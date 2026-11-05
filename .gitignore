@@ -9,6 +9,8 @@
 # Local databases and world saves
 *.sqlite
 *.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
 *.db
 
 # Editors and OS
