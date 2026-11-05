@@ -54,6 +54,14 @@ pub trait Storage: Send {
 
     /// Events strictly after `tick`, in order.
     fn events_after(&mut self, tick: Tick) -> Result<Vec<(Tick, Event)>, StorageError>;
+
+    /// Drops the events strictly after `tick` and says how many there were.
+    ///
+    /// Used on resume: a run interrupted without its final snapshot
+    /// leaves events past the last snapshot, on a timeline the resumed
+    /// world will not follow; keeping them would collide with the new
+    /// ones tick for tick.
+    fn forget_events_after(&mut self, tick: Tick) -> Result<u64, StorageError>;
 }
 
 /// Schema migrations, applied in order; the index + 1 is the version
@@ -182,6 +190,13 @@ impl Storage for Sqlite {
             Ok((Tick(tick.unsigned_abs()), serde_json::from_str(&data)?))
         })
         .collect()
+    }
+
+    fn forget_events_after(&mut self, tick: Tick) -> Result<u64, StorageError> {
+        let dropped = self
+            .conn
+            .execute("DELETE FROM events WHERE tick > ?1", [db_int(tick.0)])?;
+        Ok(u64::try_from(dropped).expect("row count fits"))
     }
 }
 
@@ -356,6 +371,29 @@ mod tests {
         assert_eq!(storage.latest_world().unwrap().unwrap().tick(), Tick(3));
         drop(storage);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resuming_after_an_interrupted_run_forgets_the_orphaned_events() {
+        let mut storage = Sqlite::in_memory(content()).unwrap();
+        let world = world_at(4);
+        storage.save_world(&world).unwrap();
+        // The run went on past the snapshot and was killed: events at
+        // ticks 5 and 6 are in the journal, no later snapshot.
+        for tick in 5..=6 {
+            storage
+                .append_events(Tick(tick), &[Event::DayStarted { day: tick }])
+                .unwrap();
+        }
+        assert_eq!(storage.events_after(Tick(4)).unwrap().len(), 2);
+        assert_eq!(storage.forget_events_after(Tick(4)).unwrap(), 2);
+        assert_eq!(storage.forget_events_after(Tick(4)).unwrap(), 0);
+        assert_eq!(storage.events_after(Tick(4)).unwrap().len(), 0);
+        // The resumed world can journal tick 5 again.
+        storage
+            .append_events(Tick(5), &[Event::DayStarted { day: 99 }])
+            .unwrap();
+        assert_eq!(storage.events_after(Tick(4)).unwrap().len(), 1);
     }
 
     #[test]

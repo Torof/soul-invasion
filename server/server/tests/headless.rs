@@ -131,3 +131,52 @@ fn help_is_printed() {
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).contains("USAGE"));
 }
+
+#[test]
+fn an_interrupted_run_leaves_a_journal_the_next_run_can_live_with() {
+    let dir =
+        std::env::temp_dir().join(format!("soul-invasion-interrupted-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let data = dir.join("world.sqlite");
+    let data = data.to_str().unwrap();
+    let calendar = ["--ticks-per-second", "10", "--seconds-per-day", "60"];
+
+    let first = server()
+        .args(["--data", data, "--headless", "--days", "1"])
+        .args(calendar)
+        .output()
+        .expect("server binary runs");
+    assert!(first.status.success());
+
+    // As if the run had gone on past its last snapshot (tick 600) and
+    // been killed: an event journaled at tick 601, no newer snapshot.
+    let conn = rusqlite::Connection::open(data).unwrap();
+    conn.execute(
+        "INSERT INTO events (tick, seq, data) VALUES (601, 0, '{\"type\":\"day_started\",\"day\":99}')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let second = server()
+        .args(["--data", data, "--headless", "--days", "1"])
+        .args(calendar)
+        .output()
+        .expect("server binary runs");
+    let stdout = String::from_utf8_lossy(&second.stdout);
+    let stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        second.status.success(),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("world: resumed at tick 600 (day 2)"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("note: the last run was interrupted; 1 journaled event(s) after the snapshot were dropped"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("now day 3"), "stdout: {stdout}");
+    let _ = std::fs::remove_dir_all(dir);
+}
