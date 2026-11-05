@@ -33,8 +33,8 @@ as welcome as technical ones.
    - Client: `godot --headless --path client --import && godot --headless --path client -s tests/run_tests.gd`
 6. The CI must be green. Pull requests that touch a **protected area**
    (`docs/`, the protocol, dependencies, storage schema, `.github/`, licenses)
-   need a review from the project lead; the rest merges automatically once
-   the CI passes.
+   need the project lead's approval, given by the `lead-approved` label; the
+   rest merges automatically once the CI passes.
 
 Architecture rules that every change must respect are summarised in
 [`CLAUDE.md`](CLAUDE.md) (written for AI-assisted sessions, but valid for

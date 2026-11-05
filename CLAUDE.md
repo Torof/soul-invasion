@@ -21,7 +21,12 @@ conductor: vision, decisions, practices, audits, security. The AI writes the cod
   messages. Conversation with the project lead may be in any language.
 - `main` is protected. All work goes through a branch and a pull request.
   The CI must be green. Protected areas (see `.github/CODEOWNERS`) need the
-  project lead's review; everything else merges on its own.
+  project lead's approval, given by adding the `lead-approved` label to the
+  pull request; everything else merges on its own.
+- **The AI never adds the `lead-approved` label, never approves a pull
+  request, and never merges one by hand.** The AI works from the project
+  lead's GitHub account, so this is a matter of trust, not of mechanics:
+  the label is the project lead's decision and theirs alone.
 - Never add a dependency, change the protocol, change a storage schema or
   touch `.github/` without saying so explicitly in the pull request.
 - Hidden game rules (karma, the Emperor's tree, titles) are **content**, never

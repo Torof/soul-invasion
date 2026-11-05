@@ -1,0 +1,69 @@
+name: Protected areas
+
+# Required status check. Fails when a pull request changes a protected path
+# (declared in .github/CODEOWNERS) and does not carry the `lead-approved`
+# label. Only the project lead adds that label, after reading the change.
+#
+# Why a label and not a GitHub review: the AI opens pull requests from the
+# project lead's own account, and GitHub does not let an author approve their
+# own pull request. The label is the project lead's explicit approval.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  check:
+    name: Protected areas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: List changed files
+        id: changes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: gh pr view "$PR" --json files --jq '.files[].path' > changed.txt
+      - name: Compare with CODEOWNERS
+        env:
+          APPROVED: ${{ contains(github.event.pull_request.labels.*.name, 'lead-approved') }}
+        run: |
+          python3 - <<'EOF'
+          import os, re, sys
+
+          def to_regex(pattern: str) -> re.Pattern:
+              # CODEOWNERS subset: leading "/" anchors at the repo root,
+              # trailing "/" matches a directory, "*" matches within a segment.
+              anchored = pattern.startswith("/")
+              p = pattern.strip("/")
+              body = "".join("[^/]*" if c == "*" else re.escape(c) for c in p)
+              if pattern.endswith("/"):
+                  body += "(/.*)?"
+              return re.compile(("^" if anchored else "(^|.*/)") + body + "$")
+
+          rules = []
+          with open(".github/CODEOWNERS", encoding="utf-8") as f:
+              for line in f:
+                  line = line.split("#", 1)[0].strip()
+                  if line:
+                      rules.append((line.split()[0], to_regex(line.split()[0])))
+
+          changed = [l.strip() for l in open("changed.txt", encoding="utf-8") if l.strip()]
+          hits = {path: pat for path in changed for pat, rx in rules if rx.match(path)}
+
+          if not hits:
+              print("No protected path changed.")
+              sys.exit(0)
+          print("Protected paths changed:")
+          for path, pat in hits.items():
+              print(f"  {path}  (rule: {pat})")
+          if os.environ["APPROVED"] == "true":
+              print("Label `lead-approved` present: approved by the project lead.")
+              sys.exit(0)
+          print("\nMissing label `lead-approved`. The project lead must read this change and add the label.")
+          sys.exit(1)
+          EOF
