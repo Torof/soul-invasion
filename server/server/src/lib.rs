@@ -8,6 +8,8 @@
 pub mod cli;
 pub mod net;
 pub mod run;
+pub mod storage;
 
 pub use cli::Options;
 pub use run::{RunSummary, run_headless, run_paced};
+pub use storage::{Sqlite, Storage, StorageError};

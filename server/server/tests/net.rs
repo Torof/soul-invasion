@@ -25,6 +25,7 @@ impl Server {
     fn start() -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_server"))
             .args([
+                "--ephemeral",
                 "--listen",
                 "127.0.0.1:0",
                 "--ticks-per-second",

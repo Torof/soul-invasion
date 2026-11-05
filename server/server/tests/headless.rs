@@ -12,6 +12,7 @@ fn server() -> Command {
 fn headless_run_simulates_the_requested_days_and_exits_cleanly() {
     let output = server()
         .args([
+            "--ephemeral",
             "--headless",
             "--days",
             "3",
@@ -40,6 +41,7 @@ fn paced_run_with_a_day_limit_stops_on_its_own() {
     // 2 ticks/s, 1 s/day, 2 days, 100x faster: finishes in a few milliseconds.
     let output = server()
         .args([
+            "--ephemeral",
             "--listen",
             "127.0.0.1:0",
             "--days",
@@ -72,6 +74,45 @@ fn paced_run_with_a_day_limit_stops_on_its_own() {
         stdout.contains("stopped: 4 ticks, 2 events, now day 3"),
         "stdout: {stdout}"
     );
+}
+
+#[test]
+fn the_world_resumes_from_its_database() {
+    let dir = std::env::temp_dir().join(format!("soul-invasion-resume-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let data = dir.join("world.sqlite");
+    let data = data.to_str().unwrap();
+    let calendar = ["--ticks-per-second", "10", "--seconds-per-day", "60"];
+
+    let first = server()
+        .args(["--data", data, "--headless", "--days", "3"])
+        .args(calendar)
+        .output()
+        .expect("server binary runs");
+    assert!(first.status.success());
+    let stdout = String::from_utf8_lossy(&first.stdout);
+    assert!(stdout.contains("world: new"), "stdout: {stdout}");
+    assert!(stdout.contains("now day 4"), "stdout: {stdout}");
+
+    // Second run: a different calendar on the command line is ignored,
+    // the world's own calendar wins, and time continues where it stopped.
+    let second = server()
+        .args(["--data", data, "--headless", "--days", "2"])
+        .args(["--ticks-per-second", "1", "--seconds-per-day", "1"])
+        .output()
+        .expect("server binary runs");
+    assert!(second.status.success());
+    let stdout = String::from_utf8_lossy(&second.stdout);
+    assert!(
+        stdout.contains("world: resumed at tick 1800 (day 4)"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("done: 1200 ticks, 2 events, now day 6"),
+        "stdout: {stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]

@@ -23,14 +23,25 @@ pub struct RunSummary {
 }
 
 /// Runs `world` for `days` full game days as fast as possible.
-pub fn run_headless(world: &mut World, days: u64) -> RunSummary {
+///
+/// `on_tick` is called after every tick with the events of that tick
+/// (often none), exactly as in [`run_paced`].
+pub fn run_headless(
+    world: &mut World,
+    days: u64,
+    mut on_tick: impl FnMut(&World, &[Event]),
+) -> RunSummary {
     let total = days * world.calendar().ticks_per_day();
+    let mut summary = RunSummary::default();
     let mut events = Vec::new();
-    world.advance(total, &mut events);
-    RunSummary {
-        ticks: total,
-        events,
+    for _ in 0..total {
+        events.clear();
+        world.step(&mut events);
+        summary.ticks += 1;
+        on_tick(world, &events);
+        summary.events.extend(events.iter().cloned());
     }
+    summary
 }
 
 /// Runs `world` in real time, `time_scale` times faster than the calendar
@@ -110,7 +121,7 @@ mod tests {
     #[test]
     fn headless_runs_exactly_the_requested_days() {
         let mut w = small_world();
-        let s = run_headless(&mut w, 3);
+        let s = run_headless(&mut w, 3, |_, _| {});
         assert_eq!(s.ticks, 18);
         assert_eq!(w.time().day, 4);
         assert_eq!(
@@ -127,7 +138,7 @@ mod tests {
     fn paced_and_headless_give_the_same_result() {
         let mut headless = small_world();
         let mut paced = small_world();
-        let expected = run_headless(&mut headless, 2);
+        let expected = run_headless(&mut headless, 2, |_, _| {});
         let mut seen = Vec::new();
         let mut ticks_seen = 0;
         // Very fast pace so the test stays quick; the result must not depend on it.
