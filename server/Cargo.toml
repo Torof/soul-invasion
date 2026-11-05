@@ -8,6 +8,8 @@ edition = "2024"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/Torof/soul-invasion"
 rust-version = "1.90"
+# Workspace crates are never published to crates.io.
+publish = false
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
