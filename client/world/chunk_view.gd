@@ -47,6 +47,18 @@ func _draw() -> void:
 		var nth: int = on_tile.get(tile, 0)
 		on_tile[tile] = nth + 1
 		var centre := Iso.tile_to_screen(tile.x, tile.y) + Vector2(-6 + 6 * (nth % 3), 2 - 4 * (nth / 3))
-		var colour: Color = _looks.get(str(item.get("material", "")), Color.MAGENTA)
+		var material := str(item.get("material", ""))
+		var colour: Color = _looks.get(material, Color.MAGENTA)
 		draw_circle(centre, ITEM_RADIUS, colour)
 		draw_circle(centre, ITEM_RADIUS, Color(0, 0, 0, 0.6), false, 1.0)
+		if material == "corpse":
+			draw_death_icon(self, centre + Vector2(0, -12))
+
+
+## A small skull above a corpse, drawn on `canvas` at `at`.
+static func draw_death_icon(canvas: CanvasItem, at: Vector2) -> void:
+	canvas.draw_circle(at, 4.5, Color(0.92, 0.92, 0.88))
+	canvas.draw_circle(at, 4.5, Color.BLACK, false, 1.0)
+	canvas.draw_rect(Rect2(at + Vector2(-2.5, 3), Vector2(5, 2.5)), Color(0.92, 0.92, 0.88))
+	canvas.draw_circle(at + Vector2(-1.7, -0.5), 1.1, Color.BLACK)
+	canvas.draw_circle(at + Vector2(1.7, -0.5), 1.1, Color.BLACK)
