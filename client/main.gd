@@ -44,4 +44,7 @@ func _on_disconnected(reason: String) -> void:
 
 func _refresh() -> void:
 	var who := "body %d" % _body if _body >= 0 else "watching"
-	_status.text = "Soul Invasion — day %d — %s — %s — click a tile to walk" % [_day, who, _state]
+	_status.text = (
+		"Soul Invasion — day %d — %s — %s — click: walk · wheel: zoom · right-drag: pan · space: follow"
+		% [_day, who, _state]
+	)

@@ -22,6 +22,13 @@ static func screen_to_tile(p: Vector2) -> Vector2i:
 	return Vector2i(floori((fx + fy) / 2.0 + 0.5), floori((fy - fx) / 2.0 + 0.5))
 
 
+## The chunk holding a tile, for any sign of coordinates. Must agree with
+## `Pos::chunk` on the server: floor division, chunk (0, 0) holding tiles
+## 0..size.
+static func chunk_of(tile: Vector2i, size: int) -> Vector2i:
+	return Vector2i(floori(float(tile.x) / size), floori(float(tile.y) / size))
+
+
 ## The four corners of the diamond for tile (x, y), clockwise from the top.
 static func diamond(x: int, y: int) -> PackedVector2Array:
 	var c := tile_to_screen(x, y)
