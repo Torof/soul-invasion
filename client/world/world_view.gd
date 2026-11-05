@@ -47,6 +47,8 @@ var _piloted := -1
 var _target := Vector2i(-1, -1)
 ## The camera follows the piloted body until the player drags it.
 var _following := true
+## Has the camera been put somewhere sensible since the last world state?
+var _camera_placed := false
 var _dragging := false
 var _hover := Vector2i(-1, -1)
 
@@ -61,7 +63,7 @@ func _ready() -> void:
 	Net.body_left.connect(_on_body_left)
 	Net.body_sleeps.connect(_on_body_sleeps)
 	Net.body_died.connect(_on_body_died)
-	Net.body_assigned.connect(func(body: int) -> void: _piloted = body)
+	Net.body_assigned.connect(_on_body_assigned)
 	Net.item_added.connect(_on_item_added)
 	Net.item_removed.connect(_on_item_removed)
 	Net.night_fell.connect(func(_day: int) -> void: _set_night(true))
@@ -89,6 +91,7 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	_tiles.clear()
 	_bodies.clear()
 	_following = true
+	_camera_placed = false
 	_set_night(night)
 	queue_redraw()
 
@@ -110,6 +113,12 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array) -> voi
 	_tiles[key] = tiles
 	_items[key] = items
 	view.show_chunk(key * _chunk_size, _chunk_size, tiles, items, _looks)
+	if not _camera_placed and _piloted < 0:
+		# Watching, no body to follow: look at the ground we were given
+		# rather than at the valley's corner.
+		var middle := key * _chunk_size + Vector2i(_chunk_size / 2, _chunk_size / 2)
+		_camera.position = Iso.tile_to_screen(middle.x, middle.y)
+		_camera_placed = true
 	for b in bodies:
 		var route: Array = []
 		for p in b.get("route", []):
@@ -135,6 +144,15 @@ func _on_item_removed(id: int, x: int, y: int) -> void:
 				kept.append(item)
 		_items[key] = kept
 		_chunks[key].show_chunk(key * _chunk_size, _chunk_size, _tiles[key], kept, _looks)
+
+
+func _on_body_assigned(body: int) -> void:
+	_piloted = body
+	_following = true
+	if body >= 0 and _bodies.has(body):
+		_camera.position = Iso.point_to_screen(_bodies[body]["at"])
+	_camera_placed = body >= 0 and _bodies.has(body)
+	queue_redraw()
 
 
 func _on_body_sleeps(body: int, asleep: bool) -> void:
@@ -199,6 +217,7 @@ func _place(body: int, at: Vector2, route: Array, speed_cm_per_s: int) -> void:
 	_bodies[body] = {"at": at, "route": route, "speed": speed_cm_per_s * 10.0, "asleep": asleep}
 	if first_sight and body == _piloted:
 		_camera.position = Iso.point_to_screen(at)
+		_camera_placed = true
 
 
 func _clear_target() -> void:
