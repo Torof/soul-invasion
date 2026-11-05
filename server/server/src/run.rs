@@ -48,9 +48,10 @@ pub fn run_headless(
 /// says, until `days` full game days have passed (or forever when `None`),
 /// or until `stop` becomes true.
 ///
-/// `on_tick` is called after every tick with the events of that tick
-/// (often none); this is where the server notifies clients and, later,
-/// the event journal.
+/// `before_tick` runs just before each tick: this is where the server
+/// hands the world the intentions that arrived from clients. `on_tick`
+/// is called after every tick with the events of that tick (often none);
+/// this is where the server notifies clients and the event journal.
 ///
 /// Uses a fixed-step accumulator: if the machine falls behind, several
 /// ticks run back to back to catch up, and the rules never see the
@@ -60,6 +61,7 @@ pub fn run_paced(
     time_scale: f64,
     days: Option<u64>,
     stop: &AtomicBool,
+    mut before_tick: impl FnMut(&mut World),
     mut on_tick: impl FnMut(&World, &[Event]),
 ) -> RunSummary {
     let tick_duration = tick_duration(world.calendar().ticks_per_second(), time_scale);
@@ -83,6 +85,7 @@ pub fn run_paced(
         while owed >= tick_duration && !reached_limit(world) && !stop.load(Ordering::Relaxed) {
             owed -= tick_duration;
             events.clear();
+            before_tick(world);
             world.step(&mut events);
             summary.ticks += 1;
             on_tick(world, &events);
@@ -142,10 +145,17 @@ mod tests {
         let mut seen = Vec::new();
         let mut ticks_seen = 0;
         // Very fast pace so the test stays quick; the result must not depend on it.
-        let got = run_paced(&mut paced, 10_000.0, Some(2), &never_stop(), |_, ev| {
-            ticks_seen += 1;
-            seen.extend(ev.iter().cloned());
-        });
+        let got = run_paced(
+            &mut paced,
+            10_000.0,
+            Some(2),
+            &never_stop(),
+            |_| {},
+            |_, ev| {
+                ticks_seen += 1;
+                seen.extend(ev.iter().cloned());
+            },
+        );
         assert_eq!(got, expected);
         assert_eq!(seen, expected.events);
         assert_eq!(ticks_seen, expected.ticks);
@@ -157,7 +167,14 @@ mod tests {
         // A slow calendar (1 tick/s) with a huge scale: the first loop
         // iteration owes many ticks at once, but must not overshoot.
         let mut w = World::new(Calendar::new(1, 2).unwrap()); // 2 ticks per day
-        let s = run_paced(&mut w, 1_000_000.0, Some(1), &never_stop(), |_, _| {});
+        let s = run_paced(
+            &mut w,
+            1_000_000.0,
+            Some(1),
+            &never_stop(),
+            |_| {},
+            |_, _| {},
+        );
         assert_eq!(s.ticks, 2);
         assert_eq!(w.time().day, 2);
     }
@@ -166,11 +183,18 @@ mod tests {
     fn paced_honours_the_stop_flag() {
         let mut w = small_world();
         let stop = AtomicBool::new(false);
-        let s = run_paced(&mut w, 10_000.0, None, &stop, |world, _| {
-            if world.tick().0 == 5 {
-                stop.store(true, Ordering::Relaxed);
-            }
-        });
+        let s = run_paced(
+            &mut w,
+            10_000.0,
+            None,
+            &stop,
+            |_| {},
+            |world, _| {
+                if world.tick().0 == 5 {
+                    stop.store(true, Ordering::Relaxed);
+                }
+            },
+        );
         assert_eq!(s.ticks, 5);
     }
 

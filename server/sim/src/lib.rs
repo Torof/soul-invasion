@@ -4,9 +4,64 @@
 //! The server feeds it intentions and asks it to advance a number of fixed
 //! ticks; it returns the events that happened. Same inputs, same outputs.
 
+pub mod map;
 pub mod time;
 
+use std::collections::VecDeque;
+
+pub use map::{Map, Pos, Terrain};
 pub use time::{Calendar, CalendarError, GameTime, Tick};
+
+/// Identifies a body (an inhabitant). Players and NPCs are the same kind
+/// of body; only the pilot differs (D13).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+pub struct BodyId(pub u32);
+
+/// Ticks a body needs to walk one tile.
+pub const TICKS_PER_TILE: u64 = 4;
+
+/// An inhabitant's body: where it is and where it is going.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Body {
+    id: BodyId,
+    pos: Pos,
+    /// Remaining steps of the current walk, nearest first.
+    path: VecDeque<Pos>,
+    /// Tick at which the next step may happen.
+    next_step: Tick,
+}
+
+impl Body {
+    /// The body's id.
+    pub fn id(&self) -> BodyId {
+        self.id
+    }
+
+    /// Where the body stands.
+    pub fn pos(&self) -> Pos {
+        self.pos
+    }
+
+    /// Is the body walking somewhere?
+    pub fn is_walking(&self) -> bool {
+        !self.path.is_empty()
+    }
+}
+
+/// What a pilot (player or, later, NPC brain) asks a body to do (D20).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Intention {
+    /// Walk to a tile.
+    MoveTo {
+        /// The body that should walk.
+        body: BodyId,
+        /// Where to.
+        target: Pos,
+    },
+}
 
 /// Something that happened in the world during a tick.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -17,21 +72,67 @@ pub enum Event {
         /// The day that just started (days count from 1).
         day: u64,
     },
+    /// A body stepped onto a tile.
+    BodyMoved {
+        /// Who.
+        body: BodyId,
+        /// Where it now stands.
+        to: Pos,
+    },
+    /// A body finished its walk.
+    BodyArrived {
+        /// Who.
+        body: BodyId,
+        /// Where.
+        at: Pos,
+    },
+    /// A walk could not start (unknown body, impassable or unreachable target).
+    MoveRefused {
+        /// Who.
+        body: BodyId,
+        /// Where it wanted to go.
+        target: Pos,
+    },
 }
 
-/// The world state. Milestone 1 ("the skeleton") only tracks time.
+/// The world state: time, ground, bodies.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct World {
     calendar: Calendar,
     tick: Tick,
+    map: Map,
+    bodies: Vec<Body>,
+    next_body: u32,
+    /// Intentions received since the last tick, applied in order at the
+    /// start of the next one. Never persisted: a restart drops them.
+    #[serde(skip)]
+    pending: Vec<Intention>,
 }
 
+/// Size of the first version's valley.
+const VALLEY_SIZE: u32 = 32;
+
 impl World {
-    /// Creates an empty world at tick zero with the given calendar.
+    /// Creates the first version's valley at tick zero, with a few
+    /// inhabitants standing on the grass.
     pub fn new(calendar: Calendar) -> Self {
+        let mut world = Self::empty(calendar, Map::valley(VALLEY_SIZE, VALLEY_SIZE, 1));
+        for pos in [Pos::new(20, 20), Pos::new(22, 21), Pos::new(19, 23)] {
+            world.map.set(pos, Terrain::Grass);
+            world.spawn_body(pos);
+        }
+        world
+    }
+
+    /// Creates a world on a given map with no bodies.
+    pub fn empty(calendar: Calendar, map: Map) -> Self {
         Self {
             calendar,
             tick: Tick(0),
+            map,
+            bodies: Vec::new(),
+            next_body: 1,
+            pending: Vec::new(),
         }
     }
 
@@ -50,6 +151,43 @@ impl World {
         self.calendar.time_at(self.tick)
     }
 
+    /// The ground.
+    pub fn map(&self) -> &Map {
+        &self.map
+    }
+
+    /// Every body, in id order.
+    pub fn bodies(&self) -> &[Body] {
+        &self.bodies
+    }
+
+    /// A body by id.
+    pub fn body(&self, id: BodyId) -> Option<&Body> {
+        self.bodies.iter().find(|b| b.id == id)
+    }
+
+    /// Adds a body standing at `pos`. The tile must be passable.
+    ///
+    /// # Panics
+    /// If `pos` is not a passable tile of the map.
+    pub fn spawn_body(&mut self, pos: Pos) -> BodyId {
+        assert!(self.map.is_passable(pos), "spawn on a passable tile");
+        let id = BodyId(self.next_body);
+        self.next_body += 1;
+        self.bodies.push(Body {
+            id,
+            pos,
+            path: VecDeque::new(),
+            next_step: self.tick,
+        });
+        id
+    }
+
+    /// Queues an intention for the next tick.
+    pub fn queue(&mut self, intention: Intention) {
+        self.pending.push(intention);
+    }
+
     /// Advances the world by exactly one fixed tick, appending the events
     /// of that tick to `events`.
     pub fn step(&mut self, events: &mut Vec<Event>) {
@@ -58,12 +196,58 @@ impl World {
         if now.is_day_start() {
             events.push(Event::DayStarted { day: now.day });
         }
+
+        let pending = std::mem::take(&mut self.pending);
+        for intention in pending {
+            self.apply(&intention, events);
+        }
+
+        for body in &mut self.bodies {
+            if body.path.is_empty() || body.next_step > self.tick {
+                continue;
+            }
+            if let Some(next) = body.path.pop_front() {
+                body.pos = next;
+                body.next_step = Tick(self.tick.0 + TICKS_PER_TILE);
+                events.push(Event::BodyMoved {
+                    body: body.id,
+                    to: next,
+                });
+                if body.path.is_empty() {
+                    events.push(Event::BodyArrived {
+                        body: body.id,
+                        at: next,
+                    });
+                }
+            }
+        }
     }
 
     /// Advances the world by `n` fixed ticks, appending events to `events`.
     pub fn advance(&mut self, n: u64, events: &mut Vec<Event>) {
         for _ in 0..n {
             self.step(events);
+        }
+    }
+
+    fn apply(&mut self, intention: &Intention, events: &mut Vec<Event>) {
+        match *intention {
+            Intention::MoveTo { body: id, target } => {
+                let Some(index) = self.bodies.iter().position(|b| b.id == id) else {
+                    events.push(Event::MoveRefused { body: id, target });
+                    return;
+                };
+                let from = self.bodies[index].pos;
+                match self.map.path(from, target) {
+                    Some(path) => {
+                        let body = &mut self.bodies[index];
+                        body.path = path.into();
+                        // A new walk starts at once; the pace applies between steps.
+                        body.next_step = self.tick;
+                    }
+                    None => events.push(Event::MoveRefused { body: id, target }),
+                }
+            }
         }
     }
 }
@@ -83,11 +267,22 @@ mod tests {
         World::new(Calendar::new(2, 2).unwrap())
     }
 
+    fn open_field() -> World {
+        let mut world = World::empty(
+            Calendar::new(10, 100).unwrap(),
+            Map::filled(8, 8, Terrain::Grass),
+        );
+        world.spawn_body(Pos::new(0, 0));
+        world
+    }
+
     #[test]
-    fn new_world_starts_at_tick_zero_on_day_one() {
+    fn new_world_starts_at_tick_zero_on_day_one_with_bodies() {
         let w = World::default();
         assert_eq!(w.tick(), Tick(0));
         assert_eq!(w.time().day, 1);
+        assert_eq!(w.bodies().len(), 3);
+        assert!(w.bodies().iter().all(|b| w.map().is_passable(b.pos())));
     }
 
     #[test]
@@ -121,22 +316,114 @@ mod tests {
         let mut a = small_world();
         let mut b = small_world();
         let (mut ea, mut eb) = (Vec::new(), Vec::new());
+        a.queue(Intention::MoveTo {
+            body: BodyId(1),
+            target: Pos::new(25, 25),
+        });
+        b.queue(Intention::MoveTo {
+            body: BodyId(1),
+            target: Pos::new(25, 25),
+        });
         a.advance(1_000, &mut ea);
         b.advance(1_000, &mut eb);
         assert_eq!(a.tick(), b.tick());
         assert_eq!(ea, eb);
+        assert_eq!(a.bodies(), b.bodies());
     }
 
     #[test]
-    fn stepping_one_by_one_equals_advancing_at_once() {
-        let mut a = small_world();
-        let mut b = small_world();
-        let (mut ea, mut eb) = (Vec::new(), Vec::new());
-        a.advance(50, &mut ea);
-        for _ in 0..50 {
-            b.step(&mut eb);
-        }
-        assert_eq!(a.tick(), b.tick());
-        assert_eq!(ea, eb);
+    fn a_body_walks_one_tile_every_few_ticks_and_arrives() {
+        let mut w = open_field();
+        let mut events = Vec::new();
+        w.queue(Intention::MoveTo {
+            body: BodyId(1),
+            target: Pos::new(2, 0),
+        });
+        w.step(&mut events); // tick 1: intention applied, first step at once
+        assert_eq!(
+            events,
+            vec![Event::BodyMoved {
+                body: BodyId(1),
+                to: Pos::new(1, 0)
+            }]
+        );
+        events.clear();
+        w.advance(TICKS_PER_TILE - 1, &mut events);
+        assert!(events.is_empty(), "no step before the pace allows");
+        w.step(&mut events);
+        assert_eq!(
+            events,
+            vec![
+                Event::BodyMoved {
+                    body: BodyId(1),
+                    to: Pos::new(2, 0)
+                },
+                Event::BodyArrived {
+                    body: BodyId(1),
+                    at: Pos::new(2, 0)
+                },
+            ]
+        );
+        assert_eq!(w.body(BodyId(1)).unwrap().pos(), Pos::new(2, 0));
+        assert!(!w.body(BodyId(1)).unwrap().is_walking());
+    }
+
+    #[test]
+    fn a_new_intention_replaces_the_current_walk() {
+        let mut w = open_field();
+        let mut events = Vec::new();
+        w.queue(Intention::MoveTo {
+            body: BodyId(1),
+            target: Pos::new(5, 0),
+        });
+        w.step(&mut events);
+        w.queue(Intention::MoveTo {
+            body: BodyId(1),
+            target: Pos::new(1, 3),
+        });
+        w.advance(40, &mut events);
+        assert_eq!(w.body(BodyId(1)).unwrap().pos(), Pos::new(1, 3));
+    }
+
+    #[test]
+    fn impossible_walks_are_refused() {
+        let mut w = open_field();
+        let mut events = Vec::new();
+        w.queue(Intention::MoveTo {
+            body: BodyId(1),
+            target: Pos::new(50, 50),
+        });
+        w.queue(Intention::MoveTo {
+            body: BodyId(9),
+            target: Pos::new(1, 1),
+        });
+        w.step(&mut events);
+        assert_eq!(
+            events,
+            vec![
+                Event::MoveRefused {
+                    body: BodyId(1),
+                    target: Pos::new(50, 50)
+                },
+                Event::MoveRefused {
+                    body: BodyId(9),
+                    target: Pos::new(1, 1)
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn pending_intentions_are_not_serialized() {
+        let mut w = open_field();
+        w.queue(Intention::MoveTo {
+            body: BodyId(1),
+            target: Pos::new(3, 3),
+        });
+        let text = serde_json::to_string(&w).unwrap();
+        let back: World = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.pending, Vec::new());
+        assert_eq!(back.bodies(), w.bodies());
+        assert_eq!(back.map(), w.map());
     }
 }

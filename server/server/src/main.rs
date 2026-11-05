@@ -18,7 +18,7 @@ use server::net::{Shared, serve};
 use server::{Options, Sqlite, Storage, StorageError, run_headless, run_paced};
 use sim::{Event, World};
 use tokio::net::TcpListener;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 type BoxError = Box<dyn std::error::Error>;
 
@@ -189,7 +189,8 @@ fn run_paced_server(
         ),
     }
 
-    let shared = Arc::new(Shared::new());
+    let (intentions_tx, mut intentions_rx) = mpsc::unbounded_channel();
+    let shared = Arc::new(Shared::new(&world, intentions_tx));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let acceptor = runtime.spawn(serve(listener, Arc::clone(&shared), shutdown_rx));
@@ -200,15 +201,27 @@ fn run_paced_server(
         let time_scale = opts.time_scale;
         let days = opts.days;
         runtime.spawn_blocking(move || {
-            let summary = run_paced(&mut world, time_scale, days, &stop, |world, events| {
+            let before_tick = |world: &mut World| {
+                while let Ok(intention) = intentions_rx.try_recv() {
+                    world.queue(intention);
+                }
+            };
+            let on_tick = |world: &World, events: &[Event]| {
                 shared.tick.store(world.tick().0, Ordering::Relaxed);
                 persister.on_tick(world, events);
                 for event in events {
-                    println!("tick {}: {event:?}", world.tick().0);
-                    // No subscribers is not an error: nobody is connected.
-                    let _ = shared.publish.send(to_message(world, event));
+                    match event {
+                        Event::BodyMoved { body, to } => shared.body_moved(*body, *to),
+                        Event::DayStarted { .. } => println!("tick {}: {event:?}", world.tick().0),
+                        _ => {}
+                    }
+                    if let Some(message) = to_message(world, event) {
+                        // No subscribers is not an error: nobody is connected.
+                        let _ = shared.publish.send(message);
+                    }
                 }
-            });
+            };
+            let summary = run_paced(&mut world, time_scale, days, &stop, before_tick, on_tick);
             (summary, world, persister)
         })
     };
@@ -247,11 +260,22 @@ fn run_paced_server(
     Ok(())
 }
 
-fn to_message(world: &World, event: &Event) -> ServerMessage {
+/// The client-facing form of an event, if clients should hear about it.
+fn to_message(world: &World, event: &Event) -> Option<ServerMessage> {
+    let tick = world.tick().0;
     match *event {
-        Event::DayStarted { day } => ServerMessage::DayStarted {
-            day,
-            tick: world.tick().0,
-        },
+        Event::DayStarted { day } => Some(ServerMessage::DayStarted { day, tick }),
+        Event::BodyMoved { body, to } => Some(ServerMessage::BodyMoved {
+            body: body.0,
+            x: to.x,
+            y: to.y,
+            tick,
+        }),
+        Event::MoveRefused { body, target } => Some(ServerMessage::MoveRefused {
+            body: body.0,
+            x: target.x,
+            y: target.y,
+        }),
+        Event::BodyArrived { .. } => None,
     }
 }

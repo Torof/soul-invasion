@@ -10,7 +10,7 @@ use sim::{Event, Tick, World};
 
 /// Version of the serialized `World` inside a snapshot. Bump on any change
 /// to `World`'s shape, and add a migration in `decode_world`.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 1;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 2;
 
 /// Errors from the storage layer.
 #[derive(Debug, thiserror::Error)]
@@ -189,13 +189,34 @@ fn db_int(value: u64) -> i64 {
 
 /// Turns stored snapshot data into a `World`, migrating old formats.
 fn decode_world(format_version: u32, data: &str) -> Result<World, StorageError> {
-    match format_version {
-        SNAPSHOT_FORMAT_VERSION => Ok(serde_json::from_str(data)?),
-        found => Err(StorageError::UnsupportedSnapshot {
-            found,
-            supported: SNAPSHOT_FORMAT_VERSION,
-        }),
+    let mut version = format_version;
+    let mut data = data.to_owned();
+    while version < SNAPSHOT_FORMAT_VERSION {
+        data = match version {
+            1 => migrate_v1_to_v2(&data)?,
+            _ => unreachable!("every version below the current one has a migration"),
+        };
+        version += 1;
     }
+    if version == SNAPSHOT_FORMAT_VERSION {
+        Ok(serde_json::from_str(&data)?)
+    } else {
+        Err(StorageError::UnsupportedSnapshot {
+            found: version,
+            supported: SNAPSHOT_FORMAT_VERSION,
+        })
+    }
+}
+
+/// v1 held only the calendar and the tick; v2 adds the map and the
+/// bodies. A v1 world gets the standard valley and inhabitants, at its
+/// old tick.
+fn migrate_v1_to_v2(data: &str) -> Result<String, StorageError> {
+    let old: serde_json::Value = serde_json::from_str(data)?;
+    let calendar: sim::Calendar = serde_json::from_value(old["calendar"].clone())?;
+    let mut new = serde_json::to_value(World::new(calendar))?;
+    new["tick"] = old["tick"].clone();
+    Ok(new.to_string())
 }
 
 #[cfg(test)]
@@ -263,6 +284,25 @@ mod tests {
         assert_eq!(storage.latest_world().unwrap().unwrap().tick(), Tick(3));
         drop(storage);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn v1_snapshots_are_migrated() {
+        let mut storage = Sqlite::in_memory().unwrap();
+        storage
+            .conn
+            .execute(
+                "INSERT INTO snapshots (tick, format_version, data) VALUES (0, 1, ?1)",
+                [r#"{"calendar":{"ticks_per_second":2,"seconds_per_day":3},"tick":12}"#],
+            )
+            .unwrap();
+        let world = storage.latest_world().unwrap().unwrap();
+        assert_eq!(world.tick(), Tick(12));
+        assert_eq!(world.calendar(), &Calendar::new(2, 3).unwrap());
+        assert_eq!(
+            world.bodies().len(),
+            World::new(Calendar::default()).bodies().len()
+        );
     }
 
     #[test]

@@ -20,6 +20,11 @@ static func ping(nonce: int) -> Dictionary:
 	return {"type": "ping", "nonce": nonce}
 
 
+## Builds the intention to walk the piloted body to a tile.
+static func move_to(x: int, y: int) -> Dictionary:
+	return {"type": "move_to", "x": x, "y": y}
+
+
 ## Encodes a message dictionary to its wire form.
 static func encode(message: Dictionary) -> String:
 	# sort_keys=false keeps the field order of the Rust types, so the wire

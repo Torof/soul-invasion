@@ -1,6 +1,7 @@
-[gd_scene load_steps=2 format=3 uid="uid://c0soulinvmain0"]
+[gd_scene load_steps=3 format=3 uid="uid://c0soulinvmain0"]
 
 [ext_resource type="Script" path="res://main.gd" id="1_main"]
+[ext_resource type="Script" path="res://world/world_view.gd" id="2_world"]
 
 [node name="Main" type="Control"]
 layout_mode = 3
@@ -10,3 +11,17 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("1_main")
+
+[node name="WorldView" type="Node2D" parent="."]
+script = ExtResource("2_world")
+
+[node name="Status" type="Label" parent="."]
+layout_mode = 1
+anchors_preset = 10
+anchor_right = 1.0
+offset_left = 12.0
+offset_top = 8.0
+offset_right = -12.0
+offset_bottom = 32.0
+grow_horizontal = 2
+text = "Soul Invasion"
