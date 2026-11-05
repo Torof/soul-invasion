@@ -6,6 +6,8 @@ extends Node
 
 signal connected(tick: int, body: int)
 signal world_state(width: int, height: int, chunk_size: int, materials: Array, night: bool)
+## The clock: {"tick", "ticks_per_second", "ticks_per_day", "time_scale"}, with world_state.
+signal clock(clock: Dictionary)
 signal chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array)
 signal chunk_hidden(x: int, y: int)
 signal body_walks(body: int, at: Vector2, route: Array, speed_cm_per_s: int)
@@ -117,6 +119,7 @@ func _handle(message: Dictionary) -> void:
 				message.get("materials", []),
 				bool(message.get("night", false))
 			)
+			clock.emit(message.get("clock", {}))
 		"chunk":
 			chunk.emit(
 				int(message.get("x", 0)),

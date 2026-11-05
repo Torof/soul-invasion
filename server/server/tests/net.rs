@@ -194,6 +194,7 @@ async fn next_day(socket: &mut Socket) -> u64 {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn hello_ping_and_a_published_day() {
     let server = Server::start();
     let mut socket = server.connect().await;
@@ -226,12 +227,15 @@ async fn hello_ping_and_a_published_day() {
             height,
             chunk_size,
             materials,
+            clock,
             ..
         }) => {
             assert_eq!((width, height), (VALLEY_SIZE, VALLEY_SIZE));
             assert_eq!(chunk_size, CHUNK_SIZE);
             assert!(materials.len() >= 9, "the catalogue of materials");
             assert!(materials.iter().all(|m| m.colour.starts_with('#')));
+            assert_eq!((clock.ticks_per_second, clock.ticks_per_day), (20, 20));
+            assert_eq!(clock.time_scale_permille, 1000);
         }
         other => panic!("expected world_state, got {other:?}"),
     }

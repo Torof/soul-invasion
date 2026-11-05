@@ -25,7 +25,9 @@ use serde::{Deserialize, Serialize};
 /// - v5: bodies have a condition (needs, vitality, sleep) told to their
 ///   pilot; they eat and sleep; they die and their pilot is given another;
 ///   items appear and vanish; night falls.
-pub const PROTOCOL_VERSION: u32 = 5;
+/// - v6: `world_state` carries the clock (tick, ticks per second and per
+///   day, pace), so clients can show the time of day between messages.
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// A tile on the map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +83,23 @@ pub struct Condition {
     pub fatigue: u32,
     /// Asleep?
     pub asleep: bool,
+}
+
+/// The world's clock, enough to show the time of day between messages:
+/// `tick` was current when sent; ticks advance at `ticks_per_second ×
+/// time_scale_permille / 1000` per real second; a day is `ticks_per_day`
+/// ticks and starts at dawn (D09).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Clock {
+    /// The tick current when this was sent.
+    pub tick: u64,
+    /// Simulation ticks per game second.
+    pub ticks_per_second: u32,
+    /// Ticks per game day.
+    pub ticks_per_day: u64,
+    /// How many times faster than real time the server runs, in
+    /// thousandths (1000 is real time).
+    pub time_scale_permille: u32,
 }
 
 /// What killed a body.
@@ -178,6 +197,8 @@ pub enum ServerMessage {
         materials: Vec<MaterialView>,
         /// Is it night right now?
         night: bool,
+        /// The clock.
+        clock: Clock,
     },
     /// A chunk of ground the client now holds, with the bodies standing
     /// in it and the items lying in it. Chunk (0, 0) holds tiles
@@ -374,6 +395,12 @@ mod tests {
                     edible: false,
                 }],
                 night: true,
+                clock: Clock {
+                    tick: 3_600,
+                    ticks_per_second: 10,
+                    ticks_per_day: 72_000,
+                    time_scale_permille: 1000,
+                },
             },
             ServerMessage::Chunk {
                 x: 5,

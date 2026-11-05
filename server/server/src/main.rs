@@ -213,7 +213,12 @@ fn run_paced_server(
         ),
     }
 
-    let shared = Arc::new(Shared::new(&world, content, opts.max_connections));
+    let shared = Arc::new(Shared::new(
+        &world,
+        content,
+        opts.max_connections,
+        opts.time_scale,
+    ));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let acceptor = runtime.spawn(serve(listener, Arc::clone(&shared), shutdown_rx));

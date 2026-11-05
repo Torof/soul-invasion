@@ -26,8 +26,8 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
-    BodyState, ClientMessage, Condition, DeathCause, ItemState, MaterialView, PROTOCOL_VERSION,
-    Point, ServerMessage, Terrain, decode, encode,
+    BodyState, ClientMessage, Clock, Condition, DeathCause, ItemState, MaterialView,
+    PROTOCOL_VERSION, Point, ServerMessage, Terrain, decode, encode,
 };
 use sim::{BodyId, CHUNK_SIZE, ChunkPos, Content, FinePos, Intention, ItemId, Map, Pos, World};
 use tokio::net::{TcpListener, TcpStream};
@@ -152,6 +152,12 @@ pub struct Shared {
     pub materials: Vec<MaterialView>,
     /// Is it night? Kept by the simulation thread.
     pub night: AtomicBool,
+    /// Simulation ticks per game second.
+    ticks_per_second: u32,
+    /// Ticks per game day.
+    ticks_per_day: u64,
+    /// How many times faster than real time the server runs, in thousandths.
+    time_scale_permille: u32,
     /// Items on the ground, by chunk, kept by the simulation thread.
     items: Mutex<BTreeMap<ChunkPos, Vec<ItemState>>>,
     /// Connections served at once, at most.
@@ -181,7 +187,7 @@ impl Drop for Admission<'_> {
 
 impl Shared {
     /// Creates the shared state from the world as it is at startup.
-    pub fn new(world: &World, content: &Content, max_connections: usize) -> Self {
+    pub fn new(world: &World, content: &Content, max_connections: usize, time_scale: f64) -> Self {
         let (publish, _) = broadcast::channel(BROADCAST_CAPACITY);
         let materials = content
             .materials
@@ -223,6 +229,9 @@ impl Shared {
             bodies: watch::Sender::new(bodies),
             materials,
             night: AtomicBool::new(world.is_night(content)),
+            ticks_per_second: world.calendar().ticks_per_second(),
+            ticks_per_day: world.calendar().ticks_per_day(),
+            time_scale_permille: permille(time_scale),
             items: Mutex::new(items),
             max_connections,
             connections: AtomicUsize::new(0),
@@ -415,6 +424,16 @@ impl Shared {
             .remove(&body);
     }
 
+    /// The clock as of now.
+    pub fn clock(&self) -> Clock {
+        Clock {
+            tick: self.tick.load(Ordering::Relaxed),
+            ticks_per_second: self.ticks_per_second,
+            ticks_per_day: self.ticks_per_day,
+            time_scale_permille: self.time_scale_permille,
+        }
+    }
+
     /// The chunk a watcher without a body looks at: the middle of the map.
     fn centre_chunk(&self) -> ChunkPos {
         Pos::new(
@@ -489,6 +508,14 @@ impl View {
     pub fn is_empty(&self) -> bool {
         self.chunks.is_empty()
     }
+}
+
+/// A pace as thousandths, for the wire; absurd paces saturate.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn permille(time_scale: f64) -> u32 {
+    (time_scale * 1000.0)
+        .round()
+        .clamp(1.0, f64::from(u32::MAX)) as u32
 }
 
 /// The tile a published point is in.
@@ -596,6 +623,7 @@ async fn handle_connection(
             chunk_size: CHUNK_SIZE,
             materials: shared.materials.clone(),
             night: shared.night.load(Ordering::Relaxed),
+            clock: shared.clock(),
         },
     )
     .await?;
@@ -894,7 +922,7 @@ mod tests {
     use super::*;
 
     fn shared(max_connections: usize) -> Shared {
-        Shared::new(&World::default(), &Content::sample(), max_connections)
+        Shared::new(&World::default(), &Content::sample(), max_connections, 1.0)
     }
 
     #[test]
