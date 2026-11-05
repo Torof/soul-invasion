@@ -25,6 +25,7 @@ OPTIONS:
                            event journal (default world.sqlite). The world
                            resumes from it when it exists.
     --ephemeral            Keep the world in memory only; nothing is saved.
+    --reset                Erase the data file first and start a new world.
     --time-scale <X>       Paced mode: run X times faster than real time
                            (default 1.0). Does not change the rules, only the
                            pace (D09).
@@ -68,6 +69,8 @@ pub struct Options {
     pub listen: SocketAddr,
     /// Where snapshots and the event journal go.
     pub data: DataLocation,
+    /// Erase the data file before starting: a new world.
+    pub reset: bool,
     /// Paced mode speed factor.
     pub time_scale: f64,
     /// Connections served at once, at most (paced mode only).
@@ -85,6 +88,7 @@ impl Default for Options {
             days: None,
             listen: DEFAULT_LISTEN.parse().expect("valid default address"),
             data: DataLocation::File(PathBuf::from(DEFAULT_DATA)),
+            reset: false,
             time_scale: 1.0,
             max_connections: DEFAULT_MAX_CONNECTIONS,
             content: None,
@@ -153,6 +157,7 @@ impl Options {
                 "--listen" => opts.listen = value(arg, args.next())?,
                 "--data" => opts.data = DataLocation::File(value(arg, args.next())?),
                 "--ephemeral" => opts.data = DataLocation::Ephemeral,
+                "--reset" => opts.reset = true,
                 "--time-scale" => opts.time_scale = value(arg, args.next())?,
                 "--max-connections" => opts.max_connections = value(arg, args.next())?,
                 "--content" => opts.content = Some(value(arg, args.next())?),
@@ -289,6 +294,12 @@ mod tests {
             Err(CliError::Calendar(sim::CalendarError::ZeroSecondsPerDay))
         );
         assert_eq!(Options::parse(["--help"]), Err(CliError::HelpRequested));
+    }
+
+    #[test]
+    fn reset_is_parsed() {
+        assert!(Options::parse(["--reset"]).unwrap().reset);
+        assert!(!Options::parse(Vec::<&str>::new()).unwrap().reset);
     }
 
     #[test]

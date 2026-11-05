@@ -101,7 +101,21 @@ fn open_world(
 ) -> Result<(World, Persister), BoxError> {
     let mut storage: Box<dyn Storage> = match &opts.data {
         DataLocation::File(path) => {
-            println!("data: {}", path.display());
+            if opts.reset {
+                // The database and SQLite's sidecar files, if any.
+                for suffix in ["", "-wal", "-shm", "-journal"] {
+                    let mut file = path.as_os_str().to_owned();
+                    file.push(suffix);
+                    match std::fs::remove_file(&file) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => return Err(e.into()),
+                    }
+                }
+                println!("data: {} (reset: starting a new world)", path.display());
+            } else {
+                println!("data: {}", path.display());
+            }
             Box::new(Sqlite::open(path, Arc::clone(content))?)
         }
         DataLocation::Ephemeral => {
