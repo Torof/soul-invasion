@@ -1,6 +1,6 @@
-//! Runs the real server binary in headless mode: the scenario check that
-//! the CI will grow over time (D09, "accelerated mode without players is
-//! mandatory from the start").
+//! Runs the real server binary: the scenario check that the CI will grow
+//! over time (D09, "accelerated mode without players is mandatory from
+//! the start").
 
 use std::process::Command;
 
@@ -40,6 +40,8 @@ fn paced_run_with_a_day_limit_stops_on_its_own() {
     // 2 ticks/s, 1 s/day, 2 days, 100x faster: finishes in a few milliseconds.
     let output = server()
         .args([
+            "--listen",
+            "127.0.0.1:0",
             "--days",
             "2",
             "--time-scale",
@@ -52,8 +54,16 @@ fn paced_run_with_a_day_limit_stops_on_its_own() {
         .output()
         .expect("server binary runs");
 
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("listening on 127.0.0.1:"),
+        "stdout: {stdout}"
+    );
     assert!(
         stdout.contains("tick 2: DayStarted { day: 2 }"),
         "stdout: {stdout}"

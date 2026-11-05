@@ -45,9 +45,17 @@ pub enum ServerMessage {
         nonce: u64,
     },
     /// The client spoke a protocol version the server does not support.
+    /// The server closes the connection after sending it.
     ProtocolMismatch {
         /// Version the server expected.
         expected: u32,
+    },
+    /// A new game day began.
+    DayStarted {
+        /// The day that just started (days count from 1).
+        day: u64,
+        /// The tick at which it started.
+        tick: u64,
     },
 }
 
@@ -89,6 +97,10 @@ mod tests {
             },
             ServerMessage::Pong { nonce: 42 },
             ServerMessage::ProtocolMismatch { expected: 1 },
+            ServerMessage::DayStarted {
+                day: 2,
+                tick: 72_000,
+            },
         ];
         for message in messages {
             let text = encode(&message).unwrap();
@@ -101,5 +113,13 @@ mod tests {
     fn wire_format_is_tagged_snake_case() {
         let text = encode(&ClientMessage::Ping { nonce: 1 }).unwrap();
         assert_eq!(text, r#"{"type":"ping","nonce":1}"#);
+        let text = encode(&ServerMessage::DayStarted { day: 2, tick: 10 }).unwrap();
+        assert_eq!(text, r#"{"type":"day_started","day":2,"tick":10}"#);
+    }
+
+    #[test]
+    fn unknown_messages_are_rejected() {
+        assert!(decode::<ClientMessage>(r#"{"type":"teleport"}"#).is_err());
+        assert!(decode::<ClientMessage>("not json").is_err());
     }
 }

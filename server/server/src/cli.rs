@@ -1,10 +1,9 @@
 //! Command-line options.
 //!
-//! Hand-rolled on purpose: the server has no dependencies yet, and adding
-//! one is a protected change. A proper argument parser can replace this
-//! when the network layer brings its own dependencies.
+//! Hand-rolled on purpose: a few flags do not justify a dependency yet.
 
 use std::fmt;
+use std::net::SocketAddr;
 
 use sim::Calendar;
 
@@ -19,6 +18,8 @@ OPTIONS:
     --headless             Run as fast as possible with no clients, then exit.
                            Requires --days.
     --days <N>             Stop after N full game days (optional in paced mode).
+    --listen <ADDR>        Paced mode: WebSocket listen address
+                           (default 127.0.0.1:7777; port 0 picks a free port).
     --time-scale <X>       Paced mode: run X times faster than real time
                            (default 1.0). Does not change the rules, only the
                            pace (D09).
@@ -28,6 +29,9 @@ OPTIONS:
     -h, --help             Print this help.
 ";
 
+/// Default listen address.
+pub const DEFAULT_LISTEN: &str = "127.0.0.1:7777";
+
 /// Parsed command-line options.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Options {
@@ -35,6 +39,8 @@ pub struct Options {
     pub headless: bool,
     /// Stop after this many full game days.
     pub days: Option<u64>,
+    /// WebSocket listen address (paced mode only).
+    pub listen: SocketAddr,
     /// Paced mode speed factor.
     pub time_scale: f64,
     /// The world's calendar.
@@ -46,6 +52,7 @@ impl Default for Options {
         Self {
             headless: false,
             days: None,
+            listen: DEFAULT_LISTEN.parse().expect("valid default address"),
             time_scale: 1.0,
             calendar: Calendar::default(),
         }
@@ -109,6 +116,7 @@ impl Options {
                 "-h" | "--help" => return Err(CliError::HelpRequested),
                 "--headless" => opts.headless = true,
                 "--days" => opts.days = Some(value(arg, args.next())?),
+                "--listen" => opts.listen = value(arg, args.next())?,
                 "--time-scale" => opts.time_scale = value(arg, args.next())?,
                 "--ticks-per-second" => ticks_per_second = value(arg, args.next())?,
                 "--seconds-per-day" => seconds_per_day = value(arg, args.next())?,
@@ -151,6 +159,7 @@ mod tests {
     fn no_arguments_gives_defaults() {
         let opts = Options::parse(Vec::<&str>::new()).unwrap();
         assert_eq!(opts, Options::default());
+        assert_eq!(opts.listen.to_string(), DEFAULT_LISTEN);
     }
 
     #[test]
@@ -168,6 +177,19 @@ mod tests {
         assert!(opts.headless);
         assert_eq!(opts.days, Some(3));
         assert_eq!(opts.calendar, Calendar::new(4, 30).unwrap());
+    }
+
+    #[test]
+    fn listen_address_is_parsed() {
+        let opts = Options::parse(["--listen", "0.0.0.0:0"]).unwrap();
+        assert_eq!(opts.listen.to_string(), "0.0.0.0:0");
+        assert_eq!(
+            Options::parse(["--listen", "nowhere"]),
+            Err(CliError::InvalidValue {
+                option: "--listen".into(),
+                value: "nowhere".into()
+            })
+        );
     }
 
     #[test]
