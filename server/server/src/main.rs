@@ -116,6 +116,12 @@ fn open_world(
             world.tick().0,
             world.time().day
         );
+        let orphaned = storage.forget_events_after(world.tick())?;
+        if orphaned > 0 {
+            println!(
+                "note: the last run was interrupted; {orphaned} journaled event(s) after the snapshot were dropped"
+            );
+        }
         if world.calendar() != &opts.calendar {
             println!("note: the world's own calendar wins over the command line");
         }
