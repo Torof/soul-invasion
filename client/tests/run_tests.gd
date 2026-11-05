@@ -85,6 +85,10 @@ func _test_main_scene_lets_clicks_reach_the_world() -> void:
 	var end := text.find("[node ", start + 1)
 	var main_block := text.substr(start, end - start if end >= 0 else -1)
 	_check(main_block.contains("mouse_filter = 2"), "Main node ignores mouse events (MOUSE_FILTER_IGNORE)")
+	# The interface lives in a CanvasLayer: the world camera must not move it.
+	_check(text.contains("[node name=\"Ui\" type=\"CanvasLayer\""), "the interface has its own canvas layer")
+	_check(text.contains("[node name=\"Hud\" type=\"PanelContainer\" parent=\"Ui\"]"), "the HUD is in it")
+	_check(text.contains("[node name=\"Help\" type=\"Label\" parent=\"Ui\"]"), "the help line is in it")
 
 
 func _test_time_of_day() -> void:
