@@ -27,7 +27,7 @@ jobs:
           mkdir -p dist
           cp target/release/server "dist/soul-invasion-server-${GITHUB_REF_NAME}-linux-x86_64"
           cp ../LICENSE dist/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: server-linux
           path: server/dist/*
