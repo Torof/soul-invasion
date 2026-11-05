@@ -17,37 +17,75 @@ const WALK_SPEED := 10.0  # tiles per second, for the visual glide only
 
 var _width := 0
 var _height := 0
-var _tiles: Array = []
+var _chunk_size := 32
+## chunk position -> Array of tiles, row by row (only the chunks the server sent)
+var _chunks: Dictionary = {}
 ## body id -> {"tile": Vector2i, "shown": Vector2 (screen, glides)}
 var _bodies: Dictionary = {}
 var _piloted := -1
+var _centered := false
 var _hover := Vector2i(-1, -1)
 
 
 func _ready() -> void:
 	Net.world_state.connect(_on_world_state)
+	Net.chunk.connect(_on_chunk)
+	Net.chunk_hidden.connect(_on_chunk_hidden)
 	Net.body_moved.connect(_on_body_moved)
+	Net.body_left.connect(_on_body_left)
 	Net.connected.connect(func(_tick: int, body: int) -> void: _piloted = body)
 
 
-func _on_world_state(width: int, height: int, tiles: Array, bodies: Array) -> void:
+func _on_world_state(width: int, height: int, chunk_size: int) -> void:
 	_width = width
 	_height = height
-	_tiles = tiles
+	_chunk_size = chunk_size
+	_chunks.clear()
 	_bodies.clear()
+	_centered = false
+	queue_redraw()
+
+
+func _on_chunk(x: int, y: int, tiles: Array, bodies: Array) -> void:
+	_chunks[Vector2i(x, y)] = tiles
 	for b in bodies:
-		var tile := Vector2i(int(b.get("x", 0)), int(b.get("y", 0)))
-		_bodies[int(b.get("id", -1))] = {"tile": tile, "shown": Iso.tile_to_screen(tile.x, tile.y)}
-	_center_camera()
+		_place(int(b.get("id", -1)), Vector2i(int(b.get("x", 0)), int(b.get("y", 0))))
+	queue_redraw()
+
+
+func _on_chunk_hidden(x: int, y: int) -> void:
+	var chunk := Vector2i(x, y)
+	_chunks.erase(chunk)
+	for id in _bodies.keys():
+		if _chunk_of(_bodies[id]["tile"]) == chunk:
+			_bodies.erase(id)
 	queue_redraw()
 
 
 func _on_body_moved(body: int, x: int, y: int, _tick: int) -> void:
-	if _bodies.has(body):
-		_bodies[body]["tile"] = Vector2i(x, y)
-	else:
-		_bodies[body] = {"tile": Vector2i(x, y), "shown": Iso.tile_to_screen(x, y)}
+	_place(body, Vector2i(x, y))
 	queue_redraw()
+
+
+func _on_body_left(body: int) -> void:
+	_bodies.erase(body)
+	queue_redraw()
+
+
+## Puts a body on a tile, gliding there if it was already shown. The view
+## centres on the piloted body the first time it is seen.
+func _place(body: int, tile: Vector2i) -> void:
+	if _bodies.has(body):
+		_bodies[body]["tile"] = tile
+	else:
+		_bodies[body] = {"tile": tile, "shown": Iso.tile_to_screen(tile.x, tile.y)}
+	if body == _piloted and not _centered:
+		_centered = true
+		_center_camera(tile)
+
+
+func _chunk_of(tile: Vector2i) -> Vector2i:
+	return Vector2i(floori(float(tile.x) / _chunk_size), floori(float(tile.y) / _chunk_size))
 
 
 func _process(delta: float) -> void:
@@ -79,16 +117,22 @@ func _in_map(tile: Vector2i) -> bool:
 	return tile.x >= 0 and tile.y >= 0 and tile.x < _width and tile.y < _height
 
 
-func _center_camera() -> void:
-	var centre := Iso.tile_to_screen(_width / 2, _height / 2)
+func _center_camera(tile: Vector2i) -> void:
+	var centre := Iso.tile_to_screen(tile.x, tile.y)
 	position = get_viewport_rect().size / 2.0 - centre
 
 
 func _draw() -> void:
-	for y in _height:
-		for x in _width:
-			var terrain: String = str(_tiles[y * _width + x])
-			draw_colored_polygon(Iso.diamond(x, y), COLORS.get(terrain, Color.MAGENTA))
+	# Chunks from far to near so nearer rows overlap farther ones.
+	var chunks := _chunks.keys()
+	chunks.sort_custom(func(a: Vector2i, b: Vector2i) -> bool: return a.x + a.y < b.x + b.y)
+	for chunk: Vector2i in chunks:
+		var tiles: Array = _chunks[chunk]
+		var origin := chunk * _chunk_size
+		for y in _chunk_size:
+			for x in _chunk_size:
+				var terrain: String = str(tiles[y * _chunk_size + x])
+				draw_colored_polygon(Iso.diamond(origin.x + x, origin.y + y), COLORS.get(terrain, Color.MAGENTA))
 	if _in_map(_hover):
 		draw_polyline(_closed(Iso.diamond(_hover.x, _hover.y)), Color(1, 1, 1, 0.6), 1.5)
 	# Bodies, far to near so nearer ones overlap farther ones.

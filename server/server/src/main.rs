@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use protocol::ServerMessage;
 use server::cli::{CliError, DataLocation, USAGE};
-use server::net::{Shared, serve};
+use server::net::{Published, Shared, serve};
 use server::{Options, Sqlite, Storage, StorageError, run_headless, run_paced};
 use sim::{Event, World};
 use tokio::net::TcpListener;
@@ -211,24 +211,36 @@ fn run_paced_server(
             let on_tick = |world: &World, events: &[Event]| {
                 shared.tick.store(world.tick().0, Ordering::Relaxed);
                 persister.on_tick(world, events);
+                let tick = world.tick().0;
                 for event in events {
-                    match event {
-                        Event::BodyMoved { body, to } => shared.body_moved(*body, *to),
-                        Event::DayStarted { .. } => println!("tick {}: {event:?}", world.tick().0),
+                    // Publishing to no subscriber is not an error: nobody is
+                    // connected.
+                    match *event {
+                        Event::BodyMoved { body, to } => {
+                            if let Some(from) = shared.body_moved(body, to) {
+                                let _ = shared.publish.send(Published::BodyMoved {
+                                    body: body.0,
+                                    from,
+                                    to,
+                                    tick,
+                                });
+                            }
+                        }
+                        Event::DayStarted { day } => {
+                            println!("tick {tick}: {event:?}");
+                            let _ = shared.publish.send(Published::DayStarted { day, tick });
+                        }
                         // A refusal concerns only whoever asked.
                         Event::MoveRefused { body, target } => shared.tell_pilot(
-                            *body,
+                            body,
                             ServerMessage::MoveRefused {
                                 body: body.0,
                                 x: target.x,
                                 y: target.y,
                             },
                         ),
+                        // Arrivals are implied by the last move.
                         Event::BodyArrived { .. } => {}
-                    }
-                    if let Some(message) = to_message(world, event) {
-                        // No subscribers is not an error: nobody is connected.
-                        let _ = shared.publish.send(message);
                     }
                 }
             };
@@ -269,20 +281,4 @@ fn run_paced_server(
         world.time().day
     );
     Ok(())
-}
-
-/// The form of an event published to every client, if there is one.
-fn to_message(world: &World, event: &Event) -> Option<ServerMessage> {
-    let tick = world.tick().0;
-    match *event {
-        Event::DayStarted { day } => Some(ServerMessage::DayStarted { day, tick }),
-        Event::BodyMoved { body, to } => Some(ServerMessage::BodyMoved {
-            body: body.0,
-            x: to.x,
-            y: to.y,
-            tick,
-        }),
-        // Refusals go to the pilot alone; arrivals are implied by the last move.
-        Event::MoveRefused { .. } | Event::BodyArrived { .. } => None,
-    }
 }

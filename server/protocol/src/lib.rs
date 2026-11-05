@@ -5,12 +5,20 @@
 //! message carries its protocol version. Clients only ever send
 //! *intentions*; the server only ever sends what the player's body perceives.
 //!
+//! The ground travels in chunks (D08, D31): after [`ServerMessage::Welcome`]
+//! and [`ServerMessage::WorldState`], the client receives one
+//! [`ServerMessage::Chunk`] per chunk around its body, then more as the
+//! body walks and [`ServerMessage::ChunkHidden`] for those left behind.
+//! Bodies are only reported while they stand in a chunk the client holds.
+//!
 //! Any change to this crate is a protected area (see `CODEOWNERS`).
 
 use serde::{Deserialize, Serialize};
 
 /// Protocol version. Bump on any incompatible change.
-pub const PROTOCOL_VERSION: u32 = 1;
+///
+/// - v2: the ground travels in chunks around the body instead of whole.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// A tile on the map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,18 +83,36 @@ pub enum ServerMessage {
         /// The body this connection pilots, or `None` to only watch.
         body: Option<u32>,
     },
-    /// Everything the client needs to draw the world, sent once after
-    /// [`ServerMessage::Welcome`]. Milestone 1 sends the whole valley;
-    /// interest management (D08) will narrow it later.
+    /// The shape of the world, sent once after [`ServerMessage::Welcome`].
+    /// The ground itself follows in [`ServerMessage::Chunk`] messages.
     WorldState {
         /// Map columns.
         width: u32,
         /// Map rows.
         height: u32,
-        /// Tiles, row by row from the north-west corner.
+        /// Side of a chunk, in tiles.
+        chunk_size: u32,
+    },
+    /// A chunk of ground the client now holds, with the bodies standing
+    /// in it. Chunk (0, 0) holds tiles `(0..chunk_size, 0..chunk_size)`.
+    Chunk {
+        /// Column of chunks.
+        x: i32,
+        /// Row of chunks.
+        y: i32,
+        /// `chunk_size × chunk_size` tiles, row by row from the north-west
+        /// corner; rock where the chunk reaches past the map.
         tiles: Vec<Terrain>,
-        /// Every body.
+        /// Every body standing in this chunk.
         bodies: Vec<BodyState>,
+    },
+    /// A chunk the client no longer holds: forget its tiles and the
+    /// bodies in it.
+    ChunkHidden {
+        /// Column of chunks.
+        x: i32,
+        /// Row of chunks.
+        y: i32,
     },
     /// Reply to [`ClientMessage::Ping`].
     Pong {
@@ -106,7 +132,7 @@ pub enum ServerMessage {
         /// The tick at which it started.
         tick: u64,
     },
-    /// A body stepped onto a tile.
+    /// A body stepped onto a tile of a chunk the client holds.
     BodyMoved {
         /// Who.
         body: u32,
@@ -116,6 +142,11 @@ pub enum ServerMessage {
         y: i32,
         /// When.
         tick: u64,
+    },
+    /// A body walked out of the chunks the client holds: forget it.
+    BodyLeft {
+        /// Who.
+        body: u32,
     },
     /// A walk could not start (impassable or unreachable target). Sent to
     /// the pilot who asked, and to nobody else.
@@ -173,11 +204,21 @@ mod tests {
                 body: None,
             },
             ServerMessage::WorldState {
-                width: 2,
-                height: 1,
-                tiles: vec![Terrain::Grass, Terrain::Water],
-                bodies: vec![BodyState { id: 1, x: 0, y: 0 }],
+                width: 256,
+                height: 256,
+                chunk_size: 32,
             },
+            ServerMessage::Chunk {
+                x: 5,
+                y: -1,
+                tiles: vec![Terrain::Grass, Terrain::Water],
+                bodies: vec![BodyState {
+                    id: 1,
+                    x: 160,
+                    y: 0,
+                }],
+            },
+            ServerMessage::ChunkHidden { x: 5, y: 4 },
             ServerMessage::Pong { nonce: 42 },
             ServerMessage::ProtocolMismatch { expected: 1 },
             ServerMessage::DayStarted {
@@ -190,6 +231,7 @@ mod tests {
                 y: 5,
                 tick: 9,
             },
+            ServerMessage::BodyLeft { body: 1 },
             ServerMessage::MoveRefused {
                 body: 1,
                 x: 4,
@@ -209,16 +251,16 @@ mod tests {
         assert_eq!(text, r#"{"type":"ping","nonce":1}"#);
         let text = encode(&ClientMessage::MoveTo { x: 2, y: 3 }).unwrap();
         assert_eq!(text, r#"{"type":"move_to","x":2,"y":3}"#);
-        let text = encode(&ServerMessage::WorldState {
-            width: 1,
-            height: 1,
+        let text = encode(&ServerMessage::Chunk {
+            x: 1,
+            y: 2,
             tiles: vec![Terrain::Ford],
             bodies: vec![],
         })
         .unwrap();
         assert_eq!(
             text,
-            r#"{"type":"world_state","width":1,"height":1,"tiles":["ford"],"bodies":[]}"#
+            r#"{"type":"chunk","x":1,"y":2,"tiles":["ford"],"bodies":[]}"#
         );
     }
 

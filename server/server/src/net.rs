@@ -5,6 +5,11 @@
 //! thread, and forwards what that thread publishes. It never touches the
 //! world itself (D29).
 //!
+//! Each connection holds a [`View`]: the chunks around its body (D08,
+//! D31). It receives those chunks, then only what happens inside them;
+//! as the body walks the view follows, chunks entering it are sent and
+//! chunks leaving it are hidden.
+//!
 //! Limits, from the milestone 1 audit: a client has [`HANDSHAKE_TIMEOUT`]
 //! to upgrade to WebSocket and then as long again to say hello; messages
 //! larger than [`MAX_MESSAGE_BYTES`] end the connection; at most
@@ -12,7 +17,7 @@
 //! latest intention per tick, so a flooding client costs one path search
 //! per tick and bothers nobody else.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -23,7 +28,7 @@ use futures_util::{SinkExt, StreamExt};
 use protocol::{
     BodyState, ClientMessage, PROTOCOL_VERSION, ServerMessage, Terrain, decode, encode,
 };
-use sim::{BodyId, Intention, Pos, World};
+use sim::{BodyId, CHUNK_SIZE, ChunkPos, Intention, Map, Pos, World};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio_tungstenite::WebSocketStream;
@@ -38,6 +43,10 @@ pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// bytes; anything near this limit is not our client.
 pub const MAX_MESSAGE_BYTES: usize = 4096;
 
+/// Chunks held around the body's own chunk, in every direction: a window
+/// of `(2 × VIEW_RADIUS + 1)²` chunks, 160 m across.
+pub const VIEW_RADIUS: i32 = 2;
+
 /// How many published messages a slow client may fall behind before it
 /// starts missing some.
 const BROADCAST_CAPACITY: usize = 256;
@@ -48,16 +57,28 @@ const PRIVATE_CAPACITY: usize = 16;
 
 type BoxError = Box<dyn Error + Send + Sync>;
 
-/// The map as clients receive it. Static for now: the ground does not
-/// change yet.
-#[derive(Debug, Clone)]
-pub struct MapView {
-    /// Columns.
-    pub width: u32,
-    /// Rows.
-    pub height: u32,
-    /// Tiles, row by row.
-    pub tiles: Vec<Terrain>,
+/// What the simulation thread publishes to every connection; each one
+/// keeps what falls inside its view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Published {
+    /// A new game day began.
+    DayStarted {
+        /// The day.
+        day: u64,
+        /// The tick at which it started.
+        tick: u64,
+    },
+    /// A body stepped from one tile to the next.
+    BodyMoved {
+        /// Who.
+        body: u32,
+        /// Where it stood.
+        from: Pos,
+        /// Where it stands now.
+        to: Pos,
+        /// When.
+        tick: u64,
+    },
 }
 
 /// State shared between the simulation thread and all connections.
@@ -65,10 +86,10 @@ pub struct MapView {
 pub struct Shared {
     /// The world's current tick, updated by the simulation thread.
     pub tick: AtomicU64,
-    /// Messages published by the simulation thread to every client.
-    pub publish: broadcast::Sender<ServerMessage>,
-    /// The ground.
-    pub map: MapView,
+    /// What the simulation thread publishes to every connection.
+    pub publish: broadcast::Sender<Published>,
+    /// The ground. Static for now: nothing changes the terrain yet.
+    pub map: Map,
     /// Latest known position of every body, kept by the simulation thread.
     pub bodies: watch::Sender<Vec<BodyState>>,
     /// Connections served at once, at most.
@@ -100,16 +121,6 @@ impl Shared {
     /// Creates the shared state from the world as it is at startup.
     pub fn new(world: &World, max_connections: usize) -> Self {
         let (publish, _) = broadcast::channel(BROADCAST_CAPACITY);
-        let map = MapView {
-            width: world.map().width(),
-            height: world.map().height(),
-            tiles: world
-                .map()
-                .tiles()
-                .iter()
-                .map(|t| terrain_view(*t))
-                .collect(),
-        };
         let bodies = world
             .bodies()
             .iter()
@@ -122,7 +133,7 @@ impl Shared {
         Self {
             tick: AtomicU64::new(world.tick().0),
             publish,
-            map,
+            map: world.map().clone(),
             bodies: watch::Sender::new(bodies),
             max_connections,
             connections: AtomicUsize::new(0),
@@ -131,14 +142,37 @@ impl Shared {
         }
     }
 
-    /// Records a body's new position.
-    pub fn body_moved(&self, body: BodyId, to: Pos) {
+    /// Records a body's new position and returns where it stood, or
+    /// `None` for a body nobody knew about.
+    pub fn body_moved(&self, body: BodyId, to: Pos) -> Option<Pos> {
+        let mut from = None;
         self.bodies.send_modify(|bodies| {
             if let Some(state) = bodies.iter_mut().find(|b| b.id == body.0) {
+                from = Some(Pos::new(state.x, state.y));
                 state.x = to.x;
                 state.y = to.y;
             }
         });
+        from
+    }
+
+    /// Where a body stands, as last published.
+    pub fn position_of(&self, body: u32) -> Option<Pos> {
+        self.bodies
+            .borrow()
+            .iter()
+            .find(|b| b.id == body)
+            .map(|b| Pos::new(b.x, b.y))
+    }
+
+    /// The bodies standing in a chunk, in id order.
+    pub fn bodies_in(&self, chunk: ChunkPos) -> Vec<BodyState> {
+        self.bodies
+            .borrow()
+            .iter()
+            .filter(|b| Pos::new(b.x, b.y).chunk() == chunk)
+            .copied()
+            .collect()
     }
 
     /// Takes a place for a new connection, or `None` when all are taken.
@@ -217,6 +251,74 @@ impl Shared {
             .lock()
             .expect("pilot set not poisoned")
             .remove(&body);
+    }
+
+    /// The chunk a watcher without a body looks at: the middle of the map.
+    fn centre_chunk(&self) -> ChunkPos {
+        Pos::new(
+            i32::try_from(self.map.width() / 2).expect("map fits in i32"),
+            i32::try_from(self.map.height() / 2).expect("map fits in i32"),
+        )
+        .chunk()
+    }
+
+    /// The message carrying a chunk and the bodies in it.
+    fn chunk_message(&self, chunk: ChunkPos) -> Option<ServerMessage> {
+        let tiles = self.map.chunk(chunk)?;
+        Some(ServerMessage::Chunk {
+            x: chunk.x,
+            y: chunk.y,
+            tiles: tiles.into_iter().map(terrain_view).collect(),
+            bodies: self.bodies_in(chunk),
+        })
+    }
+}
+
+/// The chunks a connection holds: a square window around a centre chunk,
+/// clipped to the map.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct View {
+    chunks: BTreeSet<ChunkPos>,
+}
+
+impl View {
+    /// The window around `centre`, clipped to the map.
+    fn window(map: &Map, centre: ChunkPos) -> BTreeSet<ChunkPos> {
+        let mut chunks = BTreeSet::new();
+        for dy in -VIEW_RADIUS..=VIEW_RADIUS {
+            for dx in -VIEW_RADIUS..=VIEW_RADIUS {
+                let chunk = ChunkPos::new(centre.x + dx, centre.y + dy);
+                if map.has_chunk(chunk) {
+                    chunks.insert(chunk);
+                }
+            }
+        }
+        chunks
+    }
+
+    /// Moves the window to `centre`. Returns the chunks now shown and
+    /// those now hidden, each in a fixed order.
+    pub fn recentre(&mut self, map: &Map, centre: ChunkPos) -> (Vec<ChunkPos>, Vec<ChunkPos>) {
+        let next = Self::window(map, centre);
+        let shown = next.difference(&self.chunks).copied().collect();
+        let hidden = self.chunks.difference(&next).copied().collect();
+        self.chunks = next;
+        (shown, hidden)
+    }
+
+    /// Is this tile inside the view?
+    pub fn contains(&self, pos: Pos) -> bool {
+        self.chunks.contains(&pos.chunk())
+    }
+
+    /// Chunks held.
+    pub fn len(&self) -> usize {
+        self.chunks.len()
+    }
+
+    /// Holds nothing?
+    pub fn is_empty(&self) -> bool {
+        self.chunks.is_empty()
     }
 }
 
@@ -312,13 +414,28 @@ async fn handle_connection(
         None => println!("connection {peer}: watching, no free body"),
     }
 
-    let state = ServerMessage::WorldState {
-        width: shared.map.width,
-        height: shared.map.height,
-        tiles: shared.map.tiles.clone(),
-        bodies: shared.bodies.borrow().clone(),
-    };
-    send(&mut ws, &state).await?;
+    send(
+        &mut ws,
+        &ServerMessage::WorldState {
+            width: shared.map.width(),
+            height: shared.map.height(),
+            chunk_size: CHUNK_SIZE,
+        },
+    )
+    .await?;
+
+    // The view starts around the piloted body, or the middle of the map.
+    let centre = pilot
+        .body
+        .and_then(|body| shared.position_of(body))
+        .map_or_else(|| shared.centre_chunk(), Pos::chunk);
+    let mut view = View::default();
+    let (shown, _) = view.recentre(&shared.map, centre);
+    for chunk in shown {
+        if let Some(message) = shared.chunk_message(chunk) {
+            send(&mut ws, &message).await?;
+        }
+    }
 
     loop {
         tokio::select! {
@@ -348,7 +465,7 @@ async fn handle_connection(
                 Some(Ok(_)) => {}
             },
             message = published.recv() => match message {
-                Ok(message) => send(&mut ws, &message).await?,
+                Ok(published) => forward(&mut ws, shared, pilot.body, &mut view, published).await?,
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     eprintln!("connection {peer}: too slow, {n} message(s) skipped");
                 }
@@ -366,6 +483,62 @@ async fn handle_connection(
             }
         }
     }
+}
+
+/// Forwards what the simulation published, as far as this connection's
+/// view is concerned, moving the view along with the piloted body.
+async fn forward(
+    ws: &mut WebSocketStream<TcpStream>,
+    shared: &Shared,
+    piloted: Option<u32>,
+    view: &mut View,
+    published: Published,
+) -> Result<(), BoxError> {
+    match published {
+        Published::DayStarted { day, tick } => {
+            send(ws, &ServerMessage::DayStarted { day, tick }).await?;
+        }
+        Published::BodyMoved {
+            body,
+            from,
+            to,
+            tick,
+        } => {
+            if Some(body) == piloted && from.chunk() != to.chunk() {
+                let (shown, hidden) = view.recentre(&shared.map, to.chunk());
+                for chunk in hidden {
+                    send(
+                        ws,
+                        &ServerMessage::ChunkHidden {
+                            x: chunk.x,
+                            y: chunk.y,
+                        },
+                    )
+                    .await?;
+                }
+                for chunk in shown {
+                    if let Some(message) = shared.chunk_message(chunk) {
+                        send(ws, &message).await?;
+                    }
+                }
+            }
+            if view.contains(to) {
+                send(
+                    ws,
+                    &ServerMessage::BodyMoved {
+                        body,
+                        x: to.x,
+                        y: to.y,
+                        tick,
+                    },
+                )
+                .await?;
+            } else if view.contains(from) {
+                send(ws, &ServerMessage::BodyLeft { body }).await?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Runs the hello/welcome exchange. Returns `Ok(None)` when the client
@@ -477,5 +650,57 @@ mod tests {
         shared.release_body(1);
         shared.tell_pilot(BodyId(1), ServerMessage::Pong { nonce: 0 });
         assert!(rx.try_recv().is_err(), "released: nothing more arrives");
+    }
+
+    #[test]
+    fn the_view_is_a_window_clipped_to_the_map() {
+        let map = Map::valley(256, 256, 1); // 8×8 chunks
+        let mut view = View::default();
+        let (shown, hidden) = view.recentre(&map, ChunkPos::new(4, 4));
+        assert_eq!(shown.len(), 25);
+        assert_eq!(hidden, Vec::new());
+        assert!(
+            view.contains(Pos::new(64, 64)),
+            "chunk (2, 2) is the corner"
+        );
+        assert!(!view.contains(Pos::new(63, 64)), "chunk (1, 2) is outside");
+
+        // Sliding one chunk east: a column enters, a column leaves.
+        let (shown, hidden) = view.recentre(&map, ChunkPos::new(5, 4));
+        assert_eq!(
+            shown,
+            (2..7).map(|y| ChunkPos::new(7, y)).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            hidden,
+            (2..7).map(|y| ChunkPos::new(2, y)).collect::<Vec<_>>()
+        );
+
+        // In the corner of the map the window is clipped.
+        let (shown, _) = View::default().recentre(&map, ChunkPos::new(0, 0));
+        assert_eq!(shown.len(), 9);
+        assert!(View::default().is_empty());
+    }
+
+    #[test]
+    fn a_chunk_message_carries_the_bodies_standing_in_it() {
+        let shared = shared(1);
+        let body = shared.position_of(1).expect("body 1 exists");
+        let message = shared
+            .chunk_message(body.chunk())
+            .expect("chunk on the map");
+        let ServerMessage::Chunk { tiles, bodies, .. } = message else {
+            panic!("expected a chunk");
+        };
+        assert_eq!(tiles.len(), (CHUNK_SIZE * CHUNK_SIZE) as usize);
+        assert!(bodies.iter().any(|b| b.id == 1));
+        assert!(shared.chunk_message(ChunkPos::new(-1, 0)).is_none());
+
+        // Moving a body reports where it stood and updates the chunk.
+        let far = Pos::new(10, 250);
+        assert_eq!(shared.body_moved(BodyId(1), far), Some(body));
+        assert_eq!(shared.body_moved(BodyId(99), far), None);
+        assert!(shared.bodies_in(far.chunk()).iter().any(|b| b.id == 1));
+        assert!(!shared.bodies_in(body.chunk()).iter().any(|b| b.id == 1));
     }
 }
