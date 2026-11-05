@@ -81,6 +81,57 @@ Each milestone is **playable** and **judged** before moving on to the next.
 4. **The bonds**: opinions, prestige, intentions, imitation, banishment, strangeness.
 5. **The life cycle**: couples, births, childhood, aging, choice of body, rebirth, soul points.
 
+## Order of construction and decisions (5 November 2026)
+
+Some things rest on others, so neither the building nor the deciding can
+happen in any order. This section is the order we follow and amend; each
+step names the decisions it settles, which are discussed and recorded in
+`04` **before** the code that depends on them.
+
+**Already settled**: time (D24), network (D25, D26), persistence (D28),
+spatial scale (D31), movement (D32), content as data (D15, D27), views by
+chunk (D08).
+
+**Decisions still to take, in the order they block**
+
+1. **The state of a body** — vitality, needs (hunger, cold, fatigue), wounds
+   by limb. Everything rests on it: needs, combat, animals, aging.
+2. **Combat** (D33) — tempo, gestures and guards, simultaneous resolution,
+   wounds, the engagement window, composable commands without
+   conditionals. Converged on 5 November 2026; written with step 3.
+3. **Death and provisional reattachment** — the soul takes the first free
+   body until milestone 5 brings the choice of body and rebirth.
+4. **Objects and carrying** — what an item is in hand, carried, laid down;
+   a tool made of parts (D15). Settles the weapon model for combat and the
+   crafting model.
+5. **Perception** (D18) — line of sight, light, sound, awareness. Founds
+   vigilance in combat, assassination, witnesses, fleeing animals.
+6. **The interface of intentions** — the context menu on a tile or item;
+   the engagement window. With 4 and 2.
+7. **The NPC brain** (D12) — needs to decisions, the same grammar of
+   intentions as players. Before the tribe.
+8. Groups (D19), prestige and witnesses — milestone 4. Soul points and
+   reincarnation — milestone 5. Retention of the journal — before long
+   games.
+
+**Milestone 2, pull request by pull request**
+
+| # | Pull request | Settles |
+|---|---|---|
+| 1 | Content in data: materials, spawn rules, items on the ground — **done** (#16, #17) | — |
+| 2 | Fine movement, terrain costs — **done** (#17) | D32 amended |
+| 3 | The state of a body and its needs; night; eating off the ground; sleeping; death and reattachment | 1, 2 (D33 written), 3 |
+| 4 | Pick up, carry, lay down, eat; inventory; context menu; names on hover | 4, 6 |
+| 5 | Crafting by assembly: parts, processes, computed qualities | 4 (continued) |
+| 6 | Fire and shelter: warmth, cooking, smoking; felling, building | — |
+| 7 | Perception: line of sight, light, awareness | 5 |
+| 8 | Animals and the core of combat: tempo, gestures, wounds, the engagement window; hunting, the predator | 2 (code), 6 (window) |
+| 9 | Audit of milestone 2 | — |
+
+Perception comes before the animals because too much rests on it to come
+after; combat comes with the animals, not after them. Each pull request
+ends with a run of the real client; the milestone ends with an audit.
+
 ## Milestone 1 audit (5 November 2026)
 
 What the skeleton is: a Rust server (`sim`, `protocol`, `server`), a Godot client, one valley of 32×32 tiles with a cliff, a river and a ford, three bodies, the first free one piloted by each connection. Time runs in fixed ticks (10 per game second, 7 200 game seconds per day), at any pace or headless. Snapshots and an event journal in SQLite. 59 server tests, 17 client checks, an end-to-end run with the real client.
