@@ -19,7 +19,9 @@ type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 /// The world the server starts with: the standard valley, so tests can
 /// know where bodies stand and which way they will walk.
 fn standard_world() -> World {
-    World::new(Calendar::default())
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+    let content = server::content::load(&dir).expect("repository content");
+    World::new(Calendar::default(), &content)
 }
 
 /// Where a body stands in the standard world.

@@ -1,0 +1,29 @@
+// Materials of the valley (D15). Placeholder values, tuned by play.
+//
+// id:        snake_case, unique; the name objects and rules refer to.
+// kind:      stone | wood | plant | animal.
+// mass_kg:   one piece.
+// hardness:  0 (soft) to 10 (hardest); knapping and cutting compare it.
+// flammable: feeds a fire.
+// food:      None, or (energy_kj, keeps_days) before it spoils untreated.
+// look:      provisional graphics, a colour.
+[
+    (id: "flint", name: "Flint", kind: stone, mass_kg: 0.4, hardness: 7,
+     flammable: false, food: None, look: (colour: "#5e5a52")),
+    (id: "pebble", name: "Pebble", kind: stone, mass_kg: 0.6, hardness: 6,
+     flammable: false, food: None, look: (colour: "#9a948a")),
+    (id: "branch", name: "Branch", kind: wood, mass_kg: 1.5, hardness: 3,
+     flammable: true, food: None, look: (colour: "#7a5a3a")),
+    (id: "log", name: "Log", kind: wood, mass_kg: 25.0, hardness: 3,
+     flammable: true, food: None, look: (colour: "#5a3e24")),
+    (id: "fibres", name: "Fibres", kind: plant, mass_kg: 0.2, hardness: 1,
+     flammable: true, food: None, look: (colour: "#b8b06a")),
+    (id: "berries", name: "Berries", kind: plant, mass_kg: 0.1, hardness: 0,
+     flammable: false, food: Some((energy_kj: 250, keeps_days: 3)), look: (colour: "#8a2a5a")),
+    (id: "hide", name: "Hide", kind: animal, mass_kg: 3.0, hardness: 2,
+     flammable: false, food: None, look: (colour: "#a67c52")),
+    (id: "meat", name: "Meat", kind: animal, mass_kg: 1.0, hardness: 1,
+     flammable: false, food: Some((energy_kj: 1200, keeps_days: 2)), look: (colour: "#b03a3a")),
+    (id: "bone", name: "Bone", kind: animal, mass_kg: 0.5, hardness: 4,
+     flammable: false, food: None, look: (colour: "#e8e0c8")),
+]

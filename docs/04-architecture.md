@@ -64,6 +64,7 @@ Each decision is recorded with its **reason** and its **consequences**. These ar
 ### D15 — All content as data
 - **Reason**: technologies without an imposed tree, invention by assembly, evolution without recoding.
 - **Consequences**: materials with properties, parts, processes, composite objects whose qualities are **computed**. Never a recipe hard-coded in the code.
+- **Status** (5 November 2026, milestone 2): first content files, `content/materials.ron` (family, mass, hardness, flammability, food value, provisional colour) and `content/spawns.ron` (what lies on which terrain, in pieces per thousand tiles). The valley is scattered from them when a world is created; items are world state, in the snapshot (format v4). Parts, processes and computed qualities come with crafting.
 
 ### D16 — Object states computed on demand
 - **Reason**: spoilage, wear, preservation for millions of objects.
@@ -116,6 +117,7 @@ Each decision is recorded with its **reason** and its **consequences**. These ar
 ### D27 — Content in RON, read by the server only
 - **Reason**: content (D15) is made of nested structures and categories (materials, parts, processes). RON is Rust's native data format: it expresses them directly, accepts comments and is checked at load time. The client does not need to read it: it receives the names and visual identifiers from the server at connection.
 - **Consequences**: hidden rules stay on the server effortlessly (D05). Content is validated at server startup: an inconsistent file prevents launch; a CI test loads all the content at every commit.
+- **Status** (5 November 2026, milestone 2): built. `sim::content` parses and validates (unique `snake_case` ids, resolved references, sane values); `server::content` is the only place files are read, from `--content <DIR>` or the first of `content`, `../content`, `../../content`. The server prints what it loaded at startup.
 
 ### D28 — Persistence: event journal + snapshots, SQLite first
 - **Reason**: the simulation lives in memory; we persist the event journal (D17) and periodic snapshots. SQLite is a single file, with no server to install, sufficient for a tribe and a valley.

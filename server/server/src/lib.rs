@@ -6,6 +6,7 @@
 //! (D28, D29).
 
 pub mod cli;
+pub mod content;
 pub mod net;
 pub mod run;
 pub mod storage;

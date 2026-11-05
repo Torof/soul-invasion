@@ -1,0 +1,15 @@
+// What lies on the ground when the valley is created (D15).
+//
+// material:     an id from materials.ron, quoted.
+// terrain:      grass | forest | ford (water and rock hold nothing).
+// per_thousand: pieces per thousand tiles of that terrain.
+//
+// Hide, meat and bone come from animals; logs from felled trees: no rule.
+[
+    (material: "branch", terrain: forest, per_thousand: 60),
+    (material: "fibres", terrain: grass, per_thousand: 20),
+    (material: "berries", terrain: grass, per_thousand: 8),
+    (material: "pebble", terrain: grass, per_thousand: 10),
+    (material: "pebble", terrain: ford, per_thousand: 200),
+    (material: "flint", terrain: grass, per_thousand: 4),
+]

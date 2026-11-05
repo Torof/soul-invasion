@@ -30,6 +30,9 @@ OPTIONS:
                            pace (D09).
     --max-connections <N>  Paced mode: clients served at once, at most
                            (default 64). Further connections are refused.
+    --content <DIR>        Directory of the content files (materials,
+                           spawn rules). Default: the first of content,
+                           ../content, ../../content that exists.
     --ticks-per-second <N> Calendar: simulation ticks per game second
                            (default 10).
     --seconds-per-day <N>  Calendar: game seconds per game day (default 7200).
@@ -69,6 +72,8 @@ pub struct Options {
     pub time_scale: f64,
     /// Connections served at once, at most (paced mode only).
     pub max_connections: usize,
+    /// Content directory, or `None` to look in the default places.
+    pub content: Option<PathBuf>,
     /// The world's calendar.
     pub calendar: Calendar,
 }
@@ -82,6 +87,7 @@ impl Default for Options {
             data: DataLocation::File(PathBuf::from(DEFAULT_DATA)),
             time_scale: 1.0,
             max_connections: DEFAULT_MAX_CONNECTIONS,
+            content: None,
             calendar: Calendar::default(),
         }
     }
@@ -149,6 +155,7 @@ impl Options {
                 "--ephemeral" => opts.data = DataLocation::Ephemeral,
                 "--time-scale" => opts.time_scale = value(arg, args.next())?,
                 "--max-connections" => opts.max_connections = value(arg, args.next())?,
+                "--content" => opts.content = Some(value(arg, args.next())?),
                 "--ticks-per-second" => ticks_per_second = value(arg, args.next())?,
                 "--seconds-per-day" => seconds_per_day = value(arg, args.next())?,
                 other => return Err(CliError::UnknownOption(other.to_owned())),
@@ -282,6 +289,17 @@ mod tests {
             Err(CliError::Calendar(sim::CalendarError::ZeroSecondsPerDay))
         );
         assert_eq!(Options::parse(["--help"]), Err(CliError::HelpRequested));
+    }
+
+    #[test]
+    fn content_directory_is_parsed() {
+        assert_eq!(
+            Options::parse(["--content", "/srv/content"])
+                .unwrap()
+                .content,
+            Some(PathBuf::from("/srv/content"))
+        );
+        assert_eq!(Options::parse(Vec::<&str>::new()).unwrap().content, None);
     }
 
     #[test]

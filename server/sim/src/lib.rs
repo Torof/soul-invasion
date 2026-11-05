@@ -4,11 +4,13 @@
 //! The server feeds it intentions and asks it to advance a number of fixed
 //! ticks; it returns the events that happened. Same inputs, same outputs.
 
+pub mod content;
 pub mod map;
 pub mod time;
 
 use std::collections::VecDeque;
 
+pub use content::{Content, ContentError, Food, Look, Material, MaterialKind, Spawn};
 pub use map::{CHUNK_SIZE, ChunkPos, Map, MapSpec, Pos, Terrain};
 pub use time::{Calendar, CalendarError, GameTime, Tick};
 
@@ -51,6 +53,38 @@ impl Body {
     /// Is the body walking somewhere?
     pub fn is_walking(&self) -> bool {
         !self.path.is_empty()
+    }
+}
+
+/// Identifies a piece of material lying in the world.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+pub struct ItemId(pub u64);
+
+/// A piece of material lying on the ground.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Item {
+    id: ItemId,
+    /// Content id of its material.
+    material: String,
+    pos: Pos,
+}
+
+impl Item {
+    /// The item's id.
+    pub fn id(&self) -> ItemId {
+        self.id
+    }
+
+    /// Content id of the material it is made of.
+    pub fn material(&self) -> &str {
+        &self.material
+    }
+
+    /// Where it lies.
+    pub fn pos(&self) -> Pos {
+        self.pos
     }
 }
 
@@ -99,7 +133,7 @@ pub enum Event {
     },
 }
 
-/// The world state: time, ground, bodies.
+/// The world state: time, ground, bodies, things on the ground.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct World {
     calendar: Calendar,
@@ -107,6 +141,8 @@ pub struct World {
     map: Map,
     bodies: Vec<Body>,
     next_body: u32,
+    items: Vec<Item>,
+    next_item: u64,
     /// Intentions received since the last tick, applied in order at the
     /// start of the next one. Never persisted: a restart drops them.
     #[serde(skip)]
@@ -122,8 +158,9 @@ pub const VALLEY_SEED: u64 = 1;
 
 impl World {
     /// Creates the first version's valley at tick zero, with a few
-    /// inhabitants standing on the grass of the east bank.
-    pub fn new(calendar: Calendar) -> Self {
+    /// inhabitants standing on the grass of the east bank and the
+    /// content's materials scattered over the ground by its spawn rules.
+    pub fn new(calendar: Calendar, content: &Content) -> Self {
         let mut world = Self::empty(calendar, Map::valley(VALLEY_SIZE, VALLEY_SIZE, VALLEY_SEED));
         for wanted in [Pos::new(160, 128), Pos::new(162, 129), Pos::new(159, 131)] {
             let pos = world
@@ -132,7 +169,30 @@ impl World {
                 .expect("the valley has grass");
             world.spawn_body(pos);
         }
+        world.scatter(content, VALLEY_SEED);
         world
+    }
+
+    /// Lays the content's materials on the ground following its spawn
+    /// rules, deterministically for a given seed: tile by tile, rule by
+    /// rule, a piece lands with the rule's probability.
+    fn scatter(&mut self, content: &Content, seed: u64) {
+        let mut rng = map::Lcg::new(seed ^ 0x5eed_17e5);
+        let (width, height) = (self.map.width(), self.map.height());
+        for y in 0..height {
+            for x in 0..width {
+                let pos = Pos::new(
+                    i32::try_from(x).expect("map fits in i32"),
+                    i32::try_from(y).expect("map fits in i32"),
+                );
+                let terrain = self.map.get(pos).expect("inside the map");
+                for spawn in &content.spawns {
+                    if spawn.terrain == terrain && rng.next_below(1000) < spawn.per_thousand {
+                        self.spawn_item(&spawn.material, pos);
+                    }
+                }
+            }
+        }
     }
 
     /// Creates a world on a given map with no bodies.
@@ -143,6 +203,8 @@ impl World {
             map,
             bodies: Vec::new(),
             next_body: 1,
+            items: Vec::new(),
+            next_item: 1,
             pending: Vec::new(),
         }
     }
@@ -175,6 +237,30 @@ impl World {
     /// A body by id.
     pub fn body(&self, id: BodyId) -> Option<&Body> {
         self.bodies.iter().find(|b| b.id == id)
+    }
+
+    /// Every item on the ground, in id order.
+    pub fn items(&self) -> &[Item] {
+        &self.items
+    }
+
+    /// The items lying in a chunk, in id order.
+    pub fn items_in(&self, chunk: ChunkPos) -> impl Iterator<Item = &Item> {
+        self.items.iter().filter(move |i| i.pos.chunk() == chunk)
+    }
+
+    /// Lays a piece of `material` on the ground at `pos`. The material is
+    /// the caller's responsibility: content is validated before the world
+    /// is built.
+    pub fn spawn_item(&mut self, material: &str, pos: Pos) -> ItemId {
+        let id = ItemId(self.next_item);
+        self.next_item += 1;
+        self.items.push(Item {
+            id,
+            material: material.to_owned(),
+            pos,
+        });
+        id
     }
 
     /// Adds a body standing at `pos`. The tile must be passable.
@@ -269,8 +355,9 @@ impl World {
 }
 
 impl Default for World {
+    /// The standard valley with the sample content.
     fn default() -> Self {
-        Self::new(Calendar::default())
+        Self::new(Calendar::default(), &Content::sample())
     }
 }
 
@@ -280,7 +367,7 @@ mod tests {
 
     fn small_world() -> World {
         // 4 ticks per day: easy to reason about.
-        World::new(Calendar::new(2, 2).unwrap())
+        World::new(Calendar::new(2, 2).unwrap(), &Content::sample())
     }
 
     fn open_field() -> World {
@@ -305,10 +392,10 @@ mod tests {
         );
         let text = serde_json::to_string(&w).unwrap();
         assert!(
-            text.len() < 1_000,
-            "terrain is not in the snapshot: {} bytes",
-            text.len()
+            !text.contains("\"tiles\""),
+            "terrain is not in the snapshot"
         );
+        assert!(text.contains("\"items\""), "items are");
     }
 
     #[test]
@@ -457,6 +544,49 @@ mod tests {
     }
 
     #[test]
+    fn items_are_scattered_by_the_spawn_rules_deterministically() {
+        let content = Content::sample();
+        let a = World::new(Calendar::default(), &content);
+        let b = World::new(Calendar::default(), &content);
+        assert_eq!(a.items(), b.items());
+        assert!(a.items().len() > 100, "{} items", a.items().len());
+        // Every item obeys a rule: branches in the forest, berries on grass.
+        for item in a.items() {
+            let terrain = a.map().get(item.pos()).unwrap();
+            let rule = content
+                .spawns
+                .iter()
+                .find(|s| s.material == item.material())
+                .expect("a rule for each material laid down");
+            assert_eq!(terrain, rule.terrain, "{item:?}");
+        }
+        // Densities land near their rule, over tens of thousands of tiles.
+        let forest = a
+            .map()
+            .tiles()
+            .iter()
+            .filter(|t| **t == Terrain::Forest)
+            .count();
+        let branches = a
+            .items()
+            .iter()
+            .filter(|i| i.material() == "branch")
+            .count();
+        let per_thousand = branches * 1000 / forest;
+        assert!(
+            (45..=75).contains(&per_thousand),
+            "{per_thousand}‰ branches"
+        );
+        // Items are found by chunk.
+        let first = &a.items()[0];
+        assert!(
+            a.items_in(first.pos().chunk())
+                .any(|i| i.id() == first.id())
+        );
+        assert_eq!(a.items_in(ChunkPos::new(-1, -1)).count(), 0);
+    }
+
+    #[test]
     fn pending_intentions_are_not_serialized() {
         let mut w = open_field();
         w.queue(Intention::MoveTo {
@@ -468,5 +598,6 @@ mod tests {
         assert_eq!(back.pending, Vec::new());
         assert_eq!(back.bodies(), w.bodies());
         assert_eq!(back.map(), w.map());
+        assert_eq!(back.items(), w.items());
     }
 }
