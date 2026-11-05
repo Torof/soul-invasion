@@ -15,6 +15,7 @@ func _init() -> void:
 	_test_iso_round_trip()
 	_test_iso_neighbours_are_distinct()
 	_test_main_scene_lets_clicks_reach_the_world()
+	_test_chunk_of_matches_the_server()
 	print("client tests: %d checks, %d failures" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
 
@@ -83,3 +84,11 @@ func _test_main_scene_lets_clicks_reach_the_world() -> void:
 	var end := text.find("[node ", start + 1)
 	var main_block := text.substr(start, end - start if end >= 0 else -1)
 	_check(main_block.contains("mouse_filter = 2"), "Main node ignores mouse events (MOUSE_FILTER_IGNORE)")
+
+
+func _test_chunk_of_matches_the_server() -> void:
+	# Must agree with `Pos::chunk` on the server: floor division, chunk (0, 0)
+	# holding tiles 0..32.
+	_check(Iso.chunk_of(Vector2i(0, 0), 32) == Vector2i(0, 0), "tile (0, 0) is in chunk (0, 0)")
+	_check(Iso.chunk_of(Vector2i(31, 32), 32) == Vector2i(0, 1), "tile (31, 32) is in chunk (0, 1)")
+	_check(Iso.chunk_of(Vector2i(-1, -33), 32) == Vector2i(-1, -2), "negative tiles floor")
