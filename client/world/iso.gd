@@ -15,6 +15,14 @@ static func tile_to_screen(x: int, y: int) -> Vector2:
 	return Vector2((x - y) * TILE_W / 2.0, (x + y) * TILE_H / 2.0)
 
 
+## Screen position of a fine point given in millimetres (1000 per tile);
+## the centre of tile (x, y) is at ((x + 0.5) * 1000, (y + 0.5) * 1000).
+static func point_to_screen(mm: Vector2) -> Vector2:
+	var x := mm.x / 1000.0 - 0.5
+	var y := mm.y / 1000.0 - 0.5
+	return Vector2((x - y) * TILE_W / 2.0, (x + y) * TILE_H / 2.0)
+
+
 ## Tile under a screen position (inverse of tile_to_screen).
 static func screen_to_tile(p: Vector2) -> Vector2i:
 	var fx := p.x / (TILE_W / 2.0)

@@ -18,7 +18,11 @@ use serde::{Deserialize, Serialize};
 /// Protocol version. Bump on any incompatible change.
 ///
 /// - v2: the ground travels in chunks around the body instead of whole.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// - v3: chunks carry the items lying in them; `world_state` carries the
+///   catalogue of materials they are made of.
+/// - v4: bodies stand at fine positions and walk along routes of straight
+///   segments (`body_walks`, `body_stopped`) instead of tile by tile.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// A tile on the map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,15 +40,52 @@ pub enum Terrain {
     Rock,
 }
 
-/// A body as the client sees it.
+/// A fine position: millimetres from the grid's origin. Tile (x, y)
+/// spans `(x × 1000 .. (x + 1) × 1000, y × 1000 .. (y + 1) × 1000)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Point {
+    /// Millimetres east.
+    pub x: i32,
+    /// Millimetres south.
+    pub y: i32,
+}
+
+/// A body as the client sees it: where it stands and where it is going.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BodyState {
     /// Body id.
     pub id: u32,
+    /// Where it stands.
+    pub at: Point,
+    /// Waypoints still ahead, nearest first; empty when standing still.
+    pub route: Vec<Point>,
+    /// Nominal walking speed, on open ground; terrain slows it.
+    pub speed_cm_per_s: u32,
+}
+
+/// A material as the client needs to know it: a name to show and a
+/// provisional look (D27: the client never reads the content files).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MaterialView {
+    /// Content id, the key items refer to.
+    pub id: String,
+    /// Name shown to players.
+    pub name: String,
+    /// `#rrggbb`.
+    pub colour: String,
+}
+
+/// A piece of material lying on the ground, as the client sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ItemState {
+    /// Item id.
+    pub id: u64,
     /// Column.
     pub x: i32,
     /// Row.
     pub y: i32,
+    /// Content id of its material, found in [`ServerMessage::WorldState`].
+    pub material: String,
 }
 
 /// Messages sent by the client to the server.
@@ -92,9 +133,12 @@ pub enum ServerMessage {
         height: u32,
         /// Side of a chunk, in tiles.
         chunk_size: u32,
+        /// Every material items may be made of.
+        materials: Vec<MaterialView>,
     },
     /// A chunk of ground the client now holds, with the bodies standing
-    /// in it. Chunk (0, 0) holds tiles `(0..chunk_size, 0..chunk_size)`.
+    /// in it and the items lying in it. Chunk (0, 0) holds tiles
+    /// `(0..chunk_size, 0..chunk_size)`.
     Chunk {
         /// Column of chunks.
         x: i32,
@@ -105,6 +149,8 @@ pub enum ServerMessage {
         tiles: Vec<Terrain>,
         /// Every body standing in this chunk.
         bodies: Vec<BodyState>,
+        /// Every item lying in this chunk.
+        items: Vec<ItemState>,
     },
     /// A chunk the client no longer holds: forget its tiles and the
     /// bodies in it.
@@ -132,16 +178,27 @@ pub enum ServerMessage {
         /// The tick at which it started.
         tick: u64,
     },
-    /// A body stepped onto a tile of a chunk the client holds.
-    BodyMoved {
+    /// A body in a chunk the client holds set off (or is seen for the
+    /// first time) along a route: move it from `at` through the waypoints
+    /// at its speed.
+    BodyWalks {
         /// Who.
         body: u32,
-        /// Column.
-        x: i32,
-        /// Row.
-        y: i32,
+        /// Where it is now.
+        at: Point,
+        /// Waypoints ahead, nearest first; the last is the destination.
+        route: Vec<Point>,
+        /// Nominal walking speed, on open ground; terrain slows it.
+        speed_cm_per_s: u32,
         /// When.
         tick: u64,
+    },
+    /// A body in a chunk the client holds stopped walking.
+    BodyStopped {
+        /// Who.
+        body: u32,
+        /// Exactly where.
+        at: Point,
     },
     /// A body walked out of the chunks the client holds: forget it.
     BodyLeft {
@@ -207,6 +264,11 @@ mod tests {
                 width: 256,
                 height: 256,
                 chunk_size: 32,
+                materials: vec![MaterialView {
+                    id: "flint".into(),
+                    name: "Flint".into(),
+                    colour: "#5e5a52".into(),
+                }],
             },
             ServerMessage::Chunk {
                 x: 5,
@@ -214,8 +276,15 @@ mod tests {
                 tiles: vec![Terrain::Grass, Terrain::Water],
                 bodies: vec![BodyState {
                     id: 1,
-                    x: 160,
-                    y: 0,
+                    at: Point { x: 160_500, y: 500 },
+                    route: vec![Point { x: 170_500, y: 500 }],
+                    speed_cm_per_s: 143,
+                }],
+                items: vec![ItemState {
+                    id: 9,
+                    x: 161,
+                    y: 1,
+                    material: "flint".into(),
                 }],
             },
             ServerMessage::ChunkHidden { x: 5, y: 4 },
@@ -225,11 +294,16 @@ mod tests {
                 day: 2,
                 tick: 72_000,
             },
-            ServerMessage::BodyMoved {
+            ServerMessage::BodyWalks {
                 body: 1,
-                x: 4,
-                y: 5,
+                at: Point { x: 4_500, y: 5_500 },
+                route: vec![Point { x: 6_500, y: 5_500 }, Point { x: 6_500, y: 9_500 }],
+                speed_cm_per_s: 143,
                 tick: 9,
+            },
+            ServerMessage::BodyStopped {
+                body: 1,
+                at: Point { x: 6_500, y: 9_500 },
             },
             ServerMessage::BodyLeft { body: 1 },
             ServerMessage::MoveRefused {
@@ -256,11 +330,17 @@ mod tests {
             y: 2,
             tiles: vec![Terrain::Ford],
             bodies: vec![],
+            items: vec![ItemState {
+                id: 3,
+                x: 32,
+                y: 64,
+                material: "pebble".into(),
+            }],
         })
         .unwrap();
         assert_eq!(
             text,
-            r#"{"type":"chunk","x":1,"y":2,"tiles":["ford"],"bodies":[]}"#
+            r#"{"type":"chunk","x":1,"y":2,"tiles":["ford"],"bodies":[],"items":[{"id":3,"x":32,"y":64,"material":"pebble"}]}"#
         );
     }
 

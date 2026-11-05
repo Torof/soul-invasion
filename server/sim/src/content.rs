@@ -9,7 +9,7 @@
 //! Values in the public repository are placeholders, tuned by play; hidden
 //! rules live in a private repository (D30).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -78,6 +78,32 @@ pub struct Spawn {
     pub per_thousand: u32,
 }
 
+/// How bodies move over the ground (D32).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Movement {
+    /// Walking speed on the reference terrain (cost 10), in centimetres
+    /// per game second.
+    pub walk_speed_cm_per_s: u32,
+    /// Cost of crossing one tile of each terrain, 10 being the reference;
+    /// `None` cannot be walked. Paths weigh tiles by it and bodies slow
+    /// down by it.
+    pub terrain_costs: BTreeMap<Terrain, Option<u32>>,
+}
+
+impl Movement {
+    /// Cost of a tile of this terrain, `None` when it cannot be walked.
+    pub fn cost(&self, terrain: Terrain) -> Option<u32> {
+        self.terrain_costs.get(&terrain).copied().flatten()
+    }
+
+    /// Walking speed on this terrain, in centimetres per game second;
+    /// zero when it cannot be walked.
+    pub fn speed_cm_per_s(&self, terrain: Terrain) -> u32 {
+        self.cost(terrain)
+            .map_or(0, |cost| self.walk_speed_cm_per_s * 10 / cost)
+    }
+}
+
 /// Everything loaded from the content files, validated.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Content {
@@ -85,6 +111,8 @@ pub struct Content {
     pub materials: Vec<Material>,
     /// Spawn rules, in file order.
     pub spawns: Vec<Spawn>,
+    /// How bodies move.
+    pub movement: Movement,
 }
 
 /// Why content was refused.
@@ -126,11 +154,14 @@ pub enum ContentError {
         /// The value.
         per_thousand: u32,
     },
+    /// The movement rules are incomplete or senseless.
+    #[error("movement: {0}")]
+    Movement(&'static str),
 }
 
 impl Content {
-    /// Parses the materials and spawn files and validates them together.
-    pub fn from_ron(materials: &str, spawns: &str) -> Result<Self, ContentError> {
+    /// Parses the content files and validates them together.
+    pub fn from_ron(materials: &str, spawns: &str, movement: &str) -> Result<Self, ContentError> {
         let materials = ron::from_str(materials).map_err(|source| ContentError::Parse {
             file: "materials.ron",
             source,
@@ -139,7 +170,15 @@ impl Content {
             file: "spawns.ron",
             source,
         })?;
-        let content = Self { materials, spawns };
+        let movement = ron::from_str(movement).map_err(|source| ContentError::Parse {
+            file: "movement.ron",
+            source,
+        })?;
+        let content = Self {
+            materials,
+            spawns,
+            movement,
+        };
         content.validate()?;
         Ok(content)
     }
@@ -190,6 +229,18 @@ impl Content {
                 });
             }
         }
+        if self.movement.walk_speed_cm_per_s == 0 {
+            return Err(ContentError::Movement(
+                "walk_speed_cm_per_s must be positive",
+            ));
+        }
+        for terrain in Terrain::ALL {
+            match self.movement.terrain_costs.get(&terrain) {
+                None => return Err(ContentError::Movement("every terrain needs a cost")),
+                Some(Some(0)) => return Err(ContentError::Movement("a cost is 1 or more")),
+                Some(_) => {}
+            }
+        }
         Ok(())
     }
 
@@ -201,7 +252,8 @@ impl Content {
     /// A small, valid content for tests: a stone, a branch and a berry.
     /// The real valley's content lives in the `content/` directory.
     pub fn sample() -> Self {
-        Self::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS).expect("sample content is valid")
+        Self::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, SAMPLE_MOVEMENT)
+            .expect("sample content is valid")
     }
 }
 
@@ -215,6 +267,12 @@ pub const SAMPLE_MATERIALS: &str = r##"[
     (id: "branch", name: "Branch", kind: wood, mass_kg: 1.5, hardness: 3, flammable: true, food: None, look: (colour: "#7a5a3a")),
     (id: "berries", name: "Berries", kind: plant, mass_kg: 0.1, hardness: 0, flammable: false, food: Some((energy_kj: 250, keeps_days: 3)), look: (colour: "#8a2a5a")),
 ]"##;
+
+/// Movement rules of [`Content::sample`]: the valley's own.
+pub const SAMPLE_MOVEMENT: &str = r"(
+    walk_speed_cm_per_s: 143,
+    terrain_costs: { grass: Some(10), forest: Some(15), ford: Some(20), water: None, rock: None },
+)";
 
 /// Spawn rules of [`Content::sample`].
 pub const SAMPLE_SPAWNS: &str = r#"[
@@ -239,7 +297,7 @@ mod tests {
 
     #[test]
     fn a_parse_error_names_the_file() {
-        let err = Content::from_ron("[(id: oops", SAMPLE_SPAWNS).unwrap_err();
+        let err = Content::from_ron("[(id: oops", SAMPLE_SPAWNS, SAMPLE_MOVEMENT).unwrap_err();
         assert!(matches!(
             err,
             ContentError::Parse {
@@ -247,7 +305,7 @@ mod tests {
                 ..
             }
         ));
-        let err = Content::from_ron(SAMPLE_MATERIALS, "nope").unwrap_err();
+        let err = Content::from_ron(SAMPLE_MATERIALS, "nope", SAMPLE_MOVEMENT).unwrap_err();
         assert!(matches!(
             err,
             ContentError::Parse {
@@ -264,12 +322,13 @@ mod tests {
             r##"(id: "flint", name: "Flint", kind: stone, mass_kg: 1, hardness: 7, flammable: false, food: None, look: (colour: "#000000"))"##
         );
         assert!(matches!(
-            Content::from_ron(&twice, "[]").unwrap_err(),
+            Content::from_ron(&twice, "[]", SAMPLE_MOVEMENT).unwrap_err(),
             ContentError::DuplicateMaterial(id) if id == "flint"
         ));
         let err = Content::from_ron(
             SAMPLE_MATERIALS,
             r#"[(material: "gold", terrain: grass, per_thousand: 1)]"#,
+            SAMPLE_MOVEMENT,
         )
         .unwrap_err();
         assert!(matches!(
@@ -282,7 +341,7 @@ mod tests {
     fn values_outside_sense_are_refused() {
         let bad = |field: &str| {
             let text = SAMPLE_MATERIALS.replacen(field, "", 1);
-            Content::from_ron(&text, "[]").unwrap_err()
+            Content::from_ron(&text, "[]", SAMPLE_MOVEMENT).unwrap_err()
         };
         // Removing "flammable: false, " makes the struct incomplete: a parse error.
         assert!(matches!(
@@ -292,7 +351,7 @@ mod tests {
 
         let heavy = SAMPLE_MATERIALS.replacen("mass_kg: 0.4", "mass_kg: 0", 1);
         assert!(matches!(
-            Content::from_ron(&heavy, "[]").unwrap_err(),
+            Content::from_ron(&heavy, "[]", SAMPLE_MOVEMENT).unwrap_err(),
             ContentError::InvalidValue {
                 what: "mass_kg must be positive",
                 ..
@@ -300,7 +359,7 @@ mod tests {
         ));
         let hard = SAMPLE_MATERIALS.replacen("hardness: 7", "hardness: 11", 1);
         assert!(matches!(
-            Content::from_ron(&hard, "[]").unwrap_err(),
+            Content::from_ron(&hard, "[]", SAMPLE_MOVEMENT).unwrap_err(),
             ContentError::InvalidValue {
                 what: "hardness is 0 to 10",
                 ..
@@ -308,7 +367,7 @@ mod tests {
         ));
         let colour = SAMPLE_MATERIALS.replacen("#6e6a62", "grey", 1);
         assert!(matches!(
-            Content::from_ron(&colour, "[]").unwrap_err(),
+            Content::from_ron(&colour, "[]", SAMPLE_MOVEMENT).unwrap_err(),
             ContentError::InvalidValue {
                 what: "look.colour must be #rrggbb",
                 ..
@@ -316,7 +375,7 @@ mod tests {
         ));
         let shouting = SAMPLE_MATERIALS.replacen("id: \"flint\"", "id: \"Flint\"", 1);
         assert!(matches!(
-            Content::from_ron(&shouting, "[]").unwrap_err(),
+            Content::from_ron(&shouting, "[]", SAMPLE_MOVEMENT).unwrap_err(),
             ContentError::InvalidValue {
                 what: "id must be snake_case ASCII",
                 ..
@@ -324,7 +383,7 @@ mod tests {
         ));
         let dense = SAMPLE_SPAWNS.replacen("per_thousand: 60", "per_thousand: 1001", 1);
         assert!(matches!(
-            Content::from_ron(SAMPLE_MATERIALS, &dense).unwrap_err(),
+            Content::from_ron(SAMPLE_MATERIALS, &dense, SAMPLE_MOVEMENT).unwrap_err(),
             ContentError::TooDense {
                 index: 0,
                 per_thousand: 1001

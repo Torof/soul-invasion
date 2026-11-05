@@ -5,18 +5,22 @@ extends Node2D
 ## intentions. Everything shown comes from the server; nothing is
 ## decided here (D03, D05).
 ##
+## Bodies walk along the routes the server gives them (D32): the client
+## only interpolates between waypoints at the given speed, and snaps to
+## wherever the server says they stopped.
+##
 ## Camera: mouse wheel zooms, dragging with the right or middle button
 ## pans, Space goes back to following the piloted body.
 
 const BODY_COLOR := Color(0.90, 0.80, 0.60)
 const PILOTED_COLOR := Color(1.0, 0.55, 0.20)
 const TARGET_COLOR := Color(1.0, 0.85, 0.30, 0.9)
-## Seconds a body is assumed to take per step before its pace is measured.
-const DEFAULT_STEP_SECONDS := 0.7
 const ZOOM_MIN := 0.5
 const ZOOM_MAX := 4.0
 const ZOOM_STEP := 1.25
 const DEFAULT_ZOOM := 2.0
+## Millimetres per tile, as the protocol defines fine points.
+const MM_PER_TILE := 1000.0
 
 @onready var _camera: Camera2D = $Camera
 
@@ -25,10 +29,11 @@ var _height := 0
 var _chunk_size := 32
 ## chunk position -> ChunkView (only the chunks the server sent)
 var _chunks: Dictionary = {}
-## body id -> {"tile": Vector2i, "shown": Vector2 (screen, glides),
-##   "step": seconds per step as measured, "last_move": msec of the last move}
-## The glide lasts one measured step, so a walking body never stops between
-## tiles: it is always one step behind the server, and continuous.
+## material id -> Color, from the server's catalogue
+var _looks: Dictionary = {}
+## material id -> name shown to players
+var _names: Dictionary = {}
+## body id -> {"at": Vector2 (mm), "route": Array[Vector2] (mm), "speed": mm per second}
 var _bodies: Dictionary = {}
 var _piloted := -1
 ## Where the piloted body was asked to go, highlighted until it gets there.
@@ -44,16 +49,23 @@ func _ready() -> void:
 	Net.world_state.connect(_on_world_state)
 	Net.chunk.connect(_on_chunk)
 	Net.chunk_hidden.connect(_on_chunk_hidden)
-	Net.body_moved.connect(_on_body_moved)
+	Net.body_walks.connect(_on_body_walks)
+	Net.body_stopped.connect(_on_body_stopped)
 	Net.body_left.connect(_on_body_left)
 	Net.move_refused.connect(func(_body: int, _x: int, _y: int) -> void: _clear_target())
 	Net.connected.connect(func(_tick: int, body: int) -> void: _piloted = body)
 
 
-func _on_world_state(width: int, height: int, chunk_size: int) -> void:
+func _on_world_state(width: int, height: int, chunk_size: int, materials: Array) -> void:
 	_width = width
 	_height = height
 	_chunk_size = chunk_size
+	_looks.clear()
+	_names.clear()
+	for m in materials:
+		var id := str(m.get("id", ""))
+		_looks[id] = Color.from_string(str(m.get("colour", "")), Color.MAGENTA)
+		_names[id] = str(m.get("name", id))
 	for chunk: ChunkView in _chunks.values():
 		chunk.queue_free()
 	_chunks.clear()
@@ -62,7 +74,7 @@ func _on_world_state(width: int, height: int, chunk_size: int) -> void:
 	queue_redraw()
 
 
-func _on_chunk(x: int, y: int, tiles: Array, bodies: Array) -> void:
+func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array) -> void:
 	var key := Vector2i(x, y)
 	var view: ChunkView = _chunks.get(key)
 	if view == null:
@@ -70,9 +82,12 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array) -> void:
 		view.z_index = -1  # ground below bodies and the hover outline
 		add_child(view)
 		_chunks[key] = view
-	view.show_tiles(key * _chunk_size, _chunk_size, tiles)
+	view.show_chunk(key * _chunk_size, _chunk_size, tiles, items, _looks)
 	for b in bodies:
-		_place(int(b.get("id", -1)), Vector2i(int(b.get("x", 0)), int(b.get("y", 0))))
+		var route: Array = []
+		for p in b.get("route", []):
+			route.append(Net.point(p))
+		_place(int(b.get("id", -1)), Net.point(b.get("at", {})), route, int(b.get("speed_cm_per_s", 0)))
 	queue_redraw()
 
 
@@ -83,14 +98,19 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 		view.queue_free()
 		_chunks.erase(key)
 	for id in _bodies.keys():
-		if Iso.chunk_of(_bodies[id]["tile"], _chunk_size) == key:
+		if Iso.chunk_of(_tile_of(_bodies[id]["at"]), _chunk_size) == key:
 			_bodies.erase(id)
 	queue_redraw()
 
 
-func _on_body_moved(body: int, x: int, y: int, _tick: int) -> void:
-	_place(body, Vector2i(x, y))
-	if body == _piloted and Vector2i(x, y) == _target:
+func _on_body_walks(body: int, at: Vector2, route: Array, speed_cm_per_s: int) -> void:
+	_place(body, at, route, speed_cm_per_s)
+	queue_redraw()
+
+
+func _on_body_stopped(body: int, at: Vector2) -> void:
+	_place(body, at, [], 0)
+	if body == _piloted and _tile_of(at) == _target:
 		_clear_target()
 	queue_redraw()
 
@@ -100,31 +120,22 @@ func _on_body_left(body: int) -> void:
 	queue_redraw()
 
 
-## Puts a body on a tile, gliding there if it was already shown, at the
-## pace measured between its last two moves.
-func _place(body: int, tile: Vector2i) -> void:
-	var now := Time.get_ticks_msec()
-	if _bodies.has(body):
-		var entry: Dictionary = _bodies[body]
-		entry["tile"] = tile
-		if entry["last_move"] >= 0:
-			var measured: float = clampf((now - entry["last_move"]) / 1000.0, 0.05, 3.0)
-			entry["step"] = lerpf(entry["step"], measured, 0.5)
-		entry["last_move"] = now
-	else:
-		_bodies[body] = {
-			"tile": tile,
-			"shown": Iso.tile_to_screen(tile.x, tile.y),
-			"step": DEFAULT_STEP_SECONDS,
-			"last_move": -1,
-		}
-		if body == _piloted:
-			_camera.position = _bodies[body]["shown"]
+## Puts a body somewhere with the route it is walking (empty: standing).
+func _place(body: int, at: Vector2, route: Array, speed_cm_per_s: int) -> void:
+	var first_sight := not _bodies.has(body)
+	_bodies[body] = {"at": at, "route": route, "speed": speed_cm_per_s * 10.0}
+	if first_sight and body == _piloted:
+		_camera.position = Iso.point_to_screen(at)
 
 
 func _clear_target() -> void:
 	_target = Vector2i(-1, -1)
 	queue_redraw()
+
+
+## The tile a fine point (millimetres) is in.
+static func _tile_of(mm: Vector2) -> Vector2i:
+	return Vector2i(floori(mm.x / MM_PER_TILE), floori(mm.y / MM_PER_TILE))
 
 
 ## Zoom clamped to the allowed range.
@@ -136,16 +147,27 @@ func _process(delta: float) -> void:
 	var moving := false
 	for id: int in _bodies:
 		var entry: Dictionary = _bodies[id]
-		var target: Vector2 = Iso.tile_to_screen(entry["tile"].x, entry["tile"].y)
-		var shown: Vector2 = entry["shown"]
-		if shown.distance_to(target) > 0.5:
-			# One tile's width per measured step: a straight step covers
-			# TILE_W, so the glide ends when the next move is due.
-			var speed: float = Iso.TILE_W / entry["step"]
-			entry["shown"] = shown.move_toward(target, speed * delta)
-			moving = true
+		var route: Array = entry["route"]
+		if route.is_empty():
+			continue
+		# Walk along the route at the nominal speed; the server's stop
+		# message snaps the body wherever it really ended.
+		var budget: float = entry["speed"] * delta
+		var at: Vector2 = entry["at"]
+		while budget > 0.0 and not route.is_empty():
+			var next: Vector2 = route[0]
+			var distance := at.distance_to(next)
+			if distance <= budget:
+				at = next
+				route.pop_front()
+				budget -= distance
+			else:
+				at = at.move_toward(next, budget)
+				budget = 0.0
+		entry["at"] = at
+		moving = true
 	if _following and _bodies.has(_piloted):
-		_camera.position = _bodies[_piloted]["shown"]
+		_camera.position = Iso.point_to_screen(_bodies[_piloted]["at"])
 	if moving:
 		queue_redraw()
 
@@ -198,13 +220,13 @@ func _draw() -> void:
 	# Bodies, far to near so nearer ones overlap farther ones.
 	var ids := _bodies.keys()
 	ids.sort_custom(func(a: int, b: int) -> bool:
-		var ta: Vector2i = _bodies[a]["tile"]
-		var tb: Vector2i = _bodies[b]["tile"]
-		return ta.x + ta.y < tb.x + tb.y)
+		var pa: Vector2 = _bodies[a]["at"]
+		var pb: Vector2 = _bodies[b]["at"]
+		return pa.x + pa.y < pb.x + pb.y)
 	for id: int in ids:
-		var shown: Vector2 = _bodies[id]["shown"]
+		var shown: Vector2 = Iso.point_to_screen(_bodies[id]["at"])
 		var color := PILOTED_COLOR if id == _piloted else BODY_COLOR
-		# A standing figure: taller than wide, feet on the tile's centre.
+		# A standing figure: taller than wide, feet where the body stands.
 		var feet := shown + Vector2(0, 2)
 		draw_rect(Rect2(feet + Vector2(-4, -22), Vector2(8, 20)), color)
 		draw_rect(Rect2(feet + Vector2(-4, -22), Vector2(8, 20)), Color.BLACK, false, 1.0)

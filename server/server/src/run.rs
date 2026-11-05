@@ -11,7 +11,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use sim::{Event, World};
+use sim::{Content, Event, World};
 
 /// What happened during a run.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -28,6 +28,7 @@ pub struct RunSummary {
 /// (often none), exactly as in [`run_paced`].
 pub fn run_headless(
     world: &mut World,
+    rules: &Content,
     days: u64,
     mut on_tick: impl FnMut(&World, &[Event]),
 ) -> RunSummary {
@@ -36,7 +37,7 @@ pub fn run_headless(
     let mut events = Vec::new();
     for _ in 0..total {
         events.clear();
-        world.step(&mut events);
+        world.step(rules, &mut events);
         summary.ticks += 1;
         on_tick(world, &events);
         summary.events.extend(events.iter().cloned());
@@ -58,6 +59,7 @@ pub fn run_headless(
 /// difference.
 pub fn run_paced(
     world: &mut World,
+    rules: &Content,
     time_scale: f64,
     days: Option<u64>,
     stop: &AtomicBool,
@@ -86,7 +88,7 @@ pub fn run_paced(
             owed -= tick_duration;
             events.clear();
             before_tick(world);
-            world.step(&mut events);
+            world.step(rules, &mut events);
             summary.ticks += 1;
             on_tick(world, &events);
             summary.events.extend(events.iter().cloned());
@@ -124,7 +126,7 @@ mod tests {
     #[test]
     fn headless_runs_exactly_the_requested_days() {
         let mut w = small_world();
-        let s = run_headless(&mut w, 3, |_, _| {});
+        let s = run_headless(&mut w, &Content::sample(), 3, |_, _| {});
         assert_eq!(s.ticks, 18);
         assert_eq!(w.time().day, 4);
         assert_eq!(
@@ -141,12 +143,13 @@ mod tests {
     fn paced_and_headless_give_the_same_result() {
         let mut headless = small_world();
         let mut paced = small_world();
-        let expected = run_headless(&mut headless, 2, |_, _| {});
+        let expected = run_headless(&mut headless, &Content::sample(), 2, |_, _| {});
         let mut seen = Vec::new();
         let mut ticks_seen = 0;
         // Very fast pace so the test stays quick; the result must not depend on it.
         let got = run_paced(
             &mut paced,
+            &Content::sample(),
             10_000.0,
             Some(2),
             &never_stop(),
@@ -169,6 +172,7 @@ mod tests {
         let mut w = World::new(Calendar::new(1, 2).unwrap(), &Content::sample()); // 2 ticks per day
         let s = run_paced(
             &mut w,
+            &Content::sample(),
             1_000_000.0,
             Some(1),
             &never_stop(),
@@ -185,6 +189,7 @@ mod tests {
         let stop = AtomicBool::new(false);
         let s = run_paced(
             &mut w,
+            &Content::sample(),
             10_000.0,
             None,
             &stop,

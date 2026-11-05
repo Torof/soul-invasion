@@ -7,9 +7,9 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use protocol::{ClientMessage, PROTOCOL_VERSION, ServerMessage, decode, encode};
+use protocol::{ClientMessage, PROTOCOL_VERSION, Point, ServerMessage, decode, encode};
 use server::net::VIEW_RADIUS;
-use sim::{BodyId, CHUNK_SIZE, Calendar, ChunkPos, Pos, VALLEY_SIZE, World};
+use sim::{BodyId, CHUNK_SIZE, Calendar, ChunkPos, FinePos, Pos, VALLEY_SIZE, World};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
@@ -18,10 +18,13 @@ type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// The world the server starts with: the standard valley, so tests can
 /// know where bodies stand and which way they will walk.
-fn standard_world() -> World {
+fn rules() -> sim::Content {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
-    let content = server::content::load(&dir).expect("repository content");
-    World::new(Calendar::default(), &content)
+    server::content::load(&dir).expect("repository content")
+}
+
+fn standard_world() -> World {
+    World::new(Calendar::default(), &rules())
 }
 
 /// Where a body stands in the standard world.
@@ -45,15 +48,25 @@ fn window_len(world: &World, centre: ChunkPos) -> usize {
     count
 }
 
-/// The steps the standard world will make a body take, as (x, y).
-fn steps(world: &World, from: Pos, to: Pos) -> Vec<(i32, i32)> {
+/// The route the standard world will make a body walk: straight
+/// segments, as points.
+fn route(world: &World, from: Pos, to: Pos) -> Vec<Point> {
+    let rules = rules();
+    let cost = |t: sim::Terrain| rules.movement.cost(t);
+    let path = world
+        .map()
+        .path(from, to, cost)
+        .expect("reachable in the standard valley");
     world
         .map()
-        .path(from, to)
-        .expect("reachable in the standard valley")
+        .pull(from.centre(), &path, cost)
         .into_iter()
-        .map(|p| (p.x, p.y))
+        .map(|p| Point { x: p.x, y: p.y })
         .collect()
+}
+
+fn tile(point: Point) -> Pos {
+    FinePos::new(point.x, point.y).tile()
 }
 
 /// A running server, killed when dropped.
@@ -182,15 +195,19 @@ async fn hello_ping_and_a_published_day() {
             width,
             height,
             chunk_size,
+            materials,
         }) => {
             assert_eq!((width, height), (VALLEY_SIZE, VALLEY_SIZE));
             assert_eq!(chunk_size, CHUNK_SIZE);
+            assert!(materials.len() >= 9, "the catalogue of materials");
+            assert!(materials.iter().all(|m| m.colour.starts_with('#')));
         }
         other => panic!("expected world_state, got {other:?}"),
     }
     let world = standard_world();
     let centre = start_of(&world, 1).chunk();
     let mut seen_bodies = Vec::new();
+    let mut seen_items = 0;
     let mut chunks = Vec::new();
     for _ in 0..window_len(&world, centre) {
         match receive(&mut socket).await {
@@ -199,11 +216,17 @@ async fn hello_ping_and_a_published_day() {
                 y,
                 tiles,
                 bodies,
+                items,
             }) => {
                 assert_eq!(tiles.len(), (CHUNK_SIZE * CHUNK_SIZE) as usize);
+                for i in &items {
+                    assert_eq!(Pos::new(i.x, i.y).chunk(), ChunkPos::new(x, y));
+                }
+                seen_items += items.len();
                 assert!((x - centre.x).abs() <= VIEW_RADIUS && (y - centre.y).abs() <= VIEW_RADIUS);
                 for b in &bodies {
-                    assert_eq!(Pos::new(b.x, b.y).chunk(), ChunkPos::new(x, y));
+                    assert_eq!(tile(b.at).chunk(), ChunkPos::new(x, y));
+                    assert_eq!(b.route, Vec::new(), "nobody walks at the start");
                 }
                 seen_bodies.extend(bodies.iter().map(|b| b.id));
                 chunks.push((x, y));
@@ -215,6 +238,10 @@ async fn hello_ping_and_a_published_day() {
         chunks.len(),
         25,
         "a full window in the middle of the valley"
+    );
+    assert!(
+        seen_items > 100,
+        "{seen_items} items in view: the ground is scattered"
     );
     seen_bodies.sort_unstable();
     assert_eq!(
@@ -348,7 +375,7 @@ async fn the_view_follows_the_piloted_body() {
     let start = start_of(&world, body);
     let here = start.chunk();
     let target = Pos::new(here.origin().x - 1, start.y);
-    steps(&world, start, target); // reachable
+    route(&world, start, target); // reachable
     send(
         &mut pilot,
         &ClientMessage::MoveTo {
@@ -363,7 +390,11 @@ async fn the_view_follows_the_piloted_body() {
         match receive(&mut pilot).await {
             Some(ServerMessage::Chunk { x, y, .. }) => shown.push((x, y)),
             Some(ServerMessage::ChunkHidden { x, y }) => hidden.push((x, y)),
-            Some(ServerMessage::BodyMoved { .. } | ServerMessage::DayStarted { .. }) => {}
+            Some(
+                ServerMessage::BodyWalks { .. }
+                | ServerMessage::BodyStopped { .. }
+                | ServerMessage::DayStarted { .. },
+            ) => {}
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -398,39 +429,34 @@ async fn a_body_walking_out_of_the_view_is_reported_as_left() {
         start_of(&world, other).x - far.x >= span,
         "far enough: {far:?}"
     );
-    steps(&world, start, far); // reachable
+    route(&world, start, far); // reachable
     send(&mut walker, &ClientMessage::MoveTo { x: far.x, y: far.y }).await;
 
-    let watched_chunks = {
-        let centre = start_of(&world, other).chunk();
-        move |pos: Pos| {
-            let c = pos.chunk();
-            (c.x - centre.x).abs() <= VIEW_RADIUS && (c.y - centre.y).abs() <= VIEW_RADIUS
-        }
-    };
+    // The watcher sees the walk start (inside its view), then the body
+    // leave; never where it stops, which is outside.
+    let mut saw_walk = false;
     loop {
         match receive(&mut watcher).await {
             Some(ServerMessage::BodyLeft { body: who }) => {
                 assert_eq!(who, body);
                 break;
             }
-            Some(ServerMessage::BodyMoved {
-                body: who, x, y, ..
-            }) => {
-                assert!(
-                    who != body || watched_chunks(Pos::new(x, y)),
-                    "a move outside the watcher's view leaked: ({x}, {y})"
-                );
+            Some(ServerMessage::BodyWalks { body: who, .. }) if who == body => saw_walk = true,
+            Some(ServerMessage::BodyStopped { body: who, .. }) => {
+                assert_ne!(who, body, "a stop outside the watcher's view leaked");
             }
-            Some(ServerMessage::DayStarted { .. }) => {}
+            Some(ServerMessage::DayStarted { .. } | ServerMessage::BodyWalks { .. }) => {}
             other => panic!("unexpected {other:?}"),
         }
     }
-    // The walker itself keeps seeing its own moves and receiving ground.
-    let mut own_moves = 0;
-    while own_moves < 3 {
+    assert!(saw_walk);
+    // The walker itself keeps receiving ground and finally its own stop.
+    loop {
         match receive(&mut walker).await {
-            Some(ServerMessage::BodyMoved { body: who, .. }) if who == body => own_moves += 1,
+            Some(ServerMessage::BodyStopped { body: who, at }) if who == body => {
+                assert_eq!(tile(at), far);
+                break;
+            }
             Some(ServerMessage::BodyLeft { body: who }) => {
                 assert_ne!(who, body, "never leaves itself");
             }
@@ -452,7 +478,7 @@ async fn a_move_intention_makes_the_piloted_body_walk() {
     let world = standard_world();
     let start = start_of(&world, body);
     let target = Pos::new(start.x + 3, start.y);
-    let expected = steps(&world, start, target);
+    let expected = route(&world, start, target);
     send(
         &mut pilot,
         &ClientMessage::MoveTo {
@@ -462,27 +488,43 @@ async fn a_move_intention_makes_the_piloted_body_walk() {
     )
     .await;
 
-    let mut seen_by_pilot = Vec::new();
-    let mut seen_by_watcher = Vec::new();
-    for (socket, seen) in [
-        (&mut pilot, &mut seen_by_pilot),
-        (&mut watcher, &mut seen_by_watcher),
-    ] {
-        while seen.len() < expected.len() {
+    // Both see the body set off along the route the simulation computed,
+    // then stop exactly on the target's centre.
+    for socket in [&mut pilot, &mut watcher] {
+        let (mut walked, mut stopped) = (None, None);
+        while stopped.is_none() {
             match receive(socket).await {
-                Some(ServerMessage::BodyMoved {
-                    body: who, x, y, ..
-                }) if who == body => seen.push((x, y)),
-                Some(ServerMessage::DayStarted { .. } | ServerMessage::BodyMoved { .. }) => {}
+                Some(ServerMessage::BodyWalks {
+                    body: who,
+                    at,
+                    route,
+                    speed_cm_per_s,
+                    ..
+                }) if who == body => {
+                    assert_eq!(
+                        at,
+                        Point {
+                            x: start.centre().x,
+                            y: start.centre().y
+                        }
+                    );
+                    assert_eq!(speed_cm_per_s, 143);
+                    walked = Some(route);
+                }
+                Some(ServerMessage::BodyStopped { body: who, at }) if who == body => {
+                    stopped = Some(at);
+                }
+                Some(ServerMessage::DayStarted { .. } | ServerMessage::BodyWalks { .. }) => {}
                 other => panic!("unexpected {other:?}"),
             }
         }
+        assert_eq!(
+            walked,
+            Some(expected.clone()),
+            "the route the simulation computes"
+        );
+        assert_eq!(stopped.map(tile), Some(target));
     }
-    assert_eq!(seen_by_pilot, expected, "the path the simulation computes");
-    assert_eq!(
-        seen_by_watcher, seen_by_pilot,
-        "everyone sees the same walk"
-    );
 }
 
 #[tokio::test]
@@ -626,15 +668,10 @@ async fn a_refusal_reaches_the_pilot_alone() {
     }
 
     // Body 2 walks one tile east. Messages keep their order, so a
-    // broadcast refusal would have arrived before this move.
+    // broadcast refusal would have arrived before this walk.
     let world = standard_world();
     let start = start_of(&world, other_body);
     let target = Pos::new(start.x + 1, start.y);
-    assert_eq!(
-        steps(&world, start, target).len(),
-        1,
-        "one step east is open"
-    );
     send(
         &mut other,
         &ClientMessage::MoveTo {
@@ -645,11 +682,11 @@ async fn a_refusal_reaches_the_pilot_alone() {
     .await;
     loop {
         match receive(&mut other).await {
-            Some(ServerMessage::BodyMoved { body: who, .. }) if who == other_body => break,
+            Some(ServerMessage::BodyWalks { body: who, .. }) if who == other_body => break,
             Some(ServerMessage::MoveRefused { .. }) => {
                 panic!("another pilot's refusal leaked")
             }
-            Some(ServerMessage::DayStarted { .. } | ServerMessage::BodyMoved { .. }) => {}
+            Some(ServerMessage::DayStarted { .. } | ServerMessage::BodyWalks { .. }) => {}
             unexpected => panic!("unexpected {unexpected:?}"),
         }
     }
@@ -668,7 +705,7 @@ async fn a_flood_of_intentions_leaves_only_the_last_one() {
     let start = start_of(&world, body);
     let north = Pos::new(start.x, start.y - 1);
     assert_eq!(
-        steps(&world, start, north).len(),
+        route(&world, start, north).len(),
         1,
         "one step north is open"
     );
@@ -702,16 +739,15 @@ async fn a_flood_of_intentions_leaves_only_the_last_one() {
     let mut refusals = 0;
     while !(arrived && answered) {
         match receive(&mut pilot).await {
-            Some(ServerMessage::BodyMoved {
-                body: who, x, y, ..
-            }) if who == body => {
-                arrived = (x, y) == (north.x, north.y);
+            Some(ServerMessage::BodyStopped { body: who, at }) if who == body => {
+                arrived = tile(at) == north;
             }
             Some(ServerMessage::Pong { nonce: 9 }) => answered = true,
             Some(ServerMessage::MoveRefused { .. }) => refusals += 1,
             // The flood's eastward asks may carry the body across a chunk.
             Some(
                 ServerMessage::DayStarted { .. }
+                | ServerMessage::BodyWalks { .. }
                 | ServerMessage::Chunk { .. }
                 | ServerMessage::ChunkHidden { .. }
                 | ServerMessage::BodyLeft { .. },
