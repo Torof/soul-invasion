@@ -312,17 +312,25 @@ func _draw() -> void:
 		var color := PILOTED_COLOR if id == _piloted else BODY_COLOR
 		var feet := shown + Vector2(0, 2)
 		if _bodies[id]["asleep"]:
-			# Lying down: a figure along the ground.
+			# Lying down: a figure along the ground, and a "z" above it.
 			draw_rect(Rect2(feet + Vector2(-12, -8), Vector2(20, 7)), color)
 			draw_rect(Rect2(feet + Vector2(-12, -8), Vector2(20, 7)), Color.BLACK, false, 1.0)
 			draw_circle(feet + Vector2(12, -4.5), 4.0, color)
 			draw_circle(feet + Vector2(12, -4.5), 4.0, Color.BLACK, false, 1.0)
+			draw_sleep_icon(self, feet + Vector2(0, -16))
 		else:
 			# A standing figure: taller than wide, feet where the body stands.
 			draw_rect(Rect2(feet + Vector2(-4, -22), Vector2(8, 20)), color)
 			draw_rect(Rect2(feet + Vector2(-4, -22), Vector2(8, 20)), Color.BLACK, false, 1.0)
 			draw_circle(feet + Vector2(0, -26), 4.5, color)
 			draw_circle(feet + Vector2(0, -26), 4.5, Color.BLACK, false, 1.0)
+
+
+## A small "z" above a sleeping body, drawn on `canvas` at `at`.
+static func draw_sleep_icon(canvas: CanvasItem, at: Vector2) -> void:
+	var font := ThemeDB.fallback_font
+	canvas.draw_string_outline(font, at + Vector2(-4, 4), "z", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, 3, Color.BLACK)
+	canvas.draw_string(font, at + Vector2(-4, 4), "z", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.75, 0.85, 1.0))
 
 
 static func _closed(points: PackedVector2Array) -> PackedVector2Array:
