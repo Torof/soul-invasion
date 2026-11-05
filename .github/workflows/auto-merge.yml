@@ -3,13 +3,18 @@ name: Auto-merge
 # Enables GitHub's native auto-merge on every pull request.
 # This is safe because branch protection on `main` does the gating:
 #   - all CI checks must be green;
-#   - any change to a protected area (see CODEOWNERS) requires a review
-#     from the project lead before the merge can happen.
+#   - any change to a protected area (see CODEOWNERS) requires the
+#     `lead-approved` label from the project lead (Protected areas check).
 # A pull request that touches nothing protected merges itself once CI is green.
+#
+# Why `pull_request_target`: on `pull_request` events opened by Dependabot the
+# GITHUB_TOKEN is read-only and cannot enable auto-merge. `pull_request_target`
+# runs in the context of the base branch with write access. This job never
+# checks out or executes code from the pull request, so that is safe.
 
 on:
-  pull_request:
-    types: [opened, reopened, ready_for_review]
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize, labeled]
 
 permissions:
   contents: write
