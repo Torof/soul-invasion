@@ -7,6 +7,10 @@ name: Auto-merge
 #     `lead-approved` label from the project lead (Protected areas check).
 # A pull request that touches nothing protected merges itself once CI is green.
 #
+# Only pull requests into `main` are enabled: a stacked pull request whose
+# base is another feature branch is not gated by branch protection and would
+# otherwise merge into it as soon as its CI is green, label or not.
+#
 # Why `pull_request_target`: on `pull_request` events opened by Dependabot the
 # GITHUB_TOKEN is read-only and cannot enable auto-merge. `pull_request_target`
 # runs in the context of the base branch with write access. This job never
@@ -23,7 +27,7 @@ permissions:
 jobs:
   enable:
     name: Enable auto-merge
-    if: ${{ !github.event.pull_request.draft }}
+    if: ${{ !github.event.pull_request.draft && github.event.pull_request.base.ref == 'main' }}
     runs-on: ubuntu-latest
     steps:
       - run: gh pr merge --auto --squash "$PR_URL"
