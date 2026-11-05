@@ -180,3 +180,46 @@ fn an_interrupted_run_leaves_a_journal_the_next_run_can_live_with() {
     assert!(stdout.contains("now day 3"), "stdout: {stdout}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn reset_erases_the_saved_world_and_starts_anew() {
+    let dir = std::env::temp_dir().join(format!("soul-invasion-reset-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let data = dir.join("world.sqlite");
+    let data = data.to_str().unwrap();
+    let calendar = ["--ticks-per-second", "10", "--seconds-per-day", "60"];
+
+    let first = server()
+        .args(["--data", data, "--headless", "--days", "2"])
+        .args(calendar)
+        .output()
+        .expect("server binary runs");
+    assert!(first.status.success());
+
+    let reset = server()
+        .args(["--data", data, "--reset", "--headless", "--days", "1"])
+        .args(calendar)
+        .output()
+        .expect("server binary runs");
+    let stdout = String::from_utf8_lossy(&reset.stdout);
+    assert!(reset.status.success(), "stdout: {stdout}");
+    assert!(
+        stdout.contains("(reset: starting a new world)"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("world: new"), "stdout: {stdout}");
+    assert!(stdout.contains("now day 2"), "stdout: {stdout}");
+
+    // The reset world was saved: the next run resumes from it, not from day 3.
+    let next = server()
+        .args(["--data", data, "--headless", "--days", "1"])
+        .args(calendar)
+        .output()
+        .expect("server binary runs");
+    let stdout = String::from_utf8_lossy(&next.stdout);
+    assert!(
+        stdout.contains("world: resumed at tick 600 (day 2)"),
+        "stdout: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
