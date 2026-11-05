@@ -8,11 +8,34 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use protocol::{ClientMessage, PROTOCOL_VERSION, ServerMessage, decode, encode};
+use sim::{BodyId, Calendar, Pos, VALLEY_SIZE, World};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+/// The world the server starts with: the standard valley, so tests can
+/// know where bodies stand and which way they will walk.
+fn standard_world() -> World {
+    World::new(Calendar::default())
+}
+
+/// Where a body stands in the standard world.
+fn start_of(world: &World, body: u32) -> Pos {
+    world.body(BodyId(body)).expect("standard body").pos()
+}
+
+/// The steps the standard world will make a body take, as (x, y).
+fn steps(world: &World, from: Pos, to: Pos) -> Vec<(i32, i32)> {
+    world
+        .map()
+        .path(from, to)
+        .expect("reachable in the standard valley")
+        .into_iter()
+        .map(|p| (p.x, p.y))
+        .collect()
+}
 
 /// A running server, killed when dropped.
 struct Server {
@@ -141,8 +164,8 @@ async fn hello_ping_and_a_published_day() {
             tiles,
             bodies,
         }) => {
-            assert_eq!((width, height), (32, 32));
-            assert_eq!(tiles.len(), 32 * 32);
+            assert_eq!((width, height), (VALLEY_SIZE, VALLEY_SIZE));
+            assert_eq!(tiles.len(), (VALLEY_SIZE * VALLEY_SIZE) as usize);
             assert_eq!(bodies.len(), 3);
             assert!(bodies.iter().any(|b| b.id == 1));
         }
@@ -254,8 +277,19 @@ async fn a_move_intention_makes_the_piloted_body_walk() {
     let body = body.expect("first connection pilots a body");
     assert_ne!(Some(body), other, "two connections never share a body");
 
-    // Body 1 starts at (20, 20) on grass; walk two tiles east.
-    send(&mut pilot, &ClientMessage::MoveTo { x: 22, y: 20 }).await;
+    // Walk a few tiles east of where body 1 starts.
+    let world = standard_world();
+    let start = start_of(&world, body);
+    let target = Pos::new(start.x + 3, start.y);
+    let expected = steps(&world, start, target);
+    send(
+        &mut pilot,
+        &ClientMessage::MoveTo {
+            x: target.x,
+            y: target.y,
+        },
+    )
+    .await;
 
     let mut seen_by_pilot = Vec::new();
     let mut seen_by_watcher = Vec::new();
@@ -263,7 +297,7 @@ async fn a_move_intention_makes_the_piloted_body_walk() {
         (&mut pilot, &mut seen_by_pilot),
         (&mut watcher, &mut seen_by_watcher),
     ] {
-        while seen.len() < 2 {
+        while seen.len() < expected.len() {
             match receive(socket).await {
                 Some(ServerMessage::BodyMoved {
                     body: who, x, y, ..
@@ -273,7 +307,7 @@ async fn a_move_intention_makes_the_piloted_body_walk() {
             }
         }
     }
-    assert_eq!(seen_by_pilot, vec![(21, 20), (22, 20)]);
+    assert_eq!(seen_by_pilot, expected, "the path the simulation computes");
     assert_eq!(
         seen_by_watcher, seen_by_pilot,
         "everyone sees the same walk"
@@ -287,11 +321,11 @@ async fn walking_into_the_cliff_is_refused() {
     let body = body.expect("pilots a body");
 
     // Row 0 is the cliff: not walkable.
-    send(&mut pilot, &ClientMessage::MoveTo { x: 20, y: 0 }).await;
+    send(&mut pilot, &ClientMessage::MoveTo { x: 100, y: 0 }).await;
     loop {
         match receive(&mut pilot).await {
             Some(ServerMessage::MoveRefused { body: who, x, y }) => {
-                assert_eq!((who, x, y), (body, 20, 0));
+                assert_eq!((who, x, y), (body, 100, 0));
                 break;
             }
             Some(ServerMessage::DayStarted { .. }) => {}
@@ -408,7 +442,7 @@ async fn a_refusal_reaches_the_pilot_alone() {
     let body = body.expect("pilots body 1");
     let other_body = other_body.expect("pilots body 2");
 
-    send(&mut pilot, &ClientMessage::MoveTo { x: 20, y: 0 }).await;
+    send(&mut pilot, &ClientMessage::MoveTo { x: 100, y: 0 }).await;
     loop {
         match receive(&mut pilot).await {
             Some(ServerMessage::MoveRefused { body: who, .. }) => {
@@ -420,9 +454,24 @@ async fn a_refusal_reaches_the_pilot_alone() {
         }
     }
 
-    // Body 2 starts at (22, 21): one step east. Messages keep their order,
-    // so a broadcast refusal would have arrived before this move.
-    send(&mut other, &ClientMessage::MoveTo { x: 23, y: 21 }).await;
+    // Body 2 walks one tile east. Messages keep their order, so a
+    // broadcast refusal would have arrived before this move.
+    let world = standard_world();
+    let start = start_of(&world, other_body);
+    let target = Pos::new(start.x + 1, start.y);
+    assert_eq!(
+        steps(&world, start, target).len(),
+        1,
+        "one step east is open"
+    );
+    send(
+        &mut other,
+        &ClientMessage::MoveTo {
+            x: target.x,
+            y: target.y,
+        },
+    )
+    .await;
     loop {
         match receive(&mut other).await {
             Some(ServerMessage::BodyMoved { body: who, .. }) if who == other_body => break,
@@ -441,11 +490,23 @@ async fn a_flood_of_intentions_leaves_only_the_last_one() {
     let (mut pilot, body) = join(&server).await;
     let body = body.expect("pilots body 1");
 
-    // Body 1 starts at (20, 20). Thousands of contradicting asks, the last
-    // one being one step north: the body ends there, and the server is
-    // still answering.
+    // Thousands of contradicting asks (the cliff, then far east), the
+    // last one being one step north: the body ends there, and the server
+    // is still answering.
+    let world = standard_world();
+    let start = start_of(&world, body);
+    let north = Pos::new(start.x, start.y - 1);
+    assert_eq!(
+        steps(&world, start, north).len(),
+        1,
+        "one step north is open"
+    );
     for i in 0..2000 {
-        let target = if i % 2 == 0 { (20, 0) } else { (22, 20) };
+        let target = if i % 2 == 0 {
+            (100, 0)
+        } else {
+            (start.x + 40, start.y)
+        };
         send(
             &mut pilot,
             &ClientMessage::MoveTo {
@@ -455,7 +516,14 @@ async fn a_flood_of_intentions_leaves_only_the_last_one() {
         )
         .await;
     }
-    send(&mut pilot, &ClientMessage::MoveTo { x: 20, y: 19 }).await;
+    send(
+        &mut pilot,
+        &ClientMessage::MoveTo {
+            x: north.x,
+            y: north.y,
+        },
+    )
+    .await;
     send(&mut pilot, &ClientMessage::Ping { nonce: 9 }).await;
 
     let mut arrived = false;
@@ -466,7 +534,7 @@ async fn a_flood_of_intentions_leaves_only_the_last_one() {
             Some(ServerMessage::BodyMoved {
                 body: who, x, y, ..
             }) if who == body => {
-                arrived = (x, y) == (20, 19);
+                arrived = (x, y) == (north.x, north.y);
             }
             Some(ServerMessage::Pong { nonce: 9 }) => answered = true,
             Some(ServerMessage::MoveRefused { .. }) => refusals += 1,

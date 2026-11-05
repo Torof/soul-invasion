@@ -75,6 +75,7 @@ Multiplayer, other tribes, seasons, agriculture, trade, religion, soul powers, h
 Each milestone is **playable** and **judged** before moving on to the next.
 
 1. **The skeleton**: a character walking in the valley; client and server connected; adjustable time. — **Done and audited on 5 November 2026** (see below).
+   - **1b. The scale** (added 5 November 2026, D31 and D32): the same walk in a valley of 256×256 one-metre tiles, cut in chunks sent around the body, eight-direction paths, a camera on the client. Decided before milestone 2 so that nothing is built on tiles whose meaning would change.
 2. **Surviving alone**: gathering, crafting, fire, cold, hunger, spoilage, hunting, predator, death.
 3. **The living tribe**: NPCs with needs, Willpower and a routine around the fire.
 4. **The bonds**: opinions, prestige, intentions, imitation, banishment, strangeness.
