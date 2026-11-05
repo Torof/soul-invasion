@@ -104,6 +104,32 @@ impl Movement {
     }
 }
 
+/// How a body's needs and vitality evolve (D34). Every rate is in points
+/// of a 0–100 gauge per game day.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Needs {
+    /// Where night begins, in percent of the day; the day starts at dawn.
+    pub night_from_percent: u32,
+    /// Hunger rises this much per day.
+    pub hunger_per_day: u32,
+    /// Cold rises this much per day of night, without warmth.
+    pub cold_per_day_at_night: u32,
+    /// Cold falls this much per day of daylight.
+    pub cold_relief_per_day: u32,
+    /// Fatigue rises this much per day awake.
+    pub fatigue_per_day_awake: u32,
+    /// Fatigue falls this much per day asleep.
+    pub rest_per_day_asleep: u32,
+    /// Vitality lost per day while hunger is at its maximum.
+    pub starving_per_day: u32,
+    /// Vitality lost per day while cold is at its maximum.
+    pub freezing_per_day: u32,
+    /// Vitality regained per day when fed, warm enough and rested.
+    pub vitality_regain_per_day: u32,
+    /// Kilojoules of food that relieve one point of hunger.
+    pub kj_per_hunger_point: u32,
+}
+
 /// Everything loaded from the content files, validated.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Content {
@@ -113,6 +139,8 @@ pub struct Content {
     pub spawns: Vec<Spawn>,
     /// How bodies move.
     pub movement: Movement,
+    /// How bodies hunger, freeze, tire and die.
+    pub needs: Needs,
 }
 
 /// Why content was refused.
@@ -157,11 +185,19 @@ pub enum ContentError {
     /// The movement rules are incomplete or senseless.
     #[error("movement: {0}")]
     Movement(&'static str),
+    /// The needs rules are senseless.
+    #[error("needs: {0}")]
+    Needs(&'static str),
 }
 
 impl Content {
     /// Parses the content files and validates them together.
-    pub fn from_ron(materials: &str, spawns: &str, movement: &str) -> Result<Self, ContentError> {
+    pub fn from_ron(
+        materials: &str,
+        spawns: &str,
+        movement: &str,
+        needs: &str,
+    ) -> Result<Self, ContentError> {
         let materials = ron::from_str(materials).map_err(|source| ContentError::Parse {
             file: "materials.ron",
             source,
@@ -174,10 +210,15 @@ impl Content {
             file: "movement.ron",
             source,
         })?;
+        let needs = ron::from_str(needs).map_err(|source| ContentError::Parse {
+            file: "needs.ron",
+            source,
+        })?;
         let content = Self {
             materials,
             spawns,
             movement,
+            needs,
         };
         content.validate()?;
         Ok(content)
@@ -241,6 +282,12 @@ impl Content {
                 Some(_) => {}
             }
         }
+        if !(1..100).contains(&self.needs.night_from_percent) {
+            return Err(ContentError::Needs("night_from_percent is 1 to 99"));
+        }
+        if self.needs.kj_per_hunger_point == 0 {
+            return Err(ContentError::Needs("kj_per_hunger_point must be positive"));
+        }
         Ok(())
     }
 
@@ -252,8 +299,13 @@ impl Content {
     /// A small, valid content for tests: a stone, a branch and a berry.
     /// The real valley's content lives in the `content/` directory.
     pub fn sample() -> Self {
-        Self::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, SAMPLE_MOVEMENT)
-            .expect("sample content is valid")
+        Self::from_ron(
+            SAMPLE_MATERIALS,
+            SAMPLE_SPAWNS,
+            SAMPLE_MOVEMENT,
+            SAMPLE_NEEDS,
+        )
+        .expect("sample content is valid")
     }
 }
 
@@ -274,6 +326,20 @@ pub const SAMPLE_MOVEMENT: &str = r"(
     terrain_costs: { grass: Some(10), forest: Some(15), ford: Some(20), water: None, rock: None },
 )";
 
+/// Needs rules of [`Content::sample`]: the valley's own.
+pub const SAMPLE_NEEDS: &str = r"(
+    night_from_percent: 58,
+    hunger_per_day: 33,
+    cold_per_day_at_night: 300,
+    cold_relief_per_day: 600,
+    fatigue_per_day_awake: 120,
+    rest_per_day_asleep: 300,
+    starving_per_day: 100,
+    freezing_per_day: 400,
+    vitality_regain_per_day: 50,
+    kj_per_hunger_point: 25,
+)";
+
 /// Spawn rules of [`Content::sample`].
 pub const SAMPLE_SPAWNS: &str = r#"[
     (material: "branch", terrain: forest, per_thousand: 60),
@@ -283,6 +349,28 @@ pub const SAMPLE_SPAWNS: &str = r#"[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn needs_rules_are_checked() {
+        let late = SAMPLE_NEEDS.replacen("night_from_percent: 58", "night_from_percent: 100", 1);
+        assert!(matches!(
+            Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, SAMPLE_MOVEMENT, &late).unwrap_err(),
+            ContentError::Needs("night_from_percent is 1 to 99")
+        ));
+        let free = SAMPLE_NEEDS.replacen("kj_per_hunger_point: 25", "kj_per_hunger_point: 0", 1);
+        assert!(matches!(
+            Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, SAMPLE_MOVEMENT, &free).unwrap_err(),
+            ContentError::Needs("kj_per_hunger_point must be positive")
+        ));
+        assert!(matches!(
+            Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, SAMPLE_MOVEMENT, "nope")
+                .unwrap_err(),
+            ContentError::Parse {
+                file: "needs.ron",
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn sample_content_parses_and_validates() {
@@ -297,7 +385,8 @@ mod tests {
 
     #[test]
     fn a_parse_error_names_the_file() {
-        let err = Content::from_ron("[(id: oops", SAMPLE_SPAWNS, SAMPLE_MOVEMENT).unwrap_err();
+        let err = Content::from_ron("[(id: oops", SAMPLE_SPAWNS, SAMPLE_MOVEMENT, SAMPLE_NEEDS)
+            .unwrap_err();
         assert!(matches!(
             err,
             ContentError::Parse {
@@ -305,7 +394,8 @@ mod tests {
                 ..
             }
         ));
-        let err = Content::from_ron(SAMPLE_MATERIALS, "nope", SAMPLE_MOVEMENT).unwrap_err();
+        let err =
+            Content::from_ron(SAMPLE_MATERIALS, "nope", SAMPLE_MOVEMENT, SAMPLE_NEEDS).unwrap_err();
         assert!(matches!(
             err,
             ContentError::Parse {
@@ -322,13 +412,14 @@ mod tests {
             r##"(id: "flint", name: "Flint", kind: stone, mass_kg: 1, hardness: 7, flammable: false, food: None, look: (colour: "#000000"))"##
         );
         assert!(matches!(
-            Content::from_ron(&twice, "[]", SAMPLE_MOVEMENT).unwrap_err(),
+            Content::from_ron(&twice, "[]", SAMPLE_MOVEMENT, SAMPLE_NEEDS).unwrap_err(),
             ContentError::DuplicateMaterial(id) if id == "flint"
         ));
         let err = Content::from_ron(
             SAMPLE_MATERIALS,
             r#"[(material: "gold", terrain: grass, per_thousand: 1)]"#,
             SAMPLE_MOVEMENT,
+            SAMPLE_NEEDS,
         )
         .unwrap_err();
         assert!(matches!(
@@ -341,7 +432,7 @@ mod tests {
     fn values_outside_sense_are_refused() {
         let bad = |field: &str| {
             let text = SAMPLE_MATERIALS.replacen(field, "", 1);
-            Content::from_ron(&text, "[]", SAMPLE_MOVEMENT).unwrap_err()
+            Content::from_ron(&text, "[]", SAMPLE_MOVEMENT, SAMPLE_NEEDS).unwrap_err()
         };
         // Removing "flammable: false, " makes the struct incomplete: a parse error.
         assert!(matches!(
@@ -351,7 +442,7 @@ mod tests {
 
         let heavy = SAMPLE_MATERIALS.replacen("mass_kg: 0.4", "mass_kg: 0", 1);
         assert!(matches!(
-            Content::from_ron(&heavy, "[]", SAMPLE_MOVEMENT).unwrap_err(),
+            Content::from_ron(&heavy, "[]", SAMPLE_MOVEMENT, SAMPLE_NEEDS).unwrap_err(),
             ContentError::InvalidValue {
                 what: "mass_kg must be positive",
                 ..
@@ -359,7 +450,7 @@ mod tests {
         ));
         let hard = SAMPLE_MATERIALS.replacen("hardness: 7", "hardness: 11", 1);
         assert!(matches!(
-            Content::from_ron(&hard, "[]", SAMPLE_MOVEMENT).unwrap_err(),
+            Content::from_ron(&hard, "[]", SAMPLE_MOVEMENT, SAMPLE_NEEDS).unwrap_err(),
             ContentError::InvalidValue {
                 what: "hardness is 0 to 10",
                 ..
@@ -367,7 +458,7 @@ mod tests {
         ));
         let colour = SAMPLE_MATERIALS.replacen("#6e6a62", "grey", 1);
         assert!(matches!(
-            Content::from_ron(&colour, "[]", SAMPLE_MOVEMENT).unwrap_err(),
+            Content::from_ron(&colour, "[]", SAMPLE_MOVEMENT, SAMPLE_NEEDS).unwrap_err(),
             ContentError::InvalidValue {
                 what: "look.colour must be #rrggbb",
                 ..
@@ -375,7 +466,7 @@ mod tests {
         ));
         let shouting = SAMPLE_MATERIALS.replacen("id: \"flint\"", "id: \"Flint\"", 1);
         assert!(matches!(
-            Content::from_ron(&shouting, "[]", SAMPLE_MOVEMENT).unwrap_err(),
+            Content::from_ron(&shouting, "[]", SAMPLE_MOVEMENT, SAMPLE_NEEDS).unwrap_err(),
             ContentError::InvalidValue {
                 what: "id must be snake_case ASCII",
                 ..
@@ -383,7 +474,7 @@ mod tests {
         ));
         let dense = SAMPLE_SPAWNS.replacen("per_thousand: 60", "per_thousand: 1001", 1);
         assert!(matches!(
-            Content::from_ron(SAMPLE_MATERIALS, &dense, SAMPLE_MOVEMENT).unwrap_err(),
+            Content::from_ron(SAMPLE_MATERIALS, &dense, SAMPLE_MOVEMENT, SAMPLE_NEEDS).unwrap_err(),
             ContentError::TooDense {
                 index: 0,
                 per_thousand: 1001

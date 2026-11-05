@@ -22,7 +22,10 @@ use serde::{Deserialize, Serialize};
 ///   catalogue of materials they are made of.
 /// - v4: bodies stand at fine positions and walk along routes of straight
 ///   segments (`body_walks`, `body_stopped`) instead of tile by tile.
-pub const PROTOCOL_VERSION: u32 = 4;
+/// - v5: bodies have a condition (needs, vitality, sleep) told to their
+///   pilot; they eat and sleep; they die and their pilot is given another;
+///   items appear and vanish; night falls.
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// A tile on the map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +64,33 @@ pub struct BodyState {
     pub route: Vec<Point>,
     /// Nominal walking speed, on open ground; terrain slows it.
     pub speed_cm_per_s: u32,
+    /// Lying asleep?
+    pub asleep: bool,
+}
+
+/// What a pilot knows of its own body (D34). Nobody else is told.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Condition {
+    /// Life left, 0–100; zero is death.
+    pub vitality: u32,
+    /// Need for food, 0–100.
+    pub hunger: u32,
+    /// Lack of warmth, 0–100.
+    pub cold: u32,
+    /// Need for sleep, 0–100.
+    pub fatigue: u32,
+    /// Asleep?
+    pub asleep: bool,
+}
+
+/// What killed a body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeathCause {
+    /// Hunger.
+    Starved,
+    /// Cold.
+    Froze,
 }
 
 /// A material as the client needs to know it: a name to show and a
@@ -73,6 +103,8 @@ pub struct MaterialView {
     pub name: String,
     /// `#rrggbb`.
     pub colour: String,
+    /// Can it be eaten?
+    pub edible: bool,
 }
 
 /// A piece of material lying on the ground, as the client sees it.
@@ -109,6 +141,15 @@ pub enum ClientMessage {
         /// Row.
         y: i32,
     },
+    /// Intention: eat an item lying on the body's tile or next to it.
+    Eat {
+        /// The item.
+        item: u64,
+    },
+    /// Intention: lie down and sleep where one stands.
+    Sleep,
+    /// Intention: wake up.
+    Wake,
 }
 
 /// Messages sent by the server to the client.
@@ -135,6 +176,8 @@ pub enum ServerMessage {
         chunk_size: u32,
         /// Every material items may be made of.
         materials: Vec<MaterialView>,
+        /// Is it night right now?
+        night: bool,
     },
     /// A chunk of ground the client now holds, with the bodies standing
     /// in it and the items lying in it. Chunk (0, 0) holds tiles
@@ -171,12 +214,68 @@ pub enum ServerMessage {
         /// Version the server expected.
         expected: u32,
     },
-    /// A new game day began.
+    /// A new game day began: dawn.
     DayStarted {
         /// The day that just started (days count from 1).
         day: u64,
         /// The tick at which it started.
         tick: u64,
+    },
+    /// Night fell: dark and cold until dawn.
+    NightFell {
+        /// The day it ends.
+        day: u64,
+    },
+    /// How the pilot's own body fares. Sent to the pilot alone, whenever
+    /// a whole point changes.
+    BodyCondition {
+        /// Which body.
+        body: u32,
+        /// Its condition.
+        condition: Condition,
+    },
+    /// A body in a chunk the client holds lay down or got up.
+    BodySleeps {
+        /// Who.
+        body: u32,
+        /// Asleep now?
+        asleep: bool,
+    },
+    /// A body in a chunk the client holds died; its corpse is an item
+    /// (an `item_added` precedes this message).
+    BodyDied {
+        /// Who.
+        body: u32,
+        /// Of what.
+        cause: DeathCause,
+    },
+    /// The pilot's body changed: after a death, the first free body, or
+    /// none to watch. The chunks around it follow.
+    BodyAssigned {
+        /// The body now piloted, or `None`.
+        body: Option<u32>,
+    },
+    /// An item appeared in a chunk the client holds.
+    ItemAdded {
+        /// The item.
+        item: ItemState,
+    },
+    /// An item vanished from a chunk the client holds.
+    ItemRemoved {
+        /// Which.
+        item: u64,
+        /// Column it was on.
+        x: i32,
+        /// Row it was on.
+        y: i32,
+    },
+    /// An item could not be eaten (not food, not within reach, gone).
+    /// Sent to the pilot who asked.
+    EatRefused {
+        /// Who.
+        body: u32,
+        /// What.
+        item: u64,
     },
     /// A body in a chunk the client holds set off (or is seen for the
     /// first time) along a route: move it from `at` through the waypoints
@@ -239,6 +338,9 @@ mod tests {
             },
             ClientMessage::Ping { nonce: 42 },
             ClientMessage::MoveTo { x: 3, y: -1 },
+            ClientMessage::Eat { item: 12 },
+            ClientMessage::Sleep,
+            ClientMessage::Wake,
         ];
         for message in messages {
             let text = encode(&message).unwrap();
@@ -248,6 +350,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn server_messages_round_trip() {
         let messages = [
             ServerMessage::Welcome {
@@ -268,7 +371,9 @@ mod tests {
                     id: "flint".into(),
                     name: "Flint".into(),
                     colour: "#5e5a52".into(),
+                    edible: false,
                 }],
+                night: true,
             },
             ServerMessage::Chunk {
                 x: 5,
@@ -279,6 +384,7 @@ mod tests {
                     at: Point { x: 160_500, y: 500 },
                     route: vec![Point { x: 170_500, y: 500 }],
                     speed_cm_per_s: 143,
+                    asleep: false,
                 }],
                 items: vec![ItemState {
                     id: 9,
@@ -305,6 +411,41 @@ mod tests {
                 body: 1,
                 at: Point { x: 6_500, y: 9_500 },
             },
+            ServerMessage::NightFell { day: 3 },
+            ServerMessage::BodyCondition {
+                body: 1,
+                condition: Condition {
+                    vitality: 88,
+                    hunger: 40,
+                    cold: 0,
+                    fatigue: 65,
+                    asleep: false,
+                },
+            },
+            ServerMessage::BodySleeps {
+                body: 2,
+                asleep: true,
+            },
+            ServerMessage::BodyDied {
+                body: 1,
+                cause: DeathCause::Froze,
+            },
+            ServerMessage::BodyAssigned { body: Some(2) },
+            ServerMessage::BodyAssigned { body: None },
+            ServerMessage::ItemAdded {
+                item: ItemState {
+                    id: 77,
+                    x: 1,
+                    y: 2,
+                    material: "corpse".into(),
+                },
+            },
+            ServerMessage::ItemRemoved {
+                item: 12,
+                x: 1,
+                y: 2,
+            },
+            ServerMessage::EatRefused { body: 1, item: 12 },
             ServerMessage::BodyLeft { body: 1 },
             ServerMessage::MoveRefused {
                 body: 1,
@@ -325,6 +466,14 @@ mod tests {
         assert_eq!(text, r#"{"type":"ping","nonce":1}"#);
         let text = encode(&ClientMessage::MoveTo { x: 2, y: 3 }).unwrap();
         assert_eq!(text, r#"{"type":"move_to","x":2,"y":3}"#);
+        assert_eq!(
+            encode(&ClientMessage::Sleep).unwrap(),
+            r#"{"type":"sleep"}"#
+        );
+        assert_eq!(
+            encode(&ClientMessage::Eat { item: 5 }).unwrap(),
+            r#"{"type":"eat","item":5}"#
+        );
         let text = encode(&ServerMessage::Chunk {
             x: 1,
             y: 2,

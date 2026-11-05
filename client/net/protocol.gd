@@ -7,7 +7,7 @@ extends RefCounted
 ## is the single source of truth. Every message is a dictionary with a
 ## snake_case `type` field.
 
-const PROTOCOL_VERSION := 4
+const PROTOCOL_VERSION := 5
 
 
 ## Builds the first message sent after connecting.
@@ -23,6 +23,21 @@ static func ping(nonce: int) -> Dictionary:
 ## Builds the intention to walk the piloted body to a tile.
 static func move_to(x: int, y: int) -> Dictionary:
 	return {"type": "move_to", "x": x, "y": y}
+
+
+## Builds the intention to eat an item within reach.
+static func eat(item: int) -> Dictionary:
+	return {"type": "eat", "item": item}
+
+
+## Builds the intention to lie down and sleep.
+static func sleep() -> Dictionary:
+	return {"type": "sleep"}
+
+
+## Builds the intention to wake up.
+static func wake() -> Dictionary:
+	return {"type": "wake"}
 
 
 ## Encodes a message dictionary to its wire form.

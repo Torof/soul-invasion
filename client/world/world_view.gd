@@ -33,8 +33,15 @@ var _chunks: Dictionary = {}
 var _looks: Dictionary = {}
 ## material id -> name shown to players
 var _names: Dictionary = {}
-## body id -> {"at": Vector2 (mm), "route": Array[Vector2] (mm), "speed": mm per second}
+## body id -> {"at": Vector2 (mm), "route": Array[Vector2] (mm), "speed": mm per second, "asleep": bool}
 var _bodies: Dictionary = {}
+## chunk position -> Array of items as received, redrawn on change
+var _items: Dictionary = {}
+## chunk position -> Array of tiles as received
+var _tiles: Dictionary = {}
+## material id -> edible?
+var _edible: Dictionary = {}
+var _night := false
 var _piloted := -1
 ## Where the piloted body was asked to go, highlighted until it gets there.
 var _target := Vector2i(-1, -1)
@@ -52,26 +59,44 @@ func _ready() -> void:
 	Net.body_walks.connect(_on_body_walks)
 	Net.body_stopped.connect(_on_body_stopped)
 	Net.body_left.connect(_on_body_left)
+	Net.body_sleeps.connect(_on_body_sleeps)
+	Net.body_died.connect(_on_body_died)
+	Net.body_assigned.connect(func(body: int) -> void: _piloted = body)
+	Net.item_added.connect(_on_item_added)
+	Net.item_removed.connect(_on_item_removed)
+	Net.night_fell.connect(func(_day: int) -> void: _set_night(true))
+	Net.day_started.connect(func(_day: int, _tick: int) -> void: _set_night(false))
 	Net.move_refused.connect(func(_body: int, _x: int, _y: int) -> void: _clear_target())
 	Net.connected.connect(func(_tick: int, body: int) -> void: _piloted = body)
 
 
-func _on_world_state(width: int, height: int, chunk_size: int, materials: Array) -> void:
+func _on_world_state(width: int, height: int, chunk_size: int, materials: Array, night: bool) -> void:
 	_width = width
 	_height = height
 	_chunk_size = chunk_size
 	_looks.clear()
 	_names.clear()
+	_edible.clear()
 	for m in materials:
 		var id := str(m.get("id", ""))
 		_looks[id] = Color.from_string(str(m.get("colour", "")), Color.MAGENTA)
 		_names[id] = str(m.get("name", id))
+		_edible[id] = bool(m.get("edible", false))
 	for chunk: ChunkView in _chunks.values():
 		chunk.queue_free()
 	_chunks.clear()
+	_items.clear()
+	_tiles.clear()
 	_bodies.clear()
 	_following = true
+	_set_night(night)
 	queue_redraw()
+
+
+func _set_night(night: bool) -> void:
+	_night = night
+	# Provisional graphics: the ground dims at night.
+	modulate = Color(0.45, 0.5, 0.7) if night else Color.WHITE
 
 
 func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array) -> void:
@@ -82,13 +107,58 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array) -> voi
 		view.z_index = -1  # ground below bodies and the hover outline
 		add_child(view)
 		_chunks[key] = view
+	_tiles[key] = tiles
+	_items[key] = items
 	view.show_chunk(key * _chunk_size, _chunk_size, tiles, items, _looks)
 	for b in bodies:
 		var route: Array = []
 		for p in b.get("route", []):
 			route.append(Net.point(p))
 		_place(int(b.get("id", -1)), Net.point(b.get("at", {})), route, int(b.get("speed_cm_per_s", 0)))
+		_bodies[int(b.get("id", -1))]["asleep"] = bool(b.get("asleep", false))
 	queue_redraw()
+
+
+func _on_item_added(item: Dictionary) -> void:
+	var key := Iso.chunk_of(Vector2i(int(item.get("x", 0)), int(item.get("y", 0))), _chunk_size)
+	if _chunks.has(key):
+		_items[key].append(item)
+		_chunks[key].show_chunk(key * _chunk_size, _chunk_size, _tiles[key], _items[key], _looks)
+
+
+func _on_item_removed(id: int, x: int, y: int) -> void:
+	var key := Iso.chunk_of(Vector2i(x, y), _chunk_size)
+	if _chunks.has(key):
+		var kept: Array = []
+		for item in _items[key]:
+			if int(item.get("id", -1)) != id:
+				kept.append(item)
+		_items[key] = kept
+		_chunks[key].show_chunk(key * _chunk_size, _chunk_size, _tiles[key], kept, _looks)
+
+
+func _on_body_sleeps(body: int, asleep: bool) -> void:
+	if _bodies.has(body):
+		_bodies[body]["asleep"] = asleep
+		queue_redraw()
+
+
+func _on_body_died(body: int, _cause: String) -> void:
+	_bodies.erase(body)
+	queue_redraw()
+
+
+## The id of an edible item on the piloted body's tile or next to it, or -1.
+func food_within_reach() -> int:
+	if not _bodies.has(_piloted):
+		return -1
+	var here := _tile_of(_bodies[_piloted]["at"])
+	for key in _items:
+		for item in _items[key]:
+			var tile := Vector2i(int(item.get("x", 0)), int(item.get("y", 0)))
+			if absi(tile.x - here.x) <= 1 and absi(tile.y - here.y) <= 1 and _edible.get(str(item.get("material", "")), false):
+				return int(item.get("id", -1))
+	return -1
 
 
 func _on_chunk_hidden(x: int, y: int) -> void:
@@ -97,6 +167,8 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 	if view != null:
 		view.queue_free()
 		_chunks.erase(key)
+		_items.erase(key)
+		_tiles.erase(key)
 	for id in _bodies.keys():
 		if Iso.chunk_of(_tile_of(_bodies[id]["at"]), _chunk_size) == key:
 			_bodies.erase(id)
@@ -123,7 +195,8 @@ func _on_body_left(body: int) -> void:
 ## Puts a body somewhere with the route it is walking (empty: standing).
 func _place(body: int, at: Vector2, route: Array, speed_cm_per_s: int) -> void:
 	var first_sight := not _bodies.has(body)
-	_bodies[body] = {"at": at, "route": route, "speed": speed_cm_per_s * 10.0}
+	var asleep: bool = _bodies[body]["asleep"] if not first_sight else false
+	_bodies[body] = {"at": at, "route": route, "speed": speed_cm_per_s * 10.0, "asleep": asleep}
 	if first_sight and body == _piloted:
 		_camera.position = Iso.point_to_screen(at)
 
@@ -199,8 +272,19 @@ func _unhandled_input(event: InputEvent) -> void:
 			MOUSE_BUTTON_WHEEL_DOWN:
 				if event.pressed:
 					_zoom_by(1.0 / ZOOM_STEP)
-	elif event is InputEventKey and event.pressed and event.keycode == KEY_SPACE:
-		_following = true
+	elif event is InputEventKey and event.pressed:
+		match event.keycode:
+			KEY_SPACE:
+				_following = true
+			KEY_E:
+				var food := food_within_reach()
+				if food >= 0:
+					Net.send_eat(food)
+			KEY_Z:
+				if _bodies.has(_piloted) and _bodies[_piloted]["asleep"]:
+					Net.send_wake()
+				else:
+					Net.send_sleep()
 
 
 func _zoom_by(factor: float) -> void:
@@ -226,12 +310,19 @@ func _draw() -> void:
 	for id: int in ids:
 		var shown: Vector2 = Iso.point_to_screen(_bodies[id]["at"])
 		var color := PILOTED_COLOR if id == _piloted else BODY_COLOR
-		# A standing figure: taller than wide, feet where the body stands.
 		var feet := shown + Vector2(0, 2)
-		draw_rect(Rect2(feet + Vector2(-4, -22), Vector2(8, 20)), color)
-		draw_rect(Rect2(feet + Vector2(-4, -22), Vector2(8, 20)), Color.BLACK, false, 1.0)
-		draw_circle(feet + Vector2(0, -26), 4.5, color)
-		draw_circle(feet + Vector2(0, -26), 4.5, Color.BLACK, false, 1.0)
+		if _bodies[id]["asleep"]:
+			# Lying down: a figure along the ground.
+			draw_rect(Rect2(feet + Vector2(-12, -8), Vector2(20, 7)), color)
+			draw_rect(Rect2(feet + Vector2(-12, -8), Vector2(20, 7)), Color.BLACK, false, 1.0)
+			draw_circle(feet + Vector2(12, -4.5), 4.0, color)
+			draw_circle(feet + Vector2(12, -4.5), 4.0, Color.BLACK, false, 1.0)
+		else:
+			# A standing figure: taller than wide, feet where the body stands.
+			draw_rect(Rect2(feet + Vector2(-4, -22), Vector2(8, 20)), color)
+			draw_rect(Rect2(feet + Vector2(-4, -22), Vector2(8, 20)), Color.BLACK, false, 1.0)
+			draw_circle(feet + Vector2(0, -26), 4.5, color)
+			draw_circle(feet + Vector2(0, -26), 4.5, Color.BLACK, false, 1.0)
 
 
 static func _closed(points: PackedVector2Array) -> PackedVector2Array:

@@ -10,7 +10,9 @@ pub mod time;
 
 use std::collections::VecDeque;
 
-pub use content::{Content, ContentError, Food, Look, Material, MaterialKind, Movement, Spawn};
+pub use content::{
+    Content, ContentError, Food, Look, Material, MaterialKind, Movement, Needs, Spawn,
+};
 pub use map::{CHUNK_SIZE, ChunkPos, FinePos, MM_PER_TILE, Map, MapSpec, Pos, Terrain, line_clear};
 pub use time::{Calendar, CalendarError, GameTime, Tick};
 
@@ -21,7 +23,146 @@ pub use time::{Calendar, CalendarError, GameTime, Tick};
 )]
 pub struct BodyId(pub u32);
 
-/// An inhabitant's body: where it is and where it is going.
+/// Scale of a gauge: points are kept in millionths so that a rate per
+/// day divides into whole steps per tick, deterministically.
+const GAUGE_SCALE: u64 = 1_000_000;
+
+/// The top of every gauge, in points.
+pub const GAUGE_MAX: u32 = 100;
+
+/// A 0–100 gauge, kept finely (D34).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Gauge(u64);
+
+impl Gauge {
+    /// A gauge at `points` (0–100).
+    pub fn at(points: u32) -> Self {
+        Self(u64::from(points.min(GAUGE_MAX)) * GAUGE_SCALE)
+    }
+
+    /// Whole points, 0–100.
+    pub fn points(self) -> u32 {
+        u32::try_from(self.0 / GAUGE_SCALE).expect("at most 100")
+    }
+
+    /// Is it at the top?
+    pub fn is_full(self) -> bool {
+        self.0 >= u64::from(GAUGE_MAX) * GAUGE_SCALE
+    }
+
+    /// Is it at the bottom?
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    fn raise(&mut self, by: u64) {
+        self.0 = (self.0 + by).min(u64::from(GAUGE_MAX) * GAUGE_SCALE);
+    }
+
+    fn lower(&mut self, by: u64) {
+        self.0 = self.0.saturating_sub(by);
+    }
+}
+
+/// A part of a body that can be wounded (D33, D34).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Limb {
+    /// The head.
+    Head,
+    /// The torso.
+    Torso,
+    /// The left arm.
+    LeftArm,
+    /// The right arm.
+    RightArm,
+    /// The left leg.
+    LeftLeg,
+    /// The right leg.
+    RightLeg,
+}
+
+/// How bad a wound is.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    /// Hampers a little, heals in days.
+    Light,
+    /// Hampers a lot, heals in weeks, may bleed.
+    Grave,
+    /// Kills.
+    Mortal,
+}
+
+/// A wound on a limb. Carried empty until combat (D33) deals them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Wound {
+    /// Where.
+    pub limb: Limb,
+    /// How bad.
+    pub severity: Severity,
+    /// Still bleeding?
+    pub bleeding: bool,
+}
+
+/// What killed a body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Death {
+    /// Vitality drained by hunger.
+    Starved,
+    /// Vitality drained by cold.
+    Froze,
+}
+
+/// The state of a body: what hurts and what kills (D34).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Condition {
+    /// Life left; zero is death.
+    pub vitality: Gauge,
+    /// Need for food.
+    pub hunger: Gauge,
+    /// Lack of warmth.
+    pub cold: Gauge,
+    /// Need for sleep; full, the body collapses asleep.
+    pub fatigue: Gauge,
+    /// Asleep right now?
+    pub asleep: bool,
+    /// Wounds by limb.
+    pub wounds: Vec<Wound>,
+}
+
+impl Condition {
+    /// A healthy, fed, warm, rested body.
+    pub fn healthy() -> Self {
+        Self {
+            vitality: Gauge::at(GAUGE_MAX),
+            hunger: Gauge::at(0),
+            cold: Gauge::at(0),
+            fatigue: Gauge::at(0),
+            asleep: false,
+            wounds: Vec::new(),
+        }
+    }
+
+    /// The whole points of every gauge and the sleep flag: what a client
+    /// is told, and what counts as a change.
+    pub fn summary(&self) -> (u32, u32, u32, u32, bool) {
+        (
+            self.vitality.points(),
+            self.hunger.points(),
+            self.cold.points(),
+            self.fatigue.points(),
+            self.asleep,
+        )
+    }
+}
+
+/// An inhabitant's body: where it is, where it is going, how it fares.
 ///
 /// It stands at a fine position (millimetres, D32) and walks along a
 /// route of straight segments at the speed the content gives its terrain.
@@ -31,12 +172,18 @@ pub struct Body {
     at: FinePos,
     /// Remaining waypoints of the current walk, nearest first.
     route: VecDeque<FinePos>,
+    condition: Condition,
 }
 
 impl Body {
     /// The body's id.
     pub fn id(&self) -> BodyId {
         self.id
+    }
+
+    /// How the body fares.
+    pub fn condition(&self) -> &Condition {
+        &self.condition
     }
 
     /// The tile the body stands on.
@@ -103,6 +250,23 @@ pub enum Intention {
         /// Where to.
         target: Pos,
     },
+    /// Eat an item lying on the body's tile or next to it.
+    Eat {
+        /// Who.
+        body: BodyId,
+        /// What.
+        item: ItemId,
+    },
+    /// Lie down and sleep where one stands.
+    Sleep {
+        /// Who.
+        body: BodyId,
+    },
+    /// Wake up.
+    Wake {
+        /// Who.
+        body: BodyId,
+    },
 }
 
 /// Something that happened in the world during a tick.
@@ -149,6 +313,60 @@ pub enum Event {
         body: BodyId,
         /// Where it wanted to go.
         target: Pos,
+    },
+    /// Night fell: cold rises until dawn.
+    NightFell {
+        /// The day it ends.
+        day: u64,
+    },
+    /// The whole points of a body's gauges changed, or it fell asleep or
+    /// woke. At most once per body per tick.
+    ConditionChanged {
+        /// Who.
+        body: BodyId,
+        /// (vitality, hunger, cold, fatigue, asleep).
+        summary: (u32, u32, u32, u32, bool),
+    },
+    /// A body ate an item, which is gone.
+    BodyAte {
+        /// Who.
+        body: BodyId,
+        /// What.
+        item: ItemId,
+    },
+    /// An item could not be eaten (not food, not within reach, no such item or body).
+    EatRefused {
+        /// Who.
+        body: BodyId,
+        /// What.
+        item: ItemId,
+    },
+    /// An item appeared on the ground.
+    ItemAdded {
+        /// Which.
+        item: ItemId,
+        /// Content id of its material.
+        material: String,
+        /// Where.
+        at: Pos,
+    },
+    /// An item is gone from the ground.
+    ItemRemoved {
+        /// Which.
+        item: ItemId,
+        /// Where it was.
+        at: Pos,
+    },
+    /// A body died; it is now a corpse item.
+    BodyDied {
+        /// Who.
+        body: BodyId,
+        /// Of what.
+        cause: Death,
+        /// Where.
+        at: Pos,
+        /// The corpse.
+        corpse: ItemId,
     },
 }
 
@@ -294,8 +512,29 @@ impl World {
             id,
             at: pos.centre(),
             route: VecDeque::new(),
+            condition: Condition::healthy(),
         });
         id
+    }
+
+    /// Is it night? The day starts at dawn; night covers its last part.
+    pub fn is_night(&self, rules: &Content) -> bool {
+        let now = self.time();
+        now.tick_of_day * 100
+            >= u64::from(rules.needs.night_from_percent) * self.calendar.ticks_per_day()
+    }
+
+    /// Items lying on `pos` or on one of its eight neighbours, in id order.
+    pub fn items_within_reach(&self, pos: Pos) -> impl Iterator<Item = &Item> {
+        self.items
+            .iter()
+            .filter(move |i| (i.pos.x - pos.x).abs() <= 1 && (i.pos.y - pos.y).abs() <= 1)
+    }
+
+    /// Takes an item off the ground, if it is there.
+    fn remove_item(&mut self, id: ItemId) -> Option<Item> {
+        let index = self.items.iter().position(|i| i.id == id)?;
+        Some(self.items.remove(index))
     }
 
     /// Queues an intention for the next tick.
@@ -306,10 +545,15 @@ impl World {
     /// Advances the world by exactly one fixed tick under the content's
     /// rules, appending the events of that tick to `events`.
     pub fn step(&mut self, rules: &Content, events: &mut Vec<Event>) {
+        let was_night = self.is_night(rules);
         self.tick.0 += 1;
         let now = self.time();
         if now.is_day_start() {
             events.push(Event::DayStarted { day: now.day });
+        }
+        let night = self.is_night(rules);
+        if night && !was_night {
+            events.push(Event::NightFell { day: now.day });
         }
 
         let pending = std::mem::take(&mut self.pending);
@@ -324,6 +568,83 @@ impl World {
             }
             walk(body, &self.map, &rules.movement, per_second, events);
         }
+
+        self.fare(rules, night, events);
+    }
+
+    /// Lets every body hunger, freeze, tire, rest, heal — and die.
+    fn fare(&mut self, rules: &Content, night: bool, events: &mut Vec<Event>) {
+        let per_day = self.calendar.ticks_per_day();
+        let step = |rate_per_day: u32| u64::from(rate_per_day) * GAUGE_SCALE / per_day;
+        let needs = &rules.needs;
+        let mut died = Vec::new();
+        for body in &mut self.bodies {
+            let before = body.condition.summary();
+            let c = &mut body.condition;
+            c.hunger.raise(step(needs.hunger_per_day));
+            if night {
+                c.cold.raise(step(needs.cold_per_day_at_night));
+            } else {
+                c.cold.lower(step(needs.cold_relief_per_day));
+            }
+            if c.asleep {
+                c.fatigue.lower(step(needs.rest_per_day_asleep));
+                // Rested, one sleeps on through the night and wakes with the day.
+                if c.fatigue.is_empty() && !night {
+                    c.asleep = false;
+                }
+            } else {
+                c.fatigue.raise(step(needs.fatigue_per_day_awake));
+                if c.fatigue.is_full() {
+                    c.asleep = true;
+                    body.route.clear();
+                }
+            }
+            let mut cause = None;
+            if c.hunger.is_full() {
+                c.vitality.lower(step(needs.starving_per_day));
+                cause = Some(Death::Starved);
+            }
+            if c.cold.is_full() {
+                c.vitality.lower(step(needs.freezing_per_day));
+                cause = cause.or(Some(Death::Froze));
+            }
+            if cause.is_none() {
+                c.vitality.raise(step(needs.vitality_regain_per_day));
+            }
+            if c.vitality.is_empty() {
+                died.push((body.id, cause.expect("only a full need drains vitality")));
+            } else if c.summary() != before {
+                events.push(Event::ConditionChanged {
+                    body: body.id,
+                    summary: c.summary(),
+                });
+            }
+        }
+        for (id, cause) in died {
+            self.die(id, cause, events);
+        }
+    }
+
+    /// Turns a body into a corpse on the ground.
+    fn die(&mut self, id: BodyId, cause: Death, events: &mut Vec<Event>) {
+        let Some(index) = self.bodies.iter().position(|b| b.id == id) else {
+            return;
+        };
+        let body = self.bodies.remove(index);
+        let at = body.pos();
+        let corpse = self.spawn_item("corpse", at);
+        events.push(Event::ItemAdded {
+            item: corpse,
+            material: "corpse".to_owned(),
+            at,
+        });
+        events.push(Event::BodyDied {
+            body: id,
+            cause,
+            at,
+            corpse,
+        });
     }
 
     /// Advances the world by `n` fixed ticks, appending events to `events`.
@@ -340,6 +661,7 @@ impl World {
                     events.push(Event::MoveRefused { body: id, target });
                     return;
                 };
+                self.wake(index, events);
                 let cost = |t: Terrain| rules.movement.cost(t);
                 let from = self.bodies[index].at;
                 match self.map.path(from.tile(), target, cost) {
@@ -361,6 +683,68 @@ impl World {
                     None => events.push(Event::MoveRefused { body: id, target }),
                 }
             }
+            Intention::Eat { body: id, item } => {
+                let Some(index) = self.bodies.iter().position(|b| b.id == id) else {
+                    events.push(Event::EatRefused { body: id, item });
+                    return;
+                };
+                let here = self.bodies[index].pos();
+                let food = self
+                    .items_within_reach(here)
+                    .find(|i| i.id == item)
+                    .and_then(|i| rules.material(&i.material))
+                    .and_then(|m| m.food);
+                let Some(food) = food else {
+                    events.push(Event::EatRefused { body: id, item });
+                    return;
+                };
+                self.wake(index, events);
+                let eaten = self.remove_item(item).expect("found within reach");
+                let relief = u64::from(food.energy_kj) * GAUGE_SCALE
+                    / u64::from(rules.needs.kj_per_hunger_point);
+                self.bodies[index].condition.hunger.lower(relief);
+                events.push(Event::ItemRemoved {
+                    item,
+                    at: eaten.pos,
+                });
+                events.push(Event::BodyAte { body: id, item });
+            }
+            Intention::Sleep { body: id } => {
+                if let Some(index) = self.bodies.iter().position(|b| b.id == id) {
+                    let body = &mut self.bodies[index];
+                    if !body.condition.asleep {
+                        body.condition.asleep = true;
+                        if !body.route.is_empty() {
+                            body.route.clear();
+                            events.push(Event::BodyStopped {
+                                body: id,
+                                at: body.at,
+                            });
+                        }
+                        events.push(Event::ConditionChanged {
+                            body: id,
+                            summary: body.condition.summary(),
+                        });
+                    }
+                }
+            }
+            Intention::Wake { body: id } => {
+                if let Some(index) = self.bodies.iter().position(|b| b.id == id) {
+                    self.wake(index, events);
+                }
+            }
+        }
+    }
+
+    /// Wakes a body up, if asleep; any deliberate act does.
+    fn wake(&mut self, index: usize, events: &mut Vec<Event>) {
+        let body = &mut self.bodies[index];
+        if body.condition.asleep {
+            body.condition.asleep = false;
+            events.push(Event::ConditionChanged {
+                body: body.id,
+                summary: body.condition.summary(),
+            });
         }
     }
 }
@@ -495,6 +879,7 @@ mod tests {
         let mut w = small_world();
         let mut events = Vec::new();
         w.advance(12, &rules(), &mut events); // three full days
+        events.retain(|e| matches!(e, Event::DayStarted { .. }));
         assert_eq!(
             events,
             vec![
@@ -512,7 +897,7 @@ mod tests {
         let mut w = small_world();
         let mut events = Vec::new();
         w.advance(3, &rules(), &mut events);
-        assert_eq!(events, Vec::new());
+        assert!(!events.iter().any(|e| matches!(e, Event::DayStarted { .. })));
         assert_eq!(w.time().day, 1);
     }
 
@@ -695,6 +1080,187 @@ mod tests {
                 .any(|i| i.id() == first.id())
         );
         assert_eq!(a.items_in(ChunkPos::new(-1, -1)).count(), 0);
+    }
+
+    fn fed_world() -> World {
+        let mut w = World::empty(
+            Calendar::new(10, 100).unwrap(), // 1000 ticks per day
+            Map::filled(4, 4, Terrain::Grass),
+        );
+        w.spawn_body(Pos::new(1, 1));
+        w
+    }
+
+    fn condition(w: &World) -> &Condition {
+        w.body(BodyId(1)).unwrap().condition()
+    }
+
+    #[test]
+    fn needs_rise_with_time_at_the_content_rates() {
+        let mut w = fed_world();
+        let mut events = Vec::new();
+        // Half a day awake: hunger 16, fatigue 60; by day cold stays 0.
+        w.advance(500, &rules(), &mut events);
+        let (vitality, hunger, cold, fatigue, asleep) = condition(&w).summary();
+        assert_eq!(
+            (vitality, hunger, cold, fatigue, asleep),
+            (100, 16, 0, 60, false)
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                Event::ConditionChanged {
+                    body: BodyId(1),
+                    ..
+                }
+            )),
+            "clients are told"
+        );
+    }
+
+    #[test]
+    fn night_brings_cold_and_dawn_relieves_it() {
+        let mut w = fed_world();
+        let mut events = Vec::new();
+        w.advance(580, &rules(), &mut events); // dusk at 58 %
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::NightFell { day: 1 }))
+        );
+        assert!(w.is_night(&rules()));
+        w.advance(419, &rules(), &mut events); // the rest of the night: 42 % of a day
+        assert_eq!(condition(&w).cold.points(), 100, "{:?}", condition(&w));
+        w.step(&rules(), &mut events);
+        assert!(!w.is_night(&rules()), "dawn");
+        w.advance(200, &rules(), &mut events);
+        assert_eq!(condition(&w).cold.points(), 0, "daylight undoes it");
+    }
+
+    #[test]
+    fn full_fatigue_forces_sleep_and_sleep_rests() {
+        let mut w = fed_world();
+        let mut events = Vec::new();
+        go(&mut w, Pos::new(3, 3));
+        // 120 per day awake: full after 5/6 of a day.
+        w.advance(840, &rules(), &mut events);
+        assert!(condition(&w).asleep, "{:?}", condition(&w));
+        assert!(!w.body(BodyId(1)).unwrap().is_walking(), "collapsed");
+        // 300 per day asleep: empty after a third of a day, then awake
+        // (it is day), tiring again a little.
+        w.advance(340, &rules(), &mut events);
+        assert!(!condition(&w).asleep);
+        assert!(condition(&w).fatigue.points() <= 1);
+    }
+
+    #[test]
+    fn eating_within_reach_relieves_hunger_and_removes_the_item() {
+        let mut w = fed_world();
+        let mut events = Vec::new();
+        w.advance(500, &rules(), &mut events); // hunger 16
+        let berries = w.spawn_item("berries", Pos::new(2, 2)); // diagonal neighbour
+        let far = w.spawn_item("berries", Pos::new(3, 3));
+        let stone = w.spawn_item("flint", Pos::new(1, 1));
+        events.clear();
+        w.queue(Intention::Eat {
+            body: BodyId(1),
+            item: far,
+        });
+        w.queue(Intention::Eat {
+            body: BodyId(1),
+            item: stone,
+        });
+        w.queue(Intention::Eat {
+            body: BodyId(1),
+            item: berries,
+        });
+        w.step(&rules(), &mut events);
+        assert!(events.contains(&Event::EatRefused {
+            body: BodyId(1),
+            item: far
+        }));
+        assert!(events.contains(&Event::EatRefused {
+            body: BodyId(1),
+            item: stone
+        }));
+        assert!(events.contains(&Event::ItemRemoved {
+            item: berries,
+            at: Pos::new(2, 2)
+        }));
+        assert!(events.contains(&Event::BodyAte {
+            body: BodyId(1),
+            item: berries
+        }));
+        // 250 kJ at 25 kJ per point: 10 points off 16.
+        assert_eq!(condition(&w).hunger.points(), 6);
+        assert!(w.items().iter().all(|i| i.id() != berries));
+        assert_eq!(w.items().len(), 2);
+    }
+
+    #[test]
+    fn starving_drains_vitality_and_kills_leaving_a_corpse() {
+        let mut w = fed_world();
+        let mut events = Vec::new();
+        // Three days to full hunger, then a day at full hunger to die.
+        w.advance(3_100, &rules(), &mut events);
+        assert_eq!(condition(&w).hunger.points(), 100);
+        // Three nights outside have cost vitality, but not life.
+        assert!(condition(&w).vitality.points() > 0);
+        events.clear();
+        w.advance(1_000, &rules(), &mut events);
+        assert!(w.body(BodyId(1)).is_none(), "dead and gone");
+        let died = events.iter().find_map(|e| match e {
+            Event::BodyDied {
+                body,
+                cause,
+                at,
+                corpse,
+            } => Some((*body, *cause, *at, *corpse)),
+            _ => None,
+        });
+        let (body, cause, at, corpse) = died.expect("a death event");
+        assert_eq!(
+            (body, cause, at),
+            (BodyId(1), Death::Starved, Pos::new(1, 1))
+        );
+        assert!(
+            w.items()
+                .iter()
+                .any(|i| i.id() == corpse && i.material() == "corpse")
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::ItemAdded { item, .. } if *item == corpse))
+        );
+        // Nothing more happens to a dead body.
+        events.clear();
+        w.advance(10, &rules(), &mut events);
+        assert_eq!(events, Vec::new());
+    }
+
+    #[test]
+    fn sleeping_stops_a_walk_and_any_act_wakes() {
+        let mut w = fed_world();
+        let mut events = Vec::new();
+        w.advance(100, &rules(), &mut events); // a little tired: sleep holds
+        go(&mut w, Pos::new(3, 3));
+        w.step(&rules(), &mut events);
+        w.queue(Intention::Sleep { body: BodyId(1) });
+        w.step(&rules(), &mut events);
+        assert!(condition(&w).asleep);
+        assert!(!w.body(BodyId(1)).unwrap().is_walking());
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::BodyStopped {
+                body: BodyId(1),
+                ..
+            }
+        )));
+        go(&mut w, Pos::new(0, 0));
+        w.step(&rules(), &mut events);
+        assert!(!condition(&w).asleep, "walking wakes");
+        assert!(w.body(BodyId(1)).unwrap().is_walking());
     }
 
     #[test]

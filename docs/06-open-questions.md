@@ -21,6 +21,7 @@ What remains to be decided, with the moment it will need to be settled.
 
 - **Detailed reincarnation**: point scale, penalties, distinction between abandonment and death suffered.
 - **Soul powers**: list, counterparts, counters, progression.
+- **What the soul carries: karma, Willpower, prestige** (raised 5 November 2026). All three are consequences of acts, at different levels and with different effects. Karma belongs to the soul: hidden, it judges what was done across lives and shapes powers, titles and rebirth (D30). Prestige belongs to the body: what the world thinks of this inhabitant (D7), dying with it or passed on in part by heirs. Willpower is the body's (D12) — and may also be the soul's: the strength with which it holds its body, resists, persists; a strong soul in a weak body, or the reverse. Effects to settle: karma → what the soul *may* (powers, limits, price); the soul's Willpower → what it *holds*; prestige → what the world *allows* it (to follow, obey, banish). Strengths and weaknesses from their imbalance. To decide with soul points and reincarnation.
 - **Bloodline Bond**: counterparts, limits (distance, extermination, bond-breaker).
 - **Karma**: what is measured, without allowing it to be gamed.
 - **Seats**: conditions for becoming a Demon Lord or the Emperor; the Emperor's hidden tree; extended lifespan.

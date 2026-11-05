@@ -5,13 +5,21 @@ extends Node
 ## messages into signals. Decides nothing about the world (D03, D05).
 
 signal connected(tick: int, body: int)
-signal world_state(width: int, height: int, chunk_size: int, materials: Array)
+signal world_state(width: int, height: int, chunk_size: int, materials: Array, night: bool)
 signal chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array)
 signal chunk_hidden(x: int, y: int)
 signal body_walks(body: int, at: Vector2, route: Array, speed_cm_per_s: int)
 signal body_stopped(body: int, at: Vector2)
 signal body_left(body: int)
 signal move_refused(body: int, x: int, y: int)
+signal body_condition(body: int, condition: Dictionary)
+signal body_sleeps(body: int, asleep: bool)
+signal body_died(body: int, cause: String)
+signal body_assigned(body: int)
+signal item_added(item: Dictionary)
+signal item_removed(item: int, x: int, y: int)
+signal eat_refused(body: int, item: int)
+signal night_fell(day: int)
 signal day_started(day: int, tick: int)
 signal disconnected(reason: String)
 
@@ -39,6 +47,21 @@ func connect_to(url: String = DEFAULT_URL) -> void:
 func send_move_to(x: int, y: int) -> void:
 	if is_ready and body >= 0:
 		_send(Protocol.move_to(x, y))
+
+
+func send_eat(item: int) -> void:
+	if is_ready and body >= 0:
+		_send(Protocol.eat(item))
+
+
+func send_sleep() -> void:
+	if is_ready and body >= 0:
+		_send(Protocol.sleep())
+
+
+func send_wake() -> void:
+	if is_ready and body >= 0:
+		_send(Protocol.wake())
 
 
 func _send(message: Dictionary) -> void:
@@ -91,7 +114,8 @@ func _handle(message: Dictionary) -> void:
 				int(message.get("width", 0)),
 				int(message.get("height", 0)),
 				int(message.get("chunk_size", 0)),
-				message.get("materials", [])
+				message.get("materials", []),
+				bool(message.get("night", false))
 			)
 		"chunk":
 			chunk.emit(
@@ -105,6 +129,26 @@ func _handle(message: Dictionary) -> void:
 			chunk_hidden.emit(int(message.get("x", 0)), int(message.get("y", 0)))
 		"body_left":
 			body_left.emit(int(message.get("body", -1)))
+		"body_condition":
+			body_condition.emit(int(message.get("body", -1)), message.get("condition", {}))
+		"body_sleeps":
+			body_sleeps.emit(int(message.get("body", -1)), bool(message.get("asleep", false)))
+		"body_died":
+			body_died.emit(int(message.get("body", -1)), str(message.get("cause", "")))
+		"body_assigned":
+			var assigned: Variant = message.get("body")
+			body = int(assigned) if assigned != null else -1
+			body_assigned.emit(body)
+		"item_added":
+			item_added.emit(message.get("item", {}))
+		"item_removed":
+			item_removed.emit(
+				int(message.get("item", -1)), int(message.get("x", 0)), int(message.get("y", 0))
+			)
+		"eat_refused":
+			eat_refused.emit(int(message.get("body", -1)), int(message.get("item", -1)))
+		"night_fell":
+			night_fell.emit(int(message.get("day", 0)))
 		"body_walks":
 			var route: Array = []
 			for p in message.get("route", []):
