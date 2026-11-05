@@ -1,0 +1,28 @@
+// How a body hungers, freezes, tires and dies (D34). Placeholder values,
+// tuned by play. Every rate is in points of a 0–100 gauge per game day.
+//
+// night_from_percent:      the day starts at dawn; night begins here.
+//                          58 % of a 24 h day is 14 h after dawn (20:00).
+// hunger_per_day:          33 — three days without eating fill the gauge.
+// cold_per_day_at_night:   300 — eight hours of night without warmth.
+// cold_relief_per_day:     600 — four hours of daylight undo it.
+// fatigue_per_day_awake:   120 — twenty hours awake fill the gauge.
+// rest_per_day_asleep:     300 — eight hours of sleep empty it.
+// starving_per_day:        100 — a day at full hunger kills.
+// freezing_per_day:        400 — six hours at full cold kill: a summer
+//                          night outside hurts but does not kill.
+// vitality_regain_per_day: 50 — two days fed, warm and rested to heal.
+// kj_per_hunger_point:     25 — berries (250 kJ) relieve 10 points,
+//                          meat (1 200 kJ) 48.
+(
+    night_from_percent: 58,
+    hunger_per_day: 33,
+    cold_per_day_at_night: 300,
+    cold_relief_per_day: 600,
+    fatigue_per_day_awake: 120,
+    rest_per_day_asleep: 300,
+    starving_per_day: 100,
+    freezing_per_day: 400,
+    vitality_regain_per_day: 50,
+    kj_per_hunger_point: 25,
+)

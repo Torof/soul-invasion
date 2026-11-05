@@ -16,6 +16,8 @@ real values live in a private repository (D30). Files here hold placeholders.
   terrain, in pieces per thousand tiles.
 - `movement.ron` — walking speed and the cost of each terrain, which paths
   weigh and bodies slow down by.
+- `needs.ron` — how fast a body hungers, freezes and tires, how it heals,
+  and what kills it.
 
 The server looks for this directory as `content`, `../content` or
 `../../content` from where it runs, or where `--content <DIR>` points. An

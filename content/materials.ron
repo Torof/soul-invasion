@@ -26,4 +26,7 @@
      flammable: false, food: Some((energy_kj: 1200, keeps_days: 2)), look: (colour: "#b03a3a")),
     (id: "bone", name: "Bone", kind: animal, mass_kg: 0.5, hardness: 4,
      flammable: false, food: None, look: (colour: "#e8e0c8")),
+    // What a dead body becomes: a thing on the ground, like any other (D33).
+    (id: "corpse", name: "Corpse", kind: animal, mass_kg: 60.0, hardness: 1,
+     flammable: false, food: None, look: (colour: "#4a3a3a")),
 ]

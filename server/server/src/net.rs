@@ -20,16 +20,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
-    BodyState, ClientMessage, ItemState, MaterialView, PROTOCOL_VERSION, Point, ServerMessage,
-    Terrain, decode, encode,
+    BodyState, ClientMessage, Condition, DeathCause, ItemState, MaterialView, PROTOCOL_VERSION,
+    Point, ServerMessage, Terrain, decode, encode,
 };
-use sim::{BodyId, CHUNK_SIZE, ChunkPos, Content, FinePos, Intention, Map, Pos, World};
+use sim::{BodyId, CHUNK_SIZE, ChunkPos, Content, FinePos, Intention, ItemId, Map, Pos, World};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio_tungstenite::WebSocketStream;
@@ -96,6 +96,41 @@ pub enum Published {
         /// The tile it stands on.
         at: Pos,
     },
+    /// Night fell.
+    NightFell {
+        /// The day it ends.
+        day: u64,
+    },
+    /// A body lay down or got up.
+    BodySleeps {
+        /// Who.
+        body: u32,
+        /// Where.
+        at: Pos,
+        /// Asleep now?
+        asleep: bool,
+    },
+    /// A body died where it stood.
+    BodyDied {
+        /// Who.
+        body: u32,
+        /// Where.
+        at: Pos,
+        /// Of what.
+        cause: DeathCause,
+    },
+    /// An item appeared on the ground.
+    ItemAdded {
+        /// The item.
+        item: ItemState,
+    },
+    /// An item vanished from the ground.
+    ItemRemoved {
+        /// Which.
+        item: u64,
+        /// Where it was.
+        at: Pos,
+    },
 }
 
 fn point(at: FinePos) -> Point {
@@ -115,15 +150,17 @@ pub struct Shared {
     pub bodies: watch::Sender<Vec<BodyState>>,
     /// What items are made of, as clients need it.
     pub materials: Vec<MaterialView>,
-    /// Items on the ground, by chunk. Static until something picks them up.
-    items: BTreeMap<ChunkPos, Vec<ItemState>>,
+    /// Is it night? Kept by the simulation thread.
+    pub night: AtomicBool,
+    /// Items on the ground, by chunk, kept by the simulation thread.
+    items: Mutex<BTreeMap<ChunkPos, Vec<ItemState>>>,
     /// Connections served at once, at most.
     max_connections: usize,
     /// Connections currently served.
     connections: AtomicUsize,
     /// The latest intention of each body, taken by the simulation thread
     /// before each tick.
-    intentions: Mutex<BTreeMap<u32, Pos>>,
+    intentions: Mutex<BTreeMap<u32, Intention>>,
     /// Bodies currently piloted, with the channel for messages meant for
     /// that pilot alone.
     pilots: Mutex<BTreeMap<u32, mpsc::Sender<ServerMessage>>>,
@@ -153,6 +190,7 @@ impl Shared {
                 id: m.id.clone(),
                 name: m.name.clone(),
                 colour: m.look.colour.clone(),
+                edible: m.food.is_some(),
             })
             .collect();
         let mut items: BTreeMap<ChunkPos, Vec<ItemState>> = BTreeMap::new();
@@ -175,6 +213,7 @@ impl Shared {
                 at: point(b.at()),
                 route: b.route().map(point).collect(),
                 speed_cm_per_s: content.movement.walk_speed_cm_per_s,
+                asleep: b.condition().asleep,
             })
             .collect();
         Self {
@@ -183,7 +222,8 @@ impl Shared {
             map: world.map().clone(),
             bodies: watch::Sender::new(bodies),
             materials,
-            items,
+            night: AtomicBool::new(world.is_night(content)),
+            items: Mutex::new(items),
             max_connections,
             connections: AtomicUsize::new(0),
             intentions: Mutex::new(BTreeMap::new()),
@@ -216,6 +256,51 @@ impl Shared {
             }
         });
         from
+    }
+
+    /// Records whether a body is asleep; true when that changed.
+    pub fn body_sleeps(&self, body: BodyId, asleep: bool) -> bool {
+        let mut changed = false;
+        self.bodies.send_modify(|bodies| {
+            if let Some(state) = bodies.iter_mut().find(|b| b.id == body.0) {
+                changed = state.asleep != asleep;
+                state.asleep = asleep;
+            }
+        });
+        changed
+    }
+
+    /// Forgets a dead body; returns the tile it died on, if it was known.
+    pub fn body_died(&self, body: BodyId) -> Option<Pos> {
+        let mut at = None;
+        self.bodies.send_modify(|bodies| {
+            if let Some(index) = bodies.iter().position(|b| b.id == body.0) {
+                at = Some(tile_of(bodies.remove(index).at));
+            }
+        });
+        at
+    }
+
+    /// Records an item lying on the ground.
+    pub fn item_added(&self, item: ItemState) {
+        self.items
+            .lock()
+            .expect("items not poisoned")
+            .entry(Pos::new(item.x, item.y).chunk())
+            .or_default()
+            .push(item);
+    }
+
+    /// Forgets an item that was on the ground.
+    pub fn item_removed(&self, item: ItemId, at: Pos) {
+        if let Some(items) = self
+            .items
+            .lock()
+            .expect("items not poisoned")
+            .get_mut(&at.chunk())
+        {
+            items.retain(|i| i.id != item.0);
+        }
     }
 
     /// Records that a body stopped exactly there.
@@ -278,23 +363,23 @@ impl Shared {
 
     /// Sets a body's intention for the coming tick, replacing any earlier
     /// one: the latest wins.
-    pub fn intend(&self, body: BodyId, target: Pos) {
+    pub fn intend(&self, intention: Intention) {
+        let body = match &intention {
+            Intention::MoveTo { body, .. }
+            | Intention::Eat { body, .. }
+            | Intention::Sleep { body }
+            | Intention::Wake { body } => body.0,
+        };
         self.intentions
             .lock()
             .expect("intentions not poisoned")
-            .insert(body.0, target);
+            .insert(body, intention);
     }
 
     /// Takes every pending intention, in body order, leaving none.
     pub fn take_intentions(&self) -> Vec<Intention> {
         let taken = std::mem::take(&mut *self.intentions.lock().expect("intentions not poisoned"));
-        taken
-            .into_iter()
-            .map(|(body, target)| Intention::MoveTo {
-                body: BodyId(body),
-                target,
-            })
-            .collect()
+        taken.into_values().collect()
     }
 
     /// Sends a message to the connection piloting `body`, if any. Dropped
@@ -347,7 +432,13 @@ impl Shared {
             y: chunk.y,
             tiles: tiles.into_iter().map(terrain_view).collect(),
             bodies: self.bodies_in(chunk),
-            items: self.items.get(&chunk).cloned().unwrap_or_default(),
+            items: self
+                .items
+                .lock()
+                .expect("items not poisoned")
+                .get(&chunk)
+                .cloned()
+                .unwrap_or_default(),
         })
     }
 }
@@ -488,7 +579,7 @@ async fn handle_connection(
     let (private_tx, mut private) = mpsc::channel(PRIVATE_CAPACITY);
 
     let pilot = Pilot { shared, body: None };
-    let Some(pilot) = handshake(&mut ws, pilot, private_tx).await? else {
+    let Some(mut pilot) = handshake(&mut ws, pilot, private_tx.clone()).await? else {
         ws.close(None).await?;
         return Ok(());
     };
@@ -504,6 +595,7 @@ async fn handle_connection(
             height: shared.map.height(),
             chunk_size: CHUNK_SIZE,
             materials: shared.materials.clone(),
+            night: shared.night.load(Ordering::Relaxed),
         },
     )
     .await?;
@@ -530,15 +622,15 @@ async fn handle_connection(
                     Ok(ClientMessage::Ping { nonce }) => {
                         send(&mut ws, &ServerMessage::Pong { nonce }).await?;
                     }
-                    Ok(ClientMessage::MoveTo { x, y }) => {
-                        if let Some(body) = pilot.body {
-                            shared.intend(BodyId(body), Pos::new(x, y));
-                        }
-                    }
                     Ok(ClientMessage::Hello { .. }) => {
                         // A second hello is a client bug; drop the connection.
                         ws.close(None).await?;
                         return Ok(());
+                    }
+                    Ok(message) => {
+                        if let Some(body) = pilot.body {
+                            shared.intend(intention_of(BodyId(body), &message));
+                        }
                     }
                     Err(e) => {
                         eprintln!("connection {peer}: undecodable message ignored: {e}");
@@ -549,7 +641,12 @@ async fn handle_connection(
                 Some(Ok(_)) => {}
             },
             message = published.recv() => match message {
-                Ok(published) => forward(&mut ws, shared, pilot.body, &mut view, published).await?,
+                Ok(published) => {
+                    let own_death = forward(&mut ws, shared, pilot.body, &mut view, published).await?;
+                    if own_death {
+                        reassign(&mut ws, shared, &mut pilot, &mut view, &private_tx, peer).await?;
+                    }
+                }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     eprintln!("connection {peer}: too slow, {n} message(s) skipped");
                 }
@@ -569,18 +666,112 @@ async fn handle_connection(
     }
 }
 
+/// The intention a client message asks of the piloted body.
+fn intention_of(body: BodyId, message: &ClientMessage) -> Intention {
+    match *message {
+        ClientMessage::MoveTo { x, y } => Intention::MoveTo {
+            body,
+            target: Pos::new(x, y),
+        },
+        ClientMessage::Eat { item } => Intention::Eat {
+            body,
+            item: ItemId(item),
+        },
+        ClientMessage::Sleep => Intention::Sleep { body },
+        ClientMessage::Wake => Intention::Wake { body },
+        ClientMessage::Hello { .. } | ClientMessage::Ping { .. } => {
+            unreachable!("handled before intentions")
+        }
+    }
+}
+
+/// Provisional (D34): a pilot whose body died takes the first free body,
+/// or watches, and the view moves there.
+async fn reassign(
+    ws: &mut WebSocketStream<TcpStream>,
+    shared: &Shared,
+    pilot: &mut Pilot<'_>,
+    view: &mut View,
+    private: &mpsc::Sender<ServerMessage>,
+    peer: SocketAddr,
+) -> Result<(), BoxError> {
+    if let Some(dead) = pilot.body.take() {
+        shared.release_body(dead);
+    }
+    pilot.body = shared.take_body(private.clone());
+    match pilot.body {
+        Some(body) => println!("connection {peer}: now pilots body {body}"),
+        None => println!("connection {peer}: no free body, watching"),
+    }
+    send(ws, &ServerMessage::BodyAssigned { body: pilot.body }).await?;
+    let centre = pilot
+        .body
+        .and_then(|body| shared.position_of(body))
+        .map_or_else(|| shared.centre_chunk(), Pos::chunk);
+    let (shown, hidden) = view.recentre(&shared.map, centre);
+    for chunk in hidden {
+        send(
+            ws,
+            &ServerMessage::ChunkHidden {
+                x: chunk.x,
+                y: chunk.y,
+            },
+        )
+        .await?;
+    }
+    for chunk in shown {
+        if let Some(message) = shared.chunk_message(chunk) {
+            send(ws, &message).await?;
+        }
+    }
+    Ok(())
+}
+
 /// Forwards what the simulation published, as far as this connection's
 /// view is concerned, moving the view along with the piloted body.
+/// Returns true when the piloted body just died.
 async fn forward(
     ws: &mut WebSocketStream<TcpStream>,
     shared: &Shared,
     piloted: Option<u32>,
     view: &mut View,
     published: Published,
-) -> Result<(), BoxError> {
+) -> Result<bool, BoxError> {
     match published {
         Published::DayStarted { day, tick } => {
             send(ws, &ServerMessage::DayStarted { day, tick }).await?;
+        }
+        Published::NightFell { day } => {
+            send(ws, &ServerMessage::NightFell { day }).await?;
+        }
+        Published::BodySleeps { body, at, asleep } => {
+            if view.contains(at) {
+                send(ws, &ServerMessage::BodySleeps { body, asleep }).await?;
+            }
+        }
+        Published::BodyDied { body, at, cause } => {
+            if view.contains(at) || Some(body) == piloted {
+                send(ws, &ServerMessage::BodyDied { body, cause }).await?;
+            }
+            return Ok(Some(body) == piloted);
+        }
+        Published::ItemAdded { item } => {
+            if view.contains(Pos::new(item.x, item.y)) {
+                send(ws, &ServerMessage::ItemAdded { item }).await?;
+            }
+        }
+        Published::ItemRemoved { item, at } => {
+            if view.contains(at) {
+                send(
+                    ws,
+                    &ServerMessage::ItemRemoved {
+                        item,
+                        x: at.x,
+                        y: at.y,
+                    },
+                )
+                .await?;
+            }
         }
         Published::BodyWalks { body, from, tick } => {
             if view.contains(from)
@@ -631,7 +822,19 @@ async fn forward(
             }
         }
     }
-    Ok(())
+    Ok(false)
+}
+
+/// What a pilot is told of its body's condition.
+pub fn condition_view(summary: (u32, u32, u32, u32, bool)) -> Condition {
+    let (vitality, hunger, cold, fatigue, asleep) = summary;
+    Condition {
+        vitality,
+        hunger,
+        cold,
+        fatigue,
+        asleep,
+    }
 }
 
 /// The message telling a client where a body is and where it is going.
@@ -712,10 +915,20 @@ mod tests {
     fn a_body_keeps_only_its_latest_intention() {
         let shared = shared(1);
         for _ in 0..1000 {
-            shared.intend(BodyId(1), Pos::new(0, 0));
+            shared.intend(Intention::MoveTo {
+                body: BodyId(1),
+                target: Pos::new(0, 0),
+            });
         }
-        shared.intend(BodyId(2), Pos::new(5, 5));
-        shared.intend(BodyId(1), Pos::new(3, 4));
+        shared.intend(Intention::MoveTo {
+            body: BodyId(2),
+            target: Pos::new(5, 5),
+        });
+        shared.intend(Intention::Sleep { body: BodyId(1) });
+        shared.intend(Intention::MoveTo {
+            body: BodyId(1),
+            target: Pos::new(3, 4),
+        });
         assert_eq!(
             shared.take_intentions(),
             vec![
@@ -783,6 +996,37 @@ mod tests {
         let (shown, _) = View::default().recentre(&map, ChunkPos::new(0, 0));
         assert_eq!(shown.len(), 9);
         assert!(View::default().is_empty());
+    }
+
+    #[test]
+    fn sleep_death_and_items_are_recorded() {
+        let shared = shared(1);
+        let here = shared.position_of(1).expect("body 1");
+        assert!(shared.body_sleeps(BodyId(1), true));
+        assert!(
+            !shared.body_sleeps(BodyId(1), true),
+            "no change the second time"
+        );
+        assert!(shared.body_state(1).unwrap().asleep);
+        assert_eq!(shared.body_died(BodyId(1)), Some(here));
+        assert_eq!(shared.body_died(BodyId(1)), None);
+        assert!(shared.body_state(1).is_none());
+        let corpse = ItemState {
+            id: 999,
+            x: here.x,
+            y: here.y,
+            material: "corpse".into(),
+        };
+        shared.item_added(corpse.clone());
+        let ServerMessage::Chunk { items, .. } = shared.chunk_message(here.chunk()).unwrap() else {
+            panic!("expected a chunk");
+        };
+        assert!(items.contains(&corpse));
+        shared.item_removed(ItemId(999), here);
+        let ServerMessage::Chunk { items, .. } = shared.chunk_message(here.chunk()).unwrap() else {
+            panic!("expected a chunk");
+        };
+        assert!(!items.contains(&corpse));
     }
 
     #[test]

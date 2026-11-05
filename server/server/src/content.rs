@@ -56,7 +56,8 @@ pub fn load(dir: &Path) -> Result<Content, LoadError> {
     let materials = read("materials.ron")?;
     let spawns = read("spawns.ron")?;
     let movement = read("movement.ron")?;
-    Content::from_ron(&materials, &spawns, &movement).map_err(|source| LoadError::Invalid {
+    let needs = read("needs.ron")?;
+    Content::from_ron(&materials, &spawns, &movement, &needs).map_err(|source| LoadError::Invalid {
         dir: dir.to_path_buf(),
         source: Box::new(source),
     })

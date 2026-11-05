@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use protocol::ServerMessage;
 use server::cli::{CliError, DataLocation, USAGE};
 use server::content;
-use server::net::{Published, Shared, serve};
+use server::net::{Published, Shared, condition_view, serve};
 use server::{Options, Sqlite, Storage, StorageError, run_headless, run_paced};
 use sim::{Content, Event, World};
 use tokio::net::TcpListener;
@@ -280,6 +280,7 @@ fn run_paced_server(
 
 /// Tells the connections and the pilots what one event means to them
 /// (D29: the simulation thread publishes, the connections filter).
+#[allow(clippy::too_many_lines)]
 fn publish(shared: &Shared, tick: u64, event: &Event) {
     // Publishing to no subscriber is not an error: nobody is
     // connected.
@@ -321,9 +322,73 @@ fn publish(shared: &Shared, tick: u64, event: &Event) {
         }
         Event::DayStarted { day } => {
             println!("tick {tick}: {event:?}");
+            shared.night.store(false, Ordering::Relaxed);
             let _ = shared
                 .publish
                 .send(Published::DayStarted { day: *day, tick });
+        }
+        Event::NightFell { day } => {
+            shared.night.store(true, Ordering::Relaxed);
+            let _ = shared.publish.send(Published::NightFell { day: *day });
+        }
+        Event::ConditionChanged { body, summary } => {
+            shared.tell_pilot(
+                *body,
+                ServerMessage::BodyCondition {
+                    body: body.0,
+                    condition: condition_view(*summary),
+                },
+            );
+            let asleep = summary.4;
+            if shared.body_sleeps(*body, asleep)
+                && let Some(at) = shared.position_of(body.0)
+            {
+                let _ = shared.publish.send(Published::BodySleeps {
+                    body: body.0,
+                    at,
+                    asleep,
+                });
+            }
+        }
+        Event::BodyAte { .. } => {}
+        Event::EatRefused { body, item } => shared.tell_pilot(
+            *body,
+            ServerMessage::EatRefused {
+                body: body.0,
+                item: item.0,
+            },
+        ),
+        Event::ItemAdded { item, material, at } => {
+            let state = protocol::ItemState {
+                id: item.0,
+                x: at.x,
+                y: at.y,
+                material: material.clone(),
+            };
+            shared.item_added(state.clone());
+            let _ = shared.publish.send(Published::ItemAdded { item: state });
+        }
+        Event::ItemRemoved { item, at } => {
+            shared.item_removed(*item, *at);
+            let _ = shared.publish.send(Published::ItemRemoved {
+                item: item.0,
+                at: *at,
+            });
+        }
+        Event::BodyDied {
+            body, cause, at, ..
+        } => {
+            println!("tick {tick}: body {} died ({cause:?}) at {at:?}", body.0);
+            shared.body_died(*body);
+            let cause = match cause {
+                sim::Death::Starved => protocol::DeathCause::Starved,
+                sim::Death::Froze => protocol::DeathCause::Froze,
+            };
+            let _ = shared.publish.send(Published::BodyDied {
+                body: body.0,
+                at: *at,
+                cause,
+            });
         }
         // A refusal concerns only whoever asked.
         Event::MoveRefused { body, target } => shared.tell_pilot(

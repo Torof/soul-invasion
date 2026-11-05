@@ -129,8 +129,13 @@ mod tests {
         let s = run_headless(&mut w, &Content::sample(), 3, |_, _| {});
         assert_eq!(s.ticks, 18);
         assert_eq!(w.time().day, 4);
+        let days: Vec<Event> = s
+            .events
+            .into_iter()
+            .filter(|e| matches!(e, Event::DayStarted { .. }))
+            .collect();
         assert_eq!(
-            s.events,
+            days,
             vec![
                 Event::DayStarted { day: 2 },
                 Event::DayStarted { day: 3 },

@@ -46,6 +46,15 @@
 - **Romantic relationships**, couples, births, aging, death.
 - **Attachment**: you grow attached to NPCs through shared history.
 
+## 5b. Combat
+
+- Slow real time by intentions: an engaged body commits one gesture per tempo (about a second); between tempos the player reads and chooses. No reflexes, no hit points, no battle mode.
+- Gestures (strike, feint, parry, dodge, shove, break off) with directions and target limbs, three guards; simultaneous resolution, moves hidden until they land, wind-ups readable according to skill.
+- Everything computed from content: weapon parts, protection by limb, skill, condition, facing, measure, numbers.
+- Wounds by limb that bleed, hamper, heal and scar; death from a mortal wound or exhausted vitality; a corpse is an item.
+- Assassination is combat against someone unaware. War is the same system at a hundred bodies, with orders, morale and fatigue.
+- On the client, an engagement window that is a view of the same world; commands composable by the player, never conditional. Architecture decision D33.
+
 ## 6. Interacting with NPCs
 
 - Every interaction goes through an **intention**: offer, help, ask, threaten, court, convince, lie…

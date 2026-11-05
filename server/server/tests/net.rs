@@ -138,8 +138,38 @@ async fn send(socket: &mut Socket, message: &ClientMessage) {
         .expect("message is sent");
 }
 
-/// Next server message, or `None` once the server closed the connection.
+/// Messages that flow all the time, whatever the test is about: a body's
+/// condition to its pilot, sleep, night, items coming and going.
+fn ambient(message: &ServerMessage) -> bool {
+    matches!(
+        message,
+        ServerMessage::BodyCondition { .. }
+            | ServerMessage::BodySleeps { .. }
+            | ServerMessage::NightFell { .. }
+            | ServerMessage::ItemAdded { .. }
+            | ServerMessage::ItemRemoved { .. }
+    )
+}
+
+/// Next server message that is not ambient, or `None` once the server
+/// closed the connection. Ambient messages never stop flowing, so this
+/// gives up after 20 s instead of waiting forever.
 async fn receive(socket: &mut Socket) -> Option<ServerMessage> {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match receive_any(socket).await {
+                Some(message) if ambient(&message) => {}
+                other => return other,
+            }
+        }
+    })
+    .await
+    .expect("a message of interest within 20 s")
+}
+
+/// Next server message of any kind, or `None` once the server closed
+/// the connection.
+async fn receive_any(socket: &mut Socket) -> Option<ServerMessage> {
     loop {
         let frame = tokio::time::timeout(Duration::from_secs(5), socket.next())
             .await
@@ -196,6 +226,7 @@ async fn hello_ping_and_a_published_day() {
             height,
             chunk_size,
             materials,
+            ..
         }) => {
             assert_eq!((width, height), (VALLEY_SIZE, VALLEY_SIZE));
             assert_eq!(chunk_size, CHUNK_SIZE);
@@ -227,6 +258,7 @@ async fn hello_ping_and_a_published_day() {
                 for b in &bodies {
                     assert_eq!(tile(b.at).chunk(), ChunkPos::new(x, y));
                     assert_eq!(b.route, Vec::new(), "nobody walks at the start");
+                    assert!(!b.asleep);
                 }
                 seen_bodies.extend(bodies.iter().map(|b| b.id));
                 chunks.push((x, y));
@@ -365,7 +397,7 @@ async fn join(server: &Server) -> (Socket, Option<u32>) {
 
 #[tokio::test]
 async fn the_view_follows_the_piloted_body() {
-    let server = Server::start_with(&["--time-scale", "20"]);
+    let server = Server::start_with(&["--seconds-per-day", "100", "--time-scale", "20"]);
     let (mut pilot, body) = join(&server).await;
     let body = body.expect("pilots a body");
 
@@ -410,7 +442,8 @@ async fn the_view_follows_the_piloted_body() {
 
 #[tokio::test]
 async fn a_body_walking_out_of_the_view_is_reported_as_left() {
-    let server = Server::start_with(&["--time-scale", "50"]);
+    // Long days: the walk is 70 game seconds and must not end in a collapse.
+    let server = Server::start_with(&["--seconds-per-day", "1000", "--time-scale", "50"]);
     let (mut walker, body) = join(&server).await;
     let (mut watcher, other) = join(&server).await;
     let body = body.expect("pilots body 1");
@@ -468,7 +501,7 @@ async fn a_body_walking_out_of_the_view_is_reported_as_left() {
 
 #[tokio::test]
 async fn a_move_intention_makes_the_piloted_body_walk() {
-    let server = Server::start();
+    let server = Server::start_with(&["--seconds-per-day", "100"]);
     let (mut pilot, body) = join(&server).await;
     let (mut watcher, other) = join(&server).await;
     let body = body.expect("first connection pilots a body");
@@ -649,7 +682,7 @@ async fn connections_beyond_the_limit_are_refused() {
 
 #[tokio::test]
 async fn a_refusal_reaches_the_pilot_alone() {
-    let server = Server::start();
+    let server = Server::start_with(&["--seconds-per-day", "100"]);
     let (mut pilot, body) = join(&server).await;
     let (mut other, other_body) = join(&server).await;
     let body = body.expect("pilots body 1");
@@ -694,7 +727,7 @@ async fn a_refusal_reaches_the_pilot_alone() {
 
 #[tokio::test]
 async fn a_flood_of_intentions_leaves_only_the_last_one() {
-    let server = Server::start();
+    let server = Server::start_with(&["--seconds-per-day", "100"]);
     let (mut pilot, body) = join(&server).await;
     let body = body.expect("pilots body 1");
 
@@ -761,4 +794,200 @@ async fn a_flood_of_intentions_leaves_only_the_last_one() {
         refusals < 100,
         "{refusals} refusals: the flood was not coalesced"
     );
+}
+
+// --- Needs, sleep, food and death (D34) --------------------------------
+
+/// Skips messages until `pick` returns something; fails after 15 s.
+async fn wait_for<T>(socket: &mut Socket, mut pick: impl FnMut(&ServerMessage) -> Option<T>) -> T {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let message = receive_any(socket).await.expect("still connected");
+            if let Some(found) = pick(&message) {
+                return found;
+            }
+        }
+    })
+    .await
+    .expect("what we wait for arrives within 15 s")
+}
+
+#[tokio::test]
+async fn the_pilot_is_told_how_its_body_fares_and_nobody_else() {
+    // One game day per real second: hunger climbs a point every 30 ms.
+    let server = Server::start();
+    let (mut pilot, body) = join(&server).await;
+    let (mut other, other_body) = join(&server).await;
+    let body = body.expect("pilots body 1");
+    let other_body = other_body.expect("pilots body 2");
+
+    let condition = wait_for(&mut pilot, |m| match m {
+        ServerMessage::BodyCondition {
+            body: who,
+            condition,
+        } if *who == body => Some(*condition),
+        _ => None,
+    })
+    .await;
+    assert!(
+        condition.hunger >= 1 && condition.vitality == 100,
+        "{condition:?}"
+    );
+
+    // The other pilot hears of its own body only.
+    for _ in 0..5 {
+        let who = wait_for(&mut other, |m| match m {
+            ServerMessage::BodyCondition { body: who, .. } => Some(*who),
+            _ => None,
+        })
+        .await;
+        assert_eq!(who, other_body, "another body's condition leaked");
+    }
+}
+
+#[tokio::test]
+async fn sleeping_is_seen_by_all_and_waking_by_walking() {
+    // Ten-second days: tired enough to sleep soon, not so fast as to
+    // collapse before walking.
+    let server = Server::start_with(&["--seconds-per-day", "10"]);
+    let (mut pilot, body) = join(&server).await;
+    let (mut watcher, _) = join(&server).await;
+    let body = body.expect("pilots body 1");
+
+    // A little tired first, or the body would wake at once (it is day).
+    wait_for(&mut pilot, |m| match m {
+        ServerMessage::BodyCondition { condition, .. } if condition.fatigue >= 5 => Some(()),
+        _ => None,
+    })
+    .await;
+    send(&mut pilot, &ClientMessage::Sleep).await;
+    let asleep = wait_for(&mut watcher, |m| match m {
+        ServerMessage::BodySleeps { body: who, asleep } if *who == body => Some(*asleep),
+        _ => None,
+    })
+    .await;
+    assert!(asleep);
+    let condition = wait_for(&mut pilot, |m| match m {
+        ServerMessage::BodyCondition { condition, .. } if condition.asleep => Some(*condition),
+        _ => None,
+    })
+    .await;
+    assert!(condition.asleep);
+
+    // Walking wakes the body: everyone sees it get up and set off.
+    let world = standard_world();
+    let start = start_of(&world, body);
+    send(
+        &mut pilot,
+        &ClientMessage::MoveTo {
+            x: start.x + 2,
+            y: start.y,
+        },
+    )
+    .await;
+    let awake = wait_for(&mut watcher, |m| match m {
+        ServerMessage::BodySleeps { body: who, asleep } if *who == body => Some(!*asleep),
+        _ => None,
+    })
+    .await;
+    assert!(awake);
+    wait_for(&mut watcher, |m| match m {
+        ServerMessage::BodyWalks { body: who, .. } if *who == body => Some(()),
+        _ => None,
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn eating_takes_an_item_within_reach_and_refuses_the_rest() {
+    let server = Server::start_with(&["--seconds-per-day", "1000", "--time-scale", "20"]);
+    let (mut pilot, body) = join(&server).await;
+    let (mut watcher, _) = join(&server).await;
+    let body = body.expect("pilots body 1");
+
+    // An item far away cannot be eaten from here.
+    send(&mut pilot, &ClientMessage::Eat { item: 1 }).await;
+    let refused = wait_for(&mut pilot, |m| match m {
+        ServerMessage::EatRefused { body: who, item } if *who == body => Some(*item),
+        _ => None,
+    })
+    .await;
+    assert_eq!(refused, 1);
+
+    // Walk to the nearest berries, then eat them: the watcher sees them go.
+    let world = standard_world();
+    let rules = rules();
+    let start = start_of(&world, body);
+    let berries = world
+        .items()
+        .iter()
+        .filter(|i| {
+            rules
+                .material(i.material())
+                .is_some_and(|m| m.food.is_some())
+        })
+        .min_by_key(|i| (i.pos().x - start.x).abs() + (i.pos().y - start.y).abs())
+        .expect("food in the valley");
+    send(
+        &mut pilot,
+        &ClientMessage::MoveTo {
+            x: berries.pos().x,
+            y: berries.pos().y,
+        },
+    )
+    .await;
+    wait_for(&mut pilot, |m| match m {
+        ServerMessage::BodyStopped { body: who, at } if *who == body => {
+            (tile(*at) == berries.pos()).then_some(())
+        }
+        _ => None,
+    })
+    .await;
+    send(
+        &mut pilot,
+        &ClientMessage::Eat {
+            item: berries.id().0,
+        },
+    )
+    .await;
+    let gone = wait_for(&mut watcher, |m| match m {
+        ServerMessage::ItemRemoved { item, .. } => Some(*item),
+        _ => None,
+    })
+    .await;
+    assert_eq!(gone, berries.id().0);
+}
+
+#[tokio::test]
+async fn a_starved_body_dies_and_its_pilot_is_given_another_or_watches() {
+    // Days of one second, run fifty times faster: a body starves in well
+    // under a real second.
+    let server = Server::start_with(&["--time-scale", "50"]);
+    let (mut pilot, body) = join(&server).await;
+    let body = body.expect("pilots body 1");
+
+    let cause = wait_for(&mut pilot, |m| match m {
+        ServerMessage::BodyDied { body: who, cause } if *who == body => Some(*cause),
+        _ => None,
+    })
+    .await;
+    assert!(matches!(
+        cause,
+        protocol::DeathCause::Starved | protocol::DeathCause::Froze
+    ));
+    // The corpse appeared, the pilot got another body or none, with the
+    // ground around it.
+    let assigned = wait_for(&mut pilot, |m| match m {
+        ServerMessage::BodyAssigned { body } => Some(*body),
+        _ => None,
+    })
+    .await;
+    assert_ne!(assigned, Some(body), "never the dead body");
+    if assigned.is_some() {
+        wait_for(&mut pilot, |m| match m {
+            ServerMessage::Chunk { .. } => Some(()),
+            _ => None,
+        })
+        .await;
+    }
 }
