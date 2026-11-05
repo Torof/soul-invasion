@@ -1,0 +1,16 @@
+[package]
+name = "sim"
+description = "Pure world simulation: no I/O, no clock, no network. Given intentions and ticks, produces events."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+ron = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

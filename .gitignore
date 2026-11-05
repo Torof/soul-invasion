@@ -1,0 +1,21 @@
+# Rust
+/server/target/
+
+# Godot
+/client/.godot/
+/client/export/
+*.import.tmp
+
+# Local databases and world saves
+*.sqlite
+*.sqlite-journal
+*.db
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Secrets never live in this repository (see docs/04-architecture.md, D30)
+.env

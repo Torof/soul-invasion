@@ -1,0 +1,16 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /server
+    schedule:
+      interval: weekly
+    groups:
+      # One pull request per week for all patch and minor updates.
+      minor-and-patch:
+        update-types: [minor, patch]
+    # Major updates arrive as separate pull requests.
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

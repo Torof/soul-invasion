@@ -1,0 +1,35 @@
+# 06 — Open Questions
+
+What remains to be decided, with the moment it will need to be settled.
+
+## To be settled soon (stages 3 and 4)
+
+- ~~Project practices~~: decided on 5 November 2026 (public GitHub repository, AGPL-3.0 code, CC BY-NC-SA 4.0 lore and documents, CI with protected areas; see D30 and `CONTRIBUTING.md`).
+- ~~Technical skeleton~~: decided on 5 November 2026 (D23 to D29).
+
+## To be settled during the first version
+
+- Exact rhythms of time (day, childhood, lifetime) after trials.
+- Size of the valley and exact number of NPCs.
+- Simple rules for soul points.
+- Form of the interface for tool assembly and intentions.
+- Visual rendering: pure 2D or light 3D with a fixed camera; graphics solution (AI, asset packs, artist).
+
+## To be settled later
+
+- **Detailed reincarnation**: point scale, penalties, distinction between abandonment and death suffered.
+- **Soul powers**: list, counterparts, counters, progression.
+- **Bloodline Bond**: counterparts, limits (distance, extermination, bond-breaker).
+- **Karma**: what is measured, without allowing it to be gamed.
+- **Seats**: conditions for becoming a Demon Lord or the Emperor; the Emperor's hidden tree; extended lifespan.
+- **Starting state of the world**: number of tribes, relations, beliefs.
+- **Seasons** and winter.
+- **Seizure of power** in the tribe (strength and prestige).
+- **Intuitions** of skilled characters.
+- **AI-generated speech** for NPCs, then free conversation.
+- **Multiplayer**, hosting, costs, moderation.
+- **End of the world** and nihilists: how hard it should be.
+- **Final name** of the game (check the availability of "Soul Invasion") and name of the world.
+- **Origin of the souls** (the great mystery).
+- **Age rating** and treatment of dark themes.
+- Participatory **business model**.

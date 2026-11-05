@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  server-linux:
+    name: Build server (Linux x86_64)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+      - name: Build
+        run: cargo build --release -p server
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/release/server "dist/soul-invasion-server-${GITHUB_REF_NAME}-linux-x86_64"
+          cp ../LICENSE dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-linux
+          path: server/dist/*
+
+  publish:
+    name: Publish GitHub release
+    needs: [server-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/*
+
+# The client export (Godot export templates) will be added to this workflow
+# once the client has something worth shipping.

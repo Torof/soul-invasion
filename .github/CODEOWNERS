@@ -1,0 +1,28 @@
+# Protected areas: any pull request touching these paths requires a review
+# from the project lead before it can be merged (enforced by branch protection).
+# Everything else merges automatically once CI is green.
+
+# Design decisions and documents
+/docs/                      @Torof
+
+# The client <-> server contract
+/server/protocol/           @Torof
+/client/net/                @Torof
+
+# Dependencies (new or changed)
+/server/Cargo.toml          @Torof
+/server/Cargo.lock          @Torof
+/server/*/Cargo.toml        @Torof
+/server/deny.toml           @Torof
+/client/project.godot       @Torof
+
+# Persistence schema and migrations
+/server/server/migrations/  @Torof
+
+# The rules of the project itself
+/.github/                   @Torof
+/LICENSE                    @Torof
+/docs/LICENSE               @Torof
+/CLAUDE.md                  @Torof
+/CONTRIBUTING.md            @Torof
+/README.md                  @Torof
