@@ -117,7 +117,8 @@ pub enum ServerMessage {
         /// When.
         tick: u64,
     },
-    /// A walk could not start (impassable or unreachable target).
+    /// A walk could not start (impassable or unreachable target). Sent to
+    /// the pilot who asked, and to nobody else.
     MoveRefused {
         /// Who.
         body: u32,

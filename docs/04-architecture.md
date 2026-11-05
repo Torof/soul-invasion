@@ -35,6 +35,7 @@ Each decision is recorded with its **reason** and its **consequences**. These ar
 ### D08 — Interest management
 - **Reason**: each player only receives what happens around them (performance, network).
 - **Consequences**: reinforces the principle that information travels physically.
+- **Status** (milestone 1 audit, 5 November 2026): not implemented yet. `world_state` sends the whole valley once at connection (32×32 tiles, every body), and every move is published to every client. Fine for one valley and a tribe; to be built before several regions (D07) or many players.
 
 ### D09 — Adjustable time and a calendar specific to each world
 - **Reason**: the world has its own calendar and its own biology; testing requires massive acceleration.
@@ -110,7 +111,7 @@ Each decision is recorded with its **reason** and its **consequences**. These ar
 
 ### D26 — Message encoding: JSON, behind a single door
 - **Reason**: readable in logs, parsed natively by Godot, trivial to debug. The volumes of the first version are small.
-- **Consequences**: encoding is confined to a single module on each side, so we can switch to binary the day it matters without touching the rest. Every message carries a type and a protocol version. The Rust types in `protocol` are the reference; the client mirrors them. **Shape of the dialogue** (D05, D08, D20): client → server, intentions only; server → client, an initial state of what the body perceives, then changes. The client never receives the whole world.
+- **Consequences**: encoding is confined to a single module on each side, so we can switch to binary the day it matters without touching the rest. Every message carries a type and a protocol version. The Rust types in `protocol` are the reference; the client mirrors them. **Shape of the dialogue** (D05, D08, D20): client → server, intentions only; server → client, an initial state of what the body perceives, then changes. The client never receives the whole world — except, until D08 is built, the single valley of the first version (see D08's status).
 
 ### D27 — Content in RON, read by the server only
 - **Reason**: content (D15) is made of nested structures and categories (materials, parts, processes). RON is Rust's native data format: it expresses them directly, accepts comments and is checked at load time. The client does not need to read it: it receives the names and visual identifiers from the server at connection.
@@ -119,10 +120,12 @@ Each decision is recorded with its **reason** and its **consequences**. These ar
 ### D28 — Persistence: event journal + snapshots, SQLite first
 - **Reason**: the simulation lives in memory; we persist the event journal (D17) and periodic snapshots. SQLite is a single file, with no server to install, sufficient for a tribe and a valley.
 - **Consequences**: storage goes through a single interface (`Storage`); replacing it with PostgreSQL only touches that module. Schema and snapshots versioned with migrations from day one (D21). Soul data lives in a separate file, behind its own interface (D14).
+- **Status** (milestone 1 audit, 5 November 2026): schema v1, snapshot format v2 (calendar, tick, map, bodies), one snapshot per game day plus the journal. Nothing is pruned yet; the retention policy is an open question (`06`).
 
 ### D29 — One server, one simulation thread
 - **Reason**: the simulation is deterministic and sequential, the network is asynchronous; mixing them creates the hardest bugs there are.
 - **Consequences**: the simulation loop runs on a single thread and receives intentions through a queue; the network (tokio) runs alongside and only translates. The split into regions (D07) will come later with several loops of this kind.
+- **Precision** (milestone 1 audit, 5 November 2026): the queue holds **one pending intention per body**, the latest wins, taken before each tick. A client flooding `move_to` costs one path search per tick and nothing to anyone else. Refusals go back to the pilot alone; moves are published to all. The listener also bounds what the outside can cost: a handshake deadline, a maximum message size, a maximum number of connections (`--max-connections`).
 
 ### D30 — Public repository on GitHub (`Torof`), code under AGPL-3.0, lore and documents under CC BY-NC-SA 4.0
 - **Reason**: a participatory project, open to ideas and new people. Two protections are wanted: nobody must be able to appropriate the project to turn it into a closed commercial product, nor take it "their own way" under the same name. The AGPL forces anyone who runs the code (even as an online service) to publish their modifications; CC BY-NC-SA forbids commercial use of the world, the lore and the documents, and requires share-alike. The game's name and its identity remain the property of the project lead.

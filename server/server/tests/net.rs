@@ -2,7 +2,7 @@
 //! handshake, liveness, published events, and the ways a client gets
 //! disconnected.
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -23,6 +23,11 @@ struct Server {
 impl Server {
     /// Starts a paced server with one game day per real second.
     fn start() -> Self {
+        Self::start_with(&[])
+    }
+
+    /// Like [`Server::start`], with extra command-line options.
+    fn start_with(extra: &[&str]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_server"))
             .args([
                 "--ephemeral",
@@ -33,6 +38,7 @@ impl Server {
                 "--seconds-per-day",
                 "1",
             ])
+            .args(extra)
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
@@ -309,4 +315,169 @@ async fn a_released_body_can_be_piloted_again() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!("body 1 was never released");
+}
+
+// --- Limits from the milestone 1 audit ---------------------------------
+
+#[test]
+fn a_silent_tcp_connection_is_dropped() {
+    let server = Server::start();
+    // Plain TCP, never sending the WebSocket upgrade.
+    let mut socket = std::net::TcpStream::connect(&server.addr).expect("tcp connects");
+    socket
+        .set_read_timeout(Some(Duration::from_secs(8)))
+        .expect("timeout is set");
+    let started = std::time::Instant::now();
+    let mut buffer = [0u8; 16];
+    let read = socket
+        .read(&mut buffer)
+        .expect("server closes, not a timeout");
+    assert_eq!(read, 0, "server sends nothing, just closes");
+    assert!(
+        started.elapsed() < Duration::from_secs(7),
+        "closed by the handshake timeout, took {:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn an_oversized_message_ends_the_connection() {
+    let server = Server::start();
+    let (mut pilot, _) = join(&server).await;
+    let huge = format!(
+        "{{\"type\":\"ping\",\"nonce\":1,\"pad\":\"{}\"}}",
+        "x".repeat(server::net::MAX_MESSAGE_BYTES)
+    );
+    pilot
+        .send(Message::text(huge))
+        .await
+        .expect("the frame leaves");
+    assert_eq!(
+        receive(&mut pilot).await,
+        None,
+        "server closes on an oversized frame"
+    );
+}
+
+#[tokio::test]
+async fn connections_beyond_the_limit_are_refused() {
+    let server = Server::start_with(&["--max-connections", "1"]);
+    let (mut first, body) = join(&server).await;
+    assert_eq!(body, Some(1));
+
+    // The second one is closed before any WebSocket upgrade.
+    let second = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio_tungstenite::connect_async(format!("ws://{}", server.addr)),
+    )
+    .await
+    .expect("refused promptly");
+    assert!(second.is_err(), "no upgrade for the second connection");
+
+    // The first one is unaffected.
+    send(&mut first, &ClientMessage::Ping { nonce: 3 }).await;
+    loop {
+        match receive(&mut first).await {
+            Some(ServerMessage::DayStarted { .. }) => {}
+            other => {
+                assert_eq!(other, Some(ServerMessage::Pong { nonce: 3 }));
+                break;
+            }
+        }
+    }
+
+    // Its place is given back when it leaves.
+    drop(first);
+    for _ in 0..50 {
+        if tokio_tungstenite::connect_async(format!("ws://{}", server.addr))
+            .await
+            .is_ok()
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the place was never given back");
+}
+
+#[tokio::test]
+async fn a_refusal_reaches_the_pilot_alone() {
+    let server = Server::start();
+    let (mut pilot, body) = join(&server).await;
+    let (mut other, other_body) = join(&server).await;
+    let body = body.expect("pilots body 1");
+    let other_body = other_body.expect("pilots body 2");
+
+    send(&mut pilot, &ClientMessage::MoveTo { x: 20, y: 0 }).await;
+    loop {
+        match receive(&mut pilot).await {
+            Some(ServerMessage::MoveRefused { body: who, .. }) => {
+                assert_eq!(who, body);
+                break;
+            }
+            Some(ServerMessage::DayStarted { .. }) => {}
+            unexpected => panic!("unexpected {unexpected:?}"),
+        }
+    }
+
+    // Body 2 starts at (22, 21): one step east. Messages keep their order,
+    // so a broadcast refusal would have arrived before this move.
+    send(&mut other, &ClientMessage::MoveTo { x: 23, y: 21 }).await;
+    loop {
+        match receive(&mut other).await {
+            Some(ServerMessage::BodyMoved { body: who, .. }) if who == other_body => break,
+            Some(ServerMessage::MoveRefused { .. }) => {
+                panic!("another pilot's refusal leaked")
+            }
+            Some(ServerMessage::DayStarted { .. } | ServerMessage::BodyMoved { .. }) => {}
+            unexpected => panic!("unexpected {unexpected:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_flood_of_intentions_leaves_only_the_last_one() {
+    let server = Server::start();
+    let (mut pilot, body) = join(&server).await;
+    let body = body.expect("pilots body 1");
+
+    // Body 1 starts at (20, 20). Thousands of contradicting asks, the last
+    // one being one step north: the body ends there, and the server is
+    // still answering.
+    for i in 0..2000 {
+        let target = if i % 2 == 0 { (20, 0) } else { (22, 20) };
+        send(
+            &mut pilot,
+            &ClientMessage::MoveTo {
+                x: target.0,
+                y: target.1,
+            },
+        )
+        .await;
+    }
+    send(&mut pilot, &ClientMessage::MoveTo { x: 20, y: 19 }).await;
+    send(&mut pilot, &ClientMessage::Ping { nonce: 9 }).await;
+
+    let mut arrived = false;
+    let mut answered = false;
+    let mut refusals = 0;
+    while !(arrived && answered) {
+        match receive(&mut pilot).await {
+            Some(ServerMessage::BodyMoved {
+                body: who, x, y, ..
+            }) if who == body => {
+                arrived = (x, y) == (20, 19);
+            }
+            Some(ServerMessage::Pong { nonce: 9 }) => answered = true,
+            Some(ServerMessage::MoveRefused { .. }) => refusals += 1,
+            Some(ServerMessage::DayStarted { .. }) => {}
+            unexpected => panic!("unexpected {unexpected:?}"),
+        }
+    }
+    // At most one intention per tick survives: a refusal per tick the flood
+    // spanned, never one per message.
+    assert!(
+        refusals < 100,
+        "{refusals} refusals: the flood was not coalesced"
+    );
 }
