@@ -32,7 +32,7 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 /// How long a client has to finish the WebSocket upgrade, and then how
 /// long it has to send its `hello`.
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Largest incoming message, in bytes. Client messages are a few dozen
 /// bytes; anything near this limit is not our client.
