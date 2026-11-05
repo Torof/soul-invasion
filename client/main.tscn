@@ -20,7 +20,9 @@ script = ExtResource("2_world")
 [node name="Camera" type="Camera2D" parent="WorldView"]
 zoom = Vector2(2, 2)
 
-[node name="Hud" type="PanelContainer" parent="."]
+[node name="Ui" type="CanvasLayer" parent="."]
+
+[node name="Hud" type="PanelContainer" parent="Ui"]
 layout_mode = 1
 anchors_preset = 2
 anchor_top = 1.0
@@ -33,67 +35,67 @@ grow_vertical = 0
 mouse_filter = 2
 script = ExtResource("3_hud")
 
-[node name="Rows" type="VBoxContainer" parent="Hud"]
+[node name="Rows" type="VBoxContainer" parent="Ui/Hud"]
 layout_mode = 2
 mouse_filter = 2
 
-[node name="Clock" type="Label" parent="Hud/Rows"]
+[node name="Clock" type="Label" parent="Ui/Hud/Rows"]
 unique_name_in_owner = true
 layout_mode = 2
 text = "Day 1 · 06:00 · day"
 
-[node name="Body" type="Label" parent="Hud/Rows"]
+[node name="Body" type="Label" parent="Ui/Hud/Rows"]
 unique_name_in_owner = true
 layout_mode = 2
 text = "watching"
 
-[node name="Gauges" type="GridContainer" parent="Hud/Rows"]
+[node name="Gauges" type="GridContainer" parent="Ui/Hud/Rows"]
 layout_mode = 2
 columns = 2
 
-[node name="VitalityLabel" type="Label" parent="Hud/Rows/Gauges"]
+[node name="VitalityLabel" type="Label" parent="Ui/Hud/Rows/Gauges"]
 layout_mode = 2
 text = "vitality"
 
-[node name="Vitality" type="ProgressBar" parent="Hud/Rows/Gauges"]
+[node name="Vitality" type="ProgressBar" parent="Ui/Hud/Rows/Gauges"]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(240, 0)
 layout_mode = 2
 value = 100.0
 
-[node name="HungerLabel" type="Label" parent="Hud/Rows/Gauges"]
+[node name="HungerLabel" type="Label" parent="Ui/Hud/Rows/Gauges"]
 layout_mode = 2
 text = "hunger"
 
-[node name="Hunger" type="ProgressBar" parent="Hud/Rows/Gauges"]
+[node name="Hunger" type="ProgressBar" parent="Ui/Hud/Rows/Gauges"]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(240, 0)
 layout_mode = 2
 
-[node name="ColdLabel" type="Label" parent="Hud/Rows/Gauges"]
+[node name="ColdLabel" type="Label" parent="Ui/Hud/Rows/Gauges"]
 layout_mode = 2
 text = "cold"
 
-[node name="Cold" type="ProgressBar" parent="Hud/Rows/Gauges"]
+[node name="Cold" type="ProgressBar" parent="Ui/Hud/Rows/Gauges"]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(240, 0)
 layout_mode = 2
 
-[node name="FatigueLabel" type="Label" parent="Hud/Rows/Gauges"]
+[node name="FatigueLabel" type="Label" parent="Ui/Hud/Rows/Gauges"]
 layout_mode = 2
 text = "fatigue"
 
-[node name="Fatigue" type="ProgressBar" parent="Hud/Rows/Gauges"]
+[node name="Fatigue" type="ProgressBar" parent="Ui/Hud/Rows/Gauges"]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(240, 0)
 layout_mode = 2
 
-[node name="State" type="Label" parent="Hud/Rows"]
+[node name="State" type="Label" parent="Ui/Hud/Rows"]
 unique_name_in_owner = true
 layout_mode = 2
 text = "connecting…"
 
-[node name="Help" type="Label" parent="."]
+[node name="Help" type="Label" parent="Ui"]
 layout_mode = 1
 anchors_preset = 10
 anchor_right = 1.0
