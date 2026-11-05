@@ -1,7 +1,8 @@
-[gd_scene load_steps=3 format=3 uid="uid://c0soulinvmain0"]
+[gd_scene load_steps=4 format=3 uid="uid://c0soulinvmain0"]
 
 [ext_resource type="Script" path="res://main.gd" id="1_main"]
 [ext_resource type="Script" path="res://world/world_view.gd" id="2_world"]
+[ext_resource type="Script" path="res://ui/hud.gd" id="3_hud"]
 
 [node name="Main" type="Control"]
 layout_mode = 3
@@ -19,7 +20,80 @@ script = ExtResource("2_world")
 [node name="Camera" type="Camera2D" parent="WorldView"]
 zoom = Vector2(2, 2)
 
-[node name="Status" type="Label" parent="."]
+[node name="Hud" type="PanelContainer" parent="."]
+layout_mode = 1
+anchors_preset = 2
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 12.0
+offset_top = -150.0
+offset_right = 372.0
+offset_bottom = -12.0
+grow_vertical = 0
+mouse_filter = 2
+script = ExtResource("3_hud")
+
+[node name="Rows" type="VBoxContainer" parent="Hud"]
+layout_mode = 2
+mouse_filter = 2
+
+[node name="Clock" type="Label" parent="Hud/Rows"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Day 1 · 06:00 · day"
+
+[node name="Body" type="Label" parent="Hud/Rows"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "watching"
+
+[node name="Gauges" type="GridContainer" parent="Hud/Rows"]
+layout_mode = 2
+columns = 2
+
+[node name="VitalityLabel" type="Label" parent="Hud/Rows/Gauges"]
+layout_mode = 2
+text = "vitality"
+
+[node name="Vitality" type="ProgressBar" parent="Hud/Rows/Gauges"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(240, 0)
+layout_mode = 2
+value = 100.0
+
+[node name="HungerLabel" type="Label" parent="Hud/Rows/Gauges"]
+layout_mode = 2
+text = "hunger"
+
+[node name="Hunger" type="ProgressBar" parent="Hud/Rows/Gauges"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(240, 0)
+layout_mode = 2
+
+[node name="ColdLabel" type="Label" parent="Hud/Rows/Gauges"]
+layout_mode = 2
+text = "cold"
+
+[node name="Cold" type="ProgressBar" parent="Hud/Rows/Gauges"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(240, 0)
+layout_mode = 2
+
+[node name="FatigueLabel" type="Label" parent="Hud/Rows/Gauges"]
+layout_mode = 2
+text = "fatigue"
+
+[node name="Fatigue" type="ProgressBar" parent="Hud/Rows/Gauges"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(240, 0)
+layout_mode = 2
+
+[node name="State" type="Label" parent="Hud/Rows"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "connecting…"
+
+[node name="Help" type="Label" parent="."]
 layout_mode = 1
 anchors_preset = 10
 anchor_right = 1.0
@@ -28,4 +102,5 @@ offset_top = 8.0
 offset_right = -12.0
 offset_bottom = 32.0
 grow_horizontal = 2
-text = "Soul Invasion"
+mouse_filter = 2
+text = "click: walk · E: eat · Z: sleep/wake · wheel: zoom · right-drag: pan · space: follow"

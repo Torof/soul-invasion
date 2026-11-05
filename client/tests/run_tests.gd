@@ -16,6 +16,7 @@ func _init() -> void:
 	_test_iso_neighbours_are_distinct()
 	_test_main_scene_lets_clicks_reach_the_world()
 	_test_chunk_of_matches_the_server()
+	_test_time_of_day()
 	print("client tests: %d checks, %d failures" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
 
@@ -84,6 +85,22 @@ func _test_main_scene_lets_clicks_reach_the_world() -> void:
 	var end := text.find("[node ", start + 1)
 	var main_block := text.substr(start, end - start if end >= 0 else -1)
 	_check(main_block.contains("mouse_filter = 2"), "Main node ignores mouse events (MOUSE_FILTER_IGNORE)")
+
+
+func _test_time_of_day() -> void:
+	# The day starts at dawn, 06:00; 58 % of the day is 20:00 (night falls).
+	_check(GameClock.time_of_day(0.0, 72000.0) == Vector2i(6, 0), "dawn at the day's first tick")
+	_check(GameClock.time_of_day(36000.0, 72000.0) == Vector2i(18, 0), "half a day later it is 18:00")
+	_check(GameClock.time_of_day(72000.0 * 0.58, 72000.0) == Vector2i(19, 55), "night falls just before 20:00")
+	_check(GameClock.time_of_day(72000.0 * 0.9, 72000.0) == Vector2i(3, 36), "past midnight wraps")
+	_check(GameClock.time_of_day(72000.0 * 3.5, 72000.0) == Vector2i(18, 0), "later days wrap the same way")
+	# Between two server messages the clock runs at the announced pace.
+	var clock := GameClock.new()
+	clock.set_clock({"tick": 100, "ticks_per_second": 10, "ticks_per_day": 72000, "time_scale_permille": 2000}, 1000)
+	_check(is_equal_approx(clock.tick_at(1000), 100.0), "the tick just told")
+	_check(is_equal_approx(clock.tick_at(3000), 140.0), "two real seconds at double pace: 40 ticks")
+	clock.sync(500.0, 3000)
+	_check(is_equal_approx(clock.tick_at(3500), 510.0), "resynced on a day start")
 
 
 func _test_chunk_of_matches_the_server() -> void:
