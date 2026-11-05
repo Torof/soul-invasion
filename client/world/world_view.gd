@@ -25,6 +25,10 @@ var _height := 0
 var _chunk_size := 32
 ## chunk position -> ChunkView (only the chunks the server sent)
 var _chunks: Dictionary = {}
+## material id -> Color, from the server's catalogue
+var _looks: Dictionary = {}
+## material id -> name shown to players
+var _names: Dictionary = {}
 ## body id -> {"tile": Vector2i, "shown": Vector2 (screen, glides),
 ##   "step": seconds per step as measured, "last_move": msec of the last move}
 ## The glide lasts one measured step, so a walking body never stops between
@@ -50,10 +54,16 @@ func _ready() -> void:
 	Net.connected.connect(func(_tick: int, body: int) -> void: _piloted = body)
 
 
-func _on_world_state(width: int, height: int, chunk_size: int) -> void:
+func _on_world_state(width: int, height: int, chunk_size: int, materials: Array) -> void:
 	_width = width
 	_height = height
 	_chunk_size = chunk_size
+	_looks.clear()
+	_names.clear()
+	for m in materials:
+		var id := str(m.get("id", ""))
+		_looks[id] = Color.from_string(str(m.get("colour", "")), Color.MAGENTA)
+		_names[id] = str(m.get("name", id))
 	for chunk: ChunkView in _chunks.values():
 		chunk.queue_free()
 	_chunks.clear()
@@ -62,7 +72,7 @@ func _on_world_state(width: int, height: int, chunk_size: int) -> void:
 	queue_redraw()
 
 
-func _on_chunk(x: int, y: int, tiles: Array, bodies: Array) -> void:
+func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array) -> void:
 	var key := Vector2i(x, y)
 	var view: ChunkView = _chunks.get(key)
 	if view == null:
@@ -70,7 +80,7 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array) -> void:
 		view.z_index = -1  # ground below bodies and the hover outline
 		add_child(view)
 		_chunks[key] = view
-	view.show_tiles(key * _chunk_size, _chunk_size, tiles)
+	view.show_chunk(key * _chunk_size, _chunk_size, tiles, items, _looks)
 	for b in bodies:
 		_place(int(b.get("id", -1)), Vector2i(int(b.get("x", 0)), int(b.get("y", 0))))
 	queue_redraw()

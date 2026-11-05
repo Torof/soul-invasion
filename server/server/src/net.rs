@@ -26,9 +26,10 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
-    BodyState, ClientMessage, PROTOCOL_VERSION, ServerMessage, Terrain, decode, encode,
+    BodyState, ClientMessage, ItemState, MaterialView, PROTOCOL_VERSION, ServerMessage, Terrain,
+    decode, encode,
 };
-use sim::{BodyId, CHUNK_SIZE, ChunkPos, Intention, Map, Pos, World};
+use sim::{BodyId, CHUNK_SIZE, ChunkPos, Content, Intention, Map, Pos, World};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio_tungstenite::WebSocketStream;
@@ -92,6 +93,10 @@ pub struct Shared {
     pub map: Map,
     /// Latest known position of every body, kept by the simulation thread.
     pub bodies: watch::Sender<Vec<BodyState>>,
+    /// What items are made of, as clients need it.
+    pub materials: Vec<MaterialView>,
+    /// Items on the ground, by chunk. Static until something picks them up.
+    items: BTreeMap<ChunkPos, Vec<ItemState>>,
     /// Connections served at once, at most.
     max_connections: usize,
     /// Connections currently served.
@@ -119,8 +124,29 @@ impl Drop for Admission<'_> {
 
 impl Shared {
     /// Creates the shared state from the world as it is at startup.
-    pub fn new(world: &World, max_connections: usize) -> Self {
+    pub fn new(world: &World, content: &Content, max_connections: usize) -> Self {
         let (publish, _) = broadcast::channel(BROADCAST_CAPACITY);
+        let materials = content
+            .materials
+            .iter()
+            .map(|m| MaterialView {
+                id: m.id.clone(),
+                name: m.name.clone(),
+                colour: m.look.colour.clone(),
+            })
+            .collect();
+        let mut items: BTreeMap<ChunkPos, Vec<ItemState>> = BTreeMap::new();
+        for item in world.items() {
+            items
+                .entry(item.pos().chunk())
+                .or_default()
+                .push(ItemState {
+                    id: item.id().0,
+                    x: item.pos().x,
+                    y: item.pos().y,
+                    material: item.material().to_owned(),
+                });
+        }
         let bodies = world
             .bodies()
             .iter()
@@ -135,6 +161,8 @@ impl Shared {
             publish,
             map: world.map().clone(),
             bodies: watch::Sender::new(bodies),
+            materials,
+            items,
             max_connections,
             connections: AtomicUsize::new(0),
             intentions: Mutex::new(BTreeMap::new()),
@@ -270,6 +298,7 @@ impl Shared {
             y: chunk.y,
             tiles: tiles.into_iter().map(terrain_view).collect(),
             bodies: self.bodies_in(chunk),
+            items: self.items.get(&chunk).cloned().unwrap_or_default(),
         })
     }
 }
@@ -420,6 +449,7 @@ async fn handle_connection(
             width: shared.map.width(),
             height: shared.map.height(),
             chunk_size: CHUNK_SIZE,
+            materials: shared.materials.clone(),
         },
     )
     .await?;
@@ -587,7 +617,7 @@ mod tests {
     use super::*;
 
     fn shared(max_connections: usize) -> Shared {
-        Shared::new(&World::default(), max_connections)
+        Shared::new(&World::default(), &Content::sample(), max_connections)
     }
 
     #[test]
@@ -688,11 +718,32 @@ mod tests {
         let message = shared
             .chunk_message(body.chunk())
             .expect("chunk on the map");
-        let ServerMessage::Chunk { tiles, bodies, .. } = message else {
+        let ServerMessage::Chunk {
+            tiles,
+            bodies,
+            items,
+            ..
+        } = message
+        else {
             panic!("expected a chunk");
         };
         assert_eq!(tiles.len(), (CHUNK_SIZE * CHUNK_SIZE) as usize);
         assert!(bodies.iter().any(|b| b.id == 1));
+        assert!(
+            !items.is_empty(),
+            "the sample content scatters berries on grass"
+        );
+        assert!(
+            items
+                .iter()
+                .all(|i| Pos::new(i.x, i.y).chunk() == body.chunk())
+        );
+        assert!(
+            shared
+                .materials
+                .iter()
+                .any(|m| m.id == "berries" && m.name == "Berries")
+        );
         assert!(shared.chunk_message(ChunkPos::new(-1, 0)).is_none());
 
         // Moving a body reports where it stood and updates the chunk.

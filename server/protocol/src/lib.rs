@@ -18,7 +18,9 @@ use serde::{Deserialize, Serialize};
 /// Protocol version. Bump on any incompatible change.
 ///
 /// - v2: the ground travels in chunks around the body instead of whole.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// - v3: chunks carry the items lying in them; `world_state` carries the
+///   catalogue of materials they are made of.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// A tile on the map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,6 +47,31 @@ pub struct BodyState {
     pub x: i32,
     /// Row.
     pub y: i32,
+}
+
+/// A material as the client needs to know it: a name to show and a
+/// provisional look (D27: the client never reads the content files).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MaterialView {
+    /// Content id, the key items refer to.
+    pub id: String,
+    /// Name shown to players.
+    pub name: String,
+    /// `#rrggbb`.
+    pub colour: String,
+}
+
+/// A piece of material lying on the ground, as the client sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ItemState {
+    /// Item id.
+    pub id: u64,
+    /// Column.
+    pub x: i32,
+    /// Row.
+    pub y: i32,
+    /// Content id of its material, found in [`ServerMessage::WorldState`].
+    pub material: String,
 }
 
 /// Messages sent by the client to the server.
@@ -92,9 +119,12 @@ pub enum ServerMessage {
         height: u32,
         /// Side of a chunk, in tiles.
         chunk_size: u32,
+        /// Every material items may be made of.
+        materials: Vec<MaterialView>,
     },
     /// A chunk of ground the client now holds, with the bodies standing
-    /// in it. Chunk (0, 0) holds tiles `(0..chunk_size, 0..chunk_size)`.
+    /// in it and the items lying in it. Chunk (0, 0) holds tiles
+    /// `(0..chunk_size, 0..chunk_size)`.
     Chunk {
         /// Column of chunks.
         x: i32,
@@ -105,6 +135,8 @@ pub enum ServerMessage {
         tiles: Vec<Terrain>,
         /// Every body standing in this chunk.
         bodies: Vec<BodyState>,
+        /// Every item lying in this chunk.
+        items: Vec<ItemState>,
     },
     /// A chunk the client no longer holds: forget its tiles and the
     /// bodies in it.
@@ -207,6 +239,11 @@ mod tests {
                 width: 256,
                 height: 256,
                 chunk_size: 32,
+                materials: vec![MaterialView {
+                    id: "flint".into(),
+                    name: "Flint".into(),
+                    colour: "#5e5a52".into(),
+                }],
             },
             ServerMessage::Chunk {
                 x: 5,
@@ -216,6 +253,12 @@ mod tests {
                     id: 1,
                     x: 160,
                     y: 0,
+                }],
+                items: vec![ItemState {
+                    id: 9,
+                    x: 161,
+                    y: 1,
+                    material: "flint".into(),
                 }],
             },
             ServerMessage::ChunkHidden { x: 5, y: 4 },
@@ -256,11 +299,17 @@ mod tests {
             y: 2,
             tiles: vec![Terrain::Ford],
             bodies: vec![],
+            items: vec![ItemState {
+                id: 3,
+                x: 32,
+                y: 64,
+                material: "pebble".into(),
+            }],
         })
         .unwrap();
         assert_eq!(
             text,
-            r#"{"type":"chunk","x":1,"y":2,"tiles":["ford"],"bodies":[]}"#
+            r#"{"type":"chunk","x":1,"y":2,"tiles":["ford"],"bodies":[],"items":[{"id":3,"x":32,"y":64,"material":"pebble"}]}"#
         );
     }
 

@@ -5,8 +5,8 @@ extends Node
 ## messages into signals. Decides nothing about the world (D03, D05).
 
 signal connected(tick: int, body: int)
-signal world_state(width: int, height: int, chunk_size: int)
-signal chunk(x: int, y: int, tiles: Array, bodies: Array)
+signal world_state(width: int, height: int, chunk_size: int, materials: Array)
+signal chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array)
 signal chunk_hidden(x: int, y: int)
 signal body_moved(body: int, x: int, y: int, tick: int)
 signal body_left(body: int)
@@ -82,14 +82,16 @@ func _handle(message: Dictionary) -> void:
 			world_state.emit(
 				int(message.get("width", 0)),
 				int(message.get("height", 0)),
-				int(message.get("chunk_size", 0))
+				int(message.get("chunk_size", 0)),
+				message.get("materials", [])
 			)
 		"chunk":
 			chunk.emit(
 				int(message.get("x", 0)),
 				int(message.get("y", 0)),
 				message.get("tiles", []),
-				message.get("bodies", [])
+				message.get("bodies", []),
+				message.get("items", [])
 			)
 		"chunk_hidden":
 			chunk_hidden.emit(int(message.get("x", 0)), int(message.get("y", 0)))

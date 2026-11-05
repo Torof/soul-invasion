@@ -182,15 +182,19 @@ async fn hello_ping_and_a_published_day() {
             width,
             height,
             chunk_size,
+            materials,
         }) => {
             assert_eq!((width, height), (VALLEY_SIZE, VALLEY_SIZE));
             assert_eq!(chunk_size, CHUNK_SIZE);
+            assert!(materials.len() >= 9, "the catalogue of materials");
+            assert!(materials.iter().all(|m| m.colour.starts_with('#')));
         }
         other => panic!("expected world_state, got {other:?}"),
     }
     let world = standard_world();
     let centre = start_of(&world, 1).chunk();
     let mut seen_bodies = Vec::new();
+    let mut seen_items = 0;
     let mut chunks = Vec::new();
     for _ in 0..window_len(&world, centre) {
         match receive(&mut socket).await {
@@ -199,8 +203,13 @@ async fn hello_ping_and_a_published_day() {
                 y,
                 tiles,
                 bodies,
+                items,
             }) => {
                 assert_eq!(tiles.len(), (CHUNK_SIZE * CHUNK_SIZE) as usize);
+                for i in &items {
+                    assert_eq!(Pos::new(i.x, i.y).chunk(), ChunkPos::new(x, y));
+                }
+                seen_items += items.len();
                 assert!((x - centre.x).abs() <= VIEW_RADIUS && (y - centre.y).abs() <= VIEW_RADIUS);
                 for b in &bodies {
                     assert_eq!(Pos::new(b.x, b.y).chunk(), ChunkPos::new(x, y));
@@ -215,6 +224,10 @@ async fn hello_ping_and_a_published_day() {
         chunks.len(),
         25,
         "a full window in the middle of the valley"
+    );
+    assert!(
+        seen_items > 100,
+        "{seen_items} items in view: the ground is scattered"
     );
     seen_bodies.sort_unstable();
     assert_eq!(

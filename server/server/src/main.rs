@@ -90,7 +90,7 @@ fn run(opts: &Options) -> Result<(), BoxError> {
         return Ok(());
     }
 
-    run_paced_server(world, opts, &stop, persister)
+    run_paced_server(world, opts, &content, &stop, persister)
 }
 
 /// Opens storage and loads the latest world from it, or creates a new one.
@@ -182,6 +182,7 @@ impl Persister {
 fn run_paced_server(
     mut world: World,
     opts: &Options,
+    content: &Content,
     stop: &Arc<AtomicBool>,
     mut persister: Persister,
 ) -> Result<(), BoxError> {
@@ -206,7 +207,7 @@ fn run_paced_server(
         ),
     }
 
-    let shared = Arc::new(Shared::new(&world, opts.max_connections));
+    let shared = Arc::new(Shared::new(&world, content, opts.max_connections));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let acceptor = runtime.spawn(serve(listener, Arc::clone(&shared), shutdown_rx));
