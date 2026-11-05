@@ -18,6 +18,11 @@ use serde::{Deserialize, Serialize};
 /// Side of a chunk, in tiles.
 pub const CHUNK_SIZE: u32 = 32;
 
+/// Millimetres per tile: bodies are placed this finely inside the grid
+/// (D32), so that a walking pace is a whole number per tick. Everything
+/// else (items, buildings, perception) lives on tiles.
+pub const MM_PER_TILE: i32 = 1000;
+
 /// Walking cost of a straight step, in path units.
 const STRAIGHT_COST: u32 = 10;
 /// Walking cost of a diagonal step: √2 straight steps, rounded (D32).
@@ -50,6 +55,14 @@ impl Pos {
         self.x != other.x && self.y != other.y
     }
 
+    /// The centre of this tile, in millimetres.
+    pub fn centre(self) -> FinePos {
+        FinePos::new(
+            self.x * MM_PER_TILE + MM_PER_TILE / 2,
+            self.y * MM_PER_TILE + MM_PER_TILE / 2,
+        )
+    }
+
     /// The eight neighbours, in a fixed order (determinism): the four
     /// straight ones first, then the diagonals.
     fn neighbours(self) -> [Self; 8] {
@@ -63,6 +76,38 @@ impl Pos {
             Self::new(self.x - 1, self.y + 1),
             Self::new(self.x - 1, self.y - 1),
         ]
+    }
+}
+
+/// A position inside the grid, in millimetres: where a body actually
+/// stands, not snapped to a tile's centre (D32).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct FinePos {
+    /// Millimetres east of the grid's origin.
+    pub x: i32,
+    /// Millimetres south of the grid's origin.
+    pub y: i32,
+}
+
+impl FinePos {
+    /// A fine position.
+    pub const fn new(x: i32, y: i32) -> Self {
+        Self { x, y }
+    }
+
+    /// The tile this position is in.
+    pub fn tile(self) -> Pos {
+        Pos::new(
+            self.x.div_euclid(MM_PER_TILE),
+            self.y.div_euclid(MM_PER_TILE),
+        )
+    }
+
+    /// Straight-line distance to another position, in millimetres.
+    pub fn distance_to(self, other: Self) -> f64 {
+        let dx = f64::from(other.x - self.x);
+        let dy = f64::from(other.y - self.y);
+        dx.hypot(dy)
     }
 }
 
@@ -90,7 +135,7 @@ impl ChunkPos {
 }
 
 /// What a tile is made of.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Terrain {
     /// Open ground.
@@ -106,7 +151,17 @@ pub enum Terrain {
 }
 
 impl Terrain {
-    /// Can a body stand here?
+    /// Every terrain, for content that must cover them all.
+    pub const ALL: [Self; 5] = [
+        Self::Grass,
+        Self::Forest,
+        Self::Water,
+        Self::Ford,
+        Self::Rock,
+    ];
+
+    /// Can a body ever stand here? The content's movement rules refine
+    /// this with a cost; they cannot make water or rock walkable.
     pub fn is_passable(self) -> bool {
         !matches!(self, Self::Water | Self::Rock)
     }
@@ -324,18 +379,32 @@ impl Map {
         None
     }
 
-    /// Cheapest walking path from `from` to `to`, not including `from`.
-    /// Steps go in eight directions; a diagonal step costs √2 straight
-    /// ones and never cuts a corner (both straight neighbours it passes
-    /// between must be passable) (D32). Empty when already there; `None`
-    /// when unreachable.
-    pub fn path(&self, from: Pos, to: Pos) -> Option<Vec<Pos>> {
+    /// Cheapest walking path from `from` to `to`, not including `from`,
+    /// weighing each tile by `cost` (10 is the reference, `None` cannot
+    /// be walked). Steps go in eight directions; a diagonal step costs √2
+    /// straight ones and never cuts a corner (both straight neighbours it
+    /// passes between must be walkable) (D32). Empty when already there;
+    /// `None` when unreachable.
+    pub fn path(
+        &self,
+        from: Pos,
+        to: Pos,
+        cost: impl Fn(Terrain) -> Option<u32>,
+    ) -> Option<Vec<Pos>> {
         if from == to {
             return Some(Vec::new());
         }
-        if !self.is_passable(from) || !self.is_passable(to) {
-            return None;
-        }
+        let cost_at = |pos: Pos| self.get(pos).and_then(&cost);
+        cost_at(from)?;
+        cost_at(to)?;
+        // The heuristic must not overestimate: scale it by the cheapest
+        // terrain there is.
+        let cheapest = Terrain::ALL
+            .iter()
+            .filter_map(|t| cost(*t))
+            .min()
+            .unwrap_or(STRAIGHT_COST);
+        let estimate = |a: Pos| octile(a, to) * cheapest / STRAIGHT_COST;
         // A* with an octile heuristic. Ties break on insertion order so
         // the path is the same on every machine.
         let start = self.index(from)?;
@@ -345,7 +414,7 @@ impl Map {
         let mut open = BinaryHeap::new();
         let mut pushed = 0u64;
         best[start] = 0;
-        open.push(Reverse((octile(from, to), pushed, start)));
+        open.push(Reverse((estimate(from), pushed, start)));
 
         while let Some(Reverse((_, _, current))) = open.pop() {
             if current == goal {
@@ -364,12 +433,12 @@ impl Map {
                 let Some(i) = self.index(next) else {
                     continue;
                 };
-                if !self.tiles[i].is_passable() {
+                let Some(terrain_cost) = cost(self.tiles[i]) else {
                     continue;
-                }
+                };
                 let step_cost = if here.is_diagonal_to(next) {
-                    if !self.is_passable(Pos::new(here.x, next.y))
-                        || !self.is_passable(Pos::new(next.x, here.y))
+                    if cost_at(Pos::new(here.x, next.y)).is_none()
+                        || cost_at(Pos::new(next.x, here.y)).is_none()
                     {
                         continue; // no cutting corners
                     }
@@ -377,16 +446,48 @@ impl Map {
                 } else {
                     STRAIGHT_COST
                 };
-                let cost = cost_here + step_cost;
+                let cost = cost_here + step_cost * terrain_cost / STRAIGHT_COST;
                 if cost < best[i] {
                     best[i] = cost;
                     came_from[i] = Some(current);
                     pushed += 1;
-                    open.push(Reverse((cost + octile(next, to), pushed, i)));
+                    open.push(Reverse((cost + estimate(next), pushed, i)));
                 }
             }
         }
         None
+    }
+
+    /// Pulls a tile path taut into straight segments from `from`: each
+    /// waypoint is the farthest tile centre reachable in a straight line
+    /// that crosses only walkable tiles no dearer than the tiles the
+    /// segment replaces, so a road is not short-cut through the field
+    /// beside it (D32). The last waypoint is the path's last tile.
+    pub fn pull(
+        &self,
+        from: FinePos,
+        path: &[Pos],
+        cost: impl Fn(Terrain) -> Option<u32>,
+    ) -> Vec<FinePos> {
+        let cost_at = |pos: Pos| self.get(pos).and_then(&cost);
+        let mut route = Vec::new();
+        let mut current = from;
+        let mut first = 0;
+        while first < path.len() {
+            let mut dearest = cost_at(path[first]).unwrap_or(u32::MAX);
+            let mut chosen = first;
+            for (j, tile) in path.iter().enumerate().skip(first) {
+                dearest = dearest.max(cost_at(*tile).unwrap_or(u32::MAX));
+                let allowed = |pos: Pos| cost_at(pos).is_some_and(|c| c <= dearest);
+                if line_clear(current, tile.centre(), allowed) {
+                    chosen = j;
+                }
+            }
+            current = path[chosen].centre();
+            route.push(current);
+            first = chosen + 1;
+        }
+        route
     }
 
     fn index(&self, pos: Pos) -> Option<usize> {
@@ -402,6 +503,70 @@ impl Map {
             i32::try_from(index / self.width).expect("map fits in i32"),
         )
     }
+}
+
+/// Does the straight segment from `a` to `b` cross only allowed tiles?
+/// Walks the tiles the segment passes through; where it goes exactly
+/// through a corner it may graze one disallowed tile but never slip
+/// between two.
+#[allow(clippy::cast_possible_truncation)]
+pub fn line_clear(a: FinePos, b: FinePos, allowed: impl Fn(Pos) -> bool) -> bool {
+    let scale = f64::from(MM_PER_TILE);
+    let (x0, y0) = (f64::from(a.x) / scale, f64::from(a.y) / scale);
+    let (x1, y1) = (f64::from(b.x) / scale, f64::from(b.y) / scale);
+    let (mut tx, mut ty) = (x0.floor() as i32, y0.floor() as i32);
+    let (ex, ey) = (x1.floor() as i32, y1.floor() as i32);
+    if !allowed(Pos::new(tx, ty)) {
+        return false;
+    }
+    let (dx, dy) = (x1 - x0, y1 - y0);
+    let step_x = if dx > 0.0 { 1 } else { -1 };
+    let step_y = if dy > 0.0 { 1 } else { -1 };
+    let edge = |t: i32, step: i32| f64::from(if step > 0 { t + 1 } else { t });
+    let mut t_max_x = if dx == 0.0 {
+        f64::INFINITY
+    } else {
+        (edge(tx, step_x) - x0) / dx
+    };
+    let mut t_max_y = if dy == 0.0 {
+        f64::INFINITY
+    } else {
+        (edge(ty, step_y) - y0) / dy
+    };
+    let t_delta_x = if dx == 0.0 {
+        f64::INFINITY
+    } else {
+        (1.0 / dx).abs()
+    };
+    let t_delta_y = if dy == 0.0 {
+        f64::INFINITY
+    } else {
+        (1.0 / dy).abs()
+    };
+    let mut remaining = (ex - tx).abs() + (ey - ty).abs() + 1;
+    while (tx, ty) != (ex, ey) && remaining > 0 {
+        remaining -= 1;
+        if (t_max_x - t_max_y).abs() < 1e-9 {
+            // Through a corner: no slipping between two blocked tiles.
+            if !allowed(Pos::new(tx + step_x, ty)) && !allowed(Pos::new(tx, ty + step_y)) {
+                return false;
+            }
+            tx += step_x;
+            ty += step_y;
+            t_max_x += t_delta_x;
+            t_max_y += t_delta_y;
+        } else if t_max_x < t_max_y {
+            tx += step_x;
+            t_max_x += t_delta_x;
+        } else {
+            ty += step_y;
+            t_max_y += t_delta_y;
+        }
+        if !allowed(Pos::new(tx, ty)) {
+            return false;
+        }
+    }
+    (tx, ty) == (ex, ey)
 }
 
 /// Lower bound on the walking cost between two tiles with eight-way steps.
@@ -472,6 +637,11 @@ impl Groves {
 mod tests {
     use super::*;
 
+    /// Every passable terrain at the reference cost.
+    fn walk(terrain: Terrain) -> Option<u32> {
+        terrain.is_passable().then_some(STRAIGHT_COST)
+    }
+
     #[test]
     fn positions_outside_the_map_are_none() {
         let map = Map::filled(4, 3, Terrain::Grass);
@@ -490,7 +660,7 @@ mod tests {
         let mut map = Map::filled(3, 3, Terrain::Grass);
         map.set(Pos::new(1, 0), Terrain::Water);
         map.set(Pos::new(1, 1), Terrain::Water);
-        let path = map.path(Pos::new(0, 0), Pos::new(2, 0)).unwrap();
+        let path = map.path(Pos::new(0, 0), Pos::new(2, 0), walk).unwrap();
         // Down the west bank, along the bottom, up the east bank. No
         // diagonal can shorten it: each would brush the water's corner.
         assert_eq!(
@@ -511,25 +681,30 @@ mod tests {
         // Open field: a pure diagonal walk.
         let open = Map::filled(5, 5, Terrain::Grass);
         assert_eq!(
-            open.path(Pos::new(0, 0), Pos::new(3, 3)).unwrap(),
+            open.path(Pos::new(0, 0), Pos::new(3, 3), walk).unwrap(),
             vec![Pos::new(1, 1), Pos::new(2, 2), Pos::new(3, 3)]
         );
         // A knight's move: two straight-ish steps, one of them diagonal.
-        assert_eq!(open.path(Pos::new(0, 0), Pos::new(2, 1)).unwrap().len(), 2);
+        assert_eq!(
+            open.path(Pos::new(0, 0), Pos::new(2, 1), walk)
+                .unwrap()
+                .len(),
+            2
+        );
 
         // G R
         // R G   — (0,0) to (1,1) would slip between two rocks: refused.
         let mut pinched = Map::filled(2, 2, Terrain::Grass);
         pinched.set(Pos::new(1, 0), Terrain::Rock);
         pinched.set(Pos::new(0, 1), Terrain::Rock);
-        assert_eq!(pinched.path(Pos::new(0, 0), Pos::new(1, 1)), None);
+        assert_eq!(pinched.path(Pos::new(0, 0), Pos::new(1, 1), walk), None);
 
         // G R
         // G G   — one rock only: still no diagonal past its corner.
         let mut corner = Map::filled(2, 2, Terrain::Grass);
         corner.set(Pos::new(1, 0), Terrain::Rock);
         assert_eq!(
-            corner.path(Pos::new(0, 0), Pos::new(1, 1)).unwrap(),
+            corner.path(Pos::new(0, 0), Pos::new(1, 1), walk).unwrap(),
             vec![Pos::new(0, 1), Pos::new(1, 1)]
         );
     }
@@ -538,7 +713,7 @@ mod tests {
     fn paths_are_cheapest_not_merely_shortest_in_steps() {
         // Going straight 4 tiles costs 40; a 4-diagonal detour would cost 56.
         let open = Map::filled(6, 6, Terrain::Grass);
-        let path = open.path(Pos::new(0, 2), Pos::new(4, 2)).unwrap();
+        let path = open.path(Pos::new(0, 2), Pos::new(4, 2), walk).unwrap();
         assert_eq!(path.len(), 4);
         assert!(path.iter().all(|p| p.y == 2), "stays on the row: {path:?}");
     }
@@ -547,10 +722,10 @@ mod tests {
     fn unreachable_and_trivial_paths() {
         let mut map = Map::filled(3, 1, Terrain::Grass);
         map.set(Pos::new(1, 0), Terrain::Rock);
-        assert_eq!(map.path(Pos::new(0, 0), Pos::new(2, 0)), None);
-        assert_eq!(map.path(Pos::new(0, 0), Pos::new(1, 0)), None);
-        assert_eq!(map.path(Pos::new(0, 0), Pos::new(0, 0)), Some(vec![]));
-        assert_eq!(map.path(Pos::new(0, 0), Pos::new(9, 9)), None);
+        assert_eq!(map.path(Pos::new(0, 0), Pos::new(2, 0), walk), None);
+        assert_eq!(map.path(Pos::new(0, 0), Pos::new(1, 0), walk), None);
+        assert_eq!(map.path(Pos::new(0, 0), Pos::new(0, 0), walk), Some(vec![]));
+        assert_eq!(map.path(Pos::new(0, 0), Pos::new(9, 9), walk), None);
     }
 
     #[test]
@@ -565,7 +740,7 @@ mod tests {
         assert_eq!(a.get(Pos::new(85, 128)), Some(Terrain::Ford));
         let west = a.nearest(Pos::new(20, 200), Terrain::Grass).unwrap();
         let east = a.nearest(Pos::new(240, 200), Terrain::Grass).unwrap();
-        let path = a.path(west, east).unwrap();
+        let path = a.path(west, east, walk).unwrap();
         assert!(path.iter().any(|p| a.get(*p) == Some(Terrain::Ford)));
         // Trees come in groves: between a tenth and half of the ground.
         let forest = a.tiles().iter().filter(|t| **t == Terrain::Forest).count();
@@ -602,6 +777,124 @@ mod tests {
         assert_eq!(east[8], Terrain::Rock, "tile (40, 0) is past the edge");
         assert!(map.chunk(ChunkPos::new(2, 0)).is_none());
         assert!(map.chunk(ChunkPos::new(-1, 0)).is_none());
+    }
+
+    #[test]
+    fn dear_terrain_is_avoided_when_a_detour_is_worth_it() {
+        // Three rows: forest in the middle row, grass above and below. A
+        // walk along the middle row goes round through the grass when the
+        // forest is dear enough, and straight through otherwise.
+        let mut map = Map::filled(9, 3, Terrain::Grass);
+        for x in 0..9 {
+            map.set(Pos::new(x, 1), Terrain::Forest);
+        }
+        let slow_forest = |t: Terrain| match t {
+            Terrain::Forest => Some(30),
+            other => walk(other),
+        };
+        let path = map
+            .path(Pos::new(0, 1), Pos::new(8, 1), slow_forest)
+            .unwrap();
+        assert!(path.iter().filter(|p| p.y == 1).count() <= 2, "{path:?}");
+        let path = map.path(Pos::new(0, 1), Pos::new(8, 1), walk).unwrap();
+        assert!(path.iter().all(|p| p.y == 1), "{path:?}");
+    }
+
+    #[test]
+    fn a_pulled_path_is_a_few_straight_segments_that_avoid_water() {
+        // A diagonal walk across an open field is one segment.
+        let open = Map::filled(32, 32, Terrain::Grass);
+        let path = open.path(Pos::new(2, 3), Pos::new(22, 23), walk).unwrap();
+        assert_eq!(path.len(), 20);
+        let route = open.pull(Pos::new(2, 3).centre(), &path, walk);
+        assert_eq!(route, vec![Pos::new(22, 23).centre()]);
+
+        // Round a pond: a handful of segments, none crossing water.
+        let mut pond = Map::filled(32, 32, Terrain::Grass);
+        for y in 10..20 {
+            for x in 10..20 {
+                pond.set(Pos::new(x, y), Terrain::Water);
+            }
+        }
+        let path = pond.path(Pos::new(5, 15), Pos::new(25, 15), walk).unwrap();
+        let route = pond.pull(Pos::new(5, 15).centre(), &path, walk);
+        assert!(route.len() >= 2 && route.len() <= 5, "{route:?}");
+        assert_eq!(*route.last().unwrap(), Pos::new(25, 15).centre());
+        let mut from = Pos::new(5, 15).centre();
+        for to in &route {
+            assert!(
+                line_clear(from, *to, |p| pond.is_passable(p)),
+                "{from:?} -> {to:?}"
+            );
+            from = *to;
+        }
+    }
+
+    #[test]
+    fn pulling_keeps_to_the_road_instead_of_the_field() {
+        // A road bends round a field; pulling must not cut across the
+        // dearer field.
+        let mut map = Map::filled(10, 10, Terrain::Forest);
+        for x in 0..10 {
+            map.set(Pos::new(x, 0), Terrain::Grass);
+            map.set(Pos::new(x, 9), Terrain::Grass);
+        }
+        for y in 0..10 {
+            map.set(Pos::new(0, y), Terrain::Grass);
+        }
+        let road = |t: Terrain| match t {
+            Terrain::Grass => Some(10),
+            Terrain::Forest => Some(40),
+            other => walk(other),
+        };
+        let path = map.path(Pos::new(9, 0), Pos::new(9, 9), road).unwrap();
+        let route = map.pull(Pos::new(9, 0).centre(), &path, road);
+        // Along the edges, the corners cut diagonally as A* does: five
+        // waypoints, none in the forest, no segment across it.
+        assert_eq!(
+            route,
+            vec![
+                Pos::new(1, 0).centre(),
+                Pos::new(0, 1).centre(),
+                Pos::new(0, 8).centre(),
+                Pos::new(1, 9).centre(),
+                Pos::new(9, 9).centre()
+            ]
+        );
+        let mut from = Pos::new(9, 0).centre();
+        for to in &route {
+            assert!(line_clear(from, *to, |p| map.get(p) == Some(Terrain::Grass)));
+            from = *to;
+        }
+    }
+
+    #[test]
+    fn a_line_cannot_slip_between_two_blocked_tiles() {
+        // G R
+        // R G   — from (0,0) to (1,1) exactly through the shared corner.
+        let mut pinched = Map::filled(2, 2, Terrain::Grass);
+        pinched.set(Pos::new(1, 0), Terrain::Rock);
+        pinched.set(Pos::new(0, 1), Terrain::Rock);
+        let a = Pos::new(0, 0).centre();
+        let b = Pos::new(1, 1).centre();
+        assert!(!line_clear(a, b, |p| pinched.is_passable(p)));
+        // Grazing one blocked corner is allowed: a body is a point.
+        let mut grazed = Map::filled(2, 2, Terrain::Grass);
+        grazed.set(Pos::new(1, 0), Terrain::Rock);
+        assert!(line_clear(a, b, |p| grazed.is_passable(p)));
+        let open = Map::filled(2, 2, Terrain::Grass);
+        assert!(line_clear(a, b, |p| open.is_passable(p)));
+        assert!(line_clear(a, a, |p| open.is_passable(p)));
+        assert!(!line_clear(a, Pos::new(5, 5).centre(), |p| open.is_passable(p)));
+    }
+
+    #[test]
+    fn fine_positions_map_to_tiles() {
+        assert_eq!(FinePos::new(0, 0).tile(), Pos::new(0, 0));
+        assert_eq!(FinePos::new(999, 1999).tile(), Pos::new(0, 1));
+        assert_eq!(FinePos::new(-1, 1000).tile(), Pos::new(-1, 1));
+        assert_eq!(Pos::new(3, 4).centre(), FinePos::new(3500, 4500));
+        assert!((FinePos::new(0, 0).distance_to(FinePos::new(3000, 4000)) - 5000.0).abs() < 1e-9);
     }
 
     #[test]
