@@ -12,7 +12,7 @@ use sim::{Content, Event, Tick, World};
 
 /// Version of the serialized `World` inside a snapshot. Bump on any change
 /// to `World`'s shape, and add a migration in `decode_world`.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 4;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 5;
 
 /// Errors from the storage layer.
 #[derive(Debug, thiserror::Error)]
@@ -200,6 +200,7 @@ fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<Wo
             1 => migrate_v1_to_v2(&data, content)?,
             2 => migrate_v2_to_v3(&data, content)?,
             3 => migrate_v3_to_v4(&data, content)?,
+            4 => migrate_v4_to_v5(&data)?,
             _ => unreachable!("every version below the current one has a migration"),
         };
         version += 1;
@@ -240,6 +241,29 @@ fn migrate_v3_to_v4(data: &str, content: &Content) -> Result<String, StorageErro
     Ok(old.to_string())
 }
 
+/// v5 places bodies finely (D32): `pos`, `path` and `next_step` become
+/// `at` (the tile's centre, in millimetres) and an empty `route`.
+fn migrate_v4_to_v5(data: &str) -> Result<String, StorageError> {
+    let mut old: serde_json::Value = serde_json::from_str(data)?;
+    if let Some(bodies) = old["bodies"].as_array_mut() {
+        for body in bodies {
+            if body.get("pos").is_none() {
+                continue; // already fine: rebuilt by an earlier migration
+            }
+            let pos: sim::Pos = serde_json::from_value(body["pos"].clone())?;
+            let at = pos.centre();
+            body["at"] = serde_json::json!({ "x": at.x, "y": at.y });
+            body["route"] = serde_json::json!([]);
+            if let Some(fields) = body.as_object_mut() {
+                fields.remove("pos");
+                fields.remove("path");
+                fields.remove("next_step");
+            }
+        }
+    }
+    Ok(old.to_string())
+}
+
 fn standard_world_at_old_tick(data: &str, content: &Content) -> Result<String, StorageError> {
     let old: serde_json::Value = serde_json::from_str(data)?;
     let calendar: sim::Calendar = serde_json::from_value(old["calendar"].clone())?;
@@ -259,7 +283,7 @@ mod tests {
 
     fn world_at(ticks: u64) -> World {
         let mut world = World::new(Calendar::new(2, 3).unwrap(), &content());
-        world.advance(ticks, &mut Vec::new());
+        world.advance(ticks, &content(), &mut Vec::new());
         world
     }
 
@@ -374,7 +398,30 @@ mod tests {
         assert_eq!(world.tick(), Tick(50));
         assert_eq!(world.bodies().len(), 1);
         assert_eq!(world.bodies()[0].pos(), sim::Pos::new(200, 200));
+        assert_eq!(world.bodies()[0].at(), sim::Pos::new(200, 200).centre());
         assert!(!world.items().is_empty(), "the valley's items appeared");
+    }
+
+    #[test]
+    fn v4_snapshots_place_their_bodies_finely() {
+        let mut storage = Sqlite::in_memory(content()).unwrap();
+        // A v4 world: bodies on tiles with a tile path, items present.
+        let v4 = r#"{"calendar":{"ticks_per_second":2,"seconds_per_day":3},"tick":7,
+            "map":{"kind":"valley","width":256,"height":256,"seed":1},
+            "bodies":[{"id":1,"pos":{"x":10,"y":20},"path":[{"x":11,"y":20}],"next_step":9}],"next_body":2,
+            "items":[{"id":1,"material":"berries","pos":{"x":3,"y":3}}],"next_item":2}"#;
+        storage
+            .conn
+            .execute(
+                "INSERT INTO snapshots (tick, format_version, data) VALUES (7, 4, ?1)",
+                [v4],
+            )
+            .unwrap();
+        let world = storage.latest_world().unwrap().unwrap();
+        let body = &world.bodies()[0];
+        assert_eq!(body.at(), sim::FinePos::new(10_500, 20_500));
+        assert!(!body.is_walking(), "the old tile path is dropped");
+        assert_eq!(world.items().len(), 1);
     }
 
     #[test]

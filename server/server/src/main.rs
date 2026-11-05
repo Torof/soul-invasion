@@ -75,7 +75,7 @@ fn run(opts: &Options) -> Result<(), BoxError> {
         println!("headless: simulating {days} day(s) as fast as possible");
         let started = std::time::Instant::now();
         let mut persister = persister;
-        let summary = run_headless(&mut world, days, |world, events| {
+        let summary = run_headless(&mut world, &content, days, |world, events| {
             persister.on_tick(world, events);
         });
         persister.finish(&world)?;
@@ -182,7 +182,7 @@ impl Persister {
 fn run_paced_server(
     mut world: World,
     opts: &Options,
-    content: &Content,
+    content: &Arc<Content>,
     stop: &Arc<AtomicBool>,
     mut persister: Persister,
 ) -> Result<(), BoxError> {
@@ -217,6 +217,7 @@ fn run_paced_server(
         let stop = Arc::clone(stop);
         let time_scale = opts.time_scale;
         let days = opts.days;
+        let rules = Arc::clone(content);
         runtime.spawn_blocking(move || {
             let before_tick = |world: &mut World| {
                 for intention in shared.take_intentions() {
@@ -226,40 +227,19 @@ fn run_paced_server(
             let on_tick = |world: &World, events: &[Event]| {
                 shared.tick.store(world.tick().0, Ordering::Relaxed);
                 persister.on_tick(world, events);
-                let tick = world.tick().0;
                 for event in events {
-                    // Publishing to no subscriber is not an error: nobody is
-                    // connected.
-                    match *event {
-                        Event::BodyMoved { body, to } => {
-                            if let Some(from) = shared.body_moved(body, to) {
-                                let _ = shared.publish.send(Published::BodyMoved {
-                                    body: body.0,
-                                    from,
-                                    to,
-                                    tick,
-                                });
-                            }
-                        }
-                        Event::DayStarted { day } => {
-                            println!("tick {tick}: {event:?}");
-                            let _ = shared.publish.send(Published::DayStarted { day, tick });
-                        }
-                        // A refusal concerns only whoever asked.
-                        Event::MoveRefused { body, target } => shared.tell_pilot(
-                            body,
-                            ServerMessage::MoveRefused {
-                                body: body.0,
-                                x: target.x,
-                                y: target.y,
-                            },
-                        ),
-                        // Arrivals are implied by the last move.
-                        Event::BodyArrived { .. } => {}
-                    }
+                    publish(&shared, world.tick().0, event);
                 }
             };
-            let summary = run_paced(&mut world, time_scale, days, &stop, before_tick, on_tick);
+            let summary = run_paced(
+                &mut world,
+                &rules,
+                time_scale,
+                days,
+                &stop,
+                before_tick,
+                on_tick,
+            );
             (summary, world, persister)
         })
     };
@@ -296,4 +276,63 @@ fn run_paced_server(
         world.time().day
     );
     Ok(())
+}
+
+/// Tells the connections and the pilots what one event means to them
+/// (D29: the simulation thread publishes, the connections filter).
+fn publish(shared: &Shared, tick: u64, event: &Event) {
+    // Publishing to no subscriber is not an error: nobody is
+    // connected.
+    match event {
+        Event::BodyWalks {
+            body,
+            from,
+            route,
+            speed_cm_per_s,
+        } => {
+            shared.body_walks(*body, *from, route, *speed_cm_per_s);
+            let _ = shared.publish.send(Published::BodyWalks {
+                body: body.0,
+                from: from.tile(),
+                tick,
+            });
+        }
+        Event::BodyMoved {
+            body,
+            to,
+            at,
+            remaining,
+        } => {
+            if let Some(from) = shared.body_moved(*body, *at, *remaining) {
+                let _ = shared.publish.send(Published::BodyMoved {
+                    body: body.0,
+                    from,
+                    to: *to,
+                    tick,
+                });
+            }
+        }
+        Event::BodyStopped { body, at } => {
+            shared.body_stopped(*body, *at);
+            let _ = shared.publish.send(Published::BodyStopped {
+                body: body.0,
+                at: at.tile(),
+            });
+        }
+        Event::DayStarted { day } => {
+            println!("tick {tick}: {event:?}");
+            let _ = shared
+                .publish
+                .send(Published::DayStarted { day: *day, tick });
+        }
+        // A refusal concerns only whoever asked.
+        Event::MoveRefused { body, target } => shared.tell_pilot(
+            *body,
+            ServerMessage::MoveRefused {
+                body: body.0,
+                x: target.x,
+                y: target.y,
+            },
+        ),
+    }
 }

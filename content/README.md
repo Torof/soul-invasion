@@ -14,6 +14,8 @@ real values live in a private repository (D30). Files here hold placeholders.
   flammability, food value, provisional colour.
 - `spawns.ron` — what lies on the ground when a valley is created, per
   terrain, in pieces per thousand tiles.
+- `movement.ron` — walking speed and the cost of each terrain, which paths
+  weigh and bodies slow down by.
 
 The server looks for this directory as `content`, `../content` or
 `../../content` from where it runs, or where `--content <DIR>` points. An

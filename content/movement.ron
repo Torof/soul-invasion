@@ -1,0 +1,18 @@
+// How bodies move over the ground (D32). Placeholder values, tuned by play.
+//
+// walk_speed_cm_per_s: walking speed on the reference terrain (cost 10),
+//                      in centimetres per game second. 143 is a calm walk.
+// terrain_costs:       cost of crossing one tile of each terrain, 10 being
+//                      the reference; paths weigh tiles by it and bodies
+//                      slow down by it (cost 15 = two thirds of the speed).
+//                      None cannot be walked. Every terrain must appear.
+(
+    walk_speed_cm_per_s: 143,
+    terrain_costs: {
+        grass: Some(10),
+        forest: Some(15),
+        ford: Some(20),
+        water: None,
+        rock: None,
+    },
+)

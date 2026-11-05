@@ -20,7 +20,9 @@ use serde::{Deserialize, Serialize};
 /// - v2: the ground travels in chunks around the body instead of whole.
 /// - v3: chunks carry the items lying in them; `world_state` carries the
 ///   catalogue of materials they are made of.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// - v4: bodies stand at fine positions and walk along routes of straight
+///   segments (`body_walks`, `body_stopped`) instead of tile by tile.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// A tile on the map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,15 +40,27 @@ pub enum Terrain {
     Rock,
 }
 
-/// A body as the client sees it.
+/// A fine position: millimetres from the grid's origin. Tile (x, y)
+/// spans `(x × 1000 .. (x + 1) × 1000, y × 1000 .. (y + 1) × 1000)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Point {
+    /// Millimetres east.
+    pub x: i32,
+    /// Millimetres south.
+    pub y: i32,
+}
+
+/// A body as the client sees it: where it stands and where it is going.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BodyState {
     /// Body id.
     pub id: u32,
-    /// Column.
-    pub x: i32,
-    /// Row.
-    pub y: i32,
+    /// Where it stands.
+    pub at: Point,
+    /// Waypoints still ahead, nearest first; empty when standing still.
+    pub route: Vec<Point>,
+    /// Nominal walking speed, on open ground; terrain slows it.
+    pub speed_cm_per_s: u32,
 }
 
 /// A material as the client needs to know it: a name to show and a
@@ -164,16 +178,27 @@ pub enum ServerMessage {
         /// The tick at which it started.
         tick: u64,
     },
-    /// A body stepped onto a tile of a chunk the client holds.
-    BodyMoved {
+    /// A body in a chunk the client holds set off (or is seen for the
+    /// first time) along a route: move it from `at` through the waypoints
+    /// at its speed.
+    BodyWalks {
         /// Who.
         body: u32,
-        /// Column.
-        x: i32,
-        /// Row.
-        y: i32,
+        /// Where it is now.
+        at: Point,
+        /// Waypoints ahead, nearest first; the last is the destination.
+        route: Vec<Point>,
+        /// Nominal walking speed, on open ground; terrain slows it.
+        speed_cm_per_s: u32,
         /// When.
         tick: u64,
+    },
+    /// A body in a chunk the client holds stopped walking.
+    BodyStopped {
+        /// Who.
+        body: u32,
+        /// Exactly where.
+        at: Point,
     },
     /// A body walked out of the chunks the client holds: forget it.
     BodyLeft {
@@ -251,8 +276,9 @@ mod tests {
                 tiles: vec![Terrain::Grass, Terrain::Water],
                 bodies: vec![BodyState {
                     id: 1,
-                    x: 160,
-                    y: 0,
+                    at: Point { x: 160_500, y: 500 },
+                    route: vec![Point { x: 170_500, y: 500 }],
+                    speed_cm_per_s: 143,
                 }],
                 items: vec![ItemState {
                     id: 9,
@@ -268,11 +294,16 @@ mod tests {
                 day: 2,
                 tick: 72_000,
             },
-            ServerMessage::BodyMoved {
+            ServerMessage::BodyWalks {
                 body: 1,
-                x: 4,
-                y: 5,
+                at: Point { x: 4_500, y: 5_500 },
+                route: vec![Point { x: 6_500, y: 5_500 }, Point { x: 6_500, y: 9_500 }],
+                speed_cm_per_s: 143,
                 tick: 9,
+            },
+            ServerMessage::BodyStopped {
+                body: 1,
+                at: Point { x: 6_500, y: 9_500 },
             },
             ServerMessage::BodyLeft { body: 1 },
             ServerMessage::MoveRefused {

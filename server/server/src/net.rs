@@ -26,10 +26,10 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
-    BodyState, ClientMessage, ItemState, MaterialView, PROTOCOL_VERSION, ServerMessage, Terrain,
-    decode, encode,
+    BodyState, ClientMessage, ItemState, MaterialView, PROTOCOL_VERSION, Point, ServerMessage,
+    Terrain, decode, encode,
 };
-use sim::{BodyId, CHUNK_SIZE, ChunkPos, Content, Intention, Map, Pos, World};
+use sim::{BodyId, CHUNK_SIZE, ChunkPos, Content, FinePos, Intention, Map, Pos, World};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio_tungstenite::WebSocketStream;
@@ -69,6 +69,15 @@ pub enum Published {
         /// The tick at which it started.
         tick: u64,
     },
+    /// A body set off along a route.
+    BodyWalks {
+        /// Who.
+        body: u32,
+        /// The tile it starts from.
+        from: Pos,
+        /// When.
+        tick: u64,
+    },
     /// A body stepped from one tile to the next.
     BodyMoved {
         /// Who.
@@ -80,6 +89,17 @@ pub enum Published {
         /// When.
         tick: u64,
     },
+    /// A body stopped walking.
+    BodyStopped {
+        /// Who.
+        body: u32,
+        /// The tile it stands on.
+        at: Pos,
+    },
+}
+
+fn point(at: FinePos) -> Point {
+    Point { x: at.x, y: at.y }
 }
 
 /// State shared between the simulation thread and all connections.
@@ -152,8 +172,9 @@ impl Shared {
             .iter()
             .map(|b| BodyState {
                 id: b.id().0,
-                x: b.pos().x,
-                y: b.pos().y,
+                at: point(b.at()),
+                route: b.route().map(point).collect(),
+                speed_cm_per_s: content.movement.walk_speed_cm_per_s,
             })
             .collect();
         Self {
@@ -170,27 +191,55 @@ impl Shared {
         }
     }
 
-    /// Records a body's new position and returns where it stood, or
-    /// `None` for a body nobody knew about.
-    pub fn body_moved(&self, body: BodyId, to: Pos) -> Option<Pos> {
+    /// Records that a body set off: where it is and the route ahead.
+    pub fn body_walks(&self, body: BodyId, from: FinePos, route: &[FinePos], speed_cm_per_s: u32) {
+        self.bodies.send_modify(|bodies| {
+            if let Some(state) = bodies.iter_mut().find(|b| b.id == body.0) {
+                state.at = point(from);
+                state.route = route.iter().copied().map(point).collect();
+                state.speed_cm_per_s = speed_cm_per_s;
+            }
+        });
+    }
+
+    /// Records a body's position as it crosses into another tile, keeping
+    /// the last `remaining` waypoints of its route. Returns the tile it
+    /// came from, or `None` for a body nobody knew about.
+    pub fn body_moved(&self, body: BodyId, at: FinePos, remaining: usize) -> Option<Pos> {
         let mut from = None;
         self.bodies.send_modify(|bodies| {
             if let Some(state) = bodies.iter_mut().find(|b| b.id == body.0) {
-                from = Some(Pos::new(state.x, state.y));
-                state.x = to.x;
-                state.y = to.y;
+                from = Some(tile_of(state.at));
+                state.at = point(at);
+                let passed = state.route.len().saturating_sub(remaining);
+                state.route.drain(..passed);
             }
         });
         from
     }
 
-    /// Where a body stands, as last published.
+    /// Records that a body stopped exactly there.
+    pub fn body_stopped(&self, body: BodyId, at: FinePos) {
+        self.bodies.send_modify(|bodies| {
+            if let Some(state) = bodies.iter_mut().find(|b| b.id == body.0) {
+                state.at = point(at);
+                state.route.clear();
+            }
+        });
+    }
+
+    /// The tile a body stands on, as last published.
     pub fn position_of(&self, body: u32) -> Option<Pos> {
         self.bodies
             .borrow()
             .iter()
             .find(|b| b.id == body)
-            .map(|b| Pos::new(b.x, b.y))
+            .map(|b| tile_of(b.at))
+    }
+
+    /// A body as last published.
+    pub fn body_state(&self, body: u32) -> Option<BodyState> {
+        self.bodies.borrow().iter().find(|b| b.id == body).cloned()
     }
 
     /// The bodies standing in a chunk, in id order.
@@ -198,8 +247,8 @@ impl Shared {
         self.bodies
             .borrow()
             .iter()
-            .filter(|b| Pos::new(b.x, b.y).chunk() == chunk)
-            .copied()
+            .filter(|b| tile_of(b.at).chunk() == chunk)
+            .cloned()
             .collect()
     }
 
@@ -349,6 +398,11 @@ impl View {
     pub fn is_empty(&self) -> bool {
         self.chunks.is_empty()
     }
+}
+
+/// The tile a published point is in.
+fn tile_of(at: Point) -> Pos {
+    FinePos::new(at.x, at.y).tile()
 }
 
 fn terrain_view(terrain: sim::Terrain) -> Terrain {
@@ -528,6 +582,13 @@ async fn forward(
         Published::DayStarted { day, tick } => {
             send(ws, &ServerMessage::DayStarted { day, tick }).await?;
         }
+        Published::BodyWalks { body, from, tick } => {
+            if view.contains(from)
+                && let Some(state) = shared.body_state(body)
+            {
+                send(ws, &walks_message(&state, tick)).await?;
+            }
+        }
         Published::BodyMoved {
             body,
             from,
@@ -552,23 +613,36 @@ async fn forward(
                     }
                 }
             }
-            if view.contains(to) {
-                send(
-                    ws,
-                    &ServerMessage::BodyMoved {
-                        body,
-                        x: to.x,
-                        y: to.y,
-                        tick,
-                    },
-                )
-                .await?;
-            } else if view.contains(from) {
+            let (was_seen, is_seen) = (view.contains(from), view.contains(to));
+            if is_seen && !was_seen {
+                // Walked into view: the client learns of it with its route.
+                if let Some(state) = shared.body_state(body) {
+                    send(ws, &walks_message(&state, tick)).await?;
+                }
+            } else if was_seen && !is_seen {
                 send(ws, &ServerMessage::BodyLeft { body }).await?;
+            }
+        }
+        Published::BodyStopped { body, at } => {
+            if view.contains(at)
+                && let Some(state) = shared.body_state(body)
+            {
+                send(ws, &ServerMessage::BodyStopped { body, at: state.at }).await?;
             }
         }
     }
     Ok(())
+}
+
+/// The message telling a client where a body is and where it is going.
+fn walks_message(state: &BodyState, tick: u64) -> ServerMessage {
+    ServerMessage::BodyWalks {
+        body: state.id,
+        at: state.at,
+        route: state.route.clone(),
+        speed_cm_per_s: state.speed_cm_per_s,
+        tick,
+    }
 }
 
 /// Runs the hello/welcome exchange. Returns `Ok(None)` when the client
@@ -746,11 +820,27 @@ mod tests {
         );
         assert!(shared.chunk_message(ChunkPos::new(-1, 0)).is_none());
 
-        // Moving a body reports where it stood and updates the chunk.
+        // A walk records the route; crossing tiles trims it; stopping clears it.
         let far = Pos::new(10, 250);
-        assert_eq!(shared.body_moved(BodyId(1), far), Some(body));
-        assert_eq!(shared.body_moved(BodyId(99), far), None);
+        let route = [Pos::new(12, 240).centre(), far.centre()];
+        shared.body_walks(BodyId(1), body.centre(), &route, 143);
+        assert_eq!(shared.body_state(1).unwrap().route.len(), 2);
+        assert_eq!(shared.body_moved(BodyId(1), far.centre(), 0), Some(body));
+        assert_eq!(shared.body_moved(BodyId(99), far.centre(), 0), None);
+        assert_eq!(
+            shared.body_state(1).unwrap().route,
+            Vec::new(),
+            "both waypoints passed"
+        );
         assert!(shared.bodies_in(far.chunk()).iter().any(|b| b.id == 1));
         assert!(!shared.bodies_in(body.chunk()).iter().any(|b| b.id == 1));
+        shared.body_stopped(BodyId(1), far.centre());
+        assert_eq!(
+            shared.body_state(1).unwrap().at,
+            Point {
+                x: far.centre().x,
+                y: far.centre().y
+            }
+        );
     }
 }
