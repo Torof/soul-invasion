@@ -35,7 +35,7 @@ Each decision is recorded with its **reason** and its **consequences**. These ar
 ### D08 — Interest management
 - **Reason**: each player only receives what happens around them (performance, network).
 - **Consequences**: reinforces the principle that information travels physically.
-- **Status** (milestone 1 audit, 5 November 2026): not implemented yet. `world_state` sends the whole valley once at connection (32×32 tiles, every body), and every move is published to every client. Fine for one valley and a tribe; to be built before several regions (D07) or many players.
+- **Status** (5 November 2026, step 1b): built at chunk granularity. Each connection holds a view of 5×5 chunks (160 m across) around its body; it receives those chunks with the bodies in them, then only the moves inside them; as the body walks, chunks entering the view are sent and chunks leaving it are hidden, and a body walking out is reported as left. Perception by line of sight, hearing and witnesses (D18) will refine this inside the view.
 
 ### D09 — Adjustable time and a calendar specific to each world
 - **Reason**: the world has its own calendar and its own biology; testing requires massive acceleration.
@@ -111,7 +111,7 @@ Each decision is recorded with its **reason** and its **consequences**. These ar
 
 ### D26 — Message encoding: JSON, behind a single door
 - **Reason**: readable in logs, parsed natively by Godot, trivial to debug. The volumes of the first version are small.
-- **Consequences**: encoding is confined to a single module on each side, so we can switch to binary the day it matters without touching the rest. Every message carries a type and a protocol version. The Rust types in `protocol` are the reference; the client mirrors them. **Shape of the dialogue** (D05, D08, D20): client → server, intentions only; server → client, an initial state of what the body perceives, then changes. The client never receives the whole world — except, until D08 is built, the single valley of the first version (see D08's status).
+- **Consequences**: encoding is confined to a single module on each side, so we can switch to binary the day it matters without touching the rest. Every message carries a type and a protocol version. The Rust types in `protocol` are the reference; the client mirrors them. **Shape of the dialogue** (D05, D08, D20): client → server, intentions only; server → client, an initial state of what the body perceives, then changes. The client never receives the whole world: the ground travels in chunks around the body (D08, D31).
 
 ### D27 — Content in RON, read by the server only
 - **Reason**: content (D15) is made of nested structures and categories (materials, parts, processes). RON is Rust's native data format: it expresses them directly, accepts comments and is checked at load time. The client does not need to read it: it receives the names and visual identifiers from the server at connection.
