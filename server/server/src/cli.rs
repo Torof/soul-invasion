@@ -4,6 +4,7 @@
 
 use std::fmt;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use sim::Calendar;
 
@@ -20,6 +21,10 @@ OPTIONS:
     --days <N>             Stop after N full game days (optional in paced mode).
     --listen <ADDR>        Paced mode: WebSocket listen address
                            (default 127.0.0.1:7777; port 0 picks a free port).
+    --data <PATH>          SQLite file holding the world's snapshots and
+                           event journal (default world.sqlite). The world
+                           resumes from it when it exists.
+    --ephemeral            Keep the world in memory only; nothing is saved.
     --time-scale <X>       Paced mode: run X times faster than real time
                            (default 1.0). Does not change the rules, only the
                            pace (D09).
@@ -32,6 +37,18 @@ OPTIONS:
 /// Default listen address.
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:7777";
 
+/// Default database file.
+pub const DEFAULT_DATA: &str = "world.sqlite";
+
+/// Where the world is persisted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DataLocation {
+    /// A SQLite file on disk.
+    File(PathBuf),
+    /// Memory only: nothing survives the process.
+    Ephemeral,
+}
+
 /// Parsed command-line options.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Options {
@@ -41,6 +58,8 @@ pub struct Options {
     pub days: Option<u64>,
     /// WebSocket listen address (paced mode only).
     pub listen: SocketAddr,
+    /// Where snapshots and the event journal go.
+    pub data: DataLocation,
     /// Paced mode speed factor.
     pub time_scale: f64,
     /// The world's calendar.
@@ -53,6 +72,7 @@ impl Default for Options {
             headless: false,
             days: None,
             listen: DEFAULT_LISTEN.parse().expect("valid default address"),
+            data: DataLocation::File(PathBuf::from(DEFAULT_DATA)),
             time_scale: 1.0,
             calendar: Calendar::default(),
         }
@@ -117,6 +137,8 @@ impl Options {
                 "--headless" => opts.headless = true,
                 "--days" => opts.days = Some(value(arg, args.next())?),
                 "--listen" => opts.listen = value(arg, args.next())?,
+                "--data" => opts.data = DataLocation::File(value(arg, args.next())?),
+                "--ephemeral" => opts.data = DataLocation::Ephemeral,
                 "--time-scale" => opts.time_scale = value(arg, args.next())?,
                 "--ticks-per-second" => ticks_per_second = value(arg, args.next())?,
                 "--seconds-per-day" => seconds_per_day = value(arg, args.next())?,
@@ -189,6 +211,22 @@ mod tests {
                 option: "--listen".into(),
                 value: "nowhere".into()
             })
+        );
+    }
+
+    #[test]
+    fn data_location_is_parsed() {
+        assert_eq!(
+            Options::parse(Vec::<&str>::new()).unwrap().data,
+            DataLocation::File(PathBuf::from("world.sqlite"))
+        );
+        assert_eq!(
+            Options::parse(["--data", "/tmp/w.sqlite"]).unwrap().data,
+            DataLocation::File(PathBuf::from("/tmp/w.sqlite"))
+        );
+        assert_eq!(
+            Options::parse(["--ephemeral"]).unwrap().data,
+            DataLocation::Ephemeral
         );
     }
 

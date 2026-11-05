@@ -1,7 +1,8 @@
 //! Soul Invasion game server binary.
 //!
-//! Thin wrapper around the `server` library: parse options, build the
-//! world, run the loop, report. Run `server --help` for the options.
+//! Thin wrapper around the `server` library: parse options, open storage,
+//! load or create the world, run the loop, report. Run `server --help` for
+//! the options.
 //!
 //! Paced mode wires the pieces of D29 together: the simulation runs on
 //! its own thread; the tokio runtime beside it accepts WebSocket clients
@@ -12,9 +13,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use protocol::ServerMessage;
-use server::cli::{CliError, USAGE};
+use server::cli::{CliError, DataLocation, USAGE};
 use server::net::{Shared, serve};
-use server::{Options, run_headless, run_paced};
+use server::{Options, Sqlite, Storage, StorageError, run_headless, run_paced};
 use sim::{Event, World};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -34,11 +35,26 @@ fn main() -> ExitCode {
         }
     };
 
-    let mut world = World::new(opts.calendar);
+    match run(&opts) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(opts: &Options) -> Result<(), BoxError> {
+    println!(
+        "soul-invasion server (protocol v{})",
+        protocol::PROTOCOL_VERSION
+    );
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let (mut world, persister) = open_world(opts, Arc::clone(&stop))?;
     let calendar = *world.calendar();
     println!(
-        "soul-invasion server (protocol v{}) — calendar: {} ticks/s, {} s/day ({} ticks/day)",
-        protocol::PROTOCOL_VERSION,
+        "calendar: {} ticks/s, {} s/day ({} ticks/day)",
         calendar.ticks_per_second(),
         calendar.seconds_per_day(),
         calendar.ticks_per_day(),
@@ -48,7 +64,11 @@ fn main() -> ExitCode {
         let days = opts.days.expect("validated by Options::parse");
         println!("headless: simulating {days} day(s) as fast as possible");
         let started = std::time::Instant::now();
-        let summary = run_headless(&mut world, days);
+        let mut persister = persister;
+        let summary = run_headless(&mut world, days, |world, events| {
+            persister.on_tick(world, events);
+        });
+        persister.finish(&world)?;
         let elapsed = started.elapsed();
         println!(
             "done: {} ticks, {} events, now day {} — {:.3}s real time",
@@ -57,19 +77,100 @@ fn main() -> ExitCode {
             world.time().day,
             elapsed.as_secs_f64(),
         );
-        return ExitCode::SUCCESS;
+        return Ok(());
     }
 
-    match run_paced_server(world, &opts) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("error: {e}");
-            ExitCode::FAILURE
+    run_paced_server(world, opts, &stop, persister)
+}
+
+/// Opens storage and loads the latest world from it, or creates a new one.
+fn open_world(opts: &Options, stop: Arc<AtomicBool>) -> Result<(World, Persister), BoxError> {
+    let mut storage: Box<dyn Storage> = match &opts.data {
+        DataLocation::File(path) => {
+            println!("data: {}", path.display());
+            Box::new(Sqlite::open(path)?)
         }
+        DataLocation::Ephemeral => {
+            println!("data: ephemeral (nothing is saved)");
+            Box::new(Sqlite::in_memory()?)
+        }
+    };
+
+    let world = if let Some(world) = storage.latest_world()? {
+        println!(
+            "world: resumed at tick {} (day {})",
+            world.tick().0,
+            world.time().day
+        );
+        if world.calendar() != &opts.calendar {
+            println!("note: the world's own calendar wins over the command line");
+        }
+        world
+    } else {
+        println!("world: new");
+        World::new(opts.calendar)
+    };
+
+    Ok((world, Persister::new(storage, stop)))
+}
+
+/// Feeds the journal and takes snapshots from inside the simulation loop.
+///
+/// The loop's callback cannot return errors, so the first failure is kept,
+/// the loop is asked to stop, and [`Persister::finish`] reports it.
+struct Persister {
+    storage: Box<dyn Storage>,
+    stop: Arc<AtomicBool>,
+    failed: Option<StorageError>,
+}
+
+impl Persister {
+    fn new(storage: Box<dyn Storage>, stop: Arc<AtomicBool>) -> Self {
+        Self {
+            storage,
+            stop,
+            failed: None,
+        }
+    }
+
+    /// Journals the tick's events and snapshots the world on each new day.
+    fn on_tick(&mut self, world: &World, events: &[Event]) {
+        if self.failed.is_some() || events.is_empty() {
+            return;
+        }
+        let day_started = events.iter().any(|e| matches!(e, Event::DayStarted { .. }));
+        let result = self
+            .storage
+            .append_events(world.tick(), events)
+            .and_then(|()| {
+                if day_started {
+                    self.storage.save_world(world)
+                } else {
+                    Ok(())
+                }
+            });
+        if let Err(e) = result {
+            eprintln!("persistence failed, stopping: {e}");
+            self.failed = Some(e);
+            self.stop.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Final snapshot, or the failure that interrupted the run.
+    fn finish(mut self, world: &World) -> Result<(), StorageError> {
+        if let Some(e) = self.failed.take() {
+            return Err(e);
+        }
+        self.storage.save_world(world)
     }
 }
 
-fn run_paced_server(mut world: World, opts: &Options) -> Result<(), BoxError> {
+fn run_paced_server(
+    mut world: World,
+    opts: &Options,
+    stop: &Arc<AtomicBool>,
+    mut persister: Persister,
+) -> Result<(), BoxError> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -89,30 +190,31 @@ fn run_paced_server(mut world: World, opts: &Options) -> Result<(), BoxError> {
     }
 
     let shared = Arc::new(Shared::new());
-    let stop = Arc::new(AtomicBool::new(false));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let acceptor = runtime.spawn(serve(listener, Arc::clone(&shared), shutdown_rx));
 
     let mut simulation = {
         let shared = Arc::clone(&shared);
-        let stop = Arc::clone(&stop);
+        let stop = Arc::clone(stop);
         let time_scale = opts.time_scale;
         let days = opts.days;
         runtime.spawn_blocking(move || {
             let summary = run_paced(&mut world, time_scale, days, &stop, |world, events| {
                 shared.tick.store(world.tick().0, Ordering::Relaxed);
+                persister.on_tick(world, events);
                 for event in events {
                     println!("tick {}: {event:?}", world.tick().0);
                     // No subscribers is not an error: nobody is connected.
                     let _ = shared.publish.send(to_message(world, event));
                 }
             });
-            (summary, world)
+            (summary, world, persister)
         })
     };
 
-    // Run until the simulation reaches its day limit or Ctrl-C arrives.
+    // Run until the simulation reaches its day limit, stops on a
+    // persistence failure, or Ctrl-C arrives.
     let finished = runtime.block_on(async {
         tokio::select! {
             finished = &mut simulation => Some(finished),
@@ -122,7 +224,7 @@ fn run_paced_server(mut world: World, opts: &Options) -> Result<(), BoxError> {
             }
         }
     });
-    let (summary, world) = if let Some(finished) = finished {
+    let (summary, world, persister) = if let Some(finished) = finished {
         finished?
     } else {
         stop.store(true, Ordering::Relaxed);
@@ -135,6 +237,7 @@ fn run_paced_server(mut world: World, opts: &Options) -> Result<(), BoxError> {
         let _ = acceptor.await;
     });
 
+    persister.finish(&world)?;
     println!(
         "stopped: {} ticks, {} events, now day {}",
         summary.ticks,
