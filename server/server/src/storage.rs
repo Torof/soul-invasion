@@ -10,7 +10,7 @@ use sim::{Event, Tick, World};
 
 /// Version of the serialized `World` inside a snapshot. Bump on any change
 /// to `World`'s shape, and add a migration in `decode_world`.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 2;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 3;
 
 /// Errors from the storage layer.
 #[derive(Debug, thiserror::Error)]
@@ -194,6 +194,7 @@ fn decode_world(format_version: u32, data: &str) -> Result<World, StorageError> 
     while version < SNAPSHOT_FORMAT_VERSION {
         data = match version {
             1 => migrate_v1_to_v2(&data)?,
+            2 => migrate_v2_to_v3(&data)?,
             _ => unreachable!("every version below the current one has a migration"),
         };
         version += 1;
@@ -212,6 +213,18 @@ fn decode_world(format_version: u32, data: &str) -> Result<World, StorageError> 
 /// bodies. A v1 world gets the standard valley and inhabitants, at its
 /// old tick.
 fn migrate_v1_to_v2(data: &str) -> Result<String, StorageError> {
+    standard_world_at_old_tick(data)
+}
+
+/// v2 stored the 32×32 map tile by tile; v3 stores how the map is
+/// generated, and the valley is 256×256 at one metre per tile (D31).
+/// Positions of the old valley mean nothing in the new one: a v2 world
+/// gets the standard valley and inhabitants, at its old tick.
+fn migrate_v2_to_v3(data: &str) -> Result<String, StorageError> {
+    standard_world_at_old_tick(data)
+}
+
+fn standard_world_at_old_tick(data: &str) -> Result<String, StorageError> {
     let old: serde_json::Value = serde_json::from_str(data)?;
     let calendar: sim::Calendar = serde_json::from_value(old["calendar"].clone())?;
     let mut new = serde_json::to_value(World::new(calendar))?;
@@ -303,6 +316,27 @@ mod tests {
             world.bodies().len(),
             World::new(Calendar::default()).bodies().len()
         );
+    }
+
+    #[test]
+    fn v2_snapshots_are_migrated() {
+        let mut storage = Sqlite::in_memory().unwrap();
+        // A v2 world: tiles stored one by one, bodies on the old 32×32 valley.
+        let v2 = r#"{"calendar":{"ticks_per_second":2,"seconds_per_day":3},"tick":40,
+            "map":{"width":2,"height":1,"tiles":["grass","water"]},
+            "bodies":[{"id":1,"pos":{"x":0,"y":0},"path":[],"next_step":40}],"next_body":2}"#;
+        storage
+            .conn
+            .execute(
+                "INSERT INTO snapshots (tick, format_version, data) VALUES (40, 2, ?1)",
+                [v2],
+            )
+            .unwrap();
+        let world = storage.latest_world().unwrap().unwrap();
+        assert_eq!(world.tick(), Tick(40));
+        assert_eq!(world.calendar(), &Calendar::new(2, 3).unwrap());
+        assert_eq!(world.map().width(), sim::VALLEY_SIZE);
+        assert_eq!(world.bodies().len(), 3);
     }
 
     #[test]

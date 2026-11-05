@@ -9,7 +9,7 @@ pub mod time;
 
 use std::collections::VecDeque;
 
-pub use map::{Map, Pos, Terrain};
+pub use map::{CHUNK_SIZE, ChunkPos, Map, MapSpec, Pos, Terrain};
 pub use time::{Calendar, CalendarError, GameTime, Tick};
 
 /// Identifies a body (an inhabitant). Players and NPCs are the same kind
@@ -19,8 +19,12 @@ pub use time::{Calendar, CalendarError, GameTime, Tick};
 )]
 pub struct BodyId(pub u32);
 
-/// Ticks a body needs to walk one tile.
-pub const TICKS_PER_TILE: u64 = 4;
+/// Ticks a body needs for a straight step: one metre in 0.7 s at the
+/// default calendar, a walking pace. Content later (D15).
+pub const STEP_TICKS: u64 = 7;
+
+/// Ticks a body needs for a diagonal step: √2 metres (D32).
+pub const DIAGONAL_STEP_TICKS: u64 = 10;
 
 /// An inhabitant's body: where it is and where it is going.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -109,16 +113,23 @@ pub struct World {
     pending: Vec<Intention>,
 }
 
-/// Size of the first version's valley.
-const VALLEY_SIZE: u32 = 32;
+/// Side of the first version's valley, in tiles: about 256 m, three
+/// minutes of walking (D31).
+pub const VALLEY_SIZE: u32 = 256;
+
+/// Seed of the first version's valley.
+pub const VALLEY_SEED: u64 = 1;
 
 impl World {
     /// Creates the first version's valley at tick zero, with a few
-    /// inhabitants standing on the grass.
+    /// inhabitants standing on the grass of the east bank.
     pub fn new(calendar: Calendar) -> Self {
-        let mut world = Self::empty(calendar, Map::valley(VALLEY_SIZE, VALLEY_SIZE, 1));
-        for pos in [Pos::new(20, 20), Pos::new(22, 21), Pos::new(19, 23)] {
-            world.map.set(pos, Terrain::Grass);
+        let mut world = Self::empty(calendar, Map::valley(VALLEY_SIZE, VALLEY_SIZE, VALLEY_SEED));
+        for wanted in [Pos::new(160, 128), Pos::new(162, 129), Pos::new(159, 131)] {
+            let pos = world
+                .map
+                .nearest(wanted, Terrain::Grass)
+                .expect("the valley has grass");
             world.spawn_body(pos);
         }
         world
@@ -207,8 +218,13 @@ impl World {
                 continue;
             }
             if let Some(next) = body.path.pop_front() {
+                let pace = if body.pos.is_diagonal_to(next) {
+                    DIAGONAL_STEP_TICKS
+                } else {
+                    STEP_TICKS
+                };
                 body.pos = next;
-                body.next_step = Tick(self.tick.0 + TICKS_PER_TILE);
+                body.next_step = Tick(self.tick.0 + pace);
                 events.push(Event::BodyMoved {
                     body: body.id,
                     to: next,
@@ -283,6 +299,16 @@ mod tests {
         assert_eq!(w.time().day, 1);
         assert_eq!(w.bodies().len(), 3);
         assert!(w.bodies().iter().all(|b| w.map().is_passable(b.pos())));
+        assert_eq!(
+            (w.map().width(), w.map().height()),
+            (VALLEY_SIZE, VALLEY_SIZE)
+        );
+        let text = serde_json::to_string(&w).unwrap();
+        assert!(
+            text.len() < 1_000,
+            "terrain is not in the snapshot: {} bytes",
+            text.len()
+        );
     }
 
     #[test]
@@ -318,11 +344,11 @@ mod tests {
         let (mut ea, mut eb) = (Vec::new(), Vec::new());
         a.queue(Intention::MoveTo {
             body: BodyId(1),
-            target: Pos::new(25, 25),
+            target: Pos::new(30, 200),
         });
         b.queue(Intention::MoveTo {
             body: BodyId(1),
-            target: Pos::new(25, 25),
+            target: Pos::new(30, 200),
         });
         a.advance(1_000, &mut ea);
         b.advance(1_000, &mut eb);
@@ -348,7 +374,7 @@ mod tests {
             }]
         );
         events.clear();
-        w.advance(TICKS_PER_TILE - 1, &mut events);
+        w.advance(STEP_TICKS - 1, &mut events);
         assert!(events.is_empty(), "no step before the pace allows");
         w.step(&mut events);
         assert_eq!(
@@ -369,6 +395,23 @@ mod tests {
     }
 
     #[test]
+    fn a_diagonal_step_takes_longer_than_a_straight_one() {
+        let mut w = open_field();
+        let mut events = Vec::new();
+        w.queue(Intention::MoveTo {
+            body: BodyId(1),
+            target: Pos::new(2, 2),
+        });
+        w.step(&mut events); // first diagonal step at once
+        assert_eq!(w.body(BodyId(1)).unwrap().pos(), Pos::new(1, 1));
+        events.clear();
+        w.advance(DIAGONAL_STEP_TICKS - 1, &mut events);
+        assert!(events.is_empty(), "a diagonal step waits longer");
+        w.step(&mut events);
+        assert_eq!(w.body(BodyId(1)).unwrap().pos(), Pos::new(2, 2));
+    }
+
+    #[test]
     fn a_new_intention_replaces_the_current_walk() {
         let mut w = open_field();
         let mut events = Vec::new();
@@ -381,7 +424,7 @@ mod tests {
             body: BodyId(1),
             target: Pos::new(1, 3),
         });
-        w.advance(40, &mut events);
+        w.advance(60, &mut events);
         assert_eq!(w.body(BodyId(1)).unwrap().pos(), Pos::new(1, 3));
     }
 
