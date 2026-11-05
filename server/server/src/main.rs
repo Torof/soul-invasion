@@ -18,7 +18,7 @@ use server::net::{Shared, serve};
 use server::{Options, Sqlite, Storage, StorageError, run_headless, run_paced};
 use sim::{Event, World};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 
 type BoxError = Box<dyn std::error::Error>;
 
@@ -171,7 +171,10 @@ fn run_paced_server(
     stop: &Arc<AtomicBool>,
     mut persister: Persister,
 ) -> Result<(), BoxError> {
+    // The network only translates (D29): two workers are plenty, and the
+    // machine's cores stay for the simulation thread.
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
         .enable_all()
         .build()?;
 
@@ -189,8 +192,7 @@ fn run_paced_server(
         ),
     }
 
-    let (intentions_tx, mut intentions_rx) = mpsc::unbounded_channel();
-    let shared = Arc::new(Shared::new(&world, intentions_tx));
+    let shared = Arc::new(Shared::new(&world, opts.max_connections));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let acceptor = runtime.spawn(serve(listener, Arc::clone(&shared), shutdown_rx));
@@ -202,7 +204,7 @@ fn run_paced_server(
         let days = opts.days;
         runtime.spawn_blocking(move || {
             let before_tick = |world: &mut World| {
-                while let Ok(intention) = intentions_rx.try_recv() {
+                for intention in shared.take_intentions() {
                     world.queue(intention);
                 }
             };
@@ -213,7 +215,16 @@ fn run_paced_server(
                     match event {
                         Event::BodyMoved { body, to } => shared.body_moved(*body, *to),
                         Event::DayStarted { .. } => println!("tick {}: {event:?}", world.tick().0),
-                        _ => {}
+                        // A refusal concerns only whoever asked.
+                        Event::MoveRefused { body, target } => shared.tell_pilot(
+                            *body,
+                            ServerMessage::MoveRefused {
+                                body: body.0,
+                                x: target.x,
+                                y: target.y,
+                            },
+                        ),
+                        Event::BodyArrived { .. } => {}
                     }
                     if let Some(message) = to_message(world, event) {
                         // No subscribers is not an error: nobody is connected.
@@ -260,7 +271,7 @@ fn run_paced_server(
     Ok(())
 }
 
-/// The client-facing form of an event, if clients should hear about it.
+/// The form of an event published to every client, if there is one.
 fn to_message(world: &World, event: &Event) -> Option<ServerMessage> {
     let tick = world.tick().0;
     match *event {
@@ -271,11 +282,7 @@ fn to_message(world: &World, event: &Event) -> Option<ServerMessage> {
             y: to.y,
             tick,
         }),
-        Event::MoveRefused { body, target } => Some(ServerMessage::MoveRefused {
-            body: body.0,
-            x: target.x,
-            y: target.y,
-        }),
-        Event::BodyArrived { .. } => None,
+        // Refusals go to the pilot alone; arrivals are implied by the last move.
+        Event::MoveRefused { .. } | Event::BodyArrived { .. } => None,
     }
 }

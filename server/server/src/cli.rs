@@ -28,11 +28,16 @@ OPTIONS:
     --time-scale <X>       Paced mode: run X times faster than real time
                            (default 1.0). Does not change the rules, only the
                            pace (D09).
+    --max-connections <N>  Paced mode: clients served at once, at most
+                           (default 64). Further connections are refused.
     --ticks-per-second <N> Calendar: simulation ticks per game second
                            (default 10).
     --seconds-per-day <N>  Calendar: game seconds per game day (default 7200).
     -h, --help             Print this help.
 ";
+
+/// Default number of connections served at once.
+pub const DEFAULT_MAX_CONNECTIONS: usize = 64;
 
 /// Default listen address.
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:7777";
@@ -62,6 +67,8 @@ pub struct Options {
     pub data: DataLocation,
     /// Paced mode speed factor.
     pub time_scale: f64,
+    /// Connections served at once, at most (paced mode only).
+    pub max_connections: usize,
     /// The world's calendar.
     pub calendar: Calendar,
 }
@@ -74,6 +81,7 @@ impl Default for Options {
             listen: DEFAULT_LISTEN.parse().expect("valid default address"),
             data: DataLocation::File(PathBuf::from(DEFAULT_DATA)),
             time_scale: 1.0,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
             calendar: Calendar::default(),
         }
     }
@@ -140,6 +148,7 @@ impl Options {
                 "--data" => opts.data = DataLocation::File(value(arg, args.next())?),
                 "--ephemeral" => opts.data = DataLocation::Ephemeral,
                 "--time-scale" => opts.time_scale = value(arg, args.next())?,
+                "--max-connections" => opts.max_connections = value(arg, args.next())?,
                 "--ticks-per-second" => ticks_per_second = value(arg, args.next())?,
                 "--seconds-per-day" => seconds_per_day = value(arg, args.next())?,
                 other => return Err(CliError::UnknownOption(other.to_owned())),
@@ -153,6 +162,12 @@ impl Options {
             return Err(CliError::InvalidValue {
                 option: "--time-scale".to_owned(),
                 value: opts.time_scale.to_string(),
+            });
+        }
+        if opts.max_connections == 0 {
+            return Err(CliError::InvalidValue {
+                option: "--max-connections".to_owned(),
+                value: "0".to_owned(),
             });
         }
         opts.calendar =
@@ -267,5 +282,22 @@ mod tests {
             Err(CliError::Calendar(sim::CalendarError::ZeroSecondsPerDay))
         );
         assert_eq!(Options::parse(["--help"]), Err(CliError::HelpRequested));
+    }
+
+    #[test]
+    fn max_connections_is_parsed_and_must_be_positive() {
+        assert_eq!(
+            Options::parse(["--max-connections", "3"])
+                .unwrap()
+                .max_connections,
+            3
+        );
+        assert_eq!(
+            Options::parse(["--max-connections", "0"]),
+            Err(CliError::InvalidValue {
+                option: "--max-connections".into(),
+                value: "0".into(),
+            })
+        );
     }
 }
