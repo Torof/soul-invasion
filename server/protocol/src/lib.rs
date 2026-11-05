@@ -12,6 +12,33 @@ use serde::{Deserialize, Serialize};
 /// Protocol version. Bump on any incompatible change.
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// A tile on the map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Terrain {
+    /// Open ground.
+    Grass,
+    /// Trees.
+    Forest,
+    /// The river; not walkable.
+    Water,
+    /// A shallow crossing of the river.
+    Ford,
+    /// The cliff; not walkable.
+    Rock,
+}
+
+/// A body as the client sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BodyState {
+    /// Body id.
+    pub id: u32,
+    /// Column.
+    pub x: i32,
+    /// Row.
+    pub y: i32,
+}
+
 /// Messages sent by the client to the server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -26,6 +53,13 @@ pub enum ClientMessage {
         /// Echoed back in [`ServerMessage::Pong`].
         nonce: u64,
     },
+    /// Intention: walk the piloted body to a tile.
+    MoveTo {
+        /// Column.
+        x: i32,
+        /// Row.
+        y: i32,
+    },
 }
 
 /// Messages sent by the server to the client.
@@ -38,6 +72,21 @@ pub enum ServerMessage {
         protocol_version: u32,
         /// Current world tick.
         tick: u64,
+        /// The body this connection pilots, or `None` to only watch.
+        body: Option<u32>,
+    },
+    /// Everything the client needs to draw the world, sent once after
+    /// [`ServerMessage::Welcome`]. Milestone 1 sends the whole valley;
+    /// interest management (D08) will narrow it later.
+    WorldState {
+        /// Map columns.
+        width: u32,
+        /// Map rows.
+        height: u32,
+        /// Tiles, row by row from the north-west corner.
+        tiles: Vec<Terrain>,
+        /// Every body.
+        bodies: Vec<BodyState>,
     },
     /// Reply to [`ClientMessage::Ping`].
     Pong {
@@ -56,6 +105,26 @@ pub enum ServerMessage {
         day: u64,
         /// The tick at which it started.
         tick: u64,
+    },
+    /// A body stepped onto a tile.
+    BodyMoved {
+        /// Who.
+        body: u32,
+        /// Column.
+        x: i32,
+        /// Row.
+        y: i32,
+        /// When.
+        tick: u64,
+    },
+    /// A walk could not start (impassable or unreachable target).
+    MoveRefused {
+        /// Who.
+        body: u32,
+        /// Column asked.
+        x: i32,
+        /// Row asked.
+        y: i32,
     },
 }
 
@@ -80,6 +149,7 @@ mod tests {
                 protocol_version: PROTOCOL_VERSION,
             },
             ClientMessage::Ping { nonce: 42 },
+            ClientMessage::MoveTo { x: 3, y: -1 },
         ];
         for message in messages {
             let text = encode(&message).unwrap();
@@ -94,12 +164,35 @@ mod tests {
             ServerMessage::Welcome {
                 protocol_version: PROTOCOL_VERSION,
                 tick: 7,
+                body: Some(1),
+            },
+            ServerMessage::Welcome {
+                protocol_version: PROTOCOL_VERSION,
+                tick: 7,
+                body: None,
+            },
+            ServerMessage::WorldState {
+                width: 2,
+                height: 1,
+                tiles: vec![Terrain::Grass, Terrain::Water],
+                bodies: vec![BodyState { id: 1, x: 0, y: 0 }],
             },
             ServerMessage::Pong { nonce: 42 },
             ServerMessage::ProtocolMismatch { expected: 1 },
             ServerMessage::DayStarted {
                 day: 2,
                 tick: 72_000,
+            },
+            ServerMessage::BodyMoved {
+                body: 1,
+                x: 4,
+                y: 5,
+                tick: 9,
+            },
+            ServerMessage::MoveRefused {
+                body: 1,
+                x: 4,
+                y: 5,
             },
         ];
         for message in messages {
@@ -113,8 +206,19 @@ mod tests {
     fn wire_format_is_tagged_snake_case() {
         let text = encode(&ClientMessage::Ping { nonce: 1 }).unwrap();
         assert_eq!(text, r#"{"type":"ping","nonce":1}"#);
-        let text = encode(&ServerMessage::DayStarted { day: 2, tick: 10 }).unwrap();
-        assert_eq!(text, r#"{"type":"day_started","day":2,"tick":10}"#);
+        let text = encode(&ClientMessage::MoveTo { x: 2, y: 3 }).unwrap();
+        assert_eq!(text, r#"{"type":"move_to","x":2,"y":3}"#);
+        let text = encode(&ServerMessage::WorldState {
+            width: 1,
+            height: 1,
+            tiles: vec![Terrain::Ford],
+            bodies: vec![],
+        })
+        .unwrap();
+        assert_eq!(
+            text,
+            r#"{"type":"world_state","width":1,"height":1,"tiles":["ford"],"bodies":[]}"#
+        );
     }
 
     #[test]

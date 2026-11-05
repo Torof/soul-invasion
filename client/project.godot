@@ -11,6 +11,10 @@ config/description="A game where every player is a parasite soul living through 
 run/main_scene="res://main.tscn"
 config/features=PackedStringArray("4.7")
 
+[autoload]
+
+Net="*res://net/client.gd"
+
 [display]
 
 window/size/viewport_width=1280
