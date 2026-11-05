@@ -585,10 +585,9 @@ async fn send(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sim::Calendar;
 
     fn shared(max_connections: usize) -> Shared {
-        Shared::new(&World::new(Calendar::default()), max_connections)
+        Shared::new(&World::default(), max_connections)
     }
 
     #[test]

@@ -5,12 +5,14 @@
 //! Formats are versioned from day one (D21): the database schema through
 //! SQLite's `user_version`, each snapshot through its own format version.
 
+use std::sync::Arc;
+
 use rusqlite::{Connection, OptionalExtension, params};
-use sim::{Event, Tick, World};
+use sim::{Content, Event, Tick, World};
 
 /// Version of the serialized `World` inside a snapshot. Bump on any change
 /// to `World`'s shape, and add a migration in `decode_world`.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 3;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 4;
 
 /// Errors from the storage layer.
 #[derive(Debug, thiserror::Error)]
@@ -77,23 +79,25 @@ const MIGRATIONS: &[&str] = &[
 #[derive(Debug)]
 pub struct Sqlite {
     conn: Connection,
+    /// Needed to rebuild what old snapshot formats did not hold.
+    content: Arc<Content>,
 }
 
 impl Sqlite {
     /// Opens (or creates) the database file and brings its schema up to date.
-    pub fn open(path: &std::path::Path) -> Result<Self, StorageError> {
-        Self::from_connection(Connection::open(path)?)
+    pub fn open(path: &std::path::Path, content: Arc<Content>) -> Result<Self, StorageError> {
+        Self::from_connection(Connection::open(path)?, content)
     }
 
     /// An in-memory database: nothing survives the process.
-    pub fn in_memory() -> Result<Self, StorageError> {
-        Self::from_connection(Connection::open_in_memory()?)
+    pub fn in_memory(content: Arc<Content>) -> Result<Self, StorageError> {
+        Self::from_connection(Connection::open_in_memory()?, content)
     }
 
-    fn from_connection(conn: Connection) -> Result<Self, StorageError> {
+    fn from_connection(conn: Connection, content: Arc<Content>) -> Result<Self, StorageError> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
-        let mut storage = Self { conn };
+        let mut storage = Self { conn, content };
         storage.migrate()?;
         Ok(storage)
     }
@@ -132,7 +136,7 @@ impl Storage for Sqlite {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        row.map(|(version, data)| decode_world(version, &data))
+        row.map(|(version, data)| decode_world(version, &data, &self.content))
             .transpose()
     }
 
@@ -188,13 +192,14 @@ fn db_int(value: u64) -> i64 {
 }
 
 /// Turns stored snapshot data into a `World`, migrating old formats.
-fn decode_world(format_version: u32, data: &str) -> Result<World, StorageError> {
+fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<World, StorageError> {
     let mut version = format_version;
     let mut data = data.to_owned();
     while version < SNAPSHOT_FORMAT_VERSION {
         data = match version {
-            1 => migrate_v1_to_v2(&data)?,
-            2 => migrate_v2_to_v3(&data)?,
+            1 => migrate_v1_to_v2(&data, content)?,
+            2 => migrate_v2_to_v3(&data, content)?,
+            3 => migrate_v3_to_v4(&data, content)?,
             _ => unreachable!("every version below the current one has a migration"),
         };
         version += 1;
@@ -212,22 +217,33 @@ fn decode_world(format_version: u32, data: &str) -> Result<World, StorageError> 
 /// v1 held only the calendar and the tick; v2 adds the map and the
 /// bodies. A v1 world gets the standard valley and inhabitants, at its
 /// old tick.
-fn migrate_v1_to_v2(data: &str) -> Result<String, StorageError> {
-    standard_world_at_old_tick(data)
+fn migrate_v1_to_v2(data: &str, content: &Content) -> Result<String, StorageError> {
+    standard_world_at_old_tick(data, content)
 }
 
 /// v2 stored the 32×32 map tile by tile; v3 stores how the map is
 /// generated, and the valley is 256×256 at one metre per tile (D31).
 /// Positions of the old valley mean nothing in the new one: a v2 world
 /// gets the standard valley and inhabitants, at its old tick.
-fn migrate_v2_to_v3(data: &str) -> Result<String, StorageError> {
-    standard_world_at_old_tick(data)
+fn migrate_v2_to_v3(data: &str, content: &Content) -> Result<String, StorageError> {
+    standard_world_at_old_tick(data, content)
 }
 
-fn standard_world_at_old_tick(data: &str) -> Result<String, StorageError> {
+/// v4 adds the items lying on the ground. A v3 world keeps its bodies and
+/// gets the standard valley's items, as if they had always been there.
+fn migrate_v3_to_v4(data: &str, content: &Content) -> Result<String, StorageError> {
+    let mut old: serde_json::Value = serde_json::from_str(data)?;
+    let calendar: sim::Calendar = serde_json::from_value(old["calendar"].clone())?;
+    let fresh = serde_json::to_value(World::new(calendar, content))?;
+    old["items"] = fresh["items"].clone();
+    old["next_item"] = fresh["next_item"].clone();
+    Ok(old.to_string())
+}
+
+fn standard_world_at_old_tick(data: &str, content: &Content) -> Result<String, StorageError> {
     let old: serde_json::Value = serde_json::from_str(data)?;
     let calendar: sim::Calendar = serde_json::from_value(old["calendar"].clone())?;
-    let mut new = serde_json::to_value(World::new(calendar))?;
+    let mut new = serde_json::to_value(World::new(calendar, content))?;
     new["tick"] = old["tick"].clone();
     Ok(new.to_string())
 }
@@ -237,22 +253,26 @@ mod tests {
     use super::*;
     use sim::Calendar;
 
+    fn content() -> Arc<Content> {
+        Arc::new(Content::sample())
+    }
+
     fn world_at(ticks: u64) -> World {
-        let mut world = World::new(Calendar::new(2, 3).unwrap());
+        let mut world = World::new(Calendar::new(2, 3).unwrap(), &content());
         world.advance(ticks, &mut Vec::new());
         world
     }
 
     #[test]
     fn fresh_database_has_no_world() {
-        let mut storage = Sqlite::in_memory().unwrap();
+        let mut storage = Sqlite::in_memory(content()).unwrap();
         assert_eq!(storage.schema_version().unwrap(), 1);
         assert!(storage.latest_world().unwrap().is_none());
     }
 
     #[test]
     fn snapshot_round_trips_and_latest_wins() {
-        let mut storage = Sqlite::in_memory().unwrap();
+        let mut storage = Sqlite::in_memory(content()).unwrap();
         storage.save_world(&world_at(6)).unwrap();
         storage.save_world(&world_at(12)).unwrap();
         let world = storage.latest_world().unwrap().unwrap();
@@ -262,7 +282,7 @@ mod tests {
 
     #[test]
     fn events_are_journaled_in_order() {
-        let mut storage = Sqlite::in_memory().unwrap();
+        let mut storage = Sqlite::in_memory(content()).unwrap();
         storage
             .append_events(Tick(6), &[Event::DayStarted { day: 2 }])
             .unwrap();
@@ -289,10 +309,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("reopen.sqlite");
         {
-            let mut storage = Sqlite::open(&path).unwrap();
+            let mut storage = Sqlite::open(&path, content()).unwrap();
             storage.save_world(&world_at(3)).unwrap();
         }
-        let mut storage = Sqlite::open(&path).unwrap();
+        let mut storage = Sqlite::open(&path, content()).unwrap();
         assert_eq!(storage.schema_version().unwrap(), 1);
         assert_eq!(storage.latest_world().unwrap().unwrap().tick(), Tick(3));
         drop(storage);
@@ -301,7 +321,7 @@ mod tests {
 
     #[test]
     fn v1_snapshots_are_migrated() {
-        let mut storage = Sqlite::in_memory().unwrap();
+        let mut storage = Sqlite::in_memory(content()).unwrap();
         storage
             .conn
             .execute(
@@ -312,15 +332,12 @@ mod tests {
         let world = storage.latest_world().unwrap().unwrap();
         assert_eq!(world.tick(), Tick(12));
         assert_eq!(world.calendar(), &Calendar::new(2, 3).unwrap());
-        assert_eq!(
-            world.bodies().len(),
-            World::new(Calendar::default()).bodies().len()
-        );
+        assert_eq!(world.bodies().len(), World::default().bodies().len());
     }
 
     #[test]
     fn v2_snapshots_are_migrated() {
-        let mut storage = Sqlite::in_memory().unwrap();
+        let mut storage = Sqlite::in_memory(content()).unwrap();
         // A v2 world: tiles stored one by one, bodies on the old 32×32 valley.
         let v2 = r#"{"calendar":{"ticks_per_second":2,"seconds_per_day":3},"tick":40,
             "map":{"width":2,"height":1,"tiles":["grass","water"]},
@@ -340,8 +357,29 @@ mod tests {
     }
 
     #[test]
+    fn v3_snapshots_keep_their_bodies_and_gain_items() {
+        let mut storage = Sqlite::in_memory(content()).unwrap();
+        // A v3 world: map as spec, one body somewhere unusual, no items.
+        let v3 = r#"{"calendar":{"ticks_per_second":2,"seconds_per_day":3},"tick":50,
+            "map":{"kind":"valley","width":256,"height":256,"seed":1},
+            "bodies":[{"id":1,"pos":{"x":200,"y":200},"path":[],"next_step":50}],"next_body":2}"#;
+        storage
+            .conn
+            .execute(
+                "INSERT INTO snapshots (tick, format_version, data) VALUES (50, 3, ?1)",
+                [v3],
+            )
+            .unwrap();
+        let world = storage.latest_world().unwrap().unwrap();
+        assert_eq!(world.tick(), Tick(50));
+        assert_eq!(world.bodies().len(), 1);
+        assert_eq!(world.bodies()[0].pos(), sim::Pos::new(200, 200));
+        assert!(!world.items().is_empty(), "the valley's items appeared");
+    }
+
+    #[test]
     fn unknown_snapshot_format_is_refused() {
-        let mut storage = Sqlite::in_memory().unwrap();
+        let mut storage = Sqlite::in_memory(content()).unwrap();
         storage
             .conn
             .execute(
@@ -363,7 +401,7 @@ mod tests {
     fn newer_schema_is_refused() {
         let conn = Connection::open_in_memory().unwrap();
         conn.pragma_update(None, "user_version", 42).unwrap();
-        let err = Sqlite::from_connection(conn).unwrap_err();
+        let err = Sqlite::from_connection(conn, content()).unwrap_err();
         assert!(matches!(
             err,
             StorageError::SchemaTooNew {

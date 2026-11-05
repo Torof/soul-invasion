@@ -14,9 +14,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use protocol::ServerMessage;
 use server::cli::{CliError, DataLocation, USAGE};
+use server::content;
 use server::net::{Published, Shared, serve};
 use server::{Options, Sqlite, Storage, StorageError, run_headless, run_paced};
-use sim::{Event, World};
+use sim::{Content, Event, World};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
@@ -50,8 +51,17 @@ fn run(opts: &Options) -> Result<(), BoxError> {
         protocol::PROTOCOL_VERSION
     );
 
+    let content_dir = content::find_dir(opts.content.as_deref())?;
+    let content = Arc::new(content::load(&content_dir)?);
+    println!(
+        "content: {} ({} materials, {} spawn rules)",
+        content_dir.display(),
+        content.materials.len(),
+        content.spawns.len()
+    );
+
     let stop = Arc::new(AtomicBool::new(false));
-    let (mut world, persister) = open_world(opts, Arc::clone(&stop))?;
+    let (mut world, persister) = open_world(opts, &content, Arc::clone(&stop))?;
     let calendar = *world.calendar();
     println!(
         "calendar: {} ticks/s, {} s/day ({} ticks/day)",
@@ -84,15 +94,19 @@ fn run(opts: &Options) -> Result<(), BoxError> {
 }
 
 /// Opens storage and loads the latest world from it, or creates a new one.
-fn open_world(opts: &Options, stop: Arc<AtomicBool>) -> Result<(World, Persister), BoxError> {
+fn open_world(
+    opts: &Options,
+    content: &Arc<Content>,
+    stop: Arc<AtomicBool>,
+) -> Result<(World, Persister), BoxError> {
     let mut storage: Box<dyn Storage> = match &opts.data {
         DataLocation::File(path) => {
             println!("data: {}", path.display());
-            Box::new(Sqlite::open(path)?)
+            Box::new(Sqlite::open(path, Arc::clone(content))?)
         }
         DataLocation::Ephemeral => {
             println!("data: ephemeral (nothing is saved)");
-            Box::new(Sqlite::in_memory()?)
+            Box::new(Sqlite::in_memory(Arc::clone(content))?)
         }
     };
 
@@ -108,7 +122,7 @@ fn open_world(opts: &Options, stop: Arc<AtomicBool>) -> Result<(World, Persister
         world
     } else {
         println!("world: new");
-        World::new(opts.calendar)
+        World::new(opts.calendar, content)
     };
 
     Ok((world, Persister::new(storage, stop)))

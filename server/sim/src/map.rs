@@ -411,16 +411,16 @@ fn octile(a: Pos, b: Pos) -> u32 {
     STRAIGHT_COST * dx.max(dy) + (DIAGONAL_COST - STRAIGHT_COST) * dx.min(dy)
 }
 
-/// A tiny deterministic generator, so map generation needs no dependency
+/// A tiny deterministic generator, so world generation needs no dependency
 /// and gives the same valley on every machine.
-struct Lcg(u64);
+pub(crate) struct Lcg(u64);
 
 impl Lcg {
-    fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64) -> Self {
         Self(seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1))
     }
 
-    fn next_below(&mut self, bound: u32) -> u32 {
+    pub(crate) fn next_below(&mut self, bound: u32) -> u32 {
         self.0 = self
             .0
             .wrapping_mul(6_364_136_223_846_793_005)
