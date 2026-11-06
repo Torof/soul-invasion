@@ -24,6 +24,7 @@ const GROUND_METRES := 4.0
 const GROUND_TEXTURES := {
 	"grass": "res://art/ground/ground_grass_01_summer.png",
 	"forest": "res://art/ground/ground_grass_02_summer.png",
+	"water": "res://art/ground/ground_water_01_summer.png",
 }
 ## terrain -> compatible textures shown in soft patches over the first:
 ## "second" over wide areas (a drier grass), "worn" in a few spots.
@@ -49,6 +50,13 @@ const FRINGE := 2
 const GROUND_ORDER := {"grass": 0, "forest": 1}
 ## terrain -> shader parameters that differ from the shader's defaults
 const GROUND_PARAMS := {
+	"water": {
+		"has_variants": true,
+		"dry_strength": 0.0,
+		# The image is a bright cyan; muted a little toward the valley's
+		# dull greens.
+		"base_tint": Color(0.78, 0.84, 0.88),
+	},
 	"forest": {
 		"base_tint": Color(0.56, 0.70, 0.74),
 		"sibling_cover": 0.25,

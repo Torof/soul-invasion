@@ -28,14 +28,21 @@ func _ready() -> void:
 		add_child(DevWatcher.new())
 	var shot := OS.get_environment("SOUL_INVASION_SCREENSHOT")
 	if not shot.is_empty():
-		var zoom := OS.get_environment("SOUL_INVASION_ZOOM")
-		if zoom.is_valid_float():
-			_world.get_node("Camera").zoom = Vector2.ONE * float(zoom)
 		_screenshot_then_quit(shot)
 
 
 func _screenshot_then_quit(path: String) -> void:
-	await get_tree().create_timer(3.0).timeout
+	await get_tree().create_timer(2.5).timeout
+	# Framing for the screenshot, once the world is in: SOUL_INVASION_ZOOM
+	# sets the camera zoom, SOUL_INVASION_LOOK_AT="x,y" frames that tile
+	# instead of the body.
+	var zoom := OS.get_environment("SOUL_INVASION_ZOOM")
+	if zoom.is_valid_float():
+		_world.get_node("Camera").zoom = Vector2.ONE * float(zoom)
+	var look := OS.get_environment("SOUL_INVASION_LOOK_AT").split(",")
+	if look.size() == 2 and look[0].is_valid_int() and look[1].is_valid_int():
+		_world.look_at_tile(Vector2i(int(look[0]), int(look[1])))
+	await get_tree().create_timer(0.5).timeout
 	get_viewport().get_texture().get_image().save_png(path)
 	get_tree().quit()
 
