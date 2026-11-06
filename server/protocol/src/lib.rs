@@ -27,7 +27,8 @@ use serde::{Deserialize, Serialize};
 ///   items appear and vanish; night falls.
 /// - v6: `world_state` carries the clock (tick, ticks per second and per
 ///   day, pace), so clients can show the time of day between messages.
-pub const PROTOCOL_VERSION: u32 = 6;
+/// - v7: materials carry their mass and a description, for tooltips.
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// A tile on the map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,10 +121,14 @@ pub struct MaterialView {
     pub id: String,
     /// Name shown to players.
     pub name: String,
+    /// One sentence shown to players.
+    pub description: String,
     /// `#rrggbb`.
     pub colour: String,
     /// Can it be eaten?
     pub edible: bool,
+    /// Mass of one piece, in grams.
+    pub mass_g: u32,
 }
 
 /// A piece of material lying on the ground, as the client sees it.
@@ -391,8 +396,10 @@ mod tests {
                 materials: vec![MaterialView {
                     id: "flint".into(),
                     name: "Flint".into(),
+                    description: "A hard stone.".into(),
                     colour: "#5e5a52".into(),
                     edible: false,
+                    mass_g: 400,
                 }],
                 night: true,
                 clock: Clock {

@@ -1,32 +1,54 @@
 // Materials of the valley (D15). Placeholder values, tuned by play.
 //
-// id:        snake_case, unique; the name objects and rules refer to.
-// kind:      stone | wood | plant | animal.
-// mass_kg:   one piece.
-// hardness:  0 (soft) to 10 (hardest); knapping and cutting compare it.
-// flammable: feeds a fire.
-// food:      None, or (energy_kj, keeps_days) before it spoils untreated.
-// look:      provisional graphics, a colour.
+// id:          snake_case, unique; the name objects and rules refer to.
+// name:        shown to players.
+// description: one sentence shown to players, what it is and what it is for.
+// kind:        stone | wood | plant | animal.
+// mass_kg:     one piece.
+// hardness:    0 (soft) to 10 (hardest); knapping and cutting compare it.
+// flammable:   feeds a fire.
+// food:        None, or (energy_kj, keeps_days) before it spoils untreated.
+// look:        provisional graphics, a colour.
 [
-    (id: "flint", name: "Flint", kind: stone, mass_kg: 0.4, hardness: 7,
+    (id: "flint", name: "Flint",
+     description: "A hard stone that flakes to a sharp edge when struck.",
+     kind: stone, mass_kg: 0.4, hardness: 7,
      flammable: false, food: None, look: (colour: "#5e5a52")),
-    (id: "pebble", name: "Pebble", kind: stone, mass_kg: 0.6, hardness: 6,
+    (id: "pebble", name: "Pebble",
+     description: "A smooth river stone, good for hammering.",
+     kind: stone, mass_kg: 0.6, hardness: 6,
      flammable: false, food: None, look: (colour: "#9a948a")),
-    (id: "branch", name: "Branch", kind: wood, mass_kg: 1.5, hardness: 3,
+    (id: "branch", name: "Branch",
+     description: "Dead wood, dry enough to burn or to be worked.",
+     kind: wood, mass_kg: 1.5, hardness: 3,
      flammable: true, food: None, look: (colour: "#7a5a3a")),
-    (id: "log", name: "Log", kind: wood, mass_kg: 25.0, hardness: 3,
+    (id: "log", name: "Log",
+     description: "A felled trunk, too heavy to carry alone.",
+     kind: wood, mass_kg: 25.0, hardness: 3,
      flammable: true, food: None, look: (colour: "#5a3e24")),
-    (id: "fibres", name: "Fibres", kind: plant, mass_kg: 0.2, hardness: 1,
+    (id: "fibres", name: "Fibres",
+     description: "Tough plant fibres, twisted into cordage.",
+     kind: plant, mass_kg: 0.2, hardness: 1,
      flammable: true, food: None, look: (colour: "#b8b06a")),
-    (id: "berries", name: "Berries", kind: plant, mass_kg: 0.1, hardness: 0,
+    (id: "berries", name: "Berries",
+     description: "A handful of ripe berries. They spoil in days.",
+     kind: plant, mass_kg: 0.1, hardness: 0,
      flammable: false, food: Some((energy_kj: 250, keeps_days: 3)), look: (colour: "#8a2a5a")),
-    (id: "hide", name: "Hide", kind: animal, mass_kg: 3.0, hardness: 2,
+    (id: "hide", name: "Hide",
+     description: "The skin of an animal; warm once worked.",
+     kind: animal, mass_kg: 3.0, hardness: 2,
      flammable: false, food: None, look: (colour: "#a67c52")),
-    (id: "meat", name: "Meat", kind: animal, mass_kg: 1.0, hardness: 1,
+    (id: "meat", name: "Meat",
+     description: "Raw meat. Filling, and quick to spoil.",
+     kind: animal, mass_kg: 1.0, hardness: 1,
      flammable: false, food: Some((energy_kj: 1200, keeps_days: 2)), look: (colour: "#b03a3a")),
-    (id: "bone", name: "Bone", kind: animal, mass_kg: 0.5, hardness: 4,
+    (id: "bone", name: "Bone",
+     description: "A long bone; carved into needles and points.",
+     kind: animal, mass_kg: 0.5, hardness: 4,
      flammable: false, food: None, look: (colour: "#e8e0c8")),
     // What a dead body becomes: a thing on the ground, like any other (D33).
-    (id: "corpse", name: "Corpse", kind: animal, mass_kg: 60.0, hardness: 1,
+    (id: "corpse", name: "Corpse",
+     description: "Someone who died here.",
+     kind: animal, mass_kg: 60.0, hardness: 1,
      flammable: false, food: None, look: (colour: "#4a3a3a")),
 ]

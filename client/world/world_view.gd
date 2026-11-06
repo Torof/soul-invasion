@@ -41,6 +41,11 @@ var _items: Dictionary = {}
 var _tiles: Dictionary = {}
 ## material id -> edible?
 var _edible: Dictionary = {}
+## material id -> the whole catalogue entry, for tooltips
+var _materials: Dictionary = {}
+
+## Words for what is under the mouse, or "" when nothing is.
+signal hovered(text: String)
 var _night := false
 var _piloted := -1
 ## Where the piloted body was asked to go, highlighted until it gets there.
@@ -79,11 +84,13 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	_looks.clear()
 	_names.clear()
 	_edible.clear()
+	_materials.clear()
 	for m in materials:
 		var id := str(m.get("id", ""))
 		_looks[id] = Color.from_string(str(m.get("colour", "")), Color.MAGENTA)
 		_names[id] = str(m.get("name", id))
 		_edible[id] = bool(m.get("edible", false))
+		_materials[id] = m
 	for chunk: ChunkView in _chunks.values():
 		chunk.queue_free()
 	_chunks.clear()
@@ -230,6 +237,19 @@ static func _tile_of(mm: Vector2) -> Vector2i:
 	return Vector2i(floori(mm.x / MM_PER_TILE), floori(mm.y / MM_PER_TILE))
 
 
+## What stands or lies on a tile, as words for a tooltip.
+func _describe(tile: Vector2i) -> String:
+	var lines: PackedStringArray = []
+	for id: int in _bodies:
+		if _tile_of(_bodies[id]["at"]) == tile:
+			lines.append(Tooltip.describe_body(id, _bodies[id]["asleep"], id == _piloted))
+	var key := Iso.chunk_of(tile, _chunk_size)
+	for item in _items.get(key, []):
+		if Vector2i(int(item.get("x", 0)), int(item.get("y", 0))) == tile:
+			lines.append(Tooltip.describe_item(_materials.get(str(item.get("material", "")), {})))
+	return "\n".join(lines)
+
+
 ## Zoom clamped to the allowed range.
 static func clamp_zoom(zoom: float) -> float:
 	return clampf(zoom, ZOOM_MIN, ZOOM_MAX)
@@ -271,6 +291,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		var tile := Iso.screen_to_tile(get_local_mouse_position())
 		if tile != _hover:
 			_hover = tile
+			hovered.emit(_describe(tile))
 			queue_redraw()
 	elif event is InputEventMouseButton:
 		match event.button_index:
