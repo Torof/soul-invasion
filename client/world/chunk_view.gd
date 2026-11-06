@@ -3,6 +3,20 @@ extends Node2D
 ## Draws one chunk of ground and the items lying on it. Its draw commands
 ## are retained by the renderer, so they cost nothing per frame until the
 ## chunk changes.
+##
+## The ground is drawn from top-down seamless textures projected onto the
+## diamonds (docs/09-visual-production.md): a texture covers
+## GROUND_METRES × GROUND_METRES metres and repeats; each tile's diamond
+## shows the square of the texture it stands on. Terrains without a
+## texture yet keep a flat colour.
+
+## Metres covered by one ground texture.
+const GROUND_METRES := 4.0
+## terrain -> path of its ground texture under res://art/ground/
+const GROUND_TEXTURES := {
+	"grass": "res://art/ground/ground_grass_01_summer.png",
+}
+static var _ground_cache: Dictionary = {}
 
 const COLORS := {
 	"grass": Color(0.45, 0.62, 0.30),
@@ -15,6 +29,32 @@ const ITEM_RADIUS := 4.5
 
 var _origin := Vector2i.ZERO
 var _size := 32
+
+
+func _ready() -> void:
+	# Seamless textures repeat across the chunk; linear filtering for the zoom.
+	texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
+	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+
+
+## The ground texture of a terrain, or null when it has none yet.
+static func ground_texture(terrain: String) -> Texture2D:
+	if not _ground_cache.has(terrain):
+		var path: String = GROUND_TEXTURES.get(terrain, "")
+		_ground_cache[terrain] = load(path) if path != "" and ResourceLoader.exists(path) else null
+	return _ground_cache[terrain]
+
+
+## Texture coordinates of a tile's four corners, clockwise from the top of
+## the diamond: the square of the top-down texture under that tile.
+static func ground_uvs(x: int, y: int) -> PackedVector2Array:
+	var s := 1.0 / GROUND_METRES
+	return PackedVector2Array([
+		Vector2(x, y) * s,
+		Vector2(x + 1, y) * s,
+		Vector2(x + 1, y + 1) * s,
+		Vector2(x, y + 1) * s,
+	])
 var _tiles: Array = []
 ## [{"x", "y", "material"}] as received
 var _items: Array = []
@@ -33,12 +73,17 @@ func show_chunk(origin: Vector2i, size: int, tiles: Array, items: Array, looks: 
 
 
 func _draw() -> void:
+	var white := PackedColorArray([Color.WHITE, Color.WHITE, Color.WHITE, Color.WHITE])
 	for y in _size:
 		for x in _size:
 			var terrain: String = str(_tiles[y * _size + x])
-			draw_colored_polygon(
-				Iso.diamond(_origin.x + x, _origin.y + y), COLORS.get(terrain, Color.MAGENTA)
-			)
+			var tx := _origin.x + x
+			var ty := _origin.y + y
+			var texture := ground_texture(terrain)
+			if texture != null:
+				draw_polygon(Iso.diamond(tx, ty), white, ground_uvs(tx, ty), texture)
+			else:
+				draw_colored_polygon(Iso.diamond(tx, ty), COLORS.get(terrain, Color.MAGENTA))
 	# Items: a small disc of the material's colour, slightly off the
 	# tile's centre so several on one tile stay visible.
 	var on_tile: Dictionary = {}

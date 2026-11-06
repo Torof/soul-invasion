@@ -13,6 +13,18 @@ extends Control
 func _ready() -> void:
 	_world.hovered.connect(_on_hovered)
 	Net.connect_to()
+	# Development aid: with SOUL_INVASION_SCREENSHOT set to a path, save what
+	# the window shows after three seconds and quit (headless runs cannot
+	# render, so this is how a change is looked at without a person).
+	var shot := OS.get_environment("SOUL_INVASION_SCREENSHOT")
+	if not shot.is_empty():
+		_screenshot_then_quit(shot)
+
+
+func _screenshot_then_quit(path: String) -> void:
+	await get_tree().create_timer(3.0).timeout
+	get_viewport().get_texture().get_image().save_png(path)
+	get_tree().quit()
 
 
 func _on_hovered(text: String) -> void:
