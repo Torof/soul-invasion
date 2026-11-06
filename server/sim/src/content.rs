@@ -53,6 +53,8 @@ pub struct Material {
     pub id: String,
     /// Name shown to players.
     pub name: String,
+    /// One sentence shown to players, what it is and what it is for.
+    pub description: String,
     /// Family.
     pub kind: MaterialKind,
     /// Mass of one piece, in kilograms.
@@ -246,6 +248,9 @@ impl Content {
             if material.name.trim().is_empty() {
                 return Err(invalid("name is empty"));
             }
+            if material.description.trim().is_empty() {
+                return Err(invalid("description is empty"));
+            }
             if !(material.mass_kg.is_finite() && material.mass_kg > 0.0) {
                 return Err(invalid("mass_kg must be positive"));
             }
@@ -315,9 +320,9 @@ fn is_hex_colour(text: &str) -> bool {
 
 /// Materials of [`Content::sample`].
 pub const SAMPLE_MATERIALS: &str = r##"[
-    (id: "flint", name: "Flint", kind: stone, mass_kg: 0.4, hardness: 7, flammable: false, food: None, look: (colour: "#6e6a62")),
-    (id: "branch", name: "Branch", kind: wood, mass_kg: 1.5, hardness: 3, flammable: true, food: None, look: (colour: "#7a5a3a")),
-    (id: "berries", name: "Berries", kind: plant, mass_kg: 0.1, hardness: 0, flammable: false, food: Some((energy_kj: 250, keeps_days: 3)), look: (colour: "#8a2a5a")),
+    (id: "flint", name: "Flint", description: "A hard stone that flakes to a sharp edge.", kind: stone, mass_kg: 0.4, hardness: 7, flammable: false, food: None, look: (colour: "#6e6a62")),
+    (id: "branch", name: "Branch", description: "Dead wood, dry enough to burn.", kind: wood, mass_kg: 1.5, hardness: 3, flammable: true, food: None, look: (colour: "#7a5a3a")),
+    (id: "berries", name: "Berries", description: "A handful of ripe berries.", kind: plant, mass_kg: 0.1, hardness: 0, flammable: false, food: Some((energy_kj: 250, keeps_days: 3)), look: (colour: "#8a2a5a")),
 ]"##;
 
 /// Movement rules of [`Content::sample`]: the valley's own.
@@ -409,7 +414,7 @@ mod tests {
     fn duplicate_and_unknown_ids_are_refused() {
         let twice = format!(
             "[{0}, {0}]",
-            r##"(id: "flint", name: "Flint", kind: stone, mass_kg: 1, hardness: 7, flammable: false, food: None, look: (colour: "#000000"))"##
+            r##"(id: "flint", name: "Flint", description: "A stone.", kind: stone, mass_kg: 1, hardness: 7, flammable: false, food: None, look: (colour: "#000000"))"##
         );
         assert!(matches!(
             Content::from_ron(&twice, "[]", SAMPLE_MOVEMENT, SAMPLE_NEEDS).unwrap_err(),
@@ -461,6 +466,18 @@ mod tests {
             Content::from_ron(&colour, "[]", SAMPLE_MOVEMENT, SAMPLE_NEEDS).unwrap_err(),
             ContentError::InvalidValue {
                 what: "look.colour must be #rrggbb",
+                ..
+            }
+        ));
+        let mute = SAMPLE_MATERIALS.replacen(
+            "description: \"A hard stone that flakes to a sharp edge.\"",
+            "description: \" \"",
+            1,
+        );
+        assert!(matches!(
+            Content::from_ron(&mute, "[]", SAMPLE_MOVEMENT, SAMPLE_NEEDS).unwrap_err(),
+            ContentError::InvalidValue {
+                what: "description is empty",
                 ..
             }
         ));

@@ -195,8 +195,10 @@ impl Shared {
             .map(|m| MaterialView {
                 id: m.id.clone(),
                 name: m.name.clone(),
+                description: m.description.clone(),
                 colour: m.look.colour.clone(),
                 edible: m.food.is_some(),
+                mass_g: grams(m.mass_kg),
             })
             .collect();
         let mut items: BTreeMap<ChunkPos, Vec<ItemState>> = BTreeMap::new();
@@ -508,6 +510,12 @@ impl View {
     pub fn is_empty(&self) -> bool {
         self.chunks.is_empty()
     }
+}
+
+/// A mass in grams, for the wire.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn grams(mass_kg: f32) -> u32 {
+    (mass_kg * 1000.0).round().clamp(0.0, 1e9) as u32
 }
 
 /// A pace as thousandths, for the wire; absurd paces saturate.
@@ -1088,7 +1096,7 @@ mod tests {
             shared
                 .materials
                 .iter()
-                .any(|m| m.id == "berries" && m.name == "Berries")
+                .any(|m| m.id == "berries" && m.name == "Berries" && m.mass_g == 100)
         );
         assert!(shared.chunk_message(ChunkPos::new(-1, 0)).is_none());
 

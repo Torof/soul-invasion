@@ -95,6 +95,16 @@ unique_name_in_owner = true
 layout_mode = 2
 text = "connecting…"
 
+[node name="Tooltip" type="PanelContainer" parent="Ui"]
+unique_name_in_owner = true
+visible = false
+mouse_filter = 2
+
+[node name="Text" type="Label" parent="Ui/Tooltip"]
+unique_name_in_owner = true
+layout_mode = 2
+text = ""
+
 [node name="Help" type="Label" parent="Ui"]
 layout_mode = 1
 anchors_preset = 10

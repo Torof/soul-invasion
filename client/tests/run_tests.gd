@@ -17,6 +17,7 @@ func _init() -> void:
 	_test_main_scene_lets_clicks_reach_the_world()
 	_test_chunk_of_matches_the_server()
 	_test_time_of_day()
+	_test_tooltips()
 	print("client tests: %d checks, %d failures" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
 
@@ -105,6 +106,17 @@ func _test_time_of_day() -> void:
 	_check(is_equal_approx(clock.tick_at(3000), 140.0), "two real seconds at double pace: 40 ticks")
 	clock.sync(500.0, 3000)
 	_check(is_equal_approx(clock.tick_at(3500), 510.0), "resynced on a day start")
+
+
+func _test_tooltips() -> void:
+	var flint := {"name": "Flint", "mass_g": 400, "edible": false, "description": "A hard stone."}
+	_check(Tooltip.describe_item(flint) == "Flint · 400 g\nA hard stone.", "an item: name, mass, description")
+	var log := {"name": "Log", "mass_g": 25000, "edible": false, "description": ""}
+	_check(Tooltip.describe_item(log) == "Log · 25.0 kg", "kilograms past a thousand grams, no empty line")
+	var berries := {"name": "Berries", "mass_g": 100, "edible": true, "description": "Ripe."}
+	_check(Tooltip.describe_item(berries).begins_with("Berries · 100 g · edible"), "edible is said")
+	_check(Tooltip.describe_body(2, true, false) == "body 2 · asleep", "a sleeping body")
+	_check(Tooltip.describe_body(1, false, true) == "body 1 (you)", "the piloted body")
 
 
 func _test_chunk_of_matches_the_server() -> void:
