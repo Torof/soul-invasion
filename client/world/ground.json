@@ -16,7 +16,11 @@
 			"sibling": "res://art/ground/ground_grass_06_summer.png"
 		},
 		"params": {
-			"base_tint": [0.56, 0.70, 0.74],
+			"base_tint": [
+				0.56,
+				0.7,
+				0.74
+			],
 			"sibling_cover": 0.25,
 			"has_variants": true,
 			"bare_keep": 0.35,
@@ -24,16 +28,28 @@
 		}
 	},
 	"water": {
-		"note": "The river: the cartoon water with its own streaks, brought toward the reference's river (less saturated, greener); banks a little lighter with a thin wet line. The calm water (02) stays in reserve.",
+		"note": "The river: calm cartoon water (flat teal plates, thin dark lines, specks, a few thin pale lines), with a paler sister of the same family blended over 40 %, both brought toward the reference's river by tints; banks a little lighter with a thin wet line.",
 		"texture": "res://art/ground/ground_water_01_summer.png",
-		"layers": {},
+		"layers": {
+			"sibling": "res://art/ground/ground_water_03_summer.png"
+		},
 		"params": {
 			"has_variants": true,
 			"dry_strength": 0.0,
 			"shore_lighten": 0.5,
 			"bank_line": 0.3,
 			"current_strength": 0.0,
-			"base_tint": [1.1, 0.9, 0.85]
+			"base_tint": [
+				1.0,
+				0.88,
+				0.78
+			],
+			"sibling_cover": 0.4,
+			"sibling_tint": [
+				0.8,
+				0.975,
+				0.97
+			]
 		}
 	}
 }
