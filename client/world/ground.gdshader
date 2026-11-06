@@ -6,13 +6,26 @@
 shader_type canvas_item;
 
 uniform sampler2D noise_texture : repeat_enable, filter_linear;
-// A second, compatible texture of the same terrain (made with the first
-// as style reference), shown in soft patches: worn grass on grass.
+// Up to two more compatible textures of the same terrain (made with the
+// first as style reference), each shown in soft patches of its own: a
+// drier grass over wide areas, a worn grass in a few spots.
+uniform sampler2D second_texture : repeat_enable, filter_linear;
+uniform bool has_second = false;
+uniform float second_scale = 0.03;
+uniform float second_cover = 0.45;
 uniform sampler2D worn_texture : repeat_enable, filter_linear;
 uniform bool has_worn = false;
 // Period of the patches, in texture units, and how much ground they take.
 uniform float worn_scale = 0.05;
-uniform float worn_cover = 0.3;
+uniform float worn_cover = 0.15;
+
+// Soft patches covering about `cover` of the ground, from the noise read
+// at `scale` with an offset so each layer has its own shape.
+float patches(vec2 uv, float scale, vec2 shift, float cover) {
+	float m = texture(noise_texture, uv * scale + shift).r;
+	float threshold = 1.0 - cover;
+	return smoothstep(threshold - 0.1, threshold + 0.1, m);
+}
 // Noise period, in texture units (one unit is one texture, four metres).
 uniform float noise_scale = 0.09;
 // Where the second copy is taken from, in texture units.
@@ -34,14 +47,11 @@ void fragment() {
 	float n = texture(noise_texture, uv * noise_scale).r;
 	float weight = smoothstep(0.46, 0.54, n);
 	vec4 ground = mix(first, second, weight);
+	if (has_second) {
+		ground = mix(ground, texture(second_texture, uv), patches(uv, second_scale, vec2(0.2, 0.7), second_cover));
+	}
 	if (has_worn) {
-		// Soft patches of the worn texture, from a second reading of the
-		// noise at another scale and offset.
-		float m = texture(noise_texture, uv * worn_scale + vec2(0.5, 0.25)).r;
-		float threshold = 1.0 - worn_cover;
-		float patch = smoothstep(threshold - 0.08, threshold + 0.08, m);
-		vec4 worn = texture(worn_texture, uv);
-		ground = mix(ground, worn, patch);
+		ground = mix(ground, texture(worn_texture, uv), patches(uv, worn_scale, vec2(0.5, 0.25), worn_cover));
 	}
 	// COLOR comes in already multiplied by the texture: rebuild it from
 	// the blended texture and the vertex colour, do not multiply again
