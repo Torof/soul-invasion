@@ -1,19 +1,22 @@
 // The ground: one seamless top-down texture per terrain, projected onto
-// the diamonds (docs/09-visual-production.md). To break its four-metre
-// repetition without another image, every texture is laid in four
-// variants (turned by quarter turns, each shifted) chosen by soft zones
-// of noise: same style and colours by construction, no square borders,
-// and the period becomes the noise's, far longer than four metres.
+// the diamonds (docs/09-visual-production.md). Its four-metre repetition
+// is broken by blending it with a sister image over soft noise and, where
+// wanted, by laying it in shifted variants chosen by zones of noise. The
+// textures are never turned: drawn with a slight three-quarter reading,
+// a turned grass reads upside down, like a roof.
 shader_type canvas_item;
 
 uniform sampler2D noise_texture : repeat_enable, filter_linear;
 // Noise period, in texture units (one unit is one texture, four metres).
 uniform float noise_scale = 0.09;
-// Period of the zones where one turned variant is laid: wide and few,
+// Period of the zones where one shifted variant is laid: wide and few,
 // so the ground stays calm; the cuts between them are short.
 uniform float variant_scale = 0.05;
-// Where the turned copies are taken from, in texture units.
+// Where the shifted copies are taken from, in texture units.
 uniform vec2 second_offset = vec2(0.37, 0.63);
+// Whether the textures are laid in shifted variants (the woods) or as
+// they are (the meadow, whose sister already breaks the repetition).
+uniform bool has_variants = false;
 // A sister image of the ground (same grass, drawn differently), blended
 // with the first over slow noise.
 uniform sampler2D sibling_texture : repeat_enable, filter_linear;
@@ -55,16 +58,18 @@ float patches(vec2 uv, float scale, vec2 shift, float cover) {
 	return smoothstep(threshold - 0.1, threshold + 0.1, m);
 }
 
-// A texture laid in four variants, turned by quarter turns and shifted
-// (a seamless texture stays seamless under those), chosen by three soft
-// noises, so no four-metre square ever repeats as such. The built-in
-// TEXTURE cannot go through a sampler parameter, so the sampling is
-// written out where it is used and only the coordinates and weights are
-// shared.
-vec2 uv_b(vec2 uv) { return vec2(-uv.y, uv.x) + second_offset; }
-vec2 uv_c(vec2 uv) { return -uv + vec2(0.11, 0.47); }
-vec2 uv_d(vec2 uv) { return vec2(uv.y, -uv.x) + vec2(0.73, 0.29); }
+// A texture laid in four variants shifted (never turned), chosen by three
+// soft noises, so the four-metre grid is out of phase from one zone to
+// the next. The built-in TEXTURE cannot go through a sampler parameter,
+// so its sampling is written out where it is used and only the
+// coordinates and weights are shared.
+vec2 uv_b(vec2 uv) { return uv + second_offset; }
+vec2 uv_c(vec2 uv) { return uv + vec2(0.11, 0.47); }
+vec2 uv_d(vec2 uv) { return uv + vec2(0.73, 0.29); }
 vec3 variant_weights(vec2 uv) {
+	if (!has_variants) {
+		return vec3(0.0);
+	}
 	float n1 = texture(noise_texture, uv * variant_scale).r;
 	float n2 = texture(noise_texture, uv * variant_scale * 0.7 + vec2(0.41, 0.17)).r;
 	float n3 = texture(noise_texture, uv * variant_scale * 1.3 + vec2(0.89, 0.61)).r;
@@ -90,7 +95,7 @@ void fragment() {
 	vec4 ground = blend4(texture(TEXTURE, uv), texture(TEXTURE, uv_b(uv)), texture(TEXTURE, uv_c(uv)), texture(TEXTURE, uv_d(uv)), variant_weights(uv));
 	if (has_sibling) {
 		vec4 sibling = varied(sibling_texture, uv);
-		float n = texture(noise_texture, uv * noise_scale * 0.5 + vec2(0.3, 0.8)).r;
+		float n = texture(noise_texture, uv * noise_scale).r;
 		float threshold = 1.0 - sibling_cover;
 		float weight = smoothstep(threshold - 0.04, threshold + 0.04, n);
 		vec4 base = ground;
