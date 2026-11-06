@@ -15,6 +15,9 @@ uniform sampler2D sibling_texture : repeat_enable, filter_linear;
 uniform bool has_sibling = false;
 // Share of the ground the sibling (or the turned copy) covers.
 uniform float sibling_cover = 0.5;
+// Share of the base's bare spots (its brown pixels) kept; the others
+// show the sibling's grass instead. Needs a sibling.
+uniform float bare_keep = 1.0;
 uniform sampler2D second_texture : repeat_enable, filter_linear;
 uniform bool has_second = false;
 uniform float second_scale = 0.03;
@@ -65,6 +68,11 @@ void fragment() {
 	float threshold = 1.0 - sibling_cover;
 	float weight = smoothstep(threshold - 0.04, threshold + 0.04, n);
 	vec4 ground = mix(first, second, weight);
+	if (has_sibling && bare_keep < 1.0) {
+		float bare = smoothstep(0.0, 0.08, first.r - first.g);
+		float kept = patches(uv, 0.06, vec2(0.9, 0.4), bare_keep);
+		ground = mix(ground, second, bare * (1.0 - kept));
+	}
 	// Dry zones: a soft, wide mask; the tint is applied at most at
 	// dry_strength so the change stays a half-tone.
 	float d = texture(noise_texture, uv * dry_scale + vec2(0.8, 0.1)).r;
