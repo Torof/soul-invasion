@@ -11,6 +11,7 @@ Each decision is recorded with its **reason** and its **consequences**. These ar
 ### D02 — Visual style: isometric
 - **Reason**: readability of towns, roads, constructions and armies; a natural grid for building.
 - **Consequences**: choice between pure 2D and light 3D with a fixed camera and painted rendering, to be settled according to the graphics solution (probably AI). Visual consistency is the main challenge.
+- **Settled on 6 November 2026: pure 2D isometric**, a 2:1 diamond grid of one-metre cells (64 × 32 px at scale 1), the ground from top-down textures projected and blended by the engine, elements as flat images standing on it, relief later as whole levels. A relief ground in 3D was weighed and declined: it buys continuous hills and costs the grid everything else rests on. The format every image obeys is in `09-visual-production.md`; the style in `07-style-bible.md`.
 
 ### D03 — Client: Godot (GDScript)
 - **Reason**: free under the MIT license with no revenue condition, suited to 2D and stylized 3D, mature, readable text files (efficient with AI).
