@@ -57,9 +57,9 @@ const GROUND_PARAMS := {
 		"has_variants": true,
 		"dry_strength": 0.0,
 		"shore_lighten": 1.0,
-		# The image is a bright cyan; muted a little toward the valley's
-		# dull greens.
-		"base_tint": Color(0.78, 0.84, 0.88),
+		# The image is a little darker than the reference's river; lifted
+		# toward its tone (59/122/104).
+		"base_tint": Color(1.7, 1.2, 1.18),
 	},
 	"forest": {
 		"base_tint": Color(0.56, 0.70, 0.74),
