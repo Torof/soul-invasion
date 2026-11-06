@@ -156,5 +156,21 @@ func _test_ground_art_is_reachable() -> void:
 	var material := ChunkView.ground_material("grass")
 	_check(material.shader != null and material.get_shader_parameter("noise_texture") != null, "the ground material has its shader and noise")
 	_check(material.get_shader_parameter("has_worn") == true, "the grass material has its worn layer")
+	# A wood spills over the grass beside it: the shared corners are opaque,
+	# the far ones fade, and a tile far from any wood is not in the fringe.
+	var view := ChunkView.new()
+	var tiles: Array = []
+	for y in 6:
+		for x in 6:
+			tiles.append("forest" if x < 2 else "grass")
+	view.show_chunk(Vector2i.ZERO, 6, tiles, [], {})
+	var fringe := view.fringe("forest")
+	var by_tile: Dictionary = {}
+	for spill in fringe:
+		by_tile[spill["tile"]] = spill["alphas"]
+	_check(by_tile.has(Vector2i(2, 3)) and by_tile[Vector2i(2, 3)][0] == 1.0 and by_tile[Vector2i(2, 3)][3] == 1.0, "the grass tile touching the wood is opaque on that side")
+	_check(by_tile.has(Vector2i(3, 3)) and by_tile[Vector2i(3, 3)][1] < by_tile[Vector2i(3, 3)][0], "one tile further the spill fades")
+	_check(not by_tile.has(Vector2i(5, 3)), "three tiles away the grass is itself")
+	view.free()
 	var forest := ChunkView.ground_material("forest")
 	_check(forest != material and forest.get_shader_parameter("base_tint") != material.get_shader_parameter("base_tint"), "the forest has its own material, in the shade")

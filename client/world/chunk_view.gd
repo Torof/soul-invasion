@@ -39,6 +39,14 @@ const LAYER_TEXTURES := {
 		"sibling": "res://art/ground/ground_grass_06_summer.png",
 	},
 }
+## terrain -> the terrains it spills over at its edge, with a soft eroded
+## border, so a wood's edge is not a line of diamonds. The server still
+## decides every tile's terrain; this is only how the border is drawn.
+const FRINGE_OVER := {"forest": ["grass"]}
+## Width of the spill, in tiles.
+const FRINGE := 2
+## Drawing order of the textured terrains: the one that spills is above.
+const GROUND_ORDER := {"grass": 0, "forest": 1}
 ## terrain -> shader parameters that differ from the shader's defaults
 const GROUND_PARAMS := {
 	"forest": {
@@ -69,6 +77,9 @@ var _size := 32
 
 ## terrain -> the child canvas drawing that terrain's textured tiles
 var _grounds: Dictionary = {}
+## Looks up the terrain of a tile outside this chunk (set by the world
+## view); "" when unknown, and the spill stops there.
+var terrain_at: Callable
 
 
 ## The seamless noise every ground material blends with, made here, no
@@ -116,7 +127,7 @@ func _ground_of(terrain: String) -> GroundCanvas:
 	if canvas == null:
 		canvas = GroundCanvas.new()
 		canvas.terrain = terrain
-		canvas.z_index = -1
+		canvas.z_index = -3 + int(GROUND_ORDER.get(terrain, 0))
 		# Seamless textures repeat across the chunk; linear filtering for the zoom.
 		canvas.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 		canvas.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
@@ -132,6 +143,9 @@ class GroundCanvas:
 	extends Node2D
 	var terrain := ""
 	var tiles: PackedVector2Array = []
+	## [{"tile": Vector2i, "alphas": PackedFloat32Array}] the tiles of
+	## another terrain this one spills over, with the opacity at each corner.
+	var fringe: Array = []
 
 	func _draw() -> void:
 		var white := PackedColorArray([Color.WHITE, Color.WHITE, Color.WHITE, Color.WHITE])
@@ -140,6 +154,13 @@ class GroundCanvas:
 			var tx := int(tile.x)
 			var ty := int(tile.y)
 			draw_polygon(Iso.diamond(tx, ty), white, ChunkView.ground_uvs(tx, ty), texture)
+		for spill in fringe:
+			var tile: Vector2i = spill["tile"]
+			var alphas: PackedFloat32Array = spill["alphas"]
+			var colours := PackedColorArray()
+			for a in alphas:
+				colours.append(Color(1, 1, 1, a))
+			draw_polygon(Iso.diamond(tile.x, tile.y), colours, ChunkView.ground_uvs(tile.x, tile.y), texture)
 
 
 ## The ground texture of a terrain, or null when it has none yet.
@@ -177,6 +198,58 @@ func show_chunk(origin: Vector2i, size: int, tiles: Array, items: Array, looks: 
 	queue_redraw()
 
 
+## The terrain of a tile, inside this chunk or, through the world view,
+## outside it.
+func _terrain(tx: int, ty: int) -> String:
+	var x := tx - _origin.x
+	var y := ty - _origin.y
+	if x >= 0 and y >= 0 and x < _size and y < _size:
+		return str(_tiles[y * _size + x])
+	return str(terrain_at.call(Vector2i(tx, ty))) if terrain_at.is_valid() else ""
+
+
+## The tiles of this chunk that `terrain` spills over, with the opacity of
+## the spill at each corner (clockwise from the top, like Iso.diamond): 1
+## at a corner touching a tile of `terrain`, fading to 0 FRINGE + 1
+## corners away.
+func fringe(terrain: String) -> Array:
+	var over: Array = FRINGE_OVER.get(terrain, [])
+	if over.is_empty():
+		return []
+	# Corners of the chunk and a margin around it, in tile coordinates
+	# relative to the origin: corner (cx, cy) is the top of tile (cx, cy).
+	var lo := -FRINGE
+	var hi := _size + FRINGE
+	var inside: Dictionary = {}
+	for cy in range(lo, hi + 1):
+		for cx in range(lo, hi + 1):
+			for d in [Vector2i(-1, -1), Vector2i(0, -1), Vector2i(-1, 0), Vector2i(0, 0)]:
+				if _terrain(_origin.x + cx + d.x, _origin.y + cy + d.y) == terrain:
+					inside[Vector2i(cx, cy)] = true
+					break
+	var alpha_of := func(c: Vector2i) -> float:
+		var best := FRINGE + 1
+		for dy in range(-FRINGE, FRINGE + 1):
+			for dx in range(-FRINGE, FRINGE + 1):
+				if inside.has(c + Vector2i(dx, dy)):
+					best = mini(best, maxi(absi(dx), absi(dy)))
+		return 1.0 - float(best) / float(FRINGE + 1)
+	var result: Array = []
+	for y in _size:
+		for x in _size:
+			if not over.has(str(_tiles[y * _size + x])):
+				continue
+			var alphas := PackedFloat32Array([
+				alpha_of.call(Vector2i(x, y)),
+				alpha_of.call(Vector2i(x + 1, y)),
+				alpha_of.call(Vector2i(x + 1, y + 1)),
+				alpha_of.call(Vector2i(x, y + 1)),
+			])
+			if alphas[0] > 0.0 or alphas[1] > 0.0 or alphas[2] > 0.0 or alphas[3] > 0.0:
+				result.append({"tile": _origin + Vector2i(x, y), "alphas": alphas})
+	return result
+
+
 func _draw() -> void:
 	# Textured tiles go to their terrain's canvas; the rest is flat here.
 	var by_terrain: Dictionary = {}
@@ -191,13 +264,22 @@ func _draw() -> void:
 				by_terrain[terrain].append(Vector2(tx, ty))
 			else:
 				draw_colored_polygon(Iso.diamond(tx, ty), COLORS.get(terrain, Color.MAGENTA))
+	# A terrain that spills may need a canvas here even without a tile here.
+	var spills: Dictionary = {}
+	for terrain in FRINGE_OVER:
+		if ground_texture(terrain) != null:
+			var f := fringe(terrain)
+			if not f.is_empty():
+				spills[terrain] = f
 	for terrain in _grounds:
-		if not by_terrain.has(terrain):
+		if not by_terrain.has(terrain) and not spills.has(terrain):
 			_grounds[terrain].tiles = PackedVector2Array()
+			_grounds[terrain].fringe = []
 			_grounds[terrain].queue_redraw()
-	for terrain in by_terrain:
+	for terrain in by_terrain.keys() + spills.keys():
 		var canvas := _ground_of(terrain)
-		canvas.tiles = by_terrain[terrain]
+		canvas.tiles = by_terrain.get(terrain, PackedVector2Array())
+		canvas.fringe = spills.get(terrain, [])
 		canvas.queue_redraw()
 	# Items: a small disc of the material's colour, slightly off the
 	# tile's centre so several on one tile stay visible.

@@ -129,7 +129,9 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array) -> voi
 		_chunks[key] = view
 	_tiles[key] = tiles
 	_items[key] = items
+	view.terrain_at = terrain_at
 	view.show_chunk(key * _chunk_size, _chunk_size, tiles, items, _looks)
+	_redraw_neighbours(key)
 	if not _camera_placed and _piloted < 0:
 		# Watching, no body to follow: look at the ground we were given
 		# rather than at the valley's corner.
@@ -229,6 +231,26 @@ func acts_on(tile: Vector2i) -> Array:
 	return acts
 
 
+## The terrain of any tile the server has sent, "" otherwise.
+func terrain_at(tile: Vector2i) -> String:
+	var key := Iso.chunk_of(tile, _chunk_size)
+	var tiles: Array = _tiles.get(key, [])
+	if tiles.is_empty():
+		return ""
+	var local := tile - key * _chunk_size
+	return str(tiles[local.y * _chunk_size + local.x])
+
+
+## The chunks around `key` draw their borders from their neighbours'
+## tiles: redraw them when `key` appears or goes.
+func _redraw_neighbours(key: Vector2i) -> void:
+	for dy in range(-1, 2):
+		for dx in range(-1, 2):
+			var near: ChunkView = _chunks.get(key + Vector2i(dx, dy))
+			if near != null and (dx != 0 or dy != 0):
+				near.queue_redraw()
+
+
 func _on_chunk_hidden(x: int, y: int) -> void:
 	var key := Vector2i(x, y)
 	var view: ChunkView = _chunks.get(key)
@@ -237,6 +259,7 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 		_chunks.erase(key)
 		_items.erase(key)
 		_tiles.erase(key)
+		_redraw_neighbours(key)
 	for id in _bodies.keys():
 		if Iso.chunk_of(_tile_of(_bodies[id]["at"]), _chunk_size) == key:
 			_bodies.erase(id)
