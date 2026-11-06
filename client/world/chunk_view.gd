@@ -19,9 +19,11 @@ const GROUND_TEXTURES := {
 }
 ## terrain -> compatible textures shown in soft patches over the first:
 ## "second" over wide areas (a drier grass), "worn" in a few spots.
+## (The dry grass, ground_grass_03, is kept in content but off: tone
+## variation comes from tinting the first grass in the shader, which keeps
+## the tufts upright and the change a half-tone.)
 const LAYER_TEXTURES := {
 	"grass": {
-		"second": "res://art/ground/ground_grass_03_summer.png",
 		"worn": "res://art/ground/ground_grass_02_summer.png",
 	},
 }

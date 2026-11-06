@@ -13,6 +13,14 @@ uniform sampler2D second_texture : repeat_enable, filter_linear;
 uniform bool has_second = false;
 uniform float second_scale = 0.03;
 uniform float second_cover = 0.45;
+// Tone variation without a second image: the same texture, tinted a
+// little (drier, lighter) over wide slow zones. Same tufts by
+// construction; strength and pace are numbers.
+uniform vec3 dry_tint : source_color = vec3(1.07, 1.03, 0.86);
+uniform float dry_scale = 0.018;
+uniform float dry_cover = 0.5;
+uniform float dry_strength = 0.6;
+uniform float dry_softness = 0.3;
 uniform sampler2D worn_texture : repeat_enable, filter_linear;
 uniform bool has_worn = false;
 // Period of the patches, in texture units, and how much ground they take.
@@ -47,6 +55,12 @@ void fragment() {
 	float n = texture(noise_texture, uv * noise_scale).r;
 	float weight = smoothstep(0.46, 0.54, n);
 	vec4 ground = mix(first, second, weight);
+	// Dry zones: a soft, wide mask; the tint is applied at most at
+	// dry_strength so the change stays a half-tone.
+	float d = texture(noise_texture, uv * dry_scale + vec2(0.8, 0.1)).r;
+	float dry_threshold = 1.0 - dry_cover;
+	float dry = smoothstep(dry_threshold - dry_softness, dry_threshold + dry_softness, d) * dry_strength;
+	ground.rgb = mix(ground.rgb, ground.rgb * dry_tint, dry);
 	if (has_second) {
 		ground = mix(ground, texture(second_texture, uv), patches(uv, second_scale, vec2(0.2, 0.7), second_cover));
 	}
