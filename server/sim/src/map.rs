@@ -265,7 +265,7 @@ impl Map {
             48,
             i32::try_from(width / 10).expect("map fits in i32"),
         );
-        let wobble = Meander::new(height, seed.wrapping_add(2), 12, 3);
+        let wobble = Meander::new(height, seed.wrapping_add(2), 28, 2);
         let breath = Meander::new(height, seed.wrapping_add(3), 20, 1);
 
         for y in 0..height {
