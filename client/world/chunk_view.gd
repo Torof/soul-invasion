@@ -17,9 +17,13 @@ const GROUND_METRES := 4.0
 const GROUND_TEXTURES := {
 	"grass": "res://art/ground/ground_grass_01_summer.png",
 }
-## terrain -> a compatible second texture shown in soft patches (worn grass)
-const WORN_TEXTURES := {
-	"grass": "res://art/ground/ground_grass_02_summer.png",
+## terrain -> compatible textures shown in soft patches over the first:
+## "second" over wide areas (a drier grass), "worn" in a few spots.
+const LAYER_TEXTURES := {
+	"grass": {
+		"second": "res://art/ground/ground_grass_03_summer.png",
+		"worn": "res://art/ground/ground_grass_02_summer.png",
+	},
 }
 static var _ground_cache: Dictionary = {}
 static var _ground_material: ShaderMaterial
@@ -60,13 +64,16 @@ static func ground_material() -> ShaderMaterial:
 		_ground_material = ShaderMaterial.new()
 		_ground_material.shader = load("res://world/ground.gdshader")
 		_ground_material.set_shader_parameter("noise_texture", texture)
-		# One material for all chunks: the worn texture of the one terrain
-		# that has one, for now (grass). Per-terrain materials come with
-		# the blend between terrains.
-		var worn_path: String = WORN_TEXTURES.get("grass", "")
-		if ResourceLoader.exists(worn_path):
-			_ground_material.set_shader_parameter("worn_texture", load(worn_path))
-			_ground_material.set_shader_parameter("has_worn", true)
+		# One material for all chunks: the layers of the one terrain that
+		# has some, for now (grass). Per-terrain materials come with the
+		# blend between terrains. A layer whose image is not there yet is
+		# simply off.
+		var layers: Dictionary = LAYER_TEXTURES.get("grass", {})
+		for layer in layers:
+			var path: String = layers[layer]
+			if ResourceLoader.exists(path):
+				_ground_material.set_shader_parameter(layer + "_texture", load(path))
+				_ground_material.set_shader_parameter("has_" + layer, true)
 	return _ground_material
 
 
