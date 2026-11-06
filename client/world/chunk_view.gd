@@ -228,6 +228,7 @@ static func reload_art() -> void:
 		_spec = spec
 	_decor.clear()
 	_shore.clear()
+	_shore_iso.clear()
 	var shader := Shader.new()
 	shader.code = FileAccess.get_file_as_string("res://world/ground.gdshader")
 	for terrain in _spec:
@@ -288,6 +289,57 @@ static func tile_hash(tx: int, ty: int, salt: int) -> float:
 ## step), chosen by stretches along the river, variants by tile hash.
 ## Transparent at their land and water ends, so they melt into our ground.
 const SHORE_DIR := "res://art/shore/"
+## The isometric shore: one generated piece per water tile touching land,
+## drawn in three-quarter view (a far bank shows its earthen face, a near
+## bank only its line), chosen by the land around the tile and laid on
+## the tile's diamond as it is, never turned or mirrored. The pieces are
+## numbered like the schematics they were generated from.
+const SHORE_ISO_DIR := "res://art/shore_iso/"
+const SHORE_ISO := {
+	"N": "01_far_bank_down_right", "W": "02_far_bank_up_right",
+	"S": "03_near_bank_down_right", "E": "04_near_bank_up_right",
+	"NW": "05_horizontal_land_above", "ES": "06_horizontal_land_below",
+	"NE": "07_vertical_land_right", "SW": "08_vertical_land_left",
+	"NEW": "09_bay_open_down_left", "NES": "10_bay_open_up_left",
+	"ESW": "11_bay_open_up_right", "NSW": "12_bay_open_down_right",
+	"NS": "13_channel_down_right", "EW": "14_channel_up_right",
+	"nw": "15_corner_land_up", "ne": "16_corner_land_right",
+	"se": "17_corner_land_down", "sw": "18_corner_land_left",
+}
+static var _shore_iso: Dictionary = {}
+
+
+static func shore_iso_piece(name: String) -> Texture2D:
+	if not _shore_iso.has(name):
+		var path := SHORE_ISO_DIR + name + ".png"
+		_shore_iso[name] = load_texture(path) if ResourceLoader.exists(path) or FileAccess.file_exists(path) else null
+	return _shore_iso[name]
+
+
+## The piece names a water tile needs, from the land around it: one for
+## its land sides (in N, E, S, W order), else one per land diagonal.
+static func shore_iso_names(n: bool, e: bool, s: bool, w: bool, ne: bool, se: bool, sw: bool, nw: bool) -> Array:
+	var sides := ""
+	if n:
+		sides += "N"
+	if e:
+		sides += "E"
+	if s:
+		sides += "S"
+	if w:
+		sides += "W"
+	if sides != "":
+		return [SHORE_ISO[sides]] if SHORE_ISO.has(sides) else []
+	var names: Array = []
+	if nw:
+		names.append(SHORE_ISO["nw"])
+	if ne:
+		names.append(SHORE_ISO["ne"])
+	if se:
+		names.append(SHORE_ISO["se"])
+	if sw:
+		names.append(SHORE_ISO["sw"])
+	return names
 ## "matter_kind" -> Array[Texture2D]
 static var _shore: Dictionary = {}
 
@@ -640,8 +692,32 @@ static func corner_point_to_screen(cx: float, cy: float) -> Vector2:
 const SHORE_OVERLAP := 0.5
 
 
+func _draw_shore_iso() -> void:
+	var is_land := func(t: String) -> bool: return t != "" and t != "water" and t != "ford"
+	for y in _size:
+		for x in _size:
+			if str(_tiles[y * _size + x]) != "water":
+				continue
+			var tx := _origin.x + x
+			var ty := _origin.y + y
+			var names := shore_iso_names(
+				is_land.call(_terrain(tx, ty - 1)), is_land.call(_terrain(tx + 1, ty)),
+				is_land.call(_terrain(tx, ty + 1)), is_land.call(_terrain(tx - 1, ty)),
+				is_land.call(_terrain(tx + 1, ty - 1)), is_land.call(_terrain(tx + 1, ty + 1)),
+				is_land.call(_terrain(tx - 1, ty + 1)), is_land.call(_terrain(tx - 1, ty - 1)))
+			for name in names:
+				var texture := shore_iso_piece(name)
+				if texture != null:
+					var centre := Iso.tile_to_screen(tx, ty)
+					draw_texture_rect(texture, Rect2(centre - Vector2(Iso.TILE_W / 2.0, Iso.TILE_H / 2.0), Vector2(Iso.TILE_W, Iso.TILE_H)), false)
+
+
 func _draw_shore() -> void:
-	if ground_spec().get("shore", {}).is_empty():
+	var shore: Dictionary = ground_spec().get("shore", {})
+	if shore.is_empty():
+		return
+	if bool(shore.get("iso", false)):
+		_draw_shore_iso()
 		return
 	var white := PackedColorArray([Color.WHITE, Color.WHITE, Color.WHITE, Color.WHITE])
 	for piece in shore_plan():

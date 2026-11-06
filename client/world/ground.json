@@ -92,6 +92,7 @@
 			"grass": 0.6,
 			"rock": 0.15
 		},
-		"stretch": 48
+		"stretch": 48,
+		"iso": true
 	}
 }

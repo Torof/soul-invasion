@@ -242,6 +242,11 @@ func _test_ground_art_is_reachable() -> void:
 	var pts := plan.filter(func(p: Dictionary) -> bool: return p["kind"] == "point")
 	_check(diags.size() >= 5 and pts.is_empty(), "a staircase is drawn with diagonal corners and no points")
 	_check(ChunkView.shore_pieces("grass", "diag").size() == 3, "the three diagonal pieces are there")
+	# The isometric shore: a water tile with land to the north takes the far
+	# bank sloping down-right; land only on a diagonal takes a corner piece.
+	_check(ChunkView.shore_iso_names(true, false, false, false, false, false, false, false) == ["01_far_bank_down_right"], "land north: the far bank piece")
+	_check(ChunkView.shore_iso_names(false, false, false, false, false, false, false, true) == ["15_corner_land_up"], "land only on the north-west diagonal: the corner piece")
+	_check(ChunkView.shore_iso_piece("02_far_bank_up_right") != null, "the isometric pieces load")
 	view.free()
 	var forest := ChunkView.ground_material("forest")
 	_check(forest != material and forest.get_shader_parameter("base_tint") != material.get_shader_parameter("base_tint"), "the forest has its own material, in the shade")
