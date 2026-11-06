@@ -51,6 +51,16 @@ uniform float dry_softness = 0.3;
 // The terrain's own tone over everything: white for the meadow, darker
 // and cooler for the shade of the woods.
 uniform vec3 base_tint : source_color = vec3(1.0);
+// Softened highlights: whatever is brighter than bright_knee (a luma,
+// 0 to 1) keeps only bright_keep of its excess, so the white bands of a
+// water image fade toward the water while their shapes stay. Knee at 1
+// turns it off.
+uniform float bright_knee = 1.0;
+uniform float bright_keep = 0.35;
+// The hue the softened highlights are pulled toward (the water's own),
+// by bright_recolour of the way, so pale bands do not turn grey.
+uniform vec3 bright_tone : source_color = vec3(0.23, 0.6, 0.53);
+uniform float bright_recolour = 0.0;
 // Where a terrain spills over its neighbour, the vertex alpha fades
 // across the border; a noise read at this period erodes that fade so the
 // edge is ragged, not straight.
@@ -143,6 +153,15 @@ void fragment() {
 	// COLOR comes in already multiplied by the texture: rebuild it from
 	// the blended texture and the vertex colour, do not multiply again
 	// (that squares the colour and darkens it by half).
+	if (bright_knee < 1.0) {
+		float l = dot(ground.rgb, vec3(0.299, 0.587, 0.114));
+		if (l > bright_knee) {
+			float excess = clamp((l - bright_knee) / 0.12, 0.0, 1.0);
+			float target = bright_knee + (l - bright_knee) * bright_keep;
+			vec3 toned = mix(ground.rgb, bright_tone * (l / max(dot(bright_tone, vec3(0.299, 0.587, 0.114)), 0.001)), excess * bright_recolour);
+			ground.rgb = toned * target / max(l, 0.001);
+		}
+	}
 	ground.rgb *= base_tint;
 	vec3 vertex_tint = tint.rgb;
 	if (current_strength > 0.0) {
