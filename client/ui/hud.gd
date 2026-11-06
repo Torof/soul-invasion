@@ -29,7 +29,7 @@ func _ready() -> void:
 	Net.body_died.connect(_on_body_died)
 	Net.body_assigned.connect(_on_body_assigned)
 	Net.move_refused.connect(func(_body: int, x: int, y: int) -> void: set_state("cannot walk to (%d, %d)" % [x, y]))
-	Net.eat_refused.connect(func(_body: int, _item: int) -> void: set_state("nothing to eat there"))
+	Net.act_refused.connect(_on_act_refused)
 	Net.disconnected.connect(set_state)
 	_refresh()
 
@@ -73,6 +73,10 @@ func _on_body_condition(body: int, condition: Dictionary) -> void:
 	_fatigue.value = float(condition.get("fatigue", 0))
 	var asleep := bool(condition.get("asleep", false))
 	_body_label.text = "body %d%s" % [_body, " — asleep" if asleep else ""]
+
+
+func _on_act_refused(_body: int, act: String, _item: int, reason: String) -> void:
+	set_state(Tooltip.refusal_words(act, reason))
 
 
 func _on_body_died(body: int, cause: String) -> void:

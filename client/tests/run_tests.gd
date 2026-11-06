@@ -19,6 +19,7 @@ func _init() -> void:
 	_test_time_of_day()
 	_test_tooltips()
 	_test_ground_art_is_reachable()
+	_test_inventory_lines_and_refusals()
 	print("client tests: %d checks, %d failures" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
 
@@ -118,6 +119,15 @@ func _test_tooltips() -> void:
 	_check(Tooltip.describe_item(berries).begins_with("Berries · 100 g · edible"), "edible is said")
 	_check(Tooltip.describe_body(2, true, false) == "body 2 · asleep", "a sleeping body")
 	_check(Tooltip.describe_body(1, false, true) == "body 1 (you)", "the piloted body")
+
+
+func _test_inventory_lines_and_refusals() -> void:
+	var flint := {"name": "Flint", "mass_g": 400}
+	_check(Tooltip.inventory_line(flint, true) == "[in hand] Flint · 400 g", "the item in hand is marked")
+	_check(Tooltip.inventory_line({"name": "Log", "mass_g": 25000}, false) == "Log · 25.0 kg", "kilograms")
+	_check(Tooltip.load_line(1900, 20000) == "1.9 / 20.0 kg", "the load over the capacity")
+	_check(Tooltip.refusal_words("pick_up", "too_heavy") == "cannot pick up: too heavy", "a refusal in words")
+	_check(Tooltip.refusal_words("eat", "not_food") == "cannot eat: not food", "another")
 
 
 func _test_chunk_of_matches_the_server() -> void:

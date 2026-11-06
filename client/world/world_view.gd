@@ -46,6 +46,13 @@ var _materials: Dictionary = {}
 
 ## Words for what is under the mouse, or "" when nothing is.
 signal hovered(text: String)
+## A right-click without dragging on a tile: the acts the piloted body
+## could try there, as [{"label", "send": Callable, "item": int}].
+signal acts_requested(acts: Array, at_screen: Vector2)
+## body id -> {"id", "material"} of what it holds, or {}
+var _holds: Dictionary = {}
+var _drag_start := Vector2.ZERO
+var _dragged := false
 var _night := false
 var _piloted := -1
 ## Where the piloted body was asked to go, highlighted until it gets there.
@@ -67,6 +74,9 @@ func _ready() -> void:
 	Net.body_stopped.connect(_on_body_stopped)
 	Net.body_left.connect(_on_body_left)
 	Net.body_sleeps.connect(_on_body_sleeps)
+	Net.body_holds.connect(func(body: int, item: Dictionary) -> void:
+		_holds[body] = item
+		queue_redraw())
 	Net.body_died.connect(_on_body_died)
 	Net.body_assigned.connect(_on_body_assigned)
 	Net.item_added.connect(_on_item_added)
@@ -132,6 +142,8 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array) -> voi
 			route.append(Net.point(p))
 		_place(int(b.get("id", -1)), Net.point(b.get("at", {})), route, int(b.get("speed_cm_per_s", 0)))
 		_bodies[int(b.get("id", -1))]["asleep"] = bool(b.get("asleep", false))
+		var holds: Variant = b.get("holds")
+		_holds[int(b.get("id", -1))] = holds if holds is Dictionary else {}
 	queue_redraw()
 
 
@@ -173,17 +185,48 @@ func _on_body_died(body: int, _cause: String) -> void:
 	queue_redraw()
 
 
-## The id of an edible item on the piloted body's tile or next to it, or -1.
-func food_within_reach() -> int:
+## Items on the piloted body's tile or next to it, as received.
+func items_within_reach() -> Array:
+	var found: Array = []
 	if not _bodies.has(_piloted):
-		return -1
+		return found
 	var here := _tile_of(_bodies[_piloted]["at"])
 	for key in _items:
 		for item in _items[key]:
 			var tile := Vector2i(int(item.get("x", 0)), int(item.get("y", 0)))
-			if absi(tile.x - here.x) <= 1 and absi(tile.y - here.y) <= 1 and _edible.get(str(item.get("material", "")), false):
-				return int(item.get("id", -1))
+			if absi(tile.x - here.x) <= 1 and absi(tile.y - here.y) <= 1:
+				found.append(item)
+	return found
+
+
+## The id of an edible item within reach, or -1.
+func food_within_reach() -> int:
+	for item in items_within_reach():
+		if _edible.get(str(item.get("material", "")), false):
+			return int(item.get("id", -1))
 	return -1
+
+
+## The id of any item within reach, or -1.
+func item_within_reach() -> int:
+	var items := items_within_reach()
+	return int(items[0].get("id", -1)) if not items.is_empty() else -1
+
+
+## What the piloted body could try on a tile: the client proposes, the
+## server judges (D35).
+func acts_on(tile: Vector2i) -> Array:
+	var acts: Array = []
+	for item in items_within_reach():
+		if Vector2i(int(item.get("x", 0)), int(item.get("y", 0))) != tile:
+			continue
+		var id := int(item.get("id", -1))
+		var material := str(item.get("material", ""))
+		var name := str(_names.get(material, material))
+		acts.append({"label": "pick up " + name, "send": Net.send_pick_up, "item": id})
+		if _edible.get(material, false):
+			acts.append({"label": "eat " + name, "send": Net.send_eat, "item": id})
+	return acts
 
 
 func _on_chunk_hidden(x: int, y: int) -> void:
@@ -214,6 +257,7 @@ func _on_body_stopped(body: int, at: Vector2) -> void:
 
 func _on_body_left(body: int) -> void:
 	_bodies.erase(body)
+	_holds.erase(body)
 	queue_redraw()
 
 
@@ -242,7 +286,11 @@ func _describe(tile: Vector2i) -> String:
 	var lines: PackedStringArray = []
 	for id: int in _bodies:
 		if _tile_of(_bodies[id]["at"]) == tile:
-			lines.append(Tooltip.describe_body(id, _bodies[id]["asleep"], id == _piloted))
+			var line := Tooltip.describe_body(id, _bodies[id]["asleep"], id == _piloted)
+			var holds: Dictionary = _holds.get(id, {})
+			if not holds.is_empty():
+				line += " · holds " + str(_materials.get(str(holds.get("material", "")), {}).get("name", "?"))
+			lines.append(line)
 	var key := Iso.chunk_of(tile, _chunk_size)
 	for item in _items.get(key, []):
 		if Vector2i(int(item.get("x", 0)), int(item.get("y", 0))) == tile:
@@ -288,6 +336,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion:
 		if _dragging:
 			_camera.position -= event.relative / _camera.zoom.x
+			if event.position.distance_to(_drag_start) > 4.0:
+				_dragged = true
+				_following = false
 		var tile := Iso.screen_to_tile(get_local_mouse_position())
 		if tile != _hover:
 			_hover = tile
@@ -305,7 +356,14 @@ func _unhandled_input(event: InputEvent) -> void:
 			MOUSE_BUTTON_RIGHT, MOUSE_BUTTON_MIDDLE:
 				_dragging = event.pressed
 				if event.pressed:
-					_following = false
+					_drag_start = event.position
+					_dragged = false
+				elif event.button_index == MOUSE_BUTTON_RIGHT and not _dragged:
+					# A right-click without dragging: what can be done here?
+					var tile := Iso.screen_to_tile(get_local_mouse_position())
+					var acts := acts_on(tile)
+					if not acts.is_empty():
+						acts_requested.emit(acts, event.position)
 			MOUSE_BUTTON_WHEEL_UP:
 				if event.pressed:
 					_zoom_by(ZOOM_STEP)
@@ -320,6 +378,10 @@ func _unhandled_input(event: InputEvent) -> void:
 				var food := food_within_reach()
 				if food >= 0:
 					Net.send_eat(food)
+			KEY_G:
+				var item := item_within_reach()
+				if item >= 0:
+					Net.send_pick_up(item)
 			KEY_Z:
 				if _bodies.has(_piloted) and _bodies[_piloted]["asleep"]:
 					Net.send_wake()
@@ -367,6 +429,12 @@ func _draw() -> void:
 			draw_rect(Rect2(feet + Vector2(-h * 0.18, -h), Vector2(h * 0.36, h * 0.9)), Color.BLACK, false, 1.0)
 			draw_circle(feet + Vector2(0, -h * 1.18), h * 0.2, color)
 			draw_circle(feet + Vector2(0, -h * 1.18), h * 0.2, Color.BLACK, false, 1.0)
+			var holds: Dictionary = _holds.get(id, {})
+			if not holds.is_empty():
+				# What is in hand, in its material's colour, by the right hand.
+				var held_colour: Color = _looks.get(str(holds.get("material", "")), Color.MAGENTA)
+				draw_circle(feet + Vector2(h * 0.32, -h * 0.45), h * 0.14, held_colour)
+				draw_circle(feet + Vector2(h * 0.32, -h * 0.45), h * 0.14, Color.BLACK, false, 1.0)
 
 
 ## A small "z" above a sleeping body, drawn on `canvas` at `at`.

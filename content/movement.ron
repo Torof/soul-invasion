@@ -6,7 +6,13 @@
 //                      the reference; paths weigh tiles by it and bodies
 //                      slow down by it (cost 15 = two thirds of the speed).
 //                      None cannot be walked. Every terrain must appear.
+// carry_capacity_g:    what a body can carry in all, in grams (D35).
+//                      20 kg: thirteen branches, or fifty flints.
+// speed_percent_at_full_load: walking speed at full load, in percent of
+//                      the unloaded speed; linear in between.
 (
+    carry_capacity_g: 20000,
+    speed_percent_at_full_load: 60,
     walk_speed_cm_per_s: 143,
     terrain_costs: {
         grass: Some(10),

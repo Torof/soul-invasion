@@ -20,7 +20,12 @@ signal body_died(body: int, cause: String)
 signal body_assigned(body: int)
 signal item_added(item: Dictionary)
 signal item_removed(item: int, x: int, y: int)
-signal eat_refused(body: int, item: int)
+## act: pick_up | drop | hold | stow | eat; reason: unknown | out_of_reach |
+## not_carried | too_heavy | not_food.
+signal act_refused(body: int, act: String, item: int, reason: String)
+## held: {} or {"id", "material"}; carried: Array of the same.
+signal inventory(body: int, held: Dictionary, carried: Array, load_g: int, capacity_g: int)
+signal body_holds(body: int, item: Dictionary)
 signal night_fell(day: int)
 signal day_started(day: int, tick: int)
 signal disconnected(reason: String)
@@ -54,6 +59,26 @@ func send_move_to(x: int, y: int) -> void:
 func send_eat(item: int) -> void:
 	if is_ready and body >= 0:
 		_send(Protocol.eat(item))
+
+
+func send_pick_up(item: int) -> void:
+	if is_ready and body >= 0:
+		_send(Protocol.pick_up(item))
+
+
+func send_drop(item: int) -> void:
+	if is_ready and body >= 0:
+		_send(Protocol.drop(item))
+
+
+func send_hold(item: int) -> void:
+	if is_ready and body >= 0:
+		_send(Protocol.hold(item))
+
+
+func send_stow(item: int) -> void:
+	if is_ready and body >= 0:
+		_send(Protocol.stow(item))
 
 
 func send_sleep() -> void:
@@ -148,8 +173,25 @@ func _handle(message: Dictionary) -> void:
 			item_removed.emit(
 				int(message.get("item", -1)), int(message.get("x", 0)), int(message.get("y", 0))
 			)
-		"eat_refused":
-			eat_refused.emit(int(message.get("body", -1)), int(message.get("item", -1)))
+		"act_refused":
+			act_refused.emit(
+				int(message.get("body", -1)),
+				str(message.get("act", "")),
+				int(message.get("item", -1)),
+				str(message.get("reason", ""))
+			)
+		"inventory":
+			var held: Variant = message.get("held")
+			inventory.emit(
+				int(message.get("body", -1)),
+				held if held is Dictionary else {},
+				message.get("carried", []),
+				int(message.get("load_g", 0)),
+				int(message.get("capacity_g", 0))
+			)
+		"body_holds":
+			var item: Variant = message.get("item")
+			body_holds.emit(int(message.get("body", -1)), item if item is Dictionary else {})
 		"night_fell":
 			night_fell.emit(int(message.get("day", 0)))
 		"body_walks":

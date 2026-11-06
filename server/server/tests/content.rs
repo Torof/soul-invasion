@@ -38,7 +38,7 @@ fn the_valley_is_scattered_with_the_content() {
         world
             .items()
             .iter()
-            .all(|i| world.map().get(i.pos()) != Some(Terrain::Water)),
+            .all(|i| i.pos().and_then(|p| world.map().get(p)) != Some(Terrain::Water)),
         "nothing lies in the water"
     );
     assert!(world.items().iter().any(|i| i.material() == "branch"));

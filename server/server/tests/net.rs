@@ -148,6 +148,8 @@ fn ambient(message: &ServerMessage) -> bool {
             | ServerMessage::NightFell { .. }
             | ServerMessage::ItemAdded { .. }
             | ServerMessage::ItemRemoved { .. }
+            | ServerMessage::BodyHolds { .. }
+            | ServerMessage::Inventory { .. }
     )
 }
 
@@ -912,11 +914,16 @@ async fn eating_takes_an_item_within_reach_and_refuses_the_rest() {
     // An item far away cannot be eaten from here.
     send(&mut pilot, &ClientMessage::Eat { item: 1 }).await;
     let refused = wait_for(&mut pilot, |m| match m {
-        ServerMessage::EatRefused { body: who, item } if *who == body => Some(*item),
+        ServerMessage::ActRefused {
+            body: who,
+            act: protocol::ItemAct::Eat,
+            item,
+            reason,
+        } if *who == body => Some((*item, *reason)),
         _ => None,
     })
     .await;
-    assert_eq!(refused, 1);
+    assert_eq!(refused, (1, protocol::Refusal::OutOfReach));
 
     // Walk to the nearest berries, then eat them: the watcher sees them go.
     let world = standard_world();
@@ -930,19 +937,23 @@ async fn eating_takes_an_item_within_reach_and_refuses_the_rest() {
                 .material(i.material())
                 .is_some_and(|m| m.food.is_some())
         })
-        .min_by_key(|i| (i.pos().x - start.x).abs() + (i.pos().y - start.y).abs())
+        .min_by_key(|i| {
+            let p = i.pos().expect("on the ground");
+            (p.x - start.x).abs() + (p.y - start.y).abs()
+        })
         .expect("food in the valley");
+    let berries_at = berries.pos().expect("on the ground");
     send(
         &mut pilot,
         &ClientMessage::MoveTo {
-            x: berries.pos().x,
-            y: berries.pos().y,
+            x: berries_at.x,
+            y: berries_at.y,
         },
     )
     .await;
     wait_for(&mut pilot, |m| match m {
         ServerMessage::BodyStopped { body: who, at } if *who == body => {
-            (tile(*at) == berries.pos()).then_some(())
+            (tile(*at) == berries_at).then_some(())
         }
         _ => None,
     })
@@ -994,4 +1005,109 @@ async fn a_starved_body_dies_and_its_pilot_is_given_another_or_watches() {
         })
         .await;
     }
+}
+
+#[tokio::test]
+async fn picking_up_tells_the_pilot_its_inventory_and_everyone_what_is_in_hand() {
+    let server = Server::start_with(&["--seconds-per-day", "1000", "--time-scale", "20"]);
+    let (mut pilot, body) = join(&server).await;
+    let (mut watcher, _) = join(&server).await;
+    let body = body.expect("pilots body 1");
+
+    // Walk to the nearest item, pick it up: it leaves the ground, goes in
+    // hand, and the watcher sees the hand.
+    let world = standard_world();
+    let start = start_of(&world, body);
+    let nearest = world
+        .items()
+        .iter()
+        .min_by_key(|i| {
+            let p = i.pos().expect("on the ground");
+            (p.x - start.x).abs() + (p.y - start.y).abs()
+        })
+        .expect("items in the valley");
+    let at = nearest.pos().expect("on the ground");
+    send(&mut pilot, &ClientMessage::MoveTo { x: at.x, y: at.y }).await;
+    wait_for(&mut pilot, |m| match m {
+        ServerMessage::BodyStopped {
+            body: who,
+            at: here,
+        } if *who == body => (tile(*here) == at).then_some(()),
+        _ => None,
+    })
+    .await;
+    send(
+        &mut pilot,
+        &ClientMessage::PickUp {
+            item: nearest.id().0,
+        },
+    )
+    .await;
+    let inventory = wait_for(&mut pilot, |m| match m {
+        ServerMessage::Inventory {
+            body: who,
+            held,
+            load_g,
+            capacity_g,
+            ..
+        } if *who == body => Some((held.clone(), *load_g, *capacity_g)),
+        _ => None,
+    })
+    .await;
+    assert!(inventory.1 > 0 && inventory.2 == 20_000, "{inventory:?}");
+    assert_eq!(inventory.0.map(|i| i.id), Some(nearest.id().0));
+    // In the order the simulation says it: off the ground, then in hand.
+    wait_for(&mut watcher, |m| match m {
+        ServerMessage::ItemRemoved { item, .. } if *item == nearest.id().0 => Some(()),
+        _ => None,
+    })
+    .await;
+    let held = wait_for(&mut watcher, |m| match m {
+        ServerMessage::BodyHolds { body: who, item } if *who == body => Some(item.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        held.map(|i| i.material),
+        Some(nearest.material().to_owned())
+    );
+
+    // Drop it: back on the ground for all, hand empty.
+    send(
+        &mut pilot,
+        &ClientMessage::Drop {
+            item: nearest.id().0,
+        },
+    )
+    .await;
+    wait_for(&mut watcher, |m| match m {
+        ServerMessage::ItemAdded { item } if item.id == nearest.id().0 => Some(()),
+        _ => None,
+    })
+    .await;
+    let held = wait_for(&mut watcher, |m| match m {
+        ServerMessage::BodyHolds { body: who, item } if *who == body => Some(item.clone()),
+        _ => None,
+    })
+    .await;
+    assert!(held.is_none());
+
+    // Dropping it again is refused, with a reason.
+    send(
+        &mut pilot,
+        &ClientMessage::Drop {
+            item: nearest.id().0,
+        },
+    )
+    .await;
+    let reason = wait_for(&mut pilot, |m| match m {
+        ServerMessage::ActRefused {
+            act: protocol::ItemAct::Drop,
+            reason,
+            ..
+        } => Some(*reason),
+        _ => None,
+    })
+    .await;
+    assert_eq!(reason, protocol::Refusal::NotCarried);
 }

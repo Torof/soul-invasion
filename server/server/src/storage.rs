@@ -12,7 +12,7 @@ use sim::{Content, Event, Tick, World};
 
 /// Version of the serialized `World` inside a snapshot. Bump on any change
 /// to `World`'s shape, and add a migration in `decode_world`.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 6;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 7;
 
 /// Errors from the storage layer.
 #[derive(Debug, thiserror::Error)]
@@ -217,6 +217,7 @@ fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<Wo
             3 => migrate_v3_to_v4(&data, content)?,
             4 => migrate_v4_to_v5(&data)?,
             5 => migrate_v5_to_v6(&data)?,
+            6 => migrate_v6_to_v7(&data)?,
             _ => unreachable!("every version below the current one has a migration"),
         };
         version += 1;
@@ -288,6 +289,31 @@ fn migrate_v5_to_v6(data: &str) -> Result<String, StorageError> {
         for body in bodies {
             if body.get("condition").is_none() {
                 body["condition"] = healthy.clone();
+            }
+        }
+    }
+    Ok(old.to_string())
+}
+
+/// v7 gives items a place (D35): `pos` becomes `place: ground`, and
+/// bodies gain empty hands.
+fn migrate_v6_to_v7(data: &str) -> Result<String, StorageError> {
+    let mut old: serde_json::Value = serde_json::from_str(data)?;
+    if let Some(items) = old["items"].as_array_mut() {
+        for item in items {
+            if let Some(pos) = item.get("pos").cloned() {
+                item["place"] = serde_json::json!({ "type": "ground", "pos": pos });
+                if let Some(fields) = item.as_object_mut() {
+                    fields.remove("pos");
+                }
+            }
+        }
+    }
+    if let Some(bodies) = old["bodies"].as_array_mut() {
+        for body in bodies {
+            if body.get("held").is_none() {
+                body["held"] = serde_json::Value::Null;
+                body["carried"] = serde_json::json!([]);
             }
         }
     }
@@ -475,7 +501,13 @@ mod tests {
         assert_eq!(body.at(), sim::FinePos::new(10_500, 20_500));
         assert!(!body.is_walking(), "the old tile path is dropped");
         assert_eq!(body.condition(), &sim::Condition::healthy(), "v6: healthy");
+        assert_eq!(body.held(), None, "v7: empty hands");
         assert_eq!(world.items().len(), 1);
+        assert_eq!(
+            world.items()[0].pos(),
+            Some(sim::Pos::new(3, 3)),
+            "v7: on the ground"
+        );
     }
 
     #[test]

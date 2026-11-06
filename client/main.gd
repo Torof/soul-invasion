@@ -1,17 +1,23 @@
 extends Control
-## Main scene: the world view, the head-up display, a help line and the
-## tooltip for whatever is under the mouse.
+## Main scene: the world view, the head-up display, the inventory, a help
+## line, the tooltip for whatever is under the mouse, and the context
+## menu of what the body could try on a tile.
 ##
 ## The client only displays the world and transmits the player's intentions
-## (architecture decision D03). It decides nothing.
+## (architecture decision D03). It decides nothing: the server judges.
 
 @onready var _world: WorldView = $WorldView
 @onready var _tooltip: PanelContainer = %Tooltip
 @onready var _tooltip_text: Label = %Text
+@onready var _actions: PopupMenu = %Actions
+
+var _offered: Array = []
 
 
 func _ready() -> void:
 	_world.hovered.connect(_on_hovered)
+	_world.acts_requested.connect(_on_acts_requested)
+	_actions.id_pressed.connect(_on_act_chosen)
 	Net.connect_to()
 	# Development aid: with SOUL_INVASION_SCREENSHOT set to a path, save what
 	# the window shows after three seconds and quit (headless runs cannot
@@ -30,6 +36,22 @@ func _screenshot_then_quit(path: String) -> void:
 func _on_hovered(text: String) -> void:
 	_tooltip.visible = not text.is_empty()
 	_tooltip_text.text = text
+
+
+func _on_acts_requested(acts: Array, at_screen: Vector2) -> void:
+	_offered = acts
+	_actions.clear()
+	for i in acts.size():
+		_actions.add_item(str(acts[i]["label"]), i)
+	_actions.position = Vector2i(at_screen) + Vector2i(get_window().position)
+	_actions.popup()
+
+
+func _on_act_chosen(id: int) -> void:
+	if id >= 0 and id < _offered.size():
+		var act: Dictionary = _offered[id]
+		var send: Callable = act["send"]
+		send.call(int(act["item"]))
 
 
 func _process(_delta: float) -> void:

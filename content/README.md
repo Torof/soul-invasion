@@ -14,8 +14,9 @@ real values live in a private repository (D30). Files here hold placeholders.
   flammability, food value, provisional colour.
 - `spawns.ron` — what lies on the ground when a valley is created, per
   terrain, in pieces per thousand tiles.
-- `movement.ron` — walking speed and the cost of each terrain, which paths
-  weigh and bodies slow down by.
+- `movement.ron` — walking speed, the cost of each terrain (which paths
+  weigh and bodies slow down by), what a body can carry and how much a
+  full load slows it.
 - `needs.ron` — how fast a body hungers, freezes and tires, how it heals,
   and what kills it.
 

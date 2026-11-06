@@ -26,8 +26,8 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
-    BodyState, ClientMessage, Clock, Condition, DeathCause, ItemState, MaterialView,
-    PROTOCOL_VERSION, Point, ServerMessage, Terrain, decode, encode,
+    BodyState, ClientMessage, Clock, Condition, DeathCause, ItemAct, ItemState, ItemView,
+    MaterialView, PROTOCOL_VERSION, Point, Refusal, ServerMessage, Terrain, decode, encode,
 };
 use sim::{BodyId, CHUNK_SIZE, ChunkPos, Content, FinePos, Intention, ItemId, Map, Pos, World};
 use tokio::net::{TcpListener, TcpStream};
@@ -131,6 +131,15 @@ pub enum Published {
         /// Where it was.
         at: Pos,
     },
+    /// A body changed what it holds in hand.
+    BodyHolds {
+        /// Who.
+        body: u32,
+        /// Where.
+        at: Pos,
+        /// In hand now.
+        item: Option<ItemView>,
+    },
 }
 
 fn point(at: FinePos) -> Point {
@@ -203,15 +212,15 @@ impl Shared {
             .collect();
         let mut items: BTreeMap<ChunkPos, Vec<ItemState>> = BTreeMap::new();
         for item in world.items() {
-            items
-                .entry(item.pos().chunk())
-                .or_default()
-                .push(ItemState {
-                    id: item.id().0,
-                    x: item.pos().x,
-                    y: item.pos().y,
-                    material: item.material().to_owned(),
-                });
+            let Some(pos) = item.pos() else {
+                continue; // carried: not on the ground
+            };
+            items.entry(pos.chunk()).or_default().push(ItemState {
+                id: item.id().0,
+                x: pos.x,
+                y: pos.y,
+                material: item.material().to_owned(),
+            });
         }
         let bodies = world
             .bodies()
@@ -222,6 +231,10 @@ impl Shared {
                 route: b.route().map(point).collect(),
                 speed_cm_per_s: content.movement.walk_speed_cm_per_s,
                 asleep: b.condition().asleep,
+                holds: b.held().and_then(|id| world.item(id)).map(|i| ItemView {
+                    id: i.id().0,
+                    material: i.material().to_owned(),
+                }),
             })
             .collect();
         Self {
@@ -267,6 +280,15 @@ impl Shared {
             }
         });
         from
+    }
+
+    /// Records what a body holds in hand.
+    pub fn body_holds(&self, body: BodyId, item: Option<ItemView>) {
+        self.bodies.send_modify(|bodies| {
+            if let Some(state) = bodies.iter_mut().find(|b| b.id == body.0) {
+                state.holds = item;
+            }
+        });
     }
 
     /// Records whether a body is asleep; true when that changed.
@@ -378,6 +400,10 @@ impl Shared {
         let body = match &intention {
             Intention::MoveTo { body, .. }
             | Intention::Eat { body, .. }
+            | Intention::PickUp { body, .. }
+            | Intention::Drop { body, .. }
+            | Intention::Hold { body, .. }
+            | Intention::Stow { body, .. }
             | Intention::Sleep { body }
             | Intention::Wake { body } => body.0,
         };
@@ -713,6 +739,22 @@ fn intention_of(body: BodyId, message: &ClientMessage) -> Intention {
             body,
             item: ItemId(item),
         },
+        ClientMessage::PickUp { item } => Intention::PickUp {
+            body,
+            item: ItemId(item),
+        },
+        ClientMessage::Drop { item } => Intention::Drop {
+            body,
+            item: ItemId(item),
+        },
+        ClientMessage::Hold { item } => Intention::Hold {
+            body,
+            item: ItemId(item),
+        },
+        ClientMessage::Stow { item } => Intention::Stow {
+            body,
+            item: ItemId(item),
+        },
         ClientMessage::Sleep => Intention::Sleep { body },
         ClientMessage::Wake => Intention::Wake { body },
         ClientMessage::Hello { .. } | ClientMessage::Ping { .. } => {
@@ -809,6 +851,11 @@ async fn forward(
                 .await?;
             }
         }
+        Published::BodyHolds { body, at, item } => {
+            if view.contains(at) {
+                send(ws, &ServerMessage::BodyHolds { body, item }).await?;
+            }
+        }
         Published::BodyWalks { body, from, tick } => {
             if view.contains(from)
                 && let Some(state) = shared.body_state(body)
@@ -859,6 +906,25 @@ async fn forward(
         }
     }
     Ok(false)
+}
+
+/// An act and a refusal as the wire says them.
+pub fn refusal_view(act: sim::ItemAct, reason: sim::Refusal) -> (ItemAct, Refusal) {
+    let act = match act {
+        sim::ItemAct::PickUp => ItemAct::PickUp,
+        sim::ItemAct::Drop => ItemAct::Drop,
+        sim::ItemAct::Hold => ItemAct::Hold,
+        sim::ItemAct::Stow => ItemAct::Stow,
+        sim::ItemAct::Eat => ItemAct::Eat,
+    };
+    let reason = match reason {
+        sim::Refusal::Unknown => Refusal::Unknown,
+        sim::Refusal::OutOfReach => Refusal::OutOfReach,
+        sim::Refusal::NotCarried => Refusal::NotCarried,
+        sim::Refusal::TooHeavy => Refusal::TooHeavy,
+        sim::Refusal::NotFood => Refusal::NotFood,
+    };
+    (act, reason)
 }
 
 /// What a pilot is told of its body's condition.

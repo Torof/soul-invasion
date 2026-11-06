@@ -28,7 +28,10 @@ use serde::{Deserialize, Serialize};
 /// - v6: `world_state` carries the clock (tick, ticks per second and per
 ///   day, pace), so clients can show the time of day between messages.
 /// - v7: materials carry their mass and a description, for tooltips.
-pub const PROTOCOL_VERSION: u32 = 7;
+/// - v8: bodies pick up, hold, stow and drop items; the pilot is told its
+///   inventory, everyone what a body holds in hand; `act_refused` replaces
+///   `eat_refused`.
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// A tile on the map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +59,15 @@ pub struct Point {
     pub y: i32,
 }
 
+/// An item as a client refers to it when it is not on the ground.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ItemView {
+    /// Item id.
+    pub id: u64,
+    /// Content id of its material, found in [`ServerMessage::WorldState`].
+    pub material: String,
+}
+
 /// A body as the client sees it: where it stands and where it is going.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BodyState {
@@ -69,6 +81,40 @@ pub struct BodyState {
     pub speed_cm_per_s: u32,
     /// Lying asleep?
     pub asleep: bool,
+    /// What it holds in hand, visible to all.
+    pub holds: Option<ItemView>,
+}
+
+/// What a body can do with an item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemAct {
+    /// Take it off the ground.
+    PickUp,
+    /// Lay it on the ground.
+    Drop,
+    /// Take it in hand.
+    Hold,
+    /// Put it away, out of the hand.
+    Stow,
+    /// Eat it.
+    Eat,
+}
+
+/// Why an act on an item was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Refusal {
+    /// No such item.
+    Unknown,
+    /// Not on the body's tile nor next to it.
+    OutOfReach,
+    /// The body does not have it.
+    NotCarried,
+    /// It would exceed what the body can carry.
+    TooHeavy,
+    /// It is not food.
+    NotFood,
 }
 
 /// What a pilot knows of its own body (D34). Nobody else is told.
@@ -165,8 +211,28 @@ pub enum ClientMessage {
         /// Row.
         y: i32,
     },
-    /// Intention: eat an item lying on the body's tile or next to it.
+    /// Intention: eat an item within reach on the ground, or carried.
     Eat {
+        /// The item.
+        item: u64,
+    },
+    /// Intention: take an item off the ground within reach.
+    PickUp {
+        /// The item.
+        item: u64,
+    },
+    /// Intention: lay a carried item on the body's tile.
+    Drop {
+        /// The item.
+        item: u64,
+    },
+    /// Intention: take a carried item in hand.
+    Hold {
+        /// The item.
+        item: u64,
+    },
+    /// Intention: put the item in hand away.
+    Stow {
         /// The item.
         item: u64,
     },
@@ -295,13 +361,37 @@ pub enum ServerMessage {
         /// Row it was on.
         y: i32,
     },
-    /// An item could not be eaten (not food, not within reach, gone).
-    /// Sent to the pilot who asked.
-    EatRefused {
+    /// An act on an item was refused. Sent to the pilot who asked.
+    ActRefused {
         /// Who.
         body: u32,
-        /// What.
+        /// What it tried.
+        act: ItemAct,
+        /// On what.
         item: u64,
+        /// Why.
+        reason: Refusal,
+    },
+    /// What the pilot's body carries. Sent to the pilot alone, whenever
+    /// it changes.
+    Inventory {
+        /// Which body.
+        body: u32,
+        /// In hand.
+        held: Option<ItemView>,
+        /// Carried, in the order taken.
+        carried: Vec<ItemView>,
+        /// Grams carried in all.
+        load_g: u32,
+        /// Grams the body can carry.
+        capacity_g: u32,
+    },
+    /// A body in a chunk the client holds changed what it holds in hand.
+    BodyHolds {
+        /// Who.
+        body: u32,
+        /// In hand now, if anything.
+        item: Option<ItemView>,
     },
     /// A body in a chunk the client holds set off (or is seen for the
     /// first time) along a route: move it from `at` through the waypoints
@@ -365,6 +455,10 @@ mod tests {
             ClientMessage::Ping { nonce: 42 },
             ClientMessage::MoveTo { x: 3, y: -1 },
             ClientMessage::Eat { item: 12 },
+            ClientMessage::PickUp { item: 12 },
+            ClientMessage::Drop { item: 12 },
+            ClientMessage::Hold { item: 12 },
+            ClientMessage::Stow { item: 12 },
             ClientMessage::Sleep,
             ClientMessage::Wake,
         ];
@@ -419,6 +513,10 @@ mod tests {
                     route: vec![Point { x: 170_500, y: 500 }],
                     speed_cm_per_s: 143,
                     asleep: false,
+                    holds: Some(ItemView {
+                        id: 5,
+                        material: "flint".into(),
+                    }),
                 }],
                 items: vec![ItemState {
                     id: 9,
@@ -479,7 +577,29 @@ mod tests {
                 x: 1,
                 y: 2,
             },
-            ServerMessage::EatRefused { body: 1, item: 12 },
+            ServerMessage::ActRefused {
+                body: 1,
+                act: ItemAct::PickUp,
+                item: 12,
+                reason: Refusal::TooHeavy,
+            },
+            ServerMessage::Inventory {
+                body: 1,
+                held: Some(ItemView {
+                    id: 5,
+                    material: "flint".into(),
+                }),
+                carried: vec![ItemView {
+                    id: 6,
+                    material: "berries".into(),
+                }],
+                load_g: 500,
+                capacity_g: 20_000,
+            },
+            ServerMessage::BodyHolds {
+                body: 1,
+                item: None,
+            },
             ServerMessage::BodyLeft { body: 1 },
             ServerMessage::MoveRefused {
                 body: 1,
@@ -507,6 +627,16 @@ mod tests {
         assert_eq!(
             encode(&ClientMessage::Eat { item: 5 }).unwrap(),
             r#"{"type":"eat","item":5}"#
+        );
+        assert_eq!(
+            encode(&ServerMessage::ActRefused {
+                body: 1,
+                act: ItemAct::PickUp,
+                item: 5,
+                reason: Refusal::OutOfReach,
+            })
+            .unwrap(),
+            r#"{"type":"act_refused","body":1,"act":"pick_up","item":5,"reason":"out_of_reach"}"#
         );
         let text = encode(&ServerMessage::Chunk {
             x: 1,
