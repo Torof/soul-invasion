@@ -13,6 +13,8 @@ uniform sampler2D noise_texture : repeat_enable, filter_linear;
 // with the first over slow noise instead of a turned copy of itself.
 uniform sampler2D sibling_texture : repeat_enable, filter_linear;
 uniform bool has_sibling = false;
+// Share of the ground the sibling (or the turned copy) covers.
+uniform float sibling_cover = 0.5;
 uniform sampler2D second_texture : repeat_enable, filter_linear;
 uniform bool has_second = false;
 uniform float second_scale = 0.03;
@@ -60,7 +62,8 @@ void fragment() {
 	vec2 turned = vec2(-uv.y, uv.x) + second_offset;
 	vec4 second = has_sibling ? texture(sibling_texture, uv) : texture(TEXTURE, turned);
 	float n = texture(noise_texture, uv * noise_scale).r;
-	float weight = smoothstep(0.46, 0.54, n);
+	float threshold = 1.0 - sibling_cover;
+	float weight = smoothstep(threshold - 0.04, threshold + 0.04, n);
 	vec4 ground = mix(first, second, weight);
 	// Dry zones: a soft, wide mask; the tint is applied at most at
 	// dry_strength so the change stays a half-tone.

@@ -17,13 +17,13 @@ extends Node2D
 ## Metres covered by one ground texture.
 const GROUND_METRES := 4.0
 ## terrain -> path of its ground texture under res://art/ground/
-## The floor of the woods is sparse grass in the shade, darker and
-## cooler, with the most open sister of the meadow's grass and more bare
-## earth. Plain soil does not come out of the generator; leaf litter will
-## come later as a sister.
+## The floor of the woods is the flattest grass in the shade, darker and
+## cooler, with the sparse forest grass in a few plaques and bare earth.
+## Plain soil does not come out of the generator; leaf litter will come
+## later as a sister.
 const GROUND_TEXTURES := {
 	"grass": "res://art/ground/ground_grass_01_summer.png",
-	"forest": "res://art/ground/ground_grass_06_summer.png",
+	"forest": "res://art/ground/ground_grass_02_summer.png",
 }
 ## terrain -> compatible textures shown in soft patches over the first:
 ## "second" over wide areas (a drier grass), "worn" in a few spots.
@@ -36,14 +36,14 @@ const LAYER_TEXTURES := {
 		"worn": "res://art/ground/ground_grass_02_summer.png",
 	},
 	"forest": {
-		"sibling": "res://art/ground/ground_grass_02_summer.png",
+		"sibling": "res://art/ground/ground_grass_06_summer.png",
 	},
 }
 ## terrain -> shader parameters that differ from the shader's defaults
 const GROUND_PARAMS := {
 	"forest": {
 		"base_tint": Color(0.56, 0.70, 0.74),
-		"second_offset": Vector2(0.0, 0.0),
+		"sibling_cover": 0.25,
 		"dry_strength": 0.3,
 	},
 }
