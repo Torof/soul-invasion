@@ -28,7 +28,7 @@
 		}
 	},
 	"water": {
-		"note": "The river: only the generated images (01 lively, 03 cells over 40 %, 04 swirls over a quarter, 05 calm stretches), all turned a quarter turn on disk so their lines follow the river. Nothing drawn by the shader under them. The half-turned calm (06) is in reserve.",
+		"note": "The river: only the generated images, turned to follow the river. No bank for now: the strip approach broke on a meandering river (it assumed a straight north-south bank); the bank will be a tileset of generated shore pieces. Decorations are sown by the decor entry.",
 		"texture": "res://art/ground/ground_water_01_summer.png",
 		"layers": {
 			"sibling": "res://art/ground/ground_water_03_summer.png",
@@ -57,6 +57,30 @@
 			"worn_softness": 0.35,
 			"second_softness": 0.25,
 			"spill_only_with_bank": true
+		}
+	},
+	"decor": {
+		"note": "Decorations sown by a fixed hash of the tile (client-side trial, no effect on the game).",
+		"rock": {
+			"where": "water_near_land",
+			"chance": 0.14,
+			"size_m": 1.0,
+			"tint": "water"
+		},
+		"tuft": {
+			"where": "land_near_water",
+			"chance": 0.35,
+			"size_m": 0.55
+		},
+		"flower": {
+			"where": "land_near_water",
+			"chance": 0.2,
+			"size_m": 0.5
+		},
+		"pebble": {
+			"where": "land_near_water",
+			"chance": 0.25,
+			"size_m": 0.28
 		}
 	}
 }

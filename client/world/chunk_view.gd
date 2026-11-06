@@ -23,7 +23,7 @@ const GROUND_METRES := 4.0
 ## Sisters of the same grass (same style and tone, drawn differently) give
 ## the variety; tone variation is a tint in the shader, never another image.
 const GROUND_SPEC := "res://world/ground.json"
-const LAYERS := ["sibling", "second", "worn", "bank"]
+const LAYERS := ["sibling", "second", "worn", "bank", "bank2"]
 static var _spec: Dictionary = {}
 ## terrain -> the parameter names applied to its material, to reset the
 ## ones a reload no longer sets.
@@ -72,7 +72,7 @@ static func ground_params(terrain: String) -> Dictionary:
 ## tiles. The water's spill is its bank: the shader paints sand there.
 const FRINGE_OVER := {
 	"forest": {"over": ["grass"], "width": 2},
-	"water": {"over": ["grass", "forest"], "width": 1},
+	"water": {"over": ["grass", "forest"], "width": 2},
 }
 ## Width, in tiles, over which a terrain feels its own edge (water
 ## lightens near its banks).
@@ -226,6 +226,7 @@ static func reload_art() -> void:
 	var spec := read_ground_spec()
 	if not spec.is_empty():
 		_spec = spec
+	_decor.clear()
 	var shader := Shader.new()
 	shader.code = FileAccess.get_file_as_string("res://world/ground.gdshader")
 	for terrain in _spec:
@@ -244,6 +245,39 @@ static func reload_art() -> void:
 ## A texture through the import when it has one, else straight from the
 ## image file (an image added today, not yet imported): never null for a
 ## file that is there.
+## Decorations: small generated images (rocks at the waterline; tufts,
+## flowers and pebbles on the bank) sown by a fixed hash of the tile, so
+## they are the same for everyone and never twice in the same place.
+## Client-side and without effect on the game, as a trial: the day one of
+## them counts, it becomes a server item like a pebble. Their kinds and
+## doses are the "decor" entry of the ground spec.
+const DECOR_DIR := "res://art/decor/"
+## kind -> Array[Texture2D]
+static var _decor: Dictionary = {}
+
+
+static func decor_textures(kind: String) -> Array:
+	if not _decor.has(kind):
+		var found: Array = []
+		for n in range(1, 40):
+			var path := "%s%s_%02d.png" % [DECOR_DIR, kind, n]
+			if ResourceLoader.exists(path) or FileAccess.file_exists(path):
+				var texture := load_texture(path)
+				if texture != null:
+					found.append(texture)
+		_decor[kind] = found
+	return _decor[kind]
+
+
+## A fixed number in [0, 1) for a tile and a salt: the same on every
+## client, every time.
+static func tile_hash(tx: int, ty: int, salt: int) -> float:
+	var h := (tx * 73856093) ^ (ty * 19349663) ^ (salt * 83492791)
+	h = (h ^ (h >> 13)) * 1274126177
+	h = h ^ (h >> 16)
+	return float((h & 0x7fffffff) % 100003) / 100003.0
+
+
 static func load_texture(path: String) -> Texture2D:
 	if path == "":
 		return null
@@ -410,6 +444,7 @@ func _draw() -> void:
 		canvas.fringe = spills.get(terrain, [])
 		canvas.shore = shore(terrain) if SHORE_TERRAINS.has(terrain) else {}
 		canvas.queue_redraw()
+	_draw_decor()
 	# Items: a small disc of the material's colour, slightly off the
 	# tile's centre so several on one tile stay visible.
 	var on_tile: Dictionary = {}
@@ -424,6 +459,61 @@ func _draw() -> void:
 		draw_circle(centre, ITEM_RADIUS, Color(0, 0, 0, 0.6), false, 1.0)
 		if material == "corpse":
 			draw_death_icon(self, centre + Vector2(0, -16))
+
+
+## Sows the decorations of this chunk: for each kind, on the tiles its
+## "where" names (water within a tile of land; land within two tiles of
+## water), with its chance, at a fixed random spot of the tile.
+func _draw_decor() -> void:
+	var decor: Dictionary = ground_spec().get("decor", {})
+	if decor.is_empty():
+		return
+	var water_near_land := shore("water")
+	var land_near_water := _nearness(func(t: String) -> bool: return t == "water", 2)
+	var water_tint: Color = ground_params("water").get("base_tint", Color.WHITE)
+	var salt := 0
+	for kind in decor:
+		salt += 1
+		var rule: Dictionary = decor[kind]
+		var textures := decor_textures(kind)
+		if textures.is_empty():
+			continue
+		var chance := float(rule.get("chance", 0.1))
+		var size_px := float(rule.get("size_m", 0.5)) * Iso.PX_PER_M
+		var tint := water_tint if str(rule.get("tint", "")) == "water" else Color.WHITE
+		for y in _size:
+			for x in _size:
+				var tx := _origin.x + x
+				var ty := _origin.y + y
+				var terrain := str(_tiles[y * _size + x])
+				var near := 0.0
+				if str(rule.get("where", "")) == "water_near_land":
+					if terrain != "water" or not water_near_land.has(Vector2i(tx, ty)):
+						continue
+					near = _max4(water_near_land[Vector2i(tx, ty)])
+					if near < 0.6:
+						continue
+				else:
+					if terrain == "water" or terrain == "ford":
+						continue
+					near = _max4(_corners(land_near_water, x, y))
+					if near <= 0.0:
+						continue
+				if tile_hash(tx, ty, salt) > chance * near:
+					continue
+				var texture: Texture2D = textures[int(tile_hash(tx, ty, salt + 100) * textures.size()) % textures.size()]
+				var offset := Vector2(tile_hash(tx, ty, salt + 200) - 0.5, tile_hash(tx, ty, salt + 300) - 0.5) * 600.0
+				var centre := Iso.point_to_screen(Vector2(tx * 1000 + 500, ty * 1000 + 500) + offset)
+				var ratio := float(texture.get_height()) / float(texture.get_width())
+				var size := Vector2(size_px, size_px * ratio * 0.5)
+				draw_texture_rect(texture, Rect2(centre - size / 2.0, size), false, tint)
+
+
+static func _max4(values: PackedFloat32Array) -> float:
+	var best := 0.0
+	for v in values:
+		best = maxf(best, v)
+	return best
 
 
 ## A small skull above a corpse, drawn on `canvas` at `at`.

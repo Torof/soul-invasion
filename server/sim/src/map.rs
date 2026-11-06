@@ -257,6 +257,16 @@ impl Map {
         let river_half_width = i32::try_from(width / 80).expect("map fits in i32").max(1);
         let ford_y = i32::try_from(height / 2).expect("map fits in i32");
         let ford_half_length = i32::try_from(height / 64).expect("map fits in i32").max(1);
+        // The river meanders: wide slow bends, small wobbles on top, and a
+        // width that breathes, all from the seed.
+        let bends = Meander::new(
+            height,
+            seed.wrapping_add(1),
+            48,
+            i32::try_from(width / 10).expect("map fits in i32"),
+        );
+        let wobble = Meander::new(height, seed.wrapping_add(2), 12, 3);
+        let breath = Meander::new(height, seed.wrapping_add(3), 20, 1);
 
         for y in 0..height {
             for x in 0..width {
@@ -264,9 +274,11 @@ impl Map {
                     i32::try_from(x).expect("map fits in i32"),
                     i32::try_from(y).expect("map fits in i32"),
                 );
+                let centre = river_x + bends.at(y) + wobble.at(y);
+                let half_width = (river_half_width + breath.at(y)).max(1);
                 let terrain = if y < cliff_rows {
                     Terrain::Rock
-                } else if (pos.x - river_x).abs() <= river_half_width {
+                } else if (pos.x - centre).abs() <= half_width {
                     if (pos.y - ford_y).abs() <= ford_half_length {
                         Terrain::Ford
                     } else {
@@ -628,6 +640,34 @@ struct Groves {
     values: Vec<u32>,
 }
 
+/// A smooth signed wander along one axis: lattice values every `cell`
+/// rows, interpolated with an integer smoothstep. Deterministic from the
+/// seed, like the groves.
+struct Meander {
+    cell: u32,
+    values: Vec<i32>,
+}
+
+impl Meander {
+    fn new(length: u32, seed: u64, cell: u32, amplitude: i32) -> Self {
+        let mut rng = Lcg::new(seed);
+        let span = u32::try_from(2 * amplitude + 1).expect("small amplitude");
+        let values = (0..length / cell + 2)
+            .map(|_| i32::try_from(rng.next_below(span)).expect("small") - amplitude)
+            .collect();
+        Self { cell, values }
+    }
+
+    fn at(&self, y: u32) -> i32 {
+        let index = (y / self.cell) as usize;
+        let within = i64::from(y % self.cell) * 1000 / i64::from(self.cell);
+        let smooth = within * within * (3000 - 2 * within) / 1_000_000;
+        let before = i64::from(self.values[index]);
+        let after = i64::from(self.values[index + 1]);
+        i32::try_from((before * (1000 - smooth) + after * smooth) / 1000).expect("small")
+    }
+}
+
 impl Groves {
     /// Lattice spacing in tiles.
     const CELL: u32 = 12;
@@ -762,8 +802,17 @@ mod tests {
         assert_ne!(a, Map::valley(256, 256, 8));
         // Cliff on top, river with a ford, and the two banks are connected.
         assert_eq!(a.get(Pos::new(5, 0)), Some(Terrain::Rock));
-        assert_eq!(a.get(Pos::new(85, 60)), Some(Terrain::Water));
-        assert_eq!(a.get(Pos::new(85, 128)), Some(Terrain::Ford));
+        let first_of = |row: i32, terrain: Terrain| {
+            (0..256).find(|x| a.get(Pos::new(*x, row)) == Some(terrain))
+        };
+        assert!(first_of(60, Terrain::Water).is_some());
+        assert!(first_of(128, Terrain::Ford).is_some());
+        // The river meanders: its bank is not at the same x on every row.
+        let banks: Vec<Option<i32>> = (40..220)
+            .step_by(20)
+            .map(|row| first_of(row, Terrain::Water))
+            .collect();
+        assert!(banks.iter().any(|b| *b != banks[0]), "{banks:?}");
         let west = a.nearest(Pos::new(20, 200), Terrain::Grass).unwrap();
         let east = a.nearest(Pos::new(240, 200), Terrain::Grass).unwrap();
         let path = a.path(west, east, walk).unwrap();
