@@ -21,8 +21,10 @@ uniform bool has_variants = false;
 // with the first over slow noise.
 uniform sampler2D sibling_texture : repeat_enable, filter_linear;
 uniform bool has_sibling = false;
-// Share of the ground the sibling covers.
+// Share of the ground the sibling covers, and a tint to bring its tone
+// to the first image's when the two differ (white: none).
 uniform float sibling_cover = 0.5;
+uniform vec3 sibling_tint : source_color = vec3(1.0);
 // Share of the base's bare spots (its brown pixels) kept; the others
 // show the sibling's grass instead. Needs a sibling.
 uniform float bare_keep = 1.0;
@@ -58,6 +60,16 @@ uniform float edge_scale = 1.5;
 // ground is tinted by shore_tint by that much, ragged by the same noise.
 uniform float shore_lighten = 0.0;
 uniform vec3 shore_tint : source_color = vec3(1.35, 1.3, 1.1);
+// A thin darker line at the very edge of the water (the wet bank).
+uniform float bank_line = 0.0;
+// The current: soft lighter streaks stretched along the river's axis
+// (the texture's y), drifting with time. Drawn by the shader, so they
+// never repeat as a tile would and they move. Zero turns them off.
+uniform float current_strength = 0.0;
+uniform float current_scale = 3.0;
+uniform float current_stretch = 6.0;
+uniform float current_speed = 0.04;
+uniform float current_cover = 0.3;
 
 // Soft patches covering about `cover` of the ground, from the noise read
 // at `scale` with an offset so each layer has its own shape.
@@ -104,6 +116,7 @@ void fragment() {
 	vec4 ground = blend4(texture(TEXTURE, uv), texture(TEXTURE, uv_b(uv)), texture(TEXTURE, uv_c(uv)), texture(TEXTURE, uv_d(uv)), variant_weights(uv));
 	if (has_sibling) {
 		vec4 sibling = varied(sibling_texture, uv);
+		sibling.rgb *= sibling_tint;
 		float n = texture(noise_texture, uv * noise_scale).r;
 		float threshold = 1.0 - sibling_cover;
 		float weight = smoothstep(threshold - 0.04, threshold + 0.04, n);
@@ -132,11 +145,27 @@ void fragment() {
 	// (that squares the colour and darkens it by half).
 	ground.rgb *= base_tint;
 	vec3 vertex_tint = tint.rgb;
+	if (current_strength > 0.0) {
+		// Two drifts of streaks at different paces, read from the noise
+		// squeezed across the river and stretched along it.
+		vec2 flow = vec2(uv.x * current_scale, (uv.y - TIME * current_speed) * current_scale / current_stretch);
+		vec2 flow2 = vec2(uv.x * current_scale * 1.7 + 0.5, (uv.y - TIME * current_speed * 0.6) * current_scale / current_stretch + 0.3);
+		float s1 = texture(noise_texture, flow).r;
+		float s2 = texture(noise_texture, flow2).r;
+		float t = 1.0 - current_cover;
+		float streak = max(smoothstep(t - 0.08, t + 0.08, s1), smoothstep(t, t + 0.12, s2) * 0.6);
+		ground.rgb = mix(ground.rgb, ground.rgb * shore_tint, streak * current_strength);
+	}
 	if (shore_lighten > 0.0) {
-		float near = (1.0 - tint.g) * shore_lighten;
+		float raw = 1.0 - tint.g;
+		float near = raw * shore_lighten;
 		float e = texture(noise_texture, uv * edge_scale + vec2(0.61, 0.13)).r;
 		near = smoothstep(e - 0.35, e + 0.35, near);
 		ground.rgb = mix(ground.rgb, ground.rgb * shore_tint, near);
+		if (bank_line > 0.0) {
+			float line = smoothstep(0.86, 0.97, raw) * (1.0 - smoothstep(0.985, 1.0, raw));
+			ground.rgb *= 1.0 - line * bank_line;
+		}
 		vertex_tint.g = 1.0;
 	}
 	float alpha = tint.a;
