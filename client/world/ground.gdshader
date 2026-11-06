@@ -49,6 +49,10 @@ uniform float dry_softness = 0.3;
 // The terrain's own tone over everything: white for the meadow, darker
 // and cooler for the shade of the woods.
 uniform vec3 base_tint : source_color = vec3(1.0);
+// Where a terrain spills over its neighbour, the vertex alpha fades
+// across the border; a noise read at this period erodes that fade so the
+// edge is ragged, not straight.
+uniform float edge_scale = 1.5;
 
 // Soft patches covering about `cover` of the ground, from the noise read
 // at `scale` with an offset so each layer has its own shape.
@@ -122,5 +126,10 @@ void fragment() {
 	// the blended texture and the vertex colour, do not multiply again
 	// (that squares the colour and darkens it by half).
 	ground.rgb *= base_tint;
-	COLOR = ground * tint;
+	float alpha = tint.a;
+	if (alpha < 1.0) {
+		float e = texture(noise_texture, uv * edge_scale + vec2(0.23, 0.71)).r;
+		alpha = smoothstep(e - 0.3, e + 0.3, alpha);
+	}
+	COLOR = vec4(ground.rgb * tint.rgb, alpha);
 }
