@@ -198,3 +198,99 @@ single 2D game asset, a primitive wooden rack with strips of meat hanging above 
 ## Tracking
 
 For every validated image, record beside it in `content/art/`: the file, the exact prompt, the date (see `content/art/references/style-ref-01.md`). This is what will later allow training a model on our style.
+
+---
+
+## Batch 1 — what the game shows now (6 November 2026)
+
+The format contract is in `09-visual-production.md` §4. Each image has its file name under `content/art/`, its footprint, and its prompt ready to paste. Grounds are seen exactly from above and must tile; elements stand on white with no ground shadow, lit from the front left; anchors are at the base of the centre of the footprint. Generate at twice the game size (the game uses 64 px per metre at scale 1).
+
+### Grounds (top-down, seamless, one image covers 4 × 4 m → 512 × 512 px in game)
+
+**`ground_grass_01_summer.png`** — 4×4 m
+```
+top-down seamless ground texture, lush green meadow grass with a few small tufts, seen exactly from above, no perspective, flat cel shading, calm and low in detail, no outlines, no shadows, game texture --ar 1:1 --tile --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, objects, characters
+```
+
+**`ground_grass_02_summer.png`** — 4×4 m
+```
+top-down seamless ground texture, green meadow grass worn by footsteps, patches of bare dirt showing, seen exactly from above, no perspective, flat cel shading, calm and low in detail, no outlines, no shadows, game texture --ar 1:1 --tile --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, objects, characters
+```
+
+**`ground_forest_floor_01_summer.png`** — 4×4 m
+```
+top-down seamless ground texture, dark forest floor, fallen leaves, roots and moss, seen exactly from above, no perspective, flat cel shading, calm and low in detail, no outlines, no shadows, game texture --ar 1:1 --tile --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, objects, characters
+```
+
+**`ground_ford_01_summer.png`** — 4×4 m
+```
+top-down seamless ground texture, shallow clear turquoise water over pebbles, a river ford, seen exactly from above, no perspective, flat cel shading, calm and low in detail, no outlines, no shadows, game texture --ar 1:1 --tile --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, objects, characters
+```
+
+**`ground_water_01_summer.png`** — 4×4 m
+```
+top-down seamless ground texture, clear turquoise river water with soft ripples, seen exactly from above, no perspective, flat cel shading, calm and low in detail, no outlines, no shadows, game texture --ar 1:1 --tile --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, objects, characters
+```
+
+**`ground_rock_01_summer.png`** — 4×4 m
+```
+top-down seamless ground texture, grey-green cliff rock with cracks and acid-green moss in the cracks, seen exactly from above, no perspective, flat cel shading, calm and low in detail, no outlines, no shadows, game texture --ar 1:1 --tile --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, objects, characters
+```
+
+### Overlays (top-down, transparent after cut-out, scattered on cells)
+
+**`overlay_flowers_summer.png`** — cell
+```
+top-down game overlay, a few small wildflowers in yellow and white with a leaf or two, sparse and well separated, seen exactly from above, thick dark outlines on each element, flat cel shading, plain white background --ar 1:1 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, ground texture
+```
+
+**`overlay_dead_leaves_summer.png`** — cell
+```
+top-down game overlay, a few fallen brown and ochre leaves, sparse and well separated, seen exactly from above, thick dark outlines on each element, flat cel shading, plain white background --ar 1:1 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, ground texture
+```
+
+**`overlay_pebbles_summer.png`** — cell
+```
+top-down game overlay, a few small grey river pebbles, sparse and well separated, seen exactly from above, thick dark outlines on each element, flat cel shading, plain white background --ar 1:1 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, ground texture
+```
+
+**`overlay_moss_summer.png`** — cell
+```
+top-down game overlay, a few patches of acid-green moss, sparse and well separated, seen exactly from above, thick dark outlines on each element, flat cel shading, plain white background --ar 1:1 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, ground texture
+```
+
+### Items on the ground (one sheet, each item cut out to lie on a cell; anchor: centre)
+
+**`items_materials_01.png`** — sheet
+```
+2D game item sheet, ten small items evenly spaced on a grid, each isolated: a dark grey flint nodule, a smooth round pebble, a dead wooden branch, a short thick log, a bundle of pale plant fibres, a handful of red berries, a folded animal hide, a piece of raw red meat, a long white bone, and a prehistoric human corpse lying curled on its side, high-angle three-quarter view, thick dark outlines, flat cel shading, plain white background, no shadows --ar 16:9 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, scenery
+```
+
+### Structures (three-quarter on white; footprint and anchor at the base of its centre)
+
+**`fire_states_01.png`** — 1×1, three states
+```
+2D game asset sheet, the same stone-ringed campfire in three states side by side: unlit with stacked logs, glowing orange embers, burning brightly with tall flames, evenly spaced, high-angle three-quarter view, thick dark outlines, flat cel shading, plain white background, no ground shadow --ar 16:9 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text
+```
+
+**`shelter_branches_01_summer.png`** — 1×2
+```
+single 2D game asset, a primitive lean-to shelter made of stacked branches and leaves, open on one side, about two metres long, high-angle three-quarter view, thick dark outlines, flat cel shading, isolated on a plain white background, no ground shadow, lit from the front left --ar 4:3 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, scenery
+```
+
+**`rack_drying_01.png`** — 1×2
+```
+single 2D game asset, a primitive wooden rack of lashed poles with strips of meat hanging to dry, about two metres long, high-angle three-quarter view, thick dark outlines, flat cel shading, isolated on a plain white background, no ground shadow, lit from the front left --ar 4:3 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, scenery
+```
+
+### Trees (one species now; the others with `species.ron`)
+
+**`oak_adult_01_summer.png`** — 1×1, 4 m tall
+```
+single 2D game asset, a large adult oak tree with a thick trunk clear on its lower third and dense rounded foliage clumps, high-angle three-quarter view, thick dark outlines, flat cel shading, isolated on a plain white background, no ground shadow, lit from the front left --ar 2:3 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, scenery
+```
+
+**`oak_adult_02_summer.png`** — 1×1, 4 m tall
+```
+single 2D game asset, a large adult oak tree, a different silhouette, thick trunk clear on its lower third, dense rounded foliage, one lower branch reaching out, high-angle three-quarter view, thick dark outlines, flat cel shading, isolated on a plain white background, no ground shadow, lit from the front left --ar 2:3 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, scenery
+```
