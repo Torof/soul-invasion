@@ -53,6 +53,11 @@ uniform vec3 base_tint : source_color = vec3(1.0);
 // across the border; a noise read at this period erodes that fade so the
 // edge is ragged, not straight.
 uniform float edge_scale = 1.5;
+// Water lightens near its banks: when shore_lighten is above zero, the
+// vertex colour's green channel carries 1 - nearness of the bank, and the
+// ground is tinted by shore_tint by that much, ragged by the same noise.
+uniform float shore_lighten = 0.0;
+uniform vec3 shore_tint : source_color = vec3(1.35, 1.3, 1.1);
 
 // Soft patches covering about `cover` of the ground, from the noise read
 // at `scale` with an offset so each layer has its own shape.
@@ -126,10 +131,18 @@ void fragment() {
 	// the blended texture and the vertex colour, do not multiply again
 	// (that squares the colour and darkens it by half).
 	ground.rgb *= base_tint;
+	vec3 vertex_tint = tint.rgb;
+	if (shore_lighten > 0.0) {
+		float near = (1.0 - tint.g) * shore_lighten;
+		float e = texture(noise_texture, uv * edge_scale + vec2(0.61, 0.13)).r;
+		near = smoothstep(e - 0.35, e + 0.35, near);
+		ground.rgb = mix(ground.rgb, ground.rgb * shore_tint, near);
+		vertex_tint.g = 1.0;
+	}
 	float alpha = tint.a;
 	if (alpha < 1.0) {
 		float e = texture(noise_texture, uv * edge_scale + vec2(0.23, 0.71)).r;
 		alpha = smoothstep(e - 0.3, e + 0.3, alpha);
 	}
-	COLOR = vec4(ground.rgb * tint.rgb, alpha);
+	COLOR = vec4(ground.rgb * vertex_tint, alpha);
 }

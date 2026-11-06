@@ -171,6 +171,16 @@ func _test_ground_art_is_reachable() -> void:
 	_check(by_tile.has(Vector2i(2, 3)) and by_tile[Vector2i(2, 3)][0] == 1.0 and by_tile[Vector2i(2, 3)][3] == 1.0, "the grass tile touching the wood is opaque on that side")
 	_check(by_tile.has(Vector2i(3, 3)) and by_tile[Vector2i(3, 3)][1] < by_tile[Vector2i(3, 3)][0], "one tile further the spill fades")
 	_check(not by_tile.has(Vector2i(5, 3)), "three tiles away the grass is itself")
+	# Water knows its banks: a water tile touching grass is near on that
+	# side, and open water far from any bank is not in the shore.
+	var water: Array = []
+	for y in 8:
+		for x in 8:
+			water.append("grass" if x < 2 else "water")
+	view.show_chunk(Vector2i.ZERO, 8, water, [], {})
+	var banks := view.shore("water")
+	_check(banks.has(Vector2i(2, 4)) and banks[Vector2i(2, 4)][0] == 1.0 and banks[Vector2i(2, 4)][1] < 1.0, "the water tile at the bank is nearest on the bank's side")
+	_check(not banks.has(Vector2i(7, 4)), "open water far from the bank has no shore")
 	view.free()
 	# The development watcher knows the shader and every ground texture,
 	# and a reload from the files leaves the materials usable.
