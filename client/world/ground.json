@@ -28,10 +28,12 @@
 		}
 	},
 	"water": {
-		"note": "The river: calm cartoon water (flat teal plates, thin dark lines, specks, a few thin pale lines), with a paler sister of the same family blended over 40 %, both brought toward the reference's river by tints; banks a little lighter with a thin wet line.",
+		"note": "The river: the lively cartoon water (01) with its paler cells (03) over 40 % and the swirls (04) over a quarter, and a few calm stretches (05); all images turned a quarter turn on disk so their lines follow the river. The half-turned calm (06) is in reserve. Banks a little lighter with a thin wet line.",
 		"texture": "res://art/ground/ground_water_01_summer.png",
 		"layers": {
-			"sibling": "res://art/ground/ground_water_03_summer.png"
+			"sibling": "res://art/ground/ground_water_03_summer.png",
+			"second": "res://art/ground/ground_water_04_summer.png",
+			"worn": "res://art/ground/ground_water_05_summer.png"
 		},
 		"params": {
 			"has_variants": true,
@@ -49,7 +51,14 @@
 				0.8,
 				0.975,
 				0.97
-			]
+			],
+			"second_cover": 0.25,
+			"second_scale": 0.04,
+			"noise_scale": 0.09,
+			"worn_cover": 0.22,
+			"worn_scale": 0.025,
+			"worn_softness": 0.35,
+			"second_softness": 0.25
 		}
 	}
 }
