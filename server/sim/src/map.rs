@@ -11,7 +11,7 @@
 //! of transfer and of interest (D08, D31).
 
 use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
@@ -357,6 +357,32 @@ impl Map {
     /// Can a body stand at `pos`?
     pub fn is_passable(&self, pos: Pos) -> bool {
         self.get(pos).is_some_and(Terrain::is_passable)
+    }
+
+    /// For every tile, its distance in eight-way steps to the nearest tile
+    /// of `terrain` (0 on such a tile; `u32::MAX` when there is none),
+    /// row by row like [`Map::tiles`].
+    pub fn distance_to(&self, terrain: Terrain) -> Vec<u32> {
+        let mut distance = vec![u32::MAX; self.tiles.len()];
+        let mut queue = VecDeque::new();
+        for (i, t) in self.tiles.iter().enumerate() {
+            if *t == terrain {
+                distance[i] = 0;
+                queue.push_back(i);
+            }
+        }
+        while let Some(i) = queue.pop_front() {
+            let here = self.pos_at(i);
+            for next in here.neighbours() {
+                if let Some(j) = self.index(next)
+                    && distance[j] == u32::MAX
+                {
+                    distance[j] = distance[i] + 1;
+                    queue.push_back(j);
+                }
+            }
+        }
+        distance
     }
 
     /// The nearest tile to `pos` with the given terrain, searching in
@@ -895,6 +921,27 @@ mod tests {
         assert_eq!(FinePos::new(-1, 1000).tile(), Pos::new(-1, 1));
         assert_eq!(Pos::new(3, 4).centre(), FinePos::new(3500, 4500));
         assert!((FinePos::new(0, 0).distance_to(FinePos::new(3000, 4000)) - 5000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn distance_to_a_terrain_counts_eight_way_steps() {
+        let mut map = Map::filled(5, 5, Terrain::Grass);
+        map.set(Pos::new(0, 0), Terrain::Rock);
+        let distance = map.distance_to(Terrain::Rock);
+        assert_eq!(distance[0], 0);
+        assert_eq!(
+            distance[map.index(Pos::new(1, 1)).unwrap()],
+            1,
+            "diagonal is one step"
+        );
+        assert_eq!(distance[map.index(Pos::new(4, 4)).unwrap()], 4);
+        assert_eq!(distance[map.index(Pos::new(4, 0)).unwrap()], 4);
+        assert!(
+            map.distance_to(Terrain::Water)
+                .iter()
+                .all(|d| *d == u32::MAX),
+            "no water anywhere"
+        );
     }
 
     #[test]
