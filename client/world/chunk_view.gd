@@ -46,6 +46,9 @@ const LAYER_TEXTURES := {
 const FRINGE_OVER := {"forest": ["grass"]}
 ## Width of the spill, in tiles.
 const FRINGE := 2
+## Terrains that change near their own edge (water lightens near its
+## banks): their tiles carry, at each corner, how near the bank is.
+const SHORE_TERRAINS := ["water"]
 ## Drawing order of the textured terrains: the one that spills is above.
 const GROUND_ORDER := {"grass": 0, "forest": 1}
 ## terrain -> shader parameters that differ from the shader's defaults
@@ -53,6 +56,7 @@ const GROUND_PARAMS := {
 	"water": {
 		"has_variants": true,
 		"dry_strength": 0.0,
+		"shore_lighten": 1.0,
 		# The image is a bright cyan; muted a little toward the valley's
 		# dull greens.
 		"base_tint": Color(0.78, 0.84, 0.88),
@@ -158,6 +162,10 @@ class GroundCanvas:
 	## [{"tile": Vector2i, "alphas": PackedFloat32Array}] the tiles of
 	## another terrain this one spills over, with the opacity at each corner.
 	var fringe: Array = []
+	## tile -> PackedFloat32Array: how near the bank is at each corner of
+	## this terrain's own tiles, carried to the shader in the vertex
+	## colour's green channel (1 - nearness).
+	var shore: Dictionary = {}
 
 	func _draw() -> void:
 		var white := PackedColorArray([Color.WHITE, Color.WHITE, Color.WHITE, Color.WHITE])
@@ -165,7 +173,13 @@ class GroundCanvas:
 		for tile in tiles:
 			var tx := int(tile.x)
 			var ty := int(tile.y)
-			draw_polygon(Iso.diamond(tx, ty), white, ChunkView.ground_uvs(tx, ty), texture)
+			var colours := white
+			var near: PackedFloat32Array = shore.get(Vector2i(tx, ty), PackedFloat32Array())
+			if not near.is_empty():
+				colours = PackedColorArray()
+				for n in near:
+					colours.append(Color(1, 1 - n, 1, 1))
+			draw_polygon(Iso.diamond(tx, ty), colours, ChunkView.ground_uvs(tx, ty), texture)
 		for spill in fringe:
 			var tile: Vector2i = spill["tile"]
 			var alphas: PackedFloat32Array = spill["alphas"]
@@ -250,45 +264,73 @@ func _terrain(tx: int, ty: int) -> String:
 	return str(terrain_at.call(Vector2i(tx, ty))) if terrain_at.is_valid() else ""
 
 
-## The tiles of this chunk that `terrain` spills over, with the opacity of
-## the spill at each corner (clockwise from the top, like Iso.diamond): 1
-## at a corner touching a tile of `terrain`, fading to 0 FRINGE + 1
-## corners away.
-func fringe(terrain: String) -> Array:
-	var over: Array = FRINGE_OVER.get(terrain, [])
-	if over.is_empty():
-		return []
-	# Corners of the chunk and a margin around it, in tile coordinates
-	# relative to the origin: corner (cx, cy) is the top of tile (cx, cy).
+## Nearness of each corner of the chunk to the tiles `is_near` accepts
+## (clockwise from the top, like Iso.diamond): 1 at a corner touching
+## one, fading to 0 FRINGE + 1 corners away. Returns a function of the
+## corner, in tile coordinates relative to the origin, where corner
+## (cx, cy) is the top of tile (cx, cy).
+func _nearness(is_near: Callable) -> Callable:
+	# Corners of the chunk and a margin around it.
 	var lo := -FRINGE
 	var hi := _size + FRINGE
 	var inside: Dictionary = {}
 	for cy in range(lo, hi + 1):
 		for cx in range(lo, hi + 1):
 			for d in [Vector2i(-1, -1), Vector2i(0, -1), Vector2i(-1, 0), Vector2i(0, 0)]:
-				if _terrain(_origin.x + cx + d.x, _origin.y + cy + d.y) == terrain:
+				if is_near.call(_terrain(_origin.x + cx + d.x, _origin.y + cy + d.y)):
 					inside[Vector2i(cx, cy)] = true
 					break
-	var alpha_of := func(c: Vector2i) -> float:
+	return func(c: Vector2i) -> float:
 		var best := FRINGE + 1
 		for dy in range(-FRINGE, FRINGE + 1):
 			for dx in range(-FRINGE, FRINGE + 1):
 				if inside.has(c + Vector2i(dx, dy)):
 					best = mini(best, maxi(absi(dx), absi(dy)))
 		return 1.0 - float(best) / float(FRINGE + 1)
+
+
+## The four corners' values of tile (x, y) of the chunk, from `of_corner`.
+func _corners(of_corner: Callable, x: int, y: int) -> PackedFloat32Array:
+	return PackedFloat32Array([
+		of_corner.call(Vector2i(x, y)),
+		of_corner.call(Vector2i(x + 1, y)),
+		of_corner.call(Vector2i(x + 1, y + 1)),
+		of_corner.call(Vector2i(x, y + 1)),
+	])
+
+
+## The tiles of this chunk that `terrain` spills over, with the opacity of
+## the spill at each corner: 1 at a corner touching a tile of `terrain`,
+## fading to 0 FRINGE + 1 corners away.
+func fringe(terrain: String) -> Array:
+	var over: Array = FRINGE_OVER.get(terrain, [])
+	if over.is_empty():
+		return []
+	var nearness := _nearness(func(t: String) -> bool: return t == terrain)
 	var result: Array = []
 	for y in _size:
 		for x in _size:
 			if not over.has(str(_tiles[y * _size + x])):
 				continue
-			var alphas := PackedFloat32Array([
-				alpha_of.call(Vector2i(x, y)),
-				alpha_of.call(Vector2i(x + 1, y)),
-				alpha_of.call(Vector2i(x + 1, y + 1)),
-				alpha_of.call(Vector2i(x, y + 1)),
-			])
+			var alphas := _corners(nearness, x, y)
 			if alphas[0] > 0.0 or alphas[1] > 0.0 or alphas[2] > 0.0 or alphas[3] > 0.0:
 				result.append({"tile": _origin + Vector2i(x, y), "alphas": alphas})
+	return result
+
+
+## For the tiles of `terrain` in this chunk, how near each corner is to
+## another, known terrain (the bank): tile -> four values, only for the
+## tiles where some corner is near.
+func shore(terrain: String) -> Dictionary:
+	var nearness := _nearness(func(t: String) -> bool: return t != "" and t != terrain)
+	var result: Dictionary = {}
+	for y in _size:
+		for x in _size:
+			if str(_tiles[y * _size + x]) != terrain:
+				continue
+			var near := _corners(nearness, x, y)
+			if near[0] > 0.0 or near[1] > 0.0 or near[2] > 0.0 or near[3] > 0.0:
+				result[_origin + Vector2i(x, y)] = near
 	return result
 
 
@@ -322,6 +364,7 @@ func _draw() -> void:
 		var canvas := _ground_of(terrain)
 		canvas.tiles = by_terrain.get(terrain, PackedVector2Array())
 		canvas.fringe = spills.get(terrain, [])
+		canvas.shore = shore(terrain) if SHORE_TERRAINS.has(terrain) else {}
 		canvas.queue_redraw()
 	# Items: a small disc of the material's colour, slightly off the
 	# tile's centre so several on one tile stay visible.
