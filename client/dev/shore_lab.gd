@@ -37,6 +37,10 @@ func _is_water(which: String, x: int, y: int) -> bool:
 			return x + y >= SIZE
 		"notch":
 			return x >= 7 or (x >= 5 and y >= 5 and y <= 6)
+		"pond":
+			return x >= 4 and x <= 7 and y >= 4 and y <= 7
+		"island":
+			return not (x >= 4 and x <= 7 and y >= 4 and y <= 7)
 		_:
 			return x >= 6 and x <= 8
 

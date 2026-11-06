@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://bnhma4hr4adci"
-path="res://.godot/imported/18_corner_land_left.png-8b25f41910635e04e0f02e5852feb0ec.ctex"
+uid="uid://c40yljqc0n60v"
+path="res://.godot/imported/06i_inner_corner_land_below.png-ca7f05c8c009b3a7fccc621c02692d84.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://art/shore_iso/18_corner_land_left.png"
-dest_files=["res://.godot/imported/18_corner_land_left.png-8b25f41910635e04e0f02e5852feb0ec.ctex"]
+source_file="res://art/shore_iso/06i_inner_corner_land_below.png"
+dest_files=["res://.godot/imported/06i_inner_corner_land_below.png-ca7f05c8c009b3a7fccc621c02692d84.ctex"]
 
 [params]
 

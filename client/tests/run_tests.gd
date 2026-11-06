@@ -245,8 +245,10 @@ func _test_ground_art_is_reachable() -> void:
 	# The isometric shore: a water tile with land to the north takes the far
 	# bank sloping down-right; land only on a diagonal takes a corner piece.
 	_check(ChunkView.shore_iso_names(true, false, false, false, false, false, false, false) == ["01_far_bank_down_right"], "land north: the far bank piece")
-	_check(ChunkView.shore_iso_names(false, false, false, false, false, false, false, true) == ["15_corner_land_up"], "land only on the north-west diagonal: the corner piece")
+	_check(ChunkView.shore_iso_names(false, false, false, false, false, false, false, true) == ["15_corner_land_up"], "land only on the north-west diagonal: the corner piece name (no image yet: the neighbours' banks already meet there)")
 	_check(ChunkView.shore_iso_piece("02_far_bank_up_right") != null, "the isometric pieces load")
+	_check(ChunkView.shore_iso_names(true, false, false, true, false, false, false, true) == ["05_horizontal_land_above"], "land north and west on a straight run: the horizontal piece")
+	_check(ChunkView.shore_iso_names(true, false, false, true, true, false, false, true) == ["05i_inner_corner_land_above"], "land north, west and north-east: the inner corner piece")
 	view.free()
 	var forest := ChunkView.ground_material("forest")
 	_check(forest != material and forest.get_shader_parameter("base_tint") != material.get_shader_parameter("base_tint"), "the forest has its own material, in the shade")
