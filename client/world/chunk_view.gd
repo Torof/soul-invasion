@@ -215,14 +215,20 @@ class GroundCanvas:
 ## are read straight from the image files, bypassing the import, so a
 ## change is seen at once.
 static func reload_art() -> void:
-	_spec = read_ground_spec()
+	# A file caught half-written (the spec, an image) reads as nothing:
+	# keep what we had rather than drop the ground until the next change.
+	var spec := read_ground_spec()
+	if not spec.is_empty():
+		_spec = spec
 	var shader := Shader.new()
 	shader.code = FileAccess.get_file_as_string("res://world/ground.gdshader")
-	_ground_cache.clear()
 	for terrain in _spec:
 		var path := ground_path(terrain)
-		if path != "":
-			_ground_cache[terrain] = fresh_texture(path)
+		var texture := fresh_texture(path) if path != "" else null
+		if texture != null:
+			_ground_cache[terrain] = texture
+		elif path == "":
+			_ground_cache.erase(terrain)
 	for terrain in _ground_materials:
 		var material: ShaderMaterial = _ground_materials[terrain]
 		material.shader = shader

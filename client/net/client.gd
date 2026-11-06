@@ -31,10 +31,15 @@ signal day_started(day: int, tick: int)
 signal disconnected(reason: String)
 
 const DEFAULT_URL := "ws://127.0.0.1:7777"
+## Seconds between two attempts to come back once the connection is lost
+## (the server restarted, say). Zero: never.
+const RECONNECT_AFTER := 3.0
 
 var _peer := WebSocketPeer.new()
 var _state := WebSocketPeer.STATE_CLOSED
 var _hello_sent := false
+var _url := DEFAULT_URL
+var _reconnect_in := 0.0
 
 ## True once the server has welcomed us.
 var is_ready := false
@@ -46,9 +51,13 @@ func connect_to(url: String = DEFAULT_URL) -> void:
 	_hello_sent = false
 	is_ready = false
 	body = -1
+	_url = url
+	_reconnect_in = 0.0
+	_peer = WebSocketPeer.new()
 	var err := _peer.connect_to_url(url)
 	if err != OK:
 		disconnected.emit("cannot connect to %s (error %d)" % [url, err])
+		_reconnect_in = RECONNECT_AFTER
 
 
 func send_move_to(x: int, y: int) -> void:
@@ -114,8 +123,13 @@ func _process(_delta: float) -> void:
 			_handle(Protocol.decode(text))
 	elif state == WebSocketPeer.STATE_CLOSED and _state != WebSocketPeer.STATE_CLOSED:
 		is_ready = false
-		disconnected.emit("connection closed (code %d)" % _peer.get_close_code())
+		disconnected.emit("connection closed (code %d), retrying" % _peer.get_close_code())
+		_reconnect_in = RECONNECT_AFTER
 	_state = state
+	if _reconnect_in > 0.0 and RECONNECT_AFTER > 0.0:
+		_reconnect_in -= _delta
+		if _reconnect_in <= 0.0:
+			connect_to(_url)
 
 
 ## A fine point from the wire, in millimetres.
