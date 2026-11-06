@@ -299,6 +299,10 @@ const SHORE_ISO := {
 	"S": "03_near_bank_down_right", "E": "04_near_bank_up_right",
 	"NW": "05_horizontal_land_above", "ES": "06_horizontal_land_below",
 	"NE": "07_vertical_land_right", "SW": "08_vertical_land_left",
+	# Two adjacent land sides whose bank turns an L (the diagonal beside
+	# one of them is land too) instead of running straight through.
+	"NWi": "05i_inner_corner_land_above", "ESi": "06i_inner_corner_land_below",
+	"NEi": "07i_inner_corner_land_right", "SWi": "08i_inner_corner_land_left",
 	"NEW": "09_bay_open_down_left", "NES": "10_bay_open_up_left",
 	"ESW": "11_bay_open_up_right", "NSW": "12_bay_open_down_right",
 	"NS": "13_channel_down_right", "EW": "14_channel_up_right",
@@ -327,6 +331,14 @@ static func shore_iso_names(n: bool, e: bool, s: bool, w: bool, ne: bool, se: bo
 		sides += "S"
 	if w:
 		sides += "W"
+	if sides == "NW" and (ne or sw):
+		sides = "NWi"
+	elif sides == "ES" and (ne or sw):
+		sides = "ESi"
+	elif sides == "NE" and (nw or se):
+		sides = "NEi"
+	elif sides == "SW" and (nw or se):
+		sides = "SWi"
 	if sides != "":
 		return [SHORE_ISO[sides]] if SHORE_ISO.has(sides) else []
 	var names: Array = []
