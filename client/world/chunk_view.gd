@@ -44,6 +44,7 @@ const GROUND_PARAMS := {
 	"forest": {
 		"base_tint": Color(0.56, 0.70, 0.74),
 		"sibling_cover": 0.25,
+		"bare_keep": 0.35,
 		"dry_strength": 0.3,
 	},
 }
