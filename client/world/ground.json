@@ -1,0 +1,39 @@
+{
+	"grass": {
+		"note": "The meadow: the first grass, its closest sister over half, the open sister in patches, the worn grass in spots. Tone variation is the shader's tint, never another image.",
+		"texture": "res://art/ground/ground_grass_01_summer.png",
+		"layers": {
+			"sibling": "res://art/ground/ground_grass_03_summer.png",
+			"second": "res://art/ground/ground_grass_04_summer.png",
+			"worn": "res://art/ground/ground_grass_02_summer.png"
+		},
+		"params": {}
+	},
+	"forest": {
+		"note": "The floor of the woods: the flattest grass in the shade, the sparse forest grass in a few plaques, a third of the bare spots kept. Plain soil does not come out of the generator.",
+		"texture": "res://art/ground/ground_grass_02_summer.png",
+		"layers": {
+			"sibling": "res://art/ground/ground_grass_06_summer.png"
+		},
+		"params": {
+			"base_tint": [0.56, 0.70, 0.74],
+			"sibling_cover": 0.25,
+			"has_variants": true,
+			"bare_keep": 0.35,
+			"dry_strength": 0.3
+		}
+	},
+	"water": {
+		"note": "The river: the cartoon water with its own streaks, brought toward the reference's river (less saturated, greener); banks a little lighter with a thin wet line. The calm water (02) stays in reserve.",
+		"texture": "res://art/ground/ground_water_01_summer.png",
+		"layers": {},
+		"params": {
+			"has_variants": true,
+			"dry_strength": 0.0,
+			"shore_lighten": 0.5,
+			"bank_line": 0.3,
+			"current_strength": 0.0,
+			"base_tint": [1.1, 0.9, 0.85]
+		}
+	}
+}

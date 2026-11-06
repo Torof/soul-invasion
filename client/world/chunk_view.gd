@@ -16,30 +16,55 @@ extends Node2D
 
 ## Metres covered by one ground texture.
 const GROUND_METRES := 4.0
-## terrain -> path of its ground texture under res://art/ground/
-## The floor of the woods is the flattest grass in the shade, darker and
-## cooler, with the sparse forest grass in a few plaques and bare earth.
-## Plain soil does not come out of the generator; leaf litter will come
-## later as a sister.
-const GROUND_TEXTURES := {
-	"grass": "res://art/ground/ground_grass_01_summer.png",
-	"forest": "res://art/ground/ground_grass_02_summer.png",
-	"water": "res://art/ground/ground_water_01_summer.png",
-}
-## terrain -> compatible textures shown in soft patches over the first:
-## "second" over wide areas (a drier grass), "worn" in a few spots.
+## The grounds: per terrain, its texture, its layers ("sibling" blended
+## over slow noise, "second" in wide patches, "worn" in a few spots) and
+## the shader numbers that differ from the defaults. Read from
+## world/ground.json, so the development watcher reloads a change live.
 ## Sisters of the same grass (same style and tone, drawn differently) give
 ## the variety; tone variation is a tint in the shader, never another image.
-const LAYER_TEXTURES := {
-	"grass": {
-		"sibling": "res://art/ground/ground_grass_03_summer.png",
-		"second": "res://art/ground/ground_grass_04_summer.png",
-		"worn": "res://art/ground/ground_grass_02_summer.png",
-	},
-	"forest": {
-		"sibling": "res://art/ground/ground_grass_06_summer.png",
-	},
-}
+const GROUND_SPEC := "res://world/ground.json"
+const LAYERS := ["sibling", "second", "worn"]
+static var _spec: Dictionary = {}
+## terrain -> the parameter names applied to its material, to reset the
+## ones a reload no longer sets.
+static var _applied: Dictionary = {}
+
+
+static func ground_spec() -> Dictionary:
+	if _spec.is_empty():
+		_spec = read_ground_spec()
+	return _spec
+
+
+static func read_ground_spec() -> Dictionary:
+	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(GROUND_SPEC))
+	return parsed if parsed is Dictionary else {}
+
+
+## The path of a terrain's ground texture, "" when it has none.
+static func ground_path(terrain: String) -> String:
+	return str(ground_spec().get(terrain, {}).get("texture", ""))
+
+
+## layer name -> path of the terrain's layer textures.
+static func ground_layers(terrain: String) -> Dictionary:
+	return ground_spec().get(terrain, {}).get("layers", {})
+
+
+## The shader parameters of a terrain, as the shader takes them: a list of
+## three numbers in the file is a colour.
+static func ground_params(terrain: String) -> Dictionary:
+	var params: Dictionary = {}
+	var raw: Dictionary = ground_spec().get(terrain, {}).get("params", {})
+	for name in raw:
+		var value: Variant = raw[name]
+		if value is Array and value.size() == 3:
+			params[name] = Color(value[0], value[1], value[2])
+		else:
+			params[name] = value
+	return params
+
+
 ## terrain -> the terrains it spills over at its edge, with a soft eroded
 ## border, so a wood's edge is not a line of diamonds. The server still
 ## decides every tile's terrain; this is only how the border is drawn.
@@ -51,24 +76,6 @@ const FRINGE := 2
 const SHORE_TERRAINS := ["water"]
 ## Drawing order of the textured terrains: the one that spills is above.
 const GROUND_ORDER := {"grass": 0, "forest": 1}
-## terrain -> shader parameters that differ from the shader's defaults
-const GROUND_PARAMS := {
-	"water": {
-		"has_variants": true,
-		"dry_strength": 0.0,
-		"shore_lighten": 1.0,
-		# The image is a little darker than the reference's river; lifted
-		# toward its tone (59/122/104).
-		"base_tint": Color(1.7, 1.2, 1.18),
-	},
-	"forest": {
-		"base_tint": Color(0.56, 0.70, 0.74),
-		"sibling_cover": 0.25,
-		"has_variants": true,
-		"bare_keep": 0.35,
-		"dry_strength": 0.3,
-	},
-}
 static var _ground_cache: Dictionary = {}
 ## terrain -> its ShaderMaterial
 static var _ground_materials: Dictionary = {}
@@ -123,17 +130,31 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 		var material := ShaderMaterial.new()
 		material.shader = load("res://world/ground.gdshader")
 		material.set_shader_parameter("noise_texture", noise_texture())
-		var layers: Dictionary = LAYER_TEXTURES.get(terrain, {})
-		for layer in layers:
-			var path: String = layers[layer]
-			if ResourceLoader.exists(path):
-				material.set_shader_parameter(layer + "_texture", load(path))
-				material.set_shader_parameter("has_" + layer, true)
-		var params: Dictionary = GROUND_PARAMS.get(terrain, {})
-		for name in params:
-			material.set_shader_parameter(name, params[name])
+		apply_spec(material, terrain, false)
 		_ground_materials[terrain] = material
 	return _ground_materials[terrain]
+
+
+## Gives a terrain's material its layers and numbers from the spec. With
+## `fresh`, the images are read straight from their files (a live
+## reload); otherwise through the import.
+static func apply_spec(material: ShaderMaterial, terrain: String, fresh: bool) -> void:
+	var layers := ground_layers(terrain)
+	for layer in LAYERS:
+		var path: String = str(layers.get(layer, ""))
+		var texture: Texture2D = null
+		if path != "":
+			texture = fresh_texture(path) if fresh else (load(path) if ResourceLoader.exists(path) else null)
+		if texture != null:
+			material.set_shader_parameter(layer + "_texture", texture)
+		material.set_shader_parameter("has_" + layer, texture != null)
+	var params := ground_params(terrain)
+	for name in _applied.get(terrain, []):
+		if not params.has(name):
+			material.set_shader_parameter(name, null)
+	for name in params:
+		material.set_shader_parameter(name, params[name])
+	_applied[terrain] = params.keys()
 
 
 ## The child canvas of a terrain, made on first use: it carries the
@@ -194,19 +215,18 @@ class GroundCanvas:
 ## are read straight from the image files, bypassing the import, so a
 ## change is seen at once.
 static func reload_art() -> void:
+	_spec = read_ground_spec()
 	var shader := Shader.new()
 	shader.code = FileAccess.get_file_as_string("res://world/ground.gdshader")
 	_ground_cache.clear()
-	for terrain in GROUND_TEXTURES:
-		_ground_cache[terrain] = fresh_texture(GROUND_TEXTURES[terrain])
+	for terrain in _spec:
+		var path := ground_path(terrain)
+		if path != "":
+			_ground_cache[terrain] = fresh_texture(path)
 	for terrain in _ground_materials:
 		var material: ShaderMaterial = _ground_materials[terrain]
 		material.shader = shader
-		var layers: Dictionary = LAYER_TEXTURES.get(terrain, {})
-		for layer in layers:
-			var texture := fresh_texture(layers[layer])
-			if texture != null:
-				material.set_shader_parameter(layer + "_texture", texture)
+		apply_spec(material, terrain, true)
 
 
 ## A texture read straight from its image file, with mipmaps for the
@@ -222,7 +242,7 @@ static func fresh_texture(path: String) -> Texture2D:
 ## The ground texture of a terrain, or null when it has none yet.
 static func ground_texture(terrain: String) -> Texture2D:
 	if not _ground_cache.has(terrain):
-		var path: String = GROUND_TEXTURES.get(terrain, "")
+		var path := ground_path(terrain)
 		_ground_cache[terrain] = load(path) if path != "" and ResourceLoader.exists(path) else null
 	return _ground_cache[terrain]
 

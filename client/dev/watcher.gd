@@ -30,16 +30,18 @@ func _ready() -> void:
 	print("watching the ground shader and textures: a saved change is reloaded live")
 
 
-## The files watched: the ground shader and every ground texture in use.
+## The files watched: the ground shader, the ground spec and every ground
+## texture it names.
 static func watched() -> Array[String]:
-	var paths: Array[String] = ["res://world/ground.gdshader"]
-	for path in ChunkView.GROUND_TEXTURES.values():
-		if not paths.has(path):
+	var paths: Array[String] = ["res://world/ground.gdshader", ChunkView.GROUND_SPEC]
+	var spec := ChunkView.read_ground_spec()
+	for terrain in spec:
+		var path := str(spec[terrain].get("texture", ""))
+		if path != "" and not paths.has(path):
 			paths.append(path)
-	for layers in ChunkView.LAYER_TEXTURES.values():
-		for path in layers.values():
-			if not paths.has(path):
-				paths.append(path)
+		for layer_path in spec[terrain].get("layers", {}).values():
+			if not paths.has(layer_path):
+				paths.append(str(layer_path))
 	return paths
 
 
@@ -50,6 +52,7 @@ func _poll() -> void:
 		if _stamps.has(path) and _stamps[path] != stamp:
 			changed = true
 		_stamps[path] = stamp
+	# A fresh layer named by the spec is watched from the next poll on.
 	if changed:
 		ChunkView.reload_art()
 		get_tree().call_group("chunk_views", "queue_redraw")

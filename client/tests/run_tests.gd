@@ -185,7 +185,10 @@ func _test_ground_art_is_reachable() -> void:
 	# The development watcher knows the shader and every ground texture,
 	# and a reload from the files leaves the materials usable.
 	var watched := DevWatcher.watched()
-	_check(watched.has("res://world/ground.gdshader") and watched.has("res://art/ground/ground_grass_01_summer.png"), "the watcher lists the shader and the ground textures")
+	_check(watched.has("res://world/ground.gdshader") and watched.has(ChunkView.GROUND_SPEC) and watched.has("res://art/ground/ground_grass_01_summer.png"), "the watcher lists the shader, the spec and the ground textures")
+	var spec := ChunkView.ground_spec()
+	_check(spec.has("grass") and spec.has("forest") and spec.has("water"), "the ground spec names the three textured terrains")
+	_check(ChunkView.ground_params("forest").get("base_tint") is Color, "a list of three numbers in the spec is a colour")
 	ChunkView.reload_art()
 	_check(ChunkView.ground_material("grass").shader.code.contains("void fragment()") and ChunkView.ground_texture("grass") != null, "a live reload reads the shader and textures from their files")
 	var forest := ChunkView.ground_material("forest")
