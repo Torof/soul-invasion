@@ -115,8 +115,10 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 
 func _set_night(night: bool) -> void:
 	_night = night
-	# Provisional graphics: the ground dims at night.
-	modulate = Color(0.45, 0.5, 0.7) if night else Color.WHITE
+	# Provisional graphics: the ground dims at night. SOUL_INVASION_DAYLIGHT
+	# keeps it lit, to judge the ground on a development screenshot.
+	var lit := night and OS.get_environment("SOUL_INVASION_DAYLIGHT").is_empty()
+	modulate = Color(0.45, 0.5, 0.7) if lit else Color.WHITE
 
 
 func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array) -> void:
@@ -229,6 +231,13 @@ func acts_on(tile: Vector2i) -> Array:
 		if _edible.get(material, false):
 			acts.append({"label": "eat " + name, "send": Net.send_eat, "item": id})
 	return acts
+
+
+## Frames a tile and stops following the body (development screenshots).
+func look_at_tile(tile: Vector2i) -> void:
+	_following = false
+	_camera_placed = true
+	_camera.position = Iso.tile_to_screen(tile.x, tile.y)
 
 
 ## The terrain of any tile the server has sent, "" otherwise.
