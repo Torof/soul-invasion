@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use protocol::ServerMessage;
 use server::cli::{CliError, DataLocation, USAGE};
 use server::content;
-use server::net::{Published, Shared, condition_view, serve};
+use server::net::{Published, Shared, condition_view, refusal_view, serve};
 use server::{Options, Sqlite, Storage, StorageError, run_headless, run_paced};
 use sim::{Content, Event, World};
 use tokio::net::TcpListener;
@@ -253,7 +253,7 @@ fn run_paced_server(
                 shared.tick.store(world.tick().0, Ordering::Relaxed);
                 persister.on_tick(world, events);
                 for event in events {
-                    publish(&shared, world.tick().0, event);
+                    publish(&shared, world, event);
                 }
             };
             let summary = run_paced(
@@ -306,7 +306,8 @@ fn run_paced_server(
 /// Tells the connections and the pilots what one event means to them
 /// (D29: the simulation thread publishes, the connections filter).
 #[allow(clippy::too_many_lines)]
-fn publish(shared: &Shared, tick: u64, event: &Event) {
+fn publish(shared: &Shared, world: &World, event: &Event) {
+    let tick = world.tick().0;
     // Publishing to no subscriber is not an error: nobody is
     // connected.
     match event {
@@ -376,13 +377,64 @@ fn publish(shared: &Shared, tick: u64, event: &Event) {
             }
         }
         Event::BodyAte { .. } => {}
-        Event::EatRefused { body, item } => shared.tell_pilot(
-            *body,
-            ServerMessage::EatRefused {
-                body: body.0,
-                item: item.0,
-            },
-        ),
+        Event::ActRefused {
+            body,
+            act,
+            item,
+            reason,
+        } => {
+            let (act, reason) = refusal_view(*act, *reason);
+            shared.tell_pilot(
+                *body,
+                ServerMessage::ActRefused {
+                    body: body.0,
+                    act,
+                    item: item.0,
+                    reason,
+                },
+            );
+        }
+        Event::InventoryChanged {
+            body,
+            held,
+            carried,
+            load_g,
+            capacity_g,
+        } => {
+            let view = |id: &sim::ItemId| protocol::ItemView {
+                id: id.0,
+                material: world
+                    .item(*id)
+                    .map(|i| i.material().to_owned())
+                    .unwrap_or_default(),
+            };
+            shared.tell_pilot(
+                *body,
+                ServerMessage::Inventory {
+                    body: body.0,
+                    held: held.as_ref().map(view),
+                    carried: carried.iter().map(view).collect(),
+                    load_g: *load_g,
+                    capacity_g: *capacity_g,
+                },
+            );
+        }
+        Event::BodyHolds { body, item } => {
+            let item = item
+                .and_then(|id| world.item(id))
+                .map(|i| protocol::ItemView {
+                    id: i.id().0,
+                    material: i.material().to_owned(),
+                });
+            shared.body_holds(*body, item.clone());
+            if let Some(at) = shared.position_of(body.0) {
+                let _ = shared.publish.send(Published::BodyHolds {
+                    body: body.0,
+                    at,
+                    item,
+                });
+            }
+        }
         Event::ItemAdded { item, material, at } => {
             let state = protocol::ItemState {
                 id: item.0,

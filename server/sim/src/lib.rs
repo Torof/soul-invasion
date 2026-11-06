@@ -173,6 +173,10 @@ pub struct Body {
     /// Remaining waypoints of the current walk, nearest first.
     route: VecDeque<FinePos>,
     condition: Condition,
+    /// The item in hand, if any: visible to all, the tool or weapon (D35).
+    held: Option<ItemId>,
+    /// Everything else carried, in the order it was taken.
+    carried: Vec<ItemId>,
 }
 
 impl Body {
@@ -184,6 +188,33 @@ impl Body {
     /// How the body fares.
     pub fn condition(&self) -> &Condition {
         &self.condition
+    }
+
+    /// The item in hand, if any.
+    pub fn held(&self) -> Option<ItemId> {
+        self.held
+    }
+
+    /// The items carried but not in hand, in the order they were taken.
+    pub fn carried(&self) -> &[ItemId] {
+        &self.carried
+    }
+
+    /// Does the body have this item, in hand or carried?
+    pub fn has(&self, item: ItemId) -> bool {
+        self.held == Some(item) || self.carried.contains(&item)
+    }
+
+    /// Everything the body has, the item in hand first.
+    pub fn inventory(&self) -> impl Iterator<Item = ItemId> + '_ {
+        self.held.into_iter().chain(self.carried.iter().copied())
+    }
+
+    fn let_go(&mut self, item: ItemId) {
+        if self.held == Some(item) {
+            self.held = None;
+        }
+        self.carried.retain(|i| *i != item);
     }
 
     /// The tile the body stands on.
@@ -213,13 +244,29 @@ impl Body {
 )]
 pub struct ItemId(pub u64);
 
-/// A piece of material lying on the ground.
+/// Where an item is: in exactly one place at a time (D35).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Place {
+    /// Lying on a tile.
+    Ground {
+        /// The tile.
+        pos: Pos,
+    },
+    /// Carried by a body, in hand or on it.
+    Carried {
+        /// The body.
+        body: BodyId,
+    },
+}
+
+/// A piece of material.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Item {
     id: ItemId,
     /// Content id of its material.
     material: String,
-    pos: Pos,
+    place: Place,
 }
 
 impl Item {
@@ -233,10 +280,50 @@ impl Item {
         &self.material
     }
 
-    /// Where it lies.
-    pub fn pos(&self) -> Pos {
-        self.pos
+    /// Where it is.
+    pub fn place(&self) -> Place {
+        self.place
     }
+
+    /// The tile it lies on, if it is on the ground.
+    pub fn pos(&self) -> Option<Pos> {
+        match self.place {
+            Place::Ground { pos } => Some(pos),
+            Place::Carried { .. } => None,
+        }
+    }
+}
+
+/// What a body can do with an item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemAct {
+    /// Take it off the ground.
+    PickUp,
+    /// Lay it on the ground.
+    Drop,
+    /// Take it in hand.
+    Hold,
+    /// Put it away, out of the hand.
+    Stow,
+    /// Eat it.
+    Eat,
+}
+
+/// Why an act on an item was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Refusal {
+    /// No such body or item.
+    Unknown,
+    /// Not on the body's tile nor next to it.
+    OutOfReach,
+    /// The body does not have it.
+    NotCarried,
+    /// It would exceed what the body can carry.
+    TooHeavy,
+    /// It is not food.
+    NotFood,
 }
 
 /// What a pilot (player or, later, NPC brain) asks a body to do (D20).
@@ -250,8 +337,37 @@ pub enum Intention {
         /// Where to.
         target: Pos,
     },
-    /// Eat an item lying on the body's tile or next to it.
+    /// Eat an item within reach on the ground, or carried.
     Eat {
+        /// Who.
+        body: BodyId,
+        /// What.
+        item: ItemId,
+    },
+    /// Take an item off the ground within reach: into the hand if it is
+    /// empty, otherwise carried.
+    PickUp {
+        /// Who.
+        body: BodyId,
+        /// What.
+        item: ItemId,
+    },
+    /// Lay a carried item on the body's tile.
+    Drop {
+        /// Who.
+        body: BodyId,
+        /// What.
+        item: ItemId,
+    },
+    /// Take a carried item in hand; what was in hand is carried instead.
+    Hold {
+        /// Who.
+        body: BodyId,
+        /// What.
+        item: ItemId,
+    },
+    /// Put the item in hand away, among what is carried.
+    Stow {
         /// Who.
         body: BodyId,
         /// What.
@@ -334,12 +450,37 @@ pub enum Event {
         /// What.
         item: ItemId,
     },
-    /// An item could not be eaten (not food, not within reach, no such item or body).
-    EatRefused {
+    /// An act on an item was refused.
+    ActRefused {
         /// Who.
         body: BodyId,
-        /// What.
+        /// What it tried.
+        act: ItemAct,
+        /// On what.
         item: ItemId,
+        /// Why.
+        reason: Refusal,
+    },
+    /// What a body carries changed: in hand, carried, the load and the
+    /// capacity in grams. Told to the pilot.
+    InventoryChanged {
+        /// Who.
+        body: BodyId,
+        /// In hand.
+        held: Option<ItemId>,
+        /// Carried, in order.
+        carried: Vec<ItemId>,
+        /// Grams carried in all.
+        load_g: u32,
+        /// Grams the body can carry.
+        capacity_g: u32,
+    },
+    /// What a body holds in hand changed. Seen by all.
+    BodyHolds {
+        /// Who.
+        body: BodyId,
+        /// The item in hand now, if any.
+        item: Option<ItemId>,
     },
     /// An item appeared on the ground.
     ItemAdded {
@@ -495,9 +636,25 @@ impl World {
         &self.items
     }
 
-    /// The items lying in a chunk, in id order.
+    /// The items lying on the ground in a chunk, in id order.
     pub fn items_in(&self, chunk: ChunkPos) -> impl Iterator<Item = &Item> {
-        self.items.iter().filter(move |i| i.pos.chunk() == chunk)
+        self.items
+            .iter()
+            .filter(move |i| i.pos().is_some_and(|p| p.chunk() == chunk))
+    }
+
+    /// An item by id.
+    pub fn item(&self, id: ItemId) -> Option<&Item> {
+        self.items.iter().find(|i| i.id == id)
+    }
+
+    /// Grams a body carries in all, under the content's masses.
+    pub fn load_g(&self, body: &Body, rules: &Content) -> u32 {
+        body.inventory()
+            .filter_map(|id| self.item(id))
+            .filter_map(|i| rules.material(&i.material))
+            .map(Material::mass_g)
+            .sum()
     }
 
     /// Lays a piece of `material` on the ground at `pos`. The material is
@@ -509,7 +666,7 @@ impl World {
         self.items.push(Item {
             id,
             material: material.to_owned(),
-            pos,
+            place: Place::Ground { pos },
         });
         id
     }
@@ -527,6 +684,8 @@ impl World {
             at: pos.centre(),
             route: VecDeque::new(),
             condition: Condition::healthy(),
+            held: None,
+            carried: Vec::new(),
         });
         id
     }
@@ -540,9 +699,10 @@ impl World {
 
     /// Items lying on `pos` or on one of its eight neighbours, in id order.
     pub fn items_within_reach(&self, pos: Pos) -> impl Iterator<Item = &Item> {
-        self.items
-            .iter()
-            .filter(move |i| (i.pos.x - pos.x).abs() <= 1 && (i.pos.y - pos.y).abs() <= 1)
+        self.items.iter().filter(move |i| {
+            i.pos()
+                .is_some_and(|p| (p.x - pos.x).abs() <= 1 && (p.y - pos.y).abs() <= 1)
+        })
     }
 
     /// Takes an item off the ground, if it is there.
@@ -576,11 +736,20 @@ impl World {
         }
 
         let per_second = f64::from(self.calendar.ticks_per_second());
-        for body in &mut self.bodies {
-            if body.route.is_empty() {
+        for index in 0..self.bodies.len() {
+            if self.bodies[index].route.is_empty() {
                 continue;
             }
-            walk(body, &self.map, &rules.movement, per_second, events);
+            let load = self.load_g(&self.bodies[index], rules);
+            let speed = loaded_speed(&rules.movement, load);
+            walk(
+                &mut self.bodies[index],
+                &self.map,
+                &rules.movement,
+                speed,
+                per_second,
+                events,
+            );
         }
 
         self.fare(rules, night, events);
@@ -647,6 +816,16 @@ impl World {
         };
         let body = self.bodies.remove(index);
         let at = body.pos();
+        for item in body.inventory().collect::<Vec<_>>() {
+            if let Some(dropped) = self.items.iter_mut().find(|i| i.id == item) {
+                dropped.place = Place::Ground { pos: at };
+                events.push(Event::ItemAdded {
+                    item,
+                    material: dropped.material.clone(),
+                    at,
+                });
+            }
+        }
         let corpse = self.spawn_item("corpse", at);
         events.push(Event::ItemAdded {
             item: corpse,
@@ -697,32 +876,11 @@ impl World {
                     None => events.push(Event::MoveRefused { body: id, target }),
                 }
             }
-            Intention::Eat { body: id, item } => {
-                let Some(index) = self.bodies.iter().position(|b| b.id == id) else {
-                    events.push(Event::EatRefused { body: id, item });
-                    return;
-                };
-                let here = self.bodies[index].pos();
-                let food = self
-                    .items_within_reach(here)
-                    .find(|i| i.id == item)
-                    .and_then(|i| rules.material(&i.material))
-                    .and_then(|m| m.food);
-                let Some(food) = food else {
-                    events.push(Event::EatRefused { body: id, item });
-                    return;
-                };
-                self.wake(index, events);
-                let eaten = self.remove_item(item).expect("found within reach");
-                let relief = u64::from(food.energy_kj) * GAUGE_SCALE
-                    / u64::from(rules.needs.kj_per_hunger_point);
-                self.bodies[index].condition.hunger.lower(relief);
-                events.push(Event::ItemRemoved {
-                    item,
-                    at: eaten.pos,
-                });
-                events.push(Event::BodyAte { body: id, item });
-            }
+            Intention::Eat { body: id, item } => self.eat(id, item, rules, events),
+            Intention::PickUp { body: id, item } => self.pick_up(id, item, rules, events),
+            Intention::Drop { body: id, item } => self.drop(id, item, rules, events),
+            Intention::Hold { body: id, item } => self.hold(id, item, rules, events),
+            Intention::Stow { body: id, item } => self.stow(id, item, rules, events),
             Intention::Sleep { body: id } => {
                 if let Some(index) = self.bodies.iter().position(|b| b.id == id) {
                     let body = &mut self.bodies[index];
@@ -750,6 +908,201 @@ impl World {
         }
     }
 
+    /// Where an item is relative to a body: within reach on the ground,
+    /// carried by it, or neither.
+    fn reach(&self, index: usize, item: ItemId) -> Result<Place, Refusal> {
+        let body = &self.bodies[index];
+        let Some(found) = self.item(item) else {
+            return Err(Refusal::Unknown);
+        };
+        match found.place {
+            Place::Carried { body: carrier } if carrier == body.id => Ok(found.place),
+            Place::Carried { .. } => Err(Refusal::NotCarried),
+            Place::Ground { pos } => {
+                let here = body.pos();
+                if (pos.x - here.x).abs() <= 1 && (pos.y - here.y).abs() <= 1 {
+                    Ok(found.place)
+                } else {
+                    Err(Refusal::OutOfReach)
+                }
+            }
+        }
+    }
+
+    fn refuse(events: &mut Vec<Event>, body: BodyId, act: ItemAct, item: ItemId, reason: Refusal) {
+        events.push(Event::ActRefused {
+            body,
+            act,
+            item,
+            reason,
+        });
+    }
+
+    /// Why a body cannot let go of an item it does not have.
+    fn not_had(&self, item: ItemId) -> Refusal {
+        if self.item(item).is_some() {
+            Refusal::NotCarried
+        } else {
+            Refusal::Unknown
+        }
+    }
+
+    /// Tells what a body carries now.
+    fn inventory_changed(&self, index: usize, rules: &Content, events: &mut Vec<Event>) {
+        let body = &self.bodies[index];
+        events.push(Event::InventoryChanged {
+            body: body.id,
+            held: body.held,
+            carried: body.carried.clone(),
+            load_g: self.load_g(body, rules),
+            capacity_g: rules.movement.carry_capacity_g,
+        });
+    }
+
+    fn eat(&mut self, id: BodyId, item: ItemId, rules: &Content, events: &mut Vec<Event>) {
+        let Some(index) = self.bodies.iter().position(|b| b.id == id) else {
+            return Self::refuse(events, id, ItemAct::Eat, item, Refusal::Unknown);
+        };
+        let place = match self.reach(index, item) {
+            Ok(place) => place,
+            Err(reason) => return Self::refuse(events, id, ItemAct::Eat, item, reason),
+        };
+        let food = self
+            .item(item)
+            .and_then(|i| rules.material(&i.material))
+            .and_then(|m| m.food);
+        let Some(food) = food else {
+            return Self::refuse(events, id, ItemAct::Eat, item, Refusal::NotFood);
+        };
+        self.wake(index, events);
+        self.remove_item(item);
+        let relief =
+            u64::from(food.energy_kj) * GAUGE_SCALE / u64::from(rules.needs.kj_per_hunger_point);
+        self.bodies[index].condition.hunger.lower(relief);
+        match place {
+            Place::Ground { pos } => events.push(Event::ItemRemoved { item, at: pos }),
+            Place::Carried { .. } => {
+                let was_held = self.bodies[index].held == Some(item);
+                self.bodies[index].let_go(item);
+                self.inventory_changed(index, rules, events);
+                if was_held {
+                    events.push(Event::BodyHolds {
+                        body: id,
+                        item: None,
+                    });
+                }
+            }
+        }
+        events.push(Event::BodyAte { body: id, item });
+    }
+
+    fn pick_up(&mut self, id: BodyId, item: ItemId, rules: &Content, events: &mut Vec<Event>) {
+        let Some(index) = self.bodies.iter().position(|b| b.id == id) else {
+            return Self::refuse(events, id, ItemAct::PickUp, item, Refusal::Unknown);
+        };
+        let pos = match self.reach(index, item) {
+            Ok(Place::Ground { pos }) => pos,
+            Ok(Place::Carried { .. }) => {
+                return Self::refuse(events, id, ItemAct::PickUp, item, Refusal::NotCarried);
+            }
+            Err(reason) => return Self::refuse(events, id, ItemAct::PickUp, item, reason),
+        };
+        let mass = self
+            .item(item)
+            .and_then(|i| rules.material(&i.material))
+            .map_or(0, Material::mass_g);
+        if self.load_g(&self.bodies[index], rules) + mass > rules.movement.carry_capacity_g {
+            return Self::refuse(events, id, ItemAct::PickUp, item, Refusal::TooHeavy);
+        }
+        self.wake(index, events);
+        if let Some(taken) = self.items.iter_mut().find(|i| i.id == item) {
+            taken.place = Place::Carried { body: id };
+        }
+        let body = &mut self.bodies[index];
+        let in_hand = body.held.is_none();
+        if in_hand {
+            body.held = Some(item);
+        } else {
+            body.carried.push(item);
+        }
+        events.push(Event::ItemRemoved { item, at: pos });
+        self.inventory_changed(index, rules, events);
+        if in_hand {
+            events.push(Event::BodyHolds {
+                body: id,
+                item: Some(item),
+            });
+        }
+    }
+
+    fn drop(&mut self, id: BodyId, item: ItemId, rules: &Content, events: &mut Vec<Event>) {
+        let Some(index) = self.bodies.iter().position(|b| b.id == id) else {
+            return Self::refuse(events, id, ItemAct::Drop, item, Refusal::Unknown);
+        };
+        if !self.bodies[index].has(item) {
+            let reason = self.not_had(item);
+            return Self::refuse(events, id, ItemAct::Drop, item, reason);
+        }
+        self.wake(index, events);
+        let at = self.bodies[index].pos();
+        let was_held = self.bodies[index].held == Some(item);
+        self.bodies[index].let_go(item);
+        let Some(dropped) = self.items.iter_mut().find(|i| i.id == item) else {
+            return;
+        };
+        dropped.place = Place::Ground { pos: at };
+        let material = dropped.material.clone();
+        events.push(Event::ItemAdded { item, material, at });
+        self.inventory_changed(index, rules, events);
+        if was_held {
+            events.push(Event::BodyHolds {
+                body: id,
+                item: None,
+            });
+        }
+    }
+
+    fn hold(&mut self, id: BodyId, item: ItemId, rules: &Content, events: &mut Vec<Event>) {
+        let Some(index) = self.bodies.iter().position(|b| b.id == id) else {
+            return Self::refuse(events, id, ItemAct::Hold, item, Refusal::Unknown);
+        };
+        if self.bodies[index].held == Some(item) {
+            return;
+        }
+        if !self.bodies[index].carried.contains(&item) {
+            let reason = self.not_had(item);
+            return Self::refuse(events, id, ItemAct::Hold, item, reason);
+        }
+        let body = &mut self.bodies[index];
+        body.carried.retain(|i| *i != item);
+        if let Some(previous) = body.held.replace(item) {
+            body.carried.push(previous);
+        }
+        self.inventory_changed(index, rules, events);
+        events.push(Event::BodyHolds {
+            body: id,
+            item: Some(item),
+        });
+    }
+
+    fn stow(&mut self, id: BodyId, item: ItemId, rules: &Content, events: &mut Vec<Event>) {
+        let Some(index) = self.bodies.iter().position(|b| b.id == id) else {
+            return Self::refuse(events, id, ItemAct::Stow, item, Refusal::Unknown);
+        };
+        if self.bodies[index].held != Some(item) {
+            let reason = self.not_had(item);
+            return Self::refuse(events, id, ItemAct::Stow, item, reason);
+        }
+        let body = &mut self.bodies[index];
+        body.held = None;
+        body.carried.push(item);
+        self.inventory_changed(index, rules, events);
+        events.push(Event::BodyHolds {
+            body: id,
+            item: None,
+        });
+    }
+
     /// Wakes a body up, if asleep; any deliberate act does.
     fn wake(&mut self, index: usize, events: &mut Vec<Event>) {
         let body = &mut self.bodies[index];
@@ -765,17 +1118,28 @@ impl World {
 
 /// Moves a walking body for one tick: as far along its route as the
 /// speed of the terrain it stands on allows, waypoint after waypoint.
+/// Walking speed under a load, in percent of the unloaded speed: linear
+/// from 100 % empty to the content's percent at full capacity.
+fn loaded_speed(movement: &Movement, load_g: u32) -> u32 {
+    let full = u64::from(movement.carry_capacity_g);
+    let load = u64::from(load_g).min(full);
+    let slowest = u64::from(movement.speed_percent_at_full_load);
+    u32::try_from(100 - (100 - slowest) * load / full).expect("percent")
+}
+
 #[allow(clippy::cast_possible_truncation)]
 fn walk(
     body: &mut Body,
     map: &Map,
     movement: &Movement,
+    speed_percent: u32,
     ticks_per_second: f64,
     events: &mut Vec<Event>,
 ) {
     let terrain = map.get(body.at.tile()).unwrap_or(Terrain::Rock);
     // Millimetres this tick: 143 cm/s at 10 ticks/s is exactly 143 mm.
-    let mut budget = f64::from(movement.speed_cm_per_s(terrain) * 10) / ticks_per_second;
+    let mut budget =
+        f64::from(movement.speed_cm_per_s(terrain) * 10 * speed_percent) / 100.0 / ticks_per_second;
     let tile_before = body.at.tile();
     while budget > 0.0 {
         let Some(&next) = body.route.front() else {
@@ -1064,7 +1428,7 @@ mod tests {
         // within two tiles of it.
         let to_forest = a.map().distance_to(Terrain::Forest);
         for item in a.items() {
-            let terrain = a.map().get(item.pos()).unwrap();
+            let terrain = a.map().get(item.pos().unwrap()).unwrap();
             let rule = content
                 .spawns
                 .iter()
@@ -1072,7 +1436,8 @@ mod tests {
                 .expect("a rule for each material laid down");
             assert_eq!(terrain, rule.terrain, "{item:?}");
             if let Some(near) = rule.near {
-                let index = usize::try_from(item.pos().y * 256 + item.pos().x).unwrap();
+                let pos = item.pos().unwrap();
+                let index = usize::try_from(pos.y * 256 + pos.x).unwrap();
                 assert!(
                     to_forest[index] <= near.within,
                     "{item:?} is far from the forest"
@@ -1103,7 +1468,7 @@ mod tests {
         // Items are found by chunk.
         let first = &a.items()[0];
         assert!(
-            a.items_in(first.pos().chunk())
+            a.items_in(first.pos().unwrap().chunk())
                 .any(|i| i.id() == first.id())
         );
         assert_eq!(a.items_in(ChunkPos::new(-1, -1)).count(), 0);
@@ -1202,13 +1567,17 @@ mod tests {
             item: berries,
         });
         w.step(&rules(), &mut events);
-        assert!(events.contains(&Event::EatRefused {
+        assert!(events.contains(&Event::ActRefused {
             body: BodyId(1),
-            item: far
+            act: ItemAct::Eat,
+            item: far,
+            reason: Refusal::OutOfReach,
         }));
-        assert!(events.contains(&Event::EatRefused {
+        assert!(events.contains(&Event::ActRefused {
             body: BodyId(1),
-            item: stone
+            act: ItemAct::Eat,
+            item: stone,
+            reason: Refusal::NotFood,
         }));
         assert!(events.contains(&Event::ItemRemoved {
             item: berries,
@@ -1288,6 +1657,210 @@ mod tests {
         w.step(&rules(), &mut events);
         assert!(!condition(&w).asleep, "walking wakes");
         assert!(w.body(BodyId(1)).unwrap().is_walking());
+    }
+
+    fn pick(w: &mut World, item: ItemId, events: &mut Vec<Event>) {
+        w.queue(Intention::PickUp {
+            body: BodyId(1),
+            item,
+        });
+        w.step(&rules(), events);
+    }
+
+    #[test]
+    fn picking_up_carries_an_item_and_puts_the_first_in_hand() {
+        let mut w = fed_world();
+        let mut events = Vec::new();
+        let flint = w.spawn_item("flint", Pos::new(2, 2)); // within reach
+        let branch = w.spawn_item("branch", Pos::new(1, 2));
+        let far = w.spawn_item("branch", Pos::new(3, 3));
+        pick(&mut w, flint, &mut events);
+        let body = w.body(BodyId(1)).unwrap();
+        assert_eq!(body.held(), Some(flint), "the first item goes in hand");
+        assert_eq!(
+            w.item(flint).unwrap().place(),
+            Place::Carried { body: BodyId(1) }
+        );
+        assert!(events.contains(&Event::ItemRemoved {
+            item: flint,
+            at: Pos::new(2, 2)
+        }));
+        assert!(events.contains(&Event::BodyHolds {
+            body: BodyId(1),
+            item: Some(flint)
+        }));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::InventoryChanged { body: BodyId(1), held: Some(f), load_g: 400, capacity_g: 20000, .. } if *f == flint
+        )));
+        assert_eq!(
+            w.items_within_reach(Pos::new(1, 1)).count(),
+            1,
+            "only the branch is left on the ground nearby"
+        );
+
+        events.clear();
+        pick(&mut w, branch, &mut events);
+        pick(&mut w, far, &mut events);
+        let body = w.body(BodyId(1)).unwrap();
+        assert_eq!(body.carried(), &[branch], "the second item is carried");
+        assert!(events.contains(&Event::ActRefused {
+            body: BodyId(1),
+            act: ItemAct::PickUp,
+            item: far,
+            reason: Refusal::OutOfReach,
+        }));
+        assert_eq!(w.load_g(body, &rules()), 1900);
+    }
+
+    #[test]
+    fn too_heavy_a_load_is_refused_and_a_load_slows_the_walk() {
+        let mut w = fed_world();
+        let mut events = Vec::new();
+        // Thirteen branches of 1.5 kg fit in 20 kg; the fourteenth does not.
+        let branches: Vec<ItemId> = (0..15)
+            .map(|_| w.spawn_item("branch", Pos::new(1, 1)))
+            .collect();
+        for item in &branches {
+            pick(&mut w, *item, &mut events);
+        }
+        let body = w.body(BodyId(1)).unwrap();
+        assert_eq!(
+            body.inventory().count(),
+            13,
+            "19.5 kg: one more would make 21"
+        );
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::ActRefused {
+                act: ItemAct::PickUp,
+                reason: Refusal::TooHeavy,
+                ..
+            }
+        )));
+        // At 19.5 of 20 kg the walk is nearly at 60 %: two tiles take 23 ticks, not 14.
+        go(&mut w, Pos::new(3, 1));
+        events.clear();
+        let took = until_stopped(&mut w, &mut events);
+        assert!((22..=24).contains(&took), "{took} ticks");
+    }
+
+    #[test]
+    fn holding_stowing_dropping_and_eating_what_is_carried() {
+        let mut w = fed_world();
+        let mut events = Vec::new();
+        w.advance(500, &rules(), &mut events); // hungry enough to notice eating
+        let flint = w.spawn_item("flint", Pos::new(1, 1));
+        let berries = w.spawn_item("berries", Pos::new(1, 1));
+        pick(&mut w, flint, &mut events);
+        pick(&mut w, berries, &mut events);
+        let body = w.body(BodyId(1)).unwrap();
+        assert_eq!((body.held(), body.carried()), (Some(flint), &[berries][..]));
+
+        // Hold the berries: the flint goes among the carried.
+        events.clear();
+        w.queue(Intention::Hold {
+            body: BodyId(1),
+            item: berries,
+        });
+        w.step(&rules(), &mut events);
+        let body = w.body(BodyId(1)).unwrap();
+        assert_eq!((body.held(), body.carried()), (Some(berries), &[flint][..]));
+        assert!(events.contains(&Event::BodyHolds {
+            body: BodyId(1),
+            item: Some(berries)
+        }));
+
+        // Stow them: nothing in hand.
+        w.queue(Intention::Stow {
+            body: BodyId(1),
+            item: berries,
+        });
+        w.step(&rules(), &mut events);
+        let body = w.body(BodyId(1)).unwrap();
+        assert_eq!((body.held(), body.carried()), (None, &[flint, berries][..]));
+
+        // Eat the carried berries: gone, hunger relieved, nothing on the ground.
+        let hunger_before = condition(&w).hunger.points();
+        events.clear();
+        w.queue(Intention::Eat {
+            body: BodyId(1),
+            item: berries,
+        });
+        w.step(&rules(), &mut events);
+        assert!(w.item(berries).is_none());
+        assert_eq!(condition(&w).hunger.points(), hunger_before - 10);
+        assert!(events.contains(&Event::BodyAte {
+            body: BodyId(1),
+            item: berries
+        }));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::ItemRemoved { .. })),
+            "it was not on the ground"
+        );
+
+        // Drop the flint: on the body's tile, out of the inventory.
+        events.clear();
+        w.queue(Intention::Drop {
+            body: BodyId(1),
+            item: flint,
+        });
+        w.step(&rules(), &mut events);
+        assert_eq!(
+            w.item(flint).unwrap().place(),
+            Place::Ground {
+                pos: Pos::new(1, 1)
+            }
+        );
+        assert_eq!(w.body(BodyId(1)).unwrap().inventory().count(), 0);
+        assert!(events.iter().any(
+            |e| matches!(e, Event::ItemAdded { item, at, .. } if *item == flint && *at == Pos::new(1, 1))
+        ));
+        // Dropping it again, or stowing what is not in hand, is refused.
+        events.clear();
+        w.queue(Intention::Drop {
+            body: BodyId(1),
+            item: flint,
+        });
+        w.queue(Intention::Stow {
+            body: BodyId(1),
+            item: flint,
+        });
+        w.queue(Intention::Hold {
+            body: BodyId(1),
+            item: ItemId(999),
+        });
+        w.step(&rules(), &mut events);
+        for (act, item, reason) in [
+            (ItemAct::Drop, flint, Refusal::NotCarried),
+            (ItemAct::Stow, flint, Refusal::NotCarried),
+            (ItemAct::Hold, ItemId(999), Refusal::Unknown),
+        ] {
+            assert!(events.contains(&Event::ActRefused {
+                body: BodyId(1),
+                act,
+                item,
+                reason
+            }));
+        }
+    }
+
+    #[test]
+    fn a_dead_body_drops_what_it_carried() {
+        let mut w = fed_world();
+        let mut events = Vec::new();
+        let flint = w.spawn_item("flint", Pos::new(1, 1));
+        pick(&mut w, flint, &mut events);
+        w.advance(4_200, &rules(), &mut events); // starves
+        assert!(w.body(BodyId(1)).is_none());
+        assert_eq!(
+            w.item(flint).unwrap().place(),
+            Place::Ground {
+                pos: Pos::new(1, 1)
+            }
+        );
     }
 
     #[test]

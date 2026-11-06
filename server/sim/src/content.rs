@@ -46,6 +46,14 @@ pub struct Look {
     pub colour: String,
 }
 
+impl Material {
+    /// Mass of one piece, in grams.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn mass_g(&self) -> u32 {
+        (self.mass_kg * 1000.0).round().clamp(0.0, 1e9) as u32
+    }
+}
+
 /// A material: the stuff pieces are made of.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Material {
@@ -104,6 +112,10 @@ pub struct Movement {
     /// `None` cannot be walked. Paths weigh tiles by it and bodies slow
     /// down by it.
     pub terrain_costs: BTreeMap<Terrain, Option<u32>>,
+    /// What a body can carry, in grams (D35).
+    pub carry_capacity_g: u32,
+    /// Walking speed at full load, in percent of the unloaded speed.
+    pub speed_percent_at_full_load: u32,
 }
 
 impl Movement {
@@ -315,6 +327,14 @@ impl Content {
                 Some(_) => {}
             }
         }
+        if self.movement.carry_capacity_g == 0 {
+            return Err(ContentError::Movement("carry_capacity_g must be positive"));
+        }
+        if !(1..=100).contains(&self.movement.speed_percent_at_full_load) {
+            return Err(ContentError::Movement(
+                "speed_percent_at_full_load is 1 to 100",
+            ));
+        }
         if !(1..100).contains(&self.needs.night_from_percent) {
             return Err(ContentError::Needs("night_from_percent is 1 to 99"));
         }
@@ -357,6 +377,8 @@ pub const SAMPLE_MATERIALS: &str = r##"[
 pub const SAMPLE_MOVEMENT: &str = r"(
     walk_speed_cm_per_s: 143,
     terrain_costs: { grass: Some(10), forest: Some(15), ford: Some(20), water: None, rock: None },
+    carry_capacity_g: 20000,
+    speed_percent_at_full_load: 60,
 )";
 
 /// Needs rules of [`Content::sample`]: the valley's own.
@@ -402,6 +424,35 @@ mod tests {
                 within: 2
             })
         );
+    }
+
+    #[test]
+    fn movement_and_carrying_rules_are_checked() {
+        let movement = Content::sample().movement;
+        assert_eq!(movement.cost(Terrain::Grass), Some(10));
+        assert_eq!(movement.cost(Terrain::Water), None);
+        assert_eq!(movement.speed_cm_per_s(Terrain::Forest), 95);
+        assert_eq!(movement.speed_cm_per_s(Terrain::Rock), 0);
+        let no_rock = SAMPLE_MOVEMENT.replacen(", rock: None", "", 1);
+        assert!(matches!(
+            Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, &no_rock, SAMPLE_NEEDS).unwrap_err(),
+            ContentError::Movement("every terrain needs a cost")
+        ));
+        let weak = SAMPLE_MOVEMENT.replacen("carry_capacity_g: 20000", "carry_capacity_g: 0", 1);
+        assert!(matches!(
+            Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, &weak, SAMPLE_NEEDS).unwrap_err(),
+            ContentError::Movement("carry_capacity_g must be positive")
+        ));
+        let frozen = SAMPLE_MOVEMENT.replacen(
+            "speed_percent_at_full_load: 60",
+            "speed_percent_at_full_load: 0",
+            1,
+        );
+        assert!(matches!(
+            Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, &frozen, SAMPLE_NEEDS).unwrap_err(),
+            ContentError::Movement("speed_percent_at_full_load is 1 to 100")
+        ));
+        assert_eq!(Content::sample().material("flint").unwrap().mass_g(), 400);
     }
 
     #[test]

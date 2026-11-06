@@ -1,8 +1,9 @@
-[gd_scene load_steps=4 format=3 uid="uid://c0soulinvmain0"]
+[gd_scene load_steps=5 format=3 uid="uid://c0soulinvmain0"]
 
 [ext_resource type="Script" path="res://main.gd" id="1_main"]
 [ext_resource type="Script" path="res://world/world_view.gd" id="2_world"]
 [ext_resource type="Script" path="res://ui/hud.gd" id="3_hud"]
+[ext_resource type="Script" path="res://ui/inventory.gd" id="4_inventory"]
 
 [node name="Main" type="Control"]
 layout_mode = 3
@@ -95,6 +96,65 @@ unique_name_in_owner = true
 layout_mode = 2
 text = "connecting…"
 
+[node name="Inventory" type="PanelContainer" parent="Ui"]
+layout_mode = 1
+anchors_preset = 3
+anchor_left = 1.0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -300.0
+offset_top = -260.0
+offset_right = -12.0
+offset_bottom = -12.0
+grow_horizontal = 0
+grow_vertical = 0
+script = ExtResource("4_inventory")
+
+[node name="Rows" type="VBoxContainer" parent="Ui/Inventory"]
+layout_mode = 2
+
+[node name="InventoryTitle" type="Label" parent="Ui/Inventory/Rows"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "carrying 0.0 / 0.0 kg"
+
+[node name="Items" type="ItemList" parent="Ui/Inventory/Rows"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 160)
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="Buttons" type="HBoxContainer" parent="Ui/Inventory/Rows"]
+layout_mode = 2
+
+[node name="Hold" type="Button" parent="Ui/Inventory/Rows/Buttons"]
+unique_name_in_owner = true
+layout_mode = 2
+disabled = true
+text = "hold"
+
+[node name="Stow" type="Button" parent="Ui/Inventory/Rows/Buttons"]
+unique_name_in_owner = true
+layout_mode = 2
+disabled = true
+text = "stow"
+
+[node name="Drop" type="Button" parent="Ui/Inventory/Rows/Buttons"]
+unique_name_in_owner = true
+layout_mode = 2
+disabled = true
+text = "drop"
+
+[node name="Eat" type="Button" parent="Ui/Inventory/Rows/Buttons"]
+unique_name_in_owner = true
+layout_mode = 2
+disabled = true
+text = "eat"
+
+[node name="Actions" type="PopupMenu" parent="Ui"]
+unique_name_in_owner = true
+
 [node name="Tooltip" type="PanelContainer" parent="Ui"]
 unique_name_in_owner = true
 visible = false
@@ -115,4 +175,4 @@ offset_right = -12.0
 offset_bottom = 32.0
 grow_horizontal = 2
 mouse_filter = 2
-text = "click: walk · E: eat · Z: sleep/wake · wheel: zoom · right-drag: pan · space: follow"
+text = "click: walk · right-click: act · G: pick up · E: eat · Z: sleep/wake · wheel: zoom · right-drag: pan · space: follow"
