@@ -72,7 +72,6 @@ static func ground_params(terrain: String) -> Dictionary:
 ## tiles. The water's spill is its bank: the shader paints sand there.
 const FRINGE_OVER := {
 	"forest": {"over": ["grass"], "width": 2},
-	"water": {"over": ["grass", "forest"], "width": 2},
 }
 ## Width, in tiles, over which a terrain feels its own edge (water
 ## lightens near its banks).
