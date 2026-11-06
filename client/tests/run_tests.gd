@@ -18,6 +18,7 @@ func _init() -> void:
 	_test_chunk_of_matches_the_server()
 	_test_time_of_day()
 	_test_tooltips()
+	_test_ground_art_is_reachable()
 	print("client tests: %d checks, %d failures" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
 
@@ -132,3 +133,11 @@ func _test_chunk_of_matches_the_server() -> void:
 	_check(Iso.TILE_W == 64.0 and Iso.TILE_H == 32.0, "a cell is a 64 × 32 diamond")
 	_check(Iso.tile_to_screen(1, 0).x - Iso.tile_to_screen(0, 0).x == 32.0, "one metre east is half a diamond across")
 	_check(Iso.PX_PER_M == Iso.TILE_W, "height uses the same scale as width")
+
+
+func _test_ground_art_is_reachable() -> void:
+	# The validated art lives in content/art/, reached as res://art/ through
+	# the client/art link; the grass texture is the first of it.
+	_check(ResourceLoader.exists("res://art/ground/ground_grass_01_summer.png"), "the grass texture is importable")
+	var uvs := ChunkView.ground_uvs(4, 8)
+	_check(uvs[0] == Vector2(1.0, 2.0) and uvs[2] == Vector2(1.25, 2.25), "a tile maps to its square of the 4 m texture")
