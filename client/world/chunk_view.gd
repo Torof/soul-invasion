@@ -11,7 +11,7 @@ const COLORS := {
 	"ford": Color(0.55, 0.60, 0.50),
 	"rock": Color(0.48, 0.45, 0.42),
 }
-const ITEM_RADIUS := 3.5
+const ITEM_RADIUS := 4.5
 
 var _origin := Vector2i.ZERO
 var _size := 32
@@ -46,13 +46,13 @@ func _draw() -> void:
 		var tile := Vector2i(int(item.get("x", 0)), int(item.get("y", 0)))
 		var nth: int = on_tile.get(tile, 0)
 		on_tile[tile] = nth + 1
-		var centre := Iso.tile_to_screen(tile.x, tile.y) + Vector2(-6 + 6 * (nth % 3), 2 - 4 * (nth / 3))
+		var centre := Iso.tile_to_screen(tile.x, tile.y) + Vector2(-8 + 8 * (nth % 3), 3 - 5 * (nth / 3))
 		var material := str(item.get("material", ""))
 		var colour: Color = _looks.get(material, Color.MAGENTA)
 		draw_circle(centre, ITEM_RADIUS, colour)
 		draw_circle(centre, ITEM_RADIUS, Color(0, 0, 0, 0.6), false, 1.0)
 		if material == "corpse":
-			draw_death_icon(self, centre + Vector2(0, -12))
+			draw_death_icon(self, centre + Vector2(0, -16))
 
 
 ## A small skull above a corpse, drawn on `canvas` at `at`.
