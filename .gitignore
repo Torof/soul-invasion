@@ -21,3 +21,7 @@
 
 # Secrets never live in this repository (see docs/04-architecture.md, D30)
 .env
+
+# Midjourney sources and rejected candidates: only chosen images, at game size,
+# go into content/art/ with their note (docs/09-visual-production.md).
+content/ai-generated-content/
