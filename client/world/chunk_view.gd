@@ -144,7 +144,7 @@ static func apply_spec(material: ShaderMaterial, terrain: String, fresh: bool) -
 		var path: String = str(layers.get(layer, ""))
 		var texture: Texture2D = null
 		if path != "":
-			texture = fresh_texture(path) if fresh else (load(path) if ResourceLoader.exists(path) else null)
+			texture = fresh_texture(path) if fresh else load_texture(path)
 		if texture != null:
 			material.set_shader_parameter(layer + "_texture", texture)
 		material.set_shader_parameter("has_" + layer, texture != null)
@@ -235,6 +235,17 @@ static func reload_art() -> void:
 		apply_spec(material, terrain, true)
 
 
+## A texture through the import when it has one, else straight from the
+## image file (an image added today, not yet imported): never null for a
+## file that is there.
+static func load_texture(path: String) -> Texture2D:
+	if path == "":
+		return null
+	if ResourceLoader.exists(path):
+		return load(path)
+	return fresh_texture(path)
+
+
 ## A texture read straight from its image file, with mipmaps for the
 ## zoom; null when the file cannot be read.
 static func fresh_texture(path: String) -> Texture2D:
@@ -249,7 +260,7 @@ static func fresh_texture(path: String) -> Texture2D:
 static func ground_texture(terrain: String) -> Texture2D:
 	if not _ground_cache.has(terrain):
 		var path := ground_path(terrain)
-		_ground_cache[terrain] = load(path) if path != "" and ResourceLoader.exists(path) else null
+		_ground_cache[terrain] = load_texture(path)
 	return _ground_cache[terrain]
 
 
