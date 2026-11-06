@@ -7,21 +7,18 @@ extends Node2D
 ## The ground is drawn from top-down seamless textures projected onto the
 ## diamonds (docs/09-visual-production.md): a texture covers
 ## GROUND_METRES × GROUND_METRES metres and repeats; each tile's diamond
-## shows the square of the texture it stands on. Terrains without a
-## texture yet keep a flat colour.
+## shows the square of the texture it stands on. A shader blends the
+## texture with itself, shifted and turned, by a soft noise, so its
+## repetition does not read. Terrains without a texture keep a flat colour.
 
 ## Metres covered by one ground texture.
 const GROUND_METRES := 4.0
-## terrain -> paths of its ground textures under res://art/ground/. With
-## several, each 4 m square picks one by a fixed hash of its position, so
-## the repetition breaks without the server knowing (decoration, D03).
+## terrain -> path of its ground texture under res://art/ground/
 const GROUND_TEXTURES := {
-	"grass": [
-		"res://art/ground/ground_grass_01_summer.png",
-		"res://art/ground/ground_grass_02_summer.png",
-	],
+	"grass": "res://art/ground/ground_grass_01_summer.png",
 }
 static var _ground_cache: Dictionary = {}
+static var _ground_material: ShaderMaterial
 
 const COLORS := {
 	"grass": Color(0.45, 0.62, 0.30),
@@ -40,28 +37,34 @@ func _ready() -> void:
 	# Seamless textures repeat across the chunk; linear filtering for the zoom.
 	texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	material = ground_material()
 
 
-## The ground textures of a terrain, empty when it has none yet.
-static func ground_textures(terrain: String) -> Array:
+## The shared ground material: the self-blending shader fed with a
+## seamless noise made here, no image needed.
+static func ground_material() -> ShaderMaterial:
+	if _ground_material == null:
+		var noise := FastNoiseLite.new()
+		noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+		noise.frequency = 0.02
+		noise.seed = 7
+		var texture := NoiseTexture2D.new()
+		texture.noise = noise
+		texture.seamless = true
+		texture.width = 256
+		texture.height = 256
+		_ground_material = ShaderMaterial.new()
+		_ground_material.shader = load("res://world/ground.gdshader")
+		_ground_material.set_shader_parameter("noise_texture", texture)
+	return _ground_material
+
+
+## The ground texture of a terrain, or null when it has none yet.
+static func ground_texture(terrain: String) -> Texture2D:
 	if not _ground_cache.has(terrain):
-		var loaded: Array = []
-		for path in GROUND_TEXTURES.get(terrain, []):
-			if ResourceLoader.exists(path):
-				loaded.append(load(path))
-		_ground_cache[terrain] = loaded
+		var path: String = GROUND_TEXTURES.get(terrain, "")
+		_ground_cache[terrain] = load(path) if path != "" and ResourceLoader.exists(path) else null
 	return _ground_cache[terrain]
-
-
-## Which of `count` variants the 4 m square holding tile (x, y) shows: a
-## small fixed hash, the same on every client and every run.
-static func variant_of(x: int, y: int, count: int) -> int:
-	if count <= 1:
-		return 0
-	var bx := floori(float(x) / GROUND_METRES)
-	var by := floori(float(y) / GROUND_METRES)
-	var h := (bx * 73856093) ^ (by * 19349663)
-	return absi(h) % count
 
 
 ## Texture coordinates of a tile's four corners, clockwise from the top of
@@ -98,9 +101,8 @@ func _draw() -> void:
 			var terrain: String = str(_tiles[y * _size + x])
 			var tx := _origin.x + x
 			var ty := _origin.y + y
-			var textures := ground_textures(terrain)
-			if not textures.is_empty():
-				var texture: Texture2D = textures[variant_of(tx, ty, textures.size())]
+			var texture := ground_texture(terrain)
+			if texture != null:
 				draw_polygon(Iso.diamond(tx, ty), white, ground_uvs(tx, ty), texture)
 			else:
 				draw_colored_polygon(Iso.diamond(tx, ty), COLORS.get(terrain, Color.MAGENTA))
