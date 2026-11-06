@@ -36,16 +36,14 @@ const LAYER_TEXTURES := {
 		"worn": "res://art/ground/ground_grass_02_summer.png",
 	},
 	"forest": {
-		"sibling": "res://art/ground/ground_grass_05_summer.png",
-		"worn": "res://art/ground/ground_grass_02_summer.png",
+		"sibling": "res://art/ground/ground_grass_02_summer.png",
 	},
 }
 ## terrain -> shader parameters that differ from the shader's defaults
 const GROUND_PARAMS := {
 	"forest": {
 		"base_tint": Color(0.56, 0.70, 0.74),
-		"worn_cover": 0.3,
-		"worn_scale": 0.04,
+		"second_offset": Vector2(0.0, 0.0),
 		"dry_strength": 0.3,
 	},
 }
