@@ -67,15 +67,29 @@ pub struct Material {
     pub look: Look,
 }
 
-/// Where a material lies on the ground when the world is created.
+/// A closeness condition: within so many tiles of some terrain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Near {
+    /// The terrain to be close to.
+    pub terrain: Terrain,
+    /// How many tiles away at most (eight-way steps).
+    pub within: u32,
+}
+
+/// Where a material lies on the ground when the world is created: on a
+/// terrain, at a density, and perhaps only near another terrain — flint
+/// at the foot of the cliff, berries at the forest's edge.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Spawn {
     /// The material.
     pub material: String,
     /// On which terrain.
     pub terrain: Terrain,
-    /// Pieces per thousand tiles of that terrain.
+    /// Pieces per thousand tiles of that terrain (that satisfy `near`).
     pub per_thousand: u32,
+    /// Only near this terrain, if given.
+    #[serde(default)]
+    pub near: Option<Near>,
 }
 
 /// How bodies move over the ground (D32).
@@ -188,6 +202,14 @@ pub enum ContentError {
     /// The needs rules are senseless.
     #[error("needs: {0}")]
     Needs(&'static str),
+    /// A spawn rule is senseless.
+    #[error("spawn rule {index}: {what}")]
+    Spawn {
+        /// Position of the rule in the file, from 0.
+        index: usize,
+        /// What is wrong.
+        what: &'static str,
+    },
 }
 
 impl Content {
@@ -269,6 +291,12 @@ impl Content {
                     per_thousand: spawn.per_thousand,
                 });
             }
+            if spawn.near.is_some_and(|near| near.within == 0) {
+                return Err(ContentError::Spawn {
+                    index,
+                    what: "near.within is 1 or more",
+                });
+            }
         }
         if self.movement.walk_speed_cm_per_s == 0 {
             return Err(ContentError::Movement(
@@ -343,12 +371,33 @@ pub const SAMPLE_NEEDS: &str = r"(
 /// Spawn rules of [`Content::sample`].
 pub const SAMPLE_SPAWNS: &str = r#"[
     (material: "branch", terrain: forest, per_thousand: 60),
-    (material: "berries", terrain: grass, per_thousand: 10),
+    (material: "berries", terrain: grass, per_thousand: 40, near: Some((terrain: forest, within: 2))),
 ]"#;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_closeness_condition_needs_a_reach() {
+        let zero = SAMPLE_SPAWNS.replacen("within: 2", "within: 0", 1);
+        assert!(matches!(
+            Content::from_ron(SAMPLE_MATERIALS, &zero, SAMPLE_MOVEMENT, SAMPLE_NEEDS).unwrap_err(),
+            ContentError::Spawn {
+                index: 1,
+                what: "near.within is 1 or more"
+            }
+        ));
+        let content = Content::sample();
+        assert_eq!(content.spawns[0].near, None, "near is optional");
+        assert_eq!(
+            content.spawns[1].near,
+            Some(Near {
+                terrain: Terrain::Forest,
+                within: 2
+            })
+        );
+    }
 
     #[test]
     fn needs_rules_are_checked() {

@@ -8,7 +8,7 @@ pub mod content;
 pub mod map;
 pub mod time;
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 pub use content::{
     Content, ContentError, Food, Look, Material, MaterialKind, Movement, Needs, Spawn,
@@ -415,6 +415,13 @@ impl World {
     /// rule, a piece lands with the rule's probability.
     fn scatter(&mut self, content: &Content, seed: u64) {
         let mut rng = map::Lcg::new(seed ^ 0x5eed_17e5);
+        // Distance of every tile to each terrain some rule wants to be near.
+        let mut distances: BTreeMap<Terrain, Vec<u32>> = BTreeMap::new();
+        for near in content.spawns.iter().filter_map(|s| s.near) {
+            distances
+                .entry(near.terrain)
+                .or_insert_with(|| self.map.distance_to(near.terrain));
+        }
         let (width, height) = (self.map.width(), self.map.height());
         for y in 0..height {
             for x in 0..width {
@@ -422,9 +429,16 @@ impl World {
                     i32::try_from(x).expect("map fits in i32"),
                     i32::try_from(y).expect("map fits in i32"),
                 );
+                let index = (y * width + x) as usize;
                 let terrain = self.map.get(pos).expect("inside the map");
                 for spawn in &content.spawns {
-                    if spawn.terrain == terrain && rng.next_below(1000) < spawn.per_thousand {
+                    if spawn.terrain != terrain {
+                        continue;
+                    }
+                    let close_enough = spawn
+                        .near
+                        .is_none_or(|near| distances[&near.terrain][index] <= near.within);
+                    if close_enough && rng.next_below(1000) < spawn.per_thousand {
                         self.spawn_item(&spawn.material, pos);
                     }
                 }
@@ -1046,7 +1060,9 @@ mod tests {
         let b = World::new(Calendar::default(), &content);
         assert_eq!(a.items(), b.items());
         assert!(a.items().len() > 100, "{} items", a.items().len());
-        // Every item obeys a rule: branches in the forest, berries on grass.
+        // Every item obeys a rule: branches in the forest, berries on grass
+        // within two tiles of it.
+        let to_forest = a.map().distance_to(Terrain::Forest);
         for item in a.items() {
             let terrain = a.map().get(item.pos()).unwrap();
             let rule = content
@@ -1055,7 +1071,18 @@ mod tests {
                 .find(|s| s.material == item.material())
                 .expect("a rule for each material laid down");
             assert_eq!(terrain, rule.terrain, "{item:?}");
+            if let Some(near) = rule.near {
+                let index = usize::try_from(item.pos().y * 256 + item.pos().x).unwrap();
+                assert!(
+                    to_forest[index] <= near.within,
+                    "{item:?} is far from the forest"
+                );
+            }
         }
+        assert!(
+            a.items().iter().any(|i| i.material() == "berries"),
+            "the edges do grow berries"
+        );
         // Densities land near their rule, over tens of thousands of tiles.
         let forest = a
             .map()
