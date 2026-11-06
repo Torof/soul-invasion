@@ -28,7 +28,7 @@
 		}
 	},
 	"water": {
-		"note": "The river: the lively cartoon water (01) with its paler cells (03) over 40 % and the swirls (04) over a quarter, and a few calm stretches (05); all images turned a quarter turn on disk so their lines follow the river. The half-turned calm (06) is in reserve. Banks a little lighter with a thin wet line.",
+		"note": "The river: only the generated images (01 lively, 03 cells over 40 %, 04 swirls over a quarter, 05 calm stretches), all turned a quarter turn on disk so their lines follow the river. Nothing drawn by the shader under them. The half-turned calm (06) is in reserve.",
 		"texture": "res://art/ground/ground_water_01_summer.png",
 		"layers": {
 			"sibling": "res://art/ground/ground_water_03_summer.png",
@@ -38,9 +38,6 @@
 		"params": {
 			"has_variants": true,
 			"dry_strength": 0.0,
-			"shore_lighten": 0.5,
-			"bank_line": 0.3,
-			"current_strength": 0.0,
 			"base_tint": [
 				1.0,
 				0.88,
@@ -58,7 +55,8 @@
 			"worn_cover": 0.22,
 			"worn_scale": 0.025,
 			"worn_softness": 0.35,
-			"second_softness": 0.25
+			"second_softness": 0.25,
+			"spill_only_with_bank": true
 		}
 	}
 }
