@@ -17,6 +17,10 @@ const GROUND_METRES := 4.0
 const GROUND_TEXTURES := {
 	"grass": "res://art/ground/ground_grass_01_summer.png",
 }
+## terrain -> a compatible second texture shown in soft patches (worn grass)
+const WORN_TEXTURES := {
+	"grass": "res://art/ground/ground_grass_02_summer.png",
+}
 static var _ground_cache: Dictionary = {}
 static var _ground_material: ShaderMaterial
 
@@ -56,6 +60,13 @@ static func ground_material() -> ShaderMaterial:
 		_ground_material = ShaderMaterial.new()
 		_ground_material.shader = load("res://world/ground.gdshader")
 		_ground_material.set_shader_parameter("noise_texture", texture)
+		# One material for all chunks: the worn texture of the one terrain
+		# that has one, for now (grass). Per-terrain materials come with
+		# the blend between terrains.
+		var worn_path: String = WORN_TEXTURES.get("grass", "")
+		if ResourceLoader.exists(worn_path):
+			_ground_material.set_shader_parameter("worn_texture", load(worn_path))
+			_ground_material.set_shader_parameter("has_worn", true)
 	return _ground_material
 
 
