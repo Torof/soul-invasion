@@ -1,10 +1,11 @@
 # ground_grass_03_summer
 
-Meadow grass slightly dry and sun-bleached, a half-tone lighter and yellower than `ground_grass_01`: the third validated ground (6 November 2026), blended over wide soft areas of the fresh grass.
+A sister of `ground_grass_01`: the same meadow grass, the same style and tone, drawn differently. Replaces the dry grass first kept under this name (6 November 2026): that one was rejected in the client, its tufts leaning as in wind and its tone a quarter too light, which made the colour change too strong and too fast.
+
+Used as the sibling the shader blends with the first grass over slow noise, so no square of texture is ever repeated as such.
 
 - **File**: `ground_grass_03_summer.png`, 1024 × 1024, seamless; covers 4 × 4 m.
-- **Generated** with Midjourney by the project lead, with `ground_grass_01` attached as the first style reference and the scene reference second; chosen among four (one read as shrubs, one had the same tone as the first grass).
-- **Prompt**: `top-down seamless ground texture, short meadow grass slightly dry and sun-bleached, a touch more yellow-green than fresh grass, with a few taller tufts, no bare dirt, drawn in flat cel shading with thin subtle outlines, uniform and calm, seen exactly from above, flat even lighting, no vignette, no shadows, game texture --ar 1:1 --tile --sw 100 --no photo, realistic, dirt, soil, bushes, shrubs, trees, flowers, rocks, objects, shadows, vignette, text` (style references attached in the Midjourney app).
-- **Measured**: mean RGB 106/149/70 against 90/133/61 for the first grass; flat lighting; edges continuous.
+- **Generated** with Midjourney by the project lead on 6 November 2026, with `ground_grass_01` attached as style reference, from the prompt of `ground_grass_01`; chosen among nine sisters from three jobs for being the closest in tone to the first grass.
+- **Measured**: mean RGB 90/132/62 against 90/133/61 for the first grass; flat lighting; edges continuous (checked on a 2 × 2 tiling).
 
 Licensed under CC BY-NC-SA 4.0 like all content (`docs/LICENSE`).

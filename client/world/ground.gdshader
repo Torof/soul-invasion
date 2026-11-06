@@ -9,10 +9,14 @@ uniform sampler2D noise_texture : repeat_enable, filter_linear;
 // Up to two more compatible textures of the same terrain (made with the
 // first as style reference), each shown in soft patches of its own: a
 // drier grass over wide areas, a worn grass in a few spots.
+// A sister image of the ground (same grass, drawn differently): blended
+// with the first over slow noise instead of a turned copy of itself.
+uniform sampler2D sibling_texture : repeat_enable, filter_linear;
+uniform bool has_sibling = false;
 uniform sampler2D second_texture : repeat_enable, filter_linear;
 uniform bool has_second = false;
 uniform float second_scale = 0.03;
-uniform float second_cover = 0.45;
+uniform float second_cover = 0.35;
 // Tone variation without a second image: the same texture, tinted a
 // little (drier, lighter) over wide slow zones. Same tufts by
 // construction; strength and pace are numbers.
@@ -51,7 +55,7 @@ void fragment() {
 	vec2 uv = UV;
 	vec4 first = texture(TEXTURE, uv);
 	vec2 turned = vec2(-uv.y, uv.x) + second_offset;
-	vec4 second = texture(TEXTURE, turned);
+	vec4 second = has_sibling ? texture(sibling_texture, uv) : texture(TEXTURE, turned);
 	float n = texture(noise_texture, uv * noise_scale).r;
 	float weight = smoothstep(0.46, 0.54, n);
 	vec4 ground = mix(first, second, weight);
