@@ -22,6 +22,10 @@ func _ready() -> void:
 	# Development aid: with SOUL_INVASION_SCREENSHOT set to a path, save what
 	# the window shows after three seconds and quit (headless runs cannot
 	# render, so this is how a change is looked at without a person).
+	# Development aid: with SOUL_INVASION_WATCH set, the ground shader and
+	# textures are reloaded live when their files change (dev/watcher.gd).
+	if not OS.get_environment("SOUL_INVASION_WATCH").is_empty():
+		add_child(DevWatcher.new())
 	var shot := OS.get_environment("SOUL_INVASION_SCREENSHOT")
 	if not shot.is_empty():
 		var zoom := OS.get_environment("SOUL_INVASION_ZOOM")

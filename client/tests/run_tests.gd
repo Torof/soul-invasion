@@ -172,5 +172,11 @@ func _test_ground_art_is_reachable() -> void:
 	_check(by_tile.has(Vector2i(3, 3)) and by_tile[Vector2i(3, 3)][1] < by_tile[Vector2i(3, 3)][0], "one tile further the spill fades")
 	_check(not by_tile.has(Vector2i(5, 3)), "three tiles away the grass is itself")
 	view.free()
+	# The development watcher knows the shader and every ground texture,
+	# and a reload from the files leaves the materials usable.
+	var watched := DevWatcher.watched()
+	_check(watched.has("res://world/ground.gdshader") and watched.has("res://art/ground/ground_grass_01_summer.png"), "the watcher lists the shader and the ground textures")
+	ChunkView.reload_art()
+	_check(ChunkView.ground_material("grass").shader.code.contains("void fragment()") and ChunkView.ground_texture("grass") != null, "a live reload reads the shader and textures from their files")
 	var forest := ChunkView.ground_material("forest")
 	_check(forest != material and forest.get_shader_parameter("base_tint") != material.get_shader_parameter("base_tint"), "the forest has its own material, in the shade")

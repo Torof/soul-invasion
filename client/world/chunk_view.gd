@@ -77,6 +77,10 @@ var _size := 32
 
 ## terrain -> the child canvas drawing that terrain's textured tiles
 var _grounds: Dictionary = {}
+
+
+func _ready() -> void:
+	add_to_group("chunk_views")
 ## Looks up the terrain of a tile outside this chunk (set by the world
 ## view); "" when unknown, and the spill stops there.
 var terrain_at: Callable
@@ -161,6 +165,36 @@ class GroundCanvas:
 			for a in alphas:
 				colours.append(Color(1, 1, 1, a))
 			draw_polygon(Iso.diamond(tile.x, tile.y), colours, ChunkView.ground_uvs(tile.x, tile.y), texture)
+
+
+## Reloads the ground shader and textures from their files into the
+## materials in use (development aid, see dev/watcher.gd). The textures
+## are read straight from the image files, bypassing the import, so a
+## change is seen at once.
+static func reload_art() -> void:
+	var shader := Shader.new()
+	shader.code = FileAccess.get_file_as_string("res://world/ground.gdshader")
+	_ground_cache.clear()
+	for terrain in GROUND_TEXTURES:
+		_ground_cache[terrain] = fresh_texture(GROUND_TEXTURES[terrain])
+	for terrain in _ground_materials:
+		var material: ShaderMaterial = _ground_materials[terrain]
+		material.shader = shader
+		var layers: Dictionary = LAYER_TEXTURES.get(terrain, {})
+		for layer in layers:
+			var texture := fresh_texture(layers[layer])
+			if texture != null:
+				material.set_shader_parameter(layer + "_texture", texture)
+
+
+## A texture read straight from its image file, with mipmaps for the
+## zoom; null when the file cannot be read.
+static func fresh_texture(path: String) -> Texture2D:
+	var image := Image.load_from_file(ProjectSettings.globalize_path(path))
+	if image == null:
+		return null
+	image.generate_mipmaps()
+	return ImageTexture.create_from_image(image)
 
 
 ## The ground texture of a terrain, or null when it has none yet.
