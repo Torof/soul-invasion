@@ -72,8 +72,27 @@ uniform float bank_line = 0.0;
 // like any spill.
 uniform sampler2D bank_texture : repeat_enable, filter_linear;
 uniform bool has_bank = false;
-// How far across the strip the spill reaches (1 = the whole strip).
+// A second strip of another matter (earth beside sand), chosen over
+// slow stretches along the river so the bank changes.
+uniform sampler2D bank2_texture : repeat_enable, filter_linear;
+uniform bool has_bank2 = false;
+// The bank's width across the spill varies along the river between
+// bank_reach_min and bank_reach (1 = the whole spill); beyond it the land
+// shows. bank_vary is the period of that variation along the river.
 uniform float bank_reach = 1.0;
+uniform float bank_reach_min = 0.4;
+// Width of the water's spill over the land, in tiles (the fringe's
+// alpha fades over it), so distances across the bank are in tiles.
+uniform float bank_spill = 1.0;
+// Below this wander the bank vanishes and the grass meets the water;
+// bank_gate_width is how softly it comes back.
+uniform float bank_gate = 0.3;
+uniform float bank_gate_width = 0.2;
+uniform float bank_vary = 0.3;
+// How far the bank bites into the water at most, in tiles, and the
+// scale of the fine grain that roughens its two edges.
+uniform float bank_into = 0.6;
+uniform float bank_edge = 9.0;
 // A terrain whose spill exists only for its bank (water) spills nothing
 // when it has no bank texture.
 uniform bool spill_only_with_bank = false;
@@ -186,14 +205,48 @@ void fragment() {
 			ground.rgb *= 1.0 - line * bank_line;
 		}
 	}
-	if (has_bank && tint.a < 1.0) {
-		ground.rgb = texture(bank_texture, vec2((1.0 - tint.a) * bank_reach, uv.y)).rgb;
-	}
 	float alpha = tint.a;
 	if (alpha < 1.0 && spill_only_with_bank && !has_bank) {
 		alpha = 0.0;
 	}
-	if (alpha < 1.0) {
+	if (has_bank) {
+		// Signed distance from the water line in tiles: positive on the
+		// land (the spill's alpha fades over one tile), negative in the
+		// water (the shore channel fades over SHORE_WIDTH tiles).
+		float s = tint.a < 1.0 ? (1.0 - tint.a) * bank_spill : -(tint.g * 3.0);
+		// The bank's extent wanders slowly along the river: how far onto
+		// the land, how far into the water.
+		// Two wanders of unrelated periods added, so the bank never falls
+		// back on one rhythm; the second is read at an odd scale.
+		float along = uv.y * bank_vary;
+		float w1 = texture(noise_texture, vec2(0.13, along + 0.41)).r;
+		float w2 = texture(noise_texture, vec2(0.83, along * 2.7 + 0.11)).r;
+		float wander = clamp(w1 * 0.7 + w2 * 0.5 - 0.1, 0.0, 1.0);
+		float gate = smoothstep(bank_gate - bank_gate_width, bank_gate + bank_gate_width, wander);
+		float reach = mix(bank_reach_min, bank_reach, wander) * gate;
+		float i1 = texture(noise_texture, vec2(0.57, along * 0.8 + 0.23)).r;
+		float i2 = texture(noise_texture, vec2(0.31, along * 3.1 + 0.67)).r;
+		float into = clamp(i1 * 0.8 + i2 * 0.5 - 0.15, 0.0, 1.0) * bank_into * gate;
+		float x = clamp((s + into) / max(reach + into, 0.05), 0.0, 1.0);
+		vec3 strip = texture(bank_texture, vec2(x, uv.y)).rgb;
+		if (has_bank2) {
+			float pick = texture(noise_texture, vec2(0.71, along * 0.6 + 0.07)).r;
+			strip = mix(strip, texture(bank2_texture, vec2(x, uv.y)).rgb, smoothstep(0.45, 0.55, pick));
+		}
+		// Both edges fade over a short distance, ragged by a fine grain
+		// only, so the bank stays continuous.
+		float e1 = texture(noise_texture, uv * bank_edge).r;
+		float e2 = texture(noise_texture, uv * bank_edge * 1.3 + vec2(0.5, 0.2)).r;
+		float f_out = smoothstep(e1 - 0.35, e1 + 0.35, clamp((reach - s) / 0.3, 0.0, 1.0));
+		float f_in = smoothstep(e2 - 0.35, e2 + 0.35, clamp((s + into) / 0.2, 0.0, 1.0));
+		float cover = f_out * f_in;
+		if (tint.a < 1.0) {
+			ground.rgb = strip;
+			alpha = cover;
+		} else {
+			ground.rgb = mix(ground.rgb, strip, cover);
+		}
+	} else if (alpha < 1.0) {
 		float e = texture(noise_texture, uv * edge_scale + vec2(0.23, 0.71)).r;
 		alpha = smoothstep(e - 0.3, e + 0.3, alpha);
 	}
