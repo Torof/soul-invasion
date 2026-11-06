@@ -1,10 +1,12 @@
 # ground_water_01_summer
 
-The river: calm shallow water, soft blue-green, gentle tonal variation in soft cells, almost no line. The first water ground (6 November 2026). Movement and reflections, if wanted, are the shader's, not the image's.
+The river: deep calm water, dark teal, almost flat colour with faint soft variation and no line, in the tone of the river of the style reference (`content/art/references/style-ref-01.png`, measured 59/122/104 there). Replaces a first bright cyan water with large cells (6 November 2026), which read as a close-up puddle, not a river.
+
+Lighter banks, the current and the emerging stones are not in this image: the banks are the shader's (nearness to the bank), the current a sister laid in streaks and moved by the shader, the stones small separate images placed here and there.
 
 - **File**: `ground_water_01_summer.png`, 1024 × 1024 (reduced from 2048), seamless; covers 4 × 4 m.
-- **Generated** with Midjourney by the project lead, with `ground_grass_01` attached as style reference at half weight; chosen among eight (the first grid of ten, with the reference at full weight and the word "river", gave landscapes with banks and trees; this one was framed as a texture filling the frame). Rejected: a sand bank painted in, foam crests, clouds, pebbles, and waves all parallel, which would stripe in iso.
-- **Prompt**: `top-down seamless texture of calm shallow river water filling the whole frame, soft blue-green, almost flat colour with only gentle soft tonal variation, no drawn ripples, no lines, no banks, no shore, no edges, uniform and calm, seen exactly from above, flat even lighting, no highlights, very low contrast, flat cel-shaded game texture --ar 1:1 --tile --sw 50 --s 25 --no photo, realistic, ripples, waves, lines, foam, highlights, sparkle, reflections, banks, shore, rocks, stones, trees, plants, grass, fish, landscape, scenery, shadows, vignette, text`
-- **Measured**: mean RGB 70/169/173, the lowest contrast of its grid; edges continuous (checked on a 2 × 2 tiling).
+- **Generated** with Midjourney by the project lead, with a crop of the reference's river water attached as image reference (`--iw 2`) and `ground_grass_01` as style reference at half weight; chosen among three as the flattest (one had streaks across, one a painted stone).
+- **Prompt**: `top-down seamless texture of deep calm river water filling the whole frame, dark teal blue-green exactly like the image reference, almost flat colour with a few soft lighter streaks painted in flat colour, no outlines, no banks, no shore, no edges, no objects, uniform and calm, seen exactly from above, flat even lighting, no highlights, very low contrast, flat cel-shaded game texture --ar 1:1 --tile --iw 2 --sw 50 --s 25 --no photo, realistic, bright, cyan, turquoise, ripples drawn as lines, waves, foam, highlights, sparkle, reflections, banks, shore, rocks, stones, pebbles, plants, fish, landscape, scenery, shadows, vignette, text`
+- **Measured**: mean RGB 24/100/87, contrast 3; lifted toward the reference's tone by the shader's tint; edges continuous.
 
 Licensed under CC BY-NC-SA 4.0 like all content (`docs/LICENSE`).
