@@ -25,3 +25,5 @@
 # Midjourney sources and rejected candidates: only chosen images, at game size,
 # go into content/art/ with their note (docs/09-visual-production.md).
 content/ai-generated-content/
+# Development screenshot requests and results (client/dev/watcher.gd).
+client/.dev/

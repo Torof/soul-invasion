@@ -9,6 +9,12 @@ extends Node
 
 ## How often the files are looked at, in seconds.
 const PERIOD := 1.0
+## A screenshot request: drop this file (empty, or "x,y" to frame that
+## tile, or "x,y,zoom") and the running client saves what it shows to
+## SHOT and removes the request. One client open for everyone, no other
+## instance to launch.
+const REQUEST := "res://.dev/shot.request"
+const SHOT := "res://.dev/shot.png"
 
 ## path -> last modification time seen
 var _stamps: Dictionary = {}
@@ -48,3 +54,25 @@ func _poll() -> void:
 		ChunkView.reload_art()
 		get_tree().call_group("chunk_views", "queue_redraw")
 		print("ground reloaded")
+	if FileAccess.file_exists(REQUEST):
+		var framing := FileAccess.get_file_as_string(REQUEST).strip_edges()
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(REQUEST))
+		_shoot(framing)
+
+
+## Frames as asked ("x,y" or "x,y,zoom", or nothing), then saves the
+## window to SHOT once the frame is drawn.
+func _shoot(framing: String) -> void:
+	# Untyped on purpose: naming WorldView here would pull the network
+	# autoload into the headless tests, which have none.
+	var world: Node = get_parent().get_node("WorldView")
+	var parts := framing.split(",")
+	if parts.size() >= 2 and parts[0].is_valid_int() and parts[1].is_valid_int():
+		world.call("look_at_tile", Vector2i(int(parts[0]), int(parts[1])))
+	if parts.size() >= 3 and parts[2].is_valid_float():
+		world.get_node("Camera").zoom = Vector2.ONE * float(parts[2])
+	await get_tree().process_frame
+	await get_tree().process_frame
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://.dev"))
+	get_viewport().get_texture().get_image().save_png(ProjectSettings.globalize_path(SHOT))
+	print("screenshot saved to ", SHOT)
