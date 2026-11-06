@@ -12,9 +12,14 @@ extends Node2D
 
 ## Metres covered by one ground texture.
 const GROUND_METRES := 4.0
-## terrain -> path of its ground texture under res://art/ground/
+## terrain -> paths of its ground textures under res://art/ground/. With
+## several, each 4 m square picks one by a fixed hash of its position, so
+## the repetition breaks without the server knowing (decoration, D03).
 const GROUND_TEXTURES := {
-	"grass": "res://art/ground/ground_grass_01_summer.png",
+	"grass": [
+		"res://art/ground/ground_grass_01_summer.png",
+		"res://art/ground/ground_grass_02_summer.png",
+	],
 }
 static var _ground_cache: Dictionary = {}
 
@@ -37,12 +42,26 @@ func _ready() -> void:
 	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 
 
-## The ground texture of a terrain, or null when it has none yet.
-static func ground_texture(terrain: String) -> Texture2D:
+## The ground textures of a terrain, empty when it has none yet.
+static func ground_textures(terrain: String) -> Array:
 	if not _ground_cache.has(terrain):
-		var path: String = GROUND_TEXTURES.get(terrain, "")
-		_ground_cache[terrain] = load(path) if path != "" and ResourceLoader.exists(path) else null
+		var loaded: Array = []
+		for path in GROUND_TEXTURES.get(terrain, []):
+			if ResourceLoader.exists(path):
+				loaded.append(load(path))
+		_ground_cache[terrain] = loaded
 	return _ground_cache[terrain]
+
+
+## Which of `count` variants the 4 m square holding tile (x, y) shows: a
+## small fixed hash, the same on every client and every run.
+static func variant_of(x: int, y: int, count: int) -> int:
+	if count <= 1:
+		return 0
+	var bx := floori(float(x) / GROUND_METRES)
+	var by := floori(float(y) / GROUND_METRES)
+	var h := (bx * 73856093) ^ (by * 19349663)
+	return absi(h) % count
 
 
 ## Texture coordinates of a tile's four corners, clockwise from the top of
@@ -79,8 +98,9 @@ func _draw() -> void:
 			var terrain: String = str(_tiles[y * _size + x])
 			var tx := _origin.x + x
 			var ty := _origin.y + y
-			var texture := ground_texture(terrain)
-			if texture != null:
+			var textures := ground_textures(terrain)
+			if not textures.is_empty():
+				var texture: Texture2D = textures[variant_of(tx, ty, textures.size())]
 				draw_polygon(Iso.diamond(tx, ty), white, ground_uvs(tx, ty), texture)
 			else:
 				draw_colored_polygon(Iso.diamond(tx, ty), COLORS.get(terrain, Color.MAGENTA))
