@@ -18,7 +18,7 @@ const TARGET_COLOR := Color(1.0, 0.85, 0.30, 0.9)
 const ZOOM_MIN := 0.5
 const ZOOM_MAX := 4.0
 const ZOOM_STEP := 1.25
-const DEFAULT_ZOOM := 2.0
+const DEFAULT_ZOOM := 1.5
 ## Millimetres per tile, as the protocol defines fine points.
 const MM_PER_TILE := 1000.0
 
@@ -351,19 +351,22 @@ func _draw() -> void:
 		var shown: Vector2 = Iso.point_to_screen(_bodies[id]["at"])
 		var color := PILOTED_COLOR if id == _piloted else BODY_COLOR
 		var feet := shown + Vector2(0, 2)
+		# Provisional figures: a third of a person's 1.7 m, so they stay
+		# small on the diamond until real sprites come (64 px per metre).
+		var h := Iso.PX_PER_M * 1.7 * 0.33
 		if _bodies[id]["asleep"]:
 			# Lying down: a figure along the ground, and a "z" above it.
-			draw_rect(Rect2(feet + Vector2(-12, -8), Vector2(20, 7)), color)
-			draw_rect(Rect2(feet + Vector2(-12, -8), Vector2(20, 7)), Color.BLACK, false, 1.0)
-			draw_circle(feet + Vector2(12, -4.5), 4.0, color)
-			draw_circle(feet + Vector2(12, -4.5), 4.0, Color.BLACK, false, 1.0)
-			draw_sleep_icon(self, feet + Vector2(0, -16))
+			draw_rect(Rect2(feet + Vector2(-h * 0.6, -h * 0.35), Vector2(h, h * 0.3)), color)
+			draw_rect(Rect2(feet + Vector2(-h * 0.6, -h * 0.35), Vector2(h, h * 0.3)), Color.BLACK, false, 1.0)
+			draw_circle(feet + Vector2(h * 0.6, -h * 0.2), h * 0.18, color)
+			draw_circle(feet + Vector2(h * 0.6, -h * 0.2), h * 0.18, Color.BLACK, false, 1.0)
+			draw_sleep_icon(self, feet + Vector2(0, -h * 0.7))
 		else:
 			# A standing figure: taller than wide, feet where the body stands.
-			draw_rect(Rect2(feet + Vector2(-4, -22), Vector2(8, 20)), color)
-			draw_rect(Rect2(feet + Vector2(-4, -22), Vector2(8, 20)), Color.BLACK, false, 1.0)
-			draw_circle(feet + Vector2(0, -26), 4.5, color)
-			draw_circle(feet + Vector2(0, -26), 4.5, Color.BLACK, false, 1.0)
+			draw_rect(Rect2(feet + Vector2(-h * 0.18, -h), Vector2(h * 0.36, h * 0.9)), color)
+			draw_rect(Rect2(feet + Vector2(-h * 0.18, -h), Vector2(h * 0.36, h * 0.9)), Color.BLACK, false, 1.0)
+			draw_circle(feet + Vector2(0, -h * 1.18), h * 0.2, color)
+			draw_circle(feet + Vector2(0, -h * 1.18), h * 0.2, Color.BLACK, false, 1.0)
 
 
 ## A small "z" above a sleeping body, drawn on `canvas` at `at`.

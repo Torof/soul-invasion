@@ -2,12 +2,15 @@ class_name Iso
 extends RefCounted
 ## Isometric projection (D02): tile coordinates <-> screen pixels.
 ##
-## A tile is a diamond TILE_W wide and TILE_H high. Tile (0, 0) is drawn
-## with its centre at the origin; x grows to the south-east, y to the
-## south-west.
+## A tile is a diamond TILE_W wide and TILE_H high: one metre is 64 px at
+## scale 1, horizontally and vertically (the format contract of
+## docs/09-visual-production.md). Tile (0, 0) is drawn with its centre at
+## the origin; x grows to the south-east, y to the south-west.
 
-const TILE_W := 48.0
-const TILE_H := 24.0
+const TILE_W := 64.0
+const TILE_H := 32.0
+## Pixels per metre of height at scale 1, for things standing on a tile.
+const PX_PER_M := 64.0
 
 
 ## Screen position of the centre of tile (x, y).
