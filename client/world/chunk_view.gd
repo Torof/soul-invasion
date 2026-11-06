@@ -17,9 +17,12 @@ extends Node2D
 ## Metres covered by one ground texture.
 const GROUND_METRES := 4.0
 ## terrain -> path of its ground texture under res://art/ground/
+## The floor of the woods is the meadow's grass in the shade: the same
+## images, darker and cooler, with more bare earth. Plain soil does not
+## come out of the generator; leaf litter will come later as a sister.
 const GROUND_TEXTURES := {
 	"grass": "res://art/ground/ground_grass_01_summer.png",
-	"forest": "res://art/ground/ground_forest_01_summer.png",
+	"forest": "res://art/ground/ground_grass_01_summer.png",
 }
 ## terrain -> compatible textures shown in soft patches over the first:
 ## "second" over wide areas (a drier grass), "worn" in a few spots.
@@ -30,6 +33,21 @@ const LAYER_TEXTURES := {
 		"sibling": "res://art/ground/ground_grass_03_summer.png",
 		"second": "res://art/ground/ground_grass_04_summer.png",
 		"worn": "res://art/ground/ground_grass_02_summer.png",
+	},
+	"forest": {
+		"sibling": "res://art/ground/ground_grass_03_summer.png",
+		"second": "res://art/ground/ground_grass_02_summer.png",
+		"worn": "res://art/ground/ground_grass_02_summer.png",
+	},
+}
+## terrain -> shader parameters that differ from the shader's defaults
+const GROUND_PARAMS := {
+	"forest": {
+		"base_tint": Color(0.56, 0.70, 0.74),
+		"second_cover": 0.4,
+		"second_scale": 0.05,
+		"worn_cover": 0.25,
+		"dry_strength": 0.3,
 	},
 }
 static var _ground_cache: Dictionary = {}
@@ -85,6 +103,9 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 			if ResourceLoader.exists(path):
 				material.set_shader_parameter(layer + "_texture", load(path))
 				material.set_shader_parameter("has_" + layer, true)
+		var params: Dictionary = GROUND_PARAMS.get(terrain, {})
+		for name in params:
+			material.set_shader_parameter(name, params[name])
 		_ground_materials[terrain] = material
 	return _ground_materials[terrain]
 

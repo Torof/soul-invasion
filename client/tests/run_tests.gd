@@ -156,6 +156,5 @@ func _test_ground_art_is_reachable() -> void:
 	var material := ChunkView.ground_material("grass")
 	_check(material.shader != null and material.get_shader_parameter("noise_texture") != null, "the ground material has its shader and noise")
 	_check(material.get_shader_parameter("has_worn") == true, "the grass material has its worn layer")
-	_check(ResourceLoader.exists("res://art/ground/ground_forest_01_summer.png"), "the forest floor is importable")
 	var forest := ChunkView.ground_material("forest")
-	_check(forest != material and forest.get_shader_parameter("has_worn") != true, "the forest has its own material, without the grass layers")
+	_check(forest != material and forest.get_shader_parameter("base_tint") != material.get_shader_parameter("base_tint"), "the forest has its own material, in the shade")
