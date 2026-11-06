@@ -218,34 +218,41 @@ The format contract is in `09-visual-production.md` §4. Each image has its file
 
 **Risk**: objects painted into the ground (bushes, trees, flowers) and a vignette of light that repeats every four metres. **Rule**: empty, flat-lit, low contrast; keep the dullest variation. If still busy: add `, plain` and `--stylize 30`.
 
-**`ground_grass_01_summer.png`** — 4×4 m
+What the grounds of 6 November taught, in the order it was learnt:
+
+- **The first validated ground is the style reference of all the others.** Attach `content/art/ground/ground_grass_01_summer.png` in the Midjourney app (Use → Style) with `--sw 100`; the old `--sref` link of the scene is no longer used for grounds. A ground made without it comes out in another style and is lost.
+- **One image per structure, sisters for variety, the shader for tone.** A second image is the wrong tool to vary the *tone* of a ground: it brings another structure (leaning tufts) and a colour jump. Tone is a tint in the shader (`dry_tint`, `base_tint`). Variety comes from **sisters**: the same prompt re-run with the first image as style reference, sorted by tone (mean RGB within a few points of the first) and drawn differently. The nine sisters of the grass were all usable; the dry grass was not.
+- **Say the dose, not only the ingredient.** "A few leaves" covers the surface; "moss" becomes cushions that read as shrubs. Write the amount in words ("about a tenth of the surface", "two or three small faint patches") and lower `--s` to 50. And **a bare surface does not exist** for the generator: "plain soil" came out as cobbles, furrows and lumps, twice. A ground needs a continuous matter (grass, water); earth, leaves, moss come later as sisters at a small dose.
+- **No dominant direction.** Fine blades all parallel look calm on the sheet and become diagonal stripes once projected in iso. Tufts must be radial. Test before anything: lay the image next to itself turned by a quarter turn; if the eye sees a change of direction, reject it.
+- **Never turn a ground texture in the shader.** The drawings have a slight three-quarter reading; turned, the grass reads upside down, like a roof. The shader shifts, never turns.
+- **The forest floor is grass in the shade.** Real woods keep green grass, less bright and sparser. The woods use the sparse grass and the worn grass tinted darker and cooler (`base_tint`), with more bare earth; no forest-floor image exists or is wanted.
+
+The grass family today (all 1024 × 1024, 4 × 4 m, notes beside each file in `content/art/ground/`):
+
+| File | What | Where |
+|---|---|---|
+| `ground_grass_01_summer` | the meadow grass, the style reference | meadow base |
+| `ground_grass_02_summer` | worn grass with bare spots | meadow spots; woods base |
+| `ground_grass_03_summer` | sister of 01, closest in tone | meadow sister (half) |
+| `ground_grass_04_summer` | open sister, patches of shorter grass | meadow patches |
+| `ground_grass_05_summer` | the least tufted sister | in reserve |
+| `ground_grass_06_summer` | sparse forest grass, low radial tufts | woods sister (a quarter) |
+
+**Sister of a validated ground** (variety without a new prompt): the prompt of the ground as written in its note, the ground attached as style reference, `--sw 100`. Keep the ones whose mean RGB is within six points of the original and whose tufts are radial.
+
+**`ground_water_01_summer.png`** — 4×4 m, not generated yet
 ```
-top-down seamless ground texture, short even meadow grass only, uniform and calm, seen exactly from above, no perspective, flat even lighting with no vignette and no shadows, very low contrast, thin subtle outlines only, no bushes, no shrubs, no trees, no flowers, no rocks, game texture --ar 1:1 --tile --sw 60 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no bushes, shrubs, trees, flowers, rocks, objects, shadows, vignette, text
+top-down seamless ground texture, calm clear river water, soft blue-green, a few faint ripples only, uniform and calm, seen exactly from above, no perspective, flat even lighting with no vignette and no shadows, very low contrast, thin subtle outlines only, drawn in the same flat cel-shaded style as the reference, game texture --ar 1:1 --tile --sw 100 --s 50 --no photo, realistic, waves, foam, fish, rocks, pebbles, plants, reflections, sparkle, sun, shadows, vignette, text
 ```
 
-**`ground_grass_02_summer.png`** — 4×4 m
+**`ground_ford_01_summer.png`** — 4×4 m, not generated yet
 ```
-top-down seamless ground texture, short meadow grass worn by footsteps with small patches of bare packed dirt, uniform and calm, seen exactly from above, no perspective, flat even lighting with no vignette and no shadows, very low contrast, thin subtle outlines only, no bushes, no shrubs, no trees, no flowers, no rocks, game texture --ar 1:1 --tile --sw 60 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no bushes, shrubs, trees, flowers, rocks, objects, shadows, vignette, text
-```
-
-**`ground_forest_floor_01_summer.png`** — 4×4 m
-```
-top-down seamless ground texture, dark forest floor of packed earth, fallen leaves and thin moss, no plants, uniform and calm, seen exactly from above, no perspective, flat even lighting with no vignette and no shadows, very low contrast, thin subtle outlines only, no bushes, no shrubs, no trees, no flowers, no rocks, game texture --ar 1:1 --tile --sw 60 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no bushes, shrubs, trees, flowers, rocks, objects, shadows, vignette, text
+top-down seamless ground texture, shallow clear water over small rounded pebbles, a river ford, the pebbles small and even, the water a faint blue-green veil, uniform and calm, seen exactly from above, no perspective, flat even lighting with no vignette and no shadows, very low contrast, thin subtle outlines only, drawn in the same flat cel-shaded style as the reference, game texture --ar 1:1 --tile --sw 100 --s 50 --no photo, realistic, large rocks, boulders, waves, foam, fish, plants, reflections, sparkle, shadows, vignette, text
 ```
 
-**`ground_ford_01_summer.png`** — 4×4 m
+**`ground_rock_01_summer.png`** — 4×4 m, not generated yet
 ```
-top-down seamless ground texture, shallow clear turquoise water over small pebbles, a river ford, uniform and calm, seen exactly from above, no perspective, flat even lighting with no vignette and no shadows, very low contrast, thin subtle outlines only, no bushes, no shrubs, no trees, no flowers, no rocks, game texture --ar 1:1 --tile --sw 60 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no bushes, shrubs, trees, flowers, rocks, objects, shadows, vignette, text
-```
-
-**`ground_water_01_summer.png`** — 4×4 m
-```
-top-down seamless ground texture, clear turquoise river water with soft ripples, uniform and calm, seen exactly from above, no perspective, flat even lighting with no vignette and no shadows, very low contrast, thin subtle outlines only, no bushes, no shrubs, no trees, no flowers, no rocks, game texture --ar 1:1 --tile --sw 60 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no bushes, shrubs, trees, flowers, rocks, objects, shadows, vignette, text
-```
-
-**`ground_rock_01_summer.png`** — 4×4 m
-```
-top-down seamless ground texture, grey-green cliff rock with cracks and a little acid-green moss in the cracks, uniform and calm, seen exactly from above, no perspective, flat even lighting with no vignette and no shadows, very low contrast, thin subtle outlines only, no bushes, no shrubs, no trees, no flowers, no rocks, game texture --ar 1:1 --tile --sw 60 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no bushes, shrubs, trees, flowers, rocks, objects, shadows, vignette, text
+top-down seamless ground texture, grey-green bare rock with a few thin cracks, mostly plain, a little moss in two or three cracks only, uniform and calm, seen exactly from above, no perspective, flat even lighting with no vignette and no shadows, very low contrast, thin subtle outlines only, drawn in the same flat cel-shaded style as the reference, game texture --ar 1:1 --tile --sw 100 --s 50 --no photo, realistic, boulders, pebbles, gravel, plants, grass, shadows, vignette, text
 ```
 
 ### Overlays (top-down, five pieces per sheet, cut out one by one and scattered on cells)
