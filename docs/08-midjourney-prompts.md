@@ -203,11 +203,20 @@ For every validated image, record beside it in `content/art/`: the file, the exa
 
 ## Batch 1 — what the game shows now (6 November 2026)
 
-The format contract is in `09-visual-production.md` §4. Each image has its file name under `content/art/`, its footprint, and its prompt ready to paste. Grounds are seen exactly from above and must tile; elements stand on white with no ground shadow, lit from the front left; anchors are at the base of the centre of the footprint. Generate at twice the game size (the game uses 64 px per metre at scale 1).
+The format contract is in `09-visual-production.md` §4. Each image has its file name under `content/art/`, its footprint, and its prompt ready to paste. Generate at twice the game size (the game uses 64 px per metre at scale 1); upscale the chosen variation and download the upscale.
+
+### What the first generation taught
+
+- **The ground is empty.** Everything that is an object in the game — a bush, a tree, a flower, a rock, a tuft worth picking — has its own image and its own states (full, picked, felled) and is drawn by the engine on top of the ground. Painted into a texture, it would be a thing one cannot touch, repeated every four metres.
+- **Nothing is lit.** Light, shadows, night and the fire are the engine's. A vignette or a cast shadow in an image repeats and fights the engine.
+- **Nothing is around.** Elements float on pure white with no ground, grass, soil or scenery, so they can be cut out and placed anywhere.
+- **Calm beats rich.** Low contrast, few details on the ground; the detail comes from overlays and objects, which do not repeat.
+- **Say it twice.** The subject says what we want; the `--no` list says what we refuse — Midjourney obeys the negative better.
+- **Keep the dullest variation** for grounds, the cleanest for elements. Generate two to four per prompt.
 
 ### Grounds (top-down, seamless, one image covers 4 × 4 m → 512 × 512 px in game)
 
-The first attempt (6 November 2026) taught the rule: **the ground must be empty of anything that is an object** — bushes, trees, flowers, rocks are drawn by the engine from their own images, with their states — and **flat-lit**: a vignette repeats every four metres as a chequerboard, and the engine lights the world itself. Keep the dullest variation; it is the right one. If it is still busy: add `, plain` and `--stylize 30`.
+**Risk**: objects painted into the ground (bushes, trees, flowers) and a vignette of light that repeats every four metres. **Rule**: empty, flat-lit, low contrast; keep the dullest variation. If still busy: add `, plain` and `--stylize 30`.
 
 **`ground_grass_01_summer.png`** — 4×4 m
 ```
@@ -238,60 +247,74 @@ top-down seamless ground texture, clear turquoise river water with soft ripples,
 ```
 top-down seamless ground texture, grey-green cliff rock with cracks and a little acid-green moss in the cracks, uniform and calm, seen exactly from above, no perspective, flat even lighting with no vignette and no shadows, very low contrast, thin subtle outlines only, no bushes, no shrubs, no trees, no flowers, no rocks, game texture --ar 1:1 --tile --sw 60 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no bushes, shrubs, trees, flowers, rocks, objects, shadows, vignette, text
 ```
-### Overlays (top-down, transparent after cut-out, scattered on cells)
+
+### Overlays (top-down, five pieces per sheet, cut out one by one and scattered on cells)
+
+**Risk**: a carpet instead of separate pieces, a ground painted under them, a shadow. **Rule**: five pieces, far apart, on pure white; we cut each one out. Reject any variation where pieces touch or where ground shows.
 
 **`overlay_flowers_summer.png`** — cell
 ```
-top-down game overlay, a few small wildflowers in yellow and white with a leaf or two, sparse and well separated, seen exactly from above, thick dark outlines on each element, flat cel shading, plain white background --ar 1:1 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, ground texture
+2D game asset sheet, small wildflower clumps in yellow and white with one or two leaves, five small separate pieces widely spaced apart, each one isolated, seen exactly from above, thick dark outlines, flat cel shading, flat even lighting, no shadows, floating on a plain pure white background with nothing else --ar 1:1 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no ground, grass, soil, shadow, scenery, background, frame, text, watermark
 ```
 
 **`overlay_dead_leaves_summer.png`** — cell
 ```
-top-down game overlay, a few fallen brown and ochre leaves, sparse and well separated, seen exactly from above, thick dark outlines on each element, flat cel shading, plain white background --ar 1:1 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, ground texture
+2D game asset sheet, small clusters of fallen brown and ochre leaves, five small separate pieces widely spaced apart, each one isolated, seen exactly from above, thick dark outlines, flat cel shading, flat even lighting, no shadows, floating on a plain pure white background with nothing else --ar 1:1 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no ground, grass, soil, shadow, scenery, background, frame, text, watermark
 ```
 
 **`overlay_pebbles_summer.png`** — cell
 ```
-top-down game overlay, a few small grey river pebbles, sparse and well separated, seen exactly from above, thick dark outlines on each element, flat cel shading, plain white background --ar 1:1 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, ground texture
+2D game asset sheet, small groups of grey river pebbles, five small separate pieces widely spaced apart, each one isolated, seen exactly from above, thick dark outlines, flat cel shading, flat even lighting, no shadows, floating on a plain pure white background with nothing else --ar 1:1 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no ground, grass, soil, shadow, scenery, background, frame, text, watermark
 ```
 
 **`overlay_moss_summer.png`** — cell
 ```
-top-down game overlay, a few patches of acid-green moss, sparse and well separated, seen exactly from above, thick dark outlines on each element, flat cel shading, plain white background --ar 1:1 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, ground texture
+2D game asset sheet, small patches of acid-green moss, five small separate pieces widely spaced apart, each one isolated, seen exactly from above, thick dark outlines, flat cel shading, flat even lighting, no shadows, floating on a plain pure white background with nothing else --ar 1:1 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no ground, grass, soil, shadow, scenery, background, frame, text, watermark
 ```
 
-### Items on the ground (one sheet, each item cut out to lie on a cell; anchor: centre)
+### Items on the ground (two sheets of five; each item cut out to lie on a cell; anchor: centre)
 
-**`items_materials_01.png`** — sheet
+**Risk**: a wrong count, wildly different scales, a ground or shadow under the items, items touching. **Rule**: two sheets of five, one row, same scale (a log is much bigger than a flint), pure white. Name each item plainly; Midjourney keeps a row of five better than a grid of ten.
+
+**`items_materials_01.png`** — sheet of 5
 ```
-2D game item sheet, ten small items evenly spaced on a grid, each isolated: a dark grey flint nodule, a smooth round pebble, a dead wooden branch, a short thick log, a bundle of pale plant fibres, a handful of red berries, a folded animal hide, a piece of raw red meat, a long white bone, and a prehistoric human corpse lying curled on its side, high-angle three-quarter view, thick dark outlines, flat cel shading, plain white background, no shadows --ar 16:9 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, scenery
+2D game asset sheet, five small prehistoric items: a dark grey flint nodule, a smooth round grey pebble, a dead wooden branch, a short thick log, a bundle of pale plant fibres, in a single row, evenly spaced, each one isolated and at the same scale, high-angle three-quarter view, thick dark outlines, flat cel shading, lit from the front left, no cast shadows, floating on a plain pure white background with nothing else --ar 16:9 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no ground, grass, soil, shadow, scenery, background, frame, text, watermark
+```
+
+**`items_materials_02.png`** — sheet of 5
+```
+2D game asset sheet, five small prehistoric items: a handful of red berries, a folded animal hide, a piece of raw red meat, a long pale bone, and a prehistoric human corpse lying curled on its side, in a single row, evenly spaced, each one isolated and at the same scale, high-angle three-quarter view, thick dark outlines, flat cel shading, lit from the front left, no cast shadows, floating on a plain pure white background with nothing else --ar 16:9 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no ground, grass, soil, shadow, scenery, background, frame, text, watermark
 ```
 
 ### Structures (three-quarter on white; footprint and anchor at the base of its centre)
 
+**Risk**: a patch of grass or earth painted under the structure, a cast shadow, scenery around it. **Rule**: floating on pure white, nothing else; we add the ground and the shadow in the engine.
+
 **`fire_states_01.png`** — 1×1, three states
 ```
-2D game asset sheet, the same stone-ringed campfire in three states side by side: unlit with stacked logs, glowing orange embers, burning brightly with tall flames, evenly spaced, high-angle three-quarter view, thick dark outlines, flat cel shading, plain white background, no ground shadow --ar 16:9 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text
+2D game asset sheet, the same small stone-ringed campfire three times side by side, identical ring of stones, in three states: unlit with stacked logs, glowing orange embers, burning brightly with tall flames, in a single row, evenly spaced, each one isolated and at the same scale, high-angle three-quarter view, thick dark outlines, flat cel shading, lit from the front left, no cast shadows, floating on a plain pure white background with nothing else --ar 16:9 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no ground, grass, soil, shadow, scenery, background, frame, text, watermark
 ```
 
 **`shelter_branches_01_summer.png`** — 1×2
 ```
-single 2D game asset, a primitive lean-to shelter made of stacked branches and leaves, open on one side, about two metres long, high-angle three-quarter view, thick dark outlines, flat cel shading, isolated on a plain white background, no ground shadow, lit from the front left --ar 4:3 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, scenery
+single 2D game asset, a primitive lean-to shelter made of stacked branches and leaves, open on one side, about two metres long, alone, high-angle three-quarter view, thick dark outlines, flat cel shading, lit from the front left, no cast shadow, floating on a plain pure white background with nothing else --ar 4:3 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no ground, grass, soil, shadow, scenery, background, frame, text, watermark
 ```
 
 **`rack_drying_01.png`** — 1×2
 ```
-single 2D game asset, a primitive wooden rack of lashed poles with strips of meat hanging to dry, about two metres long, high-angle three-quarter view, thick dark outlines, flat cel shading, isolated on a plain white background, no ground shadow, lit from the front left --ar 4:3 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, scenery
+single 2D game asset, a primitive wooden rack of lashed poles with strips of meat hanging to dry, about two metres long, alone, high-angle three-quarter view, thick dark outlines, flat cel shading, lit from the front left, no cast shadow, floating on a plain pure white background with nothing else --ar 4:3 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no ground, grass, soil, shadow, scenery, background, frame, text, watermark
 ```
 
-### Trees (one species now; the others with `species.ron`)
+### Trees (one species now; the others with `species.ron`, one sheet per species with its four ages)
+
+**Risk**: grass and roots painted at the foot, a shadow, foliage hiding the trunk (bodies walk behind it). **Rule**: trunk clear on the lower third, floating on pure white.
 
 **`oak_adult_01_summer.png`** — 1×1, 4 m tall
 ```
-single 2D game asset, a large adult oak tree with a thick trunk clear on its lower third and dense rounded foliage clumps, high-angle three-quarter view, thick dark outlines, flat cel shading, isolated on a plain white background, no ground shadow, lit from the front left --ar 2:3 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, scenery
+single 2D game asset, a large adult oak tree, thick trunk clearly visible on its lower third with no grass at its foot, dense rounded foliage clumps above, alone, high-angle three-quarter view, thick dark outlines, flat cel shading, lit from the front left, no cast shadow, floating on a plain pure white background with nothing else --ar 2:3 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no ground, grass, soil, shadow, scenery, background, frame, text, watermark
 ```
 
 **`oak_adult_02_summer.png`** — 1×1, 4 m tall
 ```
-single 2D game asset, a large adult oak tree, a different silhouette, thick trunk clear on its lower third, dense rounded foliage, one lower branch reaching out, high-angle three-quarter view, thick dark outlines, flat cel shading, isolated on a plain white background, no ground shadow, lit from the front left --ar 2:3 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, scenery
+single 2D game asset, a large adult oak tree with a different silhouette, one lower branch reaching out, thick trunk clearly visible on its lower third with no grass at its foot, dense rounded foliage above, alone, high-angle three-quarter view, thick dark outlines, flat cel shading, lit from the front left, no cast shadow, floating on a plain pure white background with nothing else --ar 2:3 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no ground, grass, soil, shadow, scenery, background, frame, text, watermark
 ```
