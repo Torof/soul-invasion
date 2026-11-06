@@ -66,6 +66,17 @@ uniform float shore_lighten = 0.0;
 uniform vec3 shore_tint : source_color = vec3(1.35, 1.3, 1.1);
 // A thin darker line at the very edge of the water (the wet bank).
 uniform float bank_line = 0.0;
+// The bank itself: where the water spills over the land (vertex alpha
+// below 1), the shader lays the bank strip instead of water: x across
+// the bank (0 at the water), y along the river; its outer edge eroded
+// like any spill.
+uniform sampler2D bank_texture : repeat_enable, filter_linear;
+uniform bool has_bank = false;
+// How far across the strip the spill reaches (1 = the whole strip).
+uniform float bank_reach = 1.0;
+// A terrain whose spill exists only for its bank (water) spills nothing
+// when it has no bank texture.
+uniform bool spill_only_with_bank = false;
 // The current: soft lighter streaks stretched along the river's axis
 // (the texture's y), drifting with time. Drawn by the shader, so they
 // never repeat as a tile would and they move. Zero turns them off.
@@ -149,6 +160,10 @@ void fragment() {
 	// (that squares the colour and darkens it by half).
 	ground.rgb *= base_tint;
 	vec3 vertex_tint = tint.rgb;
+	// On a ground canvas the vertex colour's green channel carries the
+	// nearness of the bank (1 - nearness), never a colour: neutralise it
+	// whether or not the shore is drawn.
+	vertex_tint.g = 1.0;
 	if (current_strength > 0.0) {
 		// Two drifts of streaks at different paces, read from the noise
 		// squeezed across the river and stretched along it.
@@ -170,9 +185,14 @@ void fragment() {
 			float line = smoothstep(0.86, 0.97, raw) * (1.0 - smoothstep(0.985, 1.0, raw));
 			ground.rgb *= 1.0 - line * bank_line;
 		}
-		vertex_tint.g = 1.0;
+	}
+	if (has_bank && tint.a < 1.0) {
+		ground.rgb = texture(bank_texture, vec2((1.0 - tint.a) * bank_reach, uv.y)).rgb;
 	}
 	float alpha = tint.a;
+	if (alpha < 1.0 && spill_only_with_bank && !has_bank) {
+		alpha = 0.0;
+	}
 	if (alpha < 1.0) {
 		float e = texture(noise_texture, uv * edge_scale + vec2(0.23, 0.71)).r;
 		alpha = smoothstep(e - 0.3, e + 0.3, alpha);

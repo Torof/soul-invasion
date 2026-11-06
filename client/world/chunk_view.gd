@@ -23,7 +23,7 @@ const GROUND_METRES := 4.0
 ## Sisters of the same grass (same style and tone, drawn differently) give
 ## the variety; tone variation is a tint in the shader, never another image.
 const GROUND_SPEC := "res://world/ground.json"
-const LAYERS := ["sibling", "second", "worn"]
+const LAYERS := ["sibling", "second", "worn", "bank"]
 static var _spec: Dictionary = {}
 ## terrain -> the parameter names applied to its material, to reset the
 ## ones a reload no longer sets.
@@ -68,14 +68,20 @@ static func ground_params(terrain: String) -> Dictionary:
 ## terrain -> the terrains it spills over at its edge, with a soft eroded
 ## border, so a wood's edge is not a line of diamonds. The server still
 ## decides every tile's terrain; this is only how the border is drawn.
-const FRINGE_OVER := {"forest": ["grass"]}
-## Width of the spill, in tiles.
-const FRINGE := 2
+## Each entry: the terrains spilled over and the width of the spill in
+## tiles. The water's spill is its bank: the shader paints sand there.
+const FRINGE_OVER := {
+	"forest": {"over": ["grass"], "width": 2},
+	"water": {"over": ["grass", "forest"], "width": 1},
+}
+## Width, in tiles, over which a terrain feels its own edge (water
+## lightens near its banks).
+const SHORE_WIDTH := 2
 ## Terrains that change near their own edge (water lightens near its
 ## banks): their tiles carry, at each corner, how near the bank is.
 const SHORE_TERRAINS := ["water"]
 ## Drawing order of the textured terrains: the one that spills is above.
-const GROUND_ORDER := {"grass": 0, "forest": 1}
+const GROUND_ORDER := {"grass": 0, "forest": 1, "water": 2}
 static var _ground_cache: Dictionary = {}
 ## terrain -> its ShaderMaterial
 static var _ground_materials: Dictionary = {}
@@ -306,10 +312,10 @@ func _terrain(tx: int, ty: int) -> String:
 ## one, fading to 0 FRINGE + 1 corners away. Returns a function of the
 ## corner, in tile coordinates relative to the origin, where corner
 ## (cx, cy) is the top of tile (cx, cy).
-func _nearness(is_near: Callable) -> Callable:
+func _nearness(is_near: Callable, width: int) -> Callable:
 	# Corners of the chunk and a margin around it.
-	var lo := -FRINGE
-	var hi := _size + FRINGE
+	var lo := -width
+	var hi := _size + width
 	var inside: Dictionary = {}
 	for cy in range(lo, hi + 1):
 		for cx in range(lo, hi + 1):
@@ -318,12 +324,12 @@ func _nearness(is_near: Callable) -> Callable:
 					inside[Vector2i(cx, cy)] = true
 					break
 	return func(c: Vector2i) -> float:
-		var best := FRINGE + 1
-		for dy in range(-FRINGE, FRINGE + 1):
-			for dx in range(-FRINGE, FRINGE + 1):
+		var best := width + 1
+		for dy in range(-width, width + 1):
+			for dx in range(-width, width + 1):
 				if inside.has(c + Vector2i(dx, dy)):
 					best = mini(best, maxi(absi(dx), absi(dy)))
-		return 1.0 - float(best) / float(FRINGE + 1)
+		return 1.0 - float(best) / float(width + 1)
 
 
 ## The four corners' values of tile (x, y) of the chunk, from `of_corner`.
@@ -340,10 +346,11 @@ func _corners(of_corner: Callable, x: int, y: int) -> PackedFloat32Array:
 ## the spill at each corner: 1 at a corner touching a tile of `terrain`,
 ## fading to 0 FRINGE + 1 corners away.
 func fringe(terrain: String) -> Array:
-	var over: Array = FRINGE_OVER.get(terrain, [])
+	var spill: Dictionary = FRINGE_OVER.get(terrain, {})
+	var over: Array = spill.get("over", [])
 	if over.is_empty():
 		return []
-	var nearness := _nearness(func(t: String) -> bool: return t == terrain)
+	var nearness := _nearness(func(t: String) -> bool: return t == terrain, int(spill.get("width", 1)))
 	var result: Array = []
 	for y in _size:
 		for x in _size:
@@ -359,7 +366,7 @@ func fringe(terrain: String) -> Array:
 ## another, known terrain (the bank): tile -> four values, only for the
 ## tiles where some corner is near.
 func shore(terrain: String) -> Dictionary:
-	var nearness := _nearness(func(t: String) -> bool: return t != "" and t != terrain)
+	var nearness := _nearness(func(t: String) -> bool: return t != "" and t != terrain, SHORE_WIDTH)
 	var result: Dictionary = {}
 	for y in _size:
 		for x in _size:
