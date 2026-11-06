@@ -24,6 +24,9 @@ func _ready() -> void:
 	# render, so this is how a change is looked at without a person).
 	var shot := OS.get_environment("SOUL_INVASION_SCREENSHOT")
 	if not shot.is_empty():
+		var zoom := OS.get_environment("SOUL_INVASION_ZOOM")
+		if zoom.is_valid_float():
+			_world.get_node("Camera").zoom = Vector2.ONE * float(zoom)
 		_screenshot_then_quit(shot)
 
 
