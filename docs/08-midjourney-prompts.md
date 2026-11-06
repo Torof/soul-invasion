@@ -207,36 +207,37 @@ The format contract is in `09-visual-production.md` §4. Each image has its file
 
 ### Grounds (top-down, seamless, one image covers 4 × 4 m → 512 × 512 px in game)
 
+The first attempt (6 November 2026) taught the rule: **the ground must be empty of anything that is an object** — bushes, trees, flowers, rocks are drawn by the engine from their own images, with their states — and **flat-lit**: a vignette repeats every four metres as a chequerboard, and the engine lights the world itself. Keep the dullest variation; it is the right one. If it is still busy: add `, plain` and `--stylize 30`.
+
 **`ground_grass_01_summer.png`** — 4×4 m
 ```
-top-down seamless ground texture, lush green meadow grass with a few small tufts, seen exactly from above, no perspective, flat cel shading, calm and low in detail, no outlines, no shadows, game texture --ar 1:1 --tile --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, objects, characters
+top-down seamless ground texture, short even meadow grass only, uniform and calm, seen exactly from above, no perspective, flat even lighting with no vignette and no shadows, very low contrast, thin subtle outlines only, no bushes, no shrubs, no trees, no flowers, no rocks, game texture --ar 1:1 --tile --sw 60 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no bushes, shrubs, trees, flowers, rocks, objects, shadows, vignette, text
 ```
 
 **`ground_grass_02_summer.png`** — 4×4 m
 ```
-top-down seamless ground texture, green meadow grass worn by footsteps, patches of bare dirt showing, seen exactly from above, no perspective, flat cel shading, calm and low in detail, no outlines, no shadows, game texture --ar 1:1 --tile --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, objects, characters
+top-down seamless ground texture, short meadow grass worn by footsteps with small patches of bare packed dirt, uniform and calm, seen exactly from above, no perspective, flat even lighting with no vignette and no shadows, very low contrast, thin subtle outlines only, no bushes, no shrubs, no trees, no flowers, no rocks, game texture --ar 1:1 --tile --sw 60 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no bushes, shrubs, trees, flowers, rocks, objects, shadows, vignette, text
 ```
 
 **`ground_forest_floor_01_summer.png`** — 4×4 m
 ```
-top-down seamless ground texture, dark forest floor, fallen leaves, roots and moss, seen exactly from above, no perspective, flat cel shading, calm and low in detail, no outlines, no shadows, game texture --ar 1:1 --tile --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, objects, characters
+top-down seamless ground texture, dark forest floor of packed earth, fallen leaves and thin moss, no plants, uniform and calm, seen exactly from above, no perspective, flat even lighting with no vignette and no shadows, very low contrast, thin subtle outlines only, no bushes, no shrubs, no trees, no flowers, no rocks, game texture --ar 1:1 --tile --sw 60 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no bushes, shrubs, trees, flowers, rocks, objects, shadows, vignette, text
 ```
 
 **`ground_ford_01_summer.png`** — 4×4 m
 ```
-top-down seamless ground texture, shallow clear turquoise water over pebbles, a river ford, seen exactly from above, no perspective, flat cel shading, calm and low in detail, no outlines, no shadows, game texture --ar 1:1 --tile --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, objects, characters
+top-down seamless ground texture, shallow clear turquoise water over small pebbles, a river ford, uniform and calm, seen exactly from above, no perspective, flat even lighting with no vignette and no shadows, very low contrast, thin subtle outlines only, no bushes, no shrubs, no trees, no flowers, no rocks, game texture --ar 1:1 --tile --sw 60 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no bushes, shrubs, trees, flowers, rocks, objects, shadows, vignette, text
 ```
 
 **`ground_water_01_summer.png`** — 4×4 m
 ```
-top-down seamless ground texture, clear turquoise river water with soft ripples, seen exactly from above, no perspective, flat cel shading, calm and low in detail, no outlines, no shadows, game texture --ar 1:1 --tile --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, objects, characters
+top-down seamless ground texture, clear turquoise river water with soft ripples, uniform and calm, seen exactly from above, no perspective, flat even lighting with no vignette and no shadows, very low contrast, thin subtle outlines only, no bushes, no shrubs, no trees, no flowers, no rocks, game texture --ar 1:1 --tile --sw 60 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no bushes, shrubs, trees, flowers, rocks, objects, shadows, vignette, text
 ```
 
 **`ground_rock_01_summer.png`** — 4×4 m
 ```
-top-down seamless ground texture, grey-green cliff rock with cracks and acid-green moss in the cracks, seen exactly from above, no perspective, flat cel shading, calm and low in detail, no outlines, no shadows, game texture --ar 1:1 --tile --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no text, objects, characters
+top-down seamless ground texture, grey-green cliff rock with cracks and a little acid-green moss in the cracks, uniform and calm, seen exactly from above, no perspective, flat even lighting with no vignette and no shadows, very low contrast, thin subtle outlines only, no bushes, no shrubs, no trees, no flowers, no rocks, game texture --ar 1:1 --tile --sw 60 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no bushes, shrubs, trees, flowers, rocks, objects, shadows, vignette, text
 ```
-
 ### Overlays (top-down, transparent after cut-out, scattered on cells)
 
 **`overlay_flowers_summer.png`** — cell
