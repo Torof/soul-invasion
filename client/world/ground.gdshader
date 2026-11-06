@@ -9,6 +9,9 @@ shader_type canvas_item;
 uniform sampler2D noise_texture : repeat_enable, filter_linear;
 // Noise period, in texture units (one unit is one texture, four metres).
 uniform float noise_scale = 0.09;
+// Period of the zones where one turned variant is laid: wide and few,
+// so the ground stays calm; the cuts between them are short.
+uniform float variant_scale = 0.05;
 // Where the turned copies are taken from, in texture units.
 uniform vec2 second_offset = vec2(0.37, 0.63);
 // A sister image of the ground (same grass, drawn differently), blended
@@ -62,10 +65,10 @@ vec2 uv_b(vec2 uv) { return vec2(-uv.y, uv.x) + second_offset; }
 vec2 uv_c(vec2 uv) { return -uv + vec2(0.11, 0.47); }
 vec2 uv_d(vec2 uv) { return vec2(uv.y, -uv.x) + vec2(0.73, 0.29); }
 vec3 variant_weights(vec2 uv) {
-	float n1 = texture(noise_texture, uv * noise_scale).r;
-	float n2 = texture(noise_texture, uv * noise_scale * 0.7 + vec2(0.41, 0.17)).r;
-	float n3 = texture(noise_texture, uv * noise_scale * 1.3 + vec2(0.89, 0.61)).r;
-	return vec3(smoothstep(0.46, 0.54, n1), smoothstep(0.46, 0.54, n2), smoothstep(0.46, 0.54, n3));
+	float n1 = texture(noise_texture, uv * variant_scale).r;
+	float n2 = texture(noise_texture, uv * variant_scale * 0.7 + vec2(0.41, 0.17)).r;
+	float n3 = texture(noise_texture, uv * variant_scale * 1.3 + vec2(0.89, 0.61)).r;
+	return vec3(smoothstep(0.47, 0.53, n1), smoothstep(0.47, 0.53, n2), smoothstep(0.47, 0.53, n3));
 }
 vec4 blend4(vec4 a, vec4 b, vec4 c, vec4 d, vec3 w) {
 	return mix(mix(a, b, w.x), mix(c, d, w.z), w.y);
