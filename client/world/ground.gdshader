@@ -6,6 +6,13 @@
 shader_type canvas_item;
 
 uniform sampler2D noise_texture : repeat_enable, filter_linear;
+// A second, compatible texture of the same terrain (made with the first
+// as style reference), shown in soft patches: worn grass on grass.
+uniform sampler2D worn_texture : repeat_enable, filter_linear;
+uniform bool has_worn = false;
+// Period of the patches, in texture units, and how much ground they take.
+uniform float worn_scale = 0.05;
+uniform float worn_cover = 0.3;
 // Noise period, in texture units (one unit is one texture, four metres).
 uniform float noise_scale = 0.09;
 // Where the second copy is taken from, in texture units.
@@ -26,8 +33,18 @@ void fragment() {
 	vec4 second = texture(TEXTURE, turned);
 	float n = texture(noise_texture, uv * noise_scale).r;
 	float weight = smoothstep(0.46, 0.54, n);
+	vec4 ground = mix(first, second, weight);
+	if (has_worn) {
+		// Soft patches of the worn texture, from a second reading of the
+		// noise at another scale and offset.
+		float m = texture(noise_texture, uv * worn_scale + vec2(0.5, 0.25)).r;
+		float threshold = 1.0 - worn_cover;
+		float patch = smoothstep(threshold - 0.08, threshold + 0.08, m);
+		vec4 worn = texture(worn_texture, uv);
+		ground = mix(ground, worn, patch);
+	}
 	// COLOR comes in already multiplied by the texture: rebuild it from
 	// the blended texture and the vertex colour, do not multiply again
 	// (that squares the colour and darkens it by half).
-	COLOR = mix(first, second, weight) * tint;
+	COLOR = ground * tint;
 }
