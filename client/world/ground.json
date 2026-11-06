@@ -63,8 +63,10 @@
 		"note": "Decorations sown by a fixed hash of the tile (client-side trial, no effect on the game).",
 		"rock": {
 			"where": "water_near_land",
-			"chance": 0.14,
-			"size_m": 1.0,
+			"chance": 0.05,
+			"min_near": 0.95,
+			"size_m": 0.6,
+			"size_jitter": 0.4,
 			"tint": "water"
 		},
 		"tuft": {
@@ -79,8 +81,18 @@
 		},
 		"pebble": {
 			"where": "land_near_water",
-			"chance": 0.25,
+			"chance": 0.18,
 			"size_m": 0.28
 		}
+	},
+	"shore": {
+		"note": "Shore tileset: generated edge and corner pieces on every land/water boundary; matter by stretch along the river.",
+		"weights": {
+			"sand": 0.25,
+			"grass": 0.6,
+			"rock": 0.15
+		},
+		"stretch": 48,
+		"iso": true
 	}
 }

@@ -194,5 +194,59 @@ func _test_ground_art_is_reachable() -> void:
 	# Decorations: their images load, and a tile's hash is fixed and spread.
 	_check(ChunkView.decor_textures("rock").size() > 5 and ChunkView.decor_textures("tuft").size() > 5, "the rock and tuft decorations are there")
 	_check(ChunkView.tile_hash(3, 7, 1) == ChunkView.tile_hash(3, 7, 1) and ChunkView.tile_hash(3, 7, 1) != ChunkView.tile_hash(4, 7, 1), "a tile's hash is fixed and differs from its neighbour's")
+	# The shore plan: a 2 x 2 pond gets four corners and no edge, a straight
+	# river two edges per water tile; the pieces are there.
+	var pond: Array = []
+	for y in 6:
+		for x in 6:
+			pond.append("water" if (x == 2 or x == 3) and (y == 2 or y == 3) else "grass")
+	view = ChunkView.new()
+	view.show_chunk(Vector2i.ZERO, 6, pond, [], {})
+	var plan := view.shore_plan()
+	var corners := plan.filter(func(p: Dictionary) -> bool: return p["kind"] == "corner")
+	_check(plan.size() == 4 and corners.size() == 4, "a 2 x 2 pond gets four corner pieces")
+	var river: Array = []
+	for y in 6:
+		for x in 6:
+			river.append("water" if x == 3 else "grass")
+	view.show_chunk(Vector2i.ZERO, 6, river, [], {})
+	plan = view.shore_plan()
+	_check(plan.size() == 12 and plan.all(func(p: Dictionary) -> bool: return p["kind"] == "edge"), "a straight river gets an edge on each side of every water tile")
+	_check(ChunkView.shore_pieces("sand", "edge").size() >= 2 and ChunkView.shore_pieces("grass", "corner").size() >= 2, "the shore pieces are there")
+	var island: Array = []
+	for y in 6:
+		for x in 6:
+			island.append("grass" if x == 3 and y == 3 else "water")
+	view.show_chunk(Vector2i.ZERO, 6, island, [], {})
+	plan = view.shore_plan()
+	var points := plan.filter(func(p: Dictionary) -> bool: return p["kind"] == "point")
+	_check(points.size() == 4 and plan.size() == 4, "a lone land tile gets four point pieces and no edge")
+	# A water tile with land north and west but water on the diagonal gets
+	# two edges, never a corner (a corner would paint land on that water).
+	var notch: Array = []
+	for y in 6:
+		for x in 6:
+			notch.append("water" if (x >= 3 and y >= 3) or (x < 3 and y < 3) else "grass")
+	view.show_chunk(Vector2i.ZERO, 6, notch, [], {})
+	plan = view.shore_plan()
+	var at33 := plan.filter(func(p: Dictionary) -> bool: return p["tile"] == Vector2i(3, 3))
+	_check(at33.size() == 2 and at33.all(func(p: Dictionary) -> bool: return p["kind"] == "edge"), "no corner where the diagonal tile is water")
+	# A 45-degree staircase: its corner cells draw diagonals, its points nothing.
+	var stairs: Array = []
+	for y in 8:
+		for x in 8:
+			stairs.append("water" if x + y >= 8 else "grass")
+	view.show_chunk(Vector2i.ZERO, 8, stairs, [], {})
+	plan = view.shore_plan()
+	var diags := plan.filter(func(p: Dictionary) -> bool: return p["kind"] == "corner" and p.get("diag", false))
+	var pts := plan.filter(func(p: Dictionary) -> bool: return p["kind"] == "point")
+	_check(diags.size() >= 5 and pts.is_empty(), "a staircase is drawn with diagonal corners and no points")
+	_check(ChunkView.shore_pieces("grass", "diag").size() == 3, "the three diagonal pieces are there")
+	# The isometric shore: a water tile with land to the north takes the far
+	# bank sloping down-right; land only on a diagonal takes a corner piece.
+	_check(ChunkView.shore_iso_names(true, false, false, false, false, false, false, false) == ["01_far_bank_down_right"], "land north: the far bank piece")
+	_check(ChunkView.shore_iso_names(false, false, false, false, false, false, false, true) == ["15_corner_land_up"], "land only on the north-west diagonal: the corner piece")
+	_check(ChunkView.shore_iso_piece("02_far_bank_up_right") != null, "the isometric pieces load")
+	view.free()
 	var forest := ChunkView.ground_material("forest")
 	_check(forest != material and forest.get_shader_parameter("base_tint") != material.get_shader_parameter("base_tint"), "the forest has its own material, in the shade")

@@ -72,7 +72,6 @@ static func ground_params(terrain: String) -> Dictionary:
 ## tiles. The water's spill is its bank: the shader paints sand there.
 const FRINGE_OVER := {
 	"forest": {"over": ["grass"], "width": 2},
-	"water": {"over": ["grass", "forest"], "width": 2},
 }
 ## Width, in tiles, over which a terrain feels its own edge (water
 ## lightens near its banks).
@@ -227,6 +226,8 @@ static func reload_art() -> void:
 	if not spec.is_empty():
 		_spec = spec
 	_decor.clear()
+	_shore.clear()
+	_shore_iso.clear()
 	var shader := Shader.new()
 	shader.code = FileAccess.get_file_as_string("res://world/ground.gdshader")
 	for terrain in _spec:
@@ -276,6 +277,84 @@ static func tile_hash(tx: int, ty: int, salt: int) -> float:
 	h = (h ^ (h >> 13)) * 1274126177
 	h = h ^ (h >> 16)
 	return float((h & 0x7fffffff) % 100003) / 100003.0
+
+
+## The shore: a tileset of generated pieces laid on every land/water
+## boundary. An "edge" piece covers a land tile and the water tile beside
+## it (2 m across the bank, 1 m along it, the land on its left, the water
+## on its right); a "corner" piece covers a 2 × 2 block whose bottom-right
+## tile is water and the three others land. Pieces are mirrored and
+## swapped to fit every orientation. Four matters (sand, grass, rock,
+## step), chosen by stretches along the river, variants by tile hash.
+## Transparent at their land and water ends, so they melt into our ground.
+const SHORE_DIR := "res://art/shore/"
+## The isometric shore: one generated piece per water tile touching land,
+## drawn in three-quarter view (a far bank shows its earthen face, a near
+## bank only its line), chosen by the land around the tile and laid on
+## the tile's diamond as it is, never turned or mirrored. The pieces are
+## numbered like the schematics they were generated from.
+const SHORE_ISO_DIR := "res://art/shore_iso/"
+const SHORE_ISO := {
+	"N": "01_far_bank_down_right", "W": "02_far_bank_up_right",
+	"S": "03_near_bank_down_right", "E": "04_near_bank_up_right",
+	"NW": "05_horizontal_land_above", "ES": "06_horizontal_land_below",
+	"NE": "07_vertical_land_right", "SW": "08_vertical_land_left",
+	"NEW": "09_bay_open_down_left", "NES": "10_bay_open_up_left",
+	"ESW": "11_bay_open_up_right", "NSW": "12_bay_open_down_right",
+	"NS": "13_channel_down_right", "EW": "14_channel_up_right",
+	"nw": "15_corner_land_up", "ne": "16_corner_land_right",
+	"se": "17_corner_land_down", "sw": "18_corner_land_left",
+}
+static var _shore_iso: Dictionary = {}
+
+
+static func shore_iso_piece(name: String) -> Texture2D:
+	if not _shore_iso.has(name):
+		var path := SHORE_ISO_DIR + name + ".png"
+		_shore_iso[name] = load_texture(path) if ResourceLoader.exists(path) or FileAccess.file_exists(path) else null
+	return _shore_iso[name]
+
+
+## The piece names a water tile needs, from the land around it: one for
+## its land sides (in N, E, S, W order), else one per land diagonal.
+static func shore_iso_names(n: bool, e: bool, s: bool, w: bool, ne: bool, se: bool, sw: bool, nw: bool) -> Array:
+	var sides := ""
+	if n:
+		sides += "N"
+	if e:
+		sides += "E"
+	if s:
+		sides += "S"
+	if w:
+		sides += "W"
+	if sides != "":
+		return [SHORE_ISO[sides]] if SHORE_ISO.has(sides) else []
+	var names: Array = []
+	if nw:
+		names.append(SHORE_ISO["nw"])
+	if ne:
+		names.append(SHORE_ISO["ne"])
+	if se:
+		names.append(SHORE_ISO["se"])
+	if sw:
+		names.append(SHORE_ISO["sw"])
+	return names
+## "matter_kind" -> Array[Texture2D]
+static var _shore: Dictionary = {}
+
+
+static func shore_pieces(matter: String, kind: String) -> Array:
+	var key := matter + "_" + kind
+	if not _shore.has(key):
+		var found: Array = []
+		for n in range(1, 20):
+			var path := "%s%s_%02d.png" % [SHORE_DIR, key, n]
+			if ResourceLoader.exists(path) or FileAccess.file_exists(path):
+				var texture := load_texture(path)
+				if texture != null:
+					found.append(texture)
+		_shore[key] = found
+	return _shore[key]
 
 
 static func load_texture(path: String) -> Texture2D:
@@ -444,6 +523,7 @@ func _draw() -> void:
 		canvas.fringe = spills.get(terrain, [])
 		canvas.shore = shore(terrain) if SHORE_TERRAINS.has(terrain) else {}
 		canvas.queue_redraw()
+	_draw_shore()
 	_draw_decor()
 	# Items: a small disc of the material's colour, slightly off the
 	# tile's centre so several on one tile stay visible.
@@ -461,6 +541,254 @@ func _draw() -> void:
 			draw_death_icon(self, centre + Vector2(0, -16))
 
 
+## The shore pieces of this chunk, from its water tiles: for each, a
+## corner on every pair of adjacent land sides, an edge on every other
+## land side. [{"kind", "at": Vector2i (block origin), "size": Vector2i,
+## "flip_u", "flip_v", "swap", "tile": Vector2i (the water tile)}].
+func shore_plan() -> Array:
+	var plan: Array = []
+	var is_land := func(t: String) -> bool: return t != "" and t != "water" and t != "ford"
+	# Points of land: a land tile with water on two adjacent sides and the
+	# diagonal between them gets a "point" piece (land in the bottom-left
+	# quarter of a 2 x 2 block, water elsewhere), and the two edges that
+	# would meet there are not drawn. The chunk holding the land tile
+	# draws the point; every chunk drops the edges.
+	var consumed: Dictionary = {}
+	# Corner cells on a 45-degree run of steps: the next corner cell along
+	# the diagonal exists. Those draw a diagonal piece instead of an L, and
+	# the points between them draw nothing (the diagonal covers them).
+	var is_corner := func(wx: int, wy: int, dx: int, dy: int) -> bool:
+		return _terrain(wx, wy) == "water" and is_land.call(_terrain(wx, wy + dy)) and is_land.call(_terrain(wx + dx, wy)) and is_land.call(_terrain(wx + dx, wy + dy))
+	var diag: Dictionary = {}
+	for y in range(-2, _size + 2):
+		for x in range(-2, _size + 2):
+			var wx := _origin.x + x
+			var wy := _origin.y + y
+			for d: Vector2i in [Vector2i(-1, -1), Vector2i(1, -1), Vector2i(-1, 1), Vector2i(1, 1)]:
+				if is_corner.call(wx, wy, d.x, d.y) and (is_corner.call(wx - d.x, wy + d.y, d.x, d.y) or is_corner.call(wx + d.x, wy - d.y, d.x, d.y)):
+					diag[[Vector2i(wx, wy), d]] = true
+	for y in range(-1, _size + 1):
+		for x in range(-1, _size + 1):
+			var lx := _origin.x + x
+			var ly := _origin.y + y
+			if not is_land.call(_terrain(lx, ly)):
+				continue
+			var inside := x >= 0 and y >= 0 and x < _size and y < _size
+			var wn := _terrain(lx, ly - 1) == "water"
+			var ws := _terrain(lx, ly + 1) == "water"
+			var ww := _terrain(lx - 1, ly) == "water"
+			var we := _terrain(lx + 1, ly) == "water"
+			var land := Vector2i(lx, ly)
+			var two := Vector2i(2, 2)
+			# A point beside a diagonal corner is covered by it.
+			var near_diag := func(ax: int, ay: int, bx: int, by: int) -> bool:
+				for d: Vector2i in [Vector2i(-1, -1), Vector2i(1, -1), Vector2i(-1, 1), Vector2i(1, 1)]:
+					if diag.has([Vector2i(ax, ay), d]) or diag.has([Vector2i(bx, by), d]):
+						return true
+				return false
+			if wn and we and _terrain(lx + 1, ly - 1) == "water":
+				if inside and not near_diag.call(lx, ly - 1, lx + 1, ly):
+					plan.append({"kind": "point", "at": Vector2i(lx, ly - 1), "size": two, "flip_u": false, "flip_v": false, "swap": false, "tile": land, "side": 0})
+				consumed[[Vector2i(lx, ly - 1), "s"]] = true
+				consumed[[Vector2i(lx + 1, ly), "w"]] = true
+			if wn and ww and _terrain(lx - 1, ly - 1) == "water":
+				if inside and not near_diag.call(lx, ly - 1, lx - 1, ly):
+					plan.append({"kind": "point", "at": Vector2i(lx - 1, ly - 1), "size": two, "flip_u": true, "flip_v": false, "swap": false, "tile": land, "side": 1})
+				consumed[[Vector2i(lx, ly - 1), "s"]] = true
+				consumed[[Vector2i(lx - 1, ly), "e"]] = true
+			if ws and we and _terrain(lx + 1, ly + 1) == "water":
+				if inside and not near_diag.call(lx, ly + 1, lx + 1, ly):
+					plan.append({"kind": "point", "at": Vector2i(lx, ly), "size": two, "flip_u": false, "flip_v": true, "swap": false, "tile": land, "side": 0})
+				consumed[[Vector2i(lx, ly + 1), "n"]] = true
+				consumed[[Vector2i(lx + 1, ly), "w"]] = true
+			if ws and ww and _terrain(lx - 1, ly + 1) == "water":
+				if inside and not near_diag.call(lx, ly + 1, lx - 1, ly):
+					plan.append({"kind": "point", "at": Vector2i(lx - 1, ly), "size": two, "flip_u": true, "flip_v": true, "swap": false, "tile": land, "side": 1})
+				consumed[[Vector2i(lx, ly + 1), "n"]] = true
+				consumed[[Vector2i(lx - 1, ly), "e"]] = true
+	for y in _size:
+		for x in _size:
+			if str(_tiles[y * _size + x]) != "water":
+				continue
+			var tx := _origin.x + x
+			var ty := _origin.y + y
+			var tile := Vector2i(tx, ty)
+			var n: bool = is_land.call(_terrain(tx, ty - 1))
+			var s: bool = is_land.call(_terrain(tx, ty + 1))
+			var w: bool = is_land.call(_terrain(tx - 1, ty))
+			var e: bool = is_land.call(_terrain(tx + 1, ty))
+			var used := {"n": false, "s": false, "w": false, "e": false}
+			var two := Vector2i(2, 2)
+			# A corner paints land on three tiles: the diagonal one must be
+			# land too, else two edges do.
+			if n and w and is_land.call(_terrain(tx - 1, ty - 1)):
+				plan.append({"kind": "corner", "at": Vector2i(tx - 1, ty - 1), "size": two, "flip_u": false, "flip_v": false, "swap": false, "tile": tile, "side": 0, "diag": diag.has([tile, Vector2i(-1, -1)])})
+				used["n"] = true
+				used["w"] = true
+			if n and e and not used["n"] and is_land.call(_terrain(tx + 1, ty - 1)):
+				plan.append({"kind": "corner", "at": Vector2i(tx, ty - 1), "size": two, "flip_u": true, "flip_v": false, "swap": false, "tile": tile, "side": 1, "diag": diag.has([tile, Vector2i(1, -1)])})
+				used["n"] = true
+				used["e"] = true
+			if s and w and not used["w"] and is_land.call(_terrain(tx - 1, ty + 1)):
+				plan.append({"kind": "corner", "at": Vector2i(tx - 1, ty), "size": two, "flip_u": false, "flip_v": true, "swap": false, "tile": tile, "side": 0, "diag": diag.has([tile, Vector2i(-1, 1)])})
+				used["s"] = true
+				used["w"] = true
+			if s and e and not used["s"] and not used["e"] and is_land.call(_terrain(tx + 1, ty + 1)):
+				plan.append({"kind": "corner", "at": Vector2i(tx, ty), "size": two, "flip_u": true, "flip_v": true, "swap": false, "tile": tile, "side": 1, "diag": diag.has([tile, Vector2i(1, 1)])})
+				used["s"] = true
+				used["e"] = true
+			# An edge overlaps its neighbour only where the bank goes on
+			# straight: the water tile before or after along the bank has
+			# land on the same side. Elsewhere it stops at the block.
+			var goes_on := func(dx: int, dy: int, land_dx: int, land_dy: int) -> bool:
+				return _terrain(tx + dx, ty + dy) == "water" and is_land.call(_terrain(tx + dx + land_dx, ty + dy + land_dy))
+			if w and not used["w"] and not consumed.has([tile, "w"]):
+				plan.append({"kind": "edge", "at": Vector2i(tx - 1, ty), "size": Vector2i(2, 1), "flip_u": false, "flip_v": false, "swap": false, "tile": tile, "side": 0,
+					"ext0": goes_on.call(0, -1, -1, 0), "ext1": goes_on.call(0, 1, -1, 0)})
+			if e and not used["e"] and not consumed.has([tile, "e"]):
+				plan.append({"kind": "edge", "at": Vector2i(tx, ty), "size": Vector2i(2, 1), "flip_u": true, "flip_v": false, "swap": false, "tile": tile, "side": 1,
+					"ext0": goes_on.call(0, -1, 1, 0), "ext1": goes_on.call(0, 1, 1, 0)})
+			if n and not used["n"] and not consumed.has([tile, "n"]):
+				plan.append({"kind": "edge", "at": Vector2i(tx, ty - 1), "size": Vector2i(1, 2), "flip_u": false, "flip_v": false, "swap": true, "tile": tile, "side": 0,
+					"ext0": goes_on.call(-1, 0, 0, -1), "ext1": goes_on.call(1, 0, 0, -1)})
+			if s and not used["s"] and not consumed.has([tile, "s"]):
+				plan.append({"kind": "edge", "at": Vector2i(tx, ty), "size": Vector2i(1, 2), "flip_u": true, "flip_v": false, "swap": true, "tile": tile, "side": 1,
+					"ext0": goes_on.call(-1, 0, 0, 1), "ext1": goes_on.call(1, 0, 0, 1)})
+	return plan
+
+
+## The matter of the shore around a tile: one per stretch of the river,
+## drawn by weight from the spec.
+static func shore_matter(tile: Vector2i, side: int) -> String:
+	var shore: Dictionary = ground_spec().get("shore", {})
+	var weights: Dictionary = shore.get("weights", {"sand": 1.0})
+	var stretch := int(shore.get("stretch", 8))
+	# One matter per stretch along the river (its axis is y) and per bank.
+	var roll := tile_hash(side, int(floor(float(tile.y) / stretch)), 7)
+	var total := 0.0
+	for m in weights:
+		total += float(weights[m])
+	var acc := 0.0
+	for m in weights:
+		acc += float(weights[m]) / total
+		if roll <= acc:
+			return str(m)
+	return str(weights.keys()[0])
+
+
+## Screen position of a tile corner (cx, cy): the top of tile (cx, cy).
+static func corner_to_screen(cx: int, cy: int) -> Vector2:
+	return Iso.tile_to_screen(cx, cy) + Vector2(0, -Iso.TILE_H / 2.0)
+
+
+## The same for a fractional corner position.
+static func corner_point_to_screen(cx: float, cy: float) -> Vector2:
+	return Vector2((cx - cy) * Iso.TILE_W / 2.0, (cx + cy) * Iso.TILE_H / 2.0 - Iso.TILE_H / 2.0)
+
+
+## How far, in tiles, a piece's quad extends past its block along the
+## bank, so that consecutive pieces overlap and their faded ends blend.
+const SHORE_OVERLAP := 0.5
+
+
+func _draw_shore_iso() -> void:
+	var is_land := func(t: String) -> bool: return t != "" and t != "water" and t != "ford"
+	for y in _size:
+		for x in _size:
+			if str(_tiles[y * _size + x]) != "water":
+				continue
+			var tx := _origin.x + x
+			var ty := _origin.y + y
+			var names := shore_iso_names(
+				is_land.call(_terrain(tx, ty - 1)), is_land.call(_terrain(tx + 1, ty)),
+				is_land.call(_terrain(tx, ty + 1)), is_land.call(_terrain(tx - 1, ty)),
+				is_land.call(_terrain(tx + 1, ty - 1)), is_land.call(_terrain(tx + 1, ty + 1)),
+				is_land.call(_terrain(tx - 1, ty + 1)), is_land.call(_terrain(tx - 1, ty - 1)))
+			for name in names:
+				var texture := shore_iso_piece(name)
+				if texture != null:
+					var centre := Iso.tile_to_screen(tx, ty)
+					draw_texture_rect(texture, Rect2(centre - Vector2(Iso.TILE_W / 2.0, Iso.TILE_H / 2.0), Vector2(Iso.TILE_W, Iso.TILE_H)), false)
+
+
+func _draw_shore() -> void:
+	var shore: Dictionary = ground_spec().get("shore", {})
+	if shore.is_empty():
+		return
+	if bool(shore.get("iso", false)):
+		_draw_shore_iso()
+		return
+	var white := PackedColorArray([Color.WHITE, Color.WHITE, Color.WHITE, Color.WHITE])
+	for piece in shore_plan():
+		var at: Vector2i = piece["at"]
+		var size: Vector2i = piece["size"]
+		var matter := shore_matter(piece["tile"], int(piece.get("side", 0)))
+		var kind: String = "diag" if bool(piece.get("diag", false)) else piece["kind"]
+		var textures := shore_pieces(matter, kind)
+		if textures.is_empty() and kind == "diag":
+			textures = shore_pieces("grass", "diag")
+		if textures.is_empty() and kind == "diag":
+			textures = shore_pieces(matter, "corner")
+		var flip_v: bool = piece["flip_v"]
+		# Where the matter changes along the river, the first metre of the
+		# new stretch is a transition piece (top half the old matter,
+		# bottom half the new), on the edges that run along the river.
+		if piece["kind"] == "edge" and size.x == 2:
+			var before := shore_matter(piece["tile"] + Vector2i(0, -1), int(piece.get("side", 0)))
+			if before != matter:
+				var trans := shore_pieces("trans_" + before, matter)
+				if trans.is_empty():
+					trans = shore_pieces("trans_" + matter, before)
+					if not trans.is_empty():
+						flip_v = not flip_v
+				if not trans.is_empty():
+					textures = trans
+		if textures.is_empty():
+			textures = shore_pieces("grass", piece["kind"])
+		if textures.is_empty():
+			textures = shore_pieces("sand", piece["kind"])
+		if textures.is_empty():
+			continue
+		var tile: Vector2i = piece["tile"]
+		# Any variant fits any other: every piece's bank line enters and
+		# leaves at the centre of its ends (normalised at cut time).
+		var texture: Texture2D = textures[int(tile_hash(tile.x, tile.y, 9) * textures.size()) % textures.size()]
+		# Along the bank the quad is longer than the block; corners extend
+		# on every side (their faded sides are transparent anyway).
+		# Extension at the start and end of the block along the bank.
+		var along_y: bool = piece["kind"] != "edge" or size.x == 2
+		var e0 := SHORE_OVERLAP if bool(piece.get("ext0", true)) else 0.0
+		var e1 := SHORE_OVERLAP if bool(piece.get("ext1", true)) else 0.0
+		var lo := Vector2(SHORE_OVERLAP, e0) if along_y else Vector2(e0, SHORE_OVERLAP)
+		var hi := Vector2(SHORE_OVERLAP, e1) if along_y else Vector2(e1, SHORE_OVERLAP)
+		if piece["kind"] == "edge":
+			lo = Vector2(0.0, e0) if along_y else Vector2(e0, 0.0)
+			hi = Vector2(0.0, e1) if along_y else Vector2(e1, 0.0)
+		if kind == "diag":
+			# Consecutive diagonals already overlap by half their length and
+			# cross-fade in the piece itself: no extension.
+			lo = Vector2.ZERO
+			hi = Vector2.ZERO
+		var points := PackedVector2Array()
+		var uvs := PackedVector2Array()
+		for corner: Vector2i in [Vector2i(0, 0), Vector2i(1, 0), Vector2i(1, 1), Vector2i(0, 1)]:
+			var cx: float = at.x - lo.x + corner.x * (size.x + lo.x + hi.x)
+			var cy: float = at.y - lo.y + corner.y * (size.y + lo.y + hi.y)
+			points.append(corner_point_to_screen(cx, cy))
+			var u := float(corner.x)
+			var v := float(corner.y)
+			if piece["swap"]:
+				var t := u
+				u = v
+				v = t
+			if piece["flip_u"]:
+				u = 1.0 - u
+			if flip_v:
+				v = 1.0 - v
+			uvs.append(Vector2(u, v))
+		draw_polygon(points, white, uvs, texture)
+
+
 ## Sows the decorations of this chunk: for each kind, on the tiles its
 ## "where" names (water within a tile of land; land within two tiles of
 ## water), with its chance, at a fixed random spot of the tile.
@@ -473,6 +801,8 @@ func _draw_decor() -> void:
 	var water_tint: Color = ground_params("water").get("base_tint", Color.WHITE)
 	var salt := 0
 	for kind in decor:
+		if not decor[kind] is Dictionary:
+			continue  # the entry's note
 		salt += 1
 		var rule: Dictionary = decor[kind]
 		var textures := decor_textures(kind)
@@ -480,6 +810,10 @@ func _draw_decor() -> void:
 			continue
 		var chance := float(rule.get("chance", 0.1))
 		var size_px := float(rule.get("size_m", 0.5)) * Iso.PX_PER_M
+		# How near the other terrain a tile must be (1 = touching it), and
+		# how much the size varies from one element to the next.
+		var min_near := float(rule.get("min_near", 0.6))
+		var jitter := float(rule.get("size_jitter", 0.0))
 		var tint := water_tint if str(rule.get("tint", "")) == "water" else Color.WHITE
 		for y in _size:
 			for x in _size:
@@ -491,7 +825,7 @@ func _draw_decor() -> void:
 					if terrain != "water" or not water_near_land.has(Vector2i(tx, ty)):
 						continue
 					near = _max4(water_near_land[Vector2i(tx, ty)])
-					if near < 0.6:
+					if near < min_near:
 						continue
 				else:
 					if terrain == "water" or terrain == "ford":
@@ -505,7 +839,8 @@ func _draw_decor() -> void:
 				var offset := Vector2(tile_hash(tx, ty, salt + 200) - 0.5, tile_hash(tx, ty, salt + 300) - 0.5) * 600.0
 				var centre := Iso.point_to_screen(Vector2(tx * 1000 + 500, ty * 1000 + 500) + offset)
 				var ratio := float(texture.get_height()) / float(texture.get_width())
-				var size := Vector2(size_px, size_px * ratio * 0.5)
+				var scale := 1.0 + (tile_hash(tx, ty, salt + 400) * 2.0 - 1.0) * jitter
+				var size := Vector2(size_px, size_px * ratio * 0.5) * scale
 				draw_texture_rect(texture, Rect2(centre - size / 2.0, size), false, tint)
 
 
