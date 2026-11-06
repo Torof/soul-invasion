@@ -152,11 +152,6 @@ func _test_ground_art_is_reachable() -> void:
 	var uvs := ChunkView.ground_uvs(4, 8)
 	_check(uvs[0] == Vector2(1.0, 2.0) and uvs[2] == Vector2(1.25, 2.25), "a tile maps to its square of the 4 m texture")
 	_check(ResourceLoader.exists("res://art/ground/ground_grass_02_summer.png"), "the worn grass is importable")
-	# Variants: fixed per 4 m square, the same for every tile of the square.
-	_check(ChunkView.variant_of(0, 0, 1) == 0, "one variant: always it")
-	_check(ChunkView.variant_of(5, 6, 2) == ChunkView.variant_of(7, 4, 2), "tiles of one square agree")
-	var seen := {}
-	for bx in 8:
-		for by in 8:
-			seen[ChunkView.variant_of(bx * 4, by * 4, 2)] = true
-	_check(seen.size() == 2, "both variants appear over a few squares")
+	_check(ResourceLoader.exists("res://world/ground.gdshader"), "the ground shader is there")
+	var material := ChunkView.ground_material()
+	_check(material.shader != null and material.get_shader_parameter("noise_texture") != null, "the ground material has its shader and noise")
