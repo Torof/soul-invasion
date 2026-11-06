@@ -25,6 +25,9 @@ uniform float dry_scale = 0.018;
 uniform float dry_cover = 0.5;
 uniform float dry_strength = 0.6;
 uniform float dry_softness = 0.3;
+// The terrain's own tone over everything: white for the meadow, darker
+// and cooler for the shade of the woods.
+uniform vec3 base_tint : source_color = vec3(1.0);
 uniform sampler2D worn_texture : repeat_enable, filter_linear;
 uniform bool has_worn = false;
 // Period of the patches, in texture units, and how much ground they take.
@@ -74,5 +77,6 @@ void fragment() {
 	// COLOR comes in already multiplied by the texture: rebuild it from
 	// the blended texture and the vertex colour, do not multiply again
 	// (that squares the colour and darkens it by half).
+	ground.rgb *= base_tint;
 	COLOR = ground * tint;
 }

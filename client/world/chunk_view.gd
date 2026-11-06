@@ -8,14 +8,21 @@ extends Node2D
 ## diamonds (docs/09-visual-production.md): a texture covers
 ## GROUND_METRES × GROUND_METRES metres and repeats; each tile's diamond
 ## shows the square of the texture it stands on. A shader blends the
-## texture with itself, shifted and turned, by a soft noise, so its
-## repetition does not read. Terrains without a texture keep a flat colour.
+## texture with a sister image (or with itself, shifted and turned) by a
+## soft noise, so its repetition does not read. Each terrain has its own
+## material, so its layers never leak onto another terrain: the chunk
+## holds one child canvas per textured terrain, under its own drawing.
+## Terrains without a texture keep a flat colour.
 
 ## Metres covered by one ground texture.
 const GROUND_METRES := 4.0
 ## terrain -> path of its ground texture under res://art/ground/
+## The floor of the woods is the meadow's grass in the shade: the same
+## images, darker and cooler, with more bare earth. Plain soil does not
+## come out of the generator; leaf litter will come later as a sister.
 const GROUND_TEXTURES := {
 	"grass": "res://art/ground/ground_grass_01_summer.png",
+	"forest": "res://art/ground/ground_grass_01_summer.png",
 }
 ## terrain -> compatible textures shown in soft patches over the first:
 ## "second" over wide areas (a drier grass), "worn" in a few spots.
@@ -27,9 +34,26 @@ const LAYER_TEXTURES := {
 		"second": "res://art/ground/ground_grass_04_summer.png",
 		"worn": "res://art/ground/ground_grass_02_summer.png",
 	},
+	"forest": {
+		"sibling": "res://art/ground/ground_grass_03_summer.png",
+		"second": "res://art/ground/ground_grass_02_summer.png",
+		"worn": "res://art/ground/ground_grass_02_summer.png",
+	},
+}
+## terrain -> shader parameters that differ from the shader's defaults
+const GROUND_PARAMS := {
+	"forest": {
+		"base_tint": Color(0.56, 0.70, 0.74),
+		"second_cover": 0.4,
+		"second_scale": 0.05,
+		"worn_cover": 0.25,
+		"dry_strength": 0.3,
+	},
 }
 static var _ground_cache: Dictionary = {}
-static var _ground_material: ShaderMaterial
+## terrain -> its ShaderMaterial
+static var _ground_materials: Dictionary = {}
+static var _noise_texture: Texture2D
 
 const COLORS := {
 	"grass": Color(0.45, 0.62, 0.30),
@@ -44,17 +68,14 @@ var _origin := Vector2i.ZERO
 var _size := 32
 
 
-func _ready() -> void:
-	# Seamless textures repeat across the chunk; linear filtering for the zoom.
-	texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
-	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-	material = ground_material()
+## terrain -> the child canvas drawing that terrain's textured tiles
+var _grounds: Dictionary = {}
 
 
-## The shared ground material: the self-blending shader fed with a
-## seamless noise made here, no image needed.
-static func ground_material() -> ShaderMaterial:
-	if _ground_material == null:
+## The seamless noise every ground material blends with, made here, no
+## image needed.
+static func noise_texture() -> Texture2D:
+	if _noise_texture == null:
 		var noise := FastNoiseLite.new()
 		noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 		noise.frequency = 0.02
@@ -64,20 +85,62 @@ static func ground_material() -> ShaderMaterial:
 		texture.seamless = true
 		texture.width = 256
 		texture.height = 256
-		_ground_material = ShaderMaterial.new()
-		_ground_material.shader = load("res://world/ground.gdshader")
-		_ground_material.set_shader_parameter("noise_texture", texture)
-		# One material for all chunks: the layers of the one terrain that
-		# has some, for now (grass). Per-terrain materials come with the
-		# blend between terrains. A layer whose image is not there yet is
-		# simply off.
-		var layers: Dictionary = LAYER_TEXTURES.get("grass", {})
+		_noise_texture = texture
+	return _noise_texture
+
+
+## The ground material of a terrain: the blending shader with the
+## terrain's layers. Shared by every chunk. A layer whose image is not
+## there yet is simply off.
+static func ground_material(terrain: String = "grass") -> ShaderMaterial:
+	if not _ground_materials.has(terrain):
+		var material := ShaderMaterial.new()
+		material.shader = load("res://world/ground.gdshader")
+		material.set_shader_parameter("noise_texture", noise_texture())
+		var layers: Dictionary = LAYER_TEXTURES.get(terrain, {})
 		for layer in layers:
 			var path: String = layers[layer]
 			if ResourceLoader.exists(path):
-				_ground_material.set_shader_parameter(layer + "_texture", load(path))
-				_ground_material.set_shader_parameter("has_" + layer, true)
-	return _ground_material
+				material.set_shader_parameter(layer + "_texture", load(path))
+				material.set_shader_parameter("has_" + layer, true)
+		var params: Dictionary = GROUND_PARAMS.get(terrain, {})
+		for name in params:
+			material.set_shader_parameter(name, params[name])
+		_ground_materials[terrain] = material
+	return _ground_materials[terrain]
+
+
+## The child canvas of a terrain, made on first use: it carries the
+## terrain's material and sits under the chunk's own drawing (the items).
+func _ground_of(terrain: String) -> GroundCanvas:
+	var canvas: GroundCanvas = _grounds.get(terrain)
+	if canvas == null:
+		canvas = GroundCanvas.new()
+		canvas.terrain = terrain
+		canvas.z_index = -1
+		# Seamless textures repeat across the chunk; linear filtering for the zoom.
+		canvas.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
+		canvas.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+		canvas.material = ground_material(terrain)
+		add_child(canvas)
+		_grounds[terrain] = canvas
+	return canvas
+
+
+## One terrain's textured tiles of a chunk, drawn with that terrain's
+## material.
+class GroundCanvas:
+	extends Node2D
+	var terrain := ""
+	var tiles: PackedVector2Array = []
+
+	func _draw() -> void:
+		var white := PackedColorArray([Color.WHITE, Color.WHITE, Color.WHITE, Color.WHITE])
+		var texture := ChunkView.ground_texture(terrain)
+		for tile in tiles:
+			var tx := int(tile.x)
+			var ty := int(tile.y)
+			draw_polygon(Iso.diamond(tx, ty), white, ChunkView.ground_uvs(tx, ty), texture)
 
 
 ## The ground texture of a terrain, or null when it has none yet.
@@ -116,17 +179,27 @@ func show_chunk(origin: Vector2i, size: int, tiles: Array, items: Array, looks: 
 
 
 func _draw() -> void:
-	var white := PackedColorArray([Color.WHITE, Color.WHITE, Color.WHITE, Color.WHITE])
+	# Textured tiles go to their terrain's canvas; the rest is flat here.
+	var by_terrain: Dictionary = {}
 	for y in _size:
 		for x in _size:
 			var terrain: String = str(_tiles[y * _size + x])
 			var tx := _origin.x + x
 			var ty := _origin.y + y
-			var texture := ground_texture(terrain)
-			if texture != null:
-				draw_polygon(Iso.diamond(tx, ty), white, ground_uvs(tx, ty), texture)
+			if ground_texture(terrain) != null:
+				if not by_terrain.has(terrain):
+					by_terrain[terrain] = PackedVector2Array()
+				by_terrain[terrain].append(Vector2(tx, ty))
 			else:
 				draw_colored_polygon(Iso.diamond(tx, ty), COLORS.get(terrain, Color.MAGENTA))
+	for terrain in _grounds:
+		if not by_terrain.has(terrain):
+			_grounds[terrain].tiles = PackedVector2Array()
+			_grounds[terrain].queue_redraw()
+	for terrain in by_terrain:
+		var canvas := _ground_of(terrain)
+		canvas.tiles = by_terrain[terrain]
+		canvas.queue_redraw()
 	# Items: a small disc of the material's colour, slightly off the
 	# tile's centre so several on one tile stay visible.
 	var on_tile: Dictionary = {}
