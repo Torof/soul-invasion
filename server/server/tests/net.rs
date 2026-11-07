@@ -638,11 +638,15 @@ async fn an_oversized_message_ends_the_connection() {
         .send(Message::text(huge))
         .await
         .expect("the frame leaves");
-    assert_eq!(
-        receive(&mut pilot).await,
-        None,
-        "server closes on an oversized frame"
-    );
+    // The clock may strike a new day meanwhile: that is not an answer.
+    let mut last = receive(&mut pilot).await;
+    while matches!(
+        last,
+        Some(ServerMessage::DayStarted { .. } | ServerMessage::NightFell { .. })
+    ) {
+        last = receive(&mut pilot).await;
+    }
+    assert_eq!(last, None, "server closes on an oversized frame");
 }
 
 #[tokio::test]
@@ -990,17 +994,30 @@ async fn a_starved_body_dies_and_its_pilot_is_given_another_or_watches() {
         cause,
         protocol::DeathCause::Starved | protocol::DeathCause::Froze
     ));
-    // The corpse appeared, the pilot got another body or none, with the
-    // ground around it.
-    let assigned = wait_for(&mut pilot, |m| match m {
+    // The corpse appeared, the pilot got another body or none. The other
+    // bodies starve at the same moment, so the body it is given may die
+    // under it at once and be replaced in turn; with a living body, the
+    // pilot is settled in it: the ground around it comes when the view
+    // moves, its condition in any case.
+    let mut assigned = wait_for(&mut pilot, |m| match m {
         ServerMessage::BodyAssigned { body } => Some(*body),
         _ => None,
     })
     .await;
-    assert_ne!(assigned, Some(body), "never the dead body");
-    if assigned.is_some() {
-        wait_for(&mut pilot, |m| match m {
-            ServerMessage::Chunk { .. } => Some(()),
+    while let Some(new_body) = assigned {
+        assert_ne!(new_body, body, "never the dead body");
+        let settled = wait_for(&mut pilot, |m| match m {
+            ServerMessage::Chunk { .. } => Some(true),
+            ServerMessage::BodyCondition { body: who, .. } if *who == new_body => Some(true),
+            ServerMessage::BodyDied { body: who, .. } if *who == new_body => Some(false),
+            _ => None,
+        })
+        .await;
+        if settled {
+            break;
+        }
+        assigned = wait_for(&mut pilot, |m| match m {
+            ServerMessage::BodyAssigned { body } => Some(*body),
             _ => None,
         })
         .await;
