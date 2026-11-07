@@ -521,7 +521,7 @@ func fringe(terrain: String) -> Array:
 	var result: Array = []
 	for y in _size:
 		for x in _size:
-			if not over.has(str(_tiles[y * _size + x])):
+			if not over.has(_ground_terrain(_origin.x + x, _origin.y + y)):
 				continue
 			var alphas := _corners(nearness, x, y)
 			if alphas[0] > 0.0 or alphas[1] > 0.0 or alphas[2] > 0.0 or alphas[3] > 0.0:
@@ -550,9 +550,9 @@ func _draw() -> void:
 	var by_terrain: Dictionary = {}
 	for y in _size:
 		for x in _size:
-			var terrain: String = str(_tiles[y * _size + x])
 			var tx := _origin.x + x
 			var ty := _origin.y + y
+			var terrain := _ground_terrain(tx, ty)
 			if ground_texture(terrain) != null:
 				if not by_terrain.has(terrain):
 					by_terrain[terrain] = PackedVector2Array()
@@ -578,6 +578,8 @@ func _draw() -> void:
 		canvas.shore = shore(terrain) if SHORE_TERRAINS.has(terrain) else {}
 		canvas.queue_redraw()
 	_draw_shore()
+	# A brook cuts the bank where it joins a river: drawn over it.
+	_draw_brooks()
 	_draw_decor()
 	# Items: a small disc of the material's colour, slightly off the
 	# tile's centre so several on one tile stay visible.
@@ -593,6 +595,46 @@ func _draw() -> void:
 		draw_circle(centre, ITEM_RADIUS, Color(0, 0, 0, 0.6), false, 1.0)
 		if material == "corpse":
 			draw_death_icon(self, centre + Vector2(0, -16))
+
+
+## The ground drawn on tile (tx, ty): its terrain, except under a brook,
+## which is a line on the ground (BrookLines): there, the land around it,
+## forest where the tiles around are mostly forest, else grass.
+func _ground_terrain(tx: int, ty: int) -> String:
+	var terrain := _terrain(tx, ty)
+	if terrain != "brook":
+		return terrain
+	var forest := 0
+	var grass := 0
+	for dy in range(-1, 2):
+		for dx in range(-1, 2):
+			var near := _terrain(tx + dx, ty + dy)
+			if near == "forest":
+				forest += 1
+			elif near == "grass":
+				grass += 1
+	return "forest" if forest > grass else "grass"
+
+
+## The brooks crossing this chunk, as lines on the ground (BrookLines):
+## found over a margin around the chunk, so they join the neighbours'
+## without a seam; each segment is drawn by the chunk under its middle.
+func _draw_brooks() -> void:
+	var near := false
+	for y in range(-2, _size + 2):
+		for x in range(-2, _size + 2):
+			if _terrain(_origin.x + x, _origin.y + y) == "brook":
+				near = true
+				break
+		if near:
+			break
+	if not near:
+		return
+	var margin := Vector2i(BrookLines.MARGIN, BrookLines.MARGIN)
+	var terrain := func(t: Vector2i) -> String: return _terrain(t.x, t.y)
+	var lines := BrookLines.lay(terrain, _origin - margin, _origin + Vector2i(_size, _size) + margin)
+	var tint: Color = ground_params("water").get("base_tint", Color.WHITE)
+	BrookLines.draw(self, lines, _origin, _origin + Vector2i(_size, _size), ground_texture("water"), tint)
 
 
 ## The shore pieces of this chunk, from its water tiles: for each, a
