@@ -230,7 +230,11 @@ class GroundCanvas:
 					colours.append(Color(1, 1 - n, 1, 1))
 			draw_polygon(Iso.diamond(tx, ty), colours, ChunkView.ground_uvs(tx, ty), texture)
 		for fill in fills:
-			draw_polygon(fill["points"], white, fill["uvs"], texture)
+			var pts: PackedVector2Array = fill["points"]
+			var colours := PackedColorArray()
+			colours.resize(pts.size())
+			colours.fill(Color.WHITE)
+			draw_polygon(pts, colours, fill["uvs"], texture)
 		for spill in fringe:
 			var tile: Vector2i = spill["tile"]
 			var alphas: PackedFloat32Array = spill["alphas"]
@@ -937,7 +941,8 @@ func shore_segments() -> Array:
 	var inside_hi := Vector2(_origin.x + _size, _origin.y + _size) - Vector2(0.5, 0.5)
 	var segments: Array = []
 	for raw in shore_lines():
-		var line := round_bends(simplify(raw, SHORE_TOLERANCE))
+		var shore: Dictionary = ground_spec().get("shore", {})
+		var line := round_bends(simplify(raw, float(shore.get("tolerance", SHORE_TOLERANCE))), int(shore.get("rounding", 2)))
 		if line.size() < 2:
 			continue
 		# Which side is the water: each segment probes both its sides; the
@@ -966,8 +971,9 @@ func shore_segments() -> Array:
 			var a: Vector2 = line[i]
 			var b: Vector2 = line[i + 1]
 			var dir: Vector2 = (b - a).normalized()
-			var own: int = verdicts[i]
-			var to_water: Vector2 = Vector2(-dir.y, dir.x) * (float(own) if own != 0 else sign)
+			# A boundary keeps its water on one side all along, so the line's
+			# majority decides for every segment (a probe at a bend can lie).
+			var to_water: Vector2 = Vector2(-dir.y, dir.x) * sign
 			var mid: Vector2 = (a + b) * 0.5
 			# The land's terrain: the first non-water tile away from the water,
 			# probing farther at a concave bend where the nearest tile is water.
@@ -1012,9 +1018,11 @@ static func _band_uvs(a: Vector2, b: Vector2, n: Vector2, from: float, to: float
 	])
 
 
-## Band width of the fills on each side of the line, in tiles: the tiles
-## stray from the line by at most half a tile, the brush hides the rest.
-const SHORE_FILL := 0.8
+## Band width of the fills on each side of the line, in tiles, beyond
+## the simplification tolerance: the tiles stray from the line by at most
+## the tolerance plus half a tile. The bands repaint the tiles' own
+## textures at their own coordinates, so a wide band costs nothing.
+const SHORE_FILL_BEYOND := 0.6
 
 
 func _draw_shore_curve() -> void:
@@ -1023,20 +1031,40 @@ func _draw_shore_curve() -> void:
 		return
 	var forest_tint: Color = ground_params("forest").get("base_tint", Color.WHITE)
 	var fills: Dictionary = {}
-	for seg in shore_segments():
+	var segs := shore_segments()
+	var fill_width: float = float(ground_spec().get("shore", {}).get("tolerance", SHORE_TOLERANCE)) + SHORE_FILL_BEYOND
+	var half := Vector2(0.5, 0.5)
+	var s := 1.0 / GROUND_METRES
+	for i in segs.size():
+		var seg: Dictionary = segs[i]
 		var a: Vector2 = seg["a"]
 		var b: Vector2 = seg["b"]
 		var n: Vector2 = seg["to_water"]
 		# Fills: the land's texture up to the line on its side, the water's
 		# on the other, so the tiles' own corners never show past the line.
+		# Bands are not extended; the gap at a bend is closed by a wedge
+		# between this band's end and the next band's start, on each side.
 		var land: String = seg["land"]
-		for pair in [[land, -SHORE_FILL, 0.02], ["water", -0.02, SHORE_FILL]]:
+		# The next segment along the line, or the first one when the line
+		# closes on itself (a pond, an island).
+		var next: Dictionary = segs[i + 1] if i + 1 < segs.size() else segs[0]
+		var joined: bool = next["a"].distance_to(b) < 0.001
+		for pair in [[land, -fill_width, 0.02], ["water", -0.02, fill_width]]:
 			var terrain: String = pair[0]
 			if ground_texture(terrain) == null:
 				continue
 			if not fills.has(terrain):
 				fills[terrain] = []
-			fills[terrain].append({"points": _band(a, b, n, pair[1], pair[2], 0.25), "uvs": _band_uvs(a, b, n, pair[1], pair[2], 0.25)})
+			fills[terrain].append({"points": _band(a, b, n, pair[1], pair[2], 0.0), "uvs": _band_uvs(a, b, n, pair[1], pair[2], 0.0)})
+			if joined:
+				var n2: Vector2 = next["to_water"]
+				var far: float = pair[1] if absf(pair[1]) > absf(pair[2]) else pair[2]
+				var p1: Vector2 = b + n * far
+				var p2: Vector2 = b + n2 * far
+				if p1.distance_to(p2) > 0.01:
+					var pts := PackedVector2Array([tile_point_to_screen(b), tile_point_to_screen(p1), tile_point_to_screen(p2)])
+					var uvs := PackedVector2Array([(b + half) * s, (p1 + half) * s, (p2 + half) * s])
+					fills[terrain].append({"points": pts, "uvs": uvs})
 		# The brush.
 		var n_screen: Vector2 = (tile_point_to_screen(b + n) - tile_point_to_screen(b)).normalized()
 		var brush: String = "far" if n_screen.y > 0.4 else ("near" if n_screen.y < -0.4 else "profile")
