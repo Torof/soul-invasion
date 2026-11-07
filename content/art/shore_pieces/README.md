@@ -2,7 +2,7 @@
 
 The bank pieces, one image per straight heading (`straight_00` … `straight_15`)
 and per one-step bend (`bend_XX_toland`, `bend_XX_towater`): 48 images,
-128 × 128 px at scale 1, centred on the piece's middle sample
+512 × 512 px drawn at 128 × 128 at scale 1 (four times the screen, like the ground textures, so they stay sharp up to zoom 4), centred on the piece's middle sample
 (`ShorePieces.middle`). Only a band of about 12 px on each side of the bank is
 opaque; it fades out across the bank and just past the piece's two ends, so
 neighbouring pieces blend. The client fills the ground up to the bank with its
