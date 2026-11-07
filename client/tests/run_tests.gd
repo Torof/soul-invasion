@@ -247,6 +247,15 @@ func _test_ground_art_is_reachable() -> void:
 	_check(ChunkView.shore_iso_names(true, false, false, false, false, false, false, false) == ["01_far_bank_down_right"], "land north: the far bank piece")
 	_check(ChunkView.shore_iso_names(false, false, false, false, false, false, false, true) == ["15_corner_land_up"], "land only on the north-west diagonal: the corner piece name (no image yet: the neighbours' banks already meet there)")
 	_check(ChunkView.shore_iso_piece("02_far_bank_up_right") != null, "the isometric pieces load")
+	# The shore line: a staircase of two-tile steps simplifies to one run.
+	var stairs2: Array = []
+	for i in 12:
+		stairs2.append(Vector2(3 + i / 2, i * 0.5))
+	var runs := ChunkView.simplify(stairs2, 0.6)
+	_check(runs.size() == 2, "a two-tile staircase simplifies to one straight run")
+	var bent := ChunkView.round_bends([Vector2(0, 0), Vector2(4, 0), Vector2(4, 4)])
+	_check(bent.size() > 3 and bent[0] == Vector2(0, 0) and bent[bent.size() - 1] == Vector2(4, 4), "a bend is rounded and the ends stay")
+	_check(ChunkView.shore_brush("far") != null and ChunkView.shore_brush("near") != null, "the bank brushes load")
 	_check(ChunkView.shore_iso_names(true, false, false, true, true, false, false, true) == ["05_horizontal_land_above"], "land north, west and on an outer diagonal (a step of stairs): the straight piece")
 	_check(ChunkView.shore_iso_names(true, false, false, true, false, false, false, true) == ["05i_inner_corner_land_above"], "land north, west and only the diagonal between (a true corner): the rounded L piece")
 	view.free()

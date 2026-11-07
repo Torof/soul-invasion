@@ -101,10 +101,29 @@ var _size := 32
 
 ## terrain -> the child canvas drawing that terrain's textured tiles
 var _grounds: Dictionary = {}
+## terrain -> the child canvas drawing that terrain's shore fills, above
+## every ground canvas and below the chunk's own drawing.
+var _fills: Dictionary = {}
+
+
+func _fill_of(terrain: String) -> GroundCanvas:
+	var canvas: GroundCanvas = _fills.get(terrain)
+	if canvas == null:
+		canvas = GroundCanvas.new()
+		canvas.terrain = terrain
+		canvas.z_index = -1
+		canvas.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
+		canvas.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+		canvas.material = ground_material(terrain)
+		add_child(canvas)
+		_fills[terrain] = canvas
+	return canvas
 
 
 func _ready() -> void:
 	add_to_group("chunk_views")
+	# The shore brushes repeat along the bank.
+	texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 ## Looks up the terrain of a tile outside this chunk (set by the world
 ## view); "" when unknown, and the spill stops there.
 var terrain_at: Callable
@@ -169,7 +188,7 @@ func _ground_of(terrain: String) -> GroundCanvas:
 	if canvas == null:
 		canvas = GroundCanvas.new()
 		canvas.terrain = terrain
-		canvas.z_index = -3 + int(GROUND_ORDER.get(terrain, 0))
+		canvas.z_index = -4 + int(GROUND_ORDER.get(terrain, 0))
 		# Seamless textures repeat across the chunk; linear filtering for the zoom.
 		canvas.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 		canvas.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
@@ -192,6 +211,10 @@ class GroundCanvas:
 	## this terrain's own tiles, carried to the shader in the vertex
 	## colour's green channel (1 - nearness).
 	var shore: Dictionary = {}
+	## [{"points": PackedVector2Array, "uvs": PackedVector2Array}]: extra
+	## polygons of this terrain's texture, the bands along the shore line
+	## that paint the terrain up to the line regardless of the tiles.
+	var fills: Array = []
 
 	func _draw() -> void:
 		var white := PackedColorArray([Color.WHITE, Color.WHITE, Color.WHITE, Color.WHITE])
@@ -206,6 +229,8 @@ class GroundCanvas:
 				for n in near:
 					colours.append(Color(1, 1 - n, 1, 1))
 			draw_polygon(Iso.diamond(tx, ty), colours, ChunkView.ground_uvs(tx, ty), texture)
+		for fill in fills:
+			draw_polygon(fill["points"], white, fill["uvs"], texture)
 		for spill in fringe:
 			var tile: Vector2i = spill["tile"]
 			var alphas: PackedFloat32Array = spill["alphas"]
@@ -228,6 +253,7 @@ static func reload_art() -> void:
 	_decor.clear()
 	_shore.clear()
 	_shore_iso.clear()
+	_brushes.clear()
 	var shader := Shader.new()
 	shader.code = FileAccess.get_file_as_string("res://world/ground.gdshader")
 	for terrain in _spec:
@@ -738,9 +764,316 @@ func _draw_shore_iso() -> void:
 					draw_texture_rect(texture, Rect2(centre - size / 2.0, size), false)
 
 
+## The shore as a line: the land/water boundary of the tiles (through
+## the midpoints between tile centres), simplified into straight runs
+## with a tolerance of about half a tile, its bends rounded, and drawn
+## as a strip along which a bank brush repeats. Three brushes, cut from
+## the generated straight pieces: "far" where the land is above the water
+## on screen (the earthen face shows), "near" where it is below (grass
+## overhangs the water), "profile" where the bank is vertical on screen.
+## So a run keeps one direction until a bend, whatever its slope, and a
+## staircase of tiles reads as one straight line. Tile data is untouched:
+## the game still walks on the tiles.
+const SHORE_BRUSH_DIR := "res://art/shore_brush/"
+const SHORE_MARGIN := 3
+const SHORE_TOLERANCE := 0.6
+const SHORE_BRUSH_WIDTH := 34.0
+const SHORE_BRUSH_LENGTH := 96.0
+static var _brushes: Dictionary = {}
+
+
+static func shore_brush(name: String) -> Texture2D:
+	if not _brushes.has(name):
+		_brushes[name] = load_texture(SHORE_BRUSH_DIR + name + ".png")
+	return _brushes[name]
+
+
+## Is the tile water, for the shore line: unknown tiles beyond the
+## server's view count as whatever their known neighbour is, so the line
+## does not close on the edge of the known world.
+func _is_water_at(tx: int, ty: int) -> bool:
+	var t := _terrain(tx, ty)
+	return t == "water"
+
+
+func _is_known(tx: int, ty: int) -> bool:
+	return _terrain(tx, ty) != ""
+
+
+## The land/water boundary of this chunk and a margin around it, as
+## polylines in tile units (a tile's centre is at integer coordinates).
+func shore_lines() -> Array:
+	var lo := Vector2i(_origin.x - SHORE_MARGIN, _origin.y - SHORE_MARGIN)
+	var hi := Vector2i(_origin.x + _size + SHORE_MARGIN, _origin.y + _size + SHORE_MARGIN)
+	# Marching squares on cells between four tile centres.
+	var segments: Array = []
+	for gy in range(lo.y, hi.y - 1):
+		for gx in range(lo.x, hi.x - 1):
+			if not (_is_known(gx, gy) and _is_known(gx + 1, gy) and _is_known(gx, gy + 1) and _is_known(gx + 1, gy + 1)):
+				continue
+			var code := 0
+			if _is_water_at(gx, gy):
+				code += 8
+			if _is_water_at(gx + 1, gy):
+				code += 4
+			if _is_water_at(gx + 1, gy + 1):
+				code += 2
+			if _is_water_at(gx, gy + 1):
+				code += 1
+			var top := Vector2(gx + 0.5, gy)
+			var right := Vector2(gx + 1, gy + 0.5)
+			var bottom := Vector2(gx + 0.5, gy + 1)
+			var left := Vector2(gx, gy + 0.5)
+			match code:
+				1, 14:
+					segments.append([left, bottom])
+				2, 13:
+					segments.append([bottom, right])
+				3, 12:
+					segments.append([left, right])
+				4, 11:
+					segments.append([top, right])
+				5:
+					segments.append([top, right])
+					segments.append([left, bottom])
+				6, 9:
+					segments.append([top, bottom])
+				7, 8:
+					segments.append([left, top])
+				10:
+					segments.append([left, top])
+					segments.append([bottom, right])
+	# Join the segments into polylines by their shared ends.
+	var key := func(p: Vector2) -> Vector2i: return Vector2i(int(round(p.x * 2.0)), int(round(p.y * 2.0)))
+	var at_end: Dictionary = {}
+	for i in segments.size():
+		for p in segments[i]:
+			var k: Vector2i = key.call(p)
+			if not at_end.has(k):
+				at_end[k] = []
+			at_end[k].append(i)
+	var used: Dictionary = {}
+	var lines: Array = []
+	for start in segments.size():
+		if used.has(start):
+			continue
+		# Walk both ways from this segment.
+		var line: Array = [segments[start][0], segments[start][1]]
+		used[start] = true
+		for direction in 2:
+			while true:
+				var tip: Vector2 = line[line.size() - 1] if direction == 0 else line[0]
+				var next := -1
+				for i in at_end.get(key.call(tip), []):
+					if not used.has(i):
+						next = i
+						break
+				if next < 0:
+					break
+				used[next] = true
+				var seg: Array = segments[next]
+				var other: Vector2 = seg[1] if key.call(seg[0]) == key.call(tip) else seg[0]
+				if direction == 0:
+					line.append(other)
+				else:
+					line.insert(0, other)
+		lines.append(line)
+	return lines
+
+
+## Douglas-Peucker: the fewest straight runs within `tolerance` of the
+## line, so a staircase of tiles becomes one run.
+static func simplify(points: Array, tolerance: float) -> Array:
+	if points.size() < 3:
+		return points.duplicate()
+	var a: Vector2 = points[0]
+	var b: Vector2 = points[points.size() - 1]
+	var worst := 0.0
+	var at := 0
+	for i in range(1, points.size() - 1):
+		var p: Vector2 = points[i]
+		var d: float
+		if a.distance_to(b) < 0.001:
+			d = p.distance_to(a)
+		else:
+			var t := clampf((p - a).dot(b - a) / (b - a).length_squared(), 0.0, 1.0)
+			d = p.distance_to(a + (b - a) * t)
+		if d > worst:
+			worst = d
+			at = i
+	if worst <= tolerance:
+		return [a, b]
+	var left := simplify(points.slice(0, at + 1), tolerance)
+	var right := simplify(points.slice(at), tolerance)
+	return left.slice(0, left.size() - 1) + right
+
+
+## Chaikin's corner cutting, twice: the bends become arcs, the ends stay.
+static func round_bends(points: Array, passes: int = 2) -> Array:
+	var line := points.duplicate()
+	for _pass in passes:
+		if line.size() < 3:
+			return line
+		var out: Array = [line[0]]
+		for i in range(line.size() - 1):
+			var p: Vector2 = line[i]
+			var q: Vector2 = line[i + 1]
+			out.append(p.lerp(q, 0.25))
+			out.append(p.lerp(q, 0.75))
+		out.append(line[line.size() - 1])
+		line = out
+	return line
+
+
+static func tile_point_to_screen(p: Vector2) -> Vector2:
+	return Vector2((p.x - p.y) * Iso.TILE_W / 2.0, (p.x + p.y) * Iso.TILE_H / 2.0)
+
+
+## The shore line's segments for this chunk, computed once per redraw:
+## [{"a", "b": Vector2 (tile units), "to_water": Vector2 (tile units,
+## unit), "land": terrain name}], only the segments inside the chunk.
+func shore_segments() -> Array:
+	var inside_lo := Vector2(_origin.x, _origin.y) - Vector2(0.5, 0.5)
+	var inside_hi := Vector2(_origin.x + _size, _origin.y + _size) - Vector2(0.5, 0.5)
+	var segments: Array = []
+	for raw in shore_lines():
+		var line := round_bends(simplify(raw, SHORE_TOLERANCE))
+		if line.size() < 2:
+			continue
+		# Which side is the water: each segment probes both its sides; the
+		# line's majority decides for the segments that cannot tell (short
+		# chords at bends, deep in one terrain).
+		var verdicts: Array = []
+		var votes := 0
+		for i in range(line.size() - 1):
+			var d: Vector2 = (line[i + 1] - line[i]).normalized()
+			var n0 := Vector2(-d.y, d.x)
+			var c: Vector2 = (line[i] + line[i + 1]) * 0.5
+			var plus := c + n0 * 0.7
+			var minus := c - n0 * 0.7
+			var pw := _is_water_at(int(round(plus.x)), int(round(plus.y)))
+			var mw := _is_water_at(int(round(minus.x)), int(round(minus.y)))
+			var v := 0
+			if pw and not mw:
+				v = 1
+			elif mw and not pw:
+				v = -1
+			verdicts.append(v)
+			votes += v
+		var sign := 1.0 if votes >= 0 else -1.0
+		var length := 0.0
+		for i in range(line.size() - 1):
+			var a: Vector2 = line[i]
+			var b: Vector2 = line[i + 1]
+			var dir: Vector2 = (b - a).normalized()
+			var own: int = verdicts[i]
+			var to_water: Vector2 = Vector2(-dir.y, dir.x) * (float(own) if own != 0 else sign)
+			var mid: Vector2 = (a + b) * 0.5
+			# The land's terrain: the first non-water tile away from the water,
+			# probing farther at a concave bend where the nearest tile is water.
+			var land := ""
+			for reach: float in [0.6, 1.0, 1.5, 2.0]:
+				var land_tile: Vector2 = mid - to_water * reach
+				var t := _terrain(int(round(land_tile.x)), int(round(land_tile.y)))
+				if t != "" and t != "water" and t != "ford":
+					land = t
+					break
+			var u0 := length
+			length += tile_point_to_screen(a).distance_to(tile_point_to_screen(b))
+			if mid.x < inside_lo.x or mid.y < inside_lo.y or mid.x >= inside_hi.x or mid.y >= inside_hi.y:
+				continue
+			segments.append({"a": a, "b": b, "to_water": to_water, "land": land if land != "" else "grass", "u0": u0, "u1": length})
+	return segments
+
+
+## A rectangle in screen space along segment a-b (tile units), from
+## `from` to `to` across it (tile units along the normal `n`), extended
+## by `ext` tile units at both ends so consecutive rectangles overlap.
+static func _band(a: Vector2, b: Vector2, n: Vector2, from: float, to: float, ext: float) -> PackedVector2Array:
+	var dir: Vector2 = (b - a).normalized()
+	var a2 := a - dir * ext
+	var b2 := b + dir * ext
+	return PackedVector2Array([
+		tile_point_to_screen(a2 + n * from), tile_point_to_screen(b2 + n * from),
+		tile_point_to_screen(b2 + n * to), tile_point_to_screen(a2 + n * to),
+	])
+
+
+## Ground texture coordinates of a screen polygon given in tile units.
+static func _band_uvs(a: Vector2, b: Vector2, n: Vector2, from: float, to: float, ext: float) -> PackedVector2Array:
+	var dir: Vector2 = (b - a).normalized()
+	var a2 := a - dir * ext
+	var b2 := b + dir * ext
+	var s := 1.0 / GROUND_METRES
+	var half := Vector2(0.5, 0.5)
+	return PackedVector2Array([
+		(a2 + n * from + half) * s, (b2 + n * from + half) * s,
+		(b2 + n * to + half) * s, (a2 + n * to + half) * s,
+	])
+
+
+## Band width of the fills on each side of the line, in tiles: the tiles
+## stray from the line by at most half a tile, the brush hides the rest.
+const SHORE_FILL := 0.8
+
+
+func _draw_shore_curve() -> void:
+	var brushes := {"far": shore_brush("far"), "near": shore_brush("near"), "profile": shore_brush("profile")}
+	if brushes["far"] == null:
+		return
+	var forest_tint: Color = ground_params("forest").get("base_tint", Color.WHITE)
+	var fills: Dictionary = {}
+	for seg in shore_segments():
+		var a: Vector2 = seg["a"]
+		var b: Vector2 = seg["b"]
+		var n: Vector2 = seg["to_water"]
+		# Fills: the land's texture up to the line on its side, the water's
+		# on the other, so the tiles' own corners never show past the line.
+		var land: String = seg["land"]
+		for pair in [[land, -SHORE_FILL, 0.02], ["water", -0.02, SHORE_FILL]]:
+			var terrain: String = pair[0]
+			if ground_texture(terrain) == null:
+				continue
+			if not fills.has(terrain):
+				fills[terrain] = []
+			fills[terrain].append({"points": _band(a, b, n, pair[1], pair[2], 0.25), "uvs": _band_uvs(a, b, n, pair[1], pair[2], 0.25)})
+		# The brush.
+		var n_screen: Vector2 = (tile_point_to_screen(b + n) - tile_point_to_screen(b)).normalized()
+		var brush: String = "far" if n_screen.y > 0.4 else ("near" if n_screen.y < -0.4 else "profile")
+		var v_land := 1.0 if brush == "near" else 0.0
+		var v_water := 1.0 - v_land
+		var sa := tile_point_to_screen(a)
+		var sb := tile_point_to_screen(b)
+		var dir: Vector2 = (sb - sa).normalized()
+		var nn := Vector2(-dir.y, dir.x)
+		if nn.dot(n_screen) < 0.0:
+			nn = -nn
+		var w := SHORE_BRUSH_WIDTH / 2.0
+		var ext := w * 0.5
+		var pa := sa - dir * ext
+		var pb := sb + dir * ext
+		var u0: float = (seg["u0"] - ext) / SHORE_BRUSH_LENGTH
+		var u1: float = (seg["u1"] + ext) / SHORE_BRUSH_LENGTH
+		var points := PackedVector2Array([pa - nn * w, pb - nn * w, pb + nn * w, pa + nn * w])
+		var uvs := PackedVector2Array([Vector2(u0, v_land), Vector2(u1, v_land), Vector2(u1, v_water), Vector2(u0, v_water)])
+		var tint := forest_tint if land == "forest" else Color.WHITE
+		draw_polygon(points, PackedColorArray([tint, tint, tint, tint]), uvs, brushes[brush])
+	for terrain in _fills:
+		if not fills.has(terrain):
+			_fills[terrain].fills = []
+			_fills[terrain].queue_redraw()
+	for terrain in fills:
+		var canvas := _fill_of(terrain)
+		canvas.fills = fills[terrain]
+		canvas.queue_redraw()
+
+
 func _draw_shore() -> void:
 	var shore: Dictionary = ground_spec().get("shore", {})
 	if shore.is_empty():
+		return
+	if str(shore.get("mode", "")) == "curve":
+		_draw_shore_curve()
 		return
 	if bool(shore.get("iso", false)):
 		_draw_shore_iso()
