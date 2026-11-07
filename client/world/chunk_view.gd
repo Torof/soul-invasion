@@ -294,6 +294,8 @@ const SHORE_DIR := "res://art/shore/"
 ## the tile's diamond as it is, never turned or mirrored. The pieces are
 ## numbered like the schematics they were generated from.
 const SHORE_ISO_DIR := "res://art/shore_iso/"
+## The pieces are cut with this margin around the tile's diamond.
+const SHORE_ISO_MARGIN := 1.25
 const SHORE_ISO := {
 	"N": "01_far_bank_down_right", "W": "02_far_bank_up_right",
 	"S": "03_near_bank_down_right", "E": "04_near_bank_up_right",
@@ -312,11 +314,16 @@ const SHORE_ISO := {
 static var _shore_iso: Dictionary = {}
 
 
-static func shore_iso_piece(name: String) -> Texture2D:
-	if not _shore_iso.has(name):
-		var path := SHORE_ISO_DIR + name + ".png"
-		_shore_iso[name] = load_texture(path) if ResourceLoader.exists(path) or FileAccess.file_exists(path) else null
-	return _shore_iso[name]
+## `shade` picks the copy whose grass is tinted like the woods, for a
+## bank whose land is forest.
+static func shore_iso_piece(name: String, shade: bool = false) -> Texture2D:
+	var key := name + ("@forest" if shade else "")
+	if not _shore_iso.has(key):
+		var path := SHORE_ISO_DIR + ("forest/" if shade else "") + name + ".png"
+		_shore_iso[key] = load_texture(path) if ResourceLoader.exists(path) or FileAccess.file_exists(path) else null
+		if _shore_iso[key] == null and shade:
+			_shore_iso[key] = shore_iso_piece(name, false)
+	return _shore_iso[key]
 
 
 ## The piece names a water tile needs, from the land around it: one for
@@ -331,13 +338,17 @@ static func shore_iso_names(n: bool, e: bool, s: bool, w: bool, ne: bool, se: bo
 		sides += "S"
 	if w:
 		sides += "W"
-	if sides == "NW" and (ne or sw):
+	# Two adjacent land sides: a true corner of land (no land on the two
+	# outer diagonals) takes the rounded L piece; a step of a staircase
+	# (land continues on an outer diagonal) takes the straight piece
+	# through the tile centre, so the stairs read as one smooth line.
+	if sides == "NW" and not (ne or sw):
 		sides = "NWi"
-	elif sides == "ES" and (ne or sw):
+	elif sides == "ES" and not (ne or sw):
 		sides = "ESi"
-	elif sides == "NE" and (nw or se):
+	elif sides == "NE" and not (nw or se):
 		sides = "NEi"
-	elif sides == "SW" and (nw or se):
+	elif sides == "SW" and not (nw or se):
 		sides = "SWi"
 	if sides != "":
 		return [SHORE_ISO[sides]] if SHORE_ISO.has(sides) else []
@@ -716,11 +727,15 @@ func _draw_shore_iso() -> void:
 				is_land.call(_terrain(tx, ty + 1)), is_land.call(_terrain(tx - 1, ty)),
 				is_land.call(_terrain(tx + 1, ty - 1)), is_land.call(_terrain(tx + 1, ty + 1)),
 				is_land.call(_terrain(tx - 1, ty + 1)), is_land.call(_terrain(tx - 1, ty - 1)))
+			var shade := _terrain(tx, ty - 1) == "forest" or _terrain(tx + 1, ty) == "forest" or _terrain(tx, ty + 1) == "forest" or _terrain(tx - 1, ty) == "forest"
 			for name in names:
-				var texture := shore_iso_piece(name)
+				var texture := shore_iso_piece(name, shade)
 				if texture != null:
+					# The piece covers its tile plus a margin (SHORE_ISO_MARGIN),
+					# so a bank painted just outside the diamond still shows.
 					var centre := Iso.tile_to_screen(tx, ty)
-					draw_texture_rect(texture, Rect2(centre - Vector2(Iso.TILE_W / 2.0, Iso.TILE_H / 2.0), Vector2(Iso.TILE_W, Iso.TILE_H)), false)
+					var size := Vector2(Iso.TILE_W, Iso.TILE_H) * SHORE_ISO_MARGIN
+					draw_texture_rect(texture, Rect2(centre - size / 2.0, size), false)
 
 
 func _draw_shore() -> void:
