@@ -848,15 +848,45 @@ const SHORE_PIECE_SIZE := 128.0  # on screen at scale 1; the images are 512 px
 ## the water's own textures repainted up to the piece, so the tiles'
 ## staircase never shows past the bank.
 const SHORE_PIECE_FILL := 0.8
+## The most variants of one piece looked for (name_1, name_2, ...).
+const SHORE_PIECE_VARIANTS := 4
 static var _piece_images: Dictionary = {}
 
 
-static func shore_piece_image(name: String) -> Texture2D:
+## The images of a piece, its variants in order; empty when it has none
+## (a sharp bend).
+static func shore_piece_images(name: String) -> Array:
 	if name == "":
-		return null
+		return []
 	if not _piece_images.has(name):
-		_piece_images[name] = load_texture(SHORE_PIECES_DIR + name + ".png")
+		var found: Array = []
+		for k in range(1, SHORE_PIECE_VARIANTS + 1):
+			var path := SHORE_PIECES_DIR + "%s_%d.png" % [name, k]
+			if not ResourceLoader.exists(path) and not FileAccess.file_exists(path):
+				break
+			var image := load_texture(path)
+			if image == null:
+				break
+			found.append(image)
+		_piece_images[name] = found
 	return _piece_images[name]
+
+
+## The first image of a piece, or null.
+static func shore_piece_image(name: String) -> Texture2D:
+	var images := shore_piece_images(name)
+	return images[0] if not images.is_empty() else null
+
+
+## Which variant a piece takes: fixed by where it starts, so a bank looks
+## the same every time it is drawn, but neighbours differ.
+static func shore_piece_variant(piece: Dictionary, count: int) -> int:
+	if count <= 1:
+		return 0
+	var from: Vector2 = piece["from"]
+	var x := int(round(from.x * 2.0))
+	var y := int(round(from.y * 2.0))
+	return posmod(hash(Vector3i(x, y, int(piece["dir"]))), count)
 
 
 ## Draws the bank pieces: the ground's own textures filled up to each
@@ -901,7 +931,10 @@ func _draw_shore_pieces() -> void:
 				if not fills.has(terrain):
 					fills[terrain] = []
 				fills[terrain].append({"points": _band(a, b, n, pair[1], pair[2], 0.05), "uvs": _band_uvs(a, b, n, pair[1], pair[2], 0.05)})
-		var image := shore_piece_image(ShorePieces.piece_name(piece["dir"], piece["turn"]))
+		var images := shore_piece_images(ShorePieces.piece_name(piece["dir"], piece["turn"]))
+		var image: Texture2D = null
+		if not images.is_empty():
+			image = images[shore_piece_variant(piece, images.size())]
 		if image != null and not ford:
 			sprites.append([image, tile_point_to_screen(mid), forest_tint if land == "forest" else Color.WHITE])
 	_set_fills(fills)
