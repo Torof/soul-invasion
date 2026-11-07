@@ -299,8 +299,8 @@ func _test_ground_art_is_reachable() -> void:
 	_check(named.size() == 48, "48 distinct piece names")
 	var all_there := named.keys().all(func(n: String) -> bool:
 		var image := ChunkView.shore_piece_image(n)
-		return image != null and image.get_width() == 128 and image.get_height() == 128)
-	_check(all_there, "every piece image is there, 128 px square")
+		return image != null and image.get_width() == 512 and image.get_height() == 512)
+	_check(all_there, "every piece image is there, 512 px square (four times the screen, like the ground)")
 	var pond_named := laid.all(func(p: Dictionary) -> bool: return absi(p["turn"]) > 1 or ChunkView.shore_piece_image(ShorePieces.piece_name(p["dir"], p["turn"])) != null)
 	_check(pond_named, "every laid straight or one-step bend finds its image")
 	# The isometric shore: a water tile with land to the north takes the far

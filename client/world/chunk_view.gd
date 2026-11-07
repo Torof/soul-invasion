@@ -843,7 +843,7 @@ func lay_shore_pieces() -> Array:
 ## The bank pieces' images, one per straight heading and per one-step
 ## bend (ShorePieces.piece_name), 128 px square around the piece's middle.
 const SHORE_PIECES_DIR := "res://art/shore_pieces/"
-const SHORE_PIECE_SIZE := 128.0
+const SHORE_PIECE_SIZE := 128.0  # on screen at scale 1; the images are 512 px
 ## Width of the fills on each side of a piece, in tiles: the land's and
 ## the water's own textures repainted up to the piece, so the tiles'
 ## staircase never shows past the bank.
