@@ -7,7 +7,7 @@ extends RefCounted
 ## is the single source of truth. Every message is a dictionary with a
 ## snake_case `type` field.
 
-const PROTOCOL_VERSION := 8
+const PROTOCOL_VERSION := 9
 
 
 ## Builds the first message sent after connecting.
