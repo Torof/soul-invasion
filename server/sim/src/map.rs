@@ -740,9 +740,11 @@ fn heading_towards(dx: i64, dy: i64) -> u8 {
 /// - the **banks breathe**: each bank of a river, on its own, holds its
 ///   line for a while, then turns one step of heading out or in for a
 ///   few steps and comes back, so a river widens, narrows, slides
-///   sideways or bends on one side only; the depth takes what the width
-///   leaves, so the flow is kept. Calm near junctions, fords,
-///   divergences, the map's edges, and on brooks.
+///   sideways or bends on one side only, up to a pool of
+///   `MAX_POOL_WIDTH`; the depth takes what the width leaves, so the flow
+///   is kept, but never less than a metre: a wide pool is slower water,
+///   never a ford. Calm near junctions, fords, divergences, the map's
+///   edges, and on brooks.
 ///
 /// All arithmetic is in integers (tile thousandths), so the same seed
 /// gives the same waters everywhere.
@@ -884,8 +886,11 @@ enum End {
 impl Rivers {
     /// Narrowest river, in tiles; narrower water is a brook.
     pub const MIN_WIDTH: u32 = 3;
-    /// Widest water, in tiles.
+    /// Widest water, in tiles, where it is not a pool.
     pub const MAX_WIDTH: u32 = 12;
+    /// Widest pool, in tiles: where its banks breathe out, a river may
+    /// widen past `MAX_WIDTH`.
+    pub const MAX_POOL_WIDTH: u32 = 18;
     /// Deepest water, in half-metres; past that a river only widens.
     pub const MAX_DEPTH: u8 = 8;
     /// Deepest brook, in half-metres: one can still stand in it.
@@ -912,12 +917,12 @@ impl Rivers {
     /// headings and each of its bends is one step.
     const BANK_SLOPE: i64 = 414;
     /// How far a bank may stand inside its line and outside it, in steps
-    /// of `BANK_SLOPE`: about a tile in, three out.
-    const BANK_REACH: (i64, i64) = (-2, 7);
+    /// of `BANK_SLOPE`: about a tile in, six out.
+    const BANK_REACH: (i64, i64) = (-2, 14);
     /// Steps a bank holds its line between two moves, at least and at most.
     const BANK_HOLD: (u32, u32) = (4, 12);
     /// Steps a move of a bank lasts, at least and at most.
-    const BANK_SHIFT: (u32, u32) = (3, 7);
+    const BANK_SHIFT: (u32, u32) = (3, 10);
     /// Tries at the banks of one free stretch before leaving it straight.
     const BANK_TRIES: u32 = 30;
     /// A river never strays more than this many steps of heading from the
@@ -1147,24 +1152,24 @@ impl Rivers {
 
     /// The widths a river carrying `flow` in a stretch of that `shape` may
     /// take when its banks breathe, in tiles, narrowest then widest: never
-    /// a brook, never deeper than `MAX_DEPTH`, never so wide that it would
-    /// be half a metre deep (a ford), and within `MAX_WIDTH`. Its own
-    /// width always lies within.
+    /// a brook, never deeper than `MAX_DEPTH`, and up to `MAX_POOL_WIDTH`.
+    /// Its own width always lies within.
     fn breathing_room(flow: i64, shape: Shape) -> (i64, i64) {
         let width = Self::section(flow, shape).0;
         let deepest = i64::from(Self::MAX_DEPTH);
         let narrowest = i64::from(Self::MIN_WIDTH)
             .max((flow + deepest - 1) / deepest)
             .min(width);
-        let widest = i64::from(Self::MAX_WIDTH).min(flow - 1).max(width);
+        let widest = i64::from(Self::MAX_POOL_WIDTH).max(width);
         (narrowest, widest)
     }
 
     /// The section of a stretch whose two banks together stand `out`
     /// thousandths of a tile outside their lines (negative inside): the
     /// width, in thousandths, grows or shrinks by that much, and the depth,
-    /// in half-metres, takes what the flow leaves, so the water's volume
-    /// is kept (D36).
+    /// in half-metres, takes what the flow leaves (D36), but never less
+    /// than a metre: a pool wider than its flow is slower water holding
+    /// more than its flow, never a ford.
     fn breathing_section(flow: i64, shape: Shape, out: i64) -> (i64, i64) {
         let (width, depth) = Self::section(flow, shape);
         if out == 0 {
@@ -2186,6 +2191,7 @@ mod tests {
     fn banks_breathe_within_their_rules() {
         let c = Rivers::CLEARANCE;
         let (mut free, mut moved, mut longest) = (0_usize, 0_usize, 0_usize);
+        let (mut widest_pool, mut past_old_bounds) = (0_i64, 0_usize);
         for seed in 1..=6 {
             let r = Rivers::generate(256, 256, 32, seed);
             for river in &r.network {
@@ -2253,10 +2259,17 @@ mod tests {
                     let tiles = (wide + 500) / 1000;
                     let (narrowest, widest) = Rivers::breathing_room(flow, shape);
                     assert!((narrowest..=widest).contains(&tiles), "width {tiles}");
-                    assert!((3..=12).contains(&tiles), "width {tiles}");
+                    assert!(
+                        (3..=i64::from(Rivers::MAX_POOL_WIDTH)).contains(&tiles),
+                        "width {tiles}"
+                    );
                     assert!((2..=i64::from(Rivers::MAX_DEPTH)).contains(&depth));
-                    if depth < i64::from(Rivers::MAX_DEPTH) {
-                        assert!(tiles * depth >= flow && tiles * (depth - 1) < flow);
+                    widest_pool = widest_pool.max(tiles);
+                    past_old_bounds += usize::from(tiles >= flow.min(13));
+                    // The section covers the flow; past a metre deep, no more.
+                    assert!(tiles * depth >= flow);
+                    if (3..i64::from(Rivers::MAX_DEPTH)).contains(&depth) {
+                        assert!(tiles * (depth - 1) < flow);
                     }
                     if calm {
                         same_width = 0;
@@ -2270,7 +2283,16 @@ mod tests {
                 }
             }
         }
-        eprintln!("banks off their line on {moved} of {free} free steps; longest held: {longest}");
+        eprintln!(
+            "banks off their line on {moved} of {free} free steps; longest held: {longest}; \
+             widest pool {widest_pool}; {past_old_bounds} steps wider than their flow or 12"
+        );
+        // Pools go past what the flow alone would fill, and past 12.
+        assert!(
+            widest_pool > i64::from(Rivers::MAX_WIDTH),
+            "widest pool {widest_pool}"
+        );
+        assert!(past_old_bounds > 0);
         // Most of the free course breathes, and no width is held long.
         assert!(free > 0 && moved * 100 >= free * 50, "{moved} of {free}");
         assert!(longest <= 40, "a width held {longest} steps");
