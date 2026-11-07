@@ -294,6 +294,8 @@ const SHORE_DIR := "res://art/shore/"
 ## the tile's diamond as it is, never turned or mirrored. The pieces are
 ## numbered like the schematics they were generated from.
 const SHORE_ISO_DIR := "res://art/shore_iso/"
+## The pieces are cut with this margin around the tile's diamond.
+const SHORE_ISO_MARGIN := 1.25
 const SHORE_ISO := {
 	"N": "01_far_bank_down_right", "W": "02_far_bank_up_right",
 	"S": "03_near_bank_down_right", "E": "04_near_bank_up_right",
@@ -729,8 +731,11 @@ func _draw_shore_iso() -> void:
 			for name in names:
 				var texture := shore_iso_piece(name, shade)
 				if texture != null:
+					# The piece covers its tile plus a margin (SHORE_ISO_MARGIN),
+					# so a bank painted just outside the diamond still shows.
 					var centre := Iso.tile_to_screen(tx, ty)
-					draw_texture_rect(texture, Rect2(centre - Vector2(Iso.TILE_W / 2.0, Iso.TILE_H / 2.0), Vector2(Iso.TILE_W, Iso.TILE_H)), false)
+					var size := Vector2(Iso.TILE_W, Iso.TILE_H) * SHORE_ISO_MARGIN
+					draw_texture_rect(texture, Rect2(centre - size / 2.0, size), false)
 
 
 func _draw_shore() -> void:
