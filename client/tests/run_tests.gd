@@ -242,6 +242,53 @@ func _test_ground_art_is_reachable() -> void:
 	var pts := plan.filter(func(p: Dictionary) -> bool: return p["kind"] == "point")
 	_check(diags.size() >= 5 and pts.is_empty(), "a staircase is drawn with diagonal corners and no points")
 	_check(ChunkView.shore_pieces("grass", "diag").size() == 3, "the three diagonal pieces are there")
+	# The bank as pieces: a straight river gives two lines, each laid as
+	# straight pieces one tile long, end to end; a staircase is laid with
+	# 45-degree pieces; a pond closes on itself with bends; every piece
+	# runs over boundary tiles only.
+	var pieces_river: Array = []
+	for y in 8:
+		for x in 8:
+			pieces_river.append("water" if x >= 3 and x <= 5 else "grass")
+	view.show_chunk(Vector2i.ZERO, 8, pieces_river, [], {})
+	var laid := view.lay_shore_pieces()
+	var straight := laid.filter(func(p: Dictionary) -> bool: return p["turn"] == 0)
+	_check(laid.size() >= 12 and straight.size() == laid.size(), "a straight river is laid with straight pieces only")
+	var one_long := laid.all(func(p: Dictionary) -> bool: return absf(p["from"].distance_to(p["to"]) - 1.0) < 0.01)
+	_check(one_long, "a straight piece is one tile long")
+	var is_bank := func(t: Vector2i) -> bool:
+		var w: bool = view._is_bank_water_tile(t)
+		for n in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+			if view._is_known(t.x + n.x, t.y + n.y) and view._is_bank_water_tile(t + n) != w:
+				return true
+		return false
+	var on_boundary := laid.all(func(p: Dictionary) -> bool:
+		for q in p["pts"]:
+			if not is_bank.call(Vector2i(int(round(q.x)), int(round(q.y)))):
+				return false
+		return true)
+	_check(on_boundary, "no piece passes through a whole tile")
+	var pieces_stairs: Array = []
+	for y in 10:
+		for x in 10:
+			pieces_stairs.append("water" if x + y >= 10 else "grass")
+	view.show_chunk(Vector2i.ZERO, 10, pieces_stairs, [], {})
+	laid = view.lay_shore_pieces()
+	var diagonal := laid.filter(func(p: Dictionary) -> bool: return p["turn"] == 0 and ShorePieces.slope_name(p["dir"]) == "45deg")
+	_check(laid.size() >= 6 and diagonal.size() >= laid.size() - 2, "a staircase is laid with 45-degree pieces")
+	var pieces_pond: Array = []
+	for y in 10:
+		for x in 10:
+			pieces_pond.append("water" if x >= 3 and x <= 6 and y >= 3 and y <= 6 else "grass")
+	view.show_chunk(Vector2i.ZERO, 10, pieces_pond, [], {})
+	laid = view.lay_shore_pieces()
+	var chained := true
+	for i in range(1, laid.size()):
+		if laid[i]["from"].distance_to(laid[i - 1]["to"]) > 0.001:
+			chained = false
+	var bends := laid.filter(func(p: Dictionary) -> bool: return p["turn"] != 0)
+	var closes: bool = laid.size() > 4 and laid[laid.size() - 1]["to"].distance_to(laid[0]["from"]) <= 0.5
+	_check(chained and closes and bends.size() >= 4, "a pond is one chain of pieces that closes on itself, bending at its corners")
 	# The isometric shore: a water tile with land to the north takes the far
 	# bank sloping down-right; land only on a diagonal takes a corner piece.
 	_check(ChunkView.shore_iso_names(true, false, false, false, false, false, false, false) == ["01_far_bank_down_right"], "land north: the far bank piece")
