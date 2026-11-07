@@ -20,6 +20,7 @@ func _init() -> void:
 	_test_tooltips()
 	_test_ground_art_is_reachable()
 	_test_inventory_lines_and_refusals()
+	_test_brooks_are_lines_on_the_ground()
 	print("client tests: %d checks, %d failures" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
 
@@ -330,3 +331,103 @@ func _test_ground_art_is_reachable() -> void:
 	view.free()
 	var forest := ChunkView.ground_material("forest")
 	_check(forest != material and forest.get_shader_parameter("base_tint") != material.get_shader_parameter("base_tint"), "the forest has its own material, in the shade")
+
+
+## A small map for the brooks: grass, a river along x = 30..34, and a
+## brook from a spring at (5, 10) winding east to the river, two wide for
+## a stretch. Returns tile -> terrain.
+func _brook_map() -> Dictionary:
+	var map := {}
+	for y in range(0, 40):
+		for x in range(0, 40):
+			map[Vector2i(x, y)] = "water" if x >= 30 and x <= 34 else "grass"
+	var path: Array = []
+	for x in range(5, 12):
+		path.append(Vector2i(x, 10))
+	for k in range(0, 5):
+		path.append(Vector2i(12 + k, 11 + k))
+	for x in range(17, 30):
+		path.append(Vector2i(x, 15))
+	for t: Vector2i in path:
+		map[t] = "brook"
+	# Two wide from x = 20 to 26.
+	for x in range(20, 27):
+		map[Vector2i(x, 16)] = "brook"
+	return map
+
+
+func _test_brooks_are_lines_on_the_ground() -> void:
+	var map := _brook_map()
+	var terrain := func(t: Vector2i) -> String: return str(map.get(t, ""))
+	# Thinning keeps a line one wide and wears a band two wide to one.
+	var line := {Vector2i(0, 0): true, Vector2i(1, 0): true, Vector2i(2, 1): true, Vector2i(3, 1): true}
+	_check(BrookLines.thin(line).size() == 4, "a thin brook stays as it is")
+	var band := {}
+	for x in 8:
+		band[Vector2i(x, 0)] = true
+		band[Vector2i(x, 1)] = true
+	var thinned := BrookLines.thin(band)
+	_check(thinned.size() <= 9 and BrookLines.chains(thinned).size() == 1, "a band two wide thins to one line: %s" % [thinned.keys()])
+	# The whole brook is one line from its spring to its mouth.
+	var lines := BrookLines.lay(terrain, Vector2i(0, 0), Vector2i(40, 40))
+	_check(lines.size() == 1, "one brook, one line: %d" % lines.size())
+	if lines.size() != 1:
+		return
+	var brook: Dictionary = lines[0]
+	var ends: Array = (brook["ends"] as Array).duplicate()
+	ends.sort()
+	_check(ends == ["mouth", "spring"], "a spring and a mouth: %s" % [ends])
+	var pts: PackedVector2Array = brook["pts"]
+	var widths: PackedFloat32Array = brook["widths"]
+	var alphas: PackedFloat32Array = brook["alphas"]
+	var spring := 0 if pts[0].x < pts[pts.size() - 1].x else pts.size() - 1
+	var mouth := pts.size() - 1 - spring
+	_check(widths[spring] == 0.0, "the spring ends in a point")
+	_check(alphas[mouth] == 0.0 and pts[mouth].x > 29.5, "the mouth runs into the river and fades: %s" % [pts[mouth]])
+	# The line keeps to the brook's tiles (and the river at its mouth).
+	var strays := 0
+	for p in pts:
+		var t := Vector2i(roundi(p.x), roundi(p.y))
+		var near := false
+		for dy in range(-1, 2):
+			for dx in range(-1, 2):
+				var at := str(map.get(t + Vector2i(dx, dy), ""))
+				near = near or at == "brook" or at == "water"
+		strays += 0 if near else 1
+	_check(strays == 0, "%d points of the line stray from the brook" % strays)
+	# Wider where the brook is two wide, never wider than its tiles.
+	var narrow := 0.0
+	var wide := 0.0
+	for i in pts.size():
+		_check(widths[i] <= 2.0 * BrookLines.WATER_SHARE * (1.0 + BrookLines.WOBBLE) + 1e-4, "width %f within the tiles" % widths[i])
+		if absf(pts[i].x - 9.0) < 0.5:
+			narrow = widths[i]
+		if absf(pts[i].x - 23.0) < 0.5 and pts[i].y > 14.0:
+			wide = widths[i]
+	_check(wide > narrow * 1.4, "two wide draws wider: %f against %f" % [wide, narrow])
+	# The same, every time.
+	_check(str(BrookLines.lay(terrain, Vector2i(0, 0), Vector2i(40, 40))) == str(lines), "a brook is laid the same every time")
+	# A chunk's window gives the same segments as the whole map, so chunks
+	# join without a seam; and a brook cut by the window is not a spring.
+	for chunk: Vector2i in [Vector2i(0, 0), Vector2i(16, 0), Vector2i(16, 16)]:
+		var lo := chunk
+		var hi := chunk + Vector2i(16, 16)
+		var margin := Vector2i(BrookLines.MARGIN, BrookLines.MARGIN)
+		var local := BrookLines.lay(terrain, lo - margin, hi + margin)
+		_check(_owned(local, lo, hi) == _owned(lines, lo, hi), "chunk %s draws the same brook as the map" % [chunk])
+	var cut := BrookLines.lay(terrain, Vector2i(0, 0), Vector2i(10, 40))
+	_check(cut.size() == 1 and (cut[0]["ends"] as Array).has("cut"), "a brook cut by the window is not a spring")
+
+
+## The segments of `lines` a chunk of tiles [lo, hi) draws, rounded.
+func _owned(lines: Array, lo: Vector2i, hi: Vector2i) -> Array:
+	var out: Array = []
+	for line: Dictionary in lines:
+		var pts: PackedVector2Array = line["pts"]
+		var widths: PackedFloat32Array = line["widths"]
+		for i in pts.size() - 1:
+			if BrookLines.owns(line, i, lo, hi):
+				out.append([pts[i].snapped(Vector2(0.001, 0.001)), pts[i + 1].snapped(Vector2(0.001, 0.001)), snappedf(widths[i], 0.001)])
+	out.sort()
+	return out
+
