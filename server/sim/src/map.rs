@@ -729,7 +729,7 @@ fn heading_towards(dx: i64, dy: i64) -> u8 {
 ///   right: a bank without a ford is a reason for a bridge or a boat;
 /// - the network is a **tree**: a main river enters at the cliff's foot
 ///   and leaves by the south edge; tributaries enter by an edge; brooks
-///   rise where the ground is wet and run to the nearest water; each
+///   rise where the ground is wet and meander to the nearest water; each
 ///   ends where it meets water, so waters join and never cross;
 /// - a **divergence** splits a river in two arms around an island, from
 ///   a rock to a large island, and the arms join again downstream; the
@@ -906,6 +906,12 @@ impl Rivers {
     const BROOKS: (u32, u32) = (8, 14);
     /// Longest brook, in steps: one that wanders further is no brook.
     const BROOK_STEPS: usize = 80;
+    /// How many steps a brook holds a heading, at least and at most: it
+    /// meanders more than a river.
+    const BROOK_RUN: (u32, u32) = (2, 5);
+    /// A brook never strays more than this many steps of heading from the
+    /// heading it rose with (4 steps = 90 degrees).
+    const BROOK_DRIFT: i32 = 4;
     /// Wetness (0..1000) a tile needs for a brook to rise there.
     const WET: u32 = 560;
     /// A river parts in two only from this flow up.
@@ -970,7 +976,7 @@ impl Rivers {
             w / 4 + i64::from(rng.next_below(u32::try_from(w / 2).expect("fits"))),
             top,
         );
-        let (path, _) = rivers.trace(start, 0, &mut rng);
+        let (path, _) = rivers.trace(start, 0, false, &mut rng);
         let flow = between(&mut rng, Self::MAIN_FLOW);
         rivers.paint_provisional(&path, flow, 0);
         network.push(River::new(path, flow));
@@ -1242,7 +1248,7 @@ impl Rivers {
             return false;
         };
         let heading = heading_towards(aim.0 - start.0 * 1000, aim.1 - start.1 * 1000);
-        let (path, end) = self.trace(start, heading, rng);
+        let (path, end) = self.trace(start, heading, brook, rng);
         if path.len() < Self::CLEARANCE || (brook && path.len() > Self::BROOK_STEPS) {
             return false;
         }
@@ -1298,9 +1304,20 @@ impl Rivers {
 
     /// The centre path of one water from `start`: steps of one tile, each
     /// with the heading it was taken with, until the map's edge or the
-    /// water of another.
-    fn trace(&self, start: (i64, i64), heading: u8, rng: &mut Lcg) -> (Vec<Step>, End) {
-        let (run_min, run_max) = Self::RUN;
+    /// water of another. A `brook` meanders: it holds its headings for
+    /// fewer steps and may stray further.
+    fn trace(
+        &self,
+        start: (i64, i64),
+        heading: u8,
+        brook: bool,
+        rng: &mut Lcg,
+    ) -> (Vec<Step>, End) {
+        let ((run_min, run_max), max_drift) = if brook {
+            (Self::BROOK_RUN, Self::BROOK_DRIFT)
+        } else {
+            (Self::RUN, Self::MAX_DRIFT)
+        };
         let run = |rng: &mut Lcg| run_min + rng.next_below(run_max - run_min + 1);
         let base = i32::from(heading);
         let mut dir = base;
@@ -1327,7 +1344,7 @@ impl Rivers {
                 } else {
                     i32::try_from(rng.next_below(3)).expect("small") - 1
                 };
-                dir += if (drift + turn).abs() > Self::MAX_DRIFT {
+                dir += if (drift + turn).abs() > max_drift {
                     -turn
                 } else {
                     turn
@@ -2276,7 +2293,9 @@ mod tests {
                     } else {
                         free += 1;
                         moved += usize::from((left, right) != (0, 0));
-                        let width_held = t > 0 && river.banks[t] == river.banks[t - 1];
+                        // Straight and parallel: the same heading, the
+                        // same banks.
+                        let width_held = t > 0 && river.banks[t] == river.banks[t - 1] && !bend(t);
                         same_width = if width_held { same_width + 1 } else { 0 };
                         longest = longest.max(same_width);
                     }
@@ -2284,7 +2303,7 @@ mod tests {
             }
         }
         eprintln!(
-            "banks off their line on {moved} of {free} free steps; longest held: {longest}; \
+            "banks off their line on {moved} of {free} free steps; longest straight: {longest}; \
              widest pool {widest_pool}; {past_old_bounds} steps wider than their flow or 12"
         );
         // Pools go past what the flow alone would fill, and past 12.
@@ -2293,9 +2312,45 @@ mod tests {
             "widest pool {widest_pool}"
         );
         assert!(past_old_bounds > 0);
-        // Most of the free course breathes, and no width is held long.
+        // Most of the free course breathes, and no stretch runs straight
+        // between parallel banks for long.
         assert!(free > 0 && moved * 100 >= free * 50, "{moved} of {free}");
-        assert!(longest <= 40, "a width held {longest} steps");
+        assert!(longest <= 30, "straight and parallel for {longest} steps");
+    }
+
+    #[test]
+    fn brooks_meander_more_than_rivers() {
+        // Mean steps a heading is held, brooks then rivers, over six maps.
+        let (mut brook, mut river) = ((0, 0), (0, 0));
+        for seed in 1..=6 {
+            let r = Rivers::generate(256, 256, 32, seed);
+            for water in &r.network {
+                let is_brook = water.entry_flow <= i64::from(Rivers::BROOK_FLOW.1);
+                let start = i32::from(water.path[0].heading);
+                let mut bends = 0;
+                for pair in water.path.windows(2) {
+                    let (a, b) = (i32::from(pair[0].heading), i32::from(pair[1].heading));
+                    let turn = (b - a + 8).rem_euclid(16) - 8;
+                    // One step of heading at a time, never past the drift.
+                    assert!(turn.abs() <= 1, "seed {seed}: a turn of {turn} steps");
+                    let drift = (b - start + 8).rem_euclid(16) - 8;
+                    let most = if is_brook {
+                        Rivers::BROOK_DRIFT
+                    } else {
+                        Rivers::MAX_DRIFT
+                    };
+                    assert!(drift.abs() <= most, "seed {seed}: strayed {drift} steps");
+                    bends += usize::from(turn != 0);
+                }
+                let tally = if is_brook { &mut brook } else { &mut river };
+                tally.0 += water.path.len();
+                tally.1 += bends + 1;
+            }
+        }
+        let (brook_run, river_run) = (brook.0 / brook.1, river.0 / river.1);
+        eprintln!("a heading held {brook_run} steps by brooks, {river_run} by rivers");
+        assert!(brook.1 > 0 && brook_run <= 4, "brooks hold {brook_run}");
+        assert!(river_run > brook_run);
     }
 
     #[test]
