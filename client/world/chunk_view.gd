@@ -91,6 +91,7 @@ const COLORS := {
 	"forest": Color(0.22, 0.40, 0.20),
 	"water": Color(0.25, 0.45, 0.70),
 	"ford": Color(0.55, 0.60, 0.50),
+	"brook": Color(0.35, 0.52, 0.62),
 	"rock": Color(0.48, 0.45, 0.42),
 }
 const ITEM_RADIUS := 4.5
@@ -1256,7 +1257,7 @@ func _draw_decor() -> void:
 					if near < min_near:
 						continue
 				else:
-					if terrain == "water" or terrain == "ford":
+					if terrain == "water" or terrain == "ford" or terrain == "brook":
 						continue
 					near = _max4(_corners(land_near_water, x, y))
 					if near <= 0.0:

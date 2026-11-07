@@ -540,7 +540,7 @@ impl World {
     /// content's materials scattered over the ground by its spawn rules.
     pub fn new(calendar: Calendar, content: &Content) -> Self {
         let mut world = Self::empty(calendar, Map::valley(VALLEY_SIZE, VALLEY_SIZE, VALLEY_SEED));
-        for wanted in [Pos::new(133, 143), Pos::new(135, 144), Pos::new(132, 146)] {
+        for wanted in [Pos::new(134, 139), Pos::new(136, 140), Pos::new(133, 142)] {
             let pos = world
                 .map
                 .nearest(wanted, Terrain::Grass)
