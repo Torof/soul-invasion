@@ -1838,6 +1838,11 @@ mod tests {
                 island_tiles += 1;
                 for dy in -m..=m {
                     for dx in -m..=m {
+                        if dx.abs() + dy.abs() > m {
+                            // Three tiles of water on every side: as the
+                            // crow flies, not across a corner.
+                            continue;
+                        }
                         let (nx, ny) = (x + dx, y + dy);
                         let ok = wet(nx, ny)
                             || !mainland[usize::try_from(
