@@ -289,6 +289,20 @@ func _test_ground_art_is_reachable() -> void:
 	var bends := laid.filter(func(p: Dictionary) -> bool: return p["turn"] != 0)
 	var closes: bool = laid.size() > 4 and laid[laid.size() - 1]["to"].distance_to(laid[0]["from"]) <= 0.5
 	_check(chained and closes and bends.size() >= 4, "a pond is one chain of pieces that closes on itself, bending at its corners")
+	# The pieces' images: one per heading and per one-step bend, named by
+	# where the bend goes; sharp bends have none.
+	_check(ShorePieces.piece_name(4, 0) == "straight_04" and ShorePieces.piece_name(3, 2) == "", "pieces are named by heading; sharp bends have no image")
+	var named := {}
+	for d in 16:
+		for turn in [0, 1, -1]:
+			named[ShorePieces.piece_name(d, turn)] = true
+	_check(named.size() == 48, "48 distinct piece names")
+	var all_there := named.keys().all(func(n: String) -> bool:
+		var image := ChunkView.shore_piece_image(n)
+		return image != null and image.get_width() == 128 and image.get_height() == 128)
+	_check(all_there, "every piece image is there, 128 px square")
+	var pond_named := laid.all(func(p: Dictionary) -> bool: return absi(p["turn"]) > 1 or ChunkView.shore_piece_image(ShorePieces.piece_name(p["dir"], p["turn"])) != null)
+	_check(pond_named, "every laid straight or one-step bend finds its image")
 	# The isometric shore: a water tile with land to the north takes the far
 	# bank sloping down-right; land only on a diagonal takes a corner piece.
 	_check(ChunkView.shore_iso_names(true, false, false, false, false, false, false, false) == ["01_far_bank_down_right"], "land north: the far bank piece")

@@ -56,15 +56,9 @@ func _run() -> void:
 	quit()
 
 
-## The name of a piece: its heading and its bend, the bend named by
-## where it goes (towards the water, which is on the right, or away).
+## The name of a piece (ShorePieces.piece_name, shared with the client).
 static func piece_name(d: int, turn: int) -> String:
-	if turn == 0:
-		return "straight_%02d" % d
-	var h: Vector2 = ShorePieces.HEADINGS[d]
-	var right := Vector2(-h.y, h.x)
-	var next: Vector2 = ShorePieces.HEADINGS[(d + turn + 16) % 16]
-	return "bend_%02d_%s" % [d, "towater" if next.dot(right) > 0.0 else "toland"]
+	return ShorePieces.piece_name(d, turn)
 
 
 ## Which face the bank shows at this heading: the direction towards the
