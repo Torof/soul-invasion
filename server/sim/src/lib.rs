@@ -536,11 +536,11 @@ pub const VALLEY_SEED: u64 = 1;
 
 impl World {
     /// Creates the first version's valley at tick zero, with a few
-    /// inhabitants standing on the grass of the east bank and the
+    /// inhabitants standing on the grass by the main river and the
     /// content's materials scattered over the ground by its spawn rules.
     pub fn new(calendar: Calendar, content: &Content) -> Self {
         let mut world = Self::empty(calendar, Map::valley(VALLEY_SIZE, VALLEY_SIZE, VALLEY_SEED));
-        for wanted in [Pos::new(164, 141), Pos::new(166, 142), Pos::new(163, 144)] {
+        for wanted in [Pos::new(133, 143), Pos::new(135, 144), Pos::new(132, 146)] {
             let pos = world
                 .map
                 .nearest(wanted, Terrain::Grass)
