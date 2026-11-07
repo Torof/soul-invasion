@@ -13,7 +13,7 @@ func _initialize() -> void:
 	var tiles: Array = []
 	for y in SIZE:
 		for x in SIZE:
-			tiles.append("water" if _is_water(which, x, y) else "grass")
+			tiles.append("water" if _is_water(which, x, y) else ("forest" if which == "forest" and x > 8 else "grass"))
 	var world := Node2D.new()
 	root.add_child(world)
 	var view := ChunkView.new()
@@ -41,6 +41,10 @@ func _is_water(which: String, x: int, y: int) -> bool:
 			return x >= 4 and x <= 7 and y >= 4 and y <= 7
 		"island":
 			return not (x >= 4 and x <= 7 and y >= 4 and y <= 7)
+		"zigzag":
+			return x >= 3 + y / 2 and x <= 5 + y / 2
+		"forest":
+			return x >= 6 and x <= 8
 		_:
 			return x >= 6 and x <= 8
 
