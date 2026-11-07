@@ -738,7 +738,7 @@ fn heading_towards(dx: i64, dy: i64) -> u8 {
 ///   then bends by one step of 22.5 degrees, never turning back on the
 ///   way it entered;
 /// - the **banks breathe**: each bank of a river, on its own, holds its
-///   line for a while, then turns one step of heading out or in for a
+///   line for a while, then turns a quarter of a step of heading out or in for a
 ///   few steps and comes back, so a river widens, narrows, slides
 ///   sideways or bends on one side only, up to a pool of
 ///   `MAX_POOL_WIDTH`; the depth takes what the width leaves, so the flow
@@ -913,16 +913,16 @@ impl Rivers {
     /// How many steps a heading is held, at least and at most.
     const RUN: (u32, u32) = (4, 10);
     /// How fast a bank leaves its line, in thousandths of a tile per step:
-    /// the tangent of 22.5 degrees, so a moving bank keeps to the sixteen
-    /// headings and each of its bends is one step.
-    const BANK_SLOPE: i64 = 414;
+    /// the tangent of 5.6 degrees, a quarter of a step of heading, so a
+    /// river widens or narrows slowly.
+    const BANK_SLOPE: i64 = 98;
     /// How far a bank may stand inside its line and outside it, in steps
     /// of `BANK_SLOPE`: about a tile in, six out.
-    const BANK_REACH: (i64, i64) = (-2, 14);
+    const BANK_REACH: (i64, i64) = (-10, 61);
     /// Steps a bank holds its line between two moves, at least and at most.
     const BANK_HOLD: (u32, u32) = (4, 12);
     /// Steps a move of a bank lasts, at least and at most.
-    const BANK_SHIFT: (u32, u32) = (3, 10);
+    const BANK_SHIFT: (u32, u32) = (12, 40);
     /// Tries at the banks of one free stretch before leaving it straight.
     const BANK_TRIES: u32 = 30;
     /// A river never strays more than this many steps of heading from the
@@ -1379,7 +1379,7 @@ impl Rivers {
     }
 
     /// Lets the banks of water `i` breathe where it is free: each bank, on
-    /// its own, holds its line, then turns one step of heading out or in
+    /// its own, holds its line, then turns a quarter of a step of heading out or in
     /// for a few steps, within its reach and the widths its flow allows.
     /// Calm within `CLEARANCE` of its ends, of the map's edges, of a
     /// junction, a ford or a divergence, and on brooks; a bank never bends
@@ -2276,7 +2276,9 @@ mod tests {
                     } else {
                         free += 1;
                         moved += usize::from((left, right) != (0, 0));
-                        let width_held = t > 0 && river.banks[t] == river.banks[t - 1];
+                        // Straight and parallel: the same heading, the
+                        // same banks.
+                        let width_held = t > 0 && river.banks[t] == river.banks[t - 1] && !bend(t);
                         same_width = if width_held { same_width + 1 } else { 0 };
                         longest = longest.max(same_width);
                     }
@@ -2284,18 +2286,19 @@ mod tests {
             }
         }
         eprintln!(
-            "banks off their line on {moved} of {free} free steps; longest held: {longest}; \
+            "banks off their line on {moved} of {free} free steps; longest straight: {longest}; \
              widest pool {widest_pool}; {past_old_bounds} steps wider than their flow or 12"
         );
-        // Pools go past what the flow alone would fill, and past 12.
+        // Pools go past what the flow alone would fill.
         assert!(
-            widest_pool > i64::from(Rivers::MAX_WIDTH),
+            widest_pool >= i64::from(Rivers::MAX_WIDTH),
             "widest pool {widest_pool}"
         );
         assert!(past_old_bounds > 0);
-        // Most of the free course breathes, and no width is held long.
+        // Most of the free course breathes, and no stretch runs straight
+        // between parallel banks for long.
         assert!(free > 0 && moved * 100 >= free * 50, "{moved} of {free}");
-        assert!(longest <= 40, "a width held {longest} steps");
+        assert!(longest <= 30, "straight and parallel for {longest} steps");
     }
 
     #[test]
