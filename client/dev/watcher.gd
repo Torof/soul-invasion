@@ -55,6 +55,7 @@ func _poll() -> void:
 	# A fresh layer named by the spec is watched from the next poll on.
 	if changed:
 		ChunkView.reload_art()
+		get_tree().call_group("world_views", "relay_shore")
 		get_tree().call_group("chunk_views", "queue_redraw")
 		print("ground reloaded")
 	if FileAccess.file_exists(REQUEST):

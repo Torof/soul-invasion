@@ -1,101 +1,101 @@
 {
-	"grass": {
-		"note": "The meadow: the first grass, its closest sister over half, the open sister in patches, the worn grass in spots. Tone variation is the shader's tint, never another image.",
-		"texture": "res://art/ground/ground_grass_01_summer.png",
-		"layers": {
-			"sibling": "res://art/ground/ground_grass_03_summer.png",
-			"second": "res://art/ground/ground_grass_04_summer.png",
-			"worn": "res://art/ground/ground_grass_02_summer.png"
-		},
-		"params": {}
-	},
-	"forest": {
-		"note": "The floor of the woods: the flattest grass in the shade, the sparse forest grass in a few plaques, a third of the bare spots kept. Plain soil does not come out of the generator.",
-		"texture": "res://art/ground/ground_grass_02_summer.png",
-		"layers": {
-			"sibling": "res://art/ground/ground_grass_06_summer.png"
-		},
-		"params": {
-			"base_tint": [
-				0.56,
-				0.7,
-				0.74
-			],
-			"sibling_cover": 0.25,
-			"has_variants": true,
-			"bare_keep": 0.35,
-			"dry_strength": 0.3
-		}
-	},
-	"water": {
-		"note": "The river: only the generated images, turned to follow the river. No bank for now: the strip approach broke on a meandering river (it assumed a straight north-south bank); the bank will be a tileset of generated shore pieces. Decorations are sown by the decor entry.",
-		"texture": "res://art/ground/ground_water_01_summer.png",
-		"layers": {
-			"sibling": "res://art/ground/ground_water_03_summer.png",
-			"second": "res://art/ground/ground_water_04_summer.png",
-			"worn": "res://art/ground/ground_water_05_summer.png"
-		},
-		"params": {
-			"has_variants": true,
-			"dry_strength": 0.0,
-			"base_tint": [
-				1.0,
-				0.88,
-				0.78
-			],
-			"sibling_cover": 0.4,
-			"sibling_tint": [
-				0.8,
-				0.975,
-				0.97
-			],
-			"second_cover": 0.25,
-			"second_scale": 0.04,
-			"noise_scale": 0.09,
-			"worn_cover": 0.22,
-			"worn_scale": 0.025,
-			"worn_softness": 0.35,
-			"second_softness": 0.25,
-			"spill_only_with_bank": true
-		}
-	},
-	"decor": {
-		"note": "Decorations sown by a fixed hash of the tile (client-side trial, no effect on the game).",
-		"rock": {
-			"where": "water_near_land",
-			"chance": 0.05,
-			"min_near": 0.95,
-			"size_m": 0.6,
-			"size_jitter": 0.4,
-			"tint": "water"
-		},
-		"tuft": {
-			"where": "land_near_water",
-			"chance": 0.35,
-			"size_m": 0.55
-		},
-		"flower": {
-			"where": "land_near_water",
-			"chance": 0.2,
-			"size_m": 0.5
-		},
-		"pebble": {
-			"where": "land_near_water",
-			"chance": 0.18,
-			"size_m": 0.28
-		}
-	},
-	"shore": {
-		"note": "Shore tileset: generated edge and corner pieces on every land/water boundary; matter by stretch along the river.",
-		"weights": {
-			"sand": 0.25,
-			"grass": 0.6,
-			"rock": 0.15
-		},
-		"stretch": 48,
-		"iso": true,
-		"mode": "curve",
-		"tolerance": 0.9,
-		"rounding": 1
-	}
+  "grass": {
+    "note": "The meadow: the first grass, its closest sister over half, the open sister in patches, the worn grass in spots. Tone variation is the shader's tint, never another image.",
+    "texture": "res://art/ground/ground_grass_01_summer.png",
+    "layers": {
+      "sibling": "res://art/ground/ground_grass_03_summer.png",
+      "second": "res://art/ground/ground_grass_04_summer.png",
+      "worn": "res://art/ground/ground_grass_02_summer.png"
+    },
+    "params": {}
+  },
+  "forest": {
+    "note": "The floor of the woods: the flattest grass in the shade, the sparse forest grass in a few plaques, a third of the bare spots kept. Plain soil does not come out of the generator.",
+    "texture": "res://art/ground/ground_grass_02_summer.png",
+    "layers": {
+      "sibling": "res://art/ground/ground_grass_06_summer.png"
+    },
+    "params": {
+      "base_tint": [
+        0.56,
+        0.7,
+        0.74
+      ],
+      "sibling_cover": 0.25,
+      "has_variants": true,
+      "bare_keep": 0.35,
+      "dry_strength": 0.3
+    }
+  },
+  "water": {
+    "note": "The river: only the generated images, turned to follow the river. No bank for now: the strip approach broke on a meandering river (it assumed a straight north-south bank); the bank will be a tileset of generated shore pieces. Decorations are sown by the decor entry.",
+    "texture": "res://art/ground/ground_water_01_summer.png",
+    "layers": {
+      "sibling": "res://art/ground/ground_water_03_summer.png",
+      "second": "res://art/ground/ground_water_04_summer.png",
+      "worn": "res://art/ground/ground_water_05_summer.png"
+    },
+    "params": {
+      "has_variants": true,
+      "dry_strength": 0.0,
+      "base_tint": [
+        1.0,
+        0.88,
+        0.78
+      ],
+      "sibling_cover": 0.4,
+      "sibling_tint": [
+        0.8,
+        0.975,
+        0.97
+      ],
+      "second_cover": 0.25,
+      "second_scale": 0.04,
+      "noise_scale": 0.09,
+      "worn_cover": 0.22,
+      "worn_scale": 0.025,
+      "worn_softness": 0.35,
+      "second_softness": 0.25,
+      "spill_only_with_bank": true
+    }
+  },
+  "decor": {
+    "note": "Decorations sown by a fixed hash of the tile (client-side trial, no effect on the game).",
+    "rock": {
+      "where": "water_near_land",
+      "chance": 0.05,
+      "min_near": 0.95,
+      "size_m": 0.6,
+      "size_jitter": 0.4,
+      "tint": "water"
+    },
+    "tuft": {
+      "where": "land_near_water",
+      "chance": 0.35,
+      "size_m": 0.55
+    },
+    "flower": {
+      "where": "land_near_water",
+      "chance": 0.2,
+      "size_m": 0.5
+    },
+    "pebble": {
+      "where": "land_near_water",
+      "chance": 0.18,
+      "size_m": 0.28
+    }
+  },
+  "shore": {
+    "note": "Shore: 'pieces' lays the bank as one-tile pieces in sixteen headings (lines for now); 'curve' draws brushes along a simplified line; else the generated tilesets.",
+    "weights": {
+      "sand": 0.25,
+      "grass": 0.6,
+      "rock": 0.15
+    },
+    "stretch": 48,
+    "iso": true,
+    "mode": "pieces",
+    "tolerance": 0.9,
+    "rounding": 1
+  }
 }

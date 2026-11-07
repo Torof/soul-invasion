@@ -809,80 +809,44 @@ func _is_known(tx: int, ty: int) -> bool:
 func shore_lines() -> Array:
 	var lo := Vector2i(_origin.x - SHORE_MARGIN, _origin.y - SHORE_MARGIN)
 	var hi := Vector2i(_origin.x + _size + SHORE_MARGIN, _origin.y + _size + SHORE_MARGIN)
-	# Marching squares on cells between four tile centres.
-	var segments: Array = []
-	for gy in range(lo.y, hi.y - 1):
-		for gx in range(lo.x, hi.x - 1):
-			if not (_is_known(gx, gy) and _is_known(gx + 1, gy) and _is_known(gx, gy + 1) and _is_known(gx + 1, gy + 1)):
-				continue
-			var code := 0
-			if _is_water_at(gx, gy):
-				code += 8
-			if _is_water_at(gx + 1, gy):
-				code += 4
-			if _is_water_at(gx + 1, gy + 1):
-				code += 2
-			if _is_water_at(gx, gy + 1):
-				code += 1
-			var top := Vector2(gx + 0.5, gy)
-			var right := Vector2(gx + 1, gy + 0.5)
-			var bottom := Vector2(gx + 0.5, gy + 1)
-			var left := Vector2(gx, gy + 0.5)
-			match code:
-				1, 14:
-					segments.append([left, bottom])
-				2, 13:
-					segments.append([bottom, right])
-				3, 12:
-					segments.append([left, right])
-				4, 11:
-					segments.append([top, right])
-				5:
-					segments.append([top, right])
-					segments.append([left, bottom])
-				6, 9:
-					segments.append([top, bottom])
-				7, 8:
-					segments.append([left, top])
-				10:
-					segments.append([left, top])
-					segments.append([bottom, right])
-	# Join the segments into polylines by their shared ends.
-	var key := func(p: Vector2) -> Vector2i: return Vector2i(int(round(p.x * 2.0)), int(round(p.y * 2.0)))
-	var at_end: Dictionary = {}
-	for i in segments.size():
-		for p in segments[i]:
-			var k: Vector2i = key.call(p)
-			if not at_end.has(k):
-				at_end[k] = []
-			at_end[k].append(i)
-	var used: Dictionary = {}
-	var lines: Array = []
-	for start in segments.size():
-		if used.has(start):
-			continue
-		# Walk both ways from this segment.
-		var line: Array = [segments[start][0], segments[start][1]]
-		used[start] = true
-		for direction in 2:
-			while true:
-				var tip: Vector2 = line[line.size() - 1] if direction == 0 else line[0]
-				var next := -1
-				for i in at_end.get(key.call(tip), []):
-					if not used.has(i):
-						next = i
-						break
-				if next < 0:
-					break
-				used[next] = true
-				var seg: Array = segments[next]
-				var other: Vector2 = seg[1] if key.call(seg[0]) == key.call(tip) else seg[0]
-				if direction == 0:
-					line.append(other)
-				else:
-					line.insert(0, other)
-		lines.append(line)
-	return lines
+	return ShorePieces.lines(_is_known_tile, _is_water_tile, lo, hi)
+
+
+func _is_known_tile(t: Vector2i) -> bool:
+	return _is_known(t.x, t.y)
+
+
+func _is_water_tile(t: Vector2i) -> bool:
+	return _is_water_at(t.x, t.y)
+
+
+## For the bank pieces, a ford is water too (it has no bank of its own
+## yet) and a brook is land (it is drawn as a line on the ground).
+func _is_bank_water_tile(t: Vector2i) -> bool:
+	var terrain := _terrain(t.x, t.y)
+	return terrain == "water" or terrain == "ford"
+
+
+## The bank pieces laid over this chunk by the world view (see
+## ShorePieces), so chunks join without a seam; null when nobody did,
+## and the chunk lays its own (the bench, the tests).
+var bank_pieces: Variant = null
+
+
+## The bank pieces of this chunk and a margin around it, laid here.
+func lay_shore_pieces() -> Array:
+	var lo := Vector2i(_origin.x - SHORE_MARGIN, _origin.y - SHORE_MARGIN)
+	var hi := Vector2i(_origin.x + _size + SHORE_MARGIN, _origin.y + _size + SHORE_MARGIN)
+	return ShorePieces.lay_all(_is_known_tile, _is_bank_water_tile, lo, hi)
+
+
+## Draws the bank pieces as lines, for the laying to be judged before
+## any image exists.
+func _draw_shore_pieces() -> void:
+	var pieces: Array = bank_pieces if bank_pieces is Array else lay_shore_pieces()
+	var lo := Vector2(_origin.x, _origin.y) - Vector2(0.5, 0.5)
+	var hi := Vector2(_origin.x + _size, _origin.y + _size) - Vector2(0.5, 0.5)
+	ShorePieces.draw(self, pieces, lo, hi)
 
 
 ## Douglas-Peucker: the fewest straight runs within `tolerance` of the
@@ -1099,6 +1063,9 @@ func _draw_shore_curve() -> void:
 func _draw_shore() -> void:
 	var shore: Dictionary = ground_spec().get("shore", {})
 	if shore.is_empty():
+		return
+	if str(shore.get("mode", "")) == "pieces":
+		_draw_shore_pieces()
 		return
 	if str(shore.get("mode", "")) == "curve":
 		_draw_shore_curve()
