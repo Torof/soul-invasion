@@ -31,7 +31,9 @@ use serde::{Deserialize, Serialize};
 /// - v8: bodies pick up, hold, stow and drop items; the pilot is told its
 ///   inventory, everyone what a body holds in hand; `act_refused` replaces
 ///   `eat_refused`.
-pub const PROTOCOL_VERSION: u32 = 8;
+/// - v9: the `brook` terrain, water one or two tiles wide that is walked
+///   through.
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// A tile on the map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,6 +47,8 @@ pub enum Terrain {
     Water,
     /// A shallow crossing of the river.
     Ford,
+    /// A brook, one or two tiles wide; walked through.
+    Brook,
     /// The cliff; not walkable.
     Rock,
 }

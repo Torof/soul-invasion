@@ -376,7 +376,7 @@ pub const SAMPLE_MATERIALS: &str = r##"[
 /// Movement rules of [`Content::sample`]: the valley's own.
 pub const SAMPLE_MOVEMENT: &str = r"(
     walk_speed_cm_per_s: 143,
-    terrain_costs: { grass: Some(10), forest: Some(15), ford: Some(20), water: None, rock: None },
+    terrain_costs: { grass: Some(10), forest: Some(15), ford: Some(20), brook: Some(15), water: None, rock: None },
     carry_capacity_g: 20000,
     speed_percent_at_full_load: 60,
 )";

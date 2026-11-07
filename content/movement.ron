@@ -18,6 +18,7 @@
         grass: Some(10),
         forest: Some(15),
         ford: Some(20),
+        brook: Some(15),
         water: None,
         rock: None,
     },

@@ -563,6 +563,7 @@ fn terrain_view(terrain: sim::Terrain) -> Terrain {
         sim::Terrain::Forest => Terrain::Forest,
         sim::Terrain::Water => Terrain::Water,
         sim::Terrain::Ford => Terrain::Ford,
+        sim::Terrain::Brook => Terrain::Brook,
         sim::Terrain::Rock => Terrain::Rock,
     }
 }
