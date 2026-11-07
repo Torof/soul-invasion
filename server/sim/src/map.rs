@@ -728,7 +728,8 @@ fn heading_towards(dx: i64, dy: i64) -> u8 {
 ///   can do; a river that could have one has one by chance, not by
 ///   right: a bank without a ford is a reason for a bridge or a boat;
 /// - the network is a **tree**: a main river enters at the cliff's foot
-///   and leaves by the south edge; tributaries enter by an edge; brooks
+///   and leaves by the south edge; one or two tributaries enter by an
+///   edge; a few brooks
 ///   rise where the ground is wet and meander to the nearest water; each
 ///   ends where it meets water, so waters join and never cross;
 /// - a **divergence** splits a river in two arms around an island, from
@@ -903,7 +904,9 @@ impl Rivers {
     /// Half-cubes a brook rises with.
     const BROOK_FLOW: (u32, u32) = (1, 2);
     /// How many brooks rise on a map, at least and at most.
-    const BROOKS: (u32, u32) = (8, 14);
+    const BROOKS: (u32, u32) = (3, 6);
+    /// How many tributaries enter by the edges, at least and at most.
+    const TRIBUTARIES: (u32, u32) = (1, 2);
     /// Longest brook, in steps: one that wanders further is no brook.
     const BROOK_STEPS: usize = 80;
     /// How many steps a brook holds a heading, at least and at most: it
@@ -982,10 +985,16 @@ impl Rivers {
         network.push(River::new(path, flow));
         rivers.ford(&mut network, 0, Self::FORD_CHANCE, &mut rng);
 
-        // Tributaries, three from the edges: each heads for a point of the
-        // main river downstream and ends where it meets water.
-        let sides = [0, w - 1, if rng.next_below(2) == 0 { 0 } else { w - 1 }];
-        for side in sides {
+        // Tributaries from the edges, one or two, the first from a side
+        // drawn at random and the next from the other: each heads for a
+        // point of the main river downstream and ends where it meets water.
+        let first = rng.next_below(2);
+        for n in 0..between(&mut rng, Self::TRIBUTARIES) {
+            let side = if (u32::try_from(n).expect("few") + first).is_multiple_of(2) {
+                0
+            } else {
+                w - 1
+            };
             let y =
                 top + h / 8 + i64::from(rng.next_below(u32::try_from(h * 3 / 4).expect("fits")));
             let flow = between(&mut rng, Self::TRIBUTARY_FLOW);
@@ -2351,6 +2360,28 @@ mod tests {
         eprintln!("a heading held {brook_run} steps by brooks, {river_run} by rivers");
         assert!(brook.1 > 0 && brook_run <= 4, "brooks hold {brook_run}");
         assert!(river_run > brook_run);
+    }
+
+    #[test]
+    fn waters_cover_little_of_the_valley() {
+        // Rivers and brooks are landmarks, not the landscape: a small share
+        // of the valley below the cliff, over six maps.
+        let (mut wet, mut ground, mut waters) = (0, 0, 0);
+        for seed in 1..=6 {
+            let r = Rivers::generate(256, 256, 32, seed);
+            waters += r.network.len();
+            for y in 32..256 {
+                for x in 0..256 {
+                    ground += 1;
+                    wet += usize::from(r.depth_at(x, y) > 0);
+                }
+            }
+        }
+        let share = wet * 1000 / ground;
+        eprintln!("water on {share} per mille of the valley, {waters} waters on six maps");
+        // About 4 % of the valley, six waters a map (it was 5 % and nine).
+        assert!(share <= 45, "{share} per mille");
+        assert!(waters <= 6 * 7, "{waters} waters on six maps");
     }
 
     #[test]
