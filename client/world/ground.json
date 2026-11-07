@@ -93,6 +93,7 @@
 			"rock": 0.15
 		},
 		"stretch": 48,
-		"iso": true
+		"iso": true,
+		"mode": "curve"
 	}
 }
