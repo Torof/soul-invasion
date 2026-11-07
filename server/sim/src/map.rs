@@ -725,7 +725,8 @@ fn heading_towards(dx: i64, dy: i64) -> u8 {
 ///   walkable, at most a metre deep; from three wide it is a river;
 /// - a **ford** is where a river spreads until it is half a metre deep
 ///   right across, which only a flow of `MAX_WIDTH` half-cubes or less
-///   can do; every river gets one where it can;
+///   can do; a river that could have one has one by chance, not by
+///   right: a bank without a ford is a reason for a bridge or a boat;
 /// - the network is a **tree**: a main river enters at the cliff's foot
 ///   and leaves by the south edge; tributaries enter by an edge; brooks
 ///   rise where the ground is wet and run to the nearest water; each
@@ -895,6 +896,9 @@ impl Rivers {
     /// A river never strays more than this many steps of heading from the
     /// heading it entered with (4 steps = 90 degrees).
     const MAX_DRIFT: i32 = 3;
+    /// Chance, in percent, that a river which could have a ford has one:
+    /// a ford is a place the terrain gives or not, never a promise.
+    const FORD_CHANCE: u32 = 50;
     /// Length of a ford along the river, in steps.
     const FORD_STEPS: usize = 6;
     /// Steps over which a ford widens from the river's width, each end.
@@ -936,7 +940,7 @@ impl Rivers {
         let flow = between(&mut rng, Self::MAIN_FLOW);
         rivers.paint_provisional(&path, flow, 0);
         network.push(River::new(path, flow));
-        rivers.ford(&mut network, 0, &mut rng);
+        rivers.ford(&mut network, 0, Self::FORD_CHANCE, &mut rng);
 
         // Tributaries, three from the edges: each heads for a point of the
         // main river downstream and ends where it meets water.
@@ -947,7 +951,7 @@ impl Rivers {
             let flow = between(&mut rng, Self::TRIBUTARY_FLOW);
             if rivers.add_tributary(&mut network, (side, y), flow, None, &mut rng) {
                 let last = network.len() - 1;
-                rivers.ford(&mut network, last, &mut rng);
+                rivers.ford(&mut network, last, Self::FORD_CHANCE, &mut rng);
             }
         }
         rivers.add_brooks(&mut network, seed, cliff_rows, &mut rng);
@@ -983,7 +987,7 @@ impl Rivers {
                 .any(|f| network[i].flow_at(f + Self::FORD_STEPS, &network) > widest)
             {
                 network[i].fords.clear();
-                rivers.ford(&mut network, i, &mut rng);
+                rivers.ford(&mut network, i, 100, &mut rng);
             }
             let wanted = if i == 0 {
                 1 + rng.next_below(2)
@@ -1376,10 +1380,14 @@ impl Rivers {
         }
     }
 
-    /// Spreads river `i` into a ford wherever its flow allows it, clear
-    /// of everything else: one ford per river, chosen among every place
-    /// that can take one. A brook needs none: it is walked through.
-    fn ford(&self, network: &mut [River], i: usize, rng: &mut Lcg) {
+    /// With `chance` percent, spreads river `i` into a ford somewhere its
+    /// flow allows it, clear of everything else: at most one per river,
+    /// chosen among every place that can take one. A brook needs none:
+    /// it is walked through.
+    fn ford(&self, network: &mut [River], i: usize, chance: u32, rng: &mut Lcg) {
+        if rng.next_below(100) >= chance {
+            return;
+        }
         let len = network[i].path.len();
         let widest = i64::from(Self::MAX_WIDTH);
         let span = Self::FORD_STEPS + 2 * Self::FORD_RAMP;
@@ -1726,13 +1734,12 @@ mod tests {
     }
 
     #[test]
-    fn valley_is_deterministic_and_crossable() {
+    fn valley_is_deterministic_and_leaves_room_to_start() {
         let a = Map::valley(256, 256, 7);
         let b = Map::valley(256, 256, 7);
         assert_eq!(a, b);
         assert_ne!(a, Map::valley(256, 256, 8));
-        // Cliff on top, rivers with fords, and the land is connected
-        // across them.
+        // Cliff on top, rivers and brooks.
         assert_eq!(a.get(Pos::new(5, 0)), Some(Terrain::Rock));
         let count = |t: Terrain| a.tiles().iter().filter(|x| **x == t).count();
         assert!(
@@ -1741,36 +1748,60 @@ mod tests {
             count(Terrain::Water)
         );
         assert!(
-            count(Terrain::Ford) >= 6,
-            "{} ford tiles",
-            count(Terrain::Ford)
-        );
-        assert!(
             count(Terrain::Brook) >= 20,
             "{} brook tiles",
             count(Terrain::Brook)
         );
-        let west = a.nearest(Pos::new(20, 200), Terrain::Grass).unwrap();
-        let east = a.nearest(Pos::new(240, 200), Terrain::Grass).unwrap();
-        let path = a.path(west, east, walk).unwrap();
-        assert!(path.iter().any(|p| a.get(*p) == Some(Terrain::Ford)));
         // Trees come in groves: between a tenth and half of the ground.
         let forest = count(Terrain::Forest);
         assert!((6_000..33_000).contains(&forest), "{forest} forest tiles");
+        // Rivers may cut the map in parts: fords are a chance, bridges and
+        // boats come later. But the standard world's bodies (seed 1, near
+        // tile 134, 139) start on a piece of land at least a quarter of
+        // the map, brooks being walked through.
+        let standard = Map::valley(256, 256, 1);
+        let start = standard
+            .nearest(Pos::new(134, 139), Terrain::Grass)
+            .unwrap();
+        let mut seen = vec![false; 256 * 256];
+        let mut stack = vec![start];
+        let mut room = 0;
+        while let Some(p) = stack.pop() {
+            let Some(i) = standard.index(p) else { continue };
+            if seen[i] || !standard.is_passable(p) {
+                continue;
+            }
+            seen[i] = true;
+            room += 1;
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    stack.push(Pos::new(p.x + dx, p.y + dy));
+                }
+            }
+        }
+        assert!(room >= 256 * 256 / 4, "{room} tiles to start on");
     }
 
     #[test]
     fn rivers_reach_the_edges_and_islands_keep_clear_water() {
-        let mut islands_seen = 0;
+        let (mut islands_seen, mut ford_tiles) = (0, 0);
         for seed in 1..=6 {
-            islands_seen += check_rivers(seed);
+            let (islands, fords) = check_rivers(seed);
+            islands_seen += usize::from(islands > 0);
+            ford_tiles += fords;
         }
         assert!(islands_seen >= 2, "islands on {islands_seen} of six maps");
+        assert!(ford_tiles >= 60, "{ford_tiles} ford tiles on six maps");
     }
 
-    /// Checks one map's waters; how many island tiles it has.
-    fn check_rivers(seed: u64) -> usize {
+    /// Checks one map's waters; how many island tiles and ford tiles it
+    /// has.
+    fn check_rivers(seed: u64) -> (usize, usize) {
         let r = Rivers::generate(256, 256, 32, seed);
+        let ford_tiles = (0..256)
+            .flat_map(|y| (0..256).map(move |x| (x, y)))
+            .filter(|(x, y)| r.at(*x, *y) == Some(Terrain::Ford))
+            .count();
         // Wet: water or ford, no bank there. Water: deeper than one tile,
         // not walkable.
         let depth = |x: i64, y: i64| match (u32::try_from(x), u32::try_from(y)) {
@@ -1857,7 +1888,7 @@ mod tests {
                 }
             }
         }
-        island_tiles
+        (island_tiles, ford_tiles)
     }
 
     #[test]
