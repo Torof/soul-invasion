@@ -736,7 +736,13 @@ fn heading_towards(dx: i64, dy: i64) -> u8 {
 ///   smaller arm, when shallow enough, shoals into a ford;
 /// - a centre path holds a heading for a run of steps (one tile each),
 ///   then bends by one step of 22.5 degrees, never turning back on the
-///   way it entered.
+///   way it entered;
+/// - the **banks breathe**: each bank of a river, on its own, holds its
+///   line for a while, then turns one step of heading out or in for a
+///   few steps and comes back, so a river widens, narrows, slides
+///   sideways or bends on one side only; the depth takes what the width
+///   leaves, so the flow is kept. Calm near junctions, fords,
+///   divergences, the map's edges, and on brooks.
 ///
 /// All arithmetic is in integers (tile thousandths), so the same seed
 /// gives the same waters everywhere.
@@ -754,6 +760,9 @@ pub struct Rivers {
     /// One line per water, for the tests' dumps.
     #[cfg(test)]
     log: Vec<String>,
+    /// The network the waters were painted from, for the tests.
+    #[cfg(test)]
+    network: Vec<River>,
 }
 
 /// Flat index of a tile in a `width` × `height` grid, if inside.
@@ -790,6 +799,10 @@ struct River {
     divergences: Vec<Divergence>,
     /// Steps spread into fords.
     fords: Vec<usize>,
+    /// Per step, how far each bank stands outside its line, the left one
+    /// then the right one, in steps of `BANK_SLOPE` (negative inside).
+    /// Empty until the banks breathe.
+    banks: Vec<(i64, i64)>,
 }
 
 impl River {
@@ -802,6 +815,7 @@ impl River {
             shapes: Vec::new(),
             divergences: Vec::new(),
             fords: Vec::new(),
+            banks: Vec::new(),
         }
     }
 
@@ -892,7 +906,20 @@ impl Rivers {
     /// A river parts in two only from this flow up.
     const DIVERGE_FLOW: i64 = 16;
     /// How many steps a heading is held, at least and at most.
-    const RUN: (u32, u32) = (6, 14);
+    const RUN: (u32, u32) = (4, 10);
+    /// How fast a bank leaves its line, in thousandths of a tile per step:
+    /// the tangent of 22.5 degrees, so a moving bank keeps to the sixteen
+    /// headings and each of its bends is one step.
+    const BANK_SLOPE: i64 = 414;
+    /// How far a bank may stand inside its line and outside it, in steps
+    /// of `BANK_SLOPE`: about a tile in, three out.
+    const BANK_REACH: (i64, i64) = (-2, 7);
+    /// Steps a bank holds its line between two moves, at least and at most.
+    const BANK_HOLD: (u32, u32) = (4, 12);
+    /// Steps a move of a bank lasts, at least and at most.
+    const BANK_SHIFT: (u32, u32) = (3, 7);
+    /// Tries at the banks of one free stretch before leaving it straight.
+    const BANK_TRIES: u32 = 30;
     /// A river never strays more than this many steps of heading from the
     /// heading it entered with (4 steps = 90 degrees).
     const MAX_DRIFT: i32 = 3;
@@ -922,6 +949,8 @@ impl Rivers {
             step: vec![0; tiles],
             #[cfg(test)]
             log: Vec::new(),
+            #[cfg(test)]
+            network: Vec::new(),
         };
         let mut rng = Lcg::new(seed.wrapping_add(0x5157));
         let w = i64::from(width);
@@ -995,32 +1024,41 @@ impl Rivers {
                 rng.next_below(2)
             };
             rivers.diverge(&mut network, i, wanted, &mut rng);
+            rivers.breathe(&mut network, i, &mut rng);
         }
 
         #[cfg(test)]
         rivers.log_network(&network);
 
-        // Paint everything afresh with the real sections: rivers first,
-        // then brooks on the land left, then the fords.
-        rivers.depth.fill(0);
-        rivers.brook.fill(false);
-        rivers.owner.fill(0);
-        rivers.step.fill(0);
+        rivers.paint_all(&network);
+        rivers.round_banks();
+        #[cfg(test)]
+        {
+            rivers.network = network;
+        }
+        rivers
+    }
+
+    /// Paints every water afresh with its real sections: rivers first,
+    /// then brooks on the land left, then the fords.
+    fn paint_all(&mut self, network: &[River]) {
+        self.depth.fill(0);
+        self.brook.fill(false);
+        self.owner.fill(0);
+        self.step.fill(0);
         let bands: Vec<(usize, Vec<Band>)> = (0..network.len())
-            .flat_map(|i| Self::bands(&network, i).into_iter().map(move |b| (i, b)))
+            .flat_map(|i| Self::bands(network, i).into_iter().map(move |b| (i, b)))
             .collect();
         for narrow in [false, true] {
             for (i, band) in bands.iter().filter(|(_, b)| b[0].brook == narrow) {
-                rivers.paint(band, *i, false);
+                self.paint(band, *i, false);
             }
         }
         for i in 0..network.len() {
-            for band in Self::ford_bands(&network, i) {
-                rivers.paint(&band, i, true);
+            for band in Self::ford_bands(network, i) {
+                self.paint(&band, i, true);
             }
         }
-        rivers.round_banks();
-        rivers
     }
 
     /// Brooks rise where the ground is wet and run to the nearest water,
@@ -1105,6 +1143,37 @@ impl Rivers {
             depth = ceil_div(flow, width).min(deepest);
         }
         (width, depth.max(1))
+    }
+
+    /// The widths a river carrying `flow` in a stretch of that `shape` may
+    /// take when its banks breathe, in tiles, narrowest then widest: never
+    /// a brook, never deeper than `MAX_DEPTH`, never so wide that it would
+    /// be half a metre deep (a ford), and within `MAX_WIDTH`. Its own
+    /// width always lies within.
+    fn breathing_room(flow: i64, shape: Shape) -> (i64, i64) {
+        let width = Self::section(flow, shape).0;
+        let deepest = i64::from(Self::MAX_DEPTH);
+        let narrowest = i64::from(Self::MIN_WIDTH)
+            .max((flow + deepest - 1) / deepest)
+            .min(width);
+        let widest = i64::from(Self::MAX_WIDTH).min(flow - 1).max(width);
+        (narrowest, widest)
+    }
+
+    /// The section of a stretch whose two banks together stand `out`
+    /// thousandths of a tile outside their lines (negative inside): the
+    /// width, in thousandths, grows or shrinks by that much, and the depth,
+    /// in half-metres, takes what the flow leaves, so the water's volume
+    /// is kept (D36).
+    fn breathing_section(flow: i64, shape: Shape, out: i64) -> (i64, i64) {
+        let (width, depth) = Self::section(flow, shape);
+        if out == 0 {
+            return (width * 1000, depth);
+        }
+        let wide = width * 1000 + out;
+        let tiles = ((wide + 500) / 1000).max(1);
+        let depth = ((flow + tiles - 1) / tiles).clamp(2, i64::from(Self::MAX_DEPTH));
+        (wide, depth)
     }
 
     /// What is at `(x, y)`: `None` on land, a brook, a ford half a metre
@@ -1304,6 +1373,218 @@ impl Rivers {
         }
     }
 
+    /// Lets the banks of water `i` breathe where it is free: each bank, on
+    /// its own, holds its line, then turns one step of heading out or in
+    /// for a few steps, within its reach and the widths its flow allows.
+    /// Calm within `CLEARANCE` of its ends, of the map's edges, of a
+    /// junction, a ford or a divergence, and on brooks; a bank never bends
+    /// within a step of a bend of the centre path, so it never turns by
+    /// two steps at once.
+    fn breathe(&self, network: &mut [River], i: usize, rng: &mut Lcg) {
+        let river = &network[i];
+        let len = river.path.len();
+        let calm = self.calm_steps(river, network);
+        let bend = |step: usize| {
+            step > 0 && step < len && river.path[step].heading != river.path[step - 1].heading
+        };
+        let mut banks = vec![(0, 0); len];
+        let mut step = 0;
+        while step < len {
+            if calm[step] {
+                step += 1;
+                continue;
+            }
+            let first = step;
+            while step < len && !calm[step] {
+                step += 1;
+            }
+            // Nodes first - 1 (calm) to step (calm), as j = 0..=nodes.
+            let nodes = step - first + 1;
+            let flow = river.flow_at(first, network);
+            let shape = river.shape_at(first);
+            let width = Self::section(flow, shape).0 * 1000;
+            let (narrowest, widest) = Self::breathing_room(flow, shape);
+            let fits = |total: i64| {
+                let tiles = (width + total * Self::BANK_SLOPE + 500) / 1000;
+                (narrowest..=widest).contains(&tiles)
+            };
+            let near_bend = |j: usize| {
+                let node = first - 1 + j;
+                bend(node.saturating_sub(1)) || bend(node) || bend(node + 1)
+            };
+            let (inside, outside) = Self::BANK_REACH;
+            for attempt in 0..2 * Self::BANK_TRIES {
+                // First each bank on its own, the second fitting around
+                // the first; then, if that keeps failing, the first bank
+                // leaves the second its whole reach.
+                let first_fits =
+                    |k: i64| attempt < Self::BANK_TRIES || (fits(k + inside) && fits(k + outside));
+                let Some(one) = Self::bank_profile(nodes, &near_bend, |_, k| first_fits(k), rng)
+                else {
+                    continue;
+                };
+                let Some(other) =
+                    Self::bank_profile(nodes, &near_bend, |j, k| fits(one[j] + k), rng)
+                else {
+                    continue;
+                };
+                if (0..=nodes).all(|j| fits(one[j] + other[j])) {
+                    let swap = rng.next_below(2) == 0;
+                    for j in 1..nodes {
+                        banks[first - 1 + j] = if swap {
+                            (other[j], one[j])
+                        } else {
+                            (one[j], other[j])
+                        };
+                    }
+                    break;
+                }
+            }
+            if banks[first..step].iter().all(|b| *b == (0, 0)) {
+                // No room to breathe on its own (a narrow river whose
+                // flow allows no other width): the river slides sideways
+                // instead, one bank out as the other comes in, its width
+                // kept.
+                for _ in 0..Self::BANK_TRIES {
+                    if let Some(left) =
+                        Self::bank_profile(nodes, &near_bend, |_, k| k.abs() <= -inside, rng)
+                    {
+                        for j in 1..nodes {
+                            banks[first - 1 + j] = (left[j], -left[j]);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        network[i].banks = banks;
+    }
+
+    /// The steps of `river` where its banks hold their lines: within
+    /// `CLEARANCE` of its ends, of the map's edges, of a junction, a ford
+    /// or a divergence, and where it is a brook.
+    fn calm_steps(&self, river: &River, network: &[River]) -> Vec<bool> {
+        let len = river.path.len();
+        let clear = Self::CLEARANCE;
+        let margin = i64::try_from(clear).expect("small") * 1000;
+        let (right_edge, bottom_edge) =
+            (i64::from(self.width) * 1000, i64::from(self.height) * 1000);
+        let mut calm: Vec<bool> = (0..len)
+            .map(|step| {
+                let at = river.path[step];
+                step < clear
+                    || step + clear >= len
+                    || at.x < margin
+                    || at.y < margin
+                    || at.x >= right_edge - margin
+                    || at.y >= bottom_edge - margin
+                    || Self::section(river.flow_at(step, network), river.shape_at(step)).0
+                        < i64::from(Self::MIN_WIDTH)
+            })
+            .collect();
+        let mut quiet = |from: usize, to: usize| {
+            let end = (to + clear).min(len);
+            calm[from.saturating_sub(clear)..end].fill(true);
+        };
+        for (at, _) in &river.joins {
+            quiet(*at, *at + 1);
+        }
+        for f in &river.fords {
+            quiet(
+                f.saturating_sub(Self::FORD_RAMP),
+                f + Self::FORD_STEPS + Self::FORD_RAMP,
+            );
+        }
+        for d in &river.divergences {
+            quiet(d.from, d.from + d.len + 1);
+        }
+        calm
+    }
+
+    /// One bank over the nodes `0..=n` of a free stretch, standing on its
+    /// line at both ends: how far out it stands at each, in steps of
+    /// `BANK_SLOPE`, or none if this draw breaks a rule. `fits` tells
+    /// whether the bank may stand `k` out at node `j`.
+    fn bank_profile(
+        n: usize,
+        near_bend: &impl Fn(usize) -> bool,
+        fits: impl Fn(usize, i64) -> bool,
+        rng: &mut Lcg,
+    ) -> Option<Vec<i64>> {
+        let between = |rng: &mut Lcg, (lo, hi): (u32, u32)| lo + rng.next_below(hi - lo + 1);
+        let (inside, outside) = Self::BANK_REACH;
+        let (shortest, longest) = Self::BANK_SHIFT;
+        // Steps of hold kept in hand before the way back, so that a move
+        // back can wait for the centre to finish a bend.
+        let spare = 6;
+        let mut k = vec![0; n + 1];
+        let (mut j, mut out) = (0, 0_i64);
+        let mut hold = between(rng, Self::BANK_HOLD);
+        while j < n {
+            let back = usize::try_from(out.unsigned_abs()).expect("small");
+            if n - j < back {
+                return None;
+            }
+            let must_return = out != 0 && n - j <= back + spare;
+            if (hold == 0 || must_return) && !near_bend(j) {
+                // A move from node j: back towards the line half the time
+                // once off it, else out or in; of a length that fits the
+                // reach and the width at every step, ends clear of the
+                // centre's bends, and leaves room to come back.
+                let dir = if must_return || (out != 0 && rng.next_below(2) == 0) {
+                    -out.signum()
+                } else if rng.next_below(2) == 0 {
+                    1
+                } else {
+                    -1
+                };
+                let span = (longest - shortest + 1) as usize;
+                let first = rng.next_below(longest - shortest + 1) as usize;
+                let lengths: Vec<usize> = if must_return {
+                    vec![back]
+                } else {
+                    (0..span)
+                        .map(|i| shortest as usize + (first + i) % span)
+                        .collect()
+                };
+                let chosen = lengths.into_iter().find(|&steps| {
+                    let end = j + steps;
+                    let last = out + dir * i64::try_from(steps).expect("small");
+                    end <= n
+                        && (inside..=outside).contains(&last)
+                        && !near_bend(end)
+                        && (must_return
+                            || n - end
+                                >= usize::try_from(last.unsigned_abs()).expect("small") + spare)
+                        && (1..=steps)
+                            .all(|i| fits(j + i, out + dir * i64::try_from(i).expect("small")))
+                });
+                if let Some(steps) = chosen {
+                    for _ in 0..steps {
+                        out += dir;
+                        j += 1;
+                        k[j] = out;
+                    }
+                    hold = between(rng, Self::BANK_HOLD);
+                    continue;
+                }
+            }
+            hold = hold.saturating_sub(1);
+            j += 1;
+            k[j] = out;
+        }
+        if k[n] != 0 {
+            return None;
+        }
+        // No bend of the bank within a step of a bend of the centre.
+        let slope = |j: usize| if j < n { k[j + 1] - k[j] } else { 0 };
+        let kinked = (0..=n).any(|j| {
+            let before = if j > 0 { slope(j - 1) } else { 0 };
+            before != slope(j) && near_bend(j)
+        });
+        (!kinked).then_some(k)
+    }
+
     /// Chooses up to `wanted` divergences along river `i`, where it is
     /// strong enough and clear of junctions, fords and other divergences.
     fn diverge(&self, network: &mut [River], i: usize, wanted: u32, rng: &mut Lcg) {
@@ -1454,7 +1735,17 @@ impl Rivers {
     fn bands(network: &[River], i: usize) -> Vec<Vec<Band>> {
         let river = &network[i];
         let at = |step: usize, flow: i64, offset: i64| {
-            Self::band_at(river.path[step], flow, river.shape_at(step), offset)
+            let shape = river.shape_at(step);
+            let (left, right) = river.banks.get(step).copied().unwrap_or((0, 0));
+            let shift = (right - left) * Self::BANK_SLOPE / 2;
+            let mut band = Self::band_at(river.path[step], flow, shape, offset + shift);
+            if left + right != 0 {
+                let (wide, depth) =
+                    Self::breathing_section(flow, shape, (left + right) * Self::BANK_SLOPE);
+                band.half_width = wide / 2 - 1;
+                band.depth = u8::try_from(depth).expect("shallow");
+            }
+            band
         };
         let mut divergences: Vec<&Divergence> = river.divergences.iter().collect();
         divergences.sort_by_key(|d| d.from);
@@ -1889,6 +2180,100 @@ mod tests {
             }
         }
         (island_tiles, ford_tiles)
+    }
+
+    #[test]
+    fn banks_breathe_within_their_rules() {
+        let c = Rivers::CLEARANCE;
+        let (mut free, mut moved, mut longest) = (0_usize, 0_usize, 0_usize);
+        for seed in 1..=6 {
+            let r = Rivers::generate(256, 256, 32, seed);
+            for river in &r.network {
+                let len = river.path.len();
+                assert_eq!(river.banks.len(), len);
+                let bend = |t: usize| {
+                    t > 0 && t < len && river.path[t].heading != river.path[t - 1].heading
+                };
+                let side = |t: usize, s: usize| {
+                    river
+                        .banks
+                        .get(t)
+                        .map_or(0, |b| if s == 0 { b.0 } else { b.1 })
+                };
+                let mut same_width = 0;
+                for t in 0..len {
+                    let (left, right) = river.banks[t];
+                    for out in [left, right] {
+                        assert!((Rivers::BANK_REACH.0..=Rivers::BANK_REACH.1).contains(&out));
+                    }
+                    // Calm near the ends, junctions, fords and divergences.
+                    let near = |a: usize, b: usize| t + c >= a && t < b + c;
+                    let calm = t < c
+                        || t + c >= len
+                        || river.joins.iter().any(|(at, _)| near(*at, at + 1))
+                        || river.fords.iter().any(|f| {
+                            near(
+                                f.saturating_sub(Rivers::FORD_RAMP),
+                                f + Rivers::FORD_STEPS + Rivers::FORD_RAMP,
+                            )
+                        })
+                        || river
+                            .divergences
+                            .iter()
+                            .any(|d| near(d.from, d.from + d.len + 1));
+                    if calm {
+                        assert_eq!((left, right), (0, 0), "seed {seed}: step {t} is calm");
+                    }
+                    for s in 0..2 {
+                        // A bank moves at one slope at most, and never
+                        // bends within a step of a bend of the centre.
+                        let before = if t > 0 {
+                            side(t, s) - side(t - 1, s)
+                        } else {
+                            0
+                        };
+                        let after = side(t + 1, s) - side(t, s);
+                        assert!(after.abs() <= 1);
+                        if before != after {
+                            assert!(
+                                !bend(t.saturating_sub(1)) && !bend(t) && !bend(t + 1),
+                                "seed {seed}: bank bends at step {t} by a bend of the centre"
+                            );
+                        }
+                    }
+                    // The width stays a river's and the flow is kept.
+                    let flow = river.flow_at(t, &r.network);
+                    let shape = river.shape_at(t);
+                    if Rivers::section(flow, shape).0 < i64::from(Rivers::MIN_WIDTH) {
+                        assert_eq!((left, right), (0, 0), "a brook does not breathe");
+                        continue;
+                    }
+                    let (wide, depth) =
+                        Rivers::breathing_section(flow, shape, (left + right) * Rivers::BANK_SLOPE);
+                    let tiles = (wide + 500) / 1000;
+                    let (narrowest, widest) = Rivers::breathing_room(flow, shape);
+                    assert!((narrowest..=widest).contains(&tiles), "width {tiles}");
+                    assert!((3..=12).contains(&tiles), "width {tiles}");
+                    assert!((2..=i64::from(Rivers::MAX_DEPTH)).contains(&depth));
+                    if depth < i64::from(Rivers::MAX_DEPTH) {
+                        assert!(tiles * depth >= flow && tiles * (depth - 1) < flow);
+                    }
+                    if calm {
+                        same_width = 0;
+                    } else {
+                        free += 1;
+                        moved += usize::from((left, right) != (0, 0));
+                        let width_held = t > 0 && river.banks[t] == river.banks[t - 1];
+                        same_width = if width_held { same_width + 1 } else { 0 };
+                        longest = longest.max(same_width);
+                    }
+                }
+            }
+        }
+        eprintln!("banks off their line on {moved} of {free} free steps; longest held: {longest}");
+        // Most of the free course breathes, and no width is held long.
+        assert!(free > 0 && moved * 100 >= free * 50, "{moved} of {free}");
+        assert!(longest <= 40, "a width held {longest} steps");
     }
 
     #[test]
