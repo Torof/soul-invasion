@@ -840,13 +840,86 @@ func lay_shore_pieces() -> Array:
 	return ShorePieces.lay_all(_is_known_tile, _is_bank_water_tile, lo, hi)
 
 
-## Draws the bank pieces as lines, for the laying to be judged before
-## any image exists.
+## The bank pieces' images, one per straight heading and per one-step
+## bend (ShorePieces.piece_name), 128 px square around the piece's middle.
+const SHORE_PIECES_DIR := "res://art/shore_pieces/"
+const SHORE_PIECE_SIZE := 128.0
+## Width of the fills on each side of a piece, in tiles: the land's and
+## the water's own textures repainted up to the piece, so the tiles'
+## staircase never shows past the bank.
+const SHORE_PIECE_FILL := 0.8
+static var _piece_images: Dictionary = {}
+
+
+static func shore_piece_image(name: String) -> Texture2D:
+	if name == "":
+		return null
+	if not _piece_images.has(name):
+		_piece_images[name] = load_texture(SHORE_PIECES_DIR + name + ".png")
+	return _piece_images[name]
+
+
+## Draws the bank pieces: the ground's own textures filled up to each
+## piece on both sides, then the piece's image over the line. With
+## "lines" in the shore spec, the pieces are drawn as coloured lines
+## instead, to judge the laying.
 func _draw_shore_pieces() -> void:
 	var pieces: Array = bank_pieces if bank_pieces is Array else lay_shore_pieces()
 	var lo := Vector2(_origin.x, _origin.y) - Vector2(0.5, 0.5)
 	var hi := Vector2(_origin.x + _size, _origin.y + _size) - Vector2(0.5, 0.5)
-	ShorePieces.draw(self, pieces, lo, hi)
+	var spec: Dictionary = ground_spec().get("shore", {})
+	if bool(spec.get("lines", false)):
+		_set_fills({})
+		ShorePieces.draw(self, pieces, lo, hi)
+		return
+	var fill := float(spec.get("fill", SHORE_PIECE_FILL))
+	var forest_tint: Color = ground_params("forest").get("base_tint", Color.WHITE)
+	var fills: Dictionary = {}
+	var sprites: Array = []
+	for piece in pieces:
+		var mid := ShorePieces.middle(piece)
+		if mid.x < lo.x or mid.y < lo.y or mid.x >= hi.x or mid.y >= hi.y:
+			continue
+		var h: Vector2 = ShorePieces.HEADINGS[piece["dir"]]
+		var right := Vector2(-h.y, h.x)
+		var land := _terrain(int(round(mid.x - right.x * 0.5)), int(round(mid.y - right.y * 0.5)))
+		if land == "" or land == "water" or land == "ford" or ground_texture(land) == null:
+			land = "grass"
+		# A ford has no bank of its own yet: no water band, no image there.
+		var wet := _terrain(int(round(mid.x + right.x * 0.5)), int(round(mid.y + right.y * 0.5)))
+		var ford := wet == "ford"
+		var pts: PackedVector2Array = piece["pts"]
+		for i in range(pts.size() - 1):
+			var a: Vector2 = pts[i]
+			var b: Vector2 = pts[i + 1]
+			var d := (b - a).normalized()
+			var n := Vector2(-d.y, d.x)
+			for pair in [[land, -fill, 0.02], ["water", -0.02, fill]]:
+				var terrain: String = pair[0]
+				if ground_texture(terrain) == null or (ford and terrain == "water"):
+					continue
+				if not fills.has(terrain):
+					fills[terrain] = []
+				fills[terrain].append({"points": _band(a, b, n, pair[1], pair[2], 0.05), "uvs": _band_uvs(a, b, n, pair[1], pair[2], 0.05)})
+		var image := shore_piece_image(ShorePieces.piece_name(piece["dir"], piece["turn"]))
+		if image != null and not ford:
+			sprites.append([image, tile_point_to_screen(mid), forest_tint if land == "forest" else Color.WHITE])
+	_set_fills(fills)
+	var size := Vector2(SHORE_PIECE_SIZE, SHORE_PIECE_SIZE)
+	for sprite in sprites:
+		draw_texture_rect(sprite[0], Rect2(sprite[1] - size / 2.0, size), false, sprite[2])
+
+
+## Hands each terrain's fill canvas its bands, emptying the others.
+func _set_fills(fills: Dictionary) -> void:
+	for terrain in _fills:
+		if not fills.has(terrain):
+			_fills[terrain].fills = []
+			_fills[terrain].queue_redraw()
+	for terrain in fills:
+		var canvas := _fill_of(terrain)
+		canvas.fills = fills[terrain]
+		canvas.queue_redraw()
 
 
 ## Douglas-Peucker: the fewest straight runs within `tolerance` of the

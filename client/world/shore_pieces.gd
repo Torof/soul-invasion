@@ -311,6 +311,28 @@ static func lay_all(is_known: Callable, is_water: Callable, lo: Vector2i, hi: Ve
 	return pieces
 
 
+## The name of a piece's image: its heading and its bend, the bend named
+## by where it goes (towards the water, which is on the right, or away
+## from it). Sharp bends (two or three steps) have no image: "".
+static func piece_name(d: int, turn: int) -> String:
+	if turn == 0:
+		return "straight_%02d" % d
+	if absi(turn) != 1:
+		return ""
+	var h: Vector2 = HEADINGS[d]
+	var right := Vector2(-h.y, h.x)
+	var next: Vector2 = HEADINGS[(d + turn + 16) % 16]
+	return "bend_%02d_%s" % [d, "towater" if next.dot(right) > 0.0 else "toland"]
+
+
+## The point a piece's image is centred on: its middle sample. The
+## images were made around it (dev/piece_schematics.gd), 128 px square
+## at scale 1.
+static func middle(piece: Dictionary) -> Vector2:
+	var pts: PackedVector2Array = piece["pts"]
+	return pts[pts.size() / 2]
+
+
 ## The name of a straight piece's slope, for the tally and the colours:
 ## how far its heading is from the tile grid's vertical.
 static func slope_name(d: int) -> String:
