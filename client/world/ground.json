@@ -94,6 +94,8 @@
 		},
 		"stretch": 48,
 		"iso": true,
-		"mode": "curve"
+		"mode": "curve",
+		"tolerance": 0.9,
+		"rounding": 1
 	}
 }
