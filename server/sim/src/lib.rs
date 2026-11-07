@@ -7,6 +7,7 @@
 pub mod content;
 pub mod map;
 pub mod time;
+pub mod woods;
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -540,7 +541,9 @@ impl World {
     /// content's materials scattered over the ground by its spawn rules.
     pub fn new(calendar: Calendar, content: &Content) -> Self {
         let mut world = Self::empty(calendar, Map::valley(VALLEY_SIZE, VALLEY_SIZE, VALLEY_SEED));
-        for wanted in [Pos::new(134, 139), Pos::new(136, 140), Pos::new(133, 142)] {
+        let camp = world.map.camp();
+        for (dx, dy) in [(0, 0), (2, 1), (-1, 3)] {
+            let wanted = Pos::new(camp.x + dx, camp.y + dy);
             let pos = world
                 .map
                 .nearest(wanted, Terrain::Grass)
