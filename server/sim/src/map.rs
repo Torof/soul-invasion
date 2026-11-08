@@ -1001,9 +1001,27 @@ impl Rivers {
     const TRIBUTARY_FLOW: (u32, u32) = (5, 9);
     /// Half-cubes a brook rises with.
     const BROOK_FLOW: (u32, u32) = (1, 2);
-    /// How many brooks rise on a map of `REFERENCE_TILES`, at least and
-    /// at most.
-    const BROOKS: (u32, u32) = (3, 6);
+    /// How many brooks a map has, in tenths, for every 256 tiles of its
+    /// side (its mean side), at least and at most: 3 to 5 on 256 × 256,
+    /// 10 to 16 on 768 × 768. By the side, not the ground: a brook is
+    /// long and crosses much of a map, so more ground calls for longer
+    /// brooks rather than proportionally more of them.
+    const BROOKS_TENTHS: (u32, u32) = (34, 54);
+    /// Share of brooks, in percent, that enter by the map's edges (west,
+    /// east or south) or rise at the cliff's foot; the others rise on wet
+    /// ground inside.
+    const EDGE_BROOKS: u32 = 67;
+    /// A brook rising inside does so at least this many tiles from any
+    /// water, so it runs a while before it joins one.
+    const SPRING_CLEARANCE: i64 = 50;
+    /// Shortest brook, in steps.
+    const BROOK_MIN_STEPS: usize = 60;
+    /// A brook entering by an edge (or rising at the cliff's foot) goes at
+    /// least this many tiles away from it, rather than along it.
+    const BROOK_INWARD: i64 = 30;
+    /// Two brooks never run closer than this many tiles, except over the
+    /// last stretch of one, where it comes to join the other.
+    const BROOK_SPACING: i64 = 25;
     /// How many tributaries enter by the edges on a map of
     /// `REFERENCE_TILES`, at least and at most.
     const TRIBUTARIES: (u32, u32) = (1, 2);
@@ -1012,7 +1030,7 @@ impl Rivers {
     /// waters keep the same density; a smaller one keeps these counts.
     const REFERENCE_TILES: u64 = 256 * 256;
     /// Longest brook, in steps: one that wanders further is no brook.
-    const BROOK_STEPS: usize = 80;
+    const BROOK_STEPS: usize = 250;
     /// How fast water runs where its section just holds its flow, in
     /// centimetres a second, and the slowest and fastest it runs.
     const BASE_SPEED: u16 = 35;
@@ -1109,7 +1127,7 @@ impl Rivers {
             let y =
                 top + h / 8 + i64::from(rng.next_below(u32::try_from(h * 3 / 4).expect("fits")));
             let flow = between(&mut rng, Self::TRIBUTARY_FLOW);
-            if rivers.add_tributary(&mut network, (side, y), flow, None, &mut rng) {
+            if rivers.add_tributary(&mut network, (side, y), flow, &mut rng) {
                 let last = network.len() - 1;
                 rivers.ford(&mut network, last, Self::FORD_CHANCE, &mut rng);
             }
@@ -1250,34 +1268,145 @@ impl Rivers {
         (scale(lo), scale(hi))
     }
 
-    /// Brooks rise where the ground is wet and run to the nearest water,
-    /// river or brook.
+    /// The brooks: most enter by the map's edges (west, east, south) or
+    /// rise at the cliff's foot; the others rise on wet ground well away
+    /// from any water. Each runs to the nearest water, river or brook, at
+    /// least `BROOK_MIN_STEPS` long, and keeps `BROOK_SPACING` from the
+    /// other brooks but where it joins one.
     fn add_brooks(&mut self, network: &mut Vec<River>, seed: u64, cliff_rows: u32, rng: &mut Lcg) {
         let (width, height) = (self.width, self.height);
-        let (h, top) = (i64::from(height), i64::from(cliff_rows));
-        let between =
-            |rng: &mut Lcg, (lo, hi): (u32, u32)| i64::from(lo + rng.next_below(hi - lo + 1));
+        let (wide, tall, top) = (i64::from(width), i64::from(height), i64::from(cliff_rows));
         let wetness = Groves::with_cell(width, height, seed ^ 0x77e7, 32);
-        for _ in 0..between(rng, Self::scaled(width, height, Self::BROOKS)) {
-            for _ in 0..40 {
-                let x = 4 + i64::from(rng.next_below(width - 8));
-                let y =
-                    top + 4 + i64::from(rng.next_below(u32::try_from(h - top - 8).expect("fits")));
-                let (ux, uy) = (
-                    u32::try_from(x).expect("inside"),
-                    u32::try_from(y).expect("inside"),
-                );
-                if wetness.value(ux, uy) < Self::WET || !self.clear_of_water(x, y, 5) {
+        let side = u64::midpoint(u64::from(width), u64::from(height));
+        let tenths = |n: u32| {
+            u32::try_from((u64::from(n) * side / 256 + 5) / 10)
+                .unwrap_or(u32::MAX)
+                .max(1)
+        };
+        let (lo, hi) = (tenths(Self::BROOKS_TENTHS.0), tenths(Self::BROOKS_TENTHS.1));
+        let count = lo + rng.next_below(hi - lo + 1);
+        // Tiles within `BROOK_SPACING` of a brook already laid.
+        let mut near_brook = vec![false; (width * height) as usize];
+        let inside = |rng: &mut Lcg, lo: i64, hi: i64| {
+            lo + i64::from(rng.next_below(u32::try_from((hi - lo).max(1)).expect("fits")))
+        };
+        for _ in 0..count {
+            for _ in 0..60 {
+                let start = if rng.next_below(100) < Self::EDGE_BROOKS {
+                    match rng.next_below(4) {
+                        0 => (0, inside(rng, top + 8, tall - 8)),
+                        1 => (wide - 1, inside(rng, top + 8, tall - 8)),
+                        2 => (inside(rng, 8, wide - 8), tall - 1),
+                        _ => (inside(rng, 8, wide - 8), top + 1),
+                    }
+                } else {
+                    let (x, y) = (inside(rng, 4, wide - 4), inside(rng, top + 4, tall - 4));
+                    let wet = wetness.value(
+                        u32::try_from(x).expect("inside"),
+                        u32::try_from(y).expect("inside"),
+                    );
+                    if wet < Self::WET || !self.clear_of_water(x, y, Self::SPRING_CLEARANCE) {
+                        continue;
+                    }
+                    (x, y)
+                };
+                let Some(at) = self.index(start.0, start.1) else {
+                    continue;
+                };
+                if near_brook[at] || !self.clear_of_water(start.0, start.1, Self::BROOK_SPACING) {
                     continue;
                 }
-                let Some(aim) = self.nearest_water(x, y) else {
+                let flow = i64::from(
+                    Self::BROOK_FLOW.0
+                        + rng.next_below(Self::BROOK_FLOW.1 - Self::BROOK_FLOW.0 + 1),
+                );
+                if self.add_brook(network, start, flow, &near_brook, top, rng) {
+                    let path = &network[network.len() - 1].path;
+                    for step in path.iter().step_by(2) {
+                        let (x, y) = (step.x / 1000, step.y / 1000);
+                        for ty in y - Self::BROOK_SPACING..=y + Self::BROOK_SPACING {
+                            for tx in x - Self::BROOK_SPACING..=x + Self::BROOK_SPACING {
+                                if let Some(t) = self.index(tx, ty) {
+                                    near_brook[t] = true;
+                                }
+                            }
+                        }
+                    }
                     break;
-                };
-                let flow = between(rng, Self::BROOK_FLOW);
-                self.add_tributary(network, (x, y), flow, Some(aim), rng);
-                break;
+                }
             }
         }
+    }
+
+    /// Traces a brook from `start` to the nearest water and adds it when
+    /// it is long enough, short enough, ends in water where no ford is
+    /// reserved, stays on the map below the cliff (`top`, its first row
+    /// of ground), and keeps away from the brooks already
+    /// laid (`near`) but over its last `BROOK_SPACING` steps. Tells whether it was added.
+    fn add_brook(
+        &mut self,
+        network: &mut Vec<River>,
+        start: (i64, i64),
+        flow: i64,
+        near: &[bool],
+        top: i64,
+        rng: &mut Lcg,
+    ) -> bool {
+        let Some(aim) = self.nearest_water(start.0, start.1) else {
+            return false;
+        };
+        let heading = heading_towards(aim.0 - start.0 * 1000, aim.1 - start.1 * 1000);
+        let (path, end) = self.trace(start, heading, true, rng);
+        if !(Self::BROOK_MIN_STEPS..=Self::BROOK_STEPS).contains(&path.len()) {
+            return false;
+        }
+        let End::Water(into, at) = end else {
+            return false;
+        };
+        // Never out of the map or into the cliff and back: the stretch
+        // outside (or under the rock) would leave a piece of brook alone.
+        if path
+            .iter()
+            .any(|s| s.y / 1000 < top || self.index(s.x / 1000, s.y / 1000).is_none())
+        {
+            return false;
+        }
+        // One that enters by an edge (or rises at the cliff's foot) heads
+        // into the valley, not along the edge.
+        let (wide, tall) = (i64::from(self.width), i64::from(self.height));
+        let off_edge = |s: &Step| {
+            let (x, y) = (s.x / 1000, s.y / 1000);
+            if start.0 == 0 {
+                x
+            } else if start.0 == wide - 1 {
+                wide - 1 - x
+            } else if start.1 == tall - 1 {
+                tall - 1 - y
+            } else if start.1 == top + 1 {
+                y - top - 1
+            } else {
+                i64::MAX
+            }
+        };
+        if path.iter().map(off_edge).max().unwrap_or(0) < Self::BROOK_INWARD {
+            return false;
+        }
+        let spaced = usize::try_from(Self::BROOK_SPACING).expect("small");
+        let crowded = path[..path.len().saturating_sub(spaced)]
+            .iter()
+            .any(|s| self.index(s.x / 1000, s.y / 1000).is_some_and(|i| near[i]));
+        let reserved = network[into].fords.iter().any(|f| {
+            (f.saturating_sub(Self::CLEARANCE)..f + Self::FORD_STEPS + Self::CLEARANCE)
+                .contains(&at)
+        });
+        if crowded || reserved {
+            return false;
+        }
+        let index = network.len();
+        self.paint_provisional(&path, flow, index);
+        network[into].joins.push((at, index));
+        network.push(River::new(path, flow));
+        true
     }
 
     #[cfg(test)]
@@ -1403,16 +1532,14 @@ impl Rivers {
             .map(|(tx, ty)| (tx * 1000, ty * 1000))
     }
 
-    /// Traces a water from `start` towards `aim` (a point of the main
-    /// river downstream, when none is given), and records where it joins.
-    /// A brook (`aim` given) must reach water within `BROOK_STEPS`, and
-    /// not where a ford is reserved. Tells whether the water was added.
+    /// Traces a tributary from `start` towards a point of the main river
+    /// downstream, and records where it joins, never where a ford is
+    /// reserved. Tells whether the water was added. (Brooks: `add_brook`.)
     fn add_tributary(
         &mut self,
         network: &mut Vec<River>,
         start: (i64, i64),
         flow: i64,
-        aim: Option<(i64, i64)>,
         rng: &mut Lcg,
     ) -> bool {
         if self
@@ -1421,13 +1548,12 @@ impl Rivers {
         {
             return false;
         }
-        let brook = aim.is_some();
-        let Some(aim) = aim.or_else(|| self.downstream_aim(&network[0].path, start, rng)) else {
+        let Some(aim) = self.downstream_aim(&network[0].path, start, rng) else {
             return false;
         };
         let heading = heading_towards(aim.0 - start.0 * 1000, aim.1 - start.1 * 1000);
-        let (path, end) = self.trace(start, heading, brook, rng);
-        if path.len() < Self::CLEARANCE || (brook && path.len() > Self::BROOK_STEPS) {
+        let (path, end) = self.trace(start, heading, false, rng);
+        if path.len() < Self::CLEARANCE {
             return false;
         }
         let join = match end {
@@ -1441,12 +1567,7 @@ impl Rivers {
                 }
                 Some((into, at))
             }
-            End::Edge => {
-                if brook {
-                    return false;
-                }
-                None
-            }
+            End::Edge => None,
         };
         let index = network.len();
         self.paint_provisional(&path, flow, index);
@@ -2457,7 +2578,8 @@ mod tests {
         let c = Rivers::CLEARANCE;
         let (mut free, mut moved, mut longest) = (0_usize, 0_usize, 0_usize);
         let (mut widest_pool, mut past_old_bounds) = (0_i64, 0_usize);
-        for seed in 1..=6 {
+        // Twenty maps: a pool wider than the widest river is rare.
+        for seed in 1..=20 {
             let r = Rivers::generate(256, 256, 32, seed);
             for river in &r.network {
                 let len = river.path.len();
@@ -2602,6 +2724,59 @@ mod tests {
     }
 
     #[test]
+    fn brooks_are_long_few_spaced_and_mostly_from_the_edges() {
+        // The first valley: 768 × 768, the cliff 96 rows deep.
+        let (size, top) = (768, 96);
+        let r = Rivers::generate(size, size, top, 1);
+        let brooks: Vec<&River> = r
+            .network
+            .iter()
+            .filter(|w| w.entry_flow <= i64::from(Rivers::BROOK_FLOW.1))
+            .collect();
+        assert!((10..=16).contains(&brooks.len()), "{} brooks", brooks.len());
+        let mut from_edges = 0;
+        for b in &brooks {
+            let len = b.path.len();
+            assert!(
+                (Rivers::BROOK_MIN_STEPS..=Rivers::BROOK_STEPS).contains(&len),
+                "a brook of {len} steps"
+            );
+            // On the valley floor all along.
+            assert!(b.path.iter().all(|s| {
+                let (x, y) = (s.x / 1000, s.y / 1000);
+                (0..i64::from(size)).contains(&x) && (i64::from(top)..i64::from(size)).contains(&y)
+            }));
+            let (x, y) = (b.path[0].x / 1000, b.path[0].y / 1000);
+            let edge = i64::from(size) - 1;
+            from_edges += usize::from(x == 0 || x == edge || y == edge || y == i64::from(top) + 1);
+        }
+        assert!(
+            from_edges * 2 > brooks.len(),
+            "{from_edges} of {} from the edges",
+            brooks.len()
+        );
+        // Spaced: no step of a brook, short of its last stretch, within
+        // BROOK_SPACING of another brook laid before it.
+        let spaced = usize::try_from(Rivers::BROOK_SPACING).expect("small");
+        for (i, b) in brooks.iter().enumerate() {
+            for earlier in &brooks[..i] {
+                for s in &b.path[..b.path.len().saturating_sub(spaced)] {
+                    for e in earlier.path.iter().step_by(2) {
+                        let (dx, dy) = ((s.x - e.x).abs() / 1000, (s.y - e.y).abs() / 1000);
+                        // Within two tiles: the generator marks every
+                        // other step, on whole tiles.
+                        assert!(
+                            dx.max(dy) > Rivers::BROOK_SPACING - 2,
+                            "two brooks {} tiles apart",
+                            dx.max(dy)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn every_brook_reaches_the_water() {
         // Every brook, with the brooks it joins, touches a river or a ford.
         for seed in 1..=8 {
@@ -2723,8 +2898,9 @@ mod tests {
         }
         let share = wet * 1000 / ground;
         eprintln!("water on {share} per mille of the valley, {waters} waters on six maps");
-        // About 4 % of the valley, six waters a map (it was 5 % and nine).
-        assert!(share <= 45, "{share} per mille");
+        // About 4 to 5 % of the valley, six waters a map (it was 5 % and
+        // nine); brooks are long since 8 November 2026.
+        assert!(share <= 50, "{share} per mille");
         assert!(waters <= 6 * 7, "{waters} waters on six maps");
     }
 

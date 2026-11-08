@@ -23,10 +23,12 @@ const EARTH_ALPHA := 0.75
 const EARTH_COLOUR := Color(0.30, 0.23, 0.15)
 ## Metres over which a brook narrows to a point at its spring.
 const SPRING_TAPER := 2.0
-## Metres a brook runs into the water it joins: over the bank at full
-## strength, then fading out, a little wider.
-const MOUTH := 0.8
-const MOUTH_FADE := 0.8
+## Metres a brook runs on into the water it joins, a little wider: far
+## enough to cross the river's smoothed bank wherever it lies. The brook
+## fades out where the river's water begins (the brook shader reads the
+## bank's field), so it never lies over the river nor stops short of it.
+const MOUTH := 1.2
+const MOUTH_FADE := 1.0
 const MOUTH_FLARE := 1.3
 ## How much lighter than the river a brook's water is (it is shallow).
 const LIGHTEN := 0.25
@@ -171,16 +173,6 @@ static func _end_kind(end: Vector2i, skeleton: Dictionary, mask: Dictionary, ter
 	return "spring"
 
 
-## Where the water lies from `end`, as a unit vector.
-static func _towards_water(end: Vector2i, terrain: Callable) -> Vector2:
-	var sum := Vector2.ZERO
-	for d: Vector2i in _N8:
-		var t := str(terrain.call(end + d))
-		if t == "water" or t == "ford":
-			sum += Vector2(d)
-	return sum.normalized()
-
-
 ## The brook's width in tiles at `t`: two where the tiles around show a
 ## band two wide, else one.
 static func _tiles_wide(t: Vector2i, terrain: Callable) -> float:
@@ -241,7 +233,8 @@ static func _line(chain: Array, skeleton: Dictionary, mask: Dictionary, terrain:
 	# Into the water at a mouth: on along its own way, drawn towards the
 	# water, over the bank, then fading out; its earth stops at the bank.
 	if kinds[0] == "mouth":
-		var into := ((pts[0] - pts[mini(3, pts.size() - 1)]).normalized() + _towards_water(first, terrain)).normalized()
+		# Straight on: a turn here would fold the ribbon at the bank.
+		var into := (pts[0] - pts[mini(1, pts.size() - 1)]).normalized()
 		pts.insert(0, pts[0] + into * MOUTH)
 		pts.insert(0, pts[0] + into * MOUTH_FADE)
 		wide.insert(0, wide[0] * MOUTH_FLARE)
@@ -252,7 +245,7 @@ static func _line(chain: Array, skeleton: Dictionary, mask: Dictionary, terrain:
 		earth.insert(0, 0.0)
 	if kinds[1] == "mouth":
 		var n := pts.size()
-		var into := ((pts[n - 1] - pts[maxi(n - 4, 0)]).normalized() + _towards_water(last, terrain)).normalized()
+		var into := (pts[n - 1] - pts[maxi(n - 2, 0)]).normalized()
 		var end := pts[n - 1]
 		pts.append(end + into * MOUTH)
 		pts.append(end + into * (MOUTH + MOUTH_FADE))

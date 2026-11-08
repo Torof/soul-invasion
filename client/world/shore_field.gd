@@ -43,6 +43,9 @@ static var map_size := Vector2i(256, 256)
 static var _jobs: Dictionary = {}
 ## Updates under way, in slices or not (the loading screen waits for them).
 static var busy := 0
+## While nobody plays (the loading screen is up), the slices may take this
+## long a frame, more than the updates ask.
+static var loading_slice_usec := 0
 ## The frame the slices are running in, and when they started in it.
 static var _slice_frame := -1
 static var _slice_start := 0
@@ -111,6 +114,13 @@ static func _update(terrain: Callable, lo: Vector2i, size: int, current: Callabl
 				near = Vector2i(clampi(near.x, 0, map_size.x - 1), clampi(near.y, 0, map_size.y - 1))
 				t = str(terrain.call(near))
 			var water := is_water(t)
+			if t == "brook" and inside:
+				# A brook's last tile at a river opens the bank in a small
+				# inlet, so the brook flows in rather than meeting a wall.
+				for d: Vector2i in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1), Vector2i(1, 1), Vector2i(-1, 1), Vector2i(1, -1), Vector2i(-1, -1)]:
+					if is_water(str(terrain.call(at + d))):
+						water = true
+						break
 			any_water = any_water or water
 			any_land = any_land or not water
 			var runs := Vector2.ZERO
@@ -246,7 +256,7 @@ static func _breathe(lo: Vector2i, job: int, slice_usec: int) -> bool:
 		if frame != _slice_frame:
 			_slice_frame = frame
 			_slice_start = Time.get_ticks_usec()
-		if Time.get_ticks_usec() - _slice_start < slice_usec:
+		if Time.get_ticks_usec() - _slice_start < maxi(slice_usec, loading_slice_usec):
 			break
 		await tree.process_frame
 	return _jobs.get(lo, 0) == job
