@@ -140,16 +140,25 @@ uniform float field_light = 0.55;
 uniform vec3 field_earth_tint : source_color = vec3(1.0);
 uniform float field_wet = 0.7;
 uniform float field_shade = 0.75;
-// Beaches: over stretches of about field_beach tiles the earth gives way
-// to sand (bank2) or pebbles (bank3), each covering about field_beach_cover
-// of the bank, and the bank is wider there by field_beach_wide. A beach
-// runs from one point where the grass meets the water to another: the
-// bank narrows to nothing where a beach begins and ends, over
-// field_beach_pinch of the noise.
+// Sand beaches (bank2): over stretches of about field_beach tiles, about
+// field_beach_cover of the bank, wider there by field_beach_wide. A beach
+// runs from one point where the grass meets the water to another. The
+// pebbles (bank3) are not drawn for now.
 uniform float field_beach = 14.0;
 uniform float field_beach_cover = 0.25;
 uniform float field_beach_wide = 1.6;
-uniform float field_beach_pinch = 0.05;
+// A beach is at least field_beach_min tiles long; the run is looked for
+// up to field_beach_reach tiles either way, at field_beach_samples points.
+uniform float field_beach_min = 3.0;
+// How close to the beach threshold, in noise units, the bank narrows to
+// nothing (where a beach could begin or end).
+uniform float field_beach_pinch = 0.02;
+uniform float field_beach_reach = 3.0;
+const int field_beach_samples = 8;
+// How far the grass overhangs the water where it meets it, in tiles, and
+// how far the water laps over the earth either way.
+uniform float field_overhang = 0.22;
+uniform float field_lap = 0.07;
 
 // Soft patches covering about `cover` of the ground, from the noise read
 // at `scale` with an offset so each layer has its own shape.
@@ -253,63 +262,123 @@ void fragment() {
 	}
 	if (has_field) {
 		vec2 world = uv * 4.0;
-		float d = (texture(shore_field, world / field_tiles).r * 2.0 - 1.0) * field_range;
+		vec2 fuv = world / field_tiles;
+		float d = (texture(shore_field, fuv).r * 2.0 - 1.0) * field_range;
+		// Along the bank: perpendicular to the field's slope.
+		float step_f = 0.5 / field_tiles;
+		vec2 grad = vec2(
+			texture(shore_field, fuv + vec2(step_f, 0.0)).r - texture(shore_field, fuv - vec2(step_f, 0.0)).r,
+			texture(shore_field, fuv + vec2(0.0, step_f)).r - texture(shore_field, fuv - vec2(0.0, step_f)).r);
+		vec2 across = length(grad) > 1e-5 ? normalize(grad) : vec2(0.0, 1.0);
+		vec2 along_bank = vec2(-across.y, across.x);
+		// The point of the water's line nearest to here: what varies along
+		// the bank (its width, its beaches) is read there, so it is the
+		// same right across the bank.
+		vec2 on_line = world - across * d;
 		// The noise's features are about 0.2 of its period: read at
 		// 0.2 / n per tile, they are about n tiles across.
-		float wander = texture(noise_texture, world * (0.2 / field_vary) + vec2(0.31, 0.77)).r;
-		float wander2 = texture(noise_texture, world * (0.2 / (field_vary * 0.4)) + vec2(0.62, 0.15)).r;
+		float wander = texture(noise_texture, on_line * (0.2 / field_vary) + vec2(0.31, 0.77)).r;
+		float wander2 = texture(noise_texture, on_line * (0.2 / (field_vary * 0.4)) + vec2(0.62, 0.15)).r;
 		float width = mix(field_width_min, field_width_max, smoothstep(0.3, 0.75, wander * 0.75 + wander2 * 0.4));
-		// Beaches of sand or pebbles along some stretches.
+		// Sand beaches: where the beach noise is high over a run of at
+		// least field_beach_min tiles along the bank. The noise is read at
+		// field_beach_samples points either way; the run around this point
+		// tells how far the beach goes each way, and the grass meets the
+		// water at its two ends.
 		float t_beach = 1.0 - field_beach_cover;
-		float sand = has_bank2 ? smoothstep(t_beach - 0.03, t_beach + 0.03, texture(noise_texture, world * (0.2 / field_beach) + vec2(0.13, 0.52)).r) : 0.0;
-		float pebbles = has_bank3 ? smoothstep(t_beach - 0.03, t_beach + 0.03, texture(noise_texture, world * (0.2 / (field_beach * 0.8)) + vec2(0.71, 0.36)).r) * (1.0 - sand) : 0.0;
-		float beach = sand + pebbles;
-		width = mix(width, max(width, field_width_max) * field_beach_wide, beach);
-		// The grass meets the water at both ends of a beach.
-		float n_sand = texture(noise_texture, world * (0.2 / field_beach) + vec2(0.13, 0.52)).r;
-		float n_peb = texture(noise_texture, world * (0.2 / (field_beach * 0.8)) + vec2(0.71, 0.36)).r;
-		float pinch = has_bank2 ? 1.0 - smoothstep(0.0, field_beach_pinch, abs(n_sand - t_beach)) : 0.0;
-		if (has_bank3) {
-			pinch = max(pinch, 1.0 - smoothstep(0.0, field_beach_pinch, abs(n_peb - t_beach)));
+		float sand = 0.0;
+		float pinch = 0.0;
+		if (has_bank2) {
+			// The beach noise along the bank, either way from here.
+			float spacing = field_beach_reach / float(field_beach_samples);
+			float nb[2 * field_beach_samples + 1];
+			for (int k = 0; k <= 2 * field_beach_samples; k++) {
+				vec2 at = on_line + along_bank * float(k - field_beach_samples) * spacing;
+				nb[k] = texture(noise_texture, at * (0.2 / field_beach) + vec2(0.13, 0.52)).r;
+			}
+			// Each run above the threshold is a beach if it is long enough;
+			// its ends are found between samples, so they move smoothly.
+			float far = float(field_beach_samples) * spacing;
+			float to_end = -1.0;
+			float to_beach = 1e3;
+			int k = 0;
+			while (k <= 2 * field_beach_samples) {
+				if (nb[k] <= t_beach) {
+					k++;
+					continue;
+				}
+				int j = k;
+				while (j < 2 * field_beach_samples && nb[j + 1] > t_beach) {
+					j++;
+				}
+				float start = -far;
+				if (k > 0) {
+					start = (float(k - 1) + (t_beach - nb[k - 1]) / max(nb[k] - nb[k - 1], 1e-4) - float(field_beach_samples)) * spacing;
+				}
+				float end = far;
+				if (j < 2 * field_beach_samples) {
+					end = (float(j) + (t_beach - nb[j]) / min(nb[j + 1] - nb[j], -1e-4) - float(field_beach_samples)) * spacing;
+				}
+				if (end - start >= field_beach_min) {
+					if (start <= 0.0 && end >= 0.0) {
+						to_end = min(-start, end);
+					} else {
+						to_beach = min(to_beach, start > 0.0 ? start : -end);
+					}
+				}
+				k = j + 1;
+			}
+			if (to_end >= 0.0) {
+				sand = smoothstep(0.25, 0.8, to_end);
+				pinch = 1.0 - smoothstep(0.0, 0.4, to_end);
+			} else {
+				pinch = 1.0 - smoothstep(0.0, 0.4, to_beach);
+			}
 		}
+		float beach = sand;
+		width = mix(width, max(width, field_width_max) * field_beach_wide, beach);
 		width *= 1.0 - pinch;
 		// Tufts: the grass's edge bulges and recedes at two scales.
 		float rag = (texture(noise_texture, world * 0.5 + vec2(0.4, 0.9)).r - 0.5) * 2.0 * field_rag
 			+ (texture(noise_texture, world * 1.4 + vec2(0.1, 0.3)).r - 0.5) * field_rag;
-		// Where the bank narrows to nothing, the grass meets the water
-		// cleanly: the ragging fades with the width.
 		float outer = max(width + rag * clamp(width / 0.12, 0.0, 1.0), 0.0);
-		if (d > outer + 0.04) {
+		// Where the bank narrows to nothing, the grass overhangs the water
+		// in tufts instead of stopping on the line.
+		float tufts = texture(noise_texture, world * 1.9 + vec2(0.83, 0.47)).r * 0.7
+			+ texture(noise_texture, world * 4.3 + vec2(0.27, 0.66)).r * 0.5;
+		float overhang = field_overhang * clamp(tufts - 0.3, 0.0, 1.0);
+		float grass_at = mix(-overhang, outer, smoothstep(0.03, 0.14, outer));
+		if (d > grass_at + 0.04) {
 			discard;
 		}
+		// The water's own edge wanders over the earth: the water laps it.
+		float lap = (texture(noise_texture, world * 1.2 + vec2(0.55, 0.05)).r - 0.5) * 2.0 * field_lap
+			+ (texture(noise_texture, world * 3.7 + vec2(0.18, 0.92)).r - 0.5) * field_lap;
+		float dw = d - lap * smoothstep(0.02, 0.15, outer);
 		vec3 colour = ground.rgb;
-		if (d < 0.0) {
-			float near = 1.0 - smoothstep(0.0, field_light_reach, -d);
+		if (dw < 0.0) {
+			float near = 1.0 - smoothstep(0.0, field_light_reach, -dw);
 			colour = mix(colour, colour * shore_tint, near * field_light);
 		} else {
 			// The bank's matter, seamless, four metres a texture like the
-			// ground: earth, or sand or pebbles on a beach.
+			// ground: earth, or sand on a beach.
 			vec2 m_uv = world * 0.25;
 			vec3 earth = texture(bank_texture, m_uv).rgb;
 			if (beach > 0.0) {
-				vec3 other = has_bank2 ? texture(bank2_texture, m_uv + vec2(0.37, 0.11)).rgb : earth;
-				if (has_bank3) {
-					other = mix(other, texture(bank3_texture, m_uv + vec2(0.61, 0.29)).rgb, pebbles / max(beach, 0.001));
-				}
-				earth = mix(earth, other, beach);
+				earth = mix(earth, texture(bank2_texture, m_uv + vec2(0.37, 0.11)).rgb, beach);
 			}
 			earth *= field_earth_tint;
-			earth *= mix(field_wet, 1.0, smoothstep(0.0, 0.14, d));
+			earth *= mix(field_wet, 1.0, smoothstep(0.0, 0.14, dw));
 			earth *= mix(1.0, field_shade, smoothstep(outer - 0.14, outer, d));
 			colour = earth;
 		}
 		// The water's edge: darker, melting into the water.
-		float line = (1.0 - smoothstep(0.0, field_line, abs(d + field_line_into))) * field_line_strength;
+		float line = (1.0 - smoothstep(0.0, field_line, abs(dw + field_line_into))) * field_line_strength;
 		colour = mix(colour, colour * 0.45, line);
-		// The grass's own outline where it meets the earth.
-		float edge = 1.0 - smoothstep(0.0, 0.03, abs(d - outer + 0.015));
-		colour = mix(colour, field_ink, edge * 0.85 * step(0.05, outer));
-		float a = 1.0 - smoothstep(outer, outer + 0.04, d);
+		// The grass's own outline, against the earth or the water.
+		float edge = 1.0 - smoothstep(0.0, 0.03, abs(d - grass_at + 0.015));
+		colour = mix(colour, field_ink, edge * 0.85);
+		float a = 1.0 - smoothstep(grass_at, grass_at + 0.04, d);
 		COLOR = vec4(colour * vertex_tint, a);
 	} else {
 	float alpha = tint.a;

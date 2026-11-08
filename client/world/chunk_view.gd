@@ -1394,7 +1394,7 @@ func _draw_decor() -> void:
 					if near < min_near:
 						continue
 				else:
-					if terrain == "water" or terrain == "ford" or terrain == "brook":
+					if terrain == "water" or terrain == "ford" or terrain == "brook" or terrain == "rock":
 						continue
 					near = _max4(_corners(land_near_water, x, y))
 					if near <= 0.0:
