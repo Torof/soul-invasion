@@ -533,9 +533,9 @@ pub struct World {
     trees: Vec<trees::Tree>,
 }
 
-/// Side of the first version's valley, in tiles: about 768 m, nine
+/// Side of the first version's valley, in tiles: about 1.5 km, eighteen
 /// minutes of walking (D31).
-pub const VALLEY_SIZE: u32 = 768;
+pub const VALLEY_SIZE: u32 = 1536;
 
 /// Seed of the first version's valley.
 pub const VALLEY_SEED: u64 = 1;
