@@ -76,9 +76,21 @@ uniform bool has_bank = false;
 // slow stretches along the river so the bank changes.
 uniform sampler2D bank2_texture : repeat_enable, filter_linear;
 uniform bool has_bank2 = false;
-// A third matter (pebbles): the bed of a ford, seen through its water.
+// A third matter (pebbles), not drawn for now.
 uniform sampler2D bank3_texture : repeat_enable, filter_linear;
 uniform bool has_bank3 = false;
+// The beds of the fords, seen through their water: four matters laid
+// side by side in soft patches a few metres across.
+uniform sampler2D ford1_texture : repeat_enable, filter_linear;
+uniform sampler2D ford2_texture : repeat_enable, filter_linear;
+uniform sampler2D ford3_texture : repeat_enable, filter_linear;
+uniform sampler2D ford4_texture : repeat_enable, filter_linear;
+uniform bool has_ford1 = false;
+uniform bool has_ford2 = false;
+uniform bool has_ford3 = false;
+uniform bool has_ford4 = false;
+// Width of a patch of one bed, in tiles.
+uniform float ford_patch = 3.5;
 // The bank's width across the spill varies along the river between
 // bank_reach_min and bank_reach (1 = the whole spill); beyond it the land
 // shows. bank_vary is the period of that variation along the river.
@@ -366,13 +378,22 @@ void fragment() {
 			float near = 1.0 - smoothstep(0.0, field_light_reach, -dw);
 			colour = mix(colour, colour * shore_tint, near * field_light);
 			float ford = smoothstep(0.15, 0.85, texture(shore_field, fuv).g);
-			if (ford > 0.0 && has_bank3) {
+			if (ford > 0.0 && has_ford1) {
 				vec2 b_uv = world * 0.25;
-				vec3 bed = texture(bank3_texture, b_uv + vec2(0.21, 0.67)).rgb;
-				if (has_bank2) {
-					float sandy = smoothstep(0.45, 0.75, texture(noise_texture, world * 0.22 + vec2(0.5, 0.2)).r);
-					bed = mix(bed, texture(bank2_texture, b_uv + vec2(0.37, 0.11)).rgb, sandy * 0.35);
-				}
+				// Each bed takes the patches where its own noise is the
+				// highest of the four, the edges between them soft.
+				float f = 0.2 / ford_patch;
+				vec4 n = vec4(
+					texture(noise_texture, world * f + vec2(0.11, 0.73)).r,
+					has_ford2 ? texture(noise_texture, world * f + vec2(0.57, 0.19)).r : 0.0,
+					has_ford3 ? texture(noise_texture, world * f + vec2(0.83, 0.41)).r : 0.0,
+					has_ford4 ? texture(noise_texture, world * f + vec2(0.29, 0.95)).r : 0.0);
+				vec4 w = pow(max(n, vec4(0.0)), vec4(8.0));
+				w /= max(w.x + w.y + w.z + w.w, 1e-5);
+				vec3 bed = texture(ford1_texture, b_uv).rgb * w.x;
+				if (has_ford2) { bed += texture(ford2_texture, b_uv + vec2(0.31, 0.17)).rgb * w.y; }
+				if (has_ford3) { bed += texture(ford3_texture, b_uv + vec2(0.67, 0.43)).rgb * w.z; }
+				if (has_ford4) { bed += texture(ford4_texture, b_uv + vec2(0.13, 0.89)).rgb * w.w; }
 				vec3 shallow = mix(bed * ford_tint, colour, ford_water);
 				// Ripples drifting with the current over the stones.
 				float r1 = texture(noise_texture, world * 0.9 + vec2(TIME * 0.03, TIME * 0.05)).r;

@@ -8,15 +8,19 @@
 shader_type canvas_item;
 
 uniform sampler2D noise_texture : repeat_enable, filter_linear;
-// The bed seen through the water, and the bank's earth.
-uniform sampler2D bed_texture : repeat_enable, filter_linear;
+// The bed seen through the water, three matters laid side by side in
+// soft patches a few metres across, and the bank's earth.
+uniform sampler2D bed1_texture : repeat_enable, filter_linear;
+uniform sampler2D bed2_texture : repeat_enable, filter_linear;
+uniform sampler2D bed3_texture : repeat_enable, filter_linear;
+uniform float bed_patch = 3.0;
 uniform sampler2D earth_texture : repeat_enable, filter_linear;
 uniform float lateral_range = 2.0;
 // How much of the water's colour lies over the bed (a brook is a metre
 // deep at most: the bed shows), and the water's tint.
-uniform float water_over_bed = 0.72;
+uniform float water_over_bed = 0.58;
 uniform vec3 water_tint : source_color = vec3(1.0);
-uniform vec3 shallow_tint : source_color = vec3(0.95, 1.15, 1.12);
+uniform vec3 shallow_tint : source_color = vec3(0.88, 1.18, 1.18);
 // The earth band: its width wanders between these, in tiles.
 uniform float earth_min = 0.0;
 uniform float earth_max = 0.1;
@@ -57,8 +61,18 @@ void fragment() {
 	vec3 colour;
 	if (dw < 0.0) {
 		vec3 water = texture(TEXTURE, UV).rgb * water_tint;
-		vec3 bed = texture(bed_texture, world * 0.25 + vec2(0.13, 0.41)).rgb;
-		colour = mix(bed * shallow_tint, water, water_over_bed);
+		float f = 0.2 / bed_patch;
+		vec3 n = vec3(
+			texture(noise_texture, world * f + vec2(0.21, 0.63)).r,
+			texture(noise_texture, world * f + vec2(0.69, 0.27)).r,
+			texture(noise_texture, world * f + vec2(0.43, 0.88)).r);
+		vec3 w = pow(n, vec3(8.0));
+		w /= max(w.x + w.y + w.z, 1e-5);
+		vec2 b_uv = world * 0.25;
+		vec3 bed = texture(bed1_texture, b_uv).rgb * w.x
+			+ texture(bed2_texture, b_uv + vec2(0.37, 0.19)).rgb * w.y
+			+ texture(bed3_texture, b_uv + vec2(0.71, 0.53)).rgb * w.z;
+		colour = mix(bed * shallow_tint * 1.15, water, water_over_bed);
 		// Lighter towards the edges, where it is shallowest, the bed showing
 		// more there.
 		float shallow = 1.0 - smoothstep(0.0, 0.25, -dw);

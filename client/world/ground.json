@@ -36,7 +36,13 @@
       "worn": "res://art/ground/ground_water_05_summer.png",
       "bank": "res://art/ground/bank_earth_03_summer.png",
       "bank2": "res://art/ground/bank_sand_02_summer.png",
-      "bank3": "res://art/ground/bank_pebbles_01_summer.png"
+      "ford1": "res://art/ground/ford_bed_01_summer.png",
+      "ford2": "res://art/ground/ford_bed_02_summer.png",
+      "ford3": "res://art/ground/ford_bed_03_summer.png",
+      "ford4": "res://art/ground/ford_bed_04_summer.png",
+      "brook1": "res://art/ground/brook_bed_01_summer.png",
+      "brook2": "res://art/ground/brook_bed_02_summer.png",
+      "brook3": "res://art/ground/brook_bed_03_summer.png"
     },
     "params": {
       "has_variants": true,

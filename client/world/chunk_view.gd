@@ -23,7 +23,7 @@ const GROUND_METRES := 4.0
 ## Sisters of the same grass (same style and tone, drawn differently) give
 ## the variety; tone variation is a tint in the shader, never another image.
 const GROUND_SPEC := "res://world/ground.json"
-const LAYERS := ["sibling", "second", "worn", "bank", "bank2", "bank3"]
+const LAYERS := ["sibling", "second", "worn", "bank", "bank2", "bank3", "ford1", "ford2", "ford3", "ford4"]
 static var _spec: Dictionary = {}
 ## terrain -> the parameter names applied to its material, to reset the
 ## ones a reload no longer sets.
@@ -695,7 +695,7 @@ func _draw_brooks() -> void:
 	var terrain := func(t: Vector2i) -> String: return _terrain(t.x, t.y)
 	var lines := BrookLines.lay(terrain, _origin - margin, _origin + Vector2i(_size, _size) + margin)
 	var tint: Color = ground_params("water").get("base_tint", Color.WHITE)
-	var bed := str(ground_layers("water").get("bank3", ""))
+	var bed := str(ground_layers("water").get("brook1", ""))
 	if shore_field_on() and bed != "":
 		var canvas := _brook_canvas()
 		canvas.lines = lines
@@ -721,7 +721,8 @@ func _brook_canvas() -> BrookCanvas:
 			_brook_material.set_shader_parameter("noise_texture", noise_texture())
 			_brook_material.set_shader_parameter("lateral_range", BrookLines.LATERAL_RANGE)
 			var layers := ground_layers("water")
-			_brook_material.set_shader_parameter("bed_texture", load_texture(str(layers.get("bank3", ""))))
+			for k in 3:
+				_brook_material.set_shader_parameter("bed%d_texture" % (k + 1), load_texture(str(layers.get("brook%d" % (k + 1), ""))))
 			_brook_material.set_shader_parameter("earth_texture", load_texture(str(layers.get("bank", ""))))
 			_brook_material.set_shader_parameter("water_tint", ground_params("water").get("base_tint", Color.WHITE))
 		_brooks = BrookCanvas.new()
