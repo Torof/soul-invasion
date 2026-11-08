@@ -490,4 +490,16 @@ func _test_the_shore_field_measures_the_bank() -> void:
 	var pond := func(t: Vector2i) -> String: return "water" if t.x >= 100 and t.y >= 100 else "grass"
 	ShoreField.update(pond, Vector2i(96, 96), 32)
 	_check(ShoreField.distance_at(Vector2(100.0, 100.0)) > 0.15, "a corner comes out round: %f" % ShoreField.distance_at(Vector2(100.0, 100.0)))
+	# A ford: water for the bank, and its own channel, high inside, nothing
+	# far from it.
+	var forded := func(t: Vector2i) -> String:
+		if t.x < 140:
+			return "grass"
+		return "ford" if t.y >= 140 and t.y < 146 else "water"
+	ShoreField.update(forded, Vector2i(128, 128), 32)
+	_check(ShoreField.distance_at(Vector2(150.0, 143.0)) < -1.0, "a ford is water for the bank")
+	_check(ShoreField.ford_at(Vector2(150.0, 143.0)) > 0.9, "inside the ford: %f" % ShoreField.ford_at(Vector2(150.0, 143.0)))
+	_check(ShoreField.ford_at(Vector2(150.0, 152.0)) < 0.05, "deep water away from the ford: %f" % ShoreField.ford_at(Vector2(150.0, 152.0)))
+	var edge := ShoreField.ford_at(Vector2(150.0, 140.0))
+	_check(edge > 0.3 and edge < 0.7, "the ford's edge is soft: %f" % edge)
 

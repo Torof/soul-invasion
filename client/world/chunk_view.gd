@@ -625,7 +625,7 @@ func _add_field_tiles(by_terrain: Dictionary) -> void:
 			var tx := _origin.x + x
 			var ty := _origin.y + y
 			var here := _terrain(tx, ty)
-			if here == "water":
+			if here == "water" or here == "ford":
 				# The land under it, where land is near: forest if the land
 				# around is mostly forest, else grass.
 				var forest := 0
@@ -647,7 +647,7 @@ func _add_field_tiles(by_terrain: Dictionary) -> void:
 				var near_water := false
 				for dy in range(-2, 3):
 					for dx in range(-2, 3):
-						if _terrain(tx + dx, ty + dy) == "water":
+						if ShoreField.is_water(_terrain(tx + dx, ty + dy)):
 							near_water = true
 				if near_water:
 					if not by_terrain.has("water"):
@@ -660,6 +660,9 @@ func _add_field_tiles(by_terrain: Dictionary) -> void:
 ## forest where the tiles around are mostly forest, else grass.
 func _ground_terrain(tx: int, ty: int) -> String:
 	var terrain := _terrain(tx, ty)
+	if terrain == "ford" and shore_field_on():
+		# A ford is shallow water: the water's shader draws it (ShoreField).
+		return "water"
 	if terrain != "brook":
 		return terrain
 	var forest := 0
