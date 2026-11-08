@@ -268,11 +268,17 @@ vec3 ford_bed(vec2 world) {
 // one whose drawing is darker there (a tuft, its ink) wins, within a
 // narrow band around where the mask changes. `w` is the soft mask.
 uniform float meet_band = 0.12;
-uniform float meet_depth = 1.6;
-vec4 meet(vec4 a, vec4 b, float w) {
+uniform float meet_depth = 0.3;
+// Where the mask changes, the two grounds interlock in pieces about a
+// tile across (each piece whole), instead of fading over each other.
+uniform float meet_grain = 0.9;
+// The shade a spilling ground lays over its neighbour, and how dark.
+uniform vec3 fringe_colour : source_color = vec3(0.237, 0.402, 0.181);
+uniform float fringe_strength = 0.55;
+vec4 meet(vec4 a, vec4 b, float w, float meet_noise) {
 	float da = 1.0 - dot(a.rgb, vec3(0.333));
 	float db = 1.0 - dot(b.rgb, vec3(0.333));
-	float t = (w - 0.5) * 2.0 + (db - da) * meet_depth;
+	float t = (w - 0.5) * 2.0 + (db - da) * meet_depth + meet_noise;
 	return mix(a, b, smoothstep(-meet_band, meet_band, t));
 }
 
@@ -286,6 +292,7 @@ void vertex() {
 
 void fragment() {
 	vec2 uv = UV;
+	float grain = (texture(noise_texture, uv * 0.8 + vec2(0.37, 0.19)).r - 0.5) * 2.0 * meet_grain;
 	vec4 ground = blend4(texture(TEXTURE, uv), texture(TEXTURE, uv_b(uv)), texture(TEXTURE, uv_c(uv)), texture(TEXTURE, uv_d(uv)), variant_weights(uv));
 	if (has_sibling) {
 		vec4 sibling = varied(sibling_texture, uv);
@@ -294,7 +301,7 @@ void fragment() {
 		float threshold = 1.0 - sibling_cover;
 		float weight = smoothstep(threshold - 0.15, threshold + 0.15, n);
 		vec4 base = ground;
-		ground = meet(base, sibling, weight);
+		ground = meet(base, sibling, weight, grain);
 		if (bare_keep < 1.0) {
 			float bare = smoothstep(0.0, 0.08, base.r - base.g);
 			float kept = patches(uv, 0.06, vec2(0.9, 0.4), bare_keep, 0.1);
@@ -308,10 +315,10 @@ void fragment() {
 	float dry = smoothstep(dry_threshold - dry_softness, dry_threshold + dry_softness, d) * dry_strength;
 	ground.rgb = mix(ground.rgb, ground.rgb * dry_tint, dry);
 	if (has_second) {
-		ground = meet(ground, varied(second_texture, uv), patches(uv, second_scale, vec2(0.2, 0.7), second_cover, second_softness));
+		ground = meet(ground, varied(second_texture, uv), patches(uv, second_scale, vec2(0.2, 0.7), second_cover, second_softness), grain);
 	}
 	if (has_worn) {
-		ground = meet(ground, varied(worn_texture, uv), patches(uv, worn_scale, vec2(0.5, 0.25), worn_cover, worn_softness));
+		ground = meet(ground, varied(worn_texture, uv), patches(uv, worn_scale, vec2(0.5, 0.25), worn_cover, worn_softness), grain);
 	}
 	// COLOR comes in already multiplied by the texture: rebuild it from
 	// the blended texture and the vertex colour, do not multiply again
@@ -561,7 +568,10 @@ void fragment() {
 		}
 	} else if (alpha < 1.0) {
 		float e = texture(noise_texture, uv * edge_scale + vec2(0.23, 0.71)).r;
-		alpha = smoothstep(e - 0.3, e + 0.3, alpha);
+		// The forest's edge over the grass: a shade, not a second drawing
+		// (two drawings showing through each other read as ghosts).
+		alpha = smoothstep(e - 0.3, e + 0.3, alpha) * fringe_strength;
+		ground.rgb = fringe_colour;
 	}
 	COLOR = vec4(ground.rgb * vertex_tint, alpha);
 	}
