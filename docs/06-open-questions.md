@@ -10,7 +10,7 @@ What remains to be decided, with the moment it will need to be settled.
 ## To be settled during the first version
 
 - Exact rhythms of time (day, childhood, lifetime) after trials.
-- ~~Size of the valley~~: 256×256 one-metre tiles to start (D31, 5 November 2026), 1536×1536 since 8 November 2026 (768×768 earlier that day), meant to grow much further; neighbouring valleys as regions later. Exact number of NPCs still open.
+- ~~Size of the valley~~: 256×256 one-metre tiles to start (D31, 5 November 2026), 3072×3072 since 8 November 2026 (768×768 then 1536×1536 earlier that day), meant to grow much further; neighbouring valleys as regions later. Exact number of NPCs still open.
 - **Floors** (D31): the first version builds on one level. Upper floors and cellars need a third coordinate in the grid, the rendering and the paths; decide when the first player wants a staircase.
 - Simple rules for soul points.
 - Form of the interface for tool assembly and intentions. First form settled with D35 (6 November 2026): hover names, right-click context menu, inventory panel; assembly still open.
