@@ -547,6 +547,11 @@ func _draw() -> void:
 		var at: Vector2 = _bodies[id]["at"]
 		standing.append([at.x + at.y, 1, id])
 	standing.sort_custom(func(a: Array, b: Array) -> bool: return a[0] < b[0])
+	# The trees' shadows lie on the ground, under every tree and body.
+	for entry: Array in standing:
+		if entry[1] == 0:
+			var tree: Dictionary = entry[2]
+			Trees.draw_shadow(self, tree, int(_tree_heights.get(tree["species"], 400)))
 	for entry: Array in standing:
 		if entry[1] == 0:
 			var tree: Dictionary = entry[2]
