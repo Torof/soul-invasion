@@ -956,6 +956,8 @@ impl Rivers {
     const TRIBUTARIES: (u32, u32) = (1, 2);
     /// Longest brook, in steps: one that wanders further is no brook.
     const BROOK_STEPS: usize = 80;
+    /// Farthest a brook goes on past its traced end to meet the water.
+    const BROOK_REACH: usize = 8;
     /// How many steps a brook holds a heading, at least and at most: it
     /// meanders more than a river.
     const BROOK_RUN: (u32, u32) = (2, 5);
@@ -1098,6 +1100,7 @@ impl Rivers {
         rivers.log_network(&network);
 
         rivers.paint_all(&network);
+        rivers.reach_the_water(&network);
         rivers.round_banks();
         #[cfg(test)]
         {
@@ -1124,6 +1127,46 @@ impl Rivers {
         for i in 0..network.len() {
             for band in Self::ford_bands(network, i) {
                 self.paint(&band, i, true);
+            }
+        }
+    }
+
+    /// A brook stops where it met the water as first traced; the water
+    /// painted in the end can be narrower there (its banks breathe), so
+    /// a brook may stop short of it: each brook that does goes on along
+    /// its last heading until it meets other water, a few steps at most.
+    fn reach_the_water(&mut self, network: &[River]) {
+        for (i, water) in network.iter().enumerate() {
+            let Some(&last) = water.path.last() else {
+                continue;
+            };
+            let flow = water.end_flow;
+            let shape = water.shape_at(water.path.len() - 1);
+            if Self::section(flow, shape).0 >= i64::from(Self::MIN_WIDTH) {
+                continue;
+            }
+            let mine = u16::try_from(i + 1).expect("few rivers");
+            let other_water = |rivers: &Self, x: i64, y: i64| {
+                rivers
+                    .index(x / 1000, y / 1000)
+                    .is_some_and(|t| rivers.depth[t] > 0 && rivers.owner[t] != mine)
+            };
+            let h = HEADINGS[usize::from(last.heading)];
+            let mut band = vec![Self::band_at(last, flow, shape, 0)];
+            let mut at = last;
+            for _ in 0..Self::BROOK_REACH {
+                if other_water(self, at.x, at.y) {
+                    break;
+                }
+                at = Step {
+                    x: at.x + h.0,
+                    y: at.y + h.1,
+                    heading: last.heading,
+                };
+                band.push(Self::band_at(at, flow, shape, 0));
+            }
+            if band.len() > 1 {
+                self.paint(&band, i, false);
             }
         }
     }
@@ -2407,6 +2450,42 @@ mod tests {
         eprintln!("a heading held {brook_run} steps by brooks, {river_run} by rivers");
         assert!(brook.1 > 0 && brook_run <= 4, "brooks hold {brook_run}");
         assert!(river_run > brook_run);
+    }
+
+    #[test]
+    fn every_brook_reaches_the_water() {
+        // Every brook, with the brooks it joins, touches a river or a ford.
+        for seed in 1..=8 {
+            let map = Map::valley(256, 256, seed);
+            let brook = |p: Pos| map.get(p) == Some(Terrain::Brook);
+            let river = |p: Pos| matches!(map.get(p), Some(Terrain::Water | Terrain::Ford));
+            let mut seen = std::collections::BTreeSet::new();
+            for y in 0..256 {
+                for x in 0..256 {
+                    let start = Pos::new(x, y);
+                    if !brook(start) || seen.contains(&start) {
+                        continue;
+                    }
+                    let (mut stack, mut touches) = (vec![start], false);
+                    seen.insert(start);
+                    while let Some(p) = stack.pop() {
+                        for dy in -1..=1 {
+                            for dx in -1..=1 {
+                                let q = Pos::new(p.x + dx, p.y + dy);
+                                touches |= river(q);
+                                if brook(q) && seen.insert(q) {
+                                    stack.push(q);
+                                }
+                            }
+                        }
+                    }
+                    assert!(
+                        touches,
+                        "seed {seed}: the brooks at {start:?} reach no river"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
