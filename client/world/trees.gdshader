@@ -17,6 +17,8 @@ uniform float rock_speed = 0.55;
 uniform float gust_scale = 0.0012;
 uniform float gust_speed = 0.018;
 uniform float still = 0.3;
+// Mipmap bias: negative reads a sharper level.
+uniform float mip_bias = -1.0;
 // The foot melts into the ground: the lower foot_dark of the tree darkens
 // (the shade among the roots), the lowest foot_melt dissolves raggedly,
 // tinted towards the earth.
@@ -61,7 +63,9 @@ void fragment() {
 		if (uv.x < 0.0 || uv.x > 1.0) {
 			COLOR = vec4(0.0);
 		} else {
-			vec4 c = texture(TEXTURE, uv);
+			// One mipmap level sharper than the hardware picks: sharp up close,
+			// still no shimmer far away.
+			vec4 c = texture(TEXTURE, uv, mip_bias);
 			float low = UV.y;
 			// Shade among the roots.
 			float dark = smoothstep(1.0 - foot_dark, 1.0, low);
