@@ -185,6 +185,57 @@ pub struct Shared {
     /// Bodies currently piloted, with the channel for messages meant for
     /// that pilot alone.
     pilots: Mutex<BTreeMap<u32, mpsc::Sender<ServerMessage>>>,
+    /// The development tools (`--dev`): the map's overview sent to every
+    /// client, and teleports accepted. `None` in play.
+    dev_overview: Option<ServerMessage>,
+}
+
+/// Tiles each cell of the development overview stands for, either way,
+/// at least; more on a map so large the overview would pass
+/// `OVERVIEW_MOST` cells across.
+pub const OVERVIEW_CELL: u32 = 8;
+/// Cells the overview has across, at most, whatever the map's size: the
+/// message stays a few hundred kilobytes.
+pub const OVERVIEW_MOST: u32 = 512;
+
+/// Tiles a cell of the overview stands for, for a map `side` tiles across.
+pub fn overview_cell(side: u32) -> u32 {
+    OVERVIEW_CELL.max(side.div_ceil(OVERVIEW_MOST))
+}
+
+/// The whole map, coarse (`ServerMessage::DevOverview`): each cell is the
+/// water crossing it when there is enough of it to see (a river, a ford,
+/// a brook), else its most common ground.
+pub fn overview(map: &Map) -> ServerMessage {
+    let cell = overview_cell(map.width().max(map.height()));
+    // Enough water to see: 6 tiles of 64 for a river, 3 for a brook.
+    let (river, brook) = (
+        (cell * cell * 6).div_ceil(64),
+        (cell * cell * 3).div_ceil(64),
+    );
+    let (width, height) = (map.width().div_ceil(cell), map.height().div_ceil(cell));
+    let mut cells = String::with_capacity((width * height) as usize);
+    for cy in 0..height {
+        for cx in 0..width {
+            // Grass, forest, rock, river, ford, brook.
+            let count = map.count_in(cx * cell, cy * cell, (cx + 1) * cell, (cy + 1) * cell);
+            let letter = if count[3] + count[4] >= river {
+                if count[4] > count[3] { 'o' } else { 'w' }
+            } else if count[5] >= brook {
+                'b'
+            } else {
+                let most = (0..3).max_by_key(|k| count[*k]).unwrap_or(0);
+                ['g', 'f', 'r'][most]
+            };
+            cells.push(letter);
+        }
+    }
+    ServerMessage::DevOverview {
+        cell,
+        width,
+        height,
+        cells,
+    }
 }
 
 /// A served connection's place among the `max_connections`, given back
@@ -279,7 +330,19 @@ impl Shared {
             connections: AtomicUsize::new(0),
             intentions: Mutex::new(BTreeMap::new()),
             pilots: Mutex::new(BTreeMap::new()),
+            dev_overview: None,
         }
+    }
+
+    /// Turns the development tools on (`--dev`): every client gets the
+    /// map's overview, and teleports are accepted.
+    pub fn enable_dev(&mut self) {
+        self.dev_overview = Some(overview(&self.map));
+    }
+
+    /// Are the development tools on?
+    pub fn is_dev(&self) -> bool {
+        self.dev_overview.is_some()
     }
 
     /// Records that a body set off: where it is and the route ahead.
@@ -432,7 +495,8 @@ impl Shared {
             | Intention::Hold { body, .. }
             | Intention::Stow { body, .. }
             | Intention::Sleep { body }
-            | Intention::Wake { body } => body.0,
+            | Intention::Wake { body }
+            | Intention::Teleport { body, .. } => body.0,
         };
         self.intentions
             .lock()
@@ -698,6 +762,9 @@ async fn handle_connection(
         },
     )
     .await?;
+    if let Some(overview) = &shared.dev_overview {
+        send(&mut ws, overview).await?;
+    }
 
     // The view starts around the piloted body, or the middle of the map.
     let centre = pilot
@@ -725,6 +792,9 @@ async fn handle_connection(
                         // A second hello is a client bug; drop the connection.
                         ws.close(None).await?;
                         return Ok(());
+                    }
+                    Ok(ClientMessage::DevTeleport { .. }) if !shared.is_dev() => {
+                        eprintln!("connection {peer}: teleport refused, the server is not in --dev");
                     }
                     Ok(message) => {
                         if let Some(body) = pilot.body {
@@ -769,6 +839,10 @@ async fn handle_connection(
 fn intention_of(body: BodyId, message: &ClientMessage) -> Intention {
     match *message {
         ClientMessage::MoveTo { x, y } => Intention::MoveTo {
+            body,
+            target: Pos::new(x, y),
+        },
+        ClientMessage::DevTeleport { x, y } => Intention::Teleport {
             body,
             target: Pos::new(x, y),
         },
@@ -1105,6 +1179,27 @@ mod tests {
         shared.release_body(1);
         shared.tell_pilot(BodyId(1), ServerMessage::Pong { nonce: 0 });
         assert!(rx.try_recv().is_err(), "released: nothing more arrives");
+    }
+
+    #[test]
+    fn the_overview_stays_small_whatever_the_map() {
+        assert_eq!(overview_cell(256), 8);
+        assert_eq!(overview_cell(3072), 8);
+        for side in [3072, 4096, 4097, 30_720, 307_200] {
+            let cell = overview_cell(side);
+            assert!(side.div_ceil(cell) <= OVERVIEW_MOST, "{side}: {cell}");
+        }
+        let ServerMessage::DevOverview {
+            cell,
+            width,
+            height,
+            cells,
+        } = overview(&Map::valley(256, 256, 1))
+        else {
+            panic!("an overview");
+        };
+        assert_eq!((cell, width, height, cells.len()), (8, 32, 32, 32 * 32));
+        assert!(cells.starts_with('r'), "the cliff along the north");
     }
 
     #[test]

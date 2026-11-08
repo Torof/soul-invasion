@@ -49,6 +49,8 @@ signal hovered(text: String)
 ## A right-click without dragging on a tile: the acts the piloted body
 ## could try there, as [{"label", "send": Callable, "item": int}].
 signal acts_requested(acts: Array, at_screen: Vector2)
+## A development teleport was asked (the ground there is on its way).
+signal teleporting
 ## body id -> {"id", "material"} of what it holds, or {}
 var _holds: Dictionary = {}
 ## chunk -> [{"at": Vector2 (millimetres), "species"}], the trees standing
@@ -257,6 +259,25 @@ func _on_body_sleeps(body: int, asleep: bool) -> void:
 func _on_body_died(body: int, _cause: String) -> void:
 	_bodies.erase(body)
 	queue_redraw()
+
+
+## Development only (--dev servers): asks for the piloted body to stand
+## near `tile` at once, and follows it there.
+func teleport_to(tile: Vector2i) -> void:
+	if not Net.dev or Net.body < 0:
+		return
+	Net.send_dev_teleport(tile.x, tile.y)
+	_target = Vector2i(-1, -1)
+	_following = true
+	teleporting.emit()
+	queue_redraw()
+
+
+## The tile the piloted body stands on, or (-1, -1) when there is none.
+func piloted_tile() -> Vector2i:
+	if not _bodies.has(_piloted):
+		return Vector2i(-1, -1)
+	return _tile_of(_bodies[_piloted]["at"])
 
 
 ## Items on the piloted body's tile or next to it, as received.
@@ -517,9 +538,10 @@ func _process(delta: float) -> void:
 	_update_see_through(delta)
 	_call_waiting_chunk()
 	for i in mini(REDRAWS_PER_FRAME, _to_redraw.size()):
-		var chunk: ChunkView = _to_redraw.pop_front()
-		if is_instance_valid(chunk):
-			chunk.queue_redraw()
+		# A chunk hidden since it was queued is freed: check before typing.
+		var queued: Variant = _to_redraw.pop_front()
+		if is_instance_valid(queued):
+			(queued as ChunkView).queue_redraw()
 	# Only the trees in view are drawn: redraw when the view moves. The
 	# sway itself is the shader's, every frame, with no redraw.
 	var view := Vector3(_camera.position.x, _camera.position.y, _camera.zoom.x)
@@ -545,7 +567,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			MOUSE_BUTTON_LEFT:
 				if event.pressed:
 					var tile := Iso.screen_to_tile(get_local_mouse_position())
-					if _in_map(tile) and Net.body >= 0:
+					if event.ctrl_pressed and Net.dev:
+						# Development (--dev): there at once.
+						teleport_to(tile)
+					elif _in_map(tile) and Net.body >= 0:
 						Net.send_move_to(tile.x, tile.y)
 						_target = tile
 						queue_redraw()

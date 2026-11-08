@@ -26,6 +26,7 @@ func _init() -> void:
 	_test_currents_decode()
 	_test_tree_images_are_clean()
 	_test_loading_waits_for_the_valley()
+	_test_dev_map_turns_as_the_game()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -60,6 +61,7 @@ func _test_protocol_wire_format_matches_server() -> void:
 	_check(Protocol.encode(Protocol.ping(1)) == "{\"type\":\"ping\",\"nonce\":1}", "ping wire format matches server")
 	_check(Protocol.encode(Protocol.move_to(2, 3)) == "{\"type\":\"move_to\",\"x\":2,\"y\":3}", "move_to wire format matches server")
 	_check(Protocol.hello().get("protocol_version") == Protocol.PROTOCOL_VERSION, "hello carries protocol version")
+	_check(Protocol.encode(Protocol.dev_teleport(7, 9)) == "{\"type\":\"dev_teleport\",\"x\":7,\"y\":9}", "dev_teleport wire format matches server")
 
 
 func _test_iso_round_trip() -> void:
@@ -557,6 +559,19 @@ func _test_the_shore_field_in_slices() -> void:
 	for i in 60:
 		await process_frame
 	_check(ShoreField._image.get_region(block).get_data() == bare, "an overtaken update gives up")
+
+
+func _test_dev_map_turns_as_the_game() -> void:
+	var map := DevMap.new()
+	var top := Vector2(500, 90)
+	# Turned as the game: x runs down to the right, y down to the left.
+	_check(map._to_screen(Vector2(10, 0), 2.0, top) == top + Vector2(20, 10), "x runs down to the right")
+	_check(map._to_screen(Vector2(0, 10), 2.0, top) == top + Vector2(-20, 10), "y runs down to the left")
+	var cell := Vector2(123.5, 37.25)
+	_check(map._to_cell(map._to_screen(cell, 3.0, top), 3.0, top).distance_to(cell) < 1e-3, "a click lands on the cell drawn there")
+	map.show_overview(8, 2, 1, "gw")
+	_check(map.available(), "the overview is kept")
+	map.free()
 
 
 func _test_loading_waits_for_the_valley() -> void:

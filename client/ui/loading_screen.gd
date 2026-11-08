@@ -29,10 +29,18 @@ const FADE_SECONDS := 0.45
 const FIELD_SLICE_USEC := 40000
 
 var progress := LoadingProgress.new()
+## After a development teleport, the world is known already: only the
+## ground there is awaited.
+var _after_teleport := false
 var _canvas: Control
 var _time := 0.0
 var _fade := 0.0
 var _finished := false
+
+
+func _init(after_teleport := false) -> void:
+	_after_teleport = after_teleport
+	progress.has_world = after_teleport
 
 
 func _ready() -> void:
@@ -53,15 +61,19 @@ func _on_disconnected(_reason: String) -> void:
 	if _finished:
 		return
 	progress = LoadingProgress.new()
+	progress.has_world = _after_teleport
 
 
 func _process(delta: float) -> void:
 	_time += delta
 	if not _finished:
-		progress.built = 0
+		# Built: what came in, less the chunks still waiting to be built
+		# (after a teleport, the chunks held before are built already).
+		var unbuilt := 0
 		for chunk in get_tree().get_nodes_in_group("chunk_views"):
-			if (chunk as ChunkView).is_built():
-				progress.built += 1
+			if not (chunk as ChunkView).is_built():
+				unbuilt += 1
+		progress.built = maxi(progress.received - unbuilt, 0)
 		progress.fields = ShoreField.busy
 		if progress.done(Time.get_ticks_msec()):
 			_finished = true

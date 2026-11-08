@@ -1,6 +1,6 @@
 extends Control
 ## Main scene: the world view, the head-up display, the inventory, a help
-## line, the loading screen, the tooltip for whatever is under the mouse, and the context
+## line, the loading screen, the development map (--dev), the tooltip for whatever is under the mouse, and the context
 ## menu of what the body could try on a tile.
 ##
 ## The client only displays the world and transmits the player's intentions
@@ -36,8 +36,15 @@ func _ready() -> void:
 	if not shot.is_empty():
 		_screenshot_then_quit(shot)
 	else:
-		# A loading screen while the valley arrives and is built.
+		# A loading screen while the valley arrives and is built, and again
+		# after a development teleport.
 		add_child(LoadingScreen.new())
+		_world.teleporting.connect(func() -> void: add_child(LoadingScreen.new(true)))
+	# Development (--dev servers): the map of the whole valley, on M.
+	var dev_map := DevMap.new()
+	dev_map.world = _world
+	add_child(dev_map)
+	Net.dev_overview.connect(dev_map.show_overview)
 
 
 func _screenshot_then_quit(path: String) -> void:
@@ -83,3 +90,4 @@ func _process(_delta: float) -> void:
 		var at := get_viewport().get_mouse_position() + Vector2(16, 16)
 		var limit := get_viewport_rect().size - _tooltip.size - Vector2(8, 8)
 		_tooltip.position = Vector2(minf(at.x, limit.x), minf(at.y, limit.y))
+
