@@ -58,6 +58,16 @@ var _trees: Dictionary = {}
 var _tree_heights: Dictionary = {}
 ## chunk -> where its water runs, tile by tile (protocol `currents`).
 var _currents: Dictionary = {}
+## Seeing through trees: how far the circles around the body and the
+## mouse are open (eased), and whether each should be.
+var _body_reveal := 0.0
+var _mouse_reveal := 0.0
+var _body_hidden := false
+var _mouse_hidden := false
+const BODY_SEE_M := 1.5
+const MOUSE_SEE_M := 1.2
+## Seconds for a circle to open or close.
+const SEE_EASE := 0.2
 ## The camera's position and zoom at the last drawing.
 var _last_view := Vector3.INF
 var _drag_start := Vector2.ZERO
@@ -455,6 +465,7 @@ func _process(delta: float) -> void:
 		moving = true
 	if _following and _bodies.has(_piloted):
 		_camera.position = Iso.point_to_screen(_bodies[_piloted]["at"])
+	_update_see_through(delta)
 	# Only the trees in view are drawn: redraw when the view moves. The
 	# sway itself is the shader's, every frame, with no redraw.
 	var view := Vector3(_camera.position.x, _camera.position.y, _camera.zoom.x)
@@ -534,6 +545,9 @@ func _draw() -> void:
 		draw_polyline(_closed(Iso.diamond(_target.x, _target.y)), TARGET_COLOR, 2.5)
 	if _in_map(_hover):
 		draw_polyline(_closed(Iso.diamond(_hover.x, _hover.y)), Color(1, 1, 1, 0.6), 1.5)
+	# Which circles are needed is found anew at each drawing.
+	_body_hidden = false
+	_mouse_hidden = false
 	# Trees and bodies, far to near, so nearer ones overlap farther ones
 	# and a body walks behind a trunk. Trees off screen are left out.
 	var seen := get_canvas_transform().affine_inverse() * get_viewport_rect()
@@ -555,7 +569,8 @@ func _draw() -> void:
 	for entry: Array in standing:
 		if entry[1] == 0:
 			var tree: Dictionary = entry[2]
-			Trees.draw(self, tree, int(_tree_heights.get(tree["species"], 400)))
+			var height := int(_tree_heights.get(tree["species"], 400))
+			Trees.draw(self, tree, height, _see_through_flags(tree, height))
 		else:
 			_draw_body(entry[2])
 
@@ -586,6 +601,78 @@ func _draw_body(id: int) -> void:
 			var held_colour: Color = _looks.get(str(holds.get("material", "")), Color.MAGENTA)
 			draw_circle(feet + Vector2(h * 0.32, -h * 0.45), h * 0.14, held_colour)
 			draw_circle(feet + Vector2(h * 0.32, -h * 0.45), h * 0.14, Color.BLACK, false, 1.0)
+
+
+## Where the circle around the piloted body is centred: its chest.
+func _body_see_centre() -> Vector2:
+	if not _bodies.has(_piloted):
+		return Vector2(-1e6, -1e6)
+	return Iso.point_to_screen(_bodies[_piloted]["at"]) - Vector2(0, Iso.PX_PER_M * 0.5)
+
+
+## Which see-through circles a tree drawn now takes part in (Trees.draw):
+## the body's when it stands in front of the piloted body and covers its
+## circle; the mouse's when it covers the mouse and something (a body, an
+## item) lies behind it near the mouse.
+func _see_through_flags(tree: Dictionary, height_cm: int) -> int:
+	var flags := 0
+	var at: Vector2 = tree["at"]
+	var images := Trees.textures(str(tree["species"]))
+	if images.is_empty():
+		return 0
+	var r := Trees.rect(at, height_cm, images[Trees.variant(at, images.size())])
+	if _bodies.has(_piloted):
+		var body: Vector2 = _bodies[_piloted]["at"]
+		var centre := _body_see_centre()
+		if at.x + at.y > body.x + body.y and r.grow(BODY_SEE_M * Iso.PX_PER_M).has_point(centre):
+			flags |= 1
+			_body_hidden = true
+	var mouse := get_local_mouse_position()
+	if r.has_point(mouse) and _something_behind(at, mouse):
+		flags |= 2
+		_mouse_hidden = true
+	return flags
+
+
+## A body or an item standing behind the tree at `at` (farther from the
+## camera) within the mouse's circle around `mouse`.
+func _something_behind(at: Vector2, mouse: Vector2) -> bool:
+	var reach := MOUSE_SEE_M * Iso.PX_PER_M
+	var depth := at.x + at.y
+	for id: int in _bodies:
+		var b: Vector2 = _bodies[id]["at"]
+		if b.x + b.y < depth and Iso.point_to_screen(b).distance_to(mouse) < reach * 1.5:
+			return true
+	for key in _items:
+		for item: Dictionary in _items[key]:
+			var p := Vector2(int(item.get("x", 0)) * 1000 + 500, int(item.get("y", 0)) * 1000 + 500)
+			if p.x + p.y < depth and Iso.point_to_screen(p).distance_to(mouse) < reach:
+				return true
+	return false
+
+
+## Eases the see-through circles open or shut and hands them to the trees'
+## shader; redraws when the mouse moves, since which tree it hides changes.
+func _update_see_through(delta: float) -> void:
+	var step := delta / SEE_EASE
+	_body_reveal = move_toward(_body_reveal, 1.0 if _body_hidden else 0.0, step)
+	_mouse_reveal = move_toward(_mouse_reveal, 1.0 if _mouse_hidden else 0.0, step)
+	var sway := material as ShaderMaterial
+	if sway == null:
+		return
+	sway.set_shader_parameter("body_at", _body_see_centre())
+	sway.set_shader_parameter("body_radius", BODY_SEE_M * Iso.PX_PER_M)
+	sway.set_shader_parameter("body_reveal", _body_reveal)
+	var mouse := get_local_mouse_position()
+	sway.set_shader_parameter("mouse_at", mouse)
+	sway.set_shader_parameter("mouse_radius", MOUSE_SEE_M * Iso.PX_PER_M)
+	sway.set_shader_parameter("mouse_reveal", _mouse_reveal)
+	if mouse.distance_to(_last_mouse) > 4.0:
+		_last_mouse = mouse
+		queue_redraw()
+
+
+var _last_mouse := Vector2(-1e6, -1e6)
 
 
 ## A small "z" above a sleeping body, drawn on `canvas` at `at`.
