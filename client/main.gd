@@ -18,7 +18,13 @@ func _ready() -> void:
 	_world.hovered.connect(_on_hovered)
 	_world.acts_requested.connect(_on_acts_requested)
 	_actions.id_pressed.connect(_on_act_chosen)
-	Net.connect_to()
+	# Development aid: SOUL_INVASION_URL names another server (a test server
+	# on another port, beside the one being played).
+	var url := OS.get_environment("SOUL_INVASION_URL")
+	if url.is_empty():
+		Net.connect_to()
+	else:
+		Net.connect_to(url)
 	# Development aid: with SOUL_INVASION_SCREENSHOT set to a path, save what
 	# the window shows after three seconds and quit (headless runs cannot
 	# render, so this is how a change is looked at without a person).
