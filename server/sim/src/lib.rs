@@ -7,6 +7,7 @@
 pub mod content;
 pub mod map;
 pub mod time;
+pub mod trees;
 pub mod woods;
 
 use std::collections::{BTreeMap, VecDeque};
@@ -526,6 +527,10 @@ pub struct World {
     /// start of the next one. Never persisted: a restart drops them.
     #[serde(skip)]
     pending: Vec<Intention>,
+    /// The trees standing, planted from the map and the content
+    /// ([`World::plant`]). Never persisted: regenerated on load.
+    #[serde(skip)]
+    trees: Vec<trees::Tree>,
 }
 
 /// Side of the first version's valley, in tiles: about 256 m, three
@@ -551,6 +556,7 @@ impl World {
             world.spawn_body(pos);
         }
         world.scatter(content, VALLEY_SEED);
+        world.plant(content);
         world
     }
 
@@ -601,7 +607,23 @@ impl World {
             items: Vec::new(),
             next_item: 1,
             pending: Vec::new(),
+            trees: Vec::new(),
         }
+    }
+
+    /// Plants the trees of the map with the content's kinds of tree (D37).
+    /// Called when the world is created and when it is loaded.
+    pub fn plant(&mut self, content: &Content) {
+        let seed = match self.map.spec() {
+            MapSpec::Valley { seed, .. } => seed,
+            MapSpec::Filled { .. } => 0,
+        };
+        self.trees = trees::plant(&self.map, &content.species, seed);
+    }
+
+    /// The trees standing.
+    pub fn trees(&self) -> &[trees::Tree] {
+        &self.trees
     }
 
     /// The world's calendar.

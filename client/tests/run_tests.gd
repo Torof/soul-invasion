@@ -21,6 +21,7 @@ func _init() -> void:
 	_test_ground_art_is_reachable()
 	_test_inventory_lines_and_refusals()
 	_test_brooks_are_lines_on_the_ground()
+	_test_trees_stand_on_their_foot()
 	print("client tests: %d checks, %d failures" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
 
@@ -430,4 +431,39 @@ func _owned(lines: Array, lo: Vector2i, hi: Vector2i) -> Array:
 				out.append([pts[i].snapped(Vector2(0.001, 0.001)), pts[i + 1].snapped(Vector2(0.001, 0.001)), snappedf(widths[i], 0.001)])
 	out.sort()
 	return out
+
+
+func _test_trees_stand_on_their_foot() -> void:
+	# Every kind of tree of the content has at least one image, four times
+	# the screen (256 px a metre of its height).
+	var text := FileAccess.get_file_as_string("res://../content/species.ron")
+	if text.is_empty():
+		text = FileAccess.get_file_as_string(ProjectSettings.globalize_path("res://").path_join("../content/species.ron"))
+	var ids: Array = []
+	var heights: Dictionary = {}
+	var re := RegEx.new()
+	re.compile("id: \"([a-z_]+)\", name: \"[^\"]*\", height_m: ([0-9.]+)")
+	for m in re.search_all(text):
+		ids.append(m.get_string(1))
+		heights[m.get_string(1)] = float(m.get_string(2))
+	_check(ids.size() >= 6, "the content names its kinds of tree: %s" % [ids])
+	for id: String in ids:
+		var images := Trees.textures(id)
+		_check(not images.is_empty(), "the %s has an image" % id)
+		for t: Texture2D in images:
+			_check(absi(t.get_height() - roundi(heights[id] * 256.0)) <= 1, "%s image is 256 px a metre: %d" % [id, t.get_height()])
+	# A tree stands on its foot, its size within the jitter, the same every
+	# time; neighbours do not all show the same image.
+	var oak: Array = Trees.textures("oak")
+	var at := Vector2(12_400, 30_700)
+	var r := Trees.rect(at, 400, oak[0])
+	var foot := Iso.point_to_screen(at)
+	_check(r.end.y == foot.y and absf(r.get_center().x - foot.x) < 0.01, "a tree stands on its foot")
+	var tall := 400.0 / 100.0 * Iso.PX_PER_M
+	_check(absf(r.size.y - tall) <= tall * Trees.SIZE_JITTER + 0.01, "a tree's size stays within its jitter")
+	_check(Trees.rect(at, 400, oak[0]) == r and Trees.variant(at, 2) == Trees.variant(at, 2), "the same tree every time")
+	var shown := {}
+	for i in 20:
+		shown[Trees.variant(Vector2(1000 * i + 300, 4_500), oak.size())] = true
+	_check(shown.size() == oak.size(), "neighbouring oaks show every image")
 

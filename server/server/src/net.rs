@@ -27,7 +27,8 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
     BodyState, ClientMessage, Clock, Condition, DeathCause, ItemAct, ItemState, ItemView,
-    MaterialView, PROTOCOL_VERSION, Point, Refusal, ServerMessage, Terrain, decode, encode,
+    MaterialView, PROTOCOL_VERSION, Point, Refusal, ServerMessage, SpeciesView, Terrain, TreeState,
+    decode, encode,
 };
 use sim::{BodyId, CHUNK_SIZE, ChunkPos, Content, FinePos, Intention, ItemId, Map, Pos, World};
 use tokio::net::{TcpListener, TcpStream};
@@ -159,6 +160,10 @@ pub struct Shared {
     pub bodies: watch::Sender<Vec<BodyState>>,
     /// What items are made of, as clients need it.
     pub materials: Vec<MaterialView>,
+    /// The kinds of tree, as clients need them.
+    pub species: Vec<SpeciesView>,
+    /// The trees standing, by chunk. Static for now: nothing fells them.
+    trees: BTreeMap<ChunkPos, Vec<TreeState>>,
     /// Is it night? Kept by the simulation thread.
     pub night: AtomicBool,
     /// Simulation ticks per game second.
@@ -210,6 +215,25 @@ impl Shared {
                 mass_g: grams(m.mass_kg),
             })
             .collect();
+        let species: Vec<SpeciesView> = content
+            .species
+            .iter()
+            .map(|s| SpeciesView {
+                id: s.id.clone(),
+                name: s.name.clone(),
+                height_cm: centimetres(s.height_m),
+            })
+            .collect();
+        let mut trees: BTreeMap<ChunkPos, Vec<TreeState>> = BTreeMap::new();
+        for tree in world.trees() {
+            trees
+                .entry(tree.at.tile().chunk())
+                .or_default()
+                .push(TreeState {
+                    at: point(tree.at),
+                    species: species[tree.species].id.clone(),
+                });
+        }
         let mut items: BTreeMap<ChunkPos, Vec<ItemState>> = BTreeMap::new();
         for item in world.items() {
             let Some(pos) = item.pos() else {
@@ -243,6 +267,8 @@ impl Shared {
             map: world.map().clone(),
             bodies: watch::Sender::new(bodies),
             materials,
+            species,
+            trees,
             night: AtomicBool::new(world.is_night(content)),
             ticks_per_second: world.calendar().ticks_per_second(),
             ticks_per_day: world.calendar().ticks_per_day(),
@@ -486,6 +512,7 @@ impl Shared {
                 .get(&chunk)
                 .cloned()
                 .unwrap_or_default(),
+            trees: self.trees.get(&chunk).cloned().unwrap_or_default(),
         })
     }
 }
@@ -542,6 +569,12 @@ impl View {
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn grams(mass_kg: f32) -> u32 {
     (mass_kg * 1000.0).round().clamp(0.0, 1e9) as u32
+}
+
+/// A length in metres as whole centimetres, for the wire.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn centimetres(metres: f32) -> u32 {
+    (metres * 100.0).round().clamp(0.0, 1e9) as u32
 }
 
 /// A pace as thousandths, for the wire; absurd paces saturate.
@@ -657,6 +690,7 @@ async fn handle_connection(
             height: shared.map.height(),
             chunk_size: CHUNK_SIZE,
             materials: shared.materials.clone(),
+            species: shared.species.clone(),
             night: shared.night.load(Ordering::Relaxed),
             clock: shared.clock(),
         },

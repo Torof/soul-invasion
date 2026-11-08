@@ -25,7 +25,10 @@
 use crate::map::{Groves, Lcg, Rivers, Terrain};
 
 /// The kind of place a tile is, for the trees that will grow on it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum Habitat {
     /// Open grass.
     Meadow,
@@ -45,6 +48,8 @@ pub enum Habitat {
     Lone,
     /// Trees along a river.
     Riverside,
+    /// The wood in the band at the cliff's foot.
+    CliffFoot,
     /// Water, a ford, a brook or the cliff: no tree.
     None,
 }
@@ -340,6 +345,13 @@ impl Plan {
                 d = 0;
                 habitat = Habitat::Camp;
             }
+        }
+        // The wood at the cliff's foot is its own place.
+        let below = i64::from(y) - i64::from(self.cliff_rows);
+        if below < Woods::CLIFF_ROWS
+            && matches!(habitat, Habitat::Edge | Habitat::Wood | Habitat::Heart)
+        {
+            habitat = Habitat::CliffFoot;
         }
         // Copses and lone trees in the meadow.
         if habitat == Habitat::Meadow {

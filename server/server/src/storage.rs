@@ -223,7 +223,10 @@ fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<Wo
         version += 1;
     }
     if version == SNAPSHOT_FORMAT_VERSION {
-        Ok(serde_json::from_str(&data)?)
+        // The trees are not stored: planted again from the map.
+        let mut world: World = serde_json::from_str(&data)?;
+        world.plant(content);
+        Ok(world)
     } else {
         Err(StorageError::UnsupportedSnapshot {
             found: version,

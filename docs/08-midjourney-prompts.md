@@ -312,7 +312,14 @@ single 2D game asset, a primitive lean-to shelter made of stacked branches and l
 single 2D game asset, a primitive wooden rack of lashed poles with strips of meat hanging to dry, about two metres long, alone, high-angle three-quarter view, thick dark outlines, flat cel shading, lit from the front left, no cast shadow, floating on a plain pure white background with nothing else --ar 4:3 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no ground, grass, soil, shadow, scenery, background, frame, text, watermark
 ```
 
-### Trees (one species now; the others with `species.ron`, one sheet per species with its four ages)
+### Trees (six species, adult, two variants each; ages later)
+
+**Made on 8 November 2026** with the prompt below, one per species and variant (the descriptions are in `content/art/trees/README.md`), the style reference **and** a clean oak on pure white as a second reference (`::2`); the chosen image is then edited in Midjourney to remove what is wrong, keeping every colour.
+```
+a single isolated <tree description>, nothing else in the image, high-angle three-quarter view, the whole tree in frame, on an empty plain pure white background, thick dark outlines, flat cel shading, lit from the front left --ar 2:3 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png <clean oak url>::2 --no ground, grass, grass tufts, soil, roots, rocks, stones, bushes, flowers, mushrooms, logs, path, fence, cast shadow, scenery, text, watermark --style raw
+```
+
+The first prompts, kept for the record:
 
 **Risk**: grass and roots painted at the foot, a shadow, foliage hiding the trunk (bodies walk behind it). **Rule**: trunk clear on the lower third, floating on pure white.
 

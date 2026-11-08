@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::map::Terrain;
+use crate::woods::Habitat;
 
 /// What family a material belongs to. Guides what can be done with it;
 /// the properties decide how well.
@@ -169,6 +170,22 @@ pub struct Content {
     pub movement: Movement,
     /// How bodies hunger, freeze, tire and die.
     pub needs: Needs,
+    /// The kinds of tree and where each grows (D37), in file order.
+    pub species: Vec<Species>,
+}
+
+/// A kind of tree.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Species {
+    /// Content id, `snake_case`, unique.
+    pub id: String,
+    /// Name shown to players.
+    pub name: String,
+    /// Height of a grown tree, in metres.
+    pub height_m: f32,
+    /// How much this species grows in each habitat, against the others
+    /// there; habitats not listed have none of it.
+    pub habitats: BTreeMap<Habitat, u32>,
 }
 
 /// Why content was refused.
@@ -209,6 +226,14 @@ pub enum ContentError {
         index: usize,
         /// The value.
         per_thousand: u32,
+    },
+    /// A kind of tree is defined twice or makes no sense.
+    #[error("species `{id}`: {what}")]
+    Species {
+        /// Which species.
+        id: String,
+        /// What is wrong.
+        what: &'static str,
     },
     /// The movement rules are incomplete or senseless.
     #[error("movement: {0}")]
@@ -255,9 +280,54 @@ impl Content {
             spawns,
             movement,
             needs,
+            species: Vec::new(),
         };
         content.validate()?;
         Ok(content)
+    }
+
+    /// The same content with the kinds of tree of `species` (the text of
+    /// `species.ron`).
+    pub fn with_species(mut self, species: &str) -> Result<Self, ContentError> {
+        self.species = ron::from_str(species).map_err(|source| ContentError::Parse {
+            file: "species.ron",
+            source,
+        })?;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Checks the kinds of tree: unique ids, a name, a sensible height,
+    /// and somewhere to grow.
+    fn validate_species(&self) -> Result<(), ContentError> {
+        let mut species_ids = BTreeSet::new();
+        for species in &self.species {
+            let invalid = |what| ContentError::Species {
+                id: species.id.clone(),
+                what,
+            };
+            if !species_ids.insert(species.id.as_str()) {
+                return Err(invalid("defined twice"));
+            }
+            if species.id.is_empty()
+                || !species
+                    .id
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            {
+                return Err(invalid("id must be snake_case ASCII"));
+            }
+            if species.name.trim().is_empty() {
+                return Err(invalid("name is empty"));
+            }
+            if !(species.height_m.is_finite() && (0.5..=40.0).contains(&species.height_m)) {
+                return Err(invalid("height_m is 0.5 to 40"));
+            }
+            if species.habitats.values().all(|w| *w == 0) {
+                return Err(invalid("grows nowhere"));
+            }
+        }
+        Ok(())
     }
 
     /// Checks ids are unique, references resolve and values make sense.
@@ -295,6 +365,7 @@ impl Content {
                 return Err(invalid("look.colour must be #rrggbb"));
             }
         }
+        self.validate_species()?;
         for (index, spawn) in self.spawns.iter().enumerate() {
             if !ids.contains(spawn.material.as_str()) {
                 return Err(ContentError::UnknownMaterial {
@@ -597,5 +668,40 @@ mod tests {
                 per_thousand: 1001
             }
         ));
+    }
+
+    #[test]
+    fn species_are_checked() {
+        let base = || Content::sample();
+        let ok = r#"[(id: "oak", name: "Oak", height_m: 4.0, habitats: { heart: 50, lone: 60 })]"#;
+        let content = base().with_species(ok).unwrap();
+        assert_eq!(content.species[0].habitats[&Habitat::Lone], 60);
+        let twice = r#"[(id: "oak", name: "Oak", height_m: 4.0, habitats: { heart: 1 }),
+                        (id: "oak", name: "Oak", height_m: 4.0, habitats: { heart: 1 })]"#;
+        assert!(matches!(
+            base().with_species(twice).unwrap_err(),
+            ContentError::Species { .. }
+        ));
+        let nowhere = r#"[(id: "oak", name: "Oak", height_m: 4.0, habitats: { heart: 0 })]"#;
+        assert!(matches!(
+            base().with_species(nowhere).unwrap_err(),
+            ContentError::Species { .. }
+        ));
+        let giant = r#"[(id: "oak", name: "Oak", height_m: 400.0, habitats: { heart: 1 })]"#;
+        assert!(matches!(
+            base().with_species(giant).unwrap_err(),
+            ContentError::Species { .. }
+        ));
+        assert!(matches!(
+            base().with_species("nope").unwrap_err(),
+            ContentError::Parse {
+                file: "species.ron",
+                ..
+            }
+        ));
+        // The repository's own file is valid.
+        base()
+            .with_species(include_str!("../../../content/species.ron"))
+            .unwrap();
     }
 }
