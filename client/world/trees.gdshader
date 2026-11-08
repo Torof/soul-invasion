@@ -70,7 +70,9 @@ void vertex() {
 		// Widen the quad either side by the largest bend.
 		pad = (sway + gust * 1.5) * height + 1.0;
 		VERTEX.x += (UV.x * 2.0 - 1.0) * pad;
-		local = VERTEX;
+		// Where this point stands in the world view (the tree node is placed
+		// at its foot).
+		local = (MODEL_MATRIX * vec4(VERTEX, 0.0, 1.0)).xy;
 	}
 }
 
