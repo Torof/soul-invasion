@@ -229,10 +229,13 @@ async fn hello_ping_and_a_published_day() {
             height,
             chunk_size,
             materials,
+            species,
             clock,
             ..
         }) => {
             assert_eq!((width, height), (VALLEY_SIZE, VALLEY_SIZE));
+            assert!(species.len() >= 6, "the kinds of tree");
+            assert!(species.iter().all(|s| s.height_cm >= 100));
             assert_eq!(chunk_size, CHUNK_SIZE);
             assert!(materials.len() >= 9, "the catalogue of materials");
             assert!(materials.iter().all(|m| m.colour.starts_with('#')));
@@ -245,6 +248,7 @@ async fn hello_ping_and_a_published_day() {
     let centre = start_of(&world, 1).chunk();
     let mut seen_bodies = Vec::new();
     let mut seen_items = 0;
+    let mut seen_trees = 0;
     let mut chunks = Vec::new();
     for _ in 0..window_len(&world, centre) {
         match receive(&mut socket).await {
@@ -254,8 +258,13 @@ async fn hello_ping_and_a_published_day() {
                 tiles,
                 bodies,
                 items,
+                trees,
             }) => {
                 assert_eq!(tiles.len(), (CHUNK_SIZE * CHUNK_SIZE) as usize);
+                for t in &trees {
+                    assert_eq!(tile(t.at).chunk(), ChunkPos::new(x, y));
+                }
+                seen_trees += trees.len();
                 for i in &items {
                     assert_eq!(Pos::new(i.x, i.y).chunk(), ChunkPos::new(x, y));
                 }
@@ -280,6 +289,10 @@ async fn hello_ping_and_a_published_day() {
     assert!(
         seen_items > 100,
         "{seen_items} items in view: the ground is scattered"
+    );
+    assert!(
+        seen_trees > 100,
+        "{seen_trees} trees in view: the woods stand"
     );
     seen_bodies.sort_unstable();
     assert_eq!(

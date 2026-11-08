@@ -1,0 +1,26 @@
+// The kinds of tree, and where each grows (D37).
+//
+// id:       snake_case, unique; the client finds its images by it.
+// height_m: a grown tree, in metres.
+// habitats: how much the species grows in each habitat, against the
+//           others there (any scale; 0 or absent: none). Habitats:
+//           heart, wood, edge, clearing, camp, copse, lone, riverside,
+//           cliff_foot, meadow.
+//
+// Within a habitat, trees of one kind come in stands that mix at their
+// borders: the weight here is multiplied by the strength of each
+// species' stand at the place.
+[
+    (id: "oak", name: "Oak", height_m: 4.0,
+        habitats: { heart: 50, wood: 45, edge: 20, copse: 50, lone: 60 }),
+    (id: "pine", name: "Scots pine", height_m: 5.0,
+        habitats: { heart: 35, wood: 25, edge: 5, cliff_foot: 100 }),
+    (id: "birch", name: "Birch", height_m: 4.5,
+        habitats: { heart: 15, wood: 20, edge: 45, cliff_foot: 20 }),
+    (id: "hazel", name: "Hazel", height_m: 3.0,
+        habitats: { wood: 10, edge: 35, copse: 15 }),
+    (id: "willow", name: "Willow", height_m: 3.5,
+        habitats: { riverside: 100 }),
+    (id: "wild_apple", name: "Wild apple", height_m: 3.0,
+        habitats: { edge: 5, copse: 40, lone: 40 }),
+]

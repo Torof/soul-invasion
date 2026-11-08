@@ -51,6 +51,11 @@ signal hovered(text: String)
 signal acts_requested(acts: Array, at_screen: Vector2)
 ## body id -> {"id", "material"} of what it holds, or {}
 var _holds: Dictionary = {}
+## chunk -> [{"at": Vector2 (millimetres), "species"}], the trees standing
+## in it, as the server sent them.
+var _trees: Dictionary = {}
+## species id -> height in centimetres.
+var _tree_heights: Dictionary = {}
 var _drag_start := Vector2.ZERO
 var _dragged := false
 var _night := false
@@ -70,6 +75,13 @@ func _ready() -> void:
 	_camera.zoom = Vector2.ONE * DEFAULT_ZOOM
 	Net.world_state.connect(_on_world_state)
 	Net.chunk.connect(_on_chunk)
+	Net.species.connect(func(species: Array) -> void:
+		_tree_heights.clear()
+		for s in species:
+			_tree_heights[str(s.get("id", ""))] = int(s.get("height_cm", 400)))
+	# Tree images are four times the screen: mipmaps keep them clean when
+	# the camera pulls back.
+	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	Net.chunk_hidden.connect(_on_chunk_hidden)
 	Net.body_walks.connect(_on_body_walks)
 	Net.body_stopped.connect(_on_body_stopped)
@@ -107,6 +119,7 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	_chunks.clear()
 	_items.clear()
 	_tiles.clear()
+	_trees.clear()
 	_bodies.clear()
 	_following = true
 	_camera_placed = false
@@ -122,7 +135,7 @@ func _set_night(night: bool) -> void:
 	modulate = Color(0.45, 0.5, 0.7) if lit else Color.WHITE
 
 
-func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array) -> void:
+func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees: Array = []) -> void:
 	var key := Vector2i(x, y)
 	var view: ChunkView = _chunks.get(key)
 	if view == null:
@@ -132,6 +145,10 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array) -> voi
 		_chunks[key] = view
 	_tiles[key] = tiles
 	_items[key] = items
+	var standing: Array = []
+	for t in trees:
+		standing.append({"at": Net.point(t.get("at", {})), "species": str(t.get("species", ""))})
+	_trees[key] = standing
 	view.terrain_at = terrain_at
 	view.show_chunk(key * _chunk_size, _chunk_size, tiles, items, _looks)
 	_redraw_neighbours(key)
@@ -316,6 +333,7 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 		_chunks.erase(key)
 		_items.erase(key)
 		_tiles.erase(key)
+		_trees.erase(key)
 		_redraw_neighbours(key)
 		_relay_shore()
 	for id in _bodies.keys():
@@ -484,38 +502,53 @@ func _draw() -> void:
 		draw_polyline(_closed(Iso.diamond(_target.x, _target.y)), TARGET_COLOR, 2.5)
 	if _in_map(_hover):
 		draw_polyline(_closed(Iso.diamond(_hover.x, _hover.y)), Color(1, 1, 1, 0.6), 1.5)
-	# Bodies, far to near so nearer ones overlap farther ones.
-	var ids := _bodies.keys()
-	ids.sort_custom(func(a: int, b: int) -> bool:
-		var pa: Vector2 = _bodies[a]["at"]
-		var pb: Vector2 = _bodies[b]["at"]
-		return pa.x + pa.y < pb.x + pb.y)
-	for id: int in ids:
-		var shown: Vector2 = Iso.point_to_screen(_bodies[id]["at"])
-		var color := PILOTED_COLOR if id == _piloted else BODY_COLOR
-		var feet := shown + Vector2(0, 2)
-		# Provisional figures: a third of a person's 1.7 m, so they stay
-		# small on the diamond until real sprites come (64 px per metre).
-		var h := Iso.PX_PER_M * 1.7 * 0.33
-		if _bodies[id]["asleep"]:
-			# Lying down: a figure along the ground, and a "z" above it.
-			draw_rect(Rect2(feet + Vector2(-h * 0.6, -h * 0.35), Vector2(h, h * 0.3)), color)
-			draw_rect(Rect2(feet + Vector2(-h * 0.6, -h * 0.35), Vector2(h, h * 0.3)), Color.BLACK, false, 1.0)
-			draw_circle(feet + Vector2(h * 0.6, -h * 0.2), h * 0.18, color)
-			draw_circle(feet + Vector2(h * 0.6, -h * 0.2), h * 0.18, Color.BLACK, false, 1.0)
-			draw_sleep_icon(self, feet + Vector2(0, -h * 0.7))
+	# Trees and bodies, far to near, so nearer ones overlap farther ones
+	# and a body walks behind a trunk. Trees off screen are left out.
+	var seen := get_canvas_transform().affine_inverse() * get_viewport_rect()
+	seen = seen.grow(Iso.PX_PER_M * 6.0)
+	var standing: Array = []
+	for key in _trees:
+		for tree: Dictionary in _trees[key]:
+			if seen.has_point(Iso.point_to_screen(tree["at"])):
+				standing.append([tree["at"].x + tree["at"].y, 0, tree])
+	for id: int in _bodies:
+		var at: Vector2 = _bodies[id]["at"]
+		standing.append([at.x + at.y, 1, id])
+	standing.sort_custom(func(a: Array, b: Array) -> bool: return a[0] < b[0])
+	for entry: Array in standing:
+		if entry[1] == 0:
+			var tree: Dictionary = entry[2]
+			Trees.draw(self, tree, int(_tree_heights.get(tree["species"], 400)))
 		else:
-			# A standing figure: taller than wide, feet where the body stands.
-			draw_rect(Rect2(feet + Vector2(-h * 0.18, -h), Vector2(h * 0.36, h * 0.9)), color)
-			draw_rect(Rect2(feet + Vector2(-h * 0.18, -h), Vector2(h * 0.36, h * 0.9)), Color.BLACK, false, 1.0)
-			draw_circle(feet + Vector2(0, -h * 1.18), h * 0.2, color)
-			draw_circle(feet + Vector2(0, -h * 1.18), h * 0.2, Color.BLACK, false, 1.0)
-			var holds: Dictionary = _holds.get(id, {})
-			if not holds.is_empty():
-				# What is in hand, in its material's colour, by the right hand.
-				var held_colour: Color = _looks.get(str(holds.get("material", "")), Color.MAGENTA)
-				draw_circle(feet + Vector2(h * 0.32, -h * 0.45), h * 0.14, held_colour)
-				draw_circle(feet + Vector2(h * 0.32, -h * 0.45), h * 0.14, Color.BLACK, false, 1.0)
+			_draw_body(entry[2])
+
+
+func _draw_body(id: int) -> void:
+	var shown: Vector2 = Iso.point_to_screen(_bodies[id]["at"])
+	var color := PILOTED_COLOR if id == _piloted else BODY_COLOR
+	var feet := shown + Vector2(0, 2)
+	# Provisional figures: a third of a person's 1.7 m, so they stay
+	# small on the diamond until real sprites come (64 px per metre).
+	var h := Iso.PX_PER_M * 1.7 * 0.33
+	if _bodies[id]["asleep"]:
+		# Lying down: a figure along the ground, and a "z" above it.
+		draw_rect(Rect2(feet + Vector2(-h * 0.6, -h * 0.35), Vector2(h, h * 0.3)), color)
+		draw_rect(Rect2(feet + Vector2(-h * 0.6, -h * 0.35), Vector2(h, h * 0.3)), Color.BLACK, false, 1.0)
+		draw_circle(feet + Vector2(h * 0.6, -h * 0.2), h * 0.18, color)
+		draw_circle(feet + Vector2(h * 0.6, -h * 0.2), h * 0.18, Color.BLACK, false, 1.0)
+		draw_sleep_icon(self, feet + Vector2(0, -h * 0.7))
+	else:
+		# A standing figure: taller than wide, feet where the body stands.
+		draw_rect(Rect2(feet + Vector2(-h * 0.18, -h), Vector2(h * 0.36, h * 0.9)), color)
+		draw_rect(Rect2(feet + Vector2(-h * 0.18, -h), Vector2(h * 0.36, h * 0.9)), Color.BLACK, false, 1.0)
+		draw_circle(feet + Vector2(0, -h * 1.18), h * 0.2, color)
+		draw_circle(feet + Vector2(0, -h * 1.18), h * 0.2, Color.BLACK, false, 1.0)
+		var holds: Dictionary = _holds.get(id, {})
+		if not holds.is_empty():
+			# What is in hand, in its material's colour, by the right hand.
+			var held_colour: Color = _looks.get(str(holds.get("material", "")), Color.MAGENTA)
+			draw_circle(feet + Vector2(h * 0.32, -h * 0.45), h * 0.14, held_colour)
+			draw_circle(feet + Vector2(h * 0.32, -h * 0.45), h * 0.14, Color.BLACK, false, 1.0)
 
 
 ## A small "z" above a sleeping body, drawn on `canvas` at `at`.

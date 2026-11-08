@@ -33,7 +33,9 @@ use serde::{Deserialize, Serialize};
 ///   `eat_refused`.
 /// - v9: the `brook` terrain, water one or two tiles wide that is walked
 ///   through.
-pub const PROTOCOL_VERSION: u32 = 9;
+/// - v10: chunks carry the trees standing in them; `world_state` carries
+///   the kinds of tree, with their height.
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// A tile on the map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,6 +196,26 @@ pub struct ItemState {
     pub material: String,
 }
 
+/// A kind of tree, as clients need it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpeciesView {
+    /// Content id, the key trees refer to.
+    pub id: String,
+    /// Name shown to players.
+    pub name: String,
+    /// Height of a grown tree, in centimetres.
+    pub height_cm: u32,
+}
+
+/// A tree standing on the ground.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TreeState {
+    /// Where its trunk meets the ground.
+    pub at: Point,
+    /// Content id of its kind, found in [`ServerMessage::WorldState`].
+    pub species: String,
+}
+
 /// Messages sent by the client to the server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -270,6 +292,8 @@ pub enum ServerMessage {
         chunk_size: u32,
         /// Every material items may be made of.
         materials: Vec<MaterialView>,
+        /// Every kind of tree chunks may hold.
+        species: Vec<SpeciesView>,
         /// Is it night right now?
         night: bool,
         /// The clock.
@@ -290,6 +314,8 @@ pub enum ServerMessage {
         bodies: Vec<BodyState>,
         /// Every item lying in this chunk.
         items: Vec<ItemState>,
+        /// Every tree standing in this chunk.
+        trees: Vec<TreeState>,
     },
     /// A chunk the client no longer holds: forget its tiles and the
     /// bodies in it.
@@ -499,6 +525,11 @@ mod tests {
                     edible: false,
                     mass_g: 400,
                 }],
+                species: vec![SpeciesView {
+                    id: "oak".into(),
+                    name: "Oak".into(),
+                    height_cm: 400,
+                }],
                 night: true,
                 clock: Clock {
                     tick: 3_600,
@@ -527,6 +558,10 @@ mod tests {
                     x: 161,
                     y: 1,
                     material: "flint".into(),
+                }],
+                trees: vec![TreeState {
+                    at: Point { x: 162_300, y: 700 },
+                    species: "oak".into(),
                 }],
             },
             ServerMessage::ChunkHidden { x: 5, y: 4 },
@@ -653,11 +688,18 @@ mod tests {
                 y: 64,
                 material: "pebble".into(),
             }],
+            trees: vec![TreeState {
+                at: Point {
+                    x: 32_400,
+                    y: 64_700,
+                },
+                species: "birch".into(),
+            }],
         })
         .unwrap();
         assert_eq!(
             text,
-            r#"{"type":"chunk","x":1,"y":2,"tiles":["ford"],"bodies":[],"items":[{"id":3,"x":32,"y":64,"material":"pebble"}]}"#
+            r#"{"type":"chunk","x":1,"y":2,"tiles":["ford"],"bodies":[],"items":[{"id":3,"x":32,"y":64,"material":"pebble"}],"trees":[{"at":{"x":32400,"y":64700},"species":"birch"}]}"#
         );
     }
 

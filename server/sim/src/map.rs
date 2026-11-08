@@ -2452,6 +2452,7 @@ mod tests {
                         Habitat::Copse => "70 120 60",
                         Habitat::Lone => "90 140 70",
                         Habitat::Riverside => "60 150 120",
+                        Habitat::CliffFoot => "30 80 70",
                         Habitat::None if y < 32 => "150 145 140",
                         Habitat::None => "60 110 170",
                     };

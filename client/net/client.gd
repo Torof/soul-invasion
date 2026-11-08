@@ -8,7 +8,9 @@ signal connected(tick: int, body: int)
 signal world_state(width: int, height: int, chunk_size: int, materials: Array, night: bool)
 ## The clock: {"tick", "ticks_per_second", "ticks_per_day", "time_scale"}, with world_state.
 signal clock(clock: Dictionary)
-signal chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array)
+## The kinds of tree, sent with the world's state, before it.
+signal species(species: Array)
+signal chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees: Array)
 signal chunk_hidden(x: int, y: int)
 signal body_walks(body: int, at: Vector2, route: Array, speed_cm_per_s: int)
 signal body_stopped(body: int, at: Vector2)
@@ -151,6 +153,7 @@ func _handle(message: Dictionary) -> void:
 			body = int(assigned) if assigned != null else -1
 			connected.emit(int(message.get("tick", 0)), body)
 		"world_state":
+			species.emit(message.get("species", []))
 			world_state.emit(
 				int(message.get("width", 0)),
 				int(message.get("height", 0)),
@@ -165,7 +168,8 @@ func _handle(message: Dictionary) -> void:
 				int(message.get("y", 0)),
 				message.get("tiles", []),
 				message.get("bodies", []),
-				message.get("items", [])
+				message.get("items", []),
+				message.get("trees", [])
 			)
 		"chunk_hidden":
 			chunk_hidden.emit(int(message.get("x", 0)), int(message.get("y", 0)))
