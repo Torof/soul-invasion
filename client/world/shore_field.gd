@@ -5,7 +5,8 @@ extends RefCounted
 ## the edge comes out round instead of in steps, and turned into a signed
 ## distance in tiles, positive on the land. One shared texture, PX pixels
 ## a tile; each chunk writes its own block when it is drawn, read with a
-## margin of its neighbours so the blocks join.
+## margin of its neighbours so the blocks join. A second channel carries
+## the fords, smoothed the same way: 1 inside a ford, 0 away from one.
 
 ## Pixels a tile.
 const PX := 4
@@ -29,8 +30,8 @@ static var _texture: ImageTexture
 
 static func texture() -> ImageTexture:
 	if _texture == null:
-		_image = Image.create(TILES * PX, TILES * PX, false, Image.FORMAT_L8)
-		_image.fill(Color(1, 1, 1))  # all land, far from water
+		_image = Image.create(TILES * PX, TILES * PX, false, Image.FORMAT_RG8)
+		_image.fill(Color(1, 0, 0))  # all land, far from water, no ford
 		_texture = ImageTexture.create_from_image(_image)
 	return _texture
 
@@ -49,6 +50,9 @@ static func update(terrain: Callable, lo: Vector2i, size: int) -> void:
 	var start := lo - Vector2i(MARGIN, MARGIN)
 	var field := PackedFloat32Array()
 	field.resize(w * w)
+	var fords := PackedFloat32Array()
+	fords.resize(w * w)
+	var any_ford := false
 	var any_water := false
 	var any_land := false
 	for ty in size + 2 * MARGIN:
@@ -67,16 +71,25 @@ static func update(terrain: Callable, lo: Vector2i, size: int) -> void:
 			any_water = any_water or water
 			any_land = any_land or not water
 			if water:
+				var ford := t == "ford"
+				any_ford = any_ford or ford
 				for py in PX:
 					var row := (ty * PX + py) * w + tx * PX
 					for px in PX:
 						field[row + px] = 1.0
+						if ford:
+							fords[row + px] = 1.0
+	var inner := size * PX
 	var block := PackedByteArray()
-	block.resize(size * PX * size * PX)
-	if not any_water:
-		block.fill(255)
-	elif not any_land:
-		block.fill(0)
+	block.resize(inner * inner * 2)
+	if any_ford:
+		for _pass in 3:
+			_blur_rows(fords, w)
+			_blur_columns(fords, w)
+	if not any_water or not any_land:
+		var far := 255 if not any_water else 0
+		for i in inner * inner:
+			block[2 * i] = far
 	else:
 		for _pass in 3:
 			_blur_rows(field, w)
@@ -84,13 +97,16 @@ static func update(terrain: Callable, lo: Vector2i, size: int) -> void:
 		# A straight edge smoothed this way is the normal curve: undo it to
 		# get a distance in tiles, sigma being the blur's spread.
 		var sigma := sqrt(3.0 * (pow(2.0 * BLUR + 1.0, 2.0) - 1.0) / 12.0) / PX
-		var inner := size * PX
 		for y in inner:
 			for x in inner:
 				var v := field[(y + MARGIN * PX) * w + x + MARGIN * PX]
 				var d := -sigma * probit(clampf(v, 0.0005, 0.9995))
-				block[y * inner + x] = int(round(clampf((d + RANGE) / (2.0 * RANGE), 0.0, 1.0) * 255.0))
-	var piece := Image.create_from_data(size * PX, size * PX, false, Image.FORMAT_L8, block)
+				block[2 * (y * inner + x)] = int(round(clampf((d + RANGE) / (2.0 * RANGE), 0.0, 1.0) * 255.0))
+	if any_ford:
+		for y in inner:
+			for x in inner:
+				block[2 * (y * inner + x) + 1] = int(round(clampf(fords[(y + MARGIN * PX) * w + x + MARGIN * PX], 0.0, 1.0) * 255.0))
+	var piece := Image.create_from_data(size * PX, size * PX, false, Image.FORMAT_RG8, block)
 	var at := lo * PX
 	var src := Rect2i(Vector2i.ZERO, Vector2i(size * PX, size * PX))
 	# Clip to the map.
@@ -107,6 +123,13 @@ static func distance_at(p: Vector2) -> float:
 	texture()
 	var px := Vector2i(clampi(int(p.x * PX), 0, TILES * PX - 1), clampi(int(p.y * PX), 0, TILES * PX - 1))
 	return (_image.get_pixelv(px).r * 2.0 - 1.0) * RANGE
+
+
+## How much of a ford there is at a point of the map in tiles, 0 to 1.
+static func ford_at(p: Vector2) -> float:
+	texture()
+	var px := Vector2i(clampi(int(p.x * PX), 0, TILES * PX - 1), clampi(int(p.y * PX), 0, TILES * PX - 1))
+	return _image.get_pixelv(px).g
 
 
 static func _blur_rows(field: PackedFloat32Array, w: int) -> void:

@@ -76,7 +76,7 @@ uniform bool has_bank = false;
 // slow stretches along the river so the bank changes.
 uniform sampler2D bank2_texture : repeat_enable, filter_linear;
 uniform bool has_bank2 = false;
-// A third matter (pebbles), for the bank drawn from the field only.
+// A third matter (pebbles): the bed of a ford, seen through its water.
 uniform sampler2D bank3_texture : repeat_enable, filter_linear;
 uniform bool has_bank3 = false;
 // The bank's width across the spill varies along the river between
@@ -158,6 +158,12 @@ const int field_beach_samples = 8;
 // How far the grass overhangs the water where it meets it, in tiles, and
 // how far the water laps over the earth either way.
 uniform float field_overhang = 0.22;
+// A ford: its bed of pebbles and sand seen through clear shallow water
+// (how much of the water's colour stays over the bed), and the light
+// ripples where the current runs over the stones.
+uniform float ford_water = 0.3;
+uniform vec3 ford_tint : source_color = vec3(0.92, 1.02, 1.08);
+uniform float ford_ripple = 0.35;
 uniform float field_lap = 0.07;
 
 // Soft patches covering about `cover` of the ground, from the noise read
@@ -359,6 +365,22 @@ void fragment() {
 		if (dw < 0.0) {
 			float near = 1.0 - smoothstep(0.0, field_light_reach, -dw);
 			colour = mix(colour, colour * shore_tint, near * field_light);
+			float ford = smoothstep(0.15, 0.85, texture(shore_field, fuv).g);
+			if (ford > 0.0 && has_bank3) {
+				vec2 b_uv = world * 0.25;
+				vec3 bed = texture(bank3_texture, b_uv + vec2(0.21, 0.67)).rgb;
+				if (has_bank2) {
+					float sandy = smoothstep(0.45, 0.75, texture(noise_texture, world * 0.22 + vec2(0.5, 0.2)).r);
+					bed = mix(bed, texture(bank2_texture, b_uv + vec2(0.37, 0.11)).rgb, sandy * 0.35);
+				}
+				vec3 shallow = mix(bed * ford_tint, colour, ford_water);
+				// Ripples drifting with the current over the stones.
+				float r1 = texture(noise_texture, world * 0.9 + vec2(TIME * 0.03, TIME * 0.05)).r;
+				float r2 = texture(noise_texture, world * 2.3 - vec2(TIME * 0.04, TIME * 0.02)).r;
+				float ripple = smoothstep(0.62, 0.72, r1 * 0.6 + r2 * 0.5);
+				shallow = mix(shallow, shallow * shore_tint * 1.15, ripple * ford_ripple);
+				colour = mix(colour, shallow, ford);
+			}
 		} else {
 			// The bank's matter, seamless, four metres a texture like the
 			// ground: earth, or sand on a beach.
