@@ -568,10 +568,16 @@ void fragment() {
 		}
 	} else if (alpha < 1.0) {
 		float e = texture(noise_texture, uv * edge_scale + vec2(0.23, 0.71)).r;
-		// The forest's edge over the grass: a shade, not a second drawing
-		// (two drawings showing through each other read as ghosts).
-		alpha = smoothstep(e - 0.3, e + 0.3, alpha) * fringe_strength;
-		ground.rgb = fringe_colour;
+		// The forest's edge over the grass: its own floor, whole or not at
+		// all along a ragged line (two drawings showing through each other
+		// read as ghosts), and beyond it a shade fading out, so the line
+		// between them follows neither the tiles nor a straight edge.
+		float e2 = texture(noise_texture, uv * edge_scale * 3.7 + vec2(0.61, 0.08)).r;
+		float rag = e * 0.65 + e2 * 0.35;
+		float floor_in = smoothstep(rag - 0.02, rag + 0.02, alpha * 1.15 - 0.15);
+		float shade = smoothstep(0.0, 1.0, alpha) * fringe_strength;
+		ground.rgb = mix(fringe_colour, ground.rgb, floor_in);
+		alpha = max(floor_in, shade);
 	}
 	COLOR = vec4(ground.rgb * vertex_tint, alpha);
 	}
