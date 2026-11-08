@@ -566,6 +566,8 @@ func _draw() -> void:
 			var f := fringe(terrain)
 			if not f.is_empty():
 				spills[terrain] = f
+	if shore_field_on():
+		_add_field_tiles(by_terrain)
 	for terrain in _grounds:
 		if not by_terrain.has(terrain) and not spills.has(terrain):
 			_grounds[terrain].tiles = PackedVector2Array()
@@ -595,6 +597,62 @@ func _draw() -> void:
 		draw_circle(centre, ITEM_RADIUS, Color(0, 0, 0, 0.6), false, 1.0)
 		if material == "corpse":
 			draw_death_icon(self, centre + Vector2(0, -16))
+
+
+## Whether the bank is drawn by the ground shader from the distance to the
+## water (shore mode "field").
+static func shore_field_on() -> bool:
+	return str(ground_spec().get("shore", {}).get("mode", "")) == "field"
+
+
+## For the bank drawn from the distance field: writes this chunk's block
+## of the field, gives the water material the field, and lets each side
+## reach across the tiles' edge so the smoothed line can fall anywhere:
+## the land beneath under the water tiles touching land, the water (which
+## draws the bank) over the land within two tiles of the water.
+func _add_field_tiles(by_terrain: Dictionary) -> void:
+	var terrain := func(t: Vector2i) -> String: return _terrain(t.x, t.y)
+	ShoreField.update(terrain, _origin, _size)
+	var water_material := ground_material("water")
+	water_material.set_shader_parameter("shore_field", ShoreField.texture())
+	water_material.set_shader_parameter("has_field", true)
+	water_material.set_shader_parameter("field_tiles", float(ShoreField.TILES))
+	water_material.set_shader_parameter("field_range", ShoreField.RANGE)
+	if ground_texture("water") == null:
+		return
+	for y in _size:
+		for x in _size:
+			var tx := _origin.x + x
+			var ty := _origin.y + y
+			var here := _terrain(tx, ty)
+			if here == "water":
+				# The land under it, where land is near: forest if the land
+				# around is mostly forest, else grass.
+				var forest := 0
+				var grass := 0
+				for dy in range(-1, 2):
+					for dx in range(-1, 2):
+						var near := _ground_terrain(tx + dx, ty + dy)
+						if near == "forest":
+							forest += 1
+						elif near == "grass":
+							grass += 1
+				if forest + grass > 0:
+					var land := "forest" if forest > grass else "grass"
+					if ground_texture(land) != null:
+						if not by_terrain.has(land):
+							by_terrain[land] = PackedVector2Array()
+						by_terrain[land].append(Vector2(tx, ty))
+			elif not ShoreField.is_water(here) and here != "":
+				var near_water := false
+				for dy in range(-2, 3):
+					for dx in range(-2, 3):
+						if _terrain(tx + dx, ty + dy) == "water":
+							near_water = true
+				if near_water:
+					if not by_terrain.has("water"):
+						by_terrain["water"] = PackedVector2Array()
+					by_terrain["water"].append(Vector2(tx, ty))
 
 
 ## The ground drawn on tile (tx, ty): its terrain, except under a brook,
@@ -1215,6 +1273,10 @@ func _draw_shore() -> void:
 		return
 	if str(shore.get("mode", "")) == "pieces":
 		_draw_shore_pieces()
+		return
+	if str(shore.get("mode", "")) == "field":
+		# Drawn by the ground shader (ShoreField).
+		_set_fills({})
 		return
 	if str(shore.get("mode", "")) == "curve":
 		_draw_shore_curve()
