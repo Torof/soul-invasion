@@ -18,7 +18,11 @@ const RANGE := 4.0
 ## smoothing, enough to round the steps of the tiles away.
 const BLUR := 3
 ## Tiles read around a chunk.
-const MARGIN := 3
+const MARGIN := 5
+## Blur for the fords' channel: wider boxes, fewer passes, about 2.4
+## tiles of spread.
+const FORD_BLUR := 7
+const FORD_BLUR_PASSES := 5
 
 ## The map's size in tiles: past it the server sends rock, which here
 ## counts as unknown so a river runs on out of the map.
@@ -83,9 +87,11 @@ static func update(terrain: Callable, lo: Vector2i, size: int) -> void:
 	var block := PackedByteArray()
 	block.resize(inner * inner * 2)
 	if any_ford:
-		for _pass in 3:
-			_blur_rows(fords, w)
-			_blur_columns(fords, w)
+		# Wider than the bank's smoothing, so a ford fades slowly into the
+		# deep water.
+		for _pass in FORD_BLUR_PASSES:
+			_blur_rows(fords, w, FORD_BLUR)
+			_blur_columns(fords, w, FORD_BLUR)
 	if not any_water or not any_land:
 		var far := 255 if not any_water else 0
 		for i in inner * inner:
@@ -132,33 +138,33 @@ static func ford_at(p: Vector2) -> float:
 	return _image.get_pixelv(px).g
 
 
-static func _blur_rows(field: PackedFloat32Array, w: int) -> void:
+static func _blur_rows(field: PackedFloat32Array, w: int, radius := BLUR) -> void:
 	var line := PackedFloat32Array()
 	line.resize(w)
-	var n := 2 * BLUR + 1
+	var n := 2 * radius + 1
 	for y in w:
 		var row := y * w
 		var sum := 0.0
-		for k in range(-BLUR, BLUR + 1):
+		for k in range(-radius, radius + 1):
 			sum += field[row + clampi(k, 0, w - 1)]
 		for x in w:
 			line[x] = sum / n
-			sum += field[row + mini(x + BLUR + 1, w - 1)] - field[row + maxi(x - BLUR, 0)]
+			sum += field[row + mini(x + radius + 1, w - 1)] - field[row + maxi(x - radius, 0)]
 		for x in w:
 			field[row + x] = line[x]
 
 
-static func _blur_columns(field: PackedFloat32Array, w: int) -> void:
+static func _blur_columns(field: PackedFloat32Array, w: int, radius := BLUR) -> void:
 	var line := PackedFloat32Array()
 	line.resize(w)
-	var n := 2 * BLUR + 1
+	var n := 2 * radius + 1
 	for x in w:
 		var sum := 0.0
-		for k in range(-BLUR, BLUR + 1):
+		for k in range(-radius, radius + 1):
 			sum += field[clampi(k, 0, w - 1) * w + x]
 		for y in w:
 			line[y] = sum / n
-			sum += field[mini(y + BLUR + 1, w - 1) * w + x] - field[maxi(y - BLUR, 0) * w + x]
+			sum += field[mini(y + radius + 1, w - 1) * w + x] - field[maxi(y - radius, 0) * w + x]
 		for y in w:
 			field[y * w + x] = line[y]
 
