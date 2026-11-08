@@ -27,6 +27,7 @@ func _init() -> void:
 	_test_tree_images_are_clean()
 	_test_loading_waits_for_the_valley()
 	_test_dev_map_turns_as_the_game()
+	_test_perf_overlay_reports()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -559,6 +560,13 @@ func _test_the_shore_field_in_slices() -> void:
 	for i in 60:
 		await process_frame
 	_check(ShoreField._image.get_region(block).get_data() == bare, "an overtaken update gives up")
+
+
+func _test_perf_overlay_reports() -> void:
+	var perf := PerfOverlay.new()
+	var text := perf.report(12.5)
+	_check(text.contains("fps") and text.contains("12.5 ms") and text.contains("draw calls") and text.contains("wind on"), "the counters report: %s" % text)
+	perf.free()
 
 
 func _test_dev_map_turns_as_the_game() -> void:
