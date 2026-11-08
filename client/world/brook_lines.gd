@@ -362,6 +362,18 @@ static func _degenerate(quad: PackedVector2Array) -> bool:
 	return absf(area) < 1e-4 or Geometry2D.triangulate_polygon(quad).is_empty()
 
 
+## Whether a brook's water runs from its first point towards its last
+## (1) or the other way (-1): away from a spring, towards a mouth or the
+## brook it joins.
+static func runs_towards_end(line: Dictionary) -> float:
+	var ends: Array = line["ends"]
+	if ends[0] == "mouth" or ends[1] == "spring":
+		return -1.0
+	if ends[1] == "mouth" or ends[0] == "spring":
+		return 1.0
+	return 1.0 if ends[1] == "joint" else -1.0
+
+
 ## Margin of land drawn either side of a brook's water by the brook
 ## shader (earth, the grass's edge), in tiles; and the lateral range the
 ## vertex colour encodes.
@@ -372,16 +384,20 @@ const LATERAL_RANGE := 2.0
 ## Draws on `canvas`, whose material is the brook shader
 ## (world/brook.gdshader), the segments of `lines` that belong to the
 ## tiles [lo, hi): one band per segment, wider than the water, its vertex
-## colour carrying across it the distance from the axis (red) and the
-## water's half-width (green), its alpha the fade of a mouth.
+## colour carrying across it the distance from the axis (red), the
+## water's half-width (green), the way it runs (blue, the angle over a
+## turn, from its spring towards its mouth), its alpha the fade of a mouth.
 static func draw_shaded(canvas: CanvasItem, lines: Array, lo: Vector2i, hi: Vector2i, texture: Texture2D) -> void:
 	for line: Dictionary in lines:
 		var pts: PackedVector2Array = line["pts"]
 		var widths: PackedFloat32Array = line["widths"]
 		var alphas: PackedFloat32Array = line["alphas"]
+		var sign := runs_towards_end(line)
 		for i in pts.size() - 1:
 			if not owns(line, i, lo, hi):
 				continue
+			var along := (pts[i + 1] - pts[i]).normalized() * sign
+			var angle := fposmod(atan2(along.y, along.x), TAU) / TAU
 			var n0 := _normal(pts, i)
 			var n1 := _normal(pts, i + 1)
 			var h0 := widths[i] / 2.0
@@ -400,6 +416,6 @@ static func draw_shaded(canvas: CanvasItem, lines: Array, lo: Vector2i, hi: Vect
 			for k in 4:
 				screen.append(to_screen(quad[k]))
 				uvs.append((quad[k] + Vector2(0.5, 0.5)) / ChunkView.GROUND_METRES)
-				colours.append(Color((float(lateral[k]) / LATERAL_RANGE + 1.0) / 2.0, float(halves[k]) / 2.0, 0.0, float(fades[k])))
+				colours.append(Color((float(lateral[k]) / LATERAL_RANGE + 1.0) / 2.0, float(halves[k]) / 2.0, angle, float(fades[k])))
 			canvas.draw_polygon(screen, colours, uvs, texture)
 

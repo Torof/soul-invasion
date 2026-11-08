@@ -6,7 +6,10 @@ extends RefCounted
 ## distance in tiles, positive on the land. One shared texture, PX pixels
 ## a tile; each chunk writes its own block when it is drawn, read with a
 ## margin of its neighbours so the blocks join. A second channel carries
-## the fords, smoothed the same way: 1 inside a ford, 0 away from one.
+## the fords, smoothed the same way: 1 inside a ford, 0 away from one. The
+## last two carry where the water runs (from the server's currents),
+## averaged over the water nearby: x then y, in metres a second, over
+## ±FLOW_MAX, 0.5 for still.
 
 ## Pixels a tile.
 const PX := 4
@@ -17,6 +20,8 @@ const RANGE := 4.0
 ## Box blur radius in pixels, run three times: about 0.9 tile of
 ## smoothing, enough to round the steps of the tiles away.
 const BLUR := 3
+## Fastest current the field carries, in metres a second.
+const FLOW_MAX := 2.0
 ## Tiles read around a chunk.
 const MARGIN := 5
 ## Blur for the fords' channel: wider boxes, fewer passes, about 2.4
@@ -34,8 +39,8 @@ static var _texture: ImageTexture
 
 static func texture() -> ImageTexture:
 	if _texture == null:
-		_image = Image.create(TILES * PX, TILES * PX, false, Image.FORMAT_RG8)
-		_image.fill(Color(1, 0, 0))  # all land, far from water, no ford
+		_image = Image.create(TILES * PX, TILES * PX, false, Image.FORMAT_RGBA8)
+		_image.fill(Color(1, 0, 0.5, 0.5))  # all land, no ford, still
 		_texture = ImageTexture.create_from_image(_image)
 	return _texture
 
@@ -48,7 +53,9 @@ static func is_water(terrain: String) -> bool:
 
 ## Writes the block of tiles [lo, lo + size) from the terrains `terrain`
 ## gives (a Callable of Vector2i -> String).
-static func update(terrain: Callable, lo: Vector2i, size: int) -> void:
+## `current`, when valid, gives where the water runs at a tile (a vector
+## in metres a second, Vector2i -> Vector2).
+static func update(terrain: Callable, lo: Vector2i, size: int, current := Callable()) -> void:
 	texture()
 	var w := (size + 2 * MARGIN) * PX
 	var start := lo - Vector2i(MARGIN, MARGIN)
@@ -56,6 +63,11 @@ static func update(terrain: Callable, lo: Vector2i, size: int) -> void:
 	field.resize(w * w)
 	var fords := PackedFloat32Array()
 	fords.resize(w * w)
+	var flow_x := PackedFloat32Array()
+	flow_x.resize(w * w)
+	var flow_y := PackedFloat32Array()
+	flow_y.resize(w * w)
+	var any_flow := false
 	var any_ford := false
 	var any_water := false
 	var any_land := false
@@ -74,6 +86,10 @@ static func update(terrain: Callable, lo: Vector2i, size: int) -> void:
 			var water := is_water(t)
 			any_water = any_water or water
 			any_land = any_land or not water
+			var runs := Vector2.ZERO
+			if water and current.is_valid():
+				runs = current.call(at) if inside else Vector2.ZERO
+				any_flow = any_flow or runs != Vector2.ZERO
 			if water:
 				var ford := t == "ford"
 				any_ford = any_ford or ford
@@ -81,11 +97,23 @@ static func update(terrain: Callable, lo: Vector2i, size: int) -> void:
 					var row := (ty * PX + py) * w + tx * PX
 					for px in PX:
 						field[row + px] = 1.0
+						flow_x[row + px] = runs.x
+						flow_y[row + px] = runs.y
 						if ford:
 							fords[row + px] = 1.0
 	var inner := size * PX
 	var block := PackedByteArray()
-	block.resize(inner * inner * 2)
+	block.resize(inner * inner * 4)
+	var mask := PackedFloat32Array()
+	if any_flow:
+		mask = field.duplicate()
+		for _pass in 3:
+			_blur_rows(mask, w)
+			_blur_columns(mask, w)
+			_blur_rows(flow_x, w)
+			_blur_columns(flow_x, w)
+			_blur_rows(flow_y, w)
+			_blur_columns(flow_y, w)
 	if any_ford:
 		# Wider than the bank's smoothing, so a ford fades slowly into the
 		# deep water.
@@ -95,7 +123,7 @@ static func update(terrain: Callable, lo: Vector2i, size: int) -> void:
 	if not any_water or not any_land:
 		var far := 255 if not any_water else 0
 		for i in inner * inner:
-			block[2 * i] = far
+			block[4 * i] = far
 	else:
 		for _pass in 3:
 			_blur_rows(field, w)
@@ -107,12 +135,20 @@ static func update(terrain: Callable, lo: Vector2i, size: int) -> void:
 			for x in inner:
 				var v := field[(y + MARGIN * PX) * w + x + MARGIN * PX]
 				var d := -sigma * probit(clampf(v, 0.0005, 0.9995))
-				block[2 * (y * inner + x)] = int(round(clampf((d + RANGE) / (2.0 * RANGE), 0.0, 1.0) * 255.0))
+				block[4 * (y * inner + x)] = int(round(clampf((d + RANGE) / (2.0 * RANGE), 0.0, 1.0) * 255.0))
 	if any_ford:
 		for y in inner:
 			for x in inner:
-				block[2 * (y * inner + x) + 1] = int(round(clampf(fords[(y + MARGIN * PX) * w + x + MARGIN * PX], 0.0, 1.0) * 255.0))
-	var piece := Image.create_from_data(size * PX, size * PX, false, Image.FORMAT_RG8, block)
+				block[4 * (y * inner + x) + 1] = int(round(clampf(fords[(y + MARGIN * PX) * w + x + MARGIN * PX], 0.0, 1.0) * 255.0))
+	for y in inner:
+		for x in inner:
+			var i := (y + MARGIN * PX) * w + x + MARGIN * PX
+			var v := Vector2.ZERO
+			if any_flow and mask[i] > 0.02:
+				v = Vector2(flow_x[i], flow_y[i]) / mask[i]
+			block[4 * (y * inner + x) + 2] = int(round(clampf(v.x / FLOW_MAX * 0.5 + 0.5, 0.0, 1.0) * 255.0))
+			block[4 * (y * inner + x) + 3] = int(round(clampf(v.y / FLOW_MAX * 0.5 + 0.5, 0.0, 1.0) * 255.0))
+	var piece := Image.create_from_data(size * PX, size * PX, false, Image.FORMAT_RGBA8, block)
 	var at := lo * PX
 	var src := Rect2i(Vector2i.ZERO, Vector2i(size * PX, size * PX))
 	# Clip to the map.
@@ -129,6 +165,15 @@ static func distance_at(p: Vector2) -> float:
 	texture()
 	var px := Vector2i(clampi(int(p.x * PX), 0, TILES * PX - 1), clampi(int(p.y * PX), 0, TILES * PX - 1))
 	return (_image.get_pixelv(px).r * 2.0 - 1.0) * RANGE
+
+
+## Where the water runs at a point of the map in tiles, in metres a
+## second, as the shader reads it.
+static func flow_at(p: Vector2) -> Vector2:
+	texture()
+	var px := Vector2i(clampi(int(p.x * PX), 0, TILES * PX - 1), clampi(int(p.y * PX), 0, TILES * PX - 1))
+	var c := _image.get_pixelv(px)
+	return Vector2(c.b * 2.0 - 1.0, c.a * 2.0 - 1.0) * FLOW_MAX
 
 
 ## How much of a ford there is at a point of the map in tiles, 0 to 1.
