@@ -565,7 +565,14 @@ func _test_the_shore_field_in_slices() -> void:
 func _test_perf_overlay_reports() -> void:
 	var perf := PerfOverlay.new()
 	var text := perf.report(12.5)
-	_check(text.contains("fps") and text.contains("12.5 ms") and text.contains("draw calls") and text.contains("wind on"), "the counters report: %s" % text)
+	_check(text.contains("fps") and text.contains("12.5 ms") and text.contains("frame step") and text.contains("draw calls") and text.contains("wind on"), "the counters report: %s" % text)
+	DevTiming.enabled = true
+	var t := DevTiming.start()
+	DevTiming.add("chunk builds", t)
+	DevTiming.tally("tree redraws")
+	var lines := perf.breakdown(DevTiming.take(), 1)
+	DevTiming.enabled = false
+	_check(lines.contains("scripts measured") and lines.contains("chunk builds") and lines.contains("tree redraws: 1") and DevTiming.take().is_empty(), "the breakdown reports and starts again: %s" % lines)
 	perf.free()
 
 

@@ -542,6 +542,12 @@ func _call_waiting_chunk() -> void:
 
 
 func _process(delta: float) -> void:
+	var timing := DevTiming.start()
+	_step(delta)
+	DevTiming.add("world view", timing)
+
+
+func _step(delta: float) -> void:
 	var moving := false
 	for id: int in _bodies:
 		var entry: Dictionary = _bodies[id]

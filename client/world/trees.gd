@@ -127,6 +127,7 @@ class TreeNode:
 			queue_redraw()
 
 	func _draw() -> void:
+		DevTiming.tally("tree redraws")
 		Trees.draw(self, tree, height_cm, flags, position)
 
 

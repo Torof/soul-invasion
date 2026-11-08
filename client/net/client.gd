@@ -140,8 +140,10 @@ func _process(_delta: float) -> void:
 			_hello_sent = true
 			_send(Protocol.hello())
 		while _peer.get_available_packet_count() > 0:
+			var t := DevTiming.start()
 			var text := _peer.get_packet().get_string_from_utf8()
 			_handle(Protocol.decode(text))
+			DevTiming.add("network messages", t)
 	elif state == WebSocketPeer.STATE_CLOSED and _state != WebSocketPeer.STATE_CLOSED:
 		is_ready = false
 		disconnected.emit("connection closed (code %d), retrying" % _peer.get_close_code())
