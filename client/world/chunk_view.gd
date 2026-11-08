@@ -695,7 +695,57 @@ func _draw_brooks() -> void:
 	var terrain := func(t: Vector2i) -> String: return _terrain(t.x, t.y)
 	var lines := BrookLines.lay(terrain, _origin - margin, _origin + Vector2i(_size, _size) + margin)
 	var tint: Color = ground_params("water").get("base_tint", Color.WHITE)
+	var bed := str(ground_layers("water").get("bank3", ""))
+	if shore_field_on() and bed != "":
+		var canvas := _brook_canvas()
+		canvas.lines = lines
+		canvas.lo = _origin
+		canvas.hi = _origin + Vector2i(_size, _size)
+		canvas.water = ground_texture("water")
+		canvas.queue_redraw()
+		return
 	BrookLines.draw(self, lines, _origin, _origin + Vector2i(_size, _size), ground_texture("water"), tint)
+
+
+## The brook shader's material, shared by every chunk.
+static var _brook_material: ShaderMaterial
+
+
+## The child canvas drawing this chunk's brooks with the brook shader,
+## above the grounds and the river's bank, below the decorations.
+func _brook_canvas() -> BrookCanvas:
+	if _brooks == null:
+		if _brook_material == null:
+			_brook_material = ShaderMaterial.new()
+			_brook_material.shader = load("res://world/brook.gdshader")
+			_brook_material.set_shader_parameter("noise_texture", noise_texture())
+			_brook_material.set_shader_parameter("lateral_range", BrookLines.LATERAL_RANGE)
+			var layers := ground_layers("water")
+			_brook_material.set_shader_parameter("bed_texture", load_texture(str(layers.get("bank3", ""))))
+			_brook_material.set_shader_parameter("earth_texture", load_texture(str(layers.get("bank", ""))))
+			_brook_material.set_shader_parameter("water_tint", ground_params("water").get("base_tint", Color.WHITE))
+		_brooks = BrookCanvas.new()
+		_brooks.z_index = -1
+		_brooks.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
+		_brooks.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+		_brooks.material = _brook_material
+		add_child(_brooks)
+	return _brooks
+
+
+var _brooks: BrookCanvas = null
+
+
+## Draws a chunk's brooks with the brook shader (BrookLines.draw_shaded).
+class BrookCanvas:
+	extends Node2D
+	var lines: Array = []
+	var lo := Vector2i.ZERO
+	var hi := Vector2i.ZERO
+	var water: Texture2D
+
+	func _draw() -> void:
+		BrookLines.draw_shaded(self, lines, lo, hi, water)
 
 
 ## The shore pieces of this chunk, from its water tiles: for each, a
