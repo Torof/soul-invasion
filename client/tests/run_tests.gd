@@ -24,6 +24,7 @@ func _init() -> void:
 	_test_trees_stand_on_their_foot()
 	_test_the_shore_field_measures_the_bank()
 	_test_currents_decode()
+	_test_tree_images_are_clean()
 	print("client tests: %d checks, %d failures" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
 
@@ -523,4 +524,37 @@ func _test_currents_decode() -> void:
 	_check(south.distance_to(Vector2(0, 0.5)) < 1e-4, "heading 0 runs +y at 0.5 m/s: %s" % south)
 	var east := ShoreField.current_vector(4 * 256 + 35)
 	_check(east.distance_to(Vector2(0.35, 0)) < 1e-4, "heading 4 runs +x: %s" % east)
+
+
+## Every tree image stands on its foot (no empty rows under it, so it is
+## anchored where it stands) and holds no pale opaque speck of the
+## background it was cut from (the birches, white of bark, aside).
+func _test_tree_images_are_clean() -> void:
+	var dir := DirAccess.open(Trees.DIR)
+	if dir == null:
+		_check(false, "the trees' folder is there")
+		return
+	for file in dir.get_files():
+		if not file.ends_with("_summer.png"):
+			continue
+		var image: Image = (load(Trees.DIR + file) as Texture2D).get_image()
+		if image.is_compressed():
+			image.decompress()
+		var w := image.get_width()
+		var h := image.get_height()
+		var foot := false
+		for x in w:
+			if image.get_pixel(x, h - 1).a > 0.8:
+				foot = true
+				break
+		_check(foot, "%s stands on its foot" % file)
+		if file.begins_with("birch"):
+			continue
+		var pale := 0
+		for y in range(0, h, 2):
+			for x in range(0, w, 2):
+				var c := image.get_pixel(x, y)
+				if c.a > 0.4 and minf(c.r, minf(c.g, c.b)) > 0.73 and maxf(c.r, maxf(c.g, c.b)) - minf(c.r, minf(c.g, c.b)) < 0.18:
+					pale += 1
+		_check(pale < 15, "%s has no pale specks: %d" % [file, pale])
 
