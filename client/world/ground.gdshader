@@ -79,8 +79,8 @@ uniform bool has_bank2 = false;
 // A third matter (pebbles), not drawn for now.
 uniform sampler2D bank3_texture : repeat_enable, filter_linear;
 uniform bool has_bank3 = false;
-// The beds of the fords, seen through their water: four matters laid
-// side by side in soft patches a few metres across.
+// The beds of the fords, seen through their water: up to four matters
+// laid side by side in soft patches a few metres across (the brooks' beds).
 uniform sampler2D ford1_texture : repeat_enable, filter_linear;
 uniform sampler2D ford2_texture : repeat_enable, filter_linear;
 uniform sampler2D ford3_texture : repeat_enable, filter_linear;
@@ -173,8 +173,11 @@ uniform float field_overhang = 0.22;
 // A ford: its bed of pebbles and sand seen through clear shallow water
 // (how much of the water's colour stays over the bed), and the light
 // ripples where the current runs over the stones.
-uniform float ford_water = 0.3;
-uniform vec3 ford_tint : source_color = vec3(0.92, 1.02, 1.08);
+uniform float ford_water = 0.6;
+// The water thickens from the bank into the ford over this many tiles, so
+// the bed shows best at the edge and fades as it deepens.
+uniform float ford_shelf = 1.6;
+uniform vec3 ford_tint : source_color = vec3(0.88, 1.18, 1.18);
 uniform float ford_ripple = 0.35;
 uniform float field_lap = 0.07;
 
@@ -377,7 +380,9 @@ void fragment() {
 		if (dw < 0.0) {
 			float near = 1.0 - smoothstep(0.0, field_light_reach, -dw);
 			colour = mix(colour, colour * shore_tint, near * field_light);
-			float ford = smoothstep(0.15, 0.85, texture(shore_field, fuv).g);
+			// Into the deep water: the bed fades out slowly.
+			float ford = smoothstep(0.02, 0.97, texture(shore_field, fuv).g);
+			ford = ford * ford * (3.0 - 2.0 * ford);
 			if (ford > 0.0 && has_ford1) {
 				vec2 b_uv = world * 0.25;
 				// Each bed takes the patches where its own noise is the
@@ -394,7 +399,9 @@ void fragment() {
 				if (has_ford2) { bed += texture(ford2_texture, b_uv + vec2(0.31, 0.17)).rgb * w.y; }
 				if (has_ford3) { bed += texture(ford3_texture, b_uv + vec2(0.67, 0.43)).rgb * w.z; }
 				if (has_ford4) { bed += texture(ford4_texture, b_uv + vec2(0.13, 0.89)).rgb * w.w; }
-				vec3 shallow = mix(bed * ford_tint, colour, ford_water);
+				// From the bank inwards, the water over the bed thickens.
+				float deep = mix(0.28, ford_water, smoothstep(0.0, ford_shelf, -dw));
+				vec3 shallow = mix(bed * ford_tint * 1.15, colour, deep);
 				// Ripples drifting with the current over the stones.
 				float r1 = texture(noise_texture, world * 0.9 + vec2(TIME * 0.03, TIME * 0.05)).r;
 				float r2 = texture(noise_texture, world * 2.3 - vec2(TIME * 0.04, TIME * 0.02)).r;
