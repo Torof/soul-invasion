@@ -33,6 +33,12 @@ const FORD_BLUR_PASSES := 5
 ## counts as unknown so a river runs on out of the map.
 static var map_size := Vector2i(TILES, TILES)
 
+## The latest update asked for each block: an update in slices gives up
+## when a newer one for its block has started.
+static var _jobs: Dictionary = {}
+## The frame the slices are running in, and when they started in it.
+static var _slice_frame := -1
+static var _slice_start := 0
 static var _image: Image
 static var _texture: ImageTexture
 
@@ -55,8 +61,13 @@ static func is_water(terrain: String) -> bool:
 ## gives (a Callable of Vector2i -> String).
 ## `current`, when valid, gives where the water runs at a tile (a vector
 ## in metres a second, Vector2i -> Vector2).
-static func update(terrain: Callable, lo: Vector2i, size: int, current := Callable()) -> void:
+## With `slice_usec`, the smoothing is spread over frames, that long at
+## most at a time (a block takes tens of milliseconds): the tiles are read
+## at once, the texture is written a few frames later.
+static func update(terrain: Callable, lo: Vector2i, size: int, current := Callable(), slice_usec := 0) -> void:
 	texture()
+	var job := int(_jobs.get(lo, 0)) + 1
+	_jobs[lo] = job
 	var w := (size + 2 * MARGIN) * PX
 	var start := lo - Vector2i(MARGIN, MARGIN)
 	var field := PackedFloat32Array()
@@ -104,30 +115,35 @@ static func update(terrain: Callable, lo: Vector2i, size: int, current := Callab
 	var inner := size * PX
 	var block := PackedByteArray()
 	block.resize(inner * inner * 4)
-	var mask := PackedFloat32Array()
-	if any_flow:
-		mask = field.duplicate()
+	# The water's mask smoothed: the bank's distance, and what the flow is
+	# averaged over.
+	if any_flow or (any_water and any_land):
 		for _pass in 3:
-			_blur_rows(mask, w)
-			_blur_columns(mask, w)
+			_blur_rows(field, w)
+			_blur_columns(field, w)
+			if not await _breathe(lo, job, slice_usec):
+				return
+	if any_flow:
+		for _pass in 3:
 			_blur_rows(flow_x, w)
 			_blur_columns(flow_x, w)
 			_blur_rows(flow_y, w)
 			_blur_columns(flow_y, w)
+			if not await _breathe(lo, job, slice_usec):
+				return
 	if any_ford:
 		# Wider than the bank's smoothing, so a ford fades slowly into the
 		# deep water.
 		for _pass in FORD_BLUR_PASSES:
 			_blur_rows(fords, w, FORD_BLUR)
 			_blur_columns(fords, w, FORD_BLUR)
+			if not await _breathe(lo, job, slice_usec):
+				return
 	if not any_water or not any_land:
 		var far := 255 if not any_water else 0
 		for i in inner * inner:
 			block[4 * i] = far
 	else:
-		for _pass in 3:
-			_blur_rows(field, w)
-			_blur_columns(field, w)
 		# A straight edge smoothed this way is the normal curve: undo it to
 		# get a distance in tiles, sigma being the blur's spread.
 		var sigma := sqrt(3.0 * (pow(2.0 * BLUR + 1.0, 2.0) - 1.0) / 12.0) / PX
@@ -140,14 +156,18 @@ static func update(terrain: Callable, lo: Vector2i, size: int, current := Callab
 		for y in inner:
 			for x in inner:
 				block[4 * (y * inner + x) + 1] = int(round(clampf(fords[(y + MARGIN * PX) * w + x + MARGIN * PX], 0.0, 1.0) * 255.0))
+	var still := int(round(0.5 * 255.0))
 	for y in inner:
 		for x in inner:
+			var o := 4 * (y * inner + x)
 			var i := (y + MARGIN * PX) * w + x + MARGIN * PX
-			var v := Vector2.ZERO
-			if any_flow and mask[i] > 0.02:
-				v = Vector2(flow_x[i], flow_y[i]) / mask[i]
-			block[4 * (y * inner + x) + 2] = int(round(clampf(v.x / FLOW_MAX * 0.5 + 0.5, 0.0, 1.0) * 255.0))
-			block[4 * (y * inner + x) + 3] = int(round(clampf(v.y / FLOW_MAX * 0.5 + 0.5, 0.0, 1.0) * 255.0))
+			if any_flow and field[i] > 0.02:
+				var v := Vector2(flow_x[i], flow_y[i]) / field[i]
+				block[o + 2] = int(round(clampf(v.x / FLOW_MAX * 0.5 + 0.5, 0.0, 1.0) * 255.0))
+				block[o + 3] = int(round(clampf(v.y / FLOW_MAX * 0.5 + 0.5, 0.0, 1.0) * 255.0))
+			else:
+				block[o + 2] = still
+				block[o + 3] = still
 	var piece := Image.create_from_data(size * PX, size * PX, false, Image.FORMAT_RGBA8, block)
 	var at := lo * PX
 	var src := Rect2i(Vector2i.ZERO, Vector2i(size * PX, size * PX))
@@ -181,6 +201,26 @@ static func ford_at(p: Vector2) -> float:
 	texture()
 	var px := Vector2i(clampi(int(p.x * PX), 0, TILES * PX - 1), clampi(int(p.y * PX), 0, TILES * PX - 1))
 	return _image.get_pixelv(px).g
+
+
+## Between two slices of an update: once the updates in slices have used
+## their time in this frame, all of them together, waits for a frame with
+## time left; tells whether the update should go on.
+static func _breathe(lo: Vector2i, job: int, slice_usec: int) -> bool:
+	if slice_usec <= 0:
+		return true
+	var tree := Engine.get_main_loop() as SceneTree
+	if tree == null:
+		return true
+	while true:
+		var frame := Engine.get_process_frames()
+		if frame != _slice_frame:
+			_slice_frame = frame
+			_slice_start = Time.get_ticks_usec()
+		if Time.get_ticks_usec() - _slice_start < slice_usec:
+			break
+		await tree.process_frame
+	return _jobs.get(lo, 0) == job
 
 
 static func _blur_rows(field: PackedFloat32Array, w: int, radius := BLUR) -> void:
