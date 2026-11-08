@@ -46,8 +46,9 @@ pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const MAX_MESSAGE_BYTES: usize = 4096;
 
 /// Chunks held around the body's own chunk, in every direction: a window
-/// of `(2 × VIEW_RADIUS + 1)²` chunks, 160 m across.
-pub const VIEW_RADIUS: i32 = 2;
+/// of `(2 × VIEW_RADIUS + 1)²` chunks, 288 m across, wide enough that the
+/// client zoomed out as far as it goes never sees past it.
+pub const VIEW_RADIUS: i32 = 4;
 
 /// How many published messages a slow client may fall behind before it
 /// starts missing some.
@@ -1108,31 +1109,40 @@ mod tests {
 
     #[test]
     fn the_view_is_a_window_clipped_to_the_map() {
-        let map = Map::valley(256, 256, 1); // 8×8 chunks
+        let map = Map::valley(768, 768, 1); // 24×24 chunks
+        let r = VIEW_RADIUS;
+        let side = usize::try_from(2 * r + 1).expect("small");
+        let chunk_tiles = i32::try_from(CHUNK_SIZE).expect("small chunk");
         let mut view = View::default();
-        let (shown, hidden) = view.recentre(&map, ChunkPos::new(4, 4));
-        assert_eq!(shown.len(), 25);
+        let (shown, hidden) = view.recentre(&map, ChunkPos::new(12, 12));
+        assert_eq!(shown.len(), side * side);
         assert_eq!(hidden, Vec::new());
+        let corner = (12 - r) * chunk_tiles;
         assert!(
-            view.contains(Pos::new(64, 64)),
-            "chunk (2, 2) is the corner"
+            view.contains(Pos::new(corner, corner)),
+            "the window's corner chunk is in"
         );
-        assert!(!view.contains(Pos::new(63, 64)), "chunk (1, 2) is outside");
+        assert!(
+            !view.contains(Pos::new(corner - 1, corner)),
+            "the chunk west of it is out"
+        );
 
         // Sliding one chunk east: a column enters, a column leaves.
-        let (shown, hidden) = view.recentre(&map, ChunkPos::new(5, 4));
+        let (shown, hidden) = view.recentre(&map, ChunkPos::new(13, 12));
+        let rows = || 12 - r..=12 + r;
         assert_eq!(
             shown,
-            (2..7).map(|y| ChunkPos::new(7, y)).collect::<Vec<_>>()
+            rows().map(|y| ChunkPos::new(13 + r, y)).collect::<Vec<_>>()
         );
         assert_eq!(
             hidden,
-            (2..7).map(|y| ChunkPos::new(2, y)).collect::<Vec<_>>()
+            rows().map(|y| ChunkPos::new(12 - r, y)).collect::<Vec<_>>()
         );
 
         // In the corner of the map the window is clipped.
         let (shown, _) = View::default().recentre(&map, ChunkPos::new(0, 0));
-        assert_eq!(shown.len(), 9);
+        let quarter = usize::try_from(r + 1).expect("small");
+        assert_eq!(shown.len(), quarter * quarter);
         assert!(View::default().is_empty());
     }
 
@@ -1174,26 +1184,23 @@ mod tests {
         let message = shared
             .chunk_message(body.chunk())
             .expect("chunk on the map");
-        let ServerMessage::Chunk {
-            tiles,
-            bodies,
-            items,
-            ..
-        } = message
-        else {
+        let ServerMessage::Chunk { tiles, bodies, .. } = message else {
             panic!("expected a chunk");
         };
         assert_eq!(tiles.len(), (CHUNK_SIZE * CHUNK_SIZE) as usize);
         assert!(bodies.iter().any(|b| b.id == 1));
-        assert!(
-            !items.is_empty(),
-            "the sample content scatters berries on grass"
-        );
-        assert!(
-            items
-                .iter()
-                .all(|i| Pos::new(i.x, i.y).chunk() == body.chunk())
-        );
+        // The items of a chunk are those lying in it; the sample content
+        // scatters berries on the grass at the forest's edge, somewhere in
+        // the body's view.
+        let mut seen_items = false;
+        for chunk in View::window(&shared.map, body.chunk()) {
+            let Some(ServerMessage::Chunk { items, .. }) = shared.chunk_message(chunk) else {
+                panic!("expected a chunk");
+            };
+            seen_items |= !items.is_empty();
+            assert!(items.iter().all(|i| Pos::new(i.x, i.y).chunk() == chunk));
+        }
+        assert!(seen_items, "the sample content scatters berries on grass");
         assert!(
             shared
                 .materials

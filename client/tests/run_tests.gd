@@ -520,6 +520,15 @@ func _test_the_shore_field_measures_the_bank() -> void:
 	_check(ShoreField.flow_at(Vector2(199.5, 200.0)).y > 0.4, "the bank's edge runs with the river: %s" % ShoreField.flow_at(Vector2(199.5, 200.0)))
 	var edge := ShoreField.ford_at(Vector2(150.0, 140.0))
 	_check(edge > 0.3 and edge < 0.7, "the ford's edge is soft: %f" % edge)
+	# The texture repeats over the map: a chunk past its width lands where
+	# the first ones were, and reads back at its own place.
+	var far_edge := func(t: Vector2i) -> String: return "water" if t.x >= ShoreField.TILES + 50 else "grass"
+	var map_size := ShoreField.map_size
+	ShoreField.map_size = Vector2i(4 * ShoreField.TILES, 4 * ShoreField.TILES)
+	ShoreField.update(far_edge, Vector2i(ShoreField.TILES + 32, 0), 32)
+	ShoreField.map_size = map_size
+	_check(absf(ShoreField.distance_at(Vector2(ShoreField.TILES + 50.0, 10.0))) < 0.15, "the edge past the texture's width: %f" % ShoreField.distance_at(Vector2(ShoreField.TILES + 50.0, 10.0)))
+	_check(absf(ShoreField.distance_at(Vector2(ShoreField.TILES + 48.5, 10.0)) - 1.5) < 0.2, "inland past the texture's width")
 
 
 func _test_the_shore_field_in_slices() -> void:

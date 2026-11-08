@@ -126,9 +126,10 @@ uniform float current_cover = 0.3;
 // the edge, a band of earth whose width wanders along the bank, and lets
 // the grass beneath show past a ragged edge.
 uniform bool has_field = false;
-uniform sampler2D shore_field : filter_linear, repeat_disable;
-// Tiles the field covers, and the distance range it encodes either way.
-uniform float field_tiles = 256.0;
+uniform sampler2D shore_field : filter_linear, repeat_enable;
+// Tiles the field covers before it repeats, and the distance range it
+// encodes either way.
+uniform float field_tiles = 384.0;
 uniform float field_range = 4.0;
 // The band of earth: its width in tiles wanders between these over
 // stretches of about field_vary tiles; the grass edge is ragged over
