@@ -141,6 +141,9 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees:
 	if view == null:
 		view = ChunkView.new()
 		view.z_index = -1  # ground below bodies and the hover outline
+		# The ground and the bank pieces keep plain linear filtering: the
+		# mipmaps this view uses for the trees would blur them.
+		view.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 		add_child(view)
 		_chunks[key] = view
 	_tiles[key] = tiles
