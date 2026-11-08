@@ -105,6 +105,7 @@ func _ready() -> void:
 func _on_world_state(width: int, height: int, chunk_size: int, materials: Array, night: bool) -> void:
 	_width = width
 	_height = height
+	ShoreField.map_size = Vector2i(width, height)
 	_chunk_size = chunk_size
 	_looks.clear()
 	_names.clear()

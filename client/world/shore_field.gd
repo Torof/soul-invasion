@@ -19,6 +19,10 @@ const BLUR := 3
 ## Tiles read around a chunk.
 const MARGIN := 3
 
+## The map's size in tiles: past it the server sends rock, which here
+## counts as unknown so a river runs on out of the map.
+static var map_size := Vector2i(TILES, TILES)
+
 static var _image: Image
 static var _texture: ImageTexture
 
@@ -49,7 +53,17 @@ static func update(terrain: Callable, lo: Vector2i, size: int) -> void:
 	var any_land := false
 	for ty in size + 2 * MARGIN:
 		for tx in size + 2 * MARGIN:
-			var water := is_water(str(terrain.call(start + Vector2i(tx, ty))))
+			var at := start + Vector2i(tx, ty)
+			var inside := at.x >= 0 and at.y >= 0 and at.x < map_size.x and at.y < map_size.y
+			var t := str(terrain.call(at)) if inside else ""
+			if t == "":
+				# Unknown (past the map's edge, or not sent yet): the nearest
+				# tile of the chunk goes on, so a river runs on out of view
+				# instead of being closed by a bank.
+				var near := Vector2i(clampi(at.x, lo.x, lo.x + size - 1), clampi(at.y, lo.y, lo.y + size - 1))
+				near = Vector2i(clampi(near.x, 0, map_size.x - 1), clampi(near.y, 0, map_size.y - 1))
+				t = str(terrain.call(near))
+			var water := is_water(t)
 			any_water = any_water or water
 			any_land = any_land or not water
 			if water:

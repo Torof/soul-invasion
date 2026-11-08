@@ -40,6 +40,7 @@ func _initialize() -> void:
 	for y in side:
 		for x in side:
 			tiles.append(_terrain(map, origin.x + x, origin.y + y))
+	ShoreField.map_size = Vector2i(map["width"], map["height"])
 	var view := ChunkView.new()
 	world.add_child(view)
 	view.show_chunk(origin, side, tiles, [], {})
@@ -59,7 +60,7 @@ func _initialize() -> void:
 
 static func _terrain(map: Dictionary, x: int, y: int) -> String:
 	if x < 0 or y < 0 or x >= map["width"] or y >= map["height"]:
-		return "grass"
+		return "rock"  # as the server sends past the map
 	return TERRAINS.get(map["values"][y * map["width"] + x], "grass")
 
 
