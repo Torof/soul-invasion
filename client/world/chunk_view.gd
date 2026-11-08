@@ -874,6 +874,10 @@ func _brook_canvas() -> BrookCanvas:
 				_brook_material.set_shader_parameter("bed%d_texture" % (k + 1), load_texture(str(layers.get("brook%d" % (k + 1), ""))))
 			_brook_material.set_shader_parameter("earth_texture", load_texture(str(layers.get("bank", ""))))
 			_brook_material.set_shader_parameter("water_tint", ground_params("water").get("base_tint", Color.WHITE))
+			# Where the river's water begins, so a brook fades into it.
+			_brook_material.set_shader_parameter("shore_field", ShoreField.texture())
+			_brook_material.set_shader_parameter("field_tiles", float(ShoreField.TILES))
+			_brook_material.set_shader_parameter("field_range", ShoreField.RANGE)
 		_brooks = BrookCanvas.new()
 		_brooks.z_index = -1
 		_brooks.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED

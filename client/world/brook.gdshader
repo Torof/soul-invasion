@@ -32,6 +32,14 @@ uniform vec3 ink : source_color = vec3(0.17, 0.12, 0.08);
 uniform float flow_speed = 0.3;
 uniform float flow_period = 2.0;
 uniform float wet = 0.7;
+// The river's bank (ShoreField): where a brook meets a river, it runs on
+// over the bank and fades out where the river's water begins, between
+// these signed distances to its edge, in tiles (negative in the water).
+uniform sampler2D shore_field : filter_linear, repeat_enable;
+uniform float field_tiles = 384.0;
+uniform float field_range = 4.0;
+uniform float mouth_in = -0.4;
+uniform float mouth_out = 0.0;
 
 varying vec4 tint;
 
@@ -43,7 +51,11 @@ void fragment() {
 	vec2 world = UV * 4.0;
 	float lateral = (tint.r * 2.0 - 1.0) * lateral_range;
 	float half_width = tint.g * 2.0;
-	float fade = tint.a;
+	float to_river = (texture(shore_field, world / field_tiles).r * 2.0 - 1.0) * field_range;
+	float fade = tint.a * smoothstep(mouth_in, mouth_out, to_river);
+	if (fade <= 0.0) {
+		discard;
+	}
 	// Distance from the water's edge, positive on the land.
 	float d = abs(lateral) - half_width;
 	float present = smoothstep(0.02, 0.12, half_width);

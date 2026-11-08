@@ -25,6 +25,8 @@ const LINES := [
 ]
 const LINE_SECONDS := 2.4
 const FADE_SECONDS := 0.45
+## How long the riverbanks may smooth a frame while the screen is up.
+const FIELD_SLICE_USEC := 40000
 
 var progress := LoadingProgress.new()
 var _canvas: Control
@@ -35,6 +37,7 @@ var _finished := false
 
 func _ready() -> void:
 	layer = 100
+	ShoreField.loading_slice_usec = FIELD_SLICE_USEC
 	_canvas = Control.new()
 	_canvas.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_canvas.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -62,6 +65,7 @@ func _process(delta: float) -> void:
 		progress.fields = ShoreField.busy
 		if progress.done(Time.get_ticks_msec()):
 			_finished = true
+			ShoreField.loading_slice_usec = 0
 	else:
 		_fade += delta / FADE_SECONDS
 		if _fade >= 1.0:
