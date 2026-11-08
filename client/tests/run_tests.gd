@@ -23,6 +23,7 @@ func _init() -> void:
 	_test_brooks_are_lines_on_the_ground()
 	_test_trees_stand_on_their_foot()
 	_test_the_shore_field_measures_the_bank()
+	_test_currents_decode()
 	print("client tests: %d checks, %d failures" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
 
@@ -502,4 +503,13 @@ func _test_the_shore_field_measures_the_bank() -> void:
 	_check(ShoreField.ford_at(Vector2(150.0, 152.0)) < 0.05, "deep water away from the ford: %f" % ShoreField.ford_at(Vector2(150.0, 152.0)))
 	var edge := ShoreField.ford_at(Vector2(150.0, 140.0))
 	_check(edge > 0.3 and edge < 0.7, "the ford's edge is soft: %f" % edge)
+
+
+func _test_currents_decode() -> void:
+	# Must agree with `current_code` on the server: heading × 256 + speed.
+	_check(ShoreField.current_vector(0) == Vector2.ZERO, "no current on land")
+	var south := ShoreField.current_vector(0 * 256 + 50)
+	_check(south.distance_to(Vector2(0, 0.5)) < 1e-4, "heading 0 runs +y at 0.5 m/s: %s" % south)
+	var east := ShoreField.current_vector(4 * 256 + 35)
+	_check(east.distance_to(Vector2(0.35, 0)) < 1e-4, "heading 4 runs +x: %s" % east)
 

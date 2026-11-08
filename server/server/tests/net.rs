@@ -259,7 +259,19 @@ async fn hello_ping_and_a_published_day() {
                 bodies,
                 items,
                 trees,
+                currents,
             }) => {
+                // Water runs, land does not.
+                assert_eq!(currents.len(), tiles.len());
+                for (t, c) in tiles.iter().zip(&currents) {
+                    let wet = matches!(
+                        t,
+                        protocol::Terrain::Water
+                            | protocol::Terrain::Ford
+                            | protocol::Terrain::Brook
+                    );
+                    assert_eq!(wet, *c != 0, "{t:?} {c}");
+                }
                 assert_eq!(tiles.len(), (CHUNK_SIZE * CHUNK_SIZE) as usize);
                 for t in &trees {
                     assert_eq!(tile(t.at).chunk(), ChunkPos::new(x, y));

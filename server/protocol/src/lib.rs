@@ -35,7 +35,8 @@ use serde::{Deserialize, Serialize};
 ///   through.
 /// - v10: chunks carry the trees standing in them; `world_state` carries
 ///   the kinds of tree, with their height.
-pub const PROTOCOL_VERSION: u32 = 10;
+/// - v11: chunks carry where their water runs (`currents`).
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// A tile on the map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -316,6 +317,12 @@ pub enum ServerMessage {
         items: Vec<ItemState>,
         /// Every tree standing in this chunk.
         trees: Vec<TreeState>,
+        /// Where the water runs, tile by tile like `tiles`: 0 where it
+        /// does not (land, rock); else its heading times 256 plus its speed
+        /// in centimetres a second (1 to 255). Heading h, from 0 to 15,
+        /// points along (sin(h × 22.5°), cos(h × 22.5°)) in tiles: 0 down
+        /// the map (+y), 4 along +x.
+        currents: Vec<u16>,
     },
     /// A chunk the client no longer holds: forget its tiles and the
     /// bodies in it.
@@ -563,6 +570,7 @@ mod tests {
                     at: Point { x: 162_300, y: 700 },
                     species: "oak".into(),
                 }],
+                currents: vec![0, 4 * 256 + 35],
             },
             ServerMessage::ChunkHidden { x: 5, y: 4 },
             ServerMessage::Pong { nonce: 42 },
@@ -695,11 +703,12 @@ mod tests {
                 },
                 species: "birch".into(),
             }],
+            currents: vec![1059],
         })
         .unwrap();
         assert_eq!(
             text,
-            r#"{"type":"chunk","x":1,"y":2,"tiles":["ford"],"bodies":[],"items":[{"id":3,"x":32,"y":64,"material":"pebble"}],"trees":[{"at":{"x":32400,"y":64700},"species":"birch"}]}"#
+            r#"{"type":"chunk","x":1,"y":2,"tiles":["ford"],"bodies":[],"items":[{"id":3,"x":32,"y":64,"material":"pebble"}],"trees":[{"at":{"x":32400,"y":64700},"species":"birch"}],"currents":[1059]}"#
         );
     }
 

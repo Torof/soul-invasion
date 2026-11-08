@@ -56,6 +56,8 @@ var _holds: Dictionary = {}
 var _trees: Dictionary = {}
 ## species id -> height in centimetres.
 var _tree_heights: Dictionary = {}
+## chunk -> where its water runs, tile by tile (protocol `currents`).
+var _currents: Dictionary = {}
 ## The camera's position and zoom at the last drawing.
 var _last_view := Vector3.INF
 var _drag_start := Vector2.ZERO
@@ -122,6 +124,7 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	_chunks.clear()
 	_items.clear()
 	_tiles.clear()
+	_currents.clear()
 	_trees.clear()
 	_bodies.clear()
 	_following = true
@@ -138,7 +141,7 @@ func _set_night(night: bool) -> void:
 	modulate = Color(0.45, 0.5, 0.7) if lit else Color.WHITE
 
 
-func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees: Array = []) -> void:
+func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees: Array = [], currents: Array = []) -> void:
 	var key := Vector2i(x, y)
 	var view: ChunkView = _chunks.get(key)
 	if view == null:
@@ -150,6 +153,7 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees:
 		add_child(view)
 		_chunks[key] = view
 	_tiles[key] = tiles
+	_currents[key] = currents
 	_items[key] = items
 	var standing: Array = []
 	for t in trees:
@@ -265,6 +269,17 @@ func look_at_tile(tile: Vector2i) -> void:
 	_camera.position = Iso.tile_to_screen(tile.x, tile.y)
 
 
+## Where the water runs at a tile the server has sent: a unit vector in
+## tiles times its speed in metres a second; zero on land or unknown.
+func current_at(tile: Vector2i) -> Vector2:
+	var key := Iso.chunk_of(tile, _chunk_size)
+	var currents: Array = _currents.get(key, [])
+	if currents.is_empty():
+		return Vector2.ZERO
+	var local := tile - key * _chunk_size
+	return ShoreField.current_vector(int(currents[local.y * _chunk_size + local.x]))
+
+
 ## The terrain of any tile the server has sent, "" otherwise.
 func terrain_at(tile: Vector2i) -> String:
 	var key := Iso.chunk_of(tile, _chunk_size)
@@ -339,6 +354,7 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 		_chunks.erase(key)
 		_items.erase(key)
 		_tiles.erase(key)
+		_currents.erase(key)
 		_trees.erase(key)
 		_redraw_neighbours(key)
 		_relay_shore()
