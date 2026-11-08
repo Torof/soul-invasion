@@ -32,3 +32,4 @@ Licensed under CC BY-NC-SA 4.0 like all content (`docs/LICENSE`).
 
 **8 November 2026, second cut**: every tree is now cut out by shape (the background reached from the border through its own colour, the trunk followed down and protected). The second hazel, the second wild apple and the second willow had grass and a shadow painted at their foot that could not be told from their bark: the project lead removed them in Midjourney's edit mode, and these edits are the images used.
 
+**8 November 2026, regenerated**: the second hazel and the first oak, too soft at their source, were generated again by the project lead (`new_hazel.png`, `new_oak.png`) and replace the earlier ones. All trees are cut from their sources in one pass, sharpened once after the reduction, and checked by a client test (standing on their foot, no pale speck).
