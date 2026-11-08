@@ -53,7 +53,7 @@ The library of prompts is `08-midjourney-prompts.md`; only what a milestone need
 - Overlays: flowers, dead leaves, pebbles, moss.
 - The **ten materials** as items on the ground: flint, pebble, branch, log, fibres, berries, hide, meat, bone, corpse — one sheet.
 - Fire in three states, branch shelter, meat drying rack (pull request 6).
-- Trees: the six species of section 6, adult, two variants each (8 November 2026; a second pine to come), placed by the server from the woods' density (D37). Young and old ages later.
+- Trees: the six species of section 6, adult, two variants each (8 November 2026), placed by the server from the woods' density (D37). Young and old ages later.
 
 **Batch 2 — pull requests 5 and 8**: tools (sharp flake, cordage, spear, stone axe); the **hunter** (model and four views); **one predator and one prey** (four views, walking, attacking, dead); the scale lineup of `08`.
 
