@@ -25,6 +25,11 @@ func _init() -> void:
 	_test_the_shore_field_measures_the_bank()
 	_test_currents_decode()
 	_test_tree_images_are_clean()
+
+
+## Once the main loop runs: the tests that wait for frames, then the end.
+func _initialize() -> void:
+	await _test_the_shore_field_in_slices()
 	print("client tests: %d checks, %d failures" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
 
@@ -515,6 +520,33 @@ func _test_the_shore_field_measures_the_bank() -> void:
 	_check(ShoreField.flow_at(Vector2(199.5, 200.0)).y > 0.4, "the bank's edge runs with the river: %s" % ShoreField.flow_at(Vector2(199.5, 200.0)))
 	var edge := ShoreField.ford_at(Vector2(150.0, 140.0))
 	_check(edge > 0.3 and edge < 0.7, "the ford's edge is soft: %f" % edge)
+
+
+func _test_the_shore_field_in_slices() -> void:
+	# Spread over frames, the field comes out the same as at once; an
+	# update overtaken by a newer one for its block gives up.
+	var river := func(t: Vector2i) -> String:
+		if t.x >= 70 and t.x < 76:
+			return "ford" if t.y >= 40 and t.y < 44 else "water"
+		return "grass"
+	var land := func(_t: Vector2i) -> String: return "grass"
+	var runs := func(_t: Vector2i) -> Vector2: return Vector2(0.5, 0.0)
+	var block := Rect2i(Vector2i(64, 32) * ShoreField.PX, Vector2i(32, 32) * ShoreField.PX)
+	ShoreField.update(river, Vector2i(64, 32), 32, runs)
+	var at_once := ShoreField._image.get_region(block).get_data()
+	ShoreField.update(land, Vector2i(64, 32), 32)
+	ShoreField.update(river, Vector2i(64, 32), 32, runs, 1)
+	var landed := ShoreField._image.get_region(block).get_data()
+	for i in 60:
+		await process_frame
+	_check(landed != at_once, "an update in slices writes later")
+	_check(ShoreField._image.get_region(block).get_data() == at_once, "in slices, the same field as at once")
+	ShoreField.update(river, Vector2i(64, 32), 32, runs, 1)
+	ShoreField.update(land, Vector2i(64, 32), 32)
+	var bare := ShoreField._image.get_region(block).get_data()
+	for i in 60:
+		await process_frame
+	_check(ShoreField._image.get_region(block).get_data() == bare, "an overtaken update gives up")
 
 
 func _test_currents_decode() -> void:

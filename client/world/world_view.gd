@@ -469,6 +469,26 @@ static func clamp_zoom(zoom: float) -> float:
 	return clampf(zoom, ZOOM_MIN, ZOOM_MAX)
 
 
+## Lets the waiting chunk nearest the camera build its ground (one a
+## frame, ChunkView.waiting).
+func _call_waiting_chunk() -> void:
+	var best: ChunkView = null
+	var best_distance := INF
+	for chunk: Variant in ChunkView.waiting.duplicate():
+		if not is_instance_valid(chunk) or not (chunk as ChunkView).is_inside_tree():
+			ChunkView.waiting.erase(chunk)
+			continue
+		var view := chunk as ChunkView
+		var middle := Iso.tile_to_screen(view._origin.x + view._size / 2, view._origin.y + view._size / 2)
+		var distance := middle.distance_squared_to(_camera.position)
+		if distance < best_distance:
+			best_distance = distance
+			best = view
+	if best != null:
+		ChunkView.waiting.erase(best)
+		best.queue_redraw()
+
+
 func _process(delta: float) -> void:
 	var moving := false
 	for id: int in _bodies:
@@ -495,6 +515,7 @@ func _process(delta: float) -> void:
 	if _following and _bodies.has(_piloted):
 		_camera.position = Iso.point_to_screen(_bodies[_piloted]["at"])
 	_update_see_through(delta)
+	_call_waiting_chunk()
 	for i in mini(REDRAWS_PER_FRAME, _to_redraw.size()):
 		var chunk: ChunkView = _to_redraw.pop_front()
 		if is_instance_valid(chunk):

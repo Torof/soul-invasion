@@ -511,23 +511,58 @@ func _terrain(tx: int, ty: int) -> String:
 ## corner, in tile coordinates relative to the origin, where corner
 ## (cx, cy) is the top of tile (cx, cy).
 func _nearness(is_near: Callable, width: int) -> Callable:
-	# Corners of the chunk and a margin around it.
+	# Corners of the chunk and a margin around it: corner c is inside when
+	# one of the four tiles meeting there is near. Tiles read once each.
 	var lo := -width
-	var hi := _size + width
-	var inside: Dictionary = {}
-	for cy in range(lo, hi + 1):
-		for cx in range(lo, hi + 1):
-			for d in [Vector2i(-1, -1), Vector2i(0, -1), Vector2i(-1, 0), Vector2i(0, 0)]:
-				if is_near.call(_terrain(_origin.x + cx + d.x, _origin.y + cy + d.y)):
-					inside[Vector2i(cx, cy)] = true
-					break
+	var span := _size + 2 * width + 1
+	var tiles := span + 1
+	var near_tile := PackedByteArray()
+	near_tile.resize(tiles * tiles)
+	var any := false
+	for ty in tiles:
+		for tx in tiles:
+			if is_near.call(_terrain(_origin.x + lo - 1 + tx, _origin.y + lo - 1 + ty)):
+				near_tile[ty * tiles + tx] = 1
+				any = true
+	var corners := _size + 1
+	var values := PackedFloat32Array()
+	values.resize(corners * corners)
+	if any:
+		# Corner (lo + i, lo + j) touches tiles i - 1 .. i and j - 1 .. j of
+		# the margin, that is indices i .. i + 1 and j .. j + 1 here.
+		var inside := PackedByteArray()
+		inside.resize(span * span)
+		for j in span:
+			for i in span:
+				var a := j * tiles + i
+				if near_tile[a] or near_tile[a + 1] or near_tile[a + tiles] or near_tile[a + tiles + 1]:
+					inside[j * span + i] = 1
+		# The distance to the nearest inside corner, square rings (the
+		# larger of the two offsets): first along each row, then across.
+		var far := width + 1
+		var along := PackedInt32Array()
+		along.resize(span * span)
+		for j in span:
+			for i in span:
+				var best := far
+				for d in range(-width, width + 1):
+					var k := i + d
+					if k >= 0 and k < span and inside[j * span + k] and absi(d) < best:
+						best = absi(d)
+				along[j * span + i] = best
+		for cy in corners:
+			for cx in corners:
+				var best := far
+				var i := cx - lo
+				for d in range(-width, width + 1):
+					var k := cy - lo + d
+					if k >= 0 and k < span:
+						best = mini(best, maxi(absi(d), along[k * span + i]))
+				values[cy * corners + cx] = 1.0 - float(best) / float(far)
 	return func(c: Vector2i) -> float:
-		var best := width + 1
-		for dy in range(-width, width + 1):
-			for dx in range(-width, width + 1):
-				if inside.has(c + Vector2i(dx, dy)):
-					best = mini(best, maxi(absi(dx), absi(dy)))
-		return 1.0 - float(best) / float(width + 1)
+		if c.x < 0 or c.y < 0 or c.x >= corners or c.y >= corners:
+			return 0.0
+		return values[c.y * corners + c.x]
 
 
 ## The four corners' values of tile (x, y) of the chunk, from `of_corner`.
@@ -590,6 +625,13 @@ func _terrain_signature() -> int:
 
 
 var _last_signature := 0
+## How long the bank's field may smooth in one frame (ShoreField.update).
+const FIELD_SLICE_USEC := 6000
+## Building a chunk's ground takes tens of milliseconds: one chunk builds
+## a frame, the others keep what they drew and wait in `waiting` for the
+## world view to call them, nearest the camera first.
+static var _built_frame := -1
+static var waiting: Array = []
 ## The chunk's own drawing kept between redraws: flat tiles [points,
 ## colour] and decorations [texture, rect, tint].
 var _flats: Array = []
@@ -599,10 +641,16 @@ var _decor_cache: Array = []
 func _draw() -> void:
 	var signature := _terrain_signature()
 	if signature != _last_signature or not shore_field_on():
-		_last_signature = signature
-		_flats.clear()
-		_decor_cache.clear()
-		_draw_ground_layers()
+		var frame := Engine.get_process_frames()
+		if _built_frame != frame:
+			_built_frame = frame
+			waiting.erase(self)
+			_last_signature = signature
+			_flats.clear()
+			_decor_cache.clear()
+			_draw_ground_layers()
+		elif not waiting.has(self):
+			waiting.append(self)
 	for flat: Array in _flats:
 		draw_colored_polygon(flat[0], flat[1])
 	for d: Array in _decor_cache:
@@ -684,7 +732,7 @@ static func shore_field_on() -> bool:
 ## draws the bank) over the land within two tiles of the water.
 func _add_field_tiles(by_terrain: Dictionary) -> void:
 	var terrain := func(t: Vector2i) -> String: return _terrain(t.x, t.y)
-	ShoreField.update(terrain, _origin, _size, current_at)
+	ShoreField.update(terrain, _origin, _size, current_at, FIELD_SLICE_USEC)
 	var water_material := ground_material("water")
 	water_material.set_shader_parameter("shore_field", ShoreField.texture())
 	water_material.set_shader_parameter("has_field", true)
@@ -692,11 +740,33 @@ func _add_field_tiles(by_terrain: Dictionary) -> void:
 	water_material.set_shader_parameter("field_range", ShoreField.RANGE)
 	if ground_texture("water") == null:
 		return
+	# The terrains over the chunk and two tiles around, read once, and
+	# which tiles have water within two tiles, row by row then across.
+	var m := 2
+	var span := _size + 2 * m
+	var grid := PackedStringArray()
+	grid.resize(span * span)
+	var water := PackedByteArray()
+	water.resize(span * span)
+	for j in span:
+		for i in span:
+			var t := _terrain(_origin.x + i - m, _origin.y + j - m)
+			grid[j * span + i] = t
+			if ShoreField.is_water(t):
+				water[j * span + i] = 1
+	var along := PackedByteArray()
+	along.resize(span * span)
+	for j in span:
+		for i in range(m, span - m):
+			for d in range(-m, m + 1):
+				if water[j * span + i + d]:
+					along[j * span + i] = 1
+					break
 	for y in _size:
 		for x in _size:
 			var tx := _origin.x + x
 			var ty := _origin.y + y
-			var here := _terrain(tx, ty)
+			var here := grid[(y + m) * span + x + m]
 			if here == "water" or here == "ford":
 				# The land under it, where land is near: forest if the land
 				# around is mostly forest, else grass.
@@ -704,7 +774,9 @@ func _add_field_tiles(by_terrain: Dictionary) -> void:
 				var grass := 0
 				for dy in range(-1, 2):
 					for dx in range(-1, 2):
-						var near := _ground_terrain(tx + dx, ty + dy)
+						var near := grid[(y + m + dy) * span + x + m + dx]
+						if near == "brook":
+							near = _ground_terrain(tx + dx, ty + dy)
 						if near == "forest":
 							forest += 1
 						elif near == "grass":
@@ -717,10 +789,10 @@ func _add_field_tiles(by_terrain: Dictionary) -> void:
 						by_terrain[land].append(Vector2(tx, ty))
 			elif not ShoreField.is_water(here) and here != "":
 				var near_water := false
-				for dy in range(-2, 3):
-					for dx in range(-2, 3):
-						if ShoreField.is_water(_terrain(tx + dx, ty + dy)):
-							near_water = true
+				for dy in range(-m, m + 1):
+					if along[(y + m + dy) * span + x + m]:
+						near_water = true
+						break
 				if near_water:
 					if not by_terrain.has("water"):
 						by_terrain["water"] = PackedVector2Array()
@@ -1488,8 +1560,26 @@ func _draw_decor() -> void:
 	var decor: Dictionary = ground_spec().get("decor", {})
 	if decor.is_empty():
 		return
-	var water_near_land := shore("water")
-	var land_near_water := _nearness(func(t: String) -> bool: return t == "water", 2)
+	var wanted: Dictionary = {}
+	for kind in decor:
+		if decor[kind] is Dictionary:
+			wanted[str(decor[kind].get("where", ""))] = true
+	var water_near_land := shore("water") if wanted.has("water_near_land") else {}
+	# How near the water each land tile is, once for every kind (0 for
+	# the tiles no decoration grows on).
+	var land_near := PackedFloat32Array()
+	land_near.resize(_size * _size)
+	var any_land_near := false
+	if wanted.keys().any(func(w: String) -> bool: return w != "water_near_land"):
+		var land_near_water := _nearness(func(t: String) -> bool: return t == "water", 2)
+		for y in _size:
+			for x in _size:
+				var terrain := str(_tiles[y * _size + x])
+				if terrain == "water" or terrain == "ford" or terrain == "brook" or terrain == "rock":
+					continue
+				var near := _max4(_corners(land_near_water, x, y))
+				land_near[y * _size + x] = near
+				any_land_near = any_land_near or near > 0.0
 	var water_tint: Color = ground_params("water").get("base_tint", Color.WHITE)
 	var salt := 0
 	for kind in decor:
@@ -1507,22 +1597,23 @@ func _draw_decor() -> void:
 		var min_near := float(rule.get("min_near", 0.6))
 		var jitter := float(rule.get("size_jitter", 0.0))
 		var tint := water_tint if str(rule.get("tint", "")) == "water" else Color.WHITE
+		var by_water := str(rule.get("where", "")) == "water_near_land"
+		if not by_water and not any_land_near:
+			continue
 		for y in _size:
 			for x in _size:
 				var tx := _origin.x + x
 				var ty := _origin.y + y
 				var terrain := str(_tiles[y * _size + x])
 				var near := 0.0
-				if str(rule.get("where", "")) == "water_near_land":
+				if by_water:
 					if terrain != "water" or not water_near_land.has(Vector2i(tx, ty)):
 						continue
 					near = _max4(water_near_land[Vector2i(tx, ty)])
 					if near < min_near:
 						continue
 				else:
-					if terrain == "water" or terrain == "ford" or terrain == "brook" or terrain == "rock":
-						continue
-					near = _max4(_corners(land_near_water, x, y))
+					near = land_near[y * _size + x]
 					if near <= 0.0:
 						continue
 				if tile_hash(tx, ty, salt) > chance * near:
