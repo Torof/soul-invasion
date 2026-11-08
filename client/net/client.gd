@@ -10,7 +10,7 @@ signal world_state(width: int, height: int, chunk_size: int, materials: Array, n
 signal clock(clock: Dictionary)
 ## The kinds of tree, sent with the world's state, before it.
 signal species(species: Array)
-signal chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees: Array)
+signal chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees: Array, currents: Array)
 signal chunk_hidden(x: int, y: int)
 signal body_walks(body: int, at: Vector2, route: Array, speed_cm_per_s: int)
 signal body_stopped(body: int, at: Vector2)
@@ -169,7 +169,8 @@ func _handle(message: Dictionary) -> void:
 				message.get("tiles", []),
 				message.get("bodies", []),
 				message.get("items", []),
-				message.get("trees", [])
+				message.get("trees", []),
+				message.get("currents", [])
 			)
 		"chunk_hidden":
 			chunk_hidden.emit(int(message.get("x", 0)), int(message.get("y", 0)))

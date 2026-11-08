@@ -176,3 +176,13 @@ static func probit(p: float) -> float:
 	var t := sqrt(-2.0 * log(q))
 	var x := t - (2.515517 + 0.802853 * t + 0.010328 * t * t) / (1.0 + 1.432788 * t + 0.189269 * t * t + 0.001308 * t * t * t)
 	return -x if p < 0.5 else x
+
+
+## A current as the protocol codes it, as a vector: its heading h (0 to
+## 15) points along (sin(h × 22.5°), cos(h × 22.5°)), its length the speed
+## in metres a second.
+static func current_vector(code: int) -> Vector2:
+	if code <= 0:
+		return Vector2.ZERO
+	var angle := deg_to_rad(float(code / 256) * 22.5)
+	return Vector2(sin(angle), cos(angle)) * (float(code % 256) / 100.0)

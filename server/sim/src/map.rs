@@ -212,6 +212,8 @@ pub struct Map {
     trees: Vec<u8>,
     /// Per tile, the kind of place it is for trees (D37).
     habitat: Vec<Habitat>,
+    /// Per tile of water, where it runs (`current_code`); 0 elsewhere (D36).
+    currents: Vec<u16>,
 }
 
 impl From<MapSpec> for Map {
@@ -252,6 +254,7 @@ impl Map {
             depth: vec![0; (width * height) as usize],
             trees: vec![0; (width * height) as usize],
             habitat: vec![Habitat::None; (width * height) as usize],
+            currents: vec![0; (width * height) as usize],
         }
     }
 
@@ -294,6 +297,9 @@ impl Map {
                 let i = (y * width + x) as usize;
                 if y >= cliff_rows {
                     map.depth[i] = rivers.depth_at(x, y);
+                    if let Some((heading, speed)) = rivers.current_at(x, y) {
+                        map.currents[i] = current_code(heading, speed);
+                    }
                 }
                 map.trees[i] = woods.density(x, y);
                 map.habitat[i] = woods.habitat(x, y);
@@ -394,6 +400,33 @@ impl Map {
             }
         }
         Some(tiles)
+    }
+
+    /// Where the water runs in a chunk, tile by tile like `chunk`
+    /// (`current_code`: 0 where it does not). `None` for a chunk entirely
+    /// outside the map.
+    pub fn chunk_currents(&self, chunk: ChunkPos) -> Option<Vec<u16>> {
+        if !self.has_chunk(chunk) {
+            return None;
+        }
+        let origin = chunk.origin();
+        let side = i32::try_from(CHUNK_SIZE).expect("small chunk side");
+        let mut out = Vec::with_capacity((CHUNK_SIZE * CHUNK_SIZE) as usize);
+        for y in 0..side {
+            for x in 0..side {
+                let pos = Pos::new(origin.x + x, origin.y + y);
+                out.push(self.index(pos).map_or(0, |i| self.currents[i]));
+            }
+        }
+        Some(out)
+    }
+
+    /// Where the water runs at `pos`: its heading (0 to 15, as
+    /// `current_code`) and speed in centimetres a second; `None` on land
+    /// and outside the map.
+    pub fn current(&self, pos: Pos) -> Option<(u8, u16)> {
+        self.index(pos)
+            .and_then(|i| decode_current(self.currents[i]))
     }
 
     /// The terrain at `pos`, or `None` outside the map.
@@ -803,6 +836,9 @@ pub struct Rivers {
     depth: Vec<u8>,
     /// Per tile: whether the water there is a brook (one or two wide).
     brook: Vec<bool>,
+    /// Per tile of water: where it runs, `current_code` of its heading and
+    /// speed; 0 on land.
+    current: Vec<u16>,
     /// Per tile: the water that painted it, as index + 1; 0 for land.
     owner: Vec<u16>,
     /// Per tile painted by a water: the step of its path that did.
@@ -813,6 +849,17 @@ pub struct Rivers {
     /// The network the waters were painted from, for the tests.
     #[cfg(test)]
     network: Vec<River>,
+}
+
+/// A current as one number: its heading (0 to 15) times 256 plus its
+/// speed in centimetres a second (1 to 255); 0 for none.
+pub fn current_code(heading: u8, speed: u16) -> u16 {
+    u16::from(heading % 16) * 256 + speed.clamp(1, 255)
+}
+
+/// The heading and speed of a current coded by `current_code`.
+pub fn decode_current(code: u16) -> Option<(u8, u16)> {
+    (code != 0).then(|| (u8::try_from(code / 256).expect("heading"), code % 256))
 }
 
 /// Flat index of a tile in a `width` × `height` grid, if inside.
@@ -920,6 +967,10 @@ struct Band {
     depth: u8,
     /// One or two tiles wide: a brook.
     brook: bool,
+    /// The heading the water runs along here.
+    heading: u8,
+    /// How fast it runs, in centimetres a second.
+    speed: u16,
 }
 
 /// Where a traced path ended.
@@ -956,6 +1007,10 @@ impl Rivers {
     const TRIBUTARIES: (u32, u32) = (1, 2);
     /// Longest brook, in steps: one that wanders further is no brook.
     const BROOK_STEPS: usize = 80;
+    /// How fast water runs where its section just holds its flow, in
+    /// centimetres a second, and the slowest and fastest it runs.
+    const BASE_SPEED: u16 = 35;
+    const SPEED: (u16, u16) = (4, 200);
     /// Farthest a brook goes on past its traced end to meet the water.
     const BROOK_REACH: usize = 8;
     /// How many steps a brook holds a heading, at least and at most: it
@@ -1008,6 +1063,7 @@ impl Rivers {
             height,
             depth: vec![0; tiles],
             brook: vec![false; tiles],
+            current: vec![0; tiles],
             owner: vec![0; tiles],
             step: vec![0; tiles],
             #[cfg(test)]
@@ -1102,6 +1158,7 @@ impl Rivers {
         rivers.paint_all(&network);
         rivers.reach_the_water(&network);
         rivers.round_banks();
+        rivers.fill_currents();
         #[cfg(test)]
         {
             rivers.network = network;
@@ -1113,6 +1170,7 @@ impl Rivers {
     /// then brooks on the land left, then the fords.
     fn paint_all(&mut self, network: &[River]) {
         self.depth.fill(0);
+        self.current.fill(0);
         self.brook.fill(false);
         self.owner.fill(0);
         self.step.fill(0);
@@ -1491,7 +1549,21 @@ impl Rivers {
             half_width: width * 500 - 1,
             depth: u8::try_from(depth).expect("shallow"),
             brook: width < i64::from(Self::MIN_WIDTH),
+            heading: s.heading,
+            speed: Self::speed(flow, width * 1000, depth),
         }
+    }
+
+    /// How fast water carrying `flow` half-cubes runs through a section
+    /// `width` thousandths of a tile wide and `depth` half-metres deep, in
+    /// centimetres a second: `BASE_SPEED` where the section just holds the
+    /// flow, slower where it holds more (a pool), faster where it holds
+    /// less.
+    fn speed(flow: i64, width: i64, depth: i64) -> u16 {
+        let held = (width * depth.max(1)).max(1);
+        let speed = i64::from(Self::BASE_SPEED) * flow * 1000 / held;
+        u16::try_from(speed.clamp(i64::from(Self::SPEED.0), i64::from(Self::SPEED.1)))
+            .expect("bounded")
     }
 
     /// Lets the banks of water `i` breathe where it is free: each bank, on
@@ -1865,6 +1937,7 @@ impl Rivers {
                     Self::breathing_section(flow, shape, (left + right) * Self::BANK_SLOPE);
                 band.half_width = wide / 2 - 1;
                 band.depth = u8::try_from(depth).expect("shallow");
+                band.speed = Self::speed(flow, wide, depth);
             }
             band
         };
@@ -1914,6 +1987,8 @@ impl Rivers {
                 half_width: width * 500 - 1,
                 depth: 1,
                 brook: false,
+                heading: s.heading,
+                speed: 0,
             }
         };
         // A ford is a lens: the river's own width at each end, the flow's
@@ -1929,7 +2004,10 @@ impl Rivers {
                     } else {
                         spread
                     };
-                    shoal(from + t - ramp, offset, width)
+                    let mut band = shoal(from + t - ramp, offset, width);
+                    // Spread thin over the stones, the water runs faster.
+                    band.speed = Self::speed(flow, width * 1000, 1) * 3 / 2;
+                    band
                 })
                 .collect()
         };
@@ -1981,11 +2059,13 @@ impl Rivers {
                         continue;
                     }
                     let point = if t < 500 { a } else { b };
+                    let current = current_code(point.heading, point.speed);
                     if shoal {
                         if self.owner[i] == 0 || self.owner[i] == mine {
                             self.depth[i] = 1;
                             self.brook[i] = false;
                             self.owner[i] = mine;
+                            self.current[i] = current;
                         }
                     } else if point.brook {
                         if self.depth[i] == 0 {
@@ -1993,10 +2073,14 @@ impl Rivers {
                             self.brook[i] = true;
                             self.owner[i] = mine;
                             self.step[i] = u32::try_from(n).expect("fits");
+                            self.current[i] = current;
                         }
                     } else {
                         if self.brook[i] || self.depth[i] < point.depth {
                             self.depth[i] = point.depth;
+                        }
+                        if self.owner[i] == 0 || self.brook[i] {
+                            self.current[i] = current;
                         }
                         self.brook[i] = false;
                         if self.owner[i] == 0 {
@@ -2007,6 +2091,50 @@ impl Rivers {
                 }
             }
         }
+    }
+
+    /// Every tile of water runs: a tile the rounding of the banks made
+    /// water takes the current of a neighbour; land has none.
+    fn fill_currents(&mut self) {
+        let (w, h) = (i64::from(self.width), i64::from(self.height));
+        for _ in 0..3 {
+            let before = self.current.clone();
+            for y in 0..h {
+                for x in 0..w {
+                    let i = self.index(x, y).expect("inside");
+                    if self.depth[i] == 0 {
+                        self.current[i] = 0;
+                        continue;
+                    }
+                    if before[i] != 0 {
+                        continue;
+                    }
+                    let near = [
+                        (0, -1),
+                        (1, 0),
+                        (0, 1),
+                        (-1, 0),
+                        (1, 1),
+                        (-1, -1),
+                        (1, -1),
+                        (-1, 1),
+                    ]
+                    .iter()
+                    .filter_map(|(dx, dy)| self.index(x + dx, y + dy))
+                    .map(|j| before[j])
+                    .find(|c| *c != 0);
+                    if let Some(c) = near {
+                        self.current[i] = c;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Where the water runs at `(x, y)`: its heading (as the centre paths',
+    /// 0 to 15) and speed in centimetres a second; `None` on land.
+    pub fn current_at(&self, x: u32, y: u32) -> Option<(u8, u16)> {
+        decode_current(self.current[(y * self.width + x) as usize])
     }
 
     /// Rounds the banks of the rivers: a land tile with river water on
@@ -2486,6 +2614,75 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn every_water_runs_down_its_course() {
+        for seed in 1..=4 {
+            let map = Map::valley(256, 256, seed);
+            let r = Rivers::generate(256, 256, 32, seed);
+            let (mut ford_speed, mut fords, mut river_speed, mut rivers) =
+                (0_u64, 0_u64, 0_u64, 0_u64);
+            for y in 0..256 {
+                for x in 0..256 {
+                    let pos = Pos::new(x, y);
+                    let terrain = map.get(pos);
+                    let wet = matches!(
+                        terrain,
+                        Some(Terrain::Water | Terrain::Ford | Terrain::Brook)
+                    );
+                    let current = map.current(pos);
+                    // Water runs, land does not.
+                    assert_eq!(wet, current.is_some(), "seed {seed}: {pos:?} {terrain:?}");
+                    if let Some((heading, speed)) = current {
+                        assert!(
+                            heading < 16 && (Rivers::SPEED.0..=Rivers::SPEED.1).contains(&speed)
+                        );
+                        match terrain {
+                            Some(Terrain::Ford) => {
+                                ford_speed += u64::from(speed);
+                                fords += 1;
+                            }
+                            Some(Terrain::Water) => {
+                                river_speed += u64::from(speed);
+                                rivers += 1;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            // Along the main river, the water runs its way, a step of
+            // heading off at most (where it bends).
+            let main = &r.network[0];
+            let mut checked = 0;
+            for step in &main.path {
+                let (x, y) = (step.x / 1000, step.y / 1000);
+                let Some(pos) = (x >= 0 && y >= 32 && x < 256 && y < 256)
+                    .then(|| Pos::new(i32::try_from(x).unwrap(), i32::try_from(y).unwrap()))
+                else {
+                    continue;
+                };
+                if map.get(pos) != Some(Terrain::Water) {
+                    continue;
+                }
+                let (heading, _) = map.current(pos).unwrap();
+                let off = (i32::from(heading) - i32::from(step.heading) + 8).rem_euclid(16) - 8;
+                assert!(
+                    off.abs() <= 1,
+                    "seed {seed}: at {pos:?} runs {heading}, the river {}",
+                    step.heading
+                );
+                checked += 1;
+            }
+            assert!(checked > 100);
+            // Spread thin over its stones, a ford runs faster.
+            if let Some(ford_mean) = ford_speed.checked_div(fords) {
+                assert!(ford_mean > river_speed / rivers, "seed {seed}");
+            }
+        }
+        assert_eq!(decode_current(current_code(13, 42)), Some((13, 42)));
+        assert_eq!(decode_current(0), None);
     }
 
     #[test]

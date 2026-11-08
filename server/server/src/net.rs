@@ -513,6 +513,7 @@ impl Shared {
                 .cloned()
                 .unwrap_or_default(),
             trees: self.trees.get(&chunk).cloned().unwrap_or_default(),
+            currents: self.map.chunk_currents(chunk)?,
         })
     }
 }
