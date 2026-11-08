@@ -15,7 +15,7 @@ extends Node2D
 const BODY_COLOR := Color(0.90, 0.80, 0.60)
 const PILOTED_COLOR := Color(1.0, 0.55, 0.20)
 const TARGET_COLOR := Color(1.0, 0.85, 0.30, 0.9)
-const ZOOM_MIN := 0.5
+const ZOOM_MIN := 0.35
 const ZOOM_MAX := 4.0
 const ZOOM_STEP := 1.25
 const DEFAULT_ZOOM := 1.5

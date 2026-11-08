@@ -533,9 +533,9 @@ pub struct World {
     trees: Vec<trees::Tree>,
 }
 
-/// Side of the first version's valley, in tiles: about 256 m, three
+/// Side of the first version's valley, in tiles: about 768 m, nine
 /// minutes of walking (D31).
-pub const VALLEY_SIZE: u32 = 256;
+pub const VALLEY_SIZE: u32 = 768;
 
 /// Seed of the first version's valley.
 pub const VALLEY_SEED: u64 = 1;
@@ -1462,7 +1462,9 @@ mod tests {
             assert_eq!(terrain, rule.terrain, "{item:?}");
             if let Some(near) = rule.near {
                 let pos = item.pos().unwrap();
-                let index = usize::try_from(pos.y * 256 + pos.x).unwrap();
+                let index =
+                    usize::try_from(pos.y * i32::try_from(a.map().width()).unwrap() + pos.x)
+                        .unwrap();
                 assert!(
                     to_forest[index] <= near.within,
                     "{item:?} is far from the forest"

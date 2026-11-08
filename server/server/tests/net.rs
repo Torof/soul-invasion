@@ -2,8 +2,10 @@
 //! handshake, liveness, published events, and the ways a client gets
 //! disconnected.
 
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -23,8 +25,33 @@ fn rules() -> sim::Content {
     server::content::load(&dir).expect("repository content")
 }
 
-fn standard_world() -> World {
-    World::new(Calendar::default(), &rules())
+/// The world a fresh server starts with, generated once for all the
+/// tests: the valley is large, and its generation must not eat into a
+/// running server's short days.
+fn standard_world() -> &'static World {
+    static WORLD: OnceLock<World> = OnceLock::new();
+    WORLD.get_or_init(|| World::new(Calendar::default(), &rules()))
+}
+
+/// The tiles a body standing at `from` can walk to, through straight
+/// steps only (a diagonal never opens a way a path would not take).
+fn reachable(world: &World, from: Pos) -> HashSet<Pos> {
+    let rules = rules();
+    let mut seen = HashSet::from([from]);
+    let mut todo = vec![from];
+    while let Some(p) = todo.pop() {
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let next = Pos::new(p.x + dx, p.y + dy);
+            let passable = world
+                .map()
+                .get(next)
+                .is_some_and(|t| rules.movement.cost(t).is_some());
+            if passable && seen.insert(next) {
+                todo.push(next);
+            }
+        }
+    }
+    seen
 }
 
 /// Where a body stands in the standard world.
@@ -83,6 +110,7 @@ impl Server {
 
     /// Like [`Server::start`], with extra command-line options.
     fn start_with(extra: &[&str]) -> Self {
+        standard_world();
         let mut child = Command::new(env!("CARGO_BIN_EXE_server"))
             .args([
                 "--ephemeral",
@@ -245,12 +273,12 @@ async fn hello_ping_and_a_published_day() {
         other => panic!("expected world_state, got {other:?}"),
     }
     let world = standard_world();
-    let centre = start_of(&world, 1).chunk();
+    let centre = start_of(world, 1).chunk();
     let mut seen_bodies = Vec::new();
     let mut seen_items = 0;
     let mut seen_trees = 0;
     let mut chunks = Vec::new();
-    for _ in 0..window_len(&world, centre) {
+    for _ in 0..window_len(world, centre) {
         match receive(&mut socket).await {
             Some(ServerMessage::Chunk {
                 x,
@@ -295,7 +323,7 @@ async fn hello_ping_and_a_published_day() {
     }
     assert_eq!(
         chunks.len(),
-        25,
+        (2 * VIEW_RADIUS + 1).pow(2) as usize,
         "a full window in the middle of the valley"
     );
     assert!(
@@ -410,12 +438,12 @@ async fn join(server: &Server) -> (Socket, Option<u32>) {
     ));
     let world = standard_world();
     let centre = if let Some(body) = body {
-        start_of(&world, body).chunk()
+        start_of(world, body).chunk()
     } else {
         let middle = i32::try_from(VALLEY_SIZE / 2).expect("small valley");
         Pos::new(middle, middle).chunk()
     };
-    for _ in 0..window_len(&world, centre) {
+    for _ in 0..window_len(world, centre) {
         assert!(matches!(
             receive(&mut socket).await,
             Some(ServerMessage::Chunk { .. })
@@ -432,13 +460,16 @@ async fn the_view_follows_the_piloted_body() {
     let (mut pilot, body) = join(&server).await;
     let body = body.expect("pilots a body");
 
-    // Walk into the chunk west of the starting one: a column of chunks
-    // is hidden to the east and a column shown to the west.
+    // Walk into the chunk east of the starting one: a column of chunks
+    // is hidden to the west and a column shown to the east.
     let world = standard_world();
-    let start = start_of(&world, body);
+    let start = start_of(world, body);
     let here = start.chunk();
-    let target = Pos::new(here.origin().x - 1, start.y);
-    route(&world, start, target); // reachable
+    let target = Pos::new(
+        here.origin().x + i32::try_from(CHUNK_SIZE).expect("small chunk"),
+        start.y,
+    );
+    route(world, start, target); // reachable
     send(
         &mut pilot,
         &ClientMessage::MoveTo {
@@ -462,11 +493,11 @@ async fn the_view_follows_the_piloted_body() {
         }
     }
     assert!(
-        shown.iter().all(|(x, _)| *x == here.x - VIEW_RADIUS - 1),
+        shown.iter().all(|(x, _)| *x == here.x + VIEW_RADIUS + 1),
         "{shown:?}"
     );
     assert!(
-        hidden.iter().all(|(x, _)| *x == here.x + VIEW_RADIUS),
+        hidden.iter().all(|(x, _)| *x == here.x - VIEW_RADIUS),
         "{hidden:?}"
     );
 }
@@ -480,20 +511,21 @@ async fn a_body_walking_out_of_the_view_is_reported_as_left() {
     let body = body.expect("pilots body 1");
     let other = other.expect("pilots body 2");
 
-    // Body 1 walks far west across the ford, out of body 2's window;
-    // body 2 stays.
+    // Body 1 walks far east, out of body 2's window; body 2 stays.
     let world = standard_world();
-    let start = start_of(&world, body);
-    let far = world
-        .map()
-        .nearest(Pos::new(start.x - 100, start.y), sim::Terrain::Grass)
-        .expect("grass far west");
+    let start = start_of(world, body);
     let span = i32::try_from(CHUNK_SIZE).expect("small chunk") * (VIEW_RADIUS + 1);
+    let east = start_of(world, other).x + span;
+    let far = *reachable(world, start)
+        .iter()
+        .filter(|p| p.x >= east)
+        .min_by_key(|p| ((p.x - start.x).abs() + (p.y - start.y).abs(), p.x, p.y))
+        .expect("ground far east");
     assert!(
-        start_of(&world, other).x - far.x >= span,
+        far.x - start_of(world, other).x >= span,
         "far enough: {far:?}"
     );
-    route(&world, start, far); // reachable
+    route(world, start, far); // reachable
     send(&mut walker, &ClientMessage::MoveTo { x: far.x, y: far.y }).await;
 
     // The watcher sees the walk start (inside its view), then the body
@@ -540,9 +572,9 @@ async fn a_move_intention_makes_the_piloted_body_walk() {
 
     // Walk a few tiles east of where body 1 starts.
     let world = standard_world();
-    let start = start_of(&world, body);
+    let start = start_of(world, body);
     let target = Pos::new(start.x + 3, start.y);
-    let expected = route(&world, start, target);
+    let expected = route(world, start, target);
     send(
         &mut pilot,
         &ClientMessage::MoveTo {
@@ -738,7 +770,7 @@ async fn a_refusal_reaches_the_pilot_alone() {
     // Body 2 walks one tile east. Messages keep their order, so a
     // broadcast refusal would have arrived before this walk.
     let world = standard_world();
-    let start = start_of(&world, other_body);
+    let start = start_of(world, other_body);
     let target = Pos::new(start.x + 1, start.y);
     send(
         &mut other,
@@ -770,10 +802,10 @@ async fn a_flood_of_intentions_leaves_only_the_last_one() {
     // last one being one step north: the body ends there, and the server
     // is still answering.
     let world = standard_world();
-    let start = start_of(&world, body);
+    let start = start_of(world, body);
     let north = Pos::new(start.x, start.y - 1);
     assert_eq!(
-        route(&world, start, north).len(),
+        route(world, start, north).len(),
         1,
         "one step north is open"
     );
@@ -911,7 +943,7 @@ async fn sleeping_is_seen_by_all_and_waking_by_walking() {
 
     // Walking wakes the body: everyone sees it get up and set off.
     let world = standard_world();
-    let start = start_of(&world, body);
+    let start = start_of(world, body);
     send(
         &mut pilot,
         &ClientMessage::MoveTo {
@@ -957,7 +989,8 @@ async fn eating_takes_an_item_within_reach_and_refuses_the_rest() {
     // Walk to the nearest berries, then eat them: the watcher sees them go.
     let world = standard_world();
     let rules = rules();
-    let start = start_of(&world, body);
+    let start = start_of(world, body);
+    let around = reachable(world, start);
     let berries = world
         .items()
         .iter()
@@ -965,6 +998,7 @@ async fn eating_takes_an_item_within_reach_and_refuses_the_rest() {
             rules
                 .material(i.material())
                 .is_some_and(|m| m.food.is_some())
+                && around.contains(&i.pos().expect("on the ground"))
         })
         .min_by_key(|i| {
             let p = i.pos().expect("on the ground");
@@ -1059,7 +1093,7 @@ async fn picking_up_tells_the_pilot_its_inventory_and_everyone_what_is_in_hand()
     // Walk to the nearest item, pick it up: it leaves the ground, goes in
     // hand, and the watcher sees the hand.
     let world = standard_world();
-    let start = start_of(&world, body);
+    let start = start_of(world, body);
     let nearest = world
         .items()
         .iter()

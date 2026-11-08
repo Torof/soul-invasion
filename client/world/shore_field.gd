@@ -1,11 +1,15 @@
 class_name ShoreField
 extends RefCounted
-## The distance to the water's edge over the whole map, for the ground
+## The distance to the water's edge around the view, for the ground
 ## shader to draw the bank (D36): the tiles' water mask is smoothed, so
 ## the edge comes out round instead of in steps, and turned into a signed
 ## distance in tiles, positive on the land. One shared texture, PX pixels
-## a tile; each chunk writes its own block when it is drawn, read with a
-## margin of its neighbours so the blocks join. A second channel carries
+## a tile, of TILES × TILES tiles laid over the map again and again: the
+## tile (x, y) is at (x mod TILES, y mod TILES), so the texture does not
+## grow with the map, and neighbours on the map are neighbours in it.
+## TILES is wider than the chunks a client holds, so two of them never
+## share a place. Each chunk writes its own block when it is drawn, read
+## with a margin of its neighbours so the blocks join. A second channel carries
 ## the fords, smoothed the same way: 1 inside a ford, 0 away from one. The
 ## last two carry where the water runs (from the server's currents),
 ## averaged over the water nearby: x then y, in metres a second, over
@@ -13,8 +17,9 @@ extends RefCounted
 
 ## Pixels a tile.
 const PX := 4
-## Tiles of the map the texture covers, from (0, 0).
-const TILES := 256
+## Tiles the texture covers either way, then repeats: twelve chunks, more
+## than the nine a client holds across (the server's view window).
+const TILES := 384
 ## Distances kept, either way, in tiles.
 const RANGE := 4.0
 ## Box blur radius in pixels, run three times: about 0.9 tile of
@@ -31,7 +36,7 @@ const FORD_BLUR_PASSES := 5
 
 ## The map's size in tiles: past it the server sends rock, which here
 ## counts as unknown so a river runs on out of the map.
-static var map_size := Vector2i(TILES, TILES)
+static var map_size := Vector2i(256, 256)
 
 ## The latest update asked for each block: an update in slices gives up
 ## when a newer one for its block has started.
@@ -43,6 +48,9 @@ static var _slice_frame := -1
 static var _slice_start := 0
 static var _image: Image
 static var _texture: ImageTexture
+## Whether the image changed since it was last sent to the texture: sent
+## once a frame at most, however many blocks were written.
+static var _upload_due := false
 
 
 static func texture() -> ImageTexture:
@@ -177,13 +185,26 @@ static func _update(terrain: Callable, lo: Vector2i, size: int, current: Callabl
 				block[o + 2] = still
 				block[o + 3] = still
 	var piece := Image.create_from_data(size * PX, size * PX, false, Image.FORMAT_RGBA8, block)
-	var at := lo * PX
-	var src := Rect2i(Vector2i.ZERO, Vector2i(size * PX, size * PX))
-	# Clip to the map.
-	var clipped := Rect2i(at, src.size).intersection(Rect2i(0, 0, TILES * PX, TILES * PX))
-	if clipped.size.x <= 0 or clipped.size.y <= 0:
-		return
-	_image.blit_rect(piece, Rect2i(clipped.position - at, clipped.size), clipped.position)
+	# Laid at its place in the repeating texture, in as many parts as it
+	# straddles the texture's edges.
+	var at := Vector2i(posmod(lo.x, TILES), posmod(lo.y, TILES)) * PX
+	var full := TILES * PX
+	var y0 := 0
+	while y0 < size * PX:
+		var rows := mini(size * PX - y0, full - posmod(at.y + y0, full))
+		var x0 := 0
+		while x0 < size * PX:
+			var columns := mini(size * PX - x0, full - posmod(at.x + x0, full))
+			_image.blit_rect(piece, Rect2i(x0, y0, columns, rows), Vector2i(posmod(at.x + x0, full), posmod(at.y + y0, full)))
+			x0 += columns
+		y0 += rows
+	if not _upload_due:
+		_upload_due = true
+		_upload.call_deferred()
+
+
+static func _upload() -> void:
+	_upload_due = false
 	_texture.update(_image)
 
 
@@ -191,7 +212,7 @@ static func _update(terrain: Callable, lo: Vector2i, size: int, current: Callabl
 ## spans [x, x + 1)), as the shader reads it; for the tests.
 static func distance_at(p: Vector2) -> float:
 	texture()
-	var px := Vector2i(clampi(int(p.x * PX), 0, TILES * PX - 1), clampi(int(p.y * PX), 0, TILES * PX - 1))
+	var px := Vector2i(posmod(floori(p.x * PX), TILES * PX), posmod(floori(p.y * PX), TILES * PX))
 	return (_image.get_pixelv(px).r * 2.0 - 1.0) * RANGE
 
 
@@ -199,7 +220,7 @@ static func distance_at(p: Vector2) -> float:
 ## second, as the shader reads it.
 static func flow_at(p: Vector2) -> Vector2:
 	texture()
-	var px := Vector2i(clampi(int(p.x * PX), 0, TILES * PX - 1), clampi(int(p.y * PX), 0, TILES * PX - 1))
+	var px := Vector2i(posmod(floori(p.x * PX), TILES * PX), posmod(floori(p.y * PX), TILES * PX))
 	var c := _image.get_pixelv(px)
 	return Vector2(c.b * 2.0 - 1.0, c.a * 2.0 - 1.0) * FLOW_MAX
 
@@ -207,7 +228,7 @@ static func flow_at(p: Vector2) -> Vector2:
 ## How much of a ford there is at a point of the map in tiles, 0 to 1.
 static func ford_at(p: Vector2) -> float:
 	texture()
-	var px := Vector2i(clampi(int(p.x * PX), 0, TILES * PX - 1), clampi(int(p.y * PX), 0, TILES * PX - 1))
+	var px := Vector2i(posmod(floori(p.x * PX), TILES * PX), posmod(floori(p.y * PX), TILES * PX))
 	return _image.get_pixelv(px).g
 
 

@@ -1001,10 +1001,16 @@ impl Rivers {
     const TRIBUTARY_FLOW: (u32, u32) = (5, 9);
     /// Half-cubes a brook rises with.
     const BROOK_FLOW: (u32, u32) = (1, 2);
-    /// How many brooks rise on a map, at least and at most.
+    /// How many brooks rise on a map of `REFERENCE_TILES`, at least and
+    /// at most.
     const BROOKS: (u32, u32) = (3, 6);
-    /// How many tributaries enter by the edges, at least and at most.
+    /// How many tributaries enter by the edges on a map of
+    /// `REFERENCE_TILES`, at least and at most.
     const TRIBUTARIES: (u32, u32) = (1, 2);
+    /// The ground the counts of waters are given for (the first valley,
+    /// 256 × 256): a larger map has as many more as it has ground, so its
+    /// waters keep the same density; a smaller one keeps these counts.
+    const REFERENCE_TILES: u64 = 256 * 256;
     /// Longest brook, in steps: one that wanders further is no brook.
     const BROOK_STEPS: usize = 80;
     /// How fast water runs where its section just holds its flow, in
@@ -1094,7 +1100,7 @@ impl Rivers {
         // drawn at random and the next from the other: each heads for a
         // point of the main river downstream and ends where it meets water.
         let first = rng.next_below(2);
-        for n in 0..between(&mut rng, Self::TRIBUTARIES) {
+        for n in 0..between(&mut rng, Self::scaled(width, height, Self::TRIBUTARIES)) {
             let side = if (u32::try_from(n).expect("few") + first).is_multiple_of(2) {
                 0
             } else {
@@ -1229,6 +1235,21 @@ impl Rivers {
         }
     }
 
+    /// A count of waters given for `REFERENCE_TILES`, for a map of
+    /// `width × height`: multiplied by how many times more ground it has,
+    /// rounded; never fewer than given.
+    fn scaled(width: u32, height: u32, (lo, hi): (u32, u32)) -> (u32, u32) {
+        let tiles = u64::from(width) * u64::from(height);
+        let scale = |n: u32| {
+            u32::try_from(
+                (u64::from(n) * tiles + Self::REFERENCE_TILES / 2) / Self::REFERENCE_TILES,
+            )
+            .unwrap_or(u32::MAX)
+            .max(n)
+        };
+        (scale(lo), scale(hi))
+    }
+
     /// Brooks rise where the ground is wet and run to the nearest water,
     /// river or brook.
     fn add_brooks(&mut self, network: &mut Vec<River>, seed: u64, cliff_rows: u32, rng: &mut Lcg) {
@@ -1237,7 +1258,7 @@ impl Rivers {
         let between =
             |rng: &mut Lcg, (lo, hi): (u32, u32)| i64::from(lo + rng.next_below(hi - lo + 1));
         let wetness = Groves::with_cell(width, height, seed ^ 0x77e7, 32);
-        for _ in 0..between(rng, Self::BROOKS) {
+        for _ in 0..between(rng, Self::scaled(width, height, Self::BROOKS)) {
             for _ in 0..40 {
                 let x = 4 + i64::from(rng.next_below(width - 8));
                 let y =
