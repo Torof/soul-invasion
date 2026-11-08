@@ -263,6 +263,19 @@ vec3 ford_bed(vec2 world) {
 	return bed;
 }
 
+// Two grounds meet without a ghost: rather than fading one drawing over
+// the other (two half-transparent drawings read as doubled tufts), the
+// one whose drawing is darker there (a tuft, its ink) wins, within a
+// narrow band around where the mask changes. `w` is the soft mask.
+uniform float meet_band = 0.12;
+uniform float meet_depth = 1.6;
+vec4 meet(vec4 a, vec4 b, float w) {
+	float da = 1.0 - dot(a.rgb, vec3(0.333));
+	float db = 1.0 - dot(b.rgb, vec3(0.333));
+	float t = (w - 0.5) * 2.0 + (db - da) * meet_depth;
+	return mix(a, b, smoothstep(-meet_band, meet_band, t));
+}
+
 // The vertex colour alone: white under a texture, the flat colour of a
 // terrain without one, the colour of an item's disc.
 varying vec4 tint;
@@ -279,9 +292,9 @@ void fragment() {
 		sibling.rgb *= sibling_tint;
 		float n = texture(noise_texture, uv * noise_scale).r;
 		float threshold = 1.0 - sibling_cover;
-		float weight = smoothstep(threshold - 0.04, threshold + 0.04, n);
+		float weight = smoothstep(threshold - 0.15, threshold + 0.15, n);
 		vec4 base = ground;
-		ground = mix(base, sibling, weight);
+		ground = meet(base, sibling, weight);
 		if (bare_keep < 1.0) {
 			float bare = smoothstep(0.0, 0.08, base.r - base.g);
 			float kept = patches(uv, 0.06, vec2(0.9, 0.4), bare_keep, 0.1);
@@ -295,10 +308,10 @@ void fragment() {
 	float dry = smoothstep(dry_threshold - dry_softness, dry_threshold + dry_softness, d) * dry_strength;
 	ground.rgb = mix(ground.rgb, ground.rgb * dry_tint, dry);
 	if (has_second) {
-		ground = mix(ground, varied(second_texture, uv), patches(uv, second_scale, vec2(0.2, 0.7), second_cover, second_softness));
+		ground = meet(ground, varied(second_texture, uv), patches(uv, second_scale, vec2(0.2, 0.7), second_cover, second_softness));
 	}
 	if (has_worn) {
-		ground = mix(ground, varied(worn_texture, uv), patches(uv, worn_scale, vec2(0.5, 0.25), worn_cover, worn_softness));
+		ground = meet(ground, varied(worn_texture, uv), patches(uv, worn_scale, vec2(0.5, 0.25), worn_cover, worn_softness));
 	}
 	// COLOR comes in already multiplied by the texture: rebuild it from
 	// the blended texture and the vertex colour, do not multiply again
