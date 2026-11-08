@@ -68,6 +68,18 @@ const BODY_SEE_M := 1.5
 const MOUSE_SEE_M := 1.2
 ## Seconds for a circle to open or close.
 const SEE_EASE := 0.2
+## Chunks whose borders must be drawn again because a neighbour came or
+## went: a few a frame, so a chunk's arrival does not freeze the game.
+var _to_redraw: Array = []
+const REDRAWS_PER_FRAME := 2
+## The layer the trees and bodies stand on, sorted by their feet.
+var _standing: Node2D
+## chunk -> the node holding its trees.
+var _tree_nodes: Dictionary = {}
+## body id -> the node drawing it.
+var _body_nodes: Dictionary = {}
+## The trees whose see-through flags are set, to clear them later.
+var _flagged: Array = []
 ## The camera's position and zoom at the last drawing.
 var _last_view := Vector3.INF
 var _drag_start := Vector2.ZERO
@@ -96,11 +108,16 @@ func _ready() -> void:
 	# Tree images are four times the screen: mipmaps keep them clean when
 	# the camera pulls back.
 	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
-	# The trees sway in the wind (trees.gdshader).
+	# Trees and bodies stand on one layer that sorts them by their feet
+	# (y-sort): a body walks behind a trunk. The trees sway in the wind and
+	# fade where they hide the body or the mouse (trees.gdshader).
 	var sway := ShaderMaterial.new()
 	sway.shader = load("res://world/trees.gdshader")
 	sway.set_shader_parameter("noise_texture", ChunkView.noise_texture())
-	material = sway
+	_standing = Node2D.new()
+	_standing.y_sort_enabled = true
+	_standing.material = sway
+	add_child(_standing)
 	Net.chunk_hidden.connect(_on_chunk_hidden)
 	Net.body_walks.connect(_on_body_walks)
 	Net.body_stopped.connect(_on_body_stopped)
@@ -141,6 +158,13 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	_tiles.clear()
 	_currents.clear()
 	_trees.clear()
+	for n: Node in _tree_nodes.values():
+		n.queue_free()
+	_tree_nodes.clear()
+	for n: Node in _body_nodes.values():
+		n.queue_free()
+	_body_nodes.clear()
+	_flagged.clear()
 	_bodies.clear()
 	_following = true
 	_camera_placed = false
@@ -174,6 +198,7 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees:
 	for t in trees:
 		standing.append({"at": Net.point(t.get("at", {})), "species": str(t.get("species", ""))})
 	_trees[key] = standing
+	_plant_chunk(key, view)
 	view.terrain_at = terrain_at
 	view.current_at = current_at
 	view.show_chunk(key * _chunk_size, _chunk_size, tiles, items, _looks)
@@ -358,8 +383,8 @@ func _redraw_neighbours(key: Vector2i) -> void:
 	for dy in range(-1, 2):
 		for dx in range(-1, 2):
 			var near: ChunkView = _chunks.get(key + Vector2i(dx, dy))
-			if near != null and (dx != 0 or dy != 0):
-				near.queue_redraw()
+			if near != null and (dx != 0 or dy != 0) and not _to_redraw.has(near):
+				_to_redraw.append(near)
 
 
 func _on_chunk_hidden(x: int, y: int) -> void:
@@ -372,6 +397,10 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 		_tiles.erase(key)
 		_currents.erase(key)
 		_trees.erase(key)
+		var gone: Node = _tree_nodes.get(key)
+		if gone != null:
+			gone.queue_free()
+			_tree_nodes.erase(key)
 		_redraw_neighbours(key)
 		_relay_shore()
 	for id in _bodies.keys():
@@ -466,6 +495,10 @@ func _process(delta: float) -> void:
 	if _following and _bodies.has(_piloted):
 		_camera.position = Iso.point_to_screen(_bodies[_piloted]["at"])
 	_update_see_through(delta)
+	for i in mini(REDRAWS_PER_FRAME, _to_redraw.size()):
+		var chunk: ChunkView = _to_redraw.pop_front()
+		if is_instance_valid(chunk):
+			chunk.queue_redraw()
 	# Only the trees in view are drawn: redraw when the view moves. The
 	# sway itself is the shader's, every frame, with no redraw.
 	var view := Vector3(_camera.position.x, _camera.position.y, _camera.zoom.x)
@@ -545,62 +578,123 @@ func _draw() -> void:
 		draw_polyline(_closed(Iso.diamond(_target.x, _target.y)), TARGET_COLOR, 2.5)
 	if _in_map(_hover):
 		draw_polyline(_closed(Iso.diamond(_hover.x, _hover.y)), Color(1, 1, 1, 0.6), 1.5)
-	# Which circles are needed is found anew at each drawing.
-	_body_hidden = false
-	_mouse_hidden = false
-	# Trees and bodies, far to near, so nearer ones overlap farther ones
-	# and a body walks behind a trunk. Trees off screen are left out.
-	var seen := get_canvas_transform().affine_inverse() * get_viewport_rect()
-	seen = seen.grow(Iso.PX_PER_M * 6.0)
-	var standing: Array = []
-	for key in _trees:
-		for tree: Dictionary in _trees[key]:
-			if seen.has_point(Iso.point_to_screen(tree["at"])):
-				standing.append([tree["at"].x + tree["at"].y, 0, tree])
-	for id: int in _bodies:
-		var at: Vector2 = _bodies[id]["at"]
-		standing.append([at.x + at.y, 1, id])
-	standing.sort_custom(func(a: Array, b: Array) -> bool: return a[0] < b[0])
-	# The trees' shadows lie on the ground, under every tree and body.
-	for entry: Array in standing:
-		if entry[1] == 0:
-			var tree: Dictionary = entry[2]
-			Trees.draw_shadow(self, tree, int(_tree_heights.get(tree["species"], 400)))
-	for entry: Array in standing:
-		if entry[1] == 0:
-			var tree: Dictionary = entry[2]
-			var height := int(_tree_heights.get(tree["species"], 400))
-			Trees.draw(self, tree, height, _see_through_flags(tree, height))
-		else:
-			_draw_body(entry[2])
 
 
-func _draw_body(id: int) -> void:
-	var shown: Vector2 = Iso.point_to_screen(_bodies[id]["at"])
+## Draws body `id` on `canvas`, whose origin stands at its feet.
+func draw_body(canvas: CanvasItem, id: int) -> void:
+	if not _bodies.has(id):
+		return
 	var color := PILOTED_COLOR if id == _piloted else BODY_COLOR
-	var feet := shown + Vector2(0, 2)
+	var feet := Vector2.ZERO
 	# Provisional figures: a third of a person's 1.7 m, so they stay
 	# small on the diamond until real sprites come (64 px per metre).
 	var h := Iso.PX_PER_M * 1.7 * 0.33
 	if _bodies[id]["asleep"]:
 		# Lying down: a figure along the ground, and a "z" above it.
-		draw_rect(Rect2(feet + Vector2(-h * 0.6, -h * 0.35), Vector2(h, h * 0.3)), color)
-		draw_rect(Rect2(feet + Vector2(-h * 0.6, -h * 0.35), Vector2(h, h * 0.3)), Color.BLACK, false, 1.0)
-		draw_circle(feet + Vector2(h * 0.6, -h * 0.2), h * 0.18, color)
-		draw_circle(feet + Vector2(h * 0.6, -h * 0.2), h * 0.18, Color.BLACK, false, 1.0)
-		draw_sleep_icon(self, feet + Vector2(0, -h * 0.7))
+		canvas.draw_rect(Rect2(feet + Vector2(-h * 0.6, -h * 0.35), Vector2(h, h * 0.3)), color)
+		canvas.draw_rect(Rect2(feet + Vector2(-h * 0.6, -h * 0.35), Vector2(h, h * 0.3)), Color.BLACK, false, 1.0)
+		canvas.draw_circle(feet + Vector2(h * 0.6, -h * 0.2), h * 0.18, color)
+		canvas.draw_circle(feet + Vector2(h * 0.6, -h * 0.2), h * 0.18, Color.BLACK, false, 1.0)
+		draw_sleep_icon(canvas, feet + Vector2(0, -h * 0.7))
 	else:
 		# A standing figure: taller than wide, feet where the body stands.
-		draw_rect(Rect2(feet + Vector2(-h * 0.18, -h), Vector2(h * 0.36, h * 0.9)), color)
-		draw_rect(Rect2(feet + Vector2(-h * 0.18, -h), Vector2(h * 0.36, h * 0.9)), Color.BLACK, false, 1.0)
-		draw_circle(feet + Vector2(0, -h * 1.18), h * 0.2, color)
-		draw_circle(feet + Vector2(0, -h * 1.18), h * 0.2, Color.BLACK, false, 1.0)
+		canvas.draw_rect(Rect2(feet + Vector2(-h * 0.18, -h), Vector2(h * 0.36, h * 0.9)), color)
+		canvas.draw_rect(Rect2(feet + Vector2(-h * 0.18, -h), Vector2(h * 0.36, h * 0.9)), Color.BLACK, false, 1.0)
+		canvas.draw_circle(feet + Vector2(0, -h * 1.18), h * 0.2, color)
+		canvas.draw_circle(feet + Vector2(0, -h * 1.18), h * 0.2, Color.BLACK, false, 1.0)
 		var holds: Dictionary = _holds.get(id, {})
 		if not holds.is_empty():
 			# What is in hand, in its material's colour, by the right hand.
 			var held_colour: Color = _looks.get(str(holds.get("material", "")), Color.MAGENTA)
-			draw_circle(feet + Vector2(h * 0.32, -h * 0.45), h * 0.14, held_colour)
-			draw_circle(feet + Vector2(h * 0.32, -h * 0.45), h * 0.14, Color.BLACK, false, 1.0)
+			canvas.draw_circle(feet + Vector2(h * 0.32, -h * 0.45), h * 0.14, held_colour)
+			canvas.draw_circle(feet + Vector2(h * 0.32, -h * 0.45), h * 0.14, Color.BLACK, false, 1.0)
+
+
+## The trees of chunk `key` as nodes on the standing layer, and their
+## shadows on the chunk's ground.
+func _plant_chunk(key: Vector2i, view: ChunkView) -> void:
+	var old: Node = _tree_nodes.get(key)
+	if old != null:
+		old.queue_free()
+	var holder := Node2D.new()
+	holder.y_sort_enabled = true
+	holder.use_parent_material = true
+	for tree: Dictionary in _trees[key]:
+		var node := Trees.TreeNode.new(tree, int(_tree_heights.get(tree["species"], 400)))
+		tree["node"] = node
+		holder.add_child(node)
+	_standing.add_child(holder)
+	_tree_nodes[key] = holder
+	var shadows: Trees.ShadowLayer = view.get_node_or_null("Shadows")
+	if shadows == null:
+		shadows = Trees.ShadowLayer.new()
+		shadows.name = "Shadows"
+		view.add_child(shadows)
+	shadows.trees = _trees[key]
+	shadows.heights = _tree_heights
+	shadows.queue_redraw()
+
+
+## One node per body on the standing layer, at its feet; redrawn every
+## frame (a handful of bodies, their pose and what they hold change).
+func _sync_bodies() -> void:
+	for id: int in _body_nodes.keys():
+		if not _bodies.has(id):
+			_body_nodes[id].queue_free()
+			_body_nodes.erase(id)
+	for id: int in _bodies:
+		var node: BodyNode = _body_nodes.get(id)
+		if node == null:
+			node = BodyNode.new()
+			node.view = self
+			node.id = id
+			node.use_parent_material = true
+			_standing.add_child(node)
+			_body_nodes[id] = node
+		node.position = Iso.point_to_screen(_bodies[id]["at"]) + Vector2(0, 2)
+		node.queue_redraw()
+
+
+## A body on the standing layer; the world view draws it.
+class BodyNode:
+	extends Node2D
+	var view: Node
+	var id := -1
+
+	func _draw() -> void:
+		view.draw_body(self, id)
+
+
+## The see-through flags of the trees near the body and the mouse; the
+## others are cleared. Only the trees in the chunks around them are
+## looked at.
+func _update_flags() -> void:
+	_body_hidden = false
+	_mouse_hidden = false
+	var keys := {}
+	var mouse := get_local_mouse_position()
+	var places: Array = [Iso.screen_to_tile(mouse)]
+	if _bodies.has(_piloted):
+		places.append(_tile_of(_bodies[_piloted]["at"]))
+	for tile: Vector2i in places:
+		var c := Iso.chunk_of(tile, _chunk_size)
+		for dy in range(-1, 2):
+			for dx in range(-1, 2):
+				keys[c + Vector2i(dx, dy)] = true
+	var now: Array = []
+	for key in keys:
+		for tree: Dictionary in _trees.get(key, []):
+			var node: Trees.TreeNode = tree.get("node")
+			if node == null:
+				continue
+			var f := _see_through_flags(tree, node.height_cm)
+			if f != 0:
+				now.append(node)
+			node.set_flags(f)
+	for node: Trees.TreeNode in _flagged:
+		if is_instance_valid(node) and not now.has(node):
+			node.set_flags(0)
+	_flagged = now
 
 
 ## Where the circle around the piloted body is centred: its chest.
@@ -654,10 +748,12 @@ func _something_behind(at: Vector2, mouse: Vector2) -> bool:
 ## Eases the see-through circles open or shut and hands them to the trees'
 ## shader; redraws when the mouse moves, since which tree it hides changes.
 func _update_see_through(delta: float) -> void:
+	_sync_bodies()
+	_update_flags()
 	var step := delta / SEE_EASE
 	_body_reveal = move_toward(_body_reveal, 1.0 if _body_hidden else 0.0, step)
 	_mouse_reveal = move_toward(_mouse_reveal, 1.0 if _mouse_hidden else 0.0, step)
-	var sway := material as ShaderMaterial
+	var sway := _standing.material as ShaderMaterial
 	if sway == null:
 		return
 	sway.set_shader_parameter("body_at", _body_see_centre())
@@ -669,7 +765,6 @@ func _update_see_through(delta: float) -> void:
 	sway.set_shader_parameter("mouse_reveal", _mouse_reveal)
 	if mouse.distance_to(_last_mouse) > 4.0:
 		_last_mouse = mouse
-		queue_redraw()
 
 
 var _last_mouse := Vector2(-1e6, -1e6)

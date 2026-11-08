@@ -39,14 +39,14 @@ static func shade() -> Texture2D:
 ## Draws on `canvas` the shadows of `tree` on the ground: a wide faint
 ## one under its crown and a darker one hugging its foot, so it stands in
 ## the grass rather than on it. Drawn before trees and bodies.
-static func draw_shadow(canvas: CanvasItem, tree: Dictionary, height_cm: int) -> void:
+static func draw_shadow(canvas: CanvasItem, tree: Dictionary, height_cm: int, origin := Vector2.ZERO) -> void:
 	var images := textures(str(tree["species"]))
 	if images.is_empty():
 		return
 	var at: Vector2 = tree["at"]
 	var texture: Texture2D = images[variant(at, images.size())]
 	var r := rect(at, height_cm, texture)
-	var foot := Iso.point_to_screen(at)
+	var foot := Iso.point_to_screen(at) - origin
 	var crown := Vector2(r.size.x * 0.85, r.size.x * 0.42)
 	canvas.draw_texture_rect(shade(), Rect2(foot - crown / 2.0 + Vector2(r.size.x * 0.06, 0), crown), false, Color(1, 1, 1, CROWN_SHADE))
 	var base := Vector2(Iso.PX_PER_M * 0.9, Iso.PX_PER_M * 0.45) * (r.size.y / (4.0 * Iso.PX_PER_M)) ** 0.5
@@ -92,7 +92,8 @@ static func rect(at: Vector2, height_cm: int, texture: Texture2D) -> Rect2:
 ## `canvas`, if its kind has an image.
 ## `flags`: 1 when the tree stands in front of the piloted body, +2 when
 ## it hides something under the mouse (trees.gdshader fades it there).
-static func draw(canvas: CanvasItem, tree: Dictionary, height_cm: int, flags: int = 0) -> void:
+## `origin`: where the canvas stands, subtracted from the tree's place.
+static func draw(canvas: CanvasItem, tree: Dictionary, height_cm: int, flags: int = 0, origin := Vector2.ZERO) -> void:
 	var images := textures(str(tree["species"]))
 	if images.is_empty():
 		return
@@ -102,4 +103,40 @@ static func draw(canvas: CanvasItem, tree: Dictionary, height_cm: int, flags: in
 	# The modulate tells the sway shader (trees.gdshader) it is a tree, how
 	# tall, and its phase; the shader draws the image untinted.
 	var marker := Color(clampf(r.size.y / 640.0, 0.0, 1.0), 0.25 + 0.25 * float(flags), place_hash(at, 11), 0.94)
-	canvas.draw_texture_rect(texture, r, false, marker)
+	canvas.draw_texture_rect(texture, Rect2(r.position - origin, r.size), false, marker)
+
+
+## One tree standing on the ground, drawn once and kept by the renderer;
+## its parent sorts it with the bodies by its foot (y-sort). It redraws
+## only when its see-through flags change.
+class TreeNode:
+	extends Node2D
+	var tree: Dictionary
+	var height_cm := 400
+	var flags := 0
+
+	func _init(t: Dictionary, h: int) -> void:
+		tree = t
+		height_cm = h
+		position = Iso.point_to_screen(t["at"])
+		use_parent_material = true
+
+	func set_flags(f: int) -> void:
+		if f != flags:
+			flags = f
+			queue_redraw()
+
+	func _draw() -> void:
+		Trees.draw(self, tree, height_cm, flags, position)
+
+
+## The shadows of a chunk's trees, drawn once on the ground.
+class ShadowLayer:
+	extends Node2D
+	var trees: Array = []
+	var heights: Dictionary = {}
+
+	func _draw() -> void:
+		for tree: Dictionary in trees:
+			Trees.draw_shadow(self, tree, int(heights.get(tree["species"], 400)))
+

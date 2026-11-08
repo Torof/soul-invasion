@@ -221,8 +221,17 @@ class GroundCanvas:
 	var fills: Array = []
 
 	func _draw() -> void:
+		# Every polygon of this canvas in one mesh, drawn at once: one
+		# draw call per terrain and chunk instead of one per tile.
+		var verts := PackedVector2Array()
+		var cols := PackedColorArray()
+		var uvs := PackedVector2Array()
+		var add_quad := func(pts: PackedVector2Array, c: PackedColorArray, u: PackedVector2Array) -> void:
+			for k in [0, 1, 2, 0, 2, 3]:
+				verts.append(pts[k])
+				cols.append(c[k])
+				uvs.append(u[k])
 		var white := PackedColorArray([Color.WHITE, Color.WHITE, Color.WHITE, Color.WHITE])
-		var texture := ChunkView.ground_texture(terrain)
 		for tile in tiles:
 			var tx := int(tile.x)
 			var ty := int(tile.y)
@@ -232,20 +241,39 @@ class GroundCanvas:
 				colours = PackedColorArray()
 				for n in near:
 					colours.append(Color(1, 1 - n, 1, 1))
-			draw_polygon(Iso.diamond(tx, ty), colours, ChunkView.ground_uvs(tx, ty), texture)
+			add_quad.call(Iso.diamond(tx, ty), colours, ChunkView.ground_uvs(tx, ty))
 		for fill in fills:
 			var pts: PackedVector2Array = fill["points"]
-			var colours := PackedColorArray()
-			colours.resize(pts.size())
-			colours.fill(Color.WHITE)
-			draw_polygon(pts, colours, fill["uvs"], texture)
+			var fuv: PackedVector2Array = fill["uvs"]
+			var order := Geometry2D.triangulate_polygon(pts)
+			for k in order:
+				verts.append(pts[k])
+				cols.append(Color.WHITE)
+				uvs.append(fuv[k])
 		for spill in fringe:
 			var tile: Vector2i = spill["tile"]
 			var alphas: PackedFloat32Array = spill["alphas"]
 			var colours := PackedColorArray()
 			for a in alphas:
 				colours.append(Color(1, 1, 1, a))
-			draw_polygon(Iso.diamond(tile.x, tile.y), colours, ChunkView.ground_uvs(tile.x, tile.y), texture)
+			add_quad.call(Iso.diamond(tile.x, tile.y), colours, ChunkView.ground_uvs(tile.x, tile.y))
+		if verts.is_empty():
+			return
+		var arrays := []
+		arrays.resize(Mesh.ARRAY_MAX)
+		var v3 := PackedVector3Array()
+		v3.resize(verts.size())
+		for i in verts.size():
+			v3[i] = Vector3(verts[i].x, verts[i].y, 0.0)
+		arrays[Mesh.ARRAY_VERTEX] = v3
+		arrays[Mesh.ARRAY_COLOR] = cols
+		arrays[Mesh.ARRAY_TEX_UV] = uvs
+		var mesh := ArrayMesh.new()
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		_mesh = mesh
+		draw_mesh(mesh, ChunkView.ground_texture(terrain))
+
+	var _mesh: ArrayMesh
 
 
 ## Reloads the ground shader and textures from their files into the
@@ -548,7 +576,43 @@ func shore(terrain: String) -> Dictionary:
 	return result
 
 
+## What this chunk's heavy drawing depends on: its tiles and those around
+## it as far as any of its parts reads (the brooks' lines, the farthest).
+## The same signature means the ground canvases, the bank's field, the
+## brooks and the decorations are as they were: only the items change.
+func _terrain_signature() -> int:
+	var codes := PackedStringArray()
+	var m := BrookLines.MARGIN
+	for y in range(-m, _size + m):
+		for x in range(-m, _size + m):
+			codes.append(_terrain(_origin.x + x, _origin.y + y))
+	return hash(codes)
+
+
+var _last_signature := 0
+## The chunk's own drawing kept between redraws: flat tiles [points,
+## colour] and decorations [texture, rect, tint].
+var _flats: Array = []
+var _decor_cache: Array = []
+
+
 func _draw() -> void:
+	var signature := _terrain_signature()
+	if signature != _last_signature or not shore_field_on():
+		_last_signature = signature
+		_flats.clear()
+		_decor_cache.clear()
+		_draw_ground_layers()
+	for flat: Array in _flats:
+		draw_colored_polygon(flat[0], flat[1])
+	for d: Array in _decor_cache:
+		draw_texture_rect(d[0], d[1], false, d[2])
+	_draw_items()
+
+
+## The ground: textured tiles to their terrain's canvas, flat ones and the
+## decorations to the caches, the bank and the brooks to their canvases.
+func _draw_ground_layers() -> void:
 	# Textured tiles go to their terrain's canvas; the rest is flat here.
 	var by_terrain: Dictionary = {}
 	for y in _size:
@@ -561,7 +625,7 @@ func _draw() -> void:
 					by_terrain[terrain] = PackedVector2Array()
 				by_terrain[terrain].append(Vector2(tx, ty))
 			else:
-				draw_colored_polygon(Iso.diamond(tx, ty), COLORS.get(terrain, Color.MAGENTA))
+				_flats.append([Iso.diamond(tx, ty), COLORS.get(terrain, Color.MAGENTA)])
 	# A terrain that spills may need a canvas here even without a tile here.
 	var spills: Dictionary = {}
 	for terrain in FRINGE_OVER:
@@ -586,6 +650,11 @@ func _draw() -> void:
 	# A brook cuts the bank where it joins a river: drawn over it.
 	_draw_brooks()
 	_draw_decor()
+
+
+## Items: a small disc of the material's colour, slightly off the tile's
+## centre so several on one tile stay visible.
+func _draw_items() -> void:
 	# Items: a small disc of the material's colour, slightly off the
 	# tile's centre so several on one tile stay visible.
 	var on_tile: Dictionary = {}
@@ -1464,7 +1533,7 @@ func _draw_decor() -> void:
 				var ratio := float(texture.get_height()) / float(texture.get_width())
 				var scale := 1.0 + (tile_hash(tx, ty, salt + 400) * 2.0 - 1.0) * jitter
 				var size := Vector2(size_px, size_px * ratio * 0.5) * scale
-				draw_texture_rect(texture, Rect2(centre - size / 2.0, size), false, tint)
+				_decor_cache.append([texture, Rect2(centre - size / 2.0, size), tint])
 
 
 static func _max4(values: PackedFloat32Array) -> float:
