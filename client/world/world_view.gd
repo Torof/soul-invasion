@@ -56,6 +56,8 @@ var _holds: Dictionary = {}
 var _trees: Dictionary = {}
 ## species id -> height in centimetres.
 var _tree_heights: Dictionary = {}
+## The camera's position and zoom at the last drawing.
+var _last_view := Vector3.INF
 var _drag_start := Vector2.ZERO
 var _dragged := false
 var _night := false
@@ -430,7 +432,10 @@ func _process(delta: float) -> void:
 		moving = true
 	if _following and _bodies.has(_piloted):
 		_camera.position = Iso.point_to_screen(_bodies[_piloted]["at"])
-	if moving:
+	# Only the trees in view are drawn: redraw when the view moves.
+	var view := Vector3(_camera.position.x, _camera.position.y, _camera.zoom.x)
+	if moving or view != _last_view:
+		_last_view = view
 		queue_redraw()
 
 

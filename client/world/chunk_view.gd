@@ -23,7 +23,7 @@ const GROUND_METRES := 4.0
 ## Sisters of the same grass (same style and tone, drawn differently) give
 ## the variety; tone variation is a tint in the shader, never another image.
 const GROUND_SPEC := "res://world/ground.json"
-const LAYERS := ["sibling", "second", "worn", "bank", "bank2"]
+const LAYERS := ["sibling", "second", "worn", "bank", "bank2", "bank3"]
 static var _spec: Dictionary = {}
 ## terrain -> the parameter names applied to its material, to reset the
 ## ones a reload no longer sets.
