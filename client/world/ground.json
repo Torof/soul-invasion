@@ -48,14 +48,6 @@
   },
   "decor": {
     "note": "Decorations sown by a fixed hash of the tile (client-side trial, no effect on the game).",
-    "rock": {
-      "where": "water_near_land",
-      "chance": 0.05,
-      "min_near": 0.95,
-      "size_m": 0.6,
-      "size_jitter": 0.4,
-      "tint": "water"
-    },
     "tuft": {
       "where": "land_near_water",
       "chance": 0.35,
