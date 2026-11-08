@@ -226,12 +226,12 @@ fn run_paced_server(
         ),
     }
 
-    let shared = Arc::new(Shared::new(
-        &world,
-        content,
-        opts.max_connections,
-        opts.time_scale,
-    ));
+    let mut shared = Shared::new(&world, content, opts.max_connections, opts.time_scale);
+    if opts.dev {
+        shared.enable_dev();
+        println!("development tools on: overview and teleports (--dev)");
+    }
+    let shared = Arc::new(shared);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let acceptor = runtime.spawn(serve(listener, Arc::clone(&shared), shutdown_rx));

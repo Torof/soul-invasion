@@ -36,7 +36,9 @@ use serde::{Deserialize, Serialize};
 /// - v10: chunks carry the trees standing in them; `world_state` carries
 ///   the kinds of tree, with their height.
 /// - v11: chunks carry where their water runs (`currents`).
-pub const PROTOCOL_VERSION: u32 = 11;
+/// - v12: development tools, on only when the server runs with `--dev`:
+///   `dev_overview` (the whole map, coarse) and `dev_teleport`.
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// A tile on the map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -267,6 +269,15 @@ pub enum ClientMessage {
     Sleep,
     /// Intention: wake up.
     Wake,
+    /// Development only, ignored unless the server runs with `--dev`:
+    /// stand the piloted body at once on the walkable tile nearest this
+    /// one, to explore the map quickly.
+    DevTeleport {
+        /// Column.
+        x: i32,
+        /// Row.
+        y: i32,
+    },
 }
 
 /// Messages sent by the server to the client.
@@ -336,6 +347,21 @@ pub enum ServerMessage {
     Pong {
         /// The nonce from the ping.
         nonce: u64,
+    },
+    /// Development only, sent after [`ServerMessage::WorldState`] when the
+    /// server runs with `--dev`: the whole map, coarse, for an overview
+    /// to teleport from. Its presence tells the client the development
+    /// tools are on.
+    DevOverview {
+        /// Tiles each cell of the overview stands for, either way.
+        cell: u32,
+        /// Cells across.
+        width: u32,
+        /// Cells down.
+        height: u32,
+        /// One letter a cell, row by row from the north-west corner: `g`
+        /// grass, `f` forest, `w` river, `o` ford, `b` brook, `r` rock.
+        cells: String,
     },
     /// The client spoke a protocol version the server does not support.
     /// The server closes the connection after sending it.
@@ -498,6 +524,7 @@ mod tests {
             ClientMessage::Stow { item: 12 },
             ClientMessage::Sleep,
             ClientMessage::Wake,
+            ClientMessage::DevTeleport { x: 1500, y: -2 },
         ];
         for message in messages {
             let text = encode(&message).unwrap();
@@ -574,6 +601,12 @@ mod tests {
             },
             ServerMessage::ChunkHidden { x: 5, y: 4 },
             ServerMessage::Pong { nonce: 42 },
+            ServerMessage::DevOverview {
+                cell: 8,
+                width: 2,
+                height: 2,
+                cells: "gfwr".to_owned(),
+            },
             ServerMessage::ProtocolMismatch { expected: 1 },
             ServerMessage::DayStarted {
                 day: 2,
@@ -674,6 +707,20 @@ mod tests {
         assert_eq!(
             encode(&ClientMessage::Eat { item: 5 }).unwrap(),
             r#"{"type":"eat","item":5}"#
+        );
+        assert_eq!(
+            encode(&ClientMessage::DevTeleport { x: 7, y: 9 }).unwrap(),
+            r#"{"type":"dev_teleport","x":7,"y":9}"#
+        );
+        assert_eq!(
+            encode(&ServerMessage::DevOverview {
+                cell: 8,
+                width: 1,
+                height: 1,
+                cells: "g".to_owned(),
+            })
+            .unwrap(),
+            r#"{"type":"dev_overview","cell":8,"width":1,"height":1,"cells":"g"}"#
         );
         assert_eq!(
             encode(&ServerMessage::ActRefused {

@@ -31,6 +31,9 @@ signal body_holds(body: int, item: Dictionary)
 signal night_fell(day: int)
 signal day_started(day: int, tick: int)
 signal disconnected(reason: String)
+## Development tools on (the server runs with --dev): the whole map,
+## coarse, one letter a cell of `cell` tiles (see the protocol).
+signal dev_overview(cell: int, width: int, height: int, cells: String)
 
 const DEFAULT_URL := "ws://127.0.0.1:7777"
 ## Seconds between two attempts to come back once the connection is lost
@@ -45,6 +48,8 @@ var _reconnect_in := 0.0
 
 ## True once the server has welcomed us.
 var is_ready := false
+## Whether the server runs with --dev (it sent its overview).
+var dev := false
 ## The body this client pilots, or -1 when only watching.
 var body := -1
 
@@ -52,10 +57,14 @@ var body := -1
 func connect_to(url: String = DEFAULT_URL) -> void:
 	_hello_sent = false
 	is_ready = false
+	dev = false
 	body = -1
 	_url = url
 	_reconnect_in = 0.0
 	_peer = WebSocketPeer.new()
+	# The development overview is the largest message (up to 512 × 512
+	# letters); Godot's default inbound buffer (64 KiB) would drop it.
+	_peer.inbound_buffer_size = 1 << 20
 	var err := _peer.connect_to_url(url)
 	if err != OK:
 		disconnected.emit("cannot connect to %s (error %d)" % [url, err])
@@ -64,6 +73,12 @@ func connect_to(url: String = DEFAULT_URL) -> void:
 		# Connecting: a refusal shows as the peer closed at the next poll,
 		# which must count as a loss and be retried (the server not up yet).
 		_state = WebSocketPeer.STATE_CONNECTING
+
+
+## Development only: stand the body near a tile at once (--dev servers).
+func send_dev_teleport(x: int, y: int) -> void:
+	if is_ready and body >= 0 and dev:
+		_send(Protocol.dev_teleport(x, y))
 
 
 func send_move_to(x: int, y: int) -> void:
@@ -180,6 +195,14 @@ func _handle(message: Dictionary) -> void:
 			chunk_hidden.emit(int(message.get("x", 0)), int(message.get("y", 0)))
 		"body_left":
 			body_left.emit(int(message.get("body", -1)))
+		"dev_overview":
+			dev = true
+			dev_overview.emit(
+				int(message.get("cell", 8)),
+				int(message.get("width", 0)),
+				int(message.get("height", 0)),
+				str(message.get("cells", ""))
+			)
 		"body_condition":
 			body_condition.emit(int(message.get("body", -1)), message.get("condition", {}))
 		"body_sleeps":

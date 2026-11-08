@@ -562,6 +562,103 @@ async fn a_body_walking_out_of_the_view_is_reported_as_left() {
     }
 }
 
+// --- Development tools (--dev) -----------------------------------------
+
+#[tokio::test]
+async fn with_dev_the_client_gets_the_overview_and_may_teleport() {
+    let server = Server::start_with(&["--dev", "--seconds-per-day", "1000"]);
+    let mut socket = server.connect().await;
+    send(
+        &mut socket,
+        &ClientMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    )
+    .await;
+    let Some(ServerMessage::Welcome { body, .. }) = receive(&mut socket).await else {
+        panic!("expected welcome");
+    };
+    let body = body.expect("pilots a body");
+    assert!(matches!(
+        receive(&mut socket).await,
+        Some(ServerMessage::WorldState { .. })
+    ));
+    // The overview: the whole map, one letter a cell.
+    let Some(ServerMessage::DevOverview {
+        cell,
+        width,
+        height,
+        cells,
+    }) = receive(&mut socket).await
+    else {
+        panic!("expected the overview");
+    };
+    assert_eq!(width, VALLEY_SIZE.div_ceil(cell));
+    assert_eq!(height, VALLEY_SIZE.div_ceil(cell));
+    assert_eq!(cells.len(), (width * height) as usize);
+    assert!(cells.chars().all(|c| "gfwobr".contains(c)));
+    assert!(cells.contains('w') && cells.contains('f') && cells.starts_with('r'));
+    let world = standard_world();
+    for _ in 0..window_len(world, start_of(world, body).chunk()) {
+        assert!(matches!(
+            receive(&mut socket).await,
+            Some(ServerMessage::Chunk { .. })
+        ));
+    }
+    // Far away at once: the view follows, the body stands there.
+    let start = start_of(world, body);
+    let far = world
+        .map()
+        .nearest(Pos::new(start.x - 600, start.y + 300), sim::Terrain::Grass)
+        .expect("grass far away");
+    send(
+        &mut socket,
+        &ClientMessage::DevTeleport { x: far.x, y: far.y },
+    )
+    .await;
+    let (mut shown, mut hidden) = (0, 0);
+    loop {
+        match receive(&mut socket).await {
+            Some(ServerMessage::Chunk { .. }) => shown += 1,
+            Some(ServerMessage::ChunkHidden { .. }) => hidden += 1,
+            Some(ServerMessage::BodyStopped { body: who, at }) if who == body => {
+                assert_eq!(tile(at), far);
+                break;
+            }
+            Some(_) => {}
+            None => panic!("disconnected"),
+        }
+    }
+    assert!(shown > 0 && hidden > 0, "shown {shown}, hidden {hidden}");
+}
+
+#[tokio::test]
+async fn without_dev_a_teleport_is_ignored() {
+    let server = Server::start_with(&["--seconds-per-day", "1000"]);
+    let (mut pilot, body) = join(&server).await;
+    let body = body.expect("pilots a body");
+    let start = start_of(standard_world(), body);
+    send(
+        &mut pilot,
+        &ClientMessage::DevTeleport {
+            x: start.x - 600,
+            y: start.y,
+        },
+    )
+    .await;
+    send(&mut pilot, &ClientMessage::Ping { nonce: 5 }).await;
+    // Give the simulation a few ticks, then ask again: no move came.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    send(&mut pilot, &ClientMessage::Ping { nonce: 6 }).await;
+    loop {
+        match receive(&mut pilot).await {
+            Some(ServerMessage::Pong { nonce: 6 }) => break,
+            Some(ServerMessage::Pong { .. } | ServerMessage::DayStarted { .. }) => {}
+            other => panic!("nothing but pongs expected, got {other:?}"),
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_move_intention_makes_the_piloted_body_walk() {
     let server = Server::start_with(&["--seconds-per-day", "100"]);

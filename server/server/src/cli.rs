@@ -37,6 +37,9 @@ OPTIONS:
     --ticks-per-second <N> Calendar: simulation ticks per game second
                            (default 10).
     --seconds-per-day <N>  Calendar: game seconds per game day (default 7200).
+    --dev                  Development tools: every client gets an overview
+                           of the whole map and may teleport its body. Never
+                           for play.
     -h, --help             Print this help.
 ";
 
@@ -79,6 +82,8 @@ pub struct Options {
     pub content: Option<PathBuf>,
     /// The world's calendar.
     pub calendar: Calendar,
+    /// Development tools on (`--dev`): the map's overview and teleports.
+    pub dev: bool,
 }
 
 impl Default for Options {
@@ -93,6 +98,7 @@ impl Default for Options {
             max_connections: DEFAULT_MAX_CONNECTIONS,
             content: None,
             calendar: Calendar::default(),
+            dev: false,
         }
     }
 }
@@ -158,6 +164,7 @@ impl Options {
                 "--data" => opts.data = DataLocation::File(value(arg, args.next())?),
                 "--ephemeral" => opts.data = DataLocation::Ephemeral,
                 "--reset" => opts.reset = true,
+                "--dev" => opts.dev = true,
                 "--time-scale" => opts.time_scale = value(arg, args.next())?,
                 "--max-connections" => opts.max_connections = value(arg, args.next())?,
                 "--content" => opts.content = Some(value(arg, args.next())?),
@@ -239,6 +246,12 @@ mod tests {
                 value: "nowhere".into()
             })
         );
+    }
+
+    #[test]
+    fn development_tools_are_off_unless_asked() {
+        assert!(!Options::parse(Vec::<&str>::new()).unwrap().dev);
+        assert!(Options::parse(["--dev"]).unwrap().dev);
     }
 
     #[test]

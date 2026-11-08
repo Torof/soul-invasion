@@ -365,6 +365,29 @@ impl Map {
         &self.tiles
     }
 
+    /// How many tiles of each terrain lie in the columns `x0..x1` and rows
+    /// `y0..y1` (clipped to the map), in the order grass, forest, rock,
+    /// water, ford, brook.
+    pub fn count_in(&self, x0: u32, y0: u32, x1: u32, y1: u32) -> [u32; 6] {
+        let mut count = [0_u32; 6];
+        for y in y0..y1.min(self.height) {
+            let row = (y * self.width) as usize;
+            for &t in
+                &self.tiles[row + x0.min(self.width) as usize..row + x1.min(self.width) as usize]
+            {
+                count[match t {
+                    Terrain::Grass => 0,
+                    Terrain::Forest => 1,
+                    Terrain::Rock => 2,
+                    Terrain::Water => 3,
+                    Terrain::Ford => 4,
+                    Terrain::Brook => 5,
+                }] += 1;
+            }
+        }
+        count
+    }
+
     /// Chunks across, the last one possibly reaching past the edge.
     pub fn chunks_wide(&self) -> u32 {
         self.width.div_ceil(CHUNK_SIZE)

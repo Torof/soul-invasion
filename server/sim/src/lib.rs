@@ -385,7 +385,20 @@ pub enum Intention {
         /// Who.
         body: BodyId,
     },
+    /// Development only (the server accepts it only when started with
+    /// `--dev`): stand at once on the walkable tile nearest `target`,
+    /// within `TELEPORT_REACH`, to explore the map quickly. Refused when
+    /// there is none.
+    Teleport {
+        /// Who.
+        body: BodyId,
+        /// Where to.
+        target: Pos,
+    },
 }
+
+/// How far from the asked tile a teleport looks for walkable ground.
+pub const TELEPORT_REACH: i32 = 64;
 
 /// Something that happened in the world during a tick.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -901,6 +914,7 @@ impl World {
                     None => events.push(Event::MoveRefused { body: id, target }),
                 }
             }
+            Intention::Teleport { body: id, target } => self.teleport(id, target, rules, events),
             Intention::Eat { body: id, item } => self.eat(id, item, rules, events),
             Intention::PickUp { body: id, item } => self.pick_up(id, item, rules, events),
             Intention::Drop { body: id, item } => self.drop(id, item, rules, events),
@@ -981,6 +995,46 @@ impl World {
             carried: body.carried.clone(),
             load_g: self.load_g(body, rules),
             capacity_g: rules.movement.carry_capacity_g,
+        });
+    }
+
+    /// A development teleport (`Intention::Teleport`): the body stands at
+    /// once on the walkable tile nearest `target`, ring by ring, awake and
+    /// with no route; it is seen to move there and stop.
+    fn teleport(&mut self, id: BodyId, target: Pos, rules: &Content, events: &mut Vec<Event>) {
+        let Some(index) = self.bodies.iter().position(|b| b.id == id) else {
+            events.push(Event::MoveRefused { body: id, target });
+            return;
+        };
+        let walkable = |p: Pos| {
+            self.map
+                .get(p)
+                .is_some_and(|t| rules.movement.cost(t).is_some())
+        };
+        let found = (0..=TELEPORT_REACH).find_map(|r| {
+            (-r..=r)
+                .flat_map(|dy| (-r..=r).map(move |dx| (dx, dy)))
+                .filter(|(dx, dy)| dx.abs() == r || dy.abs() == r)
+                .map(|(dx, dy)| Pos::new(target.x + dx, target.y + dy))
+                .find(|p| walkable(*p))
+        });
+        let Some(tile) = found else {
+            events.push(Event::MoveRefused { body: id, target });
+            return;
+        };
+        self.wake(index, events);
+        let body = &mut self.bodies[index];
+        body.route.clear();
+        body.at = tile.centre();
+        events.push(Event::BodyMoved {
+            body: id,
+            to: tile,
+            at: body.at,
+            remaining: 0,
+        });
+        events.push(Event::BodyStopped {
+            body: id,
+            at: body.at,
         });
     }
 
@@ -1302,6 +1356,57 @@ mod tests {
         w.advance(3, &rules(), &mut events);
         assert!(!events.iter().any(|e| matches!(e, Event::DayStarted { .. })));
         assert_eq!(w.time().day, 1);
+    }
+
+    #[test]
+    fn a_teleport_stands_the_body_on_walkable_ground_nearby() {
+        let mut w = small_world();
+        let rules = rules();
+        let mut events = Vec::new();
+        // Into the cliff (rock), 20 rows above its foot: the nearest
+        // walkable tile below it.
+        let foot = i32::try_from(w.map().height() / 8).expect("small");
+        let target = Pos::new(100, foot - 20);
+        w.queue(Intention::Teleport {
+            body: BodyId(1),
+            target,
+        });
+        w.advance(1, &rules, &mut events);
+        let at = w.body(BodyId(1)).expect("body 1").pos();
+        assert!(
+            rules
+                .movement
+                .cost(w.map().get(at).expect("on the map"))
+                .is_some(),
+            "{at:?}"
+        );
+        assert!(
+            (at.x - target.x).abs() <= TELEPORT_REACH && (at.y - target.y).abs() <= TELEPORT_REACH
+        );
+        assert!(events.iter().any(
+            |e| matches!(e, Event::BodyMoved { body: BodyId(1), to, remaining: 0, .. } if *to == at)
+        ));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::BodyStopped {
+                body: BodyId(1),
+                ..
+            }
+        )));
+        // Far past the map: nothing walkable within reach, refused.
+        let far = Pos::new(-1000, -1000);
+        events.clear();
+        w.queue(Intention::Teleport {
+            body: BodyId(1),
+            target: far,
+        });
+        w.advance(1, &rules, &mut events);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::MoveRefused { target, .. } if *target == far))
+        );
+        assert_eq!(w.body(BodyId(1)).expect("body 1").pos(), at);
     }
 
     #[test]
