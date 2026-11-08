@@ -22,6 +22,7 @@ func _init() -> void:
 	_test_inventory_lines_and_refusals()
 	_test_brooks_are_lines_on_the_ground()
 	_test_trees_stand_on_their_foot()
+	_test_the_shore_field_measures_the_bank()
 	print("client tests: %d checks, %d failures" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
 
@@ -466,4 +467,27 @@ func _test_trees_stand_on_their_foot() -> void:
 	for i in 20:
 		shown[Trees.variant(Vector2(1000 * i + 300, 4_500), oak.size())] = true
 	_check(shown.size() == oak.size(), "neighbouring oaks show every image")
+
+
+func _test_the_shore_field_measures_the_bank() -> void:
+	_check(absf(ShoreField.probit(0.975) - 1.96) < 0.01, "the inverse normal curve: %f" % ShoreField.probit(0.975))
+	# Water east of x = 40 on a straight edge, over two chunks side by side.
+	var terrain := func(t: Vector2i) -> String: return "water" if t.x >= 40 else "grass"
+	ShoreField.update(terrain, Vector2i(32, 0), 32)
+	ShoreField.update(terrain, Vector2i(32, 32), 32)
+	for y: float in [10.0, 31.9, 32.1, 50.0]:
+		_check(absf(ShoreField.distance_at(Vector2(40.0, y))) < 0.15, "the edge at x = 40 (y %s): %f" % [y, ShoreField.distance_at(Vector2(40.0, y))])
+		_check(absf(ShoreField.distance_at(Vector2(38.5, y)) - 1.5) < 0.2, "1.5 tiles inland: %f" % ShoreField.distance_at(Vector2(38.5, y)))
+		_check(absf(ShoreField.distance_at(Vector2(41.5, y)) + 1.5) < 0.2, "1.5 tiles out in the water: %f" % ShoreField.distance_at(Vector2(41.5, y)))
+	# A step of one tile in the edge comes out smooth: halfway along the
+	# step, the edge lies between the two lines of tiles.
+	var stepped := func(t: Vector2i) -> String: return "water" if t.x >= (40 if t.y < 80 else 41) else "grass"
+	ShoreField.update(stepped, Vector2i(32, 64), 32)
+	var at_step := ShoreField.distance_at(Vector2(40.5, 80.0))
+	_check(absf(at_step) < 0.25, "the step is smoothed: %f at its middle" % at_step)
+	# A pond's corner is rounded: the corner point of the tiles lies on
+	# the land side of the smoothed edge.
+	var pond := func(t: Vector2i) -> String: return "water" if t.x >= 100 and t.y >= 100 else "grass"
+	ShoreField.update(pond, Vector2i(96, 96), 32)
+	_check(ShoreField.distance_at(Vector2(100.0, 100.0)) > 0.15, "a corner comes out round: %f" % ShoreField.distance_at(Vector2(100.0, 100.0)))
 

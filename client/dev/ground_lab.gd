@@ -24,7 +24,7 @@ func _initialize() -> void:
 	var look := OS.get_environment("SOUL_INVASION_LOOK_AT").split(",")
 	var at := Vector2i(int(look[0]), int(look[1])) if look.size() == 2 else Vector2i(map["width"] / 2, map["height"] / 2)
 	var shore := OS.get_environment("SOUL_INVASION_SHORE")
-	if shore != "pieces" and shore != "curve":
+	if shore != "pieces" and shore != "curve" and shore != "field":
 		var spec := ChunkView.read_ground_spec()
 		spec["shore"] = {}
 		ChunkView._spec = spec

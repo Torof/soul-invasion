@@ -105,6 +105,35 @@ uniform float current_stretch = 6.0;
 uniform float current_speed = 0.04;
 uniform float current_cover = 0.3;
 
+// The bank drawn from the distance to the water's edge (ShoreField):
+// the water canvas also covers the land within two tiles of it; there the
+// shader lays, from the water outwards, a lighter water, the ink line of
+// the edge, a band of earth whose width wanders along the bank, and lets
+// the grass beneath show past a ragged edge.
+uniform bool has_field = false;
+uniform sampler2D shore_field : filter_linear, repeat_disable;
+// Tiles the field covers, and the distance range it encodes either way.
+uniform float field_tiles = 256.0;
+uniform float field_range = 4.0;
+// The band of earth: its width in tiles wanders between these over
+// stretches of about field_vary tiles; the grass edge is ragged over
+// field_rag tiles.
+uniform float field_width_min = 0.0;
+uniform float field_width_max = 0.55;
+uniform float field_vary = 9.0;
+uniform float field_rag = 0.16;
+// The ink line at the water's edge, its half-width in tiles.
+uniform float field_line = 0.035;
+uniform vec3 field_ink : source_color = vec3(0.17, 0.12, 0.08);
+// How far into the water it lightens, in tiles, and how much.
+uniform float field_light_reach = 0.9;
+uniform float field_light = 0.55;
+// The earth's own tone, and how much darker it is where wet and under
+// the grass's overhang.
+uniform vec3 field_earth_tint : source_color = vec3(1.0);
+uniform float field_wet = 0.7;
+uniform float field_shade = 0.75;
+
 // Soft patches covering about `cover` of the ground, from the noise read
 // at `scale` with an offset so each layer has its own shape.
 float patches(vec2 uv, float scale, vec2 shift, float cover, float softness) {
@@ -205,6 +234,41 @@ void fragment() {
 			ground.rgb *= 1.0 - line * bank_line;
 		}
 	}
+	if (has_field) {
+		vec2 world = uv * 4.0;
+		float d = (texture(shore_field, world / field_tiles).r * 2.0 - 1.0) * field_range;
+		// The noise's features are about 0.2 of its period: read at
+		// 0.2 / n per tile, they are about n tiles across.
+		float wander = texture(noise_texture, world * (0.2 / field_vary) + vec2(0.31, 0.77)).r;
+		float wander2 = texture(noise_texture, world * (0.2 / (field_vary * 0.4)) + vec2(0.62, 0.15)).r;
+		float width = mix(field_width_min, field_width_max, smoothstep(0.3, 0.75, wander * 0.75 + wander2 * 0.4));
+		// Tufts: the grass's edge bulges and recedes at two scales.
+		float rag = (texture(noise_texture, world * 0.5 + vec2(0.4, 0.9)).r - 0.5) * 2.0 * field_rag
+			+ (texture(noise_texture, world * 1.4 + vec2(0.1, 0.3)).r - 0.5) * field_rag;
+		float outer = max(width + rag, 0.03);
+		if (d > outer + 0.04) {
+			discard;
+		}
+		vec3 colour = ground.rgb;
+		if (d < 0.0) {
+			float near = 1.0 - smoothstep(0.0, field_light_reach, -d);
+			colour = mix(colour, colour * shore_tint, near * field_light);
+		} else {
+			// Earth, read from the middle of the bank strip, mirrored across
+			// so it never shows a seam.
+			float across = abs(fract(world.x * 0.23 + world.y * 0.07) * 2.0 - 1.0);
+			vec3 earth = texture(bank_texture, vec2(0.3 + 0.32 * across, fract(world.y * 0.25))).rgb * field_earth_tint;
+			earth *= mix(field_wet, 1.0, smoothstep(0.0, 0.14, d));
+			earth *= mix(1.0, field_shade, smoothstep(outer - 0.14, outer, d));
+			colour = earth;
+		}
+		float line = 1.0 - smoothstep(field_line * 0.6, field_line * 1.4, abs(d));
+		// The grass's own outline where it meets the earth.
+		float edge = 1.0 - smoothstep(0.0, 0.03, abs(d - outer + 0.015));
+		colour = mix(colour, field_ink, max(line, edge * 0.85 * step(0.05, outer)));
+		float a = 1.0 - smoothstep(outer, outer + 0.04, d);
+		COLOR = vec4(colour * vertex_tint, a);
+	} else {
 	float alpha = tint.a;
 	if (alpha < 1.0 && spill_only_with_bank && !has_bank) {
 		alpha = 0.0;
@@ -251,4 +315,5 @@ void fragment() {
 		alpha = smoothstep(e - 0.3, e + 0.3, alpha);
 	}
 	COLOR = vec4(ground.rgb * vertex_tint, alpha);
+	}
 }
