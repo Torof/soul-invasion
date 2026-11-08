@@ -86,6 +86,11 @@ func _ready() -> void:
 	# Tree images are four times the screen: mipmaps keep them clean when
 	# the camera pulls back.
 	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	# The trees sway in the wind (trees.gdshader).
+	var sway := ShaderMaterial.new()
+	sway.shader = load("res://world/trees.gdshader")
+	sway.set_shader_parameter("noise_texture", ChunkView.noise_texture())
+	material = sway
 	Net.chunk_hidden.connect(_on_chunk_hidden)
 	Net.body_walks.connect(_on_body_walks)
 	Net.body_stopped.connect(_on_body_stopped)
@@ -450,7 +455,8 @@ func _process(delta: float) -> void:
 		moving = true
 	if _following and _bodies.has(_piloted):
 		_camera.position = Iso.point_to_screen(_bodies[_piloted]["at"])
-	# Only the trees in view are drawn: redraw when the view moves.
+	# Only the trees in view are drawn: redraw when the view moves. The
+	# sway itself is the shader's, every frame, with no redraw.
 	var view := Vector3(_camera.position.x, _camera.position.y, _camera.zoom.x)
 	if moving or view != _last_view:
 		_last_view = view

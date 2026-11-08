@@ -57,4 +57,8 @@ static func draw(canvas: CanvasItem, tree: Dictionary, height_cm: int) -> void:
 		return
 	var at: Vector2 = tree["at"]
 	var texture: Texture2D = images[variant(at, images.size())]
-	canvas.draw_texture_rect(texture, rect(at, height_cm, texture), false)
+	var r := rect(at, height_cm, texture)
+	# The modulate tells the sway shader (trees.gdshader) it is a tree, how
+	# tall, and its phase; the shader draws the image untinted.
+	var marker := Color(clampf(r.size.y / 640.0, 0.0, 1.0), 1.0, place_hash(at, 11), 0.94)
+	canvas.draw_texture_rect(texture, r, false, marker)
