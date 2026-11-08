@@ -12,8 +12,7 @@ extends SceneTree
 const SIZE := 1024
 ## Tiles rendered around the looked-at tile, each way.
 const REACH := 20
-## Brooks are shown as fords until the client knows them.
-const TERRAINS := {200: "grass", 120: "forest", 40: "water", 90: "ford", 60: "ford", 230: "rock"}
+const TERRAINS := {200: "grass", 120: "forest", 40: "water", 90: "ford", 60: "brook", 230: "rock"}
 
 
 func _initialize() -> void:

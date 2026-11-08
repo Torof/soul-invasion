@@ -15,6 +15,8 @@ use std::collections::{BinaryHeap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
+use crate::woods::{Habitat, Woods};
+
 /// Side of a chunk, in tiles.
 pub const CHUNK_SIZE: u32 = 32;
 
@@ -206,6 +208,10 @@ pub struct Map {
     tiles: Vec<Terrain>,
     /// Per tile, how deep the water is, in half-metres; 0 on land.
     depth: Vec<u8>,
+    /// Per tile, the density of trees, 0 to 100 (D37).
+    trees: Vec<u8>,
+    /// Per tile, the kind of place it is for trees (D37).
+    habitat: Vec<Habitat>,
 }
 
 impl From<MapSpec> for Map {
@@ -244,6 +250,8 @@ impl Map {
             height,
             tiles: vec![terrain; (width * height) as usize],
             depth: vec![0; (width * height) as usize],
+            trees: vec![0; (width * height) as usize],
+            habitat: vec![Habitat::None; (width * height) as usize],
         }
     }
 
@@ -251,8 +259,10 @@ impl Map {
     /// (see [`Rivers`]: a main river from the cliff's foot to the south
     /// edge, tributaries and brooks joining it, water as a volume whose
     /// flow sets width and depth, fords where it is half a metre deep,
-    /// islands between the arms of a divergence), groves of forest, grass
-    /// elsewhere. Deterministic for a given seed.
+    /// islands between the arms of a divergence), woods (see [`Woods`]:
+    /// massifs with their edges and hearts, clearings, copses, lone and
+    /// riverside trees, a clearing at the camp), grass elsewhere.
+    /// Deterministic for a given seed.
     pub fn valley(width: u32, height: u32, seed: u64) -> Self {
         let mut map = Self::filled(width, height, Terrain::Grass);
         map.spec = MapSpec::Valley {
@@ -260,9 +270,10 @@ impl Map {
             height,
             seed,
         };
-        let groves = Groves::new(width, height, seed);
         let cliff_rows = (height / 8).max(2);
         let rivers = Rivers::generate(width, height, cliff_rows, seed);
+        let camp = Self::camp_of(width, height);
+        let woods = Woods::generate(width, height, cliff_rows, seed, &rivers, camp);
 
         for y in 0..height {
             for x in 0..width {
@@ -274,15 +285,18 @@ impl Map {
                     Terrain::Rock
                 } else if let Some(water) = rivers.at(x, y) {
                     water
-                } else if groves.is_forest(x, y) {
+                } else if woods.density(x, y) >= Woods::FOREST {
                     Terrain::Forest
                 } else {
                     Terrain::Grass
                 };
                 map.set(pos, terrain);
+                let i = (y * width + x) as usize;
                 if y >= cliff_rows {
-                    map.depth[(y * width + x) as usize] = rivers.depth_at(x, y);
+                    map.depth[i] = rivers.depth_at(x, y);
                 }
+                map.trees[i] = woods.density(x, y);
+                map.habitat[i] = woods.habitat(x, y);
             }
         }
         map
@@ -293,6 +307,36 @@ impl Map {
     /// river.
     pub fn depth(&self, pos: Pos) -> u8 {
         self.index(pos).map_or(0, |i| self.depth[i])
+    }
+
+    /// The density of trees at `pos`, 0 to 100: 0 on open ground and
+    /// outside the map, from `Woods::FOREST` up in the forest (D37).
+    #[must_use]
+    pub fn trees(&self, pos: Pos) -> u8 {
+        self.index(pos).map_or(0, |i| self.trees[i])
+    }
+
+    /// The kind of place `pos` is for trees; `Habitat::None` on water,
+    /// rock and outside the map (D37).
+    #[must_use]
+    pub fn habitat(&self, pos: Pos) -> Habitat {
+        self.index(pos).map_or(Habitat::None, |i| self.habitat[i])
+    }
+
+    /// Where the first bodies start: the camp, left open by the woods.
+    #[must_use]
+    pub fn camp(&self) -> Pos {
+        let (x, y) = Self::camp_of(self.width, self.height);
+        Pos::new(
+            i32::try_from(x).expect("map fits in i32"),
+            i32::try_from(y).expect("map fits in i32"),
+        )
+    }
+
+    /// The camp of a map of that size: in the first version's valley of
+    /// 256, tile (134, 139), by the main river.
+    fn camp_of(width: u32, height: u32) -> (u32, u32) {
+        (width * 134 / 256, height * 139 / 256)
     }
 
     /// How this map is generated.
@@ -632,27 +676,18 @@ impl Lcg {
     }
 }
 
-/// Where the forest grows: smooth value noise on a coarse lattice, so
-/// trees come in groves rather than salt and pepper.
-struct Groves {
+/// Smooth value noise on a coarse lattice, for what comes in patches
+/// rather than salt and pepper (the woods, the wet ground).
+pub(crate) struct Groves {
     cell: u32,
     columns: u32,
     values: Vec<u32>,
 }
 
 impl Groves {
-    /// Lattice spacing in tiles.
-    const CELL: u32 = 12;
-    /// Noise is in 0..1000; forest above this.
-    const THRESHOLD: u32 = 640;
-
-    fn new(width: u32, height: u32, seed: u64) -> Self {
-        Self::with_cell(width, height, seed, Self::CELL)
-    }
-
-    /// The same smooth noise on a lattice of `cell` tiles, for other
-    /// things that come in patches (where the ground is wet).
-    fn with_cell(width: u32, height: u32, seed: u64, cell: u32) -> Self {
+    /// Smooth noise on a lattice of `cell` tiles, for things that come in
+    /// patches: the woods' massifs, where the ground is wet.
+    pub(crate) fn with_cell(width: u32, height: u32, seed: u64, cell: u32) -> Self {
         let columns = width / cell + 2;
         let rows = height / cell + 2;
         let mut rng = Lcg::new(seed);
@@ -664,12 +699,24 @@ impl Groves {
         }
     }
 
-    fn is_forest(&self, x: u32, y: u32) -> bool {
-        self.value(x, y) > Self::THRESHOLD
+    /// The noise at a tile, in 0..1000, eased between lattice points
+    /// (smoothstep) so that broad patches come out round, not diamond.
+    pub(crate) fn smooth(&self, x: u32, y: u32) -> u32 {
+        let c = u64::from(self.cell);
+        let ease = |f: u32| {
+            let f = u64::from(f);
+            u32::try_from(f * f * (3 * c - 2 * f) / (c * c)).expect("within a cell")
+        };
+        let (cx, fx) = (x / self.cell, ease(x % self.cell));
+        let (cy, fy) = (y / self.cell, ease(y % self.cell));
+        let at = |i: u32, j: u32| self.values[(j * self.columns + i) as usize];
+        let top = at(cx, cy) * (self.cell - fx) + at(cx + 1, cy) * fx;
+        let bottom = at(cx, cy + 1) * (self.cell - fx) + at(cx + 1, cy + 1) * fx;
+        (top * (self.cell - fy) + bottom * fy) / (self.cell * self.cell)
     }
 
     /// The noise at a tile, in 0..1000.
-    fn value(&self, x: u32, y: u32) -> u32 {
+    pub(crate) fn value(&self, x: u32, y: u32) -> u32 {
         let (cx, fx) = (x / self.cell, x % self.cell);
         let (cy, fy) = (y / self.cell, y % self.cell);
         let at = |i: u32, j: u32| self.values[(j * self.columns + i) as usize];
@@ -2473,6 +2520,30 @@ mod tests {
             out.push(' ');
         }
         std::fs::write(path, out).unwrap();
+        // The woods, a colour per habitat, when asked for.
+        if let Ok(woods) = std::env::var("SOUL_INVASION_DUMP_WOODS") {
+            let mut out = String::from("P3\n256 256\n255\n");
+            for y in 0..256 {
+                for x in 0..256 {
+                    let rgb = match map.habitat(Pos::new(x, y)) {
+                        Habitat::Heart => "20 60 25",
+                        Habitat::Wood => "45 100 45",
+                        Habitat::Edge => "110 150 80",
+                        Habitat::Meadow => "200 215 150",
+                        Habitat::Clearing => "225 215 140",
+                        Habitat::Camp => "240 200 120",
+                        Habitat::Copse => "70 120 60",
+                        Habitat::Lone => "90 140 70",
+                        Habitat::Riverside => "60 150 120",
+                        Habitat::None if y < 32 => "150 145 140",
+                        Habitat::None => "60 110 170",
+                    };
+                    out.push_str(rgb);
+                    out.push(' ');
+                }
+            }
+            std::fs::write(woods, out).unwrap();
+        }
     }
 
     const VALLEY_SEED_FOR_DUMP: u64 = 1;
