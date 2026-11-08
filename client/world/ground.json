@@ -35,8 +35,7 @@
       "second": "res://art/ground/ground_water_04_summer.png",
       "worn": "res://art/ground/ground_water_05_summer.png",
       "bank": "res://art/ground/bank_earth_03_summer.png",
-      "bank2": "res://art/ground/bank_sand_02_summer.png",
-      "bank3": "res://art/ground/bank_pebbles_01_summer.png"
+      "bank2": "res://art/ground/bank_sand_02_summer.png"
     },
     "params": {
       "has_variants": true,
