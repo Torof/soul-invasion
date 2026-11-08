@@ -16,7 +16,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::content::Species;
-use crate::map::{FinePos, Groves, Lcg, MM_PER_TILE, Map, Pos};
+use crate::map::{FinePos, Groves, Lcg, MM_PER_TILE, Map, Pos, Terrain};
 use crate::woods::Habitat;
 
 /// A tree standing on the ground.
@@ -61,7 +61,18 @@ pub fn plant(map: &Map, species: &[Species], seed: u64) -> Vec<Tree> {
                 i32::try_from(y).expect("map fits in i32"),
             );
             let habitat = map.habitat(pos);
+            // Nothing stands right beside a river or a ford: its trunk and
+            // crown would be drawn over the water.
+            let by_the_water = (-1..=1).any(|dy| {
+                (-1..=1).any(|dx| {
+                    matches!(
+                        map.get(Pos::new(pos.x + dx, pos.y + dy)),
+                        Some(Terrain::Water | Terrain::Ford)
+                    )
+                })
+            });
             let chance = match habitat {
+                _ if by_the_water => 0,
                 Habitat::Lone | Habitat::Riverside => 1000,
                 _ => u32::from(map.trees(pos)) * CHANCE / 10,
             };
@@ -158,6 +169,16 @@ mod tests {
                         > 0
                 );
                 assert!(at.insert(tile, tree.species).is_none(), "one tree a tile");
+                // Never beside the water.
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        let near = map.get(Pos::new(tile.x + dx, tile.y + dy));
+                        assert!(
+                            !matches!(near, Some(Terrain::Water | Terrain::Ford)),
+                            "seed {seed}: a tree at {tile:?} beside the water"
+                        );
+                    }
+                }
             }
             // Every lone and riverside tile has its tree; the heart holds
             // one tile in three or so.
@@ -167,11 +188,17 @@ mod tests {
                     let pos = Pos::new(x, y);
                     match map.habitat(pos) {
                         Habitat::Lone | Habitat::Riverside => {
+                            let by_the_water = (-1..=1).any(|dy| {
+                                (-1..=1).any(|dx| {
+                                    matches!(
+                                        map.get(Pos::new(x + dx, y + dy)),
+                                        Some(Terrain::Water | Terrain::Ford)
+                                    )
+                                })
+                            });
                             assert!(
-                                at.contains_key(&pos)
-                                    || kinds
-                                        .iter()
-                                        .all(|k| !k.habitats.contains_key(&map.habitat(pos)))
+                                at.contains_key(&pos) || by_the_water,
+                                "seed {seed}: {pos:?}"
                             );
                         }
                         Habitat::Heart => {

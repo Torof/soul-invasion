@@ -96,9 +96,10 @@ impl Woods {
     const COPSE_RADIUS: (u32, u32) = (1500, 4000);
     /// Chance of a lone tree on a meadow tile, in thousandths.
     const LONE: u32 = 4;
-    /// Chance of a riverside tree one tile from a river, in thousandths;
-    /// half that two tiles away.
-    const RIVERSIDE: u32 = 350;
+    /// Chance of a riverside tree two tiles from a river, then three, in
+    /// thousandths: never on the tile beside the water, so a tree and its
+    /// crown stand on the bank, not in the river.
+    const RIVERSIDE: (u32, u32) = (250, 150);
     /// How ragged a round patch's rim is, in thousandths of its radius.
     const RAGGED: i64 = 350;
 
@@ -209,7 +210,7 @@ impl Woods {
         out
     }
 
-    /// Per tile, 1 or 2 when a river (water or ford, not a brook) is that
+    /// Per tile, 1 to 3 when a river (water or ford, not a brook) is that
     /// many tiles away, eight-way, else 0.
     fn near_river(width: u32, height: u32, rivers: &Rivers) -> Vec<u8> {
         let mut near = vec![0_u8; (width * height) as usize];
@@ -218,8 +219,8 @@ impl Woods {
                 if !matches!(rivers.at(x, y), Some(Terrain::Water | Terrain::Ford)) {
                     continue;
                 }
-                for dy in -2_i64..=2 {
-                    for dx in -2_i64..=2 {
+                for dy in -3_i64..=3 {
+                    for dx in -3_i64..=3 {
                         let (nx, ny) = (i64::from(x) + dx, i64::from(y) + dy);
                         if nx < 0 || ny < 0 || nx >= i64::from(width) || ny >= i64::from(height) {
                             continue;
@@ -370,7 +371,11 @@ impl Plan {
             Habitat::Meadow | Habitat::Edge | Habitat::Lone | Habitat::Copse
         );
         if open_bank && self.near_river[i] > 0 {
-            let chance = Woods::RIVERSIDE / u32::from(self.near_river[i]);
+            let chance = match self.near_river[i] {
+                2 => Woods::RIVERSIDE.0,
+                3 => Woods::RIVERSIDE.1,
+                _ => 0,
+            };
             if rng.next_below(1000) < chance {
                 d = d.max(300);
                 habitat = Habitat::Riverside;
@@ -460,14 +465,16 @@ mod tests {
                             near(x, y, 8, &|p| map.trees(p) >= Woods::FOREST),
                             "seed {seed}: clearing at ({x}, {y}) far from any wood"
                         ),
-                        // Riverside trees stand by a river.
-                        Habitat::Riverside => assert!(
-                            near(x, y, 2, &|p| matches!(
-                                map.get(p),
-                                Some(Terrain::Water | Terrain::Ford)
-                            )),
-                            "seed {seed}: riverside tree at ({x}, {y}) far from a river"
-                        ),
+                        // Riverside trees stand by a river, on the bank:
+                        // two or three tiles from the water, never beside it.
+                        Habitat::Riverside => {
+                            let river =
+                                |p: Pos| matches!(map.get(p), Some(Terrain::Water | Terrain::Ford));
+                            assert!(
+                                near(x, y, 3, &river) && !near(x, y, 1, &river),
+                                "seed {seed}: riverside tree at ({x}, {y})"
+                            );
+                        }
                         _ => {}
                     }
                 }
