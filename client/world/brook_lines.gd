@@ -11,7 +11,7 @@ extends RefCounted
 ## ground plane; `to_screen` projects them.
 
 ## Water width, as a share of the brook's width in tiles.
-const WATER_SHARE := 0.7
+const WATER_SHARE := 0.85
 ## How much the water width varies along the brook, either way.
 const WOBBLE := 0.15
 ## Metres of wet earth on each side of the water, then metres over which
@@ -360,3 +360,46 @@ static func _degenerate(quad: PackedVector2Array) -> bool:
 	for i in 4:
 		area += quad[i].cross(quad[(i + 1) % 4])
 	return absf(area) < 1e-4 or Geometry2D.triangulate_polygon(quad).is_empty()
+
+
+## Margin of land drawn either side of a brook's water by the brook
+## shader (earth, the grass's edge), in tiles; and the lateral range the
+## vertex colour encodes.
+const SHADER_MARGIN := 0.4
+const LATERAL_RANGE := 2.0
+
+
+## Draws on `canvas`, whose material is the brook shader
+## (world/brook.gdshader), the segments of `lines` that belong to the
+## tiles [lo, hi): one band per segment, wider than the water, its vertex
+## colour carrying across it the distance from the axis (red) and the
+## water's half-width (green), its alpha the fade of a mouth.
+static func draw_shaded(canvas: CanvasItem, lines: Array, lo: Vector2i, hi: Vector2i, texture: Texture2D) -> void:
+	for line: Dictionary in lines:
+		var pts: PackedVector2Array = line["pts"]
+		var widths: PackedFloat32Array = line["widths"]
+		var alphas: PackedFloat32Array = line["alphas"]
+		for i in pts.size() - 1:
+			if not owns(line, i, lo, hi):
+				continue
+			var n0 := _normal(pts, i)
+			var n1 := _normal(pts, i + 1)
+			var h0 := widths[i] / 2.0
+			var h1 := widths[i + 1] / 2.0
+			var r0 := h0 + SHADER_MARGIN
+			var r1 := h1 + SHADER_MARGIN
+			var quad := PackedVector2Array([pts[i] + n0 * r0, pts[i + 1] + n1 * r1, pts[i + 1] - n1 * r1, pts[i] - n0 * r0])
+			if _degenerate(quad):
+				continue
+			var lateral := [r0, r1, -r1, -r0]
+			var halves := [h0, h1, h1, h0]
+			var fades := [alphas[i], alphas[i + 1], alphas[i + 1], alphas[i]]
+			var screen := PackedVector2Array()
+			var uvs := PackedVector2Array()
+			var colours := PackedColorArray()
+			for k in 4:
+				screen.append(to_screen(quad[k]))
+				uvs.append((quad[k] + Vector2(0.5, 0.5)) / ChunkView.GROUND_METRES)
+				colours.append(Color((float(lateral[k]) / LATERAL_RANGE + 1.0) / 2.0, float(halves[k]) / 2.0, 0.0, float(fades[k])))
+			canvas.draw_polygon(screen, colours, uvs, texture)
+
