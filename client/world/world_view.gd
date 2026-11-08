@@ -160,6 +160,7 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees:
 		standing.append({"at": Net.point(t.get("at", {})), "species": str(t.get("species", ""))})
 	_trees[key] = standing
 	view.terrain_at = terrain_at
+	view.current_at = current_at
 	view.show_chunk(key * _chunk_size, _chunk_size, tiles, items, _looks)
 	_redraw_neighbours(key)
 	_relay_shore()

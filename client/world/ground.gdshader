@@ -219,6 +219,31 @@ vec4 varied(sampler2D tex, vec2 uv) {
 	return blend4(texture(tex, uv), texture(tex, uv_b(uv)), texture(tex, uv_c(uv)), texture(tex, uv_d(uv)), variant_weights(uv));
 }
 
+// The water flowing: two layers of the water's texture, each advected
+// along the current in two phases half a period apart and blended so the
+// reset never shows; the second layer turned and smaller, so neither
+// layer's pattern repeats where the eye looks.
+uniform float flow_period = 2.4;
+uniform float flow_mix = 0.45;
+// How much darker and cooler the water is in the middle of the river,
+// reached at deep_reach tiles from the bank.
+uniform vec3 deep_tint : source_color = vec3(0.72, 0.86, 0.92);
+uniform float deep_reach = 2.5;
+// Glints: small bright sparkles drifting with the water.
+uniform float glint = 0.35;
+
+vec3 flowing(sampler2D tex, vec2 world, vec2 flow, float period, float scale, mat2 turn, float shift) {
+	float t = TIME / period + shift;
+	float p0 = fract(t);
+	float p1 = fract(t + 0.5);
+	float w0 = 1.0 - abs(1.0 - 2.0 * p0);
+	vec2 base = turn * world * (0.25 * scale);
+	vec2 f = turn * flow * (period * 0.25 * scale);
+	vec3 a = texture(tex, base - f * p0 + vec2(shift, 0.0)).rgb;
+	vec3 b = texture(tex, base - f * p1 + vec2(0.0, shift) + vec2(0.5)).rgb;
+	return a * w0 + b * (1.0 - w0);
+}
+
 // The bed of the fords at a point of the map in tiles: up to four matters
 // laid side by side in soft patches.
 vec3 ford_bed(vec2 world) {
@@ -412,6 +437,19 @@ void fragment() {
 		float dw = d - lap * smoothstep(0.02, 0.15, outer) - ford_water_reach * ford_bank;
 		vec3 colour = ground.rgb;
 		if (dw < 0.0) {
+			vec4 field_px = texture(shore_field, fuv);
+			vec2 flow = (field_px.ba * 2.0 - 1.0) * 2.0;
+			// Tiles a second, a little slower than the water itself reads.
+			vec2 runs = flow * 0.8;
+			vec3 w1 = flowing(TEXTURE, world, runs, flow_period, 1.0, mat2(vec2(1.0, 0.0), vec2(0.0, 1.0)), 0.0);
+			vec3 w2 = flowing(TEXTURE, world, runs * 1.15, flow_period * 1.3, 1.6, mat2(vec2(0.0, 1.0), vec2(-1.0, 0.0)), 0.37);
+			colour = mix(w1, w2, flow_mix) * base_tint;
+			// Deeper in the middle.
+			colour *= mix(vec3(1.0), deep_tint, smoothstep(0.3, deep_reach, -dw));
+			// Glints drifting with the water.
+			float g1 = texture(noise_texture, world * 1.7 - runs * TIME * 0.4).r;
+			float g2 = texture(noise_texture, world * 2.9 + vec2(0.3, 0.6) - runs * TIME * 0.55).r;
+			colour = mix(colour, vec3(1.0), smoothstep(0.82, 0.9, g1 * 0.55 + g2 * 0.55) * glint);
 			float near = 1.0 - smoothstep(0.0, field_light_reach, -dw);
 			colour = mix(colour, colour * shore_tint, near * field_light);
 			// Into the deep water: the bed fades out slowly.

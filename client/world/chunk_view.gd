@@ -128,6 +128,9 @@ func _ready() -> void:
 ## Looks up the terrain of a tile outside this chunk (set by the world
 ## view); "" when unknown, and the spill stops there.
 var terrain_at: Callable
+## Where the water runs at any tile the world view knows (a vector in
+## metres a second; set by the world view, invalid on the benches).
+var current_at: Callable
 
 
 ## The seamless noise every ground material blends with, made here, no
@@ -612,7 +615,7 @@ static func shore_field_on() -> bool:
 ## draws the bank) over the land within two tiles of the water.
 func _add_field_tiles(by_terrain: Dictionary) -> void:
 	var terrain := func(t: Vector2i) -> String: return _terrain(t.x, t.y)
-	ShoreField.update(terrain, _origin, _size)
+	ShoreField.update(terrain, _origin, _size, current_at)
 	var water_material := ground_material("water")
 	water_material.set_shader_parameter("shore_field", ShoreField.texture())
 	water_material.set_shader_parameter("has_field", true)

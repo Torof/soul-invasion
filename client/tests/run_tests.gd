@@ -380,6 +380,10 @@ func _test_brooks_are_lines_on_the_ground() -> void:
 	var ends: Array = (brook["ends"] as Array).duplicate()
 	ends.sort()
 	_check(ends == ["mouth", "spring"], "a spring and a mouth: %s" % [ends])
+	# It runs from its spring towards its mouth.
+	var sign := BrookLines.runs_towards_end(brook)
+	var first_kind: String = (brook["ends"] as Array)[0]
+	_check((sign > 0.0) == (first_kind == "spring"), "a brook runs from its spring: %s %s" % [first_kind, sign])
 	var pts: PackedVector2Array = brook["pts"]
 	var widths: PackedFloat32Array = brook["widths"]
 	var alphas: PackedFloat32Array = brook["alphas"]
@@ -501,6 +505,13 @@ func _test_the_shore_field_measures_the_bank() -> void:
 	_check(ShoreField.distance_at(Vector2(150.0, 143.0)) < -1.0, "a ford is water for the bank")
 	_check(ShoreField.ford_at(Vector2(150.0, 143.0)) > 0.7, "inside the ford: %f" % ShoreField.ford_at(Vector2(150.0, 143.0)))
 	_check(ShoreField.ford_at(Vector2(150.0, 152.0)) < 0.05, "deep water away from the ford: %f" % ShoreField.ford_at(Vector2(150.0, 152.0)))
+	# The water runs where the server says, the land between keeps still.
+	var river := func(t: Vector2i) -> String: return "water" if t.x >= 200 and t.x < 210 else "grass"
+	var runs := func(_t: Vector2i) -> Vector2: return Vector2(0.0, 0.6)
+	ShoreField.update(river, Vector2i(192, 192), 32, runs)
+	_check(ShoreField.flow_at(Vector2(205.0, 200.0)).distance_to(Vector2(0.0, 0.6)) < 0.03, "the water runs down the river: %s" % ShoreField.flow_at(Vector2(205.0, 200.0)))
+	_check(ShoreField.flow_at(Vector2(194.0, 200.0)).length() < 0.03, "still far from the water: %s" % ShoreField.flow_at(Vector2(194.0, 200.0)))
+	_check(ShoreField.flow_at(Vector2(199.5, 200.0)).y > 0.4, "the bank's edge runs with the river: %s" % ShoreField.flow_at(Vector2(199.5, 200.0)))
 	var edge := ShoreField.ford_at(Vector2(150.0, 140.0))
 	_check(edge > 0.3 and edge < 0.7, "the ford's edge is soft: %f" % edge)
 

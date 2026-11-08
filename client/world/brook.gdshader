@@ -28,6 +28,9 @@ uniform float lap = 0.05;
 uniform float rag = 0.07;
 uniform float overhang = 0.1;
 uniform vec3 ink : source_color = vec3(0.17, 0.12, 0.08);
+// How fast a brook runs, in tiles a second, and the period of its flow.
+uniform float flow_speed = 0.3;
+uniform float flow_period = 2.0;
 uniform float wet = 0.7;
 
 varying vec4 tint;
@@ -60,7 +63,13 @@ void fragment() {
 	float dw = d - lapping * present;
 	vec3 colour;
 	if (dw < 0.0) {
-		vec3 water = texture(TEXTURE, UV).rgb * water_tint;
+		float angle = tint.b * 6.2831853;
+		vec2 drift = vec2(cos(angle), sin(angle)) * flow_speed * flow_period * 0.25;
+		float t = TIME / flow_period;
+		float p0 = fract(t);
+		float w0 = 1.0 - abs(1.0 - 2.0 * p0);
+		vec3 water = (texture(TEXTURE, UV - drift * p0).rgb * w0
+			+ texture(TEXTURE, UV - drift * fract(t + 0.5) + vec2(0.5)).rgb * (1.0 - w0)) * water_tint;
 		float f = 0.2 / bed_patch;
 		vec3 n = vec3(
 			texture(noise_texture, world * f + vec2(0.21, 0.63)).r,
