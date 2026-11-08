@@ -177,6 +177,12 @@ uniform float ford_water = 0.6;
 // The water thickens from the bank into the ford over this many tiles, so
 // the bed shows best at the edge and fades as it deepens.
 uniform float ford_shelf = 1.6;
+// At a ford the bank gives way: its bed reaches this far over the land
+// (tiles), the water's film ford_water_reach beyond the line, and the
+// grass fades in over ford_grass_fade.
+uniform float ford_bank_reach = 0.6;
+uniform float ford_water_reach = 0.35;
+uniform float ford_grass_fade = 1.0;
 uniform vec3 ford_tint : source_color = vec3(0.88, 1.18, 1.18);
 uniform float ford_ripple = 0.35;
 uniform float field_lap = 0.07;
@@ -211,6 +217,25 @@ vec4 blend4(vec4 a, vec4 b, vec4 c, vec4 d, vec3 w) {
 }
 vec4 varied(sampler2D tex, vec2 uv) {
 	return blend4(texture(tex, uv), texture(tex, uv_b(uv)), texture(tex, uv_c(uv)), texture(tex, uv_d(uv)), variant_weights(uv));
+}
+
+// The bed of the fords at a point of the map in tiles: up to four matters
+// laid side by side in soft patches.
+vec3 ford_bed(vec2 world) {
+	vec2 b_uv = world * 0.25;
+	float f = 0.2 / ford_patch;
+	vec4 n = vec4(
+		texture(noise_texture, world * f + vec2(0.11, 0.73)).r,
+		has_ford2 ? texture(noise_texture, world * f + vec2(0.57, 0.19)).r : 0.0,
+		has_ford3 ? texture(noise_texture, world * f + vec2(0.83, 0.41)).r : 0.0,
+		has_ford4 ? texture(noise_texture, world * f + vec2(0.29, 0.95)).r : 0.0);
+	vec4 w = pow(max(n, vec4(0.0)), vec4(8.0));
+	w /= max(w.x + w.y + w.z + w.w, 1e-5);
+	vec3 bed = texture(ford1_texture, b_uv).rgb * w.x;
+	if (has_ford2) { bed += texture(ford2_texture, b_uv + vec2(0.31, 0.17)).rgb * w.y; }
+	if (has_ford3) { bed += texture(ford3_texture, b_uv + vec2(0.67, 0.43)).rgb * w.z; }
+	if (has_ford4) { bed += texture(ford4_texture, b_uv + vec2(0.13, 0.89)).rgb * w.w; }
+	return bed;
 }
 
 // The vertex colour alone: white under a texture, the flat colour of a
@@ -363,19 +388,28 @@ void fragment() {
 		float rag = (texture(noise_texture, world * 0.5 + vec2(0.4, 0.9)).r - 0.5) * 2.0 * field_rag
 			+ (texture(noise_texture, world * 1.4 + vec2(0.1, 0.3)).r - 0.5) * field_rag;
 		float outer = max(width + rag * clamp(width / 0.12, 0.0, 1.0), 0.0);
+		// At a ford there is no bank: its bed runs on over the land, the
+		// water reaches further in a thin film, and the grass comes back
+		// gradually over the bed.
+		float ford_bank = has_ford1 ? smoothstep(0.03, 0.4, texture(shore_field, fuv).g) : 0.0;
+		outer = mix(outer, ford_bank_reach + rag, ford_bank);
 		// Where the bank narrows to nothing, the grass overhangs the water
 		// in tufts instead of stopping on the line.
 		float tufts = texture(noise_texture, world * 1.9 + vec2(0.83, 0.47)).r * 0.7
 			+ texture(noise_texture, world * 4.3 + vec2(0.27, 0.66)).r * 0.5;
 		float overhang = field_overhang * clamp(tufts - 0.3, 0.0, 1.0);
 		float grass_at = mix(-overhang, outer, smoothstep(0.03, 0.14, outer));
-		if (d > grass_at + 0.04) {
+		grass_at = mix(grass_at, outer, ford_bank);
+		// Over a ford's bank the grass fades in over this width instead of
+		// stopping on a line.
+		float grass_fade = mix(0.04, ford_grass_fade, ford_bank);
+		if (d > grass_at + grass_fade) {
 			discard;
 		}
 		// The water's own edge wanders over the earth: the water laps it.
 		float lap = (texture(noise_texture, world * 1.2 + vec2(0.55, 0.05)).r - 0.5) * 2.0 * field_lap
 			+ (texture(noise_texture, world * 3.7 + vec2(0.18, 0.92)).r - 0.5) * field_lap;
-		float dw = d - lap * smoothstep(0.02, 0.15, outer);
+		float dw = d - lap * smoothstep(0.02, 0.15, outer) - ford_water_reach * ford_bank;
 		vec3 colour = ground.rgb;
 		if (dw < 0.0) {
 			float near = 1.0 - smoothstep(0.0, field_light_reach, -dw);
@@ -383,25 +417,18 @@ void fragment() {
 			// Into the deep water: the bed fades out slowly.
 			float ford = smoothstep(0.02, 0.97, texture(shore_field, fuv).g);
 			ford = ford * ford * (3.0 - 2.0 * ford);
+			// Near a ford's bank the water is all ford, so its film meets the
+			// bed on the land without a line.
+			ford = max(ford, ford_bank * (1.0 - smoothstep(0.0, ford_shelf, -dw)));
 			if (ford > 0.0 && has_ford1) {
-				vec2 b_uv = world * 0.25;
-				// Each bed takes the patches where its own noise is the
-				// highest of the four, the edges between them soft.
-				float f = 0.2 / ford_patch;
-				vec4 n = vec4(
-					texture(noise_texture, world * f + vec2(0.11, 0.73)).r,
-					has_ford2 ? texture(noise_texture, world * f + vec2(0.57, 0.19)).r : 0.0,
-					has_ford3 ? texture(noise_texture, world * f + vec2(0.83, 0.41)).r : 0.0,
-					has_ford4 ? texture(noise_texture, world * f + vec2(0.29, 0.95)).r : 0.0);
-				vec4 w = pow(max(n, vec4(0.0)), vec4(8.0));
-				w /= max(w.x + w.y + w.z + w.w, 1e-5);
-				vec3 bed = texture(ford1_texture, b_uv).rgb * w.x;
-				if (has_ford2) { bed += texture(ford2_texture, b_uv + vec2(0.31, 0.17)).rgb * w.y; }
-				if (has_ford3) { bed += texture(ford3_texture, b_uv + vec2(0.67, 0.43)).rgb * w.z; }
-				if (has_ford4) { bed += texture(ford4_texture, b_uv + vec2(0.13, 0.89)).rgb * w.w; }
+				vec3 bed = ford_bed(world);
 				// From the bank inwards, the water over the bed thickens.
-				float deep = mix(0.28, ford_water, smoothstep(0.0, ford_shelf, -dw));
-				vec3 shallow = mix(bed * ford_tint * 1.15, colour, deep);
+				// At the edge of a ford's bank the water is a film that
+				// thins to nothing on the bed, so there is no line.
+				float shelf = smoothstep(0.0, ford_shelf, -dw);
+				float deep = mix(mix(0.28, 0.0, ford_bank), ford_water, shelf);
+				vec3 wet_bed = bed * mix(vec3(0.8), ford_tint * 1.15, mix(1.0, shelf, ford_bank));
+				vec3 shallow = mix(wet_bed, colour, deep);
 				// Ripples drifting with the current over the stones.
 				float r1 = texture(noise_texture, world * 0.9 + vec2(TIME * 0.03, TIME * 0.05)).r;
 				float r2 = texture(noise_texture, world * 2.3 - vec2(TIME * 0.04, TIME * 0.02)).r;
@@ -420,15 +447,24 @@ void fragment() {
 			earth *= field_earth_tint;
 			earth *= mix(field_wet, 1.0, smoothstep(0.0, 0.14, dw));
 			earth *= mix(1.0, field_shade, smoothstep(outer - 0.14, outer, d));
+			if (ford_bank > 0.0) {
+				// The ford's bed, damp, wetter near the water.
+				vec3 bed = ford_bed(world) * mix(0.8, 1.0, smoothstep(0.0, 0.5, dw));
+				earth = mix(earth, bed, ford_bank);
+			}
 			colour = earth;
 		}
 		// The water's edge: darker, melting into the water.
-		float line = (1.0 - smoothstep(0.0, field_line, abs(dw + field_line_into))) * field_line_strength;
+		float line = (1.0 - smoothstep(0.0, field_line, abs(dw + field_line_into))) * field_line_strength * (1.0 - ford_bank);
 		colour = mix(colour, colour * 0.45, line);
 		// The grass's own outline, against the earth or the water.
 		float edge = 1.0 - smoothstep(0.0, 0.03, abs(d - grass_at + 0.015));
-		colour = mix(colour, field_ink, edge * 0.85);
-		float a = 1.0 - smoothstep(grass_at, grass_at + 0.04, d);
+		colour = mix(colour, field_ink, edge * 0.85 * (1.0 - ford_bank));
+		// The grass's edge over a ford's bank: ragged by a fine noise as it
+		// fades, so it comes back in tufts.
+		float tuft_in = ((texture(noise_texture, world * 3.1 + vec2(0.37, 0.58)).r - 0.5) * 1.2
+			+ (texture(noise_texture, world * 1.1 + vec2(0.71, 0.12)).r - 0.5) * 0.8) * grass_fade * ford_bank;
+		float a = 1.0 - smoothstep(grass_at + tuft_in, grass_at + tuft_in + grass_fade, d);
 		COLOR = vec4(colour * vertex_tint, a);
 	} else {
 	float alpha = tint.a;
