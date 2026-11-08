@@ -173,7 +173,7 @@ uniform float field_overhang = 0.22;
 // A ford: its bed of pebbles and sand seen through clear shallow water
 // (how much of the water's colour stays over the bed), and the light
 // ripples where the current runs over the stones.
-uniform float ford_water = 0.6;
+uniform float ford_water = 0.42;
 // The water thickens from the bank into the ford over this many tiles, so
 // the bed shows best at the edge and fades as it deepens.
 uniform float ford_shelf = 1.6;
@@ -426,8 +426,8 @@ void fragment() {
 				// At the edge of a ford's bank the water is a film that
 				// thins to nothing on the bed, so there is no line.
 				float shelf = smoothstep(0.0, ford_shelf, -dw);
-				float deep = mix(mix(0.28, 0.0, ford_bank), ford_water, shelf);
-				vec3 wet_bed = bed * mix(vec3(0.8), ford_tint * 1.15, mix(1.0, shelf, ford_bank));
+				float deep = mix(mix(0.18, 0.0, ford_bank), ford_water, shelf);
+				vec3 wet_bed = bed * mix(vec3(0.85), ford_tint * 1.35, mix(1.0, shelf, ford_bank));
 				vec3 shallow = mix(wet_bed, colour, deep);
 				// Ripples drifting with the current over the stones.
 				float r1 = texture(noise_texture, world * 0.9 + vec2(TIME * 0.03, TIME * 0.05)).r;
