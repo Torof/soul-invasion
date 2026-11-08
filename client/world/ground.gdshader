@@ -76,6 +76,9 @@ uniform bool has_bank = false;
 // slow stretches along the river so the bank changes.
 uniform sampler2D bank2_texture : repeat_enable, filter_linear;
 uniform bool has_bank2 = false;
+// A third matter (pebbles), for the bank drawn from the field only.
+uniform sampler2D bank3_texture : repeat_enable, filter_linear;
+uniform bool has_bank3 = false;
 // The bank's width across the spill varies along the river between
 // bank_reach_min and bank_reach (1 = the whole spill); beyond it the land
 // shows. bank_vary is the period of that variation along the river.
@@ -133,6 +136,12 @@ uniform float field_light = 0.55;
 uniform vec3 field_earth_tint : source_color = vec3(1.0);
 uniform float field_wet = 0.7;
 uniform float field_shade = 0.75;
+// Beaches: over stretches of about field_beach tiles the earth gives way
+// to sand (bank2) or pebbles (bank3), each covering about field_beach_cover
+// of the bank, and the bank is wider there by field_beach_wide.
+uniform float field_beach = 14.0;
+uniform float field_beach_cover = 0.25;
+uniform float field_beach_wide = 1.6;
 
 // Soft patches covering about `cover` of the ground, from the noise read
 // at `scale` with an offset so each layer has its own shape.
@@ -242,6 +251,12 @@ void fragment() {
 		float wander = texture(noise_texture, world * (0.2 / field_vary) + vec2(0.31, 0.77)).r;
 		float wander2 = texture(noise_texture, world * (0.2 / (field_vary * 0.4)) + vec2(0.62, 0.15)).r;
 		float width = mix(field_width_min, field_width_max, smoothstep(0.3, 0.75, wander * 0.75 + wander2 * 0.4));
+		// Beaches of sand or pebbles along some stretches.
+		float t_beach = 1.0 - field_beach_cover;
+		float sand = has_bank2 ? smoothstep(t_beach - 0.03, t_beach + 0.03, texture(noise_texture, world * (0.2 / field_beach) + vec2(0.13, 0.52)).r) : 0.0;
+		float pebbles = has_bank3 ? smoothstep(t_beach - 0.03, t_beach + 0.03, texture(noise_texture, world * (0.2 / (field_beach * 0.8)) + vec2(0.71, 0.36)).r) * (1.0 - sand) : 0.0;
+		float beach = sand + pebbles;
+		width = mix(width, max(width, field_width_max) * field_beach_wide, beach);
 		// Tufts: the grass's edge bulges and recedes at two scales.
 		float rag = (texture(noise_texture, world * 0.5 + vec2(0.4, 0.9)).r - 0.5) * 2.0 * field_rag
 			+ (texture(noise_texture, world * 1.4 + vec2(0.1, 0.3)).r - 0.5) * field_rag;
@@ -254,10 +269,18 @@ void fragment() {
 			float near = 1.0 - smoothstep(0.0, field_light_reach, -d);
 			colour = mix(colour, colour * shore_tint, near * field_light);
 		} else {
-			// Earth, read from the middle of the bank strip, mirrored across
-			// so it never shows a seam.
-			float across = abs(fract(world.x * 0.23 + world.y * 0.07) * 2.0 - 1.0);
-			vec3 earth = texture(bank_texture, vec2(0.3 + 0.32 * across, fract(world.y * 0.25))).rgb * field_earth_tint;
+			// The bank's matter, seamless, four metres a texture like the
+			// ground: earth, or sand or pebbles on a beach.
+			vec2 m_uv = world * 0.25;
+			vec3 earth = texture(bank_texture, m_uv).rgb;
+			if (beach > 0.0) {
+				vec3 other = has_bank2 ? texture(bank2_texture, m_uv + vec2(0.37, 0.11)).rgb : earth;
+				if (has_bank3) {
+					other = mix(other, texture(bank3_texture, m_uv + vec2(0.61, 0.29)).rgb, pebbles / max(beach, 0.001));
+				}
+				earth = mix(earth, other, beach);
+			}
+			earth *= field_earth_tint;
 			earth *= mix(field_wet, 1.0, smoothstep(0.0, 0.14, d));
 			earth *= mix(1.0, field_shade, smoothstep(outer - 0.14, outer, d));
 			colour = earth;
