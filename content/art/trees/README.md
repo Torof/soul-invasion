@@ -20,7 +20,8 @@ the point where the server says the trunk meets the ground.
   - oak 02: wide and stocky, one thick branch leaning, bare massive trunk;
   - birch 01, 02: slender, thin straight white trunk with black marks, light airy crown;
   - pine 01: tall scots pine, bare reddish trunk, dark green parasol crown (a second to come);
-  - willow 01 (made as 02): branches hanging like a curtain, parted so the trunk shows (willow 01 withdrawn on 8 November 2026: a ring of grass with a dark outline round its foot did not blend with the ground; back once edited);
+  - willow 01: branches hanging like a curtain, parted so the trunk shows;
+  - willow 02: a gnarled leaning trunk under a curtain of branches; generated with a ring of grass and a dark outline round its foot, removed by the project lead in Midjourney's edit mode (8 November 2026), the colours kept;
   - hazel 01, 02: a tall bush of thin stems rising from one point, rounded leafy top;
   - wild apple 01, 02: small, round crown with a few red apples.
 - **Sources**: the Midjourney outputs stay outside the repository
