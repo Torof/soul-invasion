@@ -273,6 +273,25 @@ func teleport_to(tile: Vector2i) -> void:
 	queue_redraw()
 
 
+## Development (--dev): the wind on or off in the trees, to measure what
+## it costs (trees.gdshader's sway and gust; their defaults when on).
+func set_wind(on: bool) -> void:
+	var sway := _standing.material as ShaderMaterial
+	if sway == null:
+		return
+	sway.set_shader_parameter("sway", 0.005 if on else 0.0)
+	sway.set_shader_parameter("gust", 0.012 if on else 0.0)
+
+
+## What the world holds now, for the development counters.
+func counts() -> Dictionary:
+	var trees := 0
+	for holder: Variant in _tree_nodes.values():
+		if is_instance_valid(holder):
+			trees += (holder as Node).get_child_count()
+	return {"chunks": _chunks.size(), "trees": trees, "bodies": _bodies.size()}
+
+
 ## The tile the piloted body stands on, or (-1, -1) when there is none.
 func piloted_tile() -> Vector2i:
 	if not _bodies.has(_piloted):

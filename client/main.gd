@@ -1,6 +1,6 @@
 extends Control
 ## Main scene: the world view, the head-up display, the inventory, a help
-## line, the loading screen, the development map (--dev), the tooltip for whatever is under the mouse, and the context
+## line, the loading screen, the development map and counters (--dev), the tooltip for whatever is under the mouse, and the context
 ## menu of what the body could try on a tile.
 ##
 ## The client only displays the world and transmits the player's intentions
@@ -45,6 +45,11 @@ func _ready() -> void:
 	dev_map.world = _world
 	add_child(dev_map)
 	Net.dev_overview.connect(dev_map.show_overview)
+	# Development: what a frame costs (F3), the wind on or off (F4).
+	var perf := PerfOverlay.new()
+	perf.world = _world
+	add_child(perf)
+	Net.dev_overview.connect(func(_c: int, _w: int, _h: int, _cells: String) -> void: perf.enable())
 
 
 func _screenshot_then_quit(path: String) -> void:
