@@ -17,17 +17,25 @@ uniform float rock_speed = 0.55;
 uniform float gust_scale = 0.0012;
 uniform float gust_speed = 0.018;
 uniform float still = 0.3;
+// The foot melts into the ground: the lower foot_dark of the tree darkens
+// (the shade among the roots), the lowest foot_melt dissolves raggedly,
+// tinted towards the earth.
+uniform float foot_dark = 0.16;
+uniform float foot_melt = 0.05;
+uniform vec3 earth : source_color = vec3(0.30, 0.27, 0.16);
 
 varying float is_tree;
 varying float bend_px;
 varying float width_px;
 varying float pad;
+varying float seed;
 
 void vertex() {
 	is_tree = (COLOR.a > 0.9 && COLOR.a < 0.98) ? 1.0 : 0.0;
 	if (is_tree > 0.5) {
 		float height = COLOR.r * 640.0;
 		float phase = COLOR.b * 6.2831853;
+		seed = COLOR.b;
 		vec2 at = (MODEL_MATRIX * vec4(VERTEX, 0.0, 1.0)).xy;
 		float wind = smoothstep(0.45, 0.8, texture(noise_texture, at * gust_scale + vec2(TIME * gust_speed, 0.0)).r);
 		float rock = sin(TIME * rock_speed + phase) * 0.7 + sin(TIME * rock_speed * 1.9 + phase * 1.7) * 0.3;
@@ -53,7 +61,18 @@ void fragment() {
 		if (uv.x < 0.0 || uv.x > 1.0) {
 			COLOR = vec4(0.0);
 		} else {
-			COLOR = texture(TEXTURE, uv);
+			vec4 c = texture(TEXTURE, uv);
+			float low = UV.y;
+			// Shade among the roots.
+			float dark = smoothstep(1.0 - foot_dark, 1.0, low);
+			c.rgb *= 1.0 - dark * 0.35;
+			// The last few percent melt into the ground, raggedly.
+			float melt = smoothstep(1.0 - foot_melt, 1.0, low);
+			float n = texture(noise_texture, vec2(uv.x * 3.0 + seed * 7.0, low * 9.0)).r * 0.6
+				+ texture(noise_texture, vec2(uv.x * 11.0 + seed * 3.0, low * 23.0)).r * 0.4;
+			c.rgb = mix(c.rgb, earth, melt * 0.6);
+			c.a *= 1.0 - smoothstep(n - 0.15, n + 0.15, melt);
+			COLOR = c;
 		}
 	}
 }

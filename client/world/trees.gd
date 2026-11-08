@@ -14,14 +14,9 @@ const SIZE_JITTER := 0.12
 static var _textures: Dictionary = {}
 ## A soft round shade, dark in the middle, for the shadows on the ground.
 static var _shade: Texture2D
-## The ground's tufts, laid in front of a trunk's foot.
-static var _tufts: Array = []
 ## Opacity of the shade right under the trunk, and of the crown's.
 const FOOT_SHADE := 0.45
 const CROWN_SHADE := 0.18
-## Tufts in front of a foot, and their width in metres.
-const TUFTS := 3
-const TUFT_M := 0.42
 
 
 static func shade() -> Texture2D:
@@ -56,23 +51,6 @@ static func draw_shadow(canvas: CanvasItem, tree: Dictionary, height_cm: int) ->
 	canvas.draw_texture_rect(shade(), Rect2(foot - crown / 2.0 + Vector2(r.size.x * 0.06, 0), crown), false, Color(1, 1, 1, CROWN_SHADE))
 	var base := Vector2(Iso.PX_PER_M * 0.9, Iso.PX_PER_M * 0.45) * (r.size.y / (4.0 * Iso.PX_PER_M)) ** 0.5
 	canvas.draw_texture_rect(shade(), Rect2(foot - base / 2.0, base), false, Color(1, 1, 1, FOOT_SHADE))
-
-
-## A few tufts of grass in front of the foot of `tree`, drawn just after
-## it, so the line where the trunk meets the ground does not show.
-static func draw_tufts(canvas: CanvasItem, tree: Dictionary) -> void:
-	if _tufts.is_empty():
-		_tufts = ChunkView.decor_textures("tuft")
-	if _tufts.is_empty():
-		return
-	var at: Vector2 = tree["at"]
-	var foot := Iso.point_to_screen(at)
-	for k in TUFTS:
-		var texture: Texture2D = _tufts[int(place_hash(at, 20 + k) * _tufts.size()) % _tufts.size()]
-		var w := Iso.PX_PER_M * TUFT_M * (0.75 + place_hash(at, 30 + k) * 0.5)
-		var h := w * float(texture.get_height()) / float(texture.get_width()) * 0.5
-		var off := Vector2((place_hash(at, 40 + k) - 0.5) * Iso.PX_PER_M * 0.55, place_hash(at, 50 + k) * Iso.PX_PER_M * 0.12)
-		canvas.draw_texture_rect(texture, Rect2(foot + off - Vector2(w / 2.0, h * 0.85), Vector2(w, h)), false)
 
 
 ## The images of a kind of tree: `<id>_adult_01_summer.png`, `_02`, ...
@@ -123,4 +101,3 @@ static func draw(canvas: CanvasItem, tree: Dictionary, height_cm: int) -> void:
 	# tall, and its phase; the shader draws the image untinted.
 	var marker := Color(clampf(r.size.y / 640.0, 0.0, 1.0), 1.0, place_hash(at, 11), 0.94)
 	canvas.draw_texture_rect(texture, r, false, marker)
-	draw_tufts(canvas, tree)
