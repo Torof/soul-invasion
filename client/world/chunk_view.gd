@@ -638,6 +638,11 @@ var _flats: Array = []
 var _decor_cache: Array = []
 
 
+## Whether the chunk has built its ground at least once.
+func is_built() -> bool:
+	return _last_signature != 0
+
+
 func _draw() -> void:
 	var signature := _terrain_signature()
 	if signature != _last_signature or not shore_field_on():

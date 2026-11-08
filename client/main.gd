@@ -1,6 +1,6 @@
 extends Control
 ## Main scene: the world view, the head-up display, the inventory, a help
-## line, the tooltip for whatever is under the mouse, and the context
+## line, the loading screen, the tooltip for whatever is under the mouse, and the context
 ## menu of what the body could try on a tile.
 ##
 ## The client only displays the world and transmits the player's intentions
@@ -35,6 +35,9 @@ func _ready() -> void:
 	var shot := OS.get_environment("SOUL_INVASION_SCREENSHOT")
 	if not shot.is_empty():
 		_screenshot_then_quit(shot)
+	else:
+		# A loading screen while the valley arrives and is built.
+		add_child(LoadingScreen.new())
 
 
 func _screenshot_then_quit(path: String) -> void:

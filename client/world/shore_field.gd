@@ -36,6 +36,8 @@ static var map_size := Vector2i(TILES, TILES)
 ## The latest update asked for each block: an update in slices gives up
 ## when a newer one for its block has started.
 static var _jobs: Dictionary = {}
+## Updates under way, in slices or not (the loading screen waits for them).
+static var busy := 0
 ## The frame the slices are running in, and when they started in it.
 static var _slice_frame := -1
 static var _slice_start := 0
@@ -65,6 +67,12 @@ static func is_water(terrain: String) -> bool:
 ## most at a time (a block takes tens of milliseconds): the tiles are read
 ## at once, the texture is written a few frames later.
 static func update(terrain: Callable, lo: Vector2i, size: int, current := Callable(), slice_usec := 0) -> void:
+	busy += 1
+	await _update(terrain, lo, size, current, slice_usec)
+	busy -= 1
+
+
+static func _update(terrain: Callable, lo: Vector2i, size: int, current: Callable, slice_usec: int) -> void:
 	texture()
 	var job := int(_jobs.get(lo, 0)) + 1
 	_jobs[lo] = job

@@ -25,6 +25,7 @@ func _init() -> void:
 	_test_the_shore_field_measures_the_bank()
 	_test_currents_decode()
 	_test_tree_images_are_clean()
+	_test_loading_waits_for_the_valley()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -547,6 +548,25 @@ func _test_the_shore_field_in_slices() -> void:
 	for i in 60:
 		await process_frame
 	_check(ShoreField._image.get_region(block).get_data() == bare, "an overtaken update gives up")
+
+
+func _test_loading_waits_for_the_valley() -> void:
+	var p := LoadingProgress.new()
+	_check(not p.done(10_000) and p.fraction() == 0.0, "nothing in yet: loading")
+	p.has_world = true
+	_check(not p.done(10_000), "the world but no chunk yet: loading")
+	p.chunk_came(1_000)
+	p.chunk_came(1_100)
+	p.built = 1
+	_check(not p.done(5_000), "a chunk still to build: loading")
+	p.built = 2
+	_check(not p.done(1_200), "chunks may still be coming: loading")
+	p.fields = 1
+	_check(not p.done(5_000), "a riverbank still smoothing: loading")
+	p.fields = 0
+	_check(p.done(1_100 + LoadingProgress.QUIET_MSEC) and p.fraction() == 1.0, "all in, all built, quiet: done")
+	p.chunk_came(2_000)
+	_check(p.fraction() < 1.0 and p.stage() == "Laying the ground", "a new chunk sets it back")
 
 
 func _test_currents_decode() -> void:

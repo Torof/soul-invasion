@@ -60,6 +60,10 @@ func connect_to(url: String = DEFAULT_URL) -> void:
 	if err != OK:
 		disconnected.emit("cannot connect to %s (error %d)" % [url, err])
 		_reconnect_in = RECONNECT_AFTER
+	else:
+		# Connecting: a refusal shows as the peer closed at the next poll,
+		# which must count as a loss and be retried (the server not up yet).
+		_state = WebSocketPeer.STATE_CONNECTING
 
 
 func send_move_to(x: int, y: int) -> void:
