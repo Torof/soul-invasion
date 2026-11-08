@@ -17,10 +17,12 @@ var _wind := true
 var _since := 0.0
 ## The longest frame since the last refresh, in milliseconds.
 var _worst_ms := 0.0
+## Frames since the last refresh.
+var _frames := 0
 
 
 func _ready() -> void:
-	layer = 60
+	layer = 110  # above the loading screen: loads are measured too
 	visible = false
 	var panel := PanelContainer.new()
 	panel.position = Vector2(12, 40)
@@ -46,6 +48,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event.keycode == KEY_F3:
 		visible = not visible
+		DevTiming.enabled = visible
+		DevTiming.take()
 		get_viewport().set_input_as_handled()
 	elif event.keycode == KEY_F4:
 		_wind = not _wind
@@ -57,20 +61,44 @@ func _unhandled_input(event: InputEvent) -> void:
 func _process(delta: float) -> void:
 	_worst_ms = maxf(_worst_ms, delta * 1000.0)
 	_since += delta
+	_frames += 1
 	if not visible or _since < REFRESH:
 		return
+	_label.text = report(_worst_ms) + "\n" + breakdown(DevTiming.take(), _frames)
 	_since = 0.0
-	_label.text = report(_worst_ms)
+	_frames = 0
 	_worst_ms = 0.0
+
+
+## Where the script time went since the last refresh (DevTiming), a
+## frame on average, the heaviest first; `parts` is DevTiming.take().
+func breakdown(parts: Dictionary, frames: int) -> String:
+	var per := maxf(float(frames), 1.0)
+	var names := parts.keys()
+	names.sort_custom(func(a: String, b: String) -> bool: return parts[a][0] > parts[b][0])
+	var measured := 0.0
+	for part: String in names:
+		measured += parts[part][0]
+	var lines: Array[String] = ["-- scripts measured: %.1f ms a frame --" % (measured / per)]
+	for part: String in names:
+		var ms: float = parts[part][0]
+		var times: int = parts[part][1]
+		if ms > 0.0:
+			lines.append("%s %.1f ms (%d, %.1f ms each)" % [part, ms / per, times, ms / maxf(times, 1)])
+		else:
+			lines.append("%s: %d" % [part, times])
+	return "\n".join(lines)
 
 
 ## The lines shown, from the engine's monitors and the world's counts.
 func report(worst_ms: float) -> String:
 	var lines: Array[String] = []
 	lines.append("%d fps   worst frame %.1f ms" % [Engine.get_frames_per_second(), worst_ms])
-	lines.append("scripts %.1f ms   physics %.1f ms" % [
+	# The engine's process step holds the scripts and also the waits (for
+	# the graphics card, or the system holding back a hidden window): what
+	# the scripts themselves cost is in the breakdown below.
+	lines.append("frame step %.1f ms (scripts and waits)" % [
 		Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0,
-		Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0,
 	])
 	lines.append("draw calls %d   canvas items %d" % [
 		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME),

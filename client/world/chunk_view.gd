@@ -644,6 +644,7 @@ func is_built() -> bool:
 
 
 func _draw() -> void:
+	DevTiming.tally("chunk redraws")
 	var signature := _terrain_signature()
 	if signature != _last_signature or not shore_field_on():
 		var frame := Engine.get_process_frames()
@@ -653,7 +654,9 @@ func _draw() -> void:
 			_last_signature = signature
 			_flats.clear()
 			_decor_cache.clear()
+			var t := DevTiming.start()
 			_draw_ground_layers()
+			DevTiming.add("chunk builds", t)
 		elif not waiting.has(self):
 			waiting.append(self)
 	for flat: Array in _flats:
