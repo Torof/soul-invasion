@@ -985,13 +985,21 @@ enum End {
 impl Rivers {
     /// Narrowest river, in tiles; narrower water is a brook.
     pub const MIN_WIDTH: u32 = 3;
-    /// Widest water, in tiles, where it is not a pool.
+    /// Widest a ford may spread, in tiles: a ford is half a metre deep
+    /// right across, so only a river carrying this many half-cubes or
+    /// fewer can have one (and a divergence's arm shoal into one).
     pub const MAX_WIDTH: u32 = 12;
-    /// Widest pool, in tiles: where its banks breathe out, a river may
-    /// widen past `MAX_WIDTH`.
+    /// Widest pool of a small river, in tiles: where its banks breathe
+    /// out, a river may widen to this, or to half again its own width,
+    /// whichever is more.
     pub const MAX_POOL_WIDTH: u32 = 18;
-    /// Deepest water, in half-metres; past that a river only widens.
-    pub const MAX_DEPTH: u8 = 8;
+    /// Deepest water, in half-metres (6 m, a great river); past that a
+    /// river only widens (8 November 2026; it was 4 m).
+    pub const MAX_DEPTH: u8 = 12;
+    /// Widest river, in tiles: a safeguard only, far past what any valley
+    /// gives (a river widens with its flow and no other limit; 8 November
+    /// 2026, it was 12, and a river took no more water past that).
+    pub const MAX_RIVER_WIDTH: u32 = 64;
     /// Deepest brook, in half-metres: one can still stand in it.
     pub const MAX_BROOK_DEPTH: u8 = 2;
     /// Half-cubes the main river brings in, at least and at most.
@@ -1447,10 +1455,10 @@ impl Rivers {
     /// width is about the square root of twice the flow when wide, of
     /// the flow when deep; the depth takes the rest. A brook (one or two
     /// wide) is at most `MAX_BROOK_DEPTH` deep, a river at most
-    /// `MAX_DEPTH`: past that, the width takes everything, up to
-    /// `MAX_WIDTH`.
+    /// `MAX_DEPTH`: past that, the width takes everything. The section
+    /// always holds the flow (up to the safeguard `MAX_RIVER_WIDTH`).
     pub fn section(flow: i64, shape: Shape) -> (i64, i64) {
-        let widest = i64::from(Self::MAX_WIDTH);
+        let widest = i64::from(Self::MAX_RIVER_WIDTH);
         let flow = flow.max(1);
         let ceil_div = |a: i64, b: i64| (a + b - 1) / b;
         // round(sqrt(k × flow)) = round(sqrt(4k × flow) / 2).
@@ -1474,15 +1482,15 @@ impl Rivers {
 
     /// The widths a river carrying `flow` in a stretch of that `shape` may
     /// take when its banks breathe, in tiles, narrowest then widest: never
-    /// a brook, never deeper than `MAX_DEPTH`, and up to `MAX_POOL_WIDTH`.
-    /// Its own width always lies within.
+    /// a brook, never deeper than `MAX_DEPTH`, and up to `MAX_POOL_WIDTH`
+    /// or half again its own width. Its own width always lies within.
     fn breathing_room(flow: i64, shape: Shape) -> (i64, i64) {
         let width = Self::section(flow, shape).0;
         let deepest = i64::from(Self::MAX_DEPTH);
         let narrowest = i64::from(Self::MIN_WIDTH)
             .max((flow + deepest - 1) / deepest)
             .min(width);
-        let widest = i64::from(Self::MAX_POOL_WIDTH).max(width);
+        let widest = i64::from(Self::MAX_POOL_WIDTH).max(width * 3 / 2);
         (narrowest, widest)
     }
 
@@ -2962,13 +2970,20 @@ mod tests {
         // A tile half a metre deep holds one half-cube: width × depth
         // covers the flow, in either shape.
         for shape in [Shape::Wide, Shape::Deep] {
-            for flow in 1..300 {
+            // Up to the safeguard: 64 tiles × 6 m = 768 half-cubes.
+            let most = i64::from(Rivers::MAX_RIVER_WIDTH) * i64::from(Rivers::MAX_DEPTH);
+            for flow in 1..most {
                 let (width, depth) = Rivers::section(flow, shape);
-                assert!((1..=12).contains(&width), "flow {flow}: width {width}");
-                assert!((1..=8).contains(&depth), "flow {flow}: depth {depth}");
-                if flow <= 96 {
-                    assert!(width * depth >= flow, "flow {flow}: {width} × {depth}");
-                }
+                assert!(
+                    (1..=i64::from(Rivers::MAX_RIVER_WIDTH)).contains(&width),
+                    "flow {flow}: width {width}"
+                );
+                assert!(
+                    (1..=i64::from(Rivers::MAX_DEPTH)).contains(&depth),
+                    "flow {flow}: depth {depth}"
+                );
+                // The section always carries the flow: no water is lost.
+                assert!(width * depth >= flow, "flow {flow}: {width} × {depth}");
                 // A brook is one or two wide and a metre deep at most.
                 assert!(width >= 3 || depth <= 2, "flow {flow}: {width} × {depth}");
                 // The width never shrinks as the flow grows.
@@ -2981,9 +2996,33 @@ mod tests {
         assert_eq!(Rivers::section(2, Shape::Deep), (1, 2));
         assert_eq!(Rivers::section(8, Shape::Wide), (4, 2));
         assert_eq!(Rivers::section(8, Shape::Deep), (3, 3));
-        assert_eq!(Rivers::section(96, Shape::Wide), (12, 8));
-        // Past the deepest, the river only widens.
-        assert_eq!(Rivers::section(200, Shape::Deep), (12, 8));
+        assert_eq!(Rivers::section(96, Shape::Wide), (14, 7));
+        // A great river: twenty-one wide and five and a half metres deep.
+        assert_eq!(Rivers::section(224, Shape::Wide), (21, 11));
+        // Past the deepest (6 m), the river only widens.
+        assert_eq!(Rivers::section(200, Shape::Deep), (17, 12));
+    }
+
+    #[test]
+    fn every_river_of_the_valley_carries_its_flow() {
+        // On the first valley's size, all along every water: the section
+        // of each step holds what flows there, however many junctions came
+        // before, and the widest river stays far from the safeguard.
+        let r = Rivers::generate(3072, 3072, 384, 1);
+        let mut widest = 0;
+        for water in &r.network {
+            for step in 0..water.path.len() {
+                let flow = water.flow_at(step, &r.network);
+                let (width, depth) = Rivers::section(flow, water.shape_at(step));
+                assert!(width * depth >= flow, "flow {flow}: {width} × {depth}");
+                widest = widest.max(width);
+            }
+        }
+        assert!(widest > 12, "the main river widens past 12: {widest}");
+        assert!(
+            widest < i64::from(Rivers::MAX_RIVER_WIDTH) / 2,
+            "widest {widest}"
+        );
     }
 
     #[test]
