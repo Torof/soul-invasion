@@ -78,10 +78,20 @@ const REDRAWS_PER_FRAME := 2
 var _standing: Node2D
 ## chunk -> the node holding its trees.
 var _tree_nodes: Dictionary = {}
+## Chunk key -> {screen cell: [trees whose image covers that cell]}, cells
+## of TREE_CELL_PX: the trees under a point are found without looking at
+## every tree (see-through).
+var _tree_cells: Dictionary = {}
+const TREE_CELL_PX := 128.0
 ## body id -> the node drawing it.
 var _body_nodes: Dictionary = {}
 ## The trees whose see-through flags are set, to clear them later.
-var _flagged: Array = []
+var _flagged: Dictionary = {}
+## What the see-through flags were last worked out for (the mouse, the
+## bodies and where they stand), and how long ago.
+var _flags_looked: Array = []
+var _flags_age := 0.0
+const FLAGS_REFRESH := 0.25
 ## The camera's position and zoom at the last drawing.
 var _last_view := Vector3.INF
 var _drag_start := Vector2.ZERO
@@ -160,6 +170,7 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	_tiles.clear()
 	_currents.clear()
 	_trees.clear()
+	_tree_cells.clear()
 	for n: Node in _tree_nodes.values():
 		n.queue_free()
 	_tree_nodes.clear()
@@ -437,6 +448,7 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 		_tiles.erase(key)
 		_currents.erase(key)
 		_trees.erase(key)
+		_tree_cells.erase(key)
 		var gone: Node = _tree_nodes.get(key)
 		if gone != null:
 			gone.queue_free()
@@ -684,10 +696,27 @@ func _plant_chunk(key: Vector2i, view: ChunkView) -> void:
 	var holder := Node2D.new()
 	holder.y_sort_enabled = true
 	holder.use_parent_material = true
+	var cells := {}
 	for tree: Dictionary in _trees[key]:
-		var node := Trees.TreeNode.new(tree, int(_tree_heights.get(tree["species"], 400)))
+		var height := int(_tree_heights.get(tree["species"], 400))
+		var node := Trees.TreeNode.new(tree, height)
 		tree["node"] = node
 		holder.add_child(node)
+		var images := Trees.textures(str(tree["species"]))
+		if images.is_empty():
+			continue
+		var at: Vector2 = tree["at"]
+		var r := Trees.rect(at, height, images[Trees.variant(at, images.size())])
+		tree["rect"] = r
+		var lo := (r.position / TREE_CELL_PX).floor()
+		var hi := (r.end / TREE_CELL_PX).floor()
+		for cy in range(int(lo.y), int(hi.y) + 1):
+			for cx in range(int(lo.x), int(hi.x) + 1):
+				var cell := Vector2i(cx, cy)
+				if not cells.has(cell):
+					cells[cell] = []
+				cells[cell].append(tree)
+	_tree_cells[key] = cells
 	_standing.add_child(holder)
 	_tree_nodes[key] = holder
 	var shadows: Trees.ShadowLayer = view.get_node_or_null("Shadows")
@@ -733,11 +762,10 @@ class BodyNode:
 ## The see-through flags of the trees near the body and the mouse; the
 ## others are cleared. Only the trees in the chunks around them are
 ## looked at.
-func _update_flags() -> void:
+func _update_flags(mouse: Vector2) -> void:
 	_body_hidden = false
 	_mouse_hidden = false
 	var keys := {}
-	var mouse := get_local_mouse_position()
 	var places: Array = [Iso.screen_to_tile(mouse)]
 	if _bodies.has(_piloted):
 		places.append(_tile_of(_bodies[_piloted]["at"]))
@@ -746,19 +774,36 @@ func _update_flags() -> void:
 		for dy in range(-1, 2):
 			for dx in range(-1, 2):
 				keys[c + Vector2i(dx, dy)] = true
-	var now: Array = []
+	# What lies near the mouse is looked for once a frame, not once a tree;
+	# only the trees whose image covers the mouse or the body's circle are
+	# looked at, through the cells of the screen they cover.
+	var behind := _nearest_depth_near(mouse)
+	var wanted: Array[Vector2i] = [Vector2i((mouse / TREE_CELL_PX).floor())]
+	if _bodies.has(_piloted):
+		var radius := BODY_SEE_M * Iso.PX_PER_M
+		var centre := _body_see_centre()
+		var lo := ((centre - Vector2(radius, radius)) / TREE_CELL_PX).floor()
+		var hi := ((centre + Vector2(radius, radius)) / TREE_CELL_PX).floor()
+		for cy in range(int(lo.y), int(hi.y) + 1):
+			for cx in range(int(lo.x), int(hi.x) + 1):
+				wanted.append(Vector2i(cx, cy))
+	var seen := {}
+	var now := {}
 	for key in keys:
-		for tree: Dictionary in _trees.get(key, []):
-			var node: Trees.TreeNode = tree.get("node")
-			if node == null:
-				continue
-			var f := _see_through_flags(tree, node.height_cm)
-			if f != 0:
-				now.append(node)
-			node.set_flags(f)
-	for node: Trees.TreeNode in _flagged:
+		var cells: Dictionary = _tree_cells.get(key, {})
+		for cell in wanted:
+			for tree: Dictionary in cells.get(cell, []):
+				var node: Trees.TreeNode = tree.get("node")
+				if node == null or seen.has(node):
+					continue
+				seen[node] = true
+				var f := _see_through_flags(tree, node.height_cm, mouse, behind)
+				if f != 0:
+					now[node] = true
+					node.set_flags(f)
+	for node: Variant in _flagged:
 		if is_instance_valid(node) and not now.has(node):
-			node.set_flags(0)
+			(node as Trees.TreeNode).set_flags(0)
 	_flagged = now
 
 
@@ -773,48 +818,66 @@ func _body_see_centre() -> Vector2:
 ## the body's when it stands in front of the piloted body and covers its
 ## circle; the mouse's when it covers the mouse and something (a body, an
 ## item) lies behind it near the mouse.
-func _see_through_flags(tree: Dictionary, height_cm: int) -> int:
+## `behind`: the smallest depth (x + y, millimetres) of a body or an item
+## near the mouse (_nearest_depth_near), INF when there is none.
+func _see_through_flags(tree: Dictionary, height_cm: int, mouse: Vector2, behind: float) -> int:
 	var flags := 0
 	var at: Vector2 = tree["at"]
-	var images := Trees.textures(str(tree["species"]))
-	if images.is_empty():
-		return 0
-	var r := Trees.rect(at, height_cm, images[Trees.variant(at, images.size())])
+	# The tree's rectangle never changes: worked out once.
+	if not tree.has("rect"):
+		var images := Trees.textures(str(tree["species"]))
+		if images.is_empty():
+			return 0
+		tree["rect"] = Trees.rect(at, height_cm, images[Trees.variant(at, images.size())])
+	var r: Rect2 = tree["rect"]
 	if _bodies.has(_piloted):
 		var body: Vector2 = _bodies[_piloted]["at"]
 		var centre := _body_see_centre()
 		if at.x + at.y > body.x + body.y and r.grow(BODY_SEE_M * Iso.PX_PER_M).has_point(centre):
 			flags |= 1
 			_body_hidden = true
-	var mouse := get_local_mouse_position()
-	if r.has_point(mouse) and _something_behind(at, mouse):
+	if r.has_point(mouse) and behind < at.x + at.y:
 		flags |= 2
 		_mouse_hidden = true
 	return flags
 
 
-## A body or an item standing behind the tree at `at` (farther from the
-## camera) within the mouse's circle around `mouse`.
-func _something_behind(at: Vector2, mouse: Vector2) -> bool:
+## The smallest depth (x + y, in millimetres: the farthest from the
+## camera) of a body within half again the mouse's circle around `mouse`,
+## or an item within it; INF when there is none. A tree covering the
+## mouse hides something when this lies behind its foot. Items are looked
+## for only in the chunks around the mouse.
+func _nearest_depth_near(mouse: Vector2) -> float:
 	var reach := MOUSE_SEE_M * Iso.PX_PER_M
-	var depth := at.x + at.y
+	var nearest := INF
 	for id: int in _bodies:
 		var b: Vector2 = _bodies[id]["at"]
-		if b.x + b.y < depth and Iso.point_to_screen(b).distance_to(mouse) < reach * 1.5:
-			return true
-	for key in _items:
-		for item: Dictionary in _items[key]:
-			var p := Vector2(int(item.get("x", 0)) * 1000 + 500, int(item.get("y", 0)) * 1000 + 500)
-			if p.x + p.y < depth and Iso.point_to_screen(p).distance_to(mouse) < reach:
-				return true
-	return false
+		if Iso.point_to_screen(b).distance_to(mouse) < reach * 1.5:
+			nearest = minf(nearest, b.x + b.y)
+	var c := Iso.chunk_of(Iso.screen_to_tile(mouse), _chunk_size)
+	for dy in range(-1, 2):
+		for dx in range(-1, 2):
+			for item: Dictionary in _items.get(c + Vector2i(dx, dy), []):
+				var p := Vector2(int(item.get("x", 0)) * 1000 + 500, int(item.get("y", 0)) * 1000 + 500)
+				if Iso.point_to_screen(p).distance_to(mouse) < reach:
+					nearest = minf(nearest, p.x + p.y)
+	return nearest
 
 
 ## Eases the see-through circles open or shut and hands them to the trees'
 ## shader; redraws when the mouse moves, since which tree it hides changes.
 func _update_see_through(delta: float) -> void:
 	_sync_bodies()
-	_update_flags()
+	var mouse := get_local_mouse_position()
+	# Which trees to see through changes only when the mouse or a body
+	# moves; looked at again then, or a few times a second at most else
+	# (an item laid or taken near the mouse).
+	var looked := [mouse, _bodies.keys(), _bodies.values().map(func(b: Dictionary) -> Vector2: return b["at"])]
+	_flags_age += delta
+	if looked != _flags_looked or _flags_age >= FLAGS_REFRESH:
+		_flags_looked = looked
+		_flags_age = 0.0
+		_update_flags(mouse)
 	var step := delta / SEE_EASE
 	_body_reveal = move_toward(_body_reveal, 1.0 if _body_hidden else 0.0, step)
 	_mouse_reveal = move_toward(_mouse_reveal, 1.0 if _mouse_hidden else 0.0, step)
@@ -824,7 +887,6 @@ func _update_see_through(delta: float) -> void:
 	sway.set_shader_parameter("body_at", _body_see_centre())
 	sway.set_shader_parameter("body_radius", BODY_SEE_M * Iso.PX_PER_M)
 	sway.set_shader_parameter("body_reveal", _body_reveal)
-	var mouse := get_local_mouse_position()
 	sway.set_shader_parameter("mouse_at", mouse)
 	sway.set_shader_parameter("mouse_radius", MOUSE_SEE_M * Iso.PX_PER_M)
 	sway.set_shader_parameter("mouse_reveal", _mouse_reveal)
