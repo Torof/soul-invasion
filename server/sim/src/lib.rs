@@ -533,9 +533,9 @@ pub struct World {
     trees: Vec<trees::Tree>,
 }
 
-/// Side of the first version's valley, in tiles: about 1.5 km, eighteen
+/// Side of the first version's valley, in tiles: about 3 km, thirty-six
 /// minutes of walking (D31).
-pub const VALLEY_SIZE: u32 = 1536;
+pub const VALLEY_SIZE: u32 = 3072;
 
 /// Seed of the first version's valley.
 pub const VALLEY_SEED: u64 = 1;
@@ -1309,8 +1309,14 @@ mod tests {
         let mut a = small_world();
         let mut b = small_world();
         let (mut ea, mut eb) = (Vec::new(), Vec::new());
-        go(&mut a, Pos::new(30, 200));
-        go(&mut b, Pos::new(30, 200));
+        // Some grass near body 1, whatever the valley's size.
+        let start = a.body(BodyId(1)).expect("body 1").pos();
+        let target = a
+            .map()
+            .nearest(Pos::new(start.x + 20, start.y), Terrain::Grass)
+            .expect("grass near the camp");
+        go(&mut a, target);
+        go(&mut b, target);
         a.advance(1_000, &rules(), &mut ea);
         b.advance(1_000, &rules(), &mut eb);
         assert_eq!(a.tick(), b.tick());

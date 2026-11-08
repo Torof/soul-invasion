@@ -214,8 +214,7 @@ fn run_paced_server(
         .build()?;
 
     let listener = runtime.block_on(TcpListener::bind(opts.listen))?;
-    // Tests parse this line to learn the port: keep its shape stable.
-    println!("listening on {}", listener.local_addr()?);
+    let address = listener.local_addr()?;
     match opts.days {
         Some(days) => println!(
             "paced: time scale x{}, stopping after {days} day(s)",
@@ -236,6 +235,10 @@ fn run_paced_server(
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let acceptor = runtime.spawn(serve(listener, Arc::clone(&shared), shutdown_rx));
+    // Ready once the shared state is built and connections are accepted
+    // (a large valley takes a moment to copy). Tests parse this line to
+    // learn the port: keep its shape stable.
+    println!("listening on {address}");
 
     let mut simulation = {
         let shared = Arc::clone(&shared);

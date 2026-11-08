@@ -1019,15 +1019,19 @@ impl Rivers {
     /// A brook entering by an edge (or rising at the cliff's foot) goes at
     /// least this many tiles away from it, rather than along it.
     const BROOK_INWARD: i64 = 30;
+    /// Past its first `BROOK_LEAVE` steps, a brook keeps at least this
+    /// many tiles from the map's edges and the cliff.
+    const BROOK_EDGE_CLEAR: i64 = 5;
+    const BROOK_LEAVE: usize = 8;
     /// Two brooks never run closer than this many tiles, except over the
     /// last stretch of one, where it comes to join the other.
     const BROOK_SPACING: i64 = 25;
     /// How many tributaries enter by the edges, in tenths for every 256
-    /// tiles of the map's side, at least and at most: 3 to 4 on 256 × 256,
-    /// 18 to 27 on 1536 × 1536, so the valley is about 3 % water. By the
+    /// tiles of the map's side, at least and at most: 2 to 3 on 256 × 256,
+    /// 22 to 34 on 3072 × 3072, so the valley is about 2 % water. By the
     /// side, like the brooks: they enter along the edges, and counted by
     /// the ground they would make a large map mostly water.
-    const TRIBUTARIES_TENTHS: (u32, u32) = (30, 45);
+    const TRIBUTARIES_TENTHS: (u32, u32) = (18, 28);
     /// Longest brook, in steps: one that wanders further is no brook.
     const BROOK_STEPS: usize = 250;
     /// How fast water runs where its section just holds its flow, in
@@ -1346,7 +1350,8 @@ impl Rivers {
         top: i64,
         rng: &mut Lcg,
     ) -> bool {
-        let Some(aim) = self.nearest_water(start.0, start.1) else {
+        let reach = i64::try_from(Self::BROOK_STEPS).expect("small");
+        let Some(aim) = self.nearest_water(start.0, start.1, reach) else {
             return false;
         };
         let heading = heading_towards(aim.0 - start.0 * 1000, aim.1 - start.1 * 1000);
@@ -1383,6 +1388,16 @@ impl Rivers {
             }
         };
         if path.iter().map(off_edge).max().unwrap_or(0) < Self::BROOK_INWARD {
+            return false;
+        }
+        // Nor does it run along any edge: past its first steps, it keeps
+        // clear of the map's edges and of the cliff (along an edge, half
+        // of it would lie past the ground drawn).
+        let edge_clear = |s: &Step| {
+            let (x, y) = (s.x / 1000, s.y / 1000);
+            x.min(wide - 1 - x).min(tall - 1 - y).min(y - top - 1) >= Self::BROOK_EDGE_CLEAR
+        };
+        if !path.iter().skip(Self::BROOK_LEAVE).all(edge_clear) {
             return false;
         }
         let spaced = usize::try_from(Self::BROOK_SPACING).expect("small");
@@ -1516,14 +1531,40 @@ impl Rivers {
         })
     }
 
-    /// The water tile closest to `(x, y)`, in thousandths.
-    fn nearest_water(&self, x: i64, y: i64) -> Option<(i64, i64)> {
-        let (w, h) = (i64::from(self.width), i64::from(self.height));
-        (0..h)
-            .flat_map(|ty| (0..w).map(move |tx| (tx, ty)))
-            .filter(|(tx, ty)| self.depth[self.index(*tx, *ty).expect("inside")] > 0)
-            .min_by_key(|(tx, ty)| (tx - x) * (tx - x) + (ty - y) * (ty - y))
-            .map(|(tx, ty)| (tx * 1000, ty * 1000))
+    /// The water tile closest to `(x, y)` within `reach` tiles, in
+    /// thousandths: searched ring by ring outwards, so it costs what lies
+    /// around the point, not the whole map. Ties go to the first found,
+    /// row by row.
+    fn nearest_water(&self, x: i64, y: i64, reach: i64) -> Option<(i64, i64)> {
+        let mut best: Option<(i64, (i64, i64))> = None;
+        for r in 0..=reach {
+            // Every tile of ring r is at least r away: past the best found,
+            // nothing nearer remains.
+            if best.is_some_and(|(d, _)| d < r * r) {
+                break;
+            }
+            for ty in y - r..=y + r {
+                let edge_row = ty == y - r || ty == y + r;
+                let step = if edge_row {
+                    1
+                } else {
+                    usize::try_from(2 * r).expect("small").max(1)
+                };
+                for tx in (x - r..=x + r).step_by(step) {
+                    let Some(i) = self.index(tx, ty) else {
+                        continue;
+                    };
+                    if self.depth[i] == 0 {
+                        continue;
+                    }
+                    let d = (tx - x) * (tx - x) + (ty - y) * (ty - y);
+                    if best.is_none_or(|(b, _)| d < b) {
+                        best = Some((d, (tx, ty)));
+                    }
+                }
+            }
+        }
+        best.map(|(_, (tx, ty))| (tx * 1000, ty * 1000))
     }
 
     /// Traces a tributary from `start` towards a point of the main river
@@ -2740,6 +2781,13 @@ mod tests {
                 let (x, y) = (s.x / 1000, s.y / 1000);
                 (0..i64::from(size)).contains(&x) && (i64::from(top)..i64::from(size)).contains(&y)
             }));
+            // Never along an edge, past its first steps.
+            assert!(b.path.iter().skip(Rivers::BROOK_LEAVE).all(|s| {
+                let (x, y) = (s.x / 1000, s.y / 1000);
+                let last = i64::from(size) - 1;
+                x.min(last - x).min(last - y).min(y - i64::from(top) - 1)
+                    >= Rivers::BROOK_EDGE_CLEAR
+            }));
             let (x, y) = (b.path[0].x / 1000, b.path[0].y / 1000);
             let edge = i64::from(size) - 1;
             from_edges += usize::from(x == 0 || x == edge || y == edge || y == i64::from(top) + 1);
@@ -2876,13 +2924,13 @@ mod tests {
     }
 
     #[test]
-    fn the_valley_is_about_three_percent_water() {
+    fn the_valley_is_about_two_percent_water() {
         // Rivers and brooks are landmarks, not the landscape. On the first
-        // valley's size, 1536 × 1536 (8 November 2026), water lies on about
-        // 3 % of the ground below the cliff, on average over a few maps (one
-        // map alone ranges from under 2 % to near 4 %). Measured here, not on
-        // small maps, where the one main river weighs far more.
-        let (size, top) = (1536_u32, 192_u32);
+        // valley's size, 3072 × 3072 (8 November 2026), water lies on about
+        // 2 % of the ground below the cliff, on average over a few maps (one
+        // map alone ranges from 1.5 % to 2.5 %). Measured here, not on small
+        // maps, where the one main river weighs far more.
+        let (size, top) = (3072_u32, 384_u32);
         let (mut wet, mut ground) = (0_u64, 0_u64);
         for seed in 1..=4 {
             let r = Rivers::generate(size, size, top, seed);
@@ -2895,7 +2943,7 @@ mod tests {
         }
         let share = wet * 1000 / ground;
         eprintln!("water on {share} per mille of the valley");
-        assert!((20..=35).contains(&share), "{share} per mille");
+        assert!((15..=25).contains(&share), "{share} per mille");
     }
 
     #[test]
