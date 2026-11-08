@@ -26,7 +26,24 @@ uniform float foot_dark = 0.16;
 uniform float foot_melt = 0.05;
 uniform vec3 earth : source_color = vec3(0.30, 0.27, 0.16);
 
+// Seeing through: a tree in front of the piloted body fades within a
+// circle around it, and a tree hiding something under the mouse within a
+// circle around the mouse. Centres and radii in the world view's pixels;
+// the strengths ease in and out (the world view sets them every frame).
+uniform vec2 body_at = vec2(-1e6);
+uniform float body_radius = 96.0;
+uniform float body_reveal = 0.0;
+uniform vec2 mouse_at = vec2(-1e6);
+uniform float mouse_radius = 77.0;
+uniform float mouse_reveal = 0.0;
+// What is left of a tree inside a circle, and the soft rim, in pixels.
+uniform float see_through = 0.25;
+uniform float see_rim = 18.0;
+
 varying float is_tree;
+varying vec2 local;
+varying float front_of_body;
+varying float hides_mouse;
 varying float bend_px;
 varying float width_px;
 varying float pad;
@@ -38,6 +55,11 @@ void vertex() {
 		float height = COLOR.r * 640.0;
 		float phase = COLOR.b * 6.2831853;
 		seed = COLOR.b;
+		// Green: 0.25 nothing, +0.25 in front of the body, +0.5 hiding what
+		// is under the mouse.
+		float flags = round((COLOR.g - 0.25) * 4.0);
+		front_of_body = mod(flags, 2.0);
+		hides_mouse = floor(flags / 2.0);
 		vec2 at = (MODEL_MATRIX * vec4(VERTEX, 0.0, 1.0)).xy;
 		float wind = smoothstep(0.45, 0.8, texture(noise_texture, at * gust_scale + vec2(TIME * gust_speed, 0.0)).r);
 		float rock = sin(TIME * rock_speed + phase) * 0.7 + sin(TIME * rock_speed * 1.9 + phase * 1.7) * 0.3;
@@ -48,6 +70,7 @@ void vertex() {
 		// Widen the quad either side by the largest bend.
 		pad = (sway + gust * 1.5) * height + 1.0;
 		VERTEX.x += (UV.x * 2.0 - 1.0) * pad;
+		local = VERTEX;
 	}
 }
 
@@ -76,6 +99,10 @@ void fragment() {
 				+ texture(noise_texture, vec2(uv.x * 11.0 + seed * 3.0, low * 23.0)).r * 0.4;
 			c.rgb = mix(c.rgb, earth, melt * 0.6);
 			c.a *= 1.0 - smoothstep(n - 0.15, n + 0.15, melt);
+			// See through it, within the circles that apply to it.
+			float in_body = (1.0 - smoothstep(body_radius - see_rim, body_radius, distance(local, body_at))) * front_of_body * body_reveal;
+			float in_mouse = (1.0 - smoothstep(mouse_radius - see_rim, mouse_radius, distance(local, mouse_at))) * hides_mouse * mouse_reveal;
+			c.a *= 1.0 - max(in_body, in_mouse) * (1.0 - see_through);
 			COLOR = c;
 		}
 	}

@@ -90,7 +90,9 @@ static func rect(at: Vector2, height_cm: int, texture: Texture2D) -> Rect2:
 
 ## Draws the tree `tree` ({"at": Vector2 in millimetres, "species"}) on
 ## `canvas`, if its kind has an image.
-static func draw(canvas: CanvasItem, tree: Dictionary, height_cm: int) -> void:
+## `flags`: 1 when the tree stands in front of the piloted body, +2 when
+## it hides something under the mouse (trees.gdshader fades it there).
+static func draw(canvas: CanvasItem, tree: Dictionary, height_cm: int, flags: int = 0) -> void:
 	var images := textures(str(tree["species"]))
 	if images.is_empty():
 		return
@@ -99,5 +101,5 @@ static func draw(canvas: CanvasItem, tree: Dictionary, height_cm: int) -> void:
 	var r := rect(at, height_cm, texture)
 	# The modulate tells the sway shader (trees.gdshader) it is a tree, how
 	# tall, and its phase; the shader draws the image untinted.
-	var marker := Color(clampf(r.size.y / 640.0, 0.0, 1.0), 1.0, place_hash(at, 11), 0.94)
+	var marker := Color(clampf(r.size.y / 640.0, 0.0, 1.0), 0.25 + 0.25 * float(flags), place_hash(at, 11), 0.94)
 	canvas.draw_texture_rect(texture, r, false, marker)
