@@ -29,3 +29,6 @@ the point where the server says the trunk meets the ground.
   (`content/ai-reserve/`).
 
 Licensed under CC BY-NC-SA 4.0 like all content (`docs/LICENSE`).
+
+**8 November 2026, second cut**: every tree is now cut out by shape (the background reached from the border through its own colour, the trunk followed down and protected). The second hazel, the second wild apple and the second willow had grass and a shadow painted at their foot that could not be told from their bark: the project lead removed them in Midjourney's edit mode, and these edits are the images used.
+
