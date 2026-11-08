@@ -28,3 +28,6 @@ must_use_candidate = "allow"
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
+
+[profile.dev.package.sim]
+opt-level = 2

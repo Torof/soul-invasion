@@ -1022,13 +1022,12 @@ impl Rivers {
     /// Two brooks never run closer than this many tiles, except over the
     /// last stretch of one, where it comes to join the other.
     const BROOK_SPACING: i64 = 25;
-    /// How many tributaries enter by the edges on a map of
-    /// `REFERENCE_TILES`, at least and at most.
-    const TRIBUTARIES: (u32, u32) = (1, 2);
-    /// The ground the counts of waters are given for (the first valley,
-    /// 256 × 256): a larger map has as many more as it has ground, so its
-    /// waters keep the same density; a smaller one keeps these counts.
-    const REFERENCE_TILES: u64 = 256 * 256;
+    /// How many tributaries enter by the edges, in tenths for every 256
+    /// tiles of the map's side, at least and at most: 3 to 4 on 256 × 256,
+    /// 18 to 27 on 1536 × 1536, so the valley is about 3 % water. By the
+    /// side, like the brooks: they enter along the edges, and counted by
+    /// the ground they would make a large map mostly water.
+    const TRIBUTARIES_TENTHS: (u32, u32) = (30, 45);
     /// Longest brook, in steps: one that wanders further is no brook.
     const BROOK_STEPS: usize = 250;
     /// How fast water runs where its section just holds its flow, in
@@ -1118,7 +1117,10 @@ impl Rivers {
         // drawn at random and the next from the other: each heads for a
         // point of the main river downstream and ends where it meets water.
         let first = rng.next_below(2);
-        for n in 0..between(&mut rng, Self::scaled(width, height, Self::TRIBUTARIES)) {
+        for n in 0..between(
+            &mut rng,
+            Self::by_side(width, height, Self::TRIBUTARIES_TENTHS),
+        ) {
             let side = if (u32::try_from(n).expect("few") + first).is_multiple_of(2) {
                 0
             } else {
@@ -1253,19 +1255,17 @@ impl Rivers {
         }
     }
 
-    /// A count of waters given for `REFERENCE_TILES`, for a map of
-    /// `width × height`: multiplied by how many times more ground it has,
-    /// rounded; never fewer than given.
-    fn scaled(width: u32, height: u32, (lo, hi): (u32, u32)) -> (u32, u32) {
-        let tiles = u64::from(width) * u64::from(height);
-        let scale = |n: u32| {
-            u32::try_from(
-                (u64::from(n) * tiles + Self::REFERENCE_TILES / 2) / Self::REFERENCE_TILES,
-            )
-            .unwrap_or(u32::MAX)
-            .max(n)
+    /// A count given in tenths for every 256 tiles of a map's mean side,
+    /// at least and at most, as whole counts for a map of `width ×
+    /// height`, rounded, never zero.
+    fn by_side(width: u32, height: u32, (lo, hi): (u32, u32)) -> (u32, u32) {
+        let side = u64::midpoint(u64::from(width), u64::from(height));
+        let count = |tenths: u32| {
+            u32::try_from((u64::from(tenths) * side / 256 + 5) / 10)
+                .unwrap_or(u32::MAX)
+                .max(1)
         };
-        (scale(lo), scale(hi))
+        (count(lo), count(hi))
     }
 
     /// The brooks: most enter by the map's edges (west, east, south) or
@@ -1277,13 +1277,7 @@ impl Rivers {
         let (width, height) = (self.width, self.height);
         let (wide, tall, top) = (i64::from(width), i64::from(height), i64::from(cliff_rows));
         let wetness = Groves::with_cell(width, height, seed ^ 0x77e7, 32);
-        let side = u64::midpoint(u64::from(width), u64::from(height));
-        let tenths = |n: u32| {
-            u32::try_from((u64::from(n) * side / 256 + 5) / 10)
-                .unwrap_or(u32::MAX)
-                .max(1)
-        };
-        let (lo, hi) = (tenths(Self::BROOKS_TENTHS.0), tenths(Self::BROOKS_TENTHS.1));
+        let (lo, hi) = Self::by_side(width, height, Self::BROOKS_TENTHS);
         let count = lo + rng.next_below(hi - lo + 1);
         // Tiles within `BROOK_SPACING` of a brook already laid.
         let mut near_brook = vec![false; (width * height) as usize];
@@ -2882,26 +2876,26 @@ mod tests {
     }
 
     #[test]
-    fn waters_cover_little_of_the_valley() {
-        // Rivers and brooks are landmarks, not the landscape: a small share
-        // of the valley below the cliff, over six maps.
-        let (mut wet, mut ground, mut waters) = (0, 0, 0);
-        for seed in 1..=6 {
-            let r = Rivers::generate(256, 256, 32, seed);
-            waters += r.network.len();
-            for y in 32..256 {
-                for x in 0..256 {
+    fn the_valley_is_about_three_percent_water() {
+        // Rivers and brooks are landmarks, not the landscape. On the first
+        // valley's size, 1536 × 1536 (8 November 2026), water lies on about
+        // 3 % of the ground below the cliff, on average over a few maps (one
+        // map alone ranges from under 2 % to near 4 %). Measured here, not on
+        // small maps, where the one main river weighs far more.
+        let (size, top) = (1536_u32, 192_u32);
+        let (mut wet, mut ground) = (0_u64, 0_u64);
+        for seed in 1..=4 {
+            let r = Rivers::generate(size, size, top, seed);
+            for y in top..size {
+                for x in 0..size {
                     ground += 1;
-                    wet += usize::from(r.depth_at(x, y) > 0);
+                    wet += u64::from(r.depth_at(x, y) > 0);
                 }
             }
         }
         let share = wet * 1000 / ground;
-        eprintln!("water on {share} per mille of the valley, {waters} waters on six maps");
-        // About 4 to 5 % of the valley, six waters a map (it was 5 % and
-        // nine); brooks are long since 8 November 2026.
-        assert!(share <= 50, "{share} per mille");
-        assert!(waters <= 6 * 7, "{waters} waters on six maps");
+        eprintln!("water on {share} per mille of the valley");
+        assert!((20..=35).contains(&share), "{share} per mille");
     }
 
     #[test]
