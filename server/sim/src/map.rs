@@ -10,11 +10,20 @@
 //! The grid is cut into square chunks of [`CHUNK_SIZE`] tiles, the unit
 //! of transfer and of interest (D08, D31).
 
+// Generation is integer-only (invariant R7): no float arithmetic here,
+// and no float maths functions (`sim/clippy.toml`). The terrain and the
+// waters have no exception. This module also holds geometry for moving
+// bodies, which is not generation: `FinePos::distance_to` and
+// `line_clear` are allowed where they stand, until they move out of the
+// generator's module.
+#![warn(clippy::float_arithmetic)]
+
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
+use crate::r#gen::{Groves, Lcg};
 use crate::woods::{Habitat, Woods};
 
 /// Side of a chunk, in tiles.
@@ -106,6 +115,9 @@ impl FinePos {
     }
 
     /// Straight-line distance to another position, in millimetres.
+    // Not generation (it moves bodies), so not an R7 exception to remove;
+    // allowed here because it sits in the generator's module.
+    #[allow(clippy::disallowed_methods)]
     pub fn distance_to(self, other: Self) -> f64 {
         let dx = f64::from(other.x - self.x);
         let dy = f64::from(other.y - self.y);
@@ -656,7 +668,9 @@ impl Map {
 /// Walks the tiles the segment passes through; where it goes exactly
 /// through a corner it may graze one disallowed tile but never slip
 /// between two.
-#[allow(clippy::cast_possible_truncation)]
+// Not generation (it pulls a walked path taut), so not an R7 exception
+// to remove; allowed here because it sits in the generator's module.
+#[allow(clippy::cast_possible_truncation, clippy::float_arithmetic)]
 pub fn line_clear(a: FinePos, b: FinePos, allowed: impl Fn(Pos) -> bool) -> bool {
     let scale = f64::from(MM_PER_TILE);
     let (x0, y0) = (f64::from(a.x) / scale, f64::from(a.y) / scale);
@@ -721,75 +735,6 @@ fn octile(a: Pos, b: Pos) -> u32 {
     let dx = a.x.abs_diff(b.x);
     let dy = a.y.abs_diff(b.y);
     STRAIGHT_COST * dx.max(dy) + (DIAGONAL_COST - STRAIGHT_COST) * dx.min(dy)
-}
-
-/// A tiny deterministic generator, so world generation needs no dependency
-/// and gives the same valley on every machine.
-pub(crate) struct Lcg(u64);
-
-impl Lcg {
-    pub(crate) fn new(seed: u64) -> Self {
-        Self(seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1))
-    }
-
-    pub(crate) fn next_below(&mut self, bound: u32) -> u32 {
-        self.0 = self
-            .0
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1_442_695_040_888_963_407);
-        u32::try_from((self.0 >> 33) % u64::from(bound)).expect("below bound")
-    }
-}
-
-/// Smooth value noise on a coarse lattice, for what comes in patches
-/// rather than salt and pepper (the woods, the wet ground).
-pub(crate) struct Groves {
-    cell: u32,
-    columns: u32,
-    values: Vec<u32>,
-}
-
-impl Groves {
-    /// Smooth noise on a lattice of `cell` tiles, for things that come in
-    /// patches: the woods' massifs, where the ground is wet.
-    pub(crate) fn with_cell(width: u32, height: u32, seed: u64, cell: u32) -> Self {
-        let columns = width / cell + 2;
-        let rows = height / cell + 2;
-        let mut rng = Lcg::new(seed);
-        let values = (0..columns * rows).map(|_| rng.next_below(1000)).collect();
-        Self {
-            cell,
-            columns,
-            values,
-        }
-    }
-
-    /// The noise at a tile, in 0..1000, eased between lattice points
-    /// (smoothstep) so that broad patches come out round, not diamond.
-    pub(crate) fn smooth(&self, x: u32, y: u32) -> u32 {
-        let c = u64::from(self.cell);
-        let ease = |f: u32| {
-            let f = u64::from(f);
-            u32::try_from(f * f * (3 * c - 2 * f) / (c * c)).expect("within a cell")
-        };
-        let (cx, fx) = (x / self.cell, ease(x % self.cell));
-        let (cy, fy) = (y / self.cell, ease(y % self.cell));
-        let at = |i: u32, j: u32| self.values[(j * self.columns + i) as usize];
-        let top = at(cx, cy) * (self.cell - fx) + at(cx + 1, cy) * fx;
-        let bottom = at(cx, cy + 1) * (self.cell - fx) + at(cx + 1, cy + 1) * fx;
-        (top * (self.cell - fy) + bottom * fy) / (self.cell * self.cell)
-    }
-
-    /// The noise at a tile, in 0..1000.
-    pub(crate) fn value(&self, x: u32, y: u32) -> u32 {
-        let (cx, fx) = (x / self.cell, x % self.cell);
-        let (cy, fy) = (y / self.cell, y % self.cell);
-        let at = |i: u32, j: u32| self.values[(j * self.columns + i) as usize];
-        // Bilinear interpolation, in thousandths.
-        let top = at(cx, cy) * (self.cell - fx) + at(cx + 1, cy) * fx;
-        let bottom = at(cx, cy + 1) * (self.cell - fx) + at(cx + 1, cy + 1) * fx;
-        (top * (self.cell - fy) + bottom * fy) / (self.cell * self.cell)
-    }
 }
 
 /// Sixteen headings, 22.5 degrees apart, as unit vectors in thousandths

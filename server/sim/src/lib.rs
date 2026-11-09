@@ -6,6 +6,9 @@
 
 pub mod content;
 pub mod flora;
+// `gen` is a reserved keyword in the 2024 edition: the module is `r#gen`,
+// its file `gen.rs`.
+pub(crate) mod r#gen;
 pub mod map;
 pub mod time;
 pub mod trees;
@@ -584,7 +587,7 @@ impl World {
     /// rules, deterministically for a given seed: tile by tile, rule by
     /// rule, a piece lands with the rule's probability.
     fn scatter(&mut self, content: &Content, seed: u64) {
-        let mut rng = map::Lcg::new(seed ^ 0x5eed_17e5);
+        let mut rng = r#gen::Lcg::new(seed ^ 0x5eed_17e5);
         // Distance of every tile to each terrain some rule wants to be near,
         // out to the farthest any rule asks: nothing beyond is ever read.
         let mut farthest: BTreeMap<Terrain, u32> = BTreeMap::new();

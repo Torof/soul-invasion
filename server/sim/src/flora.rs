@@ -27,11 +27,17 @@
     clippy::cast_precision_loss,
     clippy::cast_sign_loss
 )]
+// Generation is integer-only (invariant R7): no float arithmetic here,
+// and no float maths functions (`sim/clippy.toml`). Known exceptions,
+// each allowed where it stands, go when the generator is rewritten
+// (stage 1): the patch shapes of `lay_patch` and a host's reach in metres.
+#![warn(clippy::float_arithmetic)]
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::r#gen::{hash, noise, unit};
 use crate::map::{CHUNK_SIZE, ChunkPos, FinePos, Map, Pos, Terrain};
 use crate::woods::Habitat;
 
@@ -273,43 +279,6 @@ const ROOM_MM: i32 = 450;
 const TRUNK_MM: i32 = 600;
 /// Height from which a plant keeps its room, in metres.
 const VOLUME_M: f32 = 0.5;
-
-/// A hash of a few numbers, well mixed (splitmix64).
-fn hash(values: &[u64]) -> u64 {
-    let mut h: u64 = 0x9e37_79b9_7f4a_7c15;
-    for v in values {
-        h ^= v
-            .wrapping_add(0x9e37_79b9_7f4a_7c15)
-            .wrapping_add(h << 6)
-            .wrapping_add(h >> 2);
-        h = h.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = h;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        h = z ^ (z >> 31);
-    }
-    h
-}
-
-/// A number in 0..1000 for some numbers, fixed.
-fn unit(values: &[u64]) -> u32 {
-    u32::try_from(hash(values) % 1000).expect("below 1000")
-}
-
-/// Smooth value noise in 0..1000 on a lattice of `cell` tiles, worked out
-/// at a point from the lattice around it: nothing stored, any size of map.
-fn noise(seed: u64, cell: u32, x: i32, y: i32) -> u32 {
-    let c = i64::from(cell);
-    let (x, y) = (i64::from(x), i64::from(y));
-    let (cx, cy) = (x.div_euclid(c), y.div_euclid(c));
-    let ease = |f: i64| f * f * (3 * c - 2 * f) / (c * c);
-    let (fx, fy) = (ease(x.rem_euclid(c)), ease(y.rem_euclid(c)));
-    #[allow(clippy::cast_sign_loss)]
-    let at = |i: i64, j: i64| i64::from(unit(&[seed, i as u64, j as u64]));
-    let top = at(cx, cy) * (c - fx) + at(cx + 1, cy) * fx;
-    let bottom = at(cx, cy + 1) * (c - fx) + at(cx + 1, cy + 1) * fx;
-    u32::try_from((top * (c - fy) + bottom * fy) / (c * c)).expect("within 0..1000")
-}
 
 /// How well `value` lies within `(lo, hi)`, in thousandths: 1000 inside,
 /// easing to nothing `NICHE_SOFT` points outside.
@@ -561,6 +530,9 @@ pub fn plants_in(
                     continue;
                 }
                 if let Some(host) = &kind.host {
+                    // R7 exception, to go in stage 1: metres to millimetres
+                    // in floats (the content gives the reach in metres).
+                    #[allow(clippy::float_arithmetic)]
                     let reach = (host.within_m * 1000.0) as i32;
                     let centre = pos.centre();
                     let near = trees.iter().any(|t| {
@@ -638,30 +610,54 @@ fn lay_patch(
             } else {
                 CLUMP_DENSITY
             };
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            // R7 exceptions, to go in stage 1: a clump's or a carpet's
+            // count, reach and thinning are worked out in floats, with
+            // `f64::hypot`.
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                clippy::float_arithmetic
+            )]
             let n = ((std::f32::consts::PI * r * r * density) as u32).clamp(1, MOST_IN_PATCH);
-            #[allow(clippy::cast_possible_truncation)]
+            #[allow(clippy::cast_possible_truncation, clippy::float_arithmetic)]
             let reach = (r * 1000.0) as i32;
             (0..n)
                 .filter_map(|i| {
                     let (dx, dy) = (jitter(i, 3, reach), jitter(i, 4, reach));
                     // Within the circle, and thinner towards its rim.
+                    #[allow(clippy::float_arithmetic, clippy::disallowed_methods)]
                     let d = (f64::from(dx).hypot(f64::from(dy)) / f64::from(reach.max(1))) as f32;
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        clippy::float_arithmetic
+                    )]
                     let keep = d <= 1.0 && (roll(i, 5) % 1000) as f32 >= d * d * 600.0;
                     keep.then(|| FinePos::new(centre.x + dx, centre.y + dy))
                 })
                 .collect()
         }
         Grouping::Ring(r) => {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            // R7 exceptions, to go in stage 1: a fairy ring's count, angles
+            // and wobble are worked out in floats, with `f32::sin` and
+            // `f32::cos`.
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                clippy::float_arithmetic
+            )]
             let n = ((std::f32::consts::TAU * r * 1.6) as u32).clamp(5, MOST_IN_PATCH);
             (0..n)
                 .map(|i| {
-                    #[allow(clippy::cast_precision_loss)]
+                    #[allow(clippy::cast_precision_loss, clippy::float_arithmetic)]
                     let angle = std::f32::consts::TAU * i as f32 / n as f32;
+                    #[allow(clippy::float_arithmetic)]
                     let wobble = 1.0 + (jitter(i, 6, 100) as f32) / 1000.0;
-                    #[allow(clippy::cast_possible_truncation)]
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        clippy::float_arithmetic,
+                        clippy::disallowed_methods
+                    )]
                     FinePos::new(
                         centre.x + (angle.cos() * r * wobble * 1000.0) as i32,
                         centre.y + (angle.sin() * r * wobble * 1000.0) as i32,
@@ -729,19 +725,6 @@ mod tests {
                 .count(),
             9
         );
-    }
-
-    #[test]
-    fn noise_is_smooth_and_fixed() {
-        for (x, y) in [(0, 0), (-5, 40), (123_456, 7)] {
-            let n = noise(9, 14, x, y);
-            assert!(n < 1000);
-            assert_eq!(n, noise(9, 14, x, y));
-            assert!(
-                n.abs_diff(noise(9, 14, x + 1, y)) < 200,
-                "neighbours are near"
-            );
-        }
     }
 
     /// The valley's chunks around the camp, with their plants.
