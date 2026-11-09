@@ -2,8 +2,9 @@ class_name PerfOverlay
 extends CanvasLayer
 ## Development only, when the server runs with --dev: what a frame costs,
 ## to measure before optimising and to say "it is slow here" with a
-## number (D39). F3 shows or hides it; F4 turns the wind in the trees
-## off and on, to see what it costs.
+## number (D39). F3 shows or hides it; to see what a part costs the
+## graphics card: F4 turns the wind in the trees off and on, F5 draws the
+## ground a plain colour, F6 hides the trees.
 
 ## How often the numbers are refreshed, in seconds.
 const REFRESH := 0.25
@@ -14,6 +15,8 @@ var world: Node
 var _label: Label
 var _enabled := false
 var _wind := true
+var _plain_ground := false
+var _trees_shown := true
 var _since := 0.0
 ## The longest frame since the last refresh, in milliseconds.
 var _worst_ms := 0.0
@@ -50,6 +53,15 @@ func _unhandled_input(event: InputEvent) -> void:
 		visible = not visible
 		DevTiming.enabled = visible
 		DevTiming.take()
+		get_viewport().set_input_as_handled()
+	elif event.keycode == KEY_F5:
+		_plain_ground = not _plain_ground
+		ChunkView.set_plain_ground(_plain_ground)
+		get_viewport().set_input_as_handled()
+	elif event.keycode == KEY_F6:
+		_trees_shown = not _trees_shown
+		if world != null:
+			world.call("set_trees_shown", _trees_shown)
 		get_viewport().set_input_as_handled()
 	elif event.keycode == KEY_F4:
 		_wind = not _wind
@@ -114,5 +126,8 @@ func report(worst_ms: float) -> String:
 		lines.append("chunks %d (%d to build)   trees %d   bodies %d" % [
 			counts.get("chunks", 0), ChunkView.waiting.size(), counts.get("trees", 0), counts.get("bodies", 0),
 		])
-	lines.append("bank fields smoothing %d   wind %s (F4)   F3 hides" % [ShoreField.busy, "on" if _wind else "off"])
+	lines.append("bank fields smoothing %d   F3 hides" % ShoreField.busy)
+	lines.append("wind %s (F4)   ground %s (F5)   trees %s (F6)" % [
+		"on" if _wind else "off", "plain" if _plain_ground else "shaded", "shown" if _trees_shown else "hidden",
+	])
 	return "\n".join(lines)

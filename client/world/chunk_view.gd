@@ -163,6 +163,33 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 	return _ground_materials[terrain]
 
 
+## Development (--dev, F5): the ground drawn a plain colour, its shaders
+## (the grounds', the banks', the brooks') swapped for one that does
+## nothing, to measure what they cost the graphics card; and back.
+static func set_plain_ground(on: bool) -> void:
+	var materials: Array = _ground_materials.values()
+	if _brook_material != null:
+		materials.append(_brook_material)
+	for material: ShaderMaterial in materials:
+		if on and not _real_shaders.has(material):
+			_real_shaders[material] = material.shader
+			material.shader = _plain_shader()
+		elif not on and _real_shaders.has(material):
+			material.shader = _real_shaders[material]
+			_real_shaders.erase(material)
+
+
+static var _real_shaders: Dictionary = {}
+static var _plain: Shader
+
+
+static func _plain_shader() -> Shader:
+	if _plain == null:
+		_plain = Shader.new()
+		_plain.code = "shader_type canvas_item;\nvoid fragment() { COLOR = vec4(0.45, 0.62, 0.30, 1.0); }\n"
+	return _plain
+
+
 ## Gives a terrain's material its layers and numbers from the spec. With
 ## `fresh`, the images are read straight from their files (a live
 ## reload); otherwise through the import.
