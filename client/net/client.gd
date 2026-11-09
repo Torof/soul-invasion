@@ -45,12 +45,17 @@ const DEFAULT_URL := "ws://127.0.0.1:7777"
 ## Seconds between two attempts to come back once the connection is lost
 ## (the server restarted, say). Zero: never.
 const RECONNECT_AFTER := 3.0
+## Seconds between two attempts while this client has never been
+## welcomed yet (the server just starting beside it): sooner.
+const FIRST_TRY_AFTER := 0.3
 
 var _peer := WebSocketPeer.new()
 var _state := WebSocketPeer.STATE_CLOSED
 var _hello_sent := false
 var _url := DEFAULT_URL
 var _reconnect_in := 0.0
+## Whether a server ever welcomed this client.
+var _ever_welcomed := false
 
 ## True once the server has welcomed us.
 var is_ready := false
@@ -74,7 +79,7 @@ func connect_to(url: String = DEFAULT_URL) -> void:
 	var err := _peer.connect_to_url(url)
 	if err != OK:
 		disconnected.emit("cannot connect to %s (error %d)" % [url, err])
-		_reconnect_in = RECONNECT_AFTER
+		_reconnect_in = _retry_after()
 	else:
 		# Connecting: a refusal shows as the peer closed at the next poll,
 		# which must count as a loss and be retried (the server not up yet).
@@ -153,12 +158,17 @@ func _process(_delta: float) -> void:
 	elif state == WebSocketPeer.STATE_CLOSED and _state != WebSocketPeer.STATE_CLOSED:
 		is_ready = false
 		disconnected.emit("connection closed (code %d), retrying" % _peer.get_close_code())
-		_reconnect_in = RECONNECT_AFTER
+		_reconnect_in = _retry_after()
 	_state = state
 	if _reconnect_in > 0.0 and RECONNECT_AFTER > 0.0:
 		_reconnect_in -= _delta
 		if _reconnect_in <= 0.0:
 			connect_to(_url)
+
+
+## Seconds before the next attempt to connect.
+func _retry_after() -> float:
+	return RECONNECT_AFTER if _ever_welcomed else FIRST_TRY_AFTER
 
 
 ## A fine point from the wire, in millimetres.
@@ -176,6 +186,7 @@ func _handle(message: Dictionary) -> void:
 				_peer.close()
 				return
 			is_ready = true
+			_ever_welcomed = true
 			var assigned: Variant = message.get("body")
 			body = int(assigned) if assigned != null else -1
 			connected.emit(int(message.get("tick", 0)), body)
