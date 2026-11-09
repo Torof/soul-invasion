@@ -444,7 +444,7 @@ func _test_plants_are_named_and_coloured() -> void:
 	_check(Array(Tooltip.describe_plants([0, 1, 0, 0], flora)) == ["Bramble ×3", "Porcini"], "a tile's plants are named, counted")
 	_check(Tooltip.describe_plants([7, -1], flora).is_empty(), "an unknown kind is left out")
 	# Every kind of the flora has its images in the atlas, and a plant
-	# stands on its foot, a small one drawn at least PLANT_MIN_M tall.
+	# stands on its foot, at the game's scale.
 	_check(ChunkView.flora_atlas() != null, "the flora's atlas loads")
 	for id: String in ["bramble", "dandelion", "porcini", "wild_flax", "yarrow", "woad", "birch_polypore"]:
 		_check(ChunkView.flora_variants(id).size() == 2, "%s has two images" % id)
@@ -452,7 +452,10 @@ func _test_plants_are_named_and_coloured() -> void:
 	var r := ChunkView.plant_rect(Vector2(3500, 7500), flora[1], region)
 	var foot := Iso.point_to_screen(Vector2(3500, 7500))
 	_check(is_equal_approx(r.end.y, foot.y) and is_equal_approx(r.get_center().x, foot.x), "a plant's foot is on its place")
-	_check(r.size.y >= ChunkView.PLANT_MIN_M * Iso.PX_PER_M * 0.87, "a small plant is drawn large enough to be seen")
+	_check(is_equal_approx(ChunkView.shown_height({"height_cm": 100}), 1.0), "a metre shows a metre")
+	_check(ChunkView.shown_height({"height_cm": 200}) < 1.6 and ChunkView.shown_height({"height_cm": 8}) > 0.18, "tall plants shrink, tiny ones grow")
+	_check(r.size.y < 0.4 * Iso.PX_PER_M, "a mushroom stays small")
+	_check(ChunkView.plant_tint(flora[1]) != Color.WHITE and ChunkView.plant_tint(flora[0]) == Color.WHITE, "small plants are drawn brighter")
 	_check(ChunkView.plant_stands(flora[0]) and not ChunkView.plant_stands(flora[1]), "a bramble stands among the trees, a mushroom lies on the ground")
 
 

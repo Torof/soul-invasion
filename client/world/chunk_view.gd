@@ -583,10 +583,14 @@ const FLORA_RECTS := "res://art/flora/atlas.json"
 ## bodies, sorted by its foot (WorldView: a bramble hides a body behind
 ## it); shorter ones lie on the ground's own layer.
 const PLANT_STANDING_M := 0.9
-## Smallest height a plant is drawn at, in metres: a mushroom of eight
-## centimetres would be five pixels across; drawn a little larger, it can
-## be seen and pointed at.
-const PLANT_MIN_M := 0.3
+## The flora is drawn at a game scale, like the trees (4 m for an oak):
+## its height in metres to the power SCALE_POWER, so what is tall shrinks
+## and what is tiny grows (a 2 m reed shows 1.5 m, a 20 cm dandelion
+## 0.4 m, an 8 cm mushroom 0.2 m). Small plants, which the light grass
+## swallows, are drawn a little brighter (SMALL_LIGHT, below SMALL_M).
+const SCALE_POWER := 0.6
+const SMALL_M := 0.7
+const SMALL_LIGHT := Color(1.18, 1.18, 1.1)
 static var _flora_atlas: Texture2D
 static var _flora_rects: Dictionary = {}
 
@@ -614,9 +618,19 @@ static func flora_variants(id: String) -> Array:
 	return found
 
 
+## The height a plant of `kind` is drawn at, in metres (SCALE_POWER).
+static func shown_height(kind: Dictionary) -> float:
+	return pow(maxf(float(kind.get("height_cm", 30)) / 100.0, 0.01), SCALE_POWER)
+
+
+## The tint a plant of `kind` is drawn with: brighter when small.
+static func plant_tint(kind: Dictionary) -> Color:
+	return SMALL_LIGHT if shown_height(kind) < SMALL_M else Color.WHITE
+
+
 ## Whether a plant of `kind` stands among the trees (PLANT_STANDING_M).
 static func plant_stands(kind: Dictionary) -> bool:
-	return float(kind.get("height_cm", 0)) >= PLANT_STANDING_M * 100.0
+	return shown_height(kind) >= PLANT_STANDING_M
 
 
 ## The atlas region a plant of `kind` at `at` takes (its variant).
@@ -644,7 +658,7 @@ class PlantNode:
 ## the variant `variants[...]` its place picks: the image's bottom middle
 ## on its foot.
 static func plant_rect(at: Vector2, kind: Dictionary, region: Rect2) -> Rect2:
-	var metres := maxf(float(kind.get("height_cm", 30)) / 100.0, PLANT_MIN_M)
+	var metres := shown_height(kind)
 	var scale := 1.0 + (Trees.place_hash(at, 5) * 2.0 - 1.0) * 0.12
 	var h := metres * Iso.PX_PER_M * scale
 	var w := h * region.size.x / region.size.y
@@ -674,7 +688,7 @@ class PlantLayer:
 			var region := ChunkView.plant_region(at, kind)
 			if region.size == Vector2.ZERO:
 				continue
-			_draws.append([ChunkView.plant_rect(at, kind, region), region])
+			_draws.append([ChunkView.plant_rect(at, kind, region), region, ChunkView.plant_tint(kind)])
 		queue_redraw()
 
 	func _draw() -> void:
@@ -682,7 +696,7 @@ class PlantLayer:
 		if atlas == null:
 			return
 		for d: Array in _draws:
-			draw_texture_rect_region(atlas, d[0], d[1])
+			draw_texture_rect_region(atlas, d[0], d[1], d[2])
 
 
 ## Whether the chunk has built its ground at least once.
