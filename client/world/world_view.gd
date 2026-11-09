@@ -34,6 +34,10 @@ const VEIL_TILES := 20.0
 ## stops at their end, so no corner of the screen ever shows past them
 ## (20, the project lead's call: 3, then 6, did not read as fog enough).
 const FOG_TILES := 20.0
+## Tiles past the limit over which the fog comes to cover what stands
+## there too (trees, plants, items): the veil before it lies on the ground
+## only, what stands showing over it.
+const COVER_TILES := 3.0
 ## Millimetres per tile, as the protocol defines fine points.
 const MM_PER_TILE := 1000.0
 
@@ -453,6 +457,7 @@ func _update_limit() -> void:
 	var veil := limit.grow(-VEIL_TILES)
 	if _far != null:
 		_far.set_held(veil.position, veil.end, VEIL_TILES, 1.0, 1.0)
+		_far.set_cover(limit.position, limit.end, COVER_TILES)
 
 
 
