@@ -200,7 +200,10 @@ pub struct Shared {
     /// The plants of the chunks asked for lately, at most
     /// [`PLANT_CACHE_CHUNKS`] chunks (the cost follows the chunks in use,
     /// never the map's size nor the land visited, D39). Shared, so a hit
-    /// holds the lock only to find them, never to copy them.
+    /// holds the lock only to find them, never to copy them. Only what the
+    /// seed gives may live here: a change to a plant (one picked, later)
+    /// must be kept apart and laid over these, or forgetting a chunk would
+    /// undo it.
     plants: Mutex<Lru<ChunkPos, Arc<[PlantState]>>>,
     /// Is it night? Kept by the simulation thread.
     pub night: AtomicBool,
@@ -660,18 +663,23 @@ impl Shared {
     /// The message carrying a chunk and the bodies in it.
     fn chunk_message(&self, chunk: ChunkPos) -> Option<ServerMessage> {
         let tiles = self.map.chunk(chunk)?;
+        // Copied first, in a statement of its own: a lock taken inside the
+        // message's literal would stay held to the literal's end, and the
+        // simulation thread would wait on it while the plants are placed
+        // (D29).
+        let items = self
+            .items
+            .lock()
+            .expect("items not poisoned")
+            .get(&chunk)
+            .cloned()
+            .unwrap_or_default();
         Some(ServerMessage::Chunk {
             x: chunk.x,
             y: chunk.y,
             tiles: tiles.into_iter().map(terrain_view).collect(),
             bodies: self.bodies_in(chunk),
-            items: self
-                .items
-                .lock()
-                .expect("items not poisoned")
-                .get(&chunk)
-                .cloned()
-                .unwrap_or_default(),
+            items,
             trees: self.trees.get(&chunk).cloned().unwrap_or_default(),
             plants: self.plants_in(chunk),
             currents: self.map.chunk_currents(chunk)?,
@@ -734,7 +742,7 @@ impl Shared {
                     })
                 })
                 .collect();
-        // Placed with the lock released: two connections missing the same
+        // Placed with no lock held: two connections missing the same
         // chunk at once place the same plants, and the second insert only
         // replaces the first.
         self.plants
@@ -1434,10 +1442,17 @@ mod tests {
             assert!(!kept.contains(&chunks[0]), "the first chunk was forgotten");
             assert!(kept.contains(&chunks[11]), "the last is kept");
         }
-        // Asked again, forgotten or kept: the same plants, the same as a
-        // server that never forgot.
+        // Asked again in the same order, every chunk has been forgotten
+        // (each placing drops the next one to be asked for): placed again,
+        // the same plants. Asked once more at once, it is kept: the same
+        // plants again. And the same as a server that never forgot.
         for (&chunk, plants) in chunks.iter().zip(&first) {
+            assert!(
+                !forgets.plants.lock().unwrap().contains(&chunk),
+                "forgotten"
+            );
             assert_eq!(&forgets.plants_in(chunk), plants, "{chunk:?} placed again");
+            assert!(forgets.plants.lock().unwrap().contains(&chunk), "kept");
             assert_eq!(&forgets.plants_in(chunk), plants, "{chunk:?} kept");
             assert_eq!(&never_forgets.plants_in(chunk), plants, "{chunk:?}");
         }
