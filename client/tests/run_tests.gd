@@ -33,6 +33,7 @@ func _init() -> void:
 	_test_the_shore_field_holds_every_chunk_held()
 	_test_the_bounds_of_the_chunks_held()
 	_test_the_camera_stops_at_the_band()
+	_test_the_watcher_sees_the_client_files()
 	_test_the_view_follows_the_body_tile_by_tile()
 
 
@@ -573,6 +574,17 @@ func _test_the_view_follows_the_body_tile_by_tile() -> void:
 		_check(is_equal_approx(maxf(l.position.x, held.position.x), l.position.x) and l.end.x <= held.end.x + 0.001,
 			"the view never passes the chunks held, wherever the body stands in its chunk: %s" % at)
 		_check(l.size.x > 380.0, "and reaches nearly 192 tiles each way: %s" % l.size)
+
+
+## In development the client restarts when one of its files changes: the
+## watcher sees the scripts and the images, not Godot's cache nor the
+## ground's files, which reload live.
+func _test_the_watcher_sees_the_client_files() -> void:
+	var files := DevWatcher.scan()
+	_check(files.has("res://main.gd") and files.has("res://world/world_view.gd"), "the scripts are watched")
+	_check(files.has("res://world/trees.gdshader"), "the shaders are watched")
+	_check(not files.has("res://world/ground.gdshader"), "the ground's shader reloads live, no restart")
+	_check(files.keys().all(func(p: String) -> bool: return not p.contains("/.godot/") and not p.ends_with(".import")), "never Godot's cache")
 
 
 func _test_currents_decode() -> void:
