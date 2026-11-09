@@ -34,6 +34,7 @@ func _init() -> void:
 	_test_the_bounds_of_the_chunks_held()
 	_test_the_camera_stops_at_the_band()
 	_test_the_watcher_sees_the_client_files()
+	_test_the_first_connection_is_tried_again_soon()
 	_test_the_view_follows_the_body_tile_by_tile()
 
 
@@ -409,8 +410,8 @@ func _test_the_shore_field_measures_the_bank() -> void:
 
 
 func _test_the_shore_field_in_slices() -> void:
-	# Spread over frames, the field comes out the same as at once; an
-	# update overtaken by a newer one for its block gives up.
+	# On another core, the field comes out the same as at once; an update
+	# overtaken by a newer one for its block gives up.
 	var river := func(t: Vector2i) -> String:
 		if t.x >= 70 and t.x < 76:
 			return "ford" if t.y >= 40 and t.y < 44 else "water"
@@ -421,13 +422,13 @@ func _test_the_shore_field_in_slices() -> void:
 	ShoreField.update(river, Vector2i(64, 32), 32, runs)
 	var at_once := ShoreField._image.get_region(block).get_data()
 	ShoreField.update(land, Vector2i(64, 32), 32)
-	ShoreField.update(river, Vector2i(64, 32), 32, runs, 1)
+	ShoreField.update(river, Vector2i(64, 32), 32, runs, true)
 	var landed := ShoreField._image.get_region(block).get_data()
 	for i in 60:
 		await process_frame
-	_check(landed != at_once, "an update in slices writes later")
-	_check(ShoreField._image.get_region(block).get_data() == at_once, "in slices, the same field as at once")
-	ShoreField.update(river, Vector2i(64, 32), 32, runs, 1)
+	_check(landed != at_once, "an update on another core writes later")
+	_check(ShoreField._image.get_region(block).get_data() == at_once, "on another core, the same field as at once")
+	ShoreField.update(river, Vector2i(64, 32), 32, runs, true)
 	ShoreField.update(land, Vector2i(64, 32), 32)
 	var bare := ShoreField._image.get_region(block).get_data()
 	for i in 60:
@@ -585,6 +586,16 @@ func _test_the_watcher_sees_the_client_files() -> void:
 	_check(files.has("res://world/trees.gdshader"), "the shaders are watched")
 	_check(not files.has("res://world/ground.gdshader"), "the ground's shader reloads live, no restart")
 	_check(files.keys().all(func(p: String) -> bool: return not p.contains("/.godot/") and not p.ends_with(".import")), "never Godot's cache")
+
+
+## Until a server has welcomed it, the client tries again soon (the
+## server may be starting beside it); afterwards it waits longer.
+func _test_the_first_connection_is_tried_again_soon() -> void:
+	var net: Node = load("res://net/client.gd").new()
+	_check(net._retry_after() == net.FIRST_TRY_AFTER, "never welcomed: it tries again soon")
+	net._ever_welcomed = true
+	_check(net._retry_after() == net.RECONNECT_AFTER, "once welcomed: it waits longer")
+	net.free()
 
 
 func _test_currents_decode() -> void:

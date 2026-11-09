@@ -131,6 +131,10 @@ var terrain_at: Callable
 ## Where the water runs at any tile the world view knows (a vector in
 ## metres a second; set by the world view, invalid on the benches).
 var current_at: Callable
+## The hash of a chunk's tiles as received, 0 when not held (set by the
+## world view): the signature of the ground below reads nine of them
+## instead of three thousand tiles.
+var tiles_hash: Callable
 
 
 ## The seamless noise every ground material blends with, made here, no
@@ -557,6 +561,15 @@ func shore(terrain: String) -> Dictionary:
 ## The same signature means the ground canvases, the bank's field, the
 ## brooks and the decorations are as they were: only the items change.
 func _terrain_signature() -> int:
+	if tiles_hash.is_valid():
+		# The chunk and its eight neighbours cover all it reads (the
+		# brooks' margin is under a chunk's side): their tiles' hashes.
+		var key := Vector2i(floori(float(_origin.x) / _size), floori(float(_origin.y) / _size))
+		var parts := PackedInt64Array()
+		for dy in range(-1, 2):
+			for dx in range(-1, 2):
+				parts.append(int(tiles_hash.call(key + Vector2i(dx, dy))))
+		return maxi(hash(parts), 1)
 	var codes := PackedStringArray()
 	var m := BrookLines.MARGIN
 	for y in range(-m, _size + m):
@@ -566,8 +579,6 @@ func _terrain_signature() -> int:
 
 
 var _last_signature := 0
-## How long the bank's field may smooth in one frame (ShoreField.update).
-const FIELD_SLICE_USEC := 6000
 ## Building a chunk's ground takes tens of milliseconds: one chunk builds
 ## a frame, the others keep what they drew and wait in `waiting` for the
 ## world view to call them, nearest the camera first.
@@ -787,9 +798,28 @@ func _draw_ground_layers() -> void:
 
 ## Items: a small disc of the material's colour, slightly off the tile's
 ## centre so several on one tile stay visible.
+## Segments of an item's disc, as Godot draws a circle.
+const ITEM_SEGMENTS := 64
+## The mesh of the chunk's items, kept while it is drawn (a mesh freed at
+## the end of `_draw` draws nothing).
+var _items_mesh: ArrayMesh
+
+
 func _draw_items() -> void:
 	# Items: a small disc of the material's colour, slightly off the
-	# tile's centre so several on one tile stay visible.
+	# tile's centre so several on one tile stay visible, outlined. All of
+	# a chunk's discs go into one mesh, drawn at once: drawn one by one
+	# they were two draw calls each, most of a frame's (from the
+	# performance audit, 9 November 2026).
+	var points := PackedVector2Array()
+	var colours := PackedColorArray()
+	var indices := PackedInt32Array()
+	var ring := PackedVector2Array()
+	for i in ITEM_SEGMENTS:
+		var angle := i * TAU / ITEM_SEGMENTS
+		ring.append(Vector2(cos(angle), sin(angle)))
+	var outline := Color(0, 0, 0, 0.6)
+	var icons: Array[Vector2] = []
 	var on_tile: Dictionary = {}
 	for item in _items:
 		var tile := Vector2i(int(item.get("x", 0)), int(item.get("y", 0)))
@@ -798,10 +828,38 @@ func _draw_items() -> void:
 		var centre := Iso.tile_to_screen(tile.x, tile.y) + Vector2(-8 + 8 * (nth % 3), 3 - 5 * (nth / 3))
 		var material := str(item.get("material", ""))
 		var colour: Color = _looks.get(material, Color.MAGENTA)
-		draw_circle(centre, ITEM_RADIUS, colour)
-		draw_circle(centre, ITEM_RADIUS, Color(0, 0, 0, 0.6), false, 1.0)
+		# The disc: a fan from its first point, as draw_circle makes it.
+		var base := points.size()
+		for d in ring:
+			points.append(centre + d * ITEM_RADIUS)
+			colours.append(colour)
+		for i in ITEM_SEGMENTS - 2:
+			indices.append_array([base, base + i + 1, base + i + 2])
+		# Its outline: a band a pixel wide across the rim.
+		base = points.size()
+		for d in ring:
+			points.append(centre + d * (ITEM_RADIUS + 0.5))
+			points.append(centre + d * (ITEM_RADIUS - 0.5))
+			colours.append(outline)
+			colours.append(outline)
+		for i in ITEM_SEGMENTS:
+			var j := (i + 1) % ITEM_SEGMENTS
+			indices.append_array([base + 2 * i, base + 2 * i + 1, base + 2 * j, base + 2 * j, base + 2 * i + 1, base + 2 * j + 1])
 		if material == "corpse":
-			draw_death_icon(self, centre + Vector2(0, -16))
+			icons.append(centre + Vector2(0, -16))
+	if points.is_empty():
+		_items_mesh = null
+		return
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = points
+	arrays[Mesh.ARRAY_COLOR] = colours
+	arrays[Mesh.ARRAY_INDEX] = indices
+	_items_mesh = ArrayMesh.new()
+	_items_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	draw_mesh(_items_mesh, null)
+	for at in icons:
+		draw_death_icon(self, at)
 
 
 ## Whether the bank is drawn by the ground shader from the distance to the
@@ -817,7 +875,7 @@ static func shore_field_on() -> bool:
 ## draws the bank) over the land within two tiles of the water.
 func _add_field_tiles(by_terrain: Dictionary) -> void:
 	var terrain := func(t: Vector2i) -> String: return _terrain(t.x, t.y)
-	ShoreField.update(terrain, _origin, _size, current_at, FIELD_SLICE_USEC)
+	ShoreField.update(terrain, _origin, _size, current_at, true)
 	var water_material := ground_material("water")
 	water_material.set_shader_parameter("shore_field", ShoreField.texture())
 	water_material.set_shader_parameter("has_field", true)

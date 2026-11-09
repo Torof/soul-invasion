@@ -475,6 +475,12 @@ impl Map {
     /// of `terrain` (0 on such a tile; `u32::MAX` when there is none),
     /// row by row like [`Map::tiles`].
     pub fn distance_to(&self, terrain: Terrain) -> Vec<u32> {
+        self.distance_within(terrain, u32::MAX)
+    }
+
+    /// The same, but only out to `limit` steps: tiles farther away keep
+    /// `u32::MAX`, and the search does not walk the rest of the map.
+    pub fn distance_within(&self, terrain: Terrain, limit: u32) -> Vec<u32> {
         let mut distance = vec![u32::MAX; self.tiles.len()];
         let mut queue = VecDeque::new();
         for (i, t) in self.tiles.iter().enumerate() {
@@ -484,6 +490,9 @@ impl Map {
             }
         }
         while let Some(i) = queue.pop_front() {
+            if distance[i] >= limit {
+                continue;
+            }
             let here = self.pos_at(i);
             for next in here.neighbours() {
                 if let Some(j) = self.index(next)
@@ -866,6 +875,10 @@ pub struct Rivers {
     owner: Vec<u16>,
     /// Per tile painted by a water: the step of its path that did.
     step: Vec<u32>,
+    /// While the brooks are traced: per block of `WATER_BLOCK` tiles,
+    /// whether any water lies in it, so a search for the nearest water
+    /// skips at once a square holding none (empty the rest of the time).
+    water_blocks: Vec<bool>,
     /// One line per water, for the tests' dumps.
     #[cfg(test)]
     log: Vec<String>,
@@ -873,6 +886,9 @@ pub struct Rivers {
     #[cfg(test)]
     network: Vec<River>,
 }
+
+/// Side of a block of `Rivers::water_blocks`, in tiles.
+const WATER_BLOCK: u32 = 16;
 
 /// A current as one number: its heading (0 to 15) times 256 plus its
 /// speed in centimetres a second (1 to 255); 0 for none.
@@ -1124,6 +1140,7 @@ impl Rivers {
             current: vec![0; tiles],
             owner: vec![0; tiles],
             step: vec![0; tiles],
+            water_blocks: Vec::new(),
             #[cfg(test)]
             log: Vec::new(),
             #[cfg(test)]
@@ -1169,7 +1186,11 @@ impl Rivers {
                 rivers.ford(&mut network, last, Self::FORD_CHANCE, &mut rng);
             }
         }
+        // While the brooks look for water, a coarse map of where it lies
+        // (kept up to date as they are painted: water is only added then).
+        rivers.mark_water_blocks();
         rivers.add_brooks(&mut network, seed, cliff_rows, &mut rng);
+        rivers.water_blocks = Vec::new();
 
         // Flows: from the last traced water, which nothing joins, back to
         // the main river. Then the shape of every stretch, and what each
@@ -1566,6 +1587,51 @@ impl Rivers {
         index_in(self.width, self.height, x, y)
     }
 
+    /// Builds `water_blocks` from the water painted so far.
+    fn mark_water_blocks(&mut self) {
+        let wide = self.width.div_ceil(WATER_BLOCK) as usize;
+        self.water_blocks = vec![false; wide * self.height.div_ceil(WATER_BLOCK) as usize];
+        for i in 0..self.depth.len() {
+            if self.depth[i] > 0 {
+                self.mark_water(i);
+            }
+        }
+    }
+
+    /// Notes that tile `i` holds water, while `water_blocks` is kept.
+    fn mark_water(&mut self, i: usize) {
+        if self.water_blocks.is_empty() {
+            return;
+        }
+        let width = self.width as usize;
+        let block = WATER_BLOCK as usize;
+        let wide = self.width.div_ceil(WATER_BLOCK) as usize;
+        self.water_blocks[(i / width / block) * wide + (i % width) / block] = true;
+    }
+
+    /// Whether the square of `reach` tiles around `(x, y)` may hold water:
+    /// false only when `water_blocks` is kept and says none of its blocks
+    /// does.
+    fn may_hold_water(&self, x: i64, y: i64, reach: i64) -> bool {
+        if self.water_blocks.is_empty() {
+            return true;
+        }
+        let block = i64::from(WATER_BLOCK);
+        let wide = i64::from(self.width.div_ceil(WATER_BLOCK));
+        let high = i64::from(self.height.div_ceil(WATER_BLOCK));
+        let (x0, x1) = (
+            (x - reach).max(0) / block,
+            ((x + reach) / block).min(wide - 1),
+        );
+        let (y0, y1) = (
+            (y - reach).max(0) / block,
+            ((y + reach) / block).min(high - 1),
+        );
+        (y0..=y1).any(|by| {
+            (x0..=x1).any(|bx| self.water_blocks[usize::try_from(by * wide + bx).expect("inside")])
+        })
+    }
+
     /// No water within `reach` tiles of `(x, y)`.
     fn clear_of_water(&self, x: i64, y: i64, reach: i64) -> bool {
         (y - reach..=y + reach).all(|ty| {
@@ -1578,6 +1644,11 @@ impl Rivers {
     /// around the point, not the whole map. Ties go to the first found,
     /// row by row.
     fn nearest_water(&self, x: i64, y: i64, reach: i64) -> Option<(i64, i64)> {
+        // Most rises lie far from any water: say so without walking the
+        // whole square ring by ring.
+        if !self.may_hold_water(x, y, reach) {
+            return None;
+        }
         let mut best: Option<(i64, (i64, i64))> = None;
         for r in 0..=reach {
             // Every tile of ring r is at least r away: past the best found,
@@ -2306,6 +2377,9 @@ impl Rivers {
                             self.owner[i] = mine;
                             self.step[i] = u32::try_from(n).expect("fits");
                         }
+                    }
+                    if self.depth[i] > 0 {
+                        self.mark_water(i);
                     }
                 }
             }
