@@ -7,9 +7,10 @@ extends Node2D
 ## at the view's limit and covers everything past it (WorldView, the
 ## project lead's call), so the far land itself is hidden for now.
 
-## Haze colour, and how much of it just past the ground held and far
+## Haze colour (a soft grey: a whiter one was too loud, the project
+## lead's call), and how much of it just past the ground held and far
 ## away.
-const HAZE := Color(0.78, 0.84, 0.86)
+const HAZE := Color(0.62, 0.65, 0.66)
 const HAZE_EDGE := 0.5
 const HAZE_FAR := 0.68
 ## Tiles past the edge over which the haze rises to HAZE_EDGE, and over
@@ -102,8 +103,9 @@ func show_far(cell: int, x: int, y: int, width: int, height: int, cells: String)
 ## haze rises to `edge`.
 ## `edge` and `far` its thickness there and far away (HAZE_EDGE and
 ## HAZE_FAR; 1 for a fog one cannot see through).
-func set_held(lo: Vector2, hi: Vector2, rise := HAZE_IN, edge := HAZE_EDGE, far := HAZE_FAR) -> void:
+func set_held(lo: Vector2, hi: Vector2, rise := HAZE_IN, edge := HAZE_EDGE, far := HAZE_FAR, corner := 0.0) -> void:
 	_held = Rect2(lo, hi - lo)
+	_haze_material.set_shader_parameter("corner", corner)
 	_haze_material.set_shader_parameter("held_lo", lo)
 	_haze_material.set_shader_parameter("held_hi", hi)
 	_haze_material.set_shader_parameter("rise_in", rise)
@@ -113,12 +115,13 @@ func set_held(lo: Vector2, hi: Vector2, rise := HAZE_IN, edge := HAZE_EDGE, far 
 
 ## Where the cover starts, over everything, in tiles from `lo` to `hi`:
 ## whole `rise` tiles past it (WorldView: at the view's limit).
-func set_cover(lo: Vector2, hi: Vector2, rise: float) -> void:
+func set_cover(lo: Vector2, hi: Vector2, rise: float, opacity := 1.0, corner := 0.0) -> void:
+	_cover_material.set_shader_parameter("corner", corner)
 	_cover_material.set_shader_parameter("held_lo", lo)
 	_cover_material.set_shader_parameter("held_hi", hi)
 	_cover_material.set_shader_parameter("rise_in", rise)
-	_cover_material.set_shader_parameter("edge", 1.0)
-	_cover_material.set_shader_parameter("far_haze", 1.0)
+	_cover_material.set_shader_parameter("edge", opacity)
+	_cover_material.set_shader_parameter("far_haze", opacity)
 
 
 ## The colour of each letter: the average of the ground's own textures,
@@ -182,6 +185,8 @@ uniform float edge = %f;
 uniform float far_haze = %f;
 uniform float rise_in = %f;
 uniform float reach = %f;
+// The radius of the rounded corners of the area held, in tiles.
+uniform float corner = 0.0;
 uniform sampler2D noise_texture : repeat_enable, filter_linear;
 void fragment() {
 	vec2 t = UV;
@@ -191,11 +196,13 @@ void fragment() {
 	vec2 drift = vec2(TIME * 0.25, TIME * 0.1);
 	float n = texture(noise_texture, (t + drift) / 14.0).r;
 	float m = texture(noise_texture, (t - drift * 0.6) / 37.0 + vec2(0.31, 0.77)).r;
-	// Distance outside the ground held, negative inside (the larger of the
-	// two axes, as the ground held is a square of chunks).
-	vec2 out_lo = held_lo - t;
-	vec2 out_hi = t - held_hi;
-	float d = max(max(out_lo.x, out_hi.x), max(out_lo.y, out_hi.y)) + n * 0.5;
+	// Distance outside the area held, negative inside: a square with its
+	// corners rounded to `corner` tiles, so the fog turns them in an arc
+	// (the project lead's call), not at a right angle.
+	vec2 half_size = (held_hi - held_lo) * 0.5;
+	float r = min(corner, min(half_size.x, half_size.y));
+	vec2 q = abs(t - (held_lo + held_hi) * 0.5) - (half_size - vec2(r));
+	float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r + n * 0.5;
 	// Nothing over the ground held (d <= 0): the haze starts at its edge.
 	float a = smoothstep(0.0, rise_in, d) * edge + smoothstep(rise_in, reach, d) * (far_haze - edge);
 	COLOR = vec4(haze * (0.94 + 0.1 * m), a);

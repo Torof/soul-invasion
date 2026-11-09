@@ -39,6 +39,12 @@ const VIEW_REACH := 224.0
 const FOG_A_TILES := 5.0
 const FOG_B_TILES := 35.0
 const FOG_C_TILES := 15.0
+## How thick the fog is at its thickest, past the limit (1: nothing seen
+## through it; a little less, the project lead's call).
+const FOG_OPACITY := 0.7
+## The radius of the view's rounded corners, in tiles: the fog turns them
+## in an arc rather than a right angle (the project lead's call).
+const FOG_CORNER := 64.0
 ## Millimetres per tile, as the protocol defines fine points.
 const MM_PER_TILE := 1000.0
 
@@ -491,8 +497,10 @@ func _update_limit() -> void:
 	var ground := limit.grow(-veil)
 	var cover := limit.grow(-FOG_B_TILES)
 	if _far != null:
-		_far.set_held(ground.position, ground.end, veil, 1.0, 1.0)
-		_far.set_cover(cover.position, cover.end, FOG_B_TILES)
+		# The fogs' arcs share one centre: each inner one is as much tighter
+		# as it lies inside the limit.
+		_far.set_held(ground.position, ground.end, veil, FOG_OPACITY, FOG_OPACITY, maxf(FOG_CORNER - veil, 0.0))
+		_far.set_cover(cover.position, cover.end, FOG_B_TILES, FOG_OPACITY, maxf(FOG_CORNER - FOG_B_TILES, 0.0))
 
 
 

@@ -34,6 +34,9 @@ var _stamps: Dictionary = {}
 var _files: Dictionary = {}
 ## Seconds since the last change seen, while a restart waits (-1: none).
 var _since_change := -1.0
+## A restart is under way: nothing more is looked at, so one change never
+## starts two clients.
+var _restarting := false
 
 
 func _ready() -> void:
@@ -63,6 +66,8 @@ static func watched() -> Array[String]:
 
 
 func _poll() -> void:
+	if _restarting:
+		return
 	var changed := false
 	for path in watched():
 		var stamp := FileAccess.get_modified_time(path)
@@ -138,6 +143,9 @@ func _watch_for_restart() -> void:
 ## Imports the project again (new images, changed shaders) and starts a
 ## fresh client with the same command line and environment, then quits.
 func restart() -> void:
+	if _restarting:
+		return
+	_restarting = true
 	print("the client changed: restarting")
 	set_process(false)
 	var layer := CanvasLayer.new()
