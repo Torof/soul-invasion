@@ -35,9 +35,9 @@ const VIEW_REACH := 192.0
 ## - fog C: the tiles before B, under a veil on the ground only, what
 ##   stands showing over it.
 ## The veil thickens from nothing at C's start to whole at the limit.
-const FOG_A_TILES := 6.0
-const FOG_B_TILES := 12.0
-const FOG_C_TILES := 20.0
+const FOG_A_TILES := 3.0
+const FOG_B_TILES := 9.0
+const FOG_C_TILES := 15.0
 ## Millimetres per tile, as the protocol defines fine points.
 const MM_PER_TILE := 1000.0
 
