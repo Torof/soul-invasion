@@ -549,28 +549,45 @@ async fn the_view_follows_the_piloted_body() {
 
 #[tokio::test]
 async fn a_body_walking_out_of_the_view_is_reported_as_left() {
-    // Long days: the walk is 70 game seconds and must not end in a collapse.
-    let server = Server::start_with(&["--seconds-per-day", "1000", "--time-scale", "50"]);
+    // Long days: the walk, straight to open ground beyond a path's reach,
+    // takes minutes of game time and must not end in a collapse.
+    let server = Server::start_with(&["--seconds-per-day", "20000", "--time-scale", "50"]);
     let (mut walker, body) = join(&server).await;
     let (mut watcher, other) = join(&server).await;
     let body = body.expect("pilots body 1");
     let other = other.expect("pilots body 2");
 
-    // Body 1 walks far east, out of body 2's window; body 2 stays.
+    // Body 1 walks far east, out of body 2's window, in two steps (a path
+    // goes no farther than the body sees); body 2 stays.
     let world = standard_world();
+    let rules = rules();
+    let cost = |t: sim::Terrain| rules.movement.cost(t);
     let start = start_of(world, body);
-    let span = i32::try_from(CHUNK_SIZE).expect("small chunk") * (VIEW_RADIUS + 1);
-    let east = start_of(world, other).x + span;
-    let far = *reachable(world, start)
-        .iter()
-        .filter(|p| p.x >= east)
-        .min_by_key(|p| ((p.x - start.x).abs() + (p.y - start.y).abs(), p.x, p.y))
-        .expect("ground far east");
-    assert!(
-        far.x - start_of(world, other).x >= span,
-        "far enough: {far:?}"
-    );
-    route(world, start, far); // reachable
+    let side = i32::try_from(CHUNK_SIZE).expect("small chunk");
+    let east = (start_of(world, other).x.div_euclid(side) + VIEW_RADIUS + 1) * side;
+    let ground = reachable(world, start);
+    // The nearest tile past `x` that a path joins to `from`.
+    let next_stop = |from: Pos, x: i32| {
+        let mut candidates: Vec<_> = ground.iter().filter(|p| p.x >= x).copied().collect();
+        candidates.sort_by_key(|p| ((p.x - from.x).abs() + (p.y - from.y).abs(), p.x, p.y));
+        candidates
+            .into_iter()
+            .find(|&p| world.map().path(from, p, cost).is_some())
+            .expect("ground east within a path's reach")
+    };
+    let mid = next_stop(start, i32::midpoint(start.x, east));
+    let far = next_stop(mid, east);
+    send(&mut walker, &ClientMessage::MoveTo { x: mid.x, y: mid.y }).await;
+    loop {
+        match receive(&mut walker).await {
+            Some(ServerMessage::BodyStopped { body: who, at }) if who == body => {
+                assert_eq!(tile(at), mid);
+                break;
+            }
+            Some(_) => {}
+            None => panic!("walker disconnected"),
+        }
+    }
     send(&mut walker, &ClientMessage::MoveTo { x: far.x, y: far.y }).await;
 
     // The watcher sees the walk start (inside its view), then the body
@@ -582,9 +599,19 @@ async fn a_body_walking_out_of_the_view_is_reported_as_left() {
                 assert_eq!(who, body);
                 break;
             }
-            Some(ServerMessage::BodyWalks { body: who, .. }) if who == body => saw_walk = true,
-            Some(ServerMessage::BodyStopped { body: who, .. }) => {
-                assert_ne!(who, body, "a stop outside the watcher's view leaked");
+            Some(ServerMessage::BodyWalks {
+                body: who,
+                ref route,
+                ..
+            }) if who == body => {
+                eprintln!("watcher sees walk {route:?}");
+                saw_walk = true;
+            }
+            Some(ServerMessage::BodyStopped { body: who, at }) => {
+                assert!(
+                    who != body || tile(at) == mid,
+                    "a stop outside the watcher's view leaked"
+                );
             }
             Some(ServerMessage::DayStarted { .. } | ServerMessage::BodyWalks { .. }) => {}
             other => panic!("unexpected {other:?}"),
@@ -766,20 +793,33 @@ async fn a_move_intention_makes_the_piloted_body_walk() {
 }
 
 #[tokio::test]
-async fn walking_into_the_cliff_is_refused() {
+async fn walking_toward_the_cliff_goes_straight_and_stops_before_the_first_obstacle() {
     let server = Server::start();
     let (mut pilot, body) = join(&server).await;
     let body = body.expect("pilots a body");
 
-    // Row 0 is the cliff: not walkable.
+    // Row 0 is the cliff: not walkable, and no path to it. The body sets
+    // off straight toward it, to stop before what is first in its way.
+    let world = standard_world();
+    let rules = rules();
+    let from = start_of(world, body).centre();
+    let walkable = |p: Pos| {
+        world
+            .map()
+            .get(p)
+            .is_some_and(|t| rules.movement.cost(t).is_some())
+    };
+    let end = sim::map::line_reach(from, Pos::new(100, 0).centre(), walkable);
     send(&mut pilot, &ClientMessage::MoveTo { x: 100, y: 0 }).await;
     loop {
         match receive(&mut pilot).await {
-            Some(ServerMessage::MoveRefused { body: who, x, y }) => {
-                assert_eq!((who, x, y), (body, 100, 0));
+            Some(ServerMessage::BodyWalks {
+                body: who, route, ..
+            }) if who == body => {
+                assert_eq!(route, vec![Point { x: end.x, y: end.y }]);
                 break;
             }
-            Some(ServerMessage::DayStarted { .. }) => {}
+            Some(ServerMessage::DayStarted { .. } | ServerMessage::BodyWalks { .. }) => {}
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -897,10 +937,11 @@ async fn a_refusal_reaches_the_pilot_alone() {
     let body = body.expect("pilots body 1");
     let other_body = other_body.expect("pilots body 2");
 
-    send(&mut pilot, &ClientMessage::MoveTo { x: 100, y: 0 }).await;
+    // Eating an item that does not exist: refused, to the pilot alone.
+    send(&mut pilot, &ClientMessage::Eat { item: 999_999 }).await;
     loop {
         match receive(&mut pilot).await {
-            Some(ServerMessage::MoveRefused { body: who, .. }) => {
+            Some(ServerMessage::ActRefused { body: who, .. }) => {
                 assert_eq!(who, body);
                 break;
             }
@@ -925,7 +966,7 @@ async fn a_refusal_reaches_the_pilot_alone() {
     loop {
         match receive(&mut other).await {
             Some(ServerMessage::BodyWalks { body: who, .. }) if who == other_body => break,
-            Some(ServerMessage::MoveRefused { .. }) => {
+            Some(ServerMessage::ActRefused { .. }) => {
                 panic!("another pilot's refusal leaked")
             }
             Some(ServerMessage::DayStarted { .. } | ServerMessage::BodyWalks { .. }) => {}

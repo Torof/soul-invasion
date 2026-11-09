@@ -136,6 +136,17 @@ impl Movement {
         self.cost(terrain)
             .map_or(0, |cost| self.walk_speed_cm_per_s * 10 / cost)
     }
+
+    /// The slowest walking speed on any terrain that can be walked, in
+    /// centimetres per game second.
+    pub fn slowest_speed_cm_per_s(&self) -> u32 {
+        Terrain::ALL
+            .iter()
+            .map(|&t| self.speed_cm_per_s(t))
+            .filter(|&speed| speed > 0)
+            .min()
+            .unwrap_or(self.walk_speed_cm_per_s)
+    }
 }
 
 /// How a body's needs and vitality evolve (D34). Every rate is in points
