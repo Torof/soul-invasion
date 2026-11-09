@@ -718,11 +718,7 @@ mod tests {
                     .map(|k| k.id.as_str()),
             )
             .collect();
-        assert_eq!(
-            kinds.len(),
-            33,
-            "4 trees to come, 6 shrubs, 14 plants, 9 mushrooms"
-        );
+        assert_eq!(kinds.len(), 29, "6 shrubs, 14 plants, 9 mushrooms");
         for kind in &kinds {
             assert_eq!(check(kind, &trees), None, "{}", kind.id);
         }

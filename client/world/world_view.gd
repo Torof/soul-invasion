@@ -708,6 +708,21 @@ func _plant_chunk(key: Vector2i, view: ChunkView) -> void:
 				cells[cell].append(tree)
 	_tree_cells[key] = cells
 	holder.visible = _trees_shown
+	# The tall plants stand among the trees, sorted with them by their foot.
+	for plant: Dictionary in _plants.get(key, []):
+		var k := int(plant.get("kind", -1))
+		if k < 0 or k >= _flora.size() or not ChunkView.plant_stands(_flora[k]):
+			continue
+		var at := Vector2(float(plant.get("x", 0)), float(plant.get("y", 0)))
+		var region := ChunkView.plant_region(at, _flora[k])
+		if region.size == Vector2.ZERO:
+			continue
+		var node := ChunkView.PlantNode.new()
+		node.position = Iso.point_to_screen(at)
+		node.region = region
+		node.rect = ChunkView.plant_rect(at, _flora[k], region)
+		node.use_parent_material = true
+		holder.add_child(node)
 	_standing.add_child(holder)
 	_tree_nodes[key] = holder
 	var shadows: Trees.ShadowLayer = view.get_node_or_null("Shadows")

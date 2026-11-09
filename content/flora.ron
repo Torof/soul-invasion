@@ -38,17 +38,10 @@
 //            to materials.ron when gathering is built.
 // season:    when it would be in season, for later (not used).
 (
-    // --- Trees still to come (move to species.ron with their images) ---
-    trees: [
-        (id: "alder", name: "Alder", height_m: 4.5,
-            habitats: { "riverside": 60, "edge": 10 }, moisture: (70, 100)),
-        (id: "ash", name: "Ash", height_m: 5.0,
-            habitats: { "edge": 25, "wood": 15, "copse": 20 }, moisture: (50, 85)),
-        (id: "linden", name: "Linden", height_m: 5.0,
-            habitats: { "wood": 20, "heart": 10, "copse": 15 }, moisture: (30, 70)),
-        (id: "yew", name: "Yew", height_m: 3.5,
-            habitats: { "heart": 4, "wood": 2 }, moisture: (30, 70)),
-    ],
+    // --- Trees still to come: none now (alder, ash, linden and yew joined
+    // species.ron with their images on 9 November 2026). A tree listed here
+    // is known to the flora (a host) but not planted.
+    trees: [],
 
     // --- Shrubs ---
     shrubs: [
