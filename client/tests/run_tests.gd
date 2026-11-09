@@ -443,7 +443,17 @@ func _test_plants_are_named_and_coloured() -> void:
 	]
 	_check(Array(Tooltip.describe_plants([0, 1, 0, 0], flora)) == ["Bramble ×3", "Porcini"], "a tile's plants are named, counted")
 	_check(Tooltip.describe_plants([7, -1], flora).is_empty(), "an unknown kind is left out")
-	_check(ChunkView.plant_colour(flora[0]) != ChunkView.plant_colour(flora[1]), "shrubs and mushrooms tell apart")
+	# Every kind of the flora has its images in the atlas, and a plant
+	# stands on its foot, a small one drawn at least PLANT_MIN_M tall.
+	_check(ChunkView.flora_atlas() != null, "the flora's atlas loads")
+	for id: String in ["bramble", "dandelion", "porcini", "wild_flax", "yarrow", "woad", "birch_polypore"]:
+		_check(ChunkView.flora_variants(id).size() == 2, "%s has two images" % id)
+	var region: Rect2 = ChunkView.flora_variants("porcini")[0]
+	var r := ChunkView.plant_rect(Vector2(3500, 7500), flora[1], region)
+	var foot := Iso.point_to_screen(Vector2(3500, 7500))
+	_check(is_equal_approx(r.end.y, foot.y) and is_equal_approx(r.get_center().x, foot.x), "a plant's foot is on its place")
+	_check(r.size.y >= ChunkView.PLANT_MIN_M * Iso.PX_PER_M * 0.87, "a small plant is drawn large enough to be seen")
+	_check(ChunkView.plant_stands(flora[0]) and not ChunkView.plant_stands(flora[1]), "a bramble stands among the trees, a mushroom lies on the ground")
 
 
 func _test_perf_overlay_reports() -> void:
@@ -530,7 +540,9 @@ func _test_tree_images_are_clean() -> void:
 				foot = true
 				break
 		_check(foot, "%s stands on its foot" % file)
-		if file.begins_with("birch"):
+		# Pale by nature: the birch's and the ash's bark, the linden's
+		# flowers.
+		if file.begins_with("birch") or file.begins_with("ash") or file.begins_with("linden"):
 			continue
 		var pale := 0
 		for y in range(0, h, 2):

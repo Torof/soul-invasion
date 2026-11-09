@@ -561,51 +561,128 @@ var _flats: Array = []
 var _decor_cache: Array = []
 
 
-## The chunk's plants as markers, until they have images: a small disc
-## each, sized by its kind's height and coloured by its family, a shade
-## of its own for each kind. One layer a chunk, drawn once, above the
+## The chunk's plants, from the flora's atlas (art/flora, made by
+## content/tools/flora_art.py): one image a plant, its foot on its place,
+## sized by its kind's height. One layer a chunk, drawn once, above the
 ## ground and below the trees.
 func show_plants(plants: Array, flora: Array) -> void:
 	var layer: PlantLayer = get_node_or_null("Plants")
 	if layer == null:
 		layer = PlantLayer.new()
 		layer.name = "Plants"
+		# The atlas is read with its mipmaps: small plants far away stay
+		# calm (the ground itself is read without).
+		layer.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 		add_child(layer)
-	layer.plants = plants
-	layer.flora = flora
-	layer.queue_redraw()
+	layer.set_plants(plants, flora)
 
 
-## The colour of a plant's marker: its family's, shifted a little by its
-## kind so neighbouring kinds tell apart.
-static func plant_colour(kind: Dictionary) -> Color:
-	var base: Color
-	match str(kind.get("family", "")):
-		"shrub":
-			base = Color(0.16, 0.36, 0.12)
-		"mushroom":
-			base = Color(0.86, 0.72, 0.52)
-		_:
-			base = Color(0.62, 0.80, 0.28)
-	var shift := float(hash(str(kind.get("id", ""))) % 1000) / 1000.0
-	return base.lerp(Color(0.95, 0.35, 0.30) if shift > 0.75 else Color(0.95, 0.90, 0.40), shift * 0.35)
+const FLORA_ATLAS := "res://art/flora/atlas.png"
+const FLORA_RECTS := "res://art/flora/atlas.json"
+## From this height, in metres, a plant stands among the trees and the
+## bodies, sorted by its foot (WorldView: a bramble hides a body behind
+## it); shorter ones lie on the ground's own layer.
+const PLANT_STANDING_M := 0.9
+## Smallest height a plant is drawn at, in metres: a mushroom of eight
+## centimetres would be five pixels across; drawn a little larger, it can
+## be seen and pointed at.
+const PLANT_MIN_M := 0.3
+static var _flora_atlas: Texture2D
+static var _flora_rects: Dictionary = {}
+
+
+## The flora's atlas and its rectangles ("<id>_<nn>" -> Rect2).
+static func flora_atlas() -> Texture2D:
+	if _flora_atlas == null and ResourceLoader.exists(FLORA_ATLAS):
+		_flora_atlas = load(FLORA_ATLAS)
+		var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(FLORA_RECTS))
+		if parsed is Dictionary:
+			for key: String in parsed:
+				var r: Array = parsed[key]
+				_flora_rects[key] = Rect2(r[0], r[1], r[2], r[3])
+	return _flora_atlas
+
+
+## The atlas rectangles of a kind's images, `_01`, `_02`, ...
+static func flora_variants(id: String) -> Array:
+	flora_atlas()
+	var found: Array = []
+	var n := 1
+	while _flora_rects.has("%s_%02d" % [id, n]):
+		found.append(_flora_rects["%s_%02d" % [id, n]])
+		n += 1
+	return found
+
+
+## Whether a plant of `kind` stands among the trees (PLANT_STANDING_M).
+static func plant_stands(kind: Dictionary) -> bool:
+	return float(kind.get("height_cm", 0)) >= PLANT_STANDING_M * 100.0
+
+
+## The atlas region a plant of `kind` at `at` takes (its variant).
+static func plant_region(at: Vector2, kind: Dictionary) -> Rect2:
+	var variants := flora_variants(str(kind.get("id", "")))
+	if variants.is_empty():
+		return Rect2()
+	return variants[int(Trees.place_hash(at, 9) * variants.size()) % variants.size()]
+
+
+## A plant standing among the trees and bodies: placed at its foot, so
+## the standing layer sorts it by depth.
+class PlantNode:
+	extends Node2D
+	var region := Rect2()
+	var rect := Rect2()
+
+	func _draw() -> void:
+		var atlas := ChunkView.flora_atlas()
+		if atlas != null:
+			draw_texture_rect_region(atlas, Rect2(rect.position - position, rect.size), region)
+
+
+## Where a plant of `kind` at `at` (millimetres) is drawn on screen, with
+## the variant `variants[...]` its place picks: the image's bottom middle
+## on its foot.
+static func plant_rect(at: Vector2, kind: Dictionary, region: Rect2) -> Rect2:
+	var metres := maxf(float(kind.get("height_cm", 30)) / 100.0, PLANT_MIN_M)
+	var scale := 1.0 + (Trees.place_hash(at, 5) * 2.0 - 1.0) * 0.12
+	var h := metres * Iso.PX_PER_M * scale
+	var w := h * region.size.x / region.size.y
+	var foot := Iso.point_to_screen(at)
+	return Rect2(foot - Vector2(w / 2.0, h), Vector2(w, h))
 
 
 class PlantLayer:
 	extends Node2D
-	var plants: Array = []
-	var flora: Array = []
+	## [texture rect, atlas region], nearest the back first.
+	var _draws: Array = []
 
-	func _draw() -> void:
-		for plant: Dictionary in plants:
+	func set_plants(plants: Array, flora: Array) -> void:
+		_draws.clear()
+		var sorted := plants.duplicate()
+		# Drawn from the back to the front (the screen's depth is x + y).
+		sorted.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			return int(a.get("x", 0)) + int(a.get("y", 0)) < int(b.get("x", 0)) + int(b.get("y", 0)))
+		for plant: Dictionary in sorted:
 			var k := int(plant.get("kind", -1))
 			if k < 0 or k >= flora.size():
 				continue
 			var kind: Dictionary = flora[k]
-			var at := Iso.point_to_screen(Vector2(float(plant.get("x", 0)), float(plant.get("y", 0))))
-			var radius := clampf(float(kind.get("height_cm", 30)) / 100.0 * 9.0, 5.0, 14.0)
-			draw_circle(at, radius, ChunkView.plant_colour(kind))
-			draw_circle(at, radius, Color(0, 0, 0, 0.55), false, 1.0)
+			if ChunkView.plant_stands(kind):
+				continue
+			var at := Vector2(float(plant.get("x", 0)), float(plant.get("y", 0)))
+			var region := ChunkView.plant_region(at, kind)
+			if region.size == Vector2.ZERO:
+				continue
+			_draws.append([ChunkView.plant_rect(at, kind, region), region])
+		queue_redraw()
+
+	func _draw() -> void:
+		var atlas := ChunkView.flora_atlas()
+		if atlas == null:
+			return
+		for d: Array in _draws:
+			draw_texture_rect_region(atlas, d[0], d[1])
 
 
 ## Whether the chunk has built its ground at least once.
