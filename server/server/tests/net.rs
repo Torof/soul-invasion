@@ -178,6 +178,7 @@ fn ambient(message: &ServerMessage) -> bool {
             | ServerMessage::ItemRemoved { .. }
             | ServerMessage::BodyHolds { .. }
             | ServerMessage::Inventory { .. }
+            | ServerMessage::FarView { .. }
     )
 }
 
@@ -201,9 +202,10 @@ async fn receive(socket: &mut Socket) -> Option<ServerMessage> {
 /// the connection.
 async fn receive_any(socket: &mut Socket) -> Option<ServerMessage> {
     loop {
-        let frame = tokio::time::timeout(Duration::from_secs(5), socket.next())
+        // Generous: twenty servers start a 3 km valley at once.
+        let frame = tokio::time::timeout(Duration::from_secs(15), socket.next())
             .await
-            .expect("server answers within 5 s");
+            .expect("server answers within 15 s");
         match frame {
             None | Some(Ok(Message::Close(_)) | Err(_)) => return None,
             Some(Ok(Message::Text(text))) => {
@@ -347,6 +349,21 @@ async fn hello_ping_and_a_published_day() {
         seen_plants > 1000,
         "the flora grows around the camp: {seen_plants}"
     );
+    // Then the far view, around the body's chunk.
+    match receive_any(&mut socket).await {
+        Some(ServerMessage::FarView {
+            cell,
+            width,
+            height,
+            cells,
+            ..
+        }) => {
+            assert_eq!(cells.len(), (width * height) as usize);
+            assert!(cell >= 8 && width >= 128);
+            assert!(cells.contains('f') && cells.contains('g'));
+        }
+        other => panic!("expected the far view, got {other:?}"),
+    }
     assert!(
         seen_items > 100,
         "{seen_items} items in view: the ground is scattered"
@@ -983,9 +1000,10 @@ async fn a_flood_of_intentions_leaves_only_the_last_one() {
 
 // --- Needs, sleep, food and death (D34) --------------------------------
 
-/// Skips messages until `pick` returns something; fails after 15 s.
+/// Skips messages until `pick` returns something; fails after 40 s
+/// (generous: twenty servers run at once).
 async fn wait_for<T>(socket: &mut Socket, mut pick: impl FnMut(&ServerMessage) -> Option<T>) -> T {
-    tokio::time::timeout(Duration::from_secs(15), async {
+    tokio::time::timeout(Duration::from_secs(40), async {
         loop {
             let message = receive_any(socket).await.expect("still connected");
             if let Some(found) = pick(&message) {
@@ -994,7 +1012,7 @@ async fn wait_for<T>(socket: &mut Socket, mut pick: impl FnMut(&ServerMessage) -
         }
     })
     .await
-    .expect("what we wait for arrives within 15 s")
+    .expect("what we wait for arrives within 40 s")
 }
 
 #[tokio::test]

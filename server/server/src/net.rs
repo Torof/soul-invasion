@@ -46,9 +46,9 @@ pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const MAX_MESSAGE_BYTES: usize = 4096;
 
 /// Chunks held around the body's own chunk, in every direction: a window
-/// of `(2 × VIEW_RADIUS + 1)²` chunks, 288 m across, wide enough that the
-/// client zoomed out as far as it goes never sees past it.
-pub const VIEW_RADIUS: i32 = 4;
+/// of `(2 × VIEW_RADIUS + 1)²` chunks, 352 m across; past it the client
+/// draws the far view (`far_view`), the land coarse and in a haze.
+pub const VIEW_RADIUS: i32 = 5;
 
 /// How many published messages a slow client may fall behind before it
 /// starts missing some.
@@ -220,15 +220,38 @@ pub fn overview_cell(side: u32) -> u32 {
 /// a brook), else its most common ground.
 pub fn overview(map: &Map) -> ServerMessage {
     let cell = overview_cell(map.width().max(map.height()));
+    let (width, height) = (map.width().div_ceil(cell), map.height().div_ceil(cell));
+    ServerMessage::DevOverview {
+        cell,
+        width,
+        height,
+        cells: coarse(map, cell, 0, 0, width, height),
+    }
+}
+
+/// The map coarse, one letter a cell of `cell` tiles, over `width` ×
+/// `height` cells from cell (`x0`, `y0`): the water crossing a cell when
+/// there is enough of it to see (`w` river, `o` ford, `b` brook), else its
+/// most common ground (`g` grass, `f` forest, `r` rock); `.` past the map.
+fn coarse(map: &Map, cell: u32, x0: i32, y0: i32, width: u32, height: u32) -> String {
     // Enough water to see: 6 tiles of 64 for a river, 3 for a brook.
     let (river, brook) = (
         (cell * cell * 6).div_ceil(64),
         (cell * cell * 3).div_ceil(64),
     );
-    let (width, height) = (map.width().div_ceil(cell), map.height().div_ceil(cell));
+    let (cols, rows) = (
+        i32::try_from(map.width().div_ceil(cell)).expect("small"),
+        i32::try_from(map.height().div_ceil(cell)).expect("small"),
+    );
     let mut cells = String::with_capacity((width * height) as usize);
-    for cy in 0..height {
-        for cx in 0..width {
+    for j in 0..i32::try_from(height).expect("small") {
+        for i in 0..i32::try_from(width).expect("small") {
+            let (cx, cy) = (x0 + i, y0 + j);
+            if cx < 0 || cy < 0 || cx >= cols || cy >= rows {
+                cells.push('.');
+                continue;
+            }
+            let (cx, cy) = (cx.unsigned_abs(), cy.unsigned_abs());
             // Grass, forest, rock, river, ford, brook.
             let count = map.count_in(cx * cell, cy * cell, (cx + 1) * cell, (cy + 1) * cell);
             let letter = if count[3] + count[4] >= river {
@@ -242,11 +265,36 @@ pub fn overview(map: &Map) -> ServerMessage {
             cells.push(letter);
         }
     }
-    ServerMessage::DevOverview {
-        cell,
-        width,
-        height,
-        cells,
+    cells
+}
+
+/// Tiles a cell of the far view stands for, either way.
+pub const FAR_CELL: u32 = 8;
+/// Cells the far view has across: 2 km of land around the body.
+pub const FAR_CELLS: u32 = 256;
+/// Chunks the body may go from the far view's centre before it is sent
+/// again.
+pub const FAR_RESEND: i32 = 16;
+
+/// The land around chunk `centre`, coarse (`ServerMessage::FarView`), for
+/// the client to draw past the chunks it holds: what can be seen from
+/// afar anyway, never what lies in it (bodies, items).
+pub fn far_view(map: &Map, centre: ChunkPos) -> ServerMessage {
+    let cell = i32::try_from(FAR_CELL).expect("small");
+    let size = i32::try_from(CHUNK_SIZE).expect("small");
+    let half = i32::try_from(FAR_CELLS / 2).expect("small");
+    let (cx, cy) = (
+        (centre.x * size + size / 2).div_euclid(cell),
+        (centre.y * size + size / 2).div_euclid(cell),
+    );
+    let (x, y) = (cx - half, cy - half);
+    ServerMessage::FarView {
+        cell: FAR_CELL,
+        x,
+        y,
+        width: FAR_CELLS,
+        height: FAR_CELLS,
+        cells: coarse(map, FAR_CELL, x, y, FAR_CELLS, FAR_CELLS),
     }
 }
 
@@ -693,6 +741,8 @@ fn flora_views(content: &Content) -> (Vec<FloraView>, Vec<Option<u16>>) {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct View {
     chunks: BTreeSet<ChunkPos>,
+    /// The centre of the far view last sent, if any.
+    far: Option<ChunkPos>,
 }
 
 impl View {
@@ -822,6 +872,7 @@ impl Drop for Pilot<'_> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn handle_connection(
     stream: TcpStream,
     peer: SocketAddr,
@@ -884,6 +935,8 @@ async fn handle_connection(
             send(&mut ws, &message).await?;
         }
     }
+    send(&mut ws, &far_view(&shared.map, centre)).await?;
+    view.far = Some(centre);
 
     loop {
         tokio::select! {
@@ -1102,6 +1155,15 @@ async fn forward(
                     if let Some(message) = shared.chunk_message(chunk) {
                         send(ws, &message).await?;
                     }
+                }
+                // The far view again once the body has gone far enough
+                // from where it was centred (a teleport, a long walk).
+                let moved = view.far.is_none_or(|c| {
+                    (c.x - to.chunk().x).abs().max((c.y - to.chunk().y).abs()) > FAR_RESEND
+                });
+                if moved {
+                    send(ws, &far_view(&shared.map, to.chunk())).await?;
+                    view.far = Some(to.chunk());
                 }
             }
             let (was_seen, is_seen) = (view.contains(from), view.contains(to));

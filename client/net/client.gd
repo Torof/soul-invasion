@@ -37,6 +37,9 @@ signal disconnected(reason: String)
 ## Development tools on (the server runs with --dev): the whole map,
 ## coarse, one letter a cell of `cell` tiles (see the protocol).
 signal dev_overview(cell: int, width: int, height: int, cells: String)
+## The land around the body, coarse, to draw past the chunks held: one
+## letter a cell of `cell` tiles from cell (x, y) (see the protocol).
+signal far_view(cell: int, x: int, y: int, width: int, height: int, cells: String)
 
 const DEFAULT_URL := "ws://127.0.0.1:7777"
 ## Seconds between two attempts to come back once the connection is lost
@@ -202,6 +205,15 @@ func _handle(message: Dictionary) -> void:
 			chunk_hidden.emit(int(message.get("x", 0)), int(message.get("y", 0)))
 		"body_left":
 			body_left.emit(int(message.get("body", -1)))
+		"far_view":
+			far_view.emit(
+				int(message.get("cell", 8)),
+				int(message.get("x", 0)),
+				int(message.get("y", 0)),
+				int(message.get("width", 0)),
+				int(message.get("height", 0)),
+				str(message.get("cells", ""))
+			)
 		"dev_overview":
 			dev = true
 			dev_overview.emit(

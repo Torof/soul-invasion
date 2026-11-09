@@ -40,7 +40,9 @@ use serde::{Deserialize, Serialize};
 ///   `dev_overview` (the whole map, coarse) and `dev_teleport`.
 /// - v13: the flora: `world_state` lists its kinds (`flora`), chunks carry
 ///   their plants (`plants`, a kind's index and a place each).
-pub const PROTOCOL_VERSION: u32 = 13;
+/// - v14: `far_view`, the land around the body, coarse, drawn past the
+///   chunks held.
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// A tile on the map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -378,6 +380,26 @@ pub enum ServerMessage {
         /// The nonce from the ping.
         nonce: u64,
     },
+    /// The land around the body, coarse, for the client to draw past the
+    /// chunks it holds (in a haze): sent after the first chunks, and again
+    /// when the body has gone far from its centre. What can be seen from
+    /// afar anyway, nothing that lies on it.
+    FarView {
+        /// Tiles each cell stands for, either way.
+        cell: u32,
+        /// Column of the first cell, in cells (cell x spans tiles
+        /// `x × cell .. (x + 1) × cell`).
+        x: i32,
+        /// Row of the first cell, in cells.
+        y: i32,
+        /// Cells across.
+        width: u32,
+        /// Cells down.
+        height: u32,
+        /// One letter a cell, row by row: `g` grass, `f` forest, `w` river,
+        /// `o` ford, `b` brook, `r` rock, `.` past the map.
+        cells: String,
+    },
     /// Development only, sent after [`ServerMessage::WorldState`] when the
     /// server runs with `--dev`: the whole map, coarse, for an overview
     /// to teleport from. Its presence tells the client the development
@@ -647,6 +669,14 @@ mod tests {
                 width: 2,
                 height: 2,
                 cells: "gfwr".to_owned(),
+            },
+            ServerMessage::FarView {
+                cell: 8,
+                x: -3,
+                y: 40,
+                width: 2,
+                height: 1,
+                cells: ".g".to_owned(),
             },
             ServerMessage::ProtocolMismatch { expected: 1 },
             ServerMessage::DayStarted {

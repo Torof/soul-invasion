@@ -15,7 +15,7 @@ extends Node2D
 const BODY_COLOR := Color(0.90, 0.80, 0.60)
 const PILOTED_COLOR := Color(1.0, 0.55, 0.20)
 const TARGET_COLOR := Color(1.0, 0.85, 0.30, 0.9)
-const ZOOM_MIN := 0.35
+const ZOOM_MIN := 0.25
 const ZOOM_MAX := 4.0
 const ZOOM_STEP := 1.25
 const DEFAULT_ZOOM := 1.5
@@ -80,6 +80,8 @@ const REDRAWS_PER_FRAME := 2
 var _standing: Node2D
 ## chunk -> the node holding its trees.
 var _tree_nodes: Dictionary = {}
+## The land past the chunks held (FarView).
+var _far: FarView
 ## The kinds of shrub, plant and mushroom (Net.flora), and the plants of
 ## each chunk held, as received ({kind, x, y}).
 var _flora: Array = []
@@ -119,6 +121,9 @@ func _ready() -> void:
 	_camera.zoom = Vector2.ONE * DEFAULT_ZOOM
 	Net.world_state.connect(_on_world_state)
 	Net.chunk.connect(_on_chunk)
+	_far = FarView.new()
+	add_child(_far)
+	Net.far_view.connect(_far.show_far)
 	Net.flora.connect(func(flora: Array) -> void: _flora = flora)
 	Net.species.connect(func(species: Array) -> void:
 		_tree_heights.clear()
@@ -226,6 +231,7 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees:
 	view.current_at = current_at
 	view.show_chunk(key * _chunk_size, _chunk_size, tiles, items, _looks)
 	_redraw_neighbours(key)
+	_update_held()
 	if not _camera_placed and _piloted < 0:
 		# Watching, no body to follow: look at the ground we were given
 		# rather than at the valley's corner.
@@ -403,6 +409,19 @@ func terrain_at(tile: Vector2i) -> String:
 	return str(tiles[local.y * _chunk_size + local.x])
 
 
+## Tells the far view which ground is held (the chunks' bounds), so its
+## haze rises to their edge.
+func _update_held() -> void:
+	if _far == null or _chunks.is_empty():
+		return
+	var lo := Vector2i(1 << 30, 1 << 30)
+	var hi := Vector2i(-(1 << 30), -(1 << 30))
+	for key: Vector2i in _chunks:
+		lo = Vector2i(mini(lo.x, key.x), mini(lo.y, key.y))
+		hi = Vector2i(maxi(hi.x, key.x + 1), maxi(hi.y, key.y + 1))
+	_far.set_held(lo * _chunk_size, hi * _chunk_size)
+
+
 ## The chunks around `key` draw their borders from their neighbours'
 ## tiles: redraw them when `key` appears or goes.
 func _redraw_neighbours(key: Vector2i) -> void:
@@ -430,6 +449,7 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 			gone.queue_free()
 			_tree_nodes.erase(key)
 		_redraw_neighbours(key)
+		_update_held()
 	for id in _bodies.keys():
 		if Iso.chunk_of(_tile_of(_bodies[id]["at"]), _chunk_size) == key:
 			_bodies.erase(id)
