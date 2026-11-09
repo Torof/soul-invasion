@@ -51,9 +51,13 @@ conductor: vision, decisions, practices, audits, security. The AI writes the cod
 
 - Commits: Conventional Commits (`feat:`, `fix:`, `docs:`, `ci:`, `refactor:`,
   `test:`, `chore:`), imperative mood, English.
-- Rust: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-  must all pass locally before opening a pull request. Pedantic clippy is on.
-  `unsafe` is forbidden.
+- Rust: `cargo fmt` and `cargo clippy --all-targets -- -D warnings` must pass
+  locally before opening a pull request, with the tests of what the change
+  touches (its crate, or its test file: `cargo test -p sim`, `cargo test -p
+  server --test net`, ...). The CI runs the whole suite on every pull request
+  that touches the server, and nothing merges without it: running it all
+  twice only made the project lead wait. Pedantic clippy is on. `unsafe` is
+  forbidden.
 - GDScript: typed, static analysis warnings fixed, tests in `client/tests/`.
 - Tests: every rule of the simulation has a test; every protocol message has
   a round-trip test; scenario tests run the world accelerated and check

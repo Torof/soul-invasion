@@ -21,21 +21,46 @@ jobs:
         working-directory: server
     steps:
       - uses: actions/checkout@v7
+      - name: What changed
+        working-directory: .
+        id: changed
+        # On a pull request only what it touches is checked:
+        # the server, the content it reads, or the CI itself.
+        # On main, everything always is.
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.sha }}"
+            if git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD | grep -qE '^(server/|content/|\.github/)'; then
+              echo "run=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "run=false" >> "$GITHUB_OUTPUT"
+              echo "Nothing here for this job: skipped."
+            fi
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.changed.outputs.run == 'true'
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        if: steps.changed.outputs.run == 'true'
         with:
           workspaces: server
       - name: Format
+        if: steps.changed.outputs.run == 'true'
         run: cargo fmt --all --check
       - name: Lint (warnings are errors)
+        if: steps.changed.outputs.run == 'true'
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Build
+        if: steps.changed.outputs.run == 'true'
         run: cargo build --workspace --all-targets
       - name: Test
+        if: steps.changed.outputs.run == 'true'
         run: cargo test --workspace
       - name: Docs build cleanly
+        if: steps.changed.outputs.run == 'true'
         run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
@@ -45,7 +70,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: What changed
+        id: changed
+        # On a pull request only what it touches is checked:
+        # the dependencies (Cargo files, deny.toml) or the CI itself.
+        # On main, everything always is.
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.sha }}"
+            if git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD | grep -qE '^(server/Cargo\.(toml|lock)|server/[^/]+/Cargo\.toml|server/deny\.toml|\.github/)'; then
+              echo "run=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "run=false" >> "$GITHUB_OUTPUT"
+              echo "Nothing here for this job: skipped."
+            fi
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: EmbarkStudios/cargo-deny-action@v2
+        if: steps.changed.outputs.run == 'true'
         with:
           manifest-path: server/Cargo.toml
           command: check
@@ -55,13 +98,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: What changed
+        id: changed
+        # On a pull request only what it touches is checked:
+        # the client, the protocol it mirrors, the content its tests read, or the CI itself.
+        # On main, everything always is.
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.sha }}"
+            if git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD | grep -qE '^(client/|server/protocol/|content/|\.github/)'; then
+              echo "run=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "run=false" >> "$GITHUB_OUTPUT"
+              echo "Nothing here for this job: skipped."
+            fi
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Install Godot (headless)
+        if: steps.changed.outputs.run == 'true'
         run: |
           curl -sSfL -o godot.zip "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
           unzip -q godot.zip
           sudo mv "Godot_v${GODOT_VERSION}-stable_linux.x86_64" /usr/local/bin/godot
           godot --version
       - name: Import project
+        if: steps.changed.outputs.run == 'true'
         run: godot --headless --path client --import
       - name: Run client tests
+        if: steps.changed.outputs.run == 'true'
         run: godot --headless --path client -s tests/run_tests.gd

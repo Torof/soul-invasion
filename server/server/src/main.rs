@@ -142,7 +142,7 @@ fn open_world(
         world
     } else {
         println!("world: new");
-        World::new(opts.calendar, content)
+        World::with_valley(opts.calendar, content, opts.valley_size)
     };
 
     Ok((world, Persister::new(storage, stop)))

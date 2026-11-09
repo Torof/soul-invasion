@@ -251,11 +251,16 @@ fn migrate_v2_to_v3(data: &str, content: &Content) -> Result<String, StorageErro
 }
 
 /// v4 adds the items lying on the ground. A v3 world keeps its bodies and
-/// gets the standard valley's items, as if they had always been there.
+/// gets the items of a fresh valley of its own size, as if they had always
+/// been there.
 fn migrate_v3_to_v4(data: &str, content: &Content) -> Result<String, StorageError> {
     let mut old: serde_json::Value = serde_json::from_str(data)?;
     let calendar: sim::Calendar = serde_json::from_value(old["calendar"].clone())?;
-    let fresh = serde_json::to_value(World::new(calendar, content))?;
+    let size = old["map"]["width"]
+        .as_u64()
+        .and_then(|w| u32::try_from(w).ok())
+        .unwrap_or(sim::VALLEY_SIZE);
+    let fresh = serde_json::to_value(World::with_valley(calendar, content, size))?;
     old["items"] = fresh["items"].clone();
     old["next_item"] = fresh["next_item"].clone();
     Ok(old.to_string())
@@ -341,7 +346,9 @@ mod tests {
     }
 
     fn world_at(ticks: u64) -> World {
-        let mut world = World::new(Calendar::new(2, 3).unwrap(), &content());
+        // A small valley: saved and restored like the game's, in a
+        // fraction of the time.
+        let mut world = World::with_valley(Calendar::new(2, 3).unwrap(), &content(), 256);
         world.advance(ticks, &content(), &mut Vec::new());
         world
     }
@@ -438,7 +445,7 @@ mod tests {
         let world = storage.latest_world().unwrap().unwrap();
         assert_eq!(world.tick(), Tick(12));
         assert_eq!(world.calendar(), &Calendar::new(2, 3).unwrap());
-        assert_eq!(world.bodies().len(), World::default().bodies().len());
+        assert_eq!(world.bodies().len(), 3, "the standard valley's inhabitants");
     }
 
     #[test]
