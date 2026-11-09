@@ -154,9 +154,10 @@ impl Woods {
         if pulls.is_empty() {
             return woods;
         }
-        pulls.sort_unstable();
         let above = pulls.len() * Self::MASSIF_SHARE as usize / 1000;
-        plan.level = pulls[pulls.len() - 1 - above.min(pulls.len() - 1)];
+        // The one value a full sort would put at that rank, without the sort.
+        let rank = pulls.len() - 1 - above.min(pulls.len() - 1);
+        plan.level = *pulls.select_nth_unstable(rank).1;
         let mut rng = Lcg::new(seed ^ 0x0a4_7eee);
         let inside = |x: u32, y: u32| land(x, y) && plan.inside(x, y);
         let outside = |x: u32, y: u32| land(x, y) && !plan.inside(x, y);

@@ -85,8 +85,14 @@ pub fn plant(map: &Map, species: &[Species], seed: u64) -> Vec<Tree> {
     let rooms: Vec<i64> = species.iter().map(room_mm).collect();
     let widest = rooms.iter().copied().max().unwrap_or(0);
     let reach = i32::try_from(2 * widest / i64::from(MM_PER_TILE) + 1).expect("small");
-    let mut near: std::collections::HashMap<(i32, i32), Vec<usize>> =
-        std::collections::HashMap::new();
+    // The tree standing on each tile, if any (a tile is visited once, so
+    // it holds one at most): a flat grid, looked up fast; it was a hashed
+    // map, most of the planting's time.
+    let (wide, high) = (
+        i32::try_from(width).expect("map fits in i32"),
+        i32::try_from(height).expect("map fits in i32"),
+    );
+    let mut near: Vec<u32> = vec![u32::MAX; (width * height) as usize];
     for y in 0..height {
         for x in 0..width {
             let pos = Pos::new(
@@ -151,21 +157,23 @@ pub fn plant(map: &Map, species: &[Species], seed: u64) -> Vec<Tree> {
             let spread = 1600 - 6 * i64::from(map.trees(pos).min(100));
             let crowded = (pos.y - reach..=pos.y + reach).any(|ty| {
                 (pos.x - reach..=pos.x + reach).any(|tx| {
-                    near.get(&(tx, ty)).is_some_and(|list| {
-                        list.iter().any(|&i| {
-                            let other: &Tree = &trees[i];
-                            let (dx, dy) =
-                                (i64::from(other.at.x - at.x), i64::from(other.at.y - at.y));
-                            let room = (rooms[kind] + rooms[other.species]) * spread / 1000;
-                            dx * dx + dy * dy < room * room
-                        })
-                    })
+                    if tx < 0 || ty < 0 || tx >= wide || ty >= high {
+                        return false;
+                    }
+                    let i = near[usize::try_from(ty * wide + tx).expect("inside")];
+                    i != u32::MAX && {
+                        let other: &Tree = &trees[i as usize];
+                        let (dx, dy) = (i64::from(other.at.x - at.x), i64::from(other.at.y - at.y));
+                        let room = (rooms[kind] + rooms[other.species]) * spread / 1000;
+                        dx * dx + dy * dy < room * room
+                    }
                 })
             });
             if crowded {
                 continue;
             }
-            near.entry((pos.x, pos.y)).or_default().push(trees.len());
+            near[usize::try_from(pos.y * wide + pos.x).expect("inside")] =
+                u32::try_from(trees.len()).expect("fewer trees than tiles");
             trees.push(Tree { at, species: kind });
         }
     }

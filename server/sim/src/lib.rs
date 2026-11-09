@@ -585,13 +585,17 @@ impl World {
     /// rule, a piece lands with the rule's probability.
     fn scatter(&mut self, content: &Content, seed: u64) {
         let mut rng = map::Lcg::new(seed ^ 0x5eed_17e5);
-        // Distance of every tile to each terrain some rule wants to be near.
-        let mut distances: BTreeMap<Terrain, Vec<u32>> = BTreeMap::new();
+        // Distance of every tile to each terrain some rule wants to be near,
+        // out to the farthest any rule asks: nothing beyond is ever read.
+        let mut farthest: BTreeMap<Terrain, u32> = BTreeMap::new();
         for near in content.spawns.iter().filter_map(|s| s.near) {
-            distances
-                .entry(near.terrain)
-                .or_insert_with(|| self.map.distance_to(near.terrain));
+            let limit = farthest.entry(near.terrain).or_insert(0);
+            *limit = (*limit).max(near.within);
         }
+        let distances: BTreeMap<Terrain, Vec<u32>> = farthest
+            .into_iter()
+            .map(|(terrain, limit)| (terrain, self.map.distance_within(terrain, limit)))
+            .collect();
         let (width, height) = (self.map.width(), self.map.height());
         for y in 0..height {
             for x in 0..width {
