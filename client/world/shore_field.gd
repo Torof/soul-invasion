@@ -39,17 +39,11 @@ const FORD_BLUR_PASSES := 5
 ## counts as unknown so a river runs on out of the map.
 static var map_size := Vector2i(256, 256)
 
-## The latest update asked for each block: an update in slices gives up
-## when a newer one for its block has started.
+## The latest update asked for each block: an update running on another
+## core gives up when a newer one for its block has started.
 static var _jobs: Dictionary = {}
-## Updates under way, in slices or not (the loading screen waits for them).
+## Updates under way (the loading screen waits for them).
 static var busy := 0
-## While nobody plays (the loading screen is up), the slices may take this
-## long a frame, more than the updates ask.
-static var loading_slice_usec := 0
-## The frame the slices are running in, and when they started in it.
-static var _slice_frame := -1
-static var _slice_start := 0
 static var _image: Image
 static var _texture: ImageTexture
 ## Whether the image changed since it was last sent to the texture: sent
@@ -75,16 +69,16 @@ static func is_water(terrain: String) -> bool:
 ## gives (a Callable of Vector2i -> String).
 ## `current`, when valid, gives where the water runs at a tile (a vector
 ## in metres a second, Vector2i -> Vector2).
-## With `slice_usec`, the smoothing is spread over frames, that long at
-## most at a time (a block takes tens of milliseconds): the tiles are read
-## at once, the texture is written a few frames later.
-static func update(terrain: Callable, lo: Vector2i, size: int, current := Callable(), slice_usec := 0) -> void:
+## `threaded`: the smoothing (tens of milliseconds for a block with
+## water) runs on another core and the texture is written a few frames
+## later; otherwise all at once (the tests).
+static func update(terrain: Callable, lo: Vector2i, size: int, current := Callable(), threaded := false) -> void:
 	busy += 1
-	await _update(terrain, lo, size, current, slice_usec)
+	await _update(terrain, lo, size, current, threaded)
 	busy -= 1
 
 
-static func _update(terrain: Callable, lo: Vector2i, size: int, current: Callable, slice_usec: int) -> void:
+static func _update(terrain: Callable, lo: Vector2i, size: int, current: Callable, threaded: bool) -> void:
 	texture()
 	var job := int(_jobs.get(lo, 0)) + 1
 	_jobs[lo] = job
@@ -140,36 +134,76 @@ static func _update(terrain: Callable, lo: Vector2i, size: int, current: Callabl
 						if ford:
 							fords[row + px] = 1.0
 	var inner := size * PX
+	var still := int(round(0.5 * 255.0))
+	var piece: Image
+	if not any_water:
+		# No water in the block nor its margin (most of them): all land,
+		# no ford, still water, without smoothing or encoding a pixel.
+		piece = Image.create(inner, inner, false, Image.FORMAT_RGBA8)
+		piece.fill(Color8(255, 0, still, still))
+	elif threaded:
+		# In the game the smoothing and the encoding run on another core
+		# (they read and write only these arrays); the result is laid when
+		# ready, unless a newer update for this block came meanwhile.
+		var out := [PackedByteArray()]
+		var task := WorkerThreadPool.add_task(_smooth.bind(out, field, fords, flow_x, flow_y, w, inner, any_flow, any_ford, any_land))
+		var tree := Engine.get_main_loop() as SceneTree
+		while tree != null and not WorkerThreadPool.is_task_completed(task):
+			await tree.process_frame
+		WorkerThreadPool.wait_for_task_completion(task)
+		if _jobs.get(lo, 0) != job:
+			return
+		piece = Image.create_from_data(inner, inner, false, Image.FORMAT_RGBA8, out[0])
+	else:
+		var out := [PackedByteArray()]
+		_smooth(out, field, fords, flow_x, flow_y, w, inner, any_flow, any_ford, any_land)
+		piece = Image.create_from_data(inner, inner, false, Image.FORMAT_RGBA8, out[0])
+	# Laid at its place in the repeating texture, in as many parts as it
+	# straddles the texture's edges.
+	var at := Vector2i(posmod(lo.x, TILES), posmod(lo.y, TILES)) * PX
+	var full := TILES * PX
+	var y0 := 0
+	while y0 < size * PX:
+		var rows := mini(size * PX - y0, full - posmod(at.y + y0, full))
+		var x0 := 0
+		while x0 < size * PX:
+			var columns := mini(size * PX - x0, full - posmod(at.x + x0, full))
+			_image.blit_rect(piece, Rect2i(x0, y0, columns, rows), Vector2i(posmod(at.x + x0, full), posmod(at.y + y0, full)))
+			x0 += columns
+		y0 += rows
+	if not _upload_due:
+		_upload_due = true
+		_upload.call_deferred()
+
+
+## Smooths the water's masks of a block read with its margin (`w` pixels
+## a side) and encodes the block's own `inner` pixels a side into
+## `out[0]`: the bank's distance, the fords, the flow. Touches nothing but
+## its arguments, so it may run on another thread.
+static func _smooth(out: Array, field: PackedFloat32Array, fords: PackedFloat32Array, flow_x: PackedFloat32Array, flow_y: PackedFloat32Array, w: int, inner: int, any_flow: bool, any_ford: bool, any_land: bool) -> void:
 	var block := PackedByteArray()
 	block.resize(inner * inner * 4)
 	# The water's mask smoothed: the bank's distance, and what the flow is
 	# averaged over.
-	if any_flow or (any_water and any_land):
+	if any_flow or any_land:
 		for _pass in 3:
 			_blur_rows(field, w)
 			_blur_columns(field, w)
-			if not await _breathe(lo, job, slice_usec):
-				return
 	if any_flow:
 		for _pass in 3:
 			_blur_rows(flow_x, w)
 			_blur_columns(flow_x, w)
 			_blur_rows(flow_y, w)
 			_blur_columns(flow_y, w)
-			if not await _breathe(lo, job, slice_usec):
-				return
 	if any_ford:
 		# Wider than the bank's smoothing, so a ford fades slowly into the
 		# deep water.
 		for _pass in FORD_BLUR_PASSES:
 			_blur_rows(fords, w, FORD_BLUR)
 			_blur_columns(fords, w, FORD_BLUR)
-			if not await _breathe(lo, job, slice_usec):
-				return
-	if not any_water or not any_land:
-		var far := 255 if not any_water else 0
+	if not any_land:
 		for i in inner * inner:
-			block[4 * i] = far
+			block[4 * i] = 0
 	else:
 		# A straight edge smoothed this way is the normal curve: undo it to
 		# get a distance in tiles, sigma being the blur's spread.
@@ -195,23 +229,7 @@ static func _update(terrain: Callable, lo: Vector2i, size: int, current: Callabl
 			else:
 				block[o + 2] = still
 				block[o + 3] = still
-	var piece := Image.create_from_data(size * PX, size * PX, false, Image.FORMAT_RGBA8, block)
-	# Laid at its place in the repeating texture, in as many parts as it
-	# straddles the texture's edges.
-	var at := Vector2i(posmod(lo.x, TILES), posmod(lo.y, TILES)) * PX
-	var full := TILES * PX
-	var y0 := 0
-	while y0 < size * PX:
-		var rows := mini(size * PX - y0, full - posmod(at.y + y0, full))
-		var x0 := 0
-		while x0 < size * PX:
-			var columns := mini(size * PX - x0, full - posmod(at.x + x0, full))
-			_image.blit_rect(piece, Rect2i(x0, y0, columns, rows), Vector2i(posmod(at.x + x0, full), posmod(at.y + y0, full)))
-			x0 += columns
-		y0 += rows
-	if not _upload_due:
-		_upload_due = true
-		_upload.call_deferred()
+	out[0] = block
 
 
 static func _upload() -> void:
@@ -241,26 +259,6 @@ static func ford_at(p: Vector2) -> float:
 	texture()
 	var px := Vector2i(posmod(floori(p.x * PX), TILES * PX), posmod(floori(p.y * PX), TILES * PX))
 	return _image.get_pixelv(px).g
-
-
-## Between two slices of an update: once the updates in slices have used
-## their time in this frame, all of them together, waits for a frame with
-## time left; tells whether the update should go on.
-static func _breathe(lo: Vector2i, job: int, slice_usec: int) -> bool:
-	if slice_usec <= 0:
-		return true
-	var tree := Engine.get_main_loop() as SceneTree
-	if tree == null:
-		return true
-	while true:
-		var frame := Engine.get_process_frames()
-		if frame != _slice_frame:
-			_slice_frame = frame
-			_slice_start = Time.get_ticks_usec()
-		if Time.get_ticks_usec() - _slice_start < maxi(slice_usec, loading_slice_usec):
-			break
-		await tree.process_frame
-	return _jobs.get(lo, 0) == job
 
 
 static func _blur_rows(field: PackedFloat32Array, w: int, radius := BLUR) -> void:

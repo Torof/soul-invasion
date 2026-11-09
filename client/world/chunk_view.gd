@@ -566,8 +566,6 @@ func _terrain_signature() -> int:
 
 
 var _last_signature := 0
-## How long the bank's field may smooth in one frame (ShoreField.update).
-const FIELD_SLICE_USEC := 6000
 ## Building a chunk's ground takes tens of milliseconds: one chunk builds
 ## a frame, the others keep what they drew and wait in `waiting` for the
 ## world view to call them, nearest the camera first.
@@ -817,7 +815,7 @@ static func shore_field_on() -> bool:
 ## draws the bank) over the land within two tiles of the water.
 func _add_field_tiles(by_terrain: Dictionary) -> void:
 	var terrain := func(t: Vector2i) -> String: return _terrain(t.x, t.y)
-	ShoreField.update(terrain, _origin, _size, current_at, FIELD_SLICE_USEC)
+	ShoreField.update(terrain, _origin, _size, current_at, true)
 	var water_material := ground_material("water")
 	water_material.set_shader_parameter("shore_field", ShoreField.texture())
 	water_material.set_shader_parameter("has_field", true)
