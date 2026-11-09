@@ -318,8 +318,8 @@ func _owned(lines: Array, lo: Vector2i, hi: Vector2i) -> Array:
 
 
 func _test_trees_stand_on_their_foot() -> void:
-	# Every kind of tree of the content has at least one image, four times
-	# the screen (256 px a metre of its height).
+	# Every kind of tree of the content has at least one image, sharp
+	# enough for its height on screen (D40) up close.
 	var text := FileAccess.get_file_as_string("res://../content/species.ron")
 	if text.is_empty():
 		text = FileAccess.get_file_as_string(ProjectSettings.globalize_path("res://").path_join("../content/species.ron"))
@@ -335,7 +335,7 @@ func _test_trees_stand_on_their_foot() -> void:
 		var images := Trees.textures(id)
 		_check(not images.is_empty(), "the %s has an image" % id)
 		for t: Texture2D in images:
-			_check(absi(t.get_height() - roundi(heights[id] * 256.0)) <= 1, "%s image is 256 px a metre: %d" % [id, t.get_height()])
+			_check(t.get_height() >= 760, "%s image is tall enough: %d" % [id, t.get_height()])
 	# A tree stands on its foot, its size within the jitter, the same every
 	# time; neighbours do not all show the same image.
 	var oak: Array = Trees.textures("oak")
@@ -343,7 +343,7 @@ func _test_trees_stand_on_their_foot() -> void:
 	var r := Trees.rect(at, 400, oak[0])
 	var foot := Iso.point_to_screen(at)
 	_check(r.end.y == foot.y and absf(r.get_center().x - foot.x) < 0.01, "a tree stands on its foot")
-	var tall := 400.0 / 100.0 * Iso.PX_PER_M
+	var tall := Scale.shown(4.0) * Iso.PX_PER_M
 	_check(absf(r.size.y - tall) <= tall * Trees.SIZE_JITTER + 0.01, "a tree's size stays within its jitter")
 	_check(Trees.rect(at, 400, oak[0]) == r and Trees.variant(at, 2) == Trees.variant(at, 2), "the same tree every time")
 	var shown := {}
