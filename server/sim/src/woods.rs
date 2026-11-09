@@ -65,14 +65,14 @@ pub struct Woods {
 
 impl Woods {
     /// Share of the land the massifs cover, edges included, in thousandths.
-    pub const MASSIF_SHARE: u32 = 320;
+    pub const MASSIF_SHARE: u32 = 240;
     /// From this density up, a tile is forest: the wood and the heart.
     pub const FOREST: u8 = 35;
     /// From this density up, the heart of a massif.
     pub const HEART: u8 = 75;
     /// Lattice of the massifs' noise, then of the two finer ones that
     /// roughen their outline, in tiles.
-    const MASSIF_CELL: u32 = 64;
+    const MASSIF_CELL: u32 = 128;
     const DETAIL_CELL: u32 = 16;
     const FINE_CELL: u32 = 5;
     /// Weight of the finer noises and of the wet ground, in thousandths.
@@ -85,21 +85,24 @@ impl Woods {
     /// How far above the level the noise climbs from the edge of a massif
     /// to its full density, in thousandths: the width of the edge.
     const EDGE: i64 = 160;
-    /// Clearings in the woods, and their radius in thousandths of a tile.
-    const CLEARINGS: u32 = 10;
+    /// Clearings in the woods for every 256 × 256 tiles of land, and their
+    /// radius in thousandths of a tile.
+    const CLEARINGS: u32 = 6;
     const CLEARING_RADIUS: (u32, u32) = (3000, 7000);
     /// Radius of the camp clearing, and the rim over which trees come back.
     const CAMP_RADIUS: i64 = 9000;
     const CAMP_RIM: i64 = 3000;
-    /// Copses in the meadow, and their radius.
-    const COPSES: u32 = 30;
-    const COPSE_RADIUS: (u32, u32) = (1500, 4000);
-    /// Chance of a lone tree on a meadow tile, in thousandths.
-    const LONE: u32 = 4;
+    /// Copses in the meadow for every 256 × 256 tiles of land, and their
+    /// radius: groups of a few big trees in the open (D40).
+    const COPSES: u32 = 10;
+    const COPSE_RADIUS: (u32, u32) = (4000, 11000);
+    /// Chance of a lone tree on a meadow tile, in ten-thousandths: wide
+    /// plains, a tree here and there.
+    const LONE: u32 = 9;
     /// Chance of a riverside tree two tiles from a river, then three, in
     /// thousandths: never on the tile beside the water, so a tree and its
     /// crown stand on the bank, not in the river.
-    const RIVERSIDE: (u32, u32) = (250, 150);
+    const RIVERSIDE: (u32, u32) = (110, 60);
     /// How ragged a round patch's rim is, in thousandths of its radius.
     const RAGGED: i64 = 350;
 
@@ -157,17 +160,31 @@ impl Woods {
         let mut rng = Lcg::new(seed ^ 0x0a4_7eee);
         let inside = |x: u32, y: u32| land(x, y) && plan.inside(x, y);
         let outside = |x: u32, y: u32| land(x, y) && !plan.inside(x, y);
+        // A clearing opens well inside a wood: wood all around its centre,
+        // as far as its widest radius, so it never eats a thin wood whole.
+        let deep_inside = |x: u32, y: u32| {
+            let r = Self::CLEARING_RADIUS.1 / 1000;
+            inside(x, y)
+                && [(r, 0), (0, r), (r, r)].iter().all(|&(dx, dy)| {
+                    x >= dx
+                        && y >= dy
+                        && x + dx < width
+                        && y + dy < height
+                        && inside(x - dx, y - dy)
+                        && inside(x + dx, y + dy)
+                })
+        };
         let clearings = Self::patches(
             (width, height, cliff_rows),
             &mut rng,
-            Self::CLEARINGS,
+            Self::per_area(width, height, Self::CLEARINGS),
             Self::CLEARING_RADIUS,
-            inside,
+            deep_inside,
         );
         let copses = Self::patches(
             (width, height, cliff_rows),
             &mut rng,
-            Self::COPSES,
+            Self::per_area(width, height, Self::COPSES),
             Self::COPSE_RADIUS,
             outside,
         );
@@ -184,6 +201,13 @@ impl Woods {
             }
         }
         woods
+    }
+
+    /// A count given for 256 × 256 tiles, for a map of `width × height`.
+    fn per_area(width: u32, height: u32, count: u32) -> u32 {
+        u32::try_from(u64::from(count) * u64::from(width) * u64::from(height) / (256 * 256))
+            .unwrap_or(u32::MAX)
+            .max(1)
     }
 
     /// Up to `count` round patches, centred where `fits`, of a radius in
@@ -360,7 +384,7 @@ impl Plan {
             if copse > 0 {
                 d = 300 + 400 * copse / 1000;
                 habitat = Habitat::Copse;
-            } else if rng.next_below(1000) < Woods::LONE {
+            } else if rng.next_below(10_000) < Woods::LONE {
                 d = 200;
                 habitat = Habitat::Lone;
             }
@@ -427,9 +451,10 @@ mod tests {
                 })
                 .map(|(_, n)| n)
                 .sum();
-            // A third of the land wooded, a fifth or so forest proper.
+            // A quarter of the land wooded (9 November 2026: wide plains),
+            // a fifth or so forest proper.
             assert!(
-                (300..=400).contains(&(wooded * 1000 / land)),
+                (200..=330).contains(&(wooded * 1000 / land)),
                 "seed {seed}: {wooded} of {land}"
             );
             assert!(
