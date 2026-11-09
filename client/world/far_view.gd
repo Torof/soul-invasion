@@ -75,16 +75,15 @@ func show_far(cell: int, x: int, y: int, width: int, height: int, cells: String)
 	_haze.queue_redraw()
 
 
-## Where the haze starts: the detailed ground, in tiles from `lo` to `hi`
-## (excluded), and over how many tiles past it the haze rises to
-## HAZE_EDGE: the ring of outline chunks around it, which melts into the
-## far land (WorldView), or HAZE_IN without one.
+## Where the haze starts: the limit of the view, in tiles from `lo` to
+## `hi` (WorldView, around the body), and over how many tiles past it the
+## haze rises to `edge`.
 ## `edge` and `far` its thickness there and far away (HAZE_EDGE and
 ## HAZE_FAR; 1 for a fog one cannot see through).
-func set_held(lo: Vector2i, hi: Vector2i, rise := HAZE_IN, edge := HAZE_EDGE, far := HAZE_FAR) -> void:
-	_held = Rect2(Vector2(lo), Vector2(hi - lo))
-	_haze_material.set_shader_parameter("held_lo", Vector2(lo))
-	_haze_material.set_shader_parameter("held_hi", Vector2(hi))
+func set_held(lo: Vector2, hi: Vector2, rise := HAZE_IN, edge := HAZE_EDGE, far := HAZE_FAR) -> void:
+	_held = Rect2(lo, hi - lo)
+	_haze_material.set_shader_parameter("held_lo", lo)
+	_haze_material.set_shader_parameter("held_hi", hi)
 	_haze_material.set_shader_parameter("rise_in", rise)
 	_haze_material.set_shader_parameter("edge", edge)
 	_haze_material.set_shader_parameter("far_haze", far)

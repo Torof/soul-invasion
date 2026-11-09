@@ -34,6 +34,7 @@ func _init() -> void:
 	_test_chunk_outline_decodes()
 	_test_the_ring_lies_outside_the_detail()
 	_test_the_camera_stops_at_the_band()
+	_test_the_view_follows_the_body_tile_by_tile()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -573,6 +574,22 @@ func _test_the_camera_stops_at_the_band() -> void:
 func _test_the_shore_field_holds_every_chunk_held() -> void:
 	var held := (2 * 7 + 1) * 32
 	_check(ShoreField.TILES >= held + 2 * ShoreField.MARGIN, "the bank texture is wider than the chunks held: %d" % ShoreField.TILES)
+
+
+## The limit of the view moves with the body, tile by tile, and stays
+## inside the ground held with room for the band and the fog.
+func _test_the_view_follows_the_body_tile_by_tile() -> void:
+	# 15 chunks held around chunk 50, as the server holds them.
+	var held := Rect2(Vector2(43, 43) * 32, Vector2(15, 15) * 32)
+	var body := Vector2(50 * 32 + 16.5, 50 * 32 + 16.5)
+	var limit := Iso.view_limit(body, 208.0, held, 4.0)
+	_check(limit.position == body - Vector2(208, 208) and limit.end == body + Vector2(208, 208), "208 tiles around the body: %s" % limit)
+	var step := Iso.view_limit(body + Vector2(1, 0), 208.0, held, 4.0)
+	_check(step.position.x == limit.position.x + 1.0, "a tile east, the limit a tile east")
+	for x in [0.0, 31.9]:
+		var at := Vector2(50 * 32 + x, 50 * 32 + 16.0)
+		var l := Iso.view_limit(at, 208.0, held, 4.0)
+		_check(l.position.x >= held.position.x + 4.0 and l.end.x <= held.end.x - 4.0, "inside the ground held at %s" % at)
 
 
 func _test_currents_decode() -> void:

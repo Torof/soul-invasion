@@ -47,18 +47,15 @@ pub const MAX_MESSAGE_BYTES: usize = 4096;
 
 /// Chunks held around the body's own chunk, in every direction: a window
 /// of `(2 × VIEW_RADIUS + 1)²` chunks, 416 m across; around it a ring of
-/// outline chunks (`OUTLINE_RADIUS`) of which the client shows only the
-/// first `OUTLINE_BAND` tiles, fading fast into a fog where the camera
-/// stops.
+/// outline chunks (`OUTLINE_RADIUS`): the client's view reaches a fixed
+/// distance from the body, tile by tile as it walks, then a few tiles
+/// blur away into a fog where the camera stops; the ring holds what lies
+/// there whatever the body's place in its chunk.
 pub const VIEW_RADIUS: i32 = 6;
 /// Chunks held in outline around the view, out to this radius: their
-/// ground and currents, and the trees and tall plants of their band
-/// (`ChunkOutline`); nothing that lies or walks there.
+/// ground and currents, trees and tall plants (`ChunkOutline`); nothing
+/// that lies or walks there.
 pub const OUTLINE_RADIUS: i32 = 7;
-/// Tiles of an outline chunk the client shows past the view's edge: its
-/// trees and plants are sent only within this many tiles of the chunk's
-/// borders (whichever faces the view, as the view moves).
-pub const OUTLINE_BAND: i32 = 3;
 /// Plants this tall and taller are in an outline chunk, in centimetres.
 pub const OUTLINE_PLANT_CM: u32 = 50;
 
@@ -676,31 +673,19 @@ impl Shared {
     }
 
     /// The message carrying a chunk in outline: its ground and currents,
-    /// the trees and tall plants of its band (`OUTLINE_BAND`); nothing
-    /// that lies or walks there.
+    /// its trees and tall plants; nothing that lies or walks there.
     fn outline_message(&self, chunk: ChunkPos) -> Option<ServerMessage> {
         let tiles = self.map.chunk(chunk)?;
         let tall = |p: &PlantState| {
-            in_band(chunk, p.x, p.y)
-                && self
-                    .flora
-                    .get(usize::from(p.kind))
-                    .is_some_and(|k| k.height_cm >= OUTLINE_PLANT_CM)
+            self.flora
+                .get(usize::from(p.kind))
+                .is_some_and(|k| k.height_cm >= OUTLINE_PLANT_CM)
         };
         Some(ServerMessage::ChunkOutline {
             x: chunk.x,
             y: chunk.y,
             tiles: tiles.into_iter().map(terrain_view).collect(),
-            trees: self
-                .trees
-                .get(&chunk)
-                .map(|t| {
-                    t.iter()
-                        .filter(|t| in_band(chunk, t.at.x, t.at.y))
-                        .cloned()
-                        .collect()
-                })
-                .unwrap_or_default(),
+            trees: self.trees.get(&chunk).cloned().unwrap_or_default(),
             plants: self.plants_in(chunk).into_iter().filter(tall).collect(),
             currents: self.map.chunk_currents(chunk)?,
         })
@@ -777,16 +762,6 @@ fn flora_views(content: &Content) -> (Vec<FloraView>, Vec<Option<u16>>) {
         })
         .collect();
     (flora, flora_wire)
-}
-
-/// Whether a point (millimetres) of `chunk` lies within `OUTLINE_BAND`
-/// tiles of one of the chunk's borders: the part of an outline chunk the
-/// client may show, whichever side faces the view.
-fn in_band(chunk: ChunkPos, x_mm: i32, y_mm: i32) -> bool {
-    let side = i32::try_from(CHUNK_SIZE).expect("small chunk side");
-    let local = |mm: i32, origin: i32| mm.div_euclid(1000) - origin * side;
-    let (x, y) = (local(x_mm, chunk.x), local(y_mm, chunk.y));
-    x < OUTLINE_BAND || y < OUTLINE_BAND || x >= side - OUTLINE_BAND || y >= side - OUTLINE_BAND
 }
 
 /// The chunks a connection holds: a square window around a centre chunk,
@@ -1504,12 +1479,6 @@ mod tests {
             no_longer.contains(&ChunkPos::new(13 + r, 12)),
             "entered the window: out of outline"
         );
-
-        // Of an outline chunk, only the band along its borders is sent.
-        let c = ChunkPos::new(1, 1);
-        let at = |x: i32, y: i32| in_band(c, (32 + x) * 1000 + 500, (32 + y) * 1000 + 500);
-        assert!(at(0, 16) && at(2, 16) && at(31, 16) && at(16, 29) && at(16, 0));
-        assert!(!at(3, 16) && !at(16, 16) && !at(28, 28));
 
         // In the corner of the map the window is clipped.
         let (shown, _) = View::default().recentre(&map, ChunkPos::new(0, 0));
