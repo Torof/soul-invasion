@@ -166,7 +166,9 @@ void fragment() {
 	vec2 out_hi = t - held_hi;
 	float d = max(max(out_lo.x, out_hi.x), max(out_lo.y, out_hi.y)) - n * 2.0;
 	// Nothing over the ground held (d <= 0): the haze starts at its edge.
-	float a = smoothstep(0.0, rise_in, d) * edge + smoothstep(rise_in, reach, d) * (far_haze - edge);
+	// It rises over the second half of the way to its edge thickness: the
+	// band before it shows the land blurring away, the fog comes last.
+	float a = smoothstep(rise_in * 0.5, rise_in, d) * edge + smoothstep(rise_in, reach, d) * (far_haze - edge);
 	COLOR = vec4(haze * (0.94 + 0.1 * m), a);
 }
 """ % [HAZE.r, HAZE.g, HAZE.b, HAZE_EDGE, HAZE_FAR, HAZE_IN, HAZE_OUT]

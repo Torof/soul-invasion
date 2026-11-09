@@ -26,8 +26,9 @@ const DEFAULT_ZOOM := 1.5
 const EDGE_BAND := 3.0
 ## How far the screen's corners may show the fog past the band: 0, the
 ## middle of the screen's edges stops at the band and the corners show
-## fog; 1, no corner ever passes the band (Iso.camera_area).
-const FOG_CORNERS := 0.5
+## fog; 1, no corner ever passes the band, the fog is barely seen (the
+## project lead's call; Iso.camera_area).
+const FOG_CORNERS := 1.0
 ## Millimetres per tile, as the protocol defines fine points.
 const MM_PER_TILE := 1000.0
 
@@ -589,11 +590,11 @@ func _process(delta: float) -> void:
 	DevTiming.add("world view", timing)
 
 
-## Keeps the screen over the detailed ground and its band: the screen's
-## edges stop at EDGE_BAND tiles beyond the detailed chunks, so the view
-## stops at the land's edge; the corners of the screen past it show the
-## fog (the project lead's call: the fog is a filler, one never pans
-## into it).
+## Keeps the screen over the detailed ground and its band: no corner of
+## the screen passes EDGE_BAND tiles beyond the detailed chunks, so the
+## view stops at the land's edge, a corner showing at most the band
+## blurring away and a hint of the fog (the project lead's call: the fog
+## is barely seen, one never pans into it).
 func _clamp_camera() -> void:
 	var held := _bounds(true)
 	if held.size == Vector2i.ZERO:
