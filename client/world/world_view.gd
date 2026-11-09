@@ -29,6 +29,10 @@ const EDGE_BAND := 3.0
 ## fog; 1, no corner ever passes the band, the fog is barely seen (the
 ## project lead's call; Iso.camera_area).
 const FOG_CORNERS := 1.0
+## Tiles of fog a corner of the screen may show past the band, at the
+## camera's stop: a thin edge of fog, so one sees the view ends there
+## (the project lead's call).
+const FOG_SEEN := 1.0
 ## Millimetres per tile, as the protocol defines fine points.
 const MM_PER_TILE := 1000.0
 
@@ -591,16 +595,17 @@ func _process(delta: float) -> void:
 
 
 ## Keeps the screen over the detailed ground and its band: no corner of
-## the screen passes EDGE_BAND tiles beyond the detailed chunks, so the
-## view stops at the land's edge, a corner showing at most the band
-## blurring away and a hint of the fog (the project lead's call: the fog
-## is barely seen, one never pans into it).
+## the screen passes EDGE_BAND + FOG_SEEN tiles beyond the detailed
+## chunks, so the view stops at the land's edge, a corner showing the band
+## blurring away and a thin edge of fog that tells the view ends there
+## (the project lead's call: the fog is barely seen, one never pans into
+## it). The view follows the body, and its edge with it.
 func _clamp_camera() -> void:
 	var held := _bounds(true)
 	if held.size == Vector2i.ZERO:
 		return
 	var a := Iso.camera_area(Vector2(held.position * _chunk_size), Vector2(held.end * _chunk_size),
-		get_viewport_rect().size / _camera.zoom.x, EDGE_BAND, FOG_CORNERS)
+		get_viewport_rect().size / _camera.zoom.x, EDGE_BAND + FOG_SEEN, FOG_CORNERS)
 	if a.size.x < 0.0 or a.size.y < 0.0:
 		return
 	var t := Vector2((_camera.position.x / (Iso.TILE_W / 2.0) + _camera.position.y / (Iso.TILE_H / 2.0)) / 2.0,

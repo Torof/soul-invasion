@@ -154,9 +154,10 @@ uniform float reach = %f;
 uniform sampler2D noise_texture : repeat_enable, filter_linear;
 void fragment() {
 	vec2 t = UV;
-	// A fog, not a wall: its edge wanders outwards by up to two tiles (never
-	// over the detailed ground) and drifts
-	// slowly, and it is lighter and darker in soft banks.
+	// A fog, not a wall: its edge wanders outwards by up to half a tile
+	// (never over the detailed ground, and always whole a tile past the
+	// band, where the camera stops) and drifts slowly, in soft lighter and
+	// darker banks.
 	vec2 drift = vec2(TIME * 0.25, TIME * 0.1);
 	float n = texture(noise_texture, (t + drift) / 14.0).r;
 	float m = texture(noise_texture, (t - drift * 0.6) / 37.0 + vec2(0.31, 0.77)).r;
@@ -164,7 +165,7 @@ void fragment() {
 	// two axes, as the ground held is a square of chunks).
 	vec2 out_lo = held_lo - t;
 	vec2 out_hi = t - held_hi;
-	float d = max(max(out_lo.x, out_hi.x), max(out_lo.y, out_hi.y)) - n * 2.0;
+	float d = max(max(out_lo.x, out_hi.x), max(out_lo.y, out_hi.y)) - n * 0.5;
 	// Nothing over the ground held (d <= 0): the haze starts at its edge.
 	// It rises over the second half of the way to its edge thickness: the
 	// band before it shows the land blurring away, the fog comes last.
