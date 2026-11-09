@@ -16,6 +16,10 @@ const HAZE_FAR := 0.68
 ## which it reaches its farthest.
 const HAZE_IN := 24.0
 const HAZE_OUT := 700.0
+## Where the veil is drawn: over the ground (ChunkView's ground layers,
+## banks and brooks, down to -4), under the chunks' items and plants
+## (-1) and what stands (0).
+const VEIL_Z := -3
 
 var _texture: ImageTexture
 var _cell := 8
@@ -23,6 +27,8 @@ var _origin := Vector2i.ZERO
 var _size := Vector2i.ZERO
 var _haze: Node2D
 var _haze_material: ShaderMaterial
+var _cover: Node2D
+var _cover_material: ShaderMaterial
 ## The ground held, in tiles: [lo, hi).
 var _held := Rect2(0, 0, 0, 0)
 
@@ -46,15 +52,31 @@ void fragment() {
 	grain.set_shader_parameter("noise_texture", ChunkView.noise_texture())
 	material = grain
 	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-	_haze = Node2D.new()
-	_haze.z_index = 40
-	_haze_material = ShaderMaterial.new()
-	_haze_material.shader = _haze_shader()
-	_haze_material.set_shader_parameter("noise_texture", ChunkView.noise_texture())
-	_haze.material = _haze_material
-	_haze.draw.connect(_paint_haze)
-	add_child(_haze)
-	_haze.z_as_relative = false
+	# The veil lies on the ground only (VEIL_Z: over the ground, the
+	# banks and the brooks, under the items, the plants, the trees and
+	# the bodies); the cover, over everything, hides what stands past the
+	# view (the project lead's call).
+	_haze_material = _fog_material()
+	_haze = _fog_layer(_haze_material, VEIL_Z)
+	_cover_material = _fog_material()
+	_cover = _fog_layer(_cover_material, 40)
+
+
+func _fog_material() -> ShaderMaterial:
+	var fog := ShaderMaterial.new()
+	fog.shader = _haze_shader()
+	fog.set_shader_parameter("noise_texture", ChunkView.noise_texture())
+	return fog
+
+
+func _fog_layer(fog: ShaderMaterial, z: int) -> Node2D:
+	var layer := Node2D.new()
+	layer.z_index = z
+	layer.z_as_relative = false
+	layer.material = fog
+	layer.draw.connect(_paint_haze.bind(layer))
+	add_child(layer)
+	return layer
 
 
 ## Takes the server's far view (cells of `cell` tiles from cell (x, y)).
@@ -72,6 +94,7 @@ func show_far(cell: int, x: int, y: int, width: int, height: int, cells: String)
 	_texture = ImageTexture.create_from_image(image)
 	queue_redraw()
 	_haze.queue_redraw()
+	_cover.queue_redraw()
 
 
 ## Where the haze starts: the limit of the view, in tiles from `lo` to
@@ -86,6 +109,16 @@ func set_held(lo: Vector2, hi: Vector2, rise := HAZE_IN, edge := HAZE_EDGE, far 
 	_haze_material.set_shader_parameter("rise_in", rise)
 	_haze_material.set_shader_parameter("edge", edge)
 	_haze_material.set_shader_parameter("far_haze", far)
+
+
+## Where the cover starts, over everything, in tiles from `lo` to `hi`:
+## whole `rise` tiles past it (WorldView: at the view's limit).
+func set_cover(lo: Vector2, hi: Vector2, rise: float) -> void:
+	_cover_material.set_shader_parameter("held_lo", lo)
+	_cover_material.set_shader_parameter("held_hi", hi)
+	_cover_material.set_shader_parameter("rise_in", rise)
+	_cover_material.set_shader_parameter("edge", 1.0)
+	_cover_material.set_shader_parameter("far_haze", 1.0)
 
 
 ## The colour of each letter: the average of the ground's own textures,
@@ -122,7 +155,7 @@ func _draw() -> void:
 
 
 ## The haze: one quad over the far view, its UV the tile coordinates.
-func _paint_haze() -> void:
+func _paint_haze(layer: Node2D) -> void:
 	if _texture == null:
 		return
 	var lo := Vector2(_origin * _cell) - Vector2(0.5, 0.5)
@@ -133,7 +166,7 @@ func _paint_haze() -> void:
 	for c: Vector2 in corners:
 		points.append(tile_space() * c)
 		uvs.append(c)
-	_haze.draw_polygon(points, PackedColorArray([Color.WHITE, Color.WHITE, Color.WHITE, Color.WHITE]), uvs)
+	layer.draw_polygon(points, PackedColorArray([Color.WHITE, Color.WHITE, Color.WHITE, Color.WHITE]), uvs)
 
 
 static func _haze_shader() -> Shader:

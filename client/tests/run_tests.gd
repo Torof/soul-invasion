@@ -534,10 +534,10 @@ func _test_the_camera_stops_at_the_band() -> void:
 	var lo := Vector2(0, 0)
 	var hi := Vector2(416, 416)
 	var within := func(tile: Vector2) -> bool:
-		return tile.x >= lo.x - 6.01 and tile.y >= lo.y - 6.01 and tile.x <= hi.x + 6.01 and tile.y <= hi.y + 6.01
+		return tile.x >= lo.x - 10.01 and tile.y >= lo.y - 10.01 and tile.x <= hi.x + 10.01 and tile.y <= hi.y + 10.01
 	for view: Vector2 in [Vector2(1600, 900) / 0.4, Vector2(3840, 2160) / 0.4, Vector2(1280, 720)]:
 		for corners: float in [0.0, 1.0]:
-			var area := Iso.camera_area(lo, hi, view, 6.0, corners)
+			var area := Iso.camera_area(lo, hi, view, 10.0, corners)
 			_check(area.size.x > 0.0 and area.size.y > 0.0, "room to move at %s" % view)
 			var points := [Vector2(-1, 0), Vector2(1, 0), Vector2(0, -1), Vector2(0, 1)]
 			if corners == 1.0:
@@ -550,30 +550,30 @@ func _test_the_camera_stops_at_the_band() -> void:
 
 
 ## The bank texture repeats every ShoreField.TILES: wider than the
-## chunks a client holds (the server's 13 × 13 view, with the margin read
+## chunks a client holds (the server's 15 × 15 view, with the margin read
 ## around a chunk), or
 ## two chunks held would draw each other's banks.
 func _test_the_shore_field_holds_every_chunk_held() -> void:
-	var held := (2 * 6 + 1) * 32
+	var held := (2 * 7 + 1) * 32
 	_check(ShoreField.TILES >= held + 2 * ShoreField.MARGIN, "the bank texture is wider than the chunks held: %d" % ShoreField.TILES)
 
 
 ## The limit of the view moves with the body, tile by tile, and stays
 ## inside the ground held with room for the band and the fog.
 func _test_the_view_follows_the_body_tile_by_tile() -> void:
-	# 13 chunks held around chunk 50, as the server holds them.
-	var held := Rect2(Vector2(44, 44) * 32, Vector2(13, 13) * 32)
+	# 15 chunks held around chunk 50, as the server holds them.
+	var held := Rect2(Vector2(43, 43) * 32, Vector2(15, 15) * 32)
 	var body := Vector2(50 * 32 + 16.5, 50 * 32 + 16.5)
-	var limit := Iso.view_limit(body, 192.0, held, 0.0)
-	_check(limit.position == body - Vector2(192, 192) and limit.end == body + Vector2(192, 192), "192 tiles around the body: %s" % limit)
-	var step := Iso.view_limit(body + Vector2(1, 0), 192.0, held, 0.0)
+	var limit := Iso.view_limit(body, 224.0, held, 0.0)
+	_check(limit.position == body - Vector2(224, 224) and limit.end == body + Vector2(224, 224), "224 tiles around the body: %s" % limit)
+	var step := Iso.view_limit(body + Vector2(1, 0), 224.0, held, 0.0)
 	_check(step.position.x == limit.position.x + 1.0, "a tile east, the limit a tile east")
 	for x in [0.0, 31.9]:
 		var at := Vector2(50 * 32 + x, 50 * 32 + 16.0)
-		var l := Iso.view_limit(at, 192.0, held, 0.0)
+		var l := Iso.view_limit(at, 224.0, held, 0.0)
 		_check(is_equal_approx(maxf(l.position.x, held.position.x), l.position.x) and l.end.x <= held.end.x + 0.001,
 			"the view never passes the chunks held, wherever the body stands in its chunk: %s" % at)
-		_check(l.size.x > 380.0, "and reaches nearly 192 tiles each way: %s" % l.size)
+		_check(l.size.x > 444.0, "and reaches nearly 224 tiles each way: %s" % l.size)
 
 
 ## In development the client restarts when one of its files changes: the

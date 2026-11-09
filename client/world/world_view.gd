@@ -23,16 +23,22 @@ const ZOOM_STEP := 1.25
 const DEFAULT_ZOOM := 1.5
 ## Tiles the view reaches from the body, either way, to where the fog is
 ## whole. It follows the body tile by tile (the chunks held move by whole
-## chunks, the view does not); 192, as far as the chunks held always reach
-## (the body's chunk and six more each way), so nothing past it is needed.
-const VIEW_REACH := 192.0
-## The last tiles of the view, under a veil that thickens until it is
-## whole fog at VIEW_REACH (the project lead's call).
-const VEIL_TILES := 3.0
-## Tiles of fog past the view, with nothing drawn under them; the camera
-## stops at their end, so no corner of the screen ever shows past them
-## (6, the project lead's call: 3 did not read as fog enough).
-const FOG_TILES := 6.0
+## chunks, the view does not); 224, as far as the chunks held always reach
+## (the body's chunk and seven more each way: 15 × 15, net.rs VIEW_RADIUS),
+## so nothing past it is needed.
+const VIEW_REACH := 224.0
+## The fog at the edge of the view, in three parts named by the project
+## lead (9 November 2026, tried live with soul-try), from the outside in:
+## - fog A: the whole fog past the view's limit, nothing drawn under it;
+##   the camera stops at its end, so no corner of the screen shows past it.
+## - fog B: the view's last tiles, under a veil over everything (trees,
+##   plants, items too), whole at the limit.
+## - fog C: the tiles before B, under a veil on the ground only, what
+##   stands showing over it.
+## The veil thickens from nothing at C's start to whole at the limit.
+const FOG_A_TILES := 5.0
+const FOG_B_TILES := 35.0
+const FOG_C_TILES := 15.0
 ## Millimetres per tile, as the protocol defines fine points.
 const MM_PER_TILE := 1000.0
 
@@ -433,10 +439,11 @@ func _update_held() -> void:
 
 ## Puts the limit of the view VIEW_REACH tiles around the piloted body
 ## (around the middle of the chunks held when watching), tile by tile as
-## it walks, never past the chunks held. Its last VEIL_TILES tiles lie
-## under a veil, the fog's own colour, that thickens until it is whole
-## (FarView): the land keeps its colours and melts into the fog. Past
-## the limit, FOG_TILES of fog, and the camera stops.
+## it walks, never past the chunks held. Its last FOG_B_TILES +
+## FOG_C_TILES tiles lie under a veil, the fog's own colour, that thickens
+## until it is whole (FarView): on the ground only over fog C, over
+## everything over fog B; the land keeps its colours and melts into it.
+## Past the limit, fog A, and the camera stops.
 func _update_limit() -> void:
 	var all := _bounds()
 	if all.size == Vector2i.ZERO:
@@ -449,9 +456,12 @@ func _update_limit() -> void:
 	if limit == _limit:
 		return
 	_limit = limit
-	var veil := limit.grow(-VEIL_TILES)
+	var veil := FOG_B_TILES + FOG_C_TILES
+	var ground := limit.grow(-veil)
+	var cover := limit.grow(-FOG_B_TILES)
 	if _far != null:
-		_far.set_held(veil.position, veil.end, VEIL_TILES, 1.0, 1.0)
+		_far.set_held(ground.position, ground.end, veil, 1.0, 1.0)
+		_far.set_cover(cover.position, cover.end, FOG_B_TILES)
 
 
 
@@ -592,14 +602,14 @@ func _process(delta: float) -> void:
 
 
 ## Keeps the screen within the view and its fog: no corner of the screen
-## passes the FOG_TILES of fog past the limit of the view, so pushing to
+## passes fog A, past the limit of the view, so pushing to
 ## the edge shows the veil and the fog, never what lies beyond (the
 ## project lead's call); walking that way moves the limit, tile by tile.
 func _clamp_camera() -> void:
 	if _limit.size.x <= 0.0 or _limit.size.y <= 0.0:
 		return
 	var a := Iso.camera_area(_limit.position, _limit.end,
-		get_viewport_rect().size / _camera.zoom.x, FOG_TILES, 1.0)
+		get_viewport_rect().size / _camera.zoom.x, FOG_A_TILES, 1.0)
 	if a.size.x < 0.0 or a.size.y < 0.0:
 		return
 	var t := Vector2((_camera.position.x / (Iso.TILE_W / 2.0) + _camera.position.y / (Iso.TILE_H / 2.0)) / 2.0,

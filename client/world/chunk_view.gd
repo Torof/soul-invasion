@@ -112,7 +112,7 @@ func _fill_of(terrain: String) -> GroundCanvas:
 	if canvas == null:
 		canvas = GroundCanvas.new()
 		canvas.terrain = terrain
-		canvas.z_index = -1
+		canvas.z_index = -3
 		canvas.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 		canvas.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 		canvas.material = ground_material(terrain)
@@ -235,7 +235,9 @@ func _ground_of(terrain: String) -> GroundCanvas:
 	if canvas == null:
 		canvas = GroundCanvas.new()
 		canvas.terrain = terrain
-		canvas.z_index = -4 + int(GROUND_ORDER.get(terrain, 0))
+		# Low enough that the fog's veil (FarView.VEIL_Z) lies over the
+		# ground and under what stands on it.
+		canvas.z_index = -6 + int(GROUND_ORDER.get(terrain, 0))
 		# Seamless textures repeat across the chunk; linear filtering for the zoom.
 		canvas.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 		canvas.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
@@ -957,7 +959,7 @@ func _brook_canvas() -> BrookCanvas:
 			_brook_material.set_shader_parameter("field_tiles", float(ShoreField.TILES))
 			_brook_material.set_shader_parameter("field_range", ShoreField.RANGE)
 		_brooks = BrookCanvas.new()
-		_brooks.z_index = -1
+		_brooks.z_index = -3
 		_brooks.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 		_brooks.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 		_brooks.material = _brook_material
