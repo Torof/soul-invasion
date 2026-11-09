@@ -566,6 +566,13 @@ func _test_perf_overlay_reports() -> void:
 	var perf := PerfOverlay.new()
 	var text := perf.report(12.5)
 	_check(text.contains("fps") and text.contains("12.5 ms") and text.contains("frame step") and text.contains("draw calls") and text.contains("wind on"), "the counters report: %s" % text)
+	# F5: the ground plain, then exactly as it was.
+	var grass := ChunkView.ground_material("grass")
+	var real := grass.shader
+	ChunkView.set_plain_ground(true)
+	_check(grass.shader != real and grass.shader.code.contains("COLOR = vec4"), "F5 draws the ground plain")
+	ChunkView.set_plain_ground(false)
+	_check(grass.shader == real, "F5 again gives the ground its own shader back")
 	DevTiming.enabled = true
 	var t := DevTiming.start()
 	DevTiming.add("chunk builds", t)

@@ -294,6 +294,18 @@ func set_wind(on: bool) -> void:
 	sway.set_shader_parameter("gust", 0.012 if on else 0.0)
 
 
+## Development (--dev, F6): the trees shown or hidden, to measure what
+## they cost the graphics card.
+func set_trees_shown(on: bool) -> void:
+	for holder: Variant in _tree_nodes.values():
+		if is_instance_valid(holder):
+			(holder as Node2D).visible = on
+	_trees_shown = on
+
+
+var _trees_shown := true
+
+
 ## What the world holds now, for the development counters.
 func counts() -> Dictionary:
 	var trees := 0
@@ -723,6 +735,7 @@ func _plant_chunk(key: Vector2i, view: ChunkView) -> void:
 					cells[cell] = []
 				cells[cell].append(tree)
 	_tree_cells[key] = cells
+	holder.visible = _trees_shown
 	_standing.add_child(holder)
 	_tree_nodes[key] = holder
 	var shadows: Trees.ShadowLayer = view.get_node_or_null("Shadows")
