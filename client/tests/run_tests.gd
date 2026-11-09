@@ -453,7 +453,7 @@ func _test_plants_are_named_and_coloured() -> void:
 	var foot := Iso.point_to_screen(Vector2(3500, 7500))
 	_check(is_equal_approx(r.end.y, foot.y) and is_equal_approx(r.get_center().x, foot.x), "a plant's foot is on its place")
 	_check(is_equal_approx(Scale.shown(2.0), 2.0) and is_equal_approx(Scale.shown(0.08), 0.08), "under 3 m, the true height")
-	_check(Scale.shown(20.0) > 8.0 and Scale.shown(20.0) < 12.0 and is_equal_approx(Scale.shown(3.0), 3.0), "above, eased towards reality, without a jump")
+	_check(Scale.shown(20.0) > 6.5 and Scale.shown(20.0) < 12.0 and is_equal_approx(Scale.shown(3.0), 3.0), "above, eased towards reality, without a jump")
 	_check(r.size.y < 0.2 * Iso.PX_PER_M, "a mushroom stays small")
 	_check(ChunkView.plant_tint(flora[1]) != Color.WHITE and ChunkView.plant_tint(flora[0]) == Color.WHITE, "small plants are drawn brighter")
 	_check(ChunkView.plant_stands(flora[0]) and not ChunkView.plant_stands(flora[1]), "a bramble stands among the trees, a mushroom lies on the ground")

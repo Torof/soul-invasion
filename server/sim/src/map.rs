@@ -1058,11 +1058,11 @@ impl Rivers {
     /// last stretch of one, where it comes to join the other.
     const BROOK_SPACING: i64 = 25;
     /// How many tributaries enter by the edges, in tenths for every 256
-    /// tiles of the map's side, at least and at most: 2 to 3 on 256 × 256,
-    /// 22 to 34 on 3072 × 3072, so the valley is about 2 % water. By the
+    /// tiles of the map's side, at least and at most: 1 on 256 × 256, 7 to
+    /// 12 on 3072 × 3072, so the valley is about 1.5 % water. By the
     /// side, like the brooks: they enter along the edges, and counted by
     /// the ground they would make a large map mostly water.
-    const TRIBUTARIES_TENTHS: (u32, u32) = (18, 28);
+    const TRIBUTARIES_TENTHS: (u32, u32) = (6, 10);
     /// Longest brook, in steps: one that wanders further is no brook.
     const BROOK_STEPS: usize = 250;
     /// How fast water runs where its section just holds its flow, in
@@ -1320,7 +1320,7 @@ impl Rivers {
             lo + i64::from(rng.next_below(u32::try_from((hi - lo).max(1)).expect("fits")))
         };
         for _ in 0..count {
-            for _ in 0..60 {
+            for _ in 0..300 {
                 let start = if rng.next_below(100) < Self::EDGE_BROOKS {
                     match rng.next_below(4) {
                         0 => (0, inside(rng, top + 8, tall - 8)),
@@ -1486,10 +1486,21 @@ impl Rivers {
         let ceil_div = |a: i64, b: i64| (a + b - 1) / b;
         // round(sqrt(k × flow)) = round(sqrt(4k × flow) / 2).
         let mut width = match shape {
-            Shape::Wide => ((8 * flow).isqrt() + 1) / 2,
+            Shape::Wide => ((14 * flow).isqrt() + 1) / 2,
             Shape::Deep => ((4 * flow).isqrt() + 1) / 2,
         }
         .clamp(1, widest);
+        // A river (three wide and more) is a metre deep at least: wider
+        // only as far as its flow keeps that depth, never a ford all along
+        // (fords are their own places, D36).
+        if width >= i64::from(Self::MIN_WIDTH) {
+            width = if flow < 2 * i64::from(Self::MIN_WIDTH) {
+                // Too little water to be a river a metre deep: a brook.
+                2
+            } else {
+                width.min(flow / 2)
+            };
+        }
         let mut depth = ceil_div(flow, width);
         if width < i64::from(Self::MIN_WIDTH) && depth > i64::from(Self::MAX_BROOK_DEPTH) {
             width = i64::from(Self::MIN_WIDTH);
@@ -2538,7 +2549,9 @@ mod tests {
             islands_seen += usize::from(islands > 0);
             ford_tiles += fords;
         }
-        assert!(islands_seen >= 2, "islands on {islands_seen} of six maps");
+        // Islands need a river of 16 half-cubes and more: rarer on small
+        // maps since there are fewer tributaries (9 November 2026).
+        assert!(islands_seen >= 1, "islands on {islands_seen} of six maps");
         assert!(ford_tiles >= 60, "{ford_tiles} ford tiles on six maps");
     }
 
@@ -2799,7 +2812,10 @@ mod tests {
             .iter()
             .filter(|w| w.entry_flow <= i64::from(Rivers::BROOK_FLOW.1))
             .collect();
-        assert!((10..=16).contains(&brooks.len()), "{} brooks", brooks.len());
+        // Fewer waters to join since 9 November 2026 (1.5 % water): on this
+        // small map some brooks find none within reach (the real valley,
+        // 3072, has 49 to 61).
+        assert!((6..=16).contains(&brooks.len()), "{} brooks", brooks.len());
         let mut from_edges = 0;
         for b in &brooks {
             let len = b.path.len();
@@ -2823,8 +2839,10 @@ mod tests {
             let edge = i64::from(size) - 1;
             from_edges += usize::from(x == 0 || x == edge || y == edge || y == i64::from(top) + 1);
         }
+        // Many from the edges: with fewer rivers (9 November 2026), an
+        // edge is farther from water, so fewer of them find a way.
         assert!(
-            from_edges * 2 > brooks.len(),
+            from_edges * 3 >= brooks.len(),
             "{from_edges} of {} from the edges",
             brooks.len()
         );
@@ -2924,7 +2942,7 @@ mod tests {
             // Along the main river, the water runs its way, a step of
             // heading off at most (where it bends).
             let main = &r.network[0];
-            let mut checked = 0;
+            let (mut checked, mut astray) = (0, 0);
             for step in &main.path {
                 let (x, y) = (step.x / 1000, step.y / 1000);
                 let Some(pos) = (x >= 0 && y >= 32 && x < 256 && y < 256)
@@ -2937,14 +2955,16 @@ mod tests {
                 }
                 let (heading, _) = map.current(pos).unwrap();
                 let off = (i32::from(heading) - i32::from(step.heading) + 8).rem_euclid(16) - 8;
-                assert!(
-                    off.abs() <= 1,
-                    "seed {seed}: at {pos:?} runs {heading}, the river {}",
-                    step.heading
-                );
+                // A step of heading off at most, but where a wide water
+                // joining paints over the main river's course.
+                astray += usize::from(off.abs() > 1);
                 checked += 1;
             }
             assert!(checked > 100);
+            assert!(
+                astray * 50 <= checked,
+                "seed {seed}: {astray} of {checked} astray"
+            );
             // Spread thin over its stones, a ford runs faster.
             if let Some(ford_mean) = ford_speed.checked_div(fords) {
                 assert!(ford_mean > river_speed / rivers, "seed {seed}");
@@ -2955,7 +2975,7 @@ mod tests {
     }
 
     #[test]
-    fn the_valley_is_about_two_percent_water() {
+    fn the_valley_is_about_one_and_a_half_percent_water() {
         // Rivers and brooks are landmarks, not the landscape. On the first
         // valley's size, 3072 × 3072 (8 November 2026), water lies on about
         // 2 % of the ground below the cliff, on average over a few maps (one
@@ -2974,7 +2994,7 @@ mod tests {
         }
         let share = wet * 1000 / ground;
         eprintln!("water on {share} per mille of the valley");
-        assert!((15..=25).contains(&share), "{share} per mille");
+        assert!((11..=20).contains(&share), "{share} per mille");
     }
 
     #[test]
@@ -3014,16 +3034,26 @@ mod tests {
             }
         }
         // Two half-cubes: two wide and half a metre, or one wide and a metre.
-        assert_eq!(Rivers::section(1, Shape::Wide), (1, 1));
+        assert_eq!(Rivers::section(1, Shape::Wide), (2, 1));
         assert_eq!(Rivers::section(2, Shape::Wide), (2, 1));
         assert_eq!(Rivers::section(2, Shape::Deep), (1, 2));
         assert_eq!(Rivers::section(8, Shape::Wide), (4, 2));
         assert_eq!(Rivers::section(8, Shape::Deep), (3, 3));
-        assert_eq!(Rivers::section(96, Shape::Wide), (14, 7));
-        // A great river: twenty-one wide and five and a half metres deep.
-        assert_eq!(Rivers::section(224, Shape::Wide), (21, 11));
+        // Rivers are wide for their flow (9 November 2026), never under a
+        // metre deep.
+        assert_eq!(Rivers::section(96, Shape::Wide), (18, 6));
+        assert_eq!(Rivers::section(224, Shape::Wide), (28, 8));
         // Past the deepest (6 m), the river only widens.
         assert_eq!(Rivers::section(200, Shape::Deep), (17, 12));
+        for flow in 6..300 {
+            for shape in [Shape::Wide, Shape::Deep] {
+                let (width, depth) = Rivers::section(flow, shape);
+                assert!(
+                    width < 3 || depth >= 2,
+                    "flow {flow}: a river {width} wide, {depth} deep"
+                );
+            }
+        }
     }
 
     #[test]
@@ -3067,7 +3097,12 @@ mod tests {
                 }
             }
         }
-        assert!(deep >= 4, "the main river gets two metres deep: {deep}");
+        // Wide for its flow (9 November 2026): on this small map the main
+        // river is a metre and a half deep at most.
+        assert!(
+            deep >= 3,
+            "the main river gets a metre and a half deep: {deep}"
+        );
         assert_eq!(map.depth(Pos::new(-1, 5)), 0);
     }
 

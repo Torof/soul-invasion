@@ -51,12 +51,13 @@ fn shown_m(metres: f32) -> f32 {
     if metres <= 3.0 {
         metres
     } else {
-        3.0 * (metres / 3.0).powf(0.6)
+        3.0 * (metres / 3.0).powf(0.5)
     }
 }
 
 /// The radius a tree of `species` keeps clear of others' trunks, in
-/// millimetres.
+/// millimetres, in the densest heart; thinner woods space their trees
+/// wider (`spread`).
 fn room_mm(species: &Species) -> i64 {
     #[allow(clippy::cast_possible_truncation)]
     let crown =
@@ -145,7 +146,9 @@ pub fn plant(map: &Map, species: &[Species], seed: u64) -> Vec<Tree> {
                 pos.x * MM_PER_TILE + MM_PER_TILE / 2 + jitter(&mut rng),
                 pos.y * MM_PER_TILE + MM_PER_TILE / 2 + jitter(&mut rng),
             );
-            // Room: no other trunk within the two trees' rooms.
+            // Room: no other trunk within the two trees' rooms, wider where
+            // the wood is thin (a heart closes, an open wood shows gaps).
+            let spread = 1600 - 6 * i64::from(map.trees(pos).min(100));
             let crowded = (pos.y - reach..=pos.y + reach).any(|ty| {
                 (pos.x - reach..=pos.x + reach).any(|tx| {
                     near.get(&(tx, ty)).is_some_and(|list| {
@@ -153,7 +156,7 @@ pub fn plant(map: &Map, species: &[Species], seed: u64) -> Vec<Tree> {
                             let other: &Tree = &trees[i];
                             let (dx, dy) =
                                 (i64::from(other.at.x - at.x), i64::from(other.at.y - at.y));
-                            let room = rooms[kind] + rooms[other.species];
+                            let room = (rooms[kind] + rooms[other.species]) * spread / 1000;
                             dx * dx + dy * dy < room * room
                         })
                     })
@@ -289,8 +292,9 @@ mod tests {
         eprintln!(
             "{trees_total} trees on four maps; {share} per mille of their neighbours of another kind"
         );
-        // Grouped by kind, yet mixed: about a third of the neighbours of
-        // another kind, not one in two.
-        assert!((150..=400).contains(&share), "{share} per mille mixed");
+        // Grouped by kind, yet mixed: under half the neighbours of another
+        // kind (trees in thin woods stand wide apart, so a tree's six-tile
+        // neighbours reach into the next stand more often).
+        assert!((150..=450).contains(&share), "{share} per mille mixed");
     }
 }

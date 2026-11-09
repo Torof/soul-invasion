@@ -15,7 +15,9 @@ extends Node2D
 const BODY_COLOR := Color(0.90, 0.80, 0.60)
 const PILOTED_COLOR := Color(1.0, 0.55, 0.20)
 const TARGET_COLOR := Color(1.0, 0.85, 0.30, 0.9)
-const ZOOM_MIN := 0.25
+## Farthest zoom: the land is discovered by going there, not seen whole
+## (the project lead's call, 9 November 2026: a sense of space).
+const ZOOM_MIN := 0.4
 const ZOOM_MAX := 4.0
 const ZOOM_STEP := 1.25
 const DEFAULT_ZOOM := 1.5
@@ -553,6 +555,31 @@ func _process(delta: float) -> void:
 	DevTiming.add("world view", timing)
 
 
+## Keeps the camera over the ground held: at least two thirds of the
+## screen's height and width show it (no panning into the far view).
+func _clamp_camera() -> void:
+	if _chunks.is_empty():
+		return
+	var lo := Vector2i(1 << 30, 1 << 30)
+	var hi := Vector2i(-(1 << 30), -(1 << 30))
+	for key: Vector2i in _chunks:
+		lo = Vector2i(mini(lo.x, key.x), mini(lo.y, key.y))
+		hi = Vector2i(maxi(hi.x, key.x + 1), maxi(hi.y, key.y + 1))
+	# The ground held is a diamond on screen: keep the camera's centre in
+	# tile coordinates, a sixth of the visible span inside its edges.
+	var view := get_viewport_rect().size / _camera.zoom.x
+	var margin := view.length() / Iso.TILE_W / 6.0
+	var t := Vector2((_camera.position.x / (Iso.TILE_W / 2.0) + _camera.position.y / (Iso.TILE_H / 2.0)) / 2.0,
+		(_camera.position.y / (Iso.TILE_H / 2.0) - _camera.position.x / (Iso.TILE_W / 2.0)) / 2.0)
+	var a := Vector2(lo * _chunk_size) + Vector2(margin, margin)
+	var b := Vector2(hi * _chunk_size) - Vector2(margin, margin)
+	if a.x > b.x or a.y > b.y:
+		return
+	var c := Vector2(clampf(t.x, a.x, b.x), clampf(t.y, a.y, b.y))
+	if c != t:
+		_camera.position = Vector2((c.x - c.y) * Iso.TILE_W / 2.0, (c.x + c.y) * Iso.TILE_H / 2.0)
+
+
 func _step(delta: float) -> void:
 	var moving := false
 	for id: int in _bodies:
@@ -597,6 +624,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion:
 		if _dragging:
 			_camera.position -= event.relative / _camera.zoom.x
+			_clamp_camera()
 			if event.position.distance_to(_drag_start) > 4.0:
 				_dragged = true
 				_following = false
