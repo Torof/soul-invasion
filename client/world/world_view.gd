@@ -39,6 +39,9 @@ const VIEW_REACH := 224.0
 const FOG_A_TILES := 5.0
 const FOG_B_TILES := 35.0
 const FOG_C_TILES := 15.0
+## How thick the fog is at its thickest, past the limit (1: nothing seen
+## through it; a little less, the project lead's call).
+const FOG_OPACITY := 0.85
 ## Millimetres per tile, as the protocol defines fine points.
 const MM_PER_TILE := 1000.0
 
@@ -460,8 +463,8 @@ func _update_limit() -> void:
 	var ground := limit.grow(-veil)
 	var cover := limit.grow(-FOG_B_TILES)
 	if _far != null:
-		_far.set_held(ground.position, ground.end, veil, 1.0, 1.0)
-		_far.set_cover(cover.position, cover.end, FOG_B_TILES)
+		_far.set_held(ground.position, ground.end, veil, FOG_OPACITY, FOG_OPACITY)
+		_far.set_cover(cover.position, cover.end, FOG_B_TILES, FOG_OPACITY)
 
 
 

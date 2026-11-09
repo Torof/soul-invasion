@@ -7,9 +7,10 @@ extends Node2D
 ## at the view's limit and covers everything past it (WorldView, the
 ## project lead's call), so the far land itself is hidden for now.
 
-## Haze colour, and how much of it just past the ground held and far
+## Haze colour (a soft grey: a whiter one was too loud, the project
+## lead's call), and how much of it just past the ground held and far
 ## away.
-const HAZE := Color(0.78, 0.84, 0.86)
+const HAZE := Color(0.62, 0.65, 0.66)
 const HAZE_EDGE := 0.5
 const HAZE_FAR := 0.68
 ## Tiles past the edge over which the haze rises to HAZE_EDGE, and over
@@ -113,12 +114,12 @@ func set_held(lo: Vector2, hi: Vector2, rise := HAZE_IN, edge := HAZE_EDGE, far 
 
 ## Where the cover starts, over everything, in tiles from `lo` to `hi`:
 ## whole `rise` tiles past it (WorldView: at the view's limit).
-func set_cover(lo: Vector2, hi: Vector2, rise: float) -> void:
+func set_cover(lo: Vector2, hi: Vector2, rise: float, opacity := 1.0) -> void:
 	_cover_material.set_shader_parameter("held_lo", lo)
 	_cover_material.set_shader_parameter("held_hi", hi)
 	_cover_material.set_shader_parameter("rise_in", rise)
-	_cover_material.set_shader_parameter("edge", 1.0)
-	_cover_material.set_shader_parameter("far_haze", 1.0)
+	_cover_material.set_shader_parameter("edge", opacity)
+	_cover_material.set_shader_parameter("far_haze", opacity)
 
 
 ## The colour of each letter: the average of the ground's own textures,
