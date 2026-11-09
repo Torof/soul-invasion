@@ -216,7 +216,6 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees:
 	view.current_at = current_at
 	view.show_chunk(key * _chunk_size, _chunk_size, tiles, items, _looks)
 	_redraw_neighbours(key)
-	_relay_shore()
 	if not _camera_placed and _piloted < 0:
 		# Watching, no body to follow: look at the ground we were given
 		# rather than at the valley's corner.
@@ -394,52 +393,6 @@ func terrain_at(tile: Vector2i) -> String:
 	return str(tiles[local.y * _chunk_size + local.x])
 
 
-## Whether a laying of the bank pieces is already due this frame.
-var _shore_due := false
-
-
-## Lays the bank pieces over every chunk known, once per frame at most,
-## and hands each chunk its own: laid together, they join at the chunk
-## borders without a seam (ShorePieces).
-func relay_shore() -> void:
-	_relay_shore()
-
-
-func _relay_shore() -> void:
-	if _shore_due or str(ChunkView.ground_spec().get("shore", {}).get("mode", "")) != "pieces":
-		return
-	_shore_due = true
-	_lay_shore.call_deferred()
-
-
-func _lay_shore() -> void:
-	_shore_due = false
-	if _chunks.is_empty():
-		return
-	var lo := Vector2i(1 << 30, 1 << 30)
-	var hi := Vector2i(-(1 << 30), -(1 << 30))
-	for key in _chunks:
-		lo = Vector2i(mini(lo.x, key.x), mini(lo.y, key.y))
-		hi = Vector2i(maxi(hi.x, key.x + 1), maxi(hi.y, key.y + 1))
-	var is_known := func(t: Vector2i) -> bool: return terrain_at(t) != ""
-	var is_water := func(t: Vector2i) -> bool:
-		var terrain := terrain_at(t)
-		return terrain == "water" or terrain == "ford"
-	var pieces := ShorePieces.lay_all(is_known, is_water, lo * _chunk_size, hi * _chunk_size)
-	var by_chunk: Dictionary = {}
-	for piece in pieces:
-		var pts: PackedVector2Array = piece["pts"]
-		var mid: Vector2 = pts[pts.size() / 2]
-		var key := Iso.chunk_of(Vector2i(int(round(mid.x)), int(round(mid.y))), _chunk_size)
-		if not by_chunk.has(key):
-			by_chunk[key] = []
-		by_chunk[key].append(piece)
-	for key in _chunks:
-		var view: ChunkView = _chunks[key]
-		view.bank_pieces = by_chunk.get(key, [])
-		view.queue_redraw()
-
-
 ## The chunks around `key` draw their borders from their neighbours'
 ## tiles: redraw them when `key` appears or goes.
 func _redraw_neighbours(key: Vector2i) -> void:
@@ -466,7 +419,6 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 			gone.queue_free()
 			_tree_nodes.erase(key)
 		_redraw_neighbours(key)
-		_relay_shore()
 	for id in _bodies.keys():
 		if Iso.chunk_of(_tile_of(_bodies[id]["at"]), _chunk_size) == key:
 			_bodies.erase(id)

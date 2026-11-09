@@ -65,16 +65,7 @@
     }
   },
   "shore": {
-    "note": "Shore: 'pieces' lays the bank as one-tile pieces in sixteen headings (lines for now); 'curve' draws brushes along a simplified line; else the generated tilesets.",
-    "weights": {
-      "sand": 0.25,
-      "grass": 0.6,
-      "rock": 0.15
-    },
-    "stretch": 48,
-    "iso": true,
-    "mode": "field",
-    "tolerance": 0.9,
-    "rounding": 1
+    "note": "Shore: 'field' (the only mode since 9 November 2026) draws the bank in the ground shader from the distance to the water (ShoreField).",
+    "mode": "field"
   }
 }
