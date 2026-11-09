@@ -176,9 +176,11 @@ def cut(path, keep_white, tree=False):
 
 def trim_to_foot(image):
     """Crops the bottom rows the softened edge left faint, so the foot is
-    the image's last row (the client stands the tree on it)."""
+    the image's last row (the client stands the tree on it). The last row
+    kept is nearly opaque, so it stays so once the GPU's compression (BC7)
+    has rounded its alpha."""
     alpha = np.asarray(image)[..., 3]
-    rows = np.nonzero(alpha.max(axis=1) > 204)[0]
+    rows = np.nonzero(alpha.max(axis=1) > 240)[0]
     return image.crop((0, 0, image.width, int(rows[-1]) + 1))
 
 
