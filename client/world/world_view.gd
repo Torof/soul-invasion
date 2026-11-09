@@ -906,6 +906,7 @@ func _update_see_through(delta: float) -> void:
 	sway.set_shader_parameter("body_at", _body_see_centre())
 	sway.set_shader_parameter("body_radius", BODY_SEE_M * Iso.PX_PER_M)
 	sway.set_shader_parameter("body_reveal", _body_reveal)
+	sway.set_shader_parameter("mip_bias", Trees.sharpness(_camera.zoom.x))
 	sway.set_shader_parameter("mouse_at", mouse)
 	sway.set_shader_parameter("mouse_radius", MOUSE_SEE_M * Iso.PX_PER_M)
 	sway.set_shader_parameter("mouse_reveal", _mouse_reveal)

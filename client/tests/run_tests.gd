@@ -28,6 +28,7 @@ func _init() -> void:
 	_test_loading_waits_for_the_valley()
 	_test_dev_map_turns_as_the_game()
 	_test_perf_overlay_reports()
+	_test_trees_sharpness_eases_with_the_zoom()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -560,6 +561,12 @@ func _test_the_shore_field_in_slices() -> void:
 	for i in 60:
 		await process_frame
 	_check(ShoreField._image.get_region(block).get_data() == bare, "an overtaken update gives up")
+
+
+func _test_trees_sharpness_eases_with_the_zoom() -> void:
+	_check(Trees.sharpness(2.0) == -1.0 and Trees.sharpness(1.0) == -1.0, "a level sharper up close")
+	_check(Trees.sharpness(0.5) == 0.0 and Trees.sharpness(0.35) == 0.0, "the hardware's own level far away")
+	_check(is_equal_approx(Trees.sharpness(0.75), -0.5), "eased in between")
 
 
 func _test_perf_overlay_reports() -> void:
