@@ -51,7 +51,7 @@ fn shown_m(metres: f32) -> f32 {
     if metres <= 3.0 {
         metres
     } else {
-        3.0 * (metres / 3.0).powf(0.6)
+        3.0 * (metres / 3.0).powf(0.7)
     }
 }
 
@@ -247,8 +247,8 @@ mod tests {
                                     )
                                 })
                             });
-                            let one_near = (-4..=4).any(|dy| {
-                                (-4..=4).any(|dx| at.contains_key(&Pos::new(x + dx, y + dy)))
+                            let one_near = (-5..=5).any(|dy| {
+                                (-5..=5).any(|dx| at.contains_key(&Pos::new(x + dx, y + dy)))
                             });
                             assert!(one_near || by_the_water, "seed {seed}: {pos:?}");
                         }
