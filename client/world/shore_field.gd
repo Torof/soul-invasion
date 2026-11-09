@@ -17,10 +17,10 @@ extends RefCounted
 
 ## Pixels a tile.
 const PX := 4
-## Tiles the texture covers either way, then repeats: sixteen chunks,
-## more than the fifteen a client holds across (the server's view,
+## Tiles the texture covers either way, then repeats: twenty chunks,
+## more than the nineteen a client holds across (the server's view,
 ## VIEW_RADIUS): two chunks held never share a place in it.
-const TILES := 512
+const TILES := 640
 ## Distances kept, either way, in tiles.
 const RANGE := 4.0
 ## Box blur radius in pixels, run three times: about 0.9 tile of

@@ -46,12 +46,12 @@ pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const MAX_MESSAGE_BYTES: usize = 4096;
 
 /// Chunks held around the body's own chunk, in every direction: a window
-/// of `(2 × VIEW_RADIUS + 1)²` chunks, 480 m across (15 × 15, the project
-/// lead's call: it was 13 × 13). The client's view reaches 224 tiles from
-/// the body (as far as the window always reaches),
+/// of `(2 × VIEW_RADIUS + 1)²` chunks, 608 m across (19 × 19, the project
+/// lead's call: it was 13 × 13, then 15 × 15). The client's view reaches
+/// 288 tiles from the body (as far as the window always reaches),
 /// following it tile by tile; its last tiles fade under a veil into a fog
 /// where the camera stops, with nothing drawn under the fog.
-pub const VIEW_RADIUS: i32 = 7;
+pub const VIEW_RADIUS: i32 = 9;
 
 /// How many published messages a slow client may fall behind before it
 /// starts missing some.

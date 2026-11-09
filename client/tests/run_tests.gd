@@ -551,30 +551,30 @@ func _test_the_camera_stops_at_the_band() -> void:
 
 
 ## The bank texture repeats every ShoreField.TILES: wider than the
-## chunks a client holds (the server's 15 × 15 view, with the margin read
+## chunks a client holds (the server's 19 × 19 view, with the margin read
 ## around a chunk), or
 ## two chunks held would draw each other's banks.
 func _test_the_shore_field_holds_every_chunk_held() -> void:
-	var held := (2 * 7 + 1) * 32
+	var held := (2 * 9 + 1) * 32
 	_check(ShoreField.TILES >= held + 2 * ShoreField.MARGIN, "the bank texture is wider than the chunks held: %d" % ShoreField.TILES)
 
 
 ## The limit of the view moves with the body, tile by tile, and stays
 ## inside the ground held with room for the band and the fog.
 func _test_the_view_follows_the_body_tile_by_tile() -> void:
-	# 15 chunks held around chunk 50, as the server holds them.
-	var held := Rect2(Vector2(43, 43) * 32, Vector2(15, 15) * 32)
+	# 19 chunks held around chunk 50, as the server holds them.
+	var held := Rect2(Vector2(41, 41) * 32, Vector2(19, 19) * 32)
 	var body := Vector2(50 * 32 + 16.5, 50 * 32 + 16.5)
-	var limit := Iso.view_limit(body, 224.0, held, 0.0)
-	_check(limit.position == body - Vector2(224, 224) and limit.end == body + Vector2(224, 224), "224 tiles around the body: %s" % limit)
-	var step := Iso.view_limit(body + Vector2(1, 0), 224.0, held, 0.0)
+	var limit := Iso.view_limit(body, 288.0, held, 0.0)
+	_check(limit.position == body - Vector2(288, 288) and limit.end == body + Vector2(288, 288), "288 tiles around the body: %s" % limit)
+	var step := Iso.view_limit(body + Vector2(1, 0), 288.0, held, 0.0)
 	_check(step.position.x == limit.position.x + 1.0, "a tile east, the limit a tile east")
 	for x in [0.0, 31.9]:
 		var at := Vector2(50 * 32 + x, 50 * 32 + 16.0)
-		var l := Iso.view_limit(at, 224.0, held, 0.0)
+		var l := Iso.view_limit(at, 288.0, held, 0.0)
 		_check(is_equal_approx(maxf(l.position.x, held.position.x), l.position.x) and l.end.x <= held.end.x + 0.001,
 			"the view never passes the chunks held, wherever the body stands in its chunk: %s" % at)
-		_check(l.size.x > 444.0, "and reaches nearly 224 tiles each way: %s" % l.size)
+		_check(l.size.x > 572.0, "and reaches nearly 288 tiles each way: %s" % l.size)
 
 
 ## In development the client restarts when one of its files changes: the

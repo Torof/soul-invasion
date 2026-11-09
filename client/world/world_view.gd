@@ -23,10 +23,10 @@ const ZOOM_STEP := 1.25
 const DEFAULT_ZOOM := 1.5
 ## Tiles the view reaches from the body, either way, to where the fog is
 ## whole. It follows the body tile by tile (the chunks held move by whole
-## chunks, the view does not); 224, as far as the chunks held always reach
-## (the body's chunk and seven more each way: 15 × 15, net.rs VIEW_RADIUS),
+## chunks, the view does not); 288, as far as the chunks held always reach
+## (the body's chunk and nine more each way: 19 × 19, net.rs VIEW_RADIUS),
 ## so nothing past it is needed.
-const VIEW_REACH := 224.0
+const VIEW_REACH := 288.0
 ## The fog at the edge of the view, in three parts named by the project
 ## lead (9 November 2026, tried live with soul-try), from the outside in:
 ## - fog A: the whole fog past the view's limit, nothing drawn under it;
