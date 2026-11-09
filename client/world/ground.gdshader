@@ -198,9 +198,7 @@ float patches(vec2 uv, float scale, vec2 shift, float cover, float softness) {
 
 // A texture laid in four variants shifted (never turned), chosen by three
 // soft noises, so the four-metre grid is out of phase from one zone to
-// the next. The built-in TEXTURE cannot go through a sampler parameter,
-// so its sampling is written out where it is used and only the
-// coordinates and weights are shared.
+// the next.
 vec2 uv_b(vec2 uv) { return uv + second_offset; }
 vec2 uv_c(vec2 uv) { return uv + vec2(0.11, 0.47); }
 vec2 uv_d(vec2 uv) { return uv + vec2(0.73, 0.29); }
@@ -213,11 +211,71 @@ vec3 variant_weights(vec2 uv) {
 	float n3 = texture(noise_texture, uv * variant_scale * 1.3 + vec2(0.89, 0.61)).r;
 	return vec3(smoothstep(0.47, 0.53, n1), smoothstep(0.47, 0.53, n2), smoothstep(0.47, 0.53, n3));
 }
-vec4 blend4(vec4 a, vec4 b, vec4 c, vec4 d, vec3 w) {
-	return mix(mix(a, b, w.x), mix(c, d, w.z), w.y);
+// A texture's four variants blended by the weights, reading only the
+// variants whose weight is not zero
+// (the weights' transition is narrow: nearly everywhere one variant alone
+// counts) and with the weights worked out once for all the layers. Read
+// with the derivatives of `uv` (dx, dy), so the mipmap level is the one
+// the hardware picks for the full blend, inside the branches too.
+vec4 varied_once(sampler2D tex, vec2 uv, vec3 w, vec2 dx, vec2 dy) {
+	vec4 left = vec4(0.0);
+	vec4 right = vec4(0.0);
+	if (w.y < 1.0) {
+		if (w.x <= 0.0) {
+			left = textureGrad(tex, uv, dx, dy);
+		} else if (w.x >= 1.0) {
+			left = textureGrad(tex, uv_b(uv), dx, dy);
+		} else {
+			left = mix(textureGrad(tex, uv, dx, dy), textureGrad(tex, uv_b(uv), dx, dy), w.x);
+		}
+	}
+	if (w.y > 0.0) {
+		if (w.z <= 0.0) {
+			right = textureGrad(tex, uv_c(uv), dx, dy);
+		} else if (w.z >= 1.0) {
+			right = textureGrad(tex, uv_d(uv), dx, dy);
+		} else {
+			right = mix(textureGrad(tex, uv_c(uv), dx, dy), textureGrad(tex, uv_d(uv), dx, dy), w.z);
+		}
+	}
+	if (w.y <= 0.0) {
+		return left;
+	}
+	if (w.y >= 1.0) {
+		return right;
+	}
+	return mix(left, right, w.y);
 }
-vec4 varied(sampler2D tex, vec2 uv) {
-	return blend4(texture(tex, uv), texture(tex, uv_b(uv)), texture(tex, uv_c(uv)), texture(tex, uv_d(uv)), variant_weights(uv));
+// The same for the canvas's own texture (TEXTURE): a function may take
+// built-in textures or uniform ones, never both.
+vec4 varied_once_builtin(sampler2D tex, vec2 uv, vec3 w, vec2 dx, vec2 dy) {
+	vec4 left = vec4(0.0);
+	vec4 right = vec4(0.0);
+	if (w.y < 1.0) {
+		if (w.x <= 0.0) {
+			left = textureGrad(tex, uv, dx, dy);
+		} else if (w.x >= 1.0) {
+			left = textureGrad(tex, uv_b(uv), dx, dy);
+		} else {
+			left = mix(textureGrad(tex, uv, dx, dy), textureGrad(tex, uv_b(uv), dx, dy), w.x);
+		}
+	}
+	if (w.y > 0.0) {
+		if (w.z <= 0.0) {
+			right = textureGrad(tex, uv_c(uv), dx, dy);
+		} else if (w.z >= 1.0) {
+			right = textureGrad(tex, uv_d(uv), dx, dy);
+		} else {
+			right = mix(textureGrad(tex, uv_c(uv), dx, dy), textureGrad(tex, uv_d(uv), dx, dy), w.z);
+		}
+	}
+	if (w.y <= 0.0) {
+		return left;
+	}
+	if (w.y >= 1.0) {
+		return right;
+	}
+	return mix(left, right, w.y);
 }
 
 // The water flowing: two layers of the water's texture, each advected
@@ -294,9 +352,14 @@ void vertex() {
 void fragment() {
 	vec2 uv = UV;
 	float grain = (texture(noise_texture, uv * 0.8 + vec2(0.37, 0.19)).r - 0.5) * 2.0 * meet_grain;
-	vec4 ground = blend4(texture(TEXTURE, uv), texture(TEXTURE, uv_b(uv)), texture(TEXTURE, uv_c(uv)), texture(TEXTURE, uv_d(uv)), variant_weights(uv));
+	// The variants' weights, once for every layer, and the derivatives the
+	// layers are read with (varied_once).
+	vec3 vw = variant_weights(uv);
+	vec2 duv_x = dFdx(uv);
+	vec2 duv_y = dFdy(uv);
+	vec4 ground = varied_once_builtin(TEXTURE, uv, vw, duv_x, duv_y);
 	if (has_sibling) {
-		vec4 sibling = varied(sibling_texture, uv);
+		vec4 sibling = varied_once(sibling_texture, uv, vw, duv_x, duv_y);
 		sibling.rgb *= sibling_tint;
 		float n = texture(noise_texture, uv * noise_scale).r;
 		float threshold = 1.0 - sibling_cover;
@@ -316,10 +379,10 @@ void fragment() {
 	float dry = smoothstep(dry_threshold - dry_softness, dry_threshold + dry_softness, d) * dry_strength;
 	ground.rgb = mix(ground.rgb, ground.rgb * dry_tint, dry);
 	if (has_second) {
-		ground = meet(ground, varied(second_texture, uv), patches(uv, second_scale, vec2(0.2, 0.7), second_cover, second_softness), grain);
+		ground = meet(ground, varied_once(second_texture, uv, vw, duv_x, duv_y), patches(uv, second_scale, vec2(0.2, 0.7), second_cover, second_softness), grain);
 	}
 	if (has_worn) {
-		ground = meet(ground, varied(worn_texture, uv), patches(uv, worn_scale, vec2(0.5, 0.25), worn_cover, worn_softness), grain);
+		ground = meet(ground, varied_once(worn_texture, uv, vw, duv_x, duv_y), patches(uv, worn_scale, vec2(0.5, 0.25), worn_cover, worn_softness), grain);
 	}
 	// COLOR comes in already multiplied by the texture: rebuild it from
 	// the blended texture and the vertex colour, do not multiply again
