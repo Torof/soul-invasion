@@ -13,8 +13,16 @@ extends Control
 
 var _offered: Array = []
 
+## Whether the head-up display (the clock, the body's gauges) and the
+## inventory are shown. Off while the world, the creatures and the things
+## in it are being designed, before play (the project lead's call, 9
+## November 2026): kept working, hidden, for when they are needed.
+const STATUS_PANELS_SHOWN := false
+
 
 func _ready() -> void:
+	$Ui/Hud.visible = STATUS_PANELS_SHOWN
+	$Ui/Inventory.visible = STATUS_PANELS_SHOWN
 	_world.hovered.connect(_on_hovered)
 	_world.acts_requested.connect(_on_acts_requested)
 	_actions.id_pressed.connect(_on_act_chosen)
