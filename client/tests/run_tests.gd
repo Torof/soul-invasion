@@ -33,6 +33,7 @@ func _init() -> void:
 	_test_the_shore_field_holds_every_chunk_held()
 	_test_chunk_outline_decodes()
 	_test_the_ring_lies_outside_the_detail()
+	_test_the_camera_stops_at_the_band()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -543,12 +544,34 @@ func _test_the_ring_lies_outside_the_detail() -> void:
 	_check(Iso.chunk_bounds([], {}) == Rect2i(), "nothing held: empty")
 
 
+## The camera stops at the band past the detailed ground, whatever the
+## zoom: the middle of each edge of the screen at most (the corners show
+## fog), or every corner with `corners` 1.
+func _test_the_camera_stops_at_the_band() -> void:
+	var lo := Vector2(0, 0)
+	var hi := Vector2(416, 416)
+	var within := func(tile: Vector2) -> bool:
+		return tile.x >= lo.x - 3.01 and tile.y >= lo.y - 3.01 and tile.x <= hi.x + 3.01 and tile.y <= hi.y + 3.01
+	for view: Vector2 in [Vector2(1600, 900) / 0.4, Vector2(3840, 2160) / 0.4, Vector2(1280, 720)]:
+		for corners: float in [0.0, 1.0]:
+			var area := Iso.camera_area(lo, hi, view, 3.0, corners)
+			_check(area.size.x > 0.0 and area.size.y > 0.0, "room to move at %s" % view)
+			var points := [Vector2(-1, 0), Vector2(1, 0), Vector2(0, -1), Vector2(0, 1)]
+			if corners == 1.0:
+				points = [Vector2(-1, -1), Vector2(1, -1), Vector2(1, 1), Vector2(-1, 1)]
+			for centre: Vector2 in [area.position, area.end, Vector2(area.position.x, area.end.y)]:
+				for p: Vector2 in points:
+					var px := p * view / 2.0
+					var tile := centre + Vector2((px.x / 32.0 + px.y / 16.0) / 2.0, (px.y / 16.0 - px.x / 32.0) / 2.0)
+					_check(within.call(tile), "the screen stops at the band (%s): %s" % [corners, tile])
+
+
 ## The bank texture repeats every ShoreField.TILES: wider than the
 ## chunks a client holds (the server's 13 × 13 view and its ring of
-## outline chunks, 17 across, with the margin read around a chunk), or
+## outline chunks, 15 across, with the margin read around a chunk), or
 ## two chunks held would draw each other's banks.
 func _test_the_shore_field_holds_every_chunk_held() -> void:
-	var held := (2 * 8 + 1) * 32
+	var held := (2 * 7 + 1) * 32
 	_check(ShoreField.TILES >= held + 2 * ShoreField.MARGIN, "the bank texture is wider than the chunks held: %d" % ShoreField.TILES)
 
 

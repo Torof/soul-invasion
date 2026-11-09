@@ -51,6 +51,7 @@ void fragment() {
 	_haze.z_index = 40
 	_haze_material = ShaderMaterial.new()
 	_haze_material.shader = _haze_shader()
+	_haze_material.set_shader_parameter("noise_texture", ChunkView.noise_texture())
 	_haze.material = _haze_material
 	_haze.draw.connect(_paint_haze)
 	add_child(_haze)
@@ -78,11 +79,15 @@ func show_far(cell: int, x: int, y: int, width: int, height: int, cells: String)
 ## (excluded), and over how many tiles past it the haze rises to
 ## HAZE_EDGE: the ring of outline chunks around it, which melts into the
 ## far land (WorldView), or HAZE_IN without one.
-func set_held(lo: Vector2i, hi: Vector2i, rise := HAZE_IN) -> void:
+## `edge` and `far` its thickness there and far away (HAZE_EDGE and
+## HAZE_FAR; 1 for a fog one cannot see through).
+func set_held(lo: Vector2i, hi: Vector2i, rise := HAZE_IN, edge := HAZE_EDGE, far := HAZE_FAR) -> void:
 	_held = Rect2(Vector2(lo), Vector2(hi - lo))
 	_haze_material.set_shader_parameter("held_lo", Vector2(lo))
 	_haze_material.set_shader_parameter("held_hi", Vector2(hi))
 	_haze_material.set_shader_parameter("rise_in", rise)
+	_haze_material.set_shader_parameter("edge", edge)
+	_haze_material.set_shader_parameter("far_haze", far)
 
 
 ## The colour of each letter: the average of the ground's own textures,
@@ -146,16 +151,25 @@ uniform float edge = %f;
 uniform float far_haze = %f;
 uniform float rise_in = %f;
 uniform float reach = %f;
+uniform sampler2D noise_texture : repeat_enable, filter_linear;
 void fragment() {
 	vec2 t = UV;
+	// A fog, not a wall: its edge wanders outwards by up to two tiles (never
+	// over the detailed ground) and drifts
+	// slowly, and it is lighter and darker in soft banks.
+	vec2 drift = vec2(TIME * 0.25, TIME * 0.1);
+	float n = texture(noise_texture, (t + drift) / 14.0).r;
+	float m = texture(noise_texture, (t - drift * 0.6) / 37.0 + vec2(0.31, 0.77)).r;
 	// Distance outside the ground held, negative inside (the larger of the
 	// two axes, as the ground held is a square of chunks).
 	vec2 out_lo = held_lo - t;
 	vec2 out_hi = t - held_hi;
-	float d = max(max(out_lo.x, out_hi.x), max(out_lo.y, out_hi.y));
+	float d = max(max(out_lo.x, out_hi.x), max(out_lo.y, out_hi.y)) - n * 2.0;
 	// Nothing over the ground held (d <= 0): the haze starts at its edge.
-	float a = smoothstep(0.0, rise_in, d) * edge + smoothstep(rise_in, reach, d) * (far_haze - edge);
-	COLOR = vec4(haze, a);
+	// It rises over the second half of the way to its edge thickness: the
+	// band before it shows the land blurring away, the fog comes last.
+	float a = smoothstep(rise_in * 0.5, rise_in, d) * edge + smoothstep(rise_in, reach, d) * (far_haze - edge);
+	COLOR = vec4(haze * (0.94 + 0.1 * m), a);
 }
 """ % [HAZE.r, HAZE.g, HAZE.b, HAZE_EDGE, HAZE_FAR, HAZE_IN, HAZE_OUT]
 	return shader
