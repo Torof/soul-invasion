@@ -41,7 +41,7 @@ const FOG_B_TILES := 35.0
 const FOG_C_TILES := 15.0
 ## How thick the fog is at its thickest, past the limit (1: nothing seen
 ## through it; a little less, the project lead's call).
-const FOG_OPACITY := 0.85
+const FOG_OPACITY := 0.7
 ## Millimetres per tile, as the protocol defines fine points.
 const MM_PER_TILE := 1000.0
 
