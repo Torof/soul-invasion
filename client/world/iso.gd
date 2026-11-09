@@ -51,13 +51,11 @@ static func diamond(x: int, y: int) -> PackedVector2Array:
 	])
 
 
-## The bounds, in chunks, of `keys` less those in `skip`; empty if none.
-static func chunk_bounds(keys: Array, skip: Dictionary) -> Rect2i:
+## The bounds, in chunks, of `keys`; empty if none.
+static func chunk_bounds(keys: Array) -> Rect2i:
 	var lo := Vector2i(1 << 30, 1 << 30)
 	var hi := Vector2i(-(1 << 30), -(1 << 30))
 	for key: Vector2i in keys:
-		if skip.has(key):
-			continue
 		lo = Vector2i(mini(lo.x, key.x), mini(lo.y, key.y))
 		hi = Vector2i(maxi(hi.x, key.x + 1), maxi(hi.y, key.y + 1))
 	if lo.x > hi.x:

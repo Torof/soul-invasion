@@ -344,11 +344,10 @@ vec4 meet(vec4 a, vec4 b, float w, float meet_noise) {
 // The vertex colour alone: white under a texture, the flat colour of a
 // terrain without one, the colour of an item's disc.
 
-// The ring of outline chunks around the view (ServerMessage::ChunkOutline)
-// loses its detail with the distance from the view: 0 inside the view,
-// 1 at the ring's outer edge, where the far view takes over (FarView).
-// Set once for every shader by WorldView (project.godot, shader_globals):
-// the detailed chunks' bounds in tiles, and the ring's width.
+// The view's last tiles lose their detail under the veil that thickens
+// into the fog (FarView): 0 inside, 1 where the fog is whole. Set once
+// for every shader by WorldView (project.godot, shader_globals): where
+// the veil starts, in tiles, and its width.
 global uniform vec2 detail_lo;
 global uniform vec2 detail_hi;
 global uniform float detail_fade;

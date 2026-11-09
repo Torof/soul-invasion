@@ -31,8 +31,7 @@ func _init() -> void:
 	_test_plants_are_named_and_coloured()
 	_test_trees_sharpness_eases_with_the_zoom()
 	_test_the_shore_field_holds_every_chunk_held()
-	_test_chunk_outline_decodes()
-	_test_the_ring_lies_outside_the_detail()
+	_test_the_bounds_of_the_chunks_held()
 	_test_the_camera_stops_at_the_band()
 	_test_the_view_follows_the_body_tile_by_tile()
 
@@ -517,32 +516,14 @@ func _test_loading_waits_for_the_valley() -> void:
 	_check(p.fraction() < 1.0 and p.stage() == "Laying the ground", "a new chunk sets it back")
 
 
-## Protocol v15: an outline chunk reaches the world view with its parts.
-func _test_chunk_outline_decodes() -> void:
-	var net: Node = load("res://net/client.gd").new()
-	var got: Array = []
-	net.chunk_outline.connect(func(x: int, y: int, tiles: Array, trees: Array, plants: Array, currents: Array) -> void:
-		got.append([x, y, tiles, trees, plants, currents]))
-	net.call("_handle", {"type": "chunk_outline", "x": 3, "y": -1, "tiles": ["grass"],
-		"trees": [{"species": "oak"}], "plants": [], "currents": [0]})
-	_check(got.size() == 1 and got[0][0] == 3 and got[0][1] == -1, "chunk_outline: its place")
-	_check(got.size() == 1 and got[0][2] == ["grass"] and (got[0][3] as Array).size() == 1 and got[0][5] == [0], "chunk_outline: its parts")
-	net.free()
-
-
-## The detailed bounds leave the ring of outline chunks out; the whole
-## held ground takes it in.
-func _test_the_ring_lies_outside_the_detail() -> void:
+## The bounds of the chunks held, in chunks.
+func _test_the_bounds_of_the_chunks_held() -> void:
 	var keys: Array = []
-	var ring := {}
 	for y in range(-2, 3):
 		for x in range(-2, 3):
 			keys.append(Vector2i(x, y))
-			if absi(x) == 2 or absi(y) == 2:
-				ring[Vector2i(x, y)] = true
-	_check(Iso.chunk_bounds(keys, {}) == Rect2i(-2, -2, 5, 5), "all held: 5 x 5")
-	_check(Iso.chunk_bounds(keys, ring) == Rect2i(-1, -1, 3, 3), "the detail: 3 x 3")
-	_check(Iso.chunk_bounds([], {}) == Rect2i(), "nothing held: empty")
+	_check(Iso.chunk_bounds(keys) == Rect2i(-2, -2, 5, 5), "all held: 5 x 5")
+	_check(Iso.chunk_bounds([]) == Rect2i(), "nothing held: empty")
 
 
 ## The camera stops at the band past the detailed ground, whatever the
@@ -552,10 +533,10 @@ func _test_the_camera_stops_at_the_band() -> void:
 	var lo := Vector2(0, 0)
 	var hi := Vector2(416, 416)
 	var within := func(tile: Vector2) -> bool:
-		return tile.x >= lo.x - 4.01 and tile.y >= lo.y - 4.01 and tile.x <= hi.x + 4.01 and tile.y <= hi.y + 4.01
+		return tile.x >= lo.x - 3.01 and tile.y >= lo.y - 3.01 and tile.x <= hi.x + 3.01 and tile.y <= hi.y + 3.01
 	for view: Vector2 in [Vector2(1600, 900) / 0.4, Vector2(3840, 2160) / 0.4, Vector2(1280, 720)]:
 		for corners: float in [0.0, 1.0]:
-			var area := Iso.camera_area(lo, hi, view, 4.0, corners)
+			var area := Iso.camera_area(lo, hi, view, 3.0, corners)
 			_check(area.size.x > 0.0 and area.size.y > 0.0, "room to move at %s" % view)
 			var points := [Vector2(-1, 0), Vector2(1, 0), Vector2(0, -1), Vector2(0, 1)]
 			if corners == 1.0:
@@ -568,28 +549,30 @@ func _test_the_camera_stops_at_the_band() -> void:
 
 
 ## The bank texture repeats every ShoreField.TILES: wider than the
-## chunks a client holds (the server's 13 × 13 view and its ring of
-## outline chunks, 15 across, with the margin read around a chunk), or
+## chunks a client holds (the server's 13 × 13 view, with the margin read
+## around a chunk), or
 ## two chunks held would draw each other's banks.
 func _test_the_shore_field_holds_every_chunk_held() -> void:
-	var held := (2 * 7 + 1) * 32
+	var held := (2 * 6 + 1) * 32
 	_check(ShoreField.TILES >= held + 2 * ShoreField.MARGIN, "the bank texture is wider than the chunks held: %d" % ShoreField.TILES)
 
 
 ## The limit of the view moves with the body, tile by tile, and stays
 ## inside the ground held with room for the band and the fog.
 func _test_the_view_follows_the_body_tile_by_tile() -> void:
-	# 15 chunks held around chunk 50, as the server holds them.
-	var held := Rect2(Vector2(43, 43) * 32, Vector2(15, 15) * 32)
+	# 13 chunks held around chunk 50, as the server holds them.
+	var held := Rect2(Vector2(44, 44) * 32, Vector2(13, 13) * 32)
 	var body := Vector2(50 * 32 + 16.5, 50 * 32 + 16.5)
-	var limit := Iso.view_limit(body, 208.0, held, 4.0)
-	_check(limit.position == body - Vector2(208, 208) and limit.end == body + Vector2(208, 208), "208 tiles around the body: %s" % limit)
-	var step := Iso.view_limit(body + Vector2(1, 0), 208.0, held, 4.0)
+	var limit := Iso.view_limit(body, 192.0, held, 0.0)
+	_check(limit.position == body - Vector2(192, 192) and limit.end == body + Vector2(192, 192), "192 tiles around the body: %s" % limit)
+	var step := Iso.view_limit(body + Vector2(1, 0), 192.0, held, 0.0)
 	_check(step.position.x == limit.position.x + 1.0, "a tile east, the limit a tile east")
 	for x in [0.0, 31.9]:
 		var at := Vector2(50 * 32 + x, 50 * 32 + 16.0)
-		var l := Iso.view_limit(at, 208.0, held, 4.0)
-		_check(l.position.x >= held.position.x + 4.0 and l.end.x <= held.end.x - 4.0, "inside the ground held at %s" % at)
+		var l := Iso.view_limit(at, 192.0, held, 0.0)
+		_check(is_equal_approx(maxf(l.position.x, held.position.x), l.position.x) and l.end.x <= held.end.x + 0.001,
+			"the view never passes the chunks held, wherever the body stands in its chunk: %s" % at)
+		_check(l.size.x > 380.0, "and reaches nearly 192 tiles each way: %s" % l.size)
 
 
 func _test_currents_decode() -> void:
