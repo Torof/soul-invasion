@@ -339,10 +339,36 @@ func set_wind(on: bool) -> void:
 ## Development (--dev, F6): the trees shown or hidden, to measure what
 ## they cost the graphics card.
 func set_trees_shown(on: bool) -> void:
-	for holder: Variant in _tree_nodes.values():
-		if is_instance_valid(holder):
-			(holder as Node2D).visible = on
 	_trees_shown = on
+	_cull_standing()
+
+
+## Pixels a chunk's standing things may reach past its ground on screen:
+## up for the tallest trees, sideways and down for their crowns.
+const STANDING_REACH_UP := 1024.0
+const STANDING_REACH := 256.0
+
+
+## Shows only the trees and tall plants of chunks on screen: the standing
+## layer sorts every child it holds every frame, seen or not (from the
+## performance audit, 9 November 2026). What is on screen is unchanged.
+func _cull_standing() -> void:
+	var half := get_viewport_rect().size / _camera.zoom.x / 2.0
+	var seen := Rect2(_camera.position - half, half * 2.0)
+	for key: Vector2i in _tree_nodes:
+		var holder: Variant = _tree_nodes[key]
+		if not is_instance_valid(holder):
+			continue
+		var lo := key * _chunk_size
+		var hi := lo + Vector2i(_chunk_size, _chunk_size)
+		# The chunk's diamond on screen, grown by what may stand out of it.
+		var ground := Rect2(
+			Vector2((lo.x - hi.y) * Iso.TILE_W / 2.0, (lo.x + lo.y) * Iso.TILE_H / 2.0),
+			Vector2((hi.x - lo.x + hi.y - lo.y) * Iso.TILE_W / 2.0, (hi.x + hi.y - lo.x - lo.y) * Iso.TILE_H / 2.0))
+		var reach := ground.grow_individual(STANDING_REACH, STANDING_REACH_UP, STANDING_REACH, STANDING_REACH)
+		var shown := _trees_shown and seen.intersects(reach)
+		if (holder as Node2D).visible != shown:
+			(holder as Node2D).visible = shown
 
 
 var _trees_shown := true
@@ -654,6 +680,7 @@ func _step(delta: float) -> void:
 		_camera.position = Iso.point_to_screen(_bodies[_piloted]["at"])
 	_update_limit()
 	_clamp_camera()
+	_cull_standing()
 	_update_see_through(delta)
 	_call_waiting_chunk()
 	for i in mini(REDRAWS_PER_FRAME, _to_redraw.size()):
