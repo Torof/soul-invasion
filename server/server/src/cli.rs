@@ -37,6 +37,9 @@ OPTIONS:
     --ticks-per-second <N> Calendar: simulation ticks per game second
                            (default 10).
     --seconds-per-day <N>  Calendar: game seconds per game day (default 7200).
+    --valley-size <N>      A new world's valley, N tiles on a side (default
+                           3072, at least 256). A smaller one starts far
+                           faster: for tests and development.
     --dev                  Development tools: every client gets an overview
                            of the whole map and may teleport its body. Never
                            for play.
@@ -84,6 +87,8 @@ pub struct Options {
     pub calendar: Calendar,
     /// Development tools on (`--dev`): the map's overview and teleports.
     pub dev: bool,
+    /// A new world's valley, tiles on a side.
+    pub valley_size: u32,
 }
 
 impl Default for Options {
@@ -99,6 +104,7 @@ impl Default for Options {
             content: None,
             calendar: Calendar::default(),
             dev: false,
+            valley_size: sim::VALLEY_SIZE,
         }
     }
 }
@@ -165,6 +171,7 @@ impl Options {
                 "--ephemeral" => opts.data = DataLocation::Ephemeral,
                 "--reset" => opts.reset = true,
                 "--dev" => opts.dev = true,
+                "--valley-size" => opts.valley_size = value(arg, args.next())?,
                 "--time-scale" => opts.time_scale = value(arg, args.next())?,
                 "--max-connections" => opts.max_connections = value(arg, args.next())?,
                 "--content" => opts.content = Some(value(arg, args.next())?),
@@ -187,6 +194,12 @@ impl Options {
             return Err(CliError::InvalidValue {
                 option: "--max-connections".to_owned(),
                 value: "0".to_owned(),
+            });
+        }
+        if opts.valley_size < 256 {
+            return Err(CliError::InvalidValue {
+                option: "--valley-size".to_owned(),
+                value: opts.valley_size.to_string(),
             });
         }
         opts.calendar =
@@ -252,6 +265,21 @@ mod tests {
     fn development_tools_are_off_unless_asked() {
         assert!(!Options::parse(Vec::<&str>::new()).unwrap().dev);
         assert!(Options::parse(["--dev"]).unwrap().dev);
+    }
+
+    #[test]
+    fn valley_size_is_parsed_and_must_be_large_enough() {
+        assert_eq!(
+            Options::parse(Vec::<&str>::new()).unwrap().valley_size,
+            sim::VALLEY_SIZE
+        );
+        assert_eq!(
+            Options::parse(["--valley-size", "768"])
+                .unwrap()
+                .valley_size,
+            768
+        );
+        assert!(Options::parse(["--valley-size", "100"]).is_err());
     }
 
     #[test]

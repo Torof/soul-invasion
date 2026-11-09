@@ -559,7 +559,13 @@ impl World {
     /// inhabitants standing on the grass by the main river and the
     /// content's materials scattered over the ground by its spawn rules.
     pub fn new(calendar: Calendar, content: &Content) -> Self {
-        let mut world = Self::empty(calendar, Map::valley(VALLEY_SIZE, VALLEY_SIZE, VALLEY_SEED));
+        Self::with_valley(calendar, content, VALLEY_SIZE)
+    }
+
+    /// The same, on a valley `size` tiles on a side: a smaller one starts
+    /// far faster, for the tests and development (`--valley-size`).
+    pub fn with_valley(calendar: Calendar, content: &Content, size: u32) -> Self {
+        let mut world = Self::empty(calendar, Map::valley(size, size, VALLEY_SEED));
         let camp = world.map.camp();
         for (dx, dy) in [(0, 0), (2, 1), (-1, 3)] {
             let wanted = Pos::new(camp.x + dx, camp.y + dy);
@@ -1272,8 +1278,9 @@ mod tests {
     }
 
     fn small_world() -> World {
-        // 4 ticks per day: easy to reason about.
-        World::new(Calendar::new(2, 2).unwrap(), &rules())
+        // 4 ticks per day: easy to reason about. A valley of 768: the same
+        // rules as the game's, made in a fraction of the time.
+        World::with_valley(Calendar::new(2, 2).unwrap(), &rules(), 768)
     }
 
     fn open_field() -> World {
@@ -1557,8 +1564,8 @@ mod tests {
     #[test]
     fn items_are_scattered_by_the_spawn_rules_deterministically() {
         let content = Content::sample();
-        let a = World::new(Calendar::default(), &content);
-        let b = World::new(Calendar::default(), &content);
+        let a = World::with_valley(Calendar::default(), &content, 768);
+        let b = World::with_valley(Calendar::default(), &content, 768);
         assert_eq!(a.items(), b.items());
         assert!(a.items().len() > 100, "{} items", a.items().len());
         // Every item obeys a rule: branches in the forest, berries on grass

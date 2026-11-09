@@ -1357,9 +1357,13 @@ async fn send(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sim::Calendar;
 
     fn shared(max_connections: usize) -> Shared {
-        Shared::new(&World::default(), &Content::sample(), max_connections, 1.0)
+        // A small valley: the rules are the same, and it is made in a
+        // fraction of the time.
+        let world = World::with_valley(Calendar::default(), &Content::sample(), 768);
+        Shared::new(&world, &Content::sample(), max_connections, 1.0)
     }
 
     #[test]

@@ -116,7 +116,7 @@ mod tests {
     use sim::{Calendar, Content};
 
     fn small_world() -> World {
-        World::new(Calendar::new(2, 3).unwrap(), &Content::sample()) // 6 ticks per day
+        World::with_valley(Calendar::new(2, 3).unwrap(), &Content::sample(), 256) // 6 ticks per day
     }
 
     fn never_stop() -> AtomicBool {
@@ -174,7 +174,7 @@ mod tests {
     fn paced_stops_at_the_boundary_even_when_behind() {
         // A slow calendar (1 tick/s) with a huge scale: the first loop
         // iteration owes many ticks at once, but must not overshoot.
-        let mut w = World::new(Calendar::new(1, 2).unwrap(), &Content::sample()); // 2 ticks per day
+        let mut w = World::with_valley(Calendar::new(1, 2).unwrap(), &Content::sample(), 256); // 2 ticks per day
         let s = run_paced(
             &mut w,
             &Content::sample(),

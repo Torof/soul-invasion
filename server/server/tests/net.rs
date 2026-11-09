@@ -11,7 +11,7 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use protocol::{ClientMessage, PROTOCOL_VERSION, Point, ServerMessage, decode, encode};
 use server::net::{OUTLINE_RADIUS, VIEW_RADIUS};
-use sim::{BodyId, CHUNK_SIZE, Calendar, ChunkPos, FinePos, Pos, VALLEY_SIZE, World};
+use sim::{BodyId, CHUNK_SIZE, Calendar, ChunkPos, FinePos, Pos, World};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
@@ -28,9 +28,13 @@ fn rules() -> sim::Content {
 /// The world a fresh server starts with, generated once for all the
 /// tests: the valley is large, and its generation must not eat into a
 /// running server's short days.
+/// The tests' valley: smaller than the game's (`--valley-size`), so each
+/// server they start is up in seconds; the same rules apply.
+const VALLEY: u32 = 768;
+
 fn standard_world() -> &'static World {
     static WORLD: OnceLock<World> = OnceLock::new();
-    WORLD.get_or_init(|| World::new(Calendar::default(), &rules()))
+    WORLD.get_or_init(|| World::with_valley(Calendar::default(), &rules(), VALLEY))
 }
 
 /// The tiles a body standing at `from` can walk to, through straight
@@ -112,6 +116,7 @@ impl Server {
     fn start_with(extra: &[&str]) -> Self {
         standard_world();
         let mut child = Command::new(env!("CARGO_BIN_EXE_server"))
+            .args(["--valley-size", &VALLEY.to_string()])
             .args([
                 "--ephemeral",
                 "--listen",
@@ -271,7 +276,7 @@ async fn hello_ping_and_a_published_day() {
                     .iter()
                     .all(|k| ["shrub", "plant", "mushroom"].contains(&k.family.as_str()))
             );
-            assert_eq!((width, height), (VALLEY_SIZE, VALLEY_SIZE));
+            assert_eq!((width, height), (VALLEY, VALLEY));
             assert!(species.len() >= 6, "the kinds of tree");
             assert!(species.iter().all(|s| s.height_cm >= 100));
             assert_eq!(chunk_size, CHUNK_SIZE);
@@ -503,7 +508,7 @@ async fn join(server: &Server) -> (Socket, Option<u32>) {
     let centre = if let Some(body) = body {
         start_of(world, body).chunk()
     } else {
-        let middle = i32::try_from(VALLEY_SIZE / 2).expect("small valley");
+        let middle = i32::try_from(VALLEY / 2).expect("small valley");
         Pos::new(middle, middle).chunk()
     };
     for _ in 0..window_len(world, centre) {
@@ -658,8 +663,8 @@ async fn with_dev_the_client_gets_the_overview_and_may_teleport() {
     else {
         panic!("expected the overview");
     };
-    assert_eq!(width, VALLEY_SIZE.div_ceil(cell));
-    assert_eq!(height, VALLEY_SIZE.div_ceil(cell));
+    assert_eq!(width, VALLEY.div_ceil(cell));
+    assert_eq!(height, VALLEY.div_ceil(cell));
     assert_eq!(cells.len(), (width * height) as usize);
     assert!(cells.chars().all(|c| "gfwobr".contains(c)));
     assert!(cells.contains('w') && cells.contains('f') && cells.starts_with('r'));

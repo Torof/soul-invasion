@@ -5,7 +5,10 @@
 use std::process::Command;
 
 fn server() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_server"))
+    // A small valley: a new world is made in seconds (`--valley-size`).
+    let mut command = Command::new(env!("CARGO_BIN_EXE_server"));
+    command.args(["--valley-size", "768"]);
+    command
 }
 
 #[test]
