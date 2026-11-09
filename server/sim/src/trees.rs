@@ -51,7 +51,7 @@ fn shown_m(metres: f32) -> f32 {
     if metres <= 3.0 {
         metres
     } else {
-        3.0 * (metres / 3.0).powf(0.7)
+        3.0 * (metres / 3.0).powf(0.6)
     }
 }
 
