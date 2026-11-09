@@ -2,7 +2,7 @@
 //
 // id:       snake_case, unique; the client finds its images by it.
 // height_m: a grown tree, in metres, its true height (the client draws it
-//           at the world's scale, D40: about 10 m for a 22 m oak).
+//           at the world's scale, D40: about 12 m for a 22 m oak).
 // habitats: how much the species grows in each habitat, against the
 //           others there (any scale; 0 or absent: none). Habitats:
 //           heart, wood, edge, clearing, camp, copse, lone, riverside,
