@@ -111,8 +111,8 @@ func set_held(lo: Vector2, hi: Vector2, rise := HAZE_IN, edge := HAZE_EDGE, far 
 	_haze_material.set_shader_parameter("far_haze", far)
 
 
-## Where the cover starts, over everything: the limit of the view, in
-## tiles from `lo` to `hi`, whole `rise` tiles past it.
+## Where the cover starts, over everything, in tiles from `lo` to `hi`:
+## whole `rise` tiles past it (WorldView: at the view's limit).
 func set_cover(lo: Vector2, hi: Vector2, rise: float) -> void:
 	_cover_material.set_shader_parameter("held_lo", lo)
 	_cover_material.set_shader_parameter("held_hi", hi)
