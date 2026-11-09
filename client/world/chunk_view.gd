@@ -131,6 +131,10 @@ var terrain_at: Callable
 ## Where the water runs at any tile the world view knows (a vector in
 ## metres a second; set by the world view, invalid on the benches).
 var current_at: Callable
+## The hash of a chunk's tiles as received, 0 when not held (set by the
+## world view): the signature of the ground below reads nine of them
+## instead of three thousand tiles.
+var tiles_hash: Callable
 
 
 ## The seamless noise every ground material blends with, made here, no
@@ -557,6 +561,15 @@ func shore(terrain: String) -> Dictionary:
 ## The same signature means the ground canvases, the bank's field, the
 ## brooks and the decorations are as they were: only the items change.
 func _terrain_signature() -> int:
+	if tiles_hash.is_valid():
+		# The chunk and its eight neighbours cover all it reads (the
+		# brooks' margin is under a chunk's side): their tiles' hashes.
+		var key := Vector2i(floori(float(_origin.x) / _size), floori(float(_origin.y) / _size))
+		var parts := PackedInt64Array()
+		for dy in range(-1, 2):
+			for dx in range(-1, 2):
+				parts.append(int(tiles_hash.call(key + Vector2i(dx, dy))))
+		return maxi(hash(parts), 1)
 	var codes := PackedStringArray()
 	var m := BrookLines.MARGIN
 	for y in range(-m, _size + m):
@@ -566,8 +579,6 @@ func _terrain_signature() -> int:
 
 
 var _last_signature := 0
-## How long the bank's field may smooth in one frame (ShoreField.update).
-const FIELD_SLICE_USEC := 6000
 ## Building a chunk's ground takes tens of milliseconds: one chunk builds
 ## a frame, the others keep what they drew and wait in `waiting` for the
 ## world view to call them, nearest the camera first.
@@ -817,7 +828,7 @@ static func shore_field_on() -> bool:
 ## draws the bank) over the land within two tiles of the water.
 func _add_field_tiles(by_terrain: Dictionary) -> void:
 	var terrain := func(t: Vector2i) -> String: return _terrain(t.x, t.y)
-	ShoreField.update(terrain, _origin, _size, current_at, FIELD_SLICE_USEC)
+	ShoreField.update(terrain, _origin, _size, current_at, true)
 	var water_material := ground_material("water")
 	water_material.set_shader_parameter("shore_field", ShoreField.texture())
 	water_material.set_shader_parameter("has_field", true)

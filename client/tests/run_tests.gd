@@ -409,8 +409,8 @@ func _test_the_shore_field_measures_the_bank() -> void:
 
 
 func _test_the_shore_field_in_slices() -> void:
-	# Spread over frames, the field comes out the same as at once; an
-	# update overtaken by a newer one for its block gives up.
+	# On another core, the field comes out the same as at once; an update
+	# overtaken by a newer one for its block gives up.
 	var river := func(t: Vector2i) -> String:
 		if t.x >= 70 and t.x < 76:
 			return "ford" if t.y >= 40 and t.y < 44 else "water"
@@ -421,13 +421,13 @@ func _test_the_shore_field_in_slices() -> void:
 	ShoreField.update(river, Vector2i(64, 32), 32, runs)
 	var at_once := ShoreField._image.get_region(block).get_data()
 	ShoreField.update(land, Vector2i(64, 32), 32)
-	ShoreField.update(river, Vector2i(64, 32), 32, runs, 1)
+	ShoreField.update(river, Vector2i(64, 32), 32, runs, true)
 	var landed := ShoreField._image.get_region(block).get_data()
 	for i in 60:
 		await process_frame
-	_check(landed != at_once, "an update in slices writes later")
-	_check(ShoreField._image.get_region(block).get_data() == at_once, "in slices, the same field as at once")
-	ShoreField.update(river, Vector2i(64, 32), 32, runs, 1)
+	_check(landed != at_once, "an update on another core writes later")
+	_check(ShoreField._image.get_region(block).get_data() == at_once, "on another core, the same field as at once")
+	ShoreField.update(river, Vector2i(64, 32), 32, runs, true)
 	ShoreField.update(land, Vector2i(64, 32), 32)
 	var bare := ShoreField._image.get_region(block).get_data()
 	for i in 60:

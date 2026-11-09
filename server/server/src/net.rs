@@ -1058,14 +1058,16 @@ async fn reassign(
 }
 
 /// Moves the view to `centre`, telling the client: chunks no longer held
-/// hidden, new ones in full.
+/// hidden, new ones in full, nearest the centre first.
 async fn move_view(
     ws: &mut WebSocketStream<TcpStream>,
     shared: &Shared,
     view: &mut View,
     centre: ChunkPos,
 ) -> Result<(), BoxError> {
-    let (shown, hidden) = view.recentre(&shared.map, centre);
+    let (mut shown, hidden) = view.recentre(&shared.map, centre);
+    // Nearest the body first, so the ground around it is built first.
+    shown.sort_by_key(|c| ((c.x - centre.x).pow(2) + (c.y - centre.y).pow(2), c.y, c.x));
     for chunk in hidden {
         send(
             ws,

@@ -61,6 +61,8 @@ var _bodies: Dictionary = {}
 var _items: Dictionary = {}
 ## chunk position -> Array of tiles as received
 var _tiles: Dictionary = {}
+## chunk position -> hash of its tiles (ChunkView.tiles_hash)
+var _tile_hashes: Dictionary = {}
 ## material id -> edible?
 var _edible: Dictionary = {}
 ## material id -> the whole catalogue entry, for tooltips
@@ -202,6 +204,7 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	_chunks.clear()
 	_items.clear()
 	_tiles.clear()
+	_tile_hashes.clear()
 	_currents.clear()
 	_trees.clear()
 	_tree_cells.clear()
@@ -240,6 +243,7 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees:
 		add_child(view)
 		_chunks[key] = view
 	_tiles[key] = tiles
+	_tile_hashes[key] = hash(tiles)
 	_currents[key] = currents
 	_items[key] = items
 	var standing: Array = []
@@ -250,6 +254,7 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees:
 	_plant_chunk(key, view)
 	view.show_plants(plants, _flora)
 	view.terrain_at = terrain_at
+	view.tiles_hash = func(k: Vector2i) -> int: return int(_tile_hashes.get(k, 0))
 	view.current_at = current_at
 	view.show_chunk(key * _chunk_size, _chunk_size, tiles, items, _looks)
 	_redraw_neighbours(key)
@@ -334,10 +339,36 @@ func set_wind(on: bool) -> void:
 ## Development (--dev, F6): the trees shown or hidden, to measure what
 ## they cost the graphics card.
 func set_trees_shown(on: bool) -> void:
-	for holder: Variant in _tree_nodes.values():
-		if is_instance_valid(holder):
-			(holder as Node2D).visible = on
 	_trees_shown = on
+	_cull_standing()
+
+
+## Pixels a chunk's standing things may reach past its ground on screen:
+## up for the tallest trees, sideways and down for their crowns.
+const STANDING_REACH_UP := 1024.0
+const STANDING_REACH := 256.0
+
+
+## Shows only the trees and tall plants of chunks on screen: the standing
+## layer sorts every child it holds every frame, seen or not (from the
+## performance audit, 9 November 2026). What is on screen is unchanged.
+func _cull_standing() -> void:
+	var half := get_viewport_rect().size / _camera.zoom.x / 2.0
+	var seen := Rect2(_camera.position - half, half * 2.0)
+	for key: Vector2i in _tree_nodes:
+		var holder: Variant = _tree_nodes[key]
+		if not is_instance_valid(holder):
+			continue
+		var lo := key * _chunk_size
+		var hi := lo + Vector2i(_chunk_size, _chunk_size)
+		# The chunk's diamond on screen, grown by what may stand out of it.
+		var ground := Rect2(
+			Vector2((lo.x - hi.y) * Iso.TILE_W / 2.0, (lo.x + lo.y) * Iso.TILE_H / 2.0),
+			Vector2((hi.x - lo.x + hi.y - lo.y) * Iso.TILE_W / 2.0, (hi.x + hi.y - lo.x - lo.y) * Iso.TILE_H / 2.0))
+		var reach := ground.grow_individual(STANDING_REACH, STANDING_REACH_UP, STANDING_REACH, STANDING_REACH)
+		var shown := _trees_shown and seen.intersects(reach)
+		if (holder as Node2D).visible != shown:
+			(holder as Node2D).visible = shown
 
 
 var _trees_shown := true
@@ -476,7 +507,8 @@ func _redraw_neighbours(key: Vector2i) -> void:
 	for dy in range(-1, 2):
 		for dx in range(-1, 2):
 			var near: ChunkView = _chunks.get(key + Vector2i(dx, dy))
-			if near != null and (dx != 0 or dy != 0) and not _to_redraw.has(near):
+			# One not built yet will read its neighbours when it builds.
+			if near != null and near.is_built() and (dx != 0 or dy != 0) and not _to_redraw.has(near):
 				_to_redraw.append(near)
 
 
@@ -488,6 +520,7 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 		_chunks.erase(key)
 		_items.erase(key)
 		_tiles.erase(key)
+		_tile_hashes.erase(key)
 		_currents.erase(key)
 		_trees.erase(key)
 		_tree_cells.erase(key)
@@ -647,6 +680,7 @@ func _step(delta: float) -> void:
 		_camera.position = Iso.point_to_screen(_bodies[_piloted]["at"])
 	_update_limit()
 	_clamp_camera()
+	_cull_standing()
 	_update_see_through(delta)
 	_call_waiting_chunk()
 	for i in mini(REDRAWS_PER_FRAME, _to_redraw.size()):
