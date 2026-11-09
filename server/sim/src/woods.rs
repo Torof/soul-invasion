@@ -135,8 +135,8 @@ impl Woods {
             width,
             pulls: Vec::new(),
             level: 0,
-            clearings: Vec::new(),
-            copses: Vec::new(),
+            clearings: Patches::default(),
+            copses: Patches::default(),
             near_river: Self::near_river(width, height, rivers),
             camp: (i64::from(camp.0) * 1000, i64::from(camp.1) * 1000),
         };
@@ -188,8 +188,8 @@ impl Woods {
             Self::COPSE_RADIUS,
             outside,
         );
-        plan.clearings = clearings;
-        plan.copses = copses;
+        plan.clearings = Patches::new(clearings, width, height);
+        plan.copses = Patches::new(copses, width, height);
         for y in 0..height {
             for x in 0..width {
                 if land(x, y) {
@@ -287,10 +287,55 @@ struct Plan {
     /// Per tile, its pull, once computed.
     pulls: Vec<i64>,
     level: i64,
-    clearings: Vec<(i64, i64, i64)>,
-    copses: Vec<(i64, i64, i64)>,
+    clearings: Patches,
+    copses: Patches,
     near_river: Vec<u8>,
     camp: (i64, i64),
+}
+
+/// Round patches (clearings, copses: centre and radius, thousandths of a
+/// tile), filed by the square cells of `PATCH_CELL` tiles their ragged
+/// rims can reach: a tile looks only at those of its own cell. Looking at
+/// them all, for every tile, was most of a valley's generation, growing
+/// with the square of the map's area.
+#[derive(Default)]
+struct Patches {
+    cells: Vec<Vec<(i64, i64, i64)>>,
+    cells_wide: u32,
+}
+
+/// Side of a cell of `Patches`, in tiles.
+const PATCH_CELL: u32 = 16;
+
+impl Patches {
+    fn new(patches: Vec<(i64, i64, i64)>, width: u32, height: u32) -> Self {
+        let (wide, high) = (width.div_ceil(PATCH_CELL), height.div_ceil(PATCH_CELL));
+        let mut cells = vec![Vec::new(); (wide * high) as usize];
+        let cell = |mm: i64, last: u32| {
+            u32::try_from(mm.max(0) / 1000).map_or(last, |t| (t / PATCH_CELL).min(last))
+        };
+        for (cx, cy, r) in patches {
+            // The farthest a ragged rim reaches (`Plan::within`): the
+            // radius times 1 + RAGGED / 2, and a tile more for safety.
+            let reach = r * (1000 + Woods::RAGGED / 2 + 1) / 1000 + 1000;
+            for y in cell(cy - reach, high - 1)..=cell(cy + reach, high - 1) {
+                for x in cell(cx - reach, wide - 1)..=cell(cx + reach, wide - 1) {
+                    cells[(y * wide + x) as usize].push((cx, cy, r));
+                }
+            }
+        }
+        Self {
+            cells,
+            cells_wide: wide,
+        }
+    }
+
+    /// The patches that may reach the tile `(x, y)`.
+    fn near(&self, x: u32, y: u32) -> &[(i64, i64, i64)] {
+        self.cells
+            .get(((y / PATCH_CELL) * self.cells_wide + x / PATCH_CELL) as usize)
+            .map_or(&[], Vec::as_slice)
+    }
 }
 
 impl Plan {
@@ -317,6 +362,9 @@ impl Plan {
     /// How deep inside one of `patches` `(x, y)` is: 1000 at a centre, 0
     /// at and past a rim made ragged by a fine noise.
     fn within(&self, patches: &[(i64, i64, i64)], x: u32, y: u32) -> i64 {
+        if patches.is_empty() {
+            return 0;
+        }
         let (px, py) = (i64::from(x) * 1000, i64::from(y) * 1000);
         let ragged = 1000 + Woods::RAGGED * (i64::from(self.rim.value(x, y)) - 500) / 1000;
         patches
@@ -348,7 +396,7 @@ impl Plan {
         };
         // Clearings: the woods open, with an edge around.
         if d > 0 {
-            let open = self.within(&self.clearings, x, y);
+            let open = self.within(self.clearings.near(x, y), x, y);
             if open > 0 {
                 d = d * (1000 - (3 * open).min(1000)) / 1000;
                 habitat = if d < 100 {
@@ -380,7 +428,7 @@ impl Plan {
         }
         // Copses and lone trees in the meadow.
         if habitat == Habitat::Meadow {
-            let copse = self.within(&self.copses, x, y);
+            let copse = self.within(self.copses.near(x, y), x, y);
             if copse > 0 {
                 d = 300 + 400 * copse / 1000;
                 habitat = Habitat::Copse;
