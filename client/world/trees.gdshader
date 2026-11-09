@@ -85,27 +85,43 @@ void fragment() {
 		float k = clamp((up - still) / (1.0 - still), 0.0, 1.0);
 		x -= bend_px * k * k;
 		vec2 uv = vec2(x / width_px, UV.y);
+		// Clear pixels are discarded: no blending with what lies beneath.
 		if (uv.x < 0.0 || uv.x > 1.0) {
-			COLOR = vec4(0.0);
+			discard;
 		} else {
 			// One mipmap level sharper than the hardware picks: sharp up close,
 			// still no shimmer far away.
 			vec4 c = texture(TEXTURE, uv, mip_bias);
-			float low = UV.y;
-			// Shade among the roots.
-			float dark = smoothstep(1.0 - foot_dark, 1.0, low);
-			c.rgb *= 1.0 - dark * 0.35;
-			// The last few percent melt into the ground, raggedly.
-			float melt = smoothstep(1.0 - foot_melt, 1.0, low);
-			float n = texture(noise_texture, vec2(uv.x * 3.0 + seed * 7.0, low * 9.0)).r * 0.6
-				+ texture(noise_texture, vec2(uv.x * 11.0 + seed * 3.0, low * 23.0)).r * 0.4;
-			c.rgb = mix(c.rgb, earth, melt * 0.6);
-			c.a *= 1.0 - smoothstep(n - 0.15, n + 0.15, melt);
-			// See through it, within the circles that apply to it.
-			float in_body = (1.0 - smoothstep(body_radius - see_rim, body_radius, distance(local, body_at))) * front_of_body * body_reveal;
-			float in_mouse = (1.0 - smoothstep(mouse_radius - see_rim, mouse_radius, distance(local, mouse_at))) * hides_mouse * mouse_reveal;
-			c.a *= 1.0 - max(in_body, in_mouse) * (1.0 - see_through);
-			COLOR = c;
+			// Nothing more to do where the image is clear (between the
+			// branches, around the crown): most of the quad.
+			if (c.a <= 0.0) {
+				discard;
+			} else {
+				float low = UV.y;
+				// Shade among the roots.
+				float dark = smoothstep(1.0 - foot_dark, 1.0, low);
+				c.rgb *= 1.0 - dark * 0.35;
+				// The last few percent melt into the ground, raggedly; only
+				// there (worked out over the whole tree, the noise thinned
+				// random specks of the crown).
+				float melt = smoothstep(1.0 - foot_melt, 1.0, low);
+				if (melt > 0.0) {
+					float n = texture(noise_texture, vec2(uv.x * 3.0 + seed * 7.0, low * 9.0)).r * 0.6
+						+ texture(noise_texture, vec2(uv.x * 11.0 + seed * 3.0, low * 23.0)).r * 0.4;
+					c.rgb = mix(c.rgb, earth, melt * 0.6);
+					c.a *= 1.0 - smoothstep(n - 0.15, n + 0.15, melt);
+				}
+				// See through it, within the circles that apply to it: only
+				// for the few trees flagged, while a circle is open.
+				float body_on = front_of_body * body_reveal;
+				float mouse_on = hides_mouse * mouse_reveal;
+				if (body_on + mouse_on > 0.0) {
+					float in_body = (1.0 - smoothstep(body_radius - see_rim, body_radius, distance(local, body_at))) * body_on;
+					float in_mouse = (1.0 - smoothstep(mouse_radius - see_rim, mouse_radius, distance(local, mouse_at))) * mouse_on;
+					c.a *= 1.0 - max(in_body, in_mouse) * (1.0 - see_through);
+				}
+				COLOR = c;
+			}
 		}
 	}
 }
