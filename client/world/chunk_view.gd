@@ -159,8 +159,8 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 		material.shader = load("res://world/ground.gdshader")
 		material.set_shader_parameter("noise_texture", noise_texture())
 		apply_spec(material, terrain, false)
-		# Its colour from afar, which it flattens to across the ring of
-		# outline chunks (ground.gdshader), as the far view's.
+		# Its colour from afar, which it flattens to under the veil at the
+		# view's last tiles (ground.gdshader), as the far view's.
 		var far := average_colour(terrain)
 		material.set_shader_parameter("has_far_colour", far.a > 0.0)
 		material.set_shader_parameter("far_colour", Vector3(far.r, far.g, far.b))

@@ -3,10 +3,9 @@ extends Node2D
 ## The land past the chunks held (D39, D40): the server's far view, one
 ## letter a cell (Protocol: far_view), drawn as a soft image under the
 ## chunks, its colours those of the ground's own textures, and a haze over
-## it that thickens with the distance from the detailed ground. The haze
-## starts at the edge of the detailed chunks, never over them: they keep
-## their colours to their last tile (the project lead's call); it rises
-## across the ring of outline chunks around them (WorldView).
+## it: a veil over the view's last tiles that thickens into a whole fog
+## at the view's limit and covers everything past it (WorldView, the
+## project lead's call), so the far land itself is hidden for now.
 
 ## Haze colour, and how much of it just past the ground held and far
 ## away.
@@ -153,10 +152,9 @@ uniform float reach = %f;
 uniform sampler2D noise_texture : repeat_enable, filter_linear;
 void fragment() {
 	vec2 t = UV;
-	// A fog, not a wall: its edge wanders outwards by up to half a tile
-	// (never over the detailed ground, and always whole a tile past the
-	// band, where the camera stops) and drifts slowly, in soft lighter and
-	// darker banks.
+	// A veil, then a fog: it starts where the view's last tiles begin (by
+	// up to half a tile sooner, wandering and drifting slowly), is whole
+	// at the view's limit, and comes in soft lighter and darker banks.
 	vec2 drift = vec2(TIME * 0.25, TIME * 0.1);
 	float n = texture(noise_texture, (t + drift) / 14.0).r;
 	float m = texture(noise_texture, (t - drift * 0.6) / 37.0 + vec2(0.31, 0.77)).r;
@@ -164,11 +162,9 @@ void fragment() {
 	// two axes, as the ground held is a square of chunks).
 	vec2 out_lo = held_lo - t;
 	vec2 out_hi = t - held_hi;
-	float d = max(max(out_lo.x, out_hi.x), max(out_lo.y, out_hi.y)) - n * 0.5;
+	float d = max(max(out_lo.x, out_hi.x), max(out_lo.y, out_hi.y)) + n * 0.5;
 	// Nothing over the ground held (d <= 0): the haze starts at its edge.
-	// It rises over the second half of the way to its edge thickness: the
-	// band before it shows the land blurring away, the fog comes last.
-	float a = smoothstep(rise_in * 0.5, rise_in, d) * edge + smoothstep(rise_in, reach, d) * (far_haze - edge);
+	float a = smoothstep(0.0, rise_in, d) * edge + smoothstep(rise_in, reach, d) * (far_haze - edge);
 	COLOR = vec4(haze * (0.94 + 0.1 * m), a);
 }
 """ % [HAZE.r, HAZE.g, HAZE.b, HAZE_EDGE, HAZE_FAR, HAZE_IN, HAZE_OUT]

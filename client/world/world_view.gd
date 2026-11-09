@@ -21,23 +21,17 @@ const ZOOM_MIN := 0.4
 const ZOOM_MAX := 4.0
 const ZOOM_STEP := 1.25
 const DEFAULT_ZOOM := 1.5
-## Tiles past the limit of the view (VIEW_REACH) that blur away fast into
-## the fog; the camera stops there.
-const EDGE_BAND := 3.0
-## How far the screen's corners may show the fog past the band: 0, the
-## middle of the screen's edges stops at the band and the corners show
-## fog; 1, no corner ever passes the band, the fog is barely seen (the
-## project lead's call; Iso.camera_area).
-const FOG_CORNERS := 1.0
-## Tiles of fog a corner of the screen may show past the band, at the
-## camera's stop: a thin edge of fog, so one sees the view ends there
-## (the project lead's call).
-const FOG_SEEN := 1.0
-## Tiles the view reaches from the body, either way, before the band: it
-## follows the body tile by tile (the chunks held move by whole chunks,
-## the view does not). 208, the middle of what the chunks held allowed
-## when the limit was their edge (192 to 224).
-const VIEW_REACH := 208.0
+## Tiles the view reaches from the body, either way, to where the fog is
+## whole. It follows the body tile by tile (the chunks held move by whole
+## chunks, the view does not); 192, as far as the chunks held always reach
+## (the body's chunk and six more each way), so nothing past it is needed.
+const VIEW_REACH := 192.0
+## The last tiles of the view, under a veil that thickens until it is
+## whole fog at VIEW_REACH (the project lead's call).
+const VEIL_TILES := 3.0
+## Tiles of fog past the view, with nothing drawn under them; the camera
+## stops at their end, so no corner of the screen ever shows past them.
+const FOG_TILES := 3.0
 ## Millimetres per tile, as the protocol defines fine points.
 const MM_PER_TILE := 1000.0
 
@@ -48,9 +42,6 @@ var _height := 0
 var _chunk_size := 32
 ## chunk position -> ChunkView (only the chunks the server sent)
 var _chunks: Dictionary = {}
-## The chunks of `_chunks` sent as outlines (ServerMessage::ChunkOutline):
-## the ring around the view, drawn simpler further out.
-var _outline: Dictionary = {}
 ## The limit of the view, in tiles (_update_limit).
 var _limit := Rect2()
 ## material id -> Color, from the server's catalogue
@@ -168,7 +159,6 @@ func _ready() -> void:
 	ChunkView.plant_material = sway
 	add_child(_standing)
 	Net.chunk_hidden.connect(_on_chunk_hidden)
-	Net.chunk_outline.connect(_on_chunk_outline)
 	Net.body_walks.connect(_on_body_walks)
 	Net.body_stopped.connect(_on_body_stopped)
 	Net.body_left.connect(_on_body_left)
@@ -204,7 +194,6 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	for chunk: ChunkView in _chunks.values():
 		chunk.queue_free()
 	_chunks.clear()
-	_outline.clear()
 	_items.clear()
 	_tiles.clear()
 	_currents.clear()
@@ -244,7 +233,6 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees:
 		view.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 		add_child(view)
 		_chunks[key] = view
-	_outline.erase(key)
 	_tiles[key] = tiles
 	_currents[key] = currents
 	_items[key] = items
@@ -445,36 +433,34 @@ func _update_held() -> void:
 
 ## Puts the limit of the view VIEW_REACH tiles around the piloted body
 ## (around the middle of the chunks held when watching), tile by tile as
-## it walks, never so far that the band and the fog would pass the chunks
-## held; tells the shaders and the far view's fog. Past the limit,
-## EDGE_BAND tiles blur away fast (shaders) under a fog that is whole at
-## the band's end and covers everything beyond.
+## it walks, never past the chunks held. Its last VEIL_TILES tiles lie
+## under a veil that thickens into the fog (FarView), the ground flattening
+## and the trees fading under it (shaders); past it, FOG_TILES of fog, and
+## the camera stops.
 func _update_limit() -> void:
-	var all := _bounds(false)
+	var all := _bounds()
 	if all.size == Vector2i.ZERO:
 		return
 	var held := Rect2(Vector2(all.position * _chunk_size), Vector2(all.size * _chunk_size))
 	var centre := held.get_center()
 	if _bodies.has(_piloted):
 		centre = (_bodies[_piloted]["at"] as Vector2) / MM_PER_TILE
-	var limit := Iso.view_limit(centre, VIEW_REACH, held, EDGE_BAND + FOG_SEEN)
+	var limit := Iso.view_limit(centre, VIEW_REACH, held, 0.0)
 	if limit == _limit:
 		return
 	_limit = limit
-	var lo := limit.position
-	var hi := limit.end
+	var veil := limit.grow(-VEIL_TILES)
 	if _far != null:
-		_far.set_held(lo, hi, EDGE_BAND, 1.0, 1.0)
-	RenderingServer.global_shader_parameter_set("detail_lo", lo)
-	RenderingServer.global_shader_parameter_set("detail_hi", hi)
-	RenderingServer.global_shader_parameter_set("detail_fade", EDGE_BAND)
+		_far.set_held(veil.position, veil.end, VEIL_TILES, 1.0, 1.0)
+	RenderingServer.global_shader_parameter_set("detail_lo", veil.position)
+	RenderingServer.global_shader_parameter_set("detail_hi", veil.end)
+	RenderingServer.global_shader_parameter_set("detail_fade", VEIL_TILES)
 
 
 
-## The bounds, in chunks, of the chunks held, or of the detailed ones
-## only (not outlines).
-func _bounds(detailed_only: bool) -> Rect2i:
-	return Iso.chunk_bounds(_chunks.keys(), _outline if detailed_only else {})
+## The bounds, in chunks, of the chunks held.
+func _bounds() -> Rect2i:
+	return Iso.chunk_bounds(_chunks.keys())
 
 
 ## The chunks around `key` draw their borders from their neighbours'
@@ -487,17 +473,8 @@ func _redraw_neighbours(key: Vector2i) -> void:
 				_to_redraw.append(near)
 
 
-## A chunk of the ring: shown as a chunk without bodies nor items; the
-## shaders draw it simpler further out (ground, brook and trees shaders).
-func _on_chunk_outline(x: int, y: int, tiles: Array, trees: Array, plants: Array, currents: Array) -> void:
-	_on_chunk(x, y, tiles, [], [], trees, currents, plants)
-	_outline[Vector2i(x, y)] = true
-	_update_held()
-
-
 func _on_chunk_hidden(x: int, y: int) -> void:
 	var key := Vector2i(x, y)
-	_outline.erase(key)
 	var view: ChunkView = _chunks.get(key)
 	if view != null:
 		view.queue_free()
@@ -617,17 +594,15 @@ func _process(delta: float) -> void:
 	DevTiming.add("world view", timing)
 
 
-## Keeps the screen over the detailed ground and its band: no corner of
-## the screen passes EDGE_BAND + FOG_SEEN tiles beyond the detailed
-## chunks, so the view stops at the land's edge, a corner showing the band
-## blurring away and a thin edge of fog that tells the view ends there
-## (the project lead's call: the fog is barely seen, one never pans into
-## it). The view follows the body, and its edge with it.
+## Keeps the screen within the view and its fog: no corner of the screen
+## passes the FOG_TILES of fog past the limit of the view, so pushing to
+## the edge shows the veil and the fog, never what lies beyond (the
+## project lead's call); walking that way moves the limit, tile by tile.
 func _clamp_camera() -> void:
 	if _limit.size.x <= 0.0 or _limit.size.y <= 0.0:
 		return
 	var a := Iso.camera_area(_limit.position, _limit.end,
-		get_viewport_rect().size / _camera.zoom.x, EDGE_BAND + FOG_SEEN, FOG_CORNERS)
+		get_viewport_rect().size / _camera.zoom.x, FOG_TILES, 1.0)
 	if a.size.x < 0.0 or a.size.y < 0.0:
 		return
 	var t := Vector2((_camera.position.x / (Iso.TILE_W / 2.0) + _camera.position.y / (Iso.TILE_H / 2.0)) / 2.0,
