@@ -41,22 +41,6 @@ uniform float field_range = 4.0;
 uniform float mouth_in = -0.4;
 uniform float mouth_out = 0.0;
 
-
-// The view's last tiles lose their detail under the veil that thickens
-// into the fog (FarView): 0 inside, 1 where the fog is whole. Set once
-// for every shader by WorldView (project.godot, shader_globals): where
-// the veil starts, in tiles, and its width.
-global uniform vec2 detail_lo;
-global uniform vec2 detail_hi;
-global uniform float detail_fade;
-float fade_at_tile(vec2 t) {
-	vec2 o = max(detail_lo - t, t - detail_hi);
-	return clamp(max(o.x, o.y) / detail_fade, 0.0, 1.0);
-}
-float fade_at_screen(vec2 p) {
-	return fade_at_tile(vec2((p.x / 32.0 + p.y / 16.0) * 0.5, (p.y / 16.0 - p.x / 32.0) * 0.5));
-}
-
 varying vec4 tint;
 
 void vertex() {
@@ -125,7 +109,5 @@ void fragment() {
 	float edge = 1.0 - smoothstep(0.0, 0.025, abs(d - grass_at + 0.012));
 	colour = mix(colour, ink, edge * 0.8);
 	float a = 1.0 - smoothstep(grass_at, grass_at + 0.03, d);
-	// Far in the ring a brook fades out (the far view shows it as a line).
-	float far = fade_at_tile(world);
-	COLOR = vec4(colour, a * fade * (1.0 - smoothstep(0.3, 1.0, far)));
+	COLOR = vec4(colour, a * fade);
 }
