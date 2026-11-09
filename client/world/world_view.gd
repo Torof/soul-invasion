@@ -61,6 +61,8 @@ var _bodies: Dictionary = {}
 var _items: Dictionary = {}
 ## chunk position -> Array of tiles as received
 var _tiles: Dictionary = {}
+## chunk position -> hash of its tiles (ChunkView.tiles_hash)
+var _tile_hashes: Dictionary = {}
 ## material id -> edible?
 var _edible: Dictionary = {}
 ## material id -> the whole catalogue entry, for tooltips
@@ -202,6 +204,7 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	_chunks.clear()
 	_items.clear()
 	_tiles.clear()
+	_tile_hashes.clear()
 	_currents.clear()
 	_trees.clear()
 	_tree_cells.clear()
@@ -240,6 +243,7 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees:
 		add_child(view)
 		_chunks[key] = view
 	_tiles[key] = tiles
+	_tile_hashes[key] = hash(tiles)
 	_currents[key] = currents
 	_items[key] = items
 	var standing: Array = []
@@ -250,6 +254,7 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees:
 	_plant_chunk(key, view)
 	view.show_plants(plants, _flora)
 	view.terrain_at = terrain_at
+	view.tiles_hash = func(k: Vector2i) -> int: return int(_tile_hashes.get(k, 0))
 	view.current_at = current_at
 	view.show_chunk(key * _chunk_size, _chunk_size, tiles, items, _looks)
 	_redraw_neighbours(key)
@@ -476,7 +481,8 @@ func _redraw_neighbours(key: Vector2i) -> void:
 	for dy in range(-1, 2):
 		for dx in range(-1, 2):
 			var near: ChunkView = _chunks.get(key + Vector2i(dx, dy))
-			if near != null and (dx != 0 or dy != 0) and not _to_redraw.has(near):
+			# One not built yet will read its neighbours when it builds.
+			if near != null and near.is_built() and (dx != 0 or dy != 0) and not _to_redraw.has(near):
 				_to_redraw.append(near)
 
 
@@ -488,6 +494,7 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 		_chunks.erase(key)
 		_items.erase(key)
 		_tiles.erase(key)
+		_tile_hashes.erase(key)
 		_currents.erase(key)
 		_trees.erase(key)
 		_tree_cells.erase(key)
