@@ -34,6 +34,7 @@ func _init() -> void:
 	_test_the_bounds_of_the_chunks_held()
 	_test_the_camera_stops_at_the_band()
 	_test_the_watcher_sees_the_client_files()
+	_test_the_first_connection_is_tried_again_soon()
 	_test_the_view_follows_the_body_tile_by_tile()
 
 
@@ -585,6 +586,16 @@ func _test_the_watcher_sees_the_client_files() -> void:
 	_check(files.has("res://world/trees.gdshader"), "the shaders are watched")
 	_check(not files.has("res://world/ground.gdshader"), "the ground's shader reloads live, no restart")
 	_check(files.keys().all(func(p: String) -> bool: return not p.contains("/.godot/") and not p.ends_with(".import")), "never Godot's cache")
+
+
+## Until a server has welcomed it, the client tries again soon (the
+## server may be starting beside it); afterwards it waits longer.
+func _test_the_first_connection_is_tried_again_soon() -> void:
+	var net: Node = load("res://net/client.gd").new()
+	_check(net._retry_after() == net.FIRST_TRY_AFTER, "never welcomed: it tries again soon")
+	net._ever_welcomed = true
+	_check(net._retry_after() == net.RECONNECT_AFTER, "once welcomed: it waits longer")
+	net.free()
 
 
 func _test_currents_decode() -> void:
