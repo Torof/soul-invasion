@@ -21,6 +21,13 @@ const ZOOM_MIN := 0.4
 const ZOOM_MAX := 4.0
 const ZOOM_STEP := 1.25
 const DEFAULT_ZOOM := 1.5
+## Tiles of the outline chunks shown past the detailed ones, fading fast
+## into the fog (net.rs OUTLINE_BAND); the camera stops there.
+const EDGE_BAND := 3.0
+## How far the screen's corners may show the fog past the band: 0, the
+## middle of the screen's edges stops at the band and the corners show
+## fog; 1, no corner ever passes the band (Iso.camera_area).
+const FOG_CORNERS := 0.5
 ## Millimetres per tile, as the protocol defines fine points.
 const MM_PER_TILE := 1000.0
 
@@ -419,23 +426,21 @@ func terrain_at(tile: Vector2i) -> String:
 	return str(tiles[local.y * _chunk_size + local.x])
 
 
-## Tells the far view and the shaders where the detailed chunks end: the
-## haze rises from there across the ring of outline chunks, which the
-## shaders draw simpler and simpler out to the far land.
+## Tells the far view and the shaders where the detailed chunks end: past
+## it, the EDGE_BAND tiles of the outline chunks fade fast (shaders) under
+## a fog that is whole at the band's end and covers everything beyond.
 func _update_held() -> void:
 	if _chunks.is_empty():
 		return
-	var all := _bounds(false)
 	var detail := _bounds(true)
 	if detail.size == Vector2i.ZERO:
 		return
-	# The ring's width, in tiles: from the detailed edge to the outer one.
-	var ring := maxi(detail.position.x - all.position.x, all.end.x - detail.end.x) * _chunk_size
 	if _far != null:
-		_far.set_held(detail.position * _chunk_size, detail.end * _chunk_size, float(ring) if ring > 0 else FarView.HAZE_IN)
+		_far.set_held(detail.position * _chunk_size, detail.end * _chunk_size, EDGE_BAND, 1.0, 1.0)
 	RenderingServer.global_shader_parameter_set("detail_lo", Vector2(detail.position * _chunk_size))
 	RenderingServer.global_shader_parameter_set("detail_hi", Vector2(detail.end * _chunk_size))
-	RenderingServer.global_shader_parameter_set("detail_fade", float(maxi(ring, 1)))
+	RenderingServer.global_shader_parameter_set("detail_fade", EDGE_BAND)
+
 
 
 ## The bounds, in chunks, of the chunks held, or of the detailed ones
@@ -584,25 +589,23 @@ func _process(delta: float) -> void:
 	DevTiming.add("world view", timing)
 
 
-## Keeps the camera over the ground held: at least two thirds of the
-## screen's height and width show it (no panning into the far view).
+## Keeps the screen over the detailed ground and its band: the screen's
+## edges stop at EDGE_BAND tiles beyond the detailed chunks, so the view
+## stops at the land's edge; the corners of the screen past it show the
+## fog (the project lead's call: the fog is a filler, one never pans
+## into it).
 func _clamp_camera() -> void:
-	var held := _bounds(false)
+	var held := _bounds(true)
 	if held.size == Vector2i.ZERO:
 		return
-	var lo := held.position
-	var hi := held.end
-	# The ground held is a diamond on screen: keep the camera's centre in
-	# tile coordinates, a sixth of the visible span inside its edges.
-	var view := get_viewport_rect().size / _camera.zoom.x
-	var margin := view.length() / Iso.TILE_W / 6.0
+	var a := Iso.camera_area(Vector2(held.position * _chunk_size), Vector2(held.end * _chunk_size),
+		get_viewport_rect().size / _camera.zoom.x, EDGE_BAND, FOG_CORNERS)
+	if a.size.x < 0.0 or a.size.y < 0.0:
+		return
 	var t := Vector2((_camera.position.x / (Iso.TILE_W / 2.0) + _camera.position.y / (Iso.TILE_H / 2.0)) / 2.0,
 		(_camera.position.y / (Iso.TILE_H / 2.0) - _camera.position.x / (Iso.TILE_W / 2.0)) / 2.0)
-	var a := Vector2(lo * _chunk_size) + Vector2(margin, margin)
-	var b := Vector2(hi * _chunk_size) - Vector2(margin, margin)
-	if a.x > b.x or a.y > b.y:
-		return
-	var c := Vector2(clampf(t.x, a.x, b.x), clampf(t.y, a.y, b.y))
+	var b := a.end
+	var c := Vector2(clampf(t.x, a.position.x, b.x), clampf(t.y, a.position.y, b.y))
 	if c != t:
 		_camera.position = Vector2((c.x - c.y) * Iso.TILE_W / 2.0, (c.x + c.y) * Iso.TILE_H / 2.0)
 
@@ -632,6 +635,7 @@ func _step(delta: float) -> void:
 		moving = true
 	if _following and _bodies.has(_piloted):
 		_camera.position = Iso.point_to_screen(_bodies[_piloted]["at"])
+	_clamp_camera()
 	_update_see_through(delta)
 	_call_waiting_chunk()
 	for i in mini(REDRAWS_PER_FRAME, _to_redraw.size()):
