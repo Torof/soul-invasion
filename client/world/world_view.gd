@@ -31,6 +31,9 @@ var _height := 0
 var _chunk_size := 32
 ## chunk position -> ChunkView (only the chunks the server sent)
 var _chunks: Dictionary = {}
+## The chunks of `_chunks` sent as outlines (ServerMessage::ChunkOutline):
+## the ring around the view, drawn simpler further out.
+var _outline: Dictionary = {}
 ## material id -> Color, from the server's catalogue
 var _looks: Dictionary = {}
 ## material id -> name shown to players
@@ -143,8 +146,10 @@ func _ready() -> void:
 	_standing = Node2D.new()
 	_standing.y_sort_enabled = true
 	_standing.material = sway
+	ChunkView.plant_material = sway
 	add_child(_standing)
 	Net.chunk_hidden.connect(_on_chunk_hidden)
+	Net.chunk_outline.connect(_on_chunk_outline)
 	Net.body_walks.connect(_on_body_walks)
 	Net.body_stopped.connect(_on_body_stopped)
 	Net.body_left.connect(_on_body_left)
@@ -180,6 +185,7 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	for chunk: ChunkView in _chunks.values():
 		chunk.queue_free()
 	_chunks.clear()
+	_outline.clear()
 	_items.clear()
 	_tiles.clear()
 	_currents.clear()
@@ -219,6 +225,7 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees:
 		view.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 		add_child(view)
 		_chunks[key] = view
+	_outline.erase(key)
 	_tiles[key] = tiles
 	_currents[key] = currents
 	_items[key] = items
@@ -388,6 +395,7 @@ func look_at_tile(tile: Vector2i) -> void:
 	_following = false
 	_camera_placed = true
 	_camera.position = Iso.tile_to_screen(tile.x, tile.y)
+	_clamp_camera()
 
 
 ## Where the water runs at a tile the server has sent: a unit vector in
@@ -411,17 +419,29 @@ func terrain_at(tile: Vector2i) -> String:
 	return str(tiles[local.y * _chunk_size + local.x])
 
 
-## Tells the far view which ground is held (the chunks' bounds), so its
-## haze rises to their edge.
+## Tells the far view and the shaders where the detailed chunks end: the
+## haze rises from there across the ring of outline chunks, which the
+## shaders draw simpler and simpler out to the far land.
 func _update_held() -> void:
-	if _far == null or _chunks.is_empty():
+	if _chunks.is_empty():
 		return
-	var lo := Vector2i(1 << 30, 1 << 30)
-	var hi := Vector2i(-(1 << 30), -(1 << 30))
-	for key: Vector2i in _chunks:
-		lo = Vector2i(mini(lo.x, key.x), mini(lo.y, key.y))
-		hi = Vector2i(maxi(hi.x, key.x + 1), maxi(hi.y, key.y + 1))
-	_far.set_held(lo * _chunk_size, hi * _chunk_size)
+	var all := _bounds(false)
+	var detail := _bounds(true)
+	if detail.size == Vector2i.ZERO:
+		return
+	# The ring's width, in tiles: from the detailed edge to the outer one.
+	var ring := maxi(detail.position.x - all.position.x, all.end.x - detail.end.x) * _chunk_size
+	if _far != null:
+		_far.set_held(detail.position * _chunk_size, detail.end * _chunk_size, float(ring) if ring > 0 else FarView.HAZE_IN)
+	RenderingServer.global_shader_parameter_set("detail_lo", Vector2(detail.position * _chunk_size))
+	RenderingServer.global_shader_parameter_set("detail_hi", Vector2(detail.end * _chunk_size))
+	RenderingServer.global_shader_parameter_set("detail_fade", float(maxi(ring, 1)))
+
+
+## The bounds, in chunks, of the chunks held, or of the detailed ones
+## only (not outlines).
+func _bounds(detailed_only: bool) -> Rect2i:
+	return Iso.chunk_bounds(_chunks.keys(), _outline if detailed_only else {})
 
 
 ## The chunks around `key` draw their borders from their neighbours'
@@ -434,8 +454,17 @@ func _redraw_neighbours(key: Vector2i) -> void:
 				_to_redraw.append(near)
 
 
+## A chunk of the ring: shown as a chunk without bodies nor items; the
+## shaders draw it simpler further out (ground, brook and trees shaders).
+func _on_chunk_outline(x: int, y: int, tiles: Array, trees: Array, plants: Array, currents: Array) -> void:
+	_on_chunk(x, y, tiles, [], [], trees, currents, plants)
+	_outline[Vector2i(x, y)] = true
+	_update_held()
+
+
 func _on_chunk_hidden(x: int, y: int) -> void:
 	var key := Vector2i(x, y)
+	_outline.erase(key)
 	var view: ChunkView = _chunks.get(key)
 	if view != null:
 		view.queue_free()
@@ -558,13 +587,11 @@ func _process(delta: float) -> void:
 ## Keeps the camera over the ground held: at least two thirds of the
 ## screen's height and width show it (no panning into the far view).
 func _clamp_camera() -> void:
-	if _chunks.is_empty():
+	var held := _bounds(false)
+	if held.size == Vector2i.ZERO:
 		return
-	var lo := Vector2i(1 << 30, 1 << 30)
-	var hi := Vector2i(-(1 << 30), -(1 << 30))
-	for key: Vector2i in _chunks:
-		lo = Vector2i(mini(lo.x, key.x), mini(lo.y, key.y))
-		hi = Vector2i(maxi(hi.x, key.x + 1), maxi(hi.y, key.y + 1))
+	var lo := held.position
+	var hi := held.end
 	# The ground held is a diamond on screen: keep the camera's centre in
 	# tile coordinates, a sixth of the visible span inside its edges.
 	var view := get_viewport_rect().size / _camera.zoom.x

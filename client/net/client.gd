@@ -14,6 +14,9 @@ signal chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees: A
 ## The kinds of shrub, plant and mushroom ({id, name, family, height_cm}),
 ## in the order chunks' plants refer to them.
 signal flora(flora: Array)
+## A chunk of the ring around the view, simplified: its ground, trees,
+## tall plants and water, no bodies nor items (protocol v15).
+signal chunk_outline(x: int, y: int, tiles: Array, trees: Array, plants: Array, currents: Array)
 signal chunk_hidden(x: int, y: int)
 signal body_walks(body: int, at: Vector2, route: Array, speed_cm_per_s: int)
 signal body_stopped(body: int, at: Vector2)
@@ -200,6 +203,15 @@ func _handle(message: Dictionary) -> void:
 				message.get("trees", []),
 				message.get("currents", []),
 				message.get("plants", [])
+			)
+		"chunk_outline":
+			chunk_outline.emit(
+				int(message.get("x", 0)),
+				int(message.get("y", 0)),
+				message.get("tiles", []),
+				message.get("trees", []),
+				message.get("plants", []),
+				message.get("currents", [])
 			)
 		"chunk_hidden":
 			chunk_hidden.emit(int(message.get("x", 0)), int(message.get("y", 0)))

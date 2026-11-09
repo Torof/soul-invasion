@@ -30,6 +30,8 @@ func _init() -> void:
 	_test_perf_overlay_reports()
 	_test_plants_are_named_and_coloured()
 	_test_trees_sharpness_eases_with_the_zoom()
+	_test_chunk_outline_decodes()
+	_test_the_ring_lies_outside_the_detail()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -510,6 +512,34 @@ func _test_loading_waits_for_the_valley() -> void:
 	_check(p.done(1_100 + LoadingProgress.QUIET_MSEC) and p.fraction() == 1.0, "all in, all built, quiet: done")
 	p.chunk_came(2_000)
 	_check(p.fraction() < 1.0 and p.stage() == "Laying the ground", "a new chunk sets it back")
+
+
+## Protocol v15: an outline chunk reaches the world view with its parts.
+func _test_chunk_outline_decodes() -> void:
+	var net: Node = load("res://net/client.gd").new()
+	var got: Array = []
+	net.chunk_outline.connect(func(x: int, y: int, tiles: Array, trees: Array, plants: Array, currents: Array) -> void:
+		got.append([x, y, tiles, trees, plants, currents]))
+	net.call("_handle", {"type": "chunk_outline", "x": 3, "y": -1, "tiles": ["grass"],
+		"trees": [{"species": "oak"}], "plants": [], "currents": [0]})
+	_check(got.size() == 1 and got[0][0] == 3 and got[0][1] == -1, "chunk_outline: its place")
+	_check(got.size() == 1 and got[0][2] == ["grass"] and (got[0][3] as Array).size() == 1 and got[0][5] == [0], "chunk_outline: its parts")
+	net.free()
+
+
+## The detailed bounds leave the ring of outline chunks out; the whole
+## held ground takes it in.
+func _test_the_ring_lies_outside_the_detail() -> void:
+	var keys: Array = []
+	var ring := {}
+	for y in range(-2, 3):
+		for x in range(-2, 3):
+			keys.append(Vector2i(x, y))
+			if absi(x) == 2 or absi(y) == 2:
+				ring[Vector2i(x, y)] = true
+	_check(Iso.chunk_bounds(keys, {}) == Rect2i(-2, -2, 5, 5), "all held: 5 x 5")
+	_check(Iso.chunk_bounds(keys, ring) == Rect2i(-1, -1, 3, 3), "the detail: 3 x 3")
+	_check(Iso.chunk_bounds([], {}) == Rect2i(), "nothing held: empty")
 
 
 func _test_currents_decode() -> void:

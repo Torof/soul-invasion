@@ -41,6 +41,23 @@ uniform float field_range = 4.0;
 uniform float mouth_in = -0.4;
 uniform float mouth_out = 0.0;
 
+
+// The ring of outline chunks around the view (ServerMessage::ChunkOutline)
+// loses its detail with the distance from the view: 0 inside the view,
+// 1 at the ring's outer edge, where the far view takes over (FarView).
+// Set once for every shader by WorldView (project.godot, shader_globals):
+// the detailed chunks' bounds in tiles, and the ring's width.
+global uniform vec2 detail_lo;
+global uniform vec2 detail_hi;
+global uniform float detail_fade;
+float fade_at_tile(vec2 t) {
+	vec2 o = max(detail_lo - t, t - detail_hi);
+	return clamp(max(o.x, o.y) / detail_fade, 0.0, 1.0);
+}
+float fade_at_screen(vec2 p) {
+	return fade_at_tile(vec2((p.x / 32.0 + p.y / 16.0) * 0.5, (p.y / 16.0 - p.x / 32.0) * 0.5));
+}
+
 varying vec4 tint;
 
 void vertex() {
@@ -109,5 +126,7 @@ void fragment() {
 	float edge = 1.0 - smoothstep(0.0, 0.025, abs(d - grass_at + 0.012));
 	colour = mix(colour, ink, edge * 0.8);
 	float a = 1.0 - smoothstep(grass_at, grass_at + 0.03, d);
-	COLOR = vec4(colour, a * fade);
+	// Far in the ring a brook fades out (the far view shows it as a line).
+	float far = fade_at_tile(world);
+	COLOR = vec4(colour, a * fade * (1.0 - smoothstep(0.3, 1.0, far)));
 }

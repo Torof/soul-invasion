@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use protocol::{ClientMessage, PROTOCOL_VERSION, Point, ServerMessage, decode, encode};
-use server::net::VIEW_RADIUS;
+use server::net::{OUTLINE_RADIUS, VIEW_RADIUS};
 use sim::{BodyId, CHUNK_SIZE, Calendar, ChunkPos, FinePos, Pos, VALLEY_SIZE, World};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
@@ -179,6 +179,7 @@ fn ambient(message: &ServerMessage) -> bool {
             | ServerMessage::BodyHolds { .. }
             | ServerMessage::Inventory { .. }
             | ServerMessage::FarView { .. }
+            | ServerMessage::ChunkOutline { .. }
     )
 }
 
@@ -349,8 +350,32 @@ async fn hello_ping_and_a_published_day() {
         seen_plants > 1000,
         "the flora grows around the camp: {seen_plants}"
     );
-    // Then the far view, around the body's chunk.
-    match receive_any(&mut socket).await {
+    // Then the outline ring, then the far view around the body's chunk.
+    let mut outlines = 0;
+    let far = loop {
+        match receive_any(&mut socket).await {
+            Some(ServerMessage::ChunkOutline {
+                x,
+                y,
+                trees,
+                plants,
+                ..
+            }) => {
+                assert!(
+                    (x - centre.x).abs().max((y - centre.y).abs()) > VIEW_RADIUS,
+                    "an outline chunk lies outside the view"
+                );
+                for t in &trees {
+                    assert_eq!(tile(t.at).chunk(), ChunkPos::new(x, y));
+                }
+                assert!(plants.len() <= 4096);
+                outlines += 1;
+            }
+            other => break other,
+        }
+    };
+    assert!(outlines > 0, "the ring around the view comes in outline");
+    match far {
         Some(ServerMessage::FarView {
             cell,
             width,
@@ -499,7 +524,9 @@ async fn the_view_follows_the_piloted_body() {
     let body = body.expect("pilots a body");
 
     // Walk into the chunk east of the starting one: a column of chunks
-    // is hidden to the west and a column shown to the east.
+    // is shown to the east, and to the west the ring's outer column is
+    // hidden (the column leaving the view turns to outline, which
+    // `receive` passes over as ambient).
     let world = standard_world();
     let start = start_of(world, body);
     let here = start.chunk();
@@ -535,7 +562,7 @@ async fn the_view_follows_the_piloted_body() {
         "{shown:?}"
     );
     assert!(
-        hidden.iter().all(|(x, _)| *x == here.x - VIEW_RADIUS),
+        hidden.iter().all(|(x, _)| *x == here.x - OUTLINE_RADIUS),
         "{hidden:?}"
     );
 }

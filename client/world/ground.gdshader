@@ -343,6 +343,36 @@ vec4 meet(vec4 a, vec4 b, float w, float meet_noise) {
 
 // The vertex colour alone: white under a texture, the flat colour of a
 // terrain without one, the colour of an item's disc.
+
+// The ring of outline chunks around the view (ServerMessage::ChunkOutline)
+// loses its detail with the distance from the view: 0 inside the view,
+// 1 at the ring's outer edge, where the far view takes over (FarView).
+// Set once for every shader by WorldView (project.godot, shader_globals):
+// the detailed chunks' bounds in tiles, and the ring's width.
+global uniform vec2 detail_lo;
+global uniform vec2 detail_hi;
+global uniform float detail_fade;
+float fade_at_tile(vec2 t) {
+	vec2 o = max(detail_lo - t, t - detail_hi);
+	return clamp(max(o.x, o.y) / detail_fade, 0.0, 1.0);
+}
+float fade_at_screen(vec2 p) {
+	return fade_at_tile(vec2((p.x / 32.0 + p.y / 16.0) * 0.5, (p.y / 16.0 - p.x / 32.0) * 0.5));
+}
+
+// Across the ring the ground flattens to its colour from afar (its
+// texture's average, set by ChunkView), grained as the far view's, so it
+// meets the far land seamlessly; the far view's haze rises over it.
+uniform bool has_far_colour = false;
+uniform vec3 far_colour = vec3(0.45, 0.62, 0.30);
+vec3 far_ground(vec3 c, vec3 vertex_tint, vec2 world, float ring) {
+	if (!has_far_colour || ring <= 0.0) {
+		return c;
+	}
+	float n = texture(noise_texture, world / 85.0).r * 0.6 + texture(noise_texture, world / 29.0).r * 0.4;
+	return mix(c, far_colour * vertex_tint * (0.86 + 0.28 * n), smoothstep(0.0, 0.85, ring));
+}
+
 varying vec4 tint;
 
 void vertex() {
@@ -355,6 +385,7 @@ void fragment() {
 	// The variants' weights, once for every layer, and the derivatives the
 	// layers are read with (varied_once).
 	vec3 vw = variant_weights(uv);
+	float ring = fade_at_tile(uv * 4.0);
 	vec2 duv_x = dFdx(uv);
 	vec2 duv_y = dFdy(uv);
 	vec4 ground = varied_once_builtin(TEXTURE, uv, vw, duv_x, duv_y);
@@ -587,7 +618,7 @@ void fragment() {
 		float tuft_in = ((texture(noise_texture, world * 3.1 + vec2(0.37, 0.58)).r - 0.5) * 1.2
 			+ (texture(noise_texture, world * 1.1 + vec2(0.71, 0.12)).r - 0.5) * 0.8) * grass_fade * ford_bank;
 		float a = 1.0 - smoothstep(grass_at + tuft_in, grass_at + tuft_in + grass_fade, d);
-		COLOR = vec4(colour * vertex_tint, a);
+		COLOR = vec4(far_ground(colour * vertex_tint, vertex_tint, uv * 4.0, ring), a);
 	} else {
 	float alpha = tint.a;
 	if (alpha < 1.0 && spill_only_with_bank && !has_bank) {
@@ -643,6 +674,6 @@ void fragment() {
 		ground.rgb = mix(fringe_colour, ground.rgb, floor_in);
 		alpha = max(floor_in, shade);
 	}
-	COLOR = vec4(ground.rgb * vertex_tint, alpha);
+	COLOR = vec4(far_ground(ground.rgb * vertex_tint, vertex_tint, uv * 4.0, ring), alpha);
 	}
 }

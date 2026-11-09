@@ -54,6 +54,11 @@ func _ready() -> void:
 
 func _screenshot_then_quit(path: String) -> void:
 	await get_tree().create_timer(2.5).timeout
+	# Then until every chunk is built (at most a minute and a half).
+	var waited := 0.0
+	while waited < 90.0 and (ShoreField.busy > 0 or _unbuilt() > 0):
+		await get_tree().create_timer(0.5).timeout
+		waited += 0.5
 	# Framing for the screenshot, once the world is in: SOUL_INVASION_ZOOM
 	# sets the camera zoom, SOUL_INVASION_LOOK_AT="x,y" frames that tile
 	# instead of the body.
@@ -66,6 +71,14 @@ func _screenshot_then_quit(path: String) -> void:
 	await get_tree().create_timer(0.5).timeout
 	get_viewport().get_texture().get_image().save_png(path)
 	get_tree().quit()
+
+
+func _unbuilt() -> int:
+	var count := 0
+	for chunk in get_tree().get_nodes_in_group("chunk_views"):
+		if not (chunk as ChunkView).is_built():
+			count += 1
+	return count
 
 
 func _on_hovered(text: String) -> void:
