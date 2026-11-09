@@ -6,7 +6,7 @@ extends RefCounted
 ## tall and does not fill the screen: TRUE_UP_TO × (h / TRUE_UP_TO) ^ ABOVE.
 
 const TRUE_UP_TO := 3.0
-const ABOVE := 0.7
+const ABOVE := 0.6
 
 
 ## The height something `metres` tall is drawn at, in metres.
