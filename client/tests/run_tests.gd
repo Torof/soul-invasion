@@ -30,6 +30,7 @@ func _init() -> void:
 	_test_perf_overlay_reports()
 	_test_plants_are_named_and_coloured()
 	_test_trees_sharpness_eases_with_the_zoom()
+	_test_the_shore_field_holds_every_chunk_held()
 	_test_chunk_outline_decodes()
 	_test_the_ring_lies_outside_the_detail()
 	_test_the_camera_stops_at_the_band()
@@ -563,6 +564,15 @@ func _test_the_camera_stops_at_the_band() -> void:
 					var px := p * view / 2.0
 					var tile := centre + Vector2((px.x / 32.0 + px.y / 16.0) / 2.0, (px.y / 16.0 - px.x / 32.0) / 2.0)
 					_check(within.call(tile), "the screen stops at the band (%s): %s" % [corners, tile])
+
+
+## The bank texture repeats every ShoreField.TILES: wider than the
+## chunks a client holds (the server's 13 × 13 view and its ring of
+## outline chunks, 15 across, with the margin read around a chunk), or
+## two chunks held would draw each other's banks.
+func _test_the_shore_field_holds_every_chunk_held() -> void:
+	var held := (2 * 7 + 1) * 32
+	_check(ShoreField.TILES >= held + 2 * ShoreField.MARGIN, "the bank texture is wider than the chunks held: %d" % ShoreField.TILES)
 
 
 func _test_currents_decode() -> void:
