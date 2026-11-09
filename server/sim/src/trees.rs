@@ -34,9 +34,35 @@ const CHANCE: u32 = 35;
 /// Farthest a tree stands from its tile's centre, in millimetres.
 const JITTER: u32 = 300;
 /// Width of a species' stands, in tiles.
-const STAND_CELL: u32 = 10;
+const STAND_CELL: u32 = 20;
 /// Added to a stand's strength (0 to 1000) before it is squared.
 const STAND_FLOOR: u64 = 50;
+/// A tree's crown, as a share of the height it is drawn at (D40): its
+/// radius, in thousandths.
+const CROWN: u32 = 300;
+/// How much two crowns may overlap: trees keep this share of their two
+/// radii apart, in thousandths (a wood closes, a stand still shows its
+/// trees).
+const SPACING: u32 = 750;
+
+/// The height a tree `metres` tall is drawn at (the client's
+/// `Scale.shown`, D40): true under 3 m, eased above.
+fn shown_m(metres: f32) -> f32 {
+    if metres <= 3.0 {
+        metres
+    } else {
+        3.0 * (metres / 3.0).powf(0.6)
+    }
+}
+
+/// The radius a tree of `species` keeps clear of others' trunks, in
+/// millimetres.
+fn room_mm(species: &Species) -> i64 {
+    #[allow(clippy::cast_possible_truncation)]
+    let crown =
+        (shown_m(species.height_m) * f32::from(u16::try_from(CROWN).expect("small"))) as i64;
+    crown * i64::from(SPACING) / 1000
+}
 
 /// The trees of `map`, of the kinds in `species`, for `seed`.
 #[must_use]
@@ -54,6 +80,12 @@ pub fn plant(map: &Map, species: &[Species], seed: u64) -> Vec<Tree> {
         .collect();
     let mut rng = Lcg::new(seed ^ 0x7_4ee5);
     let mut trees = Vec::new();
+    // Trees by tile, to keep each one's room (D40: bigger trees, fewer).
+    let rooms: Vec<i64> = species.iter().map(room_mm).collect();
+    let widest = rooms.iter().copied().max().unwrap_or(0);
+    let reach = i32::try_from(2 * widest / i64::from(MM_PER_TILE) + 1).expect("small");
+    let mut near: std::collections::HashMap<(i32, i32), Vec<usize>> =
+        std::collections::HashMap::new();
     for y in 0..height {
         for x in 0..width {
             let pos = Pos::new(
@@ -113,6 +145,24 @@ pub fn plant(map: &Map, species: &[Species], seed: u64) -> Vec<Tree> {
                 pos.x * MM_PER_TILE + MM_PER_TILE / 2 + jitter(&mut rng),
                 pos.y * MM_PER_TILE + MM_PER_TILE / 2 + jitter(&mut rng),
             );
+            // Room: no other trunk within the two trees' rooms.
+            let crowded = (pos.y - reach..=pos.y + reach).any(|ty| {
+                (pos.x - reach..=pos.x + reach).any(|tx| {
+                    near.get(&(tx, ty)).is_some_and(|list| {
+                        list.iter().any(|&i| {
+                            let other: &Tree = &trees[i];
+                            let (dx, dy) =
+                                (i64::from(other.at.x - at.x), i64::from(other.at.y - at.y));
+                            let room = rooms[kind] + rooms[other.species];
+                            dx * dx + dy * dy < room * room
+                        })
+                    })
+                })
+            });
+            if crowded {
+                continue;
+            }
+            near.entry((pos.x, pos.y)).or_default().push(trees.len());
             trees.push(Tree { at, species: kind });
         }
     }
@@ -180,8 +230,9 @@ mod tests {
                     }
                 }
             }
-            // Every lone and riverside tile has its tree; the heart holds
-            // one tile in three or so.
+            // Every lone and riverside tile has its tree, or one near it
+            // (trees keep their room, D40); the heart holds one tile in
+            // twenty or so: big trees, fewer.
             let (mut heart, mut heart_trees) = (0, 0);
             for y in 0..256 {
                 for x in 0..256 {
@@ -196,10 +247,10 @@ mod tests {
                                     )
                                 })
                             });
-                            assert!(
-                                at.contains_key(&pos) || by_the_water,
-                                "seed {seed}: {pos:?}"
-                            );
+                            let one_near = (-4..=4).any(|dy| {
+                                (-4..=4).any(|dx| at.contains_key(&Pos::new(x + dx, y + dy)))
+                            });
+                            assert!(one_near || by_the_water, "seed {seed}: {pos:?}");
                         }
                         Habitat::Heart => {
                             heart += 1;
@@ -210,14 +261,16 @@ mod tests {
                 }
             }
             let share = heart_trees * 1000 / heart.max(1);
+            eprintln!("seed {seed}: {share} per mille of the heart");
             assert!(
-                (200..=400).contains(&share),
+                (20..=120).contains(&share),
                 "seed {seed}: {share} per mille of the heart"
             );
             // Stands: most trees share their kind with the trees around.
             for (pos, kind) in &at {
-                let around: Vec<usize> = (-2..=2)
-                    .flat_map(|dy| (-2..=2).map(move |dx| Pos::new(pos.x + dx, pos.y + dy)))
+                // Within six tiles: trees stand apart now (D40).
+                let around: Vec<usize> = (-6..=6)
+                    .flat_map(|dy| (-6..=6).map(move |dx| Pos::new(pos.x + dx, pos.y + dy)))
                     .filter(|p| p != pos)
                     .filter_map(|p| at.get(&p).copied())
                     .collect();
@@ -236,8 +289,8 @@ mod tests {
         eprintln!(
             "{trees_total} trees on four maps; {share} per mille of their neighbours of another kind"
         );
-        // Grouped by kind, yet mixed: about one neighbour in four of
+        // Grouped by kind, yet mixed: about a third of the neighbours of
         // another kind, not one in two.
-        assert!((180..=330).contains(&share), "{share} per mille mixed");
+        assert!((150..=400).contains(&share), "{share} per mille mixed");
     }
 }

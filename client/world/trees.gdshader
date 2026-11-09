@@ -1,7 +1,7 @@
 // The trees sway in the wind (Trees.draw). The world view draws trees and
 // bodies on one canvas, so this shader is that canvas's: a tree is told
 // apart by its modulate, alpha between 0.90 and 0.98, its red the tree's
-// height (over 640 px) and its blue its own phase. The tree bends rather
+// height (over 1024 px) and its blue its own phase. The tree bends rather
 // than leans: the lower part of its trunk stays still, the bend grows
 // towards the top. Gusts pass across the valley, so neighbours bend
 // together. The quad is widened a little so the bent crown is not cut.
@@ -52,7 +52,7 @@ varying float seed;
 void vertex() {
 	is_tree = (COLOR.a > 0.9 && COLOR.a < 0.98) ? 1.0 : 0.0;
 	if (is_tree > 0.5) {
-		float height = COLOR.r * 640.0;
+		float height = COLOR.r * 1024.0;
 		float phase = COLOR.b * 6.2831853;
 		seed = COLOR.b;
 		// Green: 0.25 nothing, +0.25 in front of the body, +0.5 hiding what

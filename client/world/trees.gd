@@ -91,7 +91,8 @@ static func variant(at: Vector2, count: int) -> int:
 ## screen, its image `texture`: the bottom edge's middle on the foot.
 static func rect(at: Vector2, height_cm: int, texture: Texture2D) -> Rect2:
 	var scale := 1.0 + (place_hash(at, 3) * 2.0 - 1.0) * SIZE_JITTER
-	var h := float(height_cm) / 100.0 * Iso.PX_PER_M * scale
+	# The species' true height at the world's scale (D40).
+	var h := Scale.shown(float(height_cm) / 100.0) * Iso.PX_PER_M * scale
 	var w := h * float(texture.get_width()) / float(texture.get_height())
 	var foot := Iso.point_to_screen(at)
 	return Rect2(foot - Vector2(w / 2.0, h), Vector2(w, h))
@@ -111,7 +112,7 @@ static func draw(canvas: CanvasItem, tree: Dictionary, height_cm: int, flags: in
 	var r := rect(at, height_cm, texture)
 	# The modulate tells the sway shader (trees.gdshader) it is a tree, how
 	# tall, and its phase; the shader draws the image untinted.
-	var marker := Color(clampf(r.size.y / 640.0, 0.0, 1.0), 0.25 + 0.25 * float(flags), place_hash(at, 11), 0.94)
+	var marker := Color(clampf(r.size.y / 1024.0, 0.0, 1.0), 0.25 + 0.25 * float(flags), place_hash(at, 11), 0.94)
 	canvas.draw_texture_rect(texture, Rect2(r.position - origin, r.size), false, marker)
 
 
