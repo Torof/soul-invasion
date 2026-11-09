@@ -78,6 +78,10 @@ const REDRAWS_PER_FRAME := 2
 var _standing: Node2D
 ## chunk -> the node holding its trees.
 var _tree_nodes: Dictionary = {}
+## The kinds of shrub, plant and mushroom (Net.flora), and the plants of
+## each chunk held, as received ({kind, x, y}).
+var _flora: Array = []
+var _plants: Dictionary = {}
 ## Chunk key -> {screen cell: [trees whose image covers that cell]}, cells
 ## of TREE_CELL_PX: the trees under a point are found without looking at
 ## every tree (see-through).
@@ -113,6 +117,7 @@ func _ready() -> void:
 	_camera.zoom = Vector2.ONE * DEFAULT_ZOOM
 	Net.world_state.connect(_on_world_state)
 	Net.chunk.connect(_on_chunk)
+	Net.flora.connect(func(flora: Array) -> void: _flora = flora)
 	Net.species.connect(func(species: Array) -> void:
 		_tree_heights.clear()
 		for s in species:
@@ -171,6 +176,7 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	_currents.clear()
 	_trees.clear()
 	_tree_cells.clear()
+	_plants.clear()
 	for n: Node in _tree_nodes.values():
 		n.queue_free()
 	_tree_nodes.clear()
@@ -193,7 +199,7 @@ func _set_night(night: bool) -> void:
 	modulate = Color(0.45, 0.5, 0.7) if lit else Color.WHITE
 
 
-func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees: Array = [], currents: Array = []) -> void:
+func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees: Array = [], currents: Array = [], plants: Array = []) -> void:
 	var key := Vector2i(x, y)
 	var view: ChunkView = _chunks.get(key)
 	if view == null:
@@ -211,7 +217,9 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees:
 	for t in trees:
 		standing.append({"at": Net.point(t.get("at", {})), "species": str(t.get("species", ""))})
 	_trees[key] = standing
+	_plants[key] = plants
 	_plant_chunk(key, view)
+	view.show_plants(plants, _flora)
 	view.terrain_at = terrain_at
 	view.current_at = current_at
 	view.show_chunk(key * _chunk_size, _chunk_size, tiles, items, _looks)
@@ -414,6 +422,7 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 		_currents.erase(key)
 		_trees.erase(key)
 		_tree_cells.erase(key)
+		_plants.erase(key)
 		var gone: Node = _tree_nodes.get(key)
 		if gone != null:
 			gone.queue_free()
@@ -477,7 +486,18 @@ func _describe(tile: Vector2i) -> String:
 	for item in _items.get(key, []):
 		if Vector2i(int(item.get("x", 0)), int(item.get("y", 0))) == tile:
 			lines.append(Tooltip.describe_item(_materials.get(str(item.get("material", "")), {})))
+	lines.append_array(Tooltip.describe_plants(plants_on(tile), _flora))
 	return "\n".join(lines)
+
+
+## The kinds (indices into the flora) of the plants standing on `tile`.
+func plants_on(tile: Vector2i) -> Array:
+	var kinds: Array = []
+	for plant: Dictionary in _plants.get(Iso.chunk_of(tile, _chunk_size), []):
+		var at := _tile_of(Vector2(float(plant.get("x", 0)), float(plant.get("y", 0))))
+		if at == tile:
+			kinds.append(int(plant.get("kind", -1)))
+	return kinds
 
 
 ## Zoom clamped to the allowed range.

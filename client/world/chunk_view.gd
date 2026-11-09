@@ -561,6 +561,53 @@ var _flats: Array = []
 var _decor_cache: Array = []
 
 
+## The chunk's plants as markers, until they have images: a small disc
+## each, sized by its kind's height and coloured by its family, a shade
+## of its own for each kind. One layer a chunk, drawn once, above the
+## ground and below the trees.
+func show_plants(plants: Array, flora: Array) -> void:
+	var layer: PlantLayer = get_node_or_null("Plants")
+	if layer == null:
+		layer = PlantLayer.new()
+		layer.name = "Plants"
+		add_child(layer)
+	layer.plants = plants
+	layer.flora = flora
+	layer.queue_redraw()
+
+
+## The colour of a plant's marker: its family's, shifted a little by its
+## kind so neighbouring kinds tell apart.
+static func plant_colour(kind: Dictionary) -> Color:
+	var base: Color
+	match str(kind.get("family", "")):
+		"shrub":
+			base = Color(0.16, 0.36, 0.12)
+		"mushroom":
+			base = Color(0.86, 0.72, 0.52)
+		_:
+			base = Color(0.62, 0.80, 0.28)
+	var shift := float(hash(str(kind.get("id", ""))) % 1000) / 1000.0
+	return base.lerp(Color(0.95, 0.35, 0.30) if shift > 0.75 else Color(0.95, 0.90, 0.40), shift * 0.35)
+
+
+class PlantLayer:
+	extends Node2D
+	var plants: Array = []
+	var flora: Array = []
+
+	func _draw() -> void:
+		for plant: Dictionary in plants:
+			var k := int(plant.get("kind", -1))
+			if k < 0 or k >= flora.size():
+				continue
+			var kind: Dictionary = flora[k]
+			var at := Iso.point_to_screen(Vector2(float(plant.get("x", 0)), float(plant.get("y", 0))))
+			var radius := clampf(float(kind.get("height_cm", 30)) / 100.0 * 9.0, 5.0, 14.0)
+			draw_circle(at, radius, ChunkView.plant_colour(kind))
+			draw_circle(at, radius, Color(0, 0, 0, 0.55), false, 1.0)
+
+
 ## Whether the chunk has built its ground at least once.
 func is_built() -> bool:
 	return _last_signature != 0

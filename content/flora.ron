@@ -1,0 +1,186 @@
+// The flora of the valley: shrubs, plants and mushrooms, and where each
+// grows (docs/04-architecture.md D37; the list: content/ai-reserve/
+// 10-flora.md, validated by the project lead on 8 November 2026).
+//
+// DRAFT for review (9 November 2026): not read by the server yet. Every
+// number is a placeholder to tune on maps. What a plant does to whoever
+// eats or touches it (toxicity, look-alikes, cooking) is a hidden rule
+// and lives in the private repository (D30), never here.
+//
+// One season for now: everything grows and can be gathered all year.
+// `season` only notes when it would, for the day seasons come.
+//
+// id:        snake_case, unique; the client finds its images by it.
+// family:    shrub | plant | mushroom.
+// height_m:  grown, in metres (sets its image's size; under about 0.3 m
+//            it may be painted by the ground shader rather than stood up,
+//            D39).
+// habitats:  how much it grows in each place, against the others there
+//            (any scale; absent: none), places quoted. Habitats: meadow, edge, wood,
+//            heart, clearing, camp, copse, lone, riverside, cliff_foot,
+//            plus: bank (the land within 2 m of water), stream (in a
+//            brook), shallows (in a ford).
+// moisture:  the soil it needs, from 0 (dry) to 100 (in the water), at
+//            least and at most: from the distance to water and the
+//            valley's wetness (the noise brooks rise from).
+// light:     the light it needs, 0 (heart of a wood) to 100 (open
+//            meadow), at least and at most: from the density of trees.
+// host:      a mushroom tied to trees: the kinds, and how near (metres).
+//            Absent: tied to its habitat only.
+// on:        ground (default) | trunk (grows on a standing tree of the
+//            host kinds) | deadwood.
+// grouping:  how it comes: single | clump(radius_m) | carpet(radius_m) |
+//            ring(radius_m) (a fairy ring).
+// per_thousand: patches (a clump, a carpet, a ring, a single plant) per
+//            thousand tiles where its niche holds fully; fewer where it
+//            holds less. On a trunk: per thousand host trees.
+// gives:     what gathering it yields: material ids, most still to add
+//            to materials.ron when gathering is built.
+// season:    when it would be in season, for later (not used).
+(
+    // --- Trees still to come (move to species.ron with their images) ---
+    trees: [
+        (id: "alder", name: "Alder", height_m: 4.5,
+            habitats: { "riverside": 60, "edge": 10 }, moisture: (70, 100)),
+        (id: "ash", name: "Ash", height_m: 5.0,
+            habitats: { "edge": 25, "wood": 15, "copse": 20 }, moisture: (50, 85)),
+        (id: "linden", name: "Linden", height_m: 5.0,
+            habitats: { "wood": 20, "heart": 10, "copse": 15 }, moisture: (30, 70)),
+        (id: "yew", name: "Yew", height_m: 3.5,
+            habitats: { "heart": 4, "wood": 2 }, moisture: (30, 70)),
+    ],
+
+    // --- Shrubs ---
+    shrubs: [
+        (id: "bramble", name: "Bramble", height_m: 0.9,
+            habitats: { "edge": 60, "clearing": 40, "meadow": 5 }, moisture: (20, 80), light: (50, 100),
+            grouping: clump(2.5), per_thousand: 6,
+            gives: ["blackberries", "thorny_stem"], season: "late summer"),
+        (id: "elder", name: "Elder", height_m: 2.5,
+            habitats: { "bank": 40, "edge": 40, "camp": 10 }, moisture: (50, 90), light: (40, 100),
+            grouping: single, per_thousand: 5,
+            gives: ["elderberries", "elderflowers"], season: "summer, late summer"),
+        (id: "hawthorn", name: "Hawthorn", height_m: 2.5,
+            habitats: { "meadow": 30, "edge": 30, "copse": 20 }, moisture: (20, 70), light: (60, 100),
+            grouping: clump(2.0), per_thousand: 2,
+            gives: ["haws", "thorny_stem"], season: "autumn"),
+        (id: "dog_rose", name: "Dog rose", height_m: 1.5,
+            habitats: { "meadow": 40, "edge": 20 }, moisture: (10, 60), light: (70, 100),
+            grouping: clump(1.5), per_thousand: 2,
+            gives: ["rose_hips"], season: "autumn, winter"),
+        (id: "raspberry", name: "Raspberry", height_m: 1.2,
+            habitats: { "clearing": 60, "edge": 40 }, moisture: (40, 80), light: (40, 90),
+            grouping: clump(3.0), per_thousand: 3,
+            gives: ["raspberries"], season: "summer"),
+        (id: "wild_strawberry", name: "Wild strawberry", height_m: 0.15,
+            habitats: { "edge": 40, "clearing": 40, "wood": 20 }, moisture: (30, 70), light: (30, 80),
+            grouping: carpet(1.5), per_thousand: 5,
+            gives: ["strawberries"], season: "early summer"),
+    ],
+
+    // --- Plants ---
+    plants: [
+        (id: "wild_cereal", name: "Wild cereals", height_m: 0.8,
+            habitats: { "meadow": 60 }, moisture: (20, 60), light: (80, 100),
+            grouping: carpet(3.0), per_thousand: 3,
+            gives: ["grain", "straw"], season: "late summer"),
+        (id: "wild_pea", name: "Wild peas", height_m: 0.5,
+            habitats: { "meadow": 40, "edge": 10 }, moisture: (30, 70), light: (70, 100),
+            grouping: clump(1.5), per_thousand: 2,
+            gives: ["peas"], season: "summer"),
+        (id: "nettle", name: "Nettle", height_m: 0.9,
+            habitats: { "camp": 60, "bank": 20, "edge": 15 }, moisture: (50, 90), light: (30, 100),
+            grouping: carpet(2.5), per_thousand: 3,
+            gives: ["nettle_leaves", "fibres"], season: "spring, summer"),
+        (id: "cattail", name: "Cattail", height_m: 1.8,
+            habitats: { "bank": 60, "shallows": 40 }, moisture: (90, 100), light: (70, 100),
+            grouping: carpet(3.0), per_thousand: 25,
+            gives: ["cattail_root", "cattail_fluff", "reeds"], season: "all year"),
+        (id: "reed", name: "Reed", height_m: 2.0,
+            habitats: { "bank": 70 }, moisture: (85, 100), light: (70, 100),
+            grouping: carpet(4.0), per_thousand: 40,
+            gives: ["reeds"], season: "all year"),
+        (id: "wild_garlic", name: "Wild garlic", height_m: 0.3,
+            habitats: { "wood": 50, "bank": 20 }, moisture: (60, 90), light: (10, 50),
+            grouping: carpet(5.0), per_thousand: 3,
+            gives: ["garlic_leaves"], season: "spring"),
+        (id: "plantain", name: "Plantain", height_m: 0.2,
+            habitats: { "meadow": 30, "camp": 40, "edge": 20 }, moisture: (10, 80), light: (50, 100),
+            grouping: single, per_thousand: 15,
+            gives: ["plantain_leaves"], season: "spring to autumn"),
+        (id: "fern", name: "Fern", height_m: 0.8,
+            habitats: { "wood": 60, "heart": 50, "edge": 10 }, moisture: (40, 90), light: (0, 50),
+            grouping: carpet(3.0), per_thousand: 10,
+            gives: ["fern_fronds"], season: "spring to autumn"),
+        (id: "wild_flax", name: "Wild flax", height_m: 0.6,
+            habitats: { "meadow": 40 }, moisture: (20, 60), light: (80, 100),
+            grouping: clump(2.0), per_thousand: 2,
+            gives: ["flax_stems", "flax_seeds"], season: "summer"),
+        (id: "dandelion", name: "Dandelion", height_m: 0.2,
+            habitats: { "meadow": 50, "camp": 30, "edge": 20 }, moisture: (10, 80), light: (60, 100),
+            grouping: single, per_thousand: 20,
+            gives: ["dandelion_leaves", "dandelion_root"], season: "spring to autumn"),
+        (id: "water_mint", name: "Water mint", height_m: 0.4,
+            habitats: { "bank": 60, "stream": 20 }, moisture: (80, 100), light: (40, 100),
+            grouping: clump(1.5), per_thousand: 5,
+            gives: ["mint_leaves"], season: "summer"),
+        (id: "yarrow", name: "Yarrow", height_m: 0.5,
+            habitats: { "meadow": 50, "edge": 10 }, moisture: (10, 50), light: (70, 100),
+            grouping: clump(1.0), per_thousand: 4,
+            gives: ["yarrow"], season: "summer"),
+        (id: "watercress", name: "Watercress", height_m: 0.2,
+            habitats: { "stream": 80, "shallows": 20 }, moisture: (95, 100), light: (40, 100),
+            grouping: carpet(1.5), per_thousand: 30,
+            gives: ["watercress"], season: "spring to autumn"),
+        (id: "woad", name: "Woad", height_m: 0.9,
+            habitats: { "meadow": 20, "edge": 10 }, moisture: (10, 50), light: (80, 100),
+            grouping: clump(1.5), per_thousand: 1,
+            gives: ["woad_leaves"], season: "summer"),
+    ],
+
+    // --- Mushrooms ---
+    mushrooms: [
+        (id: "porcini", name: "Porcini", height_m: 0.15,
+            habitats: { "wood": 40, "heart": 30, "edge": 20 }, moisture: (40, 80), light: (10, 60),
+            host: Some((trees: ["oak", "pine"], within_m: 6.0)),
+            grouping: clump(1.5), per_thousand: 2,
+            gives: ["porcini"], season: "autumn"),
+        (id: "chanterelle", name: "Chanterelle", height_m: 0.08,
+            habitats: { "wood": 50, "heart": 30 }, moisture: (55, 90), light: (0, 50),
+            grouping: carpet(2.0), per_thousand: 2,
+            gives: ["chanterelles"], season: "summer, autumn"),
+        (id: "field_mushroom", name: "Field mushroom", height_m: 0.08,
+            habitats: { "meadow": 60 }, moisture: (30, 70), light: (80, 100),
+            grouping: ring(2.0), per_thousand: 1,
+            gives: ["field_mushrooms"], season: "late summer, autumn"),
+        (id: "parasol", name: "Parasol mushroom", height_m: 0.3,
+            habitats: { "meadow": 30, "edge": 40 }, moisture: (20, 60), light: (50, 100),
+            grouping: single, per_thousand: 1,
+            gives: ["parasol"], season: "autumn"),
+        (id: "oyster_mushroom", name: "Oyster mushroom", height_m: 0.1,
+            habitats: { "riverside": 80, "wood": 10 }, moisture: (60, 100), light: (20, 100),
+            host: Some((trees: ["willow", "alder"], within_m: 0.5)), on: trunk,
+            grouping: clump(0.3), per_thousand: 80,
+            gives: ["oyster_mushrooms"], season: "autumn, winter"),
+        (id: "death_cap", name: "Death cap", height_m: 0.12,
+            habitats: { "wood": 40, "edge": 20 }, moisture: (40, 80), light: (10, 60),
+            host: Some((trees: ["oak"], within_m: 6.0)),
+            grouping: clump(1.0), per_thousand: 1,
+            gives: ["death_cap"], season: "late summer, autumn"),
+        (id: "fly_agaric", name: "Fly agaric", height_m: 0.2,
+            habitats: { "wood": 30, "edge": 30, "cliff_foot": 30 }, moisture: (30, 80), light: (10, 70),
+            host: Some((trees: ["birch", "pine"], within_m: 6.0)),
+            grouping: clump(1.5), per_thousand: 2,
+            gives: ["fly_agaric"], season: "autumn"),
+        (id: "tinder_fungus", name: "Tinder fungus", height_m: 0.2,
+            habitats: { "wood": 30, "heart": 40, "edge": 20 }, moisture: (30, 80), light: (0, 70),
+            host: Some((trees: ["birch", "oak"], within_m: 0.5)), on: trunk,
+            grouping: single, per_thousand: 30,
+            gives: ["tinder_fungus"], season: "all year"),
+        (id: "birch_polypore", name: "Birch polypore", height_m: 0.15,
+            habitats: { "wood": 30, "edge": 30 }, moisture: (30, 80), light: (10, 70),
+            host: Some((trees: ["birch"], within_m: 0.5)), on: trunk,
+            grouping: single, per_thousand: 60,
+            gives: ["birch_polypore"], season: "all year"),
+    ],
+)
