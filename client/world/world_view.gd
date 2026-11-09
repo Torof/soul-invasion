@@ -67,6 +67,8 @@ var _mouse_reveal := 0.0
 var _body_hidden := false
 var _mouse_hidden := false
 const BODY_SEE_M := 1.5
+## A body's height, at the world's true scale (under 3 m everything is).
+const BODY_HEIGHT_M := 1.7
 const MOUSE_SEE_M := 1.2
 ## Seconds for a circle to open or close.
 const SEE_EASE := 0.2
@@ -653,9 +655,9 @@ func draw_body(canvas: CanvasItem, id: int) -> void:
 		return
 	var color := PILOTED_COLOR if id == _piloted else BODY_COLOR
 	var feet := Vector2.ZERO
-	# Provisional figures: a third of a person's 1.7 m, so they stay
-	# small on the diamond until real sprites come (64 px per metre).
-	var h := Iso.PX_PER_M * 1.7 * 0.33
+	# Provisional figures at a person's real height, 1.7 m from the feet
+	# to the top of the head (64 px per metre): the head's top is 1.38 h.
+	var h := Iso.PX_PER_M * BODY_HEIGHT_M / 1.38
 	if _bodies[id]["asleep"]:
 		# Lying down: a figure along the ground, and a "z" above it.
 		canvas.draw_rect(Rect2(feet + Vector2(-h * 0.6, -h * 0.35), Vector2(h, h * 0.3)), color)
@@ -817,7 +819,7 @@ func _update_flags(mouse: Vector2) -> void:
 func _body_see_centre() -> Vector2:
 	if not _bodies.has(_piloted):
 		return Vector2(-1e6, -1e6)
-	return Iso.point_to_screen(_bodies[_piloted]["at"]) - Vector2(0, Iso.PX_PER_M * 0.5)
+	return Iso.point_to_screen(_bodies[_piloted]["at"]) - Vector2(0, Iso.PX_PER_M * BODY_HEIGHT_M * 0.6)
 
 
 ## Which see-through circles a tree drawn now takes part in (Trees.draw):

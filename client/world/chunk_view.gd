@@ -583,12 +583,10 @@ const FLORA_RECTS := "res://art/flora/atlas.json"
 ## bodies, sorted by its foot (WorldView: a bramble hides a body behind
 ## it); shorter ones lie on the ground's own layer.
 const PLANT_STANDING_M := 0.9
-## The flora is drawn at a game scale, like the trees (4 m for an oak):
-## its height in metres to the power SCALE_POWER, so what is tall shrinks
-## and what is tiny grows (a 2 m reed shows 1.5 m, a 20 cm dandelion
-## 0.4 m, an 8 cm mushroom 0.2 m). Small plants, which the light grass
-## swallows, are drawn a little brighter (SMALL_LIGHT, below SMALL_M).
-const SCALE_POWER := 0.6
+## The world's scale (D40): under 3 m everything is drawn at its true
+## height; above, heights ease towards reality (Scale.shown). Small
+## plants, which the light grass swallows, are drawn a little brighter
+## (SMALL_LIGHT, below SMALL_M).
 const SMALL_M := 0.7
 const SMALL_LIGHT := Color(1.18, 1.18, 1.1)
 static var _flora_atlas: Texture2D
@@ -620,7 +618,7 @@ static func flora_variants(id: String) -> Array:
 
 ## The height a plant of `kind` is drawn at, in metres (SCALE_POWER).
 static func shown_height(kind: Dictionary) -> float:
-	return pow(maxf(float(kind.get("height_cm", 30)) / 100.0, 0.01), SCALE_POWER)
+	return Scale.shown(float(kind.get("height_cm", 30)) / 100.0)
 
 
 ## The tint a plant of `kind` is drawn with: brighter when small.
