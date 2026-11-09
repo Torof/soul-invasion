@@ -231,6 +231,7 @@ fn run_paced_server(
         shared.enable_dev();
         println!("development tools on: overview and teleports (--dev)");
     }
+    shared.warm_plants();
     let shared = Arc::new(shared);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 

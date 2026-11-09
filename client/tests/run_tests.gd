@@ -28,6 +28,7 @@ func _init() -> void:
 	_test_loading_waits_for_the_valley()
 	_test_dev_map_turns_as_the_game()
 	_test_perf_overlay_reports()
+	_test_plants_are_named_and_coloured()
 	_test_trees_sharpness_eases_with_the_zoom()
 
 
@@ -433,6 +434,16 @@ func _test_trees_sharpness_eases_with_the_zoom() -> void:
 	_check(Trees.sharpness(2.0) == -1.0 and Trees.sharpness(1.0) == -1.0, "a level sharper up close")
 	_check(Trees.sharpness(0.5) == 0.0 and Trees.sharpness(0.35) == 0.0, "the hardware's own level far away")
 	_check(is_equal_approx(Trees.sharpness(0.75), -0.5), "eased in between")
+
+
+func _test_plants_are_named_and_coloured() -> void:
+	var flora := [
+		{"id": "bramble", "name": "Bramble", "family": "shrub", "height_cm": 90},
+		{"id": "porcini", "name": "Porcini", "family": "mushroom", "height_cm": 15},
+	]
+	_check(Array(Tooltip.describe_plants([0, 1, 0, 0], flora)) == ["Bramble ×3", "Porcini"], "a tile's plants are named, counted")
+	_check(Tooltip.describe_plants([7, -1], flora).is_empty(), "an unknown kind is left out")
+	_check(ChunkView.plant_colour(flora[0]) != ChunkView.plant_colour(flora[1]), "shrubs and mushrooms tell apart")
 
 
 func _test_perf_overlay_reports() -> void:

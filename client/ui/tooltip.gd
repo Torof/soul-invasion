@@ -51,3 +51,22 @@ static func describe_body(id: int, asleep: bool, piloted: bool) -> String:
 	if asleep:
 		line += " · asleep"
 	return line
+
+
+## Lines naming the plants on a tile: their kinds' names, each once, with
+## how many when there are several ("Bramble ×3"). `kinds` are indices
+## into `flora` (Net.flora).
+static func describe_plants(kinds: Array, flora: Array) -> PackedStringArray:
+	var counts := {}
+	var order: Array = []
+	for kind: int in kinds:
+		if kind < 0 or kind >= flora.size():
+			continue
+		var name := str((flora[kind] as Dictionary).get("name", "?"))
+		if not counts.has(name):
+			order.append(name)
+		counts[name] = int(counts.get(name, 0)) + 1
+	var lines := PackedStringArray()
+	for name: String in order:
+		lines.append(name if counts[name] == 1 else "%s ×%d" % [name, counts[name]])
+	return lines

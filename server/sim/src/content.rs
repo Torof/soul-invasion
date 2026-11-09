@@ -172,6 +172,10 @@ pub struct Content {
     pub needs: Needs,
     /// The kinds of tree and where each grows (D37), in file order.
     pub species: Vec<Species>,
+    /// The shrubs, plants and mushrooms, and the trees still to come
+    /// (`flora.ron`), in file order by section.
+    #[serde(default)]
+    pub flora: Vec<crate::flora::Kind>,
 }
 
 /// A kind of tree.
@@ -281,6 +285,7 @@ impl Content {
             movement,
             needs,
             species: Vec::new(),
+            flora: Vec::new(),
         };
         content.validate()?;
         Ok(content)
@@ -295,6 +300,48 @@ impl Content {
         })?;
         self.validate()?;
         Ok(self)
+    }
+
+    /// The same content with the flora of `flora` (the text of
+    /// `flora.ron`).
+    pub fn with_flora(mut self, flora: &str) -> Result<Self, ContentError> {
+        self.flora = crate::flora::parse(flora).map_err(|source| ContentError::Parse {
+            file: "flora.ron",
+            source,
+        })?;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Checks the flora: unique ids (among the trees too), and each kind
+    /// sensible (`flora::check`).
+    fn validate_flora(&self) -> Result<(), ContentError> {
+        // A host may be a tree of the game or one still to come.
+        let trees: Vec<&str> = self
+            .species
+            .iter()
+            .map(|s| s.id.as_str())
+            .chain(
+                self.flora
+                    .iter()
+                    .filter(|k| k.family == crate::flora::Family::Tree)
+                    .map(|k| k.id.as_str()),
+            )
+            .collect();
+        let mut ids: BTreeSet<&str> = self.species.iter().map(|s| s.id.as_str()).collect();
+        for kind in &self.flora {
+            let invalid = |what| ContentError::Species {
+                id: kind.id.clone(),
+                what,
+            };
+            if !ids.insert(kind.id.as_str()) {
+                return Err(invalid("defined twice (in flora.ron or species.ron)"));
+            }
+            if let Some(what) = crate::flora::check(kind, &trees) {
+                return Err(invalid(what));
+            }
+        }
+        Ok(())
     }
 
     /// Checks the kinds of tree: unique ids, a name, a sensible height,
@@ -366,6 +413,7 @@ impl Content {
             }
         }
         self.validate_species()?;
+        self.validate_flora()?;
         for (index, spawn) in self.spawns.iter().enumerate() {
             if !ids.contains(spawn.material.as_str()) {
                 return Err(ContentError::UnknownMaterial {

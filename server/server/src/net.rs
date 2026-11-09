@@ -26,9 +26,9 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
-    BodyState, ClientMessage, Clock, Condition, DeathCause, ItemAct, ItemState, ItemView,
-    MaterialView, PROTOCOL_VERSION, Point, Refusal, ServerMessage, SpeciesView, Terrain, TreeState,
-    decode, encode,
+    BodyState, ClientMessage, Clock, Condition, DeathCause, FloraView, ItemAct, ItemState,
+    ItemView, MaterialView, PROTOCOL_VERSION, PlantState, Point, Refusal, ServerMessage,
+    SpeciesView, Terrain, TreeState, decode, encode,
 };
 use sim::{BodyId, CHUNK_SIZE, ChunkPos, Content, FinePos, Intention, ItemId, Map, Pos, World};
 use tokio::net::{TcpListener, TcpStream};
@@ -165,6 +165,18 @@ pub struct Shared {
     pub species: Vec<SpeciesView>,
     /// The trees standing, by chunk. Static for now: nothing fells them.
     trees: BTreeMap<ChunkPos, Vec<TreeState>>,
+    /// The kinds of shrub, plant and mushroom, as clients need them.
+    pub flora: Vec<FloraView>,
+    /// The content's flora (trees still to come included), to place it.
+    flora_kinds: Vec<sim::flora::Kind>,
+    /// Index in `flora` of each kind of the content's flora (`None` for
+    /// the trees still to come).
+    flora_wire: Vec<Option<u16>>,
+    /// The seed the flora is placed with (the map's).
+    flora_seed: u64,
+    /// The plants of the chunks asked for so far, placed once each (the
+    /// cost follows the chunks in use, never the map's size, D39).
+    plants: Mutex<BTreeMap<ChunkPos, Vec<PlantState>>>,
     /// Is it night? Kept by the simulation thread.
     pub night: AtomicBool,
     /// Simulation ticks per game second.
@@ -286,6 +298,11 @@ impl Shared {
                     species: species[tree.species].id.clone(),
                 });
         }
+        let (flora, flora_wire) = flora_views(content);
+        let flora_seed = match world.map().spec() {
+            sim::MapSpec::Valley { seed, .. } => seed,
+            sim::MapSpec::Filled { .. } => 0,
+        };
         let mut items: BTreeMap<ChunkPos, Vec<ItemState>> = BTreeMap::new();
         for item in world.items() {
             let Some(pos) = item.pos() else {
@@ -321,6 +338,11 @@ impl Shared {
             materials,
             species,
             trees,
+            flora,
+            flora_kinds: content.flora.clone(),
+            flora_wire,
+            flora_seed,
+            plants: Mutex::new(BTreeMap::new()),
             night: AtomicBool::new(world.is_night(content)),
             ticks_per_second: world.calendar().ticks_per_second(),
             ticks_per_day: world.calendar().ticks_per_day(),
@@ -578,9 +600,92 @@ impl Shared {
                 .cloned()
                 .unwrap_or_default(),
             trees: self.trees.get(&chunk).cloned().unwrap_or_default(),
+            plants: self.plants_in(chunk),
             currents: self.map.chunk_currents(chunk)?,
         })
     }
+
+    /// Places the plants of the view around the camp (where the first
+    /// bodies stand) before any connection, so the first client is not
+    /// kept waiting: the cost of a view, never of the map.
+    pub fn warm_plants(&self) {
+        let camp = self.map.camp().chunk();
+        for chunk in View::window(&self.map, camp) {
+            self.plants_in(chunk);
+        }
+    }
+
+    /// The plants of a chunk (`sim::flora`), placed the first time the
+    /// chunk is asked for and kept.
+    fn plants_in(&self, chunk: ChunkPos) -> Vec<PlantState> {
+        if let Some(plants) = self.plants.lock().expect("plants not poisoned").get(&chunk) {
+            return plants.clone();
+        }
+        let mut near = Vec::new();
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                for tree in self
+                    .trees
+                    .get(&ChunkPos::new(chunk.x + dx, chunk.y + dy))
+                    .into_iter()
+                    .flatten()
+                {
+                    near.push(sim::flora::TreeAt {
+                        at: FinePos::new(tree.at.x, tree.at.y),
+                        species: tree.species.as_str(),
+                    });
+                }
+            }
+        }
+        let plants: Vec<PlantState> =
+            sim::flora::plants_in(&self.map, &self.flora_kinds, &near, self.flora_seed, chunk)
+                .into_iter()
+                .filter_map(|p| {
+                    let kind = self
+                        .flora_wire
+                        .get(usize::from(p.kind))
+                        .copied()
+                        .flatten()?;
+                    Some(PlantState {
+                        kind,
+                        x: p.at.x,
+                        y: p.at.y,
+                    })
+                })
+                .collect();
+        self.plants
+            .lock()
+            .expect("plants not poisoned")
+            .insert(chunk, plants.clone());
+        plants
+    }
+}
+
+/// The kinds of shrub, plant and mushroom as clients need them, and the
+/// index of each kind of the content's flora among them (`None` for the
+/// trees still to come).
+fn flora_views(content: &Content) -> (Vec<FloraView>, Vec<Option<u16>>) {
+    let mut flora = Vec::new();
+    let flora_wire = content
+        .flora
+        .iter()
+        .map(|k| {
+            let family = match k.family {
+                sim::flora::Family::Tree => return None,
+                sim::flora::Family::Shrub => "shrub",
+                sim::flora::Family::Plant => "plant",
+                sim::flora::Family::Mushroom => "mushroom",
+            };
+            flora.push(FloraView {
+                id: k.id.clone(),
+                name: k.name.clone(),
+                family: family.to_owned(),
+                height_cm: centimetres(k.height_m),
+            });
+            Some(u16::try_from(flora.len() - 1).expect("few kinds"))
+        })
+        .collect();
+    (flora, flora_wire)
 }
 
 /// The chunks a connection holds: a square window around a centre chunk,
@@ -757,6 +862,7 @@ async fn handle_connection(
             chunk_size: CHUNK_SIZE,
             materials: shared.materials.clone(),
             species: shared.species.clone(),
+            flora: shared.flora.clone(),
             night: shared.night.load(Ordering::Relaxed),
             clock: shared.clock(),
         },

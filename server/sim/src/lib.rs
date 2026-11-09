@@ -5,6 +5,7 @@
 //! ticks; it returns the events that happened. Same inputs, same outputs.
 
 pub mod content;
+pub mod flora;
 pub mod map;
 pub mod time;
 pub mod trees;

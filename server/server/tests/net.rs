@@ -258,9 +258,16 @@ async fn hello_ping_and_a_published_day() {
             chunk_size,
             materials,
             species,
+            flora,
             clock,
             ..
         }) => {
+            assert!(flora.len() >= 29, "the shrubs, plants and mushrooms");
+            assert!(
+                flora
+                    .iter()
+                    .all(|k| ["shrub", "plant", "mushroom"].contains(&k.family.as_str()))
+            );
             assert_eq!((width, height), (VALLEY_SIZE, VALLEY_SIZE));
             assert!(species.len() >= 6, "the kinds of tree");
             assert!(species.iter().all(|s| s.height_cm >= 100));
@@ -278,6 +285,7 @@ async fn hello_ping_and_a_published_day() {
     let mut seen_items = 0;
     let mut seen_trees = 0;
     let mut chunks = Vec::new();
+    let mut seen_plants = 0;
     for _ in 0..window_len(world, centre) {
         match receive(&mut socket).await {
             Some(ServerMessage::Chunk {
@@ -287,8 +295,17 @@ async fn hello_ping_and_a_published_day() {
                 bodies,
                 items,
                 trees,
+                plants,
                 currents,
             }) => {
+                for p in &plants {
+                    assert_eq!(
+                        tile(Point { x: p.x, y: p.y }).chunk(),
+                        ChunkPos::new(x, y),
+                        "a plant lies in its chunk"
+                    );
+                }
+                seen_plants += plants.len();
                 // Water runs, land does not.
                 assert_eq!(currents.len(), tiles.len());
                 for (t, c) in tiles.iter().zip(&currents) {
@@ -325,6 +342,10 @@ async fn hello_ping_and_a_published_day() {
         chunks.len(),
         (2 * VIEW_RADIUS + 1).pow(2) as usize,
         "a full window in the middle of the valley"
+    );
+    assert!(
+        seen_plants > 1000,
+        "the flora grows around the camp: {seen_plants}"
     );
     assert!(
         seen_items > 100,

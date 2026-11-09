@@ -38,7 +38,9 @@ use serde::{Deserialize, Serialize};
 /// - v11: chunks carry where their water runs (`currents`).
 /// - v12: development tools, on only when the server runs with `--dev`:
 ///   `dev_overview` (the whole map, coarse) and `dev_teleport`.
-pub const PROTOCOL_VERSION: u32 = 12;
+/// - v13: the flora: `world_state` lists its kinds (`flora`), chunks carry
+///   their plants (`plants`, a kind's index and a place each).
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// A tile on the map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,6 +212,30 @@ pub struct SpeciesView {
     pub height_cm: u32,
 }
 
+/// A kind of shrub, plant or mushroom, as clients need it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FloraView {
+    /// Content id; the client finds its images by it.
+    pub id: String,
+    /// Name shown to players.
+    pub name: String,
+    /// `shrub`, `plant` or `mushroom`.
+    pub family: String,
+    /// Grown height, in centimetres.
+    pub height_cm: u32,
+}
+
+/// A plant standing on the ground, compact: many come in every chunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlantState {
+    /// Its kind: an index into [`ServerMessage::WorldState`]'s `flora`.
+    pub kind: u16,
+    /// Where it stands, millimetres east of the grid's origin.
+    pub x: i32,
+    /// Millimetres south.
+    pub y: i32,
+}
+
 /// A tree standing on the ground.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TreeState {
@@ -306,6 +332,8 @@ pub enum ServerMessage {
         materials: Vec<MaterialView>,
         /// Every kind of tree chunks may hold.
         species: Vec<SpeciesView>,
+        /// Every kind of shrub, plant and mushroom chunks may hold.
+        flora: Vec<FloraView>,
         /// Is it night right now?
         night: bool,
         /// The clock.
@@ -328,6 +356,8 @@ pub enum ServerMessage {
         items: Vec<ItemState>,
         /// Every tree standing in this chunk.
         trees: Vec<TreeState>,
+        /// Every plant standing in this chunk.
+        plants: Vec<PlantState>,
         /// Where the water runs, tile by tile like `tiles`: 0 where it
         /// does not (land, rock); else its heading times 256 plus its speed
         /// in centimetres a second (1 to 255). Heading h, from 0 to 15,
@@ -564,6 +594,12 @@ mod tests {
                     name: "Oak".into(),
                     height_cm: 400,
                 }],
+                flora: vec![FloraView {
+                    id: "bramble".into(),
+                    name: "Bramble".into(),
+                    family: "shrub".into(),
+                    height_cm: 90,
+                }],
                 night: true,
                 clock: Clock {
                     tick: 3_600,
@@ -596,6 +632,11 @@ mod tests {
                 trees: vec![TreeState {
                     at: Point { x: 162_300, y: 700 },
                     species: "oak".into(),
+                }],
+                plants: vec![PlantState {
+                    kind: 0,
+                    x: 161_200,
+                    y: 900,
                 }],
                 currents: vec![0, 4 * 256 + 35],
             },
@@ -750,12 +791,17 @@ mod tests {
                 },
                 species: "birch".into(),
             }],
+            plants: vec![PlantState {
+                kind: 2,
+                x: 32_100,
+                y: 64_300,
+            }],
             currents: vec![1059],
         })
         .unwrap();
         assert_eq!(
             text,
-            r#"{"type":"chunk","x":1,"y":2,"tiles":["ford"],"bodies":[],"items":[{"id":3,"x":32,"y":64,"material":"pebble"}],"trees":[{"at":{"x":32400,"y":64700},"species":"birch"}],"currents":[1059]}"#
+            r#"{"type":"chunk","x":1,"y":2,"tiles":["ford"],"bodies":[],"items":[{"id":3,"x":32,"y":64,"material":"pebble"}],"trees":[{"at":{"x":32400,"y":64700},"species":"birch"}],"plants":[{"kind":2,"x":32100,"y":64300}],"currents":[1059]}"#
         );
     }
 
