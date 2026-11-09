@@ -3,9 +3,10 @@ extends Node2D
 ## The land past the chunks held (D39, D40): the server's far view, one
 ## letter a cell (Protocol: far_view), drawn as a soft image under the
 ## chunks, its colours those of the ground's own textures, and a haze over
-## it that thickens with the distance from the ground held. The haze
-## starts at the edge of the ground held, never over it: the detailed
-## ground keeps its colours to its last tile (the project lead's call).
+## it that thickens with the distance from the detailed ground. The haze
+## starts at the edge of the detailed chunks, never over them: they keep
+## their colours to their last tile (the project lead's call); it rises
+## across the ring of outline chunks around them (WorldView).
 
 ## Haze colour, and how much of it just past the ground held and far
 ## away.
@@ -73,25 +74,23 @@ func show_far(cell: int, x: int, y: int, width: int, height: int, cells: String)
 	_haze.queue_redraw()
 
 
-## The ground held, in tiles from `lo` to `hi` (excluded).
-func set_held(lo: Vector2i, hi: Vector2i) -> void:
+## Where the haze starts: the detailed ground, in tiles from `lo` to `hi`
+## (excluded), and over how many tiles past it the haze rises to
+## HAZE_EDGE: the ring of outline chunks around it, which melts into the
+## far land (WorldView), or HAZE_IN without one.
+func set_held(lo: Vector2i, hi: Vector2i, rise := HAZE_IN) -> void:
 	_held = Rect2(Vector2(lo), Vector2(hi - lo))
 	_haze_material.set_shader_parameter("held_lo", Vector2(lo))
 	_haze_material.set_shader_parameter("held_hi", Vector2(hi))
+	_haze_material.set_shader_parameter("rise_in", rise)
 
 
 ## The colour of each letter: the average of the ground's own textures,
 ## so the far land matches the near; the woods a darker canopy.
 static func palette() -> Dictionary:
 	var average := func(terrain: String, fallback: Color) -> Color:
-		var texture := ChunkView.ground_texture(terrain)
-		if texture == null:
-			return fallback
-		var image := texture.get_image()
-		if image.is_compressed():
-			image.decompress()
-		image.resize(1, 1, Image.INTERPOLATE_BILINEAR)
-		return image.get_pixel(0, 0)
+		var c := ChunkView.average_colour(terrain)
+		return c if c.a > 0.0 else fallback
 	var grass: Color = average.call("grass", Color(0.45, 0.62, 0.30))
 	var water: Color = average.call("water", Color(0.20, 0.50, 0.62))
 	return {

@@ -159,8 +159,29 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 		material.shader = load("res://world/ground.gdshader")
 		material.set_shader_parameter("noise_texture", noise_texture())
 		apply_spec(material, terrain, false)
+		# Its colour from afar, which it flattens to across the ring of
+		# outline chunks (ground.gdshader), as the far view's.
+		var far := average_colour(terrain)
+		material.set_shader_parameter("has_far_colour", far.a > 0.0)
+		material.set_shader_parameter("far_colour", Vector3(far.r, far.g, far.b))
 		_ground_materials[terrain] = material
 	return _ground_materials[terrain]
+
+
+## The average colour of a terrain's ground texture; clear when it has
+## none (drawn a flat colour already).
+static func average_colour(terrain: String) -> Color:
+	var texture := ground_texture(terrain)
+	if texture == null:
+		return Color(0, 0, 0, 0)
+	var image := texture.get_image()
+	if image == null:
+		return Color(0, 0, 0, 0)
+	if image.is_compressed():
+		image.decompress()
+	image.resize(1, 1, Image.INTERPOLATE_BILINEAR)
+	var c := image.get_pixel(0, 0)
+	return Color(c.r, c.g, c.b, 1.0)
 
 
 ## Development (--dev, F5): the ground drawn a plain colour, its shaders
@@ -573,6 +594,7 @@ func show_plants(plants: Array, flora: Array) -> void:
 		# The atlas is read with its mipmaps: small plants far away stay
 		# calm (the ground itself is read without).
 		layer.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+		layer.material = plant_material
 		add_child(layer)
 	layer.set_plants(plants, flora)
 
@@ -590,6 +612,9 @@ const PLANT_STANDING_M := 0.9
 const SMALL_M := 0.7
 const SMALL_LIGHT := Color(1.18, 1.18, 1.1)
 static var _flora_atlas: Texture2D
+## The material the plants' layers are drawn with (WorldView's, which
+## fades them in the ring around the view).
+static var plant_material: Material
 static var _flora_rects: Dictionary = {}
 
 

@@ -54,6 +54,8 @@ func _ready() -> void:
 	Net.world_state.connect(func(_w: int, _h: int, _c: int, _m: Array, _n: bool) -> void: progress.has_world = true)
 	Net.chunk.connect(func(_x: int, _y: int, _t: Array, _b: Array, _i: Array, _tr: Array, _cu: Array, _pl: Array) -> void:
 		progress.chunk_came(Time.get_ticks_msec()))
+	Net.chunk_outline.connect(func(_x: int, _y: int, _t: Array, _tr: Array, _pl: Array, _cu: Array) -> void:
+		progress.chunk_came(Time.get_ticks_msec()))
 	Net.disconnected.connect(_on_disconnected)
 
 

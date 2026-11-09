@@ -42,7 +42,9 @@ use serde::{Deserialize, Serialize};
 ///   their plants (`plants`, a kind's index and a place each).
 /// - v14: `far_view`, the land around the body, coarse, drawn past the
 ///   chunks held.
-pub const PROTOCOL_VERSION: u32 = 14;
+/// - v15: `chunk_outline`, a chunk of the ring around the view: its ground,
+///   currents, trees and tall plants, drawn fading into the haze.
+pub const PROTOCOL_VERSION: u32 = 15;
 
 /// A tile on the map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -367,6 +369,24 @@ pub enum ServerMessage {
         /// the map (+y), 4 along +x.
         currents: Vec<u16>,
     },
+    /// A chunk held in outline, in the ring around the view: its ground,
+    /// currents, trees and tall plants only, drawn fading into the haze;
+    /// nothing that lies or walks there. Replaces the chunk in full if the
+    /// client held it so (and a full chunk replaces an outline).
+    ChunkOutline {
+        /// Column of chunks.
+        x: i32,
+        /// Row of chunks.
+        y: i32,
+        /// As in [`ServerMessage::Chunk`].
+        tiles: Vec<Terrain>,
+        /// Every tree standing in this chunk.
+        trees: Vec<TreeState>,
+        /// The plants standing in this chunk that show from afar.
+        plants: Vec<PlantState>,
+        /// As in [`ServerMessage::Chunk`].
+        currents: Vec<u16>,
+    },
     /// A chunk the client no longer holds: forget its tiles and the
     /// bodies in it.
     ChunkHidden {
@@ -663,6 +683,21 @@ mod tests {
                 currents: vec![0, 4 * 256 + 35],
             },
             ServerMessage::ChunkHidden { x: 5, y: 4 },
+            ServerMessage::ChunkOutline {
+                x: 6,
+                y: -1,
+                tiles: vec![Terrain::Forest],
+                trees: vec![TreeState {
+                    at: Point { x: 192_300, y: 700 },
+                    species: "oak".into(),
+                }],
+                plants: vec![PlantState {
+                    kind: 1,
+                    x: 192_900,
+                    y: 400,
+                }],
+                currents: vec![0],
+            },
             ServerMessage::Pong { nonce: 42 },
             ServerMessage::DevOverview {
                 cell: 8,

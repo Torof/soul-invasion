@@ -40,7 +40,25 @@ uniform float mouse_reveal = 0.0;
 uniform float see_through = 0.25;
 uniform float see_rim = 18.0;
 
+
+// The ring of outline chunks around the view (ServerMessage::ChunkOutline)
+// loses its detail with the distance from the view: 0 inside the view,
+// 1 at the ring's outer edge, where the far view takes over (FarView).
+// Set once for every shader by WorldView (project.godot, shader_globals):
+// the detailed chunks' bounds in tiles, and the ring's width.
+global uniform vec2 detail_lo;
+global uniform vec2 detail_hi;
+global uniform float detail_fade;
+float fade_at_tile(vec2 t) {
+	vec2 o = max(detail_lo - t, t - detail_hi);
+	return clamp(max(o.x, o.y) / detail_fade, 0.0, 1.0);
+}
+float fade_at_screen(vec2 p) {
+	return fade_at_tile(vec2((p.x / 32.0 + p.y / 16.0) * 0.5, (p.y / 16.0 - p.x / 32.0) * 0.5));
+}
+
 varying float is_tree;
+varying float far;
 varying vec2 local;
 varying float front_of_body;
 varying float hides_mouse;
@@ -51,6 +69,9 @@ varying float seed;
 
 void vertex() {
 	is_tree = (COLOR.a > 0.9 && COLOR.a < 0.98) ? 1.0 : 0.0;
+	// Faded by where it stands: a tree by its foot (its node's place), a
+	// plant of a chunk's layer by its own corner.
+	far = fade_at_screen((MODEL_MATRIX * vec4(is_tree > 0.5 ? vec2(0.0) : VERTEX, 0.0, 1.0)).xy);
 	if (is_tree > 0.5) {
 		float height = COLOR.r * 1280.0;
 		float phase = COLOR.b * 6.2831853;
@@ -76,6 +97,14 @@ void vertex() {
 	}
 }
 
+// A little muted across the ring (the far view's haze rises over it) and
+// gone at its outer edge: the far land shows no trees, only woods.
+vec4 fade_colour(vec4 c) {
+	c.rgb = mix(c.rgb, vec3(dot(c.rgb, vec3(0.333))), 0.3 * far);
+	c.a *= 1.0 - smoothstep(0.7, 1.0, far);
+	return c;
+}
+
 void fragment() {
 	if (is_tree > 0.5) {
 		// Back to the image's own coordinates, then bent: more towards the
@@ -91,7 +120,8 @@ void fragment() {
 		} else {
 			// One mipmap level sharper than the hardware picks: sharp up close,
 			// still no shimmer far away.
-			vec4 c = texture(TEXTURE, uv, mip_bias);
+			// Far in the ring, a blurrier level of the image.
+			vec4 c = texture(TEXTURE, uv, mip_bias + 2.5 * far);
 			// Nothing more to do where the image is clear (between the
 			// branches, around the crown): most of the quad.
 			if (c.a <= 0.0) {
@@ -120,8 +150,11 @@ void fragment() {
 					float in_mouse = (1.0 - smoothstep(mouse_radius - see_rim, mouse_radius, distance(local, mouse_at))) * mouse_on;
 					c.a *= 1.0 - max(in_body, in_mouse) * (1.0 - see_through);
 				}
-				COLOR = c;
+				COLOR = fade_colour(c);
 			}
 		}
+	} else if (far > 0.0) {
+		// Plants and anything else standing: blurred and muted the same.
+		COLOR = fade_colour(texture(TEXTURE, UV, 2.5 * far) * COLOR);
 	}
 }

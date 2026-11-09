@@ -46,9 +46,15 @@ pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const MAX_MESSAGE_BYTES: usize = 4096;
 
 /// Chunks held around the body's own chunk, in every direction: a window
-/// of `(2 × VIEW_RADIUS + 1)²` chunks, 352 m across; past it the client
-/// draws the far view (`far_view`), the land coarse and in a haze.
-pub const VIEW_RADIUS: i32 = 5;
+/// of `(2 × VIEW_RADIUS + 1)²` chunks, 416 m across; around it a ring of
+/// outline chunks (`OUTLINE_RADIUS`), then the far view (`far_view`).
+pub const VIEW_RADIUS: i32 = 6;
+/// Chunks held in outline around the view, out to this radius: their
+/// ground, currents, trees and tall plants only (`ChunkOutline`), drawn
+/// fading into the haze; nothing that lies or walks there.
+pub const OUTLINE_RADIUS: i32 = 8;
+/// Plants this tall and taller are in an outline chunk, in centimetres.
+pub const OUTLINE_PLANT_CM: u32 = 50;
 
 /// How many published messages a slow client may fall behind before it
 /// starts missing some.
@@ -663,6 +669,25 @@ impl Shared {
         }
     }
 
+    /// The message carrying a chunk in outline: its ground and currents,
+    /// its trees and its tall plants; nothing that lies or walks there.
+    fn outline_message(&self, chunk: ChunkPos) -> Option<ServerMessage> {
+        let tiles = self.map.chunk(chunk)?;
+        let tall = |p: &PlantState| {
+            self.flora
+                .get(usize::from(p.kind))
+                .is_some_and(|k| k.height_cm >= OUTLINE_PLANT_CM)
+        };
+        Some(ServerMessage::ChunkOutline {
+            x: chunk.x,
+            y: chunk.y,
+            tiles: tiles.into_iter().map(terrain_view).collect(),
+            trees: self.trees.get(&chunk).cloned().unwrap_or_default(),
+            plants: self.plants_in(chunk).into_iter().filter(tall).collect(),
+            currents: self.map.chunk_currents(chunk)?,
+        })
+    }
+
     /// The plants of a chunk (`sim::flora`), placed the first time the
     /// chunk is asked for and kept.
     fn plants_in(&self, chunk: ChunkPos) -> Vec<PlantState> {
@@ -741,6 +766,8 @@ fn flora_views(content: &Content) -> (Vec<FloraView>, Vec<Option<u16>>) {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct View {
     chunks: BTreeSet<ChunkPos>,
+    /// The chunks held in outline: the ring around `chunks`.
+    outline: BTreeSet<ChunkPos>,
     /// The centre of the far view last sent, if any.
     far: Option<ChunkPos>,
 }
@@ -748,9 +775,14 @@ pub struct View {
 impl View {
     /// The window around `centre`, clipped to the map.
     fn window(map: &Map, centre: ChunkPos) -> BTreeSet<ChunkPos> {
+        Self::square(map, centre, VIEW_RADIUS)
+    }
+
+    /// The chunks within `radius` of `centre`, clipped to the map.
+    fn square(map: &Map, centre: ChunkPos, radius: i32) -> BTreeSet<ChunkPos> {
         let mut chunks = BTreeSet::new();
-        for dy in -VIEW_RADIUS..=VIEW_RADIUS {
-            for dx in -VIEW_RADIUS..=VIEW_RADIUS {
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
                 let chunk = ChunkPos::new(centre.x + dx, centre.y + dy);
                 if map.has_chunk(chunk) {
                     chunks.insert(chunk);
@@ -767,6 +799,23 @@ impl View {
         let shown = next.difference(&self.chunks).copied().collect();
         let hidden = self.chunks.difference(&next).copied().collect();
         self.chunks = next;
+        (shown, hidden)
+    }
+
+    /// Moves the outline ring to `centre` (call after `recentre`). Returns
+    /// the chunks now in outline and those no longer, in a fixed order.
+    pub fn recentre_outline(
+        &mut self,
+        map: &Map,
+        centre: ChunkPos,
+    ) -> (Vec<ChunkPos>, Vec<ChunkPos>) {
+        let next: BTreeSet<ChunkPos> = Self::square(map, centre, OUTLINE_RADIUS)
+            .difference(&self.chunks)
+            .copied()
+            .collect();
+        let shown = next.difference(&self.outline).copied().collect();
+        let hidden = self.outline.difference(&next).copied().collect();
+        self.outline = next;
         (shown, hidden)
     }
 
@@ -929,12 +978,7 @@ async fn handle_connection(
         .and_then(|body| shared.position_of(body))
         .map_or_else(|| shared.centre_chunk(), Pos::chunk);
     let mut view = View::default();
-    let (shown, _) = view.recentre(&shared.map, centre);
-    for chunk in shown {
-        if let Some(message) = shared.chunk_message(chunk) {
-            send(&mut ws, &message).await?;
-        }
-    }
+    move_view(&mut ws, shared, &mut view, centre).await?;
     send(&mut ws, &far_view(&shared.map, centre)).await?;
     view.far = Some(centre);
 
@@ -1056,8 +1100,30 @@ async fn reassign(
         .body
         .and_then(|body| shared.position_of(body))
         .map_or_else(|| shared.centre_chunk(), Pos::chunk);
+    move_view(ws, shared, view, centre).await
+}
+
+/// Moves the view and its outline ring to `centre`, telling the client:
+/// chunks no longer held hidden, new chunks of the view in full, new
+/// chunks of the ring in outline (a chunk going from one to the other is
+/// sent again, never hidden).
+async fn move_view(
+    ws: &mut WebSocketStream<TcpStream>,
+    shared: &Shared,
+    view: &mut View,
+    centre: ChunkPos,
+) -> Result<(), BoxError> {
     let (shown, hidden) = view.recentre(&shared.map, centre);
-    for chunk in hidden {
+    let (outline_shown, outline_hidden) = view.recentre_outline(&shared.map, centre);
+    for chunk in hidden
+        .into_iter()
+        .filter(|c| !view.outline.contains(c))
+        .chain(
+            outline_hidden
+                .into_iter()
+                .filter(|c| !view.chunks.contains(c)),
+        )
+    {
         send(
             ws,
             &ServerMessage::ChunkHidden {
@@ -1069,6 +1135,11 @@ async fn reassign(
     }
     for chunk in shown {
         if let Some(message) = shared.chunk_message(chunk) {
+            send(ws, &message).await?;
+        }
+    }
+    for chunk in outline_shown {
+        if let Some(message) = shared.outline_message(chunk) {
             send(ws, &message).await?;
         }
     }
@@ -1140,22 +1211,7 @@ async fn forward(
             tick,
         } => {
             if Some(body) == piloted && from.chunk() != to.chunk() {
-                let (shown, hidden) = view.recentre(&shared.map, to.chunk());
-                for chunk in hidden {
-                    send(
-                        ws,
-                        &ServerMessage::ChunkHidden {
-                            x: chunk.x,
-                            y: chunk.y,
-                        },
-                    )
-                    .await?;
-                }
-                for chunk in shown {
-                    if let Some(message) = shared.chunk_message(chunk) {
-                        send(ws, &message).await?;
-                    }
-                }
+                move_view(ws, shared, view, to.chunk()).await?;
                 // The far view again once the body has gone far enough
                 // from where it was centred (a teleport, a long walk).
                 let moved = view.far.is_none_or(|c| {
@@ -1400,6 +1456,25 @@ mod tests {
         assert_eq!(
             hidden,
             rows().map(|y| ChunkPos::new(12 - r, y)).collect::<Vec<_>>()
+        );
+
+        // The outline ring: around the window, never inside it; moving one
+        // chunk east, the column leaving the window turns to outline.
+        let mut ringed = View::default();
+        ringed.recentre(&map, ChunkPos::new(12, 12));
+        let (outline, _) = ringed.recentre_outline(&map, ChunkPos::new(12, 12));
+        let wide = usize::try_from(2 * OUTLINE_RADIUS + 1).expect("small");
+        assert_eq!(outline.len(), wide * wide - side * side);
+        assert!(outline.iter().all(|c| !ringed.chunks.contains(c)));
+        ringed.recentre(&map, ChunkPos::new(13, 12));
+        let (now_outline, no_longer) = ringed.recentre_outline(&map, ChunkPos::new(13, 12));
+        assert!(
+            now_outline.contains(&ChunkPos::new(12 - r, 12)),
+            "left the window: in outline"
+        );
+        assert!(
+            no_longer.contains(&ChunkPos::new(13 + r, 12)),
+            "entered the window: out of outline"
         );
 
         // In the corner of the map the window is clipped.
