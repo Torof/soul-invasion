@@ -26,9 +26,10 @@ const DEFAULT_ZOOM := 1.5
 ## chunks, the view does not); 192, as far as the chunks held always reach
 ## (the body's chunk and six more each way), so nothing past it is needed.
 const VIEW_REACH := 192.0
-## The last tiles of the view, under a veil that thickens until it is
-## whole fog at VIEW_REACH (the project lead's call).
-const VEIL_TILES := 3.0
+## The last tiles of the view, under a veil that thickens from a little
+## fog to a whole one at VIEW_REACH (10, the project lead's call: over 3
+## the land did not melt into it enough).
+const VEIL_TILES := 10.0
 ## Tiles of fog past the view, with nothing drawn under them; the camera
 ## stops at their end, so no corner of the screen ever shows past them
 ## (6, the project lead's call: 3 did not read as fog enough).
