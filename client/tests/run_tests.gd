@@ -587,17 +587,6 @@ func _test_the_watcher_sees_the_client_files() -> void:
 	_check(files.keys().all(func(p: String) -> bool: return not p.contains("/.godot/") and not p.ends_with(".import")), "never Godot's cache")
 
 
-## In development the client restarts when one of its files changes: the
-## watcher sees the scripts and the images, not Godot's cache nor the
-## ground's files, which reload live.
-func _test_the_watcher_sees_the_client_files() -> void:
-	var files := DevWatcher.scan()
-	_check(files.has("res://main.gd") and files.has("res://world/world_view.gd"), "the scripts are watched")
-	_check(files.has("res://world/trees.gdshader"), "the shaders are watched")
-	_check(not files.has("res://world/ground.gdshader"), "the ground's shader reloads live, no restart")
-	_check(files.keys().all(func(p: String) -> bool: return not p.contains("/.godot/") and not p.ends_with(".import")), "never Godot's cache")
-
-
 func _test_currents_decode() -> void:
 	# Must agree with `current_code` on the server: heading × 256 + speed.
 	_check(ShoreField.current_vector(0) == Vector2.ZERO, "no current on land")
