@@ -3,20 +3,21 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://br7nmirkxblws"
-path="res://.godot/imported/hazel_adult_02_summer.png-c9fd3d8565cf8336b9c4d7c91d41f9af.ctex"
+path.bptc="res://.godot/imported/hazel_adult_02_summer.png-c9fd3d8565cf8336b9c4d7c91d41f9af.bptc.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc"],
+"vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/trees/hazel_adult_02_summer.png"
-dest_files=["res://.godot/imported/hazel_adult_02_summer.png-c9fd3d8565cf8336b9c4d7c91d41f9af.ctex"]
+dest_files=["res://.godot/imported/hazel_adult_02_summer.png-c9fd3d8565cf8336b9c4d7c91d41f9af.bptc.ctex"]
 
 [params]
 
-compress/mode=0
-compress/high_quality=false
+compress/mode=2
+compress/high_quality=true
 compress/lossy_quality=0.7
 compress/uastc_level=0
 compress/rdo_quality_loss=0.0

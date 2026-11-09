@@ -3,20 +3,21 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://d0x5eccls12ry"
-path="res://.godot/imported/tuft_17.png-4b23602b5a4aa6a217474c7d5c6149ed.ctex"
+path.bptc="res://.godot/imported/tuft_17.png-4b23602b5a4aa6a217474c7d5c6149ed.bptc.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc"],
+"vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/decor/tuft_17.png"
-dest_files=["res://.godot/imported/tuft_17.png-4b23602b5a4aa6a217474c7d5c6149ed.ctex"]
+dest_files=["res://.godot/imported/tuft_17.png-4b23602b5a4aa6a217474c7d5c6149ed.bptc.ctex"]
 
 [params]
 
-compress/mode=0
-compress/high_quality=false
+compress/mode=2
+compress/high_quality=true
 compress/lossy_quality=0.7
 compress/uastc_level=0
 compress/rdo_quality_loss=0.0

@@ -3,20 +3,21 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://25g8uo04efbj"
-path="res://.godot/imported/rock_11.png-08d008ee78a53440863491bf29e1e09f.ctex"
+path.bptc="res://.godot/imported/rock_11.png-08d008ee78a53440863491bf29e1e09f.bptc.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc"],
+"vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/decor/rock_11.png"
-dest_files=["res://.godot/imported/rock_11.png-08d008ee78a53440863491bf29e1e09f.ctex"]
+dest_files=["res://.godot/imported/rock_11.png-08d008ee78a53440863491bf29e1e09f.bptc.ctex"]
 
 [params]
 
-compress/mode=0
-compress/high_quality=false
+compress/mode=2
+compress/high_quality=true
 compress/lossy_quality=0.7
 compress/uastc_level=0
 compress/rdo_quality_loss=0.0

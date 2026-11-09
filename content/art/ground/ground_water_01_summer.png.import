@@ -3,20 +3,21 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://wcbw3j57n8xu"
-path="res://.godot/imported/ground_water_01_summer.png-990c0c8709f9a4ec3da5fd1b8ab6fb30.ctex"
+path.bptc="res://.godot/imported/ground_water_01_summer.png-990c0c8709f9a4ec3da5fd1b8ab6fb30.bptc.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc"],
+"vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/ground/ground_water_01_summer.png"
-dest_files=["res://.godot/imported/ground_water_01_summer.png-990c0c8709f9a4ec3da5fd1b8ab6fb30.ctex"]
+dest_files=["res://.godot/imported/ground_water_01_summer.png-990c0c8709f9a4ec3da5fd1b8ab6fb30.bptc.ctex"]
 
 [params]
 
-compress/mode=0
-compress/high_quality=false
+compress/mode=2
+compress/high_quality=true
 compress/lossy_quality=0.7
 compress/uastc_level=0
 compress/rdo_quality_loss=0.0

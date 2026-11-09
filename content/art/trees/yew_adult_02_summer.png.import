@@ -3,27 +3,28 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://ciulqrruward5"
-path="res://.godot/imported/yew_adult_02_summer.png-d669110a78f5224f2593ca4d05cd220f.ctex"
+path.bptc="res://.godot/imported/yew_adult_02_summer.png-d669110a78f5224f2593ca4d05cd220f.bptc.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc"],
+"vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/trees/yew_adult_02_summer.png"
-dest_files=["res://.godot/imported/yew_adult_02_summer.png-d669110a78f5224f2593ca4d05cd220f.ctex"]
+dest_files=["res://.godot/imported/yew_adult_02_summer.png-d669110a78f5224f2593ca4d05cd220f.bptc.ctex"]
 
 [params]
 
-compress/mode=0
-compress/high_quality=false
+compress/mode=2
+compress/high_quality=true
 compress/lossy_quality=0.7
 compress/uastc_level=0
 compress/rdo_quality_loss=0.0
 compress/hdr_compression=1
 compress/normal_map=0
 compress/channel_pack=0
-mipmaps/generate=false
+mipmaps/generate=true
 mipmaps/limit=-1
 roughness/mode=0
 roughness/src_normal=""

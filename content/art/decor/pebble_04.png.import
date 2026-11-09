@@ -3,20 +3,21 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://cr1bn3st6pb60"
-path="res://.godot/imported/pebble_04.png-83033a7fddfa3c466f4eb732b3385a8d.ctex"
+path.bptc="res://.godot/imported/pebble_04.png-83033a7fddfa3c466f4eb732b3385a8d.bptc.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc"],
+"vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/decor/pebble_04.png"
-dest_files=["res://.godot/imported/pebble_04.png-83033a7fddfa3c466f4eb732b3385a8d.ctex"]
+dest_files=["res://.godot/imported/pebble_04.png-83033a7fddfa3c466f4eb732b3385a8d.bptc.ctex"]
 
 [params]
 
-compress/mode=0
-compress/high_quality=false
+compress/mode=2
+compress/high_quality=true
 compress/lossy_quality=0.7
 compress/uastc_level=0
 compress/rdo_quality_loss=0.0
