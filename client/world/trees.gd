@@ -53,6 +53,15 @@ static func draw_shadow(canvas: CanvasItem, tree: Dictionary, height_cm: int, or
 	canvas.draw_texture_rect(shade(), Rect2(foot - base / 2.0, base), false, Color(1, 1, 1, FOOT_SHADE))
 
 
+## How much sharper than the hardware's pick the trees' images are read
+## (trees.gdshader's mip_bias) at `zoom`: a level sharper up close (zoom 1
+## and nearer), easing back to the hardware's own pick at zoom 0.5 and
+## farther, where the sharper level costs four times the reading and the
+## eye cannot see it.
+static func sharpness(zoom: float) -> float:
+	return -clampf((zoom - 0.5) / 0.5, 0.0, 1.0)
+
+
 ## The images of a kind of tree: `<id>_adult_01_summer.png`, `_02`, ...
 static func textures(species: String) -> Array:
 	if not _textures.has(species):
