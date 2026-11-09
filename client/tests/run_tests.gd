@@ -34,6 +34,7 @@ func _init() -> void:
 	_test_chunk_outline_decodes()
 	_test_the_ring_lies_outside_the_detail()
 	_test_the_camera_stops_at_the_band()
+	_test_the_view_follows_the_body_tile_by_tile()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -551,10 +552,10 @@ func _test_the_camera_stops_at_the_band() -> void:
 	var lo := Vector2(0, 0)
 	var hi := Vector2(416, 416)
 	var within := func(tile: Vector2) -> bool:
-		return tile.x >= lo.x - 3.01 and tile.y >= lo.y - 3.01 and tile.x <= hi.x + 3.01 and tile.y <= hi.y + 3.01
+		return tile.x >= lo.x - 4.01 and tile.y >= lo.y - 4.01 and tile.x <= hi.x + 4.01 and tile.y <= hi.y + 4.01
 	for view: Vector2 in [Vector2(1600, 900) / 0.4, Vector2(3840, 2160) / 0.4, Vector2(1280, 720)]:
 		for corners: float in [0.0, 1.0]:
-			var area := Iso.camera_area(lo, hi, view, 3.0, corners)
+			var area := Iso.camera_area(lo, hi, view, 4.0, corners)
 			_check(area.size.x > 0.0 and area.size.y > 0.0, "room to move at %s" % view)
 			var points := [Vector2(-1, 0), Vector2(1, 0), Vector2(0, -1), Vector2(0, 1)]
 			if corners == 1.0:
@@ -573,6 +574,22 @@ func _test_the_camera_stops_at_the_band() -> void:
 func _test_the_shore_field_holds_every_chunk_held() -> void:
 	var held := (2 * 7 + 1) * 32
 	_check(ShoreField.TILES >= held + 2 * ShoreField.MARGIN, "the bank texture is wider than the chunks held: %d" % ShoreField.TILES)
+
+
+## The limit of the view moves with the body, tile by tile, and stays
+## inside the ground held with room for the band and the fog.
+func _test_the_view_follows_the_body_tile_by_tile() -> void:
+	# 15 chunks held around chunk 50, as the server holds them.
+	var held := Rect2(Vector2(43, 43) * 32, Vector2(15, 15) * 32)
+	var body := Vector2(50 * 32 + 16.5, 50 * 32 + 16.5)
+	var limit := Iso.view_limit(body, 208.0, held, 4.0)
+	_check(limit.position == body - Vector2(208, 208) and limit.end == body + Vector2(208, 208), "208 tiles around the body: %s" % limit)
+	var step := Iso.view_limit(body + Vector2(1, 0), 208.0, held, 4.0)
+	_check(step.position.x == limit.position.x + 1.0, "a tile east, the limit a tile east")
+	for x in [0.0, 31.9]:
+		var at := Vector2(50 * 32 + x, 50 * 32 + 16.0)
+		var l := Iso.view_limit(at, 208.0, held, 4.0)
+		_check(l.position.x >= held.position.x + 4.0 and l.end.x <= held.end.x - 4.0, "inside the ground held at %s" % at)
 
 
 func _test_currents_decode() -> void:

@@ -82,3 +82,12 @@ static func camera_area(lo: Vector2, hi: Vector2, view: Vector2, band: float, co
 	var a := lo - Vector2(band, band) + Vector2(reach, reach)
 	var b := hi + Vector2(band, band) - Vector2(reach, reach)
 	return Rect2(a, b - a)
+
+
+## The limit of the view, in tiles: `reach` tiles around `centre` either
+## way, but never closer than `keep` tiles to the edge of the ground
+## `held`, so what lies past the limit (a band and the fog) is held too.
+static func view_limit(centre: Vector2, reach: float, held: Rect2, keep: float) -> Rect2:
+	var lo := Vector2(maxf(centre.x - reach, held.position.x + keep), maxf(centre.y - reach, held.position.y + keep))
+	var hi := Vector2(minf(centre.x + reach, held.end.x - keep), minf(centre.y + reach, held.end.y - keep))
+	return Rect2(lo, hi - lo)
