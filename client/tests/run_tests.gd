@@ -30,6 +30,7 @@ func _init() -> void:
 	_test_perf_overlay_reports()
 	_test_plants_are_named_and_coloured()
 	_test_trees_sharpness_eases_with_the_zoom()
+	_test_the_shore_field_holds_every_chunk_held()
 	_test_chunk_outline_decodes()
 	_test_the_ring_lies_outside_the_detail()
 
@@ -540,6 +541,15 @@ func _test_the_ring_lies_outside_the_detail() -> void:
 	_check(Iso.chunk_bounds(keys, {}) == Rect2i(-2, -2, 5, 5), "all held: 5 x 5")
 	_check(Iso.chunk_bounds(keys, ring) == Rect2i(-1, -1, 3, 3), "the detail: 3 x 3")
 	_check(Iso.chunk_bounds([], {}) == Rect2i(), "nothing held: empty")
+
+
+## The bank texture repeats every ShoreField.TILES: wider than the
+## chunks a client holds (the server's 13 × 13 view and its ring of
+## outline chunks, 17 across, with the margin read around a chunk), or
+## two chunks held would draw each other's banks.
+func _test_the_shore_field_holds_every_chunk_held() -> void:
+	var held := (2 * 8 + 1) * 32
+	_check(ShoreField.TILES >= held + 2 * ShoreField.MARGIN, "the bank texture is wider than the chunks held: %d" % ShoreField.TILES)
 
 
 func _test_currents_decode() -> void:
