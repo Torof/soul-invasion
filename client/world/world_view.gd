@@ -30,8 +30,9 @@ const VIEW_REACH := 192.0
 ## whole fog at VIEW_REACH (the project lead's call).
 const VEIL_TILES := 3.0
 ## Tiles of fog past the view, with nothing drawn under them; the camera
-## stops at their end, so no corner of the screen ever shows past them.
-const FOG_TILES := 3.0
+## stops at their end, so no corner of the screen ever shows past them
+## (6, the project lead's call: 3 did not read as fog enough).
+const FOG_TILES := 6.0
 ## Millimetres per tile, as the protocol defines fine points.
 const MM_PER_TILE := 1000.0
 
@@ -156,7 +157,6 @@ func _ready() -> void:
 	_standing = Node2D.new()
 	_standing.y_sort_enabled = true
 	_standing.material = sway
-	ChunkView.plant_material = sway
 	add_child(_standing)
 	Net.chunk_hidden.connect(_on_chunk_hidden)
 	Net.body_walks.connect(_on_body_walks)
@@ -434,9 +434,9 @@ func _update_held() -> void:
 ## Puts the limit of the view VIEW_REACH tiles around the piloted body
 ## (around the middle of the chunks held when watching), tile by tile as
 ## it walks, never past the chunks held. Its last VEIL_TILES tiles lie
-## under a veil that thickens into the fog (FarView), the ground flattening
-## and the trees fading under it (shaders); past it, FOG_TILES of fog, and
-## the camera stops.
+## under a veil, the fog's own colour, that thickens until it is whole
+## (FarView): the land keeps its colours and melts into the fog. Past
+## the limit, FOG_TILES of fog, and the camera stops.
 func _update_limit() -> void:
 	var all := _bounds()
 	if all.size == Vector2i.ZERO:
@@ -452,9 +452,6 @@ func _update_limit() -> void:
 	var veil := limit.grow(-VEIL_TILES)
 	if _far != null:
 		_far.set_held(veil.position, veil.end, VEIL_TILES, 1.0, 1.0)
-	RenderingServer.global_shader_parameter_set("detail_lo", veil.position)
-	RenderingServer.global_shader_parameter_set("detail_hi", veil.end)
-	RenderingServer.global_shader_parameter_set("detail_fade", VEIL_TILES)
 
 
 

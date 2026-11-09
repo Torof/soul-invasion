@@ -533,10 +533,10 @@ func _test_the_camera_stops_at_the_band() -> void:
 	var lo := Vector2(0, 0)
 	var hi := Vector2(416, 416)
 	var within := func(tile: Vector2) -> bool:
-		return tile.x >= lo.x - 3.01 and tile.y >= lo.y - 3.01 and tile.x <= hi.x + 3.01 and tile.y <= hi.y + 3.01
+		return tile.x >= lo.x - 6.01 and tile.y >= lo.y - 6.01 and tile.x <= hi.x + 6.01 and tile.y <= hi.y + 6.01
 	for view: Vector2 in [Vector2(1600, 900) / 0.4, Vector2(3840, 2160) / 0.4, Vector2(1280, 720)]:
 		for corners: float in [0.0, 1.0]:
-			var area := Iso.camera_area(lo, hi, view, 3.0, corners)
+			var area := Iso.camera_area(lo, hi, view, 6.0, corners)
 			_check(area.size.x > 0.0 and area.size.y > 0.0, "room to move at %s" % view)
 			var points := [Vector2(-1, 0), Vector2(1, 0), Vector2(0, -1), Vector2(0, 1)]
 			if corners == 1.0:
