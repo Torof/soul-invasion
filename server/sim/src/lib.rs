@@ -4,6 +4,14 @@
 //! The server feeds it intentions and asks it to advance a number of fixed
 //! ticks; it returns the events that happened. Same inputs, same outputs.
 
+// World generation is integer-only, so that a seed gives the same world on
+// every machine and every build (D24): float arithmetic is linted in the
+// whole crate (an error under `-D warnings`), and `clippy.toml` forbids the
+// float maths functions. New code is covered by default. Code that is not
+// generation (moving bodies, the time of day, content units) and the known
+// exceptions of today's generator allow floats where they stand.
+#![warn(clippy::float_arithmetic)]
+
 pub mod content;
 pub mod flora;
 // `gen` is a reserved keyword in the 2024 edition: the module is `r#gen`,
@@ -1220,7 +1228,8 @@ fn loaded_speed(movement: &Movement, load_g: u32) -> u32 {
     u32::try_from(100 - (100 - slowest) * load / full).expect("percent")
 }
 
-#[allow(clippy::cast_possible_truncation)]
+// Not generation: a body's walk is worked out in floats.
+#[allow(clippy::cast_possible_truncation, clippy::float_arithmetic)]
 fn walk(
     body: &mut Body,
     map: &Map,

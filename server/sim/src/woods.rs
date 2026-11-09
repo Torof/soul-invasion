@@ -22,9 +22,8 @@
 //! All arithmetic is in integers (thousandths), so a seed gives the same
 //! woods everywhere.
 
-// Generation is integer-only (invariant R7): no float arithmetic here,
-// and no float maths functions (`sim/clippy.toml`). No known exception.
-#![warn(clippy::float_arithmetic)]
+// Generation is integer-only (D24; linted from `lib.rs` and
+// `sim/clippy.toml`). No known exception.
 
 use crate::r#gen::{Groves, Lcg};
 use crate::map::{Rivers, Terrain};

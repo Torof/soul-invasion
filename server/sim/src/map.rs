@@ -10,13 +10,10 @@
 //! The grid is cut into square chunks of [`CHUNK_SIZE`] tiles, the unit
 //! of transfer and of interest (D08, D31).
 
-// Generation is integer-only (invariant R7): no float arithmetic here,
-// and no float maths functions (`sim/clippy.toml`). The terrain and the
-// waters have no exception. This module also holds geometry for moving
-// bodies, which is not generation: `FinePos::distance_to` and
-// `line_clear` are allowed where they stand, until they move out of the
-// generator's module.
-#![warn(clippy::float_arithmetic)]
+// Generation is integer-only (D24; linted from `lib.rs` and
+// `sim/clippy.toml`). The terrain and the waters have no exception. This
+// module also holds geometry for moving bodies, which is not generation:
+// `FinePos::distance_to` and `line_clear` allow floats where they stand.
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, VecDeque};
@@ -115,8 +112,7 @@ impl FinePos {
     }
 
     /// Straight-line distance to another position, in millimetres.
-    // Not generation (it moves bodies), so not an R7 exception to remove;
-    // allowed here because it sits in the generator's module.
+    // Not generation (it moves bodies): floats are allowed here, and stay.
     #[allow(clippy::disallowed_methods)]
     pub fn distance_to(self, other: Self) -> f64 {
         let dx = f64::from(other.x - self.x);
@@ -668,8 +664,8 @@ impl Map {
 /// Walks the tiles the segment passes through; where it goes exactly
 /// through a corner it may graze one disallowed tile but never slip
 /// between two.
-// Not generation (it pulls a walked path taut), so not an R7 exception
-// to remove; allowed here because it sits in the generator's module.
+// Not generation (it pulls a walked path taut): floats are allowed here,
+// and stay.
 #[allow(clippy::cast_possible_truncation, clippy::float_arithmetic)]
 pub fn line_clear(a: FinePos, b: FinePos, allowed: impl Fn(Pos) -> bool) -> bool {
     let scale = f64::from(MM_PER_TILE);

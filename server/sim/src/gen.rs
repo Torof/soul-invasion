@@ -4,8 +4,7 @@
 //! uses.
 //!
 //! A world must be the same on every machine and every build (D24), so
-//! everything here is integer arithmetic with wrapping operations: no
-//! float, no platform-dependent rounding, no dependency. The golden-value
+//! everything here is integer arithmetic: no float, no platform-dependent rounding, no dependency. The golden-value
 //! tests at the bottom pin each helper's outputs; a change that moves one
 //! of them changes every world, and must be made on purpose.
 //!
@@ -23,9 +22,11 @@
 //!   change; a lattice drawn from one stream depends on the map's size,
 //!   so these are to give way to [`hash`] and [`noise`] when the generator
 //!   is rewritten chunk by chunk.
-
-// No float in generation: see `clippy.toml` and the generator modules.
-#![warn(clippy::float_arithmetic)]
+//!
+//! The integer tables generation will need in place of float maths (sines,
+//! smoothstep, powers) are not here yet: each comes with its first user,
+//! when the generator is rewritten, so that its size and precision are
+//! chosen for that use.
 
 /// The odd constant of splitmix64 (2^64 divided by the golden ratio).
 const GOLDEN: u64 = 0x9e37_79b9_7f4a_7c15;

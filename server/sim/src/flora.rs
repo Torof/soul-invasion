@@ -27,11 +27,10 @@
     clippy::cast_precision_loss,
     clippy::cast_sign_loss
 )]
-// Generation is integer-only (invariant R7): no float arithmetic here,
-// and no float maths functions (`sim/clippy.toml`). Known exceptions,
-// each allowed where it stands, go when the generator is rewritten
-// (stage 1): the patch shapes of `lay_patch` and a host's reach in metres.
-#![warn(clippy::float_arithmetic)]
+// Generation is integer-only (D24; linted from `lib.rs` and
+// `sim/clippy.toml`). Known exceptions, each allowed where it stands, go
+// when the generator is rewritten: the patch shapes of `lay_patch` and a
+// host's reach in metres.
 
 use std::collections::BTreeMap;
 
@@ -530,8 +529,9 @@ pub fn plants_in(
                     continue;
                 }
                 if let Some(host) = &kind.host {
-                    // R7 exception, to go in stage 1: metres to millimetres
-                    // in floats (the content gives the reach in metres).
+                    // Float exception, to go when the generator is rewritten:
+                    // metres to millimetres in floats (the content gives the
+                    // reach in metres).
                     #[allow(clippy::float_arithmetic)]
                     let reach = (host.within_m * 1000.0) as i32;
                     let centre = pos.centre();
@@ -610,9 +610,9 @@ fn lay_patch(
             } else {
                 CLUMP_DENSITY
             };
-            // R7 exceptions, to go in stage 1: a clump's or a carpet's
-            // count, reach and thinning are worked out in floats, with
-            // `f64::hypot`.
+            // Float exceptions, to go when the generator is rewritten: a clump's or
+            // a carpet's count, reach and thinning are worked out in floats,
+            // with `f64::hypot`.
             #[allow(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
@@ -638,9 +638,9 @@ fn lay_patch(
                 .collect()
         }
         Grouping::Ring(r) => {
-            // R7 exceptions, to go in stage 1: a fairy ring's count, angles
-            // and wobble are worked out in floats, with `f32::sin` and
-            // `f32::cos`.
+            // Float exceptions, to go when the generator is rewritten: a fairy
+            // ring's count, angles and wobble are worked out in floats, with
+            // `f32::sin` and `f32::cos`.
             #[allow(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
