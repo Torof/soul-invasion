@@ -37,6 +37,8 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
+use crate::lru::Lru;
+
 /// How long a client has to finish the WebSocket upgrade, and then how
 /// long it has to send its `hello`.
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -52,6 +54,24 @@ pub const MAX_MESSAGE_BYTES: usize = 4096;
 /// following it tile by tile; its last tiles fade under a veil into a fog
 /// where the camera stops, with nothing drawn under the fog.
 pub const VIEW_RADIUS: i32 = 9;
+
+/// Chunks whose plants the server keeps at most, the least recently asked
+/// for forgotten first: four views' worth (4 × 19 × 19 = 1,444 chunks).
+///
+/// The plants of a chunk are placed again from the seed whenever they are
+/// asked for after being forgotten (`sim::flora`, a few milliseconds a
+/// chunk), identical, so the bound changes nothing on screen; only the
+/// memory is bounded, by this number rather than by the land visited
+/// (D39). Four views keep, for a lone player, the view around them and
+/// the land just left behind, so turning back costs nothing, and the
+/// camp's view warmed before the first connection; for a few players
+/// apart, a view each. Measured on the game's valley (9 November 2026), a
+/// chunk holds about 110 plants of 12 bytes, 500 at most: the cache holds
+/// about 2 MB, under 9 MB were every chunk the densest.
+pub const PLANT_CACHE_CHUNKS: usize = {
+    let side = 2 * VIEW_RADIUS.unsigned_abs() as usize + 1;
+    4 * side * side
+};
 
 /// How many published messages a slow client may fall behind before it
 /// starts missing some.
@@ -177,9 +197,11 @@ pub struct Shared {
     flora_wire: Vec<Option<u16>>,
     /// The seed the flora is placed with (the map's).
     flora_seed: u64,
-    /// The plants of the chunks asked for so far, placed once each (the
-    /// cost follows the chunks in use, never the map's size, D39).
-    plants: Mutex<BTreeMap<ChunkPos, Vec<PlantState>>>,
+    /// The plants of the chunks asked for lately, at most
+    /// [`PLANT_CACHE_CHUNKS`] chunks (the cost follows the chunks in use,
+    /// never the map's size nor the land visited, D39). Shared, so a hit
+    /// holds the lock only to find them, never to copy them.
+    plants: Mutex<Lru<ChunkPos, Arc<[PlantState]>>>,
     /// Is it night? Kept by the simulation thread.
     pub night: AtomicBool,
     /// Simulation ticks per game second.
@@ -393,7 +415,7 @@ impl Shared {
             flora_kinds: content.flora.clone(),
             flora_wire,
             flora_seed,
-            plants: Mutex::new(BTreeMap::new()),
+            plants: Mutex::new(Lru::new(PLANT_CACHE_CHUNKS)),
             night: AtomicBool::new(world.is_night(content)),
             ticks_per_second: world.calendar().ticks_per_second(),
             ticks_per_day: world.calendar().ticks_per_day(),
@@ -666,11 +688,19 @@ impl Shared {
         }
     }
 
-    /// The plants of a chunk (`sim::flora`), placed the first time the
-    /// chunk is asked for and kept.
+    /// The plants of a chunk (`sim::flora`), placed when the chunk is
+    /// asked for and kept while it is among the [`PLANT_CACHE_CHUNKS`]
+    /// asked for most recently. Placing them again gives the same plants,
+    /// so whether they were kept never shows.
     fn plants_in(&self, chunk: ChunkPos) -> Vec<PlantState> {
-        if let Some(plants) = self.plants.lock().expect("plants not poisoned").get(&chunk) {
-            return plants.clone();
+        let held = self
+            .plants
+            .lock()
+            .expect("plants not poisoned")
+            .get(&chunk)
+            .map(Arc::clone);
+        if let Some(plants) = held {
+            return plants.to_vec(); // copied with the lock released
         }
         let mut near = Vec::new();
         for dy in -1..=1 {
@@ -704,10 +734,13 @@ impl Shared {
                     })
                 })
                 .collect();
+        // Placed with the lock released: two connections missing the same
+        // chunk at once place the same plants, and the second insert only
+        // replaces the first.
         self.plants
             .lock()
             .expect("plants not poisoned")
-            .insert(chunk, plants.clone());
+            .insert(chunk, Arc::from(plants.as_slice()));
         plants
     }
 }
@@ -1368,6 +1401,46 @@ mod tests {
         };
         assert_eq!((cell, width, height, cells.len()), (8, 32, 32, 32 * 32));
         assert!(cells.starts_with('r'), "the cliff along the north");
+    }
+
+    #[test]
+    fn the_plants_kept_are_bounded_and_forgetting_them_changes_nothing() {
+        assert_eq!(PLANT_CACHE_CHUNKS, 4 * 19 * 19, "four views' worth");
+        // The repository's flora: the sample content has none.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+        let content = crate::content::load(&dir).expect("repository content");
+        let world = World::with_valley(Calendar::default(), &content, 768);
+        let never_forgets = Shared::new(&world, &content, 1, 1.0);
+        let mut forgets = Shared::new(&world, &content, 1, 1.0);
+        forgets.plants = Mutex::new(Lru::new(4));
+        let chunks: Vec<ChunkPos> = View::window(&forgets.map, forgets.map.camp().chunk())
+            .into_iter()
+            .take(12)
+            .collect();
+        let first: Vec<Vec<PlantState>> = chunks
+            .iter()
+            .map(|&chunk| {
+                let plants = forgets.plants_in(chunk);
+                assert!(forgets.plants.lock().unwrap().len() <= 4, "bounded");
+                plants
+            })
+            .collect();
+        assert!(
+            first.iter().filter(|p| !p.is_empty()).count() >= 4,
+            "the flora grows around the camp"
+        );
+        {
+            let kept = forgets.plants.lock().unwrap();
+            assert!(!kept.contains(&chunks[0]), "the first chunk was forgotten");
+            assert!(kept.contains(&chunks[11]), "the last is kept");
+        }
+        // Asked again, forgotten or kept: the same plants, the same as a
+        // server that never forgot.
+        for (&chunk, plants) in chunks.iter().zip(&first) {
+            assert_eq!(&forgets.plants_in(chunk), plants, "{chunk:?} placed again");
+            assert_eq!(&forgets.plants_in(chunk), plants, "{chunk:?} kept");
+            assert_eq!(&never_forgets.plants_in(chunk), plants, "{chunk:?}");
+        }
     }
 
     #[test]
