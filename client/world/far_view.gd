@@ -3,18 +3,18 @@ extends Node2D
 ## The land past the chunks held (D39, D40): the server's far view, one
 ## letter a cell (Protocol: far_view), drawn as a soft image under the
 ## chunks, its colours those of the ground's own textures, and a haze over
-## it that thickens with the distance from the ground held. At its edge
-## the haze also lies a little over the chunks, so the detailed ground
-## fades into the far land instead of stopping.
+## it that thickens with the distance from the ground held. The haze
+## starts at the edge of the ground held, never over it: the detailed
+## ground keeps its colours to its last tile (the project lead's call).
 
-## Haze colour, and how much of it at the edge of the ground held and far
+## Haze colour, and how much of it just past the ground held and far
 ## away.
 const HAZE := Color(0.78, 0.84, 0.86)
 const HAZE_EDGE := 0.5
 const HAZE_FAR := 0.68
-## Tiles over which the haze rises inside the ground held, and over which
-## it reaches its farthest.
-const HAZE_IN := 96.0
+## Tiles past the edge over which the haze rises to HAZE_EDGE, and over
+## which it reaches its farthest.
+const HAZE_IN := 24.0
 const HAZE_OUT := 700.0
 
 var _texture: ImageTexture
@@ -154,7 +154,8 @@ void fragment() {
 	vec2 out_lo = held_lo - t;
 	vec2 out_hi = t - held_hi;
 	float d = max(max(out_lo.x, out_hi.x), max(out_lo.y, out_hi.y));
-	float a = smoothstep(-rise_in, 0.0, d) * edge + smoothstep(0.0, reach, d) * (far_haze - edge);
+	// Nothing over the ground held (d <= 0): the haze starts at its edge.
+	float a = smoothstep(0.0, rise_in, d) * edge + smoothstep(rise_in, reach, d) * (far_haze - edge);
 	COLOR = vec4(haze, a);
 }
 """ % [HAZE.r, HAZE.g, HAZE.b, HAZE_EDGE, HAZE_FAR, HAZE_IN, HAZE_OUT]
