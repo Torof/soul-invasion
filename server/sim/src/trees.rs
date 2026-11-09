@@ -13,10 +13,16 @@
 //!   the place: a smooth noise per species, about `STAND_CELL` tiles
 //!   across. Trees of one kind come in groups that mix at their borders.
 
+// Generation is integer-only (D24; linted from `lib.rs` and
+// `sim/clippy.toml`). Known exceptions, allowed where they stand, to go
+// when the generator is rewritten: `shown_m`, the drawn height, with its
+// `powf`, and the crown's radius in `room_mm`.
+
 use serde::{Deserialize, Serialize};
 
 use crate::content::Species;
-use crate::map::{FinePos, Groves, Lcg, MM_PER_TILE, Map, Pos, Terrain};
+use crate::r#gen::{Groves, Lcg};
+use crate::map::{FinePos, MM_PER_TILE, Map, Pos, Terrain};
 use crate::woods::Habitat;
 
 /// A tree standing on the ground.
@@ -47,6 +53,9 @@ const SPACING: u32 = 750;
 
 /// The height a tree `metres` tall is drawn at (the client's
 /// `Scale.shown`, D40): true under 3 m, eased above.
+// Float exception, to go when the generator is rewritten: the eased height is worked out in
+// floats, with `f32::powf` (a square root).
+#[allow(clippy::float_arithmetic, clippy::disallowed_methods)]
 fn shown_m(metres: f32) -> f32 {
     if metres <= 3.0 {
         metres
@@ -59,7 +68,9 @@ fn shown_m(metres: f32) -> f32 {
 /// millimetres, in the densest heart; thinner woods space their trees
 /// wider (`spread`).
 fn room_mm(species: &Species) -> i64 {
-    #[allow(clippy::cast_possible_truncation)]
+    // Float exception, to go when the generator is rewritten: the crown's
+    // radius in floats, from the height in metres.
+    #[allow(clippy::cast_possible_truncation, clippy::float_arithmetic)]
     let crown =
         (shown_m(species.height_m) * f32::from(u16::try_from(CROWN).expect("small"))) as i64;
     crown * i64::from(SPACING) / 1000

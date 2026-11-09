@@ -49,7 +49,12 @@ pub struct Look {
 
 impl Material {
     /// Mass of one piece, in grams.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    // Not generation: content gives masses in kilograms, read once.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::float_arithmetic
+    )]
     pub fn mass_g(&self) -> u32 {
         (self.mass_kg * 1000.0).round().clamp(0.0, 1e9) as u32
     }
