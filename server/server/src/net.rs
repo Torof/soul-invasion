@@ -215,20 +215,17 @@ pub struct Shared {
     ticks_per_day: u64,
     /// How many times faster than real time the server runs, in thousandths.
     time_scale_permille: u32,
-    /// Items on the ground, by chunk, kept by the simulation thread: the
-    /// stored ones from the start, the ground's natural ones added the
-    /// first time a chunk is sent ([`sim::items`]).
+    /// The stored items on the ground, by chunk, kept by the simulation
+    /// thread. The ground's natural ones are not here: they are made again
+    /// each time a chunk is sent ([`sim::items`]), so this holds what was
+    /// dropped, never the land visited (D39).
     items: Mutex<BTreeMap<ChunkPos, Vec<ItemState>>>,
     /// What the ground's natural items are made from: whether this world
     /// has them, the spawn rules, the seed.
     natural: Option<(Vec<sim::content::Spawn>, u64)>,
-    /// The chunks whose natural items are in `items`, and the natural
-    /// items taken off the ground (they must not appear when a chunk is
-    /// sent for the first time).
-    natural_done: Mutex<(
-        std::collections::BTreeSet<ChunkPos>,
-        std::collections::BTreeSet<ItemId>,
-    )>,
+    /// The natural items taken off the ground: left out when their chunk
+    /// is sent. It grows with what bodies pick up, never with the land.
+    natural_taken: Mutex<std::collections::BTreeSet<ItemId>>,
     /// Connections served at once, at most.
     max_connections: usize,
     /// Connections currently served.
@@ -427,7 +424,7 @@ impl Shared {
             natural: world
                 .has_natural_items()
                 .then(|| (content.spawns.clone(), world.seed())),
-            natural_done: Mutex::new((std::collections::BTreeSet::new(), world.taken().clone())),
+            natural_taken: Mutex::new(world.taken().clone()),
             max_connections,
             connections: AtomicUsize::new(0),
             intentions: Mutex::new(BTreeMap::new()),
@@ -518,14 +515,15 @@ impl Shared {
 
     /// Forgets an item that was on the ground.
     pub fn item_removed(&self, item: ItemId, at: Pos) {
-        // Held while the item goes: a chunk laid at the same moment either
-        // sees it taken or has already put it where it is removed from.
-        let mut done = self
-            .natural_done
+        // Held while the item goes, as `ground_items` holds it while it
+        // gathers a chunk's: a chunk sent at the same moment sees the item
+        // either there or gone, never twice.
+        let mut taken = self
+            .natural_taken
             .lock()
             .expect("natural items not poisoned");
         if sim::items::is_natural(item) {
-            done.1.insert(item);
+            taken.insert(item);
         }
         if let Some(items) = self
             .items
@@ -676,18 +674,11 @@ impl Shared {
     /// The message carrying a chunk and the bodies in it.
     fn chunk_message(&self, chunk: ChunkPos) -> Option<ServerMessage> {
         let tiles = self.map.chunk(chunk)?;
-        // Copied first, in a statement of its own: a lock taken inside the
-        // message's literal would stay held to the literal's end, and the
-        // simulation thread would wait on it while the plants are placed
-        // (D29).
-        self.lay_natural_items(chunk);
-        let items = self
-            .items
-            .lock()
-            .expect("items not poisoned")
-            .get(&chunk)
-            .cloned()
-            .unwrap_or_default();
+        // Gathered first, in a statement of its own: a lock taken inside
+        // the message's literal would stay held to the literal's end, and
+        // the simulation thread would wait on it while the plants are
+        // placed (D29).
+        let items = self.ground_items(chunk);
         Some(ServerMessage::Chunk {
             x: chunk.x,
             y: chunk.y,
@@ -700,34 +691,25 @@ impl Shared {
         })
     }
 
-    /// Adds the ground's natural items of `chunk` to `items`, the first
-    /// time it is sent, those taken excepted.
-    fn lay_natural_items(&self, chunk: ChunkPos) {
-        let Some((spawns, seed)) = &self.natural else {
-            return;
-        };
-        if self
-            .natural_done
-            .lock()
-            .expect("natural items not poisoned")
-            .0
-            .contains(&chunk)
-        {
-            return;
-        }
-        // Made outside any lock; laid under the lock `item_removed` holds,
-        // so an item taken meanwhile is left out.
-        let natural = sim::items::natural_items(&self.map, spawns, *seed, chunk);
-        let mut done = self
-            .natural_done
+    /// The items lying in `chunk`: the ground's natural ones, made again
+    /// from the seed and the spawn rules ([`sim::items`]), those taken
+    /// excepted, then the stored ones.
+    fn ground_items(&self, chunk: ChunkPos) -> Vec<ItemState> {
+        // Made outside any lock.
+        let natural = self
+            .natural
+            .as_ref()
+            .map(|(spawns, seed)| sim::items::natural_items(&self.map, spawns, *seed, chunk))
+            .unwrap_or_default();
+        // Filtered and gathered under the lock `item_removed` holds, so an
+        // item taken meanwhile shows either here or nowhere.
+        let taken = self
+            .natural_taken
             .lock()
             .expect("natural items not poisoned");
-        if !done.0.insert(chunk) {
-            return;
-        }
-        let laid = natural
+        let mut items: Vec<ItemState> = natural
             .into_iter()
-            .filter(|i| !done.1.contains(&i.id()))
+            .filter(|i| !taken.contains(&i.id()))
             .filter_map(|i| {
                 let pos = i.pos()?;
                 Some(ItemState {
@@ -736,13 +718,15 @@ impl Shared {
                     y: pos.y,
                     material: i.material().to_owned(),
                 })
-            });
-        self.items
-            .lock()
-            .expect("items not poisoned")
-            .entry(chunk)
-            .or_default()
-            .extend(laid);
+            })
+            .collect();
+        if let Some(stored) = self.items.lock().expect("items not poisoned").get(&chunk) {
+            items.extend(stored.iter().cloned());
+        }
+        drop(taken);
+        // In the order of their ids, as the simulation lists them.
+        items.sort_by_key(|i| i.id);
+        items
     }
 
     /// The trees standing in `chunk`, placed from the map and the seed
@@ -1592,6 +1576,37 @@ mod tests {
             panic!("expected a chunk");
         };
         assert!(!items.contains(&corpse));
+    }
+
+    #[test]
+    fn natural_items_are_made_per_chunk_and_never_held() {
+        let world = World::with_valley(Calendar::default(), &Content::sample(), 768);
+        let shared = Shared::new(&world, &Content::sample(), 1, 1.0);
+        let camp = world.map().camp().chunk();
+        let mut natural = None;
+        for chunk in View::window(&shared.map, camp) {
+            let Some(ServerMessage::Chunk { items, trees, .. }) = shared.chunk_message(chunk)
+            else {
+                panic!("expected a chunk");
+            };
+            // The same items and trees as the world's.
+            let ids: Vec<u64> = world.items_in(chunk).iter().map(|i| i.id().0).collect();
+            assert_eq!(items.iter().map(|i| i.id).collect::<Vec<_>>(), ids);
+            assert_eq!(trees.len(), world.trees_in(chunk).len());
+            natural = natural.or_else(|| items.first().map(|i| (chunk, i.clone())));
+        }
+        // Sending the land held nothing: only the stored items are kept.
+        assert!(shared.items.lock().unwrap().is_empty());
+        // One taken stays gone, sent again or not.
+        let (chunk, item) = natural.expect("some natural item around the camp");
+        assert!(sim::items::is_natural(ItemId(item.id)));
+        shared.item_removed(ItemId(item.id), Pos::new(item.x, item.y));
+        for _ in 0..2 {
+            let Some(ServerMessage::Chunk { items, .. }) = shared.chunk_message(chunk) else {
+                panic!("expected a chunk");
+            };
+            assert!(items.iter().all(|i| i.id != item.id));
+        }
     }
 
     #[test]
