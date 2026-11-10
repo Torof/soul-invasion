@@ -190,6 +190,13 @@ func _ready() -> void:
 	Net.connected.connect(func(_tick: int, body: int) -> void: _piloted = body)
 
 
+## The trees' canvas items belong to no node: given back and freed here.
+func _exit_tree() -> void:
+	for stand: Trees.Stand in _trees.values():
+		stand.release()
+	Trees.free_pool()
+
+
 func _on_world_state(width: int, height: int, chunk_size: int, materials: Array, night: bool) -> void:
 	_width = width
 	_height = height

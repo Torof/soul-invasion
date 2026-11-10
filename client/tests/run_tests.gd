@@ -1085,3 +1085,5 @@ func _test_trees_sort_with_bodies_by_their_foot() -> void:
 	_check(stand.items.size() == stand.size() - 1, "every tree in view has its canvas item")
 	stand.release()
 	holder.free()
+	Trees.free_pool()
+	_check(Trees._pool.is_empty(), "the pool is freed with the world")

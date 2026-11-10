@@ -134,6 +134,13 @@ static var _pool: Array[RID] = []
 const POOL_MOST := 4096
 
 
+## Frees the canvas items kept for trees to come (the world is going).
+static func free_pool() -> void:
+	for item: RID in _pool:
+		RenderingServer.free_rid(item)
+	_pool.clear()
+
+
 ## The trees of one chunk, as light as can be (D39): packed arrays, no node
 ## and no dictionary per tree. Only the trees whose image may show on screen
 ## have a canvas item, given as the view moves, by cells of the screen
