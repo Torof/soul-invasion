@@ -52,6 +52,15 @@ fn content_dir() -> &'static std::path::Path {
     })
 }
 
+/// The items lying in the standard world: the ground's, made per chunk.
+fn ground_items(world: &World) -> Vec<sim::Item> {
+    let side = i32::try_from(VALLEY.div_ceil(CHUNK_SIZE)).expect("few chunks");
+    (0..side)
+        .flat_map(|y| (0..side).map(move |x| ChunkPos::new(x, y)))
+        .flat_map(|c| world.items_in(c))
+        .collect()
+}
+
 fn rules() -> sim::Content {
     server::content::load(content_dir()).expect("the tests' content")
 }
@@ -1189,7 +1198,18 @@ async fn eating_takes_an_item_within_reach_and_refuses_the_rest() {
     let body = body.expect("pilots body 1");
 
     // An item far away cannot be eaten from here.
-    send(&mut pilot, &ClientMessage::Eat { item: 1 }).await;
+    let world = standard_world();
+    let here = start_of(world, body);
+    let far = ground_items(world)
+        .into_iter()
+        .max_by_key(|i| {
+            let p = i.pos().expect("on the ground");
+            (p.x - here.x).abs() + (p.y - here.y).abs()
+        })
+        .expect("items in the valley")
+        .id()
+        .0;
+    send(&mut pilot, &ClientMessage::Eat { item: far }).await;
     let refused = wait_for(&mut pilot, |m| match m {
         ServerMessage::ActRefused {
             body: who,
@@ -1200,16 +1220,15 @@ async fn eating_takes_an_item_within_reach_and_refuses_the_rest() {
         _ => None,
     })
     .await;
-    assert_eq!(refused, (1, protocol::Refusal::OutOfReach));
+    assert_eq!(refused, (far, protocol::Refusal::OutOfReach));
 
     // Walk to the nearest berries, then eat them: the watcher sees them go.
     let world = standard_world();
     let rules = rules();
     let start = start_of(world, body);
     let around = reachable(world, start);
-    let berries = world
-        .items()
-        .iter()
+    let berries = ground_items(world)
+        .into_iter()
         .filter(|i| {
             rules
                 .material(i.material())
@@ -1310,9 +1329,8 @@ async fn picking_up_tells_the_pilot_its_inventory_and_everyone_what_is_in_hand()
     // hand, and the watcher sees the hand.
     let world = standard_world();
     let start = start_of(world, body);
-    let nearest = world
-        .items()
-        .iter()
+    let nearest = ground_items(world)
+        .into_iter()
         .min_by_key(|i| {
             let p = i.pos().expect("on the ground");
             (p.x - start.x).abs() + (p.y - start.y).abs()

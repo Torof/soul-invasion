@@ -213,8 +213,20 @@ pub struct Shared {
     ticks_per_day: u64,
     /// How many times faster than real time the server runs, in thousandths.
     time_scale_permille: u32,
-    /// Items on the ground, by chunk, kept by the simulation thread.
+    /// Items on the ground, by chunk, kept by the simulation thread: the
+    /// stored ones from the start, the ground's natural ones added the
+    /// first time a chunk is sent ([`sim::items`]).
     items: Mutex<BTreeMap<ChunkPos, Vec<ItemState>>>,
+    /// What the ground's natural items are made from: whether this world
+    /// has them, the spawn rules, the seed.
+    natural: Option<(Vec<sim::content::Spawn>, u64)>,
+    /// The chunks whose natural items are in `items`, and the natural
+    /// items taken off the ground (they must not appear when a chunk is
+    /// sent for the first time).
+    natural_done: Mutex<(
+        std::collections::BTreeSet<ChunkPos>,
+        std::collections::BTreeSet<ItemId>,
+    )>,
     /// Connections served at once, at most.
     max_connections: usize,
     /// Connections currently served.
@@ -424,6 +436,10 @@ impl Shared {
             ticks_per_day: world.calendar().ticks_per_day(),
             time_scale_permille: permille(time_scale),
             items: Mutex::new(items),
+            natural: world
+                .has_natural_items()
+                .then(|| (content.spawns.clone(), world.seed())),
+            natural_done: Mutex::new((std::collections::BTreeSet::new(), world.taken().clone())),
             max_connections,
             connections: AtomicUsize::new(0),
             intentions: Mutex::new(BTreeMap::new()),
@@ -514,6 +530,15 @@ impl Shared {
 
     /// Forgets an item that was on the ground.
     pub fn item_removed(&self, item: ItemId, at: Pos) {
+        // Held while the item goes: a chunk laid at the same moment either
+        // sees it taken or has already put it where it is removed from.
+        let mut done = self
+            .natural_done
+            .lock()
+            .expect("natural items not poisoned");
+        if sim::items::is_natural(item) {
+            done.1.insert(item);
+        }
         if let Some(items) = self
             .items
             .lock()
@@ -667,6 +692,7 @@ impl Shared {
         // message's literal would stay held to the literal's end, and the
         // simulation thread would wait on it while the plants are placed
         // (D29).
+        self.lay_natural_items(chunk);
         let items = self
             .items
             .lock()
@@ -684,6 +710,51 @@ impl Shared {
             plants: self.plants_in(chunk),
             currents: self.map.chunk_currents(chunk)?,
         })
+    }
+
+    /// Adds the ground's natural items of `chunk` to `items`, the first
+    /// time it is sent, those taken excepted.
+    fn lay_natural_items(&self, chunk: ChunkPos) {
+        let Some((spawns, seed)) = &self.natural else {
+            return;
+        };
+        if self
+            .natural_done
+            .lock()
+            .expect("natural items not poisoned")
+            .0
+            .contains(&chunk)
+        {
+            return;
+        }
+        // Made outside any lock; laid under the lock `item_removed` holds,
+        // so an item taken meanwhile is left out.
+        let natural = sim::items::natural_items(&self.map, spawns, *seed, chunk);
+        let mut done = self
+            .natural_done
+            .lock()
+            .expect("natural items not poisoned");
+        if !done.0.insert(chunk) {
+            return;
+        }
+        let laid = natural
+            .into_iter()
+            .filter(|i| !done.1.contains(&i.id()))
+            .filter_map(|i| {
+                let pos = i.pos()?;
+                Some(ItemState {
+                    id: i.id().0,
+                    x: pos.x,
+                    y: pos.y,
+                    material: i.material().to_owned(),
+                })
+            });
+        self.items
+            .lock()
+            .expect("items not poisoned")
+            .entry(chunk)
+            .or_default()
+            .extend(laid);
     }
 
     /// Places the plants of the view around the camp (where the first

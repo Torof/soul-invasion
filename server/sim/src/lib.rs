@@ -14,6 +14,7 @@
 
 pub mod content;
 pub mod flora;
+pub mod items;
 // `gen` is a reserved keyword in the 2024 edition: the module is `r#gen`,
 // its file `gen.rs`.
 pub(crate) mod r#gen;
@@ -22,7 +23,7 @@ pub mod time;
 pub mod trees;
 pub mod woods;
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeSet, VecDeque};
 
 pub use content::{
     Content, ContentError, Food, Look, Material, MaterialKind, Movement, Needs, Spawn,
@@ -546,8 +547,22 @@ pub struct World {
     map: Map,
     bodies: Vec<Body>,
     next_body: u32,
+    /// The items a body has touched, made or let fall: stored. The ground's
+    /// own (dead wood, pebbles) are made per chunk and never stored
+    /// ([`items`]).
     items: Vec<Item>,
     next_item: u64,
+    /// Whether the ground drops natural items ([`items`]); false for worlds
+    /// made before them, whose scattered items are all in `items`.
+    #[serde(default)]
+    natural: bool,
+    /// The natural items taken off the ground: they do not come back.
+    #[serde(default)]
+    taken: BTreeSet<ItemId>,
+    /// The content's spawn rules the natural items follow, set with the
+    /// trees ([`World::plant`]). Never persisted.
+    #[serde(skip)]
+    spawns: Vec<content::Spawn>,
     /// Intentions received since the last tick, applied in order at the
     /// start of the next one. Never persisted: a restart drops them.
     #[serde(skip)]
@@ -586,49 +601,9 @@ impl World {
                 .expect("the valley has grass");
             world.spawn_body(pos);
         }
-        world.scatter(content, VALLEY_SEED);
+        world.natural = true;
         world.plant(content);
         world
-    }
-
-    /// Lays the content's materials on the ground following its spawn
-    /// rules, deterministically for a given seed: tile by tile, rule by
-    /// rule, a piece lands with the rule's probability.
-    fn scatter(&mut self, content: &Content, seed: u64) {
-        let mut rng = r#gen::Lcg::new(seed ^ 0x5eed_17e5);
-        // Distance of every tile to each terrain some rule wants to be near,
-        // out to the farthest any rule asks: nothing beyond is ever read.
-        let mut farthest: BTreeMap<Terrain, u32> = BTreeMap::new();
-        for near in content.spawns.iter().filter_map(|s| s.near) {
-            let limit = farthest.entry(near.terrain).or_insert(0);
-            *limit = (*limit).max(near.within);
-        }
-        let distances: BTreeMap<Terrain, Vec<u32>> = farthest
-            .into_iter()
-            .map(|(terrain, limit)| (terrain, self.map.distance_within(terrain, limit)))
-            .collect();
-        let (width, height) = (self.map.width(), self.map.height());
-        for y in 0..height {
-            for x in 0..width {
-                let pos = Pos::new(
-                    i32::try_from(x).expect("map fits in i32"),
-                    i32::try_from(y).expect("map fits in i32"),
-                );
-                let index = (y * width + x) as usize;
-                let terrain = self.map.get(pos).expect("inside the map");
-                for spawn in &content.spawns {
-                    if spawn.terrain != terrain {
-                        continue;
-                    }
-                    let close_enough = spawn
-                        .near
-                        .is_none_or(|near| distances[&near.terrain][index] <= near.within);
-                    if close_enough && rng.next_below(1000) < spawn.per_thousand {
-                        self.spawn_item(&spawn.material, pos);
-                    }
-                }
-            }
-        }
     }
 
     /// Creates a world on a given map with no bodies.
@@ -641,6 +616,9 @@ impl World {
             next_body: 1,
             items: Vec::new(),
             next_item: 1,
+            natural: false,
+            taken: BTreeSet::new(),
+            spawns: Vec::new(),
             pending: Vec::new(),
             trees: Vec::new(),
         }
@@ -654,6 +632,7 @@ impl World {
             MapSpec::Filled { .. } => 0,
         };
         self.trees = trees::plant(&self.map, &content.species, seed);
+        self.spawns.clone_from(&content.spawns);
     }
 
     /// The trees standing.
@@ -691,21 +670,77 @@ impl World {
         self.bodies.iter().find(|b| b.id == id)
     }
 
-    /// Every item on the ground, in id order.
+    /// The stored items: those a body touched, made or let fall, carried or
+    /// on the ground, in the order they were stored. The ground's natural
+    /// items are not among them until taken ([`World::items_in`]).
     pub fn items(&self) -> &[Item] {
         &self.items
     }
 
-    /// The items lying on the ground in a chunk, in id order.
-    pub fn items_in(&self, chunk: ChunkPos) -> impl Iterator<Item = &Item> {
-        self.items
-            .iter()
-            .filter(move |i| i.pos().is_some_and(|p| p.chunk() == chunk))
+    /// Whether the ground drops natural items (worlds made since 10
+    /// November 2026).
+    pub fn has_natural_items(&self) -> bool {
+        self.natural
     }
 
-    /// An item by id.
+    /// The natural items taken off the ground.
+    pub fn taken(&self) -> &BTreeSet<ItemId> {
+        &self.taken
+    }
+
+    /// The seed the ground's natural items are made with: the map's.
+    pub fn seed(&self) -> u64 {
+        match self.map.spec() {
+            MapSpec::Valley { seed, .. } => seed,
+            MapSpec::Filled { .. } => 0,
+        }
+    }
+
+    /// The ground's natural items of `chunk` still there, if this world
+    /// has them.
+    fn natural_in(&self, chunk: ChunkPos) -> Vec<Item> {
+        if !self.natural {
+            return Vec::new();
+        }
+        let mut natural = items::natural_items(&self.map, &self.spawns, self.seed(), chunk);
+        natural.retain(|i| !self.taken.contains(&i.id));
+        natural
+    }
+
+    /// The items lying on the ground in a chunk, stored and natural, in id
+    /// order.
+    pub fn items_in(&self, chunk: ChunkPos) -> Vec<Item> {
+        let mut here: Vec<Item> = self
+            .items
+            .iter()
+            .filter(|i| i.pos().is_some_and(|p| p.chunk() == chunk))
+            .cloned()
+            .collect();
+        here.extend(self.natural_in(chunk));
+        here.sort_by_key(|i| i.id);
+        here
+    }
+
+    /// A stored item by id (natural items are stored once taken).
     pub fn item(&self, id: ItemId) -> Option<&Item> {
         self.items.iter().find(|i| i.id == id)
+    }
+
+    /// Makes the natural item `id` a stored one, lying where it was, and
+    /// remembers it was taken: what a body does with it is then done to a
+    /// stored item. Nothing when it is not a natural item still there.
+    fn materialise(&mut self, id: ItemId) {
+        if !items::is_natural(id) || self.taken.contains(&id) {
+            return;
+        }
+        if let Some(item) = self
+            .natural_in(items::chunk_of(id))
+            .into_iter()
+            .find(|i| i.id == id)
+        {
+            self.items.push(item);
+            self.taken.insert(id);
+        }
     }
 
     /// Grams a body carries in all, under the content's masses.
@@ -757,12 +792,23 @@ impl World {
             >= u64::from(rules.needs.night_from_percent) * self.calendar.ticks_per_day()
     }
 
-    /// Items lying on `pos` or on one of its eight neighbours, in id order.
-    pub fn items_within_reach(&self, pos: Pos) -> impl Iterator<Item = &Item> {
-        self.items.iter().filter(move |i| {
-            i.pos()
-                .is_some_and(|p| (p.x - pos.x).abs() <= 1 && (p.y - pos.y).abs() <= 1)
-        })
+    /// Items lying on `pos` or on one of its eight neighbours, stored and
+    /// natural, in id order.
+    pub fn items_within_reach(&self, pos: Pos) -> Vec<Item> {
+        let near = |p: Pos| (p.x - pos.x).abs() <= 1 && (p.y - pos.y).abs() <= 1;
+        let mut chunks: Vec<ChunkPos> = [(-1, -1), (1, 1), (-1, 1), (1, -1)]
+            .iter()
+            .map(|(dx, dy)| Pos::new(pos.x + dx, pos.y + dy).chunk())
+            .collect();
+        chunks.sort_unstable_by_key(|c| (c.x, c.y));
+        chunks.dedup();
+        let mut here: Vec<Item> = chunks
+            .into_iter()
+            .flat_map(|c| self.items_in(c))
+            .filter(|i| i.pos().is_some_and(near))
+            .collect();
+        here.sort_by_key(|i| i.id);
+        here
     }
 
     /// Takes an item off the ground, if it is there.
@@ -908,6 +954,16 @@ impl World {
     }
 
     fn apply(&mut self, intention: &Intention, rules: &Content, events: &mut Vec<Event>) {
+        // An act on a natural item makes it a stored one first, then goes
+        // as for any other.
+        if let Intention::Eat { item, .. }
+        | Intention::PickUp { item, .. }
+        | Intention::Drop { item, .. }
+        | Intention::Hold { item, .. }
+        | Intention::Stow { item, .. } = *intention
+        {
+            self.materialise(item);
+        }
         match *intention {
             Intention::MoveTo { body: id, target } => {
                 let Some(index) = self.bodies.iter().position(|b| b.id == id) else {
@@ -1690,38 +1746,39 @@ mod tests {
     }
 
     #[test]
-    fn items_are_scattered_by_the_spawn_rules_deterministically() {
+    fn the_ground_drops_natural_items_by_the_spawn_rules() {
         let content = Content::sample();
         let a = World::with_valley(Calendar::default(), &content, 768);
+        // None stored: the ground makes them per chunk.
+        assert_eq!(a.items(), []);
+        assert!(a.has_natural_items());
+        let chunks = || (0..24).flat_map(|y| (0..24).map(move |x| ChunkPos::new(x, y)));
+        let all: Vec<Item> = chunks().flat_map(|c| a.items_in(c)).collect();
         let b = World::with_valley(Calendar::default(), &content, 768);
-        assert_eq!(a.items(), b.items());
-        assert!(a.items().len() > 100, "{} items", a.items().len());
-        // Every item obeys a rule: branches in the forest, berries on grass
-        // within two tiles of it.
-        let to_forest = a.map().distance_to(Terrain::Forest);
-        for item in a.items() {
-            let terrain = a.map().get(item.pos().unwrap()).unwrap();
+        assert_eq!(
+            all,
+            chunks().flat_map(|c| b.items_in(c)).collect::<Vec<_>>()
+        );
+        // Every item obeys a rule: on its terrain, near what it must be.
+        for item in &all {
+            let pos = item.pos().unwrap();
             let rule = content
                 .spawns
                 .iter()
                 .find(|s| s.material == item.material())
                 .expect("a rule for each material laid down");
-            assert_eq!(terrain, rule.terrain, "{item:?}");
+            assert_eq!(a.map().get(pos), Some(rule.terrain), "{item:?}");
             if let Some(near) = rule.near {
-                let pos = item.pos().unwrap();
-                let index =
-                    usize::try_from(pos.y * i32::try_from(a.map().width()).unwrap() + pos.x)
-                        .unwrap();
+                let r = i32::try_from(near.within).unwrap();
                 assert!(
-                    to_forest[index] <= near.within,
-                    "{item:?} is far from the forest"
+                    (-r..=r).any(|dy| (-r..=r)
+                        .any(|dx| a.map().get(Pos::new(pos.x + dx, pos.y + dy))
+                            == Some(near.terrain))),
+                    "{item:?} is far from its {:?}",
+                    near.terrain
                 );
             }
         }
-        assert!(
-            a.items().iter().any(|i| i.material() == "berries"),
-            "the edges do grow berries"
-        );
         // Densities land near their rule, over tens of thousands of tiles.
         let forest = a
             .map()
@@ -1729,23 +1786,57 @@ mod tests {
             .iter()
             .filter(|t| **t == Terrain::Forest)
             .count();
-        let branches = a
-            .items()
-            .iter()
-            .filter(|i| i.material() == "branch")
-            .count();
+        let branches = all.iter().filter(|i| i.material() == "branch").count();
         let per_thousand = branches * 1000 / forest;
         assert!(
             (45..=75).contains(&per_thousand),
             "{per_thousand}‰ branches"
         );
-        // Items are found by chunk.
-        let first = &a.items()[0];
+        assert_eq!(a.items_in(ChunkPos::new(-1, -1)), [] as [Item; 0]);
+    }
+
+    #[test]
+    fn a_natural_item_taken_is_stored_and_never_comes_back() {
+        let content = Content::sample();
+        let mut w = World::with_valley(Calendar::new(10, 100_000).unwrap(), &content, 768);
+        // A natural item, and a body set beside it.
+        let item = (0..24)
+            .flat_map(|y| (0..24).map(move |x| ChunkPos::new(x, y)))
+            .flat_map(|c| w.items_in(c))
+            .find(|i| {
+                let p = i.pos().unwrap();
+                w.map().is_passable(p)
+            })
+            .expect("a natural item on walkable ground");
+        let at = item.pos().unwrap();
+        assert!(items::is_natural(item.id()));
+        let body = w.spawn_body(at);
+        w.queue(Intention::PickUp {
+            body,
+            item: item.id(),
+        });
+        let mut events = Vec::new();
+        w.step(&content, &mut events);
         assert!(
-            a.items_in(first.pos().unwrap().chunk())
-                .any(|i| i.id() == first.id())
+            events
+                .iter()
+                .any(|e| matches!(e, Event::ItemRemoved { item: i, .. } if *i == item.id())),
+            "{events:?}"
         );
-        assert_eq!(a.items_in(ChunkPos::new(-1, -1)).count(), 0);
+        // Carried now, stored, and gone from its chunk for good.
+        assert!(w.body(body).unwrap().has(item.id()));
+        assert!(w.item(item.id()).is_some());
+        assert!(w.taken().contains(&item.id()));
+        assert!(w.items_in(at.chunk()).iter().all(|i| i.id() != item.id()));
+        // Through a save and a load: the same.
+        let mut back: World = serde_json::from_str(&serde_json::to_string(&w).unwrap()).unwrap();
+        back.plant(&content);
+        assert!(
+            back.items_in(at.chunk())
+                .iter()
+                .all(|i| i.id() != item.id())
+        );
+        assert!(back.item(item.id()).is_some());
     }
 
     fn fed_world() -> World {
@@ -1968,7 +2059,7 @@ mod tests {
             Event::InventoryChanged { body: BodyId(1), held: Some(f), load_g: 400, capacity_g: 20000, .. } if *f == flint
         )));
         assert_eq!(
-            w.items_within_reach(Pos::new(1, 1)).count(),
+            w.items_within_reach(Pos::new(1, 1)).len(),
             1,
             "only the branch is left on the ground nearby"
         );

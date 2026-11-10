@@ -30,24 +30,28 @@ fn the_content_directory_loads_and_validates() {
 }
 
 #[test]
-fn the_valley_is_scattered_with_the_content() {
+fn the_valley_drops_dead_wood_and_pebbles_where_they_belong() {
     let content = repository_content();
-    let world = World::new(Calendar::default(), &content);
-    assert!(world.items().len() > 1000, "{} items", world.items().len());
+    let world = World::with_valley(Calendar::default(), &content, 768);
+    // Made per chunk, none stored until touched.
+    assert_eq!(world.items(), []);
+    let items: Vec<_> = (0..24)
+        .flat_map(|y| (0..24).map(move |x| sim::ChunkPos::new(x, y)))
+        .flat_map(|c| world.items_in(c))
+        .collect();
+    assert!(items.len() > 1000, "{} items", items.len());
     assert!(
-        world
-            .items()
+        items
             .iter()
             .all(|i| i.pos().and_then(|p| world.map().get(p)) != Some(Terrain::Water)),
         "nothing lies in the water"
     );
-    assert!(world.items().iter().any(|i| i.material() == "branch"));
-    assert!(world.items().iter().any(|i| i.material() == "pebble"));
+    assert!(items.iter().any(|i| i.material() == "branch"));
+    assert!(items.iter().any(|i| i.material() == "pebble"));
     // Nothing ready-made lies about: berries, fibres and flint will come
     // from the bushes, the plants and the rock.
     assert!(
-        world
-            .items()
+        items
             .iter()
             .all(|i| matches!(i.material(), "branch" | "pebble")),
         "only dead wood and pebbles lie on the ground"
