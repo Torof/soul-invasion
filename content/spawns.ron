@@ -8,17 +8,14 @@
 //               things lie where they come from.
 //
 // Hide, meat and bone come from animals; logs from felled trees: no rule.
+// Nothing ready-made lies about (the project lead, 10 November 2026):
+// berries will be picked from the bushes, fibres made from gathered
+// plants, flint broken from the rock. Only what the ground itself drops
+// stays: dead wood under the trees, pebbles by the water.
 [
     // Dead wood under the trees.
     (material: "branch", terrain: forest, per_thousand: 60),
-    // Berry bushes at the forest's edge.
-    (material: "berries", terrain: grass, per_thousand: 60, near: Some((terrain: forest, within: 2))),
-    // Tall grass and reeds, thicker by the water.
-    (material: "fibres", terrain: grass, per_thousand: 12),
-    (material: "fibres", terrain: grass, per_thousand: 80, near: Some((terrain: water, within: 3))),
     // Pebbles on the banks and in the ford.
     (material: "pebble", terrain: grass, per_thousand: 90, near: Some((terrain: water, within: 4))),
     (material: "pebble", terrain: ford, per_thousand: 200),
-    // Flint at the foot of the cliff.
-    (material: "flint", terrain: grass, per_thousand: 70, near: Some((terrain: rock, within: 6))),
 ]

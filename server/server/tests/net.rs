@@ -20,9 +20,40 @@ type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// The world the server starts with: the standard valley, so tests can
 /// know where bodies stand and which way they will walk.
+/// The content the tests' servers run with: the repository's, with
+/// hunger and the berries at the forest's edge that the game has paused
+/// while gathering is to come (10 November 2026): eating, starving and
+/// what a body is told of them are still the server's to get right.
+fn content_dir() -> &'static std::path::Path {
+    static DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+        let dir = std::env::temp_dir().join(format!("soul-invasion-net-content-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a test content directory");
+        for entry in std::fs::read_dir(&repo).expect("repository content") {
+            let path = entry.expect("an entry").path();
+            if path.extension().is_some_and(|e| e == "ron") {
+                let mut text = std::fs::read_to_string(&path).expect("a content file");
+                match path.file_name().and_then(|n| n.to_str()) {
+                    Some("needs.ron") => {
+                        text = text.replace("hunger_per_day: 0,", "hunger_per_day: 33,");
+                    }
+                    Some("spawns.ron") => {
+                        let berries = "    (material: \"berries\", terrain: grass, per_thousand: 60, \
+                                       near: Some((terrain: forest, within: 2))),\n]";
+                        text = text.replacen("\n]", &format!("\n{berries}"), 1);
+                    }
+                    _ => {}
+                }
+                std::fs::write(dir.join(path.file_name().expect("a name")), text).expect("written");
+            }
+        }
+        dir
+    })
+}
+
 fn rules() -> sim::Content {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
-    server::content::load(&dir).expect("repository content")
+    server::content::load(content_dir()).expect("the tests' content")
 }
 
 /// The world a fresh server starts with, generated once for all the
@@ -126,6 +157,7 @@ impl Server {
                 "--seconds-per-day",
                 "1",
             ])
+            .args(["--content", content_dir().to_str().expect("a UTF-8 path")])
             .args(extra)
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
