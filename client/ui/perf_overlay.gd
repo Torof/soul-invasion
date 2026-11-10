@@ -106,6 +106,8 @@ func breakdown(parts: Dictionary, frames: int) -> String:
 func report(worst_ms: float) -> String:
 	var lines: Array[String] = []
 	lines.append("%d fps   worst frame %.1f ms" % [Engine.get_frames_per_second(), worst_ms])
+	if world != null:
+		lines.append("zoom %s" % String.num(float(world.call("zoom_level")), 2))
 	# The engine's process step holds the scripts and also the waits (for
 	# the graphics card, or the system holding back a hidden window): what
 	# the scripts themselves cost is in the breakdown below.

@@ -17,10 +17,9 @@ const PILOTED_COLOR := Color(1.0, 0.55, 0.20)
 const TARGET_COLOR := Color(1.0, 0.85, 0.30, 0.9)
 ## Farthest zoom: the land is discovered by going there, not seen whole
 ## (the project lead's call, 9 November 2026: a sense of space).
-const ZOOM_MIN := 0.4
-const ZOOM_MAX := 4.0
-const ZOOM_STEP := 1.25
-const DEFAULT_ZOOM := 1.5
+const ZOOM_MIN := Zoom.MIN
+const ZOOM_MAX := Zoom.MAX
+const DEFAULT_ZOOM := Zoom.DEFAULT
 ## Tiles the view reaches from the body, either way, to where the fog is
 ## whole. It follows the body tile by tile (the chunks held move by whole
 ## chunks, the view does not); 288, as far as the chunks held always reach
@@ -742,10 +741,10 @@ func _unhandled_input(event: InputEvent) -> void:
 						acts_requested.emit(acts, event.position)
 			MOUSE_BUTTON_WHEEL_UP:
 				if event.pressed:
-					_zoom_by(ZOOM_STEP)
+					_step_zoom(1)
 			MOUSE_BUTTON_WHEEL_DOWN:
 				if event.pressed:
-					_zoom_by(1.0 / ZOOM_STEP)
+					_step_zoom(-1)
 	elif event is InputEventKey and event.pressed:
 		match event.keycode:
 			KEY_SPACE:
@@ -765,9 +764,13 @@ func _unhandled_input(event: InputEvent) -> void:
 					Net.send_sleep()
 
 
-func _zoom_by(factor: float) -> void:
-	var zoom := clamp_zoom(_camera.zoom.x * factor)
-	_camera.zoom = Vector2.ONE * zoom
+func _step_zoom(direction: int) -> void:
+	_camera.zoom = Vector2.ONE * Zoom.next(_camera.zoom.x, direction)
+
+
+## The camera's zoom now.
+func zoom_level() -> float:
+	return _camera.zoom.x
 
 
 func _in_map(tile: Vector2i) -> bool:

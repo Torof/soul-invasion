@@ -47,6 +47,7 @@ The note beside the image (`style-ref-01.md`) records its prompt and date, as ev
 - **High-angle three-quarter view**, a single angle for every element.
 - No strong perspective: an object must look the same wherever it is on screen.
 - The world is drawn in **2D isometric** (D02): the ground on a 2:1 diamond grid of one-metre cells, the elements as flat images standing on it. The format every image must obey is in `09-visual-production.md`.
+- **Zoom from 0.4 to 2.5**, 1.5 at the start, in round steps on the mouse wheel (0.4, 0.5, 0.6, 0.8, 1, 1.25, 1.5, 2, 2.5; `client/world/zoom.gd`). The project lead chose 2.5 on 10 November 2026 after trying 2, 2.5, 3 and 4 in the game: close enough to watch a craft being done (a field, a bakery, a forge), and no closer, because every image is sized to be sharp at the deepest zoom and each step deeper costs its square in weight. The F3 overlay shows the current zoom.
 
 ### Characters and animals
 - Silhouettes **recognizable as shadow puppets**.
