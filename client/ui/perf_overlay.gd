@@ -18,8 +18,10 @@ var _wind := true
 var _plain_ground := false
 var _trees_shown := true
 var _since := 0.0
-## The longest frame since the last refresh, in milliseconds.
+## The longest frame since the last refresh, in milliseconds, and when
+## the last frame ended.
 var _worst_ms := 0.0
+var _last_frame_usec := 0
 ## Frames since the last refresh.
 var _frames := 0
 
@@ -71,7 +73,12 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _process(delta: float) -> void:
-	_worst_ms = maxf(_worst_ms, delta * 1000.0)
+	# From the clock, not `delta`: the engine caps `delta` at a few physics
+	# steps (133 ms), which hid every frame over that (10 November 2026).
+	var now := Time.get_ticks_usec()
+	if _last_frame_usec > 0:
+		_worst_ms = maxf(_worst_ms, float(now - _last_frame_usec) / 1000.0)
+	_last_frame_usec = now
 	_since += delta
 	_frames += 1
 	if not visible or _since < REFRESH:
