@@ -180,8 +180,9 @@ pub struct Shared {
     pub publish: broadcast::Sender<Published>,
     /// The ground. Static for now: nothing changes the terrain yet.
     pub map: Arc<Map>,
-    /// Latest known position of every body, kept by the simulation thread.
-    pub bodies: watch::Sender<Vec<BodyState>>,
+    /// Every body as last published, by id and by the chunk it stands in,
+    /// kept by the simulation thread.
+    bodies: Mutex<Bodies>,
     /// What items are made of, as clients need it.
     pub materials: Vec<MaterialView>,
     /// The kinds of tree, as clients need them.
@@ -239,6 +240,77 @@ pub struct Shared {
     /// The development tools (`--dev`): the map's overview sent to every
     /// client, and teleports accepted. `None` in play.
     dev_overview: Option<ServerMessage>,
+}
+
+/// The bodies as last published: by id, and by the chunk each stands
+/// in, so that a step's bookkeeping and the bodies of a chunk are
+/// lookups, never a scan of every body (D39).
+#[derive(Debug, Default)]
+struct Bodies {
+    by_id: BTreeMap<u32, BodyState>,
+    by_chunk: BTreeMap<ChunkPos, std::collections::BTreeSet<u32>>,
+}
+
+impl Bodies {
+    /// Adds a body where it stands.
+    fn insert(&mut self, state: BodyState) {
+        self.by_chunk
+            .entry(tile_of(state.at).chunk())
+            .or_default()
+            .insert(state.id);
+        self.by_id.insert(state.id, state);
+    }
+
+    /// Forgets a body; what was known of it.
+    fn remove(&mut self, id: u32) -> Option<BodyState> {
+        let state = self.by_id.remove(&id)?;
+        let chunk = tile_of(state.at).chunk();
+        if let Some(ids) = self.by_chunk.get_mut(&chunk) {
+            ids.remove(&id);
+            if ids.is_empty() {
+                self.by_chunk.remove(&chunk);
+            }
+        }
+        Some(state)
+    }
+
+    /// A body as last published.
+    fn get(&self, id: u32) -> Option<&BodyState> {
+        self.by_id.get(&id)
+    }
+
+    /// A body to change, but not where it stands (see [`Bodies::place`]).
+    fn get_mut(&mut self, id: u32) -> Option<&mut BodyState> {
+        self.by_id.get_mut(&id)
+    }
+
+    /// Stands a body at `at`, keeping the chunks right; the tile it came
+    /// from, or `None` for a body nobody knew about.
+    fn place(&mut self, id: u32, at: Point) -> Option<Pos> {
+        let state = self.by_id.get_mut(&id)?;
+        let from = tile_of(state.at);
+        state.at = at;
+        let (before, after) = (from.chunk(), tile_of(at).chunk());
+        if before != after {
+            if let Some(ids) = self.by_chunk.get_mut(&before) {
+                ids.remove(&id);
+                if ids.is_empty() {
+                    self.by_chunk.remove(&before);
+                }
+            }
+            self.by_chunk.entry(after).or_default().insert(id);
+        }
+        Some(from)
+    }
+
+    /// The bodies standing in a chunk, in id order.
+    fn in_chunk(&self, chunk: ChunkPos) -> Vec<BodyState> {
+        self.by_chunk.get(&chunk).map_or_else(Vec::new, |ids| {
+            ids.iter()
+                .filter_map(|id| self.by_id.get(id).cloned())
+                .collect()
+        })
+    }
 }
 
 /// Tiles each cell of the development overview stands for, either way,
@@ -388,10 +460,9 @@ impl Shared {
                 material: item.material().to_owned(),
             });
         }
-        let bodies = world
-            .bodies()
-            .iter()
-            .map(|b| BodyState {
+        let mut bodies = Bodies::default();
+        for b in world.bodies() {
+            bodies.insert(BodyState {
                 id: b.id().0,
                 at: point(b.at()),
                 route: b.route().map(point).collect(),
@@ -401,13 +472,13 @@ impl Shared {
                     id: i.id().0,
                     material: i.material().to_owned(),
                 }),
-            })
-            .collect();
+            });
+        }
         Self {
             tick: AtomicU64::new(world.tick().0),
             publish,
             map: world.shared_map(),
-            bodies: watch::Sender::new(bodies),
+            bodies: Mutex::new(bodies),
             materials,
             species,
             tree_kinds: content.species.clone(),
@@ -446,61 +517,54 @@ impl Shared {
 
     /// Records that a body set off: where it is and the route ahead.
     pub fn body_walks(&self, body: BodyId, from: FinePos, route: &[FinePos], speed_cm_per_s: u32) {
-        self.bodies.send_modify(|bodies| {
-            if let Some(state) = bodies.iter_mut().find(|b| b.id == body.0) {
-                state.at = point(from);
-                state.route = route.iter().copied().map(point).collect();
-                state.speed_cm_per_s = speed_cm_per_s;
-            }
-        });
+        let mut bodies = self.bodies();
+        if bodies.place(body.0, point(from)).is_some()
+            && let Some(state) = bodies.get_mut(body.0)
+        {
+            state.route = route.iter().copied().map(point).collect();
+            state.speed_cm_per_s = speed_cm_per_s;
+        }
+    }
+
+    /// The bodies, locked: taken for a moment by the simulation thread
+    /// at each event, and by a connection reading one body or a chunk's.
+    fn bodies(&self) -> std::sync::MutexGuard<'_, Bodies> {
+        self.bodies.lock().expect("bodies not poisoned")
     }
 
     /// Records a body's position as it crosses into another tile, keeping
     /// the last `remaining` waypoints of its route. Returns the tile it
     /// came from, or `None` for a body nobody knew about.
     pub fn body_moved(&self, body: BodyId, at: FinePos, remaining: usize) -> Option<Pos> {
-        let mut from = None;
-        self.bodies.send_modify(|bodies| {
-            if let Some(state) = bodies.iter_mut().find(|b| b.id == body.0) {
-                from = Some(tile_of(state.at));
-                state.at = point(at);
-                let passed = state.route.len().saturating_sub(remaining);
-                state.route.drain(..passed);
-            }
-        });
-        from
+        let mut bodies = self.bodies();
+        let from = bodies.place(body.0, point(at))?;
+        if let Some(state) = bodies.get_mut(body.0) {
+            let passed = state.route.len().saturating_sub(remaining);
+            state.route.drain(..passed);
+        }
+        Some(from)
     }
 
     /// Records what a body holds in hand.
     pub fn body_holds(&self, body: BodyId, item: Option<ItemView>) {
-        self.bodies.send_modify(|bodies| {
-            if let Some(state) = bodies.iter_mut().find(|b| b.id == body.0) {
-                state.holds = item;
-            }
-        });
+        if let Some(state) = self.bodies().get_mut(body.0) {
+            state.holds = item;
+        }
     }
 
     /// Records whether a body is asleep; true when that changed.
     pub fn body_sleeps(&self, body: BodyId, asleep: bool) -> bool {
         let mut changed = false;
-        self.bodies.send_modify(|bodies| {
-            if let Some(state) = bodies.iter_mut().find(|b| b.id == body.0) {
-                changed = state.asleep != asleep;
-                state.asleep = asleep;
-            }
-        });
+        if let Some(state) = self.bodies().get_mut(body.0) {
+            changed = state.asleep != asleep;
+            state.asleep = asleep;
+        }
         changed
     }
 
     /// Forgets a dead body; returns the tile it died on, if it was known.
     pub fn body_died(&self, body: BodyId) -> Option<Pos> {
-        let mut at = None;
-        self.bodies.send_modify(|bodies| {
-            if let Some(index) = bodies.iter().position(|b| b.id == body.0) {
-                at = Some(tile_of(bodies.remove(index).at));
-            }
-        });
-        at
+        self.bodies().remove(body.0).map(|state| tile_of(state.at))
     }
 
     /// Records an item lying on the ground.
@@ -537,36 +601,27 @@ impl Shared {
 
     /// Records that a body stopped exactly there.
     pub fn body_stopped(&self, body: BodyId, at: FinePos) {
-        self.bodies.send_modify(|bodies| {
-            if let Some(state) = bodies.iter_mut().find(|b| b.id == body.0) {
-                state.at = point(at);
-                state.route.clear();
-            }
-        });
+        let mut bodies = self.bodies();
+        if bodies.place(body.0, point(at)).is_some()
+            && let Some(state) = bodies.get_mut(body.0)
+        {
+            state.route.clear();
+        }
     }
 
     /// The tile a body stands on, as last published.
     pub fn position_of(&self, body: u32) -> Option<Pos> {
-        self.bodies
-            .borrow()
-            .iter()
-            .find(|b| b.id == body)
-            .map(|b| tile_of(b.at))
+        self.bodies().get(body).map(|b| tile_of(b.at))
     }
 
     /// A body as last published.
     pub fn body_state(&self, body: u32) -> Option<BodyState> {
-        self.bodies.borrow().iter().find(|b| b.id == body).cloned()
+        self.bodies().get(body).cloned()
     }
 
     /// The bodies standing in a chunk, in id order.
     pub fn bodies_in(&self, chunk: ChunkPos) -> Vec<BodyState> {
-        self.bodies
-            .borrow()
-            .iter()
-            .filter(|b| tile_of(b.at).chunk() == chunk)
-            .cloned()
-            .collect()
+        self.bodies().in_chunk(chunk)
     }
 
     /// Takes a place for a new connection, or `None` when all are taken.
@@ -636,10 +691,10 @@ impl Shared {
     fn take_body(&self, private: mpsc::Sender<ServerMessage>) -> Option<u32> {
         let mut pilots = self.pilots.lock().expect("pilot set not poisoned");
         let free = self
-            .bodies
-            .borrow()
-            .iter()
-            .map(|b| b.id)
+            .bodies()
+            .by_id
+            .keys()
+            .copied()
             .find(|id| !pilots.contains_key(id))?;
         pilots.insert(free, private);
         Some(free)

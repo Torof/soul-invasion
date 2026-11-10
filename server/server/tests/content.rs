@@ -34,7 +34,7 @@ fn the_valley_drops_dead_wood_and_pebbles_where_they_belong() {
     let content = repository_content();
     let world = World::with_valley(Calendar::default(), &content, 768);
     // Made per chunk, none stored until touched.
-    assert_eq!(world.items(), []);
+    assert_eq!(world.items().count(), 0);
     let items: Vec<_> = (0..24)
         .flat_map(|y| (0..24).map(move |x| sim::ChunkPos::new(x, y)))
         .flat_map(|c| world.items_in(c))
