@@ -5,7 +5,7 @@
 //! nothing planted for the whole map. A felled tree will be stored when
 //! felling comes, and laid over these.
 //!
-//! - **The woods** stand on a jittered grid ([`crate::r#gen::scatter`]):
+//! - **The woods** stand on a jittered grid (`gen::scatter`):
 //!   cells of `CELL` a side, every other row shifted by half a cell, so
 //!   the trees show no rows along the view's diagonals. A cell holds one
 //!   tree at most, nudged up to `JITTER` off its centre, with a chance
