@@ -790,11 +790,14 @@ func _test_tree_images_are_clean() -> void:
 		# flowers.
 		if file.begins_with("birch") or file.begins_with("ash") or file.begins_with("linden"):
 			continue
+		# A speck is the white background left in the image: pale and
+		# colourless. The light the trees are drawn with is pale too, but
+		# yellow (a leaf's lit edge, about 255, 255, 220).
 		var pale := 0
 		for y in range(0, h, 2):
 			for x in range(0, w, 2):
 				var c := image.get_pixel(x, y)
-				if c.a > 0.4 and minf(c.r, minf(c.g, c.b)) > 0.73 and maxf(c.r, maxf(c.g, c.b)) - minf(c.r, minf(c.g, c.b)) < 0.18:
+				if c.a > 0.4 and minf(c.r, minf(c.g, c.b)) > 0.73 and maxf(c.r, maxf(c.g, c.b)) - minf(c.r, minf(c.g, c.b)) < 0.08:
 					pale += 1
 		_check(pale < 15, "%s has no pale specks: %d" % [file, pale])
 
