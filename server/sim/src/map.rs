@@ -38,15 +38,15 @@ const STRAIGHT_COST: u32 = 10;
 /// Walking cost of a diagonal step: √2 straight steps, rounded (D32).
 const DIAGONAL_COST: u32 = 14;
 
-/// How far a path may go from where it starts, in tiles on each axis
-/// (D29, D31, D32): what the body sees, the view's 288 tiles (D08). A
-/// body takes the ways it can see, a ford, a bridge, a way round a pond,
-/// and no other: past what it sees, the player finds the way. A target
-/// farther away, or reachable only by leaving the square, gets no path
-/// (the body then walks straight at it, until something stands in the
-/// way). So no search explores more than 577 × 577 tiles, about 50 to
+/// How far [`Map::path`] may go from where it starts, in tiles on each
+/// axis: the view's 288 tiles (D08), the outer bound of any search. A
+/// target farther away, or reachable only by leaving the square, gets no
+/// path. So no search explores more than 577 × 577 tiles, about 50 to
 /// 100 ms at worst in a release build (0.16 to 0.3 µs a tile, measured
-/// on 10 November 2026), whatever the size of the world.
+/// on 10 November 2026), whatever the size of the world. The world's own
+/// walks search far less: within what the body sees from the terrain it
+/// stands on and under a budget of tiles, both from the content
+/// ([`Map::path_within`], D32).
 pub const PATH_REACH: i32 = 288;
 
 /// A tile position on the grid.
@@ -570,22 +570,42 @@ impl Map {
         to: Pos,
         cost: impl Fn(Terrain) -> Option<u32>,
     ) -> Option<Vec<Pos>> {
-        self.search(from, to, cost).0
+        self.search(from, to, PATH_REACH, u32::MAX, cost).0
     }
 
-    /// The A* search behind [`Map::path`], with the number of tiles it
-    /// expanded.
+    /// [`Map::path`] within what a body sees and the effort it may spend
+    /// (D32): the search stays within `reach` tiles of `from` on each
+    /// axis and expands at most `budget` tiles. `None` for a target out
+    /// of reach, out of the square's ground, or not found within the
+    /// budget; the caller then walks straight. Within both, the path is
+    /// exactly the one [`Map::path`] finds in the same square. Its cost is
+    /// bounded by the budget whatever the ground: a refusal costs under
+    /// half a millisecond at 1,500 tiles (measured on 10 November 2026).
+    pub fn path_within(
+        &self,
+        from: Pos,
+        to: Pos,
+        reach: i32,
+        budget: u32,
+        cost: impl Fn(Terrain) -> Option<u32>,
+    ) -> Option<Vec<Pos>> {
+        self.search(from, to, reach, budget, cost).0
+    }
+
+    /// The A* search behind [`Map::path`] and [`Map::path_within`], with
+    /// the number of tiles it expanded.
     fn search(
         &self,
         from: Pos,
         to: Pos,
+        reach: i32,
+        budget: u32,
         cost: impl Fn(Terrain) -> Option<u32>,
     ) -> (Option<Vec<Pos>>, u32) {
         if from == to {
             return (Some(Vec::new()), 0);
         }
-        let within =
-            |pos: Pos| (pos.x - from.x).abs() <= PATH_REACH && (pos.y - from.y).abs() <= PATH_REACH;
+        let within = |pos: Pos| (pos.x - from.x).abs() <= reach && (pos.y - from.y).abs() <= reach;
         let cost_at = |pos: Pos| self.get(pos).and_then(&cost);
         if !within(to) || cost_at(from).is_none() || cost_at(to).is_none() {
             return (None, 0);
@@ -619,6 +639,10 @@ impl Map {
                 continue;
             }
             expanded += 1;
+            if expanded > budget {
+                // The effort is spent: the body walks straight instead.
+                return (None, expanded);
+            }
             for (step, next) in (0u8..).zip(here.neighbours()) {
                 if !within(next) {
                     continue;
@@ -2857,13 +2881,16 @@ mod tests {
             map.set(Pos::new(3, x), Terrain::Rock);
         }
         let (from, to) = (Pos::new(300, 300), Pos::new(1, 1));
-        let (path, expanded) = map.search(from, to, walk);
+        let (path, expanded) = map.search(from, to, PATH_REACH, u32::MAX, walk);
         assert_eq!(path, None);
         let side = u32::try_from(2 * PATH_REACH + 1).expect("small");
         assert!(expanded <= side * side, "{expanded}");
         // A target beyond the reach is refused at once, even in the open.
         let far = Pos::new(1, 1 + PATH_REACH + 1);
-        assert_eq!(map.search(Pos::new(1, 1), far, walk), (None, 0));
+        assert_eq!(
+            map.search(Pos::new(1, 1), far, PATH_REACH, u32::MAX, walk),
+            (None, 0)
+        );
         // At the edge of the reach it is found, straight.
         let edge = Pos::new(10 + PATH_REACH, 10);
         let path = map.path(Pos::new(10, 10), edge, walk).expect("in reach");
@@ -2882,6 +2909,51 @@ mod tests {
             walled
                 .path(Pos::new(390, 780), Pos::new(410, 780), walk)
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn a_search_within_a_sight_and_a_budget_finds_the_same_paths_or_none() {
+        // Random pairs within a small sight on a valley: under the budget
+        // the path is the one found with no budget; over it, none, and
+        // the search stops the tile after the budget. Beyond the sight,
+        // nothing is searched at all.
+        let map = Map::valley(256, 256, 3);
+        let (reach, budget) = (60, 300);
+        let (mut under, mut over) = (0, 0);
+        for (a, b) in random_pairs(&map, 11, 400, 60) {
+            let (free, expanded) = map.search(a, b, reach, u32::MAX, valley_walk);
+            let (capped, spent) = map.search(a, b, reach, budget, valley_walk);
+            if expanded <= budget {
+                assert_eq!(capped, free, "{a:?} -> {b:?}");
+                assert_eq!(spent, expanded);
+                under += usize::from(free.is_some());
+            } else {
+                assert_eq!(capped, None, "{a:?} -> {b:?}");
+                assert_eq!(spent, budget + 1);
+                over += 1;
+            }
+            assert_eq!(map.path_within(a, b, reach, budget, valley_walk), capped);
+        }
+        assert!(under > 100 && over > 10, "both cases seen: {under}, {over}");
+        let open = Map::filled(300, 300, Terrain::Grass);
+        let from = Pos::new(150, 150);
+        assert_eq!(
+            open.search(
+                from,
+                Pos::new(150, 150 + reach + 1),
+                reach,
+                budget,
+                valley_walk
+            ),
+            (None, 0),
+            "beyond the sight: nothing searched"
+        );
+        let (edge, _) = open.search(from, Pos::new(150 + reach, 150), reach, budget, valley_walk);
+        assert_eq!(
+            edge.map(|p| p.len()),
+            Some(60),
+            "at the sight's edge, straight"
         );
     }
 
@@ -2953,7 +3025,7 @@ mod tests {
                     .collect();
                 let mut expansions: Vec<u32> = pairs
                     .iter()
-                    .map(|&(a, b)| map.search(a, b, valley_walk).1)
+                    .map(|&(a, b)| map.search(a, b, PATH_REACH, u32::MAX, valley_walk).1)
                     .collect();
                 let bounded = quickest(&mut || {
                     for &(a, b) in &pairs {
@@ -2993,7 +3065,7 @@ mod tests {
                 println!("{size}: one piece of ground, nothing to refuse");
                 continue;
             };
-            let (_, expanded) = map.search(camp, target, valley_walk);
+            let (_, expanded) = map.search(camp, target, PATH_REACH, u32::MAX, valley_walk);
             let bounded = quickest(&mut || assert!(map.path(camp, target, valley_walk).is_none()));
             let unbounded = quickest(&mut || {
                 assert!(unbounded_path(&map, camp, target, valley_walk).is_none());
@@ -3017,6 +3089,98 @@ mod tests {
         println!("1500 field, walled-in target: {bounded:?} bounded, {unbounded:?} unbounded");
         let found = quickest(&mut || assert!(field.path(from, to, valley_walk).is_some()));
         println!("1500 field, to the reach's corner: {found:?}");
+    }
+
+    /// What a search costs under the content's sight and budget (D32):
+    /// the worst refusal on the game's valley, in the open and under the
+    /// trees, and how many real walks fit the budget. Run by hand:
+    /// `cargo test --release -p sim sight_and_budget_survey -- --ignored
+    /// --nocapture`.
+    #[test]
+    #[ignore = "a measure, run by hand in release"]
+    fn sight_and_budget_survey() {
+        let budget = 1500;
+        let quickest = |run: &mut dyn FnMut()| {
+            (0..5)
+                .map(|_| {
+                    let started = std::time::Instant::now();
+                    run();
+                    started.elapsed()
+                })
+                .min()
+                .expect("five runs")
+        };
+        let map = Map::valley(3072, 3072, 1);
+        let pieces = walkable_pieces(&map);
+        let piece = |p: Pos| map.index(p).and_then(|i| pieces[i]);
+        let camp = map.camp();
+        let mut worst = std::time::Duration::ZERO;
+        for (name, reach) in [("open", 60_u32), ("forest", 12)] {
+            // The nearest walkable tile not joined to the camp within the
+            // sight, if any: a refusal after the search of a whole piece.
+            let unjoined = (1..=i32::try_from(reach).expect("small"))
+                .flat_map(|r| {
+                    (-r..=r).flat_map(move |d| {
+                        [(d, -r), (d, r), (-r, d), (r, d)]
+                            .map(|(dx, dy)| Pos::new(camp.x + dx, camp.y + dy))
+                    })
+                })
+                .find(|&p| piece(p).is_some() && piece(p) != piece(camp));
+            // Joined pairs within the sight: how many fit the budget.
+            let pairs: Vec<_> = random_pairs(&map, 3072 + u64::from(reach), 50_000, reach)
+                .into_iter()
+                .filter(|&(a, b)| piece(a).is_some() && piece(a) == piece(b))
+                .take(2000)
+                .collect();
+            let reach = i32::try_from(reach).expect("small");
+            let mut fit = 0;
+            let mut longest = std::time::Duration::ZERO;
+            for &(a, b) in &pairs {
+                let (path, expanded) = map.search(a, b, reach, budget, valley_walk);
+                fit += usize::from(path.is_some());
+                let took = quickest(&mut || {
+                    map.search(a, b, reach, budget, valley_walk);
+                });
+                longest = longest.max(took);
+                assert!(path.is_some() || expanded > budget);
+            }
+            println!(
+                "{name} (sight {reach}): {fit} of {} joined pairs fit the budget of {budget}; the longest search {longest:?}",
+                pairs.len()
+            );
+            worst = worst.max(longest);
+            if let Some(target) = unjoined {
+                let (path, expanded) = map.search(camp, target, reach, budget, valley_walk);
+                assert_eq!(path, None);
+                let took = quickest(&mut || {
+                    map.search(camp, target, reach, budget, valley_walk);
+                });
+                println!(
+                    "{name}: refused {camp:?} -> {target:?} after {expanded} tiles in {took:?}"
+                );
+                worst = worst.max(took);
+            } else {
+                println!("{name}: every walkable tile within sight is joined to the camp");
+            }
+        }
+        // The worst there is: open ground larger than the sight, the
+        // target walled in, so the whole budget is spent.
+        let mut walled = Map::filled(300, 300, Terrain::Grass);
+        walled.set(Pos::new(0, 1), Terrain::Rock);
+        walled.set(Pos::new(1, 0), Terrain::Rock);
+        walled.set(Pos::new(1, 1), Terrain::Rock);
+        let from = Pos::new(50, 50);
+        let (path, expanded) = walled.search(from, Pos::new(0, 0), 60, budget, valley_walk);
+        assert_eq!((path, expanded), (None, budget + 1));
+        let took = quickest(&mut || {
+            walled.search(from, Pos::new(0, 0), 60, budget, valley_walk);
+        });
+        println!("300 field, walled-in target, the whole budget spent: {took:?}");
+        worst = worst.max(took);
+        assert!(
+            worst < std::time::Duration::from_millis(1),
+            "every search under a millisecond: {worst:?}"
+        );
     }
 
     #[test]
