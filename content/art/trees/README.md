@@ -64,3 +64,11 @@ sheets of four and the earlier sources are kept in
 Midjourney's real detail stops at about 1,300–1,800 px tall whatever its
 upscale: the tallest trees have about 55–80 % of the detail their shipped
 size could hold.
+
+**10 November 2026, colours brought back**: the edit had made the trees
+darker and cooler than before. Each new source was given its old
+version's colours with `content/tools/match_tree_colours.py`: lightness
+mapped quantile by quantile, hue turned and chroma scaled to the old
+means, per pixel, the outlines and the white background left untouched.
+The uncorrected sources are kept in
+`content/ai-reserve/sources/trees/originals/regeneration-2026-11-10/before-colour/`.
