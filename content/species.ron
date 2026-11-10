@@ -8,29 +8,36 @@
 //           heart, wood, edge, clearing, camp, copse, lone, riverside,
 //           cliff_foot, meadow.
 //
-// Within a habitat, trees of one kind come in stands that mix at their
-// borders: the weight here is multiplied by the strength of each
-// species' stand at the place.
+// big:      a big tree, on the woods' wide grid (8 m), nothing small under
+//           its crown; the others on the narrow grid (4 m) between them.
+// spread_m: how far its seeds fall from a mother tree, in metres (4 to
+//           36): heavy seeds close, in tight groups; light ones far.
+// pioneer:  the first to grow back in the woods' openings.
+//
+// Within a habitat, one kind dominates each stand of a few hundred metres
+// (the weight here times a power of its stand's strength at the place;
+// only the kinds suited at least half as well as the best compete);
+// trees then take the kind of a mother tree near them (D37, D40).
 [
-    (id: "oak", name: "Oak", height_m: 22.0,
+    (id: "oak", name: "Oak", height_m: 22.0, big: true, spread_m: 12,
         habitats: { heart: 50, wood: 45, edge: 20, copse: 50, lone: 60 }),
-    (id: "pine", name: "Scots pine", height_m: 25.0,
-        habitats: { heart: 35, wood: 25, edge: 5, cliff_foot: 100 }),
-    (id: "birch", name: "Birch", height_m: 18.0,
-        habitats: { heart: 15, wood: 20, edge: 45, cliff_foot: 20 }),
-    (id: "hazel", name: "Hazel", height_m: 5.0,
-        habitats: { wood: 10, edge: 35, copse: 15 }),
-    (id: "willow", name: "Willow", height_m: 12.0,
+    (id: "pine", name: "Scots pine", height_m: 25.0, big: true, spread_m: 28,
+        habitats: { heart: 15, wood: 15, edge: 5, cliff_foot: 100, lone: 10 }),
+    (id: "birch", name: "Birch", height_m: 18.0, spread_m: 34, pioneer: true,
+        habitats: { heart: 5, wood: 10, edge: 45, cliff_foot: 20, lone: 35 }),
+    (id: "hazel", name: "Hazel", height_m: 5.0, spread_m: 10,
+        habitats: { heart: 6, wood: 12, edge: 35, copse: 15, lone: 10 }),
+    (id: "willow", name: "Willow", height_m: 12.0, spread_m: 24,
         habitats: { riverside: 100 }),
-    (id: "wild_apple", name: "Wild apple", height_m: 6.0,
+    (id: "wild_apple", name: "Wild apple", height_m: 6.0, spread_m: 14,
         habitats: { edge: 5, copse: 40, lone: 40 }),
     // Added on 9 November 2026 with the flora (content/flora.ron).
-    (id: "alder", name: "Alder", height_m: 18.0,
+    (id: "alder", name: "Alder", height_m: 18.0, spread_m: 22,
         habitats: { riverside: 60, edge: 10 }),
-    (id: "ash", name: "Ash", height_m: 28.0,
-        habitats: { edge: 25, wood: 15, copse: 20 }),
-    (id: "linden", name: "Linden", height_m: 25.0,
-        habitats: { wood: 20, heart: 10, copse: 15 }),
-    (id: "yew", name: "Yew", height_m: 12.0,
-        habitats: { heart: 4, wood: 2 }),
+    (id: "ash", name: "Ash", height_m: 28.0, big: true, spread_m: 26,
+        habitats: { heart: 15, wood: 30, edge: 25, copse: 20 }),
+    (id: "linden", name: "Linden", height_m: 25.0, big: true, spread_m: 18,
+        habitats: { heart: 30, wood: 35, copse: 15 }),
+    (id: "yew", name: "Yew", height_m: 12.0, spread_m: 12,
+        habitats: { heart: 3, wood: 2 }),
 ]

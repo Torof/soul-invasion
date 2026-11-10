@@ -40,6 +40,12 @@ pub(crate) mod purpose {
     pub(crate) const TREE_TILE: u64 = 0x7ee_711e;
     /// A kind of tree's stands (hashed with the kind's index).
     pub(crate) const TREE_STAND: u64 = 0x7ee_57a4;
+    /// The big trees' wide grid: whether a cell holds one, where, which.
+    pub(crate) const TREE_BIG: u64 = 0x7ee_b196;
+    /// The mother trees: where they stand, and their kind.
+    pub(crate) const TREE_MOTHER: u64 = 0x7ee_3077;
+    /// The trees of the meadows, on their own grid.
+    pub(crate) const TREE_MEADOW: u64 = 0x7ee_3ead;
     /// The ground's natural items (an older salt).
     pub(crate) const NATURAL_ITEM: u64 = 0x5eed_17e5;
     /// The flora's patches and the plants in them (an older salt).
@@ -64,11 +70,14 @@ pub(crate) mod purpose {
 
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 16] = [
+    pub(crate) const ALL: [u64; 19] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
         TREE_STAND,
+        TREE_BIG,
+        TREE_MOTHER,
+        TREE_MEADOW,
         NATURAL_ITEM,
         FLORA_PATCH,
         FLORA_TRUNK,

@@ -69,7 +69,7 @@ fn the_768_valley_is_pinned() {
         (
             0x14dd_73b4_8a19_0833,
             0x31e0_5f9a_dbaa_5e26,
-            0x65e5_b06d_628e_5b8f
+            0xba05_2812_bae1_cd13
         ),
         "{print:#x?}"
     );
@@ -93,7 +93,7 @@ fn the_game_valley_is_pinned() {
         (
             0xaef7_eec3_3a88_fb48,
             0xb645_9334_0126_8a43,
-            0x609d_0881_1a89_4f34
+            0xf6ad_88ec_f426_5daa
         ),
         "{print:#x?}"
     );
