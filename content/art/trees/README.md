@@ -74,3 +74,27 @@ the apples and the flowers keep their own colours; per pixel, the outlines
 and the white background left untouched.
 The uncorrected sources are kept in
 `content/ai-reserve/sources/trees/originals/regeneration-2026-11-10/before-colour/`.
+
+**10 November 2026, feet made whole**: in the game, a good number of the
+redrawn trees showed holes, a semi-transparent band, stray strokes or
+grass at the foot of their trunk. Causes and fixes:
+- `flora_art.py` cleared every green pixel in the lowest 7 % of a tree,
+  as grass. On the redrawn trees that took the dark green-black outline
+  at the foot (the ash, the oak 02: a trunk with no outline, the outline
+  above it running on alone), the grey-green bark (the alder 01, the
+  willow 02's roots, the birch 01, the linden 02's moss: holes) and the
+  fill of grass tufts while leaving their outlines (stray strokes). The
+  rule is gone: the tool keeps the drawing as it is.
+- Its rule for slivers of background between two outlines also took pale
+  highlights on the birch's bark (small holes): a sliver is now cleared
+  only when outlines or the background hem it in.
+- Seven originals had something under the foot: grass (alder 01 and 02,
+  ash 02, yew 02), a patch of white ground (yew 01), a grey ring (ash 02),
+  or a torn foot without an outline (linden 01, wild apple 01).
+  `content/tools/clean_tree_feet.py` cleans them, by recipes written in
+  it, from untouched copies kept beside them
+  (`<species>_<nn>_before-feet.png`): grass and ground cleared, the trunk
+  closed with the bark around it, the edge of the foot rounded and given
+  the tree's own outline.
+- The client checks that every tree's foot is whole: no hole, no speck
+  apart from it.
