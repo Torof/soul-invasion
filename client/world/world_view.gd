@@ -65,7 +65,7 @@ var _names: Dictionary = {}
 var _bodies: Dictionary = {}
 ## chunk position -> Array of items as received, redrawn on change
 var _items: Dictionary = {}
-## chunk position -> Array of tiles as received
+## chunk position -> its tiles, as codes (TerrainGrid)
 var _tiles: Dictionary = {}
 ## chunk position -> hash of its tiles (ChunkView.tiles_hash)
 var _tile_hashes: Dictionary = {}
@@ -210,6 +210,7 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	_chunks.clear()
 	_items.clear()
 	_tiles.clear()
+	TerrainGrid.clear_all()
 	_tile_hashes.clear()
 	_currents.clear()
 	_trees.clear()
@@ -248,8 +249,9 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees:
 		view.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 		add_child(view)
 		_chunks[key] = view
-	_tiles[key] = tiles
-	_tile_hashes[key] = hash(tiles)
+	var codes := TerrainGrid.codes(tiles)
+	_tiles[key] = codes
+	_tile_hashes[key] = hash(codes)
 	_currents[key] = currents
 	_items[key] = items
 	var standing: Array = []
@@ -259,10 +261,9 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees:
 	_plants[key] = plants
 	_plant_chunk(key, view)
 	view.show_plants(plants, _flora)
-	view.terrain_at = terrain_at
 	view.tiles_hash = func(k: Vector2i) -> int: return int(_tile_hashes.get(k, 0))
 	view.current_at = current_at
-	view.show_chunk(key * _chunk_size, _chunk_size, tiles, items, _looks)
+	view.show_chunk(key * _chunk_size, _chunk_size, codes, items, _looks)
 	_redraw_neighbours(key)
 	_update_held()
 	if not _camera_placed and _piloted < 0:
@@ -462,11 +463,11 @@ func current_at(tile: Vector2i) -> Vector2:
 ## The terrain of any tile the server has sent, "" otherwise.
 func terrain_at(tile: Vector2i) -> String:
 	var key := Iso.chunk_of(tile, _chunk_size)
-	var tiles: Array = _tiles.get(key, [])
+	var tiles: PackedByteArray = _tiles.get(key, PackedByteArray())
 	if tiles.is_empty():
 		return ""
 	var local := tile - key * _chunk_size
-	return str(tiles[local.y * _chunk_size + local.x])
+	return TerrainGrid.name_of(tiles[local.y * _chunk_size + local.x])
 
 
 ## The chunks held changed: the limit of the view may move.
@@ -528,6 +529,7 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 		_chunks.erase(key)
 		_items.erase(key)
 		_tiles.erase(key)
+		TerrainGrid.clear(key * _chunk_size, _chunk_size)
 		_tile_hashes.erase(key)
 		_currents.erase(key)
 		_trees.erase(key)

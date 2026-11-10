@@ -23,6 +23,9 @@ func _init() -> void:
 	_test_brooks_are_lines_on_the_ground()
 	_test_trees_stand_on_their_foot()
 	_test_the_shore_field_measures_the_bank()
+	_test_the_shore_field_blurs_as_three_boxes()
+	_test_the_terrain_grid_holds_bytes()
+	_test_the_ground_index_says_what_each_canvas_draws()
 	_test_currents_decode()
 	_test_tree_images_are_clean()
 	_test_loading_waits_for_the_valley()
@@ -362,8 +365,8 @@ func _test_the_shore_field_measures_the_bank() -> void:
 	_check(absf(ShoreField.probit(0.975) - 1.96) < 0.01, "the inverse normal curve: %f" % ShoreField.probit(0.975))
 	# Water east of x = 40 on a straight edge, over two chunks side by side.
 	var terrain := func(t: Vector2i) -> String: return "water" if t.x >= 40 else "grass"
-	ShoreField.update(terrain, Vector2i(32, 0), 32)
-	ShoreField.update(terrain, Vector2i(32, 32), 32)
+	ShoreField.update(ShoreField.block_of(terrain, Vector2i(32, 0), 32), Vector2i(32, 0), 32)
+	ShoreField.update(ShoreField.block_of(terrain, Vector2i(32, 32), 32), Vector2i(32, 32), 32)
 	for y: float in [10.0, 31.9, 32.1, 50.0]:
 		_check(absf(ShoreField.distance_at(Vector2(40.0, y))) < 0.15, "the edge at x = 40 (y %s): %f" % [y, ShoreField.distance_at(Vector2(40.0, y))])
 		_check(absf(ShoreField.distance_at(Vector2(38.5, y)) - 1.5) < 0.2, "1.5 tiles inland: %f" % ShoreField.distance_at(Vector2(38.5, y)))
@@ -371,13 +374,13 @@ func _test_the_shore_field_measures_the_bank() -> void:
 	# A step of one tile in the edge comes out smooth: halfway along the
 	# step, the edge lies between the two lines of tiles.
 	var stepped := func(t: Vector2i) -> String: return "water" if t.x >= (40 if t.y < 80 else 41) else "grass"
-	ShoreField.update(stepped, Vector2i(32, 64), 32)
+	ShoreField.update(ShoreField.block_of(stepped, Vector2i(32, 64), 32), Vector2i(32, 64), 32)
 	var at_step := ShoreField.distance_at(Vector2(40.5, 80.0))
 	_check(absf(at_step) < 0.25, "the step is smoothed: %f at its middle" % at_step)
 	# A pond's corner is rounded: the corner point of the tiles lies on
 	# the land side of the smoothed edge.
 	var pond := func(t: Vector2i) -> String: return "water" if t.x >= 100 and t.y >= 100 else "grass"
-	ShoreField.update(pond, Vector2i(96, 96), 32)
+	ShoreField.update(ShoreField.block_of(pond, Vector2i(96, 96), 32), Vector2i(96, 96), 32)
 	_check(ShoreField.distance_at(Vector2(100.0, 100.0)) > 0.15, "a corner comes out round: %f" % ShoreField.distance_at(Vector2(100.0, 100.0)))
 	# A ford: water for the bank, and its own channel, high inside, nothing
 	# far from it.
@@ -385,14 +388,14 @@ func _test_the_shore_field_measures_the_bank() -> void:
 		if t.x < 140:
 			return "grass"
 		return "ford" if t.y >= 140 and t.y < 146 else "water"
-	ShoreField.update(forded, Vector2i(128, 128), 32)
+	ShoreField.update(ShoreField.block_of(forded, Vector2i(128, 128), 32), Vector2i(128, 128), 32)
 	_check(ShoreField.distance_at(Vector2(150.0, 143.0)) < -1.0, "a ford is water for the bank")
 	_check(ShoreField.ford_at(Vector2(150.0, 143.0)) > 0.7, "inside the ford: %f" % ShoreField.ford_at(Vector2(150.0, 143.0)))
 	_check(ShoreField.ford_at(Vector2(150.0, 152.0)) < 0.05, "deep water away from the ford: %f" % ShoreField.ford_at(Vector2(150.0, 152.0)))
 	# The water runs where the server says, the land between keeps still.
 	var river := func(t: Vector2i) -> String: return "water" if t.x >= 200 and t.x < 210 else "grass"
 	var runs := func(_t: Vector2i) -> Vector2: return Vector2(0.0, 0.6)
-	ShoreField.update(river, Vector2i(192, 192), 32, runs)
+	ShoreField.update(ShoreField.block_of(river, Vector2i(192, 192), 32), Vector2i(192, 192), 32, runs)
 	_check(ShoreField.flow_at(Vector2(205.0, 200.0)).distance_to(Vector2(0.0, 0.6)) < 0.03, "the water runs down the river: %s" % ShoreField.flow_at(Vector2(205.0, 200.0)))
 	_check(ShoreField.flow_at(Vector2(194.0, 200.0)).length() < 0.03, "still far from the water: %s" % ShoreField.flow_at(Vector2(194.0, 200.0)))
 	_check(ShoreField.flow_at(Vector2(199.5, 200.0)).y > 0.4, "the bank's edge runs with the river: %s" % ShoreField.flow_at(Vector2(199.5, 200.0)))
@@ -403,10 +406,149 @@ func _test_the_shore_field_measures_the_bank() -> void:
 	var far_edge := func(t: Vector2i) -> String: return "water" if t.x >= ShoreField.TILES + 50 else "grass"
 	var map_size := ShoreField.map_size
 	ShoreField.map_size = Vector2i(4 * ShoreField.TILES, 4 * ShoreField.TILES)
-	ShoreField.update(far_edge, Vector2i(ShoreField.TILES + 32, 0), 32)
+	ShoreField.update(ShoreField.block_of(far_edge, Vector2i(ShoreField.TILES + 32, 0), 32), Vector2i(ShoreField.TILES + 32, 0), 32)
 	ShoreField.map_size = map_size
 	_check(absf(ShoreField.distance_at(Vector2(ShoreField.TILES + 50.0, 10.0))) < 0.15, "the edge past the texture's width: %f" % ShoreField.distance_at(Vector2(ShoreField.TILES + 50.0, 10.0)))
 	_check(absf(ShoreField.distance_at(Vector2(ShoreField.TILES + 48.5, 10.0)) - 1.5) < 0.2, "inland past the texture's width")
+
+
+## The bank's smoothing, one convolution of the tiles, gives the bytes
+## the three box blurs of the tiles drawn at PX pixels gave (the way it
+## was computed before, kept here as the reference).
+func _test_the_shore_field_blurs_as_three_boxes() -> void:
+	var size := 32
+	var n := size + 2 * ShoreField.MARGIN
+	var px := ShoreField.PX
+	var w := n * px
+	var mask := PackedFloat32Array()
+	mask.resize(n * n)
+	var noise := FastNoiseLite.new()
+	noise.frequency = 0.05
+	for ty in n:
+		for tx in n:
+			mask[ty * n + tx] = 1.0 if noise.get_noise_2d(tx, ty) < -0.05 else 0.0
+	var field := PackedFloat32Array()
+	field.resize(w * w)
+	for y in w:
+		for x in w:
+			field[y * w + x] = mask[floori(float(y) / px) * n + floori(float(x) / px)]
+	for _pass in ShoreField.BLUR_PASSES:
+		_box_rows(field, w, ShoreField.BLUR)
+		_box_columns(field, w, ShoreField.BLUR)
+	var inner := size * px
+	var sigma := sqrt(ShoreField.BLUR_PASSES * (pow(2.0 * ShoreField.BLUR + 1.0, 2.0) - 1.0) / 12.0) / px
+	var expected := PackedByteArray()
+	expected.resize(inner * inner)
+	for y in inner:
+		for x in inner:
+			var v := field[(y + ShoreField.MARGIN * px) * w + x + ShoreField.MARGIN * px]
+			var d := -sigma * ShoreField.probit(clampf(v, 0.0005, 0.9995))
+			expected[y * inner + x] = int(round(clampf((d + ShoreField.RANGE) / (2.0 * ShoreField.RANGE), 0.0, 1.0) * 255.0))
+	var out := [PackedByteArray(), PackedByteArray()]
+	var weights := [ShoreField._weights_of("bank", size), ShoreField._weights_of("centre", size), ShoreField._weights_of("ford", size)]
+	var none := PackedFloat32Array()
+	none.resize(n * n)
+	ShoreField._smooth(out, mask, none, none, none, n, size, weights, false, false, true)
+	var bank: PackedByteArray = out[0]
+	var worst := 0
+	for i in inner * inner:
+		worst = maxi(worst, absi(int(bank[i]) - int(expected[i])))
+	_check(bank.size() == expected.size() and worst == 0, "the bank's distance as the three blurs gave it (worst difference %d)" % worst)
+
+
+## One box blur along the rows, its edges held (the former smoothing).
+func _box_rows(field: PackedFloat32Array, w: int, radius: int) -> void:
+	var line := PackedFloat32Array()
+	line.resize(w)
+	var span := 2 * radius + 1
+	for y in w:
+		var row := y * w
+		var sum := 0.0
+		for k in range(-radius, radius + 1):
+			sum += field[row + clampi(k, 0, w - 1)]
+		for x in w:
+			line[x] = sum / span
+			sum += field[row + mini(x + radius + 1, w - 1)] - field[row + maxi(x - radius, 0)]
+		for x in w:
+			field[row + x] = line[x]
+
+
+func _box_columns(field: PackedFloat32Array, w: int, radius: int) -> void:
+	var line := PackedFloat32Array()
+	line.resize(w)
+	var span := 2 * radius + 1
+	for x in w:
+		var sum := 0.0
+		for k in range(-radius, radius + 1):
+			sum += field[clampi(k, 0, w - 1) * w + x]
+		for y in w:
+			line[y] = sum / span
+			sum += field[mini(y + radius + 1, w - 1) * w + x] - field[maxi(y - radius, 0) * w + x]
+		for y in w:
+			field[y * w + x] = line[y]
+
+
+func _test_the_terrain_grid_holds_bytes() -> void:
+	var codes := TerrainGrid.codes(["grass", "water", "ford", "brook"])
+	_check(codes == PackedByteArray([TerrainGrid.GRASS, TerrainGrid.WATER, TerrainGrid.FORD, TerrainGrid.BROOK]), "the names come as codes: %s" % codes)
+	_check(TerrainGrid.name_of(TerrainGrid.code_of("sand")) == "sand" and TerrainGrid.code_of("sand") > TerrainGrid.ROCK, "a terrain new to the client gets a code of its own")
+	_check(TerrainGrid.name_of(TerrainGrid.UNKNOWN) == "", "unknown has no name")
+	# A block across the grid's edge reads back whole, at its place.
+	var lo := Vector2i(TerrainGrid.TILES - 2, 5 * TerrainGrid.TILES - 1)
+	var block := PackedByteArray([1, 2, 3, 4, 5, 6, 1, 2, 3])
+	TerrainGrid.write(lo, 3, block)
+	_check(TerrainGrid.window(lo, 3, 3) == block, "a block straddling the grid's edges reads back")
+	_check(TerrainGrid.at(lo + Vector2i(2, 1)) == 6 and TerrainGrid.name_at(lo + Vector2i(1, 1)) == "brook", "one tile at a time too")
+	# A chunk hidden is forgotten, unless a newer one took its place.
+	var chunk := Vector2i(32 * 30, 32 * 30)
+	var ones := PackedByteArray()
+	ones.resize(32 * 32)
+	ones.fill(TerrainGrid.GRASS)
+	TerrainGrid.write(chunk, 32, ones)
+	var later := chunk + Vector2i(TerrainGrid.TILES, 0)
+	var twos := ones.duplicate()
+	twos.fill(TerrainGrid.FOREST)
+	TerrainGrid.write(later, 32, twos)
+	TerrainGrid.clear(chunk, 32)
+	_check(TerrainGrid.at(later) == TerrainGrid.FOREST, "hiding a chunk leaves the one laid at its place since")
+	TerrainGrid.clear(later, 32)
+	_check(TerrainGrid.at(later) == TerrainGrid.UNKNOWN, "hiding the chunk forgets its tiles")
+
+
+## A chunk's build writes in the ground index which canvases draw each
+## tile: the forest on its tiles and, with a fading opacity at the
+## corners, over the grass beside it; the grass under the water at the
+## bank; the water over the land within two tiles of it.
+func _test_the_ground_index_says_what_each_canvas_draws() -> void:
+	var origin := Vector2i(320, 320)
+	var tiles: Array = []
+	for y in 32:
+		for x in 32:
+			tiles.append("forest" if x < 10 else ("water" if x >= 24 else "grass"))
+	var map_size := ShoreField.map_size
+	ShoreField.map_size = Vector2i(1024, 1024)
+	var view := ChunkView.new()
+	view.show_chunk(origin, 32, tiles, [], {})
+	view._draw_ground_layers()
+	ShoreField.map_size = map_size
+	var at := func(x: int, y: int) -> PackedByteArray: return GroundIndex.at(origin + Vector2i(x, y))
+	var grass := int(GroundIndex.BITS["grass"])
+	var forest := int(GroundIndex.BITS["forest"])
+	var water := int(GroundIndex.BITS["water"])
+	_check(at.call(5, 5)[0] == forest, "the wood is the forest's: %s" % at.call(5, 5))
+	_check(at.call(10, 5)[0] == grass | GroundIndex.FRINGE and at.call(10, 5)[1] == 255, "the grass at the wood's edge, under its spill, opaque at the shared corner: %s" % at.call(10, 5))
+	_check(at.call(11, 5)[1] == 170 and at.call(12, 5)[1] == 85 and at.call(13, 5)[1] == 0, "the spill fades over two tiles")
+	_check(at.call(12, 5)[0] == grass | GroundIndex.FRINGE and at.call(13, 5)[0] == grass, "and stops after them")
+	_check(at.call(22, 5)[0] == grass | water and at.call(21, 5)[0] == grass, "the water reaches over the land within two tiles: %s %s" % [at.call(22, 5), at.call(21, 5)])
+	_check(at.call(24, 5)[0] == water | grass and at.call(30, 5)[0] == water, "the grass lies under the water at the bank only: %s %s" % [at.call(24, 5), at.call(30, 5)])
+	var shown: Array = []
+	for child in view.get_children():
+		if child is ChunkView.GroundCanvas and (child as ChunkView.GroundCanvas).shown:
+			shown.append((child as ChunkView.GroundCanvas).terrain)
+	shown.sort()
+	_check(shown == ["forest", "grass", "water"], "one canvas a terrain drawn: %s" % [shown])
+	view.free()
+	TerrainGrid.clear(origin, 32)
 
 
 func _test_the_shore_field_in_slices() -> void:
@@ -419,21 +561,26 @@ func _test_the_shore_field_in_slices() -> void:
 	var land := func(_t: Vector2i) -> String: return "grass"
 	var runs := func(_t: Vector2i) -> Vector2: return Vector2(0.5, 0.0)
 	var block := Rect2i(Vector2i(64, 32) * ShoreField.PX, Vector2i(32, 32) * ShoreField.PX)
-	ShoreField.update(river, Vector2i(64, 32), 32, runs)
-	var at_once := ShoreField._image.get_region(block).get_data()
-	ShoreField.update(land, Vector2i(64, 32), 32)
-	ShoreField.update(river, Vector2i(64, 32), 32, runs, true)
-	var landed := ShoreField._image.get_region(block).get_data()
+	var waters := Rect2i(Vector2i(64, 32), Vector2i(32, 32))
+	var state := func() -> PackedByteArray:
+		var bytes := ShoreField._bank_image.get_region(block).get_data()
+		bytes.append_array(ShoreField._water_image.get_region(waters).get_data())
+		return bytes
+	ShoreField.update(ShoreField.block_of(river, Vector2i(64, 32), 32), Vector2i(64, 32), 32, runs)
+	var at_once: PackedByteArray = state.call()
+	ShoreField.update(ShoreField.block_of(land, Vector2i(64, 32), 32), Vector2i(64, 32), 32)
+	ShoreField.update(ShoreField.block_of(river, Vector2i(64, 32), 32), Vector2i(64, 32), 32, runs, true)
+	var landed: PackedByteArray = state.call()
 	for i in 60:
 		await process_frame
 	_check(landed != at_once, "an update on another core writes later")
-	_check(ShoreField._image.get_region(block).get_data() == at_once, "on another core, the same field as at once")
-	ShoreField.update(river, Vector2i(64, 32), 32, runs, true)
-	ShoreField.update(land, Vector2i(64, 32), 32)
-	var bare := ShoreField._image.get_region(block).get_data()
+	_check(state.call() == at_once, "on another core, the same field as at once")
+	ShoreField.update(ShoreField.block_of(river, Vector2i(64, 32), 32), Vector2i(64, 32), 32, runs, true)
+	ShoreField.update(ShoreField.block_of(land, Vector2i(64, 32), 32), Vector2i(64, 32), 32)
+	var bare: PackedByteArray = state.call()
 	for i in 60:
 		await process_frame
-	_check(ShoreField._image.get_region(block).get_data() == bare, "an overtaken update gives up")
+	_check(state.call() == bare, "an overtaken update gives up")
 
 
 func _test_trees_sharpness_eases_with_the_zoom() -> void:

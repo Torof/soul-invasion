@@ -4,7 +4,24 @@
 // wanted, by laying it in shifted variants chosen by zones of noise. The
 // textures are never turned: drawn with a slight three-quarter reading,
 // a turned grass reads upside down, like a roof.
+//
+// Each terrain's canvas is one quad over its chunk; the ground index
+// (GroundIndex) says which of its tiles this terrain draws. The images
+// are read with their mipmaps, one level sharper than the hardware would
+// choose (SHARPEN): the diamonds squash the texture two to one, and the
+// hardware's own level would blur it (D39).
 shader_type canvas_item;
+
+// The ground index, a pixel a tile: R the bits of the canvases drawing
+// the tile, G the forest's nearness at its top corner (GroundIndex).
+uniform sampler2D ground_index : filter_nearest, repeat_enable;
+// This terrain's bit, and the tiles the index covers before it repeats.
+uniform int index_bit = 1;
+uniform float index_tiles = 640.0;
+const int INDEX_FOREST = 2;
+const int INDEX_FRINGE = 128;
+// The images' derivatives are scaled by this: one mipmap level sharper.
+const float SHARPEN = 0.5;
 
 uniform sampler2D noise_texture : repeat_enable, filter_linear;
 // Noise period, in texture units (one unit is one texture, four metres).
@@ -19,7 +36,7 @@ uniform vec2 second_offset = vec2(0.37, 0.63);
 uniform bool has_variants = false;
 // A sister image of the ground (same grass, drawn differently), blended
 // with the first over slow noise.
-uniform sampler2D sibling_texture : repeat_enable, filter_linear;
+uniform sampler2D sibling_texture : repeat_enable, filter_linear_mipmap;
 uniform bool has_sibling = false;
 // Share of the ground the sibling covers, and a tint to bring its tone
 // to the first image's when the two differ (white: none).
@@ -31,14 +48,14 @@ uniform float bare_keep = 1.0;
 // Up to two more compatible textures of the same terrain (made with the
 // first as style reference), each shown in soft patches of its own:
 // "second" over wide areas, "worn" in a few spots.
-uniform sampler2D second_texture : repeat_enable, filter_linear;
+uniform sampler2D second_texture : repeat_enable, filter_linear_mipmap;
 uniform bool has_second = false;
 uniform float second_scale = 0.03;
 uniform float second_cover = 0.35;
 // Width of the fade at a patch's edge (0.1 is a crisp spot; 0.3 or more
 // melts one water into another).
 uniform float second_softness = 0.1;
-uniform sampler2D worn_texture : repeat_enable, filter_linear;
+uniform sampler2D worn_texture : repeat_enable, filter_linear_mipmap;
 uniform bool has_worn = false;
 // Period of the patches, in texture units, and how much ground they take.
 uniform float worn_scale = 0.05;
@@ -70,21 +87,21 @@ uniform float bank_line = 0.0;
 // below 1), the shader lays the bank strip instead of water: x across
 // the bank (0 at the water), y along the river; its outer edge eroded
 // like any spill.
-uniform sampler2D bank_texture : repeat_enable, filter_linear;
+uniform sampler2D bank_texture : repeat_enable, filter_linear_mipmap;
 uniform bool has_bank = false;
 // A second strip of another matter (earth beside sand), chosen over
 // slow stretches along the river so the bank changes.
-uniform sampler2D bank2_texture : repeat_enable, filter_linear;
+uniform sampler2D bank2_texture : repeat_enable, filter_linear_mipmap;
 uniform bool has_bank2 = false;
 // A third matter (pebbles), not drawn for now.
-uniform sampler2D bank3_texture : repeat_enable, filter_linear;
+uniform sampler2D bank3_texture : repeat_enable, filter_linear_mipmap;
 uniform bool has_bank3 = false;
 // The beds of the fords, seen through their water: up to four matters
 // laid side by side in soft patches a few metres across (the brooks' beds).
-uniform sampler2D ford1_texture : repeat_enable, filter_linear;
-uniform sampler2D ford2_texture : repeat_enable, filter_linear;
-uniform sampler2D ford3_texture : repeat_enable, filter_linear;
-uniform sampler2D ford4_texture : repeat_enable, filter_linear;
+uniform sampler2D ford1_texture : repeat_enable, filter_linear_mipmap;
+uniform sampler2D ford2_texture : repeat_enable, filter_linear_mipmap;
+uniform sampler2D ford3_texture : repeat_enable, filter_linear_mipmap;
+uniform sampler2D ford4_texture : repeat_enable, filter_linear_mipmap;
 uniform bool has_ford1 = false;
 uniform bool has_ford2 = false;
 uniform bool has_ford3 = false;
@@ -127,6 +144,8 @@ uniform float current_cover = 0.3;
 // the grass beneath show past a ragged edge.
 uniform bool has_field = false;
 uniform sampler2D shore_field : filter_linear, repeat_enable;
+// The fords (R) and the current (G, B), a pixel a tile (ShoreField).
+uniform sampler2D shore_water : filter_linear, repeat_enable;
 // Tiles the field covers before it repeats, and the distance range it
 // encodes either way.
 uniform float field_tiles = 384.0;
@@ -291,21 +310,23 @@ uniform float deep_reach = 2.5;
 // Glints: small bright sparkles drifting with the water.
 uniform float glint = 0.35;
 
-vec3 flowing(sampler2D tex, vec2 world, vec2 flow, float period, float scale, mat2 turn, float shift) {
+vec3 flowing(sampler2D tex, vec2 world, vec2 flow, float period, float scale, mat2 turn, float shift, vec2 dx, vec2 dy) {
 	float t = TIME / period + shift;
 	float p0 = fract(t);
 	float p1 = fract(t + 0.5);
 	float w0 = 1.0 - abs(1.0 - 2.0 * p0);
 	vec2 base = turn * world * (0.25 * scale);
 	vec2 f = turn * flow * (period * 0.25 * scale);
-	vec3 a = texture(tex, base - f * p0 + vec2(shift, 0.0)).rgb;
-	vec3 b = texture(tex, base - f * p1 + vec2(0.0, shift) + vec2(0.5)).rgb;
+	vec2 gx = turn * dx * scale;
+	vec2 gy = turn * dy * scale;
+	vec3 a = textureGrad(tex, base - f * p0 + vec2(shift, 0.0), gx, gy).rgb;
+	vec3 b = textureGrad(tex, base - f * p1 + vec2(0.0, shift) + vec2(0.5), gx, gy).rgb;
 	return a * w0 + b * (1.0 - w0);
 }
 
 // The bed of the fords at a point of the map in tiles: up to four matters
 // laid side by side in soft patches.
-vec3 ford_bed(vec2 world) {
+vec3 ford_bed(vec2 world, vec2 dx, vec2 dy) {
 	vec2 b_uv = world * 0.25;
 	float f = 0.2 / ford_patch;
 	vec4 n = vec4(
@@ -315,10 +336,10 @@ vec3 ford_bed(vec2 world) {
 		has_ford4 ? texture(noise_texture, world * f + vec2(0.29, 0.95)).r : 0.0);
 	vec4 w = pow(max(n, vec4(0.0)), vec4(8.0));
 	w /= max(w.x + w.y + w.z + w.w, 1e-5);
-	vec3 bed = texture(ford1_texture, b_uv).rgb * w.x;
-	if (has_ford2) { bed += texture(ford2_texture, b_uv + vec2(0.31, 0.17)).rgb * w.y; }
-	if (has_ford3) { bed += texture(ford3_texture, b_uv + vec2(0.67, 0.43)).rgb * w.z; }
-	if (has_ford4) { bed += texture(ford4_texture, b_uv + vec2(0.13, 0.89)).rgb * w.w; }
+	vec3 bed = textureGrad(ford1_texture, b_uv, dx, dy).rgb * w.x;
+	if (has_ford2) { bed += textureGrad(ford2_texture, b_uv + vec2(0.31, 0.17), dx, dy).rgb * w.y; }
+	if (has_ford3) { bed += textureGrad(ford3_texture, b_uv + vec2(0.67, 0.43), dx, dy).rgb * w.z; }
+	if (has_ford4) { bed += textureGrad(ford4_texture, b_uv + vec2(0.13, 0.89), dx, dy).rgb * w.w; }
 	return bed;
 }
 
@@ -340,36 +361,62 @@ vec4 meet(vec4 a, vec4 b, float w, float meet_noise) {
 	float t = (w - 0.5) * 2.0 + (db - da) * meet_depth + meet_noise;
 	return mix(a, b, smoothstep(-meet_band, meet_band, t));
 }
-
-// The vertex colour alone: white under a texture, the flat colour of a
-// terrain without one, the colour of an item's disc.
-varying vec4 tint;
-
-void vertex() {
-	tint = COLOR;
+// Whether `meet(a, b, w, meet_noise)` can show anything of b, whatever b
+// is (its darkness is at most 1): when it cannot, the result is a,
+// exactly, and b need not be read.
+bool meet_shows(vec4 a, float w, float meet_noise) {
+	return (w - 0.5) * 2.0 + dot(a.rgb, vec3(0.333)) * meet_depth + meet_noise > -meet_band;
 }
 
 void fragment() {
 	vec2 uv = UV;
+	// The derivatives the images are read with, before a pixel can be
+	// discarded, a mipmap level sharper.
+	vec2 duv_x = dFdx(uv) * SHARPEN;
+	vec2 duv_y = dFdy(uv) * SHARPEN;
+	// This terrain's tiles, from the ground index; the forest's spill
+	// over its neighbours, its opacity spread from the tile's corners over
+	// the diamond's two triangles, as a mesh's vertex colours were.
+	vec2 at = uv * 4.0;
+	vec2 cell = floor(at);
+	vec2 in_cell = at - cell;
+	vec4 index = texture(ground_index, (cell + 0.5) / index_tiles);
+	int bits = int(round(index.r * 255.0));
+	float spill = 1.0;
+	if ((bits & index_bit) == 0) {
+		if (index_bit != INDEX_FOREST || (bits & INDEX_FRINGE) == 0) {
+			discard;
+		}
+		float v0 = index.g;
+		float v1 = texture(ground_index, (cell + vec2(1.5, 0.5)) / index_tiles).g;
+		float v2 = texture(ground_index, (cell + vec2(1.5, 1.5)) / index_tiles).g;
+		float v3 = texture(ground_index, (cell + vec2(0.5, 1.5)) / index_tiles).g;
+		spill = in_cell.x >= in_cell.y
+			? v0 + in_cell.x * (v1 - v0) + in_cell.y * (v2 - v1)
+			: v0 + in_cell.x * (v2 - v3) + in_cell.y * (v3 - v0);
+	}
+	vec4 tint = vec4(1.0, 1.0, 1.0, spill);
 	float grain = (texture(noise_texture, uv * 0.8 + vec2(0.37, 0.19)).r - 0.5) * 2.0 * meet_grain;
 	// The variants' weights, once for every layer, and the derivatives the
 	// layers are read with (varied_once).
 	vec3 vw = variant_weights(uv);
-	vec2 duv_x = dFdx(uv);
-	vec2 duv_y = dFdy(uv);
 	vec4 ground = varied_once_builtin(TEXTURE, uv, vw, duv_x, duv_y);
+	// Each layer is read only where it can show (meet_shows): the same
+	// picture, fewer reads.
 	if (has_sibling) {
-		vec4 sibling = varied_once(sibling_texture, uv, vw, duv_x, duv_y);
-		sibling.rgb *= sibling_tint;
 		float n = texture(noise_texture, uv * noise_scale).r;
 		float threshold = 1.0 - sibling_cover;
 		float weight = smoothstep(threshold - 0.15, threshold + 0.15, n);
-		vec4 base = ground;
-		ground = meet(base, sibling, weight, grain);
-		if (bare_keep < 1.0) {
-			float bare = smoothstep(0.0, 0.08, base.r - base.g);
-			float kept = patches(uv, 0.06, vec2(0.9, 0.4), bare_keep, 0.1);
-			ground = mix(ground, sibling, bare * (1.0 - kept));
+		if (bare_keep < 1.0 || meet_shows(ground, weight, grain)) {
+			vec4 sibling = varied_once(sibling_texture, uv, vw, duv_x, duv_y);
+			sibling.rgb *= sibling_tint;
+			vec4 base = ground;
+			ground = meet(base, sibling, weight, grain);
+			if (bare_keep < 1.0) {
+				float bare = smoothstep(0.0, 0.08, base.r - base.g);
+				float kept = patches(uv, 0.06, vec2(0.9, 0.4), bare_keep, 0.1);
+				ground = mix(ground, sibling, bare * (1.0 - kept));
+			}
 		}
 	}
 	// Dry zones: a soft, wide mask; the tint is applied at most at
@@ -379,20 +426,22 @@ void fragment() {
 	float dry = smoothstep(dry_threshold - dry_softness, dry_threshold + dry_softness, d) * dry_strength;
 	ground.rgb = mix(ground.rgb, ground.rgb * dry_tint, dry);
 	if (has_second) {
-		ground = meet(ground, varied_once(second_texture, uv, vw, duv_x, duv_y), patches(uv, second_scale, vec2(0.2, 0.7), second_cover, second_softness), grain);
+		float w2 = patches(uv, second_scale, vec2(0.2, 0.7), second_cover, second_softness);
+		if (meet_shows(ground, w2, grain)) {
+			ground = meet(ground, varied_once(second_texture, uv, vw, duv_x, duv_y), w2, grain);
+		}
 	}
 	if (has_worn) {
-		ground = meet(ground, varied_once(worn_texture, uv, vw, duv_x, duv_y), patches(uv, worn_scale, vec2(0.5, 0.25), worn_cover, worn_softness), grain);
+		float w3 = patches(uv, worn_scale, vec2(0.5, 0.25), worn_cover, worn_softness);
+		if (meet_shows(ground, w3, grain)) {
+			ground = meet(ground, varied_once(worn_texture, uv, vw, duv_x, duv_y), w3, grain);
+		}
 	}
 	// COLOR comes in already multiplied by the texture: rebuild it from
 	// the blended texture and the vertex colour, do not multiply again
 	// (that squares the colour and darkens it by half).
 	ground.rgb *= base_tint;
 	vec3 vertex_tint = tint.rgb;
-	// On a ground canvas the vertex colour's green channel carries the
-	// nearness of the bank (1 - nearness), never a colour: neutralise it
-	// whether or not the shore is drawn.
-	vertex_tint.g = 1.0;
 	if (current_strength > 0.0) {
 		// Two drifts of streaks at different paces, read from the noise
 		// squeezed across the river and stretched along it.
@@ -500,7 +549,7 @@ void fragment() {
 		// At a ford there is no bank: its bed runs on over the land, the
 		// water reaches further in a thin film, and the grass comes back
 		// gradually over the bed.
-		float ford_bank = has_ford1 ? smoothstep(0.03, 0.4, texture(shore_field, fuv).g) : 0.0;
+		float ford_bank = has_ford1 ? smoothstep(0.03, 0.4, texture(shore_water, fuv).r) : 0.0;
 		outer = mix(outer, ford_bank_reach + rag, ford_bank);
 		// Where the bank narrows to nothing, the grass overhangs the water
 		// in tufts instead of stopping on the line.
@@ -521,12 +570,12 @@ void fragment() {
 		float dw = d - lap * smoothstep(0.02, 0.15, outer) - ford_water_reach * ford_bank;
 		vec3 colour = ground.rgb;
 		if (dw < 0.0) {
-			vec4 field_px = texture(shore_field, fuv);
-			vec2 flow = (field_px.ba * 2.0 - 1.0) * 2.0;
+			vec4 field_px = texture(shore_water, fuv);
+			vec2 flow = (field_px.gb * 2.0 - 1.0) * 2.0;
 			// Tiles a second, a little slower than the water itself reads.
 			vec2 runs = flow * 0.8;
-			vec3 w1 = flowing(TEXTURE, world, runs, flow_period, 1.0, mat2(vec2(1.0, 0.0), vec2(0.0, 1.0)), 0.0);
-			vec3 w2 = flowing(TEXTURE, world, runs * 1.15, flow_period * 1.3, 1.6, mat2(vec2(0.0, 1.0), vec2(-1.0, 0.0)), 0.37);
+			vec3 w1 = flowing(TEXTURE, world, runs, flow_period, 1.0, mat2(vec2(1.0, 0.0), vec2(0.0, 1.0)), 0.0, duv_x, duv_y);
+			vec3 w2 = flowing(TEXTURE, world, runs * 1.15, flow_period * 1.3, 1.6, mat2(vec2(0.0, 1.0), vec2(-1.0, 0.0)), 0.37, duv_x, duv_y);
 			colour = mix(w1, w2, flow_mix) * base_tint;
 			// Deeper in the middle.
 			colour *= mix(vec3(1.0), deep_tint, smoothstep(0.3, deep_reach, -dw));
@@ -537,13 +586,13 @@ void fragment() {
 			float near = 1.0 - smoothstep(0.0, field_light_reach, -dw);
 			colour = mix(colour, colour * shore_tint, near * field_light);
 			// Into the deep water: the bed fades out slowly.
-			float ford = smoothstep(0.02, 0.97, texture(shore_field, fuv).g);
+			float ford = smoothstep(0.02, 0.97, texture(shore_water, fuv).r);
 			ford = ford * ford * (3.0 - 2.0 * ford);
 			// Near a ford's bank the water is all ford, so its film meets the
 			// bed on the land without a line.
 			ford = max(ford, ford_bank * (1.0 - smoothstep(0.0, ford_shelf, -dw)));
 			if (ford > 0.0 && has_ford1) {
-				vec3 bed = ford_bed(world);
+				vec3 bed = ford_bed(world, duv_x, duv_y);
 				// From the bank inwards, the water over the bed thickens.
 				// At the edge of a ford's bank the water is a film that
 				// thins to nothing on the bed, so there is no line.
@@ -562,16 +611,16 @@ void fragment() {
 			// The bank's matter, seamless, four metres a texture like the
 			// ground: earth, or sand on a beach.
 			vec2 m_uv = world * 0.25;
-			vec3 earth = texture(bank_texture, m_uv).rgb;
+			vec3 earth = textureGrad(bank_texture, m_uv, duv_x, duv_y).rgb;
 			if (beach > 0.0) {
-				earth = mix(earth, texture(bank2_texture, m_uv + vec2(0.37, 0.11)).rgb, beach);
+				earth = mix(earth, textureGrad(bank2_texture, m_uv + vec2(0.37, 0.11), duv_x, duv_y).rgb, beach);
 			}
 			earth *= field_earth_tint;
 			earth *= mix(field_wet, 1.0, smoothstep(0.0, 0.14, dw));
 			earth *= mix(1.0, field_shade, smoothstep(outer - 0.14, outer, d));
 			if (ford_bank > 0.0) {
 				// The ford's bed, damp, wetter near the water.
-				vec3 bed = ford_bed(world) * mix(0.8, 1.0, smoothstep(0.0, 0.5, dw));
+				vec3 bed = ford_bed(world, duv_x, duv_y) * mix(0.8, 1.0, smoothstep(0.0, 0.5, dw));
 				earth = mix(earth, bed, ford_bank);
 			}
 			colour = earth;
@@ -612,10 +661,10 @@ void fragment() {
 		float i2 = texture(noise_texture, vec2(0.31, along * 3.1 + 0.67)).r;
 		float into = clamp(i1 * 0.8 + i2 * 0.5 - 0.15, 0.0, 1.0) * bank_into * gate;
 		float x = clamp((s + into) / max(reach + into, 0.05), 0.0, 1.0);
-		vec3 strip = texture(bank_texture, vec2(x, uv.y)).rgb;
+		vec3 strip = textureGrad(bank_texture, vec2(x, uv.y), vec2(0.0), vec2(0.0)).rgb;
 		if (has_bank2) {
 			float pick = texture(noise_texture, vec2(0.71, along * 0.6 + 0.07)).r;
-			strip = mix(strip, texture(bank2_texture, vec2(x, uv.y)).rgb, smoothstep(0.45, 0.55, pick));
+			strip = mix(strip, textureGrad(bank2_texture, vec2(x, uv.y), vec2(0.0), vec2(0.0)).rgb, smoothstep(0.45, 0.55, pick));
 		}
 		// Both edges fade over a short distance, ragged by a fine grain
 		// only, so the bank stays continuous.
