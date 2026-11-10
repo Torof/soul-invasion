@@ -29,3 +29,6 @@
 content/ai-reserve/
 # Development screenshot requests and results (client/dev/watcher.gd).
 client/.dev/
+
+# Python bytecode
+__pycache__/
