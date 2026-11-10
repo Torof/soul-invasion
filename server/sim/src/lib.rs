@@ -193,6 +193,11 @@ pub struct Body {
     held: Option<ItemId>,
     /// Everything else carried, in the order it was taken.
     carried: Vec<ItemId>,
+    /// Grams carried in all, under the content's masses: kept as the
+    /// inventory changes and set again by [`World::take_content`], so a
+    /// walking body is not weighed every tick. Derived, never stored.
+    #[serde(skip)]
+    load_g: u32,
 }
 
 impl Body {
@@ -251,6 +256,11 @@ impl Body {
     /// Is the body walking somewhere?
     pub fn is_walking(&self) -> bool {
         !self.route.is_empty()
+    }
+
+    /// Grams the body carries in all, as last weighed.
+    pub fn load_g(&self) -> u32 {
+        self.load_g
     }
 }
 
@@ -557,10 +567,11 @@ pub struct World {
     /// halving, never by a scan ([`World::body`]).
     bodies: Vec<Body>,
     next_body: u32,
-    /// The items a body has touched, made or let fall: stored. The ground's
-    /// own (dead wood, pebbles) are made per chunk and never stored
-    /// ([`items`]).
-    items: Vec<Item>,
+    /// The items a body has touched, made or let fall: stored, by id. The
+    /// ground's own (dead wood, pebbles) are made per chunk and never
+    /// stored ([`items`]). Written as the list it always was, in id order.
+    #[serde(serialize_with = "write_items")]
+    items: BTreeMap<ItemId, Item>,
     next_item: u64,
     /// Whether the ground drops natural items ([`items`]); false for worlds
     /// made before them, whose scattered items are all in `items`.
@@ -572,6 +583,11 @@ pub struct World {
     /// lookup, never a scan of them all (D39). Derived: rebuilt on load.
     #[serde(skip)]
     by_chunk: BTreeMap<ChunkPos, Vec<BodyId>>,
+    /// The stored items lying in each chunk: kept as items are laid,
+    /// taken, dropped and eaten, so the items of a place are a lookup
+    /// (D39). Derived: rebuilt on load.
+    #[serde(skip)]
+    ground: BTreeMap<ChunkPos, BTreeSet<ItemId>>,
     /// The content's spawn rules the natural items follow, set with the
     /// kinds of tree ([`World::take_content`]). Never persisted.
     #[serde(skip)]
@@ -593,6 +609,13 @@ fn write_map<S: serde::Serializer>(map: &Arc<Map>, serializer: S) -> Result<S::O
 
 fn read_map<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Arc<Map>, D::Error> {
     <Map as serde::Deserialize>::deserialize(deserializer).map(Arc::new)
+}
+
+fn write_items<S: serde::Serializer>(
+    items: &BTreeMap<ItemId, Item>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(items.values())
 }
 
 /// A world as a snapshot holds it: exactly what [`World`] writes, and
@@ -622,11 +645,12 @@ impl<'de> serde::Deserialize<'de> for World {
             map: stored.map,
             bodies: stored.bodies,
             next_body: stored.next_body,
-            items: stored.items,
+            items: stored.items.into_iter().map(|i| (i.id, i)).collect(),
             next_item: stored.next_item,
             natural: stored.natural,
             taken: stored.taken,
             by_chunk: BTreeMap::new(),
+            ground: BTreeMap::new(),
             spawns: Vec::new(),
             pending: Vec::new(),
             species: Vec::new(),
@@ -638,6 +662,14 @@ impl<'de> serde::Deserialize<'de> for World {
             .collect();
         for (id, chunk) in standing {
             world.enter_chunk(id, chunk);
+        }
+        let lying: Vec<_> = world
+            .items
+            .values()
+            .filter_map(|i| Some((i.id, i.pos()?.chunk())))
+            .collect();
+        for (id, chunk) in lying {
+            world.lay(id, chunk);
         }
         Ok(world)
     }
@@ -684,11 +716,12 @@ impl World {
             map: Arc::new(map),
             bodies: Vec::new(),
             next_body: 1,
-            items: Vec::new(),
+            items: BTreeMap::new(),
             next_item: 1,
             natural: false,
             taken: BTreeSet::new(),
             by_chunk: BTreeMap::new(),
+            ground: BTreeMap::new(),
             spawns: Vec::new(),
             pending: Vec::new(),
             species: Vec::new(),
@@ -698,10 +731,14 @@ impl World {
     /// Gives the world the content it places the ground's things with:
     /// the kinds of tree (D37) and the natural items' spawn rules. Called
     /// when the world is created and when it is loaded; nothing is placed
-    /// here, only chunk by chunk when asked for.
+    /// here, only chunk by chunk when asked for. Every body is weighed
+    /// again under the content's masses ([`Body::load_g`]).
     pub fn take_content(&mut self, content: &Content) {
         self.species.clone_from(&content.species);
         self.spawns.clone_from(&content.spawns);
+        for index in 0..self.bodies.len() {
+            self.refresh_load(index, content);
+        }
     }
 
     /// The trees standing in `chunk`, placed from the map and the seed
@@ -778,10 +815,10 @@ impl World {
     }
 
     /// The stored items: those a body touched, made or let fall, carried or
-    /// on the ground, in the order they were stored. The ground's natural
-    /// items are not among them until taken ([`World::items_in`]).
-    pub fn items(&self) -> &[Item] {
-        &self.items
+    /// on the ground, in id order. The ground's natural items are not
+    /// among them until taken ([`World::items_in`]).
+    pub fn items(&self) -> impl Iterator<Item = &Item> + '_ {
+        self.items.values()
     }
 
     /// Whether the ground drops natural items (worlds made since 10
@@ -817,12 +854,11 @@ impl World {
     /// The items lying on the ground in a chunk, stored and natural, in id
     /// order.
     pub fn items_in(&self, chunk: ChunkPos) -> Vec<Item> {
-        let mut here: Vec<Item> = self
-            .items
-            .iter()
-            .filter(|i| i.pos().is_some_and(|p| p.chunk() == chunk))
-            .cloned()
-            .collect();
+        let mut here: Vec<Item> = self.ground.get(&chunk).map_or_else(Vec::new, |ids| {
+            ids.iter()
+                .filter_map(|id| self.items.get(id).cloned())
+                .collect()
+        });
         here.extend(self.natural_in(chunk));
         here.sort_by_key(|i| i.id);
         here
@@ -830,27 +866,47 @@ impl World {
 
     /// A stored item by id (natural items are stored once taken).
     pub fn item(&self, id: ItemId) -> Option<&Item> {
-        self.items.iter().find(|i| i.id == id)
+        self.items.get(&id)
+    }
+
+    /// Notes a stored item lying in a chunk.
+    fn lay(&mut self, id: ItemId, chunk: ChunkPos) {
+        self.ground.entry(chunk).or_default().insert(id);
+    }
+
+    /// Notes a stored item no longer lying in a chunk.
+    fn lift(&mut self, id: ItemId, chunk: ChunkPos) {
+        if let Some(ids) = self.ground.get_mut(&chunk) {
+            ids.remove(&id);
+            if ids.is_empty() {
+                self.ground.remove(&chunk);
+            }
+        }
     }
 
     /// Makes the natural item `id` a stored one, lying where it was, and
     /// remembers it was taken: what a body does with it is then done to a
     /// stored item. Nothing when it is not a natural item still there.
     fn materialise(&mut self, id: ItemId) {
-        if !items::is_natural(id) || self.taken.contains(&id) {
+        if !self.natural || !items::is_natural(id) || self.taken.contains(&id) {
             return;
         }
-        if let Some(item) = self
-            .natural_in(items::chunk_of(id))
-            .into_iter()
-            .find(|i| i.id == id)
-        {
-            self.items.push(item);
+        if let Some(item) = items::natural_item(&self.map, &self.spawns, self.seed(), id) {
+            let chunk = items::chunk_of(id);
+            self.items.insert(id, item);
+            self.lay(id, chunk);
             self.taken.insert(id);
         }
     }
 
-    /// Grams a body carries in all, under the content's masses.
+    /// Weighs a body's load again ([`Body::load_g`]).
+    fn refresh_load(&mut self, index: usize, rules: &Content) {
+        let load = self.load_g(&self.bodies[index], rules);
+        self.bodies[index].load_g = load;
+    }
+
+    /// Grams a body carries in all, weighed under the content's masses
+    /// (the body keeps the result: [`Body::load_g`]).
     pub fn load_g(&self, body: &Body, rules: &Content) -> u32 {
         body.inventory()
             .filter_map(|id| self.item(id))
@@ -865,11 +921,15 @@ impl World {
     pub fn spawn_item(&mut self, material: &str, pos: Pos) -> ItemId {
         let id = ItemId(self.next_item);
         self.next_item += 1;
-        self.items.push(Item {
+        self.items.insert(
             id,
-            material: material.to_owned(),
-            place: Place::Ground { pos },
-        });
+            Item {
+                id,
+                material: material.to_owned(),
+                place: Place::Ground { pos },
+            },
+        );
+        self.lay(id, pos.chunk());
         id
     }
 
@@ -888,6 +948,7 @@ impl World {
             condition: Condition::healthy(),
             held: None,
             carried: Vec::new(),
+            load_g: 0,
         });
         self.enter_chunk(id, pos.chunk());
         id
@@ -919,10 +980,13 @@ impl World {
         here
     }
 
-    /// Takes an item off the ground, if it is there.
+    /// Takes a stored item out of the world, wherever it is.
     fn remove_item(&mut self, id: ItemId) -> Option<Item> {
-        let index = self.items.iter().position(|i| i.id == id)?;
-        Some(self.items.remove(index))
+        let item = self.items.remove(&id)?;
+        if let Some(pos) = item.pos() {
+            self.lift(id, pos.chunk());
+        }
+        Some(item)
     }
 
     /// Queues an intention for the next tick.
@@ -968,8 +1032,7 @@ impl World {
             if self.bodies[index].route.is_empty() {
                 continue;
             }
-            let load = self.load_g(&self.bodies[index], rules);
-            let speed = loaded_speed(&rules.movement, load);
+            let speed = loaded_speed(&rules.movement, self.bodies[index].load_g);
             let before = self.bodies[index].pos().chunk();
             walk(
                 &mut self.bodies[index],
@@ -1053,14 +1116,13 @@ impl World {
         let at = body.pos();
         self.leave_chunk(id, at.chunk());
         for item in body.inventory().collect::<Vec<_>>() {
-            if let Some(dropped) = self.items.iter_mut().find(|i| i.id == item) {
-                dropped.place = Place::Ground { pos: at };
-                events.push(Event::ItemAdded {
-                    item,
-                    material: dropped.material.clone(),
-                    at,
-                });
-            }
+            let Some(dropped) = self.items.get_mut(&item) else {
+                continue;
+            };
+            dropped.place = Place::Ground { pos: at };
+            let material = dropped.material.clone();
+            self.lay(item, at.chunk());
+            events.push(Event::ItemAdded { item, material, at });
         }
         let corpse = self.spawn_item("corpse", at);
         events.push(Event::ItemAdded {
@@ -1220,14 +1282,15 @@ impl World {
         }
     }
 
-    /// Tells what a body carries now.
-    fn inventory_changed(&self, index: usize, rules: &Content, events: &mut Vec<Event>) {
+    /// Weighs a body's load again and tells what it carries now.
+    fn inventory_changed(&mut self, index: usize, rules: &Content, events: &mut Vec<Event>) {
+        self.refresh_load(index, rules);
         let body = &self.bodies[index];
         events.push(Event::InventoryChanged {
             body: body.id,
             held: body.held,
             carried: body.carried.clone(),
-            load_g: self.load_g(body, rules),
+            load_g: body.load_g,
             capacity_g: rules.movement.carry_capacity_g,
         });
     }
@@ -1330,12 +1393,13 @@ impl World {
             .item(item)
             .and_then(|i| rules.material(&i.material))
             .map_or(0, Material::mass_g);
-        if self.load_g(&self.bodies[index], rules) + mass > rules.movement.carry_capacity_g {
+        if self.bodies[index].load_g + mass > rules.movement.carry_capacity_g {
             return Self::refuse(events, id, ItemAct::PickUp, item, Refusal::TooHeavy);
         }
         self.wake(index, events);
-        if let Some(taken) = self.items.iter_mut().find(|i| i.id == item) {
+        if let Some(taken) = self.items.get_mut(&item) {
             taken.place = Place::Carried { body: id };
+            self.lift(item, pos.chunk());
         }
         let body = &mut self.bodies[index];
         let in_hand = body.held.is_none();
@@ -1366,11 +1430,12 @@ impl World {
         let at = self.bodies[index].pos();
         let was_held = self.bodies[index].held == Some(item);
         self.bodies[index].let_go(item);
-        let Some(dropped) = self.items.iter_mut().find(|i| i.id == item) else {
+        let Some(dropped) = self.items.get_mut(&item) else {
             return;
         };
         dropped.place = Place::Ground { pos: at };
         let material = dropped.material.clone();
+        self.lay(item, at.chunk());
         events.push(Event::ItemAdded { item, material, at });
         self.inventory_changed(index, rules, events);
         if was_held {
@@ -2040,7 +2105,7 @@ mod tests {
         let content = Content::sample();
         let a = World::with_valley(Calendar::default(), &content, 768);
         // None stored: the ground makes them per chunk.
-        assert_eq!(a.items(), []);
+        assert_eq!(a.items().count(), 0);
         assert!(a.has_natural_items());
         let chunks = || (0..24).flat_map(|y| (0..24).map(move |x| ChunkPos::new(x, y)));
         let all: Vec<Item> = chunks().flat_map(|c| a.items_in(c)).collect();
@@ -2244,8 +2309,8 @@ mod tests {
         }));
         // 250 kJ at 25 kJ per point: 10 points off 16.
         assert_eq!(condition(&w).hunger.points(), 6);
-        assert!(w.items().iter().all(|i| i.id() != berries));
-        assert_eq!(w.items().len(), 2);
+        assert!(w.items().all(|i| i.id() != berries));
+        assert_eq!(w.items().count(), 2);
     }
 
     #[test]
@@ -2276,7 +2341,6 @@ mod tests {
         );
         assert!(
             w.items()
-                .iter()
                 .any(|i| i.id() == corpse && i.material() == "corpse")
         );
         assert!(
@@ -2586,6 +2650,89 @@ mod tests {
         assert_eq!(back.bodies(), w.bodies());
         assert!(back.body(BodyId(1)).unwrap().is_walking());
         assert_eq!(back.map(), w.map());
-        assert_eq!(back.items(), w.items());
+        assert_eq!(
+            back.items().collect::<Vec<_>>(),
+            w.items().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn items_are_found_by_id_and_by_chunk_and_the_load_is_kept() {
+        // Stored items found by id and by the chunk they lie in; taking,
+        // stowing, holding, dropping and eating keep the chunks and the
+        // body's weighed load right; a world read back knows the chunks,
+        // and the content gives it the loads again.
+        let rules = rules();
+        let map = Map::filled(96, 96, Terrain::Grass);
+        let mut w = World::empty(Calendar::new(1, 1_000_000).unwrap(), map);
+        let body = w.spawn_body(Pos::new(5, 5));
+        let flint = w.spawn_item("flint", Pos::new(5, 6));
+        let branch = w.spawn_item("branch", Pos::new(6, 5));
+        let far = w.spawn_item("flint", Pos::new(40, 40));
+        let ids = |w: &World, x, y| -> Vec<ItemId> {
+            w.items_in(ChunkPos::new(x, y))
+                .iter()
+                .map(Item::id)
+                .collect()
+        };
+        let load = |w: &World| w.body(body).expect("body").load_g();
+        let branch_g = rules.material("branch").expect("branch").mass_g();
+        assert_eq!(w.item(far).map(Item::id), Some(far));
+        assert_eq!(w.item(ItemId(99)), None);
+        assert_eq!(ids(&w, 0, 0), vec![flint, branch]);
+        assert_eq!(ids(&w, 1, 1), vec![far]);
+        assert_eq!(ids(&w, 2, 2), vec![]);
+        assert_eq!(load(&w), 0);
+        let mut events = Vec::new();
+        let mut act = |w: &mut World, intention: Intention| {
+            w.queue(intention);
+            w.step(&rules, &mut events);
+        };
+        act(&mut w, Intention::PickUp { body, item: flint });
+        assert_eq!(ids(&w, 0, 0), vec![branch]);
+        assert_eq!(load(&w), 400);
+        act(&mut w, Intention::PickUp { body, item: branch });
+        assert_eq!(ids(&w, 0, 0), vec![]);
+        assert_eq!(load(&w), 400 + branch_g);
+        act(&mut w, Intention::Stow { body, item: flint });
+        assert_eq!(load(&w), 400 + branch_g);
+        act(&mut w, Intention::Hold { body, item: branch });
+        assert_eq!(load(&w), 400 + branch_g);
+        act(&mut w, Intention::Drop { body, item: flint });
+        assert_eq!(ids(&w, 0, 0), vec![flint]);
+        assert_eq!(load(&w), branch_g);
+        let berries = w.spawn_item("berries", Pos::new(5, 5));
+        act(
+            &mut w,
+            Intention::PickUp {
+                body,
+                item: berries,
+            },
+        );
+        assert_eq!(load(&w), branch_g + 100);
+        act(
+            &mut w,
+            Intention::Eat {
+                body,
+                item: berries,
+            },
+        );
+        assert_eq!(load(&w), branch_g);
+        assert_eq!(w.item(berries), None);
+        assert_eq!(ids(&w, 0, 0), vec![flint]);
+        let mut back: World = serde_json::from_str(&serde_json::to_string(&w).unwrap()).unwrap();
+        assert_eq!(ids(&back, 0, 0), vec![flint]);
+        assert_eq!(ids(&back, 1, 1), vec![far]);
+        assert_eq!(load(&back), 0, "derived, not stored");
+        back.take_content(&rules);
+        assert_eq!(load(&back), branch_g);
+        assert_eq!(back.item(branch), w.item(branch));
+        w.die(body, Death::Starved, &mut events);
+        assert_eq!(ids(&w, 0, 0).len(), 3, "the flint, the branch, the corpse");
+        assert!(
+            w.items_in(ChunkPos::new(0, 0))
+                .iter()
+                .all(|i| i.pos().is_some())
+        );
     }
 }

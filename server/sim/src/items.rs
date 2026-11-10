@@ -83,14 +83,7 @@ pub fn natural_items(map: &Map, spawns: &[Spawn], seed: u64, chunk: ChunkPos) ->
                 if spawn.terrain != terrain || !near_enough(map, tile, spawn) {
                     continue;
                 }
-                #[allow(clippy::cast_sign_loss)]
-                let roll = hash(&[
-                    seed ^ purpose::NATURAL_ITEM,
-                    tile.x as u64,
-                    tile.y as u64,
-                    rule as u64,
-                ]) % 1000;
-                if roll >= u64::from(spawn.per_thousand) {
+                if roll(seed, tile, rule) >= u64::from(spawn.per_thousand) {
                     continue;
                 }
                 if let Some(id) = natural_id(tile, rule) {
@@ -104,6 +97,52 @@ pub fn natural_items(map: &Map, spawns: &[Spawn], seed: u64, chunk: ChunkPos) ->
         }
     }
     out
+}
+
+/// The natural item `id` names, if the ground drops it: the very piece
+/// [`natural_items`] lists for its chunk, found alone in a few hundred
+/// nanoseconds instead of making the whole chunk's. `None` for an id
+/// that is not a natural item's, that names no rule or no tile, or
+/// whose roll fails.
+#[must_use]
+pub fn natural_item(map: &Map, spawns: &[Spawn], seed: u64, id: ItemId) -> Option<Item> {
+    if !is_natural(id) {
+        return None;
+    }
+    let slot = id.0 & ((1 << SLOT_BITS) - 1);
+    let rule = usize::try_from(slot & ((1 << RULE_BITS) - 1)).expect("few rules");
+    let index = i32::try_from(slot >> RULE_BITS).expect("a tile of its chunk");
+    let side = i32::try_from(CHUNK_SIZE).expect("small chunk");
+    if index >= side * side {
+        return None;
+    }
+    let origin = chunk_of(id).origin();
+    let tile = Pos::new(origin.x + index % side, origin.y + index / side);
+    let spawn = spawns.get(rule)?;
+    let terrain = map.get(tile)?;
+    if spawn.terrain != terrain
+        || !near_enough(map, tile, spawn)
+        || roll(seed, tile, rule) >= u64::from(spawn.per_thousand)
+    {
+        return None;
+    }
+    Some(Item {
+        id,
+        material: spawn.material.clone(),
+        place: Place::Ground { pos: tile },
+    })
+}
+
+/// The roll of `rule` on `tile`, 0 to 999: the piece is there when it is
+/// under the rule's chance.
+#[allow(clippy::cast_sign_loss)]
+fn roll(seed: u64, tile: Pos, rule: usize) -> u64 {
+    hash(&[
+        seed ^ purpose::NATURAL_ITEM,
+        tile.x as u64,
+        tile.y as u64,
+        rule as u64,
+    ]) % 1000
 }
 
 /// A rule with `near` holds within that many tiles (eight-way) of its
@@ -166,6 +205,43 @@ mod tests {
             })
             .collect();
         assert_eq!(ids.len(), 32 * 32 * 2);
+    }
+
+    #[test]
+    fn one_natural_item_is_found_alone_as_among_its_chunk() {
+        let map = Map::valley(256, 256, 4);
+        let spawns = rules();
+        let mut listed = 0;
+        for cy in 0..8 {
+            for cx in 0..8 {
+                let chunk = ChunkPos::new(cx, cy);
+                let items = natural_items(&map, &spawns, 4, chunk);
+                let ids: std::collections::BTreeSet<ItemId> = items.iter().map(|i| i.id).collect();
+                for item in &items {
+                    assert_eq!(natural_item(&map, &spawns, 4, item.id).as_ref(), Some(item));
+                    listed += 1;
+                }
+                // Every other slot of the chunk names nothing.
+                let origin = chunk.origin();
+                for index in 0..32 * 32 {
+                    for rule in 0..4 {
+                        let tile = Pos::new(origin.x + index % 32, origin.y + index / 32);
+                        let id = natural_id(tile, rule).expect("in range");
+                        assert_eq!(
+                            natural_item(&map, &spawns, 4, id).is_some(),
+                            ids.contains(&id)
+                        );
+                    }
+                }
+            }
+        }
+        assert!(listed > 100, "{listed} items");
+        assert_eq!(
+            natural_item(&map, &spawns, 4, ItemId(12)),
+            None,
+            "a stored id"
+        );
+        assert_eq!(natural_item(&map, &spawns, 5, ItemId(12)), None);
     }
 
     #[test]
