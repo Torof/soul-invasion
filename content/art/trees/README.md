@@ -68,7 +68,9 @@ size could hold.
 **10 November 2026, colours brought back**: the edit had made the trees
 darker and cooler than before. Each new source was given its old
 version's colours with `content/tools/match_tree_colours.py`: lightness
-mapped quantile by quantile, hue turned and chroma scaled to the old
-means, per pixel, the outlines and the white background left untouched.
+mapped quantile by quantile, and on the foliage only (yellow-green to
+teal hues) hue turned and chroma scaled to the old means, so the bark,
+the apples and the flowers keep their own colours; per pixel, the outlines
+and the white background left untouched.
 The uncorrected sources are kept in
 `content/ai-reserve/sources/trees/originals/regeneration-2026-11-10/before-colour/`.
