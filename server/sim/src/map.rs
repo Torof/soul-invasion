@@ -16,7 +16,8 @@
 // `FinePos::distance_to` and `line_clear` allow floats where they stand.
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, VecDeque};
+use std::collections::{BinaryHeap, HashMap, VecDeque};
+use std::hash::{BuildHasherDefault, Hasher};
 
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +36,17 @@ pub const MM_PER_TILE: i32 = 1000;
 const STRAIGHT_COST: u32 = 10;
 /// Walking cost of a diagonal step: √2 straight steps, rounded (D32).
 const DIAGONAL_COST: u32 = 14;
+
+/// How far a path may go from where it starts, in tiles on each axis
+/// (D29, D31, D32): what the body sees, the view's 288 tiles (D08). A
+/// body takes the ways it can see, a ford, a bridge, a way round a pond,
+/// and no other: past what it sees, the player finds the way. A target
+/// farther away, or reachable only by leaving the square, gets no path
+/// (the body then walks straight at it, until something stands in the
+/// way). So no search explores more than 577 × 577 tiles, about 50 to
+/// 100 ms at worst in a release build (0.16 to 0.3 µs a tile, measured
+/// on 10 November 2026), whatever the size of the world.
+pub const PATH_REACH: i32 = 288;
 
 /// A tile position on the grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -468,7 +480,7 @@ impl Map {
     /// Sets the terrain at `pos`; ignored outside the map. Generation
     /// only: terrain is not stored, so a change here does not survive a
     /// snapshot.
-    fn set(&mut self, pos: Pos, terrain: Terrain) {
+    pub(crate) fn set(&mut self, pos: Pos, terrain: Terrain) {
         if let Some(i) = self.index(pos) {
             self.tiles[i] = terrain;
         }
@@ -539,19 +551,35 @@ impl Map {
     /// be walked). Steps go in eight directions; a diagonal step costs √2
     /// straight ones and never cuts a corner (both straight neighbours it
     /// passes between must be walkable) (D32). Empty when already there;
-    /// `None` when unreachable.
+    /// `None` when unreachable within [`PATH_REACH`] tiles of `from`. Its
+    /// work and memory follow the tiles it expands, never the map's size
+    /// (D31, D39).
     pub fn path(
         &self,
         from: Pos,
         to: Pos,
         cost: impl Fn(Terrain) -> Option<u32>,
     ) -> Option<Vec<Pos>> {
+        self.search(from, to, cost).0
+    }
+
+    /// The A* search behind [`Map::path`], with the number of tiles it
+    /// expanded.
+    fn search(
+        &self,
+        from: Pos,
+        to: Pos,
+        cost: impl Fn(Terrain) -> Option<u32>,
+    ) -> (Option<Vec<Pos>>, u32) {
         if from == to {
-            return Some(Vec::new());
+            return (Some(Vec::new()), 0);
         }
+        let within =
+            |pos: Pos| (pos.x - from.x).abs() <= PATH_REACH && (pos.y - from.y).abs() <= PATH_REACH;
         let cost_at = |pos: Pos| self.get(pos).and_then(&cost);
-        cost_at(from)?;
-        cost_at(to)?;
+        if !within(to) || cost_at(from).is_none() || cost_at(to).is_none() {
+            return (None, 0);
+        }
         // The heuristic must not overestimate: scale it by the cheapest
         // terrain there is.
         let cheapest = Terrain::ALL
@@ -562,33 +590,30 @@ impl Map {
         let estimate = |a: Pos| octile(a, to) * cheapest / STRAIGHT_COST;
         // A* with an octile heuristic. Ties break on insertion order so
         // the path is the same on every machine.
-        let start = self.index(from)?;
-        let goal = self.index(to)?;
-        let mut best = vec![u32::MAX; self.tiles.len()];
-        let mut came_from: Vec<Option<usize>> = vec![None; self.tiles.len()];
+        let mut reached = Reached::default();
         let mut open = BinaryHeap::new();
         let mut pushed = 0u64;
-        best[start] = 0;
-        open.push(Reverse((estimate(from), pushed, start)));
+        let mut expanded = 0u32;
+        reached.improve(from, 0, 0);
+        open.push(Reverse((estimate(from), pushed, from)));
 
-        while let Some(Reverse((_, _, current))) = open.pop() {
-            if current == goal {
-                let mut path = Vec::new();
-                let mut step = goal;
-                while step != start {
-                    path.push(self.pos_at(step));
-                    step = came_from[step].expect("reached tiles have a predecessor");
-                }
-                path.reverse();
-                return Some(path);
+        while let Some(Reverse((guess, _, here))) = open.pop() {
+            if here == to {
+                return (Some(reached.walk_back(from, to)), expanded);
             }
-            let here = self.pos_at(current);
-            let cost_here = best[current];
-            for next in here.neighbours() {
-                let Some(i) = self.index(next) else {
+            let cost_here = reached.cost(here);
+            if guess > cost_here + estimate(here) {
+                // A stale entry: the tile was reached more cheaply since,
+                // and expanded from there already; expanding it again
+                // would change nothing.
+                continue;
+            }
+            expanded += 1;
+            for (step, next) in (0u8..).zip(here.neighbours()) {
+                if !within(next) {
                     continue;
-                };
-                let Some(terrain_cost) = cost(self.tiles[i]) else {
+                }
+                let Some(terrain_cost) = cost_at(next) else {
                     continue;
                 };
                 let step_cost = if here.is_diagonal_to(next) {
@@ -602,15 +627,13 @@ impl Map {
                     STRAIGHT_COST
                 };
                 let cost = cost_here + step_cost * terrain_cost / STRAIGHT_COST;
-                if cost < best[i] {
-                    best[i] = cost;
-                    came_from[i] = Some(current);
+                if reached.improve(next, cost, step) {
                     pushed += 1;
-                    open.push(Reverse((cost + estimate(next), pushed, i)));
+                    open.push(Reverse((cost + estimate(next), pushed, next)));
                 }
             }
         }
-        None
+        (None, expanded)
     }
 
     /// Pulls a tile path taut into straight segments from `from`: each
@@ -664,17 +687,47 @@ impl Map {
 /// Walks the tiles the segment passes through; where it goes exactly
 /// through a corner it may graze one disallowed tile but never slip
 /// between two.
+pub fn line_clear(a: FinePos, b: FinePos, allowed: impl Fn(Pos) -> bool) -> bool {
+    first_block(a, b, allowed).is_none()
+}
+
+/// How far a body gets walking straight from `a` toward `b`: `b` when
+/// the way is clear, else a point on the segment a little before the
+/// first tile it may not enter (`a` itself when it is that close). For a
+/// player's walk when no path is found within reach (D31, D32).
+// Not generation: floats, as in `first_block`.
+#[allow(clippy::cast_possible_truncation, clippy::float_arithmetic)]
+pub fn line_reach(a: FinePos, b: FinePos, allowed: impl Fn(Pos) -> bool) -> FinePos {
+    /// How far before the obstacle the body stops, in millimetres.
+    const SHORT_OF: f64 = 300.0;
+    let Some(t) = first_block(a, b, allowed) else {
+        return b;
+    };
+    let length = a.distance_to(b);
+    if length <= 0.0 {
+        return a;
+    }
+    let t = (t - SHORT_OF / length).max(0.0);
+    FinePos::new(
+        a.x + (f64::from(b.x - a.x) * t).round() as i32,
+        a.y + (f64::from(b.y - a.y) * t).round() as i32,
+    )
+}
+
+/// Where along the segment from `a` to `b` (0 at `a`, 1 at `b`) it first
+/// enters a disallowed tile, slipping between two at a corner counting
+/// as entering; `None` when it never does.
 // Not generation (it pulls a walked path taut): floats are allowed here,
 // and stay.
 #[allow(clippy::cast_possible_truncation, clippy::float_arithmetic)]
-pub fn line_clear(a: FinePos, b: FinePos, allowed: impl Fn(Pos) -> bool) -> bool {
+fn first_block(a: FinePos, b: FinePos, allowed: impl Fn(Pos) -> bool) -> Option<f64> {
     let scale = f64::from(MM_PER_TILE);
     let (x0, y0) = (f64::from(a.x) / scale, f64::from(a.y) / scale);
     let (x1, y1) = (f64::from(b.x) / scale, f64::from(b.y) / scale);
     let (mut tx, mut ty) = (x0.floor() as i32, y0.floor() as i32);
     let (ex, ey) = (x1.floor() as i32, y1.floor() as i32);
     if !allowed(Pos::new(tx, ty)) {
-        return false;
+        return Some(0.0);
     }
     let (dx, dy) = (x1 - x0, y1 - y0);
     let step_x = if dx > 0.0 { 1 } else { -1 };
@@ -701,29 +754,140 @@ pub fn line_clear(a: FinePos, b: FinePos, allowed: impl Fn(Pos) -> bool) -> bool
         (1.0 / dy).abs()
     };
     let mut remaining = (ex - tx).abs() + (ey - ty).abs() + 1;
+    let mut entered = 0.0;
     while (tx, ty) != (ex, ey) && remaining > 0 {
         remaining -= 1;
         if (t_max_x - t_max_y).abs() < 1e-9 {
             // Through a corner: no slipping between two blocked tiles.
             if !allowed(Pos::new(tx + step_x, ty)) && !allowed(Pos::new(tx, ty + step_y)) {
-                return false;
+                return Some(t_max_x);
             }
+            entered = t_max_x;
             tx += step_x;
             ty += step_y;
             t_max_x += t_delta_x;
             t_max_y += t_delta_y;
         } else if t_max_x < t_max_y {
+            entered = t_max_x;
             tx += step_x;
             t_max_x += t_delta_x;
         } else {
+            entered = t_max_y;
             ty += step_y;
             t_max_y += t_delta_y;
         }
         if !allowed(Pos::new(tx, ty)) {
-            return false;
+            return Some(entered);
         }
     }
-    (tx, ty) == (ex, ey)
+    ((tx, ty) != (ex, ey)).then_some(entered)
+}
+
+/// Tiles of a chunk: the size of a page of [`Reached`].
+const PAGE: usize = (CHUNK_SIZE * CHUNK_SIZE) as usize;
+
+/// The tiles one path search has reached, kept in pages of a chunk: for
+/// each tile, its cheapest cost so far and the step that reached it. Its
+/// memory follows the chunks the search touches, never the map's size
+/// (D31, D39).
+#[derive(Default)]
+struct Reached {
+    /// The first slot of each chunk's page.
+    pages: HashMap<ChunkPos, usize, BuildHasherDefault<ChunkHasher>>,
+    /// Per slot, the cheapest cost so far; `u32::MAX` when not reached.
+    cost: Vec<u32>,
+    /// Per slot, which of [`Pos::neighbours`] of the previous tile this
+    /// one is.
+    step: Vec<u8>,
+    /// The page looked up last: most tiles a search looks at are in the
+    /// chunk of the tile before.
+    last: Option<(ChunkPos, usize)>,
+}
+
+impl Reached {
+    /// The slot of a tile, making its chunk's page when it has none.
+    fn slot(&mut self, pos: Pos) -> usize {
+        let chunk = pos.chunk();
+        let first = match self.last {
+            Some((known, first)) if known == chunk => first,
+            _ => {
+                let fresh = self.cost.len();
+                let first = *self.pages.entry(chunk).or_insert(fresh);
+                if first == fresh {
+                    self.cost.resize(fresh + PAGE, u32::MAX);
+                    self.step.resize(fresh + PAGE, 0);
+                }
+                self.last = Some((chunk, first));
+                first
+            }
+        };
+        let origin = chunk.origin();
+        let side = i32::try_from(CHUNK_SIZE).expect("small chunk side");
+        first
+            + usize::try_from((pos.y - origin.y) * side + (pos.x - origin.x)).expect("in its chunk")
+    }
+
+    /// The cheapest cost found so far to `pos`.
+    fn cost(&mut self, pos: Pos) -> u32 {
+        let slot = self.slot(pos);
+        self.cost[slot]
+    }
+
+    /// Records reaching `pos` at `cost` by `step` if that is cheaper than
+    /// before; says whether it was.
+    fn improve(&mut self, pos: Pos, cost: u32, step: u8) -> bool {
+        let slot = self.slot(pos);
+        let better = cost < self.cost[slot];
+        if better {
+            self.cost[slot] = cost;
+            self.step[slot] = step;
+        }
+        better
+    }
+
+    /// The path from `from` to `to`, not including `from`, following the
+    /// recorded steps back.
+    fn walk_back(&mut self, from: Pos, to: Pos) -> Vec<Pos> {
+        let offsets = Pos::new(0, 0).neighbours();
+        let mut path = Vec::new();
+        let mut at = to;
+        while at != from {
+            path.push(at);
+            let slot = self.slot(at);
+            let back = offsets[usize::from(self.step[slot])];
+            at = Pos::new(at.x - back.x, at.y - back.y);
+        }
+        path.reverse();
+        path
+    }
+}
+
+/// Hashes a chunk for [`Reached`]: a multiply and a fold, no random keys,
+/// so a search does the same work on every run (D24). Its table is only
+/// looked up, never iterated, so the hash cannot change a path.
+#[derive(Default)]
+struct ChunkHasher(u64);
+
+impl ChunkHasher {
+    fn mix(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
+
+impl Hasher for ChunkHasher {
+    fn finish(&self) -> u64 {
+        self.0 ^ (self.0 >> 32)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.mix(u64::from(byte));
+        }
+    }
+
+    fn write_i32(&mut self, n: i32) {
+        self.mix(u64::from(n.cast_unsigned()));
+    }
 }
 
 /// Lower bound on the walking cost between two tiles with eight-way steps.
@@ -2414,6 +2578,8 @@ impl Rivers {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     /// Every passable terrain at the reference cost.
@@ -2505,6 +2671,333 @@ mod tests {
         assert_eq!(map.path(Pos::new(0, 0), Pos::new(1, 0), walk), None);
         assert_eq!(map.path(Pos::new(0, 0), Pos::new(0, 0), walk), Some(vec![]));
         assert_eq!(map.path(Pos::new(0, 0), Pos::new(9, 9), walk), None);
+    }
+
+    /// The content's walking costs (`content/movement.ron`), which the
+    /// game's paths use: the heuristic is weaker than with `walk`, so a
+    /// search expands more.
+    fn valley_walk(terrain: Terrain) -> Option<u32> {
+        match terrain {
+            Terrain::Grass => Some(10),
+            Terrain::Forest | Terrain::Brook => Some(15),
+            Terrain::Ford => Some(20),
+            Terrain::Water | Terrain::Rock => None,
+        }
+    }
+
+    /// The path search as it was before it had a reach (5 November
+    /// 2026), kept as the reference the bounded one must equal.
+    fn unbounded_path(
+        map: &Map,
+        from: Pos,
+        to: Pos,
+        cost: impl Fn(Terrain) -> Option<u32>,
+    ) -> Option<Vec<Pos>> {
+        if from == to {
+            return Some(Vec::new());
+        }
+        let cost_at = |pos: Pos| map.get(pos).and_then(&cost);
+        cost_at(from)?;
+        cost_at(to)?;
+        let cheapest = Terrain::ALL
+            .iter()
+            .filter_map(|t| cost(*t))
+            .min()
+            .unwrap_or(STRAIGHT_COST);
+        let estimate = |a: Pos| octile(a, to) * cheapest / STRAIGHT_COST;
+        let start = map.index(from)?;
+        let goal = map.index(to)?;
+        let mut best = vec![u32::MAX; map.tiles.len()];
+        let mut came_from: Vec<Option<usize>> = vec![None; map.tiles.len()];
+        let mut open = BinaryHeap::new();
+        let mut pushed = 0u64;
+        best[start] = 0;
+        open.push(Reverse((estimate(from), pushed, start)));
+        while let Some(Reverse((_, _, current))) = open.pop() {
+            if current == goal {
+                let mut path = Vec::new();
+                let mut step = goal;
+                while step != start {
+                    path.push(map.pos_at(step));
+                    step = came_from[step].expect("reached tiles have a predecessor");
+                }
+                path.reverse();
+                return Some(path);
+            }
+            let here = map.pos_at(current);
+            let cost_here = best[current];
+            for next in here.neighbours() {
+                let Some(i) = map.index(next) else {
+                    continue;
+                };
+                let Some(terrain_cost) = cost(map.tiles[i]) else {
+                    continue;
+                };
+                let step_cost = if here.is_diagonal_to(next) {
+                    if cost_at(Pos::new(here.x, next.y)).is_none()
+                        || cost_at(Pos::new(next.x, here.y)).is_none()
+                    {
+                        continue;
+                    }
+                    DIAGONAL_COST
+                } else {
+                    STRAIGHT_COST
+                };
+                let cost = cost_here + step_cost * terrain_cost / STRAIGHT_COST;
+                if cost < best[i] {
+                    best[i] = cost;
+                    came_from[i] = Some(current);
+                    pushed += 1;
+                    open.push(Reverse((cost + estimate(next), pushed, i)));
+                }
+            }
+        }
+        None
+    }
+
+    /// `count` random pairs of tiles on `map`, the second within `reach`
+    /// tiles of the first on each axis, both on the map.
+    fn random_pairs(map: &Map, seed: u64, count: usize, reach: u32) -> Vec<(Pos, Pos)> {
+        let mut rng = Lcg::new(seed);
+        let side = |n: u32| i32::try_from(n).expect("small map");
+        let mut pairs = Vec::new();
+        while pairs.len() < count {
+            let a = Pos::new(
+                side(rng.next_below(map.width())),
+                side(rng.next_below(map.height())),
+            );
+            let b = Pos::new(
+                a.x + side(rng.next_below(2 * reach + 1)) - side(reach),
+                a.y + side(rng.next_below(2 * reach + 1)) - side(reach),
+            );
+            if map.get(b).is_some() {
+                pairs.push((a, b));
+            }
+        }
+        pairs
+    }
+
+    #[test]
+    fn bounded_paths_are_the_unbounded_ones() {
+        // Pairs anywhere, walkable or not, reachable or not: the bounded
+        // search answers exactly as the search it replaced, path for path,
+        // but for the rare way that must leave the square around the start.
+        let mut found = 0;
+        let mut detours = 0;
+        for (size, seed, count, reach) in
+            [(256, 1, 300, 256), (256, 7, 300, 256), (768, 1, 120, 250)]
+        {
+            let map = Map::valley(size, size, seed);
+            for (a, b) in random_pairs(&map, seed ^ u64::from(size), count, reach) {
+                for cost in [walk, valley_walk] {
+                    let path = map.path(a, b, cost);
+                    let unbounded = unbounded_path(&map, a, b, cost);
+                    if path.is_none() && unbounded.is_some() {
+                        // The only way leaves the square around `a`.
+                        detours += 1;
+                        continue;
+                    }
+                    assert_eq!(path, unbounded, "{a:?} -> {b:?}");
+                    found += usize::from(path.is_some_and(|p| !p.is_empty()));
+                }
+            }
+        }
+        assert!(found > 600, "many pairs are walkable and joined: {found}");
+        assert!(
+            detours * 100 < found,
+            "few ways leave the square: {detours}"
+        );
+    }
+
+    #[test]
+    fn a_straight_walk_stops_before_the_first_obstacle() {
+        let walkable = |p: Pos| p.x != 5;
+        let a = Pos::new(1, 1).centre();
+        // Clear: all the way.
+        assert_eq!(
+            line_reach(a, Pos::new(4, 3).centre(), walkable),
+            Pos::new(4, 3).centre()
+        );
+        // A wall at x = 5: stops 30 cm short of it, on the segment.
+        let end = line_reach(a, Pos::new(9, 1).centre(), walkable);
+        assert_eq!(end, FinePos::new(4700, 1500));
+        // Already against it, or on it: no step.
+        let near = FinePos::new(4900, 1500);
+        assert_eq!(line_reach(near, Pos::new(9, 1).centre(), walkable), near);
+        let on = Pos::new(5, 1).centre();
+        assert_eq!(line_reach(on, a, walkable), on);
+    }
+
+    #[test]
+    fn a_search_stays_within_its_reach() {
+        // An open field larger than the square, the target walled in by
+        // rock: the search explores the square at most, then refuses.
+        let mut map = Map::filled(1500, 1500, Terrain::Grass);
+        for x in 0..4 {
+            map.set(Pos::new(x, 3), Terrain::Rock);
+            map.set(Pos::new(3, x), Terrain::Rock);
+        }
+        let (from, to) = (Pos::new(300, 300), Pos::new(1, 1));
+        let (path, expanded) = map.search(from, to, walk);
+        assert_eq!(path, None);
+        let side = u32::try_from(2 * PATH_REACH + 1).expect("small");
+        assert!(expanded <= side * side, "{expanded}");
+        // A target beyond the reach is refused at once, even in the open.
+        let far = Pos::new(1, 1 + PATH_REACH + 1);
+        assert_eq!(map.search(Pos::new(1, 1), far, walk), (None, 0));
+        // At the edge of the reach it is found, straight.
+        let edge = Pos::new(10 + PATH_REACH, 10);
+        let path = map.path(Pos::new(10, 10), edge, walk).expect("in reach");
+        assert_eq!(path.len(), usize::try_from(PATH_REACH).expect("small"));
+        // A way that must leave the square is refused: a wall across the
+        // field with its only gap out of reach.
+        let mut walled = Map::filled(800, 800, Terrain::Grass);
+        for y in 0..799 {
+            walled.set(Pos::new(400, y), Terrain::Rock);
+        }
+        assert_eq!(
+            walled.path(Pos::new(390, 10), Pos::new(410, 10), walk),
+            None
+        );
+        assert!(
+            walled
+                .path(Pos::new(390, 780), Pos::new(410, 780), walk)
+                .is_some()
+        );
+    }
+
+    /// Ground a body can walk to from each tile: a label per tile (`None`
+    /// on water and rock), the same for two tiles joined by walkable
+    /// ground. Four neighbours suffice: a diagonal step never cuts a
+    /// corner, so it always has a straight way round.
+    fn walkable_pieces(map: &Map) -> Vec<Option<u32>> {
+        let mut label = vec![None; map.tiles.len()];
+        let mut next = 0;
+        for start in 0..map.tiles.len() {
+            if label[start].is_some() || valley_walk(map.tiles[start]).is_none() {
+                continue;
+            }
+            label[start] = Some(next);
+            let mut queue = VecDeque::from([start]);
+            while let Some(i) = queue.pop_front() {
+                for n in map.pos_at(i).neighbours().into_iter().take(4) {
+                    if let Some(j) = map.index(n)
+                        && label[j].is_none()
+                        && valley_walk(map.tiles[j]).is_some()
+                    {
+                        label[j] = Some(next);
+                        queue.push_back(j);
+                    }
+                }
+            }
+            next += 1;
+        }
+        label
+    }
+
+    /// How many tiles real paths expand on the game's valleys, and what
+    /// the worst refusal costs: the measure behind [`PATH_REACH`]. Slow;
+    /// run by hand: `cargo test --release -p sim path_budget_survey --
+    /// --ignored --nocapture`.
+    #[test]
+    #[ignore = "a measure, run by hand in release"]
+    fn path_budget_survey() {
+        // The quickest of three runs, against the noise of a busy machine.
+        let quickest = |run: &mut dyn FnMut()| {
+            (0..3)
+                .map(|_| {
+                    let started = std::time::Instant::now();
+                    run();
+                    started.elapsed()
+                })
+                .min()
+                .expect("three runs")
+        };
+        for size in [768, 1536, 3072] {
+            let map = Map::valley(size, size, 1);
+            let pieces = walkable_pieces(&map);
+            let piece = |p: Pos| map.index(p).and_then(|i| pieces[i]);
+            let mut sizes = BTreeMap::new();
+            for label in pieces.iter().flatten() {
+                *sizes.entry(*label).or_insert(0u32) += 1;
+            }
+            let largest = sizes.values().copied().max().expect("walkable ground");
+            println!(
+                "{size}: {} pieces of ground, the largest {largest} tiles",
+                sizes.len()
+            );
+            for reach in [100, 300] {
+                let pairs: Vec<_> = random_pairs(&map, u64::from(size + reach), 50_000, reach)
+                    .into_iter()
+                    .filter(|&(a, b)| piece(a).is_some() && piece(a) == piece(b))
+                    .take(2000)
+                    .collect();
+                let mut expansions: Vec<u32> = pairs
+                    .iter()
+                    .map(|&(a, b)| map.search(a, b, valley_walk).1)
+                    .collect();
+                let bounded = quickest(&mut || {
+                    for &(a, b) in &pairs {
+                        assert!(map.path(a, b, valley_walk).is_some());
+                    }
+                });
+                let unbounded = quickest(&mut || {
+                    for &(a, b) in &pairs {
+                        assert!(unbounded_path(&map, a, b, valley_walk).is_some());
+                    }
+                });
+                expansions.sort_unstable();
+                let n = expansions.len();
+                println!(
+                    "{size}, within {reach}: {n} joined pairs, expanded median {} p90 {} p99 {} max {}; \
+                     {:?} a path bounded, {:?} unbounded",
+                    expansions[n / 2],
+                    expansions[n * 9 / 10],
+                    expansions[n * 99 / 100],
+                    expansions[n - 1],
+                    bounded / u32::try_from(n).expect("few pairs"),
+                    unbounded / u32::try_from(n).expect("few pairs"),
+                );
+            }
+            // The worst refusal: from the camp to the nearest walkable
+            // tile it is not joined to (an island, a bank with no ford).
+            let camp = map.camp();
+            let Some(target) = (1..i32::try_from(size).expect("small map"))
+                .flat_map(|r| {
+                    (-r..=r).flat_map(move |d| {
+                        [(d, -r), (d, r), (-r, d), (r, d)]
+                            .map(|(dx, dy)| Pos::new(camp.x + dx, camp.y + dy))
+                    })
+                })
+                .find(|&p| piece(p).is_some() && piece(p) != piece(camp))
+            else {
+                println!("{size}: one piece of ground, nothing to refuse");
+                continue;
+            };
+            let (_, expanded) = map.search(camp, target, valley_walk);
+            let bounded = quickest(&mut || assert!(map.path(camp, target, valley_walk).is_none()));
+            let unbounded = quickest(&mut || {
+                assert!(unbounded_path(&map, camp, target, valley_walk).is_none());
+            });
+            println!(
+                "{size}, refused {camp:?} -> {target:?}: expanded {expanded}; {bounded:?} bounded, {unbounded:?} unbounded"
+            );
+        }
+        // A walled-in target on ground larger than the square: the search
+        // stops at the square.
+        let field = Map::filled(1500, 1500, Terrain::Grass);
+        let (from, to) = (Pos::new(PATH_REACH, PATH_REACH), Pos::new(0, 0));
+        let mut walled = field.clone();
+        walled.set(Pos::new(0, 1), Terrain::Rock);
+        walled.set(Pos::new(1, 0), Terrain::Rock);
+        walled.set(Pos::new(1, 1), Terrain::Rock);
+        let bounded = quickest(&mut || assert!(walled.path(from, to, valley_walk).is_none()));
+        let unbounded = quickest(&mut || {
+            assert!(unbounded_path(&walled, from, to, valley_walk).is_none());
+        });
+        println!("1500 field, walled-in target: {bounded:?} bounded, {unbounded:?} unbounded");
+        let found = quickest(&mut || assert!(field.path(from, to, valley_walk).is_some()));
+        println!("1500 field, to the reach's corner: {found:?}");
     }
 
     #[test]

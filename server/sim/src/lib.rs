@@ -917,23 +917,40 @@ impl World {
                 self.wake(index, events);
                 let cost = |t: Terrain| rules.movement.cost(t);
                 let from = self.bodies[index].at;
-                match self.map.path(from.tile(), target, cost) {
-                    Some(path) => {
-                        let route = self.map.pull(from, &path, cost);
-                        let body = &mut self.bodies[index];
-                        body.route = route.iter().copied().collect();
-                        if route.is_empty() {
-                            events.push(Event::BodyStopped { body: id, at: from });
-                        } else {
-                            events.push(Event::BodyWalks {
-                                body: id,
-                                from,
-                                route,
-                                speed_cm_per_s: rules.movement.walk_speed_cm_per_s,
-                            });
-                        }
+                if let Some(path) = self.map.path(from.tile(), target, cost) {
+                    let route = self.map.pull(from, &path, cost);
+                    let body = &mut self.bodies[index];
+                    body.route = route.iter().copied().collect();
+                    if route.is_empty() {
+                        events.push(Event::BodyStopped { body: id, at: from });
+                    } else {
+                        events.push(Event::BodyWalks {
+                            body: id,
+                            from,
+                            route,
+                            speed_cm_per_s: rules.movement.walk_speed_cm_per_s,
+                        });
                     }
-                    None => events.push(Event::MoveRefused { body: id, target }),
+                } else {
+                    // No path found within reach: straight toward the
+                    // target, stopping before the first tile the body
+                    // may not enter (D31, D32). The player walks it
+                    // round.
+                    let walkable = |p: Pos| self.map.get(p).is_some_and(|t| cost(t).is_some());
+                    let end = map::line_reach(from, target.centre(), walkable);
+                    let (dx, dy) = (i64::from(end.x - from.x), i64::from(end.y - from.y));
+                    let quarter = i64::from(MM_PER_TILE / 4);
+                    if dx * dx + dy * dy < quarter * quarter {
+                        events.push(Event::MoveRefused { body: id, target });
+                    } else {
+                        self.bodies[index].route = VecDeque::from([end]);
+                        events.push(Event::BodyWalks {
+                            body: id,
+                            from,
+                            route: vec![end],
+                            speed_cm_per_s: rules.movement.walk_speed_cm_per_s,
+                        });
+                    }
                 }
             }
             Intention::Teleport { body: id, target } => self.teleport(id, target, rules, events),
@@ -1239,9 +1256,15 @@ fn walk(
     events: &mut Vec<Event>,
 ) {
     let terrain = map.get(body.at.tile()).unwrap_or(Terrain::Rock);
+    // A straight segment may graze the corner of a tile it may not enter
+    // (`line_clear`), and a body placed to the millimetre can stand a few
+    // millimetres into it: it goes on at the slowest pace, never stuck.
+    let speed = match movement.speed_cm_per_s(terrain) {
+        0 => movement.slowest_speed_cm_per_s(),
+        speed => speed,
+    };
     // Millimetres this tick: 143 cm/s at 10 ticks/s is exactly 143 mm.
-    let mut budget =
-        f64::from(movement.speed_cm_per_s(terrain) * 10 * speed_percent) / 100.0 / ticks_per_second;
+    let mut budget = f64::from(speed * 10 * speed_percent) / 100.0 / ticks_per_second;
     let tile_before = body.at.tile();
     while budget > 0.0 {
         let Some(&next) = body.route.front() else {
@@ -1553,7 +1576,7 @@ mod tests {
     }
 
     #[test]
-    fn impossible_walks_are_refused() {
+    fn walks_without_a_body_are_refused_and_off_the_map_stop_at_its_edge() {
         let mut w = open_field();
         let mut events = Vec::new();
         go(&mut w, Pos::new(50, 50));
@@ -1565,15 +1588,104 @@ mod tests {
         assert_eq!(
             events,
             vec![
-                Event::MoveRefused {
+                // No path off the map: straight to its edge, 30 cm short.
+                Event::BodyWalks {
                     body: BodyId(1),
-                    target: Pos::new(50, 50)
+                    from: Pos::new(0, 0).centre(),
+                    route: vec![FinePos::new(7788, 7788)],
+                    speed_cm_per_s: rules().movement.walk_speed_cm_per_s,
                 },
                 Event::MoveRefused {
                     body: BodyId(9),
                     target: Pos::new(1, 1)
                 },
             ]
+        );
+    }
+
+    /// Runs `world` until body 1 stops, at most `ticks` ticks.
+    fn walk_until_stopped(world: &mut World, ticks: u32) -> Vec<Event> {
+        let rules = rules();
+        let mut events = Vec::new();
+        for _ in 0..ticks {
+            world.step(&rules, &mut events);
+            if events.iter().any(|e| {
+                matches!(
+                    e,
+                    Event::BodyStopped {
+                        body: BodyId(1),
+                        ..
+                    } | Event::MoveRefused { .. }
+                )
+            }) {
+                return events;
+            }
+        }
+        panic!("body 1 never stopped");
+    }
+
+    #[test]
+    fn with_no_path_within_reach_the_body_walks_straight_to_the_obstacle() {
+        // A target farther than a path may go, walled in by rock: the
+        // body walks straight toward it and stops before the rock. One
+        // tick a second, days long enough not to tire.
+        let mut map = Map::filled(1500, 1500, Terrain::Grass);
+        for (x, y) in [(0, 1), (1, 0), (1, 1)] {
+            map.set(Pos::new(x, y), Terrain::Rock);
+        }
+        const { assert!(1499 > map::PATH_REACH) };
+        let mut w = World::empty(Calendar::new(1, 1_000_000).unwrap(), map);
+        w.spawn_body(Pos::new(1499, 1499));
+        go(&mut w, Pos::new(0, 0));
+        let events = walk_until_stopped(&mut w, 5000);
+        assert!(matches!(events[0], Event::BodyWalks { ref route, .. } if route.len() == 1));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::MoveRefused { .. }))
+        );
+        assert_eq!(w.body(BodyId(1)).expect("body 1").pos(), Pos::new(2, 2));
+    }
+
+    #[test]
+    fn a_body_grazing_a_water_corner_walks_on() {
+        // Found on the 768 valley: a straight walk passing 3 cm from the
+        // corner of a water tile left the body a few millimetres into it,
+        // its speed zero, stuck for good. It must walk on.
+        let mut map = Map::filled(20, 20, Terrain::Grass);
+        map.set(Pos::new(5, 5), Terrain::Water);
+        let mut w = World::empty(Calendar::new(1, 1_000_000).unwrap(), map);
+        w.spawn_body(Pos::new(2, 2));
+        let body = &mut w.bodies[0];
+        body.at = FinePos::new(5020, 5030);
+        body.route = VecDeque::from([Pos::new(9, 9).centre()]);
+        walk_until_stopped(&mut w, 100);
+        assert_eq!(w.body(BodyId(1)).expect("body 1").pos(), Pos::new(9, 9));
+    }
+
+    #[test]
+    fn across_a_river_with_its_ford_out_of_reach_the_body_walks_to_the_bank() {
+        // A river with one ford far upstream: within reach the body takes
+        // the ford; beyond it, it walks straight to the bank and stops.
+        let mut map = Map::filled(900, 200, Terrain::Grass);
+        for x in 0..900 {
+            map.set(Pos::new(x, 100), Terrain::Water);
+        }
+        map.set(Pos::new(850, 100), Terrain::Ford);
+        let mut w = World::empty(Calendar::new(1, 1_000_000).unwrap(), map.clone());
+        w.spawn_body(Pos::new(10, 90));
+        go(&mut w, Pos::new(10, 110));
+        walk_until_stopped(&mut w, 5000);
+        assert_eq!(w.body(BodyId(1)).expect("body 1").pos(), Pos::new(10, 99));
+
+        let mut w = World::empty(Calendar::new(1, 1_000_000).unwrap(), map);
+        w.spawn_body(Pos::new(800, 90));
+        go(&mut w, Pos::new(800, 110));
+        walk_until_stopped(&mut w, 5000);
+        assert_eq!(
+            w.body(BodyId(1)).expect("body 1").pos(),
+            Pos::new(800, 110),
+            "by the ford"
         );
     }
 

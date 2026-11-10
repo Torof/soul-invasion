@@ -100,6 +100,7 @@ The fundamental building block of all society.
 - **Discovery** through experimentation and observation, emerging from the properties of the world (e.g. smoked meat keeps). Later, **intuitions** from skilled characters.
 - Processes exist without being displayed: the space of possibilities is vast and hidden.
 - In the long term, possibly AI to judge free-form inventions.
+- **Knowing the land is knowledge too** (10 November 2026). The game shows **no map**: the world is huge, and players learn it by walking it and taking boats on its rivers (another arm, the far bank, the hills beyond). **The game organises nothing around it**: players land on the map and create their own needs, societies, food, the search for better places to live (an islet, water, shelter). Scouts, guides paid to lead others ("I know an iron mine, I'll take you there"), sellers of maps: these are roles players may invent, not systems of the game. Drawing maps that players can use is an idea for later. The movement serves this: a click takes the body by a way it can see, otherwise straight ahead until something stands in the way, and the player finds the rest (D31, D32).
 
 ## 12. World and end of the world
 
