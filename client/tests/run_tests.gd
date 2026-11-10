@@ -54,6 +54,9 @@ func _init() -> void:
 	_test_a_redraw_past_the_cameras_reach_waits_for_the_camera()
 	_test_a_hidden_chunk_is_parked_and_comes_back_as_it_was()
 	_test_the_depth_behind_the_mouse_is_found_again_only_when_it_may_change()
+	_test_the_fog_rings_leave_only_what_is_clear()
+	_test_the_fog_rings_are_built_when_the_ground_moves()
+	_test_the_far_view_leaves_its_hole_only_under_built_ground()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -638,7 +641,7 @@ func _test_plants_are_named_and_coloured() -> void:
 func _test_perf_overlay_reports() -> void:
 	var perf := PerfOverlay.new()
 	var text := perf.report(12.5)
-	_check(text.contains("fps") and text.contains("12.5 ms") and text.contains("frame step") and text.contains("draw calls") and text.contains("wind on"), "the counters report: %s" % text)
+	_check(text.contains("fps") and text.contains("12.5 ms") and text.contains("frame step") and text.contains("draw calls") and text.contains("wind on") and text.contains("fog rings (F7)"), "the counters report: %s" % text)
 	# F5: the ground plain, then exactly as it was.
 	var grass := ChunkView.ground_material("grass")
 	var real := grass.shader
@@ -1210,3 +1213,121 @@ func _test_the_depth_behind_the_mouse_is_found_again_only_when_it_may_change() -
 	_check(ledger.items_depth_near(items, 1, mouse, 76.8) == 403_000.0, "the same mouse and version: not looked for again")
 	_check(ledger.items_depth_near(items, 2, mouse, 76.8) == 401_000.0, "an item laid (a new version): looked for again, the farther one found")
 	_check(ledger.items_depth_near(items, 2, mouse + Vector2(400, 0), 76.8) == INF, "away from them all: nothing")
+## A veil's ring leaves a hole only where the haze is exactly nothing
+## (fog.gdshader: the noise moves its distance by at most half a tile,
+## so the hole's vertices lie at least half a tile inside), and its
+## triangles share every inner edge by index, so no pixel is drawn twice
+## nor missed along a seam.
+func _test_the_fog_rings_leave_only_what_is_clear() -> void:
+	var cases := [
+		# [held, corner]: the view's own veils, a corner larger than the half
+		# size, no corner, a narrow strip, and a limit with no room at all.
+		[Rect2(Vector2(1037.3, 500.7), Vector2(476, 476)), 14.0],
+		[Rect2(Vector2(1052.3, 515.7), Vector2(506, 506)), 29.0],
+		[Rect2(Vector2(10, 10), Vector2(40, 60)), 100.0],
+		[Rect2(Vector2(10, 10), Vector2(40, 60)), 0.0],
+		[Rect2(Vector2(0, 0), Vector2(3, 200)), 64.0],
+		[Rect2(Vector2(0, 0), Vector2(1, 1)), 64.0],
+	]
+	for c: Array in cases:
+		var held: Rect2 = c[0]
+		var corner: float = c[1]
+		var outer := held.grow(FarView.VEIL_REACH)
+		var mesh := FarView.ring(outer, held, corner, FarView.HOLE_INSET)
+		var points: PackedVector2Array = mesh["points"]
+		var indices: PackedInt32Array = mesh["indices"]
+		if held.size.x <= 2.0 * FarView.HOLE_INSET or held.size.y <= 2.0 * FarView.HOLE_INSET:
+			_check(points.size() == 4 and indices.size() == 6, "no room for a hole: a plain quad (%s)" % held)
+			continue
+		_check(points.size() == 12 and indices.size() == 36, "12 vertices, 12 triangles (%s)" % held)
+		var worst := -INF
+		for i in range(4, 12):
+			worst = maxf(worst, FarView.fog_distance(points[i], held.position, held.end, corner))
+		_check(worst <= -0.5, "every hole vertex is where the veil is 0: sdf %.3f at %s corner %s" % [worst, held, corner])
+		# Along each hole edge too (the chord of an arc lies inside it).
+		for i in range(4, 12):
+			var a := points[i]
+			var b := points[4 + (i - 4 + 1) % 8]
+			for k in range(1, 8):
+				var t := a.lerp(b, k / 8.0)
+				worst = maxf(worst, FarView.fog_distance(t, held.position, held.end, corner))
+		_check(worst <= -0.5, "every point of the hole's edges is where the veil is 0: sdf %.3f (%s)" % [worst, held])
+		var edges := {}
+		for t in range(0, indices.size(), 3):
+			for e in 3:
+				var u := indices[t + e]
+				var v := indices[t + (e + 1) % 3]
+				var edge := Vector2i(mini(u, v), maxi(u, v))
+				edges[edge] = int(edges.get(edge, 0)) + 1
+		var once := 0
+		var twice := 0
+		for edge: Vector2i in edges:
+			var outer_edge := edge.x < 4 and edge.y < 4
+			var hole_edge := edge.x >= 4 and edge.y >= 4
+			if edges[edge] == 1:
+				once += 1
+				_check(outer_edge or hole_edge, "an edge drawn once is on the outer contour or the hole: %s" % edge)
+			elif edges[edge] == 2:
+				twice += 1
+				_check(not outer_edge and not hole_edge, "an edge drawn twice is between two triangles: %s" % edge)
+			else:
+				_check(false, "an edge drawn %d times: %s" % [edges[edge], edge])
+		_check(once == 12 and twice == 12, "12 contour edges, 12 shared edges: %d, %d" % [once, twice])
+	# The quad: no texture needed, the veils exist without the far view.
+	var veils := FarView.new()
+	veils._ready()
+	_check(veils.ring_builds() == [0, 0], "no ring before the ground held is known")
+	veils.free()
+
+
+## A veil's ring is built when the ground held or its corner moves, and
+## never otherwise: the shader's values may be set again as often as
+## WorldView likes.
+func _test_the_fog_rings_are_built_when_the_ground_moves() -> void:
+	var veils := FarView.new()
+	veils._ready()
+	veils.set_held(Vector2(100, 100), Vector2(600, 600), 50.0, 0.7, 0.7, 14.0)
+	veils.set_cover(Vector2(85, 85), Vector2(615, 615), 35.0, 0.7, 29.0)
+	_check(veils.ring_builds() == [1, 1], "a ring each once the ground held is known: %s" % str(veils.ring_builds()))
+	veils.set_held(Vector2(100, 100), Vector2(600, 600), 50.0, 0.7, 0.7, 14.0)
+	veils.set_cover(Vector2(85, 85), Vector2(615, 615), 35.0, 0.7, 29.0)
+	_check(veils.ring_builds() == [1, 1], "the same ground again: nothing built")
+	veils.set_held(Vector2(101, 100), Vector2(601, 600), 50.0, 0.7, 0.7, 14.0)
+	_check(veils.ring_builds() == [2, 1], "the ground a tile east: the haze's ring built again, the cover's not")
+	veils.set_cover(Vector2(85, 85), Vector2(615, 615), 35.0, 0.7, 30.0)
+	_check(veils.ring_builds() == [2, 2], "another corner: the cover's ring built again")
+	veils.free()
+
+
+## The far view is drawn with a hole under the view's limit only when
+## every chunk under it is held and built, none is waiting to build and
+## none is missing from the bounds held; and only from the frame after.
+func _test_the_far_view_leaves_its_hole_only_under_built_ground() -> void:
+	var chunks := {}
+	for y in range(3, 8):
+		for x in range(3, 8):
+			var chunk := ChunkView.new()
+			chunk._last_signature = 1
+			chunks[Vector2i(x, y)] = chunk
+	var bounds := Rect2i(3, 3, 5, 5)
+	var limit := Rect2(Vector2(140.5, 130.25), Vector2(80, 90))
+	_check(FarView.limit_built(limit, chunks, bounds, 32, 0), "all built under the limit: the hole may be left")
+	_check(not FarView.limit_built(limit, chunks, bounds, 32, 1), "a chunk waiting to build: no hole")
+	chunks[Vector2i(6, 6)]._last_signature = 0
+	_check(not FarView.limit_built(limit, chunks, bounds, 32, 0), "a chunk under the limit not built: no hole")
+	chunks[Vector2i(6, 6)]._last_signature = 1
+	chunks[Vector2i(3, 3)]._last_signature = 0
+	_check(FarView.limit_built(limit, chunks, bounds, 32, 0), "a chunk not built outside the limit: the hole may be left")
+	_check(not FarView.limit_built(Rect2(Vector2(96, 96), Vector2(100, 100)), chunks, bounds, 32, 0), "the limit touching that chunk's last tile: no hole")
+	var gone: ChunkView = chunks[Vector2i(7, 3)]
+	chunks.erase(Vector2i(7, 3))
+	_check(not FarView.limit_built(limit, chunks, bounds, 32, 0), "a chunk missing from the bounds held: no hole")
+	gone.free()
+	_check(not FarView.limit_built(limit, {}, Rect2i(), 32, 0), "nothing held: no hole")
+	for chunk: ChunkView in chunks.values():
+		chunk.free()
+	_check(not FarView.hole_drawn(true, 10, 10) and FarView.hole_drawn(true, 10, 11) and not FarView.hole_drawn(false, 10, 11), "the hole is drawn from the frame after it is complete")
+	# The far view's own ring: the hole is the limit, no corner, no inset.
+	var mesh := FarView.ring(Rect2(Vector2(-1000, -1000), Vector2(2048, 2048)), limit, 0.0, 0.0)
+	_check((mesh["points"] as PackedVector2Array).size() == 12 and (mesh["indices"] as PackedInt32Array).size() == 36, "the far view's ring has the same form")
+	_check((FarView.ring(Rect2(Vector2(0, 0), Vector2(10, 10)), limit, 0.0, 0.0)["points"] as PackedVector2Array).size() == 4, "a hole outside the far view: the plain quad")
