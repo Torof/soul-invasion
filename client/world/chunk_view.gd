@@ -321,12 +321,9 @@ static func decor_textures(kind: String) -> Array:
 
 
 ## A fixed number in [0, 1) for a tile and a salt: the same on every
-## client, every time.
+## client, every time ([StableHash]).
 static func tile_hash(tx: int, ty: int, salt: int) -> float:
-	var h := (tx * 73856093) ^ (ty * 19349663) ^ (salt * 83492791)
-	h = (h ^ (h >> 13)) * 1274126177
-	h = h ^ (h >> 16)
-	return float((h & 0x7fffffff) % 100003) / 100003.0
+	return StableHash.unit([tx, ty, salt])
 
 
 static func load_texture(path: String) -> Texture2D:

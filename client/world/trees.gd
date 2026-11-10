@@ -77,14 +77,15 @@ static func textures(species: String) -> Array:
 	return _textures[species]
 
 
-## A number in 0..1 from a tree's place and `salt`, the same every time.
+## A number in 0..1 from a tree's place and `salt`, the same every time
+## and with every engine ([StableHash]).
 static func place_hash(at: Vector2, salt: int) -> float:
-	return float(posmod(hash(Vector3i(int(at.x), int(at.y), salt)), 100003)) / 100003.0
+	return StableHash.unit([int(at.x), int(at.y), salt])
 
 
 ## Which of `count` images a tree at `at` shows.
 static func variant(at: Vector2, count: int) -> int:
-	return posmod(hash(Vector3i(int(at.x), int(at.y), 7)), count)
+	return StableHash.below([int(at.x), int(at.y), 7], count)
 
 
 ## The rectangle a tree at `at` (millimetres) of `height_cm` covers on

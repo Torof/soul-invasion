@@ -21,6 +21,7 @@ use std::hash::{BuildHasherDefault, Hasher};
 
 use serde::{Deserialize, Serialize};
 
+use crate::r#gen::scatter::purpose;
 use crate::r#gen::{Groves, Lcg};
 use crate::woods::{Habitat, Woods};
 
@@ -1260,7 +1261,7 @@ impl Rivers {
             #[cfg(test)]
             network: Vec::new(),
         };
-        let mut rng = Lcg::new(seed.wrapping_add(0x5157));
+        let mut rng = Lcg::new(seed.wrapping_add(purpose::RIVERS));
         let w = i64::from(width);
         let h = i64::from(height);
         let top = i64::from(cliff_rows);
@@ -1446,7 +1447,7 @@ impl Rivers {
     fn add_brooks(&mut self, network: &mut Vec<River>, seed: u64, cliff_rows: u32, rng: &mut Lcg) {
         let (width, height) = (self.width, self.height);
         let (wide, tall, top) = (i64::from(width), i64::from(height), i64::from(cliff_rows));
-        let wetness = Groves::with_cell(width, height, seed ^ 0x77e7, 32);
+        let wetness = Groves::with_cell(width, height, seed ^ purpose::WETNESS, 32);
         let (lo, hi) = Self::by_side(width, height, Self::BROOKS_TENTHS);
         let count = lo + rng.next_below(hi - lo + 1);
         // Tiles within `BROOK_SPACING` of a brook already laid.

@@ -7,6 +7,7 @@
 
 use crate::content::Spawn;
 use crate::r#gen::hash;
+use crate::r#gen::scatter::purpose;
 use crate::map::{CHUNK_SIZE, ChunkPos, Map, Pos};
 use crate::{Item, ItemId, Place};
 
@@ -84,7 +85,7 @@ pub fn natural_items(map: &Map, spawns: &[Spawn], seed: u64, chunk: ChunkPos) ->
                 }
                 #[allow(clippy::cast_sign_loss)]
                 let roll = hash(&[
-                    seed ^ 0x5eed_17e5,
+                    seed ^ purpose::NATURAL_ITEM,
                     tile.x as u64,
                     tile.y as u64,
                     rule as u64,

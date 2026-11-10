@@ -565,17 +565,18 @@ pub struct World {
     #[serde(default)]
     taken: BTreeSet<ItemId>,
     /// The content's spawn rules the natural items follow, set with the
-    /// trees ([`World::plant`]). Never persisted.
+    /// kinds of tree ([`World::take_content`]). Never persisted.
     #[serde(skip)]
     spawns: Vec<content::Spawn>,
     /// Intentions received since the last tick, applied in order at the
     /// start of the next one. Never persisted: a restart drops them.
     #[serde(skip)]
     pending: Vec<Intention>,
-    /// The trees standing, planted from the map and the content
-    /// ([`World::plant`]). Never persisted: regenerated on load.
+    /// The content's kinds of tree, the trees of a chunk are placed with
+    /// ([`World::trees_in`]); set by [`World::take_content`]. Never
+    /// persisted: the trees are placed again, the same, from the map.
     #[serde(skip)]
-    trees: Vec<trees::Tree>,
+    species: Vec<content::Species>,
 }
 
 fn write_map<S: serde::Serializer>(map: &Arc<Map>, serializer: S) -> Result<S::Ok, S::Error> {
@@ -615,7 +616,7 @@ impl World {
             world.spawn_body(pos);
         }
         world.natural = true;
-        world.plant(content);
+        world.take_content(content);
         world
     }
 
@@ -633,24 +634,23 @@ impl World {
             taken: BTreeSet::new(),
             spawns: Vec::new(),
             pending: Vec::new(),
-            trees: Vec::new(),
+            species: Vec::new(),
         }
     }
 
-    /// Plants the trees of the map with the content's kinds of tree (D37).
-    /// Called when the world is created and when it is loaded.
-    pub fn plant(&mut self, content: &Content) {
-        let seed = match self.map.spec() {
-            MapSpec::Valley { seed, .. } => seed,
-            MapSpec::Filled { .. } => 0,
-        };
-        self.trees = trees::plant(&self.map, &content.species, seed);
+    /// Gives the world the content it places the ground's things with:
+    /// the kinds of tree (D37) and the natural items' spawn rules. Called
+    /// when the world is created and when it is loaded; nothing is placed
+    /// here, only chunk by chunk when asked for.
+    pub fn take_content(&mut self, content: &Content) {
+        self.species.clone_from(&content.species);
         self.spawns.clone_from(&content.spawns);
     }
 
-    /// The trees standing.
-    pub fn trees(&self) -> &[trees::Tree] {
-        &self.trees
+    /// The trees standing in `chunk`, placed from the map and the seed
+    /// ([`trees::trees_in`]): the same every time, nothing stored.
+    pub fn trees_in(&self, chunk: ChunkPos) -> Vec<trees::Tree> {
+        trees::trees_in(&self.map, &self.species, self.seed(), chunk)
     }
 
     /// The world's calendar.
@@ -1848,7 +1848,7 @@ mod tests {
         assert!(w.items_in(at.chunk()).iter().all(|i| i.id() != item.id()));
         // Through a save and a load: the same.
         let mut back: World = serde_json::from_str(&serde_json::to_string(&w).unwrap()).unwrap();
-        back.plant(&content);
+        back.take_content(&content);
         assert!(
             back.items_in(at.chunk())
                 .iter()

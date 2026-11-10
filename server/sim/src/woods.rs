@@ -25,6 +25,7 @@
 // Generation is integer-only (D24; linted from `lib.rs` and
 // `sim/clippy.toml`). No known exception.
 
+use crate::r#gen::scatter::purpose;
 use crate::r#gen::{Groves, Lcg};
 use crate::map::{Rivers, Terrain};
 
@@ -129,12 +130,22 @@ impl Woods {
         };
         let land = |x: u32, y: u32| y >= cliff_rows && rivers.at(x, y).is_none();
         let mut plan = Plan {
-            massif: Groves::with_cell(width, height, seed ^ 0x00f0_4e57, Self::MASSIF_CELL),
-            detail: Groves::with_cell(width, height, seed ^ 0x00de_7a11, Self::DETAIL_CELL),
-            fine: Groves::with_cell(width, height, seed ^ 0x0000_f17e, Self::FINE_CELL),
-            rim: Groves::with_cell(width, height, seed ^ 0x001a_99ed, 2),
+            massif: Groves::with_cell(
+                width,
+                height,
+                seed ^ purpose::WOODS_MASSIF,
+                Self::MASSIF_CELL,
+            ),
+            detail: Groves::with_cell(
+                width,
+                height,
+                seed ^ purpose::WOODS_DETAIL,
+                Self::DETAIL_CELL,
+            ),
+            fine: Groves::with_cell(width, height, seed ^ purpose::WOODS_FINE, Self::FINE_CELL),
+            rim: Groves::with_cell(width, height, seed ^ purpose::WOODS_RIM, 2),
             // The same wetness the brooks rise from.
-            wet: Groves::with_cell(width, height, seed ^ 0x77e7, 32),
+            wet: Groves::with_cell(width, height, seed ^ purpose::WETNESS, 32),
             cliff_rows,
             width,
             pulls: Vec::new(),
@@ -162,7 +173,7 @@ impl Woods {
         // The one value a full sort would put at that rank, without the sort.
         let rank = pulls.len() - 1 - above.min(pulls.len() - 1);
         plan.level = *pulls.select_nth_unstable(rank).1;
-        let mut rng = Lcg::new(seed ^ 0x0a4_7eee);
+        let mut rng = Lcg::new(seed ^ purpose::WOODS_PATCHES);
         let inside = |x: u32, y: u32| land(x, y) && plan.inside(x, y);
         let outside = |x: u32, y: u32| land(x, y) && !plan.inside(x, y);
         // A clearing opens well inside a wood: wood all around its centre,

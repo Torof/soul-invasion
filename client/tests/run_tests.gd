@@ -40,6 +40,7 @@ func _init() -> void:
 	_test_the_watcher_sees_the_client_files()
 	_test_the_first_connection_is_tried_again_soon()
 	_test_the_view_follows_the_body_tile_by_tile()
+	_test_the_stable_hash_is_the_servers()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -797,3 +798,22 @@ func _test_tree_images_are_clean() -> void:
 					pale += 1
 		_check(pale < 15, "%s has no pale specks: %d" % [file, pale])
 
+
+## The client's hash is the server's `sim::gen::hash`, bit for bit: the
+## same golden values as `hash_is_pinned` in `server/sim/src/gen.rs`
+## (written signed: the server's u64 in two's complement).
+func _test_the_stable_hash_is_the_servers() -> void:
+	_check(StableHash.of([]) == -7046029254386353131, "hash of nothing (0x9e3779b97f4a7c15)")
+	_check(StableHash.of([0]) == 4184946803900360070, "hash of 0 (0x3a13eaf202632586)")
+	_check(StableHash.of([1]) == -649073454667991946, "hash of 1 (0xf6fe0721c560f476)")
+	_check(StableHash.of([1, 2, 3]) == -783912511994487019, "hash of 1, 2, 3 (0xf51efbb943959f15)")
+	_check(StableHash.of([-1, 0x9a7c, 7]) == -8449944619587469277, "hash of u64::MAX, 0x9a7c, 7 (0x8abbc42361c40023)")
+	_check(StableHash.of([1, 2]) != StableHash.of([2, 1]), "the order matters")
+	var seen := {}
+	for i in 2000:
+		var b := StableHash.below([i, 5], 7)
+		_check(b >= 0 and b < 7, "a draw below 7 is in 0..7")
+		seen[b] = true
+		var u := StableHash.unit([i, 9])
+		_check(u >= 0.0 and u < 1.0, "a unit draw is in [0, 1)")
+	_check(seen.size() == 7, "every value below 7 comes out")

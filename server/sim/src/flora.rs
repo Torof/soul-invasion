@@ -36,6 +36,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::r#gen::scatter::purpose;
 use crate::r#gen::{hash, noise, unit};
 use crate::map::{CHUNK_SIZE, ChunkPos, FinePos, Map, Pos, Terrain};
 use crate::woods::Habitat;
@@ -336,7 +337,8 @@ fn ground_at(map: &Map, seed: u64, pos: Pos, distance: i32) -> Ground {
     }
     let trees = i32::from(map.trees(pos));
     let background = 20
-        + i32::try_from(noise(seed ^ 0x77e7, WET_CELL, pos.x, pos.y)).expect("small") / 20
+        + i32::try_from(noise(seed ^ purpose::WETNESS, WET_CELL, pos.x, pos.y)).expect("small")
+            / 20
         + trees / 6;
     let near_water = if distance == 0 {
         100
@@ -473,7 +475,10 @@ pub fn plants_in(
         }
         let Some(host) = &kind.host else { continue };
         for tree in trees {
-            if !inside(tree.at) || !host.trees.iter().any(|h| h == tree.species) {
+            // On the trunk's side: it belongs to the chunk it stands in,
+            // which may be the next one when the trunk is near the border.
+            let at = FinePos::new(tree.at.x + 120, tree.at.y + 60);
+            if !inside(at) || !host.trees.iter().any(|h| h == tree.species) {
                 continue;
             }
             let Some(ground) = ground(tree.at.tile()) else {
@@ -481,10 +486,16 @@ pub fn plants_in(
             };
             let chance = kind.per_thousand * fit(kind, best[k], ground) / 1000;
             #[allow(clippy::cast_sign_loss)]
-            if unit(&[seed, 0xf107a, k as u64, tree.at.x as u64, tree.at.y as u64]) >= chance {
+            if unit(&[
+                seed,
+                purpose::FLORA_TRUNK,
+                k as u64,
+                tree.at.x as u64,
+                tree.at.y as u64,
+            ]) >= chance
+            {
                 continue;
             }
-            let at = FinePos::new(tree.at.x + 120, tree.at.y + 60);
             plants.push(Plant {
                 at,
                 kind: u16::try_from(k).expect("few kinds"),
@@ -499,7 +510,7 @@ pub fn plants_in(
             if !here.rooted {
                 continue;
             }
-            let breath = 300 + noise(seed ^ 0xb4ea, BREATH_CELL, tx, ty) * 14 / 10;
+            let breath = 300 + noise(seed ^ purpose::FLORA_BREATH, BREATH_CELL, tx, ty) * 14 / 10;
             for (k, kind) in kinds.iter().enumerate() {
                 if kind.family == Family::Tree
                     || kind.on == GrowsOn::Trunk
@@ -512,8 +523,12 @@ pub fn plants_in(
                     continue;
                 }
                 // The stand squared, in thousandths, about 1000 on average.
-                let stand =
-                    u64::from(noise(seed ^ hash(&[0x57a4d, k as u64]), STAND_CELL, tx, ty)) + 50;
+                let stand = u64::from(noise(
+                    seed ^ hash(&[purpose::FLORA_STAND, k as u64]),
+                    STAND_CELL,
+                    tx,
+                    ty,
+                )) + 50;
                 let stand = stand * stand * 2860 / 1_102_500;
                 // A chance in a million: the density, times the niche, the
                 // stand and the breath (each in thousandths).
@@ -524,7 +539,8 @@ pub fn plants_in(
                     * u64::from(breath)
                     / 1_000_000_000;
                 #[allow(clippy::cast_sign_loss)]
-                let roll = hash(&[seed, 0x9a7c, k as u64, tx as u64, ty as u64]) % 1_000_000;
+                let roll =
+                    hash(&[seed, purpose::FLORA_PATCH, k as u64, tx as u64, ty as u64]) % 1_000_000;
                 if roll >= chance {
                     continue;
                 }
@@ -586,7 +602,7 @@ fn lay_patch(
     let roll = |n: u32, salt: u64| {
         hash(&[
             seed,
-            0x9a7c,
+            purpose::FLORA_PATCH,
             k as u64,
             pos.x as u64,
             pos.y as u64,
@@ -738,7 +754,7 @@ mod tests {
     fn sample() -> Sample {
         let species: Vec<Species> = ron::from_str(SPECIES).expect("species.ron parses");
         let map = Map::valley(768, 768, 1);
-        let trees: Vec<(FinePos, String)> = crate::trees::plant(&map, &species, 1)
+        let trees: Vec<(FinePos, String)> = crate::trees::everywhere(&map, &species, 1)
             .into_iter()
             .map(|t| (t.at, species[t.species].id.clone()))
             .collect();
