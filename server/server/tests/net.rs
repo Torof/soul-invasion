@@ -2,7 +2,7 @@
 //! handshake, liveness, published events, and the ways a client gets
 //! disconnected.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
@@ -99,6 +99,71 @@ fn reachable(world: &World, from: Pos) -> HashSet<Pos> {
 }
 
 /// Where a body stands in the standard world.
+/// The stops of a walk from `start` to the nearest ground past `east`,
+/// in legs the server itself can plan: each leg ends at the farthest
+/// tile of a walkable way that the server's own search (within what the
+/// body sees from its terrain, under the content's budget, D32) joins to
+/// the leg's start. The last stop is the far ground itself.
+fn legs_east(world: &World, rules: &sim::Content, start: Pos, east: i32) -> Vec<Pos> {
+    let cost = |t: sim::Terrain| rules.movement.cost(t);
+    let sight = |from: Pos| {
+        let terrain = world.map().get(from).expect("on the map");
+        i32::try_from(rules.movement.sight_tiles(terrain)).expect("a short sight")
+    };
+    let ground = reachable(world, start);
+    let far = {
+        let mut candidates: Vec<_> = ground.iter().filter(|p| p.x >= east).copied().collect();
+        candidates.sort_by_key(|p| ((p.x - start.x).abs() + (p.y - start.y).abs(), p.x, p.y));
+        candidates[0]
+    };
+    // A walkable way by straight steps: any way does.
+    let way = {
+        let mut before = HashMap::from([(start, start)]);
+        let mut todo = VecDeque::from([start]);
+        while let Some(p) = todo.pop_front() {
+            if p == far {
+                break;
+            }
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let next = Pos::new(p.x + dx, p.y + dy);
+                if ground.contains(&next) && !before.contains_key(&next) {
+                    before.insert(next, p);
+                    todo.push_back(next);
+                }
+            }
+        }
+        let mut way = vec![far];
+        while *way.last().expect("a tile") != start {
+            way.push(before[way.last().expect("a tile")]);
+        }
+        way.reverse();
+        way
+    };
+    let mut stops = Vec::new();
+    let (mut from, mut index) = (start, 0);
+    while from != far {
+        let sight = sight(from);
+        let budget = rules.movement.path_budget_tiles;
+        let reached = way
+            .iter()
+            .enumerate()
+            .skip(index + 1)
+            .rev()
+            .filter(|(_, p)| (p.x - from.x).abs() <= sight && (p.y - from.y).abs() <= sight)
+            .find(|(_, p)| {
+                world
+                    .map()
+                    .path_within(from, **p, sight, budget, cost)
+                    .is_some()
+            })
+            .map(|(j, _)| j)
+            .expect("the next tile of the way is in sight");
+        (from, index) = (way[reached], reached);
+        stops.push(from);
+    }
+    stops
+}
+
 fn start_of(world: &World, body: u32) -> Pos {
     world.body(BodyId(body)).expect("standard body").pos()
 }
@@ -598,35 +663,33 @@ async fn a_body_walking_out_of_the_view_is_reported_as_left() {
     let body = body.expect("pilots body 1");
     let other = other.expect("pilots body 2");
 
-    // Body 1 walks far east, out of body 2's window, in two steps (a path
-    // goes no farther than the body sees); body 2 stays.
+    // Body 1 walks far east, out of body 2's window, in legs no longer
+    // than what it sees from the terrain it stands on (a path goes no
+    // farther, D32); body 2 stays.
     let world = standard_world();
-    let rules = rules();
-    let cost = |t: sim::Terrain| rules.movement.cost(t);
     let start = start_of(world, body);
     let side = i32::try_from(CHUNK_SIZE).expect("small chunk");
     let east = (start_of(world, other).x.div_euclid(side) + VIEW_RADIUS + 1) * side;
-    let ground = reachable(world, start);
-    // The nearest tile past `x` that a path joins to `from`.
-    let next_stop = |from: Pos, x: i32| {
-        let mut candidates: Vec<_> = ground.iter().filter(|p| p.x >= x).copied().collect();
-        candidates.sort_by_key(|p| ((p.x - from.x).abs() + (p.y - from.y).abs(), p.x, p.y));
-        candidates
-            .into_iter()
-            .find(|&p| world.map().path(from, p, cost).is_some())
-            .expect("ground east within a path's reach")
-    };
-    let mid = next_stop(start, i32::midpoint(start.x, east));
-    let far = next_stop(mid, east);
-    send(&mut walker, &ClientMessage::MoveTo { x: mid.x, y: mid.y }).await;
-    loop {
-        match receive(&mut walker).await {
-            Some(ServerMessage::BodyStopped { body: who, at }) if who == body => {
-                assert_eq!(tile(at), mid);
-                break;
+    let mut stops = legs_east(world, &rules(), start, east);
+    let far = stops.pop().expect("a last leg out of the view");
+    for stop in &stops {
+        send(
+            &mut walker,
+            &ClientMessage::MoveTo {
+                x: stop.x,
+                y: stop.y,
+            },
+        )
+        .await;
+        loop {
+            match receive(&mut walker).await {
+                Some(ServerMessage::BodyStopped { body: who, at }) if who == body => {
+                    assert_eq!(tile(at), *stop);
+                    break;
+                }
+                Some(_) => {}
+                None => panic!("walker disconnected"),
             }
-            Some(_) => {}
-            None => panic!("walker disconnected"),
         }
     }
     send(&mut walker, &ClientMessage::MoveTo { x: far.x, y: far.y }).await;
@@ -650,7 +713,7 @@ async fn a_body_walking_out_of_the_view_is_reported_as_left() {
             }
             Some(ServerMessage::BodyStopped { body: who, at }) => {
                 assert!(
-                    who != body || tile(at) == mid,
+                    who != body || stops.contains(&tile(at)),
                     "a stop outside the watcher's view leaked"
                 );
             }

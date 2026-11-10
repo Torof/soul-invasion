@@ -122,6 +122,15 @@ pub struct Movement {
     pub carry_capacity_g: u32,
     /// Walking speed at full load, in percent of the unloaded speed.
     pub speed_percent_at_full_load: u32,
+    /// How far a body sees, by the terrain it stands on, in tiles on each
+    /// axis: a path is searched within that square and no farther (D32).
+    pub sight_tiles: BTreeMap<Terrain, u32>,
+    /// Tiles a path search may expand at most; past it, the body walks
+    /// straight (D32).
+    pub path_budget_tiles: u32,
+    /// Path searches run in one tick at most; the rest wait for the next
+    /// tick, in order (D32).
+    pub searches_per_tick: u32,
 }
 
 impl Movement {
@@ -135,6 +144,16 @@ impl Movement {
     pub fn speed_cm_per_s(&self, terrain: Terrain) -> u32 {
         self.cost(terrain)
             .map_or(0, |cost| self.walk_speed_cm_per_s * 10 / cost)
+    }
+
+    /// How far a body standing on this terrain sees, in tiles on each
+    /// axis; the shortest sight there is for a terrain the content does
+    /// not name.
+    pub fn sight_tiles(&self, terrain: Terrain) -> u32 {
+        self.sight_tiles
+            .get(&terrain)
+            .copied()
+            .unwrap_or_else(|| self.sight_tiles.values().copied().min().unwrap_or(1))
     }
 
     /// The slowest walking speed on any terrain that can be walked, in
@@ -490,6 +509,18 @@ impl Content {
                 });
             }
         }
+        self.validate_movement()?;
+        if !(1..100).contains(&self.needs.night_from_percent) {
+            return Err(ContentError::Needs("night_from_percent is 1 to 99"));
+        }
+        if self.needs.kj_per_hunger_point == 0 {
+            return Err(ContentError::Needs("kj_per_hunger_point must be positive"));
+        }
+        Ok(())
+    }
+
+    /// Checks the movement rules (D32).
+    fn validate_movement(&self) -> Result<(), ContentError> {
         if self.movement.walk_speed_cm_per_s == 0 {
             return Err(ContentError::Movement(
                 "walk_speed_cm_per_s must be positive",
@@ -510,11 +541,18 @@ impl Content {
                 "speed_percent_at_full_load is 1 to 100",
             ));
         }
-        if !(1..100).contains(&self.needs.night_from_percent) {
-            return Err(ContentError::Needs("night_from_percent is 1 to 99"));
+        for terrain in Terrain::ALL {
+            match self.movement.sight_tiles.get(&terrain) {
+                None => return Err(ContentError::Movement("every terrain needs a sight")),
+                Some(0) => return Err(ContentError::Movement("a sight is 1 tile or more")),
+                Some(_) => {}
+            }
         }
-        if self.needs.kj_per_hunger_point == 0 {
-            return Err(ContentError::Needs("kj_per_hunger_point must be positive"));
+        if self.movement.path_budget_tiles == 0 {
+            return Err(ContentError::Movement("path_budget_tiles must be positive"));
+        }
+        if self.movement.searches_per_tick == 0 {
+            return Err(ContentError::Movement("searches_per_tick must be positive"));
         }
         Ok(())
     }
@@ -554,6 +592,9 @@ pub const SAMPLE_MOVEMENT: &str = r"(
     terrain_costs: { grass: Some(10), forest: Some(15), ford: Some(20), brook: Some(15), water: None, rock: None },
     carry_capacity_g: 20000,
     speed_percent_at_full_load: 60,
+    sight_tiles: { grass: 60, forest: 12, ford: 60, brook: 60, water: 60, rock: 60 },
+    path_budget_tiles: 1500,
+    searches_per_tick: 40,
 )";
 
 /// Needs rules of [`Content::sample`]: the valley's own.
@@ -628,6 +669,35 @@ mod tests {
             ContentError::Movement("speed_percent_at_full_load is 1 to 100")
         ));
         assert_eq!(Content::sample().material("flint").unwrap().mass_g(), 400);
+    }
+
+    #[test]
+    fn sight_budget_and_cap_are_checked() {
+        let movement = Content::sample().movement;
+        assert_eq!(movement.sight_tiles(Terrain::Grass), 60);
+        assert_eq!(movement.sight_tiles(Terrain::Forest), 12);
+        assert_eq!(movement.path_budget_tiles, 1500);
+        assert_eq!(movement.searches_per_tick, 40);
+        let blind = SAMPLE_MOVEMENT.replacen("forest: 12, ", "", 1);
+        assert!(matches!(
+            Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, &blind, SAMPLE_NEEDS).unwrap_err(),
+            ContentError::Movement("every terrain needs a sight")
+        ));
+        let dark = SAMPLE_MOVEMENT.replacen("forest: 12", "forest: 0", 1);
+        assert!(matches!(
+            Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, &dark, SAMPLE_NEEDS).unwrap_err(),
+            ContentError::Movement("a sight is 1 tile or more")
+        ));
+        let idle = SAMPLE_MOVEMENT.replacen("path_budget_tiles: 1500", "path_budget_tiles: 0", 1);
+        assert!(matches!(
+            Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, &idle, SAMPLE_NEEDS).unwrap_err(),
+            ContentError::Movement("path_budget_tiles must be positive")
+        ));
+        let stuck = SAMPLE_MOVEMENT.replacen("searches_per_tick: 40", "searches_per_tick: 0", 1);
+        assert!(matches!(
+            Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, &stuck, SAMPLE_NEEDS).unwrap_err(),
+            ContentError::Movement("searches_per_tick must be positive")
+        ));
     }
 
     #[test]

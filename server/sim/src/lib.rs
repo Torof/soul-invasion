@@ -854,10 +854,24 @@ impl World {
             events.push(Event::NightFell { day: now.day });
         }
 
+        // At most `searches_per_tick` walks are planned in a tick; the
+        // rest wait, in order, ahead of whatever comes next (D32). Any
+        // other intention is applied at once.
         let pending = std::mem::take(&mut self.pending);
+        let mut searches = 0;
+        let mut waiting = Vec::new();
         for intention in pending {
+            if matches!(intention, Intention::MoveTo { .. }) {
+                if searches >= rules.movement.searches_per_tick {
+                    waiting.push(intention);
+                    continue;
+                }
+                searches += 1;
+            }
             self.apply(&intention, rules, events);
         }
+        waiting.append(&mut self.pending);
+        self.pending = waiting;
 
         let per_second = f64::from(self.calendar.ticks_per_second());
         for index in 0..self.bodies.len() {
@@ -991,7 +1005,16 @@ impl World {
                 self.wake(index, events);
                 let cost = |t: Terrain| rules.movement.cost(t);
                 let from = self.bodies[index].at;
-                if let Some(path) = self.map.path(from.tile(), target, cost) {
+                // A way is looked for within what the body sees from the
+                // terrain it stands on, and within the content's budget of
+                // effort (D32).
+                let terrain = self.map.get(from.tile()).unwrap_or(Terrain::Rock);
+                let sight = i32::try_from(rules.movement.sight_tiles(terrain)).unwrap_or(i32::MAX);
+                let budget = rules.movement.path_budget_tiles;
+                if let Some(path) = self
+                    .map
+                    .path_within(from.tile(), target, sight, budget, cost)
+                {
                     let route = self.map.pull(from, &path, cost);
                     let body = &mut self.bodies[index];
                     body.route = route.iter().copied().collect();
@@ -1739,28 +1762,173 @@ mod tests {
 
     #[test]
     fn across_a_river_with_its_ford_out_of_reach_the_body_walks_to_the_bank() {
-        // A river with one ford far upstream: within reach the body takes
-        // the ford; beyond it, it walks straight to the bank and stops.
-        let mut map = Map::filled(900, 200, Terrain::Grass);
-        for x in 0..900 {
-            map.set(Pos::new(x, 100), Terrain::Water);
+        // A river with one ford upstream (10 November 2026: the sight is
+        // the content's 60 tiles in the open, under a budget of 1,500
+        // tiles, where it was the view's 288 with no budget). A ford
+        // fifteen tiles aside is seen and taken; one fifty tiles aside is
+        // in sight but the way round it costs more than the budget; one
+        // seventy tiles aside is out of sight: in both cases the body
+        // walks straight to the bank and stops, and the player finds the
+        // way (D32).
+        let river = |ford: i32| {
+            let mut map = Map::filled(900, 200, Terrain::Grass);
+            for x in 0..900 {
+                map.set(Pos::new(x, 100), Terrain::Water);
+            }
+            map.set(Pos::new(ford, 100), Terrain::Ford);
+            map
+        };
+        for (ford, reaches, why) in [
+            (
+                815,
+                true,
+                "a ford in sight, the way round within the budget",
+            ),
+            (850, false, "a ford in sight, the way round over the budget"),
+            (870, false, "a ford out of sight"),
+        ] {
+            let mut w = World::empty(Calendar::new(1, 1_000_000).unwrap(), river(ford));
+            w.spawn_body(Pos::new(800, 90));
+            go(&mut w, Pos::new(800, 110));
+            walk_until_stopped(&mut w, 5000);
+            let expected = if reaches {
+                Pos::new(800, 110)
+            } else {
+                Pos::new(800, 99)
+            };
+            assert_eq!(w.body(BodyId(1)).expect("body 1").pos(), expected, "{why}");
         }
-        map.set(Pos::new(850, 100), Terrain::Ford);
-        let mut w = World::empty(Calendar::new(1, 1_000_000).unwrap(), map.clone());
-        w.spawn_body(Pos::new(10, 90));
-        go(&mut w, Pos::new(10, 110));
-        walk_until_stopped(&mut w, 5000);
-        assert_eq!(w.body(BodyId(1)).expect("body 1").pos(), Pos::new(10, 99));
+    }
 
+    /// A field with a wall of water across the middle, and a body `from`
+    /// its west side with its target east of it, forty tiles away: the
+    /// way round exists, thirty tiles aside.
+    fn walled_field(terrain_under_the_body: Terrain) -> (World, Pos) {
+        let mut map = Map::filled(80, 80, Terrain::Grass);
+        for y in 25..=55 {
+            map.set(Pos::new(40, y), Terrain::Water);
+        }
+        map.set(Pos::new(20, 40), terrain_under_the_body);
         let mut w = World::empty(Calendar::new(1, 1_000_000).unwrap(), map);
-        w.spawn_body(Pos::new(800, 90));
-        go(&mut w, Pos::new(800, 110));
-        walk_until_stopped(&mut w, 5000);
+        w.spawn_body(Pos::new(20, 40));
+        (w, Pos::new(60, 40))
+    }
+
+    fn walk_with(w: &mut World, rules: &Content, target: Pos) -> Pos {
+        go(w, target);
+        let mut events = Vec::new();
+        for _ in 0..5000 {
+            w.step(rules, &mut events);
+            if events.iter().any(|e| {
+                matches!(
+                    e,
+                    Event::BodyStopped {
+                        body: BodyId(1),
+                        ..
+                    } | Event::MoveRefused { .. }
+                )
+            }) {
+                return w.body(BodyId(1)).expect("body 1").pos();
+            }
+        }
+        panic!("body 1 never stopped");
+    }
+
+    #[test]
+    fn sight_follows_the_terrain_under_the_body() {
+        // The same ground: from the grass (sight 60) the way round the
+        // water is seen and taken; from under the trees (sight 12) the
+        // target is out of sight and the body walks straight to the water.
+        let mut rules = rules();
+        rules.movement.path_budget_tiles = u32::MAX;
+        let (mut w, target) = walled_field(Terrain::Grass);
+        assert_eq!(walk_with(&mut w, &rules, target), target, "round the water");
+        let (mut w, target) = walled_field(Terrain::Forest);
         assert_eq!(
-            w.body(BodyId(1)).expect("body 1").pos(),
-            Pos::new(800, 110),
-            "by the ford"
+            walk_with(&mut w, &rules, target),
+            Pos::new(39, 40),
+            "straight to the water"
         );
+        // Under the trees a near way round is still seen: a pond two tiles
+        // ahead, the target ten tiles away.
+        let mut map = Map::filled(80, 80, Terrain::Forest);
+        for y in 38..=42 {
+            map.set(Pos::new(23, y), Terrain::Water);
+        }
+        let mut w = World::empty(Calendar::new(1, 1_000_000).unwrap(), map);
+        w.spawn_body(Pos::new(20, 40));
+        assert_eq!(
+            walk_with(&mut w, &rules, Pos::new(30, 40)),
+            Pos::new(30, 40),
+            "round the pond"
+        );
+    }
+
+    #[test]
+    fn a_search_over_its_budget_walks_straight() {
+        // The same way round, in sight: found under a generous budget,
+        // given up under a tight one, the body walking straight instead.
+        let mut rules = rules();
+        rules.movement.path_budget_tiles = u32::MAX;
+        let (mut w, target) = walled_field(Terrain::Grass);
+        assert_eq!(walk_with(&mut w, &rules, target), target);
+        rules.movement.path_budget_tiles = 100;
+        let (mut w, target) = walled_field(Terrain::Grass);
+        assert_eq!(walk_with(&mut w, &rules, target), Pos::new(39, 40));
+    }
+
+    #[test]
+    fn searches_beyond_the_cap_wait_their_turn_in_order() {
+        // Five bodies set off in one tick under a cap of two searches a
+        // tick: two walk at once, two the next tick, one the tick after,
+        // in the order asked; another intention is not kept waiting. The
+        // same twice over: the order never depends on anything else.
+        let mut rules = rules();
+        rules.movement.searches_per_tick = 2;
+        let run = || {
+            let mut w = open_field();
+            for y in 1..5 {
+                w.spawn_body(Pos::new(0, y));
+            }
+            for id in 1..=5 {
+                w.queue(Intention::MoveTo {
+                    body: BodyId(id),
+                    target: Pos::new(7, 7),
+                });
+            }
+            w.queue(Intention::Sleep { body: BodyId(5) });
+            let mut ticks = Vec::new();
+            for _ in 0..3 {
+                let mut events = Vec::new();
+                w.step(&rules, &mut events);
+                ticks.push(events);
+            }
+            ticks
+        };
+        let ticks = run();
+        let walkers = |events: &[Event]| -> Vec<BodyId> {
+            events
+                .iter()
+                .filter_map(|e| match e {
+                    Event::BodyWalks { body, .. } => Some(*body),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(walkers(&ticks[0]), vec![BodyId(1), BodyId(2)]);
+        assert_eq!(walkers(&ticks[1]), vec![BodyId(3), BodyId(4)]);
+        assert_eq!(walkers(&ticks[2]), vec![BodyId(5)]);
+        assert!(
+            ticks[0].iter().any(|e| matches!(
+                e,
+                Event::ConditionChanged {
+                    body: BodyId(5),
+                    summary: (_, _, _, _, true)
+                }
+            )),
+            "body 5 fell asleep in the first tick, its walk still waiting"
+        );
+        assert_eq!(run(), ticks);
     }
 
     #[test]
