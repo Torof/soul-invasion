@@ -26,7 +26,7 @@ the point where the server says the trunk meets the ground.
   - hazel 01, 02: a tall bush of thin stems rising from one point, rounded leafy top;
   - wild apple 01, 02: small, round crown with a few red apples.
 - **Sources**: the Midjourney outputs stay outside the repository
-  (`content/ai-reserve/`).
+  (`content/ai-reserve/sources/trees/`, the cut images and their originals).
 
 Licensed under CC BY-NC-SA 4.0 like all content (`docs/LICENSE`).
 

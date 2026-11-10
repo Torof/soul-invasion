@@ -235,7 +235,7 @@ The grass family today (all 1024 × 1024, 4 × 4 m, notes beside each file in `c
 | `ground_grass_02_summer` | worn grass with bare spots | meadow spots; woods base |
 | `ground_grass_03_summer` | sister of 01, closest in tone | meadow sister (half) |
 | `ground_grass_04_summer` | open sister, patches of shorter grass | meadow patches |
-| `ground_grass_05_summer` | the least tufted sister | in reserve |
+| `ground_grass_05_summer` | the least tufted sister | removed 10 November 2026 (never used) |
 | `ground_grass_06_summer` | sparse forest grass, low radial tufts | woods sister (a quarter) |
 
 **Sister of a validated ground** (variety without a new prompt): the prompt of the ground as written in its note, the ground attached as style reference, `--sw 100`. Keep the ones whose mean RGB is within six points of the original and whose tufts are radial.

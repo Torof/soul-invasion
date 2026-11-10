@@ -1,5 +1,5 @@
 // The flora of the valley: shrubs, plants and mushrooms, and where each
-// grows (docs/04-architecture.md D37; the list: content/ai-reserve/
+// grows (docs/04-architecture.md D37; the list: content/ai-reserve/notes/
 // 10-flora.md, validated by the project lead on 8 November 2026).
 //
 // DRAFT for review (9 November 2026): not read by the server yet. Every

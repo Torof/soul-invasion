@@ -22,11 +22,10 @@
 # Secrets never live in this repository (see docs/04-architecture.md, D30)
 .env
 
-# Midjourney sources and rejected candidates: only chosen images, at game size,
-# go into content/art/ with their note (docs/09-visual-production.md).
-content/ai-generated-content/
-# Kept generations: full-size sources of validated art, usable material
-# in reserve, and reference crops (same rule: never committed).
+# Generated images kept outside git (content/ai-reserve/README.md there):
+# the inbox of new ones, the full-size sources of the game's art, the style
+# references, notes, images for review. Only chosen images, at game size, go
+# into content/art/ with their note (docs/09-visual-production.md).
 content/ai-reserve/
 # Development screenshot requests and results (client/dev/watcher.gd).
 client/.dev/

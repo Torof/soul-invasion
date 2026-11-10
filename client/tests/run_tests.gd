@@ -214,7 +214,7 @@ func _test_ground_art_is_reachable() -> void:
 	ChunkView.reload_art()
 	_check(ChunkView.ground_material("grass").shader.code.contains("void fragment()") and ChunkView.ground_texture("grass") != null, "a live reload reads the shader and textures from their files")
 	# Decorations: their images load, and a tile's hash is fixed and spread.
-	_check(ChunkView.decor_textures("rock").size() > 5 and ChunkView.decor_textures("tuft").size() > 5, "the rock and tuft decorations are there")
+	_check(ChunkView.decor_textures("tuft").size() > 5 and ChunkView.decor_textures("pebble").size() > 5 and ChunkView.decor_textures("flower").size() > 5, "the tuft, pebble and flower decorations are there")
 	_check(ChunkView.tile_hash(3, 7, 1) == ChunkView.tile_hash(3, 7, 1) and ChunkView.tile_hash(3, 7, 1) != ChunkView.tile_hash(4, 7, 1), "a tile's hash is fixed and differs from its neighbour's")
 	var forest := ChunkView.ground_material("forest")
 	_check(forest != material and forest.get_shader_parameter("base_tint") != material.get_shader_parameter("base_tint"), "the forest has its own material, in the shade")

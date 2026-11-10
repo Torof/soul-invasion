@@ -7,7 +7,7 @@ numpy. From the repository's root:
     python3 content/tools/flora_art.py <sources> content/art
 
 <sources> holds one image per kind and variant, on a white background,
-named `<id>_<nn>.png` (`bramble_01.png`), as `content/ai-reserve/flora/`.
+named `<id>_<nn>.png` (`bramble_01.png`), as `content/ai-reserve/sources/flora/`.
 
 For each image:
 - the background is cut away: everything joined to the image's border
