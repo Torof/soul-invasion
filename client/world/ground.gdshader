@@ -6,7 +6,10 @@
 // a turned grass reads upside down, like a roof.
 //
 // Each terrain's canvas is one quad over its chunk; the ground index
-// (GroundIndex) says which of its tiles this terrain draws (D39).
+// (GroundIndex) says which of its tiles this terrain draws. The images
+// are read with their mipmaps, one level sharper than the hardware would
+// choose (SHARPEN): the diamonds squash the texture two to one, and the
+// hardware's own level would blur it (D39).
 shader_type canvas_item;
 
 // The ground index, a pixel a tile: R the bits of the canvases drawing
@@ -17,6 +20,8 @@ uniform int index_bit = 1;
 uniform float index_tiles = 640.0;
 const int INDEX_FOREST = 2;
 const int INDEX_FRINGE = 128;
+// The images' derivatives are scaled by this: one mipmap level sharper.
+const float SHARPEN = 0.5;
 
 uniform sampler2D noise_texture : repeat_enable, filter_linear;
 // Noise period, in texture units (one unit is one texture, four metres).
@@ -31,7 +36,7 @@ uniform vec2 second_offset = vec2(0.37, 0.63);
 uniform bool has_variants = false;
 // A sister image of the ground (same grass, drawn differently), blended
 // with the first over slow noise.
-uniform sampler2D sibling_texture : repeat_enable, filter_linear;
+uniform sampler2D sibling_texture : repeat_enable, filter_linear_mipmap;
 uniform bool has_sibling = false;
 // Share of the ground the sibling covers, and a tint to bring its tone
 // to the first image's when the two differ (white: none).
@@ -43,14 +48,14 @@ uniform float bare_keep = 1.0;
 // Up to two more compatible textures of the same terrain (made with the
 // first as style reference), each shown in soft patches of its own:
 // "second" over wide areas, "worn" in a few spots.
-uniform sampler2D second_texture : repeat_enable, filter_linear;
+uniform sampler2D second_texture : repeat_enable, filter_linear_mipmap;
 uniform bool has_second = false;
 uniform float second_scale = 0.03;
 uniform float second_cover = 0.35;
 // Width of the fade at a patch's edge (0.1 is a crisp spot; 0.3 or more
 // melts one water into another).
 uniform float second_softness = 0.1;
-uniform sampler2D worn_texture : repeat_enable, filter_linear;
+uniform sampler2D worn_texture : repeat_enable, filter_linear_mipmap;
 uniform bool has_worn = false;
 // Period of the patches, in texture units, and how much ground they take.
 uniform float worn_scale = 0.05;
@@ -82,21 +87,21 @@ uniform float bank_line = 0.0;
 // below 1), the shader lays the bank strip instead of water: x across
 // the bank (0 at the water), y along the river; its outer edge eroded
 // like any spill.
-uniform sampler2D bank_texture : repeat_enable, filter_linear;
+uniform sampler2D bank_texture : repeat_enable, filter_linear_mipmap;
 uniform bool has_bank = false;
 // A second strip of another matter (earth beside sand), chosen over
 // slow stretches along the river so the bank changes.
-uniform sampler2D bank2_texture : repeat_enable, filter_linear;
+uniform sampler2D bank2_texture : repeat_enable, filter_linear_mipmap;
 uniform bool has_bank2 = false;
 // A third matter (pebbles), not drawn for now.
-uniform sampler2D bank3_texture : repeat_enable, filter_linear;
+uniform sampler2D bank3_texture : repeat_enable, filter_linear_mipmap;
 uniform bool has_bank3 = false;
 // The beds of the fords, seen through their water: up to four matters
 // laid side by side in soft patches a few metres across (the brooks' beds).
-uniform sampler2D ford1_texture : repeat_enable, filter_linear;
-uniform sampler2D ford2_texture : repeat_enable, filter_linear;
-uniform sampler2D ford3_texture : repeat_enable, filter_linear;
-uniform sampler2D ford4_texture : repeat_enable, filter_linear;
+uniform sampler2D ford1_texture : repeat_enable, filter_linear_mipmap;
+uniform sampler2D ford2_texture : repeat_enable, filter_linear_mipmap;
+uniform sampler2D ford3_texture : repeat_enable, filter_linear_mipmap;
+uniform sampler2D ford4_texture : repeat_enable, filter_linear_mipmap;
 uniform bool has_ford1 = false;
 uniform bool has_ford2 = false;
 uniform bool has_ford3 = false;
@@ -366,9 +371,9 @@ bool meet_shows(vec4 a, float w, float meet_noise) {
 void fragment() {
 	vec2 uv = UV;
 	// The derivatives the images are read with, before a pixel can be
-	// discarded.
-	vec2 duv_x = dFdx(uv);
-	vec2 duv_y = dFdy(uv);
+	// discarded, a mipmap level sharper.
+	vec2 duv_x = dFdx(uv) * SHARPEN;
+	vec2 duv_y = dFdy(uv) * SHARPEN;
 	// This terrain's tiles, from the ground index; the forest's spill
 	// over its neighbours, its opacity spread from the tile's corners over
 	// the diamond's two triangles, as a mesh's vertex colours were.

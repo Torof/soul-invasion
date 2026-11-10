@@ -10,11 +10,11 @@ shader_type canvas_item;
 uniform sampler2D noise_texture : repeat_enable, filter_linear;
 // The bed seen through the water, three matters laid side by side in
 // soft patches a few metres across, and the bank's earth.
-uniform sampler2D bed1_texture : repeat_enable, filter_linear;
-uniform sampler2D bed2_texture : repeat_enable, filter_linear;
-uniform sampler2D bed3_texture : repeat_enable, filter_linear;
+uniform sampler2D bed1_texture : repeat_enable, filter_linear_mipmap;
+uniform sampler2D bed2_texture : repeat_enable, filter_linear_mipmap;
+uniform sampler2D bed3_texture : repeat_enable, filter_linear_mipmap;
 uniform float bed_patch = 3.0;
-uniform sampler2D earth_texture : repeat_enable, filter_linear;
+uniform sampler2D earth_texture : repeat_enable, filter_linear_mipmap;
 uniform float lateral_range = 2.0;
 // How much of the water's colour lies over the bed (a brook is a metre
 // deep at most: the bed shows), and the water's tint.
@@ -48,6 +48,10 @@ void vertex() {
 }
 
 void fragment() {
+	// The images are read with their mipmaps, a level sharper (as the
+	// ground's): the derivatives, before a pixel can be discarded.
+	vec2 dx = dFdx(UV) * 0.5;
+	vec2 dy = dFdy(UV) * 0.5;
 	vec2 world = UV * 4.0;
 	float lateral = (tint.r * 2.0 - 1.0) * lateral_range;
 	float half_width = tint.g * 2.0;
@@ -80,8 +84,8 @@ void fragment() {
 		float t = TIME / flow_period;
 		float p0 = fract(t);
 		float w0 = 1.0 - abs(1.0 - 2.0 * p0);
-		vec3 water = (texture(TEXTURE, UV - drift * p0).rgb * w0
-			+ texture(TEXTURE, UV - drift * fract(t + 0.5) + vec2(0.5)).rgb * (1.0 - w0)) * water_tint;
+		vec3 water = (textureGrad(TEXTURE, UV - drift * p0, dx, dy).rgb * w0
+			+ textureGrad(TEXTURE, UV - drift * fract(t + 0.5) + vec2(0.5), dx, dy).rgb * (1.0 - w0)) * water_tint;
 		float f = 0.2 / bed_patch;
 		vec3 n = vec3(
 			texture(noise_texture, world * f + vec2(0.21, 0.63)).r,
@@ -90,9 +94,9 @@ void fragment() {
 		vec3 w = pow(n, vec3(8.0));
 		w /= max(w.x + w.y + w.z, 1e-5);
 		vec2 b_uv = world * 0.25;
-		vec3 bed = texture(bed1_texture, b_uv).rgb * w.x
-			+ texture(bed2_texture, b_uv + vec2(0.37, 0.19)).rgb * w.y
-			+ texture(bed3_texture, b_uv + vec2(0.71, 0.53)).rgb * w.z;
+		vec3 bed = textureGrad(bed1_texture, b_uv, dx, dy).rgb * w.x
+			+ textureGrad(bed2_texture, b_uv + vec2(0.37, 0.19), dx, dy).rgb * w.y
+			+ textureGrad(bed3_texture, b_uv + vec2(0.71, 0.53), dx, dy).rgb * w.z;
 		colour = mix(bed * shallow_tint * 1.15, water, water_over_bed);
 		// Lighter towards the edges, where it is shallowest, the bed showing
 		// more there.
@@ -103,7 +107,7 @@ void fragment() {
 		colour = mix(colour, colour * 1.25, smoothstep(0.66, 0.74, g) * 0.5);
 		colour *= 1.0 - (1.0 - smoothstep(0.0, 0.05, abs(dw + 0.03))) * 0.3;
 	} else {
-		colour = texture(earth_texture, world * 0.25).rgb;
+		colour = textureGrad(earth_texture, world * 0.25, dx, dy).rgb;
 		colour *= mix(wet, 1.0, smoothstep(0.0, 0.08, dw));
 	}
 	float edge = 1.0 - smoothstep(0.0, 0.025, abs(d - grass_at + 0.012));
