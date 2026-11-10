@@ -319,6 +319,12 @@ single 2D game asset, a primitive wooden rack of lashed poles with strips of mea
 a single isolated <tree description>, nothing else in the image, high-angle three-quarter view, the whole tree in frame, on an empty plain pure white background, thick dark outlines, flat cel shading, lit from the front left --ar 2:3 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png <clean oak url>::2 --no ground, grass, grass tufts, soil, roots, rocks, stones, bushes, flowers, mushrooms, logs, path, fence, cast shadow, scenery, text, watermark --style raw
 ```
 
+**Made sharp (10 November 2026)**, prompt B of the pine quality test: the tree's existing image (its cut on white) is given to Midjourney's **edit** with this prompt, `<tree>` replaced by its name (`oak tree`, `scots pine`, `ash tree`, `linden tree`, `silver birch`, `alder tree`, `willow tree`, `yew tree`, `wild apple tree`, `hazel shrub`). The sheet of four comes back as it is, without Midjourney's upscale (it doubles the pixels, not the detail).
+
+```
+redraw this exact same <tree>, keeping everything identical (silhouette, trunk, branches, crown, colours, level of detail), only make it sharp and clean: crisp edges, clean thick dark outlines, no blur, no smudge, no noise, same flat cel shading lit from the front left, same high-angle three-quarter view, plain pure white background, nothing added, 2D game asset
+```
+
 The first prompts, kept for the record:
 
 **Risk**: grass and roots painted at the foot, a shadow, foliage hiding the trunk (bodies walk behind it). **Rule**: trunk clear on the lower third, floating on pure white.
