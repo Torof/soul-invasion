@@ -378,8 +378,16 @@ func show_chunk(origin: Vector2i, size: int, tiles: Variant, items: Array, looks
 	_size = size
 	_codes = TerrainGrid.codes(tiles)
 	TerrainGrid.write(origin, size, _codes)
-	_items = items
 	_looks = looks
+	# The items' mesh is built when the items change (an item picked up
+	# or laid), never on a redraw: the chunk is redrawn whenever a
+	# neighbour comes or goes, and 64-segment discs for every branch and
+	# pebble cost seconds a teleport (10 November 2026).
+	var signature := items.hash()
+	if signature != _items_signature:
+		_items = items
+		_items_signature = signature
+		_build_items()
 	queue_redraw()
 
 
@@ -724,9 +732,17 @@ func is_built() -> bool:
 	return _last_signature != 0
 
 
+## What a redraw without a build costs, in microseconds, averaged over
+## the last ones (the world view paces its redraw queue by it).
+static var redraw_usec := 1000.0
+
+
 func _draw() -> void:
 	DevTiming.tally("chunk redraws")
+	DevWatchdog.phase = DevWatchdog.CHUNK_REDRAW
+	var started := Time.get_ticks_usec()
 	var signature := _terrain_signature()
+	var built := false
 	if signature != _last_signature or not shore_field_on():
 		var frame := Engine.get_process_frames()
 		if _built_frame != frame:
@@ -735,9 +751,11 @@ func _draw() -> void:
 			_last_signature = signature
 			_flats.clear()
 			_decor_cache.clear()
+			DevWatchdog.phase = DevWatchdog.CHUNK_BUILD
 			var t := DevTiming.start()
 			_draw_ground_layers()
 			DevTiming.add("chunk builds", t)
+			built = true
 		elif not waiting.has(self):
 			waiting.append(self)
 	for flat: Array in _flats:
@@ -745,6 +763,9 @@ func _draw() -> void:
 	for d: Array in _decor_cache:
 		draw_texture_rect(d[0], d[1], false, d[2])
 	_draw_items()
+	if not built:
+		redraw_usec = lerpf(redraw_usec, float(Time.get_ticks_usec() - started), 0.2)
+	DevWatchdog.phase = DevWatchdog.ELSEWHERE
 
 
 ## The ground: what each terrain's canvas draws to the ground index, flat
@@ -814,19 +835,34 @@ func _draw_ground_layers() -> void:
 
 ## Items: a small disc of the material's colour, slightly off the tile's
 ## centre so several on one tile stay visible.
-## Segments of an item's disc, as Godot draws a circle.
-const ITEM_SEGMENTS := 64
-## The mesh of the chunk's items, kept while it is drawn (a mesh freed at
-## the end of `_draw` draws nothing).
+## Segments of an item's disc: 24 are round at a radius of 11 px (zoom
+## 2.5); the 64 of Godot's own circles cost three times the vertices.
+const ITEM_SEGMENTS := 24
+## The mesh of the chunk's items, built once per change of the items
+## (_build_items) and kept: drawn again at every redraw of the chunk.
 var _items_mesh: ArrayMesh
+## Where a corpse's skull is drawn, with the mesh.
+var _items_icons: Array[Vector2] = []
+## The hash of the items the mesh was built from (0: none yet).
+var _items_signature := 0
+## How many times the items' mesh was built (the tests).
+var items_built := 0
 
 
 func _draw_items() -> void:
-	# Items: a small disc of the material's colour, slightly off the
-	# tile's centre so several on one tile stay visible, outlined. All of
-	# a chunk's discs go into one mesh, drawn at once: drawn one by one
-	# they were two draw calls each, most of a frame's (from the
-	# performance audit, 9 November 2026).
+	if _items_mesh != null:
+		draw_mesh(_items_mesh, null)
+	for at in _items_icons:
+		draw_death_icon(self, at)
+
+
+## Builds the items' mesh: a small disc of the material's colour, slightly
+## off the tile's centre so several on one tile stay visible, outlined.
+## All of a chunk's discs go into one mesh, drawn at once: drawn one by
+## one they were two draw calls each, most of a frame's (from the
+## performance audit, 9 November 2026).
+func _build_items() -> void:
+	items_built += 1
 	var points := PackedVector2Array()
 	var colours := PackedColorArray()
 	var indices := PackedInt32Array()
@@ -863,6 +899,7 @@ func _draw_items() -> void:
 			indices.append_array([base + 2 * i, base + 2 * i + 1, base + 2 * j, base + 2 * j, base + 2 * i + 1, base + 2 * j + 1])
 		if material == "corpse":
 			icons.append(centre + Vector2(0, -16))
+	_items_icons = icons
 	if points.is_empty():
 		_items_mesh = null
 		return
@@ -873,9 +910,6 @@ func _draw_items() -> void:
 	arrays[Mesh.ARRAY_INDEX] = indices
 	_items_mesh = ArrayMesh.new()
 	_items_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	draw_mesh(_items_mesh, null)
-	for at in icons:
-		draw_death_icon(self, at)
 
 
 ## Whether the bank is drawn by the ground shader from the distance to the

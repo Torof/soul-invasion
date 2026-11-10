@@ -42,6 +42,10 @@ func _init() -> void:
 	_test_the_first_connection_is_tried_again_soon()
 	_test_the_view_follows_the_body_tile_by_tile()
 	_test_the_stable_hash_is_the_servers()
+	_test_the_items_mesh_is_built_once_per_change()
+	_test_the_redraw_queue_holds_each_chunk_once_and_paces_itself()
+	_test_a_redraw_rebuilds_only_when_the_ground_around_changed()
+	_test_the_watchdog_reports_a_stalled_frame()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -904,3 +908,89 @@ func _test_the_stable_hash_is_the_servers() -> void:
 		var u := StableHash.unit([i, 9])
 		_check(u >= 0.0 and u < 1.0, "a unit draw is in [0, 1)")
 	_check(seen.size() == 7, "every value below 7 comes out")
+
+
+## The discs of a chunk's items (branches, pebbles) are one mesh, built
+## when the items change and kept across the chunk's redraws: every
+## neighbour coming or going redraws a chunk, and rebuilding 64-segment
+## discs each time cost seconds a teleport (10 November 2026).
+func _test_the_items_mesh_is_built_once_per_change() -> void:
+	var view := ChunkView.new()
+	var tiles: Array = []
+	for i in 16:
+		tiles.append("grass")
+	var looks := {"branch": Color.SADDLE_BROWN}
+	var items: Array = [{"id": 1, "x": 1, "y": 2, "material": "branch"}]
+	view.show_chunk(Vector2i.ZERO, 4, tiles, items, looks)
+	_check(view.items_built == 1 and view._items_mesh != null, "the mesh is built when the items arrive")
+	view.show_chunk(Vector2i.ZERO, 4, tiles, items.duplicate(true), looks)
+	_check(view.items_built == 1, "the same items again: not built again")
+	items.append({"id": 2, "x": 1, "y": 2, "material": "branch"})
+	view.show_chunk(Vector2i.ZERO, 4, tiles, items, looks)
+	_check(view.items_built == 2 and view._items_mesh.get_surface_count() == 1, "an item laid: built again, one surface")
+	view.show_chunk(Vector2i.ZERO, 4, tiles, [], looks)
+	_check(view.items_built == 3 and view._items_mesh == null, "no items left: no mesh")
+	view.free()
+
+
+## A chunk shown or hidden asks its eight neighbours to redraw: the queue
+## holds each chunk once, hands out a few a frame within its budget (at
+## least one), and forgets chunks freed meanwhile.
+func _test_the_redraw_queue_holds_each_chunk_once_and_paces_itself() -> void:
+	var queue := RedrawQueue.new()
+	var chunks: Array = []
+	for i in 5:
+		chunks.append(Node.new())
+	queue.add(chunks[0])
+	queue.add(chunks[0])
+	queue.add(chunks[1])
+	_check(queue.size() == 2, "a chunk asked twice is held once")
+	var slow := queue.take(2000.0, 1500.0)
+	_check(slow.size() == 1 and slow[0] == chunks[0] and queue.size() == 1, "too costly for two a frame: one, the oldest first")
+	for c: Node in chunks:
+		queue.add(c)
+	var quick := queue.take(2000.0, 100.0)
+	_check(quick.size() == 5 and queue.size() == 0, "cheap redraws all fit the budget: %d" % quick.size())
+	var gone := Node.new()
+	queue.add(gone)
+	queue.add(chunks[2])
+	gone.free()
+	var left := queue.take()
+	_check(left == [chunks[2]] and queue.size() == 0, "a chunk freed meanwhile is dropped")
+	for c: Node in chunks:
+		c.free()
+
+
+## Redrawn because a neighbour came or went, a chunk rebuilds its ground
+## only when the tiles around it changed; redrawn for anything else, it
+## keeps what it built. So a redraw never asks for more redraws: the
+## queue only drains.
+func _test_a_redraw_rebuilds_only_when_the_ground_around_changed() -> void:
+	var tiles: Array = []
+	for i in 16:
+		tiles.append("grass")
+	var hashes := {}
+	var view := ChunkView.new()
+	view.tiles_hash = func(k: Vector2i) -> int: return int(hashes.get(k, 0))
+	view.show_chunk(Vector2i(400, 400), 4, tiles, [], {})
+	hashes[Vector2i(100, 100)] = 7
+	var alone := view._terrain_signature()
+	_check(alone == view._terrain_signature(), "nothing changed around: the same signature, nothing to rebuild")
+	hashes[Vector2i(101, 100)] = 9
+	_check(alone != view._terrain_signature(), "a neighbour came: the signature changes, the ground rebuilds")
+	hashes.erase(Vector2i(101, 100))
+	_check(alone == view._terrain_signature(), "it went: back to the signature of before")
+	view.free()
+	TerrainGrid.clear(Vector2i(400, 400), 4)
+
+
+## The development watchdog (only with --dev) reports a frame that takes
+## over STALL_SECONDS, then every REPORT_EVERY, saying what the main
+## thread was doing.
+func _test_the_watchdog_reports_a_stalled_frame() -> void:
+	_check(not DevWatchdog.report_due(1.9, 0.0) and DevWatchdog.report_due(2.0, 0.0), "the first report at 2 s")
+	_check(not DevWatchdog.report_due(4.0, 2.0) and DevWatchdog.report_due(5.0, 2.0), "then one every 3 s")
+	var line := DevWatchdog.report(2.5, 120, DevWatchdog.CHUNK_BUILD)
+	_check(line.contains("2.5 s") and line.contains("frame 120") and line.contains("chunk build"), "the report says how long, which frame and what was running: %s" % line)
+	_check(DevWatchdog.phase_name(99) == "?" and DevWatchdog.phase_name(DevWatchdog.NETWORK).begins_with("network messages"), "every phase has a name")
+	_check(DevWatchdog.phase == DevWatchdog.ELSEWHERE, "between frames the main thread is in the engine")
