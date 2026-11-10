@@ -33,6 +33,7 @@ func _init() -> void:
 	_test_perf_overlay_reports()
 	_test_plants_are_named_and_coloured()
 	_test_trees_sharpness_eases_with_the_zoom()
+	_test_the_zoom_steps_through_round_levels_up_to_2_5()
 	_test_the_shore_field_holds_every_chunk_held()
 	_test_the_bounds_of_the_chunks_held()
 	_test_the_camera_stops_at_the_band()
@@ -587,6 +588,14 @@ func _test_trees_sharpness_eases_with_the_zoom() -> void:
 	_check(Trees.sharpness(2.0) == -1.0 and Trees.sharpness(1.0) == -1.0, "a level sharper up close")
 	_check(Trees.sharpness(0.5) == 0.0 and Trees.sharpness(0.35) == 0.0, "the hardware's own level far away")
 	_check(is_equal_approx(Trees.sharpness(0.75), -0.5), "eased in between")
+
+
+func _test_the_zoom_steps_through_round_levels_up_to_2_5() -> void:
+	_check(Zoom.MAX == 2.5 and Zoom.clamped(4.0) == 2.5, "the closest zoom is 2.5")
+	_check(Zoom.next(1.5, 1) == 2.0 and Zoom.next(2.0, 1) == 2.5, "the wheel steps 1.5, 2, 2.5")
+	_check(Zoom.next(2.5, 1) == 2.5, "no closer than 2.5")
+	_check(Zoom.next(1.5, -1) == 1.25 and Zoom.next(0.4, -1) == 0.4, "and back down to 0.4")
+	_check(Zoom.next(1.7, 1) == 2.0 and Zoom.next(1.7, -1) == 1.5, "from between two levels, the next one")
 
 
 func _test_plants_are_named_and_coloured() -> void:
