@@ -80,6 +80,11 @@ HOLE_MIN = 12
 SLIVER_LIGHT = 186
 SLIVER_CHROMA = 16
 SLIVER_MAX = 400
+# ... when at least SLIVER_HEMMED of what surrounds it is outline (darker
+# than SLIVER_DARK) or background.
+SLIVER_DARK = 90
+SLIVER_HEMMED = 0.75
+TRUNK_SHARE = 1 / 3
 
 
 def shown(metres):
@@ -176,33 +181,9 @@ def keep_main(alpha):
     return alpha
 
 
-def clear_ground(rgb, alpha):
-    """For a tree: the grass painted around its foot, in the bottom 7 % of
-    the plant, cleared (green there is grass: the trunk is brown). Unless
-    45 % or more of that band is green: then the trunk itself is green (a
-    willow's grey-green bark, a pine's mossy foot), and clearing it would
-    cut the foot off."""
-    rows = np.nonzero(alpha.any(axis=1))[0]
-    top, bottom = rows[0], rows[-1]
-    start = bottom - int((bottom - top) * 0.07)
-    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
-    green = (g > r + 8) & (g > b)
-    zone = np.zeros_like(alpha, dtype=bool)
-    zone[start:bottom + 1] = True
-    plant = zone & (alpha > 0)
-    if (green & plant).sum() > 0.45 * plant.sum():
-        return alpha
-    alpha[zone & green] = 0
-    return alpha
-
-
-def cut(path, keep_white, tree=False, work=WORK_MAX):
-    """The plant of `path` on a clear background, cropped to itself."""
-    im = Image.open(path).convert("RGB")
-    # Work at most `work` px tall: enough for the target, and faster.
-    if im.height > work:
-        im = im.resize((round(im.width * work / im.height), work), Image.LANCZOS)
-    rgb = np.asarray(im).astype(np.int32)
+def background(rgb, keep_white, tree=False):
+    """What of `rgb` (an image on a plain background, int32) is the
+    background: True there."""
     h, w, _ = rgb.shape
     bg = border_colour(rgb)
     distance = np.sqrt(((rgb - bg) ** 2).sum(axis=2))
@@ -221,14 +202,49 @@ def cut(path, keep_white, tree=False, work=WORK_MAX):
         outside |= holes
     if tree:
         # Slivers of the background left between two outlines: small
-        # patches of pale, colourless pixels. A tree is never drawn so
-        # (the birch's and the ash's pale bark make large patches).
+        # patches of pale, colourless pixels. On the trunk (the lowest
+        # TRUNK_SHARE of the tree), only those hemmed in by outlines or by
+        # the background: a pale patch of bark (a highlight on the birch's
+        # or the ash's trunk) has bark around it, and stays, or it would be
+        # a hole in the trunk.
         pale = (light > SLIVER_LIGHT) & (chroma < SLIVER_CHROMA) & ~outside
         labels, sizes = components(pale)
-        outside |= np.isin(labels, [i for i, s in enumerate(sizes) if i and s < SLIVER_MAX])
+        small = [i for i, s in enumerate(sizes) if i and s < SLIVER_MAX]
+        hemmed = hemmed_in(labels, small, outside | (light < SLIVER_DARK))
+        rows = np.nonzero((~outside).any(axis=1))[0]
+        trunk_top = rows[-1] - (rows[-1] - rows[0]) * TRUNK_SHARE
+        lowest = np.zeros(len(sizes))
+        ys = np.nonzero(labels)[0]
+        np.maximum.at(lowest, labels[labels > 0], ys)
+        outside |= np.isin(labels, [i for i in small if hemmed[i] >= SLIVER_HEMMED or lowest[i] < trunk_top])
+    return outside
+
+
+def hemmed_in(labels, which, wall):
+    """For each region of `labels` listed in `which`: the share of the
+    pixels around it (up to 2 px away) that are `wall`."""
+    sliver = np.isin(labels, which)
+    lab = np.where(sliver, labels, 0)
+    ring = np.zeros_like(lab)
+    for dy in range(-2, 3):
+        for dx in range(-2, 3):
+            moved = np.roll(lab, (dy, dx), axis=(0, 1))
+            ring = np.where((ring == 0) & (moved > 0) & ~sliver, moved, ring)
+    n = int(labels.max()) + 1
+    total = np.bincount(ring.ravel(), minlength=n)
+    walls = np.bincount(ring.ravel(), weights=wall.ravel(), minlength=n)
+    return walls / np.maximum(total, 1)
+
+
+def cut(path, keep_white, tree=False, work=WORK_MAX):
+    """The plant of `path` on a clear background, cropped to itself."""
+    im = Image.open(path).convert("RGB")
+    # Work at most `work` px tall: enough for the target, and faster.
+    if im.height > work:
+        im = im.resize((round(im.width * work / im.height), work), Image.LANCZOS)
+    rgb = np.asarray(im).astype(np.int32)
+    outside = background(rgb, keep_white, tree)
     alpha = np.where(outside, 0, 255).astype(np.uint8)
-    if tree:
-        alpha = clear_ground(rgb, alpha)
     alpha = keep_main(alpha)
     # One pixel in from the edge before softening it: the outermost ring
     # is the white background blended into the outline (pale specks).
