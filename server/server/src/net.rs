@@ -179,7 +179,7 @@ pub struct Shared {
     /// What the simulation thread publishes to every connection.
     pub publish: broadcast::Sender<Published>,
     /// The ground. Static for now: nothing changes the terrain yet.
-    pub map: Map,
+    pub map: Arc<Map>,
     /// Latest known position of every body, kept by the simulation thread.
     pub bodies: watch::Sender<Vec<BodyState>>,
     /// What items are made of, as clients need it.
@@ -409,7 +409,7 @@ impl Shared {
         Self {
             tick: AtomicU64::new(world.tick().0),
             publish,
-            map: world.map().clone(),
+            map: world.shared_map(),
             bodies: watch::Sender::new(bodies),
             materials,
             species,
