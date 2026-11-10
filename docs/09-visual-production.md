@@ -35,14 +35,23 @@ Every image obeys it, so that it has a place, a scale and an anchor the day it i
 
 | | Rule |
 |---|---|
-| **Cell** | 1 m × 1 m. On screen, a diamond of **64 × 32 px** at scale 1 (zoom ×1 to ×4). **64 px = 1 m**, horizontally and vertically. |
+| **Cell** | 1 m × 1 m. On screen, a diamond of **64 × 32 px** at scale 1 (zoom ×0.4 to ×2.5). **64 px = 1 m**, horizontally and vertically. |
 | **Angle** | One angle for every element: the high-angle three-quarter of the reference. The 2:1 ground and elements drawn slightly more from the front sit together, as in Dofus. |
 | **Grounds** | Seen **exactly from above**, no perspective, no outline, **no shadow**, calm and low in detail (details come from overlays), seamless. One texture covers **4 × 4 m**: 512 × 512 px (128 px per metre, enough for zoom ×2). |
 | **Overlays** | Same as grounds, on a transparent background, sparse and well separated. |
-| **Elements** | High-angle three-quarter, **plain white background** to be cut out, **no ground shadow**, light from the left and slightly in front. Each has a **footprint** in cells (1×1, 1×2, 2×2, 3×3) and is **anchored at the base of the centre of its footprint**. Height in metres sets the pixels by **one sharpness rule** (D39): the image is as tall as the element is on the reference screen (3072 × 1920, 2.667 × the 1280 × 720 viewport) at its category's reference zoom, shown height (D40) × 64 px × zoom × 2.667. Plants and decorations: zoom 4, 683 px a metre (a 20 cm dandelion 137 px, a 2.5 m elder 1,707 px). Trees: zoom 2 to 2.5, when they are made again. Drawn with mipmaps when the camera pulls back. `content/tools/flora_art.py` sizes them and lists the sources too small for their target. |
-| **Bodies and animals** | Cut-out puppets: **four facings mirrored into eight** (combat reads the facing, D33), a few states (standing, walking, lying asleep, dead). Midjourney gives the model and the turnaround sheet; animation is Godot's or a sprite-sheet tool's. The hardest class: last, one character first. |
+| **Elements** | High-angle three-quarter, **plain white background** to be cut out, **no ground shadow**, light from the left and slightly in front. Each has a **footprint** in cells (1×1, 1×2, 2×2, 3×3) and is **anchored at the base of the centre of its footprint**. Height in metres sets the pixels by **one sharpness rule** (D39, weight rule 1 below): the image is as tall as the element is on the reference screen at the closest zoom, 2.5: shown height (D40) × 384 px a metre (a 20 cm dandelion 77 px, a 2.5 m elder 960 px, an oak shown 8.1 m 3,118 px when trees are made again). Drawn with mipmaps when the camera pulls back. `content/tools/flora_art.py` sizes them and lists the sources too small for their target. |
+| **Bodies and animals** | Cut-out puppets: **four facings mirrored into eight** (combat reads the facing, D33), a few states (standing, walking, lying asleep, dead). Midjourney gives the model and the turnaround sheet; animation is Godot's, moving the parts (weight rule 3: no frame-by-frame sheets). The hardest class: last, one character first. |
 | **Buildings** | For the first version, **whole structures with fixed footprints** (shelter 1×2, tent 2×2, hut 3×3, fire 1×1, drying rack 1×2, palisade by segment). Modular walls (segment on each diagonal, corner, door, roof pieces) come with cities and will need human touch-ups: Midjourney paints a hut, not a wall kit. |
 | **Items on the ground** | One sheet per batch of materials, each item sized to lie on a cell, cut out individually. |
+
+**Weight rules** (10 November 2026, the project lead's): the game stays light by the way its images are made, not by cutting them down afterwards.
+
+1. **Each image at its size on screen at the closest zoom, 2.5** (D39's sharpness rule): shown height (D40) × 384 px a metre, that is 64 px × zoom 2.5 × 2.4, the stretch of the 1280 × 720 viewport on the reference screen (3072 × 1920, of which Godot keeps 3072 × 1728). Nothing is stored that the screen never shows, nothing is softer than the rest.
+2. **One image per season, made in advance and shipped with the game**; only the current season is held in video memory.
+3. **Animals and characters are cut-out puppets** (parts moved by the engine), never frame-by-frame animation.
+4. **Only the species of the region in view are held in video memory**: a species' images are loaded when it comes into the region seen, and freed when it leaves.
+
+**Identity: a cartoon, pretty and readable before realistic.** Heights and proportions follow D40, but where realism and a clear, pleasant image disagree, the image wins.
 
 ## 5. What is produced, and when
 
