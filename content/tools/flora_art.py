@@ -4,7 +4,7 @@
 Development tool, run by hand; the game never runs it. Needs Pillow and
 numpy. From the repository's root:
 
-    python3 content/tools/flora_art.py <sources> content/art
+    python3 content/tools/flora_art.py <sources> content/art [--tree-zoom Z]
 
 <sources> holds one image per kind and variant, on a white background,
 named `<id>_<nn>.png` (`bramble_01.png`), as `content/ai-reserve/sources/flora/`.
@@ -18,12 +18,23 @@ For each image:
   which are white themselves;
 - the edge is softened by one pixel, then the plant is cropped to itself.
 
+Sizes follow the sharpness rule (D39, 10 November 2026): an image is made
+at the size it takes on the reference screen (3072 x 1920) at its
+category's reference zoom, so everything looks as sharp and no pixel is
+stored that the screen never shows. Its height is its kind's shown height
+(`shown`, the client's `Scale.shown`, D40) times `px_per_m(zoom)`. A source
+smaller than its target is kept as it is and reported: only those need
+making again. Plants and decorations are perfect at the closest zoom
+(FLORA_ZOOM, DECOR_ZOOM); trees take their zoom from `--tree-zoom`, and
+without it they are left untouched.
+
 Kinds of `content/species.ron` (trees) go to `art/trees/` as
-`<id>_adult_<nn>_summer.png`, 256 px per metre of their height, like the
-others. The rest go into one atlas, `art/flora/atlas.png`, with
-`art/flora/atlas.json` giving each image's rectangle: one texture for all
-the flora, so the client draws it in a few draw calls (D39). In the atlas
-an image is at most PLANT_MAX px tall; the client sets its size on screen.
+`<id>_adult_<nn>_summer.png`. The rest go into one atlas,
+`art/flora/atlas.png`, with `art/flora/atlas.json` giving each image's
+rectangle: one texture for all the flora, so the client draws it in a few
+draw calls (D39); the client sets each plant's size on screen. Last, the
+decorations of `art/decor/` wider than their target (their width on screen
+is `size_m` of the ground spec's "decor" entry) are reduced in place.
 """
 
 import json
@@ -35,10 +46,21 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageFilter
 
-PX_PER_M = 256
-PLANT_MAX = 384
+# The sharpness rule: pixels per metre on the reference screen at zoom 1
+# (Iso.PX_PER_M) times the stretch from the 1280 x 720 viewport to its
+# 1920 rows.
+PX_PER_M = 64
+SCREEN_STRETCH = 1920 / 720
+FLORA_ZOOM = 4.0
+DECOR_ZOOM = 4.0
+# The cut is worked at most this tall unless the target needs more.
+WORK_MAX = 1400
 ATLAS_WIDTH = 4096
-PAD = 2
+# Godot's GPU compression works on blocks of 4 x 4 pixels: every image
+# starts on a block and is PAD clear pixels from the next, so no block
+# mixes two plants and the mipmaps of one do not reach the next.
+BLOCK = 4
+PAD = 8
 # Colour distance (0..441) still counted as the background, and as a
 # shadow: light (above SHADOW_LIGHT) and nearly colourless.
 BG_TOLERANCE = 42
@@ -46,6 +68,23 @@ SHADOW_LIGHT = 150
 SHADOW_CHROMA = 34
 HOLE_TOLERANCE = 24
 HOLE_MIN = 12
+
+
+def shown(metres):
+    """The height a thing is drawn at (D40, the client's Scale.shown): true
+    up to 3 m, eased above."""
+    return metres if metres <= 3.0 else 3.0 * (metres / 3.0) ** 0.5
+
+
+def px_per_m(zoom):
+    """Pixels per shown metre on the reference screen at `zoom`."""
+    return PX_PER_M * zoom * SCREEN_STRETCH
+
+
+def target_px(metres, zoom):
+    """The sharpness rule: the pixels a thing `metres` tall takes on the
+    reference screen at `zoom`."""
+    return round(shown(metres) * px_per_m(zoom))
 
 
 def border_colour(rgb):
@@ -138,12 +177,12 @@ def clear_ground(rgb, alpha):
     return alpha
 
 
-def cut(path, keep_white, tree=False):
+def cut(path, keep_white, tree=False, work=WORK_MAX):
     """The plant of `path` on a clear background, cropped to itself."""
     im = Image.open(path).convert("RGB")
-    # Work at most 1400 px tall: enough for the game's sizes, and faster.
-    if im.height > 1400:
-        im = im.resize((round(im.width * 1400 / im.height), 1400), Image.LANCZOS)
+    # Work at most `work` px tall: enough for the target, and faster.
+    if im.height > work:
+        im = im.resize((round(im.width * work / im.height), work), Image.LANCZOS)
     rgb = np.asarray(im).astype(np.int32)
     h, w, _ = rgb.shape
     bg = border_colour(rgb)
@@ -222,52 +261,111 @@ def flora_kinds(content):
     return out
 
 
+def fit(image, tall, name, short):
+    """`image` brought to `tall` px high, never enlarged: a smaller source
+    is kept and noted in `short`."""
+    if image.height < tall:
+        short.append(f"{name}: {image.height} px, target {tall}")
+        return image
+    return image.resize((round(image.width * tall / image.height), tall), Image.LANCZOS)
+
+
+def work_height(tall):
+    """How tall to work the cut so the plant itself still reaches `tall`
+    (a plant fills about two thirds of its source)."""
+    return max(WORK_MAX, round(tall * 1.6))
+
+
+def pack(plants):
+    """Skyline packing, tallest first: each image goes where it ends
+    highest up, on a block and PAD from its neighbours. {name: [x, y, w,
+    h]} and the atlas height (a whole number of blocks)."""
+    def up(v):
+        return -(-v // BLOCK) * BLOCK
+
+    # The height already taken in each column of blocks.
+    columns = [0] * (ATLAS_WIDTH // BLOCK)
+    rects = {}
+    for name, image in sorted(plants, key=lambda p: (-p[1].height, -p[1].width)):
+        span = up(image.width + PAD) // BLOCK
+        need = up(image.width) // BLOCK
+        best = None
+        for c in range(len(columns) - need + 1):
+            top = max(columns[c:c + span])
+            if best is None or top < best[0]:
+                best = (top, c)
+        top, c = best
+        rects[name] = [c * BLOCK, top, image.width, image.height]
+        for i in range(c, min(c + span, len(columns))):
+            columns[i] = up(top + image.height + PAD)
+    return rects, up(max(y + h for _, y, _, h in rects.values()))
+
+
+def size_decor(art, short):
+    """Reduces in place the decorations wider than their width on screen at
+    DECOR_ZOOM (the client draws them `size_m` wide, ChunkView._draw_decor)."""
+    spec = json.loads((art.parent.parent / "client" / "world" / "ground.json").read_text())
+    for kind, rule in spec.get("decor", {}).items():
+        if not isinstance(rule, dict):
+            continue
+        wide = round(float(rule.get("size_m", 0.5)) * px_per_m(DECOR_ZOOM))
+        for path in sorted((art / "decor").glob(f"{kind}_[0-9][0-9].png")):
+            image = Image.open(path)
+            if image.width > wide:
+                image = image.resize((wide, round(image.height * wide / image.width)), Image.LANCZOS)
+                image.save(path, optimize=True)
+                print("decor", path.name, image.size)
+            elif image.width < wide:
+                short.append(f"{path.name}: {image.width} px wide, target {wide}")
+
+
 def main():
-    sources, art = Path(sys.argv[1]), Path(sys.argv[2])
+    args = sys.argv[1:]
+    tree_zoom = None
+    if "--tree-zoom" in args:
+        i = args.index("--tree-zoom")
+        tree_zoom = float(args[i + 1])
+        del args[i:i + 2]
+    sources, art = Path(args[0]), Path(args[1])
     content = art.parent
     trees = species_heights(content)
     kinds = flora_kinds(content)
     plants = []
+    short = []
     for path in sorted(sources.glob("*_[0-9][0-9].png")):
         m = re.match(r"(.+)_(\d\d)\.png$", path.name)
         kind, n = m.group(1), m.group(2)
         section, height = kinds.get(kind, ("trees", trees.get(kind, 0)))
         if kind in trees or section == "trees":
-            image = trim_to_foot(cut(path, keep_white=False, tree=True))
-            tall = round((trees.get(kind) or height) * PX_PER_M)
-            image = image.resize((round(image.width * tall / image.height), tall), Image.LANCZOS)
+            if tree_zoom is None:
+                continue
+            tall = target_px(trees.get(kind) or height, tree_zoom)
+            image = trim_to_foot(cut(path, keep_white=False, tree=True, work=work_height(tall)))
+            image = fit(image, tall, path.name, short)
             image = image.filter(ImageFilter.UnsharpMask(radius=1.2, percent=60, threshold=2))
             target = art / "trees" / f"{kind}_adult_{n}_summer.png"
             image.save(target)
             print("tree", target.name, image.size)
         else:
-            image = cut(path, keep_white=(section == "mushrooms"))
-            tall = min(PLANT_MAX, image.height)
-            image = image.resize((round(image.width * tall / image.height), tall), Image.LANCZOS)
+            tall = target_px(height, FLORA_ZOOM)
+            image = cut(path, keep_white=(section == "mushrooms"), work=work_height(tall))
+            image = fit(image, tall, path.name, short)
             image = image.filter(ImageFilter.UnsharpMask(radius=1.0, percent=50, threshold=2))
             plants.append((f"{kind}_{n}", image))
-    # Shelf packing, tallest first.
-    plants.sort(key=lambda p: -p[1].height)
-    x = y = shelf = 0
-    rects = {}
-    for name, image in plants:
-        if x + image.width + PAD > ATLAS_WIDTH:
-            x, y, shelf = 0, y + shelf + PAD, 0
-        rects[name] = [x, y, image.width, image.height]
-        x += image.width + PAD
-        shelf = max(shelf, image.height)
-    height = 1
-    while height < y + shelf:
-        height *= 2
-    atlas = Image.new("RGBA", (ATLAS_WIDTH, height), (0, 0, 0, 0))
-    for name, image in plants:
-        r = rects[name]
-        atlas.alpha_composite(image, (r[0], r[1]))
-    atlas = bleed(atlas)
-    (art / "flora").mkdir(exist_ok=True)
-    atlas.save(art / "flora" / "atlas.png", optimize=True)
-    (art / "flora" / "atlas.json").write_text(json.dumps(dict(sorted(rects.items())), indent=1) + "\n")
-    print(len(plants), "plants in an atlas of", atlas.size)
+    if plants:
+        rects, height = pack(plants)
+        atlas = Image.new("RGBA", (ATLAS_WIDTH, height), (0, 0, 0, 0))
+        for name, image in plants:
+            r = rects[name]
+            atlas.alpha_composite(image, (r[0], r[1]))
+        atlas = bleed(atlas)
+        (art / "flora").mkdir(exist_ok=True)
+        atlas.save(art / "flora" / "atlas.png", optimize=True)
+        (art / "flora" / "atlas.json").write_text(json.dumps(dict(sorted(rects.items())), indent=1) + "\n")
+        print(len(plants), "plants in an atlas of", atlas.size)
+    size_decor(art, short)
+    for line in short:
+        print("smaller than its target (to make again to be as sharp):", line)
 
 
 if __name__ == "__main__":
