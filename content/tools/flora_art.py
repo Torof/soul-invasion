@@ -18,15 +18,18 @@ For each image:
   which are white themselves;
 - the edge is softened by one pixel, then the plant is cropped to itself.
 
-Sizes follow the sharpness rule (D39, 10 November 2026): an image is made
-at the size it takes on the reference screen (3072 x 1920, of which the
-game keeps 3072 x 1728) at the closest zoom, 2.5, so everything looks as
-sharp and no pixel is stored that the screen never shows: 64 x 2.5 x 2.4 =
-384 px a shown metre. Its height is its kind's shown height (`shown`, the
-client's `Scale.shown`, D40) times `px_per_m(zoom)`. A source smaller than
-its target is kept as it is and reported: only those need making again.
-Trees are made only with `--trees` (at `--tree-zoom`, 2.5 unless given);
-without it they are left untouched.
+Sizes follow the sharpness rule (D39, 10 November 2026), in two sizes.
+The originals (the sources, the archive, never shipped) are made at 384 px
+a shown metre: sharp at the closest zoom, 2.5, on the project lead's 3072 x
+1920 screen. The game ships them reduced to 307.2 px a shown metre: sharp
+at zoom 2.5 on a 2560-px-wide screen and below, magnified 1.25 times at the
+closest zoom only on wider ones. An image's height is its kind's shown
+height (`shown`, the client's `Scale.shown`, D40) times `px_per_m()`.
+Changing the shipped size is a parameter (SHARP_SCREEN_STRETCH) and a
+rerun. A source smaller than its original target is reported: only those
+need making again; nothing is ever enlarged. Trees are made only with
+`--trees` (at `--tree-zoom`, ZOOM_MAX unless given); without it they are
+left untouched.
 
 Kinds of `content/species.ron` (trees) go to `art/trees/` as
 `<id>_adult_<nn>_summer.png`. The rest go into one atlas,
@@ -46,16 +49,16 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageFilter
 
-# The sharpness rule: pixels per metre at zoom 1 (Iso.PX_PER_M), times
-# the stretch of the 1280 x 720 viewport on the reference screen (3072 x
-# 1920: Godot keeps 3072 x 1728, 2.4 times), times the closest zoom (the
-# client's ZOOM_MAX): 384 px a shown metre.
+# The sharpness rule: pixels per shown metre = PX_PER_M (Iso.PX_PER_M, at
+# zoom 1) x ZOOM_MAX (the camera stops there) x a screen's stretch of the
+# 1280 x 720 viewport.
+# - Originals, the archive, never shipped: the project lead's 3072 x 1920
+#   screen, of which Godot keeps 3072 x 1728: stretch 2.4, 384 px a metre.
+# - Shipped: a 2560-px-wide screen (1440p): stretch 1.92, 307.2 px a metre.
 PX_PER_M = 64
-SCREEN_STRETCH = 2.4
-REFERENCE_ZOOM = 2.5
-FLORA_ZOOM = REFERENCE_ZOOM
-DECOR_ZOOM = REFERENCE_ZOOM
-TREE_ZOOM = REFERENCE_ZOOM
+ZOOM_MAX = 2.5
+ORIGINAL_SCREEN_STRETCH = 2.4
+SHARP_SCREEN_STRETCH = 1.92
 # The cut is worked at most this tall unless the target needs more.
 WORK_MAX = 1400
 ATLAS_WIDTH = 4096
@@ -79,15 +82,16 @@ def shown(metres):
     return metres if metres <= 3.0 else 3.0 * (metres / 3.0) ** 0.5
 
 
-def px_per_m(zoom):
-    """Pixels per shown metre on the reference screen at `zoom`."""
-    return PX_PER_M * zoom * SCREEN_STRETCH
+def px_per_m(zoom=ZOOM_MAX, stretch=SHARP_SCREEN_STRETCH):
+    """Pixels per shown metre at `zoom` on a screen of that `stretch`: the
+    shipped size unless told otherwise."""
+    return PX_PER_M * zoom * stretch
 
 
-def target_px(metres, zoom):
-    """The sharpness rule: the pixels a thing `metres` tall takes on the
-    reference screen at `zoom`."""
-    return round(shown(metres) * px_per_m(zoom))
+def target_px(metres, zoom=ZOOM_MAX, stretch=SHARP_SCREEN_STRETCH):
+    """The sharpness rule: the pixels a thing `metres` tall takes at `zoom`
+    on a screen of that `stretch`."""
+    return round(shown(metres) * px_per_m(zoom, stretch))
 
 
 def border_colour(rgb):
@@ -264,11 +268,13 @@ def flora_kinds(content):
     return out
 
 
-def fit(image, tall, name, short):
-    """`image` brought to `tall` px high, never enlarged: a smaller source
-    is kept and noted in `short`."""
-    if image.height < tall:
-        short.append(f"{name}: {image.height} px, target {tall}")
+def fit(image, tall, original, name, short):
+    """`image` brought to `tall` px high (the shipped size), never enlarged.
+    A source under `original` (the size its original should have) is noted
+    in `short`."""
+    if image.height < original:
+        short.append(f"{name}: {image.height} px, original target {original}, shipped {tall}")
+    if image.height <= tall:
         return image
     return image.resize((round(image.width * tall / image.height), tall), Image.LANCZOS)
 
@@ -305,13 +311,14 @@ def pack(plants):
 
 
 def size_decor(art, short):
-    """Reduces in place the decorations wider than their width on screen at
-    DECOR_ZOOM (the client draws them `size_m` wide, ChunkView._draw_decor)."""
+    """Reduces in place the decorations wider than their shipped width
+    (the client draws them `size_m` wide, ChunkView._draw_decor). They have
+    no originals apart: what is reduced here is the only copy."""
     spec = json.loads((art.parent.parent / "client" / "world" / "ground.json").read_text())
     for kind, rule in spec.get("decor", {}).items():
         if not isinstance(rule, dict):
             continue
-        wide = round(float(rule.get("size_m", 0.5)) * px_per_m(DECOR_ZOOM))
+        wide = round(float(rule.get("size_m", 0.5)) * px_per_m())
         for path in sorted((art / "decor").glob(f"{kind}_[0-9][0-9].png")):
             image = Image.open(path)
             if image.width > wide:
@@ -319,7 +326,7 @@ def size_decor(art, short):
                 image.save(path, optimize=True)
                 print("decor", path.name, image.size)
             elif image.width < wide:
-                short.append(f"{path.name}: {image.width} px wide, target {wide}")
+                short.append(f"{path.name}: {image.width} px wide, shipped target {wide}")
 
 
 def main():
@@ -327,7 +334,7 @@ def main():
     make_trees = "--trees" in args
     if make_trees:
         args.remove("--trees")
-    tree_zoom = TREE_ZOOM
+    tree_zoom = ZOOM_MAX
     if "--tree-zoom" in args:
         i = args.index("--tree-zoom")
         tree_zoom = float(args[i + 1])
@@ -345,17 +352,20 @@ def main():
         if kind in trees or section == "trees":
             if not make_trees:
                 continue
-            tall = target_px(trees.get(kind) or height, tree_zoom)
+            metres = trees.get(kind) or height
+            tall = target_px(metres, tree_zoom)
+            original = target_px(metres, tree_zoom, ORIGINAL_SCREEN_STRETCH)
             image = trim_to_foot(cut(path, keep_white=False, tree=True, work=work_height(tall)))
-            image = fit(image, tall, path.name, short)
+            image = fit(image, tall, original, path.name, short)
             image = image.filter(ImageFilter.UnsharpMask(radius=1.2, percent=60, threshold=2))
             target = art / "trees" / f"{kind}_adult_{n}_summer.png"
             image.save(target)
             print("tree", target.name, image.size)
         else:
-            tall = target_px(height, FLORA_ZOOM)
+            tall = target_px(height)
+            original = target_px(height, stretch=ORIGINAL_SCREEN_STRETCH)
             image = cut(path, keep_white=(section == "mushrooms"), work=work_height(tall))
-            image = fit(image, tall, path.name, short)
+            image = fit(image, tall, original, path.name, short)
             image = image.filter(ImageFilter.UnsharpMask(radius=1.0, percent=50, threshold=2))
             plants.append((f"{kind}_{n}", image))
     if plants:
