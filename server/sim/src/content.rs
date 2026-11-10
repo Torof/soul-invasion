@@ -449,6 +449,19 @@ impl Content {
                     what: "near.within is 1 or more",
                 });
             }
+            // A natural item's id holds its rule's index (crate::items).
+            if index >= crate::items::MOST_RULES {
+                return Err(ContentError::Spawn {
+                    index,
+                    what: "at most 64 spawn rules",
+                });
+            }
+            if spawn.near.is_some_and(|near| near.within > 16) {
+                return Err(ContentError::Spawn {
+                    index,
+                    what: "near.within is 16 at most (a chunk looks that far round)",
+                });
+            }
         }
         if self.movement.walk_speed_cm_per_s == 0 {
             return Err(ContentError::Movement(

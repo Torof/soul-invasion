@@ -12,7 +12,7 @@ use sim::{Content, Event, Tick, World};
 
 /// Version of the serialized `World` inside a snapshot. Bump on any change
 /// to `World`'s shape, and add a migration in `decode_world`.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 7;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 8;
 
 /// Snapshots kept: the latest and two before it. Every one used to be
 /// kept, a full copy of the world each game day (18 MB on the valley).
@@ -231,6 +231,7 @@ fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<Wo
             4 => migrate_v4_to_v5(&data)?,
             5 => migrate_v5_to_v6(&data)?,
             6 => migrate_v6_to_v7(&data)?,
+            7 => migrate_v7_to_v8(&data)?,
             _ => unreachable!("every version below the current one has a migration"),
         };
         version += 1;
@@ -276,6 +277,9 @@ fn migrate_v3_to_v4(data: &str, content: &Content) -> Result<String, StorageErro
     let fresh = serde_json::to_value(World::with_valley(calendar, content, size))?;
     old["items"] = fresh["items"].clone();
     old["next_item"] = fresh["next_item"].clone();
+    // Today's fresh valley drops natural items instead (v8).
+    old["natural"] = fresh["natural"].clone();
+    old["taken"] = fresh["taken"].clone();
     Ok(old.to_string())
 }
 
@@ -337,6 +341,18 @@ fn migrate_v6_to_v7(data: &str) -> Result<String, StorageError> {
                 body["carried"] = serde_json::json!([]);
             }
         }
+    }
+    Ok(old.to_string())
+}
+
+/// v8: the ground drops natural items, made per chunk and never stored,
+/// with the list of those taken. A world made before keeps the items it
+/// scattered, all stored, and makes no natural ones.
+fn migrate_v7_to_v8(data: &str) -> Result<String, StorageError> {
+    let mut old: serde_json::Value = serde_json::from_str(data)?;
+    if old.get("natural").is_none() {
+        old["natural"] = serde_json::Value::Bool(false);
+        old["taken"] = serde_json::json!([]);
     }
     Ok(old.to_string())
 }
@@ -519,7 +535,39 @@ mod tests {
         assert_eq!(world.bodies().len(), 1);
         assert_eq!(world.bodies()[0].pos(), sim::Pos::new(200, 200));
         assert_eq!(world.bodies()[0].at(), sim::Pos::new(200, 200).centre());
-        assert!(!world.items().is_empty(), "the valley's items appeared");
+        assert!(
+            (0..8).any(|y| (0..8).any(|x| !world.items_in(sim::ChunkPos::new(x, y)).is_empty())),
+            "the valley's items appeared"
+        );
+    }
+
+    #[test]
+    fn v7_worlds_keep_their_scattered_items_and_make_no_natural_ones() {
+        let mut storage = Sqlite::in_memory(content()).unwrap();
+        // A v7 world: today's, as it was written before natural items.
+        let mut v7 = serde_json::to_value(World::empty(
+            Calendar::new(2, 3).unwrap(),
+            sim::Map::valley(256, 256, 1),
+        ))
+        .unwrap();
+        for field in ["natural", "taken"] {
+            v7.as_object_mut().unwrap().remove(field);
+        }
+        v7["items"] = serde_json::json!([
+            {"id": 1, "material": "branch", "place": {"type": "ground", "pos": {"x": 10, "y": 40}}}
+        ]);
+        v7["next_item"] = serde_json::json!(2);
+        storage
+            .conn
+            .execute(
+                "INSERT INTO snapshots (tick, format_version, data) VALUES (0, 7, ?1)",
+                [v7.to_string()],
+            )
+            .unwrap();
+        let world = storage.latest_world().unwrap().unwrap();
+        assert!(!world.has_natural_items());
+        assert_eq!(world.items().len(), 1);
+        assert_eq!(world.items_in(sim::Pos::new(10, 40).chunk()).len(), 1);
     }
 
     #[test]

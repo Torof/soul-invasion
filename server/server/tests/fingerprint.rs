@@ -41,8 +41,15 @@ fn map_print(map: &Map) -> u64 {
 }
 
 fn world_print(world: &World) -> (u64, u64, u64) {
+    // The ground's items, made per chunk (and any stored), chunk by chunk.
     let mut items = Fnv::new();
-    items.bytes(format!("{:?}", world.items()).as_bytes());
+    let chunks = world.map().width().div_ceil(sim::CHUNK_SIZE);
+    let chunks = i32::try_from(chunks).expect("few chunks");
+    for y in 0..chunks {
+        for x in 0..chunks {
+            items.bytes(format!("{:?}", world.items_in(sim::ChunkPos::new(x, y))).as_bytes());
+        }
+    }
     let mut trees = Fnv::new();
     trees.bytes(format!("{:?}", world.trees()).as_bytes());
     (map_print(world.map()), items.0, trees.0)
@@ -56,7 +63,7 @@ fn the_768_valley_is_pinned() {
         print,
         (
             0x14dd_73b4_8a19_0833,
-            0xd12b_1310_03d5_e51e,
+            0x31e0_5f9a_dbaa_5e26,
             0x8d4b_87ab_cea5_950f
         ),
         "{print:#x?}"
@@ -80,7 +87,7 @@ fn the_game_valley_is_pinned() {
         print,
         (
             0xaef7_eec3_3a88_fb48,
-            0x5f74_0f93_9913_d95b,
+            0xb645_9334_0126_8a43,
             0x366b_9cd3_34a9_e906
         ),
         "{print:#x?}"
