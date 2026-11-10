@@ -206,9 +206,10 @@ pub enum MapSpec {
     },
 }
 
-/// The grid.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "MapSpec", into = "MapSpec")]
+/// The grid. Stored as its spec alone (D31): the tiles are generated
+/// again on load.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(from = "MapSpec")]
 pub struct Map {
     spec: MapSpec,
     width: u32,
@@ -244,6 +245,14 @@ impl From<MapSpec> for Map {
 impl From<Map> for MapSpec {
     fn from(map: Map) -> Self {
         map.spec
+    }
+}
+
+/// Written as its spec, read from the map in place: a snapshot used to
+/// copy every tile (57 MB on the 3072 valley) only to write a few bytes.
+impl Serialize for Map {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.spec.serialize(serializer)
     }
 }
 
@@ -2415,6 +2424,15 @@ impl Rivers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_map_is_written_as_its_spec_and_read_back_whole() {
+        let map = Map::valley(256, 256, 3);
+        let written = serde_json::to_value(&map).unwrap();
+        assert_eq!(written, serde_json::to_value(map.spec()).unwrap());
+        let read: Map = serde_json::from_value(written).unwrap();
+        assert_eq!(read, map);
+    }
 
     /// Every passable terrain at the reference cost.
     fn walk(terrain: Terrain) -> Option<u32> {

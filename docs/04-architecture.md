@@ -74,6 +74,7 @@ Each decision is recorded with its **reason** and its **consequences**. These ar
 ### D17 — Permanent event journal
 - **Reason**: the world's memory, historical merit, investigations, karma, NPC memories.
 - **Consequences**: significant events kept forever; fine details kept temporarily. Volume to be monitored.
+- **Amended on 10 November 2026**: "significant" now means what lasts: a death, an item made or gone (D28). A soul's deeds will be kept in the souls' own store only until they unlock a title, a power or a skill, then folded into the soul's state (running totals such as karma kept as totals) and erased: history is a means to unlock, not an archive.
 
 ### D18 — Witnesses and perception
 - **Reason**: crimes, investigations, rumors, suspicion, justice.
@@ -126,6 +127,7 @@ Each decision is recorded with its **reason** and its **consequences**. These ar
 - **Reason**: the simulation lives in memory; we persist the event journal (D17) and periodic snapshots. SQLite is a single file, with no server to install, sufficient for a tribe and a valley.
 - **Consequences**: storage goes through a single interface (`Storage`); replacing it with PostgreSQL only touches that module. Schema and snapshots versioned with migrations from day one (D21). Soul data lives in a separate file, behind its own interface (D14).
 - **Status** (milestone 1 audit, 5 November 2026): schema v1, snapshot format v2 (calendar, tick, map, bodies), one snapshot per game day plus the journal. Nothing is pruned yet; the retention policy is an open question (`06`).
+- **Amended on 10 November 2026 — first storage diet** (the lightness audit, `content/ai-reserve/review/lightness-audit/`): the journal keeps only what lasts (a death, an item made or gone); steps, gauges, what is held and refusals are the state of the moment and live in the snapshots. Journaling them cost about 400 MB a real day with 100 players, for a journal nothing reads back. Only the **last three snapshots** are kept (each was a full copy of the world, 18 MB a game day, never pruned). A snapshot writes the map as its spec straight from the map in place, no longer copying every tile first (57 MB on the 3072 valley): 13 ms instead of 22 ms per snapshot on that valley, the same bytes. Losing up to a few minutes of play on a crash is accepted by the project lead, which opens the way to the target design: current state only, written in the background, souls and their deeds in their own file (D14), deeds kept only until they unlock a title, power or skill.
 
 ### D29 — One server, one simulation thread
 - **Reason**: the simulation is deterministic and sequential, the network is asynchronous; mixing them creates the hardest bugs there are.
