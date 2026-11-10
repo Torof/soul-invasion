@@ -356,6 +356,12 @@ vec4 meet(vec4 a, vec4 b, float w, float meet_noise) {
 	float t = (w - 0.5) * 2.0 + (db - da) * meet_depth + meet_noise;
 	return mix(a, b, smoothstep(-meet_band, meet_band, t));
 }
+// Whether `meet(a, b, w, meet_noise)` can show anything of b, whatever b
+// is (its darkness is at most 1): when it cannot, the result is a,
+// exactly, and b need not be read.
+bool meet_shows(vec4 a, float w, float meet_noise) {
+	return (w - 0.5) * 2.0 + dot(a.rgb, vec3(0.333)) * meet_depth + meet_noise > -meet_band;
+}
 
 void fragment() {
 	vec2 uv = UV;
@@ -390,18 +396,22 @@ void fragment() {
 	// layers are read with (varied_once).
 	vec3 vw = variant_weights(uv);
 	vec4 ground = varied_once_builtin(TEXTURE, uv, vw, duv_x, duv_y);
+	// Each layer is read only where it can show (meet_shows): the same
+	// picture, fewer reads.
 	if (has_sibling) {
-		vec4 sibling = varied_once(sibling_texture, uv, vw, duv_x, duv_y);
-		sibling.rgb *= sibling_tint;
 		float n = texture(noise_texture, uv * noise_scale).r;
 		float threshold = 1.0 - sibling_cover;
 		float weight = smoothstep(threshold - 0.15, threshold + 0.15, n);
-		vec4 base = ground;
-		ground = meet(base, sibling, weight, grain);
-		if (bare_keep < 1.0) {
-			float bare = smoothstep(0.0, 0.08, base.r - base.g);
-			float kept = patches(uv, 0.06, vec2(0.9, 0.4), bare_keep, 0.1);
-			ground = mix(ground, sibling, bare * (1.0 - kept));
+		if (bare_keep < 1.0 || meet_shows(ground, weight, grain)) {
+			vec4 sibling = varied_once(sibling_texture, uv, vw, duv_x, duv_y);
+			sibling.rgb *= sibling_tint;
+			vec4 base = ground;
+			ground = meet(base, sibling, weight, grain);
+			if (bare_keep < 1.0) {
+				float bare = smoothstep(0.0, 0.08, base.r - base.g);
+				float kept = patches(uv, 0.06, vec2(0.9, 0.4), bare_keep, 0.1);
+				ground = mix(ground, sibling, bare * (1.0 - kept));
+			}
 		}
 	}
 	// Dry zones: a soft, wide mask; the tint is applied at most at
@@ -411,10 +421,16 @@ void fragment() {
 	float dry = smoothstep(dry_threshold - dry_softness, dry_threshold + dry_softness, d) * dry_strength;
 	ground.rgb = mix(ground.rgb, ground.rgb * dry_tint, dry);
 	if (has_second) {
-		ground = meet(ground, varied_once(second_texture, uv, vw, duv_x, duv_y), patches(uv, second_scale, vec2(0.2, 0.7), second_cover, second_softness), grain);
+		float w2 = patches(uv, second_scale, vec2(0.2, 0.7), second_cover, second_softness);
+		if (meet_shows(ground, w2, grain)) {
+			ground = meet(ground, varied_once(second_texture, uv, vw, duv_x, duv_y), w2, grain);
+		}
 	}
 	if (has_worn) {
-		ground = meet(ground, varied_once(worn_texture, uv, vw, duv_x, duv_y), patches(uv, worn_scale, vec2(0.5, 0.25), worn_cover, worn_softness), grain);
+		float w3 = patches(uv, worn_scale, vec2(0.5, 0.25), worn_cover, worn_softness);
+		if (meet_shows(ground, w3, grain)) {
+			ground = meet(ground, varied_once(worn_texture, uv, vw, duv_x, duv_y), w3, grain);
+		}
 	}
 	// COLOR comes in already multiplied by the texture: rebuild it from
 	// the blended texture and the vertex colour, do not multiply again
