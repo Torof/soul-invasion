@@ -46,6 +46,8 @@ func _init() -> void:
 	_test_the_redraw_queue_holds_each_chunk_once_and_paces_itself()
 	_test_a_redraw_rebuilds_only_when_the_ground_around_changed()
 	_test_the_watchdog_reports_a_stalled_frame()
+	_test_trees_are_drawn_only_where_the_view_reaches()
+	_test_trees_sort_with_bodies_by_their_foot()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -994,3 +996,94 @@ func _test_the_watchdog_reports_a_stalled_frame() -> void:
 	_check(line.contains("2.5 s") and line.contains("frame 120") and line.contains("chunk build"), "the report says how long, which frame and what was running: %s" % line)
 	_check(DevWatchdog.phase_name(99) == "?" and DevWatchdog.phase_name(DevWatchdog.NETWORK).begins_with("network messages"), "every phase has a name")
 	_check(DevWatchdog.phase == DevWatchdog.ELSEWHERE, "between frames the main thread is in the engine")
+
+
+## A stand of oaks and pines on a grid, as the server sends them.
+func _stand_of_trees(side: int) -> Trees.Stand:
+	var trees: Array = []
+	for j in side:
+		for i in side:
+			trees.append({"at": {"x": 1_700 + 3_100 * i, "y": 2_300 + 2_900 * j}, "species": "oak" if (i + j) % 3 else "pine"})
+	trees.append({"at": {"x": 9_000, "y": 9_000}, "species": "no_such_tree"})
+	return Trees.Stand.new(trees, {"oak": 2_200, "pine": 3_000})
+
+
+func _test_trees_are_drawn_only_where_the_view_reaches() -> void:
+	var stand := _stand_of_trees(10)
+	var parent := RenderingServer.canvas_item_create()
+	stand.parent = parent
+	_check(stand.size() == 101 and stand.images[100] == -1, "a kind with no image is kept, never drawn")
+	# Every tree whose image meets the view has a canvas item, and only the
+	# trees whose image covers a cell the view touches; the view moves.
+	for seen: Rect2 in [Rect2(-300, 200, 640, 360), Rect2(-100, 400, 640, 360), Rect2(-900, -200, 2560, 1440), Rect2(5000, 5000, 100, 100), Rect2(-300, 200, 640, 360)]:
+		var cells := Trees.Stand.cell_range(seen)
+		stand.show_cells(cells)
+		var exact := true
+		for i in stand.size():
+			if stand.images[i] < 0:
+				exact = exact and not stand.items.has(i)
+				continue
+			var r := stand.rect(i)
+			var near := Trees.Stand.cell_range(r).intersects(cells)
+			if r.intersects(seen) and not stand.items.has(i):
+				exact = false
+			if stand.items.has(i) != near:
+				exact = false
+		_check(exact, "the trees drawn are those whose image meets the view's cells: %s" % seen)
+	var big := stand.items.size()
+	stand.show_cells(Trees.Stand.cell_range(Rect2(800, 260, 200, 120)))
+	_check(not stand.items.is_empty() and stand.items.size() < big / 4, "a small view at the stand's corner draws a few trees: %d" % stand.items.size())
+	stand.show_cells(Trees.Stand.cell_range(Rect2(5000, 5000, 100, 100)))
+	_check(stand.items.is_empty(), "a view away from the stand draws none of it")
+	stand.show_cells(Trees.Stand.cell_range(Rect2(-300, 200, 640, 360)))
+	# Going out of view gives the canvas items back, to be used again.
+	var pooled := Trees._pool.size()
+	var held := stand.items.size()
+	stand.show_cells(Rect2i())
+	_check(stand.items.is_empty() and Trees._pool.size() == pooled + held, "out of view, the trees give their canvas items back")
+	stand.show_cells(Trees.Stand.cell_range(Rect2(-300, 200, 640, 360)))
+	_check(stand.items.size() == held and Trees._pool.size() == pooled, "back in view, they take them again")
+	# The see-through flags are kept, drawn or not.
+	stand.set_flags(3, 2)
+	stand.release()
+	_check(stand.items.is_empty() and stand.flags[3] == 2 and stand.refs.count(0) == stand.size(), "released, nothing is held but the flags")
+	# The cells of one view less another's, without overlap or gap.
+	var a := Rect2i(0, 0, 10, 8)
+	for b: Rect2i in [Rect2i(3, 2, 4, 3), Rect2i(-5, -5, 8, 30), Rect2i(20, 20, 3, 3), Rect2i(0, 0, 10, 8), Rect2i()]:
+		var area := 0
+		var apart := true
+		var parts := Trees.Stand.minus(a, b)
+		for p: Rect2i in parts:
+			area += p.get_area()
+			apart = apart and not (b.has_area() and p.intersects(b))
+			for q: Rect2i in parts:
+				apart = apart and (p == q or not p.intersects(q))
+		var common := a.intersection(b).get_area() if b.has_area() and a.intersects(b) else 0
+		_check(apart and area + common == a.get_area(), "a view less another: %s less %s" % [a, b])
+	RenderingServer.free_rid(parent)
+
+
+func _test_trees_sort_with_bodies_by_their_foot() -> void:
+	# The renderer sorts trees, tall plants and bodies by the point their
+	# canvas item stands on (y-sort): a tree's is its foot, the bottom
+	# middle of its image, so a body behind it (less x + y) is drawn first
+	# and hidden, one in front drawn over it.
+	var stand := _stand_of_trees(3)
+	for i in stand.size() - 1:
+		var foot := Iso.point_to_screen(stand.at[i])
+		var r := stand.rect(i)
+		_check(is_equal_approx(r.end.y, foot.y) and absf(r.get_center().x - foot.x) < 0.01, "tree %d's image stands on its foot" % i)
+		var behind := Iso.point_to_screen(stand.at[i] - Vector2(450, 450))
+		var front := Iso.point_to_screen(stand.at[i] + Vector2(450, 450))
+		_check(behind.y < foot.y and front.y > foot.y and r.has_point(behind - Vector2(0, 30)), "a body behind tree %d sorts before it, one in front after" % i)
+	# Each tree's canvas item hangs from the stand's y-sorted node, at its
+	# foot, ordered as the server sent the trees when two feet tie.
+	var holder := Node2D.new()
+	holder.y_sort_enabled = true
+	stand.parent = holder.get_canvas_item()
+	stand.show_cells(Trees.Stand.cell_range(Rect2(-2000, -2000, 4000, 4000)))
+	_check(stand.items.size() == stand.size() - 1, "every tree in view has its canvas item")
+	stand.release()
+	holder.free()
+	Trees.free_pool()
+	_check(Trees._pool.is_empty(), "the pool is freed with the world")

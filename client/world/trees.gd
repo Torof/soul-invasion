@@ -36,17 +36,11 @@ static func shade() -> Texture2D:
 	return _shade
 
 
-## Draws on `canvas` the shadows of `tree` on the ground: a wide faint
-## one under its crown and a darker one hugging its foot, so it stands in
-## the grass rather than on it. Drawn before trees and bodies.
-static func draw_shadow(canvas: CanvasItem, tree: Dictionary, height_cm: int, origin := Vector2.ZERO) -> void:
-	var images := textures(str(tree["species"]))
-	if images.is_empty():
-		return
-	var at: Vector2 = tree["at"]
-	var texture: Texture2D = images[variant(at, images.size())]
-	var r := rect(at, height_cm, texture)
-	var foot := Iso.point_to_screen(at) - origin
+## Draws on `canvas` the shadows of a tree whose image covers `r` and
+## whose foot stands at `foot` (both on the canvas): a wide faint one
+## under its crown and a darker one hugging its foot, so it stands in the
+## grass rather than on it. Drawn before trees and bodies.
+static func draw_shadow(canvas: CanvasItem, r: Rect2, foot: Vector2) -> void:
 	var crown := Vector2(r.size.x * 0.85, r.size.x * 0.42)
 	canvas.draw_texture_rect(shade(), Rect2(foot - crown / 2.0 + Vector2(r.size.x * 0.06, 0), crown), false, Color(1, 1, 1, CROWN_SHADE))
 	var base := Vector2(Iso.PX_PER_M * 0.9, Iso.PX_PER_M * 0.45) * (r.size.y / (4.0 * Iso.PX_PER_M)) ** 0.5
@@ -99,56 +93,243 @@ static func rect(at: Vector2, height_cm: int, texture: Texture2D) -> Rect2:
 	return Rect2(foot - Vector2(w / 2.0, h), Vector2(w, h))
 
 
-## Draws the tree `tree` ({"at": Vector2 in millimetres, "species"}) on
-## `canvas`, if its kind has an image.
-## `flags`: 1 when the tree stands in front of the piloted body, +2 when
-## it hides something under the mouse (trees.gdshader fades it there).
-## `origin`: where the canvas stands, subtracted from the tree's place.
-static func draw(canvas: CanvasItem, tree: Dictionary, height_cm: int, flags: int = 0, origin := Vector2.ZERO) -> void:
-	var images := textures(str(tree["species"]))
-	if images.is_empty():
-		return
-	var at: Vector2 = tree["at"]
-	var texture: Texture2D = images[variant(at, images.size())]
-	var r := rect(at, height_cm, texture)
-	# The modulate tells the sway shader (trees.gdshader) it is a tree, how
-	# tall, and its phase; the shader draws the image untinted.
-	var marker := Color(clampf(r.size.y / 1280.0, 0.0, 1.0), 0.25 + 0.25 * float(flags), place_hash(at, 11), 0.94)
-	canvas.draw_texture_rect(texture, Rect2(r.position - origin, r.size), false, marker)
+## The modulate that tells the sway shader (trees.gdshader) it draws a
+## tree, how tall (`height_px`), its see-through `flags` (1 when it stands
+## in front of the piloted body, +2 when it hides something under the
+## mouse) and its phase, from its place `at`; the shader draws the image
+## untinted.
+static func marker(height_px: float, at: Vector2, flags: int) -> Color:
+	return Color(clampf(height_px / 1280.0, 0.0, 1.0), 0.25 + 0.25 * float(flags), place_hash(at, 11), 0.94)
 
 
-## One tree standing on the ground, drawn once and kept by the renderer;
-## its parent sorts it with the bodies by its foot (y-sort). It redraws
-## only when its see-through flags change.
-class TreeNode:
-	extends Node2D
-	var tree: Dictionary
-	var height_cm := 400
-	var flags := 0
+## Every image of every kind of tree in one list, so a tree keeps only an
+## index; species id -> the indices of its images in that list.
+static var _images: Array[Texture2D] = []
+static var _image_ids: Dictionary = {}
 
-	func _init(t: Dictionary, h: int) -> void:
-		tree = t
-		height_cm = h
-		position = Iso.point_to_screen(t["at"])
-		use_parent_material = true
 
-	func set_flags(f: int) -> void:
-		if f != flags:
-			flags = f
-			queue_redraw()
+## The index of the image a tree of `species` at `at` shows, or -1 when its
+## kind has none.
+static func image_index(species: String, at: Vector2) -> int:
+	var ids: Variant = _image_ids.get(species)
+	if ids == null:
+		var list := PackedInt32Array()
+		for t: Texture2D in textures(species):
+			list.append(_images.size())
+			_images.append(t)
+		_image_ids[species] = list
+		ids = list
+	var n: int = (ids as PackedInt32Array).size()
+	return -1 if n == 0 else (ids as PackedInt32Array)[variant(at, n)]
 
-	func _draw() -> void:
+
+## The image at `index` (image_index).
+static func image(index: int) -> Texture2D:
+	return _images[index]
+
+
+## Canvas items no tree uses now, kept to be given to the next tree that
+## comes into view; at most POOL_MOST of them.
+static var _pool: Array[RID] = []
+const POOL_MOST := 4096
+
+
+## Frees the canvas items kept for trees to come (the world is going).
+static func free_pool() -> void:
+	for item: RID in _pool:
+		RenderingServer.free_rid(item)
+	_pool.clear()
+
+
+## The trees of one chunk, as light as can be (D39): packed arrays, no node
+## and no dictionary per tree. Only the trees whose image may show on screen
+## have a canvas item, given as the view moves, by cells of the screen
+## (`show_cells`); the renderer sorts those with the bodies and the tall
+## plants by their foot (y-sort), in the same order as when every tree had
+## its node.
+class Stand:
+	extends RefCounted
+	## Side of a cell of the screen, in pixels (zoom 1).
+	const CELL_PX := 128.0
+	## Each tree's place, in millimetres.
+	var at := PackedVector2Array()
+	## Each tree's rectangle on screen (Trees.rect): position then size.
+	var rects := PackedVector2Array()
+	## Each tree's image (Trees.image_index), -1 when its kind has none.
+	var images := PackedInt32Array()
+	## Each tree's see-through flags (Trees.marker).
+	var flags := PackedByteArray()
+	## How many of the cells shown each tree's image covers.
+	var refs := PackedByteArray()
+	## Cell of the screen -> PackedInt32Array, the trees whose image covers it.
+	var cells: Dictionary = {}
+	## The cells the trees cover, and those of them shown now.
+	var bounds := Rect2i()
+	var shown := Rect2i()
+	## Tree index -> its canvas item, for the trees shown.
+	var items: Dictionary = {}
+	## The canvas item the trees' items hang from (a y-sorted node's).
+	var parent := RID()
+
+	## `trees`: as the server sends them ({"at": {x, y}, "species"});
+	## `heights`: species id -> height in centimetres.
+	func _init(trees: Array = [], heights: Dictionary = {}) -> void:
+		var n := trees.size()
+		at.resize(n)
+		rects.resize(n * 2)
+		images.resize(n)
+		flags.resize(n)
+		refs.resize(n)
+		var lo := Vector2i(1 << 30, 1 << 30)
+		var hi := -lo
+		for i in n:
+			var t: Dictionary = trees[i]
+			var species := str(t.get("species", ""))
+			# As Net.point reads it.
+			var place: Variant = t.get("at", {})
+			var p := Vector2(float(place.get("x", 0)), float(place.get("y", 0))) if place is Dictionary else Vector2.ZERO
+			at[i] = p
+			var index := Trees.image_index(species, p)
+			images[i] = index
+			if index < 0:
+				continue
+			var r := Trees.rect(p, int(heights.get(species, 400)), Trees.image(index))
+			rects[i * 2] = r.position
+			rects[i * 2 + 1] = r.size
+			var a := Vector2i((r.position / CELL_PX).floor())
+			var b := Vector2i((r.end / CELL_PX).floor())
+			lo = Vector2i(mini(lo.x, a.x), mini(lo.y, a.y))
+			hi = Vector2i(maxi(hi.x, b.x), maxi(hi.y, b.y))
+			for cy in range(a.y, b.y + 1):
+				for cx in range(a.x, b.x + 1):
+					var cell := Vector2i(cx, cy)
+					if not cells.has(cell):
+						cells[cell] = PackedInt32Array()
+					# Packed arrays are values: append, then store back.
+					var list: PackedInt32Array = cells[cell]
+					list.append(i)
+					cells[cell] = list
+		if hi.x >= lo.x:
+			bounds = Rect2i(lo, hi - lo + Vector2i.ONE)
+
+	func size() -> int:
+		return at.size()
+
+	## Tree `i`'s rectangle on screen.
+	func rect(i: int) -> Rect2:
+		return Rect2(rects[i * 2], rects[i * 2 + 1])
+
+	## The cells of the screen (cell_range) a view `seen` (in the world's
+	## pixels) touches.
+	static func cell_range(seen: Rect2) -> Rect2i:
+		var a := Vector2i((seen.position / CELL_PX).floor())
+		var b := Vector2i((seen.end / CELL_PX).floor())
+		return Rect2i(a, b - a + Vector2i.ONE)
+
+	## Shows the trees whose image covers a cell of `range` (cell_range),
+	## and only them: a canvas item for each tree coming in, back to the
+	## pool for each going out. Only the cells that changed are looked at.
+	func show_cells(range: Rect2i) -> void:
+		var target := range.intersection(bounds) if range.has_area() and bounds.has_area() else Rect2i()
+		if target == shown:
+			return
+		for part: Rect2i in Stand.minus(shown, target):
+			_count(part, -1)
+		for part: Rect2i in Stand.minus(target, shown):
+			_count(part, 1)
+		shown = target
+
+	func _count(part: Rect2i, by: int) -> void:
+		for cy in range(part.position.y, part.end.y):
+			for cx in range(part.position.x, part.end.x):
+				var list: Variant = cells.get(Vector2i(cx, cy))
+				if list == null:
+					continue
+				for i: int in list:
+					var was := refs[i]
+					refs[i] = was + by
+					if was == 0:
+						_show(i)
+					elif was + by == 0:
+						_hide(i)
+
+	func _show(i: int) -> void:
+		var item: RID
+		if Trees._pool.is_empty():
+			item = RenderingServer.canvas_item_create()
+			RenderingServer.canvas_item_set_use_parent_material(item, true)
+			# The mipmaps the tree nodes took from the world view before.
+			RenderingServer.canvas_item_set_default_texture_filter(item, RenderingServer.CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS)
+		else:
+			item = Trees._pool.pop_back()
+		RenderingServer.canvas_item_set_parent(item, parent)
+		# Sorted by its foot (its transform), ties in the server's order (its
+		# index), as when each tree had a node.
+		RenderingServer.canvas_item_set_draw_index(item, i)
+		var foot := Iso.point_to_screen(at[i])
+		RenderingServer.canvas_item_set_transform(item, Transform2D(0.0, foot))
+		items[i] = item
+		_draw(i, item, foot)
+
+	func _hide(i: int) -> void:
+		var item: RID = items[i]
+		items.erase(i)
+		RenderingServer.canvas_item_clear(item)
+		RenderingServer.canvas_item_set_parent(item, RID())
+		if Trees._pool.size() < Trees.POOL_MOST:
+			Trees._pool.append(item)
+		else:
+			RenderingServer.free_rid(item)
+
+	func _draw(i: int, item: RID, foot: Vector2) -> void:
 		DevTiming.tally("tree redraws")
-		Trees.draw(self, tree, height_cm, flags, position)
+		var r := rect(i)
+		RenderingServer.canvas_item_clear(item)
+		RenderingServer.canvas_item_add_texture_rect(item, Rect2(r.position - foot, r.size), Trees.image(images[i]).get_rid(), false, Trees.marker(r.size.y, at[i], flags[i]))
+
+	## Sets tree `i`'s see-through flags (Trees.marker), redrawn if shown.
+	func set_flags(i: int, f: int) -> void:
+		if flags[i] == f:
+			return
+		flags[i] = f
+		if items.has(i):
+			_draw(i, items[i], Iso.point_to_screen(at[i]))
+
+	## Gives every canvas item back (the chunk is going).
+	func release() -> void:
+		for i: int in items.keys():
+			_hide(i)
+		refs.fill(0)
+		shown = Rect2i()
+
+	## The cells of `a` not in `b`, as up to four rectangles.
+	static func minus(a: Rect2i, b: Rect2i) -> Array[Rect2i]:
+		var parts: Array[Rect2i] = []
+		if not a.has_area():
+			return parts
+		if not b.has_area() or not a.intersects(b):
+			parts.append(a)
+			return parts
+		var c := a.intersection(b)
+		for part: Rect2i in [
+			Rect2i(a.position.x, a.position.y, a.size.x, c.position.y - a.position.y),
+			Rect2i(a.position.x, c.end.y, a.size.x, a.end.y - c.end.y),
+			Rect2i(a.position.x, c.position.y, c.position.x - a.position.x, c.size.y),
+			Rect2i(c.end.x, c.position.y, a.end.x - c.end.x, c.size.y),
+		]:
+			if part.has_area():
+				parts.append(part)
+		return parts
 
 
 ## The shadows of a chunk's trees, drawn once on the ground.
 class ShadowLayer:
 	extends Node2D
-	var trees: Array = []
-	var heights: Dictionary = {}
+	var stand: Stand
 
 	func _draw() -> void:
-		for tree: Dictionary in trees:
-			Trees.draw_shadow(self, tree, int(heights.get(tree["species"], 400)))
-
+		if stand == null:
+			return
+		for i in stand.size():
+			if stand.images[i] >= 0:
+				Trees.draw_shadow(self, stand.rect(i), Iso.point_to_screen(stand.at[i]))
