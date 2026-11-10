@@ -13,13 +13,17 @@ use std::time::{Duration, Instant};
 
 use sim::{Content, Event, World};
 
-/// What happened during a run.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// What happened during a run: counts only. The events themselves go
+/// to `on_tick` and are not kept: a server runs for months, and keeping
+/// every step of every body would grow without end (about 840 MB a real
+/// day at 100 walking bodies, measured on 10 November 2026). `Copy`, so
+/// that nothing in it can ever hold a growing list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RunSummary {
     /// Ticks simulated during the run.
     pub ticks: u64,
-    /// Events the world produced, in order.
-    pub events: Vec<Event>,
+    /// Events the world produced during the run.
+    pub events: u64,
 }
 
 /// Runs `world` for `days` full game days as fast as possible.
@@ -39,8 +43,8 @@ pub fn run_headless(
         events.clear();
         world.step(rules, &mut events);
         summary.ticks += 1;
+        summary.events += events.len() as u64;
         on_tick(world, &events);
-        summary.events.extend(events.iter().cloned());
     }
     summary
 }
@@ -90,8 +94,8 @@ pub fn run_paced(
             before_tick(world);
             world.step(rules, &mut events);
             summary.ticks += 1;
+            summary.events += events.len() as u64;
             on_tick(world, &events);
-            summary.events.extend(events.iter().cloned());
         }
 
         if owed < tick_duration {
@@ -126,11 +130,14 @@ mod tests {
     #[test]
     fn headless_runs_exactly_the_requested_days() {
         let mut w = small_world();
-        let s = run_headless(&mut w, &Content::sample(), 3, |_, _| {});
+        let mut seen = Vec::new();
+        let s = run_headless(&mut w, &Content::sample(), 3, |_, ev| {
+            seen.extend(ev.iter().cloned());
+        });
         assert_eq!(s.ticks, 18);
+        assert_eq!(s.events, seen.len() as u64);
         assert_eq!(w.time().day, 4);
-        let days: Vec<Event> = s
-            .events
+        let days: Vec<Event> = seen
             .into_iter()
             .filter(|e| matches!(e, Event::DayStarted { .. }))
             .collect();
@@ -148,7 +155,10 @@ mod tests {
     fn paced_and_headless_give_the_same_result() {
         let mut headless = small_world();
         let mut paced = small_world();
-        let expected = run_headless(&mut headless, &Content::sample(), 2, |_, _| {});
+        let mut expected_events = Vec::new();
+        let expected = run_headless(&mut headless, &Content::sample(), 2, |_, ev| {
+            expected_events.extend(ev.iter().cloned());
+        });
         let mut seen = Vec::new();
         let mut ticks_seen = 0;
         // Very fast pace so the test stays quick; the result must not depend on it.
@@ -165,7 +175,8 @@ mod tests {
             },
         );
         assert_eq!(got, expected);
-        assert_eq!(seen, expected.events);
+        assert_eq!(seen, expected_events);
+        assert_eq!(seen.len() as u64, expected.events);
         assert_eq!(ticks_seen, expected.ticks);
         assert_eq!(paced.tick(), headless.tick());
     }
@@ -206,6 +217,24 @@ mod tests {
             },
         );
         assert_eq!(s.ticks, 5);
+    }
+
+    #[test]
+    fn the_summary_counts_events_and_keeps_none() {
+        // A run of many ticks with a walking body: the summary is two
+        // counts, the same size whatever happened, and holds no event.
+        let mut w = World::with_valley(Calendar::new(10, 100).unwrap(), &Content::sample(), 256);
+        let body = w.bodies()[0].id();
+        let at = w.bodies()[0].pos();
+        w.queue(sim::Intention::MoveTo {
+            body,
+            target: sim::Pos::new(at.x + 5, at.y),
+        });
+        let mut counted = 0;
+        let s = run_headless(&mut w, &Content::sample(), 1, |_, ev| counted += ev.len());
+        assert!(counted > 5, "the body walked: {counted} events");
+        assert_eq!(s.events, counted as u64);
+        assert_eq!(std::mem::size_of::<RunSummary>(), 16);
     }
 
     #[test]

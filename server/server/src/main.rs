@@ -83,7 +83,7 @@ fn run(opts: &Options) -> Result<(), BoxError> {
         println!(
             "done: {} ticks, {} events, now day {} — {:.3}s real time",
             summary.ticks,
-            summary.events.len(),
+            summary.events,
             world.time().day,
             elapsed.as_secs_f64(),
         );
@@ -331,7 +331,7 @@ fn run_paced_server(
     println!(
         "stopped: {} ticks, {} events, now day {}",
         summary.ticks,
-        summary.events.len(),
+        summary.events,
         world.time().day
     );
     Ok(())
