@@ -167,15 +167,17 @@ impl Persister {
         }
     }
 
-    /// Journals the tick's events and snapshots the world on each new day.
+    /// Journals the tick's lasting events and snapshots the world on each
+    /// new day.
     fn on_tick(&mut self, world: &World, events: &[Event]) {
         if self.failed.is_some() || events.is_empty() {
             return;
         }
         let day_started = events.iter().any(|e| matches!(e, Event::DayStarted { .. }));
+        let lasting: Vec<Event> = events.iter().filter(|e| journaled(e)).cloned().collect();
         let result = self
             .storage
-            .append_events(world.tick(), events)
+            .append_events(world.tick(), &lasting)
             .and_then(|()| {
                 if day_started {
                     self.storage.save_world(world)
@@ -197,6 +199,17 @@ impl Persister {
         }
         self.storage.save_world(world)
     }
+}
+
+/// Whether an event goes into the journal: what lasts (a death, an item
+/// made or gone). Steps, gauges, what is held and refusals are the state
+/// of the moment, already in the snapshots; journaling them cost about
+/// 400 MB a real day with 100 players, for a journal nothing reads back.
+fn journaled(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::BodyDied { .. } | Event::ItemAdded { .. } | Event::ItemRemoved { .. }
+    )
 }
 
 fn run_paced_server(
@@ -480,5 +493,33 @@ fn publish(shared: &Shared, world: &World, event: &Event) {
                 y: target.y,
             },
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::journaled;
+    use sim::{BodyId, Event, FinePos, Pos};
+
+    #[test]
+    fn only_lasting_events_are_journaled() {
+        let at = FinePos::new(500, 500);
+        assert!(journaled(&Event::BodyDied {
+            body: BodyId(1),
+            cause: sim::Death::Starved,
+            at: Pos::new(0, 0),
+            corpse: sim::ItemId(9),
+        }));
+        assert!(!journaled(&Event::BodyMoved {
+            body: BodyId(1),
+            to: Pos::new(0, 0),
+            at,
+            remaining: 0,
+        }));
+        assert!(!journaled(&Event::BodyStopped {
+            body: BodyId(1),
+            at
+        }));
+        assert!(!journaled(&Event::DayStarted { day: 2 }));
     }
 }

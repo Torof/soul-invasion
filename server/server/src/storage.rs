@@ -14,6 +14,10 @@ use sim::{Content, Event, Tick, World};
 /// to `World`'s shape, and add a migration in `decode_world`.
 pub const SNAPSHOT_FORMAT_VERSION: u32 = 7;
 
+/// Snapshots kept: the latest and two before it. Every one used to be
+/// kept, a full copy of the world each game day (18 MB on the valley).
+pub const KEPT_SNAPSHOTS: u32 = 3;
+
 /// Errors from the storage layer.
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
@@ -150,10 +154,19 @@ impl Storage for Sqlite {
 
     fn save_world(&mut self, world: &World) -> Result<(), StorageError> {
         let data = serde_json::to_string(world)?;
-        self.conn.execute(
+        let tx = self.conn.transaction()?;
+        tx.execute(
             "INSERT INTO snapshots (tick, format_version, data) VALUES (?1, ?2, ?3)",
             params![db_int(world.tick().0), SNAPSHOT_FORMAT_VERSION, data],
         )?;
+        // Only the latest few are kept: a world is resumed from the last
+        // one, the others are a margin should it be damaged.
+        tx.execute(
+            "DELETE FROM snapshots WHERE rowid NOT IN \
+             (SELECT rowid FROM snapshots ORDER BY tick DESC, rowid DESC LIMIT ?1)",
+            [KEPT_SNAPSHOTS],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -368,6 +381,24 @@ mod tests {
         let world = storage.latest_world().unwrap().unwrap();
         assert_eq!(world.tick(), Tick(12));
         assert_eq!(world.calendar(), &Calendar::new(2, 3).unwrap());
+    }
+
+    #[test]
+    fn only_the_latest_snapshots_are_kept() {
+        let mut storage = Sqlite::in_memory(content()).unwrap();
+        for ticks in [6, 12, 18, 24, 30] {
+            storage.save_world(&world_at(ticks)).unwrap();
+        }
+        let kept: Vec<i64> = storage
+            .conn
+            .prepare("SELECT tick FROM snapshots ORDER BY tick")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(kept, vec![18, 24, 30]);
+        assert_eq!(storage.latest_world().unwrap().unwrap().tick(), Tick(30));
     }
 
     #[test]
