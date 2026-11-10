@@ -42,7 +42,16 @@ fn the_valley_is_scattered_with_the_content() {
         "nothing lies in the water"
     );
     assert!(world.items().iter().any(|i| i.material() == "branch"));
-    assert!(world.items().iter().any(|i| i.material() == "flint"));
+    assert!(world.items().iter().any(|i| i.material() == "pebble"));
+    // Nothing ready-made lies about: berries, fibres and flint will come
+    // from the bushes, the plants and the rock.
+    assert!(
+        world
+            .items()
+            .iter()
+            .all(|i| matches!(i.material(), "branch" | "pebble")),
+        "only dead wood and pebbles lie on the ground"
+    );
 }
 
 #[test]

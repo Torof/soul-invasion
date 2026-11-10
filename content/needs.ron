@@ -3,7 +3,9 @@
 //
 // night_from_percent:      the day starts at dawn; night begins here.
 //                          58 % of a 24 h day is 14 h after dawn (20:00).
-// hunger_per_day:          33 — three days without eating fill the gauge.
+// hunger_per_day:          0 — paused while there is no food to gather
+//                          (10 November 2026; 33 filled the gauge in
+//                          three days). Back when gathering comes.
 // cold_per_day_at_night:   300 — eight hours of night without warmth.
 // cold_relief_per_day:     600 — four hours of daylight undo it.
 // fatigue_per_day_awake:   120 — twenty hours awake fill the gauge.
@@ -16,7 +18,7 @@
 //                          meat (1 200 kJ) 48.
 (
     night_from_percent: 58,
-    hunger_per_day: 33,
+    hunger_per_day: 0,
     cold_per_day_at_night: 300,
     cold_relief_per_day: 600,
     fatigue_per_day_awake: 120,
