@@ -14,10 +14,11 @@ it. Needs Pillow and numpy. From the repository's root:
 
 In CIE Lab, over the tree's own colours (opaque pixels; outlines and white
 left aside): the lightness is mapped quantile by quantile onto the old
-version's (so the share of dark shading comes back to what it was), the
-hue is turned by the difference of the two mean hues, and the chroma is
-scaled by the ratio of the two mean chromas (a colour never turns grey or
-crosses to another hue on its own). The correction is per pixel: nothing is blurred. It fades out on
+version's (so the share of dark shading comes back to what it was). On
+the foliage only (green to teal hues), the hue is turned by the difference
+of the two mean hues and the chroma scaled by the ratio of the two mean
+chromas: a colour never turns grey, and the bark, the apples and the
+flowers keep their own. The correction is per pixel: nothing is blurred. It fades out on
 the darkest pixels (the outlines stay exactly as dark) and on the white
 background (so the cut still finds it). Then flora_art.py --trees ships
 the corrected sources.
@@ -32,6 +33,10 @@ from PIL import Image
 # outlines, darker, keep their own colour.
 OUTLINE_L = (10.0, 18.0)
 QUANTILES = np.linspace(0.0, 1.0, 257)
+# Foliage: hues (degrees in Lab) from yellow-green to teal, faded in and
+# out over FOLIAGE_FADE degrees.
+FOLIAGE_HUE = (95.0, 215.0)
+FOLIAGE_FADE = 20.0
 # And fades out on what is near white (distance in Lab): the background.
 BACKGROUND_DE = (6.0, 14.0)
 
@@ -74,6 +79,13 @@ def colours(path):
     return lab[(a[..., 3] > 230) & (lab[..., 0] > OUTLINE_L[1])]
 
 
+def foliage(lab):
+    """How much each colour is foliage, 0..1, by its hue."""
+    hue = np.degrees(np.arctan2(lab[..., 2], lab[..., 1])) % 360
+    lo, hi = FOLIAGE_HUE
+    return ramp(hue, lo - FOLIAGE_FADE, lo) * (1 - ramp(hue, hi, hi + FOLIAGE_FADE))
+
+
 def mean_hue(lab):
     """The mean hue of colours in Lab, each weighted by its chroma."""
     return np.arctan2(lab[:, 2].sum(), lab[:, 1].sum())
@@ -85,10 +97,12 @@ def main():
     lab = srgb_to_lab(np.asarray(Image.open(source).convert("RGB")).astype(np.float64))
     moved = lab.copy()
     moved[..., 0] = np.interp(lab[..., 0], np.quantile(now[:, 0], QUANTILES), np.quantile(was[:, 0], QUANTILES))
-    turn = mean_hue(was) - mean_hue(now)
-    scale = np.hypot(was[:, 1], was[:, 2]).mean() / np.hypot(now[:, 1], now[:, 2]).mean()
-    chroma = np.hypot(lab[..., 1], lab[..., 2]) * scale
-    hue = np.arctan2(lab[..., 2], lab[..., 1]) + turn
+    leaves_was, leaves_now = was[foliage(was) > 0.5], now[foliage(now) > 0.5]
+    turn = mean_hue(leaves_was) - mean_hue(leaves_now)
+    scale = np.hypot(leaves_was[:, 1], leaves_was[:, 2]).mean() / np.hypot(leaves_now[:, 1], leaves_now[:, 2]).mean()
+    leaf = foliage(lab)
+    chroma = np.hypot(lab[..., 1], lab[..., 2]) * (1 + (scale - 1) * leaf)
+    hue = np.arctan2(lab[..., 2], lab[..., 1]) + turn * leaf
     moved[..., 1], moved[..., 2] = chroma * np.cos(hue), chroma * np.sin(hue)
     white = np.sqrt((lab[..., 0] - 100) ** 2 + lab[..., 1] ** 2 + lab[..., 2] ** 2)
     weight = ramp(lab[..., 0], *OUTLINE_L) * ramp(white, *BACKGROUND_DE)
