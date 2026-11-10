@@ -186,8 +186,10 @@ pub struct Shared {
     pub materials: Vec<MaterialView>,
     /// The kinds of tree, as clients need them.
     pub species: Vec<SpeciesView>,
-    /// The trees standing, by chunk. Static for now: nothing fells them.
-    trees: BTreeMap<ChunkPos, Vec<TreeState>>,
+    /// The content's kinds of tree, the trees of a chunk are placed with
+    /// when it is sent ([`sim::trees::trees_in`], nothing held: a chunk's
+    /// trees cost a few microseconds). Nothing fells them yet.
+    tree_kinds: Vec<sim::content::Species>,
     /// The kinds of shrub, plant and mushroom, as clients need them.
     pub flora: Vec<FloraView>,
     /// The content's flora (trees still to come included), to place it.
@@ -195,8 +197,8 @@ pub struct Shared {
     /// Index in `flora` of each kind of the content's flora (`None` for
     /// the trees still to come).
     flora_wire: Vec<Option<u16>>,
-    /// The seed the flora is placed with (the map's).
-    flora_seed: u64,
+    /// The seed the trees and the flora are placed with (the map's).
+    seed: u64,
     /// The plants of the chunks asked for lately, at most
     /// [`PLANT_CACHE_CHUNKS`] chunks (the cost follows the chunks in use,
     /// never the map's size nor the land visited, D39). Shared, so a hit
@@ -376,21 +378,7 @@ impl Shared {
                 height_cm: centimetres(s.height_m),
             })
             .collect();
-        let mut trees: BTreeMap<ChunkPos, Vec<TreeState>> = BTreeMap::new();
-        for tree in world.trees() {
-            trees
-                .entry(tree.at.tile().chunk())
-                .or_default()
-                .push(TreeState {
-                    at: point(tree.at),
-                    species: species[tree.species].id.clone(),
-                });
-        }
         let (flora, flora_wire) = flora_views(content);
-        let flora_seed = match world.map().spec() {
-            sim::MapSpec::Valley { seed, .. } => seed,
-            sim::MapSpec::Filled { .. } => 0,
-        };
         let mut items: BTreeMap<ChunkPos, Vec<ItemState>> = BTreeMap::new();
         for item in world.items() {
             let Some(pos) = item.pos() else {
@@ -425,11 +413,11 @@ impl Shared {
             bodies: watch::Sender::new(bodies),
             materials,
             species,
-            trees,
+            tree_kinds: content.species.clone(),
             flora,
             flora_kinds: content.flora.clone(),
             flora_wire,
-            flora_seed,
+            seed: world.seed(),
             plants: Mutex::new(Lru::new(PLANT_CACHE_CHUNKS)),
             night: AtomicBool::new(world.is_night(content)),
             ticks_per_second: world.calendar().ticks_per_second(),
@@ -706,7 +694,7 @@ impl Shared {
             tiles: tiles.into_iter().map(terrain_view).collect(),
             bodies: self.bodies_in(chunk),
             items,
-            trees: self.trees.get(&chunk).cloned().unwrap_or_default(),
+            trees: self.trees_in(chunk),
             plants: self.plants_in(chunk),
             currents: self.map.chunk_currents(chunk)?,
         })
@@ -757,6 +745,18 @@ impl Shared {
             .extend(laid);
     }
 
+    /// The trees standing in `chunk`, placed from the map and the seed
+    /// ([`sim::trees::trees_in`]).
+    fn trees_in(&self, chunk: ChunkPos) -> Vec<TreeState> {
+        sim::trees::trees_in(&self.map, &self.tree_kinds, self.seed, chunk)
+            .into_iter()
+            .map(|tree| TreeState {
+                at: point(tree.at),
+                species: self.species[tree.species].id.clone(),
+            })
+            .collect()
+    }
+
     /// Places the plants of the view around the camp (where the first
     /// bodies stand) before any connection, so the first client is not
     /// kept waiting: the cost of a view, never of the map.
@@ -781,24 +781,19 @@ impl Shared {
         if let Some(plants) = held {
             return plants.to_vec(); // copied with the lock released
         }
-        let mut near = Vec::new();
-        for dy in -1..=1 {
-            for dx in -1..=1 {
-                for tree in self
-                    .trees
-                    .get(&ChunkPos::new(chunk.x + dx, chunk.y + dy))
-                    .into_iter()
-                    .flatten()
-                {
-                    near.push(sim::flora::TreeAt {
-                        at: FinePos::new(tree.at.x, tree.at.y),
-                        species: tree.species.as_str(),
-                    });
-                }
-            }
-        }
+        let trees: Vec<sim::trees::Tree> = (-1..=1)
+            .flat_map(|dy| (-1..=1).map(move |dx| ChunkPos::new(chunk.x + dx, chunk.y + dy)))
+            .flat_map(|around| sim::trees::trees_in(&self.map, &self.tree_kinds, self.seed, around))
+            .collect();
+        let near: Vec<sim::flora::TreeAt<'_>> = trees
+            .iter()
+            .map(|tree| sim::flora::TreeAt {
+                at: tree.at,
+                species: self.tree_kinds[tree.species].id.as_str(),
+            })
+            .collect();
         let plants: Vec<PlantState> =
-            sim::flora::plants_in(&self.map, &self.flora_kinds, &near, self.flora_seed, chunk)
+            sim::flora::plants_in(&self.map, &self.flora_kinds, &near, self.seed, chunk)
                 .into_iter()
                 .filter_map(|p| {
                     let kind = self

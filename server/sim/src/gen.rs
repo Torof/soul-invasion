@@ -23,10 +23,16 @@
 //!   so these are to give way to [`hash`] and [`noise`] when the generator
 //!   is rewritten chunk by chunk.
 //!
+//! - [`scatter`]: placing things on the ground, one scheme for all: a
+//!   hashed chance per tile, a jittered grid, a nested cell, and the table
+//!   of the purposes every random choice names.
+//!
 //! The integer tables generation will need in place of float maths (sines,
 //! smoothstep, powers) are not here yet: each comes with its first user,
 //! when the generator is rewritten, so that its size and precision are
 //! chosen for that use.
+
+pub(crate) mod scatter;
 
 /// The odd constant of splitmix64 (2^64 divided by the golden ratio).
 const GOLDEN: u64 = 0x9e37_79b9_7f4a_7c15;

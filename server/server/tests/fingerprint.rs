@@ -1,6 +1,6 @@
 //! The world a seed makes, pinned: a fingerprint of every tile (terrain,
 //! water depth, current, density of trees, habitat), of every item lying
-//! on the ground and of every tree. A change meant to make generation
+//! on the ground and of every tree, chunk by chunk. A change meant to make generation
 //! faster must leave these untouched; a change meant to change the world
 //! updates them on purpose, and says so.
 
@@ -50,8 +50,13 @@ fn world_print(world: &World) -> (u64, u64, u64) {
             items.bytes(format!("{:?}", world.items_in(sim::ChunkPos::new(x, y))).as_bytes());
         }
     }
+    // The trees, placed per chunk, chunk by chunk.
     let mut trees = Fnv::new();
-    trees.bytes(format!("{:?}", world.trees()).as_bytes());
+    for y in 0..chunks {
+        for x in 0..chunks {
+            trees.bytes(format!("{:?}", world.trees_in(sim::ChunkPos::new(x, y))).as_bytes());
+        }
+    }
     (map_print(world.map()), items.0, trees.0)
 }
 
@@ -64,7 +69,7 @@ fn the_768_valley_is_pinned() {
         (
             0x14dd_73b4_8a19_0833,
             0x31e0_5f9a_dbaa_5e26,
-            0x8d4b_87ab_cea5_950f
+            0x65e5_b06d_628e_5b8f
         ),
         "{print:#x?}"
     );
@@ -88,7 +93,7 @@ fn the_game_valley_is_pinned() {
         (
             0xaef7_eec3_3a88_fb48,
             0xb645_9334_0126_8a43,
-            0x366b_9cd3_34a9_e906
+            0x609d_0881_1a89_4f34
         ),
         "{print:#x?}"
     );

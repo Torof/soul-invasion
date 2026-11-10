@@ -10,7 +10,7 @@
 # whole `sim` crate. Each call that remains carries an explicit
 # `#[allow(clippy::disallowed_methods)]` saying why: either a known
 # exception of today's generator, to remove when the generator is
-# rewritten (the drawn height in `trees`, the patch shapes in `flora`), or
+# rewritten (the patch shapes in `flora`), or
 # code that is not generation and stays (`FinePos::distance_to`, which
 # moves bodies). Float arithmetic itself (`+ - * /` on floats) is linted
 # for the whole crate by `#![warn(clippy::float_arithmetic)]` in `lib.rs`.
