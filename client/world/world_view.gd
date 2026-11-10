@@ -102,9 +102,9 @@ const MOUSE_SEE_M := 1.2
 ## Seconds for a circle to open or close.
 const SEE_EASE := 0.2
 ## Chunks whose borders must be drawn again because a neighbour came or
-## went: a few a frame, so a chunk's arrival does not freeze the game.
-var _to_redraw: Array = []
-const REDRAWS_PER_FRAME := 2
+## went: each once, a few a frame within a time budget (RedrawQueue), so
+## a chunk's arrival does not freeze the game.
+var _to_redraw := RedrawQueue.new()
 ## The layer the trees and bodies stand on, sorted by their feet.
 var _standing: Node2D
 ## chunk -> the node holding its trees.
@@ -516,8 +516,8 @@ func _redraw_neighbours(key: Vector2i) -> void:
 		for dx in range(-1, 2):
 			var near: ChunkView = _chunks.get(key + Vector2i(dx, dy))
 			# One not built yet will read its neighbours when it builds.
-			if near != null and near.is_built() and (dx != 0 or dy != 0) and not _to_redraw.has(near):
-				_to_redraw.append(near)
+			if near != null and near.is_built() and (dx != 0 or dy != 0):
+				_to_redraw.add(near)
 
 
 func _on_chunk_hidden(x: int, y: int) -> void:
@@ -525,6 +525,7 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 	var view: ChunkView = _chunks.get(key)
 	if view != null:
 		view.queue_free()
+		_to_redraw.drop(view)
 		_chunks.erase(key)
 		_items.erase(key)
 		_tiles.erase(key)
@@ -639,7 +640,9 @@ func _call_waiting_chunk() -> void:
 
 func _process(delta: float) -> void:
 	var timing := DevTiming.start()
+	DevWatchdog.phase = DevWatchdog.WORLD_STEP
 	_step(delta)
+	DevWatchdog.phase = DevWatchdog.ELSEWHERE
 	DevTiming.add("world view", timing)
 
 
@@ -692,11 +695,8 @@ func _step(delta: float) -> void:
 	_cull_standing()
 	_update_see_through(delta)
 	_call_waiting_chunk()
-	for i in mini(REDRAWS_PER_FRAME, _to_redraw.size()):
-		# A chunk hidden since it was queued is freed: check before typing.
-		var queued: Variant = _to_redraw.pop_front()
-		if is_instance_valid(queued):
-			(queued as ChunkView).queue_redraw()
+	for queued: Variant in _to_redraw.take(RedrawQueue.BUDGET_USEC, ChunkView.redraw_usec):
+		(queued as ChunkView).queue_redraw()
 	# Only the trees in view are drawn: redraw when the view moves. The
 	# sway itself is the shader's, every frame, with no redraw.
 	var view := Vector3(_camera.position.x, _camera.position.y, _camera.zoom.x)
@@ -819,6 +819,7 @@ func draw_body(canvas: CanvasItem, id: int) -> void:
 ## The trees of chunk `key` as nodes on the standing layer, and their
 ## shadows on the chunk's ground.
 func _plant_chunk(key: Vector2i, view: ChunkView) -> void:
+	DevWatchdog.phase = DevWatchdog.TREES
 	var old: Node = _tree_nodes.get(key)
 	if old != null:
 		old.queue_free()

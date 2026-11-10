@@ -152,8 +152,10 @@ func _process(_delta: float) -> void:
 			_send(Protocol.hello())
 		while _peer.get_available_packet_count() > 0:
 			var t := DevTiming.start()
+			DevWatchdog.phase = DevWatchdog.NETWORK
 			var text := _peer.get_packet().get_string_from_utf8()
 			_handle(Protocol.decode(text))
+			DevWatchdog.phase = DevWatchdog.ELSEWHERE
 			DevTiming.add("network messages", t)
 	elif state == WebSocketPeer.STATE_CLOSED and _state != WebSocketPeer.STATE_CLOSED:
 		is_ready = false

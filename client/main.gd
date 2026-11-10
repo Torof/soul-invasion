@@ -1,6 +1,7 @@
 extends Control
 ## Main scene: the world view, the head-up display, the inventory, a help
-## line, the loading screen, the development map and counters (--dev), the tooltip for whatever is under the mouse, and the context
+## line, the loading screen, the development map, counters and watchdog
+## (--dev), the tooltip for whatever is under the mouse, and the context
 ## menu of what the body could try on a tile.
 ##
 ## The client only displays the world and transmits the player's intentions
@@ -12,6 +13,8 @@ extends Control
 @onready var _actions: PopupMenu = %Actions
 
 var _offered: Array = []
+## The development watchdog, once a --dev server is reached.
+var _watchdog: Node
 
 ## Whether the head-up display (the clock, the body's gauges) and the
 ## inventory are shown. Off while the world, the creatures and the things
@@ -58,6 +61,11 @@ func _ready() -> void:
 	perf.world = _world
 	add_child(perf)
 	Net.dev_overview.connect(func(_c: int, _w: int, _h: int, _cells: String) -> void: perf.enable())
+	# Development: a watchdog that reports a frozen main thread (dev/watchdog.gd).
+	Net.dev_overview.connect(func(_c: int, _w: int, _h: int, _cells: String) -> void:
+		if _watchdog == null:
+			_watchdog = DevWatchdog.new()
+			add_child(_watchdog))
 
 
 func _screenshot_then_quit(path: String) -> void:
