@@ -20,13 +20,13 @@
 //!   around their mothers, a companion's group mixed with the dominant
 //!   kind at its rim, the edges richer in the kinds edges suit.
 //! - **Big and small**: the big kinds ([`Species::big`]) stand on a wide
-//!   grid (`BIG_CELL`, 5.5 m: in the heart their crowns touch), the
+//!   grid (`BIG_CELL`, 6.25 m: in the heart their crowns nearly touch), the
 //!   others on a narrow one (`CELL`, 3 m) between them, never under a big
 //!   tree's crown (`BIG_CLEAR`). A narrow cell whose kind comes out big
 //!   holds a tree of the undergrowth instead (`UNDERGROWTH`), else
 //!   nothing. A cell's chance follows the woods' density, thin at the
-//!   edge as it always was and closing up in the wood and the heart: a
-//!   primeval forest. Every other row of both grids is shifted by half a
+//!   edge as it always was, thickening steadily towards the heart (D37):
+//!   a primeval forest. Every other row of both grids is shifted by half a
 //!   cell, so no rows show along the view's diagonals (`gen::scatter`).
 //! - **Openings**: a square of `GAP_SIDE` is now and then an opening,
 //!   where no big tree stands and a few pioneers ([`Species::pioneer`])
@@ -77,11 +77,11 @@ const GRID: Grid = Grid {
     jitter: JITTER,
     offset_rows: true,
 };
-/// The wide grid of the big trees: cells of 5.5 m, the trunks nudged up
-/// to 1.6 m, so two big trees keep 2.3 m apart and show no rows; in the
-/// heart their crowns touch.
-const BIG_CELL: i32 = 5500;
-const BIG_JITTER: i32 = 1600;
+/// The wide grid of the big trees: cells of 6.25 m, the trunks nudged up
+/// to 1.8 m, so two big trees keep 2.65 m apart and show no rows; in the
+/// heart their crowns nearly touch, the ground glimpsed between them.
+const BIG_CELL: i32 = 6250;
+const BIG_JITTER: i32 = 1800;
 const BIG_GRID: Grid = Grid {
     cell: BIG_CELL,
     jitter: BIG_JITTER,
@@ -96,11 +96,15 @@ const BIG_CLEAR: i32 = 2400;
 /// the heart close up), in thousandths, never more than `MOST_CHANCE`.
 const CHANCE_PER_DENSITY: u32 = 6;
 const CHANCE_IN_THE_WOOD: u32 = 12;
+/// The wide grid's cells are larger: at the edge their chance a point of
+/// density is raised by the ratio of the areas, so the edge keeps as
+/// many big trees a square metre.
+const BIG_CHANCE_PER_DENSITY: u32 = 8;
 const MOST_CHANCE: u32 = 920;
 /// A narrow cell whose kind comes out big holds, with this chance in
 /// thousandths, a tree of the undergrowth instead (a small kind that is
 /// no pioneer: hazel, yew), else nothing: a big kind's stand stays open.
-const UNDERGROWTH: u32 = 650;
+const UNDERGROWTH: u32 = 420;
 /// The openings: a square of `GAP_SIDE` millimetres is one with a chance
 /// of `GAP_CHANCE` thousandths; in it, a narrow cell holds a pioneer with
 /// `GAP_PIONEER` thousandths of its usual chance.
@@ -372,7 +376,12 @@ impl<'a> Planting<'a> {
     /// chance scaled by `share` thousandths, drawn from `keys`.
     fn stands(&self, tile: Pos, share: u32, purpose: u64, keys: &[u64]) -> bool {
         let density = u32::from(self.map.trees(tile));
-        let chance = (density * CHANCE_PER_DENSITY
+        let per_density = if purpose == purpose::TREE_BIG {
+            BIG_CHANCE_PER_DENSITY
+        } else {
+            CHANCE_PER_DENSITY
+        };
+        let chance = (density * per_density
             + density.saturating_sub(u32::from(Woods::FOREST)) * CHANCE_IN_THE_WOOD)
             .min(MOST_CHANCE)
             * share

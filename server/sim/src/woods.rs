@@ -2,7 +2,7 @@
 //! place each tile is, generated with the valley and never stored.
 //!
 //! A temperate valley untouched by man (10 November 2026): forest covers
-//! about seven tenths of the land. Each tile's woods depend only on the
+//! a little over half the land. Each tile's woods depend only on the
 //! seed and what lies within a bounded distance of it: no level chosen
 //! for the whole map, no stream drawn across it, so a chunk could be made
 //! alone (D24).
@@ -12,8 +12,9 @@
 //!   at the cliff's foot, cut at a fixed `LEVEL`.
 //! - **Meadows along the rivers**: the woods' pull falls near a river
 //!   (water or ford), so the floodplains are open grass (`RIVER_REACH`).
-//! - **Edge, wood, heart**: the density rises from the massif's edge
-//!   inwards over a few tiles; the heart is the densest.
+//! - **Edge, wood, heart**: past a narrow edge, the trees thicken with
+//!   the depth in the forest: sparse over the first `SPARSE_DEPTH` tiles,
+//!   full at `FULL_DEPTH`; the heart is the densest.
 //! - **Large clearings** open in the woods, and a **camp clearing** around
 //!   the place the first bodies start.
 //! - **Small woods** (50 to 200 m across) rise in the open between the
@@ -97,12 +98,19 @@ impl Woods {
     const CLIFF_ROWS: i64 = 10;
     const CLIFF: i64 = 200;
     /// The pull from which a tile is wooded: fixed, so the woods of a
-    /// place never depend on the rest of the map; set so that about seven
-    /// tenths of the land is forest.
-    const LEVEL: i64 = 310;
+    /// place never depend on the rest of the map; set so that a little
+    /// over half the land is forest.
+    const LEVEL: i64 = 432;
     /// How far above the level the pull climbs from the edge of a massif
     /// to its full density, in thousandths: the width of the edge.
     const EDGE: i64 = 86;
+    /// The trees thicken from the forest's edge towards its heart: from
+    /// the forest's density (`FOREST`) over the first `SPARSE_DEPTH`
+    /// tiles in (open crowns, the ground seen between them), rising
+    /// steadily to full at `FULL_DEPTH` tiles. Small woods and copses keep
+    /// their own, quicker rise.
+    const SPARSE_DEPTH: u8 = 18;
+    const FULL_DEPTH: u8 = 55;
     /// Within this many tiles of a river the woods' pull falls, by
     /// `RIVER_OPEN` at the bank, to nothing at the reach: meadows along
     /// the rivers.
@@ -208,17 +216,118 @@ impl Woods {
         });
         plan.clearings = Patches::new(clearings, width, height);
         plan.copses = Patches::new(copses, width, height);
+        let mut ramped = vec![false; tiles];
         for y in 0..height {
             for x in 0..width {
                 if land(x, y) {
                     let i = (y * width + x) as usize;
-                    let (d, habitat) = plan.tile(x, y, rivers);
+                    let (d, habitat, ramp) = plan.tile(x, y, rivers);
                     woods.density[i] = u8::try_from(d / 10).expect("percent");
                     woods.habitat[i] = habitat;
+                    ramped[i] = ramp;
                 }
             }
         }
+        // How deep in the forest each tile is, and the trees thickening
+        // with it.
+        let depth = Self::depth(
+            width,
+            height,
+            |i| woods.density[i] < Self::FOREST,
+            Self::FULL_DEPTH,
+        );
+        for i in 0..tiles {
+            if !ramped[i] {
+                // A small wood's heart still lies behind its edge.
+                if woods.habitat[i] == Habitat::Heart && depth[i] < 3 {
+                    woods.habitat[i] = Habitat::Wood;
+                    woods.density[i] = woods.density[i].min(Self::HEART - 1);
+                }
+                continue;
+            }
+            let ramp = Self::thickening(depth[i]);
+            woods.density[i] = woods.density[i].min(ramp).max(Self::FOREST);
+            if woods.habitat[i] != Habitat::CliffFoot {
+                woods.habitat[i] = if woods.density[i] >= Self::HEART {
+                    Habitat::Heart
+                } else {
+                    Habitat::Wood
+                };
+            }
+        }
         woods
+    }
+
+    /// The density of trees `depth` tiles inside the forest, past its
+    /// edge: the forest's own for `SPARSE_DEPTH` tiles, then rising
+    /// steadily to 100 at `FULL_DEPTH`.
+    fn thickening(depth: u8) -> u8 {
+        if depth <= Self::SPARSE_DEPTH {
+            return Self::FOREST;
+        }
+        let into = u32::from(depth.min(Self::FULL_DEPTH) - Self::SPARSE_DEPTH);
+        let span = u32::from(Self::FULL_DEPTH - Self::SPARSE_DEPTH);
+        Self::FOREST + u8::try_from(u32::from(100 - Self::FOREST) * into / span).expect("percent")
+    }
+
+    /// Per tile, how many tiles (eight-way) to the nearest tile where
+    /// `open` holds (or off the map), up to `cap`, in two sweeps.
+    fn depth(width: u32, height: u32, open: impl Fn(usize) -> bool, cap: u8) -> Vec<u8> {
+        let (w, h) = (width as usize, height as usize);
+        let mut to = vec![cap; w * h];
+        for (i, d) in to.iter_mut().enumerate() {
+            let (x, y) = (i % w, i / w);
+            if open(i) || x == 0 || y == 0 || x + 1 == w || y + 1 == h {
+                *d = 0;
+            }
+        }
+        Self::sweep(&mut to, w, h, cap);
+        to
+    }
+
+    /// The two sweeps of a distance, eight-way, each tile one more than
+    /// its nearest neighbour, never above `cap`.
+    fn sweep(to: &mut [u8], w: usize, h: usize, cap: u8) {
+        let step = |to: &mut [u8], i: usize, j: usize| {
+            let through = to[j].saturating_add(1).min(cap);
+            if through < to[i] {
+                to[i] = through;
+            }
+        };
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                if x > 0 {
+                    step(to, i, i - 1);
+                }
+                if y > 0 {
+                    step(to, i, i - w);
+                    if x > 0 {
+                        step(to, i, i - w - 1);
+                    }
+                    if x + 1 < w {
+                        step(to, i, i - w + 1);
+                    }
+                }
+            }
+        }
+        for y in (0..h).rev() {
+            for x in (0..w).rev() {
+                let i = y * w + x;
+                if x + 1 < w {
+                    step(to, i, i + 1);
+                }
+                if y + 1 < h {
+                    step(to, i, i + w);
+                    if x + 1 < w {
+                        step(to, i, i + w + 1);
+                    }
+                    if x > 0 {
+                        step(to, i, i + w - 1);
+                    }
+                }
+            }
+        }
     }
 
     /// The round patches of `rule` for `purpose`: on a grid of
@@ -277,46 +386,7 @@ impl Woods {
                 }
             }
         }
-        let step = |to: &mut Vec<u8>, i: usize, j: usize| {
-            let through = to[j].saturating_add(1).min(far);
-            if through < to[i] {
-                to[i] = through;
-            }
-        };
-        for y in 0..h {
-            for x in 0..w {
-                let i = y * w + x;
-                if x > 0 {
-                    step(&mut to, i, i - 1);
-                }
-                if y > 0 {
-                    step(&mut to, i, i - w);
-                    if x > 0 {
-                        step(&mut to, i, i - w - 1);
-                    }
-                    if x + 1 < w {
-                        step(&mut to, i, i - w + 1);
-                    }
-                }
-            }
-        }
-        for y in (0..h).rev() {
-            for x in (0..w).rev() {
-                let i = y * w + x;
-                if x + 1 < w {
-                    step(&mut to, i, i + 1);
-                }
-                if y + 1 < h {
-                    step(&mut to, i, i + w);
-                    if x + 1 < w {
-                        step(&mut to, i, i + w + 1);
-                    }
-                    if x > 0 {
-                        step(&mut to, i, i + w - 1);
-                    }
-                }
-            }
-        }
+        Self::sweep(&mut to, w, h, far);
         to
     }
 
@@ -425,7 +495,7 @@ impl Plan {
             m += Woods::CLIFF * (Woods::CLIFF_ROWS - below) / Woods::CLIFF_ROWS;
         }
         if with_woodlets {
-            m += Woods::WOODLET_PULL * self.within(self.woodlets.near(x, y), x, y) / 1000;
+            m += self.woodlet_pull(x, y);
         }
         let river = self.to_river[(y * self.width + x) as usize];
         if river <= Woods::RIVER_REACH {
@@ -433,6 +503,11 @@ impl Plan {
                 / i64::from(Woods::RIVER_REACH);
         }
         m
+    }
+
+    /// What the small woods add to the pull at `(x, y)`.
+    fn woodlet_pull(&self, x: u32, y: u32) -> i64 {
+        Woods::WOODLET_PULL * self.within(self.woodlets.near(x, y), x, y) / 1000
     }
 
     /// How deep inside one of `patches` `(x, y)` is: 1000 at a centre, 0
@@ -484,9 +559,13 @@ impl Plan {
         })
     }
 
-    /// The density (thousandths) and habitat of the land tile `(x, y)`.
-    fn tile(&self, x: u32, y: u32, rivers: &Rivers) -> (i64, Habitat) {
-        let mut d = ((self.pull(x, y, true) - Woods::LEVEL) * 1000 / Woods::EDGE).clamp(0, 1000);
+    /// The density (thousandths) and habitat of the land tile `(x, y)`,
+    /// and whether its trees thicken with its depth in the forest (not in
+    /// a small wood, which keeps its quicker rise).
+    fn tile(&self, x: u32, y: u32, rivers: &Rivers) -> (i64, Habitat, bool) {
+        let pull = self.pull(x, y, true);
+        let in_a_woodlet = pull - self.woodlet_pull(x, y) < Woods::LEVEL;
+        let mut d = ((pull - Woods::LEVEL) * 1000 / Woods::EDGE).clamp(0, 1000);
         let mut habitat = if d >= i64::from(Woods::HEART) * 10 {
             Habitat::Heart
         } else if d >= i64::from(Woods::FOREST) * 10 {
@@ -557,7 +636,9 @@ impl Plan {
             d = 300;
             habitat = Habitat::Riverside;
         }
-        (d, habitat)
+        let ramped =
+            !in_a_woodlet && matches!(habitat, Habitat::Wood | Habitat::Heart | Habitat::CliffFoot);
+        (d, habitat, ramped)
     }
 }
 
@@ -658,10 +739,10 @@ mod tests {
                 "seed {seed}: trees at the camp"
             );
         }
-        // About seven tenths of the land forest.
+        // A little over half the land forest.
         let share = forest_all * 1000 / land_all;
         eprintln!("forest {share} per mille of the land");
-        assert!((600..=800).contains(&share), "forest {share} per mille");
+        assert!((430..=680).contains(&share), "forest {share} per mille");
         for habitat in [
             Habitat::Heart,
             Habitat::Wood,
@@ -684,10 +765,56 @@ mod tests {
             away_open * 1000 / away.max(1),
         );
         eprintln!("open land: {near_river} per mille by the rivers, {far} away");
+        // With more open land between the woods (55 % forest), the rivers'
+        // banks are still far more open than the rest.
         assert!(
-            near_river > 2 * far,
+            near_river * 10 > far * 17,
             "{near_river} by the rivers, {far} away"
         );
+    }
+
+    #[test]
+    fn the_trees_thicken_from_the_edge_to_the_heart() {
+        // The density of the forest's tiles by their depth in it: sparse
+        // in the first tiles, full deep inside, rising between.
+        let (mut sums, mut counts) = ([0_u64; 4], [0_u64; 4]);
+        for seed in 1..=3 {
+            let map = Map::valley(512, 512, seed);
+            let forest = |i: usize| {
+                let p = Pos::new(
+                    i32::try_from(i % 512).unwrap(),
+                    i32::try_from(i / 512).unwrap(),
+                );
+                map.get(p) == Some(Terrain::Forest)
+            };
+            let depth = Woods::depth(512, 512, |i| !forest(i), 64);
+            for (i, d) in depth.iter().enumerate() {
+                let p = Pos::new(
+                    i32::try_from(i % 512).unwrap(),
+                    i32::try_from(i / 512).unwrap(),
+                );
+                if !forest(i) || !matches!(map.habitat(p), Habitat::Wood | Habitat::Heart) {
+                    continue;
+                }
+                let band = match *d {
+                    3..=15 => 0,
+                    25..=35 => 1,
+                    36..=50 => 2,
+                    56.. => 3,
+                    _ => continue,
+                };
+                sums[band] += u64::from(map.trees(p));
+                counts[band] += 1;
+            }
+        }
+        let mean: Vec<u64> = (0..4).map(|b| sums[b] / counts[b].max(1)).collect();
+        eprintln!("density by depth: {mean:?} over {counts:?} tiles");
+        assert!(counts.iter().all(|c| *c > 100), "{counts:?}");
+        assert!(
+            mean[0] < mean[1] && mean[1] < mean[2] && mean[2] < mean[3],
+            "{mean:?}"
+        );
+        assert!(mean[0] <= 50 && mean[3] >= 90, "{mean:?}");
     }
 
     #[test]
