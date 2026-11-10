@@ -39,5 +39,5 @@
     (id: "linden", name: "Linden", height_m: 25.0, big: true, spread_m: 18,
         habitats: { heart: 30, wood: 35, copse: 15 }),
     (id: "yew", name: "Yew", height_m: 12.0, spread_m: 12,
-        habitats: { heart: 3, wood: 2 }),
+        habitats: { heart: 2, wood: 1 }),
 ]

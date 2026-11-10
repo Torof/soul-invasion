@@ -67,9 +67,9 @@ fn the_768_valley_is_pinned() {
     assert_eq!(
         print,
         (
-            0x14dd_73b4_8a19_0833,
-            0x31e0_5f9a_dbaa_5e26,
-            0xba05_2812_bae1_cd13
+            0x1c21_e439_feed_8a76,
+            0x5a06_c119_668e_fdc2,
+            0xb418_0a82_8677_902a
         ),
         "{print:#x?}"
     );
@@ -78,7 +78,7 @@ fn the_768_valley_is_pinned() {
 #[test]
 fn a_1536_valley_of_another_seed_is_pinned() {
     let print = map_print(&Map::valley(1536, 1536, 7));
-    assert_eq!(print, 0xd2fd_c8ae_7554_c77a, "{print:#x}");
+    assert_eq!(print, 0x886f_cb4a_5292_2840, "{print:#x}");
 }
 
 /// The game's own valley; slow in a debug build, run by hand
@@ -91,9 +91,9 @@ fn the_game_valley_is_pinned() {
     assert_eq!(
         print,
         (
-            0xaef7_eec3_3a88_fb48,
-            0xb645_9334_0126_8a43,
-            0xf6ad_88ec_f426_5daa
+            0x2a2f_ec69_4ad3_aff4,
+            0xfa4a_495d_f00b_e00e,
+            0x8d54_f171_c25d_5aad
         ),
         "{print:#x?}"
     );
