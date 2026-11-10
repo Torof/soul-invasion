@@ -542,7 +542,7 @@ pub enum Event {
 
 /// The world state: time, ground, bodies, things on the ground.
 ///
-/// Read back from a snapshot through [`Stored`], which rebuilds what is
+/// Read back from a snapshot through `Stored`, which rebuilds what is
 /// derived from the rest (the bodies by chunk) and is never written.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct World {
