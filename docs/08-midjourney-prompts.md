@@ -197,7 +197,7 @@ single 2D game asset, a primitive wooden rack with strips of meat hanging above 
 
 ## Tracking
 
-For every validated image, record beside it in `content/art/`: the file, the exact prompt, the date (see `content/art/references/style-ref-01.md`). This is what will later allow training a model on our style.
+For every validated image, record beside it in `content/art/`: the file, the exact prompt, the date (see `content/references/style-ref-01.md`). This is what will later allow training a model on our style.
 
 ---
 

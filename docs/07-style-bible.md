@@ -1,12 +1,12 @@
 # 07 — Style Bible
 
-*Version 0.1 — 5 November 2026. Official reference: `content/art/references/style-ref-01.png`.*
+*Version 0.1 — 5 November 2026. Official reference: `content/references/style-ref-01.png`.*
 
 This document fixes the visual identity of Soul Invasion. Any new image must sit next to the reference without clashing.
 
 ## The reference
 
-![Style reference](../content/art/references/style-ref-01.png)
+![Style reference](../content/references/style-ref-01.png)
 
 Midjourney link (for `--sref`):
 `https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png`
