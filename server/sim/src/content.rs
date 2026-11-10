@@ -206,6 +206,30 @@ pub struct Species {
     /// How much this species grows in each habitat, against the others
     /// there; habitats not listed have none of it.
     pub habitats: BTreeMap<Habitat, u32>,
+    /// A big tree, standing on the woods' wide grid (8 m) with nothing
+    /// small right under its crown; the others stand on the narrow one
+    /// (4 m), between the big ones (D40).
+    #[serde(default)]
+    pub big: bool,
+    /// How far its seeds fall from the tree that bears them, in metres
+    /// (4 to [`MOST_SPREAD_M`]): heavy seeds (acorns, hazelnuts) close by,
+    /// in tight groups; light ones on the wind (birch, pine) farther, in
+    /// loose ones (D37).
+    #[serde(default = "Species::default_spread")]
+    pub spread_m: u32,
+    /// A pioneer: the first to grow back in the openings of the woods.
+    #[serde(default)]
+    pub pioneer: bool,
+}
+
+/// Farthest a species' seeds may fall ([`Species::spread_m`]): the trees
+/// look for the trees that seeded them this far around, no farther.
+pub const MOST_SPREAD_M: u32 = 36;
+
+impl Species {
+    fn default_spread() -> u32 {
+        20
+    }
 }
 
 /// Why content was refused.
@@ -388,6 +412,9 @@ impl Content {
             }
             if species.habitats.values().all(|w| *w == 0) {
                 return Err(invalid("grows nowhere"));
+            }
+            if !(4..=MOST_SPREAD_M).contains(&species.spread_m) {
+                return Err(invalid("spread_m is 4 to 36"));
             }
         }
         Ok(())
@@ -762,6 +789,12 @@ mod tests {
         let nowhere = r#"[(id: "oak", name: "Oak", height_m: 4.0, habitats: { heart: 0 })]"#;
         assert!(matches!(
             base().with_species(nowhere).unwrap_err(),
+            ContentError::Species { .. }
+        ));
+        let far =
+            r#"[(id: "oak", name: "Oak", height_m: 4.0, habitats: { heart: 1 }, spread_m: 80)]"#;
+        assert!(matches!(
+            base().with_species(far).unwrap_err(),
             ContentError::Species { .. }
         ));
         let giant = r#"[(id: "oak", name: "Oak", height_m: 400.0, habitats: { heart: 1 })]"#;

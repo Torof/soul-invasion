@@ -137,6 +137,9 @@ impl Groves {
 
     /// The noise at a tile, in 0..1000, eased between lattice points
     /// (smoothstep) so that broad patches come out round, not diamond.
+    /// Only the tests use it since the woods moved to [`noise`]; kept
+    /// pinned beside `value`.
+    #[cfg(test)]
     pub(crate) fn smooth(&self, x: u32, y: u32) -> u32 {
         let c = u64::from(self.cell);
         let ease = |f: u32| {

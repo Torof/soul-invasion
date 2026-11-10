@@ -40,6 +40,12 @@ pub(crate) mod purpose {
     pub(crate) const TREE_TILE: u64 = 0x7ee_711e;
     /// A kind of tree's stands (hashed with the kind's index).
     pub(crate) const TREE_STAND: u64 = 0x7ee_57a4;
+    /// The big trees' wide grid: whether a cell holds one, where, which.
+    pub(crate) const TREE_BIG: u64 = 0x7ee_b196;
+    /// The mother trees: where they stand, and their kind.
+    pub(crate) const TREE_MOTHER: u64 = 0x7ee_3077;
+    /// The trees of the meadows, on their own grid.
+    pub(crate) const TREE_MEADOW: u64 = 0x7ee_3ead;
     /// The ground's natural items (an older salt).
     pub(crate) const NATURAL_ITEM: u64 = 0x5eed_17e5;
     /// The flora's patches and the plants in them (an older salt).
@@ -58,17 +64,30 @@ pub(crate) mod purpose {
     pub(crate) const WOODS_DETAIL: u64 = 0x00de_7a11;
     pub(crate) const WOODS_FINE: u64 = 0x0000_f17e;
     pub(crate) const WOODS_RIM: u64 = 0x001a_99ed;
+    /// (No longer drawn since 10 November 2026; kept so no new purpose
+    /// takes it.)
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const WOODS_PATCHES: u64 = 0x0a4_7eee;
     /// The rivers' stream (an older salt, added to the seed).
     pub(crate) const RIVERS: u64 = 0x5157;
+    /// The woods' round patches, a kind each, and the trees by the
+    /// waters (10 November 2026: decided cell by cell, tile by tile).
+    pub(crate) const WOODS_CLEARING: u64 = 0x00c1_ea41;
+    pub(crate) const WOODS_WOODLET: u64 = 0x00b0_5c07;
+    pub(crate) const WOODS_COPSE: u64 = 0x00c0_95e5;
+    pub(crate) const WOODS_BANK: u64 = 0x00ba_4b5e;
+    pub(crate) const WOODS_BROOK: u64 = 0x00b4_00c5;
 
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 16] = [
+    pub(crate) const ALL: [u64; 24] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
         TREE_STAND,
+        TREE_BIG,
+        TREE_MOTHER,
+        TREE_MEADOW,
         NATURAL_ITEM,
         FLORA_PATCH,
         FLORA_TRUNK,
@@ -81,6 +100,11 @@ pub(crate) mod purpose {
         WOODS_RIM,
         WOODS_PATCHES,
         RIVERS,
+        WOODS_CLEARING,
+        WOODS_WOODLET,
+        WOODS_COPSE,
+        WOODS_BANK,
+        WOODS_BROOK,
     ];
 }
 
