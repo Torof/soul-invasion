@@ -48,6 +48,12 @@ func _init() -> void:
 	_test_the_watchdog_reports_a_stalled_frame()
 	_test_trees_are_drawn_only_where_the_view_reaches()
 	_test_trees_sort_with_bodies_by_their_foot()
+	_test_the_bounds_held_are_kept_as_chunks_come_and_go()
+	_test_waiting_chunks_are_kept_nearest_the_camera_first()
+	_test_the_fog_uniforms_are_sent_only_when_they_change()
+	_test_a_redraw_past_the_cameras_reach_waits_for_the_camera()
+	_test_a_hidden_chunk_is_parked_and_comes_back_as_it_was()
+	_test_the_depth_behind_the_mouse_is_found_again_only_when_it_may_change()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -1087,3 +1093,120 @@ func _test_trees_sort_with_bodies_by_their_foot() -> void:
 	holder.free()
 	Trees.free_pool()
 	_check(Trees._pool.is_empty(), "the pool is freed with the world")
+
+
+
+## The bounds of the chunks held are kept as chunks come and go, never
+## found again over every key unless one at the edge went.
+func _test_the_bounds_held_are_kept_as_chunks_come_and_go() -> void:
+	var ledger := ViewLedger.new()
+	var chunks := {}
+	_check(ledger.bounds(chunks) == Rect2i(), "nothing held: empty bounds")
+	for key: Vector2i in [Vector2i(3, 3), Vector2i(5, 4), Vector2i(4, 6), Vector2i(7, 7)]:
+		chunks[key] = true
+		ledger.hold(key)
+	_check(ledger.bounds(chunks) == Rect2i(3, 3, 5, 5) and not ledger.held_stale, "four chunks: the bounds grew to them")
+	chunks.erase(Vector2i(5, 4))
+	ledger.drop(Vector2i(5, 4))
+	_check(not ledger.held_stale and ledger.bounds(chunks) == Rect2i(3, 3, 5, 5), "one inside went: nothing to find again")
+	chunks.erase(Vector2i(7, 7))
+	ledger.drop(Vector2i(7, 7))
+	_check(ledger.held_stale and ledger.bounds(chunks) == Rect2i(3, 3, 2, 4) and not ledger.held_stale, "the corner went: found again, narrower")
+	_check(ledger.bounds(chunks) == Iso.chunk_bounds(chunks.keys()), "the same bounds as over every key")
+
+
+## The chunks waiting to build their ground are kept nearest the camera
+## first as they join; the world view takes the first, and orders them
+## again only when the camera has moved by a chunk.
+func _test_waiting_chunks_are_kept_nearest_the_camera_first() -> void:
+	var was: Array = ChunkView.waiting
+	ChunkView.waiting = []
+	ChunkView.camera_px = Iso.tile_to_screen(100, 100)
+	var views: Array = []
+	for at: Vector2i in [Vector2i(160, 100), Vector2i(100, 104), Vector2i(60, 60), Vector2i(104, 100)]:
+		var view := ChunkView.new()
+		view._origin = at
+		view._size = 4
+		views.append(view)
+		ChunkView.enqueue(view)
+	ChunkView.enqueue(views[0])
+	_check(ChunkView.waiting.size() == 4, "a chunk joins once")
+	var order: Array = ChunkView.waiting.map(func(v: ChunkView) -> Vector2i: return v._origin)
+	_check(order == [Vector2i(100, 104), Vector2i(104, 100), Vector2i(60, 60), Vector2i(160, 100)], "nearest the camera first: %s" % [order])
+	ChunkView.reorder(Iso.tile_to_screen(160, 100))
+	_check((ChunkView.waiting[0] as ChunkView)._origin == Vector2i(160, 100), "ordered again around the camera's new place")
+	for view: ChunkView in views:
+		view.free()
+	ChunkView.waiting = was
+
+
+## The fog's uniforms go to the graphics card only when their value
+## changes: as the body walks, the limit's two corners, nothing else.
+func _test_the_fog_uniforms_are_sent_only_when_they_change() -> void:
+	var far := FarView.new()
+	far._ready()
+	far.set_held(Vector2(10, 10), Vector2(500, 500), 24.0, 0.7, 0.7, 14.0)
+	far.set_cover(Vector2(30, 30), Vector2(480, 480), 35.0, 0.7, 29.0)
+	_check(far.uniforms_sent == 12, "the first time, every uniform: %d" % far.uniforms_sent)
+	far.set_held(Vector2(10, 10), Vector2(500, 500), 24.0, 0.7, 0.7, 14.0)
+	far.set_cover(Vector2(30, 30), Vector2(480, 480), 35.0, 0.7, 29.0)
+	_check(far.uniforms_sent == 12, "the same again: none")
+	far.set_held(Vector2(11, 10), Vector2(501, 500), 24.0, 0.7, 0.7, 14.0)
+	far.set_cover(Vector2(31, 30), Vector2(481, 480), 35.0, 0.7, 29.0)
+	_check(far.uniforms_sent == 16, "a tile east: the four corners, nothing else: %d" % far.uniforms_sent)
+	far.free()
+
+
+## A chunk whose neighbour came or went redraws at once when the camera
+## can reach it, and waits for the camera otherwise.
+func _test_a_redraw_past_the_cameras_reach_waits_for_the_camera() -> void:
+	var ledger := ViewLedger.new()
+	ledger.chunk_size = 4
+	var near := Node.new()
+	var key := Vector2i(11, 10)
+	_check(not ledger.within_reach(key), "nothing seen yet: nothing within reach")
+	ledger.mark_stale(near, key)
+	_check(ledger.wake().is_empty() and ledger.stale.get(near) == key, "past the reach: marked, not woken")
+	var rect := ledger.chunk_rect(key)
+	_check(ledger.see(Rect2(rect.end + Vector2(1000, 1000), Vector2(100, 100))) and ledger.wake().is_empty(), "the screen moved, still a few chunks away: not woken")
+	_check(not ledger.see(Rect2(rect.end + Vector2(1000, 1000), Vector2(100, 100))), "the same screen: nothing to look at")
+	ledger.see(Rect2(rect.end + Vector2(10, 10), Vector2(100, 100)))
+	_check(ledger.within_reach(key) and ledger.wake() == [near] and ledger.stale.is_empty(), "the camera within a chunk: woken, once")
+	var gone := Node.new()
+	ledger.mark_stale(gone, key)
+	gone.free()
+	_check(ledger.wake().is_empty() and ledger.stale.is_empty(), "a view freed meanwhile is forgotten")
+	near.free()
+
+
+## A chunk hidden is parked, to come back as it was while the body stays
+## within a ring of it; walked away from, or past the room, it is freed.
+func _test_a_hidden_chunk_is_parked_and_comes_back_as_it_was() -> void:
+	var ledger := ViewLedger.new()
+	var key := Vector2i(100, 100)
+	ledger.park(key, {"view": 1})
+	_check(ledger.take(Vector2i(99, 100)) == null and ledger.parked.has(key), "another chunk: nothing")
+	var back: Variant = ledger.take(key)
+	_check(back != null and back["view"] == 1 and ledger.parked.is_empty(), "the chunk sent again: its record, no longer parked")
+	ledger.park(key, {"view": 2})
+	_check(ledger.prune(Vector2i(105, 110)).is_empty() and ledger.parked.has(key), "the body ten chunks away: kept")
+	var freed := ledger.prune(Vector2i(111, 100))
+	_check(freed.size() == 1 and freed[0]["view"] == 2 and ledger.parked.is_empty(), "eleven chunks away: freed")
+	for i in ViewLedger.PARK_MOST + 3:
+		ledger.park(Vector2i(i, 0), {"view": i})
+	freed = ledger.prune(null)
+	_check(freed.size() == 3 and freed[0]["view"] == 0 and ledger.parked.size() == ViewLedger.PARK_MOST and ledger.parked.has(Vector2i(3, 0)), "past the room, the oldest go")
+	_check(ledger.take_all().size() == ViewLedger.PARK_MOST and ledger.parked.is_empty(), "a new world: every record out")
+
+
+## What lies behind the mouse among the items is looked for again only
+## when the mouse or the items held changed.
+func _test_the_depth_behind_the_mouse_is_found_again_only_when_it_may_change() -> void:
+	var ledger := ViewLedger.new()
+	var items := {Vector2i(6, 6): [{"id": 1, "x": 201, "y": 201, "material": "branch"}]}
+	var mouse := Iso.point_to_screen(Vector2(201_500, 201_500))
+	_check(ledger.items_depth_near(items, 1, mouse, 76.8) == 403_000.0, "an item under the mouse: its depth")
+	items[Vector2i(6, 6)].append({"id": 2, "x": 200, "y": 200, "material": "branch"})
+	_check(ledger.items_depth_near(items, 1, mouse, 76.8) == 403_000.0, "the same mouse and version: not looked for again")
+	_check(ledger.items_depth_near(items, 2, mouse, 76.8) == 401_000.0, "an item laid (a new version): looked for again, the farther one found")
+	_check(ledger.items_depth_near(items, 2, mouse + Vector2(400, 0), 76.8) == INF, "away from them all: nothing")

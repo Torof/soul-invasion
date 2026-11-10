@@ -585,6 +585,45 @@ var _last_signature := 0
 ## world view to call them, nearest the camera first.
 static var _built_frame := -1
 static var waiting: Array = []
+## Where the camera stands, in the world's pixels, as the world view last
+## said (`reorder`): the waiting chunks are kept nearest it first, each
+## put in its place when it joins, so the world view takes the first and
+## never looks through them all (lightness audit, 10 November 2026: a
+## copy and a scan of 361 chunks a frame while loading).
+static var camera_px := Vector2.ZERO
+## This chunk's distance (squared) to `camera_px` when it joined.
+var wait_distance := 0.0
+
+
+## The middle of the chunk's ground, in the world's pixels.
+func centre_px() -> Vector2:
+	return Iso.tile_to_screen(_origin.x + _size / 2, _origin.y + _size / 2)
+
+
+## Puts `chunk` among the waiting ones, after those nearer the camera.
+static func enqueue(chunk: ChunkView) -> void:
+	if waiting.has(chunk):
+		return
+	chunk.wait_distance = chunk.centre_px().distance_squared_to(camera_px)
+	var lo := 0
+	var hi := waiting.size()
+	while lo < hi:
+		var mid := (lo + hi) / 2
+		if (waiting[mid] as ChunkView).wait_distance <= chunk.wait_distance:
+			lo = mid + 1
+		else:
+			hi = mid
+	waiting.insert(lo, chunk)
+
+
+## Orders the waiting chunks again around `px`, where the camera stands
+## now (it moved by more than a chunk since they were ordered).
+static func reorder(px: Vector2) -> void:
+	camera_px = px
+	waiting = waiting.filter(func(chunk: Variant) -> bool: return is_instance_valid(chunk))
+	for chunk: ChunkView in waiting:
+		chunk.wait_distance = chunk.centre_px().distance_squared_to(px)
+	waiting.sort_custom(func(a: ChunkView, b: ChunkView) -> bool: return a.wait_distance < b.wait_distance)
 ## The chunk's own drawing kept between redraws: flat tiles [points,
 ## colour] and decorations [texture, rect, tint].
 var _flats: Array = []
@@ -756,8 +795,8 @@ func _draw() -> void:
 			_draw_ground_layers()
 			DevTiming.add("chunk builds", t)
 			built = true
-		elif not waiting.has(self):
-			waiting.append(self)
+		else:
+			ChunkView.enqueue(self)
 	for flat: Array in _flats:
 		draw_colored_polygon(flat[0], flat[1])
 	for d: Array in _decor_cache:

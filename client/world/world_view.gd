@@ -122,11 +122,36 @@ var _body_nodes: Dictionary = {}
 ## The trees whose see-through flags are set, to clear them later:
 ## Vector3i(chunk x, chunk y, tree index) -> true.
 var _flagged: Dictionary = {}
-## What the see-through flags were last worked out for (the mouse, the
-## bodies and where they stand), and how long ago.
-var _flags_looked: Array = []
+## What the see-through flags were last worked out for: the mouse, where
+## the piloted body stands, what lies behind near the mouse, which trees
+## are held; worked out again only when one of them changed, and a few
+## times a second regardless (before, every frame any body walked:
+## lightness audit, 10 November 2026). The flags depend on nothing else.
+var _flags_mouse := Vector2.INF
+var _flags_body := Vector2.INF
+var _flags_behind := -1.0
+var _flags_trees := -1
 var _flags_age := 0.0
 const FLAGS_REFRESH := 0.25
+## Counted up whenever the trees held or the items held change.
+var _trees_version := 0
+var _items_version := 0
+## The value each uniform of the standing layer's material was last given:
+## sent again only when it changes.
+var _sway_sent: Dictionary = {}
+## The bookkeeping of the chunks held (ViewLedger): the bounds of the
+## chunks held, kept as chunks come and go; the chunks whose redraw waits
+## for the camera to come near; the chunks parked when hidden, to come
+## back as they were when the body walks back over a border, nothing
+## built (C5: parked, a chunk is hidden and its tiles leave the terrain
+## grid, so its neighbours draw their edge as they did; a parked record
+## is {view, holder, stand, codes, items_hash, trees_hash, plants_hash,
+## stale}); what lies behind the mouse among the items.
+var _ledger := ViewLedger.new()
+## chunk -> the hash of its trees and of its plants as the server sent
+## them (a chunk sent again with the same keeps its nodes).
+var _trees_hash: Dictionary = {}
+var _plants_hash: Dictionary = {}
 ## The camera's position and zoom at the last drawing.
 var _last_view := Vector3.INF
 var _drag_start := Vector2.ZERO
@@ -169,6 +194,8 @@ func _ready() -> void:
 	_standing.y_sort_enabled = true
 	_standing.material = sway
 	add_child(_standing)
+	_set_sway("body_radius", BODY_SEE_M * Iso.PX_PER_M)
+	_set_sway("mouse_radius", MOUSE_SEE_M * Iso.PX_PER_M)
 	# Which trees have a canvas item is settled just before each frame is
 	# drawn, once the camera has moved for good (_cull_trees).
 	RenderingServer.frame_pre_draw.connect(_cull_trees)
@@ -194,6 +221,8 @@ func _ready() -> void:
 func _exit_tree() -> void:
 	for stand: Trees.Stand in _trees.values():
 		stand.release()
+	for p: Dictionary in _ledger.parked.values():
+		(p["stand"] as Trees.Stand).release()
 	Trees.free_pool()
 
 
@@ -202,6 +231,7 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	_height = height
 	ShoreField.map_size = Vector2i(width, height)
 	_chunk_size = chunk_size
+	_ledger.chunk_size = chunk_size
 	_looks.clear()
 	_names.clear()
 	_edible.clear()
@@ -215,6 +245,10 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	for chunk: ChunkView in _chunks.values():
 		chunk.queue_free()
 	_chunks.clear()
+	for p: Dictionary in _ledger.take_all():
+		_free_parked(p)
+	_ledger = ViewLedger.new()
+	_ledger.chunk_size = chunk_size
 	_items.clear()
 	_tiles.clear()
 	TerrainGrid.clear_all()
@@ -223,7 +257,11 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	for stand: Trees.Stand in _trees.values():
 		stand.release()
 	_trees.clear()
+	_trees_hash.clear()
 	_plants.clear()
+	_plants_hash.clear()
+	_trees_version += 1
+	_items_version += 1
 	_standing_changed = true
 	_trees_changed = true
 	for n: Node in _tree_nodes.values():
@@ -250,8 +288,33 @@ func _set_night(night: bool) -> void:
 
 func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees: Array = [], currents: Array = [], plants: Array = []) -> void:
 	var key := Vector2i(x, y)
+	var codes := TerrainGrid.codes(tiles)
+	var trees_hash := trees.hash()
+	var plants_hash := plants.hash()
 	var view: ChunkView = _chunks.get(key)
-	if view == null:
+	# A parked chunk comes back: what the server sends again as it was is
+	# kept as it was (the tiles never change, D31; the trees, the plants
+	# and the items are compared).
+	var kept_nodes := false
+	var kept_items := false
+	var parked: Variant = _ledger.take(key) if view == null else null
+	if parked != null:
+		var p: Dictionary = parked
+		view = p["view"]
+		view.visible = true
+		_chunks[key] = view
+		if p["stale"]:
+			_ledger.mark_stale(view, key)
+		kept_nodes = p["trees_hash"] == trees_hash and p["plants_hash"] == plants_hash
+		kept_items = p["items_hash"] == items.hash() and p["codes"] == codes
+		if kept_nodes:
+			_tree_nodes[key] = p["holder"]
+			_trees[key] = p["stand"]
+		else:
+			(p["holder"] as Node).queue_free()
+			(p["stand"] as Trees.Stand).release()
+		DevTiming.tally("chunks restored")
+	elif view == null:
 		view = ChunkView.new()
 		view.z_index = -1  # ground below bodies and the hover outline
 		# The ground and the bank pieces keep plain linear filtering: the
@@ -259,25 +322,33 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees:
 		view.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 		add_child(view)
 		_chunks[key] = view
-	var codes := TerrainGrid.codes(tiles)
+	_ledger.hold(key)
 	_tiles[key] = codes
 	_tile_hashes[key] = hash(codes)
 	_currents[key] = currents
 	_items[key] = items
-	var old: Trees.Stand = _trees.get(key)
-	if old != null:
-		old.release()
-	_trees[key] = Trees.Stand.new(trees, _tree_heights)
+	_items_version += 1
+	_trees_hash[key] = trees_hash
+	_plants_hash[key] = plants_hash
+	_plants[key] = plants
+	if not kept_nodes:
+		var old: Trees.Stand = _trees.get(key)
+		if old != null:
+			old.release()
+		_trees[key] = Trees.Stand.new(trees, _tree_heights)
+		_plant_chunk(key, view)
+		view.show_plants(plants, _flora)
+	_trees_version += 1
 	_standing_changed = true
 	_trees_changed = true
-	_plants[key] = plants
-	_plant_chunk(key, view)
-	view.show_plants(plants, _flora)
 	view.tiles_hash = func(k: Vector2i) -> int: return int(_tile_hashes.get(k, 0))
 	view.current_at = current_at
-	view.show_chunk(key * _chunk_size, _chunk_size, codes, items, _looks)
+	if kept_items:
+		TerrainGrid.write(key * _chunk_size, _chunk_size, codes)
+	else:
+		view.show_chunk(key * _chunk_size, _chunk_size, codes, items, _looks)
 	_redraw_neighbours(key)
-	_update_held()
+	_prune_parked()
 	if not _camera_placed and _piloted < 0:
 		# Watching, no body to follow: look at the ground we were given
 		# rather than at the valley's corner.
@@ -299,6 +370,7 @@ func _on_item_added(item: Dictionary) -> void:
 	var key := Iso.chunk_of(Vector2i(int(item.get("x", 0)), int(item.get("y", 0))), _chunk_size)
 	if _chunks.has(key):
 		_items[key].append(item)
+		_items_version += 1
 		_chunks[key].show_chunk(key * _chunk_size, _chunk_size, _tiles[key], _items[key], _looks)
 
 
@@ -310,6 +382,7 @@ func _on_item_removed(id: int, x: int, y: int) -> void:
 			if int(item.get("id", -1)) != id:
 				kept.append(item)
 		_items[key] = kept
+		_items_version += 1
 		_chunks[key].show_chunk(key * _chunk_size, _chunk_size, _tiles[key], kept, _looks)
 
 
@@ -341,6 +414,8 @@ func teleport_to(tile: Vector2i) -> void:
 	Net.send_dev_teleport(tile.x, tile.y)
 	_target = Vector2i(-1, -1)
 	_following = true
+	for p: Dictionary in _ledger.take_all():
+		_free_parked(p)
 	teleporting.emit()
 	queue_redraw()
 
@@ -374,8 +449,7 @@ const STANDING_REACH := 256.0
 ## layer sorts every child it holds every frame, seen or not (from the
 ## performance audit, 9 November 2026). What is on screen is unchanged.
 func _cull_standing() -> void:
-	var half := get_viewport_rect().size / _camera.zoom.x / 2.0
-	var seen := Rect2(_camera.position - half, half * 2.0)
+	var seen := _seen()
 	if seen == _standing_seen and not _standing_changed:
 		return
 	_standing_seen = seen
@@ -384,17 +458,26 @@ func _cull_standing() -> void:
 		var holder: Variant = _tree_nodes[key]
 		if not is_instance_valid(holder):
 			continue
-		var lo := key * _chunk_size
-		var hi := lo + Vector2i(_chunk_size, _chunk_size)
 		# The chunk's diamond on screen, grown by what may stand out of it.
-		var ground := Rect2(
-			Vector2((lo.x - hi.y) * Iso.TILE_W / 2.0, (lo.x + lo.y) * Iso.TILE_H / 2.0),
-			Vector2((hi.x - lo.x + hi.y - lo.y) * Iso.TILE_W / 2.0, (hi.x + hi.y - lo.x - lo.y) * Iso.TILE_H / 2.0))
-		var reach := ground.grow_individual(STANDING_REACH, STANDING_REACH_UP, STANDING_REACH, STANDING_REACH)
+		var reach := _ledger.chunk_rect(key).grow_individual(STANDING_REACH, STANDING_REACH_UP, STANDING_REACH, STANDING_REACH)
 		var shown := _trees_shown and seen.intersects(reach)
 		if (holder as Node2D).visible != shown:
 			(holder as Node2D).visible = shown
 			_trees_changed = true
+
+
+## What the screen shows, in the world's pixels.
+func _seen() -> Rect2:
+	var half := get_viewport_rect().size / _camera.zoom.x / 2.0
+	return Rect2(_camera.position - half, half * 2.0)
+
+
+## The camera's reach follows the screen: the chunks whose redraw waited
+## for it are queued when it reaches them.
+func _update_reach() -> void:
+	if _ledger.see(_seen()):
+		for view: Variant in _ledger.wake():
+			_to_redraw.add(view)
 
 
 var _trees_shown := true
@@ -440,7 +523,7 @@ func counts() -> Dictionary:
 	for stand: Trees.Stand in _trees.values():
 		trees += stand.size()
 		drawn += stand.items.size()
-	return {"chunks": _chunks.size(), "trees": trees, "trees_drawn": drawn, "bodies": _bodies.size()}
+	return {"chunks": _chunks.size(), "parked": _ledger.parked.size(), "stale": _ledger.stale.size(), "trees": trees, "trees_drawn": drawn, "bodies": _bodies.size()}
 
 
 ## The tile the piloted body stands on, or (-1, -1) when there is none.
@@ -523,11 +606,6 @@ func terrain_at(tile: Vector2i) -> String:
 	return TerrainGrid.name_of(tiles[local.y * _chunk_size + local.x])
 
 
-## The chunks held changed: the limit of the view may move.
-func _update_held() -> void:
-	_update_limit()
-
-
 ## Puts the limit of the view VIEW_REACH tiles around the piloted body
 ## (around the middle of the chunks held when watching), tile by tile as
 ## it walks, never past the chunks held. Its last FOG_B_TILES +
@@ -560,49 +638,95 @@ func _update_limit() -> void:
 
 ## The bounds, in chunks, of the chunks held.
 func _bounds() -> Rect2i:
-	return Iso.chunk_bounds(_chunks.keys())
+	return _ledger.bounds(_chunks)
 
 
 ## The chunks around `key` draw their borders from their neighbours'
-## tiles: redraw them when `key` appears or goes.
+## tiles: redraw them when `key` appears or goes, at once within the
+## camera's reach, when the camera comes otherwise (_stale).
 func _redraw_neighbours(key: Vector2i) -> void:
 	for dy in range(-1, 2):
 		for dx in range(-1, 2):
-			var near: ChunkView = _chunks.get(key + Vector2i(dx, dy))
+			var at := key + Vector2i(dx, dy)
+			var near: ChunkView = _chunks.get(at)
 			# One not built yet will read its neighbours when it builds.
 			if near != null and near.is_built() and (dx != 0 or dy != 0):
-				_to_redraw.add(near)
+				if _ledger.within_reach(at):
+					_to_redraw.add(near)
+				else:
+					_ledger.mark_stale(near, at)
+					DevTiming.tally("redraws deferred")
 
 
 func _on_chunk_hidden(x: int, y: int) -> void:
 	var key := Vector2i(x, y)
 	var view: ChunkView = _chunks.get(key)
 	if view != null:
-		view.queue_free()
 		_to_redraw.drop(view)
+		var stand: Trees.Stand = _trees.get(key)
+		var holder: Node = _tree_nodes.get(key)
+		if view.is_built() and stand != null and holder != null and is_instance_valid(holder):
+			_park(key, view, holder, stand)
+		else:
+			view.queue_free()
+			if stand != null:
+				stand.release()
+			if holder != null:
+				holder.queue_free()
+		_ledger.forget(view)
 		_chunks.erase(key)
+		_ledger.drop(key)
 		_items.erase(key)
+		_items_version += 1
 		_tiles.erase(key)
 		TerrainGrid.clear(key * _chunk_size, _chunk_size)
 		_tile_hashes.erase(key)
 		_currents.erase(key)
-		var stand: Trees.Stand = _trees.get(key)
-		if stand != null:
-			stand.release()
 		_trees.erase(key)
+		_trees_hash.erase(key)
+		_trees_version += 1
 		_plants.erase(key)
+		_plants_hash.erase(key)
 		_standing_changed = true
 		_trees_changed = true
-		var gone: Node = _tree_nodes.get(key)
-		if gone != null:
-			gone.queue_free()
-			_tree_nodes.erase(key)
+		_tree_nodes.erase(key)
 		_redraw_neighbours(key)
-		_update_held()
 	for id in _bodies.keys():
 		if Iso.chunk_of(_tile_of(_bodies[id]["at"]), _chunk_size) == key:
 			_bodies.erase(id)
+	_prune_parked()
 	queue_redraw()
+
+
+## Parks a built chunk that goes: hidden, its nodes and drawing kept, its
+## trees' canvas items and see-through flags given back.
+func _park(key: Vector2i, view: ChunkView, holder: Node, stand: Trees.Stand) -> void:
+	view.visible = false
+	(holder as Node2D).visible = false
+	stand.show_cells(Rect2i())
+	stand.flags.fill(0)
+	_ledger.park(key, {
+		"view": view, "holder": holder, "stand": stand, "codes": _tiles[key], "stale": _ledger.stale.has(view),
+		"items_hash": (_items[key] as Array).hash(), "trees_hash": _trees_hash[key], "plants_hash": _plants_hash[key],
+	})
+	DevTiming.tally("chunks parked")
+
+
+## Frees a parked chunk's nodes for good.
+func _free_parked(p: Dictionary) -> void:
+	(p["view"] as Node).queue_free()
+	(p["holder"] as Node).queue_free()
+	(p["stand"] as Trees.Stand).release()
+
+
+## Frees the parked chunks the body has walked away from, and the oldest
+## past the ledger's room.
+func _prune_parked() -> void:
+	if _ledger.parked.is_empty():
+		return
+	var centre: Variant = Iso.chunk_of(_tile_of(_bodies[_piloted]["at"]), _chunk_size) if _bodies.has(_piloted) else null
+	for p: Dictionary in _ledger.prune(centre):
+		_free_parked(p)
 
 
 func _on_body_walks(body: int, at: Vector2, route: Array, speed_cm_per_s: int) -> void:
@@ -677,23 +801,19 @@ static func clamp_zoom(zoom: float) -> float:
 
 
 ## Lets the waiting chunk nearest the camera build its ground (one a
-## frame, ChunkView.waiting).
+## frame): the first of ChunkView.waiting, kept in that order, ordered
+## again when the camera has moved by more than a chunk.
 func _call_waiting_chunk() -> void:
-	var best: ChunkView = null
-	var best_distance := INF
-	for chunk: Variant in ChunkView.waiting.duplicate():
-		if not is_instance_valid(chunk) or not (chunk as ChunkView).is_inside_tree():
-			ChunkView.waiting.erase(chunk)
-			continue
-		var view := chunk as ChunkView
-		var middle := Iso.tile_to_screen(view._origin.x + view._size / 2, view._origin.y + view._size / 2)
-		var distance := middle.distance_squared_to(_camera.position)
-		if distance < best_distance:
-			best_distance = distance
-			best = view
-	if best != null:
-		ChunkView.waiting.erase(best)
-		best.queue_redraw()
+	if ChunkView.waiting.is_empty():
+		return
+	var moved := _camera.position.distance_squared_to(ChunkView.camera_px)
+	if moved > (_chunk_size * Iso.TILE_H) ** 2:
+		ChunkView.reorder(_camera.position)
+	while not ChunkView.waiting.is_empty():
+		var chunk: Variant = ChunkView.waiting.pop_front()
+		if is_instance_valid(chunk) and (chunk as ChunkView).is_inside_tree():
+			(chunk as ChunkView).queue_redraw()
+			return
 
 
 func _process(delta: float) -> void:
@@ -751,6 +871,7 @@ func _step(delta: float) -> void:
 	_update_limit()
 	_clamp_camera()
 	_cull_standing()
+	_update_reach()
 	_update_see_through(delta)
 	_call_waiting_chunk()
 	for queued: Variant in _to_redraw.take(RedrawQueue.BUDGET_USEC, ChunkView.redraw_usec):
@@ -954,7 +1075,7 @@ class BodyNode:
 ## The see-through flags of the trees near the body and the mouse; the
 ## others are cleared. Only the trees in the chunks around them are
 ## looked at.
-func _update_flags(mouse: Vector2) -> void:
+func _update_flags(mouse: Vector2, behind: float) -> void:
 	_body_hidden = false
 	_mouse_hidden = false
 	var keys := {}
@@ -966,10 +1087,8 @@ func _update_flags(mouse: Vector2) -> void:
 		for dy in range(-1, 2):
 			for dx in range(-1, 2):
 				keys[c + Vector2i(dx, dy)] = true
-	# What lies near the mouse is looked for once a frame, not once a tree;
-	# only the trees whose image covers the mouse or the body's circle are
+	# Only the trees whose image covers the mouse or the body's circle are
 	# looked at, through the cells of the screen they cover.
-	var behind := _nearest_depth_near(mouse)
 	var wanted: Array[Vector2i] = [Vector2i((mouse / TREE_CELL_PX).floor())]
 	if _bodies.has(_piloted):
 		var radius := BODY_SEE_M * Iso.PX_PER_M
@@ -1037,8 +1156,9 @@ func _see_through_flags(at: Vector2, r: Rect2, mouse: Vector2, behind: float) ->
 ## The smallest depth (x + y, in millimetres: the farthest from the
 ## camera) of a body within half again the mouse's circle around `mouse`,
 ## or an item within it; INF when there is none. A tree covering the
-## mouse hides something when this lies behind its foot. Items are looked
-## for only in the chunks around the mouse.
+## mouse hides something when this lies behind its foot. The items are
+## looked for only in the chunks around the mouse, and only again when
+## the mouse or the items held changed.
 func _nearest_depth_near(mouse: Vector2) -> float:
 	var reach := MOUSE_SEE_M * Iso.PX_PER_M
 	var nearest := INF
@@ -1046,14 +1166,7 @@ func _nearest_depth_near(mouse: Vector2) -> float:
 		var b: Vector2 = _bodies[id]["at"]
 		if Iso.point_to_screen(b).distance_to(mouse) < reach * 1.5:
 			nearest = minf(nearest, b.x + b.y)
-	var c := Iso.chunk_of(Iso.screen_to_tile(mouse), _chunk_size)
-	for dy in range(-1, 2):
-		for dx in range(-1, 2):
-			for item: Dictionary in _items.get(c + Vector2i(dx, dy), []):
-				var p := Vector2(int(item.get("x", 0)) * 1000 + 500, int(item.get("y", 0)) * 1000 + 500)
-				if Iso.point_to_screen(p).distance_to(mouse) < reach:
-					nearest = minf(nearest, p.x + p.y)
-	return nearest
+	return minf(nearest, _ledger.items_depth_near(_items, _items_version, mouse, reach))
 
 
 ## Eases the see-through circles open or shut and hands them to the trees'
@@ -1061,33 +1174,36 @@ func _nearest_depth_near(mouse: Vector2) -> float:
 func _update_see_through(delta: float) -> void:
 	_sync_bodies()
 	var mouse := get_local_mouse_position()
-	# Which trees to see through changes only when the mouse or a body
-	# moves; looked at again then, or a few times a second at most else
-	# (an item laid or taken near the mouse).
-	var looked := [mouse, _bodies.keys(), _bodies.values().map(func(b: Dictionary) -> Vector2: return b["at"])]
+	# Which trees to see through depends on the mouse, on where the piloted
+	# body stands, on what lies behind near the mouse and on the trees
+	# held: looked at again when one of them changed, and a few times a
+	# second regardless.
+	var behind := _nearest_depth_near(mouse)
+	var body_at: Vector2 = _bodies[_piloted]["at"] if _bodies.has(_piloted) else Vector2.INF
 	_flags_age += delta
-	if looked != _flags_looked or _flags_age >= FLAGS_REFRESH:
-		_flags_looked = looked
+	if mouse != _flags_mouse or body_at != _flags_body or behind != _flags_behind or _trees_version != _flags_trees or _flags_age >= FLAGS_REFRESH:
+		_flags_mouse = mouse
+		_flags_body = body_at
+		_flags_behind = behind
+		_flags_trees = _trees_version
 		_flags_age = 0.0
-		_update_flags(mouse)
+		_update_flags(mouse, behind)
 	var step := delta / SEE_EASE
 	_body_reveal = move_toward(_body_reveal, 1.0 if _body_hidden else 0.0, step)
 	_mouse_reveal = move_toward(_mouse_reveal, 1.0 if _mouse_hidden else 0.0, step)
-	var sway := _standing.material as ShaderMaterial
-	if sway == null:
+	_set_sway("body_at", _body_see_centre())
+	_set_sway("body_reveal", _body_reveal)
+	_set_sway("mip_bias", Trees.sharpness(_camera.zoom.x))
+	_set_sway("mouse_at", mouse)
+	_set_sway("mouse_reveal", _mouse_reveal)
+
+
+## Gives the standing layer's material a uniform, when its value changed.
+func _set_sway(uniform: String, value: Variant) -> void:
+	if _sway_sent.has(uniform) and _sway_sent[uniform] == value:
 		return
-	sway.set_shader_parameter("body_at", _body_see_centre())
-	sway.set_shader_parameter("body_radius", BODY_SEE_M * Iso.PX_PER_M)
-	sway.set_shader_parameter("body_reveal", _body_reveal)
-	sway.set_shader_parameter("mip_bias", Trees.sharpness(_camera.zoom.x))
-	sway.set_shader_parameter("mouse_at", mouse)
-	sway.set_shader_parameter("mouse_radius", MOUSE_SEE_M * Iso.PX_PER_M)
-	sway.set_shader_parameter("mouse_reveal", _mouse_reveal)
-	if mouse.distance_to(_last_mouse) > 4.0:
-		_last_mouse = mouse
-
-
-var _last_mouse := Vector2(-1e6, -1e6)
+	_sway_sent[uniform] = value
+	(_standing.material as ShaderMaterial).set_shader_parameter(uniform, value)
 
 
 ## A small "z" above a sleeping body, drawn on `canvas` at `at`.
