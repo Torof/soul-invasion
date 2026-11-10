@@ -4,7 +4,7 @@
 Development tool, run by hand; the game never runs it. Needs Pillow and
 numpy. From the repository's root:
 
-    python3 content/tools/flora_art.py <sources> content/art [--tree-zoom Z]
+    python3 content/tools/flora_art.py <sources> content/art [--trees [--tree-zoom Z]]
 
 <sources> holds one image per kind and variant, on a white background,
 named `<id>_<nn>.png` (`bramble_01.png`), as `content/ai-reserve/sources/flora/`.
@@ -19,13 +19,13 @@ For each image:
 - the edge is softened by one pixel, then the plant is cropped to itself.
 
 Sizes follow the sharpness rule (D39, 10 November 2026): an image is made
-at the size it takes on the reference screen (3072 x 1920) at its
-category's reference zoom, so everything looks as sharp and no pixel is
-stored that the screen never shows. Its height is its kind's shown height
-(`shown`, the client's `Scale.shown`, D40) times `px_per_m(zoom)`. A source
-smaller than its target is kept as it is and reported: only those need
-making again. Plants and decorations are perfect at the closest zoom
-(FLORA_ZOOM, DECOR_ZOOM); trees take their zoom from `--tree-zoom`, and
+at the size it takes on the reference screen (3072 x 1920, of which the
+game keeps 3072 x 1728) at the closest zoom, 2.5, so everything looks as
+sharp and no pixel is stored that the screen never shows: 64 x 2.5 x 2.4 =
+384 px a shown metre. Its height is its kind's shown height (`shown`, the
+client's `Scale.shown`, D40) times `px_per_m(zoom)`. A source smaller than
+its target is kept as it is and reported: only those need making again.
+Trees are made only with `--trees` (at `--tree-zoom`, 2.5 unless given);
 without it they are left untouched.
 
 Kinds of `content/species.ron` (trees) go to `art/trees/` as
@@ -46,13 +46,16 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageFilter
 
-# The sharpness rule: pixels per metre on the reference screen at zoom 1
-# (Iso.PX_PER_M) times the stretch from the 1280 x 720 viewport to its
-# 1920 rows.
+# The sharpness rule: pixels per metre at zoom 1 (Iso.PX_PER_M), times
+# the stretch of the 1280 x 720 viewport on the reference screen (3072 x
+# 1920: Godot keeps 3072 x 1728, 2.4 times), times the closest zoom (the
+# client's ZOOM_MAX): 384 px a shown metre.
 PX_PER_M = 64
-SCREEN_STRETCH = 1920 / 720
-FLORA_ZOOM = 4.0
-DECOR_ZOOM = 4.0
+SCREEN_STRETCH = 2.4
+REFERENCE_ZOOM = 2.5
+FLORA_ZOOM = REFERENCE_ZOOM
+DECOR_ZOOM = REFERENCE_ZOOM
+TREE_ZOOM = REFERENCE_ZOOM
 # The cut is worked at most this tall unless the target needs more.
 WORK_MAX = 1400
 ATLAS_WIDTH = 4096
@@ -321,7 +324,10 @@ def size_decor(art, short):
 
 def main():
     args = sys.argv[1:]
-    tree_zoom = None
+    make_trees = "--trees" in args
+    if make_trees:
+        args.remove("--trees")
+    tree_zoom = TREE_ZOOM
     if "--tree-zoom" in args:
         i = args.index("--tree-zoom")
         tree_zoom = float(args[i + 1])
@@ -337,7 +343,7 @@ def main():
         kind, n = m.group(1), m.group(2)
         section, height = kinds.get(kind, ("trees", trees.get(kind, 0)))
         if kind in trees or section == "trees":
-            if tree_zoom is None:
+            if not make_trees:
                 continue
             tall = target_px(trees.get(kind) or height, tree_zoom)
             image = trim_to_foot(cut(path, keep_white=False, tree=True, work=work_height(tall)))
