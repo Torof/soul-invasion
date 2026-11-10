@@ -11,8 +11,13 @@ extends Node2D
 ## texture with a sister image (or with itself, shifted and turned) by a
 ## soft noise, so its repetition does not read. Each terrain has its own
 ## material, so its layers never leak onto another terrain: the chunk
-## holds one child canvas per textured terrain, under its own drawing.
-## Terrains without a texture keep a flat colour.
+## holds one child canvas per textured terrain, under its own drawing,
+## each a single quad over the chunk; the shader keeps the tiles of its
+## terrain from the ground index (GroundIndex), which the chunk writes
+## when it builds. Terrains without a texture keep a flat colour.
+##
+## The tiles are read as bytes (TerrainGrid), the chunk's own and its
+## neighbours' around it, once a build (D39).
 
 ## Metres covered by one ground texture.
 const GROUND_METRES := 4.0
@@ -73,12 +78,13 @@ static func ground_params(terrain: String) -> Dictionary:
 const FRINGE_OVER := {
 	"forest": {"over": ["grass"], "width": 2},
 }
-## Width, in tiles, over which a terrain feels its own edge (water
-## lightens near its banks).
+## Width, in tiles, over which water feels its own edge (shore(): the
+## decorations that grow in the water by a bank).
 const SHORE_WIDTH := 2
-## Terrains that change near their own edge (water lightens near its
-## banks): their tiles carry, at each corner, how near the bank is.
-const SHORE_TERRAINS := ["water"]
+## Tiles read around a chunk when it builds: as far as the bank's field
+## reads (ShoreField.READ), which covers the spill and the land under the
+## water.
+const READ := ShoreField.READ
 ## Drawing order of the textured terrains: the one that spills is above.
 const GROUND_ORDER := {"grass": 0, "forest": 1, "water": 2}
 static var _ground_cache: Dictionary = {}
@@ -102,32 +108,12 @@ var _size := 32
 
 ## terrain -> the child canvas drawing that terrain's textured tiles
 var _grounds: Dictionary = {}
-## terrain -> the child canvas drawing that terrain's shore fills, above
-## every ground canvas and below the chunk's own drawing.
-var _fills: Dictionary = {}
-
-
-func _fill_of(terrain: String) -> GroundCanvas:
-	var canvas: GroundCanvas = _fills.get(terrain)
-	if canvas == null:
-		canvas = GroundCanvas.new()
-		canvas.terrain = terrain
-		canvas.z_index = -3
-		canvas.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
-		canvas.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-		canvas.material = ground_material(terrain)
-		add_child(canvas)
-		_fills[terrain] = canvas
-	return canvas
 
 
 func _ready() -> void:
 	add_to_group("chunk_views")
 	# The shore brushes repeat along the bank.
 	texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
-## Looks up the terrain of a tile outside this chunk (set by the world
-## view); "" when unknown, and the spill stops there.
-var terrain_at: Callable
 ## Where the water runs at any tile the world view knows (a vector in
 ## metres a second; set by the world view, invalid on the benches).
 var current_at: Callable
@@ -162,6 +148,9 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 		var material := ShaderMaterial.new()
 		material.shader = load("res://world/ground.gdshader")
 		material.set_shader_parameter("noise_texture", noise_texture())
+		material.set_shader_parameter("ground_index", GroundIndex.texture())
+		material.set_shader_parameter("index_bit", int(GroundIndex.BITS.get(terrain, 0)))
+		material.set_shader_parameter("index_tiles", float(GroundIndex.TILES))
 		apply_spec(material, terrain, false)
 		_ground_materials[terrain] = material
 	return _ground_materials[terrain]
@@ -251,78 +240,30 @@ func _ground_of(terrain: String) -> GroundCanvas:
 	return canvas
 
 
-## One terrain's textured tiles of a chunk, drawn with that terrain's
-## material.
+## One terrain's ground over a chunk: a single quad with that terrain's
+## material, whose shader keeps the tiles the ground index gives this
+## terrain (GroundIndex).
 class GroundCanvas:
 	extends Node2D
 	var terrain := ""
-	var tiles: PackedVector2Array = []
-	## [{"tile": Vector2i, "alphas": PackedFloat32Array}] the tiles of
-	## another terrain this one spills over, with the opacity at each corner.
-	var fringe: Array = []
-	## tile -> PackedFloat32Array: how near the bank is at each corner of
-	## this terrain's own tiles, carried to the shader in the vertex
-	## colour's green channel (1 - nearness).
-	var shore: Dictionary = {}
-	## [{"points": PackedVector2Array, "uvs": PackedVector2Array}]: extra
-	## polygons of this terrain's texture, the bands along the shore line
-	## that paint the terrain up to the line regardless of the tiles.
-	var fills: Array = []
+	## The chunk covered: its north-west tile and its side.
+	var origin := Vector2i.ZERO
+	var size := 0
+	## Whether the terrain has any tile to draw in the chunk.
+	var shown := false
 
 	func _draw() -> void:
-		# Every polygon of this canvas in one mesh, drawn at once: one
-		# draw call per terrain and chunk instead of one per tile.
-		var verts := PackedVector2Array()
-		var cols := PackedColorArray()
-		var uvs := PackedVector2Array()
-		var add_quad := func(pts: PackedVector2Array, c: PackedColorArray, u: PackedVector2Array) -> void:
-			for k in [0, 1, 2, 0, 2, 3]:
-				verts.append(pts[k])
-				cols.append(c[k])
-				uvs.append(u[k])
-		var white := PackedColorArray([Color.WHITE, Color.WHITE, Color.WHITE, Color.WHITE])
-		for tile in tiles:
-			var tx := int(tile.x)
-			var ty := int(tile.y)
-			var colours := white
-			var near: PackedFloat32Array = shore.get(Vector2i(tx, ty), PackedFloat32Array())
-			if not near.is_empty():
-				colours = PackedColorArray()
-				for n in near:
-					colours.append(Color(1, 1 - n, 1, 1))
-			add_quad.call(Iso.diamond(tx, ty), colours, ChunkView.ground_uvs(tx, ty))
-		for fill in fills:
-			var pts: PackedVector2Array = fill["points"]
-			var fuv: PackedVector2Array = fill["uvs"]
-			var order := Geometry2D.triangulate_polygon(pts)
-			for k in order:
-				verts.append(pts[k])
-				cols.append(Color.WHITE)
-				uvs.append(fuv[k])
-		for spill in fringe:
-			var tile: Vector2i = spill["tile"]
-			var alphas: PackedFloat32Array = spill["alphas"]
-			var colours := PackedColorArray()
-			for a in alphas:
-				colours.append(Color(1, 1, 1, a))
-			add_quad.call(Iso.diamond(tile.x, tile.y), colours, ChunkView.ground_uvs(tile.x, tile.y))
-		if verts.is_empty():
+		if not shown or size <= 0:
 			return
-		var arrays := []
-		arrays.resize(Mesh.ARRAY_MAX)
-		var v3 := PackedVector3Array()
-		v3.resize(verts.size())
-		for i in verts.size():
-			v3[i] = Vector3(verts[i].x, verts[i].y, 0.0)
-		arrays[Mesh.ARRAY_VERTEX] = v3
-		arrays[Mesh.ARRAY_COLOR] = cols
-		arrays[Mesh.ARRAY_TEX_UV] = uvs
-		var mesh := ArrayMesh.new()
-		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		_mesh = mesh
-		draw_mesh(mesh, ChunkView.ground_texture(terrain))
-
-	var _mesh: ArrayMesh
+		var corners := [origin, origin + Vector2i(size, 0), origin + Vector2i(size, size), origin + Vector2i(0, size)]
+		var points := PackedVector2Array()
+		var uvs := PackedVector2Array()
+		for c: Vector2i in corners:
+			# A tile's top corner, and its square of the texture.
+			points.append(Iso.tile_to_screen(c.x, c.y) + Vector2(0, -Iso.TILE_H / 2.0))
+			uvs.append(Vector2(c) / ChunkView.GROUND_METRES)
+		var white := Color.WHITE
+		draw_polygon(points, PackedColorArray([white, white, white, white]), uvs, ChunkView.ground_texture(terrain))
 
 
 ## Reloads the ground shader and textures from their files into the
@@ -423,41 +364,62 @@ static func ground_uvs(x: int, y: int) -> PackedVector2Array:
 		Vector2(x + 1, y + 1) * s,
 		Vector2(x, y + 1) * s,
 	])
-var _tiles: Array = []
+## The chunk's tiles, as codes (TerrainGrid).
+var _codes := PackedByteArray()
 ## [{"x", "y", "material"}] as received
 var _items: Array = []
 ## material id -> Color
 var _looks: Dictionary = {}
 
 
-## Sets the chunk's tiles and items; `origin` is its north-west tile.
-func show_chunk(origin: Vector2i, size: int, tiles: Array, items: Array, looks: Dictionary) -> void:
+## Sets the chunk's tiles (as received, names, or as codes) and items;
+## `origin` is its north-west tile. The tiles are laid in TerrainGrid,
+## where the neighbours read them.
+func show_chunk(origin: Vector2i, size: int, tiles: Variant, items: Array, looks: Dictionary) -> void:
 	_origin = origin
 	_size = size
-	_tiles = tiles
+	_codes = TerrainGrid.codes(tiles)
+	TerrainGrid.write(origin, size, _codes)
 	_items = items
 	_looks = looks
 	queue_redraw()
 
 
-## The terrain of a tile, inside this chunk or, through the world view,
-## outside it.
-func _terrain(tx: int, ty: int) -> String:
-	var x := tx - _origin.x
-	var y := ty - _origin.y
-	if x >= 0 and y >= 0 and x < _size and y < _size:
-		return str(_tiles[y * _size + x])
-	return str(terrain_at.call(Vector2i(tx, ty))) if terrain_at.is_valid() else ""
+## The codes of the chunk and READ tiles around it (TerrainGrid.window):
+## tile (x, y) of the chunk is at (x + READ, y + READ), a row being
+## _size + 2 READ wide.
+func _window() -> PackedByteArray:
+	var side := _size + 2 * READ
+	return TerrainGrid.window(_origin - Vector2i(READ, READ), side, side)
 
 
-## Nearness of each corner of the chunk to the tiles `is_near` accepts
-## (clockwise from the top, like Iso.diamond): 1 at a corner touching
-## one, fading to 0 FRINGE + 1 corners away. Returns a function of the
-## corner, in tile coordinates relative to the origin, where corner
-## (cx, cy) is the top of tile (cx, cy).
-func _nearness(is_near: Callable, width: int) -> Callable:
+## A table of the 256 codes, 1 for those `codes` names.
+static func _table(codes: Array) -> PackedByteArray:
+	var t := PackedByteArray()
+	t.resize(256)
+	for c: int in codes:
+		t[c] = 1
+	return t
+
+
+## A table of every known code but `except` (unknown is never in it).
+static func _table_but(except: int) -> PackedByteArray:
+	var t := PackedByteArray()
+	t.resize(256)
+	t.fill(1)
+	t[TerrainGrid.UNKNOWN] = 0
+	t[except] = 0
+	return t
+
+
+## Nearness of each corner of the chunk to the tiles `near` accepts (a
+## table of codes, _table), read from `win` (_window): 1 at a corner
+## touching one, fading to 0 width + 1 corners away. Corner (cx, cy), the
+## top of tile (cx, cy), is at cy * (_size + 1) + cx.
+func _nearness(win: PackedByteArray, near: PackedByteArray, width: int) -> PackedFloat32Array:
 	# Corners of the chunk and a margin around it: corner c is inside when
 	# one of the four tiles meeting there is near. Tiles read once each.
+	var side := _size + 2 * READ
 	var lo := -width
 	var span := _size + 2 * width + 1
 	var tiles := span + 1
@@ -465,59 +427,90 @@ func _nearness(is_near: Callable, width: int) -> Callable:
 	near_tile.resize(tiles * tiles)
 	var any := false
 	for ty in tiles:
+		var row := (READ + lo - 1 + ty) * side + READ + lo - 1
 		for tx in tiles:
-			if is_near.call(_terrain(_origin.x + lo - 1 + tx, _origin.y + lo - 1 + ty)):
+			if near[win[row + tx]]:
 				near_tile[ty * tiles + tx] = 1
 				any = true
 	var corners := _size + 1
 	var values := PackedFloat32Array()
 	values.resize(corners * corners)
-	if any:
-		# Corner (lo + i, lo + j) touches tiles i - 1 .. i and j - 1 .. j of
-		# the margin, that is indices i .. i + 1 and j .. j + 1 here.
-		var inside := PackedByteArray()
-		inside.resize(span * span)
-		for j in span:
-			for i in span:
-				var a := j * tiles + i
-				if near_tile[a] or near_tile[a + 1] or near_tile[a + tiles] or near_tile[a + tiles + 1]:
-					inside[j * span + i] = 1
-		# The distance to the nearest inside corner, square rings (the
-		# larger of the two offsets): first along each row, then across.
-		var far := width + 1
-		var along := PackedInt32Array()
-		along.resize(span * span)
-		for j in span:
-			for i in span:
-				var best := far
-				for d in range(-width, width + 1):
-					var k := i + d
-					if k >= 0 and k < span and inside[j * span + k] and absi(d) < best:
-						best = absi(d)
-				along[j * span + i] = best
-		for cy in corners:
-			for cx in corners:
-				var best := far
-				var i := cx - lo
-				for d in range(-width, width + 1):
-					var k := cy - lo + d
-					if k >= 0 and k < span:
-						best = mini(best, maxi(absi(d), along[k * span + i]))
-				values[cy * corners + cx] = 1.0 - float(best) / float(far)
-	return func(c: Vector2i) -> float:
-		if c.x < 0 or c.y < 0 or c.x >= corners or c.y >= corners:
-			return 0.0
-		return values[c.y * corners + c.x]
+	if not any:
+		return values
+	# Corner (lo + i, lo + j) touches tiles i - 1 .. i and j - 1 .. j of
+	# the margin, that is indices i .. i + 1 and j .. j + 1 here.
+	var inside := PackedByteArray()
+	inside.resize(span * span)
+	for j in span:
+		for i in span:
+			var a := j * tiles + i
+			if near_tile[a] or near_tile[a + 1] or near_tile[a + tiles] or near_tile[a + tiles + 1]:
+				inside[j * span + i] = 1
+	# The distance to the nearest inside corner, square rings (the larger
+	# of the two offsets): first along each row, then across.
+	var far := width + 1
+	var along := PackedInt32Array()
+	along.resize(span * span)
+	for j in span:
+		for i in span:
+			var best := far
+			for d in range(-width, width + 1):
+				var k := i + d
+				if k >= 0 and k < span and inside[j * span + k] and absi(d) < best:
+					best = absi(d)
+			along[j * span + i] = best
+	for cy in corners:
+		for cx in corners:
+			var best := far
+			var i := cx - lo
+			for d in range(-width, width + 1):
+				var k := cy - lo + d
+				if k >= 0 and k < span:
+					best = mini(best, maxi(absi(d), along[k * span + i]))
+			values[cy * corners + cx] = 1.0 - float(best) / float(far)
+	return values
 
 
-## The four corners' values of tile (x, y) of the chunk, from `of_corner`.
-func _corners(of_corner: Callable, x: int, y: int) -> PackedFloat32Array:
-	return PackedFloat32Array([
-		of_corner.call(Vector2i(x, y)),
-		of_corner.call(Vector2i(x + 1, y)),
-		of_corner.call(Vector2i(x + 1, y + 1)),
-		of_corner.call(Vector2i(x, y + 1)),
-	])
+## The four corners' values of tile (x, y) of the chunk, from corner
+## values (_nearness), clockwise from the top like Iso.diamond.
+func _corners(values: PackedFloat32Array, x: int, y: int) -> PackedFloat32Array:
+	var c := _size + 1
+	return PackedFloat32Array([values[y * c + x], values[y * c + x + 1], values[(y + 1) * c + x + 1], values[(y + 1) * c + x]])
+
+
+## The terrain drawn on tile (x, y) of the window (_window), as a code:
+## its own, except a ford, shallow water the water's shader draws, and a
+## brook, a line on the ground (BrookLines) over the land around it,
+## forest where the tiles around are mostly forest, else grass.
+func _drawn(win: PackedByteArray, x: int, y: int, field: bool) -> int:
+	var side := _size + 2 * READ
+	var code := win[y * side + x]
+	if code == TerrainGrid.FORD and field:
+		return TerrainGrid.WATER
+	if code != TerrainGrid.BROOK:
+		return code
+	return _land_around(win, x, y, false)
+
+
+## The land most of the tiles around tile (x, y) of the window are,
+## FOREST or GRASS; with `drawn`, a brook among them counts as the land
+## drawn under it. UNKNOWN when none is land.
+func _land_around(win: PackedByteArray, x: int, y: int, drawn: bool) -> int:
+	var side := _size + 2 * READ
+	var forest := 0
+	var grass := 0
+	for dy in range(-1, 2):
+		for dx in range(-1, 2):
+			var near := win[(y + dy) * side + x + dx]
+			if near == TerrainGrid.BROOK and drawn:
+				near = _land_around(win, x + dx, y + dy, false)
+			if near == TerrainGrid.FOREST:
+				forest += 1
+			elif near == TerrainGrid.GRASS:
+				grass += 1
+	if forest + grass == 0 and drawn:
+		return TerrainGrid.UNKNOWN
+	return TerrainGrid.FOREST if forest > grass else TerrainGrid.GRASS
 
 
 ## The tiles of this chunk that `terrain` spills over, with the opacity of
@@ -528,11 +521,13 @@ func fringe(terrain: String) -> Array:
 	var over: Array = spill.get("over", [])
 	if over.is_empty():
 		return []
-	var nearness := _nearness(func(t: String) -> bool: return t == terrain, int(spill.get("width", 1)))
+	var win := _window()
+	var nearness := _nearness(win, _table([TerrainGrid.code_of(terrain)]), int(spill.get("width", 1)))
+	var field := shore_field_on()
 	var result: Array = []
 	for y in _size:
 		for x in _size:
-			if not over.has(_ground_terrain(_origin.x + x, _origin.y + y)):
+			if not over.has(TerrainGrid.name_of(_drawn(win, x + READ, y + READ, field))):
 				continue
 			var alphas := _corners(nearness, x, y)
 			if alphas[0] > 0.0 or alphas[1] > 0.0 or alphas[2] > 0.0 or alphas[3] > 0.0:
@@ -544,11 +539,15 @@ func fringe(terrain: String) -> Array:
 ## another, known terrain (the bank): tile -> four values, only for the
 ## tiles where some corner is near.
 func shore(terrain: String) -> Dictionary:
-	var nearness := _nearness(func(t: String) -> bool: return t != "" and t != terrain, SHORE_WIDTH)
+	return _shore(_window(), TerrainGrid.code_of(terrain))
+
+
+func _shore(win: PackedByteArray, code: int) -> Dictionary:
+	var nearness := _nearness(win, _table_but(code), SHORE_WIDTH)
 	var result: Dictionary = {}
 	for y in _size:
 		for x in _size:
-			if str(_tiles[y * _size + x]) != terrain:
+			if _codes[y * _size + x] != code:
 				continue
 			var near := _corners(nearness, x, y)
 			if near[0] > 0.0 or near[1] > 0.0 or near[2] > 0.0 or near[3] > 0.0:
@@ -570,12 +569,8 @@ func _terrain_signature() -> int:
 			for dx in range(-1, 2):
 				parts.append(int(tiles_hash.call(key + Vector2i(dx, dy))))
 		return maxi(hash(parts), 1)
-	var codes := PackedStringArray()
 	var m := BrookLines.MARGIN
-	for y in range(-m, _size + m):
-		for x in range(-m, _size + m):
-			codes.append(_terrain(_origin.x + x, _origin.y + y))
-	return hash(codes)
+	return maxi(hash(TerrainGrid.window(_origin - Vector2i(m, m), _size + 2 * m, _size + 2 * m)), 1)
 
 
 var _last_signature := 0
@@ -754,46 +749,69 @@ func _draw() -> void:
 	_draw_items()
 
 
-## The ground: textured tiles to their terrain's canvas, flat ones and the
-## decorations to the caches, the bank and the brooks to their canvases.
+## The ground: what each terrain's canvas draws to the ground index, flat
+## tiles and the decorations to the caches, the bank and the brooks to
+## their canvases.
 func _draw_ground_layers() -> void:
-	# Textured tiles go to their terrain's canvas; the rest is flat here.
-	var by_terrain: Dictionary = {}
+	var win := _window()
+	var field := shore_field_on()
+	# The terrain drawn on each tile, then its canvas's bit (0: flat).
+	var drawn := PackedByteArray()
+	drawn.resize(_size * _size)
+	var bit_of := PackedByteArray()
+	bit_of.resize(256)
+	bit_of.fill(255)
+	var bits := PackedByteArray()
+	bits.resize(_size * _size)
 	for y in _size:
 		for x in _size:
-			var tx := _origin.x + x
-			var ty := _origin.y + y
-			var terrain := _ground_terrain(tx, ty)
-			if ground_texture(terrain) != null:
-				if not by_terrain.has(terrain):
-					by_terrain[terrain] = PackedVector2Array()
-				by_terrain[terrain].append(Vector2(tx, ty))
+			var code := _drawn(win, x + READ, y + READ, field)
+			drawn[y * _size + x] = code
+			if bit_of[code] == 255:
+				var name := TerrainGrid.name_of(code)
+				bit_of[code] = int(GroundIndex.BITS.get(name, 0)) if ground_texture(name) != null else 0
+			if bit_of[code] != 0:
+				bits[y * _size + x] = bit_of[code]
 			else:
-				_flats.append([Iso.diamond(tx, ty), COLORS.get(terrain, Color.MAGENTA)])
-	# A terrain that spills may need a canvas here even without a tile here.
-	var spills: Dictionary = {}
-	for terrain in FRINGE_OVER:
-		if ground_texture(terrain) != null:
-			var f := fringe(terrain)
-			if not f.is_empty():
-				spills[terrain] = f
-	if shore_field_on():
-		_add_field_tiles(by_terrain)
-	for terrain in _grounds:
-		if not by_terrain.has(terrain) and not spills.has(terrain):
-			_grounds[terrain].tiles = PackedVector2Array()
-			_grounds[terrain].fringe = []
-			_grounds[terrain].queue_redraw()
-	for terrain in by_terrain.keys() + spills.keys():
-		var canvas := _ground_of(terrain)
-		canvas.tiles = by_terrain.get(terrain, PackedVector2Array())
-		canvas.fringe = spills.get(terrain, [])
-		canvas.shore = shore(terrain) if SHORE_TERRAINS.has(terrain) else {}
-		canvas.queue_redraw()
-	_draw_shore()
+				_flats.append([Iso.diamond(_origin.x + x, _origin.y + y), COLORS.get(TerrainGrid.name_of(code), Color.MAGENTA)])
+	# A terrain that spills (the forest) is drawn over the tiles it spills
+	# on, its opacity at their corners in the index.
+	var corners := PackedByteArray()
+	corners.resize((_size + 1) * (_size + 1))
+	for terrain: String in FRINGE_OVER:
+		if ground_texture(terrain) == null:
+			continue
+		var spill: Dictionary = FRINGE_OVER[terrain]
+		var over := _table(spill.get("over", []).map(func(t: String) -> int: return TerrainGrid.code_of(t)))
+		var nearness := _nearness(win, _table([TerrainGrid.code_of(terrain)]), int(spill.get("width", 1)))
+		for i in corners.size():
+			corners[i] = int(round(nearness[i] * 255.0))
+		for y in _size:
+			for x in _size:
+				if not over[drawn[y * _size + x]]:
+					continue
+				var alphas := _corners(nearness, x, y)
+				if alphas[0] > 0.0 or alphas[1] > 0.0 or alphas[2] > 0.0 or alphas[3] > 0.0:
+					bits[y * _size + x] |= GroundIndex.FRINGE
+	if field:
+		_add_field_tiles(win, bits)
+	GroundIndex.write(_origin, _size, bits, corners)
+	var used := 0
+	for b in bits:
+		used |= b
+	for terrain: String in GroundIndex.BITS:
+		var shown := (used & int(GroundIndex.BITS[terrain])) != 0
+		if FRINGE_OVER.has(terrain) and (used & GroundIndex.FRINGE) != 0:
+			shown = true
+		if shown or _grounds.has(terrain):
+			var canvas := _ground_of(terrain)
+			canvas.origin = _origin
+			canvas.size = _size
+			canvas.shown = shown
+			canvas.queue_redraw()
 	# A brook cuts the bank where it joins a river: drawn over it.
-	_draw_brooks()
-	_draw_decor()
+	_draw_brooks(win)
+	_draw_decor(win)
 
 
 ## Items: a small disc of the material's colour, slightly off the tile's
@@ -872,114 +890,68 @@ static func shore_field_on() -> bool:
 ## of the field, gives the water material the field, and lets each side
 ## reach across the tiles' edge so the smoothed line can fall anywhere:
 ## the land beneath under the water tiles touching land, the water (which
-## draws the bank) over the land within two tiles of the water.
-func _add_field_tiles(by_terrain: Dictionary) -> void:
-	var terrain := func(t: Vector2i) -> String: return _terrain(t.x, t.y)
-	ShoreField.update(terrain, _origin, _size, current_at, true)
+## draws the bank) over the land within two tiles of the water. Adds to
+## `bits`, the tiles' bits for the index.
+func _add_field_tiles(win: PackedByteArray, bits: PackedByteArray) -> void:
+	ShoreField.update(win, _origin, _size, current_at, true)
 	var water_material := ground_material("water")
 	water_material.set_shader_parameter("shore_field", ShoreField.texture())
+	water_material.set_shader_parameter("shore_water", ShoreField.water_texture())
 	water_material.set_shader_parameter("has_field", true)
 	water_material.set_shader_parameter("field_tiles", float(ShoreField.TILES))
 	water_material.set_shader_parameter("field_range", ShoreField.RANGE)
 	if ground_texture("water") == null:
 		return
-	# The terrains over the chunk and two tiles around, read once, and
-	# which tiles have water within two tiles, row by row then across.
+	var side := _size + 2 * READ
+	var water_bit := int(GroundIndex.BITS["water"])
+	# Which tiles have water within two tiles: along the rows, then across.
 	var m := 2
-	var span := _size + 2 * m
-	var grid := PackedStringArray()
-	grid.resize(span * span)
-	var water := PackedByteArray()
-	water.resize(span * span)
-	for j in span:
-		for i in span:
-			var t := _terrain(_origin.x + i - m, _origin.y + j - m)
-			grid[j * span + i] = t
-			if ShoreField.is_water(t):
-				water[j * span + i] = 1
+	var rows := _size + 2 * m
 	var along := PackedByteArray()
-	along.resize(span * span)
-	for j in span:
-		for i in range(m, span - m):
+	along.resize(rows * _size)
+	for j in rows:
+		var row := (READ - m + j) * side + READ
+		for x in _size:
 			for d in range(-m, m + 1):
-				if water[j * span + i + d]:
-					along[j * span + i] = 1
+				if ShoreField.is_water(win[row + x + d]):
+					along[j * _size + x] = 1
 					break
 	for y in _size:
 		for x in _size:
-			var tx := _origin.x + x
-			var ty := _origin.y + y
-			var here := grid[(y + m) * span + x + m]
-			if here == "water" or here == "ford":
+			var here := win[(y + READ) * side + x + READ]
+			if ShoreField.is_water(here):
 				# The land under it, where land is near: forest if the land
 				# around is mostly forest, else grass.
-				var forest := 0
-				var grass := 0
-				for dy in range(-1, 2):
-					for dx in range(-1, 2):
-						var near := grid[(y + m + dy) * span + x + m + dx]
-						if near == "brook":
-							near = _ground_terrain(tx + dx, ty + dy)
-						if near == "forest":
-							forest += 1
-						elif near == "grass":
-							grass += 1
-				if forest + grass > 0:
-					var land := "forest" if forest > grass else "grass"
-					if ground_texture(land) != null:
-						if not by_terrain.has(land):
-							by_terrain[land] = PackedVector2Array()
-						by_terrain[land].append(Vector2(tx, ty))
-			elif not ShoreField.is_water(here) and here != "":
-				var near_water := false
-				for dy in range(-m, m + 1):
-					if along[(y + m + dy) * span + x + m]:
-						near_water = true
+				var land := TerrainGrid.name_of(_land_around(win, x + READ, y + READ, true))
+				if land != "" and ground_texture(land) != null:
+					bits[y * _size + x] |= int(GroundIndex.BITS[land])
+			elif here != TerrainGrid.UNKNOWN:
+				for dy in range(0, 2 * m + 1):
+					if along[(y + dy) * _size + x]:
+						bits[y * _size + x] |= water_bit
 						break
-				if near_water:
-					if not by_terrain.has("water"):
-						by_terrain["water"] = PackedVector2Array()
-					by_terrain["water"].append(Vector2(tx, ty))
-
-
-## The ground drawn on tile (tx, ty): its terrain, except under a brook,
-## which is a line on the ground (BrookLines): there, the land around it,
-## forest where the tiles around are mostly forest, else grass.
-func _ground_terrain(tx: int, ty: int) -> String:
-	var terrain := _terrain(tx, ty)
-	if terrain == "ford" and shore_field_on():
-		# A ford is shallow water: the water's shader draws it (ShoreField).
-		return "water"
-	if terrain != "brook":
-		return terrain
-	var forest := 0
-	var grass := 0
-	for dy in range(-1, 2):
-		for dx in range(-1, 2):
-			var near := _terrain(tx + dx, ty + dy)
-			if near == "forest":
-				forest += 1
-			elif near == "grass":
-				grass += 1
-	return "forest" if forest > grass else "grass"
 
 
 ## The brooks crossing this chunk, as lines on the ground (BrookLines):
 ## found over a margin around the chunk, so they join the neighbours'
 ## without a seam; each segment is drawn by the chunk under its middle.
-func _draw_brooks() -> void:
+func _draw_brooks(win: PackedByteArray) -> void:
+	var side := _size + 2 * READ
 	var near := false
-	for y in range(-2, _size + 2):
-		for x in range(-2, _size + 2):
-			if _terrain(_origin.x + x, _origin.y + y) == "brook":
+	for y in range(READ - 2, READ + _size + 2):
+		for x in range(READ - 2, READ + _size + 2):
+			if win[y * side + x] == TerrainGrid.BROOK:
 				near = true
 				break
 		if near:
 			break
 	if not near:
+		if _brooks != null:
+			_brooks.lines = []
+			_brooks.queue_redraw()
 		return
 	var margin := Vector2i(BrookLines.MARGIN, BrookLines.MARGIN)
-	var terrain := func(t: Vector2i) -> String: return _terrain(t.x, t.y)
+	var terrain := func(t: Vector2i) -> String: return TerrainGrid.name_at(t)
 	var lines := BrookLines.lay(terrain, _origin - margin, _origin + Vector2i(_size, _size) + margin)
 	var tint: Color = ground_params("water").get("base_tint", Color.WHITE)
 	var bed := str(ground_layers("water").get("brook1", ""))
@@ -1040,56 +1012,36 @@ class BrookCanvas:
 		BrookLines.draw_shaded(self, lines, lo, hi, water)
 
 
-## Hands each terrain's fill canvas its bands, emptying the others.
-func _set_fills(fills: Dictionary) -> void:
-	for terrain in _fills:
-		if not fills.has(terrain):
-			_fills[terrain].fills = []
-			_fills[terrain].queue_redraw()
-	for terrain in fills:
-		var canvas := _fill_of(terrain)
-		canvas.fills = fills[terrain]
-		canvas.queue_redraw()
-
-
-func _draw_shore() -> void:
-	# The bank is drawn by the ground shader from the distance to the water
-	# (ShoreField, shore mode "field"); the bank's former modes (tiles,
-	# isometric pieces, brushes, curves, generated pieces) were removed on
-	# 9 November 2026, their images kept outside the repository.
-	_set_fills({})
-
-
 ## Sows the decorations of this chunk: for each kind, on the tiles its
 ## "where" names (water within a tile of land; land within two tiles of
 ## water), with its chance, at a fixed random spot of the tile.
-func _draw_decor() -> void:
+func _draw_decor(win: PackedByteArray) -> void:
 	var decor: Dictionary = ground_spec().get("decor", {})
 	if decor.is_empty():
 		return
 	var wanted: Dictionary = {}
-	for kind in decor:
+	for kind: String in decor:
 		if decor[kind] is Dictionary:
 			wanted[str(decor[kind].get("where", ""))] = true
-	var water_near_land := shore("water") if wanted.has("water_near_land") else {}
+	var water_near_land := _shore(win, TerrainGrid.WATER) if wanted.has("water_near_land") else {}
 	# How near the water each land tile is, once for every kind (0 for
 	# the tiles no decoration grows on).
 	var land_near := PackedFloat32Array()
 	land_near.resize(_size * _size)
 	var any_land_near := false
 	if wanted.keys().any(func(w: String) -> bool: return w != "water_near_land"):
-		var land_near_water := _nearness(func(t: String) -> bool: return t == "water", 2)
+		var land_near_water := _nearness(win, _table([TerrainGrid.WATER]), 2)
+		var bare := _table([TerrainGrid.WATER, TerrainGrid.FORD, TerrainGrid.BROOK, TerrainGrid.ROCK])
 		for y in _size:
 			for x in _size:
-				var terrain := str(_tiles[y * _size + x])
-				if terrain == "water" or terrain == "ford" or terrain == "brook" or terrain == "rock":
+				if bare[_codes[y * _size + x]]:
 					continue
 				var near := _max4(_corners(land_near_water, x, y))
 				land_near[y * _size + x] = near
 				any_land_near = any_land_near or near > 0.0
 	var water_tint: Color = ground_params("water").get("base_tint", Color.WHITE)
 	var salt := 0
-	for kind in decor:
+	for kind: String in decor:
 		if not decor[kind] is Dictionary:
 			continue  # the entry's note
 		salt += 1
@@ -1111,10 +1063,9 @@ func _draw_decor() -> void:
 			for x in _size:
 				var tx := _origin.x + x
 				var ty := _origin.y + y
-				var terrain := str(_tiles[y * _size + x])
 				var near := 0.0
 				if by_water:
-					if terrain != "water" or not water_near_land.has(Vector2i(tx, ty)):
+					if _codes[y * _size + x] != TerrainGrid.WATER or not water_near_land.has(Vector2i(tx, ty)):
 						continue
 					near = _max4(water_near_land[Vector2i(tx, ty)])
 					if near < min_near:
