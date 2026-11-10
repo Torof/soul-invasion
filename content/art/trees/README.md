@@ -8,6 +8,8 @@ the point where the server says the trunk meets the ground.
   oak 4 m, birch 4.5 m, pine 5 m, willow 3.5 m, hazel and wild apple 3 m),
   four times the screen, so they stay sharp up to zoom 4. The bottom edge is
   the trunk's foot and the image is centred on it. Transparent background.
+  Made before D39's sharpness rule (10 November 2026): the next trees are
+  sized by it, at a reference zoom of 2 to 2.5 (`flora_art.py --tree-zoom`).
 - **Made**: 7–8 November 2026 on Midjourney by the project lead, with the
   style reference and the prompt of `docs/08-midjourney-prompts.md` (Trees),
   plus a clean oak on white as a second reference; the first oak edited in
