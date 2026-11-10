@@ -15,7 +15,7 @@ What remains to be decided, with the moment it will need to be settled.
 - Simple rules for soul points.
 - Form of the interface for tool assembly and intentions. First form settled with D35 (6 November 2026): hover names, right-click context menu, inventory panel; assembly still open.
 - ~~Visual rendering~~: pure 2D isometric, images generated with Midjourney under a style reference (6 November 2026, D02 settled, `07` and `09`). Still open: the animation tool for bodies, and whether ground overlays are content placed by the server or decoration scattered by the client.
-- **Retention** of the event journal and snapshots (D28): today nothing is pruned (8.5 KB per game day in milestone 1, more as the world fills). Keep everything, keep N days, or compact into snapshots?
+- ~~**Retention** of the event journal and snapshots (D28)~~ — decided 10 November 2026: no world journal (D17); the last three snapshots are kept, written every five minutes on the storage thread; a soul's deeds are kept until they unlock a title, power or skill.
 
 ## To be settled later
 
