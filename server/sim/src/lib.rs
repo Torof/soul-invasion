@@ -23,7 +23,7 @@ pub mod time;
 pub mod trees;
 pub mod woods;
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 pub use content::{
@@ -541,15 +541,20 @@ pub enum Event {
 }
 
 /// The world state: time, ground, bodies, things on the ground.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+///
+/// Read back from a snapshot through [`Stored`], which rebuilds what is
+/// derived from the rest (the bodies by chunk) and is never written.
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct World {
     calendar: Calendar,
     tick: Tick,
     /// Shared, never changed once made: copying the world (to save it on
     /// another thread) and the network's view of the ground take a handle,
     /// not the tiles.
-    #[serde(serialize_with = "write_map", deserialize_with = "read_map")]
+    #[serde(serialize_with = "write_map")]
     map: Arc<Map>,
+    /// Every body, in id order: ids only ever grow, so a body is found by
+    /// halving, never by a scan ([`World::body`]).
     bodies: Vec<Body>,
     next_body: u32,
     /// The items a body has touched, made or let fall: stored. The ground's
@@ -559,11 +564,14 @@ pub struct World {
     next_item: u64,
     /// Whether the ground drops natural items ([`items`]); false for worlds
     /// made before them, whose scattered items are all in `items`.
-    #[serde(default)]
     natural: bool,
     /// The natural items taken off the ground: they do not come back.
-    #[serde(default)]
     taken: BTreeSet<ItemId>,
+    /// The bodies standing in each chunk, ids in order: kept as bodies
+    /// walk, teleport, appear and die, so the bodies of a place are a
+    /// lookup, never a scan of them all (D39). Derived: rebuilt on load.
+    #[serde(skip)]
+    by_chunk: BTreeMap<ChunkPos, Vec<BodyId>>,
     /// The content's spawn rules the natural items follow, set with the
     /// kinds of tree ([`World::take_content`]). Never persisted.
     #[serde(skip)]
@@ -585,6 +593,54 @@ fn write_map<S: serde::Serializer>(map: &Arc<Map>, serializer: S) -> Result<S::O
 
 fn read_map<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Arc<Map>, D::Error> {
     <Map as serde::Deserialize>::deserialize(deserializer).map(Arc::new)
+}
+
+/// A world as a snapshot holds it: exactly what [`World`] writes, and
+/// nothing that is derived from it.
+#[derive(serde::Deserialize)]
+struct Stored {
+    calendar: Calendar,
+    tick: Tick,
+    #[serde(deserialize_with = "read_map")]
+    map: Arc<Map>,
+    bodies: Vec<Body>,
+    next_body: u32,
+    items: Vec<Item>,
+    next_item: u64,
+    #[serde(default)]
+    natural: bool,
+    #[serde(default)]
+    taken: BTreeSet<ItemId>,
+}
+
+impl<'de> serde::Deserialize<'de> for World {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let stored = Stored::deserialize(deserializer)?;
+        let mut world = Self {
+            calendar: stored.calendar,
+            tick: stored.tick,
+            map: stored.map,
+            bodies: stored.bodies,
+            next_body: stored.next_body,
+            items: stored.items,
+            next_item: stored.next_item,
+            natural: stored.natural,
+            taken: stored.taken,
+            by_chunk: BTreeMap::new(),
+            spawns: Vec::new(),
+            pending: Vec::new(),
+            species: Vec::new(),
+        };
+        let standing: Vec<_> = world
+            .bodies
+            .iter()
+            .map(|b| (b.id, b.pos().chunk()))
+            .collect();
+        for (id, chunk) in standing {
+            world.enter_chunk(id, chunk);
+        }
+        Ok(world)
+    }
 }
 
 /// Side of the first version's valley, in tiles: about 3 km, thirty-six
@@ -632,6 +688,7 @@ impl World {
             next_item: 1,
             natural: false,
             taken: BTreeSet::new(),
+            by_chunk: BTreeMap::new(),
             spawns: Vec::new(),
             pending: Vec::new(),
             species: Vec::new(),
@@ -685,7 +742,39 @@ impl World {
 
     /// A body by id.
     pub fn body(&self, id: BodyId) -> Option<&Body> {
-        self.bodies.iter().find(|b| b.id == id)
+        self.index_of(id).map(|index| &self.bodies[index])
+    }
+
+    /// Where a body is in `bodies`, found by halving (they are in id order).
+    fn index_of(&self, id: BodyId) -> Option<usize> {
+        self.bodies.binary_search_by_key(&id, |b| b.id).ok()
+    }
+
+    /// The bodies standing in a chunk, in id order.
+    pub fn bodies_in(&self, chunk: ChunkPos) -> Vec<&Body> {
+        self.by_chunk.get(&chunk).map_or_else(Vec::new, |ids| {
+            ids.iter().filter_map(|id| self.body(*id)).collect()
+        })
+    }
+
+    /// Notes a body standing in a chunk.
+    fn enter_chunk(&mut self, id: BodyId, chunk: ChunkPos) {
+        let ids = self.by_chunk.entry(chunk).or_default();
+        if let Err(at) = ids.binary_search(&id) {
+            ids.insert(at, id);
+        }
+    }
+
+    /// Notes a body no longer standing in a chunk.
+    fn leave_chunk(&mut self, id: BodyId, chunk: ChunkPos) {
+        if let Some(ids) = self.by_chunk.get_mut(&chunk) {
+            if let Ok(at) = ids.binary_search(&id) {
+                ids.remove(at);
+            }
+            if ids.is_empty() {
+                self.by_chunk.remove(&chunk);
+            }
+        }
     }
 
     /// The stored items: those a body touched, made or let fall, carried or
@@ -800,6 +889,7 @@ impl World {
             held: None,
             carried: Vec::new(),
         });
+        self.enter_chunk(id, pos.chunk());
         id
     }
 
@@ -880,6 +970,7 @@ impl World {
             }
             let load = self.load_g(&self.bodies[index], rules);
             let speed = loaded_speed(&rules.movement, load);
+            let before = self.bodies[index].pos().chunk();
             walk(
                 &mut self.bodies[index],
                 &self.map,
@@ -888,6 +979,12 @@ impl World {
                 per_second,
                 events,
             );
+            let after = self.bodies[index].pos().chunk();
+            if after != before {
+                let id = self.bodies[index].id;
+                self.leave_chunk(id, before);
+                self.enter_chunk(id, after);
+            }
         }
 
         self.fare(rules, night, events);
@@ -949,11 +1046,12 @@ impl World {
 
     /// Turns a body into a corpse on the ground.
     fn die(&mut self, id: BodyId, cause: Death, events: &mut Vec<Event>) {
-        let Some(index) = self.bodies.iter().position(|b| b.id == id) else {
+        let Some(index) = self.index_of(id) else {
             return;
         };
         let body = self.bodies.remove(index);
         let at = body.pos();
+        self.leave_chunk(id, at.chunk());
         for item in body.inventory().collect::<Vec<_>>() {
             if let Some(dropped) = self.items.iter_mut().find(|i| i.id == item) {
                 dropped.place = Place::Ground { pos: at };
@@ -998,7 +1096,7 @@ impl World {
         }
         match *intention {
             Intention::MoveTo { body: id, target } => {
-                let Some(index) = self.bodies.iter().position(|b| b.id == id) else {
+                let Some(index) = self.index_of(id) else {
                     events.push(Event::MoveRefused { body: id, target });
                     return;
                 };
@@ -1057,7 +1155,7 @@ impl World {
             Intention::Hold { body: id, item } => self.hold(id, item, rules, events),
             Intention::Stow { body: id, item } => self.stow(id, item, rules, events),
             Intention::Sleep { body: id } => {
-                if let Some(index) = self.bodies.iter().position(|b| b.id == id) {
+                if let Some(index) = self.index_of(id) {
                     let body = &mut self.bodies[index];
                     if !body.condition.asleep {
                         body.condition.asleep = true;
@@ -1076,7 +1174,7 @@ impl World {
                 }
             }
             Intention::Wake { body: id } => {
-                if let Some(index) = self.bodies.iter().position(|b| b.id == id) {
+                if let Some(index) = self.index_of(id) {
                     self.wake(index, events);
                 }
             }
@@ -1138,7 +1236,7 @@ impl World {
     /// once on the walkable tile nearest `target`, ring by ring, awake and
     /// with no route; it is seen to move there and stop.
     fn teleport(&mut self, id: BodyId, target: Pos, rules: &Content, events: &mut Vec<Event>) {
-        let Some(index) = self.bodies.iter().position(|b| b.id == id) else {
+        let Some(index) = self.index_of(id) else {
             events.push(Event::MoveRefused { body: id, target });
             return;
         };
@@ -1161,7 +1259,13 @@ impl World {
         self.wake(index, events);
         let body = &mut self.bodies[index];
         body.route.clear();
+        let before = body.pos().chunk();
         body.at = tile.centre();
+        if tile.chunk() != before {
+            self.leave_chunk(id, before);
+            self.enter_chunk(id, tile.chunk());
+        }
+        let body = &mut self.bodies[index];
         events.push(Event::BodyMoved {
             body: id,
             to: tile,
@@ -1175,7 +1279,7 @@ impl World {
     }
 
     fn eat(&mut self, id: BodyId, item: ItemId, rules: &Content, events: &mut Vec<Event>) {
-        let Some(index) = self.bodies.iter().position(|b| b.id == id) else {
+        let Some(index) = self.index_of(id) else {
             return Self::refuse(events, id, ItemAct::Eat, item, Refusal::Unknown);
         };
         let place = match self.reach(index, item) {
@@ -1212,7 +1316,7 @@ impl World {
     }
 
     fn pick_up(&mut self, id: BodyId, item: ItemId, rules: &Content, events: &mut Vec<Event>) {
-        let Some(index) = self.bodies.iter().position(|b| b.id == id) else {
+        let Some(index) = self.index_of(id) else {
             return Self::refuse(events, id, ItemAct::PickUp, item, Refusal::Unknown);
         };
         let pos = match self.reach(index, item) {
@@ -1251,7 +1355,7 @@ impl World {
     }
 
     fn drop(&mut self, id: BodyId, item: ItemId, rules: &Content, events: &mut Vec<Event>) {
-        let Some(index) = self.bodies.iter().position(|b| b.id == id) else {
+        let Some(index) = self.index_of(id) else {
             return Self::refuse(events, id, ItemAct::Drop, item, Refusal::Unknown);
         };
         if !self.bodies[index].has(item) {
@@ -1278,7 +1382,7 @@ impl World {
     }
 
     fn hold(&mut self, id: BodyId, item: ItemId, rules: &Content, events: &mut Vec<Event>) {
-        let Some(index) = self.bodies.iter().position(|b| b.id == id) else {
+        let Some(index) = self.index_of(id) else {
             return Self::refuse(events, id, ItemAct::Hold, item, Refusal::Unknown);
         };
         if self.bodies[index].held == Some(item) {
@@ -1301,7 +1405,7 @@ impl World {
     }
 
     fn stow(&mut self, id: BodyId, item: ItemId, rules: &Content, events: &mut Vec<Event>) {
-        let Some(index) = self.bodies.iter().position(|b| b.id == id) else {
+        let Some(index) = self.index_of(id) else {
             return Self::refuse(events, id, ItemAct::Stow, item, Refusal::Unknown);
         };
         if self.bodies[index].held != Some(item) {
@@ -2412,6 +2516,59 @@ mod tests {
                 pos: Pos::new(1, 1)
             }
         );
+    }
+
+    #[test]
+    fn bodies_are_found_by_id_and_by_chunk() {
+        // Bodies across chunks, found by id and by the chunk they stand
+        // in; a walk over a chunk's edge, a teleport and a death move
+        // them; a world read back knows the same.
+        let map = Map::filled(96, 96, Terrain::Grass);
+        let mut w = World::empty(Calendar::new(1, 1_000_000).unwrap(), map);
+        let a = w.spawn_body(Pos::new(5, 5));
+        let b = w.spawn_body(Pos::new(40, 5));
+        let c = w.spawn_body(Pos::new(41, 6));
+        assert_eq!(w.body(b).map(Body::id), Some(b));
+        assert_eq!(w.body(BodyId(9)), None);
+        let ids = |w: &World, x, y| -> Vec<BodyId> {
+            w.bodies_in(ChunkPos::new(x, y))
+                .iter()
+                .map(|b| b.id)
+                .collect()
+        };
+        assert_eq!(ids(&w, 0, 0), vec![a]);
+        assert_eq!(ids(&w, 1, 0), vec![b, c]);
+        assert_eq!(ids(&w, 2, 0), vec![]);
+        let mut events = Vec::new();
+        w.queue(Intention::MoveTo {
+            body: a,
+            target: Pos::new(34, 5),
+        });
+        for _ in 0..200 {
+            w.step(&rules(), &mut events);
+            if !w.body(a).unwrap().is_walking() {
+                break;
+            }
+        }
+        assert_eq!(w.body(a).unwrap().pos(), Pos::new(34, 5));
+        assert_eq!(ids(&w, 0, 0), vec![]);
+        assert_eq!(ids(&w, 1, 0), vec![a, b, c]);
+        w.queue(Intention::Teleport {
+            body: c,
+            target: Pos::new(70, 70),
+        });
+        w.step(&rules(), &mut events);
+        assert_eq!(ids(&w, 2, 2), vec![c]);
+        assert_eq!(ids(&w, 1, 0), vec![a, b]);
+        w.die(b, Death::Starved, &mut events);
+        assert_eq!(w.body(b), None);
+        assert_eq!(ids(&w, 1, 0), vec![a]);
+        assert_eq!(w.body(c).map(Body::id), Some(c));
+        let back: World = serde_json::from_str(&serde_json::to_string(&w).unwrap()).unwrap();
+        assert_eq!(ids(&back, 1, 0), vec![a]);
+        assert_eq!(ids(&back, 2, 2), vec![c]);
+        assert_eq!(back.body(c), w.body(c));
+        assert_eq!(back.bodies(), w.bodies());
     }
 
     #[test]
