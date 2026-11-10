@@ -132,8 +132,8 @@ func report(worst_ms: float) -> String:
 	])
 	if world != null:
 		var counts: Dictionary = world.call("counts")
-		lines.append("chunks %d (%d to build)   trees %d   bodies %d" % [
-			counts.get("chunks", 0), ChunkView.waiting.size(), counts.get("trees", 0), counts.get("bodies", 0),
+		lines.append("chunks %d (%d to build)   trees %d (%d drawn)   bodies %d" % [
+			counts.get("chunks", 0), ChunkView.waiting.size(), counts.get("trees", 0), counts.get("trees_drawn", 0), counts.get("bodies", 0),
 		])
 	lines.append("bank fields smoothing %d   F3 hides" % ShoreField.busy)
 	lines.append("wind %s (F4)   ground %s (F5)   trees %s (F6)" % [

@@ -82,8 +82,7 @@ signal acts_requested(acts: Array, at_screen: Vector2)
 signal teleporting
 ## body id -> {"id", "material"} of what it holds, or {}
 var _holds: Dictionary = {}
-## chunk -> [{"at": Vector2 (millimetres), "species"}], the trees standing
-## in it, as the server sent them.
+## chunk -> the trees standing in it (Trees.Stand).
 var _trees: Dictionary = {}
 ## species id -> height in centimetres.
 var _tree_heights: Dictionary = {}
@@ -107,7 +106,7 @@ const SEE_EASE := 0.2
 var _to_redraw := RedrawQueue.new()
 ## The layer the trees and bodies stand on, sorted by their feet.
 var _standing: Node2D
-## chunk -> the node holding its trees.
+## chunk -> the node holding its trees and tall plants.
 var _tree_nodes: Dictionary = {}
 ## The land past the chunks held (FarView).
 var _far: FarView
@@ -115,14 +114,13 @@ var _far: FarView
 ## each chunk held, as received ({kind, x, y}).
 var _flora: Array = []
 var _plants: Dictionary = {}
-## Chunk key -> {screen cell: [trees whose image covers that cell]}, cells
-## of TREE_CELL_PX: the trees under a point are found without looking at
-## every tree (see-through).
-var _tree_cells: Dictionary = {}
-const TREE_CELL_PX := 128.0
+## The trees under a point are found without looking at every tree
+## (see-through), by the cells of the screen each stand knows its trees by.
+const TREE_CELL_PX := Trees.Stand.CELL_PX
 ## body id -> the node drawing it.
 var _body_nodes: Dictionary = {}
-## The trees whose see-through flags are set, to clear them later.
+## The trees whose see-through flags are set, to clear them later:
+## Vector3i(chunk x, chunk y, tree index) -> true.
 var _flagged: Dictionary = {}
 ## What the see-through flags were last worked out for (the mouse, the
 ## bodies and where they stand), and how long ago.
@@ -171,6 +169,9 @@ func _ready() -> void:
 	_standing.y_sort_enabled = true
 	_standing.material = sway
 	add_child(_standing)
+	# Which trees have a canvas item is settled just before each frame is
+	# drawn, once the camera has moved for good (_cull_trees).
+	RenderingServer.frame_pre_draw.connect(_cull_trees)
 	Net.chunk_hidden.connect(_on_chunk_hidden)
 	Net.body_walks.connect(_on_body_walks)
 	Net.body_stopped.connect(_on_body_stopped)
@@ -212,9 +213,12 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	TerrainGrid.clear_all()
 	_tile_hashes.clear()
 	_currents.clear()
+	for stand: Trees.Stand in _trees.values():
+		stand.release()
 	_trees.clear()
-	_tree_cells.clear()
 	_plants.clear()
+	_standing_changed = true
+	_trees_changed = true
 	for n: Node in _tree_nodes.values():
 		n.queue_free()
 	_tree_nodes.clear()
@@ -253,10 +257,12 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees:
 	_tile_hashes[key] = hash(codes)
 	_currents[key] = currents
 	_items[key] = items
-	var standing: Array = []
-	for t in trees:
-		standing.append({"at": Net.point(t.get("at", {})), "species": str(t.get("species", ""))})
-	_trees[key] = standing
+	var old: Trees.Stand = _trees.get(key)
+	if old != null:
+		old.release()
+	_trees[key] = Trees.Stand.new(trees, _tree_heights)
+	_standing_changed = true
+	_trees_changed = true
 	_plants[key] = plants
 	_plant_chunk(key, view)
 	view.show_plants(plants, _flora)
@@ -346,6 +352,8 @@ func set_wind(on: bool) -> void:
 ## they cost the graphics card.
 func set_trees_shown(on: bool) -> void:
 	_trees_shown = on
+	_standing_changed = true
+	_trees_changed = true
 	_cull_standing()
 
 
@@ -361,6 +369,10 @@ const STANDING_REACH := 256.0
 func _cull_standing() -> void:
 	var half := get_viewport_rect().size / _camera.zoom.x / 2.0
 	var seen := Rect2(_camera.position - half, half * 2.0)
+	if seen == _standing_seen and not _standing_changed:
+		return
+	_standing_seen = seen
+	_standing_changed = false
 	for key: Vector2i in _tree_nodes:
 		var holder: Variant = _tree_nodes[key]
 		if not is_instance_valid(holder):
@@ -375,18 +387,53 @@ func _cull_standing() -> void:
 		var shown := _trees_shown and seen.intersects(reach)
 		if (holder as Node2D).visible != shown:
 			(holder as Node2D).visible = shown
+			_trees_changed = true
 
 
 var _trees_shown := true
+## The view the standing layer was last culled for, and whether chunks came
+## or went since (then it is culled again even if the view stayed).
+var _standing_seen := Rect2()
+var _standing_changed := true
+## The cells of the screen the trees were last shown for, and whether the
+## trees or the chunks shown changed since.
+var _trees_cells := Rect2i()
+var _trees_changed := true
 
 
-## What the world holds now, for the development counters.
+## Gives a canvas item to the trees whose image may show on screen, and
+## only to them (Trees.Stand.show_cells): the renderer sorts by depth
+## every tree it is given, seen or not. Run just before a frame is drawn,
+## when the camera has stopped moving for that frame; only the cells of
+## the screen that came or went are looked at. What is on screen is
+## unchanged.
+func _cull_trees() -> void:
+	if _trees.is_empty():
+		return
+	var t := DevTiming.start()
+	var seen := get_viewport().get_canvas_transform().affine_inverse() * get_viewport().get_visible_rect()
+	var cells := Trees.Stand.cell_range(seen)
+	if cells == _trees_cells and not _trees_changed:
+		DevTiming.add("tree culling", t)
+		return
+	_trees_cells = cells
+	_trees_changed = false
+	for key: Vector2i in _trees:
+		var holder: Variant = _tree_nodes.get(key)
+		var on := holder != null and is_instance_valid(holder) and (holder as Node2D).visible
+		(_trees[key] as Trees.Stand).show_cells(cells if on else Rect2i())
+	DevTiming.add("tree culling", t)
+
+
+## What the world holds now, for the development counters: the trees held
+## and those given a canvas item (drawn, or just off the screen's edge).
 func counts() -> Dictionary:
 	var trees := 0
-	for holder: Variant in _tree_nodes.values():
-		if is_instance_valid(holder):
-			trees += (holder as Node).get_child_count()
-	return {"chunks": _chunks.size(), "trees": trees, "bodies": _bodies.size()}
+	var drawn := 0
+	for stand: Trees.Stand in _trees.values():
+		trees += stand.size()
+		drawn += stand.items.size()
+	return {"chunks": _chunks.size(), "trees": trees, "trees_drawn": drawn, "bodies": _bodies.size()}
 
 
 ## The tile the piloted body stands on, or (-1, -1) when there is none.
@@ -532,9 +579,13 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 		TerrainGrid.clear(key * _chunk_size, _chunk_size)
 		_tile_hashes.erase(key)
 		_currents.erase(key)
+		var stand: Trees.Stand = _trees.get(key)
+		if stand != null:
+			stand.release()
 		_trees.erase(key)
-		_tree_cells.erase(key)
 		_plants.erase(key)
+		_standing_changed = true
+		_trees_changed = true
 		var gone: Node = _tree_nodes.get(key)
 		if gone != null:
 			gone.queue_free()
@@ -826,27 +877,16 @@ func _plant_chunk(key: Vector2i, view: ChunkView) -> void:
 	var holder := Node2D.new()
 	holder.y_sort_enabled = true
 	holder.use_parent_material = true
-	var cells := {}
-	for tree: Dictionary in _trees[key]:
-		var height := int(_tree_heights.get(tree["species"], 400))
-		var node := Trees.TreeNode.new(tree, height)
-		tree["node"] = node
-		holder.add_child(node)
-		var images := Trees.textures(str(tree["species"]))
-		if images.is_empty():
-			continue
-		var at: Vector2 = tree["at"]
-		var r := Trees.rect(at, height, images[Trees.variant(at, images.size())])
-		tree["rect"] = r
-		var lo := (r.position / TREE_CELL_PX).floor()
-		var hi := (r.end / TREE_CELL_PX).floor()
-		for cy in range(int(lo.y), int(hi.y) + 1):
-			for cx in range(int(lo.x), int(hi.x) + 1):
-				var cell := Vector2i(cx, cy)
-				if not cells.has(cell):
-					cells[cell] = []
-				cells[cell].append(tree)
-	_tree_cells[key] = cells
+	# The trees hang from a y-sorted node of their own, first: sorted with
+	# everything else on the standing layer, ties as before (trees, then
+	# the tall plants, in the server's order).
+	var trees := Node2D.new()
+	trees.name = "Trees"
+	trees.y_sort_enabled = true
+	trees.use_parent_material = true
+	holder.add_child(trees)
+	var stand: Trees.Stand = _trees[key]
+	stand.parent = trees.get_canvas_item()
 	holder.visible = _trees_shown
 	# The tall plants stand among the trees, sorted with them by their foot.
 	for plant: Dictionary in _plants.get(key, []):
@@ -870,8 +910,7 @@ func _plant_chunk(key: Vector2i, view: ChunkView) -> void:
 		shadows = Trees.ShadowLayer.new()
 		shadows.name = "Shadows"
 		view.add_child(shadows)
-	shadows.trees = _trees[key]
-	shadows.heights = _tree_heights
+	shadows.stand = stand
 	shadows.queue_redraw()
 
 
@@ -935,21 +974,28 @@ func _update_flags(mouse: Vector2) -> void:
 				wanted.append(Vector2i(cx, cy))
 	var seen := {}
 	var now := {}
-	for key in keys:
-		var cells: Dictionary = _tree_cells.get(key, {})
+	for key: Vector2i in keys:
+		var stand: Trees.Stand = _trees.get(key)
+		if stand == null:
+			continue
 		for cell in wanted:
-			for tree: Dictionary in cells.get(cell, []):
-				var node: Trees.TreeNode = tree.get("node")
-				if node == null or seen.has(node):
+			var list: Variant = stand.cells.get(cell)
+			if list == null:
+				continue
+			for i: int in list:
+				var id := Vector3i(key.x, key.y, i)
+				if seen.has(id):
 					continue
-				seen[node] = true
-				var f := _see_through_flags(tree, node.height_cm, mouse, behind)
+				seen[id] = true
+				var f := _see_through_flags(stand.at[i], stand.rect(i), mouse, behind)
 				if f != 0:
-					now[node] = true
-					node.set_flags(f)
-	for node: Variant in _flagged:
-		if is_instance_valid(node) and not now.has(node):
-			(node as Trees.TreeNode).set_flags(0)
+					now[id] = true
+					stand.set_flags(i, f)
+	for id: Vector3i in _flagged:
+		if not now.has(id):
+			var stand: Trees.Stand = _trees.get(Vector2i(id.x, id.y))
+			if stand != null:
+				stand.set_flags(id.z, 0)
 	_flagged = now
 
 
@@ -960,22 +1006,15 @@ func _body_see_centre() -> Vector2:
 	return Iso.point_to_screen(_bodies[_piloted]["at"]) - Vector2(0, Iso.PX_PER_M * BODY_HEIGHT_M * 0.6)
 
 
-## Which see-through circles a tree drawn now takes part in (Trees.draw):
+## Which see-through circles a tree standing at `at` (millimetres), its
+## image covering `r`, takes part in (Trees.marker):
 ## the body's when it stands in front of the piloted body and covers its
 ## circle; the mouse's when it covers the mouse and something (a body, an
 ## item) lies behind it near the mouse.
 ## `behind`: the smallest depth (x + y, millimetres) of a body or an item
 ## near the mouse (_nearest_depth_near), INF when there is none.
-func _see_through_flags(tree: Dictionary, height_cm: int, mouse: Vector2, behind: float) -> int:
+func _see_through_flags(at: Vector2, r: Rect2, mouse: Vector2, behind: float) -> int:
 	var flags := 0
-	var at: Vector2 = tree["at"]
-	# The tree's rectangle never changes: worked out once.
-	if not tree.has("rect"):
-		var images := Trees.textures(str(tree["species"]))
-		if images.is_empty():
-			return 0
-		tree["rect"] = Trees.rect(at, height_cm, images[Trees.variant(at, images.size())])
-	var r: Rect2 = tree["rect"]
 	if _bodies.has(_piloted):
 		var body: Vector2 = _bodies[_piloted]["at"]
 		var centre := _body_see_centre()
