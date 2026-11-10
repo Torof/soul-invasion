@@ -74,6 +74,12 @@ SHADOW_LIGHT = 150
 SHADOW_CHROMA = 34
 HOLE_TOLERANCE = 24
 HOLE_MIN = 12
+# On a tree, a patch of pale (above SLIVER_LIGHT), colourless pixels
+# smaller than SLIVER_MAX (in the worked image) is background showing
+# between two outlines.
+SLIVER_LIGHT = 186
+SLIVER_CHROMA = 16
+SLIVER_MAX = 400
 
 
 def shown(metres):
@@ -172,7 +178,10 @@ def keep_main(alpha):
 
 def clear_ground(rgb, alpha):
     """For a tree: the grass painted around its foot, in the bottom 7 % of
-    the plant, cleared (green there is grass: the trunk is brown)."""
+    the plant, cleared (green there is grass: the trunk is brown). Unless
+    45 % or more of that band is green: then the trunk itself is green (a
+    willow's grey-green bark, a pine's mossy foot), and clearing it would
+    cut the foot off."""
     rows = np.nonzero(alpha.any(axis=1))[0]
     top, bottom = rows[0], rows[-1]
     start = bottom - int((bottom - top) * 0.07)
@@ -180,6 +189,9 @@ def clear_ground(rgb, alpha):
     green = (g > r + 8) & (g > b)
     zone = np.zeros_like(alpha, dtype=bool)
     zone[start:bottom + 1] = True
+    plant = zone & (alpha > 0)
+    if (green & plant).sum() > 0.45 * plant.sum():
+        return alpha
     alpha[zone & green] = 0
     return alpha
 
@@ -207,6 +219,13 @@ def cut(path, keep_white, tree=False, work=WORK_MAX):
         labels, sizes = components((distance < HOLE_TOLERANCE) & ~outside)
         holes = np.isin(labels, [i for i, s in enumerate(sizes) if i and s >= HOLE_MIN])
         outside |= holes
+    if tree:
+        # Slivers of the background left between two outlines: small
+        # patches of pale, colourless pixels. A tree is never drawn so
+        # (the birch's and the ash's pale bark make large patches).
+        pale = (light > SLIVER_LIGHT) & (chroma < SLIVER_CHROMA) & ~outside
+        labels, sizes = components(pale)
+        outside |= np.isin(labels, [i for i, s in enumerate(sizes) if i and s < SLIVER_MAX])
     alpha = np.where(outside, 0, 255).astype(np.uint8)
     if tree:
         alpha = clear_ground(rgb, alpha)
@@ -359,7 +378,7 @@ def main():
             image = fit(image, tall, original, path.name, short)
             image = image.filter(ImageFilter.UnsharpMask(radius=1.2, percent=60, threshold=2))
             target = art / "trees" / f"{kind}_adult_{n}_summer.png"
-            image.save(target)
+            image.save(target, optimize=True)
             print("tree", target.name, image.size)
         else:
             tall = target_px(height)
