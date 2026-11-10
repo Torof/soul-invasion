@@ -24,6 +24,7 @@ pub mod trees;
 pub mod woods;
 
 use std::collections::{BTreeSet, VecDeque};
+use std::sync::Arc;
 
 pub use content::{
     Content, ContentError, Food, Look, Material, MaterialKind, Movement, Needs, Spawn,
@@ -544,7 +545,11 @@ pub enum Event {
 pub struct World {
     calendar: Calendar,
     tick: Tick,
-    map: Map,
+    /// Shared, never changed once made: copying the world (to save it on
+    /// another thread) and the network's view of the ground take a handle,
+    /// not the tiles.
+    #[serde(serialize_with = "write_map", deserialize_with = "read_map")]
+    map: Arc<Map>,
     bodies: Vec<Body>,
     next_body: u32,
     /// The items a body has touched, made or let fall: stored. The ground's
@@ -571,6 +576,14 @@ pub struct World {
     /// ([`World::plant`]). Never persisted: regenerated on load.
     #[serde(skip)]
     trees: Vec<trees::Tree>,
+}
+
+fn write_map<S: serde::Serializer>(map: &Arc<Map>, serializer: S) -> Result<S::Ok, S::Error> {
+    serde::Serialize::serialize(map.as_ref(), serializer)
+}
+
+fn read_map<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Arc<Map>, D::Error> {
+    <Map as serde::Deserialize>::deserialize(deserializer).map(Arc::new)
 }
 
 /// Side of the first version's valley, in tiles: about 3 km, thirty-six
@@ -611,7 +624,7 @@ impl World {
         Self {
             calendar,
             tick: Tick(0),
-            map,
+            map: Arc::new(map),
             bodies: Vec::new(),
             next_body: 1,
             items: Vec::new(),
@@ -658,6 +671,11 @@ impl World {
     /// The ground.
     pub fn map(&self) -> &Map {
         &self.map
+    }
+
+    /// The map, shared: a handle, not a copy of its tiles.
+    pub fn shared_map(&self) -> Arc<Map> {
+        Arc::clone(&self.map)
     }
 
     /// Every body, in id order.

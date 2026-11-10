@@ -1,6 +1,7 @@
-//! Persistence (D28): an event journal (D17) plus world snapshots, behind
-//! the [`Storage`] interface so the engine (SQLite today) can be replaced
-//! without touching the rest of the server.
+//! Persistence (D28): world snapshots, behind the [`Storage`] interface so
+//! the engine (SQLite today) can be replaced without touching the rest of
+//! the server. There is no world journal any more (D17, 10 November 2026):
+//! nothing read it back; a soul's deeds will have their own store (D14).
 //!
 //! Formats are versioned from day one (D21): the database schema through
 //! SQLite's `user_version`, each snapshot through its own format version.
@@ -8,7 +9,7 @@
 use std::sync::Arc;
 
 use rusqlite::{Connection, OptionalExtension, params};
-use sim::{Content, Event, Tick, World};
+use sim::{Content, World};
 
 /// Version of the serialized `World` inside a snapshot. Bump on any change
 /// to `World`'s shape, and add a migration in `decode_world`.
@@ -24,7 +25,7 @@ pub enum StorageError {
     /// The database engine failed.
     #[error("database: {0}")]
     Database(#[from] rusqlite::Error),
-    /// A snapshot or event could not be (de)serialized.
+    /// A snapshot could not be (de)serialized.
     #[error("serialization: {0}")]
     Serialization(#[from] serde_json::Error),
     /// A snapshot was written by a format this build does not know.
@@ -45,27 +46,13 @@ pub enum StorageError {
     },
 }
 
-/// Where the world's history and state live.
+/// Where the world's state lives.
 pub trait Storage: Send {
     /// The most recent snapshot, if any.
     fn latest_world(&mut self) -> Result<Option<World>, StorageError>;
 
     /// Records a snapshot of the world at its current tick.
     fn save_world(&mut self, world: &World) -> Result<(), StorageError>;
-
-    /// Appends the events of one tick to the journal.
-    fn append_events(&mut self, tick: Tick, events: &[Event]) -> Result<(), StorageError>;
-
-    /// Events strictly after `tick`, in order.
-    fn events_after(&mut self, tick: Tick) -> Result<Vec<(Tick, Event)>, StorageError>;
-
-    /// Drops the events strictly after `tick` and says how many there were.
-    ///
-    /// Used on resume: a run interrupted without its final snapshot
-    /// leaves events past the last snapshot, on a timeline the resumed
-    /// world will not follow; keeping them would collide with the new
-    /// ones tick for tick.
-    fn forget_events_after(&mut self, tick: Tick) -> Result<u64, StorageError>;
 }
 
 /// Schema migrations, applied in order; the index + 1 is the version
@@ -85,6 +72,10 @@ const MIGRATIONS: &[&str] = &[
          data TEXT    NOT NULL,
          PRIMARY KEY (tick, seq)
      );",
+    // v2: no world journal (D17, 10 November 2026): it held every step and
+    // gauge, nothing read it back, and a crash already dropped what came
+    // after the last snapshot.
+    "DROP TABLE events;",
 ];
 
 /// SQLite-backed storage: one file, or memory for ephemeral worlds.
@@ -168,48 +159,6 @@ impl Storage for Sqlite {
         )?;
         tx.commit()?;
         Ok(())
-    }
-
-    fn append_events(&mut self, tick: Tick, events: &[Event]) -> Result<(), StorageError> {
-        if events.is_empty() {
-            return Ok(());
-        }
-        let tx = self.conn.transaction()?;
-        {
-            let mut insert =
-                tx.prepare_cached("INSERT INTO events (tick, seq, data) VALUES (?1, ?2, ?3)")?;
-            for (seq, event) in events.iter().enumerate() {
-                let seq = u64::try_from(seq).expect("fewer events than u64::MAX");
-                insert.execute(params![
-                    db_int(tick.0),
-                    db_int(seq),
-                    serde_json::to_string(event)?
-                ])?;
-            }
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    fn events_after(&mut self, tick: Tick) -> Result<Vec<(Tick, Event)>, StorageError> {
-        let mut query = self
-            .conn
-            .prepare_cached("SELECT tick, data FROM events WHERE tick > ?1 ORDER BY tick, seq")?;
-        let rows = query.query_map([db_int(tick.0)], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        })?;
-        rows.map(|row| {
-            let (tick, data) = row?;
-            Ok((Tick(tick.unsigned_abs()), serde_json::from_str(&data)?))
-        })
-        .collect()
-    }
-
-    fn forget_events_after(&mut self, tick: Tick) -> Result<u64, StorageError> {
-        let dropped = self
-            .conn
-            .execute("DELETE FROM events WHERE tick > ?1", [db_int(tick.0)])?;
-        Ok(u64::try_from(dropped).expect("row count fits"))
     }
 }
 
@@ -368,7 +317,7 @@ fn standard_world_at_old_tick(data: &str, content: &Content) -> Result<String, S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sim::Calendar;
+    use sim::{Calendar, Tick};
 
     fn content() -> Arc<Content> {
         Arc::new(Content::sample())
@@ -385,7 +334,7 @@ mod tests {
     #[test]
     fn fresh_database_has_no_world() {
         let mut storage = Sqlite::in_memory(content()).unwrap();
-        assert_eq!(storage.schema_version().unwrap(), 1);
+        assert_eq!(storage.schema_version().unwrap(), 2);
         assert!(storage.latest_world().unwrap().is_none());
     }
 
@@ -418,29 +367,6 @@ mod tests {
     }
 
     #[test]
-    fn events_are_journaled_in_order() {
-        let mut storage = Sqlite::in_memory(content()).unwrap();
-        storage
-            .append_events(Tick(6), &[Event::DayStarted { day: 2 }])
-            .unwrap();
-        storage.append_events(Tick(7), &[]).unwrap();
-        storage
-            .append_events(Tick(12), &[Event::DayStarted { day: 3 }])
-            .unwrap();
-        assert_eq!(
-            storage.events_after(Tick(0)).unwrap(),
-            vec![
-                (Tick(6), Event::DayStarted { day: 2 }),
-                (Tick(12), Event::DayStarted { day: 3 }),
-            ]
-        );
-        assert_eq!(
-            storage.events_after(Tick(6)).unwrap(),
-            vec![(Tick(12), Event::DayStarted { day: 3 })]
-        );
-    }
-
-    #[test]
     fn migrations_are_idempotent_across_reopens() {
         let dir = std::env::temp_dir().join(format!("soul-invasion-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -450,33 +376,35 @@ mod tests {
             storage.save_world(&world_at(3)).unwrap();
         }
         let mut storage = Sqlite::open(&path, content()).unwrap();
-        assert_eq!(storage.schema_version().unwrap(), 1);
+        assert_eq!(storage.schema_version().unwrap(), 2);
         assert_eq!(storage.latest_world().unwrap().unwrap().tick(), Tick(3));
         drop(storage);
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn resuming_after_an_interrupted_run_forgets_the_orphaned_events() {
-        let mut storage = Sqlite::in_memory(content()).unwrap();
-        let world = world_at(4);
-        storage.save_world(&world).unwrap();
-        // The run went on past the snapshot and was killed: events at
-        // ticks 5 and 6 are in the journal, no later snapshot.
-        for tick in 5..=6 {
-            storage
-                .append_events(Tick(tick), &[Event::DayStarted { day: tick }])
-                .unwrap();
-        }
-        assert_eq!(storage.events_after(Tick(4)).unwrap().len(), 2);
-        assert_eq!(storage.forget_events_after(Tick(4)).unwrap(), 2);
-        assert_eq!(storage.forget_events_after(Tick(4)).unwrap(), 0);
-        assert_eq!(storage.events_after(Tick(4)).unwrap().len(), 0);
-        // The resumed world can journal tick 5 again.
-        storage
-            .append_events(Tick(5), &[Event::DayStarted { day: 99 }])
+    fn a_v1_database_loses_its_journal_and_keeps_its_world() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(MIGRATIONS[0]).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        conn.execute(
+            "INSERT INTO events (tick, seq, data) VALUES (5, 0, '{}')",
+            [],
+        )
+        .unwrap();
+        let mut storage = Sqlite::from_connection(conn, content()).unwrap();
+        storage.save_world(&world_at(4)).unwrap();
+        assert_eq!(storage.schema_version().unwrap(), 2);
+        let journal: i64 = storage
+            .conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name = 'events'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
-        assert_eq!(storage.events_after(Tick(4)).unwrap().len(), 1);
+        assert_eq!(journal, 0, "no journal table");
+        assert_eq!(storage.latest_world().unwrap().unwrap().tick(), Tick(4));
     }
 
     #[test]
@@ -628,7 +556,7 @@ mod tests {
             err,
             StorageError::SchemaTooNew {
                 found: 42,
-                supported: 1
+                supported: 2
             }
         ));
     }

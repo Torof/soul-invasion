@@ -41,8 +41,8 @@ conductor: vision, decisions, practices, audits, security. The AI writes the cod
 - `server/protocol`: the client/server wire contract, JSON over WebSocket
   (D25, D26). Mirrored by `client/net/protocol.gd`.
 - `server/server`: the only crate that talks to the outside world. One
-  simulation thread, async network beside it (D29). Event journal and
-  snapshots in SQLite behind a `Storage` interface (D28).
+  simulation thread, async network beside it (D29). World snapshots in
+  SQLite behind a `Storage` interface, written by a storage thread (D28).
 - `client/`: Godot 4, GDScript. Displays and transmits intentions. Decides
   nothing (D03, D05).
 - `content/`: RON data files read by the server only (D27).
