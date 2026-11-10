@@ -4,13 +4,13 @@ The trees standing in the woods (D37): six species, adult, two variants
 each (`<species>_adult_<nn>_summer.png`; the client takes `_01`, `_02`, … up to the first missing number), drawn by the client on
 the point where the server says the trunk meets the ground.
 
-- **Format**: 256 px per metre of the species' height (`content/species.ron`:
-  oak 4 m, birch 4.5 m, pine 5 m, willow 3.5 m, hazel and wild apple 3 m),
-  four times the screen, so they stay sharp up to zoom 4. The bottom edge is
-  the trunk's foot and the image is centred on it. Transparent background.
-  Made before D39's sharpness rule (10 November 2026): the next trees are
-  sized by it: originals at 384 px a shown metre, shipped at 307
-  (`flora_art.py --trees`).
+- **Format**: sized by D39's sharpness rule (10 November 2026): originals
+  at 384 px a shown metre (sharp at zoom 2.5 on a 3072-px-wide screen),
+  shipped at 307 px a shown metre by `content/tools/flora_art.py --trees`
+  (an oak shown 8.1 m is 2,413–2,496 px tall). A source smaller than its
+  original target is shipped at its own size, never enlarged; the client
+  sets each tree's height on screen. The bottom edge is the trunk's foot
+  and the image is centred on it. Transparent background.
 - **Made**: 7–8 November 2026 on Midjourney by the project lead, with the
   style reference and the prompt of `docs/08-midjourney-prompts.md` (Trees),
   plus a clean oak on white as a second reference; the first oak edited in
@@ -42,3 +42,25 @@ each, made on Midjourney by the project lead with the style reference and
 the clean oak on white as a second reference, cut out by
 `content/tools/flora_art.py` (the grass at their foot removed) and scaled
 to their height (alder 4.5 m, ash and linden 5 m, yew 3.5 m).
+
+**10 November 2026, made sharp**: all twenty trees were redrawn sharp at
+the size of D39's rule. The project lead gave each one's existing image
+(its cut on white) to Midjourney's edit with prompt B of the pine quality
+test (`docs/08-midjourney-prompts.md`, Trees, "Made sharp"): the same
+drawing, silhouette and colours, only crisp outlines and clean shapes. Out
+of four results per tree he chose one. Then `flora_art.py --trees` cut and
+shipped them. Two cut fixes:
+- the tool now leaves a tree's foot alone when most of it is green: the
+  trunk itself is green (the first willow's bark, the second pine's mossy
+  foot);
+- the first wild apple's source had a ring of grass and white flowers at
+  its foot; it was painted out of the source before the cut (the original
+  is kept beside it as `wild_apple_01_before-cleanup.png`).
+
+The chosen images are the sources
+(`content/ai-reserve/sources/flora/<species>_<nn>.png`); Midjourney's
+sheets of four and the earlier sources are kept in
+`content/ai-reserve/sources/trees/originals/`, outside the repository.
+Midjourney's real detail stops at about 1,300–1,800 px tall whatever its
+upscale: the tallest trees have about 55–80 % of the detail their shipped
+size could hold.
