@@ -28,6 +28,7 @@ func _init() -> void:
 	_test_the_ground_index_says_what_each_canvas_draws()
 	_test_currents_decode()
 	_test_tree_images_are_clean()
+	_test_tree_feet_are_whole()
 	_test_loading_waits_for_the_valley()
 	_test_dev_map_turns_as_the_game()
 	_test_perf_overlay_reports()
@@ -800,6 +801,89 @@ func _test_tree_images_are_clean() -> void:
 				if c.a > 0.4 and minf(c.r, minf(c.g, c.b)) > 0.73 and maxf(c.r, maxf(c.g, c.b)) - minf(c.r, minf(c.g, c.b)) < 0.08:
 					pale += 1
 		_check(pale < 15, "%s has no pale specks: %d" % [file, pale])
+
+
+## Every tree's foot (the lowest 8 % of its image) ends in one whole trunk
+## base: no hole where the ground would show through (grass or an outline
+## cleared from inside the trunk), and no speck or stroke apart from the
+## tree (an outline left behind by grass cleared around it). Read on every
+## other pixel, which still sees a hole or a stroke a few pixels wide.
+func _test_tree_feet_are_whole() -> void:
+	var dir := DirAccess.open(Trees.DIR)
+	if dir == null:
+		_check(false, "the trees' folder is there")
+		return
+	for file in dir.get_files():
+		if not file.ends_with("_summer.png"):
+			continue
+		var image: Image = (load(Trees.DIR + file) as Texture2D).get_image()
+		if image.is_compressed():
+			image.decompress()
+		image.convert(Image.FORMAT_RGBA8)
+		var data := image.get_data()
+		var full_w := image.get_width()
+		var full_h := image.get_height()
+		var top := full_h - int(full_h * 0.08)
+		# The band, every other pixel: true where the tree is.
+		var w := floori(full_w / 2.0)
+		var h := floori((full_h - top) / 2.0)
+		var solid := PackedByteArray()
+		solid.resize(w * h)
+		for y in h:
+			var row := (top + y * 2) * full_w
+			for x in w:
+				solid[y * w + x] = 1 if data[(row + x * 2) * 4 + 3] >= 128 else 0
+		# Clear pixels reached from the band's edges are the background;
+		# any other clear pixel is a hole.
+		var outside := _reach(solid, w, h, 0, true)
+		var holes := 0
+		for i in w * h:
+			if solid[i] == 0 and outside[i] == 0:
+				holes += 1
+		# Tree pixels reached from the band's top row are the tree; any
+		# other is a speck apart.
+		var tree := _reach(solid, w, h, 1, false)
+		var specks := 0
+		for i in w * h:
+			if solid[i] == 1 and tree[i] == 0:
+				specks += 1
+		_check(holes < 5, "%s has no hole in its foot: %d" % [file, holes])
+		_check(specks < 5, "%s has no speck apart from its foot: %d" % [file, specks])
+
+
+## The cells of `cells` (w x h) equal to `value` reached, through cells of
+## that value, from the top row, and with `all_edges` from the other three
+## edges too: 1 where reached.
+static func _reach(cells: PackedByteArray, w: int, h: int, value: int, all_edges: bool) -> PackedByteArray:
+	var seen := PackedByteArray()
+	seen.resize(w * h)
+	var todo: Array[int] = []
+	for x in w:
+		todo.append(x)
+		if all_edges:
+			todo.append((h - 1) * w + x)
+	if all_edges:
+		for y in h:
+			todo.append(y * w)
+			todo.append(y * w + w - 1)
+	# The background through its sides (4 neighbours), the tree through
+	# its corners too (8): a thin outline running diagonally holds.
+	var steps: Array[Vector2i] = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
+	if value == 1:
+		steps.append_array([Vector2i(1, 1), Vector2i(1, -1), Vector2i(-1, 1), Vector2i(-1, -1)])
+	while not todo.is_empty():
+		var i: int = todo.pop_back()
+		if seen[i] == 1 or cells[i] != value:
+			continue
+		seen[i] = 1
+		var x := i % w
+		var y := floori(float(i) / w)
+		for s in steps:
+			var nx := x + s.x
+			var ny := y + s.y
+			if nx >= 0 and nx < w and ny >= 0 and ny < h and seen[ny * w + nx] == 0:
+				todo.append(ny * w + nx)
+	return seen
 
 
 ## The client's hash is the server's `sim::gen::hash`, bit for bit: the
