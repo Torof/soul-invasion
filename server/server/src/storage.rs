@@ -495,7 +495,7 @@ mod tests {
             .unwrap();
         let world = storage.latest_world().unwrap().unwrap();
         assert!(!world.has_natural_items());
-        assert_eq!(world.items().len(), 1);
+        assert_eq!(world.items().count(), 1);
         assert_eq!(world.items_in(sim::Pos::new(10, 40).chunk()).len(), 1);
     }
 
@@ -520,9 +520,9 @@ mod tests {
         assert!(!body.is_walking(), "the old tile path is dropped");
         assert_eq!(body.condition(), &sim::Condition::healthy(), "v6: healthy");
         assert_eq!(body.held(), None, "v7: empty hands");
-        assert_eq!(world.items().len(), 1);
+        assert_eq!(world.items().count(), 1);
         assert_eq!(
-            world.items()[0].pos(),
+            world.items().next().expect("one item").pos(),
             Some(sim::Pos::new(3, 3)),
             "v7: on the ground"
         );

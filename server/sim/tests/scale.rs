@@ -153,7 +153,7 @@ fn acts_on_natural_items() {
     }
     let took = started.elapsed();
     assert!(events.iter().any(|e| matches!(e, Event::ActRefused { .. })));
-    assert_eq!(world.items().len(), 200, "each is stored once taken");
+    assert_eq!(world.items().count(), 200, "each is stored once taken");
     println!(
         "an act on a natural item not yet touched: {:?}",
         took / u32::try_from(natural.len()).expect("few")
