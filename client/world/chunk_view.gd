@@ -354,8 +354,8 @@ static func reload_art() -> void:
 ## A texture through the import when it has one, else straight from the
 ## image file (an image added today, not yet imported): never null for a
 ## file that is there.
-## Decorations: small generated images (rocks at the waterline; tufts,
-## flowers and pebbles on the bank) sown by a fixed hash of the tile, so
+## Decorations: small generated images (tufts, flowers and pebbles on
+## the bank) sown by a fixed hash of the tile, so
 ## they are the same for everyone and never twice in the same place.
 ## Client-side and without effect on the game, as a trial: the day one of
 ## them counts, it becomes a server item like a pebble. Their kinds and
