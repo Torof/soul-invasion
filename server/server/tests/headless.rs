@@ -42,8 +42,10 @@ fn headless_run_simulates_the_requested_days_and_exits_cleanly() {
 #[test]
 fn paced_run_with_a_day_limit_stops_on_its_own() {
     // 2 ticks/s, 1 s/day, 2 days, 100x faster: finishes in a few milliseconds.
+    // No client comes, so the plants around the camp are not placed first.
     let output = server()
         .args([
+            "--no-warm-up",
             "--ephemeral",
             "--listen",
             "127.0.0.1:0",
