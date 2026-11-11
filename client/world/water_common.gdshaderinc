@@ -29,6 +29,11 @@ uniform bool has_streaks = false;
 uniform float streak_metres = 4.0;
 uniform float streak_strength = 1.5;
 uniform float streak_speed = 1.0;
+// The streaks only where the water runs: nothing up to streak_slow
+// metres a second (a pool), full from streak_fast (a narrows). Pools
+// stay calm, fast water shows its current.
+uniform float streak_slow = 0.3;
+uniform float streak_fast = 1.0;
 // The ground's images (the beds, the earth, the sand, the detail) read at
 // their level a zoom step.
 uniform float ground_lod = 0.0;
@@ -99,9 +104,10 @@ vec3 water_at(sampler2D tex, vec2 world, vec2 runs, float now) {
 		mat2 turn = mat2(vec2(0.0, 1.0), vec2(-1.0, 0.0));
 		colour = mix(colour, flowing(tex, turn * base * 1.6, turn * runs * (1.15 * flow_period * 1.3 * 1.6 / water_metres), flow_period * 1.3, 0.37, now), flow_mix);
 	}
-	if (has_streaks) {
-		float pace = length(runs);
-		vec2 dir = pace > 1e-4 ? runs / pace : vec2(0.0, 1.0);
+	float pace = length(runs);
+	float streaking = has_streaks ? smoothstep(streak_slow, streak_fast, pace) : 0.0;
+	if (streaking > 0.001) {
+		vec2 dir = runs / pace;
 		// The map's rows across the flow, its columns along it.
 		vec2 s = vec2(dot(world, vec2(dir.y, -dir.x)), dot(world, dir)) / streak_metres;
 		float t = now / flow_period;
@@ -111,7 +117,7 @@ vec3 water_at(sampler2D tex, vec2 world, vec2 runs, float now) {
 		float drift = pace * streak_speed * flow_period / streak_metres;
 		float l0 = textureLod(streak_texture, s - vec2(0.0, drift * p0), water_lod).r;
 		float l1 = textureLod(streak_texture, s - vec2(0.0, drift * p1) + vec2(0.5, 0.0), water_lod).r;
-		colour *= 1.0 + streak_strength * (l0 * w0 + l1 * (1.0 - w0) - 0.5);
+		colour *= 1.0 + streaking * streak_strength * (l0 * w0 + l1 * (1.0 - w0) - 0.5);
 	}
 	return colour;
 }

@@ -80,7 +80,8 @@ func _screenshot_then_quit(path: String) -> void:
 		ChunkView.set_water_mode(mode, get_tree())
 	# SOUL_INVASION_WATER_STREAKS=1, SOUL_INVASION_WATER_8M=1: the meshes'
 	# water with the streaks of the current, on the 8 m water (F11, F12).
-	if OS.get_environment("SOUL_INVASION_WATER_STREAKS") == "1":
+	# The streaks are on unless SOUL_INVASION_WATER_STREAKS=0.
+	if OS.get_environment("SOUL_INVASION_WATER_STREAKS") != "0":
 		ChunkView.set_water_streaks(true)
 	if OS.get_environment("SOUL_INVASION_WATER_8M") == "1":
 		ChunkView.set_water_8m(true, get_tree())
