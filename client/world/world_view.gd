@@ -176,6 +176,12 @@ var _following := true
 ## Has the camera been put somewhere sensible since the last world state?
 var _camera_placed := false
 var _dragging := false
+## The drag the mouse asked for and the camera has not made yet, in world
+## pixels: mouse events come at their own pace (a few a frame, or none),
+## each a whole mouse pixel, so applying them as they come moves the view
+## by uneven steps and a slow drag trembles. The camera takes a share of
+## it every frame instead (ViewLedger.PAN_SMOOTH_S).
+var _pan_pending := Vector2.ZERO
 var _hover := Vector2i(-1, -1)
 
 
@@ -914,6 +920,25 @@ func _process(delta: float) -> void:
 ## passes fog A, past the limit of the view, so pushing to
 ## the edge shows the veil and the fog, never what lies beyond (the
 ## project lead's call); walking that way moves the limit, tile by tile.
+## Moves the camera by its share of the pending drag this frame.
+func _pan(delta: float) -> void:
+	if _pan_pending == Vector2.ZERO:
+		return
+	var take := ViewLedger.pan_share(_pan_pending, delta, _camera.zoom.x)
+	_camera.position -= take
+	_pan_pending -= take
+	_clamp_camera()
+
+
+## The picture is laid on whole pixels of the screen: the camera keeps its
+## exact place, and its offset takes the view to the nearest screen pixel,
+## so the ground, the water and the trees all round the same way and the
+## view does not shimmer as it moves by fractions of a pixel.
+func _snap_camera() -> void:
+	var scale := _camera.zoom.x * get_viewport().get_screen_transform().get_scale().y
+	_camera.offset = ViewLedger.snapped_offset(_camera.position, scale)
+
+
 func _clamp_camera() -> void:
 	if _limit.size.x <= 0.0 or _limit.size.y <= 0.0:
 		return
@@ -952,6 +977,7 @@ func _step(delta: float) -> void:
 				budget = 0.0
 		entry["at"] = at
 		moving = true
+	_pan(delta)
 	if _following and _bodies.has(_piloted):
 		_camera.position = Iso.point_to_screen(_bodies[_piloted]["at"])
 	# The tree images read on a worker thread come in, the stands that
@@ -962,6 +988,7 @@ func _step(delta: float) -> void:
 		_trees_changed = true
 	_update_limit()
 	_clamp_camera()
+	_snap_camera()
 	_update_reach()
 	_update_far_hole()
 	_cull_standing()
@@ -983,8 +1010,7 @@ func _step(delta: float) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion:
 		if _dragging:
-			_camera.position -= event.relative / _camera.zoom.x
-			_clamp_camera()
+			_pan_pending += event.relative / _camera.zoom.x
 			if event.position.distance_to(_drag_start) > 4.0:
 				_dragged = true
 				_following = false

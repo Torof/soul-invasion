@@ -48,6 +48,7 @@ func _init() -> void:
 	_test_trees_sort_with_bodies_by_their_foot()
 	_test_the_bounds_held_are_kept_as_chunks_come_and_go()
 	_test_waiting_chunks_are_kept_nearest_the_camera_first()
+	_test_a_drag_is_smoothed_and_the_view_laid_on_whole_pixels()
 	_test_the_fog_uniforms_are_sent_only_when_they_change()
 	_test_a_redraw_past_the_cameras_reach_waits_for_the_camera()
 	_test_the_chunks_the_camera_reaches_are_found_exactly()
@@ -1042,6 +1043,29 @@ func _test_the_bounds_held_are_kept_as_chunks_come_and_go() -> void:
 	ledger.drop(Vector2i(7, 7))
 	_check(ledger.held_stale and ledger.bounds(chunks) == Rect2i(3, 3, 2, 4) and not ledger.held_stale, "the corner went: found again, narrower")
 	_check(ledger.bounds(chunks) == Iso.chunk_bounds(chunks.keys()), "the same bounds as over every key")
+
+
+## A slow drag trembled: mouse events come in whole pixels at their own
+## pace. The camera takes a share of the pending drag each frame, all of
+## it in the end, and its picture sits on whole screen pixels.
+func _test_a_drag_is_smoothed_and_the_view_laid_on_whole_pixels() -> void:
+	var pending := Vector2(37.0, -11.0)
+	var moved := Vector2.ZERO
+	var frames := 0
+	while pending != Vector2.ZERO and frames < 600:
+		var take := ViewLedger.pan_share(pending, 1.0 / 60.0, 0.4)
+		moved += take
+		pending -= take
+		frames += 1
+	_check(pending == Vector2.ZERO and moved.is_equal_approx(Vector2(37.0, -11.0)), "the whole drag is made: %s" % [moved])
+	_check(frames > 3 and frames < 120, "spread over a few frames, not one, not seconds: %d" % frames)
+	var first := ViewLedger.pan_share(Vector2(10.0, 0.0), 1.0 / 60.0, 1.0)
+	_check(first.x > 2.0 and first.x < 4.0, "about a third of it the first frame: %s" % [first])
+	for at: Vector2 in [Vector2(10.3, -4.71), Vector2(1234.567, 89.01), Vector2(-0.49, 0.51)]:
+		for scale: float in [0.4 * 1.92, 1.0, 2.5 * 1.92]:
+			var shown := (at + ViewLedger.snapped_offset(at, scale)) * scale
+			_check(shown.is_equal_approx(shown.round()), "laid on a whole pixel: %s at %s" % [at, scale])
+			_check(ViewLedger.snapped_offset(at, scale).length() * scale <= 0.71, "never more than half a pixel off")
 
 
 ## The chunks waiting to build their ground are kept nearest the camera
