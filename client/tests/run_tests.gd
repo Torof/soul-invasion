@@ -1045,22 +1045,9 @@ func _test_the_bounds_held_are_kept_as_chunks_come_and_go() -> void:
 	_check(ledger.bounds(chunks) == Iso.chunk_bounds(chunks.keys()), "the same bounds as over every key")
 
 
-## A slow drag trembled: mouse events come in whole pixels at their own
-## pace. The camera takes a share of the pending drag each frame, all of
-## it in the end, and its picture sits on whole screen pixels.
+## A slow drag trembled: the picture is laid on whole screen pixels, so
+## every layer rounds the same way as the view moves.
 func _test_a_drag_is_smoothed_and_the_view_laid_on_whole_pixels() -> void:
-	var pending := Vector2(37.0, -11.0)
-	var moved := Vector2.ZERO
-	var frames := 0
-	while pending != Vector2.ZERO and frames < 600:
-		var take := ViewLedger.pan_share(pending, 1.0 / 60.0, 0.4)
-		moved += take
-		pending -= take
-		frames += 1
-	_check(pending == Vector2.ZERO and moved.is_equal_approx(Vector2(37.0, -11.0)), "the whole drag is made: %s" % [moved])
-	_check(frames > 3 and frames < 120, "spread over a few frames, not one, not seconds: %d" % frames)
-	var first := ViewLedger.pan_share(Vector2(10.0, 0.0), 1.0 / 60.0, 1.0)
-	_check(first.x > 2.0 and first.x < 4.0, "about a third of it the first frame: %s" % [first])
 	for at: Vector2 in [Vector2(10.3, -4.71), Vector2(1234.567, 89.01), Vector2(-0.49, 0.51)]:
 		for scale: float in [0.4 * 1.92, 1.0, 2.5 * 1.92]:
 			var shown := (at + ViewLedger.snapped_offset(at, scale)) * scale

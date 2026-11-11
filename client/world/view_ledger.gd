@@ -238,20 +238,6 @@ func items_depth_near(items: Dictionary, version: int, mouse: Vector2, reach_px:
 	return item_depth
 
 
-## Time constant of a drag's smoothing, in seconds: short enough that the
-## view stays under the hand, long enough to even out the mouse's events.
-const PAN_SMOOTH_S := 0.045
-
-
-## The share of a pending drag `pending` the camera makes in a frame of
-## `delta` seconds at `zoom`: an exponential approach, the rest at once
-## when under a tenth of a screen pixel.
-static func pan_share(pending: Vector2, delta: float, zoom: float) -> Vector2:
-	if pending.length() * zoom < 0.1:
-		return pending
-	return pending * (1.0 - exp(-delta / PAN_SMOOTH_S))
-
-
 ## The offset that takes `at` (world pixels) to the nearest whole screen
 ## pixel at `scale` screen pixels per world pixel.
 static func snapped_offset(at: Vector2, scale: float) -> Vector2:
