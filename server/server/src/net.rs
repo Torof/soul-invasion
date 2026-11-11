@@ -26,9 +26,9 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
-    BodyState, ClientMessage, Clock, Condition, DeathCause, FloraView, ItemAct, ItemState,
-    ItemView, MaterialView, PROTOCOL_VERSION, PlantState, Point, Refusal, ServerMessage,
-    SpeciesView, Terrain, TreeState, decode, encode,
+    BodyState, ChunkFrame, ClientMessage, Clock, Condition, DeathCause, FloraView, ItemAct,
+    ItemState, ItemView, MaterialView, NaturalItem, PROTOCOL_VERSION, Point, Refusal,
+    ServerMessage, SpeciesView, Standing, StoredItem, Terrain, decode, encode, encode_chunk,
 };
 use sim::ground::Ground;
 use sim::lru::Lru;
@@ -38,8 +38,8 @@ use crate::pool::ChunkPool;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+use tokio_tungstenite::tungstenite::{Bytes, Message};
 
 /// How long a client has to finish the WebSocket upgrade, and then how
 /// long it has to send its `hello`.
@@ -74,6 +74,13 @@ pub const PLANT_CACHE_CHUNKS: usize = {
     let side = 2 * VIEW_RADIUS.unsigned_abs() as usize + 1;
     4 * side * side
 };
+
+/// Chunk frames the server keeps encoded at most, the least recently
+/// sent forgotten first: as many as the chunks whose plants it keeps
+/// ([`PLANT_CACHE_CHUNKS`]), about 2 KB each. A chunk is encoded once per
+/// version of its ground and of its items, and the same bytes go to every
+/// client asking for it (D26).
+pub const FRAME_CACHE_CHUNKS: usize = PLANT_CACHE_CHUNKS;
 
 /// How many published messages a connection may fall behind before it
 /// misses some and is told its view again ([`Link::resync`]). A
@@ -229,7 +236,7 @@ pub struct Shared {
     flora_kinds: Vec<sim::flora::Kind>,
     /// Index in `flora` of each kind of the content's flora (`None` for
     /// the trees still to come).
-    flora_wire: Vec<Option<u16>>,
+    flora_wire: Vec<Option<u8>>,
     /// The seed the trees and the flora are placed with (the map's).
     seed: u64,
     /// The plants of the chunks asked for lately, at most
@@ -239,7 +246,13 @@ pub struct Shared {
     /// seed gives may live here: a change to a plant (one picked, later)
     /// must be kept apart and laid over these, or forgetting a chunk would
     /// undo it.
-    plants: Mutex<Lru<ChunkPos, Arc<[PlantState]>>>,
+    plants: Mutex<Lru<ChunkPos, Arc<[Standing]>>>,
+    /// The chunk frames sent lately, encoded, by chunk, version of its
+    /// ground and version of its items (at most [`FRAME_CACHE_CHUNKS`]):
+    /// what a frame holds besides the bodies, which travel apart.
+    frames: Mutex<Lru<FrameKey, Bytes>>,
+    /// The index of each material in `materials`, by its content id.
+    material_index: BTreeMap<String, u16>,
     /// Is it night? Kept by the simulation thread.
     pub night: AtomicBool,
     /// The current game day, kept by the simulation thread.
@@ -375,18 +388,47 @@ impl Items {
 /// What the map and the seed give a chunk, built on the chunk pool: the
 /// ground, the trees, the plants, the currents, the natural items. What
 /// changes on it (the bodies standing there, the items taken or dropped)
-/// is added as the frame leaves ([`Shared::chunk_message_of`]), so that
+/// is added as the frame leaves ([`Shared::chunk_send_of`]), so that
 /// it is as fresh as the events around it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkGround {
     /// Which chunk.
     pub chunk: ChunkPos,
+    /// Its version when its trees were placed.
+    version: sim::ground::Version,
     tiles: Vec<Terrain>,
-    trees: Vec<TreeState>,
-    plants: Vec<PlantState>,
+    trees: Vec<Standing>,
+    plants: Vec<Standing>,
     currents: Vec<u16>,
     /// The ground's natural items, none taken out yet.
     natural: Vec<ItemState>,
+}
+
+/// A chunk frame's key in the cache: the chunk, the version of its
+/// ground, the version of its items.
+type FrameKey = (ChunkPos, sim::ground::Version, u64);
+
+/// A chunk as it leaves: its frame, encoded once for every client, and
+/// the bodies standing in it now, which follow it in their own message.
+#[derive(Debug, Clone)]
+pub struct ChunkSend {
+    /// The frame ([`encode_chunk`]).
+    pub frame: Bytes,
+    /// The bodies standing in the chunk.
+    pub bodies: Vec<BodyState>,
+    /// The version of the chunk's items the frame carries.
+    pub items_version: u64,
+}
+
+/// Millimetres from the corner of `chunk` to `at`, as a frame carries
+/// them.
+fn offset_in(chunk: ChunkPos, at: FinePos) -> Option<(u16, u16)> {
+    let origin = chunk.origin();
+    let mm = sim::MM_PER_TILE;
+    Some((
+        u16::try_from(at.x - origin.x * mm).ok()?,
+        u16::try_from(at.y - origin.y * mm).ok()?,
+    ))
 }
 
 /// Tiles each cell of the development overview stands for, either way,
@@ -502,7 +544,7 @@ impl Shared {
     /// Creates the shared state from the world as it is at startup.
     pub fn new(world: &World, content: &Content, max_connections: usize, time_scale: f64) -> Self {
         let (publish, _) = broadcast::channel(BROADCAST_CAPACITY);
-        let materials = content
+        let materials: Vec<MaterialView> = content
             .materials
             .iter()
             .map(|m| MaterialView {
@@ -559,6 +601,11 @@ impl Shared {
             publish,
             map: world.shared_map(),
             bodies: Mutex::new(bodies),
+            material_index: materials
+                .iter()
+                .enumerate()
+                .map(|(i, m)| (m.id.clone(), u16::try_from(i).expect("few materials")))
+                .collect(),
             materials,
             species,
             tree_kinds: content.species.clone(),
@@ -568,6 +615,7 @@ impl Shared {
             flora_wire,
             seed: world.seed(),
             plants: Mutex::new(Lru::new(PLANT_CACHE_CHUNKS)),
+            frames: Mutex::new(Lru::new(FRAME_CACHE_CHUNKS)),
             night: AtomicBool::new(world.is_night(content)),
             day: AtomicU64::new(world.time().day),
             deaths: Mutex::new(Lru::new(DEATHS_REMEMBERED)),
@@ -842,11 +890,18 @@ impl Shared {
         .chunk()
     }
 
-    /// The message carrying a chunk and the bodies in it: its ground as
-    /// the pool builds it, finished now.
-    pub fn chunk_message(&self, chunk: ChunkPos) -> Option<ServerMessage> {
-        self.chunk_ground(chunk)
-            .map(|ground| self.chunk_message_of(ground).0)
+    /// A chunk as it leaves ([`ChunkSend`]): its ground as the pool
+    /// builds it, finished now.
+    ///
+    /// # Panics
+    ///
+    /// If the chunk cannot be framed (a tree off its chunk, more than
+    /// 65,535 plants): a bug of the server.
+    pub fn chunk_message(&self, chunk: ChunkPos) -> Option<ChunkSend> {
+        self.chunk_ground(chunk).map(|ground| {
+            self.chunk_send_of(ground)
+                .expect("a chunk the frame carries")
+        })
     }
 
     /// What the map and the seed give `chunk`, as the pool builds it:
@@ -854,8 +909,11 @@ impl Shared {
     /// placed (D29). `None` off the map.
     pub fn chunk_ground(&self, chunk: ChunkPos) -> Option<ChunkGround> {
         let tiles = self.map.chunk(chunk)?;
+        // Read before the trees are placed: they are at least as new.
+        let version = self.ground.version(chunk);
         Some(ChunkGround {
             chunk,
+            version,
             tiles: tiles.into_iter().map(terrain_view).collect(),
             trees: self.trees_in(chunk),
             plants: self.plants_in(chunk),
@@ -864,31 +922,183 @@ impl Shared {
         })
     }
 
-    /// The message carrying a chunk's ground and what stands and lies on
-    /// it now, with the version of its items it carries.
-    pub fn chunk_message_of(&self, ground: ChunkGround) -> (ServerMessage, u64) {
-        let ChunkGround {
-            chunk,
-            tiles,
-            trees,
-            plants,
-            currents,
-            natural,
-        } = ground;
-        // Gathered first, in a statement of its own: a lock taken inside
-        // the message's literal would stay held to the literal's end.
-        let (items, version) = self.ground_items(chunk, natural);
-        let message = ServerMessage::Chunk {
+    /// A chunk's ground finished with what stands and lies on it now:
+    /// its frame, encoded once per version of its ground and of its items
+    /// and the same bytes then for every client, and the bodies in it.
+    ///
+    /// # Errors
+    ///
+    /// When the chunk cannot be framed ([`encode_chunk`]).
+    pub fn chunk_send_of(&self, ground: ChunkGround) -> Result<ChunkSend, BoxError> {
+        let chunk = ground.chunk;
+        // Gathered together, as the items' events see them, so the frame
+        // and its version agree.
+        let (natural, stored, items_version) = self.ground_items(chunk, &ground.natural);
+        let bodies = self.bodies_in(chunk);
+        let key = (chunk, ground.version, items_version);
+        let held = self
+            .frames
+            .lock()
+            .expect("frames not poisoned")
+            .get(&key)
+            .cloned();
+        let frame = if let Some(frame) = held {
+            frame
+        } else {
+            let frame = Bytes::from(encode_chunk(&self.frame_of(ground, &natural, &stored)?)?);
+            self.frames
+                .lock()
+                .expect("frames not poisoned")
+                .insert(key, frame.clone());
+            frame
+        };
+        Ok(ChunkSend {
+            frame,
+            bodies,
+            items_version,
+        })
+    }
+
+    /// The frame of a chunk's ground and items.
+    fn frame_of(
+        &self,
+        ground: ChunkGround,
+        natural: &[ItemState],
+        stored: &[ItemState],
+    ) -> Result<ChunkFrame, BoxError> {
+        let chunk = ground.chunk;
+        // A material the client was not told of (none in the content's
+        // catalogue) goes as an index past the list: unknown to the
+        // client, as its id was before.
+        let material = |id: &str| self.material_index.get(id).copied();
+        let origin = chunk.origin();
+        let natural = natural
+            .iter()
+            .map(|i| {
+                Ok(NaturalItem {
+                    slot: sim::items::slot_of(ItemId(i.id)),
+                    material: material(&i.material)
+                        .and_then(|m| u8::try_from(m).ok())
+                        .unwrap_or(u8::MAX),
+                })
+            })
+            .collect::<Result<Vec<_>, BoxError>>()?;
+        let stored = stored
+            .iter()
+            .map(|i| {
+                Ok(StoredItem {
+                    id: i.id,
+                    dx: u8::try_from(i.x - origin.x)?,
+                    dy: u8::try_from(i.y - origin.y)?,
+                    material: material(&i.material).unwrap_or(u16::MAX),
+                })
+            })
+            .collect::<Result<Vec<_>, BoxError>>()?;
+        Ok(ChunkFrame {
             x: chunk.x,
             y: chunk.y,
-            tiles,
-            bodies: self.bodies_in(chunk),
-            items,
-            trees,
-            plants,
-            currents,
-        };
-        (message, version)
+            version: ground.version,
+            tiles: ground.tiles,
+            currents: ground.currents,
+            trees: ground.trees,
+            plants: ground.plants,
+            natural,
+            stored,
+        })
+    }
+
+    /// Development (`--dump-chunk`): `chunk` as a client decodes it from
+    /// its frame, one line a thing, with the names of the kinds.
+    ///
+    /// # Errors
+    ///
+    /// When the chunk is off the map or cannot be framed.
+    pub fn dump_chunk(&self, chunk: ChunkPos) -> Result<String, BoxError> {
+        use std::fmt::Write as _;
+        let ground = self.chunk_ground(chunk).ok_or("off the map")?;
+        let sent = self.chunk_send_of(ground)?;
+        let f = protocol::decode_chunk(&sent.frame)?;
+        let side = f.tiles.len().isqrt().max(1);
+        let mut out = format!(
+            "chunk ({}, {}) version {}: {} bytes, {} trees, {} plants, {} natural items, {} stored\n",
+            f.x,
+            f.y,
+            f.version,
+            sent.frame.len(),
+            f.trees.len(),
+            f.plants.len(),
+            f.natural.len(),
+            f.stored.len()
+        );
+        for row in f.tiles.chunks(side) {
+            let line: String = row
+                .iter()
+                .map(|t| match t {
+                    Terrain::Grass => 'g',
+                    Terrain::Forest => 'f',
+                    Terrain::Water => 'w',
+                    Terrain::Ford => 'o',
+                    Terrain::Brook => 'b',
+                    Terrain::Rock => 'r',
+                })
+                .collect();
+            writeln!(out, "  {line}")?;
+        }
+        for (i, c) in f.currents.iter().enumerate().filter(|(_, c)| **c != 0) {
+            writeln!(
+                out,
+                "  current tile ({}, {}): heading {}, {} cm/s",
+                i % side,
+                i / side,
+                c >> 8,
+                c & 0xff
+            )?;
+        }
+        let name =
+            |list: &[String], k: usize| list.get(k).cloned().unwrap_or_else(|| format!("#{k}"));
+        let species: Vec<String> = self.species.iter().map(|s| s.id.clone()).collect();
+        let flora: Vec<String> = self.flora.iter().map(|s| s.id.clone()).collect();
+        let materials: Vec<String> = self.materials.iter().map(|s| s.id.clone()).collect();
+        for t in &f.trees {
+            writeln!(
+                out,
+                "  tree {} at +{} mm, +{} mm",
+                name(&species, t.kind.into()),
+                t.dx,
+                t.dy
+            )?;
+        }
+        for p in &f.plants {
+            writeln!(
+                out,
+                "  plant {} at +{} mm, +{} mm",
+                name(&flora, p.kind.into()),
+                p.dx,
+                p.dy
+            )?;
+        }
+        for n in &f.natural {
+            writeln!(
+                out,
+                "  natural item slot {}: {}",
+                n.slot,
+                name(&materials, n.material.into())
+            )?;
+        }
+        for s in &f.stored {
+            writeln!(
+                out,
+                "  stored item {} on tile +{}, +{}: {}",
+                s.id,
+                s.dx,
+                s.dy,
+                name(&materials, s.material.into())
+            )?;
+        }
+        for b in &sent.bodies {
+            writeln!(out, "  body {} at {} mm, {} mm", b.id, b.at.x, b.at.y)?;
+        }
+        Ok(out)
     }
 
     /// The ground's natural items in `chunk`, made again from the seed
@@ -913,41 +1123,50 @@ impl Shared {
     }
 
     /// The items lying in `chunk`: its `natural` ones, those taken
-    /// excepted, then the stored ones; and the version of the chunk's
-    /// items.
-    fn ground_items(&self, chunk: ChunkPos, natural: Vec<ItemState>) -> (Vec<ItemState>, u64) {
+    /// excepted, and the stored ones, each in the order of their ids; and
+    /// the version of the chunk's items.
+    fn ground_items(
+        &self,
+        chunk: ChunkPos,
+        natural: &[ItemState],
+    ) -> (Vec<ItemState>, Vec<ItemState>, u64) {
         // Filtered and gathered under the lock `item_removed` holds, so an
         // item taken meanwhile shows either here or nowhere.
         let taken = self
             .natural_taken
             .lock()
             .expect("natural items not poisoned");
-        let mut items: Vec<ItemState> = natural
-            .into_iter()
+        let mut natural: Vec<ItemState> = natural
+            .iter()
             .filter(|i| !taken.contains(&ItemId(i.id)))
+            .cloned()
             .collect();
-        let version = {
-            let stored = self.items.lock().expect("items not poisoned");
-            if let Some(stored) = stored.stored.get(&chunk) {
-                items.extend(stored.iter().cloned());
-            }
-            stored.versions.get(&chunk).copied().unwrap_or(0)
+        let (mut stored, version) = {
+            let items = self.items.lock().expect("items not poisoned");
+            (
+                items.stored.get(&chunk).cloned().unwrap_or_default(),
+                items.versions.get(&chunk).copied().unwrap_or(0),
+            )
         };
         drop(taken);
-        // In the order of their ids, as the simulation lists them.
-        items.sort_by_key(|i| i.id);
-        (items, version)
+        natural.sort_by_key(|i| i.id);
+        stored.sort_by_key(|i| i.id);
+        (natural, stored, version)
     }
 
     /// The trees standing in `chunk`, placed from the map and the seed
     /// the first time they are asked for ([`Ground::trees_in`]).
-    fn trees_in(&self, chunk: ChunkPos) -> Vec<TreeState> {
+    fn trees_in(&self, chunk: ChunkPos) -> Vec<Standing> {
         self.ground
             .trees_in(&self.map, &self.tree_kinds, self.seed, chunk)
             .iter()
-            .map(|tree| TreeState {
-                at: point(tree.at),
-                species: self.species[tree.species].id.clone(),
+            .map(|tree| {
+                let (dx, dy) = offset_in(chunk, tree.at).expect("a tree stands in its chunk");
+                Standing {
+                    dx,
+                    dy,
+                    kind: u8::try_from(tree.species).expect("at most 256 kinds of tree"),
+                }
             })
             .collect()
     }
@@ -981,7 +1200,7 @@ impl Shared {
     /// asked for and kept while it is among the [`PLANT_CACHE_CHUNKS`]
     /// asked for most recently. Placing them again gives the same plants,
     /// so whether they were kept never shows.
-    fn plants_in(&self, chunk: ChunkPos) -> Vec<PlantState> {
+    fn plants_in(&self, chunk: ChunkPos) -> Vec<Standing> {
         let held = self
             .plants
             .lock()
@@ -999,7 +1218,7 @@ impl Shared {
                 species: self.tree_kinds[tree.species].id.as_str(),
             })
             .collect();
-        let plants: Vec<PlantState> =
+        let plants: Vec<Standing> =
             sim::flora::plants_in(&self.map, &self.flora_kinds, &near, self.seed, chunk)
                 .into_iter()
                 .filter_map(|p| {
@@ -1008,11 +1227,8 @@ impl Shared {
                         .get(usize::from(p.kind))
                         .copied()
                         .flatten()?;
-                    Some(PlantState {
-                        kind,
-                        x: p.at.x,
-                        y: p.at.y,
-                    })
+                    let (dx, dy) = offset_in(chunk, p.at).expect("a plant stands in its chunk");
+                    Some(Standing { dx, dy, kind })
                 })
                 .collect();
         // Placed with no lock held: two connections missing the same
@@ -1029,7 +1245,7 @@ impl Shared {
 /// The kinds of shrub, plant and mushroom as clients need them, and the
 /// index of each kind of the content's flora among them (`None` for the
 /// trees still to come).
-fn flora_views(content: &Content) -> (Vec<FloraView>, Vec<Option<u16>>) {
+fn flora_views(content: &Content) -> (Vec<FloraView>, Vec<Option<u8>>) {
     let mut flora = Vec::new();
     let flora_wire = content
         .flora
@@ -1047,7 +1263,7 @@ fn flora_views(content: &Content) -> (Vec<FloraView>, Vec<Option<u16>>) {
                 family: family.to_owned(),
                 height_cm: centimetres(k.height_m),
             });
-            Some(u16::try_from(flora.len() - 1).expect("few kinds"))
+            Some(u8::try_from(flora.len() - 1).expect("at most 256 kinds of flora"))
         })
         .collect();
     (flora, flora_wire)
@@ -1506,13 +1722,21 @@ impl Link {
             Some(Outgoing::Frame(message)) => Ok(Some(message)),
             Some(Outgoing::Chunk(ground)) => {
                 let chunk = ground.chunk;
-                let (message, version) = self.shared.chunk_message_of(ground);
-                if let ServerMessage::Chunk { bodies, .. } = &message {
-                    self.known.extend(bodies.iter().map(|b| b.id));
+                let sent = self.shared.chunk_send_of(ground)?;
+                if !sent.bodies.is_empty() {
+                    self.known.extend(sent.bodies.iter().map(|b| b.id));
+                    // Next out, before any other event: the bodies of the
+                    // frame's own moment.
+                    let bodies = ServerMessage::ChunkBodies {
+                        x: chunk.x,
+                        y: chunk.y,
+                        bodies: sent.bodies,
+                    };
+                    self.events.push_front(Message::text(encode(&bodies)?));
                 }
                 self.sent.insert(chunk);
-                self.item_versions.insert(chunk, version);
-                Ok(Some(Message::text(encode(&message)?)))
+                self.item_versions.insert(chunk, sent.items_version);
+                Ok(Some(Message::Binary(sent.frame)))
             }
         }
     }
@@ -1944,6 +2168,48 @@ mod tests {
     use super::*;
     use sim::Calendar;
 
+    /// A chunk as a client reads it: its frame decoded, its items rebuilt,
+    /// and the bodies sent after it.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Sent {
+        x: i32,
+        y: i32,
+        frame: Bytes,
+        tiles: Vec<Terrain>,
+        trees: Vec<Standing>,
+        items: Vec<ItemState>,
+        bodies: Vec<BodyState>,
+    }
+
+    impl Sent {
+        fn of(shared: &Shared, send: ChunkSend) -> Self {
+            let f = protocol::decode_chunk(&send.frame).expect("a frame");
+            Self {
+                x: f.x,
+                y: f.y,
+                items: f.items(&shared.materials),
+                tiles: f.tiles,
+                trees: f.trees,
+                frame: send.frame,
+                bodies: send.bodies,
+            }
+        }
+    }
+
+    /// `chunk` as a client reads it, `None` off the map.
+    fn sent(shared: &Shared, chunk: ChunkPos) -> Option<Sent> {
+        shared
+            .chunk_message(chunk)
+            .map(|send| Sent::of(shared, send))
+    }
+
+    /// What leaves a link: a message, or a chunk with its bodies.
+    #[derive(Debug)]
+    enum Out {
+        Message(ServerMessage),
+        Chunk(Sent),
+    }
+
     fn shared(max_connections: usize) -> Shared {
         // A small valley: the rules are the same, and it is made in a
         // fraction of the time.
@@ -2057,7 +2323,7 @@ mod tests {
             .into_iter()
             .take(12)
             .collect();
-        let first: Vec<Vec<PlantState>> = chunks
+        let first: Vec<Vec<Standing>> = chunks
             .iter()
             .map(|&chunk| {
                 let plants = forgets.plants_in(chunk);
@@ -2104,35 +2370,38 @@ mod tests {
         let mut misses = Vec::new();
         for &chunk in &chunks {
             // Straight from the generator, as the message tells them.
-            let fresh: Vec<TreeState> =
+            let fresh: Vec<Standing> =
                 sim::trees::trees_in(&shared.map, &shared.tree_kinds, shared.seed, chunk)
                     .into_iter()
-                    .map(|tree| TreeState {
-                        at: point(tree.at),
-                        species: shared.species[tree.species].id.clone(),
+                    .map(|tree| {
+                        let (dx, dy) = offset_in(chunk, tree.at).unwrap();
+                        Standing {
+                            dx,
+                            dy,
+                            kind: u8::try_from(tree.species).unwrap(),
+                        }
                     })
                     .collect();
             if misses.is_empty() {
                 assert!(!shared.ground.holds_trees(chunk), "nothing asked for yet");
             }
-            let miss = shared.chunk_message(chunk).expect("a chunk");
+            let miss = sent(&shared, chunk).expect("a chunk");
             assert!(shared.ground.holds_trees(chunk), "held once asked for");
             let hit = shared.chunk_message(chunk).expect("a chunk");
-            let ServerMessage::Chunk { trees, .. } = &miss else {
-                panic!("a chunk");
-            };
-            assert_eq!(trees, &fresh, "{chunk:?}: a miss places the trees");
+            assert_eq!(miss.trees, fresh, "{chunk:?}: a miss places the trees");
             assert_eq!(
-                encode(&miss).unwrap(),
-                encode(&hit).unwrap(),
+                miss.frame, hit.frame,
                 "{chunk:?}: a hit sends the same bytes"
+            );
+            assert_eq!(
+                miss.frame.as_ptr(),
+                hit.frame.as_ptr(),
+                "{chunk:?}: encoded once, the very same bytes"
             );
             misses.push(miss);
         }
         assert!(
-            misses
-                .iter()
-                .any(|m| matches!(m, ServerMessage::Chunk { trees, .. } if !trees.is_empty())),
+            misses.iter().any(|m: &Sent| !m.trees.is_empty()),
             "trees grow around the camp"
         );
         // Each chunk's trees were placed once, for its own message and
@@ -2158,7 +2427,7 @@ mod tests {
         forgets.ground = Arc::new(Ground::new(1));
         forgets.plants = Mutex::new(Lru::new(1));
         for (&chunk, miss) in chunks.iter().zip(&misses) {
-            assert_eq!(&forgets.chunk_message(chunk).unwrap(), miss, "{chunk:?}");
+            assert_eq!(&sent(&forgets, chunk).unwrap(), miss, "{chunk:?}");
             assert_eq!(forgets.ground.trees_held(), 1, "bounded");
         }
         // A change to a chunk (felling, later) bumps its version: placed
@@ -2168,7 +2437,13 @@ mod tests {
             !shared.ground.holds_trees(chunks[0]),
             "the old version is stale"
         );
-        assert_eq!(&shared.chunk_message(chunks[0]).unwrap(), &misses[0]);
+        // Encoded again at the new version, which its frame carries.
+        let again = sent(&shared, chunks[0]).unwrap();
+        assert_eq!(
+            (&again.tiles, &again.trees, &again.items),
+            (&misses[0].tiles, &misses[0].trees, &misses[0].items)
+        );
+        assert_eq!(protocol::decode_chunk(&again.frame).unwrap().version, 1);
         assert!(
             shared.ground.holds_trees(chunks[0]),
             "held at the new version"
@@ -2235,15 +2510,21 @@ mod tests {
             material: "corpse".into(),
         };
         shared.item_added(corpse.clone());
-        let ServerMessage::Chunk { items, .. } = shared.chunk_message(here.chunk()).unwrap() else {
+        let Some(Sent { items, .. }) = sent(&shared, here.chunk()) else {
             panic!("expected a chunk");
         };
-        assert!(items.contains(&corpse));
+        // The sample content has no corpses: an index past the catalogue.
+        let lying = |items: &[ItemState]| {
+            items
+                .iter()
+                .any(|i| (i.id, i.x, i.y) == (corpse.id, corpse.x, corpse.y))
+        };
+        assert!(lying(&items));
         shared.item_removed(ItemId(999), here);
-        let ServerMessage::Chunk { items, .. } = shared.chunk_message(here.chunk()).unwrap() else {
+        let Some(Sent { items, .. }) = sent(&shared, here.chunk()) else {
             panic!("expected a chunk");
         };
-        assert!(!items.contains(&corpse));
+        assert!(!lying(&items));
     }
 
     #[test]
@@ -2253,8 +2534,7 @@ mod tests {
         let camp = world.map().camp().chunk();
         let mut natural = None;
         for chunk in View::window(&shared.map, camp) {
-            let Some(ServerMessage::Chunk { items, trees, .. }) = shared.chunk_message(chunk)
-            else {
+            let Some(Sent { items, trees, .. }) = sent(&shared, chunk) else {
                 panic!("expected a chunk");
             };
             // The same items and trees as the world's.
@@ -2270,7 +2550,7 @@ mod tests {
         assert!(sim::items::is_natural(ItemId(item.id)));
         shared.item_removed(ItemId(item.id), Pos::new(item.x, item.y));
         for _ in 0..2 {
-            let Some(ServerMessage::Chunk { items, .. }) = shared.chunk_message(chunk) else {
+            let Some(Sent { items, .. }) = sent(&shared, chunk) else {
                 panic!("expected a chunk");
             };
             assert!(items.iter().all(|i| i.id != item.id));
@@ -2281,12 +2561,7 @@ mod tests {
     fn a_chunk_message_carries_the_bodies_standing_in_it() {
         let shared = shared(1);
         let body = shared.position_of(1).expect("body 1 exists");
-        let message = shared
-            .chunk_message(body.chunk())
-            .expect("chunk on the map");
-        let ServerMessage::Chunk { tiles, bodies, .. } = message else {
-            panic!("expected a chunk");
-        };
+        let Sent { tiles, bodies, .. } = sent(&shared, body.chunk()).expect("chunk on the map");
         assert_eq!(tiles.len(), (CHUNK_SIZE * CHUNK_SIZE) as usize);
         assert!(bodies.iter().any(|b| b.id == 1));
         // The items of a chunk are those lying in it; the sample content
@@ -2294,7 +2569,7 @@ mod tests {
         // the body's view.
         let mut seen_items = false;
         for chunk in View::window(&shared.map, body.chunk()) {
-            let Some(ServerMessage::Chunk { items, .. }) = shared.chunk_message(chunk) else {
+            let Some(Sent { items, .. }) = sent(&shared, chunk) else {
                 panic!("expected a chunk");
             };
             seen_items |= !items.is_empty();
@@ -2373,12 +2648,32 @@ mod tests {
         }
     }
 
-    /// Everything the link has to send, decoded, in the order it leaves.
-    fn drain(link: &mut Link) -> Vec<ServerMessage> {
+    /// Everything the link has to send, decoded, in the order it leaves:
+    /// a chunk's bodies, right after its frame, folded into it.
+    fn drain(link: &mut Link) -> Vec<Out> {
         let mut out = Vec::new();
         while link.has_output() {
-            if let Some(Message::Text(text)) = link.next_output().expect("encodable") {
-                out.push(decode(text.as_str()).expect("the protocol"));
+            match link.next_output().expect("encodable") {
+                Some(Message::Text(text)) => match decode(text.as_str()).expect("the protocol") {
+                    ServerMessage::ChunkBodies { x, y, bodies } => {
+                        let Some(Out::Chunk(chunk)) = out.last_mut() else {
+                            panic!("bodies after anything but their chunk");
+                        };
+                        assert_eq!((chunk.x, chunk.y), (x, y), "the bodies of their chunk");
+                        assert!(chunk.bodies.is_empty() && !bodies.is_empty());
+                        chunk.bodies = bodies;
+                    }
+                    message => out.push(Out::Message(message)),
+                },
+                Some(Message::Binary(frame)) => out.push(Out::Chunk(Sent::of(
+                    &link.shared,
+                    ChunkSend {
+                        frame,
+                        bodies: vec![],
+                        items_version: 0,
+                    },
+                ))),
+                _ => {}
             }
         }
         out
@@ -2409,16 +2704,10 @@ mod tests {
         for _ in &chunks {
             let ground = rx.recv_timeout(Duration::from_secs(60)).expect("built");
             let chunk = ground.chunk;
-            let (pooled, _) = shared.chunk_message_of(ground);
-            let inline = shared.chunk_message(chunk).expect("on the map");
-            assert_eq!(
-                encode(&pooled).unwrap(),
-                encode(&inline).unwrap(),
-                "{chunk:?}"
-            );
-            if let ServerMessage::Chunk { bodies, .. } = &pooled {
-                with_bodies += usize::from(!bodies.is_empty());
-            }
+            let pooled = Sent::of(&shared, shared.chunk_send_of(ground).unwrap());
+            let inline = sent(&shared, chunk).expect("on the map");
+            assert_eq!(pooled, inline, "{chunk:?}");
+            with_bodies += usize::from(!pooled.bodies.is_empty());
         }
         assert!(with_bodies >= 1, "the bodies are added as the frame leaves");
     }
@@ -2441,11 +2730,17 @@ mod tests {
         // came back), then the chunks, the body's own first.
         let out = drain(&mut link);
         assert_eq!(out.len(), total + 2);
-        assert!(matches!(out[0], ServerMessage::Pong { nonce: 7 }));
-        assert!(matches!(out[1], ServerMessage::FarView { .. }));
+        assert!(matches!(
+            out[0],
+            Out::Message(ServerMessage::Pong { nonce: 7 })
+        ));
+        assert!(matches!(
+            out[1],
+            Out::Message(ServerMessage::FarView { .. })
+        ));
         assert!(matches!(
             &out[2],
-            ServerMessage::Chunk { x, y, bodies, .. }
+            Out::Chunk(Sent { x, y, bodies, .. })
                 if ChunkPos::new(*x, *y) == home && bodies.iter().any(|b| b.id == 1)
         ));
         assert_eq!(link.sent.len(), total);
@@ -2460,7 +2755,7 @@ mod tests {
         assert!(hidden > 0);
         assert!(out.iter().all(|m| matches!(
             m,
-            ServerMessage::ChunkHidden { x, .. } if *x < away.x - VIEW_RADIUS
+            Out::Message(ServerMessage::ChunkHidden { x, .. }) if *x < away.x - VIEW_RADIUS
         )));
         assert_eq!(link.sent.len() + hidden, total);
         // A chunk the pool finishes after it left the view is dropped.
@@ -2476,7 +2771,7 @@ mod tests {
         );
         assert!(out.iter().all(|m| matches!(
             m,
-            ServerMessage::Chunk { x, .. } if *x > home.x + VIEW_RADIUS
+            Out::Chunk(Sent { x, .. }) if *x > home.x + VIEW_RADIUS
         )));
         assert_eq!(link.sent, link.view.chunks);
     }
@@ -2509,28 +2804,29 @@ mod tests {
         });
         link.resync(5);
         let out = drain(&mut link);
-        assert!(matches!(out[0], ServerMessage::DayStarted { .. }));
-        assert!(
-            out.iter()
-                .any(|m| matches!(m, ServerMessage::BodyLeft { body } if *body == other))
-        );
+        assert!(matches!(
+            out[0],
+            Out::Message(ServerMessage::DayStarted { .. })
+        ));
+        assert!(out.iter().any(
+            |m| matches!(m, Out::Message(ServerMessage::BodyLeft { body }) if *body == other)
+        ));
         for body in known_before.iter().filter(|&&b| b != other) {
             assert!(out.iter().any(|m| matches!(
                 m,
-                ServerMessage::BodyStopped { body: b, .. } | ServerMessage::BodyWalks { body: b, .. }
+                Out::Message(ServerMessage::BodyStopped { body: b, .. } | ServerMessage::BodyWalks { body: b, .. })
                     if b == body
             )));
             assert!(
                 out.iter()
-                    .any(|m| matches!(m, ServerMessage::BodySleeps { body: b, .. } if b == body))
+                    .any(|m| matches!(m, Out::Message(ServerMessage::BodySleeps { body: b, .. }) if b == body))
             );
-            assert!(
-                out.iter()
-                    .any(|m| matches!(m, ServerMessage::BodyHolds { body: b, .. } if b == body))
-            );
+            assert!(out.iter().any(
+                |m| matches!(m, Out::Message(ServerMessage::BodyHolds { body: b, .. }) if b == body)
+            ));
         }
         assert!(
-            !out.iter().any(|m| matches!(m, ServerMessage::Chunk { .. })),
+            !out.iter().any(|m| matches!(m, Out::Chunk(_))),
             "the ground waits for the pool"
         );
         assert!(!link.known.contains(&other));
@@ -2540,7 +2836,7 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert!(matches!(
             &out[0],
-            ServerMessage::Chunk { x, y, items, .. }
+            Out::Chunk(Sent { x, y, items, .. })
                 if ChunkPos::new(*x, *y) == home && items.iter().any(|i| i.id == 999)
         ));
         assert_eq!(link.item_versions[&home], shared.items_version(home));
@@ -2557,15 +2853,14 @@ mod tests {
         let out = drain(&mut link);
         assert!(out.iter().any(|m| matches!(
             m,
-            ServerMessage::BodyDied {
+            Out::Message(ServerMessage::BodyDied {
                 body: 1,
                 cause: DeathCause::Froze
-            }
+            })
         )));
-        assert!(
-            out.iter()
-                .any(|m| matches!(m, ServerMessage::BodyAssigned { body: Some(b) } if *b != 1))
-        );
+        assert!(out.iter().any(
+            |m| matches!(m, Out::Message(ServerMessage::BodyAssigned { body: Some(b) }) if *b != 1)
+        ));
         assert_ne!(link.pilot.body, Some(1));
         settle(&mut link, &mut results);
     }
