@@ -127,17 +127,78 @@ var tiles_hash: Callable
 ## image needed.
 static func noise_texture() -> Texture2D:
 	if _noise_texture == null:
-		var noise := FastNoiseLite.new()
-		noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-		noise.frequency = 0.02
-		noise.seed = 7
 		var texture := NoiseTexture2D.new()
-		texture.noise = noise
+		texture.noise = noise_source()
 		texture.seamless = true
 		texture.width = 256
 		texture.height = 256
 		_noise_texture = texture
 	return _noise_texture
+
+
+## The noise itself (the ground shader's, and what the water meshes read
+## of it on the processor).
+static func noise_source() -> FastNoiseLite:
+	var noise := FastNoiseLite.new()
+	noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	noise.frequency = 0.02
+	noise.seed = 7
+	return noise
+
+
+## The bank's detail for the water meshes' shaders: one seamless image of
+## four metres, each channel two octaves of the ground's noise at the
+## scales ground.gdshader read them (R the grass edge's rag, G its tufts,
+## B the water's lap, A the ripples' grain), so one read gives the four.
+## Made once from the noise and kept in the user folder: a million pixels
+## take a second to pack in a script.
+const DETAIL_SIDE := 1024
+const DETAIL_CACHE := "user://water_detail_%d.png" % DETAIL_SIDE
+static var _detail_texture: Texture2D
+
+
+static func detail_texture() -> Texture2D:
+	if _detail_texture == null:
+		var image: Image = Image.load_from_file(ProjectSettings.globalize_path(DETAIL_CACHE)) if FileAccess.file_exists(DETAIL_CACHE) else null
+		if image == null or image.get_width() != DETAIL_SIDE:
+			image = make_detail_image()
+			image.save_png(DETAIL_CACHE)
+		image.generate_mipmaps()
+		_detail_texture = ImageTexture.create_from_image(image)
+	return _detail_texture
+
+
+## The detail image: per channel, the two scales (texture units a tile of
+## the ground's noise, rounded so each repeats within the four metres)
+## and the second's weight against the first's.
+const DETAIL_CHANNELS := [[0.5, 1.5, 0.5], [2.0, 4.25, 0.714], [1.25, 3.75, 0.5], [1.0, 2.25, 0.833]]
+
+
+static func make_detail_image() -> Image:
+	var side := DETAIL_SIDE
+	var planes: Array[PackedByteArray] = []
+	for spec: Array in DETAIL_CHANNELS:
+		var noise := noise_source()
+		# The image spans four tiles: a feature of the noise at scale s
+		# covers 0.2 / s tiles, so s / 20 of the image's side... in pixels of
+		# the image, the noise's frequency is 0.02 × s × 256 / (side / 4).
+		noise.frequency = 0.02 * float(spec[0]) * 256.0 / (float(side) / 4.0)
+		noise.fractal_type = FastNoiseLite.FRACTAL_FBM
+		noise.fractal_octaves = 2
+		noise.fractal_lacunarity = float(spec[1]) / float(spec[0])
+		noise.fractal_gain = float(spec[2])
+		var plane := noise.get_seamless_image(side, side)
+		plane.convert(Image.FORMAT_L8)
+		planes.append(plane.get_data())
+	var data := PackedByteArray()
+	data.resize(side * side * 4)
+	for i in side * side:
+		var o := 4 * i
+		data[o] = planes[0][i]
+		data[o + 1] = planes[1][i]
+		data[o + 2] = planes[2][i]
+		data[o + 3] = planes[3][i]
+	return Image.create_from_data(side, side, false, Image.FORMAT_RGBA8, data)
 
 
 ## The ground material of a terrain: the blending shader with the
@@ -190,6 +251,9 @@ static func set_plain_ground(on: bool) -> void:
 	var materials: Array = _ground_materials.values()
 	if _brook_material != null:
 		materials.append(_brook_material)
+	for material: ShaderMaterial in [_water_mesh_material, _water_bank_material]:
+		if material != null:
+			materials.append(material)
 	for material: ShaderMaterial in materials:
 		if on and not _real_shaders.has(material):
 			_real_shaders[material] = material.shader
@@ -278,6 +342,204 @@ class GroundCanvas:
 		draw_polygon(points, PackedColorArray([white, white, white, white]), uvs, ChunkView.ground_texture(terrain))
 
 
+## The river as two meshes a chunk (WaterMeshes, prototype of 11
+## November 2026), beside today's water canvas: the lead judges them
+## against each other in the sandbox. water_mode: WATER_TODAY draws
+## today's water canvas, WATER_MESHES the meshes, WATER_SPLIT today's on
+## the left half of the screen and the meshes on the right (F7).
+const WATER_TODAY := 0
+const WATER_MESHES := 1
+const WATER_SPLIT := 2
+const WATER_MODE_NAMES := ["today", "meshes", "split"]
+static var water_mode := WATER_MESHES
+static var _water_mesh_material: ShaderMaterial
+static var _water_bank_material: ShaderMaterial
+## The water mesh's time on the worker and the main thread, in microseconds,
+## summed over the builds, and how many (the F3 overlay).
+static var water_build_usec := 0
+static var water_builds := 0
+static var water_main_usec := 0
+var _water_canvas: WaterCanvas = null
+var _bank_canvas: WaterCanvas = null
+## The latest build asked for this chunk: an older one landing is dropped.
+var _water_job := 0
+
+
+## The water mesh's material (deep water) and the bank mesh's, shared by
+## every chunk; the water's dials and layers from ground.json.
+static func water_mesh_material() -> ShaderMaterial:
+	if _water_mesh_material == null:
+		_water_mesh_material = _make_water_material("res://world/water_mesh.gdshader")
+	return _water_mesh_material
+
+
+static func water_bank_material() -> ShaderMaterial:
+	if _water_bank_material == null:
+		_water_bank_material = _make_water_material("res://world/water_bank.gdshader")
+	return _water_bank_material
+
+
+static func _make_water_material(shader_path: String) -> ShaderMaterial:
+	var material := ShaderMaterial.new()
+	material.shader = load(shader_path)
+	apply_water_spec(material, false)
+	pin_flow_time(material)
+	return material
+
+
+## Gives a water mesh material its layers and numbers: the bank's earth
+## and sand, the first ford bed, the detail, and the water's params.
+static func apply_water_spec(material: ShaderMaterial, fresh: bool) -> void:
+	var layers := ground_layers("water")
+	for pair: Array in [["bank", "earth_texture", ""], ["bank2", "sand_texture", "has_sand"], ["ford1", "bed_texture", "has_bed"]]:
+		var path := str(layers.get(pair[0], ""))
+		var texture: Texture2D = null
+		if path != "":
+			texture = fresh_texture(path) if fresh else load_texture(path)
+		if texture != null:
+			material.set_shader_parameter(pair[1], texture)
+		if pair[2] != "":
+			material.set_shader_parameter(pair[2], texture != null)
+	material.set_shader_parameter("detail_texture", detail_texture())
+	material.set_shader_parameter("depth_tiles", WaterMeshes.DEPTH_TILES)
+	var params := ground_params("water")
+	for name in params:
+		material.set_shader_parameter(name, params[name])
+
+
+## Cycles the water drawn (F7) and shows it on every chunk.
+static func cycle_water_mode(tree: SceneTree) -> void:
+	set_water_mode((water_mode + 1) % WATER_MODE_NAMES.size(), tree)
+
+
+static func set_water_mode(mode: int, tree: SceneTree) -> void:
+	water_mode = mode
+	var split := 0.5 if mode == WATER_SPLIT else -1.0
+	ground_material("water").set_shader_parameter("split_edge", split)
+	water_mesh_material().set_shader_parameter("split_edge", split)
+	water_bank_material().set_shader_parameter("split_edge", split)
+	if tree != null:
+		tree.call_group("chunk_views", "apply_water_mode")
+
+
+static func water_mode_name() -> String:
+	return WATER_MODE_NAMES[water_mode]
+
+
+## Shows the chunk's water canvases the mode wants: today's, the meshes,
+## or both (split).
+func apply_water_mode() -> void:
+	var today: GroundCanvas = _grounds.get("water")
+	if today != null:
+		today.visible = water_mode != WATER_MESHES
+	for canvas: WaterCanvas in [_water_canvas, _bank_canvas]:
+		if canvas != null:
+			canvas.visible = water_mode != WATER_TODAY
+
+
+## Development: the water of the mode shown, hidden or not (the F3
+## overlay measures what it costs the graphics card).
+func set_water_hidden(hidden: bool) -> void:
+	if hidden:
+		var today: GroundCanvas = _grounds.get("water")
+		if today != null:
+			today.visible = false
+		for canvas: WaterCanvas in [_water_canvas, _bank_canvas]:
+			if canvas != null:
+				canvas.visible = false
+	else:
+		apply_water_mode()
+
+
+## The zoom changed: the water meshes' images are read at an integer
+## mipmap level a zoom step (one level sharper than the hardware would
+## choose for the diamonds, D39) and the bank's detail is off where its
+## shapes would be under a few pixels. `stretch` is the screen's pixels
+## per logical pixel.
+static func set_water_zoom(zoom: float, stretch: float) -> void:
+	# Along the screen's rows a tile is 32 × zoom × stretch pixels high and
+	# a texture's 256 texels a tile run across it: this many texels a pixel.
+	var texels := 8.0 / maxf(zoom * stretch, 0.01)
+	var lod := maxf(roundf(log(texels) / log(2.0) - 1.0), 0.0)
+	for material: ShaderMaterial in [water_mesh_material(), water_bank_material()]:
+		material.set_shader_parameter("water_lod", lod)
+		material.set_shader_parameter("ground_lod", lod)
+		material.set_shader_parameter("detail_on", 1.0 if zoom >= 0.8 else 0.0)
+
+
+## A mesh of the water drawn with one material (the water's or the
+## bank's), under the chunk's own drawing and over the grounds.
+class WaterCanvas:
+	extends Node2D
+	var arrays: Dictionary = {}
+
+	func _draw() -> void:
+		if arrays.is_empty():
+			return
+		var texture := ChunkView.ground_texture("water")
+		RenderingServer.canvas_item_add_triangle_array(get_canvas_item(), arrays["indices"], arrays["points"], arrays["colours"], arrays["uvs"],
+			PackedInt32Array(), PackedFloat32Array(), texture.get_rid() if texture != null else RID())
+
+
+func _water_canvases() -> Array:
+	if _water_canvas == null:
+		_water_canvas = WaterCanvas.new()
+		_water_canvas.name = "WaterMesh"
+		# With today's water canvas: over the grounds, under the brooks.
+		_water_canvas.z_index = -6 + int(GROUND_ORDER["water"])
+		_water_canvas.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
+		_water_canvas.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+		_water_canvas.material = water_mesh_material()
+		add_child(_water_canvas)
+		_bank_canvas = WaterCanvas.new()
+		_bank_canvas.name = "BankMesh"
+		_bank_canvas.z_index = _water_canvas.z_index
+		_bank_canvas.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
+		_bank_canvas.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+		_bank_canvas.material = water_bank_material()
+		add_child(_bank_canvas)
+		apply_water_mode()
+	return [_water_canvas, _bank_canvas]
+
+
+## Builds the chunk's water meshes from its window of codes: the arrays
+## on a worker thread, laid on the canvases when ready unless a newer
+## build for this chunk started meanwhile. A chunk without water lays
+## nothing.
+func _build_water_meshes(win: PackedByteArray) -> void:
+	_water_job += 1
+	var job := _water_job
+	var started := Time.get_ticks_usec()
+	var prepared := WaterMeshes.prepare(win, _origin, _size, current_at)
+	if prepared.is_empty():
+		if _water_canvas != null:
+			_water_canvas.arrays = {}
+			_bank_canvas.arrays = {}
+			_water_canvas.queue_redraw()
+			_bank_canvas.queue_redraw()
+		return
+	water_main_usec += Time.get_ticks_usec() - started
+	WaterMeshes.busy += 1
+	var out: Array = []
+	var task := WorkerThreadPool.add_task(WaterMeshes.build.bind(prepared, out))
+	var tree := Engine.get_main_loop() as SceneTree
+	while tree != null and not WorkerThreadPool.is_task_completed(task):
+		await tree.process_frame
+	WorkerThreadPool.wait_for_task_completion(task)
+	WaterMeshes.busy -= 1
+	water_build_usec += int(out[4]) if out.size() > 4 else 0
+	water_builds += 1
+	if _water_job != job:
+		return
+	started = Time.get_ticks_usec()
+	var canvases := _water_canvases()
+	(canvases[0] as WaterCanvas).arrays = out[0]
+	(canvases[1] as WaterCanvas).arrays = out[1]
+	(canvases[0] as WaterCanvas).queue_redraw()
+	(canvases[1] as WaterCanvas).queue_redraw()
+	water_main_usec += Time.get_ticks_usec() - started
+
+
 ## Reloads the ground shader and textures from their files into the
 ## materials in use (development aid, see dev/watcher.gd). The textures
 ## are read straight from the image files, bypassing the import, so a
@@ -302,6 +564,17 @@ static func reload_art() -> void:
 		var material: ShaderMaterial = _ground_materials[terrain]
 		material.shader = shader
 		apply_spec(material, terrain, true)
+	# The water meshes' shaders likewise (their include is read by the
+	# shader's own loader from the file beside it).
+	for pair: Array in [[_water_mesh_material, "res://world/water_mesh.gdshader"], [_water_bank_material, "res://world/water_bank.gdshader"]]:
+		var material: ShaderMaterial = pair[0]
+		if material == null:
+			continue
+		var fresh := Shader.new()
+		fresh.code = FileAccess.get_file_as_string(pair[1])
+		material.shader = fresh
+		apply_water_spec(material, true)
+		pin_flow_time(material)
 
 
 ## A texture through the import when it has one, else straight from the
@@ -864,6 +1137,7 @@ func _draw_ground_layers() -> void:
 					bits[y * _size + x] |= GroundIndex.FRINGE
 	if field:
 		_add_field_tiles(win, bits)
+		_build_water_meshes(win)
 	GroundIndex.write(_origin, _size, bits, corners)
 	var used := 0
 	for b in bits:

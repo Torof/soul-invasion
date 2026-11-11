@@ -72,7 +72,7 @@ func _screenshot_then_quit(path: String) -> void:
 	await get_tree().create_timer(2.5).timeout
 	# Then until every chunk is built (at most a minute and a half).
 	var waited := 0.0
-	while waited < 90.0 and (ShoreField.busy > 0 or _unbuilt() > 0):
+	while waited < 90.0 and (ShoreField.busy > 0 or WaterMeshes.busy > 0 or _unbuilt() > 0):
 		await get_tree().create_timer(0.5).timeout
 		waited += 0.5
 	# Framing for the screenshot, once the world is in: SOUL_INVASION_ZOOM

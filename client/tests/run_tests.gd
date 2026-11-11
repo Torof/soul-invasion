@@ -57,6 +57,9 @@ func _init() -> void:
 	_test_the_fog_rings_leave_only_what_is_clear()
 	_test_the_fog_rings_are_built_when_the_ground_moves()
 	_test_the_far_view_leaves_its_hole_only_under_built_ground()
+	_test_the_water_meshes_cover_the_water_once()
+	_test_the_water_meshes_join_across_chunks()
+	_test_the_water_meshes_measure_the_bank()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -655,7 +658,7 @@ func _test_plants_are_named_and_coloured() -> void:
 func _test_perf_overlay_reports() -> void:
 	var perf := PerfOverlay.new()
 	var text := perf.report(12.5)
-	_check(text.contains("fps") and text.contains("12.5 ms") and text.contains("frame step") and text.contains("draw calls") and text.contains("wind on") and text.contains("fog rings (F7)"), "the counters report: %s" % text)
+	_check(text.contains("fps") and text.contains("12.5 ms") and text.contains("frame step") and text.contains("draw calls") and text.contains("wind on") and text.contains("fog rings (F9)") and text.contains("water meshes (F7)"), "the counters report: %s" % text)
 	# F5: the ground plain, then exactly as it was.
 	var grass := ChunkView.ground_material("grass")
 	var real := grass.shader
@@ -1355,3 +1358,130 @@ func _test_the_far_view_leaves_its_hole_only_under_built_ground() -> void:
 	var mesh := FarView.ring(Rect2(Vector2(-1000, -1000), Vector2(2048, 2048)), limit, 0.0, 0.0)
 	_check((mesh["points"] as PackedVector2Array).size() == 12 and (mesh["indices"] as PackedInt32Array).size() == 36, "the far view's ring has the same form")
 	_check((FarView.ring(Rect2(Vector2(0, 0), Vector2(10, 10)), limit, 0.0, 0.0)["points"] as PackedVector2Array).size() == 4, "a hole outside the far view: the plain quad")
+
+
+## The water meshes (WaterMeshes): every water tile of a chunk is covered
+## once, by the water mesh or the bank mesh; the bank mesh lies only along
+## the line between water and land; the arrays are whole.
+func _test_the_water_meshes_cover_the_water_once() -> void:
+	# A river six tiles wide, x in [40, 46), crossing the chunk (32, 0).
+	var river := func(t: Vector2i) -> String: return "water" if t.x >= 40 and t.x < 46 else "grass"
+	var runs := func(_t: Vector2i) -> Vector2: return Vector2(0.0, 0.5)
+	var lo := Vector2i(32, 0)
+	var size := 32
+	var prepared := WaterMeshes.prepare(ShoreField.block_of(river, lo, size), lo, size, runs)
+	_check(not prepared.is_empty(), "a block with water prepares")
+	var out: Array = []
+	WaterMeshes.build(prepared, out)
+	var classes: PackedByteArray = out[2]
+	# Cell (i, j) spans the tile centres (i, j) to (i + 1, j + 1) of the
+	# chunk: the four cells around a water tile's centre cover it, each by
+	# one mesh.
+	var missed := 0
+	var twice := 0
+	for y in range(1, size - 1):
+		for x in range(1, size - 1):
+			if river.call(lo + Vector2i(x, y)) != "water":
+				continue
+			for c: Vector2i in [Vector2i(x - 1, y - 1), Vector2i(x, y - 1), Vector2i(x - 1, y), Vector2i(x, y)]:
+				var k := classes[c.y * size + c.x]
+				if k == 0:
+					missed += 1
+				elif k != 1 and k != 2:
+					twice += 1
+	_check(missed == 0 and twice == 0, "every water tile is covered once: %d quarters missed, %d odd" % [missed, twice])
+	# Bank cells only along the line: the cells between the tile centres
+	# 36 and 37 (3 tiles from the water) carry nothing, the cell across
+	# the line (39 to 40) the bank, the river's middle (42 to 43) the water.
+	_check(classes[10 * size + (36 - 32)] == 0, "far from the water, no cell: %d" % classes[10 * size + 4])
+	_check(classes[10 * size + (39 - 32)] == 2, "across the line, a bank cell: %d" % classes[10 * size + 7])
+	_check(classes[10 * size + (42 - 32)] == 1, "in the middle of the river, a water cell: %d" % classes[10 * size + 10])
+	var water: Dictionary = out[0]
+	var bank: Dictionary = out[1]
+	for mesh: Dictionary in [water, bank]:
+		var points: PackedVector2Array = mesh["points"]
+		var ok := points.size() == (mesh["uvs"] as PackedVector2Array).size() and points.size() == (mesh["colours"] as PackedColorArray).size()
+		var indices: PackedInt32Array = mesh["indices"]
+		ok = ok and indices.size() % 3 == 0
+		for i in indices:
+			if i < 0 or i >= points.size():
+				ok = false
+		_check(ok, "the mesh's arrays are whole (%d points, %d indices)" % [points.size(), indices.size()])
+	# The water mesh carries the current: the colour's green is the y
+	# component, 0.5 m/s over 2 either way.
+	var colours: PackedColorArray = water["colours"]
+	var points: PackedVector2Array = water["points"]
+	var middle := points.find(WaterMeshes.to_screen(Vector2(43.0, 16.0)))
+	_check(middle >= 0 and absf(colours[middle].g - 0.625) < 0.01 and absf(colours[middle].r - 0.5) < 0.01, "the vertices carry the current: %s" % (colours[middle] if middle >= 0 else Color.BLACK))
+	_check(middle >= 0 and absf(colours[middle].b - 3.0 / WaterMeshes.DEPTH_TILES) < 0.1, "and the depth, three tiles from either bank: %s" % (colours[middle] if middle >= 0 else Color.BLACK))
+	# A block without water prepares to nothing.
+	var land := func(_t: Vector2i) -> String: return "grass"
+	_check(WaterMeshes.prepare(ShoreField.block_of(land, lo, size), lo, size, runs).is_empty(), "a dry block has no meshes")
+
+
+## Two chunks side by side build the same values for the lattice points
+## they share, to the bit: no seam.
+func _test_the_water_meshes_join_across_chunks() -> void:
+	# A river running east, y in [10, 16), bending a tile at x = 70, with
+	# a ford at the border between the chunks (32, 0) and (64, 0).
+	var river := func(t: Vector2i) -> String:
+		var top := 10 if t.x < 70 else 11
+		if t.y >= top and t.y < top + 6:
+			return "ford" if t.x >= 60 and t.x < 68 else "water"
+		return "grass"
+	var runs := func(t: Vector2i) -> Vector2: return Vector2(0.3 + 0.01 * t.x, 0.0)
+	var meshes: Array = []
+	for lo: Vector2i in [Vector2i(32, 0), Vector2i(64, 0)]:
+		var out: Array = []
+		WaterMeshes.build(WaterMeshes.prepare(ShoreField.block_of(river, lo, 32), lo, 32, runs), out)
+		meshes.append(out)
+	var shared := 0
+	var differ := 0
+	for m in 2:
+		var a: Dictionary = meshes[0][m]
+		var b: Dictionary = meshes[1][m]
+		if a.is_empty() or b.is_empty():
+			continue
+		var by_point: Dictionary = {}
+		var pa: PackedVector2Array = a["points"]
+		for i in pa.size():
+			by_point[pa[i]] = i
+		var pb: PackedVector2Array = b["points"]
+		for j in pb.size():
+			if not by_point.has(pb[j]):
+				continue
+			var i: int = by_point[pb[j]]
+			shared += 1
+			if (a["uvs"] as PackedVector2Array)[i] != (b["uvs"] as PackedVector2Array)[j] or (a["colours"] as PackedColorArray)[i] != (b["colours"] as PackedColorArray)[j]:
+				differ += 1
+	_check(shared >= 20 and differ == 0, "the chunks share %d vertices on their border, %d differ" % [shared, differ])
+
+
+## The bank mesh carries the distance to the water's line as the field
+## measured it: zero on the line, the tiles inland, a step smoothed.
+func _test_the_water_meshes_measure_the_bank() -> void:
+	var stepped := func(t: Vector2i) -> String: return "water" if t.x >= (40 if t.y < 16 else 41) else "grass"
+	var lo := Vector2i(32, 0)
+	var out: Array = []
+	WaterMeshes.build(WaterMeshes.prepare(ShoreField.block_of(stepped, lo, 32), lo, 32, Callable()), out)
+	var d: PackedFloat32Array = out[3]
+	var l := WaterMeshes.PX * 32 + 3
+	# Lattice point a lies 0.25 + a / PX tiles from the chunk's first tile.
+	var at := func(x: float, y: float) -> float:
+		var a := int(round((x - lo.x - 0.25) * WaterMeshes.PX))
+		var b := int(round((y - lo.y - 0.25) * WaterMeshes.PX))
+		return d[b * l + a]
+	_check(absf(at.call(40.0, 8.0)) < 0.15, "the edge at x = 40: %f" % at.call(40.0, 8.0))
+	_check(absf(at.call(38.5, 8.0) - 1.5) < 0.2, "1.5 tiles inland: %f" % at.call(38.5, 8.0))
+	_check(absf(at.call(41.5, 8.0) + 1.5) < 0.2, "1.5 tiles out in the water: %f" % at.call(41.5, 8.0))
+	_check(absf(at.call(40.5, 16.0)) < 0.25, "the step is smoothed: %f at its middle" % at.call(40.5, 16.0))
+	# The bank's vertices carry it: a vertex of the bank mesh at (40, 8)
+	# has a distance near zero and a width within the bank's dials.
+	var bank: Dictionary = out[1]
+	var points: PackedVector2Array = bank["points"]
+	var uvs: PackedVector2Array = bank["uvs"]
+	var found := -1
+	for i in points.size():
+		if points[i] == WaterMeshes.to_screen(Vector2(40.0, 8.0)):
+			found = i
+	_check(found >= 0 and absf(uvs[found].x) < 0.15 and uvs[found].y >= 0.0 and uvs[found].y <= WaterMeshes.WIDTH_MAX * WaterMeshes.BEACH_WIDE + 0.001, "a bank vertex on the line: %s" % (uvs[found] if found >= 0 else Vector2.INF))
