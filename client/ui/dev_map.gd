@@ -44,11 +44,53 @@ func show_overview(cell: int, width: int, height: int, cells: String) -> void:
 		return
 	_cell = cell
 	_size = Vector2i(width, height)
-	var image := Image.create(width, height, false, Image.FORMAT_RGBA8)
-	for y in height:
-		for x in width:
-			image.set_pixel(x, y, COLOURS.get(cells[y * width + x], Color.MAGENTA))
-	_texture = ImageTexture.create_from_image(image)
+	_texture = ImageTexture.create_from_image(image_of(width, height, cells, COLOURS, Color.MAGENTA))
+
+
+## An image a pixel a cell of `cells` (one letter each, row by row),
+## each the colour `colours` gives its letter, `fallback` for a letter
+## not in it. The pixels are written as bytes in one go, the same bytes
+## set_pixel would write (a colour's channel times 255, truncated): a
+## set_pixel a cell took twice as long over the overview's 512 × 512
+## (D39). A text that is not all ASCII (never the server's) is painted
+## cell by cell.
+static func image_of(width: int, height: int, cells: String, colours: Dictionary, fallback: Color) -> Image:
+	var count := width * height
+	var codes := cells.to_utf8_buffer()
+	if codes.size() != cells.length():
+		var image := Image.create(width, height, false, Image.FORMAT_RGBA8)
+		for y in height:
+			for x in width:
+				image.set_pixel(x, y, colours.get(cells[y * width + x], fallback))
+		return image
+	# The bytes of each letter's colour, by its code; the fallback's for
+	# every other.
+	var table := PackedByteArray()
+	table.resize(256 * 4)
+	for code in 256:
+		_write_colour(table, code * 4, fallback)
+	for letter: String in colours:
+		var code := letter.unicode_at(0)
+		if code < 256:
+			_write_colour(table, code * 4, colours[letter])
+	var bytes := PackedByteArray()
+	bytes.resize(count * 4)
+	for i in count:
+		var from := codes[i] * 4
+		var to := i * 4
+		bytes[to] = table[from]
+		bytes[to + 1] = table[from + 1]
+		bytes[to + 2] = table[from + 2]
+		bytes[to + 3] = table[from + 3]
+	return Image.create_from_data(width, height, false, Image.FORMAT_RGBA8, bytes)
+
+
+## Writes `colour` at `at` in `bytes` as RGBA8, as Image.set_pixel does.
+static func _write_colour(bytes: PackedByteArray, at: int, colour: Color) -> void:
+	bytes[at] = int(clampf(colour.r * 255.0, 0.0, 255.0))
+	bytes[at + 1] = int(clampf(colour.g * 255.0, 0.0, 255.0))
+	bytes[at + 2] = int(clampf(colour.b * 255.0, 0.0, 255.0))
+	bytes[at + 3] = int(clampf(colour.a * 255.0, 0.0, 255.0))
 
 
 ## Whether there is an overview to show.

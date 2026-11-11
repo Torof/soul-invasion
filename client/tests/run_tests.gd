@@ -410,6 +410,20 @@ func _test_the_shore_field_measures_the_bank() -> void:
 	# The water runs where the server says, the land between keeps still.
 	var river := func(t: Vector2i) -> String: return "water" if t.x >= 200 and t.x < 210 else "grass"
 	var runs := func(_t: Vector2i) -> Vector2: return Vector2(0.0, 0.6)
+	# A block without water lays land, no ford and still water, the same
+	# bytes a wet block's encoding gives them, from pieces made once.
+	ShoreField.update(ShoreField.block_of(river, Vector2i(192, 192), 32), Vector2i(192, 192), 32, runs)
+	var meadow := func(_t: Vector2i) -> String: return "grass"
+	ShoreField.update(ShoreField.block_of(meadow, Vector2i(192, 192), 32), Vector2i(192, 192), 32)
+	var dry_bank := ShoreField._bank_image.get_region(Rect2i(192 * ShoreField.PX, 192 * ShoreField.PX, 32 * ShoreField.PX, 32 * ShoreField.PX)).get_data()
+	var dry_water := ShoreField._water_image.get_region(Rect2i(192, 192, 32, 32)).get_data()
+	var all_land := PackedByteArray()
+	all_land.resize(dry_bank.size())
+	all_land.fill(255)
+	var still_water := PackedByteArray()
+	for i in 32 * 32:
+		still_water.append_array(PackedByteArray([0, 128, 128, 255]))
+	_check(dry_bank == all_land and dry_water == still_water, "a dry block: all land, no ford, still water")
 	ShoreField.update(ShoreField.block_of(river, Vector2i(192, 192), 32), Vector2i(192, 192), 32, runs)
 	_check(ShoreField.flow_at(Vector2(205.0, 200.0)).distance_to(Vector2(0.0, 0.6)) < 0.03, "the water runs down the river: %s" % ShoreField.flow_at(Vector2(205.0, 200.0)))
 	_check(ShoreField.flow_at(Vector2(194.0, 200.0)).length() < 0.03, "still far from the water: %s" % ShoreField.flow_at(Vector2(194.0, 200.0)))
@@ -667,6 +681,16 @@ func _test_dev_map_turns_as_the_game() -> void:
 	map.show_overview(8, 2, 1, "gw")
 	_check(map.available(), "the overview is kept")
 	map.free()
+	# Painted as bytes, the overview is the one set_pixel painted, every
+	# letter and an unknown one included.
+	var cells := "gfwobr?x"
+	var painted := Image.create(4, 2, false, Image.FORMAT_RGBA8)
+	for y in 2:
+		for x in 4:
+			painted.set_pixel(x, y, DevMap.COLOURS.get(cells[y * 4 + x], Color.MAGENTA))
+	var as_bytes := DevMap.image_of(4, 2, cells, DevMap.COLOURS, Color.MAGENTA)
+	_check(as_bytes.get_size() == painted.get_size() and as_bytes.get_data() == painted.get_data(), "the overview as bytes is the overview set_pixel painted")
+	_check(DevMap.image_of(2, 1, "g\u00e9", DevMap.COLOURS, Color.MAGENTA).get_data() == DevMap.image_of(2, 1, "g?", DevMap.COLOURS, Color.MAGENTA).get_data(), "a letter past ASCII is painted cell by cell, unknown")
 
 
 func _test_loading_waits_for_the_valley() -> void:
