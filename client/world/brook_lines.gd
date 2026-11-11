@@ -383,8 +383,8 @@ const SHADER_MARGIN := 0.4
 ## The mesh of the segments of `lines` that belong to the tiles [lo, hi)
 ## for the brook shader (world/brook.gdshader): one band a segment, wider
 ## than the water. Each vertex carries, as floats, how far from the
-## brook's axis it lies across the band (UV.x, tiles, positive either
-## way) and the water's half-width there (UV.y, tiles); as bytes, where
+## brook's axis it lies across the band (UV.x, tiles, signed, zero on
+## the axis) and the water's half-width there (UV.y, tiles); as bytes, where
 ## its tile's own water runs (COLOR.rg, over ±WaterMeshes.FLOW_MAX metres
 ## a second) and the fade of a mouth (COLOR.b: the line's own, times how
 ## far the river's water is from the vertex, MOUTH_IN to MOUTH_OUT).
@@ -414,7 +414,9 @@ static func mesh(lines: Array, lo: Vector2i, hi: Vector2i, current: Callable, to
 			var quad := PackedVector2Array([pts[i] + n0 * r0, pts[i + 1] + n1 * r1, pts[i + 1] - n1 * r1, pts[i] - n0 * r0])
 			if _degenerate(quad):
 				continue
-			var lateral := [r0, r1, r1, r0]
+			# Across the band: positive on one side, negative on the other, so
+			# the rasteriser's interpolation is zero on the axis.
+			var lateral := [r0, r1, -r1, -r0]
 			var halves := [h0, h1, h1, h0]
 			var at := [i, i + 1, i + 1, i]
 			var base := points.size()

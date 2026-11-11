@@ -32,8 +32,10 @@ extends RefCounted
 ## the bank can show, nothing elsewhere.
 ##
 ## The meshes are slim: the colours go to the card as bytes (the current,
-## the depth, the sand and the ford: a step of 1/255 is below what shows),
-## the distance and the width stay floats (the ink lines are drawn from
+## the depth, the sand and the ford: a step of 1/255 is below what shows;
+## the current's step shifts the drifting pattern by up to a pixel and a
+## half at zoom 1, nothing the eye can tell of a moving pattern), the
+## distance and the width stay floats (the ink lines are drawn from
 ## them), the water mesh carries no texture coordinates (its shader takes
 ## the point of the map from the vertex, as the bank's does), the indices
 ## are 16-bit and the quarter-tile quads go as triangle strips, a row at

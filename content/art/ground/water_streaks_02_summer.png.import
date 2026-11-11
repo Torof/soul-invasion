@@ -3,20 +3,19 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://cnk0k12u5v6ix"
-path.bptc="res://.godot/imported/water_streaks_02_summer.png-a76e0a4219aa603260ce6cbb48db4be8.bptc.ctex"
+path="res://.godot/imported/water_streaks_02_summer.png-a76e0a4219aa603260ce6cbb48db4be8.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
-"vram_texture": true
+"vram_texture": false
 }
 
 [deps]
 
 source_file="res://art/ground/water_streaks_02_summer.png"
-dest_files=["res://.godot/imported/water_streaks_02_summer.png-a76e0a4219aa603260ce6cbb48db4be8.bptc.ctex"]
+dest_files=["res://.godot/imported/water_streaks_02_summer.png-a76e0a4219aa603260ce6cbb48db4be8.ctex"]
 
 [params]
 
-compress/mode=2
+compress/mode=0
 compress/high_quality=true
 compress/lossy_quality=0.7
 compress/uastc_level=0
@@ -24,7 +23,7 @@ compress/rdo_quality_loss=0.0
 compress/hdr_compression=1
 compress/normal_map=0
 compress/channel_pack=0
-mipmaps/generate=true
+mipmaps/generate=false
 mipmaps/limit=-1
 roughness/mode=0
 roughness/src_normal=""

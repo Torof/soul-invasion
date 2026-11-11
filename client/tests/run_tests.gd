@@ -1537,6 +1537,14 @@ func _test_a_brooks_current_is_its_tiles_own() -> void:
 	# meander turns on a tile.)
 	_check(points.size() >= 4 * (pts.size() - 1) / 2 and points.size() % 4 == 0 and indices.size() == points.size() / 4 * 6, "a band of four vertices a segment: %d vertices, %d indices for %d points" % [points.size(), indices.size(), pts.size()])
 	_check(uvs.size() == points.size() and colours.size() == points.size(), "every vertex carries its lateral place and its colour")
+	# Across each band, the two edges lie on opposite sides of the axis
+	# (the shader draws from the distance to it) and carry the same
+	# half-width.
+	var one_sided := 0
+	for k in range(0, points.size(), 4):
+		if uvs[k].x <= 0.0 or uvs[k + 1].x <= 0.0 or uvs[k + 2].x >= 0.0 or uvs[k + 3].x >= 0.0 or uvs[k].y != uvs[k + 3].y or uvs[k].y < 0.0:
+			one_sided += 1
+	_check(one_sided == 0, "%d bands do not straddle their brook's axis" % one_sided)
 	# Every vertex's flow runs along the brook's course, at its tile's own
 	# pace: the vertices of segment i belong to points i and i + 1.
 	var against := 0

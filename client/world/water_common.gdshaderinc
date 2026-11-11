@@ -67,6 +67,7 @@ uniform float detail_on = 1.0;
 // negative, the clock's own.
 uniform float flow_time = -1.0;
 
+
 // The current the vertex colour carries, in tiles a second.
 vec2 flow_of(vec4 tile) {
 	return (tile.rg * 2.0 - 1.0) * 2.0;
