@@ -843,8 +843,10 @@ async fn an_intention_is_read_and_answered_while_the_view_is_being_sent() {
     // Long days: no day boundary interferes. The client asks to walk as
     // soon as it is welcomed, before any chunk arrived: the walk is told
     // before the view is through (an event goes before the ground), where
-    // it used to wait for the last of the 361 chunks.
-    let server = Server::start_with(&["--seconds-per-day", "1000"]);
+    // it used to wait for the last of the 361 chunks. One chunk thread:
+    // eight built the whole view (about 80 ms in debug) before the first
+    // tick came at times, and the walk had nothing to go before.
+    let server = Server::start_with(&["--seconds-per-day", "1000", "--chunk-threads", "1"]);
     let mut socket = server.connect().await;
     send(
         &mut socket,
@@ -880,6 +882,7 @@ async fn an_intention_is_read_and_answered_while_the_view_is_being_sent() {
             }
             Some(Got::M(
                 ServerMessage::WorldState { .. }
+                | ServerMessage::View { .. }
                 | ServerMessage::BodyWalks { .. }
                 | ServerMessage::BodyStopped { .. },
             )) => {}
