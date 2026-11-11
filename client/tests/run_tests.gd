@@ -61,6 +61,7 @@ func _init() -> void:
 	_test_the_water_meshes_merge_the_deep_water()
 	_test_a_brooks_current_is_its_tiles_own()
 	_test_tree_images_follow_the_stands_that_hold_them()
+	_test_tree_outlines_hold_every_texel()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -1685,3 +1686,80 @@ func _test_tree_images_follow_the_stands_that_hold_them() -> void:
 	Trees.free_pool()
 	Trees.unload_all()
 	_check(Trees.memory().is_empty(), "the world going, every image is freed at once")
+
+
+## Every tree image's outline (TreeOutline, art/trees/outlines.json) holds
+## every texel the sway shader can draw of it: at every mipmap level the
+## game reads, as the card holds the texture, with the filter's reach, the
+## wind's largest bend at each row and the pixel of safety. A left and a
+## right chain of at most MOST_VERTICES vertices, triangulated; and the
+## game draws the image with it.
+func _test_tree_outlines_hold_every_texel() -> void:
+	var dir := DirAccess.open(Trees.DIR)
+	if dir == null:
+		_check(false, "the trees' folder is there")
+		return
+	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(Trees.OUTLINES))
+	_check(parsed is Dictionary, "the outlines are written (tools/tree_outlines.gd)")
+	if not parsed is Dictionary:
+		return
+	var outlines: Dictionary = parsed
+	for file in dir.get_files():
+		if not file.ends_with(".png"):
+			continue
+		var texture: Texture2D = load(Trees.DIR + file)
+		var w := texture.get_width()
+		var h := texture.get_height()
+		var entry: Variant = outlines.get(file)
+		_check(entry is Dictionary, "%s has an outline (else run tools/tree_outlines.gd)" % file)
+		if not entry is Dictionary:
+			continue
+		var size: Array = entry.get("texture", [])
+		_check(size.size() == 2 and int(size[0]) == w and int(size[1]) == h, "%s's outline is for its size (else run tools/tree_outlines.gd)" % file)
+		# The texels are the card's: the image padded to the compression's blocks.
+		var image := texture.get_image()
+		var padded: Array = entry.get("image", [])
+		_check(padded.size() == 2 and int(padded[0]) == image.get_width() and int(padded[1]) == image.get_height(), "%s's outline is in the texels of the image as held" % file)
+		h = image.get_height()
+		var points := PackedVector2Array()
+		for p: Array in entry.get("points", []):
+			points.append(Vector2(float(p[0]), float(p[1])))
+		_check(points.size() >= 4 and points.size() <= TreeOutline.MOST_VERTICES, "%s's outline has 4 to %d vertices (%d)" % [file, TreeOutline.MOST_VERTICES, points.size()])
+		_check(Geometry2D.triangulate_polygon(points).size() == 3 * (points.size() - 2), "%s's outline triangulates" % file)
+		# What it must hold, from the texture as the card holds it.
+		var req := TreeOutline.required(image)
+		var left: PackedFloat32Array = req["left"]
+		var right: PackedFloat32Array = req["right"]
+		var top: int = req["top"]
+		var monotone := true
+		var short := 0.0
+		for y in range(top, h):
+			var mid := TreeOutline.span(points, float(y) + 0.5)
+			if int(mid["crossings"]) != 2:
+				monotone = false
+			# The polygon's span over the whole row: the narrowest it gets
+			# at the row's edges and at any vertex within the row.
+			var heights: Array[float] = [float(y), float(y + 1)]
+			for v: Vector2 in points:
+				if v.y > float(y) and v.y < float(y + 1):
+					heights.append(v.y)
+			for t: float in heights:
+				var s := TreeOutline.span(points, t)
+				short = maxf(short, maxf(float(s["left"]) - left[y], right[y] - float(s["right"])))
+		_check(monotone, "%s's outline is a left and a right chain" % file)
+		_check(short < 1e-3, "%s's outline holds every texel the shader may draw, bent and filtered (short by %.2f texels)" % [file, short])
+	# The game draws with them.
+	var oak: Array = Trees.textures("oak")
+	if oak.is_empty():
+		return
+	var index := Trees.image_index("oak", Vector2(1_500, 2_500))
+	var hull := Trees.hull(index)
+	_check(hull.size() >= 4 and hull.size() <= TreeOutline.MOST_VERTICES and Trees.hull_indices(index).size() == 3 * (hull.size() - 2), "an oak is drawn as its outline, triangulated")
+	var r := Trees.rect(Vector2(1_500, 2_500), 2_200, oak[0])
+	var stand := Trees.Stand.new([{"at": {"x": 1_500, "y": 2_500}, "species": "oak"}], {"oak": 2_200})
+	stand.parent = RenderingServer.canvas_item_create()
+	stand.show_cells(Trees.Stand.cell_range(r))
+	_check(stand.items.size() == 1, "the oak shown has its canvas item")
+	stand.release()
+	RenderingServer.free_rid(stand.parent)
+	Trees.free_pool()

@@ -4,11 +4,22 @@ extends RefCounted
 ## stands and of what kind; this draws it, an image of its kind standing
 ## on the point where its trunk meets the ground. The images are 256 px
 ## per metre (four times the screen, sharp up to zoom 4), their bottom
-## edge at the trunk's foot, centred on it.
+## edge at the trunk's foot, centred on it. Each is drawn as the tight
+## polygon around what it shows (TreeOutline, `art/trees/outlines.json`),
+## not its whole rectangle, so the clear corners cost the card nothing.
 
 const DIR := "res://art/trees/"
+## The outlines of the images, written by tools/tree_outlines.gd.
+const OUTLINES := DIR + "outlines.json"
 ## How much a tree's size varies from one to the next, either way.
 const SIZE_JITTER := 0.12
+## The wind in trees.gdshader (its defaults, set again by the world view):
+## the bend at the top as a share of the tree's height, at rest and in a
+## gust, and the share of the height from the foot that never moves. The
+## outlines are sized for them: change them, and run tools/tree_outlines.gd.
+const SWAY := 0.005
+const GUST := 0.012
+const STILL := 0.3
 
 ## The images of a kind of tree are held in video memory only while a
 ## chunk held (or parked) has a tree of that kind (weight rule 4,
@@ -249,9 +260,22 @@ static func _place(species: String, found: Array) -> void:
 	var ids: Variant = _image_ids.get(species)
 	if ids == null:
 		var list := PackedInt32Array()
-		for t: Texture2D in found:
+		var list_paths := paths(species)
+		for i in found.size():
+			var t: Texture2D = found[i]
 			list.append(_images.size())
 			_images.append(t)
+			var outline := _outline(list_paths[i], t)
+			_hulls.append(outline)
+			var triangles := Geometry2D.triangulate_polygon(outline)
+			if triangles.is_empty():
+				push_warning("%s: its outline could not be triangulated; drawn whole" % list_paths[i])
+				outline = PackedVector2Array()
+				for p: Vector2 in TreeOutline.fallback(t.get_width(), t.get_height()):
+					outline.append(Vector2(p.x / float(t.get_width()), p.y / float(t.get_height())))
+				_hulls[-1] = outline
+				triangles = Geometry2D.triangulate_polygon(outline)
+			_hull_indices.append(triangles)
 		_image_ids[species] = list
 	else:
 		# The same indices as the first time: a stand keeps its indices.
@@ -339,6 +363,57 @@ static func marker(height_px: float, at: Vector2, flags: int) -> Color:
 ## leave memory and filled again, the same, when they come back.
 static var _images: Array[Texture2D] = []
 static var _image_ids: Dictionary = {}
+## Each image's outline, by its index: the polygon in the image's own
+## coordinates (0..1 across and down it, past them for the wind's room),
+## and its triangles (Geometry2D.triangulate_polygon, once). Kept when the
+## image leaves memory: a few bytes.
+static var _hulls: Array[PackedVector2Array] = []
+static var _hull_indices: Array[PackedInt32Array] = []
+## image file name -> its outline as written (texture size, points in
+## texels), read once from OUTLINES.
+static var _outlines: Dictionary = {}
+static var _outlines_read := false
+
+
+## The outline of `index`'s image (image_index), in the image's own
+## coordinates; and its triangles.
+static func hull(index: int) -> PackedVector2Array:
+	return _hulls[index]
+
+
+static func hull_indices(index: int) -> PackedInt32Array:
+	return _hull_indices[index]
+
+
+## The outline of the image at `path`, as `texture` is held (its size):
+## from OUTLINES, or the whole rectangle widened for the wind, as before
+## the outlines, when the image has none written (a warning: run
+## tools/tree_outlines.gd).
+static func _outline(path: String, texture: Texture2D) -> PackedVector2Array:
+	if not _outlines_read:
+		_outlines_read = true
+		if FileAccess.file_exists(OUTLINES):
+			var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(OUTLINES))
+			if parsed is Dictionary:
+				_outlines = parsed
+	var w := texture.get_width()
+	var h := texture.get_height()
+	var entry: Variant = _outlines.get(path.get_file())
+	var points := PackedVector2Array()
+	if entry is Dictionary:
+		var size: Array = entry.get("texture", [])
+		# The points are in the texels of the image as the card holds it
+		# (padded to the compression's blocks), which the UVs 0..1 span.
+		var image: Array = entry.get("image", size)
+		if size.size() == 2 and int(size[0]) == w and int(size[1]) == h and image.size() == 2:
+			for p: Array in entry.get("points", []):
+				points.append(Vector2(float(p[0]) / float(image[0]), float(p[1]) / float(image[1])))
+	if points.size() < 3:
+		push_warning("%s has no outline for its size (%d x %d): drawn whole; run tools/tree_outlines.gd" % [path, w, h])
+		points.clear()
+		for p: Vector2 in TreeOutline.fallback(w, h):
+			points.append(Vector2(p.x / float(w), p.y / float(h)))
+	return points
 
 
 ## The index of the image a tree of `species` at `at` shows, or -1 when its
@@ -560,11 +635,26 @@ class Stand:
 		else:
 			RenderingServer.free_rid(item)
 
+	## The tree's image as its outline (Trees.hull) scaled to its rectangle:
+	## the polygon's vertices carry the image's own coordinates as UVs (past
+	## 0..1 in the room left for the wind, which the shader discards once
+	## bent back), and the marker as their colour.
 	func _draw(i: int, item: RID, foot: Vector2) -> void:
 		DevTiming.tally("tree redraws")
 		var r := rect(i)
+		var index := images[i]
+		var outline := Trees.hull(index)
+		var n := outline.size()
+		var points := PackedVector2Array()
+		points.resize(n)
+		var origin := r.position - foot
+		for j in n:
+			points[j] = origin + outline[j] * r.size
+		var colours := PackedColorArray()
+		colours.resize(n)
+		colours.fill(Trees.marker(r.size.y, at[i], flags[i]))
 		RenderingServer.canvas_item_clear(item)
-		RenderingServer.canvas_item_add_texture_rect(item, Rect2(r.position - foot, r.size), Trees.image(images[i]).get_rid(), false, Trees.marker(r.size.y, at[i], flags[i]))
+		RenderingServer.canvas_item_add_triangle_array(item, Trees.hull_indices(index), points, colours, outline, PackedInt32Array(), PackedFloat32Array(), Trees.image(index).get_rid())
 
 	## Sets tree `i`'s see-through flags (Trees.marker), redrawn if shown.
 	func set_flags(i: int, f: int) -> void:

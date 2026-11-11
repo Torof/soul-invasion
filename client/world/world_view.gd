@@ -433,8 +433,8 @@ func set_wind(on: bool) -> void:
 	var sway := _standing.material as ShaderMaterial
 	if sway == null:
 		return
-	sway.set_shader_parameter("sway", 0.005 if on else 0.0)
-	sway.set_shader_parameter("gust", 0.012 if on else 0.0)
+	sway.set_shader_parameter("sway", Trees.SWAY if on else 0.0)
+	sway.set_shader_parameter("gust", Trees.GUST if on else 0.0)
 
 
 ## Development (--dev, F6): the trees shown or hidden, to measure what
