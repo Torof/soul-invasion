@@ -5,11 +5,17 @@ conductor: vision, decisions, practices, audits, security. The AI writes the cod
 
 ## Before anything else
 
-1. Read `docs/README.md` and the documents it lists. They are the reference.
-   `docs/04-architecture.md` holds every architecture decision (D01…) with its
-   reason; do not contradict one silently.
+1. Read `docs/README.md`, then only the documents the task touches: they
+   are the reference, not a reading list. `docs/04-architecture.md` holds
+   every architecture decision (D01…) with its reason; read the decisions
+   the brief cites or the change concerns, and do not contradict one
+   silently. `docs/08-midjourney-prompts.md` is for art sessions only.
 2. Check `docs/06-open-questions.md` before inventing an answer to something
    that is still open: ask instead.
+3. Context is the cost: keep tool output short (`--stat`, `head`, `grep`),
+   batch commands, read images as contact sheets. An agent waits for its
+   own background work with a blocking call and reports once, with a
+   result; it never ends its turn "still waiting".
 
 ## Rules of the project
 
