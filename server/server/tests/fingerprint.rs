@@ -69,7 +69,7 @@ fn the_768_valley_is_pinned() {
         (
             0x69d7_839f_7a2f_8794,
             0x1699_064a_28c9_c440,
-            0xd16d_837a_bce8_d3f1
+            0x506e_7e6f_4c5a_bab4
         ),
         "{print:#x?}"
     );

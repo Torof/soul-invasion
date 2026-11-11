@@ -821,9 +821,10 @@ mod tests {
     #[test]
     fn the_trees_stand_closer_in_dense_regions_than_in_light_ones() {
         // Trees a tile of full forest, in the dense regions of the
-        // density noise against the light ones: 2 to 2.5 times farther
-        // apart in the light, so 4 to 6 times fewer (D37, 11 November
-        // 2026). The forest itself is the same in both.
+        // density noise against the light ones: about 1.6 times farther
+        // apart in the light, so 2 to 3 times fewer (D37, 11 November
+        // 2026: the lead found a floor of 160 thousandths far too thin).
+        // The forest itself is the same in both.
         let kinds = species();
         let (mut dense, mut light) = ((0_u64, 0_u64), (0_u64, 0_u64));
         for seed in 1..=3 {
@@ -845,7 +846,7 @@ mod tests {
                             dense.0 += n;
                             dense.1 += 1;
                         }
-                        ..=250 => {
+                        ..=450 => {
                             light.0 += n;
                             light.1 += 1;
                         }
@@ -871,7 +872,7 @@ mod tests {
         );
         let ratio = dense_rate * 10 / light_rate.max(1);
         assert!(
-            (35..=65).contains(&ratio),
+            (20..=32).contains(&ratio),
             "dense {dense_rate}, light {light_rate}: {ratio} tenths"
         );
     }
@@ -1191,21 +1192,51 @@ mod tests {
                 wooded += u64::from(map.trees(p) > 0);
             }
         }
+        // The heart's trees in the dense regions of the density noise
+        // (stocking 950 and over) and the light ones (450 and under).
         let (mut in_heart, mut in_wood) = (0_u64, 0_u64);
+        let (mut heart_dense, mut heart_light) = ((0_u64, 0_u64), (0_u64, 0_u64));
+        let region = |p: Pos| match Woods::stocking(density_seed, p.x, p.y) {
+            950.. => Some(true),
+            ..=450 => Some(false),
+            _ => None,
+        };
+        for y in 0..size as i32 {
+            for x in 0..size as i32 {
+                let p = Pos::new(x, y);
+                if map.habitat(p) == Habitat::Heart {
+                    match region(p) {
+                        Some(true) => heart_dense.1 += 1,
+                        Some(false) => heart_light.1 += 1,
+                        None => {}
+                    }
+                }
+            }
+        }
         for t in &trees {
-            match map.habitat(t.at.tile()) {
-                Habitat::Heart => in_heart += 1,
+            let p = t.at.tile();
+            match map.habitat(p) {
+                Habitat::Heart => {
+                    in_heart += 1;
+                    match region(p) {
+                        Some(true) => heart_dense.0 += 1,
+                        Some(false) => heart_light.0 += 1,
+                        None => {}
+                    }
+                }
                 Habitat::Wood | Habitat::CliffFoot => in_wood += 1,
                 _ => {}
             }
         }
         eprintln!(
-            "forest {} per mille of the land; wooded {} per mille; edge {} per mille of the wooded, {:.1} tiles deep; trees a 100 m²: heart {:.1}, wood {:.1}",
+            "forest {} per mille of the land; wooded {} per mille; edge {} per mille of the wooded, {:.1} tiles deep; trees a 100 m²: heart {:.1} (dense regions {:.1}, light {:.1}), wood {:.1}",
             forest * 1000 / land.max(1),
             wooded * 1000 / land.max(1),
             edge * 1000 / wooded.max(1),
             edge as f64 / rim.max(1) as f64,
             in_heart as f64 * 100.0 / heart.max(1) as f64,
+            heart_dense.0 as f64 * 100.0 / heart_dense.1.max(1) as f64,
+            heart_light.0 as f64 * 100.0 / heart_light.1.max(1) as f64,
             in_wood as f64 * 100.0 / wood.max(1) as f64,
         );
         // A chunk's ground, as the server makes it when it sends one: its

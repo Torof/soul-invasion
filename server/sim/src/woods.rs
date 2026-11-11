@@ -158,9 +158,9 @@ impl Woods {
     /// times farther apart); above `DENSITY_DENSE` it is dense, the trees
     /// as close as they come; between, the one eases into the other.
     const DENSITY_CELL: u32 = 300;
-    const DENSITY_LIGHT: i64 = 300;
-    const DENSITY_DENSE: i64 = 700;
-    const STOCKING_LEAST: i64 = 160;
+    const DENSITY_LIGHT: i64 = 100;
+    const DENSITY_DENSE: i64 = 350;
+    const STOCKING_LEAST: i64 = 400;
     /// Large clearings in the woods: one cell of the grid in two (of 150
     /// tiles) holds one, 12 to 36 tiles in radius, centred well inside a
     /// wood.
