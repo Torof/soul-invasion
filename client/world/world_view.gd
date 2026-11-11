@@ -273,6 +273,11 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 		_names[id] = str(m.get("name", id))
 		_edible[id] = bool(m.get("edible", false))
 		_materials[id] = m
+	if Net.same_world:
+		_forget_bodies()
+		_set_night(night)
+		queue_redraw()
+		return
 	for chunk: ChunkView in _chunks.values():
 		chunk.queue_free()
 	_chunks.clear()
@@ -299,16 +304,23 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	for n: Node in _tree_nodes.values():
 		n.queue_free()
 	_tree_nodes.clear()
-	for n: Node in _body_nodes.values():
-		n.queue_free()
-	_body_nodes.clear()
-	_flagged.clear()
-	_bodies.clear()
+	_forget_bodies()
 	_following = true
 	_camera_placed = false
 	_far_dirty = true
 	_set_night(night)
 	queue_redraw()
+
+
+## Every body forgotten: a reconnection to the same world keeps the
+## chunks held (D4), and the bodies in them come again with them.
+func _forget_bodies() -> void:
+	for n: Node in _body_nodes.values():
+		n.queue_free()
+	_body_nodes.clear()
+	_flagged.clear()
+	_bodies.clear()
+	_holds.clear()
 
 
 func _set_night(night: bool) -> void:
@@ -844,8 +856,8 @@ func _redraw_neighbours(key: Vector2i) -> void:
 					DevTiming.tally("redraws deferred")
 
 
-## The server no longer sends chunk `key`: its nodes, if built, and its
-## data go (no grace: nothing is left to build it from).
+## Chunk `key` left the view (the server's `view`; Net keeps its frame):
+## its nodes, if built, and its data go.
 func _on_chunk_hidden(x: int, y: int) -> void:
 	var key := Vector2i(x, y)
 	if _tiles.has(key):

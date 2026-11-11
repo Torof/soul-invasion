@@ -68,6 +68,8 @@ func _init() -> void:
 	_test_tree_images_follow_the_stands_that_hold_them()
 	_test_tree_images_hold_their_finest_level_only_up_close()
 	_test_tree_outlines_hold_every_texel()
+	_test_the_frame_cache_keeps_what_left_the_view()
+	_test_the_net_keeps_the_chunks_of_the_same_world_only()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -2131,3 +2133,62 @@ func _test_tree_outlines_hold_every_texel() -> void:
 	stand.release()
 	RenderingServer.free_rid(stand.parent)
 	Trees.free_pool()
+
+
+## A chunk frame's header alone: all FrameCache reads of a frame.
+static func _frame_header(x: int, y: int, version: int) -> PackedByteArray:
+	var bytes := PackedByteArray()
+	bytes.resize(Protocol.CHUNK_HEADER)
+	bytes.encode_s32(0, x)
+	bytes.encode_s32(4, y)
+	bytes.encode_u32(8, version)
+	return bytes
+
+
+## D4: the frames of the chunks left behind are kept, the least recently
+## hidden forgotten first, in the order the server's mirror keeps them;
+## `chunk_same` shows one again only at its version.
+func _test_the_frame_cache_keeps_what_left_the_view() -> void:
+	var cache := FrameCache.new()
+	cache.capacity = 3
+	for c: Array in [[0, 0, 0], [1, 0, 0], [0, 1, 2], [5, 5, 1]]:
+		cache.received(Vector2i(c[0], c[1]), _frame_header(c[0], c[1], c[2]))
+	var outside: Array[Vector2i] = [Vector2i(5, 5)]
+	_check(cache.view(Rect2i(0, 0, 2, 2)) == outside, "what lies outside the window leaves")
+	_check(cache.is_kept(Vector2i(5, 5)) and not cache.live.has(Vector2i(5, 5)), "kept, out of view")
+	var left := cache.view(Rect2i(5, 5, 1, 1))
+	var in_order: Array[Vector2i] = [Vector2i(0, 0), Vector2i(1, 0), Vector2i(0, 1)]
+	_check(left == in_order, "left in rows, then columns: %s" % [left])
+	_check(cache.kept_count() == 3 and not cache.is_kept(Vector2i(5, 5)), "the least recently hidden is forgotten first")
+	_check(cache.same(Vector2i(0, 1), 2) == FrameCache.RESTORED, "a kept frame at its version comes back")
+	_check(FrameCache.version_of(cache.live[Vector2i(0, 1)]) == 2, "in view again, with its frame")
+	_check(cache.same(Vector2i(0, 1), 2) == FrameCache.HELD, "in view at that version: nothing to do")
+	_check(cache.same(Vector2i(1, 0), 7) == FrameCache.MISSING, "another version: missing")
+	_check(not cache.is_kept(Vector2i(1, 0)), "and the stale frame forgotten")
+	_check(cache.same(Vector2i(9, 9), 0) == FrameCache.MISSING, "never held: missing")
+	_check(cache.held() == [[0, 0, 0], [0, 1, 2]], "held: the kept first, then those in view: %s" % [cache.held()])
+	var hello := Protocol.hello("w", cache.held())
+	_check(hello["held"]["world"] == "w" and hello["held"]["chunks"].size() == 2, "hello tells them")
+	_check(not Protocol.hello().has("held"), "a first hello holds nothing")
+	cache.clear()
+	_check(cache.live.is_empty() and cache.kept_count() == 0, "cleared")
+
+
+## D4: the view message lets go of what lies outside, and a reconnection
+## keeps the chunks held only when the world is the same.
+func _test_the_net_keeps_the_chunks_of_the_same_world_only() -> void:
+	var net: Node = load("res://net/client.gd").new()
+	var hidden: Array = []
+	net.chunk_hidden.connect(func(x: int, y: int) -> void: hidden.append(Vector2i(x, y)))
+	net._handle({"type": "world_state", "world": "first", "materials": []})
+	_check(not net.same_world, "a first world is new")
+	for x in 3:
+		net.frames.received(Vector2i(x, 0), _frame_header(x, 0, 0))
+	net._handle({"type": "view", "x": 1, "y": 0, "width": 2, "height": 1})
+	_check(hidden == [Vector2i(0, 0)], "the chunk outside the window is hidden: %s" % [hidden])
+	_check(net.frames.is_kept(Vector2i(0, 0)), "its frame kept")
+	net._handle({"type": "world_state", "world": "first", "materials": []})
+	_check(net.same_world and net.frames.live.size() == 2 and net.frames.is_kept(Vector2i(0, 0)), "the same world: everything kept")
+	net._handle({"type": "world_state", "world": "second", "materials": []})
+	_check(not net.same_world and net.frames.live.is_empty() and net.frames.kept_count() == 0, "another world: nothing reused")
+	net.free()

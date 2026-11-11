@@ -985,10 +985,24 @@ mod tests {
         world.restore_changes(b, felled(2));
         storage.save_world(&world).unwrap();
         assert_eq!(written(&storage), [(1, 1, 1, 6), (2, 1, 2, 12)]);
-        // Nothing changes: nothing is written.
+        // Nothing men changed in them: they are not written again. (The
+        // starving bodies die meanwhile: the items they lay change their
+        // chunk, D4, which is written then.)
         world.advance(6, &content(), &mut Vec::new());
         storage.save_world(&world).unwrap();
-        assert_eq!(written(&storage), [(1, 1, 1, 6), (2, 1, 2, 12)]);
+        let rows = written(&storage);
+        assert_eq!(
+            rows.iter()
+                .filter(|r| [(1, 1), (2, 1)].contains(&(r.0, r.1)))
+                .collect::<Vec<_>>(),
+            [&(1, 1, 1, 6), &(2, 1, 2, 12)]
+        );
+        assert!(
+            rows.iter()
+                .filter(|r| ![(1, 1), (2, 1)].contains(&(r.0, r.1)))
+                .all(|r| r.2 == world.chunk_version(ChunkPos::new(r.0, r.1)) && r.3 == 18),
+            "{rows:?}"
+        );
         assert_eq!(storage.latest_world().unwrap().unwrap().tick(), Tick(18));
         // A chunk changed in the simulation itself (an item picked up) is
         // written at the next checkpoint.

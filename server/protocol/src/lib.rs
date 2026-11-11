@@ -7,8 +7,10 @@
 //!
 //! The ground travels in chunks (D08, D31): after [`ServerMessage::Welcome`]
 //! and [`ServerMessage::WorldState`], the client receives one chunk frame
-//! per chunk around its body, then more as the body walks and
-//! [`ServerMessage::ChunkHidden`] for those left behind. A chunk is the
+//! per chunk around its body, then more as the body walks, and
+//! [`ServerMessage::View`] for the window it holds: those outside are left
+//! behind. A chunk the client still holds at the right version is not
+//! sent again ([`ServerMessage::ChunkSame`], D4). A chunk is the
 //! one message sent in binary ([`encode_chunk`], the layout in
 //! [`ChunkFrame`]'s doc); every other message is JSON. The bodies standing
 //! in a chunk follow its frame in [`ServerMessage::ChunkBodies`]. Bodies
@@ -51,7 +53,22 @@ use serde::{Deserialize, Serialize};
 ///   inside the chunks held, so no ring is sent around them.
 /// - v17: a chunk travels as a binary frame ([`ChunkFrame`]), with its
 ///   version; the bodies standing in it follow in `chunk_bodies`.
-pub const PROTOCOL_VERSION: u32 = 17;
+/// - v18: never resend what the client holds (D4): `world_state` names its
+///   world (`world`); `chunk_same` instead of a frame the client keeps at
+///   that version, `chunk_missing` when it does not; `hello` tells the
+///   chunks a reconnecting client holds (`held`); `view`, the window
+///   held, replaces `chunk_hidden`.
+pub const PROTOCOL_VERSION: u32 = 18;
+
+/// Chunks whose frames a client keeps after they left its view, the
+/// least recently hidden forgotten first (D4): about 3 MB of frames. The
+/// server mirrors this cache per connection by the same rule, to know
+/// when [`ServerMessage::ChunkSame`] is enough.
+pub const CHUNK_CACHE_CHUNKS: usize = 1500;
+
+/// Entries of [`HeldChunks`] read at most: the chunks of a
+/// view and of the cache ([`CHUNK_CACHE_CHUNKS`]) fit.
+pub const HELD_CHUNKS_MAX: usize = 2048;
 
 /// A tile on the map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,6 +253,20 @@ pub struct FloraView {
     pub height_cm: u32,
 }
 
+/// The chunks a client still holds of a world (D4), told with
+/// [`ClientMessage::Hello`] on a reconnection: the server sends
+/// [`ServerMessage::ChunkSame`] for those unchanged. Ignored unless `world`
+/// is the server's; at most [`HELD_CHUNKS_MAX`] entries are read. A client
+/// that lies only misses what it would have been sent: nothing leaks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldChunks {
+    /// The world they belong to (`world_state`'s `world`).
+    pub world: String,
+    /// Each chunk held, the least recently hidden first and those in view
+    /// last: column, row, version of its frame.
+    pub chunks: Vec<(i32, i32, u32)>,
+}
+
 /// Messages sent by the client to the server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -244,6 +275,11 @@ pub enum ClientMessage {
     Hello {
         /// Protocol version the client speaks.
         protocol_version: u32,
+        /// The chunks a reconnecting client still holds, if any: told
+        /// with the hello, so the server knows them before it sends the
+        /// first chunk. The one message allowed past the usual size limit.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        held: Option<HeldChunks>,
     },
     /// Liveness check.
     Ping {
@@ -295,6 +331,14 @@ pub enum ClientMessage {
         /// Row.
         y: i32,
     },
+    /// Answer to [`ServerMessage::ChunkSame`] when the client does not
+    /// hold that chunk at that version after all: the frame follows.
+    ChunkMissing {
+        /// Column of chunks.
+        x: i32,
+        /// Row of chunks.
+        y: i32,
+    },
 }
 
 /// Messages sent by the server to the client.
@@ -329,6 +373,9 @@ pub enum ServerMessage {
         night: bool,
         /// The clock.
         clock: Clock,
+        /// The world's identity: chunks kept from another world are never
+        /// shown in this one (D4).
+        world: String,
     },
     /// The bodies standing in a chunk, sent right after its frame
     /// ([`encode_chunk`]) when there are any.
@@ -340,13 +387,32 @@ pub enum ServerMessage {
         /// Every body standing in this chunk.
         bodies: Vec<BodyState>,
     },
-    /// A chunk the client no longer holds: forget its tiles and the
-    /// bodies in it.
-    ChunkHidden {
+    /// In place of a chunk's frame: the client holds it at `version`
+    /// already (in view or in its cache, [`CHUNK_CACHE_CHUNKS`]) and shows
+    /// it again as it is. If it does not, it answers
+    /// [`ClientMessage::ChunkMissing`]. The bodies standing in it follow in
+    /// [`ServerMessage::ChunkBodies`], as after a frame.
+    ChunkSame {
         /// Column of chunks.
         x: i32,
         /// Row of chunks.
         y: i32,
+        /// The version of its frame.
+        version: u32,
+    },
+    /// The window of chunks the client holds, in chunks: every chunk held
+    /// outside it is left (with the bodies in it), kept in the client's
+    /// cache in the order of their rows, then columns. Sent each time the
+    /// view moves, one message however far.
+    View {
+        /// First column.
+        x: i32,
+        /// First row.
+        y: i32,
+        /// Columns.
+        width: u32,
+        /// Rows.
+        height: u32,
     },
     /// Reply to [`ClientMessage::Ping`].
     Pong {
@@ -908,6 +974,14 @@ mod tests {
         let messages = [
             ClientMessage::Hello {
                 protocol_version: PROTOCOL_VERSION,
+                held: None,
+            },
+            ClientMessage::Hello {
+                protocol_version: PROTOCOL_VERSION,
+                held: Some(HeldChunks {
+                    world: "0123456789abcdef".to_owned(),
+                    chunks: vec![(3, -1, 0), (4, 7, 12)],
+                }),
             },
             ClientMessage::Ping { nonce: 42 },
             ClientMessage::MoveTo { x: 3, y: -1 },
@@ -919,6 +993,7 @@ mod tests {
             ClientMessage::Sleep,
             ClientMessage::Wake,
             ClientMessage::DevTeleport { x: 1500, y: -2 },
+            ClientMessage::ChunkMissing { x: 3, y: -1 },
         ];
         for message in messages {
             let text = encode(&message).unwrap();
@@ -971,6 +1046,7 @@ mod tests {
                     ticks_per_day: 72_000,
                     time_scale_permille: 1000,
                 },
+                world: "0123456789abcdef".to_owned(),
             },
             ServerMessage::ChunkBodies {
                 x: 5,
@@ -987,7 +1063,17 @@ mod tests {
                     }),
                 }],
             },
-            ServerMessage::ChunkHidden { x: 5, y: 4 },
+            ServerMessage::ChunkSame {
+                x: 5,
+                y: -4,
+                version: 3,
+            },
+            ServerMessage::View {
+                x: -2,
+                y: 3,
+                width: 19,
+                height: 17,
+            },
             ServerMessage::Pong { nonce: 42 },
             ServerMessage::DevOverview {
                 cell: 8,

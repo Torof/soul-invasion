@@ -93,6 +93,13 @@ impl<K: Ord + Copy, V> Lru<K, V> {
         self.recency.insert(stamp, key);
     }
 
+    /// Takes `key`'s entry out, if any.
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        let (value, used) = self.entries.remove(key)?;
+        self.recency.remove(&used);
+        Some(value)
+    }
+
     fn next_stamp(&mut self) -> u64 {
         let stamp = self.clock;
         self.clock += 1;

@@ -8,7 +8,12 @@ extends RefCounted
 ## of truth. Every JSON message is a dictionary with a snake_case `type`
 ## field; a chunk frame decodes into packed arrays (`decode_chunk`).
 
-const PROTOCOL_VERSION := 17
+const PROTOCOL_VERSION := 18
+## Chunk frames kept after they left the view (FrameCache), as the
+## server's mirror of them.
+const CHUNK_CACHE_CHUNKS := 1500
+## Entries of `hello`'s `held` the server reads at most.
+const HELD_CHUNKS_MAX := 2048
 
 ## Bytes of a chunk frame's header.
 const CHUNK_HEADER := 16
@@ -20,9 +25,19 @@ const NATURAL := 1 << 52
 const CHUNK_MASK := (1 << 18) - 1
 
 
-## Builds the first message sent after connecting.
-static func hello() -> Dictionary:
-	return {"type": "hello", "protocol_version": PROTOCOL_VERSION}
+## Builds the first message sent after connecting. `world` and `chunks`
+## (each [x, y, version], FrameCache.held): the chunks a reconnecting
+## client still holds of that world, if any.
+static func hello(world: String = "", chunks: Array = []) -> Dictionary:
+	var message := {"type": "hello", "protocol_version": PROTOCOL_VERSION}
+	if not world.is_empty() and not chunks.is_empty():
+		message["held"] = {"world": world, "chunks": chunks}
+	return message
+
+
+## Builds the answer to `chunk_same` for a chunk not held at that version.
+static func chunk_missing(x: int, y: int) -> Dictionary:
+	return {"type": "chunk_missing", "x": x, "y": y}
 
 
 ## Builds a liveness check.

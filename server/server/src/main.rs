@@ -497,25 +497,30 @@ fn publish(shared: &Shared, world: &World, event: &Event) {
                 });
             }
         }
-        Event::ItemAdded { item, material, at } => {
+        Event::ItemAdded {
+            item,
+            material,
+            at,
+            version,
+        } => {
             let state = protocol::ItemState {
                 id: item.0,
                 x: at.x,
                 y: at.y,
                 material: material.clone(),
             };
-            let version = shared.item_added(state.clone());
+            shared.item_added(state.clone(), *version);
             let _ = shared.publish.send(Published::ItemAdded {
                 item: state,
-                version,
+                version: *version,
             });
         }
-        Event::ItemRemoved { item, at } => {
-            let version = shared.item_removed(*item, *at);
+        Event::ItemRemoved { item, at, version } => {
+            shared.item_removed(*item, *at, *version);
             let _ = shared.publish.send(Published::ItemRemoved {
                 item: item.0,
                 at: *at,
-                version,
+                version: *version,
             });
         }
         Event::BodyDied {

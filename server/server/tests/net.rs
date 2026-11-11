@@ -365,6 +365,7 @@ async fn hello_ping_and_a_published_day() {
         &mut socket,
         &ClientMessage::Hello {
             protocol_version: PROTOCOL_VERSION,
+            held: None,
         },
     )
     .await;
@@ -424,7 +425,7 @@ async fn hello_ping_and_a_published_day() {
     // The bodies follow the frame of the chunk they stand in.
     while chunks.len() < window_len(world, centre) || seen_bodies.len() < 3 {
         match receive_any(&mut socket).await {
-            Some(Got::M(ServerMessage::DayStarted { .. })) => {}
+            Some(Got::M(ServerMessage::DayStarted { .. } | ServerMessage::View { .. })) => {}
             Some(message)
                 if ambient(&message)
                     && !matches!(
@@ -552,6 +553,7 @@ async fn wrong_protocol_version_is_refused() {
         &mut socket,
         &ClientMessage::Hello {
             protocol_version: PROTOCOL_VERSION + 1,
+            held: None,
         },
     )
     .await;
@@ -583,6 +585,7 @@ async fn several_clients_each_get_the_same_days() {
             socket,
             &ClientMessage::Hello {
                 protocol_version: PROTOCOL_VERSION,
+                held: None,
             },
         )
         .await;
@@ -606,6 +609,7 @@ async fn welcome(server: &Server) -> (Socket, Option<u32>) {
         &mut socket,
         &ClientMessage::Hello {
             protocol_version: PROTOCOL_VERSION,
+            held: None,
         },
     )
     .await;
@@ -666,8 +670,8 @@ async fn the_view_follows_the_piloted_body() {
     let (mut pilot, body) = join(&server).await;
     let body = body.expect("pilots a body");
 
-    // Walk into the chunk east of the starting one: a column of chunks
-    // is hidden to the west and a column shown to the east.
+    // Walk into the chunk east of the starting one: the window moves a
+    // column east (one `view`) and a column is shown to the east.
     let world = standard_world();
     let start = start_of(world, body);
     let here = start.chunk();
@@ -685,11 +689,11 @@ async fn the_view_follows_the_piloted_body() {
     )
     .await;
 
-    let (mut shown, mut hidden) = (Vec::new(), Vec::new());
-    while shown.len() < 5 || hidden.len() < 5 {
+    let (mut shown, mut window) = (Vec::new(), None);
+    while shown.len() < 5 || window.is_none() {
         match receive(&mut pilot).await {
             Some(Got::Chunk(ChunkFrame { x, y, .. })) => shown.push((x, y)),
-            Some(Got::M(ServerMessage::ChunkHidden { x, y })) => hidden.push((x, y)),
+            Some(Got::M(ServerMessage::View { x, width, .. })) => window = Some((x, width)),
             Some(Got::M(
                 ServerMessage::BodyWalks { .. }
                 | ServerMessage::BodyStopped { .. }
@@ -702,9 +706,12 @@ async fn the_view_follows_the_piloted_body() {
         shown.iter().all(|(x, _)| *x == here.x + VIEW_RADIUS + 1),
         "{shown:?}"
     );
-    assert!(
-        hidden.iter().all(|(x, _)| *x == here.x - VIEW_RADIUS),
-        "{hidden:?}"
+    let (x, width) = window.expect("a view");
+    assert_eq!(x, (here.x - VIEW_RADIUS + 1).max(0), "{window:?}");
+    assert_eq!(
+        x + i32::try_from(width).expect("small"),
+        here.x + VIEW_RADIUS + 2,
+        "{window:?}"
     );
 }
 
@@ -836,13 +843,16 @@ async fn an_intention_is_read_and_answered_while_the_view_is_being_sent() {
     // Long days: no day boundary interferes. The client asks to walk as
     // soon as it is welcomed, before any chunk arrived: the walk is told
     // before the view is through (an event goes before the ground), where
-    // it used to wait for the last of the 361 chunks.
-    let server = Server::start_with(&["--seconds-per-day", "1000"]);
+    // it used to wait for the last of the 361 chunks. One chunk thread:
+    // eight built the whole view (about 80 ms in debug) before the first
+    // tick came at times, and the walk had nothing to go before.
+    let server = Server::start_with(&["--seconds-per-day", "1000", "--chunk-threads", "1"]);
     let mut socket = server.connect().await;
     send(
         &mut socket,
         &ClientMessage::Hello {
             protocol_version: PROTOCOL_VERSION,
+            held: None,
         },
     )
     .await;
@@ -872,6 +882,7 @@ async fn an_intention_is_read_and_answered_while_the_view_is_being_sent() {
             }
             Some(Got::M(
                 ServerMessage::WorldState { .. }
+                | ServerMessage::View { .. }
                 | ServerMessage::BodyWalks { .. }
                 | ServerMessage::BodyStopped { .. },
             )) => {}
@@ -975,16 +986,16 @@ async fn a_walk_is_seen_whole_while_another_client_builds_cold_views() {
     ];
     let hopping_task = hop_between(hopper, hopping, far, Arc::clone(&hops));
 
-    let (mut shown, mut hidden, mut stopped) = (0, 0, false);
-    while !(stopped && shown >= 5 && hidden >= 5) {
+    let (mut shown, mut moved, mut stopped) = (0, false, false);
+    while !(stopped && shown >= 5 && moved) {
         match receive(&mut walker).await {
             Some(Got::Chunk(ChunkFrame { x, .. })) => {
                 assert_eq!(x, here.x + VIEW_RADIUS + 1);
                 shown += 1;
             }
-            Some(Got::M(ServerMessage::ChunkHidden { x, .. })) => {
-                assert_eq!(x, here.x - VIEW_RADIUS);
-                hidden += 1;
+            Some(Got::M(ServerMessage::View { x, .. })) => {
+                assert_eq!(x, (here.x - VIEW_RADIUS + 1).max(0));
+                moved = true;
             }
             Some(Got::M(ServerMessage::BodyStopped { body: who, at })) if who == body => {
                 assert_eq!(tile(at), target);
@@ -1092,6 +1103,7 @@ async fn with_dev_the_client_gets_the_overview_and_may_teleport() {
         &mut socket,
         &ClientMessage::Hello {
             protocol_version: PROTOCOL_VERSION,
+            held: None,
         },
     )
     .await;
@@ -1119,6 +1131,10 @@ async fn with_dev_the_client_gets_the_overview_and_may_teleport() {
     assert!(cells.chars().all(|c| "gfwobr".contains(c)));
     assert!(cells.contains('w') && cells.contains('f') && cells.starts_with('r'));
     let world = standard_world();
+    assert!(matches!(
+        receive(&mut socket).await,
+        Some(Got::M(ServerMessage::View { .. }))
+    ));
     for _ in 0..window_len(world, start_of(world, body).chunk()) {
         assert!(matches!(receive(&mut socket).await, Some(Got::Chunk(_))));
     }
@@ -1135,11 +1151,11 @@ async fn with_dev_the_client_gets_the_overview_and_may_teleport() {
     .await;
     // The stop is an event: it leaves before the new ground, which is
     // built beside the network and follows.
-    let (mut shown, mut hidden, mut stopped) = (0, 0, false);
-    while !(stopped && shown > 0 && hidden > 0) {
+    let (mut shown, mut moved, mut stopped) = (0, false, false);
+    while !(stopped && shown > 0 && moved) {
         match receive(&mut socket).await {
             Some(Got::Chunk(_)) => shown += 1,
-            Some(Got::M(ServerMessage::ChunkHidden { .. })) => hidden += 1,
+            Some(Got::M(ServerMessage::View { .. })) => moved = true,
             Some(Got::M(ServerMessage::BodyStopped { body: who, at })) if who == body => {
                 assert_eq!(tile(at), far);
                 stopped = true;
@@ -1482,7 +1498,7 @@ async fn a_flood_of_intentions_leaves_only_the_last_one() {
                 Got::M(
                     ServerMessage::DayStarted { .. }
                     | ServerMessage::BodyWalks { .. }
-                    | ServerMessage::ChunkHidden { .. }
+                    | ServerMessage::View { .. }
                     | ServerMessage::BodyLeft { .. },
                 )
                 | Got::Chunk(_),
@@ -1842,4 +1858,328 @@ async fn picking_up_tells_the_pilot_its_inventory_and_everyone_what_is_in_hand()
     })
     .await;
     assert_eq!(reason, protocol::Refusal::NotCarried);
+}
+
+// --- Never resend what the client holds (D4) -----------------------------
+
+/// What a fake client holds: each chunk in view, with its frame's
+/// version, and the chunks it was sent, by kind, since the last count.
+#[derive(Default)]
+struct Holder {
+    in_view: HashMap<(i32, i32), u32>,
+    frames: Vec<(i32, i32)>,
+    sames: Vec<(i32, i32)>,
+    world: String,
+}
+
+impl Holder {
+    /// Takes in what concerns the chunks it holds; true when `got` was
+    /// one of those messages.
+    fn take(&mut self, got: &Got) -> bool {
+        match got {
+            Got::Chunk(frame) => {
+                self.in_view.insert((frame.x, frame.y), frame.version);
+                self.frames.push((frame.x, frame.y));
+            }
+            Got::M(ServerMessage::ChunkSame { x, y, version }) => {
+                self.in_view.insert((*x, *y), *version);
+                self.sames.push((*x, *y));
+            }
+            Got::M(ServerMessage::View {
+                x,
+                y,
+                width,
+                height,
+            }) => {
+                let (w, h) = (
+                    i32::try_from(*width).expect("small"),
+                    i32::try_from(*height).expect("small"),
+                );
+                self.in_view
+                    .retain(|(cx, cy), _| (*x..*x + w).contains(cx) && (*y..*y + h).contains(cy));
+            }
+            Got::M(ServerMessage::WorldState { world, .. }) => self.world.clone_from(world),
+            Got::M(_) => return false,
+        }
+        true
+    }
+
+    /// Reads until the window around `centre` is held whole: what it
+    /// was sent meanwhile, frames and `chunk_same`, taken out.
+    async fn fill(
+        &mut self,
+        socket: &mut Socket,
+        centre: ChunkPos,
+    ) -> (Vec<(i32, i32)>, Vec<(i32, i32)>) {
+        let world = standard_world();
+        let wanted = window(world, centre);
+        tokio::time::timeout(Duration::from_secs(40), async {
+            while !wanted.iter().all(|c| self.in_view.contains_key(c)) {
+                let got = receive_any(socket).await.expect("still connected");
+                self.take(&got);
+            }
+        })
+        .await
+        .expect("the view comes within 40 s");
+        (
+            std::mem::take(&mut self.frames),
+            std::mem::take(&mut self.sames),
+        )
+    }
+}
+
+/// Teleports `body` to `to` and back to `from`, each view held whole:
+/// what the return sent, frames and `chunk_same`.
+async fn away_and_back(
+    socket: &mut Socket,
+    holder: &mut Holder,
+    body: u32,
+    from: Pos,
+    to: Pos,
+) -> (Vec<(i32, i32)>, Vec<(i32, i32)>) {
+    for (at, last) in [(to, false), (from, true)] {
+        send(socket, &ClientMessage::DevTeleport { x: at.x, y: at.y }).await;
+        // The new window, then its ground: what came before it belongs
+        // to the old view.
+        tokio::time::timeout(Duration::from_secs(20), async {
+            let (mut moved, mut stopped) = (false, false);
+            while !(moved && stopped) {
+                let got = receive_any(socket).await.expect("still connected");
+                match got {
+                    Got::M(ServerMessage::BodyStopped {
+                        body: who,
+                        at: here,
+                    }) if who == body => {
+                        assert_eq!(tile(here), at);
+                        stopped = true;
+                    }
+                    Got::M(ServerMessage::View {
+                        x,
+                        y,
+                        width,
+                        height,
+                    }) if (x..x + i32::try_from(width).unwrap()).contains(&at.chunk().x)
+                        && (y..y + i32::try_from(height).unwrap()).contains(&at.chunk().y) =>
+                    {
+                        holder.take(&got);
+                        holder.frames.clear();
+                        holder.sames.clear();
+                        moved = true;
+                    }
+                    got => {
+                        holder.take(&got);
+                    }
+                }
+            }
+        })
+        .await
+        .expect("a teleport is answered");
+        let sent = holder.fill(socket, at.chunk()).await;
+        if last {
+            return sent;
+        }
+    }
+    unreachable!()
+}
+
+/// Walks `body` onto `at`, the view along it held.
+async fn walk_onto(socket: &mut Socket, holder: &mut Holder, body: u32, at: Pos) {
+    send(socket, &ClientMessage::MoveTo { x: at.x, y: at.y }).await;
+    tokio::time::timeout(Duration::from_secs(40), async {
+        loop {
+            let got = receive_any(socket).await.expect("still connected");
+            if let Got::M(ServerMessage::BodyStopped {
+                body: who,
+                at: here,
+            }) = got
+                && who == body
+                && tile(here) == at
+            {
+                break;
+            }
+            holder.take(&got);
+        }
+    })
+    .await
+    .expect("the walk ends");
+    holder.fill(socket, at.chunk()).await;
+}
+
+/// Waits for `item`'s event, the chunks' messages meanwhile taken in.
+async fn wait_item(socket: &mut Socket, holder: &mut Holder, item: u64, added: bool) {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let got = receive_any(socket).await.expect("still connected");
+            match &got {
+                Got::M(ServerMessage::ItemAdded { item: i }) if added && i.id == item => break,
+                Got::M(ServerMessage::ItemRemoved { item: i, .. }) if !added && *i == item => break,
+                _ => {
+                    holder.take(&got);
+                }
+            }
+        }
+    })
+    .await
+    .expect("the item's event");
+}
+
+#[tokio::test]
+async fn a_return_sends_again_only_the_chunk_where_an_item_was_taken_or_dropped() {
+    let server = Server::start_with(&["--dev", "--seconds-per-day", "1000", "--time-scale", "20"]);
+    let (mut socket, body) = welcome(&server).await;
+    let body = body.expect("pilots a body");
+    let mut holder = Holder::default();
+    let world = standard_world();
+    let start = start_of(world, body);
+    holder.fill(&mut socket, start.chunk()).await;
+
+    // Onto the nearest item, the view held whole there.
+    let item = ground_items(world)
+        .into_iter()
+        .min_by_key(|i| {
+            let p = i.pos().expect("on the ground");
+            (p.x - start.x).abs() + (p.y - start.y).abs()
+        })
+        .expect("items in the valley");
+    let at = item.pos().expect("on the ground");
+    walk_onto(&mut socket, &mut holder, body, at).await;
+    let half = i32::try_from(VALLEY / 2).expect("small");
+    let far = world
+        .map()
+        .nearest(
+            Pos::new(if at.x < half { 2 * half - 20 } else { 20 }, at.y),
+            sim::Terrain::Grass,
+        )
+        .expect("grass far away");
+    assert!(
+        (far.chunk().x - at.chunk().x).abs() > VIEW_RADIUS,
+        "the item's chunk leaves the view"
+    );
+
+    // Nothing changed: the return costs no frame.
+    let (frames, sames) = away_and_back(&mut socket, &mut holder, body, at, far).await;
+    assert!(frames.is_empty(), "{frames:?}");
+    assert!(sames.contains(&(at.chunk().x, at.chunk().y)));
+
+    // An item taken: its chunk alone is sent again.
+    send(&mut socket, &ClientMessage::PickUp { item: item.id().0 }).await;
+    wait_item(&mut socket, &mut holder, item.id().0, false).await;
+    let (frames, sames) = away_and_back(&mut socket, &mut holder, body, at, far).await;
+    assert_eq!(
+        frames,
+        [(at.chunk().x, at.chunk().y)],
+        "the chunk changed, once"
+    );
+    assert!(sames.len() > 1, "the others are the same");
+
+    // An item dropped: the same.
+    send(&mut socket, &ClientMessage::Drop { item: item.id().0 }).await;
+    wait_item(&mut socket, &mut holder, item.id().0, true).await;
+    let (frames, _) = away_and_back(&mut socket, &mut holder, body, at, far).await;
+    assert_eq!(
+        frames,
+        [(at.chunk().x, at.chunk().y)],
+        "the chunk changed, once"
+    );
+}
+
+#[tokio::test]
+async fn a_chunk_the_client_lacks_after_all_is_sent_when_it_says_so() {
+    let server = Server::start_with(&["--seconds-per-day", "1000"]);
+    let (mut first, body) = welcome(&server).await;
+    let mut holder = Holder::default();
+    let home = home_of(standard_world(), body);
+    holder.fill(&mut first, home).await;
+    // A client that says it holds the chunk of its body, and does not.
+    let mut socket = server.connect().await;
+    send(
+        &mut socket,
+        &ClientMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            held: Some(protocol::HeldChunks {
+                world: holder.world.clone(),
+                chunks: vec![(home.x, home.y, holder.in_view[&(home.x, home.y)])],
+            }),
+        },
+    )
+    .await;
+    let mut lacking = Holder::default();
+    let mut answered = false;
+    tokio::time::timeout(Duration::from_secs(40), async {
+        loop {
+            let got = receive_any(&mut socket).await.expect("still connected");
+            match got {
+                Got::M(ServerMessage::ChunkSame { x, y, .. }) => {
+                    assert_eq!(ChunkPos::new(x, y), home, "the one it said it holds");
+                    assert!(!answered, "once");
+                    send(&mut socket, &ClientMessage::ChunkMissing { x, y }).await;
+                    answered = true;
+                }
+                Got::Chunk(frame) if answered && ChunkPos::new(frame.x, frame.y) == home => break,
+                got => {
+                    lacking.take(&got);
+                }
+            }
+        }
+    })
+    .await
+    .expect("the frame follows the answer");
+}
+
+#[tokio::test]
+async fn a_reconnection_to_the_same_world_sends_no_frame_for_the_chunks_held() {
+    // A server, then another on the same world (as after a restart).
+    let (held, world_id) = {
+        let server = Server::start_with(&["--seconds-per-day", "1000"]);
+        let (mut socket, body) = welcome(&server).await;
+        let mut holder = Holder::default();
+        holder
+            .fill(&mut socket, home_of(standard_world(), body))
+            .await;
+        let held: Vec<(i32, i32, u32)> = holder
+            .in_view
+            .iter()
+            .map(|(&(x, y), &v)| (x, y, v))
+            .collect();
+        (held, holder.world)
+    };
+    assert_eq!(world_id.len(), 16, "{world_id}");
+    let server = Server::start_with(&["--seconds-per-day", "1000"]);
+    for (world, sends_frames) in [
+        (world_id.clone(), false),
+        ("another world".to_owned(), true),
+    ] {
+        let mut socket = server.connect().await;
+        send(
+            &mut socket,
+            &ClientMessage::Hello {
+                protocol_version: PROTOCOL_VERSION,
+                held: Some(protocol::HeldChunks {
+                    world,
+                    chunks: held.clone(),
+                }),
+            },
+        )
+        .await;
+        let body = match receive(&mut socket).await {
+            Some(Got::M(ServerMessage::Welcome { body, .. })) => body,
+            other => panic!("expected welcome, got {other:?}"),
+        };
+        let mut holder = Holder::default();
+        let (frames, sames) = holder
+            .fill(&mut socket, home_of(standard_world(), body))
+            .await;
+        assert_eq!(holder.world, world_id, "the same world after a restart");
+        if sends_frames {
+            assert!(sames.is_empty(), "another world's chunks are never reused");
+            assert_eq!(
+                frames.len(),
+                window_len(standard_world(), home_of(standard_world(), body))
+            );
+        } else {
+            assert!(frames.is_empty(), "{} frames sent again", frames.len());
+            assert_eq!(sames.len(), held.len());
+        }
+        drop(socket);
+    }
 }
