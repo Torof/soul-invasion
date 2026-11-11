@@ -10,8 +10,52 @@ const DIR := "res://art/trees/"
 ## How much a tree's size varies from one to the next, either way.
 const SIZE_JITTER := 0.12
 
-## species id -> Array[Texture2D], its variants.
+## The images of a kind of tree are held in video memory only while a
+## chunk held (or parked) has a tree of that kind (weight rule 4,
+## `09-visual-production.md`; D39): each stand of trees holds its kinds
+## (`hold`) and lets them go when it is released (`let_go`). The images of
+## a kind are read on a worker thread the first time a stand holds it
+## (`ResourceLoader.load_threaded_request`, one image at a time, so that
+## the main thread makes one video texture a frame at most), the stands
+## that wait for them built once they are in (`poll`, each frame); nothing
+## of the kind is drawn meanwhile. They are freed UNLOAD_GRACE_S after the last stand let
+## them go, so that walking along a stand's edge, where the farthest
+## chunks of a kind come and go, does not read them again and again.
+## Nothing changes on screen once they are in.
+
+## Seconds the images of a kind no stand holds stay in memory. A body
+## walks about 42 m in that time (speed 1.4 m/s): chunks come and go 288 m
+## from it, so a kind's last chunk must be left well behind before its
+## images are read again.
+const UNLOAD_GRACE_S := 30.0
+## species id -> Array[Texture2D], the images of the kinds in memory.
 static var _textures: Dictionary = {}
+## species id -> the paths of its images (`<id>_adult_01_summer.png`, ...),
+## found once; a kind with none has an empty list.
+static var _paths: Dictionary = {}
+## species id -> how many stands hold it.
+static var _holds: Dictionary = {}
+## species id -> when (msec) its last hold went: freed after the grace.
+static var _let_go: Dictionary = {}
+## species id -> how many of its images are in (`_read`), for the kinds
+## being read, in the order they were asked for. One image is read at a
+## time, whatever the kind (`_in_flight`): its video texture is made by
+## the main thread when it syncs the rendering, so one at a time spreads
+## that over the frames instead of piling several into one.
+static var _loading: Dictionary = {}
+## species id -> Array[Texture2D], the images in already of a kind being read.
+static var _read: Dictionary = {}
+## The path of the image being read on the worker thread, "" when none.
+static var _in_flight := ""
+## The kind of the image being read.
+static var _in_flight_species := ""
+## The index of the image being read in its kind's `paths`.
+static var _in_flight_index := 0
+## The stands waiting for their kinds' images.
+static var _waiting: Array = []
+## The kinds in memory and the kinds being read, counted for F3.
+static var images_loaded := 0
+static var images_freed := 0
 ## A soft round shade, dark in the middle, for the shadows on the ground.
 static var _shade: Texture2D
 ## Opacity of the shade right under the trunk, and of the crown's.
@@ -56,19 +100,206 @@ static func sharpness(zoom: float) -> float:
 	return -clampf((zoom - 0.5) / 0.5, 0.0, 1.0)
 
 
-## The images of a kind of tree: `<id>_adult_01_summer.png`, `_02`, ...
-static func textures(species: String) -> Array:
-	if not _textures.has(species):
-		var found: Array = []
+## The paths of the images of a kind of tree: `<id>_adult_01_summer.png`,
+## `_02`, ... (found once, kept).
+static func paths(species: String) -> PackedStringArray:
+	if not _paths.has(species):
+		var found := PackedStringArray()
 		var n := 1
 		while true:
 			var path := DIR + "%s_adult_%02d_summer.png" % [species, n]
 			if not ResourceLoader.exists(path):
 				break
-			found.append(load(path))
+			found.append(path)
 			n += 1
-		_textures[species] = found
+		_paths[species] = found
+	return _paths[species]
+
+
+## The images of a kind of tree, read now if they are not in memory (the
+## tests and tools; the game holds its kinds and lets `poll` read them).
+## Read this way and held by no stand, they are freed after the grace.
+static func textures(species: String) -> Array:
+	if not _textures.has(species):
+		var found: Array = []
+		for path: String in paths(species):
+			# A read already started on a worker thread is waited for (load does).
+			found.append(load(path))
+		if _in_flight_species == species:
+			_in_flight = ""
+		_loading.erase(species)
+		_read.erase(species)
+		_advance()
+		_place(species, found)
+		if int(_holds.get(species, 0)) == 0 and not _let_go.has(species):
+			_let_go[species] = Time.get_ticks_msec()
 	return _textures[species]
+
+
+## Whether the images of `species` are in memory.
+static func loaded(species: String) -> bool:
+	return _textures.has(species)
+
+
+## How many stands hold `species`.
+static func holds(species: String) -> int:
+	return int(_holds.get(species, 0))
+
+
+## A stand holds `kinds`: their images are kept, read on a worker thread
+## if they are not in memory nor being read.
+static func hold(kinds: PackedStringArray) -> void:
+	for species: String in kinds:
+		_holds[species] = int(_holds.get(species, 0)) + 1
+		_let_go.erase(species)
+		if _textures.has(species) or _loading.has(species):
+			continue
+		var list := paths(species)
+		if list.is_empty():
+			_place(species, [])
+			continue
+		_loading[species] = 0
+		_read[species] = []
+		_advance()
+
+
+## A stand let `kinds` go: those no stand holds any more are freed after
+## the grace, unless a stand holds them again before.
+static func let_go(kinds: PackedStringArray) -> void:
+	var now := Time.get_ticks_msec()
+	for species: String in kinds:
+		var left := int(_holds.get(species, 0)) - 1
+		if left > 0:
+			_holds[species] = left
+			continue
+		_holds.erase(species)
+		_let_go[species] = now
+
+
+## Whether every kind of `kinds` has its images in memory.
+static func ready(kinds: PackedStringArray) -> bool:
+	for species: String in kinds:
+		if not _textures.has(species):
+			return false
+	return true
+
+
+## Each frame (`now` in msec; the tests pass a later time): takes in the
+## images whose read is done and builds the stands that waited for them;
+## frees the images of the kinds no stand has held for the grace. How many
+## stands were built. With `wait`, the reads in progress are waited for.
+static func poll(now: int = Time.get_ticks_msec(), wait: bool = false) -> int:
+	# The image being read is in: taken, its kind placed if it was its
+	# last, the next one asked for (with `wait`, each in turn, waited for).
+	while not _in_flight.is_empty():
+		if ResourceLoader.load_threaded_get_status(_in_flight) == ResourceLoader.THREAD_LOAD_IN_PROGRESS and not wait:
+			break
+		var t := ResourceLoader.load_threaded_get(_in_flight)
+		var species := _in_flight_species
+		_in_flight = ""
+		if t is Texture2D:
+			(_read[species] as Array).append(t)
+		else:
+			push_error("tree image %s could not be read" % _paths[species][_in_flight_index])
+		_loading[species] = _in_flight_index + 1
+		if int(_loading[species]) >= (_paths[species] as PackedStringArray).size():
+			var found: Array = _read[species]
+			_loading.erase(species)
+			_read.erase(species)
+			_place(species, found)
+		_advance()
+	var built := 0
+	if not _waiting.is_empty():
+		var still: Array = []
+		for stand: Stand in _waiting:
+			if ready(stand.kinds):
+				stand._build()
+				built += 1
+			else:
+				still.append(stand)
+		_waiting = still
+	for species: String in _let_go.keys():
+		if now - int(_let_go[species]) < UNLOAD_GRACE_S * 1000.0 or _loading.has(species):
+			continue
+		_let_go.erase(species)
+		_unload(species)
+	return built
+
+
+## Asks the worker thread for the next image of the kinds being read,
+## if none is being read.
+static func _advance() -> void:
+	if not _in_flight.is_empty():
+		return
+	for species: String in _loading:
+		var i := int(_loading[species])
+		var list: PackedStringArray = _paths[species]
+		if i >= list.size():
+			continue
+		_in_flight = list[i]
+		_in_flight_species = species
+		_in_flight_index = i
+		ResourceLoader.load_threaded_request(_in_flight, "Texture2D")
+		return
+
+
+## The images of `species` are in: kept, and given their indices.
+static func _place(species: String, found: Array) -> void:
+	_textures[species] = found
+	var ids: Variant = _image_ids.get(species)
+	if ids == null:
+		var list := PackedInt32Array()
+		for t: Texture2D in found:
+			list.append(_images.size())
+			_images.append(t)
+		_image_ids[species] = list
+	else:
+		# The same indices as the first time: a stand keeps its indices.
+		for i in (ids as PackedInt32Array).size():
+			_images[(ids as PackedInt32Array)[i]] = found[i] if i < found.size() else null
+	if not found.is_empty():
+		images_loaded += 1
+		DevTiming.tally("tree images loaded")
+
+
+## The images of `species` leave memory (video memory with them, nothing
+## else holds them).
+static func _unload(species: String) -> void:
+	var found: Variant = _textures.get(species)
+	_textures.erase(species)
+	if found == null or (found as Array).is_empty():
+		return
+	for index: int in (_image_ids[species] as PackedInt32Array):
+		_images[index] = null
+	images_freed += 1
+	DevTiming.tally("tree images freed")
+
+
+## Frees the images of every kind at once (the world is going).
+static func unload_all() -> void:
+	poll(Time.get_ticks_msec(), true)
+	for species: String in _textures.keys():
+		_unload(species)
+	_holds.clear()
+	_let_go.clear()
+	_waiting.clear()
+
+
+## The kinds in memory, with the video memory their images take (BC7 with
+## mipmaps: a byte a pixel and a third more), for F3: {species: bytes}.
+static func memory() -> Dictionary:
+	var out := {}
+	for species: String in _textures:
+		var bytes := 0
+		for t: Texture2D in _textures[species]:
+			bytes += t.get_width() * t.get_height() * 4 / 3
+		out[species] = bytes
+	return out
+
+
+## The kinds being read now, for F3.
+static func loading() -> PackedStringArray:
+	return PackedStringArray(_loading.keys())
 
 
 ## A number in 0..1 from a tree's place and `salt`, the same every time
@@ -103,27 +334,24 @@ static func marker(height_px: float, at: Vector2, flags: int) -> Color:
 
 
 ## Every image of every kind of tree in one list, so a tree keeps only an
-## index; species id -> the indices of its images in that list.
+## index; species id -> the indices of its images in that list. A kind's
+## indices are given once and kept: its slots are emptied when its images
+## leave memory and filled again, the same, when they come back.
 static var _images: Array[Texture2D] = []
 static var _image_ids: Dictionary = {}
 
 
 ## The index of the image a tree of `species` at `at` shows, or -1 when its
-## kind has none.
+## kind has none; its images must be in memory (`ready`).
 static func image_index(species: String, at: Vector2) -> int:
 	var ids: Variant = _image_ids.get(species)
 	if ids == null:
-		var list := PackedInt32Array()
-		for t: Texture2D in textures(species):
-			list.append(_images.size())
-			_images.append(t)
-		_image_ids[species] = list
-		ids = list
+		return -1
 	var n: int = (ids as PackedInt32Array).size()
 	return -1 if n == 0 else (ids as PackedInt32Array)[variant(at, n)]
 
 
-## The image at `index` (image_index).
+## The image at `index` (image_index); null while its kind is out of memory.
 static func image(index: int) -> Texture2D:
 	return _images[index]
 
@@ -146,7 +374,9 @@ static func free_pool() -> void:
 ## have a canvas item, given as the view moves, by cells of the screen
 ## (`show_cells`); the renderer sorts those with the bodies and the tall
 ## plants by their foot (y-sort), in the same order as when every tree had
-## its node.
+## its node. A stand holds its kinds' images (Trees.hold) from its making
+## to its release; made while they are being read, it is built (`built`)
+## once they are in, and shows nothing before.
 class Stand:
 	extends RefCounted
 	## Side of a cell of the screen, in pixels (zoom 1).
@@ -155,7 +385,8 @@ class Stand:
 	var at := PackedVector2Array()
 	## Each tree's rectangle on screen (Trees.rect): position then size.
 	var rects := PackedVector2Array()
-	## Each tree's image (Trees.image_index), -1 when its kind has none.
+	## Each tree's image (Trees.image_index), -1 when its kind has none or
+	## while the stand is not built.
 	var images := PackedInt32Array()
 	## Each tree's see-through flags (Trees.marker).
 	var flags := PackedByteArray()
@@ -170,30 +401,69 @@ class Stand:
 	var items: Dictionary = {}
 	## The canvas item the trees' items hang from (a y-sorted node's).
 	var parent := RID()
+	## The kinds of tree in the stand, held while it lives.
+	var kinds := PackedStringArray()
+	## Each tree's kind, an index in `kinds`.
+	var kind := PackedByteArray()
+	## Each kind's height in centimetres, in the order of `kinds`.
+	var heights := PackedInt32Array()
+	## Whether the rectangles and cells are worked out (the images are in).
+	var built := false
+	## The cells asked for before the stand was built: shown once it is.
+	var _wanted := Rect2i()
+	## Whether the stand holds its kinds (once, until released).
+	var _holding := false
+	## The stand is built: its trees may show from now on.
+	signal was_built
 
 	## `trees`: as the server sends them ({"at": {x, y}, "species"});
 	## `heights`: species id -> height in centimetres.
-	func _init(trees: Array = [], heights: Dictionary = {}) -> void:
+	func _init(trees: Array = [], tree_heights: Dictionary = {}) -> void:
 		var n := trees.size()
 		at.resize(n)
 		rects.resize(n * 2)
 		images.resize(n)
+		images.fill(-1)
 		flags.resize(n)
 		refs.resize(n)
-		var lo := Vector2i(1 << 30, 1 << 30)
-		var hi := -lo
+		kind.resize(n)
+		var which: Dictionary = {}
 		for i in n:
 			var t: Dictionary = trees[i]
 			var species := str(t.get("species", ""))
 			# As Net.point reads it.
 			var place: Variant = t.get("at", {})
-			var p := Vector2(float(place.get("x", 0)), float(place.get("y", 0))) if place is Dictionary else Vector2.ZERO
-			at[i] = p
-			var index := Trees.image_index(species, p)
+			at[i] = Vector2(float(place.get("x", 0)), float(place.get("y", 0))) if place is Dictionary else Vector2.ZERO
+			var k: Variant = which.get(species)
+			if k == null:
+				k = kinds.size()
+				which[species] = k
+				kinds.append(species)
+				heights.append(int(tree_heights.get(species, 400)))
+			kind[i] = k
+		if n == 0:
+			built = true
+			return
+		Trees.hold(kinds)
+		_holding = true
+		if Trees.ready(kinds):
+			_build()
+		else:
+			Trees._waiting.append(self)
+
+	## The images are in: each tree's rectangle and the cells it covers,
+	## then the cells asked for meanwhile are shown.
+	func _build() -> void:
+		var n := at.size()
+		var lo := Vector2i(1 << 30, 1 << 30)
+		var hi := -lo
+		for i in n:
+			var p := at[i]
+			var index := Trees.image_index(kinds[kind[i]], p)
 			images[i] = index
 			if index < 0:
 				continue
-			var r := Trees.rect(p, int(heights.get(species, 400)), Trees.image(index))
+			var r := Trees.rect(p, heights[kind[i]], Trees.image(index))
 			rects[i * 2] = r.position
 			rects[i * 2 + 1] = r.size
 			var a := Vector2i((r.position / CELL_PX).floor())
@@ -211,6 +481,12 @@ class Stand:
 					cells[cell] = list
 		if hi.x >= lo.x:
 			bounds = Rect2i(lo, hi - lo + Vector2i.ONE)
+		built = true
+		if _wanted.has_area():
+			var wanted := _wanted
+			_wanted = Rect2i()
+			show_cells(wanted)
+		was_built.emit()
 
 	func size() -> int:
 		return at.size()
@@ -230,6 +506,9 @@ class Stand:
 	## and only them: a canvas item for each tree coming in, back to the
 	## pool for each going out. Only the cells that changed are looked at.
 	func show_cells(range: Rect2i) -> void:
+		if not built:
+			_wanted = range
+			return
 		var target := range.intersection(bounds) if range.has_area() and bounds.has_area() else Rect2i()
 		if target == shown:
 			return
@@ -295,12 +574,19 @@ class Stand:
 		if items.has(i):
 			_draw(i, items[i], Iso.point_to_screen(at[i]))
 
-	## Gives every canvas item back (the chunk is going).
+	## Gives every canvas item back and lets its kinds go (the chunk is
+	## going): their images are freed after the grace if no stand holds them.
 	func release() -> void:
 		for i: int in items.keys():
 			_hide(i)
 		refs.fill(0)
 		shown = Rect2i()
+		_wanted = Rect2i()
+		if _holding:
+			_holding = false
+			Trees.let_go(kinds)
+			if not built:
+				Trees._waiting.erase(self)
 
 	## The cells of `a` not in `b`, as up to four rectangles.
 	static func minus(a: Rect2i, b: Rect2i) -> Array[Rect2i]:
@@ -322,10 +608,18 @@ class Stand:
 		return parts
 
 
-## The shadows of a chunk's trees, drawn once on the ground.
+## The shadows of a chunk's trees, drawn once on the ground, and again
+## when the stand is built after its images came in.
 class ShadowLayer:
 	extends Node2D
-	var stand: Stand
+	var stand: Stand:
+		set(value):
+			if stand != null and stand.was_built.is_connected(queue_redraw):
+				stand.was_built.disconnect(queue_redraw)
+			stand = value
+			if stand != null and not stand.built:
+				stand.was_built.connect(queue_redraw)
+			queue_redraw()
 
 	func _draw() -> void:
 		if stand == null:
