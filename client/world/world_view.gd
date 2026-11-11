@@ -52,7 +52,12 @@ const MM_PER_TILE := 1000.0
 var _width := 0
 var _height := 0
 var _chunk_size := 32
-## chunk position -> ChunkView (only the chunks the server sent)
+## chunk position -> ChunkView, for the chunks built: those the camera's
+## reach touches (C1, 11 November 2026: the 361 chunks the server sends
+## are held as data, `_tiles` and the dictionaries beside it; a chunk is
+## built, its ground, trees, plants, items and shadows made, only when
+## the camera's reach touches it, and released after a grace once the
+## reach left it, its data kept: ViewLedger).
 var _chunks: Dictionary = {}
 ## The limit of the view, in tiles (_update_limit).
 var _limit := Rect2()
@@ -106,6 +111,11 @@ const SEE_EASE := 0.2
 var _to_redraw := RedrawQueue.new()
 ## The layer the trees and bodies stand on, sorted by their feet.
 var _standing: Node2D
+## The node the chunks built hang from, and each chunk's rank in the
+## order the server sent them (chunk -> rank), the order they hang in.
+var _ground: Node2D
+var _arrival: Dictionary = {}
+var _arrivals := 0
 ## chunk -> the node holding its trees and tall plants.
 var _tree_nodes: Dictionary = {}
 ## The land past the chunks held (FarView). It is drawn with a hole under
@@ -144,13 +154,10 @@ var _items_version := 0
 ## sent again only when it changes.
 var _sway_sent: Dictionary = {}
 ## The bookkeeping of the chunks held (ViewLedger): the bounds of the
-## chunks held, kept as chunks come and go; the chunks whose redraw waits
-## for the camera to come near; the chunks parked when hidden, to come
-## back as they were when the body walks back over a border, nothing
-## built (C5: parked, a chunk is hidden and its tiles leave the terrain
-## grid, so its neighbours draw their edge as they did; a parked record
-## is {view, holder, stand, codes, items_hash, trees_hash, plants_hash,
-## stale}); what lies behind the mouse among the items.
+## chunks held, kept as chunks come and go; which chunks are built and
+## which the camera's reach asks for or has left (C1, C5); the chunks
+## whose redraw waits for the camera to come near; what lies behind the
+## mouse among the items.
 var _ledger := ViewLedger.new()
 ## chunk -> the hash of its trees and of its plants as the server sent
 ## them (a chunk sent again with the same keeps its nodes).
@@ -198,6 +205,14 @@ func _ready() -> void:
 	_standing.y_sort_enabled = true
 	_standing.material = sway
 	add_child(_standing)
+	# The chunks built hang from one node, below the bodies and the hover
+	# outline, kept in the order the server sent them whatever order the
+	# camera builds them in: where two chunks' drawings overlap at a
+	# border, the later one shows over the earlier, as when every chunk
+	# was built on arrival.
+	_ground = Node2D.new()
+	_ground.z_index = -1
+	add_child(_ground)
 	_set_sway("body_radius", BODY_SEE_M * Iso.PX_PER_M)
 	_set_sway("mouse_radius", MOUSE_SEE_M * Iso.PX_PER_M)
 	# Which trees have a canvas item is settled just before each frame is
@@ -225,8 +240,6 @@ func _ready() -> void:
 func _exit_tree() -> void:
 	for stand: Trees.Stand in _trees.values():
 		stand.release()
-	for p: Dictionary in _ledger.parked.values():
-		(p["stand"] as Trees.Stand).release()
 	Trees.free_pool()
 	Trees.unload_all()
 
@@ -250,8 +263,6 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	for chunk: ChunkView in _chunks.values():
 		chunk.queue_free()
 	_chunks.clear()
-	for p: Dictionary in _ledger.take_all():
-		_free_parked(p)
 	_ledger = ViewLedger.new()
 	_ledger.chunk_size = chunk_size
 	_items.clear()
@@ -267,6 +278,9 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	_plants_hash.clear()
 	_trees_version += 1
 	_items_version += 1
+	_arrival.clear()
+	_paced.clear()
+	_reach_dirty = true
 	_standing_changed = true
 	_trees_changed = true
 	for n: Node in _tree_nodes.values():
@@ -297,64 +311,45 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees:
 	var codes := TerrainGrid.codes(tiles)
 	var trees_hash := trees.hash()
 	var plants_hash := plants.hash()
-	var view: ChunkView = _chunks.get(key)
-	# A parked chunk comes back: what the server sends again as it was is
-	# kept as it was (the tiles never change, D31; the trees, the plants
-	# and the items are compared).
-	var kept_nodes := false
-	var kept_items := false
-	var parked: Variant = _ledger.take(key) if view == null else null
-	if parked != null:
-		var p: Dictionary = parked
-		view = p["view"]
-		view.visible = true
-		_chunks[key] = view
-		if p["stale"]:
-			_ledger.mark_stale(view, key)
-		kept_nodes = p["trees_hash"] == trees_hash and p["plants_hash"] == plants_hash
-		kept_items = p["items_hash"] == items.hash() and p["codes"] == codes
-		if kept_nodes:
-			_tree_nodes[key] = p["holder"]
-			_trees[key] = p["stand"]
-		else:
-			(p["holder"] as Node).queue_free()
-			(p["stand"] as Trees.Stand).release()
-		DevTiming.tally("chunks restored")
-	elif view == null:
-		view = ChunkView.new()
-		view.z_index = -1  # ground below bodies and the hover outline
-		# The ground and the bank pieces keep plain linear filtering: the
-		# mipmaps this view uses for the trees would blur them.
-		view.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-		add_child(view)
-		_chunks[key] = view
+	# The chunk is held as data, its tiles laid in the terrain grid where
+	# the chunks around read their borders; a chunk sent again keeps its
+	# stand when its trees are the same (the tiles never change, D31).
+	var same_stand: bool = _trees.has(key) and int(_trees_hash.get(key, 0)) == trees_hash
+	var same_nodes: bool = same_stand and int(_plants_hash.get(key, 0)) == plants_hash
+	if not _arrival.has(key):
+		_arrivals += 1
+		_arrival[key] = _arrivals
 	_ledger.hold(key)
 	_tiles[key] = codes
 	_tile_hashes[key] = hash(codes)
+	TerrainGrid.write(key * _chunk_size, _chunk_size, codes)
 	_currents[key] = currents
 	_items[key] = items
 	_items_version += 1
 	_trees_hash[key] = trees_hash
 	_plants_hash[key] = plants_hash
 	_plants[key] = plants
-	if not kept_nodes:
+	if not same_stand:
 		var old: Trees.Stand = _trees.get(key)
 		if old != null:
 			old.release()
 		_trees[key] = Trees.Stand.new(trees, _tree_heights)
-		_plant_chunk(key, view)
-		view.show_plants(plants, _flora)
-	_trees_version += 1
-	_standing_changed = true
-	_trees_changed = true
-	view.tiles_hash = func(k: Vector2i) -> int: return int(_tile_hashes.get(k, 0))
-	view.current_at = current_at
-	if kept_items:
-		TerrainGrid.write(key * _chunk_size, _chunk_size, codes)
-	else:
+		_trees_version += 1
+	var view: ChunkView = _chunks.get(key)
+	if view != null:
+		# Built already: its items' mesh is made again only if they changed
+		# (ChunkView.show_chunk), its trees and plants only if they did.
+		if not same_nodes:
+			_plant_chunk(key, view)
+			view.show_plants(plants, _flora)
+			_standing_changed = true
+			_trees_changed = true
 		view.show_chunk(key * _chunk_size, _chunk_size, codes, items, _looks)
+	elif _camera_placed and _ledger.within_reach(key):
+		_build_chunk(key, _ledger.touches(_ledger.shown, key))
+	else:
+		_reach_dirty = true
 	_redraw_neighbours(key)
-	_prune_parked()
 	_far_dirty = true
 	if not _camera_placed and _piloted < 0:
 		# Watching, no body to follow: look at the ground we were given
@@ -375,22 +370,29 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees:
 
 func _on_item_added(item: Dictionary) -> void:
 	var key := Iso.chunk_of(Vector2i(int(item.get("x", 0)), int(item.get("y", 0))), _chunk_size)
-	if _chunks.has(key):
+	if _items.has(key):
 		_items[key].append(item)
 		_items_version += 1
-		_chunks[key].show_chunk(key * _chunk_size, _chunk_size, _tiles[key], _items[key], _looks)
+		_show_items(key)
 
 
 func _on_item_removed(id: int, x: int, y: int) -> void:
 	var key := Iso.chunk_of(Vector2i(x, y), _chunk_size)
-	if _chunks.has(key):
+	if _items.has(key):
 		var kept: Array = []
 		for item in _items[key]:
 			if int(item.get("id", -1)) != id:
 				kept.append(item)
 		_items[key] = kept
 		_items_version += 1
-		_chunks[key].show_chunk(key * _chunk_size, _chunk_size, _tiles[key], kept, _looks)
+		_show_items(key)
+
+
+## The items of chunk `key` changed: its view, if built, draws them again.
+func _show_items(key: Vector2i) -> void:
+	var view: ChunkView = _chunks.get(key)
+	if view != null:
+		view.show_chunk(key * _chunk_size, _chunk_size, _tiles[key], _items[key], _looks)
 
 
 func _on_body_assigned(body: int) -> void:
@@ -421,8 +423,6 @@ func teleport_to(tile: Vector2i) -> void:
 	Net.send_dev_teleport(tile.x, tile.y)
 	_target = Vector2i(-1, -1)
 	_following = true
-	for p: Dictionary in _ledger.take_all():
-		_free_parked(p)
 	teleporting.emit()
 	queue_redraw()
 
@@ -448,8 +448,8 @@ func set_trees_shown(on: bool) -> void:
 
 ## Pixels a chunk's standing things may reach past its ground on screen:
 ## up for the tallest trees, sideways and down for their crowns.
-const STANDING_REACH_UP := 1024.0
-const STANDING_REACH := 256.0
+const STANDING_REACH_UP := ViewLedger.STANDING_REACH_UP
+const STANDING_REACH := ViewLedger.STANDING_REACH
 
 
 ## Shows only the trees and tall plants of chunks on screen: the standing
@@ -479,12 +479,109 @@ func _seen() -> Rect2:
 	return Rect2(_camera.position - half, half * 2.0)
 
 
-## The camera's reach follows the screen: the chunks whose redraw waited
-## for it are queued when it reaches them.
+## The camera's reach follows the screen: the chunks it touches are
+## built, those the screen may show this frame, the margin's one a frame
+## (ChunkView.waiting), the ones it left for the grace released
+## (ViewLedger.plan); the chunks whose redraw waited for it are queued
+## when it reaches them. Looked at when the screen moved, when a chunk
+## came or went, and while a chunk's grace runs.
 func _update_reach() -> void:
-	if _ledger.see(_seen()):
+	var moved := _ledger.see(_seen())
+	if not moved and not _reach_dirty and _ledger.leaving.is_empty() and _paced.is_empty():
+		return
+	if not _camera_placed:
+		return
+	_reach_dirty = false
+	var plan := _ledger.plan(Time.get_ticks_msec(), _tiles)
+	for key: Vector2i in plan["at_once"]:
+		_build_chunk(key, true)
+	for key: Vector2i in plan["paced"]:
+		_build_chunk(key, false)
+	for key: Vector2i in plan["release"]:
+		_release_chunk(key)
+	if moved:
 		for view: Variant in _ledger.wake():
 			_to_redraw.add(view)
+	_hurry_paced()
+
+
+## Whether the chunks held changed since the reach was last looked at.
+var _reach_dirty := true
+## The chunks built for the margin whose ground still waits its turn
+## (chunk -> true): one the screen reaches before its turn is built this
+## frame after all, so no chunk shows before its ground.
+var _paced: Dictionary = {}
+
+
+func _hurry_paced() -> void:
+	for key: Vector2i in _paced.keys():
+		var view: ChunkView = _chunks.get(key)
+		if view == null or view.is_built():
+			_paced.erase(key)
+		elif _ledger.touches(_ledger.shown, key):
+			view.build_at_once = true
+			view.queue_redraw()
+			_paced.erase(key)
+
+
+## Builds chunk `key` from the data held: its view (the ground, the items
+## and, within it, the shadows, the plants and the banks) and its trees
+## and tall plants on the standing layer. `at_once`: the screen may show
+## it, so its ground is built this frame whatever else builds; otherwise
+## it waits its turn, nearest the camera first.
+func _build_chunk(key: Vector2i, at_once: bool) -> void:
+	var view := ChunkView.new()
+	# The ground and the bank pieces keep plain linear filtering: the
+	# mipmaps this view uses for the trees would blur them.
+	view.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	view.tiles_hash = func(k: Vector2i) -> int: return int(_tile_hashes.get(k, 0))
+	view.current_at = current_at
+	view.build_at_once = at_once
+	# Among the chunks built, in the order the server sent them.
+	var rank := int(_arrival.get(key, 0))
+	var before := 0
+	for other: Vector2i in _chunks:
+		if int(_arrival.get(other, 0)) < rank:
+			before += 1
+	_ground.add_child(view)
+	_ground.move_child(view, before)
+	_chunks[key] = view
+	if not at_once:
+		_paced[key] = true
+	_ledger.mark_built(key)
+	_plant_chunk(key, view)
+	view.show_plants(_plants[key], _flora)
+	view.show_chunk(key * _chunk_size, _chunk_size, _tiles[key], _items[key], _looks)
+	_standing_changed = true
+	_trees_changed = true
+	_far_dirty = true
+	DevTiming.tally("chunks made")
+
+
+## Frees chunk `key`'s nodes, its data kept: it builds again from them
+## when the camera's reach comes back.
+func _release_chunk(key: Vector2i) -> void:
+	var view: ChunkView = _chunks.get(key)
+	if view != null:
+		_to_redraw.drop(view)
+		_ledger.forget(view)
+		view.queue_free()
+		_chunks.erase(key)
+		_paced.erase(key)
+		DevTiming.tally("chunks released")
+	var holder: Variant = _tree_nodes.get(key)
+	if holder != null and is_instance_valid(holder):
+		(holder as Node).queue_free()
+	_tree_nodes.erase(key)
+	var stand: Trees.Stand = _trees.get(key)
+	if stand != null:
+		stand.show_cells(Rect2i())
+		stand.parent = RID()
+		stand.flags.fill(0)
+	_ledger.mark_released(key)
+	_standing_changed = true
+	_trees_changed = true
+	_far_dirty = true
 
 
 var _trees_shown := true
@@ -515,22 +612,28 @@ func _cull_trees() -> void:
 		return
 	_trees_cells = cells
 	_trees_changed = false
-	for key: Vector2i in _trees:
-		var holder: Variant = _tree_nodes.get(key)
+	# Only the stands of built chunks have a holder to hang from; a chunk
+	# released gave its cells back (_release_chunk).
+	for key: Vector2i in _tree_nodes:
+		var holder: Variant = _tree_nodes[key]
+		var stand: Trees.Stand = _trees.get(key)
+		if stand == null:
+			continue
 		var on := holder != null and is_instance_valid(holder) and (holder as Node2D).visible
-		(_trees[key] as Trees.Stand).show_cells(cells if on else Rect2i())
+		stand.show_cells(cells if on else Rect2i())
 	DevTiming.add("tree culling", t)
 
 
-## What the world holds now, for the development counters: the trees held
-## and those given a canvas item (drawn, or just off the screen's edge).
+## What the world holds now, for the development counters: the chunks
+## held and built, the trees held and those given a canvas item (drawn,
+## or just off the screen's edge).
 func counts() -> Dictionary:
 	var trees := 0
 	var drawn := 0
 	for stand: Trees.Stand in _trees.values():
 		trees += stand.size()
 		drawn += stand.items.size()
-	return {"chunks": _chunks.size(), "parked": _ledger.parked.size(), "stale": _ledger.stale.size(), "trees": trees, "trees_drawn": drawn, "bodies": _bodies.size()}
+	return {"chunks": _tiles.size(), "built": _chunks.size(), "leaving": _ledger.leaving.size(), "stale": _ledger.stale.size(), "trees": trees, "trees_drawn": drawn, "bodies": _bodies.size()}
 
 
 ## The tile the piloted body stands on, or (-1, -1) when there is none.
@@ -646,17 +749,20 @@ func _update_limit() -> void:
 
 ## The bounds, in chunks, of the chunks held.
 func _bounds() -> Rect2i:
-	return _ledger.bounds(_chunks)
+	return _ledger.bounds(_tiles)
 
 
-## Tells the far view whether it may leave its hole under the limit:
-## looked at again while something changes or is still to build, never
-## otherwise (FarView.set_complete).
+## Tells the far view whether it may leave its hole under the limit: when
+## every chunk the screen shows under it is built, or builds this frame
+## (the others are not seen, built or not). Looked at again while
+## something changes or the screen moves, never otherwise
+## (FarView.set_complete).
 func _update_far_hole() -> void:
 	if _far == null or (not _far_dirty and _far_complete):
 		return
 	_far_dirty = false
-	_far_complete = FarView.limit_built(_limit, _chunks, _bounds(), _chunk_size, ChunkView.waiting.size())
+	var shown := _ledger.chunks_touching(_ledger.seen, _bounds())
+	_far_complete = FarView.limit_built(_limit, _chunks, _tiles, _bounds(), _chunk_size, shown)
 	# The limit in tile space (tile x spans [x - 0.5, x + 0.5] there), half
 	# a tile inside it either way: only tiles of chunks under the limit.
 	_far.set_complete(Rect2(_limit.position, _limit.size - Vector2.ONE), _far_complete)
@@ -679,24 +785,15 @@ func _redraw_neighbours(key: Vector2i) -> void:
 					DevTiming.tally("redraws deferred")
 
 
+## The server no longer sends chunk `key`: its nodes, if built, and its
+## data go (no grace: nothing is left to build it from).
 func _on_chunk_hidden(x: int, y: int) -> void:
 	var key := Vector2i(x, y)
-	var view: ChunkView = _chunks.get(key)
-	if view != null:
-		_to_redraw.drop(view)
+	if _tiles.has(key):
+		_release_chunk(key)
 		var stand: Trees.Stand = _trees.get(key)
-		var holder: Node = _tree_nodes.get(key)
-		if view.is_built() and stand != null and holder != null and is_instance_valid(holder):
-			_park(key, view, holder, stand)
-		else:
-			ChunkView.waiting.erase(view)
-			view.queue_free()
-			if stand != null:
-				stand.release()
-			if holder != null:
-				holder.queue_free()
-		_ledger.forget(view)
-		_chunks.erase(key)
+		if stand != null:
+			stand.release()
 		_ledger.drop(key)
 		_items.erase(key)
 		_items_version += 1
@@ -709,48 +806,13 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 		_trees_version += 1
 		_plants.erase(key)
 		_plants_hash.erase(key)
-		_standing_changed = true
-		_trees_changed = true
-		_tree_nodes.erase(key)
+		_arrival.erase(key)
+		_reach_dirty = true
 		_redraw_neighbours(key)
-		_far_dirty = true
 	for id in _bodies.keys():
 		if Iso.chunk_of(_tile_of(_bodies[id]["at"]), _chunk_size) == key:
 			_bodies.erase(id)
-	_prune_parked()
 	queue_redraw()
-
-
-## Parks a built chunk that goes: hidden, its nodes and drawing kept, its
-## trees' canvas items and see-through flags given back.
-func _park(key: Vector2i, view: ChunkView, holder: Node, stand: Trees.Stand) -> void:
-	view.visible = false
-	(holder as Node2D).visible = false
-	stand.show_cells(Rect2i())
-	stand.flags.fill(0)
-	_ledger.park(key, {
-		"view": view, "holder": holder, "stand": stand, "codes": _tiles[key], "stale": _ledger.stale.has(view),
-		"items_hash": (_items[key] as Array).hash(), "trees_hash": _trees_hash[key], "plants_hash": _plants_hash[key],
-	})
-	DevTiming.tally("chunks parked")
-
-
-## Frees a parked chunk's nodes for good.
-func _free_parked(p: Dictionary) -> void:
-	ChunkView.waiting.erase(p["view"])
-	(p["view"] as Node).queue_free()
-	(p["holder"] as Node).queue_free()
-	(p["stand"] as Trees.Stand).release()
-
-
-## Frees the parked chunks the body has walked away from, and the oldest
-## past the ledger's room.
-func _prune_parked() -> void:
-	if _ledger.parked.is_empty():
-		return
-	var centre: Variant = Iso.chunk_of(_tile_of(_bodies[_piloted]["at"]), _chunk_size) if _bodies.has(_piloted) else null
-	for p: Dictionary in _ledger.prune(centre):
-		_free_parked(p)
 
 
 func _on_body_walks(body: int, at: Vector2, route: Array, speed_cm_per_s: int) -> void:
@@ -899,10 +961,10 @@ func _step(delta: float) -> void:
 		_trees_version += 1
 		_trees_changed = true
 	_update_limit()
-	_update_far_hole()
 	_clamp_camera()
-	_cull_standing()
 	_update_reach()
+	_update_far_hole()
+	_cull_standing()
 	_update_see_through(delta)
 	_call_waiting_chunk()
 	for queued: Variant in _to_redraw.take(RedrawQueue.BUDGET_USEC, ChunkView.redraw_usec):
@@ -1048,6 +1110,7 @@ func _plant_chunk(key: Vector2i, view: ChunkView) -> void:
 	trees.use_parent_material = true
 	holder.add_child(trees)
 	var stand: Trees.Stand = _trees[key]
+	stand.show_cells(Rect2i())
 	stand.parent = trees.get_canvas_item()
 	holder.visible = _trees_shown
 	# The tall plants stand among the trees, sorted with them by their foot.
@@ -1065,7 +1128,17 @@ func _plant_chunk(key: Vector2i, view: ChunkView) -> void:
 		node.rect = ChunkView.plant_rect(at, _flora[k], region)
 		node.use_parent_material = true
 		holder.add_child(node)
+	# Among the chunks' holders, in the order the server sent the chunks:
+	# two trees whose feet stand level are sorted as when every chunk was
+	# planted on arrival.
+	var rank := int(_arrival.get(key, 0))
+	var before := 0
+	for other: Vector2i in _tree_nodes:
+		var h: Variant = _tree_nodes[other]
+		if other != key and is_instance_valid(h) and (h as Node).get_parent() == _standing and int(_arrival.get(other, 0)) < rank:
+			before += 1
 	_standing.add_child(holder)
+	_standing.move_child(holder, before)
 	_tree_nodes[key] = holder
 	var shadows: Trees.ShadowLayer = view.get_node_or_null("Shadows")
 	if shadows == null:

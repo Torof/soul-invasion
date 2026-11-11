@@ -546,6 +546,14 @@ func _build_water_meshes(win: PackedByteArray) -> Dictionary:
 		_lay_water_meshes({}, {})
 		return prepared
 	water_main_usec += Time.get_ticks_usec() - started
+	if _water_at_once:
+		# The screen shows this chunk this frame: the water with the ground.
+		var out: Array = []
+		WaterMeshes.build(prepared, out)
+		water_build_usec += int(out[4]) if out.size() > 4 else 0
+		water_builds += 1
+		_lay_water_meshes(out[0], out[1])
+		return prepared
 	_build_water_meshes_on_a_worker(prepared, job)
 	return prepared
 
@@ -904,6 +912,15 @@ static var waiting: Array = []
 static var camera_px := Vector2.ZERO
 ## This chunk's distance (squared) to `camera_px` when it joined.
 var wait_distance := 0.0
+## Built the frame it is first drawn, whatever else built that frame: the
+## world view sets it for a chunk the screen may show (C1, 11 November
+## 2026: every chunk on screen is built the frame it enters the camera's
+## reach), and it is spent by that build.
+var build_at_once := false
+## Whether the build under way is one the screen may show: its water
+## meshes are built in line rather than on a worker, so its water shows
+## with its ground (_build_water_meshes).
+var _water_at_once := false
 
 
 ## The middle of the chunk's ground, in the world's pixels.
@@ -1099,7 +1116,9 @@ func _draw() -> void:
 	var built := false
 	if signature != _last_signature:
 		var frame := Engine.get_process_frames()
-		if _built_frame != frame:
+		if build_at_once or _built_frame != frame:
+			_water_at_once = build_at_once
+			build_at_once = false
 			_built_frame = frame
 			waiting.erase(self)
 			_last_signature = signature

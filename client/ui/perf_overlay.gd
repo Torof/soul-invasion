@@ -220,8 +220,8 @@ func report(worst_ms: float) -> String:
 	])
 	if world != null:
 		var counts: Dictionary = world.call("counts")
-		lines.append("chunks %d (%d to build, %d parked, %d stale)   trees %d (%d drawn)   bodies %d" % [
-			counts.get("chunks", 0), ChunkView.waiting.size(), counts.get("parked", 0), counts.get("stale", 0),
+		lines.append("chunks %d held, %d built (%d to build, %d leaving, %d stale)   trees %d (%d drawn)   bodies %d" % [
+			counts.get("chunks", 0), counts.get("built", 0), ChunkView.waiting.size(), counts.get("leaving", 0), counts.get("stale", 0),
 			counts.get("trees", 0), counts.get("trees_drawn", 0), counts.get("bodies", 0),
 		])
 	# The tree images in memory follow the kinds the chunks held have

@@ -251,22 +251,27 @@ func set_complete(hole: Rect2, complete: bool) -> void:
 	queue_redraw()
 
 
-## Whether every chunk under `limit` (tiles) is held and built, with no
-## chunk waiting to build and no chunk missing from the bounds held: then
-## the ground is opaque under the whole limit and the far view need not
-## be drawn there.
-static func limit_built(limit: Rect2, chunks: Dictionary, bounds: Rect2i, chunk_size: int, waiting: int) -> bool:
-	if chunks.is_empty() or waiting > 0 or limit.size.x <= 1.0 or limit.size.y <= 1.0:
+## Whether every chunk the screen shows (`shown`, chunks) under `limit`
+## (tiles) is built, or builds this frame (`chunks`: chunk -> ChunkView,
+## the chunks built), with no chunk missing from the bounds of the chunks
+## held (`held`: chunk -> anything): then the ground is opaque wherever
+## the far view would be seen under the limit and it need not be drawn
+## there. The chunks under the limit the screen does not show may stay
+## unbuilt, or wait their turn in the margin (C1): nobody sees what lies
+## under them.
+static func limit_built(limit: Rect2, chunks: Dictionary, held: Dictionary, bounds: Rect2i, chunk_size: int, shown: Array) -> bool:
+	if held.is_empty() or limit.size.x <= 1.0 or limit.size.y <= 1.0:
 		return false
-	if chunks.size() != bounds.size.x * bounds.size.y:
+	if held.size() != bounds.size.x * bounds.size.y:
 		return false
 	var lo := Vector2i((limit.position / chunk_size).floor())
 	var hi := Vector2i((limit.end / chunk_size).ceil())
-	for y in range(lo.y, hi.y):
-		for x in range(lo.x, hi.x):
-			var chunk: ChunkView = chunks.get(Vector2i(x, y))
-			if chunk == null or not chunk.is_built():
-				return false
+	for key: Vector2i in shown:
+		if key.x < lo.x or key.y < lo.y or key.x >= hi.x or key.y >= hi.y:
+			continue
+		var chunk: ChunkView = chunks.get(key)
+		if chunk == null or not (chunk.is_built() or chunk.build_at_once):
+			return false
 	return true
 
 
