@@ -1000,6 +1000,7 @@ func _step(delta: float) -> void:
 	# The tree images read on a worker thread come in, the stands that
 	# waited for them are built and the images no chunk held for the grace
 	# are freed (Trees.poll): the built stands' trees show from this frame.
+	Trees.view(_camera.zoom.x, get_viewport().get_screen_transform().get_scale().y)
 	if Trees.poll() > 0:
 		_trees_version += 1
 		_trees_changed = true

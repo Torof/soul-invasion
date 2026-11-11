@@ -282,8 +282,9 @@ func report(worst_ms: float) -> String:
 			counts.get("trees", 0), counts.get("trees_drawn", 0), counts.get("bodies", 0),
 		])
 	# The tree images in memory follow the kinds the chunks held have
-	# (Trees.hold): which, what they take (BC7 with mipmaps, worked out from
-	# their size) against every texture's, how many came and went.
+	# (Trees.hold): which (* with their finest level, Trees.fine), what they
+	# take (the BC7 levels held) against every texture's, how many came
+	# and went.
 	var kinds := Trees.memory()
 	var bytes := 0
 	for species: String in kinds:
@@ -294,8 +295,12 @@ func report(worst_ms: float) -> String:
 		kinds.size(), bytes / 1048576,
 		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TEXTURE_MEM_USED) / 1048576,
 		Trees.images_loaded, Trees.images_freed,
-		"" if Trees.loading().is_empty() else "   reading %s" % " ".join(Trees.loading()),
+		("" if Trees.loading().is_empty() else "   reading %s" % " ".join(Trees.loading()))
+		+ ("" if Trees.sharpening().is_empty() else "   sharpening %s" % " ".join(Trees.sharpening())),
 	])
+	for i in names.size():
+		if Trees.fine(names[i]):
+			names[i] = names[i] + "*"
 	lines.append("  " + " ".join(names))
 	lines.append("grounds on the workers %d   built in line: %d   laid %d, %.2f ms each on the main thread   F3 hides" % [
 		ChunkView.waiting.size(), ChunkView.in_line, ChunkView.lays, ChunkView.lay_usec / 1000.0 / maxi(ChunkView.lays, 1)])

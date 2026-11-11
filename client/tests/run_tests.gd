@@ -65,6 +65,7 @@ func _init() -> void:
 	_test_the_water_meshes_merge_the_deep_water()
 	_test_a_brooks_current_is_its_tiles_own()
 	_test_tree_images_follow_the_stands_that_hold_them()
+	_test_tree_images_hold_their_finest_level_only_up_close()
 	_test_tree_outlines_hold_every_texel()
 
 
@@ -1930,6 +1931,99 @@ func _test_tree_images_follow_the_stands_that_hold_them() -> void:
 	Trees.free_pool()
 	Trees.unload_all()
 	_check(Trees.memory().is_empty(), "the world going, every image is freed at once")
+
+
+## A tree image is held without its finest mip level (its own BC7 blocks,
+## a quarter of its weight) unless a tree of its kind is shown at a zoom
+## where the card may read that level; it gets it then, keeping its
+## texture (the trees drawn need no new drawing), and gives it up
+## FINE_GRACE_S after it is no longer needed, zoomed out or out of view.
+func _test_tree_images_hold_their_finest_level_only_up_close() -> void:
+	# The levels are the imported texture's own blocks.
+	var path := Trees.paths("oak")[0]
+	var whole := Trees.read_image(path, 0)
+	var coarse := Trees.read_image(path, Trees.COARSE)
+	_check(whole.has("image") and coarse.has("image"), "an oak image is read from its imported file, whole and without its finest level")
+	if not whole.has("image") or not coarse.has("image"):
+		return
+	var imported := (load(path) as Texture2D)
+	var a: Image = whole["image"]
+	var b: Image = coarse["image"]
+	_check(a.get_data() == imported.get_image().get_data(), "read whole, it is the imported texture, block for block")
+	_check(b.get_width() == a.get_width() / 2 and b.get_height() == a.get_height() / 2 and b.get_data() == a.get_data().slice(a.get_data().size() - b.get_data().size()), "read without its finest level, it is the whole one's chain from its second level")
+	_check(whole["size"] == Vector2i(imported.get_width(), imported.get_height()) and coarse["size"] == whole["size"], "both report the imported texture's size")
+	_check(int(coarse["bytes"]) * 4 < int(whole["bytes"]) * 1.01 and int(coarse["bytes"]) * 4 > int(whole["bytes"]) * 0.99, "without its finest level it weighs a quarter: %d against %d" % [coarse["bytes"], whole["bytes"]])
+	# The rule: on the lead's screen (canvas stretched 2.4 times), every
+	# kind is read whole from zoom 0.8 on and never at 0.6 and below, as
+	# the card picks its levels (the measured threshold, about 0.73).
+	var text := FileAccess.get_file_as_string(ProjectSettings.globalize_path("res://").path_join("../content/species.ron"))
+	var re := RegEx.new()
+	re.compile("id: \"([a-z_]+)\", name: \"[^\"]*\", height_m: ([0-9.]+)")
+	var kinds := 0
+	for m in re.search_all(text):
+		var texels := 0
+		for p: String in Trees.paths(m.get_string(1)):
+			var h := int(Trees.read_image(p, Trees.COARSE).get("texels", 0))
+			texels = h if texels == 0 else mini(texels, h)
+		if texels == 0:
+			continue
+		kinds += 1
+		var cm := int(float(m.get_string(2)) * 100.0)
+		_check(not Trees.fine_read(texels, cm, 0.6, 2.4) and Trees.fine_read(texels, cm, 0.8, 2.4), "the %s needs its finest level from zoom 0.8 on a 3072 screen, not at 0.6" % m.get_string(1))
+		_check(not Trees.fine_read(texels, cm, 0.4, 2.4) and Trees.fine_read(texels, cm, 2.5, 1.0), "the %s: never at the farthest zoom, always at the nearest" % m.get_string(1))
+	_check(kinds >= 6, "every kind with images is checked: %d" % kinds)
+	# A level of detail of exactly 1 + FINE_MARGIN at zoom 1 (bias -1).
+	var cm := 2_200
+	var px := Scale.shown(22.0) * Iso.PX_PER_M * (1.0 + Trees.SIZE_JITTER)
+	var edge := int(px * pow(2.0, 2.0 + Trees.FINE_MARGIN))
+	_check(Trees.fine_read(edge - 2, cm, 1.0, 1.0) and not Trees.fine_read(edge + 2, cm, 1.0, 1.0), "the threshold is a level of detail of 1 + FINE_MARGIN for the largest tree")
+	# In the game: held coarse, sharpened when shown up close, kept for the
+	# grace, softened after it; a kind not in view is never sharpened.
+	Trees.unload_all()
+	var trees: Array = []
+	for i in 6:
+		trees.append({"at": {"x": 1_700 + 3_100 * i, "y": 2_300}, "species": "oak"})
+	var seen := Trees.Stand.new(trees, {"oak": 2_200})
+	var unseen := Trees.Stand.new([{"at": {"x": 1_700, "y": 2_300}, "species": "pine"}], {"pine": 2_500})
+	var now := Time.get_ticks_msec()
+	Trees.view(0.4, 2.4)
+	Trees.poll(now, true)
+	seen.parent = RenderingServer.canvas_item_create()
+	seen.show_cells(Trees.Stand.cell_range(Rect2(-4000, -4000, 8000, 8000)))
+	var index := seen.images[0]
+	var rid := Trees.image(index).get_rid()
+	var coarse_mb: int = Trees.memory()["oak"]
+	Trees.poll(now, true)
+	_check(seen.built and not seen.items.is_empty() and not Trees.fine("oak") and not Trees.fine("pine"), "far away, the kinds are held without their finest level")
+	Trees.view(2.5, 2.4)
+	Trees.poll(now, true)
+	_check(Trees.fine("oak") and Trees.sharpening().is_empty(), "up close, the oak shown gets its finest level")
+	_check(not Trees.fine("pine"), "the pine, held but not shown, does not")
+	_check(Trees.image(index).get_rid() == rid and Trees.image(index).get_width() == imported.get_width(), "the oak's texture keeps its RID and its size: the trees drawn with it are not drawn again")
+	var fine_mb: int = Trees.memory()["oak"]
+	_check(fine_mb > coarse_mb * 3.9 and fine_mb < coarse_mb * 4.1, "and weighs four times more: %d against %d" % [fine_mb, coarse_mb])
+	Trees.view(0.4, 2.4)
+	var grace := int(Trees.FINE_GRACE_S * 1000.0)
+	Trees.poll(now, true)
+	Trees.poll(now + grace - 1, true)
+	_check(Trees.fine("oak"), "zoomed out, the oak keeps it for the grace")
+	Trees.poll(now + grace + 1, true)
+	_check(not Trees.fine("oak") and Trees.memory()["oak"] == coarse_mb and Trees.image(index).get_rid() == rid, "then gives it up, the same texture")
+	Trees.view(2.5, 2.4)
+	Trees.poll(now + grace + 2, true)
+	_check(Trees.fine("oak"), "zoomed in again, it gets it back")
+	seen.show_cells(Rect2i())
+	Trees.poll(now + grace + 3, true)
+	Trees.poll(now + 2 * grace + 2, true)
+	_check(Trees.fine("oak"), "out of view, it keeps it for the grace")
+	Trees.poll(now + 2 * grace + 4, true)
+	_check(not Trees.fine("oak"), "then gives it up")
+	seen.release()
+	unseen.release()
+	RenderingServer.free_rid(seen.parent)
+	Trees.free_pool()
+	Trees.unload_all()
+	Trees.view(0.0, 1.0)
 
 
 ## Every tree image's outline (TreeOutline, art/trees/outlines.json) holds
