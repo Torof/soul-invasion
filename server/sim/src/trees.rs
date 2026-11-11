@@ -39,10 +39,16 @@
 //!   `MEADOW_REACH`); far from both, a lone tree about once a square
 //!   kilometre (`MEADOW_FAR`). Their kinds are those of the `lone`
 //!   habitat and of the mothers near the edge.
-//! - **Riverside** trees line the rivers, as before, alders and willows
-//!   in runs from their mothers.
-//! - Nothing stands on a tile touching a river or a ford, even by a
-//!   corner: its trunk and crown would be drawn over the water.
+//! - **Riverside**: the wood on the first tiles by the water is placed
+//!   as any wood, on the grids, of the riverside kinds (alder, willow)
+//!   in runs from their mothers; no line of its own.
+//! - **Dense and light regions** (D37, 11 November 2026): every cell's
+//!   chance, and the meadows' groups', is scaled by the region's
+//!   stocking ([`Woods::stocking`], a noise on cells of 300 tiles): the
+//!   trees as close as today in a dense region, 2 to 2.5 times farther
+//!   apart in a light one, the habitat and the stands unchanged.
+//! - Nothing stands on a tile touching a river, a ford or a brook, even
+//!   by a corner: its trunk and crown would be drawn over the water.
 //!
 //! A chunk reads the map within `MOST_SPREAD_M` + a mother cell of
 //! itself, and the meadow's distance to the woods `MEADOW_REACH` tiles
@@ -111,9 +117,6 @@ const UNDERGROWTH: u32 = 420;
 const GAP_SIDE: i32 = 16 * MM_PER_TILE;
 const GAP_CHANCE: u32 = 45;
 const GAP_PIONEER: u32 = 300;
-/// Farthest a riverside tree stands from its tile's centre, in
-/// millimetres.
-const TILE_JITTER: i32 = 300;
 /// The stands' noise, its lattice in tiles, then the finer noise that
 /// roughens it and its weight in thousandths; added to a stand's strength
 /// (0 to 1000) before it is raised to the fifth power, so the strongest
@@ -175,6 +178,8 @@ struct Planting<'a> {
     map: &'a Map,
     species: &'a [Species],
     seed: u64,
+    /// The seed of the density noise (`Woods::stocking`).
+    density: u64,
     mothers: Vec<Mother>,
     /// Each kind's seeds for its stands' noise and their detail.
     stands: Vec<(u64, u64)>,
@@ -201,6 +206,7 @@ impl<'a> Planting<'a> {
             map,
             species,
             seed,
+            density: Woods::density_seed(seed),
             mothers: Vec::new(),
             stands: (0..species.len() as u64)
                 .map(|i| {
@@ -372,8 +378,9 @@ impl<'a> Planting<'a> {
         scatter::weighted(&weights, roll)
     }
 
-    /// Whether a cell's tree at `tile` stands, by its density, with a
-    /// chance scaled by `share` thousandths, drawn from `keys`.
+    /// Whether a cell's tree at `tile` stands, by its density and the
+    /// region's stocking, with a chance scaled by `share` thousandths,
+    /// drawn from `keys`.
     fn stands(&self, tile: Pos, share: u32, purpose: u64, keys: &[u64]) -> bool {
         let density = u32::from(self.map.trees(tile));
         let per_density = if purpose == purpose::TREE_BIG {
@@ -385,8 +392,16 @@ impl<'a> Planting<'a> {
             + density.saturating_sub(u32::from(Woods::FOREST)) * CHANCE_IN_THE_WOOD)
             .min(MOST_CHANCE)
             * share
+            / 1000
+            * self.stocking(tile)
             / 1000;
         chance > 0 && scatter::chance(chance, self.seed, purpose, keys)
+    }
+
+    /// How close the trees stand at `tile`, in thousandths of the chance
+    /// a cell holds one (`Woods::stocking`).
+    fn stocking(&self, tile: Pos) -> u32 {
+        Woods::stocking(self.density, tile.x, tile.y)
     }
 
     /// Whether the opening square around `at` is an opening.
@@ -480,7 +495,6 @@ pub fn trees_in(map: &Map, species: &[Species], seed: u64, chunk: ChunkPos) -> V
         .filter(|t| t.at.tile().chunk() == chunk)
         .collect();
     planting.small_trees(chunk, &bigs, &mut trees);
-    planting.riverside_trees(chunk, &mut trees);
     planting.meadow_trees(chunk, &mut trees);
     trees
 }
@@ -575,33 +589,6 @@ impl Planting<'_> {
         }
     }
 
-    /// The riverside trees of `chunk`: one on their tile.
-    fn riverside_trees(&self, chunk: ChunkPos, trees: &mut Vec<Tree>) {
-        let origin = chunk.origin();
-        let side = i32::try_from(CHUNK_SIZE).expect("small chunk");
-        for dy in 0..side {
-            for dx in 0..side {
-                let tile = Pos::new(origin.x + dx, origin.y + dy);
-                if self.map.habitat(tile) != Habitat::Riverside || by_the_water(self.map, tile) {
-                    continue;
-                }
-                let (x, y) = (key(i64::from(tile.x)), key(i64::from(tile.y)));
-                let nudge = |axis: u64| {
-                    scatter::offset(
-                        scatter::roll(self.seed, purpose::TREE_TILE, &[x, y, axis]),
-                        TILE_JITTER,
-                    )
-                };
-                let centre = tile.centre();
-                let at = FinePos::new(centre.x + nudge(0), centre.y + nudge(1));
-                let roll = scatter::roll(self.seed, purpose::TREE_TILE, &[x, y, 2]);
-                if let Some(kind) = self.kind(at, Habitat::Riverside, roll, |_| true) {
-                    trees.push(Tree { at, species: kind });
-                }
-            }
-        }
-    }
-
     /// The meadows' trees of `chunk`: small groups by the woods and the
     /// water, rarer farther; far from both, a lone tree now and then.
     fn meadow_trees(&mut self, chunk: ChunkPos, trees: &mut Vec<Tree>) {
@@ -636,7 +623,10 @@ impl Planting<'_> {
                 Some(d) => {
                     let left = u32::try_from(MEADOW_REACH - d).expect("within reach");
                     let reach = u32::try_from(MEADOW_REACH).expect("positive");
-                    if roll % 1000 >= u64::from(MEADOW_NEAR * left * left / (reach * reach)) {
+                    let chance = MEADOW_NEAR * left * left / (reach * reach)
+                        * self.stocking(centre.tile())
+                        / 1000;
+                    if roll % 1000 >= u64::from(chance) {
                         continue;
                     }
                     GROUP_SMALLEST + roll / 1000 % (GROUP_LARGEST - GROUP_SMALLEST + 1)
@@ -688,13 +678,10 @@ impl Planting<'_> {
     }
 }
 
-/// Whether trees of the woods grow in `habitat` (the riverside and the
-/// meadows have their own).
+/// Whether trees of the woods grow in `habitat` (the meadows have their
+/// own).
 fn in_the_woods(habitat: Habitat) -> bool {
-    !matches!(
-        habitat,
-        Habitat::Riverside | Habitat::Lone | Habitat::Meadow
-    )
+    !matches!(habitat, Habitat::Lone | Habitat::Meadow)
 }
 
 /// The trees of the whole of `map`, chunk by chunk. Only for the tests
@@ -719,13 +706,13 @@ pub fn everywhere(map: &Map, species: &[Species], seed: u64) -> Vec<Tree> {
     trees
 }
 
-/// Whether `tile` touches a river or a ford, even by a corner.
+/// Whether `tile` touches a river, a ford or a brook, even by a corner.
 fn by_the_water(map: &Map, tile: Pos) -> bool {
     (-1..=1).any(|dy| {
         (-1..=1).any(|dx| {
             matches!(
                 map.get(Pos::new(tile.x + dx, tile.y + dy)),
-                Some(Terrain::Water | Terrain::Ford)
+                Some(Terrain::Water | Terrain::Ford | Terrain::Brook)
             )
         })
     })
@@ -832,6 +819,65 @@ mod tests {
     }
 
     #[test]
+    fn the_trees_stand_closer_in_dense_regions_than_in_light_ones() {
+        // Trees a tile of full forest, in the dense regions of the
+        // density noise against the light ones: about 1.6 times farther
+        // apart in the light, so 2 to 3 times fewer (D37, 11 November
+        // 2026: the lead found a floor of 160 thousandths far too thin).
+        // The forest itself is the same in both.
+        let kinds = species();
+        let (mut dense, mut light) = ((0_u64, 0_u64), (0_u64, 0_u64));
+        for seed in 1..=3 {
+            let map = Map::valley(768, 768, seed);
+            let density = Woods::density_seed(seed);
+            let mut per_tile = std::collections::HashMap::<Pos, u64>::new();
+            for t in everywhere(&map, &kinds, seed) {
+                *per_tile.entry(t.at.tile()).or_default() += 1;
+            }
+            for y in 0..768 {
+                for x in 0..768 {
+                    let p = Pos::new(x, y);
+                    if map.trees(p) < 90 {
+                        continue;
+                    }
+                    let n = per_tile.get(&p).copied().unwrap_or(0);
+                    match Woods::stocking(density, x, y) {
+                        950.. => {
+                            dense.0 += n;
+                            dense.1 += 1;
+                        }
+                        ..=450 => {
+                            light.0 += n;
+                            light.1 += 1;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        // Trees a thousand tiles.
+        let (dense_rate, light_rate) = (
+            dense.0 * 1000 / dense.1.max(1),
+            light.0 * 1000 / light.1.max(1),
+        );
+        eprintln!(
+            "full forest: {dense_rate} trees a thousand tiles over {} dense tiles, {light_rate} over {} light",
+            dense.1, light.1
+        );
+        assert!(
+            dense.1 > 2000 && light.1 > 2000,
+            "{} dense, {} light",
+            dense.1,
+            light.1
+        );
+        let ratio = dense_rate * 10 / light_rate.max(1);
+        assert!(
+            (20..=32).contains(&ratio),
+            "dense {dense_rate}, light {light_rate}: {ratio} tenths"
+        );
+    }
+
+    #[test]
     fn big_trees_stand_apart_and_nothing_small_under_their_crowns() {
         let kinds = species();
         let map = Map::valley(512, 512, 2);
@@ -858,7 +904,8 @@ mod tests {
             dx * dx + dy * dy
         };
         let min_big = i64::from(BIG_CELL - 2 * BIG_JITTER);
-        let mut spacing = 0_i64;
+        let (mut spacing, mut dense) = (0_i64, 0_i64);
+        let density = Woods::density_seed(2);
         for (i, a) in bigs.iter().enumerate() {
             let mut nearest = i64::MAX;
             for (j, b) in bigs.iter().enumerate() {
@@ -868,12 +915,21 @@ mod tests {
                     nearest = nearest.min(d);
                 }
             }
-            spacing += nearest.isqrt();
+            // The spacing of a dense region (a light one stands wider).
+            let tile = a.at.tile();
+            if Woods::stocking(density, tile.x, tile.y) >= 900 {
+                spacing += nearest.isqrt();
+                dense += 1;
+            }
         }
         // On the wide grid of 5.5 m: their crowns touch, the nearest about
         // 4.5 m off.
-        let mean = spacing / i64::try_from(bigs.len()).unwrap();
-        eprintln!("{} big trees, {mean} mm to the nearest", bigs.len());
+        let mean = spacing / dense.max(1);
+        eprintln!(
+            "{} big trees, {dense} in dense regions, {mean} mm to the nearest",
+            bigs.len()
+        );
+        assert!(dense > 100, "{dense} big trees in dense regions");
         assert!((3800..=6500).contains(&mean), "{mean} mm");
         let clear = i64::from(BIG_CLEAR);
         for s in &smalls {
@@ -953,7 +1009,9 @@ mod tests {
         );
         assert!(sampled[0] > 500 && sampled[1] > 50, "{sampled:?}");
         assert!(rate[0] > rate[1] && rate[1] > rate[2], "{rate:?}");
-        assert!(rate[0] >= 15, "{rate:?}");
+        // Fewer since the density noise thins the groups of the light
+        // regions (11 November 2026).
+        assert!(rate[0] >= 10, "{rate:?}");
         // Far from the woods and the water, about one tree a square
         // kilometre: on four maps of a quarter of one, a handful at most.
         assert!(trees_by_band[3] <= 4, "{trees_by_band:?}");
@@ -1056,7 +1114,9 @@ mod tests {
     /// `SOUL_INVASION_SEED` (the world's seed, the game's unless given),
     /// `SOUL_INVASION_FOREST_SCALE` (pixels a tile, 1 unless given) and
     /// `SOUL_INVASION_FOREST_CROP` (`x,y,w,h` in tiles, the whole valley
-    /// unless given). In release:
+    /// unless given) and `SOUL_INVASION_FOREST_TINT=density` (the ground
+    /// tinted by the density noise, light regions pale, dense ones
+    /// dark). In release:
     /// `cargo test --release -p sim dump_forest -- --ignored --nocapture`.
     #[test]
     #[ignore = "writes the forest as an image for a look; run by hand"]
@@ -1082,6 +1142,8 @@ mod tests {
             .filter(|c: &Vec<u32>| c.len() == 4)
             .unwrap_or_else(|| vec![0, 0, size, size]);
         let (x0, y0, w, h) = (crop[0], crop[1], crop[2], crop[3]);
+        let tint_density = var("SOUL_INVASION_FOREST_TINT").as_deref() == Some("density");
+        let density_seed = Woods::density_seed(seed);
         let kinds = species();
         let started = std::time::Instant::now();
         let map = Map::valley(size, size, seed);
@@ -1130,21 +1192,51 @@ mod tests {
                 wooded += u64::from(map.trees(p) > 0);
             }
         }
+        // The heart's trees in the dense regions of the density noise
+        // (stocking 950 and over) and the light ones (450 and under).
         let (mut in_heart, mut in_wood) = (0_u64, 0_u64);
+        let (mut heart_dense, mut heart_light) = ((0_u64, 0_u64), (0_u64, 0_u64));
+        let region = |p: Pos| match Woods::stocking(density_seed, p.x, p.y) {
+            950.. => Some(true),
+            ..=450 => Some(false),
+            _ => None,
+        };
+        for y in 0..size as i32 {
+            for x in 0..size as i32 {
+                let p = Pos::new(x, y);
+                if map.habitat(p) == Habitat::Heart {
+                    match region(p) {
+                        Some(true) => heart_dense.1 += 1,
+                        Some(false) => heart_light.1 += 1,
+                        None => {}
+                    }
+                }
+            }
+        }
         for t in &trees {
-            match map.habitat(t.at.tile()) {
-                Habitat::Heart => in_heart += 1,
+            let p = t.at.tile();
+            match map.habitat(p) {
+                Habitat::Heart => {
+                    in_heart += 1;
+                    match region(p) {
+                        Some(true) => heart_dense.0 += 1,
+                        Some(false) => heart_light.0 += 1,
+                        None => {}
+                    }
+                }
                 Habitat::Wood | Habitat::CliffFoot => in_wood += 1,
                 _ => {}
             }
         }
         eprintln!(
-            "forest {} per mille of the land; wooded {} per mille; edge {} per mille of the wooded, {:.1} tiles deep; trees a 100 m²: heart {:.1}, wood {:.1}",
+            "forest {} per mille of the land; wooded {} per mille; edge {} per mille of the wooded, {:.1} tiles deep; trees a 100 m²: heart {:.1} (dense regions {:.1}, light {:.1}), wood {:.1}",
             forest * 1000 / land.max(1),
             wooded * 1000 / land.max(1),
             edge * 1000 / wooded.max(1),
             edge as f64 / rim.max(1) as f64,
             in_heart as f64 * 100.0 / heart.max(1) as f64,
+            heart_dense.0 as f64 * 100.0 / heart_dense.1.max(1) as f64,
+            heart_light.0 as f64 * 100.0 / heart_light.1.max(1) as f64,
             in_wood as f64 * 100.0 / wood.max(1) as f64,
         );
         // A chunk's ground, as the server makes it when it sends one: its
@@ -1204,7 +1296,8 @@ mod tests {
         let mut px = vec![0_u8; (pw * ph * 3) as usize];
         for ty in 0..h {
             for tx in 0..w {
-                let rgb: [u8; 3] = match map.get(Pos::new((x0 + tx) as i32, (y0 + ty) as i32)) {
+                let p = Pos::new((x0 + tx) as i32, (y0 + ty) as i32);
+                let mut rgb: [u8; 3] = match map.get(p) {
                     Some(Terrain::Forest) => [178, 184, 166],
                     Some(Terrain::Water) => [112, 132, 160],
                     Some(Terrain::Ford) => [140, 156, 176],
@@ -1212,6 +1305,15 @@ mod tests {
                     Some(Terrain::Rock) => [152, 144, 138],
                     _ => [214, 214, 198],
                 };
+                if tint_density && matches!(map.get(p), Some(Terrain::Forest | Terrain::Grass)) {
+                    // Light regions pale, dense ones a deep green.
+                    let stocking = f64::from(Woods::stocking(density_seed, p.x, p.y));
+                    let k = (stocking - 160.0) / 840.0;
+                    let dark = [60.0, 110.0, 50.0];
+                    for (c, d) in rgb.iter_mut().zip(dark) {
+                        *c = (f64::from(*c) * (1.0 - k * 0.75) + d * k * 0.75) as u8;
+                    }
+                }
                 for sy in 0..scale {
                     for sx in 0..scale {
                         let i = (((ty * scale + sy) * pw + tx * scale + sx) * 3) as usize;

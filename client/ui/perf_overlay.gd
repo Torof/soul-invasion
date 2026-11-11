@@ -224,6 +224,22 @@ func report(worst_ms: float) -> String:
 			counts.get("chunks", 0), ChunkView.waiting.size(), counts.get("parked", 0), counts.get("stale", 0),
 			counts.get("trees", 0), counts.get("trees_drawn", 0), counts.get("bodies", 0),
 		])
+	# The tree images in memory follow the kinds the chunks held have
+	# (Trees.hold): which, what they take (BC7 with mipmaps, worked out from
+	# their size) against every texture's, how many came and went.
+	var kinds := Trees.memory()
+	var bytes := 0
+	for species: String in kinds:
+		bytes += kinds[species]
+	var names := kinds.keys()
+	names.sort()
+	lines.append("tree images %d kinds, %d MB of textures %d MB   loaded %d, freed %d%s" % [
+		kinds.size(), bytes / 1048576,
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TEXTURE_MEM_USED) / 1048576,
+		Trees.images_loaded, Trees.images_freed,
+		"" if Trees.loading().is_empty() else "   reading %s" % " ".join(Trees.loading()),
+	])
+	lines.append("  " + " ".join(names))
 	lines.append("water meshes building %d   F3 hides" % WaterMeshes.busy)
 	lines.append("wind %s (F4)   ground %s (F5)   trees %s (F6)   fog %s (F7)" % [
 		"on" if _wind else "off", "plain" if _plain_ground else "shaded", "shown" if _trees_shown else "hidden",

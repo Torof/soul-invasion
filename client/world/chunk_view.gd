@@ -913,6 +913,10 @@ func centre_px() -> Vector2:
 
 ## Puts `chunk` among the waiting ones, after those nearer the camera.
 static func enqueue(chunk: ChunkView) -> void:
+	# A chunk released since it was queued (a teleport frees the whole
+	# view) must not be met by the search below: a freed object cannot
+	# be read, the error aborted the enqueue and the chunk never built.
+	waiting = waiting.filter(func(c: Variant) -> bool: return is_instance_valid(c))
 	if waiting.has(chunk):
 		return
 	chunk.wait_distance = chunk.centre_px().distance_squared_to(camera_px)

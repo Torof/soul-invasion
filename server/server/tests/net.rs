@@ -5,8 +5,9 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use protocol::{ClientMessage, PROTOCOL_VERSION, Point, ServerMessage, decode, encode};
@@ -399,8 +400,21 @@ async fn hello_ping_and_a_published_day() {
     let mut seen_trees = 0;
     let mut chunks = Vec::new();
     let mut seen_plants = 0;
-    for _ in 0..window_len(world, centre) {
-        match receive(&mut socket).await {
+    let mut far = None;
+    // The chunks are built beside the network: a day boundary may slip in
+    // between them on a loaded machine (a day lasts a second here).
+    while chunks.len() < window_len(world, centre) {
+        match receive_any(&mut socket).await {
+            Some(ServerMessage::DayStarted { .. }) => {}
+            Some(message)
+                if ambient(&message) && !matches!(message, ServerMessage::FarView { .. }) => {}
+            Some(ServerMessage::FarView {
+                cell,
+                width,
+                height,
+                cells,
+                ..
+            }) => far = Some((cell, width, height, cells)),
             Some(ServerMessage::Chunk {
                 x,
                 y,
@@ -462,21 +476,12 @@ async fn hello_ping_and_a_published_day() {
         seen_plants > 1000,
         "the flora grows around the camp: {seen_plants}"
     );
-    // Then the far view around the body's chunk.
-    match receive_any(&mut socket).await {
-        Some(ServerMessage::FarView {
-            cell,
-            width,
-            height,
-            cells,
-            ..
-        }) => {
-            assert_eq!(cells.len(), (width * height) as usize);
-            assert!(cell >= 8 && width >= 128);
-            assert!(cells.contains('f') && cells.contains('g'));
-        }
-        other => panic!("expected the far view, got {other:?}"),
-    }
+    // And the far view around the body's chunk, which leaves as soon as
+    // it is made: before the chunks, built beside the network.
+    let (cell, width, height, cells) = far.expect("the far view with the chunks");
+    assert_eq!(cells.len(), (width * height) as usize);
+    assert!(cell >= 8 && width >= 128);
+    assert!(cells.contains('f') && cells.contains('g'));
     assert!(
         seen_items > 100,
         "{seen_items} items in view: the ground is scattered"
@@ -570,7 +575,8 @@ async fn several_clients_each_get_the_same_days() {
 
 /// Opens a piloting connection: hello, welcome, `world_state` and the
 /// initial chunks consumed.
-async fn join(server: &Server) -> (Socket, Option<u32>) {
+/// Connects and says hello: the socket and the body it pilots, if any.
+async fn welcome(server: &Server) -> (Socket, Option<u32>) {
     let mut socket = server.connect().await;
     send(
         &mut socket,
@@ -583,24 +589,49 @@ async fn join(server: &Server) -> (Socket, Option<u32>) {
         Some(ServerMessage::Welcome { body, .. }) => body,
         other => panic!("expected welcome, got {other:?}"),
     };
+    (socket, body)
+}
+
+/// The chunk a fresh connection's view centres on: its body's, or the
+/// middle of the map for a watcher.
+fn home_of(world: &World, body: Option<u32>) -> ChunkPos {
+    if let Some(body) = body {
+        start_of(world, body).chunk()
+    } else {
+        let middle = i32::try_from(VALLEY / 2).expect("small valley");
+        Pos::new(middle, middle).chunk()
+    }
+}
+
+/// Connects, says hello and receives the view around the body: the
+/// socket and the body it pilots, if any.
+async fn join(server: &Server) -> (Socket, Option<u32>) {
+    let (socket, body, _) = join_counting(server).await;
+    (socket, body)
+}
+
+/// Like [`join`], returning the chunks received. The chunks are built
+/// beside the network and leave after any event of the moment (a body
+/// walking, the dev overview): what comes between them is let by.
+async fn join_counting(server: &Server) -> (Socket, Option<u32>, HashSet<(i32, i32)>) {
+    let (mut socket, body) = welcome(server).await;
     assert!(matches!(
         receive(&mut socket).await,
         Some(ServerMessage::WorldState { .. })
     ));
     let world = standard_world();
-    let centre = if let Some(body) = body {
-        start_of(world, body).chunk()
-    } else {
-        let middle = i32::try_from(VALLEY / 2).expect("small valley");
-        Pos::new(middle, middle).chunk()
-    };
-    for _ in 0..window_len(world, centre) {
-        assert!(matches!(
-            receive(&mut socket).await,
-            Some(ServerMessage::Chunk { .. })
-        ));
+    let centre = home_of(world, body);
+    let mut chunks = HashSet::new();
+    while chunks.len() < window_len(world, centre) {
+        match receive(&mut socket).await {
+            Some(ServerMessage::Chunk { x, y, .. }) => {
+                assert!(chunks.insert((x, y)), "chunk ({x}, {y}) sent twice");
+            }
+            Some(_) => {}
+            None => panic!("disconnected while the view was coming"),
+        }
     }
-    (socket, body)
+    (socket, body, chunks)
 }
 
 // --- The view follows the body (D08, D31) --------------------------------
@@ -738,6 +769,291 @@ async fn a_body_walking_out_of_the_view_is_reported_as_left() {
     }
 }
 
+// --- Chunks built beside the network (D29, 11 November 2026) ------------
+
+/// The chunks of the window around `centre` in the standard world.
+fn window(world: &World, centre: ChunkPos) -> HashSet<(i32, i32)> {
+    let mut chunks = HashSet::new();
+    for dy in -VIEW_RADIUS..=VIEW_RADIUS {
+        for dx in -VIEW_RADIUS..=VIEW_RADIUS {
+            let chunk = ChunkPos::new(centre.x + dx, centre.y + dy);
+            if world.map().has_chunk(chunk) {
+                chunks.insert((chunk.x, chunk.y));
+            }
+        }
+    }
+    chunks
+}
+
+#[tokio::test]
+async fn clients_logging_in_at_once_each_get_a_complete_view() {
+    // Three bodies to pilot, a fourth client watches the middle of the
+    // map: four cold views built at the same time on two threads, each
+    // whole, each chunk once.
+    let server = Server::start_with(&["--seconds-per-day", "1000", "--chunk-threads", "2"]);
+    let world = standard_world();
+    let (a, b, c, d) = tokio::join!(
+        join_counting(&server),
+        join_counting(&server),
+        join_counting(&server),
+        join_counting(&server)
+    );
+    for (_, body, chunks) in [&a, &b, &c, &d] {
+        let centre = home_of(world, *body);
+        assert_eq!(*chunks, window(world, centre), "{body:?}'s view");
+    }
+    let bodies: HashSet<Option<u32>> = [a.1, b.1, c.1, d.1].into_iter().collect();
+    assert_eq!(bodies.len(), 4, "three different bodies and a watcher");
+    assert!(bodies.contains(&None), "the fourth client watches");
+}
+
+#[tokio::test]
+async fn an_intention_is_read_and_answered_while_the_view_is_being_sent() {
+    // Long days: no day boundary interferes. The client asks to walk as
+    // soon as it is welcomed, before any chunk arrived: the walk is told
+    // before the view is through (an event goes before the ground), where
+    // it used to wait for the last of the 361 chunks.
+    let server = Server::start_with(&["--seconds-per-day", "1000"]);
+    let mut socket = server.connect().await;
+    send(
+        &mut socket,
+        &ClientMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    )
+    .await;
+    let body = match receive(&mut socket).await {
+        Some(ServerMessage::Welcome { body, .. }) => body.expect("pilots a body"),
+        other => panic!("expected welcome, got {other:?}"),
+    };
+    let world = standard_world();
+    let start = start_of(world, body);
+    let target = Pos::new(start.x + 3, start.y);
+    route(world, start, target); // reachable
+    send(
+        &mut socket,
+        &ClientMessage::MoveTo {
+            x: target.x,
+            y: target.y,
+        },
+    )
+    .await;
+    let total = window_len(world, start.chunk());
+    let (mut chunks, mut walked_after) = (0, None);
+    while chunks < total {
+        match receive(&mut socket).await {
+            Some(ServerMessage::Chunk { .. }) => chunks += 1,
+            Some(ServerMessage::BodyWalks { body: who, .. }) if who == body => {
+                walked_after.get_or_insert(chunks);
+            }
+            Some(
+                ServerMessage::WorldState { .. }
+                | ServerMessage::BodyWalks { .. }
+                | ServerMessage::BodyStopped { .. },
+            ) => {}
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    let walked_after = walked_after.expect("the walk is told during the view");
+    assert!(
+        walked_after < total,
+        "the walk was told after {walked_after} of {total} chunks"
+    );
+}
+
+/// Teleports `hopping` between the two `far` tiles, each hop waited for,
+/// as long as `hops` says: how many hops were made.
+fn hop_between(
+    mut hopper: Socket,
+    hopping: u32,
+    far: [Pos; 2],
+    hops: Arc<AtomicBool>,
+) -> tokio::task::JoinHandle<usize> {
+    tokio::spawn(async move {
+        let mut n = 0;
+        while hops.load(Ordering::Relaxed) {
+            let to = far[n % 2];
+            send(
+                &mut hopper,
+                &ClientMessage::DevTeleport { x: to.x, y: to.y },
+            )
+            .await;
+            n += 1;
+            // Reading what comes, or the server's writer would stall.
+            let stopped = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    match receive(&mut hopper).await {
+                        Some(ServerMessage::BodyStopped { body: who, .. }) if who == hopping => {
+                            break;
+                        }
+                        Some(_) => {}
+                        None => panic!("hopper disconnected"),
+                    }
+                }
+            })
+            .await;
+            assert!(stopped.is_ok(), "a teleport is answered within 10 s");
+        }
+        n
+    })
+}
+
+#[tokio::test]
+async fn a_walk_is_seen_whole_while_another_client_builds_cold_views() {
+    // A walks east across a chunk border, watched by C, while B teleports
+    // far away again and again: each teleport a cold view of 361 chunks.
+    // Nothing of the walk is lost or held back: C sees it start and stop,
+    // A gets the ground it walks into and its own stop.
+    let server = Server::start_with(&[
+        "--dev",
+        "--seconds-per-day",
+        "1000",
+        "--time-scale",
+        "20",
+        "--chunk-threads",
+        "2",
+    ]);
+    let (mut walker, body) = join(&server).await;
+    let (mut watcher, _) = join(&server).await;
+    let (hopper, hopping) = join(&server).await;
+    let body = body.expect("pilots body 1");
+    let hopping = hopping.expect("pilots body 3");
+
+    let world = standard_world();
+    let start = start_of(world, body);
+    let here = start.chunk();
+    let target = Pos::new(
+        here.origin().x + i32::try_from(CHUNK_SIZE).expect("small chunk"),
+        start.y,
+    );
+    route(world, start, target); // reachable
+    send(
+        &mut walker,
+        &ClientMessage::MoveTo {
+            x: target.x,
+            y: target.y,
+        },
+    )
+    .await;
+    // B hops between two far corners for the whole walk.
+    let hops = Arc::new(AtomicBool::new(true));
+    let far = [
+        world
+            .map()
+            .nearest(Pos::new(100, 600), sim::Terrain::Grass)
+            .expect("grass"),
+        world
+            .map()
+            .nearest(Pos::new(600, 100), sim::Terrain::Grass)
+            .expect("grass"),
+    ];
+    let hopping_task = hop_between(hopper, hopping, far, Arc::clone(&hops));
+
+    let (mut shown, mut hidden, mut stopped) = (0, 0, false);
+    while !(stopped && shown >= 5 && hidden >= 5) {
+        match receive(&mut walker).await {
+            Some(ServerMessage::Chunk { x, .. }) => {
+                assert_eq!(x, here.x + VIEW_RADIUS + 1);
+                shown += 1;
+            }
+            Some(ServerMessage::ChunkHidden { x, .. }) => {
+                assert_eq!(x, here.x - VIEW_RADIUS);
+                hidden += 1;
+            }
+            Some(ServerMessage::BodyStopped { body: who, at }) if who == body => {
+                assert_eq!(tile(at), target);
+                stopped = true;
+            }
+            // B leaves the view with its first hop.
+            Some(
+                ServerMessage::BodyWalks { .. }
+                | ServerMessage::BodyStopped { .. }
+                | ServerMessage::BodyLeft { .. },
+            ) => {}
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    let (mut saw_walk, mut saw_stop) = (false, false);
+    while !(saw_walk && saw_stop) {
+        match receive(&mut watcher).await {
+            Some(ServerMessage::BodyWalks { body: who, .. }) if who == body => saw_walk = true,
+            Some(ServerMessage::BodyStopped { body: who, at }) if who == body => {
+                assert_eq!(tile(at), target);
+                saw_stop = true;
+            }
+            Some(
+                ServerMessage::BodyWalks { .. }
+                | ServerMessage::BodyStopped { .. }
+                | ServerMessage::BodyLeft { .. },
+            ) => {}
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    hops.store(false, Ordering::Relaxed);
+    let hops = hopping_task.await.expect("the hopper's task");
+    assert!(hops >= 1, "B hopped {hops} time(s) meanwhile");
+}
+
+/// The chunks of a whole view, unclipped: a login at the camp or a
+/// watcher at the middle of the game's valley gets them all.
+fn whole_view() -> usize {
+    usize::try_from((2 * VIEW_RADIUS + 1).pow(2)).expect("small")
+}
+
+/// A cold login on the game's valley: how long after hello the first
+/// chunk came, and the last of the whole view.
+async fn cold_login(server: &Server) -> (Duration, Duration) {
+    let started = Instant::now();
+    let (mut socket, _) = welcome(server).await;
+    let (mut chunks, mut first) = (0, None);
+    while chunks < whole_view() {
+        if let Some(ServerMessage::Chunk { .. }) = receive(&mut socket).await {
+            chunks += 1;
+            first.get_or_insert_with(|| started.elapsed());
+        }
+    }
+    (first.expect("a chunk"), started.elapsed())
+}
+
+/// What a client waits for its view on the game's valley, built beside
+/// the network: a measure, not a rule. Run by hand, in release:
+/// `cargo test --release -p server --test net measure_cold_logins -- --ignored --nocapture`.
+///
+/// One cold login alone (hello to the last of the 361 chunks, and to the
+/// first), then four at once on a fresh server: three pilots at the
+/// camp and a watcher at the middle of the map, a cold view each.
+#[tokio::test]
+#[ignore = "a measure on the game's 3072 valley, run by hand in release"]
+async fn measure_cold_logins() {
+    const GAME_VALLEY: &[&str] = &[
+        "--valley-size",
+        "3072",
+        "--no-warm-up",
+        "--seconds-per-day",
+        "1000",
+    ];
+    let server = Server::start_with(GAME_VALLEY);
+    let (first, last) = cold_login(&server).await;
+    println!("one cold login: first chunk after {first:?}, the view whole after {last:?}");
+    drop(server);
+
+    let server = Server::start_with(GAME_VALLEY);
+    let started = Instant::now();
+    let four = tokio::join!(
+        cold_login(&server),
+        cold_login(&server),
+        cold_login(&server),
+        cold_login(&server)
+    );
+    let all = started.elapsed();
+    for (i, (first, last)) in [four.0, four.1, four.2, four.3].into_iter().enumerate() {
+        println!(
+            "four cold logins at once, client {i}: first chunk after {first:?}, the view whole after {last:?}"
+        );
+    }
+    println!("four cold logins at once: all four views whole after {all:?}");
+}
+
 // --- Development tools (--dev) -----------------------------------------
 
 #[tokio::test]
@@ -792,20 +1108,21 @@ async fn with_dev_the_client_gets_the_overview_and_may_teleport() {
         &ClientMessage::DevTeleport { x: far.x, y: far.y },
     )
     .await;
-    let (mut shown, mut hidden) = (0, 0);
-    loop {
+    // The stop is an event: it leaves before the new ground, which is
+    // built beside the network and follows.
+    let (mut shown, mut hidden, mut stopped) = (0, 0, false);
+    while !(stopped && shown > 0 && hidden > 0) {
         match receive(&mut socket).await {
             Some(ServerMessage::Chunk { .. }) => shown += 1,
             Some(ServerMessage::ChunkHidden { .. }) => hidden += 1,
             Some(ServerMessage::BodyStopped { body: who, at }) if who == body => {
                 assert_eq!(tile(at), far);
-                break;
+                stopped = true;
             }
             Some(_) => {}
             None => panic!("disconnected"),
         }
     }
-    assert!(shown > 0 && hidden > 0, "shown {shown}, hidden {hidden}");
 }
 
 #[tokio::test]
@@ -1170,9 +1487,11 @@ async fn wait_for<T>(socket: &mut Socket, mut pick: impl FnMut(&ServerMessage) -
 #[tokio::test]
 async fn the_pilot_is_told_how_its_body_fares_and_nobody_else() {
     // One game day per real second: hunger climbs a point every 30 ms.
+    // The view is not waited for: its chunks leave after the conditions
+    // of the moment, and a loaded machine would let the first ones by.
     let server = Server::start();
-    let (mut pilot, body) = join(&server).await;
-    let (mut other, other_body) = join(&server).await;
+    let (mut pilot, body) = welcome(&server).await;
+    let (mut other, other_body) = welcome(&server).await;
     let body = body.expect("pilots body 1");
     let other_body = other_body.expect("pilots body 2");
 
@@ -1339,7 +1658,9 @@ async fn a_starved_body_dies_and_its_pilot_is_given_another_or_watches() {
     // Days of one second, run fifty times faster: a body starves in well
     // under a real second.
     let server = Server::start_with(&["--time-scale", "50"]);
-    let (mut pilot, body) = join(&server).await;
+    // The death may come while the view is still arriving (it leaves
+    // before the ground): the view is not waited for.
+    let (mut pilot, body) = welcome(&server).await;
     let body = body.expect("pilots body 1");
 
     let cause = wait_for(&mut pilot, |m| match m {

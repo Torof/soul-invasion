@@ -8,6 +8,7 @@
 pub mod cli;
 pub mod content;
 pub mod net;
+pub mod pool;
 pub mod run;
 pub mod storage;
 

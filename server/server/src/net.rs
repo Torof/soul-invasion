@@ -17,7 +17,7 @@
 //! latest intention per tick, so a flooding client costs one path search
 //! per tick and bothers nobody else.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -33,6 +33,8 @@ use protocol::{
 use sim::ground::Ground;
 use sim::lru::Lru;
 use sim::{BodyId, CHUNK_SIZE, ChunkPos, Content, FinePos, Intention, ItemId, Map, Pos, World};
+
+use crate::pool::ChunkPool;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio_tungstenite::WebSocketStream;
@@ -73,9 +75,27 @@ pub const PLANT_CACHE_CHUNKS: usize = {
     4 * side * side
 };
 
-/// How many published messages a slow client may fall behind before it
-/// starts missing some.
-const BROADCAST_CAPACITY: usize = 256;
+/// How many published messages a connection may fall behind before it
+/// misses some and is told its view again ([`Link::resync`]). A
+/// connection falls behind only when its task is starved of the network
+/// threads: it never waits on the wire nor builds chunks itself since
+/// the chunk pool (11 November 2026); it was 256.
+const BROADCAST_CAPACITY: usize = 1024;
+
+/// Messages handed to a connection's writer task ahead of the wire, at
+/// most: one, so an event never waits behind more than one chunk frame.
+const WRITER_AHEAD: usize = 1;
+
+/// Events a connection may have waiting to leave before it is judged
+/// too slow to be shown the world and disconnected: a few hundred
+/// kilobytes, minutes of play at today's rates. Events are never dropped
+/// (a world with holes in it is worse than a lost connection); chunk
+/// frames no longer in view are.
+pub const EVENT_QUEUE_LIMIT: usize = 8192;
+
+/// Deaths remembered, the latest kept, to tell a connection that fell
+/// behind of its own body's death with the cause (the rest only leave).
+const DEATHS_REMEMBERED: usize = 256;
 
 /// How many private messages (refusals) a pilot may have waiting before
 /// new ones are dropped.
@@ -148,6 +168,8 @@ pub enum Published {
     ItemAdded {
         /// The item.
         item: ItemState,
+        /// The version of its chunk's items after it.
+        version: u64,
     },
     /// An item vanished from the ground.
     ItemRemoved {
@@ -155,6 +177,8 @@ pub enum Published {
         item: u64,
         /// Where it was.
         at: Pos,
+        /// The version of its chunk's items after it.
+        version: u64,
     },
     /// A body changed what it holds in hand.
     BodyHolds {
@@ -218,17 +242,23 @@ pub struct Shared {
     plants: Mutex<Lru<ChunkPos, Arc<[PlantState]>>>,
     /// Is it night? Kept by the simulation thread.
     pub night: AtomicBool,
+    /// The current game day, kept by the simulation thread.
+    pub day: AtomicU64,
+    /// The latest deaths and their cause, for a connection that fell
+    /// behind the world while its own body died.
+    deaths: Mutex<Lru<u32, DeathCause>>,
     /// Simulation ticks per game second.
     ticks_per_second: u32,
     /// Ticks per game day.
     ticks_per_day: u64,
     /// How many times faster than real time the server runs, in thousandths.
     time_scale_permille: u32,
-    /// The stored items on the ground, by chunk, kept by the simulation
-    /// thread. The ground's natural ones are not here: they are made again
-    /// each time a chunk is sent ([`sim::items`]), so this holds what was
-    /// dropped, never the land visited (D39).
-    items: Mutex<BTreeMap<ChunkPos, Vec<ItemState>>>,
+    /// The stored items on the ground, by chunk, and each chunk's items
+    /// version, kept by the simulation thread. The ground's natural ones
+    /// are not here: they are made again each time a chunk is sent
+    /// ([`sim::items`]), so this holds what was dropped, never the land
+    /// visited (D39).
+    items: Mutex<Items>,
     /// What the ground's natural items are made from: whether this world
     /// has them, the spawn rules, the seed.
     natural: Option<(Vec<sim::content::Spawn>, u64)>,
@@ -319,6 +349,44 @@ impl Bodies {
                 .collect()
         })
     }
+}
+
+/// The items dropped on the ground, by chunk, and how many times each
+/// chunk's items changed: a connection sent a chunk at a version, then
+/// each item event, knows its client holds that chunk's items right; one
+/// that fell behind compares and sends again what differs.
+#[derive(Debug, Default)]
+struct Items {
+    stored: BTreeMap<ChunkPos, Vec<ItemState>>,
+    /// Absent means 0. Grows with the chunks where something was dropped
+    /// or taken, never with the land visited.
+    versions: BTreeMap<ChunkPos, u64>,
+}
+
+impl Items {
+    /// Counts a change to `chunk`'s items; the new version.
+    fn changed(&mut self, chunk: ChunkPos) -> u64 {
+        let version = self.versions.entry(chunk).or_insert(0);
+        *version += 1;
+        *version
+    }
+}
+
+/// What the map and the seed give a chunk, built on the chunk pool: the
+/// ground, the trees, the plants, the currents, the natural items. What
+/// changes on it (the bodies standing there, the items taken or dropped)
+/// is added as the frame leaves ([`Shared::chunk_message_of`]), so that
+/// it is as fresh as the events around it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkGround {
+    /// Which chunk.
+    pub chunk: ChunkPos,
+    tiles: Vec<Terrain>,
+    trees: Vec<TreeState>,
+    plants: Vec<PlantState>,
+    currents: Vec<u16>,
+    /// The ground's natural items, none taken out yet.
+    natural: Vec<ItemState>,
 }
 
 /// Tiles each cell of the development overview stands for, either way,
@@ -456,17 +524,21 @@ impl Shared {
             })
             .collect();
         let (flora, flora_wire) = flora_views(content);
-        let mut items: BTreeMap<ChunkPos, Vec<ItemState>> = BTreeMap::new();
+        let mut items = Items::default();
         for item in world.items() {
             let Some(pos) = item.pos() else {
                 continue; // carried: not on the ground
             };
-            items.entry(pos.chunk()).or_default().push(ItemState {
-                id: item.id().0,
-                x: pos.x,
-                y: pos.y,
-                material: item.material().to_owned(),
-            });
+            items
+                .stored
+                .entry(pos.chunk())
+                .or_default()
+                .push(ItemState {
+                    id: item.id().0,
+                    x: pos.x,
+                    y: pos.y,
+                    material: item.material().to_owned(),
+                });
         }
         let mut bodies = Bodies::default();
         for b in world.bodies() {
@@ -497,6 +569,8 @@ impl Shared {
             seed: world.seed(),
             plants: Mutex::new(Lru::new(PLANT_CACHE_CHUNKS)),
             night: AtomicBool::new(world.is_night(content)),
+            day: AtomicU64::new(world.time().day),
+            deaths: Mutex::new(Lru::new(DEATHS_REMEMBERED)),
             ticks_per_second: world.calendar().ticks_per_second(),
             ticks_per_day: world.calendar().ticks_per_day(),
             time_scale_permille: permille(time_scale),
@@ -571,23 +645,59 @@ impl Shared {
         changed
     }
 
-    /// Forgets a dead body; returns the tile it died on, if it was known.
-    pub fn body_died(&self, body: BodyId) -> Option<Pos> {
+    /// Forgets a dead body, remembering of what it died; returns the
+    /// tile it died on, if it was known.
+    pub fn body_died(&self, body: BodyId, cause: DeathCause) -> Option<Pos> {
+        self.deaths
+            .lock()
+            .expect("deaths not poisoned")
+            .insert(body.0, cause);
         self.bodies().remove(body.0).map(|state| tile_of(state.at))
     }
 
-    /// Records an item lying on the ground.
-    pub fn item_added(&self, item: ItemState) {
+    /// What `body` died of, if it died lately.
+    pub fn death_of(&self, body: u32) -> Option<DeathCause> {
+        self.deaths
+            .lock()
+            .expect("deaths not poisoned")
+            .get(&body)
+            .copied()
+    }
+
+    /// Records that a day began.
+    pub fn day_started(&self, day: u64) {
+        self.day.store(day, Ordering::Relaxed);
+        self.night.store(false, Ordering::Relaxed);
+    }
+
+    /// Records that night fell.
+    pub fn night_fell(&self) {
+        self.night.store(true, Ordering::Relaxed);
+    }
+
+    /// Records an item lying on the ground; the new version of its
+    /// chunk's items.
+    pub fn item_added(&self, item: ItemState) -> u64 {
+        let chunk = Pos::new(item.x, item.y).chunk();
+        let mut items = self.items.lock().expect("items not poisoned");
+        items.stored.entry(chunk).or_default().push(item);
+        items.changed(chunk)
+    }
+
+    /// How many times `chunk`'s items changed.
+    pub fn items_version(&self, chunk: ChunkPos) -> u64 {
         self.items
             .lock()
             .expect("items not poisoned")
-            .entry(Pos::new(item.x, item.y).chunk())
-            .or_default()
-            .push(item);
+            .versions
+            .get(&chunk)
+            .copied()
+            .unwrap_or(0)
     }
 
-    /// Forgets an item that was on the ground.
-    pub fn item_removed(&self, item: ItemId, at: Pos) {
+    /// Forgets an item that was on the ground; the new version of its
+    /// chunk's items.
+    pub fn item_removed(&self, item: ItemId, at: Pos) -> u64 {
         // Held while the item goes, as `ground_items` holds it while it
         // gathers a chunk's: a chunk sent at the same moment sees the item
         // either there or gone, never twice.
@@ -598,14 +708,11 @@ impl Shared {
         if sim::items::is_natural(item) {
             taken.insert(item);
         }
-        if let Some(items) = self
-            .items
-            .lock()
-            .expect("items not poisoned")
-            .get_mut(&at.chunk())
-        {
-            items.retain(|i| i.id != item.0);
+        let mut items = self.items.lock().expect("items not poisoned");
+        if let Some(stored) = items.stored.get_mut(&at.chunk()) {
+            stored.retain(|i| i.id != item.0);
         }
+        items.changed(at.chunk())
     }
 
     /// Records that a body stopped exactly there.
@@ -735,45 +842,64 @@ impl Shared {
         .chunk()
     }
 
-    /// The message carrying a chunk and the bodies in it.
-    fn chunk_message(&self, chunk: ChunkPos) -> Option<ServerMessage> {
+    /// The message carrying a chunk and the bodies in it: its ground as
+    /// the pool builds it, finished now.
+    pub fn chunk_message(&self, chunk: ChunkPos) -> Option<ServerMessage> {
+        self.chunk_ground(chunk)
+            .map(|ground| self.chunk_message_of(ground).0)
+    }
+
+    /// What the map and the seed give `chunk`, as the pool builds it:
+    /// no lock the simulation thread takes is held while the plants are
+    /// placed (D29). `None` off the map.
+    pub fn chunk_ground(&self, chunk: ChunkPos) -> Option<ChunkGround> {
         let tiles = self.map.chunk(chunk)?;
-        // Gathered first, in a statement of its own: a lock taken inside
-        // the message's literal would stay held to the literal's end, and
-        // the simulation thread would wait on it while the plants are
-        // placed (D29).
-        let items = self.ground_items(chunk);
-        Some(ServerMessage::Chunk {
-            x: chunk.x,
-            y: chunk.y,
+        Some(ChunkGround {
+            chunk,
             tiles: tiles.into_iter().map(terrain_view).collect(),
-            bodies: self.bodies_in(chunk),
-            items,
             trees: self.trees_in(chunk),
             plants: self.plants_in(chunk),
             currents: self.map.chunk_currents(chunk)?,
+            natural: self.natural_items(chunk),
         })
     }
 
-    /// The items lying in `chunk`: the ground's natural ones, made again
-    /// from the seed and the spawn rules ([`sim::items`]), those taken
-    /// excepted, then the stored ones.
-    fn ground_items(&self, chunk: ChunkPos) -> Vec<ItemState> {
-        // Made outside any lock.
-        let natural = self
-            .natural
-            .as_ref()
-            .map(|(spawns, seed)| sim::items::natural_items(&self.map, spawns, *seed, chunk))
-            .unwrap_or_default();
-        // Filtered and gathered under the lock `item_removed` holds, so an
-        // item taken meanwhile shows either here or nowhere.
-        let taken = self
-            .natural_taken
-            .lock()
-            .expect("natural items not poisoned");
-        let mut items: Vec<ItemState> = natural
+    /// The message carrying a chunk's ground and what stands and lies on
+    /// it now, with the version of its items it carries.
+    pub fn chunk_message_of(&self, ground: ChunkGround) -> (ServerMessage, u64) {
+        let ChunkGround {
+            chunk,
+            tiles,
+            trees,
+            plants,
+            currents,
+            natural,
+        } = ground;
+        // Gathered first, in a statement of its own: a lock taken inside
+        // the message's literal would stay held to the literal's end.
+        let (items, version) = self.ground_items(chunk, natural);
+        let message = ServerMessage::Chunk {
+            x: chunk.x,
+            y: chunk.y,
+            tiles,
+            bodies: self.bodies_in(chunk),
+            items,
+            trees,
+            plants,
+            currents,
+        };
+        (message, version)
+    }
+
+    /// The ground's natural items in `chunk`, made again from the seed
+    /// and the spawn rules ([`sim::items`]) on the pool, none taken out:
+    /// what the seed gives, whoever took what since.
+    fn natural_items(&self, chunk: ChunkPos) -> Vec<ItemState> {
+        let Some((spawns, seed)) = &self.natural else {
+            return Vec::new();
+        };
+        sim::items::natural_items(&self.map, spawns, *seed, chunk)
             .into_iter()
-            .filter(|i| !taken.contains(&i.id()))
             .filter_map(|i| {
                 let pos = i.pos()?;
                 Some(ItemState {
@@ -783,14 +909,34 @@ impl Shared {
                     material: i.material().to_owned(),
                 })
             })
+            .collect()
+    }
+
+    /// The items lying in `chunk`: its `natural` ones, those taken
+    /// excepted, then the stored ones; and the version of the chunk's
+    /// items.
+    fn ground_items(&self, chunk: ChunkPos, natural: Vec<ItemState>) -> (Vec<ItemState>, u64) {
+        // Filtered and gathered under the lock `item_removed` holds, so an
+        // item taken meanwhile shows either here or nowhere.
+        let taken = self
+            .natural_taken
+            .lock()
+            .expect("natural items not poisoned");
+        let mut items: Vec<ItemState> = natural
+            .into_iter()
+            .filter(|i| !taken.contains(&ItemId(i.id)))
             .collect();
-        if let Some(stored) = self.items.lock().expect("items not poisoned").get(&chunk) {
-            items.extend(stored.iter().cloned());
-        }
+        let version = {
+            let stored = self.items.lock().expect("items not poisoned");
+            if let Some(stored) = stored.stored.get(&chunk) {
+                items.extend(stored.iter().cloned());
+            }
+            stored.versions.get(&chunk).copied().unwrap_or(0)
+        };
         drop(taken);
         // In the order of their ids, as the simulation lists them.
         items.sort_by_key(|i| i.id);
-        items
+        (items, version)
     }
 
     /// The trees standing in `chunk`, placed from the map and the seed
@@ -946,6 +1092,11 @@ impl View {
         self.chunks.contains(&pos.chunk())
     }
 
+    /// Is this chunk inside the view?
+    pub fn contains_chunk(&self, chunk: ChunkPos) -> bool {
+        self.chunks.contains(&chunk)
+    }
+
     /// Chunks held.
     pub fn len(&self) -> usize {
         self.chunks.len()
@@ -993,10 +1144,12 @@ fn terrain_view(terrain: sim::Terrain) -> Terrain {
     }
 }
 
-/// Accepts connections until `shutdown` becomes true.
+/// Accepts connections until `shutdown` becomes true. Every connection
+/// builds its chunks on `pool`.
 pub async fn serve(
     listener: TcpListener,
     shared: Arc<Shared>,
+    pool: Arc<ChunkPool>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     loop {
@@ -1004,6 +1157,7 @@ pub async fn serve(
             accepted = listener.accept() => match accepted {
                 Ok((stream, peer)) => {
                     let shared = Arc::clone(&shared);
+                    let pool = Arc::clone(&pool);
                     let shutdown = shutdown.clone();
                     tokio::spawn(async move {
                         let Some(_admission) = shared.admit() else {
@@ -1012,7 +1166,7 @@ pub async fn serve(
                             eprintln!("connection {peer}: refused, {} connections already", shared.max_connections);
                             return;
                         };
-                        if let Err(e) = handle_connection(stream, peer, &shared, shutdown).await {
+                        if let Err(e) = handle_connection(stream, peer, &shared, &pool, shutdown).await {
                             eprintln!("connection {peer}: {e}");
                         }
                         println!("connection {peer}: closed");
@@ -1030,12 +1184,12 @@ pub async fn serve(
 }
 
 /// The body a connection pilots, given back when the connection ends.
-struct Pilot<'a> {
-    shared: &'a Shared,
+struct Pilot {
+    shared: Arc<Shared>,
     body: Option<u32>,
 }
 
-impl Drop for Pilot<'_> {
+impl Drop for Pilot {
     fn drop(&mut self) {
         if let Some(body) = self.body {
             self.shared.release_body(body);
@@ -1047,7 +1201,8 @@ impl Drop for Pilot<'_> {
 async fn handle_connection(
     stream: TcpStream,
     peer: SocketAddr,
-    shared: &Shared,
+    shared: &Arc<Shared>,
+    pool: &Arc<ChunkPool>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), BoxError> {
     let config = WebSocketConfig::default()
@@ -1066,8 +1221,11 @@ async fn handle_connection(
     let mut published = shared.publish.subscribe();
     let (private_tx, mut private) = mpsc::channel(PRIVATE_CAPACITY);
 
-    let pilot = Pilot { shared, body: None };
-    let Some(mut pilot) = handshake(&mut ws, pilot, private_tx.clone()).await? else {
+    let pilot = Pilot {
+        shared: Arc::clone(shared),
+        body: None,
+    };
+    let Some(pilot) = handshake(&mut ws, pilot, private_tx.clone()).await? else {
         ws.close(None).await?;
         return Ok(());
     };
@@ -1076,86 +1234,584 @@ async fn handle_connection(
         None => println!("connection {peer}: watching, no free body"),
     }
 
-    send(
-        &mut ws,
-        &ServerMessage::WorldState {
-            width: shared.map.width(),
-            height: shared.map.height(),
-            chunk_size: CHUNK_SIZE,
-            materials: shared.materials.clone(),
-            species: shared.species.clone(),
-            flora: shared.flora.clone(),
-            night: shared.night.load(Ordering::Relaxed),
-            clock: shared.clock(),
-        },
-    )
-    .await?;
+    // From here on the socket is written by a task of its own, one
+    // message at a time from the link's queue, so this task never waits
+    // on the wire: it keeps reading the client and the world.
+    let (mut sink, mut reader) = ws.split();
+    let (writer_tx, mut writer_rx) = mpsc::channel::<Message>(WRITER_AHEAD);
+    let writer = tokio::spawn(async move {
+        while let Some(message) = writer_rx.recv().await {
+            if sink.send(message).await.is_err() {
+                return;
+            }
+        }
+        let _ = sink.close().await;
+    });
+    let (results_tx, mut results) = mpsc::unbounded_channel();
+    let mut link = Link::new(
+        Arc::clone(shared),
+        Arc::clone(pool),
+        peer,
+        pilot,
+        private_tx,
+        results_tx,
+    );
+
+    link.event(&ServerMessage::WorldState {
+        width: shared.map.width(),
+        height: shared.map.height(),
+        chunk_size: CHUNK_SIZE,
+        materials: shared.materials.clone(),
+        species: shared.species.clone(),
+        flora: shared.flora.clone(),
+        night: shared.night.load(Ordering::Relaxed),
+        clock: shared.clock(),
+    });
     if let Some(overview) = &shared.dev_overview {
-        send(&mut ws, overview).await?;
+        link.event(overview);
     }
 
     // The view starts around the piloted body, or the middle of the map.
-    let centre = pilot
-        .body
-        .and_then(|body| shared.position_of(body))
-        .map_or_else(|| shared.centre_chunk(), Pos::chunk);
-    let mut view = View::default();
-    move_view(&mut ws, shared, &mut view, centre).await?;
-    send(&mut ws, &far_view(&shared.map, centre)).await?;
-    view.far = Some(centre);
+    let centre = link.home();
+    link.move_view(centre);
+    link.far_view(centre);
 
-    loop {
-        tokio::select! {
-            incoming = ws.next() => match incoming {
-                None | Some(Ok(Message::Close(_))) => return Ok(()),
-                Some(Err(e)) => return Err(e.into()),
-                Some(Ok(Message::Text(text))) => match decode::<ClientMessage>(text.as_str()) {
-                    Ok(ClientMessage::Ping { nonce }) => {
-                        send(&mut ws, &ServerMessage::Pong { nonce }).await?;
-                    }
-                    Ok(ClientMessage::Hello { .. }) => {
-                        // A second hello is a client bug; drop the connection.
-                        ws.close(None).await?;
-                        return Ok(());
-                    }
-                    Ok(ClientMessage::DevTeleport { .. }) if !shared.is_dev() => {
-                        eprintln!("connection {peer}: teleport refused, the server is not in --dev");
-                    }
-                    Ok(message) => {
-                        if let Some(body) = pilot.body {
-                            shared.intend(intention_of(BodyId(body), &message));
+    let outcome: Result<(), BoxError> = async {
+        loop {
+            // Checked here, not as the queue leaves: a client whose wire
+            // is stuck takes nothing off it.
+            link.check_pace()?;
+            tokio::select! {
+                incoming = reader.next() => match incoming {
+                    None | Some(Ok(Message::Close(_))) => return Ok(()),
+                    Some(Err(e)) => return Err(e.into()),
+                    Some(Ok(Message::Text(text))) => match decode::<ClientMessage>(text.as_str()) {
+                        Ok(ClientMessage::Ping { nonce }) => {
+                            link.event(&ServerMessage::Pong { nonce });
+                        }
+                        Ok(ClientMessage::Hello { .. }) => {
+                            // A second hello is a client bug; drop the connection.
+                            return Ok(());
+                        }
+                        Ok(ClientMessage::DevTeleport { .. }) if !shared.is_dev() => {
+                            eprintln!("connection {peer}: teleport refused, the server is not in --dev");
+                        }
+                        Ok(message) => {
+                            if let Some(body) = link.pilot.body {
+                                shared.intend(intention_of(BodyId(body), &message));
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("connection {peer}: undecodable message ignored: {e}");
+                        }
+                    },
+                    // Binary frames are not part of the protocol; ping/pong frames
+                    // are handled by the WebSocket layer itself.
+                    Some(Ok(_)) => {}
+                },
+                message = published.recv() => match message {
+                    Ok(published) => {
+                        if link.forward(published) {
+                            link.reassign();
                         }
                     }
-                    Err(e) => {
-                        eprintln!("connection {peer}: undecodable message ignored: {e}");
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        // What the channel still holds is forwarded first,
+                        // late but whole; then the view is told again, newer
+                        // than everything sent before it.
+                        let mut skipped = skipped;
+                        loop {
+                            use broadcast::error::TryRecvError;
+                            match published.try_recv() {
+                                Ok(published) => {
+                                    if link.forward(published) {
+                                        link.reassign();
+                                    }
+                                }
+                                Err(TryRecvError::Lagged(more)) => skipped += more,
+                                Err(TryRecvError::Empty | TryRecvError::Closed) => break,
+                            }
+                        }
+                        link.resync(skipped);
                     }
+                    Err(broadcast::error::RecvError::Closed) => return Ok(()),
                 },
-                // Binary frames are not part of the protocol; ping/pong frames
-                // are handled by the WebSocket layer itself.
-                Some(Ok(_)) => {}
-            },
-            message = published.recv() => match message {
-                Ok(published) => {
-                    let own_death = forward(&mut ws, shared, pilot.body, &mut view, published).await?;
-                    if own_death {
-                        reassign(&mut ws, shared, &mut pilot, &mut view, &private_tx, peer).await?;
+                // The sender lives in the pilot set as long as this connection
+                // pilots a body, so the channel never closes before the loop ends.
+                Some(message) = private.recv() => link.event(&message),
+                Some(ground) = results.recv() => link.ground_built(ground),
+                permit = writer_tx.reserve(), if link.has_output() => match permit {
+                    Ok(permit) => {
+                        let Some(message) = link.next_output()? else {
+                            continue;
+                        };
+                        permit.send(message);
+                    }
+                    // The writer stopped: the socket is gone.
+                    Err(_) => return Ok(()),
+                },
+                _ = shutdown.changed() => return Ok(()),
+            }
+        }
+    }
+    .await;
+    // Let the writer send what it holds and the close frame.
+    drop(link);
+    drop(writer_tx);
+    let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
+    outcome
+}
+
+/// What a connection has to send: the lane a message goes in.
+enum Outgoing {
+    /// A chunk built on the pool, finished with what stands and lies in
+    /// it when it leaves.
+    Chunk(ChunkGround),
+    /// A message as is (the far view).
+    Frame(Message),
+}
+
+/// A connection past its handshake: what its client holds, what waits to
+/// go out, and how the chunks it asks for come back.
+///
+/// Two lanes feed the writer task (its inbox holds [`WRITER_AHEAD`]
+/// message), the first always before the second:
+/// **events** (what the world published, pongs, refusals, hidden chunks),
+/// then the **ground** (chunk frames, the far view). A burst of 361
+/// chunks never holds back a body walking or a day starting. The ground
+/// lane is bounded by the view itself: a chunk is asked for once per
+/// showing, and a chunk no longer in view is dropped from the lane,
+/// never built nor sent. The events lane is not dropped from: a client
+/// that lets [`EVENT_QUEUE_LIMIT`] events pile up is disconnected rather
+/// than shown a world with holes in it.
+struct Link {
+    shared: Arc<Shared>,
+    pool: Arc<ChunkPool>,
+    peer: SocketAddr,
+    /// This connection's lane in the pool.
+    lane: u64,
+    pilot: Pilot,
+    /// The channel for messages meant for this pilot alone.
+    private: mpsc::Sender<ServerMessage>,
+    /// The chunks held (asked for or sent), and where the far view was
+    /// last centred.
+    view: View,
+    /// The chunks held, as the pool's jobs read them: a job for a chunk
+    /// no longer here does nothing.
+    wanted: Arc<Mutex<BTreeSet<ChunkPos>>>,
+    /// The chunks in view whose frame has not left yet.
+    awaiting: BTreeSet<ChunkPos>,
+    /// The chunks whose frame left: what the client holds.
+    sent: BTreeSet<ChunkPos>,
+    /// For each chunk sent, the version of its items the client knows
+    /// (that of the frame, then of each item event forwarded).
+    item_versions: BTreeMap<ChunkPos, u64>,
+    /// The bodies the client was told of and not told to forget.
+    known: BTreeSet<u32>,
+    /// The events lane, encoded.
+    events: VecDeque<Message>,
+    /// The ground lane.
+    ground: VecDeque<Outgoing>,
+    /// Where the pool's jobs send what they built.
+    results: mpsc::UnboundedSender<ChunkGround>,
+}
+
+impl Drop for Link {
+    fn drop(&mut self) {
+        // The jobs still waiting in the lane find nothing wanted and
+        // build nothing for a connection that is gone.
+        self.wanted.lock().expect("wanted not poisoned").clear();
+    }
+}
+
+impl Link {
+    fn new(
+        shared: Arc<Shared>,
+        pool: Arc<ChunkPool>,
+        peer: SocketAddr,
+        pilot: Pilot,
+        private: mpsc::Sender<ServerMessage>,
+        results: mpsc::UnboundedSender<ChunkGround>,
+    ) -> Self {
+        let lane = pool.lane();
+        Self {
+            shared,
+            pool,
+            peer,
+            lane,
+            pilot,
+            private,
+            view: View::default(),
+            wanted: Arc::default(),
+            awaiting: BTreeSet::new(),
+            sent: BTreeSet::new(),
+            item_versions: BTreeMap::new(),
+            known: BTreeSet::new(),
+            events: VecDeque::new(),
+            ground: VecDeque::new(),
+            results,
+        }
+    }
+
+    /// The chunk the view centres on: the piloted body's, or the middle
+    /// of the map for a watcher.
+    fn home(&self) -> ChunkPos {
+        self.pilot
+            .body
+            .and_then(|body| self.shared.position_of(body))
+            .map_or_else(|| self.shared.centre_chunk(), Pos::chunk)
+    }
+
+    /// Queues `message` in the events lane.
+    fn event(&mut self, message: &ServerMessage) {
+        match encode(message) {
+            Ok(text) => self.events.push_back(Message::text(text)),
+            Err(e) => eprintln!(
+                "connection {}: a message could not be encoded: {e}",
+                self.peer
+            ),
+        }
+    }
+
+    /// An error once the client let more than [`EVENT_QUEUE_LIMIT`]
+    /// events pile up: too slow to be shown the world.
+    fn check_pace(&self) -> Result<(), BoxError> {
+        if self.events.len() > EVENT_QUEUE_LIMIT {
+            return Err(format!(
+                "too slow: {} events waiting, more than {EVENT_QUEUE_LIMIT}",
+                self.events.len()
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// Is there anything to write?
+    fn has_output(&self) -> bool {
+        !self.events.is_empty() || !self.ground.is_empty()
+    }
+
+    /// The next message for the writer: an event before any ground. A
+    /// chunk is finished here, as it leaves, with the bodies and items in
+    /// it at this moment: every event forwarded before it is older than
+    /// its snapshot and every one after it newer, as when the chunk was
+    /// built in line. `None` when nothing waits (a chunk was dropped from
+    /// the lane meanwhile); an error when a message cannot be encoded.
+    fn next_output(&mut self) -> Result<Option<Message>, BoxError> {
+        if let Some(message) = self.events.pop_front() {
+            return Ok(Some(message));
+        }
+        match self.ground.pop_front() {
+            None => Ok(None),
+            Some(Outgoing::Frame(message)) => Ok(Some(message)),
+            Some(Outgoing::Chunk(ground)) => {
+                let chunk = ground.chunk;
+                let (message, version) = self.shared.chunk_message_of(ground);
+                if let ServerMessage::Chunk { bodies, .. } = &message {
+                    self.known.extend(bodies.iter().map(|b| b.id));
+                }
+                self.sent.insert(chunk);
+                self.item_versions.insert(chunk, version);
+                Ok(Some(Message::text(encode(&message)?)))
+            }
+        }
+    }
+
+    /// A chunk the pool built: into the ground lane if still in view and
+    /// not sent meanwhile, else dropped.
+    fn ground_built(&mut self, ground: ChunkGround) {
+        if self.view.chunks.contains(&ground.chunk) && self.awaiting.remove(&ground.chunk) {
+            self.ground.push_back(Outgoing::Chunk(ground));
+        }
+    }
+
+    /// Asks the pool for `chunk`'s ground, nearest the body first in the
+    /// order called.
+    fn ask(&mut self, chunk: ChunkPos) {
+        if !self.awaiting.insert(chunk) {
+            return; // already asked for, not back yet
+        }
+        let (shared, wanted, results) = (
+            Arc::clone(&self.shared),
+            Arc::clone(&self.wanted),
+            self.results.clone(),
+        );
+        self.pool.submit(
+            self.lane,
+            Box::new(move || {
+                if !wanted.lock().expect("wanted not poisoned").contains(&chunk) {
+                    return; // left the view before its turn came
+                }
+                if let Some(ground) = shared.chunk_ground(chunk) {
+                    let _ = results.send(ground);
+                }
+            }),
+        );
+    }
+
+    /// Moves the view to `centre`, telling the client: chunks no longer
+    /// held hidden (those it has), new ones asked of the pool, nearest
+    /// the centre first.
+    fn move_view(&mut self, centre: ChunkPos) {
+        let (mut shown, hidden) = self.view.recentre(&self.shared.map, centre);
+        self.wanted
+            .lock()
+            .expect("wanted not poisoned")
+            .clone_from(&self.view.chunks);
+        shown.sort_by_key(|c| ((c.x - centre.x).pow(2) + (c.y - centre.y).pow(2), c.y, c.x));
+        for chunk in hidden {
+            self.awaiting.remove(&chunk);
+            self.ground
+                .retain(|out| !matches!(out, Outgoing::Chunk(g) if g.chunk == chunk));
+            // Only what the client holds is hidden; a chunk never sent is
+            // only forgotten here.
+            if self.sent.remove(&chunk) {
+                self.item_versions.remove(&chunk);
+                self.event(&ServerMessage::ChunkHidden {
+                    x: chunk.x,
+                    y: chunk.y,
+                });
+            }
+        }
+        for chunk in shown {
+            self.ask(chunk);
+        }
+    }
+
+    /// Sends the far view around `centre`, in the ground lane.
+    fn far_view(&mut self, centre: ChunkPos) {
+        match encode(&far_view(&self.shared.map, centre)) {
+            Ok(text) => self.ground.push_back(Outgoing::Frame(Message::text(text))),
+            Err(e) => eprintln!(
+                "connection {}: the far view could not be encoded: {e}",
+                self.peer
+            ),
+        }
+        self.view.far = Some(centre);
+    }
+
+    /// Provisional (D34): a pilot whose body died takes the first free
+    /// body, or watches, and the view moves there.
+    fn reassign(&mut self) {
+        if let Some(dead) = self.pilot.body.take() {
+            self.shared.release_body(dead);
+        }
+        self.pilot.body = self.shared.take_body(self.private.clone());
+        match self.pilot.body {
+            Some(body) => println!("connection {}: now pilots body {body}", self.peer),
+            None => println!("connection {}: no free body, watching", self.peer),
+        }
+        self.event(&ServerMessage::BodyAssigned {
+            body: self.pilot.body,
+        });
+        let centre = self.home();
+        self.move_view(centre);
+    }
+
+    /// Forwards what the simulation published, as far as this
+    /// connection's view is concerned, moving the view along with the
+    /// piloted body. Returns true when the piloted body just died.
+    fn forward(&mut self, published: Published) -> bool {
+        let piloted = self.pilot.body;
+        match published {
+            Published::DayStarted { day, tick } => {
+                self.event(&ServerMessage::DayStarted { day, tick });
+            }
+            Published::NightFell { day } => {
+                self.event(&ServerMessage::NightFell { day });
+            }
+            Published::BodySleeps { body, at, asleep } => {
+                if self.view.contains(at) {
+                    self.event(&ServerMessage::BodySleeps { body, asleep });
+                }
+            }
+            Published::BodyDied { body, at, cause } => {
+                if self.view.contains(at) || Some(body) == piloted {
+                    self.known.remove(&body);
+                    self.event(&ServerMessage::BodyDied { body, cause });
+                }
+                return Some(body) == piloted;
+            }
+            Published::ItemAdded { item, version } => {
+                let chunk = Pos::new(item.x, item.y).chunk();
+                if self.view.contains_chunk(chunk) {
+                    self.item_changed(chunk, version);
+                    self.event(&ServerMessage::ItemAdded { item });
+                }
+            }
+            Published::ItemRemoved { item, at, version } => {
+                if self.view.contains(at) {
+                    self.item_changed(at.chunk(), version);
+                    self.event(&ServerMessage::ItemRemoved {
+                        item,
+                        x: at.x,
+                        y: at.y,
+                    });
+                }
+            }
+            Published::BodyHolds { body, at, item } => {
+                if self.view.contains(at) {
+                    self.event(&ServerMessage::BodyHolds { body, item });
+                }
+            }
+            Published::BodyWalks { body, from, tick } => {
+                if self.view.contains(from) {
+                    self.tell_walk(body, tick);
+                }
+            }
+            Published::BodyMoved {
+                body,
+                from,
+                to,
+                tick,
+            } => {
+                if Some(body) == piloted && from.chunk() != to.chunk() {
+                    self.move_view(to.chunk());
+                    // The far view again once the body has gone far enough
+                    // from where it was centred (a teleport, a long walk).
+                    let moved = self.view.far.is_none_or(|c| {
+                        (c.x - to.chunk().x).abs().max((c.y - to.chunk().y).abs()) > FAR_RESEND
+                    });
+                    if moved {
+                        self.far_view(to.chunk());
                     }
                 }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    eprintln!("connection {peer}: too slow, {n} message(s) skipped");
+                let (was_seen, is_seen) = (self.view.contains(from), self.view.contains(to));
+                if is_seen && !was_seen {
+                    // Walked into view: the client learns of it with its route.
+                    self.tell_walk(body, tick);
+                } else if was_seen && !is_seen {
+                    self.known.remove(&body);
+                    self.event(&ServerMessage::BodyLeft { body });
+                } else if is_seen
+                    && self.sent.contains(&to.chunk())
+                    && !self.sent.contains(&from.chunk())
+                {
+                    // Stepped from a chunk whose frame is still to leave
+                    // into one the client already holds: neither frame
+                    // carries it (the first will be taken after the step,
+                    // the second was taken before), so it is told here.
+                    self.tell_walk(body, tick);
                 }
-                Err(broadcast::error::RecvError::Closed) => {
-                    ws.close(None).await?;
-                    return Ok(());
-                }
-            },
-            // The sender lives in the pilot set as long as this connection
-            // pilots a body, so the channel never closes before the loop ends.
-            Some(message) = private.recv() => send(&mut ws, &message).await?,
-            _ = shutdown.changed() => {
-                ws.close(None).await?;
-                return Ok(());
             }
+            Published::BodyStopped { body, at } => {
+                if self.view.contains(at)
+                    && let Some(state) = self.shared.body_state(body)
+                {
+                    self.known.insert(body);
+                    self.event(&ServerMessage::BodyStopped { body, at: state.at });
+                }
+            }
+        }
+        false
+    }
+
+    /// Tells the client where `body` is and where it is going.
+    fn tell_walk(&mut self, body: u32, tick: u64) {
+        if let Some(state) = self.shared.body_state(body) {
+            self.known.insert(body);
+            self.event(&walks_message(&state, tick));
+        }
+    }
+
+    /// Notes that the client is told `chunk`'s items at `version`.
+    fn item_changed(&mut self, chunk: ChunkPos, version: u64) {
+        if let Some(known) = self.item_versions.get_mut(&chunk) {
+            *known = (*known).max(version);
+        }
+    }
+
+    /// The client fell behind the world by `skipped` published messages
+    /// it will never see: rather than a world with holes in it, it is
+    /// told again, with today's messages, the state of what it holds. The
+    /// day and whether it is night; each body standing in the chunks it
+    /// holds, with its route, sleep and hand, and the bodies it knew that
+    /// stand there no more; the chunks whose items changed, sent again
+    /// (the only message that carries a chunk's items); its own body's
+    /// death, and another body, if it died meanwhile.
+    fn resync(&mut self, skipped: u64) {
+        eprintln!(
+            "connection {}: {skipped} message(s) behind the world: its view told again",
+            self.peer
+        );
+        let shared = Arc::clone(&self.shared);
+        let clock = shared.clock();
+        // The tick is now, not the day's first: the client sets its clock
+        // by it.
+        let day = shared.day.load(Ordering::Relaxed);
+        self.event(&ServerMessage::DayStarted {
+            day,
+            tick: clock.tick,
+        });
+        if shared.night.load(Ordering::Relaxed) {
+            self.event(&ServerMessage::NightFell { day });
+        }
+
+        // The bodies in the chunks the client holds; those in chunks
+        // still to leave come with their frame.
+        let standing: BTreeMap<u32, BodyState> = self
+            .sent
+            .iter()
+            .flat_map(|&chunk| shared.bodies_in(chunk))
+            .map(|state| (state.id, state))
+            .collect();
+        let gone: Vec<u32> = self
+            .known
+            .iter()
+            .copied()
+            .filter(|id| !standing.contains_key(id))
+            .collect();
+        let own_death = self
+            .pilot
+            .body
+            .filter(|&body| shared.body_state(body).is_none());
+        for body in gone {
+            self.known.remove(&body);
+            if Some(body) == own_death {
+                continue; // told below, with its cause
+            }
+            self.event(&ServerMessage::BodyLeft { body });
+        }
+        for (id, state) in standing {
+            self.known.insert(id);
+            if state.route.is_empty() {
+                self.event(&ServerMessage::BodyStopped {
+                    body: id,
+                    at: state.at,
+                });
+            } else {
+                self.event(&walks_message(&state, clock.tick));
+            }
+            self.event(&ServerMessage::BodySleeps {
+                body: id,
+                asleep: state.asleep,
+            });
+            self.event(&ServerMessage::BodyHolds {
+                body: id,
+                item: state.holds.clone(),
+            });
+        }
+
+        // The chunks whose items the client may hold wrong: sent again.
+        let stale: Vec<ChunkPos> = self
+            .sent
+            .iter()
+            .copied()
+            .filter(|chunk| {
+                shared.items_version(*chunk) != self.item_versions.get(chunk).copied().unwrap_or(0)
+            })
+            .collect();
+        for chunk in stale {
+            self.ask(chunk);
+        }
+
+        if let Some(body) = own_death {
+            match shared.death_of(body) {
+                Some(cause) => self.event(&ServerMessage::BodyDied { body, cause }),
+                // Too long ago to be remembered: at least it leaves.
+                None => self.event(&ServerMessage::BodyLeft { body }),
+            }
+            self.reassign();
         }
     }
 }
@@ -1197,158 +1853,6 @@ fn intention_of(body: BodyId, message: &ClientMessage) -> Intention {
             unreachable!("handled before intentions")
         }
     }
-}
-
-/// Provisional (D34): a pilot whose body died takes the first free body,
-/// or watches, and the view moves there.
-async fn reassign(
-    ws: &mut WebSocketStream<TcpStream>,
-    shared: &Shared,
-    pilot: &mut Pilot<'_>,
-    view: &mut View,
-    private: &mpsc::Sender<ServerMessage>,
-    peer: SocketAddr,
-) -> Result<(), BoxError> {
-    if let Some(dead) = pilot.body.take() {
-        shared.release_body(dead);
-    }
-    pilot.body = shared.take_body(private.clone());
-    match pilot.body {
-        Some(body) => println!("connection {peer}: now pilots body {body}"),
-        None => println!("connection {peer}: no free body, watching"),
-    }
-    send(ws, &ServerMessage::BodyAssigned { body: pilot.body }).await?;
-    let centre = pilot
-        .body
-        .and_then(|body| shared.position_of(body))
-        .map_or_else(|| shared.centre_chunk(), Pos::chunk);
-    move_view(ws, shared, view, centre).await
-}
-
-/// Moves the view to `centre`, telling the client: chunks no longer held
-/// hidden, new ones in full, nearest the centre first.
-async fn move_view(
-    ws: &mut WebSocketStream<TcpStream>,
-    shared: &Shared,
-    view: &mut View,
-    centre: ChunkPos,
-) -> Result<(), BoxError> {
-    let (mut shown, hidden) = view.recentre(&shared.map, centre);
-    // Nearest the body first, so the ground around it is built first.
-    shown.sort_by_key(|c| ((c.x - centre.x).pow(2) + (c.y - centre.y).pow(2), c.y, c.x));
-    for chunk in hidden {
-        send(
-            ws,
-            &ServerMessage::ChunkHidden {
-                x: chunk.x,
-                y: chunk.y,
-            },
-        )
-        .await?;
-    }
-    for chunk in shown {
-        if let Some(message) = shared.chunk_message(chunk) {
-            send(ws, &message).await?;
-        }
-    }
-    Ok(())
-}
-
-/// Forwards what the simulation published, as far as this connection's
-/// view is concerned, moving the view along with the piloted body.
-/// Returns true when the piloted body just died.
-async fn forward(
-    ws: &mut WebSocketStream<TcpStream>,
-    shared: &Shared,
-    piloted: Option<u32>,
-    view: &mut View,
-    published: Published,
-) -> Result<bool, BoxError> {
-    match published {
-        Published::DayStarted { day, tick } => {
-            send(ws, &ServerMessage::DayStarted { day, tick }).await?;
-        }
-        Published::NightFell { day } => {
-            send(ws, &ServerMessage::NightFell { day }).await?;
-        }
-        Published::BodySleeps { body, at, asleep } => {
-            if view.contains(at) {
-                send(ws, &ServerMessage::BodySleeps { body, asleep }).await?;
-            }
-        }
-        Published::BodyDied { body, at, cause } => {
-            if view.contains(at) || Some(body) == piloted {
-                send(ws, &ServerMessage::BodyDied { body, cause }).await?;
-            }
-            return Ok(Some(body) == piloted);
-        }
-        Published::ItemAdded { item } => {
-            if view.contains(Pos::new(item.x, item.y)) {
-                send(ws, &ServerMessage::ItemAdded { item }).await?;
-            }
-        }
-        Published::ItemRemoved { item, at } => {
-            if view.contains(at) {
-                send(
-                    ws,
-                    &ServerMessage::ItemRemoved {
-                        item,
-                        x: at.x,
-                        y: at.y,
-                    },
-                )
-                .await?;
-            }
-        }
-        Published::BodyHolds { body, at, item } => {
-            if view.contains(at) {
-                send(ws, &ServerMessage::BodyHolds { body, item }).await?;
-            }
-        }
-        Published::BodyWalks { body, from, tick } => {
-            if view.contains(from)
-                && let Some(state) = shared.body_state(body)
-            {
-                send(ws, &walks_message(&state, tick)).await?;
-            }
-        }
-        Published::BodyMoved {
-            body,
-            from,
-            to,
-            tick,
-        } => {
-            if Some(body) == piloted && from.chunk() != to.chunk() {
-                move_view(ws, shared, view, to.chunk()).await?;
-                // The far view again once the body has gone far enough
-                // from where it was centred (a teleport, a long walk).
-                let moved = view.far.is_none_or(|c| {
-                    (c.x - to.chunk().x).abs().max((c.y - to.chunk().y).abs()) > FAR_RESEND
-                });
-                if moved {
-                    send(ws, &far_view(&shared.map, to.chunk())).await?;
-                    view.far = Some(to.chunk());
-                }
-            }
-            let (was_seen, is_seen) = (view.contains(from), view.contains(to));
-            if is_seen && !was_seen {
-                // Walked into view: the client learns of it with its route.
-                if let Some(state) = shared.body_state(body) {
-                    send(ws, &walks_message(&state, tick)).await?;
-                }
-            } else if was_seen && !is_seen {
-                send(ws, &ServerMessage::BodyLeft { body }).await?;
-            }
-        }
-        Published::BodyStopped { body, at } => {
-            if view.contains(at)
-                && let Some(state) = shared.body_state(body)
-            {
-                send(ws, &ServerMessage::BodyStopped { body, at: state.at }).await?;
-            }
-        }
-    }
-    Ok(false)
 }
 
 /// An act and a refusal as the wire says them.
@@ -1395,11 +1899,11 @@ fn walks_message(state: &BodyState, tick: u64) -> ServerMessage {
 
 /// Runs the hello/welcome exchange. Returns `Ok(None)` when the client
 /// must be disconnected (wrong version, wrong first message, or silence).
-async fn handshake<'a>(
+async fn handshake(
     ws: &mut WebSocketStream<TcpStream>,
-    mut pilot: Pilot<'a>,
+    mut pilot: Pilot,
     private: mpsc::Sender<ServerMessage>,
-) -> Result<Option<Pilot<'a>>, BoxError> {
+) -> Result<Option<Pilot>, BoxError> {
     let first = tokio::time::timeout(HANDSHAKE_TIMEOUT, ws.next()).await;
     let Ok(Some(Ok(Message::Text(text)))) = first else {
         return Ok(None);
@@ -1426,6 +1930,7 @@ async fn handshake<'a>(
     }
 }
 
+/// Sends `message` on a socket not yet split: the handshake.
 async fn send(
     ws: &mut WebSocketStream<TcpStream>,
     message: &ServerMessage,
@@ -1719,8 +2224,9 @@ mod tests {
             "no change the second time"
         );
         assert!(shared.body_state(1).unwrap().asleep);
-        assert_eq!(shared.body_died(BodyId(1)), Some(here));
-        assert_eq!(shared.body_died(BodyId(1)), None);
+        assert_eq!(shared.body_died(BodyId(1), DeathCause::Starved), Some(here));
+        assert_eq!(shared.body_died(BodyId(1), DeathCause::Froze), None);
+        assert_eq!(shared.death_of(1), Some(DeathCause::Froze));
         assert!(shared.body_state(1).is_none());
         let corpse = ItemState {
             id: 999,
@@ -1758,7 +2264,7 @@ mod tests {
             natural = natural.or_else(|| items.first().map(|i| (chunk, i.clone())));
         }
         // Sending the land held nothing: only the stored items are kept.
-        assert!(shared.items.lock().unwrap().is_empty());
+        assert!(shared.items.lock().unwrap().stored.is_empty());
         // One taken stays gone, sent again or not.
         let (chunk, item) = natural.expect("some natural item around the camp");
         assert!(sim::items::is_natural(ItemId(item.id)));
@@ -1825,6 +2331,243 @@ mod tests {
                 y: far.centre().y
             }
         );
+    }
+
+    /// A link as a connection past its handshake holds it, piloting
+    /// `body`, with the end its chunks come back on and the pool they
+    /// are built on; nothing on the wire.
+    fn link(
+        shared: &Arc<Shared>,
+        pool: &Arc<ChunkPool>,
+        body: Option<u32>,
+    ) -> (Link, mpsc::UnboundedReceiver<ChunkGround>) {
+        let (private, _) = mpsc::channel(PRIVATE_CAPACITY);
+        let (results, results_rx) = mpsc::unbounded_channel();
+        let pilot = Pilot {
+            shared: Arc::clone(shared),
+            body,
+        };
+        let peer = "127.0.0.1:1".parse().expect("an address");
+        let link = Link::new(
+            Arc::clone(shared),
+            Arc::clone(pool),
+            peer,
+            pilot,
+            private,
+            results,
+        );
+        (link, results_rx)
+    }
+
+    /// Hands the link every chunk the pool built for it until nothing
+    /// is awaited any more.
+    fn settle(link: &mut Link, results: &mut mpsc::UnboundedReceiver<ChunkGround>) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while !link.awaiting.is_empty() {
+            if let Ok(ground) = results.try_recv() {
+                link.ground_built(ground);
+            } else {
+                assert!(std::time::Instant::now() < deadline, "the pool answers");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
+    /// Everything the link has to send, decoded, in the order it leaves.
+    fn drain(link: &mut Link) -> Vec<ServerMessage> {
+        let mut out = Vec::new();
+        while link.has_output() {
+            if let Some(Message::Text(text)) = link.next_output().expect("encodable") {
+                out.push(decode(text.as_str()).expect("the protocol"));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_chunk_built_on_the_pool_sends_the_bytes_of_one_built_in_line() {
+        let shared = Arc::new(shared(1));
+        let pool = ChunkPool::new(3);
+        let home = shared.position_of(1).expect("body 1").chunk();
+        // The body's own chunk among them: a frame carries the bodies.
+        let chunks: Vec<ChunkPos> = std::iter::once(home)
+            .chain(View::window(&shared.map, home).into_iter().take(29))
+            .collect();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let lane = pool.lane();
+        for &chunk in &chunks {
+            let (shared, tx) = (Arc::clone(&shared), tx.clone());
+            pool.submit(
+                lane,
+                Box::new(move || {
+                    tx.send(shared.chunk_ground(chunk).expect("on the map"))
+                        .unwrap();
+                }),
+            );
+        }
+        let mut with_bodies = 0;
+        for _ in &chunks {
+            let ground = rx.recv_timeout(Duration::from_secs(60)).expect("built");
+            let chunk = ground.chunk;
+            let (pooled, _) = shared.chunk_message_of(ground);
+            let inline = shared.chunk_message(chunk).expect("on the map");
+            assert_eq!(
+                encode(&pooled).unwrap(),
+                encode(&inline).unwrap(),
+                "{chunk:?}"
+            );
+            if let ServerMessage::Chunk { bodies, .. } = &pooled {
+                with_bodies += usize::from(!bodies.is_empty());
+            }
+        }
+        assert!(with_bodies >= 1, "the bodies are added as the frame leaves");
+    }
+
+    #[test]
+    fn events_leave_before_the_ground_and_a_hidden_chunk_never_leaves() {
+        let shared = Arc::new(shared(1));
+        // One thread: the chunks come back in the order asked for.
+        let pool = Arc::new(ChunkPool::new(1));
+        let (mut link, mut results) = link(&shared, &pool, Some(1));
+        let home = link.home();
+        link.move_view(home);
+        link.far_view(home);
+        link.event(&ServerMessage::Pong { nonce: 7 });
+        let total = link.view.len();
+        assert_eq!(link.awaiting.len(), total);
+        settle(&mut link, &mut results);
+
+        // The event first, then the far view (queued before any chunk
+        // came back), then the chunks, the body's own first.
+        let out = drain(&mut link);
+        assert_eq!(out.len(), total + 2);
+        assert!(matches!(out[0], ServerMessage::Pong { nonce: 7 }));
+        assert!(matches!(out[1], ServerMessage::FarView { .. }));
+        assert!(matches!(
+            &out[2],
+            ServerMessage::Chunk { x, y, bodies, .. }
+                if ChunkPos::new(*x, *y) == home && bodies.iter().any(|b| b.id == 1)
+        ));
+        assert_eq!(link.sent.len(), total);
+        assert!(link.known.contains(&1));
+
+        // The view moves: what the client holds and is out now is hidden,
+        // nothing out of view is built or sent, each chunk comes once.
+        let away = ChunkPos::new(home.x + VIEW_RADIUS + 3, home.y);
+        link.move_view(away);
+        let out = drain(&mut link);
+        let hidden = out.len();
+        assert!(hidden > 0);
+        assert!(out.iter().all(|m| matches!(
+            m,
+            ServerMessage::ChunkHidden { x, .. } if *x < away.x - VIEW_RADIUS
+        )));
+        assert_eq!(link.sent.len() + hidden, total);
+        // A chunk the pool finishes after it left the view is dropped.
+        let gone = shared.chunk_ground(home).expect("on the map");
+        link.ground_built(gone);
+        assert!(!link.has_output());
+        settle(&mut link, &mut results);
+        let out = drain(&mut link);
+        assert_eq!(
+            out.len(),
+            link.view.len() - (total - hidden),
+            "the new columns only"
+        );
+        assert!(out.iter().all(|m| matches!(
+            m,
+            ServerMessage::Chunk { x, .. } if *x > home.x + VIEW_RADIUS
+        )));
+        assert_eq!(link.sent, link.view.chunks);
+    }
+
+    #[test]
+    fn a_link_that_fell_behind_tells_its_view_again() {
+        let shared = Arc::new(shared(1));
+        let pool = Arc::new(ChunkPool::new(2));
+        let (mut link, mut results) = link(&shared, &pool, Some(1));
+        let home = link.home();
+        link.move_view(home);
+        settle(&mut link, &mut results);
+        drain(&mut link);
+        let known_before = link.known.clone();
+        assert!(known_before.len() >= 2, "the camp's bodies stand in view");
+
+        // Meanwhile, unseen: another body died and an item was dropped
+        // where body 1 stands.
+        let other = *known_before
+            .iter()
+            .find(|&&b| b != 1)
+            .expect("another body");
+        shared.body_died(BodyId(other), DeathCause::Starved);
+        let at = shared.position_of(1).expect("body 1");
+        shared.item_added(ItemState {
+            id: 999,
+            x: at.x,
+            y: at.y,
+            material: "corpse".into(),
+        });
+        link.resync(5);
+        let out = drain(&mut link);
+        assert!(matches!(out[0], ServerMessage::DayStarted { .. }));
+        assert!(
+            out.iter()
+                .any(|m| matches!(m, ServerMessage::BodyLeft { body } if *body == other))
+        );
+        for body in known_before.iter().filter(|&&b| b != other) {
+            assert!(out.iter().any(|m| matches!(
+                m,
+                ServerMessage::BodyStopped { body: b, .. } | ServerMessage::BodyWalks { body: b, .. }
+                    if b == body
+            )));
+            assert!(
+                out.iter()
+                    .any(|m| matches!(m, ServerMessage::BodySleeps { body: b, .. } if b == body))
+            );
+            assert!(
+                out.iter()
+                    .any(|m| matches!(m, ServerMessage::BodyHolds { body: b, .. } if b == body))
+            );
+        }
+        assert!(
+            !out.iter().any(|m| matches!(m, ServerMessage::Chunk { .. })),
+            "the ground waits for the pool"
+        );
+        assert!(!link.known.contains(&other));
+        // Only the chunk whose items changed is sent again, with them.
+        settle(&mut link, &mut results);
+        let out = drain(&mut link);
+        assert_eq!(out.len(), 1);
+        assert!(matches!(
+            &out[0],
+            ServerMessage::Chunk { x, y, items, .. }
+                if ChunkPos::new(*x, *y) == home && items.iter().any(|i| i.id == 999)
+        ));
+        assert_eq!(link.item_versions[&home], shared.items_version(home));
+
+        // Nothing changed: a second resync sends no ground again.
+        link.resync(1);
+        drain(&mut link);
+        assert!(link.awaiting.is_empty());
+
+        // Its own body died meanwhile: told with the cause, then another
+        // body is taken and the view moves there.
+        shared.body_died(BodyId(1), DeathCause::Froze);
+        link.resync(2);
+        let out = drain(&mut link);
+        assert!(out.iter().any(|m| matches!(
+            m,
+            ServerMessage::BodyDied {
+                body: 1,
+                cause: DeathCause::Froze
+            }
+        )));
+        assert!(
+            out.iter()
+                .any(|m| matches!(m, ServerMessage::BodyAssigned { body: Some(b) } if *b != 1))
+        );
+        assert_ne!(link.pilot.body, Some(1));
+        settle(&mut link, &mut results);
     }
 
     /// What the server spends building the chunk messages of a view on

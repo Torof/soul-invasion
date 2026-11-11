@@ -228,6 +228,7 @@ func _exit_tree() -> void:
 	for p: Dictionary in _ledger.parked.values():
 		(p["stand"] as Trees.Stand).release()
 	Trees.free_pool()
+	Trees.unload_all()
 
 
 func _on_world_state(width: int, height: int, chunk_size: int, materials: Array, night: bool) -> void:
@@ -688,6 +689,7 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 		if view.is_built() and stand != null and holder != null and is_instance_valid(holder):
 			_park(key, view, holder, stand)
 		else:
+			ChunkView.waiting.erase(view)
 			view.queue_free()
 			if stand != null:
 				stand.release()
@@ -735,6 +737,7 @@ func _park(key: Vector2i, view: ChunkView, holder: Node, stand: Trees.Stand) -> 
 
 ## Frees a parked chunk's nodes for good.
 func _free_parked(p: Dictionary) -> void:
+	ChunkView.waiting.erase(p["view"])
 	(p["view"] as Node).queue_free()
 	(p["holder"] as Node).queue_free()
 	(p["stand"] as Trees.Stand).release()
@@ -889,6 +892,12 @@ func _step(delta: float) -> void:
 		moving = true
 	if _following and _bodies.has(_piloted):
 		_camera.position = Iso.point_to_screen(_bodies[_piloted]["at"])
+	# The tree images read on a worker thread come in, the stands that
+	# waited for them are built and the images no chunk held for the grace
+	# are freed (Trees.poll): the built stands' trees show from this frame.
+	if Trees.poll() > 0:
+		_trees_version += 1
+		_trees_changed = true
 	_update_limit()
 	_update_far_hole()
 	_clamp_camera()
