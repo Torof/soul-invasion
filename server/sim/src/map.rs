@@ -1378,6 +1378,7 @@ impl Rivers {
 
         rivers.paint_all(&network);
         rivers.reach_the_water(&network);
+        rivers.close_brook_beds();
         rivers.round_banks();
         rivers.fill_currents();
         #[cfg(test)]
@@ -2461,12 +2462,14 @@ impl Rivers {
     }
 
     /// Paints water under a band: every tile whose centre is within the
-    /// local half-width. A river's deeper water wins over shallower and
+    /// local half-width, and for a brook the tile each point of the path
+    /// is in. A river's deeper water wins over shallower and
     /// over a brook; a brook only takes land. A tile keeps the first
     /// water that reached it. A ford (`shoal`) sets half a metre right
     /// across, only on land and on its own river's water.
     fn paint(&mut self, band: &[Band], river: usize, shoal: bool) {
         let mine = u16::try_from(river + 1).expect("few rivers");
+        let own = |p: &Band| ((p.x + 500).div_euclid(1000), (p.y + 500).div_euclid(1000));
         for (n, pair) in band.windows(2).enumerate() {
             let (a, b) = (&pair[0], &pair[1]);
             let reach = a.half_width.max(b.half_width) / 1000 + 1;
@@ -2484,7 +2487,13 @@ impl Rivers {
                     let (cx, cy) = (a.x + vx * t / 1000, a.y + vy * t / 1000);
                     let d2 = (px - cx) * (px - cx) + (py - cy) * (py - cy);
                     let hw = a.half_width + (b.half_width - a.half_width) * t / 1000;
-                    if d2 > hw * hw {
+                    // A brook also takes the tile each point of its path
+                    // is in (the nearest centre): a brook one tile wide
+                    // on a slant would otherwise leave the path's own
+                    // tile dry now and then, its water only touching by
+                    // the corners.
+                    let on_path = a.brook && ((tx, ty) == own(a) || (tx, ty) == own(b));
+                    if d2 > hw * hw && !on_path {
                         continue;
                     }
                     let point = if t < 500 { a } else { b };
@@ -2567,6 +2576,50 @@ impl Rivers {
     /// 0 to 15) and speed in centimetres a second; `None` on land.
     pub fn current_at(&self, x: u32, y: u32) -> Option<(u8, u16)> {
         decode_current(self.current[(y * self.width + x) as usize])
+    }
+
+    /// Closes the notches in the brooks' beds: a brook is painted on the
+    /// tiles whose centre lies within its half-width of its centre line,
+    /// and where a straight run sits just past a row's centres between
+    /// two slanting runs that reach it, that row keeps one land tile
+    /// with brook on both sides, grass and plants in the middle of the
+    /// water (11 November 2026). Such a tile, brook on its left and
+    /// right or above and below, becomes brook, as deep as its
+    /// neighbour; a few passes, since closing one may expose another.
+    /// Its current comes with `fill_currents`.
+    fn close_brook_beds(&mut self) {
+        let (width, height) = (i64::from(self.width), i64::from(self.height));
+        for _ in 0..4 {
+            let mut closed = false;
+            for y in 0..height {
+                for x in 0..width {
+                    let i = self.index(x, y).expect("inside");
+                    if self.depth[i] != 0 {
+                        continue;
+                    }
+                    let brook = |rivers: &Self, x: i64, y: i64| {
+                        rivers.index(x, y).filter(|j| rivers.brook[*j])
+                    };
+                    let from = match (brook(self, x - 1, y), brook(self, x + 1, y)) {
+                        (Some(j), Some(_)) => Some(j),
+                        _ => match (brook(self, x, y - 1), brook(self, x, y + 1)) {
+                            (Some(j), Some(_)) => Some(j),
+                            _ => None,
+                        },
+                    };
+                    if let Some(j) = from {
+                        self.depth[i] = self.depth[j];
+                        self.brook[i] = true;
+                        self.owner[i] = self.owner[j];
+                        self.step[i] = self.step[j];
+                        closed = true;
+                    }
+                }
+            }
+            if !closed {
+                break;
+            }
+        }
     }
 
     /// Rounds the banks of the rivers: a land tile with river water on
@@ -3202,9 +3255,11 @@ mod tests {
             "{} brook tiles",
             count(Terrain::Brook)
         );
-        // Trees come in groves: between a tenth and half of the ground.
+        // Trees come in groves: between a tenth and three quarters of
+        // the ground (a small map is mostly riverside, where the water
+        // draws the woods: D37, 11 November 2026).
         let forest = count(Terrain::Forest);
-        assert!((6_000..33_000).contains(&forest), "{forest} forest tiles");
+        assert!((6_000..43_000).contains(&forest), "{forest} forest tiles");
         // Rivers may cut the map in parts: fords are a chance, bridges and
         // boats come later. But the standard world's bodies (seed 1, near
         // tile 134, 139) start on a piece of land at least a quarter of
@@ -3591,6 +3646,99 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn a_brook_is_a_band_without_gaps_along_its_whole_path() {
+        // Every tile a brook's centre path crosses is water (its own or
+        // the water it joins), and no land tile lies in a bed: brook on
+        // both its sides, or river water, leaves no grass in the water
+        // (11 November 2026: a grass tile with plants in a brook).
+        for seed in 1..=8 {
+            let r = Rivers::generate(256, 256, 32, seed);
+            let wet = |x: i64, y: i64| r.index(x, y).is_some_and(|i| r.depth[i] > 0);
+            let brook = |x: i64, y: i64| r.index(x, y).is_some_and(|i| r.brook[i]);
+            let river = |x: i64, y: i64| wet(x, y) && !brook(x, y);
+            for water in &r.network {
+                if water.entry_flow > i64::from(Rivers::BROOK_FLOW.1) {
+                    continue;
+                }
+                for (n, s) in water.path.iter().enumerate() {
+                    // Tile centres lie at whole thousandths: the tile a
+                    // point is in is the nearest centre.
+                    let (x, y) = ((s.x + 500).div_euclid(1000), (s.y + 500).div_euclid(1000));
+                    assert!(
+                        wet(x, y),
+                        "seed {seed}: step {n} of a brook dry at ({x}, {y})"
+                    );
+                }
+            }
+            for y in 32..256 {
+                for x in 0..256 {
+                    if wet(x, y) {
+                        continue;
+                    }
+                    assert!(
+                        !((brook(x - 1, y) && brook(x + 1, y))
+                            || (brook(x, y - 1) && brook(x, y + 1))),
+                        "seed {seed}: land at ({x}, {y}) between two sides of a brook"
+                    );
+                    assert!(
+                        !((river(x - 1, y) && river(x + 1, y))
+                            || (river(x, y - 1) && river(x, y + 1))),
+                        "seed {seed}: land at ({x}, {y}) between two sides of a river"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_brook_runs_from_its_source_to_its_mouth() {
+        // Walking a brook's path from source to mouth, the current stored
+        // on each of its tiles points along the next step, and the last
+        // tile of the path touches the water it joins (11 November 2026:
+        // brooks seen running away from the river).
+        let valleys: Vec<(u32, u64)> = (1..=8).map(|seed| (256, seed)).chain([(3072, 1)]).collect();
+        for (size, seed) in valleys {
+            let r = Rivers::generate(size, size, size / 8, seed);
+            let tile = |s: &Step| ((s.x + 500).div_euclid(1000), (s.y + 500).div_euclid(1000));
+            let (mut checked, mut brooks) = (0, 0);
+            for water in &r.network {
+                if water.entry_flow > i64::from(Rivers::BROOK_FLOW.1) {
+                    continue;
+                }
+                brooks += 1;
+                for (n, pair) in water.path.windows(2).enumerate() {
+                    let (x, y) = tile(&pair[0]);
+                    let i = r.index(x, y).expect("on the map");
+                    if !r.brook[i] {
+                        continue;
+                    }
+                    let (heading, _) = decode_current(r.current[i]).expect("water runs");
+                    let along = HEADINGS[usize::from(heading)];
+                    let (dx, dy) = (pair[1].x - pair[0].x, pair[1].y - pair[0].y);
+                    assert!(
+                        along.0 * dx + along.1 * dy > 0,
+                        "valley {size} seed {seed}: step {n} of a brook at ({x}, {y}) runs {heading} against its path"
+                    );
+                    checked += 1;
+                }
+                let (x, y) = tile(water.path.last().expect("a path"));
+                let touches = (-1..=1).any(|dy| {
+                    (-1..=1).any(|dx| r.index(x + dx, y + dy).is_some_and(|j| r.depth[j] > 0))
+                });
+                assert!(
+                    touches,
+                    "valley {size} seed {seed}: a brook ends dry at ({x}, {y})"
+                );
+            }
+            eprintln!("valley {size} seed {seed}: {checked} tiles of {brooks} brooks");
+            assert!(
+                brooks > 0 && checked > 10 * brooks,
+                "{checked} tiles of {brooks} brooks"
+            );
         }
     }
 
