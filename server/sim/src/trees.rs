@@ -41,8 +41,8 @@
 //!   habitat and of the mothers near the edge.
 //! - **Riverside** trees line the rivers, as before, alders and willows
 //!   in runs from their mothers.
-//! - Nothing stands on a tile touching a river or a ford, even by a
-//!   corner: its trunk and crown would be drawn over the water.
+//! - Nothing stands on a tile touching a river, a ford or a brook, even
+//!   by a corner: its trunk and crown would be drawn over the water.
 //!
 //! A chunk reads the map within `MOST_SPREAD_M` + a mother cell of
 //! itself, and the meadow's distance to the woods `MEADOW_REACH` tiles
@@ -719,13 +719,13 @@ pub fn everywhere(map: &Map, species: &[Species], seed: u64) -> Vec<Tree> {
     trees
 }
 
-/// Whether `tile` touches a river or a ford, even by a corner.
+/// Whether `tile` touches a river, a ford or a brook, even by a corner.
 fn by_the_water(map: &Map, tile: Pos) -> bool {
     (-1..=1).any(|dy| {
         (-1..=1).any(|dx| {
             matches!(
                 map.get(Pos::new(tile.x + dx, tile.y + dy)),
-                Some(Terrain::Water | Terrain::Ford)
+                Some(Terrain::Water | Terrain::Ford | Terrain::Brook)
             )
         })
     })
