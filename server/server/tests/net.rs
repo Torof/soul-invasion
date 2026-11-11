@@ -401,8 +401,11 @@ async fn hello_ping_and_a_published_day() {
     let mut chunks = Vec::new();
     let mut seen_plants = 0;
     let mut far = None;
+    // The chunks are built beside the network: a day boundary may slip in
+    // between them on a loaded machine (a day lasts a second here).
     while chunks.len() < window_len(world, centre) {
         match receive_any(&mut socket).await {
+            Some(ServerMessage::DayStarted { .. }) => {}
             Some(message)
                 if ambient(&message) && !matches!(message, ServerMessage::FarView { .. }) => {}
             Some(ServerMessage::FarView {
@@ -1484,9 +1487,11 @@ async fn wait_for<T>(socket: &mut Socket, mut pick: impl FnMut(&ServerMessage) -
 #[tokio::test]
 async fn the_pilot_is_told_how_its_body_fares_and_nobody_else() {
     // One game day per real second: hunger climbs a point every 30 ms.
+    // The view is not waited for: its chunks leave after the conditions
+    // of the moment, and a loaded machine would let the first ones by.
     let server = Server::start();
-    let (mut pilot, body) = join(&server).await;
-    let (mut other, other_body) = join(&server).await;
+    let (mut pilot, body) = welcome(&server).await;
+    let (mut other, other_body) = welcome(&server).await;
     let body = body.expect("pilots body 1");
     let other_body = other_body.expect("pilots body 2");
 
