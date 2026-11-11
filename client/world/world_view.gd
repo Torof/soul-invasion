@@ -234,7 +234,7 @@ func _exit_tree() -> void:
 func _on_world_state(width: int, height: int, chunk_size: int, materials: Array, night: bool) -> void:
 	_width = width
 	_height = height
-	ShoreField.map_size = Vector2i(width, height)
+	WaterMeshes.map_size = Vector2i(width, height)
 	_chunk_size = chunk_size
 	_ledger.chunk_size = chunk_size
 	_looks.clear()
@@ -600,7 +600,7 @@ func current_at(tile: Vector2i) -> Vector2:
 	if currents.is_empty():
 		return Vector2.ZERO
 	var local := tile - key * _chunk_size
-	return ShoreField.current_vector(int(currents[local.y * _chunk_size + local.x]))
+	return WaterMeshes.current_vector(int(currents[local.y * _chunk_size + local.x]))
 
 
 ## The terrain of any tile the server has sent, "" otherwise.
@@ -911,6 +911,9 @@ func _step(delta: float) -> void:
 	# sway itself is the shader's, every frame, with no redraw.
 	var view := Vector3(_camera.position.x, _camera.position.y, _camera.zoom.x)
 	if moving or view != _last_view:
+		if view.z != _last_view.z:
+			# The water meshes read their images at a level a zoom step.
+			ChunkView.set_water_zoom(view.z, get_viewport().get_screen_transform().get_scale().y)
 		_last_view = view
 		queue_redraw()
 

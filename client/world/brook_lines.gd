@@ -25,11 +25,18 @@ const EARTH_COLOUR := Color(0.30, 0.23, 0.15)
 const SPRING_TAPER := 2.0
 ## Metres a brook runs on into the water it joins, a little wider: far
 ## enough to cross the river's smoothed bank wherever it lies. The brook
-## fades out where the river's water begins (the brook shader reads the
-## bank's field), so it never lies over the river nor stops short of it.
+## fades out where the river's water begins (each vertex of the mesh
+## carries the fade, read from the river's distance there), so it never
+## lies over the river nor stops short of it. The ribbon is cut every
+## MOUTH_STEP tiles there, so the fade follows the river's line.
 const MOUTH := 1.2
 const MOUTH_FADE := 1.0
 const MOUTH_FLARE := 1.3
+const MOUTH_STEP := 0.3
+## The brook fades out between these signed distances to the river's
+## line, in tiles (negative in the river's water).
+const MOUTH_IN := -0.4
+const MOUTH_OUT := 0.0
 ## How much lighter than the river a brook's water is (it is shallow).
 const LIGHTEN := 0.25
 ## Tiles read around a chunk to find the lines crossing it.
@@ -235,26 +242,21 @@ static func _line(chain: Array, skeleton: Dictionary, mask: Dictionary, terrain:
 	if kinds[0] == "mouth":
 		# Straight on: a turn here would fold the ribbon at the bank.
 		var into := (pts[0] - pts[mini(1, pts.size() - 1)]).normalized()
-		pts.insert(0, pts[0] + into * MOUTH)
-		pts.insert(0, pts[0] + into * MOUTH_FADE)
-		wide.insert(0, wide[0] * MOUTH_FLARE)
-		wide.insert(0, wide[0])
-		alphas.insert(0, 1.0)
-		alphas.insert(0, 0.0)
-		earth.insert(0, 0.0)
-		earth.insert(0, 0.0)
+		var ext := _mouth_points(pts[0], into, wide[0])
+		for k in ext["pts"].size():
+			pts.insert(0, ext["pts"][k])
+			wide.insert(0, ext["wide"][k])
+			alphas.insert(0, ext["alphas"][k])
+			earth.insert(0, 0.0)
 	if kinds[1] == "mouth":
 		var n := pts.size()
 		var into := (pts[n - 1] - pts[maxi(n - 2, 0)]).normalized()
-		var end := pts[n - 1]
-		pts.append(end + into * MOUTH)
-		pts.append(end + into * (MOUTH + MOUTH_FADE))
-		wide.append(wide[wide.size() - 1] * MOUTH_FLARE)
-		wide.append(wide[wide.size() - 1])
-		alphas.append(1.0)
-		alphas.append(0.0)
-		earth.append(0.0)
-		earth.append(0.0)
+		var ext := _mouth_points(pts[n - 1], into, wide[wide.size() - 1])
+		pts.append_array(ext["pts"])
+		wide.append_array(ext["wide"])
+		alphas.append_array(ext["alphas"])
+		for k in ext["pts"].size():
+			earth.append(0.0)
 	# Arc length from each end, for the springs' taper.
 	var along := PackedFloat32Array([0.0])
 	for i in range(1, pts.size()):
@@ -269,6 +271,24 @@ static func _line(chain: Array, skeleton: Dictionary, mask: Dictionary, terrain:
 			w *= clampf((total - along[i]) / SPRING_TAPER, 0.0, 1.0)
 		widths.append(w)
 	return {"pts": pts, "widths": widths, "alphas": alphas, "earth": earth, "ends": kinds}
+
+
+## The points a brook runs on past its last tile at a mouth, from `end`
+## along `into`, in the order they lie from the end: every MOUTH_STEP
+## tiles, so the fade into the river's water (read at each vertex, mesh)
+## follows the river's line closely; full and a little wider up to MOUTH
+## tiles out, then fading to nothing over MOUTH_FADE more.
+static func _mouth_points(end: Vector2, into: Vector2, width: float) -> Dictionary:
+	var pts := PackedVector2Array()
+	var wide := PackedFloat32Array()
+	var alphas := PackedFloat32Array()
+	var steps := ceili((MOUTH + MOUTH_FADE) / MOUTH_STEP - 1e-6)
+	for k in range(1, steps + 1):
+		var out := minf(float(k) * MOUTH_STEP, MOUTH + MOUTH_FADE)
+		pts.append(end + into * out)
+		wide.append(width * lerpf(1.0, MOUTH_FLARE, clampf(out / MOUTH, 0.0, 1.0)))
+		alphas.append(1.0 - clampf((out - MOUTH) / MOUTH_FADE, 0.0, 1.0))
+	return {"pts": pts, "wide": wide, "alphas": alphas}
 
 
 ## The sideways unit vector at point i of `pts`, on the ground plane.
@@ -355,42 +375,36 @@ static func _degenerate(quad: PackedVector2Array) -> bool:
 	return absf(area) < 1e-4 or Geometry2D.triangulate_polygon(quad).is_empty()
 
 
-## Whether a brook's water runs from its first point towards its last
-## (1) or the other way (-1): away from a spring, towards a mouth or the
-## brook it joins.
-static func runs_towards_end(line: Dictionary) -> float:
-	var ends: Array = line["ends"]
-	if ends[0] == "mouth" or ends[1] == "spring":
-		return -1.0
-	if ends[1] == "mouth" or ends[0] == "spring":
-		return 1.0
-	return 1.0 if ends[1] == "joint" else -1.0
-
-
 ## Margin of land drawn either side of a brook's water by the brook
-## shader (earth, the grass's edge), in tiles; and the lateral range the
-## vertex colour encodes.
+## shader (earth, the grass's edge), in tiles.
 const SHADER_MARGIN := 0.4
-const LATERAL_RANGE := 2.0
 
 
-## Draws on `canvas`, whose material is the brook shader
-## (world/brook.gdshader), the segments of `lines` that belong to the
-## tiles [lo, hi): one band per segment, wider than the water, its vertex
-## colour carrying across it the distance from the axis (red), the
-## water's half-width (green), the way it runs (blue, the angle over a
-## turn, from its spring towards its mouth), its alpha the fade of a mouth.
-static func draw_shaded(canvas: CanvasItem, lines: Array, lo: Vector2i, hi: Vector2i, texture: Texture2D) -> void:
+## The mesh of the segments of `lines` that belong to the tiles [lo, hi)
+## for the brook shader (world/brook.gdshader): one band a segment, wider
+## than the water. Each vertex carries, as floats, how far from the
+## brook's axis it lies across the band (UV.x, tiles, signed, zero on
+## the axis) and the water's half-width there (UV.y, tiles); as bytes, where
+## its tile's own water runs (COLOR.rg, over ±WaterMeshes.FLOW_MAX metres
+## a second) and the fade of a mouth (COLOR.b: the line's own, times how
+## far the river's water is from the vertex, MOUTH_IN to MOUTH_OUT).
+## `current` gives the current at a tile (Vector2i -> Vector2, zero on
+## land), `to_river` the signed distance to the river's line at a point
+## of the map in tiles (Vector2 -> float; invalid: no river near).
+## {points, uvs, colours, indices}, the points in screen pixels.
+static func mesh(lines: Array, lo: Vector2i, hi: Vector2i, current: Callable, to_river: Callable) -> Dictionary:
+	var points := PackedVector2Array()
+	var uvs := PackedVector2Array()
+	var colours := PackedColorArray()
+	var indices := PackedInt32Array()
 	for line: Dictionary in lines:
 		var pts: PackedVector2Array = line["pts"]
 		var widths: PackedFloat32Array = line["widths"]
 		var alphas: PackedFloat32Array = line["alphas"]
-		var sign := runs_towards_end(line)
+		var flows := flows_of(line, current)
 		for i in pts.size() - 1:
 			if not owns(line, i, lo, hi):
 				continue
-			var along := (pts[i + 1] - pts[i]).normalized() * sign
-			var angle := fposmod(atan2(along.y, along.x), TAU) / TAU
 			var n0 := _normal(pts, i)
 			var n1 := _normal(pts, i + 1)
 			var h0 := widths[i] / 2.0
@@ -400,15 +414,71 @@ static func draw_shaded(canvas: CanvasItem, lines: Array, lo: Vector2i, hi: Vect
 			var quad := PackedVector2Array([pts[i] + n0 * r0, pts[i + 1] + n1 * r1, pts[i + 1] - n1 * r1, pts[i] - n0 * r0])
 			if _degenerate(quad):
 				continue
+			# Across the band: positive on one side, negative on the other, so
+			# the rasteriser's interpolation is zero on the axis.
 			var lateral := [r0, r1, -r1, -r0]
 			var halves := [h0, h1, h1, h0]
-			var fades := [alphas[i], alphas[i + 1], alphas[i + 1], alphas[i]]
-			var screen := PackedVector2Array()
-			var uvs := PackedVector2Array()
-			var colours := PackedColorArray()
+			var at := [i, i + 1, i + 1, i]
+			var base := points.size()
 			for k in 4:
-				screen.append(to_screen(quad[k]))
-				uvs.append((quad[k] + Vector2(0.5, 0.5)) / ChunkView.GROUND_METRES)
-				colours.append(Color((float(lateral[k]) / LATERAL_RANGE + 1.0) / 2.0, float(halves[k]) / 2.0, angle, float(fades[k])))
-			canvas.draw_polygon(screen, colours, uvs, texture)
+				var p := quad[k]
+				points.append(to_screen(p))
+				uvs.append(Vector2(float(lateral[k]), float(halves[k])))
+				var flow: Vector2 = flows[at[k]]
+				var fade: float = alphas[at[k]]
+				if to_river.is_valid():
+					# The point as the water meshes count tiles (a tile x spans
+					# [x, x + 1); here its centre is at x).
+					var d: float = to_river.call(p + Vector2(0.5, 0.5))
+					fade *= smoothstep(MOUTH_IN, MOUTH_OUT, d)
+				colours.append(Color(
+					clampf(flow.x / WaterMeshes.FLOW_MAX * 0.5 + 0.5, 0.0, 1.0),
+					clampf(flow.y / WaterMeshes.FLOW_MAX * 0.5 + 0.5, 0.0, 1.0), fade, 1.0))
+			indices.append_array([base, base + 1, base + 2, base, base + 2, base + 3])
+	return {"points": points, "uvs": uvs, "colours": colours, "indices": indices}
 
+
+## Where the water runs at each point of a line: its own tile's current
+## (the tile under the point, else the nearest brook tile beside it: the
+## smoothed line strays from the tiles' centres by a fraction of a tile),
+## never averaged over the tiles around, so the two legs of a meander
+## never mix, and never guessed from the line's ends or its order (the
+## guess ran whole brooks away from the river); the points past a mouth
+## (no earth) take the last tile's.
+static func flows_of(line: Dictionary, current: Callable) -> PackedVector2Array:
+	var pts: PackedVector2Array = line["pts"]
+	var earth: PackedFloat32Array = line["earth"]
+	var flows := PackedVector2Array()
+	flows.resize(pts.size())
+	if not current.is_valid():
+		return flows
+	for i in pts.size():
+		if earth[i] == 0.0:
+			continue
+		var p := pts[i]
+		var tile := Vector2i(roundi(p.x), roundi(p.y))
+		var flow: Vector2 = current.call(tile)
+		if flow == Vector2.ZERO:
+			var nearest := INF
+			for d: Vector2i in _N8:
+				var near: Vector2 = current.call(tile + d)
+				var away := p.distance_squared_to(Vector2(tile + d))
+				if near != Vector2.ZERO and away < nearest:
+					nearest = away
+					flow = near
+		flows[i] = flow
+	# Past a mouth, and where no tile under a point runs: the nearest
+	# point's own, so a brook's water never stands still at its end.
+	for i in pts.size():
+		if flows[i] == Vector2.ZERO:
+			var before := i - 1
+			while before >= 0 and flows[before] == Vector2.ZERO:
+				before -= 1
+			var after := i + 1
+			while after < pts.size() and flows[after] == Vector2.ZERO:
+				after += 1
+			if before >= 0 and (after >= pts.size() or i - before <= after - i):
+				flows[i] = flows[before]
+			elif after < pts.size():
+				flows[i] = flows[after]
+	return flows

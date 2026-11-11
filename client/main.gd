@@ -60,6 +60,7 @@ func _ready() -> void:
 	var perf := PerfOverlay.new()
 	perf.world = _world
 	add_child(perf)
+	_perf = perf
 	Net.dev_overview.connect(func(_c: int, _w: int, _h: int, _cells: String) -> void: perf.enable())
 	# Development: a watchdog that reports a frozen main thread (dev/watchdog.gd).
 	Net.dev_overview.connect(func(_c: int, _w: int, _h: int, _cells: String) -> void:
@@ -68,13 +69,26 @@ func _ready() -> void:
 			add_child(_watchdog))
 
 
+var _perf: PerfOverlay
+
+
 func _screenshot_then_quit(path: String) -> void:
+	# SOUL_INVASION_WATER_STREAKS=0: the water without the current's
+	# streaks (F11), to measure them.
+	if OS.get_environment("SOUL_INVASION_WATER_STREAKS") == "0":
+		ChunkView.set_water_streaks(false)
+	# SOUL_INVASION_WIND=0: the trees still, so two captures compare.
+	if OS.get_environment("SOUL_INVASION_WIND") == "0":
+		_world.set_wind(false)
 	await get_tree().create_timer(2.5).timeout
-	# Then until every chunk is built (at most a minute and a half).
-	var waited := 0.0
-	while waited < 90.0 and (ShoreField.busy > 0 or _unbuilt() > 0):
-		await get_tree().create_timer(0.5).timeout
-		waited += 0.5
+	await _wait_built()
+	# SOUL_INVASION_TELEPORT="x,y" (--dev servers): the body there first,
+	# so the chunks around that tile are held.
+	var there := OS.get_environment("SOUL_INVASION_TELEPORT").split(",")
+	if there.size() == 2 and there[0].is_valid_int() and there[1].is_valid_int():
+		_world.teleport_to(Vector2i(int(there[0]), int(there[1])))
+		await get_tree().create_timer(2.5).timeout
+		await _wait_built()
 	# Framing for the screenshot, once the world is in: SOUL_INVASION_ZOOM
 	# sets the camera zoom, SOUL_INVASION_LOOK_AT="x,y" frames that tile
 	# instead of the body.
@@ -86,7 +100,34 @@ func _screenshot_then_quit(path: String) -> void:
 		_world.look_at_tile(Vector2i(int(look[0]), int(look[1])))
 	await get_tree().create_timer(0.5).timeout
 	get_viewport().get_texture().get_image().save_png(path)
+	# SOUL_INVASION_WATER_BENCH=file: what the water costs the graphics
+	# card here (the F8 measure), twice over, a line each appended to the
+	# file, with the meshes' bytes and build times.
+	var bench := OS.get_environment("SOUL_INVASION_WATER_BENCH")
+	if not bench.is_empty():
+		for _pass in 2:
+			await get_tree().create_timer(0.5).timeout
+			await _perf.measure_water()
+			var cost: Array = _perf.water_cost()
+			var f := FileAccess.open(bench, FileAccess.READ_WRITE if FileAccess.file_exists(bench) else FileAccess.WRITE)
+			f.seek_end()
+			f.store_line("%s zoom %s water %.2f ms frame %.2f ms clock %d MHz video %d MB buffers %d MB meshes %.2f MB (before packing %.2f) built %d worker %.1f ms each main %.2f ms each" % [
+				path.get_file(), zoom, cost[0], cost[1], cost[2],
+				RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_VIDEO_MEM_USED) / 1048576,
+				RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_BUFFER_MEM_USED) / 1048576,
+				ChunkView.water_bytes / 1048576.0, ChunkView.water_bytes_before / 1048576.0,
+				ChunkView.water_builds, ChunkView.water_build_usec / 1000.0 / maxi(ChunkView.water_builds, 1), ChunkView.water_main_usec / 1000.0 / maxi(ChunkView.water_builds, 1)])
+			f.close()
 	get_tree().quit()
+
+
+## Until every chunk is built and no water is being smoothed (at most a
+## minute and a half).
+func _wait_built() -> void:
+	var waited := 0.0
+	while waited < 90.0 and (WaterMeshes.busy > 0 or _unbuilt() > 0 or ChunkView.waiting.size() > 0):
+		await get_tree().create_timer(0.5).timeout
+		waited += 0.5
 
 
 func _unbuilt() -> int:

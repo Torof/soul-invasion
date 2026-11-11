@@ -11,7 +11,7 @@ extends RefCounted
 ## The server sends a terrain as its name; the client turns it into a
 ## code once, on arrival. 0 is "not known" (not sent, or hidden since).
 
-## Tiles the grid covers either way, then repeats (as ShoreField.TILES).
+## Tiles the grid covers either way, then repeats (wider than the chunks a client holds).
 const TILES := 640
 ## Codes of the terrains the client knows by name. A name the server adds
 ## later gets the next free code on first sight.

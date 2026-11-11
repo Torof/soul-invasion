@@ -12,7 +12,8 @@ const QUIET_MSEC := 500
 var has_world := false
 var received := 0
 var built := 0
-## Bank fields still being smoothed (ShoreField.busy).
+## Bank fields still being smoothed and water meshes still being built
+## (WaterMeshes.busy).
 var fields := 0
 var _last_chunk_msec := -1
 
