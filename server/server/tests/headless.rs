@@ -180,18 +180,52 @@ fn reset_erases_the_saved_world_and_starts_anew() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// A paced server on `data` that stops on its own after a game day: a
-/// clean stop. Its output.
-fn paced_clean_run(data: &str) -> String {
-    let output = server()
+/// How a run in [`paced_run`] ends, once the server listens.
+#[derive(Clone, Copy, PartialEq)]
+enum End {
+    /// `SIGTERM`, as scripts stop a server: a clean stop.
+    Term,
+    /// Killed: a crash, no final checkpoint.
+    Crash,
+}
+
+/// A paced server on `data`, ended as `end` once it listens. Its output.
+fn paced_run(data: &str, extra: &[&str], end: End) -> String {
+    use std::io::{BufRead, BufReader};
+
+    let mut child = server()
         .args(["--no-warm-up", "--data", data, "--listen", "127.0.0.1:0"])
-        .args(["--days", "1", "--time-scale", "100"])
-        .args(["--ticks-per-second", "2", "--seconds-per-day", "1"])
-        .output()
+        .args(extra)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
         .expect("server binary runs");
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    assert!(output.status.success(), "stdout: {stdout}");
-    stdout
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let mut told = String::new();
+    for line in lines.by_ref() {
+        let line = line.unwrap();
+        told.push_str(&line);
+        told.push('\n');
+        if line.starts_with("listening on ") {
+            break;
+        }
+    }
+    if end == End::Crash {
+        child.kill().unwrap();
+        child.wait().unwrap();
+        return told;
+    }
+    let sent = std::process::Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("kill runs");
+    assert!(sent.success());
+    for line in lines {
+        told.push_str(&line.unwrap());
+        told.push('\n');
+    }
+    assert!(child.wait().unwrap().success(), "stdout: {told}");
+    assert!(told.contains("stopping (SIGTERM)"), "stdout: {told}");
+    told
 }
 
 /// The world id the server told in its output.
@@ -205,42 +239,29 @@ fn world_id(stdout: &str) -> String {
 }
 
 #[test]
-fn the_world_id_changes_after_a_crash_and_only_then() {
-    use std::io::{BufRead, BufReader};
-
+fn the_world_id_changes_after_a_crash_or_a_reset_and_only_then() {
     let dir = std::env::temp_dir().join(format!("soul-invasion-epoch-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let data = dir.join("world.sqlite");
     let data = data.to_str().unwrap();
+    let run = |extra: &[&str], end| world_id(&paced_run(data, extra, end));
 
-    // A clean stop: the next run is the same world to a client.
-    let first = world_id(&paced_clean_run(data));
-    assert_eq!(world_id(&paced_clean_run(data)), first);
+    // A clean stop (SIGTERM): the next run is the same world to a client.
+    let first = run(&[], End::Term);
+    assert_eq!(run(&[], End::Term), first);
 
     // A crash: killed while running, no final checkpoint, no mark.
-    let mut child = server()
-        .args(["--no-warm-up", "--data", data, "--listen", "127.0.0.1:0"])
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .expect("server binary runs");
-    let stdout = child.stdout.take().unwrap();
-    let mut told = String::new();
-    for line in BufReader::new(stdout).lines() {
-        let line = line.unwrap();
-        told.push_str(&line);
-        told.push('\n');
-        if line.starts_with("listening on ") {
-            break;
-        }
-    }
-    child.kill().unwrap();
-    child.wait().unwrap();
-    assert_eq!(world_id(&told), first, "the run before was clean");
+    assert_eq!(run(&[], End::Crash), first, "the run before was clean");
 
     // The run after the crash is another world; clean stops keep it.
-    let after = world_id(&paced_clean_run(data));
+    let after = run(&[], End::Term);
     assert_ne!(after, first);
-    assert_eq!(world_id(&paced_clean_run(data)), after);
+    assert_eq!(run(&[], End::Term), after);
+
+    // A world made anew on the same seed is another world too.
+    let reset = run(&["--reset"], End::Term);
+    assert!(reset != first && reset != after, "{reset}");
+    assert_eq!(run(&[], End::Term), reset);
 
     let _ = std::fs::remove_dir_all(dir);
 }

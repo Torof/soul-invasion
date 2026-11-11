@@ -17,7 +17,7 @@ use server::cli::{CliError, DataLocation, USAGE, WarmUp};
 use server::content;
 use server::net::{Published, Shared, condition_view, refusal_view, serve};
 use server::pool::{ChunkPool, chunk_threads};
-use server::{Options, Sqlite, Storage, StorageError, run_headless, run_paced};
+use server::{Lineage, Options, Sqlite, Storage, StorageError, run_headless, run_paced};
 use sim::{Content, Event, World};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -62,7 +62,7 @@ fn run(opts: &Options) -> Result<(), BoxError> {
     );
 
     let stop = Arc::new(AtomicBool::new(false));
-    let (mut world, persister, epoch) = open_world(opts, &content, Arc::clone(&stop))?;
+    let (mut world, persister, lineage) = open_world(opts, &content, Arc::clone(&stop))?;
     let calendar = *world.calendar();
     println!(
         "calendar: {} ticks/s, {} s/day ({} ticks/day)",
@@ -103,18 +103,19 @@ fn run(opts: &Options) -> Result<(), BoxError> {
         return Ok(());
     }
 
-    run_paced_server(world, opts, &content, &stop, persister, epoch)
+    run_paced_server(world, opts, &content, &stop, persister, lineage)
 }
 
 /// Opens storage and loads the latest world from it, or creates a new one.
-/// Also starts the run: the world's epoch, one more if the last run
-/// crashed (0 for an ephemeral world, and for `--dump-chunk`, which only
-/// looks and must not take the clean stop's mark).
+/// Also starts the run: the world's lineage, its epoch one more if the
+/// last run crashed (all 0 for an ephemeral world, so that two servers on
+/// the same seed are the same world to a client, and for `--dump-chunk`,
+/// which only looks and must not take the clean stop's mark).
 fn open_world(
     opts: &Options,
     content: &Arc<Content>,
     stop: Arc<AtomicBool>,
-) -> Result<(World, Persister, u64), BoxError> {
+) -> Result<(World, Persister, Lineage), BoxError> {
     let mut storage: Box<dyn Storage + Send> = match &opts.data {
         DataLocation::File(path) => {
             if opts.reset {
@@ -156,12 +157,16 @@ fn open_world(
     };
 
     let lasting = matches!(opts.data, DataLocation::File(_)) && opts.dump_chunk.is_none();
-    let epoch = if lasting { storage.begin_run()? } else { 0 };
+    let lineage = if lasting {
+        storage.begin_run()?
+    } else {
+        Lineage::default()
+    };
 
     // A game with players saves every few real minutes; a headless run,
     // which plays days in seconds, at each new game day.
     let every = (!opts.headless).then_some(CHECKPOINT_EVERY);
-    Ok((world, Persister::new(storage, stop, every), epoch))
+    Ok((world, Persister::new(storage, stop, every), lineage))
 }
 
 /// How often a game with players saves the world: a crash loses at most
@@ -272,7 +277,7 @@ fn run_paced_server(
     content: &Arc<Content>,
     stop: &Arc<AtomicBool>,
     mut persister: Persister,
-    epoch: u64,
+    lineage: Lineage,
 ) -> Result<(), BoxError> {
     // The network only translates (D29): two workers are plenty, and the
     // machine's cores stay for the simulation thread and the chunk pool.
@@ -297,12 +302,12 @@ fn run_paced_server(
             opts.time_scale
         ),
         None => println!(
-            "paced: time scale x{}, running until stopped (Ctrl-C)",
+            "paced: time scale x{}, running until stopped (Ctrl-C, SIGTERM)",
             opts.time_scale
         ),
     }
 
-    let shared = Arc::new(shared_state(&world, opts, content, epoch));
+    let shared = Arc::new(shared_state(&world, opts, content, lineage));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let acceptor = runtime.spawn(serve(
@@ -353,8 +358,8 @@ fn run_paced_server(
     let finished = runtime.block_on(async {
         tokio::select! {
             finished = &mut simulation => Some(finished),
-            _ = tokio::signal::ctrl_c() => {
-                println!("stopping (Ctrl-C)");
+            signal = stop_signal() => {
+                println!("stopping ({signal})");
                 None
             }
         }
@@ -382,13 +387,37 @@ fn run_paced_server(
     Ok(())
 }
 
+/// Waits for a request to stop: Ctrl-C, or `SIGTERM` (how scripts and
+/// service managers stop a server). Either stops cleanly: the final
+/// snapshot, then the clean stop's mark (D28). Its name.
+async fn stop_signal() -> &'static str {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        if let Ok(mut term) = signal(SignalKind::terminate()) {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => "Ctrl-C",
+                _ = term.recv() => "SIGTERM",
+            }
+        } else {
+            let _ = tokio::signal::ctrl_c().await;
+            "Ctrl-C"
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        "Ctrl-C"
+    }
+}
+
 /// The state the network shares with the simulation, as the options
-/// ask, the world's epoch folded into its identity.
-fn shared_state(world: &World, opts: &Options, content: &Content, epoch: u64) -> Shared {
+/// ask, the world's lineage folded into its identity.
+fn shared_state(world: &World, opts: &Options, content: &Content, lineage: Lineage) -> Shared {
     let mut shared = Shared::new(world, content, opts.max_connections, opts.time_scale);
-    shared.fold_epoch(epoch);
+    shared.fold_lineage(lineage.birth, lineage.epoch);
     // Tests read this line: keep its shape stable.
-    println!("world id: {} (epoch {epoch})", shared.world_id());
+    println!("world id: {} (epoch {})", shared.world_id(), lineage.epoch);
     if opts.dev {
         shared.enable_dev();
         println!("development tools on: overview and teleports (--dev)");
@@ -615,8 +644,8 @@ mod tests {
                 .push(format!("snapshot {}", world.tick().0));
             Ok(())
         }
-        fn begin_run(&mut self) -> Result<u64, StorageError> {
-            Ok(0)
+        fn begin_run(&mut self) -> Result<server::Lineage, StorageError> {
+            Ok(server::Lineage::default())
         }
         fn mark_clean_stop(&mut self) -> Result<(), StorageError> {
             self.log.lock().unwrap().push("clean stop".to_owned());

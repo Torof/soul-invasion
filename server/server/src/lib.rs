@@ -14,4 +14,4 @@ pub mod storage;
 
 pub use cli::Options;
 pub use run::{RunSummary, run_headless, run_paced};
-pub use storage::{Sqlite, Storage, StorageError};
+pub use storage::{Lineage, Sqlite, Storage, StorageError};

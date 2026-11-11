@@ -725,14 +725,16 @@ impl Shared {
         format!("{:016x}", hash.0)
     }
 
-    /// Folds the world's epoch into its identity, once, at startup: a
-    /// run after a crash is another world to a client, which drops the
-    /// chunk frames it holds (a chunk's version may have gone back to a
-    /// number it holds with other content). Epoch 0 leaves it as it is.
-    pub fn fold_epoch(&mut self, epoch: u64) {
-        if epoch > 0 {
+    /// Folds the stored world's birth and epoch into its identity, once,
+    /// at startup: a world made anew, or a run after a crash, is another
+    /// world to a client, which drops the chunk frames it holds (a chunk's
+    /// version may have gone back to a number it holds with other
+    /// content). Both 0 (an ephemeral world) leave it as it is.
+    pub fn fold_lineage(&mut self, birth: u64, epoch: u64) {
+        if (birth, epoch) != (0, 0) {
             let mut hash = Fnv::default();
             hash.write(self.world.as_bytes());
+            hash.write(&birth.to_le_bytes());
             hash.write(&epoch.to_le_bytes());
             self.world = format!("{:016x}", hash.0);
         }
