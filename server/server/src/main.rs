@@ -62,7 +62,7 @@ fn run(opts: &Options) -> Result<(), BoxError> {
     );
 
     let stop = Arc::new(AtomicBool::new(false));
-    let (mut world, persister) = open_world(opts, &content, Arc::clone(&stop))?;
+    let (mut world, persister, epoch) = open_world(opts, &content, Arc::clone(&stop))?;
     let calendar = *world.calendar();
     println!(
         "calendar: {} ticks/s, {} s/day ({} ticks/day)",
@@ -103,15 +103,18 @@ fn run(opts: &Options) -> Result<(), BoxError> {
         return Ok(());
     }
 
-    run_paced_server(world, opts, &content, &stop, persister)
+    run_paced_server(world, opts, &content, &stop, persister, epoch)
 }
 
 /// Opens storage and loads the latest world from it, or creates a new one.
+/// Also starts the run: the world's epoch, one more if the last run
+/// crashed (0 for an ephemeral world, and for `--dump-chunk`, which only
+/// looks and must not take the clean stop's mark).
 fn open_world(
     opts: &Options,
     content: &Arc<Content>,
     stop: Arc<AtomicBool>,
-) -> Result<(World, Persister), BoxError> {
+) -> Result<(World, Persister, u64), BoxError> {
     let mut storage: Box<dyn Storage + Send> = match &opts.data {
         DataLocation::File(path) => {
             if opts.reset {
@@ -152,10 +155,13 @@ fn open_world(
         World::with_valley(opts.calendar, content, opts.valley_size)
     };
 
+    let lasting = matches!(opts.data, DataLocation::File(_)) && opts.dump_chunk.is_none();
+    let epoch = if lasting { storage.begin_run()? } else { 0 };
+
     // A game with players saves every few real minutes; a headless run,
     // which plays days in seconds, at each new game day.
     let every = (!opts.headless).then_some(CHECKPOINT_EVERY);
-    Ok((world, Persister::new(storage, stop, every)))
+    Ok((world, Persister::new(storage, stop, every), epoch))
 }
 
 /// How often a game with players saves the world: a crash loses at most
@@ -165,7 +171,12 @@ const CHECKPOINT_EVERY: std::time::Duration = std::time::Duration::from_secs(5 *
 /// What the simulation hands the storage thread: a copy of the world, to
 /// snapshot. Cheap: the map is shared, not copied; bodies, items and
 /// trees are.
-type Write = Box<World>;
+enum Write {
+    /// A checkpoint.
+    Snapshot(Box<World>),
+    /// The final snapshot of a clean stop, followed by its mark.
+    Last(Box<World>),
+}
 
 /// Takes snapshots for the simulation loop, on a
 /// thread of its own: the simulation only copies what it hands over, and
@@ -192,8 +203,21 @@ impl Persister {
             .name("storage".to_owned())
             .spawn(move || {
                 let mut storage = storage;
-                for world in receiver {
-                    if let Err(e) = storage.save_world(&world) {
+                for write in receiver {
+                    let (world, last) = match write {
+                        Write::Snapshot(world) => (world, false),
+                        Write::Last(world) => (world, true),
+                    };
+                    let saved = storage.save_world(&world).and_then(|()| {
+                        // Only once its final snapshot is written: a run
+                        // that ends otherwise (a panic) is a crash.
+                        if last {
+                            storage.mark_clean_stop()
+                        } else {
+                            Ok(())
+                        }
+                    });
+                    if let Err(e) = saved {
                         eprintln!("persistence failed, stopping: {e}");
                         stop.store(true, Ordering::Relaxed);
                         return Err(e);
@@ -218,7 +242,7 @@ impl Persister {
         };
         if due {
             self.last = std::time::Instant::now();
-            self.send(Box::new(world.clone()));
+            self.send(Write::Snapshot(Box::new(world.clone())));
         }
     }
 
@@ -229,10 +253,10 @@ impl Persister {
         }
     }
 
-    /// The final snapshot, written before returning; or the failure that
-    /// interrupted the run.
+    /// The final snapshot and the clean stop's mark, written before
+    /// returning; or the failure that interrupted the run.
     fn finish(mut self, world: &World) -> Result<(), StorageError> {
-        self.send(Box::new(world.clone()));
+        self.send(Write::Last(Box::new(world.clone())));
         drop(self.sender.take());
         self.writer
             .take()
@@ -248,6 +272,7 @@ fn run_paced_server(
     content: &Arc<Content>,
     stop: &Arc<AtomicBool>,
     mut persister: Persister,
+    epoch: u64,
 ) -> Result<(), BoxError> {
     // The network only translates (D29): two workers are plenty, and the
     // machine's cores stay for the simulation thread and the chunk pool.
@@ -277,15 +302,7 @@ fn run_paced_server(
         ),
     }
 
-    let mut shared = Shared::new(&world, content, opts.max_connections, opts.time_scale);
-    if opts.dev {
-        shared.enable_dev();
-        println!("development tools on: overview and teleports (--dev)");
-    }
-    if opts.warm_up == WarmUp::BeforeListening {
-        shared.warm_plants();
-    }
-    let shared = Arc::new(shared);
+    let shared = Arc::new(shared_state(&world, opts, content, epoch));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let acceptor = runtime.spawn(serve(
@@ -363,6 +380,23 @@ fn run_paced_server(
         world.time().day
     );
     Ok(())
+}
+
+/// The state the network shares with the simulation, as the options
+/// ask, the world's epoch folded into its identity.
+fn shared_state(world: &World, opts: &Options, content: &Content, epoch: u64) -> Shared {
+    let mut shared = Shared::new(world, content, opts.max_connections, opts.time_scale);
+    shared.fold_epoch(epoch);
+    // Tests read this line: keep its shape stable.
+    println!("world id: {} (epoch {epoch})", shared.world_id());
+    if opts.dev {
+        shared.enable_dev();
+        println!("development tools on: overview and teleports (--dev)");
+    }
+    if opts.warm_up == WarmUp::BeforeListening {
+        shared.warm_plants();
+    }
+    shared
 }
 
 /// Tells the connections and the pilots what one event means to them
@@ -581,6 +615,13 @@ mod tests {
                 .push(format!("snapshot {}", world.tick().0));
             Ok(())
         }
+        fn begin_run(&mut self) -> Result<u64, StorageError> {
+            Ok(0)
+        }
+        fn mark_clean_stop(&mut self) -> Result<(), StorageError> {
+            self.log.lock().unwrap().push("clean stop".to_owned());
+            Ok(())
+        }
     }
 
     fn world() -> World {
@@ -608,7 +649,10 @@ mod tests {
         daily.on_tick(&w, std::slice::from_ref(&moved));
         daily.on_tick(&w, &[Event::DayStarted { day: 2 }]);
         daily.finish(&w).unwrap();
-        assert_eq!(*log.lock().unwrap(), ["snapshot 0", "snapshot 0"]);
+        assert_eq!(
+            *log.lock().unwrap(),
+            ["snapshot 0", "snapshot 0", "clean stop"]
+        );
         // Due at every tick, as if minutes had passed: each tick saves.
         log.lock().unwrap().clear();
         let storage = Box::new(Recorder {
@@ -621,7 +665,7 @@ mod tests {
         timed.finish(&w).unwrap();
         assert_eq!(
             *log.lock().unwrap(),
-            ["snapshot 0", "snapshot 0", "snapshot 0"]
+            ["snapshot 0", "snapshot 0", "snapshot 0", "clean stop"]
         );
         assert!(!stop.load(Ordering::Relaxed));
     }

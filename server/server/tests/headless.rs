@@ -179,3 +179,68 @@ fn reset_erases_the_saved_world_and_starts_anew() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A paced server on `data` that stops on its own after a game day: a
+/// clean stop. Its output.
+fn paced_clean_run(data: &str) -> String {
+    let output = server()
+        .args(["--no-warm-up", "--data", data, "--listen", "127.0.0.1:0"])
+        .args(["--days", "1", "--time-scale", "100"])
+        .args(["--ticks-per-second", "2", "--seconds-per-day", "1"])
+        .output()
+        .expect("server binary runs");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(output.status.success(), "stdout: {stdout}");
+    stdout
+}
+
+/// The world id the server told in its output.
+fn world_id(stdout: &str) -> String {
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("world id: "))
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("no world id in: {stdout}"))
+        .to_owned()
+}
+
+#[test]
+fn the_world_id_changes_after_a_crash_and_only_then() {
+    use std::io::{BufRead, BufReader};
+
+    let dir = std::env::temp_dir().join(format!("soul-invasion-epoch-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let data = dir.join("world.sqlite");
+    let data = data.to_str().unwrap();
+
+    // A clean stop: the next run is the same world to a client.
+    let first = world_id(&paced_clean_run(data));
+    assert_eq!(world_id(&paced_clean_run(data)), first);
+
+    // A crash: killed while running, no final checkpoint, no mark.
+    let mut child = server()
+        .args(["--no-warm-up", "--data", data, "--listen", "127.0.0.1:0"])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("server binary runs");
+    let stdout = child.stdout.take().unwrap();
+    let mut told = String::new();
+    for line in BufReader::new(stdout).lines() {
+        let line = line.unwrap();
+        told.push_str(&line);
+        told.push('\n');
+        if line.starts_with("listening on ") {
+            break;
+        }
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(world_id(&told), first, "the run before was clean");
+
+    // The run after the crash is another world; clean stops keep it.
+    let after = world_id(&paced_clean_run(data));
+    assert_ne!(after, first);
+    assert_eq!(world_id(&paced_clean_run(data)), after);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
