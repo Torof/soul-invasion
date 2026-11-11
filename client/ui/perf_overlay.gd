@@ -77,6 +77,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		FarView.drawing = (FarView.drawing + 1) % FarView.DRAWING_NAMES.size()
 		get_tree().call_group("far_views", "redraw_fog")
 		get_viewport().set_input_as_handled()
+	elif event.keycode == KEY_F9:
+		if _recording_left <= 0.0:
+			_start_recording()
+		get_viewport().set_input_as_handled()
 	elif event.keycode == KEY_F8:
 		if not _measuring:
 			measure_water()
@@ -160,12 +164,64 @@ static func gpu_clock_mhz() -> int:
 	return 0
 
 
+## Recording (F9): RECORD_S seconds of frames, one line each, written to
+## user://frames-<time>.csv for the AI to read: what a frame cost on the
+## lead's own machine, where his eye sees a jump.
+const RECORD_S := 10.0
+var _recording_left := 0.0
+var _recorded: PackedStringArray = []
+
+
+func _start_recording() -> void:
+	_recording_left = RECORD_S
+	DevTiming.enabled = true
+	_recorded = PackedStringArray(["t_ms,frame_ms,process_ms,scripts_ms,heaviest,heaviest_ms,gpu_ms,draw_calls,items,zoom"])
+	DevTiming.take()
+	RenderingServer.viewport_set_measure_render_time(get_viewport().get_viewport_rid(), true)
+
+
+func _record_frame(now: int, frame_ms: float) -> void:
+	var parts := DevTiming.take()
+	var total := 0.0
+	var heaviest := ""
+	var heaviest_ms := 0.0
+	for part: String in parts:
+		var ms: float = parts[part][0]
+		total += ms
+		if ms > heaviest_ms:
+			heaviest_ms = ms
+			heaviest = part
+	var zoom := float(world.call("zoom_level")) if world != null else 0.0
+	_recorded.append("%d,%.2f,%.2f,%.2f,%s,%.2f,%.2f,%d,%d,%.2f" % [
+		now / 1000, frame_ms, Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0, total,
+		heaviest.replace(",", " "), heaviest_ms,
+		RenderingServer.viewport_get_measured_render_time_gpu(get_viewport().get_viewport_rid()),
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME),
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_OBJECTS_IN_FRAME), zoom])
+
+
+func _finish_recording() -> void:
+	var path := "user://frames-%s.csv" % Time.get_datetime_string_from_system().replace(":", "-")
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file != null:
+		file.store_string("\n".join(_recorded) + "\n")
+		file.close()
+	print("frames recorded: ", ProjectSettings.globalize_path(path))
+	DevTiming.enabled = visible
+	_recorded = PackedStringArray()
+
+
 func _process(delta: float) -> void:
 	# From the clock, not `delta`: the engine caps `delta` at a few physics
 	# steps (133 ms), which hid every frame over that (10 November 2026).
 	var now := Time.get_ticks_usec()
 	if _last_frame_usec > 0:
 		_worst_ms = maxf(_worst_ms, float(now - _last_frame_usec) / 1000.0)
+		if _recording_left > 0.0:
+			_record_frame(now, float(now - _last_frame_usec) / 1000.0)
+			_recording_left -= delta
+			if _recording_left <= 0.0:
+				_finish_recording()
 	_last_frame_usec = now
 	_since += delta
 	_frames += 1
@@ -200,7 +256,8 @@ func breakdown(parts: Dictionary, frames: int) -> String:
 ## The lines shown, from the engine's monitors and the world's counts.
 func report(worst_ms: float) -> String:
 	var lines: Array[String] = []
-	lines.append("%d fps   worst frame %.1f ms" % [Engine.get_frames_per_second(), worst_ms])
+	lines.append("%d fps   worst frame %.1f ms%s" % [Engine.get_frames_per_second(), worst_ms,
+		("   RECORDING %.0f s (F9)" % _recording_left) if _recording_left > 0.0 else "   F9 records 10 s"])
 	if world != null:
 		lines.append("zoom %s" % String.num(float(world.call("zoom_level")), 2))
 	# The engine's process step holds the scripts and also the waits (for
