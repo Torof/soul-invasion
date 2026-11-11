@@ -14,7 +14,8 @@
 //! one message sent in binary ([`encode_chunk`], the layout in
 //! [`ChunkFrame`]'s doc); every other message is JSON. The bodies standing
 //! in a chunk follow its frame in [`ServerMessage::ChunkBodies`]. Bodies
-//! are only reported while they stand in a chunk the client holds.
+//! are only reported while they stand within the creatures' range of the
+//! client's body (about 150 m, D5), in a chunk it holds.
 //!
 //! Any change to this crate is a protected area (see `CODEOWNERS`).
 
@@ -58,7 +59,15 @@ use serde::{Deserialize, Serialize};
 ///   that version, `chunk_missing` when it does not; `hello` tells the
 ///   chunks a reconnecting client holds (`held`); `view`, the window
 ///   held, replaces `chunk_hidden`.
-pub const PROTOCOL_VERSION: u32 = 18;
+/// - v19: interest by place (D5, A6): bodies are told within the
+///   creatures' range of the client's body (150 m between chunk centres),
+///   not across the whole view: `chunk_bodies` follows only the frames
+///   within it, and comes too for a chunk held that comes within it as
+///   the body walks; `body_left` when a body walks out of it or it moves
+///   away. `body_walks` is sent again each time a walking body walks into
+///   another chunk, never at each tile: the client walks it along its
+///   route in between.
+pub const PROTOCOL_VERSION: u32 = 19;
 
 /// Chunks whose frames a client keeps after they left its view, the
 /// least recently hidden forgotten first (D4): about 3 MB of frames. The
@@ -377,8 +386,9 @@ pub enum ServerMessage {
         /// shown in this one (D4).
         world: String,
     },
-    /// The bodies standing in a chunk, sent right after its frame
-    /// ([`encode_chunk`]) when there are any.
+    /// The bodies standing in a chunk within the creatures' range, sent
+    /// right after its frame ([`encode_chunk`]) when there are any, or
+    /// when a chunk held comes within range.
     ChunkBodies {
         /// Column of chunks.
         x: i32,
@@ -547,9 +557,10 @@ pub enum ServerMessage {
         /// In hand now, if anything.
         item: Option<ItemView>,
     },
-    /// A body in a chunk the client holds set off (or is seen for the
-    /// first time) along a route: move it from `at` through the waypoints
-    /// at its speed.
+    /// A body within range set off along a route, walked into another
+    /// chunk, or is seen for the first time: move it from `at` through the
+    /// waypoints at its speed. Told again at each chunk it walks into
+    /// (A6), never at each tile.
     BodyWalks {
         /// Who.
         body: u32,
@@ -569,7 +580,8 @@ pub enum ServerMessage {
         /// Exactly where.
         at: Point,
     },
-    /// A body walked out of the chunks the client holds: forget it.
+    /// A body walked out of the creatures' range, or the range moved away
+    /// from it: forget it.
     BodyLeft {
         /// Who.
         body: u32,

@@ -72,6 +72,7 @@ func _init() -> void:
 	_test_tree_outlines_hold_every_texel()
 	_test_the_frame_cache_keeps_what_left_the_view()
 	_test_the_net_keeps_the_chunks_of_the_same_world_only()
+	_test_a_body_told_at_each_chunk_keeps_walking_its_route()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -2267,3 +2268,38 @@ func _test_the_net_keeps_the_chunks_of_the_same_world_only() -> void:
 	net._handle({"type": "world_state", "world": "second", "materials": []})
 	_check(not net.same_world and net.frames.live.is_empty() and net.frames.kept_count() == 0, "another world: nothing reused")
 	net.free()
+
+
+func _test_a_body_told_at_each_chunk_keeps_walking_its_route() -> void:
+	# Announced as it walks into range: east 40 m, then south 10 m, at
+	# 1.43 m/s, across a chunk border (32 m).
+	var corner := Vector2(40000, 5000)
+	var end := Vector2(40000, 15000)
+	var body := BodyWalk.told({}, Vector2(0, 5000), [corner, end], 1430.0)
+	_check(body["at"] == Vector2(0, 5000), "seen first: where the server says")
+	var before: Vector2 = body["at"]
+	for _i in 20:
+		BodyWalk.advance(body, 1.0)
+		_check((body["at"] as Vector2).distance_to(before) <= 1430.0 + 0.01, "no step longer than its speed")
+		before = body["at"]
+		if before.x >= 32500.0:
+			break
+	# Told again as it walks into the next chunk, a little behind where it
+	# is shown (the ground slowed it): it walks on from where it is shown.
+	var shown: Vector2 = body["at"]
+	var told := BodyWalk.told(body, Vector2(shown.x - 500.0, 5000), [corner, end], 1430.0)
+	_check(told["at"] == shown, "a body told near where it is shown does not jump")
+	_check(told["route"] == [corner, end], "and walks the route told")
+	# Past the corner when told again: the waypoint passed is left out.
+	var past := {"at": Vector2(40000, 6000), "route": [end], "speed": 1430.0}
+	var again := BodyWalk.told(past, Vector2(39000, 5000), [corner, end], 1430.0)
+	_check(again["at"] == Vector2(40000, 6000) and again["route"] == [end], "a waypoint passed is not walked back to")
+	# It walks on to the end and stops there.
+	for _i in 30:
+		BodyWalk.advance(told, 1.0)
+	_check(told["at"] == end and (told["route"] as Array).is_empty(), "the walk ends at the route's end")
+	# Far from where it is shown, or going elsewhere: where the server says.
+	var far := BodyWalk.told(past, Vector2(20000, 5000), [corner, end], 1430.0)
+	_check(far["at"] == Vector2(20000, 5000), "told far from where it is shown: stands where told")
+	var elsewhere := BodyWalk.told(past, Vector2(40000, 6000), [Vector2(0, 0)], 1430.0)
+	_check(elsewhere["route"] == [Vector2(0, 0)], "a new destination: the new route")

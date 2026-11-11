@@ -6,8 +6,10 @@ extends Node2D
 ## decided here (D03, D05).
 ##
 ## Bodies walk along the routes the server gives them (D32): the client
-## only interpolates between waypoints at the given speed, and snaps to
-## wherever the server says they stopped.
+## only interpolates between waypoints at the given speed (BodyWalk), told
+## again as a body walks into another chunk, and snaps to wherever the
+## server says they stopped. Bodies are told within about 150 m of the
+## piloted one (protocol v19, D5).
 ##
 ## Camera: mouse wheel zooms, dragging with the right or middle button
 ## pans, Space goes back to following the piloted body.
@@ -902,7 +904,10 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 
 
 func _on_body_walks(body: int, at: Vector2, route: Array, speed_cm_per_s: int) -> void:
-	_place(body, at, route, speed_cm_per_s)
+	# Told again at each chunk it walks into: walked on from where it is
+	# shown when near, so it never jumps.
+	var walk := BodyWalk.told(_bodies.get(body, {}), at, route, speed_cm_per_s * 10.0)
+	_place(body, walk["at"], walk["route"], speed_cm_per_s)
 	queue_redraw()
 
 
@@ -1020,26 +1025,10 @@ func _clamp_camera() -> void:
 func _step(delta: float) -> void:
 	var moving := false
 	for id: int in _bodies:
-		var entry: Dictionary = _bodies[id]
-		var route: Array = entry["route"]
-		if route.is_empty():
-			continue
 		# Walk along the route at the nominal speed; the server's stop
 		# message snaps the body wherever it really ended.
-		var budget: float = entry["speed"] * delta
-		var at: Vector2 = entry["at"]
-		while budget > 0.0 and not route.is_empty():
-			var next: Vector2 = route[0]
-			var distance := at.distance_to(next)
-			if distance <= budget:
-				at = next
-				route.pop_front()
-				budget -= distance
-			else:
-				at = at.move_toward(next, budget)
-				budget = 0.0
-		entry["at"] = at
-		moving = true
+		if BodyWalk.advance(_bodies[id], delta):
+			moving = true
 	_pan(delta)
 	if _following and _bodies.has(_piloted):
 		_camera.position = Iso.point_to_screen(_bodies[_piloted]["at"])

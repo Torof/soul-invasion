@@ -36,9 +36,10 @@ use sim::ground::{Ground, Version};
 use sim::lru::Lru;
 use sim::{BodyId, CHUNK_SIZE, ChunkPos, Content, FinePos, Intention, ItemId, Map, Pos, World};
 
+use crate::interest::{self, Inbox, Router};
 use crate::pool::ChunkPool;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{Bytes, Message};
@@ -89,12 +90,12 @@ pub const PLANT_CACHE_CHUNKS: usize = {
 /// client asking for it (D26).
 pub const FRAME_CACHE_CHUNKS: usize = PLANT_CACHE_CHUNKS;
 
-/// How many published messages a connection may fall behind before it
+/// How many published messages may wait for a connection before it
 /// misses some and is told its view again ([`Link::resync`]). A
 /// connection falls behind only when its task is starved of the network
 /// threads: it never waits on the wire nor builds chunks itself since
 /// the chunk pool (11 November 2026); it was 256.
-const BROADCAST_CAPACITY: usize = 1024;
+const INBOX_CAPACITY: usize = 1024;
 
 /// Messages handed to a connection's writer task ahead of the wire, at
 /// most: one, so an event never waits behind more than one chunk frame.
@@ -117,8 +118,8 @@ const PRIVATE_CAPACITY: usize = 16;
 
 type BoxError = Box<dyn Error + Send + Sync>;
 
-/// What the simulation thread publishes to every connection; each one
-/// keeps what falls inside its view.
+/// What the simulation thread publishes, handed to the connections it
+/// concerns by the place it happens in ([`Router`], D5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Published {
     /// A new game day began.
@@ -234,8 +235,10 @@ fn point(at: FinePos) -> Point {
 pub struct Shared {
     /// The world's current tick, updated by the simulation thread.
     pub tick: AtomicU64,
-    /// What the simulation thread publishes to every connection.
-    pub publish: broadcast::Sender<Published>,
+    /// The connections by the chunks they hold and the chunks within
+    /// their range: what the simulation thread publishes goes only to the
+    /// connections it concerns (D5).
+    router: Mutex<Router>,
     /// The ground. Static for now: nothing changes the terrain yet.
     pub map: Arc<Map>,
     /// Every body as last published, by id and by the chunk it stands in,
@@ -576,7 +579,6 @@ impl Drop for Admission<'_> {
 impl Shared {
     /// Creates the shared state from the world as it is at startup.
     pub fn new(world: &World, content: &Content, max_connections: usize, time_scale: f64) -> Self {
-        let (publish, _) = broadcast::channel(BROADCAST_CAPACITY);
         let materials: Vec<MaterialView> = content
             .materials
             .iter()
@@ -638,7 +640,7 @@ impl Shared {
         }
         let mut shared = Self {
             tick: AtomicU64::new(world.tick().0),
-            publish,
+            router: Mutex::new(Router::default()),
             map: world.shared_map(),
             bodies: Mutex::new(bodies),
             material_index: materials
@@ -754,6 +756,25 @@ impl Shared {
     /// Are the development tools on?
     pub fn is_dev(&self) -> bool {
         self.dev_overview.is_some()
+    }
+
+    /// Hands what the simulation published to the connections it
+    /// concerns (D5): the day and the night to all, an item's change to
+    /// those holding its chunk, a body's to those within range of it and
+    /// to its pilot.
+    pub fn publish(&self, event: &Published) {
+        self.router().publish(event);
+    }
+
+    /// A new connection's end of the router.
+    pub fn subscribe(&self) -> Inbox {
+        self.router().subscribe(INBOX_CAPACITY)
+    }
+
+    /// The router, locked: by the simulation thread at each event, by a
+    /// connection as its view moves.
+    fn router(&self) -> std::sync::MutexGuard<'_, Router> {
+        self.router.lock().expect("router not poisoned")
     }
 
     /// Records that a body set off: where it is and the route ahead.
@@ -1554,7 +1575,7 @@ async fn handle_connection(
 
     // Subscribe before answering hello so nothing is missed between the
     // welcome tick and the first published message.
-    let mut published = shared.publish.subscribe();
+    let mut inbox = shared.subscribe();
     let (private_tx, mut private) = mpsc::channel(PRIVATE_CAPACITY);
 
     let pilot = Pilot {
@@ -1588,6 +1609,7 @@ async fn handle_connection(
         Arc::clone(shared),
         Arc::clone(pool),
         peer,
+        inbox.id,
         pilot,
         private_tx,
         results_tx,
@@ -1655,32 +1677,24 @@ async fn handle_connection(
                     // are handled by the WebSocket layer itself.
                     Some(Ok(_)) => {}
                 },
-                message = published.recv() => match message {
-                    Ok(published) => {
+                message = inbox.events.recv() => match message {
+                    Some(published) => {
                         if link.forward(published) {
                             link.reassign();
                         }
-                    }
-                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                        // What the channel still holds is forwarded first,
-                        // late but whole; then the view is told again, newer
-                        // than everything sent before it.
-                        let mut skipped = skipped;
-                        loop {
-                            use broadcast::error::TryRecvError;
-                            match published.try_recv() {
-                                Ok(published) => {
-                                    if link.forward(published) {
-                                        link.reassign();
-                                    }
+                        if inbox.lagged.load(Ordering::Relaxed) > 0 {
+                            // What the inbox still holds is forwarded first,
+                            // late but whole; then the view is told again,
+                            // newer than everything sent before it.
+                            while let Ok(published) = inbox.events.try_recv() {
+                                if link.forward(published) {
+                                    link.reassign();
                                 }
-                                Err(TryRecvError::Lagged(more)) => skipped += more,
-                                Err(TryRecvError::Empty | TryRecvError::Closed) => break,
                             }
+                            link.resync(inbox.lagged.swap(0, Ordering::Relaxed));
                         }
-                        link.resync(skipped);
                     }
-                    Err(broadcast::error::RecvError::Closed) => return Ok(()),
+                    None => return Ok(()),
                 },
                 // The sender lives in the pilot set as long as this connection
                 // pilots a body, so the channel never closes before the loop ends.
@@ -1748,12 +1762,18 @@ struct Link {
     peer: SocketAddr,
     /// This connection's lane in the pool.
     lane: u64,
+    /// This connection, as the router knows it.
+    conn: u64,
     pilot: Pilot,
     /// The channel for messages meant for this pilot alone.
     private: mpsc::Sender<ServerMessage>,
     /// The chunks held (asked for or sent), and where the far view was
     /// last centred.
     view: View,
+    /// The chunks held within the creatures' range of the view's centre
+    /// ([`interest::BODY_RANGE_M`]): the bodies standing there are told,
+    /// those farther are not (D5).
+    range: BTreeSet<ChunkPos>,
     /// The chunks held, as the pool's jobs read them: a job for a chunk
     /// no longer here does nothing.
     wanted: Arc<Mutex<BTreeSet<ChunkPos>>>,
@@ -1768,7 +1788,8 @@ struct Link {
     /// that version, `chunk_same` goes instead of the frame. A guess:
     /// should the client not hold it, it says so and gets the frame.
     cache: Lru<ChunkPos, Version>,
-    /// The bodies the client was told of and not told to forget.
+    /// The bodies the client was told of and not told to forget: all
+    /// within range, as last told.
     known: BTreeSet<u32>,
     /// The events lane, encoded.
     events: VecDeque<Message>,
@@ -1783,6 +1804,7 @@ impl Drop for Link {
         // The jobs still waiting in the lane find nothing wanted and
         // build nothing for a connection that is gone.
         self.wanted.lock().expect("wanted not poisoned").clear();
+        self.shared.router().unsubscribe(self.conn);
     }
 }
 
@@ -1791,19 +1813,23 @@ impl Link {
         shared: Arc<Shared>,
         pool: Arc<ChunkPool>,
         peer: SocketAddr,
+        conn: u64,
         pilot: Pilot,
         private: mpsc::Sender<ServerMessage>,
         results: mpsc::UnboundedSender<ChunkGround>,
     ) -> Self {
         let lane = pool.lane();
+        shared.router().set_pilot(conn, pilot.body);
         Self {
             shared,
             pool,
             peer,
             lane,
+            conn,
             pilot,
             private,
             view: View::default(),
+            range: BTreeSet::new(),
             wanted: Arc::default(),
             awaiting: BTreeSet::new(),
             sent: BTreeMap::new(),
@@ -1873,7 +1899,7 @@ impl Link {
                     return Ok(None);
                 }
                 self.awaiting.remove(&chunk);
-                let bodies = self.shared.bodies_in(chunk);
+                let bodies = self.bodies_seen_in(chunk);
                 self.same(chunk, version, bodies).map(Some)
             }
             Some(Outgoing::Chunk(ground)) => {
@@ -1920,10 +1946,19 @@ impl Link {
         Ok(Message::text(encode(&same)?))
     }
 
+    /// The bodies standing in `chunk` if it is within range, else none.
+    fn bodies_seen_in(&self, chunk: ChunkPos) -> Vec<BodyState> {
+        if self.range.contains(&chunk) {
+            self.shared.bodies_in(chunk)
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Queues the bodies standing in `chunk` right after its frame, if
-    /// any.
+    /// any and if it is within range.
     fn tell_bodies(&mut self, chunk: ChunkPos, bodies: Vec<BodyState>) -> Result<(), BoxError> {
-        if !bodies.is_empty() {
+        if !bodies.is_empty() && self.range.contains(&chunk) {
             self.known.extend(bodies.iter().map(|b| b.id));
             // Next out, before any other event: the bodies of the frame's
             // own moment.
@@ -2039,8 +2074,60 @@ impl Link {
         {
             self.event(&window);
         }
+        self.move_range(centre);
         for chunk in shown {
             self.ask(chunk);
+        }
+    }
+
+    /// Moves the creatures' range to `centre` (D5), and tells the router
+    /// what this connection now holds and sees. The bodies of a chunk
+    /// held that comes within range are told (`chunk_bodies`), those
+    /// known that now stand out of it are forgotten (`body_left`); a chunk
+    /// whose frame is still to leave brings its bodies along.
+    fn move_range(&mut self, centre: ChunkPos) {
+        let range: BTreeSet<ChunkPos> = interest::body_range(&self.shared.map, centre)
+            .intersection(&self.view.chunks)
+            .copied()
+            .collect();
+        // The router first: whatever is published from now on reaches
+        // this connection, and what was before is in the bodies read next.
+        self.shared
+            .router()
+            .set_interest(self.conn, &self.view.chunks, &range);
+        let entered: Vec<ChunkPos> = range.difference(&self.range).copied().collect();
+        let left = self.range.difference(&range).next().is_some();
+        self.range = range;
+        if left {
+            let gone: Vec<u32> = self
+                .known
+                .iter()
+                .copied()
+                .filter(|&body| {
+                    self.shared
+                        .position_of(body)
+                        .is_some_and(|at| !self.range.contains(&at.chunk()))
+                })
+                .collect();
+            for body in gone {
+                self.known.remove(&body);
+                self.event(&ServerMessage::BodyLeft { body });
+            }
+        }
+        for chunk in entered {
+            if !self.sent.contains_key(&chunk) {
+                continue; // its frame brings them
+            }
+            let bodies = self.shared.bodies_in(chunk);
+            if bodies.is_empty() {
+                continue;
+            }
+            self.known.extend(bodies.iter().map(|b| b.id));
+            self.event(&ServerMessage::ChunkBodies {
+                x: chunk.x,
+                y: chunk.y,
+                bodies,
+            });
         }
     }
 
@@ -2063,6 +2150,7 @@ impl Link {
             self.shared.release_body(dead);
         }
         self.pilot.body = self.shared.take_body(self.private.clone());
+        self.shared.router().set_pilot(self.conn, self.pilot.body);
         match self.pilot.body {
             Some(body) => println!("connection {}: now pilots body {body}", self.peer),
             None => println!("connection {}: no free body, watching", self.peer),
@@ -2075,8 +2163,10 @@ impl Link {
     }
 
     /// Forwards what the simulation published, as far as this
-    /// connection's view is concerned, moving the view along with the
-    /// piloted body. Returns true when the piloted body just died.
+    /// connection's view and range are concerned (the router hands it a
+    /// little more: what was published before the view last moved),
+    /// moving the view along with the piloted body. Returns true when the
+    /// piloted body just died.
     fn forward(&mut self, published: Published) -> bool {
         let piloted = self.pilot.body;
         match published {
@@ -2087,12 +2177,12 @@ impl Link {
                 self.event(&ServerMessage::NightFell { day });
             }
             Published::BodySleeps { body, at, asleep } => {
-                if self.view.contains(at) {
+                if self.sees(at) {
                     self.event(&ServerMessage::BodySleeps { body, asleep });
                 }
             }
             Published::BodyDied { body, at, cause } => {
-                if self.view.contains(at) || Some(body) == piloted {
+                if self.sees(at) || Some(body) == piloted {
                     self.known.remove(&body);
                     self.event(&ServerMessage::BodyDied { body, cause });
                 }
@@ -2116,12 +2206,12 @@ impl Link {
                 }
             }
             Published::BodyHolds { body, at, item } => {
-                if self.view.contains(at) {
+                if self.sees(at) {
                     self.event(&ServerMessage::BodyHolds { body, item });
                 }
             }
             Published::BodyWalks { body, from, tick } => {
-                if self.view.contains(from) {
+                if self.sees(from) {
                     self.tell_walk(body, tick);
                 }
             }
@@ -2142,26 +2232,21 @@ impl Link {
                         self.far_view(to.chunk());
                     }
                 }
-                let (was_seen, is_seen) = (self.view.contains(from), self.view.contains(to));
-                if is_seen && !was_seen {
-                    // Walked into view: the client learns of it with its route.
+                // Published as a body walks into another chunk only (A6):
+                // within range, the client is told where it is and its
+                // route, whether it walked into range (it learns of it),
+                // came from a chunk whose frame is still to leave (neither
+                // frame carries it) or walked on in sight (the client's
+                // walk, on open ground's speed, set right). Out of range,
+                // it is forgotten.
+                if self.sees(to) {
                     self.tell_walk(body, tick);
-                } else if was_seen && !is_seen {
-                    self.known.remove(&body);
+                } else if self.known.remove(&body) {
                     self.event(&ServerMessage::BodyLeft { body });
-                } else if is_seen
-                    && self.sent.contains_key(&to.chunk())
-                    && !self.sent.contains_key(&from.chunk())
-                {
-                    // Stepped from a chunk whose frame is still to leave
-                    // into one the client already holds: neither frame
-                    // carries it (the first will be taken after the step,
-                    // the second was taken before), so it is told here.
-                    self.tell_walk(body, tick);
                 }
             }
             Published::BodyStopped { body, at } => {
-                if self.view.contains(at)
+                if self.sees(at)
                     && let Some(state) = self.shared.body_state(body)
                 {
                     self.known.insert(body);
@@ -2170,6 +2255,11 @@ impl Link {
             }
         }
         false
+    }
+
+    /// Is this tile within the creatures' range, its bodies told?
+    fn sees(&self, at: Pos) -> bool {
+        self.range.contains(&at.chunk())
     }
 
     /// Tells the client where `body` is and where it is going.
@@ -2213,11 +2303,12 @@ impl Link {
             self.event(&ServerMessage::NightFell { day });
         }
 
-        // The bodies in the chunks the client holds; those in chunks
-        // still to leave come with their frame.
+        // The bodies in the chunks the client holds within range; those
+        // in chunks still to leave come with their frame.
         let standing: BTreeMap<u32, BodyState> = self
             .sent
             .keys()
+            .filter(|chunk| self.range.contains(chunk))
             .flat_map(|&chunk| shared.bodies_in(chunk))
             .map(|state| (state.id, state))
             .collect();
@@ -2873,10 +2964,12 @@ mod tests {
             body,
         };
         let peer = "127.0.0.1:1".parse().expect("an address");
+        let conn = shared.subscribe().id;
         let link = Link::new(
             Arc::clone(shared),
             Arc::clone(pool),
             peer,
+            conn,
             pilot,
             private,
             results,
@@ -3001,12 +3094,18 @@ mod tests {
         // holds and is out now goes to its cache (and to the mirror of
         // it), nothing out of view is built or sent, each chunk comes once.
         let away = ChunkPos::new(home.x + VIEW_RADIUS + 3, home.y);
+        let known = link.known.len();
         link.move_view(away);
+        // The bodies known, out of range now, are forgotten.
         let out = drain(&mut link);
         assert!(matches!(
             out.as_slice(),
-            [Out::Message(ServerMessage::View { x, .. })] if *x > home.x - VIEW_RADIUS
+            [Out::Message(ServerMessage::View { x, .. }), rest @ ..]
+                if *x > home.x - VIEW_RADIUS
+                    && rest.len() == known
+                    && rest.iter().all(|m| matches!(m, Out::Message(ServerMessage::BodyLeft { .. })))
         ));
+        assert!(link.known.is_empty());
         let hidden = total - link.sent.len();
         assert!(hidden > 0);
         assert_eq!(link.cache.len(), hidden);
