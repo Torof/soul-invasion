@@ -91,7 +91,11 @@ var _holds: Dictionary = {}
 var _trees: Dictionary = {}
 ## species id -> height in centimetres.
 var _tree_heights: Dictionary = {}
-## chunk -> where its water runs, tile by tile (protocol `currents`).
+## The content ids of the kinds of tree, in `world_state`'s order: a
+## chunk's trees name their kind by its index.
+var _species_ids := PackedStringArray()
+## chunk -> where its water runs, tile by tile (protocol `currents`;
+## empty for a chunk without water).
 var _currents: Dictionary = {}
 ## Seeing through trees: how far the circles around the body and the
 ## mouse are open (eased), and whether each should be.
@@ -125,7 +129,8 @@ var _far: FarView
 var _far_dirty := true
 var _far_complete := false
 ## The kinds of shrub, plant and mushroom (Net.flora), and the plants of
-## each chunk held, as received ({kind, x, y}).
+## each chunk held, as received (Protocol.decode_chunk: three ints a plant,
+## its kind, then where it stands, x and y, in millimetres).
 var _flora: Array = []
 var _plants: Dictionary = {}
 ## The trees under a point are found without looking at every tree
@@ -189,13 +194,16 @@ func _ready() -> void:
 	_camera.zoom = Vector2.ONE * DEFAULT_ZOOM
 	Net.world_state.connect(_on_world_state)
 	Net.chunk.connect(_on_chunk)
+	Net.chunk_bodies.connect(_on_chunk_bodies)
 	_far = FarView.new()
 	add_child(_far)
 	Net.far_view.connect(_far.show_far)
 	Net.flora.connect(func(flora: Array) -> void: _flora = flora)
 	Net.species.connect(func(species: Array) -> void:
 		_tree_heights.clear()
+		_species_ids.clear()
 		for s in species:
+			_species_ids.append(str(s.get("id", "")))
 			_tree_heights[str(s.get("id", ""))] = int(s.get("height_cm", 400)))
 	# Tree images are four times the screen: mipmaps keep them clean when
 	# the camera pulls back.
@@ -311,11 +319,17 @@ func _set_night(night: bool) -> void:
 	modulate = Color(0.45, 0.5, 0.7) if lit else Color.WHITE
 
 
-func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees: Array = [], currents: Array = [], plants: Array = []) -> void:
+## A chunk as Protocol.decode_chunk gives it: its tiles' codes, currents,
+## trees, plants (packed arrays) and items.
+func _on_chunk(x: int, y: int, chunk: Dictionary) -> void:
 	var key := Vector2i(x, y)
-	var codes := TerrainGrid.codes(tiles)
-	var trees_hash := trees.hash()
-	var plants_hash := plants.hash()
+	var codes: PackedByteArray = chunk["tiles"]
+	var currents: PackedInt32Array = chunk["currents"]
+	var trees: PackedInt32Array = chunk["trees"]
+	var plants: PackedInt32Array = chunk["plants"]
+	var items: Array = chunk["items"]
+	var trees_hash := hash(trees)
+	var plants_hash := hash(plants)
 	# The chunk is held as data, its tiles laid in the terrain grid where
 	# the chunks around read their borders; a chunk sent again keeps its
 	# stand when its trees are the same (the tiles never change, D31).
@@ -338,7 +352,7 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees:
 		var old: Trees.Stand = _trees.get(key)
 		if old != null:
 			old.release()
-		_trees[key] = Trees.Stand.new(trees, _tree_heights)
+		_trees[key] = Trees.Stand.new(trees, _tree_heights, _species_ids)
 		_trees_version += 1
 	var view: ChunkView = _chunks.get(key)
 	if view != null:
@@ -362,6 +376,11 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees:
 		var middle := key * _chunk_size + Vector2i(_chunk_size / 2, _chunk_size / 2)
 		_camera.position = Iso.tile_to_screen(middle.x, middle.y)
 		_camera_placed = true
+	queue_redraw()
+
+
+## The bodies standing in a chunk, told right after its frame.
+func _on_chunk_bodies(_x: int, _y: int, bodies: Array) -> void:
 	for b in bodies:
 		var route: Array = []
 		for p in b.get("route", []):
@@ -559,7 +578,7 @@ func _build_chunk(key: Vector2i, at_once: bool) -> void:
 	view.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	view.tiles_hash = func(k: Vector2i) -> int: return int(_tile_hashes.get(k, 0))
 	view.current_at = current_at
-	view.currents_of = func(k: Vector2i) -> Array: return _currents.get(k, [])
+	view.currents_of = func(k: Vector2i) -> PackedInt32Array: return _currents.get(k, PackedInt32Array())
 	view.build_at_once = at_once
 	# Among the chunks built, in the order the server sent them.
 	var rank := int(_arrival.get(key, 0))
@@ -739,7 +758,7 @@ func look_at_tile(tile: Vector2i) -> void:
 ## tiles times its speed in metres a second; zero on land or unknown.
 func current_at(tile: Vector2i) -> Vector2:
 	var key := Iso.chunk_of(tile, _chunk_size)
-	var currents: Array = _currents.get(key, [])
+	var currents: PackedInt32Array = _currents.get(key, PackedInt32Array())
 	if currents.is_empty():
 		return Vector2.ZERO
 	var local := tile - key * _chunk_size
@@ -914,10 +933,10 @@ func _describe(tile: Vector2i) -> String:
 ## The kinds (indices into the flora) of the plants standing on `tile`.
 func plants_on(tile: Vector2i) -> Array:
 	var kinds: Array = []
-	for plant: Dictionary in _plants.get(Iso.chunk_of(tile, _chunk_size), []):
-		var at := _tile_of(Vector2(float(plant.get("x", 0)), float(plant.get("y", 0))))
-		if at == tile:
-			kinds.append(int(plant.get("kind", -1)))
+	var plants: PackedInt32Array = _plants.get(Iso.chunk_of(tile, _chunk_size), PackedInt32Array())
+	for i in range(0, plants.size(), 3):
+		if _tile_of(Vector2(plants[i + 1], plants[i + 2])) == tile:
+			kinds.append(plants[i])
 	return kinds
 
 
@@ -1160,11 +1179,12 @@ func _plant_chunk(key: Vector2i, view: ChunkView) -> void:
 	stand.parent = trees.get_canvas_item()
 	holder.visible = _trees_shown
 	# The tall plants stand among the trees, sorted with them by their foot.
-	for plant: Dictionary in _plants.get(key, []):
-		var k := int(plant.get("kind", -1))
+	var plants: PackedInt32Array = _plants.get(key, PackedInt32Array())
+	for i in range(0, plants.size(), 3):
+		var k := plants[i]
 		if k < 0 or k >= _flora.size() or not ChunkView.plant_stands(_flora[k]):
 			continue
-		var at := Vector2(float(plant.get("x", 0)), float(plant.get("y", 0)))
+		var at := Vector2(plants[i + 1], plants[i + 2])
 		var region := ChunkView.plant_region(at, _flora[k])
 		if region.size == Vector2.ZERO:
 			continue

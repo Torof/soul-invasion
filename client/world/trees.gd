@@ -491,10 +491,15 @@ class Stand:
 	## The stand is built: its trees may show from now on.
 	signal was_built
 
-	## `trees`: as the server sends them ({"at": {x, y}, "species"});
-	## `heights`: species id -> height in centimetres.
-	func _init(trees: Array = [], tree_heights: Dictionary = {}) -> void:
-		var n := trees.size()
+	## `trees`: as a chunk brings them (Protocol.decode_chunk: three ints
+	## a tree, its species' index in `species_ids`, then where it stands, x
+	## and y, in millimetres), or as dictionaries ({"at": {x, y},
+	## "species"}); `heights`: species id -> height in centimetres.
+	func _init(trees: Variant = [], tree_heights: Dictionary = {}, species_ids := PackedStringArray()) -> void:
+		var packed: bool = trees is PackedInt32Array
+		var triples: PackedInt32Array = trees if packed else PackedInt32Array()
+		var listed: Array = [] if packed else trees
+		var n := triples.size() / 3 if packed else listed.size()
 		at.resize(n)
 		rects.resize(n * 2)
 		images.resize(n)
@@ -504,11 +509,17 @@ class Stand:
 		kind.resize(n)
 		var which: Dictionary = {}
 		for i in n:
-			var t: Dictionary = trees[i]
-			var species := str(t.get("species", ""))
-			# As Net.point reads it.
-			var place: Variant = t.get("at", {})
-			at[i] = Vector2(float(place.get("x", 0)), float(place.get("y", 0))) if place is Dictionary else Vector2.ZERO
+			var species: String
+			if packed:
+				var index := triples[i * 3]
+				species = species_ids[index] if index < species_ids.size() else ""
+				at[i] = Vector2(triples[i * 3 + 1], triples[i * 3 + 2])
+			else:
+				var t: Dictionary = listed[i]
+				species = str(t.get("species", ""))
+				# As Net.point reads it.
+				var place: Variant = t.get("at", {})
+				at[i] = Vector2(float(place.get("x", 0)), float(place.get("y", 0))) if place is Dictionary else Vector2.ZERO
 			var k: Variant = which.get(species)
 			if k == null:
 				k = kinds.size()

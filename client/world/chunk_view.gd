@@ -132,7 +132,7 @@ var current_at: Callable
 ## world view): the signature of the ground below reads nine of them
 ## instead of three thousand tiles.
 var tiles_hash: Callable
-## The currents of a chunk as received (Vector2i -> Array; set by the
+## The currents of a chunk as received (Vector2i -> PackedInt32Array; set by the
 ## world view): a worker reads a copy of those around the chunk rather
 ## than the world view's own (`current_at`).
 var currents_of: Callable
@@ -858,7 +858,7 @@ var _decor_cache: Array = []
 ## ground and below the trees. `with_ground`: worked out on a worker with
 ## the chunk's ground and laid with it (a chunk being built, C3), rather
 ## than here (plants changed on a chunk built).
-func show_plants(plants: Array, flora: Array, with_ground := false) -> void:
+func show_plants(plants: PackedInt32Array, flora: Array, with_ground := false) -> void:
 	var layer: PlantLayer = get_node_or_null("Plants")
 	if layer == null:
 		layer = PlantLayer.new()
@@ -971,30 +971,33 @@ class PlantLayer:
 	## [texture rect, atlas region], nearest the back first.
 	var _draws: Array = []
 
-	func set_plants(plants: Array, flora: Array) -> void:
+	func set_plants(plants: PackedInt32Array, flora: Array) -> void:
 		set_draws(draws_of(plants, flora))
 
 	func set_draws(draws: Array) -> void:
 		_draws = draws
 		queue_redraw()
 
-	## What `plants` (as received) draw on the layer, nearest the back
-	## first: [texture rect, atlas region, tint]. Pure: a worker may run it
-	## once the atlas is read (ChunkView.flora_atlas).
-	static func draws_of(plants: Array, flora: Array) -> Array:
+	## What `plants` (as received: kind, x, y each) draw on the layer,
+	## nearest the back first: [texture rect, atlas region, tint]. Pure: a
+	## worker may run it once the atlas is read (ChunkView.flora_atlas).
+	static func draws_of(plants: PackedInt32Array, flora: Array) -> Array:
 		var draws: Array = []
-		var sorted := plants.duplicate()
-		# Drawn from the back to the front (the screen's depth is x + y).
-		sorted.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-			return int(a.get("x", 0)) + int(a.get("y", 0)) < int(b.get("x", 0)) + int(b.get("y", 0)))
-		for plant: Dictionary in sorted:
-			var k := int(plant.get("kind", -1))
+		var sorted: Array = range(0, plants.size(), 3)
+		# Drawn from the back to the front (the screen's depth is x + y),
+		# ties in the order received.
+		sorted.sort_custom(func(a: int, b: int) -> bool:
+			var da := plants[a + 1] + plants[a + 2]
+			var db := plants[b + 1] + plants[b + 2]
+			return da < db or (da == db and a < b))
+		for i: int in sorted:
+			var k := plants[i]
 			if k < 0 or k >= flora.size():
 				continue
 			var kind: Dictionary = flora[k]
 			if ChunkView.plant_stands(kind):
 				continue
-			var at := Vector2(float(plant.get("x", 0)), float(plant.get("y", 0)))
+			var at := Vector2(plants[i + 1], plants[i + 2])
 			var region := ChunkView.plant_region(at, kind)
 			if region.size == Vector2.ZERO:
 				continue

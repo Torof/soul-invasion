@@ -10,7 +10,9 @@ signal world_state(width: int, height: int, chunk_size: int, materials: Array, n
 signal clock(clock: Dictionary)
 ## The kinds of tree, sent with the world's state, before it.
 signal species(species: Array)
-signal chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees: Array, currents: Array, plants: Array)
+signal chunk(x: int, y: int, chunk: Dictionary)
+## The bodies standing in a chunk, right after its frame (when any).
+signal chunk_bodies(x: int, y: int, bodies: Array)
 ## The kinds of shrub, plant and mushroom ({id, name, family, height_cm}),
 ## in the order chunks' plants refer to them.
 signal flora(flora: Array)
@@ -56,6 +58,9 @@ var _url := DEFAULT_URL
 var _reconnect_in := 0.0
 ## Whether a server ever welcomed this client.
 var _ever_welcomed := false
+## The content ids of the world's materials, in order: a chunk frame names
+## its items' materials by their index.
+var _material_ids := PackedStringArray()
 
 ## True once the server has welcomed us.
 var is_ready := false
@@ -153,8 +158,11 @@ func _process(_delta: float) -> void:
 		while _peer.get_available_packet_count() > 0:
 			var t := DevTiming.start()
 			DevWatchdog.phase = DevWatchdog.NETWORK
-			var text := _peer.get_packet().get_string_from_utf8()
-			_handle(Protocol.decode(text))
+			var packet := _peer.get_packet()
+			if _peer.was_string_packet():
+				_handle(Protocol.decode(packet.get_string_from_utf8()))
+			else:
+				_handle_chunk(packet)
 			DevWatchdog.phase = DevWatchdog.ELSEWHERE
 			DevTiming.add("network messages", t)
 	elif state == WebSocketPeer.STATE_CLOSED and _state != WebSocketPeer.STATE_CLOSED:
@@ -180,6 +188,15 @@ static func point(p: Variant) -> Vector2:
 	return Vector2.ZERO
 
 
+## A chunk's binary frame: decoded (Protocol.decode_chunk) and told.
+func _handle_chunk(bytes: PackedByteArray) -> void:
+	var decoded := Protocol.decode_chunk(bytes, _material_ids)
+	if decoded.is_empty():
+		push_warning("a chunk frame that does not decode (%d bytes)" % bytes.size())
+		return
+	chunk.emit(int(decoded["x"]), int(decoded["y"]), decoded)
+
+
 func _handle(message: Dictionary) -> void:
 	match message.get("type", ""):
 		"welcome":
@@ -193,6 +210,9 @@ func _handle(message: Dictionary) -> void:
 			body = int(assigned) if assigned != null else -1
 			connected.emit(int(message.get("tick", 0)), body)
 		"world_state":
+			_material_ids.clear()
+			for m in message.get("materials", []):
+				_material_ids.append(str(m.get("id", "")))
 			species.emit(message.get("species", []))
 			flora.emit(message.get("flora", []))
 			world_state.emit(
@@ -203,17 +223,8 @@ func _handle(message: Dictionary) -> void:
 				bool(message.get("night", false))
 			)
 			clock.emit(message.get("clock", {}))
-		"chunk":
-			chunk.emit(
-				int(message.get("x", 0)),
-				int(message.get("y", 0)),
-				message.get("tiles", []),
-				message.get("bodies", []),
-				message.get("items", []),
-				message.get("trees", []),
-				message.get("currents", []),
-				message.get("plants", [])
-			)
+		"chunk_bodies":
+			chunk_bodies.emit(int(message.get("x", 0)), int(message.get("y", 0)), message.get("bodies", []))
 		"chunk_hidden":
 			chunk_hidden.emit(int(message.get("x", 0)), int(message.get("y", 0)))
 		"body_left":
