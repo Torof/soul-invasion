@@ -22,8 +22,7 @@ func _init() -> void:
 	_test_inventory_lines_and_refusals()
 	_test_brooks_are_lines_on_the_ground()
 	_test_trees_stand_on_their_foot()
-	_test_the_shore_field_measures_the_bank()
-	_test_the_shore_field_blurs_as_three_boxes()
+	_test_the_water_meshes_blur_as_three_boxes()
 	_test_the_terrain_grid_holds_bytes()
 	_test_the_ground_index_says_what_each_canvas_draws()
 	_test_currents_decode()
@@ -35,7 +34,6 @@ func _init() -> void:
 	_test_plants_are_named_and_coloured()
 	_test_trees_sharpness_eases_with_the_zoom()
 	_test_the_zoom_steps_through_round_levels_up_to_2_5()
-	_test_the_shore_field_holds_every_chunk_held()
 	_test_the_bounds_of_the_chunks_held()
 	_test_the_camera_stops_at_the_band()
 	_test_the_watcher_sees_the_client_files()
@@ -60,11 +58,13 @@ func _init() -> void:
 	_test_the_water_meshes_cover_the_water_once()
 	_test_the_water_meshes_join_across_chunks()
 	_test_the_water_meshes_measure_the_bank()
+	_test_the_water_meshes_merge_the_deep_water()
+	_test_a_brooks_current_is_its_tiles_own()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
 func _initialize() -> void:
-	await _test_the_shore_field_in_slices()
+	await process_frame
 	print("client tests: %d checks, %d failures" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
 
@@ -289,9 +289,6 @@ func _test_brooks_are_lines_on_the_ground() -> void:
 	ends.sort()
 	_check(ends == ["mouth", "spring"], "a spring and a mouth: %s" % [ends])
 	# It runs from its spring towards its mouth.
-	var sign := BrookLines.runs_towards_end(brook)
-	var first_kind: String = (brook["ends"] as Array)[0]
-	_check((sign > 0.0) == (first_kind == "spring"), "a brook runs from its spring: %s %s" % [first_kind, sign])
 	var pts: PackedVector2Array = brook["pts"]
 	var widths: PackedFloat32Array = brook["widths"]
 	var alphas: PackedFloat32Array = brook["alphas"]
@@ -382,113 +379,51 @@ func _test_trees_stand_on_their_foot() -> void:
 	_check(shown.size() == oak.size(), "neighbouring oaks show every image")
 
 
-func _test_the_shore_field_measures_the_bank() -> void:
-	_check(absf(ShoreField.probit(0.975) - 1.96) < 0.01, "the inverse normal curve: %f" % ShoreField.probit(0.975))
-	# Water east of x = 40 on a straight edge, over two chunks side by side.
-	var terrain := func(t: Vector2i) -> String: return "water" if t.x >= 40 else "grass"
-	ShoreField.update(ShoreField.block_of(terrain, Vector2i(32, 0), 32), Vector2i(32, 0), 32)
-	ShoreField.update(ShoreField.block_of(terrain, Vector2i(32, 32), 32), Vector2i(32, 32), 32)
-	for y: float in [10.0, 31.9, 32.1, 50.0]:
-		_check(absf(ShoreField.distance_at(Vector2(40.0, y))) < 0.15, "the edge at x = 40 (y %s): %f" % [y, ShoreField.distance_at(Vector2(40.0, y))])
-		_check(absf(ShoreField.distance_at(Vector2(38.5, y)) - 1.5) < 0.2, "1.5 tiles inland: %f" % ShoreField.distance_at(Vector2(38.5, y)))
-		_check(absf(ShoreField.distance_at(Vector2(41.5, y)) + 1.5) < 0.2, "1.5 tiles out in the water: %f" % ShoreField.distance_at(Vector2(41.5, y)))
-	# A step of one tile in the edge comes out smooth: halfway along the
-	# step, the edge lies between the two lines of tiles.
-	var stepped := func(t: Vector2i) -> String: return "water" if t.x >= (40 if t.y < 80 else 41) else "grass"
-	ShoreField.update(ShoreField.block_of(stepped, Vector2i(32, 64), 32), Vector2i(32, 64), 32)
-	var at_step := ShoreField.distance_at(Vector2(40.5, 80.0))
-	_check(absf(at_step) < 0.25, "the step is smoothed: %f at its middle" % at_step)
-	# A pond's corner is rounded: the corner point of the tiles lies on
-	# the land side of the smoothed edge.
-	var pond := func(t: Vector2i) -> String: return "water" if t.x >= 100 and t.y >= 100 else "grass"
-	ShoreField.update(ShoreField.block_of(pond, Vector2i(96, 96), 32), Vector2i(96, 96), 32)
-	_check(ShoreField.distance_at(Vector2(100.0, 100.0)) > 0.15, "a corner comes out round: %f" % ShoreField.distance_at(Vector2(100.0, 100.0)))
-	# A ford: water for the bank, and its own channel, high inside, nothing
-	# far from it.
-	var forded := func(t: Vector2i) -> String:
-		if t.x < 140:
-			return "grass"
-		return "ford" if t.y >= 140 and t.y < 146 else "water"
-	ShoreField.update(ShoreField.block_of(forded, Vector2i(128, 128), 32), Vector2i(128, 128), 32)
-	_check(ShoreField.distance_at(Vector2(150.0, 143.0)) < -1.0, "a ford is water for the bank")
-	_check(ShoreField.ford_at(Vector2(150.0, 143.0)) > 0.7, "inside the ford: %f" % ShoreField.ford_at(Vector2(150.0, 143.0)))
-	_check(ShoreField.ford_at(Vector2(150.0, 152.0)) < 0.05, "deep water away from the ford: %f" % ShoreField.ford_at(Vector2(150.0, 152.0)))
-	# The water runs where the server says, the land between keeps still.
-	var river := func(t: Vector2i) -> String: return "water" if t.x >= 200 and t.x < 210 else "grass"
-	var runs := func(_t: Vector2i) -> Vector2: return Vector2(0.0, 0.6)
-	# A block without water lays land, no ford and still water, the same
-	# bytes a wet block's encoding gives them, from pieces made once.
-	ShoreField.update(ShoreField.block_of(river, Vector2i(192, 192), 32), Vector2i(192, 192), 32, runs)
-	var meadow := func(_t: Vector2i) -> String: return "grass"
-	ShoreField.update(ShoreField.block_of(meadow, Vector2i(192, 192), 32), Vector2i(192, 192), 32)
-	var dry_bank := ShoreField._bank_image.get_region(Rect2i(192 * ShoreField.PX, 192 * ShoreField.PX, 32 * ShoreField.PX, 32 * ShoreField.PX)).get_data()
-	var dry_water := ShoreField._water_image.get_region(Rect2i(192, 192, 32, 32)).get_data()
-	var all_land := PackedByteArray()
-	all_land.resize(dry_bank.size())
-	all_land.fill(255)
-	var still_water := PackedByteArray()
-	for i in 32 * 32:
-		still_water.append_array(PackedByteArray([0, 128, 128, 255]))
-	_check(dry_bank == all_land and dry_water == still_water, "a dry block: all land, no ford, still water")
-	ShoreField.update(ShoreField.block_of(river, Vector2i(192, 192), 32), Vector2i(192, 192), 32, runs)
-	_check(ShoreField.flow_at(Vector2(205.0, 200.0)).distance_to(Vector2(0.0, 0.6)) < 0.03, "the water runs down the river: %s" % ShoreField.flow_at(Vector2(205.0, 200.0)))
-	_check(ShoreField.flow_at(Vector2(194.0, 200.0)).length() < 0.03, "still far from the water: %s" % ShoreField.flow_at(Vector2(194.0, 200.0)))
-	_check(ShoreField.flow_at(Vector2(199.5, 200.0)).y > 0.4, "the bank's edge runs with the river: %s" % ShoreField.flow_at(Vector2(199.5, 200.0)))
-	var edge := ShoreField.ford_at(Vector2(150.0, 140.0))
-	_check(edge > 0.3 and edge < 0.7, "the ford's edge is soft: %f" % edge)
-	# The texture repeats over the map: a chunk past its width lands where
-	# the first ones were, and reads back at its own place.
-	var far_edge := func(t: Vector2i) -> String: return "water" if t.x >= ShoreField.TILES + 50 else "grass"
-	var map_size := ShoreField.map_size
-	ShoreField.map_size = Vector2i(4 * ShoreField.TILES, 4 * ShoreField.TILES)
-	ShoreField.update(ShoreField.block_of(far_edge, Vector2i(ShoreField.TILES + 32, 0), 32), Vector2i(ShoreField.TILES + 32, 0), 32)
-	ShoreField.map_size = map_size
-	_check(absf(ShoreField.distance_at(Vector2(ShoreField.TILES + 50.0, 10.0))) < 0.15, "the edge past the texture's width: %f" % ShoreField.distance_at(Vector2(ShoreField.TILES + 50.0, 10.0)))
-	_check(absf(ShoreField.distance_at(Vector2(ShoreField.TILES + 48.5, 10.0)) - 1.5) < 0.2, "inland past the texture's width")
-
-
-## The bank's smoothing, one convolution of the tiles, gives the bytes
-## the three box blurs of the tiles drawn at PX pixels gave (the way it
-## was computed before, kept here as the reference).
-func _test_the_shore_field_blurs_as_three_boxes() -> void:
+## The water's line, one convolution of the tiles, gives at the lattice
+## points what the three box blurs of the tiles drawn at PX pixels gave
+## (the way the distance-field texture was computed, kept here as the
+## reference).
+func _test_the_water_meshes_blur_as_three_boxes() -> void:
 	var size := 32
-	var n := size + 2 * ShoreField.MARGIN
-	var px := ShoreField.PX
+	var n := size + 2 * WaterMeshes.MARGIN
+	var px := WaterMeshes.PX
 	var w := n * px
-	var mask := PackedFloat32Array()
-	mask.resize(n * n)
 	var noise := FastNoiseLite.new()
 	noise.frequency = 0.05
-	for ty in n:
-		for tx in n:
-			mask[ty * n + tx] = 1.0 if noise.get_noise_2d(tx, ty) < -0.05 else 0.0
+	var terrain := func(t: Vector2i) -> String: return "water" if noise.get_noise_2d(t.x + WaterMeshes.MARGIN, t.y + WaterMeshes.MARGIN) < -0.05 else "grass"
+	var lo := Vector2i.ZERO
+	var prepared := WaterMeshes.prepare(WaterMeshes.block_of(terrain, lo, size), lo, size, Callable())
+	var mask: PackedFloat32Array = prepared["mask"]
 	var field := PackedFloat32Array()
 	field.resize(w * w)
 	for y in w:
 		for x in w:
 			field[y * w + x] = mask[floori(float(y) / px) * n + floori(float(x) / px)]
-	for _pass in ShoreField.BLUR_PASSES:
-		_box_rows(field, w, ShoreField.BLUR)
-		_box_columns(field, w, ShoreField.BLUR)
-	var inner := size * px
-	var sigma := sqrt(ShoreField.BLUR_PASSES * (pow(2.0 * ShoreField.BLUR + 1.0, 2.0) - 1.0) / 12.0) / px
-	var expected := PackedByteArray()
-	expected.resize(inner * inner)
-	for y in inner:
-		for x in inner:
-			var v := field[(y + ShoreField.MARGIN * px) * w + x + ShoreField.MARGIN * px]
-			var d := -sigma * ShoreField.probit(clampf(v, 0.0005, 0.9995))
-			expected[y * inner + x] = int(round(clampf((d + ShoreField.RANGE) / (2.0 * ShoreField.RANGE), 0.0, 1.0) * 255.0))
-	var out := [PackedByteArray(), PackedByteArray()]
-	var weights := [ShoreField._weights_of("bank", size), ShoreField._weights_of("centre", size), ShoreField._weights_of("ford", size)]
-	var none := PackedFloat32Array()
-	none.resize(n * n)
-	ShoreField._smooth(out, mask, none, none, none, n, size, weights, false, false, true)
-	var bank: PackedByteArray = out[0]
-	var worst := 0
-	for i in inner * inner:
-		worst = maxi(worst, absi(int(bank[i]) - int(expected[i])))
-	_check(bank.size() == expected.size() and worst == 0, "the bank's distance as the three blurs gave it (worst difference %d)" % worst)
+	for _pass in WaterMeshes.BLUR_PASSES:
+		_box_rows(field, w, WaterMeshes.BLUR)
+		_box_columns(field, w, WaterMeshes.BLUR)
+	var out: Array = []
+	WaterMeshes.build(prepared, out)
+	var d: PackedFloat32Array = out[3]
+	var l := px * size + 6
+	var worst := 0.0
+	for b in l:
+		for a in l:
+			# Lattice point a lies on the boundary between the pixels
+			# (MARGIN * PX + a - 2) and the next: the mean of the two.
+			var x := WaterMeshes.MARGIN * px + a - 2
+			var y := WaterMeshes.MARGIN * px + b - 2
+			var v := (field[y * w + x] + field[y * w + x + 1] + field[(y + 1) * w + x] + field[(y + 1) * w + x + 1]) / 4.0
+			var expected := -WaterMeshes.sigma() * WaterMeshes.probit(clampf(v, 0.0005, 0.9995))
+			worst = maxf(worst, absf(d[b * l + a] - expected))
+	_check(worst < 1e-4, "the lattice's distances as the three blurs gave them (worst difference %f)" % worst)
+	# A point asked for on its own reads the same field.
+	var asked := 0.0
+	for b in range(0, l, 7):
+		for a in range(0, l, 5):
+			var at := Vector2(lo) + Vector2(float(a) / px - 0.25, float(b) / px - 0.25)
+			asked = maxf(asked, absf(WaterMeshes.distance_at(prepared, at) - d[b * l + a]))
+	_check(asked < 1e-4, "a point asked for alone reads the lattice's value (worst difference %f)" % asked)
 
 
 ## One box blur along the rows, its edges held (the former smoothing).
@@ -553,69 +488,36 @@ func _test_the_terrain_grid_holds_bytes() -> void:
 ## A chunk's build writes in the ground index which canvases draw each
 ## tile: the forest on its tiles and, with a fading opacity at the
 ## corners, over the grass beside it; the grass under the water at the
-## bank; the water over the land within two tiles of it.
+## bank, nothing under the water away from it (the meshes draw it).
 func _test_the_ground_index_says_what_each_canvas_draws() -> void:
 	var origin := Vector2i(320, 320)
 	var tiles: Array = []
 	for y in 32:
 		for x in 32:
 			tiles.append("forest" if x < 10 else ("water" if x >= 24 else "grass"))
-	var map_size := ShoreField.map_size
-	ShoreField.map_size = Vector2i(1024, 1024)
+	var map_size := WaterMeshes.map_size
+	WaterMeshes.map_size = Vector2i(1024, 1024)
 	var view := ChunkView.new()
 	view.show_chunk(origin, 32, tiles, [], {})
 	view._draw_ground_layers()
-	ShoreField.map_size = map_size
+	WaterMeshes.map_size = map_size
 	var at := func(x: int, y: int) -> PackedByteArray: return GroundIndex.at(origin + Vector2i(x, y))
 	var grass := int(GroundIndex.BITS["grass"])
 	var forest := int(GroundIndex.BITS["forest"])
-	var water := int(GroundIndex.BITS["water"])
 	_check(at.call(5, 5)[0] == forest, "the wood is the forest's: %s" % at.call(5, 5))
 	_check(at.call(10, 5)[0] == grass | GroundIndex.FRINGE and at.call(10, 5)[1] == 255, "the grass at the wood's edge, under its spill, opaque at the shared corner: %s" % at.call(10, 5))
 	_check(at.call(11, 5)[1] == 170 and at.call(12, 5)[1] == 85 and at.call(13, 5)[1] == 0, "the spill fades over two tiles")
 	_check(at.call(12, 5)[0] == grass | GroundIndex.FRINGE and at.call(13, 5)[0] == grass, "and stops after them")
-	_check(at.call(22, 5)[0] == grass | water and at.call(21, 5)[0] == grass, "the water reaches over the land within two tiles: %s %s" % [at.call(22, 5), at.call(21, 5)])
-	_check(at.call(24, 5)[0] == water | grass and at.call(30, 5)[0] == water, "the grass lies under the water at the bank only: %s %s" % [at.call(24, 5), at.call(30, 5)])
+	_check(at.call(22, 5)[0] == grass and at.call(23, 5)[0] == grass, "the land up to the water is its own: %s %s" % [at.call(22, 5), at.call(23, 5)])
+	_check(at.call(24, 5)[0] == grass and at.call(25, 5)[0] == 0 and at.call(30, 5)[0] == 0, "the grass lies under the water at the bank only, the water meshes draw the rest: %s %s %s" % [at.call(24, 5), at.call(25, 5), at.call(30, 5)])
 	var shown: Array = []
 	for child in view.get_children():
 		if child is ChunkView.GroundCanvas and (child as ChunkView.GroundCanvas).shown:
 			shown.append((child as ChunkView.GroundCanvas).terrain)
 	shown.sort()
-	_check(shown == ["forest", "grass", "water"], "one canvas a terrain drawn: %s" % [shown])
+	_check(shown == ["forest", "grass"], "one canvas a terrain drawn, none for the water: %s" % [shown])
 	view.free()
 	TerrainGrid.clear(origin, 32)
-
-
-func _test_the_shore_field_in_slices() -> void:
-	# On another core, the field comes out the same as at once; an update
-	# overtaken by a newer one for its block gives up.
-	var river := func(t: Vector2i) -> String:
-		if t.x >= 70 and t.x < 76:
-			return "ford" if t.y >= 40 and t.y < 44 else "water"
-		return "grass"
-	var land := func(_t: Vector2i) -> String: return "grass"
-	var runs := func(_t: Vector2i) -> Vector2: return Vector2(0.5, 0.0)
-	var block := Rect2i(Vector2i(64, 32) * ShoreField.PX, Vector2i(32, 32) * ShoreField.PX)
-	var waters := Rect2i(Vector2i(64, 32), Vector2i(32, 32))
-	var state := func() -> PackedByteArray:
-		var bytes := ShoreField._bank_image.get_region(block).get_data()
-		bytes.append_array(ShoreField._water_image.get_region(waters).get_data())
-		return bytes
-	ShoreField.update(ShoreField.block_of(river, Vector2i(64, 32), 32), Vector2i(64, 32), 32, runs)
-	var at_once: PackedByteArray = state.call()
-	ShoreField.update(ShoreField.block_of(land, Vector2i(64, 32), 32), Vector2i(64, 32), 32)
-	ShoreField.update(ShoreField.block_of(river, Vector2i(64, 32), 32), Vector2i(64, 32), 32, runs, true)
-	var landed: PackedByteArray = state.call()
-	for i in 60:
-		await process_frame
-	_check(landed != at_once, "an update on another core writes later")
-	_check(state.call() == at_once, "on another core, the same field as at once")
-	ShoreField.update(ShoreField.block_of(river, Vector2i(64, 32), 32), Vector2i(64, 32), 32, runs, true)
-	ShoreField.update(ShoreField.block_of(land, Vector2i(64, 32), 32), Vector2i(64, 32), 32)
-	var bare: PackedByteArray = state.call()
-	for i in 60:
-		await process_frame
-	_check(state.call() == bare, "an overtaken update gives up")
 
 
 func _test_trees_sharpness_eases_with_the_zoom() -> void:
@@ -658,7 +560,7 @@ func _test_plants_are_named_and_coloured() -> void:
 func _test_perf_overlay_reports() -> void:
 	var perf := PerfOverlay.new()
 	var text := perf.report(12.5)
-	_check(text.contains("fps") and text.contains("12.5 ms") and text.contains("frame step") and text.contains("draw calls") and text.contains("wind on") and text.contains("fog rings (F9)") and text.contains("water meshes (F7)"), "the counters report: %s" % text)
+	_check(text.contains("fps") and text.contains("12.5 ms") and text.contains("frame step") and text.contains("draw calls") and text.contains("wind on") and text.contains("fog rings (F7)") and text.contains("streaks on (F11)"), "the counters report: %s" % text)
 	# F5: the ground plain, then exactly as it was.
 	var grass := ChunkView.ground_material("grass")
 	var real := grass.shader
@@ -750,15 +652,6 @@ func _test_the_camera_stops_at_the_band() -> void:
 					_check(within.call(tile), "the screen stops at the band (%s): %s" % [corners, tile])
 
 
-## The bank texture repeats every ShoreField.TILES: wider than the
-## chunks a client holds (the server's 19 × 19 view, with the margin read
-## around a chunk), or
-## two chunks held would draw each other's banks.
-func _test_the_shore_field_holds_every_chunk_held() -> void:
-	var held := (2 * 9 + 1) * 32
-	_check(ShoreField.TILES >= held + 2 * ShoreField.MARGIN, "the bank texture is wider than the chunks held: %d" % ShoreField.TILES)
-
-
 ## The limit of the view moves with the body, tile by tile, and stays
 ## inside the ground held with room for the band and the fog.
 func _test_the_view_follows_the_body_tile_by_tile() -> void:
@@ -800,10 +693,10 @@ func _test_the_first_connection_is_tried_again_soon() -> void:
 
 func _test_currents_decode() -> void:
 	# Must agree with `current_code` on the server: heading × 256 + speed.
-	_check(ShoreField.current_vector(0) == Vector2.ZERO, "no current on land")
-	var south := ShoreField.current_vector(0 * 256 + 50)
+	_check(WaterMeshes.current_vector(0) == Vector2.ZERO, "no current on land")
+	var south := WaterMeshes.current_vector(0 * 256 + 50)
 	_check(south.distance_to(Vector2(0, 0.5)) < 1e-4, "heading 0 runs +y at 0.5 m/s: %s" % south)
-	var east := ShoreField.current_vector(4 * 256 + 35)
+	var east := WaterMeshes.current_vector(4 * 256 + 35)
 	_check(east.distance_to(Vector2(0.35, 0)) < 1e-4, "heading 4 runs +x: %s" % east)
 
 
@@ -1369,7 +1262,7 @@ func _test_the_water_meshes_cover_the_water_once() -> void:
 	var runs := func(_t: Vector2i) -> Vector2: return Vector2(0.0, 0.5)
 	var lo := Vector2i(32, 0)
 	var size := 32
-	var prepared := WaterMeshes.prepare(ShoreField.block_of(river, lo, size), lo, size, runs)
+	var prepared := WaterMeshes.prepare(WaterMeshes.block_of(river, lo, size), lo, size, runs)
 	_check(not prepared.is_empty(), "a block with water prepares")
 	var out: Array = []
 	WaterMeshes.build(prepared, out)
@@ -1400,23 +1293,28 @@ func _test_the_water_meshes_cover_the_water_once() -> void:
 	var bank: Dictionary = out[1]
 	for mesh: Dictionary in [water, bank]:
 		var points: PackedVector2Array = mesh["points"]
-		var ok := points.size() == (mesh["uvs"] as PackedVector2Array).size() and points.size() == (mesh["colours"] as PackedColorArray).size()
+		var uvs: PackedVector2Array = mesh["uvs"]
+		var ok := (uvs.is_empty() if mesh == water else points.size() == uvs.size()) and points.size() == (mesh["colours"] as PackedColorArray).size()
 		var indices: PackedInt32Array = mesh["indices"]
-		ok = ok and indices.size() % 3 == 0
+		var strip: PackedInt32Array = mesh["strip"]
+		ok = ok and indices.size() % 3 == 0 and strip.size() >= 4
 		for i in indices:
 			if i < 0 or i >= points.size():
 				ok = false
-		_check(ok, "the mesh's arrays are whole (%d points, %d indices)" % [points.size(), indices.size()])
+		for i in strip:
+			if i < 0 or i >= points.size():
+				ok = false
+		_check(ok, "the mesh's arrays are whole (%d points, %d strip indices, %d indices)" % [points.size(), strip.size(), indices.size()])
 	# The water mesh carries the current: the colour's green is the y
 	# component, 0.5 m/s over 2 either way.
 	var colours: PackedColorArray = water["colours"]
 	var points: PackedVector2Array = water["points"]
 	var middle := points.find(WaterMeshes.to_screen(Vector2(43.0, 16.0)))
 	_check(middle >= 0 and absf(colours[middle].g - 0.625) < 0.01 and absf(colours[middle].r - 0.5) < 0.01, "the vertices carry the current: %s" % (colours[middle] if middle >= 0 else Color.BLACK))
-	_check(middle >= 0 and absf(colours[middle].b - 3.0 / WaterMeshes.DEPTH_TILES) < 0.1, "and the depth, three tiles from either bank: %s" % (colours[middle] if middle >= 0 else Color.BLACK))
+	_check(middle >= 0 and absf(colours[middle].b - clampf(3.0 / WaterMeshes.DEPTH_TILES, 0.0, 1.0)) < 0.1, "and the depth, three tiles from either bank: %s" % (colours[middle] if middle >= 0 else Color.BLACK))
 	# A block without water prepares to nothing.
 	var land := func(_t: Vector2i) -> String: return "grass"
-	_check(WaterMeshes.prepare(ShoreField.block_of(land, lo, size), lo, size, runs).is_empty(), "a dry block has no meshes")
+	_check(WaterMeshes.prepare(WaterMeshes.block_of(land, lo, size), lo, size, runs).is_empty(), "a dry block has no meshes")
 
 
 ## Two chunks side by side build the same values for the lattice points
@@ -1433,7 +1331,7 @@ func _test_the_water_meshes_join_across_chunks() -> void:
 	var meshes: Array = []
 	for lo: Vector2i in [Vector2i(32, 0), Vector2i(64, 0)]:
 		var out: Array = []
-		WaterMeshes.build(WaterMeshes.prepare(ShoreField.block_of(river, lo, 32), lo, 32, runs), out)
+		WaterMeshes.build(WaterMeshes.prepare(WaterMeshes.block_of(river, lo, 32), lo, 32, runs), out)
 		meshes.append(out)
 	var shared := 0
 	var differ := 0
@@ -1452,7 +1350,9 @@ func _test_the_water_meshes_join_across_chunks() -> void:
 				continue
 			var i: int = by_point[pb[j]]
 			shared += 1
-			if (a["uvs"] as PackedVector2Array)[i] != (b["uvs"] as PackedVector2Array)[j] or (a["colours"] as PackedColorArray)[i] != (b["colours"] as PackedColorArray)[j]:
+			var auv: PackedVector2Array = a["uvs"]
+			var buv: PackedVector2Array = b["uvs"]
+			if (not auv.is_empty() and auv[i] != buv[j]) or (a["colours"] as PackedColorArray)[i] != (b["colours"] as PackedColorArray)[j]:
 				differ += 1
 	_check(shared >= 20 and differ == 0, "the chunks share %d vertices on their border, %d differ" % [shared, differ])
 
@@ -1463,7 +1363,7 @@ func _test_the_water_meshes_measure_the_bank() -> void:
 	var stepped := func(t: Vector2i) -> String: return "water" if t.x >= (40 if t.y < 16 else 41) else "grass"
 	var lo := Vector2i(32, 0)
 	var out: Array = []
-	WaterMeshes.build(WaterMeshes.prepare(ShoreField.block_of(stepped, lo, 32), lo, 32, Callable()), out)
+	WaterMeshes.build(WaterMeshes.prepare(WaterMeshes.block_of(stepped, lo, 32), lo, 32, Callable()), out)
 	var d: PackedFloat32Array = out[3]
 	var l := WaterMeshes.PX * 32 + 6
 	# Lattice point a lies a / PX - 0.25 tiles from the chunk's first tile.
@@ -1485,3 +1385,231 @@ func _test_the_water_meshes_measure_the_bank() -> void:
 		if points[i] == WaterMeshes.to_screen(Vector2(40.0, 8.0)):
 			found = i
 	_check(found >= 0 and absf(uvs[found].x) < 0.15 and uvs[found].y >= 0.0 and uvs[found].y <= WaterMeshes.WIDTH_MAX * WaterMeshes.BEACH_WIDE + 0.001, "a bank vertex on the line: %s" % (uvs[found] if found >= 0 else Vector2.INF))
+	_check(absf(WaterMeshes.probit(0.975) - 1.96) < 0.01, "the inverse normal curve: %f" % WaterMeshes.probit(0.975))
+	# A ford is water for the bank, and the water mesh carries it.
+	var forded := func(t: Vector2i) -> String: return "ford" if t.x >= 40 and t.x < 60 and t.y >= 8 and t.y < 24 else ("water" if t.x >= 40 and t.x < 60 else "grass")
+	var fout: Array = []
+	WaterMeshes.build(WaterMeshes.prepare(WaterMeshes.block_of(forded, lo, 32), lo, 32, Callable()), fout)
+	var fd: PackedFloat32Array = fout[3]
+	_check(fd[int(round((16.0 + 0.25) * WaterMeshes.PX)) * l + int(round((50.0 - lo.x + 0.25) * WaterMeshes.PX))] < -1.0, "a ford is water for the bank")
+	var fwater: Dictionary = fout[0]
+	var fpoints: PackedVector2Array = fwater["points"]
+	var fcolours: PackedColorArray = fwater["colours"]
+	var inside := fpoints.find(WaterMeshes.to_screen(Vector2(50.0, 16.0)))
+	var away := fpoints.find(WaterMeshes.to_screen(Vector2(50.0, 30.0)))
+	_check(inside >= 0 and fcolours[inside].a > 0.7, "inside the ford the vertices carry it: %s" % (fcolours[inside] if inside >= 0 else Color.BLACK))
+	_check(away >= 0 and fcolours[away].a < 0.05, "deep water away from the ford carries none: %s" % (fcolours[away] if away >= 0 else Color.BLACK))
+
+
+## The lattice point a vertex of a water mesh stands at (the inverse of
+## WaterMeshes.to_screen, for the chunk at `lo`).
+func _lattice_of(point: Vector2, lo: Vector2i) -> Vector2i:
+	var wx := point.x / Iso.TILE_W + (point.y + Iso.TILE_H / 2.0) / Iso.TILE_H
+	var wy := (point.y + Iso.TILE_H / 2.0) / Iso.TILE_H - point.x / Iso.TILE_W
+	return Vector2i(roundi((wx - lo.x + 0.25) * WaterMeshes.PX), roundi((wy - lo.y + 0.25) * WaterMeshes.PX))
+
+
+## The deep water is merged into half-tile quads where nothing varies,
+## without a T-junction: a merged quad's edge beside a finer quad keeps
+## the vertex in its middle; the chunk's own edge keeps every lattice
+## point, so the neighbouring chunk joins it; the bank stays fine.
+func _test_the_water_meshes_merge_the_deep_water() -> void:
+	# A river twenty tiles wide, x in [40, 60), crossing the chunk (32, 0),
+	# running south.
+	var river := func(t: Vector2i) -> String: return "water" if t.x >= 40 and t.x < 60 else "grass"
+	var runs := func(_t: Vector2i) -> Vector2: return Vector2(0.0, 0.5)
+	var lo := Vector2i(32, 0)
+	var out: Array = []
+	WaterMeshes.build(WaterMeshes.prepare(WaterMeshes.block_of(river, lo, 32), lo, 32, runs), out)
+	var classes: PackedByteArray = out[2]
+	var deep := 0
+	for k in classes:
+		if k == 1:
+			deep += 1
+	var water: Dictionary = out[0]
+	var points: PackedVector2Array = water["points"]
+	var indices: PackedInt32Array = water["indices"]
+	var strip: PackedInt32Array = water["strip"]
+	# A strip draws a triangle an index past its first two (the joins'
+	# flat ones counted too): with the fans, well under the unmerged count.
+	var triangles := indices.size() / 3 + strip.size() - 2
+	_check(deep > 300 and triangles < deep * 32 / 2, "the deep water is merged: %d triangles for %d deep cells (%d unmerged)" % [triangles, deep, deep * 32])
+	_check(int(water["bytes"]) == points.size() * WaterMeshes.WATER_VERTEX_BYTES + (indices.size() + strip.size()) * WaterMeshes.INDEX_BYTES, "the bytes counted: %d" % int(water["bytes"]))
+	_check(int(water["bytes_before"]) > 3 * int(water["bytes"]), "well under what the same cells weighed before: %d of %d" % [int(water["bytes"]), int(water["bytes_before"])])
+	var lattice: Dictionary = {}
+	for i in points.size():
+		lattice[_lattice_of(points[i], lo)] = i
+	var t_junctions := 0
+	var long_edges := 0
+	for k in range(0, indices.size(), 3):
+		for e in 3:
+			var a: Vector2i = _lattice_of(points[indices[k + e]], lo)
+			var b: Vector2i = _lattice_of(points[indices[k + (e + 1) % 3]], lo)
+			var step := b - a
+			if (absi(step.x) == 2 and step.y == 0) or (absi(step.y) == 2 and step.x == 0):
+				long_edges += 1
+				if lattice.has(a + step / 2):
+					t_junctions += 1
+	_check(long_edges > 0 and t_junctions == 0, "no merged edge passes a finer quad's vertex: %d of %d" % [t_junctions, long_edges])
+	# The chunk's edge keeps every lattice point of the deep rows.
+	var on_edge: Array = []
+	for at: Vector2i in lattice:
+		if at.y == 3:
+			on_edge.append(at.x)
+	on_edge.sort()
+	var gaps := 0
+	for i in range(1, on_edge.size()):
+		if on_edge[i] - on_edge[i - 1] != 1:
+			gaps += 1
+	_check(on_edge.size() > 60 and gaps == 0, "the chunk's edge keeps its fine vertices: %d points, %d gaps" % [on_edge.size(), gaps])
+	# The bank mesh stays fine: all of it one strip of quarter quads, no
+	# step of the strip longer than a lattice step but at the joins
+	# between runs (a repeated index, then the next run's first).
+	var bank: Dictionary = out[1]
+	var bpoints: PackedVector2Array = bank["points"]
+	var bstrip: PackedInt32Array = bank["strip"]
+	var long_bank := 0
+	for k in range(1, bstrip.size()):
+		if bstrip[k] == bstrip[k - 1] or (k >= 2 and bstrip[k - 1] == bstrip[k - 2]):
+			continue
+		var step: Vector2i = _lattice_of(bpoints[bstrip[k]], lo) - _lattice_of(bpoints[bstrip[k - 1]], lo)
+		if absi(step.x) > 1 or absi(step.y) > 1:
+			long_bank += 1
+	_check((bank["indices"] as PackedInt32Array).is_empty() and bstrip.size() > 100 and long_bank == 0, "the bank mesh stays at a quarter tile: %d long steps in a strip of %d" % [long_bank, bstrip.size()])
+	# Where the current twists within a tile (the four tiles around a
+	# point running two ways), the quads stay fine: fewer cells merge. (A
+	# current that only shears is linear between tile centres and merges
+	# as a still one does.)
+	var swings := func(t: Vector2i) -> Vector2: return Vector2(1.0 if (t.x < 50) == (t.y < 16) else -1.0, 0.5)
+	var sout: Array = []
+	WaterMeshes.build(WaterMeshes.prepare(WaterMeshes.block_of(river, lo, 32), lo, 32, swings), sout)
+	var stwisted: int = (sout[0]["strip"] as PackedInt32Array).size()
+	_check(stwisted > strip.size(), "a varying current keeps more quads: %d > %d strip indices" % [stwisted, strip.size()])
+
+
+## A brook's water runs as its own tiles say: each vertex of its ribbon
+## carries the current of the tile under it, never an average over the
+## tiles around, so the legs of a tight meander, two tiles apart and
+## running opposite ways, each keep their own way; at the mouth the
+## ribbon fades out where the river's water begins.
+func _test_a_brooks_current_is_its_tiles_own() -> void:
+	# Grass, a river east of x = 30, and a brook from a spring at (5, 10)
+	# east, back west two rows down, then east again to the river: three
+	# legs with one tile of grass between them.
+	var path: Array[Vector2i] = []
+	for x in range(5, 13):
+		path.append(Vector2i(x, 10))
+	path.append(Vector2i(12, 11))
+	for x in range(12, 5, -1):
+		path.append(Vector2i(x, 12))
+	path.append(Vector2i(6, 13))
+	for x in range(6, 30):
+		path.append(Vector2i(x, 14))
+	var brook: Dictionary = {}
+	var current: Dictionary = {}
+	for k in path.size():
+		brook[path[k]] = true
+		var next: Vector2i = path[k + 1] if k + 1 < path.size() else path[k] + Vector2i(1, 0)
+		current[path[k]] = Vector2(next - path[k]).normalized() * 0.3
+	var terrain := func(t: Vector2i) -> String:
+		if brook.has(t):
+			return "brook"
+		return "water" if t.x >= 30 else "grass"
+	var current_at := func(t: Vector2i) -> Vector2: return current.get(t, Vector2.ZERO)
+	var lo := Vector2i.ZERO
+	var size := 32
+	var prepared := WaterMeshes.prepare(WaterMeshes.block_of(terrain, lo, size), lo, size, current_at)
+	var to_river := func(p: Vector2) -> float: return WaterMeshes.distance_at(prepared, p)
+	var lines := BrookLines.lay(terrain, lo - Vector2i(BrookLines.MARGIN, BrookLines.MARGIN), lo + Vector2i(size + BrookLines.MARGIN, size + BrookLines.MARGIN))
+	_check(lines.size() == 1 and (lines[0]["ends"] as Array).has("spring") and (lines[0]["ends"] as Array).has("mouth"), "one brook from its spring to its mouth: %s" % [lines.map(func(l: Dictionary) -> Array: return l["ends"])])
+	var line: Dictionary = lines[0]
+	var pts: PackedVector2Array = line["pts"]
+	var earth: PackedFloat32Array = line["earth"]
+	# The line's course from the spring to the mouth, whichever way its
+	# points are ordered.
+	var sign := 1.0 if (line["ends"] as Array)[0] == "spring" else -1.0
+	var mesh := BrookLines.mesh([line], lo, lo + Vector2i(size, size), current_at, to_river)
+	var points: PackedVector2Array = mesh["points"]
+	var colours: PackedColorArray = mesh["colours"]
+	var uvs: PackedVector2Array = mesh["uvs"]
+	var indices: PackedInt32Array = mesh["indices"]
+	# (A band folded at a tight corner is not drawn, as before: this
+	# meander turns on a tile.)
+	_check(points.size() >= 4 * (pts.size() - 1) / 2 and points.size() % 4 == 0 and indices.size() == points.size() / 4 * 6, "a band of four vertices a segment: %d vertices, %d indices for %d points" % [points.size(), indices.size(), pts.size()])
+	_check(uvs.size() == points.size() and colours.size() == points.size(), "every vertex carries its lateral place and its colour")
+	# Every vertex's flow runs along the brook's course, at its tile's own
+	# pace: the vertices of segment i belong to points i and i + 1.
+	var against := 0
+	var slowed := 0
+	var at := 0
+	var segment := 0
+	var flows := BrookLines.flows_of(line, current_at)
+	while at + 3 < points.size():
+		# Find the segment this band belongs to: its first vertex lies at
+		# point i's left edge.
+		while segment < pts.size() - 1 and BrookLines.to_screen(pts[segment] + BrookLines._normal(pts, segment) * ((line["widths"] as PackedFloat32Array)[segment] / 2.0 + BrookLines.SHADER_MARGIN)) != points[at]:
+			segment += 1
+		var along := (pts[segment + 1] - pts[segment]).normalized() * sign
+		for k in 4:
+			var c := colours[at + k]
+			var flow := Vector2(c.r * 2.0 - 1.0, c.g * 2.0 - 1.0) * WaterMeshes.FLOW_MAX
+			if flow.dot(along) <= 0.0:
+				against += 1
+			if absf(flow.length() - 0.3) > 2.0 * WaterMeshes.FLOW_MAX / 255.0:
+				slowed += 1
+		at += 4
+	_check(segment < pts.size() - 1, "every band found its segment")
+	_check(against == 0, "%d vertices run against the brook's course" % against)
+	_check(slowed == 0, "%d vertices run at another pace than their tile's 0.3 m/s" % slowed)
+	# The tiles' own currents, not a mean: at the middle of the west leg
+	# the point's flow is west, at the legs beside it east.
+	var west := 0
+	var east := 0
+	for i in pts.size():
+		if earth[i] == 0.0:
+			continue
+		var tile := Vector2i(roundi(pts[i].x), roundi(pts[i].y))
+		if tile.y == 12 and tile.x >= 8 and tile.x <= 10:
+			west += 1 if flows[i].x < -0.29 else 0
+		elif (tile.y == 10 or tile.y == 14) and tile.x >= 8 and tile.x <= 10:
+			east += 1 if flows[i].x > 0.29 else 0
+	_check(west >= 3 and east >= 6, "the legs keep their own way: %d points west on the middle leg, %d east beside it" % [west, east])
+	# The mouth: full on the land, gone in the river's water.
+	var mouth_full := 0
+	var mouth_gone := 0
+	var mouth_half := 0
+	for i in points.size():
+		var p := pts[0]
+		var world := Vector2(points[i].x / Iso.TILE_W + (points[i].y + Iso.TILE_H / 2.0) / Iso.TILE_H, (points[i].y + Iso.TILE_H / 2.0) / Iso.TILE_H - points[i].x / Iso.TILE_W)
+		p = world
+		var d: float = to_river.call(p)
+		if d > 0.3:
+			if colours[i].b > 0.99:
+				mouth_full += 1
+		elif d < -0.6:
+			if colours[i].b < 0.01:
+				mouth_gone += 1
+			else:
+				mouth_half += 1
+	_check(mouth_full > 100 and mouth_gone > 4 and mouth_half == 0, "the brook is whole on the land (%d vertices) and gone in the river's water (%d gone, %d not): its mouth fades on the river's line" % [mouth_full, mouth_gone, mouth_half])
+	# The same brook drawn from its mouth to its spring runs the same way:
+	# the flow comes from the tiles, never from the order of the line.
+	var reversed := line.duplicate()
+	for key: String in ["pts", "widths", "alphas", "earth"]:
+		var arr: Variant = line[key].duplicate()
+		arr.reverse()
+		reversed[key] = arr
+	var ends: Array = (line["ends"] as Array).duplicate()
+	ends.reverse()
+	reversed["ends"] = ends
+	var back := BrookLines.mesh([reversed], lo, lo + Vector2i(size, size), current_at, to_river)
+	var by_point: Dictionary = {}
+	for i in points.size():
+		by_point[points[i]] = colours[i]
+	var bpoints: PackedVector2Array = back["points"]
+	var bcolours: PackedColorArray = back["colours"]
+	var differ := 0
+	for i in bpoints.size():
+		if not by_point.has(bpoints[i]) or by_point[bpoints[i]] != bcolours[i]:
+			differ += 1
+	_check(bpoints.size() == points.size() and differ == 0, "drawn mouth to spring, the brook's vertices carry the same flow and fade: %d of %d differ" % [differ, bpoints.size()])

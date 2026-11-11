@@ -4,10 +4,10 @@ extends CanvasLayer
 ## to measure before optimising and to say "it is slow here" with a
 ## number (D39). F3 shows or hides it; to see what a part costs the
 ## graphics card: F4 turns the wind in the trees off and on, F5 draws the
-## ground a plain colour, F6 hides the trees, F7 cycles the water drawn
-## (today's, the meshes, the screen split between them: WaterMeshes), F8
-## measures what the water shown costs the graphics card, F9 draws the
-## fog and the far view as rings, as full quads or not at all.
+## ground a plain colour, F6 hides the trees, F7 draws the fog and the
+## far view as rings, as full quads or not at all, F8 measures what the
+## water costs the graphics card, F10 and F11 turn its second layer and
+## the current's streaks off and on (WaterMeshes).
 
 ## How often the numbers are refreshed, in seconds.
 const REFRESH := 0.25
@@ -74,7 +74,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			world.call("set_wind", _wind)
 		get_viewport().set_input_as_handled()
 	elif event.keycode == KEY_F7:
-		ChunkView.cycle_water_mode(get_tree())
+		FarView.drawing = (FarView.drawing + 1) % FarView.DRAWING_NAMES.size()
+		get_tree().call_group("far_views", "redraw_fog")
 		get_viewport().set_input_as_handled()
 	elif event.keycode == KEY_F8:
 		if not _measuring:
@@ -88,29 +89,23 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event.keycode == KEY_F11:
 		ChunkView.set_water_streaks(not ChunkView.water_streaks)
 		get_viewport().set_input_as_handled()
-	elif event.keycode == KEY_F12:
-		ChunkView.set_water_8m(not ChunkView.water_8m, get_tree())
-		get_viewport().set_input_as_handled()
-	elif event.keycode == KEY_F9:
-		FarView.drawing = (FarView.drawing + 1) % FarView.DRAWING_NAMES.size()
-		get_tree().call_group("far_views", "redraw_fog")
-		get_viewport().set_input_as_handled()
 
 
-## What the water shown costs the graphics card (F8): the frame's GPU time
+## What the water costs the graphics card (F8): the frame's GPU time
 ## with the water, then without it, MEASURE_FRAMES frames each after a
-## few of settling, twice over, alternated; the medians' difference, by
-## water mode, shown in the report. Nothing else should move meanwhile.
+## few of settling, twice over, alternated; the medians' difference shown
+## in the report. Nothing else should move meanwhile.
 const MEASURE_FRAMES := 300
 const MEASURE_SETTLE := 10
 var _measuring := false
-## The meshes' water with its second layer (F10).
+## The water with its second layer (F10).
 var _second_layer := true
-## mode name -> [the water's GPU ms, the frame's GPU ms with it, clock MHz]
-var _water_cost: Dictionary = {}
+## [the water's GPU ms, the frame's GPU ms with it, clock MHz], empty
+## until measured.
+var _water_cost: Array = []
 
 
-func water_cost() -> Dictionary:
+func water_cost() -> Array:
 	return _water_cost
 
 
@@ -143,7 +138,7 @@ func measure_water() -> void:
 	DisplayServer.window_set_vsync_mode(vsync)
 	Engine.max_fps = max_fps
 	var base := _median(with_water)
-	_water_cost[ChunkView.water_mode_name()] = [base - _median(without), base, gpu_clock_mhz()]
+	_water_cost = [base - _median(without), base, gpu_clock_mhz()]
 	_measuring = false
 
 
@@ -229,18 +224,16 @@ func report(worst_ms: float) -> String:
 			counts.get("chunks", 0), ChunkView.waiting.size(), counts.get("parked", 0), counts.get("stale", 0),
 			counts.get("trees", 0), counts.get("trees_drawn", 0), counts.get("bodies", 0),
 		])
-	lines.append("bank fields smoothing %d   F3 hides" % (ShoreField.busy + WaterMeshes.busy))
-	lines.append("wind %s (F4)   ground %s (F5)   trees %s (F6)   fog %s (F9)" % [
+	lines.append("water meshes building %d   F3 hides" % WaterMeshes.busy)
+	lines.append("wind %s (F4)   ground %s (F5)   trees %s (F6)   fog %s (F7)" % [
 		"on" if _wind else "off", "plain" if _plain_ground else "shaded", "shown" if _trees_shown else "hidden",
 		FarView.drawing_name(),
 	])
-	lines.append("water %s (F7)   %s" % [ChunkView.water_mode_name(), "measuring..." if _measuring else "F8 measures its GPU time"])
-	lines.append("  meshes: second layer %s (F10)   streaks %s (F11)   8 m water %s (F12)" % [
-		"on" if _second_layer else "off", "on" if ChunkView.water_streaks else "off", "on" if ChunkView.water_8m else "off"])
-	for mode: String in _water_cost:
-		var cost: Array = _water_cost[mode]
-		lines.append("  water %s: %.2f ms GPU (frame %.2f ms, clock %d MHz)" % [mode, cost[0], cost[1], cost[2]])
-	if ChunkView.water_builds > 0:
-		lines.append("  meshes built %d: worker %.1f ms each, main thread %.2f ms each" % [
-			ChunkView.water_builds, ChunkView.water_build_usec / 1000.0 / ChunkView.water_builds, ChunkView.water_main_usec / 1000.0 / ChunkView.water_builds])
+	lines.append("water: second layer %s (F10)   streaks %s (F11)   %s" % [
+		"on" if _second_layer else "off", "on" if ChunkView.water_streaks else "off", "measuring..." if _measuring else "F8 measures its GPU time"])
+	if not _water_cost.is_empty():
+		lines.append("  water %.2f ms GPU (frame %.2f ms, clock %d MHz)" % [_water_cost[0], _water_cost[1], _water_cost[2]])
+	lines.append("  meshes %.2f MB on the card (%.2f before packing), built %d: worker %.1f ms each, main thread %.2f ms each" % [
+		ChunkView.water_bytes / 1048576.0, ChunkView.water_bytes_before / 1048576.0, ChunkView.water_builds,
+		ChunkView.water_build_usec / 1000.0 / maxi(ChunkView.water_builds, 1), ChunkView.water_main_usec / 1000.0 / maxi(ChunkView.water_builds, 1)])
 	return "\n".join(lines)

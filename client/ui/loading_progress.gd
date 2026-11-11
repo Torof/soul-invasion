@@ -13,7 +13,7 @@ var has_world := false
 var received := 0
 var built := 0
 ## Bank fields still being smoothed and water meshes still being built
-## (ShoreField.busy, WaterMeshes.busy).
+## (WaterMeshes.busy).
 var fields := 0
 var _last_chunk_msec := -1
 

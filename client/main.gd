@@ -73,18 +73,10 @@ var _perf: PerfOverlay
 
 
 func _screenshot_then_quit(path: String) -> void:
-	# Development: the water drawn (ChunkView.WATER_MODE_NAMES: today,
-	# meshes, split), as F7 would set it.
-	var mode := ChunkView.WATER_MODE_NAMES.find(OS.get_environment("SOUL_INVASION_WATER_MODE"))
-	if mode >= 0:
-		ChunkView.set_water_mode(mode, get_tree())
-	# SOUL_INVASION_WATER_STREAKS=1, SOUL_INVASION_WATER_8M=1: the meshes'
-	# water with the streaks of the current, on the 8 m water (F11, F12).
-	# The streaks are on unless SOUL_INVASION_WATER_STREAKS=0.
-	if OS.get_environment("SOUL_INVASION_WATER_STREAKS") != "0":
-		ChunkView.set_water_streaks(true)
-	if OS.get_environment("SOUL_INVASION_WATER_8M") == "1":
-		ChunkView.set_water_8m(true, get_tree())
+	# SOUL_INVASION_WATER_STREAKS=0: the water without the current's
+	# streaks (F11), to measure them.
+	if OS.get_environment("SOUL_INVASION_WATER_STREAKS") == "0":
+		ChunkView.set_water_streaks(false)
 	# SOUL_INVASION_WIND=0: the trees still, so two captures compare.
 	if OS.get_environment("SOUL_INVASION_WIND") == "0":
 		_world.set_wind(false)
@@ -109,20 +101,21 @@ func _screenshot_then_quit(path: String) -> void:
 	await get_tree().create_timer(0.5).timeout
 	get_viewport().get_texture().get_image().save_png(path)
 	# SOUL_INVASION_WATER_BENCH=file: what the water costs the graphics
-	# card here, today's and the meshes (the F8 measure), a line each
-	# appended to the file.
+	# card here (the F8 measure), twice over, a line each appended to the
+	# file, with the meshes' bytes and build times.
 	var bench := OS.get_environment("SOUL_INVASION_WATER_BENCH")
 	if not bench.is_empty():
-		for m in [ChunkView.WATER_TODAY, ChunkView.WATER_MESHES, ChunkView.WATER_TODAY, ChunkView.WATER_MESHES]:
-			ChunkView.set_water_mode(m, get_tree())
+		for _pass in 2:
 			await get_tree().create_timer(0.5).timeout
 			await _perf.measure_water()
-			var cost: Array = _perf.water_cost()[ChunkView.water_mode_name()]
+			var cost: Array = _perf.water_cost()
 			var f := FileAccess.open(bench, FileAccess.READ_WRITE if FileAccess.file_exists(bench) else FileAccess.WRITE)
 			f.seek_end()
-			f.store_line("%s zoom %s %s water %.2f ms frame %.2f ms clock %d MHz video %d MB meshes built %d worker %.1f ms each main %.2f ms each" % [
-				path.get_file(), zoom, ChunkView.water_mode_name(), cost[0], cost[1], cost[2],
+			f.store_line("%s zoom %s water %.2f ms frame %.2f ms clock %d MHz video %d MB buffers %d MB meshes %.2f MB (before packing %.2f) built %d worker %.1f ms each main %.2f ms each" % [
+				path.get_file(), zoom, cost[0], cost[1], cost[2],
 				RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_VIDEO_MEM_USED) / 1048576,
+				RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_BUFFER_MEM_USED) / 1048576,
+				ChunkView.water_bytes / 1048576.0, ChunkView.water_bytes_before / 1048576.0,
 				ChunkView.water_builds, ChunkView.water_build_usec / 1000.0 / maxi(ChunkView.water_builds, 1), ChunkView.water_main_usec / 1000.0 / maxi(ChunkView.water_builds, 1)])
 			f.close()
 	get_tree().quit()
@@ -132,7 +125,7 @@ func _screenshot_then_quit(path: String) -> void:
 ## minute and a half).
 func _wait_built() -> void:
 	var waited := 0.0
-	while waited < 90.0 and (ShoreField.busy > 0 or WaterMeshes.busy > 0 or _unbuilt() > 0 or ChunkView.waiting.size() > 0):
+	while waited < 90.0 and (WaterMeshes.busy > 0 or _unbuilt() > 0 or ChunkView.waiting.size() > 0):
 		await get_tree().create_timer(0.5).timeout
 		waited += 0.5
 

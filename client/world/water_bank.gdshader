@@ -53,9 +53,6 @@ void vertex() {
 }
 
 void fragment() {
-	if (split_edge >= 0.0 && SCREEN_UV.x < split_edge) {
-		discard;
-	}
 	float d = edge.x;
 	float width = edge.y;
 	float now = flow_time < 0.0 ? TIME : flow_time;

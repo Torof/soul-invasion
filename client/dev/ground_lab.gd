@@ -40,7 +40,7 @@ func _initialize() -> void:
 	for y in side:
 		for x in side:
 			tiles.append(_terrain(map, origin.x + x, origin.y + y))
-	ShoreField.map_size = Vector2i(map["width"], map["height"])
+	WaterMeshes.map_size = Vector2i(map["width"], map["height"])
 	var view := ChunkView.new()
 	world.add_child(view)
 	view.show_chunk(origin, side, tiles, [], {})

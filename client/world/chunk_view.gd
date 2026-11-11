@@ -81,10 +81,10 @@ const FRINGE_OVER := {
 ## Width, in tiles, over which water feels its own edge (shore(): the
 ## decorations that grow in the water by a bank).
 const SHORE_WIDTH := 2
-## Tiles read around a chunk when it builds: as far as the bank's field
-## reads (ShoreField.READ), which covers the spill and the land under the
+## Tiles read around a chunk when it builds: as far as the water meshes
+## read (WaterMeshes.READ), which covers the spill and the land under the
 ## water.
-const READ := ShoreField.READ
+const READ := WaterMeshes.READ
 ## Drawing order of the textured terrains: the one that spills is above.
 const GROUND_ORDER := {"grass": 0, "forest": 1, "water": 2}
 static var _ground_cache: Dictionary = {}
@@ -112,6 +112,15 @@ var _grounds: Dictionary = {}
 
 func _ready() -> void:
 	add_to_group("chunk_views")
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_PREDELETE:
+		# The meshes go with the chunk: off the tally.
+		water_bytes -= _water_bytes
+		water_bytes_before -= _water_bytes_before
+		_water_bytes = 0
+		_water_bytes_before = 0
 	# The shore brushes repeat along the bank.
 	texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 ## Where the water runs at any tile the world view knows (a vector in
@@ -342,26 +351,34 @@ class GroundCanvas:
 		draw_polygon(points, PackedColorArray([white, white, white, white]), uvs, ChunkView.ground_texture(terrain))
 
 
-## The river as two meshes a chunk (WaterMeshes, prototype of 11
-## November 2026), beside today's water canvas: the lead judges them
-## against each other in the sandbox. water_mode: WATER_TODAY draws
-## today's water canvas, WATER_MESHES the meshes, WATER_SPLIT today's on
-## the left half of the screen and the meshes on the right (F7).
-const WATER_TODAY := 0
-const WATER_MESHES := 1
-const WATER_SPLIT := 2
-const WATER_MODE_NAMES := ["today", "meshes", "split"]
-static var water_mode := WATER_MESHES
+## The river as two meshes a chunk (WaterMeshes, D36): a water mesh and a
+## bank mesh, built on a worker thread when the chunk builds, drawn under
+## the chunk's own drawing and over the grounds; the brooks a mesh of
+## their own over them (BrookLines.mesh).
 static var _water_mesh_material: ShaderMaterial
 static var _water_bank_material: ShaderMaterial
 ## The water mesh's time on the worker and the main thread, in microseconds,
-## summed over the builds, and how many (the F3 overlay).
+## and the builds done (the F3 report).
 static var water_build_usec := 0
 static var water_builds := 0
 static var water_main_usec := 0
+## What the water meshes held cost the card, in bytes (the F3 report),
+## and what they weighed before they were packed and merged (D39's
+## record: the same cells as quarter quads, float colours, 32-bit
+## indices).
+static var water_bytes := 0
+static var water_bytes_before := 0
+## Development: SOUL_INVASION_WATER_ARROWS=1 draws, over each brook, the
+## current its vertices carry, an arrow a point of the ribbon.
+static var show_arrows := OS.get_environment("SOUL_INVASION_WATER_ARROWS") == "1"
+## The brooks' arrows of this chunk: [screen point, flow] pairs.
+var _arrows: Array = []
 var _water_canvas: WaterCanvas = null
 var _bank_canvas: WaterCanvas = null
-## The latest build asked for this chunk: an older one landing is dropped.
+## The water meshes' bytes this chunk holds, and before packing.
+var _water_bytes := 0
+var _water_bytes_before := 0
+## The latest build asked for: an earlier one still on a worker is dropped.
 var _water_job := 0
 
 
@@ -388,10 +405,11 @@ static func _make_water_material(shader_path: String) -> ShaderMaterial:
 
 
 ## Gives a water mesh material its layers and numbers: the bank's earth
-## and sand, the first ford bed, the detail, and the water's params.
+## and sand, the first ford bed, the current's streaks, the detail, and
+## the water's params.
 static func apply_water_spec(material: ShaderMaterial, fresh: bool) -> void:
 	var layers := ground_layers("water")
-	for pair: Array in [["bank", "earth_texture", ""], ["bank2", "sand_texture", "has_sand"], ["ford1", "bed_texture", "has_bed"]]:
+	for pair: Array in [["bank", "earth_texture", ""], ["bank2", "sand_texture", "has_sand"], ["ford1", "bed_texture", "has_bed"], ["streaks", "streak_texture", "has_streaks"]]:
 		var path := str(layers.get(pair[0], ""))
 		var texture: Texture2D = null
 		if path != "":
@@ -399,7 +417,7 @@ static func apply_water_spec(material: ShaderMaterial, fresh: bool) -> void:
 		if texture != null:
 			material.set_shader_parameter(pair[1], texture)
 		if pair[2] != "":
-			material.set_shader_parameter(pair[2], texture != null)
+			material.set_shader_parameter(pair[2], texture != null and (pair[2] != "has_streaks" or water_streaks))
 	material.set_shader_parameter("detail_texture", detail_texture())
 	material.set_shader_parameter("depth_tiles", WaterMeshes.DEPTH_TILES)
 	var params := ground_params("water")
@@ -407,108 +425,23 @@ static func apply_water_spec(material: ShaderMaterial, fresh: bool) -> void:
 		material.set_shader_parameter(name, params[name])
 
 
-## The water art of the reserve tried on keys (F11 the streaks, F12 the
-## 8 m water): read from the reserve beside the client, else from the
-## lead's own checkout (the reserve is not in git, so a sandbox has none).
-const WATER_ART_DIRS := [
-	"res://../content/ai-reserve/sources/water/scenario-2026-11-11/",
-	"/home/torof/Desktop/projets-en-cours/soul invasion/content/ai-reserve/sources/water/scenario-2026-11-11/",
-]
-static var _water_art: Dictionary = {}
-static var water_streaks := false
-static var water_8m := false
-## The base water drawn by the meshes when not the ground's own.
-static var _water_base_override: Texture2D
+## The streaks of the current over the meshes' water (the lead's look,
+## ground.json: layers.streaks), off and on to measure them (F11).
+static var water_streaks := true
 
 
-static func water_art_texture(name: String) -> Texture2D:
-	if not _water_art.has(name):
-		var texture: Texture2D = null
-		for dir: String in WATER_ART_DIRS:
-			var path := ProjectSettings.globalize_path(dir) + name if dir.begins_with("res://") else dir + name
-			if FileAccess.file_exists(path):
-				texture = fresh_texture(path)
-				if texture != null:
-					break
-		_water_art[name] = texture
-	return _water_art[name]
-
-
-## The streaks of the current over the meshes' water (F11), when the art
-## is there.
 static func set_water_streaks(on: bool) -> void:
-	var texture := water_art_texture("streaks_02_lightmap.png") if on else null
-	water_streaks = on and texture != null
+	water_streaks = on
 	for material: ShaderMaterial in [water_mesh_material(), water_bank_material()]:
-		material.set_shader_parameter("has_streaks", water_streaks)
-		if texture != null:
-			material.set_shader_parameter("streak_texture", texture)
+		material.set_shader_parameter("has_streaks", on and material.get_shader_parameter("streak_texture") != null)
 
 
-## The 8 m water as the meshes' base (F12), when the art is there.
-static func set_water_8m(on: bool, tree: SceneTree) -> void:
-	var texture := water_art_texture("water8m_02.png") if on else null
-	water_8m = on and texture != null
-	_water_base_override = texture if water_8m else null
-	for material: ShaderMaterial in [water_mesh_material(), water_bank_material()]:
-		material.set_shader_parameter("water_metres", 8.0 if water_8m else 4.0)
-	if tree != null:
-		tree.call_group("chunk_views", "redraw_water")
-
-
-## The water the meshes read.
-static func water_base() -> Texture2D:
-	return _water_base_override if _water_base_override != null else ground_texture("water")
-
-
-func redraw_water() -> void:
-	for canvas: WaterCanvas in [_water_canvas, _bank_canvas]:
-		if canvas != null:
-			canvas.queue_redraw()
-
-
-## Cycles the water drawn (F7) and shows it on every chunk.
-static func cycle_water_mode(tree: SceneTree) -> void:
-	set_water_mode((water_mode + 1) % WATER_MODE_NAMES.size(), tree)
-
-
-static func set_water_mode(mode: int, tree: SceneTree) -> void:
-	water_mode = mode
-	var split := 0.5 if mode == WATER_SPLIT else -1.0
-	ground_material("water").set_shader_parameter("split_edge", split)
-	water_mesh_material().set_shader_parameter("split_edge", split)
-	water_bank_material().set_shader_parameter("split_edge", split)
-	if tree != null:
-		tree.call_group("chunk_views", "apply_water_mode")
-
-
-static func water_mode_name() -> String:
-	return WATER_MODE_NAMES[water_mode]
-
-
-## Shows the chunk's water canvases the mode wants: today's, the meshes,
-## or both (split).
-func apply_water_mode() -> void:
-	var today: GroundCanvas = _grounds.get("water")
-	if today != null:
-		today.visible = water_mode != WATER_MESHES
-	for canvas: WaterCanvas in [_water_canvas, _bank_canvas]:
-		if canvas != null:
-			canvas.visible = water_mode != WATER_TODAY
-
-
-## Development: the water of the mode shown, hidden or not (the F3
-## overlay measures what it costs the graphics card).
+## Development: the water hidden or not (the F8 measure: a frame
+## without the water, against one with it).
 func set_water_hidden(hidden: bool) -> void:
-	if hidden:
-		var today: GroundCanvas = _grounds.get("water")
-		if today != null:
-			today.visible = false
-		for canvas: WaterCanvas in [_water_canvas, _bank_canvas]:
-			if canvas != null:
-				canvas.visible = false
-	else:
-		apply_water_mode()
+	for canvas: Node2D in [_water_canvas, _bank_canvas, _brooks]:
+		if canvas != null:
+			canvas.visible = not hidden
 
 
 ## The zoom changed: the water meshes' images are read at an integer
@@ -527,29 +460,50 @@ static func set_water_zoom(zoom: float, stretch: float) -> void:
 		material.set_shader_parameter("detail_on", 1.0 if zoom >= 0.8 else 0.0)
 
 
-## A mesh of the water drawn with one material (the water's or the
-## bank's), under the chunk's own drawing and over the grounds.
+## A mesh of the water drawn with one material (the water's, the
+## bank's or the brooks'), under the chunk's own drawing and over the
+## grounds. The arrays (points, uvs when the shader reads them, colours,
+## a strip and/or triangles) go to the card as one or two surfaces: the
+## colours as bytes, the indices 16-bit.
 class WaterCanvas:
 	extends Node2D
-	var arrays: Dictionary = {}
+	var mesh: ArrayMesh = null
+	var texture: Texture2D = null
+
+	## Lays `arrays` (empty: nothing) as the mesh drawn.
+	func lay(arrays: Dictionary) -> void:
+		mesh = null
+		if not arrays.is_empty() and not (arrays["points"] as PackedVector2Array).is_empty():
+			mesh = ArrayMesh.new()
+			for pair: Array in [["strip", Mesh.PRIMITIVE_TRIANGLE_STRIP], ["indices", Mesh.PRIMITIVE_TRIANGLES]]:
+				var indices: PackedInt32Array = arrays.get(pair[0], PackedInt32Array())
+				if indices.is_empty():
+					continue
+				var surface: Array = []
+				surface.resize(Mesh.ARRAY_MAX)
+				surface[Mesh.ARRAY_VERTEX] = arrays["points"]
+				if not (arrays["uvs"] as PackedVector2Array).is_empty():
+					surface[Mesh.ARRAY_TEX_UV] = arrays["uvs"]
+				surface[Mesh.ARRAY_COLOR] = arrays["colours"]
+				surface[Mesh.ARRAY_INDEX] = indices
+				mesh.add_surface_from_arrays(pair[1], surface)
+		queue_redraw()
 
 	func _draw() -> void:
-		if arrays.is_empty():
-			return
-		var texture := ChunkView.water_base()
-		RenderingServer.canvas_item_add_triangle_array(get_canvas_item(), arrays["indices"], arrays["points"], arrays["colours"], arrays["uvs"],
-			PackedInt32Array(), PackedFloat32Array(), texture.get_rid() if texture != null else RID())
+		if mesh != null:
+			draw_mesh(mesh, texture)
 
 
 func _water_canvases() -> Array:
 	if _water_canvas == null:
 		_water_canvas = WaterCanvas.new()
 		_water_canvas.name = "WaterMesh"
-		# With today's water canvas: over the grounds, under the brooks.
+		# Over the grounds, under the brooks.
 		_water_canvas.z_index = -6 + int(GROUND_ORDER["water"])
 		_water_canvas.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 		_water_canvas.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 		_water_canvas.material = water_mesh_material()
+		_water_canvas.texture = ground_texture("water")
 		add_child(_water_canvas)
 		_bank_canvas = WaterCanvas.new()
 		_bank_canvas.name = "BankMesh"
@@ -557,28 +511,46 @@ func _water_canvases() -> Array:
 		_bank_canvas.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 		_bank_canvas.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 		_bank_canvas.material = water_bank_material()
+		_bank_canvas.texture = ground_texture("water")
 		add_child(_bank_canvas)
-		apply_water_mode()
 	return [_water_canvas, _bank_canvas]
+
+
+## Lays the water meshes (WaterMeshes.build) on the canvases, and counts
+## their bytes.
+func _lay_water_meshes(water: Dictionary, bank: Dictionary) -> void:
+	water_bytes -= _water_bytes
+	water_bytes_before -= _water_bytes_before
+	_water_bytes = int(water.get("bytes", 0)) + int(bank.get("bytes", 0))
+	_water_bytes_before = int(water.get("bytes_before", 0)) + int(bank.get("bytes_before", 0))
+	water_bytes += _water_bytes
+	water_bytes_before += _water_bytes_before
+	if water.is_empty() and bank.is_empty() and _water_canvas == null:
+		return
+	var canvases := _water_canvases()
+	(canvases[0] as WaterCanvas).lay(water)
+	(canvases[1] as WaterCanvas).lay(bank)
 
 
 ## Builds the chunk's water meshes from its window of codes: the arrays
 ## on a worker thread, laid on the canvases when ready unless a newer
 ## build for this chunk started meanwhile. A chunk without water lays
-## nothing.
-func _build_water_meshes(win: PackedByteArray) -> void:
+## nothing. Gives back what was prepared on the main thread (the brooks
+## read the river's line from it; empty when the block holds no river).
+func _build_water_meshes(win: PackedByteArray) -> Dictionary:
 	_water_job += 1
 	var job := _water_job
 	var started := Time.get_ticks_usec()
 	var prepared := WaterMeshes.prepare(win, _origin, _size, current_at)
 	if prepared.is_empty():
-		if _water_canvas != null:
-			_water_canvas.arrays = {}
-			_bank_canvas.arrays = {}
-			_water_canvas.queue_redraw()
-			_bank_canvas.queue_redraw()
-		return
+		_lay_water_meshes({}, {})
+		return prepared
 	water_main_usec += Time.get_ticks_usec() - started
+	_build_water_meshes_on_a_worker(prepared, job)
+	return prepared
+
+
+func _build_water_meshes_on_a_worker(prepared: Dictionary, job: int) -> void:
 	WaterMeshes.busy += 1
 	var out: Array = []
 	var task := WorkerThreadPool.add_task(WaterMeshes.build.bind(prepared, out))
@@ -589,14 +561,10 @@ func _build_water_meshes(win: PackedByteArray) -> void:
 	WaterMeshes.busy -= 1
 	water_build_usec += int(out[4]) if out.size() > 4 else 0
 	water_builds += 1
-	if _water_job != job:
+	if _water_job != job or not is_inside_tree():
 		return
-	started = Time.get_ticks_usec()
-	var canvases := _water_canvases()
-	(canvases[0] as WaterCanvas).arrays = out[0]
-	(canvases[1] as WaterCanvas).arrays = out[1]
-	(canvases[0] as WaterCanvas).queue_redraw()
-	(canvases[1] as WaterCanvas).queue_redraw()
+	var started := Time.get_ticks_usec()
+	_lay_water_meshes(out[0], out[1])
 	water_main_usec += Time.get_ticks_usec() - started
 
 
@@ -829,13 +797,13 @@ func _corners(values: PackedFloat32Array, x: int, y: int) -> PackedFloat32Array:
 
 
 ## The terrain drawn on tile (x, y) of the window (_window), as a code:
-## its own, except a ford, shallow water the water's shader draws, and a
-## brook, a line on the ground (BrookLines) over the land around it,
-## forest where the tiles around are mostly forest, else grass.
-func _drawn(win: PackedByteArray, x: int, y: int, field: bool) -> int:
+## its own, except a ford, water the water meshes draw, and a brook, a
+## ribbon on the ground (BrookLines) over the land around it, forest
+## where the tiles around are mostly forest, else grass.
+func _drawn(win: PackedByteArray, x: int, y: int) -> int:
 	var side := _size + 2 * READ
 	var code := win[y * side + x]
-	if code == TerrainGrid.FORD and field:
+	if code == TerrainGrid.FORD:
 		return TerrainGrid.WATER
 	if code != TerrainGrid.BROOK:
 		return code
@@ -873,11 +841,10 @@ func fringe(terrain: String) -> Array:
 		return []
 	var win := _window()
 	var nearness := _nearness(win, _table([TerrainGrid.code_of(terrain)]), int(spill.get("width", 1)))
-	var field := shore_field_on()
 	var result: Array = []
 	for y in _size:
 		for x in _size:
-			if not over.has(TerrainGrid.name_of(_drawn(win, x + READ, y + READ, field))):
+			if not over.has(TerrainGrid.name_of(_drawn(win, x + READ, y + READ))):
 				continue
 			var alphas := _corners(nearness, x, y)
 			if alphas[0] > 0.0 or alphas[1] > 0.0 or alphas[2] > 0.0 or alphas[3] > 0.0:
@@ -1126,7 +1093,7 @@ func _draw() -> void:
 	var started := Time.get_ticks_usec()
 	var signature := _terrain_signature()
 	var built := false
-	if signature != _last_signature or not shore_field_on():
+	if signature != _last_signature:
 		var frame := Engine.get_process_frames()
 		if _built_frame != frame:
 			_built_frame = frame
@@ -1145,6 +1112,13 @@ func _draw() -> void:
 		draw_colored_polygon(flat[0], flat[1])
 	for d: Array in _decor_cache:
 		draw_texture_rect(d[0], d[1], false, d[2])
+	for arrow: Array in _arrows:
+		# The current on the ground plane, a metre a second drawn a tile long.
+		var from: Vector2 = arrow[0]
+		var flow: Vector2 = arrow[1]
+		var to := from + Vector2((flow.x - flow.y) * Iso.TILE_W / 2.0, (flow.x + flow.y) * Iso.TILE_H / 2.0)
+		draw_line(from, to, Color(1.0, 0.1, 0.1), 2.0)
+		draw_circle(to, 3.0, Color(1.0, 0.1, 0.1))
 	_draw_items()
 	if not built:
 		redraw_usec = lerpf(redraw_usec, float(Time.get_ticks_usec() - started), 0.2)
@@ -1156,8 +1130,9 @@ func _draw() -> void:
 ## their canvases.
 func _draw_ground_layers() -> void:
 	var win := _window()
-	var field := shore_field_on()
-	# The terrain drawn on each tile, then its canvas's bit (0: flat).
+	# The terrain drawn on each tile, then its canvas's bit (0: flat); the
+	# water's tiles are the meshes' (_add_water_tiles lays the land beneath
+	# where the bank can show).
 	var drawn := PackedByteArray()
 	drawn.resize(_size * _size)
 	var bit_of := PackedByteArray()
@@ -1167,8 +1142,10 @@ func _draw_ground_layers() -> void:
 	bits.resize(_size * _size)
 	for y in _size:
 		for x in _size:
-			var code := _drawn(win, x + READ, y + READ, field)
+			var code := _drawn(win, x + READ, y + READ)
 			drawn[y * _size + x] = code
+			if code == TerrainGrid.WATER:
+				continue
 			if bit_of[code] == 255:
 				var name := TerrainGrid.name_of(code)
 				bit_of[code] = int(GroundIndex.BITS.get(name, 0)) if ground_texture(name) != null else 0
@@ -1195,9 +1172,8 @@ func _draw_ground_layers() -> void:
 				var alphas := _corners(nearness, x, y)
 				if alphas[0] > 0.0 or alphas[1] > 0.0 or alphas[2] > 0.0 or alphas[3] > 0.0:
 					bits[y * _size + x] |= GroundIndex.FRINGE
-	if field:
-		_add_field_tiles(win, bits)
-		_build_water_meshes(win)
+	_add_water_tiles(win, bits)
+	var prepared := _build_water_meshes(win)
 	GroundIndex.write(_origin, _size, bits, corners)
 	var used := 0
 	for b in bits:
@@ -1213,7 +1189,7 @@ func _draw_ground_layers() -> void:
 			canvas.shown = shown
 			canvas.queue_redraw()
 	# A brook cuts the bank where it joins a river: drawn over it.
-	_draw_brooks(win)
+	_draw_brooks(win, prepared)
 	_draw_decor(win)
 
 
@@ -1296,89 +1272,51 @@ func _build_items() -> void:
 	_items_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 
 
-## Whether the bank is drawn by the ground shader from the distance to the
-## water (shore mode "field").
-static func shore_field_on() -> bool:
-	return str(ground_spec().get("shore", {}).get("mode", "")) == "field"
-
-
-## For the bank drawn from the distance field: writes this chunk's block
-## of the field, gives the water material the field, and lets each side
-## reach across the tiles' edge so the smoothed line can fall anywhere:
-## the land beneath under the water tiles touching land, the water (which
-## draws the bank) over the land within two tiles of the water. Adds to
+## Under the water meshes, the land beneath where the bank can show: the
+## smoothed line can fall anywhere across the tiles' edge, so the water
+## tiles touching land draw the land around them (forest if the land
+## around is mostly forest, else grass) under the bank mesh. Adds to
 ## `bits`, the tiles' bits for the index.
-func _add_field_tiles(win: PackedByteArray, bits: PackedByteArray) -> void:
-	ShoreField.update(win, _origin, _size, current_at, true)
-	var water_material := ground_material("water")
-	water_material.set_shader_parameter("shore_field", ShoreField.texture())
-	water_material.set_shader_parameter("shore_water", ShoreField.water_texture())
-	water_material.set_shader_parameter("has_field", true)
-	water_material.set_shader_parameter("field_tiles", float(ShoreField.TILES))
-	water_material.set_shader_parameter("field_range", ShoreField.RANGE)
-	if ground_texture("water") == null:
-		return
+func _add_water_tiles(win: PackedByteArray, bits: PackedByteArray) -> void:
 	var side := _size + 2 * READ
-	var water_bit := int(GroundIndex.BITS["water"])
-	# Which tiles have water within two tiles: along the rows, then across.
-	var m := 2
-	var rows := _size + 2 * m
-	var along := PackedByteArray()
-	along.resize(rows * _size)
-	for j in rows:
-		var row := (READ - m + j) * side + READ
-		for x in _size:
-			for d in range(-m, m + 1):
-				if ShoreField.is_water(win[row + x + d]):
-					along[j * _size + x] = 1
-					break
 	for y in _size:
 		for x in _size:
 			var here := win[(y + READ) * side + x + READ]
-			if ShoreField.is_water(here):
-				# The land under it, where land is near: forest if the land
-				# around is mostly forest, else grass.
+			if WaterMeshes.is_water(here):
 				var land := TerrainGrid.name_of(_land_around(win, x + READ, y + READ, true))
 				if land != "" and ground_texture(land) != null:
 					bits[y * _size + x] |= int(GroundIndex.BITS[land])
-			elif here != TerrainGrid.UNKNOWN:
-				for dy in range(0, 2 * m + 1):
-					if along[(y + dy) * _size + x]:
-						bits[y * _size + x] |= water_bit
-						break
 
 
-## The brooks crossing this chunk, as lines on the ground (BrookLines):
-## found over a margin around the chunk, so they join the neighbours'
-## without a seam; each segment is drawn by the chunk under its middle.
-func _draw_brooks(win: PackedByteArray) -> void:
-	var side := _size + 2 * READ
-	var near := false
-	for y in range(READ - 2, READ + _size + 2):
-		for x in range(READ - 2, READ + _size + 2):
-			if win[y * side + x] == TerrainGrid.BROOK:
-				near = true
-				break
-		if near:
-			break
-	if not near:
+## The brooks crossing this chunk, a mesh of ribbons (BrookLines.mesh)
+## drawn by the brook shader over the water meshes: each vertex carries
+## its own tile's current and, at a mouth, the fade into the river's
+## water read from the river's line (`prepared`: WaterMeshes.prepare,
+## empty when no river is near). Without the brook's art, flat lines.
+func _draw_brooks(win: PackedByteArray, prepared: Dictionary) -> void:
+	if not win.has(TerrainGrid.BROOK):
 		if _brooks != null:
-			_brooks.lines = []
-			_brooks.queue_redraw()
+			_brooks.lay({})
 		return
 	var margin := Vector2i(BrookLines.MARGIN, BrookLines.MARGIN)
 	var terrain := func(t: Vector2i) -> String: return TerrainGrid.name_at(t)
 	var lines := BrookLines.lay(terrain, _origin - margin, _origin + Vector2i(_size, _size) + margin)
-	var tint: Color = ground_params("water").get("base_tint", Color.WHITE)
 	var bed := str(ground_layers("water").get("brook1", ""))
-	if shore_field_on() and bed != "":
-		var canvas := _brook_canvas()
-		canvas.lines = lines
-		canvas.lo = _origin
-		canvas.hi = _origin + Vector2i(_size, _size)
-		canvas.water = ground_texture("water")
-		canvas.queue_redraw()
+	if bed != "":
+		var to_river := Callable()
+		if not prepared.is_empty():
+			to_river = func(p: Vector2) -> float: return WaterMeshes.distance_at(prepared, p)
+		_brook_canvas().lay(BrookLines.mesh(lines, _origin, _origin + Vector2i(_size, _size), current_at, to_river))
+		if show_arrows:
+			_arrows.clear()
+			for line: Dictionary in lines:
+				var pts: PackedVector2Array = line["pts"]
+				var flows := BrookLines.flows_of(line, current_at)
+				for i in pts.size() - 1:
+					if BrookLines.owns(line, i, _origin, _origin + Vector2i(_size, _size)):
+						_arrows.append([BrookLines.to_screen(pts[i]), flows[i]])
 		return
+	var tint: Color = ground_params("water").get("base_tint", Color.WHITE)
 	BrookLines.draw(self, lines, _origin, _origin + Vector2i(_size, _size), ground_texture("water"), tint)
 
 
@@ -1387,46 +1325,32 @@ static var _brook_material: ShaderMaterial
 
 
 ## The child canvas drawing this chunk's brooks with the brook shader,
-## above the grounds and the river's bank, below the decorations.
-func _brook_canvas() -> BrookCanvas:
+## made on first use.
+func _brook_canvas() -> WaterCanvas:
 	if _brooks == null:
 		if _brook_material == null:
 			_brook_material = ShaderMaterial.new()
 			_brook_material.shader = load("res://world/brook.gdshader")
 			_brook_material.set_shader_parameter("noise_texture", noise_texture())
-			_brook_material.set_shader_parameter("lateral_range", BrookLines.LATERAL_RANGE)
+			_brook_material.set_shader_parameter("flow_max", WaterMeshes.FLOW_MAX)
 			var layers := ground_layers("water")
 			for k in 3:
 				_brook_material.set_shader_parameter("bed%d_texture" % (k + 1), load_texture(str(layers.get("brook%d" % (k + 1), ""))))
 			_brook_material.set_shader_parameter("earth_texture", load_texture(str(layers.get("bank", ""))))
 			_brook_material.set_shader_parameter("water_tint", ground_params("water").get("base_tint", Color.WHITE))
-			# Where the river's water begins, so a brook fades into it.
-			_brook_material.set_shader_parameter("shore_field", ShoreField.texture())
-			_brook_material.set_shader_parameter("field_tiles", float(ShoreField.TILES))
-			_brook_material.set_shader_parameter("field_range", ShoreField.RANGE)
 			pin_flow_time(_brook_material)
-		_brooks = BrookCanvas.new()
+		_brooks = WaterCanvas.new()
+		_brooks.name = "Brooks"
 		_brooks.z_index = -3
 		_brooks.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 		_brooks.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 		_brooks.material = _brook_material
+		_brooks.texture = ground_texture("water")
 		add_child(_brooks)
 	return _brooks
 
 
-var _brooks: BrookCanvas = null
-
-
-## Draws a chunk's brooks with the brook shader (BrookLines.draw_shaded).
-class BrookCanvas:
-	extends Node2D
-	var lines: Array = []
-	var lo := Vector2i.ZERO
-	var hi := Vector2i.ZERO
-	var water: Texture2D
-
-	func _draw() -> void:
-		BrookLines.draw_shaded(self, lines, lo, hi, water)
+var _brooks: WaterCanvas = null
 
 
 ## Sows the decorations of this chunk: for each kind, on the tiles its

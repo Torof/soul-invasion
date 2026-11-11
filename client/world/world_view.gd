@@ -233,7 +233,7 @@ func _exit_tree() -> void:
 func _on_world_state(width: int, height: int, chunk_size: int, materials: Array, night: bool) -> void:
 	_width = width
 	_height = height
-	ShoreField.map_size = Vector2i(width, height)
+	WaterMeshes.map_size = Vector2i(width, height)
 	_chunk_size = chunk_size
 	_ledger.chunk_size = chunk_size
 	_looks.clear()
@@ -599,7 +599,7 @@ func current_at(tile: Vector2i) -> Vector2:
 	if currents.is_empty():
 		return Vector2.ZERO
 	var local := tile - key * _chunk_size
-	return ShoreField.current_vector(int(currents[local.y * _chunk_size + local.x]))
+	return WaterMeshes.current_vector(int(currents[local.y * _chunk_size + local.x]))
 
 
 ## The terrain of any tile the server has sent, "" otherwise.

@@ -1,6 +1,5 @@
 // What the two water shaders share (WaterMeshes): the flowing water, the
-// ford's bed, and the dials, the same names as ground.gdshader's so
-// ground.json sets both.
+// ford's bed, and the dials (ground.json's water params set them).
 
 // The water flows: the painted water advected along the current in two
 // phases half a period apart, cross-faded by a triangle wave so the reset
@@ -67,10 +66,6 @@ uniform float detail_on = 1.0;
 // captures can be compared pixel by pixel (SOUL_INVASION_WATER_TIME);
 // negative, the clock's own.
 uniform float flow_time = -1.0;
-// Development: the screen split against today's water (F7): this water
-// draws on the right of split_edge (0 to 1 across the screen); negative,
-// everywhere.
-uniform float split_edge = -1.0;
 
 // The current the vertex colour carries, in tiles a second.
 vec2 flow_of(vec4 tile) {
