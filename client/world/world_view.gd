@@ -526,8 +526,8 @@ var _reach_dirty := true
 ## The main thread's time a frame for building the margin's chunks
 ## (their nodes: trees, plants, items; their grounds go to the workers)
 ## and for laying the grounds the workers finished (C3).
-const BUILD_BUDGET_USEC := 3000
-const LAY_BUDGET_USEC := 4000
+const BUILD_BUDGET_USEC := 1000
+const LAY_BUDGET_USEC := 1500
 ## The chunks built for the margin whose ground still waits its turn
 ## (chunk -> true): one the screen reaches before its turn is built this
 ## frame after all, so no chunk shows before its ground.
