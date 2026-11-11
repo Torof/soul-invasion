@@ -1,7 +1,7 @@
 //! A bounded cache that forgets the least recently used entry first.
 //!
-//! Made for what the server can always compute again from the seed (the
-//! flora of a chunk, later the chunks themselves, D39): a cache only
+//! Made for what can always be computed again from the seed (the trees
+//! and the flora of a chunk, later the chunks themselves, D39): a cache only
 //! memoises, so forgetting an entry at any time changes nothing but the
 //! time the next request takes. Its memory follows its capacity, never
 //! the map's size nor the land visited.
