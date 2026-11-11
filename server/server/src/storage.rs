@@ -3,17 +3,31 @@
 //! the server. There is no world journal any more (D17, 10 November 2026):
 //! nothing read it back; a soul's deeds will have their own store (D14).
 //!
+//! What men changed in the world is not in the snapshot but beside it,
+//! chunk by chunk (`chunk_changes`, lightness plan D2): a row a chunk men
+//! touched, with its version, written again only when that version moved
+//! since the last checkpoint.
+//!
 //! Formats are versioned from day one (D21): the database schema through
-//! SQLite's `user_version`, each snapshot through its own format version.
+//! SQLite's `user_version`, each snapshot through its own format version,
+//! each chunk's changes through theirs.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rusqlite::{Connection, OptionalExtension, params};
-use sim::{Content, World};
+use sim::changes::{ChunkChanges, Construction, Planted, Stage};
+use sim::ground::Version;
+use sim::trees::TreeKey;
+use sim::{CHUNK_SIZE, ChunkPos, Content, Pos, World};
 
 /// Version of the serialized `World` inside a snapshot. Bump on any change
 /// to `World`'s shape, and add a migration in `decode_world`.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 8;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 9;
+
+/// Version of a chunk's changes as stored (`encode_changes`). Bump on any
+/// change to their bytes, and read the old ones in `decode_changes`.
+pub const CHUNK_CHANGES_FORMAT_VERSION: u32 = 1;
 
 /// Snapshots kept: the latest and two before it. Every one used to be
 /// kept, a full copy of the world each game day (18 MB on the valley).
@@ -35,6 +49,17 @@ pub enum StorageError {
         found: u32,
         /// Version this build reads.
         supported: u32,
+    },
+    /// A chunk's stored changes are damaged, or of a format this build
+    /// does not know.
+    #[error("the changes of chunk ({x}, {y}) are damaged or of an unknown format (v{format})")]
+    ChunkChanges {
+        /// The chunk.
+        x: i32,
+        /// The chunk.
+        y: i32,
+        /// Their format version.
+        format: u32,
     },
     /// The database schema is newer than this build.
     #[error("database schema v{found} is newer than this build (v{supported})")]
@@ -76,6 +101,20 @@ const MIGRATIONS: &[&str] = &[
     // gauge, nothing read it back, and a crash already dropped what came
     // after the last snapshot.
     "DROP TABLE events;",
+    // v3: what men changed, chunk by chunk (lightness plan D2, 11 November
+    // 2026), beside the snapshots: a row a chunk men touched, written
+    // again only when its version moved. `tick` is the checkpoint that
+    // wrote it. The natural items taken, which v8 snapshots held, move in
+    // at the next checkpoint (the world reads them from the snapshot).
+    "CREATE TABLE chunk_changes (
+         x              INTEGER NOT NULL,
+         y              INTEGER NOT NULL,
+         version        INTEGER NOT NULL,
+         format_version INTEGER NOT NULL,
+         tick           INTEGER NOT NULL,
+         data           BLOB    NOT NULL,
+         PRIMARY KEY (x, y)
+     ) WITHOUT ROWID;",
 ];
 
 /// SQLite-backed storage: one file, or memory for ephemeral worlds.
@@ -84,6 +123,10 @@ pub struct Sqlite {
     conn: Connection,
     /// Needed to rebuild what old snapshot formats did not hold.
     content: Arc<Content>,
+    /// The version of each chunk's changes in the database, as last read
+    /// or written: a checkpoint writes only the chunks whose version
+    /// differs. Grows with what men change, never with the land.
+    written: BTreeMap<ChunkPos, Version>,
 }
 
 impl Sqlite {
@@ -100,7 +143,11 @@ impl Sqlite {
     fn from_connection(conn: Connection, content: Arc<Content>) -> Result<Self, StorageError> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
-        let mut storage = Self { conn, content };
+        let mut storage = Self {
+            conn,
+            content,
+            written: BTreeMap::new(),
+        };
         storage.migrate()?;
         Ok(storage)
     }
@@ -139,8 +186,35 @@ impl Storage for Sqlite {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        row.map(|(version, data)| decode_world(version, &data, &self.content))
-            .transpose()
+        let Some((version, data)) = row else {
+            return Ok(None);
+        };
+        let mut world = decode_world(version, &data, &self.content)?;
+        let mut rows = self
+            .conn
+            .prepare("SELECT x, y, version, format_version, data FROM chunk_changes")?;
+        let rows = rows.query_map([], |row| {
+            Ok((
+                ChunkPos::new(row.get(0)?, row.get(1)?),
+                row.get::<_, Version>(2)?,
+                row.get::<_, u32>(3)?,
+                row.get::<_, Vec<u8>>(4)?,
+            ))
+        })?;
+        self.written.clear();
+        for row in rows {
+            let (chunk, version, format, data) = row?;
+            let changes = decode_changes(chunk, version, format, &data).ok_or(
+                StorageError::ChunkChanges {
+                    x: chunk.x,
+                    y: chunk.y,
+                    format,
+                },
+            )?;
+            world.restore_changes(chunk, changes);
+            self.written.insert(chunk, version);
+        }
+        Ok(Some(world))
     }
 
     fn save_world(&mut self, world: &World) -> Result<(), StorageError> {
@@ -150,6 +224,27 @@ impl Storage for Sqlite {
             "INSERT INTO snapshots (tick, format_version, data) VALUES (?1, ?2, ?3)",
             params![db_int(world.tick().0), SNAPSHOT_FORMAT_VERSION, data],
         )?;
+        // The chunks men changed since the last checkpoint, alone.
+        let moved: Vec<(ChunkPos, Version)> = world
+            .chunk_changes()
+            .filter(|(chunk, changes)| self.written.get(chunk) != Some(&changes.version))
+            .map(|(chunk, changes)| (chunk, changes.version))
+            .collect();
+        for &(chunk, version) in &moved {
+            let changes = world.changes_in(chunk).expect("listed above");
+            tx.execute(
+                "INSERT OR REPLACE INTO chunk_changes (x, y, version, format_version, tick, data) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    chunk.x,
+                    chunk.y,
+                    version,
+                    CHUNK_CHANGES_FORMAT_VERSION,
+                    db_int(world.tick().0),
+                    encode_changes(chunk, changes),
+                ],
+            )?;
+        }
         // Only the latest few are kept: a world is resumed from the last
         // one, the others are a margin should it be damaged.
         tx.execute(
@@ -158,8 +253,165 @@ impl Storage for Sqlite {
             [KEPT_SNAPSHOTS],
         )?;
         tx.commit()?;
+        self.written.extend(moved);
         Ok(())
     }
+}
+
+/// A chunk's changes as stored, format 1: four lists, each its length
+/// then its entries, every number a LEB128 varint (a byte under 128).
+/// The taken slots and the felled trees' keys ([`TreeKey::bits`]) in
+/// order, each as its distance from the one before: about a byte an
+/// entry. A planted tree: its key, its species' id (length, then UTF-8),
+/// its stage (0 to 3), its day. A construction: its kind's id, its tile
+/// in the chunk (`y × 32 + x`), its day.
+fn encode_changes(chunk: ChunkPos, changes: &ChunkChanges) -> Vec<u8> {
+    fn varint(out: &mut Vec<u8>, mut value: u64) {
+        while value >= 0x80 {
+            out.push(u8::try_from(value & 0x7f).expect("seven bits") | 0x80);
+            value >>= 7;
+        }
+        out.push(u8::try_from(value).expect("under 128"));
+    }
+    fn ascending(out: &mut Vec<u8>, values: impl ExactSizeIterator<Item = u16>) {
+        varint(out, values.len() as u64);
+        let mut last = 0;
+        for value in values {
+            varint(out, u64::from(value - last));
+            last = value;
+        }
+    }
+    fn text(out: &mut Vec<u8>, text: &str) {
+        varint(out, text.len() as u64);
+        out.extend_from_slice(text.as_bytes());
+    }
+    let mut out = Vec::new();
+    ascending(&mut out, changes.taken.iter().copied());
+    let mut felled: Vec<u16> = changes.felled.iter().map(|k| k.bits()).collect();
+    felled.sort_unstable();
+    ascending(&mut out, felled.into_iter());
+    varint(&mut out, changes.planted.len() as u64);
+    for (key, planted) in &changes.planted {
+        varint(&mut out, u64::from(key.bits()));
+        text(&mut out, &planted.species);
+        let stage = Stage::ALL.iter().position(|s| *s == planted.stage);
+        varint(&mut out, stage.expect("a stage") as u64);
+        varint(&mut out, planted.day);
+    }
+    varint(&mut out, changes.built.len() as u64);
+    let origin = chunk.origin();
+    let side = i32::try_from(CHUNK_SIZE).expect("small chunk");
+    for built in &changes.built {
+        text(&mut out, &built.kind);
+        let (dx, dy) = (built.at.x - origin.x, built.at.y - origin.y);
+        assert!(
+            (0..side).contains(&dx) && (0..side).contains(&dy),
+            "a construction stands in its chunk"
+        );
+        varint(
+            &mut out,
+            u64::try_from(dy * side + dx).expect("in the chunk"),
+        );
+        varint(&mut out, built.day);
+    }
+    out
+}
+
+/// The changes [`encode_changes`] wrote for `chunk` at `version`, in
+/// `format`; `None` if the bytes are damaged or the format unknown.
+fn decode_changes(
+    chunk: ChunkPos,
+    version: Version,
+    format: u32,
+    data: &[u8],
+) -> Option<ChunkChanges> {
+    struct Bytes<'a>(&'a [u8]);
+    impl Bytes<'_> {
+        fn varint(&mut self) -> Option<u64> {
+            let mut value = 0_u64;
+            for shift in (0..64).step_by(7) {
+                let (&byte, rest) = self.0.split_first()?;
+                self.0 = rest;
+                value |= u64::from(byte & 0x7f).checked_shl(shift)?;
+                if byte & 0x80 == 0 {
+                    return Some(value);
+                }
+            }
+            None
+        }
+        fn count(&mut self) -> Option<usize> {
+            // Never more entries than bytes left: damaged bytes cannot ask
+            // for a huge allocation.
+            usize::try_from(self.varint()?)
+                .ok()
+                .filter(|n| *n <= self.0.len())
+        }
+        fn ascending(&mut self) -> Option<Vec<u16>> {
+            let count = self.count()?;
+            let mut values = Vec::with_capacity(count);
+            let mut last = 0_u16;
+            for n in 0..count {
+                let step = u16::try_from(self.varint()?).ok()?;
+                if n > 0 && step == 0 {
+                    return None;
+                }
+                last = last.checked_add(step)?;
+                values.push(last);
+            }
+            Some(values)
+        }
+        fn text(&mut self) -> Option<String> {
+            let len = usize::try_from(self.varint()?).ok()?;
+            if len > self.0.len() {
+                return None;
+            }
+            let (text, rest) = self.0.split_at(len);
+            self.0 = rest;
+            String::from_utf8(text.to_vec()).ok()
+        }
+    }
+    if format != CHUNK_CHANGES_FORMAT_VERSION {
+        return None;
+    }
+    let mut bytes = Bytes(data);
+    let mut changes = ChunkChanges {
+        version,
+        taken: bytes.ascending()?.into_iter().collect(),
+        ..ChunkChanges::default()
+    };
+    for bits in bytes.ascending()? {
+        changes.felled.insert(TreeKey::from_bits(bits)?);
+    }
+    for _ in 0..bytes.count()? {
+        let key = TreeKey::from_bits(u16::try_from(bytes.varint()?).ok()?)?;
+        let species = bytes.text()?;
+        let stage = *Stage::ALL.get(usize::try_from(bytes.varint()?).ok()?)?;
+        let day = bytes.varint()?;
+        changes.planted.insert(
+            key,
+            Planted {
+                species,
+                stage,
+                day,
+            },
+        );
+    }
+    let origin = chunk.origin();
+    let side = u64::from(CHUNK_SIZE);
+    for _ in 0..bytes.count()? {
+        let kind = bytes.text()?;
+        let tile = bytes.varint()?;
+        if tile >= side * side {
+            return None;
+        }
+        let at = Pos::new(
+            origin.x + i32::try_from(tile % side).ok()?,
+            origin.y + i32::try_from(tile / side).ok()?,
+        );
+        let day = bytes.varint()?;
+        changes.built.push(Construction { kind, at, day });
+    }
+    bytes.0.is_empty().then_some(changes)
 }
 
 /// SQLite integers are signed 64-bit; ticks and sequence numbers never
@@ -181,6 +433,7 @@ fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<Wo
             5 => migrate_v5_to_v6(&data)?,
             6 => migrate_v6_to_v7(&data)?,
             7 => migrate_v7_to_v8(&data)?,
+            8 => migrate_v8_to_v9(data),
             _ => unreachable!("every version below the current one has a migration"),
         };
         version += 1;
@@ -229,7 +482,6 @@ fn migrate_v3_to_v4(data: &str, content: &Content) -> Result<String, StorageErro
     old["next_item"] = fresh["next_item"].clone();
     // Today's fresh valley drops natural items instead (v8).
     old["natural"] = fresh["natural"].clone();
-    old["taken"] = fresh["taken"].clone();
     Ok(old.to_string())
 }
 
@@ -307,6 +559,14 @@ fn migrate_v7_to_v8(data: &str) -> Result<String, StorageError> {
     Ok(old.to_string())
 }
 
+/// v9: the natural items taken leave the snapshot for their chunks'
+/// changes, stored beside it (schema v3). A v8 snapshot's `taken` list
+/// is read as it is, each item becoming its chunk's change
+/// (`World`'s reading); the next checkpoint writes them in their chunks.
+fn migrate_v8_to_v9(data: String) -> String {
+    data
+}
+
 fn standard_world_at_old_tick(data: &str, content: &Content) -> Result<String, StorageError> {
     let old: serde_json::Value = serde_json::from_str(data)?;
     let calendar: sim::Calendar = serde_json::from_value(old["calendar"].clone())?;
@@ -335,7 +595,7 @@ mod tests {
     #[test]
     fn fresh_database_has_no_world() {
         let mut storage = Sqlite::in_memory(content()).unwrap();
-        assert_eq!(storage.schema_version().unwrap(), 2);
+        assert_eq!(storage.schema_version().unwrap(), 3);
         assert!(storage.latest_world().unwrap().is_none());
     }
 
@@ -377,7 +637,7 @@ mod tests {
             storage.save_world(&world_at(3)).unwrap();
         }
         let mut storage = Sqlite::open(&path, content()).unwrap();
-        assert_eq!(storage.schema_version().unwrap(), 2);
+        assert_eq!(storage.schema_version().unwrap(), 3);
         assert_eq!(storage.latest_world().unwrap().unwrap().tick(), Tick(3));
         drop(storage);
         let _ = std::fs::remove_dir_all(dir);
@@ -395,7 +655,7 @@ mod tests {
         .unwrap();
         let mut storage = Sqlite::from_connection(conn, content()).unwrap();
         storage.save_world(&world_at(4)).unwrap();
-        assert_eq!(storage.schema_version().unwrap(), 2);
+        assert_eq!(storage.schema_version().unwrap(), 3);
         let journal: i64 = storage
             .conn
             .query_row(
@@ -528,6 +788,243 @@ mod tests {
         );
     }
 
+    /// A database file of its own, in a fresh directory removed by the
+    /// caller.
+    fn temp_db(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir =
+            std::env::temp_dir().join(format!("soul-invasion-test-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("world.sqlite");
+        (dir, path)
+    }
+
+    /// Changes of every kind, in a chunk east of the map and one west of
+    /// it, at the far end of the cells keys name.
+    fn every_kind_of_change() -> Vec<(ChunkPos, ChunkChanges)> {
+        let key = |bits| TreeKey::from_bits(bits).expect("a key");
+        let east = ChunkPos::new(5, 3);
+        let west = ChunkPos::new(-1, 2);
+        let mut a = ChunkChanges {
+            version: 4,
+            taken: [3, 70, 4000, u16::MAX].into(),
+            felled: [key(0), key(0x0888), key(1 << 11 | 0x7f8)].into(),
+            ..ChunkChanges::default()
+        };
+        for (n, stage) in Stage::ALL.into_iter().enumerate() {
+            a.planted.insert(
+                key(2 << 11 | u16::try_from(n).unwrap()),
+                Planted {
+                    species: ["oak", "birch", "wild_apple", "pine"][n].to_owned(),
+                    stage,
+                    day: 1 + 400 * n as u64,
+                },
+            );
+        }
+        a.built.push(Construction {
+            kind: "hut".to_owned(),
+            at: Pos::new(east.origin().x + 31, east.origin().y + 31),
+            day: u64::MAX,
+        });
+        let b = ChunkChanges {
+            version: 1,
+            built: vec![Construction {
+                kind: "cairn".to_owned(),
+                at: west.origin(),
+                day: 0,
+            }],
+            ..ChunkChanges::default()
+        };
+        vec![(east, a), (west, b)]
+    }
+
+    #[test]
+    fn chunk_changes_round_trip_through_sqlite() {
+        // The bytes alone, every kind of change, and nothing at all.
+        for (chunk, changes) in every_kind_of_change() {
+            let bytes = encode_changes(chunk, &changes);
+            let back = decode_changes(chunk, changes.version, CHUNK_CHANGES_FORMAT_VERSION, &bytes);
+            assert_eq!(back.as_ref(), Some(&changes));
+            // Damaged bytes are refused, never misread.
+            for cut in 0..bytes.len() {
+                assert_eq!(
+                    decode_changes(chunk, 1, 1, &bytes[..cut]),
+                    None,
+                    "cut at {cut}"
+                );
+            }
+            let mut longer = bytes.clone();
+            longer.push(0);
+            assert_eq!(decode_changes(chunk, 1, 1, &longer), None);
+            assert_eq!(decode_changes(chunk, 1, 2, &bytes), None, "unknown format");
+        }
+        let none = ChunkChanges::default();
+        assert_eq!(encode_changes(ChunkPos::new(0, 0), &none), [0, 0, 0, 0]);
+        // Through a database file, closed and opened again.
+        let (dir, path) = temp_db("round-trip");
+        let mut world = world_at(6);
+        for (chunk, changes) in every_kind_of_change() {
+            world.restore_changes(chunk, changes);
+        }
+        Sqlite::open(&path, content())
+            .unwrap()
+            .save_world(&world)
+            .unwrap();
+        let mut storage = Sqlite::open(&path, content()).unwrap();
+        let back = storage.latest_world().unwrap().unwrap();
+        for (chunk, changes) in every_kind_of_change() {
+            assert_eq!(back.changes_in(chunk), Some(&changes));
+            assert_eq!(back.chunk_version(chunk), changes.version);
+        }
+        assert_eq!(back.chunk_changes().count(), 2);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_v2_database_of_today_keeps_its_taken_items() {
+        // A snapshot written by the code of 11 November 2026 (format v8,
+        // schema v2): a small valley, four natural items picked up in
+        // three chunks, their ids in the snapshot's `taken` list.
+        const FIXTURE: &str = include_str!("../tests/fixtures/snapshot-v8.json");
+        let taken: Vec<sim::ItemId> = serde_json::from_value(
+            serde_json::from_str::<serde_json::Value>(FIXTURE).unwrap()["taken"].clone(),
+        )
+        .unwrap();
+        assert_eq!(taken.len(), 4);
+        let (dir, path) = temp_db("v2");
+        {
+            // The database as v2 made it: its first two migrations.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(MIGRATIONS[0]).unwrap();
+            conn.execute_batch(MIGRATIONS[1]).unwrap();
+            conn.pragma_update(None, "user_version", 2).unwrap();
+            conn.execute(
+                "INSERT INTO snapshots (tick, format_version, data) VALUES (4, 8, ?1)",
+                [FIXTURE],
+            )
+            .unwrap();
+        }
+        let check = |world: &World| {
+            let mut found: Vec<_> = world.taken().collect();
+            found.sort_unstable();
+            assert_eq!(found, taken);
+            for &id in &taken {
+                assert!(world.is_taken(id));
+                let chunk = sim::items::chunk_of(id);
+                assert!(
+                    world
+                        .items_in(chunk)
+                        .iter()
+                        .all(|i| i.id() != id || world.item(id).is_some())
+                );
+            }
+            assert_eq!(world.chunk_changes().count(), 3, "three chunks");
+            assert_eq!(
+                world.chunk_changes().map(|(_, c)| c.version).sum::<u32>(),
+                4,
+                "a version an item taken"
+            );
+        };
+        let mut storage = Sqlite::open(&path, content()).unwrap();
+        assert_eq!(storage.schema_version().unwrap(), 3);
+        let world = storage.latest_world().unwrap().unwrap();
+        assert_eq!(world.tick(), Tick(4));
+        check(&world);
+        // The next checkpoint moves them into their chunks' rows, and the
+        // snapshot no longer holds them.
+        storage.save_world(&world).unwrap();
+        let rows: i64 = storage
+            .conn
+            .query_row("SELECT count(*) FROM chunk_changes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 3);
+        let latest: String = storage
+            .conn
+            .query_row(
+                "SELECT data FROM snapshots WHERE format_version = ?1",
+                [SNAPSHOT_FORMAT_VERSION],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!latest.contains("\"taken\""));
+        drop(storage);
+        let mut storage = Sqlite::open(&path, content()).unwrap();
+        check(&storage.latest_world().unwrap().unwrap());
+        drop(storage);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_checkpoint_writes_only_the_chunks_that_changed() {
+        let mut storage = Sqlite::in_memory(content()).unwrap();
+        let written = |storage: &Sqlite| -> Vec<(i32, i32, u32, i64)> {
+            storage
+                .conn
+                .prepare("SELECT x, y, version, tick FROM chunk_changes ORDER BY x, y")
+                .unwrap()
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        let (a, b) = (ChunkPos::new(1, 1), ChunkPos::new(2, 1));
+        let felled = |version| ChunkChanges {
+            version,
+            felled: [TreeKey::from_bits(u16::try_from(version).unwrap() << 3).unwrap()].into(),
+            ..ChunkChanges::default()
+        };
+        let mut world = world_at(6);
+        world.restore_changes(a, felled(1));
+        world.restore_changes(b, felled(1));
+        storage.save_world(&world).unwrap();
+        assert_eq!(written(&storage), [(1, 1, 1, 6), (2, 1, 1, 6)]);
+        // Only b changes: only b is written again.
+        world.advance(6, &content(), &mut Vec::new());
+        world.restore_changes(b, felled(2));
+        storage.save_world(&world).unwrap();
+        assert_eq!(written(&storage), [(1, 1, 1, 6), (2, 1, 2, 12)]);
+        // Nothing changes: nothing is written.
+        world.advance(6, &content(), &mut Vec::new());
+        storage.save_world(&world).unwrap();
+        assert_eq!(written(&storage), [(1, 1, 1, 6), (2, 1, 2, 12)]);
+        assert_eq!(storage.latest_world().unwrap().unwrap().tick(), Tick(18));
+        // A chunk changed in the simulation itself (an item picked up) is
+        // written at the next checkpoint.
+        let mut world = storage.latest_world().unwrap().unwrap();
+        let item = (0..8)
+            .flat_map(|y| (0..8).map(move |x| ChunkPos::new(x, y)))
+            .flat_map(|c| world.items_in(c))
+            .find(|i| sim::items::is_natural(i.id()) && world.map().is_passable(i.pos().unwrap()))
+            .expect("a natural item on walkable ground");
+        let body = world.spawn_body(item.pos().unwrap());
+        world.queue(sim::Intention::PickUp {
+            body,
+            item: item.id(),
+        });
+        world.step(&content(), &mut Vec::new());
+        let chunk = item.pos().unwrap().chunk();
+        storage.save_world(&world).unwrap();
+        let rows = written(&storage);
+        assert!(
+            rows.contains(&(
+                chunk.x,
+                chunk.y,
+                world.chunk_version(chunk),
+                db_int(world.tick().0)
+            )),
+            "{rows:?}"
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.3 == db_int(world.tick().0))
+                .count(),
+            1,
+            "{rows:?}"
+        );
+    }
+
     #[test]
     fn unknown_snapshot_format_is_refused() {
         let mut storage = Sqlite::in_memory(content()).unwrap();
@@ -557,7 +1054,7 @@ mod tests {
             err,
             StorageError::SchemaTooNew {
                 found: 42,
-                supported: 2
+                supported: 3
             }
         ));
     }

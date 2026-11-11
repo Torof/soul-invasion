@@ -40,6 +40,15 @@ fn map_print(map: &Map) -> u64 {
     h.0
 }
 
+/// A tree as the prints read it: where and of what kind, written as trees
+/// were before they carried their key (D2), so a key added moved no tree.
+#[derive(Debug)]
+#[allow(dead_code, reason = "read by Debug only")]
+struct Tree {
+    at: sim::FinePos,
+    species: usize,
+}
+
 fn world_print(world: &World) -> (u64, u64, u64) {
     // The ground's items, made per chunk (and any stored), chunk by chunk.
     let mut items = Fnv::new();
@@ -50,11 +59,20 @@ fn world_print(world: &World) -> (u64, u64, u64) {
             items.bytes(format!("{:?}", world.items_in(sim::ChunkPos::new(x, y))).as_bytes());
         }
     }
-    // The trees, placed per chunk, chunk by chunk.
+    // The trees, placed per chunk, chunk by chunk: where and of what kind
+    // ([`Tree`]).
     let mut trees = Fnv::new();
     for y in 0..chunks {
         for x in 0..chunks {
-            trees.bytes(format!("{:?}", world.trees_in(sim::ChunkPos::new(x, y))).as_bytes());
+            let placed: Vec<Tree> = world
+                .trees_in(sim::ChunkPos::new(x, y))
+                .iter()
+                .map(|t| Tree {
+                    at: t.at,
+                    species: t.species,
+                })
+                .collect();
+            trees.bytes(format!("{placed:?}").as_bytes());
         }
     }
     (map_print(world.map()), items.0, trees.0)

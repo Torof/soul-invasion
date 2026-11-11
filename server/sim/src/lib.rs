@@ -12,6 +12,7 @@
 // exceptions of today's generator allow floats where they stand.
 #![warn(clippy::float_arithmetic)]
 
+pub mod changes;
 pub mod content;
 pub mod flora;
 // `gen` is a reserved keyword in the 2024 edition: the module is `r#gen`,
@@ -578,8 +579,15 @@ pub struct World {
     /// Whether the ground drops natural items ([`items`]); false for worlds
     /// made before them, whose scattered items are all in `items`.
     natural: bool,
-    /// The natural items taken off the ground: they do not come back.
-    taken: BTreeSet<ItemId>,
+    /// What men changed, chunk by chunk (D28, lightness plan D2): the
+    /// natural items taken off the ground (they do not come back), and,
+    /// when felling, planting and building come, the trees felled and
+    /// planted and what was built. Absent for a chunk as the seed made it.
+    /// Stored per chunk beside the snapshot, never in it: a checkpoint
+    /// writes only the chunks whose version moved. Shared with the copy
+    /// handed to the storage thread, copied only when changed.
+    #[serde(skip)]
+    changes: BTreeMap<ChunkPos, Arc<changes::ChunkChanges>>,
     /// The bodies standing in each chunk, ids in order: kept as bodies
     /// walk, teleport, appear and die, so the bodies of a place are a
     /// lookup, never a scan of them all (D39). Derived: rebuilt on load.
@@ -640,6 +648,8 @@ struct Stored {
     next_item: u64,
     #[serde(default)]
     natural: bool,
+    /// The natural items taken, as snapshots held them up to format 8:
+    /// since, each chunk's changes hold its own, stored beside.
     #[serde(default)]
     taken: BTreeSet<ItemId>,
 }
@@ -656,7 +666,7 @@ impl<'de> serde::Deserialize<'de> for World {
             items: stored.items.into_iter().map(|i| (i.id, i)).collect(),
             next_item: stored.next_item,
             natural: stored.natural,
-            taken: stored.taken,
+            changes: BTreeMap::new(),
             by_chunk: BTreeMap::new(),
             ground: BTreeMap::new(),
             spawns: Vec::new(),
@@ -679,6 +689,15 @@ impl<'de> serde::Deserialize<'de> for World {
             .collect();
         for (id, chunk) in lying {
             world.lay(id, chunk);
+        }
+        // An old snapshot's taken items become their chunks' changes, a
+        // version for each item taken.
+        for id in stored.taken {
+            if items::is_natural(id) {
+                world.change(items::chunk_of(id), |c| {
+                    c.taken.insert(items::slot_of(id));
+                });
+            }
         }
         Ok(world)
     }
@@ -728,7 +747,7 @@ impl World {
             items: BTreeMap::new(),
             next_item: 1,
             natural: false,
-            taken: BTreeSet::new(),
+            changes: BTreeMap::new(),
             by_chunk: BTreeMap::new(),
             ground: BTreeMap::new(),
             spawns: Vec::new(),
@@ -847,9 +866,55 @@ impl World {
         self.natural
     }
 
-    /// The natural items taken off the ground.
-    pub fn taken(&self) -> &BTreeSet<ItemId> {
-        &self.taken
+    /// The natural items taken off the ground, chunk by chunk.
+    pub fn taken(&self) -> impl Iterator<Item = ItemId> + '_ {
+        self.changes.iter().flat_map(|(&chunk, changes)| {
+            changes
+                .taken
+                .iter()
+                .filter_map(move |&slot| items::natural_in_slot(chunk, slot))
+        })
+    }
+
+    /// Whether the natural item `id` was taken off the ground.
+    pub fn is_taken(&self, id: ItemId) -> bool {
+        items::is_natural(id)
+            && self
+                .changes
+                .get(&items::chunk_of(id))
+                .is_some_and(|c| c.taken.contains(&items::slot_of(id)))
+    }
+
+    /// What men changed in each chunk they changed, in chunk order.
+    pub fn chunk_changes(&self) -> impl Iterator<Item = (ChunkPos, &changes::ChunkChanges)> + '_ {
+        self.changes.iter().map(|(&chunk, c)| (chunk, c.as_ref()))
+    }
+
+    /// What men changed in `chunk`, if anything.
+    pub fn changes_in(&self, chunk: ChunkPos) -> Option<&changes::ChunkChanges> {
+        self.changes.get(&chunk).map(AsRef::as_ref)
+    }
+
+    /// `chunk`'s version: how many times men changed it, 0 while it is as
+    /// the seed made it.
+    pub fn chunk_version(&self, chunk: ChunkPos) -> ground::Version {
+        self.changes.get(&chunk).map_or(0, |c| c.version)
+    }
+
+    /// Puts back a chunk's changes as the storage kept them, version
+    /// included: how a world is loaded.
+    pub fn restore_changes(&mut self, chunk: ChunkPos, changes: changes::ChunkChanges) {
+        self.ground_cache.set_version(chunk, changes.version);
+        self.changes.insert(chunk, Arc::new(changes));
+    }
+
+    /// Changes `chunk` as `change` does, and counts it: the chunk's
+    /// version grows by one.
+    fn change(&mut self, chunk: ChunkPos, change: impl FnOnce(&mut changes::ChunkChanges)) {
+        let changes = Arc::make_mut(self.changes.entry(chunk).or_default());
+        change(changes);
+        changes.version += 1;
+        self.ground_cache.set_version(chunk, changes.version);
     }
 
     /// The seed the ground's natural items are made with: the map's.
@@ -867,7 +932,9 @@ impl World {
             return Vec::new();
         }
         let mut natural = items::natural_items(&self.map, &self.spawns, self.seed(), chunk);
-        natural.retain(|i| !self.taken.contains(&i.id));
+        if let Some(changes) = self.changes.get(&chunk) {
+            natural.retain(|i| !changes.taken.contains(&items::slot_of(i.id)));
+        }
         natural
     }
 
@@ -908,14 +975,16 @@ impl World {
     /// remembers it was taken: what a body does with it is then done to a
     /// stored item. Nothing when it is not a natural item still there.
     fn materialise(&mut self, id: ItemId) {
-        if !self.natural || !items::is_natural(id) || self.taken.contains(&id) {
+        if !self.natural || !items::is_natural(id) || self.is_taken(id) {
             return;
         }
         if let Some(item) = items::natural_item(&self.map, &self.spawns, self.seed(), id) {
             let chunk = items::chunk_of(id);
             self.items.insert(id, item);
             self.lay(id, chunk);
-            self.taken.insert(id);
+            self.change(chunk, |c| {
+                c.taken.insert(items::slot_of(id));
+            });
         }
     }
 
@@ -2201,11 +2270,19 @@ mod tests {
         // Carried now, stored, and gone from its chunk for good.
         assert!(w.body(body).unwrap().has(item.id()));
         assert!(w.item(item.id()).is_some());
-        assert!(w.taken().contains(&item.id()));
+        assert!(w.is_taken(item.id()));
+        assert_eq!(w.taken().collect::<Vec<_>>(), [item.id()]);
+        assert_eq!(w.chunk_version(at.chunk()), 1, "a change counted");
         assert!(w.items_in(at.chunk()).iter().all(|i| i.id() != item.id()));
         // Through a save and a load: the same.
+        // (The snapshot holds no changes: the storage keeps them beside.)
         let mut back: World = serde_json::from_str(&serde_json::to_string(&w).unwrap()).unwrap();
+        assert_eq!(back.chunk_changes().count(), 0);
+        for (chunk, changes) in w.chunk_changes() {
+            back.restore_changes(chunk, changes.clone());
+        }
         back.take_content(&content);
+        assert_eq!(back.chunk_version(at.chunk()), 1);
         assert!(
             back.items_in(at.chunk())
                 .iter()

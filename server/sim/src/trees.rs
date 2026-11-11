@@ -1,7 +1,9 @@
 //! The trees (D37, D40): placed **chunk by chunk** ([`trees_in`]), a pure
 //! function of the chunk, the map and the seed, the same in any order,
-//! nothing stored and nothing planted for the whole map. A felled tree
-//! will be stored when felling comes, and laid over these.
+//! nothing stored and nothing planted for the whole map. Each tree is
+//! known by the cell it was placed on ([`TreeKey`]); a felled tree will
+//! be stored by that key in its chunk's changes when felling comes, and
+//! laid over these.
 //!
 //! They grow as a natural forest does, in layers:
 //!
@@ -70,6 +72,124 @@ pub struct Tree {
     pub at: FinePos,
     /// Its kind: an index into the content's species.
     pub species: usize,
+    /// Who it is, for the whole life of the world: the cell it was placed
+    /// on.
+    pub key: TreeKey,
+}
+
+/// A tree's identity for the whole life of the world (lightness plan D2,
+/// 11 November 2026): the placement cell it stands on, in its chunk, with
+/// no table of ids. The same tree has the same key every time its chunk
+/// is placed, in any order, on any machine; two trees of a chunk never
+/// share one. What men do to a tree (fell it, plant one) is stored in its
+/// chunk's changes ([`crate::changes::ChunkChanges`]) under this key.
+///
+/// The cell is counted from the chunk's first cell on its grid (the cell
+/// the chunk's corner lies in), so a key is small (13 bits,
+/// [`TreeKey::bits`]) and means the same in a chunk at any distance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct TreeKey {
+    /// The grid it was placed on.
+    pub grid: TreeGrid,
+    /// Its cell on that grid, from the chunk's first cell: −2 to 13 on
+    /// each axis (a trunk in the chunk always has its cell within).
+    pub cell: (i8, i8),
+    /// Which tree of a meadow cell's group, 0 to 7; 0 on the woods' grids.
+    pub member: u8,
+}
+
+/// The grids trees are placed on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TreeGrid {
+    /// The big trees' wide grid (`BIG_CELL`).
+    Big,
+    /// The narrow grid of the small trees between them (`CELL`).
+    Narrow,
+    /// The meadows' grid (`MEADOW_GRID`): a group of trees a cell.
+    Meadow,
+}
+
+impl TreeGrid {
+    /// Side of a cell of this grid, in millimetres.
+    const fn cell(self) -> i32 {
+        match self {
+            Self::Big => BIG_GRID.cell,
+            Self::Narrow => GRID.cell,
+            Self::Meadow => MEADOW_GRID.cell,
+        }
+    }
+}
+
+/// The lowest relative cell a key holds, on each axis.
+const KEY_CELL_LOW: i8 = -2;
+/// The highest.
+const KEY_CELL_HIGH: i8 = 13;
+/// Members of a meadow group a key tells apart (`GROUP_LARGEST`).
+const KEY_MEMBERS: u8 = 8;
+
+impl TreeKey {
+    /// The key of the tree of `grid`'s cell `(cx, cy)` (whole-map cell
+    /// coordinates), `member` of its group, standing in `chunk`.
+    ///
+    /// # Panics
+    ///
+    /// If the cell is not near the chunk, or the member beyond a group:
+    /// no tree standing in the chunk is.
+    fn on(grid: TreeGrid, chunk: ChunkPos, (cx, cy): (i64, i64), member: u64) -> Self {
+        let first =
+            |origin: i32| i64::from(origin * MM_PER_TILE).div_euclid(i64::from(grid.cell()));
+        let origin = chunk.origin();
+        let relative = |c: i64, first: i64| {
+            i8::try_from(c - first)
+                .ok()
+                .filter(|r| (KEY_CELL_LOW..=KEY_CELL_HIGH).contains(r))
+                .expect("a tree's cell lies near its chunk")
+        };
+        let member = u8::try_from(member)
+            .ok()
+            .filter(|m| *m < KEY_MEMBERS)
+            .expect("a group holds eight trees at most");
+        Self {
+            grid,
+            cell: (relative(cx, first(origin.x)), relative(cy, first(origin.y))),
+            member,
+        }
+    }
+
+    /// The key in 13 bits: the grid (2), the cell (4 + 4), the member (3).
+    #[must_use]
+    pub fn bits(self) -> u16 {
+        let grid: u16 = match self.grid {
+            TreeGrid::Big => 0,
+            TreeGrid::Narrow => 1,
+            TreeGrid::Meadow => 2,
+        };
+        let axis = |c: i8| u16::try_from(c - KEY_CELL_LOW).expect("checked when made");
+        grid << 11 | axis(self.cell.0) << 7 | axis(self.cell.1) << 3 | u16::from(self.member)
+    }
+
+    /// The key [`TreeKey::bits`] gave, or `None` for bits no key gives.
+    #[must_use]
+    pub fn from_bits(bits: u16) -> Option<Self> {
+        let grid = match bits >> 11 {
+            0 => TreeGrid::Big,
+            1 => TreeGrid::Narrow,
+            2 => TreeGrid::Meadow,
+            _ => return None,
+        };
+        let axis =
+            |shift: u16| i8::try_from((bits >> shift) & 0xf).expect("four bits") + KEY_CELL_LOW;
+        let member = u8::try_from(bits & 0x7).expect("three bits");
+        if grid != TreeGrid::Meadow && member != 0 {
+            return None;
+        }
+        Some(Self {
+            grid,
+            cell: (axis(7), axis(3)),
+            member,
+        })
+    }
 }
 
 /// Side of the narrow grid, in millimetres: one small tree at most a cell.
@@ -522,7 +642,11 @@ impl Planting<'_> {
                 .kind(at, habitat, roll, |_| true)
                 .filter(|k| self.species[*k].big)
             {
-                bigs.push(Tree { at, species: kind });
+                bigs.push(Tree {
+                    at,
+                    species: kind,
+                    key: TreeKey::on(TreeGrid::Big, at.tile().chunk(), (cx, cy), 0),
+                });
             }
         }
         bigs
@@ -584,7 +708,11 @@ impl Planting<'_> {
                 })
             };
             if let Some(kind) = kind.filter(|k| !big(*k)) {
-                trees.push(Tree { at, species: kind });
+                trees.push(Tree {
+                    at,
+                    species: kind,
+                    key: TreeKey::on(TreeGrid::Narrow, chunk, (cx, cy), 0),
+                });
             }
         }
     }
@@ -671,7 +799,11 @@ impl Planting<'_> {
                 }
                 let roll = scatter::roll(self.seed, purpose::TREE_MEADOW, &keys(200 + n as u64));
                 if let Some(kind) = self.kind(at, Habitat::Lone, roll, |_| true) {
-                    trees.push(Tree { at, species: kind });
+                    trees.push(Tree {
+                        at,
+                        species: kind,
+                        key: TreeKey::on(TreeGrid::Meadow, chunk, (cx, cy), n as u64),
+                    });
                 }
             }
         }
@@ -816,6 +948,51 @@ mod tests {
         places.dedup();
         assert_eq!(places.len(), forward.len());
         assert!(forward.len() > 300, "{} trees", forward.len());
+    }
+
+    #[test]
+    fn a_tree_keeps_its_key_across_placings_and_no_two_of_a_chunk_share_one() {
+        let kinds = species();
+        let chunks: Vec<ChunkPos> = (0..8)
+            .flat_map(|y| (0..8).map(move |x| ChunkPos::new(x, y)))
+            .collect();
+        let placed = |map: &Map, order: &mut dyn Iterator<Item = &ChunkPos>| {
+            let mut all = std::collections::BTreeMap::new();
+            for &chunk in order {
+                all.insert(chunk, trees_in(map, &kinds, 3, chunk));
+            }
+            all
+        };
+        let first = placed(&Map::valley(256, 256, 3), &mut chunks.iter());
+        // The map generated again, the chunks placed the other way round.
+        let again = placed(&Map::valley(256, 256, 3), &mut chunks.iter().rev());
+        assert_eq!(first, again, "the same trees under the same keys");
+        let mut grids = std::collections::BTreeSet::new();
+        let mut total = 0;
+        for (chunk, trees) in &first {
+            let keys: std::collections::BTreeSet<TreeKey> = trees.iter().map(|t| t.key).collect();
+            assert_eq!(keys.len(), trees.len(), "{chunk:?}: one key a tree");
+            for tree in trees {
+                assert_eq!(TreeKey::from_bits(tree.key.bits()), Some(tree.key));
+                assert!(tree.key.bits() < 1 << 13);
+                grids.insert(tree.key.grid);
+            }
+            total += trees.len();
+        }
+        assert!(total > 300, "{total} trees");
+        assert!(grids.contains(&TreeGrid::Big) && grids.contains(&TreeGrid::Narrow));
+        // A key is the cell, not the place: the chunk's trees hold the
+        // same keys however far the chunk lies (a negative chunk too).
+        let far = ChunkPos::new(-5, 9);
+        let key = TreeKey::on(TreeGrid::Narrow, far, (-52, 96), 0);
+        assert_eq!(key.cell, (2, 0));
+        assert_eq!(TreeKey::from_bits(key.bits()), Some(key));
+        assert_eq!(TreeKey::from_bits(3 << 11), None, "no fourth grid");
+        assert_eq!(
+            TreeKey::from_bits(1 << 11 | 1),
+            None,
+            "members are the meadow's"
+        );
     }
 
     #[test]

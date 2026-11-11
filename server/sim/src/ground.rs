@@ -11,11 +11,12 @@
 //! where each reader used to place them again (a chunk's plants read the
 //! trees of the nine chunks around it: a view of 361 chunks placed about
 //! 3,600 chunks' trees). An entry is keyed by the chunk and its
-//! **version**: how many times men changed it (a tree felled, one
-//! planted). Every chunk is at version 0 until felling comes with the
-//! chunk's changes; a change bumps the version ([`Ground::changed`]), so
-//! the next request places the chunk again and lays the changes over it.
-//! The old entry ages out. Bounded ([`TREE_CACHE_CHUNKS`]), the least
+//! **version**: how many times men changed it (an item taken, a tree
+//! felled, one planted: [`crate::changes::ChunkChanges`], which the world
+//! keeps and stores). Every chunk is at version 0 until men change it; a
+//! change sets the new version here ([`Ground::set_version`]), so the
+//! next request places the chunk again and, when felling comes, lays the
+//! changes over it. The old entry ages out. Bounded ([`TREE_CACHE_CHUNKS`]), the least
 //! recently used out first: the memory follows the chunks in use, never
 //! the map's size nor the land visited.
 //!
@@ -40,8 +41,8 @@ pub type Version = u32;
 /// views' worth, as the plants' own cache holds (the view around a lone
 /// player and the land just left, or a view each for a few players
 /// apart). A chunk holds about 19 trees of 16 bytes on the game's valley
-/// (55 % forest, 10 November 2026), 130 at most: about 0.5 MB, under
-/// 4 MB were every chunk the densest.
+/// (55 % forest, 10 November 2026), 130 at most, 24 bytes each with
+/// their key: about 0.8 MB, under 6 MB were every chunk the densest.
 pub const TREE_CACHE_CHUNKS: usize = {
     let reach = (PATH_REACH.unsigned_abs() / CHUNK_SIZE) as usize;
     let with_rim = 2 * reach + 1 + 2;
@@ -63,8 +64,8 @@ struct Held {
     /// first.
     trees: Lru<(ChunkPos, Version), Arc<[Tree]>>,
     /// The chunks changed by men, with how many times: absent means 0.
-    /// Grows with what men change, never with the land visited; derived
-    /// from the chunk's changes, which felling will store.
+    /// Grows with what men change, never with the land visited; the
+    /// versions of the world's chunk changes, set as they change.
     versions: BTreeMap<ChunkPos, Version>,
 }
 
@@ -96,15 +97,11 @@ impl Ground {
         self.lock().versions.get(&chunk).copied().unwrap_or(0)
     }
 
-    /// Notes that men changed `chunk` (a tree felled, one planted): its
-    /// version grows, and its trees are placed again, with the changes
-    /// laid over them, the next time they are asked for. Returns the new
-    /// version.
-    pub fn changed(&self, chunk: ChunkPos) -> Version {
-        let mut held = self.lock();
-        let version = held.versions.entry(chunk).or_insert(0);
-        *version += 1;
-        *version
+    /// Notes that men changed `chunk` (an item taken, a tree felled, one
+    /// planted), now at `version`: its trees are placed again, with the
+    /// changes laid over them, the next time they are asked for.
+    pub fn set_version(&self, chunk: ChunkPos, version: Version) {
+        self.lock().versions.insert(chunk, version);
     }
 
     /// The trees standing in `chunk` at its current version: those held,
@@ -241,7 +238,7 @@ mod tests {
         let chunk = wooded(&map, &species)[0];
         assert_eq!(ground.version(chunk), 0);
         let before = ground.trees_in(&map, &species, SEED, chunk);
-        assert_eq!(ground.changed(chunk), 1);
+        ground.set_version(chunk, 1);
         assert_eq!(ground.version(chunk), 1);
         assert!(
             !ground.holds_trees(chunk),
@@ -255,7 +252,8 @@ mod tests {
             2,
             "the old entry ages out, it is not dropped"
         );
-        assert_eq!(ground.changed(chunk), 2);
+        ground.set_version(chunk, 2);
+        assert_eq!(ground.version(chunk), 2);
         // Another chunk keeps its own version.
         let other = ChunkPos::new(chunk.x + 1, chunk.y);
         assert_eq!(ground.version(other), 0);

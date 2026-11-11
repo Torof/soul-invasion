@@ -578,7 +578,7 @@ impl Shared {
             natural: world
                 .has_natural_items()
                 .then(|| (content.spawns.clone(), world.seed())),
-            natural_taken: Mutex::new(world.taken().clone()),
+            natural_taken: Mutex::new(world.taken().collect()),
             max_connections,
             connections: AtomicUsize::new(0),
             intentions: Mutex::new(BTreeMap::new()),
@@ -2163,7 +2163,7 @@ mod tests {
         }
         // A change to a chunk (felling, later) bumps its version: placed
         // again, the same today, nothing laying changes over them yet.
-        assert_eq!(shared.ground.changed(chunks[0]), 1);
+        shared.ground.set_version(chunks[0], 1);
         assert!(
             !shared.ground.holds_trees(chunks[0]),
             "the old version is stale"

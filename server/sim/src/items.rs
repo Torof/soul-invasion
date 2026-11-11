@@ -65,6 +65,28 @@ pub fn chunk_of(id: ItemId) -> ChunkPos {
     )
 }
 
+/// The slot of a natural item's id in its chunk: its tile and its spawn
+/// rule, what [`crate::changes::ChunkChanges::taken`] remembers.
+#[must_use]
+pub fn slot_of(id: ItemId) -> u16 {
+    u16::try_from(id.0 & ((1 << SLOT_BITS) - 1)).expect("sixteen bits")
+}
+
+/// The id of the natural item in `slot` of `chunk` ([`slot_of`]), or
+/// `None` outside the chunks ids can name.
+#[must_use]
+pub fn natural_in_slot(chunk: ChunkPos, slot: u16) -> Option<ItemId> {
+    let limit = 1_i64 << CHUNK_BITS;
+    if !(0..limit).contains(&i64::from(chunk.x)) || !(0..limit).contains(&i64::from(chunk.y)) {
+        return None;
+    }
+    let cx = u64::try_from(chunk.x).expect("checked");
+    let cy = u64::try_from(chunk.y).expect("checked");
+    Some(ItemId(
+        NATURAL | cx << (CHUNK_BITS + SLOT_BITS) | cy << SLOT_BITS | u64::from(slot),
+    ))
+}
+
 /// The natural items of `chunk` on `map`, under the `spawns` rules and the
 /// world's `seed`, in slot order: on each tile, for each rule of its
 /// terrain whose `near` holds, a piece with the rule's chance.
@@ -194,7 +216,9 @@ mod tests {
             assert!(is_natural(id));
             assert!(id.0 < 1 << 53, "{id:?}");
             assert_eq!(chunk_of(id), tile.chunk());
+            assert_eq!(natural_in_slot(tile.chunk(), slot_of(id)), Some(id));
         }
+        assert_eq!(natural_in_slot(ChunkPos::new(-1, 0), 0), None);
         assert_eq!(natural_id(Pos::new(-1, 0), 0), None);
         assert_eq!(natural_id(Pos::new(0, 0), MOST_RULES), None);
         assert!(!is_natural(ItemId(12)));
