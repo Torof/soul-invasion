@@ -796,6 +796,16 @@ impl Shared {
             .collect()
     }
 
+    /// The trees of `chunk` and of the eight chunks around it, as the
+    /// flora reads them: a plant stands clear of trunks over the chunk's
+    /// border too.
+    fn trees_around(&self, chunk: ChunkPos) -> Vec<sim::trees::Tree> {
+        (-1..=1)
+            .flat_map(|dy| (-1..=1).map(move |dx| ChunkPos::new(chunk.x + dx, chunk.y + dy)))
+            .flat_map(|around| sim::trees::trees_in(&self.map, &self.tree_kinds, self.seed, around))
+            .collect()
+    }
+
     /// Places the plants of the view around the camp (where the first
     /// bodies stand) before any connection, so the first client is not
     /// kept waiting: the cost of a view, never of the map.
@@ -820,10 +830,7 @@ impl Shared {
         if let Some(plants) = held {
             return plants.to_vec(); // copied with the lock released
         }
-        let trees: Vec<sim::trees::Tree> = (-1..=1)
-            .flat_map(|dy| (-1..=1).map(move |dx| ChunkPos::new(chunk.x + dx, chunk.y + dy)))
-            .flat_map(|around| sim::trees::trees_in(&self.map, &self.tree_kinds, self.seed, around))
-            .collect();
+        let trees = self.trees_around(chunk);
         let near: Vec<sim::flora::TreeAt<'_>> = trees
             .iter()
             .map(|tree| sim::flora::TreeAt {
@@ -1717,6 +1724,86 @@ mod tests {
                 x: far.centre().x,
                 y: far.centre().y
             }
+        );
+    }
+
+    /// What the server spends building the chunk messages of a view on
+    /// the game's valley (D39): a measure, not a rule. Run by hand:
+    /// `cargo test --release -p server profile_chunk_messages -- --ignored --nocapture`.
+    ///
+    /// A login's view around the camp built cold (a fresh server) and
+    /// again warm (the same server, every cache full), then a teleport's
+    /// view cold and warm; and, for the login view, the trees of a chunk
+    /// alone and the trees of the nine chunks around it, as the plants
+    /// read them.
+    #[test]
+    #[ignore = "a measure of the game's 3072 valley, run by hand in release"]
+    fn profile_chunk_messages() {
+        use std::time::Instant;
+
+        fn report(what: &str, mut each: Vec<Duration>) {
+            each.sort_unstable();
+            let total: Duration = each.iter().sum();
+            let count = u32::try_from(each.len()).expect("a view");
+            println!(
+                "{what}: {count} chunks in {total:?}; a chunk mean {:?}, median {:?}, max {:?}",
+                total / count,
+                each[each.len() / 2],
+                each[each.len() - 1]
+            );
+        }
+
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+        let content = crate::content::load(&dir).expect("repository content");
+        let started = Instant::now();
+        let world = World::new(Calendar::default(), &content);
+        println!("the valley made in {:?}", started.elapsed());
+        let shared = Shared::new(&world, &content, 1, 1.0);
+        let camp = shared.map.camp().chunk();
+        let login = View::window(&shared.map, camp);
+        let away = View::window(&shared.map, ChunkPos::new(30, 40));
+        let time_each = |chunks: &BTreeSet<ChunkPos>| -> Vec<Duration> {
+            chunks
+                .iter()
+                .map(|&chunk| {
+                    let started = Instant::now();
+                    let message = shared.chunk_message(chunk).expect("a chunk of the map");
+                    let took = started.elapsed();
+                    std::hint::black_box(message);
+                    took
+                })
+                .collect()
+        };
+        report("login view, cold", time_each(&login));
+        report("login view, warm", time_each(&login));
+        report("teleport view, cold", time_each(&away));
+        report("teleport view, warm", time_each(&away));
+
+        let alone: Vec<Duration> = login
+            .iter()
+            .map(|&chunk| {
+                let started = Instant::now();
+                std::hint::black_box(shared.trees_in(chunk));
+                started.elapsed()
+            })
+            .collect();
+        report(
+            "trees of the chunk itself (as the message holds them)",
+            alone,
+        );
+        let around: Vec<Duration> = login
+            .iter()
+            .map(|&chunk| {
+                let started = Instant::now();
+                let trees = shared.trees_around(chunk);
+                let took = started.elapsed();
+                std::hint::black_box(trees);
+                took
+            })
+            .collect();
+        report(
+            "trees of the nine chunks around (as the plants read them)",
+            around,
         );
     }
 }
