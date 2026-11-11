@@ -101,7 +101,7 @@ func _unhandled_input(event: InputEvent) -> void:
 ## with the water, then without it, MEASURE_FRAMES frames each after a
 ## few of settling, twice over, alternated; the medians' difference, by
 ## water mode, shown in the report. Nothing else should move meanwhile.
-const MEASURE_FRAMES := 120
+const MEASURE_FRAMES := 300
 const MEASURE_SETTLE := 10
 var _measuring := false
 ## The meshes' water with its second layer (F10).
