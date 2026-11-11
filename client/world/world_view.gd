@@ -176,11 +176,10 @@ var _following := true
 ## Has the camera been put somewhere sensible since the last world state?
 var _camera_placed := false
 var _dragging := false
-## The drag the mouse asked for and the camera has not made yet, in world
-## pixels: mouse events come at their own pace (a few a frame, or none),
-## each a whole mouse pixel, so applying them as they come moves the view
-## by uneven steps and a slow drag trembles. The camera takes a share of
-## it every frame instead (ViewLedger.PAN_SMOOTH_S).
+## The drag the mouse asked for since the last frame, in world pixels:
+## mouse events come at their own pace (none, one or several a frame);
+## the camera makes them all at once, once a frame, so the map stays
+## under the hand and every layer moves together.
 var _pan_pending := Vector2.ZERO
 var _hover := Vector2i(-1, -1)
 
@@ -920,13 +919,12 @@ func _process(delta: float) -> void:
 ## passes fog A, past the limit of the view, so pushing to
 ## the edge shows the veil and the fog, never what lies beyond (the
 ## project lead's call); walking that way moves the limit, tile by tile.
-## Moves the camera by its share of the pending drag this frame.
-func _pan(delta: float) -> void:
+## Moves the camera by the drag asked for since the last frame.
+func _pan(_delta: float) -> void:
 	if _pan_pending == Vector2.ZERO:
 		return
-	var take := ViewLedger.pan_share(_pan_pending, delta, _camera.zoom.x)
-	_camera.position -= take
-	_pan_pending -= take
+	_camera.position -= _pan_pending
+	_pan_pending = Vector2.ZERO
 	_clamp_camera()
 
 
@@ -1083,7 +1081,9 @@ func _in_map(tile: Vector2i) -> bool:
 func _draw() -> void:
 	if _in_map(_target):
 		draw_polyline(_closed(Iso.diamond(_target.x, _target.y)), TARGET_COLOR, 2.5)
-	if _in_map(_hover):
+	# Not while the map is dragged: the tile under the hand changes as
+	# the view moves, and its outline would flicker from tile to tile.
+	if _in_map(_hover) and not _dragged:
 		draw_polyline(_closed(Iso.diamond(_hover.x, _hover.y)), Color(1, 1, 1, 0.6), 1.5)
 
 
