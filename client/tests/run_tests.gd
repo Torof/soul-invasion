@@ -47,7 +47,8 @@ func _init() -> void:
 	_test_trees_are_drawn_only_where_the_view_reaches()
 	_test_trees_sort_with_bodies_by_their_foot()
 	_test_the_bounds_held_are_kept_as_chunks_come_and_go()
-	_test_waiting_chunks_are_kept_nearest_the_camera_first()
+	_test_grounds_built_on_workers_are_laid_nearest_first_within_the_budget()
+	_test_the_reach_s_margin_grows_as_the_zoom_pulls_back()
 	_test_a_drag_is_smoothed_and_the_view_laid_on_whole_pixels()
 	_test_the_fog_uniforms_are_sent_only_when_they_change()
 	_test_a_redraw_past_the_cameras_reach_waits_for_the_camera()
@@ -1055,39 +1056,106 @@ func _test_a_drag_is_smoothed_and_the_view_laid_on_whole_pixels() -> void:
 			_check(ViewLedger.snapped_offset(at, scale).length() * scale <= 0.71, "never more than half a pixel off")
 
 
-## The chunks waiting to build their ground are kept nearest the camera
-## first as they join; the world view takes the first, and orders them
-## again only when the camera has moved by a chunk.
-func _test_waiting_chunks_are_kept_nearest_the_camera_first() -> void:
+## A chunk's ground is worked out on a worker (GroundBuild) and laid on
+## the main thread the same, bit for bit, as built in line; the grounds
+## done are laid nearest the camera first, as many a frame as fit the
+## budget but at least one; a chunk freed with its ground under way lets
+## the task finish on its own (C3).
+func _test_grounds_built_on_workers_are_laid_nearest_first_within_the_budget() -> void:
 	var was: Array = ChunkView.waiting
 	ChunkView.waiting = []
-	ChunkView.camera_px = Iso.tile_to_screen(100, 100)
+	var map_size := WaterMeshes.map_size
+	WaterMeshes.map_size = Vector2i(1024, 1024)
+	var tiles: Array = []
+	for y in 32:
+		for x in 32:
+			tiles.append("forest" if x < 10 else ("water" if x >= 24 else "grass"))
+	# In line, then on a worker, the same chunk: the same ground.
+	var origin := Vector2i(320, 320)
+	var inline := ChunkView.new()
+	inline.show_chunk(origin, 32, tiles, [], {})
+	inline._draw_ground_layers()
+	var index_inline: Array = []
+	for y in 33:
+		for x in 33:
+			index_inline.append(GroundIndex.at(origin + Vector2i(x, y)))
+	var worked := ChunkView.new()
+	worked.show_chunk(origin, 32, tiles, [], {})
+	GroundIndex.write(origin, 32, PackedByteArray(range(32 * 32).map(func(_i: int) -> int: return 0)), PackedByteArray(range(33 * 33).map(func(_i: int) -> int: return 0)))
+	worked.start_build()
+	_check(ChunkView.waiting.has(worked) and not worked.is_built(), "started: waiting, not built yet")
+	while not worked.ground_ready():
+		OS.delay_msec(1)
+	_check(ChunkView.lay_ready(0, Iso.tile_to_screen(336, 336)) == 1 and worked.is_built() and not ChunkView.waiting.has(worked), "done: laid, no longer waiting")
+	var index_worked: Array = []
+	for y in 33:
+		for x in 33:
+			index_worked.append(GroundIndex.at(origin + Vector2i(x, y)))
+	_check(index_worked == index_inline, "the ground index the same as built in line")
+	_check(worked._flats.size() == inline._flats.size() and worked._decor_cache.size() == inline._decor_cache.size(), "the same flat tiles and decorations")
+	var meshes := func(view: ChunkView) -> Array:
+		var out: Array = []
+		for canvas: ChunkView.WaterCanvas in view._water_canvases():
+			out.append(canvas.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX] if canvas.mesh != null else null)
+		return out
+	_check(meshes.call(worked) == meshes.call(inline) and meshes.call(worked)[0] != null, "the same water meshes")
+	worked.start_build()
+	_check(not ChunkView.waiting.has(worked), "laid and nothing changed around: nothing more to build")
+	inline.free()
+	worked.free()
+	# Four chunks done at once: the nearest the camera laid first, one
+	# when the budget is spent at once, then the rest.
 	var views: Array = []
-	for at: Vector2i in [Vector2i(160, 100), Vector2i(100, 104), Vector2i(60, 60), Vector2i(104, 100)]:
+	for at: Vector2i in [Vector2i(160, 96), Vector2i(96, 128), Vector2i(64, 64), Vector2i(128, 96)]:
 		var view := ChunkView.new()
-		view._origin = at
-		view._size = 4
+		view.show_chunk(at, 32, tiles, [], {})
+		view.start_build()
 		views.append(view)
-		ChunkView.enqueue(view)
-	ChunkView.enqueue(views[0])
-	_check(ChunkView.waiting.size() == 4, "a chunk joins once")
-	var order: Array = ChunkView.waiting.map(func(v: ChunkView) -> Vector2i: return v._origin)
-	_check(order == [Vector2i(100, 104), Vector2i(104, 100), Vector2i(60, 60), Vector2i(160, 100)], "nearest the camera first: %s" % [order])
-	ChunkView.reorder(Iso.tile_to_screen(160, 100))
-	_check((ChunkView.waiting[0] as ChunkView)._origin == Vector2i(160, 100), "ordered again around the camera's new place")
-	# A chunk freed while it waited (a teleport frees the view) is let go
-	# of when another joins: the queue never reads a freed object.
-	(views[2] as ChunkView).free()
-	views.remove_at(2)
-	var late := ChunkView.new()
-	late._origin = Vector2i(120, 120)
-	late._size = 4
-	views.append(late)
-	ChunkView.enqueue(late)
-	_check(ChunkView.waiting.size() == 4 and ChunkView.waiting.all(func(v: Variant) -> bool: return is_instance_valid(v)), "a freed chunk leaves the queue when another joins")
+	_check(ChunkView.waiting.size() == 4, "four grounds on the workers")
+	while not views.all(func(v: ChunkView) -> bool: return v.ground_ready()):
+		OS.delay_msec(1)
+	var camera := Iso.tile_to_screen(100, 140)
+	_check(ChunkView.lay_ready(0, camera) == 1 and (views[1] as ChunkView).is_built() and ChunkView.waiting.size() == 3, "no budget: one laid, the nearest")
+	_check(ChunkView.lay_ready(1_000_000, camera) == 3 and views.all(func(v: ChunkView) -> bool: return v.is_built()) and ChunkView.waiting.is_empty(), "budget enough: the rest laid")
+	_check(ChunkView.lay_ready(0, camera) == 0, "nothing done: nothing laid")
+	# Freed with its ground under way: the task finishes on its own.
+	var gone := ChunkView.new()
+	gone.show_chunk(Vector2i(192, 192), 32, tiles, [], {})
+	gone.start_build()
+	gone.free()
+	_check(ChunkView.waiting.is_empty() and ChunkView._orphans.size() == 1, "freed: no longer waiting, its task left to finish")
+	var waited := 0
+	while not ChunkView._orphans.is_empty() and waited < 5000:
+		ChunkView.lay_ready(0, camera)
+		OS.delay_msec(1)
+		waited += 1
+	_check(ChunkView._orphans.is_empty(), "and forgotten once done")
 	for view: ChunkView in views:
 		view.free()
+	for at: Vector2i in [origin, Vector2i(160, 96), Vector2i(96, 128), Vector2i(64, 64), Vector2i(128, 96), Vector2i(192, 192)]:
+		TerrainGrid.clear(at, 32)
+	WaterMeshes.map_size = map_size
 	ChunkView.waiting = was
+
+
+## The camera's reach is the screen and a margin of chunks that grows as
+## the zoom pulls back (the grounds are laid before the screen gets
+## there); a new margin moves the reach even if the screen stayed (C3).
+func _test_the_reach_s_margin_grows_as_the_zoom_pulls_back() -> void:
+	_check(ViewLedger.margin_for(2.5) == 1 and ViewLedger.margin_for(1.5) == 1, "close up: a chunk")
+	_check(ViewLedger.margin_for(1.0) == 2 and ViewLedger.margin_for(0.7) == 2, "the middle zooms: two")
+	_check(ViewLedger.margin_for(0.4) == 3 and ViewLedger.margin_for(0.25) == 3, "pulled back: three")
+	var ledger := ViewLedger.new()
+	ledger.chunk_size = 32
+	var bounds := Rect2i(0, 0, 40, 40)
+	var screen := Rect2(Iso.tile_to_screen(640, 640) - Vector2(960, 540), Vector2(1920, 1080))
+	_check(ledger.see(screen, 1), "seen")
+	var one := ledger.chunks_touching(ledger.reach, bounds).size()
+	_check(not ledger.see(screen, 1) and ledger.see(screen, 3), "the same screen with a wider margin: moved")
+	var three := ledger.chunks_touching(ledger.reach, bounds).size()
+	_check(three > one and ledger.reach.encloses(ledger.shown), "a wider margin reaches more chunks: %d -> %d" % [one, three])
+	var keys: Array[Vector2i] = [Vector2i(25, 25), Vector2i(20, 20), Vector2i(22, 20)]
+	_check(ViewLedger.nearest_first(keys, ledger, screen.get_center()) == [Vector2i(20, 20), Vector2i(22, 20), Vector2i(25, 25)], "the margin built nearest the screen's middle first")
 
 
 ## The fog's uniforms go to the graphics card only when their value

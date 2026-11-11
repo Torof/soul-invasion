@@ -71,7 +71,7 @@ func _process(delta: float) -> void:
 			if not (chunk as ChunkView).is_built():
 				unbuilt += 1
 		progress.built = maxi(progress.received - unbuilt, 0)
-		progress.fields = WaterMeshes.busy
+		progress.fields = ChunkView.waiting.size()
 		# And the tree images being read (Trees.poll), so no tree shows up
 		# a moment after the ground.
 		if progress.done(Time.get_ticks_msec()) and Trees.loading().is_empty():

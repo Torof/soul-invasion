@@ -29,16 +29,18 @@ var stale: Dictionary = {}
 ## the screen itself (`seen`); the screen grown by what may stand out of a
 ## chunk's ground, up for the tallest trees, sideways and down for their
 ## crowns (`shown`: a chunk touching it may show something on screen);
-## and a chunk more around (`reach`).
+## and the margin around, in chunks (`reach`, margin_for).
 var seen := Rect2()
 var shown := Rect2()
 var reach := Rect2()
+## The reach's margin around the screen, in chunks (margin_for).
+var margin := 1
 const STANDING_REACH_UP := 1024.0
 const STANDING_REACH := 256.0
 
 ## A chunk held is data until the camera's reach touches it; then it is
-## built, the chunks the screen may show at once, the chunk of margin
-## around them paced one a frame, nearest the camera first. A built chunk
+## built, the chunks the screen may show at once, the margin around them
+## paced, nearest the camera first (WorldView._update_reach). A built chunk
 ## the reach left is released after RELEASE_GRACE_MSEC, its data kept,
 ## so it builds again from them with no network (C1); the grace and the
 ## margin are the hysteresis (C5): the camera jittering on an edge, or
@@ -86,15 +88,41 @@ func chunk_rect(key: Vector2i) -> Rect2:
 		Vector2((hi.x - lo.x + hi.y - lo.y) * Iso.TILE_W / 2.0, (hi.x + hi.y - lo.x - lo.y) * Iso.TILE_H / 2.0))
 
 
-## The screen shows `screen` (the world's pixels): the reach follows it, a
-## chunk around. Whether it moved.
-func see(screen: Rect2) -> bool:
-	if screen == seen:
+## The screen shows `screen` (the world's pixels): the reach follows it,
+## `chunks` chunks around (margin_for). Whether it moved.
+func see(screen: Rect2, chunks := 1) -> bool:
+	if screen == seen and chunks == margin:
 		return false
 	seen = screen
+	margin = chunks
 	shown = screen.grow_individual(STANDING_REACH, STANDING_REACH_UP, STANDING_REACH, STANDING_REACH)
-	reach = screen.grow_individual(chunk_size * Iso.TILE_W, chunk_size * Iso.TILE_H, chunk_size * Iso.TILE_W, chunk_size * Iso.TILE_H)
+	var w := chunks * chunk_size * Iso.TILE_W
+	var h := chunks * chunk_size * Iso.TILE_H
+	reach = screen.grow_individual(w, h, w, h)
 	return true
+
+
+## The reach's margin, in chunks, at `zoom`: the grounds are worked out
+## on worker threads and must be laid before the screen gets there; a
+## drag of the same speed on screen crosses more of the world when the
+## camera is pulled back, so the margin grows as the zoom shrinks (C3,
+## 11 November 2026). Each step is (the smallest zoom, the margin).
+const MARGINS := [[1.5, 1], [0.7, 2], [0.0, 3]]
+
+
+static func margin_for(zoom: float) -> int:
+	for step: Array in MARGINS:
+		if zoom >= float(step[0]):
+			return int(step[1])
+	return int(MARGINS[-1][1])
+
+
+## `keys` (chunks), nearest first to `centre` (the world's pixels).
+static func nearest_first(keys: Array[Vector2i], ledger: ViewLedger, centre: Vector2) -> Array[Vector2i]:
+	var sorted := keys.duplicate()
+	sorted.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+		return ledger.chunk_rect(a).get_center().distance_squared_to(centre) < ledger.chunk_rect(b).get_center().distance_squared_to(centre))
+	return sorted
 
 
 ## Whether chunk `key`'s diamond of ground touches `rect` (the world's

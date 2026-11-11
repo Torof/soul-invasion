@@ -12,8 +12,8 @@ const QUIET_MSEC := 500
 var has_world := false
 var received := 0
 var built := 0
-## Bank fields still being smoothed and water meshes still being built
-## (WaterMeshes.busy).
+## Grounds still being built on a worker or waiting to be laid, water
+## meshes included (ChunkView.waiting).
 var fields := 0
 var _last_chunk_msec := -1
 

@@ -484,23 +484,34 @@ func _seen() -> Rect2:
 	return Rect2(_camera.position - half, half * 2.0)
 
 
-## The camera's reach follows the screen: the chunks it touches are
-## built, those the screen may show this frame, the margin's one a frame
-## (ChunkView.waiting), the ones it left for the grace released
-## (ViewLedger.plan); the chunks whose redraw waited for it are queued
-## when it reaches them. Looked at when the screen moved, when a chunk
-## came or went, and while a chunk's grace runs.
+## The camera's reach follows the screen, its margin wider as the zoom
+## pulls back (ViewLedger.margin_for): the chunks it touches are built,
+## those the screen may show this frame, the margin's nearest the camera
+## first within BUILD_BUDGET_USEC a frame (their grounds then worked out
+## on the workers and laid nearest first, ChunkView.lay_ready), the ones
+## it left for the grace released (ViewLedger.plan); the chunks whose
+## redraw waited for it are queued when it reaches them. Looked at when
+## the screen moved, when a chunk came or went, while a chunk's grace
+## runs and while the margin waits to be built.
 func _update_reach() -> void:
-	var moved := _ledger.see(_seen())
+	var moved := _ledger.see(_seen(), ViewLedger.margin_for(_camera.zoom.x))
 	if not moved and not _reach_dirty and _ledger.leaving.is_empty() and _paced.is_empty():
 		return
 	if not _camera_placed:
 		return
 	_reach_dirty = false
+	var t := DevTiming.start()
 	var plan := _ledger.plan(Time.get_ticks_msec(), _tiles)
+	DevTiming.add("reach plan", t)
 	for key: Vector2i in plan["at_once"]:
 		_build_chunk(key, true)
-	for key: Vector2i in plan["paced"]:
+	var paced: Array[Vector2i] = plan["paced"]
+	var started := Time.get_ticks_usec()
+	for key: Vector2i in ViewLedger.nearest_first(paced, _ledger, _ledger.seen.get_center()):
+		if Time.get_ticks_usec() - started >= BUILD_BUDGET_USEC:
+			# The rest next frame.
+			_reach_dirty = true
+			break
 		_build_chunk(key, false)
 	for key: Vector2i in plan["release"]:
 		_release_chunk(key)
@@ -512,6 +523,11 @@ func _update_reach() -> void:
 
 ## Whether the chunks held changed since the reach was last looked at.
 var _reach_dirty := true
+## The main thread's time a frame for building the margin's chunks
+## (their nodes: trees, plants, items; their grounds go to the workers)
+## and for laying the grounds the workers finished (C3).
+const BUILD_BUDGET_USEC := 3000
+const LAY_BUDGET_USEC := 4000
 ## The chunks built for the margin whose ground still waits its turn
 ## (chunk -> true): one the screen reaches before its turn is built this
 ## frame after all, so no chunk shows before its ground.
@@ -531,16 +547,19 @@ func _hurry_paced() -> void:
 
 ## Builds chunk `key` from the data held: its view (the ground, the items
 ## and, within it, the shadows, the plants and the banks) and its trees
-## and tall plants on the standing layer. `at_once`: the screen may show
-## it, so its ground is built this frame whatever else builds; otherwise
-## it waits its turn, nearest the camera first.
+## and tall plants on the standing layer. Its ground is worked out on a
+## worker from now; `at_once`: the screen may show it, so its ground is
+## laid this frame, the worker waited for if need be; otherwise it is
+## laid when done, nearest the camera first (ChunkView.lay_ready).
 func _build_chunk(key: Vector2i, at_once: bool) -> void:
+	var t := DevTiming.start()
 	var view := ChunkView.new()
 	# The ground and the bank pieces keep plain linear filtering: the
 	# mipmaps this view uses for the trees would blur them.
 	view.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	view.tiles_hash = func(k: Vector2i) -> int: return int(_tile_hashes.get(k, 0))
 	view.current_at = current_at
+	view.currents_of = func(k: Vector2i) -> Array: return _currents.get(k, [])
 	view.build_at_once = at_once
 	# Among the chunks built, in the order the server sent them.
 	var rank := int(_arrival.get(key, 0))
@@ -555,12 +574,15 @@ func _build_chunk(key: Vector2i, at_once: bool) -> void:
 		_paced[key] = true
 	_ledger.mark_built(key)
 	_plant_chunk(key, view)
-	view.show_plants(_plants[key], _flora)
+	view.show_plants(_plants[key], _flora, true)
 	view.show_chunk(key * _chunk_size, _chunk_size, _tiles[key], _items[key], _looks)
+	# Its ground and its plants worked out on a worker from now
+	# (ChunkView.start_build).
+	view.start_build()
 	_standing_changed = true
 	_trees_changed = true
 	_far_dirty = true
-	DevTiming.tally("chunks made")
+	DevTiming.add("chunks made", t)
 
 
 ## Frees chunk `key`'s nodes, its data kept: it builds again from them
@@ -638,7 +660,7 @@ func counts() -> Dictionary:
 	for stand: Trees.Stand in _trees.values():
 		trees += stand.size()
 		drawn += stand.items.size()
-	return {"chunks": _tiles.size(), "built": _chunks.size(), "leaving": _ledger.leaving.size(), "stale": _ledger.stale.size(), "trees": trees, "trees_drawn": drawn, "bodies": _bodies.size()}
+	return {"chunks": _tiles.size(), "built": _chunks.size(), "in_line": ChunkView.in_line, "leaving": _ledger.leaving.size(), "stale": _ledger.stale.size(), "trees": trees, "trees_drawn": drawn, "bodies": _bodies.size()}
 
 
 ## The tile the piloted body stands on, or (-1, -1) when there is none.
@@ -891,22 +913,6 @@ static func clamp_zoom(zoom: float) -> float:
 	return clampf(zoom, ZOOM_MIN, ZOOM_MAX)
 
 
-## Lets the waiting chunk nearest the camera build its ground (one a
-## frame): the first of ChunkView.waiting, kept in that order, ordered
-## again when the camera has moved by more than a chunk.
-func _call_waiting_chunk() -> void:
-	if ChunkView.waiting.is_empty():
-		return
-	var moved := _camera.position.distance_squared_to(ChunkView.camera_px)
-	if moved > (_chunk_size * Iso.TILE_H) ** 2:
-		ChunkView.reorder(_camera.position)
-	while not ChunkView.waiting.is_empty():
-		var chunk: Variant = ChunkView.waiting.pop_front()
-		if is_instance_valid(chunk) and (chunk as ChunkView).is_inside_tree():
-			(chunk as ChunkView).queue_redraw()
-			return
-
-
 func _process(delta: float) -> void:
 	var timing := DevTiming.start()
 	DevWatchdog.phase = DevWatchdog.WORLD_STEP
@@ -991,7 +997,8 @@ func _step(delta: float) -> void:
 	_update_far_hole()
 	_cull_standing()
 	_update_see_through(delta)
-	_call_waiting_chunk()
+	# The grounds the workers finished, nearest the camera first.
+	ChunkView.lay_ready(LAY_BUDGET_USEC, _camera.position)
 	for queued: Variant in _to_redraw.take(RedrawQueue.BUDGET_USEC, ChunkView.redraw_usec):
 		(queued as ChunkView).queue_redraw()
 	# Only the trees in view are drawn: redraw when the view moves. The
