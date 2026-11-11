@@ -52,6 +52,7 @@ func _ready() -> void:
 	Net.chunk.connect(func(_x: int, _y: int, _t: Array, _b: Array, _i: Array, _tr: Array, _cu: Array, _pl: Array) -> void:
 		progress.chunk_came(Time.get_ticks_msec()))
 	Net.disconnected.connect(_on_disconnected)
+	progress.start(Time.get_ticks_msec())
 
 
 func _on_disconnected(_reason: String) -> void:
@@ -59,6 +60,7 @@ func _on_disconnected(_reason: String) -> void:
 		return
 	progress = LoadingProgress.new()
 	progress.has_world = _after_teleport
+	progress.start(Time.get_ticks_msec())
 
 
 func _process(delta: float) -> void:
@@ -72,6 +74,8 @@ func _process(delta: float) -> void:
 				unbuilt += 1
 		progress.built = maxi(progress.received - unbuilt, 0)
 		progress.fields = ChunkView.waiting.size()
+		var world := get_tree().get_first_node_in_group("world_views")
+		progress.view_ready = world != null and bool(world.call("reach_ready"))
 		# And the tree images being read (Trees.poll), so no tree shows up
 		# a moment after the ground.
 		if progress.done(Time.get_ticks_msec()) and Trees.loading().is_empty():

@@ -623,6 +623,20 @@ func _test_loading_waits_for_the_valley() -> void:
 	_check(p.done(1_100 + LoadingProgress.QUIET_MSEC) and p.fraction() == 1.0, "all in, all built, quiet: done")
 	p.chunk_came(2_000)
 	_check(p.fraction() < 1.0 and p.stage() == "Laying the ground", "a new chunk sets it back")
+	# A teleport onto the tile the body stands on: no chunk comes; the
+	# screen lifts once the view holds what the screen shows, and quiet.
+	var still := LoadingProgress.new()
+	still.has_world = true
+	still.start(3_000)
+	_check(not still.done(9_000), "no chunk, the view not ready: loading")
+	still.view_ready = true
+	_check(not still.done(3_000 + LoadingProgress.QUIET_MSEC - 1), "the view ready, but chunks may still come: loading")
+	_check(still.done(3_000 + LoadingProgress.QUIET_MSEC), "the view ready and quiet since the screen came up: done")
+	still.fields = 1
+	_check(not still.done(9_000), "a ground still on a worker: loading")
+	still.fields = 0
+	still.chunk_came(3_600)
+	_check(not still.done(3_600 + LoadingProgress.QUIET_MSEC - 1) and still.done(3_600 + LoadingProgress.QUIET_MSEC) == (still.built >= 1), "a chunk came after all: waited for as before")
 
 
 ## The bounds of the chunks held, in chunks.

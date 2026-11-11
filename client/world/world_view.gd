@@ -585,6 +585,19 @@ func _build_chunk(key: Vector2i, at_once: bool) -> void:
 	DevTiming.add("chunks made", t)
 
 
+## Whether every chunk the screen may show is held and built: the
+## loading screen lifts on it when no chunk comes (a teleport onto the
+## tile the body stands on).
+func reach_ready() -> bool:
+	if not _camera_placed or not _ledger.shown.has_area():
+		return false
+	for key: Vector2i in _ledger.chunks_touching(_ledger.shown, _bounds()):
+		var view: ChunkView = _chunks.get(key)
+		if _tiles.has(key) and (view == null or not view.is_built()):
+			return false
+	return true
+
+
 ## Frees chunk `key`'s nodes, its data kept: it builds again from them
 ## when the camera's reach comes back.
 func _release_chunk(key: Vector2i) -> void:
