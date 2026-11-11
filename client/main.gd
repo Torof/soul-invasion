@@ -69,12 +69,20 @@ func _ready() -> void:
 
 
 func _screenshot_then_quit(path: String) -> void:
+	# Development: the water drawn (ChunkView.WATER_MODE_NAMES: today,
+	# meshes, split), as F7 would set it.
+	var mode := ChunkView.WATER_MODE_NAMES.find(OS.get_environment("SOUL_INVASION_WATER_MODE"))
+	if mode >= 0:
+		ChunkView.set_water_mode(mode, get_tree())
 	await get_tree().create_timer(2.5).timeout
-	# Then until every chunk is built (at most a minute and a half).
-	var waited := 0.0
-	while waited < 90.0 and (ShoreField.busy > 0 or WaterMeshes.busy > 0 or _unbuilt() > 0):
-		await get_tree().create_timer(0.5).timeout
-		waited += 0.5
+	await _wait_built()
+	# SOUL_INVASION_TELEPORT="x,y" (--dev servers): the body there first,
+	# so the chunks around that tile are held.
+	var there := OS.get_environment("SOUL_INVASION_TELEPORT").split(",")
+	if there.size() == 2 and there[0].is_valid_int() and there[1].is_valid_int():
+		_world.teleport_to(Vector2i(int(there[0]), int(there[1])))
+		await get_tree().create_timer(2.5).timeout
+		await _wait_built()
 	# Framing for the screenshot, once the world is in: SOUL_INVASION_ZOOM
 	# sets the camera zoom, SOUL_INVASION_LOOK_AT="x,y" frames that tile
 	# instead of the body.
@@ -87,6 +95,15 @@ func _screenshot_then_quit(path: String) -> void:
 	await get_tree().create_timer(0.5).timeout
 	get_viewport().get_texture().get_image().save_png(path)
 	get_tree().quit()
+
+
+## Until every chunk is built and no water is being smoothed (at most a
+## minute and a half).
+func _wait_built() -> void:
+	var waited := 0.0
+	while waited < 90.0 and (ShoreField.busy > 0 or WaterMeshes.busy > 0 or _unbuilt() > 0 or ChunkView.waiting.size() > 0):
+		await get_tree().create_timer(0.5).timeout
+		waited += 0.5
 
 
 func _unbuilt() -> int:

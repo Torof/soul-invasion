@@ -314,6 +314,10 @@ uniform float glint = 0.35;
 // captures can be compared pixel by pixel (SOUL_INVASION_WATER_TIME);
 // negative, the clock's own.
 uniform float flow_time = -1.0;
+// Development: the screen split against the water meshes (F7,
+// ChunkView.WATER_SPLIT): this water draws on the left of split_edge (0
+// to 1 across the screen); negative, everywhere.
+uniform float split_edge = -1.0;
 
 vec3 flowing(sampler2D tex, vec2 world, vec2 flow, float period, float scale, mat2 turn, float shift, float now, vec2 dx, vec2 dy) {
 	float t = now / period + shift;
@@ -411,6 +415,9 @@ void fragment() {
 			: v0 + in_cell.x * (v2 - v3) + in_cell.y * (v3 - v0);
 	}
 	if (has_field) {
+		if (split_edge >= 0.0 && SCREEN_UV.x > split_edge) {
+			discard;
+		}
 		// The water canvas (D36): the water, its bank and the land within
 		// two tiles of it. The picture is settled; the work is laid out so
 		// that a pixel pays only for what can show at its distance from
