@@ -16,6 +16,7 @@ use protocol::ServerMessage;
 use server::cli::{CliError, DataLocation, USAGE, WarmUp};
 use server::content;
 use server::net::{Published, Shared, condition_view, refusal_view, serve};
+use server::pool::{ChunkPool, chunk_threads};
 use server::{Options, Sqlite, Storage, StorageError, run_headless, run_paced};
 use sim::{Content, Event, World};
 use tokio::net::TcpListener;
@@ -237,11 +238,19 @@ fn run_paced_server(
     mut persister: Persister,
 ) -> Result<(), BoxError> {
     // The network only translates (D29): two workers are plenty, and the
-    // machine's cores stay for the simulation thread.
+    // machine's cores stay for the simulation thread and the chunk pool.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()?;
+    let cores = std::thread::available_parallelism().map_or(1, usize::from);
+    let pool = Arc::new(ChunkPool::new(
+        opts.chunk_threads.unwrap_or_else(|| chunk_threads(cores)),
+    ));
+    println!(
+        "chunk pool: {} thread(s) beside the network ({cores} hardware threads)",
+        pool.threads()
+    );
 
     let listener = runtime.block_on(TcpListener::bind(opts.listen))?;
     let address = listener.local_addr()?;
@@ -267,7 +276,12 @@ fn run_paced_server(
     let shared = Arc::new(shared);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let acceptor = runtime.spawn(serve(listener, Arc::clone(&shared), shutdown_rx));
+    let acceptor = runtime.spawn(serve(
+        listener,
+        Arc::clone(&shared),
+        Arc::clone(&pool),
+        shutdown_rx,
+    ));
     // Ready once the shared state is built and connections are accepted
     // (a large valley takes a moment to copy). Tests parse this line to
     // learn the port: keep its shape stable.
@@ -384,13 +398,13 @@ fn publish(shared: &Shared, world: &World, event: &Event) {
         }
         Event::DayStarted { day } => {
             println!("tick {tick}: {event:?}");
-            shared.night.store(false, Ordering::Relaxed);
+            shared.day_started(*day);
             let _ = shared
                 .publish
                 .send(Published::DayStarted { day: *day, tick });
         }
         Event::NightFell { day } => {
-            shared.night.store(true, Ordering::Relaxed);
+            shared.night_fell();
             let _ = shared.publish.send(Published::NightFell { day: *day });
         }
         Event::ConditionChanged { body, summary } => {
@@ -478,25 +492,29 @@ fn publish(shared: &Shared, world: &World, event: &Event) {
                 y: at.y,
                 material: material.clone(),
             };
-            shared.item_added(state.clone());
-            let _ = shared.publish.send(Published::ItemAdded { item: state });
+            let version = shared.item_added(state.clone());
+            let _ = shared.publish.send(Published::ItemAdded {
+                item: state,
+                version,
+            });
         }
         Event::ItemRemoved { item, at } => {
-            shared.item_removed(*item, *at);
+            let version = shared.item_removed(*item, *at);
             let _ = shared.publish.send(Published::ItemRemoved {
                 item: item.0,
                 at: *at,
+                version,
             });
         }
         Event::BodyDied {
             body, cause, at, ..
         } => {
             println!("tick {tick}: body {} died ({cause:?}) at {at:?}", body.0);
-            shared.body_died(*body);
             let cause = match cause {
                 sim::Death::Starved => protocol::DeathCause::Starved,
                 sim::Death::Froze => protocol::DeathCause::Froze,
             };
+            shared.body_died(*body, cause);
             let _ = shared.publish.send(Published::BodyDied {
                 body: body.0,
                 at: *at,
