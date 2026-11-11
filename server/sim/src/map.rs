@@ -3695,6 +3695,54 @@ mod tests {
     }
 
     #[test]
+    fn every_brook_runs_from_its_source_to_its_mouth() {
+        // Walking a brook's path from source to mouth, the current stored
+        // on each of its tiles points along the next step, and the last
+        // tile of the path touches the water it joins (11 November 2026:
+        // brooks seen running away from the river).
+        let valleys: Vec<(u32, u64)> = (1..=8).map(|seed| (256, seed)).chain([(3072, 1)]).collect();
+        for (size, seed) in valleys {
+            let r = Rivers::generate(size, size, size / 8, seed);
+            let tile = |s: &Step| ((s.x + 500).div_euclid(1000), (s.y + 500).div_euclid(1000));
+            let (mut checked, mut brooks) = (0, 0);
+            for water in &r.network {
+                if water.entry_flow > i64::from(Rivers::BROOK_FLOW.1) {
+                    continue;
+                }
+                brooks += 1;
+                for (n, pair) in water.path.windows(2).enumerate() {
+                    let (x, y) = tile(&pair[0]);
+                    let i = r.index(x, y).expect("on the map");
+                    if !r.brook[i] {
+                        continue;
+                    }
+                    let (heading, _) = decode_current(r.current[i]).expect("water runs");
+                    let along = HEADINGS[usize::from(heading)];
+                    let (dx, dy) = (pair[1].x - pair[0].x, pair[1].y - pair[0].y);
+                    assert!(
+                        along.0 * dx + along.1 * dy > 0,
+                        "valley {size} seed {seed}: step {n} of a brook at ({x}, {y}) runs {heading} against its path"
+                    );
+                    checked += 1;
+                }
+                let (x, y) = tile(water.path.last().expect("a path"));
+                let touches = (-1..=1).any(|dy| {
+                    (-1..=1).any(|dx| r.index(x + dx, y + dy).is_some_and(|j| r.depth[j] > 0))
+                });
+                assert!(
+                    touches,
+                    "valley {size} seed {seed}: a brook ends dry at ({x}, {y})"
+                );
+            }
+            eprintln!("valley {size} seed {seed}: {checked} tiles of {brooks} brooks");
+            assert!(
+                brooks > 0 && checked > 10 * brooks,
+                "{checked} tiles of {brooks} brooks"
+            );
+        }
+    }
+
+    #[test]
     fn every_water_runs_down_its_course() {
         for seed in 1..=4 {
             let map = Map::valley(256, 256, seed);
