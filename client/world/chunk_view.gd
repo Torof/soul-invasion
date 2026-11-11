@@ -116,6 +116,8 @@ func _ready() -> void:
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE:
+		# A ground under way is left to finish on its own.
+		_drop_task()
 		# The meshes go with the chunk: off the tally.
 		water_bytes -= _water_bytes
 		water_bytes_before -= _water_bytes_before
@@ -130,6 +132,10 @@ var current_at: Callable
 ## world view): the signature of the ground below reads nine of them
 ## instead of three thousand tiles.
 var tiles_hash: Callable
+## The currents of a chunk as received (Vector2i -> Array; set by the
+## world view): a worker reads a copy of those around the chunk rather
+## than the world view's own (`current_at`).
+var currents_of: Callable
 
 
 ## The seamless noise every ground material blends with, made here, no
@@ -379,7 +385,6 @@ var _bank_canvas: WaterCanvas = null
 var _water_bytes := 0
 var _water_bytes_before := 0
 ## The latest build asked for: an earlier one still on a worker is dropped.
-var _water_job := 0
 
 
 ## The water mesh's material (deep water) and the bank mesh's, shared by
@@ -532,50 +537,6 @@ func _lay_water_meshes(water: Dictionary, bank: Dictionary) -> void:
 	(canvases[1] as WaterCanvas).lay(bank)
 
 
-## Builds the chunk's water meshes from its window of codes: the arrays
-## on a worker thread, laid on the canvases when ready unless a newer
-## build for this chunk started meanwhile. A chunk without water lays
-## nothing. Gives back what was prepared on the main thread (the brooks
-## read the river's line from it; empty when the block holds no river).
-func _build_water_meshes(win: PackedByteArray) -> Dictionary:
-	_water_job += 1
-	var job := _water_job
-	var started := Time.get_ticks_usec()
-	var prepared := WaterMeshes.prepare(win, _origin, _size, current_at)
-	if prepared.is_empty():
-		_lay_water_meshes({}, {})
-		return prepared
-	water_main_usec += Time.get_ticks_usec() - started
-	if _water_at_once:
-		# The screen shows this chunk this frame: the water with the ground.
-		var out: Array = []
-		WaterMeshes.build(prepared, out)
-		water_build_usec += int(out[4]) if out.size() > 4 else 0
-		water_builds += 1
-		_lay_water_meshes(out[0], out[1])
-		return prepared
-	_build_water_meshes_on_a_worker(prepared, job)
-	return prepared
-
-
-func _build_water_meshes_on_a_worker(prepared: Dictionary, job: int) -> void:
-	WaterMeshes.busy += 1
-	var out: Array = []
-	var task := WorkerThreadPool.add_task(WaterMeshes.build.bind(prepared, out))
-	var tree := Engine.get_main_loop() as SceneTree
-	while tree != null and not WorkerThreadPool.is_task_completed(task):
-		await tree.process_frame
-	WorkerThreadPool.wait_for_task_completion(task)
-	WaterMeshes.busy -= 1
-	water_build_usec += int(out[4]) if out.size() > 4 else 0
-	water_builds += 1
-	if _water_job != job or not is_inside_tree():
-		return
-	var started := Time.get_ticks_usec()
-	_lay_water_meshes(out[0], out[1])
-	water_main_usec += Time.get_ticks_usec() - started
-
-
 ## Reloads the ground shader and textures from their files into the
 ## materials in use (development aid, see dev/watcher.gd). The textures
 ## are read straight from the image files, bypassing the import, so a
@@ -719,126 +680,6 @@ func _window() -> PackedByteArray:
 	return TerrainGrid.window(_origin - Vector2i(READ, READ), side, side)
 
 
-## A table of the 256 codes, 1 for those `codes` names.
-static func _table(codes: Array) -> PackedByteArray:
-	var t := PackedByteArray()
-	t.resize(256)
-	for c: int in codes:
-		t[c] = 1
-	return t
-
-
-## A table of every known code but `except` (unknown is never in it).
-static func _table_but(except: int) -> PackedByteArray:
-	var t := PackedByteArray()
-	t.resize(256)
-	t.fill(1)
-	t[TerrainGrid.UNKNOWN] = 0
-	t[except] = 0
-	return t
-
-
-## Nearness of each corner of the chunk to the tiles `near` accepts (a
-## table of codes, _table), read from `win` (_window): 1 at a corner
-## touching one, fading to 0 width + 1 corners away. Corner (cx, cy), the
-## top of tile (cx, cy), is at cy * (_size + 1) + cx.
-func _nearness(win: PackedByteArray, near: PackedByteArray, width: int) -> PackedFloat32Array:
-	# Corners of the chunk and a margin around it: corner c is inside when
-	# one of the four tiles meeting there is near. Tiles read once each.
-	var side := _size + 2 * READ
-	var lo := -width
-	var span := _size + 2 * width + 1
-	var tiles := span + 1
-	var near_tile := PackedByteArray()
-	near_tile.resize(tiles * tiles)
-	var any := false
-	for ty in tiles:
-		var row := (READ + lo - 1 + ty) * side + READ + lo - 1
-		for tx in tiles:
-			if near[win[row + tx]]:
-				near_tile[ty * tiles + tx] = 1
-				any = true
-	var corners := _size + 1
-	var values := PackedFloat32Array()
-	values.resize(corners * corners)
-	if not any:
-		return values
-	# Corner (lo + i, lo + j) touches tiles i - 1 .. i and j - 1 .. j of
-	# the margin, that is indices i .. i + 1 and j .. j + 1 here.
-	var inside := PackedByteArray()
-	inside.resize(span * span)
-	for j in span:
-		for i in span:
-			var a := j * tiles + i
-			if near_tile[a] or near_tile[a + 1] or near_tile[a + tiles] or near_tile[a + tiles + 1]:
-				inside[j * span + i] = 1
-	# The distance to the nearest inside corner, square rings (the larger
-	# of the two offsets): first along each row, then across.
-	var far := width + 1
-	var along := PackedInt32Array()
-	along.resize(span * span)
-	for j in span:
-		for i in span:
-			var best := far
-			for d in range(-width, width + 1):
-				var k := i + d
-				if k >= 0 and k < span and inside[j * span + k] and absi(d) < best:
-					best = absi(d)
-			along[j * span + i] = best
-	for cy in corners:
-		for cx in corners:
-			var best := far
-			var i := cx - lo
-			for d in range(-width, width + 1):
-				var k := cy - lo + d
-				if k >= 0 and k < span:
-					best = mini(best, maxi(absi(d), along[k * span + i]))
-			values[cy * corners + cx] = 1.0 - float(best) / float(far)
-	return values
-
-
-## The four corners' values of tile (x, y) of the chunk, from corner
-## values (_nearness), clockwise from the top like Iso.diamond.
-func _corners(values: PackedFloat32Array, x: int, y: int) -> PackedFloat32Array:
-	var c := _size + 1
-	return PackedFloat32Array([values[y * c + x], values[y * c + x + 1], values[(y + 1) * c + x + 1], values[(y + 1) * c + x]])
-
-
-## The terrain drawn on tile (x, y) of the window (_window), as a code:
-## its own, except a ford, water the water meshes draw, and a brook, a
-## ribbon on the ground (BrookLines) over the land around it, forest
-## where the tiles around are mostly forest, else grass.
-func _drawn(win: PackedByteArray, x: int, y: int) -> int:
-	var side := _size + 2 * READ
-	var code := win[y * side + x]
-	if code == TerrainGrid.FORD:
-		return TerrainGrid.WATER
-	if code != TerrainGrid.BROOK:
-		return code
-	return _land_around(win, x, y, false)
-
-
-## The land most of the tiles around tile (x, y) of the window are,
-## FOREST or GRASS; with `drawn`, a brook among them counts as the land
-## drawn under it. UNKNOWN when none is land.
-func _land_around(win: PackedByteArray, x: int, y: int, drawn: bool) -> int:
-	var side := _size + 2 * READ
-	var forest := 0
-	var grass := 0
-	for dy in range(-1, 2):
-		for dx in range(-1, 2):
-			var near := win[(y + dy) * side + x + dx]
-			if near == TerrainGrid.BROOK and drawn:
-				near = _land_around(win, x + dx, y + dy, false)
-			if near == TerrainGrid.FOREST:
-				forest += 1
-			elif near == TerrainGrid.GRASS:
-				grass += 1
-	if forest + grass == 0 and drawn:
-		return TerrainGrid.UNKNOWN
-	return TerrainGrid.FOREST if forest > grass else TerrainGrid.GRASS
-
-
 ## The tiles of this chunk that `terrain` spills over, with the opacity of
 ## the spill at each corner: 1 at a corner touching a tile of `terrain`,
 ## fading to 0 FRINGE + 1 corners away.
@@ -848,13 +689,13 @@ func fringe(terrain: String) -> Array:
 	if over.is_empty():
 		return []
 	var win := _window()
-	var nearness := _nearness(win, _table([TerrainGrid.code_of(terrain)]), int(spill.get("width", 1)))
+	var nearness := GroundBuild.nearness_of(win, GroundBuild.table([TerrainGrid.code_of(terrain)]), int(spill.get("width", 1)), _size)
 	var result: Array = []
 	for y in _size:
 		for x in _size:
-			if not over.has(TerrainGrid.name_of(_drawn(win, x + READ, y + READ))):
+			if not over.has(TerrainGrid.name_of(GroundBuild.drawn_code(win, x + READ, y + READ, _size))):
 				continue
-			var alphas := _corners(nearness, x, y)
+			var alphas := GroundBuild.corners_of(nearness, x, y, _size)
 			if alphas[0] > 0.0 or alphas[1] > 0.0 or alphas[2] > 0.0 or alphas[3] > 0.0:
 				result.append({"tile": _origin + Vector2i(x, y), "alphas": alphas})
 	return result
@@ -864,20 +705,7 @@ func fringe(terrain: String) -> Array:
 ## another, known terrain (the bank): tile -> four values, only for the
 ## tiles where some corner is near.
 func shore(terrain: String) -> Dictionary:
-	return _shore(_window(), TerrainGrid.code_of(terrain))
-
-
-func _shore(win: PackedByteArray, code: int) -> Dictionary:
-	var nearness := _nearness(win, _table_but(code), SHORE_WIDTH)
-	var result: Dictionary = {}
-	for y in _size:
-		for x in _size:
-			if _codes[y * _size + x] != code:
-				continue
-			var near := _corners(nearness, x, y)
-			if near[0] > 0.0 or near[1] > 0.0 or near[2] > 0.0 or near[3] > 0.0:
-				result[_origin + Vector2i(x, y)] = near
-	return result
+	return GroundBuild.shore_of(_window(), _codes, TerrainGrid.code_of(terrain), _origin, _size)
 
 
 ## What this chunk's heavy drawing depends on: its tiles and those around
@@ -899,28 +727,33 @@ func _terrain_signature() -> int:
 
 
 var _last_signature := 0
-## Building a chunk's ground takes tens of milliseconds: one chunk builds
-## a frame, the others keep what they drew and wait in `waiting` for the
-## world view to call them, nearest the camera first.
-static var _built_frame := -1
+## Building a chunk's ground takes 3 to 150 ms (a river's banks): it is
+## worked out on a worker thread (GroundBuild, C3, 11 November 2026) and
+## laid on the main thread when done, nearest the camera first, as many a
+## frame as fit the world view's budget (`lay_ready`). `waiting`: the
+## chunks whose ground is on a worker or done and not yet laid.
 static var waiting: Array = []
-## Where the camera stands, in the world's pixels, as the world view last
-## said (`reorder`): the waiting chunks are kept nearest it first, each
-## put in its place when it joins, so the world view takes the first and
-## never looks through them all (lightness audit, 10 November 2026: a
-## copy and a scan of 361 chunks a frame while loading).
-static var camera_px := Vector2.ZERO
-## This chunk's distance (squared) to `camera_px` when it joined.
-var wait_distance := 0.0
-## Built the frame it is first drawn, whatever else built that frame: the
-## world view sets it for a chunk the screen may show (C1, 11 November
-## 2026: every chunk on screen is built the frame it enters the camera's
-## reach), and it is spent by that build.
+## The tasks whose chunk went or asked for a newer ground meanwhile:
+## waited for once done, their result dropped.
+static var _orphans: Array[int] = []
+## The ground under way: its task (-1: none), the signature it is for,
+## where the worker puts its result.
+var _task := -1
+var _task_signature := 0
+var _task_out: Array = []
+## Built the frame it is first drawn, whatever its turn: the world view
+## sets it for a chunk the screen may show (C1: every chunk on screen has
+## its ground and its water the frame it shows), and it is spent by that
+## build. With the margin built ahead (ViewLedger.margin_for) the ground
+## is laid before the screen gets there; a chunk the screen catches first
+## waits for its worker on the main thread, counted in `in_line` (F3).
 var build_at_once := false
-## Whether the build under way is one the screen may show: its water
-## meshes are built in line rather than on a worker, so its water shows
-## with its ground (_build_water_meshes).
-var _water_at_once := false
+## Grounds the screen caught before their worker was done (the safety
+## net): the main thread waited for them.
+static var in_line := 0
+## The main thread's time laying grounds, in microseconds, and how many.
+static var lay_usec := 0
+static var lays := 0
 
 
 ## The middle of the chunk's ground, in the world's pixels.
@@ -928,34 +761,79 @@ func centre_px() -> Vector2:
 	return Iso.tile_to_screen(_origin.x + _size / 2, _origin.y + _size / 2)
 
 
-## Puts `chunk` among the waiting ones, after those nearer the camera.
-static func enqueue(chunk: ChunkView) -> void:
-	# A chunk released since it was queued (a teleport frees the whole
-	# view) must not be met by the search below: a freed object cannot
-	# be read, the error aborted the enqueue and the chunk never built.
-	waiting = waiting.filter(func(c: Variant) -> bool: return is_instance_valid(c))
-	if waiting.has(chunk):
+## Starts working out the chunk's ground on a worker if the tiles around
+## changed since it was last laid and no worker is on it already: called
+## when the chunk is built (WorldView._build_chunk), so it is under way
+## before the chunk is first drawn, and on every redraw.
+func start_build() -> void:
+	var signature := _terrain_signature()
+	if signature == _last_signature or signature == _task_signature:
 		return
-	chunk.wait_distance = chunk.centre_px().distance_squared_to(camera_px)
-	var lo := 0
-	var hi := waiting.size()
-	while lo < hi:
-		var mid := (lo + hi) / 2
-		if (waiting[mid] as ChunkView).wait_distance <= chunk.wait_distance:
-			lo = mid + 1
-		else:
-			hi = mid
-	waiting.insert(lo, chunk)
+	_drop_task()
+	var input := _gather(true)
+	_task_out = []
+	_task = WorkerThreadPool.add_task(GroundBuild.run.bind(input, _task_out), true, "chunk ground")
+	_task_signature = signature
+	if not waiting.has(self):
+		waiting.append(self)
 
 
-## Orders the waiting chunks again around `px`, where the camera stands
-## now (it moved by more than a chunk since they were ordered).
-static func reorder(px: Vector2) -> void:
-	camera_px = px
-	waiting = waiting.filter(func(chunk: Variant) -> bool: return is_instance_valid(chunk))
-	for chunk: ChunkView in waiting:
-		chunk.wait_distance = chunk.centre_px().distance_squared_to(px)
-	waiting.sort_custom(func(a: ChunkView, b: ChunkView) -> bool: return a.wait_distance < b.wait_distance)
+## The task under way, if any, is left to finish on its own.
+func _drop_task() -> void:
+	if _task >= 0:
+		_orphans.append(_task)
+	_task = -1
+	_task_signature = 0
+	_task_out = []
+	waiting.erase(self)
+
+
+## Whether the ground worked out on a worker is done and may be laid.
+func ground_ready() -> bool:
+	return _task >= 0 and WorkerThreadPool.is_task_completed(_task)
+
+
+## Lays the ground the worker worked out (waiting for it if it is not
+## done), for the signature it was started for.
+func _lay_task() -> void:
+	var signature := _task_signature
+	WorkerThreadPool.wait_for_task_completion(_task)
+	var result: Dictionary = _task_out[0] if not _task_out.is_empty() else {}
+	_task = -1
+	_task_signature = 0
+	_task_out = []
+	waiting.erase(self)
+	if not result.is_empty():
+		_lay(result, signature)
+
+
+## Lays the grounds done on the workers, nearest `camera_px` first, as
+## many as fit `budget_usec` of the main thread (at least one), and
+## forgets the tasks dropped once they are done. How many were laid.
+static func lay_ready(budget_usec: int, camera_px: Vector2) -> int:
+	for i in range(_orphans.size() - 1, -1, -1):
+		if WorkerThreadPool.is_task_completed(_orphans[i]):
+			WorkerThreadPool.wait_for_task_completion(_orphans[i])
+			_orphans.remove_at(i)
+	var done: Array = []
+	for chunk: Variant in waiting:
+		if is_instance_valid(chunk) and (chunk as ChunkView).ground_ready():
+			done.append(chunk)
+	if done.is_empty():
+		return 0
+	done.sort_custom(func(a: ChunkView, b: ChunkView) -> bool:
+		return a.centre_px().distance_squared_to(camera_px) < b.centre_px().distance_squared_to(camera_px))
+	var started := Time.get_ticks_usec()
+	var laid := 0
+	for chunk: ChunkView in done:
+		if laid > 0 and Time.get_ticks_usec() - started >= budget_usec:
+			break
+		chunk._lay_task()
+		chunk.queue_redraw()
+		laid += 1
+	return laid
+
+
 ## The chunk's own drawing kept between redraws: flat tiles [points,
 ## colour] and decorations [texture, rect, tint].
 var _flats: Array = []
@@ -965,8 +843,10 @@ var _decor_cache: Array = []
 ## The chunk's plants, from the flora's atlas (art/flora, made by
 ## content/tools/flora_art.py): one image a plant, its foot on its place,
 ## sized by its kind's height. One layer a chunk, drawn once, above the
-## ground and below the trees.
-func show_plants(plants: Array, flora: Array) -> void:
+## ground and below the trees. `with_ground`: worked out on a worker with
+## the chunk's ground and laid with it (a chunk being built, C3), rather
+## than here (plants changed on a chunk built).
+func show_plants(plants: Array, flora: Array, with_ground := false) -> void:
 	var layer: PlantLayer = get_node_or_null("Plants")
 	if layer == null:
 		layer = PlantLayer.new()
@@ -975,7 +855,16 @@ func show_plants(plants: Array, flora: Array) -> void:
 		# calm (the ground itself is read without).
 		layer.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 		add_child(layer)
+	if with_ground:
+		_plants_due = [plants, flora]
+		return
+	_plants_due = []
 	layer.set_plants(plants, flora)
+
+
+## The plants to work out with the next ground ([plants, flora]; empty:
+## none).
+var _plants_due: Array = []
 
 
 const FLORA_ATLAS := "res://art/flora/atlas.png"
@@ -1071,7 +960,17 @@ class PlantLayer:
 	var _draws: Array = []
 
 	func set_plants(plants: Array, flora: Array) -> void:
-		_draws.clear()
+		set_draws(draws_of(plants, flora))
+
+	func set_draws(draws: Array) -> void:
+		_draws = draws
+		queue_redraw()
+
+	## What `plants` (as received) draw on the layer, nearest the back
+	## first: [texture rect, atlas region, tint]. Pure: a worker may run it
+	## once the atlas is read (ChunkView.flora_atlas).
+	static func draws_of(plants: Array, flora: Array) -> Array:
+		var draws: Array = []
 		var sorted := plants.duplicate()
 		# Drawn from the back to the front (the screen's depth is x + y).
 		sorted.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
@@ -1087,8 +986,8 @@ class PlantLayer:
 			var region := ChunkView.plant_region(at, kind)
 			if region.size == Vector2.ZERO:
 				continue
-			_draws.append([ChunkView.plant_rect(at, kind, region), region, ChunkView.plant_tint(kind)])
-		queue_redraw()
+			draws.append([ChunkView.plant_rect(at, kind, region), region, ChunkView.plant_tint(kind)])
+		return draws
 
 	func _draw() -> void:
 		var atlas := ChunkView.flora_atlas()
@@ -1115,22 +1014,20 @@ func _draw() -> void:
 	var signature := _terrain_signature()
 	var built := false
 	if signature != _last_signature:
-		var frame := Engine.get_process_frames()
-		if build_at_once or _built_frame != frame:
-			_water_at_once = build_at_once
+		start_build()
+		if build_at_once:
+			# The screen may show the chunk this frame: its ground now, the
+			# worker's if done, else waited for (the safety net, counted).
 			build_at_once = false
-			_built_frame = frame
-			waiting.erase(self)
-			_last_signature = signature
-			_flats.clear()
-			_decor_cache.clear()
 			DevWatchdog.phase = DevWatchdog.CHUNK_BUILD
-			var t := DevTiming.start()
-			_draw_ground_layers()
-			DevTiming.add("chunk builds", t)
+			if not ground_ready():
+				in_line += 1
+				DevTiming.tally("grounds built in line")
+			_lay_task()
 			built = true
-		else:
-			ChunkView.enqueue(self)
+	if not _brook_lines.is_empty():
+		var tint: Color = ground_params("water").get("base_tint", Color.WHITE)
+		BrookLines.draw(self, _brook_lines, _origin, _origin + Vector2i(_size, _size), ground_texture("water"), tint)
 	for flat: Array in _flats:
 		draw_colored_polygon(flat[0], flat[1])
 	for d: Array in _decor_cache:
@@ -1148,59 +1045,113 @@ func _draw() -> void:
 	DevWatchdog.phase = DevWatchdog.ELSEWHERE
 
 
-## The ground: what each terrain's canvas draws to the ground index, flat
-## tiles and the decorations to the caches, the bank and the brooks to
-## their canvases.
+## Builds the chunk's ground in line, on this thread (the tests): the
+## same as a worker's.
 func _draw_ground_layers() -> void:
-	var win := _window()
-	# The terrain drawn on each tile, then its canvas's bit (0: flat); the
-	# water's tiles are the meshes' (_add_water_tiles lays the land beneath
-	# where the bank can show).
-	var drawn := PackedByteArray()
-	drawn.resize(_size * _size)
+	_drop_task()
+	_lay(GroundBuild.compute(_gather(false)), _terrain_signature())
+
+
+## What the ground's build reads (GroundBuild.compute), gathered on the
+## main thread: the codes of the chunk and around it, the currents near
+## it (a copy of the world view's, for a worker: `for_worker`), which
+## terrains have a texture, the decorations' rules and images.
+func _gather(for_worker: bool) -> Dictionary:
+	WaterMeshes.warm(_size)
+	if not _plants_due.is_empty():
+		flora_atlas()
 	var bit_of := PackedByteArray()
 	bit_of.resize(256)
-	bit_of.fill(255)
-	var bits := PackedByteArray()
-	bits.resize(_size * _size)
-	for y in _size:
-		for x in _size:
-			var code := _drawn(win, x + READ, y + READ)
-			drawn[y * _size + x] = code
-			if code == TerrainGrid.WATER:
-				continue
-			if bit_of[code] == 255:
-				var name := TerrainGrid.name_of(code)
-				bit_of[code] = int(GroundIndex.BITS.get(name, 0)) if ground_texture(name) != null else 0
-			if bit_of[code] != 0:
-				bits[y * _size + x] = bit_of[code]
-			else:
-				_flats.append([Iso.diamond(_origin.x + x, _origin.y + y), COLORS.get(TerrainGrid.name_of(code), Color.MAGENTA)])
-	# A terrain that spills (the forest) is drawn over the tiles it spills
-	# on, its opacity at their corners in the index.
-	var corners := PackedByteArray()
-	corners.resize((_size + 1) * (_size + 1))
+	var colours: Array = []
+	colours.resize(256)
+	for code in 256:
+		var name := TerrainGrid.name_of(code)
+		colours[code] = COLORS.get(name, Color.MAGENTA)
+		if name != "" and ground_texture(name) != null:
+			bit_of[code] = int(GroundIndex.BITS.get(name, 0))
+	var fringe_rules: Array = []
 	for terrain: String in FRINGE_OVER:
 		if ground_texture(terrain) == null:
 			continue
 		var spill: Dictionary = FRINGE_OVER[terrain]
-		var over := _table(spill.get("over", []).map(func(t: String) -> int: return TerrainGrid.code_of(t)))
-		var nearness := _nearness(win, _table([TerrainGrid.code_of(terrain)]), int(spill.get("width", 1)))
-		for i in corners.size():
-			corners[i] = int(round(nearness[i] * 255.0))
-		for y in _size:
-			for x in _size:
-				if not over[drawn[y * _size + x]]:
-					continue
-				var alphas := _corners(nearness, x, y)
-				if alphas[0] > 0.0 or alphas[1] > 0.0 or alphas[2] > 0.0 or alphas[3] > 0.0:
-					bits[y * _size + x] |= GroundIndex.FRINGE
-	_add_water_tiles(win, bits)
-	var prepared := _build_water_meshes(win)
-	GroundIndex.write(_origin, _size, bits, corners)
-	var used := 0
-	for b in bits:
-		used |= b
+		var over := GroundBuild.table(spill.get("over", []).map(func(t: String) -> int: return TerrainGrid.code_of(t)))
+		fringe_rules.append([TerrainGrid.code_of(terrain), over, int(spill.get("width", 1))])
+	var current := current_at
+	if for_worker and current_at.is_valid():
+		current = Callable()
+		if currents_of.is_valid():
+			# The currents of the chunk and the eight around it: all the
+			# water and the brooks read.
+			var key := Vector2i(floori(float(_origin.x) / _size), floori(float(_origin.y) / _size))
+			var currents := {}
+			for dy in range(-1, 2):
+				for dx in range(-1, 2):
+					currents[key + Vector2i(dx, dy)] = currents_of.call(key + Vector2i(dx, dy))
+			current = GroundBuild.current_in.bind(currents, _size)
+	var win := _window()
+	var brook_win := PackedByteArray()
+	if win.has(TerrainGrid.BROOK):
+		var m := GroundBuild.BROOK_READ
+		brook_win = TerrainGrid.window(_origin - Vector2i(m, m), _size + 2 * m, _size + 2 * m)
+	return {
+		"origin": _origin, "size": _size, "win": win, "codes": _codes, "brook_win": brook_win,
+		"bit_of": bit_of, "colours": colours, "fringe": fringe_rules, "current": current,
+		"decor": _decor_rules(), "brook_bed": str(ground_layers("water").get("brook1", "")) != "",
+		"arrows": show_arrows, "plants": _plants_due,
+	}
+
+
+## The decorations' rules (ground.json), each with its images and their
+## proportions, in the spec's order: what GroundBuild sows from.
+static func _decor_rules() -> Array:
+	var decor: Dictionary = ground_spec().get("decor", {})
+	var rules: Array = []
+	var water_tint: Color = ground_params("water").get("base_tint", Color.WHITE)
+	var salt := 0
+	for kind: String in decor:
+		if not decor[kind] is Dictionary:
+			continue  # the entry's note
+		salt += 1
+		var rule: Dictionary = decor[kind]
+		var textures := decor_textures(kind)
+		if textures.is_empty():
+			continue
+		var ratios := PackedFloat32Array()
+		for texture: Texture2D in textures:
+			ratios.append(float(texture.get_height()) / float(texture.get_width()))
+		rules.append({
+			"salt": salt, "textures": textures, "ratios": ratios,
+			"chance": float(rule.get("chance", 0.1)),
+			"size_px": float(rule.get("size_m", 0.5)) * Iso.PX_PER_M,
+			"min_near": float(rule.get("min_near", 0.6)),
+			"jitter": float(rule.get("size_jitter", 0.0)),
+			"tint": water_tint if str(rule.get("tint", "")) == "water" else Color.WHITE,
+			"by_water": str(rule.get("where", "")) == "water_near_land",
+		})
+	return rules
+
+
+## Lays the ground worked out (GroundBuild.compute) for `signature`: the
+## flat tiles and the decorations kept for the chunk's own drawing, the
+## ground index written, each terrain's canvas told, the water meshes
+## and the brooks' ribbons made from their arrays. The main thread's
+## whole share of a build.
+func _lay(result: Dictionary, signature: int) -> void:
+	var started := Time.get_ticks_usec()
+	var t := DevTiming.start()
+	_last_signature = signature
+	_flats = result["flats"]
+	_decor_cache = result["decor"]
+	_arrows = result["arrows"]
+	_brook_lines = result["brook_lines"]
+	var plants: Variant = result["plant_draws"]
+	if plants is Array and not _plants_due.is_empty():
+		var layer: PlantLayer = get_node_or_null("Plants")
+		if layer != null:
+			layer.set_draws(plants)
+		_plants_due = []
+	GroundIndex.write(_origin, _size, result["bits"], result["corners"])
+	var used: int = result["used"]
 	for terrain: String in GroundIndex.BITS:
 		var shown := (used & int(GroundIndex.BITS[terrain])) != 0
 		if FRINGE_OVER.has(terrain) and (used & GroundIndex.FRINGE) != 0:
@@ -1211,9 +1162,24 @@ func _draw_ground_layers() -> void:
 			canvas.size = _size
 			canvas.shown = shown
 			canvas.queue_redraw()
+	var water_usec: int = result["water_usec"]
+	if water_usec >= 0:
+		var laid := Time.get_ticks_usec()
+		water_build_usec += water_usec
+		water_builds += 1
+		_lay_water_meshes(result["water"], result["bank"])
+		water_main_usec += Time.get_ticks_usec() - laid
+	else:
+		_lay_water_meshes({}, {})
 	# A brook cuts the bank where it joins a river: drawn over it.
-	_draw_brooks(win, prepared)
-	_draw_decor(win)
+	var brooks: Variant = result["brooks"]
+	if brooks is Dictionary:
+		_brook_canvas().lay(brooks)
+	elif _brooks != null:
+		_brooks.lay({})
+	lay_usec += Time.get_ticks_usec() - started
+	lays += 1
+	DevTiming.add("chunk lays", t)
 
 
 ## Items: a small disc of the material's colour, slightly off the tile's
@@ -1295,54 +1261,6 @@ func _build_items() -> void:
 	_items_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 
 
-## Under the water meshes, the land beneath where the bank can show: the
-## smoothed line can fall anywhere across the tiles' edge, so the water
-## tiles touching land draw the land around them (forest if the land
-## around is mostly forest, else grass) under the bank mesh. Adds to
-## `bits`, the tiles' bits for the index.
-func _add_water_tiles(win: PackedByteArray, bits: PackedByteArray) -> void:
-	var side := _size + 2 * READ
-	for y in _size:
-		for x in _size:
-			var here := win[(y + READ) * side + x + READ]
-			if WaterMeshes.is_water(here):
-				var land := TerrainGrid.name_of(_land_around(win, x + READ, y + READ, true))
-				if land != "" and ground_texture(land) != null:
-					bits[y * _size + x] |= int(GroundIndex.BITS[land])
-
-
-## The brooks crossing this chunk, a mesh of ribbons (BrookLines.mesh)
-## drawn by the brook shader over the water meshes: each vertex carries
-## its own tile's current and, at a mouth, the fade into the river's
-## water read from the river's line (`prepared`: WaterMeshes.prepare,
-## empty when no river is near). Without the brook's art, flat lines.
-func _draw_brooks(win: PackedByteArray, prepared: Dictionary) -> void:
-	if not win.has(TerrainGrid.BROOK):
-		if _brooks != null:
-			_brooks.lay({})
-		return
-	var margin := Vector2i(BrookLines.MARGIN, BrookLines.MARGIN)
-	var terrain := func(t: Vector2i) -> String: return TerrainGrid.name_at(t)
-	var lines := BrookLines.lay(terrain, _origin - margin, _origin + Vector2i(_size, _size) + margin)
-	var bed := str(ground_layers("water").get("brook1", ""))
-	if bed != "":
-		var to_river := Callable()
-		if not prepared.is_empty():
-			to_river = func(p: Vector2) -> float: return WaterMeshes.distance_at(prepared, p)
-		_brook_canvas().lay(BrookLines.mesh(lines, _origin, _origin + Vector2i(_size, _size), current_at, to_river))
-		if show_arrows:
-			_arrows.clear()
-			for line: Dictionary in lines:
-				var pts: PackedVector2Array = line["pts"]
-				var flows := BrookLines.flows_of(line, current_at)
-				for i in pts.size() - 1:
-					if BrookLines.owns(line, i, _origin, _origin + Vector2i(_size, _size)):
-						_arrows.append([BrookLines.to_screen(pts[i]), flows[i]])
-		return
-	var tint: Color = ground_params("water").get("base_tint", Color.WHITE)
-	BrookLines.draw(self, lines, _origin, _origin + Vector2i(_size, _size), ground_texture("water"), tint)
-
-
 ## The brook shader's material, shared by every chunk.
 static var _brook_material: ShaderMaterial
 
@@ -1374,86 +1292,8 @@ func _brook_canvas() -> WaterCanvas:
 
 
 var _brooks: WaterCanvas = null
-
-
-## Sows the decorations of this chunk: for each kind, on the tiles its
-## "where" names (water within a tile of land; land within two tiles of
-## water), with its chance, at a fixed random spot of the tile.
-func _draw_decor(win: PackedByteArray) -> void:
-	var decor: Dictionary = ground_spec().get("decor", {})
-	if decor.is_empty():
-		return
-	var wanted: Dictionary = {}
-	for kind: String in decor:
-		if decor[kind] is Dictionary:
-			wanted[str(decor[kind].get("where", ""))] = true
-	var water_near_land := _shore(win, TerrainGrid.WATER) if wanted.has("water_near_land") else {}
-	# How near the water each land tile is, once for every kind (0 for
-	# the tiles no decoration grows on).
-	var land_near := PackedFloat32Array()
-	land_near.resize(_size * _size)
-	var any_land_near := false
-	if wanted.keys().any(func(w: String) -> bool: return w != "water_near_land"):
-		var land_near_water := _nearness(win, _table([TerrainGrid.WATER]), 2)
-		var bare := _table([TerrainGrid.WATER, TerrainGrid.FORD, TerrainGrid.BROOK, TerrainGrid.ROCK])
-		for y in _size:
-			for x in _size:
-				if bare[_codes[y * _size + x]]:
-					continue
-				var near := _max4(_corners(land_near_water, x, y))
-				land_near[y * _size + x] = near
-				any_land_near = any_land_near or near > 0.0
-	var water_tint: Color = ground_params("water").get("base_tint", Color.WHITE)
-	var salt := 0
-	for kind: String in decor:
-		if not decor[kind] is Dictionary:
-			continue  # the entry's note
-		salt += 1
-		var rule: Dictionary = decor[kind]
-		var textures := decor_textures(kind)
-		if textures.is_empty():
-			continue
-		var chance := float(rule.get("chance", 0.1))
-		var size_px := float(rule.get("size_m", 0.5)) * Iso.PX_PER_M
-		# How near the other terrain a tile must be (1 = touching it), and
-		# how much the size varies from one element to the next.
-		var min_near := float(rule.get("min_near", 0.6))
-		var jitter := float(rule.get("size_jitter", 0.0))
-		var tint := water_tint if str(rule.get("tint", "")) == "water" else Color.WHITE
-		var by_water := str(rule.get("where", "")) == "water_near_land"
-		if not by_water and not any_land_near:
-			continue
-		for y in _size:
-			for x in _size:
-				var tx := _origin.x + x
-				var ty := _origin.y + y
-				var near := 0.0
-				if by_water:
-					if _codes[y * _size + x] != TerrainGrid.WATER or not water_near_land.has(Vector2i(tx, ty)):
-						continue
-					near = _max4(water_near_land[Vector2i(tx, ty)])
-					if near < min_near:
-						continue
-				else:
-					near = land_near[y * _size + x]
-					if near <= 0.0:
-						continue
-				if tile_hash(tx, ty, salt) > chance * near:
-					continue
-				var texture: Texture2D = textures[int(tile_hash(tx, ty, salt + 100) * textures.size()) % textures.size()]
-				var offset := Vector2(tile_hash(tx, ty, salt + 200) - 0.5, tile_hash(tx, ty, salt + 300) - 0.5) * 600.0
-				var centre := Iso.point_to_screen(Vector2(tx * 1000 + 500, ty * 1000 + 500) + offset)
-				var ratio := float(texture.get_height()) / float(texture.get_width())
-				var scale := 1.0 + (tile_hash(tx, ty, salt + 400) * 2.0 - 1.0) * jitter
-				var size := Vector2(size_px, size_px * ratio * 0.5) * scale
-				_decor_cache.append([texture, Rect2(centre - size / 2.0, size), tint])
-
-
-static func _max4(values: PackedFloat32Array) -> float:
-	var best := 0.0
-	for v in values:
-		best = maxf(best, v)
-	return best
+## The brooks' lines drawn flat, when the brook's art is missing.
+var _brook_lines: Array = []
 
 
 ## A small skull above a corpse, drawn on `canvas` at `at`.

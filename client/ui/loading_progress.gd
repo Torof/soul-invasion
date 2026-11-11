@@ -12,10 +12,21 @@ const QUIET_MSEC := 500
 var has_world := false
 var received := 0
 var built := 0
-## Bank fields still being smoothed and water meshes still being built
-## (WaterMeshes.busy).
+## Grounds still being built on a worker or waiting to be laid, water
+## meshes included (ChunkView.waiting).
 var fields := 0
 var _last_chunk_msec := -1
+## Whether the world view already holds and has built all the screen may
+## show (WorldView.reach_ready): after a teleport onto the tile the body
+## stands on no chunk comes, and the world counts as in on this instead,
+## once nothing came for QUIET_MSEC since the screen came up.
+var view_ready := false
+var _started_msec := -1
+
+
+## The screen came up at `now_msec`.
+func start(now_msec: int) -> void:
+	_started_msec = now_msec
 
 
 ## A chunk came in at `now_msec`.
@@ -26,7 +37,9 @@ func chunk_came(now_msec: int) -> void:
 
 ## Whether everything sent is in and drawn.
 func done(now_msec: int) -> bool:
-	return has_world and received > 0 and now_msec - _last_chunk_msec >= QUIET_MSEC \
+	if received == 0:
+		return has_world and view_ready and _started_msec >= 0 and now_msec - _started_msec >= QUIET_MSEC and fields == 0
+	return has_world and now_msec - _last_chunk_msec >= QUIET_MSEC \
 		and built >= received and fields == 0
 
 

@@ -125,7 +125,7 @@ func _screenshot_then_quit(path: String) -> void:
 ## minute and a half).
 func _wait_built() -> void:
 	var waited := 0.0
-	while waited < 90.0 and (WaterMeshes.busy > 0 or _unbuilt() > 0 or ChunkView.waiting.size() > 0):
+	while waited < 90.0 and (_unbuilt() > 0 or ChunkView.waiting.size() > 0):
 		await get_tree().create_timer(0.5).timeout
 		waited += 0.5
 

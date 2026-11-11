@@ -297,7 +297,8 @@ func report(worst_ms: float) -> String:
 		"" if Trees.loading().is_empty() else "   reading %s" % " ".join(Trees.loading()),
 	])
 	lines.append("  " + " ".join(names))
-	lines.append("water meshes building %d   F3 hides" % WaterMeshes.busy)
+	lines.append("grounds on the workers %d   built in line: %d   laid %d, %.2f ms each on the main thread   F3 hides" % [
+		ChunkView.waiting.size(), ChunkView.in_line, ChunkView.lays, ChunkView.lay_usec / 1000.0 / maxi(ChunkView.lays, 1)])
 	lines.append("wind %s (F4)   ground %s (F5)   trees %s (F6)   fog %s (F7)" % [
 		"on" if _wind else "off", "plain" if _plain_ground else "shaded", "shown" if _trees_shown else "hidden",
 		FarView.drawing_name(),

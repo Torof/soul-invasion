@@ -101,8 +101,6 @@ const BEACH_SAMPLES := 8
 ## The map's size in tiles: past it the server sends rock, which here
 ## counts as unknown so a river runs on out of the map.
 static var map_size := Vector2i(256, 256)
-## Builds under way (the loading screen waits for them).
-static var busy := 0
 ## Convolution weights by kind and chunk size (made on the main thread).
 static var _weights: Dictionary = {}
 ## The bank's kernel, for the points asked for one by one (distance_at).
@@ -142,10 +140,11 @@ static func block_of(terrain: Callable, lo: Vector2i, size: int) -> PackedByteAr
 	return out
 
 
-## What `build` needs, gathered on the main thread from the chunk's
-## window of codes (`win`: ChunkView._window, MARGIN tiles around) and the
-## currents (`current`: Vector2i -> Vector2 in metres a second). Empty when
-## the block holds no water at all.
+## What `build` needs, gathered from the chunk's window of codes (`win`:
+## ChunkView._window, MARGIN tiles around) and the currents (`current`:
+## Vector2i -> Vector2 in metres a second). Empty when the block holds no
+## water at all. Runs on a worker (GroundBuild) once `warm` made the
+## tables on the main thread.
 static func prepare(win: PackedByteArray, lo: Vector2i, size: int, current: Callable) -> Dictionary:
 	if not (win.has(TerrainGrid.WATER) or win.has(TerrainGrid.FORD)):
 		return {}
@@ -206,6 +205,17 @@ static func prepare(win: PackedByteArray, lo: Vector2i, size: int, current: Call
 		"any_flow": any_flow, "any_ford": any_ford, "any_land": any_land,
 		"weights": [_weights_of("lattice", size), _weights_of("centre", size), _weights_of("ford", size)],
 	}
+
+
+## Makes, on the main thread, the static tables `prepare` and `build`
+## read for chunks of `size` tiles (the noise, the bank's kernel, the
+## blurs' weights), so that both may then run on a worker thread.
+static func warm(size: int) -> void:
+	_make_noise()
+	if _bank_kernel.is_empty():
+		_bank_kernel = kernel(BLUR, BLUR_PASSES)
+	for kind: String in ["lattice", "centre", "ford"]:
+		_weights_of(kind, size)
 
 
 ## The kernel of `passes` box blurs of `radius` pixels, as one.
