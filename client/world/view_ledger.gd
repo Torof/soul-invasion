@@ -2,10 +2,11 @@ class_name ViewLedger
 extends RefCounted
 ## The world view's bookkeeping of the chunks held, kept up to date as
 ## chunks come and go rather than worked out again every frame (lightness
-## audit, 10 November 2026): the bounds of the chunks held; the chunks
-## whose redraw waits for the camera to come near; the chunks parked
-## when hidden, to come back as they were; what lies behind the mouse
-## among the items. No node and no network in here: tested bare.
+## audit, 10 November 2026): the bounds of the chunks held; which chunks
+## are built and which are to be, from the camera's reach (C1, 11
+## November 2026); the chunks whose redraw waits for the camera to come
+## near; what lies behind the mouse among the items. No node and no
+## network in here: tested bare.
 
 var chunk_size := 32
 
@@ -23,19 +24,30 @@ var held_stale := false
 ## come and go lie 256 tiles away, under the fog, and the camera never
 ## reaches them: a border crossing redraws nothing.
 var stale: Dictionary = {}
-## What the camera can reach, in the world's pixels: the screen and a
-## chunk around it; and the screen it was last worked out for.
-var reach := Rect2()
-var reach_seen := Rect2()
 
-## A chunk hidden is parked rather than freed while it stays within
-## PARK_RING chunks of the body's chunk (one past the 19 × 19 held) and
-## while at most PARK_MOST are parked: walking back over a border brings
-## it back as it was, nothing built. chunk -> what the world view keeps
-## of it, oldest first.
-const PARK_RING := 10
-const PARK_MOST := 96
-var parked: Dictionary = {}
+## What the camera can reach, in the world's pixels, from the inside out:
+## the screen itself (`seen`); the screen grown by what may stand out of a
+## chunk's ground, up for the tallest trees, sideways and down for their
+## crowns (`shown`: a chunk touching it may show something on screen);
+## and a chunk more around (`reach`).
+var seen := Rect2()
+var shown := Rect2()
+var reach := Rect2()
+const STANDING_REACH_UP := 1024.0
+const STANDING_REACH := 256.0
+
+## A chunk held is data until the camera's reach touches it; then it is
+## built, the chunks the screen may show at once, the chunk of margin
+## around them paced one a frame, nearest the camera first. A built chunk
+## the reach left is released after RELEASE_GRACE_MSEC, its data kept,
+## so it builds again from them with no network (C1); the grace and the
+## margin are the hysteresis (C5): the camera jittering on an edge, or
+## the body walking back and forth over one, builds nothing twice.
+## chunk -> true for the chunks built; chunk -> the moment (msec) the
+## reach left it for the built chunks out of reach.
+var built: Dictionary = {}
+var leaving: Dictionary = {}
+const RELEASE_GRACE_MSEC := 2000
 
 ## The depth of the nearest item near the mouse (items_depth_near), and
 ## the mouse and the items it was found for.
@@ -74,18 +86,113 @@ func chunk_rect(key: Vector2i) -> Rect2:
 		Vector2((hi.x - lo.x + hi.y - lo.y) * Iso.TILE_W / 2.0, (hi.x + hi.y - lo.x - lo.y) * Iso.TILE_H / 2.0))
 
 
-## The screen shows `seen` (the world's pixels): the reach follows it, a
+## The screen shows `screen` (the world's pixels): the reach follows it, a
 ## chunk around. Whether it moved.
-func see(seen: Rect2) -> bool:
-	if seen == reach_seen:
+func see(screen: Rect2) -> bool:
+	if screen == seen:
 		return false
-	reach_seen = seen
-	reach = seen.grow_individual(chunk_size * Iso.TILE_W, chunk_size * Iso.TILE_H, chunk_size * Iso.TILE_W, chunk_size * Iso.TILE_H)
+	seen = screen
+	shown = screen.grow_individual(STANDING_REACH, STANDING_REACH_UP, STANDING_REACH, STANDING_REACH)
+	reach = screen.grow_individual(chunk_size * Iso.TILE_W, chunk_size * Iso.TILE_H, chunk_size * Iso.TILE_W, chunk_size * Iso.TILE_H)
 	return true
 
 
+## Whether chunk `key`'s diamond of ground touches `rect` (the world's
+## pixels), exactly: in tile space the rect is a band in x - y and in
+## x + y, the chunk a square (its tiles' diamonds start half a tile before
+## their centre), and two convex shapes meet unless an edge's normal
+## parts them.
+func touches(rect: Rect2, key: Vector2i) -> bool:
+	if not rect.has_area():
+		return false
+	var u0 := rect.position.x / (Iso.TILE_W / 2.0)
+	var u1 := rect.end.x / (Iso.TILE_W / 2.0)
+	var v0 := rect.position.y / (Iso.TILE_H / 2.0)
+	var v1 := rect.end.y / (Iso.TILE_H / 2.0)
+	var x0 := key.x * chunk_size - 0.5
+	var y0 := key.y * chunk_size - 0.5
+	var x1 := x0 + chunk_size
+	var y1 := y0 + chunk_size
+	return x0 - y1 < u1 and x1 - y0 > u0 and x0 + y0 < v1 and x1 + y1 > v0 \
+		and x0 < (u1 + v1) / 2.0 and x1 > (u0 + v0) / 2.0 \
+		and y0 < (v1 - u0) / 2.0 and y1 > (v0 - u1) / 2.0
+
+
+## The chunks of `bounds` (chunks) whose ground touches `rect` (the
+## world's pixels): exactly those `touches` says, found row by row
+## without looking at each chunk of the bounds.
+func chunks_touching(rect: Rect2, bounds: Rect2i) -> Array[Vector2i]:
+	var keys: Array[Vector2i] = []
+	if not rect.has_area() or not bounds.has_area():
+		return keys
+	var u0 := rect.position.x / (Iso.TILE_W / 2.0)
+	var u1 := rect.end.x / (Iso.TILE_W / 2.0)
+	var v0 := rect.position.y / (Iso.TILE_H / 2.0)
+	var v1 := rect.end.y / (Iso.TILE_H / 2.0)
+	var cs := float(chunk_size)
+	# The rows whose square of tiles crosses the band's span in y.
+	var cy_lo := maxi(floori(((v0 - u1) / 2.0 + 0.5) / cs), bounds.position.y)
+	var cy_hi := mini(ceili(((v1 - u0) / 2.0 + 0.5) / cs) - 1, bounds.end.y - 1)
+	for cy in range(cy_lo, cy_hi + 1):
+		var y0 := cy * cs - 0.5
+		var y1 := y0 + cs
+		if not (y0 < (v1 - u0) / 2.0 and y1 > (v0 - u1) / 2.0):
+			continue
+		# In this row, the squares' x0 must lie in (lo - cs, hi).
+		var hi := minf(minf(u1 + y1, v1 - y0), (u1 + v1) / 2.0)
+		var lo := maxf(maxf(u0 + y0, v0 - y1), (u0 + v0) / 2.0)
+		var cx_lo := maxi(floori((lo - cs + 0.5) / cs) + 1, bounds.position.x)
+		var cx_hi := mini(ceili((hi + 0.5) / cs) - 1, bounds.end.x - 1)
+		for cx in range(cx_lo, cx_hi + 1):
+			keys.append(Vector2i(cx, cy))
+	return keys
+
+
+## Whether the camera's reach touches chunk `key`.
 func within_reach(key: Vector2i) -> bool:
-	return reach.intersects(chunk_rect(key))
+	return touches(reach, key)
+
+
+## What to do with the chunks now the reach or the chunks held moved:
+## the chunks held in reach and not built, those the screen may show
+## (`at_once`) and the margin's (`paced`); the built chunks the reach
+## left start their grace, those it came back to keep theirs cancelled,
+## and those whose grace is over are to be released (`release`). `held`:
+## chunk -> anything, the chunks held.
+func plan(now_msec: int, held_chunks: Dictionary) -> Dictionary:
+	var at_once: Array[Vector2i] = []
+	var paced: Array[Vector2i] = []
+	var in_reach := {}
+	for key: Vector2i in chunks_touching(reach, bounds(held_chunks)):
+		if not held_chunks.has(key):
+			continue
+		in_reach[key] = true
+		if built.has(key):
+			leaving.erase(key)
+		elif touches(shown, key):
+			at_once.append(key)
+		else:
+			paced.append(key)
+	for key: Vector2i in built:
+		if not in_reach.has(key) and not leaving.has(key):
+			leaving[key] = now_msec
+	var release: Array[Vector2i] = []
+	for key: Vector2i in leaving:
+		if now_msec - int(leaving[key]) >= RELEASE_GRACE_MSEC:
+			release.append(key)
+	return {"at_once": at_once, "paced": paced, "release": release}
+
+
+## Chunk `key` is built now.
+func mark_built(key: Vector2i) -> void:
+	built[key] = true
+	leaving.erase(key)
+
+
+## Chunk `key`'s nodes are gone.
+func mark_released(key: Vector2i) -> void:
+	built.erase(key)
+	leaving.erase(key)
 
 
 ## Chunk `key`, drawn by `view`, must be redrawn when the camera reaches it.
@@ -108,44 +215,6 @@ func wake() -> Array:
 			stale.erase(view)
 			woken.append(view)
 	return woken
-
-
-## Keeps `record` for chunk `key`, hidden.
-func park(key: Vector2i, record: Dictionary) -> void:
-	parked[key] = record
-
-
-## The record parked for `key`, no longer parked; null when none.
-func take(key: Vector2i) -> Variant:
-	if not parked.has(key):
-		return null
-	var record: Dictionary = parked[key]
-	parked.erase(key)
-	return record
-
-
-## The records to free: the chunks past PARK_RING from `centre` (the
-## body's chunk; null when unknown), then the oldest past PARK_MOST.
-func prune(centre: Variant) -> Array:
-	var freed: Array = []
-	if centre != null:
-		var c: Vector2i = centre
-		for key: Vector2i in parked.keys():
-			if maxi(absi(key.x - c.x), absi(key.y - c.y)) > PARK_RING:
-				freed.append(parked[key])
-				parked.erase(key)
-	while parked.size() > PARK_MOST:
-		var oldest: Vector2i = parked.keys()[0]
-		freed.append(parked[oldest])
-		parked.erase(oldest)
-	return freed
-
-
-## Every record parked, none left.
-func take_all() -> Array:
-	var all := parked.values()
-	parked.clear()
-	return all
 
 
 ## The smallest depth (x + y, millimetres) of an item within `reach_px`

@@ -50,7 +50,8 @@ func _init() -> void:
 	_test_waiting_chunks_are_kept_nearest_the_camera_first()
 	_test_the_fog_uniforms_are_sent_only_when_they_change()
 	_test_a_redraw_past_the_cameras_reach_waits_for_the_camera()
-	_test_a_hidden_chunk_is_parked_and_comes_back_as_it_was()
+	_test_the_chunks_the_camera_reaches_are_found_exactly()
+	_test_a_chunk_is_built_when_the_reach_touches_it_and_released_after_the_grace()
 	_test_the_depth_behind_the_mouse_is_found_again_only_when_it_may_change()
 	_test_the_fog_rings_leave_only_what_is_clear()
 	_test_the_fog_rings_are_built_when_the_ground_moves()
@@ -1116,24 +1117,117 @@ func _test_a_redraw_past_the_cameras_reach_waits_for_the_camera() -> void:
 	near.free()
 
 
-## A chunk hidden is parked, to come back as it was while the body stays
-## within a ring of it; walked away from, or past the room, it is freed.
-func _test_a_hidden_chunk_is_parked_and_comes_back_as_it_was() -> void:
+## The chunks the camera's reach touches are found exactly, row by row:
+## the same as asking each chunk (ViewLedger.touches), and the same as
+## cutting the chunk's diamond of ground with the rectangle.
+func _test_the_chunks_the_camera_reaches_are_found_exactly() -> void:
 	var ledger := ViewLedger.new()
-	var key := Vector2i(100, 100)
-	ledger.park(key, {"view": 1})
-	_check(ledger.take(Vector2i(99, 100)) == null and ledger.parked.has(key), "another chunk: nothing")
-	var back: Variant = ledger.take(key)
-	_check(back != null and back["view"] == 1 and ledger.parked.is_empty(), "the chunk sent again: its record, no longer parked")
-	ledger.park(key, {"view": 2})
-	_check(ledger.prune(Vector2i(105, 110)).is_empty() and ledger.parked.has(key), "the body ten chunks away: kept")
-	var freed := ledger.prune(Vector2i(111, 100))
-	_check(freed.size() == 1 and freed[0]["view"] == 2 and ledger.parked.is_empty(), "eleven chunks away: freed")
-	for i in ViewLedger.PARK_MOST + 3:
-		ledger.park(Vector2i(i, 0), {"view": i})
-	freed = ledger.prune(null)
-	_check(freed.size() == 3 and freed[0]["view"] == 0 and ledger.parked.size() == ViewLedger.PARK_MOST and ledger.parked.has(Vector2i(3, 0)), "past the room, the oldest go")
-	_check(ledger.take_all().size() == ViewLedger.PARK_MOST and ledger.parked.is_empty(), "a new world: every record out")
+	ledger.chunk_size = 8
+	var bounds := Rect2i(2, 2, 12, 12)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 11
+	var agreed := 0
+	var touched := 0
+	for trial in 40:
+		var centre := Iso.tile_to_screen(rng.randi_range(16, 112), rng.randi_range(16, 112)) + Vector2(rng.randf_range(-40, 40), rng.randf_range(-40, 40))
+		var size := Vector2(rng.randf_range(10, 900), rng.randf_range(10, 500))
+		var rect := Rect2(centre - size / 2.0, size)
+		var found := ledger.chunks_touching(rect, bounds)
+		var each: Array[Vector2i] = []
+		for y in range(bounds.position.y, bounds.end.y):
+			for x in range(bounds.position.x, bounds.end.x):
+				var key := Vector2i(x, y)
+				# The diamond of the chunk's ground: its tiles' diamonds start
+				# half a tile before their centre (ChunkView.GroundCanvas).
+				var lo := key * ledger.chunk_size
+				var hi := lo + Vector2i(ledger.chunk_size, ledger.chunk_size)
+				var up := Vector2(0, -Iso.TILE_H / 2.0)
+				var diamond := PackedVector2Array([Iso.tile_to_screen(lo.x, lo.y) + up, Iso.tile_to_screen(hi.x, lo.y) + up, Iso.tile_to_screen(hi.x, hi.y) + up, Iso.tile_to_screen(lo.x, hi.y) + up])
+				var corners := PackedVector2Array([rect.position, Vector2(rect.end.x, rect.position.y), rect.end, Vector2(rect.position.x, rect.end.y)])
+				var area := 0.0
+				for part: PackedVector2Array in Geometry2D.intersect_polygons(diamond, corners):
+					area += _polygon_area(part)
+				var cut := area > 1e-3
+				if ledger.touches(rect, key) == cut:
+					agreed += 1
+				if ledger.touches(rect, key):
+					each.append(key)
+		touched += each.size()
+		_check(found == each, "trial %d: the rows give what each chunk says: %s vs %s" % [trial, found, each])
+	_check(agreed == 40 * 144, "the chunk touches the rectangle exactly when its diamond cuts it: %d of %d agree" % [agreed, 40 * 144])
+	_check(touched > 40, "the trials touched chunks: %d" % touched)
+	_check(ledger.chunks_touching(Rect2(), bounds).is_empty() and ledger.chunks_touching(Rect2(0, 0, 10, 10), Rect2i()).is_empty(), "no rectangle or no bounds: nothing")
+	_check(ledger.chunks_touching(Rect2(-100000, -100000, 10, 10), bounds).is_empty(), "a rectangle far outside the bounds: nothing")
+
+
+static func _polygon_area(points: PackedVector2Array) -> float:
+	var twice := 0.0
+	for i in points.size():
+		var a := points[i]
+		var b := points[(i + 1) % points.size()]
+		twice += a.x * b.y - b.x * a.y
+	return absf(twice) / 2.0
+
+
+## A chunk held is built when the camera's reach touches it, at once
+## when the screen may show it (its ground, or what stands on it), paced
+## in the margin around; released after the grace once the reach left
+## it; and the reach coming back within the grace builds nothing twice,
+## so the camera jittering on an edge costs nothing (C1, C5).
+func _test_a_chunk_is_built_when_the_reach_touches_it_and_released_after_the_grace() -> void:
+	var ledger := ViewLedger.new()
+	ledger.chunk_size = 32
+	var held := {}
+	for y in 10:
+		for x in 10:
+			held[Vector2i(x, y)] = true
+			ledger.hold(Vector2i(x, y))
+	var centre := Iso.tile_to_screen(5 * 32 + 16, 5 * 32 + 16)
+	var screen := Rect2(centre - Vector2(10, 10), Vector2(20, 20))
+	_check(ledger.plan(0, held)["at_once"].is_empty(), "nothing seen yet: nothing to build")
+	_check(ledger.see(screen) and not ledger.see(screen), "the screen moved, then stayed")
+	var plan: Dictionary = ledger.plan(1000, held)
+	var at_once: Array = plan["at_once"]
+	var paced: Array = plan["paced"]
+	_check(at_once.has(Vector2i(5, 5)) and at_once.has(Vector2i(4, 4)), "the chunk under the screen and the one above, whose trees may reach it: at once")
+	_check(not at_once.has(Vector2i(6, 6)) and paced.has(Vector2i(6, 6)), "the chunk below, a chunk away: in the margin, paced")
+	_check(not at_once.has(Vector2i(9, 9)) and not paced.has(Vector2i(9, 9)), "a chunk far off: not built")
+	for key: Vector2i in at_once:
+		_check(ledger.touches(ledger.shown, key) and ledger.within_reach(key), "at once: the screen may show it")
+	for key: Vector2i in paced:
+		_check(not ledger.touches(ledger.shown, key) and ledger.within_reach(key), "paced: in the reach, past what the screen may show")
+	_check(plan["release"].is_empty() and ledger.leaving.is_empty(), "nothing built yet: nothing leaving")
+	var built: Array = at_once + paced
+	for key: Vector2i in built:
+		ledger.mark_built(key)
+	plan = ledger.plan(1100, held)
+	_check(plan["at_once"].is_empty() and plan["paced"].is_empty() and plan["release"].is_empty() and ledger.leaving.is_empty(), "built: nothing more to do")
+	ledger.mark_released(Vector2i(4, 4))
+	_check(ledger.plan(1100, held)["at_once"] == [Vector2i(4, 4)], "a chunk released while in reach is asked for again")
+	ledger.mark_built(Vector2i(4, 4))
+	# The camera goes far away: the built chunks start their grace.
+	var away := Rect2(Iso.tile_to_screen(16, 16) - Vector2(10, 10), Vector2(20, 20))
+	ledger.see(away)
+	plan = ledger.plan(2000, held)
+	_check(plan["release"].is_empty() and ledger.leaving.size() == built.size() and int(ledger.leaving[Vector2i(5, 5)]) == 2000, "away: every built chunk leaving, none released yet")
+	_check(plan["at_once"].has(Vector2i(0, 0)), "the chunk under the camera there: at once")
+	# Back within the grace: nothing to build, the grace cancelled.
+	ledger.see(screen)
+	plan = ledger.plan(2500, held)
+	_check(plan["at_once"].is_empty() and plan["paced"].is_empty() and plan["release"].is_empty(), "back within the grace: nothing built twice")
+	_check(not ledger.leaving.has(Vector2i(5, 5)) and not ledger.leaving.has(Vector2i(6, 6)), "the chunks the reach came back to keep their nodes")
+	# Away for good: released once the grace is over, not before.
+	ledger.see(away)
+	ledger.plan(3000, held)
+	_check(ledger.plan(3000 + ViewLedger.RELEASE_GRACE_MSEC - 1, held)["release"].is_empty(), "a moment before the grace is over: kept")
+	var release: Array = ledger.plan(3000 + ViewLedger.RELEASE_GRACE_MSEC, held)["release"]
+	_check(release.size() == built.size() and release.has(Vector2i(5, 5)), "the grace over: every chunk the reach left is released")
+	for key: Vector2i in release:
+		ledger.mark_released(key)
+	_check(ledger.leaving.is_empty() and not ledger.built.has(Vector2i(5, 5)), "released: no longer built nor leaving")
+	# Only what is held is built: a chunk the server never sent is skipped.
+	held.erase(Vector2i(0, 0))
+	_check(not ledger.plan(6000, held)["at_once"].has(Vector2i(0, 0)), "a chunk not held is never built")
 
 
 ## What lies behind the mouse among the items is looked for again only
@@ -1238,26 +1332,38 @@ func _test_the_fog_rings_are_built_when_the_ground_moves() -> void:
 ## none is missing from the bounds held; and only from the frame after.
 func _test_the_far_view_leaves_its_hole_only_under_built_ground() -> void:
 	var chunks := {}
+	var held := {}
 	for y in range(3, 8):
 		for x in range(3, 8):
 			var chunk := ChunkView.new()
 			chunk._last_signature = 1
 			chunks[Vector2i(x, y)] = chunk
+			held[Vector2i(x, y)] = true
 	var bounds := Rect2i(3, 3, 5, 5)
 	var limit := Rect2(Vector2(140.5, 130.25), Vector2(80, 90))
-	_check(FarView.limit_built(limit, chunks, bounds, 32, 0), "all built under the limit: the hole may be left")
-	_check(not FarView.limit_built(limit, chunks, bounds, 32, 1), "a chunk waiting to build: no hole")
+	# The chunks the screen shows: three under the limit, one outside it.
+	var shown: Array[Vector2i] = [Vector2i(4, 4), Vector2i(5, 5), Vector2i(6, 6), Vector2i(3, 3)]
+	_check(FarView.limit_built(limit, chunks, held, bounds, 32, shown), "all built under the limit: the hole may be left")
 	chunks[Vector2i(6, 6)]._last_signature = 0
-	_check(not FarView.limit_built(limit, chunks, bounds, 32, 0), "a chunk under the limit not built: no hole")
-	chunks[Vector2i(6, 6)]._last_signature = 1
+	_check(not FarView.limit_built(limit, chunks, held, bounds, 32, shown), "a chunk shown under the limit not built: no hole")
+	chunks[Vector2i(6, 6)].build_at_once = true
+	_check(FarView.limit_built(limit, chunks, held, bounds, 32, shown), "a chunk shown under the limit that builds this frame: the hole may be left")
+	chunks[Vector2i(6, 6)].build_at_once = false
+	var unbuilt: ChunkView = chunks[Vector2i(6, 6)]
+	chunks.erase(Vector2i(6, 6))
+	_check(not FarView.limit_built(limit, chunks, held, bounds, 32, shown), "a chunk shown under the limit with no view (C1, data only): no hole")
+	chunks[Vector2i(6, 6)] = unbuilt
+	unbuilt._last_signature = 1
 	chunks[Vector2i(3, 3)]._last_signature = 0
-	_check(FarView.limit_built(limit, chunks, bounds, 32, 0), "a chunk not built outside the limit: the hole may be left")
-	_check(not FarView.limit_built(Rect2(Vector2(96, 96), Vector2(100, 100)), chunks, bounds, 32, 0), "the limit touching that chunk's last tile: no hole")
-	var gone: ChunkView = chunks[Vector2i(7, 3)]
-	chunks.erase(Vector2i(7, 3))
-	_check(not FarView.limit_built(limit, chunks, bounds, 32, 0), "a chunk missing from the bounds held: no hole")
-	gone.free()
-	_check(not FarView.limit_built(limit, {}, Rect2i(), 32, 0), "nothing held: no hole")
+	_check(FarView.limit_built(limit, chunks, held, bounds, 32, shown), "a chunk not built outside the limit: the hole may be left")
+	var unseen: ChunkView = chunks[Vector2i(5, 4)]
+	chunks.erase(Vector2i(5, 4))
+	_check(FarView.limit_built(limit, chunks, held, bounds, 32, shown), "a chunk under the limit the screen does not show, not built (C1): the hole may be left")
+	chunks[Vector2i(5, 4)] = unseen
+	_check(not FarView.limit_built(Rect2(Vector2(96, 96), Vector2(100, 100)), chunks, held, bounds, 32, shown), "the limit touching that chunk's last tile: no hole")
+	held.erase(Vector2i(7, 3))
+	_check(not FarView.limit_built(limit, chunks, held, bounds, 32, shown), "a chunk missing from the bounds held: no hole")
+	_check(not FarView.limit_built(limit, chunks, {}, Rect2i(), 32, shown), "nothing held: no hole")
 	for chunk: ChunkView in chunks.values():
 		chunk.free()
 	_check(not FarView.hole_drawn(true, 10, 10) and FarView.hole_drawn(true, 10, 11) and not FarView.hole_drawn(false, 10, 11), "the hole is drawn from the frame after it is complete")
