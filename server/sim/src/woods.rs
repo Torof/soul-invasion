@@ -11,17 +11,25 @@
 //!   finer ones, thickened a little where the ground is wet and in a band
 //!   at the cliff's foot, cut at a fixed `LEVEL`.
 //! - **Woods along the waters** (11 November 2026): water draws trees.
-//!   The bank tile is free (`trees` stands nothing on a tile touching
-//!   water); from 2 to 5 tiles off a river a dense line of **riverside**
-//!   trees, one a tile on part of the tiles, the riverside kinds (willow,
-//!   alder); past it the woods' pull rises, full to 20 tiles, fading to
-//!   nothing at 60, where the land is what it would be on its own. The
-//!   depth rule below keeps that wood open near the water, thickening
-//!   away from it. A brook draws the same shape, thinner: a loose line
-//!   at 2 to 3 tiles, its wood to 6, gone by 12. A smooth noise on cells
-//!   of a few hundred tiles (`RIPARIAN_CELL`) makes one stretch thick and
-//!   the next thin, and now and then, rarely, a **bare stretch**: the
-//!   pull falls there instead, meadow to the water's edge.
+//!   The woods' pull is strongest at the water, held for 20 tiles from a
+//!   river and fading to nothing at 60, where the land is what it would
+//!   be on its own (a brook: held to 6, gone by 12); no line of its own,
+//!   the bank has the woods of its region. The bank tile is free
+//!   (`trees` stands nothing on a tile touching water), and the water is
+//!   no edge for the depth rule below: the wood by a river is as deep as
+//!   the woods around it. The first tiles of wood by the water (2 to 5 off a river, 2 to
+//!   3 off a brook) are the **riverside** habitat, the riverside kinds'
+//!   (willow, alder). A smooth noise on cells of a few hundred tiles
+//!   (`RIPARIAN_CELL`) makes one stretch thick and the next thin, and
+//!   now and then, rarely, a **bare stretch**: the pull falls there
+//!   instead, meadow to the water's edge.
+//! - **Dense and light regions** (the project lead, 11 November 2026):
+//!   a smooth noise on cells of `DENSITY_CELL` tiles sets how close the
+//!   trees stand, region by region (`Woods::stocking`): as today's heart
+//!   in a dense region, 2 to 2.5 times farther apart in a light one.
+//!   The density below, the habitat and the forest's ground are the
+//!   same in both; only the trees' number changes, where they are placed
+//!   (`trees`).
 //! - **Edge, wood, heart**: past a narrow edge, the trees thicken with
 //!   the depth in the forest: sparse over the first `SPARSE_DEPTH` tiles,
 //!   full at `FULL_DEPTH`; the heart is the densest.
@@ -71,7 +79,8 @@ pub enum Habitat {
     Copse,
     /// A tree alone in the meadow.
     Lone,
-    /// Trees along a river or a brook, on the line nearest the water.
+    /// The wood on the first tiles by a river or a brook: the riverside
+    /// kinds' (willow, alder).
     Riverside,
     /// The wood in the band at the cliff's foot.
     CliffFoot,
@@ -108,7 +117,7 @@ impl Woods {
     /// The pull from which a tile is wooded: fixed, so the woods of a
     /// place never depend on the rest of the map; set so that a little
     /// over half the land is forest.
-    const LEVEL: i64 = 500;
+    const LEVEL: i64 = 505;
     /// How far above the level the pull climbs from the edge of a massif
     /// to its full density, in thousandths: the width of the edge.
     const EDGE: i64 = 86;
@@ -119,20 +128,16 @@ impl Woods {
     /// their own, quicker rise.
     const SPARSE_DEPTH: u8 = 18;
     const FULL_DEPTH: u8 = 55;
-    /// The woods along a river (11 November 2026): riverside trees on
-    /// the tiles `RIVER_NEAR.0` to `RIVER_NEAR.1` off the water (never
-    /// the bank tile), a tile holding one with `RIVER_NEAR_CHANCE`
-    /// thousandths at the thickest; past them the woods' pull rises over
-    /// `RIVER_RISE` tiles to `RIPARIAN_PULL`, holds to `RIVER_WOOD`, and
-    /// fades to nothing at `RIVER_REACH`. Along a brook the same, smaller.
+    /// The woods along a river (11 November 2026): the water's pull,
+    /// `RIPARIAN_PULL` at the thickest, held to `RIVER_WOOD` tiles off
+    /// the water and fading to nothing at `RIVER_REACH`; the wood on the
+    /// tiles `RIVER_NEAR.0` to `RIVER_NEAR.1` off the water is the
+    /// riverside habitat (never the bank tile). Along a brook the same,
+    /// smaller.
     const RIVER_NEAR: (u8, u8) = (2, 5);
-    const RIVER_NEAR_CHANCE: u32 = 420;
-    const RIVER_RISE: u8 = 3;
     const RIVER_WOOD: u8 = 20;
     const RIVER_REACH: u8 = 60;
     const BROOK_NEAR: (u8, u8) = (2, 3);
-    const BROOK_NEAR_CHANCE: u32 = 200;
-    const BROOK_RISE: u8 = 2;
     const BROOK_WOOD: u8 = 6;
     const BROOK_REACH: u8 = 12;
     const RIPARIAN_PULL: i64 = 480;
@@ -147,6 +152,15 @@ impl Woods {
     const RIPARIAN_CELL: u32 = 256;
     const RIPARIAN_BARE: i64 = 140;
     const RIPARIAN_LEAST: i64 = 300;
+    /// The density noise, on cells of `DENSITY_CELL` tiles: below
+    /// `DENSITY_LIGHT` thousandths a region is light, its cells holding
+    /// `STOCKING_LEAST` thousandths of the trees they would (2 to 2.5
+    /// times farther apart); above `DENSITY_DENSE` it is dense, the trees
+    /// as close as they come; between, the one eases into the other.
+    const DENSITY_CELL: u32 = 300;
+    const DENSITY_LIGHT: i64 = 300;
+    const DENSITY_DENSE: i64 = 700;
+    const STOCKING_LEAST: i64 = 160;
     /// Large clearings in the woods: one cell of the grid in two (of 150
     /// tiles) holds one, 12 to 36 tiles in radius, centred well inside a
     /// wood.
@@ -199,7 +213,6 @@ impl Woods {
         let land = |x: u32, y: u32| y >= cliff_rows && rivers.at(x, y).is_none();
         let noise_seed = |salt: u64| scatter::roll(seed, salt, &[]);
         let mut plan = Plan {
-            seed,
             massif: noise_seed(purpose::WOODS_MASSIF),
             detail: noise_seed(purpose::WOODS_DETAIL),
             fine: noise_seed(purpose::WOODS_FINE),
@@ -254,11 +267,22 @@ impl Woods {
             }
         }
         // How deep in the forest each tile is, and the trees thickening
-        // with it.
+        // with it. Water is no edge (11 November 2026): the wood by a
+        // river is as deep as the woods around it, so the bank has the
+        // forest of its region, not a rim.
+        let w = width as usize;
         let depth = Self::depth(
             width,
             height,
-            |i| woods.density[i] < Self::FOREST,
+            |i| {
+                woods.density[i] < Self::FOREST
+                    && rivers
+                        .at(
+                            u32::try_from(i % w).expect("fits"),
+                            u32::try_from(i / w).expect("fits"),
+                        )
+                        .is_none()
+            },
             Self::FULL_DEPTH,
         );
         for i in 0..tiles {
@@ -272,7 +296,7 @@ impl Woods {
             }
             let ramp = Self::thickening(depth[i]);
             woods.density[i] = woods.density[i].min(ramp).max(Self::FOREST);
-            if woods.habitat[i] != Habitat::CliffFoot {
+            if !matches!(woods.habitat[i], Habitat::CliffFoot | Habitat::Riverside) {
                 woods.habitat[i] = if woods.density[i] >= Self::HEART {
                     Habitat::Heart
                 } else {
@@ -446,6 +470,25 @@ impl Woods {
         Self::RIPARIAN_LEAST + (1000 - Self::RIPARIAN_LEAST) * lift.clamp(0, 1000) / 1000
     }
 
+    /// The seed of the density noise for the world's `seed`.
+    #[must_use]
+    pub fn density_seed(seed: u64) -> u64 {
+        scatter::roll(seed, purpose::WOODS_DENSITY, &[])
+    }
+
+    /// How close the trees stand at `(x, y)`, in thousandths of the
+    /// chance a cell holds a tree: `STOCKING_LEAST` in a light region,
+    /// 1000 in a dense one, from the density noise (`density_seed`).
+    #[must_use]
+    pub fn stocking(density_seed: u64, x: i32, y: i32) -> u32 {
+        let n = i64::from(noise(density_seed, Self::DENSITY_CELL, x, y));
+        let eased = ((n - Self::DENSITY_LIGHT) * 1000
+            / (Self::DENSITY_DENSE - Self::DENSITY_LIGHT))
+            .clamp(0, 1000);
+        u32::try_from(Self::STOCKING_LEAST + (1000 - Self::STOCKING_LEAST) * eased / 1000)
+            .expect("thousandths")
+    }
+
     /// The density of trees at `(x, y)`, 0 to 100.
     #[must_use]
     pub fn density(&self, x: u32, y: u32) -> u8 {
@@ -471,7 +514,6 @@ struct PatchRule {
 /// What the woods are drawn from: the noises' seeds, the wetness, the
 /// distance to the rivers, the round patches and the camp's place.
 struct Plan {
-    seed: u64,
     massif: u64,
     detail: u64,
     fine: u64,
@@ -559,57 +601,38 @@ impl Plan {
         m + self.water_pull(x, y)
     }
 
-    /// What the water adds to the pull at `(x, y)`: past the riverside
-    /// line, rising over a few tiles to the water's full pull, held
-    /// through its wood and fading to nothing at its reach, as thick as
-    /// the stretch is; on a bare stretch, taken away instead, from the
-    /// water's edge to the reach. A river and a brook each pull; the
+    /// What the water adds to the pull at `(x, y)`: the water's full
+    /// pull from its edge through its wood, fading to nothing at its
+    /// reach, as thick as the stretch is; on a bare stretch, taken away
+    /// instead, over the same reach. A river and a brook each pull; the
     /// stronger counts.
     fn water_pull(&self, x: u32, y: u32) -> i64 {
         let i = (y * self.width + x) as usize;
         let lift = self.lift(x, y);
-        let shape = |d: u8, (near, rise, wood, reach): (u8, u8, u8, u8), pull: i64| -> i64 {
+        let shape = |d: u8, (wood, reach): (u8, u8), pull: i64| -> i64 {
             if d > reach {
                 return 0;
             }
-            if lift < 0 {
-                // Bare: open as far as the wood would have gone.
-                let kept = if d <= wood {
-                    1000
-                } else {
-                    1000 * i64::from(reach - d) / i64::from(reach - wood)
-                };
-                return Woods::RIPARIAN_OPEN * lift / 1000 * kept / 1000;
-            }
-            let band = if d <= near {
-                0
-            } else if d <= near + rise {
-                1000 * i64::from(d - near) / i64::from(rise)
-            } else if d <= wood {
+            let band = if d <= wood {
                 1000
             } else {
                 1000 * i64::from(reach - d) / i64::from(reach - wood)
             };
-            pull * Woods::thickness(lift) / 1000 * band / 1000
+            if lift < 0 {
+                // Bare: open as far as the wood would have gone.
+                Woods::RIPARIAN_OPEN * lift / 1000 * band / 1000
+            } else {
+                pull * Woods::thickness(lift) / 1000 * band / 1000
+            }
         };
         let river = shape(
             self.to_river[i],
-            (
-                Woods::RIVER_NEAR.1,
-                Woods::RIVER_RISE,
-                Woods::RIVER_WOOD,
-                Woods::RIVER_REACH,
-            ),
+            (Woods::RIVER_WOOD, Woods::RIVER_REACH),
             Woods::RIPARIAN_PULL,
         );
         let brook = shape(
             self.to_brook[i],
-            (
-                Woods::BROOK_NEAR.1,
-                Woods::BROOK_RISE,
-                Woods::BROOK_WOOD,
-                Woods::BROOK_REACH,
-            ),
+            (Woods::BROOK_WOOD, Woods::BROOK_REACH),
             Woods::BROOK_PULL,
         );
         if lift < 0 {
@@ -655,11 +678,6 @@ impl Plan {
             })
             .max()
             .unwrap_or(0)
-    }
-
-    /// A chance of `per_mille` for the tile `(x, y)` and `purpose`.
-    fn chance(&self, per_mille: u32, purpose: u64, x: u32, y: u32) -> bool {
-        scatter::chance(per_mille, self.seed, purpose, &[u64::from(x), u64::from(y)])
     }
 
     /// The density (thousandths) and habitat of the land tile `(x, y)`,
@@ -718,36 +736,26 @@ impl Plan {
                 habitat = Habitat::Copse;
             }
         }
-        // The riverside line: a dense line of trees along a river, a
-        // loose one along a brook, never on the tile beside any water,
-        // thinner where the stretch is thin, none on a bare stretch.
+        // The wood on the first tiles by the water is the riverside
+        // habitat, the riverside kinds' (willow, alder): no tree of its
+        // own, the woods' density as around it; never the tile beside
+        // any water, never on a bare stretch.
         let i = (y * self.width + x) as usize;
         let (river, brook) = (self.to_river[i], self.to_brook[i]);
-        let lift = self.lift(x, y);
-        if lift >= 0
+        let near = |d: u8, (lo, hi): (u8, u8)| (lo..=hi).contains(&d);
+        if matches!(habitat, Habitat::Wood | Habitat::Heart)
             && river > 1
             && brook > 1
-            && !matches!(habitat, Habitat::Clearing | Habitat::Camp)
+            && (near(river, Woods::RIVER_NEAR) || near(brook, Woods::BROOK_NEAR))
+            && self.lift(x, y) >= 0
         {
-            let near = |d: u8, (lo, hi): (u8, u8)| (lo..=hi).contains(&d);
-            let line = if near(river, Woods::RIVER_NEAR) {
-                Some((Woods::RIVER_NEAR_CHANCE, purpose::WOODS_BANK))
-            } else if near(brook, Woods::BROOK_NEAR) {
-                Some((Woods::BROOK_NEAR_CHANCE, purpose::WOODS_BROOK))
-            } else {
-                None
-            };
-            if let Some((chance, purpose)) = line {
-                let chance = u32::try_from(i64::from(chance) * Woods::thickness(lift) / 1000)
-                    .expect("thousandths");
-                if self.chance(chance, purpose, x, y) {
-                    d = d.max(300);
-                    habitat = Habitat::Riverside;
-                }
-            }
+            habitat = Habitat::Riverside;
         }
-        let ramped =
-            !in_a_woodlet && matches!(habitat, Habitat::Wood | Habitat::Heart | Habitat::CliffFoot);
+        let ramped = !in_a_woodlet
+            && matches!(
+                habitat,
+                Habitat::Wood | Habitat::Heart | Habitat::CliffFoot | Habitat::Riverside
+            );
         (d, habitat, ramped)
     }
 }
@@ -785,9 +793,9 @@ mod tests {
         let (mut land_all, mut forest_all) = (0, 0);
         let mut habitats = std::collections::BTreeSet::new();
         let (mut riverside_maps, mut brook_lines) = (0, 0);
-        // The density of trees: over the land, on the riverside band (2
-        // to 5 tiles off a river) of each stretch of the riparian noise,
-        // and along the bare stretches.
+        // The density of trees: over the land, on the band 2 to 10 tiles
+        // off a river of each stretch of the riparian noise, and along
+        // the bare stretches.
         let (mut land_sum, mut near_sum, mut near_tiles, mut bare_sum, mut bare_tiles) =
             (0_u64, 0_u64, 0_u64, 0_u64, 0_u64);
         let mut stretches: std::collections::BTreeMap<(u64, i32, i32), (u64, u64)> =
@@ -826,8 +834,8 @@ mod tests {
                             near(x, y, 40, &|p| map.trees(p) >= Woods::FOREST),
                             "seed {seed}: clearing at ({x}, {y}) far from any wood"
                         ),
-                        // The riverside line stands 2 to 5 tiles off a
-                        // river, or 2 to 3 off a brook, never on the
+                        // The riverside habitat is the wood 2 to 5 tiles
+                        // off a river, or 2 to 3 off a brook, never on the
                         // tile beside any water, never on a bare stretch.
                         Habitat::Riverside => {
                             let (lo, hi) = Woods::RIVER_NEAR;
@@ -836,9 +844,13 @@ mod tests {
                                 river >= 2
                                     && brook >= 2
                                     && ((lo..=hi).contains(&river) || (blo..=bhi).contains(&brook)),
-                                "seed {seed}: riverside tree at ({x}, {y}), {river} from a river, {brook} from a brook"
+                                "seed {seed}: riverside at ({x}, {y}), {river} from a river, {brook} from a brook"
                             );
-                            assert!(lift >= 0, "seed {seed}: riverside tree on a bare stretch");
+                            assert!(lift >= 0, "seed {seed}: riverside on a bare stretch");
+                            assert!(
+                                map.trees(pos) >= Woods::FOREST,
+                                "seed {seed}: riverside at ({x}, {y}) is no wood"
+                            );
                             brook_lines += usize::from(river > hi);
                         }
                         _ => {}
@@ -846,15 +858,9 @@ mod tests {
                     if habitat == Habitat::None {
                         continue;
                     }
-                    // A riverside tile holds its own tree, the most a
-                    // tile can: full density for the measure.
-                    let density = if habitat == Habitat::Riverside {
-                        100
-                    } else {
-                        u64::from(map.trees(pos))
-                    };
+                    let density = u64::from(map.trees(pos));
                     land_sum += density;
-                    if (Woods::RIVER_NEAR.0..=Woods::RIVER_NEAR.1).contains(&river) && lift >= 0 {
+                    if (2..=10).contains(&river) && lift >= 0 {
                         near_sum += density;
                         near_tiles += 1;
                         let stretch = stretches.entry((seed, x / 256, y / 256)).or_default();
@@ -894,17 +900,21 @@ mod tests {
             riverside_maps >= 3,
             "riverside trees on {riverside_maps} maps"
         );
-        assert!(brook_lines > 50, "{brook_lines} trees along the brooks");
-        // The riparian gradient: the band by the rivers is denser than
-        // the land as a whole on most stretches, and a bare stretch, now
-        // and then, is open meadow to the water.
+        assert!(
+            brook_lines > 50,
+            "{brook_lines} riverside tiles along the brooks"
+        );
+        // The riparian gradient: the band by the rivers is at least as
+        // dense as the land as a whole on most stretches (the wood
+        // reaches the water), and a bare stretch, now and then, is open
+        // meadow to the water.
         let land_mean = land_sum / u64::try_from(land_all).unwrap();
         let near_mean = near_sum / near_tiles.max(1);
         let bare_mean = bare_sum / bare_tiles.max(1);
         let judged: Vec<bool> = stretches
             .values()
             .filter(|(_, n)| *n >= 100)
-            .map(|(sum, n)| sum / n > land_mean)
+            .map(|(sum, n)| sum / n >= land_mean)
             .collect();
         let denser = judged.iter().filter(|d| **d).count();
         eprintln!(
@@ -912,7 +922,7 @@ mod tests {
             judged.len()
         );
         assert!(
-            near_mean > land_mean,
+            near_mean >= land_mean,
             "by the rivers {near_mean}, land {land_mean}"
         );
         assert!(
@@ -941,7 +951,19 @@ mod tests {
                 );
                 map.get(p) == Some(Terrain::Forest)
             };
-            let depth = Woods::depth(512, 512, |i| !forest(i), 64);
+            // Water is no edge: the wood by a river is as deep as the
+            // woods around it.
+            let water = |i: usize| {
+                let p = Pos::new(
+                    i32::try_from(i % 512).unwrap(),
+                    i32::try_from(i / 512).unwrap(),
+                );
+                matches!(
+                    map.get(p),
+                    Some(Terrain::Water | Terrain::Ford | Terrain::Brook)
+                )
+            };
+            let depth = Woods::depth(512, 512, |i| !forest(i) && !water(i), 64);
             for (i, d) in depth.iter().enumerate() {
                 let p = Pos::new(
                     i32::try_from(i % 512).unwrap(),

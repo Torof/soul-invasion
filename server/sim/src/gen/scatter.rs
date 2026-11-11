@@ -70,20 +70,21 @@ pub(crate) mod purpose {
     pub(crate) const WOODS_PATCHES: u64 = 0x0a4_7eee;
     /// The rivers' stream (an older salt, added to the seed).
     pub(crate) const RIVERS: u64 = 0x5157;
-    /// The woods' round patches, a kind each, and the trees by the
-    /// waters (10 November 2026: decided cell by cell, tile by tile).
+    /// The woods' round patches, a kind each (10 November 2026: decided
+    /// cell by cell).
     pub(crate) const WOODS_CLEARING: u64 = 0x00c1_ea41;
     pub(crate) const WOODS_WOODLET: u64 = 0x00b0_5c07;
     pub(crate) const WOODS_COPSE: u64 = 0x00c0_95e5;
-    pub(crate) const WOODS_BANK: u64 = 0x00ba_4b5e;
-    pub(crate) const WOODS_BROOK: u64 = 0x00b4_00c5;
     /// The riparian noise: how thick the woods by the water are, stretch
     /// by stretch (11 November 2026).
     pub(crate) const WOODS_RIPARIAN: u64 = 0x0041_9a41;
+    /// The density noise: how close the trees stand, region by region
+    /// (11 November 2026).
+    pub(crate) const WOODS_DENSITY: u64 = 0x00de_4517;
 
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 25] = [
+    pub(crate) const ALL: [u64; 24] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -106,9 +107,8 @@ pub(crate) mod purpose {
         WOODS_CLEARING,
         WOODS_WOODLET,
         WOODS_COPSE,
-        WOODS_BANK,
-        WOODS_BROOK,
         WOODS_RIPARIAN,
+        WOODS_DENSITY,
     ];
 }
 
