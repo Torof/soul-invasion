@@ -26,13 +26,24 @@ const STILL := 0.3
 ## `09-visual-production.md`; D39): each stand of trees holds its kinds
 ## (`hold`) and lets them go when it is released (`let_go`). The images of
 ## a kind are read on a worker thread the first time a stand holds it
-## (`ResourceLoader.load_threaded_request`, one image at a time, so that
+## (`read_image` on the WorkerThreadPool, one image at a time, so that
 ## the main thread makes one video texture a frame at most), the stands
 ## that wait for them built once they are in (`poll`, each frame); nothing
 ## of the kind is drawn meanwhile. They are freed UNLOAD_GRACE_S after the last stand let
 ## them go, so that walking along a stand's edge, where the farthest
 ## chunks of a kind come and go, does not read them again and again.
 ## Nothing changes on screen once they are in.
+##
+## The finest level only up close (D39, E2): an image is read without its
+## finest mip level (from COARSE: half its width and height, a quarter of
+## its weight), as its own chain of BC7 blocks from the imported file, so
+## the card reads the same texels wherever it would not have read the
+## finest level. A kind gets its finest level back only while a tree of it
+## is shown and the card may read that level at the view's zoom
+## (`fine_read`: from the image's texels, the kind's height, the zoom, the
+## screen's stretch and the shader's bias, FINE_MARGIN to spare);
+## FINE_GRACE_S after that stops, it is read without it again. The
+## texture keeps its RID (ImageTexture.set_image): no tree is drawn again.
 
 ## Seconds the images of a kind no stand holds stay in memory. A body
 ## walks about 42 m in that time (speed 1.4 m/s): chunks come and go 288 m
@@ -54,14 +65,49 @@ static var _let_go: Dictionary = {}
 ## the main thread when it syncs the rendering, so one at a time spreads
 ## that over the frames instead of piling several into one.
 static var _loading: Dictionary = {}
-## species id -> Array[Texture2D], the images in already of a kind being read.
+## species id -> Array of `read_image` results (their texture made, their
+## image dropped), the images in already of a kind being read.
 static var _read: Dictionary = {}
-## The path of the image being read on the worker thread, "" when none.
-static var _in_flight := ""
-## The kind of the image being read.
+## The WorkerThreadPool task reading an image, -1 when none, and where it
+## puts what it read (`read_image`).
+static var _in_flight := -1
+static var _in_flight_out: Array = []
+## The kind of the image being read, its index in its kind's `paths`, the
+## mip level it is read from, and whether its kind is arriving (else one
+## of its images changes level).
 static var _in_flight_species := ""
-## The index of the image being read in its kind's `paths`.
 static var _in_flight_index := 0
+static var _in_flight_level := 0
+static var _in_flight_arrival := false
+
+## The mip level the images are read from, unless their finest is needed.
+const COARSE := 1
+## Mip levels to spare: a kind is sharpened while the card's level of
+## detail for its largest tree is under 1 + FINE_MARGIN (the card's own
+## rounding, the wind's slant on the texels).
+const FINE_MARGIN := 0.15
+## Seconds a kind keeps its finest level once it is no longer needed
+## (zoomed out, or out of view): a few steps of the wheel back and forth,
+## or a look aside, read nothing again.
+const FINE_GRACE_S := 10.0
+## The camera's zoom and the screen's stretch (`view`).
+static var _view_zoom := 0.0
+static var _view_stretch := 1.0
+## species id -> its height in centimetres, as the stands gave it.
+static var _heights: Dictionary = {}
+## species id -> how many of its trees have a canvas item (Stand._show).
+static var _shown: Dictionary = {}
+## species id -> true while it wants its finest level.
+static var _fine_wanted: Dictionary = {}
+## species id -> when (msec) its finest level stopped being needed.
+static var _fine_unneeded: Dictionary = {}
+## The kinds in memory whose images may not all be at the level wanted.
+static var _changing: Dictionary = {}
+## By image index (`_images`): the mip level its texture starts from, the
+## bytes the card holds for it, the height of its finest level in texels.
+static var _levels := PackedByteArray()
+static var _bytes := PackedInt64Array()
+static var _texels := PackedInt32Array()
 ## The stands waiting for their kinds' images.
 static var _waiting: Array = []
 ## The kinds in memory and the kinds being read, counted for F3.
@@ -132,18 +178,23 @@ static func paths(species: String) -> PackedStringArray:
 ## Read this way and held by no stand, they are freed after the grace.
 static func textures(species: String) -> Array:
 	if not _textures.has(species):
+		# The image being read on the worker, whatever its kind, is waited
+		# for and taken first.
+		_finish_in_flight()
+	if not _textures.has(species):
 		var found: Array = []
 		for path: String in paths(species):
-			# A read already started on a worker thread is waited for (load does).
-			found.append(load(path))
-		if _in_flight_species == species:
-			_in_flight = ""
+			var read := read_image(path, COARSE)
+			if read.is_empty():
+				push_error("tree image %s could not be read" % path)
+				continue
+			found.append(_made(read))
 		_loading.erase(species)
 		_read.erase(species)
-		_advance()
 		_place(species, found)
 		if int(_holds.get(species, 0)) == 0 and not _let_go.has(species):
 			_let_go[species] = Time.get_ticks_msec()
+		_advance()
 	return _textures[species]
 
 
@@ -195,30 +246,27 @@ static func ready(kinds: PackedStringArray) -> bool:
 	return true
 
 
+## The camera's zoom and the screen's stretch (the canvas' scale to the
+## screen), each frame before `poll`: which kinds need their finest level.
+static func view(zoom: float, stretch: float) -> void:
+	_view_zoom = zoom
+	_view_stretch = stretch
+
+
 ## Each frame (`now` in msec; the tests pass a later time): takes in the
 ## images whose read is done and builds the stands that waited for them;
-## frees the images of the kinds no stand has held for the grace. How many
-## stands were built. With `wait`, the reads in progress are waited for.
+## gives the kinds shown up close their finest level, and takes it back
+## FINE_GRACE_S after it is no longer needed; frees the images of the
+## kinds no stand has held for the grace. How many stands were built.
+## With `wait`, the reads in progress are waited for.
 static func poll(now: int = Time.get_ticks_msec(), wait: bool = false) -> int:
-	# The image being read is in: taken, its kind placed if it was its
-	# last, the next one asked for (with `wait`, each in turn, waited for).
-	while not _in_flight.is_empty():
-		if ResourceLoader.load_threaded_get_status(_in_flight) == ResourceLoader.THREAD_LOAD_IN_PROGRESS and not wait:
+	_focus(now)
+	# The image being read is in: taken, the next one asked for (with
+	# `wait`, each in turn, waited for).
+	while _in_flight >= 0:
+		if not wait and not WorkerThreadPool.is_task_completed(_in_flight):
 			break
-		var t := ResourceLoader.load_threaded_get(_in_flight)
-		var species := _in_flight_species
-		_in_flight = ""
-		if t is Texture2D:
-			(_read[species] as Array).append(t)
-		else:
-			push_error("tree image %s could not be read" % _paths[species][_in_flight_index])
-		_loading[species] = _in_flight_index + 1
-		if int(_loading[species]) >= (_paths[species] as PackedStringArray).size():
-			var found: Array = _read[species]
-			_loading.erase(species)
-			_read.erase(species)
-			_place(species, found)
-		_advance()
+		_finish_in_flight()
 	var built := 0
 	if not _waiting.is_empty():
 		var still: Array = []
@@ -237,25 +285,229 @@ static func poll(now: int = Time.get_ticks_msec(), wait: bool = false) -> int:
 	return built
 
 
-## Asks the worker thread for the next image of the kinds being read,
-## if none is being read.
+## Whether the card may read the finest mip level of an image `texels`
+## high (its finest level, as the card holds it) drawn as a tree
+## `height_cm` tall (its largest, SIZE_JITTER over), at `zoom` on a screen
+## that stretches the canvas `stretch` times: the level of detail it picks
+## is log2 of the texels a pixel of the screen spans, plus the shader's
+## bias (`sharpness`); under 1 it blends in the finest level.
+static func fine_read(texels: int, height_cm: int, zoom: float, stretch: float) -> bool:
+	if zoom <= 0.0 or stretch <= 0.0 or texels <= 0:
+		return false
+	var pixels := Scale.shown(float(height_cm) / 100.0) * Iso.PX_PER_M * (1.0 + SIZE_JITTER) * zoom * stretch
+	var lod := log(float(texels) / pixels) / log(2.0) + sharpness(zoom)
+	return lod < 1.0 + FINE_MARGIN
+
+
+## Whether `species` needs its finest level now: a tree of it is shown and
+## the card may read that level (`fine_read`) for its tallest image.
+static func _needs_fine(species: String) -> bool:
+	if int(_shown.get(species, 0)) <= 0:
+		return false
+	var texels := 0
+	for index: int in (_image_ids.get(species, PackedInt32Array()) as PackedInt32Array):
+		texels = _texels[index] if texels == 0 else mini(texels, _texels[index])
+	return fine_read(texels, int(_heights.get(species, 400)), _view_zoom, _view_stretch)
+
+
+## The kinds in memory that need their finest level want it at once; those
+## that no longer need it give it up FINE_GRACE_S later.
+static func _focus(now: int) -> void:
+	for species: String in _textures:
+		if _needs_fine(species):
+			_fine_unneeded.erase(species)
+			if not _fine_wanted.has(species):
+				_fine_wanted[species] = true
+				_changing[species] = true
+		elif _fine_wanted.has(species):
+			if not _fine_unneeded.has(species):
+				_fine_unneeded[species] = now
+			elif now - int(_fine_unneeded[species]) >= FINE_GRACE_S * 1000.0:
+				_fine_unneeded.erase(species)
+				_fine_wanted.erase(species)
+				_changing[species] = true
+	_advance()
+
+
+## The mip level `species`' images should start from.
+static func _level_wanted(species: String) -> int:
+	return 0 if _fine_wanted.has(species) else COARSE
+
+
+## Asks the worker for the next image to read, if none is being read: the
+## kinds arriving first (nothing of them shows meanwhile), then the kinds
+## to sharpen, then those to soften.
 static func _advance() -> void:
-	if not _in_flight.is_empty():
+	if _in_flight >= 0:
 		return
 	for species: String in _loading:
 		var i := int(_loading[species])
 		var list: PackedStringArray = _paths[species]
-		if i >= list.size():
-			continue
-		_in_flight = list[i]
-		_in_flight_species = species
-		_in_flight_index = i
-		ResourceLoader.load_threaded_request(_in_flight, "Texture2D")
+		if i < list.size():
+			_start(species, i, COARSE, true)
+			return
+	for sharpen: bool in [true, false]:
+		for species: String in _changing.keys():
+			var level := _level_wanted(species)
+			if (level == 0) != sharpen:
+				continue
+			var ids: PackedInt32Array = _image_ids.get(species, PackedInt32Array())
+			for i in ids.size():
+				var index := ids[i]
+				if _images[index] is ImageTexture and _levels[index] != level:
+					_start(species, i, level, false)
+					return
+			_changing.erase(species)
+
+
+static func _start(species: String, i: int, level: int, arrival: bool) -> void:
+	_in_flight_species = species
+	_in_flight_index = i
+	_in_flight_level = level
+	_in_flight_arrival = arrival
+	_in_flight_out = []
+	_in_flight = WorkerThreadPool.add_task(_read_into.bind(_paths[species][i], level, _in_flight_out), false, "tree image")
+
+
+## On the worker: reads the image, puts the result in `out`.
+static func _read_into(path: String, level: int, out: Array) -> void:
+	out.append(read_image(path, level))
+
+
+## Waits for the image being read, if any, and takes it: an arriving
+## kind's, placed with its kind once its last is in; or one changing level,
+## its texture given the new image (same RID: the trees drawn with it need
+## no new drawing), unless its kind left meanwhile. The next is asked for.
+static func _finish_in_flight() -> void:
+	if _in_flight < 0:
 		return
+	WorkerThreadPool.wait_for_task_completion(_in_flight)
+	_in_flight = -1
+	var read: Dictionary = _in_flight_out[0] if not _in_flight_out.is_empty() else {}
+	_in_flight_out = []
+	var species := _in_flight_species
+	var path: String = _paths[species][_in_flight_index]
+	if _in_flight_arrival:
+		if _loading.has(species) and int(_loading[species]) == _in_flight_index:
+			if read.is_empty():
+				push_error("tree image %s could not be read" % path)
+			else:
+				(_read[species] as Array).append(_made(read))
+			_loading[species] = _in_flight_index + 1
+			if int(_loading[species]) >= (_paths[species] as PackedStringArray).size():
+				var found: Array = _read[species]
+				_loading.erase(species)
+				_read.erase(species)
+				_place(species, found)
+	elif _textures.has(species) and read.has("image"):
+		var ids: PackedInt32Array = _image_ids[species]
+		if _in_flight_index < ids.size():
+			var index := ids[_in_flight_index]
+			var t := _images[index] as ImageTexture
+			if t != null:
+				t.set_image(read["image"])
+				t.set_size_override(read["size"])
+				_levels[index] = int(read["level"])
+				_bytes[index] = int(read["bytes"])
+				DevTiming.tally("tree images sharpened" if _in_flight_level == 0 else "tree images softened")
+	_advance()
 
 
-## The images of `species` are in: kept, and given their indices.
-static func _place(species: String, found: Array) -> void:
+## The video texture of a `read_image` result, made now (on the main
+## thread, one a frame): the result keeps it and drops its image.
+static func _made(read: Dictionary) -> Dictionary:
+	if read.has("image"):
+		var t := ImageTexture.create_from_image(read["image"])
+		# As the imported texture reports itself: the size of the image
+		# before it was padded to the compression's blocks.
+		t.set_size_override(read["size"])
+		read["texture"] = t
+		read.erase("image")
+	return read
+
+
+## The image at `path` (a tree's PNG, imported) as the card will hold it,
+## from mip `level` down: {"image", "size" (the texture's size as it
+## reports it), "level", "texels" (the finest level's height, padded),
+## "bytes" (what the card holds)}. Read straight from the imported file
+## (GST2: a 36-byte header, then the image's format and size and its mip
+## levels, finest first, each padded to the compression's blocks), so the
+## levels are the very blocks the whole texture holds. When the file is
+## not one this can cut, the whole texture is loaded: {"texture", ...},
+## level 0. {} when nothing can be read. Safe on a worker thread.
+static func read_image(path: String, level: int) -> Dictionary:
+	var source := _imported(path)
+	var f := FileAccess.open(source, FileAccess.READ) if not source.is_empty() else null
+	if f != null and f.get_buffer(4).get_string_from_ascii() == "GST2" and f.get_32() == 1:
+		var size := Vector2i(f.get_32(), f.get_32())
+		f.seek(0x24)
+		var data_format := f.get_32()
+		var w := f.get_16()
+		var h := f.get_16()
+		var mipmaps := f.get_32()
+		var format := f.get_32()
+		var block := int(BLOCK_BYTES.get(format, 0))
+		if data_format == 0 and block > 0 and level <= mipmaps:
+			var skip := 0
+			var rest := 0
+			var lw := w
+			var lh := h
+			var at_w := w
+			var at_h := h
+			for i in mipmaps + 1:
+				var bytes := ceili(lw / 4.0) * ceili(lh / 4.0) * block
+				if i < level:
+					skip += bytes
+					at_w = maxi(lw >> 1, 1)
+					at_h = maxi(lh >> 1, 1)
+				else:
+					rest += bytes
+				lw = maxi(lw >> 1, 1)
+				lh = maxi(lh >> 1, 1)
+			if 0x34 + skip + rest == f.get_length():
+				f.seek(0x34 + skip)
+				var data := f.get_buffer(rest)
+				var image := Image.create_from_data(at_w, at_h, mipmaps > level, format, data)
+				if not image.is_empty():
+					return {"image": image, "size": size, "level": level, "texels": h, "bytes": rest}
+	# Not a file this can cut: the whole texture, as before.
+	var t := ResourceLoader.load(path, "Texture2D") as Texture2D
+	if t == null:
+		return {}
+	return {"texture": t, "size": Vector2i(t.get_width(), t.get_height()), "level": 0, "texels": t.get_height(), "bytes": t.get_width() * t.get_height() * 4 / 3}
+
+
+## Bytes a block of 4 × 4 pixels takes, by compressed format.
+const BLOCK_BYTES := {
+	Image.FORMAT_DXT1: 8, Image.FORMAT_DXT5: 16, Image.FORMAT_BPTC_RGBA: 16,
+	Image.FORMAT_ETC2_RGB8: 8, Image.FORMAT_ETC2_RGBA8: 16, Image.FORMAT_ASTC_4x4: 16,
+}
+
+
+## The imported file of the image at `path`, the one the engine would load
+## (its `.import` file names one by texture format), "" when none.
+static func _imported(path: String) -> String:
+	var config := ConfigFile.new()
+	if config.load(path + ".import") != OK:
+		return ""
+	var fallback := ""
+	for key: String in config.get_section_keys("remap") if config.has_section("remap") else PackedStringArray():
+		if not key.begins_with("path"):
+			continue
+		var feature := key.trim_prefix("path").trim_prefix(".")
+		if feature.is_empty() or OS.has_feature(feature):
+			return str(config.get_value("remap", key))
+		if fallback.is_empty():
+			fallback = str(config.get_value("remap", key))
+	return fallback
+
+
+## The images of `species` are in (`read_image` results, their textures
+## made): kept, and given their indices.
+static func _place(species: String, reads: Array) -> void:
+	var found: Array = []
+	for read: Dictionary in reads:
+		found.append(read["texture"])
 	_textures[species] = found
 	var ids: Variant = _image_ids.get(species)
 	if ids == null:
@@ -265,6 +517,9 @@ static func _place(species: String, found: Array) -> void:
 			var t: Texture2D = found[i]
 			list.append(_images.size())
 			_images.append(t)
+			_levels.append(int(reads[i]["level"]))
+			_bytes.append(int(reads[i]["bytes"]))
+			_texels.append(int(reads[i]["texels"]))
 			var outline := _outline(list_paths[i], t)
 			_hulls.append(outline)
 			var triangles := Geometry2D.triangulate_polygon(outline)
@@ -280,10 +535,23 @@ static func _place(species: String, found: Array) -> void:
 	else:
 		# The same indices as the first time: a stand keeps its indices.
 		for i in (ids as PackedInt32Array).size():
-			_images[(ids as PackedInt32Array)[i]] = found[i] if i < found.size() else null
+			var index := (ids as PackedInt32Array)[i]
+			_images[index] = found[i] if i < found.size() else null
+			if i < found.size():
+				_levels[index] = int(reads[i]["level"])
+				_bytes[index] = int(reads[i]["bytes"])
 	if not found.is_empty():
 		images_loaded += 1
 		DevTiming.tally("tree images loaded")
+
+
+## A tree of `species` was given a canvas item (`by` 1) or gave it back (-1).
+static func _count_shown(species: String, by: int) -> void:
+	var n := int(_shown.get(species, 0)) + by
+	if n > 0:
+		_shown[species] = n
+	else:
+		_shown.erase(species)
 
 
 ## The images of `species` leave memory (video memory with them, nothing
@@ -293,6 +561,9 @@ static func _unload(species: String) -> void:
 	_textures.erase(species)
 	if found == null or (found as Array).is_empty():
 		return
+	_fine_wanted.erase(species)
+	_fine_unneeded.erase(species)
+	_changing.erase(species)
 	for index: int in (_image_ids[species] as PackedInt32Array):
 		_images[index] = null
 	images_freed += 1
@@ -307,17 +578,40 @@ static func unload_all() -> void:
 	_holds.clear()
 	_let_go.clear()
 	_waiting.clear()
+	_shown.clear()
 
 
-## The kinds in memory, with the video memory their images take (BC7 with
-## mipmaps: a byte a pixel and a third more), for F3: {species: bytes}.
+## The kinds in memory, with the video memory their images take (the
+## compressed levels the card holds, from the finest held), for F3:
+## {species: bytes}.
 static func memory() -> Dictionary:
 	var out := {}
 	for species: String in _textures:
 		var bytes := 0
-		for t: Texture2D in _textures[species]:
-			bytes += t.get_width() * t.get_height() * 4 / 3
+		for index: int in (_image_ids.get(species, PackedInt32Array()) as PackedInt32Array):
+			if _images[index] != null:
+				bytes += _bytes[index]
 		out[species] = bytes
+	return out
+
+
+## Whether every image of `species` in memory holds its finest level.
+static func fine(species: String) -> bool:
+	if not _textures.has(species):
+		return false
+	for index: int in (_image_ids.get(species, PackedInt32Array()) as PackedInt32Array):
+		if _images[index] != null and _levels[index] != 0:
+			return false
+	return true
+
+
+## The kinds being given their finest level now, for F3 and the loading
+## screen (so that the first view is as sharp as the next).
+static func sharpening() -> PackedStringArray:
+	var out := PackedStringArray()
+	for species: String in _changing:
+		if _fine_wanted.has(species) and not fine(species):
+			out.append(species)
 	return out
 
 
@@ -515,6 +809,7 @@ class Stand:
 				which[species] = k
 				kinds.append(species)
 				heights.append(int(tree_heights.get(species, 400)))
+				Trees._heights[species] = heights[-1]
 			kind[i] = k
 		if n == 0:
 			built = true
@@ -623,11 +918,13 @@ class Stand:
 		var foot := Iso.point_to_screen(at[i])
 		RenderingServer.canvas_item_set_transform(item, Transform2D(0.0, foot))
 		items[i] = item
+		Trees._count_shown(kinds[kind[i]], 1)
 		_draw(i, item, foot)
 
 	func _hide(i: int) -> void:
 		var item: RID = items[i]
 		items.erase(i)
+		Trees._count_shown(kinds[kind[i]], -1)
 		RenderingServer.canvas_item_clear(item)
 		RenderingServer.canvas_item_set_parent(item, RID())
 		if Trees._pool.size() < Trees.POOL_MOST:
