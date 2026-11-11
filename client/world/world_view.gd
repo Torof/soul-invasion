@@ -689,6 +689,7 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 		if view.is_built() and stand != null and holder != null and is_instance_valid(holder):
 			_park(key, view, holder, stand)
 		else:
+			ChunkView.waiting.erase(view)
 			view.queue_free()
 			if stand != null:
 				stand.release()
@@ -736,6 +737,7 @@ func _park(key: Vector2i, view: ChunkView, holder: Node, stand: Trees.Stand) -> 
 
 ## Frees a parked chunk's nodes for good.
 func _free_parked(p: Dictionary) -> void:
+	ChunkView.waiting.erase(p["view"])
 	(p["view"] as Node).queue_free()
 	(p["holder"] as Node).queue_free()
 	(p["stand"] as Trees.Stand).release()

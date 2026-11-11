@@ -1166,6 +1166,16 @@ func _test_waiting_chunks_are_kept_nearest_the_camera_first() -> void:
 	_check(order == [Vector2i(100, 104), Vector2i(104, 100), Vector2i(60, 60), Vector2i(160, 100)], "nearest the camera first: %s" % [order])
 	ChunkView.reorder(Iso.tile_to_screen(160, 100))
 	_check((ChunkView.waiting[0] as ChunkView)._origin == Vector2i(160, 100), "ordered again around the camera's new place")
+	# A chunk freed while it waited (a teleport frees the view) is let go
+	# of when another joins: the queue never reads a freed object.
+	(views[2] as ChunkView).free()
+	views.remove_at(2)
+	var late := ChunkView.new()
+	late._origin = Vector2i(120, 120)
+	late._size = 4
+	views.append(late)
+	ChunkView.enqueue(late)
+	_check(ChunkView.waiting.size() == 4 and ChunkView.waiting.all(func(v: Variant) -> bool: return is_instance_valid(v)), "a freed chunk leaves the queue when another joins")
 	for view: ChunkView in views:
 		view.free()
 	ChunkView.waiting = was
