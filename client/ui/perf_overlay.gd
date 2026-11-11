@@ -4,7 +4,8 @@ extends CanvasLayer
 ## to measure before optimising and to say "it is slow here" with a
 ## number (D39). F3 shows or hides it; to see what a part costs the
 ## graphics card: F4 turns the wind in the trees off and on, F5 draws the
-## ground a plain colour, F6 hides the trees.
+## ground a plain colour, F6 hides the trees, F7 draws the fog and the far
+## view as rings, as full quads or not at all.
 
 ## How often the numbers are refreshed, in seconds.
 const REFRESH := 0.25
@@ -69,6 +70,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		_wind = not _wind
 		if world != null:
 			world.call("set_wind", _wind)
+		get_viewport().set_input_as_handled()
+	elif event.keycode == KEY_F7:
+		FarView.drawing = (FarView.drawing + 1) % FarView.DRAWING_NAMES.size()
+		get_tree().call_group("far_views", "redraw_fog")
 		get_viewport().set_input_as_handled()
 
 
@@ -137,7 +142,8 @@ func report(worst_ms: float) -> String:
 			counts.get("trees", 0), counts.get("trees_drawn", 0), counts.get("bodies", 0),
 		])
 	lines.append("bank fields smoothing %d   F3 hides" % ShoreField.busy)
-	lines.append("wind %s (F4)   ground %s (F5)   trees %s (F6)" % [
+	lines.append("wind %s (F4)   ground %s (F5)   trees %s (F6)   fog %s (F7)" % [
 		"on" if _wind else "off", "plain" if _plain_ground else "shaded", "shown" if _trees_shown else "hidden",
+		FarView.drawing_name(),
 	])
 	return "\n".join(lines)

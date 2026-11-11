@@ -108,8 +108,12 @@ var _to_redraw := RedrawQueue.new()
 var _standing: Node2D
 ## chunk -> the node holding its trees and tall plants.
 var _tree_nodes: Dictionary = {}
-## The land past the chunks held (FarView).
+## The land past the chunks held (FarView). It is drawn with a hole under
+## the view's limit once every chunk under it is built: looked at again
+## when a chunk comes, goes or builds, or the limit moves.
 var _far: FarView
+var _far_dirty := true
+var _far_complete := false
 ## The kinds of shrub, plant and mushroom (Net.flora), and the plants of
 ## each chunk held, as received ({kind, x, y}).
 var _flora: Array = []
@@ -274,6 +278,7 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	_bodies.clear()
 	_following = true
 	_camera_placed = false
+	_far_dirty = true
 	_set_night(night)
 	queue_redraw()
 
@@ -349,6 +354,7 @@ func _on_chunk(x: int, y: int, tiles: Array, bodies: Array, items: Array, trees:
 		view.show_chunk(key * _chunk_size, _chunk_size, codes, items, _looks)
 	_redraw_neighbours(key)
 	_prune_parked()
+	_far_dirty = true
 	if not _camera_placed and _piloted < 0:
 		# Watching, no body to follow: look at the ground we were given
 		# rather than at the valley's corner.
@@ -625,6 +631,7 @@ func _update_limit() -> void:
 	if limit == _limit:
 		return
 	_limit = limit
+	_far_dirty = true
 	var veil := FOG_B_TILES + FOG_C_TILES
 	var ground := limit.grow(-veil)
 	var cover := limit.grow(-FOG_B_TILES)
@@ -639,6 +646,19 @@ func _update_limit() -> void:
 ## The bounds, in chunks, of the chunks held.
 func _bounds() -> Rect2i:
 	return _ledger.bounds(_chunks)
+
+
+## Tells the far view whether it may leave its hole under the limit:
+## looked at again while something changes or is still to build, never
+## otherwise (FarView.set_complete).
+func _update_far_hole() -> void:
+	if _far == null or (not _far_dirty and _far_complete):
+		return
+	_far_dirty = false
+	_far_complete = FarView.limit_built(_limit, _chunks, _bounds(), _chunk_size, ChunkView.waiting.size())
+	# The limit in tile space (tile x spans [x - 0.5, x + 0.5] there), half
+	# a tile inside it either way: only tiles of chunks under the limit.
+	_far.set_complete(Rect2(_limit.position, _limit.size - Vector2.ONE), _far_complete)
 
 
 ## The chunks around `key` draw their borders from their neighbours'
@@ -691,6 +711,7 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 		_trees_changed = true
 		_tree_nodes.erase(key)
 		_redraw_neighbours(key)
+		_far_dirty = true
 	for id in _bodies.keys():
 		if Iso.chunk_of(_tile_of(_bodies[id]["at"]), _chunk_size) == key:
 			_bodies.erase(id)
@@ -869,6 +890,7 @@ func _step(delta: float) -> void:
 	if _following and _bodies.has(_piloted):
 		_camera.position = Iso.point_to_screen(_bodies[_piloted]["at"])
 	_update_limit()
+	_update_far_hole()
 	_clamp_camera()
 	_cull_standing()
 	_update_reach()
