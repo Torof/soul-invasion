@@ -76,3 +76,13 @@ conductor: vision, decisions, practices, audits, security. The AI writes the cod
 - Rust stable via `rustup` (`~/.cargo/bin`).
 - Godot 4.7 (`godot` on the PATH). Client tests:
   `godot --headless --path client --import && godot --headless --path client -s tests/run_tests.gd`
+
+## Compact instructions
+
+When the conversation is compacted, the summary keeps, in this order: the
+project lead's decisions of the session with their wording; the state of
+every open pull request (number, what it holds, whether it waits for the
+label), running agent, sandbox and worktree; what was measured (numbers,
+not adjectives); what the lead asked for last and what remains; and the
+working rhythm with the lead (how to answer, what not to re-ask). Drop
+tool output, file contents and intermediate attempts.
