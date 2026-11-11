@@ -105,23 +105,40 @@ func show_far(cell: int, x: int, y: int, width: int, height: int, cells: String)
 ## HAZE_FAR; 1 for a fog one cannot see through).
 func set_held(lo: Vector2, hi: Vector2, rise := HAZE_IN, edge := HAZE_EDGE, far := HAZE_FAR, corner := 0.0) -> void:
 	_held = Rect2(lo, hi - lo)
-	_haze_material.set_shader_parameter("corner", corner)
-	_haze_material.set_shader_parameter("held_lo", lo)
-	_haze_material.set_shader_parameter("held_hi", hi)
-	_haze_material.set_shader_parameter("rise_in", rise)
-	_haze_material.set_shader_parameter("edge", edge)
-	_haze_material.set_shader_parameter("far_haze", far)
+	_send(_haze_material, "corner", corner)
+	_send(_haze_material, "held_lo", lo)
+	_send(_haze_material, "held_hi", hi)
+	_send(_haze_material, "rise_in", rise)
+	_send(_haze_material, "edge", edge)
+	_send(_haze_material, "far_haze", far)
 
 
 ## Where the cover starts, over everything, in tiles from `lo` to `hi`:
 ## whole `rise` tiles past it (WorldView: at the view's limit).
 func set_cover(lo: Vector2, hi: Vector2, rise: float, opacity := 1.0, corner := 0.0) -> void:
-	_cover_material.set_shader_parameter("corner", corner)
-	_cover_material.set_shader_parameter("held_lo", lo)
-	_cover_material.set_shader_parameter("held_hi", hi)
-	_cover_material.set_shader_parameter("rise_in", rise)
-	_cover_material.set_shader_parameter("edge", opacity)
-	_cover_material.set_shader_parameter("far_haze", opacity)
+	_send(_cover_material, "corner", corner)
+	_send(_cover_material, "held_lo", lo)
+	_send(_cover_material, "held_hi", hi)
+	_send(_cover_material, "rise_in", rise)
+	_send(_cover_material, "edge", opacity)
+	_send(_cover_material, "far_haze", opacity)
+
+
+## The value each uniform of each fog material was last given, and how
+## many were sent: the limit moves every frame the body walks, and only
+## its two corners change; the rest went to the graphics card twelve
+## times a frame for nothing (lightness audit, 10 November 2026).
+var _sent: Dictionary = {}
+var uniforms_sent := 0
+
+
+func _send(fog: ShaderMaterial, uniform: String, value: Variant) -> void:
+	var sent: Dictionary = _sent.get_or_add(fog, {})
+	if sent.has(uniform) and sent[uniform] == value:
+		return
+	sent[uniform] = value
+	uniforms_sent += 1
+	fog.set_shader_parameter(uniform, value)
 
 
 ## The colour of each letter: the average of the ground's own textures,
