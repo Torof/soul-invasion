@@ -77,7 +77,11 @@ vec3 flowing(sampler2D tex, vec2 base, vec2 f, float period, float shift, float 
 vec3 water_at(sampler2D tex, vec2 world, vec2 runs, float now) {
 	vec2 base = world * 0.25;
 	if (water_warp > 0.0) {
-		base += water_warp * vec2(sin(world.x * 0.9 + world.y * 0.37), cos(world.y * 1.1 - world.x * 0.43));
+		// Two waves of unrelated periods each way, so the warp itself has
+		// no visible stripes.
+		base += water_warp * vec2(
+			sin(world.x * 0.9 + world.y * 0.37) + 0.6 * sin(world.x * 0.31 - world.y * 0.83),
+			cos(world.y * 1.1 - world.x * 0.43) + 0.6 * cos(world.x * 0.57 + world.y * 0.29));
 	}
 	vec3 colour = flowing(tex, base, runs * (flow_period * 0.25), flow_period, 0.0, now);
 	if (flow_mix > 0.0) {

@@ -113,7 +113,10 @@ func _screenshot_then_quit(path: String) -> void:
 			var cost: Array = _perf.water_cost()[ChunkView.water_mode_name()]
 			var f := FileAccess.open(bench, FileAccess.READ_WRITE if FileAccess.file_exists(bench) else FileAccess.WRITE)
 			f.seek_end()
-			f.store_line("%s zoom %s %s water %.2f ms frame %.2f ms clock %d MHz" % [path.get_file(), zoom, ChunkView.water_mode_name(), cost[0], cost[1], cost[2]])
+			f.store_line("%s zoom %s %s water %.2f ms frame %.2f ms clock %d MHz video %d MB meshes built %d worker %.1f ms each main %.2f ms each" % [
+				path.get_file(), zoom, ChunkView.water_mode_name(), cost[0], cost[1], cost[2],
+				RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_VIDEO_MEM_USED) / 1048576,
+				ChunkView.water_builds, ChunkView.water_build_usec / 1000.0 / maxi(ChunkView.water_builds, 1), ChunkView.water_main_usec / 1000.0 / maxi(ChunkView.water_builds, 1)])
 			f.close()
 	get_tree().quit()
 
