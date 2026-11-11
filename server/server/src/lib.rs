@@ -7,7 +7,6 @@
 
 pub mod cli;
 pub mod content;
-pub mod lru;
 pub mod net;
 pub mod run;
 pub mod storage;

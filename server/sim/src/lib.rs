@@ -14,10 +14,12 @@
 
 pub mod content;
 pub mod flora;
-pub mod items;
 // `gen` is a reserved keyword in the 2024 edition: the module is `r#gen`,
 // its file `gen.rs`.
 pub(crate) mod r#gen;
+pub mod ground;
+pub mod items;
+pub mod lru;
 pub mod map;
 pub mod time;
 pub mod trees;
@@ -601,6 +603,12 @@ pub struct World {
     /// persisted: the trees are placed again, the same, from the map.
     #[serde(skip)]
     species: Vec<content::Species>,
+    /// The trees of the chunks asked for lately, placed once and shared
+    /// ([`ground::Ground`]) with the server's threads, which take a handle
+    /// as they take the map ([`World::shared_ground`]). Derived from the
+    /// map, the seed and the content: never persisted, empty on load.
+    #[serde(skip)]
+    ground_cache: Arc<ground::Ground>,
 }
 
 fn write_map<S: serde::Serializer>(map: &Arc<Map>, serializer: S) -> Result<S::Ok, S::Error> {
@@ -654,6 +662,7 @@ impl<'de> serde::Deserialize<'de> for World {
             spawns: Vec::new(),
             pending: Vec::new(),
             species: Vec::new(),
+            ground_cache: Arc::new(ground::Ground::default()),
         };
         let standing: Vec<_> = world
             .bodies
@@ -725,6 +734,7 @@ impl World {
             spawns: Vec::new(),
             pending: Vec::new(),
             species: Vec::new(),
+            ground_cache: Arc::new(ground::Ground::default()),
         }
     }
 
@@ -742,9 +752,19 @@ impl World {
     }
 
     /// The trees standing in `chunk`, placed from the map and the seed
-    /// ([`trees::trees_in`]): the same every time, nothing stored.
-    pub fn trees_in(&self, chunk: ChunkPos) -> Vec<trees::Tree> {
-        trees::trees_in(&self.map, &self.species, self.seed(), chunk)
+    /// ([`trees::trees_in`]) the first time they are asked for and held a
+    /// while ([`ground::Ground`]): the same every time, nothing stored.
+    pub fn trees_in(&self, chunk: ChunkPos) -> Arc<[trees::Tree]> {
+        self.ground_cache
+            .trees_in(&self.map, &self.species, self.seed(), chunk)
+    }
+
+    /// The ground's placed trees, shared: the server's threads read the
+    /// same cache as the simulation, so a chunk's trees are placed once
+    /// for every reader, and a change made here (a tree felled, later)
+    /// shows to them at once.
+    pub fn shared_ground(&self) -> Arc<ground::Ground> {
+        Arc::clone(&self.ground_cache)
     }
 
     /// The world's calendar.

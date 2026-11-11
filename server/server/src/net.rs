@@ -30,14 +30,14 @@ use protocol::{
     ItemView, MaterialView, PROTOCOL_VERSION, PlantState, Point, Refusal, ServerMessage,
     SpeciesView, Terrain, TreeState, decode, encode,
 };
+use sim::ground::Ground;
+use sim::lru::Lru;
 use sim::{BodyId, CHUNK_SIZE, ChunkPos, Content, FinePos, Intention, ItemId, Map, Pos, World};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
-
-use crate::lru::Lru;
 
 /// How long a client has to finish the WebSocket upgrade, and then how
 /// long it has to send its `hello`.
@@ -188,9 +188,17 @@ pub struct Shared {
     /// The kinds of tree, as clients need them.
     pub species: Vec<SpeciesView>,
     /// The content's kinds of tree, the trees of a chunk are placed with
-    /// when it is sent ([`sim::trees::trees_in`], nothing held: a chunk's
-    /// trees cost a few microseconds). Nothing fells them yet.
+    /// the first time it is asked for ([`Ground::trees_in`]). Nothing
+    /// fells them yet.
     tree_kinds: Vec<sim::content::Species>,
+    /// The placed trees of the chunks asked for lately, the world's own
+    /// cache shared by handle (as the map is): a chunk's trees are placed
+    /// once for the chunk's message, for the plants of the nine chunks
+    /// around it and for the simulation alike, and held while the chunk
+    /// is among the [`sim::ground::TREE_CACHE_CHUNKS`] asked for most
+    /// recently. Keyed by the chunk and its version, so felling, when it
+    /// comes, bumps the version and the chunk is placed again.
+    ground: Arc<Ground>,
     /// The kinds of shrub, plant and mushroom, as clients need them.
     pub flora: Vec<FloraView>,
     /// The content's flora (trees still to come included), to place it.
@@ -482,6 +490,7 @@ impl Shared {
             materials,
             species,
             tree_kinds: content.species.clone(),
+            ground: world.shared_ground(),
             flora,
             flora_kinds: content.flora.clone(),
             flora_wire,
@@ -785,10 +794,11 @@ impl Shared {
     }
 
     /// The trees standing in `chunk`, placed from the map and the seed
-    /// ([`sim::trees::trees_in`]).
+    /// the first time they are asked for ([`Ground::trees_in`]).
     fn trees_in(&self, chunk: ChunkPos) -> Vec<TreeState> {
-        sim::trees::trees_in(&self.map, &self.tree_kinds, self.seed, chunk)
-            .into_iter()
+        self.ground
+            .trees_in(&self.map, &self.tree_kinds, self.seed, chunk)
+            .iter()
             .map(|tree| TreeState {
                 at: point(tree.at),
                 species: self.species[tree.species].id.clone(),
@@ -797,12 +807,17 @@ impl Shared {
     }
 
     /// The trees of `chunk` and of the eight chunks around it, as the
-    /// flora reads them: a plant stands clear of trunks over the chunk's
-    /// border too.
+    /// flora reads them (a plant stands clear of trunks over the chunk's
+    /// border too), each chunk's from the shared cache: placed once, read
+    /// nine times.
     fn trees_around(&self, chunk: ChunkPos) -> Vec<sim::trees::Tree> {
         (-1..=1)
             .flat_map(|dy| (-1..=1).map(move |dx| ChunkPos::new(chunk.x + dx, chunk.y + dy)))
-            .flat_map(|around| sim::trees::trees_in(&self.map, &self.tree_kinds, self.seed, around))
+            .flat_map(|around| {
+                self.ground
+                    .trees_in(&self.map, &self.tree_kinds, self.seed, around)
+                    .to_vec()
+            })
             .collect()
     }
 
@@ -1568,6 +1583,91 @@ mod tests {
             assert_eq!(&forgets.plants_in(chunk), plants, "{chunk:?} kept");
             assert_eq!(&never_forgets.plants_in(chunk), plants, "{chunk:?}");
         }
+    }
+
+    #[test]
+    fn the_trees_are_placed_once_and_a_hit_sends_the_bytes_of_a_miss() {
+        // The repository's kinds of tree: the sample content has none.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+        let content = crate::content::load(&dir).expect("repository content");
+        let world = World::with_valley(Calendar::default(), &content, 768);
+        let shared = Shared::new(&world, &content, 1, 1.0);
+        let chunks: Vec<ChunkPos> = View::window(&shared.map, shared.map.camp().chunk())
+            .into_iter()
+            .take(12)
+            .collect();
+        let mut misses = Vec::new();
+        for &chunk in &chunks {
+            // Straight from the generator, as the message tells them.
+            let fresh: Vec<TreeState> =
+                sim::trees::trees_in(&shared.map, &shared.tree_kinds, shared.seed, chunk)
+                    .into_iter()
+                    .map(|tree| TreeState {
+                        at: point(tree.at),
+                        species: shared.species[tree.species].id.clone(),
+                    })
+                    .collect();
+            if misses.is_empty() {
+                assert!(!shared.ground.holds_trees(chunk), "nothing asked for yet");
+            }
+            let miss = shared.chunk_message(chunk).expect("a chunk");
+            assert!(shared.ground.holds_trees(chunk), "held once asked for");
+            let hit = shared.chunk_message(chunk).expect("a chunk");
+            let ServerMessage::Chunk { trees, .. } = &miss else {
+                panic!("a chunk");
+            };
+            assert_eq!(trees, &fresh, "{chunk:?}: a miss places the trees");
+            assert_eq!(
+                encode(&miss).unwrap(),
+                encode(&hit).unwrap(),
+                "{chunk:?}: a hit sends the same bytes"
+            );
+            misses.push(miss);
+        }
+        assert!(
+            misses
+                .iter()
+                .any(|m| matches!(m, ServerMessage::Chunk { trees, .. } if !trees.is_empty())),
+            "trees grow around the camp"
+        );
+        // Each chunk's trees were placed once, for its own message and
+        // for the plants of its neighbours alike: the twelve chunks and
+        // their rim are held, nothing beyond.
+        let rim: BTreeSet<ChunkPos> = chunks
+            .iter()
+            .flat_map(|c| {
+                (-1..=1)
+                    .flat_map(move |dy| (-1..=1).map(move |dx| ChunkPos::new(c.x + dx, c.y + dy)))
+            })
+            .collect();
+        assert_eq!(shared.ground.trees_held(), rim.len());
+        // The world reads the same cache: the very same trees.
+        assert!(Arc::ptr_eq(
+            &world.trees_in(chunks[0]),
+            &shared
+                .ground
+                .trees_in(&shared.map, &shared.tree_kinds, shared.seed, chunks[0])
+        ));
+        // A server that forgets its trees at once sends the same chunks.
+        let mut forgets = Shared::new(&world, &content, 1, 1.0);
+        forgets.ground = Arc::new(Ground::new(1));
+        forgets.plants = Mutex::new(Lru::new(1));
+        for (&chunk, miss) in chunks.iter().zip(&misses) {
+            assert_eq!(&forgets.chunk_message(chunk).unwrap(), miss, "{chunk:?}");
+            assert_eq!(forgets.ground.trees_held(), 1, "bounded");
+        }
+        // A change to a chunk (felling, later) bumps its version: placed
+        // again, the same today, nothing laying changes over them yet.
+        assert_eq!(shared.ground.changed(chunks[0]), 1);
+        assert!(
+            !shared.ground.holds_trees(chunks[0]),
+            "the old version is stale"
+        );
+        assert_eq!(&shared.chunk_message(chunks[0]).unwrap(), &misses[0]);
+        assert!(
+            shared.ground.holds_trees(chunks[0]),
+            "held at the new version"
+        );
     }
 
     #[test]
