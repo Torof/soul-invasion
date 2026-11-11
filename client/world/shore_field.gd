@@ -69,6 +69,8 @@ static var _upload_due := false
 ## Convolution weights, by kind and chunk size (made on the main thread,
 ## read by the workers).
 static var _weights: Dictionary = {}
+## The pieces a block without water lays, by chunk size (_dry_pieces).
+static var _dry: Dictionary = {}
 
 
 static func _make_textures() -> void:
@@ -184,18 +186,15 @@ static func _update(block: PackedByteArray, lo: Vector2i, size: int, current: Ca
 					fords[i] = 1.0
 					any_ford = true
 	var inner := size * PX
-	var still := int(round(0.5 * 255.0))
-	var bank: PackedByteArray
-	var waters: PackedByteArray
+	var bank: Image
+	var waters: Image
 	if not any_water:
 		# No water in the block nor its margin (most of them): all land,
-		# no ford, still water, without smoothing or encoding a pixel.
-		bank = PackedByteArray()
-		bank.resize(inner * inner)
-		bank.fill(255)
-		waters = PackedByteArray()
-		for i in size * size:
-			waters.append_array(PackedByteArray([0, still, still, 255]))
+		# no ford, still water, without smoothing or encoding a pixel: the
+		# pieces made once for the size are laid as they are.
+		var pieces := _dry_pieces(size)
+		bank = pieces[0]
+		waters = pieces[1]
 	else:
 		var weights := [_weights_of("bank", size), _weights_of("centre", size), _weights_of("ford", size)]
 		var out := [PackedByteArray(), PackedByteArray()]
@@ -212,13 +211,38 @@ static func _update(block: PackedByteArray, lo: Vector2i, size: int, current: Ca
 				return
 		else:
 			_smooth(out, mask, fords, flow_x, flow_y, n, size, weights, any_flow, any_ford, any_land)
-		bank = out[0]
-		waters = out[1]
-	_blit(_bank_image, Image.create_from_data(inner, inner, false, Image.FORMAT_R8, bank), lo * PX, inner, TILES * PX)
-	_blit(_water_image, Image.create_from_data(size, size, false, Image.FORMAT_RGBA8, waters), lo, size, TILES)
+		bank = Image.create_from_data(inner, inner, false, Image.FORMAT_R8, out[0])
+		waters = Image.create_from_data(size, size, false, Image.FORMAT_RGBA8, out[1])
+	_blit(_bank_image, bank, lo * PX, inner, TILES * PX)
+	_blit(_water_image, waters, lo, size, TILES)
 	if not _upload_due:
 		_upload_due = true
 		_upload.call_deferred()
+
+
+## The pieces a block without water lays, for a chunk `size` tiles a
+## side: [the bank, all land; the water, no ford and still]. Made once a
+## size and laid as they are: a thousand small arrays appended a chunk
+## were most of what a dry block cost (D39).
+static func _dry_pieces(size: int) -> Array:
+	if not _dry.has(size):
+		var inner := size * PX
+		var bank := PackedByteArray()
+		bank.resize(inner * inner)
+		bank.fill(255)
+		var waters := PackedByteArray()
+		waters.resize(size * size * 4)
+		var still := int(round(0.5 * 255.0))
+		for i in size * size:
+			var o := 4 * i
+			waters[o + 1] = still
+			waters[o + 2] = still
+			waters[o + 3] = 255
+		_dry[size] = [
+			Image.create_from_data(inner, inner, false, Image.FORMAT_R8, bank),
+			Image.create_from_data(size, size, false, Image.FORMAT_RGBA8, waters),
+		]
+	return _dry[size]
 
 
 ## Lays `piece` (`side` pixels square) at `at` in the repeating `image`
