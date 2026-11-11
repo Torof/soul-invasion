@@ -48,6 +48,7 @@ func _init() -> void:
 	_test_the_watchdog_reports_a_stalled_frame()
 	_test_trees_are_drawn_only_where_the_view_reaches()
 	_test_tall_plants_are_drawn_only_where_the_view_reaches()
+	_test_tree_shadows_are_sixteen_sided()
 	_test_trees_sort_with_bodies_by_their_foot()
 	_test_the_bounds_held_are_kept_as_chunks_come_and_go()
 	_test_grounds_built_on_workers_are_laid_nearest_first_within_the_budget()
@@ -1141,6 +1142,29 @@ func _test_tall_plants_are_drawn_only_where_the_view_reaches() -> void:
 	_check(stand.items.is_empty() and stand.refs.count(0) == stand.size() and stand.shown == Rect2i(), "released, nothing is held")
 	_check(PlantStand.new(PackedInt32Array([1, 100, 100]), flora).size() == 0, "a chunk of mushrooms has no tall plant")
 	RenderingServer.free_rid(parent)
+
+
+func _test_tree_shadows_are_sixteen_sided() -> void:
+	# A shadow's rim: sixteen vertices round the ellipse, the polygon's area
+	# the ellipse's within 2 %.
+	for size: Vector2 in [Vector2(200, 97), Vector2(58, 29), Vector2(10, 10)]:
+		var centre := Vector2(31, -12)
+		var rim := Trees.shadow_polygon(centre, size)
+		var area := 0.0
+		for j in rim.size():
+			area += rim[j].cross(rim[(j + 1) % rim.size()])
+		area = absf(area) / 2.0
+		var ellipse := PI * size.x * size.y / 4.0
+		_check(rim.size() == 16 and absf(area / ellipse - 1.0) < 0.02, "a shadow is 16-sided, its area the ellipse's: %d vertices, %.4f" % [rim.size(), area / ellipse])
+	# Two shadows a tree, each its middle, its knee ring and its rim, in one
+	# triangle array; opaque in the middle, clear at the rim.
+	var rects: Array[Rect2] = [Rect2(-50, -300, 100, 300), Rect2(400, -100, 60, 180)]
+	var mesh := Trees.shadow_mesh(rects, PackedVector2Array([Vector2(0, 0), Vector2(430, 80)]))
+	var points: PackedVector2Array = mesh[0]
+	var colours: PackedColorArray = mesh[1]
+	var indices: PackedInt32Array = mesh[2]
+	_check(points.size() == 4 * 33 and colours.size() == points.size() and indices.size() == 4 * 48 * 3, "two shadows a tree, 33 vertices and 48 triangles each")
+	_check(is_equal_approx(colours[0].a, Trees.CROWN_SHADE) and is_equal_approx(colours[33].a, Trees.FOOT_SHADE) and colours[32].a == 0.0, "dark in the middle, clear at the rim")
 
 
 func _test_trees_sort_with_bodies_by_their_foot() -> void:
