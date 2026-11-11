@@ -310,8 +310,13 @@ uniform float deep_reach = 2.5;
 // Glints: small bright sparkles drifting with the water.
 uniform float glint = 0.35;
 
-vec3 flowing(sampler2D tex, vec2 world, vec2 flow, float period, float scale, mat2 turn, float shift, vec2 dx, vec2 dy) {
-	float t = TIME / period + shift;
+// Development: the time the water has run for, pinned so that two
+// captures can be compared pixel by pixel (SOUL_INVASION_WATER_TIME);
+// negative, the clock's own.
+uniform float flow_time = -1.0;
+
+vec3 flowing(sampler2D tex, vec2 world, vec2 flow, float period, float scale, mat2 turn, float shift, float now, vec2 dx, vec2 dy) {
+	float t = now / period + shift;
 	float p0 = fract(t);
 	float p1 = fract(t + 0.5);
 	float w0 = 1.0 - abs(1.0 - 2.0 * p0);
@@ -370,6 +375,8 @@ bool meet_shows(vec4 a, float w, float meet_noise) {
 
 void fragment() {
 	vec2 uv = UV;
+	// The clock the water runs by (pinned by flow_time in development).
+	float now = flow_time < 0.0 ? TIME : flow_time;
 	// The derivatives the images are read with, before a pixel can be
 	// discarded, a mipmap level sharper.
 	vec2 duv_x = dFdx(uv) * SHARPEN;
@@ -445,8 +452,8 @@ void fragment() {
 	if (current_strength > 0.0) {
 		// Two drifts of streaks at different paces, read from the noise
 		// squeezed across the river and stretched along it.
-		vec2 flow = vec2(uv.x * current_scale, (uv.y - TIME * current_speed) * current_scale / current_stretch);
-		vec2 flow2 = vec2(uv.x * current_scale * 1.7 + 0.5, (uv.y - TIME * current_speed * 0.6) * current_scale / current_stretch + 0.3);
+		vec2 flow = vec2(uv.x * current_scale, (uv.y - now * current_speed) * current_scale / current_stretch);
+		vec2 flow2 = vec2(uv.x * current_scale * 1.7 + 0.5, (uv.y - now * current_speed * 0.6) * current_scale / current_stretch + 0.3);
 		float s1 = texture(noise_texture, flow).r;
 		float s2 = texture(noise_texture, flow2).r;
 		float t = 1.0 - current_cover;
@@ -574,14 +581,14 @@ void fragment() {
 			vec2 flow = (field_px.gb * 2.0 - 1.0) * 2.0;
 			// Tiles a second, a little slower than the water itself reads.
 			vec2 runs = flow * 0.8;
-			vec3 w1 = flowing(TEXTURE, world, runs, flow_period, 1.0, mat2(vec2(1.0, 0.0), vec2(0.0, 1.0)), 0.0, duv_x, duv_y);
-			vec3 w2 = flowing(TEXTURE, world, runs * 1.15, flow_period * 1.3, 1.6, mat2(vec2(0.0, 1.0), vec2(-1.0, 0.0)), 0.37, duv_x, duv_y);
+			vec3 w1 = flowing(TEXTURE, world, runs, flow_period, 1.0, mat2(vec2(1.0, 0.0), vec2(0.0, 1.0)), 0.0, now, duv_x, duv_y);
+			vec3 w2 = flowing(TEXTURE, world, runs * 1.15, flow_period * 1.3, 1.6, mat2(vec2(0.0, 1.0), vec2(-1.0, 0.0)), 0.37, now, duv_x, duv_y);
 			colour = mix(w1, w2, flow_mix) * base_tint;
 			// Deeper in the middle.
 			colour *= mix(vec3(1.0), deep_tint, smoothstep(0.3, deep_reach, -dw));
 			// Glints drifting with the water.
-			float g1 = texture(noise_texture, world * 1.7 - runs * TIME * 0.4).r;
-			float g2 = texture(noise_texture, world * 2.9 + vec2(0.3, 0.6) - runs * TIME * 0.55).r;
+			float g1 = texture(noise_texture, world * 1.7 - runs * now * 0.4).r;
+			float g2 = texture(noise_texture, world * 2.9 + vec2(0.3, 0.6) - runs * now * 0.55).r;
 			colour = mix(colour, vec3(1.0), smoothstep(0.82, 0.9, g1 * 0.55 + g2 * 0.55) * glint);
 			float near = 1.0 - smoothstep(0.0, field_light_reach, -dw);
 			colour = mix(colour, colour * shore_tint, near * field_light);
@@ -601,8 +608,8 @@ void fragment() {
 				vec3 wet_bed = bed * mix(vec3(0.85), ford_tint * 1.35, mix(1.0, shelf, ford_bank));
 				vec3 shallow = mix(wet_bed, colour, deep);
 				// Ripples drifting with the current over the stones.
-				float r1 = texture(noise_texture, world * 0.9 + vec2(TIME * 0.03, TIME * 0.05)).r;
-				float r2 = texture(noise_texture, world * 2.3 - vec2(TIME * 0.04, TIME * 0.02)).r;
+				float r1 = texture(noise_texture, world * 0.9 + vec2(now * 0.03, now * 0.05)).r;
+				float r2 = texture(noise_texture, world * 2.3 - vec2(now * 0.04, now * 0.02)).r;
 				float ripple = smoothstep(0.62, 0.72, r1 * 0.6 + r2 * 0.5);
 				shallow = mix(shallow, shallow * shore_tint * 1.15, ripple * ford_ripple);
 				colour = mix(colour, shallow, ford);

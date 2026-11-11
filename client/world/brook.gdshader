@@ -31,6 +31,10 @@ uniform vec3 ink : source_color = vec3(0.17, 0.12, 0.08);
 // How fast a brook runs, in tiles a second, and the period of its flow.
 uniform float flow_speed = 0.3;
 uniform float flow_period = 2.0;
+// Development: the time the water has run for, pinned so that two
+// captures can be compared pixel by pixel (SOUL_INVASION_WATER_TIME);
+// negative, the clock's own.
+uniform float flow_time = -1.0;
 uniform float wet = 0.7;
 // The river's bank (ShoreField): where a brook meets a river, it runs on
 // over the bank and fades out where the river's water begins, between
@@ -81,7 +85,8 @@ void fragment() {
 	if (dw < 0.0) {
 		float angle = tint.b * 6.2831853;
 		vec2 drift = vec2(cos(angle), sin(angle)) * flow_speed * flow_period * 0.25;
-		float t = TIME / flow_period;
+		float now = flow_time < 0.0 ? TIME : flow_time;
+		float t = now / flow_period;
 		float p0 = fract(t);
 		float w0 = 1.0 - abs(1.0 - 2.0 * p0);
 		vec3 water = (textureGrad(TEXTURE, UV - drift * p0, dx, dy).rgb * w0
@@ -103,7 +108,7 @@ void fragment() {
 		float shallow = 1.0 - smoothstep(0.0, 0.25, -dw);
 		colour = mix(colour, mix(bed, colour, 0.5) * shallow_tint, shallow * 0.6);
 		// Light glints drifting with the current.
-		float g = texture(noise_texture, world * 1.3 + vec2(TIME * 0.05, TIME * 0.03)).r;
+		float g = texture(noise_texture, world * 1.3 + vec2(now * 0.05, now * 0.03)).r;
 		colour = mix(colour, colour * 1.25, smoothstep(0.66, 0.74, g) * 0.5);
 		colour *= 1.0 - (1.0 - smoothstep(0.0, 0.05, abs(dw + 0.03))) * 0.3;
 	} else {
