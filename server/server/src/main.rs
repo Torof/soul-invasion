@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use protocol::ServerMessage;
-use server::cli::{CliError, DataLocation, USAGE};
+use server::cli::{CliError, DataLocation, USAGE, WarmUp};
 use server::content;
 use server::net::{Published, Shared, condition_view, refusal_view, serve};
 use server::{Options, Sqlite, Storage, StorageError, run_headless, run_paced};
@@ -261,7 +261,9 @@ fn run_paced_server(
         shared.enable_dev();
         println!("development tools on: overview and teleports (--dev)");
     }
-    shared.warm_plants();
+    if opts.warm_up == WarmUp::BeforeListening {
+        shared.warm_plants();
+    }
     let shared = Arc::new(shared);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 

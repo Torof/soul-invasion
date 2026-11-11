@@ -43,6 +43,9 @@ OPTIONS:
     --dev                  Development tools: every client gets an overview
                            of the whole map and may teleport its body. Never
                            for play.
+    --no-warm-up           Paced mode: listen at once, without placing the
+                           plants of the view around the camp first; the
+                           first client waits for them instead. For tests.
     -h, --help             Print this help.
 ";
 
@@ -89,6 +92,19 @@ pub struct Options {
     pub dev: bool,
     /// A new world's valley, tiles on a side.
     pub valley_size: u32,
+    /// When the plants of the view around the camp are placed (paced mode).
+    pub warm_up: WarmUp,
+}
+
+/// When a paced server places the plants of the view around the camp,
+/// where the first bodies stand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WarmUp {
+    /// Before it listens, so the first client is not kept waiting: the game.
+    BeforeListening,
+    /// When a client first asks for them (`--no-warm-up`): the tests,
+    /// whose servers rarely do and start twenty at once.
+    OnDemand,
 }
 
 impl Default for Options {
@@ -105,6 +121,7 @@ impl Default for Options {
             calendar: Calendar::default(),
             dev: false,
             valley_size: sim::VALLEY_SIZE,
+            warm_up: WarmUp::BeforeListening,
         }
     }
 }
@@ -172,6 +189,7 @@ impl Options {
                 "--reset" => opts.reset = true,
                 "--dev" => opts.dev = true,
                 "--valley-size" => opts.valley_size = value(arg, args.next())?,
+                "--no-warm-up" => opts.warm_up = WarmUp::OnDemand,
                 "--time-scale" => opts.time_scale = value(arg, args.next())?,
                 "--max-connections" => opts.max_connections = value(arg, args.next())?,
                 "--content" => opts.content = Some(value(arg, args.next())?),
@@ -280,6 +298,18 @@ mod tests {
             768
         );
         assert!(Options::parse(["--valley-size", "100"]).is_err());
+    }
+
+    #[test]
+    fn the_warm_up_is_on_unless_turned_off() {
+        assert_eq!(
+            Options::parse(Vec::<&str>::new()).unwrap().warm_up,
+            WarmUp::BeforeListening
+        );
+        assert_eq!(
+            Options::parse(["--no-warm-up"]).unwrap().warm_up,
+            WarmUp::OnDemand
+        );
     }
 
     #[test]
