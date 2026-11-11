@@ -626,10 +626,12 @@ impl Shared {
         }
         let mut bodies = Bodies::default();
         for b in world.bodies() {
+            let timeline = world.walk_timeline(b.id(), content);
             bodies.insert(BodyState {
                 id: b.id().0,
                 at: point(b.at()),
-                route: b.route().map(point).collect(),
+                route: timeline.iter().map(|&(p, _)| point(p)).collect(),
+                arrivals: timeline.iter().map(|&(_, t)| t).collect(),
                 speed_cm_per_s: content.movement.walk_speed_cm_per_s,
                 asleep: b.condition().asleep,
                 holds: b.held().and_then(|id| world.item(id)).map(|i| ItemView {
@@ -777,13 +779,23 @@ impl Shared {
         self.router.lock().expect("router not poisoned")
     }
 
-    /// Records that a body set off: where it is and the route ahead.
-    pub fn body_walks(&self, body: BodyId, from: FinePos, route: &[FinePos], speed_cm_per_s: u32) {
+    /// Records where a walking body is and the rest of its walk, as the
+    /// simulation will walk it ([`World::walk_timeline`]): as it sets
+    /// off, and again at each chunk it walks into, so that what it is
+    /// told agrees with the world whatever changed (its load, the ground).
+    pub fn body_walks(
+        &self,
+        body: BodyId,
+        at: FinePos,
+        timeline: &[(FinePos, u64)],
+        speed_cm_per_s: u32,
+    ) {
         let mut bodies = self.bodies();
-        if bodies.place(body.0, point(from)).is_some()
+        if bodies.place(body.0, point(at)).is_some()
             && let Some(state) = bodies.get_mut(body.0)
         {
-            state.route = route.iter().copied().map(point).collect();
+            state.route = timeline.iter().map(|&(p, _)| point(p)).collect();
+            state.arrivals = timeline.iter().map(|&(_, t)| t).collect();
             state.speed_cm_per_s = speed_cm_per_s;
         }
     }
@@ -794,15 +806,16 @@ impl Shared {
         self.bodies.lock().expect("bodies not poisoned")
     }
 
-    /// Records a body's position as it crosses into another tile, keeping
-    /// the last `remaining` waypoints of its route. Returns the tile it
-    /// came from, or `None` for a body nobody knew about.
-    pub fn body_moved(&self, body: BodyId, at: FinePos, remaining: usize) -> Option<Pos> {
+    /// Records a body's position as it crosses into another tile at
+    /// `tick`, leaving out the waypoints it passed by then. Returns the
+    /// tile it came from, or `None` for a body nobody knew about.
+    pub fn body_moved(&self, body: BodyId, at: FinePos, tick: u64) -> Option<Pos> {
         let mut bodies = self.bodies();
         let from = bodies.place(body.0, point(at))?;
         if let Some(state) = bodies.get_mut(body.0) {
-            let passed = state.route.len().saturating_sub(remaining);
+            let passed = state.arrivals.iter().take_while(|&&t| t <= tick).count();
             state.route.drain(..passed);
+            state.arrivals.drain(..passed);
         }
         Some(from)
     }
@@ -898,6 +911,7 @@ impl Shared {
             && let Some(state) = bodies.get_mut(body.0)
         {
             state.route.clear();
+            state.arrivals.clear();
         }
     }
 
@@ -2451,6 +2465,7 @@ fn walks_message(state: &BodyState, tick: u64) -> ServerMessage {
         body: state.id,
         at: state.at,
         route: state.route.clone(),
+        arrivals: state.arrivals.clone(),
         speed_cm_per_s: state.speed_cm_per_s,
         tick,
     }
@@ -2927,11 +2942,18 @@ mod tests {
 
         // A walk records the route; crossing tiles trims it; stopping clears it.
         let far = Pos::new(10, 250);
-        let route = [Pos::new(12, 240).centre(), far.centre()];
+        let route = [(Pos::new(12, 240).centre(), 50), (far.centre(), 90)];
         shared.body_walks(BodyId(1), body.centre(), &route, 143);
         assert_eq!(shared.body_state(1).unwrap().route.len(), 2);
-        assert_eq!(shared.body_moved(BodyId(1), far.centre(), 0), Some(body));
-        assert_eq!(shared.body_moved(BodyId(99), far.centre(), 0), None);
+        assert_eq!(shared.body_state(1).unwrap().arrivals, vec![50, 90]);
+        assert_eq!(shared.body_moved(BodyId(1), far.centre(), 60), Some(body));
+        assert_eq!(
+            shared.body_state(1).unwrap().arrivals,
+            vec![90],
+            "the waypoint reached by then passed"
+        );
+        assert_eq!(shared.body_moved(BodyId(1), far.centre(), 90), Some(far));
+        assert_eq!(shared.body_moved(BodyId(99), far.centre(), 90), None);
         assert_eq!(
             shared.body_state(1).unwrap().route,
             Vec::new(),

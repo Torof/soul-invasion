@@ -17,7 +17,7 @@ signal chunk_bodies(x: int, y: int, bodies: Array)
 ## in the order chunks' plants refer to them.
 signal flora(flora: Array)
 signal chunk_hidden(x: int, y: int)
-signal body_walks(body: int, at: Vector2, route: Array, speed_cm_per_s: int)
+signal body_walks(body: int, at: Vector2, route: Array, arrivals: Array, speed_cm_per_s: int, tick: int)
 signal body_stopped(body: int, at: Vector2)
 signal body_left(body: int)
 signal move_refused(body: int, x: int, y: int)
@@ -197,6 +197,15 @@ static func point(p: Variant) -> Vector2:
 	return Vector2.ZERO
 
 
+## The ticks a walk reaches its waypoints at (`arrivals`), as ints.
+static func arrivals(list: Variant) -> Array:
+	var ticks: Array = []
+	if list is Array:
+		for t: Variant in list:
+			ticks.append(int(t))
+	return ticks
+
+
 ## A chunk's binary frame: decoded (Protocol.decode_chunk) and told.
 func _handle_chunk(bytes: PackedByteArray) -> void:
 	var decoded := Protocol.decode_chunk(bytes, _material_ids)
@@ -331,7 +340,9 @@ func _handle(message: Dictionary) -> void:
 				int(message.get("body", -1)),
 				point(message.get("at", {})),
 				route,
-				int(message.get("speed_cm_per_s", 0))
+				arrivals(message.get("arrivals", [])),
+				int(message.get("speed_cm_per_s", 0)),
+				int(message.get("tick", 0))
 			)
 		"body_stopped":
 			body_stopped.emit(int(message.get("body", -1)), point(message.get("at", {})))

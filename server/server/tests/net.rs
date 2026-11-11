@@ -1225,17 +1225,18 @@ async fn a_move_intention_makes_the_piloted_body_walk() {
                     body: who,
                     at,
                     route,
+                    arrivals,
                     speed_cm_per_s,
                     ..
-                })) if who == body => {
-                    assert_eq!(
-                        at,
-                        Point {
-                            x: start.centre().x,
-                            y: start.centre().y
-                        }
-                    );
+                })) if who == body && walked.is_none() => {
+                    // Told at the end of its first tick of walking, a
+                    // step from where it stood.
+                    let centre = start.centre();
+                    let step = f64::from(at.x - centre.x).hypot(f64::from(at.y - centre.y));
+                    assert!(step <= 200.0, "{step} mm from the start");
                     assert_eq!(speed_cm_per_s, 143);
+                    assert_eq!(arrivals.len(), route.len());
+                    assert!(arrivals.windows(2).all(|t| t[0] < t[1]));
                     walked = Some(route);
                 }
                 Some(Got::M(ServerMessage::BodyStopped { body: who, at })) if who == body => {
@@ -1247,11 +1248,14 @@ async fn a_move_intention_makes_the_piloted_body_walk() {
                 other => panic!("unexpected {other:?}"),
             }
         }
-        assert_eq!(
-            walked,
-            Some(expected.clone()),
-            "the route the simulation computes"
+        // The route the simulation computes, with the points where the
+        // pace changes on its way.
+        let walked = walked.expect("told the walk");
+        assert!(
+            expected.iter().all(|p| walked.contains(p)),
+            "the route the simulation computes: {walked:?} {expected:?}"
         );
+        assert_eq!(walked.last(), expected.last());
         assert_eq!(stopped.map(tile), Some(target));
     }
 }
@@ -1278,9 +1282,14 @@ async fn walking_toward_the_cliff_goes_straight_and_stops_before_the_first_obsta
     loop {
         match receive(&mut pilot).await {
             Some(Got::M(ServerMessage::BodyWalks {
-                body: who, route, ..
+                body: who,
+                route,
+                arrivals,
+                ..
             })) if who == body => {
-                assert_eq!(route, vec![Point { x: end.x, y: end.y }]);
+                // One straight segment, cut where the pace changes.
+                assert_eq!(route.last(), Some(&Point { x: end.x, y: end.y }));
+                assert_eq!(arrivals.len(), route.len());
                 break;
             }
             Some(Got::M(ServerMessage::DayStarted { .. } | ServerMessage::BodyWalks { .. })) => {}
@@ -2213,6 +2222,25 @@ fn chunk_changes(at: Point, route: &[Point]) -> usize {
     changes
 }
 
+/// Where a walk told at `at` at `tick`, reaching `route`'s waypoints at
+/// `arrivals`, has the body at `now`: moved by time between them, as the
+/// client walks it.
+#[allow(clippy::cast_precision_loss)]
+fn walked_to(at: Point, tick: u64, route: &[Point], arrivals: &[u64], now: u64) -> (f64, f64) {
+    let (mut from, mut from_tick) = (at, tick);
+    for (&to, &arrival) in route.iter().zip(arrivals) {
+        if now < arrival {
+            let f = now.saturating_sub(from_tick) as f64 / (arrival - from_tick) as f64;
+            return (
+                f64::from(from.x) + f64::from(to.x - from.x) * f,
+                f64::from(from.y) + f64::from(to.y - from.y) * f,
+            );
+        }
+        (from, from_tick) = (to, arrival);
+    }
+    (f64::from(from.x), f64::from(from.y))
+}
+
 /// Teleports the body `socket` pilots near `target`, out of range of
 /// the body `left` (told first, as the view moves, that it left), and
 /// waits until it stands there: the chunk it stands in.
@@ -2292,21 +2320,29 @@ async fn a_walker_is_heard_within_range_at_each_chunk_it_walks_into_and_nowhere_
         .await;
         // The near client is told the walk once as it starts, then once
         // more each time the body walks into another chunk: never at
-        // each tile.
-        let (mut expected, mut told, mut chunk) = (None, 0, None);
+        // each tile; and each time where the walk first told, followed by
+        // time, has it then, whatever the ground (no jump on the client).
+        let (mut expected, mut told, mut chunk, mut first) = (None, 0, None, None);
         loop {
             match receive(&mut near).await {
                 Some(Got::M(ServerMessage::BodyWalks {
                     body: who,
                     at,
                     route,
+                    arrivals,
+                    tick,
                     ..
                 })) if who == body => {
                     let here = tile(at).chunk();
                     if expected.is_none() {
                         expected = Some(1 + chunk_changes(at, &route));
+                        first = Some((at, tick, route, arrivals));
                     } else {
                         assert_ne!(Some(here), chunk, "told again in the same chunk");
+                        let (at0, tick0, route0, arrivals0) = first.as_ref().expect("told");
+                        let (x, y) = walked_to(*at0, *tick0, route0, arrivals0, tick);
+                        let off = (x - f64::from(at.x)).hypot(y - f64::from(at.y));
+                        assert!(off <= 300.0, "{off} mm from where the walk told has it");
                     }
                     chunk = Some(here);
                     told += 1;

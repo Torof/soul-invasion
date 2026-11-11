@@ -337,7 +337,7 @@ fn run_paced_server(
                 shared.tick.store(world.tick().0, Ordering::Relaxed);
                 persister.on_tick(world, events);
                 for event in events {
-                    publish(&shared, world, event);
+                    publish(&shared, world, &rules, event);
                 }
             };
             let summary = run_paced(
@@ -432,7 +432,7 @@ fn shared_state(world: &World, opts: &Options, content: &Content, lineage: Linea
 /// (D29: the simulation thread publishes; the router hands each event to
 /// the connections it concerns, D5).
 #[allow(clippy::too_many_lines)]
-fn publish(shared: &Shared, world: &World, event: &Event) {
+fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
     let tick = world.tick().0;
     // Publishing to no subscriber is not an error: nobody is
     // connected.
@@ -440,28 +440,31 @@ fn publish(shared: &Shared, world: &World, event: &Event) {
         Event::BodyWalks {
             body,
             from,
-            route,
             speed_cm_per_s,
+            ..
         } => {
-            shared.body_walks(*body, *from, route, *speed_cm_per_s);
+            // Where it is at the tick's end and the rest of its walk, by
+            // time: the clients walk it there whatever the ground.
+            if let Some(now) = world.body(*body) {
+                let timeline = world.walk_timeline(*body, rules);
+                shared.body_walks(*body, now.at(), &timeline, *speed_cm_per_s);
+            }
             shared.publish(&Published::BodyWalks {
                 body: body.0,
                 from: from.tile(),
                 tick,
             });
         }
-        Event::BodyMoved {
-            body,
-            to,
-            at,
-            remaining,
-        } => {
+        Event::BodyMoved { body, to, at, .. } => {
             // Every step is recorded, so a body told is told where it
-            // is; only a step into another chunk is published (A6): the
-            // clients walk it along its route in between.
-            if let Some(from) = shared.body_moved(*body, *at, *remaining)
+            // is; only a step into another chunk is published (A6), its
+            // walk worked out again: the clients walk it along its route
+            // by time in between.
+            if let Some(from) = shared.body_moved(*body, *at, tick)
                 && from.chunk() != to.chunk()
             {
+                let timeline = world.walk_timeline(*body, rules);
+                shared.body_walks(*body, *at, &timeline, rules.movement.walk_speed_cm_per_s);
                 shared.publish(&Published::BodyMoved {
                     body: body.0,
                     from,

@@ -2271,35 +2271,42 @@ func _test_the_net_keeps_the_chunks_of_the_same_world_only() -> void:
 
 
 func _test_a_body_told_at_each_chunk_keeps_walking_its_route() -> void:
-	# Announced as it walks into range: east 40 m, then south 10 m, at
-	# 1.43 m/s, across a chunk border (32 m).
-	var corner := Vector2(40000, 5000)
-	var end := Vector2(40000, 15000)
-	var body := BodyWalk.told({}, Vector2(0, 5000), [corner, end], 1430.0)
+	# Told at tick 100 at (0, 5 m): 20 m of grass reached at tick 240
+	# (fast), 10 m of forest reached at tick 380 (slow, the pace changes
+	# there), then a turn south, 10 m reached at tick 450.
+	var a := Vector2(20000, 5000)
+	var b := Vector2(30000, 5000)
+	var end := Vector2(30000, 15000)
+	var route := [a, b, end]
+	var arrivals := [240, 380, 450]
+	var body := BodyWalk.told({}, Vector2(0, 5000), route, arrivals, 100.0, 1430.0, 100.0)
 	_check(body["at"] == Vector2(0, 5000), "seen first: where the server says")
-	var before: Vector2 = body["at"]
-	for _i in 20:
-		BodyWalk.advance(body, 1.0)
-		_check((body["at"] as Vector2).distance_to(before) <= 1430.0 + 0.01, "no step longer than its speed")
-		before = body["at"]
-		if before.x >= 32500.0:
-			break
-	# Told again as it walks into the next chunk, a little behind where it
-	# is shown (the ground slowed it): it walks on from where it is shown.
+	var near := func(at: Vector2, want: Vector2) -> bool: return at.distance_to(want) < 1.0
+	BodyWalk.advance(body, 0.0, 170.0)
+	_check(near.call(body["at"], Vector2(10000, 5000)), "on the fast stretch: half way at half time")
+	BodyWalk.advance(body, 0.0, 240.0)
+	_check(near.call(body["at"], a), "at the change of pace on time")
+	BodyWalk.advance(body, 0.0, 310.0)
+	_check(near.call(body["at"], Vector2(25000, 5000)), "on the slow stretch: half its 10 m at half its time")
+	# Told again as it walks into the next chunk (x 32 m is not reached:
+	# the same walk told at tick 380 at b): it agrees, nothing moves.
+	BodyWalk.advance(body, 0.0, 380.0)
 	var shown: Vector2 = body["at"]
-	var told := BodyWalk.told(body, Vector2(shown.x - 500.0, 5000), [corner, end], 1430.0)
-	_check(told["at"] == shown, "a body told near where it is shown does not jump")
-	_check(told["route"] == [corner, end], "and walks the route told")
-	# Past the corner when told again: the waypoint passed is left out.
-	var past := {"at": Vector2(40000, 6000), "route": [end], "speed": 1430.0}
-	var again := BodyWalk.told(past, Vector2(39000, 5000), [corner, end], 1430.0)
-	_check(again["at"] == Vector2(40000, 6000) and again["route"] == [end], "a waypoint passed is not walked back to")
-	# It walks on to the end and stops there.
-	for _i in 30:
-		BodyWalk.advance(told, 1.0)
-	_check(told["at"] == end and (told["route"] as Array).is_empty(), "the walk ends at the route's end")
-	# Far from where it is shown, or going elsewhere: where the server says.
-	var far := BodyWalk.told(past, Vector2(20000, 5000), [corner, end], 1430.0)
-	_check(far["at"] == Vector2(20000, 5000), "told far from where it is shown: stands where told")
-	var elsewhere := BodyWalk.told(past, Vector2(40000, 6000), [Vector2(0, 0)], 1430.0)
-	_check(elsewhere["route"] == [Vector2(0, 0)], "a new destination: the new route")
+	var again := BodyWalk.told(body, b, [end], [450], 380.0, 1430.0, 380.0)
+	_check(near.call(again["at"], shown), "told again: where it is shown, no jump")
+	BodyWalk.advance(again, 0.0, 415.0)
+	_check(near.call(again["at"], Vector2(30000, 10000)), "and walks on by time after the turn")
+	# Told a little off (within 3 m): walked on from where it is shown, to
+	# the next waypoint on time.
+	var off := BodyWalk.told(again, Vector2(30000, 11000), [end], [450], 415.0, 1430.0, 415.0)
+	_check(near.call(off["at"], Vector2(30000, 10000)), "a little off: no jump")
+	BodyWalk.advance(off, 0.0, 450.0)
+	_check(near.call(off["at"], end), "and on time at the end")
+	_check(not BodyWalk.advance(off, 0.0, 460.0), "then it stands")
+	# Far from where it is shown (a new order, a refusal): where told.
+	var far := BodyWalk.told(again, Vector2(0, 0), [Vector2(1000, 0)], [500], 415.0, 1430.0, 415.0)
+	_check(far["at"] == Vector2(0, 0), "told far from where it is shown: stands where told")
+	# A message without arrivals walks at the nominal speed, as before.
+	var nominal := BodyWalk.told({}, Vector2(0, 0), [Vector2(2860, 0)], [], 0.0, 1430.0, 0.0)
+	BodyWalk.advance(nominal, 1.0, 0.0)
+	_check(near.call(nominal["at"], Vector2(1430, 0)), "no arrivals: the nominal speed")

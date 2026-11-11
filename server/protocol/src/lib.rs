@@ -66,7 +66,9 @@ use serde::{Deserialize, Serialize};
 ///   the body walks; `body_left` when a body walks out of it or it moves
 ///   away. `body_walks` is sent again each time a walking body walks into
 ///   another chunk, never at each tile: the client walks it along its
-///   route in between.
+///   route in between, by time: `body_walks` and `chunk_bodies`' bodies
+///   carry the tick each waypoint is reached (`arrivals`), the route
+///   holding the points where the pace changes with the terrain.
 pub const PROTOCOL_VERSION: u32 = 19;
 
 /// Chunks whose frames a client keeps after they left its view, the
@@ -124,7 +126,12 @@ pub struct BodyState {
     /// Where it stands.
     pub at: Point,
     /// Waypoints still ahead, nearest first; empty when standing still.
+    /// Where it turns and where its pace changes (the terrain): between
+    /// two of them it walks straight at one pace.
     pub route: Vec<Point>,
+    /// The tick it stands at each waypoint of `route`: move it by time
+    /// between them, from `at` now.
+    pub arrivals: Vec<u64>,
     /// Nominal walking speed, on open ground; terrain slows it.
     pub speed_cm_per_s: u32,
     /// Lying asleep?
@@ -567,7 +574,12 @@ pub enum ServerMessage {
         /// Where it is now.
         at: Point,
         /// Waypoints ahead, nearest first; the last is the destination.
+        /// Where it turns and where its pace changes (the terrain).
         route: Vec<Point>,
+        /// The tick it stands at each waypoint of `route`: move it by
+        /// time between them, from `at` at `tick`, and it is where the
+        /// world has it whatever the ground (A6).
+        arrivals: Vec<u64>,
         /// Nominal walking speed, on open ground; terrain slows it.
         speed_cm_per_s: u32,
         /// When.
@@ -1067,6 +1079,7 @@ mod tests {
                     id: 1,
                     at: Point { x: 160_500, y: 500 },
                     route: vec![Point { x: 170_500, y: 500 }],
+                    arrivals: vec![80],
                     speed_cm_per_s: 143,
                     asleep: false,
                     holds: Some(ItemView {
@@ -1110,6 +1123,7 @@ mod tests {
                 body: 1,
                 at: Point { x: 4_500, y: 5_500 },
                 route: vec![Point { x: 6_500, y: 5_500 }, Point { x: 6_500, y: 9_500 }],
+                arrivals: vec![23, 51],
                 speed_cm_per_s: 143,
                 tick: 9,
             },
