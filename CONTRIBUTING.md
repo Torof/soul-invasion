@@ -31,6 +31,7 @@ as welcome as technical ones.
 5. Before opening the pull request, make sure it passes locally:
    - Server: `cd server && cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
    - Client: `godot --headless --path client --import && godot --headless --path client -s tests/run_tests.gd`
+   - A change to what the client ships (art, scenes, the export preset): `client/tools/export_size.sh` prints what the game weighs, to put in the pull request (D39).
 6. The CI must be green. Pull requests that touch a **protected area**
    (`docs/`, the protocol, dependencies, storage schema, `.github/`, licenses)
    need the project lead's approval, given by the `lead-approved` label; the
