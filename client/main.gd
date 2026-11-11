@@ -78,6 +78,12 @@ func _screenshot_then_quit(path: String) -> void:
 	var mode := ChunkView.WATER_MODE_NAMES.find(OS.get_environment("SOUL_INVASION_WATER_MODE"))
 	if mode >= 0:
 		ChunkView.set_water_mode(mode, get_tree())
+	# SOUL_INVASION_WATER_STREAKS=1, SOUL_INVASION_WATER_8M=1: the meshes'
+	# water with the streaks of the current, on the 8 m water (F11, F12).
+	if OS.get_environment("SOUL_INVASION_WATER_STREAKS") == "1":
+		ChunkView.set_water_streaks(true)
+	if OS.get_environment("SOUL_INVASION_WATER_8M") == "1":
+		ChunkView.set_water_8m(true, get_tree())
 	# SOUL_INVASION_WIND=0: the trees still, so two captures compare.
 	if OS.get_environment("SOUL_INVASION_WIND") == "0":
 		_world.set_wind(false)

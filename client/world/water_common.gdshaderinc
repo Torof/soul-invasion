@@ -18,6 +18,17 @@ uniform float flow_mix = 0.0;
 // over about six tiles. The flowing pattern passes through it as water
 // over an uneven bed. Zero: none.
 uniform float water_warp = 0.12;
+// Metres the water's texture repeats over (4; the 8 m water on F12).
+uniform float water_metres = 4.0;
+// The current as a layer of light: a grey streak map (mid-grey no
+// change) read with its streaks along the flow and scrolled at the
+// current's pace, in two phases like the water; the water's colour times
+// 1 + streak_strength × (streak - 0.5). F11.
+uniform sampler2D streak_texture : repeat_enable, filter_linear_mipmap;
+uniform bool has_streaks = false;
+uniform float streak_metres = 4.0;
+uniform float streak_strength = 1.5;
+uniform float streak_speed = 1.0;
 // The ground's images (the beds, the earth, the sand, the detail) read at
 // their level a zoom step.
 uniform float ground_lod = 0.0;
@@ -75,7 +86,7 @@ vec3 flowing(sampler2D tex, vec2 base, vec2 f, float period, float shift, float 
 
 // The flowing water at a point of the map in tiles.
 vec3 water_at(sampler2D tex, vec2 world, vec2 runs, float now) {
-	vec2 base = world * 0.25;
+	vec2 base = world / water_metres;
 	if (water_warp > 0.0) {
 		// Two waves of unrelated periods each way, so the warp itself has
 		// no visible stripes.
@@ -83,10 +94,24 @@ vec3 water_at(sampler2D tex, vec2 world, vec2 runs, float now) {
 			sin(world.x * 0.9 + world.y * 0.37) + 0.6 * sin(world.x * 0.31 - world.y * 0.83),
 			cos(world.y * 1.1 - world.x * 0.43) + 0.6 * cos(world.x * 0.57 + world.y * 0.29));
 	}
-	vec3 colour = flowing(tex, base, runs * (flow_period * 0.25), flow_period, 0.0, now);
+	vec3 colour = flowing(tex, base, runs * (flow_period / water_metres), flow_period, 0.0, now);
 	if (flow_mix > 0.0) {
 		mat2 turn = mat2(vec2(0.0, 1.0), vec2(-1.0, 0.0));
-		colour = mix(colour, flowing(tex, turn * base * 1.6, turn * runs * (1.15 * flow_period * 1.3 * 0.25 * 1.6), flow_period * 1.3, 0.37, now), flow_mix);
+		colour = mix(colour, flowing(tex, turn * base * 1.6, turn * runs * (1.15 * flow_period * 1.3 * 1.6 / water_metres), flow_period * 1.3, 0.37, now), flow_mix);
+	}
+	if (has_streaks) {
+		float pace = length(runs);
+		vec2 dir = pace > 1e-4 ? runs / pace : vec2(0.0, 1.0);
+		// The map's rows across the flow, its columns along it.
+		vec2 s = vec2(dot(world, vec2(dir.y, -dir.x)), dot(world, dir)) / streak_metres;
+		float t = now / flow_period;
+		float p0 = fract(t);
+		float p1 = fract(t + 0.5);
+		float w0 = 1.0 - abs(1.0 - 2.0 * p0);
+		float drift = pace * streak_speed * flow_period / streak_metres;
+		float l0 = textureLod(streak_texture, s - vec2(0.0, drift * p0), water_lod).r;
+		float l1 = textureLod(streak_texture, s - vec2(0.0, drift * p1) + vec2(0.5, 0.0), water_lod).r;
+		colour *= 1.0 + streak_strength * (l0 * w0 + l1 * (1.0 - w0) - 0.5);
 	}
 	return colour;
 }

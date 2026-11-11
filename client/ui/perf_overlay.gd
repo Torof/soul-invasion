@@ -85,6 +85,12 @@ func _unhandled_input(event: InputEvent) -> void:
 		for material: ShaderMaterial in [ChunkView.water_mesh_material(), ChunkView.water_bank_material()]:
 			material.set_shader_parameter("flow_mix", 0.45 if _second_layer else 0.0)
 		get_viewport().set_input_as_handled()
+	elif event.keycode == KEY_F11:
+		ChunkView.set_water_streaks(not ChunkView.water_streaks)
+		get_viewport().set_input_as_handled()
+	elif event.keycode == KEY_F12:
+		ChunkView.set_water_8m(not ChunkView.water_8m, get_tree())
+		get_viewport().set_input_as_handled()
 	elif event.keycode == KEY_F9:
 		FarView.drawing = (FarView.drawing + 1) % FarView.DRAWING_NAMES.size()
 		get_tree().call_group("far_views", "redraw_fog")
@@ -112,6 +118,13 @@ func measure_water() -> void:
 	_measuring = true
 	var rid := get_viewport().get_viewport_rid()
 	RenderingServer.viewport_set_measure_render_time(rid, true)
+	# Without the vertical sync and the frame cap meanwhile: waiting for
+	# the screen stalls the graphics card and lowers its clock, and the
+	# measure would read the wait.
+	var vsync := DisplayServer.window_get_vsync_mode()
+	var max_fps := Engine.max_fps
+	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+	Engine.max_fps = 0
 	var with_water: Array[float] = []
 	var without: Array[float] = []
 	for pass_n in 2:
@@ -127,6 +140,8 @@ func measure_water() -> void:
 				else:
 					with_water.append(ms)
 	get_tree().call_group("chunk_views", "set_water_hidden", false)
+	DisplayServer.window_set_vsync_mode(vsync)
+	Engine.max_fps = max_fps
 	var base := _median(with_water)
 	_water_cost[ChunkView.water_mode_name()] = [base - _median(without), base, gpu_clock_mhz()]
 	_measuring = false
@@ -219,7 +234,9 @@ func report(worst_ms: float) -> String:
 		"on" if _wind else "off", "plain" if _plain_ground else "shaded", "shown" if _trees_shown else "hidden",
 		FarView.drawing_name(),
 	])
-	lines.append("water %s (F7)   %s   meshes' second layer %s (F10)" % [ChunkView.water_mode_name(), "measuring..." if _measuring else "F8 measures its GPU time", "on" if _second_layer else "off"])
+	lines.append("water %s (F7)   %s" % [ChunkView.water_mode_name(), "measuring..." if _measuring else "F8 measures its GPU time"])
+	lines.append("  meshes: second layer %s (F10)   streaks %s (F11)   8 m water %s (F12)" % [
+		"on" if _second_layer else "off", "on" if ChunkView.water_streaks else "off", "on" if ChunkView.water_8m else "off"])
 	for mode: String in _water_cost:
 		var cost: Array = _water_cost[mode]
 		lines.append("  water %s: %.2f ms GPU (frame %.2f ms, clock %d MHz)" % [mode, cost[0], cost[1], cost[2]])

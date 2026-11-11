@@ -407,6 +407,66 @@ static func apply_water_spec(material: ShaderMaterial, fresh: bool) -> void:
 		material.set_shader_parameter(name, params[name])
 
 
+## The water art of the reserve tried on keys (F11 the streaks, F12 the
+## 8 m water): read from the reserve beside the client, else from the
+## lead's own checkout (the reserve is not in git, so a sandbox has none).
+const WATER_ART_DIRS := [
+	"res://../content/ai-reserve/sources/water/scenario-2026-11-11/",
+	"/home/torof/Desktop/projets-en-cours/soul invasion/content/ai-reserve/sources/water/scenario-2026-11-11/",
+]
+static var _water_art: Dictionary = {}
+static var water_streaks := false
+static var water_8m := false
+## The base water drawn by the meshes when not the ground's own.
+static var _water_base_override: Texture2D
+
+
+static func water_art_texture(name: String) -> Texture2D:
+	if not _water_art.has(name):
+		var texture: Texture2D = null
+		for dir: String in WATER_ART_DIRS:
+			var path := ProjectSettings.globalize_path(dir) + name if dir.begins_with("res://") else dir + name
+			if FileAccess.file_exists(path):
+				texture = fresh_texture(path)
+				if texture != null:
+					break
+		_water_art[name] = texture
+	return _water_art[name]
+
+
+## The streaks of the current over the meshes' water (F11), when the art
+## is there.
+static func set_water_streaks(on: bool) -> void:
+	var texture := water_art_texture("streaks_02_lightmap.png") if on else null
+	water_streaks = on and texture != null
+	for material: ShaderMaterial in [water_mesh_material(), water_bank_material()]:
+		material.set_shader_parameter("has_streaks", water_streaks)
+		if texture != null:
+			material.set_shader_parameter("streak_texture", texture)
+
+
+## The 8 m water as the meshes' base (F12), when the art is there.
+static func set_water_8m(on: bool, tree: SceneTree) -> void:
+	var texture := water_art_texture("water8m_02.png") if on else null
+	water_8m = on and texture != null
+	_water_base_override = texture if water_8m else null
+	for material: ShaderMaterial in [water_mesh_material(), water_bank_material()]:
+		material.set_shader_parameter("water_metres", 8.0 if water_8m else 4.0)
+	if tree != null:
+		tree.call_group("chunk_views", "redraw_water")
+
+
+## The water the meshes read.
+static func water_base() -> Texture2D:
+	return _water_base_override if _water_base_override != null else ground_texture("water")
+
+
+func redraw_water() -> void:
+	for canvas: WaterCanvas in [_water_canvas, _bank_canvas]:
+		if canvas != null:
+			canvas.queue_redraw()
+
+
 ## Cycles the water drawn (F7) and shows it on every chunk.
 static func cycle_water_mode(tree: SceneTree) -> void:
 	set_water_mode((water_mode + 1) % WATER_MODE_NAMES.size(), tree)
@@ -476,7 +536,7 @@ class WaterCanvas:
 	func _draw() -> void:
 		if arrays.is_empty():
 			return
-		var texture := ChunkView.ground_texture("water")
+		var texture := ChunkView.water_base()
 		RenderingServer.canvas_item_add_triangle_array(get_canvas_item(), arrays["indices"], arrays["points"], arrays["colours"], arrays["uvs"],
 			PackedInt32Array(), PackedFloat32Array(), texture.get_rid() if texture != null else RID())
 
