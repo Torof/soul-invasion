@@ -4,13 +4,17 @@
 // height (over 1280 px) and its blue its own phase. The tree bends rather
 // than leans: the lower part of its trunk stays still, the bend grows
 // towards the top. Gusts pass across the valley, so neighbours bend
-// together. The quad is widened a little so the bent crown is not cut.
+// together. The polygon the tree is drawn as leaves room either side of
+// the image for the bent crown (its UVs run past 0..1 there).
 shader_type canvas_item;
 
 uniform sampler2D noise_texture : repeat_enable, filter_linear;
 // The bend at the top, as a share of the tree's height, at rest and in a
 // gust; how fast the tree rocks; how wide and slow the gusts are; the
-// share of the height, from the foot, that never moves.
+// share of the height, from the foot, that never moves. The tree is drawn
+// as a polygon around what its image shows (Trees.Stand, TreeOutline),
+// with room either side for the largest bend: sway, gust and still are
+// Trees.SWAY, GUST and STILL, which size that room.
 uniform float sway = 0.005;
 uniform float gust = 0.012;
 uniform float rock_speed = 0.55;
@@ -46,7 +50,6 @@ varying float front_of_body;
 varying float hides_mouse;
 varying float bend_px;
 varying float width_px;
-varying float pad;
 varying float seed;
 
 void vertex() {
@@ -67,20 +70,17 @@ void vertex() {
 		// The image's width, from its height and the texture's proportions.
 		vec2 size = 1.0 / TEXTURE_PIXEL_SIZE;
 		width_px = height * size.x / size.y;
-		// Widen the quad either side by the largest bend.
-		pad = (sway + gust * 1.5) * height + 1.0;
-		VERTEX.x += (UV.x * 2.0 - 1.0) * pad;
-		// Where this point stands in the world view (the tree node is placed
-		// at its foot).
-		local = (MODEL_MATRIX * vec4(VERTEX, 0.0, 1.0)).xy;
+		// Where this point stands in the world view (the tree's item is
+		// placed at its foot).
+		local = at;
 	}
 }
 
 void fragment() {
 	if (is_tree > 0.5) {
-		// Back to the image's own coordinates, then bent: more towards the
-		// top, nothing over the still lower part.
-		float x = UV.x * (width_px + 2.0 * pad) - pad;
+		// The image's own coordinates (the polygon's UVs), in pixels, then
+		// bent: more towards the top, nothing over the still lower part.
+		float x = UV.x * width_px;
 		float up = 1.0 - UV.y;
 		float k = clamp((up - still) / (1.0 - still), 0.0, 1.0);
 		x -= bend_px * k * k;
