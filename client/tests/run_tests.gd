@@ -47,6 +47,7 @@ func _init() -> void:
 	_test_a_redraw_rebuilds_only_when_the_ground_around_changed()
 	_test_the_watchdog_reports_a_stalled_frame()
 	_test_trees_are_drawn_only_where_the_view_reaches()
+	_test_tall_plants_are_drawn_only_where_the_view_reaches()
 	_test_trees_sort_with_bodies_by_their_foot()
 	_test_the_bounds_held_are_kept_as_chunks_come_and_go()
 	_test_grounds_built_on_workers_are_laid_nearest_first_within_the_budget()
@@ -1089,6 +1090,56 @@ func _test_trees_are_drawn_only_where_the_view_reaches() -> void:
 				apart = apart and (p == q or not p.intersects(q))
 		var common := a.intersection(b).get_area() if b.has_area() and a.intersects(b) else 0
 		_check(apart and area + common == a.get_area(), "a view less another: %s less %s" % [a, b])
+	RenderingServer.free_rid(parent)
+
+
+func _test_tall_plants_are_drawn_only_where_the_view_reaches() -> void:
+	var flora := [
+		{"id": "bramble", "name": "Bramble", "family": "shrub", "height_cm": 90},
+		{"id": "porcini", "name": "Porcini", "family": "mushroom", "height_cm": 15},
+	]
+	# A field of brambles and mushrooms, and a kind unknown, as a chunk
+	# brings them (kind, x, y).
+	var plants := PackedInt32Array()
+	var kept: Array = []
+	for j in 12:
+		for i in 12:
+			var k := 0 if (i + j) % 3 else 1
+			var at := Vector2(1_100 + 2_300 * i, 900 + 2_100 * j)
+			plants.append_array([k, int(at.x), int(at.y)])
+			if k == 0:
+				kept.append(at)
+	plants.append_array([7, 5_000, 5_000])
+	var stand := PlantStand.new(plants, flora)
+	_check(stand.size() == kept.size() and stand.size() == 96, "only the tall plants of a known kind are kept, in the server's order: %d" % stand.size())
+	var placed := true
+	for i in stand.size():
+		var at: Vector2 = kept[i]
+		var region := ChunkView.plant_region(at, flora[0])
+		placed = placed and stand.feet[i] == Iso.point_to_screen(at) and stand.region(i) == region and stand.rect(i) == ChunkView.plant_rect(at, flora[0], region)
+	_check(placed, "each tall plant keeps its foot, its image and its rectangle, as its node had")
+	var parent := RenderingServer.canvas_item_create()
+	stand.parent = parent
+	for seen: Rect2 in [Rect2(-300, 200, 640, 360), Rect2(-100, 400, 640, 360), Rect2(-900, -200, 2560, 1440), Rect2(5000, 5000, 100, 100), Rect2(-300, 200, 640, 360)]:
+		var cells := Trees.Stand.cell_range(seen)
+		stand.show_cells(cells)
+		var exact := true
+		for i in stand.size():
+			var r := stand.rect(i)
+			if r.intersects(seen) and not stand.items.has(i):
+				exact = false
+			if stand.items.has(i) != Trees.Stand.cell_range(r).intersects(cells):
+				exact = false
+		_check(exact, "the tall plants drawn are those whose image meets the view's cells: %s" % seen)
+	_check(not stand.items.is_empty() and stand.items.size() < stand.size(), "a view on part of the field draws part of it: %d" % stand.items.size())
+	var pooled := Trees._pool.size()
+	var held := stand.items.size()
+	stand.show_cells(Rect2i())
+	_check(stand.items.is_empty() and Trees._pool.size() == pooled + held, "out of view, the tall plants give their canvas items back")
+	stand.show_cells(Trees.Stand.cell_range(Rect2(-300, 200, 640, 360)))
+	stand.release()
+	_check(stand.items.is_empty() and stand.refs.count(0) == stand.size() and stand.shown == Rect2i(), "released, nothing is held")
+	_check(PlantStand.new(PackedInt32Array([1, 100, 100]), flora).size() == 0, "a chunk of mushrooms has no tall plant")
 	RenderingServer.free_rid(parent)
 
 

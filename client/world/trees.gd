@@ -731,6 +731,29 @@ static var _pool: Array[RID] = []
 const POOL_MOST := 4096
 
 
+## A canvas item for a tree or a tall plant coming into view: from the pool,
+## or new. It draws with its parent's material, its image read with its
+## mipmaps (what the nodes took from the world view before).
+static func take_item() -> RID:
+	if not _pool.is_empty():
+		return _pool.pop_back()
+	var item := RenderingServer.canvas_item_create()
+	RenderingServer.canvas_item_set_use_parent_material(item, true)
+	RenderingServer.canvas_item_set_default_texture_filter(item, RenderingServer.CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS)
+	return item
+
+
+## Gives back the canvas item of a tree or a tall plant going out of view:
+## cleared, unhung, kept for the next one (freed past POOL_MOST).
+static func give_back(item: RID) -> void:
+	RenderingServer.canvas_item_clear(item)
+	RenderingServer.canvas_item_set_parent(item, RID())
+	if _pool.size() < POOL_MOST:
+		_pool.append(item)
+	else:
+		RenderingServer.free_rid(item)
+
+
 ## Frees the canvas items kept for trees to come (the world is going).
 static func free_pool() -> void:
 	for item: RID in _pool:
@@ -914,14 +937,7 @@ class Stand:
 						_hide(i)
 
 	func _show(i: int) -> void:
-		var item: RID
-		if Trees._pool.is_empty():
-			item = RenderingServer.canvas_item_create()
-			RenderingServer.canvas_item_set_use_parent_material(item, true)
-			# The mipmaps the tree nodes took from the world view before.
-			RenderingServer.canvas_item_set_default_texture_filter(item, RenderingServer.CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS)
-		else:
-			item = Trees._pool.pop_back()
+		var item := Trees.take_item()
 		RenderingServer.canvas_item_set_parent(item, parent)
 		# Sorted by its foot (its transform), ties in the server's order (its
 		# index), as when each tree had a node.
@@ -936,12 +952,7 @@ class Stand:
 		var item: RID = items[i]
 		items.erase(i)
 		Trees._count_shown(kinds[kind[i]], -1)
-		RenderingServer.canvas_item_clear(item)
-		RenderingServer.canvas_item_set_parent(item, RID())
-		if Trees._pool.size() < Trees.POOL_MOST:
-			Trees._pool.append(item)
-		else:
-			RenderingServer.free_rid(item)
+		Trees.give_back(item)
 
 	## The tree's image as its outline (Trees.hull) scaled to its rectangle:
 	## the polygon's vertices carry the image's own coordinates as UVs (past
