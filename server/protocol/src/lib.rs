@@ -311,7 +311,7 @@ pub enum ServerMessage {
         body: Option<u32>,
     },
     /// The shape of the world, sent once after [`ServerMessage::Welcome`].
-    /// The ground itself follows in [`ServerMessage::Chunk`] messages.
+    /// The ground itself follows in chunk frames ([`encode_chunk`]).
     WorldState {
         /// Map columns.
         width: u32,
