@@ -12,12 +12,12 @@ uniform float water_lod = 0.0;
 // A second layer of the same water, turned and smaller, over the first
 // by flow_mix (today's two layers): hides the four-metre repeat for two
 // more reads. Zero: one layer.
-uniform float flow_mix = 0.0;
+uniform float flow_mix = 0.45;
 // A slow, still warp of the water's coordinates, so its four-metre
 // lattice no longer lines up with itself: in periods of the texture,
 // over about six tiles. The flowing pattern passes through it as water
 // over an uneven bed. Zero: none.
-uniform float water_warp = 0.12;
+uniform float water_warp = 0.0;
 // Metres the water's texture repeats over (4; the 8 m water on F12).
 uniform float water_metres = 4.0;
 // The current as a layer of light: a grey streak map (mid-grey no

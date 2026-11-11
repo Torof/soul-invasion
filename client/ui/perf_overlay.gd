@@ -105,7 +105,7 @@ const MEASURE_FRAMES := 300
 const MEASURE_SETTLE := 10
 var _measuring := false
 ## The meshes' water with its second layer (F10).
-var _second_layer := false
+var _second_layer := true
 ## mode name -> [the water's GPU ms, the frame's GPU ms with it, clock MHz]
 var _water_cost: Dictionary = {}
 
