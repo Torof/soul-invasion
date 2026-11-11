@@ -49,7 +49,7 @@ func _ready() -> void:
 	_canvas.draw.connect(_paint)
 	add_child(_canvas)
 	Net.world_state.connect(func(_w: int, _h: int, _c: int, _m: Array, _n: bool) -> void: progress.has_world = true)
-	Net.chunk.connect(func(_x: int, _y: int, _t: Array, _b: Array, _i: Array, _tr: Array, _cu: Array, _pl: Array) -> void:
+	Net.chunk.connect(func(_x: int, _y: int, _chunk: Dictionary) -> void:
 		progress.chunk_came(Time.get_ticks_msec()))
 	Net.disconnected.connect(_on_disconnected)
 	progress.start(Time.get_ticks_msec())

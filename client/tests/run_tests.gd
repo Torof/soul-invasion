@@ -27,6 +27,7 @@ func _init() -> void:
 	_test_the_ground_index_says_what_each_canvas_draws()
 	_test_each_ground_canvas_covers_only_its_rows()
 	_test_currents_decode()
+	_test_the_golden_chunk_decodes()
 	_test_tree_images_are_clean()
 	_test_tree_feet_are_whole()
 	_test_loading_waits_for_the_valley()
@@ -763,6 +764,35 @@ func _test_currents_decode() -> void:
 	_check(south.distance_to(Vector2(0, 0.5)) < 1e-4, "heading 0 runs +y at 0.5 m/s: %s" % south)
 	var east := WaterMeshes.current_vector(4 * 256 + 35)
 	_check(east.distance_to(Vector2(0.35, 0)) < 1e-4, "heading 4 runs +x: %s" % east)
+
+
+## The chunk frame the server's protocol writes (its test
+## `the_golden_chunk_is_the_clients` keeps tests/fixtures/chunk_v17.bin):
+## every field read back. A change of the layout on one side only breaks
+## this test or the server's.
+func _test_the_golden_chunk_decodes() -> void:
+	var bytes := FileAccess.get_file_as_bytes("res://tests/fixtures/chunk_v17.bin")
+	_check(bytes.size() == 83, "the golden chunk is there: %d bytes" % bytes.size())
+	var c := Protocol.decode_chunk(bytes, PackedStringArray(["m0", "m1", "m2", "m3", "m4"]))
+	_check(not c.is_empty(), "the golden chunk decodes")
+	if c.is_empty():
+		return
+	_check([c["x"], c["y"], c["version"]] == [3, -2, 7], "its place and version: %s" % [[c["x"], c["y"], c["version"]]])
+	_check(c["tiles"] == PackedByteArray([1, 2, 3, 4, 5, 6, 1, 3, 2, 2, 1, 1, 6, 6, 6, 5]), "its tiles: %s" % c["tiles"])
+	_check(c["currents"] == PackedInt32Array([0, 0, 1059, 50, 3073, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4095]), "its currents: %s" % c["currents"])
+	_check(c["trees"] == PackedInt32Array([2, 43_999, -8_000, 0, 13_500, -5_750]), "its trees: %s" % c["trees"])
+	_check(c["plants"] == PackedInt32Array([11, 12_700, -4_100]), "its plants: %s" % c["plants"])
+	var items: Array = c["items"]
+	_check(items == [
+		{"id": 281_474_976_710_698, "x": 15, "y": -7, "material": ""},
+		{"id": 4_503_668_346_716_227, "x": 13, "y": -8, "material": "m4"},
+		{"id": 4_503_668_346_717_120, "x": 15, "y": -5, "material": "m0"},
+	], "its items: %s" % [items])
+	_check(Protocol.decode_chunk(bytes.slice(0, 82), PackedStringArray()).is_empty(), "a frame cut short is refused")
+	var dry := Protocol.decode_chunk(bytes, PackedStringArray())
+	var stand := Trees.Stand.new(dry["trees"], {"oak": 2_200}, PackedStringArray(["oak", "pine", "birch"]))
+	_check(Array(stand.kinds) == ["birch", "oak"] and stand.at[1] == Vector2(13_500, -5_750), "a stand reads the trees as they come")
+	stand.release()
 
 
 ## Every tree image stands on its foot (no empty rows under it, so it is

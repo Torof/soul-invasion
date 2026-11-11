@@ -47,6 +47,8 @@ OPTIONS:
     --dev                  Development tools: every client gets an overview
                            of the whole map and may teleport its body. Never
                            for play.
+    --dump-chunk <X,Y>     Development: print chunk (X, Y) as a client
+                           decodes it from its binary frame, then exit.
     --no-warm-up           Paced mode: listen at once, without placing the
                            plants of the view around the camp first; the
                            first client waits for them instead. For tests.
@@ -96,6 +98,9 @@ pub struct Options {
     pub calendar: Calendar,
     /// Development tools on (`--dev`): the map's overview and teleports.
     pub dev: bool,
+    /// Development (`--dump-chunk X,Y`): print that chunk as a client
+    /// decodes it, then exit.
+    pub dump_chunk: Option<(i32, i32)>,
     /// A new world's valley, tiles on a side.
     pub valley_size: u32,
     /// When the plants of the view around the camp are placed (paced mode).
@@ -127,6 +132,7 @@ impl Default for Options {
             content: None,
             calendar: Calendar::default(),
             dev: false,
+            dump_chunk: None,
             valley_size: sim::VALLEY_SIZE,
             warm_up: WarmUp::BeforeListening,
         }
@@ -195,6 +201,16 @@ impl Options {
                 "--ephemeral" => opts.data = DataLocation::Ephemeral,
                 "--reset" => opts.reset = true,
                 "--dev" => opts.dev = true,
+                "--dump-chunk" => {
+                    let raw: String = value(arg, args.next())?;
+                    let parsed = raw
+                        .split_once(',')
+                        .and_then(|(x, y)| Some((x.trim().parse().ok()?, y.trim().parse().ok()?)));
+                    opts.dump_chunk = Some(parsed.ok_or(CliError::InvalidValue {
+                        option: arg.to_owned(),
+                        value: raw,
+                    })?);
+                }
                 "--valley-size" => opts.valley_size = value(arg, args.next())?,
                 "--no-warm-up" => opts.warm_up = WarmUp::OnDemand,
                 "--time-scale" => opts.time_scale = value(arg, args.next())?,
@@ -297,6 +313,11 @@ mod tests {
     fn development_tools_are_off_unless_asked() {
         assert!(!Options::parse(Vec::<&str>::new()).unwrap().dev);
         assert!(Options::parse(["--dev"]).unwrap().dev);
+        assert_eq!(
+            Options::parse(["--dump-chunk", "3,-4"]).unwrap().dump_chunk,
+            Some((3, -4))
+        );
+        assert!(Options::parse(["--dump-chunk", "3"]).is_err());
     }
 
     #[test]

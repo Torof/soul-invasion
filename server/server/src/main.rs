@@ -71,6 +71,18 @@ fn run(opts: &Options) -> Result<(), BoxError> {
         calendar.ticks_per_day(),
     );
 
+    if let Some((x, y)) = opts.dump_chunk {
+        // Development: a chunk as the client decodes it, then nothing more.
+        let shared = Shared::new(&world, &content, 1, 1.0);
+        print!(
+            "{}",
+            shared
+                .dump_chunk(sim::ChunkPos::new(x, y))
+                .map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+
     if opts.headless {
         let days = opts.days.expect("validated by Options::parse");
         println!("headless: simulating {days} day(s) as fast as possible");

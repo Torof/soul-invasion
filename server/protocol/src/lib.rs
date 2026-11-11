@@ -6,10 +6,13 @@
 //! *intentions*; the server only ever sends what the player's body perceives.
 //!
 //! The ground travels in chunks (D08, D31): after [`ServerMessage::Welcome`]
-//! and [`ServerMessage::WorldState`], the client receives one
-//! [`ServerMessage::Chunk`] per chunk around its body, then more as the
-//! body walks and [`ServerMessage::ChunkHidden`] for those left behind.
-//! Bodies are only reported while they stand in a chunk the client holds.
+//! and [`ServerMessage::WorldState`], the client receives one chunk frame
+//! per chunk around its body, then more as the body walks and
+//! [`ServerMessage::ChunkHidden`] for those left behind. A chunk is the
+//! one message sent in binary ([`encode_chunk`], the layout in
+//! [`ChunkFrame`]'s doc); every other message is JSON. The bodies standing
+//! in a chunk follow its frame in [`ServerMessage::ChunkBodies`]. Bodies
+//! are only reported while they stand in a chunk the client holds.
 //!
 //! Any change to this crate is a protected area (see `CODEOWNERS`).
 
@@ -46,7 +49,9 @@ use serde::{Deserialize, Serialize};
 ///   currents, trees and tall plants, drawn fading into the haze.
 /// - v16: `chunk_outline` is gone: the view's last tiles fade into a fog
 ///   inside the chunks held, so no ring is sent around them.
-pub const PROTOCOL_VERSION: u32 = 16;
+/// - v17: a chunk travels as a binary frame ([`ChunkFrame`]), with its
+///   version; the bodies standing in it follow in `chunk_bodies`.
+pub const PROTOCOL_VERSION: u32 = 17;
 
 /// A tile on the map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,26 +236,6 @@ pub struct FloraView {
     pub height_cm: u32,
 }
 
-/// A plant standing on the ground, compact: many come in every chunk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PlantState {
-    /// Its kind: an index into [`ServerMessage::WorldState`]'s `flora`.
-    pub kind: u16,
-    /// Where it stands, millimetres east of the grid's origin.
-    pub x: i32,
-    /// Millimetres south.
-    pub y: i32,
-}
-
-/// A tree standing on the ground.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TreeState {
-    /// Where its trunk meets the ground.
-    pub at: Point,
-    /// Content id of its kind, found in [`ServerMessage::WorldState`].
-    pub species: String,
-}
-
 /// Messages sent by the client to the server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -326,7 +311,7 @@ pub enum ServerMessage {
         body: Option<u32>,
     },
     /// The shape of the world, sent once after [`ServerMessage::Welcome`].
-    /// The ground itself follows in [`ServerMessage::Chunk`] messages.
+    /// The ground itself follows in chunk frames ([`encode_chunk`]).
     WorldState {
         /// Map columns.
         width: u32,
@@ -345,31 +330,15 @@ pub enum ServerMessage {
         /// The clock.
         clock: Clock,
     },
-    /// A chunk of ground the client now holds, with the bodies standing
-    /// in it and the items lying in it. Chunk (0, 0) holds tiles
-    /// `(0..chunk_size, 0..chunk_size)`.
-    Chunk {
+    /// The bodies standing in a chunk, sent right after its frame
+    /// ([`encode_chunk`]) when there are any.
+    ChunkBodies {
         /// Column of chunks.
         x: i32,
         /// Row of chunks.
         y: i32,
-        /// `chunk_size × chunk_size` tiles, row by row from the north-west
-        /// corner; rock where the chunk reaches past the map.
-        tiles: Vec<Terrain>,
         /// Every body standing in this chunk.
         bodies: Vec<BodyState>,
-        /// Every item lying in this chunk.
-        items: Vec<ItemState>,
-        /// Every tree standing in this chunk.
-        trees: Vec<TreeState>,
-        /// Every plant standing in this chunk.
-        plants: Vec<PlantState>,
-        /// Where the water runs, tile by tile like `tiles`: 0 where it
-        /// does not (land, rock); else its heading times 256 plus its speed
-        /// in centimetres a second (1 to 255). Heading h, from 0 to 15,
-        /// points along (sin(h × 22.5°), cos(h × 22.5°)) in tiles: 0 down
-        /// the map (+y), 4 along +x.
-        currents: Vec<u16>,
     },
     /// A chunk the client no longer holds: forget its tiles and the
     /// bodies in it.
@@ -561,6 +530,375 @@ pub fn decode<'a, T: Deserialize<'a>>(text: &'a str) -> Result<T, serde_json::Er
     serde_json::from_str(text)
 }
 
+/// A tree or a plant in a [`ChunkFrame`]: where it stands in its chunk
+/// and its kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Standing {
+    /// Millimetres east of the chunk's north-west corner.
+    pub dx: u16,
+    /// Millimetres south of it.
+    pub dy: u16,
+    /// A tree's species, an index into [`ServerMessage::WorldState`]'s
+    /// `species`; a plant's kind, into its `flora`.
+    pub kind: u8,
+}
+
+/// A natural item in a [`ChunkFrame`]: what the ground itself drops. Its
+/// id and its tile follow from the chunk and the slot (`sim::items`): id
+/// `2^52 | chunk x << 34 | chunk y << 16 | slot`, tile `slot >> 6` in the
+/// chunk, row by row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NaturalItem {
+    /// Its slot in the chunk.
+    pub slot: u16,
+    /// Its material, an index into [`ServerMessage::WorldState`]'s
+    /// `materials`.
+    pub material: u8,
+}
+
+/// An item men laid on the ground, in a [`ChunkFrame`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoredItem {
+    /// Item id.
+    pub id: u64,
+    /// Its tile's column in the chunk.
+    pub dx: u8,
+    /// Its tile's row in the chunk.
+    pub dy: u8,
+    /// Its material, an index into [`ServerMessage::WorldState`]'s
+    /// `materials`.
+    pub material: u16,
+}
+
+/// A chunk of ground the client now holds, sent as a binary frame
+/// ([`encode_chunk`], [`decode_chunk`]): what lies and stands in it, the
+/// bodies apart ([`ServerMessage::ChunkBodies`]). Chunk (0, 0) holds tiles
+/// `(0..side, 0..side)`.
+///
+/// The frame, little-endian:
+///
+/// - header, 16 bytes: `x i32`, `y i32`, `version u32`, `flags u8` (bit 0:
+///   the chunk has water, so currents follow the tiles), `side u8`, two
+///   bytes 0;
+/// - tiles: `side × side` bytes, row by row from the north-west corner,
+///   each a [`Terrain`] code ([`terrain_code`]);
+/// - currents, when flag 0 is set: one `u16` per water tile (river, ford,
+///   brook) in tile order;
+/// - trees: `n u16`, then `n × (dx u16, dy u16, species u8)`;
+/// - plants: `n u16`, then `n × (dx u16, dy u16, kind u8)`;
+/// - natural items: `n u16`, then `n × (slot u16, material u8)`;
+/// - stored items: `n u16`, then `n × (id u64, dx u8, dy u8, material u16)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkFrame {
+    /// Column of chunks.
+    pub x: i32,
+    /// Row of chunks.
+    pub y: i32,
+    /// The chunk's version: how many times men changed it, 0 while it is
+    /// as the seed made it.
+    pub version: u32,
+    /// `side × side` tiles, row by row from the north-west corner; rock
+    /// where the chunk reaches past the map.
+    pub tiles: Vec<Terrain>,
+    /// Where the water runs, tile by tile like `tiles`: 0 where it does
+    /// not, always on dry tiles (land, rock); else its heading times 256
+    /// plus its speed in centimetres a second (1 to 255). Heading h, from
+    /// 0 to 15, points along (sin(h × 22.5°), cos(h × 22.5°)) in tiles: 0
+    /// down the map (+y), 4 along +x.
+    pub currents: Vec<u16>,
+    /// Every tree standing in this chunk.
+    pub trees: Vec<Standing>,
+    /// Every plant standing in this chunk.
+    pub plants: Vec<Standing>,
+    /// The ground's own items still lying in this chunk.
+    pub natural: Vec<NaturalItem>,
+    /// The items men laid in this chunk.
+    pub stored: Vec<StoredItem>,
+}
+
+impl ChunkFrame {
+    /// The id of the natural item in `slot` of this chunk, as `sim::items`
+    /// makes it: 18 bits a chunk coordinate (natural items lie only in
+    /// chunks 0 to 262,143 either way).
+    #[must_use]
+    pub fn natural_id(&self, slot: u16) -> u64 {
+        const MASK: u32 = (1 << 18) - 1;
+        let cx = u64::from(self.x.cast_unsigned() & MASK);
+        let cy = u64::from(self.y.cast_unsigned() & MASK);
+        1 << 52 | cx << 34 | cy << 16 | u64::from(slot)
+    }
+
+    /// Every item lying in the chunk, in the order of their ids, as a
+    /// client rebuilds them: their materials named from `materials`
+    /// (`WorldState`'s), empty for an index past it.
+    #[must_use]
+    pub fn items(&self, materials: &[MaterialView]) -> Vec<ItemState> {
+        let side = self.tiles.len().isqrt().max(1);
+        let (x0, y0) = (self.x * side_i32(side), self.y * side_i32(side));
+        let name = |i: usize| materials.get(i).map_or_else(String::new, |m| m.id.clone());
+        let mut items: Vec<ItemState> = self
+            .stored
+            .iter()
+            .map(|i| ItemState {
+                id: i.id,
+                x: x0 + i32::from(i.dx),
+                y: y0 + i32::from(i.dy),
+                material: name(usize::from(i.material)),
+            })
+            .chain(self.natural.iter().map(|i| {
+                let tile = usize::from(i.slot >> 6);
+                ItemState {
+                    id: self.natural_id(i.slot),
+                    x: x0 + side_i32(tile % side),
+                    y: y0 + side_i32(tile / side),
+                    material: name(usize::from(i.material)),
+                }
+            }))
+            .collect();
+        items.sort_by_key(|i| i.id);
+        items
+    }
+}
+
+/// A small count as an `i32`.
+fn side_i32(n: usize) -> i32 {
+    i32::try_from(n).expect("a chunk's side")
+}
+
+/// Bytes of a chunk frame's header.
+pub const CHUNK_HEADER: usize = 16;
+/// Flag of a chunk frame: the chunk has water, its currents follow.
+pub const CHUNK_HAS_WATER: u8 = 1;
+
+/// A chunk frame that cannot be written or read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FrameError {
+    /// The tiles are not a square of at most 255 on a side, or the
+    /// currents are not one a tile.
+    Shape,
+    /// A dry tile has a current: it would be lost on the wire.
+    DryCurrent,
+    /// More than 65,535 of something.
+    TooMany,
+    /// The bytes end too early, or go on past the frame.
+    Length,
+    /// A tile code no terrain has.
+    Terrain(u8),
+}
+
+impl std::fmt::Display for FrameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Shape => write!(f, "tiles not a square, or currents not one a tile"),
+            Self::DryCurrent => write!(f, "a current on a dry tile"),
+            Self::TooMany => write!(f, "more than 65535 of a kind of thing"),
+            Self::Length => write!(f, "the frame's length does not match its content"),
+            Self::Terrain(code) => write!(f, "unknown terrain code {code}"),
+        }
+    }
+}
+
+impl std::error::Error for FrameError {}
+
+/// A terrain's code in a chunk frame: the client's `TerrainGrid` codes (0
+/// is no terrain).
+#[must_use]
+pub fn terrain_code(terrain: Terrain) -> u8 {
+    match terrain {
+        Terrain::Grass => 1,
+        Terrain::Forest => 2,
+        Terrain::Water => 3,
+        Terrain::Ford => 4,
+        Terrain::Brook => 5,
+        Terrain::Rock => 6,
+    }
+}
+
+/// The terrain of a code ([`terrain_code`]), if any.
+#[must_use]
+pub fn terrain_of_code(code: u8) -> Option<Terrain> {
+    Some(match code {
+        1 => Terrain::Grass,
+        2 => Terrain::Forest,
+        3 => Terrain::Water,
+        4 => Terrain::Ford,
+        5 => Terrain::Brook,
+        6 => Terrain::Rock,
+        _ => return None,
+    })
+}
+
+/// Does water run on this terrain (its current is on the wire)?
+#[must_use]
+pub fn is_water(terrain: Terrain) -> bool {
+    matches!(terrain, Terrain::Water | Terrain::Ford | Terrain::Brook)
+}
+
+/// A count of things, as the frame writes it.
+fn count(n: usize) -> Result<[u8; 2], FrameError> {
+    u16::try_from(n)
+        .map(u16::to_le_bytes)
+        .map_err(|_| FrameError::TooMany)
+}
+
+/// Writes a chunk frame (the layout in [`ChunkFrame`]'s doc).
+///
+/// # Errors
+///
+/// When the tiles are not a square of at most 255 on a side or the
+/// currents not one a tile, when a dry tile has a current, or when there
+/// are more than 65,535 of some thing.
+pub fn encode_chunk(chunk: &ChunkFrame) -> Result<Vec<u8>, FrameError> {
+    let side = chunk.tiles.len().isqrt();
+    if side * side != chunk.tiles.len() || chunk.currents.len() != chunk.tiles.len() {
+        return Err(FrameError::Shape);
+    }
+    let side = u8::try_from(side).map_err(|_| FrameError::Shape)?;
+    let wet = chunk.tiles.iter().any(|&t| is_water(t));
+    let mut out = Vec::with_capacity(
+        CHUNK_HEADER
+            + chunk.tiles.len()
+            + 8
+            + 5 * (chunk.trees.len() + chunk.plants.len())
+            + 3 * chunk.natural.len()
+            + 12 * chunk.stored.len(),
+    );
+    out.extend_from_slice(&chunk.x.to_le_bytes());
+    out.extend_from_slice(&chunk.y.to_le_bytes());
+    out.extend_from_slice(&chunk.version.to_le_bytes());
+    out.extend_from_slice(&[if wet { CHUNK_HAS_WATER } else { 0 }, side, 0, 0]);
+    out.extend(chunk.tiles.iter().map(|&t| terrain_code(t)));
+    for (&tile, &current) in chunk.tiles.iter().zip(&chunk.currents) {
+        if is_water(tile) {
+            out.extend_from_slice(&current.to_le_bytes());
+        } else if current != 0 {
+            return Err(FrameError::DryCurrent);
+        }
+    }
+    for standing in [&chunk.trees, &chunk.plants] {
+        out.extend_from_slice(&count(standing.len())?);
+        for s in standing {
+            out.extend_from_slice(&s.dx.to_le_bytes());
+            out.extend_from_slice(&s.dy.to_le_bytes());
+            out.push(s.kind);
+        }
+    }
+    out.extend_from_slice(&count(chunk.natural.len())?);
+    for item in &chunk.natural {
+        out.extend_from_slice(&item.slot.to_le_bytes());
+        out.push(item.material);
+    }
+    out.extend_from_slice(&count(chunk.stored.len())?);
+    for item in &chunk.stored {
+        out.extend_from_slice(&item.id.to_le_bytes());
+        out.extend_from_slice(&[item.dx, item.dy]);
+        out.extend_from_slice(&item.material.to_le_bytes());
+    }
+    Ok(out)
+}
+
+/// Reads a chunk frame byte by byte.
+struct Reader<'a> {
+    bytes: &'a [u8],
+}
+
+impl Reader<'_> {
+    fn take<const N: usize>(&mut self) -> Result<[u8; N], FrameError> {
+        let (head, rest) = self
+            .bytes
+            .split_first_chunk::<N>()
+            .ok_or(FrameError::Length)?;
+        self.bytes = rest;
+        Ok(*head)
+    }
+
+    fn u8(&mut self) -> Result<u8, FrameError> {
+        Ok(self.take::<1>()?[0])
+    }
+
+    fn u16(&mut self) -> Result<u16, FrameError> {
+        self.take().map(u16::from_le_bytes)
+    }
+
+    fn standing(&mut self) -> Result<Vec<Standing>, FrameError> {
+        let n = self.u16()?;
+        (0..n)
+            .map(|_| {
+                Ok(Standing {
+                    dx: self.u16()?,
+                    dy: self.u16()?,
+                    kind: self.u8()?,
+                })
+            })
+            .collect()
+    }
+}
+
+/// Reads a chunk frame ([`encode_chunk`]).
+///
+/// # Errors
+///
+/// When the bytes are not a whole frame and nothing more, or a tile code
+/// is no terrain's.
+pub fn decode_chunk(bytes: &[u8]) -> Result<ChunkFrame, FrameError> {
+    let mut r = Reader { bytes };
+    let x = i32::from_le_bytes(r.take()?);
+    let y = i32::from_le_bytes(r.take()?);
+    let version = u32::from_le_bytes(r.take()?);
+    let [flags, side, _, _] = r.take::<4>()?;
+    let side = usize::from(side);
+    let tiles = (0..side * side)
+        .map(|_| {
+            let code = r.u8()?;
+            terrain_of_code(code).ok_or(FrameError::Terrain(code))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut currents = vec![0; tiles.len()];
+    if flags & CHUNK_HAS_WATER != 0 {
+        for (current, &tile) in currents.iter_mut().zip(&tiles) {
+            if is_water(tile) {
+                *current = r.u16()?;
+            }
+        }
+    }
+    let trees = r.standing()?;
+    let plants = r.standing()?;
+    let n = r.u16()?;
+    let natural = (0..n)
+        .map(|_| {
+            Ok(NaturalItem {
+                slot: r.u16()?,
+                material: r.u8()?,
+            })
+        })
+        .collect::<Result<Vec<_>, FrameError>>()?;
+    let n = r.u16()?;
+    let stored = (0..n)
+        .map(|_| {
+            Ok(StoredItem {
+                id: u64::from_le_bytes(r.take()?),
+                dx: r.u8()?,
+                dy: r.u8()?,
+                material: r.u16()?,
+            })
+        })
+        .collect::<Result<Vec<_>, FrameError>>()?;
+    if !r.bytes.is_empty() {
+        return Err(FrameError::Length);
+    }
+    Ok(ChunkFrame {
+        x,
+        y,
+        version,
+        tiles,
+        currents,
+        trees,
+        plants,
+        natural,
+        stored,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -634,10 +972,9 @@ mod tests {
                     time_scale_permille: 1000,
                 },
             },
-            ServerMessage::Chunk {
+            ServerMessage::ChunkBodies {
                 x: 5,
                 y: -1,
-                tiles: vec![Terrain::Grass, Terrain::Water],
                 bodies: vec![BodyState {
                     id: 1,
                     at: Point { x: 160_500, y: 500 },
@@ -649,22 +986,6 @@ mod tests {
                         material: "flint".into(),
                     }),
                 }],
-                items: vec![ItemState {
-                    id: 9,
-                    x: 161,
-                    y: 1,
-                    material: "flint".into(),
-                }],
-                trees: vec![TreeState {
-                    at: Point { x: 162_300, y: 700 },
-                    species: "oak".into(),
-                }],
-                plants: vec![PlantState {
-                    kind: 0,
-                    x: 161_200,
-                    y: 900,
-                }],
-                currents: vec![0, 4 * 256 + 35],
             },
             ServerMessage::ChunkHidden { x: 5, y: 4 },
             ServerMessage::Pong { nonce: 42 },
@@ -807,35 +1128,14 @@ mod tests {
             .unwrap(),
             r#"{"type":"act_refused","body":1,"act":"pick_up","item":5,"reason":"out_of_reach"}"#
         );
-        let text = encode(&ServerMessage::Chunk {
-            x: 1,
-            y: 2,
-            tiles: vec![Terrain::Ford],
-            bodies: vec![],
-            items: vec![ItemState {
-                id: 3,
-                x: 32,
-                y: 64,
-                material: "pebble".into(),
-            }],
-            trees: vec![TreeState {
-                at: Point {
-                    x: 32_400,
-                    y: 64_700,
-                },
-                species: "birch".into(),
-            }],
-            plants: vec![PlantState {
-                kind: 2,
-                x: 32_100,
-                y: 64_300,
-            }],
-            currents: vec![1059],
-        })
-        .unwrap();
         assert_eq!(
-            text,
-            r#"{"type":"chunk","x":1,"y":2,"tiles":["ford"],"bodies":[],"items":[{"id":3,"x":32,"y":64,"material":"pebble"}],"trees":[{"at":{"x":32400,"y":64700},"species":"birch"}],"plants":[{"kind":2,"x":32100,"y":64300}],"currents":[1059]}"#
+            encode(&ServerMessage::ChunkBodies {
+                x: 1,
+                y: 2,
+                bodies: vec![],
+            })
+            .unwrap(),
+            r#"{"type":"chunk_bodies","x":1,"y":2,"bodies":[]}"#
         );
     }
 
@@ -843,5 +1143,182 @@ mod tests {
     fn unknown_messages_are_rejected() {
         assert!(decode::<ClientMessage>(r#"{"type":"teleport"}"#).is_err());
         assert!(decode::<ClientMessage>("not json").is_err());
+    }
+    /// The reference chunk of the golden bytes: water and dry land, trees,
+    /// plants, natural and stored items, on a chunk of 4 × 4 tiles.
+    fn reference_chunk() -> ChunkFrame {
+        use Terrain::{Brook, Ford, Forest, Grass, Rock, Water};
+        ChunkFrame {
+            x: 3,
+            y: -2,
+            version: 7,
+            tiles: vec![
+                Grass, Forest, Water, Ford, //
+                Brook, Rock, Grass, Water, //
+                Forest, Forest, Grass, Grass, //
+                Rock, Rock, Rock, Brook,
+            ],
+            currents: vec![
+                0,
+                0,
+                4 * 256 + 35,
+                50, //
+                12 * 256 + 1,
+                0,
+                0,
+                0, //
+                0,
+                0,
+                0,
+                0, //
+                0,
+                0,
+                0,
+                15 * 256 + 255,
+            ],
+            trees: vec![
+                Standing {
+                    dx: 31_999,
+                    dy: 0,
+                    kind: 2,
+                },
+                Standing {
+                    dx: 1_500,
+                    dy: 2_250,
+                    kind: 0,
+                },
+            ],
+            plants: vec![Standing {
+                dx: 700,
+                dy: 3_900,
+                kind: 11,
+            }],
+            natural: vec![
+                NaturalItem {
+                    slot: 1 << 6 | 3,
+                    material: 4,
+                },
+                NaturalItem {
+                    slot: 15 << 6,
+                    material: 0,
+                },
+            ],
+            stored: vec![StoredItem {
+                id: 0x0001_0000_0000_002a,
+                dx: 3,
+                dy: 1,
+                material: 513,
+            }],
+        }
+    }
+
+    #[test]
+    fn chunk_frames_round_trip() {
+        let mut dense = reference_chunk();
+        dense.tiles = vec![Terrain::Forest; 32 * 32];
+        dense.currents = vec![0; 32 * 32];
+        dense.trees = (0..400_u16)
+            .map(|i| Standing {
+                dx: i * 80,
+                dy: 32_000 - i * 80,
+                kind: u8::try_from(i % 7).unwrap(),
+            })
+            .collect();
+        dense.plants = (0..2_000_u16)
+            .map(|i| Standing {
+                dx: i * 16,
+                dy: i,
+                kind: u8::try_from(i % 40).unwrap(),
+            })
+            .collect();
+        let empty = ChunkFrame {
+            x: 0,
+            y: 0,
+            version: 0,
+            tiles: vec![Terrain::Grass; 32 * 32],
+            currents: vec![0; 32 * 32],
+            trees: vec![],
+            plants: vec![],
+            natural: vec![],
+            stored: vec![],
+        };
+        for chunk in [reference_chunk(), dense, empty] {
+            let bytes = encode_chunk(&chunk).unwrap();
+            assert_eq!(decode_chunk(&bytes).unwrap(), chunk);
+        }
+        let empty_bytes = encode_chunk(&ChunkFrame {
+            x: 0,
+            y: 0,
+            version: 0,
+            tiles: vec![Terrain::Grass; 32 * 32],
+            currents: vec![0; 32 * 32],
+            trees: vec![],
+            plants: vec![],
+            natural: vec![],
+            stored: vec![],
+        })
+        .unwrap();
+        assert_eq!(
+            empty_bytes.len(),
+            CHUNK_HEADER + 32 * 32 + 4 * 2,
+            "a dry chunk carries no currents"
+        );
+    }
+
+    #[test]
+    fn chunk_frames_refuse_what_they_cannot_carry() {
+        let mut dry_current = reference_chunk();
+        dry_current.currents[0] = 3;
+        assert_eq!(encode_chunk(&dry_current), Err(FrameError::DryCurrent));
+        let mut ragged = reference_chunk();
+        ragged.tiles.pop();
+        assert_eq!(encode_chunk(&ragged), Err(FrameError::Shape));
+        let bytes = encode_chunk(&reference_chunk()).unwrap();
+        assert_eq!(
+            decode_chunk(&bytes[..bytes.len() - 1]),
+            Err(FrameError::Length)
+        );
+        let mut longer = bytes.clone();
+        longer.push(0);
+        assert_eq!(decode_chunk(&longer), Err(FrameError::Length));
+        let mut unknown = bytes;
+        unknown[CHUNK_HEADER] = 9;
+        assert_eq!(decode_chunk(&unknown), Err(FrameError::Terrain(9)));
+    }
+
+    /// The golden bytes the client's tests decode
+    /// (`client/tests/fixtures/chunk_v17.bin`): a change of the layout on
+    /// this side breaks this test until the file is written again
+    /// (`SOUL_WRITE_GOLDEN=1`), and then the client's test until the
+    /// client reads the new layout.
+    #[test]
+    fn the_golden_chunk_is_the_clients() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../client/tests/fixtures/chunk_v17.bin");
+        let bytes = encode_chunk(&reference_chunk()).unwrap();
+        if std::env::var_os("SOUL_WRITE_GOLDEN").is_some() {
+            std::fs::write(&path, &bytes).unwrap();
+        }
+        let golden = std::fs::read(&path).expect("the golden chunk, written");
+        assert_eq!(
+            golden, bytes,
+            "the layout changed: write the golden chunk again"
+        );
+        assert_eq!(decode_chunk(&golden).unwrap(), reference_chunk());
+        // The items as the client rebuilds them, ids and tiles: the same
+        // numbers its test checks.
+        let items: Vec<(u64, i32, i32)> = reference_chunk()
+            .items(&[])
+            .iter()
+            .map(|i| (i.id, i.x, i.y))
+            .collect();
+        assert_eq!(
+            items,
+            [
+                (281_474_976_710_698, 15, -7),
+                (4_503_668_346_716_227, 13, -8),
+                (4_503_668_346_717_120, 15, -5),
+            ]
+        );
     }
 }

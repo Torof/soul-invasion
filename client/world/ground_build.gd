@@ -403,7 +403,7 @@ static func shore_of(win: PackedByteArray, codes: PackedByteArray, code: int, or
 ## reads them: what a worker reads instead of the world view's own.
 static func current_in(tile: Vector2i, currents: Dictionary, chunk_size: int) -> Vector2:
 	var key := Iso.chunk_of(tile, chunk_size)
-	var c: Array = currents.get(key, [])
+	var c: PackedInt32Array = currents.get(key, PackedInt32Array())
 	if c.is_empty():
 		return Vector2.ZERO
 	var local := tile - key * chunk_size

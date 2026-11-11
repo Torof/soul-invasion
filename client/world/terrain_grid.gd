@@ -8,8 +8,9 @@ extends RefCounted
 ## chunk, so two tiles read together never share a place (D39: the
 ## ground is built from bytes, not strings).
 ##
-## The server sends a terrain as its name; the client turns it into a
-## code once, on arrival. 0 is "not known" (not sent, or hidden since).
+## A chunk's frame carries its tiles in these codes (protocol v17), laid
+## as they come; a terrain named in text is turned into its code once. 0
+## is "not known" (not sent, or hidden since).
 
 ## Tiles the grid covers either way, then repeats (wider than the chunks a client holds).
 const TILES := 640

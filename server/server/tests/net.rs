@@ -10,7 +10,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
-use protocol::{ClientMessage, PROTOCOL_VERSION, Point, ServerMessage, decode, encode};
+use protocol::{
+    ChunkFrame, ClientMessage, PROTOCOL_VERSION, Point, ServerMessage, decode, decode_chunk, encode,
+};
 use server::net::VIEW_RADIUS;
 use sim::{BodyId, CHUNK_SIZE, Calendar, ChunkPos, FinePos, Pos, World};
 use tokio::net::TcpStream;
@@ -280,10 +282,14 @@ async fn send(socket: &mut Socket, message: &ClientMessage) {
 
 /// Messages that flow all the time, whatever the test is about: a body's
 /// condition to its pilot, sleep, night, items coming and going.
-fn ambient(message: &ServerMessage) -> bool {
+fn ambient(message: &Got) -> bool {
+    let Got::M(message) = message else {
+        return false;
+    };
     matches!(
         message,
         ServerMessage::BodyCondition { .. }
+            | ServerMessage::ChunkBodies { .. }
             | ServerMessage::BodySleeps { .. }
             | ServerMessage::NightFell { .. }
             | ServerMessage::ItemAdded { .. }
@@ -297,7 +303,7 @@ fn ambient(message: &ServerMessage) -> bool {
 /// Next server message that is not ambient, or `None` once the server
 /// closed the connection. Ambient messages never stop flowing, so this
 /// gives up after 20 s instead of waiting forever.
-async fn receive(socket: &mut Socket) -> Option<ServerMessage> {
+async fn receive(socket: &mut Socket) -> Option<Got> {
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             match receive_any(socket).await {
@@ -310,9 +316,16 @@ async fn receive(socket: &mut Socket) -> Option<ServerMessage> {
     .expect("a message of interest within 20 s")
 }
 
+/// What the server sent: a message, or a chunk's binary frame decoded.
+#[derive(Debug, PartialEq, Eq)]
+enum Got {
+    M(ServerMessage),
+    Chunk(ChunkFrame),
+}
+
 /// Next server message of any kind, or `None` once the server closed
 /// the connection.
-async fn receive_any(socket: &mut Socket) -> Option<ServerMessage> {
+async fn receive_any(socket: &mut Socket) -> Option<Got> {
     loop {
         // Generous: twenty servers start a 3 km valley at once.
         let frame = tokio::time::timeout(Duration::from_secs(15), socket.next())
@@ -321,7 +334,12 @@ async fn receive_any(socket: &mut Socket) -> Option<ServerMessage> {
         match frame {
             None | Some(Ok(Message::Close(_)) | Err(_)) => return None,
             Some(Ok(Message::Text(text))) => {
-                return Some(decode(text.as_str()).expect("server speaks the protocol"));
+                return Some(Got::M(
+                    decode(text.as_str()).expect("server speaks the protocol"),
+                ));
+            }
+            Some(Ok(Message::Binary(frame))) => {
+                return Some(Got::Chunk(decode_chunk(&frame).expect("a chunk frame")));
             }
             Some(Ok(_)) => {}
         }
@@ -331,7 +349,7 @@ async fn receive_any(socket: &mut Socket) -> Option<ServerMessage> {
 /// Waits for the next published day boundary.
 async fn next_day(socket: &mut Socket) -> u64 {
     loop {
-        if let Some(ServerMessage::DayStarted { day, .. }) = receive(socket).await {
+        if let Some(Got::M(ServerMessage::DayStarted { day, .. })) = receive(socket).await {
             break day;
         }
     }
@@ -354,11 +372,11 @@ async fn hello_ping_and_a_published_day() {
     assert!(
         matches!(
             welcome,
-            Some(ServerMessage::Welcome {
+            Some(Got::M(ServerMessage::Welcome {
                 protocol_version: PROTOCOL_VERSION,
                 body: Some(1),
                 ..
-            })
+            }))
         ),
         "got {welcome:?}"
     );
@@ -366,7 +384,7 @@ async fn hello_ping_and_a_published_day() {
     // The shape of the world follows the welcome, then the chunks around
     // body 1, each with the bodies standing in it.
     match receive(&mut socket).await {
-        Some(ServerMessage::WorldState {
+        Some(Got::M(ServerMessage::WorldState {
             width,
             height,
             chunk_size,
@@ -375,7 +393,7 @@ async fn hello_ping_and_a_published_day() {
             flora,
             clock,
             ..
-        }) => {
+        })) => {
             assert!(flora.len() >= 29, "the shrubs, plants and mushrooms");
             assert!(
                 flora
@@ -403,33 +421,50 @@ async fn hello_ping_and_a_published_day() {
     let mut far = None;
     // The chunks are built beside the network: a day boundary may slip in
     // between them on a loaded machine (a day lasts a second here).
-    while chunks.len() < window_len(world, centre) {
+    // The bodies follow the frame of the chunk they stand in.
+    while chunks.len() < window_len(world, centre) || seen_bodies.len() < 3 {
         match receive_any(&mut socket).await {
-            Some(ServerMessage::DayStarted { .. }) => {}
+            Some(Got::M(ServerMessage::DayStarted { .. })) => {}
             Some(message)
-                if ambient(&message) && !matches!(message, ServerMessage::FarView { .. }) => {}
-            Some(ServerMessage::FarView {
+                if ambient(&message)
+                    && !matches!(
+                        message,
+                        Got::M(ServerMessage::FarView { .. } | ServerMessage::ChunkBodies { .. })
+                    ) => {}
+            Some(Got::M(ServerMessage::FarView {
                 cell,
                 width,
                 height,
                 cells,
                 ..
-            }) => far = Some((cell, width, height, cells)),
-            Some(ServerMessage::Chunk {
-                x,
-                y,
-                tiles,
-                bodies,
-                items,
-                trees,
-                plants,
-                currents,
-            }) => {
-                for p in &plants {
-                    assert_eq!(
-                        tile(Point { x: p.x, y: p.y }).chunk(),
-                        ChunkPos::new(x, y),
-                        "a plant lies in its chunk"
+            })) => far = Some((cell, width, height, cells)),
+            Some(Got::M(ServerMessage::ChunkBodies { x, y, bodies })) => {
+                assert_eq!(chunks.last(), Some(&(x, y)), "right after their chunk");
+                for b in &bodies {
+                    assert_eq!(tile(b.at).chunk(), ChunkPos::new(x, y));
+                    assert_eq!(b.route, Vec::new(), "nobody walks at the start");
+                    // Not whether it sleeps: a game day passes every second
+                    // here, and on a loaded machine a body may tire and fall
+                    // asleep before the chunks arrive (sleep has its tests).
+                }
+                seen_bodies.extend(bodies.iter().map(|b| b.id));
+            }
+            Some(Got::Chunk(frame)) => {
+                let items = frame.items(&[]);
+                let ChunkFrame {
+                    x,
+                    y,
+                    tiles,
+                    trees,
+                    plants,
+                    currents,
+                    ..
+                } = frame;
+                let side = i32::try_from(CHUNK_SIZE).unwrap() * sim::MM_PER_TILE;
+                for p in plants.iter().chain(&trees) {
+                    assert!(
+                        i32::from(p.dx) < side && i32::from(p.dy) < side,
+                        "a tree or a plant stands in its chunk"
                     );
                 }
                 seen_plants += plants.len();
@@ -445,23 +480,12 @@ async fn hello_ping_and_a_published_day() {
                     assert_eq!(wet, *c != 0, "{t:?} {c}");
                 }
                 assert_eq!(tiles.len(), (CHUNK_SIZE * CHUNK_SIZE) as usize);
-                for t in &trees {
-                    assert_eq!(tile(t.at).chunk(), ChunkPos::new(x, y));
-                }
                 seen_trees += trees.len();
                 for i in &items {
                     assert_eq!(Pos::new(i.x, i.y).chunk(), ChunkPos::new(x, y));
                 }
                 seen_items += items.len();
                 assert!((x - centre.x).abs() <= VIEW_RADIUS && (y - centre.y).abs() <= VIEW_RADIUS);
-                for b in &bodies {
-                    assert_eq!(tile(b.at).chunk(), ChunkPos::new(x, y));
-                    assert_eq!(b.route, Vec::new(), "nobody walks at the start");
-                    // Not whether it sleeps: a game day passes every second
-                    // here, and on a loaded machine a body may tire and fall
-                    // asleep before the chunks arrive (sleep has its tests).
-                }
-                seen_bodies.extend(bodies.iter().map(|b| b.id));
                 chunks.push((x, y));
             }
             other => panic!("expected a chunk, got {other:?}"),
@@ -501,15 +525,15 @@ async fn hello_ping_and_a_published_day() {
     // A day boundary may slip in before the pong: skip those.
     let pong = loop {
         match receive(&mut socket).await {
-            Some(ServerMessage::DayStarted { .. }) => {}
+            Some(Got::M(ServerMessage::DayStarted { .. })) => {}
             other => break other,
         }
     };
-    assert_eq!(pong, Some(ServerMessage::Pong { nonce: 7 }));
+    assert_eq!(pong, Some(Got::M(ServerMessage::Pong { nonce: 7 })));
 
     // One game day lasts one real second: a day boundary must be published.
     let (day, tick) = match receive(&mut socket).await {
-        Some(ServerMessage::DayStarted { day, tick }) => (day, tick),
+        Some(Got::M(ServerMessage::DayStarted { day, tick })) => (day, tick),
         Some(other) => panic!("unexpected {other:?}"),
         None => panic!("connection closed before a day started"),
     };
@@ -533,9 +557,9 @@ async fn wrong_protocol_version_is_refused() {
     .await;
     assert_eq!(
         receive(&mut socket).await,
-        Some(ServerMessage::ProtocolMismatch {
+        Some(Got::M(ServerMessage::ProtocolMismatch {
             expected: PROTOCOL_VERSION
-        })
+        }))
     );
     assert_eq!(receive(&mut socket).await, None, "server closes afterwards");
 }
@@ -564,7 +588,7 @@ async fn several_clients_each_get_the_same_days() {
         .await;
         assert!(matches!(
             receive(socket).await,
-            Some(ServerMessage::Welcome { .. })
+            Some(Got::M(ServerMessage::Welcome { .. }))
         ));
     }
 
@@ -586,7 +610,7 @@ async fn welcome(server: &Server) -> (Socket, Option<u32>) {
     )
     .await;
     let body = match receive(&mut socket).await {
-        Some(ServerMessage::Welcome { body, .. }) => body,
+        Some(Got::M(ServerMessage::Welcome { body, .. })) => body,
         other => panic!("expected welcome, got {other:?}"),
     };
     (socket, body)
@@ -617,14 +641,14 @@ async fn join_counting(server: &Server) -> (Socket, Option<u32>, HashSet<(i32, i
     let (mut socket, body) = welcome(server).await;
     assert!(matches!(
         receive(&mut socket).await,
-        Some(ServerMessage::WorldState { .. })
+        Some(Got::M(ServerMessage::WorldState { .. }))
     ));
     let world = standard_world();
     let centre = home_of(world, body);
     let mut chunks = HashSet::new();
     while chunks.len() < window_len(world, centre) {
         match receive(&mut socket).await {
-            Some(ServerMessage::Chunk { x, y, .. }) => {
+            Some(Got::Chunk(ChunkFrame { x, y, .. })) => {
                 assert!(chunks.insert((x, y)), "chunk ({x}, {y}) sent twice");
             }
             Some(_) => {}
@@ -664,13 +688,13 @@ async fn the_view_follows_the_piloted_body() {
     let (mut shown, mut hidden) = (Vec::new(), Vec::new());
     while shown.len() < 5 || hidden.len() < 5 {
         match receive(&mut pilot).await {
-            Some(ServerMessage::Chunk { x, y, .. }) => shown.push((x, y)),
-            Some(ServerMessage::ChunkHidden { x, y }) => hidden.push((x, y)),
-            Some(
+            Some(Got::Chunk(ChunkFrame { x, y, .. })) => shown.push((x, y)),
+            Some(Got::M(ServerMessage::ChunkHidden { x, y })) => hidden.push((x, y)),
+            Some(Got::M(
                 ServerMessage::BodyWalks { .. }
                 | ServerMessage::BodyStopped { .. }
                 | ServerMessage::DayStarted { .. },
-            ) => {}
+            )) => {}
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -714,7 +738,7 @@ async fn a_body_walking_out_of_the_view_is_reported_as_left() {
         .await;
         loop {
             match receive(&mut walker).await {
-                Some(ServerMessage::BodyStopped { body: who, at }) if who == body => {
+                Some(Got::M(ServerMessage::BodyStopped { body: who, at })) if who == body => {
                     assert_eq!(tile(at), *stop);
                     break;
                 }
@@ -730,25 +754,25 @@ async fn a_body_walking_out_of_the_view_is_reported_as_left() {
     let mut saw_walk = false;
     loop {
         match receive(&mut watcher).await {
-            Some(ServerMessage::BodyLeft { body: who }) => {
+            Some(Got::M(ServerMessage::BodyLeft { body: who })) => {
                 assert_eq!(who, body);
                 break;
             }
-            Some(ServerMessage::BodyWalks {
+            Some(Got::M(ServerMessage::BodyWalks {
                 body: who,
                 ref route,
                 ..
-            }) if who == body => {
+            })) if who == body => {
                 eprintln!("watcher sees walk {route:?}");
                 saw_walk = true;
             }
-            Some(ServerMessage::BodyStopped { body: who, at }) => {
+            Some(Got::M(ServerMessage::BodyStopped { body: who, at })) => {
                 assert!(
                     who != body || stops.contains(&tile(at)),
                     "a stop outside the watcher's view leaked"
                 );
             }
-            Some(ServerMessage::DayStarted { .. } | ServerMessage::BodyWalks { .. }) => {}
+            Some(Got::M(ServerMessage::DayStarted { .. } | ServerMessage::BodyWalks { .. })) => {}
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -756,11 +780,11 @@ async fn a_body_walking_out_of_the_view_is_reported_as_left() {
     // The walker itself keeps receiving ground and finally its own stop.
     loop {
         match receive(&mut walker).await {
-            Some(ServerMessage::BodyStopped { body: who, at }) if who == body => {
+            Some(Got::M(ServerMessage::BodyStopped { body: who, at })) if who == body => {
                 assert_eq!(tile(at), far);
                 break;
             }
-            Some(ServerMessage::BodyLeft { body: who }) => {
+            Some(Got::M(ServerMessage::BodyLeft { body: who })) => {
                 assert_ne!(who, body, "never leaves itself");
             }
             Some(_) => {}
@@ -823,7 +847,7 @@ async fn an_intention_is_read_and_answered_while_the_view_is_being_sent() {
     )
     .await;
     let body = match receive(&mut socket).await {
-        Some(ServerMessage::Welcome { body, .. }) => body.expect("pilots a body"),
+        Some(Got::M(ServerMessage::Welcome { body, .. })) => body.expect("pilots a body"),
         other => panic!("expected welcome, got {other:?}"),
     };
     let world = standard_world();
@@ -842,15 +866,15 @@ async fn an_intention_is_read_and_answered_while_the_view_is_being_sent() {
     let (mut chunks, mut walked_after) = (0, None);
     while chunks < total {
         match receive(&mut socket).await {
-            Some(ServerMessage::Chunk { .. }) => chunks += 1,
-            Some(ServerMessage::BodyWalks { body: who, .. }) if who == body => {
+            Some(Got::Chunk(_)) => chunks += 1,
+            Some(Got::M(ServerMessage::BodyWalks { body: who, .. })) if who == body => {
                 walked_after.get_or_insert(chunks);
             }
-            Some(
+            Some(Got::M(
                 ServerMessage::WorldState { .. }
                 | ServerMessage::BodyWalks { .. }
                 | ServerMessage::BodyStopped { .. },
-            ) => {}
+            )) => {}
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -883,7 +907,9 @@ fn hop_between(
             let stopped = tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
                     match receive(&mut hopper).await {
-                        Some(ServerMessage::BodyStopped { body: who, .. }) if who == hopping => {
+                        Some(Got::M(ServerMessage::BodyStopped { body: who, .. }))
+                            if who == hopping =>
+                        {
                             break;
                         }
                         Some(_) => {}
@@ -952,40 +978,42 @@ async fn a_walk_is_seen_whole_while_another_client_builds_cold_views() {
     let (mut shown, mut hidden, mut stopped) = (0, 0, false);
     while !(stopped && shown >= 5 && hidden >= 5) {
         match receive(&mut walker).await {
-            Some(ServerMessage::Chunk { x, .. }) => {
+            Some(Got::Chunk(ChunkFrame { x, .. })) => {
                 assert_eq!(x, here.x + VIEW_RADIUS + 1);
                 shown += 1;
             }
-            Some(ServerMessage::ChunkHidden { x, .. }) => {
+            Some(Got::M(ServerMessage::ChunkHidden { x, .. })) => {
                 assert_eq!(x, here.x - VIEW_RADIUS);
                 hidden += 1;
             }
-            Some(ServerMessage::BodyStopped { body: who, at }) if who == body => {
+            Some(Got::M(ServerMessage::BodyStopped { body: who, at })) if who == body => {
                 assert_eq!(tile(at), target);
                 stopped = true;
             }
             // B leaves the view with its first hop.
-            Some(
+            Some(Got::M(
                 ServerMessage::BodyWalks { .. }
                 | ServerMessage::BodyStopped { .. }
                 | ServerMessage::BodyLeft { .. },
-            ) => {}
+            )) => {}
             other => panic!("unexpected {other:?}"),
         }
     }
     let (mut saw_walk, mut saw_stop) = (false, false);
     while !(saw_walk && saw_stop) {
         match receive(&mut watcher).await {
-            Some(ServerMessage::BodyWalks { body: who, .. }) if who == body => saw_walk = true,
-            Some(ServerMessage::BodyStopped { body: who, at }) if who == body => {
+            Some(Got::M(ServerMessage::BodyWalks { body: who, .. })) if who == body => {
+                saw_walk = true;
+            }
+            Some(Got::M(ServerMessage::BodyStopped { body: who, at })) if who == body => {
                 assert_eq!(tile(at), target);
                 saw_stop = true;
             }
-            Some(
+            Some(Got::M(
                 ServerMessage::BodyWalks { .. }
                 | ServerMessage::BodyStopped { .. }
                 | ServerMessage::BodyLeft { .. },
-            ) => {}
+            )) => {}
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -1007,7 +1035,7 @@ async fn cold_login(server: &Server) -> (Duration, Duration) {
     let (mut socket, _) = welcome(server).await;
     let (mut chunks, mut first) = (0, None);
     while chunks < whole_view() {
-        if let Some(ServerMessage::Chunk { .. }) = receive(&mut socket).await {
+        if let Some(Got::Chunk(_)) = receive(&mut socket).await {
             chunks += 1;
             first.get_or_insert_with(|| started.elapsed());
         }
@@ -1067,21 +1095,21 @@ async fn with_dev_the_client_gets_the_overview_and_may_teleport() {
         },
     )
     .await;
-    let Some(ServerMessage::Welcome { body, .. }) = receive(&mut socket).await else {
+    let Some(Got::M(ServerMessage::Welcome { body, .. })) = receive(&mut socket).await else {
         panic!("expected welcome");
     };
     let body = body.expect("pilots a body");
     assert!(matches!(
         receive(&mut socket).await,
-        Some(ServerMessage::WorldState { .. })
+        Some(Got::M(ServerMessage::WorldState { .. }))
     ));
     // The overview: the whole map, one letter a cell.
-    let Some(ServerMessage::DevOverview {
+    let Some(Got::M(ServerMessage::DevOverview {
         cell,
         width,
         height,
         cells,
-    }) = receive(&mut socket).await
+    })) = receive(&mut socket).await
     else {
         panic!("expected the overview");
     };
@@ -1092,10 +1120,7 @@ async fn with_dev_the_client_gets_the_overview_and_may_teleport() {
     assert!(cells.contains('w') && cells.contains('f') && cells.starts_with('r'));
     let world = standard_world();
     for _ in 0..window_len(world, start_of(world, body).chunk()) {
-        assert!(matches!(
-            receive(&mut socket).await,
-            Some(ServerMessage::Chunk { .. })
-        ));
+        assert!(matches!(receive(&mut socket).await, Some(Got::Chunk(_))));
     }
     // Far away at once: the view follows, the body stands there.
     let start = start_of(world, body);
@@ -1113,9 +1138,9 @@ async fn with_dev_the_client_gets_the_overview_and_may_teleport() {
     let (mut shown, mut hidden, mut stopped) = (0, 0, false);
     while !(stopped && shown > 0 && hidden > 0) {
         match receive(&mut socket).await {
-            Some(ServerMessage::Chunk { .. }) => shown += 1,
-            Some(ServerMessage::ChunkHidden { .. }) => hidden += 1,
-            Some(ServerMessage::BodyStopped { body: who, at }) if who == body => {
+            Some(Got::Chunk(_)) => shown += 1,
+            Some(Got::M(ServerMessage::ChunkHidden { .. })) => hidden += 1,
+            Some(Got::M(ServerMessage::BodyStopped { body: who, at })) if who == body => {
                 assert_eq!(tile(at), far);
                 stopped = true;
             }
@@ -1145,8 +1170,8 @@ async fn without_dev_a_teleport_is_ignored() {
     send(&mut pilot, &ClientMessage::Ping { nonce: 6 }).await;
     loop {
         match receive(&mut pilot).await {
-            Some(ServerMessage::Pong { nonce: 6 }) => break,
-            Some(ServerMessage::Pong { .. } | ServerMessage::DayStarted { .. }) => {}
+            Some(Got::M(ServerMessage::Pong { nonce: 6 })) => break,
+            Some(Got::M(ServerMessage::Pong { .. } | ServerMessage::DayStarted { .. })) => {}
             other => panic!("nothing but pongs expected, got {other:?}"),
         }
     }
@@ -1180,13 +1205,13 @@ async fn a_move_intention_makes_the_piloted_body_walk() {
         let (mut walked, mut stopped) = (None, None);
         while stopped.is_none() {
             match receive(socket).await {
-                Some(ServerMessage::BodyWalks {
+                Some(Got::M(ServerMessage::BodyWalks {
                     body: who,
                     at,
                     route,
                     speed_cm_per_s,
                     ..
-                }) if who == body => {
+                })) if who == body => {
                     assert_eq!(
                         at,
                         Point {
@@ -1197,10 +1222,12 @@ async fn a_move_intention_makes_the_piloted_body_walk() {
                     assert_eq!(speed_cm_per_s, 143);
                     walked = Some(route);
                 }
-                Some(ServerMessage::BodyStopped { body: who, at }) if who == body => {
+                Some(Got::M(ServerMessage::BodyStopped { body: who, at })) if who == body => {
                     stopped = Some(at);
                 }
-                Some(ServerMessage::DayStarted { .. } | ServerMessage::BodyWalks { .. }) => {}
+                Some(Got::M(
+                    ServerMessage::DayStarted { .. } | ServerMessage::BodyWalks { .. },
+                )) => {}
                 other => panic!("unexpected {other:?}"),
             }
         }
@@ -1234,13 +1261,13 @@ async fn walking_toward_the_cliff_goes_straight_and_stops_before_the_first_obsta
     send(&mut pilot, &ClientMessage::MoveTo { x: 100, y: 0 }).await;
     loop {
         match receive(&mut pilot).await {
-            Some(ServerMessage::BodyWalks {
+            Some(Got::M(ServerMessage::BodyWalks {
                 body: who, route, ..
-            }) if who == body => {
+            })) if who == body => {
                 assert_eq!(route, vec![Point { x: end.x, y: end.y }]);
                 break;
             }
-            Some(ServerMessage::DayStarted { .. } | ServerMessage::BodyWalks { .. }) => {}
+            Some(Got::M(ServerMessage::DayStarted { .. } | ServerMessage::BodyWalks { .. })) => {}
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -1302,7 +1329,9 @@ async fn an_oversized_message_ends_the_connection() {
     let mut last = receive(&mut pilot).await;
     while matches!(
         last,
-        Some(ServerMessage::DayStarted { .. } | ServerMessage::NightFell { .. })
+        Some(Got::M(
+            ServerMessage::DayStarted { .. } | ServerMessage::NightFell { .. }
+        ))
     ) {
         last = receive(&mut pilot).await;
     }
@@ -1328,9 +1357,9 @@ async fn connections_beyond_the_limit_are_refused() {
     send(&mut first, &ClientMessage::Ping { nonce: 3 }).await;
     loop {
         match receive(&mut first).await {
-            Some(ServerMessage::DayStarted { .. }) => {}
+            Some(Got::M(ServerMessage::DayStarted { .. })) => {}
             other => {
-                assert_eq!(other, Some(ServerMessage::Pong { nonce: 3 }));
+                assert_eq!(other, Some(Got::M(ServerMessage::Pong { nonce: 3 })));
                 break;
             }
         }
@@ -1362,11 +1391,11 @@ async fn a_refusal_reaches_the_pilot_alone() {
     send(&mut pilot, &ClientMessage::Eat { item: 999_999 }).await;
     loop {
         match receive(&mut pilot).await {
-            Some(ServerMessage::ActRefused { body: who, .. }) => {
+            Some(Got::M(ServerMessage::ActRefused { body: who, .. })) => {
                 assert_eq!(who, body);
                 break;
             }
-            Some(ServerMessage::DayStarted { .. }) => {}
+            Some(Got::M(ServerMessage::DayStarted { .. })) => {}
             unexpected => panic!("unexpected {unexpected:?}"),
         }
     }
@@ -1386,11 +1415,11 @@ async fn a_refusal_reaches_the_pilot_alone() {
     .await;
     loop {
         match receive(&mut other).await {
-            Some(ServerMessage::BodyWalks { body: who, .. }) if who == other_body => break,
-            Some(ServerMessage::ActRefused { .. }) => {
+            Some(Got::M(ServerMessage::BodyWalks { body: who, .. })) if who == other_body => break,
+            Some(Got::M(ServerMessage::ActRefused { .. })) => {
                 panic!("another pilot's refusal leaked")
             }
-            Some(ServerMessage::DayStarted { .. } | ServerMessage::BodyWalks { .. }) => {}
+            Some(Got::M(ServerMessage::DayStarted { .. } | ServerMessage::BodyWalks { .. })) => {}
             unexpected => panic!("unexpected {unexpected:?}"),
         }
     }
@@ -1443,18 +1472,20 @@ async fn a_flood_of_intentions_leaves_only_the_last_one() {
     let mut refusals = 0;
     while !(arrived && answered) {
         match receive(&mut pilot).await {
-            Some(ServerMessage::BodyStopped { body: who, at }) if who == body => {
+            Some(Got::M(ServerMessage::BodyStopped { body: who, at })) if who == body => {
                 arrived = tile(at) == north;
             }
-            Some(ServerMessage::Pong { nonce: 9 }) => answered = true,
-            Some(ServerMessage::MoveRefused { .. }) => refusals += 1,
+            Some(Got::M(ServerMessage::Pong { nonce: 9 })) => answered = true,
+            Some(Got::M(ServerMessage::MoveRefused { .. })) => refusals += 1,
             // The flood's eastward asks may carry the body across a chunk.
             Some(
-                ServerMessage::DayStarted { .. }
-                | ServerMessage::BodyWalks { .. }
-                | ServerMessage::Chunk { .. }
-                | ServerMessage::ChunkHidden { .. }
-                | ServerMessage::BodyLeft { .. },
+                Got::M(
+                    ServerMessage::DayStarted { .. }
+                    | ServerMessage::BodyWalks { .. }
+                    | ServerMessage::ChunkHidden { .. }
+                    | ServerMessage::BodyLeft { .. },
+                )
+                | Got::Chunk(_),
             ) => {}
             unexpected => panic!("unexpected {unexpected:?}"),
         }
@@ -1474,8 +1505,10 @@ async fn a_flood_of_intentions_leaves_only_the_last_one() {
 async fn wait_for<T>(socket: &mut Socket, mut pick: impl FnMut(&ServerMessage) -> Option<T>) -> T {
     tokio::time::timeout(Duration::from_secs(40), async {
         loop {
-            let message = receive_any(socket).await.expect("still connected");
-            if let Some(found) = pick(&message) {
+            let got = receive_any(socket).await.expect("still connected");
+            if let Got::M(message) = got
+                && let Some(found) = pick(&message)
+            {
                 return found;
             }
         }
@@ -1685,7 +1718,12 @@ async fn a_starved_body_dies_and_its_pilot_is_given_another_or_watches() {
     while let Some(new_body) = assigned {
         assert_ne!(new_body, body, "never the dead body");
         let settled = wait_for(&mut pilot, |m| match m {
-            ServerMessage::Chunk { .. } => Some(true),
+            // The new body's own chunk, the bodies in it after it.
+            ServerMessage::ChunkBodies { bodies, .. }
+                if bodies.iter().any(|b| b.id == new_body) =>
+            {
+                Some(true)
+            }
             ServerMessage::BodyCondition { body: who, .. } if *who == new_body => Some(true),
             ServerMessage::BodyDied { body: who, .. } if *who == new_body => Some(false),
             _ => None,
