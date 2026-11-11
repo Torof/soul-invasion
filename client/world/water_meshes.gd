@@ -141,10 +141,11 @@ static func _weights_of(kind: String, size: int) -> Array:
 		var n := size + 2 * MARGIN
 		var samples: Array = []
 		if kind == "lattice":
-			# Point a lies at MARGIN + 0.25 + a / PX tiles into the window: the
-			# boundary between the fine texels (MARGIN * fine + a) and the next.
-			for a in PX * size + 3:
-				var first := MARGIN * fine + a
+			# Point a lies at MARGIN - 0.25 + a / PX tiles into the window: the
+			# boundary between the fine texels (MARGIN * fine + a - 2) and the
+			# next.
+			for a in PX * size + 6:
+				var first := MARGIN * fine + a - 2
 				samples.append([[first, 0.5], [first + 1, 0.5]])
 		else:
 			for t in range(-1, size + 1):
@@ -210,8 +211,9 @@ static func to_screen(w: Vector2) -> Vector2:
 ## colours, indices} in the chunk's screen pixels (empty when the mesh has
 ## nothing); out[2] the classes of the chunk's size × size cells (0 none,
 ## 1 water, 2 bank), cell (i, j) spanning tile centres (i, j) to (i + 1,
-## j + 1) of the chunk; out[3] the lattice (size * PX + 3 a side) of
-## distances, for the tests; out[4] the time it took, in microseconds.
+## j + 1) of the chunk; out[3] the lattice (size * PX + 6 a side, point a
+## lying a / PX - 0.25 tiles from the chunk's first tile) of distances,
+## for the tests; out[4] the time it took, in microseconds.
 ## Touches nothing but its arguments and the static tables, so it may run
 ## on another thread.
 static func build(p: Dictionary, out: Array) -> void:
@@ -219,7 +221,7 @@ static func build(p: Dictionary, out: Array) -> void:
 	var size: int = p["size"]
 	var n: int = p["n"]
 	var weights: Array = p["weights"]
-	var l := PX * size + 3
+	var l := PX * size + 6
 	# The distance to the water's line at the lattice points.
 	var d := PackedFloat32Array()
 	d.resize(l * l)
@@ -258,8 +260,8 @@ static func build(p: Dictionary, out: Array) -> void:
 	var any_bank_cell := false
 	for j in size:
 		for i in size:
-			var a0 := PX * i + 1
-			var b0 := PX * j + 1
+			var a0 := PX * i + 3
+			var b0 := PX * j + 3
 			var dmin := INF
 			var dmax := -INF
 			for bb in PX + 1:
@@ -295,6 +297,9 @@ static func _mesh(wanted: int, classes: PackedByteArray, size: int, l: int, c: i
 	var index := PackedInt32Array()
 	index.resize(l * l)
 	index.fill(-1)
+	var profiles := PackedVector3Array()
+	if wanted == 2:
+		profiles.resize(l * l)
 	var points := PackedVector2Array()
 	var uvs := PackedVector2Array()
 	var colours := PackedColorArray()
@@ -303,28 +308,28 @@ static func _mesh(wanted: int, classes: PackedByteArray, size: int, l: int, c: i
 		for i in size:
 			if classes[j * size + i] != wanted:
 				continue
-			var a0 := PX * i + 1
-			var b0 := PX * j + 1
+			var a0 := PX * i + 3
+			var b0 := PX * j + 3
 			for bb in PX:
 				for aa in PX:
-					var v00 := _vertex(index, a0 + aa, b0 + bb, wanted, l, c, lo, d, flow_x, flow_y, ford, points, uvs, colours)
-					var v10 := _vertex(index, a0 + aa + 1, b0 + bb, wanted, l, c, lo, d, flow_x, flow_y, ford, points, uvs, colours)
-					var v11 := _vertex(index, a0 + aa + 1, b0 + bb + 1, wanted, l, c, lo, d, flow_x, flow_y, ford, points, uvs, colours)
-					var v01 := _vertex(index, a0 + aa, b0 + bb + 1, wanted, l, c, lo, d, flow_x, flow_y, ford, points, uvs, colours)
+					var v00 := _vertex(index, a0 + aa, b0 + bb, wanted, l, c, lo, d, flow_x, flow_y, ford, points, uvs, colours, profiles)
+					var v10 := _vertex(index, a0 + aa + 1, b0 + bb, wanted, l, c, lo, d, flow_x, flow_y, ford, points, uvs, colours, profiles)
+					var v11 := _vertex(index, a0 + aa + 1, b0 + bb + 1, wanted, l, c, lo, d, flow_x, flow_y, ford, points, uvs, colours, profiles)
+					var v01 := _vertex(index, a0 + aa, b0 + bb + 1, wanted, l, c, lo, d, flow_x, flow_y, ford, points, uvs, colours, profiles)
 					indices.append_array([v00, v10, v11, v00, v11, v01])
 	return {"points": points, "uvs": uvs, "colours": colours, "indices": indices}
 
 
 ## The vertex at lattice point (a, b), made on first use: its place on the
 ## screen, and what it carries for the mesh's shader.
-static func _vertex(index: PackedInt32Array, a: int, b: int, wanted: int, l: int, c: int, lo: Vector2i, d: PackedFloat32Array, flow_x: PackedFloat32Array, flow_y: PackedFloat32Array, ford: PackedFloat32Array, points: PackedVector2Array, uvs: PackedVector2Array, colours: PackedColorArray) -> int:
+static func _vertex(index: PackedInt32Array, a: int, b: int, wanted: int, l: int, c: int, lo: Vector2i, d: PackedFloat32Array, flow_x: PackedFloat32Array, flow_y: PackedFloat32Array, ford: PackedFloat32Array, points: PackedVector2Array, uvs: PackedVector2Array, colours: PackedColorArray, profiles: PackedVector3Array) -> int:
 	var at := b * l + a
 	if index[at] >= 0:
 		return index[at]
 	var id := points.size()
 	index[at] = id
-	# The point's place: 0.25 + a / PX tiles from the chunk's first tile.
-	var w := Vector2(0.25 + float(a) / PX, 0.25 + float(b) / PX)
+	# The point's place: a / PX - 0.25 tiles from the chunk's first tile.
+	var w := Vector2(float(a) / PX - 0.25, float(b) / PX - 0.25)
 	var world := Vector2(lo) + w
 	points.append(to_screen(world))
 	# The current and the ford, between the tile centres around (the
@@ -356,10 +361,30 @@ static func _vertex(index: PackedInt32Array, a: int, b: int, wanted: int, l: int
 	else:
 		# The bank: the distance to the line and the bank's width there, the
 		# current, the sand, the ford.
-		var profile := _profile(a, b, l, world, dist, d)
+		var profile := _profile_near(a, b, l, lo, d, profiles)
 		uvs.append(Vector2(dist, profile.x))
 		colours.append(Color(fr, fg, profile.y, f))
 	return id
+
+
+## The bank's profile at a lattice point: computed at the points half a
+## tile apart (the even ones), once each, and averaged between them at the
+## others; the noise it reads varies over tiles, the beaches' ends over
+## half a tile. The same points on both sides of a chunk border give the
+## same values. `profiles`: x the width, y the sand, z 1 once computed.
+static func _profile_near(a: int, b: int, l: int, lo: Vector2i, d: PackedFloat32Array, profiles: PackedVector3Array) -> Vector2:
+	var sum := Vector2.ZERO
+	var count := 0
+	for bb in range(b - (b & 1), b + (b & 1) + 1, 2):
+		for aa in range(a - (a & 1), a + (a & 1) + 1, 2):
+			var at := bb * l + aa
+			if profiles[at].z == 0.0:
+				var world := Vector2(lo) + Vector2(float(aa) / PX - 0.25, float(bb) / PX - 0.25)
+				var p := _profile(aa, bb, l, world, d[at], d)
+				profiles[at] = Vector3(p.x, p.y, 1.0)
+			sum += Vector2(profiles[at].x, profiles[at].y)
+			count += 1
+	return sum / count
 
 
 ## The bank's profile at a lattice point: (the earth's width in tiles,

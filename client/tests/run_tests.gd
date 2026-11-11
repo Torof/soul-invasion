@@ -1465,11 +1465,11 @@ func _test_the_water_meshes_measure_the_bank() -> void:
 	var out: Array = []
 	WaterMeshes.build(WaterMeshes.prepare(ShoreField.block_of(stepped, lo, 32), lo, 32, Callable()), out)
 	var d: PackedFloat32Array = out[3]
-	var l := WaterMeshes.PX * 32 + 3
-	# Lattice point a lies 0.25 + a / PX tiles from the chunk's first tile.
+	var l := WaterMeshes.PX * 32 + 6
+	# Lattice point a lies a / PX - 0.25 tiles from the chunk's first tile.
 	var at := func(x: float, y: float) -> float:
-		var a := int(round((x - lo.x - 0.25) * WaterMeshes.PX))
-		var b := int(round((y - lo.y - 0.25) * WaterMeshes.PX))
+		var a := int(round((x - lo.x + 0.25) * WaterMeshes.PX))
+		var b := int(round((y - lo.y + 0.25) * WaterMeshes.PX))
 		return d[b * l + a]
 	_check(absf(at.call(40.0, 8.0)) < 0.15, "the edge at x = 40: %f" % at.call(40.0, 8.0))
 	_check(absf(at.call(38.5, 8.0) - 1.5) < 0.2, "1.5 tiles inland: %f" % at.call(38.5, 8.0))
