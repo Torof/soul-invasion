@@ -12,9 +12,9 @@ extends Node2D
 ## soft noise, so its repetition does not read. Each terrain has its own
 ## material, so its layers never leak onto another terrain: the chunk
 ## holds one child canvas per textured terrain, under its own drawing,
-## each a single quad over the chunk; the shader keeps the tiles of its
-## terrain from the ground index (GroundIndex), which the chunk writes
-## when it builds. Terrains without a texture keep a flat colour.
+## each covering only the rows of tiles it draws (GroundBuild.rows_of);
+## the shader keeps the tiles of its terrain from the ground index
+## (GroundIndex), which the chunk writes when it builds. Terrains without a texture keep a flat colour.
 ##
 ## The tiles are read as bytes (TerrainGrid), the chunk's own and its
 ## neighbours' around it, once a build (D39).
@@ -331,30 +331,42 @@ func _ground_of(terrain: String) -> GroundCanvas:
 	return canvas
 
 
-## One terrain's ground over a chunk: a single quad with that terrain's
-## material, whose shader keeps the tiles the ground index gives this
-## terrain (GroundIndex).
+## One terrain's ground over a chunk: one array of triangles with that
+## terrain's material, covering the rows of tiles it draws (GroundBuild.
+## rows_of), whose shader keeps, as a safety net, the tiles the ground
+## index gives this terrain (GroundIndex).
 class GroundCanvas:
 	extends Node2D
 	var terrain := ""
 	## The chunk covered: its north-west tile and its side.
 	var origin := Vector2i.ZERO
 	var size := 0
+	## The tiles drawn, rectangles [x0, y0, x1, y1) in the chunk.
+	var rows := PackedInt32Array()
 	## Whether the terrain has any tile to draw in the chunk.
 	var shown := false
 
 	func _draw() -> void:
-		if not shown or size <= 0:
+		if not shown or size <= 0 or rows.is_empty():
 			return
-		var corners := [origin, origin + Vector2i(size, 0), origin + Vector2i(size, size), origin + Vector2i(0, size)]
 		var points := PackedVector2Array()
 		var uvs := PackedVector2Array()
-		for c: Vector2i in corners:
-			# A tile's top corner, and its square of the texture.
-			points.append(Iso.tile_to_screen(c.x, c.y) + Vector2(0, -Iso.TILE_H / 2.0))
-			uvs.append(Vector2(c) / ChunkView.GROUND_METRES)
-		var white := Color.WHITE
-		draw_polygon(points, PackedColorArray([white, white, white, white]), uvs, ChunkView.ground_texture(terrain))
+		var indices := PackedInt32Array()
+		for r in range(0, rows.size(), 4):
+			var lo := origin + Vector2i(rows[r], rows[r + 1])
+			var hi := origin + Vector2i(rows[r + 2], rows[r + 3])
+			var first := points.size()
+			for c: Vector2i in [lo, Vector2i(hi.x, lo.y), hi, Vector2i(lo.x, hi.y)]:
+				# A tile's top corner, and its square of the texture.
+				points.append(Iso.tile_to_screen(c.x, c.y) + Vector2(0, -Iso.TILE_H / 2.0))
+				uvs.append(Vector2(c) / ChunkView.GROUND_METRES)
+			indices.append_array([first, first + 1, first + 2, first, first + 2, first + 3])
+		var colours := PackedColorArray()
+		colours.resize(points.size())
+		colours.fill(Color.WHITE)
+		var texture := ChunkView.ground_texture(terrain)
+		RenderingServer.canvas_item_add_triangle_array(get_canvas_item(), indices, points, colours, uvs,
+				PackedInt32Array(), PackedFloat32Array(), texture.get_rid() if texture != null else RID())
 
 
 ## The river as two meshes a chunk (WaterMeshes, D36): a water mesh and a
@@ -1151,15 +1163,15 @@ func _lay(result: Dictionary, signature: int) -> void:
 			layer.set_draws(plants)
 		_plants_due = []
 	GroundIndex.write(_origin, _size, result["bits"], result["corners"])
-	var used: int = result["used"]
+	var rows: Dictionary = result["rows"]
 	for terrain: String in GroundIndex.BITS:
-		var shown := (used & int(GroundIndex.BITS[terrain])) != 0
-		if FRINGE_OVER.has(terrain) and (used & GroundIndex.FRINGE) != 0:
-			shown = true
+		var rects: PackedInt32Array = rows.get(terrain, PackedInt32Array())
+		var shown := not rects.is_empty()
 		if shown or _grounds.has(terrain):
 			var canvas := _ground_of(terrain)
 			canvas.origin = _origin
 			canvas.size = _size
+			canvas.rows = rects
 			canvas.shown = shown
 			canvas.queue_redraw()
 	var water_usec: int = result["water_usec"]

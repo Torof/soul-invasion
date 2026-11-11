@@ -2,8 +2,9 @@ class_name GroundIndex
 extends RefCounted
 ## What the ground shader needs to know of each tile, two bytes a tile, in
 ## one texture of TILES × TILES laid over the map again and again (as
-## TerrainGrid): each terrain's canvas draws one quad a chunk and the
-## shader keeps, pixel by pixel, the tiles that terrain covers (D39).
+## TerrainGrid): each terrain's canvas draws a few rectangles of tiles a
+## chunk (its rows, GroundBuild.rows_of) and the shader keeps, pixel by
+## pixel, the tiles that terrain covers (D39).
 ## Before, each canvas was a mesh of six vertices a tile, built in
 ## GDScript and held by the graphics card.
 ##

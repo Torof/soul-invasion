@@ -25,6 +25,7 @@ func _init() -> void:
 	_test_the_water_meshes_blur_as_three_boxes()
 	_test_the_terrain_grid_holds_bytes()
 	_test_the_ground_index_says_what_each_canvas_draws()
+	_test_each_ground_canvas_covers_only_its_rows()
 	_test_currents_decode()
 	_test_tree_images_are_clean()
 	_test_tree_feet_are_whole()
@@ -521,6 +522,50 @@ func _test_the_ground_index_says_what_each_canvas_draws() -> void:
 			shown.append((child as ChunkView.GroundCanvas).terrain)
 	shown.sort()
 	_check(shown == ["forest", "grass"], "one canvas a terrain drawn, none for the water: %s" % [shown])
+	view.free()
+	TerrainGrid.clear(origin, 32)
+
+
+## Each ground canvas draws the rows of tiles it covers, not the whole
+## chunk (B9): its rectangles cover exactly the tiles whose index bits
+## meet its mask (the forest's own and its spill), each once, and a run
+## going on from the row above extends its rectangle.
+func _test_each_ground_canvas_covers_only_its_rows() -> void:
+	var origin := Vector2i(352, 320)
+	var tiles: Array = []
+	for y in 32:
+		for x in 32:
+			var glade := x >= 3 and x < 6 and y >= 10 and y < 13
+			tiles.append("water" if x >= 24 else ("forest" if x < 10 and not glade else "grass"))
+	var map_size := WaterMeshes.map_size
+	WaterMeshes.map_size = Vector2i(1024, 1024)
+	var view := ChunkView.new()
+	view.show_chunk(origin, 32, tiles, [], {})
+	view._draw_ground_layers()
+	WaterMeshes.map_size = map_size
+	var rects := {}
+	for child in view.get_children():
+		if child is ChunkView.GroundCanvas and (child as ChunkView.GroundCanvas).shown:
+			var canvas := child as ChunkView.GroundCanvas
+			rects[canvas.terrain] = canvas.rows
+			var mask := GroundBuild.canvas_mask(canvas.terrain)
+			var covered := PackedByteArray()
+			covered.resize(32 * 32)
+			for r in range(0, canvas.rows.size(), 4):
+				for y in range(canvas.rows[r + 1], canvas.rows[r + 3]):
+					for x in range(canvas.rows[r], canvas.rows[r + 2]):
+						covered[y * 32 + x] += 1
+			var wrong := 0
+			for y in 32:
+				for x in 32:
+					var own := int(GroundIndex.at(origin + Vector2i(x, y))[0]) & mask != 0
+					if covered[y * 32 + x] != (1 if own else 0):
+						wrong += 1
+			_check(wrong == 0, "the %s canvas covers its own tiles, each once, and no other: %d wrong" % [canvas.terrain, wrong])
+	_check(rects.keys().size() == 2 and rects.has("forest") and rects.has("grass"), "the forest and the grass are drawn, the water by its meshes: %s" % [rects.keys()])
+	_check(rects.get("forest") == PackedInt32Array([0, 0, 13, 32]), "the wood and its spill over the glade and the meadow, one rectangle: %s" % [rects.get("forest")])
+	_check(rects.get("grass") == PackedInt32Array([10, 0, 25, 32, 3, 10, 6, 13]), "the meadow to the bank, and the glade apart: %s" % [rects.get("grass")])
+	_check(GroundBuild.rows_of(PackedByteArray([1, 0, 1, 1, 0, 0, 1, 1, 0]), 3, 1) == PackedInt32Array([0, 0, 1, 2, 2, 0, 3, 1, 0, 2, 2, 3]), "runs split where they change")
 	view.free()
 	TerrainGrid.clear(origin, 32)
 

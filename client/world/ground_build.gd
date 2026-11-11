@@ -29,8 +29,8 @@ static func run(input: Dictionary, out: Array) -> void:
 
 ## The chunk's ground from `input` (ChunkView._gather): "flats" [points,
 ## colour], "decor" [texture, rect, tint], "bits" and "corners" (the
-## ground index's bytes, GroundIndex.write), "used" (the canvas bits
-## used), "water" and "bank" (WaterMeshes.build's arrays, empty when
+## ground index's bytes, GroundIndex.write), "rows" (terrain -> the
+## tiles its canvas draws, as rectangles of whole rows: rows_of), "water" and "bank" (WaterMeshes.build's arrays, empty when
 ## none), "water_usec" (its time, -1 when no water), "brooks" (the
 ## ribbons' arrays, or null without a brook), "brook_lines" (the lines,
 ## drawn flat when the brook's art is missing), "arrows", "plant_draws"
@@ -86,11 +86,11 @@ static func compute(input: Dictionary) -> Dictionary:
 		for x in size:
 			if WaterMeshes.is_water(win[(y + READ) * side + x + READ]):
 				bits[y * size + x] |= bit_of[land_around(win, x + READ, y + READ, true, size)]
-	var used := 0
-	for b in bits:
-		used |= b
+	var rows := {}
+	for terrain: String in GroundIndex.BITS:
+		rows[terrain] = rows_of(bits, size, canvas_mask(terrain))
 	var current: Callable = input["current"]
-	var result := {"flats": flats, "bits": bits, "corners": corners, "used": used,
+	var result := {"flats": flats, "bits": bits, "corners": corners, "rows": rows,
 		"water": {}, "bank": {}, "water_usec": -1, "brooks": null, "brook_lines": [], "arrows": []}
 	var prepared := WaterMeshes.prepare(win, origin, size, current)
 	if not prepared.is_empty():
@@ -215,6 +215,50 @@ static func _decor(input: Dictionary, win: PackedByteArray, codes: PackedByteArr
 				var shown := Vector2(size_px, size_px * ratios[pick] * 0.5) * scale
 				out.append([textures[pick], Rect2(centre - shown / 2.0, shown), tint])
 	return out
+
+
+## The bits of the ground index (R) a terrain's canvas draws a tile for:
+## its own and, for a terrain that spills (the forest), the spill.
+static func canvas_mask(terrain: String) -> int:
+	var mask := int(GroundIndex.BITS.get(terrain, 0))
+	if ChunkView.FRINGE_OVER.has(terrain):
+		mask |= GroundIndex.FRINGE
+	return mask
+
+
+## The tiles of a chunk whose bits (`bits`, size × size) meet `mask`, as
+## rectangles of tiles [x0, y0, x1, y1) in the chunk: each row's runs, a
+## run going on from the row above when it spans the same tiles. A
+## rectangle of tiles is a parallelogram on screen, the union of its
+## diamonds, so a canvas drawing these covers its own tiles and nothing
+## else (B9 of the lightness plan: before, each canvas covered the whole
+## chunk and its shader discarded the others' tiles).
+static func rows_of(bits: PackedByteArray, size: int, mask: int) -> PackedInt32Array:
+	var rects := PackedInt32Array()
+	# Run [x0, x1) -> where its rectangle sits in `rects`, for the runs of
+	# the row above.
+	var open := {}
+	for y in size:
+		var next := {}
+		var row := y * size
+		var x := 0
+		while x < size:
+			if bits[row + x] & mask == 0:
+				x += 1
+				continue
+			var x0 := x
+			while x < size and bits[row + x] & mask != 0:
+				x += 1
+			var run := Vector2i(x0, x)
+			if open.has(run):
+				var at: int = open[run]
+				rects[at + 3] = y + 1
+				next[run] = at
+			else:
+				next[run] = rects.size()
+				rects.append_array([x0, y, x, y + 1])
+		open = next
+	return rects
 
 
 ## A table of the 256 codes, 1 for those `codes` names.

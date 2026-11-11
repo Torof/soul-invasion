@@ -5,8 +5,9 @@
 // textures are never turned: drawn with a slight three-quarter reading,
 // a turned grass reads upside down, like a roof.
 //
-// Each terrain's canvas is one quad over its chunk; the ground index
-// (GroundIndex) says which of its tiles this terrain draws. The images
+// Each terrain's canvas covers the rows of tiles it draws in its chunk
+// (GroundBuild.rows_of); the ground index (GroundIndex) says, as a safety
+// net and for the forest's spill, which tiles this terrain draws. The images
 // are read with their mipmaps, one level sharper than the hardware would
 // choose (SHARPEN): the diamonds squash the texture two to one, and the
 // hardware's own level would blur it (D39).
@@ -276,6 +277,28 @@ void fragment() {
 // The land: its layers, read only where they can show (meet_shows),
 // then the terrain's own edge and bank.
 vec4 tint = vec4(1.0, 1.0, 1.0, spill);
+float alpha = tint.a;
+if (alpha < 1.0 && spill_only_with_bank && !has_bank) {
+	alpha = 0.0;
+}
+// The forest's edge over the grass: its own floor, whole or not at all
+// along a ragged line (two drawings showing through each other read as
+// ghosts), and beyond it a shade fading out, so the line between them
+// follows neither the tiles nor a straight edge. Worked out first: where
+// the floor does not reach, only the shade shows and no layer is read.
+bool edged = !has_bank && alpha < 1.0;
+float floor_in = 1.0;
+float edge_shade = 0.0;
+if (edged) {
+	float e = texture(noise_texture, uv * edge_scale + vec2(0.23, 0.71)).r;
+	float e2 = texture(noise_texture, uv * edge_scale * 3.7 + vec2(0.61, 0.08)).r;
+	float rag = e * 0.65 + e2 * 0.35;
+	floor_in = smoothstep(rag - 0.02, rag + 0.02, alpha * 1.15 - 0.15);
+	edge_shade = smoothstep(0.0, 1.0, alpha) * fringe_strength;
+}
+if (edged && floor_in <= 0.0) {
+	COLOR = vec4(fringe_colour * tint.rgb, max(floor_in, edge_shade));
+} else {
 float grain = (texture(noise_texture, uv * 0.8 + vec2(0.37, 0.19)).r - 0.5) * 2.0 * meet_grain;
 // The variants' weights, once for every layer, and the derivatives the
 // layers are read with (varied_once).
@@ -287,16 +310,20 @@ if (has_sibling) {
 	float n = texture(noise_texture, uv * noise_scale).r;
 	float threshold = 1.0 - sibling_cover;
 	float weight = smoothstep(threshold - 0.15, threshold + 0.15, n);
-	if (bare_keep < 1.0 || meet_shows(ground, weight, grain)) {
+	// The base's bare spots (its brown pixels) not kept take the
+	// sibling's grass: read only on a bare pixel.
+	float bare_taken = 0.0;
+	if (bare_keep < 1.0) {
+		float bare = smoothstep(0.0, 0.08, ground.r - ground.g);
+		if (bare > 0.0) {
+			float kept = patches(uv, 0.06, vec2(0.9, 0.4), bare_keep, 0.1);
+			bare_taken = bare * (1.0 - kept);
+		}
+	}
+	if (bare_taken > 0.0 || meet_shows(ground, weight, grain)) {
 		vec4 sibling = varied_once(sibling_texture, uv, vw, duv_x, duv_y);
 		sibling.rgb *= sibling_tint;
-		vec4 base = ground;
-		ground = meet(base, sibling, weight, grain);
-		if (bare_keep < 1.0) {
-			float bare = smoothstep(0.0, 0.08, base.r - base.g);
-			float kept = patches(uv, 0.06, vec2(0.9, 0.4), bare_keep, 0.1);
-			ground = mix(ground, sibling, bare * (1.0 - kept));
-		}
+		ground = mix(meet(ground, sibling, weight, grain), sibling, bare_taken);
 	}
 }
 // Dry zones: a soft, wide mask; the tint is applied at most at
@@ -344,10 +371,6 @@ if (shore_lighten > 0.0) {
 		ground.rgb *= 1.0 - line * bank_line;
 	}
 }
-float alpha = tint.a;
-if (alpha < 1.0 && spill_only_with_bank && !has_bank) {
-	alpha = 0.0;
-}
 if (has_bank) {
 	// Signed distance from the water line in tiles: positive on the
 	// land (the spill's alpha fades over one tile), negative in the
@@ -385,18 +408,10 @@ if (has_bank) {
 	} else {
 		ground.rgb = mix(ground.rgb, strip, cover);
 	}
-} else if (alpha < 1.0) {
-	float e = texture(noise_texture, uv * edge_scale + vec2(0.23, 0.71)).r;
-	// The forest's edge over the grass: its own floor, whole or not at
-	// all along a ragged line (two drawings showing through each other
-	// read as ghosts), and beyond it a shade fading out, so the line
-	// between them follows neither the tiles nor a straight edge.
-	float e2 = texture(noise_texture, uv * edge_scale * 3.7 + vec2(0.61, 0.08)).r;
-	float rag = e * 0.65 + e2 * 0.35;
-	float floor_in = smoothstep(rag - 0.02, rag + 0.02, alpha * 1.15 - 0.15);
-	float shade = smoothstep(0.0, 1.0, alpha) * fringe_strength;
+} else if (edged) {
 	ground.rgb = mix(fringe_colour, ground.rgb, floor_in);
-	alpha = max(floor_in, shade);
+	alpha = max(floor_in, edge_shade);
 }
 COLOR = vec4(ground.rgb * vertex_tint, alpha);
+}
 }
