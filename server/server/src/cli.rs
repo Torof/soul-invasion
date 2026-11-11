@@ -31,6 +31,10 @@ OPTIONS:
                            pace (D09).
     --max-connections <N>  Paced mode: clients served at once, at most
                            (default 64). Further connections are refused.
+    --chunk-threads <N>    Paced mode: threads building the chunks of the
+                           clients' views, beside the network (default: the
+                           machine's hardware threads less three, from 1 to
+                           8).
     --content <DIR>        Directory of the content files (materials,
                            spawn rules). Default: the first of content,
                            ../content, ../../content that exists.
@@ -84,6 +88,8 @@ pub struct Options {
     pub time_scale: f64,
     /// Connections served at once, at most (paced mode only).
     pub max_connections: usize,
+    /// Threads of the chunk pool, or `None` to size it from the machine.
+    pub chunk_threads: Option<usize>,
     /// Content directory, or `None` to look in the default places.
     pub content: Option<PathBuf>,
     /// The world's calendar.
@@ -117,6 +123,7 @@ impl Default for Options {
             reset: false,
             time_scale: 1.0,
             max_connections: DEFAULT_MAX_CONNECTIONS,
+            chunk_threads: None,
             content: None,
             calendar: Calendar::default(),
             dev: false,
@@ -192,6 +199,7 @@ impl Options {
                 "--no-warm-up" => opts.warm_up = WarmUp::OnDemand,
                 "--time-scale" => opts.time_scale = value(arg, args.next())?,
                 "--max-connections" => opts.max_connections = value(arg, args.next())?,
+                "--chunk-threads" => opts.chunk_threads = Some(value(arg, args.next())?),
                 "--content" => opts.content = Some(value(arg, args.next())?),
                 "--ticks-per-second" => ticks_per_second = value(arg, args.next())?,
                 "--seconds-per-day" => seconds_per_day = value(arg, args.next())?,
@@ -211,6 +219,12 @@ impl Options {
         if opts.max_connections == 0 {
             return Err(CliError::InvalidValue {
                 option: "--max-connections".to_owned(),
+                value: "0".to_owned(),
+            });
+        }
+        if opts.chunk_threads == Some(0) {
+            return Err(CliError::InvalidValue {
+                option: "--chunk-threads".to_owned(),
                 value: "0".to_owned(),
             });
         }
@@ -382,6 +396,27 @@ mod tests {
             Some(PathBuf::from("/srv/content"))
         );
         assert_eq!(Options::parse(Vec::<&str>::new()).unwrap().content, None);
+    }
+
+    #[test]
+    fn chunk_threads_is_parsed_and_must_be_positive() {
+        assert_eq!(
+            Options::parse(Vec::<&str>::new()).unwrap().chunk_threads,
+            None
+        );
+        assert_eq!(
+            Options::parse(["--chunk-threads", "3"])
+                .unwrap()
+                .chunk_threads,
+            Some(3)
+        );
+        assert_eq!(
+            Options::parse(["--chunk-threads", "0"]),
+            Err(CliError::InvalidValue {
+                option: "--chunk-threads".into(),
+                value: "0".into(),
+            })
+        );
     }
 
     #[test]
