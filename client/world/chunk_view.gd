@@ -152,8 +152,19 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 		material.set_shader_parameter("index_bit", int(GroundIndex.BITS.get(terrain, 0)))
 		material.set_shader_parameter("index_tiles", float(GroundIndex.TILES))
 		apply_spec(material, terrain, false)
+		pin_flow_time(material)
 		_ground_materials[terrain] = material
 	return _ground_materials[terrain]
+
+
+## Development: with SOUL_INVASION_WATER_TIME set to a number of seconds,
+## the water of `material` (the ground's or the brooks') stands at that
+## moment of its drift instead of running, so two captures compare pixel
+## by pixel (as SOUL_INVASION_FOG_TIME does for the fog).
+static func pin_flow_time(material: ShaderMaterial) -> void:
+	var pinned := OS.get_environment("SOUL_INVASION_WATER_TIME")
+	if pinned.is_valid_float():
+		material.set_shader_parameter("flow_time", float(pinned))
 
 
 ## The average colour of a terrain's ground texture; clear when it has
@@ -1059,6 +1070,7 @@ func _brook_canvas() -> BrookCanvas:
 			_brook_material.set_shader_parameter("shore_field", ShoreField.texture())
 			_brook_material.set_shader_parameter("field_tiles", float(ShoreField.TILES))
 			_brook_material.set_shader_parameter("field_range", ShoreField.RANGE)
+			pin_flow_time(_brook_material)
 		_brooks = BrookCanvas.new()
 		_brooks.z_index = -3
 		_brooks.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
