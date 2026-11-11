@@ -62,6 +62,15 @@ var _ever_welcomed := false
 ## its items' materials by their index.
 var _material_ids := PackedStringArray()
 
+## The chunk frames held, in view and lately left behind (D4), in
+## memory only, and the world they belong to: kept across a
+## reconnection to the same world.
+var frames := FrameCache.new()
+var world_id := ""
+## Whether the last `world_state` was of the world already held: the
+## chunks held are kept, not built again.
+var same_world := false
+
 ## True once the server has welcomed us.
 var is_ready := false
 ## Whether the server runs with --dev (it sent its overview).
@@ -154,7 +163,7 @@ func _process(_delta: float) -> void:
 	if state == WebSocketPeer.STATE_OPEN:
 		if not _hello_sent:
 			_hello_sent = true
-			_send(Protocol.hello())
+			_send(Protocol.hello(world_id, frames.held()))
 		while _peer.get_available_packet_count() > 0:
 			var t := DevTiming.start()
 			DevWatchdog.phase = DevWatchdog.NETWORK
@@ -194,7 +203,26 @@ func _handle_chunk(bytes: PackedByteArray) -> void:
 	if decoded.is_empty():
 		push_warning("a chunk frame that does not decode (%d bytes)" % bytes.size())
 		return
+	frames.received(Vector2i(int(decoded["x"]), int(decoded["y"])), bytes)
 	chunk.emit(int(decoded["x"]), int(decoded["y"]), decoded)
+
+
+## `chunk_same`: the chunk is held at that version already, or kept out
+## of view (shown again from its frame), or the server is told it is not.
+func _same(x: int, y: int, version: int) -> void:
+	var key := Vector2i(x, y)
+	match frames.same(key, version):
+		FrameCache.RESTORED:
+			var decoded := Protocol.decode_chunk(frames.live[key], _material_ids)
+			chunk.emit(x, y, decoded)
+		FrameCache.MISSING:
+			_send(Protocol.chunk_missing(x, y))
+
+
+## `view`: the chunks held outside the window are left, their frames kept.
+func _view(window: Rect2i) -> void:
+	for key in frames.view(window):
+		chunk_hidden.emit(key.x, key.y)
 
 
 func _handle(message: Dictionary) -> void:
@@ -210,6 +238,11 @@ func _handle(message: Dictionary) -> void:
 			body = int(assigned) if assigned != null else -1
 			connected.emit(int(message.get("tick", 0)), body)
 		"world_state":
+			var world := str(message.get("world", ""))
+			same_world = not world.is_empty() and world == world_id
+			if not same_world:
+				frames.clear()
+			world_id = world
 			_material_ids.clear()
 			for m in message.get("materials", []):
 				_material_ids.append(str(m.get("id", "")))
@@ -225,8 +258,15 @@ func _handle(message: Dictionary) -> void:
 			clock.emit(message.get("clock", {}))
 		"chunk_bodies":
 			chunk_bodies.emit(int(message.get("x", 0)), int(message.get("y", 0)), message.get("bodies", []))
-		"chunk_hidden":
-			chunk_hidden.emit(int(message.get("x", 0)), int(message.get("y", 0)))
+		"chunk_same":
+			_same(int(message.get("x", 0)), int(message.get("y", 0)), int(message.get("version", -1)))
+		"view":
+			_view(Rect2i(
+				int(message.get("x", 0)),
+				int(message.get("y", 0)),
+				int(message.get("width", 0)),
+				int(message.get("height", 0))
+			))
 		"body_left":
 			body_left.emit(int(message.get("body", -1)))
 		"far_view":
