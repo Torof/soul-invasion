@@ -532,6 +532,8 @@ pub enum Event {
         material: String,
         /// Where.
         at: Pos,
+        /// Its chunk's version right after it ([`World::chunk_version`]).
+        version: ground::Version,
     },
     /// An item is gone from the ground.
     ItemRemoved {
@@ -539,6 +541,8 @@ pub enum Event {
         item: ItemId,
         /// Where it was.
         at: Pos,
+        /// Its chunk's version right after it ([`World::chunk_version`]).
+        version: ground::Version,
     },
     /// A body died; it is now a corpse item.
     BodyDied {
@@ -956,12 +960,14 @@ impl World {
         self.items.get(&id)
     }
 
-    /// Notes a stored item lying in a chunk.
+    /// Notes a stored item lying in a chunk: a change to what the chunk
+    /// holds, which bumps its version as an item taken does (D4).
     fn lay(&mut self, id: ItemId, chunk: ChunkPos) {
         self.ground.entry(chunk).or_default().insert(id);
+        self.change(chunk, |_| {});
     }
 
-    /// Notes a stored item no longer lying in a chunk.
+    /// Notes a stored item no longer lying in a chunk; its version bumps.
     fn lift(&mut self, id: ItemId, chunk: ChunkPos) {
         if let Some(ids) = self.ground.get_mut(&chunk) {
             ids.remove(&id);
@@ -969,6 +975,7 @@ impl World {
                 self.ground.remove(&chunk);
             }
         }
+        self.change(chunk, |_| {});
     }
 
     /// Makes the natural item `id` a stored one, lying where it was, and
@@ -981,7 +988,8 @@ impl World {
         if let Some(item) = items::natural_item(&self.map, &self.spawns, self.seed(), id) {
             let chunk = items::chunk_of(id);
             self.items.insert(id, item);
-            self.lay(id, chunk);
+            // Laid as a stored item where it lay: one change, counted once.
+            self.ground.entry(chunk).or_default().insert(id);
             self.change(chunk, |c| {
                 c.taken.insert(items::slot_of(id));
             });
@@ -1211,13 +1219,20 @@ impl World {
             dropped.place = Place::Ground { pos: at };
             let material = dropped.material.clone();
             self.lay(item, at.chunk());
-            events.push(Event::ItemAdded { item, material, at });
+            let version = self.chunk_version(at.chunk());
+            events.push(Event::ItemAdded {
+                item,
+                material,
+                at,
+                version,
+            });
         }
         let corpse = self.spawn_item("corpse", at);
         events.push(Event::ItemAdded {
             item: corpse,
             material: "corpse".to_owned(),
             at,
+            version: self.chunk_version(at.chunk()),
         });
         events.push(Event::BodyDied {
             body: id,
@@ -1451,7 +1466,11 @@ impl World {
             u64::from(food.energy_kj) * GAUGE_SCALE / u64::from(rules.needs.kj_per_hunger_point);
         self.bodies[index].condition.hunger.lower(relief);
         match place {
-            Place::Ground { pos } => events.push(Event::ItemRemoved { item, at: pos }),
+            Place::Ground { pos } => events.push(Event::ItemRemoved {
+                item,
+                at: pos,
+                version: self.chunk_version(pos.chunk()),
+            }),
             Place::Carried { .. } => {
                 let was_held = self.bodies[index].held == Some(item);
                 self.bodies[index].let_go(item);
@@ -1497,7 +1516,11 @@ impl World {
         } else {
             body.carried.push(item);
         }
-        events.push(Event::ItemRemoved { item, at: pos });
+        events.push(Event::ItemRemoved {
+            item,
+            at: pos,
+            version: self.chunk_version(pos.chunk()),
+        });
         self.inventory_changed(index, rules, events);
         if in_hand {
             events.push(Event::BodyHolds {
@@ -1525,7 +1548,12 @@ impl World {
         dropped.place = Place::Ground { pos: at };
         let material = dropped.material.clone();
         self.lay(item, at.chunk());
-        events.push(Event::ItemAdded { item, material, at });
+        events.push(Event::ItemAdded {
+            item,
+            material,
+            at,
+            version: self.chunk_version(at.chunk()),
+        });
         self.inventory_changed(index, rules, events);
         if was_held {
             events.push(Event::BodyHolds {
@@ -2272,7 +2300,7 @@ mod tests {
         assert!(w.item(item.id()).is_some());
         assert!(w.is_taken(item.id()));
         assert_eq!(w.taken().collect::<Vec<_>>(), [item.id()]);
-        assert_eq!(w.chunk_version(at.chunk()), 1, "a change counted");
+        assert_eq!(w.chunk_version(at.chunk()), 2, "taken, then lifted");
         assert!(w.items_in(at.chunk()).iter().all(|i| i.id() != item.id()));
         // Through a save and a load: the same.
         // (The snapshot holds no changes: the storage keeps them beside.)
@@ -2282,7 +2310,7 @@ mod tests {
             back.restore_changes(chunk, changes.clone());
         }
         back.take_content(&content);
-        assert_eq!(back.chunk_version(at.chunk()), 1);
+        assert_eq!(back.chunk_version(at.chunk()), 2);
         assert!(
             back.items_in(at.chunk())
                 .iter()
@@ -2396,10 +2424,10 @@ mod tests {
             item: stone,
             reason: Refusal::NotFood,
         }));
-        assert!(events.contains(&Event::ItemRemoved {
-            item: berries,
-            at: Pos::new(2, 2)
-        }));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::ItemRemoved { item, at, .. } if *item == berries && *at == Pos::new(2, 2)
+        )));
         assert!(events.contains(&Event::BodyAte {
             body: BodyId(1),
             item: berries
@@ -2484,6 +2512,46 @@ mod tests {
     }
 
     #[test]
+    fn the_chunk_version_bumps_on_drop_as_on_take() {
+        // D4: the one version a chunk frame carries moves with anything
+        // the frame shows, an item dropped as an item taken, and each
+        // event tells the version right after it.
+        let mut w = fed_world();
+        let mut events = Vec::new();
+        let flint = w.spawn_item("flint", Pos::new(2, 2));
+        let chunk = Pos::new(2, 2).chunk();
+        let laid = w.chunk_version(chunk);
+        assert!(laid > 0, "an item laid is a change");
+        pick(&mut w, flint, &mut events);
+        let taken = w.chunk_version(chunk);
+        assert!(taken > laid, "taking bumps the version");
+        assert!(events.contains(&Event::ItemRemoved {
+            item: flint,
+            at: Pos::new(2, 2),
+            version: taken,
+        }));
+        events.clear();
+        w.queue(Intention::Drop {
+            body: BodyId(1),
+            item: flint,
+        });
+        w.step(&rules(), &mut events);
+        let at = w.item(flint).unwrap().pos().unwrap();
+        let dropped = w.chunk_version(at.chunk());
+        assert!(
+            events.contains(&Event::ItemAdded {
+                item: flint,
+                material: "flint".to_owned(),
+                at,
+                version: dropped,
+            }),
+            "{events:?}"
+        );
+        assert_eq!(at.chunk(), chunk, "a map of one chunk");
+        assert!(dropped > taken, "dropping bumps the version");
+    }
+
+    #[test]
     fn picking_up_carries_an_item_and_puts_the_first_in_hand() {
         let mut w = fed_world();
         let mut events = Vec::new();
@@ -2497,10 +2565,10 @@ mod tests {
             w.item(flint).unwrap().place(),
             Place::Carried { body: BodyId(1) }
         );
-        assert!(events.contains(&Event::ItemRemoved {
-            item: flint,
-            at: Pos::new(2, 2)
-        }));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::ItemRemoved { item, at, .. } if *item == flint && *at == Pos::new(2, 2)
+        )));
         assert!(events.contains(&Event::BodyHolds {
             body: BodyId(1),
             item: Some(flint)
