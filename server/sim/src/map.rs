@@ -3255,9 +3255,11 @@ mod tests {
             "{} brook tiles",
             count(Terrain::Brook)
         );
-        // Trees come in groves: between a tenth and half of the ground.
+        // Trees come in groves: between a tenth and three quarters of
+        // the ground (a small map is mostly riverside, where the water
+        // draws the woods: D37, 11 November 2026).
         let forest = count(Terrain::Forest);
-        assert!((6_000..33_000).contains(&forest), "{forest} forest tiles");
+        assert!((6_000..43_000).contains(&forest), "{forest} forest tiles");
         // Rivers may cut the map in parts: fords are a chance, bridges and
         // boats come later. But the standard world's bodies (seed 1, near
         // tile 134, 139) start on a piece of land at least a quarter of

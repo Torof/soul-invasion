@@ -77,10 +77,13 @@ pub(crate) mod purpose {
     pub(crate) const WOODS_COPSE: u64 = 0x00c0_95e5;
     pub(crate) const WOODS_BANK: u64 = 0x00ba_4b5e;
     pub(crate) const WOODS_BROOK: u64 = 0x00b4_00c5;
+    /// The riparian noise: how thick the woods by the water are, stretch
+    /// by stretch (11 November 2026).
+    pub(crate) const WOODS_RIPARIAN: u64 = 0x0041_9a41;
 
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 24] = [
+    pub(crate) const ALL: [u64; 25] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -105,6 +108,7 @@ pub(crate) mod purpose {
         WOODS_COPSE,
         WOODS_BANK,
         WOODS_BROOK,
+        WOODS_RIPARIAN,
     ];
 }
 
