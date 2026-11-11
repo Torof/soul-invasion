@@ -373,6 +373,14 @@ bool meet_shows(vec4 a, float w, float meet_noise) {
 	return (w - 0.5) * 2.0 + dot(a.rgb, vec3(0.333)) * meet_depth + meet_noise > -meet_band;
 }
 
+// The beach noise at sample `k` of the window along the bank: the
+// samples are field_beach_samples either way from the point of the
+// water's line nearest the pixel, `spacing` tiles apart.
+float beach_noise(vec2 on_line, vec2 along_bank, int k, float spacing) {
+	vec2 at = on_line + along_bank * float(k - field_beach_samples) * spacing;
+	return texture(noise_texture, at * (0.2 / field_beach) + vec2(0.13, 0.52)).r;
+}
+
 void fragment() {
 	vec2 uv = UV;
 	// The clock the water runs by (pinned by flow_time in development).
@@ -402,6 +410,295 @@ void fragment() {
 			? v0 + in_cell.x * (v1 - v0) + in_cell.y * (v2 - v1)
 			: v0 + in_cell.x * (v2 - v3) + in_cell.y * (v3 - v0);
 	}
+	if (has_field) {
+		// The water canvas (D36): the water, its bank and the land within
+		// two tiles of it. The picture is settled; the work is laid out so
+		// that a pixel pays only for what can show at its distance from
+		// the water's line, with the same result to the bit where a layer
+		// contributes (D39, 11 November 2026). The bounds below are
+		// arithmetic on the uniforms alone.
+		vec2 world = uv * 4.0;
+		vec2 fuv = world / field_tiles;
+		float d = (texture(shore_field, fuv).r * 2.0 - 1.0) * field_range;
+		// Farthest the grass's edge can lie from the water's line: the
+		// widest bank (the earth, a beach), the tufts' bulge, a ford's bed.
+		float rag_max = 1.5 * abs(field_rag);
+		float width_top = max(max(field_width_min, field_width_max), 0.0);
+		width_top = max(width_top, width_top * field_beach_wide);
+		float outer_top = width_top + rag_max;
+		float outer_top_ford = max(outer_top, ford_bank_reach + rag_max);
+		// A hair past the bound, so a rounding of the exact test below can
+		// never keep a pixel this bound would have sent away.
+		const float SLACK = 0.01;
+		// Past the farthest edge there can be, with or without a ford: land
+		// the canvas does not draw. One read, instead of the whole bank.
+		if (d > max(outer_top_ford, 0.0) + max(0.04, ford_grass_fade) + SLACK) {
+			discard;
+		}
+		// The fords (R) and the current (G, B), read once for all.
+		vec4 field_px = texture(shore_water, fuv);
+		float ford_bank = has_ford1 ? smoothstep(0.03, 0.4, field_px.r) : 0.0;
+		// Over a ford's bank the grass fades in over this width instead of
+		// stopping on a line.
+		float grass_fade = mix(0.04, ford_grass_fade, ford_bank);
+		// The same bound, knowing whether a ford widens the bank here.
+		float outer_bound = ford_bank > 0.0 ? outer_top_ford : outer_top;
+		if (d > max(outer_bound, 0.0) + grass_fade + SLACK) {
+			discard;
+		}
+		// Out in the water, past where the bank's edge, its line, its
+		// light and a ford's shelf can still be felt, the water's colour
+		// depends on nothing the bank computes: every term fed by dw or by
+		// the grass's edge is saturated there, whatever the lap, the tufts
+		// and the beaches would have said. The lap moves the water's edge
+		// by at most lap_max; the ford's film by ford_water_reach.
+		float lap_max = 1.5 * abs(field_lap) + max(0.0, -ford_water_reach);
+		// Lowest the grass's edge can lie (the tufts' overhang, a ford's
+		// bed cut by the rag).
+		float grass_min = min(-max(field_overhang, 0.0), min(0.0, ford_bank_reach - rag_max));
+		// Past this depth the grass's own outline and its fade are whole
+		// water, so the tufts need not be read.
+		float edge_limit = -(max(0.045, abs(grass_fade)) - grass_min) - SLACK;
+		float deep_limit = -(max(max(deep_reach, field_light_reach), max(ford_shelf, field_line + field_line_into)) + lap_max) - SLACK;
+		deep_limit = min(deep_limit, min(edge_limit, -lap_max - SLACK));
+		float dw;
+		float grass_at;
+		float outer;
+		float beach;
+		if (d <= deep_limit) {
+			// Deep water: the distance itself stands for the water's edge
+			// (every use of it below is saturated at this depth).
+			dw = d;
+			grass_at = 0.0;
+			outer = 0.0;
+			beach = 0.0;
+		} else {
+			// Along the bank: perpendicular to the field's slope.
+			float step_f = 0.5 / field_tiles;
+			vec2 grad = vec2(
+				texture(shore_field, fuv + vec2(step_f, 0.0)).r - texture(shore_field, fuv - vec2(step_f, 0.0)).r,
+				texture(shore_field, fuv + vec2(0.0, step_f)).r - texture(shore_field, fuv - vec2(0.0, step_f)).r);
+			vec2 across = length(grad) > 1e-5 ? normalize(grad) : vec2(0.0, 1.0);
+			vec2 along_bank = vec2(-across.y, across.x);
+			// The point of the water's line nearest to here: what varies along
+			// the bank (its width, its beaches) is read there, so it is the
+			// same right across the bank.
+			vec2 on_line = world - across * d;
+			// The noise's features are about 0.2 of its period: read at
+			// 0.2 / n per tile, they are about n tiles across.
+			float wander = texture(noise_texture, on_line * (0.2 / field_vary) + vec2(0.31, 0.77)).r;
+			float wander2 = texture(noise_texture, on_line * (0.2 / (field_vary * 0.4)) + vec2(0.62, 0.15)).r;
+			float width = mix(field_width_min, field_width_max, smoothstep(0.3, 0.75, wander * 0.75 + wander2 * 0.4));
+			// Sand beaches: where the beach noise is high over a run of at
+			// least field_beach_min tiles along the bank. The noise is read at
+			// field_beach_samples points either way; the run around this point
+			// tells how far the beach goes each way, and the grass meets the
+			// water at its two ends.
+			float t_beach = 1.0 - field_beach_cover;
+			float sand = 0.0;
+			float pinch = 0.0;
+			if (has_bank2) {
+				float spacing = field_beach_reach / float(field_beach_samples);
+				float far = float(field_beach_samples) * spacing;
+				float to_end = -1.0;
+				float to_beach = 1e3;
+				float centre = beach_noise(on_line, along_bank, field_beach_samples, spacing);
+				if (field_beach_min >= field_beach_reach && centre != t_beach) {
+					// A run that does not pass through this point lies on one
+					// side of it, so it is shorter than the reach: when a beach
+					// must be at least as long as the reach, only the run through
+					// this point can be one. It is followed from here outwards,
+					// sample by sample, as far as it goes: one read where the
+					// noise is low here (most of the bank), the same values as
+					// the whole window where it is high. (The noise exactly at
+					// the threshold is the one case where a run ending here
+					// counts as passing through: that case reads the window.)
+					if (centre > t_beach) {
+						int k = field_beach_samples;
+						float at_k = centre;
+						float below_k = 0.0;
+						while (k > 0) {
+							float n = beach_noise(on_line, along_bank, k - 1, spacing);
+							if (n <= t_beach) {
+								below_k = n;
+								break;
+							}
+							at_k = n;
+							k--;
+						}
+						int j = field_beach_samples;
+						float at_j = centre;
+						float below_j = 0.0;
+						while (j < 2 * field_beach_samples) {
+							float n = beach_noise(on_line, along_bank, j + 1, spacing);
+							if (n <= t_beach) {
+								below_j = n;
+								break;
+							}
+							at_j = n;
+							j++;
+						}
+						float start = -far;
+						if (k > 0) {
+							start = (float(k - 1) + (t_beach - below_k) / max(at_k - below_k, 1e-4) - float(field_beach_samples)) * spacing;
+						}
+						float end = far;
+						if (j < 2 * field_beach_samples) {
+							end = (float(j) + (t_beach - at_j) / min(below_j - at_j, -1e-4) - float(field_beach_samples)) * spacing;
+						}
+						if (end - start >= field_beach_min) {
+							to_end = min(-start, end);
+						}
+					}
+				} else {
+					// The beach noise along the bank, either way from here.
+					float nb[2 * field_beach_samples + 1];
+					for (int k = 0; k <= 2 * field_beach_samples; k++) {
+						nb[k] = beach_noise(on_line, along_bank, k, spacing);
+					}
+					// Each run above the threshold is a beach if it is long enough;
+					// its ends are found between samples, so they move smoothly.
+					int k = 0;
+					while (k <= 2 * field_beach_samples) {
+						if (nb[k] <= t_beach) {
+							k++;
+							continue;
+						}
+						int j = k;
+						while (j < 2 * field_beach_samples && nb[j + 1] > t_beach) {
+							j++;
+						}
+						float start = -far;
+						if (k > 0) {
+							start = (float(k - 1) + (t_beach - nb[k - 1]) / max(nb[k] - nb[k - 1], 1e-4) - float(field_beach_samples)) * spacing;
+						}
+						float end = far;
+						if (j < 2 * field_beach_samples) {
+							end = (float(j) + (t_beach - nb[j]) / min(nb[j + 1] - nb[j], -1e-4) - float(field_beach_samples)) * spacing;
+						}
+						if (end - start >= field_beach_min) {
+							if (start <= 0.0 && end >= 0.0) {
+								to_end = min(-start, end);
+							} else {
+								to_beach = min(to_beach, start > 0.0 ? start : -end);
+							}
+						}
+						k = j + 1;
+					}
+				}
+				if (to_end >= 0.0) {
+					sand = smoothstep(0.25, 0.8, to_end);
+					pinch = 1.0 - smoothstep(0.0, 0.4, to_end);
+				} else {
+					pinch = 1.0 - smoothstep(0.0, 0.4, to_beach);
+				}
+			}
+			beach = sand;
+			width = mix(width, max(width, field_width_max) * field_beach_wide, beach);
+			width *= 1.0 - pinch;
+			// Tufts: the grass's edge bulges and recedes at two scales.
+			float rag = (texture(noise_texture, world * 0.5 + vec2(0.4, 0.9)).r - 0.5) * 2.0 * field_rag
+				+ (texture(noise_texture, world * 1.4 + vec2(0.1, 0.3)).r - 0.5) * field_rag;
+			outer = max(width + rag * clamp(width / 0.12, 0.0, 1.0), 0.0);
+			// At a ford there is no bank: its bed runs on over the land, the
+			// water reaches further in a thin film, and the grass comes back
+			// gradually over the bed.
+			outer = mix(outer, ford_bank_reach + rag, ford_bank);
+			// Where the bank narrows to nothing, the grass overhangs the water
+			// in tufts instead of stopping on the line. Out past edge_limit
+			// the overhang changes nothing (the outline and the fade are
+			// saturated there), so the tufts are not read.
+			float overhang = 0.0;
+			if (d > edge_limit) {
+				float tufts = texture(noise_texture, world * 1.9 + vec2(0.83, 0.47)).r * 0.7
+					+ texture(noise_texture, world * 4.3 + vec2(0.27, 0.66)).r * 0.5;
+				overhang = field_overhang * clamp(tufts - 0.3, 0.0, 1.0);
+			}
+			grass_at = mix(-overhang, outer, smoothstep(0.03, 0.14, outer));
+			grass_at = mix(grass_at, outer, ford_bank);
+			if (d > grass_at + grass_fade) {
+				discard;
+			}
+			// The water's own edge wanders over the earth: the water laps it.
+			float lap = (texture(noise_texture, world * 1.2 + vec2(0.55, 0.05)).r - 0.5) * 2.0 * field_lap
+				+ (texture(noise_texture, world * 3.7 + vec2(0.18, 0.92)).r - 0.5) * field_lap;
+			dw = d - lap * smoothstep(0.02, 0.15, outer) - ford_water_reach * ford_bank;
+		}
+		vec3 colour;
+		if (dw < 0.0) {
+			vec2 flow = (field_px.gb * 2.0 - 1.0) * 2.0;
+			// Tiles a second, a little slower than the water itself reads.
+			vec2 runs = flow * 0.8;
+			vec3 w1 = flowing(TEXTURE, world, runs, flow_period, 1.0, mat2(vec2(1.0, 0.0), vec2(0.0, 1.0)), 0.0, now, duv_x, duv_y);
+			vec3 w2 = flowing(TEXTURE, world, runs * 1.15, flow_period * 1.3, 1.6, mat2(vec2(0.0, 1.0), vec2(-1.0, 0.0)), 0.37, now, duv_x, duv_y);
+			colour = mix(w1, w2, flow_mix) * base_tint;
+			// Deeper in the middle.
+			colour *= mix(vec3(1.0), deep_tint, smoothstep(0.3, deep_reach, -dw));
+			// Glints drifting with the water.
+			float g1 = texture(noise_texture, world * 1.7 - runs * now * 0.4).r;
+			float g2 = texture(noise_texture, world * 2.9 + vec2(0.3, 0.6) - runs * now * 0.55).r;
+			colour = mix(colour, vec3(1.0), smoothstep(0.82, 0.9, g1 * 0.55 + g2 * 0.55) * glint);
+			float near = 1.0 - smoothstep(0.0, field_light_reach, -dw);
+			colour = mix(colour, colour * shore_tint, near * field_light);
+			// Into the deep water: the bed fades out slowly.
+			float ford = smoothstep(0.02, 0.97, field_px.r);
+			ford = ford * ford * (3.0 - 2.0 * ford);
+			// Near a ford's bank the water is all ford, so its film meets the
+			// bed on the land without a line.
+			ford = max(ford, ford_bank * (1.0 - smoothstep(0.0, ford_shelf, -dw)));
+			if (ford > 0.0 && has_ford1) {
+				vec3 bed = ford_bed(world, duv_x, duv_y);
+				// From the bank inwards, the water over the bed thickens.
+				// At the edge of a ford's bank the water is a film that
+				// thins to nothing on the bed, so there is no line.
+				float shelf = smoothstep(0.0, ford_shelf, -dw);
+				float deep = mix(mix(0.18, 0.0, ford_bank), ford_water, shelf);
+				vec3 wet_bed = bed * mix(vec3(0.85), ford_tint * 1.35, mix(1.0, shelf, ford_bank));
+				vec3 shallow = mix(wet_bed, colour, deep);
+				// Ripples drifting with the current over the stones.
+				float r1 = texture(noise_texture, world * 0.9 + vec2(now * 0.03, now * 0.05)).r;
+				float r2 = texture(noise_texture, world * 2.3 - vec2(now * 0.04, now * 0.02)).r;
+				float ripple = smoothstep(0.62, 0.72, r1 * 0.6 + r2 * 0.5);
+				shallow = mix(shallow, shallow * shore_tint * 1.15, ripple * ford_ripple);
+				colour = mix(colour, shallow, ford);
+			}
+		} else {
+			// The bank's matter, seamless, four metres a texture like the
+			// ground: earth, or sand on a beach.
+			vec2 m_uv = world * 0.25;
+			vec3 earth = textureGrad(bank_texture, m_uv, duv_x, duv_y).rgb;
+			if (beach > 0.0) {
+				earth = mix(earth, textureGrad(bank2_texture, m_uv + vec2(0.37, 0.11), duv_x, duv_y).rgb, beach);
+			}
+			earth *= field_earth_tint;
+			earth *= mix(field_wet, 1.0, smoothstep(0.0, 0.14, dw));
+			earth *= mix(1.0, field_shade, smoothstep(outer - 0.14, outer, d));
+			if (ford_bank > 0.0) {
+				// The ford's bed, damp, wetter near the water.
+				vec3 bed = ford_bed(world, duv_x, duv_y) * mix(0.8, 1.0, smoothstep(0.0, 0.5, dw));
+				earth = mix(earth, bed, ford_bank);
+			}
+			colour = earth;
+		}
+		// The water's edge: darker, melting into the water.
+		float line = (1.0 - smoothstep(0.0, field_line, abs(dw + field_line_into))) * field_line_strength * (1.0 - ford_bank);
+		colour = mix(colour, colour * 0.45, line);
+		// The grass's own outline, against the earth or the water.
+		float edge = 1.0 - smoothstep(0.0, 0.03, abs(d - grass_at + 0.015));
+		colour = mix(colour, field_ink, edge * 0.85 * (1.0 - ford_bank));
+		// The grass's edge over a ford's bank: ragged by a fine noise as it
+		// fades, so it comes back in tufts. Away from a ford it is nothing,
+		// exactly, and need not be read.
+		float tuft_in = 0.0;
+		if (ford_bank > 0.0) {
+			tuft_in = ((texture(noise_texture, world * 3.1 + vec2(0.37, 0.58)).r - 0.5) * 1.2
+				+ (texture(noise_texture, world * 1.1 + vec2(0.71, 0.12)).r - 0.5) * 0.8) * grass_fade * ford_bank;
+		}
+		float a = 1.0 - smoothstep(grass_at + tuft_in, grass_at + tuft_in + grass_fade, d);
+		COLOR = vec4(colour, a);
+	} else {
+	// The land: its layers, read only where they can show (meet_shows),
+	// then the terrain's own edge and bank.
 	vec4 tint = vec4(1.0, 1.0, 1.0, spill);
 	float grain = (texture(noise_texture, uv * 0.8 + vec2(0.37, 0.19)).r - 0.5) * 2.0 * meet_grain;
 	// The variants' weights, once for every layer, and the derivatives the
@@ -471,180 +768,6 @@ void fragment() {
 			ground.rgb *= 1.0 - line * bank_line;
 		}
 	}
-	if (has_field) {
-		vec2 world = uv * 4.0;
-		vec2 fuv = world / field_tiles;
-		float d = (texture(shore_field, fuv).r * 2.0 - 1.0) * field_range;
-		// Along the bank: perpendicular to the field's slope.
-		float step_f = 0.5 / field_tiles;
-		vec2 grad = vec2(
-			texture(shore_field, fuv + vec2(step_f, 0.0)).r - texture(shore_field, fuv - vec2(step_f, 0.0)).r,
-			texture(shore_field, fuv + vec2(0.0, step_f)).r - texture(shore_field, fuv - vec2(0.0, step_f)).r);
-		vec2 across = length(grad) > 1e-5 ? normalize(grad) : vec2(0.0, 1.0);
-		vec2 along_bank = vec2(-across.y, across.x);
-		// The point of the water's line nearest to here: what varies along
-		// the bank (its width, its beaches) is read there, so it is the
-		// same right across the bank.
-		vec2 on_line = world - across * d;
-		// The noise's features are about 0.2 of its period: read at
-		// 0.2 / n per tile, they are about n tiles across.
-		float wander = texture(noise_texture, on_line * (0.2 / field_vary) + vec2(0.31, 0.77)).r;
-		float wander2 = texture(noise_texture, on_line * (0.2 / (field_vary * 0.4)) + vec2(0.62, 0.15)).r;
-		float width = mix(field_width_min, field_width_max, smoothstep(0.3, 0.75, wander * 0.75 + wander2 * 0.4));
-		// Sand beaches: where the beach noise is high over a run of at
-		// least field_beach_min tiles along the bank. The noise is read at
-		// field_beach_samples points either way; the run around this point
-		// tells how far the beach goes each way, and the grass meets the
-		// water at its two ends.
-		float t_beach = 1.0 - field_beach_cover;
-		float sand = 0.0;
-		float pinch = 0.0;
-		if (has_bank2) {
-			// The beach noise along the bank, either way from here.
-			float spacing = field_beach_reach / float(field_beach_samples);
-			float nb[2 * field_beach_samples + 1];
-			for (int k = 0; k <= 2 * field_beach_samples; k++) {
-				vec2 at = on_line + along_bank * float(k - field_beach_samples) * spacing;
-				nb[k] = texture(noise_texture, at * (0.2 / field_beach) + vec2(0.13, 0.52)).r;
-			}
-			// Each run above the threshold is a beach if it is long enough;
-			// its ends are found between samples, so they move smoothly.
-			float far = float(field_beach_samples) * spacing;
-			float to_end = -1.0;
-			float to_beach = 1e3;
-			int k = 0;
-			while (k <= 2 * field_beach_samples) {
-				if (nb[k] <= t_beach) {
-					k++;
-					continue;
-				}
-				int j = k;
-				while (j < 2 * field_beach_samples && nb[j + 1] > t_beach) {
-					j++;
-				}
-				float start = -far;
-				if (k > 0) {
-					start = (float(k - 1) + (t_beach - nb[k - 1]) / max(nb[k] - nb[k - 1], 1e-4) - float(field_beach_samples)) * spacing;
-				}
-				float end = far;
-				if (j < 2 * field_beach_samples) {
-					end = (float(j) + (t_beach - nb[j]) / min(nb[j + 1] - nb[j], -1e-4) - float(field_beach_samples)) * spacing;
-				}
-				if (end - start >= field_beach_min) {
-					if (start <= 0.0 && end >= 0.0) {
-						to_end = min(-start, end);
-					} else {
-						to_beach = min(to_beach, start > 0.0 ? start : -end);
-					}
-				}
-				k = j + 1;
-			}
-			if (to_end >= 0.0) {
-				sand = smoothstep(0.25, 0.8, to_end);
-				pinch = 1.0 - smoothstep(0.0, 0.4, to_end);
-			} else {
-				pinch = 1.0 - smoothstep(0.0, 0.4, to_beach);
-			}
-		}
-		float beach = sand;
-		width = mix(width, max(width, field_width_max) * field_beach_wide, beach);
-		width *= 1.0 - pinch;
-		// Tufts: the grass's edge bulges and recedes at two scales.
-		float rag = (texture(noise_texture, world * 0.5 + vec2(0.4, 0.9)).r - 0.5) * 2.0 * field_rag
-			+ (texture(noise_texture, world * 1.4 + vec2(0.1, 0.3)).r - 0.5) * field_rag;
-		float outer = max(width + rag * clamp(width / 0.12, 0.0, 1.0), 0.0);
-		// At a ford there is no bank: its bed runs on over the land, the
-		// water reaches further in a thin film, and the grass comes back
-		// gradually over the bed.
-		float ford_bank = has_ford1 ? smoothstep(0.03, 0.4, texture(shore_water, fuv).r) : 0.0;
-		outer = mix(outer, ford_bank_reach + rag, ford_bank);
-		// Where the bank narrows to nothing, the grass overhangs the water
-		// in tufts instead of stopping on the line.
-		float tufts = texture(noise_texture, world * 1.9 + vec2(0.83, 0.47)).r * 0.7
-			+ texture(noise_texture, world * 4.3 + vec2(0.27, 0.66)).r * 0.5;
-		float overhang = field_overhang * clamp(tufts - 0.3, 0.0, 1.0);
-		float grass_at = mix(-overhang, outer, smoothstep(0.03, 0.14, outer));
-		grass_at = mix(grass_at, outer, ford_bank);
-		// Over a ford's bank the grass fades in over this width instead of
-		// stopping on a line.
-		float grass_fade = mix(0.04, ford_grass_fade, ford_bank);
-		if (d > grass_at + grass_fade) {
-			discard;
-		}
-		// The water's own edge wanders over the earth: the water laps it.
-		float lap = (texture(noise_texture, world * 1.2 + vec2(0.55, 0.05)).r - 0.5) * 2.0 * field_lap
-			+ (texture(noise_texture, world * 3.7 + vec2(0.18, 0.92)).r - 0.5) * field_lap;
-		float dw = d - lap * smoothstep(0.02, 0.15, outer) - ford_water_reach * ford_bank;
-		vec3 colour = ground.rgb;
-		if (dw < 0.0) {
-			vec4 field_px = texture(shore_water, fuv);
-			vec2 flow = (field_px.gb * 2.0 - 1.0) * 2.0;
-			// Tiles a second, a little slower than the water itself reads.
-			vec2 runs = flow * 0.8;
-			vec3 w1 = flowing(TEXTURE, world, runs, flow_period, 1.0, mat2(vec2(1.0, 0.0), vec2(0.0, 1.0)), 0.0, now, duv_x, duv_y);
-			vec3 w2 = flowing(TEXTURE, world, runs * 1.15, flow_period * 1.3, 1.6, mat2(vec2(0.0, 1.0), vec2(-1.0, 0.0)), 0.37, now, duv_x, duv_y);
-			colour = mix(w1, w2, flow_mix) * base_tint;
-			// Deeper in the middle.
-			colour *= mix(vec3(1.0), deep_tint, smoothstep(0.3, deep_reach, -dw));
-			// Glints drifting with the water.
-			float g1 = texture(noise_texture, world * 1.7 - runs * now * 0.4).r;
-			float g2 = texture(noise_texture, world * 2.9 + vec2(0.3, 0.6) - runs * now * 0.55).r;
-			colour = mix(colour, vec3(1.0), smoothstep(0.82, 0.9, g1 * 0.55 + g2 * 0.55) * glint);
-			float near = 1.0 - smoothstep(0.0, field_light_reach, -dw);
-			colour = mix(colour, colour * shore_tint, near * field_light);
-			// Into the deep water: the bed fades out slowly.
-			float ford = smoothstep(0.02, 0.97, texture(shore_water, fuv).r);
-			ford = ford * ford * (3.0 - 2.0 * ford);
-			// Near a ford's bank the water is all ford, so its film meets the
-			// bed on the land without a line.
-			ford = max(ford, ford_bank * (1.0 - smoothstep(0.0, ford_shelf, -dw)));
-			if (ford > 0.0 && has_ford1) {
-				vec3 bed = ford_bed(world, duv_x, duv_y);
-				// From the bank inwards, the water over the bed thickens.
-				// At the edge of a ford's bank the water is a film that
-				// thins to nothing on the bed, so there is no line.
-				float shelf = smoothstep(0.0, ford_shelf, -dw);
-				float deep = mix(mix(0.18, 0.0, ford_bank), ford_water, shelf);
-				vec3 wet_bed = bed * mix(vec3(0.85), ford_tint * 1.35, mix(1.0, shelf, ford_bank));
-				vec3 shallow = mix(wet_bed, colour, deep);
-				// Ripples drifting with the current over the stones.
-				float r1 = texture(noise_texture, world * 0.9 + vec2(now * 0.03, now * 0.05)).r;
-				float r2 = texture(noise_texture, world * 2.3 - vec2(now * 0.04, now * 0.02)).r;
-				float ripple = smoothstep(0.62, 0.72, r1 * 0.6 + r2 * 0.5);
-				shallow = mix(shallow, shallow * shore_tint * 1.15, ripple * ford_ripple);
-				colour = mix(colour, shallow, ford);
-			}
-		} else {
-			// The bank's matter, seamless, four metres a texture like the
-			// ground: earth, or sand on a beach.
-			vec2 m_uv = world * 0.25;
-			vec3 earth = textureGrad(bank_texture, m_uv, duv_x, duv_y).rgb;
-			if (beach > 0.0) {
-				earth = mix(earth, textureGrad(bank2_texture, m_uv + vec2(0.37, 0.11), duv_x, duv_y).rgb, beach);
-			}
-			earth *= field_earth_tint;
-			earth *= mix(field_wet, 1.0, smoothstep(0.0, 0.14, dw));
-			earth *= mix(1.0, field_shade, smoothstep(outer - 0.14, outer, d));
-			if (ford_bank > 0.0) {
-				// The ford's bed, damp, wetter near the water.
-				vec3 bed = ford_bed(world, duv_x, duv_y) * mix(0.8, 1.0, smoothstep(0.0, 0.5, dw));
-				earth = mix(earth, bed, ford_bank);
-			}
-			colour = earth;
-		}
-		// The water's edge: darker, melting into the water.
-		float line = (1.0 - smoothstep(0.0, field_line, abs(dw + field_line_into))) * field_line_strength * (1.0 - ford_bank);
-		colour = mix(colour, colour * 0.45, line);
-		// The grass's own outline, against the earth or the water.
-		float edge = 1.0 - smoothstep(0.0, 0.03, abs(d - grass_at + 0.015));
-		colour = mix(colour, field_ink, edge * 0.85 * (1.0 - ford_bank));
-		// The grass's edge over a ford's bank: ragged by a fine noise as it
-		// fades, so it comes back in tufts.
-		float tuft_in = ((texture(noise_texture, world * 3.1 + vec2(0.37, 0.58)).r - 0.5) * 1.2
-			+ (texture(noise_texture, world * 1.1 + vec2(0.71, 0.12)).r - 0.5) * 0.8) * grass_fade * ford_bank;
-		float a = 1.0 - smoothstep(grass_at + tuft_in, grass_at + tuft_in + grass_fade, d);
-		COLOR = vec4(colour * vertex_tint, a);
-	} else {
 	float alpha = tint.a;
 	if (alpha < 1.0 && spill_only_with_bank && !has_bank) {
 		alpha = 0.0;
