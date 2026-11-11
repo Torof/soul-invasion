@@ -228,6 +228,7 @@ func _exit_tree() -> void:
 	for p: Dictionary in _ledger.parked.values():
 		(p["stand"] as Trees.Stand).release()
 	Trees.free_pool()
+	Trees.unload_all()
 
 
 func _on_world_state(width: int, height: int, chunk_size: int, materials: Array, night: bool) -> void:
@@ -889,6 +890,12 @@ func _step(delta: float) -> void:
 		moving = true
 	if _following and _bodies.has(_piloted):
 		_camera.position = Iso.point_to_screen(_bodies[_piloted]["at"])
+	# The tree images read on a worker thread come in, the stands that
+	# waited for them are built and the images no chunk held for the grace
+	# are freed (Trees.poll): the built stands' trees show from this frame.
+	if Trees.poll() > 0:
+		_trees_version += 1
+		_trees_changed = true
 	_update_limit()
 	_update_far_hole()
 	_clamp_camera()

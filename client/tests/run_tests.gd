@@ -57,6 +57,7 @@ func _init() -> void:
 	_test_the_fog_rings_leave_only_what_is_clear()
 	_test_the_fog_rings_are_built_when_the_ground_moves()
 	_test_the_far_view_leaves_its_hole_only_under_built_ground()
+	_test_tree_images_follow_the_stands_that_hold_them()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -1038,7 +1039,10 @@ func _stand_of_trees(side: int) -> Trees.Stand:
 		for i in side:
 			trees.append({"at": {"x": 1_700 + 3_100 * i, "y": 2_300 + 2_900 * j}, "species": "oak" if (i + j) % 3 else "pine"})
 	trees.append({"at": {"x": 9_000, "y": 9_000}, "species": "no_such_tree"})
-	return Trees.Stand.new(trees, {"oak": 2_200, "pine": 3_000})
+	var stand := Trees.Stand.new(trees, {"oak": 2_200, "pine": 3_000})
+	# Its images read at once, as the game's frame would within a moment.
+	Trees.poll(Time.get_ticks_msec(), true)
+	return stand
 
 
 func _test_trees_are_drawn_only_where_the_view_reaches() -> void:
@@ -1355,3 +1359,55 @@ func _test_the_far_view_leaves_its_hole_only_under_built_ground() -> void:
 	var mesh := FarView.ring(Rect2(Vector2(-1000, -1000), Vector2(2048, 2048)), limit, 0.0, 0.0)
 	_check((mesh["points"] as PackedVector2Array).size() == 12 and (mesh["indices"] as PackedInt32Array).size() == 36, "the far view's ring has the same form")
 	_check((FarView.ring(Rect2(Vector2(0, 0), Vector2(10, 10)), limit, 0.0, 0.0)["points"] as PackedVector2Array).size() == 4, "a hole outside the far view: the plain quad")
+
+
+## The images of a kind of tree are read when a stand first holds it and
+## freed after the grace once no stand holds it (weight rule 4): the
+## holds follow the stands' making and release, parked ones included (a
+## parked stand is not released); a stand made while its images are read
+## shows nothing until they are in, then exactly what it would have.
+func _test_tree_images_follow_the_stands_that_hold_them() -> void:
+	var now := Time.get_ticks_msec()
+	# Every kind out of memory to start from, whatever the tests before held.
+	Trees.unload_all()
+	_check(not Trees.loaded("oak") and Trees.holds("oak") == 0, "nothing held, nothing in memory")
+	var trees: Array = []
+	for i in 6:
+		trees.append({"at": {"x": 1_700 + 3_100 * i, "y": 2_300}, "species": "oak" if i % 2 else "pine"})
+	var first := Trees.Stand.new(trees, {"oak": 2_200, "pine": 3_000})
+	_check(Trees.holds("oak") == 1 and Trees.holds("pine") == 1, "a stand holds its kinds")
+	_check(not first.built and first.images.count(-1) == first.size(), "made while its images are read, the stand shows no tree")
+	first.parent = RenderingServer.canvas_item_create()
+	first.show_cells(Trees.Stand.cell_range(Rect2(-4000, -4000, 8000, 8000)))
+	_check(first.items.is_empty(), "no tree gets a canvas item before its image is in")
+	Trees.poll(now, true)
+	_check(Trees.loaded("oak") and Trees.loaded("pine") and first.built, "the images in, the stand is built")
+	_check(first.items.size() == first.size(), "and shows at once the trees the view asked for meanwhile")
+	var same := Trees.Stand.new(trees, {"oak": 2_200, "pine": 3_000})
+	_check(same.built and same.rects == first.rects and same.images == first.images, "a stand made with its kinds in memory is built at once, the same")
+	_check(Trees.holds("oak") == 2, "two stands hold the oak")
+	same.release()
+	first.release()
+	var grace := int(Trees.UNLOAD_GRACE_S * 1000.0)
+	var released := Time.get_ticks_msec()
+	_check(Trees.holds("oak") == 0 and Trees.loaded("oak"), "both released: nothing holds the oak, its images stay for the grace")
+	Trees.poll(released + grace - 1)
+	_check(Trees.loaded("oak") and Trees.loaded("pine"), "within the grace, both stay")
+	var third := Trees.Stand.new([trees[1]], {"oak": 2_200})
+	Trees.poll(released + grace + 1)
+	_check(Trees.loaded("oak") and not Trees.loaded("pine"), "after the grace, the pine (held by no stand) is freed and the oak (held again) kept")
+	var slot := third.images[0]
+	third.release()
+	released = Time.get_ticks_msec()
+	Trees.poll(released + grace - 1)
+	_check(Trees.loaded("oak"), "released again: kept until a new grace is over")
+	Trees.poll(released + grace + 1)
+	_check(not Trees.loaded("oak") and Trees.image(slot) == null, "then the oak's images are freed, their slots emptied")
+	var again := Trees.Stand.new([trees[1]], {"oak": 2_200})
+	Trees.poll(now, true)
+	_check(again.built and again.images[0] == slot and Trees.image(slot) != null, "held again, the images come back in the same slots")
+	again.release()
+	RenderingServer.free_rid(first.parent)
+	Trees.free_pool()
+	Trees.unload_all()
+	_check(Trees.memory().is_empty(), "the world going, every image is freed at once")
