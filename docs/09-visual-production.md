@@ -49,7 +49,7 @@ Every image obeys it, so that it has a place, a scale and an anchor the day it i
 1. **Each image at its size on screen at the closest zoom, 2.5** (D39's sharpness rule), in two sizes. **Originals at 384 px a shown metre** (64 px × zoom 2.5 × 2.4, the stretch of the 1280 × 720 viewport on the lead's 3072 × 1920 screen, of which Godot keeps 3072 × 1728): the archive, never shipped. **Shipped at 307 px a shown metre** (× 1.92, a 2560-px-wide screen): sharp at zoom 2.5 on 1440p and below, magnified 1.25 times at the closest zoom only on wider screens, 36 % lighter. Changing the shipped size is a parameter and a rerun of the tool. Nothing is stored that the screen never shows, nothing is softer than the rest.
 2. **One image per season, made in advance and shipped with the game**; only the current season is held in video memory.
 3. **Animals and characters are cut-out puppets** (parts moved by the engine), never frame-by-frame animation.
-4. **Only the species of the region in view are held in video memory**: a species' images are loaded when it comes into the region seen, and freed when it leaves.
+4. **Only the species of the region in view are held in video memory**: a species' images are loaded when it comes into the region seen, and freed when it leaves. Coded on 11 November 2026 (D39, "the tree images follow the chunks held"): a kind's images are read on a worker thread when the first chunk held has a tree of it, counted by the chunks that hold it (parked ones included), and freed thirty seconds after the last let it go.
 
 **Identity: a cartoon, pretty and readable before realistic.** Heights and proportions follow D40, but where realism and a clear, pleasant image disagree, the image wins.
 
