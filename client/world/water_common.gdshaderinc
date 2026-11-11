@@ -9,6 +9,15 @@
 // from a level that changes with the camera.
 uniform float flow_period = 2.4;
 uniform float water_lod = 0.0;
+// A second layer of the same water, turned and smaller, over the first
+// by flow_mix (today's two layers): hides the four-metre repeat for two
+// more reads. Zero: one layer.
+uniform float flow_mix = 0.0;
+// A slow, still warp of the water's coordinates, so its four-metre
+// lattice no longer lines up with itself: in periods of the texture,
+// over about six tiles. The flowing pattern passes through it as water
+// over an uneven bed. Zero: none.
+uniform float water_warp = 0.12;
 // The ground's images (the beds, the earth, the sand, the detail) read at
 // their level a zoom step.
 uniform float ground_lod = 0.0;
@@ -52,17 +61,30 @@ vec2 flow_of(vec4 tile) {
 	return (tile.rg * 2.0 - 1.0) * 2.0;
 }
 
-// The flowing water at a point of the map in tiles.
-vec3 water_at(sampler2D tex, vec2 world, vec2 runs, float now) {
-	float t = now / flow_period;
+// One layer of the flowing water: the texture's coordinates `base`,
+// drifting by `f` a period, turned by `turn`.
+vec3 flowing(sampler2D tex, vec2 base, vec2 f, float period, float shift, float now) {
+	float t = now / period + shift;
 	float p0 = fract(t);
 	float p1 = fract(t + 0.5);
 	float w0 = 1.0 - abs(1.0 - 2.0 * p0);
-	vec2 base = world * 0.25;
-	vec2 f = runs * (flow_period * 0.25);
-	vec3 a = textureLod(tex, base - f * p0, water_lod).rgb;
-	vec3 b = textureLod(tex, base - f * p1 + vec2(0.5), water_lod).rgb;
+	vec3 a = textureLod(tex, base - f * p0 + vec2(shift, 0.0), water_lod).rgb;
+	vec3 b = textureLod(tex, base - f * p1 + vec2(0.0, shift) + vec2(0.5), water_lod).rgb;
 	return a * w0 + b * (1.0 - w0);
+}
+
+// The flowing water at a point of the map in tiles.
+vec3 water_at(sampler2D tex, vec2 world, vec2 runs, float now) {
+	vec2 base = world * 0.25;
+	if (water_warp > 0.0) {
+		base += water_warp * vec2(sin(world.x * 0.9 + world.y * 0.37), cos(world.y * 1.1 - world.x * 0.43));
+	}
+	vec3 colour = flowing(tex, base, runs * (flow_period * 0.25), flow_period, 0.0, now);
+	if (flow_mix > 0.0) {
+		mat2 turn = mat2(vec2(0.0, 1.0), vec2(-1.0, 0.0));
+		colour = mix(colour, flowing(tex, turn * base * 1.6, turn * runs * (1.15 * flow_period * 1.3 * 0.25 * 1.6), flow_period * 1.3, 0.37, now), flow_mix);
+	}
+	return colour;
 }
 
 // The water over a ford's bed: `colour` the water, `depth` how far into

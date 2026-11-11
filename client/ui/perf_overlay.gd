@@ -78,7 +78,12 @@ func _unhandled_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 	elif event.keycode == KEY_F8:
 		if not _measuring:
-			_measure_water()
+			measure_water()
+		get_viewport().set_input_as_handled()
+	elif event.keycode == KEY_F10:
+		_second_layer = not _second_layer
+		for material: ShaderMaterial in [ChunkView.water_mesh_material(), ChunkView.water_bank_material()]:
+			material.set_shader_parameter("flow_mix", 0.45 if _second_layer else 0.0)
 		get_viewport().set_input_as_handled()
 	elif event.keycode == KEY_F9:
 		FarView.drawing = (FarView.drawing + 1) % FarView.DRAWING_NAMES.size()
@@ -93,11 +98,17 @@ func _unhandled_input(event: InputEvent) -> void:
 const MEASURE_FRAMES := 120
 const MEASURE_SETTLE := 10
 var _measuring := false
+## The meshes' water with its second layer (F10).
+var _second_layer := false
 ## mode name -> [the water's GPU ms, the frame's GPU ms with it, clock MHz]
 var _water_cost: Dictionary = {}
 
 
-func _measure_water() -> void:
+func water_cost() -> Dictionary:
+	return _water_cost
+
+
+func measure_water() -> void:
 	_measuring = true
 	var rid := get_viewport().get_viewport_rid()
 	RenderingServer.viewport_set_measure_render_time(rid, true)
@@ -208,7 +219,7 @@ func report(worst_ms: float) -> String:
 		"on" if _wind else "off", "plain" if _plain_ground else "shaded", "shown" if _trees_shown else "hidden",
 		FarView.drawing_name(),
 	])
-	lines.append("water %s (F7)   %s" % [ChunkView.water_mode_name(), "measuring..." if _measuring else "F8 measures its GPU time"])
+	lines.append("water %s (F7)   %s   meshes' second layer %s (F10)" % [ChunkView.water_mode_name(), "measuring..." if _measuring else "F8 measures its GPU time", "on" if _second_layer else "off"])
 	for mode: String in _water_cost:
 		var cost: Array = _water_cost[mode]
 		lines.append("  water %s: %.2f ms GPU (frame %.2f ms, clock %d MHz)" % [mode, cost[0], cost[1], cost[2]])

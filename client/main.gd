@@ -60,6 +60,7 @@ func _ready() -> void:
 	var perf := PerfOverlay.new()
 	perf.world = _world
 	add_child(perf)
+	_perf = perf
 	Net.dev_overview.connect(func(_c: int, _w: int, _h: int, _cells: String) -> void: perf.enable())
 	# Development: a watchdog that reports a frozen main thread (dev/watchdog.gd).
 	Net.dev_overview.connect(func(_c: int, _w: int, _h: int, _cells: String) -> void:
@@ -68,12 +69,18 @@ func _ready() -> void:
 			add_child(_watchdog))
 
 
+var _perf: PerfOverlay
+
+
 func _screenshot_then_quit(path: String) -> void:
 	# Development: the water drawn (ChunkView.WATER_MODE_NAMES: today,
 	# meshes, split), as F7 would set it.
 	var mode := ChunkView.WATER_MODE_NAMES.find(OS.get_environment("SOUL_INVASION_WATER_MODE"))
 	if mode >= 0:
 		ChunkView.set_water_mode(mode, get_tree())
+	# SOUL_INVASION_WIND=0: the trees still, so two captures compare.
+	if OS.get_environment("SOUL_INVASION_WIND") == "0":
+		_world.set_wind(false)
 	await get_tree().create_timer(2.5).timeout
 	await _wait_built()
 	# SOUL_INVASION_TELEPORT="x,y" (--dev servers): the body there first,
@@ -94,6 +101,20 @@ func _screenshot_then_quit(path: String) -> void:
 		_world.look_at_tile(Vector2i(int(look[0]), int(look[1])))
 	await get_tree().create_timer(0.5).timeout
 	get_viewport().get_texture().get_image().save_png(path)
+	# SOUL_INVASION_WATER_BENCH=file: what the water costs the graphics
+	# card here, today's and the meshes (the F8 measure), a line each
+	# appended to the file.
+	var bench := OS.get_environment("SOUL_INVASION_WATER_BENCH")
+	if not bench.is_empty():
+		for m in [ChunkView.WATER_TODAY, ChunkView.WATER_MESHES, ChunkView.WATER_TODAY, ChunkView.WATER_MESHES]:
+			ChunkView.set_water_mode(m, get_tree())
+			await get_tree().create_timer(0.5).timeout
+			await _perf.measure_water()
+			var cost: Array = _perf.water_cost()[ChunkView.water_mode_name()]
+			var f := FileAccess.open(bench, FileAccess.READ_WRITE if FileAccess.file_exists(bench) else FileAccess.WRITE)
+			f.seek_end()
+			f.store_line("%s zoom %s %s water %.2f ms frame %.2f ms clock %d MHz" % [path.get_file(), zoom, ChunkView.water_mode_name(), cost[0], cost[1], cost[2]])
+			f.close()
 	get_tree().quit()
 
 
