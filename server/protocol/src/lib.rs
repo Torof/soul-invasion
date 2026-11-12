@@ -69,7 +69,9 @@ use serde::{Deserialize, Serialize};
 ///   route in between, by time: `body_walks` and `chunk_bodies`' bodies
 ///   carry the tick each waypoint is reached (`arrivals`), the route
 ///   holding the points where the pace changes with the terrain.
-pub const PROTOCOL_VERSION: u32 = 19;
+/// - v20: `body_blocked`, to the pilot alone: its body stopped for good
+///   short of where it was sent, and what it sees barring its way (D32).
+pub const PROTOCOL_VERSION: u32 = 20;
 
 /// Chunks whose frames a client keeps after they left its view, the
 /// least recently hidden forgotten first (D4): about 3 MB of frames. The
@@ -170,6 +172,18 @@ pub enum Refusal {
     TooHeavy,
     /// It is not food.
     NotFood,
+}
+
+/// What a body that stopped for good sees barring its way (D32).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Blockage {
+    /// Water too deep to walk through.
+    Water,
+    /// The cliff.
+    Rock,
+    /// Nothing it may not enter right ahead, yet no way it can see.
+    NoWay,
 }
 
 /// What a pilot knows of its own body (D34). Nobody else is told.
@@ -607,6 +621,21 @@ pub enum ServerMessage {
         x: i32,
         /// Row asked.
         y: i32,
+    },
+    /// The pilot's body stopped for good short of where it was sent: it
+    /// walked straight for want of a way, looked again and could get no
+    /// nearer (D32). Sent to the pilot alone, after its `body_stopped`.
+    BodyBlocked {
+        /// Who.
+        body: u32,
+        /// Exactly where it stands.
+        at: Point,
+        /// Column it was sent to.
+        x: i32,
+        /// Row it was sent to.
+        y: i32,
+        /// What it sees barring its way.
+        reason: Blockage,
     },
 }
 
@@ -1194,6 +1223,23 @@ mod tests {
                 x: 4,
                 y: 5,
             },
+            ServerMessage::BodyBlocked {
+                body: 1,
+                at: Point {
+                    x: 34_700,
+                    y: 40_500,
+                },
+                x: 40,
+                y: 40,
+                reason: Blockage::Water,
+            },
+            ServerMessage::BodyBlocked {
+                body: 1,
+                at: Point { x: 0, y: 0 },
+                x: 4,
+                y: 5,
+                reason: Blockage::NoWay,
+            },
         ];
         for message in messages {
             let text = encode(&message).unwrap();
@@ -1239,6 +1285,17 @@ mod tests {
             })
             .unwrap(),
             r#"{"type":"act_refused","body":1,"act":"pick_up","item":5,"reason":"out_of_reach"}"#
+        );
+        assert_eq!(
+            encode(&ServerMessage::BodyBlocked {
+                body: 1,
+                at: Point { x: 1500, y: 2500 },
+                x: 9,
+                y: 2,
+                reason: Blockage::NoWay,
+            })
+            .unwrap(),
+            r#"{"type":"body_blocked","body":1,"at":{"x":1500,"y":2500},"x":9,"y":2,"reason":"no_way"}"#
         );
         assert_eq!(
             encode(&ServerMessage::ChunkBodies {

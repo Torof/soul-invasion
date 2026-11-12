@@ -75,6 +75,7 @@ func _init() -> void:
 	_test_a_body_told_at_each_chunk_keeps_walking_its_route()
 	_test_a_new_route_told_while_walking_turns_from_where_the_body_is_shown()
 	_test_the_clock_catches_up_with_the_ticks_walks_are_told_at()
+	_test_a_blocked_body_is_decoded_and_its_notice_shows_then_fades()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -2362,3 +2363,33 @@ func _test_the_clock_catches_up_with_the_ticks_walks_are_told_at() -> void:
 	clock.catch_up(1060.0, 6000)
 	_check(is_equal_approx(clock.tick_at(6000), 1080.0), "never set back by a tick past")
 
+
+
+## F4, protocol v20: `body_blocked` decodes into the signal, and the
+## notice shows the reason's words, whole, then fades and is gone.
+func _test_a_blocked_body_is_decoded_and_its_notice_shows_then_fades() -> void:
+	var net: Node = load("res://net/client.gd").new()
+	var got: Array = []
+	net.body_blocked.connect(func(body: int, at: Vector2, x: int, y: int, reason: String) -> void:
+		got.append([body, at, x, y, reason]))
+	var wire := "{\"type\":\"body_blocked\",\"body\":1,\"at\":{\"x\":34700,\"y\":40500},\"x\":40,\"y\":40,\"reason\":\"water\"}"
+	net._handle(Protocol.decode(wire))
+	_check(got == [[1, Vector2(34700, 40500), 40, 40, "water"]], "body_blocked decodes: %s" % [got])
+	net.free()
+
+	_check(BlockedNotice.words("water") == "Bloqué : l'eau est trop profonde", "water in words")
+	_check(BlockedNotice.words("rock") == "Bloqué : la falaise barre le chemin", "the cliff in words")
+	_check(BlockedNotice.words("no_way") == "Bloqué : aucun passage en vue", "no way in words")
+	_check(BlockedNotice.words("lava") == BlockedNotice.words("no_way"), "an unknown reason reads as no way")
+	var notice := BlockedNotice.new()
+	_check(not notice.shown(0) and notice.alpha(0) == 0.0, "nothing before it is told")
+	notice.show(BlockedNotice.words("rock"), Vector2(1500, 2500), 10_000)
+	_check(notice.text == BlockedNotice.words("rock") and notice.at == Vector2(1500, 2500), "the line and the place")
+	_check(notice.shown(10_000) and notice.alpha(10_000) == 1.0, "whole at once")
+	var fading := 10_000 + BlockedNotice.SHOW_MS - BlockedNotice.FADE_MS / 2
+	_check(is_equal_approx(notice.alpha(fading), 0.5), "half faded: %f" % notice.alpha(fading))
+	_check(notice.alpha(10_000 + BlockedNotice.SHOW_MS - BlockedNotice.FADE_MS) == 1.0, "whole until the fade")
+	_check(not notice.shown(10_000 + BlockedNotice.SHOW_MS) and notice.alpha(10_000 + BlockedNotice.SHOW_MS) == 0.0, "gone after")
+	notice.show("x", Vector2.ZERO, 20_000)
+	notice.clear()
+	_check(not notice.shown(20_001), "cleared at once")

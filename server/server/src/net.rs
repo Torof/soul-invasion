@@ -28,8 +28,8 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
-    BodyState, ChunkFrame, ClientMessage, Clock, Condition, DeathCause, FloraView, ItemAct,
-    ItemState, ItemView, MaterialView, NaturalItem, PROTOCOL_VERSION, Point, Refusal,
+    Blockage, BodyState, ChunkFrame, ClientMessage, Clock, Condition, DeathCause, FloraView,
+    ItemAct, ItemState, ItemView, MaterialView, NaturalItem, PROTOCOL_VERSION, Point, Refusal,
     ServerMessage, SpeciesView, Standing, StoredItem, Terrain, decode, encode, encode_chunk,
 };
 use sim::ground::{Ground, Version};
@@ -2521,6 +2521,27 @@ pub fn refusal_view(act: sim::ItemAct, reason: sim::Refusal) -> (ItemAct, Refusa
         sim::Refusal::NotFood => Refusal::NotFood,
     };
     (act, reason)
+}
+
+/// What a pilot is told when its body stopped for good short of
+/// `target` (D32).
+pub fn blocked_view(
+    body: BodyId,
+    at: FinePos,
+    target: Pos,
+    reason: sim::Blockage,
+) -> ServerMessage {
+    ServerMessage::BodyBlocked {
+        body: body.0,
+        at: point(at),
+        x: target.x,
+        y: target.y,
+        reason: match reason {
+            sim::Blockage::Water => Blockage::Water,
+            sim::Blockage::Rock => Blockage::Rock,
+            sim::Blockage::NoWay => Blockage::NoWay,
+        },
+    }
 }
 
 /// What a pilot is told of its body's condition.
