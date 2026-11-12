@@ -2857,13 +2857,15 @@ mod tests {
         );
         // Each chunk's trees were placed once, for its own message and
         // for the plants of its neighbours alike: the twelve chunks and
-        // their rim are held, nothing beyond.
+        // their rim are held, nothing beyond but the chunks the bodies
+        // stand in (the world made sure none stands in a trunk).
         let rim: BTreeSet<ChunkPos> = chunks
             .iter()
             .flat_map(|c| {
                 (-1..=1)
                     .flat_map(move |dy| (-1..=1).map(move |dx| ChunkPos::new(c.x + dx, c.y + dy)))
             })
+            .chain(world.bodies().iter().map(|b| b.pos().chunk()))
             .collect();
         assert_eq!(shared.ground.trees_held(), rim.len());
         // The world reads the same cache: the very same trees.

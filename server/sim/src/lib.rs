@@ -816,13 +816,15 @@ impl World {
     /// the kinds of tree (D37) and the natural items' spawn rules. Called
     /// when the world is created and when it is loaded; nothing is placed
     /// here, only chunk by chunk when asked for. Every body is weighed
-    /// again under the content's masses ([`Body::load_g`]).
+    /// again under the content's masses ([`Body::load_g`]), and one
+    /// standing in a trunk's tile is let out of it.
     pub fn take_content(&mut self, content: &Content) {
         self.species.clone_from(&content.species);
         self.spawns.clone_from(&content.spawns);
         for index in 0..self.bodies.len() {
             self.refresh_load(index, content);
         }
+        self.let_out_of_trunks(content);
     }
 
     /// The trees standing in `chunk`, placed from the map and the seed
@@ -831,6 +833,62 @@ impl World {
     pub fn trees_in(&self, chunk: ChunkPos) -> Arc<[trees::Tree]> {
         self.ground_cache
             .trees_in(&self.map, &self.species, self.seed(), chunk)
+    }
+
+    /// Does an adult tree's trunk block `pos` (D32)? A body never walks
+    /// into such a tile.
+    pub fn is_trunk(&self, pos: Pos) -> bool {
+        self.map.has_chunk(pos.chunk())
+            && self
+                .ground_cache
+                .trunks_in(&self.map, &self.species, self.seed(), pos.chunk())
+                .blocks(pos)
+    }
+
+    /// A lookup of the trunks tile by tile, for one walk's plan.
+    fn trunks(&self) -> ground::TrunkLookup<'_> {
+        self.ground_cache
+            .trunks_at(&self.map, &self.species, self.seed())
+    }
+
+    /// The open tile nearest `target`, searching in growing squares out
+    /// to [`TELEPORT_REACH`]: ground a body may walk on, with no trunk.
+    fn open_near(&self, target: Pos, rules: &Content) -> Option<Pos> {
+        let trunks = self.trunks();
+        let open = |p: Pos| {
+            self.map
+                .get(p)
+                .is_some_and(|t| rules.movement.cost(t).is_some())
+                && !trunks.blocks(p)
+        };
+        (0..=TELEPORT_REACH).find_map(|r| {
+            (-r..=r)
+                .flat_map(|dy| (-r..=r).map(move |dx| (dx, dy)))
+                .filter(|(dx, dy)| dx.abs() == r || dy.abs() == r)
+                .map(|(dx, dy)| Pos::new(target.x + dx, target.y + dy))
+                .find(|p| open(*p))
+        })
+    }
+
+    /// Lets out every body standing in a trunk's tile, as a snapshot made
+    /// before trunks blocked the way may hold them (D32): each is stood on
+    /// the nearest open tile, its walk dropped. Never stuck.
+    fn let_out_of_trunks(&mut self, rules: &Content) {
+        let caught: Vec<(usize, Pos)> = (0..self.bodies.len())
+            .filter(|&i| self.is_trunk(self.bodies[i].pos()))
+            .filter_map(|i| Some((i, self.open_near(self.bodies[i].pos(), rules)?)))
+            .collect();
+        for (index, tile) in caught {
+            let body = &mut self.bodies[index];
+            let (id, before) = (body.id, body.pos().chunk());
+            body.at = tile.centre();
+            body.route.clear();
+            body.goal = None;
+            if tile.chunk() != before {
+                self.leave_chunk(id, before);
+                self.enter_chunk(id, tile.chunk());
+            }
+        }
     }
 
     /// The ground's placed trees, shared: the server's threads read the
@@ -1452,19 +1510,7 @@ impl World {
             events.push(Event::MoveRefused { body: id, target });
             return;
         };
-        let walkable = |p: Pos| {
-            self.map
-                .get(p)
-                .is_some_and(|t| rules.movement.cost(t).is_some())
-        };
-        let found = (0..=TELEPORT_REACH).find_map(|r| {
-            (-r..=r)
-                .flat_map(|dy| (-r..=r).map(move |dx| (dx, dy)))
-                .filter(|(dx, dy)| dx.abs() == r || dy.abs() == r)
-                .map(|(dx, dy)| Pos::new(target.x + dx, target.y + dy))
-                .find(|p| walkable(*p))
-        });
-        let Some(tile) = found else {
+        let Some(tile) = self.open_near(target, rules) else {
             events.push(Event::MoveRefused { body: id, target });
             return;
         };
@@ -1654,9 +1700,11 @@ impl World {
     /// Sends a body toward `target` (`ordered`: a new order, rather than a
     /// body looking again). A way is looked for within what the body sees
     /// from where it stands ([`World::sight_tiles_at`]) and within the
-    /// content's budget of effort (D32). With none, it walks straight
-    /// toward the target, stopping before the first tile it may not enter
-    /// (D31), and keeps the target to look again from there; a new order
+    /// content's budget of effort (D32), round the trunks of trees. With
+    /// none, it walks straight toward the target, stepping round a trunk
+    /// or a bush in its way and stopping before the first bigger obstacle
+    /// ([`Map::walk_straight`], D31), and keeps the target to look again
+    /// from there; a new order
     /// that cannot even set off is refused, a body looking again that
     /// cannot stops for good.
     fn set_off(
@@ -1673,11 +1721,13 @@ impl World {
         self.bodies[index].goal = None;
         let sight = i32::try_from(self.sight_tiles_at(from.tile(), rules)).unwrap_or(i32::MAX);
         let budget = rules.movement.path_budget_tiles;
-        if let Some(path) = self
-            .map
-            .path_within(from.tile(), target, sight, budget, cost)
+        let trunks = self.trunks();
+        let blocked = |p: Pos| trunks.blocks(p);
+        if let Some(path) =
+            self.map
+                .path_around(from.tile(), target, (sight, budget), cost, blocked)
         {
-            let route = self.map.pull(from, &path, cost);
+            let route = self.map.pull_around(from, &path, cost, blocked);
             let body = &mut self.bodies[index];
             body.route = route.iter().copied().collect();
             if route.is_empty() {
@@ -1692,11 +1742,15 @@ impl World {
             }
             return;
         }
-        let walkable = |p: Pos| self.map.get(p).is_some_and(|t| cost(t).is_some());
-        let end = map::line_reach(from, target.centre(), walkable);
-        let (dx, dy) = (i64::from(end.x - from.x), i64::from(end.y - from.y));
-        let quarter = i64::from(MM_PER_TILE / 4);
-        if dx * dx + dy * dy < quarter * quarter {
+        let route = self
+            .map
+            .walk_straight(from, target.centre(), sight, cost, blocked);
+        drop(trunks);
+        let quarter = u64::from(MM_PER_TILE.unsigned_abs() / 4);
+        if route
+            .iter()
+            .all(|p| squared_mm(*p, from) < quarter * quarter)
+        {
             if ordered {
                 events.push(Event::MoveRefused { body: id, target });
             } else {
@@ -1705,7 +1759,7 @@ impl World {
             return;
         }
         let body = &mut self.bodies[index];
-        body.route = VecDeque::from([end]);
+        body.route = route.iter().copied().collect();
         body.goal = Some(Goal {
             target,
             looked_from: squared_mm(from, target.centre()),
@@ -1713,7 +1767,7 @@ impl World {
         events.push(Event::BodyWalks {
             body: id,
             from,
-            route: vec![end],
+            route,
             speed_cm_per_s: rules.movement.walk_speed_cm_per_s,
         });
     }
@@ -1721,8 +1775,14 @@ impl World {
     /// A body that walked straight for want of a way and stopped looks
     /// again from where it stands, toward the same target, but only from
     /// nearer to it than where it last looked: it never circles before a
-    /// wall. Otherwise it stops for good.
+    /// wall. Otherwise it stops for good and says it is blocked; on its
+    /// target, it simply stays.
     fn look_again(&mut self, index: usize, goal: Goal, rules: &Content, events: &mut Vec<Event>) {
+        // Arrived: its stop was told on arrival, once, and nothing bars it.
+        if self.bodies[index].at == goal.target.centre() {
+            self.bodies[index].goal = None;
+            return;
+        }
         if squared_mm(self.bodies[index].at, goal.target.centre()) >= goal.looked_from {
             self.bodies[index].goal = None;
             self.blocked(index, goal.target, rules, events);
@@ -3579,5 +3639,325 @@ mod tests {
                 .iter()
                 .all(|i| i.pos().is_some())
         );
+    }
+    /// The sample rules with the repository's kinds of tree.
+    fn wooded_rules() -> Content {
+        Content::sample()
+            .with_species(include_str!("../../../content/species.ron"))
+            .expect("species.ron parses")
+    }
+
+    /// The small valley with its trees.
+    fn wooded_world() -> World {
+        World::with_valley(Calendar::new(10, 1_000_000).unwrap(), &wooded_rules(), 768)
+    }
+
+    /// Does any segment of `route`, from `from`, enter one of `tiles`?
+    fn route_enters(from: FinePos, route: &[FinePos], tiles: &[Pos]) -> bool {
+        let mut at = from;
+        route.iter().any(|&next| {
+            let hit = tiles.iter().any(|&t| map::enters(at, next, t));
+            at = next;
+            hit
+        })
+    }
+
+    /// How deep `at` stands inside `tile`, in millimetres from its
+    /// nearest edge; 0 outside it.
+    fn depth_in(at: FinePos, tile: Pos) -> i32 {
+        if at.tile() != tile {
+            return 0;
+        }
+        let (x0, y0) = (tile.x * MM_PER_TILE, tile.y * MM_PER_TILE);
+        (at.x - x0)
+            .min(x0 + MM_PER_TILE - at.x)
+            .min(at.y - y0)
+            .min(y0 + MM_PER_TILE - at.y)
+    }
+
+    /// The chunks of a world's map, row by row.
+    fn every_chunk(w: &World) -> Vec<ChunkPos> {
+        let wide = i32::try_from(w.map().chunks_wide()).expect("small");
+        let high = i32::try_from(w.map().chunks_high()).expect("small");
+        (0..high)
+            .flat_map(|y| (0..wide).map(move |x| ChunkPos::new(x, y)))
+            .collect()
+    }
+
+    /// The tiles of `chunk` and of the chunks around it.
+    fn tiles_around(chunk: ChunkPos) -> Vec<Pos> {
+        let origin = chunk.origin();
+        let side = i32::try_from(CHUNK_SIZE).expect("small");
+        (origin.y - side..origin.y + 2 * side)
+            .flat_map(|y| (origin.x - side..origin.x + 2 * side).map(move |x| Pos::new(x, y)))
+            .collect()
+    }
+
+    /// The chunk of `w` with the most trunks.
+    fn densest_woods(w: &World) -> ChunkPos {
+        every_chunk(w)
+            .into_iter()
+            .max_by_key(|&c| w.trees_in(c).len())
+            .expect("chunks")
+    }
+
+    #[test]
+    fn pulled_routes_never_cross_a_trunk_in_the_densest_woods() {
+        let w = wooded_world();
+        let rules = wooded_rules();
+        let cost = |t: Terrain| rules.movement.cost(t);
+        let chunk = densest_woods(&w);
+        let trunks: Vec<Pos> = tiles_around(chunk)
+            .into_iter()
+            .filter(|&p| w.is_trunk(p))
+            .collect();
+        let open: Vec<Pos> = tiles_around(chunk)
+            .into_iter()
+            .filter(|&p| p.chunk() == chunk)
+            .filter(|&p| w.map().get(p).and_then(cost).is_some() && !w.is_trunk(p))
+            .collect();
+        assert!(trunks.len() > 100, "dense woods: {} trunks", trunks.len());
+        let lookup = w.trunks();
+        let blocked = |p: Pos| lookup.blocks(p);
+        let (mut found, mut blind_crossings) = (0, 0);
+        let mut roll: u64 = 7;
+        let mut next = |n: usize| {
+            roll = roll
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            usize::try_from(roll >> 33).expect("small") % n
+        };
+        for _ in 0..300 {
+            let (a, b) = (open[next(open.len())], open[next(open.len())]);
+            let Some(path) = w.map().path_around(a, b, (60, u32::MAX), cost, blocked) else {
+                continue;
+            };
+            found += 1;
+            assert!(path.iter().all(|&p| !blocked(p)), "{a:?} to {b:?}");
+            let route = w.map().pull_around(a.centre(), &path, cost, blocked);
+            assert!(
+                !route_enters(a.centre(), &route, &trunks),
+                "{a:?} to {b:?}: {route:?}"
+            );
+            let blind = w.map().pull(a.centre(), &path, cost);
+            if route_enters(a.centre(), &blind, &trunks) {
+                blind_crossings += 1;
+            }
+        }
+        assert!(found > 250, "most pairs joined: {found}");
+        assert!(
+            blind_crossings > 0,
+            "pulled blind, some would cross a trunk"
+        );
+    }
+
+    #[test]
+    fn a_body_walking_straight_at_a_lone_trunk_steps_round_it_and_arrives() {
+        let mut w = wooded_world();
+        let mut rules = wooded_rules();
+        let open = |w: &World, p: Pos| {
+            w.map()
+                .get(p)
+                .and_then(|t| rules.movement.cost(t))
+                .is_some()
+                && !w.is_trunk(p)
+        };
+        let lone = every_chunk(&w)
+            .into_iter()
+            .flat_map(|c| {
+                w.trees_in(c)
+                    .iter()
+                    .map(|t| t.at.tile())
+                    .collect::<Vec<_>>()
+            })
+            .find(|&t| {
+                (-3..=3).all(|dy| {
+                    (-8..=8).all(|dx| (dx, dy) == (0, 0) || open(&w, Pos::new(t.x + dx, t.y + dy)))
+                })
+            })
+            .expect("a lone tree in the meadow");
+        let (start, target) = (Pos::new(lone.x - 8, lone.y), Pos::new(lone.x + 8, lone.y));
+        let mut events = Vec::new();
+        w.queue(Intention::Teleport {
+            body: BodyId(1),
+            target: start,
+        });
+        w.advance(1, &rules, &mut events);
+        assert_eq!(w.body(BodyId(1)).expect("body 1").pos(), start);
+        // No search: the body walks straight, as with none in sight.
+        rules.movement.path_budget_tiles = 1;
+        let route = first_route(&mut w, &rules, target);
+        assert!(route.len() > 2, "a step aside and back: {route:?}");
+        assert!(
+            route
+                .windows(2)
+                .all(|p| p[1].x > p[0].x || (p[1].x == p[0].x && p[1].y != p[0].y)),
+            "never a step back: {route:?}"
+        );
+        assert_eq!(route.last(), Some(&target.centre()));
+        let mut events = Vec::new();
+        for _ in 0..2000 {
+            w.step(&rules, &mut events);
+            let at = w.body(BodyId(1)).expect("body 1").at();
+            assert!(depth_in(at, lone) <= 2, "into the trunk at {at:?}");
+            if events.iter().any(|e| {
+                matches!(
+                    e,
+                    Event::BodyStopped {
+                        body: BodyId(1),
+                        ..
+                    }
+                )
+            }) {
+                break;
+            }
+        }
+        assert_eq!(w.body(BodyId(1)).expect("body 1").at(), target.centre());
+    }
+
+    #[test]
+    fn a_long_straight_walk_through_the_woods_never_goes_through_a_trunk() {
+        let mut w = wooded_world();
+        let mut rules = wooded_rules();
+        rules.movement.path_budget_tiles = 1;
+        let chunk = densest_woods(&w);
+        let origin = chunk.origin();
+        let mut events = Vec::new();
+        w.queue(Intention::Teleport {
+            body: BodyId(1),
+            target: Pos::new(origin.x - 20, origin.y + 16),
+        });
+        w.advance(1, &rules, &mut events);
+        let start = w.body(BodyId(1)).expect("body 1").at();
+        let target = Pos::new(origin.x + 52, start.tile().y);
+        go(&mut w, target);
+        let trunks: Vec<Pos> = tiles_around(chunk)
+            .into_iter()
+            .filter(|&p| w.is_trunk(p))
+            .collect();
+        let mut sidestepped = false;
+        for _ in 0..5000 {
+            let mut events = Vec::new();
+            w.step(&rules, &mut events);
+            let body = w.body(BodyId(1)).expect("body 1");
+            let at = body.at();
+            let tile = at.tile();
+            assert!(
+                !w.is_trunk(tile) || depth_in(at, tile) <= 2,
+                "into a trunk at {at:?}"
+            );
+            sidestepped |= events
+                .iter()
+                .any(|e| matches!(e, Event::BodyWalks { route, .. } if route.len() > 1));
+            if !body.is_walking() && body.goal.is_none() {
+                break;
+            }
+        }
+        let end = w.body(BodyId(1)).expect("body 1").at();
+        assert!(sidestepped, "trunks stepped round on the way");
+        assert!(
+            squared_mm(end, target.centre()) * 4 < squared_mm(start, target.centre()),
+            "most of the way through the woods: {start:?} to {end:?}, {} trunks",
+            trunks.len()
+        );
+    }
+
+    #[test]
+    fn a_body_saved_in_a_trunk_tile_is_let_out_and_walks_on() {
+        let mut w = wooded_world();
+        let rules = wooded_rules();
+        let trunk = w
+            .trees_in(densest_woods(&w))
+            .first()
+            .expect("a tree")
+            .at
+            .tile();
+        assert!(w.is_trunk(trunk));
+        // As a snapshot made before trunks blocked the way may hold it.
+        let caught = w.spawn_body(trunk);
+        let text = serde_json::to_string(&w).unwrap();
+        let mut back: World = serde_json::from_str(&text).unwrap();
+        back.take_content(&rules);
+        let body = back.body(caught).expect("the body");
+        let out = body.pos();
+        assert!(!back.is_trunk(out), "let out of the trunk");
+        assert!(
+            (out.x - trunk.x).abs() <= 1 && (out.y - trunk.y).abs() <= 1,
+            "beside it: {out:?}"
+        );
+        assert_eq!(
+            back.bodies_in(out.chunk())
+                .iter()
+                .filter(|b| b.id() == caught)
+                .count(),
+            1
+        );
+        // It walks.
+        let target = Pos::new(out.x + 3, out.y);
+        back.queue(Intention::MoveTo {
+            body: caught,
+            target,
+        });
+        let mut events = Vec::new();
+        back.step(&rules, &mut events);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::BodyWalks { body, .. } if *body == caught)),
+            "{events:?}"
+        );
+        // Sent onto a trunk, a body stands beside it.
+        back.queue(Intention::Teleport {
+            body: caught,
+            target: trunk,
+        });
+        back.advance(1, &rules, &mut events);
+        assert!(!back.is_trunk(back.body(caught).expect("the body").pos()));
+    }
+    #[test]
+    fn a_straight_walk_to_its_target_tells_one_stop() {
+        let mut w = World::empty(
+            Calendar::new(10, 1_000_000).unwrap(),
+            Map::filled(40, 40, Terrain::Grass),
+        );
+        w.spawn_body(Pos::new(2, 2));
+        let mut rules = rules();
+        rules.movement.path_budget_tiles = 1;
+        go(&mut w, Pos::new(30, 20));
+        let mut events = Vec::new();
+        for _ in 0..1000 {
+            w.step(&rules, &mut events);
+        }
+        let stops = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Event::BodyStopped {
+                        body: BodyId(1),
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                Event::BodyWalks {
+                    body: BodyId(1),
+                    ..
+                }
+            )),
+            "it walked"
+        );
+        assert_eq!(w.body(BodyId(1)).expect("body 1").pos(), Pos::new(30, 20));
+        assert_eq!(stops, 1, "{events:?}");
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::BodyBlocked { .. })),
+            "arrived, not blocked"
+        );
+        assert!(w.body(BodyId(1)).expect("body 1").goal.is_none(), "done");
     }
 }
