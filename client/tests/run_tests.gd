@@ -73,6 +73,8 @@ func _init() -> void:
 	_test_the_frame_cache_keeps_what_left_the_view()
 	_test_the_net_keeps_the_chunks_of_the_same_world_only()
 	_test_a_body_told_at_each_chunk_keeps_walking_its_route()
+	_test_a_new_route_told_while_walking_turns_from_where_the_body_is_shown()
+	_test_the_clock_catches_up_with_the_ticks_walks_are_told_at()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -2310,3 +2312,53 @@ func _test_a_body_told_at_each_chunk_keeps_walking_its_route() -> void:
 	var nominal := BodyWalk.told({}, Vector2(0, 0), [Vector2(2860, 0)], [], 0.0, 1430.0, 0.0)
 	BodyWalk.advance(nominal, 1.0, 0.0)
 	_check(near.call(nominal["at"], Vector2(1430, 0)), "no arrivals: the nominal speed")
+
+
+func _test_a_new_route_told_while_walking_turns_from_where_the_body_is_shown() -> void:
+	# Found in play (12 November 2026): a new destination clicked while
+	# walking sent the body back about a tile in a dash, then on its new
+	# way. Walking east at 1.43 m/s (143 mm a tick), it is sent north at
+	# tick 150: its new route sets off where the world has it then, a
+	# change of pace half a metre on. The client, its clock a few ticks off
+	# the world's (ahead or behind), shows it elsewhere when told: it turns
+	# from there, never dashing nor standing still, and joins its route.
+	var pace := 20000.0 / 140.0
+	var turn := Vector2(50.0 * pace, 5000.0)
+	var route := [turn + Vector2(0, -500), Vector2(turn.x, -5000)]
+	var arrivals := [154, 220]
+	for now: float in [153.0, 147.0]:
+		var east := BodyWalk.told({}, Vector2(0, 5000), [Vector2(20000, 5000)], [240], 100.0, 1430.0, 100.0)
+		BodyWalk.advance(east, 0.0, now)
+		var shown: Vector2 = east["at"]
+		var north := BodyWalk.told(east, turn, route, arrivals, 150.0, 1430.0, now)
+		var why := "clock %s: " % ("ahead" if now > 150.0 else "behind")
+		_check(north["at"].distance_to(shown) < 1.0, why + "turns from where it is shown")
+		var dash := 0.0
+		var still := INF
+		var at: Vector2 = north["at"]
+		var t := now
+		while BodyWalk.advance(north, 0.0, t + 0.25):
+			t += 0.25
+			var step: float = at.distance_to(north["at"])
+			dash = maxf(dash, step)
+			still = minf(still, step)
+			at = north["at"]
+		_check(dash <= 1.6 * pace * 0.25, why + "never a dash (%.0f mm in a quarter tick)" % dash)
+		_check(still > 0.25 * pace * 0.25, why + "never standing still on its way (%.0f mm)" % still)
+		_check(north["at"] == route[1], why + "where the world has it at the end")
+
+
+func _test_the_clock_catches_up_with_the_ticks_walks_are_told_at() -> void:
+	# Set at the welcome, read two seconds late (a busy first frame): the
+	# clock runs 20 ticks behind the world. A walk told at a later tick
+	# sets it right; a walk told at a tick past (a message that waited)
+	# never sets it back.
+	var clock := GameClock.new()
+	clock.set_clock({"tick": 1000, "ticks_per_second": 10, "time_scale_permille": 1000}, 0)
+	_check(is_equal_approx(clock.tick_at(5000), 1050.0), "set at the welcome")
+	clock.catch_up(1070.0, 5000)
+	_check(is_equal_approx(clock.tick_at(5000), 1070.0), "caught up by a walk told later")
+	_check(is_equal_approx(clock.tick_at(6000), 1080.0), "and runs on from there")
+	clock.catch_up(1060.0, 6000)
+	_check(is_equal_approx(clock.tick_at(6000), 1080.0), "never set back by a tick past")
+

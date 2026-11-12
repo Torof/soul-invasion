@@ -916,7 +916,10 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 
 func _on_body_walks(body: int, at: Vector2, route: Array, arrivals: Array, speed_cm_per_s: int, tick: int) -> void:
 	# Told again at each chunk it walks into, by time: it agrees with what
-	# is shown, and a body near is walked on from where it is shown.
+	# is shown, and a body near is walked on from where it is shown. The
+	# clock, set at the welcome and at dawn only, is caught up by the tick
+	# the walk was told at: a welcome read late left it behind for good.
+	_clock.catch_up(float(tick), Time.get_ticks_msec())
 	_place(body, BodyWalk.told(_bodies.get(body, {}), at, route, arrivals, float(tick), speed_cm_per_s * 10.0, _now()))
 	queue_redraw()
 

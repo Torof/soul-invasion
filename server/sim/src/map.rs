@@ -674,7 +674,10 @@ impl Map {
     /// waypoint is the farthest tile centre reachable in a straight line
     /// that crosses only walkable tiles no dearer than the tiles the
     /// segment replaces, so a road is not short-cut through the field
-    /// beside it (D32). The last waypoint is the path's last tile.
+    /// beside it (D32). The tile a segment starts in is left whatever it
+    /// costs: a body under a tree, sent onto the grass, walks straight
+    /// from where it stands rather than to a tile's centre first. The
+    /// last waypoint is the path's last tile.
     pub fn pull(
         &self,
         from: FinePos,
@@ -688,9 +691,10 @@ impl Map {
         while first < path.len() {
             let mut dearest = cost_at(path[first]).unwrap_or(u32::MAX);
             let mut chosen = first;
+            let start = current.tile();
             for (j, tile) in path.iter().enumerate().skip(first) {
                 dearest = dearest.max(cost_at(*tile).unwrap_or(u32::MAX));
-                let allowed = |pos: Pos| cost_at(pos).is_some_and(|c| c <= dearest);
+                let allowed = |pos: Pos| pos == start || cost_at(pos).is_some_and(|c| c <= dearest);
                 if line_clear(current, tile.centre(), allowed) {
                     chosen = j;
                 }
