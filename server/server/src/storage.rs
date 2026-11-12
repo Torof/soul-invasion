@@ -8,6 +8,14 @@
 //! touched, with its version, written again only when that version moved
 //! since the last checkpoint.
 //!
+//! Whether the last run stopped cleanly is stored too (`run_state`): a
+//! run that crashed lost what men changed since the last checkpoint, so
+//! a chunk's version can go back to a number a client already holds with
+//! other content; the next run then starts a new epoch, folded into the
+//! world's identity (D4), and clients drop what they hold. The world's
+//! birth, drawn at random when its database is made, is folded in too: a
+//! world made anew (`--reset`) never shares an identity with the old one.
+//!
 //! Formats are versioned from day one (D21): the database schema through
 //! SQLite's `user_version`, each snapshot through its own format version,
 //! each chunk's changes through theirs.
@@ -78,6 +86,25 @@ pub trait Storage: Send {
 
     /// Records a snapshot of the world at its current tick.
     fn save_world(&mut self, world: &World) -> Result<(), StorageError>;
+
+    /// Starts a run: reads whether the last one stopped cleanly, clears
+    /// that mark, and returns the world's lineage, its epoch one more
+    /// than the last run's if it did not (a crash).
+    fn begin_run(&mut self) -> Result<Lineage, StorageError>;
+
+    /// Marks the run as stopped cleanly, after its final snapshot.
+    fn mark_clean_stop(&mut self) -> Result<(), StorageError>;
+}
+
+/// What makes a stored world another world to a client (D28): its birth,
+/// a random number drawn when its database was made, and its epoch, one
+/// more after each crash. Both fold into the world's identity (D4).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Lineage {
+    /// Drawn once, when the database is made.
+    pub birth: u64,
+    /// How many runs ended in a crash.
+    pub epoch: u64,
 }
 
 /// Schema migrations, applied in order; the index + 1 is the version
@@ -115,6 +142,19 @@ const MIGRATIONS: &[&str] = &[
          data           BLOB    NOT NULL,
          PRIMARY KEY (x, y)
      ) WITHOUT ROWID;",
+    // v4: whether the last run stopped cleanly, the world's epoch, one
+    // more after each crash, and its birth, drawn here at random (SQLite's
+    // `random()`, from the system's entropy) (11 November 2026). A
+    // database that already holds a world does not know how its last run
+    // ended: it counts as a crash, once.
+    "CREATE TABLE run_state (
+         id    INTEGER PRIMARY KEY CHECK (id = 0),
+         birth INTEGER NOT NULL,
+         epoch INTEGER NOT NULL,
+         clean INTEGER NOT NULL
+     );
+     INSERT INTO run_state (id, birth, epoch, clean)
+         SELECT 0, random(), 0, NOT EXISTS (SELECT 1 FROM snapshots);",
 ];
 
 /// SQLite-backed storage: one file, or memory for ephemeral worlds.
@@ -254,6 +294,30 @@ impl Storage for Sqlite {
         )?;
         tx.commit()?;
         self.written.extend(moved);
+        Ok(())
+    }
+
+    fn begin_run(&mut self) -> Result<Lineage, StorageError> {
+        // Synchronous, so that a power cut cannot bring the mark back:
+        // a crash after it would be taken for a clean stop.
+        self.conn.pragma_update(None, "synchronous", "FULL")?;
+        let tx = self.conn.transaction()?;
+        let (birth, epoch, clean): (i64, i64, bool) =
+            tx.query_row("SELECT birth, epoch, clean FROM run_state", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+        let epoch = if clean { epoch } else { epoch + 1 };
+        tx.execute("UPDATE run_state SET epoch = ?1, clean = 0", [epoch])?;
+        tx.commit()?;
+        self.conn.pragma_update(None, "synchronous", "NORMAL")?;
+        Ok(Lineage {
+            birth: birth.cast_unsigned(),
+            epoch: u64::try_from(epoch).expect("a positive epoch"),
+        })
+    }
+
+    fn mark_clean_stop(&mut self) -> Result<(), StorageError> {
+        self.conn.execute("UPDATE run_state SET clean = 1", [])?;
         Ok(())
     }
 }
@@ -595,7 +659,7 @@ mod tests {
     #[test]
     fn fresh_database_has_no_world() {
         let mut storage = Sqlite::in_memory(content()).unwrap();
-        assert_eq!(storage.schema_version().unwrap(), 3);
+        assert_eq!(storage.schema_version().unwrap(), 4);
         assert!(storage.latest_world().unwrap().is_none());
     }
 
@@ -637,7 +701,7 @@ mod tests {
             storage.save_world(&world_at(3)).unwrap();
         }
         let mut storage = Sqlite::open(&path, content()).unwrap();
-        assert_eq!(storage.schema_version().unwrap(), 3);
+        assert_eq!(storage.schema_version().unwrap(), 4);
         assert_eq!(storage.latest_world().unwrap().unwrap().tick(), Tick(3));
         drop(storage);
         let _ = std::fs::remove_dir_all(dir);
@@ -655,7 +719,7 @@ mod tests {
         .unwrap();
         let mut storage = Sqlite::from_connection(conn, content()).unwrap();
         storage.save_world(&world_at(4)).unwrap();
-        assert_eq!(storage.schema_version().unwrap(), 3);
+        assert_eq!(storage.schema_version().unwrap(), 4);
         let journal: i64 = storage
             .conn
             .query_row(
@@ -926,7 +990,7 @@ mod tests {
             );
         };
         let mut storage = Sqlite::open(&path, content()).unwrap();
-        assert_eq!(storage.schema_version().unwrap(), 3);
+        assert_eq!(storage.schema_version().unwrap(), 4);
         let world = storage.latest_world().unwrap().unwrap();
         assert_eq!(world.tick(), Tick(4));
         check(&world);
@@ -1068,7 +1132,7 @@ mod tests {
             err,
             StorageError::SchemaTooNew {
                 found: 42,
-                supported: 3
+                supported: 4
             }
         ));
     }
