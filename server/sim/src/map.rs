@@ -635,7 +635,8 @@ impl Map {
         to: Pos,
         cost: impl Fn(Terrain) -> Option<u32>,
     ) -> Option<Vec<Pos>> {
-        self.search(from, to, PATH_REACH, u32::MAX, cost).0
+        self.search(from, to, PATH_REACH, u32::MAX, cost, |_| false)
+            .0
     }
 
     /// [`Map::path`] within what a body sees and the effort it may spend
@@ -654,11 +655,25 @@ impl Map {
         budget: u32,
         cost: impl Fn(Terrain) -> Option<u32>,
     ) -> Option<Vec<Pos>> {
-        self.search(from, to, reach, budget, cost).0
+        self.search(from, to, reach, budget, cost, |_| false).0
     }
 
-    /// The A* search behind [`Map::path`] and [`Map::path_within`], with
-    /// the number of tiles it expanded.
+    /// [`Map::path_within`] with tiles `blocked` besides the terrain's
+    /// (the trunks of trees, D32): never stepped onto, nor cut between at
+    /// a corner. The tile the search starts from is left even if blocked.
+    pub fn path_around(
+        &self,
+        from: Pos,
+        to: Pos,
+        (reach, budget): (i32, u32),
+        cost: impl Fn(Terrain) -> Option<u32>,
+        blocked: impl Fn(Pos) -> bool,
+    ) -> Option<Vec<Pos>> {
+        self.search(from, to, reach, budget, cost, blocked).0
+    }
+
+    /// The A* search behind [`Map::path`], [`Map::path_within`] and
+    /// [`Map::path_around`], with the number of tiles it expanded.
     fn search(
         &self,
         from: Pos,
@@ -666,13 +681,20 @@ impl Map {
         reach: i32,
         budget: u32,
         cost: impl Fn(Terrain) -> Option<u32>,
+        blocked: impl Fn(Pos) -> bool,
     ) -> (Option<Vec<Pos>>, u32) {
         if from == to {
             return (Some(Vec::new()), 0);
         }
         let within = |pos: Pos| (pos.x - from.x).abs() <= reach && (pos.y - from.y).abs() <= reach;
-        let cost_at = |pos: Pos| self.get(pos).and_then(&cost);
-        if !within(to) || cost_at(from).is_none() || cost_at(to).is_none() {
+        let cost_at = |pos: Pos| {
+            if blocked(pos) {
+                None
+            } else {
+                self.get(pos).and_then(&cost)
+            }
+        };
+        if !within(to) || self.get(from).and_then(&cost).is_none() || cost_at(to).is_none() {
             return (None, 0);
         }
         // The heuristic must not overestimate: scale it by the cheapest
@@ -749,7 +771,26 @@ impl Map {
         path: &[Pos],
         cost: impl Fn(Terrain) -> Option<u32>,
     ) -> Vec<FinePos> {
-        let cost_at = |pos: Pos| self.get(pos).and_then(&cost);
+        self.pull_around(from, path, cost, |_| false)
+    }
+
+    /// [`Map::pull`] with tiles `blocked` besides the terrain's (the
+    /// trunks of trees, D32): no segment crosses one, nor slips between
+    /// two at a corner.
+    pub fn pull_around(
+        &self,
+        from: FinePos,
+        path: &[Pos],
+        cost: impl Fn(Terrain) -> Option<u32>,
+        blocked: impl Fn(Pos) -> bool,
+    ) -> Vec<FinePos> {
+        let cost_at = |pos: Pos| {
+            if blocked(pos) {
+                None
+            } else {
+                self.get(pos).and_then(&cost)
+            }
+        };
         let mut route = Vec::new();
         let mut current = from;
         let mut first = 0;
@@ -769,6 +810,123 @@ impl Map {
             first = chosen + 1;
         }
         route
+    }
+
+    /// A straight walk from `from` toward `to`, for a body with no path
+    /// in sight (D31, D32): straight on to the first tile it may not enter
+    /// (the terrain's, or `blocked`: a trunk), stopping a little before
+    /// it, as [`line_reach`]. An obstacle no bigger than a bush or a
+    /// trunk, a tile or two across, is stepped round (lightness plan F3):
+    /// a search of a few metres around it ([`SIDESTEP_REACH`]) finds the
+    /// way from the stop to the line 0.5 to 3 m beyond the obstacle, and
+    /// the walk goes on along its line from there. Only obstacles within
+    /// `sight` tiles of `from` (it sees them), [`SIDESTEPS`] at most; the
+    /// walk stops before the next. The tile a segment starts in is left
+    /// whatever it is. The route's last point is `to` when nothing stops
+    /// it; empty when it cannot set off.
+    // Not generation: floats, as in `first_block`.
+    #[allow(clippy::float_arithmetic)]
+    pub fn walk_straight(
+        &self,
+        from: FinePos,
+        to: FinePos,
+        sight: i32,
+        cost: impl Fn(Terrain) -> Option<u32>,
+        blocked: impl Fn(Pos) -> bool,
+    ) -> Vec<FinePos> {
+        let open = |pos: Pos| !blocked(pos) && self.get(pos).and_then(&cost).is_some();
+        let seen = |pos: Pos| {
+            (pos.x - from.tile().x).abs() <= sight && (pos.y - from.tile().y).abs() <= sight
+        };
+        let mut route = Vec::new();
+        let mut at = from;
+        let mut sidesteps = 0;
+        loop {
+            let start = at.tile();
+            let leg = |pos: Pos| pos == start || open(pos);
+            let Some(t) = first_block(at, to, leg) else {
+                if at != to {
+                    route.push(to);
+                }
+                break;
+            };
+            let length = at.distance_to(to);
+            let stop = along(at, to, (t - SHORT_OF / length).max(0.0));
+            if stop != at {
+                route.push(stop);
+            }
+            if sidesteps >= SIDESTEPS || !seen(along(at, to, t).tile()) {
+                break;
+            }
+            let Some((detour, rejoin)) = self.sidestep(stop, (at, to, t), &cost, &blocked) else {
+                break;
+            };
+            route.extend(detour);
+            sidesteps += 1;
+            if rejoin == to {
+                break;
+            }
+            at = rejoin;
+        }
+        route
+    }
+
+    /// The way round the obstacle a straight walk from `a` toward `b`
+    /// meets at `t` (0 at `a`, 1 at `b`), from `stop` short of it back to
+    /// the line beyond it: the waypoints, the last of them the point on
+    /// the line where the walk goes on. `None` when the line is not open
+    /// again within 3 m past the obstacle, or no way joins it within
+    /// [`SIDESTEP_REACH`] tiles of the stop.
+    // Not generation: floats, as in `first_block`.
+    #[allow(clippy::float_arithmetic)]
+    fn sidestep(
+        &self,
+        stop: FinePos,
+        (a, b, t): (FinePos, FinePos, f64),
+        cost: impl Fn(Terrain) -> Option<u32>,
+        blocked: impl Fn(Pos) -> bool,
+    ) -> Option<(Vec<FinePos>, FinePos)> {
+        /// How far past the obstacle the line is tried again, in
+        /// millimetres: every half metre, up to 3 m.
+        const BEYOND: f64 = 500.0;
+        let open = |pos: Pos| !blocked(pos) && self.get(pos).and_then(&cost).is_some();
+        let length = a.distance_to(b);
+        if length <= 0.0 {
+            return None;
+        }
+        for k in 1..=6 {
+            let along_t = (t + f64::from(k) * BEYOND / length).min(1.0);
+            let rejoin = along(a, b, along_t);
+            let tile = rejoin.tile();
+            if tile != stop.tile()
+                && open(tile)
+                && let Some(path) = self.path_around(
+                    stop.tile(),
+                    tile,
+                    (SIDESTEP_REACH, SIDESTEP_BUDGET),
+                    &cost,
+                    &blocked,
+                )
+            {
+                let mut detour = self.pull_around(stop, &path, &cost, &blocked);
+                // Back onto the line itself, not the centre of its tile,
+                // straight from the waypoint before when nothing is in
+                // the way.
+                let before = detour.len().checked_sub(2).map_or(stop, |i| detour[i]);
+                let start = before.tile();
+                if line_clear(before, rejoin, |pos| pos == start || open(pos)) {
+                    detour.pop();
+                }
+                if detour.last() != Some(&rejoin) {
+                    detour.push(rejoin);
+                }
+                return Some((detour, rejoin));
+            }
+            if along_t >= 1.0 {
+                break;
+            }
+        }
+        None
     }
 
     #[cfg(test)]
@@ -803,8 +961,6 @@ pub fn line_clear(a: FinePos, b: FinePos, allowed: impl Fn(Pos) -> bool) -> bool
 // Not generation: floats, as in `first_block`.
 #[allow(clippy::cast_possible_truncation, clippy::float_arithmetic)]
 pub fn line_reach(a: FinePos, b: FinePos, allowed: impl Fn(Pos) -> bool) -> FinePos {
-    /// How far before the obstacle the body stops, in millimetres.
-    const SHORT_OF: f64 = 300.0;
     let Some(t) = first_block(a, b, allowed) else {
         return b;
     };
@@ -812,7 +968,29 @@ pub fn line_reach(a: FinePos, b: FinePos, allowed: impl Fn(Pos) -> bool) -> Fine
     if length <= 0.0 {
         return a;
     }
-    let t = (t - SHORT_OF / length).max(0.0);
+    along(a, b, (t - SHORT_OF / length).max(0.0))
+}
+
+/// How far before an obstacle a straight walk stops, in millimetres.
+const SHORT_OF: f64 = 300.0;
+
+/// Tiles around the stop, on each axis, a straight walk's sidestep looks
+/// within ([`Map::walk_straight`]): a trunk or a bush is stepped round in
+/// 2 to 3 m.
+pub const SIDESTEP_REACH: i32 = 4;
+
+/// Tiles a sidestep's search expands at most: the square it looks
+/// within, 9 × 9.
+const SIDESTEP_BUDGET: u32 = 81;
+
+/// Obstacles a straight walk steps round at most before it stops and the
+/// body looks again ([`Map::walk_straight`]).
+pub const SIDESTEPS: u32 = 32;
+
+/// The point at `t` along the segment from `a` to `b` (0 at `a`, 1 at
+/// `b`), to the millimetre.
+#[allow(clippy::cast_possible_truncation, clippy::float_arithmetic)]
+fn along(a: FinePos, b: FinePos, t: f64) -> FinePos {
     FinePos::new(
         a.x + (f64::from(b.x - a.x) * t).round() as i32,
         a.y + (f64::from(b.y - a.y) * t).round() as i32,
@@ -886,6 +1064,37 @@ fn first_block(a: FinePos, b: FinePos, allowed: impl Fn(Pos) -> bool) -> Option<
         }
     }
     ((tx, ty) != (ex, ey)).then_some(entered)
+}
+
+/// Does the segment from `a` to `b` pass through the inside of `tile`?
+/// Touching its edges or grazing a corner (within a millimetre) does
+/// not count. Tests only: the check a walk must pass, made apart from
+/// the walk's own (`first_block`).
+#[cfg(test)]
+#[allow(clippy::float_arithmetic)]
+pub(crate) fn enters(a: FinePos, b: FinePos, tile: Pos) -> bool {
+    let (x0, y0) = (f64::from(a.x), f64::from(a.y));
+    let (dx, dy) = (f64::from(b.x) - x0, f64::from(b.y) - y0);
+    let low = |c: i32| f64::from(c * MM_PER_TILE) + 1.0;
+    let high = |c: i32| f64::from((c + 1) * MM_PER_TILE) - 1.0;
+    let (mut t0, mut t1) = (0.0_f64, 1.0_f64);
+    for (p, q) in [
+        (-dx, x0 - low(tile.x)),
+        (dx, high(tile.x) - x0),
+        (-dy, y0 - low(tile.y)),
+        (dy, high(tile.y) - y0),
+    ] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return false;
+            }
+        } else if p < 0.0 {
+            t0 = t0.max(q / p);
+        } else {
+            t1 = t1.min(q / p);
+        }
+    }
+    t0 < t1
 }
 
 /// Tiles of a chunk: the size of a page of [`Reached`].
@@ -3011,14 +3220,14 @@ mod tests {
             map.set(Pos::new(3, x), Terrain::Rock);
         }
         let (from, to) = (Pos::new(300, 300), Pos::new(1, 1));
-        let (path, expanded) = map.search(from, to, PATH_REACH, u32::MAX, walk);
+        let (path, expanded) = map.search(from, to, PATH_REACH, u32::MAX, walk, |_| false);
         assert_eq!(path, None);
         let side = u32::try_from(2 * PATH_REACH + 1).expect("small");
         assert!(expanded <= side * side, "{expanded}");
         // A target beyond the reach is refused at once, even in the open.
         let far = Pos::new(1, 1 + PATH_REACH + 1);
         assert_eq!(
-            map.search(Pos::new(1, 1), far, PATH_REACH, u32::MAX, walk),
+            map.search(Pos::new(1, 1), far, PATH_REACH, u32::MAX, walk, |_| false),
             (None, 0)
         );
         // At the edge of the reach it is found, straight.
@@ -3052,8 +3261,8 @@ mod tests {
         let (reach, budget) = (60, 300);
         let (mut under, mut over) = (0, 0);
         for (a, b) in random_pairs(&map, 11, 400, 60) {
-            let (free, expanded) = map.search(a, b, reach, u32::MAX, valley_walk);
-            let (capped, spent) = map.search(a, b, reach, budget, valley_walk);
+            let (free, expanded) = map.search(a, b, reach, u32::MAX, valley_walk, |_| false);
+            let (capped, spent) = map.search(a, b, reach, budget, valley_walk, |_| false);
             if expanded <= budget {
                 assert_eq!(capped, free, "{a:?} -> {b:?}");
                 assert_eq!(spent, expanded);
@@ -3074,12 +3283,20 @@ mod tests {
                 Pos::new(150, 150 + reach + 1),
                 reach,
                 budget,
-                valley_walk
+                valley_walk,
+                |_| false
             ),
             (None, 0),
             "beyond the sight: nothing searched"
         );
-        let (edge, _) = open.search(from, Pos::new(150 + reach, 150), reach, budget, valley_walk);
+        let (edge, _) = open.search(
+            from,
+            Pos::new(150 + reach, 150),
+            reach,
+            budget,
+            valley_walk,
+            |_| false,
+        );
         assert_eq!(
             edge.map(|p| p.len()),
             Some(60),
@@ -3156,7 +3373,10 @@ mod tests {
                     .collect();
                 let mut expansions: Vec<u32> = pairs
                     .iter()
-                    .map(|&(a, b)| map.search(a, b, PATH_REACH, u32::MAX, valley_walk).1)
+                    .map(|&(a, b)| {
+                        map.search(a, b, PATH_REACH, u32::MAX, valley_walk, |_| false)
+                            .1
+                    })
                     .collect();
                 let bounded = quickest(&mut || {
                     for &(a, b) in &pairs {
@@ -3196,7 +3416,8 @@ mod tests {
                 println!("{size}: one piece of ground, nothing to refuse");
                 continue;
             };
-            let (_, expanded) = map.search(camp, target, PATH_REACH, u32::MAX, valley_walk);
+            let (_, expanded) =
+                map.search(camp, target, PATH_REACH, u32::MAX, valley_walk, |_| false);
             let bounded = quickest(&mut || assert!(map.path(camp, target, valley_walk).is_none()));
             let unbounded = quickest(&mut || {
                 assert!(unbounded_path(&map, camp, target, valley_walk).is_none());
@@ -3267,10 +3488,10 @@ mod tests {
             let mut fit = 0;
             let mut longest = std::time::Duration::ZERO;
             for &(a, b) in &pairs {
-                let (path, expanded) = map.search(a, b, reach, budget, valley_walk);
+                let (path, expanded) = map.search(a, b, reach, budget, valley_walk, |_| false);
                 fit += usize::from(path.is_some());
                 let took = quickest(&mut || {
-                    map.search(a, b, reach, budget, valley_walk);
+                    map.search(a, b, reach, budget, valley_walk, |_| false);
                 });
                 longest = longest.max(took);
                 assert!(path.is_some() || expanded > budget);
@@ -3281,10 +3502,11 @@ mod tests {
             );
             worst = worst.max(longest);
             if let Some(target) = unjoined {
-                let (path, expanded) = map.search(camp, target, reach, budget, valley_walk);
+                let (path, expanded) =
+                    map.search(camp, target, reach, budget, valley_walk, |_| false);
                 assert_eq!(path, None);
                 let took = quickest(&mut || {
-                    map.search(camp, target, reach, budget, valley_walk);
+                    map.search(camp, target, reach, budget, valley_walk, |_| false);
                 });
                 println!(
                     "{name}: refused {camp:?} -> {target:?} after {expanded} tiles in {took:?}"
@@ -3301,10 +3523,11 @@ mod tests {
         walled.set(Pos::new(1, 0), Terrain::Rock);
         walled.set(Pos::new(1, 1), Terrain::Rock);
         let from = Pos::new(50, 50);
-        let (path, expanded) = walled.search(from, Pos::new(0, 0), 60, budget, valley_walk);
+        let (path, expanded) =
+            walled.search(from, Pos::new(0, 0), 60, budget, valley_walk, |_| false);
         assert_eq!((path, expanded), (None, budget + 1));
         let took = quickest(&mut || {
-            walled.search(from, Pos::new(0, 0), 60, budget, valley_walk);
+            walled.search(from, Pos::new(0, 0), 60, budget, valley_walk, |_| false);
         });
         println!("300 field, walled-in target, the whole budget spent: {took:?}");
         worst = worst.max(took);
@@ -4263,5 +4486,103 @@ mod tests {
             Some(Pos::new(1, 2))
         );
         assert_eq!(map.nearest(Pos::new(2, 2), Terrain::Water), None);
+    }
+    /// The tiles of a set, as a predicate.
+    fn among(tiles: &[(i32, i32)]) -> impl Fn(Pos) -> bool + '_ {
+        |p: Pos| tiles.contains(&(p.x, p.y))
+    }
+
+    /// Does any segment of `route`, from `from`, enter one of `tiles`?
+    fn route_enters(from: FinePos, route: &[FinePos], tiles: &[(i32, i32)]) -> bool {
+        let mut at = from;
+        route.iter().any(|&next| {
+            let hit = tiles.iter().any(|&(x, y)| enters(at, next, Pos::new(x, y)));
+            at = next;
+            hit
+        })
+    }
+
+    #[test]
+    fn a_blocked_tile_is_never_stepped_on_and_searches_go_round_it() {
+        let map = Map::filled(20, 20, Terrain::Grass);
+        let trunk = [(10, 10)];
+        let (from, to) = (Pos::new(5, 10), Pos::new(15, 10));
+        let straight = map.path(from, to, walk).expect("open ground");
+        assert!(straight.contains(&Pos::new(10, 10)), "the way it would go");
+        let path = map
+            .path_around(from, to, (20, u32::MAX), walk, among(&trunk))
+            .expect("a way round");
+        assert!(!path.contains(&Pos::new(10, 10)));
+        assert_eq!(path.len(), straight.len(), "one diagonal there, one back");
+        let route = map.pull_around(from.centre(), &path, walk, among(&trunk));
+        assert!(!route_enters(from.centre(), &route, &trunk));
+        assert_eq!(route.last(), Some(&to.centre()));
+        // Two trunks touching at a corner: never slipped between.
+        let pair = [(10, 10), (11, 11)];
+        let path = map
+            .path_around(
+                Pos::new(10, 11),
+                Pos::new(11, 10),
+                (20, 100),
+                walk,
+                among(&pair),
+            )
+            .expect("a way round");
+        assert_eq!(path.len(), 6, "round one of them, corners uncut: {path:?}");
+        let route = map.pull_around(Pos::new(10, 11).centre(), &path, walk, among(&pair));
+        assert!(!route_enters(Pos::new(10, 11).centre(), &route, &pair));
+        // A trunk is never a target; one stood in is left.
+        assert_eq!(
+            map.path_around(from, Pos::new(10, 10), (20, 100), walk, among(&trunk)),
+            None
+        );
+        let out = map
+            .path_around(Pos::new(10, 10), to, (20, 100), walk, among(&trunk))
+            .expect("out of the trunk's tile");
+        assert_eq!(out.last(), Some(&to));
+    }
+
+    #[test]
+    fn a_straight_walk_steps_round_a_trunk_or_a_bush_and_goes_on_along_its_line() {
+        let map = Map::filled(40, 40, Terrain::Grass);
+        let (from, to) = (Pos::new(5, 10).centre(), Pos::new(35, 10).centre());
+        for obstacle in [
+            &[(20, 10)][..],
+            &[(20, 10), (21, 10), (20, 11)],
+            &[(14, 10), (25, 10), (26, 9)],
+        ] {
+            let route = map.walk_straight(from, to, 60, walk, among(obstacle));
+            assert_eq!(route.last(), Some(&to), "{obstacle:?}: {route:?}");
+            assert!(!route_enters(from, &route, obstacle), "{route:?}");
+            assert!(
+                route
+                    .iter()
+                    .all(|p| (p.y - 10_500).abs() <= 3 * MM_PER_TILE),
+                "a step aside, no more: {route:?}"
+            );
+        }
+        // Nothing in the way: one segment, as before.
+        assert_eq!(map.walk_straight(from, to, 60, walk, |_| false), vec![to]);
+    }
+
+    #[test]
+    fn a_straight_walk_stops_before_a_wall_and_before_what_it_does_not_see() {
+        let map = Map::filled(40, 40, Terrain::Grass);
+        let (from, to) = (Pos::new(5, 10).centre(), Pos::new(35, 10).centre());
+        let wall: Vec<(i32, i32)> = (0..40).map(|y| (20, y)).collect();
+        let route = map.walk_straight(from, to, 60, walk, among(&wall));
+        assert_eq!(
+            route,
+            vec![FinePos::new(19_700, 10_500)],
+            "short of the wall"
+        );
+        // A trunk 15 tiles away, seen from 10: the walk stops before it,
+        // the body to look again from there.
+        let trunk = [(20, 10)];
+        let route = map.walk_straight(from, to, 10, walk, among(&trunk));
+        assert_eq!(route, vec![FinePos::new(19_700, 10_500)]);
+        // Toward a trunk itself: stops before it.
+        let route = map.walk_straight(from, Pos::new(20, 10).centre(), 60, walk, among(&trunk));
+        assert_eq!(route, vec![FinePos::new(19_700, 10_500)]);
     }
 }

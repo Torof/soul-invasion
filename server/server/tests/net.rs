@@ -1285,13 +1285,29 @@ async fn walking_toward_the_cliff_goes_straight_and_stops_before_the_first_obsta
     let world = standard_world();
     let rules = rules();
     let from = start_of(world, body).centre();
-    let walkable = |p: Pos| {
-        world
-            .map()
-            .get(p)
-            .is_some_and(|t| rules.movement.cost(t).is_some())
-    };
-    let end = sim::map::line_reach(from, Pos::new(100, 0).centre(), walkable);
+    // Straight, stepping round the trunks in its way within its sight
+    // (D32): the most open walkable ground it stands on or touches.
+    let cost = |t: sim::Terrain| rules.movement.cost(t);
+    let here = from.tile();
+    let sight = (-1..=1)
+        .flat_map(|dy| (-1..=1).map(move |dx| Pos::new(here.x + dx, here.y + dy)))
+        .filter_map(|p| world.map().get(p))
+        .filter(|t| cost(*t).is_some())
+        .map(|t| rules.movement.sight_tiles(t))
+        .fold(
+            rules
+                .movement
+                .sight_tiles(world.map().get(here).expect("on the map")),
+            u32::max,
+        );
+    let sight = i32::try_from(sight).expect("a short sight");
+    let end = *world
+        .map()
+        .walk_straight(from, Pos::new(100, 0).centre(), sight, cost, |p| {
+            world.is_trunk(p)
+        })
+        .last()
+        .expect("it sets off");
     send(&mut pilot, &ClientMessage::MoveTo { x: 100, y: 0 }).await;
     loop {
         match receive(&mut pilot).await {
@@ -1301,7 +1317,7 @@ async fn walking_toward_the_cliff_goes_straight_and_stops_before_the_first_obsta
                 arrivals,
                 ..
             })) if who == body => {
-                // One straight segment, cut where the pace changes.
+                // Straight segments, cut where the pace changes.
                 assert_eq!(route.last(), Some(&Point { x: end.x, y: end.y }));
                 assert_eq!(arrivals.len(), route.len());
                 break;
