@@ -16,6 +16,8 @@ The inhabitants **have no soul**. They are born, live and die; at death, they go
 - Most inhabitants have modest Willpower; a few have exceptional Willpower.
 - Willpower **can evolve**: an ordeal, an injustice, a responsibility or an education can make it grow.
 - Low Willpower does not mean an empty shell: every inhabitant has a name, habits, moods, bonds.
+- **Strong personalities** are few, fewer than one in fifty: the master craftsman who changes a workshop, the woman who holds a council, once or twice a generation someone who changes a kingdom. They do not make history out of nothing; they seize what the land and the times allow.
+- **Willpower awakens.** Some are born with it, more often in hard times; most find it in the middle of their lives. A massacre, a famine, an injustice breaks most of those who live it up close, and forges a few: the peaceful peasant who comes out of the raid as the man the valley will follow. Nobody chooses them; the world only notices afterwards.
 
 ## The parasite souls
 
