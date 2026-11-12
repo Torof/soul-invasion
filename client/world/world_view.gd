@@ -96,9 +96,6 @@ signal following_changed(following: bool)
 ## The piloted body thinks `line`, about the place `at` (mm): its way
 ## barred (ThoughtBubble).
 signal thinks(line: String, at: Vector2)
-## Someone says `line` (SpeechBubble). PLACEHOLDER (--dev only): body 3
-## greeting the piloted body (DevGreeter), until NPCs really talk.
-signal speaks(speaker: String, line: String)
 ## body id -> {"id", "material"} of what it holds, or {}
 var _holds: Dictionary = {}
 ## chunk -> the trees standing in it (Trees.Stand).
@@ -204,8 +201,6 @@ var _following := true:
 ## thought clicked, toward `_glide_to`, in world pixels).
 var _glide := CameraGlide.new()
 var _glide_to := Vector2.ZERO
-## PLACEHOLDER (--dev only): body 3 greets the piloted body near it.
-var _greeter := DevGreeter.new()
 ## Has the camera been put somewhere sensible since the last world state?
 var _camera_placed := false
 var _dragging := false
@@ -1068,19 +1063,6 @@ func plants_on(tile: Vector2i) -> Array:
 	return kinds
 
 
-## PLACEHOLDER (--dev only), until NPCs really talk: body 3 greets the
-## piloted body coming near it (DevGreeter).
-func _greet() -> void:
-	var distance := INF
-	if _piloted != DevGreeter.SPEAKER and _bodies.has(_piloted) and _bodies.has(DevGreeter.SPEAKER):
-		var mine: Vector2 = _bodies[_piloted]["at"]
-		var theirs: Vector2 = _bodies[DevGreeter.SPEAKER]["at"]
-		distance = mine.distance_to(theirs)
-	var line := _greeter.look(distance, Time.get_ticks_msec())
-	if not line.is_empty():
-		speaks.emit(UiWords.body_name(DevGreeter.SPEAKER), line)
-
-
 ## Zoom clamped to the allowed range.
 static func clamp_zoom(zoom: float) -> float:
 	return clampf(zoom, ZOOM_MIN, ZOOM_MAX)
@@ -1147,8 +1129,6 @@ func _step(delta: float) -> void:
 		_camera.position = _glide.step(delta, to)
 	elif _following and _bodies.has(_piloted):
 		_camera.position = Iso.point_to_screen(_bodies[_piloted]["at"])
-	if Net.dev:
-		_greet()
 	# The tree images read on a worker thread come in, the stands that
 	# waited for them are built and the images no chunk held for the grace
 	# are freed (Trees.poll): the built stands' trees show from this frame.

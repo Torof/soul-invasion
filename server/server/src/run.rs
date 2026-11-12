@@ -224,8 +224,8 @@ mod tests {
         // A run of many ticks with a walking body: the summary is two
         // counts, the same size whatever happened, and holds no event.
         let mut w = World::with_valley(Calendar::new(10, 100).unwrap(), &Content::sample(), 256);
-        let body = w.bodies()[0].id();
-        let at = w.bodies()[0].pos();
+        let body = w.spawn_at_camp().expect("grass by the camp");
+        let at = w.body(body).expect("just born").pos();
         w.queue(sim::Intention::MoveTo {
             body,
             target: sim::Pos::new(at.x + 5, at.y),

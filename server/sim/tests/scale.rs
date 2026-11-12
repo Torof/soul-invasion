@@ -132,8 +132,8 @@ fn a_tick_of_loaded_walkers_among_stored_items() {
 fn acts_on_natural_items() {
     let rules = Content::sample();
     let mut world = World::with_valley(calendar(), &rules, 768);
-    let body = world.bodies()[0].id();
-    let at = world.bodies()[0].pos().chunk();
+    let body = world.spawn_at_camp().expect("grass by the camp");
+    let at = world.body(body).expect("just born").pos().chunk();
     // Natural items of the chunks around the camp, each acted on once
     // (an act on an item already taken costs nothing to measure).
     let natural: Vec<ItemId> = (-2..=2)

@@ -517,7 +517,7 @@ fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<Wo
 }
 
 /// v1 held only the calendar and the tick; v2 adds the map and the
-/// bodies. A v1 world gets the standard valley and inhabitants, at its
+/// bodies. A v1 world gets the standard valley, nobody in it yet, at its
 /// old tick.
 fn migrate_v1_to_v2(data: &str, content: &Content) -> Result<String, StorageError> {
     standard_world_at_old_tick(data, content)
@@ -526,7 +526,7 @@ fn migrate_v1_to_v2(data: &str, content: &Content) -> Result<String, StorageErro
 /// v2 stored the 32×32 map tile by tile; v3 stores how the map is
 /// generated, and the valley is 256×256 at one metre per tile (D31).
 /// Positions of the old valley mean nothing in the new one: a v2 world
-/// gets the standard valley and inhabitants, at its old tick.
+/// gets the standard valley, nobody in it yet, at its old tick.
 fn migrate_v2_to_v3(data: &str, content: &Content) -> Result<String, StorageError> {
     standard_world_at_old_tick(data, content)
 }
@@ -745,7 +745,10 @@ mod tests {
         let world = storage.latest_world().unwrap().unwrap();
         assert_eq!(world.tick(), Tick(12));
         assert_eq!(world.calendar(), &Calendar::new(2, 3).unwrap());
-        assert_eq!(world.bodies().len(), 3, "the standard valley's inhabitants");
+        assert!(
+            world.bodies().is_empty(),
+            "the standard valley, nobody in it yet"
+        );
     }
 
     #[test]
@@ -766,7 +769,10 @@ mod tests {
         assert_eq!(world.tick(), Tick(40));
         assert_eq!(world.calendar(), &Calendar::new(2, 3).unwrap());
         assert_eq!(world.map().width(), sim::VALLEY_SIZE);
-        assert_eq!(world.bodies().len(), 3);
+        assert!(
+            world.bodies().is_empty(),
+            "the standard valley, nobody in it yet"
+        );
     }
 
     #[test]

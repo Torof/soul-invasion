@@ -86,7 +86,6 @@ func _init() -> void:
 	_test_a_placed_thought_is_clicked_from_the_history()
 	_test_body_thinks_decodes_and_has_its_words()
 	_test_the_recentre_button_shows_while_the_camera_does_not_follow()
-	_test_body_3_greets_once_on_coming_near()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -2635,31 +2634,3 @@ func _test_the_recentre_button_shows_while_the_camera_does_not_follow() -> void:
 	_check(glide.active and half.x > 50.0 and half.x < 100.0, "quick at first: %s" % half)
 	var there := glide.step(CameraGlide.SECONDS / 2.0, Vector2(110, 0))
 	_check(not glide.active and there == Vector2(110, 0), "on the body, which walked meanwhile: %s" % there)
-
-
-## PLACEHOLDER (--dev): body 3 greets once on coming within 3 m, not
-## again while the piloted body stays, nor within the cooldown.
-func _test_body_3_greets_once_on_coming_near() -> void:
-	var greeter := DevGreeter.new()
-	greeter.rng.seed = 7
-	_check(greeter.look(INF, 0) == "", "body 3 unseen: nothing")
-	_check(greeter.look(DevGreeter.RADIUS_MM + 1.0, 1000) == "", "farther than 3 m: nothing")
-	var first := greeter.look(DevGreeter.RADIUS_MM - 1.0, 2000)
-	_check(UiWords.DEV_GREETINGS.has(first), "coming near: a line of the list: %s" % first)
-	_check(greeter.look(1000.0, 2000 + DevGreeter.COOLDOWN_MS + 1) == "", "standing there: nothing more, even past the cooldown")
-	greeter.look(5000.0, 3000 + DevGreeter.COOLDOWN_MS)
-	_check(greeter.look(1000.0, 4000 + DevGreeter.COOLDOWN_MS) != "", "going away and coming back past the cooldown: again")
-	var spoke := 4000 + DevGreeter.COOLDOWN_MS
-	greeter.look(5000.0, spoke + 1000)
-	_check(greeter.look(1000.0, spoke + 2000) == "", "coming back within the cooldown: nothing")
-	var lines := {}
-	var g := DevGreeter.new()
-	var last := ""
-	var repeated := false
-	for i in 20:
-		g.look(INF, i * 2 * DevGreeter.COOLDOWN_MS)
-		var said := g.look(0.0, (i * 2 + 1) * DevGreeter.COOLDOWN_MS)
-		repeated = repeated or said == last
-		last = said
-		lines[said] = true
-	_check(not repeated and lines.size() > 2, "picked at random, never twice in a row: %d lines" % lines.size())

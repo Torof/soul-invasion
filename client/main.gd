@@ -86,7 +86,6 @@ func _add_bubbles() -> void:
 	_world.thinks.connect(func(line: String, at: Vector2) -> void: hud.think(line, at, true))
 	Net.body_assigned.connect(func(_body: int) -> void: hud.thoughts.clear())
 	hud.speech = SpeechBubble.new()
-	_world.speaks.connect(hud.say)
 	for node: Control in [recentre, hud.thoughts, hud.speech]:
 		$Ui.add_child(node)
 
