@@ -84,6 +84,7 @@ func _init() -> void:
 	_test_a_thread_left_alone_longer_leaves_only_the_icon()
 	_test_the_icon_reopens_on_the_newest_and_so_does_a_new_bubble()
 	_test_a_placed_thought_is_clicked_from_the_history()
+	_test_body_thinks_decodes_and_has_its_words()
 	_test_the_recentre_button_shows_while_the_camera_does_not_follow()
 	_test_body_3_greets_once_on_coming_near()
 
@@ -2593,6 +2594,23 @@ func _texts(entries: Array[Dictionary]) -> Array[String]:
 	for entry in entries:
 		texts.append(str(entry["text"]))
 	return texts
+## Protocol v22: `body_thinks` decodes into the signal, as the server's
+## `wire_format_is_tagged_snake_case` writes it, and each thought has its
+## words.
+func _test_body_thinks_decodes_and_has_its_words() -> void:
+	var net: Node = load("res://net/client.gd").new()
+	var got: Array = []
+	net.body_thinks.connect(func(body: int, kind: String, side: String, at: Vector2) -> void:
+		got.append([body, kind, side, at]))
+	net._handle(Protocol.decode("{\"type\":\"body_thinks\",\"body\":1,\"thought\":{\"kind\":\"skirting\",\"side\":\"right\"},\"at\":{\"x\":1500,\"y\":2500}}"))
+	net._handle(Protocol.decode("{\"type\":\"body_thinks\",\"body\":1,\"thought\":{\"kind\":\"no_way\"},\"at\":{\"x\":1,\"y\":2}}"))
+	_check(got == [[1, "skirting", "right", Vector2(1500, 2500)], [1, "no_way", "", Vector2(1, 2)]], "body_thinks decodes: %s" % [got])
+	net.free()
+	_check(UiWords.thought("skirting", "left") == "Pas de passage ici… je longe vers la gauche", "skirting left in words")
+	_check(UiWords.thought("skirting", "right") == "Pas de passage ici… je longe vers la droite", "skirting right in words")
+	_check(UiWords.thought("way_seen", "") == "Je vois un passage, j'y vais", "a way seen in words")
+	_check(UiWords.thought("no_way", "") == "Je ne sais pas où aller", "no way in words")
+	_check(UiWords.thought("dreaming", "") == UiWords.thought("no_way", ""), "an unknown thought reads as no way")
 
 
 ## The recentre button shows only while the camera does not follow the

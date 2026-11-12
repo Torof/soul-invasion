@@ -137,13 +137,6 @@ pub struct Movement {
     /// percent; the rest goes to the others (NPCs, animals). A lane's
     /// unused share goes to the other (D32).
     pub player_share_percent: u32,
-    /// Tiles a body skirting an obstacle whose end it does not see may
-    /// expand in one look for the best point on the edge of its sight
-    /// (D32).
-    pub skirt_budget_tiles: u32,
-    /// Looks a body may take skirting obstacles for one order before it
-    /// gives up and says it is blocked (D32).
-    pub skirt_looks: u32,
 }
 
 impl Movement {
@@ -572,11 +565,6 @@ impl Content {
         if self.movement.player_share_percent > 100 {
             return Err(ContentError::Movement("player_share_percent is 0 to 100"));
         }
-        if self.movement.skirt_budget_tiles == 0 {
-            return Err(ContentError::Movement(
-                "skirt_budget_tiles must be positive",
-            ));
-        }
         Ok(())
     }
 
@@ -619,8 +607,6 @@ pub const SAMPLE_MOVEMENT: &str = r"(
     path_budget_tiles: 1500,
     search_work_per_tick: 60000,
     player_share_percent: 50,
-    skirt_budget_tiles: 15000,
-    skirt_looks: 24,
 )";
 
 /// Needs rules of [`Content::sample`]: the valley's own.
@@ -731,13 +717,6 @@ mod tests {
         assert!(matches!(
             Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, &greedy, SAMPLE_NEEDS).unwrap_err(),
             ContentError::Movement("player_share_percent is 0 to 100")
-        ));
-        let blindfold =
-            SAMPLE_MOVEMENT.replacen("skirt_budget_tiles: 15000", "skirt_budget_tiles: 0", 1);
-        assert!(matches!(
-            Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, &blindfold, SAMPLE_NEEDS)
-                .unwrap_err(),
-            ContentError::Movement("skirt_budget_tiles must be positive")
         ));
     }
 

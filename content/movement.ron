@@ -16,12 +16,13 @@
 //                      around it, so at a wood's edge it sees out (D32). A
 //                      way round (a ford, a bridge, the end of a pond) is
 //                      taken only within that square. Past it the body
-//                      walks straight toward its target; an obstacle in
-//                      sight whose end it does not see, it skirts (see
-//                      skirt_budget_tiles), using only what it sees; when
-//                      that leads nowhere it says so and the player finds
-//                      the way: exploring and knowing the ways is the
-//                      game. 60 m in the open,
+//                      walks straight toward its target. Stopped before
+//                      an obstacle with no way past it in sight, it picks
+//                      a side and walks along it once, about five sixths
+//                      of its sight, and looks again there: a way seen is
+//                      taken, otherwise it stops and says so, and the
+//                      player finds the way: exploring and knowing the
+//                      ways is the game. 60 m in the open,
 //                      25 m in the heart of a wood. A body never
 //                      stands on water or rock; their values apply only to
 //                      a body put there by mistake. Every terrain must
@@ -45,21 +46,6 @@
 //                      player pilots; NPCs and animals have the rest. A
 //                      lane that does not use its part leaves it to the
 //                      other.
-// skirt_budget_tiles:  tiles a body may expand in one look when an
-//                      obstacle stops it and the way round is not in
-//                      sight: it looks within what it sees for the point
-//                      on the edge of its sight from which the target
-//                      seems nearest by the way it would walk (beside the
-//                      obstacle, or past its end), goes there and looks
-//                      again. 15000 covers all a body sees in the open
-//                      (121 x 121 tiles): a look then costs a few
-//                      milliseconds at worst, within the work above.
-// skirt_looks:         looks a body may take skirting obstacles for one
-//                      order; then it gives up and says it is blocked. It
-//                      gives up sooner when every point on the edge of
-//                      its sight is ground it has already looked over for
-//                      that order: it never circles at the bottom of a
-//                      bay, nor walks back past where it has been.
 (
     carry_capacity_g: 20000,
     speed_percent_at_full_load: 60,
@@ -75,8 +61,6 @@
     path_budget_tiles: 1500,
     search_work_per_tick: 60000,
     player_share_percent: 50,
-    skirt_budget_tiles: 15000,
-    skirt_looks: 24,
     terrain_costs: {
         grass: Some(10),
         forest: Some(15),

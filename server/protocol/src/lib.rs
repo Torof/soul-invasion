@@ -74,7 +74,10 @@ use serde::{Deserialize, Serialize};
 /// - v21: `move_refused` carries a `reason`, as `body_blocked` does: a new
 ///   order that cannot even set off says what the body sees barring its
 ///   way (D32).
-pub const PROTOCOL_VERSION: u32 = 21;
+/// - v22: `body_thinks`, to the pilot alone: what its body thinks as it
+///   decides how to go on (D32): it skirts an obstacle to one side, it
+///   sees a way, it does not know where to go.
+pub const PROTOCOL_VERSION: u32 = 22;
 
 /// Chunks whose frames a client keeps after they left its view, the
 /// least recently hidden forgotten first (D4): about 3 MB of frames. The
@@ -187,6 +190,32 @@ pub enum Blockage {
     Rock,
     /// Nothing it may not enter right ahead, yet no way it can see.
     NoWay,
+}
+
+/// What a body thinks as it decides how to go on toward where it was
+/// sent (D32).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Thought {
+    /// No way here: it walks along the obstacle, to that side.
+    Skirting {
+        /// Which way, as it faces where it was sent.
+        side: Side,
+    },
+    /// It sees a way on and takes it.
+    WaySeen,
+    /// It sees no way and stops: it does not know where to go.
+    NoWay,
+}
+
+/// A side, as a body faces where it goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Side {
+    /// To its left.
+    Left,
+    /// To its right.
+    Right,
 }
 
 /// What a pilot knows of its own body (D34). Nobody else is told.
@@ -642,6 +671,17 @@ pub enum ServerMessage {
         y: i32,
         /// What it sees barring its way.
         reason: Blockage,
+    },
+    /// What the pilot's body thinks as it decides how to go on (D32),
+    /// about a place: where it goes, or where it stands. Sent to the pilot
+    /// alone.
+    BodyThinks {
+        /// Who.
+        body: u32,
+        /// What.
+        thought: Thought,
+        /// About where.
+        at: Point,
     },
 }
 
@@ -1247,6 +1287,26 @@ mod tests {
                 y: 5,
                 reason: Blockage::NoWay,
             },
+            ServerMessage::BodyThinks {
+                body: 1,
+                thought: Thought::Skirting { side: Side::Left },
+                at: Point { x: 7_500, y: 2_500 },
+            },
+            ServerMessage::BodyThinks {
+                body: 1,
+                thought: Thought::Skirting { side: Side::Right },
+                at: Point { x: 0, y: 0 },
+            },
+            ServerMessage::BodyThinks {
+                body: 1,
+                thought: Thought::WaySeen,
+                at: Point { x: 1, y: 2 },
+            },
+            ServerMessage::BodyThinks {
+                body: 1,
+                thought: Thought::NoWay,
+                at: Point { x: 3, y: 4 },
+            },
         ];
         for message in messages {
             let text = encode(&message).unwrap();
@@ -1313,6 +1373,24 @@ mod tests {
             })
             .unwrap(),
             r#"{"type":"body_blocked","body":1,"at":{"x":1500,"y":2500},"x":9,"y":2,"reason":"no_way"}"#
+        );
+        assert_eq!(
+            encode(&ServerMessage::BodyThinks {
+                body: 1,
+                thought: Thought::Skirting { side: Side::Right },
+                at: Point { x: 1500, y: 2500 },
+            })
+            .unwrap(),
+            r#"{"type":"body_thinks","body":1,"thought":{"kind":"skirting","side":"right"},"at":{"x":1500,"y":2500}}"#
+        );
+        assert_eq!(
+            encode(&ServerMessage::BodyThinks {
+                body: 1,
+                thought: Thought::NoWay,
+                at: Point { x: 1, y: 2 },
+            })
+            .unwrap(),
+            r#"{"type":"body_thinks","body":1,"thought":{"kind":"no_way"},"at":{"x":1,"y":2}}"#
         );
         assert_eq!(
             encode(&ServerMessage::ChunkBodies {

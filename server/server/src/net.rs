@@ -30,7 +30,8 @@ use futures_util::{SinkExt, StreamExt};
 use protocol::{
     Blockage, BodyState, ChunkFrame, ClientMessage, Clock, Condition, DeathCause, FloraView,
     ItemAct, ItemState, ItemView, MaterialView, NaturalItem, PROTOCOL_VERSION, Point, Refusal,
-    ServerMessage, SpeciesView, Standing, StoredItem, Terrain, decode, encode, encode_chunk,
+    ServerMessage, Side, SpeciesView, Standing, StoredItem, Terrain, Thought, decode, encode,
+    encode_chunk,
 };
 use sim::ground::{Ground, Version};
 use sim::lru::Lru;
@@ -2560,6 +2561,23 @@ pub fn refused_view(body: BodyId, target: Pos, reason: sim::Blockage) -> ServerM
         x: target.x,
         y: target.y,
         reason: blockage_view(reason),
+    }
+}
+
+/// What a pilot is told its body thinks as it decides how to go on (D32).
+pub fn thinks_view(body: BodyId, thought: sim::Thought, at: FinePos) -> ServerMessage {
+    let side = |side: sim::Side| match side {
+        sim::Side::Left => Side::Left,
+        sim::Side::Right => Side::Right,
+    };
+    ServerMessage::BodyThinks {
+        body: body.0,
+        thought: match thought {
+            sim::Thought::Skirting { side: s } => Thought::Skirting { side: side(s) },
+            sim::Thought::WaySeen => Thought::WaySeen,
+            sim::Thought::NoWay => Thought::NoWay,
+        },
+        at: point(at),
     }
 }
 

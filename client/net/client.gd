@@ -26,6 +26,10 @@ signal move_refused(body: int, x: int, y: int, reason: String)
 ## The piloted body stopped for good short of tile (x, y), at `at` (mm):
 ## reason: water | rock | no_way (BlockedNotice has the words).
 signal body_blocked(body: int, at: Vector2, x: int, y: int, reason: String)
+## What the piloted body thinks as it decides how to go on (protocol v22),
+## about the place `at` (mm): kind skirting (side left | right), way_seen
+## or no_way (UiWords has the words).
+signal body_thinks(body: int, kind: String, side: String, at: Vector2)
 signal body_condition(body: int, condition: Dictionary)
 signal body_sleeps(body: int, asleep: bool)
 signal body_died(body: int, cause: String)
@@ -365,6 +369,14 @@ func _handle(message: Dictionary) -> void:
 				int(message.get("x", 0)),
 				int(message.get("y", 0)),
 				str(message.get("reason", ""))
+			)
+		"body_thinks":
+			var thought: Dictionary = message.get("thought", {})
+			body_thinks.emit(
+				int(message.get("body", -1)),
+				str(thought.get("kind", "")),
+				str(thought.get("side", "")),
+				point(message.get("at", {}))
 			)
 		"day_started":
 			day_started.emit(int(message.get("day", 0)), int(message.get("tick", 0)))

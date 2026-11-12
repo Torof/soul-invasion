@@ -34,7 +34,7 @@ pub use content::{
     Content, ContentError, Food, Look, Material, MaterialKind, Movement, Needs, Spawn,
 };
 pub use map::{
-    CHUNK_SIZE, ChunkPos, FinePos, MM_PER_TILE, Map, MapSpec, Pos, Sighting, Terrain, line_clear,
+    CHUNK_SIZE, ChunkPos, FinePos, MM_PER_TILE, Map, MapSpec, Pos, Side, Terrain, line_clear,
 };
 pub use time::{Calendar, CalendarError, GameTime, Tick};
 
@@ -211,12 +211,12 @@ pub struct Body {
     /// Absent from a snapshot when there is none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     goal: Option<Goal>,
-    /// The places the body looked from while skirting an obstacle for its
-    /// current goal, with how far it saw from each (D32): ground looked
-    /// over, never again a place to look from. Cleared with the goal and
-    /// on a new order; never stored, a restart forgets it.
+    /// Where the body is in skirting an obstacle for its current order
+    /// (D32): once only, then it looks once more and goes on by a way it
+    /// sees or stops. Cleared with the goal and on a new order; never
+    /// stored, a restart forgets it.
     #[serde(skip)]
-    looked_over: map::LookedOver,
+    skirted: Skirted,
     condition: Condition,
     /// The item in hand, if any: visible to all, the tool or weapon (D35).
     held: Option<ItemId>,
@@ -618,18 +618,58 @@ pub enum Event {
         /// The corpse.
         corpse: ItemId,
     },
+    /// What a body thinks as it decides how to go on toward where it was
+    /// sent (D32), about the place `at`: where it goes, or where it
+    /// stands. Told to its pilot alone.
+    BodyThinks {
+        /// Who.
+        body: BodyId,
+        /// What.
+        thought: Thought,
+        /// About where.
+        at: FinePos,
+    },
+}
+
+/// A body's thought as it decides how to go on (D32).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Thought {
+    /// No way here: it walks along the obstacle, to that side.
+    Skirting {
+        /// Which way, as it faces its target.
+        side: Side,
+    },
+    /// It sees a way on and takes it.
+    WaySeen,
+    /// It sees no way and stops: it does not know where to go.
+    NoWay,
+}
+
+/// Where a body is in skirting an obstacle for its current order (D32).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Skirted {
+    /// It has not skirted.
+    #[default]
+    Not,
+    /// It walked along the obstacle and looks once more on arriving.
+    Along,
+    /// It saw a way on from there and took it: it skirts no more.
+    Beyond,
 }
 
 /// How a body sets off ([`World::plan_walk`]).
 enum Plan {
     /// Along a way found to the target.
     Path(Vec<FinePos>),
-    /// To a point on the edge of its sight, to look again there, with
-    /// the ground this look went over.
-    Skirt(Vec<FinePos>, map::Look),
-    /// Straight toward the target.
-    Straight(Vec<FinePos>),
-    /// Nowhere: it has skirted all it may.
+    /// Along a way found past the obstacle on its line, the target kept.
+    Past(Vec<FinePos>),
+    /// Along the obstacle, to look once more from there.
+    Skirt(Vec<FinePos>, Side),
+    /// Straight toward the target; `true` when that is a way seen on
+    /// looking once more after skirting.
+    Straight(Vec<FinePos>, bool),
+    /// Nowhere: it skirted once and sees no way.
     GiveUp,
 }
 
@@ -969,7 +1009,7 @@ impl World {
             body.at = tile.centre();
             body.route.clear();
             body.goal = None;
-            body.looked_over.clear();
+            body.skirted = Skirted::Not;
             if tile.chunk() != before {
                 self.leave_chunk(id, before);
                 self.enter_chunk(id, tile.chunk());
@@ -1257,7 +1297,7 @@ impl World {
             at: pos.centre(),
             route: VecDeque::new(),
             goal: None,
-            looked_over: map::LookedOver::default(),
+            skirted: Skirted::Not,
             condition: Condition::healthy(),
             held: None,
             carried: Vec::new(),
@@ -1486,7 +1526,7 @@ impl World {
                     c.asleep = true;
                     body.route.clear();
                     body.goal = None;
-                    body.looked_over.clear();
+                    body.skirted = Skirted::Not;
                 }
             }
             let mut cause = None;
@@ -1596,7 +1636,7 @@ impl World {
                     if !body.condition.asleep {
                         body.condition.asleep = true;
                         body.goal = None;
-                        body.looked_over.clear();
+                        body.skirted = Skirted::Not;
                         if !body.route.is_empty() {
                             body.route.clear();
                             events.push(Event::BodyStopped {
@@ -1692,7 +1732,7 @@ impl World {
         let body = &mut self.bodies[index];
         body.route.clear();
         body.goal = None;
-        body.looked_over.clear();
+        body.skirted = Skirted::Not;
         let before = body.pos().chunk();
         body.at = tile.centre();
         if tile.chunk() != before {
@@ -1879,14 +1919,14 @@ impl World {
     /// straight toward the target, stepping round a trunk or a bush in its
     /// way and stopping before the first bigger obstacle
     /// ([`Map::walk_straight`], D31), and keeps the target to look again
-    /// from there. When that obstacle is in sight, it skirts it instead
-    /// ([`Map::skirt`]): it walks to the point on the edge of its sight
-    /// from which the target seems nearest by the way it would walk, and
-    /// looks again there, never from ground it has already looked over
-    /// for this goal; when every such point is, or after the content's
-    /// `skirt_looks`, it gives up. A new order that cannot even set off is
-    /// refused, saying what the body sees barring its way, a body looking
-    /// again that cannot stops for good.
+    /// from there. Before an obstacle it sees no way past, it walks along
+    /// it once ([`Map::skirt`]) and looks once more from there: a way seen
+    /// is taken, otherwise it stops for good. It thinks aloud at each
+    /// decision ([`Event::BodyThinks`]). A new order that cannot even set
+    /// off is refused, saying what the body sees barring its way, a body
+    /// looking again that cannot stops for good.
+    // One arm for each way of setting off, each telling what it does.
+    #[allow(clippy::too_many_lines)]
     fn set_off(
         &mut self,
         index: usize,
@@ -1899,7 +1939,7 @@ impl World {
         let from = self.bodies[index].at;
         self.bodies[index].goal = None;
         if ordered {
-            self.bodies[index].looked_over.clear();
+            self.bodies[index].skirted = Skirted::Not;
         }
         let (plan, work) = self.plan_walk(index, target, rules);
         let walk_speed = rules.movement.walk_speed_cm_per_s;
@@ -1909,20 +1949,47 @@ impl World {
             route,
             speed_cm_per_s: walk_speed,
         };
+        let thinks = |thought: Thought, at: FinePos| Event::BodyThinks {
+            body: id,
+            thought,
+            at,
+        };
         match plan {
             Plan::Path(route) => {
                 let body = &mut self.bodies[index];
-                body.looked_over.clear();
+                let after_skirting = body.skirted == Skirted::Along;
+                body.skirted = Skirted::Not;
                 body.route = route.iter().copied().collect();
-                if route.is_empty() {
-                    events.push(Event::BodyStopped { body: id, at: from });
-                } else {
+                if let Some(&end) = route.last() {
                     events.push(walks(route));
+                    if after_skirting {
+                        events.push(thinks(Thought::WaySeen, end));
+                    }
+                } else {
+                    events.push(Event::BodyStopped { body: id, at: from });
                 }
             }
-            Plan::Skirt(route, look) => {
+            Plan::Past(route) => {
+                let end = *route.last().expect("a way past is a walk");
                 let body = &mut self.bodies[index];
-                body.looked_over.push(look);
+                let after_skirting = body.skirted == Skirted::Along;
+                if after_skirting {
+                    body.skirted = Skirted::Beyond;
+                }
+                body.route = route.iter().copied().collect();
+                body.goal = Some(Goal {
+                    target,
+                    looked_from: squared_mm(from, target.centre()),
+                });
+                events.push(walks(route));
+                if after_skirting {
+                    events.push(thinks(Thought::WaySeen, end));
+                }
+            }
+            Plan::Skirt(route, side) => {
+                let end = *route.last().expect("a skirt is a walk");
+                let body = &mut self.bodies[index];
+                body.skirted = Skirted::Along;
                 body.route = route.iter().copied().collect();
                 // It looks again on arriving, wherever that is.
                 body.goal = Some(Goal {
@@ -1930,18 +1997,19 @@ impl World {
                     looked_from: u64::MAX,
                 });
                 events.push(walks(route));
+                events.push(thinks(Thought::Skirting { side }, end));
             }
             Plan::GiveUp => {
-                self.bodies[index].looked_over.clear();
+                self.bodies[index].skirted = Skirted::Not;
                 self.blocked(index, target, rules, events);
             }
-            Plan::Straight(route) => {
+            Plan::Straight(route, seen) => {
                 let quarter = u64::from(MM_PER_TILE.unsigned_abs() / 4);
                 if route
                     .iter()
                     .all(|p| squared_mm(*p, from) < quarter * quarter)
                 {
-                    self.bodies[index].looked_over.clear();
+                    self.bodies[index].skirted = Skirted::Not;
                     if ordered {
                         events.push(Event::MoveRefused {
                             body: id,
@@ -1953,84 +2021,88 @@ impl World {
                     }
                     return work;
                 }
+                let end = *route.last().expect("a walk");
                 let body = &mut self.bodies[index];
+                if seen {
+                    body.skirted = Skirted::Beyond;
+                }
                 body.route = route.iter().copied().collect();
                 body.goal = Some(Goal {
                     target,
                     looked_from: squared_mm(from, target.centre()),
                 });
                 events.push(walks(route));
+                if seen {
+                    events.push(thinks(Thought::WaySeen, end));
+                }
             }
         }
         work
     }
 
     /// How a body standing where it is sets off toward `target`
-    /// ([`World::set_off`]), and the tiles its searches expanded.
+    /// ([`World::set_off`]), and the tiles its searches expanded: a way
+    /// in sight to the target; else straight on while nothing in sight
+    /// stops it; else a way in sight past the obstacle that stops the
+    /// straight walk, back to its line beyond it; else, having skirted
+    /// once, nowhere; else straight to the obstacle when it stands short
+    /// of it, and along it when it stands before it ([`Map::skirt`]).
     fn plan_walk(&self, index: usize, target: Pos, rules: &Content) -> (Plan, u32) {
         let movement = &rules.movement;
         let cost = |t: Terrain| movement.cost(t);
-        let from = self.bodies[index].at;
+        let body = &self.bodies[index];
+        let (from, skirted) = (body.at, body.skirted != Skirted::Not);
         let tile = from.tile();
         let sight = i32::try_from(self.sight_tiles_at(tile, rules)).unwrap_or(i32::MAX);
-        let mut work = 0;
-        let plan = {
-            let trunks = self.trunks();
-            let blocked = |p: Pos| trunks.blocks(p);
-            let (path, spent) = self.map.search(
-                tile,
-                target,
-                sight,
-                movement.path_budget_tiles,
-                cost,
-                blocked,
+        let trunks = self.trunks();
+        let blocked = |p: Pos| trunks.blocks(p);
+        let budget = movement.path_budget_tiles;
+        let (path, mut work) = self.map.search(tile, target, sight, budget, cost, blocked);
+        if let Some(path) = path {
+            return (
+                Plan::Path(self.map.pull_around(from, &path, cost, blocked)),
+                work,
             );
+        }
+        let straight = self
+            .map
+            .walk_straight(from, target.centre(), sight, cost, blocked);
+        let seen = |p: Pos| (p.x - tile.x).abs() <= sight && (p.y - tile.y).abs() <= sight;
+        let end = straight.last().copied().unwrap_or(from);
+        // Straight on while nothing in sight stops it; and a target seen on
+        // ground it may not enter is only walked toward.
+        if end == target.centre() || !seen(end.tile()) {
+            let seen_way = body.skirted == Skirted::Along;
+            return (Plan::Straight(straight, seen_way), work);
+        }
+        if seen(target) && self.map.get(target).and_then(cost).is_none() {
+            return (Plan::Straight(straight, false), work);
+        }
+        let open = |p: Pos| !blocked(p) && self.map.get(p).and_then(cost).is_some();
+        if !seen(target)
+            && let Some(past) = self.map.past_obstacle(end, target.centre(), sight, open)
+        {
+            let (path, spent) = self.map.search(tile, past, sight, budget, cost, blocked);
             work += spent;
-            if let Some(path) = path {
-                Plan::Path(self.map.pull_around(from, &path, cost, blocked))
-            } else {
-                let straight = self
-                    .map
-                    .walk_straight(from, target.centre(), sight, cost, blocked);
-                let looked_over = &self.bodies[index].looked_over;
-                let seen = |p: Pos| (p.x - tile.x).abs() <= sight && (p.y - tile.y).abs() <= sight;
-                let explored = |p: Pos| looked_over.contains(p);
-                let end = straight.last().copied().unwrap_or(from);
-                // Straight on while nothing in sight stops it, toward
-                // ground not looked over; and a target seen on ground it
-                // may not enter is only walked toward.
-                let clear = end == target.centre() || !seen(end.tile()) && !explored(end.tile());
-                let unwalkable = seen(target) && self.map.get(target).and_then(cost).is_none();
-                if clear || unwalkable {
-                    Plan::Straight(straight)
-                } else if !looked_over.is_empty()
-                    && looked_over.len() >= usize::try_from(movement.skirt_looks).unwrap_or(0)
-                {
-                    Plan::GiveUp
-                } else {
-                    let (sighting, look, spent) = self.map.skirt(
-                        tile,
-                        target,
-                        (sight, movement.skirt_budget_tiles),
-                        (cost, blocked),
-                        looked_over,
-                    );
-                    work += spent;
-                    match sighting {
-                        Sighting::Arrives(path) => {
-                            Plan::Path(self.map.pull_around(from, &path, cost, blocked))
-                        }
-                        Sighting::Edge(path) => {
-                            Plan::Skirt(self.map.pull_around(from, &path, cost, blocked), look)
-                        }
-                        // Nothing to skirt toward: the first time, it
-                        // walks straight to the obstacle and looks again
-                        // from there; after skirting, it gives up.
-                        Sighting::Nothing if looked_over.is_empty() => Plan::Straight(straight),
-                        Sighting::Nothing => Plan::GiveUp,
-                    }
-                }
+            if let Some(path) = path.filter(|p| !p.is_empty()) {
+                return (
+                    Plan::Past(self.map.pull_around(from, &path, cost, blocked)),
+                    work,
+                );
             }
+        }
+        if skirted {
+            return (Plan::GiveUp, work);
+        }
+        let near = u64::from(MM_PER_TILE.unsigned_abs()) * 3 / 2;
+        if squared_mm(end, from) > near * near {
+            return (Plan::Straight(straight, false), work);
+        }
+        let plan = match self.map.skirt(from, target, sight, cost, blocked) {
+            Some((side, path)) => {
+                Plan::Skirt(self.map.pull_around(from, &path, cost, blocked), side)
+            }
+            None => Plan::Straight(straight, false),
         };
         (plan, work)
     }
@@ -2051,12 +2123,12 @@ impl World {
         // Arrived: its stop was told on arrival, once, and nothing bars it.
         if self.bodies[index].at == goal.target.centre() {
             self.bodies[index].goal = None;
-            self.bodies[index].looked_over.clear();
+            self.bodies[index].skirted = Skirted::Not;
             return 0;
         }
         if squared_mm(self.bodies[index].at, goal.target.centre()) >= goal.looked_from {
             self.bodies[index].goal = None;
-            self.bodies[index].looked_over.clear();
+            self.bodies[index].skirted = Skirted::Not;
             self.blocked(index, goal.target, rules, events);
             return 0;
         }
@@ -2072,6 +2144,11 @@ impl World {
             at: body.at,
             target,
             reason: self.blockage(body.at, target.centre(), rules),
+        });
+        events.push(Event::BodyThinks {
+            body: body.id,
+            thought: Thought::NoWay,
+            at: body.at,
         });
     }
 
@@ -2764,9 +2841,12 @@ mod tests {
         // tiles, where it was the view's 288 with no budget). A ford
         // fifteen tiles aside is seen and taken; one fifty tiles aside is
         // in sight but the way round it costs more than the budget; one
-        // seventy tiles aside is out of sight. Since 12 November 2026 the
-        // body skirts the bank in both cases, looking from the edge of its
-        // sight for the best way on, and finds the ford (D32).
+        // seventy tiles aside is out of sight. Since 12 November 2026 a
+        // body stopped at the bank skirts it once, about fifty tiles to the
+        // side where the river ends sooner in sight, and looks once more:
+        // the ford fifty tiles aside is then found; the one seventy tiles
+        // aside is not, the two sides alike in sight, and the body stops
+        // after one skirt (D32).
         let river = |ford: i32| {
             let mut map = Map::filled(900, 200, Terrain::Grass);
             for x in 0..900 {
@@ -2782,17 +2862,18 @@ mod tests {
                 "a ford in sight, the way round within the budget",
             ),
             (850, true, "a ford in sight, the way round over the budget"),
-            (870, true, "a ford out of sight"),
+            (870, false, "a ford out of sight"),
         ] {
             let mut w = World::empty(Calendar::new(1, 1_000_000).unwrap(), river(ford));
             w.spawn_body(Pos::new(800, 90));
-            walk_until_done(&mut w, &rules(), Pos::new(800, 110), 20_000);
-            let expected = if reaches {
-                Pos::new(800, 110)
+            let events = walk_until_done(&mut w, &rules(), Pos::new(800, 110), 20_000);
+            let at = w.body(BodyId(1)).expect("body 1").pos();
+            if reaches {
+                assert_eq!(at, Pos::new(800, 110), "{why}");
             } else {
-                Pos::new(800, 99)
-            };
-            assert_eq!(w.body(BodyId(1)).expect("body 1").pos(), expected, "{why}");
+                assert_eq!(blocks(&events).len(), 1, "{why}");
+                assert!(at.y == 99 && (at.x - 800).abs() <= 50, "{why}: {at:?}");
+            }
         }
     }
 
@@ -2801,12 +2882,15 @@ mod tests {
         // Found in play (12 November 2026): the body already at the bank,
         // a click across the river refused at once said nothing. It says
         // what it sees barring its way, as a blocked body does (D32).
-        // The river runs across a map smaller than the body's sight, so
-        // there is no bank out of sight to skirt along either.
+        // The body stands on a rock in the river, a single tile: no bank
+        // to skirt along either (D32).
         let mut map = Map::filled(100, 100, Terrain::Grass);
-        for x in 0..100 {
-            map.set(Pos::new(x, 50), Terrain::Water);
+        for y in 45..=55 {
+            for x in 0..100 {
+                map.set(Pos::new(x, y), Terrain::Water);
+            }
         }
+        map.set(Pos::new(50, 49), Terrain::Grass);
         let mut w = World::empty(Calendar::new(1, 1_000_000).unwrap(), map);
         w.spawn_body(Pos::new(50, 49));
         go(&mut w, Pos::new(50, 60));
@@ -2879,23 +2963,21 @@ mod tests {
     fn sight_follows_the_ground_around_the_body() {
         // The same ground: from the grass (sight 60) the way round the
         // water is seen and taken at once; from the heart of a wood (sight
-        // 25) the target is out of sight, the water in sight: the body
-        // skirts it to the edge of its sight, then looks again from there
-        // and goes round (12 November 2026).
+        // 25) the target is out of sight, but the water's end is not: the
+        // body goes round it back to its line beyond the water, then on
+        // (12 November 2026).
         let mut rules = rules();
         rules.movement.path_budget_tiles = u32::MAX;
         let (mut w, target) = walled_field(Terrain::Grass);
         assert!(first_route(&mut w, &rules, target).len() > 1, "a way round");
         assert_eq!(walk_with(&mut w, &rules, target), target, "round the water");
         let (mut w, target) = walled_field(Terrain::Forest);
-        let edge = first_route(&mut w, &rules, target)
-            .last()
-            .expect("a walk")
-            .tile();
+        let route = first_route(&mut w, &rules, target);
+        assert!(route.len() > 1, "round the water's end");
         assert_eq!(
-            (edge.x - 20).abs().max((edge.y - 40).abs()),
-            25,
-            "to the edge of its sight"
+            route.last(),
+            Some(&FinePos::new(41_500, 40_500)),
+            "back on its line"
         );
         let mut events = Vec::new();
         for _ in 0..500 {
@@ -2959,9 +3041,9 @@ mod tests {
     fn stopped_by_a_wall_the_body_looks_again_and_goes_round() {
         // A wall of water seventy tiles long, from the map's edge, its end
         // eight tiles aside of the way; the target eighty tiles off, out of
-        // sight. The wall and its end in sight, the body skirts it to the
-        // edge of its sight beyond the wall's end, looks again from there,
-        // sees the target and goes on.
+        // sight. The wall's end in sight, the body goes round it back to
+        // its line beyond the wall (12 November 2026), looks again from
+        // there, sees the target and goes on.
         let rules = rules();
         let mut map = Map::filled(140, 140, Terrain::Grass);
         for y in 0..=70 {
@@ -2970,14 +3052,13 @@ mod tests {
         let mut w = World::empty(Calendar::new(10, 1_000_000).unwrap(), map);
         w.spawn_body(Pos::new(20, 62));
         let target = Pos::new(100, 62);
-        let edge = first_route(&mut w, &rules, target)
-            .last()
-            .expect("a walk")
-            .tile();
-        assert!(
-            edge.x == 80 && edge.y > 70,
-            "round the wall's end to the edge of sight: {edge:?}"
+        let route = first_route(&mut w, &rules, target);
+        assert_eq!(
+            route.last(),
+            Some(&FinePos::new(71_500, 62_500)),
+            "past the wall"
         );
+        assert!(route.len() > 1, "round its end");
         let mut events = Vec::new();
         for _ in 0..2000 {
             w.step(&rules, &mut events);
@@ -2986,14 +3067,15 @@ mod tests {
             .iter()
             .filter(|e| matches!(e, Event::BodyWalks { .. }))
             .count();
-        assert_eq!(walks, 1, "one look again, from the edge of sight");
+        assert_eq!(walks, 1, "one look again, past the wall");
         assert_eq!(w.body(BodyId(1)).expect("body 1").pos(), target);
     }
 
     #[test]
     fn a_body_looks_again_only_from_nearer() {
         // A target walled in: the body walks straight to the wall, looks
-        // again once, finds nothing nearer to walk to and stops for good.
+        // again, finds no way, skirts the wall once, looks once more from
+        // there and stops for good: no second skirt.
         let rules = rules();
         let mut map = Map::filled(60, 60, Terrain::Grass);
         for i in 35..=45 {
@@ -3009,13 +3091,18 @@ mod tests {
         for _ in 0..1000 {
             w.step(&rules, &mut events);
         }
+        let walks = events
+            .iter()
+            .filter(|e| matches!(e, Event::BodyWalks { .. }))
+            .count();
+        assert_eq!(walks, 1, "one skirt along the wall");
         assert!(
             !events
                 .iter()
-                .any(|e| matches!(e, Event::BodyWalks { .. } | Event::MoveRefused { .. }))
+                .any(|e| matches!(e, Event::MoveRefused { .. }))
         );
         let body = w.body(BodyId(1)).expect("body 1");
-        assert_eq!((body.pos(), body.goal), (Pos::new(34, 40), None));
+        assert_eq!((body.goal, body.skirted), (None, Skirted::Not));
         // Stopped no nearer than where it last looked (pushed back, say):
         // it does not look again. From nearer, it does.
         for (looked_from, looks) in [(0, false), (u64::MAX, true)] {
@@ -3071,11 +3158,12 @@ mod tests {
             for _ in 0..1000 {
                 w.step(&rules, &mut events);
             }
-            let stop = FinePos::new(34_700, 40_500);
+            // At the end of its one skirt along the wall.
+            let stop = w.body(BodyId(1)).expect("body 1").at;
             assert_eq!(blocks(&events), vec![(stop, target, reason)], "{wall:?}");
             let stopped = events
                 .iter()
-                .position(|e| matches!(e, Event::BodyStopped { .. }))
+                .rposition(|e| matches!(e, Event::BodyStopped { .. }))
                 .expect("it stops");
             let blocked = events
                 .iter()
@@ -3149,7 +3237,6 @@ mod tests {
         let (mut w, target) = walled_field(Terrain::Grass);
         assert_eq!(walk_with(&mut w, &rules, target), target);
         rules.movement.path_budget_tiles = 100;
-        rules.movement.skirt_budget_tiles = 100;
         let (mut w, target) = walled_field(Terrain::Grass);
         assert_eq!(walk_with(&mut w, &rules, target), Pos::new(39, 40));
     }
@@ -3313,111 +3400,186 @@ mod tests {
         events
     }
 
-    #[test]
-    fn a_body_walks_along_a_lake_wider_than_its_sight_to_the_target_behind() {
-        // A lake 281 tiles wide, its ends out of sight (60): the target
-        // 110 tiles off, behind it. The body skirts the shore, looking
-        // again at the edge of its sight each time, rounds the lake's end
-        // and arrives; never in the water.
-        let rules = rules();
-        let mut map = Map::filled(400, 300, Terrain::Grass);
-        for y in 100..=180 {
-            for x in 60..=340 {
-                map.set(Pos::new(x, y), Terrain::Water);
-            }
-        }
-        let mut w = World::empty(Calendar::new(10, 1_000_000).unwrap(), map);
-        w.spawn_body(Pos::new(150, 90));
-        let target = Pos::new(160, 200);
-        let events = walk_until_done(&mut w, &rules, target, 20_000);
-        assert_eq!(blocks(&events), vec![], "never blocked");
-        assert_eq!(w.body(BodyId(1)).expect("body 1").pos(), target);
-        let looks = walkers(&events).len();
-        assert!((3..=10).contains(&looks), "{looks} walks");
-        for e in &events {
-            if let Event::BodyWalks { from, route, .. } = e {
-                let mut a = *from;
-                for b in route {
-                    assert!(
-                        line_clear(a, *b, |p| p == a.tile()
-                            || w.map().get(p) != Some(Terrain::Water)),
-                        "{a:?} to {b:?} crosses the lake"
-                    );
-                    a = *b;
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn a_body_in_a_dead_end_bay_gives_up_without_circling() {
-        // A water wall across the whole map, a bay cut into it 90 tiles
-        // deep, the target behind the wall: no way at all. The body
-        // walks into the bay, looks, skirts back out and along the wall,
-        // never looking twice from the same ground, and gives up, said
-        // once.
-        let rules = rules();
-        let mut map = Map::filled(300, 300, Terrain::Grass);
-        for y in 150..=155 {
-            for x in 0..300 {
-                map.set(Pos::new(x, y), Terrain::Water);
-            }
-        }
-        for y in 60..150 {
-            map.set(Pos::new(140, y), Terrain::Water);
-            map.set(Pos::new(160, y), Terrain::Water);
-        }
-        let mut w = World::empty(Calendar::new(10, 1_000_000).unwrap(), map);
-        w.spawn_body(Pos::new(150, 40));
-        let target = Pos::new(150, 250);
-        let events = walk_until_done(&mut w, &rules, target, 50_000);
-        assert_eq!(blocks(&events).len(), 1, "gives up, said once");
-        let body = w.body(BodyId(1)).expect("body 1");
-        assert_eq!((body.goal, body.looked_over.len()), (None, 0));
-        let looks: Vec<Pos> = events
+    /// Body 1's thoughts among `events`, in order.
+    fn thoughts(events: &[Event]) -> Vec<Thought> {
+        events
             .iter()
             .filter_map(|e| match e {
-                Event::BodyWalks { from, .. } => Some(from.tile()),
+                Event::BodyThinks {
+                    body: BodyId(1),
+                    thought,
+                    ..
+                } => Some(*thought),
                 _ => None,
             })
-            .collect();
-        assert!(
-            looks.len() <= rules.movement.skirt_looks as usize + 2,
-            "{looks:?}"
-        );
-        for (i, a) in looks.iter().enumerate() {
-            for b in &looks[i + 1..] {
-                assert!(
-                    (a.x - b.x).abs().max((a.y - b.y).abs()) > 5,
-                    "looked twice from about {a:?}: {looks:?}"
-                );
+            .collect()
+    }
+
+    /// A lake from the map's west edge to x = 180, from y = 100 to 250,
+    /// and a body at (150, 80) sent to (150, 280), behind it, out of
+    /// sight; its east end within sight of the bank, its far shore not.
+    fn lake_with_one_end_in_sight() -> (World, Pos) {
+        let mut map = Map::filled(300, 300, Terrain::Grass);
+        for y in 100..=250 {
+            for x in 0..=180 {
+                map.set(Pos::new(x, y), Terrain::Water);
             }
+        }
+        let mut w = World::empty(Calendar::new(10, 1_000_000).unwrap(), map);
+        w.spawn_body(Pos::new(150, 80));
+        (w, Pos::new(150, 280))
+    }
+
+    #[test]
+    fn at_an_obstacle_with_no_way_in_sight_the_body_skirts_toward_its_end() {
+        // The body walks straight to the shore, sees no way past the lake
+        // and walks along it toward the end it sees (to its left, facing
+        // the target), some fifty tiles, staying by the water.
+        let rules = rules();
+        let (mut w, target) = lake_with_one_end_in_sight();
+        go(&mut w, target);
+        let mut events = Vec::new();
+        let mut skirt = None;
+        for _ in 0..2000 {
+            w.step(&rules, &mut events);
+            skirt = events.iter().find_map(|e| match e {
+                Event::BodyWalks { from, route, .. } if from.tile().y == 99 => {
+                    Some((*from, route.clone()))
+                }
+                _ => None,
+            });
+            if skirt.is_some() {
+                break;
+            }
+        }
+        let (from, route) = skirt.expect("it skirts from the shore");
+        assert_eq!(
+            thoughts(&events),
+            vec![Thought::Skirting { side: Side::Left }]
+        );
+        let end = route.last().expect("a walk").tile();
+        assert!(end.x > from.tile().x, "toward the lake's east end: {end:?}");
+        let along = (end.x - from.tile().x)
+            .abs()
+            .max((end.y - from.tile().y).abs());
+        assert!(
+            (30..=50).contains(&along),
+            "about fifty tiles along: {end:?}"
+        );
+        for p in &route {
+            let t = p.tile();
+            let by_water = (-3..=3).any(|dy| {
+                (-3..=3).any(|dx| w.map().get(Pos::new(t.x + dx, t.y + dy)) == Some(Terrain::Water))
+            });
+            assert!(by_water, "{t:?} stays by the water");
         }
     }
 
     #[test]
-    fn a_body_walks_along_a_river_to_a_ford_beyond_its_sight() {
-        // A river across the whole map, its only ford 200 tiles down the
-        // bank, far out of sight; the target just across, in sight. The
-        // body walks along the bank, finds the ford, crosses and arrives.
+    fn after_one_skirt_with_no_way_seen_the_body_stops_and_says_it() {
+        // The same lake: from the end of its skirt the far shore is still
+        // out of sight. It looks once more, sees no way, stops for good
+        // and says so: no second skirt, no wandering.
         let rules = rules();
-        let mut map = Map::filled(200, 400, Terrain::Grass);
-        for y in 0..400 {
-            for x in 100..=104 {
+        let (mut w, target) = lake_with_one_end_in_sight();
+        go(&mut w, target);
+        let mut events = Vec::new();
+        for _ in 0..5000 {
+            w.step(&rules, &mut events);
+        }
+        assert_eq!(blocks(&events).len(), 1, "stops once, for good");
+        assert_eq!(
+            thoughts(&events),
+            vec![Thought::Skirting { side: Side::Left }, Thought::NoWay]
+        );
+        let walks = events
+            .iter()
+            .filter(|e| matches!(e, Event::BodyWalks { .. }))
+            .count();
+        assert_eq!(walks, 2, "to the shore, then along it once");
+        let body = w.body(BodyId(1)).expect("body 1");
+        assert_eq!((body.goal, body.skirted), (None, Skirted::Not));
+        let blocked = events
+            .iter()
+            .position(|e| matches!(e, Event::BodyBlocked { .. }))
+            .expect("blocked");
+        assert!(
+            matches!(
+                events[blocked + 1],
+                Event::BodyThinks {
+                    thought: Thought::NoWay,
+                    ..
+                }
+            ),
+            "it thinks it right after"
+        );
+    }
+
+    #[test]
+    fn from_the_end_of_its_skirt_the_body_takes_a_ford_it_sees() {
+        // A river across the whole map, its ford 70 tiles east of where
+        // the body meets it: out of sight from there. The target lies a
+        // little east, across, out of sight. The body skirts east (the
+        // bank toward the target), sees the ford from the end of its skirt,
+        // crosses and arrives; it thinks "skirting", then "a way seen",
+        // and nothing more.
+        let rules = rules();
+        let mut map = Map::filled(400, 300, Terrain::Grass);
+        for y in 100..=104 {
+            for x in 0..400 {
                 map.set(Pos::new(x, y), Terrain::Water);
             }
-        }
-        for y in 300..=303 {
-            for x in 100..=104 {
+            for x in 268..=272 {
                 map.set(Pos::new(x, y), Terrain::Ford);
             }
         }
         let mut w = World::empty(Calendar::new(10, 1_000_000).unwrap(), map);
-        w.spawn_body(Pos::new(90, 100));
-        let target = Pos::new(115, 110);
-        let events = walk_until_done(&mut w, &rules, target, 50_000);
+        w.spawn_body(Pos::new(200, 90));
+        let target = Pos::new(230, 200);
+        go(&mut w, target);
+        let mut events = Vec::new();
+        for _ in 0..10_000 {
+            w.step(&rules, &mut events);
+            if w.body(BodyId(1)).expect("body 1").pos() == target && blocks(&events).is_empty() {
+                break;
+            }
+        }
         assert_eq!(blocks(&events), vec![], "never blocked");
         assert_eq!(w.body(BodyId(1)).expect("body 1").pos(), target);
+        assert_eq!(
+            thoughts(&events),
+            vec![Thought::Skirting { side: Side::Left }, Thought::WaySeen]
+        );
+    }
+
+    #[test]
+    fn thoughts_come_in_the_order_of_the_decisions() {
+        // Each thought follows the walk it decides, at the place it is
+        // about: skirting at the end of the skirt, the stop where it
+        // stands.
+        let rules = rules();
+        let (mut w, target) = lake_with_one_end_in_sight();
+        go(&mut w, target);
+        let mut events = Vec::new();
+        for _ in 0..5000 {
+            w.step(&rules, &mut events);
+        }
+        let mut last_walk_end = None;
+        let mut seen = Vec::new();
+        for e in &events {
+            match e {
+                Event::BodyWalks { route, .. } => last_walk_end = route.last().copied(),
+                Event::BodyThinks { thought, at, .. } => {
+                    match thought {
+                        Thought::Skirting { .. } => assert_eq!(Some(*at), last_walk_end),
+                        _ => assert_eq!(*at, w.body(BodyId(1)).expect("body 1").at),
+                    }
+                    seen.push(*thought);
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(seen.len(), 2);
     }
 
     #[test]
