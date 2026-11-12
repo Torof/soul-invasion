@@ -51,6 +51,18 @@ Every image obeys it, so that it has a place, a scale and an anchor the day it i
 3. **Animals and characters are cut-out puppets** (parts moved by the engine), never frame-by-frame animation.
 4. **Only the species of the region in view are held in video memory**: a species' images are loaded when it comes into the region seen, and freed when it leaves. Coded on 11 November 2026 (D39, "the tree images follow the chunks held"): a kind's images are read on a worker thread when the first chunk held has a tree of it, counted by the chunks that hold it (parked ones included), and freed thirty seconds after the last let it go.
 5. **Shipped images are kept in git as lossless WebP** (12 November 2026, lightness plan E3): the very pixels of a PNG, transparent ones included, about 30 % lighter in the repository and in its history; Godot imports them the same (the imported textures were identical byte for byte). `content/tools/flora_art.py` writes WebP; `client/tools/webp_same_pixels.py` compares every WebP with the PNG it replaced. One exception: a greyscale image (`water_streaks_02_summer.png`) stays PNG, since WebP has no grey and its texture would weigh three times more.
+6. **A video-memory budget per category, about 184 MB a season** (12 November 2026, lightness plan E4; D39). What the game's images and fields hold on the graphics card, the current season only, at the worst place and any zoom, measured by F3's texture memory. **Every new image states its category and stays within it**: an image that would push its category over asks first for a lighter way (weight rules 1 to 4) or for the project lead's decision to move the line. The screen's own buffers (they follow the screen's size) are not counted.
+
+| Category | What it holds today (F3, 11 November 2026, and the imported textures) | **Budget** | What keeps it there |
+|---|---|---|---|
+| Trees | 9.6 MB at zoom 0.4, 25.9 MB from 0.8 (the forest heart, 6 kinds held, the ones on screen whole: E2); all 20 images whole would be 64.5 MB | **64 MB** | only the region's kinds (rule 4), the finest level only up close (D39, E2) |
+| Plants and decorations | the flora's atlas 6.5 MB, the 39 decorations 0.8 MB: 7.3 MB | **16 MB** | one atlas per biome and season, the region's only |
+| Ground | the 5 grass textures, 6.7 MB | **24 MB** | the terrains of the region held, at most about 16 (1.4 MB each), blended two or three at a pixel (D39) |
+| Water | 7 textures (water, banks, brook beds, streaks) 8.3 MB, the meshes held 4.5–6.7 MB (`eau-finale`): about 15 MB at a river | **16 MB** | the meshes follow the chunks built, never the river's length |
+| Bodies and animals (to come) | nothing yet | **24 MB** | cut-out puppets (rule 3), the region's species (a puppet about 0.5–1.5 MB) |
+| Buildings and items (to come) | nothing yet | **24 MB** | one culture's set at a time (a 3×3 hut about 1.5 MB) |
+| UI, fields and effects | small fixed grids (the ground index, the fog), not yet measured apart | **16 MB** | grids of fixed size, never growing with the map (D39) |
+| **Total** | about 55 MB at the forest heart | **184 MB** | fits a 2 GB graphics card with room |
 
 **Identity: a cartoon, pretty and readable before realistic.** Heights and proportions follow D40, but where realism and a clear, pleasant image disagree, the image wins.
 
