@@ -1,5 +1,5 @@
 {
-	"alder_adult_01_summer.png": {
+	"alder_adult_01_summer.webp": {
 		"covered": 0.63,
 		"image": [
 			1212,
@@ -76,7 +76,7 @@
 			2257
 		]
 	},
-	"alder_adult_02_summer.png": {
+	"alder_adult_02_summer.webp": {
 		"covered": 0.711,
 		"image": [
 			1276,
@@ -153,7 +153,7 @@
 			2257
 		]
 	},
-	"ash_adult_01_summer.png": {
+	"ash_adult_01_summer.webp": {
 		"covered": 0.643,
 		"image": [
 			1420,
@@ -230,7 +230,7 @@
 			2719
 		]
 	},
-	"ash_adult_02_summer.png": {
+	"ash_adult_02_summer.webp": {
 		"covered": 0.57,
 		"image": [
 			1288,
@@ -307,7 +307,7 @@
 			2791
 		]
 	},
-	"birch_adult_01_summer.png": {
+	"birch_adult_01_summer.webp": {
 		"covered": 0.61,
 		"image": [
 			616,
@@ -384,7 +384,7 @@
 			2257
 		]
 	},
-	"birch_adult_02_summer.png": {
+	"birch_adult_02_summer.webp": {
 		"covered": 0.583,
 		"image": [
 			708,
@@ -461,7 +461,7 @@
 			2257
 		]
 	},
-	"hazel_adult_01_summer.png": {
+	"hazel_adult_01_summer.webp": {
 		"covered": 0.704,
 		"image": [
 			960,
@@ -538,7 +538,7 @@
 			1190
 		]
 	},
-	"hazel_adult_02_summer.png": {
+	"hazel_adult_02_summer.webp": {
 		"covered": 0.703,
 		"image": [
 			792,
@@ -615,7 +615,7 @@
 			1190
 		]
 	},
-	"linden_adult_01_summer.png": {
+	"linden_adult_01_summer.webp": {
 		"covered": 0.669,
 		"image": [
 			1604,
@@ -692,7 +692,7 @@
 			2326
 		]
 	},
-	"linden_adult_02_summer.png": {
+	"linden_adult_02_summer.webp": {
 		"covered": 0.632,
 		"image": [
 			1548,
@@ -769,7 +769,7 @@
 			2410
 		]
 	},
-	"oak_adult_01_summer.png": {
+	"oak_adult_01_summer.webp": {
 		"covered": 0.679,
 		"image": [
 			1624,
@@ -846,7 +846,7 @@
 			2413
 		]
 	},
-	"oak_adult_02_summer.png": {
+	"oak_adult_02_summer.webp": {
 		"covered": 0.603,
 		"image": [
 			1464,
@@ -923,7 +923,7 @@
 			2496
 		]
 	},
-	"pine_adult_01_summer.png": {
+	"pine_adult_01_summer.webp": {
 		"covered": 0.522,
 		"image": [
 			1136,
@@ -1000,7 +1000,7 @@
 			2660
 		]
 	},
-	"pine_adult_02_summer.png": {
+	"pine_adult_02_summer.webp": {
 		"covered": 0.612,
 		"image": [
 			1096,
@@ -1077,7 +1077,7 @@
 			2660
 		]
 	},
-	"wild_apple_adult_01_summer.png": {
+	"wild_apple_adult_01_summer.webp": {
 		"covered": 0.71,
 		"image": [
 			896,
@@ -1154,7 +1154,7 @@
 			1303
 		]
 	},
-	"wild_apple_adult_02_summer.png": {
+	"wild_apple_adult_02_summer.webp": {
 		"covered": 0.688,
 		"image": [
 			1036,
@@ -1231,7 +1231,7 @@
 			1303
 		]
 	},
-	"willow_adult_01_summer.png": {
+	"willow_adult_01_summer.webp": {
 		"covered": 0.738,
 		"image": [
 			1280,
@@ -1308,7 +1308,7 @@
 			1843
 		]
 	},
-	"willow_adult_02_summer.png": {
+	"willow_adult_02_summer.webp": {
 		"covered": 0.741,
 		"image": [
 			1264,
@@ -1385,7 +1385,7 @@
 			1843
 		]
 	},
-	"yew_adult_01_summer.png": {
+	"yew_adult_01_summer.webp": {
 		"covered": 0.703,
 		"image": [
 			1032,
@@ -1462,7 +1462,7 @@
 			1843
 		]
 	},
-	"yew_adult_02_summer.png": {
+	"yew_adult_02_summer.webp": {
 		"covered": 0.603,
 		"image": [
 			1292,

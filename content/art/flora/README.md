@@ -1,7 +1,7 @@
 # flora
 
 The shrubs, plants and mushrooms of `content/flora.ron`, in one atlas
-(`atlas.png`), with each image's rectangle in `atlas.json` (`<id>_<nn>`):
+(`atlas.webp`), with each image's rectangle in `atlas.json` (`<id>_<nn>`):
 one texture for the whole flora, so the client draws it in a few draw
 calls (D39). Two images a kind; the client picks one by the plant's place.
 

@@ -14,7 +14,7 @@ func _init() -> void:
 	var out := {}
 	var files := PackedStringArray()
 	for file in DirAccess.get_files_at(Trees.DIR):
-		if file.ends_with(".png"):
+		if file.ends_with(".webp"):
 			files.append(file)
 	files.sort()
 	print("| image | texels | opaque | quad before | outline | vertices |")

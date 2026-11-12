@@ -604,7 +604,7 @@ static func decor_textures(kind: String) -> Array:
 	if not _decor.has(kind):
 		var found: Array = []
 		for n in range(1, 40):
-			var path := "%s%s_%02d.png" % [DECOR_DIR, kind, n]
+			var path := "%s%s_%02d.webp" % [DECOR_DIR, kind, n]
 			if ResourceLoader.exists(path) or FileAccess.file_exists(path):
 				var texture := load_texture(path)
 				if texture != null:
@@ -879,7 +879,7 @@ func show_plants(plants: PackedInt32Array, flora: Array, with_ground := false) -
 var _plants_due: Array = []
 
 
-const FLORA_ATLAS := "res://art/flora/atlas.png"
+const FLORA_ATLAS := "res://art/flora/atlas.webp"
 const FLORA_RECTS := "res://art/flora/atlas.json"
 ## From this height, in metres, a plant stands among the trees and the
 ## bodies, sorted by its foot (WorldView: a bramble hides a body behind

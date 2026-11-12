@@ -13,7 +13,7 @@ The charter says: do little, but very well; ship early; depth before size. Miles
 - **Elements, the method that works** (8 November 2026): the style reference is kept (without it Midjourney loses both the style and the three-quarter view); it adds things around the element (a patch of ground, a shadow, bushes at the foot), so the image chosen is opened in Midjourney's **edit** mode and what is wrong is removed (asking to keep every colour exactly as it is: the edit tends to shift them); then it is cut out of its plain background. Prompts start with the isolation ("a single isolated …, nothing else in the image").
 - **Style reference** mandatory in every prompt: `--sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png` (`content/references/style-ref-01.png`).
 - Every validated image lives in `content/art/` (content, CC BY-NC-SA 4.0) **at the size the game uses**, with a note beside it giving its prompt and date. Midjourney sources stay out of the repository.
-- File names say what and when: `oak_adult_summer.png`, `ground_grass_01_summer.png`. One season for now; the others will come as `_autumn`, `_winter`, `_spring`.
+- File names say what and when: `oak_adult_01_summer.webp`, `ground_grass_01_summer.webp`. One season for now; the others will come as `_autumn`, `_winter`, `_spring`.
 
 ## 3. The rendering: 2D isometric, confirmed (6 November 2026)
 
@@ -50,6 +50,7 @@ Every image obeys it, so that it has a place, a scale and an anchor the day it i
 2. **One image per season, made in advance and shipped with the game**; only the current season is held in video memory.
 3. **Animals and characters are cut-out puppets** (parts moved by the engine), never frame-by-frame animation.
 4. **Only the species of the region in view are held in video memory**: a species' images are loaded when it comes into the region seen, and freed when it leaves. Coded on 11 November 2026 (D39, "the tree images follow the chunks held"): a kind's images are read on a worker thread when the first chunk held has a tree of it, counted by the chunks that hold it (parked ones included), and freed thirty seconds after the last let it go.
+5. **Shipped images are kept in git as lossless WebP** (12 November 2026, lightness plan E3): the very pixels of a PNG, transparent ones included, about 30 % lighter in the repository and in its history; Godot imports them the same (the imported textures were identical byte for byte). `content/tools/flora_art.py` writes WebP; `client/tools/webp_same_pixels.py` compares every WebP with the PNG it replaced. One exception: a greyscale image (`water_streaks_02_summer.png`) stays PNG, since WebP has no grey and its texture would weigh three times more.
 
 **Identity: a cartoon, pretty and readable before realistic.** Heights and proportions follow D40, but where realism and a clear, pleasant image disagree, the image wins.
 
