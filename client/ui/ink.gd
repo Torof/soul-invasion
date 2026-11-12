@@ -15,25 +15,38 @@ const WOBBLE := 0.7
 
 
 ## Fills `points` (a closed shape) with `fill` and outlines it in ink,
-## straying `wobble` pixels at most.
+## straying `wobble` pixels at most, the line `width` wide.
 static func shape(item: CanvasItem, points: PackedVector2Array, fill: Color, alpha: float = 1.0,
-		wobble: float = WOBBLE) -> void:
+		wobble: float = WOBBLE, width: float = LINE_WIDTH) -> void:
 	item.draw_colored_polygon(points, Color(fill, alpha))
-	outline(item, points, alpha, wobble)
+	outline(item, points, alpha, wobble, width)
 
 
 ## The ink line round a closed shape, wobbling a little.
 static func outline(item: CanvasItem, points: PackedVector2Array, alpha: float = 1.0,
-		wobble: float = WOBBLE) -> void:
+		wobble: float = WOBBLE, width: float = LINE_WIDTH) -> void:
 	var line := wobbled(points, wobble)
 	line.append(line[0])
-	item.draw_polyline(line, Color(INK, alpha), LINE_WIDTH, true)
+	item.draw_polyline(line, Color(INK, alpha), width, true)
 
 
 ## A circle filled and outlined.
 static func circle(item: CanvasItem, centre: Vector2, radius: float, fill: Color, alpha: float = 1.0,
-		wobble: float = WOBBLE) -> void:
-	shape(item, arc(centre, radius, 0.0, TAU, maxi(12, int(radius * 2.0))), fill, alpha, wobble)
+		wobble: float = WOBBLE, width: float = LINE_WIDTH) -> void:
+	shape(item, oval(Rect2(centre - Vector2(radius, radius), Vector2(radius, radius) * 2.0)),
+			fill, alpha, wobble, width)
+
+
+## An oval filling `rect`, enough points for a smooth line at its size.
+static func oval(rect: Rect2) -> PackedVector2Array:
+	var points := PackedVector2Array()
+	var centre := rect.get_center()
+	var r := rect.size / 2.0
+	var steps := clampi(int((r.x + r.y) * 1.2), 12, 160)
+	for i in steps:
+		var a := TAU * float(i) / float(steps)
+		points.append(centre + Vector2(cos(a) * r.x, sin(a) * r.y))
+	return points
 
 
 ## The points along an arc (angles in radians, screen y down).

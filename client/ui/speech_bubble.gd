@@ -2,7 +2,8 @@ class_name SpeechBubble
 extends BubbleStack
 ## What is said, top left: classic comic speech bubbles on cream paper
 ## outlined in ink, the speaker's name on top, the tail pointing down,
-## stacked as a thread (BubbleStack). Nothing in the game speaks yet:
+## stacked as a thread (BubbleStack); left alone, a small speech bubble
+## stays in the corner. Nothing in the game speaks yet:
 ## HUD.say is the way in, for players and NPCs later.
 
 const FONT_SIZE := 17
@@ -42,11 +43,11 @@ func _box_size(entry: Dictionary, factor: float, is_folded: bool) -> Vector2:
 	return inner + PAD * factor * 2.0
 
 
-func _paint(entry: Dictionary, rect: Rect2, factor: float, paper: Color, alpha: float,
-		is_folded: bool, _last: bool) -> void:
+func _paint(canvas: CanvasItem, entry: Dictionary, rect: Rect2, factor: float, paper: Color,
+		alpha: float, is_folded: bool, _last: bool) -> void:
 	var box := Rect2(rect.position, _box_size(entry, factor, is_folded))
 	var tail_x := 26.0 * factor
-	Ink.shape(self, Ink.rounded(box, CORNER * factor, tail_x, 16.0 * factor,
+	Ink.shape(canvas, Ink.rounded(box, CORNER * factor, tail_x, 16.0 * factor,
 			Vector2(box.position.x + tail_x - 6.0 * factor, box.end.y + TAIL * factor)), paper, alpha)
 	var font := ThemeDB.fallback_font
 	var ink := Color(Ink.INK, alpha)
@@ -56,11 +57,18 @@ func _paint(entry: Dictionary, rect: Rect2, factor: float, paper: Color, alpha: 
 		var name_size := roundi(NAME_SIZE * factor)
 		var speaker := str(entry["speaker"])
 		var at := box.position + PAD * factor + Vector2(0, font.get_ascent(name_size))
-		draw_string(font, at, speaker, HORIZONTAL_ALIGNMENT_LEFT, -1, name_size, ink)
+		canvas.draw_string(font, at, speaker, HORIZONTAL_ALIGNMENT_LEFT, -1, name_size, ink)
 		# The name underlined in ink, as a comic's caption.
 		var name_width := font.get_string_size(speaker, HORIZONTAL_ALIGNMENT_LEFT, -1, name_size).x
-		draw_line(at + Vector2(0, 3), at + Vector2(name_width, 3), ink, 1.5, true)
+		canvas.draw_line(at + Vector2(0, 3), at + Vector2(name_width, 3), ink, 1.5, true)
 		text_y += font.get_height(name_size) + NAME_GAP * factor
 	var text_at := Vector2(box.position.x + PAD.x * factor, text_y + font.get_ascent(font_size))
-	draw_multiline_string(font, text_at, str(entry["text"]), HORIZONTAL_ALIGNMENT_LEFT,
+	canvas.draw_multiline_string(font, text_at, str(entry["text"]), HORIZONTAL_ALIGNMENT_LEFT,
 			-1.0 if is_folded else TEXT_WIDTH * factor, font_size, -1, ink)
+
+
+## A small speech bubble, its tail down on the left.
+func _paint_icon(rect: Rect2, paper: Color, alpha: float) -> void:
+	var box := Rect2(rect.position + Vector2(1, 1), Vector2(25, 15))
+	Ink.shape(self, Ink.rounded(box, 5.0, 5.0, 5.0, Vector2(box.position.x + 4.0, rect.end.y - 1.0)),
+			paper, alpha, Ink.WOBBLE * 0.5, 1.6)

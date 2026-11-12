@@ -79,7 +79,10 @@ func _init() -> void:
 	_test_a_refused_order_says_why_in_a_thought()
 	_test_a_thread_keeps_its_last_twenty_and_shows_three_newest_last()
 	_test_a_thread_scrolls_back_to_the_oldest_and_down_to_the_newest()
+	_test_the_focus_has_older_above_and_newer_below_while_scrolling()
 	_test_a_thread_folds_when_left_alone_and_unfolds()
+	_test_a_thread_left_alone_longer_leaves_only_the_icon()
+	_test_the_icon_reopens_on_the_newest_and_so_does_a_new_bubble()
 	_test_a_placed_thought_is_clicked_from_the_history()
 	_test_the_recentre_button_shows_while_the_camera_does_not_follow()
 	_test_body_3_greets_once_on_coming_near()
@@ -2444,21 +2447,22 @@ func _test_a_thread_keeps_its_last_twenty_and_shows_three_newest_last() -> void:
 	_check(_texts(thread.shown()) == ["23", "24", "24"], "the same line by someone else is a new bubble")
 
 
-## Hovering, the wheel scrolls back until the oldest kept is at the top of
-## the window, and down again until the newest is at its bottom; a new
-## bubble brings the window back to the newest.
+## Hovering, the wheel moves the focus back to the oldest kept and down
+## again to the newest; a new bubble brings it back to the newest.
 func _test_a_thread_scrolls_back_to_the_oldest_and_down_to_the_newest() -> void:
 	var thread := BubbleThread.new()
 	for i in BubbleThread.KEPT + 5:
 		thread.push("", str(i), Vector2.ZERO, false, 1000)
-	_check(thread.max_scroll() == BubbleThread.KEPT - BubbleThread.SHOWN, "the range: %d" % thread.max_scroll())
+	_check(thread.max_scroll() == BubbleThread.KEPT - 1, "the range, to the oldest: %d" % thread.max_scroll())
 	thread.scroll(1)
-	_check(_texts(thread.shown()) == ["21", "22", "23"], "one back: %s" % [_texts(thread.shown())])
+	_check(_texts(thread.shown()) == ["22", "23", "24"], "one back: %s" % [_texts(thread.shown())])
 	thread.scroll(100)
 	_check(thread.scrolled() == thread.max_scroll() and _texts(thread.shown()) == ["5", "6", "7"],
 			"no further than the oldest kept: %s" % [_texts(thread.shown())])
 	thread.scroll(-1)
-	_check(_texts(thread.shown()) == ["6", "7", "8"], "and down again: %s" % [_texts(thread.shown())])
+	_check(_texts(thread.shown()) == ["5", "6", "7"], "and down again: %s" % [_texts(thread.shown())])
+	thread.scroll(-1)
+	_check(_texts(thread.shown()) == ["6", "7", "8"], "the window follows the focus: %s" % [_texts(thread.shown())])
 	thread.scroll(-100)
 	_check(thread.scrolled() == 0 and _texts(thread.shown()) == ["22", "23", "24"], "no further than the newest")
 	thread.scroll(4)
@@ -2467,8 +2471,34 @@ func _test_a_thread_scrolls_back_to_the_oldest_and_down_to_the_newest() -> void:
 	var short := BubbleThread.new()
 	short.push("", "a", Vector2.ZERO, false, 0)
 	short.push("", "b", Vector2.ZERO, false, 0)
-	short.scroll(1)
-	_check(short.max_scroll() == 0 and short.scrolled() == 0, "fewer than three: nothing to scroll")
+	short.scroll(5)
+	_check(short.max_scroll() == 1 and short.scrolled() == 1 and short.focus_slot() == 0,
+			"two: the focus goes back to the first, the second below it")
+
+
+## Scrolling, the bubble in focus has the older ones above it and, until
+## it is the newest, a newer one below it: what the stack draws whole and
+## what it blurs.
+func _test_the_focus_has_older_above_and_newer_below_while_scrolling() -> void:
+	var thread := BubbleThread.new()
+	_check(thread.focus_slot() == -1, "no focus when nothing is kept")
+	for i in 6:
+		thread.push("", str(i), Vector2.ZERO, false, 1000)
+	var seen: Array[String] = []
+	for step in thread.max_scroll() + 1:
+		var window := _texts(thread.shown())
+		var slot := thread.focus_slot()
+		var focus := int(window[slot])
+		seen.append("%s@%d" % [window, slot])
+		_check(focus == 5 - step, "the focus goes back one bubble a notch: %s" % seen.back())
+		for i in window.size():
+			_check(int(window[i]) - focus == i - slot, "older above, newer below it, in order: %s" % seen.back())
+		var below := window.size() - 1 - slot
+		_check((below == 0) == (step == 0), "a newer bubble below the focus unless it is the newest: %s" % seen.back())
+		_check(slot > 0 or focus == 0, "an older bubble above it unless it is the oldest: %s" % seen.back())
+		thread.scroll(1)
+	thread.scroll(-100)
+	_check(thread.focus_slot() == 2 and _texts(thread.shown()) == ["3", "4", "5"], "back on the newest, nothing below it")
 
 
 ## Left alone FOLD_MS (nothing new, no hover), the stack folds into one
@@ -2502,6 +2532,48 @@ func _test_a_thread_folds_when_left_alone_and_unfolds() -> void:
 	_check(thread.scrolled() == 0, "unfolded by the mouse, it opens on the newest")
 
 
+## Left alone HIDE_MS with nothing new, the folded bubble goes too: only
+## the icon stays, and hovering it does not open the stack.
+func _test_a_thread_left_alone_longer_leaves_only_the_icon() -> void:
+	var thread := BubbleThread.new()
+	_check(not thread.hidden(1_000_000), "no icon with nothing kept")
+	for i in 4:
+		thread.push("", str(i), Vector2.ZERO, false, 1000)
+	_check(thread.folded(1000 + BubbleThread.FOLD_MS) and not thread.hidden(1000 + BubbleThread.FOLD_MS),
+			"after 8 s, the newest only, folded")
+	_check(thread.folded(1000 + BubbleThread.HIDE_MS - 1) and not thread.hidden(1000 + BubbleThread.HIDE_MS - 1),
+			"folded until 25 s")
+	var gone := 1000 + BubbleThread.HIDE_MS
+	_check(thread.hidden(gone) and not thread.folded(gone), "then the icon only")
+	thread.hover(true, gone + 10)
+	_check(thread.hidden(gone + 10), "the mouse on the icon does not open it")
+	thread.hover(false, gone + 20)
+	_check(thread.hidden(gone + 20), "nor leaving it")
+
+
+## Clicked, the icon opens the stack on the newest, whole; a new bubble
+## opens it too, on itself.
+func _test_the_icon_reopens_on_the_newest_and_so_does_a_new_bubble() -> void:
+	var thread := BubbleThread.new()
+	for i in 6:
+		thread.push("", str(i), Vector2.ZERO, false, 1000)
+	thread.hover(true, 1000)
+	thread.scroll(3)
+	thread.hover(false, 2000)
+	var gone := 2000 + BubbleThread.HIDE_MS
+	_check(thread.hidden(gone) and thread.scrolled() == 3, "left scrolled back, then iconised")
+	thread.reopen(gone + 100)
+	_check(not thread.hidden(gone + 100) and not thread.folded(gone + 100), "the click opens it, unfolded")
+	_check(thread.scrolled() == 0 and thread.focus_slot() == 2 and thread.shown().back()["text"] == "5",
+			"on the newest: %s" % [_texts(thread.shown())])
+	_check(thread.folded(gone + 100 + BubbleThread.FOLD_MS), "and folds again when left alone")
+	var again := gone + 100 + BubbleThread.HIDE_MS
+	_check(thread.hidden(again), "iconised again")
+	thread.push("Corps 3", "Te revoilà.", Vector2.ZERO, false, again + 1)
+	_check(not thread.hidden(again + 1) and not thread.folded(again + 1), "a new bubble opens it")
+	_check(thread.scrolled() == 0 and thread.shown().back()["text"] == "Te revoilà.", "on itself, at the bottom")
+
+
 ## A thought tied to a place stays clickable back in the history: its
 ## slot in the window gives its place; a thought with none gives null.
 func _test_a_placed_thought_is_clicked_from_the_history() -> void:
@@ -2510,7 +2582,7 @@ func _test_a_placed_thought_is_clicked_from_the_history() -> void:
 	for line in ["b", "c", "d"]:
 		thread.push("", line, Vector2.ZERO, false, 1000)
 	_check(thread.place_at(0) == null and thread.place_at(2) == null, "the window b, c, d: none tied to a place")
-	thread.scroll(1)
+	thread.scroll(2)
 	_check(_texts(thread.shown()) == ["a", "b", "c"] and thread.place_at(0) == Vector2(1, 2),
 			"scrolled back, the first thought still takes the camera to its place")
 	_check(thread.place_at(-1) == null and thread.place_at(3) == null, "no slot outside the window")
