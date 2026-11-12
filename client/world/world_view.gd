@@ -282,6 +282,7 @@ func _ready() -> void:
 	Net.day_started.connect(func(_day: int, _tick: int) -> void: _set_night(false))
 	Net.move_refused.connect(_on_move_refused)
 	Net.body_blocked.connect(_on_body_blocked)
+	Net.body_thinks.connect(_on_body_thinks)
 	Net.connected.connect(func(_tick: int, body: int) -> void: _piloted = body)
 
 
@@ -975,6 +976,14 @@ func _on_body_blocked(body: int, at: Vector2, _x: int, _y: int, reason: String) 
 	_clear_target()
 	_blocked.mark(at)
 	thinks.emit(UiWords.blocked(reason), at)
+
+
+## The piloted body thinks aloud as it decides how to go on (protocol
+## v22): it skirts to a side, it sees a way, it does not know where to go.
+func _on_body_thinks(body: int, kind: String, side: String, at: Vector2) -> void:
+	if body != _piloted:
+		return
+	thinks.emit(UiWords.thought(kind, side), at)
 
 
 ## An order refused at once (the body at the bank, sent across the

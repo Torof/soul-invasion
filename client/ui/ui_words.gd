@@ -11,6 +11,15 @@ const BLOCKED := {
 	"no_way": "Bloqué : aucun passage en vue",
 }
 
+## What the piloted body thinks as it decides how to go on (`body_thinks`,
+## protocol v22), by the thought's kind (and side, for skirting).
+const THOUGHTS := {
+	"skirting_left": "Pas de passage ici… je longe vers la gauche",
+	"skirting_right": "Pas de passage ici… je longe vers la droite",
+	"way_seen": "Je vois un passage, j'y vais",
+	"no_way": "Je ne sais pas où aller",
+}
+
 ## The recentre button's tooltip.
 const RECENTRE := "Revenir au corps"
 
@@ -39,6 +48,13 @@ const DEV_GREETINGS := [
 ## way seen.
 static func blocked(reason: String) -> String:
 	return str(BLOCKED.get(reason, BLOCKED["no_way"]))
+
+
+## The words for a thought; an unknown one reads as not knowing where to
+## go.
+static func thought(kind: String, side: String) -> String:
+	var key := "%s_%s" % [kind, side] if kind == "skirting" else kind
+	return str(THOUGHTS.get(key, THOUGHTS["no_way"]))
 
 
 ## A body's name as a speaker, until bodies have names.

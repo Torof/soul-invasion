@@ -16,7 +16,7 @@ use protocol::ServerMessage;
 use server::cli::{CliError, DataLocation, USAGE, WarmUp};
 use server::content;
 use server::net::{
-    Published, Shared, blocked_view, condition_view, refusal_view, refused_view, serve,
+    Published, Shared, blocked_view, condition_view, refusal_view, refused_view, serve, thinks_view,
 };
 use server::pool::{ChunkPool, chunk_threads};
 use server::{Lineage, Options, Sqlite, Storage, StorageError, run_headless, run_paced};
@@ -331,6 +331,7 @@ fn run_paced_server(
         let rules = Arc::clone(content);
         runtime.spawn_blocking(move || {
             let before_tick = |world: &mut World| {
+                world.set_piloted(shared.piloted());
                 for intention in shared.take_intentions() {
                     world.queue(intention);
                 }
@@ -623,6 +624,10 @@ fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
             target,
             reason,
         } => shared.tell_pilot(*body, blocked_view(*body, *at, *target, *reason)),
+        // And so does what it thinks as it decides how to go on.
+        Event::BodyThinks { body, thought, at } => {
+            shared.tell_pilot(*body, thinks_view(*body, *thought, *at));
+        }
     }
 }
 

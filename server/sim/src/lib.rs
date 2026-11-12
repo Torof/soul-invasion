@@ -33,7 +33,9 @@ use std::sync::Arc;
 pub use content::{
     Content, ContentError, Food, Look, Material, MaterialKind, Movement, Needs, Spawn,
 };
-pub use map::{CHUNK_SIZE, ChunkPos, FinePos, MM_PER_TILE, Map, MapSpec, Pos, Terrain, line_clear};
+pub use map::{
+    CHUNK_SIZE, ChunkPos, FinePos, MM_PER_TILE, Map, MapSpec, Pos, Side, Terrain, line_clear,
+};
 pub use time::{Calendar, CalendarError, GameTime, Tick};
 
 /// Identifies a body (an inhabitant). Players and NPCs are the same kind
@@ -209,6 +211,12 @@ pub struct Body {
     /// Absent from a snapshot when there is none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     goal: Option<Goal>,
+    /// Where the body is in skirting an obstacle for its current order
+    /// (D32): once only, then it looks once more and goes on by a way it
+    /// sees or stops. Cleared with the goal and on a new order; never
+    /// stored, a restart forgets it.
+    #[serde(skip)]
+    skirted: Skirted,
     condition: Condition,
     /// The item in hand, if any: visible to all, the tool or weapon (D35).
     held: Option<ItemId>,
@@ -610,6 +618,106 @@ pub enum Event {
         /// The corpse.
         corpse: ItemId,
     },
+    /// What a body thinks as it decides how to go on toward where it was
+    /// sent (D32), about the place `at`: where it goes, or where it
+    /// stands. Told to its pilot alone.
+    BodyThinks {
+        /// Who.
+        body: BodyId,
+        /// What.
+        thought: Thought,
+        /// About where.
+        at: FinePos,
+    },
+}
+
+/// A body's thought as it decides how to go on (D32).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Thought {
+    /// No way here: it walks along the obstacle, to that side.
+    Skirting {
+        /// Which way, as it faces its target.
+        side: Side,
+    },
+    /// It sees a way on and takes it.
+    WaySeen,
+    /// It sees no way and stops: it does not know where to go.
+    NoWay,
+}
+
+/// Where a body is in skirting an obstacle for its current order (D32).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Skirted {
+    /// It has not skirted.
+    #[default]
+    Not,
+    /// It walked along the obstacle and looks once more on arriving.
+    Along,
+    /// It saw a way on from there and took it: it skirts no more.
+    Beyond,
+}
+
+/// How a body sets off ([`World::plan_walk`]).
+enum Plan {
+    /// Along a way found to the target.
+    Path(Vec<FinePos>),
+    /// Along a way found past the obstacle on its line, the target kept.
+    Past(Vec<FinePos>),
+    /// Along the obstacle, to look once more from there.
+    Skirt(Vec<FinePos>, Side),
+    /// Straight toward the target; `true` when that is a way seen on
+    /// looking once more after skirting.
+    Straight(Vec<FinePos>, bool),
+    /// Nowhere: it skirted once and sees no way.
+    GiveUp,
+}
+
+/// The lane of a path search: the players' (bodies with a pilot) or the
+/// others' (NPCs, animals), each with its share of the work (D32).
+const PLAYERS: usize = 0;
+const OTHERS: usize = 1;
+
+/// The path searches waiting for their turn (D32): two lanes, players'
+/// and others', each served in the order its searches came; a body has
+/// one search waiting at most. The cap counts the tiles searches expand,
+/// not the searches: one refused at once costs next to nothing.
+#[derive(Debug, Clone, Default)]
+struct Searches {
+    /// Per lane, by arrival: the body and its order's target, or `None`
+    /// for a body looking again.
+    lanes: [BTreeMap<u64, (BodyId, Option<Pos>)>; 2],
+    /// The lane and place of each body's waiting search.
+    waiting: BTreeMap<BodyId, (usize, u64)>,
+    /// The next place in a lane: arrivals only ever grow.
+    next: u64,
+    /// Work spent past the last tick's allowance, repaid by the next.
+    owed: u64,
+}
+
+impl Searches {
+    /// Puts a body's search in its lane. A new order takes the place of
+    /// the body's waiting search, if any, keeping its turn; a look again
+    /// never displaces what waits.
+    fn ask(&mut self, body: BodyId, order: Option<Pos>, lane: usize) {
+        if let Some(&(lane, at)) = self.waiting.get(&body) {
+            if order.is_some() {
+                self.lanes[lane].insert(at, (body, order));
+            }
+            return;
+        }
+        let at = self.next;
+        self.next += 1;
+        self.lanes[lane].insert(at, (body, order));
+        self.waiting.insert(body, (lane, at));
+    }
+
+    /// The search at the head of a lane, taken out of it.
+    fn pop(&mut self, lane: usize) -> Option<(BodyId, Option<Pos>)> {
+        let (_, (body, order)) = self.lanes[lane].pop_first()?;
+        self.waiting.remove(&body);
+        Some((body, order))
+    }
 }
 
 /// The world state: time, ground, bodies, things on the ground.
@@ -665,6 +773,15 @@ pub struct World {
     /// start of the next one. Never persisted: a restart drops them.
     #[serde(skip)]
     pending: Vec<Intention>,
+    /// The path searches waiting for their turn, orders and looks again,
+    /// in two lanes ([`Searches`], D32). Never persisted, as `pending`.
+    #[serde(skip)]
+    searches: Searches,
+    /// The bodies a player pilots, as the server last told
+    /// ([`World::set_piloted`]): their searches go in the players' lane.
+    /// Never persisted.
+    #[serde(skip)]
+    piloted: BTreeSet<BodyId>,
     /// The content's kinds of tree, the trees of a chunk are placed with
     /// ([`World::trees_in`]); set by [`World::take_content`]. Never
     /// persisted: the trees are placed again, the same, from the map.
@@ -730,6 +847,8 @@ impl<'de> serde::Deserialize<'de> for World {
             ground: BTreeMap::new(),
             spawns: Vec::new(),
             pending: Vec::new(),
+            searches: Searches::default(),
+            piloted: BTreeSet::new(),
             species: Vec::new(),
             ground_cache: Arc::new(ground::Ground::default()),
         };
@@ -811,6 +930,8 @@ impl World {
             ground: BTreeMap::new(),
             spawns: Vec::new(),
             pending: Vec::new(),
+            searches: Searches::default(),
+            piloted: BTreeSet::new(),
             species: Vec::new(),
             ground_cache: Arc::new(ground::Ground::default()),
         }
@@ -888,6 +1009,7 @@ impl World {
             body.at = tile.centre();
             body.route.clear();
             body.goal = None;
+            body.skirted = Skirted::Not;
             if tile.chunk() != before {
                 self.leave_chunk(id, before);
                 self.enter_chunk(id, tile.chunk());
@@ -1175,6 +1297,7 @@ impl World {
             at: pos.centre(),
             route: VecDeque::new(),
             goal: None,
+            skirted: Skirted::Not,
             condition: Condition::healthy(),
             held: None,
             carried: Vec::new(),
@@ -1238,41 +1361,32 @@ impl World {
             events.push(Event::NightFell { day: now.day });
         }
 
-        // At most `searches_per_tick` walks are planned in a tick; the
-        // rest wait, in order, ahead of whatever comes next (D32). Any
-        // other intention is applied at once.
+        // Orders to walk join their body's lane of searches; any other
+        // intention is applied at once. A body that walked straight for
+        // want of a way and stopped joins it too, to look again from
+        // where it stands. The searches then run in turn under the cap
+        // of work (D32).
         let pending = std::mem::take(&mut self.pending);
-        let mut searches = 0;
-        let mut waiting = Vec::new();
         for intention in pending {
-            if matches!(intention, Intention::MoveTo { .. }) {
-                if searches >= rules.movement.searches_per_tick {
-                    waiting.push(intention);
-                    continue;
-                }
-                searches += 1;
+            if let Intention::MoveTo { body, target } = intention {
+                let lane = self.lane(body);
+                self.searches.ask(body, Some(target), lane);
+            } else {
+                self.apply(&intention, rules, events);
             }
-            self.apply(&intention, rules, events);
         }
-        waiting.append(&mut self.pending);
-        self.pending = waiting;
-        // A body that walked straight for want of a way and stopped looks
-        // again from where it stands, within the same cap; those over it
-        // look at the next tick.
         for index in 0..self.bodies.len() {
-            if searches >= rules.movement.searches_per_tick {
-                break;
-            }
             let body = &self.bodies[index];
-            let Some(goal) = body.goal else {
-                continue;
-            };
-            if !body.route.is_empty() || body.condition.asleep {
-                continue;
+            if body.goal.is_some()
+                && body.route.is_empty()
+                && !body.condition.asleep
+                && !self.searches.waiting.contains_key(&body.id)
+            {
+                let (id, lane) = (body.id, self.lane(body.id));
+                self.searches.ask(id, None, lane);
             }
-            searches += 1;
-            self.look_again(index, goal, rules, events);
         }
+        self.search(rules, events);
 
         let per_second = f64::from(self.calendar.ticks_per_second());
         for index in 0..self.bodies.len() {
@@ -1298,6 +1412,91 @@ impl World {
         }
 
         self.fare(rules, night, events);
+    }
+
+    /// Tells the world which bodies a player pilots, all of them: their
+    /// path searches go in the players' lane, with its share of the work
+    /// (D32). The server's input, as intentions are; never persisted.
+    pub fn set_piloted(&mut self, bodies: impl IntoIterator<Item = BodyId>) {
+        self.piloted = bodies.into_iter().collect();
+    }
+
+    /// The lane of a body's searches.
+    fn lane(&self, body: BodyId) -> usize {
+        if self.piloted.contains(&body) {
+            PLAYERS
+        } else {
+            OTHERS
+        }
+    }
+
+    /// Runs the waiting searches under the tick's cap of work (D32): the
+    /// players' lane up to its share, the others' up to theirs and what
+    /// the players left, the players' again with what the others left.
+    /// In each lane, in the order they came; the search at the head runs
+    /// as long as any of its share is left, even past it, and the next
+    /// tick repays the excess: none waits for ever. Every search counts
+    /// one tile at least.
+    fn search(&mut self, rules: &Content, events: &mut Vec<Event>) {
+        let movement = &rules.movement;
+        let cap = u64::from(movement.search_work_per_tick);
+        let allowance = cap.saturating_sub(self.searches.owed);
+        self.searches.owed = self.searches.owed.saturating_sub(cap);
+        let players = allowance * u64::from(movement.player_share_percent.min(100)) / 100;
+        let mut used = [0u64; 2];
+        let mut run = |world: &mut Self, lane: usize, limit: u64, used: &mut [u64; 2]| {
+            while used[lane] < limit {
+                let Some((body, order)) = world.searches.pop(lane) else {
+                    break;
+                };
+                used[lane] += u64::from(world.run_search(body, order, rules, events).max(1));
+            }
+        };
+        run(self, PLAYERS, players, &mut used);
+        let spare = if self.searches.lanes[PLAYERS].is_empty() {
+            players.saturating_sub(used[PLAYERS])
+        } else {
+            0
+        };
+        let others = allowance - players + spare;
+        run(self, OTHERS, others, &mut used);
+        if self.searches.lanes[OTHERS].is_empty() {
+            let spare = others.saturating_sub(used[OTHERS]);
+            run(self, PLAYERS, players + spare, &mut used);
+        }
+        self.searches.owed += (used[PLAYERS] + used[OTHERS]).saturating_sub(allowance);
+    }
+
+    /// One waiting search: a body's order to walk, or a look again. The
+    /// tiles it expanded.
+    fn run_search(
+        &mut self,
+        id: BodyId,
+        order: Option<Pos>,
+        rules: &Content,
+        events: &mut Vec<Event>,
+    ) -> u32 {
+        let Some(index) = self.index_of(id) else {
+            if let Some(target) = order {
+                events.push(Event::MoveRefused {
+                    body: id,
+                    target,
+                    reason: Blockage::NoWay,
+                });
+            }
+            return 0;
+        };
+        if let Some(target) = order {
+            self.wake(index, events);
+            return self.set_off(index, target, true, rules, events);
+        }
+        let body = &self.bodies[index];
+        match body.goal {
+            Some(goal) if body.route.is_empty() && !body.condition.asleep => {
+                self.look_again(index, goal, rules, events)
+            }
+            _ => 0,
+        }
     }
 
     /// Lets every body hunger, freeze, tire, rest, heal — and die.
@@ -1327,6 +1526,7 @@ impl World {
                     c.asleep = true;
                     body.route.clear();
                     body.goal = None;
+                    body.skirted = Skirted::Not;
                 }
             }
             let mut cause = None;
@@ -1436,6 +1636,7 @@ impl World {
                     if !body.condition.asleep {
                         body.condition.asleep = true;
                         body.goal = None;
+                        body.skirted = Skirted::Not;
                         if !body.route.is_empty() {
                             body.route.clear();
                             events.push(Event::BodyStopped {
@@ -1531,6 +1732,7 @@ impl World {
         let body = &mut self.bodies[index];
         body.route.clear();
         body.goal = None;
+        body.skirted = Skirted::Not;
         let before = body.pos().chunk();
         body.at = tile.centre();
         if tile.chunk() != before {
@@ -1709,17 +1911,22 @@ impl World {
         });
     }
 
-    /// Wakes a body up, if asleep; any deliberate act does.
     /// Sends a body toward `target` (`ordered`: a new order, rather than a
-    /// body looking again). A way is looked for within what the body sees
-    /// from where it stands ([`World::sight_tiles_at`]) and within the
-    /// content's budget of effort (D32), round the trunks of trees. With
-    /// none, it walks straight toward the target, stepping round a trunk
-    /// or a bush in its way and stopping before the first bigger obstacle
+    /// body looking again), saying how many tiles its searches expanded.
+    /// A way is looked for within what the body sees from where it stands
+    /// ([`World::sight_tiles_at`]) and within the content's budget of
+    /// effort (D32), round the trunks of trees. With none, it walks
+    /// straight toward the target, stepping round a trunk or a bush in its
+    /// way and stopping before the first bigger obstacle
     /// ([`Map::walk_straight`], D31), and keeps the target to look again
-    /// from there; a new order
-    /// that cannot even set off is refused, saying what the body sees
-    /// barring its way, a body looking again that cannot stops for good.
+    /// from there. Before an obstacle it sees no way past, it walks along
+    /// it once ([`Map::skirt`]) and looks once more from there: a way seen
+    /// is taken, otherwise it stops for good. It thinks aloud at each
+    /// decision ([`Event::BodyThinks`]). A new order that cannot even set
+    /// off is refused, saying what the body sees barring its way, a body
+    /// looking again that cannot stops for good.
+    // One arm for each way of setting off, each telling what it does.
+    #[allow(clippy::too_many_lines)]
     fn set_off(
         &mut self,
         index: usize,
@@ -1727,85 +1934,205 @@ impl World {
         ordered: bool,
         rules: &Content,
         events: &mut Vec<Event>,
-    ) {
-        let cost = |t: Terrain| rules.movement.cost(t);
+    ) -> u32 {
         let id = self.bodies[index].id;
         let from = self.bodies[index].at;
         self.bodies[index].goal = None;
-        let sight = i32::try_from(self.sight_tiles_at(from.tile(), rules)).unwrap_or(i32::MAX);
-        let budget = rules.movement.path_budget_tiles;
-        let trunks = self.trunks();
-        let blocked = |p: Pos| trunks.blocks(p);
-        if let Some(path) =
-            self.map
-                .path_around(from.tile(), target, (sight, budget), cost, blocked)
-        {
-            let route = self.map.pull_around(from, &path, cost, blocked);
-            let body = &mut self.bodies[index];
-            body.route = route.iter().copied().collect();
-            if route.is_empty() {
-                events.push(Event::BodyStopped { body: id, at: from });
-            } else {
-                events.push(Event::BodyWalks {
-                    body: id,
-                    from,
-                    route,
-                    speed_cm_per_s: rules.movement.walk_speed_cm_per_s,
-                });
-            }
-            return;
+        if ordered {
+            self.bodies[index].skirted = Skirted::Not;
         }
-        let route = self
-            .map
-            .walk_straight(from, target.centre(), sight, cost, blocked);
-        drop(trunks);
-        let quarter = u64::from(MM_PER_TILE.unsigned_abs() / 4);
-        if route
-            .iter()
-            .all(|p| squared_mm(*p, from) < quarter * quarter)
-        {
-            if ordered {
-                events.push(Event::MoveRefused {
-                    body: id,
-                    target,
-                    reason: self.blockage(from, target.centre(), rules),
-                });
-            } else {
-                self.blocked(index, target, rules, events);
-            }
-            return;
-        }
-        let body = &mut self.bodies[index];
-        body.route = route.iter().copied().collect();
-        body.goal = Some(Goal {
-            target,
-            looked_from: squared_mm(from, target.centre()),
-        });
-        events.push(Event::BodyWalks {
+        let (plan, work) = self.plan_walk(index, target, rules);
+        let walk_speed = rules.movement.walk_speed_cm_per_s;
+        let walks = |route: Vec<FinePos>| Event::BodyWalks {
             body: id,
             from,
             route,
-            speed_cm_per_s: rules.movement.walk_speed_cm_per_s,
-        });
+            speed_cm_per_s: walk_speed,
+        };
+        let thinks = |thought: Thought, at: FinePos| Event::BodyThinks {
+            body: id,
+            thought,
+            at,
+        };
+        match plan {
+            Plan::Path(route) => {
+                let body = &mut self.bodies[index];
+                let after_skirting = body.skirted == Skirted::Along;
+                body.skirted = Skirted::Not;
+                body.route = route.iter().copied().collect();
+                if let Some(&end) = route.last() {
+                    events.push(walks(route));
+                    if after_skirting {
+                        events.push(thinks(Thought::WaySeen, end));
+                    }
+                } else {
+                    events.push(Event::BodyStopped { body: id, at: from });
+                }
+            }
+            Plan::Past(route) => {
+                let end = *route.last().expect("a way past is a walk");
+                let body = &mut self.bodies[index];
+                let after_skirting = body.skirted == Skirted::Along;
+                if after_skirting {
+                    body.skirted = Skirted::Beyond;
+                }
+                body.route = route.iter().copied().collect();
+                body.goal = Some(Goal {
+                    target,
+                    looked_from: squared_mm(from, target.centre()),
+                });
+                events.push(walks(route));
+                if after_skirting {
+                    events.push(thinks(Thought::WaySeen, end));
+                }
+            }
+            Plan::Skirt(route, side) => {
+                let end = *route.last().expect("a skirt is a walk");
+                let body = &mut self.bodies[index];
+                body.skirted = Skirted::Along;
+                body.route = route.iter().copied().collect();
+                // It looks again on arriving, wherever that is.
+                body.goal = Some(Goal {
+                    target,
+                    looked_from: u64::MAX,
+                });
+                events.push(walks(route));
+                events.push(thinks(Thought::Skirting { side }, end));
+            }
+            Plan::GiveUp => {
+                self.bodies[index].skirted = Skirted::Not;
+                self.blocked(index, target, rules, events);
+            }
+            Plan::Straight(route, seen) => {
+                let quarter = u64::from(MM_PER_TILE.unsigned_abs() / 4);
+                if route
+                    .iter()
+                    .all(|p| squared_mm(*p, from) < quarter * quarter)
+                {
+                    self.bodies[index].skirted = Skirted::Not;
+                    if ordered {
+                        events.push(Event::MoveRefused {
+                            body: id,
+                            target,
+                            reason: self.blockage(from, target.centre(), rules),
+                        });
+                    } else {
+                        self.blocked(index, target, rules, events);
+                    }
+                    return work;
+                }
+                let end = *route.last().expect("a walk");
+                let body = &mut self.bodies[index];
+                if seen {
+                    body.skirted = Skirted::Beyond;
+                }
+                body.route = route.iter().copied().collect();
+                body.goal = Some(Goal {
+                    target,
+                    looked_from: squared_mm(from, target.centre()),
+                });
+                events.push(walks(route));
+                if seen {
+                    events.push(thinks(Thought::WaySeen, end));
+                }
+            }
+        }
+        work
+    }
+
+    /// How a body standing where it is sets off toward `target`
+    /// ([`World::set_off`]), and the tiles its searches expanded: a way
+    /// in sight to the target; else straight on while nothing in sight
+    /// stops it; else a way in sight past the obstacle that stops the
+    /// straight walk, back to its line beyond it; else, having skirted
+    /// once, nowhere; else straight to the obstacle when it stands short
+    /// of it, and along it when it stands before it ([`Map::skirt`]).
+    fn plan_walk(&self, index: usize, target: Pos, rules: &Content) -> (Plan, u32) {
+        let movement = &rules.movement;
+        let cost = |t: Terrain| movement.cost(t);
+        let body = &self.bodies[index];
+        let (from, skirted) = (body.at, body.skirted != Skirted::Not);
+        let tile = from.tile();
+        let sight = i32::try_from(self.sight_tiles_at(tile, rules)).unwrap_or(i32::MAX);
+        let trunks = self.trunks();
+        let blocked = |p: Pos| trunks.blocks(p);
+        let budget = movement.path_budget_tiles;
+        let (path, mut work) = self.map.search(tile, target, sight, budget, cost, blocked);
+        if let Some(path) = path {
+            return (
+                Plan::Path(self.map.pull_around(from, &path, cost, blocked)),
+                work,
+            );
+        }
+        let straight = self
+            .map
+            .walk_straight(from, target.centre(), sight, cost, blocked);
+        let seen = |p: Pos| (p.x - tile.x).abs() <= sight && (p.y - tile.y).abs() <= sight;
+        let end = straight.last().copied().unwrap_or(from);
+        // Straight on while nothing in sight stops it; and a target seen on
+        // ground it may not enter is only walked toward.
+        if end == target.centre() || !seen(end.tile()) {
+            let seen_way = body.skirted == Skirted::Along;
+            return (Plan::Straight(straight, seen_way), work);
+        }
+        if seen(target) && self.map.get(target).and_then(cost).is_none() {
+            return (Plan::Straight(straight, false), work);
+        }
+        let open = |p: Pos| !blocked(p) && self.map.get(p).and_then(cost).is_some();
+        if !seen(target)
+            && let Some(past) = self.map.past_obstacle(end, target.centre(), sight, open)
+        {
+            let (path, spent) = self.map.search(tile, past, sight, budget, cost, blocked);
+            work += spent;
+            if let Some(path) = path.filter(|p| !p.is_empty()) {
+                return (
+                    Plan::Past(self.map.pull_around(from, &path, cost, blocked)),
+                    work,
+                );
+            }
+        }
+        if skirted {
+            return (Plan::GiveUp, work);
+        }
+        let near = u64::from(MM_PER_TILE.unsigned_abs()) * 3 / 2;
+        if squared_mm(end, from) > near * near {
+            return (Plan::Straight(straight, false), work);
+        }
+        let plan = match self.map.skirt(from, target, sight, cost, blocked) {
+            Some((side, path)) => {
+                Plan::Skirt(self.map.pull_around(from, &path, cost, blocked), side)
+            }
+            None => Plan::Straight(straight, false),
+        };
+        (plan, work)
     }
 
     /// A body that walked straight for want of a way and stopped looks
     /// again from where it stands, toward the same target, but only from
-    /// nearer to it than where it last looked: it never circles before a
-    /// wall. Otherwise it stops for good and says it is blocked; on its
-    /// target, it simply stays.
-    fn look_again(&mut self, index: usize, goal: Goal, rules: &Content, events: &mut Vec<Event>) {
+    /// nearer to it than where it last looked, or after skirting an
+    /// obstacle: it never circles before a wall. Otherwise it stops for
+    /// good and says it is blocked; on its target, it simply stays. The
+    /// tiles its search expanded.
+    fn look_again(
+        &mut self,
+        index: usize,
+        goal: Goal,
+        rules: &Content,
+        events: &mut Vec<Event>,
+    ) -> u32 {
         // Arrived: its stop was told on arrival, once, and nothing bars it.
         if self.bodies[index].at == goal.target.centre() {
             self.bodies[index].goal = None;
-            return;
+            self.bodies[index].skirted = Skirted::Not;
+            return 0;
         }
         if squared_mm(self.bodies[index].at, goal.target.centre()) >= goal.looked_from {
             self.bodies[index].goal = None;
+            self.bodies[index].skirted = Skirted::Not;
             self.blocked(index, goal.target, rules, events);
-            return;
+            return 0;
         }
-        self.set_off(index, goal.target, false, rules, events);
+        self.set_off(index, goal.target, false, rules, events)
     }
 
     /// Tells that a body stopped for good short of `target`, and what it
@@ -1817,6 +2144,11 @@ impl World {
             at: body.at,
             target,
             reason: self.blockage(body.at, target.centre(), rules),
+        });
+        events.push(Event::BodyThinks {
+            body: body.id,
+            thought: Thought::NoWay,
+            at: body.at,
         });
     }
 
@@ -1890,6 +2222,7 @@ impl World {
             .fold(own, u32::max)
     }
 
+    /// Wakes a body up, if asleep; any deliberate act does.
     fn wake(&mut self, index: usize, events: &mut Vec<Event>) {
         let body = &mut self.bodies[index];
         if body.condition.asleep {
@@ -2508,9 +2841,12 @@ mod tests {
         // tiles, where it was the view's 288 with no budget). A ford
         // fifteen tiles aside is seen and taken; one fifty tiles aside is
         // in sight but the way round it costs more than the budget; one
-        // seventy tiles aside is out of sight: in both cases the body
-        // walks straight to the bank and stops, and the player finds the
-        // way (D32).
+        // seventy tiles aside is out of sight. Since 12 November 2026 a
+        // body stopped at the bank skirts it once, about fifty tiles to the
+        // side where the river ends sooner in sight, and looks once more:
+        // the ford fifty tiles aside is then found; the one seventy tiles
+        // aside is not, the two sides alike in sight, and the body stops
+        // after one skirt (D32).
         let river = |ford: i32| {
             let mut map = Map::filled(900, 200, Terrain::Grass);
             for x in 0..900 {
@@ -2525,19 +2861,19 @@ mod tests {
                 true,
                 "a ford in sight, the way round within the budget",
             ),
-            (850, false, "a ford in sight, the way round over the budget"),
+            (850, true, "a ford in sight, the way round over the budget"),
             (870, false, "a ford out of sight"),
         ] {
             let mut w = World::empty(Calendar::new(1, 1_000_000).unwrap(), river(ford));
             w.spawn_body(Pos::new(800, 90));
-            go(&mut w, Pos::new(800, 110));
-            walk_until_stopped(&mut w, 5000);
-            let expected = if reaches {
-                Pos::new(800, 110)
+            let events = walk_until_done(&mut w, &rules(), Pos::new(800, 110), 20_000);
+            let at = w.body(BodyId(1)).expect("body 1").pos();
+            if reaches {
+                assert_eq!(at, Pos::new(800, 110), "{why}");
             } else {
-                Pos::new(800, 99)
-            };
-            assert_eq!(w.body(BodyId(1)).expect("body 1").pos(), expected, "{why}");
+                assert_eq!(blocks(&events).len(), 1, "{why}");
+                assert!(at.y == 99 && (at.x - 800).abs() <= 50, "{why}: {at:?}");
+            }
         }
     }
 
@@ -2546,19 +2882,24 @@ mod tests {
         // Found in play (12 November 2026): the body already at the bank,
         // a click across the river refused at once said nothing. It says
         // what it sees barring its way, as a blocked body does (D32).
-        let mut map = Map::filled(900, 200, Terrain::Grass);
-        for x in 0..900 {
-            map.set(Pos::new(x, 100), Terrain::Water);
+        // The body stands on a rock in the river, a single tile: no bank
+        // to skirt along either (D32).
+        let mut map = Map::filled(100, 100, Terrain::Grass);
+        for y in 45..=55 {
+            for x in 0..100 {
+                map.set(Pos::new(x, y), Terrain::Water);
+            }
         }
+        map.set(Pos::new(50, 49), Terrain::Grass);
         let mut w = World::empty(Calendar::new(1, 1_000_000).unwrap(), map);
-        w.spawn_body(Pos::new(800, 99));
-        go(&mut w, Pos::new(800, 110));
+        w.spawn_body(Pos::new(50, 49));
+        go(&mut w, Pos::new(50, 60));
         let mut events = Vec::new();
         w.step(&rules(), &mut events);
         assert!(
             events.contains(&Event::MoveRefused {
                 body: BodyId(1),
-                target: Pos::new(800, 110),
+                target: Pos::new(50, 60),
                 reason: Blockage::Water,
             }),
             "{events:?}"
@@ -2622,19 +2963,21 @@ mod tests {
     fn sight_follows_the_ground_around_the_body() {
         // The same ground: from the grass (sight 60) the way round the
         // water is seen and taken at once; from the heart of a wood (sight
-        // 25) the target is out of sight and the body sets off straight to
-        // the water, then looks again from its bank, in the open, and goes
-        // round (12 November 2026).
+        // 25) the target is out of sight, but the water's end is not: the
+        // body goes round it back to its line beyond the water, then on
+        // (12 November 2026).
         let mut rules = rules();
         rules.movement.path_budget_tiles = u32::MAX;
         let (mut w, target) = walled_field(Terrain::Grass);
         assert!(first_route(&mut w, &rules, target).len() > 1, "a way round");
         assert_eq!(walk_with(&mut w, &rules, target), target, "round the water");
         let (mut w, target) = walled_field(Terrain::Forest);
+        let route = first_route(&mut w, &rules, target);
+        assert!(route.len() > 1, "round the water's end");
         assert_eq!(
-            first_route(&mut w, &rules, target),
-            vec![FinePos::new(39_700, 40_500)],
-            "straight to the water"
+            route.last(),
+            Some(&FinePos::new(41_500, 40_500)),
+            "back on its line"
         );
         let mut events = Vec::new();
         for _ in 0..500 {
@@ -2698,8 +3041,9 @@ mod tests {
     fn stopped_by_a_wall_the_body_looks_again_and_goes_round() {
         // A wall of water seventy tiles long, from the map's edge, its end
         // eight tiles aside of the way; the target eighty tiles off, out of
-        // sight: the body walks straight to the wall, looks again from
-        // there, sees the end and goes round, under the content's budget.
+        // sight. The wall's end in sight, the body goes round it back to
+        // its line beyond the wall (12 November 2026), looks again from
+        // there, sees the target and goes on.
         let rules = rules();
         let mut map = Map::filled(140, 140, Terrain::Grass);
         for y in 0..=70 {
@@ -2708,11 +3052,13 @@ mod tests {
         let mut w = World::empty(Calendar::new(10, 1_000_000).unwrap(), map);
         w.spawn_body(Pos::new(20, 62));
         let target = Pos::new(100, 62);
+        let route = first_route(&mut w, &rules, target);
         assert_eq!(
-            first_route(&mut w, &rules, target),
-            vec![FinePos::new(69_700, 62_500)],
-            "straight to the wall first"
+            route.last(),
+            Some(&FinePos::new(71_500, 62_500)),
+            "past the wall"
         );
+        assert!(route.len() > 1, "round its end");
         let mut events = Vec::new();
         for _ in 0..2000 {
             w.step(&rules, &mut events);
@@ -2721,14 +3067,15 @@ mod tests {
             .iter()
             .filter(|e| matches!(e, Event::BodyWalks { .. }))
             .count();
-        assert_eq!(walks, 1, "one look again, from the wall");
+        assert_eq!(walks, 1, "one look again, past the wall");
         assert_eq!(w.body(BodyId(1)).expect("body 1").pos(), target);
     }
 
     #[test]
     fn a_body_looks_again_only_from_nearer() {
         // A target walled in: the body walks straight to the wall, looks
-        // again once, finds nothing nearer to walk to and stops for good.
+        // again, finds no way, skirts the wall once, looks once more from
+        // there and stops for good: no second skirt.
         let rules = rules();
         let mut map = Map::filled(60, 60, Terrain::Grass);
         for i in 35..=45 {
@@ -2744,13 +3091,18 @@ mod tests {
         for _ in 0..1000 {
             w.step(&rules, &mut events);
         }
+        let walks = events
+            .iter()
+            .filter(|e| matches!(e, Event::BodyWalks { .. }))
+            .count();
+        assert_eq!(walks, 1, "one skirt along the wall");
         assert!(
             !events
                 .iter()
-                .any(|e| matches!(e, Event::BodyWalks { .. } | Event::MoveRefused { .. }))
+                .any(|e| matches!(e, Event::MoveRefused { .. }))
         );
         let body = w.body(BodyId(1)).expect("body 1");
-        assert_eq!((body.pos(), body.goal), (Pos::new(34, 40), None));
+        assert_eq!((body.goal, body.skirted), (None, Skirted::Not));
         // Stopped no nearer than where it last looked (pushed back, say):
         // it does not look again. From nearer, it does.
         for (looked_from, looks) in [(0, false), (u64::MAX, true)] {
@@ -2806,11 +3158,12 @@ mod tests {
             for _ in 0..1000 {
                 w.step(&rules, &mut events);
             }
-            let stop = FinePos::new(34_700, 40_500);
+            // At the end of its one skirt along the wall.
+            let stop = w.body(BodyId(1)).expect("body 1").at;
             assert_eq!(blocks(&events), vec![(stop, target, reason)], "{wall:?}");
             let stopped = events
                 .iter()
-                .position(|e| matches!(e, Event::BodyStopped { .. }))
+                .rposition(|e| matches!(e, Event::BodyStopped { .. }))
                 .expect("it stops");
             let blocked = events
                 .iter()
@@ -2888,26 +3241,52 @@ mod tests {
         assert_eq!(walk_with(&mut w, &rules, target), Pos::new(39, 40));
     }
 
+    /// The bodies setting off among `events`, in the order they did.
+    fn walkers(events: &[Event]) -> Vec<BodyId> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::BodyWalks { body, .. } => Some(*body),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// An open field of `side` tiles with `count` bodies on a grid two
+    /// tiles apart from (10, 10), a hundred to a row.
+    fn crowd(side: u32, count: i32) -> World {
+        let mut w = World::empty(
+            Calendar::new(10, 1_000_000).unwrap(),
+            Map::filled(side, side, Terrain::Grass),
+        );
+        for i in 0..count {
+            w.spawn_body(Pos::new(10 + (i % 100) * 2, 10 + (i / 100) * 2));
+        }
+        w
+    }
+
     #[test]
-    fn searches_beyond_the_cap_wait_their_turn_in_order() {
-        // Five bodies set off in one tick under a cap of two searches a
-        // tick: two walk at once, two the next tick, one the tick after,
-        // in the order asked; another intention is not kept waiting. The
-        // same twice over: the order never depends on anything else.
-        let mut rules = rules();
-        rules.movement.searches_per_tick = 2;
+    fn a_wave_of_five_thousand_orders_clears_in_a_few_ticks() {
+        // 5,000 bodies ordered in one tick, half to a target in sight
+        // thirty tiles off, half to one out of sight: under the cap of
+        // work, a search refused at once costing next to nothing, every
+        // one sets off within two ticks (forty searches a tick took 125).
+        // The same twice over, to the event.
+        let rules = rules();
         let run = || {
-            let mut w = open_field();
-            for y in 1..5 {
-                w.spawn_body(Pos::new(0, y));
-            }
-            for id in 1..=5 {
+            let mut w = crowd(400, 5000);
+            for id in 1..=5000u32 {
+                let at = w.body(BodyId(id)).expect("body").pos();
+                let target = if id % 2 == 0 {
+                    Pos::new(at.x + 30, at.y)
+                } else {
+                    Pos::new(at.x, at.y + 150)
+                };
                 w.queue(Intention::MoveTo {
                     body: BodyId(id),
-                    target: Pos::new(7, 7),
+                    target,
                 });
             }
-            w.queue(Intention::Sleep { body: BodyId(5) });
             let mut ticks = Vec::new();
             for _ in 0..3 {
                 let mut events = Vec::new();
@@ -2917,29 +3296,290 @@ mod tests {
             ticks
         };
         let ticks = run();
-        let walkers = |events: &[Event]| -> Vec<BodyId> {
-            events
-                .iter()
-                .filter_map(|e| match e {
-                    Event::BodyWalks { body, .. } => Some(*body),
-                    _ => None,
-                })
-                .collect()
-        };
-        assert_eq!(walkers(&ticks[0]), vec![BodyId(1), BodyId(2)]);
-        assert_eq!(walkers(&ticks[1]), vec![BodyId(3), BodyId(4)]);
-        assert_eq!(walkers(&ticks[2]), vec![BodyId(5)]);
-        assert!(
-            ticks[0].iter().any(|e| matches!(
-                e,
-                Event::ConditionChanged {
-                    body: BodyId(5),
-                    summary: (_, _, _, _, true)
-                }
-            )),
-            "body 5 fell asleep in the first tick, its walk still waiting"
-        );
+        let set_off: Vec<usize> = ticks.iter().map(|t| walkers(t).len()).collect();
+        assert_eq!(set_off.iter().sum::<usize>(), 5000, "{set_off:?}");
+        assert_eq!(set_off[2], 0, "all set off within two ticks: {set_off:?}");
+        assert!(set_off[0] >= 2500, "most in the first: {set_off:?}");
         assert_eq!(run(), ticks);
+    }
+
+    #[test]
+    fn players_are_served_before_npcs_under_saturation() {
+        // A cap of 400 tiles a tick, half for players; each walk here
+        // costs some thirty tiles. Forty NPC orders at once: the NPCs
+        // take the whole cap while no player asks. Five players order
+        // in the second tick, behind the NPCs' backlog: they all set off
+        // at once, first, and the NPCs keep their own half.
+        let mut rules = rules();
+        rules.movement.search_work_per_tick = 400;
+        rules.movement.player_share_percent = 50;
+        let mut w = crowd(200, 45);
+        w.set_piloted((41..=45).map(BodyId));
+        let order = |w: &mut World, id: u32| {
+            let at = w.body(BodyId(id)).expect("body").pos();
+            w.queue(Intention::MoveTo {
+                body: BodyId(id),
+                target: Pos::new(at.x + 30, at.y),
+            });
+        };
+        for id in 1..=40 {
+            order(&mut w, id);
+        }
+        let mut first = Vec::new();
+        w.step(&rules, &mut first);
+        let npcs_first = walkers(&first).len();
+        assert!(npcs_first > 6, "the players' spare share went to the NPCs");
+        for id in 41..=45 {
+            order(&mut w, id);
+        }
+        let mut second = Vec::new();
+        w.step(&rules, &mut second);
+        let walked = walkers(&second);
+        assert_eq!(walked[..5], (41..=45).map(BodyId).collect::<Vec<_>>()[..]);
+        let npcs = walked.len() - 5;
+        assert!(npcs > 0, "the NPCs keep their share: {walked:?}");
+        assert!(
+            npcs_first + npcs < 40,
+            "a backlog of NPCs still waits: {walked:?}"
+        );
+    }
+
+    #[test]
+    fn a_look_again_waits_its_turn_and_never_starves() {
+        // A cap of 100 tiles a tick and a flood of five new orders every
+        // tick, each some thirty tiles: the orders alone always fill it.
+        // The last body stopped with a goal: its look again joins the
+        // lane after the orders of its tick and runs before any order
+        // that came later; it never waits behind the bodies listed first.
+        let mut rules = rules();
+        rules.movement.search_work_per_tick = 100;
+        let mut w = crowd(200, 61);
+        let looker = BodyId(61);
+        let at = w.body(looker).expect("looker").pos();
+        let index = w.index_of(looker).expect("looker");
+        w.bodies[index].goal = Some(Goal {
+            target: Pos::new(at.x + 30, at.y + 30),
+            looked_from: u64::MAX,
+        });
+        let mut served = Vec::new();
+        for tick in 0..12u32 {
+            for id in tick * 5 + 1..=tick * 5 + 5 {
+                let at = w.body(BodyId(id)).expect("body").pos();
+                w.queue(Intention::MoveTo {
+                    body: BodyId(id),
+                    target: Pos::new(at.x + 30, at.y),
+                });
+            }
+            let mut events = Vec::new();
+            w.step(&rules, &mut events);
+            served.extend(walkers(&events));
+        }
+        let turn = served
+            .iter()
+            .position(|b| *b == looker)
+            .expect("the look again ran");
+        assert_eq!(
+            served[..turn],
+            (1..=5).map(BodyId).collect::<Vec<_>>()[..],
+            "after the orders of its own tick, before any later one"
+        );
+    }
+
+    /// Runs body 1 toward `target` until it arrives or says it is blocked,
+    /// at most `ticks` ticks; all the events.
+    fn walk_until_done(w: &mut World, rules: &Content, target: Pos, ticks: u32) -> Vec<Event> {
+        go(w, target);
+        let mut events = Vec::new();
+        for _ in 0..ticks {
+            w.step(rules, &mut events);
+            let body = w.body(BodyId(1)).expect("body 1");
+            if body.pos() == target && body.route.is_empty() || !blocks(&events).is_empty() {
+                break;
+            }
+        }
+        events
+    }
+
+    /// Body 1's thoughts among `events`, in order.
+    fn thoughts(events: &[Event]) -> Vec<Thought> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::BodyThinks {
+                    body: BodyId(1),
+                    thought,
+                    ..
+                } => Some(*thought),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A lake from the map's west edge to x = 180, from y = 100 to 250,
+    /// and a body at (150, 80) sent to (150, 280), behind it, out of
+    /// sight; its east end within sight of the bank, its far shore not.
+    fn lake_with_one_end_in_sight() -> (World, Pos) {
+        let mut map = Map::filled(300, 300, Terrain::Grass);
+        for y in 100..=250 {
+            for x in 0..=180 {
+                map.set(Pos::new(x, y), Terrain::Water);
+            }
+        }
+        let mut w = World::empty(Calendar::new(10, 1_000_000).unwrap(), map);
+        w.spawn_body(Pos::new(150, 80));
+        (w, Pos::new(150, 280))
+    }
+
+    #[test]
+    fn at_an_obstacle_with_no_way_in_sight_the_body_skirts_toward_its_end() {
+        // The body walks straight to the shore, sees no way past the lake
+        // and walks along it toward the end it sees (to its left, facing
+        // the target), some fifty tiles, staying by the water.
+        let rules = rules();
+        let (mut w, target) = lake_with_one_end_in_sight();
+        go(&mut w, target);
+        let mut events = Vec::new();
+        let mut skirt = None;
+        for _ in 0..2000 {
+            w.step(&rules, &mut events);
+            skirt = events.iter().find_map(|e| match e {
+                Event::BodyWalks { from, route, .. } if from.tile().y == 99 => {
+                    Some((*from, route.clone()))
+                }
+                _ => None,
+            });
+            if skirt.is_some() {
+                break;
+            }
+        }
+        let (from, route) = skirt.expect("it skirts from the shore");
+        assert_eq!(
+            thoughts(&events),
+            vec![Thought::Skirting { side: Side::Left }]
+        );
+        let end = route.last().expect("a walk").tile();
+        assert!(end.x > from.tile().x, "toward the lake's east end: {end:?}");
+        let along = (end.x - from.tile().x)
+            .abs()
+            .max((end.y - from.tile().y).abs());
+        assert!(
+            (30..=50).contains(&along),
+            "about fifty tiles along: {end:?}"
+        );
+        for p in &route {
+            let t = p.tile();
+            let by_water = (-3..=3).any(|dy| {
+                (-3..=3).any(|dx| w.map().get(Pos::new(t.x + dx, t.y + dy)) == Some(Terrain::Water))
+            });
+            assert!(by_water, "{t:?} stays by the water");
+        }
+    }
+
+    #[test]
+    fn after_one_skirt_with_no_way_seen_the_body_stops_and_says_it() {
+        // The same lake: from the end of its skirt the far shore is still
+        // out of sight. It looks once more, sees no way, stops for good
+        // and says so: no second skirt, no wandering.
+        let rules = rules();
+        let (mut w, target) = lake_with_one_end_in_sight();
+        go(&mut w, target);
+        let mut events = Vec::new();
+        for _ in 0..5000 {
+            w.step(&rules, &mut events);
+        }
+        assert_eq!(blocks(&events).len(), 1, "stops once, for good");
+        assert_eq!(
+            thoughts(&events),
+            vec![Thought::Skirting { side: Side::Left }, Thought::NoWay]
+        );
+        let walks = events
+            .iter()
+            .filter(|e| matches!(e, Event::BodyWalks { .. }))
+            .count();
+        assert_eq!(walks, 2, "to the shore, then along it once");
+        let body = w.body(BodyId(1)).expect("body 1");
+        assert_eq!((body.goal, body.skirted), (None, Skirted::Not));
+        let blocked = events
+            .iter()
+            .position(|e| matches!(e, Event::BodyBlocked { .. }))
+            .expect("blocked");
+        assert!(
+            matches!(
+                events[blocked + 1],
+                Event::BodyThinks {
+                    thought: Thought::NoWay,
+                    ..
+                }
+            ),
+            "it thinks it right after"
+        );
+    }
+
+    #[test]
+    fn from_the_end_of_its_skirt_the_body_takes_a_ford_it_sees() {
+        // A river across the whole map, its ford 70 tiles east of where
+        // the body meets it: out of sight from there. The target lies a
+        // little east, across, out of sight. The body skirts east (the
+        // bank toward the target), sees the ford from the end of its skirt,
+        // crosses and arrives; it thinks "skirting", then "a way seen",
+        // and nothing more.
+        let rules = rules();
+        let mut map = Map::filled(400, 300, Terrain::Grass);
+        for y in 100..=104 {
+            for x in 0..400 {
+                map.set(Pos::new(x, y), Terrain::Water);
+            }
+            for x in 268..=272 {
+                map.set(Pos::new(x, y), Terrain::Ford);
+            }
+        }
+        let mut w = World::empty(Calendar::new(10, 1_000_000).unwrap(), map);
+        w.spawn_body(Pos::new(200, 90));
+        let target = Pos::new(230, 200);
+        go(&mut w, target);
+        let mut events = Vec::new();
+        for _ in 0..10_000 {
+            w.step(&rules, &mut events);
+            if w.body(BodyId(1)).expect("body 1").pos() == target && blocks(&events).is_empty() {
+                break;
+            }
+        }
+        assert_eq!(blocks(&events), vec![], "never blocked");
+        assert_eq!(w.body(BodyId(1)).expect("body 1").pos(), target);
+        assert_eq!(
+            thoughts(&events),
+            vec![Thought::Skirting { side: Side::Left }, Thought::WaySeen]
+        );
+    }
+
+    #[test]
+    fn thoughts_come_in_the_order_of_the_decisions() {
+        // Each thought follows the walk it decides, at the place it is
+        // about: skirting at the end of the skirt, the stop where it
+        // stands.
+        let rules = rules();
+        let (mut w, target) = lake_with_one_end_in_sight();
+        go(&mut w, target);
+        let mut events = Vec::new();
+        for _ in 0..5000 {
+            w.step(&rules, &mut events);
+        }
+        let mut last_walk_end = None;
+        let mut seen = Vec::new();
+        for e in &events {
+            match e {
+                Event::BodyWalks { route, .. } => last_walk_end = route.last().copied(),
+                Event::BodyThinks { thought, at, .. } => {
+                    match thought {
+                        Thought::Skirting { .. } => assert_eq!(Some(*at), last_walk_end),
+                        _ => assert_eq!(*at, w.body(BodyId(1)).expect("body 1").at),
+                    }
+                    seen.push(*thought);
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(seen.len(), 2);
     }
 
     #[test]

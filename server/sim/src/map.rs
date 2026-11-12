@@ -16,9 +16,7 @@
 // `FinePos::distance_to` and `line_clear` allow floats where they stand.
 
 use std::cmp::Reverse;
-#[cfg(test)]
-use std::collections::VecDeque;
-use std::collections::{BTreeMap, BinaryHeap, HashMap};
+use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 use std::hash::{BuildHasherDefault, Hasher};
 
 use serde::{Deserialize, Serialize};
@@ -674,7 +672,7 @@ impl Map {
 
     /// The A* search behind [`Map::path`], [`Map::path_within`] and
     /// [`Map::path_around`], with the number of tiles it expanded.
-    fn search(
+    pub(crate) fn search(
         &self,
         from: Pos,
         to: Pos,
@@ -871,6 +869,220 @@ impl Map {
         route
     }
 
+    /// Where the straight line from `from` toward `to` comes out past
+    /// the first tile it may not enter (`open` says which it may), within
+    /// `reach` tiles of `from` on each axis: the first open tile beyond,
+    /// looked for every quarter metre along the line (D32). `None` when
+    /// the line is clear, or still barred where it leaves that square.
+    // Not generation: floats, as in `first_block`.
+    #[allow(clippy::float_arithmetic)]
+    pub fn past_obstacle(
+        &self,
+        from: FinePos,
+        to: FinePos,
+        reach: i32,
+        open: impl Fn(Pos) -> bool,
+    ) -> Option<Pos> {
+        /// Millimetres between two points looked at past the obstacle.
+        const STEP: f64 = 250.0;
+        let start = from.tile();
+        let t = first_block(from, to, |p| p == start || open(p))?;
+        let length = from.distance_to(to);
+        if length <= 0.0 {
+            return None;
+        }
+        let within = |p: Pos| (p.x - start.x).abs() <= reach && (p.y - start.y).abs() <= reach;
+        let mut along_t = t;
+        let mut barred = false;
+        while along_t <= 1.0 {
+            let tile = along(from, to, along_t).tile();
+            if !within(tile) {
+                return None;
+            }
+            if tile != start && !open(tile) {
+                barred = true;
+            } else if barred && open(tile) {
+                return Some(tile);
+            }
+            along_t += STEP / length;
+        }
+        None
+    }
+
+    /// The way along an obstacle for a body that stands before it at `at`
+    /// on its way toward `toward` and sees no way past it (D32): the
+    /// obstacle is the patch of ground it may not enter right ahead (the
+    /// tile nearest the point a metre ahead on its line, within
+    /// [`SKIRT_SIDE`] tiles), as far as it spreads within `reach` tiles
+    /// of `at`; the bank is the open ground within [`SKIRT_SIDE`] tiles of
+    /// it, never a trunk's tile. Along the bank, each way from where the
+    /// body stands, the point farthest along within five sixths of
+    /// `reach` steps; of the two, the one nearer `toward` as the crow
+    /// flies (where the bank turns toward the target, or rounds the
+    /// obstacle's end), on a tie the side where less of the obstacle is
+    /// in sight (it ends sooner), then the right. The side and the tile path to
+    /// that point, not including the start; `None` when there is no
+    /// obstacle ahead or no bank at least three steps long.
+    // Not generation: the heading's length is a float, as elsewhere in
+    // walking.
+    #[allow(
+        clippy::float_arithmetic,
+        clippy::cast_possible_truncation,
+        clippy::too_many_lines
+    )]
+    pub fn skirt(
+        &self,
+        at: FinePos,
+        toward: Pos,
+        reach: i32,
+        cost: impl Fn(Terrain) -> Option<u32>,
+        blocked: impl Fn(Pos) -> bool,
+    ) -> Option<(Side, Vec<Pos>)> {
+        let start = at.tile();
+        let side_len = 2 * reach + 1;
+        let index = |p: Pos| -> Option<usize> {
+            let (x, y) = (p.x - start.x + reach, p.y - start.y + reach);
+            (x >= 0 && y >= 0 && x < side_len && y < side_len)
+                .then(|| usize::try_from(y * side_len + x).expect("within the square"))
+        };
+        let pos_at = |i: usize| {
+            let i = i32::try_from(i).expect("a small square");
+            Pos::new(
+                start.x - reach + i % side_len,
+                start.y - reach + i / side_len,
+            )
+        };
+        let barred = |p: Pos| self.get(p).is_some_and(|t| cost(t).is_none());
+        let open = |p: Pos| !blocked(p) && self.get(p).and_then(&cost).is_some();
+        // The obstacle right ahead.
+        let goal = toward.centre();
+        let length = at.distance_to(goal);
+        if length <= 0.0 {
+            return None;
+        }
+        let ahead = along(at, goal, (f64::from(MM_PER_TILE) / length).min(1.0));
+        let mut first = None;
+        for dy in -SKIRT_SIDE..=SKIRT_SIDE {
+            for dx in -SKIRT_SIDE..=SKIRT_SIDE {
+                let p = Pos::new(start.x + dx, start.y + dy);
+                if barred(p) {
+                    let near = squared(p.centre(), ahead);
+                    if first.is_none_or(|(d, _)| near < d) {
+                        first = Some((near, p));
+                    }
+                }
+            }
+        }
+        let (_, first) = first?;
+        // As far as it spreads in sight, and the bank along it.
+        let cells = usize::try_from(side_len * side_len).expect("a small square");
+        let mut obstacle = vec![false; cells];
+        let mut bank = vec![false; cells];
+        let mut todo = VecDeque::from([first]);
+        obstacle[index(first)?] = true;
+        while let Some(p) = todo.pop_front() {
+            for dy in -SKIRT_SIDE..=SKIRT_SIDE {
+                for dx in -SKIRT_SIDE..=SKIRT_SIDE {
+                    if let Some(i) = index(Pos::new(p.x + dx, p.y + dy)) {
+                        bank[i] = true;
+                    }
+                }
+            }
+            for next in p.neighbours() {
+                if let Some(i) = index(next)
+                    && !obstacle[i]
+                    && barred(next)
+                {
+                    obstacle[i] = true;
+                    todo.push_back(next);
+                }
+            }
+        }
+        // Along the bank from where the body stands, each tile on the side
+        // of the first step that reached it.
+        let heading = (toward.x - start.x, toward.y - start.y);
+        let side_of = |p: Pos| {
+            let (vx, vy) = (p.x - start.x, p.y - start.y);
+            if heading.0 * vy - heading.1 * vx < 0 {
+                Side::Left
+            } else {
+                Side::Right
+            }
+        };
+        let walkable = |p: Pos| p == start || open(p);
+        let on_bank = |p: Pos| index(p).is_some_and(|i| bank[i] && !obstacle[i]) && walkable(p);
+        let mut steps = vec![u32::MAX; cells];
+        let mut from = vec![usize::MAX; cells];
+        let mut sides = vec![Side::Right; cells];
+        let origin = index(start)?;
+        steps[origin] = 0;
+        let mut todo = VecDeque::from([start]);
+        let most = u32::try_from((reach * 5 / 6).max(3)).unwrap_or(3);
+        while let Some(p) = todo.pop_front() {
+            let i = index(p)?;
+            if steps[i] >= most {
+                continue;
+            }
+            for next in p.neighbours() {
+                if !on_bank(next) {
+                    continue;
+                }
+                if p.is_diagonal_to(next)
+                    && (!walkable(Pos::new(p.x, next.y)) || !walkable(Pos::new(next.x, p.y)))
+                {
+                    continue; // no cutting corners
+                }
+                let j = index(next)?;
+                if steps[j] != u32::MAX {
+                    continue;
+                }
+                steps[j] = steps[i] + 1;
+                from[j] = i;
+                sides[j] = if i == origin { side_of(next) } else { sides[i] };
+                todo.push_back(next);
+            }
+        }
+        // Each side's farthest point, then the better of the two.
+        let mut best: [Option<(u32, u32, usize)>; 2] = [None, None];
+        for (i, &n) in steps.iter().enumerate() {
+            if n == u32::MAX || n < 3 {
+                continue;
+            }
+            let k = usize::from(sides[i] == Side::Right);
+            let crow = octile(pos_at(i), toward);
+            let better = best[k].is_none_or(|(m, c, _)| n > m || n == m && crow < c);
+            if better {
+                best[k] = Some((n, crow, i));
+            }
+        }
+        // Of the two, nearer the target; on a tie, where the obstacle in
+        // sight ends sooner (less of it on that side); then the right.
+        let mut spread = [0u32; 2];
+        for (i, _) in obstacle.iter().enumerate().filter(|(_, p)| **p) {
+            spread[usize::from(side_of(pos_at(i)) == Side::Right)] += 1;
+        }
+        let (side, end) = match best {
+            [None, None] => return None,
+            [Some((_, _, i)), None] => (Side::Left, i),
+            [None, Some((_, _, i))] => (Side::Right, i),
+            [Some((_, l, li)), Some((_, r, ri))] => {
+                if (l, spread[0]) < (r, spread[1]) {
+                    (Side::Left, li)
+                } else {
+                    (Side::Right, ri)
+                }
+            }
+        };
+        let mut path = Vec::new();
+        let mut i = end;
+        while i != origin {
+            path.push(pos_at(i));
+            i = from[i];
+        }
+        path.reverse();
+        Some((side, path))
+    }
+
     /// The way round the obstacle a straight walk from `a` toward `b`
     /// meets at `t` (0 at `a`, 1 at `b`), from `stop` short of it back to
     /// the line beyond it: the waypoints, the last of them the point on
@@ -985,6 +1197,21 @@ pub fn line_reach(a: FinePos, b: FinePos, allowed: impl Fn(Pos) -> bool) -> Fine
 
 /// How far before an obstacle a straight walk stops, in millimetres.
 const SHORT_OF: f64 = 300.0;
+
+/// How near the obstacle, in tiles on each axis, the bank a body skirts
+/// along runs ([`Map::skirt`]).
+pub const SKIRT_SIDE: i32 = 2;
+
+/// Which way a body goes along an obstacle, as it faces its target
+/// ([`Map::skirt`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Side {
+    /// To its left.
+    Left,
+    /// To its right.
+    Right,
+}
 
 /// Tiles around the stop, on each axis, a straight walk's sidestep looks
 /// within ([`Map::walk_straight`]): a trunk or a bush is stepped round in

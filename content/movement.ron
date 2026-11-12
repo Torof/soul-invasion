@@ -15,12 +15,14 @@
 //                      open walkable tile among its own and the eight
 //                      around it, so at a wood's edge it sees out (D32). A
 //                      way round (a ford, a bridge, the end of a pond) is
-//                      taken only within that square; past it the body
-//                      walks straight toward its target, stops at the
-//                      first thing in the way and looks again from there,
-//                      as long as each look is nearer the target than the
-//                      last; then the player finds the way: exploring and
-//                      knowing the ways is the game. 60 m in the open,
+//                      taken only within that square. Past it the body
+//                      walks straight toward its target. Stopped before
+//                      an obstacle with no way past it in sight, it picks
+//                      a side and walks along it once, about five sixths
+//                      of its sight, and looks again there: a way seen is
+//                      taken, otherwise it stops and says so, and the
+//                      player finds the way: exploring and knowing the
+//                      ways is the game. 60 m in the open,
 //                      25 m in the heart of a wood. A body never
 //                      stands on water or rock; their values apply only to
 //                      a body put there by mistake. Every terrain must
@@ -30,10 +32,20 @@
 //                      round an obstacle up to thirty or forty tiles
 //                      across in the open; the search then costs under
 //                      half a millisecond however it ends.
-// searches_per_tick:   path searches the world runs in one tick at most;
-//                      the rest wait for the next tick, in the order they
-//                      came. A click waits a tick or two at worst when a
-//                      whole tribe sets off at once.
+// search_work_per_tick: tiles all the path searches of one tick may
+//                      expand in all (forty searches at their whole
+//                      budget). A search refused at once (a target out of
+//                      sight) costs next to nothing, so a wave of
+//                      thousands of orders clears in a few ticks. The
+//                      rest wait for the next tick in their lane, in the
+//                      order they came, looks again included; the search
+//                      at the head of a lane runs even past what is left,
+//                      the next tick repaying the excess: none waits for
+//                      ever.
+// player_share_percent: the part of that work kept for the bodies a
+//                      player pilots; NPCs and animals have the rest. A
+//                      lane that does not use its part leaves it to the
+//                      other.
 (
     carry_capacity_g: 20000,
     speed_percent_at_full_load: 60,
@@ -47,7 +59,8 @@
         rock: 60,
     },
     path_budget_tiles: 1500,
-    searches_per_tick: 40,
+    search_work_per_tick: 60000,
+    player_share_percent: 50,
     terrain_costs: {
         grass: Some(10),
         forest: Some(15),
