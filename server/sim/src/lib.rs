@@ -1524,6 +1524,14 @@ impl World {
                 c.fatigue.raise(step(needs.fatigue_per_day_awake));
                 if c.fatigue.is_full() {
                     c.asleep = true;
+                    // Collapsing on its way, it stops there: told as any
+                    // stop, or those who saw it set off would walk it on.
+                    if !body.route.is_empty() {
+                        events.push(Event::BodyStopped {
+                            body: body.id,
+                            at: body.at,
+                        });
+                    }
                     body.route.clear();
                     body.goal = None;
                     body.skirted = Skirted::Not;
@@ -3753,6 +3761,38 @@ mod tests {
         w.advance(340, &rules(), &mut events);
         assert!(!condition(&w).asleep);
         assert!(condition(&w).fatigue.points() <= 1);
+    }
+
+    #[test]
+    fn a_body_collapsing_on_its_way_is_told_to_stop_there() {
+        let mut w = World::empty(
+            Calendar::new(10, 100).unwrap(), // 1000 ticks per day
+            Map::filled(40, 4, Terrain::Grass),
+        );
+        w.spawn_body(Pos::new(1, 1));
+        let mut events = Vec::new();
+        // Nearly worn out (full after 5/6 of a day), then sent far.
+        w.advance(825, &rules(), &mut events);
+        events.clear();
+        go(&mut w, Pos::new(38, 1));
+        w.advance(20, &rules(), &mut events);
+        assert!(condition(&w).asleep, "{:?}", condition(&w));
+        let body = w.body(BodyId(1)).unwrap();
+        assert!(!body.is_walking(), "collapsed");
+        assert!(body.pos().x < 38, "short of the target");
+        let stop = events.iter().position(
+            |e| matches!(e, Event::BodyStopped { body: BodyId(1), at } if *at == body.at()),
+        );
+        let walk = events.iter().position(|e| {
+            matches!(
+                e,
+                Event::BodyWalks {
+                    body: BodyId(1),
+                    ..
+                }
+            )
+        });
+        assert!(walk < stop && walk.is_some(), "{events:?}");
     }
 
     #[test]
