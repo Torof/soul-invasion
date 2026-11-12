@@ -18,6 +18,10 @@ var _body := -1
 var _state := "connecting…"
 var _clock := GameClock.new()
 var _has_clock := false
+## The bubbles, set by the main scene: beside this panel in the
+## interface, shown even while it is hidden.
+var speech: SpeechBubble
+var thoughts: ThoughtBubble
 
 
 func _ready() -> void:
@@ -28,7 +32,7 @@ func _ready() -> void:
 	Net.body_condition.connect(_on_body_condition)
 	Net.body_died.connect(_on_body_died)
 	Net.body_assigned.connect(_on_body_assigned)
-	Net.move_refused.connect(func(_body: int, x: int, y: int) -> void: set_state("cannot walk to (%d, %d)" % [x, y]))
+	Net.move_refused.connect(func(_body: int, x: int, y: int, _reason: String) -> void: set_state("cannot walk to (%d, %d)" % [x, y]))
 	Net.act_refused.connect(_on_act_refused)
 	Net.disconnected.connect(set_state)
 	_refresh()
@@ -105,3 +109,18 @@ func _refresh() -> void:
 func _refresh_clock() -> void:
 	var hm := GameClock.time_of_day(_clock.tick_at(Time.get_ticks_msec()), _clock.ticks_per_day)
 	_clock_label.text = "Day %d · %02d:%02d · %s" % [_day, hm.x, hm.y, "night" if _night else "day"]
+
+
+## `speaker` says `line`, in the speech bubble on the left: the way in for
+## players and NPCs when they talk.
+func say(speaker: String, line: String) -> void:
+	if speech != null:
+		speech.say(speaker, line)
+
+
+## The piloted body thinks `line`, in the thought bubble at the top
+## right; tied to the place `at` (mm) when `placed`, so a click takes the
+## camera there.
+func think(line: String, at: Vector2 = Vector2.ZERO, placed: bool = false) -> void:
+	if thoughts != null:
+		thoughts.think(line, at, placed)

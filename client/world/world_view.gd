@@ -90,6 +90,15 @@ signal hovered(text: String)
 signal acts_requested(acts: Array, at_screen: Vector2)
 ## A development teleport was asked (the ground there is on its way).
 signal teleporting
+## The camera starts or stops following the piloted body (the recentre
+## button shows while it does not).
+signal following_changed(following: bool)
+## The piloted body thinks `line`, about the place `at` (mm): its way
+## barred (ThoughtBubble).
+signal thinks(line: String, at: Vector2)
+## Someone says `line` (SpeechBubble). PLACEHOLDER (--dev only): body 3
+## greeting the piloted body (DevGreeter), until NPCs really talk.
+signal speaks(speaker: String, line: String)
 ## body id -> {"id", "material"} of what it holds, or {}
 var _holds: Dictionary = {}
 ## chunk -> the trees standing in it (Trees.Stand).
@@ -186,7 +195,17 @@ var _piloted := -1
 ## Where the piloted body was asked to go, highlighted until it gets there.
 var _target := Vector2i(-1, -1)
 ## The camera follows the piloted body until the player drags it.
-var _following := true
+var _following := true:
+	set(value):
+		if value != _following:
+			_following = value
+			following_changed.emit(value)
+## The camera's glide back to the body (recentre) or to a place (a
+## thought clicked, toward `_glide_to`, in world pixels).
+var _glide := CameraGlide.new()
+var _glide_to := Vector2.ZERO
+## PLACEHOLDER (--dev only): body 3 greets the piloted body near it.
+var _greeter := DevGreeter.new()
 ## Has the camera been put somewhere sensible since the last world state?
 var _camera_placed := false
 var _dragging := false
@@ -261,7 +280,7 @@ func _ready() -> void:
 	Net.item_removed.connect(_on_item_removed)
 	Net.night_fell.connect(func(_day: int) -> void: _set_night(true))
 	Net.day_started.connect(func(_day: int, _tick: int) -> void: _set_night(false))
-	Net.move_refused.connect(func(_body: int, _x: int, _y: int) -> void: _clear_target())
+	Net.move_refused.connect(_on_move_refused)
 	Net.body_blocked.connect(_on_body_blocked)
 	Net.connected.connect(func(_tick: int, body: int) -> void: _piloted = body)
 
@@ -798,6 +817,7 @@ func acts_on(tile: Vector2i) -> Array:
 ## Frames a tile and stops following the body (development screenshots).
 func look_at_tile(tile: Vector2i) -> void:
 	_following = false
+	_glide.stop()
 	_camera_placed = true
 	_camera.position = Iso.tile_to_screen(tile.x, tile.y)
 	_clamp_camera()
@@ -947,12 +967,40 @@ func _on_body_stopped(body: int, at: Vector2) -> void:
 	queue_redraw()
 
 
-## The piloted body stopped for good short of its target: it says why.
+## The piloted body stopped for good short of its target: it thinks why,
+## and a cross marks where it stands.
 func _on_body_blocked(body: int, at: Vector2, _x: int, _y: int, reason: String) -> void:
 	if body != _piloted:
 		return
 	_clear_target()
-	_blocked.tell(BlockedNotice.words(reason), at)
+	_blocked.mark(at)
+	thinks.emit(UiWords.blocked(reason), at)
+
+
+## An order refused at once (the body at the bank, sent across the
+## water): it thinks why, as when it stops on the way (protocol v21).
+func _on_move_refused(body: int, _x: int, _y: int, reason: String) -> void:
+	_clear_target()
+	if body != _piloted or not _bodies.has(body):
+		return
+	var at: Vector2 = _bodies[body]["at"]
+	_blocked.mark(at)
+	thinks.emit(UiWords.blocked(reason), at)
+
+
+## The camera glides back to the piloted body and follows it again (the
+## recentre button, the space key).
+func recentre() -> void:
+	_following = true
+	_glide.start(_camera.position)
+
+
+## The camera glides to `at` (mm) and stays there (a thought clicked).
+func glide_to(at: Vector2) -> void:
+	_following = false
+	_camera_placed = true
+	_glide_to = Iso.point_to_screen(at)
+	_glide.start(_camera.position)
 
 
 func _on_body_left(body: int) -> void:
@@ -1009,6 +1057,19 @@ func plants_on(tile: Vector2i) -> Array:
 		if _tile_of(Vector2(plants[i + 1], plants[i + 2])) == tile:
 			kinds.append(plants[i])
 	return kinds
+
+
+## PLACEHOLDER (--dev only), until NPCs really talk: body 3 greets the
+## piloted body coming near it (DevGreeter).
+func _greet() -> void:
+	var distance := INF
+	if _piloted != DevGreeter.SPEAKER and _bodies.has(_piloted) and _bodies.has(DevGreeter.SPEAKER):
+		var mine: Vector2 = _bodies[_piloted]["at"]
+		var theirs: Vector2 = _bodies[DevGreeter.SPEAKER]["at"]
+		distance = mine.distance_to(theirs)
+	var line := _greeter.look(distance, Time.get_ticks_msec())
+	if not line.is_empty():
+		speaks.emit(UiWords.body_name(DevGreeter.SPEAKER), line)
 
 
 ## Zoom clamped to the allowed range.
@@ -1070,8 +1131,15 @@ func _step(delta: float) -> void:
 		if BodyWalk.advance(_bodies[id], delta, now):
 			moving = true
 	_pan(delta)
-	if _following and _bodies.has(_piloted):
+	if _glide.active:
+		var to := _glide_to
+		if _following and _bodies.has(_piloted):
+			to = Iso.point_to_screen(_bodies[_piloted]["at"])
+		_camera.position = _glide.step(delta, to)
+	elif _following and _bodies.has(_piloted):
 		_camera.position = Iso.point_to_screen(_bodies[_piloted]["at"])
+	if Net.dev:
+		_greet()
 	# The tree images read on a worker thread come in, the stands that
 	# waited for them are built and the images no chunk held for the grace
 	# are freed (Trees.poll): the built stands' trees show from this frame.
@@ -1108,6 +1176,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			if event.position.distance_to(_drag_start) > 4.0:
 				_dragged = true
 				_following = false
+				_glide.stop()
 		var tile := Iso.screen_to_tile(get_local_mouse_position())
 		if tile != _hover:
 			_hover = tile
@@ -1145,7 +1214,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventKey and event.pressed:
 		match event.keycode:
 			KEY_SPACE:
-				_following = true
+				recentre()
 			KEY_E:
 				var food := food_within_reach()
 				if food >= 0:
