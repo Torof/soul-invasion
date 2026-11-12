@@ -1031,6 +1031,18 @@ impl Shared {
         }
     }
 
+    /// The bodies a connection pilots, in id order: told to the
+    /// simulation before each tick, their path searches take the
+    /// players' lane (D32).
+    pub fn piloted(&self) -> Vec<BodyId> {
+        self.pilots
+            .lock()
+            .expect("pilot set not poisoned")
+            .keys()
+            .map(|id| BodyId(*id))
+            .collect()
+    }
+
     /// Gives the connection the free body with the lowest id, if any.
     fn take_body(&self, private: mpsc::Sender<ServerMessage>) -> Option<u32> {
         let mut pilots = self.pilots.lock().expect("pilot set not poisoned");

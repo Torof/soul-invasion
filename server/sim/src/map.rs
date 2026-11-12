@@ -672,9 +672,108 @@ impl Map {
         self.search(from, to, reach, budget, cost, blocked).0
     }
 
+    /// A look for a way round an obstacle whose end is not in sight
+    /// (D32, a real-time heuristic search after LSS-LRTA*): an A* from
+    /// `from` toward `to` within `reach` tiles on each axis and `budget`
+    /// tiles expanded, `to` in sight or not. Reaching `to`, it gives that
+    /// path. Otherwise it gives the path to the best point to go on from:
+    /// a tile on the edge of the square (the edge of what the body sees)
+    /// with the least walking cost from `from` plus estimate to `to`,
+    /// that is not ground `looked_over` already for this goal, and that
+    /// either lies beside ground the body may not enter (within
+    /// [`SKIRT_SIDE`] tiles: the obstacle going on out of sight) or
+    /// looks on toward `to` with nothing in the way as far as it sees,
+    /// now or from its earlier looks (past the obstacle's end). Nothing when no such tile was reached.
+    /// The ground looked over is searched last, its estimate raised past
+    /// anything in sight, as a real-time search learns that a place it
+    /// explored leads nowhere better. The A* expands the rest by walking
+    /// cost plus estimate, never decreasing, so the first such tile it
+    /// expands is the best and it stops there; ties go to the tile
+    /// expanded first, the same on every machine. Also gives the tiles it
+    /// expanded, as ground looked over, and how many.
+    pub fn skirt(
+        &self,
+        from: Pos,
+        to: Pos,
+        (reach, budget): (i32, u32),
+        (cost, blocked): (impl Fn(Terrain) -> Option<u32>, impl Fn(Pos) -> bool),
+        looked_over: &LookedOver,
+    ) -> (Sighting, Look, u32) {
+        let mut look = Look::new(from, reach);
+        if from == to {
+            return (Sighting::Arrives(Vec::new()), look, 0);
+        }
+        if self.get(from).and_then(&cost).is_none() {
+            return (Sighting::Nothing, look, 0);
+        }
+        let within = |p: Pos| (p.x - from.x).abs() <= reach && (p.y - from.y).abs() <= reach;
+        let edge = |p: Pos| (p.x - from.x).abs() == reach || (p.y - from.y).abs() == reach;
+        let walkable = |p: Pos| self.get(p).and_then(&cost).is_some();
+        let raise = |p: Pos| {
+            if looked_over.contains(p) {
+                LOOKED_OVER
+            } else {
+                0
+            }
+        };
+        let beside = |p: Pos| {
+            (-SKIRT_SIDE..=SKIRT_SIDE).any(|dy| {
+                (-SKIRT_SIDE..=SKIRT_SIDE).any(|dx| {
+                    self.get(Pos::new(p.x + dx, p.y + dy))
+                        .is_some_and(|t| cost(t).is_none())
+                })
+            })
+        };
+        // On toward the target from `p`, as far as the body sees, now or
+        // from where it looked before for this goal.
+        let open_ahead = |p: Pos| {
+            let (a, b) = (p.centre(), to.centre());
+            let far = i64::from(reach) * 3;
+            let (dx, dy) = (i64::from(b.x - a.x), i64::from(b.y - a.y));
+            let tiles = (dx.abs().max(dy.abs()) / i64::from(MM_PER_TILE)).max(1);
+            let b = if tiles > far {
+                FinePos::new(
+                    a.x + i32::try_from(dx * far / tiles).unwrap_or(0),
+                    a.y + i32::try_from(dy * far / tiles).unwrap_or(0),
+                )
+            } else {
+                b
+            };
+            line_clear(a, b, |q| {
+                q == p || !within(q) && !looked_over.saw(q) || walkable(q)
+            })
+        };
+        let mut best = None;
+        let (found, expanded, mut reached) = self.explore(
+            from,
+            to,
+            (reach, budget),
+            (&cost, &blocked, raise),
+            |tile| {
+                look.mark(tile);
+                let go_on = tile != from
+                    && edge(tile)
+                    && !looked_over.contains(tile)
+                    && (beside(tile) || open_ahead(tile));
+                if go_on {
+                    best = Some(tile);
+                }
+                go_on
+            },
+        );
+        let sighting = if found {
+            Sighting::Arrives(reached.walk_back(from, to))
+        } else if let Some(tile) = best {
+            Sighting::Edge(reached.walk_back(from, tile))
+        } else {
+            Sighting::Nothing
+        };
+        (sighting, look, expanded)
+    }
+
     /// The A* search behind [`Map::path`], [`Map::path_within`] and
     /// [`Map::path_around`], with the number of tiles it expanded.
-    fn search(
+    pub(crate) fn search(
         &self,
         from: Pos,
         to: Pos,
@@ -697,14 +796,45 @@ impl Map {
         if !within(to) || self.get(from).and_then(&cost).is_none() || cost_at(to).is_none() {
             return (None, 0);
         }
+        let (found, expanded, mut reached) =
+            self.explore(from, to, (reach, budget), (&cost, &blocked, |_| 0), |_| {
+                false
+            });
+        (found.then(|| reached.walk_back(from, to)), expanded)
+    }
+
+    /// The A* itself, from `from` toward `to` within `reach` tiles of
+    /// `from` on each axis and at most `budget` tiles expanded: whether it
+    /// reached `to`, the tiles it expanded, and what it reached. The
+    /// estimate of a tile is raised by `raise`, zero for a plain A*. Each
+    /// tile it expands is shown to `stop_at`, in the order of its walking
+    /// cost from `from` plus estimate to `to`, never decreasing (the
+    /// estimate never drops by more than a step costs); the search stops
+    /// there when it says so.
+    fn explore(
+        &self,
+        from: Pos,
+        to: Pos,
+        (reach, budget): (i32, u32),
+        (cost, blocked, raise): (
+            impl Fn(Terrain) -> Option<u32>,
+            impl Fn(Pos) -> bool,
+            impl Fn(Pos) -> u32,
+        ),
+        mut stop_at: impl FnMut(Pos) -> bool,
+    ) -> (bool, u32, Reached) {
+        let within = |pos: Pos| (pos.x - from.x).abs() <= reach && (pos.y - from.y).abs() <= reach;
+        let cost_at = |pos: Pos| {
+            if blocked(pos) {
+                None
+            } else {
+                self.get(pos).and_then(&cost)
+            }
+        };
         // The heuristic must not overestimate: scale it by the cheapest
         // terrain there is.
-        let cheapest = Terrain::ALL
-            .iter()
-            .filter_map(|t| cost(*t))
-            .min()
-            .unwrap_or(STRAIGHT_COST);
-        let estimate = |a: Pos| octile(a, to) * cheapest / STRAIGHT_COST;
+        let cheapest = cheapest(&cost);
+        let estimate = |a: Pos| octile(a, to) * cheapest / STRAIGHT_COST + raise(a);
         // A* with an octile heuristic. Ties break on insertion order so
         // the path is the same on every machine.
         let mut reached = Reached::default();
@@ -716,7 +846,7 @@ impl Map {
 
         while let Some(Reverse((guess, _, here))) = open.pop() {
             if here == to {
-                return (Some(reached.walk_back(from, to)), expanded);
+                return (true, expanded, reached);
             }
             let cost_here = reached.cost(here);
             if guess > cost_here + estimate(here) {
@@ -728,7 +858,10 @@ impl Map {
             expanded += 1;
             if expanded > budget {
                 // The effort is spent: the body walks straight instead.
-                return (None, expanded);
+                return (false, expanded, reached);
+            }
+            if stop_at(here) {
+                return (false, expanded, reached);
             }
             for (step, next) in (0u8..).zip(here.neighbours()) {
                 if !within(next) {
@@ -754,7 +887,7 @@ impl Map {
                 }
             }
         }
-        (None, expanded)
+        (false, expanded, reached)
     }
 
     /// Pulls a tile path taut into straight segments from `from`: each
@@ -1290,6 +1423,125 @@ impl Hasher for ChunkHasher {
     fn write_i32(&mut self, n: i32) {
         self.mix(u64::from(n.cast_unsigned()));
     }
+}
+
+/// Side of the blocks, in tiles, in which a look keeps the ground it
+/// expanded ([`Look`]).
+const LOOK_BLOCK: i32 = 4;
+
+/// The ground one look for a way round expanded ([`Map::skirt`]): blocks
+/// of four tiles on a side within the square it looked in,
+/// one bit each, 128 bytes for a sight of 60 tiles.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Look {
+    /// The square's first corner.
+    corner: Pos,
+    /// Blocks on a side.
+    side: i32,
+    bits: Vec<u64>,
+}
+
+impl Look {
+    fn new(centre: Pos, reach: i32) -> Self {
+        let side = (2 * reach + LOOK_BLOCK) / LOOK_BLOCK;
+        let blocks = usize::try_from(side * side).unwrap_or(0);
+        Self {
+            corner: Pos::new(centre.x - reach, centre.y - reach),
+            side,
+            bits: vec![0; blocks.div_ceil(64)],
+        }
+    }
+
+    /// The bit of the block holding `p`, if `p` is within the square.
+    fn bit(&self, p: Pos) -> Option<usize> {
+        let (bx, by) = (
+            (p.x - self.corner.x).div_euclid(LOOK_BLOCK),
+            (p.y - self.corner.y).div_euclid(LOOK_BLOCK),
+        );
+        if bx < 0 || by < 0 || bx >= self.side || by >= self.side {
+            return None;
+        }
+        usize::try_from(by * self.side + bx).ok()
+    }
+
+    fn mark(&mut self, p: Pos) {
+        if let Some(bit) = self.bit(p) {
+            self.bits[bit / 64] |= 1 << (bit % 64);
+        }
+    }
+
+    fn contains(&self, p: Pos) -> bool {
+        self.bit(p)
+            .is_some_and(|bit| self.bits[bit / 64] & (1 << (bit % 64)) != 0)
+    }
+}
+
+/// The ground a body skirting obstacles has looked over for its goal
+/// (D32): the [`Look`]s it took, a few hundred bytes each.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LookedOver(Vec<Look>);
+
+impl LookedOver {
+    /// Has any of its looks expanded the block holding `p`?
+    pub fn contains(&self, p: Pos) -> bool {
+        self.0.iter().any(|look| look.contains(p))
+    }
+
+    /// Was `p` in sight from any of its looks?
+    pub fn saw(&self, p: Pos) -> bool {
+        self.0.iter().any(|look| look.bit(p).is_some())
+    }
+
+    /// The looks taken.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// No look taken yet?
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Keeps a look.
+    pub fn push(&mut self, look: Look) {
+        self.0.push(look);
+    }
+
+    /// Forgets every look: a new goal.
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+/// How near ground it may not enter, in tiles on each axis, a point on
+/// the edge of sight must be for a body skirting an obstacle to go on
+/// from it ([`Map::skirt`]).
+pub const SKIRT_SIDE: i32 = 2;
+
+/// What raises the estimate of a tile a body has looked over already
+/// ([`Map::skirt`]): more than any walk within sight costs.
+const LOOKED_OVER: u32 = 1 << 24;
+
+/// What a look for a way round finds ([`Map::skirt`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Sighting {
+    /// A path to the target itself, not including the start.
+    Arrives(Vec<Pos>),
+    /// A path to the best tile on the edge of sight, not including the
+    /// start: from there the body looks again.
+    Edge(Vec<Pos>),
+    /// No tile on the edge of sight it has not looked over already.
+    Nothing,
+}
+
+/// The cheapest cost of a walkable terrain, scaling the estimate so it
+/// never overestimates.
+fn cheapest(cost: impl Fn(Terrain) -> Option<u32>) -> u32 {
+    Terrain::ALL
+        .iter()
+        .filter_map(|t| cost(*t))
+        .min()
+        .unwrap_or(STRAIGHT_COST)
 }
 
 /// Lower bound on the walking cost between two tiles with eight-way steps.

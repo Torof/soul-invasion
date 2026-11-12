@@ -128,9 +128,22 @@ pub struct Movement {
     /// Tiles a path search may expand at most; past it, the body walks
     /// straight (D32).
     pub path_budget_tiles: u32,
-    /// Path searches run in one tick at most; the rest wait for the next
-    /// tick, in order (D32).
-    pub searches_per_tick: u32,
+    /// Tiles the path searches of one tick may expand in all; the rest
+    /// wait for the next tick, in their lane, in the order they came. The
+    /// search at the head of a lane runs even past it, the next tick
+    /// repaying the excess (D32).
+    pub search_work_per_tick: u32,
+    /// The share of that work kept for bodies with a pilot (players), in
+    /// percent; the rest goes to the others (NPCs, animals). A lane's
+    /// unused share goes to the other (D32).
+    pub player_share_percent: u32,
+    /// Tiles a body skirting an obstacle whose end it does not see may
+    /// expand in one look for the best point on the edge of its sight
+    /// (D32).
+    pub skirt_budget_tiles: u32,
+    /// Looks a body may take skirting obstacles for one order before it
+    /// gives up and says it is blocked (D32).
+    pub skirt_looks: u32,
 }
 
 impl Movement {
@@ -551,8 +564,18 @@ impl Content {
         if self.movement.path_budget_tiles == 0 {
             return Err(ContentError::Movement("path_budget_tiles must be positive"));
         }
-        if self.movement.searches_per_tick == 0 {
-            return Err(ContentError::Movement("searches_per_tick must be positive"));
+        if self.movement.search_work_per_tick == 0 {
+            return Err(ContentError::Movement(
+                "search_work_per_tick must be positive",
+            ));
+        }
+        if self.movement.player_share_percent > 100 {
+            return Err(ContentError::Movement("player_share_percent is 0 to 100"));
+        }
+        if self.movement.skirt_budget_tiles == 0 {
+            return Err(ContentError::Movement(
+                "skirt_budget_tiles must be positive",
+            ));
         }
         Ok(())
     }
@@ -594,7 +617,10 @@ pub const SAMPLE_MOVEMENT: &str = r"(
     speed_percent_at_full_load: 60,
     sight_tiles: { grass: 60, forest: 25, ford: 60, brook: 60, water: 60, rock: 60 },
     path_budget_tiles: 1500,
-    searches_per_tick: 40,
+    search_work_per_tick: 60000,
+    player_share_percent: 50,
+    skirt_budget_tiles: 15000,
+    skirt_looks: 24,
 )";
 
 /// Needs rules of [`Content::sample`]: the valley's own.
@@ -677,7 +703,8 @@ mod tests {
         assert_eq!(movement.sight_tiles(Terrain::Grass), 60);
         assert_eq!(movement.sight_tiles(Terrain::Forest), 25);
         assert_eq!(movement.path_budget_tiles, 1500);
-        assert_eq!(movement.searches_per_tick, 40);
+        assert_eq!(movement.search_work_per_tick, 60_000);
+        assert_eq!(movement.player_share_percent, 50);
         let blind = SAMPLE_MOVEMENT.replacen("forest: 25, ", "", 1);
         assert!(matches!(
             Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, &blind, SAMPLE_NEEDS).unwrap_err(),
@@ -693,10 +720,24 @@ mod tests {
             Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, &idle, SAMPLE_NEEDS).unwrap_err(),
             ContentError::Movement("path_budget_tiles must be positive")
         ));
-        let stuck = SAMPLE_MOVEMENT.replacen("searches_per_tick: 40", "searches_per_tick: 0", 1);
+        let stuck =
+            SAMPLE_MOVEMENT.replacen("search_work_per_tick: 60000", "search_work_per_tick: 0", 1);
         assert!(matches!(
             Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, &stuck, SAMPLE_NEEDS).unwrap_err(),
-            ContentError::Movement("searches_per_tick must be positive")
+            ContentError::Movement("search_work_per_tick must be positive")
+        ));
+        let greedy =
+            SAMPLE_MOVEMENT.replacen("player_share_percent: 50", "player_share_percent: 101", 1);
+        assert!(matches!(
+            Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, &greedy, SAMPLE_NEEDS).unwrap_err(),
+            ContentError::Movement("player_share_percent is 0 to 100")
+        ));
+        let blindfold =
+            SAMPLE_MOVEMENT.replacen("skirt_budget_tiles: 15000", "skirt_budget_tiles: 0", 1);
+        assert!(matches!(
+            Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, &blindfold, SAMPLE_NEEDS)
+                .unwrap_err(),
+            ContentError::Movement("skirt_budget_tiles must be positive")
         ));
     }
 

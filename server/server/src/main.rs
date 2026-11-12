@@ -331,6 +331,7 @@ fn run_paced_server(
         let rules = Arc::clone(content);
         runtime.spawn_blocking(move || {
             let before_tick = |world: &mut World| {
+                world.set_piloted(shared.piloted());
                 for intention in shared.take_intentions() {
                     world.queue(intention);
                 }
