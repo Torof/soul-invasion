@@ -509,6 +509,10 @@ pub enum Event {
         body: BodyId,
         /// Where it wanted to go.
         target: Pos,
+        /// What it sees barring its way, as for [`Event::BodyBlocked`]: a
+        /// new order that cannot even set off says why (D32); no way seen
+        /// for an unknown body or a teleport with nowhere to land.
+        reason: Blockage,
     },
     /// A body that walked straight for want of a way stopped for good
     /// short of its target: it looked again and found no way, and could
@@ -1410,7 +1414,11 @@ impl World {
         match *intention {
             Intention::MoveTo { body: id, target } => {
                 let Some(index) = self.index_of(id) else {
-                    events.push(Event::MoveRefused { body: id, target });
+                    events.push(Event::MoveRefused {
+                        body: id,
+                        target,
+                        reason: Blockage::NoWay,
+                    });
                     return;
                 };
                 self.wake(index, events);
@@ -1506,12 +1514,17 @@ impl World {
     /// once on the walkable tile nearest `target`, ring by ring, awake and
     /// with no route; it is seen to move there and stop.
     fn teleport(&mut self, id: BodyId, target: Pos, rules: &Content, events: &mut Vec<Event>) {
+        let refused = Event::MoveRefused {
+            body: id,
+            target,
+            reason: Blockage::NoWay,
+        };
         let Some(index) = self.index_of(id) else {
-            events.push(Event::MoveRefused { body: id, target });
+            events.push(refused);
             return;
         };
         let Some(tile) = self.open_near(target, rules) else {
-            events.push(Event::MoveRefused { body: id, target });
+            events.push(refused);
             return;
         };
         self.wake(index, events);
@@ -1705,8 +1718,8 @@ impl World {
     /// or a bush in its way and stopping before the first bigger obstacle
     /// ([`Map::walk_straight`], D31), and keeps the target to look again
     /// from there; a new order
-    /// that cannot even set off is refused, a body looking again that
-    /// cannot stops for good.
+    /// that cannot even set off is refused, saying what the body sees
+    /// barring its way, a body looking again that cannot stops for good.
     fn set_off(
         &mut self,
         index: usize,
@@ -1752,7 +1765,11 @@ impl World {
             .all(|p| squared_mm(*p, from) < quarter * quarter)
         {
             if ordered {
-                events.push(Event::MoveRefused { body: id, target });
+                events.push(Event::MoveRefused {
+                    body: id,
+                    target,
+                    reason: self.blockage(from, target.centre(), rules),
+                });
             } else {
                 self.blocked(index, target, rules, events);
             }
@@ -2340,7 +2357,8 @@ mod tests {
                 },
                 Event::MoveRefused {
                     body: BodyId(9),
-                    target: Pos::new(1, 1)
+                    target: Pos::new(1, 1),
+                    reason: Blockage::NoWay,
                 },
             ]
         );
@@ -2521,6 +2539,30 @@ mod tests {
             };
             assert_eq!(w.body(BodyId(1)).expect("body 1").pos(), expected, "{why}");
         }
+    }
+
+    #[test]
+    fn an_order_across_the_water_from_the_bank_is_refused_saying_why() {
+        // Found in play (12 November 2026): the body already at the bank,
+        // a click across the river refused at once said nothing. It says
+        // what it sees barring its way, as a blocked body does (D32).
+        let mut map = Map::filled(900, 200, Terrain::Grass);
+        for x in 0..900 {
+            map.set(Pos::new(x, 100), Terrain::Water);
+        }
+        let mut w = World::empty(Calendar::new(1, 1_000_000).unwrap(), map);
+        w.spawn_body(Pos::new(800, 99));
+        go(&mut w, Pos::new(800, 110));
+        let mut events = Vec::new();
+        w.step(&rules(), &mut events);
+        assert!(
+            events.contains(&Event::MoveRefused {
+                body: BodyId(1),
+                target: Pos::new(800, 110),
+                reason: Blockage::Water,
+            }),
+            "{events:?}"
+        );
     }
 
     /// A field with a wall of water across the middle, and a body `from`
