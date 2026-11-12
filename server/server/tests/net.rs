@@ -209,6 +209,13 @@ fn tile(point: Point) -> Pos {
     FinePos::new(point.x, point.y).tile()
 }
 
+/// One game day per real second, for the tests about time itself (days
+/// published, needs, sleep, death). Days that short tire, chill and starve
+/// a body within seconds, and a loaded machine stretches a test over many
+/// of them: a test asking for them waits for what the time brings, never
+/// for a state at a given moment.
+const SHORT_DAYS: [&str; 2] = ["--seconds-per-day", "1"];
+
 /// A running server, killed when dropped.
 struct Server {
     child: Child,
@@ -216,12 +223,16 @@ struct Server {
 }
 
 impl Server {
-    /// Starts a paced server with one game day per real second.
+    /// Starts a paced server whose days are a real day long: nothing of
+    /// time touches a body while a test runs (it does not tire, hunger,
+    /// freeze or starve), however loaded the machine. A test about time
+    /// asks for short days itself ([`SHORT_DAYS`]).
     fn start() -> Self {
         Self::start_with(&[])
     }
 
-    /// Like [`Server::start`], with extra command-line options.
+    /// Like [`Server::start`], with extra command-line options; a later
+    /// option overrides the defaults.
     fn start_with(extra: &[&str]) -> Self {
         standard_world();
         let mut child = Command::new(env!("CARGO_BIN_EXE_server"))
@@ -233,7 +244,7 @@ impl Server {
                 "--ticks-per-second",
                 "20",
                 "--seconds-per-day",
-                "1",
+                "86400",
             ])
             .args(["--content", content_dir().to_str().expect("a UTF-8 path")])
             .args(extra)
@@ -347,18 +358,20 @@ async fn receive_any(socket: &mut Socket) -> Option<Got> {
     }
 }
 
-/// Waits for the next published day boundary.
-async fn next_day(socket: &mut Socket) -> u64 {
+/// Waits for the next published day boundary: the day and its tick.
+async fn next_day(socket: &mut Socket) -> (u64, u64) {
     loop {
-        if let Some(Got::M(ServerMessage::DayStarted { day, .. })) = receive(socket).await {
-            break day;
+        if let Some(Got::M(ServerMessage::DayStarted { day, tick })) = receive(socket).await {
+            break (day, tick);
         }
     }
 }
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn hello_ping_and_a_published_day() {
+async fn hello_world_view_and_ping() {
+    // The days are long: the bodies stand awake and alive while the view
+    // comes, however slowly (the published days have their own test).
     let server = Server::start();
     let mut socket = server.connect().await;
 
@@ -408,7 +421,10 @@ async fn hello_ping_and_a_published_day() {
             assert_eq!(chunk_size, CHUNK_SIZE);
             assert!(materials.len() >= 9, "the catalogue of materials");
             assert!(materials.iter().all(|m| m.colour.starts_with('#')));
-            assert_eq!((clock.ticks_per_second, clock.ticks_per_day), (20, 20));
+            assert_eq!(
+                (clock.ticks_per_second, clock.ticks_per_day),
+                (20, 20 * 86_400)
+            );
             assert_eq!(clock.time_scale_permille, 1000);
         }
         other => panic!("expected world_state, got {other:?}"),
@@ -421,9 +437,8 @@ async fn hello_ping_and_a_published_day() {
     let mut chunks = Vec::new();
     let mut seen_plants = 0;
     let mut far = None;
-    // The chunks are built beside the network: a day boundary may slip in
-    // between them on a loaded machine (a day lasts a second here).
-    // The bodies follow the frame of the chunk they stand in.
+    // The chunks are built beside the network. The bodies follow the
+    // frame of the chunk they stand in.
     while chunks.len() < window_len(world, centre) || seen_bodies.len() < 3 {
         match receive_any(&mut socket).await {
             Some(Got::M(ServerMessage::DayStarted { .. } | ServerMessage::View { .. })) => {}
@@ -445,9 +460,7 @@ async fn hello_ping_and_a_published_day() {
                 for b in &bodies {
                     assert_eq!(tile(b.at).chunk(), ChunkPos::new(x, y));
                     assert_eq!(b.route, Vec::new(), "nobody walks at the start");
-                    // Not whether it sleeps: a game day passes every second
-                    // here, and on a loaded machine a body may tire and fall
-                    // asleep before the chunks arrive (sleep has its tests).
+                    assert!(!b.asleep, "nobody sleeps at the start");
                 }
                 seen_bodies.extend(bodies.iter().map(|b| b.id));
             }
@@ -537,23 +550,10 @@ async fn hello_ping_and_a_published_day() {
     );
 
     send(&mut socket, &ClientMessage::Ping { nonce: 7 }).await;
-    // A day boundary may slip in before the pong: skip those.
-    let pong = loop {
-        match receive(&mut socket).await {
-            Some(Got::M(ServerMessage::DayStarted { .. })) => {}
-            other => break other,
-        }
-    };
-    assert_eq!(pong, Some(Got::M(ServerMessage::Pong { nonce: 7 })));
-
-    // One game day lasts one real second: a day boundary must be published.
-    let (day, tick) = match receive(&mut socket).await {
-        Some(Got::M(ServerMessage::DayStarted { day, tick })) => (day, tick),
-        Some(other) => panic!("unexpected {other:?}"),
-        None => panic!("connection closed before a day started"),
-    };
-    assert!(day >= 2);
-    assert_eq!(tick % 20, 0, "a day starts on a day boundary");
+    assert_eq!(
+        receive(&mut socket).await,
+        Some(Got::M(ServerMessage::Pong { nonce: 7 }))
+    );
 
     socket.close(None).await.expect("clean close");
 }
@@ -590,8 +590,9 @@ async fn anything_but_hello_first_is_disconnected() {
 }
 
 #[tokio::test]
-async fn several_clients_each_get_the_same_days() {
-    let server = Server::start();
+async fn several_clients_each_get_the_same_published_days() {
+    // One game day lasts one real second: day boundaries are published.
+    let server = Server::start_with(&SHORT_DAYS);
     let mut a = server.connect().await;
     let mut b = server.connect().await;
     for socket in [&mut a, &mut b] {
@@ -609,9 +610,11 @@ async fn several_clients_each_get_the_same_days() {
         ));
     }
 
-    let day_a = next_day(&mut a).await;
-    let day_b = next_day(&mut b).await;
+    let (day_a, tick) = next_day(&mut a).await;
+    let (day_b, _) = next_day(&mut b).await;
     assert_eq!(day_a, day_b);
+    assert!(day_a >= 2);
+    assert_eq!(tick % 20, 0, "a day starts on a day boundary");
 }
 
 /// Opens a piloting connection: hello, welcome, `world_state` and the
@@ -680,7 +683,7 @@ async fn join_counting(server: &Server) -> (Socket, Option<u32>, HashSet<(i32, i
 
 #[tokio::test]
 async fn the_view_follows_the_piloted_body() {
-    let server = Server::start_with(&["--seconds-per-day", "100", "--time-scale", "20"]);
+    let server = Server::start_with(&["--time-scale", "20"]);
     let (mut pilot, body) = join(&server).await;
     let body = body.expect("pilots a body");
 
@@ -733,7 +736,7 @@ async fn the_view_follows_the_piloted_body() {
 async fn a_body_walking_out_of_the_view_is_reported_as_left() {
     // Long days: the walk, straight to open ground beyond a path's reach,
     // takes minutes of game time and must not end in a collapse.
-    let server = Server::start_with(&["--seconds-per-day", "20000", "--time-scale", "50"]);
+    let server = Server::start_with(&["--time-scale", "50"]);
     let (mut walker, body) = join(&server).await;
     let (mut watcher, other) = join(&server).await;
     let body = body.expect("pilots body 1");
@@ -835,7 +838,7 @@ async fn clients_logging_in_at_once_each_get_a_complete_view() {
     // Three bodies to pilot, a fourth client watches the middle of the
     // map: four cold views built at the same time on two threads, each
     // whole, each chunk once.
-    let server = Server::start_with(&["--seconds-per-day", "1000", "--chunk-threads", "2"]);
+    let server = Server::start_with(&["--chunk-threads", "2"]);
     let world = standard_world();
     let (a, b, c, d) = tokio::join!(
         join_counting(&server),
@@ -860,7 +863,7 @@ async fn an_intention_is_read_and_answered_while_the_view_is_being_sent() {
     // it used to wait for the last of the 361 chunks. One chunk thread:
     // eight built the whole view (about 80 ms in debug) before the first
     // tick came at times, and the walk had nothing to go before.
-    let server = Server::start_with(&["--seconds-per-day", "1000", "--chunk-threads", "1"]);
+    let server = Server::start_with(&["--chunk-threads", "1"]);
     let mut socket = server.connect().await;
     send(
         &mut socket,
@@ -955,15 +958,7 @@ async fn a_walk_is_seen_whole_while_another_client_builds_cold_views() {
     // far away again and again: each teleport a cold view of 361 chunks.
     // Nothing of the walk is lost or held back: C sees it start and stop,
     // A gets the ground it walks into and its own stop.
-    let server = Server::start_with(&[
-        "--dev",
-        "--seconds-per-day",
-        "1000",
-        "--time-scale",
-        "20",
-        "--chunk-threads",
-        "2",
-    ]);
+    let server = Server::start_with(&["--dev", "--time-scale", "20", "--chunk-threads", "2"]);
     let (mut walker, body) = join(&server).await;
     let (mut watcher, _) = join(&server).await;
     let (hopper, hopping) = join(&server).await;
@@ -1078,13 +1073,7 @@ async fn cold_login(server: &Server) -> (Duration, Duration) {
 #[tokio::test]
 #[ignore = "a measure on the game's 3072 valley, run by hand in release"]
 async fn measure_cold_logins() {
-    const GAME_VALLEY: &[&str] = &[
-        "--valley-size",
-        "3072",
-        "--no-warm-up",
-        "--seconds-per-day",
-        "1000",
-    ];
+    const GAME_VALLEY: &[&str] = &["--valley-size", "3072", "--no-warm-up"];
     let server = Server::start_with(GAME_VALLEY);
     let (first, last) = cold_login(&server).await;
     println!("one cold login: first chunk after {first:?}, the view whole after {last:?}");
@@ -1111,7 +1100,7 @@ async fn measure_cold_logins() {
 
 #[tokio::test]
 async fn with_dev_the_client_gets_the_overview_and_may_teleport() {
-    let server = Server::start_with(&["--dev", "--seconds-per-day", "1000"]);
+    let server = Server::start_with(&["--dev"]);
     let mut socket = server.connect().await;
     send(
         &mut socket,
@@ -1182,7 +1171,7 @@ async fn with_dev_the_client_gets_the_overview_and_may_teleport() {
 
 #[tokio::test]
 async fn without_dev_a_teleport_is_ignored() {
-    let server = Server::start_with(&["--seconds-per-day", "1000"]);
+    let server = Server::start();
     let (mut pilot, body) = join(&server).await;
     let body = body.expect("pilots a body");
     let start = start_of(standard_world(), body);
@@ -1209,7 +1198,7 @@ async fn without_dev_a_teleport_is_ignored() {
 
 #[tokio::test]
 async fn a_move_intention_makes_the_piloted_body_walk() {
-    let server = Server::start_with(&["--seconds-per-day", "100"]);
+    let server = Server::start();
     let (mut pilot, body) = join(&server).await;
     let (mut watcher, other) = join(&server).await;
     let body = body.expect("first connection pilots a body");
@@ -1436,7 +1425,7 @@ async fn connections_beyond_the_limit_are_refused() {
 
 #[tokio::test]
 async fn a_refusal_reaches_the_pilot_alone() {
-    let server = Server::start_with(&["--seconds-per-day", "100"]);
+    let server = Server::start();
     let (mut pilot, body) = join(&server).await;
     let (mut other, other_body) = join(&server).await;
     let body = body.expect("pilots body 1");
@@ -1492,7 +1481,7 @@ async fn stand_at(socket: &mut Socket, who: u32, at: Pos) -> Pos {
 
 #[tokio::test]
 async fn a_blocked_body_is_told_to_its_pilot_alone() {
-    let server = Server::start_with(&["--dev", "--seconds-per-day", "1000"]);
+    let server = Server::start_with(&["--dev"]);
     let (mut pilot, body) = join(&server).await;
     let (mut other, other_body) = join(&server).await;
     let body = body.expect("pilots body 1");
@@ -1567,7 +1556,7 @@ async fn a_blocked_body_is_told_to_its_pilot_alone() {
 
 #[tokio::test]
 async fn a_flood_of_intentions_leaves_only_the_last_one() {
-    let server = Server::start_with(&["--seconds-per-day", "100"]);
+    let server = Server::start();
     let (mut pilot, body) = join(&server).await;
     let body = body.expect("pilots body 1");
 
@@ -1659,10 +1648,12 @@ async fn wait_for<T>(socket: &mut Socket, mut pick: impl FnMut(&ServerMessage) -
 
 #[tokio::test]
 async fn the_pilot_is_told_how_its_body_fares_and_nobody_else() {
-    // One game day per real second: hunger climbs a point every 30 ms.
-    // The view is not waited for: its chunks leave after the conditions
-    // of the moment, and a loaded machine would let the first ones by.
-    let server = Server::start();
+    // Days of a hundred seconds: hunger climbs a point every three
+    // seconds, fatigue about one a second; the first night's cold, which
+    // would cost the body vitality, is a minute and a half away.
+    // The condition first told with some hunger is the one of the moment
+    // hunger reached a point, however late the client reads it.
+    let server = Server::start_with(&["--seconds-per-day", "100"]);
     let (mut pilot, body) = welcome(&server).await;
     let (mut other, other_body) = welcome(&server).await;
     let body = body.expect("pilots body 1");
@@ -1672,7 +1663,7 @@ async fn the_pilot_is_told_how_its_body_fares_and_nobody_else() {
         ServerMessage::BodyCondition {
             body: who,
             condition,
-        } if *who == body => Some(*condition),
+        } if *who == body && condition.hunger >= 1 => Some(*condition),
         _ => None,
     })
     .await;
@@ -1694,9 +1685,10 @@ async fn the_pilot_is_told_how_its_body_fares_and_nobody_else() {
 
 #[tokio::test]
 async fn sleeping_is_seen_by_all_and_waking_by_walking() {
-    // Ten-second days: tired enough to sleep soon, not so fast as to
-    // collapse before walking.
-    let server = Server::start_with(&["--seconds-per-day", "10"]);
+    // Days of a hundred seconds: tired enough to sleep within seconds,
+    // and more than a minute from collapsing or the first night, however
+    // slowly a loaded machine lets the clients join.
+    let server = Server::start_with(&["--seconds-per-day", "100"]);
     let (mut pilot, body) = join(&server).await;
     let (mut watcher, _) = join(&server).await;
     let body = body.expect("pilots body 1");
@@ -1747,7 +1739,7 @@ async fn sleeping_is_seen_by_all_and_waking_by_walking() {
 
 #[tokio::test]
 async fn eating_takes_an_item_within_reach_and_refuses_the_rest() {
-    let server = Server::start_with(&["--seconds-per-day", "1000", "--time-scale", "20"]);
+    let server = Server::start_with(&["--time-scale", "20"]);
     let (mut pilot, body) = join(&server).await;
     let (mut watcher, _) = join(&server).await;
     let body = body.expect("pilots body 1");
@@ -1830,7 +1822,7 @@ async fn eating_takes_an_item_within_reach_and_refuses_the_rest() {
 async fn a_starved_body_dies_and_its_pilot_is_given_another_or_watches() {
     // Days of one second, run fifty times faster: a body starves in well
     // under a real second.
-    let server = Server::start_with(&["--time-scale", "50"]);
+    let server = Server::start_with(&[SHORT_DAYS[0], SHORT_DAYS[1], "--time-scale", "50"]);
     // The death may come while the view is still arriving (it leaves
     // before the ground): the view is not waited for.
     let (mut pilot, body) = welcome(&server).await;
@@ -1882,7 +1874,7 @@ async fn a_starved_body_dies_and_its_pilot_is_given_another_or_watches() {
 
 #[tokio::test]
 async fn picking_up_tells_the_pilot_its_inventory_and_everyone_what_is_in_hand() {
-    let server = Server::start_with(&["--seconds-per-day", "1000", "--time-scale", "20"]);
+    let server = Server::start_with(&["--time-scale", "20"]);
     let (mut pilot, body) = join(&server).await;
     let (mut watcher, _) = join(&server).await;
     let body = body.expect("pilots body 1");
@@ -2149,7 +2141,7 @@ async fn wait_item(socket: &mut Socket, holder: &mut Holder, item: u64, added: b
 
 #[tokio::test]
 async fn a_return_sends_again_only_the_chunk_where_an_item_was_taken_or_dropped() {
-    let server = Server::start_with(&["--dev", "--seconds-per-day", "1000", "--time-scale", "20"]);
+    let server = Server::start_with(&["--dev", "--time-scale", "20"]);
     let (mut socket, body) = welcome(&server).await;
     let body = body.expect("pilots a body");
     let mut holder = Holder::default();
@@ -2209,7 +2201,7 @@ async fn a_return_sends_again_only_the_chunk_where_an_item_was_taken_or_dropped(
 
 #[tokio::test]
 async fn a_chunk_the_client_lacks_after_all_is_sent_when_it_says_so() {
-    let server = Server::start_with(&["--seconds-per-day", "1000"]);
+    let server = Server::start();
     let (mut first, body) = welcome(&server).await;
     let mut holder = Holder::default();
     let home = home_of(standard_world(), body);
@@ -2254,7 +2246,7 @@ async fn a_chunk_the_client_lacks_after_all_is_sent_when_it_says_so() {
 async fn a_reconnection_to_the_same_world_sends_no_frame_for_the_chunks_held() {
     // A server, then another on the same world (as after a restart).
     let (held, world_id) = {
-        let server = Server::start_with(&["--seconds-per-day", "1000"]);
+        let server = Server::start();
         let (mut socket, body) = welcome(&server).await;
         let mut holder = Holder::default();
         holder
@@ -2268,7 +2260,7 @@ async fn a_reconnection_to_the_same_world_sends_no_frame_for_the_chunks_held() {
         (held, holder.world)
     };
     assert_eq!(world_id.len(), 16, "{world_id}");
-    let server = Server::start_with(&["--seconds-per-day", "1000"]);
+    let server = Server::start();
     for (world, sends_frames) in [
         (world_id.clone(), false),
         ("another world".to_owned(), true),
@@ -2358,8 +2350,8 @@ fn walked_to(at: Point, tick: u64, route: &[Point], arrivals: &[u64], now: u64) 
 
 /// Teleports the body `socket` pilots near `target`, out of range of
 /// the body `left` (told first, as the view moves, that it left), and
-/// waits until it stands there: the chunk it stands in.
-async fn teleport(socket: &mut Socket, body: u32, target: Pos, left: u32) -> ChunkPos {
+/// waits until it stands there: the tile it stands on.
+async fn teleport(socket: &mut Socket, body: u32, target: Pos, left: u32) -> Pos {
     send(
         socket,
         &ClientMessage::DevTeleport {
@@ -2377,7 +2369,7 @@ async fn teleport(socket: &mut Socket, body: u32, target: Pos, left: u32) -> Chu
     })
     .await;
     wait_for(socket, |m| match m {
-        ServerMessage::BodyStopped { body: who, at } if *who == body => Some(tile(*at).chunk()),
+        ServerMessage::BodyStopped { body: who, at } if *who == body => Some(tile(*at)),
         _ => None,
     })
     .await
@@ -2399,7 +2391,7 @@ fn about(message: &ServerMessage) -> Option<u32> {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn a_walker_is_heard_within_range_at_each_chunk_it_walks_into_and_nowhere_else() {
-    let server = Server::start_with(&["--dev", "--seconds-per-day", "20000", "--time-scale", "50"]);
+    let server = Server::start_with(&["--dev", "--time-scale", "50"]);
     let (mut walker, body) = join(&server).await;
     let (mut near, _) = join(&server).await;
     let (mut edge, edge_body) = join(&server).await;
@@ -2415,7 +2407,9 @@ async fn a_walker_is_heard_within_range_at_each_chunk_it_walks_into_and_nowhere_
     // four chunks along a row), the next chunk east within it.
     let five_east = Pos::new((home.x + 5) * side + side / 2, start.y);
     // Out of range, the camp's bodies are forgotten.
-    let there = teleport(&mut edge, edge_body, five_east, body).await;
+    let there = teleport(&mut edge, edge_body, five_east, body)
+        .await
+        .chunk();
     assert_eq!(there.x, home.x + 5, "teleported five chunks east");
     assert!((there.y - home.y).abs() <= 2, "{there:?}");
 
@@ -2499,7 +2493,7 @@ async fn a_walker_is_heard_within_range_at_each_chunk_it_walks_into_and_nowhere_
 
 #[tokio::test]
 async fn a_client_far_from_a_walker_hears_nothing_of_it() {
-    let server = Server::start_with(&["--dev", "--seconds-per-day", "200", "--time-scale", "50"]);
+    let server = Server::start_with(&["--dev", "--time-scale", "50"]);
     let (mut walker, body) = join(&server).await;
     let (mut near, _) = join(&server).await;
     let (mut far, far_body) = join(&server).await;
@@ -2518,7 +2512,8 @@ async fn a_client_far_from_a_walker_hears_nothing_of_it() {
         home.x - 11
     };
     let target = Pos::new(away * side + side / 2, start.y);
-    let there = teleport(&mut far, far_body, target, body).await;
+    let standing = teleport(&mut far, far_body, target, body).await;
+    let there = standing.chunk();
     assert!(
         (there.x - home.x).abs() > VIEW_RADIUS,
         "{there:?} out of the view"
@@ -2544,15 +2539,29 @@ async fn a_client_far_from_a_walker_hears_nothing_of_it() {
     })
     .await;
 
-    // Whatever was published for the far client before the next day
-    // came before it: nothing of the walker, nor of the camp's chunks,
-    // which it does not hold.
+    // The far body is set down again where it stands: its stop is
+    // published after the walker's, so whatever was published for the far
+    // client before came before it: nothing of the walker, nor of the
+    // camp's chunks, which it does not hold. (A day boundary served here
+    // once: with short days, the bodies starved before a loaded machine
+    // let the walk happen.)
     let outside = |x: i32, y: i32| {
         let chunk = Pos::new(x, y).chunk();
         (chunk.x - there.x).abs() > VIEW_RADIUS || (chunk.y - there.y).abs() > VIEW_RADIUS
     };
+    send(
+        &mut far,
+        &ClientMessage::DevTeleport {
+            x: standing.x,
+            y: standing.y,
+        },
+    )
+    .await;
     wait_for(&mut far, |m| match m {
-        ServerMessage::DayStarted { .. } => Some(()),
+        ServerMessage::BodyStopped { body: who, at } if *who == far_body => {
+            assert_eq!(tile(*at), standing, "set down where it stood");
+            Some(())
+        }
         m if about(m).is_some_and(|b| b != far_body) => panic!("{m:?} leaked to a far client"),
         ServerMessage::ItemAdded { item } if outside(item.x, item.y) => {
             panic!("{m:?} out of the view leaked")
