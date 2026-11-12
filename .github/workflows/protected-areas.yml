@@ -27,7 +27,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
-        run: gh pr view "$PR" --json files --jq '.files[].path' > changed.txt
+        # Every changed file, page after page: `gh pr view --json files`
+        # stops at 100 files, and a larger pull request (#215, 239 files)
+        # merged with its protected files unseen (12 November 2026). The
+        # API itself lists at most 3,000 files: past that, refuse.
+        run: |
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --jq '.[].filename' > changed.txt
+          total=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" --jq '.changed_files')
+          listed=$(wc -l < changed.txt)
+          echo "Changed files: ${listed} listed of ${total}."
+          if [ "${listed}" -lt "${total}" ]; then
+            echo "Not every changed file could be listed: split the pull request."
+            exit 1
+          fi
       - name: Compare with CODEOWNERS
         env:
           APPROVED: ${{ contains(github.event.pull_request.labels.*.name, 'lead-approved') }}
