@@ -16,13 +16,16 @@
 // `FinePos::distance_to` and `line_clear` allow floats where they stand.
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, VecDeque};
+#[cfg(test)]
+use std::collections::VecDeque;
+use std::collections::{BTreeMap, BinaryHeap, HashMap};
 use std::hash::{BuildHasherDefault, Hasher};
 
 use serde::{Deserialize, Serialize};
 
 use crate::r#gen::scatter::purpose;
 use crate::r#gen::{Groves, Lcg};
+use crate::land::{Land, Waters};
 use crate::woods::{Habitat, Woods};
 
 /// Side of a chunk, in tiles.
@@ -220,22 +223,48 @@ pub enum MapSpec {
 }
 
 /// The grid. Stored as its spec alone (D31): the tiles are generated
-/// again on load.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// again on load. A valley holds only its waters, sparse; the rest of a
+/// chunk (terrain, density of trees, habitat) is made when it is read
+/// and held while in use (`land`): the map's memory follows its water
+/// and the chunks in use, not its size.
+#[derive(Clone, Deserialize)]
 #[serde(from = "MapSpec")]
 pub struct Map {
     spec: MapSpec,
     width: u32,
     height: u32,
-    tiles: Vec<Terrain>,
-    /// Per tile, how deep the water is, in half-metres; 0 on land.
-    depth: Vec<u8>,
-    /// Per tile, the density of trees, 0 to 100 (D37).
-    trees: Vec<u8>,
-    /// Per tile, the kind of place it is for trees (D37).
-    habitat: Vec<Habitat>,
-    /// Per tile of water, where it runs (`current_code`); 0 elsewhere (D36).
-    currents: Vec<u16>,
+    ground: Made,
+    /// Tiles set by hand ([`Map::set`]: tests), a whole chunk each.
+    edits: BTreeMap<ChunkPos, Box<[Terrain]>>,
+}
+
+/// What a map's tiles are made from.
+#[derive(Clone)]
+enum Made {
+    /// One terrain everywhere; no water, no tree.
+    Filled(Terrain),
+    /// The valley: its waters, and its land made per chunk.
+    Valley(Box<Land>),
+}
+
+/// Two maps are equal when made the same way with the same tiles set by
+/// hand: the rest follows from the spec.
+impl PartialEq for Map {
+    fn eq(&self, other: &Self) -> bool {
+        self.spec == other.spec && self.edits == other.edits
+    }
+}
+
+impl Eq for Map {}
+
+/// The spec and the tiles set by hand: the tiles themselves are made.
+impl std::fmt::Debug for Map {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Map")
+            .field("spec", &self.spec)
+            .field("edited_chunks", &self.edits.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl From<MapSpec> for Map {
@@ -280,11 +309,8 @@ impl Map {
             },
             width,
             height,
-            tiles: vec![terrain; (width * height) as usize],
-            depth: vec![0; (width * height) as usize],
-            trees: vec![0; (width * height) as usize],
-            habitat: vec![Habitat::None; (width * height) as usize],
-            currents: vec![0; (width * height) as usize],
+            ground: Made::Filled(terrain),
+            edits: BTreeMap::new(),
         }
     }
 
@@ -295,68 +321,67 @@ impl Map {
     /// islands between the arms of a divergence), woods (see [`Woods`]:
     /// massifs with their edges and hearts, clearings, copses, lone and
     /// riverside trees, a clearing at the camp), grass elsewhere.
-    /// Deterministic for a given seed.
+    /// Deterministic for a given seed. Only the waters are kept, sparse
+    /// (the rivers' working arrays go once they are painted); the land is
+    /// made per chunk when read.
     pub fn valley(width: u32, height: u32, seed: u64) -> Self {
-        let mut map = Self::filled(width, height, Terrain::Grass);
-        map.spec = MapSpec::Valley {
+        let cliff_rows = (height / 8).max(2);
+        let waters = {
+            let rivers = Rivers::generate(width, height, cliff_rows, seed);
+            Waters::from_rivers(&rivers, width, height)
+        };
+        let camp = Self::camp_of(width, height);
+        let woods = Woods::new(width, height, cliff_rows, seed, camp);
+        Self {
+            spec: MapSpec::Valley {
+                width,
+                height,
+                seed,
+            },
             width,
             height,
-            seed,
-        };
-        let cliff_rows = (height / 8).max(2);
-        let rivers = Rivers::generate(width, height, cliff_rows, seed);
-        let camp = Self::camp_of(width, height);
-        let woods = Woods::generate(width, height, cliff_rows, seed, &rivers, camp);
-
-        for y in 0..height {
-            for x in 0..width {
-                let pos = Pos::new(
-                    i32::try_from(x).expect("map fits in i32"),
-                    i32::try_from(y).expect("map fits in i32"),
-                );
-                let terrain = if y < cliff_rows {
-                    Terrain::Rock
-                } else if let Some(water) = rivers.at(x, y) {
-                    water
-                } else if woods.density(x, y) >= Woods::FOREST {
-                    Terrain::Forest
-                } else {
-                    Terrain::Grass
-                };
-                map.set(pos, terrain);
-                let i = (y * width + x) as usize;
-                if y >= cliff_rows {
-                    map.depth[i] = rivers.depth_at(x, y);
-                    if let Some((heading, speed)) = rivers.current_at(x, y) {
-                        map.currents[i] = current_code(heading, speed);
-                    }
-                }
-                map.trees[i] = woods.density(x, y);
-                map.habitat[i] = woods.habitat(x, y);
-            }
+            ground: Made::Valley(Box::new(Land::new(
+                width, height, cliff_rows, waters, woods,
+            ))),
+            edits: BTreeMap::new(),
         }
-        map
+    }
+
+    /// The tile `pos` of the map, if on it.
+    fn inside(&self, pos: Pos) -> Option<(u32, u32)> {
+        let x = u32::try_from(pos.x).ok()?;
+        let y = u32::try_from(pos.y).ok()?;
+        (x < self.width && y < self.height).then_some((x, y))
     }
 
     /// How deep the water is at `pos`, in half-metres: 0 on land and
     /// outside the map, 1 on a ford, 1 or 2 in a brook, 2 or more in a
     /// river.
     pub fn depth(&self, pos: Pos) -> u8 {
-        self.index(pos).map_or(0, |i| self.depth[i])
+        match (&self.ground, self.inside(pos)) {
+            (Made::Valley(land), Some((x, y))) => land.depth(x, y),
+            _ => 0,
+        }
     }
 
     /// The density of trees at `pos`, 0 to 100: 0 on open ground and
     /// outside the map, from `Woods::FOREST` up in the forest (D37).
     #[must_use]
     pub fn trees(&self, pos: Pos) -> u8 {
-        self.index(pos).map_or(0, |i| self.trees[i])
+        match (&self.ground, self.inside(pos)) {
+            (Made::Valley(land), Some((x, y))) => land.wood(x, y).0,
+            _ => 0,
+        }
     }
 
     /// The kind of place `pos` is for trees; `Habitat::None` on water,
     /// rock and outside the map (D37).
     #[must_use]
     pub fn habitat(&self, pos: Pos) -> Habitat {
-        self.index(pos).map_or(Habitat::None, |i| self.habitat[i])
+        match (&self.ground, self.inside(pos)) {
+            (Made::Valley(land), Some((x, y))) => land.wood(x, y).1,
+            _ => Habitat::None,
+        }
     }
 
     /// Where the first bodies start: the camp, left open by the woods.
@@ -390,9 +415,13 @@ impl Map {
         self.height
     }
 
-    /// All tiles, row by row from the north-west corner.
-    pub fn tiles(&self) -> &[Terrain] {
-        &self.tiles
+    /// All tiles, row by row from the north-west corner: every chunk of
+    /// the map made, for the tests.
+    #[cfg(test)]
+    pub(crate) fn tiles(&self) -> Vec<Terrain> {
+        (0..self.width * self.height)
+            .map(|i| self.get(self.pos_at(i as usize)).expect("on the map"))
+            .collect()
     }
 
     /// How many tiles of each terrain lie in the columns `x0..x1` and rows
@@ -401,11 +430,12 @@ impl Map {
     pub fn count_in(&self, x0: u32, y0: u32, x1: u32, y1: u32) -> [u32; 6] {
         let mut count = [0_u32; 6];
         for y in y0..y1.min(self.height) {
-            let row = (y * self.width) as usize;
-            for &t in
-                &self.tiles[row + x0.min(self.width) as usize..row + x1.min(self.width) as usize]
-            {
-                count[match t {
+            for x in x0.min(self.width)..x1.min(self.width) {
+                let pos = Pos::new(
+                    i32::try_from(x).expect("map fits in i32"),
+                    i32::try_from(y).expect("map fits in i32"),
+                );
+                count[match self.get(pos).expect("on the map") {
                     Terrain::Grass => 0,
                     Terrain::Forest => 1,
                     Terrain::Rock => 2,
@@ -441,6 +471,11 @@ impl Map {
         if !self.has_chunk(chunk) {
             return None;
         }
+        if let Made::Valley(land) = &self.ground
+            && self.edits.is_empty()
+        {
+            return Some(land.tiles(chunk).terrain.to_vec());
+        }
         let origin = chunk.origin();
         let side = i32::try_from(CHUNK_SIZE).expect("small chunk side");
         let mut tiles = Vec::with_capacity((CHUNK_SIZE * CHUNK_SIZE) as usize);
@@ -468,7 +503,10 @@ impl Map {
         for y in 0..side {
             for x in 0..side {
                 let pos = Pos::new(origin.x + x, origin.y + y);
-                out.push(self.index(pos).map_or(0, |i| self.currents[i]));
+                out.push(match (&self.ground, self.inside(pos)) {
+                    (Made::Valley(land), Some((x, y))) => land.current(x, y),
+                    _ => 0,
+                });
             }
         }
         Some(out)
@@ -478,22 +516,46 @@ impl Map {
     /// `current_code`) and speed in centimetres a second; `None` on land
     /// and outside the map.
     pub fn current(&self, pos: Pos) -> Option<(u8, u16)> {
-        self.index(pos)
-            .and_then(|i| decode_current(self.currents[i]))
+        match (&self.ground, self.inside(pos)) {
+            (Made::Valley(land), Some((x, y))) => decode_current(land.current(x, y)),
+            _ => None,
+        }
     }
 
     /// The terrain at `pos`, or `None` outside the map.
     pub fn get(&self, pos: Pos) -> Option<Terrain> {
-        self.index(pos).map(|i| self.tiles[i])
+        let (x, y) = self.inside(pos)?;
+        if !self.edits.is_empty()
+            && let Some(edited) = self.edits.get(&pos.chunk())
+        {
+            return Some(edited[((y % CHUNK_SIZE) * CHUNK_SIZE + x % CHUNK_SIZE) as usize]);
+        }
+        Some(match &self.ground {
+            Made::Filled(terrain) => *terrain,
+            Made::Valley(land) => land.terrain(x, y),
+        })
     }
 
-    /// Sets the terrain at `pos`; ignored outside the map. Generation
-    /// only: terrain is not stored, so a change here does not survive a
+    /// Sets the terrain at `pos`; ignored outside the map. Tests only:
+    /// terrain is not stored, so a change here does not survive a
     /// snapshot.
+    #[cfg(test)]
     pub(crate) fn set(&mut self, pos: Pos, terrain: Terrain) {
-        if let Some(i) = self.index(pos) {
-            self.tiles[i] = terrain;
+        let Some((x, y)) = self.inside(pos) else {
+            return;
+        };
+        let chunk = pos.chunk();
+        if !self.edits.contains_key(&chunk) {
+            let origin = chunk.origin();
+            let side = i32::try_from(CHUNK_SIZE).expect("small chunk side");
+            let tiles = (0..side)
+                .flat_map(|dy| (0..side).map(move |dx| Pos::new(origin.x + dx, origin.y + dy)))
+                .map(|p| self.get(p).unwrap_or(Terrain::Rock))
+                .collect();
+            self.edits.insert(chunk, tiles);
         }
+        let edited = self.edits.get_mut(&chunk).expect("just made");
+        edited[((y % CHUNK_SIZE) * CHUNK_SIZE + x % CHUNK_SIZE) as usize] = terrain;
     }
 
     /// Can a body stand at `pos`?
@@ -504,16 +566,19 @@ impl Map {
     /// For every tile, its distance in eight-way steps to the nearest tile
     /// of `terrain` (0 on such a tile; `u32::MAX` when there is none),
     /// row by row like [`Map::tiles`].
-    pub fn distance_to(&self, terrain: Terrain) -> Vec<u32> {
+    #[cfg(test)]
+    pub(crate) fn distance_to(&self, terrain: Terrain) -> Vec<u32> {
         self.distance_within(terrain, u32::MAX)
     }
 
     /// The same, but only out to `limit` steps: tiles farther away keep
     /// `u32::MAX`, and the search does not walk the rest of the map.
-    pub fn distance_within(&self, terrain: Terrain, limit: u32) -> Vec<u32> {
-        let mut distance = vec![u32::MAX; self.tiles.len()];
+    #[cfg(test)]
+    pub(crate) fn distance_within(&self, terrain: Terrain, limit: u32) -> Vec<u32> {
+        let tiles = self.tiles();
+        let mut distance = vec![u32::MAX; tiles.len()];
         let mut queue = VecDeque::new();
-        for (i, t) in self.tiles.iter().enumerate() {
+        for (i, t) in tiles.iter().enumerate() {
             if *t == terrain {
                 distance[i] = 0;
                 queue.push_back(i);
@@ -706,12 +771,14 @@ impl Map {
         route
     }
 
+    #[cfg(test)]
     fn index(&self, pos: Pos) -> Option<usize> {
         let x = u32::try_from(pos.x).ok()?;
         let y = u32::try_from(pos.y).ok()?;
         (x < self.width && y < self.height).then(|| (y * self.width + x) as usize)
     }
 
+    #[cfg(test)]
     fn pos_at(&self, index: usize) -> Pos {
         let index = u32::try_from(index).expect("index within the map");
         Pos::new(
@@ -2579,7 +2646,12 @@ impl Rivers {
     /// Where the water runs at `(x, y)`: its heading (as the centre paths',
     /// 0 to 15) and speed in centimetres a second; `None` on land.
     pub fn current_at(&self, x: u32, y: u32) -> Option<(u8, u16)> {
-        decode_current(self.current[(y * self.width + x) as usize])
+        decode_current(self.current_code_at(x, y))
+    }
+
+    /// Where the water runs at `(x, y)`, as `current_code`: 0 on land.
+    pub(crate) fn current_code_at(&self, x: u32, y: u32) -> u16 {
+        self.current[(y * self.width + x) as usize]
     }
 
     /// Closes the notches in the brooks' beds: a brook is painted on the
@@ -2807,8 +2879,9 @@ mod tests {
         let estimate = |a: Pos| octile(a, to) * cheapest / STRAIGHT_COST;
         let start = map.index(from)?;
         let goal = map.index(to)?;
-        let mut best = vec![u32::MAX; map.tiles.len()];
-        let mut came_from: Vec<Option<usize>> = vec![None; map.tiles.len()];
+        let tiles = map.tiles();
+        let mut best = vec![u32::MAX; tiles.len()];
+        let mut came_from: Vec<Option<usize>> = vec![None; tiles.len()];
         let mut open = BinaryHeap::new();
         let mut pushed = 0u64;
         best[start] = 0;
@@ -2830,7 +2903,7 @@ mod tests {
                 let Some(i) = map.index(next) else {
                     continue;
                 };
-                let Some(terrain_cost) = cost(map.tiles[i]) else {
+                let Some(terrain_cost) = cost(tiles[i]) else {
                     continue;
                 };
                 let step_cost = if here.is_diagonal_to(next) {
@@ -3019,10 +3092,11 @@ mod tests {
     /// ground. Four neighbours suffice: a diagonal step never cuts a
     /// corner, so it always has a straight way round.
     fn walkable_pieces(map: &Map) -> Vec<Option<u32>> {
-        let mut label = vec![None; map.tiles.len()];
+        let tiles = map.tiles();
+        let mut label = vec![None; tiles.len()];
         let mut next = 0;
-        for start in 0..map.tiles.len() {
-            if label[start].is_some() || valley_walk(map.tiles[start]).is_none() {
+        for start in 0..tiles.len() {
+            if label[start].is_some() || valley_walk(tiles[start]).is_none() {
                 continue;
             }
             label[start] = Some(next);
@@ -3031,7 +3105,7 @@ mod tests {
                 for n in map.pos_at(i).neighbours().into_iter().take(4) {
                     if let Some(j) = map.index(n)
                         && label[j].is_none()
-                        && valley_walk(map.tiles[j]).is_some()
+                        && valley_walk(tiles[j]).is_some()
                     {
                         label[j] = Some(next);
                         queue.push_back(j);

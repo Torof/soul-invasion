@@ -4,8 +4,9 @@
 //! A temperate valley untouched by man (10 November 2026): forest covers
 //! a little over half the land. Each tile's woods depend only on the
 //! seed and what lies within a bounded distance of it: no level chosen
-//! for the whole map, no stream drawn across it, so a chunk could be made
-//! alone (D24).
+//! for the whole map, no stream drawn across it, so a chunk is made
+//! alone (D24): the map makes its woods per chunk (`land`), drafted on
+//! the chunk (`Woods::draft`) then finished with the forest's depth.
 //!
 //! - **Massifs**: a very broad noise (`MASSIF_CELL`), roughened by two
 //!   finer ones, thickened a little where the ground is wet and in a band
@@ -42,8 +43,8 @@
 //! cell on a grid in absolute coordinates, each from a hash of the seed
 //! and its cell (`gen::scatter`): the same anywhere, in any order.
 //!
-//! A tile is [`Terrain::Forest`] where the density reaches `FOREST`: the
-//! wood and the heart. The edge, copses, riverside and brookside trees
+//! A tile is forest ([`crate::map::Terrain::Forest`]) where the density
+//! reaches `FOREST`: the wood and the heart. The edge, copses, riverside and brookside trees
 //! stand on grass. Which species grows where comes with the trees
 //! themselves (`trees`).
 //!
@@ -53,8 +54,12 @@
 // Generation is integer-only (D24; linted from `lib.rs` and
 // `sim/clippy.toml`). No known exception.
 
+use std::sync::{Mutex, PoisonError};
+
 use crate::r#gen::scatter::{self, key, purpose};
 use crate::r#gen::{Groves, noise};
+use crate::lru::Lru;
+#[cfg(test)]
 use crate::map::{Rivers, Terrain};
 
 /// The kind of place a tile is, for the trees that will grow on it.
@@ -88,14 +93,86 @@ pub enum Habitat {
     None,
 }
 
-/// Density of trees, per tile, and its habitat.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What the woods are drawn from, for one map: the noises' seeds, the
+/// wetness, the cliff and the camp. The woods themselves are worked out
+/// a rectangle at a time (`Woods::draft`, then `Woods::finish` with
+/// the forest's depth): the map makes them per chunk and never holds
+/// them for the whole map (D37).
+#[derive(Debug, Clone)]
 pub struct Woods {
+    seed: u64,
+    massif: u64,
+    detail: u64,
+    fine: u64,
+    rim: u64,
+    riparian: u64,
+    /// The same wetness the brooks rise from.
+    wet: Groves,
     width: u32,
-    /// Per tile, 0 to 100.
-    density: Vec<u8>,
-    habitat: Vec<Habitat>,
+    height: u32,
+    cliff_rows: u32,
+    /// The camp's place, in thousandths of a tile.
+    camp: (i64, i64),
+    /// The round patches decided lately.
+    memo: PatchMemo,
 }
+
+/// The round patches decided lately, by kind and cell, `None` for a cell
+/// holding none: each is decided by its cell alone, once for the many
+/// chunks it may reach rather than once a chunk. Bounded
+/// (`PATCH_MEMO`), the least recently used out first.
+#[derive(Debug)]
+struct PatchMemo(Mutex<Lru<(u64, u32, u32), Option<Patch>>>);
+
+/// Round patches' cells remembered at most: the small woods', clearings'
+/// and copses' cells within reach of the far view's 2 km (about 3,300
+/// copse cells), some 600 KB.
+const PATCH_MEMO: usize = 4096;
+
+impl PatchMemo {
+    fn new() -> Self {
+        Self(Mutex::new(Lru::new(PATCH_MEMO)))
+    }
+
+    /// The patch of `purpose` in the cell `(cx, cy)`: remembered, or else
+    /// decided now (with the lock released: deciding a clearing or a
+    /// copse asks for the small woods around it).
+    fn patch(
+        &self,
+        purpose: u64,
+        cx: u32,
+        cy: u32,
+        decide: impl FnOnce() -> Option<Patch>,
+    ) -> Option<Patch> {
+        let key = (purpose, cx, cy);
+        let lock = || self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(patch) = lock().get(&key) {
+            return *patch;
+        }
+        let patch = decide();
+        lock().insert(key, patch);
+        patch
+    }
+}
+
+impl Clone for PatchMemo {
+    /// Nothing remembered: it is only a memo.
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+
+/// The woods of the tiles of a rectangle before the forest's depth is
+/// known: per tile, row by row, the density (0 to 100), the habitat and
+/// whether the trees thicken with the depth (`Woods::finish`).
+pub(crate) struct Draft {
+    pub(crate) density: Vec<u8>,
+    pub(crate) habitat: Vec<Habitat>,
+    pub(crate) ramped: Vec<bool>,
+}
+
+/// A round patch: centre and radius, thousandths of a tile.
+type Patch = (i64, i64, i64);
 
 impl Woods {
     /// From this density up, a tile is forest: the wood and the heart.
@@ -127,7 +204,7 @@ impl Woods {
     /// steadily to full at `FULL_DEPTH` tiles. Small woods and copses keep
     /// their own, quicker rise.
     const SPARSE_DEPTH: u8 = 18;
-    const FULL_DEPTH: u8 = 55;
+    pub(crate) const FULL_DEPTH: u8 = 55;
     /// The woods along a river (11 November 2026): the water's pull,
     /// `RIPARIAN_PULL` at the thickest, held to `RIVER_WOOD` tiles off
     /// the water and fading to nothing at `RIVER_REACH`; the wood on the
@@ -136,10 +213,10 @@ impl Woods {
     /// smaller.
     const RIVER_NEAR: (u8, u8) = (2, 5);
     const RIVER_WOOD: u8 = 20;
-    const RIVER_REACH: u8 = 60;
+    pub(crate) const RIVER_REACH: u8 = 60;
     const BROOK_NEAR: (u8, u8) = (2, 3);
     const BROOK_WOOD: u8 = 6;
-    const BROOK_REACH: u8 = 12;
+    pub(crate) const BROOK_REACH: u8 = 12;
     const RIPARIAN_PULL: i64 = 480;
     const BROOK_PULL: i64 = 300;
     /// A bare stretch takes this much pull away, at its barest, as far
@@ -193,118 +270,158 @@ impl Woods {
     const RAGGED: i64 = 500;
     const RAGGED_CELL: u32 = 7;
 
-    /// The woods of a map of `width` by `height` below `cliff_rows`, around
-    /// `rivers`, with the camp clearing at `camp`.
+    /// The woods of a map of `width` by `height` below `cliff_rows`, with
+    /// the camp clearing at `camp`.
     #[must_use]
-    pub fn generate(
-        width: u32,
-        height: u32,
-        cliff_rows: u32,
-        seed: u64,
-        rivers: &Rivers,
-        camp: (u32, u32),
-    ) -> Self {
-        let tiles = (width * height) as usize;
-        let mut woods = Self {
-            width,
-            density: vec![0; tiles],
-            habitat: vec![Habitat::None; tiles],
-        };
-        let land = |x: u32, y: u32| y >= cliff_rows && rivers.at(x, y).is_none();
+    pub fn new(width: u32, height: u32, cliff_rows: u32, seed: u64, camp: (u32, u32)) -> Self {
         let noise_seed = |salt: u64| scatter::roll(seed, salt, &[]);
-        let mut plan = Plan {
+        Self {
+            seed,
             massif: noise_seed(purpose::WOODS_MASSIF),
             detail: noise_seed(purpose::WOODS_DETAIL),
             fine: noise_seed(purpose::WOODS_FINE),
             rim: noise_seed(purpose::WOODS_RIM),
             riparian: noise_seed(purpose::WOODS_RIPARIAN),
-            // The same wetness the brooks rise from.
             wet: Groves::with_cell(width, height, seed ^ purpose::WETNESS, 32),
-            cliff_rows,
-            width,
-            to_river: Self::to_water(width, height, rivers, false, Self::RIVER_REACH),
-            to_brook: Self::to_water(width, height, rivers, true, Self::BROOK_REACH),
-            woodlets: Patches::default(),
-            clearings: Patches::default(),
-            copses: Patches::default(),
-            camp: (i64::from(camp.0) * 1000, i64::from(camp.1) * 1000),
-        };
-        let area = (width, height, cliff_rows);
-        // Small woods rise in the open.
-        let woodlets = Self::patches(
-            area,
-            seed,
-            purpose::WOODS_WOODLET,
-            Self::WOODLETS,
-            |x, y| land(x, y) && plan.pull(x, y, false) < Self::LEVEL,
-        );
-        plan.woodlets = Patches::new(woodlets, width, height);
-        // A clearing opens well inside a wood, so it never eats a thin
-        // wood whole.
-        let clearings = Self::patches(
-            area,
-            seed,
-            purpose::WOODS_CLEARING,
-            Self::CLEARINGS,
-            |x, y| land(x, y) && plan.pull(x, y, true) > Self::LEVEL + Self::EDGE * 3,
-        );
-        // A copse stands in the open.
-        let copses = Self::patches(area, seed, purpose::WOODS_COPSE, Self::COPSES, |x, y| {
-            land(x, y) && plan.pull(x, y, true) < Self::LEVEL - Self::EDGE / 2
-        });
-        plan.clearings = Patches::new(clearings, width, height);
-        plan.copses = Patches::new(copses, width, height);
-        let mut ramped = vec![false; tiles];
-        for y in 0..height {
-            for x in 0..width {
-                if land(x, y) {
-                    let i = (y * width + x) as usize;
-                    let (d, habitat, ramp) = plan.tile(x, y);
-                    woods.density[i] = u8::try_from(d / 10).expect("percent");
-                    woods.habitat[i] = habitat;
-                    ramped[i] = ramp;
-                }
-            }
-        }
-        // How deep in the forest each tile is, and the trees thickening
-        // with it. Water is no edge (11 November 2026): the wood by a
-        // river is as deep as the woods around it, so the bank has the
-        // forest of its region, not a rim.
-        let w = width as usize;
-        let depth = Self::depth(
             width,
             height,
-            |i| {
-                woods.density[i] < Self::FOREST
-                    && rivers
-                        .at(
-                            u32::try_from(i % w).expect("fits"),
-                            u32::try_from(i / w).expect("fits"),
-                        )
-                        .is_none()
-            },
-            Self::FULL_DEPTH,
+            cliff_rows,
+            camp: (i64::from(camp.0) * 1000, i64::from(camp.1) * 1000),
+            memo: PatchMemo::new(),
+        }
+    }
+
+    /// The woods of the tiles `x0..x1` × `y0..y1` before the forest's
+    /// depth: `land` tells a tile the woods may cover (below the cliff,
+    /// not water), `to_tile` the tiles from one of them to the nearest
+    /// river and brook (each up to its reach + 1), `to_point` the same
+    /// anywhere on the map (for the round patches' centres, which may lie
+    /// outside). Each tile depends only on the seed and what lies within a
+    /// bounded distance of it: the same whatever the rectangle.
+    pub(crate) fn draft(
+        &self,
+        (x0, y0, x1, y1): (u32, u32, u32, u32),
+        land: impl Fn(u32, u32) -> bool,
+        to_tile: impl Fn(u32, u32) -> (u8, u8),
+        to_point: impl Fn(u32, u32) -> (u8, u8),
+    ) -> Draft {
+        let rect = (x0, y0, x1, y1);
+        let area = (self.width, self.height, self.cliff_rows);
+        // Small woods rise in the open.
+        let woodlet_fits =
+            |x: u32, y: u32| land(x, y) && self.pull(x, y, to_point(x, y), &[]) < Self::LEVEL;
+        let woodlets = Patches::new(
+            Self::patches_in(
+                area,
+                self.seed,
+                purpose::WOODS_WOODLET,
+                Self::WOODLETS,
+                rect,
+                woodlet_fits,
+                Some(&self.memo),
+            ),
+            rect,
         );
-        for i in 0..tiles {
-            if !ramped[i] {
-                // A small wood's heart still lies behind its edge.
-                if woods.habitat[i] == Habitat::Heart && depth[i] < 3 {
-                    woods.habitat[i] = Habitat::Wood;
-                    woods.density[i] = woods.density[i].min(Self::HEART - 1);
-                }
-                continue;
+        // The pull with the small woods at a patch's centre, which may lie
+        // outside the rectangle.
+        let full_pull = |x: u32, y: u32| {
+            let to = to_point(x, y);
+            if woodlets.covers(x, y) {
+                self.pull(x, y, to, woodlets.near(x, y))
+            } else {
+                let near = Self::patches_in(
+                    area,
+                    self.seed,
+                    purpose::WOODS_WOODLET,
+                    Self::WOODLETS,
+                    (x, y, x + 1, y + 1),
+                    woodlet_fits,
+                    Some(&self.memo),
+                );
+                self.pull(x, y, to, &near)
             }
-            let ramp = Self::thickening(depth[i]);
-            woods.density[i] = woods.density[i].min(ramp).max(Self::FOREST);
-            if !matches!(woods.habitat[i], Habitat::CliffFoot | Habitat::Riverside) {
-                woods.habitat[i] = if woods.density[i] >= Self::HEART {
-                    Habitat::Heart
-                } else {
-                    Habitat::Wood
-                };
+        };
+        // A clearing opens well inside a wood, so it never eats a thin
+        // wood whole.
+        let clearings = Self::patches_in(
+            area,
+            self.seed,
+            purpose::WOODS_CLEARING,
+            Self::CLEARINGS,
+            rect,
+            |x, y| land(x, y) && full_pull(x, y) > Self::LEVEL + Self::EDGE * 3,
+            Some(&self.memo),
+        );
+        // A copse stands in the open.
+        let copses = Self::patches_in(
+            area,
+            self.seed,
+            purpose::WOODS_COPSE,
+            Self::COPSES,
+            rect,
+            |x, y| land(x, y) && full_pull(x, y) < Self::LEVEL - Self::EDGE / 2,
+            Some(&self.memo),
+        );
+        let sets = PatchSets {
+            woodlets,
+            clearings: Patches::new(clearings, rect),
+            copses: Patches::new(copses, rect),
+        };
+        let tiles = ((x1 - x0) * (y1 - y0)) as usize;
+        let mut draft = Draft {
+            density: vec![0; tiles],
+            habitat: vec![Habitat::None; tiles],
+            ramped: vec![false; tiles],
+        };
+        let mut i = 0;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                if land(x, y) {
+                    let (d, habitat, ramp) = self.tile(x, y, to_tile(x, y), &sets);
+                    draft.density[i] = u8::try_from(d / 10).expect("percent");
+                    draft.habitat[i] = habitat;
+                    draft.ramped[i] = ramp;
+                }
+                i += 1;
             }
         }
-        woods
+        draft
+    }
+
+    /// A tile's density and habitat once the forest's `depth` there is
+    /// known (`Woods::depth`, water no edge: 11 November 2026, the wood by
+    /// a river is as deep as the woods around it, so the bank has the
+    /// forest of its region, not a rim), from its `Draft`.
+    pub(crate) fn finish(density: u8, habitat: Habitat, ramped: bool, depth: u8) -> (u8, Habitat) {
+        if !ramped {
+            // A small wood's heart still lies behind its edge.
+            if habitat == Habitat::Heart && depth < 3 {
+                return (density.min(Self::HEART - 1), Habitat::Wood);
+            }
+            return (density, habitat);
+        }
+        let density = density.min(Self::thickening(depth)).max(Self::FOREST);
+        let habitat = if matches!(habitat, Habitat::CliffFoot | Habitat::Riverside) {
+            habitat
+        } else if density >= Self::HEART {
+            Habitat::Heart
+        } else {
+            Habitat::Wood
+        };
+        (density, habitat)
+    }
+
+    /// Is a tile of this `Draft` forest ([`crate::map::Terrain::Forest`]) once
+    /// finished? Its trees thicken with the depth, never below `FOREST`,
+    /// or its density already reaches it: the depth changes neither.
+    pub(crate) fn is_forest(density: u8, ramped: bool) -> bool {
+        ramped || density >= Self::FOREST
+    }
+
+    /// Is a tile of this `Draft` open ground for the forest's depth: not
+    /// forest before the depth, and not water?
+    pub(crate) fn is_open(density: u8, water: bool) -> bool {
+        density < Self::FOREST && !water
     }
 
     /// The density of trees `depth` tiles inside the forest, past its
@@ -319,6 +436,7 @@ impl Woods {
         Self::FOREST + u8::try_from(u32::from(100 - Self::FOREST) * into / span).expect("percent")
     }
 
+    #[cfg(test)]
     /// Per tile, how many tiles (eight-way) to the nearest tile where
     /// `open` holds (or off the map), up to `cap`, in two sweeps.
     fn depth(width: u32, height: u32, open: impl Fn(usize) -> bool, cap: u8) -> Vec<u8> {
@@ -336,7 +454,7 @@ impl Woods {
 
     /// The two sweeps of a distance, eight-way, each tile one more than
     /// its nearest neighbour, never above `cap`.
-    fn sweep(to: &mut [u8], w: usize, h: usize, cap: u8) {
+    pub(crate) fn sweep(to: &mut [u8], w: usize, h: usize, cap: u8) {
         let step = |to: &mut [u8], i: usize, j: usize| {
             let through = to[j].saturating_add(1).min(cap);
             if through < to[i] {
@@ -379,52 +497,84 @@ impl Woods {
         }
     }
 
-    /// The round patches of `rule` for `purpose`: on a grid of
-    /// `rule.cell` tiles in absolute coordinates, a cell holds one with
-    /// `rule.chance` thousandths, its centre anywhere in the cell, where
-    /// it `fits`; (x, y, radius) in thousandths of a tile. Each is decided
-    /// by its own cell alone.
-    fn patches(
+    /// The round patches of `rule` for `purpose` that may reach the tiles
+    /// `x0..x1` × `y0..y1`: on a grid of `rule.cell` tiles in absolute
+    /// coordinates, a cell holds one with `rule.chance` thousandths, its
+    /// centre anywhere in the cell, where it `fits`; (x, y, radius) in
+    /// thousandths of a tile. Each is decided by its own cell alone, so a
+    /// rectangle sees the same patches as the whole map, those too far to
+    /// reach it aside.
+    fn patches_in(
         (width, height, cliff_rows): (u32, u32, u32),
         seed: u64,
         purpose: u64,
         rule: PatchRule,
+        (x0, y0, x1, y1): (u32, u32, u32, u32),
         fits: impl Fn(u32, u32) -> bool,
-    ) -> Vec<(i64, i64, i64)> {
+        memo: Option<&PatchMemo>,
+    ) -> Vec<Patch> {
         let mut out = Vec::new();
         let side = u64::from(rule.cell) * 1000;
-        for cy in 0..=height / rule.cell {
-            for cx in 0..=width / rule.cell {
-                let keys = |n: u64| [key(i64::from(cx)), key(i64::from(cy)), n];
-                if !scatter::chance(rule.chance, seed, purpose, &keys(0)) {
-                    continue;
-                }
-                let x = u64::from(cx) * side + scatter::roll(seed, purpose, &keys(1)) % side;
-                let y = u64::from(cy) * side + scatter::roll(seed, purpose, &keys(2)) % side;
-                let (lo, hi) = rule.radius;
-                let r =
-                    u64::from(lo) + scatter::roll(seed, purpose, &keys(3)) % u64::from(hi - lo + 1);
-                let (tx, ty) = (x / 1000, y / 1000);
-                if tx >= u64::from(width) || ty >= u64::from(height) || ty < u64::from(cliff_rows) {
-                    continue;
-                }
-                let (tx, ty) = (
-                    u32::try_from(tx).expect("on the map"),
-                    u32::try_from(ty).expect("on the map"),
-                );
-                if fits(tx, ty) {
-                    let at = |v: u64| i64::try_from(v).expect("on the map");
-                    out.push((at(x), at(y), at(r)));
-                }
+        let reach = Self::reach(i64::from(rule.radius.1));
+        // The cells whose patches may reach the rectangle, on the map.
+        let cells = |lo: u32, hi: u32, last: u32| {
+            let side = i64::from(rule.cell) * 1000;
+            let first = (i64::from(lo) * 1000 - reach).max(0) / side;
+            let end = (i64::from(hi) * 1000 + reach) / side;
+            let first = u32::try_from(first).expect("on the map");
+            let end = u32::try_from(end).map_or(last, |e| e.min(last));
+            first..=end
+        };
+        let decide = |cx: u32, cy: u32| -> Option<Patch> {
+            let keys = |n: u64| [key(i64::from(cx)), key(i64::from(cy)), n];
+            if !scatter::chance(rule.chance, seed, purpose, &keys(0)) {
+                return None;
+            }
+            let x = u64::from(cx) * side + scatter::roll(seed, purpose, &keys(1)) % side;
+            let y = u64::from(cy) * side + scatter::roll(seed, purpose, &keys(2)) % side;
+            let (lo, hi) = rule.radius;
+            let r = u64::from(lo) + scatter::roll(seed, purpose, &keys(3)) % u64::from(hi - lo + 1);
+            let (tx, ty) = (x / 1000, y / 1000);
+            if tx >= u64::from(width) || ty >= u64::from(height) || ty < u64::from(cliff_rows) {
+                return None;
+            }
+            let (tx, ty) = (
+                u32::try_from(tx).expect("on the map"),
+                u32::try_from(ty).expect("on the map"),
+            );
+            let at = |v: u64| i64::try_from(v).expect("on the map");
+            fits(tx, ty).then(|| (at(x), at(y), at(r)))
+        };
+        for cy in cells(y0, y1, height / rule.cell) {
+            for cx in cells(x0, x1, width / rule.cell) {
+                let patch = match memo {
+                    Some(memo) => memo.patch(purpose, cx, cy, || decide(cx, cy)),
+                    None => decide(cx, cy),
+                };
+                out.extend(patch);
             }
         }
         out
     }
 
+    /// The farthest a patch of radius `r` (thousandths) reaches with its
+    /// ragged rim (`Woods::within`): the radius times 1 + RAGGED / 2, and
+    /// a tile more for safety.
+    fn reach(r: i64) -> i64 {
+        r * (1000 + Self::RAGGED / 2 + 1) / 1000 + 1000
+    }
+
+    #[cfg(test)]
     /// Per tile, how many tiles (eight-way) to the nearest brook, or to
     /// the nearest river (water or ford), up to `reach + 1`: a distance
     /// only ever that far, worked out in two sweeps.
-    fn to_water(width: u32, height: u32, rivers: &Rivers, brook: bool, reach: u8) -> Vec<u8> {
+    pub(crate) fn to_water(
+        width: u32,
+        height: u32,
+        rivers: &Rivers,
+        brook: bool,
+        reach: u8,
+    ) -> Vec<u8> {
         let far = reach + 1;
         let (w, h) = (width as usize, height as usize);
         let mut to = vec![far; w * h];
@@ -488,18 +638,6 @@ impl Woods {
         u32::try_from(Self::STOCKING_LEAST + (1000 - Self::STOCKING_LEAST) * eased / 1000)
             .expect("thousandths")
     }
-
-    /// The density of trees at `(x, y)`, 0 to 100.
-    #[must_use]
-    pub fn density(&self, x: u32, y: u32) -> u8 {
-        self.density[(y * self.width + x) as usize]
-    }
-
-    /// The habitat of `(x, y)`.
-    #[must_use]
-    pub fn habitat(&self, x: u32, y: u32) -> Habitat {
-        self.habitat[(y * self.width + x) as usize]
-    }
 }
 
 /// How round patches of one kind are laid: a grid of `cell` tiles, a
@@ -511,53 +649,43 @@ struct PatchRule {
     radius: (u32, u32),
 }
 
-/// What the woods are drawn from: the noises' seeds, the wetness, the
-/// distance to the rivers, the round patches and the camp's place.
-struct Plan {
-    massif: u64,
-    detail: u64,
-    fine: u64,
-    rim: u64,
-    riparian: u64,
-    wet: Groves,
-    cliff_rows: u32,
-    width: u32,
-    /// Per tile, the tiles to the nearest river, then to the nearest
-    /// brook, each up to its reach.
-    to_river: Vec<u8>,
-    to_brook: Vec<u8>,
+/// The round patches that may reach a rectangle, of each kind.
+struct PatchSets {
     woodlets: Patches,
     clearings: Patches,
     copses: Patches,
-    camp: (i64, i64),
 }
 
 /// Round patches (clearings, small woods, copses: centre and radius,
 /// thousandths of a tile), filed by the square cells of `PATCH_CELL`
-/// tiles their ragged rims can reach: a tile looks only at those of its
-/// own cell.
-#[derive(Default)]
+/// tiles of a rectangle their ragged rims can reach: a tile looks only at
+/// those of its own cell.
 struct Patches {
-    cells: Vec<Vec<(i64, i64, i64)>>,
+    cells: Vec<Vec<Patch>>,
     cells_wide: u32,
+    /// The rectangle filed: `x0, y0, x1, y1`.
+    rect: (u32, u32, u32, u32),
 }
 
 /// Side of a cell of `Patches`, in tiles.
 const PATCH_CELL: u32 = 16;
 
 impl Patches {
-    fn new(patches: Vec<(i64, i64, i64)>, width: u32, height: u32) -> Self {
-        let (wide, high) = (width.div_ceil(PATCH_CELL), height.div_ceil(PATCH_CELL));
+    fn new(patches: Vec<Patch>, rect: (u32, u32, u32, u32)) -> Self {
+        let (x0, y0, x1, y1) = rect;
+        let (wide, high) = (
+            (x1 - x0).div_ceil(PATCH_CELL),
+            (y1 - y0).div_ceil(PATCH_CELL),
+        );
         let mut cells = vec![Vec::new(); (wide * high) as usize];
-        let cell = |mm: i64, last: u32| {
-            u32::try_from(mm.max(0) / 1000).map_or(last, |t| (t / PATCH_CELL).min(last))
+        let cell = |mm: i64, origin: u32, last: u32| {
+            let tile = (mm / 1000 - i64::from(origin)).max(0);
+            u32::try_from(tile).map_or(last, |t| (t / PATCH_CELL).min(last))
         };
         for (cx, cy, r) in patches {
-            // The farthest a ragged rim reaches (`Plan::within`): the
-            // radius times 1 + RAGGED / 2, and a tile more for safety.
-            let reach = r * (1000 + Woods::RAGGED / 2 + 1) / 1000 + 1000;
-            for y in cell(cy - reach, high - 1)..=cell(cy + reach, high - 1) {
-                for x in cell(cx - reach, wide - 1)..=cell(cx + reach, wide - 1) {
+            let reach = Woods::reach(r);
+            for y in cell(cy - reach, y0, high - 1)..=cell(cy + reach, y0, high - 1) {
+                for x in cell(cx - reach, x0, wide - 1)..=cell(cx + reach, x0, wide - 1) {
                     cells[(y * wide + x) as usize].push((cx, cy, r));
                 }
             }
@@ -565,49 +693,55 @@ impl Patches {
         Self {
             cells,
             cells_wide: wide,
+            rect,
         }
     }
 
-    /// The patches that may reach the tile `(x, y)`.
-    fn near(&self, x: u32, y: u32) -> &[(i64, i64, i64)] {
+    /// Is `(x, y)` in the rectangle filed?
+    fn covers(&self, x: u32, y: u32) -> bool {
+        let (x0, y0, x1, y1) = self.rect;
+        (x0..x1).contains(&x) && (y0..y1).contains(&y)
+    }
+
+    /// The patches that may reach the tile `(x, y)` of the rectangle.
+    fn near(&self, x: u32, y: u32) -> &[Patch] {
+        let (x0, y0, _, _) = self.rect;
         self.cells
-            .get(((y / PATCH_CELL) * self.cells_wide + x / PATCH_CELL) as usize)
+            .get((((y - y0) / PATCH_CELL) * self.cells_wide + (x - x0) / PATCH_CELL) as usize)
             .map_or(&[], Vec::as_slice)
     }
 }
 
-impl Plan {
-    /// How strongly the woods pull at `(x, y)`, in thousandths: the
-    /// massifs' noise, roughened, wetter ground and the cliff's foot, the
-    /// small woods (`with_woodlets`), and the water's draw (or a bare
+impl Woods {
+    /// How strongly the woods pull at `(x, y)`, `to` tiles from the
+    /// nearest river and brook, in thousandths: the massifs' noise,
+    /// roughened, wetter ground and the cliff's foot, the small `woodlets`
+    /// near (none to leave them out), and the water's draw (or a bare
     /// stretch's opening) near a river or a brook.
-    fn pull(&self, x: u32, y: u32, with_woodlets: bool) -> i64 {
+    fn pull(&self, x: u32, y: u32, to: (u8, u8), woodlets: &[Patch]) -> i64 {
         let (ix, iy) = (
             i32::try_from(x).expect("map fits in i32"),
             i32::try_from(y).expect("map fits in i32"),
         );
         let centred = |v: u32| i64::from(v) - 500;
-        let mut m = i64::from(noise(self.massif, Woods::MASSIF_CELL, ix, iy))
-            + Woods::DETAIL * centred(noise(self.detail, Woods::DETAIL_CELL, ix, iy)) / 1000
-            + Woods::FINE * centred(noise(self.fine, Woods::FINE_CELL, ix, iy)) / 1000
-            + Woods::WET * centred(self.wet.value(x, y)) / 1000;
+        let mut m = i64::from(noise(self.massif, Self::MASSIF_CELL, ix, iy))
+            + Self::DETAIL * centred(noise(self.detail, Self::DETAIL_CELL, ix, iy)) / 1000
+            + Self::FINE * centred(noise(self.fine, Self::FINE_CELL, ix, iy)) / 1000
+            + Self::WET * centred(self.wet.value(x, y)) / 1000;
         let below = i64::from(y) - i64::from(self.cliff_rows);
-        if below < Woods::CLIFF_ROWS {
-            m += Woods::CLIFF * (Woods::CLIFF_ROWS - below) / Woods::CLIFF_ROWS;
+        if below < Self::CLIFF_ROWS {
+            m += Self::CLIFF * (Self::CLIFF_ROWS - below) / Self::CLIFF_ROWS;
         }
-        if with_woodlets {
-            m += self.woodlet_pull(x, y);
-        }
-        m + self.water_pull(x, y)
+        m += self.woodlet_pull(x, y, woodlets);
+        m + self.water_pull(x, y, to)
     }
 
-    /// What the water adds to the pull at `(x, y)`: the water's full
-    /// pull from its edge through its wood, fading to nothing at its
-    /// reach, as thick as the stretch is; on a bare stretch, taken away
-    /// instead, over the same reach. A river and a brook each pull; the
-    /// stronger counts.
-    fn water_pull(&self, x: u32, y: u32) -> i64 {
-        let i = (y * self.width + x) as usize;
+    /// What the water adds to the pull at `(x, y)`, `(river, brook)`
+    /// tiles from each: the water's full pull from its edge through its
+    /// wood, fading to nothing at its reach, as thick as the stretch is;
+    /// on a bare stretch, taken away instead, over the same reach. A
+    /// river and a brook each pull; the stronger counts.
+    fn water_pull(&self, x: u32, y: u32, (to_river, to_brook): (u8, u8)) -> i64 {
         let lift = self.lift(x, y);
         let shape = |d: u8, (wood, reach): (u8, u8), pull: i64| -> i64 {
             if d > reach {
@@ -620,20 +754,20 @@ impl Plan {
             };
             if lift < 0 {
                 // Bare: open as far as the wood would have gone.
-                Woods::RIPARIAN_OPEN * lift / 1000 * band / 1000
+                Self::RIPARIAN_OPEN * lift / 1000 * band / 1000
             } else {
-                pull * Woods::thickness(lift) / 1000 * band / 1000
+                pull * Self::thickness(lift) / 1000 * band / 1000
             }
         };
         let river = shape(
-            self.to_river[i],
-            (Woods::RIVER_WOOD, Woods::RIVER_REACH),
-            Woods::RIPARIAN_PULL,
+            to_river,
+            (Self::RIVER_WOOD, Self::RIVER_REACH),
+            Self::RIPARIAN_PULL,
         );
         let brook = shape(
-            self.to_brook[i],
-            (Woods::BROOK_WOOD, Woods::BROOK_REACH),
-            Woods::BROOK_PULL,
+            to_brook,
+            (Self::BROOK_WOOD, Self::BROOK_REACH),
+            Self::BROOK_PULL,
         );
         if lift < 0 {
             river.min(brook)
@@ -644,28 +778,28 @@ impl Plan {
 
     /// The riparian lift at `(x, y)` (`Woods::riparian_lift`).
     fn lift(&self, x: u32, y: u32) -> i64 {
-        Woods::riparian_lift(self.riparian, x, y)
+        Self::riparian_lift(self.riparian, x, y)
     }
 
-    /// What the small woods add to the pull at `(x, y)`.
-    fn woodlet_pull(&self, x: u32, y: u32) -> i64 {
-        Woods::WOODLET_PULL * self.within(self.woodlets.near(x, y), x, y) / 1000
+    /// What the small `woodlets` near add to the pull at `(x, y)`.
+    fn woodlet_pull(&self, x: u32, y: u32, woodlets: &[Patch]) -> i64 {
+        Self::WOODLET_PULL * self.within(woodlets, x, y) / 1000
     }
 
     /// How deep inside one of `patches` `(x, y)` is: 1000 at a centre, 0
     /// at and past a rim made ragged by a fine noise.
-    fn within(&self, patches: &[(i64, i64, i64)], x: u32, y: u32) -> i64 {
+    fn within(&self, patches: &[Patch], x: u32, y: u32) -> i64 {
         if patches.is_empty() {
             return 0;
         }
         let (px, py) = (i64::from(x) * 1000, i64::from(y) * 1000);
         let rim = noise(
             self.rim,
-            Woods::RAGGED_CELL,
+            Self::RAGGED_CELL,
             i32::try_from(x).expect("map fits in i32"),
             i32::try_from(y).expect("map fits in i32"),
         );
-        let ragged = 1000 + Woods::RAGGED * (i64::from(rim) - 500) / 1000;
+        let ragged = 1000 + Self::RAGGED * (i64::from(rim) - 500) / 1000;
         patches
             .iter()
             .map(|(cx, cy, r)| {
@@ -681,15 +815,17 @@ impl Plan {
     }
 
     /// The density (thousandths) and habitat of the land tile `(x, y)`,
-    /// and whether its trees thicken with its depth in the forest (not in
-    /// a small wood, which keeps its quicker rise).
-    fn tile(&self, x: u32, y: u32) -> (i64, Habitat, bool) {
-        let pull = self.pull(x, y, true);
-        let in_a_woodlet = pull - self.woodlet_pull(x, y) < Woods::LEVEL;
-        let mut d = ((pull - Woods::LEVEL) * 1000 / Woods::EDGE).clamp(0, 1000);
-        let mut habitat = if d >= i64::from(Woods::HEART) * 10 {
+    /// `to` tiles from the nearest river and brook, and whether its trees
+    /// thicken with its depth in the forest (not in a small wood, which
+    /// keeps its quicker rise).
+    fn tile(&self, x: u32, y: u32, to: (u8, u8), sets: &PatchSets) -> (i64, Habitat, bool) {
+        let woodlets = sets.woodlets.near(x, y);
+        let pull = self.pull(x, y, to, woodlets);
+        let in_a_woodlet = pull - self.woodlet_pull(x, y, woodlets) < Self::LEVEL;
+        let mut d = ((pull - Self::LEVEL) * 1000 / Self::EDGE).clamp(0, 1000);
+        let mut habitat = if d >= i64::from(Self::HEART) * 10 {
             Habitat::Heart
-        } else if d >= i64::from(Woods::FOREST) * 10 {
+        } else if d >= i64::from(Self::FOREST) * 10 {
             Habitat::Wood
         } else if d > 0 {
             Habitat::Edge
@@ -698,7 +834,7 @@ impl Plan {
         };
         // Clearings: the woods open, with an edge around.
         if d > 0 {
-            let open = self.within(self.clearings.near(x, y), x, y);
+            let open = self.within(sets.clearings.near(x, y), x, y);
             if open > 0 {
                 d = d * (1000 - (3 * open).min(1000)) / 1000;
                 habitat = if d < 100 {
@@ -713,9 +849,9 @@ impl Plan {
         let from_camp = ((i64::from(x) * 1000 - self.camp.0).pow(2)
             + (i64::from(y) * 1000 - self.camp.1).pow(2))
         .isqrt();
-        if from_camp < Woods::CAMP_RADIUS {
-            let back = (from_camp - (Woods::CAMP_RADIUS - Woods::CAMP_RIM)).max(0);
-            d = d * back / Woods::CAMP_RIM;
+        if from_camp < Self::CAMP_RADIUS {
+            let back = (from_camp - (Self::CAMP_RADIUS - Self::CAMP_RIM)).max(0);
+            d = d * back / Self::CAMP_RIM;
             if d < 100 {
                 d = 0;
                 habitat = Habitat::Camp;
@@ -723,14 +859,14 @@ impl Plan {
         }
         // The wood at the cliff's foot is its own place.
         let below = i64::from(y) - i64::from(self.cliff_rows);
-        if below < Woods::CLIFF_ROWS
+        if below < Self::CLIFF_ROWS
             && matches!(habitat, Habitat::Edge | Habitat::Wood | Habitat::Heart)
         {
             habitat = Habitat::CliffFoot;
         }
         // Copses in the meadow, tight.
         if habitat == Habitat::Meadow {
-            let copse = self.within(self.copses.near(x, y), x, y);
+            let copse = self.within(sets.copses.near(x, y), x, y);
             if copse > 0 {
                 d = 800 + 200 * copse / 1000;
                 habitat = Habitat::Copse;
@@ -740,13 +876,12 @@ impl Plan {
         // habitat, the riverside kinds' (willow, alder): no tree of its
         // own, the woods' density as around it; never the tile beside
         // any water, never on a bare stretch.
-        let i = (y * self.width + x) as usize;
-        let (river, brook) = (self.to_river[i], self.to_brook[i]);
+        let (river, brook) = to;
         let near = |d: u8, (lo, hi): (u8, u8)| (lo..=hi).contains(&d);
         if matches!(habitat, Habitat::Wood | Habitat::Heart)
             && river > 1
             && brook > 1
-            && (near(river, Woods::RIVER_NEAR) || near(brook, Woods::BROOK_NEAR))
+            && (near(river, Self::RIVER_NEAR) || near(brook, Self::BROOK_NEAR))
             && self.lift(x, y) >= 0
         {
             habitat = Habitat::Riverside;
@@ -757,6 +892,75 @@ impl Plan {
                 Habitat::Wood | Habitat::Heart | Habitat::CliffFoot | Habitat::Riverside
             );
         (d, habitat, ramped)
+    }
+}
+
+/// The woods of a whole map at once, as they were made before the map
+/// made them per chunk: the reference the chunks are checked against,
+/// and what the woods' own tests read.
+#[cfg(test)]
+pub(crate) struct WholeWoods {
+    width: u32,
+    density: Vec<u8>,
+    habitat: Vec<Habitat>,
+}
+
+#[cfg(test)]
+impl WholeWoods {
+    /// The woods of a map of `width` by `height` below `cliff_rows`,
+    /// around `rivers`, with the camp clearing at `camp`: every tile at
+    /// once, the distances to the waters and the forest's depth swept
+    /// over the whole map.
+    pub(crate) fn generate(
+        width: u32,
+        height: u32,
+        cliff_rows: u32,
+        seed: u64,
+        rivers: &Rivers,
+        camp: (u32, u32),
+    ) -> Self {
+        let woods = Woods::new(width, height, cliff_rows, seed, camp);
+        let w = width as usize;
+        let to_river = Woods::to_water(width, height, rivers, false, Woods::RIVER_REACH);
+        let to_brook = Woods::to_water(width, height, rivers, true, Woods::BROOK_REACH);
+        let to = |x: u32, y: u32| {
+            let i = y as usize * w + x as usize;
+            (to_river[i], to_brook[i])
+        };
+        let land = |x: u32, y: u32| y >= cliff_rows && rivers.at(x, y).is_none();
+        let draft = woods.draft((0, 0, width, height), land, to, to);
+        let depth = Woods::depth(
+            width,
+            height,
+            |i| {
+                let (x, y) = (
+                    u32::try_from(i % w).expect("fits"),
+                    u32::try_from(i / w).expect("fits"),
+                );
+                Woods::is_open(draft.density[i], rivers.at(x, y).is_some())
+            },
+            Woods::FULL_DEPTH,
+        );
+        let (mut density, mut habitat) = (draft.density, draft.habitat);
+        for i in 0..density.len() {
+            (density[i], habitat[i]) =
+                Woods::finish(density[i], habitat[i], draft.ramped[i], depth[i]);
+        }
+        Self {
+            width,
+            density,
+            habitat,
+        }
+    }
+
+    /// The density of trees at `(x, y)`, 0 to 100.
+    pub(crate) fn density(&self, x: u32, y: u32) -> u8 {
+        self.density[(y * self.width + x) as usize]
+    }
+
+    /// The habitat of `(x, y)`.
+    pub(crate) fn habitat(&self, x: u32, y: u32) -> Habitat {
+        self.habitat[(y * self.width + x) as usize]
     }
 }
 
@@ -998,8 +1202,19 @@ mod tests {
         // The same patches where two maps overlap: each cell decides its
         // own, the map's size changes nothing.
         let rule = Woods::COPSES;
-        let small = Woods::patches((256, 256, 0), 9, purpose::WOODS_COPSE, rule, |_, _| true);
-        let large = Woods::patches((768, 512, 0), 9, purpose::WOODS_COPSE, rule, |_, _| true);
+        let all = |(w, h)| {
+            Woods::patches_in(
+                (w, h, 0),
+                9,
+                purpose::WOODS_COPSE,
+                rule,
+                (0, 0, w, h),
+                |_, _| true,
+                None,
+            )
+        };
+        let small = all((256, 256));
+        let large = all((768, 512));
         let inside: Vec<_> = large
             .iter()
             .copied()
