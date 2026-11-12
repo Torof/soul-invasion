@@ -132,6 +132,41 @@ Perception comes before the animals because too much rests on it to come
 after; combat comes with the animals, not after them. Each pull request
 ends with a run of the real client; the milestone ends with an audit.
 
+**Milestone 2 with the vivarium (13 November 2026)**
+
+The project lead decided on 12 and 13 November that the rest of milestone 2
+goes through the vivarium (D41): NPCs alone, from the Stone Age, under
+glass. It replaces the order of the table above where they differ. It also
+brings the year and its seasons into this version (D09 amended): "No
+seasons" above, and seasons out of scope, no longer hold.
+
+1. **The documents**: this record of the decisions (D41 and the amendments
+   of 13 November).
+2. **Eating and drinking**: the item model in grams, seasons and
+   temperature, thirst, the dated flora that regrows, fruit years, the fat
+   reserve, carrying without a container; what the plants and animals give;
+   measuring what a larger map costs.
+3. **The simple fire**: lit, kept by adding wood, warming and cooking, with
+   the structures on tiles and dead wood that returns.
+4. **Vivarium V1**: one band of about forty, strength and kinship, a
+   minimal perception, the brain and its memory of places, the rock shelter,
+   the camp, **a small deer herd**, the program and its report.
+5. **Assembly, containers, built shelters.**
+6. **Perception**, complete.
+7. **Hunting** (V2): the deer herd that feeds, flees and breeds; the spear,
+   alone or together.
+8. **Knowledge and discovery** (V3), after the design page and the full
+   model of processes.
+9. **Society** (V4): opinions, prestige, a recognized chief, strong
+   personalities and awakenings.
+10. **Two tribes** (V5), the meeting, and the judgement on forty seeds and a
+    second map.
+
+Each step ends with something the project lead can read in the report. The
+body rules hold for the game too, so the client's share of each step is
+counted with it. Images of rocks and caves come only once their shape is
+validated with placeholders.
+
 ## Milestone 1 audit (5 November 2026)
 
 What the skeleton is: a Rust server (`sim`, `protocol`, `server`), a Godot client, one valley of 32×32 tiles with a cliff, a river and a ford, three bodies, the first free one piloted by each connection. Time runs in fixed ticks (10 per game second, 7 200 game seconds per day), at any pace or headless. Snapshots and an event journal in SQLite. 59 server tests, 17 client checks, an end-to-end run with the real client.
