@@ -592,7 +592,7 @@ pub const SAMPLE_MOVEMENT: &str = r"(
     terrain_costs: { grass: Some(10), forest: Some(15), ford: Some(20), brook: Some(15), water: None, rock: None },
     carry_capacity_g: 20000,
     speed_percent_at_full_load: 60,
-    sight_tiles: { grass: 60, forest: 12, ford: 60, brook: 60, water: 60, rock: 60 },
+    sight_tiles: { grass: 60, forest: 25, ford: 60, brook: 60, water: 60, rock: 60 },
     path_budget_tiles: 1500,
     searches_per_tick: 40,
 )";
@@ -675,15 +675,15 @@ mod tests {
     fn sight_budget_and_cap_are_checked() {
         let movement = Content::sample().movement;
         assert_eq!(movement.sight_tiles(Terrain::Grass), 60);
-        assert_eq!(movement.sight_tiles(Terrain::Forest), 12);
+        assert_eq!(movement.sight_tiles(Terrain::Forest), 25);
         assert_eq!(movement.path_budget_tiles, 1500);
         assert_eq!(movement.searches_per_tick, 40);
-        let blind = SAMPLE_MOVEMENT.replacen("forest: 12, ", "", 1);
+        let blind = SAMPLE_MOVEMENT.replacen("forest: 25, ", "", 1);
         assert!(matches!(
             Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, &blind, SAMPLE_NEEDS).unwrap_err(),
             ContentError::Movement("every terrain needs a sight")
         ));
-        let dark = SAMPLE_MOVEMENT.replacen("forest: 12", "forest: 0", 1);
+        let dark = SAMPLE_MOVEMENT.replacen("forest: 25", "forest: 0", 1);
         assert!(matches!(
             Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, &dark, SAMPLE_NEEDS).unwrap_err(),
             ContentError::Movement("a sight is 1 tile or more")

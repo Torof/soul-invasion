@@ -11,13 +11,17 @@
 // speed_percent_at_full_load: walking speed at full load, in percent of
 //                      the unloaded speed; linear in between.
 // sight_tiles:         how far a body sees, in tiles on each axis, by the
-//                      terrain of the tile it stands on when it sets off
-//                      (D32). A way round (a ford, a bridge, the end of a
-//                      pond) is taken only within that square; past it the
-//                      body walks straight toward its target and stops at
-//                      the first thing in the way, and the player finds the
-//                      way: exploring and knowing the ways is the game. 60 m
-//                      in the open, 12 m under the trees. A body never
+//                      terrain where it stands when it sets off: the most
+//                      open walkable tile among its own and the eight
+//                      around it, so at a wood's edge it sees out (D32). A
+//                      way round (a ford, a bridge, the end of a pond) is
+//                      taken only within that square; past it the body
+//                      walks straight toward its target, stops at the
+//                      first thing in the way and looks again from there,
+//                      as long as each look is nearer the target than the
+//                      last; then the player finds the way: exploring and
+//                      knowing the ways is the game. 60 m in the open,
+//                      25 m in the heart of a wood. A body never
 //                      stands on water or rock; their values apply only to
 //                      a body put there by mistake. Every terrain must
 //                      appear.
@@ -36,7 +40,7 @@
     walk_speed_cm_per_s: 143,
     sight_tiles: {
         grass: 60,
-        forest: 12,
+        forest: 25,
         ford: 60,
         brook: 60,
         water: 60,

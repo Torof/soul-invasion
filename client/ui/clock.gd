@@ -28,6 +28,14 @@ func sync(tick: float, now_msec: int) -> void:
 	_synced_at_msec = now_msec
 
 
+## Takes a tick a message was sent at (a walk told): the world was at
+## that tick at least, so a clock found behind it is set to it. Never set
+## back by it: a message may wait in the queue, its tick past.
+func catch_up(tick: float, now_msec: int) -> void:
+	if tick > tick_at(now_msec):
+		sync(tick, now_msec)
+
+
 ## The tick we estimate the world is at `now_msec`.
 func tick_at(now_msec: int) -> float:
 	var elapsed := (now_msec - _synced_at_msec) / 1000.0

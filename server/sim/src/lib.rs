@@ -181,6 +181,18 @@ impl Condition {
     }
 }
 
+/// Where a body that walked straight for want of a way in sight is still
+/// going, and how near it stood to it when it last looked (D32).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct Goal {
+    /// The tile it was sent to.
+    target: Pos,
+    /// The square of its distance to the target's centre, in square
+    /// millimetres, where it last looked for a way: it looks again only
+    /// from nearer.
+    looked_from: u64,
+}
+
 /// An inhabitant's body: where it is, where it is going, how it fares.
 ///
 /// It stands at a fine position (millimetres, D32) and walks along a
@@ -191,6 +203,11 @@ pub struct Body {
     at: FinePos,
     /// Remaining waypoints of the current walk, nearest first.
     route: VecDeque<FinePos>,
+    /// The target of a walk that found no way within sight and went
+    /// straight toward it: the body looks again when it stops (D32).
+    /// Absent from a snapshot when there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    goal: Option<Goal>,
     condition: Condition,
     /// The item in hand, if any: visible to all, the tool or weapon (D35).
     held: Option<ItemId>,
@@ -1061,6 +1078,7 @@ impl World {
             id,
             at: pos.centre(),
             route: VecDeque::new(),
+            goal: None,
             condition: Condition::healthy(),
             held: None,
             carried: Vec::new(),
@@ -1142,6 +1160,23 @@ impl World {
         }
         waiting.append(&mut self.pending);
         self.pending = waiting;
+        // A body that walked straight for want of a way and stopped looks
+        // again from where it stands, within the same cap; those over it
+        // look at the next tick.
+        for index in 0..self.bodies.len() {
+            if searches >= rules.movement.searches_per_tick {
+                break;
+            }
+            let body = &self.bodies[index];
+            let Some(goal) = body.goal else {
+                continue;
+            };
+            if !body.route.is_empty() || body.condition.asleep {
+                continue;
+            }
+            searches += 1;
+            self.look_again(index, goal, rules, events);
+        }
 
         let per_second = f64::from(self.calendar.ticks_per_second());
         for index in 0..self.bodies.len() {
@@ -1195,6 +1230,7 @@ impl World {
                 if c.fatigue.is_full() {
                     c.asleep = true;
                     body.route.clear();
+                    body.goal = None;
                 }
             }
             let mut cause = None;
@@ -1286,52 +1322,7 @@ impl World {
                     return;
                 };
                 self.wake(index, events);
-                let cost = |t: Terrain| rules.movement.cost(t);
-                let from = self.bodies[index].at;
-                // A way is looked for within what the body sees from the
-                // terrain it stands on, and within the content's budget of
-                // effort (D32).
-                let terrain = self.map.get(from.tile()).unwrap_or(Terrain::Rock);
-                let sight = i32::try_from(rules.movement.sight_tiles(terrain)).unwrap_or(i32::MAX);
-                let budget = rules.movement.path_budget_tiles;
-                if let Some(path) = self
-                    .map
-                    .path_within(from.tile(), target, sight, budget, cost)
-                {
-                    let route = self.map.pull(from, &path, cost);
-                    let body = &mut self.bodies[index];
-                    body.route = route.iter().copied().collect();
-                    if route.is_empty() {
-                        events.push(Event::BodyStopped { body: id, at: from });
-                    } else {
-                        events.push(Event::BodyWalks {
-                            body: id,
-                            from,
-                            route,
-                            speed_cm_per_s: rules.movement.walk_speed_cm_per_s,
-                        });
-                    }
-                } else {
-                    // No path found within reach: straight toward the
-                    // target, stopping before the first tile the body
-                    // may not enter (D31, D32). The player walks it
-                    // round.
-                    let walkable = |p: Pos| self.map.get(p).is_some_and(|t| cost(t).is_some());
-                    let end = map::line_reach(from, target.centre(), walkable);
-                    let (dx, dy) = (i64::from(end.x - from.x), i64::from(end.y - from.y));
-                    let quarter = i64::from(MM_PER_TILE / 4);
-                    if dx * dx + dy * dy < quarter * quarter {
-                        events.push(Event::MoveRefused { body: id, target });
-                    } else {
-                        self.bodies[index].route = VecDeque::from([end]);
-                        events.push(Event::BodyWalks {
-                            body: id,
-                            from,
-                            route: vec![end],
-                            speed_cm_per_s: rules.movement.walk_speed_cm_per_s,
-                        });
-                    }
-                }
+                self.set_off(index, target, true, rules, events);
             }
             Intention::Teleport { body: id, target } => self.teleport(id, target, rules, events),
             Intention::Eat { body: id, item } => self.eat(id, item, rules, events),
@@ -1344,6 +1335,7 @@ impl World {
                     let body = &mut self.bodies[index];
                     if !body.condition.asleep {
                         body.condition.asleep = true;
+                        body.goal = None;
                         if !body.route.is_empty() {
                             body.route.clear();
                             events.push(Event::BodyStopped {
@@ -1445,6 +1437,7 @@ impl World {
         self.wake(index, events);
         let body = &mut self.bodies[index];
         body.route.clear();
+        body.goal = None;
         let before = body.pos().chunk();
         body.at = tile.centre();
         if tile.chunk() != before {
@@ -1624,6 +1617,98 @@ impl World {
     }
 
     /// Wakes a body up, if asleep; any deliberate act does.
+    /// Sends a body toward `target` (`ordered`: a new order, rather than a
+    /// body looking again). A way is looked for within what the body sees
+    /// from where it stands ([`World::sight_tiles_at`]) and within the
+    /// content's budget of effort (D32). With none, it walks straight
+    /// toward the target, stopping before the first tile it may not enter
+    /// (D31), and keeps the target to look again from there; a new order
+    /// that cannot even set off is refused, a body looking again that
+    /// cannot stops for good.
+    fn set_off(
+        &mut self,
+        index: usize,
+        target: Pos,
+        ordered: bool,
+        rules: &Content,
+        events: &mut Vec<Event>,
+    ) {
+        let cost = |t: Terrain| rules.movement.cost(t);
+        let id = self.bodies[index].id;
+        let from = self.bodies[index].at;
+        self.bodies[index].goal = None;
+        let sight = i32::try_from(self.sight_tiles_at(from.tile(), rules)).unwrap_or(i32::MAX);
+        let budget = rules.movement.path_budget_tiles;
+        if let Some(path) = self
+            .map
+            .path_within(from.tile(), target, sight, budget, cost)
+        {
+            let route = self.map.pull(from, &path, cost);
+            let body = &mut self.bodies[index];
+            body.route = route.iter().copied().collect();
+            if route.is_empty() {
+                events.push(Event::BodyStopped { body: id, at: from });
+            } else {
+                events.push(Event::BodyWalks {
+                    body: id,
+                    from,
+                    route,
+                    speed_cm_per_s: rules.movement.walk_speed_cm_per_s,
+                });
+            }
+            return;
+        }
+        let walkable = |p: Pos| self.map.get(p).is_some_and(|t| cost(t).is_some());
+        let end = map::line_reach(from, target.centre(), walkable);
+        let (dx, dy) = (i64::from(end.x - from.x), i64::from(end.y - from.y));
+        let quarter = i64::from(MM_PER_TILE / 4);
+        if dx * dx + dy * dy < quarter * quarter {
+            if ordered {
+                events.push(Event::MoveRefused { body: id, target });
+            }
+            return;
+        }
+        let body = &mut self.bodies[index];
+        body.route = VecDeque::from([end]);
+        body.goal = Some(Goal {
+            target,
+            looked_from: squared_mm(from, target.centre()),
+        });
+        events.push(Event::BodyWalks {
+            body: id,
+            from,
+            route: vec![end],
+            speed_cm_per_s: rules.movement.walk_speed_cm_per_s,
+        });
+    }
+
+    /// A body that walked straight for want of a way and stopped looks
+    /// again from where it stands, toward the same target, but only from
+    /// nearer to it than where it last looked: it never circles before a
+    /// wall. Otherwise it stops for good.
+    fn look_again(&mut self, index: usize, goal: Goal, rules: &Content, events: &mut Vec<Event>) {
+        if squared_mm(self.bodies[index].at, goal.target.centre()) >= goal.looked_from {
+            self.bodies[index].goal = None;
+            return;
+        }
+        self.set_off(index, goal.target, false, rules, events);
+    }
+
+    /// How far a body standing on `pos` sees, in tiles on each axis
+    /// (D32): the content's sight from the most open walkable ground it
+    /// stands on or touches. In the heart of a wood, the forest's; at its
+    /// edge, it sees out, as from the open ground beside it.
+    fn sight_tiles_at(&self, pos: Pos, rules: &Content) -> u32 {
+        let movement = &rules.movement;
+        let own = movement.sight_tiles(self.map.get(pos).unwrap_or(Terrain::Rock));
+        (-1..=1)
+            .flat_map(|dy| (-1..=1).map(move |dx| Pos::new(pos.x + dx, pos.y + dy)))
+            .filter_map(|p| self.map.get(p))
+            .filter(|t| movement.cost(*t).is_some())
+            .map(|t| movement.sight_tiles(t))
+            .fold(own, u32::max)
+    }
+
     fn wake(&mut self, index: usize, events: &mut Vec<Event>) {
         let body = &mut self.bodies[index];
         if body.condition.asleep {
@@ -1634,6 +1719,13 @@ impl World {
             });
         }
     }
+}
+
+/// The square of the distance between two fine points, in square
+/// millimetres.
+fn squared_mm(a: FinePos, b: FinePos) -> u64 {
+    let (dx, dy) = (i64::from(a.x - b.x), i64::from(a.y - b.y));
+    (dx * dx + dy * dy).unsigned_abs()
 }
 
 /// Walking speed under a load, in percent of the unloaded speed: linear
@@ -2175,10 +2267,9 @@ mod tests {
     fn a_short_way_round_in_sight_is_always_found() {
         // Seen in play (12 November 2026): a wall two tiles ahead, its
         // end two tiles aside, the target eight to twenty tiles away.
-        // Within the sight and the budget the way round is taken, on
-        // either side, in the open and from the edge of a wood within
-        // its twelve tiles of sight (D32). Beyond them, from under the
-        // trees, the body walks straight: the rule, tested above.
+        // Within the sight and the budget the way round is taken at once,
+        // on either side, in the open and from the edge of a wood, which
+        // sees out (D32).
         let rules = rules();
         for (under, distances) in [
             (Terrain::Grass, &[8, 12, 16, 20][..]),
@@ -2270,13 +2361,18 @@ mod tests {
 
     /// A field with a wall of water across the middle, and a body `from`
     /// its west side with its target east of it, forty tiles away: the
-    /// way round exists, thirty tiles aside.
+    /// way round exists, thirty tiles aside. The body stands in a patch
+    /// of `terrain_under_the_body` five tiles across.
     fn walled_field(terrain_under_the_body: Terrain) -> (World, Pos) {
         let mut map = Map::filled(80, 80, Terrain::Grass);
         for y in 25..=55 {
             map.set(Pos::new(40, y), Terrain::Water);
         }
-        map.set(Pos::new(20, 40), terrain_under_the_body);
+        for y in 38..=42 {
+            for x in 18..=22 {
+                map.set(Pos::new(x, y), terrain_under_the_body);
+            }
+        }
         let mut w = World::empty(Calendar::new(1, 1_000_000).unwrap(), map);
         w.spawn_body(Pos::new(20, 40));
         (w, Pos::new(60, 40))
@@ -2302,34 +2398,166 @@ mod tests {
         panic!("body 1 never stopped");
     }
 
+    /// The route body 1 sets off along toward `target`.
+    fn first_route(w: &mut World, rules: &Content, target: Pos) -> Vec<FinePos> {
+        go(w, target);
+        let mut events = Vec::new();
+        w.step(rules, &mut events);
+        events
+            .into_iter()
+            .find_map(|e| match e {
+                Event::BodyWalks { route, .. } => Some(route),
+                _ => None,
+            })
+            .expect("body 1 sets off")
+    }
+
     #[test]
-    fn sight_follows_the_terrain_under_the_body() {
+    fn sight_follows_the_ground_around_the_body() {
         // The same ground: from the grass (sight 60) the way round the
-        // water is seen and taken; from under the trees (sight 12) the
-        // target is out of sight and the body walks straight to the water.
+        // water is seen and taken at once; from the heart of a wood (sight
+        // 25) the target is out of sight and the body sets off straight to
+        // the water, then looks again from its bank, in the open, and goes
+        // round (12 November 2026).
         let mut rules = rules();
         rules.movement.path_budget_tiles = u32::MAX;
         let (mut w, target) = walled_field(Terrain::Grass);
+        assert!(first_route(&mut w, &rules, target).len() > 1, "a way round");
         assert_eq!(walk_with(&mut w, &rules, target), target, "round the water");
         let (mut w, target) = walled_field(Terrain::Forest);
         assert_eq!(
-            walk_with(&mut w, &rules, target),
-            Pos::new(39, 40),
+            first_route(&mut w, &rules, target),
+            vec![FinePos::new(39_700, 40_500)],
             "straight to the water"
         );
-        // Under the trees a near way round is still seen: a pond two tiles
-        // ahead, the target ten tiles away.
+        let mut events = Vec::new();
+        for _ in 0..500 {
+            w.step(&rules, &mut events);
+        }
+        assert_eq!(
+            w.body(BodyId(1)).expect("body 1").pos(),
+            target,
+            "then round it"
+        );
+        // In the heart of a wood a near way round is seen: a pond two
+        // tiles ahead, the target ten tiles away.
         let mut map = Map::filled(80, 80, Terrain::Forest);
         for y in 38..=42 {
             map.set(Pos::new(23, y), Terrain::Water);
         }
         let mut w = World::empty(Calendar::new(1, 1_000_000).unwrap(), map);
         w.spawn_body(Pos::new(20, 40));
+        assert!(first_route(&mut w, &rules, Pos::new(30, 40)).len() > 1);
         assert_eq!(
             walk_with(&mut w, &rules, Pos::new(30, 40)),
             Pos::new(30, 40),
             "round the pond"
         );
+    }
+
+    #[test]
+    fn at_a_woods_edge_the_body_sees_out() {
+        // Sight from the most open walkable ground the body stands on or
+        // touches: the open's 60 at a wood's edge, even across a corner;
+        // the forest's 25 in its heart; water beside it is no opening.
+        let rules = rules();
+        let mut map = Map::filled(20, 20, Terrain::Forest);
+        map.set(Pos::new(15, 15), Terrain::Grass);
+        map.set(Pos::new(5, 6), Terrain::Water);
+        let w = World::empty(Calendar::new(1, 1_000_000).unwrap(), map);
+        assert_eq!(
+            w.sight_tiles_at(Pos::new(15, 15), &rules),
+            60,
+            "in the open"
+        );
+        assert_eq!(
+            w.sight_tiles_at(Pos::new(14, 14), &rules),
+            60,
+            "at the edge"
+        );
+        assert_eq!(
+            w.sight_tiles_at(Pos::new(15, 13), &rules),
+            25,
+            "two tiles in"
+        );
+        assert_eq!(w.sight_tiles_at(Pos::new(5, 5), &rules), 25, "beside water");
+        assert_eq!(
+            w.sight_tiles_at(Pos::new(0, 0), &rules),
+            25,
+            "at the map's corner"
+        );
+    }
+
+    #[test]
+    fn stopped_by_a_wall_the_body_looks_again_and_goes_round() {
+        // A wall of water seventy tiles long, from the map's edge, its end
+        // eight tiles aside of the way; the target eighty tiles off, out of
+        // sight: the body walks straight to the wall, looks again from
+        // there, sees the end and goes round, under the content's budget.
+        let rules = rules();
+        let mut map = Map::filled(140, 140, Terrain::Grass);
+        for y in 0..=70 {
+            map.set(Pos::new(70, y), Terrain::Water);
+        }
+        let mut w = World::empty(Calendar::new(10, 1_000_000).unwrap(), map);
+        w.spawn_body(Pos::new(20, 62));
+        let target = Pos::new(100, 62);
+        assert_eq!(
+            first_route(&mut w, &rules, target),
+            vec![FinePos::new(69_700, 62_500)],
+            "straight to the wall first"
+        );
+        let mut events = Vec::new();
+        for _ in 0..2000 {
+            w.step(&rules, &mut events);
+        }
+        let walks = events
+            .iter()
+            .filter(|e| matches!(e, Event::BodyWalks { .. }))
+            .count();
+        assert_eq!(walks, 1, "one look again, from the wall");
+        assert_eq!(w.body(BodyId(1)).expect("body 1").pos(), target);
+    }
+
+    #[test]
+    fn a_body_looks_again_only_from_nearer() {
+        // A target walled in: the body walks straight to the wall, looks
+        // again once, finds nothing nearer to walk to and stops for good.
+        let rules = rules();
+        let mut map = Map::filled(60, 60, Terrain::Grass);
+        for i in 35..=45 {
+            for p in [(i, 35), (i, 45), (35, i), (45, i)] {
+                map.set(Pos::new(p.0, p.1), Terrain::Water);
+            }
+        }
+        let mut w = World::empty(Calendar::new(10, 1_000_000).unwrap(), map);
+        w.spawn_body(Pos::new(10, 40));
+        let route = first_route(&mut w, &rules, Pos::new(40, 40));
+        assert_eq!(route, vec![FinePos::new(34_700, 40_500)]);
+        let mut events = Vec::new();
+        for _ in 0..1000 {
+            w.step(&rules, &mut events);
+        }
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::BodyWalks { .. } | Event::MoveRefused { .. }))
+        );
+        let body = w.body(BodyId(1)).expect("body 1");
+        assert_eq!((body.pos(), body.goal), (Pos::new(34, 40), None));
+        // Stopped no nearer than where it last looked (pushed back, say):
+        // it does not look again. From nearer, it does.
+        for (looked_from, looks) in [(0, false), (u64::MAX, true)] {
+            w.bodies[0].at = Pos::new(30, 40).centre();
+            w.bodies[0].goal = Some(Goal {
+                target: Pos::new(40, 40),
+                looked_from,
+            });
+            events.clear();
+            w.step(&rules, &mut events);
+            let walked = events.iter().any(|e| matches!(e, Event::BodyWalks { .. }));
+            assert_eq!(walked, looks, "looked from {looked_from}");
+        }
     }
 
     #[test]

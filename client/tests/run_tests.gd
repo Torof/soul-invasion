@@ -74,6 +74,7 @@ func _init() -> void:
 	_test_the_net_keeps_the_chunks_of_the_same_world_only()
 	_test_a_body_told_at_each_chunk_keeps_walking_its_route()
 	_test_a_new_route_told_while_walking_turns_from_where_the_body_is_shown()
+	_test_the_clock_catches_up_with_the_ticks_walks_are_told_at()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -2345,4 +2346,19 @@ func _test_a_new_route_told_while_walking_turns_from_where_the_body_is_shown() -
 		_check(dash <= 1.6 * pace * 0.25, why + "never a dash (%.0f mm in a quarter tick)" % dash)
 		_check(still > 0.25 * pace * 0.25, why + "never standing still on its way (%.0f mm)" % still)
 		_check(north["at"] == route[1], why + "where the world has it at the end")
+
+
+func _test_the_clock_catches_up_with_the_ticks_walks_are_told_at() -> void:
+	# Set at the welcome, read two seconds late (a busy first frame): the
+	# clock runs 20 ticks behind the world. A walk told at a later tick
+	# sets it right; a walk told at a tick past (a message that waited)
+	# never sets it back.
+	var clock := GameClock.new()
+	clock.set_clock({"tick": 1000, "ticks_per_second": 10, "time_scale_permille": 1000}, 0)
+	_check(is_equal_approx(clock.tick_at(5000), 1050.0), "set at the welcome")
+	clock.catch_up(1070.0, 5000)
+	_check(is_equal_approx(clock.tick_at(5000), 1070.0), "caught up by a walk told later")
+	_check(is_equal_approx(clock.tick_at(6000), 1080.0), "and runs on from there")
+	clock.catch_up(1060.0, 6000)
+	_check(is_equal_approx(clock.tick_at(6000), 1080.0), "never set back by a tick past")
 
