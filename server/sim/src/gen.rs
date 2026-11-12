@@ -114,6 +114,7 @@ impl Lcg {
 /// The lattice is drawn from one [`Lcg`] stream, row by row, so its
 /// values depend on the map's width: the same seed gives other patches on
 /// a wider map. Kept for today's worlds; [`noise`] does not have this flaw.
+#[derive(Debug, Clone)]
 pub(crate) struct Groves {
     cell: u32,
     columns: u32,

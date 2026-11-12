@@ -20,6 +20,7 @@ pub mod flora;
 pub(crate) mod r#gen;
 pub mod ground;
 pub mod items;
+pub mod land;
 pub mod lru;
 pub mod map;
 pub mod time;
