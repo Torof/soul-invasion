@@ -896,8 +896,18 @@ impl Map {
         }
         for k in 1..=6 {
             let along_t = (t + f64::from(k) * BEYOND / length).min(1.0);
-            let rejoin = along(a, b, along_t);
-            let tile = rejoin.tile();
+            let tile = along(a, b, along_t).tile();
+            // Back on the line as far on as it runs inside that tile, so
+            // the way round never has to turn back to meet it.
+            let rejoin = if along_t >= 1.0 {
+                b
+            } else {
+                along(
+                    a,
+                    b,
+                    exit_from(a, b, tile).map_or(along_t, |e| e.clamp(along_t, 1.0)),
+                )
+            };
             if tile != stop.tile()
                 && open(tile)
                 && let Some(path) = self.path_around(
@@ -920,6 +930,8 @@ impl Map {
                 if detour.last() != Some(&rejoin) {
                     detour.push(rejoin);
                 }
+                let heading = (f64::from(b.x - a.x) / length, f64::from(b.y - a.y) / length);
+                ease_forward(stop, heading, &mut detour, open);
                 return Some((detour, rejoin));
             }
             if along_t >= 1.0 {
@@ -986,6 +998,82 @@ const SIDESTEP_BUDGET: u32 = 81;
 /// Obstacles a straight walk steps round at most before it stops and the
 /// body looks again ([`Map::walk_straight`]).
 pub const SIDESTEPS: u32 = 32;
+
+/// Moves each waypoint of a sidestep's `detour` but the last (back on
+/// the line) within its tile, as little as it can, so that each one is
+/// ahead of the one before along `heading`, the first ahead of `stop`,
+/// and none ahead of the next: a pulled path turns at tile centres, and
+/// the centre of a tile beside the stop can lie behind it, a step back
+/// before going round. A waypoint moves to a point 15 cm or more inside
+/// its tile, on a grid of 10 cm, the segments before and after it still
+/// clear; with none such, it stays.
+#[allow(clippy::float_arithmetic)]
+fn ease_forward(
+    stop: FinePos,
+    heading: (f64, f64),
+    detour: &mut [FinePos],
+    open: impl Fn(Pos) -> bool,
+) {
+    let ahead = |p: FinePos| f64::from(p.x) * heading.0 + f64::from(p.y) * heading.1;
+    let clear = |p: FinePos, q: FinePos| {
+        let start = p.tile();
+        line_clear(p, q, |pos| pos == start || open(pos))
+    };
+    for i in 0..detour.len().saturating_sub(1) {
+        let (before, after, here) = (
+            if i == 0 { stop } else { detour[i - 1] },
+            detour[i + 1],
+            detour[i],
+        );
+        let tile = here.tile();
+        let (x0, y0) = (tile.x * MM_PER_TILE, tile.y * MM_PER_TILE);
+        let best = std::iter::once(here)
+            .chain((0..8).flat_map(|j| {
+                (0..8).map(move |k| FinePos::new(x0 + 150 + 100 * j, y0 + 150 + 100 * k))
+            }))
+            .filter(|&c| ahead(c) > ahead(before) && ahead(c) <= ahead(after))
+            .filter(|&c| clear(before, c) && clear(c, after))
+            .min_by_key(|&c| squared(c, here));
+        if let Some(best) = best {
+            detour[i] = best;
+        }
+    }
+}
+
+/// Where the segment from `a` to `b` (0 at `a`, 1 at `b`) last runs
+/// 15 cm or more inside `tile`, if it does.
+#[allow(clippy::float_arithmetic)]
+fn exit_from(a: FinePos, b: FinePos, tile: Pos) -> Option<f64> {
+    let (x0, y0) = (f64::from(a.x), f64::from(a.y));
+    let (dx, dy) = (f64::from(b.x) - x0, f64::from(b.y) - y0);
+    let low = |c: i32| f64::from(c * MM_PER_TILE) + 150.0;
+    let high = |c: i32| f64::from((c + 1) * MM_PER_TILE) - 150.0;
+    let (mut t0, mut t1) = (f64::NEG_INFINITY, f64::INFINITY);
+    for (p, q) in [
+        (-dx, x0 - low(tile.x)),
+        (dx, high(tile.x) - x0),
+        (-dy, y0 - low(tile.y)),
+        (dy, high(tile.y) - y0),
+    ] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return None;
+            }
+        } else if p < 0.0 {
+            t0 = t0.max(q / p);
+        } else {
+            t1 = t1.min(q / p);
+        }
+    }
+    (t0 <= t1).then_some(t1)
+}
+
+/// The square of the distance between two fine points, in square
+/// millimetres.
+fn squared(a: FinePos, b: FinePos) -> i64 {
+    let (dx, dy) = (i64::from(a.x - b.x), i64::from(a.y - b.y));
+    dx * dx + dy * dy
+}
 
 /// The point at `t` along the segment from `a` to `b` (0 at `a`, 1 at
 /// `b`), to the millimetre.
@@ -4560,9 +4648,54 @@ mod tests {
                     .all(|p| (p.y - 10_500).abs() <= 3 * MM_PER_TILE),
                 "a step aside, no more: {route:?}"
             );
+            // Never a step back: every waypoint at or ahead of the one
+            // before.
+            let mut last = from.x;
+            for p in &route {
+                assert!(p.x >= last, "a step back to {p:?}: {route:?}");
+                last = p.x;
+            }
         }
         // Nothing in the way: one segment, as before.
         assert_eq!(map.walk_straight(from, to, 60, walk, |_| false), vec![to]);
+    }
+
+    #[test]
+    fn a_sidestep_starts_from_the_stop_and_never_turns_back() {
+        let map = Map::filled(40, 40, Terrain::Grass);
+        // Every heading, at a trunk right on the line: the waypoint after
+        // the stop is ahead of it along the line, as is every next one.
+        let centre = Pos::new(20, 20);
+        let trunk = [(20, 20)];
+        for (dx, dy) in [
+            (1, 0),
+            (0, 1),
+            (-1, 0),
+            (0, -1),
+            (1, 1),
+            (-1, 1),
+            (2, 1),
+            (-1, -2),
+        ] {
+            let from = Pos::new(centre.x - 6 * dx, centre.y - 6 * dy).centre();
+            let to = Pos::new(centre.x + 6 * dx, centre.y + 6 * dy).centre();
+            let route = map.walk_straight(from, to, 60, walk, among(&trunk));
+            assert_eq!(route.last(), Some(&to), "{route:?}");
+            assert!(!route_enters(from, &route, &trunk), "{route:?}");
+            let ahead =
+                |p: FinePos| i64::from(p.x) * i64::from(dx) + i64::from(p.y) * i64::from(dy);
+            let stop = route[0];
+            assert!(
+                ahead(route[1]) > ahead(stop),
+                "({dx}, {dy}): back from the stop: {route:?}"
+            );
+            for pair in route.windows(2) {
+                assert!(
+                    ahead(pair[1]) >= ahead(pair[0]),
+                    "({dx}, {dy}): back: {route:?}"
+                );
+            }
+        }
     }
 
     #[test]

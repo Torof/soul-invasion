@@ -1775,8 +1775,14 @@ impl World {
     /// A body that walked straight for want of a way and stopped looks
     /// again from where it stands, toward the same target, but only from
     /// nearer to it than where it last looked: it never circles before a
-    /// wall. Otherwise it stops for good.
+    /// wall. Otherwise it stops for good and says it is blocked; on its
+    /// target, it simply stays.
     fn look_again(&mut self, index: usize, goal: Goal, rules: &Content, events: &mut Vec<Event>) {
+        // Arrived: its stop was told on arrival, once, and nothing bars it.
+        if self.bodies[index].at == goal.target.centre() {
+            self.bodies[index].goal = None;
+            return;
+        }
         if squared_mm(self.bodies[index].at, goal.target.centre()) >= goal.looked_from {
             self.bodies[index].goal = None;
             self.blocked(index, goal.target, rules, events);
@@ -3782,6 +3788,12 @@ mod tests {
         rules.movement.path_budget_tiles = 1;
         let route = first_route(&mut w, &rules, target);
         assert!(route.len() > 2, "a step aside and back: {route:?}");
+        assert!(
+            route
+                .windows(2)
+                .all(|p| p[1].x > p[0].x || (p[1].x == p[0].x && p[1].y != p[0].y)),
+            "never a step back: {route:?}"
+        );
         assert_eq!(route.last(), Some(&target.centre()));
         let mut events = Vec::new();
         for _ in 0..2000 {
@@ -3901,5 +3913,51 @@ mod tests {
         });
         back.advance(1, &rules, &mut events);
         assert!(!back.is_trunk(back.body(caught).expect("the body").pos()));
+    }
+    #[test]
+    fn a_straight_walk_to_its_target_tells_one_stop() {
+        let mut w = World::empty(
+            Calendar::new(10, 1_000_000).unwrap(),
+            Map::filled(40, 40, Terrain::Grass),
+        );
+        w.spawn_body(Pos::new(2, 2));
+        let mut rules = rules();
+        rules.movement.path_budget_tiles = 1;
+        go(&mut w, Pos::new(30, 20));
+        let mut events = Vec::new();
+        for _ in 0..1000 {
+            w.step(&rules, &mut events);
+        }
+        let stops = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Event::BodyStopped {
+                        body: BodyId(1),
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                Event::BodyWalks {
+                    body: BodyId(1),
+                    ..
+                }
+            )),
+            "it walked"
+        );
+        assert_eq!(w.body(BodyId(1)).expect("body 1").pos(), Pos::new(30, 20));
+        assert_eq!(stops, 1, "{events:?}");
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::BodyBlocked { .. })),
+            "arrived, not blocked"
+        );
+        assert!(w.body(BodyId(1)).expect("body 1").goal.is_none(), "done");
     }
 }
