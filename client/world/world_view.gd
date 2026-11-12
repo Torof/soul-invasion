@@ -123,6 +123,8 @@ var _standing: Node2D
 ## The node the chunks built hang from, and each chunk's rank in the
 ## order the server sent them (chunk -> rank), the order they hang in.
 var _ground: Node2D
+## The "blocked" notice of the piloted body.
+var _blocked: BlockedView
 var _arrival: Dictionary = {}
 var _arrivals := 0
 ## chunk -> the node holding its trees and tall plants.
@@ -233,6 +235,10 @@ func _ready() -> void:
 	_ground = Node2D.new()
 	_ground.z_index = -1
 	add_child(_ground)
+	# The "blocked" notice, over the bodies and the trees.
+	_blocked = BlockedView.new()
+	_blocked.z_index = 1
+	add_child(_blocked)
 	_set_sway("body_radius", BODY_SEE_M * Iso.PX_PER_M)
 	_set_sway("mouse_radius", MOUSE_SEE_M * Iso.PX_PER_M)
 	# Which trees have a canvas item is settled just before each frame is
@@ -256,6 +262,7 @@ func _ready() -> void:
 	Net.night_fell.connect(func(_day: int) -> void: _set_night(true))
 	Net.day_started.connect(func(_day: int, _tick: int) -> void: _set_night(false))
 	Net.move_refused.connect(func(_body: int, _x: int, _y: int) -> void: _clear_target())
+	Net.body_blocked.connect(_on_body_blocked)
 	Net.connected.connect(func(_tick: int, body: int) -> void: _piloted = body)
 
 
@@ -454,6 +461,7 @@ func _show_items(key: Vector2i) -> void:
 
 func _on_body_assigned(body: int) -> void:
 	_piloted = body
+	_blocked.clear()
 	_following = true
 	if body >= 0 and _bodies.has(body):
 		_camera.position = Iso.point_to_screen(_bodies[body]["at"])
@@ -479,6 +487,7 @@ func teleport_to(tile: Vector2i) -> void:
 		return
 	Net.send_dev_teleport(tile.x, tile.y)
 	_target = Vector2i(-1, -1)
+	_blocked.clear()
 	_following = true
 	teleporting.emit()
 	queue_redraw()
@@ -920,6 +929,8 @@ func _on_body_walks(body: int, at: Vector2, route: Array, arrivals: Array, speed
 	# clock, set at the welcome and at dawn only, is caught up by the tick
 	# the walk was told at: a welcome read late left it behind for good.
 	_clock.catch_up(float(tick), Time.get_ticks_msec())
+	if body == _piloted:
+		_blocked.clear()
 	_place(body, BodyWalk.told(_bodies.get(body, {}), at, route, arrivals, float(tick), speed_cm_per_s * 10.0, _now()))
 	queue_redraw()
 
@@ -934,6 +945,14 @@ func _on_body_stopped(body: int, at: Vector2) -> void:
 	if body == _piloted and _tile_of(at) == _target:
 		_clear_target()
 	queue_redraw()
+
+
+## The piloted body stopped for good short of its target: it says why.
+func _on_body_blocked(body: int, at: Vector2, _x: int, _y: int, reason: String) -> void:
+	if body != _piloted:
+		return
+	_clear_target()
+	_blocked.tell(BlockedNotice.words(reason), at)
 
 
 func _on_body_left(body: int) -> void:

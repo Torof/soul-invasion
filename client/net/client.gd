@@ -21,6 +21,9 @@ signal body_walks(body: int, at: Vector2, route: Array, arrivals: Array, speed_c
 signal body_stopped(body: int, at: Vector2)
 signal body_left(body: int)
 signal move_refused(body: int, x: int, y: int)
+## The piloted body stopped for good short of tile (x, y), at `at` (mm):
+## reason: water | rock | no_way (BlockedNotice has the words).
+signal body_blocked(body: int, at: Vector2, x: int, y: int, reason: String)
 signal body_condition(body: int, condition: Dictionary)
 signal body_sleeps(body: int, asleep: bool)
 signal body_died(body: int, cause: String)
@@ -349,6 +352,14 @@ func _handle(message: Dictionary) -> void:
 		"move_refused":
 			move_refused.emit(
 				int(message.get("body", -1)), int(message.get("x", 0)), int(message.get("y", 0))
+			)
+		"body_blocked":
+			body_blocked.emit(
+				int(message.get("body", -1)),
+				point(message.get("at", {})),
+				int(message.get("x", 0)),
+				int(message.get("y", 0)),
+				str(message.get("reason", ""))
 			)
 		"day_started":
 			day_started.emit(int(message.get("day", 0)), int(message.get("tick", 0)))

@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
-    ChunkFrame, ClientMessage, PROTOCOL_VERSION, Point, ServerMessage, decode, decode_chunk, encode,
+    Blockage, ChunkFrame, ClientMessage, PROTOCOL_VERSION, Point, ServerMessage, decode,
+    decode_chunk, encode,
 };
 use server::net::VIEW_RADIUS;
 use sim::{BodyId, CHUNK_SIZE, Calendar, ChunkPos, FinePos, Pos, World};
@@ -1448,6 +1449,91 @@ async fn a_refusal_reaches_the_pilot_alone() {
             unexpected => panic!("unexpected {unexpected:?}"),
         }
     }
+}
+
+/// Stands body `who` at once near `at` (`--dev`), returning its tile.
+async fn stand_at(socket: &mut Socket, who: u32, at: Pos) -> Pos {
+    send(socket, &ClientMessage::DevTeleport { x: at.x, y: at.y }).await;
+    wait_for(socket, |m| match m {
+        ServerMessage::BodyStopped { body, at } if *body == who => Some(tile(*at)),
+        _ => None,
+    })
+    .await
+}
+
+#[tokio::test]
+async fn a_blocked_body_is_told_to_its_pilot_alone() {
+    let server = Server::start_with(&["--dev", "--seconds-per-day", "1000"]);
+    let (mut pilot, body) = join(&server).await;
+    let (mut other, other_body) = join(&server).await;
+    let body = body.expect("pilots body 1");
+    let other_body = other_body.expect("pilots body 2");
+
+    // The foot of the cliff, the north row, in the body's column: three
+    // walkable tiles below it.
+    let world = standard_world();
+    let rules = rules();
+    let walkable = |p: Pos| {
+        world
+            .map()
+            .get(p)
+            .is_some_and(|t| rules.movement.cost(t).is_some())
+    };
+    let start = start_of(world, body);
+    let (x, foot) = (start.x - 40..start.x + 40)
+        .find_map(|x| {
+            let foot = (0..start.y).find(|&y| walkable(Pos::new(x, y)))?;
+            let rock = world.map().get(Pos::new(x, foot - 1)) == Some(sim::Terrain::Rock);
+            (rock && (foot..foot + 4).all(|y| walkable(Pos::new(x, y)))).then_some((x, foot))
+        })
+        .expect("a foot of the cliff with open ground below it");
+
+    // Both bodies stand there, a few tiles apart, well within range.
+    assert_eq!(
+        stand_at(&mut pilot, body, Pos::new(x, foot + 3)).await,
+        Pos::new(x, foot + 3)
+    );
+    let other_at = stand_at(&mut other, other_body, Pos::new(x + 3, foot + 3)).await;
+
+    // Sent into the cliff: straight to its foot, a look again, no way.
+    send(&mut pilot, &ClientMessage::MoveTo { x, y: foot - 1 }).await;
+    let (at, reason) = wait_for(&mut pilot, |m| match m {
+        ServerMessage::BodyBlocked {
+            body: who,
+            at,
+            x: tx,
+            y: ty,
+            reason,
+        } if *who == body => {
+            assert_eq!((*tx, *ty), (x, foot - 1), "the target asked");
+            Some((*at, *reason))
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!((tile(at), reason), (Pos::new(x, foot), Blockage::Rock));
+
+    // The other walks a tile. Messages keep their order, so a blocked
+    // signal sent to it too would have arrived before this walk.
+    let next = [(0, 1), (1, 0), (-1, 0), (0, -1)]
+        .into_iter()
+        .map(|(dx, dy)| Pos::new(other_at.x + dx, other_at.y + dy))
+        .find(|p| walkable(*p))
+        .expect("a walkable tile beside");
+    send(
+        &mut other,
+        &ClientMessage::MoveTo {
+            x: next.x,
+            y: next.y,
+        },
+    )
+    .await;
+    wait_for(&mut other, |m| match m {
+        ServerMessage::BodyWalks { body: who, .. } if *who == other_body => Some(()),
+        ServerMessage::BodyBlocked { .. } => panic!("another pilot's blocked signal leaked"),
+        _ => None,
+    })
+    .await;
 }
 
 #[tokio::test]

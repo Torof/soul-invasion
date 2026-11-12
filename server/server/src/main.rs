@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use protocol::ServerMessage;
 use server::cli::{CliError, DataLocation, USAGE, WarmUp};
 use server::content;
-use server::net::{Published, Shared, condition_view, refusal_view, serve};
+use server::net::{Published, Shared, blocked_view, condition_view, refusal_view, serve};
 use server::pool::{ChunkPool, chunk_threads};
 use server::{Lineage, Options, Sqlite, Storage, StorageError, run_headless, run_paced};
 use sim::{Content, Event, World};
@@ -617,6 +617,13 @@ fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
                 y: target.y,
             },
         ),
+        // So does a body that can get no nearer: what it sees is its own.
+        Event::BodyBlocked {
+            body,
+            at,
+            target,
+            reason,
+        } => shared.tell_pilot(*body, blocked_view(*body, *at, *target, *reason)),
     }
 }
 

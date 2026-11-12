@@ -372,6 +372,20 @@ pub enum Refusal {
     NotFood,
 }
 
+/// What a body that stopped for good short of its target sees barring
+/// its way (D32): only what lies right ahead of it, never what it could
+/// not see.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Blockage {
+    /// Water too deep to walk through.
+    Water,
+    /// The cliff.
+    Rock,
+    /// Nothing it may not enter right ahead, yet no way it can see.
+    NoWay,
+}
+
 /// What a pilot (player or, later, NPC brain) asks a body to do (D20).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -441,6 +455,12 @@ pub enum Intention {
     },
 }
 
+/// How far ahead of a body that stopped for good it looks for what bars
+/// its way, in millimetres ([`Event::BodyBlocked`]): it stops 30 cm short
+/// of the first tile it may not enter, or a quarter of a tile when it could
+/// not set off at all.
+const BLOCKAGE_REACH_MM: i64 = 1500;
+
 /// How far from the asked tile a teleport looks for walkable ground.
 pub const TELEPORT_REACH: i32 = 64;
 
@@ -488,6 +508,19 @@ pub enum Event {
         body: BodyId,
         /// Where it wanted to go.
         target: Pos,
+    },
+    /// A body that walked straight for want of a way stopped for good
+    /// short of its target: it looked again and found no way, and could
+    /// get no nearer (D32). Told to its pilot alone.
+    BodyBlocked {
+        /// Who.
+        body: BodyId,
+        /// Where it stands.
+        at: FinePos,
+        /// Where it was going.
+        target: Pos,
+        /// What it sees barring its way.
+        reason: Blockage,
     },
     /// Night fell: cold rises until dawn.
     NightFell {
@@ -1665,6 +1698,8 @@ impl World {
         if dx * dx + dy * dy < quarter * quarter {
             if ordered {
                 events.push(Event::MoveRefused { body: id, target });
+            } else {
+                self.blocked(index, target, rules, events);
             }
             return;
         }
@@ -1689,9 +1724,77 @@ impl World {
     fn look_again(&mut self, index: usize, goal: Goal, rules: &Content, events: &mut Vec<Event>) {
         if squared_mm(self.bodies[index].at, goal.target.centre()) >= goal.looked_from {
             self.bodies[index].goal = None;
+            self.blocked(index, goal.target, rules, events);
             return;
         }
         self.set_off(index, goal.target, false, rules, events);
+    }
+
+    /// Tells that a body stopped for good short of `target`, and what it
+    /// sees barring its way.
+    fn blocked(&self, index: usize, target: Pos, rules: &Content, events: &mut Vec<Event>) {
+        let body = &self.bodies[index];
+        events.push(Event::BodyBlocked {
+            body: body.id,
+            at: body.at,
+            target,
+            reason: self.blockage(body.at, target.centre(), rules),
+        });
+    }
+
+    /// What bars the way from `at` toward `toward`, looked for along the
+    /// line between them up to [`BLOCKAGE_REACH_MM`] ahead (a body stops
+    /// short of the first tile it may not enter, [`map::line_reach`]): the
+    /// first tile it may not enter, a little to each side too so a line
+    /// slipping between two at a corner sees them. Water or the cliff by
+    /// name; anything else, nothing ahead or the map's edge: no way seen.
+    fn blockage(&self, at: FinePos, toward: FinePos, rules: &Content) -> Blockage {
+        /// Millimetres between two points looked at along the line.
+        const STEP: i64 = 25;
+        /// How far to each side of the line a point is looked at too.
+        const SIDE: i32 = 30;
+        let (dx, dy) = (i64::from(toward.x - at.x), i64::from(toward.y - at.y));
+        let length = (dx * dx + dy * dy).unsigned_abs().isqrt();
+        let length = i64::try_from(length).unwrap_or(i64::MAX);
+        if length == 0 {
+            return Blockage::NoWay;
+        }
+        let own = at.tile();
+        let reach = length.min(BLOCKAGE_REACH_MM);
+        for along in (0..=reach / STEP).map(|i| i * STEP) {
+            let point = |ox: i32, oy: i32| {
+                let x = i64::from(at.x) + dx * along / length;
+                let y = i64::from(at.y) + dy * along / length;
+                FinePos::new(
+                    i32::try_from(x).unwrap_or(at.x) + ox,
+                    i32::try_from(y).unwrap_or(at.y) + oy,
+                )
+                .tile()
+            };
+            for p in [
+                point(0, 0),
+                point(SIDE, 0),
+                point(-SIDE, 0),
+                point(0, SIDE),
+                point(0, -SIDE),
+            ] {
+                if p == own {
+                    continue;
+                }
+                match self.map.get(p) {
+                    None => return Blockage::NoWay,
+                    Some(t) if rules.movement.cost(t).is_none() => {
+                        return match t {
+                            Terrain::Water => Blockage::Water,
+                            Terrain::Rock => Blockage::Rock,
+                            _ => Blockage::NoWay,
+                        };
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+        Blockage::NoWay
     }
 
     /// How far a body standing on `pos` sees, in tiles on each axis
@@ -2558,6 +2661,115 @@ mod tests {
             let walked = events.iter().any(|e| matches!(e, Event::BodyWalks { .. }));
             assert_eq!(walked, looks, "looked from {looked_from}");
         }
+    }
+
+    /// The blocked signals among `events`: (where, target, reason).
+    fn blocks(events: &[Event]) -> Vec<(FinePos, Pos, Blockage)> {
+        events
+            .iter()
+            .filter_map(|e| match *e {
+                Event::BodyBlocked {
+                    body: BodyId(1),
+                    at,
+                    target,
+                    reason,
+                } => Some((at, target, reason)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_body_stopped_for_good_says_once_what_bars_its_way() {
+        // A target walled in by water, then by the cliff: the body walks
+        // straight to the wall, stops, looks again, finds nothing and
+        // stops for good: told once, after its stop, with what it sees.
+        for (wall, reason) in [
+            (Terrain::Water, Blockage::Water),
+            (Terrain::Rock, Blockage::Rock),
+        ] {
+            let rules = rules();
+            let mut map = Map::filled(60, 60, Terrain::Grass);
+            for i in 35..=45 {
+                for p in [(i, 35), (i, 45), (35, i), (45, i)] {
+                    map.set(Pos::new(p.0, p.1), wall);
+                }
+            }
+            let mut w = World::empty(Calendar::new(10, 1_000_000).unwrap(), map);
+            w.spawn_body(Pos::new(10, 40));
+            let target = Pos::new(40, 40);
+            go(&mut w, target);
+            let mut events = Vec::new();
+            for _ in 0..1000 {
+                w.step(&rules, &mut events);
+            }
+            let stop = FinePos::new(34_700, 40_500);
+            assert_eq!(blocks(&events), vec![(stop, target, reason)], "{wall:?}");
+            let stopped = events
+                .iter()
+                .position(|e| matches!(e, Event::BodyStopped { .. }))
+                .expect("it stops");
+            let blocked = events
+                .iter()
+                .position(|e| matches!(e, Event::BodyBlocked { .. }))
+                .expect("it is blocked");
+            assert!(stopped < blocked, "told once it stands, not before");
+        }
+    }
+
+    #[test]
+    fn a_body_with_nothing_ahead_and_no_way_says_it_sees_none() {
+        // Stopped no nearer than where it last looked, open grass ahead:
+        // it stops for good and sees no way, nothing barring it by name.
+        let rules = rules();
+        let mut w = open_field();
+        let target = Pos::new(7, 0);
+        w.bodies[0].goal = Some(Goal {
+            target,
+            looked_from: 0,
+        });
+        let mut events = Vec::new();
+        w.step(&rules, &mut events);
+        assert_eq!(
+            blocks(&events),
+            vec![(Pos::new(0, 0).centre(), target, Blockage::NoWay)]
+        );
+        assert_eq!(w.bodies[0].goal, None);
+    }
+
+    #[test]
+    fn no_blocked_signal_on_arrival_nor_at_a_stop_the_body_goes_on_from() {
+        // Arriving on open ground: never blocked.
+        let rules = rules();
+        let mut w = open_field();
+        go(&mut w, Pos::new(7, 7));
+        let mut events = Vec::new();
+        for _ in 0..500 {
+            w.step(&rules, &mut events);
+        }
+        assert_eq!(w.body(BodyId(1)).expect("body 1").pos(), Pos::new(7, 7));
+        assert_eq!(blocks(&events), vec![]);
+        // Stopped by a wall with a way round in sight from there: it
+        // stops, looks again, goes round and arrives, never blocked.
+        let mut map = Map::filled(140, 140, Terrain::Grass);
+        for y in 0..=70 {
+            map.set(Pos::new(70, y), Terrain::Water);
+        }
+        let mut w = World::empty(Calendar::new(10, 1_000_000).unwrap(), map);
+        w.spawn_body(Pos::new(20, 62));
+        let target = Pos::new(100, 62);
+        go(&mut w, target);
+        let mut events = Vec::new();
+        for _ in 0..2000 {
+            w.step(&rules, &mut events);
+        }
+        let stops = events
+            .iter()
+            .filter(|e| matches!(e, Event::BodyStopped { .. }))
+            .count();
+        assert_eq!(stops, 2, "at the wall, then at the target");
+        assert_eq!(w.body(BodyId(1)).expect("body 1").pos(), target);
+        assert_eq!(blocks(&events), vec![]);
     }
 
     #[test]
