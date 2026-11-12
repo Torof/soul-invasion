@@ -113,39 +113,68 @@ static var _waiting: Array = []
 ## The kinds in memory and the kinds being read, counted for F3.
 static var images_loaded := 0
 static var images_freed := 0
-## A soft round shade, dark in the middle, for the shadows on the ground.
-static var _shade: Texture2D
 ## Opacity of the shade right under the trunk, and of the crown's.
 const FOOT_SHADE := 0.45
 const CROWN_SHADE := 0.18
+## A shadow is a soft round shade, dark in the middle, drawn as a polygon
+## of SHADOW_SIDES sides with its opacity in its vertices' colours (D39,
+## B5: no texture to read, no clear corners to blend): full in the middle,
+## SHADE_KNEE_ALPHA of it at SHADE_KNEE of the radius, nothing at the rim,
+## straight in between (the radial gradient it was drawn with before).
+const SHADOW_SIDES := 16
+const SHADE_KNEE := 0.55
+const SHADE_KNEE_ALPHA := 0.45
 
 
-static func shade() -> Texture2D:
-	if _shade == null:
-		var g := Gradient.new()
-		g.set_color(0, Color(0, 0, 0, 1))
-		g.set_color(1, Color(0, 0, 0, 0))
-		g.add_point(0.55, Color(0, 0, 0, 0.45))
-		var t := GradientTexture2D.new()
-		t.gradient = g
-		t.fill = GradientTexture2D.FILL_RADIAL
-		t.fill_from = Vector2(0.5, 0.5)
-		t.fill_to = Vector2(1.0, 0.5)
-		t.width = 128
-		t.height = 128
-		_shade = t
-	return _shade
+## The rim of the shade filling the ellipse centred on `centre`, `size`
+## across and down: SHADOW_SIDES vertices, the polygon's area the
+## ellipse's (its radius a little over the ellipse's, the sides cutting
+## across it).
+static func shadow_polygon(centre: Vector2, size: Vector2) -> PackedVector2Array:
+	var n := float(SHADOW_SIDES)
+	var k := sqrt(PI / (n / 2.0 * sin(TAU / n)))
+	var out := PackedVector2Array()
+	out.resize(SHADOW_SIDES)
+	for j in SHADOW_SIDES:
+		var a := TAU * float(j) / n
+		out[j] = centre + Vector2(cos(a), sin(a)) * size * (k / 2.0)
+	return out
 
 
-## Draws on `canvas` the shadows of a tree whose image covers `r` and
-## whose foot stands at `foot` (both on the canvas): a wide faint one
-## under its crown and a darker one hugging its foot, so it stands in the
-## grass rather than on it. Drawn before trees and bodies.
-static func draw_shadow(canvas: CanvasItem, r: Rect2, foot: Vector2) -> void:
-	var crown := Vector2(r.size.x * 0.85, r.size.x * 0.42)
-	canvas.draw_texture_rect(shade(), Rect2(foot - crown / 2.0 + Vector2(r.size.x * 0.06, 0), crown), false, Color(1, 1, 1, CROWN_SHADE))
-	var base := Vector2(Iso.PX_PER_M * 0.9, Iso.PX_PER_M * 0.45) * (r.size.y / (4.0 * Iso.PX_PER_M)) ** 0.5
-	canvas.draw_texture_rect(shade(), Rect2(foot - base / 2.0, base), false, Color(1, 1, 1, FOOT_SHADE))
+## The shadows of trees whose images cover `rects` and whose feet stand at
+## `feet` (on the ground's canvas), as one triangle array, in the trees'
+## order: [points, colours, indices]. Each tree has a wide faint one under
+## its crown and a darker one hugging its foot, so it stands in the grass
+## rather than on it. Drawn before trees and bodies.
+static func shadow_mesh(rects: Array[Rect2], feet: PackedVector2Array) -> Array:
+	var points := PackedVector2Array()
+	var colours := PackedColorArray()
+	var indices := PackedInt32Array()
+	var n := SHADOW_SIDES
+	for t in rects.size():
+		var r := rects[t]
+		var foot := feet[t]
+		var crown := Vector2(r.size.x * 0.85, r.size.x * 0.42)
+		var base := Vector2(Iso.PX_PER_M * 0.9, Iso.PX_PER_M * 0.45) * (r.size.y / (4.0 * Iso.PX_PER_M)) ** 0.5
+		for shade: Array in [[foot + Vector2(r.size.x * 0.06, 0), crown, CROWN_SHADE], [foot, base, FOOT_SHADE]]:
+			var centre: Vector2 = shade[0]
+			var across: Vector2 = shade[1]
+			var alpha: float = shade[2]
+			var rim := shadow_polygon(centre, across)
+			var first := points.size()
+			points.append(centre)
+			colours.append(Color(0, 0, 0, alpha))
+			for p: Vector2 in rim:
+				points.append(centre + (p - centre) * SHADE_KNEE)
+				colours.append(Color(0, 0, 0, alpha * SHADE_KNEE_ALPHA))
+			for p: Vector2 in rim:
+				points.append(p)
+				colours.append(Color(0, 0, 0, 0))
+			for j in n:
+				var a := first + 1 + j
+				var b := first + 1 + (j + 1) % n
+				indices.append_array([first, a, b, a, a + n, b + n, a, b + n, b])
+	return [points, colours, indices]
 
 
 ## How much sharper than the hardware's pick the trees' images are read
@@ -731,6 +760,29 @@ static var _pool: Array[RID] = []
 const POOL_MOST := 4096
 
 
+## A canvas item for a tree or a tall plant coming into view: from the pool,
+## or new. It draws with its parent's material, its image read with its
+## mipmaps (what the nodes took from the world view before).
+static func take_item() -> RID:
+	if not _pool.is_empty():
+		return _pool.pop_back()
+	var item := RenderingServer.canvas_item_create()
+	RenderingServer.canvas_item_set_use_parent_material(item, true)
+	RenderingServer.canvas_item_set_default_texture_filter(item, RenderingServer.CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS)
+	return item
+
+
+## Gives back the canvas item of a tree or a tall plant going out of view:
+## cleared, unhung, kept for the next one (freed past POOL_MOST).
+static func give_back(item: RID) -> void:
+	RenderingServer.canvas_item_clear(item)
+	RenderingServer.canvas_item_set_parent(item, RID())
+	if _pool.size() < POOL_MOST:
+		_pool.append(item)
+	else:
+		RenderingServer.free_rid(item)
+
+
 ## Frees the canvas items kept for trees to come (the world is going).
 static func free_pool() -> void:
 	for item: RID in _pool:
@@ -914,14 +966,7 @@ class Stand:
 						_hide(i)
 
 	func _show(i: int) -> void:
-		var item: RID
-		if Trees._pool.is_empty():
-			item = RenderingServer.canvas_item_create()
-			RenderingServer.canvas_item_set_use_parent_material(item, true)
-			# The mipmaps the tree nodes took from the world view before.
-			RenderingServer.canvas_item_set_default_texture_filter(item, RenderingServer.CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS)
-		else:
-			item = Trees._pool.pop_back()
+		var item := Trees.take_item()
 		RenderingServer.canvas_item_set_parent(item, parent)
 		# Sorted by its foot (its transform), ties in the server's order (its
 		# index), as when each tree had a node.
@@ -936,12 +981,7 @@ class Stand:
 		var item: RID = items[i]
 		items.erase(i)
 		Trees._count_shown(kinds[kind[i]], -1)
-		RenderingServer.canvas_item_clear(item)
-		RenderingServer.canvas_item_set_parent(item, RID())
-		if Trees._pool.size() < Trees.POOL_MOST:
-			Trees._pool.append(item)
-		else:
-			RenderingServer.free_rid(item)
+		Trees.give_back(item)
 
 	## The tree's image as its outline (Trees.hull) scaled to its rectangle:
 	## the polygon's vertices carry the image's own coordinates as UVs (past
@@ -1022,6 +1062,13 @@ class ShadowLayer:
 	func _draw() -> void:
 		if stand == null:
 			return
+		var rects: Array[Rect2] = []
+		var feet := PackedVector2Array()
 		for i in stand.size():
 			if stand.images[i] >= 0:
-				Trees.draw_shadow(self, stand.rect(i), Iso.point_to_screen(stand.at[i]))
+				rects.append(stand.rect(i))
+				feet.append(Iso.point_to_screen(stand.at[i]))
+		if rects.is_empty():
+			return
+		var mesh := Trees.shadow_mesh(rects, feet)
+		RenderingServer.canvas_item_add_triangle_array(get_canvas_item(), mesh[2], mesh[0], mesh[1])

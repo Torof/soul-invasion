@@ -941,19 +941,6 @@ static func plant_region(at: Vector2, kind: Dictionary) -> Rect2:
 	return variants[int(Trees.place_hash(at, 9) * variants.size()) % variants.size()]
 
 
-## A plant standing among the trees and bodies: placed at its foot, so
-## the standing layer sorts it by depth.
-class PlantNode:
-	extends Node2D
-	var region := Rect2()
-	var rect := Rect2()
-
-	func _draw() -> void:
-		var atlas := ChunkView.flora_atlas()
-		if atlas != null:
-			draw_texture_rect_region(atlas, Rect2(rect.position - position, rect.size), region)
-
-
 ## Where a plant of `kind` at `at` (millimetres) is drawn on screen, with
 ## the variant `variants[...]` its place picks: the image's bottom middle
 ## on its foot.

@@ -122,6 +122,8 @@ var _arrival: Dictionary = {}
 var _arrivals := 0
 ## chunk -> the node holding its trees and tall plants.
 var _tree_nodes: Dictionary = {}
+## chunk -> its tall plants (PlantStand), for the chunks built.
+var _plant_stands: Dictionary = {}
 ## The land past the chunks held (FarView). It is drawn with a hole under
 ## the view's limit once every chunk under it is built: looked at again
 ## when a chunk comes, goes or builds, or the limit moves.
@@ -253,6 +255,9 @@ func _ready() -> void:
 func _exit_tree() -> void:
 	for stand: Trees.Stand in _trees.values():
 		stand.release()
+	for plants: PlantStand in _plant_stands.values():
+		plants.release()
+	_plant_stands.clear()
 	Trees.free_pool()
 	Trees.unload_all()
 
@@ -304,6 +309,9 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	for n: Node in _tree_nodes.values():
 		n.queue_free()
 	_tree_nodes.clear()
+	for plants: PlantStand in _plant_stands.values():
+		plants.release()
+	_plant_stands.clear()
 	_forget_bodies()
 	_following = true
 	_camera_placed = false
@@ -640,6 +648,10 @@ func _release_chunk(key: Vector2i) -> void:
 		_chunks.erase(key)
 		_paced.erase(key)
 		DevTiming.tally("chunks released")
+	var plants: PlantStand = _plant_stands.get(key)
+	if plants != null:
+		plants.release()
+		_plant_stands.erase(key)
 	var holder: Variant = _tree_nodes.get(key)
 	if holder != null and is_instance_valid(holder):
 		(holder as Node).queue_free()
@@ -692,6 +704,9 @@ func _cull_trees() -> void:
 			continue
 		var on := holder != null and is_instance_valid(holder) and (holder as Node2D).visible
 		stand.show_cells(cells if on else Rect2i())
+		var plants: PlantStand = _plant_stands.get(key)
+		if plants != null:
+			plants.show_cells(cells if on else Rect2i())
 	DevTiming.add("tree culling", t)
 
 
@@ -1176,6 +1191,9 @@ func _plant_chunk(key: Vector2i, view: ChunkView) -> void:
 	var old: Node = _tree_nodes.get(key)
 	if old != null:
 		old.queue_free()
+	var old_plants: PlantStand = _plant_stands.get(key)
+	if old_plants != null:
+		old_plants.release()
 	var holder := Node2D.new()
 	holder.y_sort_enabled = true
 	holder.use_parent_material = true
@@ -1191,22 +1209,18 @@ func _plant_chunk(key: Vector2i, view: ChunkView) -> void:
 	stand.show_cells(Rect2i())
 	stand.parent = trees.get_canvas_item()
 	holder.visible = _trees_shown
-	# The tall plants stand among the trees, sorted with them by their foot.
-	var plants: PackedInt32Array = _plants.get(key, PackedInt32Array())
-	for i in range(0, plants.size(), 3):
-		var k := plants[i]
-		if k < 0 or k >= _flora.size() or not ChunkView.plant_stands(_flora[k]):
-			continue
-		var at := Vector2(plants[i + 1], plants[i + 2])
-		var region := ChunkView.plant_region(at, _flora[k])
-		if region.size == Vector2.ZERO:
-			continue
-		var node := ChunkView.PlantNode.new()
-		node.position = Iso.point_to_screen(at)
-		node.region = region
-		node.rect = ChunkView.plant_rect(at, _flora[k], region)
-		node.use_parent_material = true
-		holder.add_child(node)
+	# The tall plants stand among the trees, sorted with them by their foot:
+	# their canvas items hang from a y-sorted node after the trees', ties
+	# as before (the trees, then the plants in the server's order). Given
+	# as the view moves, as the trees' are (_cull_trees).
+	var tall := Node2D.new()
+	tall.name = "Plants"
+	tall.y_sort_enabled = true
+	tall.use_parent_material = true
+	holder.add_child(tall)
+	var plants := PlantStand.new(_plants.get(key, PackedInt32Array()), _flora)
+	plants.parent = tall.get_canvas_item()
+	_plant_stands[key] = plants
 	# Among the chunks' holders, in the order the server sent the chunks:
 	# two trees whose feet stand level are sorted as when every chunk was
 	# planted on arrival.
