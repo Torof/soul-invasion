@@ -1742,7 +1742,7 @@ fn stride(
 }
 
 /// The rest of a body's walk as it will go if nothing changes, worked out
-/// with the very steps of the simulation ([`stride`]): the points where
+/// with the very steps of the simulation (`stride`): the points where
 /// it turns or its pace changes (the terrain under it, D32), each with the
 /// tick it stands there, `now` being the tick it stands at `at`. Between
 /// two of them it walks straight at one pace, so a client that moves it
