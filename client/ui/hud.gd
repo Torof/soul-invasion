@@ -111,14 +111,14 @@ func _refresh_clock() -> void:
 	_clock_label.text = "Day %d · %02d:%02d · %s" % [_day, hm.x, hm.y, "night" if _night else "day"]
 
 
-## `speaker` says `line`, in the speech bubble on the left: the way in for
-## players and NPCs when they talk.
+## `speaker` says `line`, in the speech thread at the top left: the way
+## in for players and NPCs when they talk.
 func say(speaker: String, line: String) -> void:
 	if speech != null:
 		speech.say(speaker, line)
 
 
-## The piloted body thinks `line`, in the thought bubble at the top
+## The piloted body thinks `line`, in the thought thread at the top
 ## right; tied to the place `at` (mm) when `placed`, so a click takes the
 ## camera there.
 func think(line: String, at: Vector2 = Vector2.ZERO, placed: bool = false) -> void:

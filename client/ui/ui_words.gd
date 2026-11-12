@@ -18,7 +18,8 @@ const RECENTRE := "Revenir au corps"
 ## bubble, in turn, until people talk.
 const DEV_SPEECH := [
 	["Voix d'essai", "Ceci est une ligne d'essai pour la bulle de dialogue."],
-	["Voix d'essai", "Et voici la suivante : elle remplace la première."],
+	["Voix d'essai", "Et voici la suivante : elle se range sous la première."],
+	["Autre voix", "Une troisième, d'une autre voix, pour voir le fil."],
 ]
 
 ## PLACEHOLDER, development only (--dev): what body 3 says when the
