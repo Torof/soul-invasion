@@ -2135,6 +2135,84 @@ mod tests {
     }
 
     #[test]
+    fn a_new_order_while_walking_sets_off_straight_from_where_the_body_is() {
+        // Found in play (12 November 2026): a new destination clicked
+        // while walking could send the body toward the centre of a tile
+        // next to it first. Walking east through one tile of trees in a
+        // field, past its middle, it is sent elsewhere three times over:
+        // each walk sets off from where it is, to the millimetre, in one
+        // straight segment, the way being clear (leaving the tile it
+        // stands on costs what it costs, dearer or not).
+        let rules = rules();
+        let mut map = Map::filled(40, 40, Terrain::Grass);
+        map.set(Pos::new(10, 10), Terrain::Forest);
+        let mut w = World::empty(Calendar::new(10, 1_000_000).unwrap(), map);
+        w.spawn_body(Pos::new(5, 10));
+        go(&mut w, Pos::new(30, 10));
+        let mut events = Vec::new();
+        while w.body(BodyId(1)).expect("body 1").at().x < 10_700 {
+            w.step(&rules, &mut events);
+        }
+        for target in [Pos::new(4, 20), Pos::new(25, 14), Pos::new(10, 0)] {
+            let at = w.body(BodyId(1)).expect("body 1").at();
+            assert_eq!(at.tile(), Pos::new(10, 10), "still under the trees");
+            go(&mut w, target);
+            events.clear();
+            w.step(&rules, &mut events);
+            let walks = events.iter().find_map(|e| match e {
+                Event::BodyWalks { from, route, .. } => Some((*from, route.clone())),
+                _ => None,
+            });
+            assert_eq!(
+                walks,
+                Some((at, vec![target.centre()])),
+                "toward {target:?}: from where it is, straight"
+            );
+        }
+    }
+
+    #[test]
+    fn a_short_way_round_in_sight_is_always_found() {
+        // Seen in play (12 November 2026): a wall two tiles ahead, its
+        // end two tiles aside, the target eight to twenty tiles away.
+        // Within the sight and the budget the way round is taken, on
+        // either side, in the open and from the edge of a wood within
+        // its twelve tiles of sight (D32). Beyond them, from under the
+        // trees, the body walks straight: the rule, tested above.
+        let rules = rules();
+        for (under, distances) in [
+            (Terrain::Grass, &[8, 12, 16, 20][..]),
+            (Terrain::Forest, &[8, 10, 12][..]),
+        ] {
+            for &distance in distances {
+                for side in [-1, 1] {
+                    let mut map = Map::filled(60, 60, Terrain::Grass);
+                    // The body at (20, 30) facing east, the wood (or the
+                    // field) behind it; the wall at x 22, from one tile
+                    // on one side to three on the other: its end, two
+                    // tiles aside, is the way round.
+                    for x in 10..=20 {
+                        for y in 20..=40 {
+                            map.set(Pos::new(x, y), under);
+                        }
+                    }
+                    for dy in -3..=1 {
+                        map.set(Pos::new(22, 30 - side * dy), Terrain::Water);
+                    }
+                    let mut w = World::empty(Calendar::new(10, 1_000_000).unwrap(), map);
+                    w.spawn_body(Pos::new(20, 30));
+                    let target = Pos::new(20 + distance, 30);
+                    assert_eq!(
+                        walk_with(&mut w, &rules, target),
+                        target,
+                        "from {under:?}, {distance} tiles, side {side}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_body_grazing_a_water_corner_walks_on() {
         // Found on the 768 valley: a straight walk passing 3 cm from the
         // corner of a water tile left the body a few millimetres into it,
