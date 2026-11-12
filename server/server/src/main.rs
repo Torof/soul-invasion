@@ -337,7 +337,7 @@ fn run_paced_server(
                 shared.tick.store(world.tick().0, Ordering::Relaxed);
                 persister.on_tick(world, events);
                 for event in events {
-                    publish(&shared, world, event);
+                    publish(&shared, world, &rules, event);
                 }
             };
             let summary = run_paced(
@@ -429,9 +429,10 @@ fn shared_state(world: &World, opts: &Options, content: &Content, lineage: Linea
 }
 
 /// Tells the connections and the pilots what one event means to them
-/// (D29: the simulation thread publishes, the connections filter).
+/// (D29: the simulation thread publishes; the router hands each event to
+/// the connections it concerns, D5).
 #[allow(clippy::too_many_lines)]
-fn publish(shared: &Shared, world: &World, event: &Event) {
+fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
     let tick = world.tick().0;
     // Publishing to no subscriber is not an error: nobody is
     // connected.
@@ -439,24 +440,32 @@ fn publish(shared: &Shared, world: &World, event: &Event) {
         Event::BodyWalks {
             body,
             from,
-            route,
             speed_cm_per_s,
+            ..
         } => {
-            shared.body_walks(*body, *from, route, *speed_cm_per_s);
-            let _ = shared.publish.send(Published::BodyWalks {
+            // Where it is at the tick's end and the rest of its walk, by
+            // time: the clients walk it there whatever the ground.
+            if let Some(now) = world.body(*body) {
+                let timeline = world.walk_timeline(*body, rules);
+                shared.body_walks(*body, now.at(), &timeline, *speed_cm_per_s);
+            }
+            shared.publish(&Published::BodyWalks {
                 body: body.0,
                 from: from.tile(),
                 tick,
             });
         }
-        Event::BodyMoved {
-            body,
-            to,
-            at,
-            remaining,
-        } => {
-            if let Some(from) = shared.body_moved(*body, *at, *remaining) {
-                let _ = shared.publish.send(Published::BodyMoved {
+        Event::BodyMoved { body, to, at, .. } => {
+            // Every step is recorded, so a body told is told where it
+            // is; only a step into another chunk is published (A6), its
+            // walk worked out again: the clients walk it along its route
+            // by time in between.
+            if let Some(from) = shared.body_moved(*body, *at, tick)
+                && from.chunk() != to.chunk()
+            {
+                let timeline = world.walk_timeline(*body, rules);
+                shared.body_walks(*body, *at, &timeline, rules.movement.walk_speed_cm_per_s);
+                shared.publish(&Published::BodyMoved {
                     body: body.0,
                     from,
                     to: *to,
@@ -466,7 +475,7 @@ fn publish(shared: &Shared, world: &World, event: &Event) {
         }
         Event::BodyStopped { body, at } => {
             shared.body_stopped(*body, *at);
-            let _ = shared.publish.send(Published::BodyStopped {
+            shared.publish(&Published::BodyStopped {
                 body: body.0,
                 at: at.tile(),
             });
@@ -474,13 +483,11 @@ fn publish(shared: &Shared, world: &World, event: &Event) {
         Event::DayStarted { day } => {
             println!("tick {tick}: {event:?}");
             shared.day_started(*day);
-            let _ = shared
-                .publish
-                .send(Published::DayStarted { day: *day, tick });
+            shared.publish(&Published::DayStarted { day: *day, tick });
         }
         Event::NightFell { day } => {
             shared.night_fell();
-            let _ = shared.publish.send(Published::NightFell { day: *day });
+            shared.publish(&Published::NightFell { day: *day });
         }
         Event::ConditionChanged { body, summary } => {
             shared.tell_pilot(
@@ -494,7 +501,7 @@ fn publish(shared: &Shared, world: &World, event: &Event) {
             if shared.body_sleeps(*body, asleep)
                 && let Some(at) = shared.position_of(body.0)
             {
-                let _ = shared.publish.send(Published::BodySleeps {
+                shared.publish(&Published::BodySleeps {
                     body: body.0,
                     at,
                     asleep,
@@ -553,7 +560,7 @@ fn publish(shared: &Shared, world: &World, event: &Event) {
                 });
             shared.body_holds(*body, item.clone());
             if let Some(at) = shared.position_of(body.0) {
-                let _ = shared.publish.send(Published::BodyHolds {
+                shared.publish(&Published::BodyHolds {
                     body: body.0,
                     at,
                     item,
@@ -573,14 +580,14 @@ fn publish(shared: &Shared, world: &World, event: &Event) {
                 material: material.clone(),
             };
             shared.item_added(state.clone(), *version);
-            let _ = shared.publish.send(Published::ItemAdded {
+            shared.publish(&Published::ItemAdded {
                 item: state,
                 version: *version,
             });
         }
         Event::ItemRemoved { item, at, version } => {
             shared.item_removed(*item, *at, *version);
-            let _ = shared.publish.send(Published::ItemRemoved {
+            shared.publish(&Published::ItemRemoved {
                 item: item.0,
                 at: *at,
                 version: *version,
@@ -595,7 +602,7 @@ fn publish(shared: &Shared, world: &World, event: &Event) {
                 sim::Death::Froze => protocol::DeathCause::Froze,
             };
             shared.body_died(*body, cause);
-            let _ = shared.publish.send(Published::BodyDied {
+            shared.publish(&Published::BodyDied {
                 body: body.0,
                 at: *at,
                 cause,

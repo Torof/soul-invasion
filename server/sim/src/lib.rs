@@ -825,6 +825,25 @@ impl World {
         self.index_of(id).map(|index| &self.bodies[index])
     }
 
+    /// The rest of a body's walk, as it will go if nothing changes: the
+    /// points where it turns or its pace changes, each with the tick it
+    /// stands there ([`timeline`]). Empty for a body standing still or
+    /// unknown.
+    pub fn walk_timeline(&self, id: BodyId, rules: &Content) -> Vec<(FinePos, u64)> {
+        let Some(body) = self.body(id) else {
+            return Vec::new();
+        };
+        timeline(
+            body.at,
+            body.route.iter().copied(),
+            &self.map,
+            &rules.movement,
+            loaded_speed(&rules.movement, body.load_g),
+            f64::from(self.calendar.ticks_per_second()),
+            self.tick.0,
+        )
+    }
+
     /// Where a body is in `bodies`, found by halving (they are in id order).
     fn index_of(&self, id: BodyId) -> Option<usize> {
         self.bodies.binary_search_by_key(&id, |b| b.id).ok()
@@ -1617,8 +1636,6 @@ impl World {
     }
 }
 
-/// Moves a walking body for one tick: as far along its route as the
-/// speed of the terrain it stands on allows, waypoint after waypoint.
 /// Walking speed under a load, in percent of the unloaded speed: linear
 /// from 100 % empty to the content's percent at full capacity.
 fn loaded_speed(movement: &Movement, load_g: u32) -> u32 {
@@ -1630,6 +1647,8 @@ fn loaded_speed(movement: &Movement, load_g: u32) -> u32 {
 
 // Not generation: a body's walk is worked out in floats.
 #[allow(clippy::cast_possible_truncation, clippy::float_arithmetic)]
+/// Moves a walking body for one tick ([`stride`]), telling the tile it
+/// steps onto and its stop.
 fn walk(
     body: &mut Body,
     map: &Map,
@@ -1638,35 +1657,16 @@ fn walk(
     ticks_per_second: f64,
     events: &mut Vec<Event>,
 ) {
-    let terrain = map.get(body.at.tile()).unwrap_or(Terrain::Rock);
-    // A straight segment may graze the corner of a tile it may not enter
-    // (`line_clear`), and a body placed to the millimetre can stand a few
-    // millimetres into it: it goes on at the slowest pace, never stuck.
-    let speed = match movement.speed_cm_per_s(terrain) {
-        0 => movement.slowest_speed_cm_per_s(),
-        speed => speed,
-    };
-    // Millimetres this tick: 143 cm/s at 10 ticks/s is exactly 143 mm.
-    let mut budget = f64::from(speed * 10 * speed_percent) / 100.0 / ticks_per_second;
     let tile_before = body.at.tile();
-    while budget > 0.0 {
-        let Some(&next) = body.route.front() else {
-            break;
-        };
-        let distance = body.at.distance_to(next);
-        if distance <= budget {
-            body.at = next;
-            body.route.pop_front();
-            budget -= distance;
-        } else {
-            let ratio = budget / distance;
-            body.at = FinePos::new(
-                body.at.x + (f64::from(next.x - body.at.x) * ratio).round() as i32,
-                body.at.y + (f64::from(next.y - body.at.y) * ratio).round() as i32,
-            );
-            budget = 0.0;
-        }
-    }
+    stride(
+        &mut body.at,
+        &mut body.route,
+        map,
+        movement,
+        speed_percent,
+        ticks_per_second,
+        |_| {},
+    );
     let tile = body.at.tile();
     if tile != tile_before {
         events.push(Event::BodyMoved {
@@ -1682,6 +1682,110 @@ fn walk(
             at: body.at,
         });
     }
+}
+
+/// The speed a body standing at `at` walks at this tick, in millimetres a
+/// tick: the terrain's, under `speed_percent` (its load).
+#[allow(clippy::float_arithmetic)]
+fn pace(
+    at: FinePos,
+    map: &Map,
+    movement: &Movement,
+    speed_percent: u32,
+    ticks_per_second: f64,
+) -> f64 {
+    let terrain = map.get(at.tile()).unwrap_or(Terrain::Rock);
+    // A straight segment may graze the corner of a tile it may not enter
+    // (`line_clear`), and a body placed to the millimetre can stand a few
+    // millimetres into it: it goes on at the slowest pace, never stuck.
+    let speed = match movement.speed_cm_per_s(terrain) {
+        0 => movement.slowest_speed_cm_per_s(),
+        speed => speed,
+    };
+    // Millimetres this tick: 143 cm/s at 10 ticks/s is exactly 143 mm.
+    f64::from(speed * 10 * speed_percent) / 100.0 / ticks_per_second
+}
+
+/// One tick of a walk: as far along the route as the speed of the
+/// terrain the body stands on allows, waypoint after waypoint, each one
+/// reached handed to `reached`.
+#[allow(clippy::cast_possible_truncation, clippy::float_arithmetic)]
+fn stride(
+    at: &mut FinePos,
+    route: &mut VecDeque<FinePos>,
+    map: &Map,
+    movement: &Movement,
+    speed_percent: u32,
+    ticks_per_second: f64,
+    mut reached: impl FnMut(FinePos),
+) {
+    let mut budget = pace(*at, map, movement, speed_percent, ticks_per_second);
+    while budget > 0.0 {
+        let Some(&next) = route.front() else {
+            break;
+        };
+        let distance = at.distance_to(next);
+        if distance <= budget {
+            *at = next;
+            route.pop_front();
+            reached(next);
+            budget -= distance;
+        } else {
+            let ratio = budget / distance;
+            *at = FinePos::new(
+                at.x + (f64::from(next.x - at.x) * ratio).round() as i32,
+                at.y + (f64::from(next.y - at.y) * ratio).round() as i32,
+            );
+            budget = 0.0;
+        }
+    }
+}
+
+/// The rest of a body's walk as it will go if nothing changes, worked out
+/// with the very steps of the simulation (`stride`): the points where
+/// it turns or its pace changes (the terrain under it, D32), each with the
+/// tick it stands there, `now` being the tick it stands at `at`. Between
+/// two of them it walks straight at one pace, so a client that moves it
+/// by time between them shows it where the world has it (A6). The last
+/// point is the end of the route.
+#[allow(clippy::float_arithmetic)]
+pub fn timeline(
+    at: FinePos,
+    route: impl IntoIterator<Item = FinePos>,
+    map: &Map,
+    movement: &Movement,
+    speed_percent: u32,
+    ticks_per_second: f64,
+    now: u64,
+) -> Vec<(FinePos, u64)> {
+    let mut route: VecDeque<FinePos> = route.into_iter().collect();
+    let (mut at, mut tick) = (at, now);
+    let mut points = Vec::new();
+    let mut last_pace = pace(at, map, movement, speed_percent, ticks_per_second);
+    while !route.is_empty() {
+        let this_pace = pace(at, map, movement, speed_percent, ticks_per_second);
+        if (this_pace - last_pace).abs() > f64::EPSILON
+            && points.last().is_none_or(|&(p, _)| p != at)
+        {
+            points.push((at, tick));
+        }
+        last_pace = this_pace;
+        // A waypoint reached during the tick is told at the tick's end,
+        // within a tick's walk (a few centimetres) of the truth.
+        let mut turns = Vec::new();
+        stride(
+            &mut at,
+            &mut route,
+            map,
+            movement,
+            speed_percent,
+            ticks_per_second,
+            |p| turns.push(p),
+        );
+        tick += 1;
+        points.extend(turns.into_iter().map(|p| (p, tick)));
+    }
+    points
 }
 
 impl Default for World {
@@ -2595,6 +2699,63 @@ mod tests {
             reason: Refusal::OutOfReach,
         }));
         assert_eq!(w.load_g(body, &rules()), 1900);
+    }
+
+    #[test]
+    fn the_timeline_of_a_walk_is_where_the_world_has_the_body_tick_by_tick() {
+        // Grass, then forest (slower), then grass, on a walk with a turn.
+        let mut map = Map::filled(16, 8, Terrain::Grass);
+        for x in 5..9 {
+            for y in 0..8 {
+                map.set(Pos::new(x, y), Terrain::Forest);
+            }
+        }
+        let mut w = World::empty(Calendar::new(10, 100).unwrap(), map);
+        w.spawn_body(Pos::new(0, 0));
+        let rules = rules();
+        let mut events = Vec::new();
+        go(&mut w, Pos::new(12, 4));
+        w.step(&rules, &mut events);
+        let timeline = w.walk_timeline(BodyId(1), &rules);
+        let (start, now) = (w.body(BodyId(1)).unwrap().at(), w.tick().0);
+        assert!(timeline.len() >= 3, "the pace changes twice: {timeline:?}");
+        assert!(
+            timeline.windows(2).all(|p| p[0].1 < p[1].1),
+            "in time order"
+        );
+        assert_eq!(timeline.last().unwrap().0, Pos::new(12, 4).centre());
+        // Moved by time between the points, the body is where the world
+        // has it at every tick, within a tick's walk.
+        let shown = |tick: u64| {
+            let (mut from, mut from_tick) = (start, now);
+            for &(to, at) in &timeline {
+                if tick < at {
+                    #[allow(clippy::cast_precision_loss)]
+                    let f = (tick - from_tick) as f64 / (at - from_tick) as f64;
+                    return (
+                        f64::from(from.x) + f64::from(to.x - from.x) * f,
+                        f64::from(from.y) + f64::from(to.y - from.y) * f,
+                    );
+                }
+                (from, from_tick) = (to, at);
+            }
+            (f64::from(from.x), f64::from(from.y))
+        };
+        loop {
+            let tick = w.tick().0;
+            let at = w.body(BodyId(1)).unwrap().at();
+            let (x, y) = shown(tick);
+            let (dx, dy) = (x - f64::from(at.x), y - f64::from(at.y));
+            assert!(
+                dx * dx + dy * dy <= 150.0 * 150.0,
+                "({dx}, {dy}) mm off at tick {tick}"
+            );
+            if !w.body(BodyId(1)).unwrap().is_walking() {
+                assert_eq!(tick, timeline.last().unwrap().1, "it stops on time");
+                break;
+            }
+            w.step(&rules, &mut events);
+        }
     }
 
     #[test]

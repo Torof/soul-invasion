@@ -6,8 +6,10 @@ extends Node2D
 ## decided here (D03, D05).
 ##
 ## Bodies walk along the routes the server gives them (D32): the client
-## only interpolates between waypoints at the given speed, and snaps to
-## wherever the server says they stopped.
+## only interpolates between waypoints at the given speed (BodyWalk), told
+## again as a body walks into another chunk, and snaps to wherever the
+## server says they stopped. Bodies are told within about 150 m of the
+## piloted one (protocol v19, D5).
 ##
 ## Camera: mouse wheel zooms, dragging with the right or middle button
 ## pans, Space goes back to following the piloted body.
@@ -65,8 +67,11 @@ var _limit := Rect2()
 var _looks: Dictionary = {}
 ## material id -> name shown to players
 var _names: Dictionary = {}
-## body id -> {"at": Vector2 (mm), "route": Array[Vector2] (mm), "speed": mm per second, "asleep": bool}
+## body id -> a walk (BodyWalk: "at", the place shown, in mm, "route",
+## "arrivals"...) and "asleep"
 var _bodies: Dictionary = {}
+## The world's tick between server messages: bodies walk by it (BodyWalk).
+var _clock := GameClock.new()
 ## chunk position -> Array of items as received, redrawn on change
 var _items: Dictionary = {}
 ## chunk position -> its tiles, as codes (TerrainGrid)
@@ -235,6 +240,9 @@ func _ready() -> void:
 	RenderingServer.frame_pre_draw.connect(_cull_trees)
 	Net.chunk_hidden.connect(_on_chunk_hidden)
 	Net.body_walks.connect(_on_body_walks)
+	Net.clock.connect(func(clock: Dictionary) -> void: _clock.set_clock(clock, Time.get_ticks_msec()))
+	Net.connected.connect(func(tick: int, _body: int) -> void: _clock.sync(float(tick), Time.get_ticks_msec()))
+	Net.day_started.connect(func(_day: int, tick: int) -> void: _clock.sync(float(tick), Time.get_ticks_msec()))
 	Net.body_stopped.connect(_on_body_stopped)
 	Net.body_left.connect(_on_body_left)
 	Net.body_sleeps.connect(_on_body_sleeps)
@@ -405,7 +413,12 @@ func _on_chunk_bodies(_x: int, _y: int, bodies: Array) -> void:
 		var route: Array = []
 		for p in b.get("route", []):
 			route.append(Net.point(p))
-		_place(int(b.get("id", -1)), Net.point(b.get("at", {})), route, int(b.get("speed_cm_per_s", 0)))
+		# Where it stood when its chunk left the server, a moment ago:
+		# walked on from there, to its next waypoint on time.
+		var now := _now()
+		var id := int(b.get("id", -1))
+		_place(id, BodyWalk.told(_bodies.get(id, {}), Net.point(b.get("at", {})), route,
+			Net.arrivals(b.get("arrivals", [])), now, int(b.get("speed_cm_per_s", 0)) * 10.0, now))
 		_bodies[int(b.get("id", -1))]["asleep"] = bool(b.get("asleep", false))
 		var holds: Variant = b.get("holds")
 		_holds[int(b.get("id", -1))] = holds if holds is Dictionary else {}
@@ -901,13 +914,20 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 	queue_redraw()
 
 
-func _on_body_walks(body: int, at: Vector2, route: Array, speed_cm_per_s: int) -> void:
-	_place(body, at, route, speed_cm_per_s)
+func _on_body_walks(body: int, at: Vector2, route: Array, arrivals: Array, speed_cm_per_s: int, tick: int) -> void:
+	# Told again at each chunk it walks into, by time: it agrees with what
+	# is shown, and a body near is walked on from where it is shown.
+	_place(body, BodyWalk.told(_bodies.get(body, {}), at, route, arrivals, float(tick), speed_cm_per_s * 10.0, _now()))
 	queue_redraw()
 
 
+## The world's tick now, as the clock reckons it.
+func _now() -> float:
+	return _clock.tick_at(Time.get_ticks_msec())
+
+
 func _on_body_stopped(body: int, at: Vector2) -> void:
-	_place(body, at, [], 0)
+	_place(body, BodyWalk.standing(at))
 	if body == _piloted and _tile_of(at) == _target:
 		_clear_target()
 	queue_redraw()
@@ -919,11 +939,13 @@ func _on_body_left(body: int) -> void:
 	queue_redraw()
 
 
-## Puts a body somewhere with the route it is walking (empty: standing).
-func _place(body: int, at: Vector2, route: Array, speed_cm_per_s: int) -> void:
+## Puts a body somewhere with the walk it is on (BodyWalk; no route:
+## standing).
+func _place(body: int, walk: Dictionary) -> void:
 	var first_sight := not _bodies.has(body)
-	var asleep: bool = _bodies[body]["asleep"] if not first_sight else false
-	_bodies[body] = {"at": at, "route": route, "speed": speed_cm_per_s * 10.0, "asleep": asleep}
+	walk["asleep"] = _bodies[body]["asleep"] if not first_sight else false
+	_bodies[body] = walk
+	var at: Vector2 = walk["at"]
 	if first_sight and body == _piloted:
 		_camera.position = Iso.point_to_screen(at)
 		_camera_placed = true
@@ -1019,27 +1041,12 @@ func _clamp_camera() -> void:
 
 func _step(delta: float) -> void:
 	var moving := false
+	var now := _now()
 	for id: int in _bodies:
-		var entry: Dictionary = _bodies[id]
-		var route: Array = entry["route"]
-		if route.is_empty():
-			continue
-		# Walk along the route at the nominal speed; the server's stop
+		# Walk along the route by time (BodyWalk); the server's stop
 		# message snaps the body wherever it really ended.
-		var budget: float = entry["speed"] * delta
-		var at: Vector2 = entry["at"]
-		while budget > 0.0 and not route.is_empty():
-			var next: Vector2 = route[0]
-			var distance := at.distance_to(next)
-			if distance <= budget:
-				at = next
-				route.pop_front()
-				budget -= distance
-			else:
-				at = at.move_toward(next, budget)
-				budget = 0.0
-		entry["at"] = at
-		moving = true
+		if BodyWalk.advance(_bodies[id], delta, now):
+			moving = true
 	_pan(delta)
 	if _following and _bodies.has(_piloted):
 		_camera.position = Iso.point_to_screen(_bodies[_piloted]["at"])

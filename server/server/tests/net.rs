@@ -1225,17 +1225,18 @@ async fn a_move_intention_makes_the_piloted_body_walk() {
                     body: who,
                     at,
                     route,
+                    arrivals,
                     speed_cm_per_s,
                     ..
-                })) if who == body => {
-                    assert_eq!(
-                        at,
-                        Point {
-                            x: start.centre().x,
-                            y: start.centre().y
-                        }
-                    );
+                })) if who == body && walked.is_none() => {
+                    // Told at the end of its first tick of walking, a
+                    // step from where it stood.
+                    let centre = start.centre();
+                    let step = f64::from(at.x - centre.x).hypot(f64::from(at.y - centre.y));
+                    assert!(step <= 200.0, "{step} mm from the start");
                     assert_eq!(speed_cm_per_s, 143);
+                    assert_eq!(arrivals.len(), route.len());
+                    assert!(arrivals.windows(2).all(|t| t[0] < t[1]));
                     walked = Some(route);
                 }
                 Some(Got::M(ServerMessage::BodyStopped { body: who, at })) if who == body => {
@@ -1247,11 +1248,14 @@ async fn a_move_intention_makes_the_piloted_body_walk() {
                 other => panic!("unexpected {other:?}"),
             }
         }
-        assert_eq!(
-            walked,
-            Some(expected.clone()),
-            "the route the simulation computes"
+        // The route the simulation computes, with the points where the
+        // pace changes on its way.
+        let walked = walked.expect("told the walk");
+        assert!(
+            expected.iter().all(|p| walked.contains(p)),
+            "the route the simulation computes: {walked:?} {expected:?}"
         );
+        assert_eq!(walked.last(), expected.last());
         assert_eq!(stopped.map(tile), Some(target));
     }
 }
@@ -1278,9 +1282,14 @@ async fn walking_toward_the_cliff_goes_straight_and_stops_before_the_first_obsta
     loop {
         match receive(&mut pilot).await {
             Some(Got::M(ServerMessage::BodyWalks {
-                body: who, route, ..
+                body: who,
+                route,
+                arrivals,
+                ..
             })) if who == body => {
-                assert_eq!(route, vec![Point { x: end.x, y: end.y }]);
+                // One straight segment, cut where the pace changes.
+                assert_eq!(route.last(), Some(&Point { x: end.x, y: end.y }));
+                assert_eq!(arrivals.len(), route.len());
                 break;
             }
             Some(Got::M(ServerMessage::DayStarted { .. } | ServerMessage::BodyWalks { .. })) => {}
@@ -2182,4 +2191,266 @@ async fn a_reconnection_to_the_same_world_sends_no_frame_for_the_chunks_held() {
         }
         drop(socket);
     }
+}
+
+// --- Interest by place (D5, A6) ------------------------------------------
+
+/// The chunks a body walking from `at` along `route` steps into, as the
+/// server walks it: every chunk change along the straight segments.
+fn chunk_changes(at: Point, route: &[Point]) -> usize {
+    let chunk = |x: f64, y: f64| {
+        #[allow(clippy::cast_possible_truncation)]
+        let mm = |v: f64| v.round() as i32;
+        FinePos::new(mm(x), mm(y)).tile().chunk()
+    };
+    let (mut changes, mut from) = (0, at);
+    let mut last = chunk(f64::from(at.x), f64::from(at.y));
+    for &next in route {
+        let (dx, dy) = (f64::from(next.x - from.x), f64::from(next.y - from.y));
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let steps = (dx.hypot(dy) / 10.0).ceil() as u32;
+        for i in 1..=steps {
+            let t = f64::from(i) / f64::from(steps);
+            let here = chunk(f64::from(from.x) + dx * t, f64::from(from.y) + dy * t);
+            if here != last {
+                changes += 1;
+                last = here;
+            }
+        }
+        from = next;
+    }
+    changes
+}
+
+/// Where a walk told at `at` at `tick`, reaching `route`'s waypoints at
+/// `arrivals`, has the body at `now`: moved by time between them, as the
+/// client walks it.
+#[allow(clippy::cast_precision_loss)]
+fn walked_to(at: Point, tick: u64, route: &[Point], arrivals: &[u64], now: u64) -> (f64, f64) {
+    let (mut from, mut from_tick) = (at, tick);
+    for (&to, &arrival) in route.iter().zip(arrivals) {
+        if now < arrival {
+            let f = now.saturating_sub(from_tick) as f64 / (arrival - from_tick) as f64;
+            return (
+                f64::from(from.x) + f64::from(to.x - from.x) * f,
+                f64::from(from.y) + f64::from(to.y - from.y) * f,
+            );
+        }
+        (from, from_tick) = (to, arrival);
+    }
+    (f64::from(from.x), f64::from(from.y))
+}
+
+/// Teleports the body `socket` pilots near `target`, out of range of
+/// the body `left` (told first, as the view moves, that it left), and
+/// waits until it stands there: the chunk it stands in.
+async fn teleport(socket: &mut Socket, body: u32, target: Pos, left: u32) -> ChunkPos {
+    send(
+        socket,
+        &ClientMessage::DevTeleport {
+            x: target.x,
+            y: target.y,
+        },
+    )
+    .await;
+    wait_for(socket, |m| match m {
+        ServerMessage::BodyLeft { body: who } if *who == left => Some(()),
+        ServerMessage::BodyStopped { body: who, .. } if *who == body => {
+            panic!("stopped before {left} was forgotten")
+        }
+        _ => None,
+    })
+    .await;
+    wait_for(socket, |m| match m {
+        ServerMessage::BodyStopped { body: who, at } if *who == body => Some(tile(*at).chunk()),
+        _ => None,
+    })
+    .await
+}
+
+/// The body a message is about, if any.
+fn about(message: &ServerMessage) -> Option<u32> {
+    match message {
+        ServerMessage::BodyWalks { body, .. }
+        | ServerMessage::BodyStopped { body, .. }
+        | ServerMessage::BodyLeft { body }
+        | ServerMessage::BodySleeps { body, .. }
+        | ServerMessage::BodyHolds { body, .. }
+        | ServerMessage::BodyDied { body, .. } => Some(*body),
+        _ => None,
+    }
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn a_walker_is_heard_within_range_at_each_chunk_it_walks_into_and_nowhere_else() {
+    let server = Server::start_with(&["--dev", "--seconds-per-day", "20000", "--time-scale", "50"]);
+    let (mut walker, body) = join(&server).await;
+    let (mut near, _) = join(&server).await;
+    let (mut edge, edge_body) = join(&server).await;
+    let body = body.expect("pilots body 1");
+    let edge_body = edge_body.expect("pilots body 3");
+    let world = standard_world();
+    let start = start_of(world, body);
+    let home = start.chunk();
+    let side = i32::try_from(CHUNK_SIZE).expect("small chunk");
+
+    // The edge's body five chunks east, on the walker's row: the walker's
+    // chunk is in its view (nine chunks) but out of its range (150 m,
+    // four chunks along a row), the next chunk east within it.
+    let five_east = Pos::new((home.x + 5) * side + side / 2, start.y);
+    // Out of range, the camp's bodies are forgotten.
+    let there = teleport(&mut edge, edge_body, five_east, body).await;
+    assert_eq!(there.x, home.x + 5, "teleported five chunks east");
+    assert!((there.y - home.y).abs() <= 2, "{there:?}");
+
+    // The walker walks into the next chunk east, a few tiles deep, in
+    // legs it can plan (D32).
+    let east = (home.x + 1) * side + 8;
+    let stops = legs_east(world, &rules(), start, east);
+    let mut walks = 0;
+    for stop in &stops {
+        send(
+            &mut walker,
+            &ClientMessage::MoveTo {
+                x: stop.x,
+                y: stop.y,
+            },
+        )
+        .await;
+        // The near client is told the walk once as it starts, then once
+        // more each time the body walks into another chunk: never at
+        // each tile; and each time where the walk first told, followed by
+        // time, has it then, whatever the ground (no jump on the client).
+        let (mut expected, mut told, mut chunk, mut first) = (None, 0, None, None);
+        loop {
+            match receive(&mut near).await {
+                Some(Got::M(ServerMessage::BodyWalks {
+                    body: who,
+                    at,
+                    route,
+                    arrivals,
+                    tick,
+                    ..
+                })) if who == body => {
+                    let here = tile(at).chunk();
+                    if expected.is_none() {
+                        expected = Some(1 + chunk_changes(at, &route));
+                        first = Some((at, tick, route, arrivals));
+                    } else {
+                        assert_ne!(Some(here), chunk, "told again in the same chunk");
+                        let (at0, tick0, route0, arrivals0) = first.as_ref().expect("told");
+                        let (x, y) = walked_to(*at0, *tick0, route0, arrivals0, tick);
+                        let off = (x - f64::from(at.x)).hypot(y - f64::from(at.y));
+                        assert!(off <= 300.0, "{off} mm from where the walk told has it");
+                    }
+                    chunk = Some(here);
+                    told += 1;
+                }
+                Some(Got::M(ServerMessage::BodyStopped { body: who, at })) if who == body => {
+                    assert_eq!(tile(at), *stop);
+                    break;
+                }
+                Some(_) => {}
+                None => panic!("near client disconnected"),
+            }
+        }
+        assert_eq!(Some(told), expected, "a walk event per chunk walked into");
+        walks += told;
+    }
+    assert!(walks >= 2, "the walk crossed into the next chunk");
+
+    // The edge first hears of the walker as it walks into range, with
+    // where it is, in the next chunk east, and its route; nothing of its
+    // walk in the camp's chunk leaked before.
+    let (at, route) = wait_for(&mut edge, |m| match m {
+        ServerMessage::BodyWalks {
+            body: who,
+            at,
+            route,
+            ..
+        } if *who == body => Some((*at, route.clone())),
+        m if about(m) == Some(body) => panic!("{m:?} before the walker came within range"),
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        tile(at).chunk().x,
+        home.x + 1,
+        "announced as it walks into range"
+    );
+    assert!(!route.is_empty(), "announced with its route");
+}
+
+#[tokio::test]
+async fn a_client_far_from_a_walker_hears_nothing_of_it() {
+    let server = Server::start_with(&["--dev", "--seconds-per-day", "200", "--time-scale", "50"]);
+    let (mut walker, body) = join(&server).await;
+    let (mut near, _) = join(&server).await;
+    let (mut far, far_body) = join(&server).await;
+    let body = body.expect("pilots body 1");
+    let far_body = far_body.expect("pilots body 3");
+    let world = standard_world();
+    let start = start_of(world, body);
+    let home = start.chunk();
+    let side = i32::try_from(CHUNK_SIZE).expect("small chunk");
+    let chunks = i32::try_from(VALLEY).expect("small") / side;
+
+    // Eleven chunks away: out of range and out of the view (nine chunks).
+    let away = if home.x + 11 < chunks {
+        home.x + 11
+    } else {
+        home.x - 11
+    };
+    let target = Pos::new(away * side + side / 2, start.y);
+    let there = teleport(&mut far, far_body, target, body).await;
+    assert!(
+        (there.x - home.x).abs() > VIEW_RADIUS,
+        "{there:?} out of the view"
+    );
+
+    // The walker walks two tiles and stops; the near client hears it.
+    send(
+        &mut walker,
+        &ClientMessage::MoveTo {
+            x: start.x + 2,
+            y: start.y,
+        },
+    )
+    .await;
+    wait_for(&mut near, |m| match m {
+        ServerMessage::BodyWalks { body: who, .. } if *who == body => Some(()),
+        _ => None,
+    })
+    .await;
+    wait_for(&mut near, |m| match m {
+        ServerMessage::BodyStopped { body: who, .. } if *who == body => Some(()),
+        _ => None,
+    })
+    .await;
+
+    // Whatever was published for the far client before the next day
+    // came before it: nothing of the walker, nor of the camp's chunks,
+    // which it does not hold.
+    let outside = |x: i32, y: i32| {
+        let chunk = Pos::new(x, y).chunk();
+        (chunk.x - there.x).abs() > VIEW_RADIUS || (chunk.y - there.y).abs() > VIEW_RADIUS
+    };
+    wait_for(&mut far, |m| match m {
+        ServerMessage::DayStarted { .. } => Some(()),
+        m if about(m).is_some_and(|b| b != far_body) => panic!("{m:?} leaked to a far client"),
+        ServerMessage::ItemAdded { item } if outside(item.x, item.y) => {
+            panic!("{m:?} out of the view leaked")
+        }
+        ServerMessage::ItemRemoved { x, y, .. } if outside(*x, *y) => {
+            panic!("{m:?} out of the view leaked")
+        }
+        ServerMessage::ChunkBodies { x, y, .. }
+            if (x - there.x).abs() > VIEW_RADIUS || (y - there.y).abs() > VIEW_RADIUS =>
+        {
+            panic!("{m:?} out of the view leaked")
+        }
+        _ => None,
+    })
+    .await;
 }
