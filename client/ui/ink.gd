@@ -14,22 +14,26 @@ const LINE_WIDTH := 2.5
 const WOBBLE := 0.7
 
 
-## Fills `points` (a closed shape) with `fill` and outlines it in ink.
-static func shape(item: CanvasItem, points: PackedVector2Array, fill: Color, alpha: float = 1.0) -> void:
+## Fills `points` (a closed shape) with `fill` and outlines it in ink,
+## straying `wobble` pixels at most.
+static func shape(item: CanvasItem, points: PackedVector2Array, fill: Color, alpha: float = 1.0,
+		wobble: float = WOBBLE) -> void:
 	item.draw_colored_polygon(points, Color(fill, alpha))
-	outline(item, points, alpha)
+	outline(item, points, alpha, wobble)
 
 
 ## The ink line round a closed shape, wobbling a little.
-static func outline(item: CanvasItem, points: PackedVector2Array, alpha: float = 1.0) -> void:
-	var line := wobbled(points)
+static func outline(item: CanvasItem, points: PackedVector2Array, alpha: float = 1.0,
+		wobble: float = WOBBLE) -> void:
+	var line := wobbled(points, wobble)
 	line.append(line[0])
 	item.draw_polyline(line, Color(INK, alpha), LINE_WIDTH, true)
 
 
 ## A circle filled and outlined.
-static func circle(item: CanvasItem, centre: Vector2, radius: float, fill: Color, alpha: float = 1.0) -> void:
-	shape(item, arc(centre, radius, 0.0, TAU, maxi(12, int(radius * 2.0))), fill, alpha)
+static func circle(item: CanvasItem, centre: Vector2, radius: float, fill: Color, alpha: float = 1.0,
+		wobble: float = WOBBLE) -> void:
+	shape(item, arc(centre, radius, 0.0, TAU, maxi(12, int(radius * 2.0))), fill, alpha, wobble)
 
 
 ## The points along an arc (angles in radians, screen y down).
@@ -63,12 +67,12 @@ static func rounded(rect: Rect2, radius: float, tail_x: float = 0.0, tail_width:
 
 ## `points` moved a little across the line, smoothly and always the same
 ## way for the same shape (no flicker from frame to frame).
-static func wobbled(points: PackedVector2Array) -> PackedVector2Array:
+static func wobbled(points: PackedVector2Array, wobble: float = WOBBLE) -> PackedVector2Array:
 	var out := PackedVector2Array()
 	var n := points.size()
 	for i in n:
 		var along := points[(i + 1) % n] - points[(i - 1 + n) % n]
 		var across := Vector2(-along.y, along.x).normalized()
-		var stray := WOBBLE * (0.6 * sin(i * 1.7) + 0.4 * sin(i * 0.53 + 1.0))
+		var stray := wobble * (0.6 * sin(i * 1.7) + 0.4 * sin(i * 0.53 + 1.0))
 		out.append(points[i] + across * stray)
 	return out

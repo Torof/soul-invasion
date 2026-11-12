@@ -1,70 +1,66 @@
 class_name SpeechBubble
-extends Control
-## What someone says, on the left: a classic comic speech bubble on cream
-## paper outlined in ink, the speaker's name on top, its tail pointing
-## down. Shows a line ~6 s or until the next (SpeechLine). Nothing in the
-## game speaks yet: HUD.say is the way in, for players and NPCs later.
+extends BubbleStack
+## What is said, top left: classic comic speech bubbles on cream paper
+## outlined in ink, the speaker's name on top, the tail pointing down,
+## stacked as a thread (BubbleStack). Nothing in the game speaks yet:
+## HUD.say is the way in, for players and NPCs later.
 
 const FONT_SIZE := 17
 const NAME_SIZE := 14
 const TEXT_WIDTH := 300.0
 const PAD := Vector2(16, 12)
 const CORNER := 14.0
-const MARGIN := 16.0
-## Its top, as a share of the screen's height.
-const TOP_SHARE := 0.32
-const TAIL := 20.0
-
-var line := SpeechLine.new()
-var _shown := ""
-var _box := Rect2()
+const TAIL := 14.0
+## Room between the name and the line.
+const NAME_GAP := 6.0
 
 
-func _ready() -> void:
-	set_anchors_preset(Control.PRESET_TOP_LEFT)
-	mouse_filter = Control.MOUSE_FILTER_IGNORE
-	visible = false
+func _init() -> void:
+	_right = false
 
 
 ## `speaker` says `words`.
 func say(speaker: String, words: String) -> void:
-	line.say(speaker, words, Time.get_ticks_msec())
-	_shown = ""
+	thread.push(speaker, words, Vector2.ZERO, false, Time.get_ticks_msec())
 
 
-func _process(_delta: float) -> void:
-	var alpha := line.alpha(Time.get_ticks_msec())
-	visible = alpha > 0.0
-	if not visible:
-		return
-	modulate.a = alpha
-	var key := line.speaker + "\n" + line.text
-	if key != _shown:
-		_shown = key
-		_lay_out()
-		queue_redraw()
+func _measure(entry: Dictionary, factor: float, is_folded: bool, _last: bool) -> Vector2:
+	return _box_size(entry, factor, is_folded) + Vector2(0, TAIL * factor)
 
 
-func _lay_out() -> void:
+## The bubble without its tail: the name above the line, or the line
+## alone when folded (it carries the name).
+func _box_size(entry: Dictionary, factor: float, is_folded: bool) -> Vector2:
 	var font := ThemeDB.fallback_font
-	var words := font.get_multiline_string_size(line.text, HORIZONTAL_ALIGNMENT_LEFT, TEXT_WIDTH, FONT_SIZE)
-	var name_width := font.get_string_size(line.speaker, HORIZONTAL_ALIGNMENT_LEFT, -1, NAME_SIZE).x
-	var inner := Vector2(maxf(maxf(words.x, name_width), 120.0), font.get_height(NAME_SIZE) + 6.0 + words.y)
-	_box = Rect2(Vector2.ZERO, inner + PAD * 2.0)
-	position = Vector2(MARGIN, get_viewport_rect().size.y * TOP_SHARE)
-	size = _box.size + Vector2(0, TAIL)
+	var words := font.get_multiline_string_size(str(entry["text"]), HORIZONTAL_ALIGNMENT_LEFT,
+			-1.0 if is_folded else TEXT_WIDTH * factor, roundi(FONT_SIZE * factor))
+	var inner := Vector2(maxf(words.x, (40.0 if is_folded else 120.0) * factor), words.y)
+	if not is_folded:
+		var name_size := roundi(NAME_SIZE * factor)
+		inner.x = maxf(inner.x, font.get_string_size(str(entry["speaker"]), HORIZONTAL_ALIGNMENT_LEFT, -1, name_size).x)
+		inner.y += font.get_height(name_size) + NAME_GAP * factor
+	return inner + PAD * factor * 2.0
 
 
-func _draw() -> void:
-	if _box.size == Vector2.ZERO:
-		return
-	var tail_x := 26.0
-	Ink.shape(self, Ink.rounded(_box, CORNER, tail_x, 16.0, Vector2(tail_x - 6.0, _box.end.y + TAIL)), Ink.PAPER)
+func _paint(entry: Dictionary, rect: Rect2, factor: float, paper: Color, alpha: float,
+		is_folded: bool, _last: bool) -> void:
+	var box := Rect2(rect.position, _box_size(entry, factor, is_folded))
+	var tail_x := 26.0 * factor
+	Ink.shape(self, Ink.rounded(box, CORNER * factor, tail_x, 16.0 * factor,
+			Vector2(box.position.x + tail_x - 6.0 * factor, box.end.y + TAIL * factor)), paper, alpha)
 	var font := ThemeDB.fallback_font
-	var at := PAD + Vector2(0, font.get_ascent(NAME_SIZE))
-	draw_string(font, at, line.speaker, HORIZONTAL_ALIGNMENT_LEFT, -1, NAME_SIZE, Ink.INK)
-	# The name underlined in ink, as a comic's caption.
-	var name_width := font.get_string_size(line.speaker, HORIZONTAL_ALIGNMENT_LEFT, -1, NAME_SIZE).x
-	draw_line(at + Vector2(0, 3), at + Vector2(name_width, 3), Ink.INK, 1.5, true)
-	var text_at := Vector2(PAD.x, PAD.y + font.get_height(NAME_SIZE) + 6.0 + font.get_ascent(FONT_SIZE))
-	draw_multiline_string(font, text_at, line.text, HORIZONTAL_ALIGNMENT_LEFT, TEXT_WIDTH, FONT_SIZE, -1, Ink.INK)
+	var ink := Color(Ink.INK, alpha)
+	var font_size := roundi(FONT_SIZE * factor)
+	var text_y := box.position.y + PAD.y * factor
+	if not is_folded:
+		var name_size := roundi(NAME_SIZE * factor)
+		var speaker := str(entry["speaker"])
+		var at := box.position + PAD * factor + Vector2(0, font.get_ascent(name_size))
+		draw_string(font, at, speaker, HORIZONTAL_ALIGNMENT_LEFT, -1, name_size, ink)
+		# The name underlined in ink, as a comic's caption.
+		var name_width := font.get_string_size(speaker, HORIZONTAL_ALIGNMENT_LEFT, -1, name_size).x
+		draw_line(at + Vector2(0, 3), at + Vector2(name_width, 3), ink, 1.5, true)
+		text_y += font.get_height(name_size) + NAME_GAP * factor
+	var text_at := Vector2(box.position.x + PAD.x * factor, text_y + font.get_ascent(font_size))
+	draw_multiline_string(font, text_at, str(entry["text"]), HORIZONTAL_ALIGNMENT_LEFT,
+			-1.0 if is_folded else TEXT_WIDTH * factor, font_size, -1, ink)

@@ -77,9 +77,11 @@ func _init() -> void:
 	_test_the_clock_catches_up_with_the_ticks_walks_are_told_at()
 	_test_a_blocked_body_is_decoded_and_its_notice_shows_then_fades()
 	_test_a_refused_order_says_why_in_a_thought()
-	_test_thoughts_come_one_at_a_time()
+	_test_a_thread_keeps_its_last_twenty_and_shows_three_newest_last()
+	_test_a_thread_scrolls_back_to_the_oldest_and_down_to_the_newest()
+	_test_a_thread_folds_when_left_alone_and_unfolds()
+	_test_a_placed_thought_is_clicked_from_the_history()
 	_test_the_recentre_button_shows_while_the_camera_does_not_follow()
-	_test_a_line_said_shows_six_seconds_or_until_the_next()
 	_test_body_3_greets_once_on_coming_near()
 
 
@@ -2414,49 +2416,111 @@ func _test_a_refused_order_says_why_in_a_thought() -> void:
 	_check(got == [[1, 4, 5, "water"]], "move_refused decodes with its reason: %s" % [got])
 	net.free()
 	# As WorldView._on_move_refused does with it, the body standing at the bank.
-	var thoughts := ThoughtQueue.new()
+	var thoughts := BubbleThread.new()
 	var stands := Vector2(800_500, 99_700)
-	thoughts.push(UiWords.blocked(str(got[0][3])), stands, true, 1000)
-	_check(thoughts.text(1000) == "Bloqué : l'eau est trop profonde", "the bubble says why: %s" % thoughts.text(1000))
-	_check(thoughts.clickable(1000) and thoughts.place(1000) == stands, "and a click takes the camera to the body")
+	thoughts.push("", UiWords.blocked(str(got[0][3])), stands, true, 1000)
+	var said := str(thoughts.shown().back()["text"])
+	_check(said == "Bloqué : l'eau est trop profonde", "the bubble says why: %s" % said)
+	_check(thoughts.place_at(0) == stands, "and a click takes the camera to the body")
 
 
-## One thought at a time: each shows at least MIN_MS when others wait,
-## stays STAY_MS then fades when none do; the same line told again is not
-## queued twice; a thought tied to a place is the only one clicked.
-func _test_thoughts_come_one_at_a_time() -> void:
-	var q := ThoughtQueue.new()
-	_check(q.text(0) == "" and q.alpha(0) == 0.0 and not q.clickable(0), "nothing at first")
-	q.push("a", Vector2(1, 2), true, 1000)
-	q.push("b", Vector2.ZERO, false, 1200)
-	q.push("c", Vector2(5, 6), true, 1300)
-	_check(q.text(1300) == "a" and q.clickable(1300) and q.place(1300) == Vector2(1, 2), "the first shows, tied to its place")
-	_check(q.text(1000 + ThoughtQueue.MIN_MS - 1) == "a", "until it has shown its least")
-	var b_since := 1000 + ThoughtQueue.MIN_MS
-	_check(q.text(b_since) == "b" and not q.clickable(b_since), "then the next, with no place: not clicked")
-	_check(q.alpha(b_since) == 1.0, "whole")
-	# Asked late: the result is the same as if asked every frame.
-	var c_since := b_since + ThoughtQueue.MIN_MS
-	_check(q.text(c_since + 100) == "c" and q.place(c_since + 100) == Vector2(5, 6), "then the last")
-	_check(q.alpha(c_since + ThoughtQueue.STAY_MS - 1) == 1.0, "the last stays whole while nothing waits")
-	var half := c_since + ThoughtQueue.STAY_MS + ThoughtQueue.FADE_MS / 2
-	_check(is_equal_approx(q.alpha(half), 0.5), "then fades: %f" % q.alpha(half))
-	var gone := c_since + ThoughtQueue.STAY_MS + ThoughtQueue.FADE_MS
-	_check(q.text(gone) == "" and q.alpha(gone) == 0.0 and not q.clickable(gone), "and is gone")
-	# The same line told again (clicking across the water twice): shown
-	# anew, at its new place, not queued behind itself.
-	q.push("x", Vector2(1, 1), true, 50_000)
-	q.push("x", Vector2(2, 2), true, 51_000)
-	_check(q.text(51_000 + ThoughtQueue.STAY_MS - 1) == "x" and q.place(51_000) == Vector2(2, 2), "the same line shown anew")
-	q.push("y", Vector2.ZERO, false, 52_000)
-	_check(q.text(52_000) == "x" and q.text(51_000 + ThoughtQueue.MIN_MS) == "y", "a new line still waits its turn")
-	# Many at once: only the last few wait.
-	q.clear()
-	_check(q.text(60_000) == "", "cleared at once")
-	for i in ThoughtQueue.MAX_WAITING + 3:
-		q.push(str(i), Vector2.ZERO, false, 60_000)
-	_check(q.text(60_000) == "0", "the first shows")
-	_check(q.text(60_000 + ThoughtQueue.MIN_MS) == str(3), "the oldest waiting were dropped: %s" % q.text(60_000 + ThoughtQueue.MIN_MS))
+## Each side keeps its last KEPT bubbles in order of arrival (no wait:
+## a bubble enters the thread at once) and shows the SHOWN newest, the
+## newest last; the same bubble told twice is kept once, at its new place.
+func _test_a_thread_keeps_its_last_twenty_and_shows_three_newest_last() -> void:
+	var thread := BubbleThread.new()
+	_check(thread.size() == 0 and thread.shown().is_empty() and not thread.folded(100_000), "nothing at first")
+	thread.push("", "a", Vector2.ZERO, false, 1000)
+	thread.push("", "b", Vector2.ZERO, false, 1001)
+	_check(_texts(thread.shown()) == ["a", "b"], "two told at once, both shown, the newest last: %s" % [_texts(thread.shown())])
+	thread.clear()
+	for i in BubbleThread.KEPT + 5:
+		thread.push("", str(i), Vector2.ZERO, false, 1000 + i)
+	_check(thread.size() == BubbleThread.KEPT, "no more than %d kept: %d" % [BubbleThread.KEPT, thread.size()])
+	_check(_texts(thread.shown()) == ["22", "23", "24"], "the three newest, the newest last: %s" % [_texts(thread.shown())])
+	thread.push("", "24", Vector2(3, 4), true, 2000)
+	_check(thread.size() == BubbleThread.KEPT and thread.place_at(2) == Vector2(3, 4), "the same line told again: kept once, at its new place")
+	thread.push("Corps 3", "24", Vector2.ZERO, false, 2001)
+	_check(_texts(thread.shown()) == ["23", "24", "24"], "the same line by someone else is a new bubble")
+
+
+## Hovering, the wheel scrolls back until the oldest kept is at the top of
+## the window, and down again until the newest is at its bottom; a new
+## bubble brings the window back to the newest.
+func _test_a_thread_scrolls_back_to_the_oldest_and_down_to_the_newest() -> void:
+	var thread := BubbleThread.new()
+	for i in BubbleThread.KEPT + 5:
+		thread.push("", str(i), Vector2.ZERO, false, 1000)
+	_check(thread.max_scroll() == BubbleThread.KEPT - BubbleThread.SHOWN, "the range: %d" % thread.max_scroll())
+	thread.scroll(1)
+	_check(_texts(thread.shown()) == ["21", "22", "23"], "one back: %s" % [_texts(thread.shown())])
+	thread.scroll(100)
+	_check(thread.scrolled() == thread.max_scroll() and _texts(thread.shown()) == ["5", "6", "7"],
+			"no further than the oldest kept: %s" % [_texts(thread.shown())])
+	thread.scroll(-1)
+	_check(_texts(thread.shown()) == ["6", "7", "8"], "and down again: %s" % [_texts(thread.shown())])
+	thread.scroll(-100)
+	_check(thread.scrolled() == 0 and _texts(thread.shown()) == ["22", "23", "24"], "no further than the newest")
+	thread.scroll(4)
+	thread.push("", "new", Vector2.ZERO, false, 2000)
+	_check(thread.scrolled() == 0 and thread.shown().back()["text"] == "new", "a new bubble shows at the bottom")
+	var short := BubbleThread.new()
+	short.push("", "a", Vector2.ZERO, false, 0)
+	short.push("", "b", Vector2.ZERO, false, 0)
+	short.scroll(1)
+	_check(short.max_scroll() == 0 and short.scrolled() == 0, "fewer than three: nothing to scroll")
+
+
+## Left alone FOLD_MS (nothing new, no hover), the stack folds into one
+## small bubble, its newest line shortened; a new bubble or the mouse
+## unfolds it, and the delay starts again when the mouse leaves.
+func _test_a_thread_folds_when_left_alone_and_unfolds() -> void:
+	var thread := BubbleThread.new()
+	thread.push("Corps 3", "Ah, t'es là !", Vector2.ZERO, false, 1000)
+	_check(not thread.folded(1000 + BubbleThread.FOLD_MS - 1), "open until the delay")
+	_check(thread.folded(1000 + BubbleThread.FOLD_MS), "folded after it")
+	_check(thread.folded_text() == "Corps 3 : Ah, t'es là !", "the folded bubble says who and what: %s" % thread.folded_text())
+	var later := 1000 + BubbleThread.FOLD_MS * 2
+	thread.push("Voix d'essai", "Une ligne bien trop longue pour tenir dans la petite bulle.", Vector2.ZERO, false, later)
+	_check(not thread.folded(later), "a new bubble unfolds it")
+	_check(thread.folded_text().length() <= BubbleThread.FOLDED_CHARS and thread.folded_text().ends_with("…"),
+			"a long line shortened: %s" % thread.folded_text())
+	var hover_at := later + BubbleThread.FOLD_MS + 100
+	_check(thread.folded(hover_at), "folded again")
+	for i in 3:
+		thread.push("", str(i), Vector2.ZERO, false, hover_at - 50)
+	thread.scroll(2)
+	thread.hover(true, hover_at)
+	_check(not thread.folded(hover_at), "the mouse unfolds it")
+	_check(not thread.folded(hover_at + BubbleThread.FOLD_MS * 3), "and it stays open while hovered")
+	thread.scroll(2)
+	var left := hover_at + BubbleThread.FOLD_MS * 3
+	thread.hover(false, left)
+	_check(not thread.folded(left + BubbleThread.FOLD_MS - 1) and thread.folded(left + BubbleThread.FOLD_MS),
+			"the delay starts again when the mouse leaves")
+	thread.hover(true, left + BubbleThread.FOLD_MS)
+	_check(thread.scrolled() == 0, "unfolded by the mouse, it opens on the newest")
+
+
+## A thought tied to a place stays clickable back in the history: its
+## slot in the window gives its place; a thought with none gives null.
+func _test_a_placed_thought_is_clicked_from_the_history() -> void:
+	var thread := BubbleThread.new()
+	thread.push("", "a", Vector2(1, 2), true, 1000)
+	for line in ["b", "c", "d"]:
+		thread.push("", line, Vector2.ZERO, false, 1000)
+	_check(thread.place_at(0) == null and thread.place_at(2) == null, "the window b, c, d: none tied to a place")
+	thread.scroll(1)
+	_check(_texts(thread.shown()) == ["a", "b", "c"] and thread.place_at(0) == Vector2(1, 2),
+			"scrolled back, the first thought still takes the camera to its place")
+	_check(thread.place_at(-1) == null and thread.place_at(3) == null, "no slot outside the window")
+
+
+func _texts(entries: Array[Dictionary]) -> Array[String]:
+	var texts: Array[String] = []
+	for entry in entries:
+		texts.append(str(entry["text"]))
+	return texts
 
 
 ## The recentre button shows only while the camera does not follow the
@@ -2481,22 +2545,6 @@ func _test_the_recentre_button_shows_while_the_camera_does_not_follow() -> void:
 	_check(glide.active and half.x > 50.0 and half.x < 100.0, "quick at first: %s" % half)
 	var there := glide.step(CameraGlide.SECONDS / 2.0, Vector2(110, 0))
 	_check(not glide.active and there == Vector2(110, 0), "on the body, which walked meanwhile: %s" % there)
-
-
-## A line said shows SHOW_MS, its end fading, or until the next line,
-## which takes its place at once.
-func _test_a_line_said_shows_six_seconds_or_until_the_next() -> void:
-	var line := SpeechLine.new()
-	_check(not line.shown(0) and line.alpha(0) == 0.0, "nothing said at first")
-	line.say("Corps 3", "Ah, t'es là !", 1000)
-	_check(line.shown(1000) and line.alpha(1000) == 1.0 and line.speaker == "Corps 3", "said, whole, with its speaker")
-	_check(line.alpha(1000 + SpeechLine.SHOW_MS - SpeechLine.FADE_MS) == 1.0, "whole until its end fades")
-	_check(is_equal_approx(line.alpha(1000 + SpeechLine.SHOW_MS - SpeechLine.FADE_MS / 2), 0.5), "fading")
-	_check(not line.shown(1000 + SpeechLine.SHOW_MS), "gone after six seconds")
-	line.say("Voix d'essai", "un", 10_000)
-	line.say("Corps 3", "deux", 11_000)
-	_check(line.text == "deux" and line.speaker == "Corps 3" and line.alpha(11_000) == 1.0, "the next line at once")
-	_check(line.shown(11_000 + SpeechLine.SHOW_MS - 1), "for its own six seconds")
 
 
 ## PLACEHOLDER (--dev): body 3 greets once on coming within 3 m, not

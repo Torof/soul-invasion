@@ -75,7 +75,7 @@ var _perf: PerfOverlay
 
 
 ## The recentre button (bottom right), the body's thoughts (top right) and
-## what is said (left), in the interface, drawn in ink on cream paper.
+## what is said (top left), in the interface, drawn in ink on cream paper.
 func _add_bubbles() -> void:
 	var hud: Hud = $Ui/Hud
 	var recentre := RecentreButton.new()
