@@ -7,7 +7,8 @@ extends CanvasLayer
 ## ground a plain colour, F6 hides the trees, F7 draws the fog and the
 ## far view as rings, as full quads or not at all, F8 measures what the
 ## water costs the graphics card, F10 and F11 turn its second layer and
-## the current's streaks off and on (WaterMeshes).
+## the current's streaks off and on (WaterMeshes). F12 says a test line
+## in the speech bubble (HUD.say), until people talk.
 
 ## How often the numbers are refreshed, in seconds.
 const REFRESH := 0.25
@@ -15,6 +16,10 @@ const REFRESH := 0.25
 ## The world view (WorldView), for its counts and the wind; untyped so the
 ## overlay stands alone in the tests.
 var world: Node
+## The head-up display (Hud), for its test line (F12); untyped likewise.
+var hud: Node
+## The next test line said (F12).
+var _speech := 0
 var _label: Label
 var _enabled := false
 var _wind := true
@@ -92,6 +97,12 @@ func _unhandled_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 	elif event.keycode == KEY_F11:
 		ChunkView.set_water_streaks(not ChunkView.water_streaks)
+		get_viewport().set_input_as_handled()
+	elif event.keycode == KEY_F12:
+		if hud != null:
+			var line: Array = UiWords.DEV_SPEECH[_speech % UiWords.DEV_SPEECH.size()]
+			hud.call("say", line[0], line[1])
+			_speech += 1
 		get_viewport().set_input_as_handled()
 
 

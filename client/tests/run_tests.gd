@@ -76,6 +76,11 @@ func _init() -> void:
 	_test_a_new_route_told_while_walking_turns_from_where_the_body_is_shown()
 	_test_the_clock_catches_up_with_the_ticks_walks_are_told_at()
 	_test_a_blocked_body_is_decoded_and_its_notice_shows_then_fades()
+	_test_a_refused_order_says_why_in_a_thought()
+	_test_thoughts_come_one_at_a_time()
+	_test_the_recentre_button_shows_while_the_camera_does_not_follow()
+	_test_a_line_said_shows_six_seconds_or_until_the_next()
+	_test_body_3_greets_once_on_coming_near()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -2365,8 +2370,8 @@ func _test_the_clock_catches_up_with_the_ticks_walks_are_told_at() -> void:
 
 
 
-## F4, protocol v20: `body_blocked` decodes into the signal, and the
-## notice shows the reason's words, whole, then fades and is gone.
+## F4, protocol v20: `body_blocked` decodes into the signal, the reason
+## has its words, and the cross at the feet shows, whole, then fades.
 func _test_a_blocked_body_is_decoded_and_its_notice_shows_then_fades() -> void:
 	var net: Node = load("res://net/client.gd").new()
 	var got: Array = []
@@ -2377,19 +2382,146 @@ func _test_a_blocked_body_is_decoded_and_its_notice_shows_then_fades() -> void:
 	_check(got == [[1, Vector2(34700, 40500), 40, 40, "water"]], "body_blocked decodes: %s" % [got])
 	net.free()
 
-	_check(BlockedNotice.words("water") == "Bloqué : l'eau est trop profonde", "water in words")
-	_check(BlockedNotice.words("rock") == "Bloqué : la falaise barre le chemin", "the cliff in words")
-	_check(BlockedNotice.words("no_way") == "Bloqué : aucun passage en vue", "no way in words")
-	_check(BlockedNotice.words("lava") == BlockedNotice.words("no_way"), "an unknown reason reads as no way")
+	_check(UiWords.blocked("water") == "Bloqué : l'eau est trop profonde", "water in words")
+	_check(UiWords.blocked("rock") == "Bloqué : la falaise barre le chemin", "the cliff in words")
+	_check(UiWords.blocked("no_way") == "Bloqué : aucun passage en vue", "no way in words")
+	_check(UiWords.blocked("lava") == UiWords.blocked("no_way"), "an unknown reason reads as no way")
 	var notice := BlockedNotice.new()
 	_check(not notice.shown(0) and notice.alpha(0) == 0.0, "nothing before it is told")
-	notice.show(BlockedNotice.words("rock"), Vector2(1500, 2500), 10_000)
-	_check(notice.text == BlockedNotice.words("rock") and notice.at == Vector2(1500, 2500), "the line and the place")
+	notice.show(Vector2(1500, 2500), 10_000)
+	_check(notice.at == Vector2(1500, 2500), "the place")
 	_check(notice.shown(10_000) and notice.alpha(10_000) == 1.0, "whole at once")
 	var fading := 10_000 + BlockedNotice.SHOW_MS - BlockedNotice.FADE_MS / 2
 	_check(is_equal_approx(notice.alpha(fading), 0.5), "half faded: %f" % notice.alpha(fading))
 	_check(notice.alpha(10_000 + BlockedNotice.SHOW_MS - BlockedNotice.FADE_MS) == 1.0, "whole until the fade")
 	_check(not notice.shown(10_000 + BlockedNotice.SHOW_MS) and notice.alpha(10_000 + BlockedNotice.SHOW_MS) == 0.0, "gone after")
-	notice.show("x", Vector2.ZERO, 20_000)
+	notice.show(Vector2.ZERO, 20_000)
 	notice.clear()
 	_check(not notice.shown(20_001), "cleared at once")
+
+
+## Protocol v21: an order refused at once (the body at the bank, sent
+## across the water) carries what the body sees; it reaches the thought
+## bubble as the same words as a stop on the way, tied to where the body
+## stands, so a click takes the camera there.
+func _test_a_refused_order_says_why_in_a_thought() -> void:
+	var net: Node = load("res://net/client.gd").new()
+	var got: Array = []
+	net.move_refused.connect(func(body: int, x: int, y: int, reason: String) -> void:
+		got.append([body, x, y, reason]))
+	# The wire as the server's `wire_format_is_tagged_snake_case` writes it.
+	net._handle(Protocol.decode("{\"type\":\"move_refused\",\"body\":1,\"x\":4,\"y\":5,\"reason\":\"water\"}"))
+	_check(got == [[1, 4, 5, "water"]], "move_refused decodes with its reason: %s" % [got])
+	net.free()
+	# As WorldView._on_move_refused does with it, the body standing at the bank.
+	var thoughts := ThoughtQueue.new()
+	var stands := Vector2(800_500, 99_700)
+	thoughts.push(UiWords.blocked(str(got[0][3])), stands, true, 1000)
+	_check(thoughts.text(1000) == "Bloqué : l'eau est trop profonde", "the bubble says why: %s" % thoughts.text(1000))
+	_check(thoughts.clickable(1000) and thoughts.place(1000) == stands, "and a click takes the camera to the body")
+
+
+## One thought at a time: each shows at least MIN_MS when others wait,
+## stays STAY_MS then fades when none do; the same line told again is not
+## queued twice; a thought tied to a place is the only one clicked.
+func _test_thoughts_come_one_at_a_time() -> void:
+	var q := ThoughtQueue.new()
+	_check(q.text(0) == "" and q.alpha(0) == 0.0 and not q.clickable(0), "nothing at first")
+	q.push("a", Vector2(1, 2), true, 1000)
+	q.push("b", Vector2.ZERO, false, 1200)
+	q.push("c", Vector2(5, 6), true, 1300)
+	_check(q.text(1300) == "a" and q.clickable(1300) and q.place(1300) == Vector2(1, 2), "the first shows, tied to its place")
+	_check(q.text(1000 + ThoughtQueue.MIN_MS - 1) == "a", "until it has shown its least")
+	var b_since := 1000 + ThoughtQueue.MIN_MS
+	_check(q.text(b_since) == "b" and not q.clickable(b_since), "then the next, with no place: not clicked")
+	_check(q.alpha(b_since) == 1.0, "whole")
+	# Asked late: the result is the same as if asked every frame.
+	var c_since := b_since + ThoughtQueue.MIN_MS
+	_check(q.text(c_since + 100) == "c" and q.place(c_since + 100) == Vector2(5, 6), "then the last")
+	_check(q.alpha(c_since + ThoughtQueue.STAY_MS - 1) == 1.0, "the last stays whole while nothing waits")
+	var half := c_since + ThoughtQueue.STAY_MS + ThoughtQueue.FADE_MS / 2
+	_check(is_equal_approx(q.alpha(half), 0.5), "then fades: %f" % q.alpha(half))
+	var gone := c_since + ThoughtQueue.STAY_MS + ThoughtQueue.FADE_MS
+	_check(q.text(gone) == "" and q.alpha(gone) == 0.0 and not q.clickable(gone), "and is gone")
+	# The same line told again (clicking across the water twice): shown
+	# anew, at its new place, not queued behind itself.
+	q.push("x", Vector2(1, 1), true, 50_000)
+	q.push("x", Vector2(2, 2), true, 51_000)
+	_check(q.text(51_000 + ThoughtQueue.STAY_MS - 1) == "x" and q.place(51_000) == Vector2(2, 2), "the same line shown anew")
+	q.push("y", Vector2.ZERO, false, 52_000)
+	_check(q.text(52_000) == "x" and q.text(51_000 + ThoughtQueue.MIN_MS) == "y", "a new line still waits its turn")
+	# Many at once: only the last few wait.
+	q.clear()
+	_check(q.text(60_000) == "", "cleared at once")
+	for i in ThoughtQueue.MAX_WAITING + 3:
+		q.push(str(i), Vector2.ZERO, false, 60_000)
+	_check(q.text(60_000) == "0", "the first shows")
+	_check(q.text(60_000 + ThoughtQueue.MIN_MS) == str(3), "the oldest waiting were dropped: %s" % q.text(60_000 + ThoughtQueue.MIN_MS))
+
+
+## The recentre button shows only while the camera does not follow the
+## body, as WorldView tells it (following_changed); a click glides the
+## camera back over CameraGlide.SECONDS, eased, following the body as it
+## walks.
+func _test_the_recentre_button_shows_while_the_camera_does_not_follow() -> void:
+	var button := RecentreButton.new()
+	button.show_for(false)
+	_check(button.visible, "shown after a drag")
+	button.show_for(true)
+	_check(not button.visible, "hidden once the camera follows again")
+	button.free()
+	var main := FileAccess.get_file_as_string("res://main.gd")
+	_check(main.contains("_world.following_changed.connect(recentre.show_for)"), "the button listens to the camera")
+	_check(main.contains("recentre.recentre.connect(_world.recentre)"), "and its click recentres it")
+	var world := FileAccess.get_file_as_string("res://world/world_view.gd")
+	_check(world.contains("following_changed.emit(value)"), "the world tells each change of _following")
+	var glide := CameraGlide.new()
+	glide.start(Vector2.ZERO)
+	var half := glide.step(CameraGlide.SECONDS / 2.0, Vector2(100, 0))
+	_check(glide.active and half.x > 50.0 and half.x < 100.0, "quick at first: %s" % half)
+	var there := glide.step(CameraGlide.SECONDS / 2.0, Vector2(110, 0))
+	_check(not glide.active and there == Vector2(110, 0), "on the body, which walked meanwhile: %s" % there)
+
+
+## A line said shows SHOW_MS, its end fading, or until the next line,
+## which takes its place at once.
+func _test_a_line_said_shows_six_seconds_or_until_the_next() -> void:
+	var line := SpeechLine.new()
+	_check(not line.shown(0) and line.alpha(0) == 0.0, "nothing said at first")
+	line.say("Corps 3", "Ah, t'es là !", 1000)
+	_check(line.shown(1000) and line.alpha(1000) == 1.0 and line.speaker == "Corps 3", "said, whole, with its speaker")
+	_check(line.alpha(1000 + SpeechLine.SHOW_MS - SpeechLine.FADE_MS) == 1.0, "whole until its end fades")
+	_check(is_equal_approx(line.alpha(1000 + SpeechLine.SHOW_MS - SpeechLine.FADE_MS / 2), 0.5), "fading")
+	_check(not line.shown(1000 + SpeechLine.SHOW_MS), "gone after six seconds")
+	line.say("Voix d'essai", "un", 10_000)
+	line.say("Corps 3", "deux", 11_000)
+	_check(line.text == "deux" and line.speaker == "Corps 3" and line.alpha(11_000) == 1.0, "the next line at once")
+	_check(line.shown(11_000 + SpeechLine.SHOW_MS - 1), "for its own six seconds")
+
+
+## PLACEHOLDER (--dev): body 3 greets once on coming within 3 m, not
+## again while the piloted body stays, nor within the cooldown.
+func _test_body_3_greets_once_on_coming_near() -> void:
+	var greeter := DevGreeter.new()
+	greeter.rng.seed = 7
+	_check(greeter.look(INF, 0) == "", "body 3 unseen: nothing")
+	_check(greeter.look(DevGreeter.RADIUS_MM + 1.0, 1000) == "", "farther than 3 m: nothing")
+	var first := greeter.look(DevGreeter.RADIUS_MM - 1.0, 2000)
+	_check(UiWords.DEV_GREETINGS.has(first), "coming near: a line of the list: %s" % first)
+	_check(greeter.look(1000.0, 2000 + DevGreeter.COOLDOWN_MS + 1) == "", "standing there: nothing more, even past the cooldown")
+	greeter.look(5000.0, 3000 + DevGreeter.COOLDOWN_MS)
+	_check(greeter.look(1000.0, 4000 + DevGreeter.COOLDOWN_MS) != "", "going away and coming back past the cooldown: again")
+	var spoke := 4000 + DevGreeter.COOLDOWN_MS
+	greeter.look(5000.0, spoke + 1000)
+	_check(greeter.look(1000.0, spoke + 2000) == "", "coming back within the cooldown: nothing")
+	var lines := {}
+	var g := DevGreeter.new()
+	var last := ""
+	var repeated := false
+	for i in 20:
+		g.look(INF, i * 2 * DevGreeter.COOLDOWN_MS)
+		var said := g.look(0.0, (i * 2 + 1) * DevGreeter.COOLDOWN_MS)
+		repeated = repeated or said == last
+		last = said
+		lines[said] = true
+	_check(not repeated and lines.size() > 2, "picked at random, never twice in a row: %d lines" % lines.size())

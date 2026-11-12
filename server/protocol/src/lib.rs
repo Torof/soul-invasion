@@ -71,7 +71,10 @@ use serde::{Deserialize, Serialize};
 ///   holding the points where the pace changes with the terrain.
 /// - v20: `body_blocked`, to the pilot alone: its body stopped for good
 ///   short of where it was sent, and what it sees barring its way (D32).
-pub const PROTOCOL_VERSION: u32 = 20;
+/// - v21: `move_refused` carries a `reason`, as `body_blocked` does: a new
+///   order that cannot even set off says what the body sees barring its
+///   way (D32).
+pub const PROTOCOL_VERSION: u32 = 21;
 
 /// Chunks whose frames a client keeps after they left its view, the
 /// least recently hidden forgotten first (D4): about 3 MB of frames. The
@@ -621,6 +624,9 @@ pub enum ServerMessage {
         x: i32,
         /// Row asked.
         y: i32,
+        /// What the body sees barring its way, as for `body_blocked`
+        /// (`no_way` when it is not a matter of sight).
+        reason: Blockage,
     },
     /// The pilot's body stopped for good short of where it was sent: it
     /// walked straight for want of a way, looked again and could get no
@@ -1222,6 +1228,7 @@ mod tests {
                 body: 1,
                 x: 4,
                 y: 5,
+                reason: Blockage::Water,
             },
             ServerMessage::BodyBlocked {
                 body: 1,
@@ -1285,6 +1292,16 @@ mod tests {
             })
             .unwrap(),
             r#"{"type":"act_refused","body":1,"act":"pick_up","item":5,"reason":"out_of_reach"}"#
+        );
+        assert_eq!(
+            encode(&ServerMessage::MoveRefused {
+                body: 1,
+                x: 4,
+                y: 5,
+                reason: Blockage::Water,
+            })
+            .unwrap(),
+            r#"{"type":"move_refused","body":1,"x":4,"y":5,"reason":"water"}"#
         );
         assert_eq!(
             encode(&ServerMessage::BodyBlocked {

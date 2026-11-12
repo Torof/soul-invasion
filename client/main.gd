@@ -27,6 +27,7 @@ func _ready() -> void:
 	$Ui/Hud.visible = STATUS_PANELS_SHOWN
 	$Ui/Inventory.visible = STATUS_PANELS_SHOWN
 	_world.hovered.connect(_on_hovered)
+	_add_bubbles()
 	_world.acts_requested.connect(_on_acts_requested)
 	_actions.id_pressed.connect(_on_act_chosen)
 	# Development aid: SOUL_INVASION_URL names another server (a test server
@@ -59,6 +60,7 @@ func _ready() -> void:
 	# Development: what a frame costs (F3), the wind on or off (F4).
 	var perf := PerfOverlay.new()
 	perf.world = _world
+	perf.hud = $Ui/Hud
 	add_child(perf)
 	_perf = perf
 	Net.dev_overview.connect(func(_c: int, _w: int, _h: int, _cells: String) -> void: perf.enable())
@@ -70,6 +72,23 @@ func _ready() -> void:
 
 
 var _perf: PerfOverlay
+
+
+## The recentre button (bottom right), the body's thoughts (top right) and
+## what is said (left), in the interface, drawn in ink on cream paper.
+func _add_bubbles() -> void:
+	var hud: Hud = $Ui/Hud
+	var recentre := RecentreButton.new()
+	recentre.recentre.connect(_world.recentre)
+	_world.following_changed.connect(recentre.show_for)
+	hud.thoughts = ThoughtBubble.new()
+	hud.thoughts.place_clicked.connect(_world.glide_to)
+	_world.thinks.connect(func(line: String, at: Vector2) -> void: hud.think(line, at, true))
+	Net.body_assigned.connect(func(_body: int) -> void: hud.thoughts.clear())
+	hud.speech = SpeechBubble.new()
+	_world.speaks.connect(hud.say)
+	for node: Control in [recentre, hud.thoughts, hud.speech]:
+		$Ui.add_child(node)
 
 
 func _screenshot_then_quit(path: String) -> void:

@@ -2536,11 +2536,27 @@ pub fn blocked_view(
         at: point(at),
         x: target.x,
         y: target.y,
-        reason: match reason {
-            sim::Blockage::Water => Blockage::Water,
-            sim::Blockage::Rock => Blockage::Rock,
-            sim::Blockage::NoWay => Blockage::NoWay,
-        },
+        reason: blockage_view(reason),
+    }
+}
+
+/// A refused order, as its pilot is told: what the body sees barring its
+/// way too (protocol v21).
+pub fn refused_view(body: BodyId, target: Pos, reason: sim::Blockage) -> ServerMessage {
+    ServerMessage::MoveRefused {
+        body: body.0,
+        x: target.x,
+        y: target.y,
+        reason: blockage_view(reason),
+    }
+}
+
+/// What a body sees barring its way, on the wire.
+fn blockage_view(reason: sim::Blockage) -> Blockage {
+    match reason {
+        sim::Blockage::Water => Blockage::Water,
+        sim::Blockage::Rock => Blockage::Rock,
+        sim::Blockage::NoWay => Blockage::NoWay,
     }
 }
 
@@ -2729,6 +2745,7 @@ mod tests {
             body: 1,
             x: 0,
             y: 0,
+            reason: Blockage::NoWay,
         };
         shared.tell_pilot(BodyId(1), refusal.clone());
         shared.tell_pilot(BodyId(2), refusal.clone());
