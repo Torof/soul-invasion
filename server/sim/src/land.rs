@@ -21,7 +21,9 @@
 //! Made per chunk, the land is the one the whole map used to be made at
 //! once, tile for tile (the fingerprint tests pin it).
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::lru::Lru;
@@ -280,6 +282,9 @@ pub(crate) struct ChunkWoods {
 /// The valley's land, made per chunk from its waters and its woods' plan.
 #[derive(Debug)]
 pub(crate) struct Land {
+    /// This land among the others (`LANDS`), for the threads' recent
+    /// chunks.
+    id: u64,
     width: u32,
     height: u32,
     cliff_rows: u32,
@@ -291,11 +296,64 @@ pub(crate) struct Land {
 /// What the lock guards: the chunks made lately.
 #[derive(Debug)]
 struct Held {
-    /// The chunk whose tiles were read last: most reads follow one
-    /// another in a chunk, and need not touch the cache's order.
-    last: Option<(ChunkPos, Arc<ChunkTiles>)>,
     tiles: Lru<ChunkPos, Arc<ChunkTiles>>,
     woods: Lru<ChunkPos, Arc<ChunkWoods>>,
+}
+
+/// The lands made so far, numbered: the threads' recent chunks name their
+/// land by its number.
+static LANDS: AtomicU64 = AtomicU64::new(0);
+
+/// Chunks of tiles and of woods each thread keeps at hand, the latest
+/// read first.
+const RECENT_CHUNKS: usize = 4;
+
+/// The chunks a thread read last, by land: most reads follow one another
+/// in a chunk or two (a path search, a chunk's trees and plants), and
+/// need neither the lock nor the cache's order. A chunk never changes, so
+/// one held here a while after the cache let it go is still right.
+#[derive(Default)]
+struct Recent {
+    tiles: RecentList<ChunkTiles>,
+    woods: RecentList<ChunkWoods>,
+}
+
+/// A thread's recent chunks of one kind: land, chunk, what was made.
+type RecentList<T> = Vec<(u64, ChunkPos, Arc<T>)>;
+
+thread_local! {
+    static RECENT: RefCell<Recent> = RefCell::new(Recent::default());
+}
+
+/// The entry of `land` and `chunk` among a thread's recent chunks
+/// (`pick` chooses tiles or woods), or else `fetch`ed (the thread's list
+/// not borrowed meanwhile) and put first.
+fn recent<T>(
+    pick: fn(&mut Recent) -> &mut RecentList<T>,
+    land: u64,
+    chunk: ChunkPos,
+    fetch: impl FnOnce() -> Arc<T>,
+) -> Arc<T> {
+    let held = RECENT.with_borrow_mut(|r| {
+        let list = pick(r);
+        let k = list
+            .iter()
+            .position(|(l, c, _)| *l == land && *c == chunk)?;
+        let entry = list.remove(k);
+        let value = Arc::clone(&entry.2);
+        list.insert(0, entry);
+        Some(value)
+    });
+    if let Some(value) = held {
+        return value;
+    }
+    let value = fetch();
+    RECENT.with_borrow_mut(|r| {
+        let list = pick(r);
+        list.insert(0, (land, chunk, Arc::clone(&value)));
+        list.truncate(RECENT_CHUNKS);
+    });
+    value
 }
 
 impl Clone for Land {
@@ -337,13 +395,13 @@ impl Land {
         (tiles, woods_held): (usize, usize),
     ) -> Self {
         Self {
+            id: LANDS.fetch_add(1, Ordering::Relaxed),
             width,
             height,
             cliff_rows,
             waters,
             woods,
             held: Mutex::new(Held {
-                last: None,
                 tiles: Lru::new(tiles),
                 woods: Lru::new(woods_held),
             }),
@@ -379,21 +437,7 @@ impl Land {
             i32::try_from(y / CHUNK_SIZE).expect("on the map"),
         );
         let place = ((y % CHUNK_SIZE) * CHUNK_SIZE + x % CHUNK_SIZE) as usize;
-        {
-            let mut held = self.lock();
-            if let Some((last, tiles)) = &held.last
-                && *last == chunk
-            {
-                return tiles.terrain[place];
-            }
-            if let Some(tiles) = held.tiles.get(&chunk).map(Arc::clone) {
-                let terrain = tiles.terrain[place];
-                held.last = Some((chunk, tiles));
-                return terrain;
-            }
-        }
-        let tiles = self.tiles(chunk);
-        self.lock().last = Some((chunk, Arc::clone(&tiles)));
+        let tiles = recent(|r| &mut r.tiles, self.id, chunk, || self.tiles(chunk));
         tiles.terrain[place]
     }
 
@@ -405,7 +449,7 @@ impl Land {
             i32::try_from(y / CHUNK_SIZE).expect("on the map"),
         );
         let place = ((y % CHUNK_SIZE) * CHUNK_SIZE + x % CHUNK_SIZE) as usize;
-        let woods = self.woods(chunk);
+        let woods = recent(|r| &mut r.woods, self.id, chunk, || self.woods(chunk));
         (woods.density[place], woods.habitat[place])
     }
 

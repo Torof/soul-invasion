@@ -90,6 +90,13 @@ pub const PLANT_CACHE_CHUNKS: usize = {
 /// client asking for it (D26).
 pub const FRAME_CACHE_CHUNKS: usize = PLANT_CACHE_CHUNKS;
 
+/// Far views held, encoded, by the chunk they centre on: a few players'
+/// worth, about 64 KB each. Counting one costs the 2 km of land around it
+/// (64 × 64 chunks' tiles, made per chunk since the map holds only the
+/// water, D37): done once on the chunk pool, sent to every client centred
+/// there.
+pub const FAR_VIEWS_HELD: usize = 16;
+
 /// How many published messages may wait for a connection before it
 /// misses some and is told its view again ([`Link::resync`]). A
 /// connection falls behind only when its task is starved of the network
@@ -281,6 +288,10 @@ pub struct Shared {
     /// ground and version of its items (at most [`FRAME_CACHE_CHUNKS`]):
     /// what a frame holds besides the bodies, which travel apart.
     frames: Mutex<Lru<FrameKey, Bytes>>,
+    /// The far views counted lately, encoded, by the chunk they centre on
+    /// (at most [`FAR_VIEWS_HELD`]): the land seen from afar is the
+    /// seed's, the same for every client.
+    far_views: Mutex<Lru<ChunkPos, Message>>,
     /// The index of each material in `materials`, by its content id.
     material_index: BTreeMap<String, u16>,
     /// Is it night? Kept by the simulation thread.
@@ -578,6 +589,10 @@ impl Drop for Admission<'_> {
 
 impl Shared {
     /// Creates the shared state from the world as it is at startup.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one field a line: every part of the shared state, set up"
+    )]
     pub fn new(world: &World, content: &Content, max_connections: usize, time_scale: f64) -> Self {
         let materials: Vec<MaterialView> = content
             .materials
@@ -660,6 +675,7 @@ impl Shared {
             seed: world.seed(),
             plants: Mutex::new(Lru::new(PLANT_CACHE_CHUNKS)),
             frames: Mutex::new(Lru::new(FRAME_CACHE_CHUNKS)),
+            far_views: Mutex::new(Lru::new(FAR_VIEWS_HELD)),
             night: AtomicBool::new(world.is_night(content)),
             day: AtomicU64::new(world.time().day),
             deaths: Mutex::new(Lru::new(DEATHS_REMEMBERED)),
@@ -679,6 +695,28 @@ impl Shared {
         };
         shared.world = shared.world_identity(world);
         shared
+    }
+
+    /// The far view around `centre`, encoded: held, or else counted now
+    /// and held. Slow when counted (the 2 km around, tile by tile): run
+    /// on the chunk pool, never on the network's threads. `None` if it
+    /// could not be encoded.
+    pub fn far_view_message(&self, centre: ChunkPos) -> Option<Message> {
+        let lock = || self.far_views.lock().expect("far views not poisoned");
+        if let Some(message) = lock().get(&centre).cloned() {
+            return Some(message);
+        }
+        match encode(&far_view(&self.map, centre)) {
+            Ok(text) => {
+                let message = Message::text(text);
+                lock().insert(centre, message.clone());
+                Some(message)
+            }
+            Err(e) => {
+                eprintln!("the far view around {centre:?} could not be encoded: {e}");
+                None
+            }
+        }
     }
 
     /// Chunks sampled into the world's identity: the middle of the map
@@ -1713,7 +1751,7 @@ async fn handle_connection(
                 // The sender lives in the pilot set as long as this connection
                 // pilots a body, so the channel never closes before the loop ends.
                 Some(message) = private.recv() => link.event(&message),
-                Some(ground) = results.recv() => link.ground_built(ground),
+                Some(built) = results.recv() => link.built(built),
                 permit = writer_tx.reserve(), if link.has_output() => match permit {
                     Ok(permit) => {
                         let Some(message) = link.next_output()? else {
@@ -1746,6 +1784,14 @@ enum Outgoing {
     Same(ChunkPos, Version),
     /// A message as is (the far view).
     Frame(Message),
+}
+
+/// What the pool built for a connection.
+enum Built {
+    /// A chunk's ground.
+    Ground(ChunkGround),
+    /// The far view around a chunk, encoded.
+    Far(ChunkPos, Message),
 }
 
 /// A chunk in view whose frame (or `chunk_same`) left: the version of the
@@ -1809,8 +1855,11 @@ struct Link {
     events: VecDeque<Message>,
     /// The ground lane.
     ground: VecDeque<Outgoing>,
+    /// The far view asked of the pool and not back yet: the chunk it
+    /// centres on.
+    far_awaited: Option<ChunkPos>,
     /// Where the pool's jobs send what they built.
-    results: mpsc::UnboundedSender<ChunkGround>,
+    results: mpsc::UnboundedSender<Built>,
 }
 
 impl Drop for Link {
@@ -1830,7 +1879,7 @@ impl Link {
         conn: u64,
         pilot: Pilot,
         private: mpsc::Sender<ServerMessage>,
-        results: mpsc::UnboundedSender<ChunkGround>,
+        results: mpsc::UnboundedSender<Built>,
     ) -> Self {
         let lane = pool.lane();
         shared.router().set_pilot(conn, pilot.body);
@@ -1851,6 +1900,7 @@ impl Link {
             known: BTreeSet::new(),
             events: VecDeque::new(),
             ground: VecDeque::new(),
+            far_awaited: None,
             results,
         }
     }
@@ -2008,6 +2058,23 @@ impl Link {
         }
     }
 
+    /// What the pool built: a chunk's ground or the far view.
+    fn built(&mut self, built: Built) {
+        match built {
+            Built::Ground(ground) => self.ground_built(ground),
+            Built::Far(centre, message) => self.far_built(centre, message),
+        }
+    }
+
+    /// The far view the pool counted: into the ground lane if it is the
+    /// one awaited, else dropped (the body went on, a newer one is asked).
+    fn far_built(&mut self, centre: ChunkPos, message: Message) {
+        if self.far_awaited == Some(centre) {
+            self.far_awaited = None;
+            self.ground.push_back(Outgoing::Frame(message));
+        }
+    }
+
     /// A chunk the pool built: into the ground lane if still in view and
     /// not sent meanwhile, else dropped.
     fn ground_built(&mut self, ground: ChunkGround) {
@@ -2046,7 +2113,7 @@ impl Link {
                     return; // left the view before its turn came
                 }
                 if let Some(ground) = shared.chunk_ground(chunk) {
-                    let _ = results.send(ground);
+                    let _ = results.send(Built::Ground(ground));
                 }
             }),
         );
@@ -2145,16 +2212,25 @@ impl Link {
         }
     }
 
-    /// Sends the far view around `centre`, in the ground lane.
+    /// Asks the pool for the far view around `centre`, after the chunks
+    /// asked before it in the lane; it goes in the ground lane when back
+    /// (`far_built`). Counting it reads 2 km of land, made per chunk: never
+    /// on the network's threads.
     fn far_view(&mut self, centre: ChunkPos) {
-        match encode(&far_view(&self.shared.map, centre)) {
-            Ok(text) => self.ground.push_back(Outgoing::Frame(Message::text(text))),
-            Err(e) => eprintln!(
-                "connection {}: the far view could not be encoded: {e}",
-                self.peer
-            ),
-        }
         self.view.far = Some(centre);
+        self.far_awaited = Some(centre);
+        let (shared, results) = (Arc::clone(&self.shared), self.results.clone());
+        self.pool.submit(
+            self.lane,
+            Box::new(move || {
+                if results.is_closed() {
+                    return; // the connection is gone
+                }
+                if let Some(message) = shared.far_view_message(centre) {
+                    let _ = results.send(Built::Far(centre, message));
+                }
+            }),
+        );
     }
 
     /// Provisional (D34): a pilot whose body died takes the first free
@@ -2978,7 +3054,7 @@ mod tests {
         shared: &Arc<Shared>,
         pool: &Arc<ChunkPool>,
         body: Option<u32>,
-    ) -> (Link, mpsc::UnboundedReceiver<ChunkGround>) {
+    ) -> (Link, mpsc::UnboundedReceiver<Built>) {
         let (private, _) = mpsc::channel(PRIVATE_CAPACITY);
         let (results, results_rx) = mpsc::unbounded_channel();
         let pilot = Pilot {
@@ -2999,13 +3075,13 @@ mod tests {
         (link, results_rx)
     }
 
-    /// Hands the link every chunk the pool built for it until nothing
-    /// is awaited any more.
-    fn settle(link: &mut Link, results: &mut mpsc::UnboundedReceiver<ChunkGround>) {
+    /// Hands the link every chunk (and far view) the pool built for it
+    /// until nothing is awaited any more.
+    fn settle(link: &mut Link, results: &mut mpsc::UnboundedReceiver<Built>) {
         let deadline = std::time::Instant::now() + Duration::from_secs(60);
-        while !link.awaiting.is_empty() {
-            if let Ok(ground) = results.try_recv() {
-                link.ground_built(ground);
+        while !link.awaiting.is_empty() || link.far_awaited.is_some() {
+            if let Ok(built) = results.try_recv() {
+                link.built(built);
             } else {
                 assert!(std::time::Instant::now() < deadline, "the pool answers");
                 std::thread::sleep(Duration::from_millis(1));
@@ -3078,6 +3154,53 @@ mod tests {
     }
 
     #[test]
+    fn the_far_view_is_counted_on_the_pool_held_and_only_the_latest_sent() {
+        let shared = Arc::new(shared(1));
+        // One thread: the jobs run in the order given.
+        let pool = Arc::new(ChunkPool::new(1));
+        let (mut link, mut results) = link(&shared, &pool, Some(1));
+        let home = link.home();
+        let away = ChunkPos::new(home.x + FAR_RESEND + 1, home.y);
+        // Asked for, nothing waits in the ground lane: the network's
+        // thread counted nothing.
+        link.far_view(home);
+        assert!(link.ground.is_empty() && link.far_awaited == Some(home));
+        // A newer one asked before the first is back: the first is
+        // dropped when it comes.
+        link.far_view(away);
+        settle(&mut link, &mut results);
+        let far: Vec<ServerMessage> = drain(&mut link)
+            .into_iter()
+            .filter_map(|out| match out {
+                Out::Message(m @ ServerMessage::FarView { .. }) => Some(m),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            far,
+            vec![far_view(&shared.map, away)],
+            "the latest only, as counted in line"
+        );
+        // Both are held: a client centred there is sent the same bytes,
+        // counted once.
+        let held = |c: ChunkPos| {
+            shared
+                .far_views
+                .lock()
+                .expect("far views not poisoned")
+                .contains(&c)
+        };
+        assert!(held(home) && held(away));
+        let first = shared.far_view_message(away).expect("encodable");
+        let again = shared.far_view_message(away).expect("encodable");
+        assert_eq!(first, again);
+        assert_eq!(
+            decode::<ServerMessage>(first.to_text().expect("text")).expect("the protocol"),
+            far_view(&shared.map, away)
+        );
+    }
+
+    #[test]
     fn events_leave_before_the_ground_and_a_hidden_chunk_never_leaves() {
         let shared = Arc::new(shared(1));
         // One thread: the chunks come back in the order asked for.
@@ -3091,8 +3214,9 @@ mod tests {
         assert_eq!(link.awaiting.len(), total);
         settle(&mut link, &mut results);
 
-        // The event first, then the far view (queued before any chunk
-        // came back), then the chunks, the body's own first.
+        // The event first, then the chunks, the body's own first, then
+        // the far view, counted on the pool after the chunks asked before
+        // it.
         let out = drain(&mut link);
         assert_eq!(out.len(), total + 3);
         assert!(matches!(out[0], Out::Message(ServerMessage::View { .. })));
@@ -3101,13 +3225,13 @@ mod tests {
             Out::Message(ServerMessage::Pong { nonce: 7 })
         ));
         assert!(matches!(
-            out[2],
-            Out::Message(ServerMessage::FarView { .. })
-        ));
-        assert!(matches!(
-            &out[3],
+            &out[2],
             Out::Chunk(Sent { x, y, bodies, .. })
                 if ChunkPos::new(*x, *y) == home && bodies.iter().any(|b| b.id == 1)
+        ));
+        assert!(matches!(
+            out.last(),
+            Some(Out::Message(ServerMessage::FarView { .. }))
         ));
         assert_eq!(link.sent.len(), total);
         assert!(link.known.contains(&1));

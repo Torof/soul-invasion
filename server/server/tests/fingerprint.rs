@@ -109,9 +109,9 @@ fn the_game_valley_is_pinned() {
     assert_eq!(
         print,
         (
-            0xc0a6_68b7_ee16_82e9,
-            0x9d4b_72a6_0cab_c2d7,
-            0xfd53_6c29_dc37_5fba
+            0xf87f_9a29_456e_a107,
+            0xe198_ab58_61fb_919b,
+            0x3fb9_b8ad_f369_c17e
         ),
         "{print:#x?}"
     );

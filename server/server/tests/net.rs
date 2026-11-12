@@ -501,9 +501,22 @@ async fn hello_ping_and_a_published_day() {
         seen_plants > 1000,
         "the flora grows around the camp: {seen_plants}"
     );
-    // And the far view around the body's chunk, which leaves as soon as
-    // it is made: before the chunks, built beside the network.
-    let (cell, width, height, cells) = far.expect("the far view with the chunks");
+    // And the far view around the body's chunk, counted on the chunk
+    // pool after the chunks asked before it: it may come after them.
+    while far.is_none() {
+        match receive_any(&mut socket).await {
+            Some(Got::M(ServerMessage::FarView {
+                cell,
+                width,
+                height,
+                cells,
+                ..
+            })) => far = Some((cell, width, height, cells)),
+            Some(_) => {}
+            None => break,
+        }
+    }
+    let (cell, width, height, cells) = far.expect("the far view after the chunks");
     assert_eq!(cells.len(), (width * height) as usize);
     assert!(cell >= 8 && width >= 128);
     assert!(cells.contains('f') && cells.contains('g'));
