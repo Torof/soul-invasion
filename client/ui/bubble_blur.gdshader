@@ -7,7 +7,7 @@ shader_type canvas_item;
 render_mode blend_premul_alpha;
 
 // How far apart the taps are, in texture pixels.
-uniform float spread = 1.8;
+uniform float spread = 0.7;
 
 void fragment() {
 	vec2 apart = TEXTURE_PIXEL_SIZE * spread;

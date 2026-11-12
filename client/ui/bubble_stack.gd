@@ -25,8 +25,8 @@ const TOP := 40.0
 const GAP := 4.0
 ## A bubble's size and opacity by how far it is from the focus: the focus
 ## whole, then one away, then two.
-const SCALES: Array[float] = [1.0, 0.84, 0.72]
-const ALPHAS: Array[float] = [1.0, 0.75, 0.55]
+const SCALES: Array[float] = [1.0, 0.92, 0.84]
+const ALPHAS: Array[float] = [1.0, 0.88, 0.68]
 ## The folded bubble's size and opacity.
 const FOLDED_SCALE := 0.72
 const FOLDED_ALPHA := 0.75
