@@ -52,7 +52,7 @@ const STILL := 0.3
 const UNLOAD_GRACE_S := 30.0
 ## species id -> Array[Texture2D], the images of the kinds in memory.
 static var _textures: Dictionary = {}
-## species id -> the paths of its images (`<id>_adult_01_summer.png`, ...),
+## species id -> the paths of its images (`<id>_adult_01_summer.webp`, ...),
 ## found once; a kind with none has an empty list.
 static var _paths: Dictionary = {}
 ## species id -> how many stands hold it.
@@ -186,14 +186,14 @@ static func sharpness(zoom: float) -> float:
 	return -clampf((zoom - 0.5) / 0.5, 0.0, 1.0)
 
 
-## The paths of the images of a kind of tree: `<id>_adult_01_summer.png`,
+## The paths of the images of a kind of tree: `<id>_adult_01_summer.webp`,
 ## `_02`, ... (found once, kept).
 static func paths(species: String) -> PackedStringArray:
 	if not _paths.has(species):
 		var found := PackedStringArray()
 		var n := 1
 		while true:
-			var path := DIR + "%s_adult_%02d_summer.png" % [species, n]
+			var path := DIR + "%s_adult_%02d_summer.webp" % [species, n]
 			if not ResourceLoader.exists(path):
 				break
 			found.append(path)
@@ -455,7 +455,7 @@ static func _made(read: Dictionary) -> Dictionary:
 	return read
 
 
-## The image at `path` (a tree's PNG, imported) as the card will hold it,
+## The image at `path` (a tree's image, imported) as the card will hold it,
 ## from mip `level` down: {"image", "size" (the texture's size as it
 ## reports it), "level", "texels" (the finest level's height, padded),
 ## "bytes" (what the card holds)}. Read straight from the imported file

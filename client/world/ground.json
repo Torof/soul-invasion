@@ -1,19 +1,19 @@
 {
   "grass": {
     "note": "The meadow: the first grass, its closest sister over half, the open sister in patches, the worn grass in spots. Tone variation is the shader's tint, never another image.",
-    "texture": "res://art/ground/ground_grass_01_summer.png",
+    "texture": "res://art/ground/ground_grass_01_summer.webp",
     "layers": {
-      "sibling": "res://art/ground/ground_grass_03_summer.png",
-      "second": "res://art/ground/ground_grass_04_summer.png",
-      "worn": "res://art/ground/ground_grass_02_summer.png"
+      "sibling": "res://art/ground/ground_grass_03_summer.webp",
+      "second": "res://art/ground/ground_grass_04_summer.webp",
+      "worn": "res://art/ground/ground_grass_02_summer.webp"
     },
     "params": {}
   },
   "forest": {
     "note": "The floor of the woods: the flattest grass in the shade, the sparse forest grass in a few plaques, a third of the bare spots kept. Plain soil does not come out of the generator.",
-    "texture": "res://art/ground/ground_grass_02_summer.png",
+    "texture": "res://art/ground/ground_grass_02_summer.webp",
     "layers": {
-      "sibling": "res://art/ground/ground_grass_06_summer.png"
+      "sibling": "res://art/ground/ground_grass_06_summer.webp"
     },
     "params": {
       "base_tint": [
@@ -29,16 +29,16 @@
   },
   "water": {
     "note": "The river: one seamless water (Scenario) laid in two layers flowing along the current the server sends, the streaks of the current over it where it runs fast (streaks); the bank, the fords and the beaches are drawn by the water meshes' shaders from the vertices (WaterMeshes, D36); the brooks by their own ribbon (BrookLines) over their beds.",
-    "texture": "res://art/ground/ground_water_07_summer.png",
+    "texture": "res://art/ground/ground_water_07_summer.webp",
     "layers": {
-      "bank": "res://art/ground/bank_earth_03_summer.png",
-      "bank2": "res://art/ground/bank_sand_02_summer.png",
-      "brook1": "res://art/ground/brook_bed_01_summer.png",
-      "brook2": "res://art/ground/brook_bed_02_summer.png",
-      "brook3": "res://art/ground/brook_bed_03_summer.png",
-      "ford1": "res://art/ground/brook_bed_01_summer.png",
-      "ford2": "res://art/ground/brook_bed_02_summer.png",
-      "ford3": "res://art/ground/brook_bed_03_summer.png",
+      "bank": "res://art/ground/bank_earth_03_summer.webp",
+      "bank2": "res://art/ground/bank_sand_02_summer.webp",
+      "brook1": "res://art/ground/brook_bed_01_summer.webp",
+      "brook2": "res://art/ground/brook_bed_02_summer.webp",
+      "brook3": "res://art/ground/brook_bed_03_summer.webp",
+      "ford1": "res://art/ground/brook_bed_01_summer.webp",
+      "ford2": "res://art/ground/brook_bed_02_summer.webp",
+      "ford3": "res://art/ground/brook_bed_03_summer.webp",
       "streaks": "res://art/ground/water_streaks_02_summer.png"
     },
     "params": {

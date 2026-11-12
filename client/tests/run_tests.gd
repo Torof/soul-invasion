@@ -207,10 +207,10 @@ func _test_chunk_of_matches_the_server() -> void:
 func _test_ground_art_is_reachable() -> void:
 	# The validated art lives in content/art/, reached as res://art/ through
 	# the client/art link; the grass texture is the first of it.
-	_check(ResourceLoader.exists("res://art/ground/ground_grass_01_summer.png"), "the grass texture is importable")
+	_check(ResourceLoader.exists("res://art/ground/ground_grass_01_summer.webp"), "the grass texture is importable")
 	var uvs := ChunkView.ground_uvs(4, 8)
 	_check(uvs[0] == Vector2(1.0, 2.0) and uvs[2] == Vector2(1.25, 2.25), "a tile maps to its square of the 4 m texture")
-	_check(ResourceLoader.exists("res://art/ground/ground_grass_02_summer.png"), "the worn grass is importable")
+	_check(ResourceLoader.exists("res://art/ground/ground_grass_02_summer.webp"), "the worn grass is importable")
 	_check(ResourceLoader.exists("res://world/ground.gdshader"), "the ground shader is there")
 	var material := ChunkView.ground_material("grass")
 	_check(material.shader != null and material.get_shader_parameter("noise_texture") != null, "the ground material has its shader and noise")
@@ -244,7 +244,7 @@ func _test_ground_art_is_reachable() -> void:
 	# The development watcher knows the shader and every ground texture,
 	# and a reload from the files leaves the materials usable.
 	var watched := DevWatcher.watched()
-	_check(watched.has("res://world/ground.gdshader") and watched.has(ChunkView.GROUND_SPEC) and watched.has("res://art/ground/ground_grass_01_summer.png"), "the watcher lists the shader, the spec and the ground textures")
+	_check(watched.has("res://world/ground.gdshader") and watched.has(ChunkView.GROUND_SPEC) and watched.has("res://art/ground/ground_grass_01_summer.webp"), "the watcher lists the shader, the spec and the ground textures")
 	var spec := ChunkView.ground_spec()
 	_check(spec.has("grass") and spec.has("forest") and spec.has("water"), "the ground spec names the three textured terrains")
 	_check(ChunkView.ground_params("forest").get("base_tint") is Color, "a list of three numbers in the spec is a colour")
@@ -809,7 +809,7 @@ func _test_tree_images_are_clean() -> void:
 		_check(false, "the trees' folder is there")
 		return
 	for file in dir.get_files():
-		if not file.ends_with("_summer.png"):
+		if not file.ends_with("_summer.webp"):
 			continue
 		var image: Image = (load(Trees.DIR + file) as Texture2D).get_image()
 		if image.is_compressed():
@@ -849,7 +849,7 @@ func _test_tree_feet_are_whole() -> void:
 		_check(false, "the trees' folder is there")
 		return
 	for file in dir.get_files():
-		if not file.ends_with("_summer.png"):
+		if not file.ends_with("_summer.webp"):
 			continue
 		var image: Image = (load(Trees.DIR + file) as Texture2D).get_image()
 		if image.is_compressed():
@@ -2151,7 +2151,7 @@ func _test_tree_outlines_hold_every_texel() -> void:
 		return
 	var outlines: Dictionary = parsed
 	for file in dir.get_files():
-		if not file.ends_with(".png"):
+		if not file.ends_with(".webp"):
 			continue
 		var texture: Texture2D = load(Trees.DIR + file)
 		var w := texture.get_width()

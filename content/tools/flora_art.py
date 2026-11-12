@@ -32,12 +32,16 @@ need making again; nothing is ever enlarged. Trees are made only with
 left untouched.
 
 Kinds of `content/species.ron` (trees) go to `art/trees/` as
-`<id>_adult_<nn>_summer.png`. The rest go into one atlas,
-`art/flora/atlas.png`, with `art/flora/atlas.json` giving each image's
+`<id>_adult_<nn>_summer.webp`. The rest go into one atlas,
+`art/flora/atlas.webp`, with `art/flora/atlas.json` giving each image's
 rectangle: one texture for all the flora, so the client draws it in a few
 draw calls (D39); the client sets each plant's size on screen. Last, the
 decorations of `art/decor/` wider than their target (their width on screen
 is `size_m` of the ground spec's "decor" entry) are reduced in place.
+
+Everything shipped is written as lossless WebP (E3): the same pixels as a
+PNG, about a third lighter in git (`client/tools/webp_same_pixels.py`
+proves it).
 """
 
 import json
@@ -85,6 +89,12 @@ SLIVER_MAX = 400
 SLIVER_DARK = 90
 SLIVER_HEMMED = 0.75
 TRUNK_SHARE = 1 / 3
+
+
+def save_webp(image, path):
+    """Writes a shipped image as lossless WebP, the colour under
+    transparent pixels kept (`exact`), so its pixels are the PNG's."""
+    image.save(path, "WEBP", lossless=True, quality=100, method=6, exact=True)
 
 
 def shown(metres):
@@ -354,11 +364,11 @@ def size_decor(art, short):
         if not isinstance(rule, dict):
             continue
         wide = round(float(rule.get("size_m", 0.5)) * px_per_m())
-        for path in sorted((art / "decor").glob(f"{kind}_[0-9][0-9].png")):
+        for path in sorted((art / "decor").glob(f"{kind}_[0-9][0-9].webp")):
             image = Image.open(path)
             if image.width > wide:
                 image = image.resize((wide, round(image.height * wide / image.width)), Image.LANCZOS)
-                image.save(path, optimize=True)
+                save_webp(image, path)
                 print("decor", path.name, image.size)
             elif image.width < wide:
                 short.append(f"{path.name}: {image.width} px wide, shipped target {wide}")
@@ -393,8 +403,8 @@ def main():
             image = trim_to_foot(cut(path, keep_white=False, tree=True, work=work_height(tall)))
             image = fit(image, tall, original, path.name, short)
             image = image.filter(ImageFilter.UnsharpMask(radius=1.2, percent=60, threshold=2))
-            target = art / "trees" / f"{kind}_adult_{n}_summer.png"
-            image.save(target, optimize=True)
+            target = art / "trees" / f"{kind}_adult_{n}_summer.webp"
+            save_webp(image, target)
             print("tree", target.name, image.size)
         else:
             tall = target_px(height)
@@ -411,7 +421,7 @@ def main():
             atlas.alpha_composite(image, (r[0], r[1]))
         atlas = bleed(atlas)
         (art / "flora").mkdir(exist_ok=True)
-        atlas.save(art / "flora" / "atlas.png", optimize=True)
+        save_webp(atlas, art / "flora" / "atlas.webp")
         (art / "flora" / "atlas.json").write_text(json.dumps(dict(sorted(rects.items())), indent=1) + "\n")
         print(len(plants), "plants in an atlas of", atlas.size)
     size_decor(art, short)

@@ -1,7 +1,7 @@
 # trees
 
 The trees standing in the woods (D37): six species, adult, two variants
-each (`<species>_adult_<nn>_summer.png`; the client takes `_01`, `_02`, … up to the first missing number), drawn by the client on
+each (`<species>_adult_<nn>_summer.webp`; the client takes `_01`, `_02`, … up to the first missing number), drawn by the client on
 the point where the server says the trunk meets the ground.
 
 - **Format**: sized by D39's sharpness rule (10 November 2026): originals
