@@ -231,8 +231,6 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 		if terrain != "water":
 			material.set_shader_parameter("steps_mode", steps_mode)
 			material.set_shader_parameter("slope_texture", load(SLOPE_GRASS))
-			material.set_shader_parameter("slope_stony_texture", load(SLOPE_STONY))
-			material.set_shader_parameter("slope_rock_texture", load(SLOPE_ROCK))
 		apply_spec(material, terrain, false)
 		pin_flow_time(material)
 		_ground_materials[terrain] = material
@@ -244,11 +242,8 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 ## offsets against repetition (the mountain test's rule), 0 the game's
 ## ground as it is (any world with no relief).
 static var steps_mode := 0
-## The mountain test's slope images (Scenario's, 13 November 2026): the
-## grass, tinted, the stones over it and the rock over both.
+## The steps test's slope grass, the project lead's image, whole.
 const SLOPE_GRASS := "res://world/test/slope_grass.png"
-const SLOPE_STONY := "res://world/test/slope_stony.png"
-const SLOPE_ROCK := "res://world/test/slope_rock.png"
 
 
 static func set_steps_mode(mode: int) -> void:

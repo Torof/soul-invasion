@@ -25,23 +25,19 @@ const int INDEX_FRINGE = 128;
 const float SHARPEN = 0.5;
 
 // The mountain test (13 November 2026, `--world test:montagne`, the rule
-// of the image the project lead chose, `G-D-textures-scenario`): the
+// of the image the project lead validated, `montagne-v3-etiree-b`): the
 // ground stays flat; where it slopes, the slope's grass is laid over it,
-// leaning the way the ground rises, and stones then rock over the grass
-// where it is steeper still. slope_index (HeightIndex): R and G the
+// leaning the way the ground rises. slope_index (HeightIndex): R and G the
 // ground's rise along the map's x and y, in metres a tile, read over two
 // tiles on either side; read between the tiles' middles. steps_mode: 0
 // the game's ground as it is, 1 the slopes' grass and the offsets below.
 uniform sampler2D slope_index : filter_linear, repeat_enable;
 uniform int steps_mode = 0;
-// The slope's grass, its stones and its rock (client/world/test/
-// slope_grass.png, slope_stony.png and slope_rock.png, Scenario's images
-// of 13 November 2026, the grass tinted, their streaks rising toward the
-// upper right) laid in canvas space, SLOPE_TEXTURE_PX a repetition, all
-// three toned toward the meadow's grass by SLOPE_TINT.
+// The slope's grass (client/world/test/slope_grass.png, the project
+// lead's image "pente rochers inclinés" whole, its streaks rising toward
+// the upper right) laid in canvas space, SLOPE_TEXTURE_PX a repetition,
+// toned toward the meadow's grass by SLOPE_TINT.
 uniform sampler2D slope_texture : repeat_enable, filter_linear_mipmap;
-uniform sampler2D slope_stony_texture : repeat_enable, filter_linear_mipmap;
-uniform sampler2D slope_rock_texture : repeat_enable, filter_linear_mipmap;
 const float SLOPE_TEXTURE_PX = 384.0;
 const vec3 SLOPE_TINT = vec3(0.94, 1.02, 0.92);
 // A tile's half width and half height on the canvas.
@@ -56,15 +52,8 @@ const float SLOPE_SHOW_FULL = 0.14;
 const float SLOPE_GENTLE_WIDTH = 1.8;
 const float SLOPE_MEDIUM_WIDTH = 1.25;
 const float SLOPE_STEEP_WIDTH = 0.85;
-const vec2 SLOPE_GENTLE_UNTIL = vec2(0.12, 0.18);
-const vec2 SLOPE_STEEP_FROM = vec2(0.30, 0.40);
-// The stones laid over the grass from SLOPE_STONY_FROM, the rock over
-// both from SLOPE_ROCK_FROM (metres a tile, soft), each through the same
-// inclinations and leaning as the grass. A layer weighing less than
-// SLOPE_LAYER_MIN is not read at all (the others share its weight).
-const vec2 SLOPE_STONY_FROM = vec2(0.45, 0.60);
-const vec2 SLOPE_ROCK_FROM = vec2(0.68, 0.85);
-const float SLOPE_LAYER_MIN = 0.01;
+const vec2 SLOPE_GENTLE_UNTIL = vec2(0.10, 0.20);
+const vec2 SLOPE_STEEP_FROM = vec2(0.25, 0.38);
 // Which way it leans: the image as is where the ground rises toward the
 // screen's right, mirrored where it rises toward the left, blended over
 // SLOPE_SIDE_BLEND of the slope's sideways share. Where it rises mostly
@@ -320,56 +309,39 @@ void offset_cells(vec2 canvas, out vec4 w, out vec4 ox, out vec4 oy) {
 		offset_hash(i + vec2(0.0, 1.0), 7.0), offset_hash(i + vec2(1.0, 1.0), 7.0));
 }
 
-// One reading of a slope's image `tex` at `uv` shifted by `offset`,
-// mirrored left to right when `flip` is -1.
-vec3 slope_tap(sampler2D tex, vec2 uv, vec2 offset, float flip, vec2 gx, vec2 gy) {
+// One reading of the slope's grass at `uv` shifted by `offset`, mirrored
+// left to right when `flip` is -1.
+vec3 slope_tap(vec2 uv, vec2 offset, float flip, vec2 gx, vec2 gy) {
 	vec2 at = uv + offset;
-	return textureGrad(tex, vec2(at.x * flip, at.y), gx, gy).rgb;
+	return textureGrad(slope_texture, vec2(at.x * flip, at.y), gx, gy).rgb;
 }
 
-// A slope's image `tex` at canvas point `canvas`, stretched sideways
-// `widen` times and mirrored when `flip` is -1, its four cells blended.
-// `dx` and `dy`: the canvas point's derivatives.
-vec3 slope_read(sampler2D tex, vec2 canvas, vec2 dx, vec2 dy, float widen, float flip, vec4 w, vec4 ox, vec4 oy) {
+// The slope's grass at canvas point `canvas`, stretched sideways `widen`
+// times and mirrored when `flip` is -1, its four cells blended. `dx` and
+// `dy`: the canvas point's derivatives.
+vec3 slope_read(vec2 canvas, vec2 dx, vec2 dy, float widen, float flip, vec4 w, vec4 ox, vec4 oy) {
 	vec2 scale = vec2(1.0 / widen, 1.0) / SLOPE_TEXTURE_PX;
 	vec2 uv = canvas * scale;
 	vec2 gx = dx * scale * vec2(flip, 1.0);
 	vec2 gy = dy * scale * vec2(flip, 1.0);
-	return w.x * slope_tap(tex, uv, vec2(ox.x, oy.x), flip, gx, gy)
-		+ w.y * slope_tap(tex, uv, vec2(ox.y, oy.y), flip, gx, gy)
-		+ w.z * slope_tap(tex, uv, vec2(ox.z, oy.z), flip, gx, gy)
-		+ w.w * slope_tap(tex, uv, vec2(ox.w, oy.w), flip, gx, gy);
+	return w.x * slope_tap(uv, vec2(ox.x, oy.x), flip, gx, gy)
+		+ w.y * slope_tap(uv, vec2(ox.y, oy.y), flip, gx, gy)
+		+ w.z * slope_tap(uv, vec2(ox.z, oy.z), flip, gx, gy)
+		+ w.w * slope_tap(uv, vec2(ox.w, oy.w), flip, gx, gy);
 }
 
-// A slope's image `tex` at its three inclinations blended by `inclines`
+// The slope's grass at its three inclinations blended by `inclines`
 // (gentle, medium, steep), mirrored when `flip` is -1.
-vec3 slope_inclined(sampler2D tex, vec2 canvas, vec2 dx, vec2 dy, vec3 inclines, float flip, vec4 w, vec4 ox, vec4 oy) {
+vec3 slope_inclined(vec2 canvas, vec2 dx, vec2 dy, vec3 inclines, float flip, vec4 w, vec4 ox, vec4 oy) {
 	vec3 c = vec3(0.0);
 	if (inclines.x > 0.0) {
-		c += inclines.x * slope_read(tex, canvas, dx, dy, SLOPE_GENTLE_WIDTH, flip, w, ox, oy);
+		c += inclines.x * slope_read(canvas, dx, dy, SLOPE_GENTLE_WIDTH, flip, w, ox, oy);
 	}
 	if (inclines.y > 0.0) {
-		c += inclines.y * slope_read(tex, canvas, dx, dy, SLOPE_MEDIUM_WIDTH, flip, w, ox, oy);
+		c += inclines.y * slope_read(canvas, dx, dy, SLOPE_MEDIUM_WIDTH, flip, w, ox, oy);
 	}
 	if (inclines.z > 0.0) {
-		c += inclines.z * slope_read(tex, canvas, dx, dy, SLOPE_STEEP_WIDTH, flip, w, ox, oy);
-	}
-	return c;
-}
-
-// A slope's image `tex` leaning the way the ground rises: `leans` the
-// shares of the image as is, mirrored, and stretched for a face turned
-// away; `inclines` as slope_inclined's.
-vec3 slope_leaning(sampler2D tex, vec2 canvas, vec2 dx, vec2 dy, vec3 inclines, vec3 leans, vec4 w, vec4 ox, vec4 oy) {
-	vec3 c = vec3(0.0);
-	if (leans.x > 0.0) {
-		c += leans.x * slope_inclined(tex, canvas, dx, dy, inclines, 1.0, w, ox, oy);
-	}
-	if (leans.y > 0.0) {
-		c += leans.y * slope_inclined(tex, canvas, dx, dy, inclines, -1.0, w, ox, oy);
-	}
-	if (leans.z > 0.0) {
-		c += leans.z * slope_read(tex, canvas, dx, dy, SLOPE_AWAY_WIDTH, 1.0, w, ox, oy);
+		c += inclines.z * slope_read(canvas, dx, dy, SLOPE_STEEP_WIDTH, flip, w, ox, oy);
 	}
 	return c;
 }
@@ -394,26 +366,20 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 	vec3 inclines = vec3(gentle, clamp(1.0 - gentle - steep, 0.0, 1.0), steep);
 	float rightward = smoothstep(-SLOPE_SIDE_BLEND, SLOPE_SIDE_BLEND, across / (s + 1e-6));
 	float facing = smoothstep(-SLOPE_SIDE_BLEND, SLOPE_SIDE_BLEND, -down / (s + 1e-6));
-	vec3 leans = vec3(horiz * rightward + (1.0 - horiz) * facing,
-		horiz * (1.0 - rightward), (1.0 - horiz) * (1.0 - facing));
-	// The grass, the stones over it, the rock over both: each layer's
-	// share of the whole.
-	float stony = smoothstep(SLOPE_STONY_FROM.x, SLOPE_STONY_FROM.y, s);
-	float rocky = smoothstep(SLOPE_ROCK_FROM.x, SLOPE_ROCK_FROM.y, s);
-	vec3 layers = vec3((1.0 - stony) * (1.0 - rocky), stony * (1.0 - rocky), rocky);
-	layers *= step(SLOPE_LAYER_MIN, layers);
-	layers /= layers.x + layers.y + layers.z;
-	vec3 slope = vec3(0.0);
-	if (layers.x > 0.0) {
-		slope += layers.x * slope_leaning(slope_texture, canvas, dx, dy, inclines, leans, w, ox, oy);
+	float as_is = horiz * rightward + (1.0 - horiz) * facing;
+	float mirrored = horiz * (1.0 - rightward);
+	float away = (1.0 - horiz) * (1.0 - facing);
+	vec3 grass = vec3(0.0);
+	if (as_is > 0.0) {
+		grass += as_is * slope_inclined(canvas, dx, dy, inclines, 1.0, w, ox, oy);
 	}
-	if (layers.y > 0.0) {
-		slope += layers.y * slope_leaning(slope_stony_texture, canvas, dx, dy, inclines, leans, w, ox, oy);
+	if (mirrored > 0.0) {
+		grass += mirrored * slope_inclined(canvas, dx, dy, inclines, -1.0, w, ox, oy);
 	}
-	if (layers.z > 0.0) {
-		slope += layers.z * slope_leaning(slope_rock_texture, canvas, dx, dy, inclines, leans, w, ox, oy);
+	if (away > 0.0) {
+		grass += away * slope_read(canvas, dx, dy, SLOPE_AWAY_WIDTH, 1.0, w, ox, oy);
 	}
-	return mix(c, slope * SLOPE_TINT, shown);
+	return mix(c, grass * SLOPE_TINT, shown);
 }
 
 void fragment() {
