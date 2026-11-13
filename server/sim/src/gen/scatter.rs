@@ -87,10 +87,31 @@ pub(crate) mod purpose {
     /// The rock regions' ragged borders, a shift east and one south.
     pub(crate) const ROCK_BORDER_X: u64 = 0x0a0c_b0d1;
     pub(crate) const ROCK_BORDER_Y: u64 = 0x0a0c_b0d2;
+    /// The atlas (`sim::plan`, 13 November 2026, outside the game): the
+    /// continent's outline and its warp, the strokes drawn from the seed,
+    /// the uplift's broad swell and a range's peaks and cols, the first
+    /// ground's roughness, the three covers of rock, the latitude, and the
+    /// region's site, detail, river nodes, meanders and ragged borders.
+    pub(crate) const PLAN_LAND: u64 = 0x91a7_1a4d;
+    pub(crate) const PLAN_WARP_X: u64 = 0x91a7_3a01;
+    pub(crate) const PLAN_WARP_Y: u64 = 0x91a7_3a02;
+    pub(crate) const PLAN_STROKES: u64 = 0x91a7_5743;
+    pub(crate) const PLAN_SWELL: u64 = 0x91a7_5e11;
+    pub(crate) const PLAN_PEAKS: u64 = 0x91a7_9eac;
+    pub(crate) const PLAN_ROUGH: u64 = 0x91a7_4096;
+    pub(crate) const PLAN_CHALK: u64 = 0x91a7_c4a1;
+    pub(crate) const PLAN_LIMESTONE: u64 = 0x91a7_1153;
+    pub(crate) const PLAN_SANDSTONE: u64 = 0x91a7_5a4d;
+    pub(crate) const PLAN_LATITUDE: u64 = 0x91a7_1a71;
+    pub(crate) const PLAN_SITE: u64 = 0x91a7_5173;
+    pub(crate) const PLAN_DETAIL: u64 = 0x91a7_de7a;
+    pub(crate) const PLAN_NODE: u64 = 0x91a7_40de;
+    pub(crate) const PLAN_MEANDER: u64 = 0x91a7_3ea4;
+    pub(crate) const PLAN_BORDER: u64 = 0x91a7_b04d;
 
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 27] = [
+    pub(crate) const ALL: [u64; 43] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -118,6 +139,22 @@ pub(crate) mod purpose {
         ROCK_REGION,
         ROCK_BORDER_X,
         ROCK_BORDER_Y,
+        PLAN_LAND,
+        PLAN_WARP_X,
+        PLAN_WARP_Y,
+        PLAN_STROKES,
+        PLAN_SWELL,
+        PLAN_PEAKS,
+        PLAN_ROUGH,
+        PLAN_CHALK,
+        PLAN_LIMESTONE,
+        PLAN_SANDSTONE,
+        PLAN_LATITUDE,
+        PLAN_SITE,
+        PLAN_DETAIL,
+        PLAN_NODE,
+        PLAN_MEANDER,
+        PLAN_BORDER,
     ];
 }
 
