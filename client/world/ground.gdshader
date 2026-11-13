@@ -53,7 +53,7 @@ uniform bool slope_crisp = true;
 // SLOPE_LIFT_PX up the screen a metre risen so that steeper ground draws
 // steeper streaks: the lead read x1.25 as gentle, x0.85 as steep, x0.6 as
 // very steep, x1.8 and more as flat. Off (key T): the earlier rule.
-uniform bool slope_fall_line = true;
+uniform bool slope_fall_line = false;
 const float SLOPE_LIFT_PX = 39.0;
 const float SLOPE_STREAK_TAN = 1.56;
 const vec2 SLOPE_FALL_WIDTH = vec2(0.5, 3.0);

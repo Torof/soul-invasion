@@ -246,7 +246,7 @@ static var steps_mode := 0
 ## The steps test's slope grass, the project lead's image, whole.
 const SLOPE_GRASS := "res://world/test/slope_grass.png"
 ## The mountain test: the fall-line rule (true) or the earlier one (key T).
-static var slope_fall_line := true
+static var slope_fall_line := false
 
 
 static func set_slope_fall_line(on: bool) -> void:
