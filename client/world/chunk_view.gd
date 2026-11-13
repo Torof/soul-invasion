@@ -231,7 +231,7 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 		if terrain != "water":
 			material.set_shader_parameter("steps_mode", steps_mode)
 			material.set_shader_parameter("slope_texture", load(SLOPE_GRASS))
-			material.set_shader_parameter("slope_crisp", slope_crisp)
+			material.set_shader_parameter("slope_fall_line", slope_fall_line)
 		apply_spec(material, terrain, false)
 		pin_flow_time(material)
 		_ground_materials[terrain] = material
@@ -245,15 +245,15 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 static var steps_mode := 0
 ## The steps test's slope grass, the project lead's image, whole.
 const SLOPE_GRASS := "res://world/test/slope_grass.png"
-## The mountain test: one slope image a pixel (true) or the blends (key T).
-static var slope_crisp := true
+## The mountain test: the fall-line rule (true) or the earlier one (key T).
+static var slope_fall_line := true
 
 
-static func set_slope_crisp(on: bool) -> void:
-	slope_crisp = on
+static func set_slope_fall_line(on: bool) -> void:
+	slope_fall_line = on
 	for terrain: String in _ground_materials:
 		if terrain != "water":
-			(_ground_materials[terrain] as ShaderMaterial).set_shader_parameter("slope_crisp", on)
+			(_ground_materials[terrain] as ShaderMaterial).set_shader_parameter("slope_fall_line", on)
 
 
 static func set_steps_mode(mode: int) -> void:

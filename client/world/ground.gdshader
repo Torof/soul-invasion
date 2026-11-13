@@ -43,6 +43,20 @@ uniform sampler2D slope_texture : repeat_enable, filter_linear_mipmap;
 // two grasses never lie over each other (they blurred). Off (key T): the
 // earlier blends, to compare.
 uniform bool slope_crisp = true;
+// The fall-line rule (13 November 2026, from the project lead's two
+// rounds of reading slope images): the image's streaks show the slope's
+// line as it runs on the screen. The image as is where the ground rises
+// toward the upper right or the lower left, toward the right or toward
+// the top; mirrored toward the upper left or the lower right, toward the
+// left or toward the bottom. Stretched sideways (SLOPE_STREAK_TAN, the
+// streaks' slant in the image) to the line's slant, the climb counted as
+// SLOPE_LIFT_PX up the screen a metre risen so that steeper ground draws
+// steeper streaks: the lead read x1.25 as gentle, x0.85 as steep, x0.6 as
+// very steep, x1.8 and more as flat. Off (key T): the earlier rule.
+uniform bool slope_fall_line = true;
+const float SLOPE_LIFT_PX = 39.0;
+const float SLOPE_STREAK_TAN = 1.56;
+const vec2 SLOPE_FALL_WIDTH = vec2(0.5, 3.0);
 const float SLOPE_TEXTURE_PX = 384.0;
 const vec3 SLOPE_TINT = vec3(0.94, 1.02, 0.92);
 // A tile's half width and half height on the canvas.
@@ -387,6 +401,18 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 	}
 	if (shown <= 0.0) {
 		return c;
+	}
+	if (slope_fall_line) {
+		vec2 g = rise / max(s, 1e-6);
+		float sx = TILE_HALF_PX.x * (g.x - g.y);
+		float sy = TILE_HALF_PX.y * (g.x + g.y);
+		bool as_is = sx * sy < 0.0 || (abs(sy) < 1e-4 && sx > 0.0) || (abs(sx) < 1e-4 && sy < 0.0);
+		float flip = as_is ? 1.0 : -1.0;
+		float width = clamp(SLOPE_STREAK_TAN * abs(sx) / (abs(sy) + SLOPE_LIFT_PX * s),
+			SLOPE_FALL_WIDTH.x, SLOPE_FALL_WIDTH.y);
+		vec3 fall = slope_read(slope_texture, canvas, dx, dy, width, flip,
+			vec4(1.0, 0.0, 0.0, 0.0), vec4(0.0), vec4(0.0));
+		return mix(c, fall * SLOPE_TINT, shown);
 	}
 	// The screen's right is the map's +x and -y at once, its bottom +x
 	// and +y.
