@@ -38,6 +38,17 @@ uniform int steps_mode = 0;
 // lead's image, its streaks rising toward the upper right) laid in canvas
 // space, SLOPE_TEXTURE_PX a repetition, toned by SLOPE_TINT.
 uniform sampler2D slope_texture : repeat_enable, filter_linear_mipmap;
+// Four more slopes' grasses (Midjourney's of 13 November 2026, numbers
+// 1, 2, 3 and 16 of that batch, toned to the lead's): each zone of about
+// SLOPE_ZONE_TILES, its edges wavy, takes one of the five whole, never two
+// over each other, against the same grass coming back everywhere. Off
+// (key V): the lead's grass alone.
+uniform sampler2D slope_grass_1 : repeat_enable, filter_linear_mipmap;
+uniform sampler2D slope_grass_2 : repeat_enable, filter_linear_mipmap;
+uniform sampler2D slope_grass_3 : repeat_enable, filter_linear_mipmap;
+uniform sampler2D slope_grass_16 : repeat_enable, filter_linear_mipmap;
+uniform bool slope_zones = true;
+const float SLOPE_ZONE_TILES = 22.0;
 // Crisp (the default, 13 November 2026): one image a pixel, the dominant
 // inclination and side only, no offset cells, no fade into the meadow, so
 // two grasses never lie over each other (they blurred). Off (key T): the
@@ -392,6 +403,30 @@ vec3 one_hot(vec3 v) {
 	return v.y >= v.z ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0);
 }
 
+// Which of the five slope grasses the zone around map point `p` takes:
+// the nearest of a jittered grid of centres, the point's place wobbled so
+// the edges wave.
+int slope_zone(vec2 p) {
+	vec2 q = p + 4.0 * vec2(sin(p.y * 0.21 + 1.3) + sin(p.y * 0.07),
+		sin(p.x * 0.19 + 0.4) + sin(p.x * 0.083 + 2.0));
+	vec2 cell = floor(q / SLOPE_ZONE_TILES);
+	float best = 1e9;
+	float pick = 0.0;
+	for (int j = -1; j <= 1; j++) {
+		for (int i = -1; i <= 1; i++) {
+			vec2 c = cell + vec2(float(i), float(j));
+			vec2 h = fract(sin(vec2(dot(c, vec2(127.1, 311.7)), dot(c, vec2(269.5, 183.3)))) * 43758.5453);
+			vec2 centre = (c + h) * SLOPE_ZONE_TILES;
+			float d = dot(q - centre, q - centre);
+			if (d < best) {
+				best = d;
+				pick = fract(h.x * 7.13 + h.y * 3.71);
+			}
+		}
+	}
+	return int(floor(pick * 5.0));
+}
+
 vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox, vec4 oy) {
 	vec2 rise = texture(slope_index, p / index_tiles).rg;
 	float s = length(rise);
@@ -434,7 +469,19 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 		ox = vec4(0.0);
 		oy = vec4(0.0);
 	}
-	vec3 slope = slope_leaning(slope_texture, canvas, dx, dy, inclines, leans, w, ox, oy);
+	vec3 slope;
+	int zone = slope_zones ? slope_zone(p) : 0;
+	if (zone == 1) {
+		slope = slope_leaning(slope_grass_1, canvas, dx, dy, inclines, leans, w, ox, oy);
+	} else if (zone == 2) {
+		slope = slope_leaning(slope_grass_2, canvas, dx, dy, inclines, leans, w, ox, oy);
+	} else if (zone == 3) {
+		slope = slope_leaning(slope_grass_3, canvas, dx, dy, inclines, leans, w, ox, oy);
+	} else if (zone == 4) {
+		slope = slope_leaning(slope_grass_16, canvas, dx, dy, inclines, leans, w, ox, oy);
+	} else {
+		slope = slope_leaning(slope_texture, canvas, dx, dy, inclines, leans, w, ox, oy);
+	}
 	return mix(c, slope * SLOPE_TINT, shown);
 }
 

@@ -232,6 +232,9 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 			material.set_shader_parameter("steps_mode", steps_mode)
 			material.set_shader_parameter("slope_texture", load(SLOPE_GRASS))
 			material.set_shader_parameter("slope_fall_line", slope_fall_line)
+			for n: int in [1, 2, 3, 16]:
+				material.set_shader_parameter("slope_grass_%d" % n, load("res://world/test/slope_grass_%d.png" % n))
+			material.set_shader_parameter("slope_zones", slope_zones)
 		apply_spec(material, terrain, false)
 		pin_flow_time(material)
 		_ground_materials[terrain] = material
@@ -247,6 +250,15 @@ static var steps_mode := 0
 const SLOPE_GRASS := "res://world/test/slope_grass.png"
 ## The mountain test: the fall-line rule (true) or the earlier one (key T).
 static var slope_fall_line := false
+## The mountain test: the five slope grasses by zones (true) or the lead's alone (key V).
+static var slope_zones := true
+
+
+static func set_slope_zones(on: bool) -> void:
+	slope_zones = on
+	for terrain: String in _ground_materials:
+		if terrain != "water":
+			(_ground_materials[terrain] as ShaderMaterial).set_shader_parameter("slope_zones", on)
 
 
 static func set_slope_fall_line(on: bool) -> void:

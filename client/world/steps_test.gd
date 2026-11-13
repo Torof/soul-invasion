@@ -156,6 +156,11 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	var key := event as InputEventKey
 	if key == null or not key.pressed or key.echo:
 		return
+	if key.keycode == KEY_V:
+		ChunkView.set_slope_zones(not ChunkView.slope_zones)
+		_apply()
+		get_viewport().set_input_as_handled()
+		return
 	if key.keycode == KEY_T:
 		ChunkView.set_slope_fall_line(not ChunkView.slope_fall_line)
 		_apply()
@@ -172,4 +177,5 @@ func _unhandled_key_input(event: InputEvent) -> void:
 func _apply() -> void:
 	ChunkView.set_steps_mode(mode)
 	var look := "fall-line rule" if ChunkView.slope_fall_line else "earlier rule"
-	_label.text = "Slope test — %s, %s   (keys 1, 0 and T)" % [MODES[mode], look]
+	var zones := "five grasses" if ChunkView.slope_zones else "your grass alone"
+	_label.text = "Slope test — %s, %s, %s   (keys 1, 0, T and V)" % [MODES[mode], look, zones]
