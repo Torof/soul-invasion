@@ -87,7 +87,11 @@ use serde::{Deserialize, Serialize};
 ///   condition carries `thirst`; `drink` at running water within reach,
 ///   `drink_refused` with the reason (`not_water` joins the refusals);
 ///   a body may die `dehydrated`.
-pub const PROTOCOL_VERSION: u32 = 24;
+/// - v25: the relief look test (generator version 3, 13 November 2026): a
+///   chunk frame may carry its tiles' heights (flag 1, `heights`), one
+///   `i16` a tile in decimetres after the currents; a world with no
+///   relief sends none.
+pub const PROTOCOL_VERSION: u32 = 25;
 
 /// Chunks whose frames a client keeps after they left its view, the
 /// least recently hidden forgotten first (D4): about 3 MB of frames. The
@@ -812,11 +816,13 @@ pub struct StoredItem {
 ///
 /// - header, 16 bytes: `x i32`, `y i32`, `version u32`, `flags u8` (bit 0:
 ///   the chunk has water, so currents follow the tiles), `side u8`, two
-///   bytes 0;
+///   bytes 0; flag 1: the chunk has heights, which follow the currents;
 /// - tiles: `side × side` bytes, row by row from the north-west corner,
 ///   each a [`Terrain`] code ([`terrain_code`]);
 /// - currents, when flag 0 is set: one `u16` per water tile (river, ford,
 ///   brook) in tile order;
+/// - heights, when flag 1 is set: one `i16` per tile in tile order, in
+///   decimetres above the sea (2 KB a chunk of 32 × 32);
 /// - trees: `n u16`, then `n × (dx u16, dy u16, species u8)`;
 /// - plants: `n u16`, then `n × (dx u16, dy u16, kind u8)`;
 /// - natural items: `n u16`, then `n × (slot u16, material u8)`;
@@ -840,6 +846,10 @@ pub struct ChunkFrame {
     /// 0 to 15, points along (sin(h × 22.5°), cos(h × 22.5°)) in tiles: 0
     /// down the map (+y), 4 along +x.
     pub currents: Vec<u16>,
+    /// The ground's height, tile by tile like `tiles`, in decimetres
+    /// above the sea; empty in a world with no relief (every generator
+    /// but the look test's, `sim::map::PLAN_GENERATOR`).
+    pub heights: Vec<i16>,
     /// Every tree standing in this chunk.
     pub trees: Vec<Standing>,
     /// Every plant standing in this chunk.
@@ -908,12 +918,16 @@ fn side_i32(n: usize) -> i32 {
 pub const CHUNK_HEADER: usize = 16;
 /// Flag of a chunk frame: the chunk has water, its currents follow.
 pub const CHUNK_HAS_WATER: u8 = 1;
+/// Flag of a chunk frame: the chunk has heights, they follow the
+/// currents.
+pub const CHUNK_HAS_HEIGHTS: u8 = 2;
 
 /// A chunk frame that cannot be written or read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrameError {
     /// The tiles are not a square of at most 255 on a side, or the
-    /// currents are not one a tile.
+    /// currents are not one a tile, or the heights neither none nor one a
+    /// tile.
     Shape,
     /// A dry tile has a current: it would be lost on the wire.
     DryCurrent,
@@ -928,7 +942,10 @@ pub enum FrameError {
 impl std::fmt::Display for FrameError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Shape => write!(f, "tiles not a square, or currents not one a tile"),
+            Self::Shape => write!(
+                f,
+                "tiles not a square, or currents or heights not one a tile"
+            ),
             Self::DryCurrent => write!(f, "a current on a dry tile"),
             Self::TooMany => write!(f, "more than 65535 of a kind of thing"),
             Self::Length => write!(f, "the frame's length does not match its content"),
@@ -989,14 +1006,20 @@ fn count(n: usize) -> Result<[u8; 2], FrameError> {
 /// are more than 65,535 of some thing.
 pub fn encode_chunk(chunk: &ChunkFrame) -> Result<Vec<u8>, FrameError> {
     let side = chunk.tiles.len().isqrt();
-    if side * side != chunk.tiles.len() || chunk.currents.len() != chunk.tiles.len() {
+    if side * side != chunk.tiles.len()
+        || chunk.currents.len() != chunk.tiles.len()
+        || !(chunk.heights.is_empty() || chunk.heights.len() == chunk.tiles.len())
+    {
         return Err(FrameError::Shape);
     }
     let side = u8::try_from(side).map_err(|_| FrameError::Shape)?;
     let wet = chunk.tiles.iter().any(|&t| is_water(t));
+    let high = !chunk.heights.is_empty();
+    let flags = if wet { CHUNK_HAS_WATER } else { 0 } | if high { CHUNK_HAS_HEIGHTS } else { 0 };
     let mut out = Vec::with_capacity(
         CHUNK_HEADER
             + chunk.tiles.len()
+            + 2 * chunk.heights.len()
             + 8
             + 5 * (chunk.trees.len() + chunk.plants.len())
             + 3 * chunk.natural.len()
@@ -1005,7 +1028,7 @@ pub fn encode_chunk(chunk: &ChunkFrame) -> Result<Vec<u8>, FrameError> {
     out.extend_from_slice(&chunk.x.to_le_bytes());
     out.extend_from_slice(&chunk.y.to_le_bytes());
     out.extend_from_slice(&chunk.version.to_le_bytes());
-    out.extend_from_slice(&[if wet { CHUNK_HAS_WATER } else { 0 }, side, 0, 0]);
+    out.extend_from_slice(&[flags, side, 0, 0]);
     out.extend(chunk.tiles.iter().map(|&t| terrain_code(t)));
     for (&tile, &current) in chunk.tiles.iter().zip(&chunk.currents) {
         if is_water(tile) {
@@ -1013,6 +1036,9 @@ pub fn encode_chunk(chunk: &ChunkFrame) -> Result<Vec<u8>, FrameError> {
         } else if current != 0 {
             return Err(FrameError::DryCurrent);
         }
+    }
+    for height in &chunk.heights {
+        out.extend_from_slice(&height.to_le_bytes());
     }
     for standing in [&chunk.trees, &chunk.plants] {
         out.extend_from_slice(&count(standing.len())?);
@@ -1101,6 +1127,13 @@ pub fn decode_chunk(bytes: &[u8]) -> Result<ChunkFrame, FrameError> {
             }
         }
     }
+    let heights = if flags & CHUNK_HAS_HEIGHTS != 0 {
+        (0..tiles.len())
+            .map(|_| r.take().map(i16::from_le_bytes))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
     let trees = r.standing()?;
     let plants = r.standing()?;
     let n = r.u16()?;
@@ -1133,6 +1166,7 @@ pub fn decode_chunk(bytes: &[u8]) -> Result<ChunkFrame, FrameError> {
         version,
         tiles,
         currents,
+        heights,
         trees,
         plants,
         natural,
@@ -1575,6 +1609,12 @@ mod tests {
                 0,
                 15 * 256 + 255,
             ],
+            heights: vec![
+                0, 1, -1, 7, //
+                32_767, -32_768, 120, 121, //
+                0, 0, 0, 0, //
+                5, 4, 3, 2,
+            ],
             trees: vec![
                 Standing {
                     dx: 31_999,
@@ -1617,6 +1657,9 @@ mod tests {
         let mut dense = reference_chunk();
         dense.tiles = vec![Terrain::Forest; 32 * 32];
         dense.currents = vec![0; 32 * 32];
+        dense.heights = (0..32 * 32)
+            .map(|i| i16::try_from(i * 7 - 3000).unwrap())
+            .collect();
         dense.trees = (0..400_u16)
             .map(|i| Standing {
                 dx: i * 80,
@@ -1637,6 +1680,7 @@ mod tests {
             version: 0,
             tiles: vec![Terrain::Grass; 32 * 32],
             currents: vec![0; 32 * 32],
+            heights: vec![],
             trees: vec![],
             plants: vec![],
             natural: vec![],
@@ -1652,6 +1696,7 @@ mod tests {
             version: 0,
             tiles: vec![Terrain::Grass; 32 * 32],
             currents: vec![0; 32 * 32],
+            heights: vec![],
             trees: vec![],
             plants: vec![],
             natural: vec![],
@@ -1661,7 +1706,7 @@ mod tests {
         assert_eq!(
             empty_bytes.len(),
             CHUNK_HEADER + 32 * 32 + 4 * 2,
-            "a dry chunk carries no currents"
+            "a dry chunk carries no currents, a flat world no heights"
         );
     }
 
@@ -1673,6 +1718,9 @@ mod tests {
         let mut ragged = reference_chunk();
         ragged.tiles.pop();
         assert_eq!(encode_chunk(&ragged), Err(FrameError::Shape));
+        let mut short = reference_chunk();
+        short.heights.pop();
+        assert_eq!(encode_chunk(&short), Err(FrameError::Shape));
         let bytes = encode_chunk(&reference_chunk()).unwrap();
         assert_eq!(
             decode_chunk(&bytes[..bytes.len() - 1]),

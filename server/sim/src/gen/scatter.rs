@@ -108,10 +108,16 @@ pub(crate) mod purpose {
     pub(crate) const PLAN_NODE: u64 = 0x91a7_40de;
     pub(crate) const PLAN_MEANDER: u64 = 0x91a7_3ea4;
     pub(crate) const PLAN_BORDER: u64 = 0x91a7_b04d;
+    /// The relief look test (`sim::plan::window`, generator version 3):
+    /// the small hills on a tile, a brook's bend in its cell, the ragged
+    /// border between the forest and the open.
+    pub(crate) const PLAN_HILLS: u64 = 0x91a7_4111;
+    pub(crate) const PLAN_BROOK: u64 = 0x91a7_b400;
+    pub(crate) const PLAN_EDGE: u64 = 0x91a7_ed9e;
 
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 43] = [
+    pub(crate) const ALL: [u64; 46] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -155,6 +161,9 @@ pub(crate) mod purpose {
         PLAN_NODE,
         PLAN_MEANDER,
         PLAN_BORDER,
+        PLAN_HILLS,
+        PLAN_BROOK,
+        PLAN_EDGE,
     ];
 }
 

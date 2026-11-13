@@ -8,7 +8,7 @@ extends RefCounted
 ## of truth. Every JSON message is a dictionary with a snake_case `type`
 ## field; a chunk frame decodes into packed arrays (`decode_chunk`).
 
-const PROTOCOL_VERSION := 24
+const PROTOCOL_VERSION := 25
 ## Chunk frames kept after they left the view (FrameCache), as the
 ## server's mirror of them.
 const CHUNK_CACHE_CHUNKS := 1500
@@ -19,6 +19,8 @@ const HELD_CHUNKS_MAX := 2048
 const CHUNK_HEADER := 16
 ## Flag of a chunk frame: the chunk has water, its currents follow.
 const CHUNK_HAS_WATER := 1
+## Flag of a chunk frame: the chunk has heights, they follow the currents.
+const CHUNK_HAS_HEIGHTS := 2
 ## The bit that marks a natural item's id (`sim::items::NATURAL`).
 const NATURAL := 1 << 52
 ## A chunk coordinate in a natural item's id: 18 bits.
@@ -121,6 +123,8 @@ static func decode(text: String) -> Dictionary:
 ## - `tiles`: PackedByteArray, `side × side` TerrainGrid codes;
 ## - `currents`: PackedInt32Array, one a tile (heading × 256 + speed, 0
 ##   where no water runs), empty when the chunk has no water;
+## - `heights`: PackedInt32Array, one a tile in decimetres above the sea,
+##   empty in a world with no relief;
 ## - `trees`, `plants`: PackedInt32Array, three ints each: the kind (an
 ##   index into `world_state`'s `species` or `flora`), then where it stands
 ##   in millimetres from the grid's origin, x and y;
@@ -151,6 +155,14 @@ static func decode_chunk(bytes: PackedByteArray, materials: PackedStringArray) -
 					return {}
 				currents[i] = bytes.decode_u16(at)
 				at += 2
+	var heights := PackedInt32Array()
+	if flags & CHUNK_HAS_HEIGHTS:
+		if at + tiles_n * 2 > size:
+			return {}
+		heights.resize(tiles_n)
+		for i in tiles_n:
+			heights[i] = bytes.decode_s16(at)
+			at += 2
 	var x0 := cx * side * 1000
 	var y0 := cy * side * 1000
 	var standing: Array[PackedInt32Array] = []
@@ -213,6 +225,7 @@ static func decode_chunk(bytes: PackedByteArray, materials: PackedStringArray) -
 		"version": version,
 		"tiles": tiles,
 		"currents": currents,
+		"heights": heights,
 		"trees": standing[0],
 		"plants": standing[1],
 		"items": items,

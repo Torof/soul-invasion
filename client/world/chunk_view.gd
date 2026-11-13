@@ -227,10 +227,23 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 		material.set_shader_parameter("ground_index", GroundIndex.texture())
 		material.set_shader_parameter("index_bit", int(GroundIndex.BITS.get(terrain, 0)))
 		material.set_shader_parameter("index_tiles", float(GroundIndex.TILES))
+		material.set_shader_parameter("height_index", HeightIndex.texture())
+		# Shaded by slope on land only: water lies flat (the relief look
+		# test); on only once a chunk carried heights.
+		material.set_shader_parameter("relief", HeightIndex.any and terrain != "water")
 		apply_spec(material, terrain, false)
 		pin_flow_time(material)
 		_ground_materials[terrain] = material
 	return _ground_materials[terrain]
+
+
+## Turns the ground's shading by slope on (HeightIndex, the relief look
+## test), for the land's materials made so far; those made later read it
+## at their making.
+static func enable_relief() -> void:
+	for terrain: String in _ground_materials:
+		var material: ShaderMaterial = _ground_materials[terrain]
+		material.set_shader_parameter("relief", terrain != "water")
 
 
 ## Development: with SOUL_INVASION_WATER_TIME set to a number of seconds,

@@ -24,6 +24,47 @@ const int INDEX_FRINGE = 128;
 // The images' derivatives are scaled by this: one mipmap level sharper.
 const float SHARPEN = 0.5;
 
+// The relief look test (generator version 3, 13 November 2026): the
+// ground's slope under each tile (HeightIndex: R east, G south, byte 128
+// flat and HEIGHT_RANGE either way at 1 and 255; A 1 where known), read to shade
+// the land by its slope, as a map's hillshade. Off in a world with no
+// relief, and on the water, which lies flat.
+uniform sampler2D height_index : filter_linear, repeat_enable;
+uniform bool relief = false;
+// The steepest slope the index holds (HeightIndex.RANGE).
+const float HEIGHT_RANGE = 1.0;
+// Where the light comes from, on the map (x east, y south): the screen's
+// upper left, as on a map drawn north up, where it is the north-west.
+// The screen's up is the map's north-west, so its upper left is the map's
+// west-north-west. A light from below the screen turns hills into hollows
+// to the eye.
+const vec2 RELIEF_LIGHT_FROM = vec2(-0.9487, -0.3162);
+// The light's height over the horizon: 45°, a map's usual.
+const float RELIEF_LIGHT_ELEVATION = 0.7854;
+// Slopes are steepened this much for the shading only: our hills rise
+// 2 to 15 %, which a true light barely shows under the grass's own
+// contrast (4 was invisible in the offscreen captures of 13 November
+// 2026, 8 shows a hill's sides at zoom 0.4); maps exaggerate the same.
+const float RELIEF_EXAGGERATION = 8.0;
+// How strongly the shading darkens and lights, and its bounds: gentle,
+// never black, never washed out.
+const float RELIEF_STRENGTH = 0.9;
+const float RELIEF_DARKEST = 0.62;
+const float RELIEF_BRIGHTEST = 1.2;
+// Bare rock and scree on steep ground, a placeholder colour: from this
+// slope (rise over run: 20 %, 11°) to fully at this one (45 %, 24°), at
+// most this much over the ground's own drawing.
+const float ROCK_FROM = 0.20;
+const float ROCK_FULL = 0.45;
+const float ROCK_MOST = 0.85;
+const vec3 ROCK_COLOUR = vec3(0.56, 0.53, 0.49);
+// A cliff's band only where it is truly steep (70 %, 35°), and only on
+// the faces turned to the camera (falling to the south or the east: the
+// map's +y and +x), streaked down the screen.
+const float CLIFF_SLOPE = 0.70;
+const float CLIFF_SOFT = 0.08;
+const vec3 CLIFF_COLOUR = vec3(0.42, 0.40, 0.38);
+
 uniform sampler2D noise_texture : repeat_enable, filter_linear;
 // Noise period, in texture units (one unit is one texture, four metres).
 uniform float noise_scale = 0.09;
@@ -245,6 +286,34 @@ bool meet_shows(vec4 a, float w, float meet_noise) {
 	return (w - 0.5) * 2.0 + dot(a.rgb, vec3(0.333)) * meet_depth + meet_noise > -meet_band;
 }
 
+// `c` shaded by the slope at map point `p` (tiles): a hillshade, rock on
+// steep ground, a cliff's band on the steepest faces turned to the camera.
+vec3 relief_colour(vec3 c, vec2 p) {
+	vec4 known = texture(height_index, p / index_tiles);
+	// A neighbour not come yet: no relief rather than a false cliff.
+	if (known.a < 0.999) {
+		return c;
+	}
+	vec2 g = (known.rg * 255.0 - 128.0) / 127.0 * HEIGHT_RANGE;
+	float slope = length(g);
+	vec3 normal = normalize(vec3(-g * RELIEF_EXAGGERATION, 1.0));
+	vec3 light = vec3(RELIEF_LIGHT_FROM * cos(RELIEF_LIGHT_ELEVATION), sin(RELIEF_LIGHT_ELEVATION));
+	float lit = dot(normal, light) - sin(RELIEF_LIGHT_ELEVATION);
+	float shade = clamp(1.0 + lit * RELIEF_STRENGTH, RELIEF_DARKEST, RELIEF_BRIGHTEST);
+	float luma = dot(c, vec3(0.333));
+	float rock = smoothstep(ROCK_FROM, ROCK_FULL, slope) * ROCK_MOST;
+	c = mix(c, ROCK_COLOUR * (0.75 + 0.5 * luma), rock);
+	// Facing the camera: falling towards +x or +y.
+	float facing = clamp(-(g.x + g.y) / max(slope, 1e-4) * 0.7071, 0.0, 1.0);
+	float cliff = smoothstep(CLIFF_SLOPE - CLIFF_SOFT, CLIFF_SLOPE + CLIFF_SOFT, slope) * facing;
+	if (cliff > 0.0) {
+		// Streaks down the screen: along x + y, varying across x - y.
+		float streak = texture(noise_texture, vec2((p.x - p.y) * 0.9, (p.x + p.y) * 0.04)).r;
+		c = mix(c, CLIFF_COLOUR * (0.8 + 0.4 * streak), cliff);
+	}
+	return c * shade;
+}
+
 void fragment() {
 	vec2 uv = UV;
 	// The clock the streaks run by (pinned by flow_time in development).
@@ -297,7 +366,11 @@ if (edged) {
 	edge_shade = smoothstep(0.0, 1.0, alpha) * fringe_strength;
 }
 if (edged && floor_in <= 0.0) {
-	COLOR = vec4(fringe_colour * tint.rgb, max(floor_in, edge_shade));
+	vec3 fringe = fringe_colour * tint.rgb;
+	if (relief) {
+		fringe = relief_colour(fringe, at);
+	}
+	COLOR = vec4(fringe, max(floor_in, edge_shade));
 } else {
 float grain = (texture(noise_texture, uv * 0.8 + vec2(0.37, 0.19)).r - 0.5) * 2.0 * meet_grain;
 // The variants' weights, once for every layer, and the derivatives the
@@ -412,6 +485,10 @@ if (has_bank) {
 	ground.rgb = mix(fringe_colour, ground.rgb, floor_in);
 	alpha = max(floor_in, edge_shade);
 }
-COLOR = vec4(ground.rgb * vertex_tint, alpha);
+vec3 drawn = ground.rgb * vertex_tint;
+if (relief) {
+	drawn = relief_colour(drawn, at);
+}
+COLOR = vec4(drawn, alpha);
 }
 }

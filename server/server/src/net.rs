@@ -497,6 +497,8 @@ pub struct ChunkGround {
     trees: Vec<Standing>,
     plants: Vec<Standing>,
     currents: Vec<u16>,
+    /// Its tiles' heights in decimetres; empty in a world with no relief.
+    heights: Vec<i16>,
     /// The ground's natural items, none taken out yet.
     natural: Vec<ItemState>,
 }
@@ -1213,6 +1215,7 @@ impl Shared {
             trees: self.trees_in(chunk),
             plants: self.plants_in(chunk),
             currents: self.map.chunk_currents(chunk)?,
+            heights: self.map.chunk_heights(chunk).unwrap_or_default(),
             natural: self.natural_items(chunk),
         })
     }
@@ -1299,6 +1302,7 @@ impl Shared {
             version,
             tiles: ground.tiles,
             currents: ground.currents,
+            heights: ground.heights,
             trees: ground.trees,
             plants: ground.plants,
             natural,
@@ -1352,6 +1356,9 @@ impl Shared {
                 c >> 8,
                 c & 0xff
             )?;
+        }
+        if let (Some(lo), Some(hi)) = (f.heights.iter().min(), f.heights.iter().max()) {
+            writeln!(out, "  heights: {lo} to {hi} dm")?;
         }
         let name =
             |list: &[String], k: usize| list.get(k).cloned().unwrap_or_else(|| format!("#{k}"));

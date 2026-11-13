@@ -155,6 +155,9 @@ fn open_world(
             println!("note: the world's own calendar wins over the command line");
         }
         world
+    } else if let Some(seed) = opts.plan {
+        println!("world: new, cut from the atlas of seed {seed} (relief look test)");
+        World::on_valley(opts.calendar, content, sim::map::Map::plan(seed))
     } else {
         println!("world: new");
         World::with_valley(opts.calendar, content, opts.valley_size)

@@ -51,6 +51,7 @@ pub mod climate;
 pub mod measure;
 pub mod region;
 pub mod relief;
+pub mod window;
 
 use crate::r#gen::hash;
 use crate::geology::Rock;
@@ -59,6 +60,7 @@ pub use climate::Biome;
 pub use measure::Numbers;
 pub use region::Region;
 pub use relief::{Stroke, StrokeKind};
+pub use window::Window;
 
 /// Side of a continent cell, in metres: 64 chunks of 32 m, so a chunk
 /// never straddles two cells (`pipeline.md` §1.1).

@@ -46,6 +46,10 @@ OPTIONS:
     --valley-size <N>      A new world's valley, N tiles on a side (default
                            3072, at least 256). A smaller one starts far
                            faster: for tests and development.
+    --world plan:<SEED>    Experimental: a new world cut from the atlas of
+                           SEED instead of the valley, 6 km a side with a
+                           height per tile (generator version 3, the relief
+                           look test; some seconds to make). Never for play.
     --dev                  Development tools: every client gets an overview
                            of the whole map and may teleport its body. Never
                            for play.
@@ -105,6 +109,9 @@ pub struct Options {
     pub dump_chunk: Option<(i32, i32)>,
     /// A new world's valley, tiles on a side.
     pub valley_size: u32,
+    /// Experimental (`--world plan:<seed>`): a new world cut from the
+    /// atlas of this seed instead of the valley (the relief look test).
+    pub plan: Option<u64>,
     /// When the plants of the view around the camp are placed (paced mode).
     pub warm_up: WarmUp,
 }
@@ -136,6 +143,7 @@ impl Default for Options {
             dev: false,
             dump_chunk: None,
             valley_size: sim::VALLEY_SIZE,
+            plan: None,
             warm_up: WarmUp::BeforeListening,
         }
     }
@@ -215,6 +223,16 @@ impl Options {
                     })?);
                 }
                 "--valley-size" => opts.valley_size = value(arg, args.next())?,
+                "--world" => {
+                    let raw: String = value(arg, args.next())?;
+                    let seed = raw
+                        .strip_prefix("plan:")
+                        .and_then(|s| s.trim().parse().ok());
+                    opts.plan = Some(seed.ok_or(CliError::InvalidValue {
+                        option: arg.to_owned(),
+                        value: raw,
+                    })?);
+                }
                 "--no-warm-up" => opts.warm_up = WarmUp::OnDemand,
                 "--time-scale" => opts.time_scale = value(arg, args.next())?,
                 "--max-connections" => opts.max_connections = value(arg, args.next())?,
@@ -331,6 +349,14 @@ mod tests {
             Some((3, -4))
         );
         assert!(Options::parse(["--dump-chunk", "3"]).is_err());
+    }
+
+    #[test]
+    fn the_atlas_world_is_asked_for_by_its_seed() {
+        assert_eq!(Options::parse(Vec::<&str>::new()).unwrap().plan, None);
+        assert_eq!(Options::parse(["--world", "plan:7"]).unwrap().plan, Some(7));
+        assert!(Options::parse(["--world", "valley"]).is_err());
+        assert!(Options::parse(["--world", "plan:x"]).is_err());
     }
 
     #[test]

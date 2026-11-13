@@ -30,6 +30,7 @@ func _init() -> void:
 	_test_each_ground_canvas_covers_only_its_rows()
 	_test_currents_decode()
 	_test_the_golden_chunk_decodes()
+	_test_heights_reach_the_height_index()
 	_test_tree_images_are_clean()
 	_test_tree_feet_are_whole()
 	_test_loading_waits_for_the_valley()
@@ -833,9 +834,34 @@ func _test_currents_decode() -> void:
 ## `the_golden_chunk_is_the_clients` keeps tests/fixtures/chunk_v17.bin):
 ## every field read back. A change of the layout on one side only breaks
 ## this test or the server's.
+## The relief look test: a chunk's heights (decimetres) land in the height
+## index in metres, their slope worked out over four metres, and turn the
+## land's shading on, never the water's.
+func _test_heights_reach_the_height_index() -> void:
+	_check(not HeightIndex.at(Vector2i(70, 6))["written"], "a tile no chunk wrote is not marked")
+	# A chunk of 8 × 8 rising 1 dm a tile eastward (10 %), flat southward.
+	var heights := PackedInt32Array()
+	for y in 8:
+		for x in 8:
+			heights.append(500 + x)
+	HeightIndex.write(Vector2i(64, 0), 8, heights)
+	var middle: Dictionary = HeightIndex.at(Vector2i(67, 3))
+	_check(is_equal_approx(middle["height"], 50.3) and middle["written"], "a tile's height, in metres: %s" % middle)
+	_check(middle["known"] and absf(middle["slope"].x - 0.1) < 0.01 and middle["slope"].y == 0.0, "its slope, a tenth east: %s" % middle)
+	var edge: Dictionary = HeightIndex.at(Vector2i(64, 0))
+	_check(edge["known"] and absf(edge["slope"].x - 0.1) < 0.01, "at the chunk's edge, read from its own side: %s" % edge)
+	_check(not HeightIndex.at(Vector2i(63, 0))["known"], "no slope where no height came")
+	_check(HeightIndex.at(Vector2i(67 + HeightIndex.TILES, 3)) == middle, "laid over the map again and again")
+	_check(HeightIndex.any, "the relief is on once heights came")
+	_check(ChunkView.ground_material("grass").get_shader_parameter("relief") == true, "the grass is shaded by its slope")
+	_check(ChunkView.ground_material("water").get_shader_parameter("relief") == false, "the water lies flat")
+	HeightIndex.write(Vector2i(0, 64), 4, PackedInt32Array([1, 2]))
+	_check(not HeightIndex.at(Vector2i(0, 64))["written"], "a chunk whose heights do not fit is ignored")
+
+
 func _test_the_golden_chunk_decodes() -> void:
 	var bytes := FileAccess.get_file_as_bytes("res://tests/fixtures/chunk_v17.bin")
-	_check(bytes.size() == 87, "the golden chunk is there: %d bytes" % bytes.size())
+	_check(bytes.size() == 119, "the golden chunk is there: %d bytes" % bytes.size())
 	var c := Protocol.decode_chunk(bytes, PackedStringArray(["m0", "m1", "m2", "m3", "m4"]))
 	_check(not c.is_empty(), "the golden chunk decodes")
 	if c.is_empty():
@@ -843,6 +869,7 @@ func _test_the_golden_chunk_decodes() -> void:
 	_check([c["x"], c["y"], c["version"]] == [3, -2, 7], "its place and version: %s" % [[c["x"], c["y"], c["version"]]])
 	_check(c["tiles"] == PackedByteArray([1, 2, 3, 4, 5, 6, 1, 3, 2, 2, 1, 1, 6, 6, 6, 5]), "its tiles: %s" % c["tiles"])
 	_check(c["currents"] == PackedInt32Array([0, 0, 1059, 50, 3073, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4095]), "its currents: %s" % c["currents"])
+	_check(c["heights"] == PackedInt32Array([0, 1, -1, 7, 32767, -32768, 120, 121, 0, 0, 0, 0, 5, 4, 3, 2]), "its heights: %s" % c["heights"])
 	_check(c["trees"] == PackedInt32Array([2, 43_999, -8_000, 0, 13_500, -5_750]), "its trees: %s" % c["trees"])
 	_check(c["plants"] == PackedInt32Array([11, 12_700, -4_100]), "its plants: %s" % c["plants"])
 	var items: Array = c["items"]

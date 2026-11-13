@@ -392,6 +392,9 @@ func _on_chunk(x: int, y: int, chunk: Dictionary) -> void:
 	_tiles[key] = codes
 	_tile_hashes[key] = hash(codes)
 	TerrainGrid.write(key * _chunk_size, _chunk_size, codes)
+	var heights: PackedInt32Array = chunk.get("heights", PackedInt32Array())
+	if not heights.is_empty():
+		HeightIndex.write(key * _chunk_size, _chunk_size, heights)
 	_currents[key] = currents
 	_items[key] = items
 	_items_version += 1
