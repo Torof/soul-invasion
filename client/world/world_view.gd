@@ -108,6 +108,9 @@ var _species_ids := PackedStringArray()
 ## chunk -> where its water runs, tile by tile (protocol `currents`;
 ## empty for a chunk without water).
 var _currents: Dictionary = {}
+## chunk -> the rock under each tile (protocol `rocks`; empty on a world
+## without rock under its ground).
+var _rocks: Dictionary = {}
 ## Seeing through trees: how far the circles around the body and the
 ## mouse are open (eased), and whether each should be.
 var _body_reveal := 0.0
@@ -323,6 +326,7 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	TerrainGrid.clear_all()
 	_tile_hashes.clear()
 	_currents.clear()
+	_rocks.clear()
 	for stand: Trees.Stand in _trees.values():
 		stand.release()
 	_trees.clear()
@@ -393,6 +397,7 @@ func _on_chunk(x: int, y: int, chunk: Dictionary) -> void:
 	_tile_hashes[key] = hash(codes)
 	TerrainGrid.write(key * _chunk_size, _chunk_size, codes)
 	_currents[key] = currents
+	_rocks[key] = chunk.get("rocks", PackedByteArray())
 	_items[key] = items
 	_items_version += 1
 	_trees_hash[key] = trees_hash
@@ -414,6 +419,7 @@ func _on_chunk(x: int, y: int, chunk: Dictionary) -> void:
 			_standing_changed = true
 			_trees_changed = true
 		view.show_chunk(key * _chunk_size, _chunk_size, codes, items, _looks)
+		view.show_rocks(_rocks[key])
 	elif _camera_placed and _ledger.within_reach(key):
 		_build_chunk(key, _ledger.touches(_ledger.shown, key))
 	else:
@@ -652,6 +658,7 @@ func _build_chunk(key: Vector2i, at_once: bool) -> void:
 	_plant_chunk(key, view)
 	view.show_plants(_plants[key], _flora, true)
 	view.show_chunk(key * _chunk_size, _chunk_size, _tiles[key], _items[key], _looks)
+	view.show_rocks(_rocks.get(key, PackedByteArray()))
 	# Its ground and its plants worked out on a worker from now
 	# (ChunkView.start_build).
 	view.start_build()
@@ -925,6 +932,7 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 		TerrainGrid.clear(key * _chunk_size, _chunk_size)
 		_tile_hashes.erase(key)
 		_currents.erase(key)
+		_rocks.erase(key)
 		_trees.erase(key)
 		_trees_hash.erase(key)
 		_trees_version += 1

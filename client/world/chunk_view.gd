@@ -663,6 +663,76 @@ var _items: Array = []
 var _looks: Dictionary = {}
 
 
+## The rock under the ground (D42), as a faint tint laid over it: a
+## placeholder so the rock regions show before their art comes. Rock code
+## (Protocol.GRANITE...) -> colour.
+const ROCK_TINTS := {
+	Protocol.GRANITE: Color(0.85, 0.66, 0.68, 0.14),
+	Protocol.LIMESTONE: Color(0.98, 0.92, 0.74, 0.14),
+	Protocol.CHALK: Color(1.0, 1.0, 1.0, 0.16),
+	Protocol.SANDSTONE: Color(0.86, 0.58, 0.24, 0.16),
+}
+var _rock_tint: RockTint = null
+
+
+## Tints the chunk's ground by the rock under each tile (`rocks`, one code
+## a tile; empty on a world without rock under its ground). Call after
+## show_chunk: the water's tiles are left out.
+func show_rocks(rocks: PackedByteArray) -> void:
+	if rocks.is_empty() and _rock_tint == null:
+		return
+	if _rock_tint == null:
+		_rock_tint = RockTint.new()
+		# Over the grounds, under the fog's veil and what stands.
+		_rock_tint.z_index = -6 + int(GROUND_ORDER["water"])
+		add_child(_rock_tint)
+	_rock_tint.origin = _origin
+	_rock_tint.rects = rock_rects(rocks, _codes, _size)
+	_rock_tint.queue_redraw()
+
+
+## The tiles of each rock in a chunk `size` tiles wide, water left out:
+## rock code -> rectangles of tiles [x0, y0, x1, y1) (GroundBuild.rows_of).
+## Empty when `rocks` is not one a tile.
+static func rock_rects(rocks: PackedByteArray, codes: PackedByteArray, size: int) -> Dictionary:
+	var out := {}
+	var n := size * size
+	if rocks.size() != n or codes.size() != n:
+		return out
+	for code: int in ROCK_TINTS:
+		var bits := PackedByteArray()
+		bits.resize(n)
+		var any := false
+		for i in n:
+			if rocks[i] == code and not WaterMeshes.is_water(codes[i]):
+				bits[i] = 1
+				any = true
+		if any:
+			out[code] = GroundBuild.rows_of(bits, size, 1)
+	return out
+
+
+## The rock tint of a chunk: each rock's tiles as flat parallelograms of
+## its colour (ROCK_TINTS).
+class RockTint:
+	extends Node2D
+	var origin := Vector2i.ZERO
+	## Rock code -> rectangles of tiles in the chunk (rock_rects).
+	var rects: Dictionary = {}
+
+	func _draw() -> void:
+		for code: int in rects:
+			var colour: Color = ChunkView.ROCK_TINTS[code]
+			var r: PackedInt32Array = rects[code]
+			for k in range(0, r.size(), 4):
+				var lo := origin + Vector2i(r[k], r[k + 1])
+				var hi := origin + Vector2i(r[k + 2], r[k + 3])
+				var points := PackedVector2Array()
+				for c: Vector2i in [lo, Vector2i(hi.x, lo.y), hi, Vector2i(lo.x, hi.y)]:
+					points.append(Iso.tile_to_screen(c.x, c.y) + Vector2(0, -Iso.TILE_H / 2.0))
+				draw_colored_polygon(points, colour)
+
+
 ## Sets the chunk's tiles (as received, names, or as codes) and items;
 ## `origin` is its north-west tile. The tiles are laid in TerrainGrid,
 ## where the neighbours read them.

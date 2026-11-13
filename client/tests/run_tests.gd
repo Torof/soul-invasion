@@ -28,6 +28,8 @@ func _init() -> void:
 	_test_each_ground_canvas_covers_only_its_rows()
 	_test_currents_decode()
 	_test_the_golden_chunk_decodes()
+	_test_the_golden_chunk_with_rocks_decodes()
+	_test_rock_tint_leaves_the_water_out()
 	_test_tree_images_are_clean()
 	_test_tree_feet_are_whole()
 	_test_loading_waits_for_the_valley()
@@ -798,6 +800,7 @@ func _test_the_golden_chunk_decodes() -> void:
 	_check([c["x"], c["y"], c["version"]] == [3, -2, 7], "its place and version: %s" % [[c["x"], c["y"], c["version"]]])
 	_check(c["tiles"] == PackedByteArray([1, 2, 3, 4, 5, 6, 1, 3, 2, 2, 1, 1, 6, 6, 6, 5]), "its tiles: %s" % c["tiles"])
 	_check(c["currents"] == PackedInt32Array([0, 0, 1059, 50, 3073, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4095]), "its currents: %s" % c["currents"])
+	_check((c["rocks"] as PackedByteArray).is_empty(), "a world without rock under its ground: no rocks")
 	_check(c["trees"] == PackedInt32Array([2, 43_999, -8_000, 0, 13_500, -5_750]), "its trees: %s" % c["trees"])
 	_check(c["plants"] == PackedInt32Array([11, 12_700, -4_100]), "its plants: %s" % c["plants"])
 	var items: Array = c["items"]
@@ -811,6 +814,54 @@ func _test_the_golden_chunk_decodes() -> void:
 	var stand := Trees.Stand.new(dry["trees"], {"oak": 2_200}, PackedStringArray(["oak", "pine", "birch"]))
 	_check(Array(stand.kinds) == ["birch", "oak"] and stand.at[1] == Vector2(13_500, -5_750), "a stand reads the trees as they come")
 	stand.release()
+
+
+## The chunk frame with rocks (the server's test
+## `the_golden_chunk_with_rocks_is_the_clients` keeps
+## tests/fixtures/chunk_v23.bin): a nibble a tile; and the same chunk on
+## one rock, a byte for all.
+func _test_the_golden_chunk_with_rocks_decodes() -> void:
+	var bytes := FileAccess.get_file_as_bytes("res://tests/fixtures/chunk_v23.bin")
+	_check(bytes.size() == 92, "the golden chunk with rocks is there: %d bytes" % bytes.size())
+	var c := Protocol.decode_chunk(bytes, PackedStringArray())
+	_check(not c.is_empty(), "the golden chunk with rocks decodes")
+	if c.is_empty():
+		return
+	var g := Protocol.GRANITE
+	var l := Protocol.LIMESTONE
+	var k := Protocol.CHALK
+	var s := Protocol.SANDSTONE
+	_check(c["rocks"] == PackedByteArray([g, g, l, l, g, l, l, k, g, s, k, k, s, s, k, k]), "its rocks: %s" % c["rocks"])
+	_check(c["tiles"] == PackedByteArray([1, 2, 3, 4, 5, 6, 1, 3, 2, 2, 1, 1, 6, 6, 6, 5]), "its tiles, as before")
+	_check(c["plants"] == PackedInt32Array([11, 12_700, -4_100]), "what follows the rocks, as before")
+	_check((c["items"] as Array).size() == 3, "its items, as before")
+	_check(Protocol.decode_chunk(bytes.slice(0, 91), PackedStringArray()).is_empty(), "a frame with rocks cut short is refused")
+	# The chunk without rocks, given one rock for all: the flag, then one
+	# byte after the currents (five water tiles, two bytes each).
+	var one := FileAccess.get_file_as_bytes("res://tests/fixtures/chunk_v17.bin")
+	one[12] = one[12] | Protocol.CHUNK_HAS_ROCKS
+	one.insert(Protocol.CHUNK_HEADER + 16 + 10, Protocol.CHALK)
+	var u := Protocol.decode_chunk(one, PackedStringArray())
+	_check(not u.is_empty() and (u["rocks"] as PackedByteArray).count(Protocol.CHALK) == 16, "a chunk on one rock: %s" % [u.get("rocks")])
+	_check(not u.is_empty() and (u["trees"] as PackedInt32Array).size() == 6, "and the rest read after it")
+	one[Protocol.CHUNK_HEADER + 16 + 10] = 9
+	_check(Protocol.decode_chunk(one, PackedStringArray()).is_empty(), "an unknown rock is refused")
+
+
+## The rock tint covers each rock's tiles, the water left out.
+func _test_rock_tint_leaves_the_water_out() -> void:
+	var w := TerrainGrid.WATER
+	var codes := PackedByteArray([1, 1, w, 2])
+	var rocks := PackedByteArray([Protocol.GRANITE, Protocol.CHALK, Protocol.CHALK, Protocol.CHALK])
+	var rects := ChunkView.rock_rects(rocks, codes, 2)
+	_check(rects.keys().size() == 2, "two rocks tinted: %s" % [rects])
+	_check(rects.get(Protocol.GRANITE) == PackedInt32Array([0, 0, 1, 1]), "granite's tile: %s" % [rects.get(Protocol.GRANITE)])
+	var chalk: PackedInt32Array = rects.get(Protocol.CHALK, PackedInt32Array())
+	var tiles := 0
+	for r in range(0, chalk.size(), 4):
+		tiles += (chalk[r + 2] - chalk[r]) * (chalk[r + 3] - chalk[r + 1])
+	_check(tiles == 2, "chalk's two dry tiles, not the water: %s" % [chalk])
+	_check(ChunkView.rock_rects(PackedByteArray(), codes, 2).is_empty(), "no rocks, no tint")
 
 
 ## Every tree image stands on its foot (no empty rows under it, so it is

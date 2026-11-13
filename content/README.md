@@ -19,6 +19,9 @@ real values live in a private repository (D30). Files here hold placeholders.
   full load slows it.
 - `needs.ron` — how fast a body hungers, freezes and tires, how it heals,
   and what kills it.
+- `geology.ron` — the rock regions under the ground (granite, limestone,
+  chalk, sandstone): their size, how their borders wander, how often
+  each rock comes. Drawn on worlds of the generator's version 2 on.
 
 The server looks for this directory as `content`, `../content` or
 `../../content` from where it runs, or where `--content <DIR>` points. An

@@ -217,7 +217,26 @@ pub enum MapSpec {
         height: u32,
         /// Generation seed.
         seed: u64,
+        /// The version of the generator that made it, kept for the
+        /// world's life (D24, amended 13 November 2026): a world saved
+        /// before versions were stored reads as version 1.
+        #[serde(default = "first_generator")]
+        generator: u32,
     },
+}
+
+/// The version of the generator new worlds are made with (D24): 2 adds
+/// the rock under the ground (`geology`) to version 1's valley, whose
+/// terrain, waters, woods, trees and items it keeps tile for tile.
+pub const GENERATOR: u32 = 2;
+
+/// The first generator, the valley as it was made before versions were
+/// stored: no rock under the ground.
+pub const FIRST_GENERATOR: u32 = 1;
+
+/// A world saved before versions were stored was made by the first.
+fn first_generator() -> u32 {
+    FIRST_GENERATOR
 }
 
 /// The grid. Stored as its spec alone (D31): the tiles are generated
@@ -277,7 +296,8 @@ impl From<MapSpec> for Map {
                 width,
                 height,
                 seed,
-            } => Self::valley(width, height, seed),
+                generator,
+            } => Self::valley_by(generator, width, height, seed),
         }
     }
 }
@@ -321,8 +341,16 @@ impl Map {
     /// riverside trees, a clearing at the camp), grass elsewhere.
     /// Deterministic for a given seed. Only the waters are kept, sparse
     /// (the rivers' working arrays go once they are painted); the land is
-    /// made per chunk when read.
+    /// made per chunk when read. Made by today's generator ([`GENERATOR`]).
     pub fn valley(width: u32, height: u32, seed: u64) -> Self {
+        Self::valley_by(GENERATOR, width, height, seed)
+    }
+
+    /// The same valley, made by the generator of version `generator`
+    /// (D24): the terrain, the waters and the woods are the same in every
+    /// version; from version 2 the ground has a rock under it
+    /// ([`Map::has_geology`]).
+    pub fn valley_by(generator: u32, width: u32, height: u32, seed: u64) -> Self {
         let cliff_rows = (height / 8).max(2);
         let waters = {
             let rivers = Rivers::generate(width, height, cliff_rows, seed);
@@ -335,6 +363,7 @@ impl Map {
                 width,
                 height,
                 seed,
+                generator,
             },
             width,
             height,
@@ -401,6 +430,23 @@ impl Map {
     /// How this map is generated.
     pub fn spec(&self) -> MapSpec {
         self.spec
+    }
+
+    /// The version of the generator that made this map (D24); a filled
+    /// map is the first's.
+    #[must_use]
+    pub fn generator(&self) -> u32 {
+        match self.spec {
+            MapSpec::Valley { generator, .. } => generator,
+            MapSpec::Filled { .. } => FIRST_GENERATOR,
+        }
+    }
+
+    /// Does the ground have a rock under it ([`crate::geology`])? From
+    /// the generator's version 2 on, in a valley.
+    #[must_use]
+    pub fn has_geology(&self) -> bool {
+        matches!(self.spec, MapSpec::Valley { .. }) && self.generator() >= 2
     }
 
     /// Columns.
@@ -4628,9 +4674,24 @@ mod tests {
             MapSpec::Valley {
                 width: 64,
                 height: 96,
-                seed: 3
+                seed: 3,
+                generator: GENERATOR,
             }
         );
+    }
+
+    #[test]
+    fn a_map_saved_before_generator_versions_reads_as_the_first() {
+        let back: Map =
+            serde_json::from_str(r#"{"kind":"valley","width":64,"height":96,"seed":3}"#).unwrap();
+        assert_eq!(back.generator(), FIRST_GENERATOR);
+        assert!(!back.has_geology());
+        assert_eq!(back, Map::valley_by(FIRST_GENERATOR, 64, 96, 3));
+        let text = serde_json::to_string(&back).unwrap();
+        assert!(text.contains(r#""generator":1"#), "kept for life: {text}");
+        let new = Map::valley(64, 96, 3);
+        assert!(new.has_geology(), "new worlds are made by version 2");
+        assert!(!Map::filled(4, 4, Terrain::Grass).has_geology());
     }
 
     #[test]

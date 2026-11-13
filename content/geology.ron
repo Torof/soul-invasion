@@ -1,0 +1,26 @@
+// The rock under the ground (docs/04-architecture.md, D42): granite,
+// limestone, chalk or sandstone, a region each. Drawn only on worlds made
+// by the generator's version 2 on (D24); a world made by the first keeps
+// none. Placeholder values, tuned by eye on the overview of a 6 km world.
+//
+// region_m:       side of the coarse grid's cells, in metres: a region's
+//                 usual breadth. A real region is 10 to 100 km; the game
+//                 compresses it five to fifty times (2 km). A 6 km world
+//                 shows three to six patches of two to four rocks.
+// border_cell_m:  cell of the noise that shifts the borders, in metres:
+//                 the size of their bends.
+// border_shift_m: how far that noise shifts a border at most, each way, in
+//                 metres. Under region_m.
+// weights:        how often each rock is a region's, against the others.
+//                 Every rock must appear; 0 leaves it out.
+(
+    region_m: 2000,
+    border_cell_m: 100,
+    border_shift_m: 150,
+    weights: {
+        granite: 30,
+        limestone: 30,
+        chalk: 20,
+        sandstone: 20,
+    },
+)

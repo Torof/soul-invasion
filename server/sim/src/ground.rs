@@ -1,6 +1,7 @@
 //! What the seed places on the ground, worked out once a chunk and held
 //! (D37, D39): the trees, and the tiles their trunks block ([`Trunks`],
-//! D32); the ground's fields the flora reads, next. Derived state: never stored,
+//! D32); the rock under the ground (`geology`, D42); the ground's fields
+//! the flora reads, next. Derived state: never stored,
 //! placed again from the map and the seed, so forgetting any of it
 //! changes nothing but the time the next request takes (a cache only
 //! memoises).
@@ -28,6 +29,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crate::content::Species;
+use crate::geology::{Geology, Rock};
 use crate::lru::Lru;
 use crate::map::{CHUNK_SIZE, ChunkPos, Map, PATH_REACH, Pos};
 use crate::trees::{self, Tree};
@@ -68,6 +70,9 @@ struct Held {
     /// Grows with what men change, never with the land visited; the
     /// versions of the world's chunk changes, set as they change.
     versions: BTreeMap<ChunkPos, Version>,
+    /// The rock under each tile of a chunk (`geology`), on a map that has
+    /// it: never changed by men, so held by the chunk alone.
+    rocks: Lru<ChunkPos, Arc<[Rock]>>,
 }
 
 /// A chunk's trees as placed, with the tiles their trunks block: made
@@ -182,6 +187,7 @@ impl Ground {
             held: Mutex::new(Held {
                 trees: Lru::new(capacity),
                 versions: BTreeMap::new(),
+                rocks: Lru::new(capacity),
             }),
         }
     }
@@ -260,6 +266,29 @@ impl Ground {
         let placed = Placed::new(chunk, trees::trees_in(map, species, seed, chunk));
         self.lock().trees.insert(key, placed.clone());
         placed
+    }
+
+    /// The rock under each tile of `chunk`, row by row
+    /// ([`Geology::rocks_in`]): held, or else worked out now and held.
+    /// `None` on a map without rock under its ground (made by the first
+    /// generator, or filled) and for a chunk off the map.
+    #[must_use]
+    pub fn rocks_in(
+        &self,
+        map: &Map,
+        geology: &Geology,
+        seed: u64,
+        chunk: ChunkPos,
+    ) -> Option<Arc<[Rock]>> {
+        if !map.has_geology() || !map.has_chunk(chunk) {
+            return None;
+        }
+        if let Some(rocks) = self.lock().rocks.get(&chunk) {
+            return Some(Arc::clone(rocks));
+        }
+        let rocks: Arc<[Rock]> = geology.rocks_in(seed, chunk).into();
+        self.lock().rocks.insert(chunk, Arc::clone(&rocks));
+        Some(rocks)
     }
 
     /// Are `chunk`'s trees held, at its current version? Does not count

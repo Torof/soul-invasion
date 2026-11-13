@@ -31,7 +31,7 @@ use sim::{CHUNK_SIZE, ChunkPos, Content, Pos, World};
 
 /// Version of the serialized `World` inside a snapshot. Bump on any change
 /// to `World`'s shape, and add a migration in `decode_world`.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 9;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 10;
 
 /// Version of a chunk's changes as stored (`encode_changes`). Bump on any
 /// change to their bytes, and read the old ones in `decode_changes`.
@@ -498,6 +498,7 @@ fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<Wo
             6 => migrate_v6_to_v7(&data)?,
             7 => migrate_v7_to_v8(&data)?,
             8 => migrate_v8_to_v9(data),
+            9 => migrate_v9_to_v10(&data)?,
             _ => unreachable!("every version below the current one has a migration"),
         };
         version += 1;
@@ -629,6 +630,20 @@ fn migrate_v7_to_v8(data: &str) -> Result<String, StorageError> {
 /// (`World`'s reading); the next checkpoint writes them in their chunks.
 fn migrate_v8_to_v9(data: String) -> String {
     data
+}
+
+/// v10: a valley stores the version of the generator that made it (D24,
+/// amended 13 November 2026). A valley saved without one was made by
+/// the first, and keeps it for life: no rock under its ground.
+fn migrate_v9_to_v10(data: &str) -> Result<String, StorageError> {
+    let mut old: serde_json::Value = serde_json::from_str(data)?;
+    if let Some(map) = old["map"].as_object_mut()
+        && map.get("kind").and_then(serde_json::Value::as_str) == Some("valley")
+        && !map.contains_key("generator")
+    {
+        map.insert("generator".into(), sim::map::FIRST_GENERATOR.into());
+    }
+    Ok(old.to_string())
 }
 
 fn standard_world_at_old_tick(data: &str, content: &Content) -> Result<String, StorageError> {
@@ -1022,6 +1037,34 @@ mod tests {
         check(&storage.latest_world().unwrap().unwrap());
         drop(storage);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_world_saved_before_generator_versions_keeps_the_first() {
+        // A v9 snapshot (the v8 fixture reads the same): its valley has no
+        // generator, so it was made by the first and keeps it for life.
+        const FIXTURE: &str = include_str!("../tests/fixtures/snapshot-v8.json");
+        assert!(!FIXTURE.contains("generator"));
+        let mut storage = Sqlite::in_memory(content()).unwrap();
+        storage
+            .conn
+            .execute(
+                "INSERT INTO snapshots (tick, format_version, data) VALUES (4, 9, ?1)",
+                [FIXTURE],
+            )
+            .unwrap();
+        let old = storage.latest_world().unwrap().unwrap();
+        assert_eq!(old.map().generator(), sim::map::FIRST_GENERATOR);
+        assert!(old.rocks_in(sim::ChunkPos::new(0, 0)).is_none());
+        storage.save_world(&old).unwrap();
+        let again = storage.latest_world().unwrap().unwrap();
+        assert_eq!(again.map().generator(), sim::map::FIRST_GENERATOR);
+        // A new world is made by today's generator, and keeps it.
+        let mut storage = Sqlite::in_memory(content()).unwrap();
+        storage.save_world(&world_at(0)).unwrap();
+        let new = storage.latest_world().unwrap().unwrap();
+        assert_eq!(new.map().generator(), sim::map::GENERATOR);
+        assert!(new.rocks_in(sim::ChunkPos::new(0, 0)).is_some());
     }
 
     #[test]

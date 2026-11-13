@@ -8,7 +8,7 @@ extends RefCounted
 ## of truth. Every JSON message is a dictionary with a snake_case `type`
 ## field; a chunk frame decodes into packed arrays (`decode_chunk`).
 
-const PROTOCOL_VERSION := 22
+const PROTOCOL_VERSION := 23
 ## Chunk frames kept after they left the view (FrameCache), as the
 ## server's mirror of them.
 const CHUNK_CACHE_CHUNKS := 1500
@@ -19,6 +19,13 @@ const HELD_CHUNKS_MAX := 2048
 const CHUNK_HEADER := 16
 ## Flag of a chunk frame: the chunk has water, its currents follow.
 const CHUNK_HAS_WATER := 1
+## Flag of a chunk frame: the rock under its tiles follows the currents.
+const CHUNK_HAS_ROCKS := 2
+## The rocks' codes in a chunk frame (the Rust `rock_code`).
+const GRANITE := 1
+const LIMESTONE := 2
+const CHALK := 3
+const SANDSTONE := 4
 ## The bit that marks a natural item's id (`sim::items::NATURAL`).
 const NATURAL := 1 << 52
 ## A chunk coordinate in a natural item's id: 18 bits.
@@ -115,6 +122,8 @@ static func decode(text: String) -> Dictionary:
 ## - `tiles`: PackedByteArray, `side × side` TerrainGrid codes;
 ## - `currents`: PackedInt32Array, one a tile (heading × 256 + speed, 0
 ##   where no water runs), empty when the chunk has no water;
+## - `rocks`: PackedByteArray, the rock under each tile (GRANITE to
+##   SANDSTONE), empty on a world without rock under its ground;
 ## - `trees`, `plants`: PackedInt32Array, three ints each: the kind (an
 ##   index into `world_state`'s `species` or `flora`), then where it stands
 ##   in millimetres from the grid's origin, x and y;
@@ -143,6 +152,27 @@ static func decode_chunk(bytes: PackedByteArray, materials: PackedStringArray) -
 					return {}
 				currents[i] = bytes.decode_u16(at)
 				at += 2
+	var rocks := PackedByteArray()
+	if flags & CHUNK_HAS_ROCKS:
+		if at + 1 > size:
+			return {}
+		var one := bytes[at]
+		at += 1
+		rocks.resize(tiles_n)
+		if one != 0:
+			if one > SANDSTONE:
+				return {}
+			rocks.fill(one)
+		else:
+			var packed := (tiles_n + 1) / 2
+			if at + packed > size:
+				return {}
+			for i in tiles_n:
+				var code := (bytes[at + i / 2] >> (4 * (i % 2))) & 0xf
+				if code == 0 or code > SANDSTONE:
+					return {}
+				rocks[i] = code
+			at += packed
 	var x0 := cx * side * 1000
 	var y0 := cy * side * 1000
 	var standing: Array[PackedInt32Array] = []
@@ -204,6 +234,7 @@ static func decode_chunk(bytes: PackedByteArray, materials: PackedStringArray) -
 		"version": version,
 		"tiles": tiles,
 		"currents": currents,
+		"rocks": rocks,
 		"trees": standing[0],
 		"plants": standing[1],
 		"items": items,
