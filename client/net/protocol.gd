@@ -8,7 +8,7 @@ extends RefCounted
 ## of truth. Every JSON message is a dictionary with a snake_case `type`
 ## field; a chunk frame decodes into packed arrays (`decode_chunk`).
 
-const PROTOCOL_VERSION := 22
+const PROTOCOL_VERSION := 23
 ## Chunk frames kept after they left the view (FrameCache), as the
 ## server's mirror of them.
 const CHUNK_CACHE_CHUNKS := 1500
@@ -118,7 +118,9 @@ static func decode(text: String) -> Dictionary:
 ## - `trees`, `plants`: PackedInt32Array, three ints each: the kind (an
 ##   index into `world_state`'s `species` or `flora`), then where it stands
 ##   in millimetres from the grid's origin, x and y;
-## - `items`: Array of {id, x, y, material}, in the order of their ids.
+## - `items`: Array of {id, x, y, material}, in the order of their ids; a
+##   stored item says its own grams too (`mass_g`), a natural one weighs
+##   its material's piece.
 static func decode_chunk(bytes: PackedByteArray, materials: PackedStringArray) -> Dictionary:
 	var size := bytes.size()
 	if size < CHUNK_HEADER:
@@ -183,7 +185,7 @@ static func decode_chunk(bytes: PackedByteArray, materials: PackedStringArray) -
 		return {}
 	var stored_n := bytes.decode_u16(at)
 	at += 2
-	if at + stored_n * 12 != size:
+	if at + stored_n * 16 != size:
 		return {}
 	for i in stored_n:
 		items.append({
@@ -191,8 +193,9 @@ static func decode_chunk(bytes: PackedByteArray, materials: PackedStringArray) -
 			"x": cx * side + bytes[at + 8],
 			"y": cy * side + bytes[at + 9],
 			"material": _material(materials, bytes.decode_u16(at + 10)),
+			"mass_g": bytes.decode_u32(at + 12),
 		})
-		at += 12
+		at += 16
 	# In the order of their ids, as the server lists them: the stored ones
 	# first (smaller ids) but for a natural item men laid again.
 	items.append_array(natural)

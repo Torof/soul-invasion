@@ -317,12 +317,19 @@ pub enum Place {
     },
 }
 
-/// A piece of material.
+/// A bulk mass of one material (D35): a pebble, a log, a heap of berries.
+/// It weighs its own whole grams, which split and merge, and keeps the
+/// tick it was made (its date, from which spoilage will be computed, D16).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Item {
     id: ItemId,
     /// Content id of its material.
     material: String,
+    /// Its mass, in whole grams; never 0.
+    mass_g: u32,
+    /// When it was made: picked, dropped by the ground (tick 0, as old as
+    /// the world) or left by a death.
+    made: Tick,
     place: Place,
 }
 
@@ -337,6 +344,16 @@ impl Item {
         &self.material
     }
 
+    /// Its mass, in grams.
+    pub fn mass_g(&self) -> u32 {
+        self.mass_g
+    }
+
+    /// The tick it was made: its date.
+    pub fn made(&self) -> Tick {
+        self.made
+    }
+
     /// Where it is.
     pub fn place(&self) -> Place {
         self.place
@@ -348,6 +365,47 @@ impl Item {
             Place::Ground { pos } => Some(pos),
             Place::Carried { .. } => None,
         }
+    }
+
+    /// Takes `grams` off this pile into a new item `id`, in the same place
+    /// and of the same date; the pile keeps the rest. `None`, and nothing
+    /// taken, unless both parts weigh something: a split of 0 grams or of
+    /// the whole pile is no split.
+    #[must_use]
+    pub fn split(&mut self, id: ItemId, grams: u32) -> Option<Item> {
+        if grams == 0 || grams >= self.mass_g {
+            return None;
+        }
+        self.mass_g -= grams;
+        Some(Item {
+            id,
+            material: self.material.clone(),
+            mass_g: grams,
+            made: self.made,
+            place: self.place,
+        })
+    }
+
+    /// Pours `other` into this pile: one item of both masses, this one's id
+    /// and place, **dated as the older of the two**. A heap is as old as
+    /// the oldest matter in it: fresh berries poured on old ones do not
+    /// make the old ones fresh, so a store cannot be kept young by topping
+    /// it up (a mass-weighted date would allow just that), and the date
+    /// stays exact, never rounded. Gives `other` back, untouched, when the
+    /// materials differ or the mass would overflow.
+    ///
+    /// # Errors
+    /// `other` itself, when it cannot be merged.
+    pub fn merge(&mut self, other: Item) -> Result<(), Item> {
+        if other.material != self.material {
+            return Err(other);
+        }
+        let Some(mass) = self.mass_g.checked_add(other.mass_g) else {
+            return Err(other);
+        };
+        self.mass_g = mass;
+        self.made = self.made.min(other.made);
+        Ok(())
     }
 }
 
@@ -550,12 +608,19 @@ pub enum Event {
         /// (vitality, hunger, cold, fatigue, asleep).
         summary: (u32, u32, u32, u32, bool),
     },
-    /// A body ate an item, which is gone.
+    /// A body ate a meal off an item: all of it, which is gone, or a
+    /// meal's grams ([`content::Needs::meal_g`]), the rest staying.
     BodyAte {
         /// Who.
         body: BodyId,
         /// What.
         item: ItemId,
+        /// Content id of its material.
+        material: String,
+        /// Grams eaten.
+        grams: u32,
+        /// Kilojoules they gave.
+        energy_kj: u32,
     },
     /// An act on an item was refused.
     ActRefused {
@@ -595,6 +660,8 @@ pub enum Event {
         item: ItemId,
         /// Content id of its material.
         material: String,
+        /// Its mass, in grams.
+        mass_g: u32,
         /// Where.
         at: Pos,
         /// Its chunk's version right after it ([`World::chunk_version`]).
@@ -955,7 +1022,7 @@ impl World {
         self.spawns.clone_from(&content.spawns);
         self.geology.clone_from(&content.geology);
         for index in 0..self.bodies.len() {
-            self.refresh_load(index, content);
+            self.refresh_load(index);
         }
         self.let_out_of_trunks(content);
     }
@@ -1268,25 +1335,24 @@ impl World {
     }
 
     /// Weighs a body's load again ([`Body::load_g`]).
-    fn refresh_load(&mut self, index: usize, rules: &Content) {
-        let load = self.load_g(&self.bodies[index], rules);
+    fn refresh_load(&mut self, index: usize) {
+        let load = self.load_g(&self.bodies[index]);
         self.bodies[index].load_g = load;
     }
 
-    /// Grams a body carries in all, weighed under the content's masses
-    /// (the body keeps the result: [`Body::load_g`]).
-    pub fn load_g(&self, body: &Body, rules: &Content) -> u32 {
+    /// Grams a body carries in all, its items' own (the body keeps the
+    /// result: [`Body::load_g`]).
+    pub fn load_g(&self, body: &Body) -> u32 {
         body.inventory()
             .filter_map(|id| self.item(id))
-            .filter_map(|i| rules.material(&i.material))
-            .map(Material::mass_g)
+            .map(Item::mass_g)
             .sum()
     }
 
-    /// Lays a piece of `material` on the ground at `pos`. The material is
-    /// the caller's responsibility: content is validated before the world
-    /// is built.
-    pub fn spawn_item(&mut self, material: &str, pos: Pos) -> ItemId {
+    /// Lays `mass_g` grams of `material` on the ground at `pos`, made now.
+    /// The material is the caller's responsibility: content is validated
+    /// before the world is built.
+    pub fn spawn_item(&mut self, material: &str, mass_g: u32, pos: Pos) -> ItemId {
         let id = ItemId(self.next_item);
         self.next_item += 1;
         self.items.insert(
@@ -1294,6 +1360,8 @@ impl World {
             Item {
                 id,
                 material: material.to_owned(),
+                mass_g: mass_g.max(1),
+                made: self.tick,
                 place: Place::Ground { pos },
             },
         );
@@ -1599,12 +1667,12 @@ impl World {
             }
         }
         for (id, cause) in died {
-            self.die(id, cause, events);
+            self.die(id, cause, rules, events);
         }
     }
 
     /// Turns a body into a corpse on the ground.
-    fn die(&mut self, id: BodyId, cause: Death, events: &mut Vec<Event>) {
+    fn die(&mut self, id: BodyId, cause: Death, rules: &Content, events: &mut Vec<Event>) {
         let Some(index) = self.index_of(id) else {
             return;
         };
@@ -1617,19 +1685,23 @@ impl World {
             };
             dropped.place = Place::Ground { pos: at };
             let material = dropped.material.clone();
+            let mass_g = dropped.mass_g;
             self.lay(item, at.chunk());
             let version = self.chunk_version(at.chunk());
             events.push(Event::ItemAdded {
                 item,
                 material,
+                mass_g,
                 at,
                 version,
             });
         }
-        let corpse = self.spawn_item("corpse", at);
+        let corpse_g = rules.material("corpse").map_or(1, Material::mass_g);
+        let corpse = self.spawn_item("corpse", corpse_g, at);
         events.push(Event::ItemAdded {
             item: corpse,
             material: "corpse".to_owned(),
+            mass_g: corpse_g,
             at,
             version: self.chunk_version(at.chunk()),
         });
@@ -1748,7 +1820,7 @@ impl World {
 
     /// Weighs a body's load again and tells what it carries now.
     fn inventory_changed(&mut self, index: usize, rules: &Content, events: &mut Vec<Event>) {
-        self.refresh_load(index, rules);
+        self.refresh_load(index);
         let body = &self.bodies[index];
         events.push(Event::InventoryChanged {
             body: body.id,
@@ -1800,6 +1872,9 @@ impl World {
         });
     }
 
+    /// Eats a meal off `item`: all of it when it weighs no more than a
+    /// meal ([`content::Needs::meal_g`]), which is then gone; else a
+    /// meal's grams, the rest staying where it is.
     fn eat(&mut self, id: BodyId, item: ItemId, rules: &Content, events: &mut Vec<Event>) {
         let Some(index) = self.index_of(id) else {
             return Self::refuse(events, id, ItemAct::Eat, item, Refusal::Unknown);
@@ -1808,25 +1883,51 @@ impl World {
             Ok(place) => place,
             Err(reason) => return Self::refuse(events, id, ItemAct::Eat, item, reason),
         };
-        let food = self
-            .item(item)
-            .and_then(|i| rules.material(&i.material))
-            .and_then(|m| m.food);
-        let Some(food) = food else {
+        let Some((material, mass_g)) = self.item(item).map(|i| (i.material.clone(), i.mass_g))
+        else {
+            return Self::refuse(events, id, ItemAct::Eat, item, Refusal::Unknown);
+        };
+        let Some(food) = rules.material(&material).and_then(|m| m.food) else {
             return Self::refuse(events, id, ItemAct::Eat, item, Refusal::NotFood);
         };
         self.wake(index, events);
-        self.remove_item(item);
-        let relief =
-            u64::from(food.energy_kj) * GAUGE_SCALE / u64::from(rules.needs.kj_per_hunger_point);
+        let grams = mass_g.min(rules.needs.meal_g);
+        let whole = grams == mass_g;
+        let relief = u64::from(grams) * u64::from(food.energy_kj_per_kg) * GAUGE_SCALE
+            / (1000 * u64::from(rules.needs.kj_per_hunger_point));
         self.bodies[index].condition.hunger.lower(relief);
         match place {
-            Place::Ground { pos } => events.push(Event::ItemRemoved {
-                item,
-                at: pos,
-                version: self.chunk_version(pos.chunk()),
-            }),
-            Place::Carried { .. } => {
+            Place::Ground { pos } if whole => {
+                self.remove_item(item);
+                events.push(Event::ItemRemoved {
+                    item,
+                    at: pos,
+                    version: self.chunk_version(pos.chunk()),
+                });
+            }
+            Place::Ground { pos } => {
+                // Told as the item gone and laid again, lighter: the
+                // chunk changes twice, its holders follow both.
+                self.lift(item, pos.chunk());
+                events.push(Event::ItemRemoved {
+                    item,
+                    at: pos,
+                    version: self.chunk_version(pos.chunk()),
+                });
+                if let Some(left) = self.items.get_mut(&item) {
+                    left.mass_g -= grams;
+                }
+                self.lay(item, pos.chunk());
+                events.push(Event::ItemAdded {
+                    item,
+                    material: material.clone(),
+                    mass_g: mass_g - grams,
+                    at: pos,
+                    version: self.chunk_version(pos.chunk()),
+                });
+            }
+            Place::Carried { .. } if whole => {
+                self.remove_item(item);
                 let was_held = self.bodies[index].held == Some(item);
                 self.bodies[index].let_go(item);
                 self.inventory_changed(index, rules, events);
@@ -1837,8 +1938,20 @@ impl World {
                     });
                 }
             }
+            Place::Carried { .. } => {
+                if let Some(left) = self.items.get_mut(&item) {
+                    left.mass_g -= grams;
+                }
+                self.inventory_changed(index, rules, events);
+            }
         }
-        events.push(Event::BodyAte { body: id, item });
+        events.push(Event::BodyAte {
+            body: id,
+            item,
+            material,
+            grams,
+            energy_kj: food.energy_kj(grams),
+        });
     }
 
     fn pick_up(&mut self, id: BodyId, item: ItemId, rules: &Content, events: &mut Vec<Event>) {
@@ -1852,11 +1965,8 @@ impl World {
             }
             Err(reason) => return Self::refuse(events, id, ItemAct::PickUp, item, reason),
         };
-        let mass = self
-            .item(item)
-            .and_then(|i| rules.material(&i.material))
-            .map_or(0, Material::mass_g);
-        if self.bodies[index].load_g + mass > rules.movement.carry_capacity_g {
+        let mass = self.item(item).map_or(0, Item::mass_g);
+        if self.bodies[index].load_g.saturating_add(mass) > rules.movement.carry_capacity_g {
             return Self::refuse(events, id, ItemAct::PickUp, item, Refusal::TooHeavy);
         }
         self.wake(index, events);
@@ -1902,10 +2012,12 @@ impl World {
         };
         dropped.place = Place::Ground { pos: at };
         let material = dropped.material.clone();
+        let mass_g = dropped.mass_g;
         self.lay(item, at.chunk());
         events.push(Event::ItemAdded {
             item,
             material,
+            mass_g,
             at,
             version: self.chunk_version(at.chunk()),
         });
@@ -3885,9 +3997,9 @@ mod tests {
         let mut w = fed_world();
         let mut events = Vec::new();
         w.advance(500, &rules(), &mut events); // hunger 16
-        let berries = w.spawn_item("berries", Pos::new(2, 2)); // diagonal neighbour
-        let far = w.spawn_item("berries", Pos::new(3, 3));
-        let stone = w.spawn_item("flint", Pos::new(1, 1));
+        let berries = w.spawn_item("berries", 100, Pos::new(2, 2)); // diagonal neighbour
+        let far = w.spawn_item("berries", 100, Pos::new(3, 3));
+        let stone = w.spawn_item("flint", 400, Pos::new(1, 1));
         events.clear();
         w.queue(Intention::Eat {
             body: BodyId(1),
@@ -3920,12 +4032,128 @@ mod tests {
         )));
         assert!(events.contains(&Event::BodyAte {
             body: BodyId(1),
-            item: berries
+            item: berries,
+            material: "berries".to_owned(),
+            grams: 100,
+            energy_kj: 250,
         }));
         // 250 kJ at 25 kJ per point: 10 points off 16.
         assert_eq!(condition(&w).hunger.points(), 6);
         assert!(w.items().all(|i| i.id() != berries));
         assert_eq!(w.items().count(), 2);
+    }
+
+    #[test]
+    fn splitting_and_merging_keep_the_mass_and_the_older_date_wins() {
+        let mut w = fed_world();
+        let old = w.spawn_item("berries", 700, Pos::new(2, 2));
+        w.advance(50, &rules(), &mut Vec::new());
+        let young = w.spawn_item("berries", 250, Pos::new(2, 2));
+        let mut heap = w.item(old).unwrap().clone();
+        let fresh = w.item(young).unwrap().clone();
+        assert_eq!(heap.made(), Tick(0));
+        assert_eq!(fresh.made(), Tick(50));
+        // A split: two parts of the same date, the mass kept.
+        let part = heap.split(ItemId(99), 300).expect("a part");
+        assert_eq!((heap.mass_g(), part.mass_g()), (400, 300));
+        assert_eq!(part.made(), heap.made());
+        assert_eq!(
+            (part.material(), part.place()),
+            (heap.material(), heap.place())
+        );
+        // No split of nothing, nor of the whole pile.
+        assert!(heap.split(ItemId(100), 0).is_none());
+        assert!(heap.split(ItemId(100), 400).is_none());
+        assert_eq!(heap.mass_g(), 400);
+        // Merged, young into old or old into young: the mass of both, and
+        // the older date.
+        let mut young_first = fresh.clone();
+        young_first.merge(part.clone()).expect("same material");
+        assert_eq!((young_first.mass_g(), young_first.made()), (550, Tick(0)));
+        heap.merge(part).expect("same material");
+        heap.merge(fresh).expect("same material");
+        assert_eq!((heap.mass_g(), heap.made()), (950, Tick(0)));
+        assert_eq!(heap.id(), old, "it keeps its id");
+        // Another material is given back untouched.
+        let stone = w.spawn_item("flint", 400, Pos::new(1, 1));
+        let flint = w.item(stone).unwrap().clone();
+        assert_eq!(heap.merge(flint.clone()), Err(flint));
+        assert_eq!(heap.mass_g(), 950);
+    }
+
+    #[test]
+    fn a_meal_takes_at_most_its_grams_and_leaves_the_rest() {
+        let mut w = fed_world();
+        let mut events = Vec::new();
+        w.advance(1000, &rules(), &mut events); // hunger 33
+        let meal = rules().needs.meal_g;
+        assert_eq!(meal, 300);
+        // A heap on the ground: a meal off it, the rest stays, told as
+        // gone and laid again, lighter.
+        let heap = w.spawn_item("berries", 350, Pos::new(2, 2));
+        let before = condition(&w).hunger.points();
+        events.clear();
+        w.queue(Intention::Eat {
+            body: BodyId(1),
+            item: heap,
+        });
+        w.step(&rules(), &mut events);
+        assert_eq!(w.item(heap).map(Item::mass_g), Some(50));
+        // 300 g at 2,500 kJ a kilogram: 750 kJ, 30 points.
+        assert_eq!(condition(&w).hunger.points(), before - 30);
+        assert!(events.contains(&Event::BodyAte {
+            body: BodyId(1),
+            item: heap,
+            material: "berries".to_owned(),
+            grams: 300,
+            energy_kj: 750,
+        }));
+        let removed = events
+            .iter()
+            .position(|e| matches!(e, Event::ItemRemoved { item, .. } if *item == heap));
+        let added = events
+            .iter()
+            .position(|e| matches!(e, Event::ItemAdded { item, mass_g: 50, .. } if *item == heap));
+        assert!(removed < added && removed.is_some(), "{events:?}");
+        assert_eq!(w.items_in(ChunkPos::new(0, 0)).len(), 1);
+        // The rest is less than a meal: eaten whole, gone.
+        w.queue(Intention::Eat {
+            body: BodyId(1),
+            item: heap,
+        });
+        w.step(&rules(), &mut events);
+        assert!(w.item(heap).is_none());
+        // Carried in hand: a meal at a time, the load lighter each time,
+        // the hand empty once it is all eaten.
+        let carried = w.spawn_item("berries", 700, Pos::new(1, 1));
+        w.queue(Intention::PickUp {
+            body: BodyId(1),
+            item: carried,
+        });
+        w.step(&rules(), &mut events);
+        let mut left = Vec::new();
+        for _ in 0..3 {
+            events.clear();
+            w.queue(Intention::Eat {
+                body: BodyId(1),
+                item: carried,
+            });
+            w.step(&rules(), &mut events);
+            left.push(w.body(BodyId(1)).unwrap().load_g());
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, Event::ItemRemoved { .. } | Event::ItemAdded { .. })),
+                "{events:?}"
+            );
+        }
+        assert_eq!(left, vec![400, 100, 0]);
+        assert!(w.item(carried).is_none());
+        assert_eq!(w.body(BodyId(1)).unwrap().held(), None);
+        assert!(events.contains(&Event::BodyHolds {
+            body: BodyId(1),
+            item: None,
+        }));
     }
 
     #[test]
@@ -4008,7 +4236,7 @@ mod tests {
         // event tells the version right after it.
         let mut w = fed_world();
         let mut events = Vec::new();
-        let flint = w.spawn_item("flint", Pos::new(2, 2));
+        let flint = w.spawn_item("flint", 400, Pos::new(2, 2));
         let chunk = Pos::new(2, 2).chunk();
         let laid = w.chunk_version(chunk);
         assert!(laid > 0, "an item laid is a change");
@@ -4032,6 +4260,7 @@ mod tests {
             events.contains(&Event::ItemAdded {
                 item: flint,
                 material: "flint".to_owned(),
+                mass_g: 400,
                 at,
                 version: dropped,
             }),
@@ -4045,9 +4274,9 @@ mod tests {
     fn picking_up_carries_an_item_and_puts_the_first_in_hand() {
         let mut w = fed_world();
         let mut events = Vec::new();
-        let flint = w.spawn_item("flint", Pos::new(2, 2)); // within reach
-        let branch = w.spawn_item("branch", Pos::new(1, 2));
-        let far = w.spawn_item("branch", Pos::new(3, 3));
+        let flint = w.spawn_item("flint", 400, Pos::new(2, 2)); // within reach
+        let branch = w.spawn_item("branch", 1500, Pos::new(1, 2));
+        let far = w.spawn_item("branch", 1500, Pos::new(3, 3));
         pick(&mut w, flint, &mut events);
         let body = w.body(BodyId(1)).unwrap();
         assert_eq!(body.held(), Some(flint), "the first item goes in hand");
@@ -4084,7 +4313,7 @@ mod tests {
             item: far,
             reason: Refusal::OutOfReach,
         }));
-        assert_eq!(w.load_g(body, &rules()), 1900);
+        assert_eq!(w.load_g(body), 1900);
     }
 
     #[test]
@@ -4150,7 +4379,7 @@ mod tests {
         let mut events = Vec::new();
         // Thirteen branches of 1.5 kg fit in 20 kg; the fourteenth does not.
         let branches: Vec<ItemId> = (0..15)
-            .map(|_| w.spawn_item("branch", Pos::new(1, 1)))
+            .map(|_| w.spawn_item("branch", 1500, Pos::new(1, 1)))
             .collect();
         for item in &branches {
             pick(&mut w, *item, &mut events);
@@ -4181,8 +4410,8 @@ mod tests {
         let mut w = fed_world();
         let mut events = Vec::new();
         w.advance(500, &rules(), &mut events); // hungry enough to notice eating
-        let flint = w.spawn_item("flint", Pos::new(1, 1));
-        let berries = w.spawn_item("berries", Pos::new(1, 1));
+        let flint = w.spawn_item("flint", 400, Pos::new(1, 1));
+        let berries = w.spawn_item("berries", 100, Pos::new(1, 1));
         pick(&mut w, flint, &mut events);
         pick(&mut w, berries, &mut events);
         let body = w.body(BodyId(1)).unwrap();
@@ -4223,7 +4452,10 @@ mod tests {
         assert_eq!(condition(&w).hunger.points(), hunger_before - 10);
         assert!(events.contains(&Event::BodyAte {
             body: BodyId(1),
-            item: berries
+            item: berries,
+            material: "berries".to_owned(),
+            grams: 100,
+            energy_kj: 250,
         }));
         assert!(
             !events
@@ -4282,7 +4514,7 @@ mod tests {
     fn a_dead_body_drops_what_it_carried() {
         let mut w = fed_world();
         let mut events = Vec::new();
-        let flint = w.spawn_item("flint", Pos::new(1, 1));
+        let flint = w.spawn_item("flint", 400, Pos::new(1, 1));
         pick(&mut w, flint, &mut events);
         w.advance(4_200, &rules(), &mut events); // starves
         assert!(w.body(BodyId(1)).is_none());
@@ -4336,7 +4568,7 @@ mod tests {
         w.step(&rules(), &mut events);
         assert_eq!(ids(&w, 2, 2), vec![c]);
         assert_eq!(ids(&w, 1, 0), vec![a, b]);
-        w.die(b, Death::Starved, &mut events);
+        w.die(b, Death::Starved, &rules(), &mut events);
         assert_eq!(w.body(b), None);
         assert_eq!(ids(&w, 1, 0), vec![a]);
         assert_eq!(w.body(c).map(Body::id), Some(c));
@@ -4378,9 +4610,9 @@ mod tests {
         let map = Map::filled(96, 96, Terrain::Grass);
         let mut w = World::empty(Calendar::new(1, 1_000_000).unwrap(), map);
         let body = w.spawn_body(Pos::new(5, 5));
-        let flint = w.spawn_item("flint", Pos::new(5, 6));
-        let branch = w.spawn_item("branch", Pos::new(6, 5));
-        let far = w.spawn_item("flint", Pos::new(40, 40));
+        let flint = w.spawn_item("flint", 400, Pos::new(5, 6));
+        let branch = w.spawn_item("branch", 1500, Pos::new(6, 5));
+        let far = w.spawn_item("flint", 400, Pos::new(40, 40));
         let ids = |w: &World, x, y| -> Vec<ItemId> {
             w.items_in(ChunkPos::new(x, y))
                 .iter()
@@ -4413,7 +4645,7 @@ mod tests {
         act(&mut w, Intention::Drop { body, item: flint });
         assert_eq!(ids(&w, 0, 0), vec![flint]);
         assert_eq!(load(&w), branch_g);
-        let berries = w.spawn_item("berries", Pos::new(5, 5));
+        let berries = w.spawn_item("berries", 100, Pos::new(5, 5));
         act(
             &mut w,
             Intention::PickUp {
@@ -4439,7 +4671,7 @@ mod tests {
         back.take_content(&rules);
         assert_eq!(load(&back), branch_g);
         assert_eq!(back.item(branch), w.item(branch));
-        w.die(body, Death::Starved, &mut events);
+        w.die(body, Death::Starved, &rules, &mut events);
         assert_eq!(ids(&w, 0, 0).len(), 3, "the flint, the branch, the corpse");
         assert!(
             w.items_in(ChunkPos::new(0, 0))

@@ -4,10 +4,13 @@
 // name:        shown to players.
 // description: one sentence shown to players, what it is and what it is for.
 // kind:        stone | wood | plant | animal.
-// mass_kg:     one piece.
+// mass_kg:     one piece as the ground drops it; an item then keeps its own
+//              grams, split and merged (D35).
 // hardness:    0 (soft) to 10 (hardest); knapping and cutting compare it.
 // flammable:   feeds a fire.
-// food:        None, or (energy_kj, keeps_days) before it spoils untreated.
+// food:        None, or (energy_kj_per_kg, keeps_days): the energy of a
+//              kilogram on the one scale all content shares (D15), and
+//              the days before it spoils untreated.
 // look:        provisional graphics, a colour.
 [
     (id: "flint", name: "Flint",
@@ -33,7 +36,7 @@
     (id: "berries", name: "Berries",
      description: "A handful of ripe berries. They spoil in days.",
      kind: plant, mass_kg: 0.1, hardness: 0,
-     flammable: false, food: Some((energy_kj: 250, keeps_days: 3)), look: (colour: "#8a2a5a")),
+     flammable: false, food: Some((energy_kj_per_kg: 2500, keeps_days: 3)), look: (colour: "#8a2a5a")),
     (id: "hide", name: "Hide",
      description: "The skin of an animal; warm once worked.",
      kind: animal, mass_kg: 3.0, hardness: 2,
@@ -41,7 +44,7 @@
     (id: "meat", name: "Meat",
      description: "Raw meat. Filling, and quick to spoil.",
      kind: animal, mass_kg: 1.0, hardness: 1,
-     flammable: false, food: Some((energy_kj: 1200, keeps_days: 2)), look: (colour: "#b03a3a")),
+     flammable: false, food: Some((energy_kj_per_kg: 1200, keeps_days: 2)), look: (colour: "#b03a3a")),
     (id: "bone", name: "Bone",
      description: "A long bone; carved into needles and points.",
      kind: animal, mass_kg: 0.5, hardness: 4,

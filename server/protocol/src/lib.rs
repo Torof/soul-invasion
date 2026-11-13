@@ -77,7 +77,11 @@ use serde::{Deserialize, Serialize};
 /// - v22: `body_thinks`, to the pilot alone: what its body thinks as it
 ///   decides how to go on (D32): it skirts an obstacle to one side, it
 ///   sees a way, it does not know where to go.
-pub const PROTOCOL_VERSION: u32 = 22;
+/// - v23: an item weighs its own grams (D35): `mass_g` on every item
+///   (`ItemView`, `ItemState`) and on the stored items of a chunk frame
+///   (`id u64, dx u8, dy u8, material u16, mass_g u32`); a natural item
+///   weighs its material's `mass_g`.
+pub const PROTOCOL_VERSION: u32 = 23;
 
 /// Chunks whose frames a client keeps after they left its view, the
 /// least recently hidden forgotten first (D4): about 3 MB of frames. The
@@ -124,6 +128,8 @@ pub struct ItemView {
     pub id: u64,
     /// Content id of its material, found in [`ServerMessage::WorldState`].
     pub material: String,
+    /// Its mass, in grams.
+    pub mass_g: u32,
 }
 
 /// A body as the client sees it: where it stands and where it is going.
@@ -274,7 +280,8 @@ pub struct MaterialView {
     pub colour: String,
     /// Can it be eaten?
     pub edible: bool,
-    /// Mass of one piece, in grams.
+    /// Mass of one piece as the ground drops it, in grams: a natural
+    /// item's. Other items say their own.
     pub mass_g: u32,
 }
 
@@ -289,6 +296,8 @@ pub struct ItemState {
     pub y: i32,
     /// Content id of its material, found in [`ServerMessage::WorldState`].
     pub material: String,
+    /// Its mass, in grams.
+    pub mass_g: u32,
 }
 
 /// A kind of tree, as clients need it.
@@ -733,6 +742,8 @@ pub struct StoredItem {
     /// Its material, an index into [`ServerMessage::WorldState`]'s
     /// `materials`.
     pub material: u16,
+    /// Its mass, in grams.
+    pub mass_g: u32,
 }
 
 /// A chunk of ground the client now holds, sent as a binary frame
@@ -752,7 +763,8 @@ pub struct StoredItem {
 /// - trees: `n u16`, then `n × (dx u16, dy u16, species u8)`;
 /// - plants: `n u16`, then `n × (dx u16, dy u16, kind u8)`;
 /// - natural items: `n u16`, then `n × (slot u16, material u8)`;
-/// - stored items: `n u16`, then `n × (id u64, dx u8, dy u8, material u16)`.
+/// - stored items: `n u16`, then `n × (id u64, dx u8, dy u8, material u16,
+///   mass_g u32)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkFrame {
     /// Column of chunks.
@@ -795,7 +807,8 @@ impl ChunkFrame {
 
     /// Every item lying in the chunk, in the order of their ids, as a
     /// client rebuilds them: their materials named from `materials`
-    /// (`WorldState`'s), empty for an index past it.
+    /// (`WorldState`'s), empty for an index past it; a natural item weighs
+    /// its material's piece (0 for an index past it).
     #[must_use]
     pub fn items(&self, materials: &[MaterialView]) -> Vec<ItemState> {
         let side = self.tiles.len().isqrt().max(1);
@@ -809,6 +822,7 @@ impl ChunkFrame {
                 x: x0 + i32::from(i.dx),
                 y: y0 + i32::from(i.dy),
                 material: name(usize::from(i.material)),
+                mass_g: i.mass_g,
             })
             .chain(self.natural.iter().map(|i| {
                 let tile = usize::from(i.slot >> 6);
@@ -817,6 +831,9 @@ impl ChunkFrame {
                     x: x0 + side_i32(tile % side),
                     y: y0 + side_i32(tile / side),
                     material: name(usize::from(i.material)),
+                    mass_g: materials
+                        .get(usize::from(i.material))
+                        .map_or(0, |m| m.mass_g),
                 }
             }))
             .collect();
@@ -926,7 +943,7 @@ pub fn encode_chunk(chunk: &ChunkFrame) -> Result<Vec<u8>, FrameError> {
             + 8
             + 5 * (chunk.trees.len() + chunk.plants.len())
             + 3 * chunk.natural.len()
-            + 12 * chunk.stored.len(),
+            + 16 * chunk.stored.len(),
     );
     out.extend_from_slice(&chunk.x.to_le_bytes());
     out.extend_from_slice(&chunk.y.to_le_bytes());
@@ -958,6 +975,7 @@ pub fn encode_chunk(chunk: &ChunkFrame) -> Result<Vec<u8>, FrameError> {
         out.extend_from_slice(&item.id.to_le_bytes());
         out.extend_from_slice(&[item.dx, item.dy]);
         out.extend_from_slice(&item.material.to_le_bytes());
+        out.extend_from_slice(&item.mass_g.to_le_bytes());
     }
     Ok(out)
 }
@@ -1045,6 +1063,7 @@ pub fn decode_chunk(bytes: &[u8]) -> Result<ChunkFrame, FrameError> {
                 dx: r.u8()?,
                 dy: r.u8()?,
                 material: r.u16()?,
+                mass_g: u32::from_le_bytes(r.take()?),
             })
         })
         .collect::<Result<Vec<_>, FrameError>>()?;
@@ -1160,6 +1179,7 @@ mod tests {
                     holds: Some(ItemView {
                         id: 5,
                         material: "flint".into(),
+                        mass_g: 400,
                     }),
                 }],
             },
@@ -1233,6 +1253,7 @@ mod tests {
                     x: 1,
                     y: 2,
                     material: "corpse".into(),
+                    mass_g: 60_000,
                 },
             },
             ServerMessage::ItemRemoved {
@@ -1251,10 +1272,12 @@ mod tests {
                 held: Some(ItemView {
                     id: 5,
                     material: "flint".into(),
+                    mass_g: 400,
                 }),
                 carried: vec![ItemView {
                     id: 6,
                     material: "berries".into(),
+                    mass_g: 100,
                 }],
                 load_g: 500,
                 capacity_g: 20_000,
@@ -1472,6 +1495,7 @@ mod tests {
                 dx: 3,
                 dy: 1,
                 material: 513,
+                mass_g: 70_123,
             }],
         }
     }

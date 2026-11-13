@@ -5,24 +5,30 @@ extends RefCounted
 ## network: testable headless.
 
 
-## The lines for one item, given the catalogue entry of its material.
-static func describe_item(material: Dictionary) -> String:
+## The lines for one item, given the catalogue entry of its material and
+## the item's own grams (D35); without them (-1), its material's piece.
+static func describe_item(material: Dictionary, grams := -1) -> String:
 	var name := str(material.get("name", "?"))
-	var grams := int(material.get("mass_g", 0))
-	var mass := "%.1f kg" % (grams / 1000.0) if grams >= 1000 else "%d g" % grams
-	var line := "%s · %s" % [name, mass]
+	var line := "%s · %s" % [name, mass_words(material, grams)]
 	if bool(material.get("edible", false)):
 		line += " · edible"
 	var description := str(material.get("description", ""))
 	return line if description.is_empty() else line + "\n" + description
 
 
-## The inventory line for an item: its name and mass, marked when in hand.
-static func inventory_line(material: Dictionary, in_hand: bool) -> String:
-	var grams := int(material.get("mass_g", 0))
-	var mass := "%.1f kg" % (grams / 1000.0) if grams >= 1000 else "%d g" % grams
-	var line := "%s · %s" % [str(material.get("name", "?")), mass]
+## The inventory line for an item: its name and its own grams (or, -1,
+## its material's piece), marked when in hand.
+static func inventory_line(material: Dictionary, in_hand: bool, grams := -1) -> String:
+	var line := "%s · %s" % [str(material.get("name", "?")), mass_words(material, grams)]
 	return "[in hand] " + line if in_hand else line
+
+
+## A mass in words: grams under a kilogram, else kilograms to a decimal.
+## `grams` -1: the material's piece.
+static func mass_words(material: Dictionary, grams: int) -> String:
+	if grams < 0:
+		grams = int(material.get("mass_g", 0))
+	return "%.1f kg" % (grams / 1000.0) if grams >= 1000 else "%d g" % grams
 
 
 ## The load line: carried over capacity, in kilograms.

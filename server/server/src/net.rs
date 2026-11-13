@@ -252,6 +252,7 @@ fn body_state_of(world: &World, body: &sim::Body, content: &Content) -> BodyStat
         holds: body.held().and_then(|id| world.item(id)).map(|i| ItemView {
             id: i.id().0,
             material: i.material().to_owned(),
+            mass_g: i.mass_g(),
         }),
     }
 }
@@ -677,6 +678,7 @@ impl Shared {
                     x: pos.x,
                     y: pos.y,
                     material: item.material().to_owned(),
+                    mass_g: item.mass_g(),
                 });
         }
         let mut bodies = Bodies::default();
@@ -1275,6 +1277,7 @@ impl Shared {
                     dx: u8::try_from(i.x - origin.x)?,
                     dy: u8::try_from(i.y - origin.y)?,
                     material: material(&i.material).unwrap_or(u16::MAX),
+                    mass_g: i.mass_g,
                 })
             })
             .collect::<Result<Vec<_>, BoxError>>()?;
@@ -1401,6 +1404,7 @@ impl Shared {
                     x: pos.x,
                     y: pos.y,
                     material: i.material().to_owned(),
+                    mass_g: i.mass_g(),
                 })
             })
             .collect()
@@ -3185,6 +3189,7 @@ mod tests {
             x: here.x,
             y: here.y,
             material: "corpse".into(),
+            mass_g: 60_000,
         };
         shared.item_added(corpse.clone(), 1);
         let Some(Sent { items, .. }) = sent(&shared, here.chunk()) else {
@@ -3601,6 +3606,7 @@ mod tests {
                 x: at.x,
                 y: at.y,
                 material: "corpse".into(),
+                mass_g: 60_000,
             },
             shared.chunk_version(at.chunk()) + 1,
         );

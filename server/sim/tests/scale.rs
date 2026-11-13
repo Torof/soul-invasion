@@ -74,15 +74,15 @@ fn a_tick_of_loaded_walkers_among_stored_items() {
         // The stored items far away first, then three stones under each
         // walker's feet: a scan for a walker's stone passes them all.
         for n in 0..stored {
-            world.spawn_item("flint", Pos::new(n % side, 100 + n / side));
+            world.spawn_item("flint", 400, Pos::new(n % side, 100 + n / side));
         }
         let mut under_feet = Vec::new();
         for n in 0..i32::try_from(walkers).expect("few bodies") {
             let at = Pos::new(n % side, n / side);
             under_feet.push([
-                world.spawn_item("flint", at),
-                world.spawn_item("flint", at),
-                world.spawn_item("flint", at),
+                world.spawn_item("flint", 400, at),
+                world.spawn_item("flint", 400, at),
+                world.spawn_item("flint", 400, at),
             ]);
         }
         let mut events = Vec::new();

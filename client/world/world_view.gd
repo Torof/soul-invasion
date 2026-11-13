@@ -1048,7 +1048,8 @@ func _describe(tile: Vector2i) -> String:
 	var key := Iso.chunk_of(tile, _chunk_size)
 	for item in _items.get(key, []):
 		if Vector2i(int(item.get("x", 0)), int(item.get("y", 0))) == tile:
-			lines.append(Tooltip.describe_item(_materials.get(str(item.get("material", "")), {})))
+			var material: Dictionary = _materials.get(str(item.get("material", "")), {})
+			lines.append(Tooltip.describe_item(material, int(item.get("mass_g", -1))))
 	lines.append_array(Tooltip.describe_plants(plants_on(tile), _flora))
 	return "\n".join(lines)
 
