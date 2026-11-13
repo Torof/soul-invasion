@@ -259,6 +259,10 @@ pub struct Map {
     ground: Made,
     /// Tiles set by hand ([`Map::set`]: tests), a whole chunk each.
     edits: BTreeMap<ChunkPos, Box<[Terrain]>>,
+    /// The steps test only (`--world test:marches`): a height per tile in
+    /// decimetres, row by row, shown by the client and nothing else (no
+    /// rule reads it, no snapshot keeps it: the test world is ephemeral).
+    heights: Option<std::sync::Arc<[i16]>>,
 }
 
 /// What a map's tiles are made from.
@@ -335,6 +339,7 @@ impl Map {
             height,
             ground: Made::Filled(terrain),
             edits: BTreeMap::new(),
+            heights: None,
         }
     }
 
@@ -377,6 +382,7 @@ impl Map {
                 width, height, cliff_rows, waters, woods,
             ))),
             edits: BTreeMap::new(),
+            heights: None,
         }
     }
 
@@ -538,6 +544,45 @@ impl Map {
             }
         }
         Some(tiles)
+    }
+
+    /// The same map with a height per tile, in decimetres, row by row (the
+    /// steps test: shown by the client, read by no rule).
+    ///
+    /// # Panics
+    ///
+    /// When `heights` is not one a tile.
+    #[must_use]
+    pub fn with_heights(mut self, heights: Vec<i16>) -> Self {
+        assert_eq!(
+            heights.len(),
+            (self.width * self.height) as usize,
+            "one height a tile"
+        );
+        self.heights = Some(heights.into());
+        self
+    }
+
+    /// The heights of a chunk's tiles, row by row like [`Map::chunk`], in
+    /// decimetres; `None` on a map with no heights and for a chunk off the
+    /// map. Past the map's edge, the edge's height.
+    pub fn chunk_heights(&self, chunk: ChunkPos) -> Option<Vec<i16>> {
+        let heights = self.heights.as_ref()?;
+        if !self.has_chunk(chunk) {
+            return None;
+        }
+        let origin = chunk.origin();
+        let side = i32::try_from(CHUNK_SIZE).expect("small chunk side");
+        let (w, h) = (self.width as usize, self.height as usize);
+        let mut out = Vec::with_capacity((CHUNK_SIZE * CHUNK_SIZE) as usize);
+        for y in 0..side {
+            for x in 0..side {
+                let tx = usize::try_from(origin.x + x).unwrap_or(0).min(w - 1);
+                let ty = usize::try_from(origin.y + y).unwrap_or(0).min(h - 1);
+                out.push(heights[ty * w + tx]);
+            }
+        }
+        Some(out)
     }
 
     /// Where the water runs in a chunk, tile by tile like `chunk`
