@@ -92,7 +92,7 @@ func _on_body_assigned(body: int) -> void:
 	_body = body
 	for gauge in [_vitality, _hunger, _cold, _fatigue]:
 		gauge.value = 0.0
-	set_state("reborn in a free body" if body >= 0 else "no free body: watching")
+	set_state("reborn in another body" if body >= 0 else "no body: watching")
 
 
 func set_state(state: String) -> void:

@@ -31,18 +31,6 @@ const DEV_SPEECH := [
 	["Autre voix", "Une troisième, d'une autre voix, pour voir le fil."],
 ]
 
-## PLACEHOLDER, development only (--dev): what body 3 says when the
-## piloted body comes near it, until NPCs really talk (DevGreeter).
-const DEV_GREETINGS := [
-	"Ah, salut ! Ça fait longtemps.",
-	"Ah, t'es là !",
-	"Viens m'aider.",
-	"Viens voir par ici !",
-	"Te voilà enfin !",
-	"Hé, par ici !",
-	"Tu tombes bien, toi.",
-]
-
 
 ## The words for a reason the way is barred; an unknown one reads as no
 ## way seen.
@@ -55,8 +43,3 @@ static func blocked(reason: String) -> String:
 static func thought(kind: String, side: String) -> String:
 	var key := "%s_%s" % [kind, side] if kind == "skirting" else kind
 	return str(THOUGHTS.get(key, THOUGHTS["no_way"]))
-
-
-## A body's name as a speaker, until bodies have names.
-static func body_name(body: int) -> String:
-	return "Corps %d" % body

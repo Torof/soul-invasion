@@ -238,6 +238,42 @@ fn point(at: FinePos) -> Point {
     Point { x: at.x, y: at.y }
 }
 
+/// A body as the clients are told it: where it stands, its walk, its
+/// sleep and its hand.
+fn body_state_of(world: &World, body: &sim::Body, content: &Content) -> BodyState {
+    let timeline = world.walk_timeline(body.id(), content);
+    BodyState {
+        id: body.id().0,
+        at: point(body.at()),
+        route: timeline.iter().map(|&(p, _)| point(p)).collect(),
+        arrivals: timeline.iter().map(|&(_, t)| t).collect(),
+        speed_cm_per_s: content.movement.walk_speed_cm_per_s,
+        asleep: body.condition().asleep,
+        holds: body.held().and_then(|id| world.item(id)).map(|i| ItemView {
+            id: i.id().0,
+            material: i.material().to_owned(),
+        }),
+    }
+}
+
+/// A connection waiting for a body to be born at the camp for it: no
+/// free body was left to pilot. The simulation thread takes it before
+/// its next tick ([`Shared::take_births`]).
+#[derive(Debug)]
+struct Birth {
+    /// The channel for messages meant for that pilot alone.
+    private: mpsc::Sender<ServerMessage>,
+    /// Where the connection learns the id of its body.
+    born: mpsc::UnboundedSender<u32>,
+}
+
+impl Birth {
+    /// Has the connection gone meanwhile? No body is born for it.
+    fn is_gone(&self) -> bool {
+        self.born.is_closed()
+    }
+}
+
 /// State shared between the simulation thread and all connections.
 #[derive(Debug)]
 pub struct Shared {
@@ -331,6 +367,9 @@ pub struct Shared {
     /// Bodies currently piloted, with the channel for messages meant for
     /// that pilot alone.
     pilots: Mutex<BTreeMap<u32, mpsc::Sender<ServerMessage>>>,
+    /// Connections waiting for a body born at the camp, in the order
+    /// they asked.
+    births: Mutex<Vec<Birth>>,
     /// The development tools (`--dev`): the map's overview sent to every
     /// client, and teleports accepted. `None` in play.
     dev_overview: Option<ServerMessage>,
@@ -642,19 +681,7 @@ impl Shared {
         }
         let mut bodies = Bodies::default();
         for b in world.bodies() {
-            let timeline = world.walk_timeline(b.id(), content);
-            bodies.insert(BodyState {
-                id: b.id().0,
-                at: point(b.at()),
-                route: timeline.iter().map(|&(p, _)| point(p)).collect(),
-                arrivals: timeline.iter().map(|&(_, t)| t).collect(),
-                speed_cm_per_s: content.movement.walk_speed_cm_per_s,
-                asleep: b.condition().asleep,
-                holds: b.held().and_then(|id| world.item(id)).map(|i| ItemView {
-                    id: i.id().0,
-                    material: i.material().to_owned(),
-                }),
-            });
+            bodies.insert(body_state_of(world, b, content));
         }
         let mut shared = Self {
             tick: AtomicU64::new(world.tick().0),
@@ -692,6 +719,7 @@ impl Shared {
             connections: AtomicUsize::new(0),
             intentions: Mutex::new(BTreeMap::new()),
             pilots: Mutex::new(BTreeMap::new()),
+            births: Mutex::new(Vec::new()),
             dev_overview: None,
         };
         shared.world = shared.world_identity(world);
@@ -1055,6 +1083,66 @@ impl Shared {
             .find(|id| !pilots.contains_key(id))?;
         pilots.insert(free, private);
         Some(free)
+    }
+
+    /// Gives the connection a free body if one is left (its pilot gone,
+    /// or from an older world); else asks for one to be born at the camp
+    /// for it, its id sent on `born` once the simulation thread made it.
+    fn body_for(
+        &self,
+        private: mpsc::Sender<ServerMessage>,
+        born: &mpsc::UnboundedSender<u32>,
+    ) -> Option<u32> {
+        let free = self.take_body(private.clone());
+        if free.is_none() {
+            self.births
+                .lock()
+                .expect("births not poisoned")
+                .push(Birth {
+                    private,
+                    born: born.clone(),
+                });
+        }
+        free
+    }
+
+    /// A body is born at the camp for each connection waiting for one, in
+    /// the order they asked, none for a connection gone meanwhile: the
+    /// simulation thread's, before a tick, as it takes the intentions.
+    pub fn bear_bodies(&self, world: &mut World, content: &Content) {
+        for birth in self.take_births() {
+            if birth.is_gone() {
+                continue;
+            }
+            let Some(body) = world.spawn_at_camp() else {
+                eprintln!("no free grass on the map: no body born");
+                continue;
+            };
+            let state = body_state_of(world, world.body(body).expect("just born"), content);
+            self.body_born(birth, state);
+        }
+    }
+
+    /// Takes every connection waiting for a body, in the order they
+    /// asked, leaving none.
+    fn take_births(&self) -> Vec<Birth> {
+        std::mem::take(&mut *self.births.lock().expect("births not poisoned"))
+    }
+
+    /// Records a body just born at the camp for the connection that
+    /// asked: it pilots it, and whoever sees the camp is told it stands
+    /// there. A connection gone meanwhile leaves it free for the next.
+    fn body_born(&self, birth: Birth, state: BodyState) {
+        let (body, at) = (state.id, tile_of(state.at));
+        {
+            let mut pilots = self.pilots.lock().expect("pilot set not poisoned");
+            pilots.insert(body, birth.private);
+            self.bodies().insert(state);
+        }
+        if birth.born.send(body).is_err() {
+            self.release_body(body);
+        }
+        self.publish(&Published::BodyStopped { body, at });
     }
 
     fn release_body(&self, body: u32) {
@@ -1606,11 +1694,31 @@ pub async fn serve(
 struct Pilot {
     shared: Arc<Shared>,
     body: Option<u32>,
+    /// Where a body born at the camp for this connection is told
+    /// ([`Shared::body_for`]).
+    born: mpsc::UnboundedSender<u32>,
 }
 
 impl Drop for Pilot {
     fn drop(&mut self) {
         if let Some(body) = self.body {
+            self.shared.release_body(body);
+        }
+    }
+}
+
+/// The end a connection learns of the bodies born for it on. When the
+/// connection ends, it is closed, and a body born for it that it never
+/// took is given back: the next connection pilots it.
+struct Cradle {
+    shared: Arc<Shared>,
+    born: mpsc::UnboundedReceiver<u32>,
+}
+
+impl Drop for Cradle {
+    fn drop(&mut self) {
+        self.born.close();
+        while let Ok(body) = self.born.try_recv() {
             self.shared.release_body(body);
         }
     }
@@ -1642,18 +1750,26 @@ async fn handle_connection(
     // welcome tick and the first published message.
     let mut inbox = shared.subscribe();
     let (private_tx, mut private) = mpsc::channel(PRIVATE_CAPACITY);
+    let (born_tx, born) = mpsc::unbounded_channel();
+    let mut cradle = Cradle {
+        shared: Arc::clone(shared),
+        born,
+    };
 
     let pilot = Pilot {
         shared: Arc::clone(shared),
         body: None,
+        born: born_tx,
     };
-    let Some((pilot, held)) = handshake(&mut ws, pilot, private_tx.clone()).await? else {
+    let Some((pilot, held)) =
+        handshake(&mut ws, pilot, private_tx.clone(), &mut cradle.born).await?
+    else {
         ws.close(None).await?;
         return Ok(());
     };
     match pilot.body {
         Some(body) => println!("connection {peer}: pilots body {body}"),
-        None => println!("connection {peer}: watching, no free body"),
+        None => println!("connection {peer}: watching until a body is born for it"),
     }
 
     // From here on the socket is written by a task of its own, one
@@ -1764,6 +1880,7 @@ async fn handle_connection(
                 // The sender lives in the pilot set as long as this connection
                 // pilots a body, so the channel never closes before the loop ends.
                 Some(message) = private.recv() => link.event(&message),
+                Some(body) = cradle.born.recv() => link.born(body),
                 Some(built) = results.recv() => link.built(built),
                 permit = writer_tx.reserve(), if link.has_output() => match permit {
                     Ok(permit) => {
@@ -2246,21 +2363,37 @@ impl Link {
         );
     }
 
-    /// Provisional (D34): a pilot whose body died takes the first free
-    /// body, or watches, and the view moves there.
+    /// Provisional (D34, amended on 13 November 2026): a pilot whose body
+    /// died takes a free body if one is left, else a new one is born for
+    /// it at the camp ([`Link::born`]); the view moves there.
     fn reassign(&mut self) {
         if let Some(dead) = self.pilot.body.take() {
             self.shared.release_body(dead);
         }
-        self.pilot.body = self.shared.take_body(self.private.clone());
-        self.shared.router().set_pilot(self.conn, self.pilot.body);
-        match self.pilot.body {
-            Some(body) => println!("connection {}: now pilots body {body}", self.peer),
-            None => println!("connection {}: no free body, watching", self.peer),
+        if let Some(body) = self.shared.body_for(self.private.clone(), &self.pilot.born) {
+            self.pilots(body);
+        } else {
+            self.shared.router().set_pilot(self.conn, None);
+            println!("connection {}: a body is born for it", self.peer);
         }
-        self.event(&ServerMessage::BodyAssigned {
-            body: self.pilot.body,
-        });
+    }
+
+    /// A body was born at the camp for this connection: it pilots it.
+    /// One born after it found another is given back, free.
+    fn born(&mut self, body: u32) {
+        if self.pilot.body.is_some() {
+            self.shared.release_body(body);
+        } else {
+            self.pilots(body);
+        }
+    }
+
+    /// Pilots `body` from now on, and the view moves there.
+    fn pilots(&mut self, body: u32) {
+        self.pilot.body = Some(body);
+        self.shared.router().set_pilot(self.conn, Some(body));
+        println!("connection {}: now pilots body {body}", self.peer);
+        self.event(&ServerMessage::BodyAssigned { body: Some(body) });
         let centre = self.home();
         self.move_view(centre);
     }
@@ -2615,12 +2748,16 @@ fn walks_message(state: &BodyState, tick: u64) -> ServerMessage {
 }
 
 /// Runs the hello/welcome exchange: the pilot, and the chunks the client
-/// says it holds. Returns `Ok(None)` when the client must be disconnected
-/// (wrong version, wrong first message, or silence).
+/// says it holds. The pilot takes a free body if one is left, else waits
+/// (a tick, normally) for one born at the camp: welcomed without one if
+/// none came in time, it pilots it once it comes ([`Link::born`]).
+/// Returns `Ok(None)` when the client must be disconnected (wrong
+/// version, wrong first message, or silence).
 async fn handshake(
     ws: &mut WebSocketStream<TcpStream>,
     mut pilot: Pilot,
     private: mpsc::Sender<ServerMessage>,
+    born: &mut mpsc::UnboundedReceiver<u32>,
 ) -> Result<Option<(Pilot, Option<protocol::HeldChunks>)>, BoxError> {
     let first = tokio::time::timeout(HANDSHAKE_TIMEOUT, ws.next()).await;
     let Ok(Some(Ok(Message::Text(text)))) = first else {
@@ -2631,7 +2768,13 @@ async fn handshake(
             protocol_version,
             held,
         }) if protocol_version == PROTOCOL_VERSION => {
-            pilot.body = pilot.shared.take_body(private);
+            pilot.body = pilot.shared.body_for(private, &pilot.born);
+            if pilot.body.is_none() {
+                pilot.body = tokio::time::timeout(HANDSHAKE_TIMEOUT, born.recv())
+                    .await
+                    .ok()
+                    .flatten();
+            }
             let welcome = ServerMessage::Welcome {
                 protocol_version: PROTOCOL_VERSION,
                 tick: pilot.shared.tick.load(Ordering::Relaxed),
@@ -2708,10 +2851,18 @@ mod tests {
     }
 
     fn shared(max_connections: usize) -> Shared {
-        // A small valley: the rules are the same, and it is made in a
-        // fraction of the time.
-        let world = World::with_valley(Calendar::default(), &Content::sample(), 768);
-        Shared::new(&world, &Content::sample(), max_connections, 1.0)
+        Shared::new(&players(), &Content::sample(), max_connections, 1.0)
+    }
+
+    /// A small valley (the rules are the same, and it is made in a
+    /// fraction of the time) where three bodies were born at the camp,
+    /// as for three players.
+    fn players() -> World {
+        let mut world = World::with_valley(Calendar::default(), &Content::sample(), 768);
+        for _ in 0..3 {
+            world.spawn_at_camp().expect("grass by the camp");
+        }
+        world
     }
 
     #[test]
@@ -3125,11 +3276,27 @@ mod tests {
         pool: &Arc<ChunkPool>,
         body: Option<u32>,
     ) -> (Link, mpsc::UnboundedReceiver<Built>) {
+        let (link, results_rx, _) = link_born(shared, pool, body);
+        (link, results_rx)
+    }
+
+    /// The same, with the end the bodies born for it are told on.
+    fn link_born(
+        shared: &Arc<Shared>,
+        pool: &Arc<ChunkPool>,
+        body: Option<u32>,
+    ) -> (
+        Link,
+        mpsc::UnboundedReceiver<Built>,
+        mpsc::UnboundedReceiver<u32>,
+    ) {
         let (private, _) = mpsc::channel(PRIVATE_CAPACITY);
         let (results, results_rx) = mpsc::unbounded_channel();
+        let (born, born_rx) = mpsc::unbounded_channel();
         let pilot = Pilot {
             shared: Arc::clone(shared),
             body,
+            born,
         };
         let peer = "127.0.0.1:1".parse().expect("an address");
         let conn = shared.subscribe().id;
@@ -3142,7 +3309,7 @@ mod tests {
             private,
             results,
         );
-        (link, results_rx)
+        (link, results_rx, born_rx)
     }
 
     /// Hands the link every chunk (and far view) the pool built for it
@@ -3268,6 +3435,47 @@ mod tests {
             decode::<ServerMessage>(first.to_text().expect("text")).expect("the protocol"),
             far_view(&shared.map, away)
         );
+    }
+
+    #[test]
+    fn a_pilot_whose_body_died_pilots_a_body_born_for_it_at_the_camp() {
+        // Body 1 alone in the valley, piloted: when it dies, no free body
+        // is left. (Its death is the network's here: the world keeps it,
+        // so the new body is born on the next free grass.)
+        let content = Content::sample();
+        let mut world = World::with_valley(Calendar::default(), &content, 768);
+        world.spawn_at_camp().expect("grass by the camp");
+        let shared = Arc::new(Shared::new(&world, &content, 1, 1.0));
+        let pool = Arc::new(ChunkPool::new(1));
+        let (tx, _private) = mpsc::channel(PRIVATE_CAPACITY);
+        assert_eq!(shared.take_body(tx), Some(1));
+        let (mut link, mut results, mut born) = link_born(&shared, &pool, Some(1));
+        shared.body_died(BodyId(1), DeathCause::Starved);
+
+        link.reassign();
+        assert_eq!(link.pilot.body, None, "it waits for its birth");
+        assert!(shared.piloted().is_empty(), "the dead body is let go");
+        assert!(born.try_recv().is_err(), "nothing born before the tick");
+
+        // Before the next tick, the simulation thread bears it at the
+        // camp: piloted at once, standing where the world has it.
+        shared.bear_bodies(&mut world, &content);
+        assert_eq!(born.try_recv(), Ok(2));
+        assert_eq!(shared.piloted(), vec![BodyId(2)]);
+        let at = world.body(BodyId(2)).expect("born").pos();
+        assert_eq!(shared.position_of(2), Some(at));
+        let camp = world.map().camp();
+        assert!((at.x - camp.x).abs().max((at.y - camp.y).abs()) <= 3);
+        assert!(shared.take_births().is_empty(), "born once");
+
+        link.born(2);
+        assert_eq!(link.pilot.body, Some(2));
+        assert!(matches!(
+            drain(&mut link).first(),
+            Some(Out::Message(ServerMessage::BodyAssigned { body: Some(2) }))
+        ));
+        assert_eq!(link.home(), at.chunk(), "the view moves to it");
+        settle(&mut link, &mut results);
     }
 
     #[test]

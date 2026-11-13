@@ -889,9 +889,10 @@ pub const VALLEY_SIZE: u32 = 3072;
 pub const VALLEY_SEED: u64 = 1;
 
 impl World {
-    /// Creates the first version's valley at tick zero, with a few
-    /// inhabitants standing on the grass by the main river and the
-    /// content's materials scattered over the ground by its spawn rules.
+    /// Creates the first version's valley at tick zero, with nobody in
+    /// it yet (a player's body is born at the camp:
+    /// [`World::spawn_at_camp`]) and the content's materials scattered
+    /// over the ground by its spawn rules.
     pub fn new(calendar: Calendar, content: &Content) -> Self {
         Self::with_valley(calendar, content, VALLEY_SIZE)
     }
@@ -900,15 +901,6 @@ impl World {
     /// far faster, for the tests and development (`--valley-size`).
     pub fn with_valley(calendar: Calendar, content: &Content, size: u32) -> Self {
         let mut world = Self::empty(calendar, Map::valley(size, size, VALLEY_SEED));
-        let camp = world.map.camp();
-        for (dx, dy) in [(0, 0), (2, 1), (-1, 3)] {
-            let wanted = Pos::new(camp.x + dx, camp.y + dy);
-            let pos = world
-                .map
-                .nearest(wanted, Terrain::Grass)
-                .expect("the valley has grass");
-            world.spawn_body(pos);
-        }
         world.natural = true;
         world.take_content(content);
         world
@@ -1305,6 +1297,29 @@ impl World {
         });
         self.enter_chunk(id, pos.chunk());
         id
+    }
+
+    /// Adds a body on the grass nearest the camp where no body stands and
+    /// no trunk grows, searching in growing squares: a player's body,
+    /// born there (provisional, until souls choose their bodies, D34).
+    /// `None` when the map has no such tile.
+    pub fn spawn_at_camp(&mut self) -> Option<BodyId> {
+        let camp = self.map.camp();
+        let taken: BTreeSet<Pos> = self.bodies.iter().map(Body::pos).collect();
+        let reach =
+            i32::try_from(self.map.width().max(self.map.height())).expect("map fits in i32");
+        let trunks = self.trunks();
+        let free = |p: Pos| {
+            self.map.get(p) == Some(Terrain::Grass) && !taken.contains(&p) && !trunks.blocks(p)
+        };
+        let pos = (0..=reach).find_map(|r| {
+            (-r..=r)
+                .flat_map(|dy| (-r..=r).map(move |dx| (dx, dy)))
+                .filter(|(dx, dy)| dx.abs() == r || dy.abs() == r)
+                .map(|(dx, dy)| Pos::new(camp.x + dx, camp.y + dy))
+                .find(|p| free(*p))
+        })?;
+        Some(self.spawn_body(pos))
     }
 
     /// Is it night? The day starts at dawn; night covers its last part.
@@ -2419,8 +2434,11 @@ mod tests {
 
     fn small_world() -> World {
         // 4 ticks per day: easy to reason about. A valley of 768: the same
-        // rules as the game's, made in a fraction of the time.
-        World::with_valley(Calendar::new(2, 2).unwrap(), &rules(), 768)
+        // rules as the game's, made in a fraction of the time. Body 1
+        // born at the camp, as for a player.
+        let mut world = World::with_valley(Calendar::new(2, 2).unwrap(), &rules(), 768);
+        world.spawn_at_camp().expect("grass by the camp");
+        world
     }
 
     fn open_field() -> World {
@@ -2460,13 +2478,11 @@ mod tests {
     }
 
     #[test]
-    fn new_world_starts_at_tick_zero_on_day_one_with_bodies() {
+    fn new_world_starts_at_tick_zero_on_day_one_with_nobody() {
         let w = World::default();
         assert_eq!(w.tick(), Tick(0));
         assert_eq!(w.time().day, 1);
-        assert_eq!(w.bodies().len(), 3);
-        assert!(w.bodies().iter().all(|b| w.map().is_passable(b.pos())));
-        assert!(w.bodies().iter().all(|b| b.at() == b.pos().centre()));
+        assert!(w.bodies().is_empty(), "no idle body: a player's is born");
         assert_eq!(
             (w.map().width(), w.map().height()),
             (VALLEY_SIZE, VALLEY_SIZE)
@@ -2477,6 +2493,26 @@ mod tests {
             "terrain is not in the snapshot"
         );
         assert!(text.contains("\"items\""), "items are");
+    }
+
+    #[test]
+    fn a_body_is_born_on_free_grass_nearest_the_camp() {
+        let mut w = World::with_valley(Calendar::new(2, 2).unwrap(), &rules(), 768);
+        let camp = w.map().camp();
+        let first = w.spawn_at_camp().expect("grass by the camp");
+        let second = w.spawn_at_camp().expect("grass by the camp");
+        assert_eq!((first, second), (BodyId(1), BodyId(2)));
+        let (a, b) = (w.body(first).unwrap(), w.body(second).unwrap());
+        assert_ne!(a.pos(), b.pos(), "never on a tile a body stands on");
+        for body in [a, b] {
+            assert_eq!(w.map().get(body.pos()), Some(Terrain::Grass));
+            assert!(!w.is_trunk(body.pos()));
+            assert_eq!(body.at(), body.pos().centre());
+        }
+        let (dx, dy) = (a.pos().x - camp.x, a.pos().y - camp.y);
+        assert!(dx.abs().max(dy.abs()) <= 3, "by the camp: {dx}, {dy}");
+        let near = |p: Pos| (p.x - camp.x).abs().max((p.y - camp.y).abs());
+        assert!(near(a.pos()) <= near(b.pos()), "the nearest first");
     }
 
     #[test]
@@ -4369,9 +4405,12 @@ mod tests {
             .expect("species.ron parses")
     }
 
-    /// The small valley with its trees.
+    /// The small valley with its trees, body 1 born at the camp.
     fn wooded_world() -> World {
-        World::with_valley(Calendar::new(10, 1_000_000).unwrap(), &wooded_rules(), 768)
+        let mut world =
+            World::with_valley(Calendar::new(10, 1_000_000).unwrap(), &wooded_rules(), 768);
+        world.spawn_at_camp().expect("grass by the camp");
+        world
     }
 
     /// Does any segment of `route`, from `from`, enter one of `tiles`?

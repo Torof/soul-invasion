@@ -69,16 +69,27 @@ fn rules() -> sim::Content {
     server::content::load(content_dir()).expect("the tests' content")
 }
 
-/// The world a fresh server starts with, generated once for all the
-/// tests: the valley is large, and its generation must not eat into a
-/// running server's short days.
 /// The tests' valley: smaller than the game's (`--valley-size`), so each
 /// server they start is up in seconds; the same rules apply.
 const VALLEY: u32 = 768;
 
+/// How many bodies [`standard_world`] holds.
+const PLAYERS: usize = 4;
+
+/// The world a fresh server holds once players joined it in turn, none
+/// of them moving yet: a fresh server starts with nobody, and a body is
+/// born at the camp for each connection, body 1 for the first.
+/// Generated once for all the tests: the valley is large, and its
+/// generation must not eat into a running server's short days.
 fn standard_world() -> &'static World {
     static WORLD: OnceLock<World> = OnceLock::new();
-    WORLD.get_or_init(|| World::with_valley(Calendar::default(), &rules(), VALLEY))
+    WORLD.get_or_init(|| {
+        let mut world = World::with_valley(Calendar::default(), &rules(), VALLEY);
+        for _ in 0..PLAYERS {
+            world.spawn_at_camp().expect("grass by the camp");
+        }
+        world
+    })
 }
 
 /// The tiles a body standing at `from` can walk to, through straight
@@ -439,9 +450,15 @@ async fn hello_world_view_and_ping() {
     let mut far = None;
     // The chunks are built beside the network. The bodies follow the
     // frame of the chunk they stand in.
-    while chunks.len() < window_len(world, centre) || seen_bodies.len() < 3 {
+    while chunks.len() < window_len(world, centre) || seen_bodies.is_empty() {
         match receive_any(&mut socket).await {
-            Some(Got::M(ServerMessage::DayStarted { .. } | ServerMessage::View { .. })) => {}
+            // The body born for this connection is announced to whoever sees
+            // the camp, this one included, and may arrive among the chunks.
+            Some(Got::M(
+                ServerMessage::DayStarted { .. }
+                | ServerMessage::View { .. }
+                | ServerMessage::BodyStopped { .. },
+            )) => {}
             Some(message)
                 if ambient(&message)
                     && !matches!(
@@ -462,7 +479,7 @@ async fn hello_world_view_and_ping() {
                     assert_eq!(b.route, Vec::new(), "nobody walks at the start");
                     assert!(!b.asleep, "nobody sleeps at the start");
                 }
-                seen_bodies.extend(bodies.iter().map(|b| b.id));
+                seen_bodies.extend(bodies.iter().map(|b| (b.id, tile(b.at))));
             }
             Some(Got::Chunk(frame)) => {
                 let items = frame.items(&[]);
@@ -542,12 +559,13 @@ async fn hello_world_view_and_ping() {
         seen_trees > 100,
         "{seen_trees} trees in view: the woods stand"
     );
-    seen_bodies.sort_unstable();
-    assert_eq!(
-        seen_bodies,
-        vec![1, 2, 3],
-        "the three bodies start close together"
-    );
+    // Nobody stood in the valley: the player's body was born for it on
+    // the grass nearest the camp, and stands there alone.
+    let camp = world.map().camp();
+    let born = start_of(world, 1);
+    assert_eq!(world.map().get(born), Some(sim::Terrain::Grass));
+    assert!((born.x - camp.x).abs().max((born.y - camp.y).abs()) <= 3);
+    assert_eq!(seen_bodies, vec![(1, born)], "only the player's body");
 
     send(&mut socket, &ClientMessage::Ping { nonce: 7 }).await;
     assert_eq!(
@@ -835,9 +853,8 @@ fn window(world: &World, centre: ChunkPos) -> HashSet<(i32, i32)> {
 
 #[tokio::test]
 async fn clients_logging_in_at_once_each_get_a_complete_view() {
-    // Three bodies to pilot, a fourth client watches the middle of the
-    // map: four cold views built at the same time on two threads, each
-    // whole, each chunk once.
+    // A body born at the camp for each of four clients: four cold views
+    // built at the same time on two threads, each whole, each chunk once.
     let server = Server::start_with(&["--chunk-threads", "2"]);
     let world = standard_world();
     let (a, b, c, d) = tokio::join!(
@@ -851,8 +868,11 @@ async fn clients_logging_in_at_once_each_get_a_complete_view() {
         assert_eq!(*chunks, window(world, centre), "{body:?}'s view");
     }
     let bodies: HashSet<Option<u32>> = [a.1, b.1, c.1, d.1].into_iter().collect();
-    assert_eq!(bodies.len(), 4, "three different bodies and a watcher");
-    assert!(bodies.contains(&None), "the fourth client watches");
+    assert_eq!(
+        bodies,
+        (1..=4).map(Some).collect(),
+        "a body born for each, by the camp"
+    );
 }
 
 #[tokio::test]
@@ -1068,8 +1088,8 @@ async fn cold_login(server: &Server) -> (Duration, Duration) {
 /// `cargo test --release -p server --test net measure_cold_logins -- --ignored --nocapture`.
 ///
 /// One cold login alone (hello to the last of the 361 chunks, and to the
-/// first), then four at once on a fresh server: three pilots at the
-/// camp and a watcher at the middle of the map, a cold view each.
+/// first), then four at once on a fresh server: four pilots born at the
+/// camp, a cold view each.
 #[tokio::test]
 #[ignore = "a measure on the game's 3072 valley, run by hand in release"]
 async fn measure_cold_logins() {
@@ -1245,8 +1265,11 @@ async fn a_move_intention_makes_the_piloted_body_walk() {
                 Some(Got::M(ServerMessage::BodyStopped { body: who, at })) if who == body => {
                     stopped = Some(at);
                 }
+                // The watcher's body, born at the camp as it joined.
                 Some(Got::M(
-                    ServerMessage::DayStarted { .. } | ServerMessage::BodyWalks { .. },
+                    ServerMessage::DayStarted { .. }
+                    | ServerMessage::BodyWalks { .. }
+                    | ServerMessage::BodyStopped { .. },
                 )) => {}
                 other => panic!("unexpected {other:?}"),
             }
@@ -1439,6 +1462,8 @@ async fn a_refusal_reaches_the_pilot_alone() {
                 assert_eq!(who, body);
                 break;
             }
+            // The other's body, born at the camp as it joined.
+            Some(Got::M(ServerMessage::BodyStopped { body: who, .. })) if who == other_body => {}
             Some(Got::M(ServerMessage::DayStarted { .. })) => {}
             unexpected => panic!("unexpected {unexpected:?}"),
         }
@@ -1819,7 +1844,7 @@ async fn eating_takes_an_item_within_reach_and_refuses_the_rest() {
 }
 
 #[tokio::test]
-async fn a_starved_body_dies_and_its_pilot_is_given_another_or_watches() {
+async fn a_starved_body_dies_and_its_pilot_is_born_again_at_the_camp() {
     // Days of one second, run fifty times faster: a body starves in well
     // under a real second.
     let server = Server::start_with(&[SHORT_DAYS[0], SHORT_DAYS[1], "--time-scale", "50"]);
@@ -1837,39 +1862,30 @@ async fn a_starved_body_dies_and_its_pilot_is_given_another_or_watches() {
         cause,
         protocol::DeathCause::Starved | protocol::DeathCause::Froze
     ));
-    // The corpse appeared, the pilot got another body or none. The other
-    // bodies starve at the same moment, so the body it is given may die
-    // under it at once and be replaced in turn; with a living body, the
-    // pilot is settled in it: the ground around it comes when the view
-    // moves, its condition in any case.
-    let mut assigned = wait_for(&mut pilot, |m| match m {
-        ServerMessage::BodyAssigned { body } => Some(*body),
-        _ => None,
+    // A new body is born for the pilot on the grass nearest the camp: the
+    // tile its first body was born on and died on, free again (the dead
+    // leave a corpse, an item, not a body). Whoever sees the camp is told
+    // it stands there, the pilot that it is its own, in either order. It
+    // may starve in turn: only its birth is looked at.
+    let mut assigned = None;
+    let mut stands = HashMap::new();
+    let (new_body, at) = wait_for(&mut pilot, |m| {
+        match m {
+            ServerMessage::BodyAssigned { body: Some(b) } => assigned = Some(*b),
+            ServerMessage::BodyStopped { body: b, at } => {
+                stands.insert(*b, tile(*at));
+            }
+            ServerMessage::ChunkBodies { bodies, .. } => {
+                stands.extend(bodies.iter().map(|s| (s.id, tile(s.at))));
+            }
+            _ => {}
+        }
+        let new_body = assigned?;
+        stands.get(&new_body).map(|at| (new_body, *at))
     })
     .await;
-    while let Some(new_body) = assigned {
-        assert_ne!(new_body, body, "never the dead body");
-        let settled = wait_for(&mut pilot, |m| match m {
-            // The new body's own chunk, the bodies in it after it.
-            ServerMessage::ChunkBodies { bodies, .. }
-                if bodies.iter().any(|b| b.id == new_body) =>
-            {
-                Some(true)
-            }
-            ServerMessage::BodyCondition { body: who, .. } if *who == new_body => Some(true),
-            ServerMessage::BodyDied { body: who, .. } if *who == new_body => Some(false),
-            _ => None,
-        })
-        .await;
-        if settled {
-            break;
-        }
-        assigned = wait_for(&mut pilot, |m| match m {
-            ServerMessage::BodyAssigned { body } => Some(*body),
-            _ => None,
-        })
-        .await;
-    }
+    assert_ne!(new_body, body, "never the dead body");
+    assert_eq!(at, start_of(standard_world(), 1), "born at the camp");
 }
 
 #[tokio::test]
