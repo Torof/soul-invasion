@@ -39,7 +39,8 @@ uniform int steps_mode = 0;
 // space, SLOPE_TEXTURE_PX a repetition, toned by SLOPE_TINT.
 uniform sampler2D slope_texture : repeat_enable, filter_linear_mipmap;
 // Four more slopes' grasses (Midjourney's of 13 November 2026, numbers
-// 1, 2, 3 and 16 of that batch, toned to the lead's): each zone of about
+// 1, 2, 3 and 16 of that batch, toned to the lead's; all five with their
+// broad light streaks softened by 60 %, ink and dark tufts kept): each zone of about
 // SLOPE_ZONE_TILES, its edges wavy, takes one of the five whole, never two
 // over each other, against the same grass coming back everywhere. Off
 // (key V): the lead's grass alone.
@@ -49,6 +50,9 @@ uniform sampler2D slope_grass_3 : repeat_enable, filter_linear_mipmap;
 uniform sampler2D slope_grass_16 : repeat_enable, filter_linear_mipmap;
 uniform bool slope_zones = true;
 const float SLOPE_ZONE_TILES = 22.0;
+// Midjourney's grasses are drawn at half the lead's scale: repeated over
+// SLOPE_ZONE_SCALE times the canvas so their tufts match his.
+const float SLOPE_ZONE_SCALE = 2.0;
 // Crisp (the default, 13 November 2026): one image a pixel, the dominant
 // inclination and side only, no offset cells, no fade into the meadow, so
 // two grasses never lie over each other (they blurred). Off (key T): the
@@ -471,6 +475,11 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 	}
 	vec3 slope;
 	int zone = slope_zones ? slope_zone(p) : 0;
+	if (zone > 0) {
+		canvas /= SLOPE_ZONE_SCALE;
+		dx /= SLOPE_ZONE_SCALE;
+		dy /= SLOPE_ZONE_SCALE;
+	}
 	if (zone == 1) {
 		slope = slope_leaning(slope_grass_1, canvas, dx, dy, inclines, leans, w, ox, oy);
 	} else if (zone == 2) {
