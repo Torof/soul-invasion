@@ -40,6 +40,17 @@ fn map_print(map: &Map) -> u64 {
     h.0
 }
 
+/// An item as the prints read it: which, of what and where, written as
+/// items were before they carried their own grams and date (D35, 13
+/// November 2026), so a heavier pile moved no item.
+#[derive(Debug)]
+#[allow(dead_code, reason = "read by Debug only")]
+struct Item {
+    id: sim::ItemId,
+    material: String,
+    place: sim::Place,
+}
+
 /// A tree as the prints read it: where and of what kind, written as trees
 /// were before they carried their key (D2), so a key added moved no tree.
 #[derive(Debug)]
@@ -56,7 +67,16 @@ fn world_print(world: &World) -> (u64, u64, u64) {
     let chunks = i32::try_from(chunks).expect("few chunks");
     for y in 0..chunks {
         for x in 0..chunks {
-            items.bytes(format!("{:?}", world.items_in(sim::ChunkPos::new(x, y))).as_bytes());
+            let placed: Vec<Item> = world
+                .items_in(sim::ChunkPos::new(x, y))
+                .iter()
+                .map(|i| Item {
+                    id: i.id(),
+                    material: i.material().to_owned(),
+                    place: i.place(),
+                })
+                .collect();
+            items.bytes(format!("{placed:?}").as_bytes());
         }
     }
     // The trees, placed per chunk, chunk by chunk: where and of what kind
