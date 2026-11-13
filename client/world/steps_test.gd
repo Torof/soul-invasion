@@ -156,6 +156,11 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	var key := event as InputEventKey
 	if key == null or not key.pressed or key.echo:
 		return
+	if key.keycode == KEY_M:
+		ChunkView.set_slope_sides_swapped(not ChunkView.slope_sides_swapped)
+		_apply()
+		get_viewport().set_input_as_handled()
+		return
 	var chosen := key.keycode - KEY_0
 	if chosen < 0 or chosen >= MODES.size():
 		return
@@ -166,4 +171,5 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 func _apply() -> void:
 	ChunkView.set_steps_mode(mode)
-	_label.text = "Slope test — %s   (keys 1 and 0)" % MODES[mode]
+	var sides := "sides swapped" if ChunkView.slope_sides_swapped else "sides as before"
+	_label.text = "Slope test — %s, %s   (keys 1, 0 and M)" % [MODES[mode], sides]

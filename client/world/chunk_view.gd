@@ -230,6 +230,7 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 		material.set_shader_parameter("slope_index", HeightIndex.texture())
 		if terrain != "water":
 			material.set_shader_parameter("steps_mode", steps_mode)
+			material.set_shader_parameter("slope_sides_swapped", slope_sides_swapped)
 			material.set_shader_parameter("slope_texture", load(SLOPE_GRASS))
 			material.set_shader_parameter("slope_stony_texture", load(SLOPE_STONY))
 			material.set_shader_parameter("slope_rock_texture", load(SLOPE_ROCK))
@@ -244,11 +245,20 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 ## offsets against repetition (the mountain test's rule), 0 the game's
 ## ground as it is (any world with no relief).
 static var steps_mode := 0
+## The mountain test: whether the slope images' sides are swapped.
+static var slope_sides_swapped := true
 ## The mountain test's slope images (Scenario's, 13 November 2026): the
 ## grass, tinted, the stones over it and the rock over both.
 const SLOPE_GRASS := "res://world/test/slope_grass.png"
 const SLOPE_STONY := "res://world/test/slope_stony.png"
 const SLOPE_ROCK := "res://world/test/slope_rock.png"
+
+
+static func set_slope_sides_swapped(swapped: bool) -> void:
+	slope_sides_swapped = swapped
+	for terrain: String in _ground_materials:
+		if terrain != "water":
+			(_ground_materials[terrain] as ShaderMaterial).set_shader_parameter("slope_sides_swapped", swapped)
 
 
 static func set_steps_mode(mode: int) -> void:
