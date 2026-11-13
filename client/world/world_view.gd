@@ -403,8 +403,6 @@ func _on_chunk(x: int, y: int, chunk: Dictionary) -> void:
 		if _steps == null and _any_relief(heights):
 			_steps = StepsTest.new()
 			add_child(_steps)
-		if _steps != null:
-			_steps.chunk(key * _chunk_size, _chunk_size)
 	_currents[key] = currents
 	_items[key] = items
 	_items_version += 1

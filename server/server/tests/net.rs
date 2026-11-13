@@ -2606,8 +2606,9 @@ async fn a_client_far_from_a_walker_hears_nothing_of_it() {
     .await;
 }
 
-/// The steps test: a 32 × 32 world starts, a body is born in it, and its
-/// one chunk carries the hill's heights through the protocol.
+/// The steps test: a 12 × 12 world starts, a body is born in it, and its
+/// one chunk carries the blocks' heights through the protocol (the tiles
+/// past the map's edge repeat its last row and column).
 #[tokio::test]
 async fn the_steps_test_world_starts_and_sends_its_heights() {
     let server = Server::start_with(&["--world", "test:marches"]);
@@ -2620,6 +2621,13 @@ async fn the_steps_test_world_starts_and_sends_its_heights() {
             None => panic!("the server closed before the chunk came"),
         }
     };
-    assert_eq!(frame.heights, server::test_world::marches_heights());
-    assert_eq!(frame.heights.iter().max(), Some(&30), "a hill 3 m high");
+    let side = server::test_world::MARCHES_SIDE as usize;
+    let chunk = CHUNK_SIZE as usize;
+    let heights = server::test_world::marches_heights();
+    for y in 0..side {
+        for x in 0..side {
+            assert_eq!(frame.heights[y * chunk + x], heights[y * side + x]);
+        }
+    }
+    assert_eq!(frame.heights.iter().max(), Some(&20), "blocks up to 2 m");
 }

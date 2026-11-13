@@ -228,30 +228,28 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 		material.set_shader_parameter("index_bit", int(GroundIndex.BITS.get(terrain, 0)))
 		material.set_shader_parameter("index_tiles", float(GroundIndex.TILES))
 		material.set_shader_parameter("height_index", HeightIndex.texture())
-		material.set_shader_parameter("height_smooth", HeightIndex.texture())
 		if terrain != "water":
 			material.set_shader_parameter("steps_mode", steps_mode)
-			material.set_shader_parameter("slope_mode", slope_mode)
+			material.set_shader_parameter("slope_texture", load(SLOPE_GRASS))
 		apply_spec(material, terrain, false)
 		pin_flow_time(material)
 		_ground_materials[terrain] = material
 	return _ground_materials[terrain]
 
 
-## The steps test's modes (StepsTest): what the land's grounds draw of
-## the levels, its steps and its slopes; 0 in any world with no relief.
+## The steps test's mode (StepsTest): 1 the land's grounds draw the
+## levels' walls and the slope's grass, 0 nothing (any world with no
+## relief).
 static var steps_mode := 0
-static var slope_mode := 0
+## The steps test's slope grass, a crop of the project lead's image.
+const SLOPE_GRASS := "res://world/test/slope_grass.png"
 
 
-static func set_steps_mode(mode: int, slopes: int) -> void:
+static func set_steps_mode(mode: int) -> void:
 	steps_mode = mode
-	slope_mode = slopes
 	for terrain: String in _ground_materials:
 		if terrain != "water":
-			var material := _ground_materials[terrain] as ShaderMaterial
-			material.set_shader_parameter("steps_mode", mode)
-			material.set_shader_parameter("slope_mode", slopes)
+			(_ground_materials[terrain] as ShaderMaterial).set_shader_parameter("steps_mode", mode)
 
 
 ## Development: with SOUL_INVASION_WATER_TIME set to a number of seconds,

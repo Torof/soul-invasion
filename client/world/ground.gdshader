@@ -30,15 +30,14 @@ const float SHARPEN = 0.5;
 // the camera (a south or east face), an earth wall is drawn on the lower
 // ground below the upper level's lip, STEP_PX_PER_M tall a metre, with a
 // short shadow at its foot; on a face turned away, a thin dark line.
-// steps_mode: 0 nothing, 1 the walls (A), 2 with a light lip (B), 3 A
-// with the stones (C, drawn by StepsTest, not here), 4 all.
+// steps_mode: 0 nothing, 1 the walls and the slope's grass (third
+// version, 13 November 2026: the levels read as stacked cubes, v1's).
 uniform sampler2D height_index : filter_nearest, repeat_enable;
 uniform int steps_mode = 0;
 // A wall's height on the canvas, a metre: less than a metre's true
-// height (Iso.PX_PER_M, 64), which made the 2 m cliff too strong (the
-// project lead, 13 November 2026: "a little too much"). StepsTest's
-// stones follow it (WALL_PX_PER_M).
-const float STEP_PX_PER_M = 44.0;
+// height (Iso.PX_PER_M, 64, a little too strong for the project lead),
+// more than the second version's 44.
+const float STEP_PX_PER_M = 50.0;
 // Going up the canvas by a tile along both x and y: a diamond's height.
 const float STEP_TILE_PX = 32.0;
 // A smaller difference is a ramp: no edge.
@@ -57,43 +56,17 @@ const vec3 WALL_DEEP = vec3(0.33, 0.24, 0.16);
 const float WALL_EAST_SHADE = 0.8;
 const float AWAY_LINE_PX = 1.6;
 const float AWAY_LINE = 0.45;
-const float LIP_LIGHT_PX = 2.5;
-const vec3 LIP_LIGHT = vec3(1.28, 1.25, 1.12);
 
-// The steps test's slopes (second version, 13 November 2026): where
-// neighbouring tiles differ by less than a step, the level runs smoothly
-// between the tiles' middles (height_smooth: the same HeightIndex, read
-// linearly) and its fall is drawn without ever darkening the ground
-// broadly. slope_mode: 0 nothing, 1 a band down the slopes turned to the
-// camera, 2 strokes along the fall line, 3 both.
-uniform sampler2D height_smooth : filter_linear, repeat_enable;
-uniform int slope_mode = 0;
-// A fall under SLOPE_FLAT_M a tile is flat ground, drawn as it is; the
-// slope is whole from SLOPE_FULL_M.
-const float SLOPE_FLAT_M = 0.06;
-const float SLOPE_FULL_M = 0.2;
-// The band: lighter by BAND_TOP at a slope's top, darker by BAND_FOOT at
-// its foot; the top and foot found by marching BAND_MARCH steps of
-// BAND_STEP tiles each way along the fall.
-const float BAND_TOP = 0.04;
-const float BAND_FOOT = 0.15;
-const float BAND_STEP = 0.5;
-const int BAND_MARCH = 16;
-// The light lip where a slope begins at its top, on the canvas.
-const float SLOPE_LIP_PX = 2.5;
-const float SLOPE_LIP = 0.16;
-// The strokes: at most one a cell of STROKE_CELL tiles, there with a
-// chance of STROKE_DENSITY a metre of fall a tile (at most STROKE_MAX):
-// denser where steeper. On the canvas, STROKE_LEN_PX long at most,
-// STROKE_WIDTH_PX wide, tapered; the grass under them darker by up to
-// STROKE_DARK, a little greener.
-const float STROKE_CELL = 0.25;
-const float STROKE_DENSITY = 1.2;
-const float STROKE_MAX = 0.85;
-const float STROKE_LEN_PX = 9.0;
-const float STROKE_WIDTH_PX = 1.1;
-const float STROKE_DARK = 0.18;
-const vec3 STROKE_TINT = vec3(0.97, 1.0, 0.95);
+// The steps test's slope: the slope's grass (client/world/test/
+// slope_grass.png, a crop of the project lead's Midjourney image "herbe
+// en pente", its streaks rising towards the upper right) laid in canvas
+// space, SLOPE_TEXTURE_PX a repetition from SLOPE_ORIGIN_PX: the test's
+// ridge lies inside a single repetition, so no seam shows. Toned towards
+// the meadow's grass by SLOPE_TINT (the crop is lighter and yellower).
+uniform sampler2D slope_texture : repeat_enable, filter_linear_mipmap;
+const float SLOPE_TEXTURE_PX = 384.0;
+const vec2 SLOPE_ORIGIN_PX = vec2(-340.0, 0.0);
+const vec3 SLOPE_TINT = vec3(0.74, 0.86, 0.73);
 
 uniform sampler2D noise_texture : repeat_enable, filter_linear;
 // Noise period, in texture units (one unit is one texture, four metres).
@@ -354,10 +327,8 @@ vec3 steps_colour(vec3 c, vec2 p) {
 			float lip = LIP_MIN_PX + (n1 * 0.6 + n2 * 0.4) * LIP_JITTER_PX;
 			float foot = wall + lip + (texture(noise_texture, vec2(along * 1.7, 0.83)).r - 0.5) * 2.0 * FOOT_JITTER_PX;
 			if (s < lip) {
-				// The upper ground's lip, overhanging; lit on the faces
-				// turned to the light (B).
-				bool lit = (steps_mode == 2 || steps_mode == 4) && !west && s > lip - LIP_LIGHT_PX;
-				return lit ? c * LIP_LIGHT : c;
+				// The upper ground's lip, overhanging.
+				return c;
 			}
 			if (s < foot) {
 				float v = (s - lip) / max(foot - lip, 1.0);
@@ -393,139 +364,50 @@ vec3 steps_colour(vec3 c, vec2 p) {
 	return c;
 }
 
-// The level at map point `p` (tiles), read linearly between the tiles'
-// middles, in metres.
-float slope_level(vec2 p) {
-	return texture(height_smooth, p / index_tiles).r * 25.5;
+// A tile's height in decimetres, or `own` where no chunk said it.
+float slope_dm(vec2 cell, float own) {
+	vec4 h = texture(height_index, (cell + 0.5) / index_tiles);
+	return h.g > 0.5 ? round(h.r * 255.0) : own;
 }
 
-// The level's rise at `p`, metres a tile along x and y.
-vec2 slope_rise(vec2 p) {
-	const float e = 0.25;
-	return vec2(
-		slope_level(p + vec2(e, 0.0)) - slope_level(p - vec2(e, 0.0)),
-		slope_level(p + vec2(0.0, e)) - slope_level(p - vec2(0.0, e))) / (2.0 * e);
+// A tile's incline as the screen sees it: 1 where it rises towards the
+// screen's right, -1 where it falls, 0 where it is no slope's (the steps
+// test's convention: a slope's level is not a whole number of metres).
+float slope_incline(vec2 cell) {
+	float own = slope_dm(cell, -1.0);
+	if (own < 0.0 || mod(own, 10.0) < 0.5) {
+		return 0.0;
+	}
+	// The screen's right is the map's +x and -y at once.
+	float gx = slope_dm(cell + vec2(1.0, 0.0), own) - slope_dm(cell - vec2(1.0, 0.0), own);
+	float gy = slope_dm(cell + vec2(0.0, 1.0), own) - slope_dm(cell - vec2(0.0, 1.0), own);
+	return gx - gy < 0.0 ? -1.0 : 1.0;
 }
 
-// How much of a slope `p` lies on, 0 to 1.
-float slope_weight(vec2 rise) {
-	return smoothstep(SLOPE_FLAT_M, SLOPE_FULL_M, length(rise));
-}
-
-// Whether the tiles read around `p` all have a level and no step between
-// two of them (a step is a wall, steps_colour's, never a slope).
-bool slope_smooth(vec2 p) {
-	vec2 a = floor(p);
-	float l[9];
-	for (int j = 0; j < 3; j++) {
-		for (int i = 0; i < 3; i++) {
-			l[j * 3 + i] = step_level(a + vec2(float(i - 1), float(j - 1)));
-			if (l[j * 3 + i] < 0.0) {
-				return false;
-			}
-		}
-	}
-	for (int j = 0; j < 3; j++) {
-		for (int i = 0; i < 2; i++) {
-			if (abs(l[j * 3 + i] - l[j * 3 + i + 1]) >= STEP_MIN_M
-					|| abs(l[i * 3 + j] - l[i * 3 + j + 3]) >= STEP_MIN_M) {
-				return false;
-			}
-		}
-	}
-	return true;
-}
-
-// Three numbers in [0, 1) for a cell (a hash without sines).
-vec3 slope_hash(vec2 k) {
-	vec3 q = fract(vec3(k.xyx) * vec3(0.1031, 0.1030, 0.0973));
-	q += dot(q, q.yxz + 33.33);
-	return fract((q.xxy + q.yzz) * q.zyx);
-}
-
-// A map offset in tiles, on the canvas in pixels.
-vec2 slope_canvas(vec2 d) {
-	return vec2((d.x - d.y) * STEP_TILE_PX, (d.x + d.y) * STEP_TILE_PX * 0.5);
-}
-
-// How far down its slope `p` lies: 0 at the top, 1 at the foot.
-float slope_down(vec2 p, vec2 fall) {
-	float here = slope_level(p);
-	float top = here;
-	float foot = here;
-	for (int i = 1; i <= BAND_MARCH; i++) {
-		float l = slope_level(p - fall * float(i) * BAND_STEP);
-		if (l - top < SLOPE_FLAT_M * BAND_STEP) {
-			break;
-		}
-		top = l;
-	}
-	for (int i = 1; i <= BAND_MARCH; i++) {
-		float l = slope_level(p + fall * float(i) * BAND_STEP);
-		if (foot - l < SLOPE_FLAT_M * BAND_STEP) {
-			break;
-		}
-		foot = l;
-	}
-	return top - foot > 0.01 ? (top - here) / (top - foot) : 0.5;
-}
-
-// The ink of the strokes along the fall line at `p`, 0 to 1: one at most
-// a cell, its direction and chance from the fall at its middle.
-float slope_strokes(vec2 p) {
-	vec2 cell = floor(p / STROKE_CELL);
-	float ink = 0.0;
-	for (int j = -1; j <= 1; j++) {
-		for (int i = -1; i <= 1; i++) {
-			vec2 k = cell + vec2(float(i), float(j));
-			vec3 r = slope_hash(k);
-			vec2 middle = (k + 0.2 + 0.6 * r.xy) * STROKE_CELL;
-			vec2 rise = slope_rise(middle);
-			float steep = length(rise);
-			if (steep < SLOPE_FLAT_M || r.z > min(steep * STROKE_DENSITY, STROKE_MAX)) {
-				continue;
-			}
-			vec2 down = normalize(slope_canvas(-rise / steep));
-			vec2 off = slope_canvas(p - middle);
-			float half_len = STROKE_LEN_PX * (0.3 + 0.2 * r.x);
-			float t = dot(off, down) / half_len;
-			if (abs(t) >= 1.0) {
-				continue;
-			}
-			float half_width = STROKE_WIDTH_PX * (0.35 + 0.3 * r.y) * (1.0 - 0.6 * t * t);
-			float across = abs(dot(off, vec2(-down.y, down.x)));
-			float a = 1.0 - smoothstep(half_width - 0.35, half_width + 0.35, across);
-			ink = max(ink, a * (0.6 + 0.4 * fract(r.z * 7.3)));
-		}
-	}
-	return ink;
-}
-
-// `c`, the ground at map point `p` (tiles), with the slopes drawn
-// (slope_mode); flat ground and flat tops left exactly as they are.
-vec3 slopes_colour(vec3 c, vec2 p) {
-	vec2 rise = slope_rise(p);
-	if (length(rise) < SLOPE_FLAT_M || !slope_smooth(p)) {
-		return c;
-	}
-	float weight = slope_weight(rise);
-	vec2 fall = -normalize(rise);
-	vec3 out_c = c;
-	if (slope_mode == 1 || slope_mode == 3) {
-		// Turned to the camera: falling towards the map's +x and +y.
-		float facing = smoothstep(0.0, 0.7, dot(fall, vec2(0.7071)));
-		float down = slope_down(p, fall);
-		float shade = mix(1.0 + BAND_TOP, 1.0 - BAND_FOOT, down);
-		// The lip: on the slope, with flat ground just above.
-		float above = slope_weight(slope_rise(p - fall * SLOPE_LIP_PX / (STEP_TILE_PX * 0.7071)));
-		shade += SLOPE_LIP * (1.0 - above);
-		out_c *= mix(1.0, shade, weight * facing);
-	}
-	if (slope_mode == 2 || slope_mode == 3) {
-		float ink = slope_strokes(p) * weight;
-		out_c = mix(out_c, out_c * STROKE_TINT * (1.0 - STROKE_DARK), ink);
-	}
-	return out_c;
+// `c`, the ground at map point `p` (tiles), with the slope's grass on
+// the slopes' tiles, the ground still drawn flat: the crop as it is where
+// the tile rises towards the screen's right, mirrored left to right
+// (never turned: the blades still point up) where it falls. Each read
+// between the tiles' middles, so it fades into the grass, and the two
+// flanks into each other, over about a tile, ragged by the noise.
+vec3 slope_colour(vec3 c, vec2 p) {
+	vec2 q = p - 0.5;
+	vec2 a = floor(q);
+	vec2 f = q - a;
+	float i00 = slope_incline(a);
+	float i10 = slope_incline(a + vec2(1.0, 0.0));
+	float i01 = slope_incline(a + vec2(0.0, 1.0));
+	float i11 = slope_incline(a + vec2(1.0, 1.0));
+	float rise = mix(mix(max(i00, 0.0), max(i10, 0.0), f.x), mix(max(i01, 0.0), max(i11, 0.0), f.x), f.y);
+	float fall = mix(mix(max(-i00, 0.0), max(-i10, 0.0), f.x), mix(max(-i01, 0.0), max(-i11, 0.0), f.x), f.y);
+	float n = (texture(noise_texture, p * 0.7 + vec2(0.31, 0.87)).r - 0.5) * 0.3;
+	float w = smoothstep(0.15, 0.85, rise + fall + n);
+	float mirrored = smoothstep(0.35, 0.65, fall / max(rise + fall, 0.001) + n);
+	vec2 canvas = vec2((p.x - p.y) * STEP_TILE_PX, (p.x + p.y) * STEP_TILE_PX * 0.5);
+	vec2 suv = (canvas - SLOPE_ORIGIN_PX) / SLOPE_TEXTURE_PX;
+	vec3 up = texture(slope_texture, suv).rgb;
+	vec3 down = texture(slope_texture, vec2(-suv.x, suv.y)).rgb;
+	return mix(c, mix(up, down, mirrored) * SLOPE_TINT, w);
 }
 
 void fragment() {
@@ -696,11 +578,8 @@ if (has_bank) {
 	alpha = max(floor_in, edge_shade);
 }
 vec3 drawn = ground.rgb * vertex_tint;
-if (slope_mode > 0) {
-	drawn = slopes_colour(drawn, at);
-}
 if (steps_mode > 0) {
-	drawn = steps_colour(drawn, at);
+	drawn = steps_colour(slope_colour(drawn, at), at);
 }
 COLOR = vec4(drawn, alpha);
 }
