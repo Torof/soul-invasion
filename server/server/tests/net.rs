@@ -1158,8 +1158,15 @@ async fn with_dev_the_client_gets_the_overview_and_may_teleport() {
         receive(&mut socket).await,
         Some(Got::M(ServerMessage::View { .. }))
     ));
-    for _ in 0..window_len(world, start_of(world, body).chunk()) {
-        assert!(matches!(receive(&mut socket).await, Some(Got::Chunk(_))));
+    // The window's chunks; the clock and the body's news (a season, the
+    // condition, the born body seen) may come between them.
+    let mut chunks = 0;
+    while chunks < window_len(world, start_of(world, body).chunk()) {
+        match receive(&mut socket).await {
+            Some(Got::Chunk(_)) => chunks += 1,
+            Some(Got::M(_)) => {}
+            None => panic!("disconnected before the window was sent"),
+        }
     }
     // Far away at once: the view follows, the body stands there.
     let start = start_of(world, body);
@@ -1858,9 +1865,13 @@ async fn a_starved_body_dies_and_its_pilot_is_born_again_at_the_camp() {
         _ => None,
     })
     .await;
+    // Hunger is paused (D34): the cold of the nights or, since thirst
+    // (13 November 2026), the third day without water kills first.
     assert!(matches!(
         cause,
-        protocol::DeathCause::Starved | protocol::DeathCause::Froze
+        protocol::DeathCause::Starved
+            | protocol::DeathCause::Froze
+            | protocol::DeathCause::Dehydrated
     ));
     // A new body is born for the pilot on the grass nearest the camp: the
     // tile its first body was born on and died on, free again (the dead

@@ -41,6 +41,8 @@ OPTIONS:
     --ticks-per-second <N> Calendar: simulation ticks per game second
                            (default 10).
     --seconds-per-day <N>  Calendar: game seconds per game day (default 7200).
+    --days-per-year <N>    Calendar: game days per year, four seasons
+                           (default 50, at least 4).
     --valley-size <N>      A new world's valley, N tiles on a side (default
                            3072, at least 256). A smaller one starts far
                            faster: for tests and development.
@@ -188,6 +190,7 @@ impl Options {
         let mut opts = Self::default();
         let mut ticks_per_second = Calendar::DEFAULT_TICKS_PER_SECOND;
         let mut seconds_per_day = Calendar::DEFAULT_SECONDS_PER_DAY;
+        let mut days_per_year = Calendar::DEFAULT_DAYS_PER_YEAR;
         let mut args = args.into_iter();
 
         while let Some(arg) = args.next() {
@@ -219,6 +222,7 @@ impl Options {
                 "--content" => opts.content = Some(value(arg, args.next())?),
                 "--ticks-per-second" => ticks_per_second = value(arg, args.next())?,
                 "--seconds-per-day" => seconds_per_day = value(arg, args.next())?,
+                "--days-per-year" => days_per_year = value(arg, args.next())?,
                 other => return Err(CliError::UnknownOption(other.to_owned())),
             }
         }
@@ -250,8 +254,9 @@ impl Options {
                 value: opts.valley_size.to_string(),
             });
         }
-        opts.calendar =
-            Calendar::new(ticks_per_second, seconds_per_day).map_err(CliError::Calendar)?;
+        opts.calendar = Calendar::new(ticks_per_second, seconds_per_day)
+            .and_then(|c| c.with_days_per_year(days_per_year))
+            .map_err(CliError::Calendar)?;
         Ok(opts)
     }
 }
@@ -289,11 +294,19 @@ mod tests {
             "4",
             "--seconds-per-day",
             "30",
+            "--days-per-year",
+            "12",
         ])
         .unwrap();
         assert!(opts.headless);
         assert_eq!(opts.days, Some(3));
-        assert_eq!(opts.calendar, Calendar::new(4, 30).unwrap());
+        assert_eq!(
+            opts.calendar,
+            Calendar::new(4, 30)
+                .unwrap()
+                .with_days_per_year(12)
+                .unwrap()
+        );
     }
 
     #[test]
@@ -398,6 +411,10 @@ mod tests {
         assert_eq!(
             Options::parse(["--seconds-per-day", "0"]),
             Err(CliError::Calendar(sim::CalendarError::ZeroSecondsPerDay))
+        );
+        assert_eq!(
+            Options::parse(["--days-per-year", "3"]),
+            Err(CliError::Calendar(sim::CalendarError::TooShortYear))
         );
         assert_eq!(Options::parse(["--help"]), Err(CliError::HelpRequested));
     }

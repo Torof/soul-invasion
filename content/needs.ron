@@ -1,11 +1,21 @@
 // How a body hungers, freezes, tires and dies (D34). Placeholder values,
 // tuned by play. Every rate is in points of a 0–100 gauge per game day.
 //
-// night_from_percent:      the day starts at dawn; night begins here.
-//                          58 % of a 24 h day is 14 h after dawn (20:00).
+// night_from_percent:      the day starts at dawn; night begins here, by
+//                          season (D09): the light lasts longer in summer.
+//                          Of a 24 h day from 06:00: spring and autumn 58 %
+//                          (night at 19:55), summer 64 % (21:20), winter
+//                          56 % (19:25). Winter is shortened only that much
+//                          until cold by season, fire and shelter come: its
+//                          10.6 h of night cost a body sleeping outside 43
+//                          points of vitality, which the day gives back; at
+//                          50 % it would lose 25 a day and die in winter.
 // hunger_per_day:          0 — paused while there is no food to gather
 //                          (10 November 2026; 33 filled the gauge in
 //                          three days). Back when gathering comes.
+// thirst_per_day:          100 — a game day without drinking fills it
+//                          (D34, 13 November 2026; faster in heat and at
+//                          work comes later).
 // cold_per_day_at_night:   300 — eight hours of night without warmth.
 // cold_relief_per_day:     600 — four hours of daylight undo it.
 // fatigue_per_day_awake:   120 — twenty hours awake fill the gauge.
@@ -13,6 +23,8 @@
 // starving_per_day:        100 — a day at full hunger kills.
 // freezing_per_day:        400 — six hours at full cold kill: a summer
 //                          night outside hurts but does not kill.
+// dehydration_per_day:     50 — two days at full thirst kill: a body dies
+//                          on the third day without water, as people do.
 // vitality_regain_per_day: 50 — two days fed, warm and rested to heal.
 // kj_per_hunger_point:     25 — a handful of berries (100 g, 250 kJ)
 //                          relieves 10 points, a meal of meat (300 g,
@@ -20,14 +32,16 @@
 // meal_g:                  300 — grams eaten at most in one act; the rest
 //                          of the item stays (D35).
 (
-    night_from_percent: 58,
+    night_from_percent: (spring: 58, summer: 64, autumn: 58, winter: 56),
     hunger_per_day: 0,
+    thirst_per_day: 100,
     cold_per_day_at_night: 300,
     cold_relief_per_day: 600,
     fatigue_per_day_awake: 120,
     rest_per_day_asleep: 300,
     starving_per_day: 100,
     freezing_per_day: 400,
+    dehydration_per_day: 50,
     vitality_regain_per_day: 50,
     kj_per_hunger_point: 25,
     meal_g: 300,

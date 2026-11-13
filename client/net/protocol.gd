@@ -8,7 +8,7 @@ extends RefCounted
 ## of truth. Every JSON message is a dictionary with a snake_case `type`
 ## field; a chunk frame decodes into packed arrays (`decode_chunk`).
 
-const PROTOCOL_VERSION := 23
+const PROTOCOL_VERSION := 24
 ## Chunk frames kept after they left the view (FrameCache), as the
 ## server's mirror of them.
 const CHUNK_CACHE_CHUNKS := 1500
@@ -53,6 +53,12 @@ static func move_to(x: int, y: int) -> Dictionary:
 ## Builds the intention to eat an item within reach.
 static func eat(item: int) -> Dictionary:
 	return {"type": "eat", "item": item}
+
+
+## Builds the intention to drink from running water on tile (x, y), the
+## body's own or next to it (protocol v24).
+static func drink(x: int, y: int) -> Dictionary:
+	return {"type": "drink", "x": x, "y": y}
 
 
 ## Builds the intention to take an item off the ground within reach.

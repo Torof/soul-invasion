@@ -147,7 +147,9 @@ impl Router {
             }
         };
         let body = match *event {
-            Published::DayStarted { .. } | Published::NightFell { .. } => {
+            Published::DayStarted { .. }
+            | Published::NightFell { .. }
+            | Published::SeasonStarted { .. } => {
                 to.extend(self.links.keys());
                 None
             }

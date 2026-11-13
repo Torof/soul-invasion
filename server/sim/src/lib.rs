@@ -32,13 +32,13 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 pub use content::{
-    Content, ContentError, Food, Look, Material, MaterialKind, Movement, Needs, Spawn,
+    BySeason, Content, ContentError, Food, Look, Material, MaterialKind, Movement, Needs, Spawn,
 };
 pub use geology::{Geology, Rock};
 pub use map::{
     CHUNK_SIZE, ChunkPos, FinePos, MM_PER_TILE, Map, MapSpec, Pos, Side, Terrain, line_clear,
 };
-pub use time::{Calendar, CalendarError, GameTime, Tick};
+pub use time::{Calendar, CalendarError, GameTime, Season, Tick};
 
 /// Identifies a body (an inhabitant). Players and NPCs are the same kind
 /// of body; only the pilot differs (D13).
@@ -141,6 +141,8 @@ pub enum Death {
     Starved,
     /// Vitality drained by cold.
     Froze,
+    /// Vitality drained by thirst.
+    Dehydrated,
 }
 
 /// The state of a body: what hurts and what kills (D34).
@@ -150,6 +152,8 @@ pub struct Condition {
     pub vitality: Gauge,
     /// Need for food.
     pub hunger: Gauge,
+    /// Need for water (D34, amended 13 November 2026).
+    pub thirst: Gauge,
     /// Lack of warmth.
     pub cold: Gauge,
     /// Need for sleep; full, the body collapses asleep.
@@ -166,6 +170,7 @@ impl Condition {
         Self {
             vitality: Gauge::at(GAUGE_MAX),
             hunger: Gauge::at(0),
+            thirst: Gauge::at(0),
             cold: Gauge::at(0),
             fatigue: Gauge::at(0),
             asleep: false,
@@ -175,10 +180,11 @@ impl Condition {
 
     /// The whole points of every gauge and the sleep flag: what a client
     /// is told, and what counts as a change.
-    pub fn summary(&self) -> (u32, u32, u32, u32, bool) {
+    pub fn summary(&self) -> (u32, u32, u32, u32, u32, bool) {
         (
             self.vitality.points(),
             self.hunger.points(),
+            self.thirst.points(),
             self.cold.points(),
             self.fatigue.points(),
             self.asleep,
@@ -439,6 +445,8 @@ pub enum Refusal {
     TooHeavy,
     /// It is not food.
     NotFood,
+    /// No running water there to drink.
+    NotWater,
 }
 
 /// What a body that stopped for good short of its target sees barring
@@ -502,6 +510,14 @@ pub enum Intention {
         /// What.
         item: ItemId,
     },
+    /// Drink from running water (a river, a ford, a brook) on the
+    /// body's tile or next to it: thirst is quenched at once.
+    Drink {
+        /// Who.
+        body: BodyId,
+        /// The tile of water.
+        at: Pos,
+    },
     /// Lie down and sleep where one stands.
     Sleep {
         /// Who.
@@ -541,6 +557,13 @@ pub enum Event {
     DayStarted {
         /// The day that just started (days count from 1).
         day: u64,
+    },
+    /// A new season began, at the dawn of its first day (D09).
+    SeasonStarted {
+        /// The year it belongs to (years count from 1).
+        year: u64,
+        /// Which.
+        season: Season,
     },
     /// A body set off along a route of straight segments.
     BodyWalks {
@@ -601,12 +624,13 @@ pub enum Event {
         day: u64,
     },
     /// The whole points of a body's gauges changed, or it fell asleep or
-    /// woke. At most once per body per tick.
+    /// woke. Once per body per tick as it fares, and at once when it
+    /// drinks.
     ConditionChanged {
         /// Who.
         body: BodyId,
-        /// (vitality, hunger, cold, fatigue, asleep).
-        summary: (u32, u32, u32, u32, bool),
+        /// (vitality, hunger, thirst, cold, fatigue, asleep).
+        summary: (u32, u32, u32, u32, u32, bool),
     },
     /// A body ate a meal off an item: all of it, which is gone, or a
     /// meal's grams ([`content::Needs::meal_g`]), the rest staying.
@@ -621,6 +645,22 @@ pub enum Event {
         grams: u32,
         /// Kilojoules they gave.
         energy_kj: u32,
+    },
+    /// A body drank its fill: its thirst is gone.
+    BodyDrank {
+        /// Who.
+        body: BodyId,
+        /// The tile of water.
+        at: Pos,
+    },
+    /// A drink was refused: the tile is out of reach, or no running water.
+    DrinkRefused {
+        /// Who.
+        body: BodyId,
+        /// The tile asked.
+        at: Pos,
+        /// Why.
+        reason: Refusal,
     },
     /// An act on an item was refused.
     ActRefused {
@@ -1415,11 +1455,13 @@ impl World {
         Some(self.spawn_body(pos))
     }
 
-    /// Is it night? The day starts at dawn; night covers its last part.
+    /// Is it night? The day starts at dawn; night covers its last part,
+    /// shorter in summer than in winter (D09).
     pub fn is_night(&self, rules: &Content) -> bool {
         let now = self.time();
         now.tick_of_day * 100
-            >= u64::from(rules.needs.night_from_percent) * self.calendar.ticks_per_day()
+            >= u64::from(rules.needs.night_from_percent.get(now.season))
+                * self.calendar.ticks_per_day()
     }
 
     /// Items lying on `pos` or on one of its eight neighbours, stored and
@@ -1463,6 +1505,12 @@ impl World {
         let now = self.time();
         if now.is_day_start() {
             events.push(Event::DayStarted { day: now.day });
+        }
+        if now.is_season_start() {
+            events.push(Event::SeasonStarted {
+                year: now.year,
+                season: now.season,
+            });
         }
         let night = self.is_night(rules);
         if night && !was_night {
@@ -1617,6 +1665,7 @@ impl World {
             let before = body.condition.summary();
             let c = &mut body.condition;
             c.hunger.raise(step(needs.hunger_per_day));
+            c.thirst.raise(step(needs.thirst_per_day));
             if night {
                 c.cold.raise(step(needs.cold_per_day_at_night));
             } else {
@@ -1653,6 +1702,10 @@ impl World {
             if c.cold.is_full() {
                 c.vitality.lower(step(needs.freezing_per_day));
                 cause = cause.or(Some(Death::Froze));
+            }
+            if c.thirst.is_full() {
+                c.vitality.lower(step(needs.dehydration_per_day));
+                cause = cause.or(Some(Death::Dehydrated));
             }
             if cause.is_none() {
                 c.vitality.raise(step(needs.vitality_regain_per_day));
@@ -1750,6 +1803,7 @@ impl World {
             Intention::Drop { body: id, item } => self.drop(id, item, rules, events),
             Intention::Hold { body: id, item } => self.hold(id, item, rules, events),
             Intention::Stow { body: id, item } => self.stow(id, item, rules, events),
+            Intention::Drink { body: id, at } => self.drink(id, at, events),
             Intention::Sleep { body: id } => {
                 if let Some(index) = self.index_of(id) {
                     let body = &mut self.bodies[index];
@@ -1870,6 +1924,42 @@ impl World {
             body: id,
             at: body.at,
         });
+    }
+
+    /// Drinks from the running water at `at`, on the body's tile or next
+    /// to it: thirst is quenched at once. A drink takes no time, as a meal
+    /// takes none, until acts that last are built; and a body at the water
+    /// drinks its fill. Refused, with the reason, out of reach or away
+    /// from running water.
+    fn drink(&mut self, id: BodyId, at: Pos, events: &mut Vec<Event>) {
+        let refuse = |events: &mut Vec<Event>, reason| {
+            events.push(Event::DrinkRefused {
+                body: id,
+                at,
+                reason,
+            });
+        };
+        let Some(index) = self.index_of(id) else {
+            return refuse(events, Refusal::Unknown);
+        };
+        let here = self.bodies[index].pos();
+        if (at.x - here.x).abs() > 1 || (at.y - here.y).abs() > 1 {
+            return refuse(events, Refusal::OutOfReach);
+        }
+        if !self.map.get(at).is_some_and(Terrain::is_drinkable) {
+            return refuse(events, Refusal::NotWater);
+        }
+        self.wake(index, events);
+        let body = &mut self.bodies[index];
+        let before = body.condition.summary();
+        body.condition.thirst = Gauge::at(0);
+        events.push(Event::BodyDrank { body: id, at });
+        if body.condition.summary() != before {
+            events.push(Event::ConditionChanged {
+                body: id,
+                summary: body.condition.summary(),
+            });
+        }
     }
 
     /// Eats a meal off `item`: all of it when it weighs no more than a
@@ -3906,13 +3996,10 @@ mod tests {
     fn needs_rise_with_time_at_the_content_rates() {
         let mut w = fed_world();
         let mut events = Vec::new();
-        // Half a day awake: hunger 16, fatigue 60; by day cold stays 0.
+        // Half a day awake: hunger 16, thirst 50, fatigue 60; by day cold
+        // stays 0.
         w.advance(500, &rules(), &mut events);
-        let (vitality, hunger, cold, fatigue, asleep) = condition(&w).summary();
-        assert_eq!(
-            (vitality, hunger, cold, fatigue, asleep),
-            (100, 16, 0, 60, false)
-        );
+        assert_eq!(condition(&w).summary(), (100, 16, 50, 0, 60, false));
         assert!(
             events.iter().any(|e| matches!(
                 e,
@@ -4156,10 +4243,171 @@ mod tests {
         }));
     }
 
+    /// The sample rules with a body that never thirsts: for the tests of
+    /// another need, which a thirst death would cut short.
+    fn without_thirst() -> Content {
+        let mut rules = rules();
+        rules.needs.thirst_per_day = 0;
+        rules
+    }
+
+    #[test]
+    fn thirst_fills_in_a_day_and_kills_two_days_later() {
+        let mut w = fed_world();
+        let mut rules = rules();
+        // Thirst alone: no hunger, no cold at night.
+        rules.needs.hunger_per_day = 0;
+        rules.needs.cold_per_day_at_night = 0;
+        let mut events = Vec::new();
+        w.advance(500, &rules, &mut events);
+        assert_eq!(condition(&w).thirst.points(), 50, "half a day, half full");
+        w.advance(500, &rules, &mut events);
+        assert!(
+            condition(&w).thirst.is_full(),
+            "a day without water fills it"
+        );
+        assert_eq!(condition(&w).vitality.points(), 99, "it starts to hurt");
+        w.advance(1_000, &rules, &mut events);
+        assert_eq!(condition(&w).vitality.points(), 49, "a day at full thirst");
+        w.advance(990, &rules, &mut events);
+        assert!(w.body(BodyId(1)).is_some(), "alive on the third day");
+        events.clear();
+        w.advance(20, &rules, &mut events);
+        assert!(
+            w.body(BodyId(1)).is_none(),
+            "dead before the third day ends"
+        );
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::BodyDied {
+                body: BodyId(1),
+                cause: Death::Dehydrated,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn drinking_at_running_water_quenches_thirst_and_elsewhere_is_refused() {
+        // A river east of body 1, a ford south, a brook beyond its reach,
+        // and body 2 standing in that brook.
+        let mut map = Map::filled(8, 8, Terrain::Grass);
+        map.set(Pos::new(2, 1), Terrain::Water);
+        map.set(Pos::new(1, 2), Terrain::Ford);
+        map.set(Pos::new(4, 4), Terrain::Brook);
+        let mut w = World::empty(Calendar::new(10, 100).unwrap(), map); // 1000 ticks per day
+        w.spawn_body(Pos::new(1, 1));
+        w.spawn_body(Pos::new(4, 4));
+        let mut events = Vec::new();
+        w.advance(600, &rules(), &mut events); // thirst 60
+        assert_eq!(condition(&w).thirst.points(), 60);
+        let drink = |w: &mut World, at: Pos, events: &mut Vec<Event>| {
+            events.clear();
+            w.queue(Intention::Drink {
+                body: BodyId(1),
+                at,
+            });
+            w.step(&rules(), events);
+        };
+        // At the river beside it: thirst gone, told to the pilot at once.
+        drink(&mut w, Pos::new(2, 1), &mut events);
+        assert_eq!(condition(&w).thirst.points(), 0);
+        assert!(events.contains(&Event::BodyDrank {
+            body: BodyId(1),
+            at: Pos::new(2, 1),
+        }));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::ConditionChanged { body: BodyId(1), summary } if summary.2 == 0
+        )));
+        // At a ford, and asleep: it wakes to drink.
+        w.advance(300, &rules(), &mut events);
+        w.queue(Intention::Sleep { body: BodyId(1) });
+        w.step(&rules(), &mut events);
+        drink(&mut w, Pos::new(1, 2), &mut events);
+        assert_eq!(condition(&w).thirst.points(), 0);
+        assert!(!condition(&w).asleep);
+        // A brook is running water too, but this one is out of reach; the
+        // grass is no water; another body is unknown.
+        w.advance(300, &rules(), &mut events);
+        for (body, at, reason) in [
+            (BodyId(1), Pos::new(4, 4), Refusal::OutOfReach),
+            (BodyId(1), Pos::new(0, 0), Refusal::NotWater),
+            (BodyId(1), Pos::new(1, 1), Refusal::NotWater),
+            (BodyId(9), Pos::new(2, 1), Refusal::Unknown),
+        ] {
+            events.clear();
+            w.queue(Intention::Drink { body, at });
+            w.step(&rules(), &mut events);
+            assert!(
+                events.contains(&Event::DrinkRefused { body, at, reason }),
+                "{at:?}: {reason:?}"
+            );
+            assert_eq!(condition(&w).thirst.points(), 30, "still thirsty");
+        }
+        // Standing in a brook, one drinks where one stands.
+        events.clear();
+        w.queue(Intention::Drink {
+            body: BodyId(2),
+            at: Pos::new(4, 4),
+        });
+        w.step(&rules(), &mut events);
+        let second = w.body(BodyId(2)).unwrap().condition();
+        assert_eq!(second.thirst.points(), 0);
+    }
+
+    #[test]
+    fn summer_days_are_longer_than_winter_days() {
+        // 1000 ticks a day, 8 days a year: two days a season.
+        let calendar = Calendar::new(10, 100)
+            .unwrap()
+            .with_days_per_year(8)
+            .unwrap();
+        let mut w = World::empty(calendar, Map::filled(4, 4, Terrain::Grass));
+        let mut events = Vec::new();
+        let mut nightfall = BTreeMap::new();
+        let mut seasons = Vec::new();
+        for _ in 0..8 * 1000 {
+            events.clear();
+            w.step(&rules(), &mut events);
+            for e in &events {
+                match e {
+                    Event::NightFell { .. } => {
+                        nightfall.insert(w.time().season, w.time().tick_of_day);
+                    }
+                    Event::SeasonStarted { year, season } => seasons.push((*year, *season)),
+                    _ => {}
+                }
+            }
+        }
+        let needs = &rules().needs.night_from_percent;
+        for season in Season::ALL {
+            assert_eq!(
+                nightfall[&season],
+                u64::from(needs.get(season)) * 10,
+                "{season:?}"
+            );
+        }
+        assert!(nightfall[&Season::Summer] > nightfall[&Season::Spring]);
+        assert!(nightfall[&Season::Winter] < nightfall[&Season::Autumn]);
+        // Each season told as it starts at dawn, and the next year's
+        // spring; the world's first spring began with it, untold.
+        assert_eq!(
+            seasons,
+            [
+                (1, Season::Summer),
+                (1, Season::Autumn),
+                (1, Season::Winter),
+                (2, Season::Spring)
+            ]
+        );
+    }
+
     #[test]
     fn starving_drains_vitality_and_kills_leaving_a_corpse() {
         let mut w = fed_world();
         let mut events = Vec::new();
+        let rules = without_thirst;
         // Three days to full hunger, then a day at full hunger to die.
         w.advance(3_100, &rules(), &mut events);
         assert_eq!(condition(&w).hunger.points(), 100);

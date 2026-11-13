@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::map::Terrain;
+use crate::time::Season;
 use crate::woods::Habitat;
 
 /// What family a material belongs to. Guides what can be done with it;
@@ -189,14 +190,42 @@ impl Movement {
     }
 }
 
+/// A value for each season (D09).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BySeason<T> {
+    /// In spring.
+    pub spring: T,
+    /// In summer.
+    pub summer: T,
+    /// In autumn.
+    pub autumn: T,
+    /// In winter.
+    pub winter: T,
+}
+
+impl<T: Copy> BySeason<T> {
+    /// The value for `season`.
+    pub fn get(&self, season: Season) -> T {
+        match season {
+            Season::Spring => self.spring,
+            Season::Summer => self.summer,
+            Season::Autumn => self.autumn,
+            Season::Winter => self.winter,
+        }
+    }
+}
+
 /// How a body's needs and vitality evolve (D34). Every rate is in points
 /// of a 0–100 gauge per game day.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Needs {
-    /// Where night begins, in percent of the day; the day starts at dawn.
-    pub night_from_percent: u32,
+    /// Where night begins, in percent of the day, by season: the day
+    /// starts at dawn, and summer's light lasts longer (D09).
+    pub night_from_percent: BySeason<u32>,
     /// Hunger rises this much per day.
     pub hunger_per_day: u32,
+    /// Thirst rises this much per day (D34, amended 13 November 2026).
+    pub thirst_per_day: u32,
     /// Cold rises this much per day of night, without warmth.
     pub cold_per_day_at_night: u32,
     /// Cold falls this much per day of daylight.
@@ -209,6 +238,8 @@ pub struct Needs {
     pub starving_per_day: u32,
     /// Vitality lost per day while cold is at its maximum.
     pub freezing_per_day: u32,
+    /// Vitality lost per day while thirst is at its maximum.
+    pub dehydration_per_day: u32,
     /// Vitality regained per day when fed, warm enough and rested.
     pub vitality_regain_per_day: u32,
     /// Kilojoules of food that relieve one point of hunger.
@@ -558,7 +589,10 @@ impl Content {
             }
         }
         self.validate_movement()?;
-        if !(1..100).contains(&self.needs.night_from_percent) {
+        if Season::ALL
+            .iter()
+            .any(|s| !(1..100).contains(&self.needs.night_from_percent.get(*s)))
+        {
             return Err(ContentError::Needs("night_from_percent is 1 to 99"));
         }
         if self.needs.kj_per_hunger_point == 0 {
@@ -656,14 +690,16 @@ pub const SAMPLE_MOVEMENT: &str = r"(
 
 /// Needs rules of [`Content::sample`]: the valley's own.
 pub const SAMPLE_NEEDS: &str = r"(
-    night_from_percent: 58,
+    night_from_percent: (spring: 58, summer: 64, autumn: 58, winter: 56),
     hunger_per_day: 33,
+    thirst_per_day: 100,
     cold_per_day_at_night: 300,
     cold_relief_per_day: 600,
     fatigue_per_day_awake: 120,
     rest_per_day_asleep: 300,
     starving_per_day: 100,
     freezing_per_day: 400,
+    dehydration_per_day: 50,
     vitality_regain_per_day: 50,
     kj_per_hunger_point: 25,
     meal_g: 300,
@@ -768,7 +804,7 @@ mod tests {
 
     #[test]
     fn needs_rules_are_checked() {
-        let late = SAMPLE_NEEDS.replacen("night_from_percent: 58", "night_from_percent: 100", 1);
+        let late = SAMPLE_NEEDS.replacen("winter: 56", "winter: 100", 1);
         assert!(matches!(
             Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, SAMPLE_MOVEMENT, &late).unwrap_err(),
             ContentError::Needs("night_from_percent is 1 to 99")

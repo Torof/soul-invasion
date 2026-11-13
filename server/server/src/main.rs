@@ -16,7 +16,8 @@ use protocol::ServerMessage;
 use server::cli::{CliError, DataLocation, USAGE, WarmUp};
 use server::content;
 use server::net::{
-    Published, Shared, blocked_view, condition_view, refusal_view, refused_view, serve, thinks_view,
+    Published, Shared, blocked_view, condition_view, drink_refused_view, refusal_view,
+    refused_view, season_view, serve, thinks_view,
 };
 use server::pool::{ChunkPool, chunk_threads};
 use server::{Lineage, Options, Sqlite, Storage, StorageError, run_headless, run_paced};
@@ -67,10 +68,11 @@ fn run(opts: &Options) -> Result<(), BoxError> {
     let (mut world, persister, lineage) = open_world(opts, &content, Arc::clone(&stop))?;
     let calendar = *world.calendar();
     println!(
-        "calendar: {} ticks/s, {} s/day ({} ticks/day)",
+        "calendar: {} ticks/s, {} s/day ({} ticks/day), {} days/year",
         calendar.ticks_per_second(),
         calendar.seconds_per_day(),
         calendar.ticks_per_day(),
+        calendar.days_per_year(),
     );
 
     if let Some((x, y)) = opts.dump_chunk {
@@ -493,6 +495,13 @@ fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
             shared.night_fell();
             shared.publish(&Published::NightFell { day: *day });
         }
+        Event::SeasonStarted { year, season } => {
+            println!("tick {tick}: {event:?}");
+            shared.publish(&Published::SeasonStarted {
+                year: *year,
+                season: season_view(*season),
+            });
+        }
         Event::ConditionChanged { body, summary } => {
             shared.tell_pilot(
                 *body,
@@ -501,7 +510,7 @@ fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
                     condition: condition_view(*summary),
                 },
             );
-            let asleep = summary.4;
+            let asleep = summary.5;
             if shared.body_sleeps(*body, asleep)
                 && let Some(at) = shared.position_of(body.0)
             {
@@ -512,7 +521,10 @@ fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
                 });
             }
         }
-        Event::BodyAte { .. } => {}
+        Event::BodyAte { .. } | Event::BodyDrank { .. } => {}
+        Event::DrinkRefused { body, at, reason } => {
+            shared.tell_pilot(*body, drink_refused_view(*body, *at, *reason));
+        }
         Event::ActRefused {
             body,
             act,
@@ -608,6 +620,7 @@ fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
             let cause = match cause {
                 sim::Death::Starved => protocol::DeathCause::Starved,
                 sim::Death::Froze => protocol::DeathCause::Froze,
+                sim::Death::Dehydrated => protocol::DeathCause::Dehydrated,
             };
             shared.body_died(*body, cause);
             shared.publish(&Published::BodyDied {

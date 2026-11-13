@@ -38,13 +38,14 @@ static func load_line(load_g: int, capacity_g: int) -> String:
 
 ## Words for a refusal: "cannot pick up: too heavy".
 static func refusal_words(act: String, reason: String) -> String:
-	var acts := {"pick_up": "pick up", "drop": "drop", "hold": "hold", "stow": "stow", "eat": "eat"}
+	var acts := {"pick_up": "pick up", "drop": "drop", "hold": "hold", "stow": "stow", "eat": "eat", "drink": "drink"}
 	var reasons := {
 		"unknown": "no such thing",
 		"out_of_reach": "out of reach",
 		"not_carried": "not carried",
 		"too_heavy": "too heavy",
 		"not_food": "not food",
+		"not_water": "no running water there",
 	}
 	return "cannot %s: %s" % [acts.get(act, act), reasons.get(reason, reason)]
 

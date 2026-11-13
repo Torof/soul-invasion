@@ -30,8 +30,8 @@ use futures_util::{SinkExt, StreamExt};
 use protocol::{
     Blockage, BodyState, ChunkFrame, ClientMessage, Clock, Condition, DeathCause, FloraView,
     ItemAct, ItemState, ItemView, MaterialView, NaturalItem, PROTOCOL_VERSION, Point, Refusal,
-    ServerMessage, Side, SpeciesView, Standing, StoredItem, Terrain, Thought, decode, encode,
-    encode_chunk,
+    Season, ServerMessage, Side, SpeciesView, Standing, StoredItem, Terrain, Thought, decode,
+    encode, encode_chunk,
 };
 use sim::ground::{Ground, Version};
 use sim::lru::Lru;
@@ -168,6 +168,13 @@ pub enum Published {
     NightFell {
         /// The day it ends.
         day: u64,
+    },
+    /// A new season began (D09).
+    SeasonStarted {
+        /// The year.
+        year: u64,
+        /// Which.
+        season: Season,
     },
     /// A body lay down or got up.
     BodySleeps {
@@ -343,6 +350,8 @@ pub struct Shared {
     ticks_per_second: u32,
     /// Ticks per game day.
     ticks_per_day: u64,
+    /// Game days per year.
+    days_per_year: u32,
     /// How many times faster than real time the server runs, in thousandths.
     time_scale_permille: u32,
     /// The stored items on the ground, by chunk, the natural ones taken,
@@ -711,6 +720,7 @@ impl Shared {
             deaths: Mutex::new(Lru::new(DEATHS_REMEMBERED)),
             ticks_per_second: world.calendar().ticks_per_second(),
             ticks_per_day: world.calendar().ticks_per_day(),
+            days_per_year: world.calendar().days_per_year(),
             time_scale_permille: permille(time_scale),
             items: Mutex::new(items),
             natural: world
@@ -1033,6 +1043,7 @@ impl Shared {
             | Intention::Drop { body, .. }
             | Intention::Hold { body, .. }
             | Intention::Stow { body, .. }
+            | Intention::Drink { body, .. }
             | Intention::Sleep { body }
             | Intention::Wake { body }
             | Intention::Teleport { body, .. } => body.0,
@@ -1160,6 +1171,7 @@ impl Shared {
             tick: self.tick.load(Ordering::Relaxed),
             ticks_per_second: self.ticks_per_second,
             ticks_per_day: self.ticks_per_day,
+            days_per_year: self.days_per_year,
             time_scale_permille: self.time_scale_permille,
         }
     }
@@ -2416,6 +2428,9 @@ impl Link {
             Published::NightFell { day } => {
                 self.event(&ServerMessage::NightFell { day });
             }
+            Published::SeasonStarted { year, season } => {
+                self.event(&ServerMessage::SeasonStarted { year, season });
+            }
             Published::BodySleeps { body, at, asleep } => {
                 if self.sees(at) {
                     self.event(&ServerMessage::BodySleeps { body, asleep });
@@ -2624,6 +2639,10 @@ fn intention_of(body: BodyId, message: &ClientMessage) -> Intention {
             body,
             target: Pos::new(x, y),
         },
+        ClientMessage::Drink { x, y } => Intention::Drink {
+            body,
+            at: Pos::new(x, y),
+        },
         ClientMessage::Eat { item } => Intention::Eat {
             body,
             item: ItemId(item),
@@ -2669,8 +2688,30 @@ pub fn refusal_view(act: sim::ItemAct, reason: sim::Refusal) -> (ItemAct, Refusa
         sim::Refusal::NotCarried => Refusal::NotCarried,
         sim::Refusal::TooHeavy => Refusal::TooHeavy,
         sim::Refusal::NotFood => Refusal::NotFood,
+        sim::Refusal::NotWater => Refusal::NotWater,
     };
     (act, reason)
+}
+
+/// A refused drink, as its pilot is told (protocol v24).
+pub fn drink_refused_view(body: BodyId, at: Pos, reason: sim::Refusal) -> ServerMessage {
+    let (_, reason) = refusal_view(sim::ItemAct::Eat, reason);
+    ServerMessage::DrinkRefused {
+        body: body.0,
+        x: at.x,
+        y: at.y,
+        reason,
+    }
+}
+
+/// A season, on the wire.
+pub fn season_view(season: sim::Season) -> Season {
+    match season {
+        sim::Season::Spring => Season::Spring,
+        sim::Season::Summer => Season::Summer,
+        sim::Season::Autumn => Season::Autumn,
+        sim::Season::Winter => Season::Winter,
+    }
 }
 
 /// What a pilot is told when its body stopped for good short of
@@ -2728,11 +2769,12 @@ fn blockage_view(reason: sim::Blockage) -> Blockage {
 }
 
 /// What a pilot is told of its body's condition.
-pub fn condition_view(summary: (u32, u32, u32, u32, bool)) -> Condition {
-    let (vitality, hunger, cold, fatigue, asleep) = summary;
+pub fn condition_view(summary: (u32, u32, u32, u32, u32, bool)) -> Condition {
+    let (vitality, hunger, thirst, cold, fatigue, asleep) = summary;
     Condition {
         vitality,
         hunger,
+        thirst,
         cold,
         fatigue,
         asleep,
