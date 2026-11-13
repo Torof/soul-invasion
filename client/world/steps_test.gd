@@ -1,11 +1,11 @@
 class_name StepsTest
 extends Node2D
-## The steps test (`--world test:marches`, third version, 13 November
-## 2026), on only in a world whose chunks carry heights above zero: key 1
-## draws the levels' walls and the slope's grass (the ground shader), key 0
-## nothing, to compare; a line on screen says which. Never in the game.
+## The slope test (`--world test:...`, the mountain test's rule, 13
+## November 2026), on only in a world whose chunks carry heights above
+## zero: key 1 draws the slope's grass (the ground shader), key 0 the flat
+## ground, to compare; a line on screen says which. Never in the game.
 
-const MODES := ["0: off (flat grass)", "1: walls + slope grass"]
+const MODES := ["0: flat (the game's ground)", "1: slopes"]
 
 var mode := 1
 var _label: Label
@@ -37,4 +37,4 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 func _apply() -> void:
 	ChunkView.set_steps_mode(mode)
-	_label.text = "Steps test — %s   (keys 1 and 0)" % MODES[mode]
+	_label.text = "Slope test — %s   (keys 1 and 0)" % MODES[mode]

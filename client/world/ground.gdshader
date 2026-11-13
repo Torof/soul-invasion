@@ -24,72 +24,50 @@ const int INDEX_FRINGE = 128;
 // The images' derivatives are scaled by this: one mipmap level sharper.
 const float SHARPEN = 0.5;
 
-// The steps test (13 November 2026, `--world test:marches`): a level per
-// tile (HeightIndex: R the height in decimetres, G 255 where known). The
-// ground stays flat and is never darkened; where the level drops towards
-// the camera (a south or east face), an earth wall is drawn on the lower
-// ground below the upper level's lip, STEP_PX_PER_M tall a metre, with a
-// short shadow at its foot; on a face turned away, a thin dark line.
-// steps_mode: 0 nothing, 1 the walls and the slope's grass (third
-// version, 13 November 2026: the levels read as stacked cubes, v1's).
-uniform sampler2D height_index : filter_nearest, repeat_enable;
+// The mountain test (13 November 2026, `--world test:montagne`, the rule
+// of the image the project lead validated, `montagne-v3-etiree-b`): the
+// ground stays flat; where it slopes, the slope's grass is laid over it,
+// leaning the way the ground rises. slope_index (HeightIndex): R and G the
+// ground's rise along the map's x and y, in metres a tile, read over two
+// tiles on either side; read between the tiles' middles. steps_mode: 0
+// the game's ground as it is, 1 the slopes' grass and the offsets below.
+uniform sampler2D slope_index : filter_linear, repeat_enable;
 uniform int steps_mode = 0;
-// A wall's height on the canvas, a metre: less than a metre's true
-// height (Iso.PX_PER_M, 64, a little too strong for the project lead),
-// more than the second version's 44.
-const float STEP_PX_PER_M = 50.0;
-// Going up the canvas by a tile along both x and y: a diamond's height.
-const float STEP_TILE_PX = 32.0;
-// A smaller difference is a ramp: no edge.
-const float STEP_MIN_M = 0.95;
-const int STEP_MARCH = 16;
-// The lip overhangs the wall by LIP_MIN_PX to LIP_MIN_PX + LIP_JITTER_PX,
-// ragged along the edge; the foot wanders by FOOT_JITTER_PX either way.
-const float LIP_MIN_PX = 2.0;
-const float LIP_JITTER_PX = 6.0;
-const float FOOT_JITTER_PX = 3.0;
-const float FOOT_SHADOW_PX = 6.0;
-const float FOOT_SHADOW = 0.3;
-const vec3 WALL_EARTH = vec3(0.50, 0.38, 0.26);
-const vec3 WALL_DEEP = vec3(0.33, 0.24, 0.16);
-// An east face is turned from the light (the screen's upper left).
-const float WALL_EAST_SHADE = 0.8;
-const float AWAY_LINE_PX = 1.6;
-const float AWAY_LINE = 0.45;
-
-// The steps test's slope: the slope's grass (client/world/test/
-// slope_grass.png, the project lead's image "pente rochers inclinés"
-// whole, tufts and small rocks included, downscaled to 1024 px, its
-// streaks rising towards the upper right) laid in canvas
-// space, SLOPE_TEXTURE_PX a repetition from SLOPE_ORIGIN_PX: the test's
-// ridge lies inside a single repetition, so no seam shows. Toned towards
-// the meadow's grass by SLOPE_TINT (its mean already sits near the
-// meadow's; its light streaks read yellower, so a little less red).
+// The slope's grass (client/world/test/slope_grass.png, the project
+// lead's image "pente rochers inclinés" whole, its streaks rising toward
+// the upper right) laid in canvas space, SLOPE_TEXTURE_PX a repetition,
+// toned toward the meadow's grass by SLOPE_TINT.
 uniform sampler2D slope_texture : repeat_enable, filter_linear_mipmap;
 const float SLOPE_TEXTURE_PX = 384.0;
-const vec2 SLOPE_ORIGIN_PX = vec2(-340.0, 0.0);
 const vec3 SLOPE_TINT = vec3(0.94, 1.02, 0.92);
-// Which way a slope's grass leans. The image climbs towards the screen's
-// right; where a slope rises mostly sideways on screen, it is used as is
-// where the ground rises towards the right and mirrored where it rises
-// towards the left. Where it rises mostly up or down the screen, the
-// sideways sign is noise (a flank seen face on has none to speak of), so
-// both flanks keep the same diagonal, as is, and only its steepness
-// tells them apart: the flank that rises towards the screen's bottom
-// (the upper half of a ridge across the screen) has its image widened
-// to SLOPE_STEEP_WIDTH times its width on screen, so its streaks lie
-// flatter, still rising to the right, nearly level (the lead, 13
-// November), the blades still pointing up (never turned, never
-// mirrored). A
-// slope counts as vertical while its sideways part stays under
-// SLOPE_VERTICAL_RATIO of its vertical part (about 27 degrees off the
-// screen's vertical, which keeps a
-// map's edge, where one neighbour repeats, on the vertical rule), and the
-// two rules blend over SLOPE_RATIO_BLEND on either side, so no seam shows
-// where they hand over.
-const float SLOPE_STEEP_WIDTH = 2.2;
-const float SLOPE_VERTICAL_RATIO = 0.5;
-const float SLOPE_RATIO_BLEND = 0.15;
+// A tile's half width and half height on the canvas.
+const vec2 TILE_HALF_PX = vec2(32.0, 16.0);
+// The slope shows from SLOPE_SHOW_FROM and whole at SLOPE_SHOW_FULL, in
+// metres a tile.
+const float SLOPE_SHOW_FROM = 0.04;
+const float SLOPE_SHOW_FULL = 0.14;
+// Three inclinations, by soft weights on the slope (metres a tile): a
+// gentle slope's image stretched sideways the most (its streaks lie
+// flatter), a steep one's narrowed.
+const float SLOPE_GENTLE_WIDTH = 1.8;
+const float SLOPE_MEDIUM_WIDTH = 1.25;
+const float SLOPE_STEEP_WIDTH = 0.85;
+const vec2 SLOPE_GENTLE_UNTIL = vec2(0.10, 0.20);
+const vec2 SLOPE_STEEP_FROM = vec2(0.25, 0.38);
+// Which way it leans: the image as is where the ground rises toward the
+// screen's right, mirrored where it rises toward the left, blended over
+// SLOPE_SIDE_BLEND of the slope's sideways share. Where it rises mostly
+// up or down the screen (SLOPE_VERTICAL_BLEND), a face turned toward the
+// viewer keeps the image as is and a face turned away has it stretched
+// SLOPE_AWAY_WIDTH times, its streaks nearly level.
+const float SLOPE_SIDE_BLEND = 0.35;
+const float SLOPE_VERTICAL_BLEND = 0.3;
+const float SLOPE_AWAY_WIDTH = 2.2;
+// Against repetition: the canvas is cut into cells of OFFSET_CELL_PX, each
+// reading the images at its own random offset, and a point blends its
+// four nearest cells' readings (bilinearly), so no seam shows. For the
+// slope's grass and the meadow's.
+const float OFFSET_CELL_PX = 150.0;
 
 uniform sampler2D noise_texture : repeat_enable, filter_linear;
 // Noise period, in texture units (one unit is one texture, four metres).
@@ -312,177 +290,96 @@ bool meet_shows(vec4 a, float w, float meet_noise) {
 	return (w - 0.5) * 2.0 + dot(a.rgb, vec3(0.333)) * meet_depth + meet_noise > -meet_band;
 }
 
-// A tile's level in metres, or -1 where no chunk said it.
-float step_level(vec2 cell) {
-	vec4 h = texture(height_index, (cell + 0.5) / index_tiles);
-	return h.g > 0.5 ? h.r * 25.5 : -1.0;
+// A cell's random number, from 0 to 1, for the seed `s`.
+float offset_hash(vec2 cell, float s) {
+	return fract(sin(cell.x * 12.9898 + cell.y * 78.233 + s) * 43758.5453);
 }
 
-// `c`, the ground at map point `p` (tiles), with the steps test's walls:
-// marches up the canvas (the map's -x and -y at once) across the tiles'
-// west and north edges, and stops at the first that rises by a step.
-vec3 steps_colour(vec3 c, vec2 p) {
-	vec2 a = floor(p);
-	float la = step_level(a);
-	if (la < 0.0) {
-		return c;
+// The four cells nearest canvas point `canvas`: their weights (`w`) and
+// their offsets (`ox`, `oy`, in repetitions of an image), in the order
+// (0, 0), (1, 0), (0, 1), (1, 1).
+void offset_cells(vec2 canvas, out vec4 w, out vec4 ox, out vec4 oy) {
+	vec2 g = canvas / OFFSET_CELL_PX - 0.5;
+	vec2 i = floor(g);
+	vec2 f = g - i;
+	w = vec4((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y);
+	ox = vec4(offset_hash(i, 1.0), offset_hash(i + vec2(1.0, 0.0), 1.0),
+		offset_hash(i + vec2(0.0, 1.0), 1.0), offset_hash(i + vec2(1.0, 1.0), 1.0));
+	oy = vec4(offset_hash(i, 7.0), offset_hash(i + vec2(1.0, 0.0), 7.0),
+		offset_hash(i + vec2(0.0, 1.0), 7.0), offset_hash(i + vec2(1.0, 1.0), 7.0));
+}
+
+// One reading of the slope's grass at `uv` shifted by `offset`, mirrored
+// left to right when `flip` is -1.
+vec3 slope_tap(vec2 uv, vec2 offset, float flip, vec2 gx, vec2 gy) {
+	vec2 at = uv + offset;
+	return textureGrad(slope_texture, vec2(at.x * flip, at.y), gx, gy).rgb;
+}
+
+// The slope's grass at canvas point `canvas`, stretched sideways `widen`
+// times and mirrored when `flip` is -1, its four cells blended. `dx` and
+// `dy`: the canvas point's derivatives.
+vec3 slope_read(vec2 canvas, vec2 dx, vec2 dy, float widen, float flip, vec4 w, vec4 ox, vec4 oy) {
+	vec2 scale = vec2(1.0 / widen, 1.0) / SLOPE_TEXTURE_PX;
+	vec2 uv = canvas * scale;
+	vec2 gx = dx * scale * vec2(flip, 1.0);
+	vec2 gy = dy * scale * vec2(flip, 1.0);
+	return w.x * slope_tap(uv, vec2(ox.x, oy.x), flip, gx, gy)
+		+ w.y * slope_tap(uv, vec2(ox.y, oy.y), flip, gx, gy)
+		+ w.z * slope_tap(uv, vec2(ox.z, oy.z), flip, gx, gy)
+		+ w.w * slope_tap(uv, vec2(ox.w, oy.w), flip, gx, gy);
+}
+
+// The slope's grass at its three inclinations blended by `inclines`
+// (gentle, medium, steep), mirrored when `flip` is -1.
+vec3 slope_inclined(vec2 canvas, vec2 dx, vec2 dy, vec3 inclines, float flip, vec4 w, vec4 ox, vec4 oy) {
+	vec3 c = vec3(0.0);
+	if (inclines.x > 0.0) {
+		c += inclines.x * slope_read(canvas, dx, dy, SLOPE_GENTLE_WIDTH, flip, w, ox, oy);
 	}
-	// Distance to the next west and north edges, in tiles along the march.
-	vec2 next = p - a;
-	for (int i = 0; i < STEP_MARCH; i++) {
-		bool west = next.x < next.y;
-		float d = west ? next.x : next.y;
-		float s = d * STEP_TILE_PX;
-		if (s > 3.0 * STEP_PX_PER_M + LIP_MIN_PX + LIP_JITTER_PX + FOOT_JITTER_PX + FOOT_SHADOW_PX) {
-			break;
-		}
-		vec2 b = a - (west ? vec2(1.0, 0.0) : vec2(0.0, 1.0));
-		float lb = step_level(b);
-		if (lb < 0.0) {
-			break;
-		}
-		// Where along the edge: its own coordinate, for the noise.
-		float along = west ? p.y - d : p.x - d;
-		if (lb - la >= STEP_MIN_M) {
-			float wall = (lb - la) * STEP_PX_PER_M;
-			float n1 = texture(noise_texture, vec2(along * 0.9, west ? 0.17 : 0.61)).r;
-			float n2 = texture(noise_texture, vec2(along * 3.1, west ? 0.43 : 0.29)).r;
-			float lip = LIP_MIN_PX + (n1 * 0.6 + n2 * 0.4) * LIP_JITTER_PX;
-			float foot = wall + lip + (texture(noise_texture, vec2(along * 1.7, 0.83)).r - 0.5) * 2.0 * FOOT_JITTER_PX;
-			if (s < lip) {
-				// The upper ground's lip, overhanging.
-				return c;
-			}
-			if (s < foot) {
-				float v = (s - lip) / max(foot - lip, 1.0);
-				// Earth streaked down the wall, deeper under the lip and
-				// lighter towards the foot.
-				float streak = texture(noise_texture, vec2(along * 6.0, v * 0.15 + (west ? 0.3 : 0.7))).r;
-				float clod = texture(noise_texture, vec2(along * 2.3, s / STEP_PX_PER_M * 0.6 + 0.5)).r;
-				vec3 earth = mix(WALL_DEEP, WALL_EARTH, smoothstep(0.0, 0.35, v) * 0.8 + streak * 0.35);
-				earth *= 0.85 + clod * 0.3;
-				return west ? earth * WALL_EAST_SHADE : earth;
-			}
-			if (s < foot + FOOT_SHADOW_PX) {
-				float t = (s - foot) / FOOT_SHADOW_PX;
-				return c * (1.0 - FOOT_SHADOW * (1.0 - t) * (1.0 - t));
-			}
-			return c;
-		}
-		if (la - lb >= STEP_MIN_M && i == 0) {
-			// A face turned away: only its lip, a thin dark line.
-			float n = texture(noise_texture, vec2(along * 2.0, 0.37)).r;
-			if (s < AWAY_LINE_PX * (0.6 + n * 0.8)) {
-				return c * (1.0 - AWAY_LINE);
-			}
-		}
-		if (west) {
-			next.x += 1.0;
-		} else {
-			next.y += 1.0;
-		}
-		a = b;
-		la = lb;
+	if (inclines.y > 0.0) {
+		c += inclines.y * slope_read(canvas, dx, dy, SLOPE_MEDIUM_WIDTH, flip, w, ox, oy);
+	}
+	if (inclines.z > 0.0) {
+		c += inclines.z * slope_read(canvas, dx, dy, SLOPE_STEEP_WIDTH, flip, w, ox, oy);
 	}
 	return c;
 }
 
-// A tile's height in decimetres, or `own` where no chunk said it.
-float slope_dm(vec2 cell, float own) {
-	vec4 h = texture(height_index, (cell + 0.5) / index_tiles);
-	return h.g > 0.5 ? round(h.r * 255.0) : own;
-}
-
-// TEST ONLY, the steps test's eleventh version (13 November 2026): its
-// crest (server/server/src/test_world.rs) runs from the map's (29, 0),
-// the screen's right corner, to its middle BENT_CREST_BEND, then turns
-// down and to the left on screen to BENT_CREST_END, the middle of the
-// diamond's lower left side. Beside that bent arm (the tiles nearer to
-// it than to the straight one), the slope's grass is forced, whatever
-// the rule below says: mirrored (streaks from upper left to lower right)
-// above and left of the arm, as is below and right of it, both at their
-// own width. On only while steps_mode is on, and only the steps test's
-// world has relief to turn it on; to be removed with the test.
-const vec2 BENT_CREST_BEND = vec2(14.5, 14.5);
-const vec2 BENT_CREST_END = vec2(14.5, 29.0);
-const vec2 BENT_CREST_START = vec2(29.0, 0.0);
-
-float bent_crest_reach(vec2 p, vec2 a, vec2 b) {
-	vec2 ab = b - a;
-	float t = clamp(dot(p - a, ab) / dot(ab, ab), 0.0, 1.0);
-	return length(p - a - t * ab);
-}
-
-// TEST ONLY: -1 where the bent arm does not force the grass, else 1
-// mirrored, 0 as is.
-float bent_crest_mirrored(vec2 cell) {
-	if (steps_mode != 1) {
-		return -1.0;
+// `c`, the ground at map point `p` (tiles, canvas point `canvas`), with
+// the slope's grass where the ground slopes (the mountain test's rule).
+vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox, vec4 oy) {
+	vec2 rise = texture(slope_index, p / index_tiles).rg;
+	float s = length(rise);
+	float shown = smoothstep(SLOPE_SHOW_FROM, SLOPE_SHOW_FULL, s);
+	if (shown <= 0.0) {
+		return c;
 	}
-	float to_bent = bent_crest_reach(cell, BENT_CREST_BEND, BENT_CREST_END);
-	float to_straight = bent_crest_reach(cell, BENT_CREST_BEND, BENT_CREST_START);
-	if (to_bent > to_straight + 0.001) {
-		return -1.0;
-	}
-	return cell.x < BENT_CREST_BEND.x ? 1.0 : 0.0;
-}
-
-// A tile's incline as the screen sees it: x is 1 on a slope's tile and 0
-// elsewhere (the steps test's convention: a slope's level is not a whole
-// number of metres), y how much its grass is mirrored and z how much it
-// is steepened, each from 0 (as is) to 1 (see SLOPE_VERTICAL_RATIO).
-vec3 slope_incline(vec2 cell) {
-	float own = slope_dm(cell, -1.0);
-	if (own < 0.0 || mod(own, 10.0) < 0.5) {
-		return vec3(0.0);
-	}
-	float forced = bent_crest_mirrored(cell);
-	if (forced >= 0.0) {
-		return vec3(1.0, forced, 0.0);
-	}
-	float gx = slope_dm(cell + vec2(1.0, 0.0), own) - slope_dm(cell - vec2(1.0, 0.0), own);
-	float gy = slope_dm(cell + vec2(0.0, 1.0), own) - slope_dm(cell - vec2(0.0, 1.0), own);
 	// The screen's right is the map's +x and -y at once, its bottom +x
 	// and +y.
-	float across = gx - gy;
-	float down = gx + gy;
-	float by_across = across < 0.0 ? 1.0 : 0.0;
-	float by_down = down > 0.0 ? 1.0 : 0.0;
-	float sideways = smoothstep(
-		SLOPE_VERTICAL_RATIO - SLOPE_RATIO_BLEND,
-		SLOPE_VERTICAL_RATIO + SLOPE_RATIO_BLEND,
-		abs(across) / max(abs(down), 0.001));
-	return vec3(1.0, by_across * sideways, by_down * (1.0 - sideways));
-}
-
-// `c`, the ground at map point `p` (tiles), with the slope's grass on
-// the slopes' tiles, the ground still drawn flat: the image as it is,
-// mirrored left to right or narrowed (never turned: the blades still
-// point up) as slope_incline says. Each read between the tiles' middles,
-// so it fades into the grass, and the two flanks into each other, over
-// about a tile, ragged by the noise.
-vec3 slope_colour(vec3 c, vec2 p) {
-	vec2 q = p - 0.5;
-	vec2 a = floor(q);
-	vec2 f = q - a;
-	vec3 i00 = slope_incline(a);
-	vec3 i10 = slope_incline(a + vec2(1.0, 0.0));
-	vec3 i01 = slope_incline(a + vec2(0.0, 1.0));
-	vec3 i11 = slope_incline(a + vec2(1.0, 1.0));
-	float slope = mix(mix(i00.x, i10.x, f.x), mix(i01.x, i11.x, f.x), f.y);
-	vec2 turn = mix(
-		mix(i00.x * i00.yz, i10.x * i10.yz, f.x),
-		mix(i01.x * i01.yz, i11.x * i11.yz, f.x), f.y);
-	float n = (texture(noise_texture, p * 0.7 + vec2(0.31, 0.87)).r - 0.5) * 0.3;
-	float w = smoothstep(0.15, 0.85, slope + n);
-	float mirrored = smoothstep(0.35, 0.65, turn.x / max(slope, 0.001) + n);
-	float steep = smoothstep(0.35, 0.65, turn.y / max(slope, 0.001) + n);
-	vec2 canvas = vec2((p.x - p.y) * STEP_TILE_PX, (p.x + p.y) * STEP_TILE_PX * 0.5);
-	vec2 suv = (canvas - SLOPE_ORIGIN_PX) / SLOPE_TEXTURE_PX;
-	vec3 up = texture(slope_texture, suv).rgb;
-	vec3 down = texture(slope_texture, vec2(-suv.x, suv.y)).rgb;
-	vec3 steeper = texture(slope_texture, vec2(suv.x / SLOPE_STEEP_WIDTH, suv.y)).rgb;
-	return mix(c, mix(mix(up, down, mirrored), steeper, steep) * SLOPE_TINT, w);
+	float across = rise.x - rise.y;
+	float down = rise.x + rise.y;
+	float horiz = smoothstep(-SLOPE_VERTICAL_BLEND, SLOPE_VERTICAL_BLEND,
+		(abs(across) - 0.8 * abs(down)) / (s + 1e-6));
+	float gentle = 1.0 - smoothstep(SLOPE_GENTLE_UNTIL.x, SLOPE_GENTLE_UNTIL.y, s);
+	float steep = smoothstep(SLOPE_STEEP_FROM.x, SLOPE_STEEP_FROM.y, s);
+	vec3 inclines = vec3(gentle, clamp(1.0 - gentle - steep, 0.0, 1.0), steep);
+	float rightward = smoothstep(-SLOPE_SIDE_BLEND, SLOPE_SIDE_BLEND, across / (s + 1e-6));
+	float facing = smoothstep(-SLOPE_SIDE_BLEND, SLOPE_SIDE_BLEND, -down / (s + 1e-6));
+	float as_is = horiz * rightward + (1.0 - horiz) * facing;
+	float mirrored = horiz * (1.0 - rightward);
+	float away = (1.0 - horiz) * (1.0 - facing);
+	vec3 grass = vec3(0.0);
+	if (as_is > 0.0) {
+		grass += as_is * slope_inclined(canvas, dx, dy, inclines, 1.0, w, ox, oy);
+	}
+	if (mirrored > 0.0) {
+		grass += mirrored * slope_inclined(canvas, dx, dy, inclines, -1.0, w, ox, oy);
+	}
+	if (away > 0.0) {
+		grass += away * slope_read(canvas, dx, dy, SLOPE_AWAY_WIDTH, 1.0, w, ox, oy);
+	}
+	return mix(c, grass * SLOPE_TINT, shown);
 }
 
 void fragment() {
@@ -543,7 +440,24 @@ float grain = (texture(noise_texture, uv * 0.8 + vec2(0.37, 0.19)).r - 0.5) * 2.
 // The variants' weights, once for every layer, and the derivatives the
 // layers are read with (varied_once).
 vec3 vw = variant_weights(uv);
-vec4 ground = varied_once_builtin(TEXTURE, uv, vw, duv_x, duv_y);
+// The mountain test: the canvas point, its derivatives and the four
+// cells' offsets (offset_cells), for the meadow and the slope's grass.
+vec2 canvas = vec2(at.x - at.y, at.x + at.y) * TILE_HALF_PX;
+vec2 canvas_dx = vec2(duv_x.x - duv_x.y, duv_x.x + duv_x.y) * 4.0 * TILE_HALF_PX;
+vec2 canvas_dy = vec2(duv_y.x - duv_y.y, duv_y.x + duv_y.y) * 4.0 * TILE_HALF_PX;
+vec4 cell_w = vec4(0.0);
+vec4 cell_ox = vec4(0.0);
+vec4 cell_oy = vec4(0.0);
+vec4 ground;
+if (steps_mode > 0) {
+	offset_cells(canvas, cell_w, cell_ox, cell_oy);
+	ground = cell_w.x * varied_once_builtin(TEXTURE, uv + vec2(cell_ox.x, cell_oy.x), vw, duv_x, duv_y)
+		+ cell_w.y * varied_once_builtin(TEXTURE, uv + vec2(cell_ox.y, cell_oy.y), vw, duv_x, duv_y)
+		+ cell_w.z * varied_once_builtin(TEXTURE, uv + vec2(cell_ox.z, cell_oy.z), vw, duv_x, duv_y)
+		+ cell_w.w * varied_once_builtin(TEXTURE, uv + vec2(cell_ox.w, cell_oy.w), vw, duv_x, duv_y);
+} else {
+	ground = varied_once_builtin(TEXTURE, uv, vw, duv_x, duv_y);
+}
 // Each layer is read only where it can show (meet_shows): the same
 // picture, fewer reads.
 if (has_sibling) {
@@ -654,7 +568,7 @@ if (has_bank) {
 }
 vec3 drawn = ground.rgb * vertex_tint;
 if (steps_mode > 0) {
-	drawn = steps_colour(slope_colour(drawn, at), at);
+	drawn = slope_colour(drawn, at, canvas, canvas_dx, canvas_dy, cell_w, cell_ox, cell_oy);
 }
 COLOR = vec4(drawn, alpha);
 }

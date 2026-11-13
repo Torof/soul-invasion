@@ -227,7 +227,7 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 		material.set_shader_parameter("ground_index", GroundIndex.texture())
 		material.set_shader_parameter("index_bit", int(GroundIndex.BITS.get(terrain, 0)))
 		material.set_shader_parameter("index_tiles", float(GroundIndex.TILES))
-		material.set_shader_parameter("height_index", HeightIndex.texture())
+		material.set_shader_parameter("slope_index", HeightIndex.texture())
 		if terrain != "water":
 			material.set_shader_parameter("steps_mode", steps_mode)
 			material.set_shader_parameter("slope_texture", load(SLOPE_GRASS))
@@ -237,9 +237,10 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 	return _ground_materials[terrain]
 
 
-## The steps test's mode (StepsTest): 1 the land's grounds draw the
-## levels' walls and the slope's grass, 0 nothing (any world with no
-## relief).
+## The slope test's mode (StepsTest): 1 the land's grounds draw the
+## slope's grass where the ground slopes, and read the meadow at random
+## offsets against repetition (the mountain test's rule), 0 the game's
+## ground as it is (any world with no relief).
 static var steps_mode := 0
 ## The steps test's slope grass, the project lead's image, whole.
 const SLOPE_GRASS := "res://world/test/slope_grass.png"
