@@ -49,8 +49,8 @@ OPTIONS:
     --world flat:<N>       A test world instead of the valley: N × N tiles
                            of grass (at least 8), the camp in the middle.
     --world test:marches   The steps test: 30 × 30 tiles of grass with a
-                           ridge about 3 m high from the screen's top
-                           corner to its bottom one, shown by the client
+                           ridge about 3 m high from the screen's left
+                           corner to its right one, shown by the client
                            only. Never for play.
     --dev                  Development tools: every client gets an overview
                            of the whole map and may teleport its body. Never
