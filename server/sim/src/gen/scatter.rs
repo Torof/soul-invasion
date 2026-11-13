@@ -114,10 +114,22 @@ pub(crate) mod purpose {
     pub(crate) const PLAN_HILLS: u64 = 0x91a7_4111;
     pub(crate) const PLAN_BROOK: u64 = 0x91a7_b400;
     pub(crate) const PLAN_EDGE: u64 = 0x91a7_ed9e;
+    /// The atlas's tuning (13 November 2026): the folds that bring each
+    /// rock up in patches, the small lakes the land keeps and the size a
+    /// lake drains down to, the winds and the sea currents, the warmth's
+    /// anomalies, the ragged borders between biomes, and how wide a river's
+    /// widest riffle spreads in a cell.
+    pub(crate) const PLAN_FOLDS: u64 = 0x91a7_f01d;
+    pub(crate) const PLAN_LAKES: u64 = 0x91a7_1a6e;
+    pub(crate) const PLAN_WIND: u64 = 0x91a7_3141;
+    pub(crate) const PLAN_CURRENT: u64 = 0x91a7_c0c0;
+    pub(crate) const PLAN_WARMTH: u64 = 0x91a7_3a73;
+    pub(crate) const PLAN_ECOTONE: u64 = 0x91a7_ec07;
+    pub(crate) const PLAN_REACH: u64 = 0x91a7_4eac;
 
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 46] = [
+    pub(crate) const ALL: [u64; 53] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -164,6 +176,13 @@ pub(crate) mod purpose {
         PLAN_HILLS,
         PLAN_BROOK,
         PLAN_EDGE,
+        PLAN_FOLDS,
+        PLAN_LAKES,
+        PLAN_WIND,
+        PLAN_CURRENT,
+        PLAN_WARMTH,
+        PLAN_ECOTONE,
+        PLAN_REACH,
     ];
 }
 

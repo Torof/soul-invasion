@@ -92,6 +92,13 @@ const BASINS: (u64, u64) = (1, 4);
 const BASIN_HALF_WIDTH_PER_MILLE: (u64, u64) = (15, 40);
 const BASIN_SINK_CM: (u64, u64) = (500, 1_100);
 
+/// Where strokes overlap their uplifts add up; past this knee (cm a pass)
+/// only a quarter of the excess is kept, so two crossing ranges make a
+/// massif of 5 to 6 km, not a 7 km spike, while a single strong range
+/// still reaches 4 to 5 km.
+const UPLIFT_KNEE_CM: i64 = 10_000;
+const UPLIFT_PAST_KNEE_PER_MILLE: i64 = 300;
+
 // ---------------------------------------------------------------- erosion
 
 /// Passes of the erosion. Enough for the ranges to reach their balance
@@ -122,18 +129,27 @@ const DOME_CM_PER_UNIT: i64 = 40;
 /// basement. Plains keep their cover, ranges lose it (they are cut
 /// kilometres deep), and the uplands between show whatever layer the
 /// erosion reached.
-const CHALK_CM: i64 = 15_000;
-const LIMESTONE_CM: i64 = 40_000;
-const SANDSTONE_CM: i64 = 80_000;
+const CHALK_CM: i64 = 30_000;
+const LIMESTONE_CM: i64 = 60_000;
+const SANDSTONE_CM: i64 = 70_000;
 
-/// Each cover's noise (cell per mille of the side), and where in the
-/// noise's range (-500..500) it starts and reaches its thickest: chalk in
-/// patches (a third of the land), limestone over about half, sandstone
-/// nearly everywhere.
-const COVER_CELL_PER_MILLE: u32 = 90;
-const CHALK_SPREAD: (i64, i64) = (30, 250);
-const LIMESTONE_SPREAD: (i64, i64) = (-60, 200);
-const SANDSTONE_SPREAD: (i64, i64) = (-250, 100);
+/// Each cover's noise, at several scales (cell per mille of the side,
+/// weight: 190, 60 and 20 km), and where in the noise's range (-500..500)
+/// it starts and reaches its thickest: chalk and limestone over half the
+/// land each, sandstone nearly everywhere, all of them thinning and
+/// thickening from one valley to the next.
+const COVER_OCTAVES: [(u32, i64); 3] = [(90, 4), (30, 2), (10, 2)];
+const CHALK_SPREAD: (i64, i64) = (-40, 140);
+const LIMESTONE_SPREAD: (i64, i64) = (-60, 120);
+const SANDSTONE_SPREAD: (i64, i64) = (-300, 0);
+
+/// The layers are folded and faulted: the depth at which a cell meets
+/// them is shifted by up to this much either way (cm), by a noise of
+/// cells of 16 and 6 km, so the erosion's surface cuts every layer in
+/// patches and each region shows a bit of every rock; the big structures
+/// (granite ranges, covered plains) still follow the relief's history.
+const FOLD_CM: i64 = 30_000;
+const FOLD_OCTAVES: [(u32, i64); 2] = [(8, 2), (3, 1)];
 
 /// How fast each rock gives way to a river, per mille of
 /// [`CUTTING_PER_MILLE`]: granite resists, limestone holds plateaus up,
@@ -147,6 +163,30 @@ const SEDIMENT_K: i64 = 1_700;
 /// A hollow is a lake when the flood filled it at least this deep, in
 /// cm; shallower, it is a wet flat.
 pub const LAKE_MIN_DEPTH_CM: i32 = 400;
+
+/// Small lakes the erosion's 2 km cells smooth away, put back where
+/// nature makes them: per 100,000 land cells, everywhere (landslide and
+/// beaver dams, karst sinks, old river loops), and up to this many more
+/// where the land is cold (the scoured rock of former ice sheets and the
+/// cirques of high ranges: Finland's and Canada's lake districts).
+const SCATTERED_LAKES: u64 = 230;
+const GLACIAL_LAKES: u64 = 700;
+/// Colder than this at the ground (tenths of a degree, yearly mean), the
+/// ice scoured; the scouring is fullest this much colder.
+const GLACIAL_TENTHS: i64 = 60;
+const GLACIAL_FULL_TENTHS: i64 = 80;
+/// A small lake's hollow below its rim, in cm.
+const SMALL_LAKE_DEPTH_CM: (u64, u64) = (800, 3_500);
+
+/// A lake keeps a share of its basin drawn for it, per mille, by a table
+/// on a draw per mille, at least [`LAKE_LEAST_CELLS`] and at most
+/// [`LAKE_MOST_CELLS`] cells: most basins keep a small lake, some a
+/// medium one, a big basin now and then a big lake (6,000 km² at most,
+/// Lake Ontario's ten-thousand). The rest of the basin is silted up (see
+/// `drain_lakes`).
+const LAKE_SHARES: [(i64, i64); 4] = [(0, 20), (500, 70), (850, 220), (1000, 500)];
+const LAKE_LEAST_CELLS: usize = 3;
+const LAKE_MOST_CELLS: usize = 1_500;
 
 /// Alluvium lies where a river of at least this many drained cells runs
 /// this gently (cm of drop a cell) or lower: a floodplain.
@@ -183,7 +223,7 @@ pub struct Stroke {
 }
 
 /// Sixteen headings, as a cosine and a sine per mille.
-const HEADINGS: [(i64, i64); 16] = [
+pub(crate) const HEADINGS: [(i64, i64); 16] = [
     (1000, 0),
     (924, 383),
     (707, 707),
@@ -304,8 +344,157 @@ impl Relief {
             strokes,
         };
         relief.erode(&start, &covers);
+        relief.keep_small_lakes(seed);
+        relief.drain_lakes(seed);
         relief.settle_rock(&start, &covers);
         relief
+    }
+
+    /// Pass 4, first half: the small lakes the erosion's cells smooth
+    /// away, dug back where nature makes them (see [`SCATTERED_LAKES`]).
+    /// Each is a hollow below the lowest ground around it, so the flood
+    /// fills it to that rim and its outlet spills there.
+    fn keep_small_lakes(&mut self, seed: u64) {
+        let grid = self.grid;
+        let north = super::climate::north_latitude(seed);
+        for i in 0..grid.len() {
+            if self.sea[i] {
+                continue;
+            }
+            let (x, y) = grid.xy(i);
+            let ground = super::climate::ground_tenths(north, y, self.height[i]);
+            let cold = (GLACIAL_TENTHS - ground).clamp(0, GLACIAL_FULL_TENTHS);
+            let density = SCATTERED_LAKES
+                + GLACIAL_LAKES * cold.unsigned_abs() / GLACIAL_FULL_TENTHS.unsigned_abs();
+            if roll(seed, purpose::PLAN_LAKES, &[i as u64]) % 100_000 >= density {
+                continue;
+            }
+            // A single cell, a cross of five, or a square of nine.
+            let shape = roll(seed, purpose::PLAN_LAKES, &[i as u64, 1]) % 3;
+            let depth = i64::try_from(
+                SMALL_LAKE_DEPTH_CM.0
+                    + roll(seed, purpose::PLAN_LAKES, &[i as u64, 2])
+                        % (SMALL_LAKE_DEPTH_CM.1 - SMALL_LAKE_DEPTH_CM.0 + 1),
+            )
+            .expect("small");
+            let inside = |dx: i32, dy: i32| match shape {
+                0 => dx == 0 && dy == 0,
+                1 => dx.abs() + dy.abs() <= 1,
+                _ => true,
+            };
+            let mut rim = i64::MAX;
+            let mut near_sea = false;
+            for dy in -2..=2 {
+                for dx in -2..=2 {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if !grid.inside(nx, ny) {
+                        near_sea = true;
+                        continue;
+                    }
+                    let j = grid.index(nx, ny);
+                    near_sea |= self.sea[j];
+                    if !(dx.abs() <= 1 && dy.abs() <= 1 && inside(dx, dy)) {
+                        rim = rim.min(i64::from(self.height[j]));
+                    }
+                }
+            }
+            if near_sea || rim == i64::MAX {
+                continue;
+            }
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    if inside(dx, dy) {
+                        let j = grid.index(x + dx, y + dy);
+                        let floor = rim - if (dx, dy) == (0, 0) { depth } else { depth / 2 };
+                        self.height[j] = self.height[j].min(clamp_i32(floor));
+                    }
+                }
+            }
+        }
+        self.routing.route(grid, &self.height, &self.sea);
+    }
+
+    /// Pass 4, second half: each lake keeps a size drawn for it
+    /// ([`LAKE_SHARES`]): its deepest cells, as many as that, stay under
+    /// water; the rest of its basin is filled by the rivers' silt up to
+    /// the lake's level, a flat plain around a smaller lake (the Po's, the
+    /// Hungarian plain). A lake whose basin sank below the sea becomes a
+    /// plain at sea level the same way.
+    fn drain_lakes(&mut self, seed: u64) {
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+        let grid = self.grid;
+        let n = grid.len();
+        let lake = |r: &Self, i: usize| {
+            !r.sea[i] && r.routing.filled[i] - r.height[i] >= LAKE_MIN_DEPTH_CM
+        };
+        let mut done = vec![false; n];
+        let mut kept = vec![false; n];
+        let mut changed = false;
+        for start in 0..n {
+            if done[start] || !lake(self, start) {
+                continue;
+            }
+            // One lake: its cells, all at one level.
+            let level = self.routing.filled[start];
+            let mut cells = vec![start];
+            done[start] = true;
+            let mut k = 0;
+            while k < cells.len() {
+                let c = cells[k];
+                k += 1;
+                for (m, _) in grid.around(c) {
+                    if !done[m] && lake(self, m) && self.routing.filled[m] == level {
+                        done[m] = true;
+                        cells.push(m);
+                    }
+                }
+            }
+            let deepest = *cells
+                .iter()
+                .min_by_key(|&&c| (self.height[c], c))
+                .expect("a cell");
+            let draw =
+                i64::try_from(roll(seed, purpose::PLAN_LAKES, &[0xd4, deepest as u64]) % 1001)
+                    .expect("small");
+            let share = usize::try_from(super::table(&LAKE_SHARES, draw)).expect("positive");
+            let size = (cells.len() * share / 1000).clamp(LAKE_LEAST_CELLS, LAKE_MOST_CELLS);
+            if cells.len() <= size {
+                continue;
+            }
+            // The deepest `size` cells joined to the deepest one, grown
+            // lowest bed first (ties by index: a fixed order).
+            let mut heap = BinaryHeap::new();
+            heap.push(Reverse((self.height[deepest], deepest)));
+            kept[deepest] = true;
+            let mut count = 0;
+            while let Some(Reverse((_, c))) = heap.pop() {
+                count += 1;
+                if count >= size {
+                    break;
+                }
+                for (m, _) in grid.around(c) {
+                    if !kept[m] && lake(self, m) && self.routing.filled[m] == level {
+                        kept[m] = true;
+                        heap.push(Reverse((self.height[m], m)));
+                    }
+                }
+            }
+            // Whatever was pushed but not reached stays dry too.
+            for Reverse((_, c)) in heap {
+                kept[c] = false;
+            }
+            for &c in &cells {
+                if !kept[c] {
+                    self.height[c] = level;
+                }
+            }
+            changed = true;
+        }
+        if changed {
+            self.routing.route(grid, &self.height, &self.sea);
+        }
+        self.accumulate();
     }
 
     /// Pass 2: the stream-power law, implicit (Braun and Willett 2013).
@@ -650,7 +839,15 @@ fn uplift(seed: u64, grid: Grid, sea: &[bool], strokes: &[Stroke]) -> Vec<i32> {
     uplift
         .iter()
         .zip(sea)
-        .map(|(&u, &s)| if s { 0 } else { clamp_i32(u) })
+        .map(|(&u, &s)| {
+            if s {
+                0
+            } else if u > UPLIFT_KNEE_CM {
+                clamp_i32(UPLIFT_KNEE_CM + (u - UPLIFT_KNEE_CM) * UPLIFT_PAST_KNEE_PER_MILLE / 1000)
+            } else {
+                clamp_i32(u)
+            }
+        })
         .collect()
 }
 
@@ -659,6 +856,7 @@ struct Covers {
     chalk: Vec<i32>,
     limestone: Vec<i32>,
     sandstone: Vec<i32>,
+    fold: Vec<i32>,
 }
 
 impl Covers {
@@ -667,14 +865,7 @@ impl Covers {
             (0..grid.len())
                 .map(|i| {
                     let (x, y) = grid.xy(i);
-                    let n = fbm(
-                        seed,
-                        p,
-                        grid.side,
-                        x,
-                        y,
-                        &[(COVER_CELL_PER_MILLE, 2), (COVER_CELL_PER_MILLE / 3, 1)],
-                    );
+                    let n = fbm(seed, p, grid.side, x, y, &COVER_OCTAVES);
                     clamp_i32(thickest * ((n - from) * 1000 / (full - from)).clamp(0, 1000) / 1000)
                 })
                 .collect()
@@ -683,6 +874,13 @@ impl Covers {
             chalk: cover(purpose::PLAN_CHALK, CHALK_CM, CHALK_SPREAD),
             limestone: cover(purpose::PLAN_LIMESTONE, LIMESTONE_CM, LIMESTONE_SPREAD),
             sandstone: cover(purpose::PLAN_SANDSTONE, SANDSTONE_CM, SANDSTONE_SPREAD),
+            fold: (0..grid.len())
+                .map(|i| {
+                    let (x, y) = grid.xy(i);
+                    let n = fbm(seed, purpose::PLAN_FOLDS, grid.side, x, y, &FOLD_OCTAVES);
+                    clamp_i32(n * FOLD_CM / 250)
+                })
+                .collect(),
         }
     }
 
@@ -691,6 +889,7 @@ impl Covers {
         if depth < 0 {
             return Layer::Sediment;
         }
+        let depth = (depth + i64::from(self.fold[c])).max(0);
         let chalk = i64::from(self.chalk[c]);
         let limestone = chalk + i64::from(self.limestone[c]);
         let sandstone = limestone + i64::from(self.sandstone[c]);
