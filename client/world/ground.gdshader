@@ -34,10 +34,6 @@ const float SHARPEN = 0.5;
 // the game's ground as it is, 1 the slopes' grass and the offsets below.
 uniform sampler2D slope_index : filter_linear, repeat_enable;
 uniform int steps_mode = 0;
-// The mountain test: true lays the image rising right where the ground
-// rises left and the mirrored one where it rises right (13 November 2026,
-// the project lead's reading of the first screen of image G).
-uniform bool slope_sides_swapped = true;
 // The slope's grass, its stones and its rock (client/world/test/
 // slope_grass.png, slope_stony.png and slope_rock.png, Scenario's images
 // of 13 November 2026, the grass tinted, their streaks rising toward the
@@ -397,9 +393,6 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 	float steep = smoothstep(SLOPE_STEEP_FROM.x, SLOPE_STEEP_FROM.y, s);
 	vec3 inclines = vec3(gentle, clamp(1.0 - gentle - steep, 0.0, 1.0), steep);
 	float rightward = smoothstep(-SLOPE_SIDE_BLEND, SLOPE_SIDE_BLEND, across / (s + 1e-6));
-	if (slope_sides_swapped) {
-		rightward = 1.0 - rightward;
-	}
 	float facing = smoothstep(-SLOPE_SIDE_BLEND, SLOPE_SIDE_BLEND, -down / (s + 1e-6));
 	vec3 leans = vec3(horiz * rightward + (1.0 - horiz) * facing,
 		horiz * (1.0 - rightward), (1.0 - horiz) * (1.0 - facing));
