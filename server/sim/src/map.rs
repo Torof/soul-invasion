@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use crate::r#gen::scatter::purpose;
 use crate::r#gen::{Groves, Lcg};
 use crate::land::{Land, Waters};
+use crate::plan::Window;
 use crate::woods::{Habitat, Woods};
 
 /// Side of a chunk, in tiles.
@@ -240,6 +241,12 @@ pub const GENERATOR: u32 = 2;
 /// stored: no rock under the ground.
 pub const FIRST_GENERATOR: u32 = 1;
 
+/// The experimental generator of the relief look test (13 November
+/// 2026): a window of the atlas at one metre ([`crate::plan::window`]),
+/// with a height per tile. Never the default: a server makes it only when
+/// asked (`--world plan:<seed>`).
+pub const PLAN_GENERATOR: u32 = 3;
+
 /// A world saved before versions were stored was made by the first.
 fn first_generator() -> u32 {
     FIRST_GENERATOR
@@ -366,6 +373,10 @@ impl Map {
     /// version; from version 2 the ground has a rock under it
     /// ([`Map::has_geology`]).
     pub fn valley_by(generator: u32, width: u32, height: u32, seed: u64) -> Self {
+        if generator == PLAN_GENERATOR {
+            assert_eq!(width, height, "a window of the atlas is square");
+            return Self::on_window(Window::atlas(seed, width), seed);
+        }
         let cliff_rows = (height / 8).max(2);
         let waters = {
             let rivers = Rivers::generate(width, height, cliff_rows, seed);
@@ -388,6 +399,61 @@ impl Map {
             edits: BTreeMap::new(),
             heights: None,
             camp_at: None,
+        }
+    }
+
+    /// The relief look test's world (generator version 3): the window of
+    /// [`crate::plan::window::WINDOW_SIDE`] tiles chosen in the atlas of
+    /// `seed`. Some seconds to make: the whole continent is born first.
+    pub fn plan(seed: u64) -> Self {
+        let side = crate::plan::window::WINDOW_SIDE;
+        Self::valley_by(PLAN_GENERATOR, side, side, seed)
+    }
+
+    /// The map of an atlas's `window`: its waters, the valley's woods
+    /// within its forest, its heights.
+    pub fn on_window(window: Window, seed: u64) -> Self {
+        let side = window.side();
+        let waters = Waters::from_tiles(
+            side,
+            side,
+            window
+                .waters()
+                .into_iter()
+                .map(|(x, y, w)| (x, y, w.terrain, w.depth, w.current)),
+        );
+        let woods = Woods::new(side, side, 0, seed, window.camp());
+        Self {
+            spec: MapSpec::Valley {
+                width: side,
+                height: side,
+                seed,
+                generator: PLAN_GENERATOR,
+            },
+            width: side,
+            height: side,
+            ground: Made::Valley(Box::new(
+                Land::new(side, side, 0, waters, woods).on_window(std::sync::Arc::new(window)),
+            )),
+            edits: BTreeMap::new(),
+            heights: None,
+            camp_at: None,
+        }
+    }
+
+    /// The height of the ground at `pos`, in decimetres above the sea;
+    /// `None` on a map with no heights (the valley) and off the map.
+    #[must_use]
+    pub fn elevation(&self, pos: Pos) -> Option<i16> {
+        let (x, y) = self.inside(pos)?;
+        if let Some(heights) = &self.heights {
+            return Some(heights[(y * self.width + x) as usize]);
+        }
+        match &self.ground {
+            Made::Valley(land) => land
+                .relief()
+                .map(|w| w.height_dm(i64::from(x), i64::from(y))),
+            Made::Filled(_) => None,
         }
     }
 
@@ -431,9 +497,12 @@ impl Map {
     /// Where the first bodies start: the camp, left open by the woods.
     #[must_use]
     pub fn camp(&self) -> Pos {
-        let (x, y) = self
-            .camp_at
-            .unwrap_or_else(|| Self::camp_of(self.width, self.height));
+        let (x, y) = self.camp_at.unwrap_or_else(|| match &self.ground {
+            Made::Valley(land) => land
+                .relief()
+                .map_or_else(|| Self::camp_of(self.width, self.height), Window::camp),
+            Made::Filled(_) => Self::camp_of(self.width, self.height),
+        });
         Pos::new(
             i32::try_from(x).expect("map fits in i32"),
             i32::try_from(y).expect("map fits in i32"),
@@ -587,10 +656,16 @@ impl Map {
     /// decimetres; `None` on a map with no heights and for a chunk off the
     /// map. Past the map's edge, the edge's height.
     pub fn chunk_heights(&self, chunk: ChunkPos) -> Option<Vec<i16>> {
-        let heights = self.heights.as_ref()?;
         if !self.has_chunk(chunk) {
             return None;
         }
+        // The look test's window works each height out on demand; the test
+        // worlds carry theirs.
+        let window = match (&self.heights, &self.ground) {
+            (None, Made::Valley(land)) => Some(land.relief()?),
+            (None, Made::Filled(_)) => return None,
+            (Some(_), _) => None,
+        };
         let origin = chunk.origin();
         let side = i32::try_from(CHUNK_SIZE).expect("small chunk side");
         let (w, h) = (self.width as usize, self.height as usize);
@@ -599,7 +674,14 @@ impl Map {
             for x in 0..side {
                 let tx = usize::try_from(origin.x + x).unwrap_or(0).min(w - 1);
                 let ty = usize::try_from(origin.y + y).unwrap_or(0).min(h - 1);
-                out.push(heights[ty * w + tx]);
+                out.push(match (window, &self.heights) {
+                    (Some(window), _) => window.height_dm(
+                        i64::try_from(tx).expect("map fits in i64"),
+                        i64::try_from(ty).expect("map fits in i64"),
+                    ),
+                    (None, Some(heights)) => heights[ty * w + tx],
+                    (None, None) => unreachable!("heights or a window"),
+                });
             }
         }
         Some(out)

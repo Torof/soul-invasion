@@ -28,6 +28,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::lru::Lru;
 use crate::map::{CHUNK_SIZE, ChunkPos, PATH_REACH, Rivers, Terrain};
+use crate::plan::window::Window;
 use crate::woods::{Habitat, Woods};
 
 /// Tiles in a chunk.
@@ -113,6 +114,35 @@ impl Waters {
                 wet.depth.push(depth);
                 wet.current.push(current);
             }
+        }
+        waters
+    }
+
+    /// The water of `tiles`, `(x, y, terrain, depth, current)` row by row
+    /// over the map, kept sparse.
+    pub(crate) fn from_tiles(
+        width: u32,
+        height: u32,
+        tiles: impl IntoIterator<Item = (u32, u32, Terrain, u8, u16)>,
+    ) -> Self {
+        let chunks_wide = width.div_ceil(CHUNK_SIZE);
+        let chunks_high = height.div_ceil(CHUNK_SIZE);
+        let mut waters = Self {
+            width,
+            height,
+            chunks_wide,
+            wet: vec![0; (chunks_wide * chunks_high).div_ceil(64) as usize],
+            chunks: BTreeMap::new(),
+        };
+        for (x, y, terrain, depth, current) in tiles {
+            let (chunk, place) = waters.place(x, y);
+            waters.wet[chunk as usize / 64] |= 1 << (chunk % 64);
+            let wet = waters.chunks.entry(chunk).or_default();
+            debug_assert!(wet.at.last().is_none_or(|&p| p < place), "row by row");
+            wet.at.push(place);
+            wet.terrain.push(Some(terrain));
+            wet.depth.push(depth);
+            wet.current.push(current);
         }
         waters
     }
@@ -290,6 +320,9 @@ pub(crate) struct Land {
     cliff_rows: u32,
     waters: Waters,
     woods: Woods,
+    /// The atlas's window the land is cut from (generator version 3, the
+    /// relief look test): its heights, and where the forest may grow.
+    relief: Option<Arc<Window>>,
     held: Mutex<Held>,
 }
 
@@ -359,13 +392,15 @@ fn recent<T>(
 impl Clone for Land {
     /// The same land, its caches empty.
     fn clone(&self) -> Self {
-        Self::new(
+        let mut land = Self::new(
             self.width,
             self.height,
             self.cliff_rows,
             self.waters.clone(),
             self.woods.clone(),
-        )
+        );
+        land.relief.clone_from(&self.relief);
+        land
     }
 }
 
@@ -401,11 +436,24 @@ impl Land {
             cliff_rows,
             waters,
             woods,
+            relief: None,
             held: Mutex::new(Held {
                 tiles: Lru::new(tiles),
                 woods: Lru::new(woods_held),
             }),
         }
+    }
+
+    /// The same land on the atlas's `window` (the relief look test): the
+    /// woods grow only in its forest.
+    pub(crate) fn on_window(mut self, window: Arc<Window>) -> Self {
+        self.relief = Some(window);
+        self
+    }
+
+    /// The atlas's window under this land, if any.
+    pub(crate) fn relief(&self) -> Option<&Window> {
+        self.relief.as_deref()
     }
 
     /// How deep the water is at `(x, y)`, in half-metres: 0 on land and
@@ -493,7 +541,14 @@ impl Land {
         let w = x1 - x0;
         self.woods.draft(
             rect,
-            |x, y| y >= self.cliff_rows && self.waters.at(x, y).is_none(),
+            |x, y| {
+                y >= self.cliff_rows
+                    && self.waters.at(x, y).is_none()
+                    && self
+                        .relief
+                        .as_ref()
+                        .is_none_or(|w| w.wooded(i64::from(x), i64::from(y)))
+            },
             |x, y| to[((y - y0) * w + (x - x0)) as usize],
             |x, y| self.waters.to_water(x, y),
         )
