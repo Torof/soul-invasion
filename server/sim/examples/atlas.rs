@@ -92,6 +92,7 @@ fn main() {
     .expect("write");
     std::fs::write(out.join("atlas.html"), page(&rows)).expect("write");
     std::fs::write(out.join("mesures.md"), measures(&rows)).expect("write");
+    std::fs::write(out.join("mesures.tsv"), table(&rows)).expect("write");
     println!("written to {}", out.display());
 }
 
@@ -446,6 +447,59 @@ fn measures(rows: &[Row]) -> String {
     s.push_str("\n## Biomes per seed\n\n");
     for r in rows {
         let _ = writeln!(s, "- **{}**: {}", r.seed, biomes_line(&r.numbers));
+    }
+    s
+}
+
+fn rock_name(r: Rock) -> &'static str {
+    match r {
+        Rock::Granite => "granite",
+        Rock::Limestone => "limestone",
+        Rock::Chalk => "chalk",
+        Rock::Sandstone => "sandstone",
+    }
+}
+
+/// Every number of every seed, a row each, tab-separated: what the
+/// before-and-after pages are built from.
+fn table(rows: &[Row]) -> String {
+    let mut s = String::from(
+        "seed\tland_km2\trivers_bp\tlakes_bp\tdry_piece_bp\twading_piece_bp\tlongest_dry_km\tlongest_wading_km\tdetour_median_km\tdetour_p90_km\tdetour_max_km\thighest_m\tlargest_river_m3s\tborn_ms\trocks_a_block_centi\talluvium_bp\tbiomes\trocks\n",
+    );
+    for r in rows {
+        let n = &r.numbers;
+        let biomes = n
+            .biomes_bp
+            .iter()
+            .map(|(b, bp)| format!("{}:{bp}", biome_name(*b)))
+            .collect::<Vec<_>>()
+            .join(";");
+        let rocks = n
+            .rocks_bp
+            .iter()
+            .map(|(k, bp)| format!("{}:{bp}", rock_name(*k)))
+            .collect::<Vec<_>>()
+            .join(";");
+        let _ = writeln!(
+            s,
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{biomes}\t{rocks}",
+            r.seed,
+            n.land_km2,
+            n.rivers_bp,
+            n.lakes_bp,
+            n.dry_piece_bp,
+            n.wading_piece_bp,
+            n.longest_dry_km,
+            n.longest_wading_km,
+            n.detour_median_km,
+            n.detour_p90_km,
+            n.detour_max_km,
+            n.highest_m,
+            n.largest_river_m3s,
+            r.born_ms,
+            n.rocks_a_block_centi,
+            n.alluvium_bp,
+        );
     }
     s
 }
