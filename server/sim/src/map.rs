@@ -263,6 +263,9 @@ pub struct Map {
     /// by row, shown by the client and nothing else (no rule reads it, no
     /// snapshot keeps it: a test world is ephemeral).
     heights: Option<std::sync::Arc<[i16]>>,
+    /// Test worlds only (`--world`): the camp, where it is not the one
+    /// its size gives ([`Map::with_camp`]).
+    camp_at: Option<(u32, u32)>,
 }
 
 /// What a map's tiles are made from.
@@ -340,6 +343,7 @@ impl Map {
             ground: Made::Filled(terrain),
             edits: BTreeMap::new(),
             heights: None,
+            camp_at: None,
         }
     }
 
@@ -383,6 +387,7 @@ impl Map {
             ))),
             edits: BTreeMap::new(),
             heights: None,
+            camp_at: None,
         }
     }
 
@@ -426,7 +431,9 @@ impl Map {
     /// Where the first bodies start: the camp, left open by the woods.
     #[must_use]
     pub fn camp(&self) -> Pos {
-        let (x, y) = Self::camp_of(self.width, self.height);
+        let (x, y) = self
+            .camp_at
+            .unwrap_or_else(|| Self::camp_of(self.width, self.height));
         Pos::new(
             i32::try_from(x).expect("map fits in i32"),
             i32::try_from(y).expect("map fits in i32"),
@@ -560,6 +567,19 @@ impl Map {
             "one height a tile"
         );
         self.heights = Some(heights.into());
+        self
+    }
+
+    /// The same map with its camp at tile (`x`, `y`) (the steps test: the
+    /// camp on its flat ground).
+    ///
+    /// # Panics
+    ///
+    /// When the tile is off the map.
+    #[must_use]
+    pub fn with_camp(mut self, x: u32, y: u32) -> Self {
+        assert!(x < self.width && y < self.height, "a camp on the map");
+        self.camp_at = Some((x, y));
         self
     }
 

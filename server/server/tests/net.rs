@@ -2606,8 +2606,8 @@ async fn a_client_far_from_a_walker_hears_nothing_of_it() {
     .await;
 }
 
-/// The steps test: a 12 × 12 world starts, a body is born in it, and its
-/// one chunk carries the blocks' heights through the protocol (the tiles
+/// The steps test: a 30 × 30 world starts, a body is born in it, and its
+/// one chunk carries the ridge's heights through the protocol (the tiles
 /// past the map's edge repeat its last row and column).
 #[tokio::test]
 async fn the_steps_test_world_starts_and_sends_its_heights() {
@@ -2629,5 +2629,5 @@ async fn the_steps_test_world_starts_and_sends_its_heights() {
             assert_eq!(frame.heights[y * chunk + x], heights[y * side + x]);
         }
     }
-    assert_eq!(frame.heights.iter().max(), Some(&20), "blocks up to 2 m");
+    assert_eq!(frame.heights.iter().max(), Some(&29), "a crest under 3 m");
 }

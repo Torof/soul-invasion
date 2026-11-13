@@ -48,9 +48,10 @@ OPTIONS:
                            faster: for tests and development.
     --world flat:<N>       A test world instead of the valley: N × N tiles
                            of grass (at least 8), the camp in the middle.
-    --world test:marches   The steps test: 12 × 12 tiles of grass with
-                           blocks 1 and 2 m high and a small ridge, shown
-                           by the client only. Never for play.
+    --world test:marches   The steps test: 30 × 30 tiles of grass with a
+                           ridge about 3 m high from the screen's top
+                           corner to its bottom one, shown by the client
+                           only. Never for play.
     --dev                  Development tools: every client gets an overview
                            of the whole map and may teleport its body. Never
                            for play.
@@ -121,7 +122,7 @@ pub struct Options {
 pub enum TestWorld {
     /// `flat:<N>`: N × N tiles of grass.
     Flat(u32),
-    /// `test:marches`: the steps test's blocks and ridge.
+    /// `test:marches`: the steps test's ridge.
     Marches,
 }
 
