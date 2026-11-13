@@ -9,21 +9,31 @@ use sim::{Content, World};
 
 use crate::cli::TestWorld;
 
-/// The steps test (fifth version, 13 November 2026): one ridge across the
-/// whole square. The screen's horizontal is the map's `x - y` (`Iso`), so
-/// a tile's height depends on it alone: flat grass for the outer
-/// [`MARCHES_FOOT`]`- 1` diagonals near the screen's left corner (0, 29)
-/// and right corner (29, 0), then rising evenly to a crest of about
-/// [`MARCHES_CREST`] decimetres on the diagonal `x = y`, which runs from
-/// the screen's top corner to its bottom one, and falling the same way
-/// past it. A height that is not a whole number of metres is a slope's
-/// tile (the client draws it flat, with the slope's grass inclined the way
-/// it rises), so a slope's tile that would be one is a decimetre lower.
-/// The camp lies on the flat ground near the screen's left corner.
+/// The steps test (sixth version, 13 November 2026): one ridge across the
+/// whole square, its crest slanted and off-centre. The screen's horizontal
+/// is the map's `x - y` and its vertical `x + y` (`Iso`). Flat grass lies
+/// on the outer [`MARCHES_FOOT`]` - 1` diagonals near the screen's left
+/// corner (0, 29) and right corner (29, 0) (`|x - y| >= MARCHES_FOOT`).
+/// The crest runs from `x - y` = [`MARCHES_CREST_TOP`] at the screen's top
+/// corner (`x + y` = 0) to `x - y` = [`MARCHES_CREST_BOTTOM`] at its bottom
+/// one (`x + y` = 58), so it leans, and lower down the climbing flank is
+/// much wider than the falling one. A tile rises evenly from the left foot
+/// to the crest's [`MARCHES_CREST`] decimetres and falls evenly from it to
+/// the right foot, so the falling flank is shorter and steeper. A height
+/// that is not a whole number of metres is a slope's tile (the client draws
+/// it flat, with the slope's grass inclined the way it rises), so a slope's
+/// tile that would be one is a decimetre lower. The camp lies on the flat
+/// ground near the screen's left corner.
 const MARCHES_FOOT: i32 = 25;
 
 /// The steps test's crest, in decimetres (before the decimetre off).
 const MARCHES_CREST: i32 = 30;
+
+/// The crest's `x - y` at the screen's top corner.
+const MARCHES_CREST_TOP: i32 = 4;
+
+/// The crest's `x - y` at the screen's bottom corner.
+const MARCHES_CREST_BOTTOM: i32 = 14;
 
 /// The steps test's side, in tiles.
 pub const MARCHES_SIDE: u32 = 30;
@@ -36,11 +46,21 @@ pub const MARCHES_CAMP: (u32, u32) = (1, 28);
 #[must_use]
 pub fn marches_heights() -> Vec<i16> {
     let side = MARCHES_SIDE as usize;
+    let span = 2 * (i32::try_from(side).expect("small") - 1);
     let mut out = vec![0; side * side];
     for (i, h) in out.iter_mut().enumerate() {
-        let (x, y) = (i % side, i / side);
-        let across = (i32::try_from(x).expect("small") - i32::try_from(y).expect("small")).abs();
-        let dm = (MARCHES_CREST * (MARCHES_FOOT - across) / MARCHES_FOOT).max(0);
+        let x = i32::try_from(i % side).expect("small");
+        let y = i32::try_from(i / side).expect("small");
+        // Everything below is scaled by `span` to keep the crest's slant exact.
+        let across = (x - y) * span;
+        let crest = MARCHES_CREST_TOP * span + (MARCHES_CREST_BOTTOM - MARCHES_CREST_TOP) * (x + y);
+        let foot = MARCHES_FOOT * span;
+        let dm = if across <= crest {
+            MARCHES_CREST * (across + foot) / (crest + foot)
+        } else {
+            MARCHES_CREST * (foot - across) / (foot - crest)
+        }
+        .max(0);
         let dm = if dm > 0 && dm % 10 == 0 { dm - 1 } else { dm };
         *h = i16::try_from(dm).expect("a few metres");
     }
