@@ -18,7 +18,8 @@
 use std::collections::VecDeque;
 
 use super::relief::step_m;
-use super::{Biome, CELL_M, Continent, iroot, isqrt};
+use super::{Biome, CELL_M, Continent, Grid, iroot, isqrt};
+use crate::geology::Rock;
 
 /// Depth on a riffle, per mille of the mean depth.
 pub const RIFFLE_PER_MILLE: u64 = 500;
@@ -79,7 +80,40 @@ pub struct Numbers {
     pub highest_m: i64,
     /// The largest river's discharge at its mouth, in m³/s.
     pub largest_river_m3s: u64,
+    /// Each bedrock's share of the land outside lakes, in hundredths of a
+    /// percent, in [`Rock::ALL`] order (under the alluvium too).
+    pub rocks_bp: Vec<(Rock, u64)>,
+    /// The alluvium's share of the land outside lakes, in hundredths of a
+    /// percent.
+    pub alluvium_bp: u64,
+    /// How many bedrocks a block of [`BLOCK_CELLS`] cells a side shows on
+    /// average (each on at least [`BLOCK_ROCK_PER_MILLE`] of its land),
+    /// times 100: "a bit of everything everywhere" is near 400.
+    pub rocks_a_block_centi: u64,
+    /// The walk from one bank of a big river to the facing bank, wading,
+    /// in km: the median over the big rivers' cells.
+    pub detour_median_km: u64,
+    /// The same, its ninth decile.
+    pub detour_p90_km: u64,
+    /// The same, its longest (at most [`DETOUR_CAP_KM`]).
+    pub detour_max_km: u64,
 }
+
+/// A block of the continent for the rocks' variety: 32 cells, 65.5 km a
+/// side, about what a tribe roams in a generation.
+pub const BLOCK_CELLS: usize = 32;
+/// A rock counts in a block when it shows on this much of its land, per
+/// mille.
+pub const BLOCK_ROCK_PER_MILLE: u64 = 20;
+
+/// Rivers carrying at least this (m³/s) are the big rivers the detour is
+/// measured on: about 40 m wide and 2 m deep on average.
+pub const DETOUR_RIVER_M3S: u64 = 100;
+/// The detour's search stops this far (km): longer counts as this.
+pub const DETOUR_CAP_KM: u64 = 300;
+/// One big-river cell in this many is measured (a fixed choice by the
+/// cell's index), so the search stays quick on rivers with no crossing.
+pub const DETOUR_SAMPLE: usize = 3;
 
 /// What a cell is for a walker who crosses water up to some depth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,6 +278,7 @@ pub fn measure(c: &Continent) -> Numbers {
     let dry_land = land - lakes;
     let (dry_piece_bp, longest_dry) = walking(c, DRY_CM);
     let (wading_piece_bp, longest_wading) = walking(c, WADE_CM);
+    let detour = detours(c, &passages(c, WADE_CM));
     Numbers {
         land_km2: land * cell_m2 / 1_000_000,
         rivers_bp: river_m2 * 10_000 / (land * cell_m2).max(1),
@@ -259,5 +294,170 @@ pub fn measure(c: &Continent) -> Numbers {
             .collect(),
         highest_m: i64::from(c.height.iter().copied().max().unwrap_or(0)) / 100,
         largest_river_m3s: largest / 1_000_000,
+        rocks_bp: Rock::ALL
+            .iter()
+            .map(|&r| {
+                let k = (0..n)
+                    .filter(|&i| !c.sea[i] && !c.lake[i] && c.rock[i] == r)
+                    .count() as u64;
+                (r, k * 10_000 / dry_land.max(1))
+            })
+            .collect(),
+        alluvium_bp: (0..n)
+            .filter(|&i| !c.sea[i] && !c.lake[i] && c.alluvium[i])
+            .count() as u64
+            * 10_000
+            / dry_land.max(1),
+        rocks_a_block_centi: rocks_a_block(c),
+        detour_median_km: detour[0],
+        detour_p90_km: detour[1],
+        detour_max_km: detour[2],
+    }
+}
+
+/// The mean number of bedrocks a block shows, times 100, over the blocks
+/// that are at least a quarter land.
+fn rocks_a_block(c: &Continent) -> u64 {
+    let side = c.grid.side;
+    let (mut blocks, mut kinds) = (0_u64, 0_u64);
+    for by in (0..side).step_by(BLOCK_CELLS) {
+        for bx in (0..side).step_by(BLOCK_CELLS) {
+            let mut counts = [0_u64; 4];
+            let mut land = 0_u64;
+            for y in by..(by + BLOCK_CELLS).min(side) {
+                for x in bx..(bx + BLOCK_CELLS).min(side) {
+                    let i = y * side + x;
+                    if c.sea[i] || c.lake[i] {
+                        continue;
+                    }
+                    land += 1;
+                    let k = Rock::ALL
+                        .iter()
+                        .position(|&r| r == c.rock[i])
+                        .expect("a rock");
+                    counts[k] += 1;
+                }
+            }
+            if land * 4 < (BLOCK_CELLS * BLOCK_CELLS) as u64 {
+                continue;
+            }
+            blocks += 1;
+            kinds += counts
+                .iter()
+                .filter(|&&k| k * 1000 >= land * BLOCK_ROCK_PER_MILLE)
+                .count() as u64;
+        }
+    }
+    kinds * 100 / blocks.max(1)
+}
+
+/// The walk between facing banks of the big rivers, wading: its median,
+/// ninth decile and longest, in km.
+fn detours(c: &Continent, p: &[Passage]) -> [u64; 3] {
+    let grid = c.grid;
+    let walkable = |i: usize| matches!(p[i], Passage::Main | Passage::Cut | Passage::Crossing);
+    let mut search = Search::new(grid);
+    let mut walks = Vec::new();
+    for i in (0..grid.len()).filter(|i| i % DETOUR_SAMPLE == 0) {
+        if !matches!(p[i], Passage::Barrier | Passage::Crossing)
+            || c.cubic_metres(i) < DETOUR_RIVER_M3S
+        {
+            continue;
+        }
+        let r = c.receiver[i] as usize;
+        let ((x, y), (rx, ry)) = (grid.xy(i), grid.xy(r));
+        let (dx, dy) = (rx - x, ry - y);
+        if (dx, dy) == (0, 0) {
+            continue;
+        }
+        let bank = |sx: i32, sy: i32| {
+            (1..=4).find_map(|k| {
+                let (bx, by) = (x + sx * k, y + sy * k);
+                (grid.inside(bx, by) && walkable(grid.index(bx, by))).then(|| grid.index(bx, by))
+            })
+        };
+        if let (Some(a), Some(b)) = (bank(-dy, dx), bank(dy, -dx)) {
+            walks.push(search.walk(a, b, &walkable));
+        }
+    }
+    if walks.is_empty() {
+        return [0; 3];
+    }
+    walks.sort_unstable();
+    let at = |q: usize| walks[(walks.len() - 1) * q / 100] / 1000;
+    [at(50), at(90), at(100)]
+}
+
+/// A shortest walk over the walkable cells, eight ways (never between two
+/// cells that only touch by a corner past water), with a bucket queue:
+/// a straight step costs 5, a diagonal 7 (√2 within 1 %).
+struct Search {
+    grid: Grid,
+    cost: Vec<u32>,
+    stamp: Vec<u32>,
+    now: u32,
+    buckets: Vec<Vec<u32>>,
+}
+
+impl Search {
+    fn new(grid: Grid) -> Self {
+        Self {
+            grid,
+            cost: vec![0; grid.len()],
+            stamp: vec![0; grid.len()],
+            now: 0,
+            buckets: vec![Vec::new(); 8],
+        }
+    }
+
+    /// The walk from `a` to `b`, in metres, at most [`DETOUR_CAP_KM`].
+    fn walk(&mut self, a: usize, b: usize, walkable: &dyn Fn(usize) -> bool) -> u64 {
+        let cap = u32::try_from(DETOUR_CAP_KM * 1000 * 5 / CELL_M.unsigned_abs()).expect("small");
+        self.now += 1;
+        for bucket in &mut self.buckets {
+            bucket.clear();
+        }
+        self.stamp[a] = self.now;
+        self.cost[a] = 0;
+        self.buckets[0].push(u32::try_from(a).expect("small"));
+        let mut d = 0_u32;
+        let mut pending = 1_usize;
+        while pending > 0 && d <= cap {
+            let slot = (d % 8) as usize;
+            while let Some(c) = self.buckets[slot].pop() {
+                pending -= 1;
+                let c = c as usize;
+                if self.cost[c] != d {
+                    continue;
+                }
+                if c == b {
+                    return u64::from(d) * CELL_M.unsigned_abs() / 5;
+                }
+                let (x, y) = self.grid.xy(c);
+                for &(dx, dy, diagonal) in &super::NEIGHBOURS {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if !self.grid.inside(nx, ny) {
+                        continue;
+                    }
+                    let m = self.grid.index(nx, ny);
+                    if !walkable(m)
+                        || (diagonal
+                            && !(walkable(self.grid.index(nx, y))
+                                && walkable(self.grid.index(x, ny))))
+                    {
+                        continue;
+                    }
+                    let nd = d + if diagonal { 7 } else { 5 };
+                    if self.stamp[m] != self.now || nd < self.cost[m] {
+                        self.stamp[m] = self.now;
+                        self.cost[m] = nd;
+                        self.buckets[(nd % 8) as usize].push(u32::try_from(m).expect("small"));
+                        pending += 1;
+                    }
+                }
+            }
+            d += 1;
+        }
+        DETOUR_CAP_KM * 1000
     }
 }
