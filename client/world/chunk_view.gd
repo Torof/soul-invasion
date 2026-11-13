@@ -227,10 +227,25 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 		material.set_shader_parameter("ground_index", GroundIndex.texture())
 		material.set_shader_parameter("index_bit", int(GroundIndex.BITS.get(terrain, 0)))
 		material.set_shader_parameter("index_tiles", float(GroundIndex.TILES))
+		material.set_shader_parameter("height_index", HeightIndex.texture())
+		if terrain != "water":
+			material.set_shader_parameter("steps_mode", steps_mode)
 		apply_spec(material, terrain, false)
 		pin_flow_time(material)
 		_ground_materials[terrain] = material
 	return _ground_materials[terrain]
+
+
+## The steps test's mode (StepsTest): what the land's grounds draw of the
+## levels; 0 in any world with no heights.
+static var steps_mode := 0
+
+
+static func set_steps_mode(mode: int) -> void:
+	steps_mode = mode
+	for terrain: String in _ground_materials:
+		if terrain != "water":
+			(_ground_materials[terrain] as ShaderMaterial).set_shader_parameter("steps_mode", mode)
 
 
 ## Development: with SOUL_INVASION_WATER_TIME set to a number of seconds,

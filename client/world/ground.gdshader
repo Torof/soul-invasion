@@ -24,6 +24,39 @@ const int INDEX_FRINGE = 128;
 // The images' derivatives are scaled by this: one mipmap level sharper.
 const float SHARPEN = 0.5;
 
+// The steps test (13 November 2026, `--world test:marches`): a level per
+// tile (HeightIndex: R the height in decimetres, G 255 where known). The
+// ground stays flat and is never darkened; where the level drops towards
+// the camera (a south or east face), an earth wall is drawn on the lower
+// ground below the upper level's lip, STEP_PX_PER_M tall a metre, with a
+// short shadow at its foot; on a face turned away, a thin dark line.
+// steps_mode: 0 nothing, 1 the walls (A), 2 with a light lip (B), 3 A
+// with the stones (C, drawn by StepsTest, not here), 4 all.
+uniform sampler2D height_index : filter_nearest, repeat_enable;
+uniform int steps_mode = 0;
+// A wall's height on the canvas, a metre (Iso.PX_PER_M).
+const float STEP_PX_PER_M = 64.0;
+// Going up the canvas by a tile along both x and y: a diamond's height.
+const float STEP_TILE_PX = 32.0;
+// A smaller difference is a ramp: no edge.
+const float STEP_MIN_M = 0.95;
+const int STEP_MARCH = 16;
+// The lip overhangs the wall by LIP_MIN_PX to LIP_MIN_PX + LIP_JITTER_PX,
+// ragged along the edge; the foot wanders by FOOT_JITTER_PX either way.
+const float LIP_MIN_PX = 2.0;
+const float LIP_JITTER_PX = 6.0;
+const float FOOT_JITTER_PX = 3.0;
+const float FOOT_SHADOW_PX = 6.0;
+const float FOOT_SHADOW = 0.3;
+const vec3 WALL_EARTH = vec3(0.50, 0.38, 0.26);
+const vec3 WALL_DEEP = vec3(0.33, 0.24, 0.16);
+// An east face is turned from the light (the screen's upper left).
+const float WALL_EAST_SHADE = 0.8;
+const float AWAY_LINE_PX = 1.6;
+const float AWAY_LINE = 0.45;
+const float LIP_LIGHT_PX = 2.5;
+const vec3 LIP_LIGHT = vec3(1.28, 1.25, 1.12);
+
 uniform sampler2D noise_texture : repeat_enable, filter_linear;
 // Noise period, in texture units (one unit is one texture, four metres).
 uniform float noise_scale = 0.09;
@@ -245,6 +278,83 @@ bool meet_shows(vec4 a, float w, float meet_noise) {
 	return (w - 0.5) * 2.0 + dot(a.rgb, vec3(0.333)) * meet_depth + meet_noise > -meet_band;
 }
 
+// A tile's level in metres, or -1 where no chunk said it.
+float step_level(vec2 cell) {
+	vec4 h = texture(height_index, (cell + 0.5) / index_tiles);
+	return h.g > 0.5 ? h.r * 25.5 : -1.0;
+}
+
+// `c`, the ground at map point `p` (tiles), with the steps test's walls:
+// marches up the canvas (the map's -x and -y at once) across the tiles'
+// west and north edges, and stops at the first that rises by a step.
+vec3 steps_colour(vec3 c, vec2 p) {
+	vec2 a = floor(p);
+	float la = step_level(a);
+	if (la < 0.0) {
+		return c;
+	}
+	// Distance to the next west and north edges, in tiles along the march.
+	vec2 next = p - a;
+	for (int i = 0; i < STEP_MARCH; i++) {
+		bool west = next.x < next.y;
+		float d = west ? next.x : next.y;
+		float s = d * STEP_TILE_PX;
+		if (s > 3.0 * STEP_PX_PER_M + LIP_MIN_PX + LIP_JITTER_PX + FOOT_JITTER_PX + FOOT_SHADOW_PX) {
+			break;
+		}
+		vec2 b = a - (west ? vec2(1.0, 0.0) : vec2(0.0, 1.0));
+		float lb = step_level(b);
+		if (lb < 0.0) {
+			break;
+		}
+		// Where along the edge: its own coordinate, for the noise.
+		float along = west ? p.y - d : p.x - d;
+		if (lb - la >= STEP_MIN_M) {
+			float wall = (lb - la) * STEP_PX_PER_M;
+			float n1 = texture(noise_texture, vec2(along * 0.9, west ? 0.17 : 0.61)).r;
+			float n2 = texture(noise_texture, vec2(along * 3.1, west ? 0.43 : 0.29)).r;
+			float lip = LIP_MIN_PX + (n1 * 0.6 + n2 * 0.4) * LIP_JITTER_PX;
+			float foot = wall + lip + (texture(noise_texture, vec2(along * 1.7, 0.83)).r - 0.5) * 2.0 * FOOT_JITTER_PX;
+			if (s < lip) {
+				// The upper ground's lip, overhanging; lit on the faces
+				// turned to the light (B).
+				bool lit = (steps_mode == 2 || steps_mode == 4) && !west && s > lip - LIP_LIGHT_PX;
+				return lit ? c * LIP_LIGHT : c;
+			}
+			if (s < foot) {
+				float v = (s - lip) / max(foot - lip, 1.0);
+				// Earth streaked down the wall, deeper under the lip and
+				// lighter towards the foot.
+				float streak = texture(noise_texture, vec2(along * 6.0, v * 0.15 + (west ? 0.3 : 0.7))).r;
+				float clod = texture(noise_texture, vec2(along * 2.3, s / STEP_PX_PER_M * 0.6 + 0.5)).r;
+				vec3 earth = mix(WALL_DEEP, WALL_EARTH, smoothstep(0.0, 0.35, v) * 0.8 + streak * 0.35);
+				earth *= 0.85 + clod * 0.3;
+				return west ? earth * WALL_EAST_SHADE : earth;
+			}
+			if (s < foot + FOOT_SHADOW_PX) {
+				float t = (s - foot) / FOOT_SHADOW_PX;
+				return c * (1.0 - FOOT_SHADOW * (1.0 - t) * (1.0 - t));
+			}
+			return c;
+		}
+		if (la - lb >= STEP_MIN_M && i == 0) {
+			// A face turned away: only its lip, a thin dark line.
+			float n = texture(noise_texture, vec2(along * 2.0, 0.37)).r;
+			if (s < AWAY_LINE_PX * (0.6 + n * 0.8)) {
+				return c * (1.0 - AWAY_LINE);
+			}
+		}
+		if (west) {
+			next.x += 1.0;
+		} else {
+			next.y += 1.0;
+		}
+		a = b;
+		la = lb;
+	}
+	return c;
+}
+
 void fragment() {
 	vec2 uv = UV;
 	// The clock the streaks run by (pinned by flow_time in development).
@@ -412,6 +522,10 @@ if (has_bank) {
 	ground.rgb = mix(fringe_colour, ground.rgb, floor_in);
 	alpha = max(floor_in, edge_shade);
 }
-COLOR = vec4(ground.rgb * vertex_tint, alpha);
+vec3 drawn = ground.rgb * vertex_tint;
+if (steps_mode > 0) {
+	drawn = steps_colour(drawn, at);
+}
+COLOR = vec4(drawn, alpha);
 }
 }

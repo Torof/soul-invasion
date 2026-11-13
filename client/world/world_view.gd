@@ -131,6 +131,8 @@ var _standing: Node2D
 var _ground: Node2D
 ## The "blocked" notice of the piloted body.
 var _blocked: BlockedView
+## The steps test, made when a chunk first carries heights.
+var _steps: StepsTest
 var _arrival: Dictionary = {}
 var _arrivals := 0
 ## chunk -> the node holding its trees and tall plants.
@@ -392,6 +394,13 @@ func _on_chunk(x: int, y: int, chunk: Dictionary) -> void:
 	_tiles[key] = codes
 	_tile_hashes[key] = hash(codes)
 	TerrainGrid.write(key * _chunk_size, _chunk_size, codes)
+	var heights: PackedInt32Array = chunk.get("heights", PackedInt32Array())
+	if not heights.is_empty():
+		HeightIndex.write(key * _chunk_size, _chunk_size, heights)
+		if _steps == null:
+			_steps = StepsTest.new()
+			add_child(_steps)
+		_steps.chunk(key * _chunk_size, _chunk_size)
 	_currents[key] = currents
 	_items[key] = items
 	_items_version += 1
