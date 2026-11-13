@@ -77,10 +77,7 @@ use serde::{Deserialize, Serialize};
 /// - v22: `body_thinks`, to the pilot alone: what its body thinks as it
 ///   decides how to go on (D32): it skirts an obstacle to one side, it
 ///   sees a way, it does not know where to go.
-/// - v23: a chunk frame carries the rock under its tiles (`rocks`, D42),
-///   on a world whose generator draws it (version 2, D24): one byte when
-///   the whole chunk stands on one rock, else a nibble a tile.
-pub const PROTOCOL_VERSION: u32 = 23;
+pub const PROTOCOL_VERSION: u32 = 22;
 
 /// Chunks whose frames a client keeps after they left its view, the
 /// least recently hidden forgotten first (D4): about 3 MB of frames. The
@@ -108,20 +105,6 @@ pub enum Terrain {
     Brook,
     /// The cliff; not walkable.
     Rock,
-}
-
-/// The rock under a tile (D42), from the generator's version 2 on (D24).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Rock {
-    /// Granite.
-    Granite,
-    /// Limestone.
-    Limestone,
-    /// Chalk.
-    Chalk,
-    /// Sandstone.
-    Sandstone,
 }
 
 /// A fine position: millimetres from the grid's origin. Tile (x, y)
@@ -760,16 +743,12 @@ pub struct StoredItem {
 /// The frame, little-endian:
 ///
 /// - header, 16 bytes: `x i32`, `y i32`, `version u32`, `flags u8` (bit 0:
-///   the chunk has water, so currents follow the tiles; bit 1: rocks
-///   follow them), `side u8`, two bytes 0;
+///   the chunk has water, so currents follow the tiles), `side u8`, two
+///   bytes 0;
 /// - tiles: `side × side` bytes, row by row from the north-west corner,
 ///   each a [`Terrain`] code ([`terrain_code`]);
 /// - currents, when flag 0 is set: one `u16` per water tile (river, ford,
 ///   brook) in tile order;
-/// - rocks, when flag 1 is set (the world has rock under its ground): a
-///   byte, the [`rock_code`] of every tile when the chunk stands on one
-///   rock; else 0, then a nibble a tile in tile order, two a byte, the
-///   even tile in the low nibble (`side × side / 2` bytes, rounded up);
 /// - trees: `n u16`, then `n × (dx u16, dy u16, species u8)`;
 /// - plants: `n u16`, then `n × (dx u16, dy u16, kind u8)`;
 /// - natural items: `n u16`, then `n × (slot u16, material u8)`;
@@ -792,9 +771,6 @@ pub struct ChunkFrame {
     /// 0 to 15, points along (sin(h × 22.5°), cos(h × 22.5°)) in tiles: 0
     /// down the map (+y), 4 along +x.
     pub currents: Vec<u16>,
-    /// The rock under each tile, tile by tile like `tiles`; empty on a
-    /// world without rock under its ground (made by the first generator).
-    pub rocks: Vec<Rock>,
     /// Every tree standing in this chunk.
     pub trees: Vec<Standing>,
     /// Every plant standing in this chunk.
@@ -858,14 +834,12 @@ fn side_i32(n: usize) -> i32 {
 pub const CHUNK_HEADER: usize = 16;
 /// Flag of a chunk frame: the chunk has water, its currents follow.
 pub const CHUNK_HAS_WATER: u8 = 1;
-/// Flag of a chunk frame: the rock under its tiles follows the currents.
-pub const CHUNK_HAS_ROCKS: u8 = 2;
 
 /// A chunk frame that cannot be written or read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrameError {
     /// The tiles are not a square of at most 255 on a side, or the
-    /// currents (or the rocks, when any) are not one a tile.
+    /// currents are not one a tile.
     Shape,
     /// A dry tile has a current: it would be lost on the wire.
     DryCurrent,
@@ -875,8 +849,6 @@ pub enum FrameError {
     Length,
     /// A tile code no terrain has.
     Terrain(u8),
-    /// A rock code no rock has.
-    Rock(u8),
 }
 
 impl std::fmt::Display for FrameError {
@@ -887,7 +859,6 @@ impl std::fmt::Display for FrameError {
             Self::TooMany => write!(f, "more than 65535 of a kind of thing"),
             Self::Length => write!(f, "the frame's length does not match its content"),
             Self::Terrain(code) => write!(f, "unknown terrain code {code}"),
-            Self::Rock(code) => write!(f, "unknown rock code {code}"),
         }
     }
 }
@@ -922,29 +893,6 @@ pub fn terrain_of_code(code: u8) -> Option<Terrain> {
     })
 }
 
-/// A rock's code in a chunk frame, 1 to 15 (0 is none).
-#[must_use]
-pub fn rock_code(rock: Rock) -> u8 {
-    match rock {
-        Rock::Granite => 1,
-        Rock::Limestone => 2,
-        Rock::Chalk => 3,
-        Rock::Sandstone => 4,
-    }
-}
-
-/// The rock of a code ([`rock_code`]), if any.
-#[must_use]
-pub fn rock_of_code(code: u8) -> Option<Rock> {
-    Some(match code {
-        1 => Rock::Granite,
-        2 => Rock::Limestone,
-        3 => Rock::Chalk,
-        4 => Rock::Sandstone,
-        _ => return None,
-    })
-}
-
 /// Does water run on this terrain (its current is on the wire)?
 #[must_use]
 pub fn is_water(terrain: Terrain) -> bool {
@@ -967,24 +915,14 @@ fn count(n: usize) -> Result<[u8; 2], FrameError> {
 /// are more than 65,535 of some thing.
 pub fn encode_chunk(chunk: &ChunkFrame) -> Result<Vec<u8>, FrameError> {
     let side = chunk.tiles.len().isqrt();
-    if side * side != chunk.tiles.len()
-        || chunk.currents.len() != chunk.tiles.len()
-        || !(chunk.rocks.is_empty() || chunk.rocks.len() == chunk.tiles.len())
-    {
+    if side * side != chunk.tiles.len() || chunk.currents.len() != chunk.tiles.len() {
         return Err(FrameError::Shape);
     }
     let side = u8::try_from(side).map_err(|_| FrameError::Shape)?;
     let wet = chunk.tiles.iter().any(|&t| is_water(t));
-    let flags = if wet { CHUNK_HAS_WATER } else { 0 }
-        | if chunk.rocks.is_empty() {
-            0
-        } else {
-            CHUNK_HAS_ROCKS
-        };
     let mut out = Vec::with_capacity(
         CHUNK_HEADER
             + chunk.tiles.len()
-            + 1
             + 8
             + 5 * (chunk.trees.len() + chunk.plants.len())
             + 3 * chunk.natural.len()
@@ -993,26 +931,13 @@ pub fn encode_chunk(chunk: &ChunkFrame) -> Result<Vec<u8>, FrameError> {
     out.extend_from_slice(&chunk.x.to_le_bytes());
     out.extend_from_slice(&chunk.y.to_le_bytes());
     out.extend_from_slice(&chunk.version.to_le_bytes());
-    out.extend_from_slice(&[flags, side, 0, 0]);
+    out.extend_from_slice(&[if wet { CHUNK_HAS_WATER } else { 0 }, side, 0, 0]);
     out.extend(chunk.tiles.iter().map(|&t| terrain_code(t)));
     for (&tile, &current) in chunk.tiles.iter().zip(&chunk.currents) {
         if is_water(tile) {
             out.extend_from_slice(&current.to_le_bytes());
         } else if current != 0 {
             return Err(FrameError::DryCurrent);
-        }
-    }
-    if let Some(&first) = chunk.rocks.first() {
-        if chunk.rocks.iter().all(|&r| r == first) {
-            out.push(rock_code(first));
-        } else {
-            out.push(0);
-            out.extend(
-                chunk
-                    .rocks
-                    .chunks(2)
-                    .map(|pair| rock_code(pair[0]) | pair.get(1).map_or(0, |&r| rock_code(r) << 4)),
-            );
         }
     }
     for standing in [&chunk.trees, &chunk.plants] {
@@ -1101,25 +1026,6 @@ pub fn decode_chunk(bytes: &[u8]) -> Result<ChunkFrame, FrameError> {
             }
         }
     }
-    let rocks = if flags & CHUNK_HAS_ROCKS == 0 {
-        Vec::new()
-    } else {
-        let rock = |code: u8| rock_of_code(code).ok_or(FrameError::Rock(code));
-        match r.u8()? {
-            0 => {
-                let mut rocks = Vec::with_capacity(tiles.len());
-                for _ in 0..tiles.len().div_ceil(2) {
-                    let pair = r.u8()?;
-                    rocks.push(rock(pair & 0xf)?);
-                    if rocks.len() < tiles.len() {
-                        rocks.push(rock(pair >> 4)?);
-                    }
-                }
-                rocks
-            }
-            code => vec![rock(code)?; tiles.len()],
-        }
-    };
     let trees = r.standing()?;
     let plants = r.standing()?;
     let n = r.u16()?;
@@ -1151,7 +1057,6 @@ pub fn decode_chunk(bytes: &[u8]) -> Result<ChunkFrame, FrameError> {
         version,
         tiles,
         currents,
-        rocks,
         trees,
         plants,
         natural,
@@ -1535,7 +1440,6 @@ mod tests {
                 0,
                 15 * 256 + 255,
             ],
-            rocks: vec![],
             trees: vec![
                 Standing {
                     dx: 31_999,
@@ -1597,7 +1501,6 @@ mod tests {
             version: 0,
             tiles: vec![Terrain::Grass; 32 * 32],
             currents: vec![0; 32 * 32],
-            rocks: vec![],
             trees: vec![],
             plants: vec![],
             natural: vec![],
@@ -1613,7 +1516,6 @@ mod tests {
             version: 0,
             tiles: vec![Terrain::Grass; 32 * 32],
             currents: vec![0; 32 * 32],
-            rocks: vec![],
             trees: vec![],
             plants: vec![],
             natural: vec![],
@@ -1646,87 +1548,6 @@ mod tests {
         let mut unknown = bytes;
         unknown[CHUNK_HEADER] = 9;
         assert_eq!(decode_chunk(&unknown), Err(FrameError::Terrain(9)));
-    }
-
-    /// The reference chunk on a world with rock under its ground: two
-    /// rocks meeting across it, so a nibble a tile.
-    fn reference_chunk_with_rocks() -> ChunkFrame {
-        use Rock::{Chalk, Granite, Limestone, Sandstone};
-        ChunkFrame {
-            rocks: vec![
-                Granite, Granite, Limestone, Limestone, //
-                Granite, Limestone, Limestone, Chalk, //
-                Granite, Sandstone, Chalk, Chalk, //
-                Sandstone, Sandstone, Chalk, Chalk,
-            ],
-            ..reference_chunk()
-        }
-    }
-
-    #[test]
-    fn chunk_frames_carry_their_rocks() {
-        let mixed = reference_chunk_with_rocks();
-        let bare = encode_chunk(&reference_chunk()).unwrap();
-        let bytes = encode_chunk(&mixed).unwrap();
-        assert_eq!(bytes.len(), bare.len() + 1 + 16 / 2, "a nibble a tile");
-        assert_eq!(bytes[12], CHUNK_HAS_WATER | CHUNK_HAS_ROCKS);
-        assert_eq!(decode_chunk(&bytes).unwrap(), mixed);
-        // A chunk on one rock: one byte.
-        let mut one = reference_chunk();
-        one.rocks = vec![Rock::Chalk; 16];
-        let bytes = encode_chunk(&one).unwrap();
-        assert_eq!(bytes.len(), bare.len() + 1, "one byte for the whole chunk");
-        assert_eq!(decode_chunk(&bytes).unwrap(), one);
-        // An odd number of tiles: the last byte's high nibble is unused.
-        let odd = ChunkFrame {
-            x: 0,
-            y: 0,
-            version: 0,
-            tiles: vec![Terrain::Grass; 9],
-            currents: vec![0; 9],
-            rocks: [Rock::Granite, Rock::Sandstone, Rock::Limestone]
-                .into_iter()
-                .cycle()
-                .take(9)
-                .collect(),
-            trees: vec![],
-            plants: vec![],
-            natural: vec![],
-            stored: vec![],
-        };
-        assert_eq!(decode_chunk(&encode_chunk(&odd).unwrap()).unwrap(), odd);
-        // Rocks are one a tile, or none.
-        let mut ragged = reference_chunk();
-        ragged.rocks = vec![Rock::Granite; 3];
-        assert_eq!(encode_chunk(&ragged), Err(FrameError::Shape));
-        // An unknown rock code is refused.
-        let mut bytes = encode_chunk(&one).unwrap();
-        let at = CHUNK_HEADER + 16 + 2 * 5;
-        assert_eq!(bytes[at], rock_code(Rock::Chalk));
-        bytes[at] = 9;
-        assert_eq!(decode_chunk(&bytes), Err(FrameError::Rock(9)));
-        for rock in [Rock::Granite, Rock::Limestone, Rock::Chalk, Rock::Sandstone] {
-            assert_eq!(rock_of_code(rock_code(rock)), Some(rock));
-        }
-        assert_eq!(rock_of_code(0), None);
-    }
-
-    /// The golden bytes with rocks (`client/tests/fixtures/chunk_v23.bin`),
-    /// kept like the one without (`SOUL_WRITE_GOLDEN=1`).
-    #[test]
-    fn the_golden_chunk_with_rocks_is_the_clients() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../client/tests/fixtures/chunk_v23.bin");
-        let bytes = encode_chunk(&reference_chunk_with_rocks()).unwrap();
-        if std::env::var_os("SOUL_WRITE_GOLDEN").is_some() {
-            std::fs::write(&path, &bytes).unwrap();
-        }
-        let golden = std::fs::read(&path).expect("the golden chunk, written");
-        assert_eq!(
-            golden, bytes,
-            "the layout changed: write the golden chunk again"
-        );
-        assert_eq!(decode_chunk(&golden).unwrap(), reference_chunk_with_rocks());
     }
 
     /// The golden bytes the client's tests decode

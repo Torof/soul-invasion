@@ -7,9 +7,9 @@
 //! ```
 //!
 //! One pixel every 6 m, a grey line every kilometre. Granite pinkish
-//! grey, limestone cream, chalk white, sandstone ochre (the client's
-//! tints, at full strength). Written with no dependency: a palette PNG
-//! whose image data is stored, not compressed.
+//! grey, limestone cream, chalk white, sandstone ochre, for this image
+//! only: the game never shows the rock itself. Written with no
+//! dependency: a palette PNG whose image data is stored, not compressed.
 
 use sim::{Geology, Rock};
 

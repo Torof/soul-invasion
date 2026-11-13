@@ -1,7 +1,8 @@
 //! The rock under the ground (D42): granite, limestone, chalk or
 //! sandstone, a region each, from the generator's version 2 on (D24).
-//! It decides what comes next on the rocks' page (cliffs, shelters,
-//! caves, boulders, flint, clay); today it only tints the ground.
+//! It is invisible by itself and lives in the simulation only, never on
+//! the wire: it drives the visible features to come (bare rock outcrops,
+//! boulders, cliffs, shelters, caves, flint, quarries).
 //!
 //! The regions are the cells of a coarse grid (`region_m`, 2 km: a real
 //! region is 10 to 100 km, so the game compresses them five to fifty

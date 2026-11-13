@@ -296,9 +296,6 @@ pub struct Shared {
     /// the first time it is asked for ([`Ground::trees_in`]). Nothing
     /// fells them yet.
     tree_kinds: Vec<sim::content::Species>,
-    /// The content's rock regions: the rock under a chunk is drawn with
-    /// them, the first time it is asked for ([`Ground::rocks_in`]).
-    geology: sim::Geology,
     /// The placed trees of the chunks asked for lately, the world's own
     /// cache shared by handle (as the map is): a chunk's trees are placed
     /// once for the chunk's message, for the plants of the nine chunks
@@ -490,8 +487,6 @@ pub struct ChunkGround {
     trees: Vec<Standing>,
     plants: Vec<Standing>,
     currents: Vec<u16>,
-    /// The rock under each tile; none on a world without (D42).
-    rocks: Vec<protocol::Rock>,
     /// The ground's natural items, none taken out yet.
     natural: Vec<ItemState>,
 }
@@ -701,7 +696,6 @@ impl Shared {
             materials,
             species,
             tree_kinds: content.species.clone(),
-            geology: content.geology.clone(),
             ground: world.shared_ground(),
             flora,
             flora_kinds: content.flora.clone(),
@@ -1205,11 +1199,6 @@ impl Shared {
             trees: self.trees_in(chunk),
             plants: self.plants_in(chunk),
             currents: self.map.chunk_currents(chunk)?,
-            rocks: self
-                .ground
-                .rocks_in(&self.map, &self.geology, self.seed, chunk)
-                .map(|rocks| rocks.iter().copied().map(rock_view).collect())
-                .unwrap_or_default(),
             natural: self.natural_items(chunk),
         })
     }
@@ -1295,7 +1284,6 @@ impl Shared {
             version,
             tiles: ground.tiles,
             currents: ground.currents,
-            rocks: ground.rocks,
             trees: ground.trees,
             plants: ground.plants,
             natural,
@@ -1660,15 +1648,6 @@ fn terrain_view(terrain: sim::Terrain) -> Terrain {
         sim::Terrain::Ford => Terrain::Ford,
         sim::Terrain::Brook => Terrain::Brook,
         sim::Terrain::Rock => Terrain::Rock,
-    }
-}
-
-fn rock_view(rock: sim::Rock) -> protocol::Rock {
-    match rock {
-        sim::Rock::Granite => protocol::Rock::Granite,
-        sim::Rock::Limestone => protocol::Rock::Limestone,
-        sim::Rock::Chalk => protocol::Rock::Chalk,
-        sim::Rock::Sandstone => protocol::Rock::Sandstone,
     }
 }
 
@@ -3031,7 +3010,7 @@ mod tests {
         // The frames of every chunk of a 768 valley, as the code of 13
         // November 2026 sent them before the generator had versions
         // (FNV-1a of their bytes, end to end): a world made by the first
-        // generator sends them byte for byte, no rock among them.
+        // generator sends them byte for byte.
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
         let content = crate::content::load(&dir).expect("repository content");
         let map = Map::valley_by(sim::map::FIRST_GENERATOR, 768, 768, sim::VALLEY_SEED);
@@ -3041,7 +3020,6 @@ mod tests {
         for y in 0..24 {
             for x in 0..24 {
                 let frame = shared.chunk_message(ChunkPos::new(x, y)).unwrap().frame;
-                assert_eq!(frame[12] & protocol::CHUNK_HAS_ROCKS, 0, "no rock");
                 bytes += frame.len();
                 for b in &frame {
                     print = (print ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
@@ -3049,25 +3027,6 @@ mod tests {
             }
         }
         assert_eq!((print, bytes), (0xff43_cd45_98af_971b, 1_015_322));
-    }
-
-    #[test]
-    fn a_new_world_sends_the_rock_under_each_tile() {
-        let world = World::with_valley(Calendar::default(), &Content::sample(), 256);
-        let shared = Shared::new(&world, &Content::sample(), 1, 1.0);
-        for (x, y) in [(0, 0), (3, 5), (7, 7)] {
-            let chunk = ChunkPos::new(x, y);
-            let frame =
-                protocol::decode_chunk(&shared.chunk_message(chunk).unwrap().frame).unwrap();
-            let rocks: Vec<protocol::Rock> = world
-                .rocks_in(chunk)
-                .expect("a new world has rocks")
-                .iter()
-                .copied()
-                .map(rock_view)
-                .collect();
-            assert_eq!(frame.rocks, rocks, "{chunk:?}");
-        }
     }
 
     #[test]
