@@ -63,6 +63,7 @@ fn main() {
         .expect("write");
         std::fs::write(name("climat"), png(1024, 1024, &draw_climate(&continent))).expect("write");
         std::fs::write(name("region"), png(1024, 1024, &draw_region(&region))).expect("write");
+        std::fs::write(name("nappe"), png(1024, 1024, &draw_table(&continent))).expect("write");
         thumbs.push(shrink(&relief, 1024, 4));
         println!(
             "seed {seed}: born {:.1} s, with region {:.1} s, peak {peak_mb} MB, fingerprint {fingerprint:016x}, water {}+{} bp, pieces {}/{} bp, longest {}/{} km",
@@ -134,8 +135,10 @@ fn biome_colour(b: Biome) -> Rgb {
         Biome::Lake => LAKE,
         Biome::Desert => [226, 204, 150],
         Biome::Steppe => [204, 196, 128],
+        Biome::WoodedSteppe => [176, 186, 108],
         Biome::Grassland => [164, 190, 102],
         Biome::Broadleaf => [86, 140, 66],
+        Biome::MixedForest => [72, 122, 70],
         Biome::Conifer => [56, 100, 74],
         Biome::Marsh => [104, 150, 128],
         Biome::Tundra => [176, 180, 160],
@@ -293,14 +296,65 @@ fn draw_climate(c: &Continent) -> Vec<Rgb> {
         .collect()
 }
 
+/// The water table's depth: blue-green where it meets the surface, green
+/// within 10 m (a well dug by hand), yellow to 50 m, orange to 200 m,
+/// brown deeper; springs as white dots; rivers faint.
+fn draw_table(c: &Continent) -> Vec<Rgb> {
+    const SCALE: [(i64, Rgb); 5] = [
+        (0, [60, 170, 160]),
+        (1_000, [120, 190, 90]),
+        (5_000, [230, 214, 110]),
+        (20_000, [214, 140, 70]),
+        (60_000, [120, 70, 40]),
+    ];
+    let side = c.grid.side;
+    let mut img: Vec<Rgb> = (0..c.grid.len())
+        .map(|i| {
+            if c.sea[i] {
+                return sea_colour(c.height[i]);
+            }
+            if c.lake[i] {
+                return LAKE;
+            }
+            let d = i64::from(c.water_table[i]);
+            let k = SCALE.iter().rposition(|s| s.0 <= d).expect("a band");
+            let colour = if k + 1 < SCALE.len() {
+                let (a, b) = (SCALE[k], SCALE[k + 1]);
+                mix(a.1, b.1, (d - a.0) * 1000 / (b.0 - a.0))
+            } else {
+                SCALE[k].1
+            };
+            lit(colour, shade(&c.surface, side, i, 250))
+        })
+        .collect();
+    for (i, pixel) in img.iter_mut().enumerate() {
+        if !c.sea[i] && !c.lake[i] && c.cubic_metres(i) >= 15 {
+            *pixel = mix(*pixel, RIVER, 500);
+        }
+    }
+    for i in 0..c.grid.len() {
+        if c.spring[i] {
+            let (x, y) = c.grid.xy(i);
+            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (-1, 0), (0, -1)] {
+                if c.grid.inside(x + dx, y + dy) {
+                    img[c.grid.index(x + dx, y + dy)] = [250, 250, 255];
+                }
+            }
+        }
+    }
+    img
+}
+
 fn draw_passages(c: &Continent) -> Vec<Rgb> {
     let side = c.grid.side;
     let p = measure::passages(c, measure::WADE_CM);
+    let low = measure::passages_low(c, measure::WADE_CM);
     (0..c.grid.len())
         .map(|i| {
             let colour = match p[i] {
                 Passage::Sea => return sea_colour(c.height[i]),
                 Passage::Lake => return LAKE,
+                Passage::Barrier if low[i] == Passage::Crossing => return [236, 196, 30],
                 Passage::Barrier => return [214, 36, 36],
                 Passage::Crossing => return [30, 170, 70],
                 Passage::Main => [226, 222, 206],
@@ -392,8 +446,10 @@ fn biome_name(b: Biome) -> &'static str {
         Biome::Lake => "lake",
         Biome::Desert => "desert",
         Biome::Steppe => "steppe",
+        Biome::WoodedSteppe => "wooded steppe",
         Biome::Grassland => "grassland",
         Biome::Broadleaf => "broadleaf forest",
+        Biome::MixedForest => "mixed forest",
         Biome::Conifer => "conifer forest",
         Biome::Marsh => "marsh",
         Biome::Tundra => "tundra",
@@ -464,7 +520,7 @@ fn rock_name(r: Rock) -> &'static str {
 /// before-and-after pages are built from.
 fn table(rows: &[Row]) -> String {
     let mut s = String::from(
-        "seed\tland_km2\trivers_bp\tlakes_bp\tdry_piece_bp\twading_piece_bp\tlongest_dry_km\tlongest_wading_km\tdetour_median_km\tdetour_p90_km\tdetour_max_km\thighest_m\tlargest_river_m3s\tborn_ms\trocks_a_block_centi\talluvium_bp\tbiomes\trocks\n",
+        "seed\tland_km2\trivers_bp\tlakes_bp\tdry_piece_bp\twading_piece_bp\tlongest_dry_km\tlongest_wading_km\tdetour_median_km\tdetour_p90_km\tdetour_max_km\thighest_m\tlargest_river_m3s\tborn_ms\trocks_a_block_centi\talluvium_bp\tlongest_low_km\tdetour_low_median_km\tdetour_low_p90_km\tdetour_low_max_km\tlakes\tlargest_lake_km2\tsprings_10k_km2\ttable_median_m\ttable_near_bp\tbiomes\trocks\n",
     );
     for r in rows {
         let n = &r.numbers;
@@ -482,7 +538,7 @@ fn table(rows: &[Row]) -> String {
             .join(";");
         let _ = writeln!(
             s,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{biomes}\t{rocks}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{biomes}\t{rocks}",
             r.seed,
             n.land_km2,
             n.rivers_bp,
@@ -499,6 +555,15 @@ fn table(rows: &[Row]) -> String {
             r.born_ms,
             n.rocks_a_block_centi,
             n.alluvium_bp,
+            n.longest_low_km,
+            n.detour_low_median_km,
+            n.detour_low_p90_km,
+            n.detour_low_max_km,
+            n.lakes,
+            n.largest_lake_km2,
+            n.springs_10k_km2,
+            n.table_median_m,
+            n.table_near_bp,
         );
     }
     s

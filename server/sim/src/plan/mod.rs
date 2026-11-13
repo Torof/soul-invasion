@@ -21,12 +21,21 @@
 //!    erosion cut through decides what shows, and the rock in turn sets
 //!    how fast the river cuts.
 //! 4. **The lakes**: the hollows the last flood filled, deep enough.
-//! 5. **The climate** ([`climate`]): temperature by latitude and height,
-//!    rain carried by the prevailing winds, wrung out on the way up a
-//!    range and withheld on the way down (rain shadows).
-//! 6. **The discharge and the biomes** ([`climate`]): what the rain
-//!    leaves after evaporation, gathered down the network; a biome from
-//!    warmth, wetness and the lie of the land.
+//!    Small lakes the 2 km cells smooth away are dug back where nature
+//!    makes them (cold scoured land above all), and every lake drains
+//!    down to a size drawn for it, its outlet cut through its sill: many
+//!    small lakes, some medium, an occasional big one.
+//! 5. **The climate** ([`climate`]): temperature by latitude, height and
+//!    wandering anomalies; rain carried by winds the seed turns and
+//!    bends, wrung out on the way up a range and withheld on the way
+//!    down (rain shadows); air turned along the ranges it meets.
+//! 6. **The water and the biomes** ([`climate`]): what the rain leaves
+//!    after evaporation, split by the rock between the rivers and the
+//!    ground (karst drinks it); the ground's water comes up at springs;
+//!    the water table's depth everywhere; each river's reach (braided,
+//!    a bar, a lake's sill) for its natural crossings; a biome from
+//!    warmth, wetness, the rock and the lie of the land, with ragged,
+//!    mixed borders.
 //!
 //! The [`region`] refines a 64 km square of it at 64 m; [`measure`]
 //! counts what the project lead judges a seed by.
@@ -56,7 +65,7 @@ pub mod window;
 use crate::r#gen::hash;
 use crate::geology::Rock;
 
-pub use climate::Biome;
+pub use climate::{Biome, Reach};
 pub use measure::Numbers;
 pub use region::Region;
 pub use relief::{Stroke, StrokeKind};
@@ -170,6 +179,19 @@ pub struct Continent {
     pub rock: Vec<Rock>,
     /// Whether river sediment covers the bedrock.
     pub alluvium: Vec<bool>,
+    /// The water table's depth below the ground, in centimetres: 0 where
+    /// it meets the surface (rivers, lakes, springs, wet flats).
+    pub water_table: Vec<i32>,
+    /// Whether water comes up out of the ground in each cell: a spring.
+    pub spring: Vec<bool>,
+    /// How each river runs through its cell.
+    pub reach: Vec<Reach>,
+    /// How much wider than its usual width each river's widest riffle
+    /// spreads, per mille (1,000: not at all).
+    pub spread: Vec<u16>,
+    /// What leaves each cell by its river at low water, late in a dry
+    /// season, in millilitres a second.
+    pub low_discharge: Vec<u64>,
     /// Mean yearly temperature, in tenths of a degree Celsius.
     pub temperature: Vec<i16>,
     /// Yearly rain, in millimetres.
@@ -221,6 +243,10 @@ impl Continent {
                 u64::from(self.receiver[i]),
                 self.discharge[i],
                 u64::from(self.rain[i]) << 16 | u64::from(self.temperature[i] as u16),
+                u64::from(self.water_table[i] as u32) << 8
+                    | (self.reach[i] as u64) << 4
+                    | u64::from(self.spring[i]),
+                u64::from(self.spread[i]) << 48 | self.low_discharge[i],
                 (self.biome[i] as u64) << 8
                     | (self.rock[i] as u64) << 4
                     | u64::from(self.alluvium[i]) << 1

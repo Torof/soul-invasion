@@ -1,6 +1,7 @@
 //! What the project lead judges a seed by (`premier-pas.md` §2): the
 //! water on the land, the land one can walk across, the longest river
-//! with no natural crossing, the biomes' shares.
+//! with no natural crossing and the walk across a big river, the
+//! biomes' and the rocks' shares, the lakes, springs and water table.
 //!
 //! A river's width and depth come from its discharge by the average
 //! hydraulic geometry of rivers (Leopold and Maddock 1953): width about
@@ -12,8 +13,11 @@
 //! shallow enough. Its shallowest point is a riffle: a natural river
 //! alternates pools and riffles every five to seven widths (Leopold,
 //! Wolman and Miller 1964), several to a cell, and is shallower on them;
-//! shallower still where it braids down a steep reach, or spills over a
-//! lake's sill.
+//! shallower still where it spreads wider (the continent's spread: a
+//! bar, a braided reach, a lake's sill, a cell's widest riffle). It is
+//! measured at the mean discharge (all year) and at low water, late in a
+//! dry season; and so is the walk from one bank of a big river to the
+//! facing one (the detour).
 
 use std::collections::VecDeque;
 
@@ -24,14 +28,15 @@ use crate::geology::Rock;
 /// Depth on a riffle, per mille of the mean depth.
 pub const RIFFLE_PER_MILLE: u64 = 500;
 
-/// A reach dropping at least this many cm a cell (0.2 %) braids into
-/// shallow arms; its shallowest arm is this deep, per mille of the mean.
-pub const BRAID_DROP_CM: i32 = 400;
-/// The shallowest arm of a braided reach, per mille of the mean depth.
-pub const BRAID_PER_MILLE: u64 = 300;
-
-/// A lake's outlet spills over a broad sill: this deep, per mille.
-pub const SILL_PER_MILLE: u64 = 300;
+/// A reach that spreads `k` times wider than its usual width keeps its
+/// discharge at a depth of `k^-0.6` (Manning's law: `Q ∝ w d^(5/3)`):
+/// the continent's [`Continent::spread`] (bars, braids, a lake's sill,
+/// the widest of a cell's riffles). The water's width over such a reach
+/// grows by half the spread: islands and bars stand out of it.
+fn spread_depth_per_mille(spread: u16) -> u64 {
+    let s = u128::from(spread.max(1000));
+    1_000_000 / iroot(s * s * s * 1_000_000, 5).max(1)
+}
 
 /// Rivers wind: a river's length over its cells' steps, per mille (a
 /// plain's river runs about one and a half times the straight line).
@@ -97,6 +102,29 @@ pub struct Numbers {
     pub detour_p90_km: u64,
     /// The same, its longest (at most [`DETOUR_CAP_KM`]).
     pub detour_max_km: u64,
+    /// The longest stretch of river with no crossing wading at low water,
+    /// late in a dry season, in km.
+    pub longest_low_km: u64,
+    /// The walk between facing banks of the big rivers wading at low
+    /// water: median, ninth decile and longest, in km.
+    pub detour_low_median_km: u64,
+    /// Its ninth decile.
+    pub detour_low_p90_km: u64,
+    /// Its longest.
+    pub detour_low_max_km: u64,
+    /// How many lakes (one or more cells together), and the largest's
+    /// area in km².
+    pub lakes: u64,
+    /// The largest lake, in km².
+    pub largest_lake_km2: u64,
+    /// Springs, per 10,000 km² of land.
+    pub springs_10k_km2: u64,
+    /// The water table's median depth under the land outside water, in
+    /// metres.
+    pub table_median_m: u64,
+    /// The share of the land whose water table is within 10 m (a well
+    /// dug by hand reaches it), in hundredths of a percent.
+    pub table_near_bp: u64,
 }
 
 /// A block of the continent for the rocks' variety: 32 cells, 65.5 km a
@@ -134,39 +162,37 @@ pub enum Passage {
 
 /// The shallowest water across each cell's river, in cm (0 at sea and in
 /// lakes, which are not crossed but walked around).
-fn shallowest(c: &Continent) -> Vec<u64> {
-    let n = c.grid.len();
-    let mut sill = vec![false; n];
-    for i in 0..n {
-        let r = c.receiver[i] as usize;
-        if c.lake[i] && !c.lake[r] {
-            sill[r] = true;
-        }
-    }
-    (0..n)
+fn shallowest(c: &Continent, low: bool) -> Vec<u64> {
+    (0..c.grid.len())
         .map(|i| {
             if c.sea[i] || c.lake[i] {
                 return 0;
             }
-            let r = c.receiver[i] as usize;
-            let d = depth_cm(c.discharge[i]);
-            let mut f = RIFFLE_PER_MILLE;
-            if c.surface[i] - c.surface[r] >= BRAID_DROP_CM {
-                f = f.min(BRAID_PER_MILLE);
-            }
-            if sill[i] {
-                f = f.min(SILL_PER_MILLE);
-            }
-            d * f / 1000
+            let q = if low {
+                c.low_discharge[i]
+            } else {
+                c.discharge[i]
+            };
+            depth_cm(q) * RIFFLE_PER_MILLE / 1000 * spread_depth_per_mille(c.spread[i]) / 1000
         })
         .collect()
 }
 
-/// Each cell's passage for a walker crossing up to `limit_cm`.
+/// Each cell's passage for a walker crossing up to `limit_cm`, at the
+/// mean discharge (all year).
 pub fn passages(c: &Continent, limit_cm: u64) -> Vec<Passage> {
+    passages_at(c, limit_cm, false)
+}
+
+/// The same at low water, late in a dry season.
+pub fn passages_low(c: &Continent, limit_cm: u64) -> Vec<Passage> {
+    passages_at(c, limit_cm, true)
+}
+
+fn passages_at(c: &Continent, limit_cm: u64, low_water: bool) -> Vec<Passage> {
     let grid = c.grid;
     let n = grid.len();
-    let low = shallowest(c);
+    let low = shallowest(c, low_water);
     let mut out: Vec<Passage> = (0..n)
         .map(|i| {
             if c.sea[i] {
@@ -226,8 +252,8 @@ pub fn passages(c: &Continent, limit_cm: u64) -> Vec<Passage> {
 
 /// The share of the walkable land in the largest piece, and the longest
 /// run of river with no crossing (in metres), for `limit_cm`.
-fn walking(c: &Continent, limit_cm: u64) -> (u64, u64) {
-    let p = passages(c, limit_cm);
+fn walking(c: &Continent, limit_cm: u64, low_water: bool) -> (u64, u64) {
+    let p = passages_at(c, limit_cm, low_water);
     let main = p.iter().filter(|&&q| q == Passage::Main).count() as u64;
     let walkable = p
         .iter()
@@ -267,7 +293,8 @@ pub fn measure(c: &Continent) -> Numbers {
         }
         let r = c.receiver[i] as usize;
         let step = u64::try_from(step_m(c.grid, i, r)).expect("positive");
-        river_m2 += width_cm(c.discharge[i]) * step * SINUOSITY_PER_MILLE / 1000 / 100;
+        let wet = (1000 + u64::from(c.spread[i]).saturating_sub(1000) / 2).min(4_000);
+        river_m2 += width_cm(c.discharge[i]) * wet / 1000 * step * SINUOSITY_PER_MILLE / 1000 / 100;
         if c.sea[r] {
             largest = largest.max(c.discharge[i]);
         }
@@ -276,9 +303,11 @@ pub fn measure(c: &Continent) -> Numbers {
         }
     }
     let dry_land = land - lakes;
-    let (dry_piece_bp, longest_dry) = walking(c, DRY_CM);
-    let (wading_piece_bp, longest_wading) = walking(c, WADE_CM);
+    let (dry_piece_bp, longest_dry) = walking(c, DRY_CM, false);
+    let (wading_piece_bp, longest_wading) = walking(c, WADE_CM, false);
+    let (_, longest_low) = walking(c, WADE_CM, true);
     let detour = detours(c, &passages(c, WADE_CM));
+    let detour_low = detours(c, &passages_low(c, WADE_CM));
     Numbers {
         land_km2: land * cell_m2 / 1_000_000,
         rivers_bp: river_m2 * 10_000 / (land * cell_m2).max(1),
@@ -312,7 +341,56 @@ pub fn measure(c: &Continent) -> Numbers {
         detour_median_km: detour[0],
         detour_p90_km: detour[1],
         detour_max_km: detour[2],
+        longest_low_km: longest_low / 1000,
+        detour_low_median_km: detour_low[0],
+        detour_low_p90_km: detour_low[1],
+        detour_low_max_km: detour_low[2],
+        lakes: lake_sizes(c).len() as u64,
+        largest_lake_km2: lake_sizes(c).first().copied().unwrap_or(0) * cell_m2 / 1_000_000,
+        springs_10k_km2: (0..n).filter(|&i| c.spring[i]).count() as u64 * 10_000_000_000
+            / (land * cell_m2).max(1),
+        table_median_m: {
+            let mut t: Vec<i32> = (0..n)
+                .filter(|&i| !c.sea[i] && !c.lake[i])
+                .map(|i| c.water_table[i])
+                .collect();
+            t.sort_unstable();
+            t.get(t.len() / 2)
+                .map_or(0, |&v| u64::try_from(v).unwrap_or(0) / 100)
+        },
+        table_near_bp: (0..n)
+            .filter(|&i| !c.sea[i] && !c.lake[i] && c.water_table[i] <= 1_000)
+            .count() as u64
+            * 10_000
+            / dry_land.max(1),
     }
+}
+
+/// The lakes' sizes in cells, largest first (eight ways together).
+pub fn lake_sizes(c: &Continent) -> Vec<u64> {
+    let n = c.grid.len();
+    let mut seen = vec![false; n];
+    let mut sizes = Vec::new();
+    for start in 0..n {
+        if seen[start] || !c.lake[start] {
+            continue;
+        }
+        seen[start] = true;
+        let mut stack = vec![start];
+        let mut size = 0;
+        while let Some(i) = stack.pop() {
+            size += 1;
+            for (m, _) in c.grid.around(i) {
+                if !seen[m] && c.lake[m] {
+                    seen[m] = true;
+                    stack.push(m);
+                }
+            }
+        }
+        sizes.push(size);
+    }
+    sizes.sort_unstable_by(|a, b| b.cmp(a));
+    sizes
 }
 
 /// The mean number of bedrocks a block shows, times 100, over the blocks

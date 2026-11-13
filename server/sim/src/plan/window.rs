@@ -268,7 +268,10 @@ impl Window {
                             Water::River => river += 1,
                             _ => {}
                         }
-                        if matches!(region.biome[i], Biome::Broadleaf | Biome::Conifer) {
+                        if matches!(
+                            region.biome[i],
+                            Biome::Broadleaf | Biome::MixedForest | Biome::Conifer
+                        ) {
                             forest += 1;
                         }
                         let up = (region.height[i + 1] - region.height[i])
@@ -338,7 +341,10 @@ impl Window {
                 } else {
                     1000
                 });
-                forest.push(matches!(region.biome[i], Biome::Broadleaf | Biome::Conifer));
+                forest.push(matches!(
+                    region.biome[i],
+                    Biome::Broadleaf | Biome::MixedForest | Biome::Conifer
+                ));
                 lake.push(if region.water[i] == Water::Lake {
                     region.surface[i]
                 } else {
