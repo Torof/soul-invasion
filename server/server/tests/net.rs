@@ -452,7 +452,13 @@ async fn hello_world_view_and_ping() {
     // frame of the chunk they stand in.
     while chunks.len() < window_len(world, centre) || seen_bodies.is_empty() {
         match receive_any(&mut socket).await {
-            Some(Got::M(ServerMessage::DayStarted { .. } | ServerMessage::View { .. })) => {}
+            // The body born for this connection is announced to whoever sees
+            // the camp, this one included, and may arrive among the chunks.
+            Some(Got::M(
+                ServerMessage::DayStarted { .. }
+                | ServerMessage::View { .. }
+                | ServerMessage::BodyStopped { .. },
+            )) => {}
             Some(message)
                 if ambient(&message)
                     && !matches!(
