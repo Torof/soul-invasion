@@ -81,10 +81,16 @@ pub(crate) mod purpose {
     /// The density noise: how close the trees stand, region by region
     /// (11 November 2026).
     pub(crate) const WOODS_DENSITY: u64 = 0x00de_4517;
+    /// The rock regions: a coarse cell's site and its rock (13 November
+    /// 2026, generator version 2).
+    pub(crate) const ROCK_REGION: u64 = 0x0a0c_4e61;
+    /// The rock regions' ragged borders, a shift east and one south.
+    pub(crate) const ROCK_BORDER_X: u64 = 0x0a0c_b0d1;
+    pub(crate) const ROCK_BORDER_Y: u64 = 0x0a0c_b0d2;
 
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 24] = [
+    pub(crate) const ALL: [u64; 27] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -109,6 +115,9 @@ pub(crate) mod purpose {
         WOODS_COPSE,
         WOODS_RIPARIAN,
         WOODS_DENSITY,
+        ROCK_REGION,
+        ROCK_BORDER_X,
+        ROCK_BORDER_Y,
     ];
 }
 

@@ -3006,6 +3006,30 @@ mod tests {
     }
 
     #[test]
+    fn a_world_of_the_first_generator_sends_the_frames_of_before() {
+        // The frames of every chunk of a 768 valley, as the code of 13
+        // November 2026 sent them before the generator had versions
+        // (FNV-1a of their bytes, end to end): a world made by the first
+        // generator sends them byte for byte.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+        let content = crate::content::load(&dir).expect("repository content");
+        let map = Map::valley_by(sim::map::FIRST_GENERATOR, 768, 768, sim::VALLEY_SEED);
+        let world = World::on_valley(Calendar::default(), &content, map);
+        let shared = Shared::new(&world, &content, 1, 1.0);
+        let (mut print, mut bytes) = (0xcbf2_9ce4_8422_2325_u64, 0);
+        for y in 0..24 {
+            for x in 0..24 {
+                let frame = shared.chunk_message(ChunkPos::new(x, y)).unwrap().frame;
+                bytes += frame.len();
+                for b in &frame {
+                    print = (print ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
+                }
+            }
+        }
+        assert_eq!((print, bytes), (0xff43_cd45_98af_971b, 1_015_322));
+    }
+
+    #[test]
     fn the_trees_are_placed_once_and_a_hit_sends_the_bytes_of_a_miss() {
         // The repository's kinds of tree: the sample content has none.
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");

@@ -71,13 +71,24 @@ pub(crate) fn unit(values: &[u64]) -> u32 {
 /// value is interpolated with an integer smoothstep, so broad patches come
 /// out round. Negative coordinates are fine (the lattice is floored).
 pub(crate) fn noise(seed: u64, cell: u32, x: i32, y: i32) -> u32 {
+    noise_by(cell, x, y, |i, j| lattice(seed, i, j))
+}
+
+/// The value of [`noise`]'s lattice point `(i, j)`, in 0..1000.
+#[allow(clippy::cast_sign_loss)]
+pub(crate) fn lattice(seed: u64, i: i64, j: i64) -> i64 {
+    i64::from(unit(&[seed, i as u64, j as u64]))
+}
+
+/// [`noise`] with its lattice points read from `at` (each in 0..1000):
+/// the same numbers when `at` is [`lattice`], so a caller working out a
+/// whole chunk may draw the few points it needs once.
+pub(crate) fn noise_by(cell: u32, x: i32, y: i32, at: impl Fn(i64, i64) -> i64) -> u32 {
     let c = i64::from(cell);
     let (x, y) = (i64::from(x), i64::from(y));
     let (cx, cy) = (x.div_euclid(c), y.div_euclid(c));
     let ease = |f: i64| f * f * (3 * c - 2 * f) / (c * c);
     let (fx, fy) = (ease(x.rem_euclid(c)), ease(y.rem_euclid(c)));
-    #[allow(clippy::cast_sign_loss)]
-    let at = |i: i64, j: i64| i64::from(unit(&[seed, i as u64, j as u64]));
     let top = at(cx, cy) * (c - fx) + at(cx + 1, cy) * fx;
     let bottom = at(cx, cy + 1) * (c - fx) + at(cx + 1, cy + 1) * fx;
     u32::try_from((top * (c - fy) + bottom * fy) / (c * c)).expect("within 0..1000")

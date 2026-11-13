@@ -59,9 +59,11 @@ pub fn load(dir: &Path) -> Result<Content, LoadError> {
     let needs = read("needs.ron")?;
     let species = read("species.ron")?;
     let flora = read("flora.ron")?;
+    let geology = read("geology.ron")?;
     Content::from_ron(&materials, &spawns, &movement, &needs)
         .and_then(|content| content.with_species(&species))
         .and_then(|content| content.with_flora(&flora))
+        .and_then(|content| content.with_geology(&geology))
         .map_err(|source| LoadError::Invalid {
             dir: dir.to_path_buf(),
             source: Box::new(source),

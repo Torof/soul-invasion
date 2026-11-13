@@ -217,6 +217,10 @@ pub struct Content {
     /// (`flora.ron`), in file order by section.
     #[serde(default)]
     pub flora: Vec<crate::flora::Kind>,
+    /// The rock regions under the ground (`geology.ron`, D42): drawn on
+    /// worlds of the generator's version 2 on.
+    #[serde(default)]
+    pub geology: crate::geology::Geology,
 }
 
 /// A kind of tree.
@@ -296,6 +300,9 @@ pub enum ContentError {
         /// The value.
         per_thousand: u32,
     },
+    /// The rock regions make no sense.
+    #[error("geology: {0}")]
+    Geology(&'static str),
     /// A kind of tree is defined twice or makes no sense.
     #[error("species `{id}`: {what}")]
     Species {
@@ -351,6 +358,7 @@ impl Content {
             needs,
             species: Vec::new(),
             flora: Vec::new(),
+            geology: crate::geology::Geology::default(),
         };
         content.validate()?;
         Ok(content)
@@ -375,6 +383,17 @@ impl Content {
             source,
         })?;
         self.validate()?;
+        Ok(self)
+    }
+
+    /// The same content with the rock regions of `geology` (the text of
+    /// `geology.ron`).
+    pub fn with_geology(mut self, geology: &str) -> Result<Self, ContentError> {
+        self.geology = ron::from_str(geology).map_err(|source| ContentError::Parse {
+            file: "geology.ron",
+            source,
+        })?;
+        self.geology.check().map_err(ContentError::Geology)?;
         Ok(self)
     }
 

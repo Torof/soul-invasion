@@ -15,6 +15,7 @@
 pub mod changes;
 pub mod content;
 pub mod flora;
+pub mod geology;
 // `gen` is a reserved keyword in the 2024 edition: the module is `r#gen`,
 // its file `gen.rs`.
 pub(crate) mod r#gen;
@@ -33,6 +34,7 @@ use std::sync::Arc;
 pub use content::{
     Content, ContentError, Food, Look, Material, MaterialKind, Movement, Needs, Spawn,
 };
+pub use geology::{Geology, Rock};
 pub use map::{
     CHUNK_SIZE, ChunkPos, FinePos, MM_PER_TILE, Map, MapSpec, Pos, Side, Terrain, line_clear,
 };
@@ -787,6 +789,11 @@ pub struct World {
     /// persisted: the trees are placed again, the same, from the map.
     #[serde(skip)]
     species: Vec<content::Species>,
+    /// The content's rock regions, the rock under a chunk is drawn with
+    /// ([`World::rocks_in`]); set by [`World::take_content`]. Never
+    /// persisted: the rocks are drawn again, the same, from the map.
+    #[serde(skip)]
+    geology: geology::Geology,
     /// The trees of the chunks asked for lately, placed once and shared
     /// ([`ground::Ground`]) with the server's threads, which take a handle
     /// as they take the map ([`World::shared_ground`]). Derived from the
@@ -850,6 +857,7 @@ impl<'de> serde::Deserialize<'de> for World {
             searches: Searches::default(),
             piloted: BTreeSet::new(),
             species: Vec::new(),
+            geology: geology::Geology::default(),
             ground_cache: Arc::new(ground::Ground::default()),
         };
         let standing: Vec<_> = world
@@ -900,7 +908,13 @@ impl World {
     /// The same, on a valley `size` tiles on a side: a smaller one starts
     /// far faster, for the tests and development (`--valley-size`).
     pub fn with_valley(calendar: Calendar, content: &Content, size: u32) -> Self {
-        let mut world = Self::empty(calendar, Map::valley(size, size, VALLEY_SEED));
+        Self::on_valley(calendar, content, Map::valley(size, size, VALLEY_SEED))
+    }
+
+    /// The same, on a given valley: one made by an older generator (D24),
+    /// or of another seed.
+    pub fn on_valley(calendar: Calendar, content: &Content, map: Map) -> Self {
+        let mut world = Self::empty(calendar, map);
         world.natural = true;
         world.take_content(content);
         world
@@ -925,6 +939,7 @@ impl World {
             searches: Searches::default(),
             piloted: BTreeSet::new(),
             species: Vec::new(),
+            geology: geology::Geology::default(),
             ground_cache: Arc::new(ground::Ground::default()),
         }
     }
@@ -938,6 +953,7 @@ impl World {
     pub fn take_content(&mut self, content: &Content) {
         self.species.clone_from(&content.species);
         self.spawns.clone_from(&content.spawns);
+        self.geology.clone_from(&content.geology);
         for index in 0..self.bodies.len() {
             self.refresh_load(index, content);
         }
@@ -950,6 +966,15 @@ impl World {
     pub fn trees_in(&self, chunk: ChunkPos) -> Arc<[trees::Tree]> {
         self.ground_cache
             .trees_in(&self.map, &self.species, self.seed(), chunk)
+    }
+
+    /// The rock under each tile of `chunk`, row by row (D42), drawn from
+    /// the seed the first time it is asked for and held a while
+    /// ([`ground::Ground`]); `None` on a map made by the first generator
+    /// (D24), which has none, and off the map.
+    pub fn rocks_in(&self, chunk: ChunkPos) -> Option<Arc<[Rock]>> {
+        self.ground_cache
+            .rocks_in(&self.map, &self.geology, self.seed(), chunk)
     }
 
     /// Does an adult tree's trunk block `pos` (D32)? A body never walks
@@ -3624,6 +3649,30 @@ mod tests {
             }
         }
         assert_eq!(seen.len(), 2);
+    }
+
+    #[test]
+    fn a_new_world_has_rock_under_its_ground_and_an_old_one_none() {
+        let content = Content::sample();
+        let new = World::with_valley(Calendar::default(), &content, 256);
+        assert_eq!(new.map().generator(), map::GENERATOR);
+        let chunk = ChunkPos::new(3, 4);
+        let rocks = new.rocks_in(chunk).expect("version 2 has rocks");
+        assert_eq!(rocks.len(), 32 * 32);
+        assert_eq!(*rocks, *content.geology.rocks_in(VALLEY_SEED, chunk));
+        assert!(new.rocks_in(ChunkPos::new(8, 0)).is_none(), "off the map");
+        let old = World::on_valley(
+            Calendar::default(),
+            &content,
+            Map::valley_by(map::FIRST_GENERATOR, 256, 256, VALLEY_SEED),
+        );
+        assert!(old.rocks_in(chunk).is_none(), "version 1 has none");
+        // The rest of the ground is the same in both.
+        for c in [chunk, ChunkPos::new(0, 0), ChunkPos::new(7, 7)] {
+            assert_eq!(old.map().chunk(c), new.map().chunk(c));
+            assert_eq!(*old.trees_in(c), *new.trees_in(c));
+            assert_eq!(old.items_in(c), new.items_in(c));
+        }
     }
 
     #[test]
