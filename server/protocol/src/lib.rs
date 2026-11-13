@@ -81,7 +81,13 @@ use serde::{Deserialize, Serialize};
 ///   (`ItemView`, `ItemState`) and on the stored items of a chunk frame
 ///   (`id u64, dx u8, dy u8, material u16, mass_g u32`); a natural item
 ///   weighs its material's `mass_g`.
-pub const PROTOCOL_VERSION: u32 = 23;
+/// - v24: the year and thirst (D09, D34): the clock carries the year's
+///   length (`days_per_year`), so a client knows the season and the year
+///   of any tick; `season_started` at the dawn of each season; the
+///   condition carries `thirst`; `drink` at running water within reach,
+///   `drink_refused` with the reason (`not_water` joins the refusals);
+///   a body may die `dehydrated`.
+pub const PROTOCOL_VERSION: u32 = 24;
 
 /// Chunks whose frames a client keeps after they left its view, the
 /// least recently hidden forgotten first (D4): about 3 MB of frames. The
@@ -184,6 +190,8 @@ pub enum Refusal {
     TooHeavy,
     /// It is not food.
     NotFood,
+    /// No running water there to drink.
+    NotWater,
 }
 
 /// What a body that stopped for good sees barring its way (D32).
@@ -231,6 +239,8 @@ pub struct Condition {
     pub vitality: u32,
     /// Need for food, 0–100.
     pub hunger: u32,
+    /// Need for water, 0–100.
+    pub thirst: u32,
     /// Lack of warmth, 0–100.
     pub cold: u32,
     /// Need for sleep, 0–100.
@@ -242,7 +252,9 @@ pub struct Condition {
 /// The world's clock, enough to show the time of day between messages:
 /// `tick` was current when sent; ticks advance at `ticks_per_second ×
 /// time_scale_permille / 1000` per real second; a day is `ticks_per_day`
-/// ticks and starts at dawn (D09).
+/// ticks and starts at dawn (D09); a year is `days_per_year` days, cut in
+/// four seasons at whole days (day of the year, from 0, `× 4 /
+/// days_per_year`: spring, summer, autumn, winter).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Clock {
     /// The tick current when this was sent.
@@ -251,6 +263,8 @@ pub struct Clock {
     pub ticks_per_second: u32,
     /// Ticks per game day.
     pub ticks_per_day: u64,
+    /// Game days per year.
+    pub days_per_year: u32,
     /// How many times faster than real time the server runs, in
     /// thousandths (1000 is real time).
     pub time_scale_permille: u32,
@@ -264,6 +278,22 @@ pub enum DeathCause {
     Starved,
     /// Cold.
     Froze,
+    /// Thirst.
+    Dehydrated,
+}
+
+/// A quarter of the year (D09).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Season {
+    /// The first; a world is born on its first day.
+    Spring,
+    /// The second.
+    Summer,
+    /// The third.
+    Autumn,
+    /// The last.
+    Winter,
 }
 
 /// A material as the client needs to know it: a name to show and a
@@ -388,6 +418,14 @@ pub enum ClientMessage {
     Stow {
         /// The item.
         item: u64,
+    },
+    /// Intention: drink from running water (river, ford, brook) on the
+    /// body's tile or next to it.
+    Drink {
+        /// Column of the tile of water.
+        x: i32,
+        /// Row.
+        y: i32,
     },
     /// Intention: lie down and sleep where one stands.
     Sleep,
@@ -539,6 +577,14 @@ pub enum ServerMessage {
         /// The tick at which it started.
         tick: u64,
     },
+    /// A new season began, at dawn (it follows that day's
+    /// `day_started`). Between them, the clock tells the season.
+    SeasonStarted {
+        /// The year (years count from 1).
+        year: u64,
+        /// Which.
+        season: Season,
+    },
     /// Night fell: dark and cold until dawn.
     NightFell {
         /// The day it ends.
@@ -596,6 +642,17 @@ pub enum ServerMessage {
         /// On what.
         item: u64,
         /// Why.
+        reason: Refusal,
+    },
+    /// A drink was refused. Sent to the pilot who asked.
+    DrinkRefused {
+        /// Who.
+        body: u32,
+        /// Column of the tile asked.
+        x: i32,
+        /// Row.
+        y: i32,
+        /// Why: `out_of_reach`, `not_water` or `unknown`.
         reason: Refusal,
     },
     /// What the pilot's body carries. Sent to the pilot alone, whenever
@@ -1108,6 +1165,7 @@ mod tests {
             ClientMessage::Drop { item: 12 },
             ClientMessage::Hold { item: 12 },
             ClientMessage::Stow { item: 12 },
+            ClientMessage::Drink { x: 4, y: -2 },
             ClientMessage::Sleep,
             ClientMessage::Wake,
             ClientMessage::DevTeleport { x: 1500, y: -2 },
@@ -1162,6 +1220,7 @@ mod tests {
                     tick: 3_600,
                     ticks_per_second: 10,
                     ticks_per_day: 72_000,
+                    days_per_year: 50,
                     time_scale_permille: 1000,
                 },
                 world: "0123456789abcdef".to_owned(),
@@ -1214,6 +1273,16 @@ mod tests {
                 day: 2,
                 tick: 72_000,
             },
+            ServerMessage::SeasonStarted {
+                year: 2,
+                season: Season::Autumn,
+            },
+            ServerMessage::DrinkRefused {
+                body: 1,
+                x: 3,
+                y: -4,
+                reason: Refusal::NotWater,
+            },
             ServerMessage::BodyWalks {
                 body: 1,
                 at: Point { x: 4_500, y: 5_500 },
@@ -1232,6 +1301,7 @@ mod tests {
                 condition: Condition {
                     vitality: 88,
                     hunger: 40,
+                    thirst: 75,
                     cold: 0,
                     fatigue: 65,
                     asleep: false,
@@ -1336,6 +1406,48 @@ mod tests {
             let back: ServerMessage = decode(&text).unwrap();
             assert_eq!(message, back);
         }
+    }
+
+    #[test]
+    fn the_year_and_thirst_on_the_wire() {
+        assert_eq!(
+            encode(&ClientMessage::Drink { x: 4, y: 6 }).unwrap(),
+            r#"{"type":"drink","x":4,"y":6}"#
+        );
+        assert_eq!(
+            encode(&ServerMessage::SeasonStarted {
+                year: 1,
+                season: Season::Summer,
+            })
+            .unwrap(),
+            r#"{"type":"season_started","year":1,"season":"summer"}"#
+        );
+        assert_eq!(
+            encode(&ServerMessage::DrinkRefused {
+                body: 1,
+                x: 2,
+                y: 3,
+                reason: Refusal::NotWater,
+            })
+            .unwrap(),
+            r#"{"type":"drink_refused","body":1,"x":2,"y":3,"reason":"not_water"}"#
+        );
+        let condition = Condition {
+            vitality: 90,
+            hunger: 10,
+            thirst: 75,
+            cold: 0,
+            fatigue: 5,
+            asleep: false,
+        };
+        assert_eq!(
+            serde_json::to_string(&condition).unwrap(),
+            r#"{"vitality":90,"hunger":10,"thirst":75,"cold":0,"fatigue":5,"asleep":false}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&DeathCause::Dehydrated).unwrap(),
+            r#""dehydrated""#
+        );
     }
 
     #[test]

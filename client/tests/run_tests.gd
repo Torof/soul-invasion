@@ -20,6 +20,8 @@ func _init() -> void:
 	_test_tooltips()
 	_test_ground_art_is_reachable()
 	_test_inventory_lines_and_refusals()
+	_test_the_year_and_its_seasons()
+	_test_drink_is_offered_at_running_water_within_reach()
 	_test_brooks_are_lines_on_the_ground()
 	_test_trees_stand_on_their_foot()
 	_test_the_water_meshes_blur_as_three_boxes()
@@ -121,6 +123,7 @@ func _test_protocol_wire_format_matches_server() -> void:
 	_check(Protocol.encode(Protocol.move_to(2, 3)) == "{\"type\":\"move_to\",\"x\":2,\"y\":3}", "move_to wire format matches server")
 	_check(Protocol.hello().get("protocol_version") == Protocol.PROTOCOL_VERSION, "hello carries protocol version")
 	_check(Protocol.encode(Protocol.dev_teleport(7, 9)) == "{\"type\":\"dev_teleport\",\"x\":7,\"y\":9}", "dev_teleport wire format matches server")
+	_check(Protocol.encode(Protocol.drink(4, 6)) == "{\"type\":\"drink\",\"x\":4,\"y\":6}", "drink wire format matches server")
 
 
 func _test_iso_round_trip() -> void:
@@ -204,6 +207,44 @@ func _test_inventory_lines_and_refusals() -> void:
 	_check(Tooltip.load_line(1900, 20000) == "1.9 / 20.0 kg", "the load over the capacity")
 	_check(Tooltip.refusal_words("pick_up", "too_heavy") == "cannot pick up: too heavy", "a refusal in words")
 	_check(Tooltip.refusal_words("eat", "not_food") == "cannot eat: not food", "another")
+
+
+func _test_the_year_and_its_seasons() -> void:
+	# Must agree with `a_tick_has_a_year_and_a_season` in the Rust sim: 50
+	# days cut 13, 12, 13, 12.
+	var cases := [[1, "spring", 1], [13, "spring", 1], [14, "summer", 1], [25, "summer", 1],
+		[26, "autumn", 1], [38, "autumn", 1], [39, "winter", 1], [50, "winter", 1], [51, "spring", 2], [114, "summer", 3]]
+	for case: Array in cases:
+		var day: int = case[0]
+		_check(GameClock.season_of(day, 50) == case[1] and GameClock.year_of(day, 50) == case[2], "day %d: %s of year %d" % case)
+	_check(GameClock.day_of(0.0, 72000.0) == 1 and GameClock.day_of(71999.0, 72000.0) == 1 and GameClock.day_of(72000.0, 72000.0) == 2, "days count from 1")
+	# The HUD's clock line: day, hour, day or night, season and year.
+	_check(GameClock.clock_line(72000.0 * 13, 72000.0, 50, false) == "Day 14 · 06:00 · day · summer, year 1", "the season and year beside the day")
+	_check(GameClock.clock_line(72000.0 * 50 + 36000.0, 72000.0, 50, true) == "Day 51 · 18:00 · night · spring, year 2", "a new year")
+	_check(GameClock.season_line(2, "winter") == "winter begins · year 2", "a season begins")
+	# The clock takes the year's length from the server.
+	var clock := GameClock.new()
+	clock.set_clock({"tick": 0, "ticks_per_second": 10, "ticks_per_day": 72000, "days_per_year": 12, "time_scale_permille": 1000}, 0)
+	_check(clock.days_per_year == 12, "the year told by the server")
+
+
+func _test_drink_is_offered_at_running_water_within_reach() -> void:
+	var here := Vector2i(10, 10)
+	for terrain: String in ["water", "ford", "brook"]:
+		_check(TerrainGrid.can_drink(terrain, Vector2i(11, 9), here), "drink at %s beside the body" % terrain)
+	_check(TerrainGrid.can_drink("brook", here, here), "drink where one stands in a brook")
+	_check(not TerrainGrid.can_drink("water", Vector2i(12, 10), here), "not beyond reach")
+	_check(not TerrainGrid.can_drink("grass", Vector2i(11, 10), here), "not on grass")
+	_check(not TerrainGrid.can_drink("", Vector2i(11, 10), here), "not on an unknown tile")
+	# The context menu offers it, through the intention the server judges.
+	var world := FileAccess.get_file_as_string("res://world/world_view.gd")
+	_check(world.contains("TerrainGrid.can_drink(terrain_at(tile), tile, piloted_tile())") and world.contains("\"label\": \"drink\"") and world.contains("Net.send_drink(tile.x, tile.y)"), "the menu's drink entry")
+	_check(Tooltip.refusal_words("drink", "not_water") == "cannot drink: no running water there", "a refused drink in words")
+	# The thirst gauge sits with the others.
+	var scene := FileAccess.get_file_as_string("res://main.tscn")
+	_check(scene.contains("[node name=\"Thirst\" type=\"ProgressBar\" parent=\"Ui/Hud/Rows/Gauges\"]"), "the thirst gauge is in the HUD")
+	var hud := FileAccess.get_file_as_string("res://ui/hud.gd")
+	_check(hud.contains("_thirst.value = float(condition.get(\"thirst\", 0))"), "the thirst gauge follows the condition")
 
 
 func _test_chunk_of_matches_the_server() -> void:

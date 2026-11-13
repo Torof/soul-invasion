@@ -193,6 +193,12 @@ impl Terrain {
     pub fn is_passable(self) -> bool {
         !matches!(self, Self::Water | Self::Rock)
     }
+
+    /// Running water a body can drink from (D34, amended 13 November
+    /// 2026): a river, a ford, a brook. Still water comes later.
+    pub fn is_drinkable(self) -> bool {
+        matches!(self, Self::Water | Self::Ford | Self::Brook)
+    }
 }
 
 /// How a map is generated. A map is stored and sent as this, never as

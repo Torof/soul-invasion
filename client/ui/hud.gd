@@ -1,6 +1,6 @@
 class_name Hud
 extends PanelContainer
-## The head-up display: the clock (day, hour, night), the piloted body
+## The head-up display: the clock (day, hour, night, season and year), the piloted body
 ## and its gauges, and a line for what just happened. Shows only what the
 ## server says; decides nothing (D03, D05).
 
@@ -9,6 +9,7 @@ extends PanelContainer
 @onready var _state_label: Label = %State
 @onready var _vitality: ProgressBar = %Vitality
 @onready var _hunger: ProgressBar = %Hunger
+@onready var _thirst: ProgressBar = %Thirst
 @onready var _cold: ProgressBar = %Cold
 @onready var _fatigue: ProgressBar = %Fatigue
 
@@ -34,6 +35,8 @@ func _ready() -> void:
 	Net.body_assigned.connect(_on_body_assigned)
 	Net.move_refused.connect(func(_body: int, x: int, y: int, _reason: String) -> void: set_state("cannot walk to (%d, %d)" % [x, y]))
 	Net.act_refused.connect(_on_act_refused)
+	Net.drink_refused.connect(func(_body: int, _x: int, _y: int, reason: String) -> void: set_state(Tooltip.refusal_words("drink", reason)))
+	Net.season_started.connect(func(year: int, season: String) -> void: set_state(GameClock.season_line(year, season)))
 	Net.disconnected.connect(set_state)
 	_refresh()
 
@@ -73,6 +76,7 @@ func _on_body_condition(body: int, condition: Dictionary) -> void:
 		return
 	_vitality.value = float(condition.get("vitality", 0))
 	_hunger.value = float(condition.get("hunger", 0))
+	_thirst.value = float(condition.get("thirst", 0))
 	_cold.value = float(condition.get("cold", 0))
 	_fatigue.value = float(condition.get("fatigue", 0))
 	var asleep := bool(condition.get("asleep", false))
@@ -90,7 +94,7 @@ func _on_body_died(body: int, cause: String) -> void:
 
 func _on_body_assigned(body: int) -> void:
 	_body = body
-	for gauge in [_vitality, _hunger, _cold, _fatigue]:
+	for gauge in [_vitality, _hunger, _thirst, _cold, _fatigue]:
 		gauge.value = 0.0
 	set_state("reborn in another body" if body >= 0 else "no body: watching")
 
@@ -107,8 +111,9 @@ func _refresh() -> void:
 
 
 func _refresh_clock() -> void:
-	var hm := GameClock.time_of_day(_clock.tick_at(Time.get_ticks_msec()), _clock.ticks_per_day)
-	_clock_label.text = "Day %d · %02d:%02d · %s" % [_day, hm.x, hm.y, "night" if _night else "day"]
+	var tick := _clock.tick_at(Time.get_ticks_msec())
+	_clock_label.text = GameClock.clock_line(tick, _clock.ticks_per_day, _clock.days_per_year, _night) if _has_clock else "Day %d · %s" % [_day, "night" if _night else "day"]
+
 
 
 ## `speaker` says `line`, in the speech thread at the top left: the way

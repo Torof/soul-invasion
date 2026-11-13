@@ -31,7 +31,7 @@ use sim::{CHUNK_SIZE, ChunkPos, Content, Pos, World};
 
 /// Version of the serialized `World` inside a snapshot. Bump on any change
 /// to `World`'s shape, and add a migration in `decode_world`.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 11;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 12;
 
 /// Version of a chunk's changes as stored (`encode_changes`). Bump on any
 /// change to their bytes, and read the old ones in `decode_changes`.
@@ -500,6 +500,7 @@ fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<Wo
             8 => migrate_v8_to_v9(data),
             9 => migrate_v9_to_v10(&data)?,
             10 => migrate_v10_to_v11(&data, content)?,
+            11 => migrate_v11_to_v12(&data)?,
             _ => unreachable!("every version below the current one has a migration"),
         };
         version += 1;
@@ -666,6 +667,31 @@ fn migrate_v10_to_v11(data: &str, content: &Content) -> Result<String, StorageEr
                 item.insert("mass_g".into(), grams.into());
             }
             item.entry("made").or_insert_with(|| 0.into());
+        }
+    }
+    Ok(old.to_string())
+}
+
+/// v12: the calendar has a year (D09, amended 13 November 2026) and
+/// bodies thirst (D34, amended the same day). A world saved before gets
+/// the provisional year of 50 days and its bodies have just drunk.
+fn migrate_v11_to_v12(data: &str) -> Result<String, StorageError> {
+    let mut old: serde_json::Value = serde_json::from_str(data)?;
+    if let Some(calendar) = old["calendar"].as_object_mut() {
+        calendar
+            .entry("days_per_year")
+            .or_insert_with(|| sim::Calendar::DEFAULT_DAYS_PER_YEAR.into());
+    }
+    let quenched = serde_json::to_value(sim::Condition::healthy().thirst)?;
+    if let Some(bodies) = old["bodies"].as_array_mut() {
+        for condition in bodies
+            .iter_mut()
+            .filter_map(|b| b.get_mut("condition"))
+            .filter_map(serde_json::Value::as_object_mut)
+        {
+            condition
+                .entry("thirst")
+                .or_insert_with(|| quenched.clone());
         }
     }
     Ok(old.to_string())
@@ -1096,6 +1122,53 @@ mod tests {
         let today = storage.latest_world().unwrap().unwrap();
         let item = today.item(flint).expect("the flint");
         assert_eq!((item.mass_g(), item.made()), (123, Tick(3)));
+    }
+
+    #[test]
+    fn a_world_saved_before_the_year_gets_fifty_days_and_bodies_quenched() {
+        // A v11 snapshot: its calendar has no year, its bodies no thirst.
+        let mut world = World::with_valley(
+            Calendar::new(2, 3).unwrap().with_days_per_year(12).unwrap(),
+            &content(),
+            256,
+        );
+        let body = world.spawn_at_camp().expect("a body at the camp");
+        let mut events = Vec::new();
+        world.advance(4, &content(), &mut events); // thirsty by now
+        assert!(world.body(body).unwrap().condition().thirst.points() > 0);
+        let mut old: serde_json::Value = serde_json::to_value(&world).unwrap();
+        assert!(
+            old["calendar"]
+                .as_object_mut()
+                .unwrap()
+                .remove("days_per_year")
+                .is_some()
+        );
+        for body in old["bodies"].as_array_mut().unwrap() {
+            let condition = body["condition"].as_object_mut().unwrap();
+            assert!(condition.remove("thirst").is_some());
+        }
+        let mut storage = Sqlite::in_memory(content()).unwrap();
+        storage
+            .conn
+            .execute(
+                "INSERT INTO snapshots (tick, format_version, data) VALUES (4, 11, ?1)",
+                [old.to_string()],
+            )
+            .unwrap();
+        let back = storage.latest_world().unwrap().unwrap();
+        assert_eq!(back.calendar().days_per_year(), 50);
+        assert_eq!(back.calendar().ticks_per_day(), 6);
+        assert_eq!(back.body(body).unwrap().condition().thirst.points(), 0);
+        // Today's worlds keep their own year and thirst.
+        let mut storage = Sqlite::in_memory(content()).unwrap();
+        storage.save_world(&world).unwrap();
+        let today = storage.latest_world().unwrap().unwrap();
+        assert_eq!(today.calendar().days_per_year(), 12);
+        assert_eq!(
+            today.body(body).unwrap().condition(),
+            world.body(body).unwrap().condition()
+        );
     }
 
     #[test]

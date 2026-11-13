@@ -49,6 +49,14 @@ static func code_of(terrain: String) -> int:
 	return int(code)
 
 
+## Can a body standing on `here` drink at `tile`? Running water (a river,
+## a ford, a brook: `terrain`'s name) on its tile or next to it, as the
+## server judges it (D34, protocol v24).
+static func can_drink(terrain: String, tile: Vector2i, here: Vector2i) -> bool:
+	var near := absi(tile.x - here.x) <= 1 and absi(tile.y - here.y) <= 1
+	return near and terrain in ["water", "ford", "brook"]
+
+
 ## The name of a code, "" when unknown.
 static func name_of(code: int) -> String:
 	return _names[code] if code >= 0 and code < _names.size() else ""

@@ -6,7 +6,8 @@ extends Node
 
 signal connected(tick: int, body: int)
 signal world_state(width: int, height: int, chunk_size: int, materials: Array, night: bool)
-## The clock: {"tick", "ticks_per_second", "ticks_per_day", "time_scale"}, with world_state.
+## The clock: {"tick", "ticks_per_second", "ticks_per_day", "days_per_year",
+## "time_scale_permille"}, with world_state.
 signal clock(clock: Dictionary)
 ## The kinds of tree, sent with the world's state, before it.
 signal species(species: Array)
@@ -37,12 +38,18 @@ signal body_assigned(body: int)
 signal item_added(item: Dictionary)
 signal item_removed(item: int, x: int, y: int)
 ## act: pick_up | drop | hold | stow | eat; reason: unknown | out_of_reach |
-## not_carried | too_heavy | not_food.
+## not_carried | too_heavy | not_food | not_water.
 signal act_refused(body: int, act: String, item: int, reason: String)
 ## held: {} or {"id", "material"}; carried: Array of the same.
 signal inventory(body: int, held: Dictionary, carried: Array, load_g: int, capacity_g: int)
 signal body_holds(body: int, item: Dictionary)
 signal night_fell(day: int)
+## A new season began at dawn (protocol v24): spring | summer | autumn |
+## winter, of `year` (from 1).
+signal season_started(year: int, season: String)
+## A drink at tile (x, y) was refused (protocol v24): reason out_of_reach |
+## not_water | unknown.
+signal drink_refused(body: int, x: int, y: int, reason: String)
 signal day_started(day: int, tick: int)
 signal disconnected(reason: String)
 ## Development tools on (the server runs with --dev): the whole map,
@@ -123,6 +130,11 @@ func send_move_to(x: int, y: int) -> void:
 func send_eat(item: int) -> void:
 	if is_ready and body >= 0:
 		_send(Protocol.eat(item))
+
+
+func send_drink(x: int, y: int) -> void:
+	if is_ready and body >= 0:
+		_send(Protocol.drink(x, y))
 
 
 func send_pick_up(item: int) -> void:
@@ -380,6 +392,15 @@ func _handle(message: Dictionary) -> void:
 			)
 		"day_started":
 			day_started.emit(int(message.get("day", 0)), int(message.get("tick", 0)))
+		"season_started":
+			season_started.emit(int(message.get("year", 1)), str(message.get("season", "")))
+		"drink_refused":
+			drink_refused.emit(
+				int(message.get("body", -1)),
+				int(message.get("x", 0)),
+				int(message.get("y", 0)),
+				str(message.get("reason", ""))
+			)
 		"protocol_mismatch":
 			disconnected.emit("server expects protocol v%s" % message.get("expected"))
 		"pong":

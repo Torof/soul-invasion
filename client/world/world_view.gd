@@ -807,6 +807,8 @@ func acts_on(tile: Vector2i) -> Array:
 		acts.append({"label": "pick up " + name, "send": Net.send_pick_up, "item": id})
 		if _edible.get(material, false):
 			acts.append({"label": "eat " + name, "send": Net.send_eat, "item": id})
+	if TerrainGrid.can_drink(terrain_at(tile), tile, piloted_tile()):
+		acts.append({"label": "drink", "send": func(_item: int) -> void: Net.send_drink(tile.x, tile.y), "item": -1})
 	return acts
 
 
