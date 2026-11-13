@@ -94,68 +94,107 @@ pub fn marches_heights() -> Vec<i16> {
     out
 }
 
-/// The mountain test (13 November 2026, version G): a window of
-/// [`MOUNTAIN_SIDE`] tiles cut at (320, 310) from the relief the project
-/// lead chose on images (`G-D-textures-scenario`): relief D, a crest that
-/// winds, ravines running down its flanks along the fall line, with flat
-/// floors that widen and deepen downhill and unequal sides, and benches
-/// every 3 m of height; its shapes stretched 7.5 times across and 2.5
-/// times in height (a third of the first version's heights). The map's
-/// `x` and `y` are the image's `u` and `v`; a tile's height is the
-/// relief's at its middle, (320 + x + 0.5, 310 + y + 0.5), rounded to
-/// decimetres.
-///
-/// D's ravines follow traced fall lines, too heavy to port: the heights
-/// are baked into [`MOUNTAIN_HEIGHTS`] (`mountain_heights.bin`, i16
-/// decimetres little endian, row by row) by `bake-montagne-g.py` over
-/// `montagne-scenario.py` (the project lead's local reserve,
-/// `content/ai-reserve/notes/montagne-g/`). Test only.
+/// The mountain test (13 November 2026): a window of [`MOUNTAIN_SIDE`]
+/// tiles cut at [`MOUNTAIN_ORIGIN`] from the relief the project lead
+/// validated on images (`montagne-v3-etiree-b`): a crest that winds, its
+/// flanks crossed by winding ravines with flat floors and unequal sides,
+/// and benches every 3 m of height, the whole stretched
+/// [`MOUNTAIN_STRETCH`] times. The map's `x` and `y` are the image's `u`
+/// and `v`. Test only: floats are fine here, the heights are rounded to
+/// decimetres once.
 pub const MOUNTAIN_SIDE: u32 = 192;
 
-/// The mountain test's heights, baked: decimetres, i16 little endian,
-/// [`MOUNTAIN_SIDE`] rows of [`MOUNTAIN_SIDE`].
-const MOUNTAIN_HEIGHTS: &[u8] = include_bytes!("mountain_heights.bin");
+/// Where the mountain test's window starts in the relief, in tiles.
+const MOUNTAIN_ORIGIN: (f64, f64) = (320.0, 310.0);
 
-/// Where the camp should stand, the screen's middle left; it stands on
-/// the nearest gentle tile to it ([`mountain_camp`]).
-const MOUNTAIN_CAMP_NEAR: (i32, i32) = (61, 136);
+/// How many times the relief's shapes are stretched.
+const MOUNTAIN_STRETCH: f64 = 7.5;
 
-/// A gentle tile's largest rise, squared: the rise to its neighbours at
-/// two tiles on either side, in decimetres over four tiles (0.12 m a
-/// tile, where the slope's gentle grass starts to give way, is 4.8 dm;
-/// 23 is under 4.8²).
-const MOUNTAIN_GENTLE: i32 = 23;
+fn smooth(e0: f64, e1: f64, x: f64) -> f64 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
 
-/// The heights of the mountain test's tiles, in decimetres, row by row.
+/// The crest's line wanders across the screen.
+fn crest_offset(u: f64, v: f64) -> f64 {
+    10.0 * ((u + v) / 34.0).sin() + 4.0 * ((u + v) / 11.0).sin()
+}
+
+/// Bumps, small crests and the ravines.
+fn detail(u: f64, v: f64) -> f64 {
+    let bumps = 0.9 * (u * 0.31 + v * 0.17).sin()
+        + 0.7 * (u * 0.12 - v * 0.29 + 1.3).sin()
+        + 0.5 * (u * 0.53 + v * 0.47 + 2.1).sin()
+        + 0.35 * (u * 0.81 - v * 0.66 + 0.4).sin();
+    // Ravines that wind, with a flat floor a few tiles wide and two
+    // unequal sides.
+    let phase =
+        (u - v) * 0.21 + 0.8 + 1.3 * ((u + v) * 0.075).sin() + 0.6 * ((u + v) * 0.19 + 1.1).sin();
+    let x = phase.sin();
+    let floor = 1.0 - smooth(0.10, 0.18, x.abs());
+    let side = if x > 0.0 {
+        smooth(0.10, 0.55, x)
+    } else {
+        smooth(0.10, 0.30, -x)
+    };
+    let ravine = -1.4 * (floor + (1.0 - floor) * (1.0 - side)) * smooth(20.0, 45.0, u + v);
+    bumps + ravine
+}
+
+/// The relief before the stretch, in metres.
+fn mountain_base(u: f64, v: f64) -> f64 {
+    let across = (u - v) - crest_offset(u, v);
+    let along = u + v;
+    let top = 26.0 * (-((along - 80.0) / 70.0).powi(2)).exp() + 6.0;
+    let h = top * (1.0 - across.abs() / 52.0).clamp(0.0, 1.0).powf(1.25);
+    let h = h + 2.2 * detail(u, v) * (h / 4.0).clamp(0.0, 1.0);
+    // Benches every 3 m of height.
+    let period = 3.0;
+    let amplitude = 0.62 * period / std::f64::consts::TAU;
+    h - amplitude * (std::f64::consts::TAU * h / period).sin()
+}
+
+/// The relief's height at map point (`u`, `v`), in metres.
+fn mountain_at(u: f64, v: f64) -> f64 {
+    MOUNTAIN_STRETCH * mountain_base(u / MOUNTAIN_STRETCH, v / MOUNTAIN_STRETCH)
+}
+
+/// The heights of the mountain test's tiles, in decimetres, row by row:
+/// the relief at each tile's middle.
 #[must_use]
 pub fn mountain_heights() -> Vec<i16> {
     let side = MOUNTAIN_SIDE as usize;
-    assert_eq!(MOUNTAIN_HEIGHTS.len(), 2 * side * side, "a whole window");
-    MOUNTAIN_HEIGHTS
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|&b| i16::from_le_bytes(b))
+    let (u0, v0) = MOUNTAIN_ORIGIN;
+    (0..side * side)
+        .map(|i| {
+            let (x, y) = (
+                f64::from(u32::try_from(i % side).expect("small")),
+                f64::from(u32::try_from(i / side).expect("small")),
+            );
+            let dm = (mountain_at(u0 + x + 0.5, v0 + y + 0.5) * 10.0).round();
+            #[allow(clippy::cast_possible_truncation)]
+            let dm = dm.clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
+            dm
+        })
         .collect()
 }
 
-/// Where the mountain test's camp stands: the gentle tile (its rise to
-/// its four neighbours at two tiles at most [`MOUNTAIN_GENTLE`]) nearest
-/// [`MOUNTAIN_CAMP_NEAR`], the first row by row among equals.
+/// Where the mountain test's camp stands: the gentlest tile (the smallest
+/// rise to its four neighbours at two tiles) within 16 tiles of the
+/// screen's middle left, the map's (48, 144).
 #[must_use]
 pub fn mountain_camp(heights: &[i16]) -> (u32, u32) {
     let side = i32::try_from(MOUNTAIN_SIDE).expect("small");
     let at =
         |x: i32, y: i32| i32::from(heights[usize::try_from(y * side + x).expect("on the map")]);
-    let (cx, cy) = MOUNTAIN_CAMP_NEAR;
-    let mut best = (i32::MAX, MOUNTAIN_CAMP_NEAR);
-    for y in 2..side - 2 {
-        for x in 2..side - 2 {
+    let mut best = (i32::MAX, (48, 144));
+    for y in 128..=160 {
+        for x in 32..=64 {
             let du = at(x + 2, y) - at(x - 2, y);
             let dv = at(x, y + 2) - at(x, y - 2);
-            let away = (x - cx).pow(2) + (y - cy).pow(2);
-            if du * du + dv * dv <= MOUNTAIN_GENTLE && away < best.0 {
-                best = (away, (x, y));
+            let rise = du * du + dv * dv;
+            if rise < best.0 {
+                best = (rise, (x, y));
             }
         }
     }
@@ -223,21 +262,5 @@ mod tests {
         assert!(at(14, 28) >= 27 && at(15, 28) >= 27);
         // The left corner is flat now.
         assert_eq!(at(0, 29), 0);
-    }
-
-    #[test]
-    fn the_mountain_is_baked_whole_and_its_camp_is_gentle() {
-        let heights = mountain_heights();
-        let lowest = heights.iter().min().copied();
-        let highest = heights.iter().max().copied();
-        assert_eq!((lowest, highest), (Some(208), Some(802)), "relief D at 2.5");
-        let (x, y) = mountain_camp(&heights);
-        assert_eq!((x, y), (71, 145));
-        let side = MOUNTAIN_SIDE as usize;
-        let at = |x: usize, y: usize| i32::from(heights[y * side + x]);
-        let (x, y) = (x as usize, y as usize);
-        let du = at(x + 2, y) - at(x - 2, y);
-        let dv = at(x, y + 2) - at(x, y - 2);
-        assert!(du * du + dv * dv <= MOUNTAIN_GENTLE);
     }
 }
