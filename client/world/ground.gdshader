@@ -74,14 +74,18 @@ const vec3 SLOPE_TINT = vec3(0.94, 1.02, 0.92);
 // where the ground rises towards the right and mirrored where it rises
 // towards the left. Where it rises mostly up or down the screen, the
 // sideways sign is noise (a flank seen face on has none to speak of), so
-// the vertical one chooses: as is where the ground rises towards the
-// screen's top, mirrored where it rises towards its bottom, so the two
-// flanks of a ridge across the screen still lean apart. A slope counts as
-// vertical while its sideways part stays under SLOPE_VERTICAL_RATIO of its
-// vertical part (about 27 degrees off the screen's vertical, which keeps a
+// both flanks keep the same diagonal, as is, and only its steepness
+// tells them apart: the flank that rises towards the screen's bottom
+// (the upper half of a ridge across the screen) has its image narrowed
+// to SLOPE_STEEP_WIDTH of its width on screen, so its streaks stand up
+// more, the blades still pointing up (never turned, never mirrored). A
+// slope counts as vertical while its sideways part stays under
+// SLOPE_VERTICAL_RATIO of its vertical part (about 27 degrees off the
+// screen's vertical, which keeps a
 // map's edge, where one neighbour repeats, on the vertical rule), and the
 // two rules blend over SLOPE_RATIO_BLEND on either side, so no seam shows
 // where they hand over.
+const float SLOPE_STEEP_WIDTH = 0.55;
 const float SLOPE_VERTICAL_RATIO = 0.5;
 const float SLOPE_RATIO_BLEND = 0.15;
 
@@ -389,12 +393,12 @@ float slope_dm(vec2 cell, float own) {
 
 // A tile's incline as the screen sees it: x is 1 on a slope's tile and 0
 // elsewhere (the steps test's convention: a slope's level is not a whole
-// number of metres), y how much its grass is mirrored, from 0 (as is) to 1
-// (see SLOPE_VERTICAL_RATIO).
-vec2 slope_incline(vec2 cell) {
+// number of metres), y how much its grass is mirrored and z how much it
+// is steepened, each from 0 (as is) to 1 (see SLOPE_VERTICAL_RATIO).
+vec3 slope_incline(vec2 cell) {
 	float own = slope_dm(cell, -1.0);
 	if (own < 0.0 || mod(own, 10.0) < 0.5) {
-		return vec2(0.0);
+		return vec3(0.0);
 	}
 	float gx = slope_dm(cell + vec2(1.0, 0.0), own) - slope_dm(cell - vec2(1.0, 0.0), own);
 	float gy = slope_dm(cell + vec2(0.0, 1.0), own) - slope_dm(cell - vec2(0.0, 1.0), own);
@@ -408,33 +412,37 @@ vec2 slope_incline(vec2 cell) {
 		SLOPE_VERTICAL_RATIO - SLOPE_RATIO_BLEND,
 		SLOPE_VERTICAL_RATIO + SLOPE_RATIO_BLEND,
 		abs(across) / max(abs(down), 0.001));
-	return vec2(1.0, mix(by_down, by_across, sideways));
+	return vec3(1.0, by_across * sideways, by_down * (1.0 - sideways));
 }
 
 // `c`, the ground at map point `p` (tiles), with the slope's grass on
-// the slopes' tiles, the ground still drawn flat: the image as it is or
-// mirrored left to right (never turned: the blades still point up) as
-// slope_incline says. Each read between the tiles' middles, so it fades
-// into the grass, and the two flanks into each other, over about a tile,
-// ragged by the noise.
+// the slopes' tiles, the ground still drawn flat: the image as it is,
+// mirrored left to right or narrowed (never turned: the blades still
+// point up) as slope_incline says. Each read between the tiles' middles,
+// so it fades into the grass, and the two flanks into each other, over
+// about a tile, ragged by the noise.
 vec3 slope_colour(vec3 c, vec2 p) {
 	vec2 q = p - 0.5;
 	vec2 a = floor(q);
 	vec2 f = q - a;
-	vec2 i00 = slope_incline(a);
-	vec2 i10 = slope_incline(a + vec2(1.0, 0.0));
-	vec2 i01 = slope_incline(a + vec2(0.0, 1.0));
-	vec2 i11 = slope_incline(a + vec2(1.0, 1.0));
+	vec3 i00 = slope_incline(a);
+	vec3 i10 = slope_incline(a + vec2(1.0, 0.0));
+	vec3 i01 = slope_incline(a + vec2(0.0, 1.0));
+	vec3 i11 = slope_incline(a + vec2(1.0, 1.0));
 	float slope = mix(mix(i00.x, i10.x, f.x), mix(i01.x, i11.x, f.x), f.y);
-	float fall = mix(mix(i00.x * i00.y, i10.x * i10.y, f.x), mix(i01.x * i01.y, i11.x * i11.y, f.x), f.y);
+	vec2 turn = mix(
+		mix(i00.x * i00.yz, i10.x * i10.yz, f.x),
+		mix(i01.x * i01.yz, i11.x * i11.yz, f.x), f.y);
 	float n = (texture(noise_texture, p * 0.7 + vec2(0.31, 0.87)).r - 0.5) * 0.3;
 	float w = smoothstep(0.15, 0.85, slope + n);
-	float mirrored = smoothstep(0.35, 0.65, fall / max(slope, 0.001) + n);
+	float mirrored = smoothstep(0.35, 0.65, turn.x / max(slope, 0.001) + n);
+	float steep = smoothstep(0.35, 0.65, turn.y / max(slope, 0.001) + n);
 	vec2 canvas = vec2((p.x - p.y) * STEP_TILE_PX, (p.x + p.y) * STEP_TILE_PX * 0.5);
 	vec2 suv = (canvas - SLOPE_ORIGIN_PX) / SLOPE_TEXTURE_PX;
 	vec3 up = texture(slope_texture, suv).rgb;
 	vec3 down = texture(slope_texture, vec2(-suv.x, suv.y)).rgb;
-	return mix(c, mix(up, down, mirrored) * SLOPE_TINT, w);
+	vec3 steeper = texture(slope_texture, vec2(suv.x / SLOPE_STEEP_WIDTH, suv.y)).rgb;
+	return mix(c, mix(mix(up, down, mirrored), steeper, steep) * SLOPE_TINT, w);
 }
 
 void fragment() {
