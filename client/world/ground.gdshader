@@ -58,15 +58,17 @@ const float AWAY_LINE_PX = 1.6;
 const float AWAY_LINE = 0.45;
 
 // The steps test's slope: the slope's grass (client/world/test/
-// slope_grass.png, a crop of the project lead's Midjourney image "herbe
-// en pente", its streaks rising towards the upper right) laid in canvas
+// slope_grass.png, the project lead's image "pente rochers inclinés"
+// whole, tufts and small rocks included, downscaled to 1024 px, its
+// streaks rising towards the upper right) laid in canvas
 // space, SLOPE_TEXTURE_PX a repetition from SLOPE_ORIGIN_PX: the test's
 // ridge lies inside a single repetition, so no seam shows. Toned towards
-// the meadow's grass by SLOPE_TINT (the crop is lighter and yellower).
+// the meadow's grass by SLOPE_TINT (its mean already sits near the
+// meadow's; its light streaks read yellower, so a little less red).
 uniform sampler2D slope_texture : repeat_enable, filter_linear_mipmap;
 const float SLOPE_TEXTURE_PX = 384.0;
 const vec2 SLOPE_ORIGIN_PX = vec2(-340.0, 0.0);
-const vec3 SLOPE_TINT = vec3(0.74, 0.86, 0.73);
+const vec3 SLOPE_TINT = vec3(0.94, 1.02, 0.92);
 
 uniform sampler2D noise_texture : repeat_enable, filter_linear;
 // Noise period, in texture units (one unit is one texture, four metres).
@@ -385,7 +387,7 @@ float slope_incline(vec2 cell) {
 }
 
 // `c`, the ground at map point `p` (tiles), with the slope's grass on
-// the slopes' tiles, the ground still drawn flat: the crop as it is where
+// the slopes' tiles, the ground still drawn flat: the image as it is where
 // the tile rises towards the screen's right, mirrored left to right
 // (never turned: the blades still point up) where it falls. Each read
 // between the tiles' middles, so it fades into the grass, and the two

@@ -241,7 +241,7 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 ## levels' walls and the slope's grass, 0 nothing (any world with no
 ## relief).
 static var steps_mode := 0
-## The steps test's slope grass, a crop of the project lead's image.
+## The steps test's slope grass, the project lead's image, whole.
 const SLOPE_GRASS := "res://world/test/slope_grass.png"
 
 
