@@ -34,18 +34,15 @@ const float SHARPEN = 0.5;
 // the game's ground as it is, 1 the slopes' grass and the offsets below.
 uniform sampler2D slope_index : filter_linear, repeat_enable;
 uniform int steps_mode = 0;
-// The slope's grass, its stones and its rock (client/world/test/
-// slope_grass.png, the project lead's image; slope_stony.png and
-// slope_rock.png, Scenario's of 13 November 2026 in its style; their
-// streaks rising toward the upper right) laid in canvas space,
-// SLOPE_TEXTURE_PX a repetition, all three toned by SLOPE_TINT.
-// slope_grass_b.png is Scenario's grass in the same style, shown instead
-// of the lead's while slope_grass_variant is on (key T).
+// The slope's grass (client/world/test/slope_grass.png, the project
+// lead's image, its streaks rising toward the upper right) laid in canvas
+// space, SLOPE_TEXTURE_PX a repetition, toned by SLOPE_TINT.
 uniform sampler2D slope_texture : repeat_enable, filter_linear_mipmap;
-uniform sampler2D slope_grass_b_texture : repeat_enable, filter_linear_mipmap;
-uniform bool slope_grass_variant = false;
-uniform sampler2D slope_stony_texture : repeat_enable, filter_linear_mipmap;
-uniform sampler2D slope_rock_texture : repeat_enable, filter_linear_mipmap;
+// Crisp (the default, 13 November 2026): one image a pixel, the dominant
+// inclination and side only, no offset cells, no fade into the meadow, so
+// two grasses never lie over each other (they blurred). Off (key T): the
+// earlier blends, to compare.
+uniform bool slope_crisp = true;
 const float SLOPE_TEXTURE_PX = 384.0;
 const vec3 SLOPE_TINT = vec3(0.94, 1.02, 0.92);
 // A tile's half width and half height on the canvas.
@@ -62,14 +59,6 @@ const float SLOPE_MEDIUM_WIDTH = 1.25;
 const float SLOPE_STEEP_WIDTH = 0.85;
 const vec2 SLOPE_GENTLE_UNTIL = vec2(0.10, 0.20);
 const vec2 SLOPE_STEEP_FROM = vec2(0.25, 0.38);
-// The stones laid over the grass from SLOPE_STONY_FROM, the rock over
-// both from SLOPE_ROCK_FROM (metres a tile, soft; on the steep mountain
-// about a third of the tiles carry stones and a tenth rock), each through the same
-// inclinations and leaning as the grass. A layer weighing less than
-// SLOPE_LAYER_MIN is not read at all (the others share its weight).
-const vec2 SLOPE_STONY_FROM = vec2(1.8, 2.3);
-const vec2 SLOPE_ROCK_FROM = vec2(2.8, 3.4);
-const float SLOPE_LAYER_MIN = 0.01;
 // Which way it leans: the image as is where the ground rises toward the
 // screen's right, mirrored where it rises toward the left, blended over
 // SLOPE_SIDE_BLEND of the slope's sideways share. Where it rises mostly
@@ -381,10 +370,21 @@ vec3 slope_leaning(sampler2D tex, vec2 canvas, vec2 dx, vec2 dy, vec3 inclines, 
 
 // `c`, the ground at map point `p` (tiles, canvas point `canvas`), with
 // the slope's grass where the ground slopes (the mountain test's rule).
+// `v` with its largest share whole and the others nothing.
+vec3 one_hot(vec3 v) {
+	if (v.x >= v.y && v.x >= v.z) {
+		return vec3(1.0, 0.0, 0.0);
+	}
+	return v.y >= v.z ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0);
+}
+
 vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox, vec4 oy) {
 	vec2 rise = texture(slope_index, p / index_tiles).rg;
 	float s = length(rise);
 	float shown = smoothstep(SLOPE_SHOW_FROM, SLOPE_SHOW_FULL, s);
+	if (slope_crisp) {
+		shown = step(0.5 * (SLOPE_SHOW_FROM + SLOPE_SHOW_FULL), s);
+	}
 	if (shown <= 0.0) {
 		return c;
 	}
@@ -401,27 +401,14 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 	float facing = smoothstep(-SLOPE_SIDE_BLEND, SLOPE_SIDE_BLEND, -down / (s + 1e-6));
 	vec3 leans = vec3(horiz * rightward + (1.0 - horiz) * facing,
 		horiz * (1.0 - rightward), (1.0 - horiz) * (1.0 - facing));
-	// The grass, the stones over it, the rock over both: each layer's
-	// share of the whole.
-	float stony = smoothstep(SLOPE_STONY_FROM.x, SLOPE_STONY_FROM.y, s);
-	float rocky = smoothstep(SLOPE_ROCK_FROM.x, SLOPE_ROCK_FROM.y, s);
-	vec3 layers = vec3((1.0 - stony) * (1.0 - rocky), stony * (1.0 - rocky), rocky);
-	layers *= step(SLOPE_LAYER_MIN, layers);
-	layers /= layers.x + layers.y + layers.z;
-	vec3 slope = vec3(0.0);
-	if (layers.x > 0.0) {
-		if (slope_grass_variant) {
-			slope += layers.x * slope_leaning(slope_grass_b_texture, canvas, dx, dy, inclines, leans, w, ox, oy);
-		} else {
-			slope += layers.x * slope_leaning(slope_texture, canvas, dx, dy, inclines, leans, w, ox, oy);
-		}
+	if (slope_crisp) {
+		inclines = one_hot(inclines);
+		leans = one_hot(leans);
+		w = vec4(1.0, 0.0, 0.0, 0.0);
+		ox = vec4(0.0);
+		oy = vec4(0.0);
 	}
-	if (layers.y > 0.0) {
-		slope += layers.y * slope_leaning(slope_stony_texture, canvas, dx, dy, inclines, leans, w, ox, oy);
-	}
-	if (layers.z > 0.0) {
-		slope += layers.z * slope_leaning(slope_rock_texture, canvas, dx, dy, inclines, leans, w, ox, oy);
-	}
+	vec3 slope = slope_leaning(slope_texture, canvas, dx, dy, inclines, leans, w, ox, oy);
 	return mix(c, slope * SLOPE_TINT, shown);
 }
 

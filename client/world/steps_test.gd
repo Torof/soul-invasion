@@ -157,7 +157,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if key == null or not key.pressed or key.echo:
 		return
 	if key.keycode == KEY_T:
-		ChunkView.set_slope_grass_variant(not ChunkView.slope_grass_variant)
+		ChunkView.set_slope_crisp(not ChunkView.slope_crisp)
 		_apply()
 		get_viewport().set_input_as_handled()
 		return
@@ -171,5 +171,5 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 func _apply() -> void:
 	ChunkView.set_steps_mode(mode)
-	var grass := "Scenario's grass" if ChunkView.slope_grass_variant else "your grass"
-	_label.text = "Slope test — %s, %s   (keys 1, 0 and T)" % [MODES[mode], grass]
+	var look := "crisp" if ChunkView.slope_crisp else "blended"
+	_label.text = "Slope test — %s, %s   (keys 1, 0 and T)" % [MODES[mode], look]
