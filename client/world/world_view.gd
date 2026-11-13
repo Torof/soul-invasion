@@ -131,7 +131,7 @@ var _standing: Node2D
 var _ground: Node2D
 ## The "blocked" notice of the piloted body.
 var _blocked: BlockedView
-## The steps test, made when a chunk first carries heights.
+## The steps test, made when a chunk first carries heights above zero.
 var _steps: StepsTest
 var _arrival: Dictionary = {}
 var _arrivals := 0
@@ -396,11 +396,15 @@ func _on_chunk(x: int, y: int, chunk: Dictionary) -> void:
 	TerrainGrid.write(key * _chunk_size, _chunk_size, codes)
 	var heights: PackedInt32Array = chunk.get("heights", PackedInt32Array())
 	if not heights.is_empty():
+		# Only a test world (`--world`) has heights: drawn with no fog, to
+		# be seen clearly (the project lead's call, 13 November 2026).
+		_far.visible = false
 		HeightIndex.write(key * _chunk_size, _chunk_size, heights)
-		if _steps == null:
+		if _steps == null and _any_relief(heights):
 			_steps = StepsTest.new()
 			add_child(_steps)
-		_steps.chunk(key * _chunk_size, _chunk_size)
+		if _steps != null:
+			_steps.chunk(key * _chunk_size, _chunk_size)
 	_currents[key] = currents
 	_items[key] = items
 	_items_version += 1
@@ -839,6 +843,14 @@ func current_at(tile: Vector2i) -> Vector2:
 		return Vector2.ZERO
 	var local := tile - key * _chunk_size
 	return WaterMeshes.current_vector(int(currents[local.y * _chunk_size + local.x]))
+
+
+## Whether a chunk's heights rise anywhere (a flat test world's do not).
+static func _any_relief(heights: PackedInt32Array) -> bool:
+	for h: int in heights:
+		if h > 0:
+			return true
+	return false
 
 
 ## The terrain of any tile the server has sent, "" otherwise.

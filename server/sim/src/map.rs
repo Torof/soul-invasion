@@ -259,9 +259,9 @@ pub struct Map {
     ground: Made,
     /// Tiles set by hand ([`Map::set`]: tests), a whole chunk each.
     edits: BTreeMap<ChunkPos, Box<[Terrain]>>,
-    /// The steps test only (`--world test:marches`): a height per tile in
-    /// decimetres, row by row, shown by the client and nothing else (no
-    /// rule reads it, no snapshot keeps it: the test world is ephemeral).
+    /// Test worlds only (`--world`): a height per tile in decimetres, row
+    /// by row, shown by the client and nothing else (no rule reads it, no
+    /// snapshot keeps it: a test world is ephemeral).
     heights: Option<std::sync::Arc<[i16]>>,
 }
 

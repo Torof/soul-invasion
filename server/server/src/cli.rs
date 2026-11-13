@@ -49,8 +49,8 @@ OPTIONS:
     --world flat:<N>       A test world instead of the valley: N × N tiles
                            of grass (at least 8), the camp in the middle.
     --world test:marches   The steps test: 32 × 32 tiles of grass with a
-                           small hill of levels 0 to 3 m, shown by the
-                           client only. Never for play.
+                           small hill up to 3 m (slopes, a ramp, one cliff),
+                           shown by the client only. Never for play.
     --dev                  Development tools: every client gets an overview
                            of the whole map and may teleport its body. Never
                            for play.
