@@ -52,6 +52,9 @@ OPTIONS:
                            ridge about 3 m high from the screen's left
                            corner to its right one, shown by the client
                            only. Never for play.
+    --world test:montagne  The mountain test: 192 × 192 tiles of grass cut
+                           from a large mountain's flank, shown by the
+                           client only. Never for play.
     --dev                  Development tools: every client gets an overview
                            of the whole map and may teleport its body. Never
                            for play.
@@ -124,6 +127,8 @@ pub enum TestWorld {
     Flat(u32),
     /// `test:marches`: the steps test's ridge.
     Marches,
+    /// `test:montagne`: a window on a large mountain's flank.
+    Mountain,
 }
 
 /// When a paced server places the plants of the view around the camp,
@@ -237,6 +242,7 @@ impl Options {
                     let raw: String = value(arg, args.next())?;
                     let world = match raw.as_str() {
                         "test:marches" => Some(TestWorld::Marches),
+                        "test:montagne" => Some(TestWorld::Mountain),
                         _ => raw
                             .strip_prefix("flat:")
                             .and_then(|n| n.parse().ok())

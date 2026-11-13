@@ -2631,3 +2631,32 @@ async fn the_steps_test_world_starts_and_sends_its_heights() {
     }
     assert_eq!(frame.heights.iter().max(), Some(&29), "a crest under 3 m");
 }
+
+/// The mountain test: a 192 × 192 world starts, a body is born in it, and
+/// a chunk carries the relief's heights through the protocol.
+#[tokio::test]
+async fn the_mountain_test_world_starts_and_sends_its_heights() {
+    let server = Server::start_with(&["--world", "test:montagne"]);
+    let (mut socket, body) = welcome(&server).await;
+    assert!(body.is_some(), "a body is born on the mountain");
+    let frame = loop {
+        match receive(&mut socket).await {
+            Some(Got::Chunk(frame)) if (frame.x, frame.y) == (1, 4) => break frame,
+            Some(_) => {}
+            None => panic!("the server closed before the chunk came"),
+        }
+    };
+    let side = server::test_world::MOUNTAIN_SIDE as usize;
+    let chunk = CHUNK_SIZE as usize;
+    let heights = server::test_world::mountain_heights();
+    for y in 0..chunk {
+        for x in 0..chunk {
+            let (mx, my) = (chunk + x, 4 * chunk + y);
+            assert_eq!(frame.heights[y * chunk + x], heights[my * side + mx]);
+        }
+    }
+    assert!(
+        frame.heights.iter().any(|&h| h > 100),
+        "a mountain, not a plain"
+    );
+}
