@@ -189,6 +189,8 @@ func _test_tooltips() -> void:
 	_check(Tooltip.describe_item(log) == "Log · 25.0 kg", "kilograms past a thousand grams, no empty line")
 	var berries := {"name": "Berries", "mass_g": 100, "edible": true, "description": "Ripe."}
 	_check(Tooltip.describe_item(berries).begins_with("Berries · 100 g · edible"), "edible is said")
+	_check(Tooltip.describe_item(berries, 2400).begins_with("Berries · 2.4 kg · edible"), "an item's own grams")
+	_check(Tooltip.describe_item(berries, 40).begins_with("Berries · 40 g"), "a heap lighter than its piece")
 	_check(Tooltip.describe_body(2, true, false) == "body 2 · asleep", "a sleeping body")
 	_check(Tooltip.describe_body(1, false, true) == "body 1 (you)", "the piloted body")
 
@@ -197,6 +199,8 @@ func _test_inventory_lines_and_refusals() -> void:
 	var flint := {"name": "Flint", "mass_g": 400}
 	_check(Tooltip.inventory_line(flint, true) == "[in hand] Flint · 400 g", "the item in hand is marked")
 	_check(Tooltip.inventory_line({"name": "Log", "mass_g": 25000}, false) == "Log · 25.0 kg", "kilograms")
+	_check(Tooltip.inventory_line(flint, false, 50) == "Flint · 50 g", "the item's own grams, not its piece's")
+	_check(Tooltip.inventory_line(flint, true, 1300) == "[in hand] Flint · 1.3 kg", "its own kilograms")
 	_check(Tooltip.load_line(1900, 20000) == "1.9 / 20.0 kg", "the load over the capacity")
 	_check(Tooltip.refusal_words("pick_up", "too_heavy") == "cannot pick up: too heavy", "a refusal in words")
 	_check(Tooltip.refusal_words("eat", "not_food") == "cannot eat: not food", "another")
@@ -790,7 +794,7 @@ func _test_currents_decode() -> void:
 ## this test or the server's.
 func _test_the_golden_chunk_decodes() -> void:
 	var bytes := FileAccess.get_file_as_bytes("res://tests/fixtures/chunk_v17.bin")
-	_check(bytes.size() == 83, "the golden chunk is there: %d bytes" % bytes.size())
+	_check(bytes.size() == 87, "the golden chunk is there: %d bytes" % bytes.size())
 	var c := Protocol.decode_chunk(bytes, PackedStringArray(["m0", "m1", "m2", "m3", "m4"]))
 	_check(not c.is_empty(), "the golden chunk decodes")
 	if c.is_empty():
@@ -802,11 +806,11 @@ func _test_the_golden_chunk_decodes() -> void:
 	_check(c["plants"] == PackedInt32Array([11, 12_700, -4_100]), "its plants: %s" % c["plants"])
 	var items: Array = c["items"]
 	_check(items == [
-		{"id": 281_474_976_710_698, "x": 15, "y": -7, "material": ""},
+		{"id": 281_474_976_710_698, "x": 15, "y": -7, "material": "", "mass_g": 70_123},
 		{"id": 4_503_668_346_716_227, "x": 13, "y": -8, "material": "m4"},
 		{"id": 4_503_668_346_717_120, "x": 15, "y": -5, "material": "m0"},
 	], "its items: %s" % [items])
-	_check(Protocol.decode_chunk(bytes.slice(0, 82), PackedStringArray()).is_empty(), "a frame cut short is refused")
+	_check(Protocol.decode_chunk(bytes.slice(0, 86), PackedStringArray()).is_empty(), "a frame cut short is refused")
 	var dry := Protocol.decode_chunk(bytes, PackedStringArray())
 	var stand := Trees.Stand.new(dry["trees"], {"oak": 2_200}, PackedStringArray(["oak", "pine", "birch"]))
 	_check(Array(stand.kinds) == ["birch", "oak"] and stand.at[1] == Vector2(13_500, -5_750), "a stand reads the trees as they come")

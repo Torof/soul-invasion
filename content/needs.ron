@@ -14,8 +14,11 @@
 // freezing_per_day:        400 — six hours at full cold kill: a summer
 //                          night outside hurts but does not kill.
 // vitality_regain_per_day: 50 — two days fed, warm and rested to heal.
-// kj_per_hunger_point:     25 — berries (250 kJ) relieve 10 points,
-//                          meat (1 200 kJ) 48.
+// kj_per_hunger_point:     25 — a handful of berries (100 g, 250 kJ)
+//                          relieves 10 points, a meal of meat (300 g,
+//                          360 kJ) 14.
+// meal_g:                  300 — grams eaten at most in one act; the rest
+//                          of the item stays (D35).
 (
     night_from_percent: 58,
     hunger_per_day: 0,
@@ -27,4 +30,5 @@
     freezing_per_day: 400,
     vitality_regain_per_day: 50,
     kj_per_hunger_point: 25,
+    meal_g: 300,
 )

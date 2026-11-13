@@ -34,10 +34,20 @@ pub enum MaterialKind {
 /// What eating a material gives, when it is food.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Food {
-    /// Energy of one piece, in kilojoules.
-    pub energy_kj: u32,
+    /// Energy of a kilogram, in kilojoules: the one scale all content
+    /// shares (D15), so an item gives what its grams are worth.
+    pub energy_kj_per_kg: u32,
     /// Days before it spoils, untreated (D16: computed on demand).
     pub keeps_days: u32,
+}
+
+impl Food {
+    /// Kilojoules in `grams` of it, rounded down.
+    #[must_use]
+    pub fn energy_kj(&self, grams: u32) -> u32 {
+        let kj = u64::from(grams) * u64::from(self.energy_kj_per_kg) / 1000;
+        u32::try_from(kj).unwrap_or(u32::MAX)
+    }
 }
 
 /// How a material looks, for the client. Placeholder graphics: a colour.
@@ -71,7 +81,8 @@ pub struct Material {
     pub description: String,
     /// Family.
     pub kind: MaterialKind,
-    /// Mass of one piece, in kilograms.
+    /// Mass of one piece as the ground drops it or a body dies into it,
+    /// in kilograms; an item then keeps its own grams (D35).
     pub mass_kg: f32,
     /// Hardness, 0 (soft) to 10 (hardest).
     pub hardness: u8,
@@ -106,6 +117,10 @@ pub struct Spawn {
     /// Only near this terrain, if given.
     #[serde(default)]
     pub near: Option<Near>,
+    /// Grams of the piece it drops: its material's mass, filled when the
+    /// content is read ([`Content::from_ron`]), never written in the file.
+    #[serde(skip)]
+    pub piece_g: u32,
 }
 
 /// How bodies move over the ground (D32).
@@ -198,6 +213,9 @@ pub struct Needs {
     pub vitality_regain_per_day: u32,
     /// Kilojoules of food that relieve one point of hunger.
     pub kj_per_hunger_point: u32,
+    /// Grams a body eats at most in one act: a meal (D35); the rest of
+    /// the item stays.
+    pub meal_g: u32,
 }
 
 /// Everything loaded from the content files, validated.
@@ -351,7 +369,7 @@ impl Content {
             file: "needs.ron",
             source,
         })?;
-        let content = Self {
+        let mut content = Self {
             materials,
             spawns,
             movement,
@@ -361,6 +379,11 @@ impl Content {
             geology: crate::geology::Geology::default(),
         };
         content.validate()?;
+        for index in 0..content.spawns.len() {
+            content.spawns[index].piece_g = content
+                .material(&content.spawns[index].material)
+                .map_or(0, Material::mass_g);
+        }
         Ok(content)
     }
 
@@ -541,6 +564,9 @@ impl Content {
         if self.needs.kj_per_hunger_point == 0 {
             return Err(ContentError::Needs("kj_per_hunger_point must be positive"));
         }
+        if self.needs.meal_g == 0 {
+            return Err(ContentError::Needs("meal_g must be positive"));
+        }
         Ok(())
     }
 
@@ -613,7 +639,7 @@ fn is_hex_colour(text: &str) -> bool {
 pub const SAMPLE_MATERIALS: &str = r##"[
     (id: "flint", name: "Flint", description: "A hard stone that flakes to a sharp edge.", kind: stone, mass_kg: 0.4, hardness: 7, flammable: false, food: None, look: (colour: "#6e6a62")),
     (id: "branch", name: "Branch", description: "Dead wood, dry enough to burn.", kind: wood, mass_kg: 1.5, hardness: 3, flammable: true, food: None, look: (colour: "#7a5a3a")),
-    (id: "berries", name: "Berries", description: "A handful of ripe berries.", kind: plant, mass_kg: 0.1, hardness: 0, flammable: false, food: Some((energy_kj: 250, keeps_days: 3)), look: (colour: "#8a2a5a")),
+    (id: "berries", name: "Berries", description: "A handful of ripe berries.", kind: plant, mass_kg: 0.1, hardness: 0, flammable: false, food: Some((energy_kj_per_kg: 2500, keeps_days: 3)), look: (colour: "#8a2a5a")),
 ]"##;
 
 /// Movement rules of [`Content::sample`]: the valley's own.
@@ -640,6 +666,7 @@ pub const SAMPLE_NEEDS: &str = r"(
     freezing_per_day: 400,
     vitality_regain_per_day: 50,
     kj_per_hunger_point: 25,
+    meal_g: 300,
 )";
 
 /// Spawn rules of [`Content::sample`].
@@ -751,6 +778,12 @@ mod tests {
             Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, SAMPLE_MOVEMENT, &free).unwrap_err(),
             ContentError::Needs("kj_per_hunger_point must be positive")
         ));
+        let starved = SAMPLE_NEEDS.replacen("meal_g: 300", "meal_g: 0", 1);
+        assert!(matches!(
+            Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, SAMPLE_MOVEMENT, &starved)
+                .unwrap_err(),
+            ContentError::Needs("meal_g must be positive")
+        ));
         assert!(matches!(
             Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, SAMPLE_MOVEMENT, "nope")
                 .unwrap_err(),
@@ -769,6 +802,21 @@ mod tests {
         let berries = content.material("berries").unwrap();
         assert_eq!(berries.kind, MaterialKind::Plant);
         assert_eq!(berries.food.map(|f| f.keeps_days), Some(3));
+        // 2,500 kJ a kilogram: a 100 g handful gives 250 kJ, as one piece
+        // did before energy was by weight; 1 g gives 2 (rounded down).
+        let food = berries.food.unwrap();
+        assert_eq!(food.energy_kj(berries.mass_g()), 250);
+        assert_eq!(food.energy_kj(1), 2);
+        // A spawn rule knows the grams of the piece it drops.
+        let flint = content.material("flint").unwrap().mass_g();
+        assert!(content.spawns.iter().all(|s| s.piece_g > 0));
+        assert!(
+            content
+                .spawns
+                .iter()
+                .filter(|s| s.material == "flint")
+                .all(|s| s.piece_g == flint)
+        );
         assert!(content.material("gold").is_none());
     }
 

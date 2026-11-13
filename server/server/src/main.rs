@@ -537,12 +537,13 @@ fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
             load_g,
             capacity_g,
         } => {
-            let view = |id: &sim::ItemId| protocol::ItemView {
-                id: id.0,
-                material: world
-                    .item(*id)
-                    .map(|i| i.material().to_owned())
-                    .unwrap_or_default(),
+            let view = |id: &sim::ItemId| {
+                let item = world.item(*id);
+                protocol::ItemView {
+                    id: id.0,
+                    material: item.map(|i| i.material().to_owned()).unwrap_or_default(),
+                    mass_g: item.map_or(0, sim::Item::mass_g),
+                }
             };
             shared.tell_pilot(
                 *body,
@@ -561,6 +562,7 @@ fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
                 .map(|i| protocol::ItemView {
                     id: i.id().0,
                     material: i.material().to_owned(),
+                    mass_g: i.mass_g(),
                 });
             shared.body_holds(*body, item.clone());
             if let Some(at) = shared.position_of(body.0) {
@@ -574,6 +576,7 @@ fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
         Event::ItemAdded {
             item,
             material,
+            mass_g,
             at,
             version,
         } => {
@@ -582,6 +585,7 @@ fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
                 x: at.x,
                 y: at.y,
                 material: material.clone(),
+                mass_g: *mass_g,
             };
             shared.item_added(state.clone(), *version);
             shared.publish(&Published::ItemAdded {

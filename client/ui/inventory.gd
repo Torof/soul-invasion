@@ -82,10 +82,16 @@ func _refresh() -> void:
 	_title.text = "carrying " + Tooltip.load_line(_load_g, _capacity_g) if _body >= 0 else "watching"
 	_list.clear()
 	if not _held.is_empty():
-		_list.add_item(Tooltip.inventory_line(_materials.get(str(_held.get("material", "")), {}), true))
+		_list.add_item(_line(_held, true))
 	for item in _carried:
-		_list.add_item(Tooltip.inventory_line(_materials.get(str(item.get("material", "")), {}), false))
+		_list.add_item(_line(item, false))
 	_refresh_buttons()
+
+
+## An item's line: its material's name and the item's own grams.
+func _line(item: Dictionary, in_hand: bool) -> String:
+	var material: Dictionary = _materials.get(str(item.get("material", "")), {})
+	return Tooltip.inventory_line(material, in_hand, int(item.get("mass_g", -1)))
 
 
 func _refresh_buttons() -> void:

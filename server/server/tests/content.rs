@@ -29,6 +29,28 @@ fn the_content_directory_loads_and_validates() {
     }
 }
 
+/// Food weighs its energy per kilogram now (D15, D35): a piece of each
+/// food gives the kilojoules its single piece gave before, and a meal is
+/// a positive number of grams.
+#[test]
+fn energy_per_kilogram_gives_a_piece_what_it_gave_before() {
+    let content = repository_content();
+    let before = [("berries", 250), ("meat", 1200)];
+    for (id, kj) in before {
+        let material = content.material(id).expect(id);
+        let food = material.food.expect("food");
+        assert_eq!(food.energy_kj(material.mass_g()), kj, "{id}");
+    }
+    let foods = content.materials.iter().filter(|m| m.food.is_some());
+    assert_eq!(foods.count(), before.len(), "a new food: add it here");
+    assert!(content.needs.meal_g > 0);
+    // Every spawn rule knows the grams of the piece it drops.
+    for spawn in &content.spawns {
+        let material = content.material(&spawn.material).expect("validated");
+        assert_eq!(spawn.piece_g, material.mass_g(), "{}", spawn.material);
+    }
+}
+
 #[test]
 fn the_valley_drops_dead_wood_and_pebbles_where_they_belong() {
     let content = repository_content();

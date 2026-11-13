@@ -31,7 +31,7 @@ use sim::{CHUNK_SIZE, ChunkPos, Content, Pos, World};
 
 /// Version of the serialized `World` inside a snapshot. Bump on any change
 /// to `World`'s shape, and add a migration in `decode_world`.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 10;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 11;
 
 /// Version of a chunk's changes as stored (`encode_changes`). Bump on any
 /// change to their bytes, and read the old ones in `decode_changes`.
@@ -499,6 +499,7 @@ fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<Wo
             7 => migrate_v7_to_v8(&data)?,
             8 => migrate_v8_to_v9(data),
             9 => migrate_v9_to_v10(&data)?,
+            10 => migrate_v10_to_v11(&data, content)?,
             _ => unreachable!("every version below the current one has a migration"),
         };
         version += 1;
@@ -642,6 +643,30 @@ fn migrate_v9_to_v10(data: &str) -> Result<String, StorageError> {
         && !map.contains_key("generator")
     {
         map.insert("generator".into(), sim::map::FIRST_GENERATOR.into());
+    }
+    Ok(old.to_string())
+}
+
+/// v11: an item weighs its own whole grams and keeps the tick it was made
+/// (D35, amended 13 November 2026). An item saved before weighs its
+/// material's piece, as it did, and is as old as the world (tick 0).
+fn migrate_v10_to_v11(data: &str, content: &Content) -> Result<String, StorageError> {
+    let mut old: serde_json::Value = serde_json::from_str(data)?;
+    if let Some(items) = old["items"].as_array_mut() {
+        for item in items
+            .iter_mut()
+            .filter_map(serde_json::Value::as_object_mut)
+        {
+            if !item.contains_key("mass_g") {
+                let grams = item
+                    .get("material")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|m| content.material(m))
+                    .map_or(1, sim::Material::mass_g);
+                item.insert("mass_g".into(), grams.into());
+            }
+            item.entry("made").or_insert_with(|| 0.into());
+        }
     }
     Ok(old.to_string())
 }
@@ -1037,6 +1062,40 @@ mod tests {
         check(&storage.latest_world().unwrap().unwrap());
         drop(storage);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn items_saved_before_their_own_grams_weigh_their_material() {
+        // A v10 snapshot: its items carry neither grams nor a date.
+        let mut world = world_at(3);
+        let flint = world.spawn_item("flint", 123, Pos::new(1, 1));
+        let mut old: serde_json::Value = serde_json::to_value(&world).unwrap();
+        for item in old["items"].as_array_mut().unwrap() {
+            let item = item.as_object_mut().unwrap();
+            assert!(item.remove("mass_g").is_some() && item.remove("made").is_some());
+        }
+        let mut storage = Sqlite::in_memory(content()).unwrap();
+        storage
+            .conn
+            .execute(
+                "INSERT INTO snapshots (tick, format_version, data) VALUES (3, 10, ?1)",
+                [old.to_string()],
+            )
+            .unwrap();
+        let back = storage.latest_world().unwrap().unwrap();
+        let item = back.item(flint).expect("the flint");
+        assert_eq!(item.mass_g(), 400, "the material's piece");
+        assert_eq!(item.made(), Tick(0));
+        // Saved again in today's format: its grams and date kept.
+        storage.save_world(&back).unwrap();
+        let again = storage.latest_world().unwrap().unwrap();
+        assert_eq!(again.item(flint), back.item(flint));
+        // Today's items keep their own grams and date.
+        let mut storage = Sqlite::in_memory(content()).unwrap();
+        storage.save_world(&world).unwrap();
+        let today = storage.latest_world().unwrap().unwrap();
+        let item = today.item(flint).expect("the flint");
+        assert_eq!((item.mass_g(), item.made()), (123, Tick(3)));
     }
 
     #[test]

@@ -9,7 +9,7 @@ use crate::content::Spawn;
 use crate::r#gen::hash;
 use crate::r#gen::scatter::purpose;
 use crate::map::{CHUNK_SIZE, ChunkPos, Map, Pos};
-use crate::{Item, ItemId, Place};
+use crate::{Item, ItemId, Place, Tick};
 
 /// The bit that marks a natural item's id; below it, the chunk (two
 /// fields of `CHUNK_BITS`) and the slot (`SLOT_BITS`). All of it under
@@ -109,11 +109,7 @@ pub fn natural_items(map: &Map, spawns: &[Spawn], seed: u64, chunk: ChunkPos) ->
                     continue;
                 }
                 if let Some(id) = natural_id(tile, rule) {
-                    out.push(Item {
-                        id,
-                        material: spawn.material.clone(),
-                        place: Place::Ground { pos: tile },
-                    });
+                    out.push(Item::natural(id, spawn, tile));
                 }
             }
         }
@@ -148,11 +144,21 @@ pub fn natural_item(map: &Map, spawns: &[Spawn], seed: u64, id: ItemId) -> Optio
     {
         return None;
     }
-    Some(Item {
-        id,
-        material: spawn.material.clone(),
-        place: Place::Ground { pos: tile },
-    })
+    Some(Item::natural(id, spawn, tile))
+}
+
+impl Item {
+    /// The piece `spawn` drops on `tile`: its material's mass, as old as
+    /// the world (tick 0).
+    fn natural(id: ItemId, spawn: &Spawn, tile: Pos) -> Self {
+        Self {
+            id,
+            material: spawn.material.clone(),
+            mass_g: spawn.piece_g.max(1),
+            made: Tick(0),
+            place: Place::Ground { pos: tile },
+        }
+    }
 }
 
 /// The roll of `rule` on `tile`, 0 to 999: the piece is there when it is
@@ -192,6 +198,7 @@ mod tests {
                 terrain: Terrain::Forest,
                 per_thousand: 60,
                 near: None,
+                piece_g: 1500,
             },
             Spawn {
                 material: "pebble".to_owned(),
@@ -201,6 +208,7 @@ mod tests {
                     terrain: Terrain::Water,
                     within: 4,
                 }),
+                piece_g: 600,
             },
         ]
     }
@@ -293,7 +301,8 @@ mod tests {
         again.sort_by_key(key);
         assert_eq!(all, again);
         assert!(all.len() > 100, "{} items", all.len());
-        // Where the rules say: branches in the forest, pebbles near water.
+        // Where the rules say: branches in the forest, pebbles near water;
+        // each the piece's mass, as old as the world.
         for item in &all {
             let pos = item.pos().expect("on the ground");
             match item.material() {
@@ -301,6 +310,13 @@ mod tests {
                 "pebble" => assert_eq!(map.get(pos), Some(Terrain::Grass)),
                 other => panic!("{other}"),
             }
+            let piece = if item.material() == "branch" {
+                1500
+            } else {
+                600
+            };
+            assert_eq!(item.mass_g(), piece);
+            assert_eq!(item.made(), Tick(0));
             assert_eq!(chunk_of(item.id), pos.chunk());
         }
     }
