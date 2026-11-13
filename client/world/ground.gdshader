@@ -393,6 +393,40 @@ float slope_dm(vec2 cell, float own) {
 	return h.g > 0.5 ? round(h.r * 255.0) : own;
 }
 
+// TEST ONLY, the steps test's eleventh version (13 November 2026): its
+// crest (server/server/src/test_world.rs) runs from the map's (29, 0),
+// the screen's right corner, to its middle BENT_CREST_BEND, then turns
+// down and to the left on screen to BENT_CREST_END, the middle of the
+// diamond's lower left side. Beside that bent arm (the tiles nearer to
+// it than to the straight one), the slope's grass is forced, whatever
+// the rule below says: mirrored (streaks from upper left to lower right)
+// above and left of the arm, as is below and right of it, both at their
+// own width. On only while steps_mode is on, and only the steps test's
+// world has relief to turn it on; to be removed with the test.
+const vec2 BENT_CREST_BEND = vec2(14.5, 14.5);
+const vec2 BENT_CREST_END = vec2(14.5, 29.0);
+const vec2 BENT_CREST_START = vec2(29.0, 0.0);
+
+float bent_crest_reach(vec2 p, vec2 a, vec2 b) {
+	vec2 ab = b - a;
+	float t = clamp(dot(p - a, ab) / dot(ab, ab), 0.0, 1.0);
+	return length(p - a - t * ab);
+}
+
+// TEST ONLY: -1 where the bent arm does not force the grass, else 1
+// mirrored, 0 as is.
+float bent_crest_mirrored(vec2 cell) {
+	if (steps_mode != 1) {
+		return -1.0;
+	}
+	float to_bent = bent_crest_reach(cell, BENT_CREST_BEND, BENT_CREST_END);
+	float to_straight = bent_crest_reach(cell, BENT_CREST_BEND, BENT_CREST_START);
+	if (to_bent > to_straight + 0.001) {
+		return -1.0;
+	}
+	return cell.x < BENT_CREST_BEND.x ? 1.0 : 0.0;
+}
+
 // A tile's incline as the screen sees it: x is 1 on a slope's tile and 0
 // elsewhere (the steps test's convention: a slope's level is not a whole
 // number of metres), y how much its grass is mirrored and z how much it
@@ -401,6 +435,10 @@ vec3 slope_incline(vec2 cell) {
 	float own = slope_dm(cell, -1.0);
 	if (own < 0.0 || mod(own, 10.0) < 0.5) {
 		return vec3(0.0);
+	}
+	float forced = bent_crest_mirrored(cell);
+	if (forced >= 0.0) {
+		return vec3(1.0, forced, 0.0);
 	}
 	float gx = slope_dm(cell + vec2(1.0, 0.0), own) - slope_dm(cell - vec2(1.0, 0.0), own);
 	float gy = slope_dm(cell + vec2(0.0, 1.0), own) - slope_dm(cell - vec2(0.0, 1.0), own);
