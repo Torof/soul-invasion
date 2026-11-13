@@ -88,6 +88,7 @@ func _init() -> void:
 	_test_a_placed_thought_is_clicked_from_the_history()
 	_test_body_thinks_decodes_and_has_its_words()
 	_test_the_recentre_button_shows_while_the_camera_does_not_follow()
+	_test_the_slope_test_tells_a_summit_and_a_col_from_a_ring()
 
 
 ## Once the main loop runs: the tests that wait for frames, then the end.
@@ -2680,3 +2681,22 @@ func _test_the_recentre_button_shows_while_the_camera_does_not_follow() -> void:
 	_check(glide.active and half.x > 50.0 and half.x < 100.0, "quick at first: %s" % half)
 	var there := glide.step(CameraGlide.SECONDS / 2.0, Vector2(110, 0))
 	_check(not glide.active and there == Vector2(110, 0), "on the body, which walked meanwhile: %s" % there)
+
+
+func _test_the_slope_test_tells_a_summit_and_a_col_from_a_ring() -> void:
+	var summit := PackedFloat32Array()
+	var col := PackedFloat32Array()
+	var slope := PackedFloat32Array()
+	var flat := PackedFloat32Array()
+	for i in 16:
+		var angle := TAU * i / 16.0
+		summit.append(100.0 - 5.0 - 2.0 * cos(angle))
+		col.append(100.0 + 10.0 * cos(2.0 * angle))
+		slope.append(100.0 + 10.0 * cos(angle))
+		flat.append(100.0 + 0.5 * cos(angle))
+	_check(StepsTest.classify_ring(100.0, summit) == "summit", "a ring all lower is a summit")
+	_check(StepsTest.classify_ring(100.0, col) == "col", "two higher and two lower arcs are a col")
+	_check(StepsTest.classify_ring(100.0, slope) == "", "one higher and one lower arc is a slope")
+	_check(StepsTest.classify_ring(100.0, flat) == "", "a ring within a metre is flat")
+	summit[3] = -1.0
+	_check(StepsTest.classify_ring(100.0, summit) == "", "an unknown height on the ring says nothing")
