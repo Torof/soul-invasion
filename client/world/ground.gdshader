@@ -76,16 +76,18 @@ const vec3 SLOPE_TINT = vec3(0.94, 1.02, 0.92);
 // sideways sign is noise (a flank seen face on has none to speak of), so
 // both flanks keep the same diagonal, as is, and only its steepness
 // tells them apart: the flank that rises towards the screen's bottom
-// (the upper half of a ridge across the screen) has its image narrowed
-// to SLOPE_STEEP_WIDTH of its width on screen, so its streaks stand up
-// more, the blades still pointing up (never turned, never mirrored). A
+// (the upper half of a ridge across the screen) has its image widened
+// to SLOPE_STEEP_WIDTH times its width on screen, so its streaks lie
+// flatter, still rising to the right, nearly level (the lead, 13
+// November), the blades still pointing up (never turned, never
+// mirrored). A
 // slope counts as vertical while its sideways part stays under
 // SLOPE_VERTICAL_RATIO of its vertical part (about 27 degrees off the
 // screen's vertical, which keeps a
 // map's edge, where one neighbour repeats, on the vertical rule), and the
 // two rules blend over SLOPE_RATIO_BLEND on either side, so no seam shows
 // where they hand over.
-const float SLOPE_STEEP_WIDTH = 0.55;
+const float SLOPE_STEEP_WIDTH = 2.2;
 const float SLOPE_VERTICAL_RATIO = 0.5;
 const float SLOPE_RATIO_BLEND = 0.15;
 
