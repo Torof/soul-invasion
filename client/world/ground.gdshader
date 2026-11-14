@@ -100,7 +100,7 @@ uniform float slope_break_turn = 165.0;
 // dials it): mirrored first if slope_turf_mirror (key J), then turned by
 // slope_turf_turn degrees (key K, 15 a press); the streaks keep
 // slope_break_turn.
-uniform bool slope_turf_mirror = false;
+uniform bool slope_turf_mirror = true;
 uniform float slope_turf_turn = 165.0;
 const float SLOPE_TURF_PX = 768.0;
 const vec3 SLOPE_STREAK_PALE = vec3(0.92, 0.94, 0.59);

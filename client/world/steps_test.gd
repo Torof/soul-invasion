@@ -243,4 +243,4 @@ func _apply() -> void:
 	crests += ", turf with bushes" if ChunkView.slope_turf_with_bushes else ", plain turf"
 	crests += ", streaks below the crest %d°" % roundi(ChunkView.slope_break_turn)
 	crests += ", turf below: %s turn %d° (K)" % ["no mirror" if not ChunkView.slope_turf_mirror else "mirror (J)", roundi(ChunkView.slope_turf_turn)]
-	_label.text = "Slope test — %s, %s, %s, %s, %s   (keys 1, 0, T, V, B, X, C, N, R, L, G and K)" % [MODES[mode], look, zones, seams, crests]
+	_label.text = ("Slope test — %s, %s, %s, %s\n%s   (keys 1, 0, T, V, B, X, C, N, R, L, G, J and K)" % [MODES[mode], look, zones, seams, crests]).replace(", two layers", "\ntwo layers")

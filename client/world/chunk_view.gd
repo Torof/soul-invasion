@@ -279,7 +279,7 @@ static var slope_turf_with_bushes := false
 ## The mountain test: the break of a side whose crest lies below, in degrees (key K).
 static var slope_break_turn := 165.0
 ## The mountain test: below a crest, the turf's own mirror (key J) and turn in degrees (key K).
-static var slope_turf_mirror := false
+static var slope_turf_mirror := true
 static var slope_turf_turn := 165.0
 ## The mountain test: the turn between two sides, in degrees, that makes a crest (key N).
 static var slope_crest_degrees := 120.0
