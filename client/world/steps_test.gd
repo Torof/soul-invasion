@@ -156,12 +156,6 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	var key := event as InputEventKey
 	if key == null or not key.pressed or key.echo:
 		return
-	if key.keycode == KEY_F:
-		ChunkView.slope_points_uphill = not ChunkView.slope_points_uphill
-		ChunkView.set_slope_param("slope_points_uphill", ChunkView.slope_points_uphill)
-		_apply()
-		get_viewport().set_input_as_handled()
-		return
 	if key.keycode == KEY_R:
 		ChunkView.slope_rim = not ChunkView.slope_rim
 		ChunkView.set_slope_param("slope_rim", ChunkView.slope_rim)
@@ -219,5 +213,4 @@ func _apply() -> void:
 	var crests := ("side rule" + (", chevron flipped" if ChunkView.slope_chevron_flip else "")) if ChunkView.slope_crest_square else "earlier sides"
 	crests += ", crest from %d°" % roundi(ChunkView.slope_crest_degrees)
 	crests += ", rim" if ChunkView.slope_rim else ", no rim"
-	crests += ", blades uphill" if ChunkView.slope_points_uphill else ", blades up"
-	_label.text = "Slope test — %s, %s, %s, %s, %s   (keys 1, 0, T, V, B, X, C, N, R and F)" % [MODES[mode], look, zones, seams, crests]
+	_label.text = "Slope test — %s, %s, %s, %s, %s   (keys 1, 0, T, V, B, X, C, N and R)" % [MODES[mode], look, zones, seams, crests]
