@@ -79,6 +79,8 @@ const float SLOPE_RIM_SHADE = 0.82;
 uniform bool slope_chevron_flip = false;
 const float SLOPE_CREST_TILT = 12.0;
 const float SLOPE_SIDE_FADE = 4.0;
+// Below this screen-x share of the rise (px a tile) the ground rises straight up or down the screen.
+const float SLOPE_POINT_SIDE_PX = 3.0;
 // At a crest each side is one image whole, never several strips.
 // The widths a crest's side may take (fixed ones only, never in between).
 const float CREST_WIDTHS[7] = float[](0.45, 0.6, 0.85, 1.25, 1.8, 2.2, 3.0);
@@ -451,11 +453,19 @@ vec4 side_images(vec2 g, out float share) {
 	// and the right, mirrored toward the bottom and the left).
 	float side = -sign(line.x * rises.y - line.y * rises.x) * (slope_chevron_flip ? -1.0 : 1.0);
 	float target = degrees(atan(line.y, line.x)) + 90.0 + side * SLOPE_CREST_TILT;
+	// The blades' points (14 November 2026, the lead): they rise toward
+	// the screen's top and lean toward the crest, so the image is as is
+	// where the ground rises toward the screen's right, mirrored toward
+	// its left; only straight up or down the screen leaves both open (the
+	// tilt side then decides, so a crest across the screen still shows
+	// two images).
 	float best = 1e9;
 	float next = 1e9;
 	vec2 pick = vec2(1.0, 1.0);
 	vec2 runner = vec2(1.0, 1.0);
-	for (int i = 0; i < 14; i++) {
+	int first = rises.x > SLOPE_POINT_SIDE_PX ? 0 : (rises.x < -SLOPE_POINT_SIDE_PX ? 7 : 0);
+	int last = rises.x > SLOPE_POINT_SIDE_PX ? 7 : (rises.x < -SLOPE_POINT_SIDE_PX ? 14 : 14);
+	for (int i = first; i < last; i++) {
 		float width = CREST_WIDTHS[i % 7];
 		float slant = degrees(atan(SLOPE_STREAK_TAN / width));
 		float flip = i < 7 ? 1.0 : -1.0;
