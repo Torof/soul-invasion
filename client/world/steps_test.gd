@@ -157,16 +157,16 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if key == null or not key.pressed or key.echo:
 		return
 	if key.keycode == KEY_J:
-		ChunkView.slope_turf_lie = (ChunkView.slope_turf_lie + 1) % 4
-		ChunkView.set_slope_param("slope_turf_lie", ChunkView.slope_turf_lie)
+		ChunkView.slope_turf_mirror = not ChunkView.slope_turf_mirror
+		ChunkView.set_slope_param("slope_turf_mirror", ChunkView.slope_turf_mirror)
 		_apply()
 		get_viewport().set_input_as_handled()
 		return
 	if key.keycode == KEY_K:
-		ChunkView.slope_break_turn += 15.0
-		if ChunkView.slope_break_turn > 180.0:
-			ChunkView.slope_break_turn = -165.0
-		ChunkView.set_slope_param("slope_break_turn", ChunkView.slope_break_turn)
+		ChunkView.slope_turf_turn += 15.0
+		if ChunkView.slope_turf_turn >= 360.0:
+			ChunkView.slope_turf_turn = 0.0
+		ChunkView.set_slope_param("slope_turf_turn", ChunkView.slope_turf_turn)
 		_apply()
 		get_viewport().set_input_as_handled()
 		return
@@ -241,7 +241,6 @@ func _apply() -> void:
 	crests += ", rim" if ChunkView.slope_rim else ", no rim"
 	crests += ", two layers" if ChunkView.slope_layers else ", one image"
 	crests += ", turf with bushes" if ChunkView.slope_turf_with_bushes else ", plain turf"
-	crests += ", break below the crest %+d°" % roundi(ChunkView.slope_break_turn)
-	const LIE := ["J0 turf with the streaks", "J1 turf the other way", "J2 with the streaks, mirrored on the axis", "J3 the other way, mirrored on the axis"]
-	crests += ", " + LIE[ChunkView.slope_turf_lie]
+	crests += ", streaks below the crest %d°" % roundi(ChunkView.slope_break_turn)
+	crests += ", turf below: %s turn %d° (K)" % ["no mirror" if not ChunkView.slope_turf_mirror else "mirror (J)", roundi(ChunkView.slope_turf_turn)]
 	_label.text = "Slope test — %s, %s, %s, %s, %s   (keys 1, 0, T, V, B, X, C, N, R, L, G and K)" % [MODES[mode], look, zones, seams, crests]
