@@ -84,11 +84,14 @@ uniform bool slope_rim = true;
 // the steepness alone. Key L: off, the one-image rule instead.
 uniform bool slope_layers = true;
 uniform sampler2D slope_streaks : repeat_enable, filter_linear_mipmap;
-// The turf under the streaks (client/world/test/slope_turf.png: upright
-// tufts, no streak, never turned), drawn SLOPE_TURF_PX a repetition; the
-// meadow's own image until the lead's turf replaces the file.
+// The turf under the streaks, never turned, drawn SLOPE_TURF_PX a
+// repetition: slope_turf.png (the lead's mountain grass, number 2 of
+// 14 November) or, with slope_turf_bushes on (key G), slope_turf_bushes.png
+// (his grass with tufts, bushes and stones, number 1 of 13 November).
 uniform sampler2D slope_turf : repeat_enable, filter_linear_mipmap;
-const float SLOPE_TURF_PX = 192.0;
+uniform sampler2D slope_turf_bushes : repeat_enable, filter_linear_mipmap;
+uniform bool slope_turf_with_bushes = false;
+const float SLOPE_TURF_PX = 768.0;
 const vec3 SLOPE_STREAK_PALE = vec3(0.92, 0.94, 0.59);
 const float SLOPE_STREAK_MIX = 0.55;
 const float SLOPE_RIM_TILES = 0.9;
@@ -636,7 +639,9 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 		// where the other side begins.
 		vec3 tex = streak_read(canvas, dx, dy, 1.0, vec2(fx, fy));
 		float light = tex.r;
-		vec3 turf = textureGrad(slope_turf, canvas / SLOPE_TURF_PX, dx / SLOPE_TURF_PX, dy / SLOPE_TURF_PX).rgb * SLOPE_TINT;
+		vec3 turf = slope_turf_with_bushes
+			? textureGrad(slope_turf_bushes, canvas / SLOPE_TURF_PX, dx / SLOPE_TURF_PX, dy / SLOPE_TURF_PX).rgb * SLOPE_TINT
+			: textureGrad(slope_turf, canvas / SLOPE_TURF_PX, dx / SLOPE_TURF_PX, dy / SLOPE_TURF_PX).rgb * SLOPE_TINT;
 		vec3 lit = mix(turf, SLOPE_STREAK_PALE, light * SLOPE_STREAK_MIX);
 		if (rim) {
 			lit *= SLOPE_RIM_SHADE;
