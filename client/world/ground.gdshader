@@ -83,7 +83,9 @@ const float SLOPE_SIDE_FADE = 14.0;
 const float SLOPE_POINT_SIDE_PX = 10.0;
 // At a crest each side is one image whole, never several strips.
 // The widths a crest's side may take (fixed ones only, never in between).
-const float CREST_WIDTHS[7] = float[](0.45, 0.6, 0.85, 1.25, 1.8, 2.2, 3.0);
+const float LADDER_WIDTHS[4] = float[](1.25, 0.85, 0.6, 0.45);
+// Steepness (metres a tile) where the ladder steps: gentle to medium, medium to steep.
+const vec3 SLOPE_STEEP_LADDER = vec3(0.3, 0.6, 1.0);
 // The grasses are drawn over SLOPE_ZONE_SCALE times the canvas, their
 // tufts at the size of the lead's first slope image.
 const float SLOPE_ZONE_SCALE = 2.0;
@@ -442,48 +444,42 @@ vec3 slope_leaning(sampler2D tex, vec2 canvas, vec2 dx, vec2 dy, vec3 inclines, 
 // side that only turns or steepens keeps its look. Returns the best image
 // (xy: width, flip) and the next best (zw); `share` the best's share, one
 // unless the two are nearly as good, fading over SLOPE_SIDE_FADE degrees.
-vec4 side_images(vec2 g, out float share) {
+vec4 side_images(vec2 g, float s, out float share) {
 	vec2 t = vec2(-g.y, g.x);
 	vec2 line = vec2(TILE_HALF_PX.x * (t.x - t.y), -TILE_HALF_PX.y * (t.x + t.y));
 	vec2 rises = vec2(TILE_HALF_PX.x * (g.x - g.y), -TILE_HALF_PX.y * (g.x + g.y));
 	if (line.y < 0.0 || (line.y == 0.0 && line.x < 0.0)) {
 		line = -line;
 	}
-	// Signed so the sides match the lead's readings (as is toward the top
-	// and the right, mirrored toward the bottom and the left).
-	float side = -sign(line.x * rises.y - line.y * rises.x) * (slope_chevron_flip ? -1.0 : 1.0);
-	float target = degrees(atan(line.y, line.x)) + 90.0 + side * SLOPE_CREST_TILT;
-	// The blades' points (14 November 2026, the lead): they rise toward
-	// the screen's top and lean toward the crest, so the image is as is
-	// where the ground rises toward the screen's right, mirrored toward
-	// its left; only straight up or down the screen leaves both open (the
-	// tilt side then decides, so a crest across the screen still shows
-	// two images).
-	float best = 1e9;
-	float next = 1e9;
-	vec2 pick = vec2(1.0, 1.0);
-	vec2 runner = vec2(1.0, 1.0);
-	int first = rises.x > SLOPE_POINT_SIDE_PX ? 0 : (rises.x < -SLOPE_POINT_SIDE_PX ? 7 : 0);
-	int last = rises.x > SLOPE_POINT_SIDE_PX ? 7 : (rises.x < -SLOPE_POINT_SIDE_PX ? 14 : 14);
-	for (int i = first; i < last; i++) {
-		float width = CREST_WIDTHS[i % 7];
-		float slant = degrees(atan(SLOPE_STREAK_TAN / width));
-		float flip = i < 7 ? 1.0 : -1.0;
-		if (flip < 0.0) {
-			slant = 180.0 - slant;
-		}
-		float off = abs(mod(slant - target + 90.0, 180.0) - 90.0);
-		if (off < best) {
-			next = best;
-			runner = pick;
-			best = off;
-			pick = vec2(width, flip);
-		} else if (off < next) {
-			next = off;
-			runner = vec2(width, flip);
-		}
+	// The side (14 November 2026, the lead): the blades' points rise
+	// toward the screen's top and lean toward the crest, so the image is
+	// as is where the ground rises toward the screen's right, mirrored
+	// where it rises toward the left. Rising straight up or down the
+	// screen, the side of the fold line decides, so a crest across the
+	// screen still shows two images.
+	float tilt_side = -sign(line.x * rises.y - line.y * rises.x) * (slope_chevron_flip ? -1.0 : 1.0);
+	float flip = rises.x > SLOPE_POINT_SIDE_PX ? 1.0 : (rises.x < -SLOPE_POINT_SIDE_PX ? -1.0 : tilt_side);
+	// The width by steepness alone (the lead's ladder: x1.25 gentle,
+	// x0.85 medium, x0.6 steep), one step narrower where the ground rises
+	// nearly straight up or down the screen (his reading of those).
+	float at = s < SLOPE_STEEP_LADDER.x ? 0.0 : (s < SLOPE_STEEP_LADDER.y ? (s - SLOPE_STEEP_LADDER.x) / (SLOPE_STEEP_LADDER.y - SLOPE_STEEP_LADDER.x)
+		: (s < SLOPE_STEEP_LADDER.z ? 1.0 + (s - SLOPE_STEEP_LADDER.y) / (SLOPE_STEEP_LADDER.z - SLOPE_STEEP_LADDER.y) : 2.0));
+	if (abs(rises.x) <= SLOPE_POINT_SIDE_PX) {
+		at += 1.0;
 	}
-	share = 0.5 + 0.5 * smoothstep(0.0, SLOPE_SIDE_FADE, next - best);
+	at = clamp(at, 0.0, 3.0);
+	int low = int(floor(at));
+	float frac = at - float(low);
+	vec2 pick = vec2(LADDER_WIDTHS[low], flip);
+	vec2 runner = vec2(LADDER_WIDTHS[min(low + 1, 3)], flip);
+	if (frac > 0.5) {
+		vec2 keep = pick;
+		pick = runner;
+		runner = keep;
+		frac = 1.0 - frac;
+	}
+	// frac in 0..0.5: the nearer width's share, whole away from the step.
+	share = 1.0 - smoothstep(0.35, 0.5, frac) * 0.5;
 	return vec4(pick, runner);
 }
 
@@ -645,7 +641,7 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 			// so no thin strips.
 			if (slope_crest_square) {
 				crest_band = true;
-				side_pick = side_images(g, side_share);
+				side_pick = side_images(g, s, side_share);
 				if (fold) {
 					side_share = 1.0;
 				}
