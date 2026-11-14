@@ -71,7 +71,17 @@ const float SLOPE_FOLD_TILES = 1.5;
 // off (key X): the sides keep their usual images.
 uniform bool slope_crest_square = true;
 uniform bool slope_chevron_flip = false;
-const float SLOPE_CREST_TILT = 25.0;
+const float SLOPE_CREST_TILT = 12.0;
+// The fold's band: where the rise uphill and downhill point apart by more
+// than SLOPE_CREST_FROM (a cosine); its top, nearest the line, by more
+// than SLOPE_CREST_TOP, drawn level (SLOPE_CREST_TOP_WIDTH) so the crest
+// reads rounded and flat on top. In the band each side is one image
+// whole, never several strips.
+const float SLOPE_CREST_FROM = -0.1;
+const float SLOPE_CREST_TOP = -0.8;
+const float SLOPE_CREST_TOP_WIDTH = 3.0;
+// The widths a crest's side may take (fixed ones only, never in between).
+const float CREST_WIDTHS[7] = float[](0.45, 0.6, 0.85, 1.25, 1.8, 2.2, 3.0);
 // Midjourney's grasses are drawn at half the lead's scale: repeated over
 // SLOPE_ZONE_SCALE times the canvas so their tufts match his.
 const float SLOPE_ZONE_SCALE = 2.0;
@@ -422,10 +432,11 @@ vec3 slope_leaning(sampler2D tex, vec2 canvas, vec2 dx, vec2 dy, vec3 inclines, 
 
 // `c`, the ground at map point `p` (tiles, canvas point `canvas`), with
 // the slope's grass where the ground slopes (the mountain test's rule).
-// At a fold whose ground rises along the map's unit `g`: the image whose
-// streaks meet the fold's line on the screen nearest 90 - SLOPE_CREST_TILT
-// degrees, tilted one way on one side and the other way on the other.
-void crest_choice(vec2 g, out vec3 inclines, out vec3 leans) {
+// At a fold whose ground rises along the map's unit `g`: the image (x its
+// width, y 1 as is or -1 mirrored) whose streaks meet the fold's line on
+// the screen nearest 90 - SLOPE_CREST_TILT degrees, tilted one way on one
+// side and the other way on the other.
+vec2 crest_choice(vec2 g) {
 	vec2 t = vec2(-g.y, g.x);
 	vec2 line = vec2(TILE_HALF_PX.x * (t.x - t.y), -TILE_HALF_PX.y * (t.x + t.y));
 	vec2 rises = vec2(TILE_HALF_PX.x * (g.x - g.y), -TILE_HALF_PX.y * (g.x + g.y));
@@ -436,32 +447,22 @@ void crest_choice(vec2 g, out vec3 inclines, out vec3 leans) {
 	}
 	float side = sign(line.x * rises.y - line.y * rises.x) * (slope_chevron_flip ? -1.0 : 1.0);
 	float target = degrees(atan(line.y, line.x)) + 90.0 + side * SLOPE_CREST_TILT;
-	// The streaks' slant on the screen for each image: as is gentle,
-	// medium, steep, level; mirrored gentle, medium, steep.
 	float best = 1e9;
-	int pick = 0;
-	for (int i = 0; i < 7; i++) {
-		float width = i == 0 || i == 4 ? SLOPE_GENTLE_WIDTH : (i == 1 || i == 5 ? SLOPE_MEDIUM_WIDTH
-			: (i == 2 || i == 6 ? SLOPE_STEEP_WIDTH : SLOPE_AWAY_WIDTH));
+	vec2 pick = vec2(1.0, 1.0);
+	for (int i = 0; i < 14; i++) {
+		float width = CREST_WIDTHS[i % 7];
 		float slant = degrees(atan(SLOPE_STREAK_TAN / width));
-		if (i >= 4) {
+		float flip = i < 7 ? 1.0 : -1.0;
+		if (flip < 0.0) {
 			slant = 180.0 - slant;
 		}
 		float off = abs(mod(slant - target + 90.0, 180.0) - 90.0);
 		if (off < best) {
 			best = off;
-			pick = i;
+			pick = vec2(width, flip);
 		}
 	}
-	inclines = vec3(0.0);
-	leans = vec3(0.0);
-	if (pick == 3) {
-		leans.z = 1.0;
-		inclines.x = 1.0;
-	} else {
-		leans[pick >= 4 ? 1 : 0] = 1.0;
-		inclines[pick >= 4 ? pick - 4 : pick] = 1.0;
-	}
+	return pick;
 }
 
 // `v`'s shares raised to SLOPE_SEAM_SHARPEN and summing to one again:
@@ -532,6 +533,25 @@ vec3 zone_grass(int zone, vec2 canvas, vec2 dx, vec2 dy, vec3 inclines, vec3 lea
 	return slope_leaning(slope_grass_16, canvas, dx, dy, inclines, leans, w, ox, oy);
 }
 
+// One zone's grass `zone` read once at `width`, mirrored when `flip` is -1.
+vec3 zone_read(int zone, vec2 canvas, vec2 dx, vec2 dy, float width, float flip) {
+	vec4 one = vec4(1.0, 0.0, 0.0, 0.0);
+	if (zone == 0) {
+		return slope_read(slope_texture, canvas, dx, dy, width, flip, one, vec4(0.0), vec4(0.0));
+	}
+	canvas /= SLOPE_ZONE_SCALE;
+	dx /= SLOPE_ZONE_SCALE;
+	dy /= SLOPE_ZONE_SCALE;
+	if (zone == 1) {
+		return slope_read(slope_grass_1, canvas, dx, dy, width, flip, one, vec4(0.0), vec4(0.0));
+	} else if (zone == 2) {
+		return slope_read(slope_grass_2, canvas, dx, dy, width, flip, one, vec4(0.0), vec4(0.0));
+	} else if (zone == 3) {
+		return slope_read(slope_grass_3, canvas, dx, dy, width, flip, one, vec4(0.0), vec4(0.0));
+	}
+	return slope_read(slope_grass_16, canvas, dx, dy, width, flip, one, vec4(0.0), vec4(0.0));
+}
+
 vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox, vec4 oy) {
 	vec2 rise = texture(slope_index, p / index_tiles).rg;
 	float s = length(rise);
@@ -567,16 +587,23 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 	float facing = smoothstep(-SLOPE_SIDE_BLEND, SLOPE_SIDE_BLEND, -down / (s + 1e-6));
 	vec3 leans = vec3(horiz * rightward + (1.0 - horiz) * facing,
 		horiz * (1.0 - rightward), (1.0 - horiz) * (1.0 - facing));
+	bool crest_band = false;
+	vec2 crest_pick = vec2(1.0, 1.0);
 	if (slope_crisp) {
 		bool fold = true;
-		float crest = 0.0;
 		if (slope_seams_soft) {
 			vec2 g = rise / s;
 			vec2 up = texture(slope_index, (p + g * SLOPE_FOLD_TILES) / index_tiles).rg;
 			vec2 below = texture(slope_index, (p - g * SLOPE_FOLD_TILES) / index_tiles).rg;
 			fold = dot(up, below) < 0.0;
 			float apart = dot(up, below) / (length(up) * length(below) + 1e-6);
-			crest = slope_crest_square ? smoothstep(0.2, -0.4, apart) : 0.0;
+			if (slope_crest_square && apart < SLOPE_CREST_FROM) {
+				crest_band = true;
+				crest_pick = crest_choice(g);
+				if (apart < SLOPE_CREST_TOP) {
+					crest_pick.x = SLOPE_CREST_TOP_WIDTH;
+				}
+			}
 		}
 		if (!fold) {
 			inclines = sharpen(inclines);
@@ -585,26 +612,22 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 			inclines = one_hot(inclines);
 			leans = one_hot(leans);
 		}
-		if (crest > 0.0) {
-			vec3 square_inclines;
-			vec3 square_leans;
-			crest_choice(rise / s, square_inclines, square_leans);
-			inclines = mix(inclines, square_inclines, crest);
-			leans = mix(leans, square_leans, crest);
-		}
 		w = vec4(1.0, 0.0, 0.0, 0.0);
 		ox = vec4(0.0);
 		oy = vec4(0.0);
 	}
 	vec3 slope;
-	if (slope_zones) {
-		vec3 zone = slope_zone(p);
+	vec3 zone = slope_zones ? slope_zone(p) : vec3(0.0, 0.0, 1.0);
+	if (crest_band) {
+		slope = zone_read(int(zone.x), canvas, dx, dy, crest_pick.x, crest_pick.y);
+		if (zone.z < 0.999) {
+			slope = mix(zone_read(int(zone.y), canvas, dx, dy, crest_pick.x, crest_pick.y), slope, zone.z);
+		}
+	} else {
 		slope = zone_grass(int(zone.x), canvas, dx, dy, inclines, leans, w, ox, oy);
 		if (zone.z < 0.999) {
 			slope = mix(zone_grass(int(zone.y), canvas, dx, dy, inclines, leans, w, ox, oy), slope, zone.z);
 		}
-	} else {
-		slope = zone_grass(0, canvas, dx, dy, inclines, leans, w, ox, oy);
 	}
 	return mix(c, slope * SLOPE_TINT, shown);
 }
