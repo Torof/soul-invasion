@@ -259,6 +259,13 @@ pub struct Map {
     ground: Made,
     /// Tiles set by hand ([`Map::set`]: tests), a whole chunk each.
     edits: BTreeMap<ChunkPos, Box<[Terrain]>>,
+    /// Test worlds only (`--world`): a height per tile in decimetres, row
+    /// by row, shown by the client and nothing else (no rule reads it, no
+    /// snapshot keeps it: a test world is ephemeral).
+    heights: Option<std::sync::Arc<[i16]>>,
+    /// Test worlds only (`--world`): the camp, where it is not the one
+    /// its size gives ([`Map::with_camp`]).
+    camp_at: Option<(u32, u32)>,
 }
 
 /// What a map's tiles are made from.
@@ -335,6 +342,8 @@ impl Map {
             height,
             ground: Made::Filled(terrain),
             edits: BTreeMap::new(),
+            heights: None,
+            camp_at: None,
         }
     }
 
@@ -377,6 +386,8 @@ impl Map {
                 width, height, cliff_rows, waters, woods,
             ))),
             edits: BTreeMap::new(),
+            heights: None,
+            camp_at: None,
         }
     }
 
@@ -420,7 +431,9 @@ impl Map {
     /// Where the first bodies start: the camp, left open by the woods.
     #[must_use]
     pub fn camp(&self) -> Pos {
-        let (x, y) = Self::camp_of(self.width, self.height);
+        let (x, y) = self
+            .camp_at
+            .unwrap_or_else(|| Self::camp_of(self.width, self.height));
         Pos::new(
             i32::try_from(x).expect("map fits in i32"),
             i32::try_from(y).expect("map fits in i32"),
@@ -538,6 +551,58 @@ impl Map {
             }
         }
         Some(tiles)
+    }
+
+    /// The same map with a height per tile, in decimetres, row by row (the
+    /// test worlds: shown by the client, read by no rule).
+    ///
+    /// # Panics
+    ///
+    /// When `heights` is not one a tile.
+    #[must_use]
+    pub fn with_heights(mut self, heights: Vec<i16>) -> Self {
+        assert_eq!(
+            heights.len(),
+            (self.width * self.height) as usize,
+            "one height a tile"
+        );
+        self.heights = Some(heights.into());
+        self
+    }
+
+    /// The same map with its camp at tile (`x`, `y`) (the test worlds: the
+    /// camp on their flat ground).
+    ///
+    /// # Panics
+    ///
+    /// When the tile is off the map.
+    #[must_use]
+    pub fn with_camp(mut self, x: u32, y: u32) -> Self {
+        assert!(x < self.width && y < self.height, "a camp on the map");
+        self.camp_at = Some((x, y));
+        self
+    }
+
+    /// The heights of a chunk's tiles, row by row like [`Map::chunk`], in
+    /// decimetres; `None` on a map with no heights and for a chunk off the
+    /// map. Past the map's edge, the edge's height.
+    pub fn chunk_heights(&self, chunk: ChunkPos) -> Option<Vec<i16>> {
+        let heights = self.heights.as_ref()?;
+        if !self.has_chunk(chunk) {
+            return None;
+        }
+        let origin = chunk.origin();
+        let side = i32::try_from(CHUNK_SIZE).expect("small chunk side");
+        let (w, h) = (self.width as usize, self.height as usize);
+        let mut out = Vec::with_capacity((CHUNK_SIZE * CHUNK_SIZE) as usize);
+        for y in 0..side {
+            for x in 0..side {
+                let tx = usize::try_from(origin.x + x).unwrap_or(0).min(w - 1);
+                let ty = usize::try_from(origin.y + y).unwrap_or(0).min(h - 1);
+                out.push(heights[ty * w + tx]);
+            }
+        }
+        Some(out)
     }
 
     /// Where the water runs in a chunk, tile by tile like `chunk`
