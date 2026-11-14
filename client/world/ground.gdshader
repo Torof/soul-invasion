@@ -80,7 +80,7 @@ uniform bool slope_chevron_flip = false;
 const float SLOPE_CREST_TILT = 12.0;
 const float SLOPE_SIDE_FADE = 4.0;
 // Below this screen-x share of the rise (px a tile) the ground rises straight up or down the screen.
-const float SLOPE_POINT_SIDE_PX = 3.0;
+const float SLOPE_POINT_SIDE_PX = 10.0;
 // At a crest each side is one image whole, never several strips.
 // The widths a crest's side may take (fixed ones only, never in between).
 const float CREST_WIDTHS[7] = float[](0.45, 0.6, 0.85, 1.25, 1.8, 2.2, 3.0);
