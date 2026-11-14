@@ -653,10 +653,13 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 			: streak_read(canvas, dx, dy, 1.0, cf);
 		float light = tex.r;
 		// The turf: as drawn where the ground rises to the right, mirrored
-		// where it rises to the left (validated on vertical crests), and
-		// rotated like the streaks where the crest lies below.
+		// where it rises to the left (validated on vertical crests). Where
+		// the crest lies below it lies along the streaks' line but points
+		// the other way, up the screen (the lead, 14 November 2026): the
+		// streaks' turn less a half turn, a rotation still.
 		vec2 tf = below ? vec2(1.0) : vec2(fx, 1.0);
-		mat2 trot = below ? rot : mat2(vec2(1.0, 0.0), vec2(0.0, 1.0));
+		float tturn = turn - 3.14159265;
+		mat2 trot = below ? mat2(vec2(cos(tturn), sin(tturn)), vec2(-sin(tturn), cos(tturn))) : mat2(vec2(1.0, 0.0), vec2(0.0, 1.0));
 		vec2 tuv = trot * (canvas / SLOPE_TURF_PX * tf);
 		vec2 tdx = trot * (dx / SLOPE_TURF_PX * tf);
 		vec2 tdy = trot * (dy / SLOPE_TURF_PX * tf);
