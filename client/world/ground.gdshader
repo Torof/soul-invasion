@@ -78,7 +78,7 @@ const float SLOPE_RIM_TILES = 0.9;
 const float SLOPE_RIM_SHADE = 0.82;
 uniform bool slope_chevron_flip = false;
 const float SLOPE_CREST_TILT = 12.0;
-const float SLOPE_SIDE_FADE = 4.0;
+const float SLOPE_SIDE_FADE = 14.0;
 // Below this screen-x share of the rise (px a tile) the ground rises straight up or down the screen.
 const float SLOPE_POINT_SIDE_PX = 10.0;
 // At a crest each side is one image whole, never several strips.
