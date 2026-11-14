@@ -67,6 +67,13 @@ OPTIONS:
                            top, two dissymmetric ridges, a col, a valley with
                            a flat floor), shown by the client only. Never
                            for play.
+    --world test:relief    The relief test, the sandbox's world: 512 × 512
+                           tiles of grass flat at 50 m holding the shapes
+                           test (x 0–256, y 0–256), the sense test
+                           (x 256–512, y 0–256) and the mountain test
+                           (x 32–224, y 288–480, levelled to 50 m at its
+                           window's edge), shown by the client only. Never
+                           for play.
     --dev                  Development tools: every client gets an overview
                            of the whole map and may teleport its body. Never
                            for play.
@@ -146,6 +153,9 @@ pub enum TestWorld {
     /// `test:sens`: crests across the screen whose profiles tell which
     /// way a slope rises.
     Sense,
+    /// `test:relief`: the shapes, sense and mountain tests on one map,
+    /// the sandbox's world.
+    Relief,
 }
 
 /// When a paced server places the plants of the view around the camp,
@@ -262,6 +272,7 @@ impl Options {
                         "test:montagne" => Some(TestWorld::Mountain),
                         "test:formes" => Some(TestWorld::Shapes),
                         "test:sens" => Some(TestWorld::Sense),
+                        "test:relief" => Some(TestWorld::Relief),
                         _ => raw
                             .strip_prefix("flat:")
                             .and_then(|n| n.parse().ok())

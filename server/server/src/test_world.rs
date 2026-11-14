@@ -1,8 +1,9 @@
 //! Tiny worlds for visual tests (`--world`): a flat square of grass, the
-//! steps test's ridge, the mountain test's flank and the shapes test.
-//! Ephemeral and never for play. All
-//! carry heights (the flat one all zero): the client knows a test world by
-//! them and draws it with no fog.
+//! steps test's ridge, the mountain test's flank, the shapes test, the
+//! sense test, and the relief test that gathers the last three on one map
+//! (`test:relief`, the one the sandbox uses). Ephemeral and never for
+//! play. All carry heights (the flat one all zero): the client knows a
+//! test world by them and draws it with no fog.
 
 use sim::Calendar;
 use sim::map::{Map, Terrain};
@@ -603,6 +604,108 @@ pub fn sens_heights() -> Vec<i16> {
         .collect()
 }
 
+/// The relief test (14 November 2026): the shapes test, the sense test
+/// and the mountain test gathered on one map of [`RELIEF_SIDE`] tiles of
+/// grass, flat at [`RELIEF_BASE_DM`] everywhere else, so the project lead
+/// has a single sandbox. This is the world the sandbox uses; the three
+/// older worlds stay for the tests. Where each part lies, in map tiles
+/// (`x` range × `y` range, the ends excluded):
+///
+/// - the shapes test, its heights as they are: x 0–256 × y 0–256;
+/// - the sense test, its heights as they are: x 256–512 × y 0–256;
+/// - the mountain test, in the window [`RELIEF_MOUNTAIN`]: x 32–224 ×
+///   y 288–480. Its heights are shifted so that the mean of its window's
+///   outer ring sits at the base (if a tile then fell below
+///   [`RELIEF_FLOOR_DM`], the whole band is raised instead until none
+///   does: its relief is kept either way), then faded to the base over
+///   the [`RELIEF_FADE`] tiles inside its window's edge, so the window's
+///   border is no cliff: its outer ring is the base.
+///
+/// The camp is the shapes test's, [`SHAPES_CAMP`].
+pub const RELIEF_SIDE: u32 = 512;
+
+/// The relief test's base height, in decimetres: the shapes and sense
+/// tests' meadows, [`SHAPES_BASE_M`] and [`SENS_BASE_M`].
+pub const RELIEF_BASE_DM: i16 = 500;
+
+/// Below this height, in decimetres, no tile of the mountain band falls.
+pub const RELIEF_FLOOR_DM: i16 = 200;
+
+/// Where the mountain test's window starts on the relief test's map.
+pub const RELIEF_MOUNTAIN: (u32, u32) = (32, 288);
+
+/// Over how many tiles inside its window's edge the mountain fades to
+/// the base.
+pub const RELIEF_FADE: u32 = 8;
+
+/// Copies `part`, a `side × side` block of heights, onto `heights` (a
+/// `RELIEF_SIDE` wide map) at `origin`.
+fn relief_lay(heights: &mut [i16], part: &[i16], side: u32, origin: (u32, u32)) {
+    let (map, side) = (RELIEF_SIDE as usize, side as usize);
+    let (x0, y0) = (origin.0 as usize, origin.1 as usize);
+    for (row, tiles) in part.chunks_exact(side).enumerate() {
+        let start = (y0 + row) * map + x0;
+        heights[start..start + side].copy_from_slice(tiles);
+    }
+}
+
+/// The mountain test's heights as the relief test lays them: shifted so
+/// the mean of the outer ring sits at the base (raised further if any
+/// tile fell below the floor), then faded to the base over the window's
+/// edge. Row by row, `MOUNTAIN_SIDE` on a side.
+#[must_use]
+pub fn relief_mountain_heights() -> Vec<i16> {
+    let heights = mountain_heights();
+    let side = MOUNTAIN_SIDE as usize;
+    let last = side - 1;
+    let on_ring = |i: usize| {
+        let (x, y) = (i % side, i / side);
+        x == 0 || y == 0 || x == last || y == last
+    };
+    let ring: Vec<f64> = heights
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| on_ring(i))
+        .map(|(_, &h)| f64::from(h))
+        .collect();
+    let ring_mean = ring.iter().sum::<f64>() / f64::from(u32::try_from(ring.len()).expect("small"));
+    let lowest = heights.iter().copied().min().unwrap_or(RELIEF_BASE_DM);
+    let base = f64::from(RELIEF_BASE_DM);
+    let shift = (base - ring_mean).max(f64::from(RELIEF_FLOOR_DM) - f64::from(lowest));
+    let fade = f64::from(RELIEF_FADE);
+    heights
+        .iter()
+        .enumerate()
+        .map(|(i, &h)| {
+            let (x, y) = (i % side, i / side);
+            let edge = x.min(y).min(last - x).min(last - y);
+            let edge = f64::from(u32::try_from(edge).expect("small"));
+            let weight = smooth(0.0, fade, edge);
+            let dm = (base + weight * (f64::from(h) + shift - base)).round();
+            #[allow(clippy::cast_possible_truncation)]
+            let dm = dm.clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
+            dm
+        })
+        .collect()
+}
+
+/// The heights of the relief test's tiles, in decimetres, row by row:
+/// the three parts at their places, the base everywhere else.
+#[must_use]
+pub fn relief_heights() -> Vec<i16> {
+    let side = RELIEF_SIDE as usize;
+    let mut heights = vec![RELIEF_BASE_DM; side * side];
+    relief_lay(&mut heights, &shapes_heights(), SHAPES_SIDE, (0, 0));
+    relief_lay(&mut heights, &sens_heights(), SENS_SIDE, (SHAPES_SIDE, 0));
+    relief_lay(
+        &mut heights,
+        &relief_mountain_heights(),
+        MOUNTAIN_SIDE,
+        RELIEF_MOUNTAIN,
+    );
+    heights
+}
+
 /// A test world at tick zero, with nobody in it yet.
 #[must_use]
 pub fn make(world: TestWorld, calendar: Calendar, content: &Content) -> World {
@@ -633,6 +736,12 @@ pub fn make(world: TestWorld, calendar: Calendar, content: &Content) -> World {
             let (x, y) = SENS_CAMP;
             Map::filled(SENS_SIDE, SENS_SIDE, Terrain::Grass)
                 .with_heights(sens_heights())
+                .with_camp(x, y)
+        }
+        TestWorld::Relief => {
+            let (x, y) = SHAPES_CAMP;
+            Map::filled(RELIEF_SIDE, RELIEF_SIDE, Terrain::Grass)
+                .with_heights(relief_heights())
                 .with_camp(x, y)
         }
     };
@@ -801,6 +910,76 @@ mod tests {
                     .min()
                     .expect("tiles");
                 assert!(nearest >= 144, "shapes too close: {nearest}");
+            }
+        }
+    }
+    #[test]
+    fn the_relief_test_lays_the_three_parts_on_one_flat_map_and_the_camp_is_flat() {
+        let heights = relief_heights();
+        let side = RELIEF_SIDE as usize;
+        assert_eq!(heights.len(), side * side);
+        let at = |x: usize, y: usize| heights[y * side + x];
+        // Nothing below the floor; the highest tile is the mountain's.
+        let laid = relief_mountain_heights();
+        let (low, high) = (
+            *heights.iter().min().expect("tiles"),
+            *heights.iter().max().expect("tiles"),
+        );
+        assert!(low >= RELIEF_FLOOR_DM, "lowest {low}");
+        assert_eq!(Some(&high), laid.iter().max(), "highest {high}");
+        // The shapes test at (0, 0): its valley's floor and a crest.
+        assert_eq!(at(35, 130), 200, "the shapes' valley floor");
+        assert_eq!(at(135, 49), 800, "the shapes' crest across the screen");
+        // The sense test at (256, 0): its col's floor and a summit.
+        let sens = sens_heights();
+        assert_eq!(
+            at(256 + 193, 192),
+            sens[192 * 256 + 193],
+            "the sense test's col"
+        );
+        assert_eq!(at(256 + 193, 192), 610);
+        assert_eq!(at(256 + 128, 50), sens[50 * 256 + 128]);
+        assert!(at(256 + 128, 50) > 390);
+        // The mountain at (32, 288): its relief, shifted and faded, at
+        // its middle; its window's outer ring at the base.
+        let (mx, my) = (RELIEF_MOUNTAIN.0 as usize, RELIEF_MOUNTAIN.1 as usize);
+        let m = MOUNTAIN_SIDE as usize;
+        assert_eq!(at(mx + 96, my + 96), laid[96 * m + 96]);
+        let mountain = mountain_heights();
+        let inner: Vec<i32> = (0..m * m)
+            .filter(|i| {
+                let (x, y) = (i % m, i / m);
+                let edge = x.min(y).min(m - 1 - x).min(m - 1 - y);
+                edge >= RELIEF_FADE as usize
+            })
+            .map(|i| i32::from(laid[i]) - i32::from(mountain[i]))
+            .collect();
+        let shift = inner[0];
+        assert!(
+            inner.iter().all(|&d| (d - shift).abs() <= 1),
+            "the relief is kept"
+        );
+        assert!(
+            (0..m * m).any(|i| laid[i] != RELIEF_BASE_DM),
+            "the mountain is not flat"
+        );
+        for i in 0..m {
+            for (x, y) in [(i, 0), (i, m - 1), (0, i), (m - 1, i)] {
+                let h = at(mx + x, my + y);
+                assert!((h - RELIEF_BASE_DM).abs() <= 3, "ring ({x}, {y}): {h}");
+            }
+        }
+        // Outside the parts, the base.
+        assert_eq!(at(300, 300), RELIEF_BASE_DM);
+        assert_eq!(at(10, 270), RELIEF_BASE_DM);
+        assert_eq!(at(10, 500), RELIEF_BASE_DM);
+        // The camp (the shapes test's) and the 20 tiles around it are meadow.
+        let (cx, cy) = (SHAPES_CAMP.0 as usize, SHAPES_CAMP.1 as usize);
+        for y in cy - 20..=cy + 20 {
+            for x in cx - 20..=cx + 20 {
+                if x.abs_diff(cx).pow(2) + y.abs_diff(cy).pow(2) <= 400 {
+                    assert_eq!(at(x, y), RELIEF_BASE_DM, "({x}, {y})");
+                }
             }
         }
     }
