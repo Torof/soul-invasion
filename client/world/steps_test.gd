@@ -2,8 +2,9 @@ class_name StepsTest
 extends Node2D
 ## The slope test (`--world test:...`, the mountain test's rule, 13
 ## November 2026), on only in a world whose chunks carry heights above
-## zero: key 1 draws the slope's grass (the ground shader), key 0 the flat
-## ground, to compare; a line on screen says which, and the altitude of
+## zero: key 1 draws the slopes (the ground shader's one rule), key 0 the
+## flat ground, to compare, key G the turf with bushes, key R the rim; a
+## line on screen says which, and the altitude of
 ## the tile the piloted body stands on (the project lead's ask, 13
 ## November 2026), with its trend over the last few seconds, the height of
 ## the tile under the mouse against the body's, and whether the body
@@ -156,70 +157,14 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	var key := event as InputEventKey
 	if key == null or not key.pressed or key.echo:
 		return
-	if key.keycode == KEY_J:
-		ChunkView.slope_turf_mirror = not ChunkView.slope_turf_mirror
-		ChunkView.set_slope_param("slope_turf_mirror", ChunkView.slope_turf_mirror)
-		_apply()
-		get_viewport().set_input_as_handled()
-		return
-	if key.keycode == KEY_K:
-		ChunkView.slope_turf_turn += 15.0
-		if ChunkView.slope_turf_turn >= 360.0:
-			ChunkView.slope_turf_turn = 0.0
-		ChunkView.set_slope_param("slope_turf_turn", ChunkView.slope_turf_turn)
-		_apply()
-		get_viewport().set_input_as_handled()
-		return
 	if key.keycode == KEY_G:
-		ChunkView.slope_turf_with_bushes = not ChunkView.slope_turf_with_bushes
-		ChunkView.set_slope_param("slope_turf_with_bushes", ChunkView.slope_turf_with_bushes)
-		_apply()
-		get_viewport().set_input_as_handled()
-		return
-	if key.keycode == KEY_L:
-		ChunkView.slope_layers = not ChunkView.slope_layers
-		ChunkView.set_slope_param("slope_layers", ChunkView.slope_layers)
+		ChunkView.set_slope_turf_with_bushes(not ChunkView.slope_turf_with_bushes)
 		_apply()
 		get_viewport().set_input_as_handled()
 		return
 	if key.keycode == KEY_R:
 		ChunkView.slope_rim = not ChunkView.slope_rim
 		ChunkView.set_slope_param("slope_rim", ChunkView.slope_rim)
-		_apply()
-		get_viewport().set_input_as_handled()
-		return
-	if key.keycode == KEY_X:
-		ChunkView.slope_crest_square = not ChunkView.slope_crest_square
-		ChunkView.set_slope_param("slope_crest_square", ChunkView.slope_crest_square)
-		_apply()
-		get_viewport().set_input_as_handled()
-		return
-	if key.keycode == KEY_N:
-		var steps: Array[float] = [100.0, 120.0, 140.0, 160.0]
-		var at := steps.find(ChunkView.slope_crest_degrees)
-		ChunkView.slope_crest_degrees = steps[(at + 1) % steps.size()]
-		ChunkView.set_slope_param("slope_crest_cos", cos(deg_to_rad(ChunkView.slope_crest_degrees)))
-		_apply()
-		get_viewport().set_input_as_handled()
-		return
-	if key.keycode == KEY_C:
-		ChunkView.slope_chevron_flip = not ChunkView.slope_chevron_flip
-		ChunkView.set_slope_param("slope_chevron_flip", ChunkView.slope_chevron_flip)
-		_apply()
-		get_viewport().set_input_as_handled()
-		return
-	if key.keycode == KEY_B:
-		ChunkView.set_slope_seams_soft(not ChunkView.slope_seams_soft)
-		_apply()
-		get_viewport().set_input_as_handled()
-		return
-	if key.keycode == KEY_V:
-		ChunkView.set_slope_zones(not ChunkView.slope_zones)
-		_apply()
-		get_viewport().set_input_as_handled()
-		return
-	if key.keycode == KEY_T:
-		ChunkView.set_slope_fall_line(not ChunkView.slope_fall_line)
 		_apply()
 		get_viewport().set_input_as_handled()
 		return
@@ -233,14 +178,6 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 func _apply() -> void:
 	ChunkView.set_steps_mode(mode)
-	var look := "fall-line rule" if ChunkView.slope_fall_line else "earlier rule"
-	var zones := "five grasses" if ChunkView.slope_zones else "your grass alone"
-	var seams := "soft seams" if ChunkView.slope_seams_soft else "sharp seams"
-	var crests := ("side rule" + (", chevron flipped" if ChunkView.slope_chevron_flip else "")) if ChunkView.slope_crest_square else "earlier sides"
-	crests += ", crest from %d°" % roundi(ChunkView.slope_crest_degrees)
-	crests += ", rim" if ChunkView.slope_rim else ", no rim"
-	crests += ", two layers" if ChunkView.slope_layers else ", one image"
-	crests += ", turf with bushes" if ChunkView.slope_turf_with_bushes else ", plain turf"
-	crests += ", streaks below the crest %d°" % roundi(ChunkView.slope_break_turn)
-	crests += ", turf below: %s turn %d° (K)" % ["no mirror" if not ChunkView.slope_turf_mirror else "mirror (J)", roundi(ChunkView.slope_turf_turn)]
-	_label.text = ("Slope test — %s, %s, %s, %s\n%s   (keys 1, 0, T, V, B, X, C, N, R, L, G, J and K)" % [MODES[mode], look, zones, seams, crests]).replace(", two layers", "\ntwo layers")
+	var turf := "turf with bushes" if ChunkView.slope_turf_with_bushes else "plain turf"
+	var rim := "rim" if ChunkView.slope_rim else "no rim"
+	_label.text = "Slope test — %s, %s, %s   (keys 1, 0, G and R)" % [MODES[mode], turf, rim]

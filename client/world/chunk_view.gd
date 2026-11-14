@@ -230,24 +230,9 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 		material.set_shader_parameter("slope_index", HeightIndex.texture())
 		if terrain != "water":
 			material.set_shader_parameter("steps_mode", steps_mode)
-			material.set_shader_parameter("slope_texture", load(SLOPE_GRASS))
-			material.set_shader_parameter("slope_fall_line", slope_fall_line)
-			for n: int in [1, 2, 3, 16]:
-				material.set_shader_parameter("slope_grass_%d" % n, load("res://world/test/slope_grass_%d.png" % n))
-			material.set_shader_parameter("slope_zones", slope_zones)
-			material.set_shader_parameter("slope_seams_soft", slope_seams_soft)
-			material.set_shader_parameter("slope_crest_square", slope_crest_square)
-			material.set_shader_parameter("slope_chevron_flip", slope_chevron_flip)
 			material.set_shader_parameter("slope_rim", slope_rim)
-			material.set_shader_parameter("slope_layers", slope_layers)
-			material.set_shader_parameter("slope_streaks", load("res://world/test/slope_streaks.png"))
-			material.set_shader_parameter("slope_turf", load("res://world/test/slope_turf.png"))
-			material.set_shader_parameter("slope_turf_bushes", load("res://world/test/slope_turf_bushes.png"))
-			material.set_shader_parameter("slope_turf_with_bushes", slope_turf_with_bushes)
-			material.set_shader_parameter("slope_break_turn", slope_break_turn)
-			material.set_shader_parameter("slope_turf_mirror", slope_turf_mirror)
-			material.set_shader_parameter("slope_turf_turn", slope_turf_turn)
-			material.set_shader_parameter("slope_crest_cos", cos(deg_to_rad(slope_crest_degrees)))
+			for dial: String in SLOPE_LOOK:
+				material.set_shader_parameter(dial, _slope_dial(dial))
 		apply_spec(material, terrain, false)
 		pin_flow_time(material)
 		_ground_materials[terrain] = material
@@ -255,68 +240,61 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 
 
 ## The slope test's mode (StepsTest): 1 the land's grounds draw the
-## slope's grass where the ground slopes, and read the meadow at random
+## slopes where the ground slopes, and read the meadow at random
 ## offsets against repetition (the mountain test's rule), 0 the game's
 ## ground as it is (any world with no relief).
 static var steps_mode := 0
-## The steps test's slope grass, the project lead's image, whole.
-const SLOPE_GRASS := "res://world/test/slope_grass.png"
-## The mountain test: the fall-line rule (true) or the earlier one (key T).
-static var slope_fall_line := false
-## The mountain test: the five slope grasses by zones (true) or the lead's alone (key V).
-static var slope_zones := true
-## The mountain test: soft seams where the slope only steepens or turns (true) or every seam at once (key B).
-static var slope_seams_soft := true
-## The mountain test: crests' streaks nearly square to the crest (key X) and the chevron's way (key C).
-static var slope_crest_square := true
-static var slope_chevron_flip := false
+## The slopes' look (the one rule the project lead validated on
+## 14 November 2026; ground.gdshader, slope_lit): the two images and the
+## dials, each a shader parameter of the same name, so another biome can
+## bring its own look without touching the shader. An image is given by
+## its path. slope_break_turn: the streaks' turn, in degrees, on a side
+## whose crest lies below; slope_streak_mix and slope_streak_pale: how
+## much the streaks' light pales the turf, and toward what;
+## slope_turf_px: the turf's repetition on the canvas, in pixels.
+const SLOPE_LOOK := {
+	"slope_streaks": "res://world/test/slope_streaks.png",
+	"slope_turf": "res://world/test/slope_turf.png",
+	"slope_break_turn": 165.0,
+	"slope_streak_mix": 0.2,
+	"slope_streak_pale": Vector3(0.92, 0.94, 0.59),
+	"slope_turf_px": 768.0,
+}
+## The turf with tufts, bushes and stones (the lead's grass of
+## 13 November 2026) laid instead of the look's (key G).
+const SLOPE_TURF_BUSHES := "res://world/test/slope_turf_bushes.png"
 ## The mountain test: the rim a near face lays over the face behind a crest (key R).
 static var slope_rim := true
-## The mountain test: the meadow with the streak image's light over it, turned toward the crest (key L).
-static var slope_layers := true
 ## The mountain test: the turf with bushes and stones under the streaks (key G).
 static var slope_turf_with_bushes := false
-## The mountain test: the break of a side whose crest lies below, in degrees (key K).
-static var slope_break_turn := 165.0
-## The mountain test: below a crest, the turf's own mirror (key J) and turn in degrees (key K).
-static var slope_turf_mirror := true
-static var slope_turf_turn := 165.0
-## The mountain test: the turn between two sides, in degrees, that makes a crest (key N).
-static var slope_crest_degrees := 120.0
 
 
+## The value of the look's dial `name` for the shader: the image loaded,
+## the turf the one with bushes when it is asked for.
+static func _slope_dial(name: String) -> Variant:
+	if name == "slope_turf" and slope_turf_with_bushes:
+		return load(SLOPE_TURF_BUSHES)
+	var value: Variant = SLOPE_LOOK[name]
+	return load(value) if value is String else value
+
+
+## Sets the slope shader parameter `name` of every land's ground to
+## `value` (the slope test's keys).
 static func set_slope_param(name: String, value: Variant) -> void:
 	for terrain: String in _ground_materials:
 		if terrain != "water":
 			(_ground_materials[terrain] as ShaderMaterial).set_shader_parameter(name, value)
 
 
-static func set_slope_seams_soft(on: bool) -> void:
-	slope_seams_soft = on
-	for terrain: String in _ground_materials:
-		if terrain != "water":
-			(_ground_materials[terrain] as ShaderMaterial).set_shader_parameter("slope_seams_soft", on)
-
-
-static func set_slope_zones(on: bool) -> void:
-	slope_zones = on
-	for terrain: String in _ground_materials:
-		if terrain != "water":
-			(_ground_materials[terrain] as ShaderMaterial).set_shader_parameter("slope_zones", on)
-
-
-static func set_slope_fall_line(on: bool) -> void:
-	slope_fall_line = on
-	for terrain: String in _ground_materials:
-		if terrain != "water":
-			(_ground_materials[terrain] as ShaderMaterial).set_shader_parameter("slope_fall_line", on)
+## Key G: the turf with bushes (true) or the look's turf.
+static func set_slope_turf_with_bushes(on: bool) -> void:
+	slope_turf_with_bushes = on
+	set_slope_param("slope_turf", _slope_dial("slope_turf"))
 
 
 static func set_steps_mode(mode: int) -> void:
 	steps_mode = mode
-	for terrain: String in _ground_materials:
-		if terrain != "water":
-			(_ground_materials[terrain] as ShaderMaterial).set_shader_parameter("steps_mode", mode)
+	set_slope_param("steps_mode", mode)
 
 
 ## Development: with SOUL_INVASION_WATER_TIME set to a number of seconds,
