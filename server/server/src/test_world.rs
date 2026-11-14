@@ -860,6 +860,7 @@ pub fn make(world: TestWorld, calendar: Calendar, content: &Content) -> World {
                 .with_heights(relief_heights())
                 .with_camp(x, y)
         }
+        TestWorld::Plan(seed) => Map::plan(seed),
     };
     World::on_valley(calendar, content, map)
 }
