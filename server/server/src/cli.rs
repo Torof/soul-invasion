@@ -92,6 +92,9 @@ OPTIONS:
                            the three turned; x 12–84, 92–164, 172–244 ×
                            y 100–172 and 180–252), the camp on the flat at
                            (235, 47). Never for play.
+    --world vivarium       The vivarium's world (D41, lot 0): zone 2 of the
+                           atlas of seed 14, 2,176 m a side with a height
+                           per tile, born at camp A (generator version 4).
     --dev                  Development tools: every client gets an overview
                            of the whole map and may teleport its body. Never
                            for play.
@@ -182,6 +185,9 @@ pub enum TestWorld {
     /// `test:squelette`: the mountain plan's first trials, made from
     /// declared ridges by `sim::relief`.
     Skeleton,
+    /// `vivarium`: the vivarium's world, zone 2 of the atlas of seed 14
+    /// (generator version 4, D41 lot 0).
+    Vivarium,
 }
 
 /// When a paced server places the plants of the view around the camp,
@@ -301,6 +307,7 @@ impl Options {
                         "test:sens" => Some(TestWorld::Sense),
                         "test:relief" => Some(TestWorld::Relief),
                         "test:squelette" => Some(TestWorld::Skeleton),
+                        "vivarium" => Some(TestWorld::Vivarium),
                         _ => {
                             if let Some(seed) = raw.strip_prefix("plan:") {
                                 seed.trim().parse().ok().map(TestWorld::Plan)
@@ -448,6 +455,10 @@ mod tests {
         );
         assert!(Options::parse(["--world", "valley"]).is_err());
         assert!(Options::parse(["--world", "plan:x"]).is_err());
+        assert_eq!(
+            Options::parse(["--world", "vivarium"]).unwrap().world,
+            Some(TestWorld::Vivarium)
+        );
     }
 
     #[test]

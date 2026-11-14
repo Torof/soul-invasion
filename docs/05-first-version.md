@@ -167,6 +167,26 @@ body rules hold for the game too, so the client's share of each step is
 counted with it. Images of rocks and caves come only once their shape is
 validated with placeholders.
 
+**Lot 0, the vivarium's world (14 November 2026).** The vivarium is born on
+the continent of seed 14, its **zone 2** (`sim::plan::vivarium`, `--world
+vivarium`, generator version 4): atlas cell (383, 521), region origin
+(378, 516), the zone's corner at region cell (156, 164), 34 cells of 64 m a
+side, 2,176 m (4.73 km²), cut from the atlas like `plan:<seed>` so its
+heights, biomes, woods, river and brooks are the atlas's. In it: a river of
+57 m³/s (13 at low water) crossing at region cell (176, 176), some 30 m
+wide at the tile, the width its flow gives it; the forest edge at
+(178, 173), 230 m from the crossing; a hill at (159, 194), 144 m of relief,
+its top at 217 m, 1,584 m from the crossing, scenery only (heights, no
+walking cost); camp A at (186, 194) and camp B at (159, 167) on opposite
+banks, 2,443 m apart; the first body is born at camp A. Measured: the zone
+itself is cut in about 60 ms, but the continent it is cut from takes some
+6 s in release, so the world is born in about 6 s, not under the second
+the plan asked; the continent's cost is the thing to bring down or to keep,
+not the zone's. The atlas finds the crossing wadeable (a bar reach, its
+riffle about 33 cm deep) but the window draws a river at its mean depth,
+1.5 m here, and no ford: today no path joins the two camps, and drawing the
+crossing is lot 1's first job.
+
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
 slopes drawn by the client from them (D44), then the relief in the
