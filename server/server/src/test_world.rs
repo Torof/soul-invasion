@@ -924,6 +924,7 @@ pub fn make(world: TestWorld, calendar: Calendar, content: &Content) -> World {
                 .with_heights(skeleton_heights())
                 .with_camp(x, y)
         }
+        TestWorld::Vivarium => Map::vivarium(),
     };
     World::on_valley(calendar, content, map)
 }
