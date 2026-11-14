@@ -156,6 +156,12 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	var key := event as InputEventKey
 	if key == null or not key.pressed or key.echo:
 		return
+	if key.keycode == KEY_K:
+		ChunkView.slope_turf_upright = not ChunkView.slope_turf_upright
+		ChunkView.set_slope_param("slope_turf_upright", ChunkView.slope_turf_upright)
+		_apply()
+		get_viewport().set_input_as_handled()
+		return
 	if key.keycode == KEY_G:
 		ChunkView.slope_turf_with_bushes = not ChunkView.slope_turf_with_bushes
 		ChunkView.set_slope_param("slope_turf_with_bushes", ChunkView.slope_turf_with_bushes)
@@ -227,4 +233,5 @@ func _apply() -> void:
 	crests += ", rim" if ChunkView.slope_rim else ", no rim"
 	crests += ", two layers" if ChunkView.slope_layers else ", one image"
 	crests += ", turf with bushes" if ChunkView.slope_turf_with_bushes else ", plain turf"
-	_label.text = "Slope test — %s, %s, %s, %s, %s   (keys 1, 0, T, V, B, X, C, N, R, L and G)" % [MODES[mode], look, zones, seams, crests]
+	crests += ", turf upright" if ChunkView.slope_turf_upright else ", turf follows streaks"
+	_label.text = "Slope test — %s, %s, %s, %s, %s   (keys 1, 0, T, V, B, X, C, N, R, L, G and K)" % [MODES[mode], look, zones, seams, crests]

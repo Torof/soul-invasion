@@ -91,6 +91,7 @@ uniform sampler2D slope_streaks : repeat_enable, filter_linear_mipmap;
 uniform sampler2D slope_turf : repeat_enable, filter_linear_mipmap;
 uniform sampler2D slope_turf_bushes : repeat_enable, filter_linear_mipmap;
 uniform bool slope_turf_with_bushes = false;
+uniform bool slope_turf_upright = false;
 const float SLOPE_TURF_PX = 768.0;
 const vec3 SLOPE_STREAK_PALE = vec3(0.92, 0.94, 0.59);
 const float SLOPE_STREAK_MIX = 0.55;
@@ -639,9 +640,14 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 		// where the other side begins.
 		vec3 tex = streak_read(canvas, dx, dy, 1.0, vec2(fx, fy));
 		float light = tex.r;
+		// The turf follows the streaks (14 November 2026, the lead: grass
+		// and streaks must run the same way): turned like them, unless
+		// slope_turf_upright (key K) keeps it as drawn.
+		vec2 tf = slope_turf_upright ? vec2(1.0) : vec2(fx, fy);
+		vec2 tuv = canvas / SLOPE_TURF_PX * tf;
 		vec3 turf = slope_turf_with_bushes
-			? textureGrad(slope_turf_bushes, canvas / SLOPE_TURF_PX, dx / SLOPE_TURF_PX, dy / SLOPE_TURF_PX).rgb * SLOPE_TINT
-			: textureGrad(slope_turf, canvas / SLOPE_TURF_PX, dx / SLOPE_TURF_PX, dy / SLOPE_TURF_PX).rgb * SLOPE_TINT;
+			? textureGrad(slope_turf_bushes, tuv, dx / SLOPE_TURF_PX * tf, dy / SLOPE_TURF_PX * tf).rgb * SLOPE_TINT
+			: textureGrad(slope_turf, tuv, dx / SLOPE_TURF_PX * tf, dy / SLOPE_TURF_PX * tf).rgb * SLOPE_TINT;
 		vec3 lit = mix(turf, SLOPE_STREAK_PALE, light * SLOPE_STREAK_MIX);
 		if (rim) {
 			lit *= SLOPE_RIM_SHADE;
