@@ -247,7 +247,7 @@ impl Window {
     }
 
     /// Where to cut a window of `side` tiles in `region`, in its cells:
-    /// no sea, a river, woods over [`CHOICE_FOREST`] of it if any window
+    /// no sea, a river, woods over `CHOICE_FOREST` of it if any window
     /// has them, and the most steep ground then the steepest on average.
     pub fn choose(region: &Region, side: u32) -> (usize, usize) {
         let n = side as usize / usize::try_from(CELL).expect("small");
@@ -672,7 +672,7 @@ impl Window {
     }
 
     /// Is tile `(x, y)` in the forest's biome? Its border with the open
-    /// ground wanders [`EDGE_SHIFT_M`] either way.
+    /// ground wanders `EDGE_SHIFT_M` either way.
     pub fn wooded(&self, x: i64, y: i64) -> bool {
         let (sx, sy) = self.ragged(x, y, 0, EDGE_SHIFT_M);
         self.cell(&self.forest, sx.div_euclid(CELL), sy.div_euclid(CELL))

@@ -211,7 +211,7 @@ pub enum Biome {
     /// Broadleaf forest: oak, beech, lime; the warm forests too.
     Broadleaf,
     /// The jungle: the hot, wet forest of the tropics, where the mean
-    /// year is over [`JUNGLE_TENTHS`] and the rain over [`JUNGLE_ARIDITY`]
+    /// year is over `JUNGLE_TENTHS` and the rain over `JUNGLE_ARIDITY`
     /// of what the air could take back.
     Jungle,
     /// Broadleaf and conifer together, where the one gives way to the
