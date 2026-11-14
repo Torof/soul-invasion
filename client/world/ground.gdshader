@@ -640,12 +640,13 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 		// where the other side begins.
 		vec3 tex = streak_read(canvas, dx, dy, 1.0, vec2(fx, fy));
 		float light = tex.r;
-		// The turf follows the streaks' diagonal (14 November 2026, the
-		// lead: grass and streaks run the same way) but its blades always
-		// point up the screen: where the streaks are upside down the turf
-		// takes the mirror instead, the same diagonal, the point up. Key K
-		// keeps the turf as drawn.
-		vec2 tf = slope_turf_upright ? vec2(1.0) : vec2(fx * fy, 1.0);
+		// The turf keeps the streaks' SIDE with its blades up the screen
+		// (14 November 2026, the lead, on a side whose crest lies below:
+		// a streak running down to the right wants the grass pointing up
+		// and right, one running down to the left wants it up and left).
+		// So the turf is mirrored with the streaks and never turned upside
+		// down. Key K keeps the turf as drawn.
+		vec2 tf = slope_turf_upright ? vec2(1.0) : vec2(fx, 1.0);
 		vec2 tuv = canvas / SLOPE_TURF_PX * tf;
 		vec3 turf = slope_turf_with_bushes
 			? textureGrad(slope_turf_bushes, tuv, dx / SLOPE_TURF_PX * tf, dy / SLOPE_TURF_PX * tf).rgb * SLOPE_TINT
