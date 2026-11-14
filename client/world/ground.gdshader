@@ -663,12 +663,13 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 		// the crest lies below it lies along the streaks' line but points
 		// the other way, up the screen (the lead, 14 November 2026): the
 		// streaks' turn less a half turn, a rotation still.
-		vec2 tf = below ? vec2(1.0) : vec2(fx, 1.0);
-		float tturn = radians(slope_turf_turn);
-		mat2 trot = below ? mat2(vec2(cos(tturn), sin(tturn)), vec2(-sin(tturn), cos(tturn))) : mat2(vec2(1.0, 0.0), vec2(0.0, 1.0));
-		if (below && slope_turf_mirror) {
-			trot = trot * mat2(vec2(-1.0, 0.0), vec2(0.0, 1.0));
-		}
+		// The turf NEVER points down the screen (the lead, all day on
+		// 14 November 2026; the "mirror then 165°" of the evening was a
+		// vertical flip in disguise, my error): everywhere, as drawn where
+		// the ground rises toward the screen's right, mirrored toward the
+		// left, blades up. Only the streaks turn under a crest.
+		vec2 tf = vec2(fx, 1.0);
+		mat2 trot = mat2(vec2(1.0, 0.0), vec2(0.0, 1.0));
 		vec2 tuv = trot * (canvas / SLOPE_TURF_PX * tf);
 		vec2 tdx = trot * (dx / SLOPE_TURF_PX * tf);
 		vec2 tdy = trot * (dy / SLOPE_TURF_PX * tf);
