@@ -38,12 +38,12 @@ uniform int steps_mode = 0;
 // lead's image, its streaks rising toward the upper right) laid in canvas
 // space, SLOPE_TEXTURE_PX a repetition, toned by SLOPE_TINT.
 uniform sampler2D slope_texture : repeat_enable, filter_linear_mipmap;
-// Four more slopes' grasses (Midjourney's of 13 November 2026, numbers
-// 1, 2, 3 and 16 of that batch, toned to the lead's; all five with their
-// broad light streaks softened by 60 %, ink and dark tufts kept): each zone of about
-// SLOPE_ZONE_TILES, its edges wavy, takes one of the five whole, never two
-// over each other, against the same grass coming back everywhere. Off
-// (key V): the lead's grass alone.
+// The five slopes' grasses (the project lead's Midjourney batch of
+// 14 November 2026, numbers 2, 6, 22, 26 and 34, made seamless by a
+// periodic Poisson solve; nothing strong near their edges): each zone of
+// about SLOPE_ZONE_TILES, its edges wavy, takes one of them whole, never
+// two over each other, against the same grass coming back everywhere.
+// Off (key V): the first one alone.
 uniform sampler2D slope_grass_1 : repeat_enable, filter_linear_mipmap;
 uniform sampler2D slope_grass_2 : repeat_enable, filter_linear_mipmap;
 uniform sampler2D slope_grass_3 : repeat_enable, filter_linear_mipmap;
@@ -82,8 +82,8 @@ const float SLOPE_SIDE_FADE = 4.0;
 // At a crest each side is one image whole, never several strips.
 // The widths a crest's side may take (fixed ones only, never in between).
 const float CREST_WIDTHS[7] = float[](0.45, 0.6, 0.85, 1.25, 1.8, 2.2, 3.0);
-// Midjourney's grasses are drawn at half the lead's scale: repeated over
-// SLOPE_ZONE_SCALE times the canvas so their tufts match his.
+// The grasses are drawn over SLOPE_ZONE_SCALE times the canvas, their
+// tufts at the size of the lead's first slope image.
 const float SLOPE_ZONE_SCALE = 2.0;
 const float SLOPE_ZONE_FADE = 1.5;
 // Crisp (the default, 13 November 2026): one image a pixel, the dominant
@@ -527,14 +527,14 @@ vec3 slope_zone(vec2 p) {
 }
 
 // One zone's grass `zone` (0 the lead's) leaning as slope_leaning lays it,
-// Midjourney's drawn SLOPE_ZONE_SCALE times larger.
+// drawn SLOPE_ZONE_SCALE times larger.
 vec3 zone_grass(int zone, vec2 canvas, vec2 dx, vec2 dy, vec3 inclines, vec3 leans, vec4 w, vec4 ox, vec4 oy) {
-	if (zone == 0) {
-		return slope_leaning(slope_texture, canvas, dx, dy, inclines, leans, w, ox, oy);
-	}
 	canvas /= SLOPE_ZONE_SCALE;
 	dx /= SLOPE_ZONE_SCALE;
 	dy /= SLOPE_ZONE_SCALE;
+	if (zone == 0) {
+		return slope_leaning(slope_texture, canvas, dx, dy, inclines, leans, w, ox, oy);
+	}
 	if (zone == 1) {
 		return slope_leaning(slope_grass_1, canvas, dx, dy, inclines, leans, w, ox, oy);
 	} else if (zone == 2) {
@@ -548,12 +548,12 @@ vec3 zone_grass(int zone, vec2 canvas, vec2 dx, vec2 dy, vec3 inclines, vec3 lea
 // One zone's grass `zone` read once at `width`, mirrored when `flip` is -1.
 vec3 zone_read(int zone, vec2 canvas, vec2 dx, vec2 dy, float width, float flip) {
 	vec4 one = vec4(1.0, 0.0, 0.0, 0.0);
-	if (zone == 0) {
-		return slope_read(slope_texture, canvas, dx, dy, width, flip, one, vec4(0.0), vec4(0.0));
-	}
 	canvas /= SLOPE_ZONE_SCALE;
 	dx /= SLOPE_ZONE_SCALE;
 	dy /= SLOPE_ZONE_SCALE;
+	if (zone == 0) {
+		return slope_read(slope_texture, canvas, dx, dy, width, flip, one, vec4(0.0), vec4(0.0));
+	}
 	if (zone == 1) {
 		return slope_read(slope_grass_1, canvas, dx, dy, width, flip, one, vec4(0.0), vec4(0.0));
 	} else if (zone == 2) {
