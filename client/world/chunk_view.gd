@@ -241,6 +241,7 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 			material.set_shader_parameter("slope_rim", slope_rim)
 			material.set_shader_parameter("slope_layers", slope_layers)
 			material.set_shader_parameter("slope_streaks", load("res://world/test/slope_streaks.png"))
+			material.set_shader_parameter("slope_turf", load("res://world/test/slope_turf.png"))
 			material.set_shader_parameter("slope_crest_cos", cos(deg_to_rad(slope_crest_degrees)))
 		apply_spec(material, terrain, false)
 		pin_flow_time(material)
