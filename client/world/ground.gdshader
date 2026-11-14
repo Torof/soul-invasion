@@ -24,6 +24,72 @@ const int INDEX_FRINGE = 128;
 // The images' derivatives are scaled by this: one mipmap level sharper.
 const float SHARPEN = 0.5;
 
+// The slopes (D44, the project lead's decisions of 13 and 14 November
+// 2026): the ground is drawn flat; where it slopes, a slope is laid over
+// it in two layers, by the one rule the lead validated on 14 November
+// 2026 in the evening (slope_lit; the rules learnt are in
+// content/ai-reserve/review/montagne-algo/REGLES-APPRISES.md, G and H).
+// slope_index (HeightIndex): R and G the ground's rise along the map's x
+// and y, in metres a tile, read over two tiles on either side; read
+// between the tiles' middles. slopes_drawn: 0 the game's ground as it is
+// (any world whose chunks carry no heights, D43: every branch below is
+// then dead and the picture is what it was), 1 the slopes where the
+// ground slopes, and the meadow at random offsets against repetition.
+uniform sampler2D slope_index : filter_linear, repeat_enable;
+uniform int slopes_drawn = 0;
+// The two layers. The streaks (client/world/slope/slope_streaks.png,
+// drawn by a script: soft comets, wide at the lower left, thin point at
+// the upper right, no tuft) carry the SENSE: their thin point goes toward
+// the crest. The turf (mountain_turf.png, the lead's mountain grass of
+// 14 November 2026, or mountain_turf_bushes.png, his grass with tufts,
+// bushes and stones of 13 November; ChunkView sets which; both
+// provisional, a short grass seen close is wanted) carries the UP: its
+// blades point up the screen, never down. Both are laid in canvas space,
+// SLOPE_STREAK_PX and slope_turf_px a repetition, the turf toned by
+// SLOPE_TINT.
+uniform sampler2D slope_streaks : repeat_enable, filter_linear_mipmap;
+uniform sampler2D slope_turf : repeat_enable, filter_linear_mipmap;
+const float SLOPE_STREAK_PX = 768.0;
+const vec3 SLOPE_TINT = vec3(0.94, 1.02, 0.92);
+// The look's dials (ChunkView.SLOPE_LOOK sets them, so another biome can
+// change them without touching the shader): a side whose crest lies
+// below (the ground rising toward the viewer) has its streaks turned by
+// slope_break_turn degrees (the lead's dial, 14 November 2026: 165, the
+// point still toward the crest, the body nearly level); the streaks'
+// light (their red channel) is laid over the turf toward
+// slope_streak_pale at slope_streak_mix (0.2 gave the sense without
+// being seen; 0, the lead's choice of 14 November 2026 at night: the
+// turf alone, and the streaks are not even read); the turf repeats
+// every slope_turf_px of canvas.
+uniform float slope_break_turn = 165.0;
+uniform float slope_streak_mix = 0.0;
+uniform vec3 slope_streak_pale = vec3(0.92, 0.94, 0.59);
+uniform float slope_turf_px = 768.0;
+// The rim (off by default; the lead prefers the crests without it,
+// 14 November 2026; the developer overlay's key R turns it on): at a
+// crest, the face toward the viewer hides the first row of the face
+// behind it. A point just behind the line (its ground rising toward the
+// screen's bottom, the ground SLOPE_RIM_TILES nearer the viewer rising
+// the other way, the two folded) is drawn as that nearer face, shaded by
+// SLOPE_RIM_SHADE: the only cue of up and down that needs no light.
+uniform bool slope_rim = false;
+const float SLOPE_RIM_TILES = 0.9;
+const float SLOPE_RIM_SHADE = 0.82;
+// A tile's half width and half height on the canvas.
+const vec2 TILE_HALF_PX = vec2(32.0, 16.0);
+// The slope shows whole from SLOPE_SHOWN_AT metres a tile and not at all
+// below (one image a pixel, no fade into the meadow: two grasses over
+// each other blurred, 13 November 2026); the rim's near face counts from
+// SLOPE_SHOW_FROM.
+const float SLOPE_SHOW_FROM = 0.04;
+const float SLOPE_SHOW_FULL = 0.14;
+const float SLOPE_SHOWN_AT = 0.5 * (SLOPE_SHOW_FROM + SLOPE_SHOW_FULL);
+// Against repetition: the canvas is cut into cells of OFFSET_CELL_PX, each
+// reading the images at its own random offset, and a point blends its
+// four nearest cells' readings (bilinearly), so no seam shows. For the
+// meadow between the slopes.
+const float OFFSET_CELL_PX = 150.0;
+
 uniform sampler2D noise_texture : repeat_enable, filter_linear;
 // Noise period, in texture units (one unit is one texture, four metres).
 uniform float noise_scale = 0.09;
@@ -245,6 +311,82 @@ bool meet_shows(vec4 a, float w, float meet_noise) {
 	return (w - 0.5) * 2.0 + dot(a.rgb, vec3(0.333)) * meet_depth + meet_noise > -meet_band;
 }
 
+// A cell's random number, from 0 to 1, for the seed `s`.
+float offset_hash(vec2 cell, float s) {
+	return fract(sin(cell.x * 12.9898 + cell.y * 78.233 + s) * 43758.5453);
+}
+
+// The four cells nearest canvas point `canvas`: their weights (`w`) and
+// their offsets (`ox`, `oy`, in repetitions of an image), in the order
+// (0, 0), (1, 0), (0, 1), (1, 1).
+void offset_cells(vec2 canvas, out vec4 w, out vec4 ox, out vec4 oy) {
+	vec2 g = canvas / OFFSET_CELL_PX - 0.5;
+	vec2 i = floor(g);
+	vec2 f = g - i;
+	w = vec4((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y);
+	ox = vec4(offset_hash(i, 1.0), offset_hash(i + vec2(1.0, 0.0), 1.0),
+		offset_hash(i + vec2(0.0, 1.0), 1.0), offset_hash(i + vec2(1.0, 1.0), 1.0));
+	oy = vec4(offset_hash(i, 7.0), offset_hash(i + vec2(1.0, 0.0), 7.0),
+		offset_hash(i + vec2(0.0, 1.0), 7.0), offset_hash(i + vec2(1.0, 1.0), 7.0));
+}
+
+// The slopes' one rule (the lead, 14 November 2026 in the evening:
+// "the best picture we have ever had"). Where the ground at map point
+// `p` (tiles) slopes, `lit` is the slope's colour at canvas point
+// `canvas` (derivatives `dx`, `dy`), the slope covers the pixel whole
+// and the meadow need not be read: true. Flat ground: false, `lit`
+// untouched.
+// Per pixel: `up` the uphill direction on the screen (y down), where
+// the crest lies; `fx` +1 where the ground rises toward the screen's
+// right, -1 toward its left (straight up or down the screen, a tie,
+// settled once and for all so nothing flickers: -1 rising up, +1 rising
+// down); `below` where the ground rises toward the viewer, the crest
+// below. The streaks: as drawn or mirrored by `fx` where the crest is up
+// the screen; where it lies below, turned by slope_break_turn and not
+// mirrored, so the thin point still goes toward the crest (the break
+// tells the crest, not the sense). The turf: ALWAYS as drawn or mirrored
+// by `fx`, never turned, never upside down (REGLES-APPRISES H1). The
+// streaks' light lies over the turf, pale, at slope_streak_mix; at 0
+// the streaks are not read.
+bool slope_lit(vec2 p, vec2 canvas, vec2 dx, vec2 dy, out vec3 lit) {
+	vec2 rise = texture(slope_index, p / index_tiles).rg;
+	float s = length(rise);
+	bool rim = false;
+	if (slope_rim && rise.x + rise.y > 0.0) {
+		vec2 near = texture(slope_index, (p + vec2(0.7071) * SLOPE_RIM_TILES) / index_tiles).rg;
+		if (near.x + near.y < 0.0 && dot(rise, near) < 0.0 && length(near) > SLOPE_SHOW_FROM) {
+			rise = near;
+			s = length(rise);
+			rim = true;
+		}
+	}
+	if (s < SLOPE_SHOWN_AT) {
+		return false;
+	}
+	vec2 g = rise / s;
+	vec2 up = vec2(TILE_HALF_PX.x * (g.x - g.y), TILE_HALF_PX.y * (g.x + g.y));
+	float fx = up.x != 0.0 ? sign(up.x) : sign(up.y);
+	bool below = up.y > 0.0;
+	float light = 0.0;
+	if (slope_streak_mix > 0.0) {
+		mat2 lay = mat2(vec2(fx, 0.0), vec2(0.0, 1.0));
+		if (below) {
+			float turn = radians(slope_break_turn);
+			lay = mat2(vec2(cos(turn), sin(turn)), vec2(-sin(turn), cos(turn)));
+		}
+		light = textureGrad(slope_streaks, lay * (canvas / SLOPE_STREAK_PX),
+			lay * (dx / SLOPE_STREAK_PX), lay * (dy / SLOPE_STREAK_PX)).r;
+	}
+	vec2 flip = vec2(fx, 1.0);
+	vec3 turf = textureGrad(slope_turf, canvas / slope_turf_px * flip,
+		dx / slope_turf_px * flip, dy / slope_turf_px * flip).rgb * SLOPE_TINT;
+	lit = mix(turf, slope_streak_pale, light * slope_streak_mix);
+	if (rim) {
+		lit *= SLOPE_RIM_SHADE;
+	}
+	return true;
+}
+
 void fragment() {
 	vec2 uv = UV;
 	// The clock the streaks run by (pinned by flow_time in development).
@@ -299,14 +441,41 @@ if (edged) {
 if (edged && floor_in <= 0.0) {
 	COLOR = vec4(fringe_colour * tint.rgb, max(floor_in, edge_shade));
 } else {
-float grain = (texture(noise_texture, uv * 0.8 + vec2(0.37, 0.19)).r - 0.5) * 2.0 * meet_grain;
+// The slopes: the canvas point and its derivatives, and the slope
+// first; where it covers the pixel whole, nothing of the meadow shows
+// and none of its layers is read.
+vec2 canvas = vec2(at.x - at.y, at.x + at.y) * TILE_HALF_PX;
+vec2 canvas_dx = vec2(duv_x.x - duv_x.y, duv_x.x + duv_x.y) * 4.0 * TILE_HALF_PX;
+vec2 canvas_dy = vec2(duv_y.x - duv_y.y, duv_y.x + duv_y.y) * 4.0 * TILE_HALF_PX;
+vec3 slope = vec3(0.0);
+bool sloped = slopes_drawn > 0 && slope_lit(at, canvas, canvas_dx, canvas_dy, slope);
+float grain = 0.0;
 // The variants' weights, once for every layer, and the derivatives the
 // layers are read with (varied_once).
-vec3 vw = variant_weights(uv);
-vec4 ground = varied_once_builtin(TEXTURE, uv, vw, duv_x, duv_y);
+vec3 vw = vec3(0.0);
+vec4 ground = vec4(0.0, 0.0, 0.0, 1.0);
+if (!sloped) {
+	grain = (texture(noise_texture, uv * 0.8 + vec2(0.37, 0.19)).r - 0.5) * 2.0 * meet_grain;
+	vw = variant_weights(uv);
+}
+if (sloped) {
+	// Nothing of the meadow shows.
+} else if (slopes_drawn > 0) {
+	// The meadow at random offsets against repetition (offset_cells).
+	vec4 cell_w;
+	vec4 cell_ox;
+	vec4 cell_oy;
+	offset_cells(canvas, cell_w, cell_ox, cell_oy);
+	ground = cell_w.x * varied_once_builtin(TEXTURE, uv + vec2(cell_ox.x, cell_oy.x), vw, duv_x, duv_y)
+		+ cell_w.y * varied_once_builtin(TEXTURE, uv + vec2(cell_ox.y, cell_oy.y), vw, duv_x, duv_y)
+		+ cell_w.z * varied_once_builtin(TEXTURE, uv + vec2(cell_ox.z, cell_oy.z), vw, duv_x, duv_y)
+		+ cell_w.w * varied_once_builtin(TEXTURE, uv + vec2(cell_ox.w, cell_oy.w), vw, duv_x, duv_y);
+} else {
+	ground = varied_once_builtin(TEXTURE, uv, vw, duv_x, duv_y);
+}
 // Each layer is read only where it can show (meet_shows): the same
 // picture, fewer reads.
-if (has_sibling) {
+if (has_sibling && !sloped) {
 	float n = texture(noise_texture, uv * noise_scale).r;
 	float threshold = 1.0 - sibling_cover;
 	float weight = smoothstep(threshold - 0.15, threshold + 0.15, n);
@@ -328,17 +497,19 @@ if (has_sibling) {
 }
 // Dry zones: a soft, wide mask; the tint is applied at most at
 // dry_strength so the change stays a half-tone.
-float d = texture(noise_texture, uv * dry_scale + vec2(0.8, 0.1)).r;
-float dry_threshold = 1.0 - dry_cover;
-float dry = smoothstep(dry_threshold - dry_softness, dry_threshold + dry_softness, d) * dry_strength;
-ground.rgb = mix(ground.rgb, ground.rgb * dry_tint, dry);
-if (has_second) {
+if (!sloped) {
+	float d = texture(noise_texture, uv * dry_scale + vec2(0.8, 0.1)).r;
+	float dry_threshold = 1.0 - dry_cover;
+	float dry = smoothstep(dry_threshold - dry_softness, dry_threshold + dry_softness, d) * dry_strength;
+	ground.rgb = mix(ground.rgb, ground.rgb * dry_tint, dry);
+}
+if (has_second && !sloped) {
 	float w2 = patches(uv, second_scale, vec2(0.2, 0.7), second_cover, second_softness);
 	if (meet_shows(ground, w2, grain)) {
 		ground = meet(ground, varied_once(second_texture, uv, vw, duv_x, duv_y), w2, grain);
 	}
 }
-if (has_worn) {
+if (has_worn && !sloped) {
 	float w3 = patches(uv, worn_scale, vec2(0.5, 0.25), worn_cover, worn_softness);
 	if (meet_shows(ground, w3, grain)) {
 		ground = meet(ground, varied_once(worn_texture, uv, vw, duv_x, duv_y), w3, grain);
@@ -349,7 +520,7 @@ if (has_worn) {
 // (that squares the colour and darkens it by half).
 ground.rgb *= base_tint;
 vec3 vertex_tint = tint.rgb;
-if (current_strength > 0.0) {
+if (current_strength > 0.0 && !sloped) {
 	// Two drifts of streaks at different paces, read from the noise
 	// squeezed across the river and stretched along it.
 	vec2 flow = vec2(uv.x * current_scale, (uv.y - now * current_speed) * current_scale / current_stretch);
@@ -360,7 +531,7 @@ if (current_strength > 0.0) {
 	float streak = max(smoothstep(t - 0.08, t + 0.08, s1), smoothstep(t, t + 0.12, s2) * 0.6);
 	ground.rgb = mix(ground.rgb, ground.rgb * shore_tint, streak * current_strength);
 }
-if (shore_lighten > 0.0) {
+if (shore_lighten > 0.0 && !sloped) {
 	float raw = 1.0 - tint.g;
 	float near = raw * shore_lighten;
 	float e = texture(noise_texture, uv * edge_scale + vec2(0.61, 0.13)).r;
@@ -412,6 +583,6 @@ if (has_bank) {
 	ground.rgb = mix(fringe_colour, ground.rgb, floor_in);
 	alpha = max(floor_in, edge_shade);
 }
-COLOR = vec4(ground.rgb * vertex_tint, alpha);
+COLOR = vec4(sloped ? slope : ground.rgb * vertex_tint, alpha);
 }
 }

@@ -167,6 +167,11 @@ body rules hold for the game too, so the client's share of each step is
 counted with it. Images of rocks and caves come only once their shape is
 validated with placeholders.
 
+Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
+is built in three pull requests: the heights in the chunks (D43), the
+slopes drawn by the client from them (D44), then the relief in the
+generator.
+
 ## Milestone 1 audit (5 November 2026)
 
 What the skeleton is: a Rust server (`sim`, `protocol`, `server`), a Godot client, one valley of 32×32 tiles with a cliff, a river and a ford, three bodies, the first free one piloted by each connection. Time runs in fixed ticks (10 per game second, 7 200 game seconds per day), at any pace or headless. Snapshots and an event journal in SQLite. 59 server tests, 17 client checks, an end-to-end run with the real client.

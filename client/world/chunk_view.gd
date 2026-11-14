@@ -227,10 +227,99 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 		material.set_shader_parameter("ground_index", GroundIndex.texture())
 		material.set_shader_parameter("index_bit", int(GroundIndex.BITS.get(terrain, 0)))
 		material.set_shader_parameter("index_tiles", float(GroundIndex.TILES))
+		material.set_shader_parameter("slope_index", HeightIndex.texture())
+		if terrain != "water":
+			material.set_shader_parameter("slopes_drawn", slopes_drawn)
+			material.set_shader_parameter("slope_rim", slope_rim)
+			for dial: String in SLOPE_LOOK:
+				material.set_shader_parameter(dial, _slope_dial(dial))
 		apply_spec(material, terrain, false)
 		pin_flow_time(material)
 		_ground_materials[terrain] = material
 	return _ground_materials[terrain]
+
+
+## Whether the land's grounds draw the slopes (D44): 1 where a chunk has
+## carried heights (D43), the ground shader lays its two layers wherever
+## the ground slopes and reads the meadow at random offsets against
+## repetition; 0 the game's ground as it is (any world with no relief:
+## the valley and the game's worlds today), the picture unchanged.
+## WorldView turns it on with the first chunk that carries heights.
+static var slopes_drawn := 0
+## The slopes' look (the one rule the project lead validated on
+## 14 November 2026; ground.gdshader, slope_lit): the two images and the
+## dials, each a shader parameter of the same name, so another biome can
+## bring its own look without touching the shader. An image is given by
+## its path. slope_streaks: the comets whose thin point goes toward the
+## crest; slope_turf: the lead's mountain grass (provisional: he wants a
+## short grass seen close, with stones and a few bushes). slope_break_turn:
+## the streaks' turn, in degrees, on a side whose crest lies below (the
+## lead's dial); slope_streak_mix and slope_streak_pale: how much the
+## streaks' light pales the turf, and toward what (0: the turf alone, the
+## streaks not read; 0.2 showed the sense without being seen; the lead's
+## choice of 14 November 2026 at night); slope_turf_px: the turf's
+## repetition on the canvas, in pixels (the lead's choice, 384).
+const SLOPE_LOOK := {
+	"slope_streaks": "res://world/slope/slope_streaks.png",
+	"slope_turf": "res://world/slope/mountain_turf.png",
+	"slope_break_turn": 165.0,
+	"slope_streak_mix": 0.0,
+	"slope_streak_pale": Vector3(0.92, 0.94, 0.59),
+	"slope_turf_px": 384.0,
+}
+## The turf with tufts, bushes and stones (the lead's grass of
+## 13 November 2026) laid instead of the look's (the developer overlay's
+## key G).
+const SLOPE_TURF_BUSHES := "res://world/slope/mountain_turf_bushes.png"
+## The rim a near face lays over the face behind a crest (off: the lead
+## prefers the crests without it; the developer overlay's key R).
+static var slope_rim := false
+## The turf with bushes and stones instead of the look's (key G).
+static var slope_turf_with_bushes := false
+## The turf's repetition in canvas px as drawn now (the look's, or the
+## developer overlay's key P).
+static var slope_turf_px: float = SLOPE_LOOK["slope_turf_px"]
+
+
+## The value of the look's dial `name` for the shader: the image loaded,
+## the turf the one with bushes when it is asked for, the turf's size as
+## set now.
+static func _slope_dial(name: String) -> Variant:
+	if name == "slope_turf" and slope_turf_with_bushes:
+		return load(SLOPE_TURF_BUSHES)
+	if name == "slope_turf_px":
+		return slope_turf_px
+	var value: Variant = SLOPE_LOOK[name]
+	return load(value) if value is String else value
+
+
+## Sets the slope shader parameter `name` of every land's ground to
+## `value`.
+static func set_slope_param(name: String, value: Variant) -> void:
+	for terrain: String in _ground_materials:
+		if terrain != "water":
+			(_ground_materials[terrain] as ShaderMaterial).set_shader_parameter(name, value)
+
+
+static func set_slope_turf_px(px: float) -> void:
+	slope_turf_px = px
+	set_slope_param("slope_turf_px", px)
+
+
+## The turf with bushes (true) or the look's turf.
+static func set_slope_turf_with_bushes(on: bool) -> void:
+	slope_turf_with_bushes = on
+	set_slope_param("slope_turf", _slope_dial("slope_turf"))
+
+
+static func set_slope_rim(on: bool) -> void:
+	slope_rim = on
+	set_slope_param("slope_rim", on)
+
+
+static func set_slopes_drawn(mode: int) -> void:
+	slopes_drawn = mode
+	set_slope_param("slopes_drawn", mode)
 
 
 ## Development: with SOUL_INVASION_WATER_TIME set to a number of seconds,
