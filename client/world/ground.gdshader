@@ -95,7 +95,7 @@ uniform bool slope_turf_with_bushes = false;
 // streaks whole (its blades toward the crest, upside down where they
 // are), 1 the streaks' side only (blades up), 2 the opposite side (blades
 // up, the streaks' diagonal), 3 as drawn.
-uniform int slope_turf_mode = 0;
+uniform int slope_turf_mode = 2;
 const float SLOPE_TURF_PX = 768.0;
 const vec3 SLOPE_STREAK_PALE = vec3(0.92, 0.94, 0.59);
 const float SLOPE_STREAK_MIX = 0.55;
