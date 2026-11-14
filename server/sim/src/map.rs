@@ -247,6 +247,13 @@ pub const FIRST_GENERATOR: u32 = 1;
 /// asked (`--world plan:<seed>`).
 pub const PLAN_GENERATOR: u32 = 3;
 
+/// The vivarium's generator (D41, lot 0; the project lead's decision of
+/// 14 November 2026): zone 2 of the atlas of seed 14, cut and refined
+/// like the look test's window but at that fixed place, the camp at camp
+/// A ([`crate::plan::vivarium`]). Never the default: a server makes it
+/// only when asked (`--world vivarium`).
+pub const VIVARIUM_GENERATOR: u32 = 4;
+
 /// A world saved before versions were stored was made by the first.
 fn first_generator() -> u32 {
     FIRST_GENERATOR
@@ -377,6 +384,14 @@ impl Map {
             assert_eq!(width, height, "a window of the atlas is square");
             return Self::on_window(Window::atlas(seed, width), seed);
         }
+        if generator == VIVARIUM_GENERATOR {
+            let zone = crate::plan::ZONE_2;
+            assert!(
+                width == zone.side() && height == zone.side(),
+                "the vivarium's zone has one size"
+            );
+            return Self::on_window_by(zone.window(seed), seed, VIVARIUM_GENERATOR);
+        }
         let cliff_rows = (height / 8).max(2);
         let waters = {
             let rivers = Rivers::generate(width, height, cliff_rows, seed);
@@ -410,9 +425,23 @@ impl Map {
         Self::valley_by(PLAN_GENERATOR, side, side, seed)
     }
 
+    /// The vivarium's world (generator version 4, D41 lot 0): zone 2 of
+    /// the atlas of seed 14 ([`crate::plan::ZONE_2`]), 2,176 m a side,
+    /// with a height per tile, the camp at camp A.
+    pub fn vivarium() -> Self {
+        let side = crate::plan::ZONE_2.side();
+        Self::valley_by(VIVARIUM_GENERATOR, side, side, crate::plan::VIVARIUM_SEED)
+    }
+
     /// The map of an atlas's `window`: its waters, the valley's woods
-    /// within its forest, its heights.
+    /// within its forest, its heights. The look test's (generator 3).
     pub fn on_window(window: Window, seed: u64) -> Self {
+        Self::on_window_by(window, seed, PLAN_GENERATOR)
+    }
+
+    /// [`Map::on_window`] made by `generator`, which must give back the
+    /// same window from `seed` and the map's side.
+    pub(crate) fn on_window_by(window: Window, seed: u64, generator: u32) -> Self {
         let side = window.side();
         let waters = Waters::from_tiles(
             side,
@@ -428,7 +457,7 @@ impl Map {
                 width: side,
                 height: side,
                 seed,
-                generator: PLAN_GENERATOR,
+                generator,
             },
             width: side,
             height: side,

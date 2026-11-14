@@ -213,7 +213,7 @@ pub struct Wet {
 const NO_LAKE: i32 = i32::MIN;
 
 /// A window of the atlas at one metre (see the module).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Window {
     seed: u64,
     side: u32,
@@ -524,9 +524,46 @@ impl Window {
     }
 
     /// The camp: dry, gentle ground near a river, the nearest such to the
-    /// window's centre.
+    /// window's centre, unless set ([`Window::with_camp`]).
     pub fn camp(&self) -> (u32, u32) {
         self.camp
+    }
+
+    /// The same window with its camp at `at`, or at the nearest dry tile
+    /// (no water, no lake's shore) when `at` is wet: the vivarium's camps
+    /// are chosen on the atlas, by the cell, not found from the centre.
+    ///
+    /// # Panics
+    ///
+    /// When `at` is off the window.
+    #[must_use]
+    pub fn with_camp(mut self, at: (u32, u32)) -> Self {
+        assert!(at.0 < self.side && at.1 < self.side, "a camp on the window");
+        let side = i64::from(self.side);
+        let (cx, cy) = (i64::from(at.0), i64::from(at.1));
+        let dry = |x: i64, y: i64| {
+            (1..side - 1).contains(&x)
+                && (1..side - 1).contains(&y)
+                && self.wet(x, y).is_none()
+                && self.lake_at(x, y).0 == 0
+        };
+        let mut r = 0;
+        while r < side {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    if (dx.abs() == r || dy.abs() == r) && dry(cx + dx, cy + dy) {
+                        self.camp = (
+                            u32::try_from(cx + dx).expect("inside"),
+                            u32::try_from(cy + dy).expect("inside"),
+                        );
+                        return self;
+                    }
+                }
+            }
+            r += 1;
+        }
+        self.camp = at;
+        self
     }
 
     /// The value of a cell grid at cell `(i, j)` of the window (0 is the
