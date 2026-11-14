@@ -92,8 +92,10 @@ uniform sampler2D slope_turf : repeat_enable, filter_linear_mipmap;
 uniform sampler2D slope_turf_bushes : repeat_enable, filter_linear_mipmap;
 uniform bool slope_turf_with_bushes = false;
 // The break, in degrees, of a side whose crest lies below, against the
-// sides rising away (key K, 15 degrees a press; the lead expects 45–60).
-uniform float slope_break_turn = 60.0;
+// sides rising away (key K, 15 degrees a press, the whole turn): the point
+// stays toward the crest (a half turn) and the body lies flatter than the
+// corner (the lead: about 150).
+uniform float slope_break_turn = 150.0;
 const float SLOPE_TURF_PX = 768.0;
 const vec3 SLOPE_STREAK_PALE = vec3(0.92, 0.94, 0.59);
 const float SLOPE_STREAK_MIX = 0.55;

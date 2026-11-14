@@ -158,8 +158,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		return
 	if key.keycode == KEY_K:
 		ChunkView.slope_break_turn += 15.0
-		if ChunkView.slope_break_turn > 90.0:
-			ChunkView.slope_break_turn = -90.0
+		if ChunkView.slope_break_turn > 180.0:
+			ChunkView.slope_break_turn = -165.0
 		ChunkView.set_slope_param("slope_break_turn", ChunkView.slope_break_turn)
 		_apply()
 		get_viewport().set_input_as_handled()
