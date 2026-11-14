@@ -91,11 +91,11 @@ uniform sampler2D slope_streaks : repeat_enable, filter_linear_mipmap;
 uniform sampler2D slope_turf : repeat_enable, filter_linear_mipmap;
 uniform sampler2D slope_turf_bushes : repeat_enable, filter_linear_mipmap;
 uniform bool slope_turf_with_bushes = false;
-// How the turf is turned against the streaks (key K cycles): 0 with the
-// streaks whole (its blades toward the crest, upside down where they
-// are), 1 the streaks' side only (blades up), 2 the opposite side (blades
-// up, the streaks' diagonal), 3 as drawn.
-uniform int slope_turf_mode = 2;
+// The turf is ROTATED with the streaks (14 November 2026, the lead: his
+// pick among the square's eight turns was the quarter turn, which keeps
+// the blades' curl; a flip inverts it): by the streaks' angle, plus
+// slope_turf_offset degrees, his dial (key K, 6 degrees a press).
+uniform float slope_turf_offset = 0.0;
 const float SLOPE_TURF_PX = 768.0;
 const vec3 SLOPE_STREAK_PALE = vec3(0.92, 0.94, 0.59);
 const float SLOPE_STREAK_MIX = 0.55;
@@ -650,12 +650,17 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 		// and right, one running down to the left wants it up and left).
 		// So the turf is mirrored with the streaks and never turned upside
 		// down. Key K keeps the turf as drawn.
-		vec2 tf = slope_turf_mode == 0 ? vec2(fx, fy)
-			: (slope_turf_mode == 1 ? vec2(fx, 1.0) : (slope_turf_mode == 2 ? vec2(fx * fy, 1.0) : vec2(1.0)));
-		vec2 tuv = canvas / SLOPE_TURF_PX * tf;
+		// The streaks' angle on the screen (y up): as is 45, mirrored 135,
+		// upside down -45, both -135; the turf as drawn matches the as-is
+		// streaks, so it turns by that angle less 45, plus the dial.
+		float turn = radians(degrees(atan(fy, fx)) - 45.0 + slope_turf_offset);
+		mat2 rot = mat2(vec2(cos(turn), sin(turn)), vec2(-sin(turn), cos(turn)));
+		vec2 tuv = rot * (canvas / SLOPE_TURF_PX);
+		vec2 tdx = rot * (dx / SLOPE_TURF_PX);
+		vec2 tdy = rot * (dy / SLOPE_TURF_PX);
 		vec3 turf = slope_turf_with_bushes
-			? textureGrad(slope_turf_bushes, tuv, dx / SLOPE_TURF_PX * tf, dy / SLOPE_TURF_PX * tf).rgb * SLOPE_TINT
-			: textureGrad(slope_turf, tuv, dx / SLOPE_TURF_PX * tf, dy / SLOPE_TURF_PX * tf).rgb * SLOPE_TINT;
+			? textureGrad(slope_turf_bushes, tuv, tdx, tdy).rgb * SLOPE_TINT
+			: textureGrad(slope_turf, tuv, tdx, tdy).rgb * SLOPE_TINT;
 		vec3 lit = mix(turf, SLOPE_STREAK_PALE, light * SLOPE_STREAK_MIX);
 		if (rim) {
 			lit *= SLOPE_RIM_SHADE;
