@@ -49,7 +49,7 @@ const DETAIL_OCTAVES: [(u32, i64); 4] = [(48, 8), (20, 4), (8, 2), (3, 1)];
 /// Rivers drawn from the continent: at least this discharge (mL/s), so
 /// one cubic metre a second. Smaller waters come from the region's own
 /// drainage.
-const RIVER_DISCHARGE: u64 = 1_000_000;
+pub(crate) const RIVER_DISCHARGE: u64 = 1_000_000;
 
 /// How far a river's point strays from its cell's centre, in region cells
 /// either way.
@@ -116,6 +116,11 @@ pub struct Region {
     pub height: Vec<i32>,
     /// What lies on each cell.
     pub water: Vec<Water>,
+    /// The water's surface: the ground, or a lake's level where the
+    /// flood filled a hollow (cm).
+    pub surface: Vec<i32>,
+    /// Where each cell's water goes: a neighbour, or itself at an outlet.
+    pub receiver: Vec<u32>,
     /// The biome, from the continent.
     pub biome: Vec<Biome>,
     /// The bedrock.
@@ -174,7 +179,7 @@ fn weights(t: i64) -> [i64; 4] {
 
 /// The point of continent cell `(x, y)`'s river, in absolute region
 /// cells.
-fn node(seed: u64, x: i32, y: i32) -> (i64, i64) {
+pub(crate) fn node(seed: u64, x: i32, y: i32) -> (i64, i64) {
     let jitter = |k: u64| {
         i64::try_from(
             roll(
@@ -197,7 +202,7 @@ fn node(seed: u64, x: i32, y: i32) -> (i64, i64) {
 
 /// The meandering course from `a` to `b`, in absolute region cells, both
 /// ends included; the same for the same two ends, whichever region asks.
-fn course(seed: u64, a: (i64, i64), b: (i64, i64)) -> Vec<(i64, i64)> {
+pub(crate) fn course(seed: u64, a: (i64, i64), b: (i64, i64)) -> Vec<(i64, i64)> {
     fn split(seed: u64, a: (i64, i64), b: (i64, i64), depth: u32, out: &mut Vec<(i64, i64)>) {
         if depth == 0 {
             out.push(b);
@@ -477,6 +482,8 @@ impl Region {
             origin,
             height,
             water,
+            surface: routing.filled,
+            receiver: routing.receiver,
             biome,
             rock,
             alluvium,

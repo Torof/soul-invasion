@@ -79,6 +79,10 @@ OPTIONS:
                            (x 32–224, y 288–480, levelled to 50 m at its
                            window's edge), shown by the client only. Never
                            for play.
+    --world plan:<SEED>    Experimental: a world cut from the atlas of SEED,
+                           6 km a side with a height per tile (generator
+                           version 3, the relief look test; some seconds to
+                           make). Never for play.
     --dev                  Development tools: every client gets an overview
                            of the whole map and may teleport its body. Never
                            for play.
@@ -163,6 +167,9 @@ pub enum TestWorld {
     /// `test:relief`: the shapes, sense and mountain tests on one map,
     /// the sandbox's world.
     Relief,
+    /// `plan:<SEED>`: a window of the atlas of that seed (the relief look
+    /// test, generator version 3).
+    Plan(u64),
 }
 
 /// When a paced server places the plants of the view around the camp,
@@ -281,11 +288,16 @@ impl Options {
                         "test:formes" => Some(TestWorld::Shapes),
                         "test:sens" => Some(TestWorld::Sense),
                         "test:relief" => Some(TestWorld::Relief),
-                        _ => raw
-                            .strip_prefix("flat:")
-                            .and_then(|n| n.parse().ok())
-                            .filter(|&n: &u32| (8..=4096).contains(&n))
-                            .map(TestWorld::Flat),
+                        _ => {
+                            if let Some(seed) = raw.strip_prefix("plan:") {
+                                seed.trim().parse().ok().map(TestWorld::Plan)
+                            } else {
+                                raw.strip_prefix("flat:")
+                                    .and_then(|n| n.parse().ok())
+                                    .filter(|&n: &u32| (8..=4096).contains(&n))
+                                    .map(TestWorld::Flat)
+                            }
+                        }
                     };
                     opts.world = Some(world.ok_or(CliError::InvalidValue {
                         option: arg.to_owned(),
@@ -412,6 +424,17 @@ mod tests {
             Some((3, -4))
         );
         assert!(Options::parse(["--dump-chunk", "3"]).is_err());
+    }
+
+    #[test]
+    fn the_atlas_world_is_asked_for_by_its_seed() {
+        assert_eq!(Options::parse(Vec::<&str>::new()).unwrap().world, None);
+        assert_eq!(
+            Options::parse(["--world", "plan:7"]).unwrap().world,
+            Some(TestWorld::Plan(7))
+        );
+        assert!(Options::parse(["--world", "valley"]).is_err());
+        assert!(Options::parse(["--world", "plan:x"]).is_err());
     }
 
     #[test]
