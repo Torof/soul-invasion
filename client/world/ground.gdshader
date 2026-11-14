@@ -73,6 +73,9 @@ uniform float slope_crest_cos = -0.5;
 // they draw a chevron. slope_chevron_flip turns the chevron over (key C);
 // off (key X): the sides keep their usual images.
 uniform bool slope_crest_square = true;
+uniform bool slope_rim = true;
+const float SLOPE_RIM_TILES = 0.9;
+const float SLOPE_RIM_SHADE = 0.82;
 uniform bool slope_chevron_flip = false;
 const float SLOPE_CREST_TILT = 12.0;
 const float SLOPE_SIDE_FADE = 4.0;
@@ -564,6 +567,21 @@ vec3 zone_read(int zone, vec2 canvas, vec2 dx, vec2 dy, float width, float flip)
 vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox, vec4 oy) {
 	vec2 rise = texture(slope_index, p / index_tiles).rg;
 	float s = length(rise);
+	// The rim (14 November 2026, perception.md): at a crest, the face
+	// toward the viewer hides the first row of the face behind it. A
+	// point just behind the line (its ground rising toward the screen's
+	// bottom, the ground SLOPE_RIM_TILES nearer the viewer rising the
+	// other way, the two folded) is drawn as that nearer face, shaded by
+	// SLOPE_RIM_SHADE: the only cue of up and down that needs no light.
+	bool rim = false;
+	if (slope_rim) {
+		vec2 near = texture(slope_index, (p + vec2(0.7071) * SLOPE_RIM_TILES) / index_tiles).rg;
+		if (rise.x + rise.y > 0.0 && near.x + near.y < 0.0 && dot(rise, near) < 0.0 && length(near) > SLOPE_SHOW_FROM) {
+			rise = near;
+			s = length(rise);
+			rim = true;
+		}
+	}
 	float shown = smoothstep(SLOPE_SHOW_FROM, SLOPE_SHOW_FULL, s);
 	if (slope_crisp) {
 		shown = step(0.5 * (SLOPE_SHOW_FROM + SLOPE_SHOW_FULL), s);
@@ -649,6 +667,9 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 		if (zone.z < 0.999) {
 			slope = mix(zone_grass(int(zone.y), canvas, dx, dy, inclines, leans, w, ox, oy), slope, zone.z);
 		}
+	}
+	if (rim) {
+		slope *= SLOPE_RIM_SHADE;
 	}
 	return mix(c, slope * SLOPE_TINT, shown);
 }
