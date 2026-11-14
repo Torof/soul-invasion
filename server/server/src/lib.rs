@@ -12,6 +12,7 @@ pub mod net;
 pub mod pool;
 pub mod run;
 pub mod storage;
+pub mod test_world;
 
 pub use cli::Options;
 pub use run::{RunSummary, run_headless, run_paced};

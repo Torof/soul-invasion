@@ -30,6 +30,7 @@ func _init() -> void:
 	_test_each_ground_canvas_covers_only_its_rows()
 	_test_currents_decode()
 	_test_the_golden_chunk_decodes()
+	_test_a_flat_chunk_has_no_heights_and_a_chunks_heights_are_kept()
 	_test_tree_images_are_clean()
 	_test_tree_feet_are_whole()
 	_test_loading_waits_for_the_valley()
@@ -835,7 +836,7 @@ func _test_currents_decode() -> void:
 ## this test or the server's.
 func _test_the_golden_chunk_decodes() -> void:
 	var bytes := FileAccess.get_file_as_bytes("res://tests/fixtures/chunk_v17.bin")
-	_check(bytes.size() == 87, "the golden chunk is there: %d bytes" % bytes.size())
+	_check(bytes.size() == 119, "the golden chunk is there: %d bytes" % bytes.size())
 	var c := Protocol.decode_chunk(bytes, PackedStringArray(["m0", "m1", "m2", "m3", "m4"]))
 	_check(not c.is_empty(), "the golden chunk decodes")
 	if c.is_empty():
@@ -843,6 +844,7 @@ func _test_the_golden_chunk_decodes() -> void:
 	_check([c["x"], c["y"], c["version"]] == [3, -2, 7], "its place and version: %s" % [[c["x"], c["y"], c["version"]]])
 	_check(c["tiles"] == PackedByteArray([1, 2, 3, 4, 5, 6, 1, 3, 2, 2, 1, 1, 6, 6, 6, 5]), "its tiles: %s" % c["tiles"])
 	_check(c["currents"] == PackedInt32Array([0, 0, 1059, 50, 3073, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4095]), "its currents: %s" % c["currents"])
+	_check(c["heights"] == PackedInt32Array([0, 1, -1, 7, 32767, -32768, 120, 121, 0, 0, 0, 0, 5, 4, 3, 2]), "its heights: %s" % c["heights"])
 	_check(c["trees"] == PackedInt32Array([2, 43_999, -8_000, 0, 13_500, -5_750]), "its trees: %s" % c["trees"])
 	_check(c["plants"] == PackedInt32Array([11, 12_700, -4_100]), "its plants: %s" % c["plants"])
 	var items: Array = c["items"]
@@ -2679,3 +2681,30 @@ func _test_the_recentre_button_shows_while_the_camera_does_not_follow() -> void:
 	_check(glide.active and half.x > 50.0 and half.x < 100.0, "quick at first: %s" % half)
 	var there := glide.step(CameraGlide.SECONDS / 2.0, Vector2(110, 0))
 	_check(not glide.active and there == Vector2(110, 0), "on the body, which walked meanwhile: %s" % there)
+
+
+## A frame with no heights (every world but the test worlds) decodes to
+## an empty `heights`; a chunk's heights laid in the HeightIndex are read
+## back tile by tile, negative ones too, and an unsaid tile is told apart.
+func _test_a_flat_chunk_has_no_heights_and_a_chunks_heights_are_kept() -> void:
+	var bytes := PackedByteArray()
+	bytes.resize(Protocol.CHUNK_HEADER)
+	bytes.encode_s32(0, 3)
+	bytes.encode_s32(4, -2)
+	bytes.encode_u32(8, 7)
+	bytes.encode_u8(12, 0)
+	bytes.encode_u8(13, 2)
+	bytes.append_array(PackedByteArray([1, 1, 1, 1]))
+	bytes.append_array(PackedByteArray([0, 0, 0, 0, 0, 0, 0, 0]))
+	var flat := Protocol.decode_chunk(bytes, PackedStringArray())
+	_check(not flat.is_empty() and (flat["heights"] as PackedInt32Array).is_empty(), "a flat world's chunk has no heights")
+	HeightIndex.clear()
+	_check(not HeightIndex.known(Vector2i(64, 96)) and not HeightIndex.any, "nothing said yet")
+	HeightIndex.write(Vector2i(64, 96), 2, PackedInt32Array([10, -25, 0, 32767]))
+	_check(HeightIndex.any and HeightIndex.known(Vector2i(65, 97)), "a chunk's heights are known")
+	_check(HeightIndex.height_dm(Vector2i(64, 96)) == 10 and HeightIndex.height_dm(Vector2i(65, 96)) == -25, "read back in decimetres: %d %d" % [HeightIndex.height_dm(Vector2i(64, 96)), HeightIndex.height_dm(Vector2i(65, 96))])
+	_check(is_equal_approx(HeightIndex.level(Vector2i(65, 97)), 3276.7), "and in metres")
+	_check(not HeightIndex.known(Vector2i(66, 96)) and HeightIndex.height_dm(Vector2i(66, 96)) == 0, "a tile no chunk said is unknown")
+	HeightIndex.write(Vector2i(64, 96), 2, PackedInt32Array([1, 2, 3]))
+	_check(HeightIndex.height_dm(Vector2i(64, 96)) == 10, "heights not one a tile are refused")
+	HeightIndex.clear()

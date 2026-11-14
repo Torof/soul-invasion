@@ -155,6 +155,9 @@ fn open_world(
             println!("note: the world's own calendar wins over the command line");
         }
         world
+    } else if let Some(test) = opts.world {
+        println!("world: new, the test world {test:?} (never for play)");
+        server::test_world::make(test, opts.calendar, content)
     } else {
         println!("world: new");
         World::with_valley(opts.calendar, content, opts.valley_size)

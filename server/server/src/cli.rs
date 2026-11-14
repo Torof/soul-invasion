@@ -46,6 +46,39 @@ OPTIONS:
     --valley-size <N>      A new world's valley, N tiles on a side (default
                            3072, at least 256). A smaller one starts far
                            faster: for tests and development.
+    --world flat:<N>       A test world instead of the valley: N × N tiles
+                           of grass (at least 8), the camp in the middle.
+    --world test:marches   The steps test: 30 × 30 tiles of grass with a
+                           ridge about 3 m high from the screen's left
+                           corner to its right one, shown by the client
+                           only. Never for play.
+    --world test:montagne  The mountain test: 192 × 192 tiles of grass cut
+                           from a large mountain's flank, shown by the
+                           client only. Never for play.
+    --world test:massif    The massif test: 1024 × 1024 tiles of grass
+                           holding the whole mountain the mountain test
+                           cuts its window from, its 270 m summit at the
+                           middle, a flat margin at its edge, shown by the
+                           client only. Never for play.
+    --world test:formes    The shapes test: 256 × 256 tiles of grass, flat
+                           at 50 m, with seven shapes on their own meadows
+                           (three crests, a valley, a cone, a plane whose
+                           slope changes, one that turns), shown by the
+                           client only. Never for play.
+    --world test:sens      The sense test: 256 × 256 tiles of grass, flat
+                           at 50 m, with six crests and a valley across the
+                           screen, their profiles chosen to tell which way a
+                           slope rises (a flat top and a shoulder, a sharp
+                           top, two dissymmetric ridges, a col, a valley with
+                           a flat floor), shown by the client only. Never
+                           for play.
+    --world test:relief    The relief test, the sandbox's world: 512 × 512
+                           tiles of grass flat at 50 m holding the shapes
+                           test (x 0–256, y 0–256), the sense test
+                           (x 256–512, y 0–256) and the mountain test
+                           (x 32–224, y 288–480, levelled to 50 m at its
+                           window's edge), shown by the client only. Never
+                           for play.
     --dev                  Development tools: every client gets an overview
                            of the whole map and may teleport its body. Never
                            for play.
@@ -105,8 +138,31 @@ pub struct Options {
     pub dump_chunk: Option<(i32, i32)>,
     /// A new world's valley, tiles on a side.
     pub valley_size: u32,
+    /// A test world instead of the valley (`--world`); always ephemeral.
+    pub world: Option<TestWorld>,
     /// When the plants of the view around the camp are placed (paced mode).
     pub warm_up: WarmUp,
+}
+
+/// A tiny world for a visual test, instead of the valley (`--world`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestWorld {
+    /// `flat:<N>`: N × N tiles of grass.
+    Flat(u32),
+    /// `test:marches`: the steps test's ridge.
+    Marches,
+    /// `test:montagne`: a window on a large mountain's flank.
+    Mountain,
+    /// `test:massif`: the whole mountain, cut to 1024 tiles on a side.
+    Massif,
+    /// `test:formes`: simple shapes, one on each meadow.
+    Shapes,
+    /// `test:sens`: crests across the screen whose profiles tell which
+    /// way a slope rises.
+    Sense,
+    /// `test:relief`: the shapes, sense and mountain tests on one map,
+    /// the sandbox's world.
+    Relief,
 }
 
 /// When a paced server places the plants of the view around the camp,
@@ -136,6 +192,7 @@ impl Default for Options {
             dev: false,
             dump_chunk: None,
             valley_size: sim::VALLEY_SIZE,
+            world: None,
             warm_up: WarmUp::BeforeListening,
         }
     }
@@ -215,6 +272,26 @@ impl Options {
                     })?);
                 }
                 "--valley-size" => opts.valley_size = value(arg, args.next())?,
+                "--world" => {
+                    let raw: String = value(arg, args.next())?;
+                    let world = match raw.as_str() {
+                        "test:marches" => Some(TestWorld::Marches),
+                        "test:montagne" => Some(TestWorld::Mountain),
+                        "test:massif" => Some(TestWorld::Massif),
+                        "test:formes" => Some(TestWorld::Shapes),
+                        "test:sens" => Some(TestWorld::Sense),
+                        "test:relief" => Some(TestWorld::Relief),
+                        _ => raw
+                            .strip_prefix("flat:")
+                            .and_then(|n| n.parse().ok())
+                            .filter(|&n: &u32| (8..=4096).contains(&n))
+                            .map(TestWorld::Flat),
+                    };
+                    opts.world = Some(world.ok_or(CliError::InvalidValue {
+                        option: arg.to_owned(),
+                        value: raw,
+                    })?);
+                }
                 "--no-warm-up" => opts.warm_up = WarmUp::OnDemand,
                 "--time-scale" => opts.time_scale = value(arg, args.next())?,
                 "--max-connections" => opts.max_connections = value(arg, args.next())?,
@@ -253,6 +330,10 @@ impl Options {
                 option: "--valley-size".to_owned(),
                 value: opts.valley_size.to_string(),
             });
+        }
+        if opts.world.is_some() {
+            // A test world is never saved: its heights live in no snapshot.
+            opts.data = DataLocation::Ephemeral;
         }
         opts.calendar = Calendar::new(ticks_per_second, seconds_per_day)
             .and_then(|c| c.with_days_per_year(days_per_year))
