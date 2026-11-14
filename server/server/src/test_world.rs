@@ -1,5 +1,6 @@
 //! Tiny worlds for visual tests (`--world`): a flat square of grass, the
-//! steps test's ridge and the mountain test's flank. Ephemeral and never for play. Both
+//! steps test's ridge, the mountain test's flank and the shapes test.
+//! Ephemeral and never for play. All
 //! carry heights (the flat one all zero): the client knows a test world by
 //! them and draws it with no fog.
 
@@ -205,6 +206,159 @@ pub fn mountain_camp(heights: &[i16]) -> (u32, u32) {
     )
 }
 
+/// The shapes test (14 November 2026): simple shapes the slope rendering
+/// is judged on, each on its own meadow, on [`SHAPES_SIDE`] tiles of grass
+/// flat at [`SHAPES_BASE_M`]. The screen's horizontal is the map's
+/// `x - y` and its vertical `x + y` (`Iso`). Every side is a plane rising
+/// [`SHAPES_RISE_M`] over 25 tiles ([`SHAPES_SLOPE`] metres a tile) unless
+/// said otherwise, and crests are left sharp (the client decides how they
+/// look). Where each stands, in map tiles (`x` range × `y` range of the
+/// tiles that are not flat, both inclusive):
+///
+/// 1. A crest across the screen (along the map's (1, −1)): 30 tiles of
+///    straight crest centred on (135, 50), its tiles `x + y` = 184, the
+///    ends rounded as half cones; x 99–170 × y 14–85.
+/// 2. A crest up the screen (along the map's (1, 1)): centred on
+///    (114, 160), its tiles `x - y` = −46; x 78–149 × y 124–195.
+/// 3. A crest along a screen diagonal (the map's `x` axis): row `y` = 36,
+///    from `x` 35 to 65; x 10–89 × y 12–60.
+/// 4. A valley along the map's `y` axis, dug into the meadow: a floor of
+///    two tiles (`x` 35 and 36) at 20 m, from `y` 115 to 145, two sides
+///    rising 30 m to the meadow, the ends rounded; x 10–61 × y 89–170.
+/// 5. A cone 30 m high, slope 1.1, its top rounded over 3 tiles, centred
+///    on the tile (220, 40); x 192–248 × y 12–68.
+/// 6. A plane rising toward the screen's upper right (the map's −`y`):
+///    0.4 a tile for 20 tiles from its foot at `y` = 161, then 1.2 for 20
+///    tiles, to 31.4 m at `y` = 122, 12 tiles wide at the top; its back
+///    and ends fall back at 1.2; x 163–228 × y 95–161. Beside it below, a
+///    crest bent by 60 degrees, its bend rounded (radius 6.6 tiles) and
+///    pointing at the screen's bottom: on its outer side the rising
+///    direction turns 60 degrees across 20 tiles halfway up, 7 at the
+///    top and 33 at the foot (its inner side folds); x 160–236 × y
+///    175–251. The two are 13 tiles apart, the least between any two
+///    shapes.
+///
+/// The camp, [`SHAPES_CAMP`], is a flat tile near the map's middle with
+/// 26 tiles of meadow around it. The map is larger than the mountain
+/// test's: seven shapes 50 to 77 tiles across, 12 tiles of meadow apart,
+/// do not fit in 192. Test only: floats are fine here, the
+/// heights are rounded to decimetres once.
+pub const SHAPES_SIDE: u32 = 256;
+
+/// The meadows' height, in metres: high enough for the valley to be dug.
+pub const SHAPES_BASE_M: f64 = 50.0;
+
+/// How much the crests, the cone and the bent crest rise, and the valley
+/// sinks, in metres.
+pub const SHAPES_RISE_M: f64 = 30.0;
+
+/// The sides' slope, in metres a tile.
+pub const SHAPES_SLOPE: f64 = 1.2;
+
+/// Half a straight crest's (and the valley's floor's) length, in tiles.
+const SHAPES_HALF: f64 = 15.0;
+
+/// The shapes test's camp.
+pub const SHAPES_CAMP: (u32, u32) = (136, 110);
+
+/// The distance from `p` to the segment of half length `half` centred on
+/// `centre` along the unit vector `dir`.
+fn to_segment(p: (f64, f64), centre: (f64, f64), dir: (f64, f64), half: f64) -> f64 {
+    let (px, py) = (p.0 - centre.0, p.1 - centre.1);
+    let t = (px * dir.0 + py * dir.1).clamp(-half, half);
+    (px - t * dir.0).hypot(py - t * dir.1)
+}
+
+/// A roof's rise at `d` tiles from its crest, in metres.
+fn roof(d: f64) -> f64 {
+    (SHAPES_RISE_M - SHAPES_SLOPE * d).max(0.0)
+}
+
+/// Shape 5: the cone, slope 1.1, its top a paraboloid over 3 tiles.
+fn shapes_cone(p: (f64, f64)) -> f64 {
+    let (slope, top) = (1.1, 3.0);
+    let d = (p.0 - 220.5).hypot(p.1 - 40.5);
+    let h = if d < top {
+        SHAPES_RISE_M - slope * d * d / (2.0 * top)
+    } else {
+        SHAPES_RISE_M - slope * top / 2.0 - slope * (d - top)
+    };
+    h.max(0.0)
+}
+
+/// Shape 6, the plane whose slope changes: rising toward −`y` from its
+/// foot, the least of the two-slope plane, its back and its two ends.
+fn shapes_steepening(p: (f64, f64)) -> f64 {
+    let t = 162.0 - p.1;
+    if t <= 0.0 {
+        return 0.0;
+    }
+    let front = if t < 20.0 {
+        0.4 * t
+    } else {
+        8.0 + SHAPES_SLOPE * (t - 20.0)
+    };
+    let top = 32.0;
+    let back = SHAPES_SLOPE * (40.0 - t) + top;
+    let ends = SHAPES_SLOPE * (6.0 - (p.0 - 196.0).abs()) + top;
+    front.min(back).min(ends).max(0.0)
+}
+
+/// Shape 6, the plane that turns: a crest bent by 60 degrees, the bend an
+/// arc of radius 6.6 tiles around (201, 216) facing the screen's bottom
+/// (the map's (1, 1)), each arm 18 tiles long.
+fn shapes_turning(p: (f64, f64)) -> f64 {
+    let (ox, oy) = (201.0, 216.0);
+    let radius = 6.6;
+    let arm = 18.0;
+    let (px, py) = (p.0 - ox, p.1 - oy);
+    // The arc runs from 15 to 75 degrees (the map's angles, `y` down).
+    let angle = py.atan2(px).to_degrees();
+    let mut d = f64::INFINITY;
+    if (15.0..=75.0).contains(&angle) {
+        d = (px.hypot(py) - radius).abs();
+    }
+    for end in [15.0_f64, 75.0] {
+        let (c, s) = (end.to_radians().cos(), end.to_radians().sin());
+        // Each arm leaves the arc's end along its tangent, up the screen.
+        let dir = if end < 45.0 { (s, -c) } else { (-s, c) };
+        let start = (ox + radius * c, oy + radius * s);
+        let mid = (start.0 + dir.0 * arm / 2.0, start.1 + dir.1 * arm / 2.0);
+        d = d.min(to_segment(p, mid, dir, arm / 2.0));
+    }
+    roof(d)
+}
+
+/// The shapes test's rise above the meadow at map point `p`, in metres
+/// (the valley's is below zero). The shapes never overlap.
+fn shapes_rise(p: (f64, f64)) -> f64 {
+    let r = std::f64::consts::FRAC_1_SQRT_2;
+    let across = roof(to_segment(p, (135.0, 50.0), (r, -r), SHAPES_HALF));
+    let up = roof(to_segment(p, (114.0, 160.0), (r, r), SHAPES_HALF));
+    let diagonal = roof(to_segment(p, (50.0, 36.5), (1.0, 0.0), SHAPES_HALF));
+    let valley = -roof((to_segment(p, (36.0, 130.0), (0.0, 1.0), SHAPES_HALF) - 1.0).max(0.0));
+    across + up + diagonal + valley + shapes_cone(p) + shapes_steepening(p) + shapes_turning(p)
+}
+
+/// The heights of the shapes test's tiles, in decimetres, row by row: the
+/// shapes at each tile's middle.
+#[must_use]
+pub fn shapes_heights() -> Vec<i16> {
+    let side = SHAPES_SIDE as usize;
+    (0..side * side)
+        .map(|i| {
+            let (x, y) = (
+                f64::from(u32::try_from(i % side).expect("small")),
+                f64::from(u32::try_from(i / side).expect("small")),
+            );
+            let dm = ((SHAPES_BASE_M + shapes_rise((x + 0.5, y + 0.5))) * 10.0).round();
+            #[allow(clippy::cast_possible_truncation)]
+            let dm = dm.clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
+            dm
+        })
+        .collect()
+}
+
 /// A test world at tick zero, with nobody in it yet.
 #[must_use]
 pub fn make(world: TestWorld, calendar: Calendar, content: &Content) -> World {
@@ -223,6 +377,12 @@ pub fn make(world: TestWorld, calendar: Calendar, content: &Content) -> World {
             let (x, y) = mountain_camp(&heights);
             Map::filled(MOUNTAIN_SIDE, MOUNTAIN_SIDE, Terrain::Grass)
                 .with_heights(heights)
+                .with_camp(x, y)
+        }
+        TestWorld::Shapes => {
+            let (x, y) = SHAPES_CAMP;
+            Map::filled(SHAPES_SIDE, SHAPES_SIDE, Terrain::Grass)
+                .with_heights(shapes_heights())
                 .with_camp(x, y)
         }
     };
@@ -262,5 +422,37 @@ mod tests {
         assert!(at(14, 28) >= 27 && at(15, 28) >= 27);
         // The left corner is flat now.
         assert_eq!(at(0, 29), 0);
+    }
+
+    #[test]
+    fn the_shapes_span_the_valley_to_the_crests_and_the_camp_is_flat() {
+        let heights = shapes_heights();
+        let side = SHAPES_SIDE as usize;
+        let at = |x: usize, y: usize| heights[y * side + x];
+        // The valley's floor at 20 m, the steepening plane's top at 31.4 m
+        // above the meadow, the crests and the cone at 30.
+        assert_eq!(heights.iter().min(), Some(&200));
+        assert_eq!(heights.iter().max(), Some(&814));
+        assert_eq!((at(35, 130), at(36, 130)), (200, 200));
+        assert_eq!(at(135, 49), 800, "crest across the screen");
+        assert_eq!(at(114, 160), 800, "crest up the screen");
+        assert_eq!(at(50, 36), 800, "crest along the map's x");
+        assert_eq!(at(220, 40), 800, "the cone's top");
+        // No side steeper than 1.2 m a tile.
+        for y in 0..side {
+            for x in 1..side {
+                assert!((at(x, y) - at(x - 1, y)).abs() <= 12, "({x}, {y})");
+                assert!((at(y, x) - at(y, x - 1)).abs() <= 12, "({y}, {x})");
+            }
+        }
+        // The camp and the 20 tiles around it are meadow.
+        let (cx, cy) = (SHAPES_CAMP.0 as usize, SHAPES_CAMP.1 as usize);
+        for y in cy - 20..=cy + 20 {
+            for x in cx - 20..=cx + 20 {
+                if x.abs_diff(cx).pow(2) + y.abs_diff(cy).pow(2) <= 400 {
+                    assert_eq!(at(x, y), 500, "({x}, {y})");
+                }
+            }
+        }
     }
 }

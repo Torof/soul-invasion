@@ -55,6 +55,11 @@ OPTIONS:
     --world test:montagne  The mountain test: 192 × 192 tiles of grass cut
                            from a large mountain's flank, shown by the
                            client only. Never for play.
+    --world test:formes    The shapes test: 256 × 256 tiles of grass, flat
+                           at 50 m, with seven shapes on their own meadows
+                           (three crests, a valley, a cone, a plane whose
+                           slope changes, one that turns), shown by the
+                           client only. Never for play.
     --dev                  Development tools: every client gets an overview
                            of the whole map and may teleport its body. Never
                            for play.
@@ -129,6 +134,8 @@ pub enum TestWorld {
     Marches,
     /// `test:montagne`: a window on a large mountain's flank.
     Mountain,
+    /// `test:formes`: simple shapes, one on each meadow.
+    Shapes,
 }
 
 /// When a paced server places the plants of the view around the camp,
@@ -243,6 +250,7 @@ impl Options {
                     let world = match raw.as_str() {
                         "test:marches" => Some(TestWorld::Marches),
                         "test:montagne" => Some(TestWorld::Mountain),
+                        "test:formes" => Some(TestWorld::Shapes),
                         _ => raw
                             .strip_prefix("flat:")
                             .and_then(|n| n.parse().ok())
