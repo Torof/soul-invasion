@@ -626,8 +626,10 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 		float tilt_side = -sign(line.x * (-up.y) - line.y * up.x) * (slope_chevron_flip ? -1.0 : 1.0);
 		float fx = up.x > SLOPE_POINT_SIDE_PX ? 1.0 : (up.x < -SLOPE_POINT_SIDE_PX ? -1.0 : tilt_side);
 		float fy = up.y > 0.0 ? -1.0 : 1.0;
-		float width = s < SLOPE_STEEP_LADDER.x ? LADDER_WIDTHS[0] : (s < SLOPE_STEEP_LADDER.y ? LADDER_WIDTHS[1] : LADDER_WIDTHS[2]);
-		vec3 tex = streak_read(canvas, dx, dy, width, vec2(fx, fy));
+		// One width for all (14 November 2026, the lead: a patchwork
+		// otherwise): a side is one image whole, the turn happens only
+		// where the other side begins.
+		vec3 tex = streak_read(canvas, dx, dy, 1.0, vec2(fx, fy));
 		float light = tex.r;
 		vec3 lit = mix(c, SLOPE_STREAK_PALE, light * SLOPE_STREAK_MIX);
 		if (rim) {
