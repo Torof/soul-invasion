@@ -245,7 +245,7 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 			material.set_shader_parameter("slope_turf_bushes", load("res://world/test/slope_turf_bushes.png"))
 			material.set_shader_parameter("slope_turf_with_bushes", slope_turf_with_bushes)
 			material.set_shader_parameter("slope_break_turn", slope_break_turn)
-			material.set_shader_parameter("slope_turf_half_turn", slope_turf_half_turn)
+			material.set_shader_parameter("slope_turf_lie", slope_turf_lie)
 			material.set_shader_parameter("slope_crest_cos", cos(deg_to_rad(slope_crest_degrees)))
 		apply_spec(material, terrain, false)
 		pin_flow_time(material)
@@ -277,8 +277,8 @@ static var slope_layers := true
 static var slope_turf_with_bushes := false
 ## The mountain test: the break of a side whose crest lies below, in degrees (key K).
 static var slope_break_turn := 165.0
-## The mountain test: below a crest, the turf pointing the other way along the streaks' line (key J).
-static var slope_turf_half_turn := false
+## The mountain test: below a crest, how the turf lies on the streaks' line, 0..3 (key J).
+static var slope_turf_lie := 3
 ## The mountain test: the turn between two sides, in degrees, that makes a crest (key N).
 static var slope_crest_degrees := 120.0
 

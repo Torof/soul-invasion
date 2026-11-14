@@ -157,8 +157,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if key == null or not key.pressed or key.echo:
 		return
 	if key.keycode == KEY_J:
-		ChunkView.slope_turf_half_turn = not ChunkView.slope_turf_half_turn
-		ChunkView.set_slope_param("slope_turf_half_turn", ChunkView.slope_turf_half_turn)
+		ChunkView.slope_turf_lie = (ChunkView.slope_turf_lie + 1) % 4
+		ChunkView.set_slope_param("slope_turf_lie", ChunkView.slope_turf_lie)
 		_apply()
 		get_viewport().set_input_as_handled()
 		return
@@ -242,5 +242,6 @@ func _apply() -> void:
 	crests += ", two layers" if ChunkView.slope_layers else ", one image"
 	crests += ", turf with bushes" if ChunkView.slope_turf_with_bushes else ", plain turf"
 	crests += ", break below the crest %+d°" % roundi(ChunkView.slope_break_turn)
-	crests += ", turf the other way (J)" if ChunkView.slope_turf_half_turn else ", turf with the streaks"
+	const LIE := ["J0 turf with the streaks", "J1 turf the other way", "J2 with the streaks, mirrored on the axis", "J3 the other way, mirrored on the axis"]
+	crests += ", " + LIE[ChunkView.slope_turf_lie]
 	_label.text = "Slope test — %s, %s, %s, %s, %s   (keys 1, 0, T, V, B, X, C, N, R, L, G and K)" % [MODES[mode], look, zones, seams, crests]

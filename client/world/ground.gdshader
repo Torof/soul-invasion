@@ -96,9 +96,11 @@ uniform bool slope_turf_with_bushes = false;
 // stays toward the crest (a half turn) and the body lies flatter than the
 // corner (the lead: about 150).
 uniform float slope_break_turn = 165.0;
-// Below a crest, the turf along the streaks' line pointing the same way
-// as them (false, toward the crest's side) or the other way (true). Key J.
-uniform bool slope_turf_half_turn = false;
+// Below a crest, how the turf lies on the streaks' line (key J cycles):
+// 0 with the streaks, 1 the other way (a half turn), 2 with the streaks
+// then mirrored across the streaks' axis, 3 the other way then mirrored
+// across the axis (the lead's description, 14 November 2026).
+uniform int slope_turf_lie = 3;
 const float SLOPE_TURF_PX = 768.0;
 const vec3 SLOPE_STREAK_PALE = vec3(0.92, 0.94, 0.59);
 const float SLOPE_STREAK_MIX = 0.55;
@@ -661,8 +663,13 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 		// the other way, up the screen (the lead, 14 November 2026): the
 		// streaks' turn less a half turn, a rotation still.
 		vec2 tf = below ? vec2(1.0) : vec2(fx, 1.0);
-		float tturn = slope_turf_half_turn ? turn - 3.14159265 : turn;
+		float tturn = (slope_turf_lie == 1 || slope_turf_lie == 3) ? turn - 3.14159265 : turn;
 		mat2 trot = below ? mat2(vec2(cos(tturn), sin(tturn)), vec2(-sin(tturn), cos(tturn))) : mat2(vec2(1.0, 0.0), vec2(0.0, 1.0));
+		if (below && slope_turf_lie >= 2) {
+			// Mirrored across the streaks' axis (the image's rising
+			// diagonal) before the turn.
+			trot = trot * mat2(vec2(0.0, -1.0), vec2(-1.0, 0.0));
+		}
 		vec2 tuv = trot * (canvas / SLOPE_TURF_PX * tf);
 		vec2 tdx = trot * (dx / SLOPE_TURF_PX * tf);
 		vec2 tdy = trot * (dy / SLOPE_TURF_PX * tf);
