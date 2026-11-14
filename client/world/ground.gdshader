@@ -75,6 +75,7 @@ uniform float slope_crest_cos = -0.5;
 uniform bool slope_crest_square = true;
 uniform bool slope_chevron_flip = false;
 const float SLOPE_CREST_TILT = 12.0;
+const float SLOPE_SIDE_FADE = 4.0;
 // At a crest each side is one image whole, never several strips.
 // The widths a crest's side may take (fixed ones only, never in between).
 const float CREST_WIDTHS[7] = float[](0.45, 0.6, 0.85, 1.25, 1.8, 2.2, 3.0);
@@ -428,23 +429,29 @@ vec3 slope_leaning(sampler2D tex, vec2 canvas, vec2 dx, vec2 dy, vec3 inclines, 
 
 // `c`, the ground at map point `p` (tiles, canvas point `canvas`), with
 // the slope's grass where the ground slopes (the mountain test's rule).
-// At a fold whose ground rises along the map's unit `g`: the image (x its
-// width, y 1 as is or -1 mirrored) whose streaks meet the fold's line on
-// the screen nearest 90 - SLOPE_CREST_TILT degrees, tilted one way on one
-// side and the other way on the other.
-vec2 crest_choice(vec2 g) {
+// The side rule (14 November 2026, the lead's crests): every slope, not a
+// band at its crests, takes the image whose streaks meet its contour on the
+// screen nearest 90 - SLOPE_CREST_TILT degrees, tilted one way or the
+// other by which side of the contour it rises toward, so two sides meeting
+// at a crest or a valley floor always differ and meet nearly square, and a
+// side that only turns or steepens keeps its look. Returns the best image
+// (xy: width, flip) and the next best (zw); `share` the best's share, one
+// unless the two are nearly as good, fading over SLOPE_SIDE_FADE degrees.
+vec4 side_images(vec2 g, out float share) {
 	vec2 t = vec2(-g.y, g.x);
 	vec2 line = vec2(TILE_HALF_PX.x * (t.x - t.y), -TILE_HALF_PX.y * (t.x + t.y));
 	vec2 rises = vec2(TILE_HALF_PX.x * (g.x - g.y), -TILE_HALF_PX.y * (g.x + g.y));
-	// The line one way only, so the two sides (whose rises point apart)
-	// fall on opposite sides of it.
 	if (line.y < 0.0 || (line.y == 0.0 && line.x < 0.0)) {
 		line = -line;
 	}
-	float side = sign(line.x * rises.y - line.y * rises.x) * (slope_chevron_flip ? -1.0 : 1.0);
+	// Signed so the sides match the lead's readings (as is toward the top
+	// and the right, mirrored toward the bottom and the left).
+	float side = -sign(line.x * rises.y - line.y * rises.x) * (slope_chevron_flip ? -1.0 : 1.0);
 	float target = degrees(atan(line.y, line.x)) + 90.0 + side * SLOPE_CREST_TILT;
 	float best = 1e9;
+	float next = 1e9;
 	vec2 pick = vec2(1.0, 1.0);
+	vec2 runner = vec2(1.0, 1.0);
 	for (int i = 0; i < 14; i++) {
 		float width = CREST_WIDTHS[i % 7];
 		float slant = degrees(atan(SLOPE_STREAK_TAN / width));
@@ -454,11 +461,17 @@ vec2 crest_choice(vec2 g) {
 		}
 		float off = abs(mod(slant - target + 90.0, 180.0) - 90.0);
 		if (off < best) {
+			next = best;
+			runner = pick;
 			best = off;
 			pick = vec2(width, flip);
+		} else if (off < next) {
+			next = off;
+			runner = vec2(width, flip);
 		}
 	}
-	return pick;
+	share = 0.5 + 0.5 * smoothstep(0.0, SLOPE_SIDE_FADE, next - best);
+	return vec4(pick, runner);
 }
 
 // `v`'s shares raised to SLOPE_SEAM_SHARPEN and summing to one again:
@@ -584,7 +597,8 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 	vec3 leans = vec3(horiz * rightward + (1.0 - horiz) * facing,
 		horiz * (1.0 - rightward), (1.0 - horiz) * (1.0 - facing));
 	bool crest_band = false;
-	vec2 crest_pick = vec2(1.0, 1.0);
+	vec4 side_pick = vec4(1.0, 1.0, 1.0, 1.0);
+	float side_share = 1.0;
 	if (slope_crisp) {
 		bool fold = true;
 		if (slope_seams_soft) {
@@ -601,9 +615,12 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 			// The band is as wide as the far reads straddle the line (about
 			// SLOPE_FOLD_WIDE_TILES each side), one image whole each side,
 			// so no thin strips.
-			if (slope_crest_square && fold) {
+			if (slope_crest_square) {
 				crest_band = true;
-				crest_pick = crest_choice(g);
+				side_pick = side_images(g, side_share);
+				if (fold) {
+					side_share = 1.0;
+				}
 			}
 		}
 		if (!fold) {
@@ -620,9 +637,12 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 	vec3 slope;
 	vec3 zone = slope_zones ? slope_zone(p) : vec3(0.0, 0.0, 1.0);
 	if (crest_band) {
-		slope = zone_read(int(zone.x), canvas, dx, dy, crest_pick.x, crest_pick.y);
+		slope = zone_read(int(zone.x), canvas, dx, dy, side_pick.x, side_pick.y);
+		if (side_share < 0.999) {
+			slope = mix(zone_read(int(zone.x), canvas, dx, dy, side_pick.z, side_pick.w), slope, side_share);
+		}
 		if (zone.z < 0.999) {
-			slope = mix(zone_read(int(zone.y), canvas, dx, dy, crest_pick.x, crest_pick.y), slope, zone.z);
+			slope = mix(zone_read(int(zone.y), canvas, dx, dy, side_pick.x, side_pick.y), slope, zone.z);
 		}
 	} else {
 		slope = zone_grass(int(zone.x), canvas, dx, dy, inclines, leans, w, ox, oy);

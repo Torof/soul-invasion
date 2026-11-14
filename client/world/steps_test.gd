@@ -204,6 +204,6 @@ func _apply() -> void:
 	var look := "fall-line rule" if ChunkView.slope_fall_line else "earlier rule"
 	var zones := "five grasses" if ChunkView.slope_zones else "your grass alone"
 	var seams := "soft seams" if ChunkView.slope_seams_soft else "sharp seams"
-	var crests := ("square crests" + (", chevron flipped" if ChunkView.slope_chevron_flip else "")) if ChunkView.slope_crest_square else "crests as before"
+	var crests := ("side rule" + (", chevron flipped" if ChunkView.slope_chevron_flip else "")) if ChunkView.slope_crest_square else "earlier sides"
 	crests += ", crest from %d°" % roundi(ChunkView.slope_crest_degrees)
 	_label.text = "Slope test — %s, %s, %s, %s, %s   (keys 1, 0, T, V, B, X, C and N)" % [MODES[mode], look, zones, seams, crests]
