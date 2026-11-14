@@ -15,6 +15,8 @@ extends Control
 var _offered: Array = []
 ## The development watchdog, once a --dev server is reached.
 var _watchdog: Node
+## The slopes' developer overlay, once a --dev server is reached.
+var _slopes: Node
 
 ## Whether the head-up display (the clock, the body's gauges) and the
 ## inventory are shown. Off while the world, the creatures and the things
@@ -69,6 +71,14 @@ func _ready() -> void:
 		if _watchdog == null:
 			_watchdog = DevWatchdog.new()
 			add_child(_watchdog))
+	# Development: the slopes' readout and dials (dev/slope_overlay.gd), on
+	# a --dev server whose chunks carry heights (D43, D44): the altitude,
+	# summit or col, keys 1/0, G, R and P. It shows nothing on a flat world.
+	Net.dev_overview.connect(func(_c: int, _w: int, _h: int, _cells: String) -> void:
+		if _slopes == null:
+			_slopes = SlopeOverlay.new()
+			_slopes.world = _world
+			add_child(_slopes))
 
 
 var _perf: PerfOverlay

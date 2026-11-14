@@ -31,6 +31,8 @@ func _init() -> void:
 	_test_currents_decode()
 	_test_the_golden_chunk_decodes()
 	_test_a_flat_chunk_has_no_heights_and_a_chunks_heights_are_kept()
+	_test_the_slopes_are_read_over_two_tiles_and_off_until_a_chunk_has_heights()
+	_test_the_slope_overlay_tells_a_summit_and_a_col_from_a_ring()
 	_test_tree_images_are_clean()
 	_test_tree_feet_are_whole()
 	_test_loading_waits_for_the_valley()
@@ -2708,3 +2710,50 @@ func _test_a_flat_chunk_has_no_heights_and_a_chunks_heights_are_kept() -> void:
 	HeightIndex.write(Vector2i(64, 96), 2, PackedInt32Array([1, 2, 3]))
 	_check(HeightIndex.height_dm(Vector2i(64, 96)) == 10, "heights not one a tile are refused")
 	HeightIndex.clear()
+
+
+## The slopes (D44): the rise under a tile is the difference of the
+## farthest known tiles within SPAN on either side over their distance,
+## in metres a tile; at a chunk's edge the tile itself stands in for the
+## unknown side; and the ground draws no slope until a chunk has heights,
+## the look's images being there to draw them with.
+func _test_the_slopes_are_read_over_two_tiles_and_off_until_a_chunk_has_heights() -> void:
+	HeightIndex.clear()
+	ChunkView.set_slopes_drawn(0)
+	var grass := ChunkView.ground_material("grass")
+	_check(grass.get_shader_parameter("slopes_drawn") == 0 and grass.get_shader_parameter("slope_index") == HeightIndex.texture(), "the ground draws no slope until a chunk has heights, and reads the slope index")
+	_check(is_equal_approx(float(grass.get_shader_parameter("slope_break_turn")), 165.0) and grass.get_shader_parameter("slope_turf") != null and grass.get_shader_parameter("slope_streaks") != null, "the look's dials and images are on the ground: %s" % grass.get_shader_parameter("slope_break_turn"))
+	for image: String in ["slope_streaks", "slope_turf"]:
+		_check(ResourceLoader.exists(ChunkView.SLOPE_LOOK[image]), "%s is there" % image)
+	_check(ResourceLoader.exists(ChunkView.SLOPE_TURF_BUSHES), "the turf with bushes is there")
+	# A 4 × 4 chunk rising 1 m a tile along x (10 dm), flat along y.
+	var ramp := PackedInt32Array()
+	for y in 4:
+		for x in 4:
+			ramp.append(10 * x)
+	HeightIndex.write(Vector2i(200, 300), 4, ramp)
+	_check(is_equal_approx(HeightIndex.rise(Vector2i(202, 301), Vector2i(1, 0)), 1.0), "inside, the rise along x over two tiles each way is 1 m a tile: %s" % HeightIndex.rise(Vector2i(202, 301), Vector2i(1, 0)))
+	_check(is_equal_approx(HeightIndex.rise(Vector2i(202, 301), Vector2i(0, 1)), 0.0), "and 0 along y")
+	_check(is_equal_approx(HeightIndex.rise(Vector2i(200, 301), Vector2i(1, 0)), 1.0), "at the west edge, the tile itself stands in for the unknown side: %s" % HeightIndex.rise(Vector2i(200, 301), Vector2i(1, 0)))
+	_check(is_equal_approx(HeightIndex.rise(Vector2i(199, 301), Vector2i(1, 0)), 0.0), "a tile no chunk said has no rise")
+	HeightIndex.clear()
+	_check(is_equal_approx(HeightIndex.rise(Vector2i(202, 301), Vector2i(1, 0)), 0.0) and not HeightIndex.any, "cleared, the slopes are gone")
+
+
+func _test_the_slope_overlay_tells_a_summit_and_a_col_from_a_ring() -> void:
+	var summit := PackedFloat32Array()
+	var col := PackedFloat32Array()
+	var slope := PackedFloat32Array()
+	var flat := PackedFloat32Array()
+	for i in 16:
+		var angle := TAU * i / 16.0
+		summit.append(100.0 - 5.0 - 2.0 * cos(angle))
+		col.append(100.0 + 10.0 * cos(2.0 * angle))
+		slope.append(100.0 + 10.0 * cos(angle))
+		flat.append(100.0 + 0.5 * cos(angle))
+	_check(SlopeOverlay.classify_ring(100.0, summit) == "summit", "a ring all lower is a summit")
+	_check(SlopeOverlay.classify_ring(100.0, col) == "col", "two higher and two lower arcs are a col")
+	_check(SlopeOverlay.classify_ring(100.0, slope) == "", "one higher and one lower arc is a slope")
+	_check(SlopeOverlay.classify_ring(100.0, flat) == "", "a ring within a metre is flat")
+	summit[3] = -1.0
+	_check(SlopeOverlay.classify_ring(100.0, summit) == "", "an unknown height on the ring says nothing")

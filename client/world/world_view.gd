@@ -394,9 +394,18 @@ func _on_chunk(x: int, y: int, chunk: Dictionary) -> void:
 	TerrainGrid.write(key * _chunk_size, _chunk_size, codes)
 	var heights: PackedInt32Array = chunk.get("heights", PackedInt32Array())
 	if not heights.is_empty():
-		# Only a test world (`--world test:*`) sends heights (D43); nothing
-		# draws them yet.
+		# Only a test world (`--world test:*`) sends heights (D43). The
+		# ground draws the slopes from them (D44) from the first chunk that
+		# carries any; a world with no heights never gets here and its
+		# picture is what it was.
 		HeightIndex.write(key * _chunk_size, _chunk_size, heights)
+		if ChunkView.slopes_drawn == 0:
+			ChunkView.set_slopes_drawn(1)
+		if _far.visible and _any_relief(heights):
+			# A relief is drawn with no fog, to be seen clearly (the project
+			# lead's call, 13 November 2026; the fog's return with the relief
+			# is to be decided).
+			_far.visible = false
 	_currents[key] = currents
 	_items[key] = items
 	_items_version += 1
@@ -835,6 +844,15 @@ func current_at(tile: Vector2i) -> Vector2:
 		return Vector2.ZERO
 	var local := tile - key * _chunk_size
 	return WaterMeshes.current_vector(int(currents[local.y * _chunk_size + local.x]))
+
+
+## Whether a chunk's heights rise anywhere above the sea (a flat test
+## world's do not).
+static func _any_relief(heights: PackedInt32Array) -> bool:
+	for h: int in heights:
+		if h > 0:
+			return true
+	return false
 
 
 ## The terrain of any tile the server has sent, "" otherwise.
