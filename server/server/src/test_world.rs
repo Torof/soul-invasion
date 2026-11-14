@@ -98,11 +98,11 @@ pub fn marches_heights() -> Vec<i16> {
 }
 
 /// The mountain test (13 November 2026): a window of [`MOUNTAIN_SIDE`]
-/// tiles cut at [`MOUNTAIN_ORIGIN`] from the relief the project lead
+/// tiles cut at `MOUNTAIN_ORIGIN` from the relief the project lead
 /// validated on images (`montagne-v3-etiree-b`): a crest that winds, its
 /// flanks crossed by winding ravines with flat floors and unequal sides,
 /// and benches every 3 m of height, the whole stretched
-/// [`MOUNTAIN_STRETCH`] times. The map's `x` and `y` are the image's `u`
+/// `MOUNTAIN_STRETCH` times. The map's `x` and `y` are the image's `u`
 /// and `v`. Test only: floats are fine here, the heights are rounded to
 /// decimetres once.
 pub const MOUNTAIN_SIDE: u32 = 192;
@@ -223,7 +223,7 @@ pub fn mountain_camp(heights: &[i16]) -> (u32, u32) {
 /// summit around `x + y` = 600 of the relief and falls back to the ridge
 /// some 700 tiles away on either side. The map is therefore cut to
 /// 1024 × 1024 tiles centred on the summit, the relief's (356, 282),
-/// the map's (511, 511): the window starts at [`MASSIF_ORIGIN`]. Its
+/// the map's (511, 511): the window starts at `MASSIF_ORIGIN`. Its
 /// outer [`MASSIF_MARGIN`] tiles are flat at the plain's 0 m, and the
 /// mountain fades to the plain over the [`MASSIF_FADE`] tiles inside
 /// them (the ridge leaves by the map's upper left and lower right
