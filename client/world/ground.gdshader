@@ -74,6 +74,7 @@ uniform float slope_crest_cos = -0.5;
 // off (key X): the sides keep their usual images.
 uniform bool slope_crest_square = true;
 uniform bool slope_rim = true;
+uniform bool slope_points_uphill = true;
 const float SLOPE_RIM_TILES = 0.9;
 const float SLOPE_RIM_SHADE = 0.82;
 uniform bool slope_chevron_flip = false;
@@ -378,19 +379,19 @@ void offset_cells(vec2 canvas, out vec4 w, out vec4 ox, out vec4 oy) {
 
 // One reading of a slope's image `tex` at `uv` shifted by `offset`,
 // mirrored left to right when `flip` is -1.
-vec3 slope_tap(sampler2D tex, vec2 uv, vec2 offset, float flip, vec2 gx, vec2 gy) {
+vec3 slope_tap(sampler2D tex, vec2 uv, vec2 offset, vec2 flip, vec2 gx, vec2 gy) {
 	vec2 at = uv + offset;
-	return textureGrad(tex, vec2(at.x * flip, at.y), gx, gy).rgb;
+	return textureGrad(tex, at * flip, gx, gy).rgb;
 }
 
 // A slope's image `tex` at canvas point `canvas`, stretched sideways
 // `widen` times and mirrored when `flip` is -1, its four cells blended.
 // `dx` and `dy`: the canvas point's derivatives.
-vec3 slope_read(sampler2D tex, vec2 canvas, vec2 dx, vec2 dy, float widen, float flip, vec4 w, vec4 ox, vec4 oy) {
+vec3 slope_read(sampler2D tex, vec2 canvas, vec2 dx, vec2 dy, float widen, vec2 flip, vec4 w, vec4 ox, vec4 oy) {
 	vec2 scale = vec2(1.0 / widen, 1.0) / SLOPE_TEXTURE_PX;
 	vec2 uv = canvas * scale;
-	vec2 gx = dx * scale * vec2(flip, 1.0);
-	vec2 gy = dy * scale * vec2(flip, 1.0);
+	vec2 gx = dx * scale * flip;
+	vec2 gy = dy * scale * flip;
 	return w.x * slope_tap(tex, uv, vec2(ox.x, oy.x), flip, gx, gy)
 		+ w.y * slope_tap(tex, uv, vec2(ox.y, oy.y), flip, gx, gy)
 		+ w.z * slope_tap(tex, uv, vec2(ox.z, oy.z), flip, gx, gy)
@@ -399,7 +400,7 @@ vec3 slope_read(sampler2D tex, vec2 canvas, vec2 dx, vec2 dy, float widen, float
 
 // A slope's image `tex` at its three inclinations blended by `inclines`
 // (gentle, medium, steep), mirrored when `flip` is -1.
-vec3 slope_inclined(sampler2D tex, vec2 canvas, vec2 dx, vec2 dy, vec3 inclines, float flip, vec4 w, vec4 ox, vec4 oy) {
+vec3 slope_inclined(sampler2D tex, vec2 canvas, vec2 dx, vec2 dy, vec3 inclines, vec2 flip, vec4 w, vec4 ox, vec4 oy) {
 	vec3 c = vec3(0.0);
 	if (inclines.x > 0.0) {
 		c += inclines.x * slope_read(tex, canvas, dx, dy, SLOPE_GENTLE_WIDTH, flip, w, ox, oy);
@@ -416,16 +417,16 @@ vec3 slope_inclined(sampler2D tex, vec2 canvas, vec2 dx, vec2 dy, vec3 inclines,
 // A slope's image `tex` leaning the way the ground rises: `leans` the
 // shares of the image as is, mirrored, and stretched for a face turned
 // away; `inclines` as slope_inclined's.
-vec3 slope_leaning(sampler2D tex, vec2 canvas, vec2 dx, vec2 dy, vec3 inclines, vec3 leans, vec4 w, vec4 ox, vec4 oy) {
+vec3 slope_leaning(sampler2D tex, vec2 canvas, vec2 dx, vec2 dy, vec3 inclines, vec3 leans, float vflip, vec4 w, vec4 ox, vec4 oy) {
 	vec3 c = vec3(0.0);
 	if (leans.x > 0.0) {
-		c += leans.x * slope_inclined(tex, canvas, dx, dy, inclines, 1.0, w, ox, oy);
+		c += leans.x * slope_inclined(tex, canvas, dx, dy, inclines, vec2(vflip, vflip), w, ox, oy);
 	}
 	if (leans.y > 0.0) {
-		c += leans.y * slope_inclined(tex, canvas, dx, dy, inclines, -1.0, w, ox, oy);
+		c += leans.y * slope_inclined(tex, canvas, dx, dy, inclines, vec2(-vflip, vflip), w, ox, oy);
 	}
 	if (leans.z > 0.0) {
-		c += leans.z * slope_read(tex, canvas, dx, dy, SLOPE_AWAY_WIDTH, 1.0, w, ox, oy);
+		c += leans.z * slope_read(tex, canvas, dx, dy, SLOPE_AWAY_WIDTH, vec2(vflip, vflip), w, ox, oy);
 	}
 	return c;
 }
@@ -528,25 +529,25 @@ vec3 slope_zone(vec2 p) {
 
 // One zone's grass `zone` (0 the lead's) leaning as slope_leaning lays it,
 // drawn SLOPE_ZONE_SCALE times larger.
-vec3 zone_grass(int zone, vec2 canvas, vec2 dx, vec2 dy, vec3 inclines, vec3 leans, vec4 w, vec4 ox, vec4 oy) {
+vec3 zone_grass(int zone, vec2 canvas, vec2 dx, vec2 dy, vec3 inclines, vec3 leans, float vflip, vec4 w, vec4 ox, vec4 oy) {
 	canvas /= SLOPE_ZONE_SCALE;
 	dx /= SLOPE_ZONE_SCALE;
 	dy /= SLOPE_ZONE_SCALE;
 	if (zone == 0) {
-		return slope_leaning(slope_texture, canvas, dx, dy, inclines, leans, w, ox, oy);
+		return slope_leaning(slope_texture, canvas, dx, dy, inclines, leans, vflip, w, ox, oy);
 	}
 	if (zone == 1) {
-		return slope_leaning(slope_grass_1, canvas, dx, dy, inclines, leans, w, ox, oy);
+		return slope_leaning(slope_grass_1, canvas, dx, dy, inclines, leans, vflip, w, ox, oy);
 	} else if (zone == 2) {
-		return slope_leaning(slope_grass_2, canvas, dx, dy, inclines, leans, w, ox, oy);
+		return slope_leaning(slope_grass_2, canvas, dx, dy, inclines, leans, vflip, w, ox, oy);
 	} else if (zone == 3) {
-		return slope_leaning(slope_grass_3, canvas, dx, dy, inclines, leans, w, ox, oy);
+		return slope_leaning(slope_grass_3, canvas, dx, dy, inclines, leans, vflip, w, ox, oy);
 	}
-	return slope_leaning(slope_grass_16, canvas, dx, dy, inclines, leans, w, ox, oy);
+	return slope_leaning(slope_grass_16, canvas, dx, dy, inclines, leans, vflip, w, ox, oy);
 }
 
 // One zone's grass `zone` read once at `width`, mirrored when `flip` is -1.
-vec3 zone_read(int zone, vec2 canvas, vec2 dx, vec2 dy, float width, float flip) {
+vec3 zone_read(int zone, vec2 canvas, vec2 dx, vec2 dy, float width, vec2 flip) {
 	vec4 one = vec4(1.0, 0.0, 0.0, 0.0);
 	canvas /= SLOPE_ZONE_SCALE;
 	dx /= SLOPE_ZONE_SCALE;
@@ -573,6 +574,13 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 	// bottom, the ground SLOPE_RIM_TILES nearer the viewer rising the
 	// other way, the two folded) is drawn as that nearer face, shaded by
 	// SLOPE_RIM_SHADE: the only cue of up and down that needs no light.
+	// The blades' points (14 November 2026, the lead): the eye reads the
+	// climb from where the blades point, so they must point uphill. The
+	// image's blades point toward the screen's top; where the ground rises
+	// toward the screen's bottom (toward the viewer) the image is turned
+	// by a half turn (upside down and mirrored, so its streaks keep their
+	// axis), an experiment behind key F: the tufts then hang.
+	float vflip = 1.0;
 	bool rim = false;
 	if (slope_rim) {
 		vec2 near = texture(slope_index, (p + vec2(0.7071) * SLOPE_RIM_TILES) / index_tiles).rg;
@@ -581,6 +589,9 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 			s = length(rise);
 			rim = true;
 		}
+	}
+	if (slope_points_uphill && rise.x + rise.y > 0.0) {
+		vflip = -1.0;
 	}
 	float shown = smoothstep(SLOPE_SHOW_FROM, SLOPE_SHOW_FULL, s);
 	if (slope_crisp) {
@@ -597,7 +608,7 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 		float flip = as_is ? 1.0 : -1.0;
 		float width = clamp(SLOPE_STREAK_TAN * abs(sx) / (abs(sy) + SLOPE_LIFT_PX * s),
 			SLOPE_FALL_WIDTH.x, SLOPE_FALL_WIDTH.y);
-		vec3 fall = slope_read(slope_texture, canvas, dx, dy, width, flip,
+		vec3 fall = slope_read(slope_texture, canvas, dx, dy, width, vec2(flip, 1.0),
 			vec4(1.0, 0.0, 0.0, 0.0), vec4(0.0), vec4(0.0));
 		return mix(c, fall * SLOPE_TINT, shown);
 	}
@@ -655,17 +666,17 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 	vec3 slope;
 	vec3 zone = slope_zones ? slope_zone(p) : vec3(0.0, 0.0, 1.0);
 	if (crest_band) {
-		slope = zone_read(int(zone.x), canvas, dx, dy, side_pick.x, side_pick.y);
+		slope = zone_read(int(zone.x), canvas, dx, dy, side_pick.x, vec2(side_pick.y * vflip, vflip));
 		if (side_share < 0.999) {
-			slope = mix(zone_read(int(zone.x), canvas, dx, dy, side_pick.z, side_pick.w), slope, side_share);
+			slope = mix(zone_read(int(zone.x), canvas, dx, dy, side_pick.z, vec2(side_pick.w * vflip, vflip)), slope, side_share);
 		}
 		if (zone.z < 0.999) {
-			slope = mix(zone_read(int(zone.y), canvas, dx, dy, side_pick.x, side_pick.y), slope, zone.z);
+			slope = mix(zone_read(int(zone.y), canvas, dx, dy, side_pick.x, vec2(side_pick.y * vflip, vflip)), slope, zone.z);
 		}
 	} else {
-		slope = zone_grass(int(zone.x), canvas, dx, dy, inclines, leans, w, ox, oy);
+		slope = zone_grass(int(zone.x), canvas, dx, dy, inclines, leans, vflip, w, ox, oy);
 		if (zone.z < 0.999) {
-			slope = mix(zone_grass(int(zone.y), canvas, dx, dy, inclines, leans, w, ox, oy), slope, zone.z);
+			slope = mix(zone_grass(int(zone.y), canvas, dx, dy, inclines, leans, vflip, w, ox, oy), slope, zone.z);
 		}
 	}
 	if (rim) {
