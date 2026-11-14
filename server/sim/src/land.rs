@@ -539,15 +539,23 @@ impl Land {
         let (x0, y0, x1, _) = rect;
         let to = self.waters.to_water_in(rect);
         let w = x1 - x0;
+        let dry = |x: u32, y: u32| y >= self.cliff_rows && self.waters.at(x, y).is_none();
         self.woods.draft(
             rect,
             |x, y| {
-                y >= self.cliff_rows
-                    && self.waters.at(x, y).is_none()
+                dry(x, y)
                     && self
                         .relief
                         .as_ref()
                         .is_none_or(|w| w.wooded(i64::from(x), i64::from(y)))
+            },
+            // The atlas's open biomes: a meadow outside the forest.
+            |x, y| {
+                dry(x, y)
+                    && self
+                        .relief
+                        .as_ref()
+                        .is_some_and(|w| !w.wooded(i64::from(x), i64::from(y)))
             },
             |x, y| to[((y - y0) * w + (x - x0)) as usize],
             |x, y| self.waters.to_water(x, y),

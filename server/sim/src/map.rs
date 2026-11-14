@@ -513,6 +513,18 @@ impl Map {
         }
     }
 
+    /// The biome of `pos` on a world cut from the atlas (generator
+    /// versions 3 on, [`crate::plan::Window::biome`]); `None` on the
+    /// valley, which has no biome, and outside the map.
+    #[must_use]
+    pub fn biome(&self, pos: Pos) -> Option<crate::plan::Biome> {
+        let (x, y) = self.inside(pos)?;
+        match &self.ground {
+            Made::Valley(land) => land.relief().map(|w| w.biome(i64::from(x), i64::from(y))),
+            Made::Filled(_) => None,
+        }
+    }
+
     /// The kind of place `pos` is for trees; `Habitat::None` on water,
     /// rock and outside the map (D37).
     #[must_use]

@@ -24,6 +24,7 @@ pub mod items;
 pub mod land;
 pub mod lru;
 pub mod map;
+pub mod open_ground;
 pub mod plan;
 pub mod relief;
 pub mod time;
@@ -40,6 +41,7 @@ pub use geology::{Geology, Rock};
 pub use map::{
     CHUNK_SIZE, ChunkPos, FinePos, MM_PER_TILE, Map, MapSpec, Pos, Side, Terrain, line_clear,
 };
+pub use open_ground::OpenGround;
 pub use time::{Calendar, CalendarError, GameTime, Season, Tick};
 
 /// Identifies a body (an inhabitant). Players and NPCs are the same kind
@@ -903,6 +905,11 @@ pub struct World {
     /// persisted: the rocks are drawn again, the same, from the map.
     #[serde(skip)]
     geology: geology::Geology,
+    /// The content's open biomes' trees, the trees of a chunk are placed
+    /// with on a world cut from the atlas ([`World::trees_in`]); set by
+    /// [`World::take_content`]. Never persisted either.
+    #[serde(skip)]
+    open_ground: open_ground::OpenGround,
     /// The trees of the chunks asked for lately, placed once and shared
     /// ([`ground::Ground`]) with the server's threads, which take a handle
     /// as they take the map ([`World::shared_ground`]). Derived from the
@@ -967,6 +974,7 @@ impl<'de> serde::Deserialize<'de> for World {
             piloted: BTreeSet::new(),
             species: Vec::new(),
             geology: geology::Geology::default(),
+            open_ground: open_ground::OpenGround::default(),
             ground_cache: Arc::new(ground::Ground::default()),
         };
         let standing: Vec<_> = world
@@ -1049,6 +1057,7 @@ impl World {
             piloted: BTreeSet::new(),
             species: Vec::new(),
             geology: geology::Geology::default(),
+            open_ground: open_ground::OpenGround::default(),
             ground_cache: Arc::new(ground::Ground::default()),
         }
     }
@@ -1063,6 +1072,7 @@ impl World {
         self.species.clone_from(&content.species);
         self.spawns.clone_from(&content.spawns);
         self.geology.clone_from(&content.geology);
+        self.open_ground.clone_from(&content.open_ground);
         for index in 0..self.bodies.len() {
             self.refresh_load(index);
         }
@@ -1073,8 +1083,13 @@ impl World {
     /// ([`trees::trees_in`]) the first time they are asked for and held a
     /// while ([`ground::Ground`]): the same every time, nothing stored.
     pub fn trees_in(&self, chunk: ChunkPos) -> Arc<[trees::Tree]> {
-        self.ground_cache
-            .trees_in(&self.map, &self.species, self.seed(), chunk)
+        self.ground_cache.trees_in(
+            &self.map,
+            &self.species,
+            &self.open_ground,
+            self.seed(),
+            chunk,
+        )
     }
 
     /// The rock under each tile of `chunk`, row by row (D42), drawn from
@@ -1092,14 +1107,20 @@ impl World {
         self.map.has_chunk(pos.chunk())
             && self
                 .ground_cache
-                .trunks_in(&self.map, &self.species, self.seed(), pos.chunk())
+                .trunks_in(
+                    &self.map,
+                    &self.species,
+                    &self.open_ground,
+                    self.seed(),
+                    pos.chunk(),
+                )
                 .blocks(pos)
     }
 
     /// A lookup of the trunks tile by tile, for one walk's plan.
     fn trunks(&self) -> ground::TrunkLookup<'_> {
         self.ground_cache
-            .trunks_at(&self.map, &self.species, self.seed())
+            .trunks_at(&self.map, &self.species, &self.open_ground, self.seed())
     }
 
     /// The open tile nearest `target`, searching in growing squares out

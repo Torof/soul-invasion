@@ -270,6 +270,10 @@ pub struct Content {
     /// worlds of the generator's version 2 on.
     #[serde(default)]
     pub geology: crate::geology::Geology,
+    /// The trees of the open biomes' ground (`open_ground.ron`, D37):
+    /// alone and in groves on the atlas's grassland, steppe and marsh.
+    #[serde(default)]
+    pub open_ground: crate::open_ground::OpenGround,
 }
 
 /// A kind of tree.
@@ -352,6 +356,9 @@ pub enum ContentError {
     /// The rock regions make no sense.
     #[error("geology: {0}")]
     Geology(&'static str),
+    /// The open ground's trees make no sense.
+    #[error("open ground: {0}")]
+    OpenGround(&'static str),
     /// A kind of tree is defined twice or makes no sense.
     #[error("species `{id}`: {what}")]
     Species {
@@ -408,6 +415,7 @@ impl Content {
             species: Vec::new(),
             flora: Vec::new(),
             geology: crate::geology::Geology::default(),
+            open_ground: crate::open_ground::OpenGround::default(),
         };
         content.validate()?;
         for index in 0..content.spawns.len() {
@@ -448,6 +456,17 @@ impl Content {
             source,
         })?;
         self.geology.check().map_err(ContentError::Geology)?;
+        Ok(self)
+    }
+
+    /// The same content with the open biomes' trees of `open_ground`
+    /// (the text of `open_ground.ron`).
+    pub fn with_open_ground(mut self, open_ground: &str) -> Result<Self, ContentError> {
+        self.open_ground = ron::from_str(open_ground).map_err(|source| ContentError::Parse {
+            file: "open_ground.ron",
+            source,
+        })?;
+        self.open_ground.check().map_err(ContentError::OpenGround)?;
         Ok(self)
     }
 

@@ -293,15 +293,21 @@ impl Woods {
 
     /// The woods of the tiles `x0..x1` × `y0..y1` before the forest's
     /// depth: `land` tells a tile the woods may cover (below the cliff,
-    /// not water), `to_tile` the tiles from one of them to the nearest
-    /// river and brook (each up to its reach + 1), `to_point` the same
-    /// anywhere on the map (for the round patches' centres, which may lie
-    /// outside). Each tile depends only on the seed and what lies within a
-    /// bounded distance of it: the same whatever the rectangle.
+    /// not water), `open` the tiles that are no land of the woods but
+    /// open ground all the same (the atlas's grassland, steppe or marsh
+    /// outside a forest biome, 15 November 2026): a meadow with no wood
+    /// of its own, where the open ground's trees stand
+    /// ([`crate::open_ground`]) and the meadow's plants grow; `to_tile`
+    /// the tiles from one of them to the nearest river and brook (each up
+    /// to its reach + 1), `to_point` the same anywhere on the map (for
+    /// the round patches' centres, which may lie outside). Each tile
+    /// depends only on the seed and what lies within a bounded distance
+    /// of it: the same whatever the rectangle.
     pub(crate) fn draft(
         &self,
         (x0, y0, x1, y1): (u32, u32, u32, u32),
         land: impl Fn(u32, u32) -> bool,
+        open: impl Fn(u32, u32) -> bool,
         to_tile: impl Fn(u32, u32) -> (u8, u8),
         to_point: impl Fn(u32, u32) -> (u8, u8),
     ) -> Draft {
@@ -381,6 +387,8 @@ impl Woods {
                     draft.density[i] = u8::try_from(d / 10).expect("percent");
                     draft.habitat[i] = habitat;
                     draft.ramped[i] = ramp;
+                } else if open(x, y) {
+                    draft.habitat[i] = Habitat::Meadow;
                 }
                 i += 1;
             }
@@ -928,7 +936,7 @@ impl WholeWoods {
             (to_river[i], to_brook[i])
         };
         let land = |x: u32, y: u32| y >= cliff_rows && rivers.at(x, y).is_none();
-        let draft = woods.draft((0, 0, width, height), land, to, to);
+        let draft = woods.draft((0, 0, width, height), land, |_, _| false, to, to);
         let depth = Woods::depth(
             width,
             height,

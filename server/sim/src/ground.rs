@@ -32,6 +32,7 @@ use crate::content::Species;
 use crate::geology::{Geology, Rock};
 use crate::lru::Lru;
 use crate::map::{CHUNK_SIZE, ChunkPos, Map, PATH_REACH, Pos};
+use crate::open_ground::OpenGround;
 use crate::trees::{self, Tree};
 
 /// How many times a chunk was changed by men: 0 while it is as the seed
@@ -145,6 +146,7 @@ pub struct TrunkLookup<'a> {
     ground: &'a Ground,
     map: &'a Map,
     species: &'a [Species],
+    open: &'a OpenGround,
     seed: u64,
     seen: RefCell<BTreeMap<ChunkPos, Arc<Trunks>>>,
 }
@@ -162,7 +164,7 @@ impl TrunkLookup<'_> {
         }
         let trunks = self
             .ground
-            .trunks_in(self.map, self.species, self.seed, chunk);
+            .trunks_in(self.map, self.species, self.open, self.seed, chunk);
         let blocks = trunks.blocks(pos);
         self.seen.borrow_mut().insert(chunk, trunks);
         blocks
@@ -215,10 +217,11 @@ impl Ground {
         &self,
         map: &Map,
         species: &[Species],
+        open: &OpenGround,
         seed: u64,
         chunk: ChunkPos,
     ) -> Arc<[Tree]> {
-        self.placed(map, species, seed, chunk).trees
+        self.placed(map, species, open, seed, chunk).trees
     }
 
     /// The tiles blocked by the trunks of `chunk`'s trees at its current
@@ -229,10 +232,11 @@ impl Ground {
         &self,
         map: &Map,
         species: &[Species],
+        open: &OpenGround,
         seed: u64,
         chunk: ChunkPos,
     ) -> Arc<Trunks> {
-        self.placed(map, species, seed, chunk).trunks
+        self.placed(map, species, open, seed, chunk).trunks
     }
 
     /// A lookup of the trunks tile by tile, for one walk's plan.
@@ -241,12 +245,14 @@ impl Ground {
         &'a self,
         map: &'a Map,
         species: &'a [Species],
+        open: &'a OpenGround,
         seed: u64,
     ) -> TrunkLookup<'a> {
         TrunkLookup {
             ground: self,
             map,
             species,
+            open,
             seed,
             seen: RefCell::new(BTreeMap::new()),
         }
@@ -254,7 +260,14 @@ impl Ground {
 
     /// `chunk`'s trees and trunks at its current version: held, or else
     /// placed now and held.
-    fn placed(&self, map: &Map, species: &[Species], seed: u64, chunk: ChunkPos) -> Placed {
+    fn placed(
+        &self,
+        map: &Map,
+        species: &[Species],
+        open: &OpenGround,
+        seed: u64,
+        chunk: ChunkPos,
+    ) -> Placed {
         let (key, held) = {
             let mut held = self.lock();
             let key = (chunk, held.versions.get(&chunk).copied().unwrap_or(0));
@@ -263,7 +276,7 @@ impl Ground {
         if let Some(placed) = held {
             return placed;
         }
-        let placed = Placed::new(chunk, trees::trees_in(map, species, seed, chunk));
+        let placed = Placed::new(chunk, trees::trees_in(map, species, open, seed, chunk));
         self.lock().trees.insert(key, placed.clone());
         placed
     }
@@ -323,6 +336,12 @@ mod tests {
     /// The kinds of tree of the repository's `content/species.ron`.
     const SPECIES: &str = include_str!("../../../content/species.ron");
 
+    /// The open biomes' trees: the valley has no biome, so the
+    /// placeholders will do.
+    fn open() -> OpenGround {
+        OpenGround::default()
+    }
+
     /// A small valley with the repository's kinds of tree.
     fn valley() -> (Map, Vec<Species>) {
         let species: Vec<Species> = ron::from_str(SPECIES).expect("species.ron parses");
@@ -335,7 +354,7 @@ mod tests {
         let side = i32::try_from(map.width() / CHUNK_SIZE).expect("small");
         let chunks: Vec<ChunkPos> = (0..side)
             .flat_map(|y| (0..side).map(move |x| ChunkPos::new(x, y)))
-            .filter(|&chunk| !trees::trees_in(map, species, SEED, chunk).is_empty())
+            .filter(|&chunk| !trees::trees_in(map, species, &open(), SEED, chunk).is_empty())
             .take(12)
             .collect();
         assert_eq!(chunks.len(), 12, "a wooded valley");
@@ -351,12 +370,12 @@ mod tests {
         let ground = Ground::default();
         let chunks = wooded(&map, &species);
         for &chunk in &chunks {
-            let fresh = trees::trees_in(&map, &species, SEED, chunk);
+            let fresh = trees::trees_in(&map, &species, &open(), SEED, chunk);
             assert!(!ground.holds_trees(chunk));
-            let placed = ground.trees_in(&map, &species, SEED, chunk);
+            let placed = ground.trees_in(&map, &species, &open(), SEED, chunk);
             assert_eq!(&*placed, &fresh[..], "a miss places the trees");
             assert!(ground.holds_trees(chunk));
-            let again = ground.trees_in(&map, &species, SEED, chunk);
+            let again = ground.trees_in(&map, &species, &open(), SEED, chunk);
             assert!(Arc::ptr_eq(&placed, &again), "a hit shares the same trees");
         }
         assert_eq!(ground.trees_held(), chunks.len());
@@ -370,7 +389,7 @@ mod tests {
         let first: Vec<Arc<[Tree]>> = chunks
             .iter()
             .map(|&chunk| {
-                let trees = ground.trees_in(&map, &species, SEED, chunk);
+                let trees = ground.trees_in(&map, &species, &open(), SEED, chunk);
                 assert!(ground.trees_held() <= 4, "bounded");
                 trees
             })
@@ -382,11 +401,11 @@ mod tests {
         // same trees in another allocation. Asked once more at once, held.
         for (&chunk, trees) in chunks.iter().zip(&first) {
             assert!(!ground.holds_trees(chunk), "forgotten");
-            let again = ground.trees_in(&map, &species, SEED, chunk);
+            let again = ground.trees_in(&map, &species, &open(), SEED, chunk);
             assert_eq!(again, *trees, "{chunk:?} placed again, the same");
             assert!(!Arc::ptr_eq(&again, trees), "placed anew");
             assert!(Arc::ptr_eq(
-                &ground.trees_in(&map, &species, SEED, chunk),
+                &ground.trees_in(&map, &species, &open(), SEED, chunk),
                 &again
             ));
         }
@@ -398,14 +417,14 @@ mod tests {
         let ground = Ground::default();
         let chunk = wooded(&map, &species)[0];
         assert_eq!(ground.version(chunk), 0);
-        let before = ground.trees_in(&map, &species, SEED, chunk);
+        let before = ground.trees_in(&map, &species, &open(), SEED, chunk);
         ground.set_version(chunk, 1);
         assert_eq!(ground.version(chunk), 1);
         assert!(
             !ground.holds_trees(chunk),
             "the old version is not the chunk's"
         );
-        let after = ground.trees_in(&map, &species, SEED, chunk);
+        let after = ground.trees_in(&map, &species, &open(), SEED, chunk);
         assert!(!Arc::ptr_eq(&before, &after), "placed again");
         assert_eq!(before, after, "nothing lays changes over them yet");
         assert_eq!(
@@ -426,7 +445,7 @@ mod tests {
         let empty = Map::filled(64, 64, Terrain::Grass);
         let ground = Ground::default();
         let (_, species) = valley();
-        let none = ground.trees_in(&empty, &species, SEED, ChunkPos::new(0, 0));
+        let none = ground.trees_in(&empty, &species, &open(), SEED, ChunkPos::new(0, 0));
         assert!(none.is_empty(), "no woods, no trees");
         assert!(
             ground.holds_trees(ChunkPos::new(0, 0)),
@@ -441,8 +460,8 @@ mod tests {
         let first: Vec<Arc<Trunks>> = chunks
             .iter()
             .map(|&chunk| {
-                let trunks = ground.trunks_in(&map, &species, SEED, chunk);
-                let trees = trees::trees_in(&map, &species, SEED, chunk);
+                let trunks = ground.trunks_in(&map, &species, &open(), SEED, chunk);
+                let trees = trees::trees_in(&map, &species, &open(), SEED, chunk);
                 let tiles: std::collections::BTreeSet<Pos> =
                     trees.iter().map(|t| t.at.tile()).collect();
                 let origin = chunk.origin();
@@ -463,19 +482,20 @@ mod tests {
         // the same.
         assert!(!ground.holds_trees(chunks[0]));
         for (&chunk, trunks) in chunks.iter().zip(&first) {
-            let again = ground.trunks_in(&map, &species, SEED, chunk);
+            let again = ground.trunks_in(&map, &species, &open(), SEED, chunk);
             assert_eq!(*again, **trunks);
             assert!(ground.holds_trees(chunk), "held with the trees");
         }
         // A changed chunk makes its trunks again with its trees.
         let chunk = chunks[11];
-        let before = ground.trunks_in(&map, &species, SEED, chunk);
+        let before = ground.trunks_in(&map, &species, &open(), SEED, chunk);
         ground.set_version(chunk, 1);
-        let after = ground.trunks_in(&map, &species, SEED, chunk);
+        let after = ground.trunks_in(&map, &species, &open(), SEED, chunk);
         assert!(!Arc::ptr_eq(&before, &after), "made again");
         assert_eq!(before, after, "nothing felled yet");
         // A lookup reads the same bits, and nothing off the map.
-        let lookup = ground.trunks_at(&map, &species, SEED);
+        let open = open();
+        let lookup = ground.trunks_at(&map, &species, &open, SEED);
         let origin = chunk.origin();
         for y in origin.y..origin.y + 32 {
             for x in origin.x..origin.x + 32 {

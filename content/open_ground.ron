@@ -1,0 +1,38 @@
+// The open ground inhabited (docs/04-architecture.md, D37, 15 November
+// 2026): the trees standing alone and in groves on the open biomes of
+// the atlas. The atlas gives a whole 2 km cell one biome; where it is a
+// forest, the valley's woods grow (massifs, edges, clearings, copses);
+// where it is open ground, nothing grew at all, and the plains were
+// bare. A real prairie has a few trees on every hectare and small groves
+// dotting it. Placeholder values, to be tuned by looking at the zone.
+//
+// One entry per open biome, by name: grassland, wooded_steppe, steppe,
+// marsh, desert, tundra, alpine. A biome left out has no tree of its own
+// (desert, tundra, alpine here). A forest biome takes no entry: its
+// meadows are the valley's own, with their copses and the groups of
+// trees by the woods and the water.
+//
+// lone_per_km2:   trees standing alone, a square kilometre (100 ha):
+//                 200 is two a hectare.
+// groves_per_km2: groves, small groups of trees, a square kilometre: 50
+//                 is one every two hectares.
+// grove:          a grove's trees, at least and at most, 1 to 8.
+//
+// Together lone_per_km2 and groves_per_km2 stay under 1,500: the
+// meadows' grid holds one group at most every 24 m. Where the woods or
+// the water are near (within 40 m), the valley's own groups come too,
+// thicker by the woods, so a forest's edge is never a wall; and the
+// dense and light regions of the woods (D37) thin the open ground's
+// trees as they thin the forest's.
+(
+    biomes: {
+        // Prairie and parkland: a few trees a hectare, a grove every two.
+        "grassland": (lone_per_km2: 200, groves_per_km2: 50, grove: (3, 8)),
+        // Forest-steppe, savanna: more trees, mostly in groves.
+        "wooded_steppe": (lone_per_km2: 150, groves_per_km2: 120, grove: (4, 8)),
+        // Dry grass: a tree now and then, a small grove rarely.
+        "steppe": (lone_per_km2: 30, groves_per_km2: 10, grove: (3, 5)),
+        // Wet flats: a tree on the drier ground here and there.
+        "marsh": (lone_per_km2: 100, groves_per_km2: 30, grove: (3, 6)),
+    },
+)

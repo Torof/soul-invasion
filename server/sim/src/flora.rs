@@ -754,10 +754,15 @@ mod tests {
     fn sample() -> Sample {
         let species: Vec<Species> = ron::from_str(SPECIES).expect("species.ron parses");
         let map = Map::valley(768, 768, 1);
-        let trees: Vec<(FinePos, String)> = crate::trees::everywhere(&map, &species, 1)
-            .into_iter()
-            .map(|t| (t.at, species[t.species].id.clone()))
-            .collect();
+        let trees: Vec<(FinePos, String)> = crate::trees::everywhere(
+            &map,
+            &species,
+            &crate::open_ground::OpenGround::default(),
+            1,
+        )
+        .into_iter()
+        .map(|t| (t.at, species[t.species].id.clone()))
+        .collect();
         let kinds = kinds();
         let camp = map.camp().chunk();
         let mut chunks = Vec::new();
