@@ -242,6 +242,15 @@ impl Biome {
         Self::Tundra,
         Self::Alpine,
     ];
+
+    /// Is this a forest biome, where the valley's woods grow (D37)?
+    #[must_use]
+    pub const fn is_forest(self) -> bool {
+        matches!(
+            self,
+            Self::Broadleaf | Self::Jungle | Self::MixedForest | Self::Conifer
+        )
+    }
 }
 
 /// Aridity (rain over potential evaporation, per mille) under which the

@@ -63,6 +63,7 @@ use crate::content::{MOST_SPREAD_M, Species};
 use crate::r#gen::noise;
 use crate::r#gen::scatter::{self, Grid, key, purpose};
 use crate::map::{CHUNK_SIZE, ChunkPos, FinePos, MM_PER_TILE, Map, Pos, Terrain};
+use crate::open_ground::OpenGround;
 use crate::woods::{Habitat, Woods};
 
 /// A tree standing on the ground.
@@ -275,6 +276,9 @@ const GROUP_SMALLEST: u64 = 3;
 const GROUP_LARGEST: u64 = 8;
 const GROUP_RADIUS: i32 = 5000;
 const GROUP_APART: i64 = 1800;
+/// A meadow cell's area in square metres: what turns an open biome's
+/// trees a square kilometre into a chance per cell, in millionths.
+const MEADOW_CELL_M2: u64 = 24 * 24;
 /// The lattice, in tiles, on which the meadow looks for the woods and the
 /// water.
 const MEADOW_STEP: i32 = 4;
@@ -297,6 +301,9 @@ struct Mother {
 struct Planting<'a> {
     map: &'a Map,
     species: &'a [Species],
+    /// The open biomes' trees, alone and in groves (the atlas's open
+    /// ground, 15 November 2026).
+    open: &'a OpenGround,
     seed: u64,
     /// The seed of the density noise (`Woods::stocking`).
     density: u64,
@@ -317,6 +324,7 @@ impl<'a> Planting<'a> {
     fn new(
         map: &'a Map,
         species: &'a [Species],
+        open: &'a OpenGround,
         seed: u64,
         lo: (i32, i32),
         hi: (i32, i32),
@@ -325,6 +333,7 @@ impl<'a> Planting<'a> {
         let mut planting = Self {
             map,
             species,
+            open,
             seed,
             density: Woods::density_seed(seed),
             mothers: Vec::new(),
@@ -599,7 +608,13 @@ impl<'a> Planting<'a> {
 /// mother cell around the chunk, and `MEADOW_REACH` around its meadow
 /// trees.
 #[must_use]
-pub fn trees_in(map: &Map, species: &[Species], seed: u64, chunk: ChunkPos) -> Vec<Tree> {
+pub fn trees_in(
+    map: &Map,
+    species: &[Species],
+    open: &OpenGround,
+    seed: u64,
+    chunk: ChunkPos,
+) -> Vec<Tree> {
     let origin = chunk.origin();
     let side = i32::try_from(CHUNK_SIZE).expect("small chunk");
     let lo = (origin.x * MM_PER_TILE, origin.y * MM_PER_TILE);
@@ -607,7 +622,7 @@ pub fn trees_in(map: &Map, species: &[Species], seed: u64, chunk: ChunkPos) -> V
         (origin.x + side) * MM_PER_TILE,
         (origin.y + side) * MM_PER_TILE,
     );
-    let mut planting = Planting::new(map, species, seed, lo, hi);
+    let mut planting = Planting::new(map, species, open, seed, lo, hi);
     let bigs = planting.big_trees(lo, hi);
     let mut trees: Vec<Tree> = bigs
         .iter()
@@ -718,7 +733,12 @@ impl Planting<'_> {
     }
 
     /// The meadows' trees of `chunk`: small groups by the woods and the
-    /// water, rarer farther; far from both, a lone tree now and then.
+    /// water, rarer farther; far from both, a lone tree now and then. On
+    /// the open ground of an atlas's open biome, its own trees besides
+    /// ([`OpenGround`]): lone trees and groves at the biome's rate, the
+    /// chance of each per cell of the meadows' grid, thinned by the dense
+    /// and light regions as the woods are, the groups by the woods
+    /// keeping their chance where it is the greater.
     fn meadow_trees(&mut self, chunk: ChunkPos, trees: &mut Vec<Tree>) {
         let origin = chunk.origin();
         let side = i32::try_from(CHUNK_SIZE).expect("small chunk");
@@ -747,20 +767,8 @@ impl Planting<'_> {
             }
             let keys = |n: u64| [key(cx), key(cy), n];
             let roll = scatter::roll(self.seed, purpose::TREE_MEADOW, &keys(2));
-            let count = match self.woods_distance(chunk, centre.tile()) {
-                Some(d) => {
-                    let left = u32::try_from(MEADOW_REACH - d).expect("within reach");
-                    let reach = u32::try_from(MEADOW_REACH).expect("positive");
-                    let chance = MEADOW_NEAR * left * left / (reach * reach)
-                        * self.stocking(centre.tile())
-                        / 1000;
-                    if roll % 1000 >= u64::from(chance) {
-                        continue;
-                    }
-                    GROUP_SMALLEST + roll / 1000 % (GROUP_LARGEST - GROUP_SMALLEST + 1)
-                }
-                None if roll % 1_000_000 < MEADOW_FAR => 1,
-                None => continue,
+            let Some(count) = self.meadow_count(chunk, centre.tile(), roll) else {
+                continue;
             };
             // The group's trees around its centre, kept apart; a place too
             // near one already taken is drawn again, twice at most.
@@ -808,6 +816,49 @@ impl Planting<'_> {
             }
         }
     }
+    /// How many trees the meadow cell centred on `tile` holds, from its
+    /// `roll`: a group by the woods or the water, a lone tree far from
+    /// both, and on an open biome's ground the biome's own groves and
+    /// lone trees; `None` for none.
+    fn meadow_count(&mut self, chunk: ChunkPos, tile: Pos, roll: u64) -> Option<u64> {
+        let near = self.woods_distance(chunk, tile);
+        let by_the_woods = |d: i32, stocking: u32| {
+            let left = u32::try_from(MEADOW_REACH - d).expect("within reach");
+            let reach = u32::try_from(MEADOW_REACH).expect("positive");
+            MEADOW_NEAR * left * left / (reach * reach) * stocking / 1000
+        };
+        let biome = self.map.biome(tile).and_then(|b| self.open.of(b));
+        match (near, biome) {
+            // The valley's meadows, as they were.
+            (Some(d), None) => {
+                let chance = by_the_woods(d, self.stocking(tile));
+                (roll % 1000 < u64::from(chance))
+                    .then(|| GROUP_SMALLEST + roll / 1000 % (GROUP_LARGEST - GROUP_SMALLEST + 1))
+            }
+            (None, None) => (roll % 1_000_000 < MEADOW_FAR).then_some(1),
+            // An open biome's ground: its groves and lone trees, in
+            // millionths a cell, the groups by the woods keeping their
+            // chance where it is the greater.
+            (near, Some(open)) => {
+                let stocking = self.stocking(tile);
+                let own =
+                    |per_km2: u32| u64::from(per_km2) * MEADOW_CELL_M2 * u64::from(stocking) / 1000;
+                let grove = near
+                    .map_or(0, |d| u64::from(by_the_woods(d, stocking)) * 1000)
+                    .max(own(open.groves_per_km2));
+                let lone = if near.is_some() { 0 } else { MEADOW_FAR }.max(own(open.lone_per_km2));
+                let drawn = roll % 1_000_000;
+                if drawn < grove {
+                    let (lo, hi) = (u64::from(open.grove.0), u64::from(open.grove.1));
+                    Some(lo + roll / 1_000_000 % (hi - lo + 1))
+                } else if drawn < grove + lone {
+                    Some(1)
+                } else {
+                    None
+                }
+            }
+        }
+    }
 }
 
 /// Whether trees of the woods grow in `habitat` (the meadows have their
@@ -820,7 +871,7 @@ fn in_the_woods(habitat: Habitat) -> bool {
 /// and the tools that look at a whole map (the fingerprints): the game
 /// places the trees of the chunks it sends ([`trees_in`]).
 #[must_use]
-pub fn everywhere(map: &Map, species: &[Species], seed: u64) -> Vec<Tree> {
+pub fn everywhere(map: &Map, species: &[Species], open: &OpenGround, seed: u64) -> Vec<Tree> {
     let (columns, rows) = (
         map.width().div_ceil(CHUNK_SIZE),
         map.height().div_ceil(CHUNK_SIZE),
@@ -832,7 +883,7 @@ pub fn everywhere(map: &Map, species: &[Species], seed: u64) -> Vec<Tree> {
                 i32::try_from(cx).expect("few chunks"),
                 i32::try_from(cy).expect("few chunks"),
             );
-            trees.extend(trees_in(map, species, seed, chunk));
+            trees.extend(trees_in(map, species, open, seed, chunk));
         }
     }
     trees
@@ -857,6 +908,12 @@ mod tests {
     /// The kinds of tree of the repository's `content/species.ron`.
     const SPECIES: &str = include_str!("../../../content/species.ron");
 
+    /// The open biomes' trees of the repository's `content/open_ground.ron`.
+    fn open() -> OpenGround {
+        ron::from_str(include_str!("../../../content/open_ground.ron"))
+            .expect("open_ground.ron parses")
+    }
+
     fn species() -> Vec<Species> {
         ron::from_str(SPECIES).expect("species.ron parses")
     }
@@ -867,9 +924,11 @@ mod tests {
         let chunk = at.tile().chunk();
         let origin = chunk.origin();
         let side = i32::try_from(CHUNK_SIZE).unwrap();
+        let open = OpenGround::default();
         let planting = Planting::new(
             map,
             kinds,
+            &open,
             seed,
             (origin.x * MM_PER_TILE, origin.y * MM_PER_TILE),
             (
@@ -888,10 +947,10 @@ mod tests {
         let kinds = species();
         for seed in 1..=3 {
             let map = Map::valley(256, 256, seed);
-            let trees = everywhere(&map, &kinds, seed);
+            let trees = everywhere(&map, &kinds, &open(), seed);
             assert_eq!(
                 trees,
-                everywhere(&map, &kinds, seed),
+                everywhere(&map, &kinds, &open(), seed),
                 "the same trees every time"
             );
             assert!(trees.len() > 300, "seed {seed}: {} trees", trees.len());
@@ -928,7 +987,7 @@ mod tests {
         for cy in 0..8 {
             for cx in 0..8 {
                 let chunk = ChunkPos::new(cx, cy);
-                let trees = trees_in(&map, &kinds, 3, chunk);
+                let trees = trees_in(&map, &kinds, &open(), 3, chunk);
                 assert!(trees.iter().all(|t| t.at.tile().chunk() == chunk));
                 forward.extend(trees);
             }
@@ -936,7 +995,7 @@ mod tests {
         let mut backward = Vec::new();
         for cy in (0..8).rev() {
             for cx in (0..8).rev() {
-                backward.extend(trees_in(&map, &kinds, 3, ChunkPos::new(cx, cy)));
+                backward.extend(trees_in(&map, &kinds, &open(), 3, ChunkPos::new(cx, cy)));
             }
         }
         let order = |t: &Tree| (t.at.y, t.at.x);
@@ -959,7 +1018,7 @@ mod tests {
         let placed = |map: &Map, order: &mut dyn Iterator<Item = &ChunkPos>| {
             let mut all = std::collections::BTreeMap::new();
             for &chunk in order {
-                all.insert(chunk, trees_in(map, &kinds, 3, chunk));
+                all.insert(chunk, trees_in(map, &kinds, &open(), 3, chunk));
             }
             all
         };
@@ -1008,7 +1067,7 @@ mod tests {
             let map = Map::valley(768, 768, seed);
             let density = Woods::density_seed(seed);
             let mut per_tile = std::collections::HashMap::<Pos, u64>::new();
-            for t in everywhere(&map, &kinds, seed) {
+            for t in everywhere(&map, &kinds, &open(), seed) {
                 *per_tile.entry(t.at.tile()).or_default() += 1;
             }
             for y in 0..768 {
@@ -1058,7 +1117,7 @@ mod tests {
     fn big_trees_stand_apart_and_nothing_small_under_their_crowns() {
         let kinds = species();
         let map = Map::valley(512, 512, 2);
-        let trees = everywhere(&map, &kinds, 2);
+        let trees = everywhere(&map, &kinds, &open(), 2);
         let woods: Vec<&Tree> = trees
             .iter()
             .filter(|t| {
@@ -1130,16 +1189,20 @@ mod tests {
             Some(_) => 2,
             None => 3,
         };
-        let open = |map: &Map, t: Pos| {
+        let in_a_meadow = |map: &Map, t: Pos| {
             matches!(
                 map.habitat(t),
                 Habitat::Meadow | Habitat::Lone | Habitat::Clearing
             ) && !by_the_water(map, t)
         };
+        let open = open();
         for seed in 1..=4 {
             let map = Map::valley(512, 512, seed);
-            let all = everywhere(&map, &kinds, seed);
-            let in_the_open: Vec<&Tree> = all.iter().filter(|t| open(&map, t.at.tile())).collect();
+            let all = everywhere(&map, &kinds, &open, seed);
+            let in_the_open: Vec<&Tree> = all
+                .iter()
+                .filter(|t| in_a_meadow(&map, t.at.tile()))
+                .collect();
             for cy in 0..16 {
                 for cx in 0..16 {
                     let chunk = ChunkPos::new(cx, cy);
@@ -1147,6 +1210,7 @@ mod tests {
                     let mut planting = Planting::new(
                         &map,
                         &kinds,
+                        &open,
                         seed,
                         (origin.x * MM_PER_TILE, origin.y * MM_PER_TILE),
                         ((origin.x + 32) * MM_PER_TILE, (origin.y + 32) * MM_PER_TILE),
@@ -1154,7 +1218,7 @@ mod tests {
                     for y in (origin.y..origin.y + 32).step_by(4) {
                         for x in (origin.x..origin.x + 32).step_by(4) {
                             let t = Pos::new(x, y);
-                            if open(&map, t) {
+                            if in_a_meadow(&map, t) {
                                 sampled[band(planting.woods_distance(chunk, t))] += 1;
                             }
                         }
@@ -1206,7 +1270,7 @@ mod tests {
             (0_u64, 0_u64, 0_u64, 0_u64);
         for seed in 1..=3 {
             let map = Map::valley(512, 512, seed);
-            let woods: Vec<Tree> = everywhere(&map, &kinds, seed)
+            let woods: Vec<Tree> = everywhere(&map, &kinds, &open(), seed)
                 .into_iter()
                 .filter(|t| matches!(map.habitat(t.at.tile()), Habitat::Wood | Habitat::Heart))
                 .collect();
@@ -1327,7 +1391,7 @@ mod tests {
         eprintln!("valley {size}: {:?}", started.elapsed());
         // Every chunk, timed.
         let started = std::time::Instant::now();
-        let trees = everywhere(&map, &kinds, seed);
+        let trees = everywhere(&map, &kinds, &open(), seed);
         let chunks = size.div_ceil(CHUNK_SIZE).pow(2);
         let spent = started.elapsed();
         eprintln!(
@@ -1434,13 +1498,13 @@ mod tests {
             for cx in (0..chunks_wide).step_by(3) {
                 let chunk = ChunkPos::new(cx, cy);
                 let started = std::time::Instant::now();
-                let own = trees_in(&map, &kinds, seed, chunk);
+                let own = trees_in(&map, &kinds, &open(), seed, chunk);
                 alone += started.elapsed();
                 let started = std::time::Instant::now();
                 items += crate::items::natural_items(&map, &spawns, seed, chunk).len();
                 let around: Vec<Tree> = (-1..=1)
                     .flat_map(|dy| (-1..=1).map(move |dx| ChunkPos::new(cx + dx, cy + dy)))
-                    .flat_map(|c| trees_in(&map, &kinds, seed, c))
+                    .flat_map(|c| trees_in(&map, &kinds, &open(), seed, c))
                     .collect();
                 let near: Vec<crate::flora::TreeAt<'_>> = around
                     .iter()

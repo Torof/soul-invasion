@@ -22,6 +22,10 @@ real values live in a private repository (D30). Files here hold placeholders.
 - `geology.ron` — the rock regions under the ground (granite, limestone,
   chalk, sandstone): their size, how their borders wander, how often
   each rock comes. Drawn on worlds of the generator's version 2 on.
+- `open_ground.ron` — the trees standing alone and in groves on the open
+  biomes of the atlas (grassland, wooded steppe, steppe, marsh): how many
+  of each a square kilometre, how large a grove. Worlds cut from the
+  atlas only (versions 3 on); the valley's meadows have their own.
 
 The server looks for this directory as `content`, `../content` or
 `../../content` from where it runs, or where `--content <DIR>` points. An

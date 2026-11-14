@@ -304,6 +304,9 @@ pub struct Shared {
     /// the first time it is asked for ([`Ground::trees_in`]). Nothing
     /// fells them yet.
     tree_kinds: Vec<sim::content::Species>,
+    /// The content's open biomes' trees, placed with them on a world cut
+    /// from the atlas.
+    open_ground: sim::OpenGround,
     /// The placed trees of the chunks asked for lately, the world's own
     /// cache shared by handle (as the map is): a chunk's trees are placed
     /// once for the chunk's message, for the plants of the nine chunks
@@ -709,6 +712,7 @@ impl Shared {
             materials,
             species,
             tree_kinds: content.species.clone(),
+            open_ground: content.open_ground.clone(),
             ground: world.shared_ground(),
             flora,
             flora_kinds: content.flora.clone(),
@@ -1457,7 +1461,13 @@ impl Shared {
     /// the first time they are asked for ([`Ground::trees_in`]).
     fn trees_in(&self, chunk: ChunkPos) -> Vec<Standing> {
         self.ground
-            .trees_in(&self.map, &self.tree_kinds, self.seed, chunk)
+            .trees_in(
+                &self.map,
+                &self.tree_kinds,
+                &self.open_ground,
+                self.seed,
+                chunk,
+            )
             .iter()
             .map(|tree| {
                 let (dx, dy) = offset_in(chunk, tree.at).expect("a tree stands in its chunk");
@@ -1479,7 +1489,13 @@ impl Shared {
             .flat_map(|dy| (-1..=1).map(move |dx| ChunkPos::new(chunk.x + dx, chunk.y + dy)))
             .flat_map(|around| {
                 self.ground
-                    .trees_in(&self.map, &self.tree_kinds, self.seed, around)
+                    .trees_in(
+                        &self.map,
+                        &self.tree_kinds,
+                        &self.open_ground,
+                        self.seed,
+                        around,
+                    )
                     .to_vec()
             })
             .collect()
@@ -3096,18 +3112,23 @@ mod tests {
         let mut misses = Vec::new();
         for &chunk in &chunks {
             // Straight from the generator, as the message tells them.
-            let fresh: Vec<Standing> =
-                sim::trees::trees_in(&shared.map, &shared.tree_kinds, shared.seed, chunk)
-                    .into_iter()
-                    .map(|tree| {
-                        let (dx, dy) = offset_in(chunk, tree.at).unwrap();
-                        Standing {
-                            dx,
-                            dy,
-                            kind: u8::try_from(tree.species).unwrap(),
-                        }
-                    })
-                    .collect();
+            let fresh: Vec<Standing> = sim::trees::trees_in(
+                &shared.map,
+                &shared.tree_kinds,
+                &shared.open_ground,
+                shared.seed,
+                chunk,
+            )
+            .into_iter()
+            .map(|tree| {
+                let (dx, dy) = offset_in(chunk, tree.at).unwrap();
+                Standing {
+                    dx,
+                    dy,
+                    kind: u8::try_from(tree.species).unwrap(),
+                }
+            })
+            .collect();
             if misses.is_empty() {
                 assert!(!shared.ground.holds_trees(chunk), "nothing asked for yet");
             }
@@ -3146,9 +3167,13 @@ mod tests {
         // The world reads the same cache: the very same trees.
         assert!(Arc::ptr_eq(
             &world.trees_in(chunks[0]),
-            &shared
-                .ground
-                .trees_in(&shared.map, &shared.tree_kinds, shared.seed, chunks[0])
+            &shared.ground.trees_in(
+                &shared.map,
+                &shared.tree_kinds,
+                &shared.open_ground,
+                shared.seed,
+                chunks[0]
+            )
         ));
         // A server that forgets its trees at once sends the same chunks.
         let mut forgets = Shared::new(&world, &content, 1, 1.0);

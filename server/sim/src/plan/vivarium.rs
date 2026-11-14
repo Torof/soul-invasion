@@ -113,10 +113,16 @@ impl Zone {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::OnceLock;
 
     use super::*;
+    use crate::content::Species;
     use crate::map::{CHUNK_SIZE, ChunkPos, Map, Pos, Terrain, VIVARIUM_GENERATOR};
+    use crate::open_ground::OpenGround;
+    use crate::plan::Biome;
+    use crate::trees::{Tree, TreeGrid};
+    use crate::woods::Habitat;
 
     /// The zone's window, born once for the tests below: the continent of
     /// seed 14 takes some six seconds, the region 60 ms, the cut 4 ms
@@ -283,6 +289,164 @@ mod tests {
     }
 
     /// A camp asked for on the water moves to the nearest dry tile.
+    /// The repository's kinds of tree and open biomes' trees.
+    fn content() -> (Vec<Species>, OpenGround) {
+        (
+            ron::from_str(include_str!("../../../../content/species.ron")).expect("species.ron"),
+            ron::from_str(include_str!("../../../../content/open_ground.ron"))
+                .expect("open_ground.ron"),
+        )
+    }
+
+    /// The trees of every chunk of `map`, chunk by chunk, with `open`.
+    fn trees(map: &Map, species: &[Species], open: &OpenGround) -> Vec<Tree> {
+        crate::trees::everywhere(map, species, open, VIVARIUM_SEED)
+    }
+
+    /// Is the tile a forest's (the woods' habitats) or a meadow's?
+    fn in_the_woods(map: &Map, tile: Pos) -> bool {
+        !matches!(
+            map.habitat(tile),
+            Habitat::Meadow | Habitat::Lone | Habitat::Clearing | Habitat::Camp | Habitat::None
+        )
+    }
+
+    /// The open ground inhabited (15 November 2026): the grassland of the
+    /// zone, bare before, holds a few trees a hectare, alone and in
+    /// groves of the content's size; the forest's trees are what they
+    /// were; no tree stands in or by the water; the same trees whatever
+    /// the order and the chunk.
+    #[test]
+    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+    fn the_open_ground_is_inhabited_and_the_forest_unchanged() {
+        let map = map();
+        let (species, open) = content();
+        let all = trees(&map, &species, &open);
+        let grass = open.of(Biome::Grassland).expect("grassland is inhabited");
+        // Grassland tiles that are open ground (the biome's, not a wood
+        // inside it), and the trees standing on them.
+        let side = i32::try_from(map.width()).expect("small");
+        let mut tiles = 0_u64;
+        for y in 0..side {
+            for x in 0..side {
+                let p = Pos::new(x, y);
+                if map.biome(p) == Some(Biome::Grassland)
+                    && map.habitat(p) == Habitat::Meadow
+                    && map.get(p) == Some(Terrain::Grass)
+                {
+                    tiles += 1;
+                }
+            }
+        }
+        assert!(
+            tiles > 500_000,
+            "{tiles} grassland tiles: a third of the zone"
+        );
+        let on_grass: Vec<&Tree> = all
+            .iter()
+            .filter(|t| {
+                let p = t.at.tile();
+                map.biome(p) == Some(Biome::Grassland) && map.habitat(p) == Habitat::Meadow
+            })
+            .collect();
+        let per_ha = on_grass.len() as f64 * 10_000.0 / tiles as f64;
+        // The content asks 2 lone trees and half a grove of 3 to 8 a
+        // hectare (about 4.75 trees), thinned by the light regions (down
+        // to 40 %) and thickened by the groups along the woods and the
+        // water.
+        let asked = f64::from(grass.lone_per_km2)
+            + f64::from(grass.groves_per_km2) * f64::from(grass.grove.0 + grass.grove.1) / 2.0;
+        let asked = asked / 100.0;
+        assert!(
+            per_ha > asked * 0.4 && per_ha < asked * 2.5,
+            "{per_ha:.2} trees a hectare on the grassland, {asked:.2} asked"
+        );
+        // Groves: the meadow grid's groups of two or more, of the content's
+        // size at most; and lone trees, plenty of both.
+        let mut groups: BTreeMap<(ChunkPos, (i8, i8)), usize> = BTreeMap::new();
+        for t in &on_grass {
+            if t.key.grid == TreeGrid::Meadow {
+                *groups.entry((t.at.tile().chunk(), t.key.cell)).or_default() += 1;
+            }
+        }
+        let groves = groups.values().filter(|n| **n >= 2).count();
+        let lone = groups.values().filter(|n| **n == 1).count();
+        let ha = tiles as f64 / 10_000.0;
+        let (groves_asked, lone_asked) = (
+            f64::from(grass.groves_per_km2) / 100.0 * ha,
+            f64::from(grass.lone_per_km2) / 100.0 * ha,
+        );
+        assert!(
+            groves as f64 > groves_asked * 0.4 && (groves as f64) < groves_asked * 2.5,
+            "{groves} groves on {ha:.0} ha, {groves_asked:.0} asked"
+        );
+        assert!(
+            lone as f64 > lone_asked * 0.4 && (lone as f64) < lone_asked * 2.0,
+            "{lone} lone trees on {ha:.0} ha, {lone_asked:.0} asked"
+        );
+        assert!(
+            groups.values().all(|n| *n <= usize::from(grass.grove.1)),
+            "a grove holds at most {} trees",
+            grass.grove.1
+        );
+        // No tree in the water, on its bank, or on rock.
+        for t in &all {
+            let p = t.at.tile();
+            assert!(
+                matches!(map.get(p), Some(Terrain::Grass | Terrain::Forest)),
+                "a tree on {:?} at {p:?}",
+                map.get(p)
+            );
+            assert_eq!(map.depth(p), 0, "a tree in the water at {p:?}");
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let q = Pos::new(p.x + dx, p.y + dy);
+                    assert!(
+                        !matches!(
+                            map.get(q),
+                            Some(Terrain::Water | Terrain::Ford | Terrain::Brook)
+                        ),
+                        "a tree by the water at {p:?}"
+                    );
+                }
+            }
+        }
+        // The forest's trees are the same with no open biome at all: the
+        // open ground adds, it never changes the woods.
+        let bare = OpenGround {
+            biomes: BTreeMap::new(),
+        };
+        let without = trees(&map, &species, &bare);
+        let woods = |list: &[Tree]| -> Vec<Tree> {
+            list.iter()
+                .filter(|t| in_the_woods(&map, t.at.tile()))
+                .copied()
+                .collect()
+        };
+        assert_eq!(woods(&all), woods(&without), "the forest unchanged");
+        assert!(
+            without.len() + 500 < all.len(),
+            "{} trees without the open ground, {} with",
+            without.len(),
+            all.len()
+        );
+        // Deterministic: a chunk placed alone, after the others, gives the
+        // same trees.
+        for chunk in [
+            ChunkPos::new(5, 7),
+            ChunkPos::new(20, 3),
+            ChunkPos::new(33, 33),
+        ] {
+            let alone = crate::trees::trees_in(&map, &species, &open, VIVARIUM_SEED, chunk);
+            let among: Vec<Tree> = all
+                .iter()
+                .filter(|t| t.at.tile().chunk() == chunk)
+                .copied()
+                .collect();
+            assert_eq!(alone, among, "chunk {chunk:?}");
+        }
+    }
+
     #[test]
     fn a_camp_on_the_water_moves_to_the_bank() {
         let (cx, cy) = ZONE_2.tile(ZONE_2.crossing);

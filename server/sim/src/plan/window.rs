@@ -18,7 +18,10 @@
 //!   level over a bank, so water always sits in the low ground;
 //! - **forest or open ground**, from the region's biome, its border
 //!   ragged by noise; the woods themselves are the valley's
-//!   ([`crate::woods::Woods`]), allowed only inside the forest.
+//!   ([`crate::woods::Woods`]), allowed only inside the forest. The open
+//!   ground is a meadow, its biome read tile by tile ([`Window::biome`])
+//!   by the trees that stand alone and in groves on it
+//!   ([`crate::open_ground`], 15 November 2026).
 //!
 //! Everything is worked out at the tile from the seed and a few small
 //! grids of the window's cells (its own cells and a margin of two): any
@@ -287,10 +290,10 @@ pub struct Window {
     /// Cells a side of the grids below: the window's and the margins.
     cells: i64,
     /// Per cell: the ground (cm), the hills' strength (per mille), the
-    /// forest, a lake's level ([`NO_LAKE`] where there is none).
+    /// biome, a lake's level ([`NO_LAKE`] where there is none).
     height: Vec<i32>,
     hills: Vec<i32>,
-    forest: Vec<bool>,
+    biome: Vec<Biome>,
     lake: Vec<i32>,
     stretches: Vec<Stretch>,
     /// Per chunk of the window, row by row: the stretches whose bank
@@ -333,10 +336,7 @@ impl Window {
                             Water::River => river += 1,
                             _ => {}
                         }
-                        if matches!(
-                            region.biome[i],
-                            Biome::Broadleaf | Biome::Jungle | Biome::MixedForest | Biome::Conifer
-                        ) {
+                        if region.biome[i].is_forest() {
                             forest += 1;
                         }
                         let up = (region.height[i + 1] - region.height[i])
@@ -391,7 +391,7 @@ impl Window {
         );
         let index = |x: i64, y: i64| usize::try_from((cy0 + y) * rs + cx0 + x).expect("inside");
         let total = usize::try_from(cells * cells).expect("small");
-        let (mut height, mut hills, mut forest, mut lake) = (
+        let (mut height, mut hills, mut biome, mut lake) = (
             Vec::with_capacity(total),
             Vec::with_capacity(total),
             Vec::with_capacity(total),
@@ -406,10 +406,7 @@ impl Window {
                 } else {
                     1000
                 });
-                forest.push(matches!(
-                    region.biome[i],
-                    Biome::Broadleaf | Biome::Jungle | Biome::MixedForest | Biome::Conifer
-                ));
+                biome.push(region.biome[i]);
                 lake.push(if region.water[i] == Water::Lake {
                     region.surface[i]
                 } else {
@@ -555,7 +552,7 @@ impl Window {
             cells,
             height,
             hills,
-            forest,
+            biome,
             lake,
             stretches,
             by_chunk,
@@ -765,11 +762,19 @@ impl Window {
         i16::try_from(dm.clamp(i64::from(i16::MIN), i64::from(i16::MAX))).expect("clamped")
     }
 
-    /// Is tile `(x, y)` in the forest's biome? Its border with the open
+    /// Is tile `(x, y)` in a forest's biome? Its border with the open
     /// ground wanders `EDGE_SHIFT_M` either way.
     pub fn wooded(&self, x: i64, y: i64) -> bool {
+        self.biome(x, y).is_forest()
+    }
+
+    /// The biome of tile `(x, y)`: its region cell's, the borders between
+    /// cells wandering `EDGE_SHIFT_M` either way (the same wandering as
+    /// the forest's border, so a forest's edge and its open ground's
+    /// trees agree on where the forest ends).
+    pub fn biome(&self, x: i64, y: i64) -> Biome {
         let (sx, sy) = self.ragged(x, y, 0, EDGE_SHIFT_M);
-        self.cell(&self.forest, sx.div_euclid(CELL), sy.div_euclid(CELL))
+        self.cell(&self.biome, sx.div_euclid(CELL), sy.div_euclid(CELL))
     }
 
     /// Tile `(x, y)` shifted up to `reach` metres either way by a noise
