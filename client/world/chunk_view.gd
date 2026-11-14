@@ -260,7 +260,7 @@ const SLOPE_LOOK := {
 	"slope_break_turn": 165.0,
 	"slope_streak_mix": 0.0,
 	"slope_streak_pale": Vector3(0.92, 0.94, 0.59),
-	"slope_turf_px": 768.0,
+	"slope_turf_px": 512.0,
 }
 ## The turf with tufts, bushes and stones (the lead's grass of
 ## 13 November 2026) laid instead of the look's (key G).
@@ -290,7 +290,7 @@ static func set_slope_param(name: String, value: Variant) -> void:
 
 ## Key P: the turf drawn smaller (its repetition in canvas px); the look's
 ## 768 is the lead's grass number 2 at twice the old scale.
-static var slope_turf_px := 768.0
+static var slope_turf_px := 512.0
 
 
 static func set_slope_turf_px(px: float) -> void:
