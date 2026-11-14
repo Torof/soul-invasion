@@ -156,6 +156,12 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	var key := event as InputEventKey
 	if key == null or not key.pressed or key.echo:
 		return
+	if key.keycode == KEY_J:
+		ChunkView.slope_turf_half_turn = not ChunkView.slope_turf_half_turn
+		ChunkView.set_slope_param("slope_turf_half_turn", ChunkView.slope_turf_half_turn)
+		_apply()
+		get_viewport().set_input_as_handled()
+		return
 	if key.keycode == KEY_K:
 		ChunkView.slope_break_turn += 15.0
 		if ChunkView.slope_break_turn > 180.0:
@@ -236,4 +242,5 @@ func _apply() -> void:
 	crests += ", two layers" if ChunkView.slope_layers else ", one image"
 	crests += ", turf with bushes" if ChunkView.slope_turf_with_bushes else ", plain turf"
 	crests += ", break below the crest %+d°" % roundi(ChunkView.slope_break_turn)
+	crests += ", turf the other way (J)" if ChunkView.slope_turf_half_turn else ", turf with the streaks"
 	_label.text = "Slope test — %s, %s, %s, %s, %s   (keys 1, 0, T, V, B, X, C, N, R, L, G and K)" % [MODES[mode], look, zones, seams, crests]
