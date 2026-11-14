@@ -406,6 +406,49 @@ const BAR_ABOVE_CM: i32 = 300;
 const ALPINE_CM: i32 = 150_000;
 const ALPINE_TENTHS: i64 = -10;
 
+/// Conifers by altitude (the project lead's decision of 14 November 2026:
+/// conifers belong in the mountains). The continent lies at 28–38° N,
+/// where no land is cold enough for conifers by latitude, lapse rate
+/// included (6.5 °C a kilometre takes a 20 °C lowland to 4 °C only past
+/// 2,400 m): so a forest above `CONIFER_FLOOR_CM` is conifer, and above
+/// the tree line `TREE_LINE_CM` it is alpine, whatever its warmth.
+/// Placeholder values, realistic for these latitudes: pine and fir from
+/// 1,500 m, the tree line at 2,700 m.
+const CONIFER_FLOOR_CM: i32 = 150_000;
+const TREE_LINE_CM: i32 = 270_000;
+
+/// The biome of a land cell from its mean year `t` (tenths of a degree,
+/// the ecotone's wander included), its `aridity` (rain over potential
+/// evaporation, per mille), its `height_cm` and whether it is a wet
+/// flat.
+fn land_biome(t: i64, aridity: i64, height_cm: i32, wet_flat: bool) -> Biome {
+    if t < ALPINE_TENTHS && height_cm >= ALPINE_CM {
+        Biome::Alpine
+    } else if t < TUNDRA_TENTHS {
+        Biome::Tundra
+    } else if aridity < DESERT_ARIDITY {
+        Biome::Desert
+    } else if aridity < STEPPE_ARIDITY {
+        Biome::Steppe
+    } else if wet_flat {
+        Biome::Marsh
+    } else if aridity < WOODED_STEPPE_ARIDITY {
+        Biome::WoodedSteppe
+    } else if aridity < GRASSLAND_ARIDITY {
+        Biome::Grassland
+    } else if height_cm >= TREE_LINE_CM {
+        Biome::Alpine
+    } else if t < CONIFER_TENTHS || height_cm >= CONIFER_FLOOR_CM {
+        Biome::Conifer
+    } else if t < MIXED_TENTHS {
+        Biome::MixedForest
+    } else if t >= JUNGLE_TENTHS && aridity >= JUNGLE_ARIDITY {
+        Biome::Jungle
+    } else {
+        Biome::Broadleaf
+    }
+}
+
 /// A wet flat: draining at least this many millilitres a second, dropping
 /// at most this many cm a cell, wetter than this aridity; or a filled
 /// hollow too shallow to be a lake.
@@ -483,29 +526,7 @@ pub(crate) fn settle(seed: u64, grid: Grid, relief: Relief) -> Continent {
             let hollow = surface[i] > relief.height[i];
             let wet_flat = (hollow || (discharge[i] >= MARSH_DISCHARGE && drop <= MARSH_DROP_CM))
                 && aridity >= MARSH_ARIDITY;
-            if t < ALPINE_TENTHS && relief.height[i] >= ALPINE_CM {
-                Biome::Alpine
-            } else if t < TUNDRA_TENTHS {
-                Biome::Tundra
-            } else if aridity < DESERT_ARIDITY {
-                Biome::Desert
-            } else if aridity < STEPPE_ARIDITY {
-                Biome::Steppe
-            } else if wet_flat {
-                Biome::Marsh
-            } else if aridity < WOODED_STEPPE_ARIDITY {
-                Biome::WoodedSteppe
-            } else if aridity < GRASSLAND_ARIDITY {
-                Biome::Grassland
-            } else if t < CONIFER_TENTHS {
-                Biome::Conifer
-            } else if t < MIXED_TENTHS {
-                Biome::MixedForest
-            } else if t >= JUNGLE_TENTHS && aridity >= JUNGLE_ARIDITY {
-                Biome::Jungle
-            } else {
-                Biome::Broadleaf
-            }
+            land_biome(t, aridity, relief.height[i], wet_flat)
         })
         .collect();
 
@@ -1005,4 +1026,27 @@ fn reaches(seed: u64, relief: &Relief, discharge: &[u64]) -> (Vec<Reach>, Vec<u1
         })
         .collect();
     (reach, spread)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conifers_climb_the_mountains_and_stop_at_the_tree_line() {
+        // A forest's rain, a warm year: broadleaf in the lowland.
+        let (rainy, warm) = (GRASSLAND_ARIDITY + 100, MIXED_TENTHS + 50);
+        assert_eq!(land_biome(warm, rainy, 20_000, false), Biome::Broadleaf);
+        // The same forest high up is conifer, and alpine past the tree line.
+        assert_eq!(
+            land_biome(warm, rainy, CONIFER_FLOOR_CM, false),
+            Biome::Conifer
+        );
+        assert_eq!(land_biome(warm, rainy, TREE_LINE_CM, false), Biome::Alpine);
+        // Open land keeps its own biome, whatever its height.
+        assert_eq!(
+            land_biome(warm, STEPPE_ARIDITY + 10, TREE_LINE_CM, false),
+            Biome::WoodedSteppe
+        );
+    }
 }
