@@ -57,6 +57,7 @@
 )]
 
 pub mod climate;
+mod course;
 pub mod measure;
 pub mod region;
 pub mod relief;
