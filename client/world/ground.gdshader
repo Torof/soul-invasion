@@ -91,7 +91,11 @@ uniform sampler2D slope_streaks : repeat_enable, filter_linear_mipmap;
 uniform sampler2D slope_turf : repeat_enable, filter_linear_mipmap;
 uniform sampler2D slope_turf_bushes : repeat_enable, filter_linear_mipmap;
 uniform bool slope_turf_with_bushes = false;
-uniform bool slope_turf_upright = false;
+// How the turf is turned against the streaks (key K cycles): 0 with the
+// streaks whole (its blades toward the crest, upside down where they
+// are), 1 the streaks' side only (blades up), 2 the opposite side (blades
+// up, the streaks' diagonal), 3 as drawn.
+uniform int slope_turf_mode = 0;
 const float SLOPE_TURF_PX = 768.0;
 const vec3 SLOPE_STREAK_PALE = vec3(0.92, 0.94, 0.59);
 const float SLOPE_STREAK_MIX = 0.55;
@@ -646,7 +650,8 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 		// and right, one running down to the left wants it up and left).
 		// So the turf is mirrored with the streaks and never turned upside
 		// down. Key K keeps the turf as drawn.
-		vec2 tf = slope_turf_upright ? vec2(1.0) : vec2(fx, 1.0);
+		vec2 tf = slope_turf_mode == 0 ? vec2(fx, fy)
+			: (slope_turf_mode == 1 ? vec2(fx, 1.0) : (slope_turf_mode == 2 ? vec2(fx * fy, 1.0) : vec2(1.0)));
 		vec2 tuv = canvas / SLOPE_TURF_PX * tf;
 		vec3 turf = slope_turf_with_bushes
 			? textureGrad(slope_turf_bushes, tuv, dx / SLOPE_TURF_PX * tf, dy / SLOPE_TURF_PX * tf).rgb * SLOPE_TINT
