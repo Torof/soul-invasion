@@ -55,6 +55,11 @@ OPTIONS:
     --world test:montagne  The mountain test: 192 × 192 tiles of grass cut
                            from a large mountain's flank, shown by the
                            client only. Never for play.
+    --world test:massif    The massif test: 1024 × 1024 tiles of grass
+                           holding the whole mountain the mountain test
+                           cuts its window from, its 270 m summit at the
+                           middle, a flat margin at its edge, shown by the
+                           client only. Never for play.
     --world test:formes    The shapes test: 256 × 256 tiles of grass, flat
                            at 50 m, with seven shapes on their own meadows
                            (three crests, a valley, a cone, a plane whose
@@ -148,6 +153,8 @@ pub enum TestWorld {
     Marches,
     /// `test:montagne`: a window on a large mountain's flank.
     Mountain,
+    /// `test:massif`: the whole mountain, cut to 1024 tiles on a side.
+    Massif,
     /// `test:formes`: simple shapes, one on each meadow.
     Shapes,
     /// `test:sens`: crests across the screen whose profiles tell which
@@ -270,6 +277,7 @@ impl Options {
                     let world = match raw.as_str() {
                         "test:marches" => Some(TestWorld::Marches),
                         "test:montagne" => Some(TestWorld::Mountain),
+                        "test:massif" => Some(TestWorld::Massif),
                         "test:formes" => Some(TestWorld::Shapes),
                         "test:sens" => Some(TestWorld::Sense),
                         "test:relief" => Some(TestWorld::Relief),

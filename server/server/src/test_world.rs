@@ -1,6 +1,7 @@
 //! Tiny worlds for visual tests (`--world`): a flat square of grass, the
-//! steps test's ridge, the mountain test's flank, the shapes test, the
-//! sense test, and the relief test that gathers the last three on one map
+//! steps test's ridge, the mountain test's flank, the massif test that
+//! holds the whole mountain, the shapes test, the sense test, and the
+//! relief test that gathers the flank and the last two on one map
 //! (`test:relief`, the one the sandbox uses). Ephemeral and never for
 //! play. All carry heights (the flat one all zero): the client knows a
 //! test world by them and draws it with no fog.
@@ -161,12 +162,11 @@ fn mountain_at(u: f64, v: f64) -> f64 {
     MOUNTAIN_STRETCH * mountain_base(u / MOUNTAIN_STRETCH, v / MOUNTAIN_STRETCH)
 }
 
-/// The heights of the mountain test's tiles, in decimetres, row by row:
-/// the relief at each tile's middle.
-#[must_use]
-pub fn mountain_heights() -> Vec<i16> {
-    let side = MOUNTAIN_SIDE as usize;
-    let (u0, v0) = MOUNTAIN_ORIGIN;
+/// The relief sampled on a `side × side` window starting at `origin`,
+/// in decimetres, row by row: the relief at each tile's middle.
+fn mountain_window(origin: (f64, f64), side: u32) -> Vec<i16> {
+    let (u0, v0) = origin;
+    let side = side as usize;
     (0..side * side)
         .map(|i| {
             let (x, y) = (
@@ -179,6 +179,13 @@ pub fn mountain_heights() -> Vec<i16> {
             dm
         })
         .collect()
+}
+
+/// The heights of the mountain test's tiles, in decimetres, row by row:
+/// the relief at each tile's middle.
+#[must_use]
+pub fn mountain_heights() -> Vec<i16> {
+    mountain_window(MOUNTAIN_ORIGIN, MOUNTAIN_SIDE)
 }
 
 /// Where the mountain test's camp stands: the gentlest tile (the smallest
@@ -197,6 +204,108 @@ pub fn mountain_camp(heights: &[i16]) -> (u32, u32) {
             let rise = du * du + dv * dv;
             if rise < best.0 {
                 best = (rise, (x, y));
+            }
+        }
+    }
+    let (x, y) = best.1;
+    (
+        u32::try_from(x).expect("on the map"),
+        u32::try_from(y).expect("on the map"),
+    )
+}
+
+/// The massif test (14 November 2026): the whole mountain the mountain
+/// test cuts its window from, on [`MASSIF_SIDE`] tiles of grass. The
+/// relief has no end along its crest: it is a ridge about 45 m high
+/// running along the map's diagonal (`x - y` within about ±100 of the
+/// crest's line, `x - y` ≈ 75 at the middle), 700 tiles wide at its foot
+/// (where its height falls to the plain's 0 m), that swells to a 270 m
+/// summit around `x + y` = 600 of the relief and falls back to the ridge
+/// some 700 tiles away on either side. The map is therefore cut to
+/// 1024 × 1024 tiles centred on the summit, the relief's (356, 282),
+/// the map's (511, 511): the window starts at [`MASSIF_ORIGIN`]. Its
+/// outer [`MASSIF_MARGIN`] tiles are flat at the plain's 0 m, and the
+/// mountain fades to the plain over the [`MASSIF_FADE`] tiles inside
+/// them (the ridge leaves by the map's upper left and lower right
+/// corners, about 50 m high there). The ravines dig below the plain near
+/// the foot: the lowest tile is about −26 m.
+///
+/// Along the crest the summit has a col on each side, about 200 m high
+/// and 95 tiles away: the nearer, toward the next summit (232 m, at the
+/// map's `x + y` = 839), is [`MASSIF_COL`]. The camp stands on the
+/// gentlest tile within [`MASSIF_CAMP_REACH`] tiles of that col
+/// ([`massif_camp`]): (439, 449), 202.7 m, level with its neighbours.
+/// Test only: floats are fine here, the heights are rounded to
+/// decimetres once.
+pub const MASSIF_SIDE: u32 = 1024;
+
+/// Where the massif test's window starts in the relief, in tiles: the
+/// summit at the map's middle.
+const MASSIF_ORIGIN: (f64, f64) = (-155.0, -229.0);
+
+/// How many tiles at the massif test's edge are flat at the plain.
+pub const MASSIF_MARGIN: u32 = 16;
+
+/// Over how many tiles inside the margin the mountain fades to the plain.
+pub const MASSIF_FADE: u32 = 8;
+
+/// The col beside the massif's summit, on the map: the lowest point of
+/// the crest between the summit and the next one, found by sampling.
+pub const MASSIF_COL: (u32, u32) = (440, 449);
+
+/// How far from the col, in tiles on each axis, the camp may stand.
+pub const MASSIF_CAMP_REACH: i32 = 20;
+
+/// The steepest rise the camp's tile may have between its neighbours two
+/// tiles apart on an axis, in decimetres: 0.15 m a tile.
+pub const MASSIF_CAMP_RISE_DM: i32 = 3;
+
+/// The heights of the massif test's tiles, in decimetres, row by row:
+/// the relief at each tile's middle, faded to the plain inside the flat
+/// margin.
+#[must_use]
+pub fn massif_heights() -> Vec<i16> {
+    let side = MASSIF_SIDE as usize;
+    let last = side - 1;
+    let (margin, fade) = (f64::from(MASSIF_MARGIN), f64::from(MASSIF_FADE));
+    mountain_window(MASSIF_ORIGIN, MASSIF_SIDE)
+        .into_iter()
+        .enumerate()
+        .map(|(i, h)| {
+            let (x, y) = (i % side, i / side);
+            let edge = x.min(y).min(last - x).min(last - y);
+            let edge = f64::from(u32::try_from(edge).expect("small"));
+            let weight = smooth(margin, margin + fade, edge);
+            #[allow(clippy::cast_possible_truncation)]
+            let dm = (weight * f64::from(h)).round() as i16;
+            dm
+        })
+        .collect()
+}
+
+/// Where the massif test's camp stands: the gentlest tile (the smallest
+/// rise between its neighbours one tile away on each axis, the nearest
+/// to the col among equals) within [`MASSIF_CAMP_REACH`] tiles of
+/// [`MASSIF_COL`].
+#[must_use]
+pub fn massif_camp(heights: &[i16]) -> (u32, u32) {
+    let side = i32::try_from(MASSIF_SIDE).expect("small");
+    let at =
+        |x: i32, y: i32| i32::from(heights[usize::try_from(y * side + x).expect("on the map")]);
+    let (cx, cy) = (
+        i32::try_from(MASSIF_COL.0).expect("small"),
+        i32::try_from(MASSIF_COL.1).expect("small"),
+    );
+    let reach = MASSIF_CAMP_REACH;
+    let mut best = ((i32::MAX, i32::MAX), (cx, cy));
+    for y in cy - reach..=cy + reach {
+        for x in cx - reach..=cx + reach {
+            let du = at(x + 1, y) - at(x - 1, y);
+            let dv = at(x, y + 1) - at(x, y - 1);
+            let rise = du * du + dv * dv;
+            let away = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+            if (rise, away) < best.0 {
+                best = ((rise, away), (x, y));
             }
         }
     }
@@ -726,6 +835,13 @@ pub fn make(world: TestWorld, calendar: Calendar, content: &Content) -> World {
                 .with_heights(heights)
                 .with_camp(x, y)
         }
+        TestWorld::Massif => {
+            let heights = massif_heights();
+            let (x, y) = massif_camp(&heights);
+            Map::filled(MASSIF_SIDE, MASSIF_SIDE, Terrain::Grass)
+                .with_heights(heights)
+                .with_camp(x, y)
+        }
         TestWorld::Shapes => {
             let (x, y) = SHAPES_CAMP;
             Map::filled(SHAPES_SIDE, SHAPES_SIDE, Terrain::Grass)
@@ -781,6 +897,64 @@ mod tests {
         assert!(at(14, 28) >= 27 && at(15, 28) >= 27);
         // The left corner is flat now.
         assert_eq!(at(0, 29), 0);
+    }
+
+    #[test]
+    fn the_massif_holds_the_whole_mountain_on_a_flat_margin_and_the_camp_is_gentle() {
+        let heights = massif_heights();
+        let side = MASSIF_SIDE as usize;
+        assert_eq!(heights.len(), side * side);
+        let at = |x: usize, y: usize| i32::from(heights[y * side + x]);
+        // The summit, about 270 m, stands at the map's middle; the ravines
+        // dig a little below the plain at the foot.
+        let (top, i) = heights
+            .iter()
+            .enumerate()
+            .map(|(i, &h)| (h, i))
+            .max()
+            .expect("tiles");
+        assert!((2650..=2750).contains(&top), "summit {top} dm");
+        let (sx, sy) = (i % side, i / side);
+        assert!(
+            sx.abs_diff(side / 2) <= 2 && sy.abs_diff(side / 2) <= 2,
+            "summit at ({sx}, {sy})"
+        );
+        let low = heights.iter().copied().min().expect("tiles");
+        assert!((-300..0).contains(&low), "lowest {low} dm");
+        // The margin is flat at the plain, and the ridge still crosses the
+        // corners inside the fade.
+        let margin = MASSIF_MARGIN as usize;
+        let last = side - 1;
+        for (i, &h) in heights.iter().enumerate() {
+            let (x, y) = (i % side, i / side);
+            if x.min(y).min(last - x).min(last - y) < margin {
+                assert_eq!(h, 0, "margin tile ({x}, {y})");
+            }
+        }
+        let inside = margin + MASSIF_FADE as usize;
+        let ridge = |sum: usize| {
+            (inside..side - inside)
+                .filter_map(|x| sum.checked_sub(x).filter(|&y| y < side).map(|y| at(x, y)))
+                .max()
+                .expect("tiles")
+        };
+        assert!(ridge(2 * (inside + 20)) > 300);
+        assert!(ridge(2 * (last - inside - 20)) > 300);
+        // The col is well below the summit, and the camp near it lies level.
+        let (cx, cy) = (MASSIF_COL.0 as usize, MASSIF_COL.1 as usize);
+        assert!((1950..=2100).contains(&at(cx, cy)), "col {} dm", at(cx, cy));
+        let (x, y) = massif_camp(&heights);
+        let (x, y) = (x as usize, y as usize);
+        assert!(
+            x.abs_diff(cx) <= 20 && y.abs_diff(cy) <= 20,
+            "camp ({x}, {y})"
+        );
+        let du = (at(x + 1, y) - at(x - 1, y)).abs();
+        let dv = (at(x, y + 1) - at(x, y - 1)).abs();
+        assert!(
+            du <= MASSIF_CAMP_RISE_DM && dv <= MASSIF_CAMP_RISE_DM,
+            "camp rises {du}, {dv}"
+        );
     }
 
     #[test]
