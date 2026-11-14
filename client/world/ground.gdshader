@@ -91,11 +91,9 @@ uniform sampler2D slope_streaks : repeat_enable, filter_linear_mipmap;
 uniform sampler2D slope_turf : repeat_enable, filter_linear_mipmap;
 uniform sampler2D slope_turf_bushes : repeat_enable, filter_linear_mipmap;
 uniform bool slope_turf_with_bushes = false;
-// The turf is ROTATED with the streaks (14 November 2026, the lead: his
-// pick among the square's eight turns was the quarter turn, which keeps
-// the blades' curl; a flip inverts it): by the streaks' angle, plus
-// slope_turf_offset degrees, his dial (key K, 6 degrees a press).
-uniform float slope_turf_offset = 0.0;
+// The break, in degrees, of a side whose crest lies below, against the
+// sides rising away (key K, 15 degrees a press; the lead expects 45–60).
+uniform float slope_break_turn = 60.0;
 const float SLOPE_TURF_PX = 768.0;
 const vec3 SLOPE_STREAK_PALE = vec3(0.92, 0.94, 0.59);
 const float SLOPE_STREAK_MIX = 0.55;
@@ -638,26 +636,28 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 		}
 		float tilt_side = -sign(line.x * (-up.y) - line.y * up.x) * (slope_chevron_flip ? -1.0 : 1.0);
 		float fx = up.x > SLOPE_POINT_SIDE_PX ? 1.0 : (up.x < -SLOPE_POINT_SIDE_PX ? -1.0 : tilt_side);
-		float fy = up.y > 0.0 ? -1.0 : 1.0;
-		// One width for all (14 November 2026, the lead: a patchwork
-		// otherwise): a side is one image whole, the turn happens only
-		// where the other side begins.
-		vec3 tex = streak_read(canvas, dx, dy, 1.0, vec2(fx, fy));
-		float light = tex.r;
-		// The turf keeps the streaks' SIDE with its blades up the screen
-		// (14 November 2026, the lead, on a side whose crest lies below:
-		// a streak running down to the right wants the grass pointing up
-		// and right, one running down to the left wants it up and left).
-		// So the turf is mirrored with the streaks and never turned upside
-		// down. Key K keeps the turf as drawn.
-		// The streaks' angle on the screen (y up): as is 45, mirrored 135,
-		// upside down -45, both -135; the turf as drawn matches the as-is
-		// streaks, so it turns by that angle less 45, plus the dial.
-		float turn = radians(degrees(atan(fy, fx)) - 45.0 + slope_turf_offset);
+		// A side whose crest lies below (the ground rising toward the
+		// viewer), 14 November 2026, the lead: it keeps the SAME direction
+		// as the sides rising away (grass and streaks up the screen, never
+		// turned over), but BROKEN by slope_break_turn degrees (his dial,
+		// key K): the break tells the crest, not the sense. Everything is
+		// rotated, never flipped, so the blades keep their curl.
+		bool below = up.y > 0.0;
+		float turn = radians(below ? slope_break_turn : (fx < 0.0 ? 90.0 : 0.0));
 		mat2 rot = mat2(vec2(cos(turn), sin(turn)), vec2(-sin(turn), cos(turn)));
-		vec2 tuv = rot * (canvas / SLOPE_TURF_PX);
-		vec2 tdx = rot * (dx / SLOPE_TURF_PX);
-		vec2 tdy = rot * (dy / SLOPE_TURF_PX);
+		vec2 cf = below ? vec2(1.0) : vec2(fx, 1.0);
+		vec3 tex = below
+			? textureGrad(slope_streaks, rot * (canvas / (SLOPE_TEXTURE_PX * SLOPE_ZONE_SCALE)), rot * (dx / (SLOPE_TEXTURE_PX * SLOPE_ZONE_SCALE)), rot * (dy / (SLOPE_TEXTURE_PX * SLOPE_ZONE_SCALE))).rgb
+			: streak_read(canvas, dx, dy, 1.0, cf);
+		float light = tex.r;
+		// The turf: as drawn where the ground rises to the right, mirrored
+		// where it rises to the left (validated on vertical crests), and
+		// rotated like the streaks where the crest lies below.
+		vec2 tf = below ? vec2(1.0) : vec2(fx, 1.0);
+		mat2 trot = below ? rot : mat2(vec2(1.0, 0.0), vec2(0.0, 1.0));
+		vec2 tuv = trot * (canvas / SLOPE_TURF_PX * tf);
+		vec2 tdx = trot * (dx / SLOPE_TURF_PX * tf);
+		vec2 tdy = trot * (dy / SLOPE_TURF_PX * tf);
 		vec3 turf = slope_turf_with_bushes
 			? textureGrad(slope_turf_bushes, tuv, tdx, tdy).rgb * SLOPE_TINT
 			: textureGrad(slope_turf, tuv, tdx, tdy).rgb * SLOPE_TINT;
