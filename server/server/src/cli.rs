@@ -83,6 +83,15 @@ OPTIONS:
                            6 km a side with a height per tile (generator
                            version 3, the relief look test; some seconds to
                            make). Never for play.
+    --world test:squelette The skeleton test: 256 × 256 tiles of grass flat
+                           at 50 m holding the mountain plan's first trials,
+                           made by sim::relief from declared ridges: the
+                           humpback with a shoulder (x 2–84, y 2–78), the col
+                           (x 92–214, y 2–92) and the sense by edges, six
+                           crests across the screen (bare, shelf, rim, then
+                           the three turned; x 12–84, 92–164, 172–244 ×
+                           y 100–172 and 180–252), the camp on the flat at
+                           (235, 47). Never for play.
     --dev                  Development tools: every client gets an overview
                            of the whole map and may teleport its body. Never
                            for play.
@@ -170,6 +179,9 @@ pub enum TestWorld {
     /// `plan:<SEED>`: a window of the atlas of that seed (the relief look
     /// test, generator version 3).
     Plan(u64),
+    /// `test:squelette`: the mountain plan's first trials, made from
+    /// declared ridges by `sim::relief`.
+    Skeleton,
 }
 
 /// When a paced server places the plants of the view around the camp,
@@ -288,6 +300,7 @@ impl Options {
                         "test:formes" => Some(TestWorld::Shapes),
                         "test:sens" => Some(TestWorld::Sense),
                         "test:relief" => Some(TestWorld::Relief),
+                        "test:squelette" => Some(TestWorld::Skeleton),
                         _ => {
                             if let Some(seed) = raw.strip_prefix("plan:") {
                                 seed.trim().parse().ok().map(TestWorld::Plan)
