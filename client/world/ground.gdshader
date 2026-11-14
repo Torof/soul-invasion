@@ -56,11 +56,14 @@ const float SLOPE_ZONE_TILES = 22.0;
 // only changes its steepness or turns while still rising, the change must
 // stay soft: the two nearest choices fade into each other there, sharpened
 // by SLOPE_SEAM_SHARPEN so the fade stays narrow. A fold is told by the
-// ground's rise SLOPE_FOLD_TILES uphill and downhill pointing apart. Off
+// ground's rise SLOPE_FOLD_WIDE_TILES uphill and downhill pointing apart. Off
 // (key B): every seam at once.
 uniform bool slope_seams_soft = true;
 const float SLOPE_SEAM_SHARPEN = 3.0;
-const float SLOPE_FOLD_TILES = 1.5;
+const float SLOPE_FOLD_WIDE_TILES = 4.0;
+// How far apart the two sides must turn to make a crest: the cosine of
+// the angle between their rises (-0.5: 120 degrees). Key N cycles it.
+uniform float slope_crest_cos = -0.5;
 // At a crest or a valley floor (14 November 2026, the lead): each side's
 // streaks must meet the fold's line nearly square, between 45 and 90
 // degrees, never running along it, or the crest is lost. There each side
@@ -72,14 +75,7 @@ const float SLOPE_FOLD_TILES = 1.5;
 uniform bool slope_crest_square = true;
 uniform bool slope_chevron_flip = false;
 const float SLOPE_CREST_TILT = 12.0;
-// The fold's band: where the rise uphill and downhill point apart by more
-// than SLOPE_CREST_FROM (a cosine); its top, nearest the line, by more
-// than SLOPE_CREST_TOP, drawn level (SLOPE_CREST_TOP_WIDTH) so the crest
-// reads rounded and flat on top. In the band each side is one image
-// whole, never several strips.
-const float SLOPE_CREST_FROM = -0.1;
-const float SLOPE_CREST_TOP = -0.8;
-const float SLOPE_CREST_TOP_WIDTH = 3.0;
+// At a crest each side is one image whole, never several strips.
 // The widths a crest's side may take (fixed ones only, never in between).
 const float CREST_WIDTHS[7] = float[](0.45, 0.6, 0.85, 1.25, 1.8, 2.2, 3.0);
 // Midjourney's grasses are drawn at half the lead's scale: repeated over
@@ -593,16 +589,21 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 		bool fold = true;
 		if (slope_seams_soft) {
 			vec2 g = rise / s;
-			vec2 up = texture(slope_index, (p + g * SLOPE_FOLD_TILES) / index_tiles).rg;
-			vec2 below = texture(slope_index, (p - g * SLOPE_FOLD_TILES) / index_tiles).rg;
-			fold = dot(up, below) < 0.0;
-			float apart = dot(up, below) / (length(up) * length(below) + 1e-6);
-			if (slope_crest_square && apart < SLOPE_CREST_FROM) {
+			// A true crest or valley floor (14 November 2026, the lead: a
+			// crest is two opposite sides; a smaller turn is the same side
+			// changing, to stay soft): the two sides point apart by more
+			// than slope_crest_cos, and still apart SLOPE_FOLD_WIDE_TILES
+			// away, so a fold a few tiles wide is not drawn as a crest.
+			vec2 up_far = texture(slope_index, (p + g * SLOPE_FOLD_WIDE_TILES) / index_tiles).rg;
+			vec2 below_far = texture(slope_index, (p - g * SLOPE_FOLD_WIDE_TILES) / index_tiles).rg;
+			float apart_far = dot(up_far, below_far) / (length(up_far) * length(below_far) + 1e-6);
+			fold = apart_far < slope_crest_cos;
+			// The band is as wide as the far reads straddle the line (about
+			// SLOPE_FOLD_WIDE_TILES each side), one image whole each side,
+			// so no thin strips.
+			if (slope_crest_square && fold) {
 				crest_band = true;
 				crest_pick = crest_choice(g);
-				if (apart < SLOPE_CREST_TOP) {
-					crest_pick.x = SLOPE_CREST_TOP_WIDTH;
-				}
 			}
 		}
 		if (!fold) {

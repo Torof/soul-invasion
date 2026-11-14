@@ -162,6 +162,14 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		_apply()
 		get_viewport().set_input_as_handled()
 		return
+	if key.keycode == KEY_N:
+		var steps: Array[float] = [100.0, 120.0, 140.0, 160.0]
+		var at := steps.find(ChunkView.slope_crest_degrees)
+		ChunkView.slope_crest_degrees = steps[(at + 1) % steps.size()]
+		ChunkView.set_slope_param("slope_crest_cos", cos(deg_to_rad(ChunkView.slope_crest_degrees)))
+		_apply()
+		get_viewport().set_input_as_handled()
+		return
 	if key.keycode == KEY_C:
 		ChunkView.slope_chevron_flip = not ChunkView.slope_chevron_flip
 		ChunkView.set_slope_param("slope_chevron_flip", ChunkView.slope_chevron_flip)
@@ -197,4 +205,5 @@ func _apply() -> void:
 	var zones := "five grasses" if ChunkView.slope_zones else "your grass alone"
 	var seams := "soft seams" if ChunkView.slope_seams_soft else "sharp seams"
 	var crests := ("square crests" + (", chevron flipped" if ChunkView.slope_chevron_flip else "")) if ChunkView.slope_crest_square else "crests as before"
-	_label.text = "Slope test — %s, %s, %s, %s, %s   (keys 1, 0, T, V, B, X and C)" % [MODES[mode], look, zones, seams, crests]
+	crests += ", crest from %d°" % roundi(ChunkView.slope_crest_degrees)
+	_label.text = "Slope test — %s, %s, %s, %s, %s   (keys 1, 0, T, V, B, X, C and N)" % [MODES[mode], look, zones, seams, crests]

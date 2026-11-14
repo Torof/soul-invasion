@@ -238,6 +238,7 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 			material.set_shader_parameter("slope_seams_soft", slope_seams_soft)
 			material.set_shader_parameter("slope_crest_square", slope_crest_square)
 			material.set_shader_parameter("slope_chevron_flip", slope_chevron_flip)
+			material.set_shader_parameter("slope_crest_cos", cos(deg_to_rad(slope_crest_degrees)))
 		apply_spec(material, terrain, false)
 		pin_flow_time(material)
 		_ground_materials[terrain] = material
@@ -260,9 +261,11 @@ static var slope_seams_soft := true
 ## The mountain test: crests' streaks nearly square to the crest (key X) and the chevron's way (key C).
 static var slope_crest_square := true
 static var slope_chevron_flip := false
+## The mountain test: the turn between two sides, in degrees, that makes a crest (key N).
+static var slope_crest_degrees := 120.0
 
 
-static func set_slope_param(name: String, value: bool) -> void:
+static func set_slope_param(name: String, value: Variant) -> void:
 	for terrain: String in _ground_materials:
 		if terrain != "water":
 			(_ground_materials[terrain] as ShaderMaterial).set_shader_parameter(name, value)
