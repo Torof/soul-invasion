@@ -24,7 +24,7 @@ use std::time::Instant;
 use sim::Rock;
 use sim::plan::measure::{self, Numbers, Passage};
 use sim::plan::region::{self, REGION_SIDE, Water};
-use sim::plan::{Biome, CELL_M, Continent, Region};
+use sim::plan::{Biome, CELL_M, Continent, RIVER_ML, Region};
 
 fn main() {
     let out = std::env::var_os("ATLAS_OUT").map_or_else(
@@ -64,6 +64,12 @@ fn main() {
         std::fs::write(name("climat"), png(1024, 1024, &draw_climate(&continent))).expect("write");
         std::fs::write(name("region"), png(1024, 1024, &draw_region(&region))).expect("write");
         std::fs::write(name("nappe"), png(1024, 1024, &draw_table(&continent))).expect("write");
+        std::fs::write(
+            name("temperature"),
+            png(1024, 1024, &draw_temperature(&continent)),
+        )
+        .expect("write");
+        std::fs::write(name("fleuves"), png(1024, 1024, &draw_network(&continent))).expect("write");
         thumbs.push(shrink(&relief, 1024, 4));
         println!(
             "seed {seed}: born {:.1} s, with region {:.1} s, peak {peak_mb} MB, fingerprint {fingerprint:016x}, water {}+{} bp, pieces {}/{} bp, longest {}/{} km",
@@ -138,6 +144,7 @@ fn biome_colour(b: Biome) -> Rgb {
         Biome::WoodedSteppe => [176, 186, 108],
         Biome::Grassland => [164, 190, 102],
         Biome::Broadleaf => [86, 140, 66],
+        Biome::Jungle => [30, 104, 52],
         Biome::MixedForest => [72, 122, 70],
         Biome::Conifer => [56, 100, 74],
         Biome::Marsh => [104, 150, 128],
@@ -187,8 +194,14 @@ fn sea_colour(depth_cm: i32) -> Rgb {
 }
 
 /// River pixels: (discharge in m³/s, half-thickness in pixels, opacity).
-const RIVER_CLASSES: [(u64, i32, i64); 4] =
-    [(5_000, 1, 1000), (600, 0, 1000), (80, 0, 800), (15, 0, 450)];
+/// The faintest class is the atlas's threshold, [`RIVER_ML`]: under it a
+/// watercourse is a brook of the region, not drawn here.
+const RIVER_CLASSES: [(u64, i32, i64); 4] = [
+    (5_000, 1, 1000),
+    (600, 0, 1000),
+    (150, 0, 850),
+    (RIVER_ML / 1_000_000, 0, 550),
+];
 
 /// Draws the rivers of a continent onto `img`.
 fn draw_rivers(c: &Continent, img: &mut [Rgb]) {
@@ -345,6 +358,76 @@ fn draw_table(c: &Continent) -> Vec<Rgb> {
     img
 }
 
+/// The yearly mean: a hard band of white-violet under 0 °C, then blue
+/// (0 °C) to green (15 °C), yellow (20) and orange (25) to red (30 and
+/// over); isotherms every 5 °C as thin dark lines.
+fn draw_temperature(c: &Continent) -> Vec<Rgb> {
+    const SCALE: [(i64, Rgb); 7] = [
+        (0, [70, 110, 190]),
+        (50, [80, 160, 200]),
+        (100, [110, 190, 150]),
+        (150, [150, 200, 90]),
+        (200, [230, 210, 80]),
+        (250, [236, 140, 50]),
+        (300, [190, 40, 40]),
+    ];
+    const FROZEN: Rgb = [232, 226, 246];
+    let side = c.grid.side;
+    (0..c.grid.len())
+        .map(|i| {
+            if c.sea[i] {
+                return sea_colour(c.height[i]);
+            }
+            let t = i64::from(c.temperature[i]);
+            if t < 0 {
+                return FROZEN;
+            }
+            let k = SCALE.iter().rposition(|s| s.0 <= t).expect("a band");
+            let colour = if k + 1 < SCALE.len() {
+                let (a, b) = (SCALE[k], SCALE[k + 1]);
+                mix(a.1, b.1, (t - a.0) * 1000 / (b.0 - a.0))
+            } else {
+                SCALE[k].1
+            };
+            let band = |t: i16| i64::from(t).div_euclid(50);
+            let (x, y) = (i % side, i / side);
+            let edge = (x + 1 < side && band(c.temperature[i + 1]) != band(c.temperature[i]))
+                || (y + 1 < side && band(c.temperature[i + side]) != band(c.temperature[i]));
+            if edge {
+                [60, 50, 50]
+            } else if c.lake[i] {
+                mix(colour, LAKE, 500)
+            } else {
+                lit(colour, shade(&c.surface, side, i, 400))
+            }
+        })
+        .collect()
+}
+
+/// The rivers the atlas shows, alone on a pale shaded ground: every
+/// watercourse of at least [`RIVER_ML`], thicker as it grows, the lakes,
+/// the sea.
+fn draw_network(c: &Continent) -> Vec<Rgb> {
+    let side = c.grid.side;
+    let mut img: Vec<Rgb> = (0..c.grid.len())
+        .map(|i| {
+            if c.sea[i] {
+                sea_colour(c.height[i])
+            } else if c.lake[i] {
+                LAKE
+            } else {
+                let high = (i64::from(c.height[i]) * 1000 / 400_000).clamp(0, 500);
+                lit(
+                    mix([238, 234, 222], [196, 186, 176], high),
+                    shade(&c.surface, side, i, 200),
+                )
+            }
+        })
+        .collect();
+    draw_rivers(c, &mut img);
+    img
+}
+
 fn draw_passages(c: &Continent) -> Vec<Rgb> {
     let side = c.grid.side;
     let p = measure::passages(c, measure::WADE_CM);
@@ -449,6 +532,7 @@ fn biome_name(b: Biome) -> &'static str {
         Biome::WoodedSteppe => "wooded steppe",
         Biome::Grassland => "grassland",
         Biome::Broadleaf => "broadleaf forest",
+        Biome::Jungle => "jungle",
         Biome::MixedForest => "mixed forest",
         Biome::Conifer => "conifer forest",
         Biome::Marsh => "marsh",
@@ -520,7 +604,7 @@ fn rock_name(r: Rock) -> &'static str {
 /// before-and-after pages are built from.
 fn table(rows: &[Row]) -> String {
     let mut s = String::from(
-        "seed\tland_km2\trivers_bp\tlakes_bp\tdry_piece_bp\twading_piece_bp\tlongest_dry_km\tlongest_wading_km\tdetour_median_km\tdetour_p90_km\tdetour_max_km\thighest_m\tlargest_river_m3s\tborn_ms\trocks_a_block_centi\talluvium_bp\tlongest_low_km\tdetour_low_median_km\tdetour_low_p90_km\tdetour_low_max_km\tlakes\tlargest_lake_km2\tsprings_10k_km2\ttable_median_m\ttable_near_bp\tbiomes\trocks\n",
+        "seed\tland_km2\trivers_bp\tlakes_bp\tdry_piece_bp\twading_piece_bp\tlongest_dry_km\tlongest_wading_km\tdetour_median_km\tdetour_p90_km\tdetour_max_km\thighest_m\tlargest_river_m3s\tborn_ms\trocks_a_block_centi\talluvium_bp\tlongest_low_km\tdetour_low_median_km\tdetour_low_p90_km\tdetour_low_max_km\tlakes\tlargest_lake_km2\tsprings_10k_km2\ttable_median_m\ttable_near_bp\tbiomes\trocks\twarmth_bp\tcoldest_tenths\trivers\tgreat_rivers\tbiggest\n",
     );
     for r in rows {
         let n = &r.numbers;
@@ -536,9 +620,21 @@ fn table(rows: &[Row]) -> String {
             .map(|(k, bp)| format!("{}:{bp}", rock_name(*k)))
             .collect::<Vec<_>>()
             .join(";");
+        let warmth = n
+            .warmth_bp
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(";");
+        let biggest = n
+            .biggest
+            .iter()
+            .map(|(q, km)| format!("{q}:{km}"))
+            .collect::<Vec<_>>()
+            .join(";");
         let _ = writeln!(
             s,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{biomes}\t{rocks}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{biomes}\t{rocks}\t{warmth}\t{}\t{}\t{}\t{biggest}",
             r.seed,
             n.land_km2,
             n.rivers_bp,
@@ -564,6 +660,9 @@ fn table(rows: &[Row]) -> String {
             n.springs_10k_km2,
             n.table_median_m,
             n.table_near_bp,
+            n.coldest_tenths,
+            n.rivers,
+            n.great_rivers,
         );
     }
     s
@@ -614,6 +713,8 @@ td,th{border-bottom:1px solid var(--line);padding:3px 10px 3px 0;text-align:left
 <figure><a href="roches-{seed:02}.png"><img src="roches-{seed:02}.png" alt="rocks {seed}"></a><figcaption>rocks: granite pink-grey, limestone cream, chalk white, sandstone ochre, alluvium olive</figcaption></figure>
 <figure><a href="passages-{seed:02}.png"><img src="passages-{seed:02}.png" alt="passages {seed}"></a><figcaption>passages, wading up to 1 m</figcaption></figure>
 <figure><a href="region-{seed:02}.png"><img src="region-{seed:02}.png" alt="region {seed}"></a><figcaption>region of 65.5 km at 64 m, centred {cx} km east, {cy} km south of the north-west corner</figcaption></figure>
+<figure><a href="temperature-{seed:02}.png"><img src="temperature-{seed:02}.png" alt="temperature {seed}"></a><figcaption>yearly mean: white-violet under 0 °C, blue 0, green 15, yellow 20, orange 25, red 30</figcaption></figure>
+<figure><a href="fleuves-{seed:02}.png"><img src="fleuves-{seed:02}.png" alt="rivers {seed}"></a><figcaption>the rivers the atlas shows (from {threshold} m³/s)</figcaption></figure>
 </div><div class="wrap"><table>
 <tr><th>water on the land</th><td class="{w}">{water} (rivers {rivers}, lakes {lakes})</td></tr>
 <tr><th>largest piece, dry-shod ≤ 0.5 m</th><td class="{d}">{dry}</td></tr>
@@ -626,6 +727,7 @@ td,th{border-bottom:1px solid var(--line);padding:3px 10px 3px 0;text-align:left
 </table></div></div>
 "#,
             seed = r.seed,
+            threshold = RIVER_ML / 1_000_000,
             cx = km(r.site.0),
             cy = km(r.site.1),
             w = mark((100..=150).contains(&water)),

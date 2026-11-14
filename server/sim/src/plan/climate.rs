@@ -15,9 +15,13 @@ use crate::r#gen::scatter::{purpose, roll};
 use crate::geology::Rock;
 
 /// Latitude of the northern edge, in hundredths of a degree: drawn in
-/// this range, so seeds run from cool-temperate to subtropical. The grid
-/// spans about 19° of latitude (2,097 km at 111 km a degree).
-const NORTH_LATITUDE: (u64, u64) = (4_400, 6_400);
+/// this range, so seeds run from warm-temperate to tropical. The grid
+/// spans about 19° of latitude (2,097 km at 111 km a degree), so the
+/// southern edge lies between 9° and 19° N. Lowered from 44–64° on 14
+/// November 2026 (the project lead, for playability): the yearly mean
+/// should sit between 15 and 25 °C on most of the land, reach 25–30 °C
+/// somewhere (a jungle), and fall to 0 °C only on the high ground.
+const NORTH_LATITUDE: (u64, u64) = (2_800, 3_800);
 
 /// Kilometres a degree of latitude, times 100 (111.2 km).
 const KM_PER_DEGREE_100: i64 = 11_120;
@@ -107,13 +111,18 @@ const CURRENT_PER_MILLE: i64 = 250;
 const CURRENT_OCTAVES: [(u32, i64); 2] = [(300, 2), (150, 1)];
 
 /// The moisture of air over the sea, by latitude in degrees, per mille of
-/// [`SEA_MOISTURE`]: wet tropics, the dry subtropical highs near 25-30°,
-/// wet middle latitudes, dry polar air.
+/// [`SEA_MOISTURE`]: wet tropics, the drier subtropical highs near
+/// 25-30°, wet middle latitudes, dry polar air. Raised under 40° on 14
+/// November 2026, when the continents moved to 9–38° N: warm sea air
+/// holds about twice the water of air at 40° (Clausius–Clapeyron, 27 °C
+/// against 15 °C), and the subtropical high's descent only takes part of
+/// it back (1,500 before: 600 at 22–30°, which left the land a desert
+/// for a third and a forest for a twentieth).
 const SEA_MOISTURE_BY_LATITUDE: [(i64, i64); 8] = [
-    (0, 1500),
-    (12, 1300),
-    (22, 600),
-    (30, 600),
+    (0, 2600),
+    (12, 2400),
+    (22, 1500),
+    (30, 1200),
     (40, 1000),
     (60, 900),
     (75, 500),
@@ -199,8 +208,12 @@ pub enum Biome {
     WoodedSteppe,
     /// Grassland and parkland: prairie, meadows, scattered trees.
     Grassland,
-    /// Broadleaf forest: oak, beech, lime; the tropics' forest too.
+    /// Broadleaf forest: oak, beech, lime; the warm forests too.
     Broadleaf,
+    /// The jungle: the hot, wet forest of the tropics, where the mean
+    /// year is over [`JUNGLE_TENTHS`] and the rain over [`JUNGLE_ARIDITY`]
+    /// of what the air could take back.
+    Jungle,
     /// Broadleaf and conifer together, where the one gives way to the
     /// other: oak and pine, beech and fir.
     MixedForest,
@@ -216,12 +229,13 @@ pub enum Biome {
 
 impl Biome {
     /// The biomes of the land, in this order.
-    pub const LAND: [Self; 10] = [
+    pub const LAND: [Self; 11] = [
         Self::Desert,
         Self::Steppe,
         Self::WoodedSteppe,
         Self::Grassland,
         Self::Broadleaf,
+        Self::Jungle,
         Self::MixedForest,
         Self::Conifer,
         Self::Marsh,
@@ -244,6 +258,13 @@ const GRASSLAND_ARIDITY: i64 = 900;
 const TUNDRA_TENTHS: i64 = -70;
 const CONIFER_TENTHS: i64 = 40;
 const MIXED_TENTHS: i64 = 75;
+
+/// Over this mean temperature (tenths of a degree) and this aridity (rain
+/// over potential evaporation, per mille), a forest is a jungle: the
+/// tropical rain forest, a mean year over 22 °C and some 1,600 mm of
+/// rain at that warmth (Köppen's Af, rounded).
+const JUNGLE_TENTHS: i64 = 220;
+const JUNGLE_ARIDITY: i64 = 1_100;
 
 /// Biome borders are not lines: the aridity a biome is read from wanders
 /// by up to this per mille either way, and the warmth by up to this many
@@ -322,8 +343,16 @@ pub enum Reach {
     Sill,
 }
 
+/// A watercourse exists on the atlas from this discharge (mL/s) up: 40
+/// m³/s, a river some 25 m wide. Under it, it is a brook of the region's
+/// scale: not drawn on the continent, not given a reach, not a crossing
+/// to count. Raised from 15 m³/s (drawn) and 5 m³/s (reaches) on 14
+/// November 2026 (the project lead: a continent should show a few great
+/// rivers and a clear, sparse network, not water everywhere).
+pub const RIVER_ML: u64 = 40_000_000;
+
 /// Rivers under this discharge (mL/s) are not given a reach: brooks.
-const REACH_ML: u64 = 5_000_000;
+const REACH_ML: u64 = RIVER_ML;
 
 /// How much wider than its usual width a reach's widest riffle spreads,
 /// per mille, by a table on a draw per mille: riffles come every five
@@ -472,6 +501,8 @@ pub(crate) fn settle(seed: u64, grid: Grid, relief: Relief) -> Continent {
                 Biome::Conifer
             } else if t < MIXED_TENTHS {
                 Biome::MixedForest
+            } else if t >= JUNGLE_TENTHS && aridity >= JUNGLE_ARIDITY {
+                Biome::Jungle
             } else {
                 Biome::Broadleaf
             }
