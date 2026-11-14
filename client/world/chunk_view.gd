@@ -266,7 +266,7 @@ const SLOPE_LOOK := {
 ## 13 November 2026) laid instead of the look's (key G).
 const SLOPE_TURF_BUSHES := "res://world/test/slope_turf_bushes.png"
 ## The mountain test: the rim a near face lays over the face behind a crest (key R).
-static var slope_rim := true
+static var slope_rim := false
 ## The mountain test: the turf with bushes and stones under the streaks (key G).
 static var slope_turf_with_bushes := false
 

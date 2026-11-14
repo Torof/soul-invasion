@@ -68,7 +68,7 @@ uniform float slope_turf_px = 768.0;
 // screen's bottom, the ground SLOPE_RIM_TILES nearer the viewer rising
 // the other way, the two folded) is drawn as that nearer face, shaded by
 // SLOPE_RIM_SHADE: the only cue of up and down that needs no light.
-uniform bool slope_rim = true;
+uniform bool slope_rim = false;
 const float SLOPE_RIM_TILES = 0.9;
 const float SLOPE_RIM_SHADE = 0.82;
 // A tile's half width and half height on the canvas.
