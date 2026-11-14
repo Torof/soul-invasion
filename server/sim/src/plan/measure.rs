@@ -22,7 +22,7 @@
 use std::collections::VecDeque;
 
 use super::relief::step_m;
-use super::{Biome, CELL_M, Continent, Grid, iroot, isqrt};
+use super::{Biome, CELL_M, Continent, Grid, RIVER_ML, iroot, isqrt};
 use crate::geology::Rock;
 
 /// Depth on a riffle, per mille of the mean depth.
@@ -125,7 +125,31 @@ pub struct Numbers {
     /// The share of the land whose water table is within 10 m (a well
     /// dug by hand reaches it), in hundredths of a percent.
     pub table_near_bp: u64,
+    /// The land outside lakes by its yearly mean, in hundredths of a
+    /// percent: under 0 °C, 0 to 15, 15 to 25, 25 to 30, 30 and over
+    /// ([`WARMTH_BANDS_TENTHS`]).
+    pub warmth_bp: [u64; 5],
+    /// The coldest yearly mean on the land, in tenths of a degree.
+    pub coldest_tenths: i64,
+    /// How many watercourses the atlas shows: the stems of at least
+    /// [`RIVER_ML`], a stem starting where its largest inflow is under it.
+    pub rivers: u64,
+    /// How many of them reach the sea with at least [`GREAT_RIVER_M3S`].
+    pub great_rivers: u64,
+    /// The three biggest rivers by their flow at the sea: `(m³/s, km)`,
+    /// the length being the stem's, with its windings, from the sea up
+    /// to where it falls under [`RIVER_ML`].
+    pub biggest: Vec<(u64, u64)>,
 }
+
+/// The bands of the land's yearly mean, in tenths of a degree: the
+/// project lead's targets of 14 November 2026 (most of the land between
+/// 15 and 25 °C, some at 25–30, little at 0, nothing far below).
+pub const WARMTH_BANDS_TENTHS: [i64; 4] = [0, 150, 250, 300];
+
+/// A great river reaches the sea with at least this (m³/s): the project
+/// lead wants two to four a continent.
+pub const GREAT_RIVER_M3S: u64 = 500;
 
 /// A block of the continent for the rocks' variety: 32 cells, 65.5 km a
 /// side, about what a tribe roams in a generation.
@@ -152,7 +176,7 @@ pub enum Passage {
     Lake,
     /// A river too deep to cross here.
     Barrier,
-    /// A river large enough to matter (wider than 10 m), crossed here.
+    /// A river of the atlas (at least [`RIVER_ML`]), crossed here.
     Crossing,
     /// Land in the largest piece.
     Main,
@@ -201,7 +225,7 @@ fn passages_at(c: &Continent, limit_cm: u64, low_water: bool) -> Vec<Passage> {
                 Passage::Lake
             } else if low[i] > limit_cm {
                 Passage::Barrier
-            } else if width_cm(c.discharge[i]) >= 1_000 {
+            } else if c.discharge[i] >= RIVER_ML {
                 Passage::Crossing
             } else {
                 Passage::Cut
@@ -308,6 +332,8 @@ pub fn measure(c: &Continent) -> Numbers {
     let (_, longest_low) = walking(c, WADE_CM, true);
     let detour = detours(c, &passages(c, WADE_CM));
     let detour_low = detours(c, &passages_low(c, WADE_CM));
+    let (warmth, coldest) = warmth(c);
+    let (rivers, great_rivers, biggest) = river_stems(c);
     Numbers {
         land_km2: land * cell_m2 / 1_000_000,
         rivers_bp: river_m2 * 10_000 / (land * cell_m2).max(1),
@@ -363,7 +389,89 @@ pub fn measure(c: &Continent) -> Numbers {
             .count() as u64
             * 10_000
             / dry_land.max(1),
+        warmth_bp: warmth.map(|k| k * 10_000 / dry_land.max(1)),
+        coldest_tenths: coldest,
+        rivers,
+        great_rivers,
+        biggest,
     }
+}
+
+/// The land outside lakes in each band of [`WARMTH_BANDS_TENTHS`], in
+/// cells, and the coldest yearly mean on it (tenths of a degree).
+fn warmth(c: &Continent) -> ([u64; 5], i64) {
+    let mut bands = [0_u64; 5];
+    let mut coldest = i64::MAX;
+    for i in 0..c.grid.len() {
+        if c.sea[i] || c.lake[i] {
+            continue;
+        }
+        let t = i64::from(c.temperature[i]);
+        coldest = coldest.min(t);
+        bands[WARMTH_BANDS_TENTHS.iter().filter(|&&b| t >= b).count()] += 1;
+    }
+    (bands, if coldest == i64::MAX { 0 } else { coldest })
+}
+
+/// The watercourses of the atlas: how many stems of at least
+/// [`RIVER_ML`] there are, how many reach the sea as great rivers, and
+/// the three biggest with their flow at the sea and their length.
+fn river_stems(c: &Continent) -> (u64, u64, Vec<(u64, u64)>) {
+    let n = c.grid.len();
+    // Each cell's largest inflow.
+    let mut main_in = vec![u32::MAX; n];
+    for i in 0..n {
+        if c.sea[i] {
+            continue;
+        }
+        let r = c.receiver[i] as usize;
+        if r == i || c.sea[r] {
+            continue;
+        }
+        let m = main_in[r];
+        if m == u32::MAX || c.discharge[i] > c.discharge[m as usize] {
+            main_in[r] = u32::try_from(i).expect("small");
+        }
+    }
+    let river = |i: usize| !c.sea[i] && !c.lake[i] && c.discharge[i] >= RIVER_ML;
+    let mut stems = 0_u64;
+    let mut mouths: Vec<(u64, usize)> = Vec::new();
+    for i in 0..n {
+        if !river(i) {
+            continue;
+        }
+        let m = main_in[i];
+        if m == u32::MAX || c.discharge[m as usize] < RIVER_ML {
+            stems += 1;
+        }
+        if c.sea[c.receiver[i] as usize] {
+            mouths.push((c.discharge[i], i));
+        }
+    }
+    mouths.sort_unstable_by(|a, b| b.cmp(a));
+    let great = mouths
+        .iter()
+        .filter(|&&(q, _)| q / 1_000_000 >= GREAT_RIVER_M3S)
+        .count() as u64;
+    let biggest = mouths
+        .iter()
+        .take(3)
+        .map(|&(q, mouth)| {
+            let mut length_m = 0_u64;
+            let mut i = mouth;
+            loop {
+                let m = main_in[i];
+                if m == u32::MAX || c.discharge[m as usize] < RIVER_ML {
+                    break;
+                }
+                let m = m as usize;
+                length_m += u64::try_from(step_m(c.grid, m, i)).expect("positive");
+                i = m;
+            }
+            (q / 1_000_000, length_m * SINUOSITY_PER_MILLE / 1000 / 1000)
+        })
+        .collect();
+    (stems, great, biggest)
 }
 
 /// The lakes' sizes in cells, largest first (eight ways together).

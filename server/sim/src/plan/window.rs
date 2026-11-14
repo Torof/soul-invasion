@@ -270,7 +270,7 @@ impl Window {
                         }
                         if matches!(
                             region.biome[i],
-                            Biome::Broadleaf | Biome::MixedForest | Biome::Conifer
+                            Biome::Broadleaf | Biome::Jungle | Biome::MixedForest | Biome::Conifer
                         ) {
                             forest += 1;
                         }
@@ -343,7 +343,7 @@ impl Window {
                 });
                 forest.push(matches!(
                     region.biome[i],
-                    Biome::Broadleaf | Biome::MixedForest | Biome::Conifer
+                    Biome::Broadleaf | Biome::Jungle | Biome::MixedForest | Biome::Conifer
                 ));
                 lake.push(if region.water[i] == Water::Lake {
                     region.surface[i]

@@ -65,7 +65,7 @@ pub mod window;
 use crate::r#gen::hash;
 use crate::geology::Rock;
 
-pub use climate::{Biome, Reach};
+pub use climate::{Biome, RIVER_ML, Reach};
 pub use measure::Numbers;
 pub use region::Region;
 pub use relief::{Stroke, StrokeKind};
