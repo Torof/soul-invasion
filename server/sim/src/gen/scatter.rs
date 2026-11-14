@@ -114,6 +114,10 @@ pub(crate) mod purpose {
     pub(crate) const PLAN_HILLS: u64 = 0x91a7_4111;
     pub(crate) const PLAN_BROOK: u64 = 0x91a7_b400;
     pub(crate) const PLAN_EDGE: u64 = 0x91a7_ed9e;
+    /// The natural river of the window (15 November 2026): the course's
+    /// detail below the region's cell, and each bank's breathing.
+    pub(crate) const PLAN_FINE: u64 = 0x91a7_f14e;
+    pub(crate) const PLAN_BANK: u64 = 0x91a7_ba4b;
     /// The atlas's tuning (13 November 2026): the folds that bring each
     /// rock up in patches, the small lakes the land keeps and the size a
     /// lake drains down to, the winds and the sea currents, the warmth's
@@ -129,7 +133,7 @@ pub(crate) mod purpose {
 
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 53] = [
+    pub(crate) const ALL: [u64; 55] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -176,6 +180,8 @@ pub(crate) mod purpose {
         PLAN_HILLS,
         PLAN_BROOK,
         PLAN_EDGE,
+        PLAN_FINE,
+        PLAN_BANK,
         PLAN_FOLDS,
         PLAN_LAKES,
         PLAN_WIND,

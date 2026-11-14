@@ -8,12 +8,14 @@
 //!   region's heights interpolated (Catmull-Rom, so the slope has no
 //!   crease at a cell's border), plus small hills of a few metres
 //!   (cubic lattice noise, three octaves), flattened on alluvium;
-//! - **the water**: the continent's rivers along the region's own
-//!   meandering courses, at their width; the region's brooks from cell
-//!   to receiver; its lakes, their shore drawn where the interpolated
-//!   share of lake cells passes a half. Each water lies flat at its
-//!   level, and the ground around it is drawn down to that level over a
-//!   bank, so water always sits in the low ground;
+//! - **the water**: the continent's rivers along their natural courses
+//!   (`course`: the region's meanders carried down to the tile, their
+//!   corners rounded, each bank breathing on its own, a ford across the
+//!   river at every crossing the atlas finds dry-shod); the region's
+//!   brooks from cell to receiver; its lakes, their shore drawn where
+//!   the interpolated share of lake cells passes a half. Each water lies
+//!   flat at its level, and the ground around it is drawn down to that
+//!   level over a bank, so water always sits in the low ground;
 //! - **forest or open ground**, from the region's biome, its border
 //!   ragged by noise; the woods themselves are the valley's
 //!   ([`crate::woods::Woods`]), allowed only inside the forest.
@@ -27,7 +29,8 @@
 
 use std::collections::BTreeMap;
 
-use super::region::{self, REGION_CELL_M, RIVER_DISCHARGE, Water};
+use super::course;
+use super::region::{self, REGION_CELL_M, Water};
 use super::{Biome, Continent, Region, isqrt, measure};
 use crate::r#gen::scatter::{key, purpose, roll};
 use crate::r#gen::{noise, unit};
@@ -73,12 +76,17 @@ const BROOK_BANK_M: i64 = 20;
 const RIVER_BANK_M: i64 = 24;
 const RIVER_BANK_PER_DEPTH_M: i64 = 32;
 
-/// A river this shallow or less is a ford, walked through (cm).
-const FORD_DEPTH_CM: u64 = 50;
+/// A river whose mean depth is this or less is a ford all along, walked
+/// through (cm): the atlas's dry-shod depth, the one its crossings are
+/// found at ([`measure::passages`]).
+const FORD_DEPTH_CM: i64 = measure::DRY_CM as i64;
 
-/// Currents, in cm a second: a river, a brook.
-const RIVER_SPEED: u16 = 45;
+/// Currents, in cm a second: a river where its section is the one its
+/// flow gives (slower in a pool, quicker in a narrows), a brook; a ford,
+/// spread thin over its stones, runs half as fast again (D36).
+const RIVER_SPEED: i64 = 45;
 const BROOK_SPEED: u16 = 25;
+const FORD_SPEED_PER_MILLE: i64 = 1500;
 
 /// How far the border between forest and open ground wanders, in metres
 /// either way, so it does not draw the 64 m cells; a lake's shore, the
@@ -137,33 +145,60 @@ fn cubic(at: impl Fn(i64, i64) -> i64, f: i64, u: i64, v: i64) -> i64 {
 /// What runs on a stretch of water.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
-    /// A river from the continent, this deep (cm).
-    River(u64),
+    /// A river from the continent.
+    River,
     /// A brook of the region's own drainage.
     Brook,
 }
 
 /// A straight stretch of running water, in millimetres from the
-/// window's north-west corner, upstream end first.
+/// window's north-west corner, upstream end first. A river's is a few
+/// metres long, one segment of its natural course ([`course`]); a
+/// brook's runs from its cell to its receiver's.
 #[derive(Debug, Clone, Copy)]
 struct Stretch {
     a: (i64, i64),
     b: (i64, i64),
     /// The water's level at each end (cm).
     level: (i64, i64),
-    /// Half its width (mm).
-    half: i64,
+    /// The half-width at `a` then at `b`, each on the left bank then the
+    /// right bank of the current (mm): a river's banks breathe each on
+    /// its own, a brook's hold their lines.
+    half: ((i64, i64), (i64, i64)),
+    /// The width the flow gives the water at each end, before its banks
+    /// breathe (mm).
+    width: (i64, i64),
+    /// The mean depth the flow gives it at each end (cm; 0 on a brook).
+    depth: (i64, i64),
     /// Its bank (mm).
     bank: i64,
     kind: Kind,
+    /// On a ford's bar: half a metre deep right across.
+    ford: bool,
     /// Its heading, as a current's (`map::current_code`).
     heading: u8,
 }
 
+/// What a stretch is at the point of it nearest to a tile.
+#[derive(Debug, Clone, Copy)]
+struct Probe {
+    /// How far the tile is from the stretch's line (mm).
+    d: i64,
+    /// The half-width on the tile's side of the line (mm).
+    half: i64,
+    /// The water's level (cm).
+    level: i64,
+    /// Its depth, what the width leaves of the flow (cm): deeper in a
+    /// narrows, shallower in a pool, never under a metre on a river.
+    depth: i64,
+    /// Its current's speed (cm/s).
+    speed: i64,
+}
+
 impl Stretch {
-    /// The distance from `p` to the stretch (mm) and the water's level at
-    /// the nearest point (cm).
-    fn near(&self, p: (i64, i64)) -> (i64, i64) {
+    /// The stretch probed from `p`: its distance, and what the water is
+    /// at the nearest point.
+    fn probe(&self, p: (i64, i64)) -> Probe {
         let (dx, dy) = (self.b.0 - self.a.0, self.b.1 - self.a.1);
         let len2 = dx * dx + dy * dy;
         let dot = (p.0 - self.a.0) * dx + (p.1 - self.a.1) * dy;
@@ -172,10 +207,40 @@ impl Stretch {
         } else {
             (dot.clamp(0, len2), len2)
         };
-        let (cx, cy) = (self.a.0 + dx * num / den, self.a.1 + dy * num / den);
+        let mix = |x: i64, y: i64| x + (y - x) * num / den;
+        let (cx, cy) = (mix(self.a.0, self.b.0), mix(self.a.1, self.b.1));
         let d2 = (p.0 - cx).pow(2) + (p.1 - cy).pow(2);
-        let d = i64::try_from(isqrt(u64::try_from(d2).expect("a square"))).expect("small");
-        (d, self.level.0 + (self.level.1 - self.level.0) * num / den)
+        let d = i64::try_from(isqrt(u64::try_from(d2).expect("small"))).expect("small");
+        // Which bank: the sign of the cross product of the stretch and
+        // the way to the tile (seen from above with y downwards, the
+        // current's left bank is where it is positive).
+        let left = dx * (p.1 - self.a.1) - dy * (p.0 - self.a.0) > 0;
+        let (ha, hb) = if left {
+            (self.half.0.0, self.half.1.0)
+        } else {
+            (self.half.0.1, self.half.1.1)
+        };
+        let both = mix(self.half.0.0 + self.half.0.1, self.half.1.0 + self.half.1.1).max(1);
+        let width = mix(self.width.0, self.width.1);
+        let nominal = mix(self.depth.0, self.depth.1);
+        let depth = (nominal * width / both).max(nominal.min(100));
+        Probe {
+            d,
+            half: mix(ha, hb),
+            level: mix(self.level.0, self.level.1),
+            depth,
+            speed: RIVER_SPEED * depth / nominal.max(1),
+        }
+    }
+
+    /// The widest the stretch is, either side (mm).
+    fn widest(&self) -> i64 {
+        self.half
+            .0
+            .0
+            .max(self.half.0.1)
+            .max(self.half.1.0)
+            .max(self.half.1.1)
     }
 }
 
@@ -361,53 +426,34 @@ impl Window {
             )
         };
 
-        // The rivers, along the region's courses.
+        // The rivers, along their natural courses, segment by segment.
         let mut stretches = Vec::new();
         let span = i32::try_from(n / per + 3).expect("small");
         let (kx, ky) = (
             i32::try_from(origin.0.div_euclid(per)).expect("small"),
             i32::try_from(origin.1.div_euclid(per)).expect("small"),
         );
-        for y in ky - 2..ky + span {
-            for x in kx - 2..kx + span {
-                if !continent.grid.inside(x, y) {
-                    continue;
-                }
-                let i = continent.grid.index(x, y);
-                let q = continent.discharge[i];
-                if continent.sea[i] || q < RIVER_DISCHARGE {
-                    continue;
-                }
-                let r = continent.receiver[i] as usize;
-                let (rx, ry) = continent.grid.xy(r);
-                let path =
-                    region::course(seed, region::node(seed, x, y), region::node(seed, rx, ry));
-                let (top, bottom) = (
-                    i64::from(continent.surface[i]),
-                    i64::from(continent.surface[r]),
+        let shift = (origin.0 * CELL * 1000, origin.1 * CELL * 1000);
+        for stem in course::stems(continent, kx - 2..kx + span, ky - 2..ky + span) {
+            for pair in stem.nodes.windows(2) {
+                let (u, v) = (pair[0], pair[1]);
+                let (a, b) = (
+                    (u.p.0 - shift.0, u.p.1 - shift.1),
+                    (v.p.0 - shift.0, v.p.1 - shift.1),
                 );
-                let depth = measure::depth_cm(q);
-                let half = i64::try_from(measure::width_cm(q)).expect("small") * 5;
-                let bank = (RIVER_BANK_M
-                    + RIVER_BANK_PER_DEPTH_M * i64::try_from(depth).expect("small") / 100)
-                    * 1000;
-                let steps = i64::try_from(path.len() - 1).expect("small").max(1);
-                for (k, pair) in path.windows(2).enumerate() {
-                    let k = i64::try_from(k).expect("small");
-                    let (a, b) = (mm(pair[0]), mm(pair[1]));
-                    stretches.push(Stretch {
-                        a,
-                        b,
-                        level: (
-                            top - (top - bottom) * k / steps,
-                            top - (top - bottom) * (k + 1) / steps,
-                        ),
-                        half: half.max(1000),
-                        bank,
-                        kind: Kind::River(depth),
-                        heading: heading(b.0 - a.0, b.1 - a.1),
-                    });
-                }
+                let bank = (RIVER_BANK_M + RIVER_BANK_PER_DEPTH_M * u.depth / 100) * 1000;
+                stretches.push(Stretch {
+                    a,
+                    b,
+                    level: (u.level, v.level),
+                    half: (u.half, v.half),
+                    width: (u.width, v.width),
+                    depth: (u.depth, v.depth),
+                    bank,
+                    kind: Kind::River,
+                    ford: u.ford,
+                    heading: heading(b.0 - a.0, b.1 - a.1),
+                });
             }
         }
         let rivers = stretches.len();
@@ -448,7 +494,7 @@ impl Window {
                         let c = mm((rx, ry));
                         let mut best: Option<(i64, (i64, i64), i64)> = None;
                         for s in &stretches[..rivers] {
-                            let (d, level) = s.near(c);
+                            let Probe { d, level, .. } = s.probe(c);
                             if best.is_none_or(|(bd, _, _)| d < bd) {
                                 // The nearest point itself.
                                 let (dx, dy) = (s.b.0 - s.a.0, s.b.1 - s.a.1);
@@ -473,9 +519,15 @@ impl Window {
                     a,
                     b,
                     level: (from, to.min(from)),
-                    half: BROOK_HALF_MM,
+                    half: (
+                        (BROOK_HALF_MM, BROOK_HALF_MM),
+                        (BROOK_HALF_MM, BROOK_HALF_MM),
+                    ),
+                    width: (2 * BROOK_HALF_MM, 2 * BROOK_HALF_MM),
+                    depth: (0, 0),
                     bank: BROOK_BANK_M * 1000,
                     kind: Kind::Brook,
+                    ford: false,
                     heading: heading(b.0 - a.0, b.1 - a.1),
                 });
             }
@@ -486,7 +538,7 @@ impl Window {
         let chunk_mm = i64::from(CHUNK_SIZE) * 1000;
         let mut by_chunk = vec![Vec::new(); usize::try_from(chunks * chunks).expect("small")];
         for (k, s) in stretches.iter().enumerate() {
-            let reach = s.half + s.bank;
+            let reach = s.widest() + s.bank;
             let lo = |a: i64, b: i64| ((a.min(b) - reach).div_euclid(chunk_mm)).max(0);
             let hi = |a: i64, b: i64| ((a.max(b) + reach).div_euclid(chunk_mm)).min(chunks - 1);
             for cy in lo(s.a.1, s.b.1)..=hi(s.a.1, s.b.1) {
@@ -655,24 +707,29 @@ impl Window {
         let p = (x * 1000 + 500, y * 1000 + 500);
         let mut best: Option<Wet> = None;
         for s in self.stretches_near(x, y) {
-            let (d, level) = s.near(p);
-            if d > s.half || best.is_some_and(|b| b.level <= level) {
+            let probe = s.probe(p);
+            if probe.d > probe.half || best.is_some_and(|b| b.level <= probe.level) {
                 continue;
             }
             let (terrain, depth, speed) = match s.kind {
-                Kind::River(depth) if depth <= FORD_DEPTH_CM => (Terrain::Ford, 1, RIVER_SPEED),
-                Kind::River(depth) => (
+                Kind::River if s.ford || probe.depth <= FORD_DEPTH_CM => {
+                    (Terrain::Ford, 1, probe.speed * FORD_SPEED_PER_MILLE / 1000)
+                }
+                Kind::River => (
                     Terrain::Water,
-                    u8::try_from((depth / 50).clamp(2, 12)).expect("small"),
-                    RIVER_SPEED,
+                    u8::try_from((probe.depth / 50).clamp(2, 12)).expect("small"),
+                    probe.speed,
                 ),
-                Kind::Brook => (Terrain::Brook, 1, BROOK_SPEED),
+                Kind::Brook => (Terrain::Brook, 1, i64::from(BROOK_SPEED)),
             };
             best = Some(Wet {
                 terrain,
                 depth,
-                current: current_code(s.heading, speed),
-                level,
+                current: current_code(
+                    s.heading,
+                    u16::try_from(speed.clamp(1, 1000)).expect("small"),
+                ),
+                level: probe.level,
             });
         }
         best
@@ -693,9 +750,9 @@ impl Window {
         }
         let p = (x * 1000 + 500, y * 1000 + 500);
         for s in self.stretches_near(x, y) {
-            let (d, level) = s.near(p);
-            if d < s.half + s.bank {
-                let w = smooth((d - s.half) * 1000 / s.bank);
+            let Probe { d, half, level, .. } = s.probe(p);
+            if d < half + s.bank {
+                let w = smooth((d - half) * 1000 / s.bank);
                 h = level + (h - level) * w / 1000;
             }
         }
@@ -746,11 +803,13 @@ impl Window {
             }
         };
         for s in &self.stretches {
-            let lo = |a: i64, b: i64| (a.min(b) - s.half).div_euclid(1000);
-            let hi = |a: i64, b: i64| (a.max(b) + s.half).div_euclid(1000);
+            let widest = s.widest();
+            let lo = |a: i64, b: i64| (a.min(b) - widest).div_euclid(1000);
+            let hi = |a: i64, b: i64| (a.max(b) + widest).div_euclid(1000);
             for y in lo(s.a.1, s.b.1)..=hi(s.a.1, s.b.1) {
                 for x in lo(s.a.0, s.b.0)..=hi(s.a.0, s.b.0) {
-                    if s.near((x * 1000 + 500, y * 1000 + 500)).0 <= s.half {
+                    let probe = s.probe((x * 1000 + 500, y * 1000 + 500));
+                    if probe.d <= probe.half {
                         look(x, y);
                     }
                 }
@@ -800,8 +859,11 @@ impl Window {
             let p = (x * 1000 + 500, y * 1000 + 500);
             let near = self
                 .stretches_near(x, y)
-                .filter(|s| matches!(s.kind, Kind::River(_)))
-                .map(|s| s.near(p).0 - s.half)
+                .filter(|s| s.kind == Kind::River)
+                .map(|s| {
+                    let probe = s.probe(p);
+                    probe.d - probe.half
+                })
                 .min()
                 .unwrap_or(i64::MAX);
             if !(CAMP_WATER_M.0 * 1000..=CAMP_WATER_M.1 * 1000).contains(&near) {

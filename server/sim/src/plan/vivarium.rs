@@ -246,29 +246,40 @@ mod tests {
         );
     }
 
-    /// Camp A and camp B stand on opposite banks: with today's walking
-    /// rules no path joins them. The atlas finds the river wadeable at the
-    /// zone's cell (a bar reach spread four times its width, its riffle
-    /// about 33 cm deep at 57 m³/s: `measure::passages`), but the window
-    /// draws a river at its mean depth all along a cell's course, 1.5 m
-    /// here, and a ford only where that mean is half a metre or less, so
-    /// no ford exists in the zone. Drawing the crossing is lot 1's.
+    /// Camp A and camp B stand on opposite banks, and a path joins them:
+    /// the atlas finds the river crossed dry-shod at the zone's cell (a
+    /// bar reach spread four times its width, its riffle about 33 cm deep
+    /// at 57 m³/s: `measure::passages`), and the window draws that
+    /// crossing as a ford across the river, near the cell's centre, the
+    /// one place the path can wade. The ford's tiles lie within a cell of
+    /// the crossing's and the path steps on one of them.
     #[test]
-    fn the_river_parts_the_camps_until_the_crossing_is_drawn() {
+    fn a_path_joins_the_camps_over_the_ford_at_the_crossing() {
         let map = map();
         let (a, b) = (map.camp(), pos(ZONE_2.tile(ZONE_2.camp_b)));
         let reach = i32::try_from(ZONE_2.side()).expect("small");
-        assert_eq!(map.path_within(a, b, reach, u32::MAX, walk), None);
+        let path = map
+            .path_within(a, b, reach, u32::MAX, walk)
+            .expect("a path from camp A to camp B");
+        assert!(
+            path.iter().any(|p| map.get(*p) == Some(Terrain::Ford)),
+            "the path wades the ford"
+        );
         let side = i64::from(ZONE_2.side());
-        let fords = (0..side)
+        let fords: Vec<(i64, i64)> = (0..side)
             .flat_map(|y| (0..side).map(move |x| (x, y)))
             .filter(|&(x, y)| {
                 window()
                     .wet(x, y)
                     .is_some_and(|w| w.terrain == Terrain::Ford)
             })
-            .count();
-        assert_eq!(fords, 0, "no ford is drawn in the zone today");
+            .collect();
+        let (cx, cy) = ZONE_2.tile(ZONE_2.crossing);
+        assert!(!fords.is_empty(), "a ford is drawn at the crossing");
+        for &(x, y) in &fords {
+            let away = (x - i64::from(cx)).abs().max((y - i64::from(cy)).abs());
+            assert!(away <= 64, "a ford tile {away} tiles from the crossing");
+        }
     }
 
     /// A camp asked for on the water moves to the nearest dry tile.
@@ -282,5 +293,91 @@ mod tests {
             .abs()
             .max((i64::from(y) - i64::from(cy)).abs());
         assert!((1..=30).contains(&away), "{away} tiles from the crossing");
+    }
+
+    /// Writes the zone as an image (a binary PPM) for a look: the terrain,
+    /// the water by depth, the ford, the camps (red), the crossing's cell
+    /// (yellow) and the path from camp A to camp B (orange) when one
+    /// exists. Run by hand: `SOUL_INVASION_DUMP=zone.ppm cargo test -p sim
+    /// dump_vivarium -- --ignored`.
+    #[test]
+    #[ignore = "writes the vivarium's zone as an image for a look; run by hand"]
+    fn dump_vivarium() {
+        let path = std::env::var("SOUL_INVASION_DUMP").unwrap_or_else(|_| "vivarium.ppm".into());
+        let map = map();
+        let side = ZONE_2.side();
+        let n = usize::try_from(side * side).expect("small");
+        let mut rgb = vec![0_u8; 3 * n];
+        for y in 0..side {
+            for x in 0..side {
+                let p = pos((x, y));
+                let depth = u32::from(map.depth(p));
+                let c: [u8; 3] = match map.get(p) {
+                    Some(Terrain::Grass) => [190, 205, 140],
+                    Some(Terrain::Forest) => [60, 110, 50],
+                    Some(Terrain::Water) => [
+                        30,
+                        u8::try_from(110_u32.saturating_sub(depth * 12)).expect("small"),
+                        u8::try_from(200_u32.saturating_sub(depth * 10)).expect("small"),
+                    ],
+                    Some(Terrain::Ford) => [140, 215, 225],
+                    Some(Terrain::Brook) => [90, 150, 210],
+                    Some(Terrain::Rock) | None => [120, 120, 120],
+                };
+                let i = 3 * usize::try_from(y * side + x).expect("small");
+                rgb[i..i + 3].copy_from_slice(&c);
+            }
+        }
+        let mut mark = |(cx, cy): (u32, u32), c: [u8; 3], r: u32| {
+            for y in cy.saturating_sub(r)..(cy + r + 1).min(side) {
+                for x in cx.saturating_sub(r)..(cx + r + 1).min(side) {
+                    let i = 3 * usize::try_from(y * side + x).expect("small");
+                    rgb[i..i + 3].copy_from_slice(&c);
+                }
+            }
+        };
+        let (a, b) = (map.camp(), pos(ZONE_2.tile(ZONE_2.camp_b)));
+        let reach = i32::try_from(side).expect("small");
+        let fords: Vec<(i64, i64)> = (0..side)
+            .flat_map(|y| (0..side).map(move |x| (x, y)))
+            .filter(|&(x, y)| map.get(pos((x, y))) == Some(Terrain::Ford))
+            .map(|(x, y)| (i64::from(x), i64::from(y)))
+            .collect();
+        if !fords.is_empty() {
+            let n = i64::try_from(fords.len()).expect("small");
+            let (sx, sy) = fords.iter().fold((0, 0), |s, f| (s.0 + f.0, s.1 + f.1));
+            let (lo_x, hi_x) = fords
+                .iter()
+                .fold((i64::MAX, i64::MIN), |r, f| (r.0.min(f.0), r.1.max(f.0)));
+            let (lo_y, hi_y) = fords
+                .iter()
+                .fold((i64::MAX, i64::MIN), |r, f| (r.0.min(f.1), r.1.max(f.1)));
+            eprintln!(
+                "ford: {n} tiles, centre ({}, {}), x {lo_x}..={hi_x}, y {lo_y}..={hi_y}; camp A ({}, {})",
+                sx / n,
+                sy / n,
+                a.x,
+                a.y
+            );
+        }
+        if let Some(path) = map.path_within(a, b, reach, u32::MAX, walk) {
+            eprintln!("path from camp A to camp B: {} steps", path.len());
+            for p in path {
+                mark(
+                    (
+                        u32::try_from(p.x).expect("inside"),
+                        u32::try_from(p.y).expect("inside"),
+                    ),
+                    [240, 130, 20],
+                    1,
+                );
+            }
+        }
+        mark(ZONE_2.tile(ZONE_2.crossing), [250, 230, 40], 5);
+        mark(ZONE_2.tile(ZONE_2.camp_a), [220, 30, 30], 5);
+        mark(ZONE_2.tile(ZONE_2.camp_b), [220, 30, 30], 5);
+        let mut out = format!("P6\n{side} {side}\n255\n").into_bytes();
+        out.extend_from_slice(&rgb);
+        std::fs::write(path, out).expect("the image");
     }
 }
