@@ -162,6 +162,13 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		_apply()
 		get_viewport().set_input_as_handled()
 		return
+	if key.keycode == KEY_P:
+		var sizes: Array[float] = [768.0, 512.0, 384.0, 256.0]
+		var at := sizes.find(ChunkView.slope_turf_px)
+		ChunkView.set_slope_turf_px(sizes[(at + 1) % sizes.size()])
+		_apply()
+		get_viewport().set_input_as_handled()
+		return
 	if key.keycode == KEY_R:
 		ChunkView.slope_rim = not ChunkView.slope_rim
 		ChunkView.set_slope_param("slope_rim", ChunkView.slope_rim)
@@ -180,4 +187,4 @@ func _apply() -> void:
 	ChunkView.set_steps_mode(mode)
 	var turf := "turf with bushes" if ChunkView.slope_turf_with_bushes else "plain turf"
 	var rim := "rim" if ChunkView.slope_rim else "no rim"
-	_label.text = "Slope test — %s, %s, %s   (keys 1, 0, G and R)" % [MODES[mode], turf, rim]
+	_label.text = "Slope test — %s, %s, %s, turf %d px (P)   (keys 1, 0, G, R and P)" % [MODES[mode], turf, rim, roundi(ChunkView.slope_turf_px)]

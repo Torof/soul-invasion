@@ -288,6 +288,16 @@ static func set_slope_param(name: String, value: Variant) -> void:
 			(_ground_materials[terrain] as ShaderMaterial).set_shader_parameter(name, value)
 
 
+## Key P: the turf drawn smaller (its repetition in canvas px); the look's
+## 768 is the lead's grass number 2 at twice the old scale.
+static var slope_turf_px := 768.0
+
+
+static func set_slope_turf_px(px: float) -> void:
+	slope_turf_px = px
+	set_slope_param("slope_turf_px", px)
+
+
 ## Key G: the turf with bushes (true) or the look's turf.
 static func set_slope_turf_with_bushes(on: bool) -> void:
 	slope_turf_with_bushes = on
