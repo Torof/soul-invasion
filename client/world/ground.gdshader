@@ -327,8 +327,9 @@ void offset_cells(vec2 canvas, out vec4 w, out vec4 ox, out vec4 oy) {
 // The slope test's one rule (the lead, 14 November 2026 in the evening:
 // "the best picture we have ever had"). Where the ground at map point
 // `p` (tiles) slopes, `lit` is the slope's colour at canvas point
-// `canvas` (derivatives `dx`, `dy`), the slope covers the pixel whole:
-// true. Flat ground: false, `lit` untouched.
+// `canvas` (derivatives `dx`, `dy`), the slope covers the pixel whole
+// and the meadow need not be read: true. Flat ground: false, `lit`
+// untouched.
 // Per pixel: `up` the uphill direction on the screen (y down), where
 // the crest lies; `fx` +1 where the ground rises toward the screen's
 // right, -1 toward its left (straight up or down the screen, a tie,
@@ -430,17 +431,27 @@ if (edged) {
 if (edged && floor_in <= 0.0) {
 	COLOR = vec4(fringe_colour * tint.rgb, max(floor_in, edge_shade));
 } else {
-float grain = (texture(noise_texture, uv * 0.8 + vec2(0.37, 0.19)).r - 0.5) * 2.0 * meet_grain;
-// The variants' weights, once for every layer, and the derivatives the
-// layers are read with (varied_once).
-vec3 vw = variant_weights(uv);
-// The slope test: the canvas point and its derivatives, for the meadow
-// at random offsets against repetition (offset_cells) and the slope.
+// The slope test: the canvas point and its derivatives, and the slope
+// first; where it covers the pixel whole, nothing of the meadow shows
+// and none of its layers is read.
 vec2 canvas = vec2(at.x - at.y, at.x + at.y) * TILE_HALF_PX;
 vec2 canvas_dx = vec2(duv_x.x - duv_x.y, duv_x.x + duv_x.y) * 4.0 * TILE_HALF_PX;
 vec2 canvas_dy = vec2(duv_y.x - duv_y.y, duv_y.x + duv_y.y) * 4.0 * TILE_HALF_PX;
-vec4 ground;
-if (steps_mode > 0) {
+vec3 slope = vec3(0.0);
+bool sloped = steps_mode > 0 && slope_lit(at, canvas, canvas_dx, canvas_dy, slope);
+float grain = 0.0;
+// The variants' weights, once for every layer, and the derivatives the
+// layers are read with (varied_once).
+vec3 vw = vec3(0.0);
+vec4 ground = vec4(0.0, 0.0, 0.0, 1.0);
+if (!sloped) {
+	grain = (texture(noise_texture, uv * 0.8 + vec2(0.37, 0.19)).r - 0.5) * 2.0 * meet_grain;
+	vw = variant_weights(uv);
+}
+if (sloped) {
+	// Nothing of the meadow shows.
+} else if (steps_mode > 0) {
+	// The meadow at random offsets against repetition (offset_cells).
 	vec4 cell_w;
 	vec4 cell_ox;
 	vec4 cell_oy;
@@ -454,7 +465,7 @@ if (steps_mode > 0) {
 }
 // Each layer is read only where it can show (meet_shows): the same
 // picture, fewer reads.
-if (has_sibling) {
+if (has_sibling && !sloped) {
 	float n = texture(noise_texture, uv * noise_scale).r;
 	float threshold = 1.0 - sibling_cover;
 	float weight = smoothstep(threshold - 0.15, threshold + 0.15, n);
@@ -476,17 +487,19 @@ if (has_sibling) {
 }
 // Dry zones: a soft, wide mask; the tint is applied at most at
 // dry_strength so the change stays a half-tone.
-float d = texture(noise_texture, uv * dry_scale + vec2(0.8, 0.1)).r;
-float dry_threshold = 1.0 - dry_cover;
-float dry = smoothstep(dry_threshold - dry_softness, dry_threshold + dry_softness, d) * dry_strength;
-ground.rgb = mix(ground.rgb, ground.rgb * dry_tint, dry);
-if (has_second) {
+if (!sloped) {
+	float d = texture(noise_texture, uv * dry_scale + vec2(0.8, 0.1)).r;
+	float dry_threshold = 1.0 - dry_cover;
+	float dry = smoothstep(dry_threshold - dry_softness, dry_threshold + dry_softness, d) * dry_strength;
+	ground.rgb = mix(ground.rgb, ground.rgb * dry_tint, dry);
+}
+if (has_second && !sloped) {
 	float w2 = patches(uv, second_scale, vec2(0.2, 0.7), second_cover, second_softness);
 	if (meet_shows(ground, w2, grain)) {
 		ground = meet(ground, varied_once(second_texture, uv, vw, duv_x, duv_y), w2, grain);
 	}
 }
-if (has_worn) {
+if (has_worn && !sloped) {
 	float w3 = patches(uv, worn_scale, vec2(0.5, 0.25), worn_cover, worn_softness);
 	if (meet_shows(ground, w3, grain)) {
 		ground = meet(ground, varied_once(worn_texture, uv, vw, duv_x, duv_y), w3, grain);
@@ -497,7 +510,7 @@ if (has_worn) {
 // (that squares the colour and darkens it by half).
 ground.rgb *= base_tint;
 vec3 vertex_tint = tint.rgb;
-if (current_strength > 0.0) {
+if (current_strength > 0.0 && !sloped) {
 	// Two drifts of streaks at different paces, read from the noise
 	// squeezed across the river and stretched along it.
 	vec2 flow = vec2(uv.x * current_scale, (uv.y - now * current_speed) * current_scale / current_stretch);
@@ -508,7 +521,7 @@ if (current_strength > 0.0) {
 	float streak = max(smoothstep(t - 0.08, t + 0.08, s1), smoothstep(t, t + 0.12, s2) * 0.6);
 	ground.rgb = mix(ground.rgb, ground.rgb * shore_tint, streak * current_strength);
 }
-if (shore_lighten > 0.0) {
+if (shore_lighten > 0.0 && !sloped) {
 	float raw = 1.0 - tint.g;
 	float near = raw * shore_lighten;
 	float e = texture(noise_texture, uv * edge_scale + vec2(0.61, 0.13)).r;
@@ -560,11 +573,6 @@ if (has_bank) {
 	ground.rgb = mix(fringe_colour, ground.rgb, floor_in);
 	alpha = max(floor_in, edge_shade);
 }
-vec3 drawn = ground.rgb * vertex_tint;
-vec3 slope;
-if (steps_mode > 0 && slope_lit(at, canvas, canvas_dx, canvas_dy, slope)) {
-	drawn = slope;
-}
-COLOR = vec4(drawn, alpha);
+COLOR = vec4(sloped ? slope : ground.rgb * vertex_tint, alpha);
 }
 }
