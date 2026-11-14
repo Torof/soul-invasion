@@ -50,18 +50,21 @@ uniform sampler2D slope_grass_3 : repeat_enable, filter_linear_mipmap;
 uniform sampler2D slope_grass_16 : repeat_enable, filter_linear_mipmap;
 uniform bool slope_zones = true;
 const float SLOPE_ZONE_TILES = 22.0;
-// Where the slope turns while still rising (14 November 2026, the lead:
-// the straight seam between two images there looked wrong; at crests and
-// valley floors it is right), the choice of image is shaken by a smooth
-// noise of SLOPE_SEAM_SHAKE over about SLOPE_SEAM_TILES, so the seam
-// winds in interlocking patches, each pixel still one image whole. Off
-// (key B): straight seams.
-uniform bool slope_seams_wavy = true;
-const float SLOPE_SEAM_SHAKE = 0.35;
-const float SLOPE_SEAM_TILES = 1.6;
+// Seams (14 November 2026, the lead): at a fold, a crest or a valley
+// floor, where the ground rises one way on one side and the other way on
+// the other, the image changes at once, which is right. Where the slope
+// only changes its steepness or turns while still rising, the change must
+// stay soft: the two nearest choices fade into each other there, sharpened
+// by SLOPE_SEAM_SHARPEN so the fade stays narrow. A fold is told by the
+// ground's rise SLOPE_FOLD_TILES uphill and downhill pointing apart. Off
+// (key B): every seam at once.
+uniform bool slope_seams_soft = true;
+const float SLOPE_SEAM_SHARPEN = 3.0;
+const float SLOPE_FOLD_TILES = 1.5;
 // Midjourney's grasses are drawn at half the lead's scale: repeated over
 // SLOPE_ZONE_SCALE times the canvas so their tufts match his.
 const float SLOPE_ZONE_SCALE = 2.0;
+const float SLOPE_ZONE_FADE = 1.5;
 // Crisp (the default, 13 November 2026): one image a pixel, the dominant
 // inclination and side only, no offset cells, no fade into the meadow, so
 // two grasses never lie over each other (they blurred). Off (key T): the
@@ -408,6 +411,13 @@ vec3 slope_leaning(sampler2D tex, vec2 canvas, vec2 dx, vec2 dy, vec3 inclines, 
 
 // `c`, the ground at map point `p` (tiles, canvas point `canvas`), with
 // the slope's grass where the ground slopes (the mountain test's rule).
+// `v`'s shares raised to SLOPE_SEAM_SHARPEN and summing to one again:
+// the largest wins faster, the fade between two stays soft but narrow.
+vec3 sharpen(vec3 v) {
+	vec3 k = pow(max(v, vec3(0.0)), vec3(SLOPE_SEAM_SHARPEN));
+	return k / max(k.x + k.y + k.z, 1e-6);
+}
+
 // `v` with its largest share whole and the others nothing.
 vec3 one_hot(vec3 v) {
 	if (v.x >= v.y && v.x >= v.z) {
@@ -416,41 +426,57 @@ vec3 one_hot(vec3 v) {
 	return v.y >= v.z ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0);
 }
 
-// Which of the five slope grasses the zone around map point `p` takes:
-// the nearest of a jittered grid of centres, the point's place wobbled so
-// the edges wave.
-int slope_zone(vec2 p) {
+// The zone around map point `p`: x the nearest zone's grass (0..4), y the
+// next nearest's, z the nearest's share, one inside a zone and fading to a
+// half at the edge over SLOPE_ZONE_FADE tiles (14 November 2026, the lead:
+// a change of texture must not be a sharp line). The centres sit on a
+// jittered grid, the point's place wobbled so the edges wave.
+vec3 slope_zone(vec2 p) {
 	vec2 q = p + 4.0 * vec2(sin(p.y * 0.21 + 1.3) + sin(p.y * 0.07),
 		sin(p.x * 0.19 + 0.4) + sin(p.x * 0.083 + 2.0));
 	vec2 cell = floor(q / SLOPE_ZONE_TILES);
-	float best = 1e9;
-	float pick = 0.0;
+	float d1 = 1e9;
+	float d2 = 1e9;
+	float pick1 = 0.0;
+	float pick2 = 0.0;
 	for (int j = -1; j <= 1; j++) {
 		for (int i = -1; i <= 1; i++) {
 			vec2 c = cell + vec2(float(i), float(j));
 			vec2 h = fract(sin(vec2(dot(c, vec2(127.1, 311.7)), dot(c, vec2(269.5, 183.3)))) * 43758.5453);
-			vec2 centre = (c + h) * SLOPE_ZONE_TILES;
-			float d = dot(q - centre, q - centre);
-			if (d < best) {
-				best = d;
-				pick = fract(h.x * 7.13 + h.y * 3.71);
+			float d = length(q - (c + h) * SLOPE_ZONE_TILES);
+			float pick = floor(fract(h.x * 7.13 + h.y * 3.71) * 5.0);
+			if (d < d1) {
+				d2 = d1;
+				pick2 = pick1;
+				d1 = d;
+				pick1 = pick;
+			} else if (d < d2) {
+				d2 = d;
+				pick2 = pick;
 			}
 		}
 	}
-	return int(floor(pick * 5.0));
+	float share = pick1 == pick2 ? 1.0 : 0.5 + 0.5 * smoothstep(0.0, SLOPE_ZONE_FADE, d2 - d1);
+	return vec3(pick1, pick2, share);
 }
 
-// A smooth noise in -1..1 over map point `p` (tiles), cells `size` wide.
-float seam_noise(vec2 p, float size, float seed) {
-	vec2 q = p / size + seed;
-	vec2 i = floor(q);
-	vec2 f = q - i;
-	f = f * f * (3.0 - 2.0 * f);
-	float a = fract(sin(dot(i, vec2(127.1, 311.7))) * 43758.5453);
-	float b = fract(sin(dot(i + vec2(1.0, 0.0), vec2(127.1, 311.7))) * 43758.5453);
-	float c = fract(sin(dot(i + vec2(0.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
-	float d = fract(sin(dot(i + vec2(1.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
-	return mix(mix(a, b, f.x), mix(c, d, f.x), f.y) * 2.0 - 1.0;
+// One zone's grass `zone` (0 the lead's) leaning as slope_leaning lays it,
+// Midjourney's drawn SLOPE_ZONE_SCALE times larger.
+vec3 zone_grass(int zone, vec2 canvas, vec2 dx, vec2 dy, vec3 inclines, vec3 leans, vec4 w, vec4 ox, vec4 oy) {
+	if (zone == 0) {
+		return slope_leaning(slope_texture, canvas, dx, dy, inclines, leans, w, ox, oy);
+	}
+	canvas /= SLOPE_ZONE_SCALE;
+	dx /= SLOPE_ZONE_SCALE;
+	dy /= SLOPE_ZONE_SCALE;
+	if (zone == 1) {
+		return slope_leaning(slope_grass_1, canvas, dx, dy, inclines, leans, w, ox, oy);
+	} else if (zone == 2) {
+		return slope_leaning(slope_grass_2, canvas, dx, dy, inclines, leans, w, ox, oy);
+	} else if (zone == 3) {
+		return slope_leaning(slope_grass_3, canvas, dx, dy, inclines, leans, w, ox, oy);
+	}
+	return slope_leaning(slope_grass_16, canvas, dx, dy, inclines, leans, w, ox, oy);
 }
 
 vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox, vec4 oy) {
@@ -489,37 +515,33 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 	vec3 leans = vec3(horiz * rightward + (1.0 - horiz) * facing,
 		horiz * (1.0 - rightward), (1.0 - horiz) * (1.0 - facing));
 	if (slope_crisp) {
-		if (slope_seams_wavy) {
-			vec3 shake = SLOPE_SEAM_SHAKE * vec3(seam_noise(p, SLOPE_SEAM_TILES, 3.1),
-				seam_noise(p, SLOPE_SEAM_TILES, 17.7), seam_noise(p, SLOPE_SEAM_TILES, 41.3));
-			// Only a choice already shared is shaken: a whole one (a crest's
-			// side, far from any seam) stays.
-			inclines += shake * step(0.001, inclines) * step(inclines, vec3(0.999));
-			leans += shake.zxy * step(0.001, leans) * step(leans, vec3(0.999));
+		bool fold = true;
+		if (slope_seams_soft) {
+			vec2 g = rise / s;
+			vec2 up = texture(slope_index, (p + g * SLOPE_FOLD_TILES) / index_tiles).rg;
+			vec2 below = texture(slope_index, (p - g * SLOPE_FOLD_TILES) / index_tiles).rg;
+			fold = dot(up, below) < 0.0;
 		}
-		inclines = one_hot(inclines);
-		leans = one_hot(leans);
+		if (!fold) {
+			inclines = sharpen(inclines);
+			leans = sharpen(leans);
+		} else {
+			inclines = one_hot(inclines);
+			leans = one_hot(leans);
+		}
 		w = vec4(1.0, 0.0, 0.0, 0.0);
 		ox = vec4(0.0);
 		oy = vec4(0.0);
 	}
 	vec3 slope;
-	int zone = slope_zones ? slope_zone(p) : 0;
-	if (zone > 0) {
-		canvas /= SLOPE_ZONE_SCALE;
-		dx /= SLOPE_ZONE_SCALE;
-		dy /= SLOPE_ZONE_SCALE;
-	}
-	if (zone == 1) {
-		slope = slope_leaning(slope_grass_1, canvas, dx, dy, inclines, leans, w, ox, oy);
-	} else if (zone == 2) {
-		slope = slope_leaning(slope_grass_2, canvas, dx, dy, inclines, leans, w, ox, oy);
-	} else if (zone == 3) {
-		slope = slope_leaning(slope_grass_3, canvas, dx, dy, inclines, leans, w, ox, oy);
-	} else if (zone == 4) {
-		slope = slope_leaning(slope_grass_16, canvas, dx, dy, inclines, leans, w, ox, oy);
+	if (slope_zones) {
+		vec3 zone = slope_zone(p);
+		slope = zone_grass(int(zone.x), canvas, dx, dy, inclines, leans, w, ox, oy);
+		if (zone.z < 0.999) {
+			slope = mix(zone_grass(int(zone.y), canvas, dx, dy, inclines, leans, w, ox, oy), slope, zone.z);
+		}
 	} else {
-		slope = slope_leaning(slope_texture, canvas, dx, dy, inclines, leans, w, ox, oy);
+		slope = zone_grass(0, canvas, dx, dy, inclines, leans, w, ox, oy);
 	}
 	return mix(c, slope * SLOPE_TINT, shown);
 }
