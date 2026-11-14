@@ -75,17 +75,17 @@ uniform float slope_crest_cos = -0.5;
 uniform bool slope_crest_square = true;
 uniform bool slope_rim = true;
 // Two layers (14 November 2026, the lead's reading of the sketch test):
-// the meadow with its upright tufts stays as it is, and only the LIGHT of
-// a streak image (slope_grass_1, Midjourney's number 6, nearly tuft-free)
-// is laid over it, turned in any of the four ways so the streaks' thin
+// the meadow with its upright tufts stays as it is, and a streak image
+// (client/world/test/slope_streaks.png, drawn by notes/calibration-pentes/
+// stries.py: soft comets, wide at the lower left, thin point at the upper
+// right, no tuft) lights it, turned in any of the four ways so the thin
 // points go toward the crest: as is where the crest is up and right,
 // mirrored where it is left, upside down where it is below. The width is
 // the steepness alone. Key L: off, the one-image rule instead.
 uniform bool slope_layers = true;
+uniform sampler2D slope_streaks : repeat_enable, filter_linear_mipmap;
 const vec3 SLOPE_STREAK_PALE = vec3(0.92, 0.94, 0.59);
-const float SLOPE_STREAK_FROM = 0.45;
-const float SLOPE_STREAK_GAIN = 2.2;
-const float SLOPE_STREAK_MIX = 0.8;
+const float SLOPE_STREAK_MIX = 0.55;
 const float SLOPE_RIM_TILES = 0.9;
 const float SLOPE_RIM_SHADE = 0.82;
 uniform bool slope_chevron_flip = false;
@@ -586,7 +586,7 @@ vec3 zone_read(int zone, vec2 canvas, vec2 dx, vec2 dy, float width, float flip)
 vec3 streak_read(vec2 canvas, vec2 dx, vec2 dy, float widen, vec2 flip) {
 	vec2 scale = vec2(1.0 / widen, 1.0) / (SLOPE_TEXTURE_PX * SLOPE_ZONE_SCALE);
 	vec2 uv = canvas * scale * flip;
-	return textureGrad(slope_grass_1, uv, dx * scale * flip, dy * scale * flip).rgb;
+	return textureGrad(slope_streaks, uv, dx * scale * flip, dy * scale * flip).rgb;
 }
 
 vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox, vec4 oy) {
@@ -628,7 +628,7 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 		float fy = up.y > 0.0 ? -1.0 : 1.0;
 		float width = s < SLOPE_STEEP_LADDER.x ? LADDER_WIDTHS[0] : (s < SLOPE_STEEP_LADDER.y ? LADDER_WIDTHS[1] : LADDER_WIDTHS[2]);
 		vec3 tex = streak_read(canvas, dx, dy, width, vec2(fx, fy));
-		float light = clamp((dot(tex, vec3(0.299, 0.587, 0.114)) - SLOPE_STREAK_FROM) * SLOPE_STREAK_GAIN, 0.0, 1.0);
+		float light = tex.r;
 		vec3 lit = mix(c, SLOPE_STREAK_PALE, light * SLOPE_STREAK_MIX);
 		if (rim) {
 			lit *= SLOPE_RIM_SHADE;
