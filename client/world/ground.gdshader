@@ -74,6 +74,18 @@ uniform float slope_crest_cos = -0.5;
 // off (key X): the sides keep their usual images.
 uniform bool slope_crest_square = true;
 uniform bool slope_rim = true;
+// Two layers (14 November 2026, the lead's reading of the sketch test):
+// the meadow with its upright tufts stays as it is, and only the LIGHT of
+// a streak image (slope_grass_1, Midjourney's number 6, nearly tuft-free)
+// is laid over it, turned in any of the four ways so the streaks' thin
+// points go toward the crest: as is where the crest is up and right,
+// mirrored where it is left, upside down where it is below. The width is
+// the steepness alone. Key L: off, the one-image rule instead.
+uniform bool slope_layers = true;
+const vec3 SLOPE_STREAK_PALE = vec3(0.92, 0.94, 0.59);
+const float SLOPE_STREAK_FROM = 0.45;
+const float SLOPE_STREAK_GAIN = 2.2;
+const float SLOPE_STREAK_MIX = 0.8;
 const float SLOPE_RIM_TILES = 0.9;
 const float SLOPE_RIM_SHADE = 0.82;
 uniform bool slope_chevron_flip = false;
@@ -570,6 +582,13 @@ vec3 zone_read(int zone, vec2 canvas, vec2 dx, vec2 dy, float width, float flip)
 	return slope_read(slope_grass_16, canvas, dx, dy, width, flip, one, vec4(0.0), vec4(0.0));
 }
 
+// The streak image read once, `flip` its turn (x mirror, y upside down).
+vec3 streak_read(vec2 canvas, vec2 dx, vec2 dy, float widen, vec2 flip) {
+	vec2 scale = vec2(1.0 / widen, 1.0) / (SLOPE_TEXTURE_PX * SLOPE_ZONE_SCALE);
+	vec2 uv = canvas * scale * flip;
+	return textureGrad(slope_grass_1, uv, dx * scale * flip, dy * scale * flip).rgb;
+}
+
 vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox, vec4 oy) {
 	vec2 rise = texture(slope_index, p / index_tiles).rg;
 	float s = length(rise);
@@ -594,6 +613,27 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 	}
 	if (shown <= 0.0) {
 		return c;
+	}
+	if (slope_layers) {
+		vec2 g = rise / max(s, 1e-6);
+		// Uphill on the screen (y down): the crest's side.
+		vec2 up = vec2(TILE_HALF_PX.x * (g.x - g.y), TILE_HALF_PX.y * (g.x + g.y));
+		vec2 t = vec2(-g.y, g.x);
+		vec2 line = vec2(TILE_HALF_PX.x * (t.x - t.y), -TILE_HALF_PX.y * (t.x + t.y));
+		if (line.y < 0.0 || (line.y == 0.0 && line.x < 0.0)) {
+			line = -line;
+		}
+		float tilt_side = -sign(line.x * (-up.y) - line.y * up.x) * (slope_chevron_flip ? -1.0 : 1.0);
+		float fx = up.x > SLOPE_POINT_SIDE_PX ? 1.0 : (up.x < -SLOPE_POINT_SIDE_PX ? -1.0 : tilt_side);
+		float fy = up.y > 0.0 ? -1.0 : 1.0;
+		float width = s < SLOPE_STEEP_LADDER.x ? LADDER_WIDTHS[0] : (s < SLOPE_STEEP_LADDER.y ? LADDER_WIDTHS[1] : LADDER_WIDTHS[2]);
+		vec3 tex = streak_read(canvas, dx, dy, width, vec2(fx, fy));
+		float light = clamp((dot(tex, vec3(0.299, 0.587, 0.114)) - SLOPE_STREAK_FROM) * SLOPE_STREAK_GAIN, 0.0, 1.0);
+		vec3 lit = mix(c, SLOPE_STREAK_PALE, light * SLOPE_STREAK_MIX);
+		if (rim) {
+			lit *= SLOPE_RIM_SHADE;
+		}
+		return mix(c, lit, shown);
 	}
 	if (slope_fall_line) {
 		vec2 g = rise / max(s, 1e-6);

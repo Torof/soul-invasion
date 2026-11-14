@@ -239,6 +239,7 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 			material.set_shader_parameter("slope_crest_square", slope_crest_square)
 			material.set_shader_parameter("slope_chevron_flip", slope_chevron_flip)
 			material.set_shader_parameter("slope_rim", slope_rim)
+			material.set_shader_parameter("slope_layers", slope_layers)
 			material.set_shader_parameter("slope_crest_cos", cos(deg_to_rad(slope_crest_degrees)))
 		apply_spec(material, terrain, false)
 		pin_flow_time(material)
@@ -264,6 +265,8 @@ static var slope_crest_square := true
 static var slope_chevron_flip := false
 ## The mountain test: the rim a near face lays over the face behind a crest (key R).
 static var slope_rim := true
+## The mountain test: the meadow with the streak image's light over it, turned toward the crest (key L).
+static var slope_layers := true
 ## The mountain test: the turn between two sides, in degrees, that makes a crest (key N).
 static var slope_crest_degrees := 120.0
 
