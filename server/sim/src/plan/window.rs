@@ -97,6 +97,15 @@ const FORD_SPEED_PER_MILLE: i64 = 1500;
 const EDGE_SHIFT_M: i64 = 28;
 const SHORE_SHIFT_M: i64 = 20;
 
+/// The grain of a river's water line: each bank's line wanders up to
+/// this many millimetres either way, from a value noise on a lattice of
+/// [`GRAIN_CELL_TILES`] tiles, so the line is never smooth at the tile
+/// (the lead's verdict of 15 November 2026) and never speckled either
+/// (a lattice of one tile left lone tiles of water on the land). A
+/// brook's and a lake's lines keep theirs.
+const GRAIN_MM: i64 = 1500;
+const GRAIN_CELL_TILES: u32 = 3;
+
 /// The camp: on dry, gentle ground this many metres from a river (a
 /// brook's head may be a few tiles long).
 const CAMP_WATER_M: (i64, i64) = (8, 40);
@@ -180,6 +189,10 @@ struct Stretch {
     ford: bool,
     /// Its heading, as a current's (`map::current_code`).
     heading: u8,
+    /// What a pool or a narrows makes of the width at each end, per
+    /// mille (1000 outside one; a brook's is 1000), for the tests' look.
+    #[cfg(test)]
+    shape: (i64, i64),
 }
 
 /// What a stretch is at the point of it nearest to a tile.
@@ -450,6 +463,8 @@ impl Window {
                     kind: Kind::River,
                     ford: u.ford,
                     heading: heading(b.0 - a.0, b.1 - a.1),
+                    #[cfg(test)]
+                    shape: (u.shape, v.shape),
                 });
             }
         }
@@ -526,6 +541,8 @@ impl Window {
                     kind: Kind::Brook,
                     ford: false,
                     heading: heading(b.0 - a.0, b.1 - a.1),
+                    #[cfg(test)]
+                    shape: (1000, 1000),
                 });
             }
         }
@@ -702,10 +719,12 @@ impl Window {
             });
         }
         let p = (x * 1000 + 500, y * 1000 + 500);
+        let grain = self.grain_mm(x, y);
         let mut best: Option<Wet> = None;
         for s in self.stretches_near(x, y) {
             let probe = s.probe(p);
-            if probe.d > probe.half || best.is_some_and(|b| b.level <= probe.level) {
+            let half = probe.half + if s.kind == Kind::River { grain } else { 0 };
+            if probe.d > half || best.is_some_and(|b| b.level <= probe.level) {
                 continue;
             }
             let (terrain, depth, speed) = match s.kind {
@@ -746,8 +765,10 @@ impl Window {
             h = level + (h - level) * w / 1000;
         }
         let p = (x * 1000 + 500, y * 1000 + 500);
+        let grain = self.grain_mm(x, y);
         for s in self.stretches_near(x, y) {
             let Probe { d, half, level, .. } = s.probe(p);
+            let half = half + if s.kind == Kind::River { grain } else { 0 };
             if d < half + s.bank {
                 let w = smooth((d - half) * 1000 / s.bank);
                 h = level + (h - level) * w / 1000;
@@ -775,6 +796,88 @@ impl Window {
     pub fn biome(&self, x: i64, y: i64) -> Biome {
         let (sx, sy) = self.ragged(x, y, 0, EDGE_SHIFT_M);
         self.cell(&self.biome, sx.div_euclid(CELL), sy.div_euclid(CELL))
+    }
+
+    /// How far the water line of a river moves out at tile `(x, y)`, in
+    /// millimetres, either way up to [`GRAIN_MM`]: a value noise keyed by
+    /// the tile's place on the region grid, so two windows that overlap
+    /// draw the same grain.
+    fn grain_mm(&self, x: i64, y: i64) -> i64 {
+        let s = roll(self.seed, purpose::PLAN_GRAIN, &[]);
+        let (xi, yi) = (
+            i32::try_from(self.origin.0 * CELL + x).expect("small"),
+            i32::try_from(self.origin.1 * CELL + y).expect("small"),
+        );
+        (i64::from(noise(s, GRAIN_CELL_TILES, xi, yi)) - 500) * 2 * GRAIN_MM / 1000
+    }
+
+    /// The river's widths over the window, for a look at how the banks
+    /// breathe: the narrowest and the widest width (mm) of a river
+    /// stretch wholly inside the window and off any ford, the widest
+    /// over the narrowest within 500 m of each other along a river (per
+    /// mille), and how many pools and narrows the window's rivers hold.
+    #[cfg(test)]
+    pub(crate) fn river_breadth(&self) -> (i64, i64, i64, usize, usize) {
+        let inside = |p: (i64, i64)| {
+            let side = i64::from(self.side) * 1000;
+            (0..side).contains(&p.0) && (0..side).contains(&p.1)
+        };
+        let (mut least, mut most, mut pools, mut narrows) = (i64::MAX, 0, 0, 0);
+        let mut before = 1000;
+        // The widths along the rivers, each river's run of stretches in
+        // order through the window: `(how far along, width)`; a ford's
+        // stretches count for the way along, not for the widths.
+        let mut runs: Vec<(i64, Vec<(i64, i64)>)> = Vec::new();
+        let mut last_end = None;
+        for s in &self.stretches {
+            if s.kind != Kind::River {
+                continue;
+            }
+            if inside(s.a) && inside(s.b) {
+                let step = isqrt(
+                    u64::try_from((s.b.0 - s.a.0).pow(2) + (s.b.1 - s.a.1).pow(2))
+                        .expect("a square"),
+                );
+                if last_end != Some(s.a) {
+                    runs.push((0, Vec::new()));
+                }
+                let (along, run) = runs.last_mut().expect("one");
+                *along += i64::try_from(step).expect("small");
+                if !s.ford {
+                    let w = s.half.0.0 + s.half.0.1;
+                    least = least.min(w);
+                    most = most.max(w);
+                    run.push((*along, w));
+                }
+                last_end = Some(s.b);
+            }
+            let shape = s.shape.0;
+            if inside(s.a) {
+                if shape > 1000 && before <= 1000 {
+                    pools += 1;
+                } else if shape < 1000 && before >= 1000 {
+                    narrows += 1;
+                }
+            }
+            before = shape;
+        }
+        let mut spread = 0;
+        for (_, run) in &runs {
+            for (i, &(from, _)) in run.iter().enumerate() {
+                let (mut lo, mut hi) = (i64::MAX, 0);
+                for &(at, w) in &run[i..] {
+                    if at - from > 500_000 {
+                        break;
+                    }
+                    lo = lo.min(w);
+                    hi = hi.max(w);
+                }
+                if hi > 0 {
+                    spread = spread.max(hi * 1000 / lo);
+                }
+            }
+        }
+        (least, most, spread, pools, narrows)
     }
 
     /// Tile `(x, y)` shifted up to `reach` metres either way by a noise

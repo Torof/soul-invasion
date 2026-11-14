@@ -20,11 +20,20 @@
 //!    consecutive segments;
 //! 3. its **banks breathe**, each on its own (D36's rule for the valley):
 //!    the half-width of each bank wanders ±[`BREATH_PER_MILLE`] over
-//!    waves of [`BREATH_WAVE_WIDTHS`] river widths, from a value noise
-//!    keyed by the cell and the bank, calm at both ends of a cell's
-//!    course so two cells meet without a step; the depth takes what the
-//!    width leaves, so the flow is kept;
-//! 4. the **ford** at an atlas crossing (`measure::passages` at
+//!    waves of [`BREATH_WAVE_WIDTHS`] river widths and ±[`RIPPLE_PER_MILLE`]
+//!    over short waves of [`RIPPLE_WAVE_WIDTHS_PER_MILLE`] widths, from
+//!    value noises keyed by the cell and the bank (so one bank bulges
+//!    while the other holds), calm at both ends of a cell's course so two
+//!    cells meet without a step; the depth takes what the width leaves,
+//!    so the flow is kept;
+//! 4. along the course, **pools and narrows** ([`feature`]): every
+//!    [`FEATURE_EVERY_CELLS`] cells of a stem, counted from its source,
+//!    the river opens to [`POOL_PER_MILLE`] of its width, more on one
+//!    bank than the other, or closes to [`NARROWS_PER_MILLE`], over
+//!    [`FEATURE_WIDTHS_PER_MILLE`] widths of length with a slow way in and
+//!    out, never at a cell's ends nor in a crossing's cell or the one
+//!    before or after it, so the ford's lens and the junctions stay calm;
+//! 5. the **ford** at an atlas crossing (`measure::passages` at
 //!    [`measure::DRY_CM`]): where the atlas finds the cell's river
 //!    crossed dry-shod, a bar [`FORD_BAR_WIDTHS_PER_MILLE`] river widths
 //!    long lies across the stem at the point nearest the cell's centre,
@@ -37,6 +46,9 @@
 //! each looked at: a stem cut short at a span's edge differs from the
 //! whole one only within a few cells of that edge, and a window keeps a
 //! margin of two continent cells.
+//!
+//! The water line itself is given its grain at the tile, in the window
+//! (`Window::grain_mm`), not here.
 
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
@@ -74,21 +86,67 @@ const FINE_SMOOTH: u32 = 1;
 #[cfg(test)]
 const SHARPEST_TURN_COS_MILLI: i64 = 500;
 
-/// Each bank breathes this much either way, per mille of its half-width:
-/// a fifth, the project lead's figure, so the river's width stays within
-/// ±20 % of what its flow gives it.
-pub(crate) const BREATH_PER_MILLE: i64 = 200;
+/// Each bank breathes this much either way, per mille of its half-width,
+/// over the long wave: two fifths (the project lead's verdict of
+/// 15 November 2026 in the game: at a fifth the banks still read as
+/// parallel; the valley's river doubled its width within twenty metres).
+pub(crate) const BREATH_PER_MILLE: i64 = 400;
 /// The breathing's wave, in river widths: a natural river alternates
 /// pools and riffles every five to seven widths (Leopold, Wolman and
 /// Miller 1964).
 const BREATH_WAVE_WIDTHS: i64 = 6;
-/// Most waves over one cell's course: the course has 32 points, and a
-/// wave needs two.
-const BREATH_MOST_WAVES: i64 = 16;
+/// On top of the long wave, each bank ripples this much either way (per
+/// mille of its half-width) over short waves of this many river widths
+/// (per mille): two to three widths, the lead's figure, so the width
+/// changes within a few tens of metres and not only from cell to cell.
+pub(crate) const RIPPLE_PER_MILLE: i64 = 150;
+const RIPPLE_WAVE_WIDTHS_PER_MILLE: i64 = 2500;
+/// Most waves over one cell's course: the banks breathe on the fine
+/// course, some 300 points over a cell's 2 km, and a wave needs two.
+const BREATH_MOST_WAVES: i64 = 128;
 /// The banks hold their lines over this share (per mille) of a cell's
 /// course at each end, so the banks of two cells meet without a step and
 /// a junction stays calm (the valley's rule).
 const BREATH_CALM_PER_MILLE: i64 = 100;
+/// What a bank's half-width may come to, per mille of the half-width the
+/// flow gives it, once it breathes and the pools and narrows are laid
+/// over: never under half (a narrows at the bottom of a breath would
+/// leave a third, and the depth, which takes what the width leaves,
+/// would triple), never over two and a half times.
+pub(crate) const BANK_LEAST_PER_MILLE: i64 = 500;
+pub(crate) const BANK_MOST_PER_MILLE: i64 = 2500;
+
+/// A pool or a narrows about every this many metres along a river (150
+/// to 300 m, the lead's figure): a cell's course is cut in slots of this
+/// length and each slot's feature sits in the middle half of its slot,
+/// keyed by the cell and the slot, so a stem followed from anywhere
+/// places them the same.
+const FEATURE_EVERY_M: i64 = 225;
+/// No feature within this many river widths of a ford's bar, and the
+/// banks hold their lines over the bar and come to breathe again over
+/// this distance past it, so the ford's lens stands alone.
+const FEATURE_FORD_GAP_WIDTHS: i64 = 1;
+/// Pools over narrows, per mille of the features: more pools, a narrows
+/// being a brief thing.
+const POOL_SHARE_PER_MILLE: u64 = 600;
+/// A pool opens the river to this much of its width (per mille, the
+/// least and the most: 1.6 to 2 times), a narrows closes it to this
+/// much (0.6 times); the lead's figures.
+pub(crate) const POOL_PER_MILLE: (i64, i64) = (1600, 2000);
+pub(crate) const NARROWS_PER_MILLE: i64 = 600;
+/// A feature runs this long along the course, per mille of the river's
+/// width (the least and the most: one and a half to two widths), with
+/// a slow way in and out.
+const FEATURE_WIDTHS_PER_MILLE: (i64, i64) = (1500, 2000);
+/// A feature's way in and out takes this much of each half of its
+/// length (per mille), the middle holding its full opening: a pool is a
+/// reach of wider water, not a bead on the river (the first dump drew
+/// beads), and the river still doubles within a few tens of metres.
+const FEATURE_RAMP_PER_MILLE: i64 = 650;
+/// How much of a pool's opening the left bank takes, per mille (the
+/// least and the most): never half and half, so a pool bulges on one
+/// side more than the other, never a lens.
+const FEATURE_SKEW_PER_MILLE: (i64, i64) = (250, 750);
 
 /// A piece of a finished course is at least this long (mm): the
 /// rounding of a hairpin leaves specks a few millimetres apart, whose
@@ -130,6 +188,99 @@ pub(crate) struct Node {
     pub(crate) depth: i64,
     /// On the ford's bar.
     pub(crate) ford: bool,
+    /// What a pool or a narrows makes of the width here, per mille:
+    /// 1000 outside one, over it in a pool, under it in a narrows.
+    pub(crate) shape: i64,
+    /// The continent cell whose course this point belongs to, and how
+    /// far along that course it lies (per mille): what the breathing and
+    /// the features are keyed by, so they are the same whatever the span.
+    pub(crate) cell: usize,
+    pub(crate) f: i64,
+}
+
+/// A pool or a narrows laid over one cell's course.
+#[derive(Debug, Clone, Copy)]
+struct Feature {
+    /// Its middle along the cell's course, per mille of the way.
+    centre: i64,
+    /// Half its length, per mille of the way.
+    half_len: i64,
+    /// What it makes of each bank's half-width at its middle, per mille
+    /// (the left bank, the right bank).
+    peak: (i64, i64),
+}
+
+impl Feature {
+    /// What the feature makes of each bank at `f` per mille of the way
+    /// along the cell's course: a smooth way in over the outer
+    /// [`FEATURE_RAMP_PER_MILLE`] of each half, whole over the middle,
+    /// nothing beyond its ends.
+    fn at(self, f: i64) -> (i64, i64) {
+        let t = (f - self.centre).abs() * 1000 / self.half_len.max(1);
+        if t >= 1000 {
+            return (1000, 1000);
+        }
+        let bump = smooth((1000 - t) * 1000 / FEATURE_RAMP_PER_MILLE);
+        (
+            1000 + (self.peak.0 - 1000) * bump / 1000,
+            1000 + (self.peak.1 - 1000) * bump / 1000,
+        )
+    }
+}
+
+/// The pools and narrows over one cell's course (`cell` in grid
+/// coordinates), for a river `width` wide (mm) whose course over the
+/// cell is `length` long (mm): one a slot of [`FEATURE_EVERY_M`], keyed
+/// by the cell and the slot, dropped where it would reach the calm ends
+/// of the course or come within `keep_out` (a point along the course and
+/// a reach, per mille) of a ford's bar.
+fn features(
+    seed: u64,
+    cell: (i32, i32),
+    width: i64,
+    length: i64,
+    keep_out: Option<(i64, i64)>,
+) -> Vec<Feature> {
+    let slots = (length / (FEATURE_EVERY_M * 1000)).max(1);
+    let slot_len = 1000 / slots;
+    let mut out = Vec::new();
+    for slot in 0..slots {
+        let draw = |k: u64| {
+            roll(
+                seed,
+                purpose::PLAN_POOL,
+                &[key(i64::from(cell.0)), key(i64::from(cell.1)), key(slot), k],
+            )
+        };
+        let pick = |k: u64, (lo, hi): (i64, i64)| {
+            lo + i64::try_from(draw(k) % u64::try_from(hi - lo + 1).expect("a range"))
+                .expect("small")
+        };
+        let open = if draw(0) % 1000 < POOL_SHARE_PER_MILLE {
+            pick(1, POOL_PER_MILLE)
+        } else {
+            NARROWS_PER_MILLE
+        };
+        let skew = pick(2, FEATURE_SKEW_PER_MILLE);
+        let peak = (
+            1000 + (open - 1000) * 2 * skew / 1000,
+            1000 + (open - 1000) * 2 * (1000 - skew) / 1000,
+        );
+        let half_len = pick(3, FEATURE_WIDTHS_PER_MILLE) * width / 2 / length.max(1);
+        let centre = slot * slot_len + slot_len / 4 + pick(4, (0, slot_len / 2));
+        if centre - half_len < BREATH_CALM_PER_MILLE
+            || centre + half_len > 1000 - BREATH_CALM_PER_MILLE
+            || keep_out.is_some_and(|(at, reach)| (centre - at).abs() < half_len + reach)
+        {
+            continue;
+        }
+        out.push(Feature {
+            centre,
+            half_len,
+            peak,
+        });
+    }
+    out
 }
 
 /// One river of the continent followed cell to cell, at the tile scale.
@@ -158,6 +309,15 @@ fn distance(a: (i64, i64), b: (i64, i64)) -> i64 {
 /// `a + (b - a) × num / den`, for a node's every number.
 fn between(a: Node, b: Node, num: i64, den: i64) -> Node {
     let mix = |x: i64, y: i64| x + (y - x) * num / den;
+    // Across two cells' courses the point keeps the nearer cell, its way
+    // along it run to the end or from the start: both ends are calm.
+    let (cell, f) = if a.cell == b.cell {
+        (a.cell, mix(a.f, b.f))
+    } else if 2 * num < den {
+        (a.cell, a.f + (1000 - a.f) * 2 * num / den)
+    } else {
+        (b.cell, b.f * (2 * num - den) / den)
+    };
     Node {
         p: (mix(a.p.0, b.p.0), mix(a.p.1, b.p.1)),
         level: mix(a.level, b.level),
@@ -165,6 +325,9 @@ fn between(a: Node, b: Node, num: i64, den: i64) -> Node {
         width: mix(a.width, b.width),
         depth: mix(a.depth, b.depth),
         ford: a.ford,
+        shape: mix(a.shape, b.shape),
+        cell,
+        f,
     }
 }
 
@@ -337,6 +500,82 @@ fn nearest_on(nodes: &[Node], p: (i64, i64)) -> Option<((i64, i64), i64)> {
     best
 }
 
+/// One cell's course as the breathing reads it.
+#[derive(Debug, Clone, Copy)]
+struct Course {
+    /// The cell, in grid coordinates.
+    xy: (i32, i32),
+    /// The width the flow gives the river over it (mm).
+    width: i64,
+    /// How long its course is (mm).
+    length: i64,
+}
+
+/// The banks of `nodes` breathe, each on its own, and take their pools
+/// and narrows: the long and the short waves of each bank, the features
+/// of each cell's course, calm at the ends of a cell's course and over
+/// a ford's bar (`fords`: the bars' middle nodes).
+fn breathe(seed: u64, nodes: &mut [Node], fords: &[usize], courses: &BTreeMap<usize, Course>) {
+    let mut along = vec![0; nodes.len()];
+    for j in 1..nodes.len() {
+        along[j] = along[j - 1] + distance(nodes[j - 1].p, nodes[j].p);
+    }
+    // Each bar: its middle node, its middle along the course (mm) and
+    // its half-length (mm).
+    let bars: Vec<(Node, i64, i64)> = fords
+        .iter()
+        .map(|&at| {
+            let w = nodes[at].width;
+            (nodes[at], along[at], w * FORD_BAR_WIDTHS_PER_MILLE / 2000)
+        })
+        .collect();
+    let mut shapes: BTreeMap<usize, Vec<Feature>> = BTreeMap::new();
+    for (j, node) in nodes.iter_mut().enumerate() {
+        let Some(&course) = courses.get(&node.cell) else {
+            continue;
+        };
+        let (xy, width, length) = (course.xy, course.width, course.length);
+        let shape = shapes
+            .entry(node.cell)
+            .or_insert_with(|| {
+                let keep_out = bars
+                    .iter()
+                    .find(|&&(middle, _, _)| middle.cell == node.cell)
+                    .map(|&(middle, _, half_bar)| {
+                        let reach = half_bar + FEATURE_FORD_GAP_WIDTHS * width;
+                        (middle.f, reach * 1000 / length)
+                    });
+                features(seed, xy, width, length, keep_out)
+            })
+            .iter()
+            .find(|ft| (node.f - ft.centre).abs() < ft.half_len)
+            .map_or((1000, 1000), |ft| ft.at(node.f));
+        let bar_room = bars
+            .iter()
+            .map(|&(_, at, half_bar)| {
+                smooth(
+                    ((along[j] - at).abs() - half_bar) * 1000 / (FEATURE_FORD_GAP_WIDTHS * width),
+                )
+            })
+            .min()
+            .unwrap_or(1000);
+        let room = breathing_room(node.f) * bar_room / 1000;
+        let waves = (length / (BREATH_WAVE_WIDTHS * width)).clamp(1, BREATH_MOST_WAVES);
+        let ripples = ((length * 1000 + RIPPLE_WAVE_WIDTHS_PER_MILLE * width / 2)
+            / (RIPPLE_WAVE_WIDTHS_PER_MILLE * width))
+            .clamp(1, BREATH_MOST_WAVES);
+        let bank = |side: u64, shape: i64| {
+            let long = wave(seed, xy, side, waves, node.f) * BREATH_PER_MILLE / 500;
+            let short = wave(seed, xy, side + 2, ripples, node.f) * RIPPLE_PER_MILLE / 500;
+            let breath = 1000 + (long + short) * room / 1000;
+            let factor = (breath * shape / 1000).clamp(BANK_LEAST_PER_MILLE, BANK_MOST_PER_MILLE);
+            node.width / 2 * factor / 1000
+        };
+        node.half = (bank(0, shape.0), bank(1, shape.1));
+        node.shape = i64::midpoint(shape.0, shape.1);
+    }
+}
+
 /// The ford's bar over `nodes` around node `at`: every node within half
 /// a bar along the course is on the ford, the river spreading over it
 /// as a lens.
@@ -429,9 +668,9 @@ pub(crate) fn stems(c: &Continent, x: std::ops::Range<i32>, y: std::ops::Range<i
         .flat_map(|(k, (cells, _))| cells.iter().map(move |&i| (i, k)))
         .collect();
 
-    // Each chain's course, cell by cell, with its levels and widths, the
-    // banks breathing within each cell's course.
+    // Each chain's course, cell by cell, with its levels and widths.
     let mut out: Vec<Stem> = Vec::with_capacity(chains.len());
+    let mut courses: BTreeMap<usize, Course> = BTreeMap::new();
     for (cells, end) in &chains {
         let mut nodes: Vec<Node> = Vec::new();
         for (k, &i) in cells.iter().enumerate() {
@@ -448,26 +687,30 @@ pub(crate) fn stems(c: &Continent, x: std::ops::Range<i32>, y: std::ops::Range<i
                 .map(|w| distance(mm(w[0]), mm(w[1])))
                 .sum::<i64>()
                 .max(1);
-            let waves = (length / (BREATH_WAVE_WIDTHS * width)).clamp(1, BREATH_MOST_WAVES);
+            courses.insert(
+                i,
+                Course {
+                    xy: (ix, iy),
+                    width,
+                    length,
+                },
+            );
             let steps = i64::try_from(path.len() - 1).expect("small").max(1);
             for (j, &g) in path.iter().enumerate() {
                 if j == 0 && k > 0 {
                     continue;
                 }
                 let j = i64::try_from(j).expect("small");
-                let f = j * 1000 / steps;
-                let room = breathing_room(f);
-                let bank = |side: u64| {
-                    let w = wave(seed, (ix, iy), side, waves, f);
-                    width / 2 + width / 2 * (w * BREATH_PER_MILLE / 500) * room / 1_000_000
-                };
                 nodes.push(Node {
                     p: mm(g),
                     level: top - (top - bottom) * j / steps,
-                    half: (bank(0), bank(1)),
+                    half: (width / 2, width / 2),
                     width,
                     depth,
                     ford: false,
+                    shape: 1000,
+                    cell: i,
+                    f: j * 1000 / steps,
                 });
             }
         }
@@ -514,8 +757,11 @@ pub(crate) fn stems(c: &Continent, x: std::ops::Range<i32>, y: std::ops::Range<i
         }
     }
 
-    // The fords at the atlas's crossings.
+    // The fords at the atlas's crossings: their bars' middles, then the
+    // banks' breath, pools and narrows around them, then the lens over
+    // each bar.
     for stem in &mut out {
+        let mut fords = Vec::new();
         for &i in &stem.cells {
             if passages[i] != measure::Passage::Crossing {
                 continue;
@@ -526,8 +772,12 @@ pub(crate) fn stems(c: &Continent, x: std::ops::Range<i32>, y: std::ops::Range<i
             if let Some(at) =
                 (0..stem.nodes.len()).min_by_key(|&j| distance(stem.nodes[j].p, centre))
             {
-                spread_ford(&mut stem.nodes, at);
+                fords.push(at);
             }
+        }
+        breathe(seed, &mut stem.nodes, &fords, &courses);
+        for &at in &fords {
+            spread_ford(&mut stem.nodes, at);
         }
     }
     out
@@ -563,26 +813,106 @@ mod tests {
     }
 
     #[test]
-    fn the_width_breathes_within_a_fifth_and_never_holds_still() {
+    fn each_bank_stays_between_half_and_two_and_a_half_times_its_line() {
         let c = continent(1);
-        let mut moved = false;
         for s in all_stems(&c) {
-            for n in &s.nodes {
-                if n.ford {
-                    continue;
-                }
-                let width = n.half.0 + n.half.1;
-                let (lo, hi) = (
-                    n.width * (1000 - BREATH_PER_MILLE) / 1000,
-                    n.width * (1000 + BREATH_PER_MILLE) / 1000,
-                );
-                assert!((lo..=hi).contains(&width), "{width} for {}", n.width);
-                if (width - n.width).abs() > n.width / 20 {
-                    moved = true;
+            for n in s.nodes.iter().filter(|n| !n.ford) {
+                for half in [n.half.0, n.half.1] {
+                    let (lo, hi) = (
+                        n.width / 2 * BANK_LEAST_PER_MILLE / 1000,
+                        n.width / 2 * BANK_MOST_PER_MILLE / 1000,
+                    );
+                    assert!((lo..=hi).contains(&half), "{half} for {}", n.width);
                 }
             }
         }
-        assert!(moved, "some bank stands a twentieth off its line");
+    }
+
+    /// The widths along a stem, off the fords, with how far along the
+    /// course each lies (mm).
+    fn widths_along(s: &Stem) -> Vec<(i64, i64)> {
+        let mut along = 0;
+        let mut out = Vec::with_capacity(s.nodes.len());
+        for (j, n) in s.nodes.iter().enumerate() {
+            if j > 0 {
+                along += distance(s.nodes[j - 1].p, n.p);
+            }
+            if !n.ford {
+                out.push((along, n.half.0 + n.half.1));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_width_nearly_doubles_within_five_hundred_metres_somewhere() {
+        let c = continent(1);
+        let reach = 500_000;
+        let mut best = 0;
+        for s in all_stems(&c) {
+            let widths = widths_along(&s);
+            for (i, &(from, _)) in widths.iter().enumerate() {
+                let (mut lo, mut hi) = (i64::MAX, 0);
+                for &(at, w) in &widths[i..] {
+                    if at - from > reach {
+                        break;
+                    }
+                    lo = lo.min(w);
+                    hi = hi.max(w);
+                }
+                if lo < i64::MAX {
+                    best = best.max(hi * 1000 / lo);
+                }
+            }
+        }
+        assert!(
+            best >= 1800,
+            "widest over narrowest within 500 m: {best} per mille"
+        );
+    }
+
+    #[test]
+    fn the_two_banks_breathe_each_on_its_own() {
+        let c = continent(1);
+        let (mut apart, mut all) = (0, 0);
+        for s in all_stems(&c) {
+            for n in s.nodes.iter().filter(|n| !n.ford) {
+                let (l, r) = (n.half.0 - n.width / 2, n.half.1 - n.width / 2);
+                all += 1;
+                // One bank a tenth out while the other is a tenth in.
+                if (l > n.width / 20 && r < -n.width / 20)
+                    || (l < -n.width / 20 && r > n.width / 20)
+                {
+                    apart += 1;
+                }
+            }
+        }
+        assert!(
+            apart * 10 > all,
+            "{apart} of {all} nodes have one bank out, the other in"
+        );
+    }
+
+    #[test]
+    fn pools_and_narrows_lie_along_the_rivers_and_never_on_a_ford() {
+        let c = continent(1);
+        let (mut pools, mut narrows) = (0, 0);
+        for s in all_stems(&c) {
+            let mut last = 1000;
+            for n in &s.nodes {
+                assert!(!n.ford || n.shape == 1000, "a ford's lens is calm: {n:?}");
+                if n.shape > 1000 && last <= 1000 {
+                    pools += 1;
+                } else if n.shape < 1000 && last >= 1000 {
+                    narrows += 1;
+                }
+                last = n.shape;
+            }
+        }
+        assert!(
+            pools > narrows && narrows > 0,
+            "{pools} pools, {narrows} narrows"
+        );
     }
 
     #[test]
@@ -602,16 +932,17 @@ mod tests {
             let cell = |v: i64| v / (CELL_MM * per);
             (36..92).contains(&cell(p.0)) && (36..92).contains(&cell(p.1))
         };
-        let known: std::collections::BTreeSet<(i64, i64)> = whole
-            .iter()
-            .flat_map(|w| w.nodes.iter().map(|n| n.p))
-            .collect();
+        // By place: a tributary's end and the stem it joins share one.
+        let mut known: BTreeMap<(i64, i64), Vec<Node>> = BTreeMap::new();
+        for n in whole.iter().flat_map(|w| w.nodes.iter()) {
+            known.entry(n.p).or_default().push(*n);
+        }
         let mut checked = 0;
         for s in &part {
             for n in s.nodes.iter().filter(|n| inner(n.p)) {
                 assert!(
-                    known.contains(&n.p),
-                    "a point of a cut stem is a point of the whole one: {n:?}"
+                    known.get(&n.p).is_some_and(|nodes| nodes.contains(n)),
+                    "a point of a cut stem is a point of the whole one, banks and all: {n:?}"
                 );
                 checked += 1;
             }
