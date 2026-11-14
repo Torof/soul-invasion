@@ -61,6 +61,17 @@ const float SLOPE_ZONE_TILES = 22.0;
 uniform bool slope_seams_soft = true;
 const float SLOPE_SEAM_SHARPEN = 3.0;
 const float SLOPE_FOLD_TILES = 1.5;
+// At a crest or a valley floor (14 November 2026, the lead): each side's
+// streaks must meet the fold's line nearly square, between 45 and 90
+// degrees, never running along it, or the crest is lost. There each side
+// takes, of the images it has (as is or mirrored, gentle, medium, steep,
+// or the level one), the one whose streaks meet the line nearest
+// 90 - SLOPE_CREST_TILT degrees, the two sides tilted opposite ways so
+// they draw a chevron. slope_chevron_flip turns the chevron over (key C);
+// off (key X): the sides keep their usual images.
+uniform bool slope_crest_square = true;
+uniform bool slope_chevron_flip = false;
+const float SLOPE_CREST_TILT = 25.0;
 // Midjourney's grasses are drawn at half the lead's scale: repeated over
 // SLOPE_ZONE_SCALE times the canvas so their tufts match his.
 const float SLOPE_ZONE_SCALE = 2.0;
@@ -411,6 +422,48 @@ vec3 slope_leaning(sampler2D tex, vec2 canvas, vec2 dx, vec2 dy, vec3 inclines, 
 
 // `c`, the ground at map point `p` (tiles, canvas point `canvas`), with
 // the slope's grass where the ground slopes (the mountain test's rule).
+// At a fold whose ground rises along the map's unit `g`: the image whose
+// streaks meet the fold's line on the screen nearest 90 - SLOPE_CREST_TILT
+// degrees, tilted one way on one side and the other way on the other.
+void crest_choice(vec2 g, out vec3 inclines, out vec3 leans) {
+	vec2 t = vec2(-g.y, g.x);
+	vec2 line = vec2(TILE_HALF_PX.x * (t.x - t.y), -TILE_HALF_PX.y * (t.x + t.y));
+	vec2 rises = vec2(TILE_HALF_PX.x * (g.x - g.y), -TILE_HALF_PX.y * (g.x + g.y));
+	// The line one way only, so the two sides (whose rises point apart)
+	// fall on opposite sides of it.
+	if (line.y < 0.0 || (line.y == 0.0 && line.x < 0.0)) {
+		line = -line;
+	}
+	float side = sign(line.x * rises.y - line.y * rises.x) * (slope_chevron_flip ? -1.0 : 1.0);
+	float target = degrees(atan(line.y, line.x)) + 90.0 + side * SLOPE_CREST_TILT;
+	// The streaks' slant on the screen for each image: as is gentle,
+	// medium, steep, level; mirrored gentle, medium, steep.
+	float best = 1e9;
+	int pick = 0;
+	for (int i = 0; i < 7; i++) {
+		float width = i == 0 || i == 4 ? SLOPE_GENTLE_WIDTH : (i == 1 || i == 5 ? SLOPE_MEDIUM_WIDTH
+			: (i == 2 || i == 6 ? SLOPE_STEEP_WIDTH : SLOPE_AWAY_WIDTH));
+		float slant = degrees(atan(SLOPE_STREAK_TAN / width));
+		if (i >= 4) {
+			slant = 180.0 - slant;
+		}
+		float off = abs(mod(slant - target + 90.0, 180.0) - 90.0);
+		if (off < best) {
+			best = off;
+			pick = i;
+		}
+	}
+	inclines = vec3(0.0);
+	leans = vec3(0.0);
+	if (pick == 3) {
+		leans.z = 1.0;
+		inclines.x = 1.0;
+	} else {
+		leans[pick >= 4 ? 1 : 0] = 1.0;
+		inclines[pick >= 4 ? pick - 4 : pick] = 1.0;
+	}
+}
+
 // `v`'s shares raised to SLOPE_SEAM_SHARPEN and summing to one again:
 // the largest wins faster, the fade between two stays soft but narrow.
 vec3 sharpen(vec3 v) {
@@ -516,11 +569,14 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 		horiz * (1.0 - rightward), (1.0 - horiz) * (1.0 - facing));
 	if (slope_crisp) {
 		bool fold = true;
+		float crest = 0.0;
 		if (slope_seams_soft) {
 			vec2 g = rise / s;
 			vec2 up = texture(slope_index, (p + g * SLOPE_FOLD_TILES) / index_tiles).rg;
 			vec2 below = texture(slope_index, (p - g * SLOPE_FOLD_TILES) / index_tiles).rg;
 			fold = dot(up, below) < 0.0;
+			float apart = dot(up, below) / (length(up) * length(below) + 1e-6);
+			crest = slope_crest_square ? smoothstep(0.2, -0.4, apart) : 0.0;
 		}
 		if (!fold) {
 			inclines = sharpen(inclines);
@@ -528,6 +584,13 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 		} else {
 			inclines = one_hot(inclines);
 			leans = one_hot(leans);
+		}
+		if (crest > 0.0) {
+			vec3 square_inclines;
+			vec3 square_leans;
+			crest_choice(rise / s, square_inclines, square_leans);
+			inclines = mix(inclines, square_inclines, crest);
+			leans = mix(leans, square_leans, crest);
 		}
 		w = vec4(1.0, 0.0, 0.0, 0.0);
 		ox = vec4(0.0);

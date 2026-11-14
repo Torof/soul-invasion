@@ -236,6 +236,8 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 				material.set_shader_parameter("slope_grass_%d" % n, load("res://world/test/slope_grass_%d.png" % n))
 			material.set_shader_parameter("slope_zones", slope_zones)
 			material.set_shader_parameter("slope_seams_soft", slope_seams_soft)
+			material.set_shader_parameter("slope_crest_square", slope_crest_square)
+			material.set_shader_parameter("slope_chevron_flip", slope_chevron_flip)
 		apply_spec(material, terrain, false)
 		pin_flow_time(material)
 		_ground_materials[terrain] = material
@@ -255,6 +257,15 @@ static var slope_fall_line := false
 static var slope_zones := true
 ## The mountain test: soft seams where the slope only steepens or turns (true) or every seam at once (key B).
 static var slope_seams_soft := true
+## The mountain test: crests' streaks nearly square to the crest (key X) and the chevron's way (key C).
+static var slope_crest_square := true
+static var slope_chevron_flip := false
+
+
+static func set_slope_param(name: String, value: bool) -> void:
+	for terrain: String in _ground_materials:
+		if terrain != "water":
+			(_ground_materials[terrain] as ShaderMaterial).set_shader_parameter(name, value)
 
 
 static func set_slope_seams_soft(on: bool) -> void:

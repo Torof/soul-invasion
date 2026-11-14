@@ -156,6 +156,18 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	var key := event as InputEventKey
 	if key == null or not key.pressed or key.echo:
 		return
+	if key.keycode == KEY_X:
+		ChunkView.slope_crest_square = not ChunkView.slope_crest_square
+		ChunkView.set_slope_param("slope_crest_square", ChunkView.slope_crest_square)
+		_apply()
+		get_viewport().set_input_as_handled()
+		return
+	if key.keycode == KEY_C:
+		ChunkView.slope_chevron_flip = not ChunkView.slope_chevron_flip
+		ChunkView.set_slope_param("slope_chevron_flip", ChunkView.slope_chevron_flip)
+		_apply()
+		get_viewport().set_input_as_handled()
+		return
 	if key.keycode == KEY_B:
 		ChunkView.set_slope_seams_soft(not ChunkView.slope_seams_soft)
 		_apply()
@@ -184,4 +196,5 @@ func _apply() -> void:
 	var look := "fall-line rule" if ChunkView.slope_fall_line else "earlier rule"
 	var zones := "five grasses" if ChunkView.slope_zones else "your grass alone"
 	var seams := "soft seams" if ChunkView.slope_seams_soft else "sharp seams"
-	_label.text = "Slope test — %s, %s, %s, %s   (keys 1, 0, T, V and B)" % [MODES[mode], look, zones, seams]
+	var crests := ("square crests" + (", chevron flipped" if ChunkView.slope_chevron_flip else "")) if ChunkView.slope_crest_square else "crests as before"
+	_label.text = "Slope test — %s, %s, %s, %s, %s   (keys 1, 0, T, V, B, X and C)" % [MODES[mode], look, zones, seams, crests]
