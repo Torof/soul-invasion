@@ -60,6 +60,13 @@ OPTIONS:
                            (three crests, a valley, a cone, a plane whose
                            slope changes, one that turns), shown by the
                            client only. Never for play.
+    --world test:sens      The sense test: 256 × 256 tiles of grass, flat
+                           at 50 m, with six crests and a valley across the
+                           screen, their profiles chosen to tell which way a
+                           slope rises (a flat top and a shoulder, a sharp
+                           top, two dissymmetric ridges, a col, a valley with
+                           a flat floor), shown by the client only. Never
+                           for play.
     --dev                  Development tools: every client gets an overview
                            of the whole map and may teleport its body. Never
                            for play.
@@ -136,6 +143,9 @@ pub enum TestWorld {
     Mountain,
     /// `test:formes`: simple shapes, one on each meadow.
     Shapes,
+    /// `test:sens`: crests across the screen whose profiles tell which
+    /// way a slope rises.
+    Sense,
 }
 
 /// When a paced server places the plants of the view around the camp,
@@ -251,6 +261,7 @@ impl Options {
                         "test:marches" => Some(TestWorld::Marches),
                         "test:montagne" => Some(TestWorld::Mountain),
                         "test:formes" => Some(TestWorld::Shapes),
+                        "test:sens" => Some(TestWorld::Sense),
                         _ => raw
                             .strip_prefix("flat:")
                             .and_then(|n| n.parse().ok())

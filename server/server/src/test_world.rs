@@ -359,6 +359,250 @@ pub fn shapes_heights() -> Vec<i16> {
         .collect()
 }
 
+/// The sense test (14 November 2026): what makes a slope read as going
+/// up rather than as a hole (the shapes test's 6 read as a vortex). Six
+/// shapes on their own meadows, on [`SENS_SIDE`] tiles of grass flat at
+/// [`SENS_BASE_M`], every crest running across the screen (along the
+/// map's (1, −1)) so that one flank faces the camera (the front, rising
+/// toward the screen's top, the map's (−1, −1)) and the other faces away.
+/// The heights are smooth (no step above 12 dm between neighbours), the
+/// crests sharp unless a flat top is said. Where each stands, in map
+/// tiles (`x` range × `y` range of the tiles that are not flat, both
+/// inclusive; the crest's tiles are those with the `x + y` given):
+///
+/// 1. The ridge with a shoulder: a crest 30 tiles long centred on
+///    (50, 126), `x + y` = 175, a flat top 5 tiles wide, both flanks 25
+///    tiles at [`SENS_SLOPE`] with a convex shoulder (the upper 4 tiles
+///    ease from 0.5 to 0.125 a tile at the top) and a concave foot (the
+///    lowest 3 tiles ease from 0.5 to 0 onto the meadow), 11 m high; the
+///    ends rounded as half cones; x 13–86 × y 89–162.
+/// 2. The same with a sharp top, to compare: plain planes at 0.5 meeting
+///    at a line 12.5 m high, centred on (44, 44), `x + y` = 87; x 8–79 ×
+///    y 8–79.
+/// 3. Dissymmetric ridge A: the front flank short and steep (15 tiles at
+///    0.8), the back long and gentle (35 tiles at 12/35, about 0.34),
+///    sharp crest 12 m high centred on (96, 186), `x + y` = 281; x 55–126
+///    × y 145–216.
+/// 4. Dissymmetric ridge B: A turned 180 degrees (the front long and
+///    gentle, the back short and steep), centred on (171, 82), `x + y` =
+///    252; x 140–211 × y 51–122.
+/// 5. The col: shape 1's profile on a crest 60 tiles long centred on
+///    (193, 193), `x + y` = 385, with two summits 8 m over the crest's
+///    line at the tiles (182, 203) and (203, 182) (15 tiles from the
+///    crest's middle along it: a climb of 1 m a tile along the crest, the
+///    top rounded over 3 tiles), the col between them at the crest's base
+///    height; the flat top 5 wide on the summits only, narrowing to a
+///    sharp line at the col; x 147–238 × y 147–238.
+/// 6. The valley with a flat floor: shape 1's mirror dug into the meadow:
+///    a floor 3 tiles wide 11 m below it (`x + y` = 175, centred on
+///    (126, 50)), the flanks 25 tiles at 0.5 with a concave foot onto the
+///    floor and a convex lip at the meadow; the ends rounded; x 90–161 ×
+///    y 14–85.
+///
+/// No two shapes stand closer than 14 tiles, none closer than 8 to the
+/// map's edge. The camp, [`SENS_CAMP`], is a flat tile at the map's
+/// middle with 24 tiles of meadow around it. Test only: floats are fine
+/// here, the heights are rounded to decimetres once.
+pub const SENS_SIDE: u32 = 256;
+
+/// The meadows' height, in metres: high enough for the valley to be dug.
+pub const SENS_BASE_M: f64 = 50.0;
+
+/// The flanks' slope, in metres a tile, unless said otherwise.
+pub const SENS_SLOPE: f64 = 0.5;
+
+/// A flank's length, in tiles, from the crest's flat top to the meadow.
+const SENS_FLANK: f64 = 25.0;
+
+/// The convex shoulder: over its tiles below the flat top the slope eases
+/// from [`SENS_SHOULDER_TOP`] at the top to [`SENS_SLOPE`].
+const SENS_SHOULDER: f64 = 4.0;
+const SENS_SHOULDER_TOP: f64 = 0.125;
+
+/// The concave foot: over its tiles the slope eases from [`SENS_SLOPE`]
+/// to flat on the meadow.
+const SENS_FOOT: f64 = 3.0;
+
+/// What the shoulder and the foot drop, in metres (the mean slope over
+/// their tiles).
+const SENS_SHOULDER_DROP: f64 = SENS_SHOULDER * (SENS_SHOULDER_TOP + SENS_SLOPE) / 2.0;
+const SENS_FOOT_RISE: f64 = SENS_SLOPE * SENS_FOOT / 2.0;
+
+/// The shouldered ridge's height over the meadow, in metres: 11.
+const SENS_RIDGE_M: f64 =
+    SENS_SHOULDER_DROP + SENS_SLOPE * (SENS_FLANK - SENS_SHOULDER - SENS_FOOT) + SENS_FOOT_RISE;
+
+/// Half the flat top's width, in tiles.
+const SENS_TOP_HALF: f64 = 2.5;
+
+/// The sharp ridge's height: plain planes at [`SENS_SLOPE`] over
+/// [`SENS_FLANK`] tiles.
+const SENS_SHARP_M: f64 = SENS_SLOPE * SENS_FLANK;
+
+/// The dissymmetric ridges: the steep flank's slope and length, the
+/// gentle flank's length; the crest is as high as the steep flank climbs.
+const SENS_STEEP: f64 = 0.8;
+const SENS_STEEP_LEN: f64 = 15.0;
+const SENS_GENTLE_LEN: f64 = 35.0;
+const SENS_DISSYMMETRIC_M: f64 = SENS_STEEP * SENS_STEEP_LEN;
+
+/// The col's summits: how much they rise over the crest's line, in
+/// metres, their climb along the crest in metres a tile, how many tiles
+/// of their top are rounded (a parabola), and how far from the crest's
+/// middle they stand along it (21 tiles of `x - y`, so that each summit
+/// is a tile's middle).
+const SENS_SUMMIT_M: f64 = 8.0;
+const SENS_SUMMIT_SLOPE: f64 = 1.0;
+const SENS_SUMMIT_TOP: f64 = 3.0;
+const SENS_SUMMIT_ALONG: f64 = 21.0 * std::f64::consts::FRAC_1_SQRT_2;
+
+/// Half the valley's floor's width, in tiles.
+const SENS_FLOOR_HALF: f64 = 1.5;
+
+/// Half a crest's length, in tiles, and half the col's.
+const SENS_HALF: f64 = 15.0;
+const SENS_COL_HALF: f64 = 30.0;
+
+/// The sense test's camp.
+pub const SENS_CAMP: (u32, u32) = (128, 128);
+
+/// Where the shapes' crests are centred, in map coordinates, in the
+/// order of the doc comment.
+const SENS_CENTRES: [(f64, f64); 6] = [
+    (50.0, 126.0),
+    (44.0, 44.0),
+    (96.0, 186.0),
+    (171.0, 82.0),
+    (193.0, 193.0),
+    (126.0, 50.0),
+];
+
+/// What a shouldered flank has dropped `f` tiles below the flat top's
+/// edge, in metres: the shoulder's ease, then [`SENS_SLOPE`].
+fn sens_drop(f: f64) -> f64 {
+    if f <= SENS_SHOULDER {
+        SENS_SHOULDER_TOP * f + (SENS_SLOPE - SENS_SHOULDER_TOP) * f * f / (2.0 * SENS_SHOULDER)
+    } else {
+        SENS_SHOULDER_DROP + SENS_SLOPE * (f - SENS_SHOULDER)
+    }
+}
+
+/// The concave foot: the height `h` a plain flank at [`SENS_SLOPE`] would
+/// have, eased onto the meadow over the foot's tiles.
+fn sens_foot(h: f64) -> f64 {
+    if h >= SENS_FOOT_RISE {
+        return h;
+    }
+    let g = ((SENS_FOOT_RISE - h) / SENS_SLOPE).min(SENS_FOOT);
+    SENS_FOOT_RISE - SENS_SLOPE * g + SENS_SLOPE * g * g / (2.0 * SENS_FOOT)
+}
+
+/// Where `p` stands against a crest across the screen centred on
+/// `centre`, of half length `half`: how far across it (positive toward
+/// the screen's bottom, the map's (1, 1): the front), how far beyond its
+/// ends along it, and where along it (clamped to the crest).
+fn sens_frame(p: (f64, f64), centre: (f64, f64), half: f64) -> (f64, f64, f64) {
+    let r = std::f64::consts::FRAC_1_SQRT_2;
+    let across = (p.0 - centre.0 + p.1 - centre.1) * r;
+    let along = (p.0 - centre.0 - p.1 + centre.1) * r;
+    (
+        across,
+        (along.abs() - half).max(0.0),
+        along.clamp(-half, half),
+    )
+}
+
+/// Shapes 1 and 5: the shouldered profile, `crest` metres high with a
+/// flat top of half width `top`, at `across` and `beyond` the crest.
+fn sens_shouldered(across: f64, beyond: f64, top: f64, crest: f64) -> f64 {
+    let d = beyond.hypot((across.abs() - top).max(0.0));
+    sens_foot(crest - sens_drop(d))
+}
+
+/// Shape 1: the ridge with a shoulder.
+fn sens_ridge(p: (f64, f64)) -> f64 {
+    let (across, beyond, _) = sens_frame(p, SENS_CENTRES[0], SENS_HALF);
+    sens_shouldered(across, beyond, SENS_TOP_HALF, SENS_RIDGE_M)
+}
+
+/// Shape 2: the sharp ridge.
+fn sens_sharp(p: (f64, f64)) -> f64 {
+    let (across, beyond, _) = sens_frame(p, SENS_CENTRES[1], SENS_HALF);
+    (SENS_SHARP_M - SENS_SLOPE * beyond.hypot(across)).max(0.0)
+}
+
+/// Shapes 3 and 4: a dissymmetric ridge, its steep flank in front (shape
+/// 3) or behind (shape 4); the ends fall at [`SENS_SLOPE`].
+fn sens_dissymmetric(p: (f64, f64), centre: (f64, f64), steep_front: bool) -> f64 {
+    let (across, beyond, _) = sens_frame(p, centre, SENS_HALF);
+    let slope = if (across > 0.0) == steep_front {
+        SENS_STEEP
+    } else {
+        SENS_DISSYMMETRIC_M / SENS_GENTLE_LEN
+    };
+    (SENS_DISSYMMETRIC_M - (slope * across).hypot(SENS_SLOPE * beyond)).max(0.0)
+}
+
+/// A summit's rise over the crest's line, `a` tiles from it along the
+/// crest.
+fn sens_summit(a: f64) -> f64 {
+    let d = a.abs();
+    if d < SENS_SUMMIT_TOP {
+        SENS_SUMMIT_M - SENS_SUMMIT_SLOPE * d * d / (2.0 * SENS_SUMMIT_TOP)
+    } else {
+        let below_top = SENS_SUMMIT_M - SENS_SUMMIT_SLOPE * SENS_SUMMIT_TOP / 2.0;
+        (below_top - SENS_SUMMIT_SLOPE * (d - SENS_SUMMIT_TOP)).max(0.0)
+    }
+}
+
+/// Shape 5: the col, two summits on the shouldered profile; the flat top
+/// narrows with the summit's rise, to nothing at the col.
+fn sens_col(p: (f64, f64)) -> f64 {
+    let (across, beyond, along) = sens_frame(p, SENS_CENTRES[4], SENS_COL_HALF);
+    let rise = sens_summit(along - SENS_SUMMIT_ALONG) + sens_summit(along + SENS_SUMMIT_ALONG);
+    let top = SENS_TOP_HALF * rise / SENS_SUMMIT_M;
+    sens_shouldered(across, beyond, top, SENS_RIDGE_M + rise)
+}
+
+/// Shape 6: the valley with a flat floor, shape 1's mirror.
+fn sens_valley(p: (f64, f64)) -> f64 {
+    let (across, beyond, _) = sens_frame(p, SENS_CENTRES[5], SENS_HALF);
+    -sens_shouldered(across, beyond, SENS_FLOOR_HALF, SENS_RIDGE_M)
+}
+
+/// Each shape's rise above the meadow at map point `p`, in metres (the
+/// valley's below zero), in the doc comment's order.
+fn sens_rises(p: (f64, f64)) -> [f64; 6] {
+    [
+        sens_ridge(p),
+        sens_sharp(p),
+        sens_dissymmetric(p, SENS_CENTRES[2], true),
+        sens_dissymmetric(p, SENS_CENTRES[3], false),
+        sens_col(p),
+        sens_valley(p),
+    ]
+}
+
+/// The heights of the sense test's tiles, in decimetres, row by row: the
+/// shapes at each tile's middle (they never overlap).
+#[must_use]
+pub fn sens_heights() -> Vec<i16> {
+    let side = SENS_SIDE as usize;
+    (0..side * side)
+        .map(|i| {
+            let (x, y) = (
+                f64::from(u32::try_from(i % side).expect("small")),
+                f64::from(u32::try_from(i / side).expect("small")),
+            );
+            let rise: f64 = sens_rises((x + 0.5, y + 0.5)).iter().sum();
+            let dm = ((SENS_BASE_M + rise) * 10.0).round();
+            #[allow(clippy::cast_possible_truncation)]
+            let dm = dm.clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
+            dm
+        })
+        .collect()
+}
+
 /// A test world at tick zero, with nobody in it yet.
 #[must_use]
 pub fn make(world: TestWorld, calendar: Calendar, content: &Content) -> World {
@@ -383,6 +627,12 @@ pub fn make(world: TestWorld, calendar: Calendar, content: &Content) -> World {
             let (x, y) = SHAPES_CAMP;
             Map::filled(SHAPES_SIDE, SHAPES_SIDE, Terrain::Grass)
                 .with_heights(shapes_heights())
+                .with_camp(x, y)
+        }
+        TestWorld::Sense => {
+            let (x, y) = SENS_CAMP;
+            Map::filled(SENS_SIDE, SENS_SIDE, Terrain::Grass)
+                .with_heights(sens_heights())
                 .with_camp(x, y)
         }
     };
@@ -452,6 +702,105 @@ mod tests {
                 if x.abs_diff(cx).pow(2) + y.abs_diff(cy).pow(2) <= 400 {
                     assert_eq!(at(x, y), 500, "({x}, {y})");
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn the_sense_test_spans_the_valleys_floor_to_the_summits_and_the_camp_is_flat() {
+        let heights = sens_heights();
+        let side = SENS_SIDE as usize;
+        let at = |x: usize, y: usize| heights[y * side + x];
+        // The valley's floor 11 m below the meadow, the col's summits 19 m
+        // above it.
+        assert_eq!(heights.iter().min(), Some(&390));
+        assert_eq!(heights.iter().max(), Some(&690));
+        // Shape 1's flat top: 5 tiles wide across the crest's line.
+        for (x, y) in [
+            (50, 125),
+            (49, 126),
+            (51, 126),
+            (50, 127),
+            (52, 126),
+            (46, 126),
+        ] {
+            assert_eq!(at(x, y), 610, "({x}, {y})");
+        }
+        // Shape 2's sharp line.
+        assert_eq!(at(44, 43), 625);
+        assert!(at(44, 44) < 625 && at(43, 43) < 625);
+        // Shapes 3 and 4: the steep flank in front, then behind.
+        assert_eq!(at(96, 185), 620);
+        assert!(at(100, 189) < at(92, 181), "A: the front is the steep one");
+        assert_eq!(at(171, 81), 620);
+        assert!(at(175, 85) > at(167, 77), "B: the back is the steep one");
+        // The col: the summits' flat tops, the col at the crest's base height.
+        for (x, y) in [(182, 203), (203, 182), (183, 204), (181, 202), (204, 183)] {
+            assert_eq!(at(x, y), 690, "({x}, {y})");
+        }
+        assert_eq!(at(193, 192), 610);
+        // The valley's floor: 3 tiles wide.
+        for (x, y) in [(126, 49), (125, 50), (127, 50)] {
+            assert_eq!(at(x, y), 390, "({x}, {y})");
+        }
+        assert!(at(128, 50) > 390);
+        // No step above 12 dm between neighbours.
+        for y in 0..side {
+            for x in 1..side {
+                assert!((at(x, y) - at(x - 1, y)).abs() <= 12, "({x}, {y})");
+                assert!((at(y, x) - at(y, x - 1)).abs() <= 12, "({y}, {x})");
+            }
+        }
+        // The camp and the 20 tiles around it are meadow.
+        let (cx, cy) = (SENS_CAMP.0 as usize, SENS_CAMP.1 as usize);
+        for y in cy - 20..=cy + 20 {
+            for x in cx - 20..=cx + 20 {
+                if x.abs_diff(cx).pow(2) + y.abs_diff(cy).pow(2) <= 400 {
+                    assert_eq!(at(x, y), 500, "({x}, {y})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_sense_tests_shapes_keep_12_tiles_apart_and_4_from_the_edges() {
+        let side = i32::try_from(SENS_SIDE).expect("small");
+        let shaped = |x: i32, y: i32, shape: usize| {
+            (0..side).contains(&x)
+                && (0..side).contains(&y)
+                && sens_rises((f64::from(x) + 0.5, f64::from(y) + 0.5))[shape].abs() > 0.04
+        };
+        // Each shape's tiles that are not flat and touch a flat one.
+        let edges: Vec<Vec<(i32, i32)>> = (0..6)
+            .map(|shape| {
+                let mut edge = Vec::new();
+                for y in 0..side {
+                    for x in 0..side {
+                        if shaped(x, y, shape) {
+                            assert!((4..side - 4).contains(&x) && (4..side - 4).contains(&y));
+                            if [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                                .iter()
+                                .any(|(dx, dy)| !shaped(x + dx, y + dy, shape))
+                            {
+                                edge.push((x, y));
+                            }
+                        }
+                    }
+                }
+                edge
+            })
+            .collect();
+        for (i, a) in edges.iter().enumerate() {
+            for b in &edges[i + 1..] {
+                let nearest = a
+                    .iter()
+                    .flat_map(|p| {
+                        b.iter()
+                            .map(move |q| (p.0 - q.0).pow(2) + (p.1 - q.1).pow(2))
+                    })
+                    .min()
+                    .expect("tiles");
+                assert!(nearest >= 144, "shapes too close: {nearest}");
             }
         }
     }
