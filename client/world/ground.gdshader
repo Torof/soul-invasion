@@ -95,7 +95,7 @@ uniform bool slope_turf_with_bushes = false;
 // sides rising away (key K, 15 degrees a press, the whole turn): the point
 // stays toward the crest (a half turn) and the body lies flatter than the
 // corner (the lead: about 150).
-uniform float slope_break_turn = 150.0;
+uniform float slope_break_turn = 165.0;
 // Below a crest, the turf along the streaks' line pointing the same way
 // as them (false, toward the crest's side) or the other way (true). Key J.
 uniform bool slope_turf_half_turn = false;

@@ -276,7 +276,7 @@ static var slope_layers := true
 ## The mountain test: the turf with bushes and stones under the streaks (key G).
 static var slope_turf_with_bushes := false
 ## The mountain test: the break of a side whose crest lies below, in degrees (key K).
-static var slope_break_turn := 150.0
+static var slope_break_turn := 165.0
 ## The mountain test: below a crest, the turf pointing the other way along the streaks' line (key J).
 static var slope_turf_half_turn := false
 ## The mountain test: the turn between two sides, in degrees, that makes a crest (key N).
