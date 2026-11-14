@@ -235,6 +235,7 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 			for n: int in [1, 2, 3, 16]:
 				material.set_shader_parameter("slope_grass_%d" % n, load("res://world/test/slope_grass_%d.png" % n))
 			material.set_shader_parameter("slope_zones", slope_zones)
+			material.set_shader_parameter("slope_seams_wavy", slope_seams_wavy)
 		apply_spec(material, terrain, false)
 		pin_flow_time(material)
 		_ground_materials[terrain] = material
@@ -252,6 +253,15 @@ const SLOPE_GRASS := "res://world/test/slope_grass.png"
 static var slope_fall_line := false
 ## The mountain test: the five slope grasses by zones (true) or the lead's alone (key V).
 static var slope_zones := true
+## The mountain test: seams that wind where the slope turns (true) or straight (key B).
+static var slope_seams_wavy := true
+
+
+static func set_slope_seams_wavy(on: bool) -> void:
+	slope_seams_wavy = on
+	for terrain: String in _ground_materials:
+		if terrain != "water":
+			(_ground_materials[terrain] as ShaderMaterial).set_shader_parameter("slope_seams_wavy", on)
 
 
 static func set_slope_zones(on: bool) -> void:

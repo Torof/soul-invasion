@@ -50,6 +50,15 @@ uniform sampler2D slope_grass_3 : repeat_enable, filter_linear_mipmap;
 uniform sampler2D slope_grass_16 : repeat_enable, filter_linear_mipmap;
 uniform bool slope_zones = true;
 const float SLOPE_ZONE_TILES = 22.0;
+// Where the slope turns while still rising (14 November 2026, the lead:
+// the straight seam between two images there looked wrong; at crests and
+// valley floors it is right), the choice of image is shaken by a smooth
+// noise of SLOPE_SEAM_SHAKE over about SLOPE_SEAM_TILES, so the seam
+// winds in interlocking patches, each pixel still one image whole. Off
+// (key B): straight seams.
+uniform bool slope_seams_wavy = true;
+const float SLOPE_SEAM_SHAKE = 0.35;
+const float SLOPE_SEAM_TILES = 1.6;
 // Midjourney's grasses are drawn at half the lead's scale: repeated over
 // SLOPE_ZONE_SCALE times the canvas so their tufts match his.
 const float SLOPE_ZONE_SCALE = 2.0;
@@ -431,6 +440,19 @@ int slope_zone(vec2 p) {
 	return int(floor(pick * 5.0));
 }
 
+// A smooth noise in -1..1 over map point `p` (tiles), cells `size` wide.
+float seam_noise(vec2 p, float size, float seed) {
+	vec2 q = p / size + seed;
+	vec2 i = floor(q);
+	vec2 f = q - i;
+	f = f * f * (3.0 - 2.0 * f);
+	float a = fract(sin(dot(i, vec2(127.1, 311.7))) * 43758.5453);
+	float b = fract(sin(dot(i + vec2(1.0, 0.0), vec2(127.1, 311.7))) * 43758.5453);
+	float c = fract(sin(dot(i + vec2(0.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
+	float d = fract(sin(dot(i + vec2(1.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
+	return mix(mix(a, b, f.x), mix(c, d, f.x), f.y) * 2.0 - 1.0;
+}
+
 vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox, vec4 oy) {
 	vec2 rise = texture(slope_index, p / index_tiles).rg;
 	float s = length(rise);
@@ -467,6 +489,14 @@ vec3 slope_colour(vec3 c, vec2 p, vec2 canvas, vec2 dx, vec2 dy, vec4 w, vec4 ox
 	vec3 leans = vec3(horiz * rightward + (1.0 - horiz) * facing,
 		horiz * (1.0 - rightward), (1.0 - horiz) * (1.0 - facing));
 	if (slope_crisp) {
+		if (slope_seams_wavy) {
+			vec3 shake = SLOPE_SEAM_SHAKE * vec3(seam_noise(p, SLOPE_SEAM_TILES, 3.1),
+				seam_noise(p, SLOPE_SEAM_TILES, 17.7), seam_noise(p, SLOPE_SEAM_TILES, 41.3));
+			// Only a choice already shared is shaken: a whole one (a crest's
+			// side, far from any seam) stays.
+			inclines += shake * step(0.001, inclines) * step(inclines, vec3(0.999));
+			leans += shake.zxy * step(0.001, leans) * step(leans, vec3(0.999));
+		}
 		inclines = one_hot(inclines);
 		leans = one_hot(leans);
 		w = vec4(1.0, 0.0, 0.0, 0.0);
