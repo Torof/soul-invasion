@@ -250,13 +250,15 @@ static var steps_mode := 0
 ## bring its own look without touching the shader. An image is given by
 ## its path. slope_break_turn: the streaks' turn, in degrees, on a side
 ## whose crest lies below; slope_streak_mix and slope_streak_pale: how
-## much the streaks' light pales the turf, and toward what;
-## slope_turf_px: the turf's repetition on the canvas, in pixels.
+## much the streaks' light pales the turf, and toward what (0: the turf
+## alone, the streaks not read; 0.2 showed the sense without being seen;
+## the lead's choice of 14 November 2026 at night); slope_turf_px: the
+## turf's repetition on the canvas, in pixels.
 const SLOPE_LOOK := {
 	"slope_streaks": "res://world/test/slope_streaks.png",
 	"slope_turf": "res://world/test/slope_turf.png",
 	"slope_break_turn": 165.0,
-	"slope_streak_mix": 0.2,
+	"slope_streak_mix": 0.0,
 	"slope_streak_pale": Vector3(0.92, 0.94, 0.59),
 	"slope_turf_px": 768.0,
 }

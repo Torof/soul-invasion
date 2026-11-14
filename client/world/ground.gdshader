@@ -54,10 +54,12 @@ const vec3 SLOPE_TINT = vec3(0.94, 1.02, 0.92);
 // slope_break_turn degrees (the lead's dial, 14 November 2026: 165, the
 // point still toward the crest, the body nearly level); the streaks'
 // light (their red channel) is laid over the turf toward
-// slope_streak_pale at slope_streak_mix (0.2: the sense without being
-// seen); the turf repeats every slope_turf_px of canvas.
+// slope_streak_pale at slope_streak_mix (0.2 gave the sense without
+// being seen; 0, the lead's choice of 14 November 2026 at night: the
+// turf alone, and the streaks are not even read); the turf repeats
+// every slope_turf_px of canvas.
 uniform float slope_break_turn = 165.0;
-uniform float slope_streak_mix = 0.2;
+uniform float slope_streak_mix = 0.0;
 uniform vec3 slope_streak_pale = vec3(0.92, 0.94, 0.59);
 uniform float slope_turf_px = 768.0;
 // The rim (key R, 14 November 2026, perception.md; not judged yet): at a
@@ -340,7 +342,8 @@ void offset_cells(vec2 canvas, out vec4 w, out vec4 ox, out vec4 oy) {
 // mirrored, so the thin point still goes toward the crest (the break
 // tells the crest, not the sense). The turf: ALWAYS as drawn or mirrored
 // by `fx`, never turned, never upside down (REGLES-APPRISES H1). The
-// streaks' light lies over the turf, pale, at slope_streak_mix.
+// streaks' light lies over the turf, pale, at slope_streak_mix; at 0
+// the streaks are not read.
 bool slope_lit(vec2 p, vec2 canvas, vec2 dx, vec2 dy, out vec3 lit) {
 	vec2 rise = texture(slope_index, p / index_tiles).rg;
 	float s = length(rise);
@@ -360,13 +363,16 @@ bool slope_lit(vec2 p, vec2 canvas, vec2 dx, vec2 dy, out vec3 lit) {
 	vec2 up = vec2(TILE_HALF_PX.x * (g.x - g.y), TILE_HALF_PX.y * (g.x + g.y));
 	float fx = up.x != 0.0 ? sign(up.x) : sign(up.y);
 	bool below = up.y > 0.0;
-	mat2 lay = mat2(vec2(fx, 0.0), vec2(0.0, 1.0));
-	if (below) {
-		float turn = radians(slope_break_turn);
-		lay = mat2(vec2(cos(turn), sin(turn)), vec2(-sin(turn), cos(turn)));
+	float light = 0.0;
+	if (slope_streak_mix > 0.0) {
+		mat2 lay = mat2(vec2(fx, 0.0), vec2(0.0, 1.0));
+		if (below) {
+			float turn = radians(slope_break_turn);
+			lay = mat2(vec2(cos(turn), sin(turn)), vec2(-sin(turn), cos(turn)));
+		}
+		light = textureGrad(slope_streaks, lay * (canvas / SLOPE_STREAK_PX),
+			lay * (dx / SLOPE_STREAK_PX), lay * (dy / SLOPE_STREAK_PX)).r;
 	}
-	float light = textureGrad(slope_streaks, lay * (canvas / SLOPE_STREAK_PX),
-		lay * (dx / SLOPE_STREAK_PX), lay * (dy / SLOPE_STREAK_PX)).r;
 	vec2 flip = vec2(fx, 1.0);
 	vec3 turf = textureGrad(slope_turf, canvas / slope_turf_px * flip,
 		dx / slope_turf_px * flip, dy / slope_turf_px * flip).rgb * SLOPE_TINT;
