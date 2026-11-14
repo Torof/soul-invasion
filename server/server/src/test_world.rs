@@ -1,13 +1,16 @@
 //! Tiny worlds for visual tests (`--world`): a flat square of grass, the
 //! steps test's ridge, the mountain test's flank, the massif test that
-//! holds the whole mountain, the shapes test, the sense test, and the
+//! holds the whole mountain, the shapes test, the sense test, the
 //! relief test that gathers the flank and the last two on one map
-//! (`test:relief`, the one the sandbox uses). Ephemeral and never for
-//! play. All carry heights (the flat one all zero), the one thing that
-//! sets them apart on the wire (protocol v25, D43).
+//! (`test:relief`), and the skeleton test, the mountain plan's first
+//! trials made from declared ridges by `sim::relief` (`test:squelette`).
+//! Ephemeral and never for play. All carry heights (the flat one all
+//! zero), the one thing that sets them apart on the wire (protocol v25,
+//! D43).
 
 use sim::Calendar;
 use sim::map::{Map, Terrain};
+use sim::relief::{self, trials};
 use sim::{Content, World};
 
 use crate::cli::TestWorld;
@@ -815,6 +818,60 @@ pub fn relief_heights() -> Vec<i16> {
     heights
 }
 
+/// The skeleton test (15 November 2026): the mountain plan's first
+/// trials (`content/ai-reserve/review/montagne-algo/ALGORITHME.md` §4,
+/// tests 1, 2 and 6), each a patch of heights made by `sim::relief` from
+/// a declared ridge ([`trials::all`]), laid on a flat map of
+/// [`SKELETON_SIDE`] tiles of grass at [`trials::FLOOR_DM`], eight tiles
+/// of flat ground at least between any two. No fade is needed: every
+/// flank ends on the floor by construction. Where each patch lies, in
+/// map tiles (`x` range × `y` range, the ends excluded), in the order of
+/// [`SKELETON_ORIGINS`]:
+///
+/// - test 1, the humpback with a shoulder: x 2–84 × y 2–78;
+/// - test 2, the col: x 92–214 × y 2–92;
+/// - test 6, the sense by edges, bare, shelf, rim: x 12–84, 92–164,
+///   172–244 × y 100–172; the same three turned by 180°: the same
+///   columns × y 180–252.
+///
+/// The camp, [`SKELETON_CAMP`], stands on the flat to the right of the
+/// col (toward the screen's right), 20 tiles of meadow around it.
+pub const SKELETON_SIDE: u32 = 256;
+
+/// Where each trial's patch starts on the skeleton test's map, in the
+/// order of [`trials::all`].
+pub const SKELETON_ORIGINS: [(u32, u32); 8] = [
+    (2, 2),
+    (92, 2),
+    (12, 100),
+    (92, 100),
+    (172, 100),
+    (12, 180),
+    (92, 180),
+    (172, 180),
+];
+
+/// The skeleton test's camp.
+pub const SKELETON_CAMP: (u32, u32) = (235, 47);
+
+/// The heights of the skeleton test's tiles, in decimetres, row by row:
+/// each trial's patch at its origin, the floor everywhere else.
+#[must_use]
+pub fn skeleton_heights() -> Vec<i16> {
+    let side = SKELETON_SIDE as usize;
+    let floor = i16::try_from(trials::FLOOR_DM).expect("a height in decimetres");
+    let mut heights = vec![floor; side * side];
+    for (trial, &(x0, y0)) in trials::all().iter().zip(SKELETON_ORIGINS.iter()) {
+        let (w, h) = trial.size;
+        let patch = relief::heights(&trial.skeleton, w, h);
+        for (row, tiles) in patch.chunks_exact(w as usize).enumerate() {
+            let start = (y0 as usize + row) * side + x0 as usize;
+            heights[start..start + w as usize].copy_from_slice(tiles);
+        }
+    }
+    heights
+}
+
 /// A test world at tick zero, with nobody in it yet.
 #[must_use]
 pub fn make(world: TestWorld, calendar: Calendar, content: &Content) -> World {
@@ -861,6 +918,12 @@ pub fn make(world: TestWorld, calendar: Calendar, content: &Content) -> World {
                 .with_camp(x, y)
         }
         TestWorld::Plan(seed) => Map::plan(seed),
+        TestWorld::Skeleton => {
+            let (x, y) = SKELETON_CAMP;
+            Map::filled(SKELETON_SIDE, SKELETON_SIDE, Terrain::Grass)
+                .with_heights(skeleton_heights())
+                .with_camp(x, y)
+        }
     };
     World::on_valley(calendar, content, map)
 }
@@ -1154,6 +1217,63 @@ mod tests {
             for x in cx - 20..=cx + 20 {
                 if x.abs_diff(cx).pow(2) + y.abs_diff(cy).pow(2) <= 400 {
                     assert_eq!(at(x, y), RELIEF_BASE_DM, "({x}, {y})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_skeleton_test_lays_the_trials_eight_tiles_apart_and_the_camp_is_flat() {
+        let heights = skeleton_heights();
+        let side = SKELETON_SIDE as usize;
+        assert_eq!(heights.len(), side * side);
+        let floor = i16::try_from(trials::FLOOR_DM).expect("dm");
+        let at = |x: usize, y: usize| heights[y * side + x];
+        let all = trials::all();
+        assert_eq!(all.len(), SKELETON_ORIGINS.len());
+        // Each patch within the map, its relief at its place, its own
+        // floor ring at its edge; no two patches nearer than eight tiles.
+        let mut boxes: Vec<(u32, u32, u32, u32)> = Vec::new();
+        for (trial, &(x0, y0)) in all.iter().zip(SKELETON_ORIGINS.iter()) {
+            let (w, h) = trial.size;
+            assert!(
+                x0 + w <= SKELETON_SIDE && y0 + h <= SKELETON_SIDE,
+                "{}",
+                trial.name
+            );
+            let patch = relief::heights(&trial.skeleton, w, h);
+            let top = *patch.iter().max().expect("tiles");
+            assert!(top > floor, "{} is not flat", trial.name);
+            for (i, &p) in patch.iter().enumerate() {
+                let (x, y) = (i % w as usize, i / w as usize);
+                assert_eq!(
+                    at(x0 as usize + x, y0 as usize + y),
+                    p,
+                    "{} ({x}, {y})",
+                    trial.name
+                );
+                if x == 0 || y == 0 || x + 1 == w as usize || y + 1 == h as usize {
+                    assert_eq!(p, floor, "{}'s edge ({x}, {y})", trial.name);
+                }
+            }
+            for &(bx, by, bw, bh) in &boxes {
+                let apart_x = x0 >= bx + bw + 8 || bx >= x0 + w + 8;
+                let apart_y = y0 >= by + bh + 8 || by >= y0 + h + 8;
+                assert!(apart_x || apart_y, "{} overlaps a patch", trial.name);
+            }
+            boxes.push((x0, y0, w, h));
+        }
+        // The humpback's crest and the col at their places on the map.
+        assert_eq!(at(2 + 38, 2 + 38), floor + 115);
+        assert_eq!(at(92 + 57, 2 + 42), floor + 120);
+        // Outside the patches, the floor; the camp and 20 tiles around.
+        assert_eq!(at(88, 50), floor);
+        assert_eq!(at(128, 176), floor);
+        let (cx, cy) = (SKELETON_CAMP.0 as usize, SKELETON_CAMP.1 as usize);
+        for y in cy - 20..=cy + 20 {
+            for x in cx - 20..=(cx + 20).min(side - 1) {
+                if x.abs_diff(cx).pow(2) + y.abs_diff(cy).pow(2) <= 400 {
+                    assert_eq!(at(x, y), floor, "({x}, {y})");
                 }
             }
         }
