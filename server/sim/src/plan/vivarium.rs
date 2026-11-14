@@ -502,6 +502,11 @@ mod tests {
         };
         let (a, b) = (map.camp(), pos(ZONE_2.tile(ZONE_2.camp_b)));
         let reach = i32::try_from(side).expect("small");
+        let (least, most, spread, pools, narrows) = window().river_breadth();
+        eprintln!(
+            "river: width {least} to {most} mm (widest over narrowest {} per mille over the zone, {spread} within 500 m), {pools} pools, {narrows} narrows",
+            most * 1000 / least.max(1)
+        );
         let fords: Vec<(i64, i64)> = (0..side)
             .flat_map(|y| (0..side).map(move |x| (x, y)))
             .filter(|&(x, y)| map.get(pos((x, y))) == Some(Terrain::Ford))
