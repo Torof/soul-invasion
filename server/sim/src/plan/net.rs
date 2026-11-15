@@ -1283,6 +1283,17 @@ fn a_tile_is_the_same_through_two_windows() {
     );
 }
 
+/// The steppe window the net found pitted on 15 November 2026 ((390, 476)
+/// of seed 14: five pits of 2 to 3 dm on the shore of a lake 6 m below
+/// the ground): the shore's wander no longer runs back on itself
+/// (`window::SHORE_WANDER_CELLS`), so the shore's slope holds no pit.
+#[test]
+fn the_steppe_lake_shore_holds_no_pit() {
+    let verdict = judge_heights_of((390, 476));
+    eprintln!("{}", verdict.line());
+    assert!(verdict.failures.is_empty(), "{}", verdict.line());
+}
+
 /// The whole sample (minutes: run by hand, see the module).
 #[test]
 #[ignore = "about a hundred windows with their trees, minutes; run by hand: cargo test --release -p sim --lib plan::net -- --ignored --nocapture"]

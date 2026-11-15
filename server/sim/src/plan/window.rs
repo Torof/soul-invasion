@@ -125,6 +125,16 @@ const FORD_SPEED_PER_MILLE: i64 = 1500;
 /// same.
 const EDGE_SHIFT_M: i64 = 28;
 const SHORE_SHIFT_M: i64 = 20;
+/// The noises the wander is drawn from, in tiles: two octaves, the
+/// first weighing twice the second (`Window::ragged`). A forest's border
+/// may wander as fast as it likes; a lake's shore carries the ground
+/// down to the lake's level, so its wander must never run back on
+/// itself (over a tile a tile: `reach × (2 / first + 1 / second)` under
+/// one), else the shore's slope folds into pits (five of 2 to 3 dm on a
+/// shore 6 m above its lake at (390, 476) of seed 14, 15 November 2026;
+/// the net's `Pits`).
+const EDGE_WANDER_CELLS: (u32, u32) = (40, 11);
+const SHORE_WANDER_CELLS: (u32, u32) = (120, 40);
 
 /// The camp: on dry, gentle ground this many metres from a river (a
 /// brook's head may be a few tiles long).
@@ -1126,7 +1136,7 @@ impl Window {
     /// The share of lake around tile `(x, y)`, per mille (above 500 is a
     /// lake), and the lowest level of the lakes it reads.
     fn lake_at(&self, x: i64, y: i64) -> (i64, i64) {
-        let (x, y) = self.ragged(x, y, 2, SHORE_SHIFT_M);
+        let (x, y) = self.ragged(x, y, 2, SHORE_SHIFT_M, SHORE_WANDER_CELLS);
         let share = Self::smooth_at(
             |i, j| {
                 if self.cell(&self.lake, i, j) == NO_LAKE {
@@ -1266,7 +1276,7 @@ impl Window {
     /// the forest's border, so a forest's edge and its open ground's
     /// trees agree on where the forest ends).
     pub fn biome(&self, x: i64, y: i64) -> Biome {
-        let (sx, sy) = self.ragged(x, y, 0, EDGE_SHIFT_M);
+        let (sx, sy) = self.ragged(x, y, 0, EDGE_SHIFT_M, EDGE_WANDER_CELLS);
         self.cell(&self.biome, sx.div_euclid(CELL), sy.div_euclid(CELL))
     }
 
@@ -1358,8 +1368,9 @@ impl Window {
     }
 
     /// Tile `(x, y)` shifted up to `reach` metres either way by a noise
-    /// of its own (`k`), so a border read there wanders.
-    fn ragged(&self, x: i64, y: i64, k: u64, reach: i64) -> (i64, i64) {
+    /// of its own (`k`, two octaves of `cells` tiles), so a border read
+    /// there wanders.
+    fn ragged(&self, x: i64, y: i64, k: u64, reach: i64, cells: (u32, u32)) -> (i64, i64) {
         let (wx, wy) = self.world(x, y);
         let shift = |k: u64| {
             let s = roll(self.seed, purpose::PLAN_EDGE, &[k]);
@@ -1367,8 +1378,8 @@ impl Window {
                 i32::try_from(wx).expect("the continent fits in i32 tiles"),
                 i32::try_from(wy).expect("the continent fits in i32 tiles"),
             );
-            let n = (i64::from(noise(s, 40, xi, yi)) - 500) * 2
-                + i64::from(noise(s ^ 1, 11, xi, yi))
+            let n = (i64::from(noise(s, cells.0, xi, yi)) - 500) * 2
+                + i64::from(noise(s ^ 1, cells.1, xi, yi))
                 - 500;
             n * reach / 1500
         };
@@ -1571,6 +1582,32 @@ mod tests {
     /// 15 November 2026 a brook ran straight from cell centre to cell
     /// centre, in 45° diagonals and right angles), and the pieces are a
     /// few metres long at most.
+    /// A lake's shore wanders without running back on itself: along
+    /// either axis, the point a tile reads its lake share at never moves
+    /// back from one tile to the next (`SHORE_WANDER_CELLS`; it may stall
+    /// a tile where the wander crosses a whole metre). Before
+    /// 15 November 2026 it wandered as fast as the forest's border and
+    /// folded, and the shore's slope held pits of 2 to 3 dm ((390, 476)
+    /// of seed 14).
+    #[test]
+    fn the_lake_shore_never_runs_back_on_itself() {
+        let w = Window::of_cell(continent(), ZONE_2.cell);
+        let side = i64::from(w.side());
+        let (mut back, mut folds) = (0, 0);
+        for y in (0..side - 1).step_by(7) {
+            for x in (0..side - 1).step_by(7) {
+                let shore = |x, y| w.ragged(x, y, 2, SHORE_SHIFT_M, SHORE_WANDER_CELLS);
+                let (here, east, south) = (shore(x, y), shore(x + 1, y), shore(x, y + 1));
+                back += i32::from(east.0 < here.0) + i32::from(south.1 < here.1);
+                // The forest's border may wander as fast as it likes.
+                let edge = |x, y| w.ragged(x, y, 0, EDGE_SHIFT_M, EDGE_WANDER_CELLS);
+                folds += i32::from(edge(x + 1, y).0 < edge(x, y).0);
+            }
+        }
+        eprintln!("the forest's border runs back on {folds} sampled tiles, the shore on {back}");
+        assert_eq!(back, 0, "{back} sampled tiles where the shore runs back");
+    }
+
     #[test]
     fn the_brooks_meander_and_never_climb() {
         let c = continent();
