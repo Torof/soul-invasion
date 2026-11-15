@@ -7,8 +7,8 @@
 // eats or touches it (toxicity, look-alikes, cooking) is a hidden rule
 // and lives in the private repository (D30), never here.
 //
-// One season for now: everything grows and can be gathered all year.
-// `season` only notes when it would, for the day seasons come.
+// What a plant bears, when and how much, is in crops.ron (D45); `gives`
+// and `season` here are notes from the list, for the kinds not yet there.
 //
 // id:        snake_case, unique; the client finds its images by it.
 // family:    shrub | plant | mushroom.

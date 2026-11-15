@@ -274,6 +274,10 @@ pub struct Content {
     /// alone and in groves on the atlas's grassland, steppe and marsh.
     #[serde(default)]
     pub open_ground: crate::open_ground::OpenGround,
+    /// What the trees and plants bear, when, and how much (`crops.ron`,
+    /// D45), in file order.
+    #[serde(default)]
+    pub crops: Vec<crate::crops::Crop>,
 }
 
 /// A kind of tree.
@@ -359,6 +363,17 @@ pub enum ContentError {
     /// The open ground's trees make no sense.
     #[error("open ground: {0}")]
     OpenGround(&'static str),
+    /// A crop names a kind or a material that does not exist, or makes
+    /// no sense.
+    #[error("crop `{gives}` on `{on}`: {what}")]
+    Crop {
+        /// The kind bearing it.
+        on: String,
+        /// The material it gives.
+        gives: String,
+        /// What is wrong.
+        what: &'static str,
+    },
     /// A kind of tree is defined twice or makes no sense.
     #[error("species `{id}`: {what}")]
     Species {
@@ -416,6 +431,7 @@ impl Content {
             flora: Vec::new(),
             geology: crate::geology::Geology::default(),
             open_ground: crate::open_ground::OpenGround::default(),
+            crops: Vec::new(),
         };
         content.validate()?;
         for index in 0..content.spawns.len() {
@@ -468,6 +484,46 @@ impl Content {
         })?;
         self.open_ground.check().map_err(ContentError::OpenGround)?;
         Ok(self)
+    }
+
+    /// The same content with the crops of `crops` (the text of
+    /// `crops.ron`): after the trees and the flora, whose kinds bear them.
+    pub fn with_crops(mut self, crops: &str) -> Result<Self, ContentError> {
+        self.crops = crate::crops::parse(crops).map_err(|source| ContentError::Parse {
+            file: "crops.ron",
+            source,
+        })?;
+        self.validate_crops()?;
+        Ok(self)
+    }
+
+    /// Checks the crops: each borne by a tree or a plant of the content,
+    /// giving one of its materials, sensible (`crops::check`), and no
+    /// kind giving the same material twice.
+    fn validate_crops(&self) -> Result<(), ContentError> {
+        let mut seen = BTreeSet::new();
+        for crop in &self.crops {
+            let invalid = |what| ContentError::Crop {
+                on: crop.on.clone(),
+                gives: crop.gives.clone(),
+                what,
+            };
+            let borne = self.species.iter().any(|s| s.id == crop.on)
+                || self.flora.iter().any(|k| k.id == crop.on);
+            if !borne {
+                return Err(invalid("no tree or plant of that id"));
+            }
+            if self.material(&crop.gives).is_none() {
+                return Err(invalid("no material of that id"));
+            }
+            if !seen.insert((crop.on.as_str(), crop.gives.as_str())) {
+                return Err(invalid("defined twice"));
+            }
+            if let Some(what) = crate::crops::check(crop) {
+                return Err(invalid(what));
+            }
+        }
+        Ok(())
     }
 
     /// Checks the flora: unique ids (among the trees too), and each kind

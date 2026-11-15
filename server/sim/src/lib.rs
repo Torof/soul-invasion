@@ -15,6 +15,7 @@
 pub mod brain;
 pub mod changes;
 pub mod content;
+pub mod crops;
 pub mod flora;
 pub mod geology;
 // `gen` is a reserved keyword in the 2024 edition: the module is `r#gen`,
@@ -911,6 +912,16 @@ pub struct World {
     /// [`World::take_content`]. Never persisted either.
     #[serde(skip)]
     open_ground: open_ground::OpenGround,
+    /// The content's flora, the plants bearing crops are placed with
+    /// ([`World::bearers_in`]); set by [`World::take_content`]. Never
+    /// persisted: the plants are placed again, the same, from the map.
+    #[serde(skip)]
+    flora: Vec<flora::Kind>,
+    /// What the trees and plants bear, when, and how much (D45); set by
+    /// [`World::take_content`]. Never persisted: a crop is worked out
+    /// from the date, and only what men picked is kept.
+    #[serde(skip)]
+    crops: Vec<crops::Crop>,
     /// The trees of the chunks asked for lately, placed once and shared
     /// ([`ground::Ground`]) with the server's threads, which take a handle
     /// as they take the map ([`World::shared_ground`]). Derived from the
@@ -976,6 +987,8 @@ impl<'de> serde::Deserialize<'de> for World {
             species: Vec::new(),
             geology: geology::Geology::default(),
             open_ground: open_ground::OpenGround::default(),
+            flora: Vec::new(),
+            crops: Vec::new(),
             ground_cache: Arc::new(ground::Ground::default()),
         };
         let standing: Vec<_> = world
@@ -1059,6 +1072,8 @@ impl World {
             species: Vec::new(),
             geology: geology::Geology::default(),
             open_ground: open_ground::OpenGround::default(),
+            flora: Vec::new(),
+            crops: Vec::new(),
             ground_cache: Arc::new(ground::Ground::default()),
         }
     }
@@ -1074,6 +1089,8 @@ impl World {
         self.spawns.clone_from(&content.spawns);
         self.geology.clone_from(&content.geology);
         self.open_ground.clone_from(&content.open_ground);
+        self.flora.clone_from(&content.flora);
+        self.crops.clone_from(&content.crops);
         for index in 0..self.bodies.len() {
             self.refresh_load(index);
         }
@@ -1091,6 +1108,119 @@ impl World {
             self.seed(),
             chunk,
         )
+    }
+
+    /// The trees and plants of `chunk` that bear a crop in some season
+    /// (D45): its trees, then its plants, in the order they are placed,
+    /// the same every time. The plants are placed from the map, the seed
+    /// and the trees around (a few milliseconds a chunk), and only when a
+    /// kind of the flora bears something.
+    pub fn bearers_in(&self, chunk: ChunkPos) -> Vec<crops::Bearer> {
+        let bears = |id: &str| self.crops.iter().any(|c| c.on == id);
+        let mut out: Vec<crops::Bearer> = self
+            .trees_in(chunk)
+            .iter()
+            .filter(|tree| bears(&self.species[tree.species].id))
+            .map(|tree| crops::Bearer {
+                source: crops::Source::Tree(tree.key),
+                at: tree.at,
+                kind: self.species[tree.species].id.clone(),
+            })
+            .collect();
+        if !self.flora.iter().any(|kind| bears(&kind.id)) {
+            return out;
+        }
+        let around: Vec<trees::Tree> = (-1..=1)
+            .flat_map(|dy| (-1..=1).map(move |dx| ChunkPos::new(chunk.x + dx, chunk.y + dy)))
+            .flat_map(|near| self.trees_in(near).to_vec())
+            .collect();
+        let near: Vec<flora::TreeAt<'_>> = around
+            .iter()
+            .map(|tree| flora::TreeAt {
+                at: tree.at,
+                species: self.species[tree.species].id.as_str(),
+            })
+            .collect();
+        for plant in flora::plants_in(&self.map, &self.flora, &near, self.seed(), chunk) {
+            let kind = &self.flora[usize::from(plant.kind)];
+            if !bears(&kind.id) {
+                continue;
+            }
+            if let Some(key) = crops::PlantKey::of(chunk, plant.at) {
+                out.push(crops::Bearer {
+                    source: crops::Source::Plant(key),
+                    at: plant.at,
+                    kind: kind.id.clone(),
+                });
+            }
+        }
+        out
+    }
+
+    /// The crops on `bearer`, of `chunk`, now (D45): those in season,
+    /// each with what is left of it after what men picked; none empty.
+    pub fn ripe_on(&self, chunk: ChunkPos, bearer: &crops::Bearer) -> Vec<crops::Ripe> {
+        let frame = r#gen::scatter::Frame::at(self.map.origin());
+        let picked = self.changes_in(chunk).map(|c| &c.picked);
+        self.crops
+            .iter()
+            .filter(|crop| crop.on == bearer.kind)
+            .filter_map(|crop| {
+                let year = crops::in_season(crop, &self.calendar, self.tick)?;
+                let grams = crops::bears(crop, self.seed(), frame, bearer.at, year);
+                let taken = picked
+                    .and_then(|p| p.get(&(bearer.source, crop.gives.clone())))
+                    .filter(|p| p.year == year)
+                    .map_or(0, |p| p.grams);
+                let left = grams.saturating_sub(taken);
+                (left > 0).then(|| crops::Ripe {
+                    gives: crop.gives.clone(),
+                    year,
+                    grams: left,
+                })
+            })
+            .collect()
+    }
+
+    /// Picks up to `grams` of the crop giving `gives` on `source`, of
+    /// `chunk` (D45): the grams taken, at most what is left on it now, 0
+    /// if none is there. Counted in the chunk's changes, whose version
+    /// grows; the chunk's trees stay held, as picking changes no tree.
+    pub fn pick(&mut self, chunk: ChunkPos, source: crops::Source, gives: &str, grams: u32) -> u32 {
+        let Some(bearer) = self
+            .bearers_in(chunk)
+            .into_iter()
+            .find(|b| b.source == source)
+        else {
+            return 0;
+        };
+        let Some(ripe) = self
+            .ripe_on(chunk, &bearer)
+            .into_iter()
+            .find(|r| r.gives == gives)
+        else {
+            return 0;
+        };
+        let taken = grams.min(ripe.grams);
+        if taken == 0 {
+            return 0;
+        }
+        let key = (source, gives.to_owned());
+        let changes = Arc::make_mut(self.changes.entry(chunk).or_default());
+        let before = changes
+            .picked
+            .get(&key)
+            .filter(|p| p.year == ripe.year)
+            .map_or(0, |p| p.grams);
+        changes.picked.insert(
+            key,
+            changes::Picked {
+                year: ripe.year,
+                grams: before + taken,
+            },
+        );
+        changes.version += 1;
+        taken
     }
 
     /// The rock under each tile of `chunk`, row by row (D42), drawn from

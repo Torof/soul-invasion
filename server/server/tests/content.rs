@@ -35,7 +35,13 @@ fn the_content_directory_loads_and_validates() {
 #[test]
 fn energy_per_kilogram_gives_a_piece_what_it_gave_before() {
     let content = repository_content();
-    let before = [("berries", 250), ("meat", 1200)];
+    let before = [
+        ("berries", 250),
+        ("meat", 1200),
+        // The crops of lot 2 (D45): a handful of each.
+        ("hazelnuts", 2600),
+        ("blackberries", 180),
+    ];
     for (id, kj) in before {
         let material = content.material(id).expect(id);
         let food = material.food.expect("food");

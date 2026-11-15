@@ -9,13 +9,14 @@
 //! since the last one, and a client will compare it (D4) to know whether
 //! the chunk it holds is still the one the server has.
 //!
-//! Today only the natural items taken off the ground are changes the
-//! simulation makes. The shape is ready for felled trees, planted trees
+//! Today the natural items taken off the ground and the crops picked
+//! are the changes the simulation makes. The shape is ready for felled trees, planted trees
 //! and constructions: they are stored and read back, but nothing in the
 //! simulation makes them yet.
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::crops::Source;
 use crate::ground::Version;
 use crate::map::Pos;
 use crate::trees::TreeKey;
@@ -36,6 +37,20 @@ pub struct ChunkChanges {
     pub planted: BTreeMap<TreeKey, Planted>,
     /// What men built in the chunk.
     pub built: Vec<Construction>,
+    /// What men picked of the crops of its trees and plants (D45): by
+    /// what bore it and the material, the crop's year and the grams
+    /// taken. A crop of another year is whole again: what was picked last
+    /// autumn does not lessen this one.
+    pub picked: BTreeMap<(Source, String), Picked>,
+}
+
+/// What men picked of one crop of one tree or plant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Picked {
+    /// The year whose crop it was.
+    pub year: u64,
+    /// The grams taken from it.
+    pub grams: u32,
 }
 
 /// A tree men planted.
