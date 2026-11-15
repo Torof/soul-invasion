@@ -10,8 +10,9 @@
 //!   (cubic lattice noise, three octaves), flattened on alluvium;
 //! - **the water**: the continent's rivers along their natural courses
 //!   (`course`: the region's meanders carried down to the tile, their
-//!   corners rounded, each bank breathing on its own, a ford across the
-//!   river at every crossing the atlas finds dry-shod); the region's
+//!   corners rounded, each bank walking on its own as the valley's do,
+//!   tributaries joining at first contact, a ford across the river at
+//!   every crossing the atlas finds dry-shod); the region's
 //!   brooks from cell to receiver; its lakes, their shore drawn where
 //!   the interpolated share of lake cells passes a half. Each water lies
 //!   flat at its level, and the ground around it is drawn down to that
@@ -85,7 +86,8 @@ const RIVER_BANK_PER_DEPTH_M: i64 = 32;
 const FORD_DEPTH_CM: i64 = measure::DRY_CM as i64;
 
 /// Currents, in cm a second: a river where its section is the one its
-/// flow gives (slower in a pool, quicker in a narrows), a brook; a ford,
+/// flow gives (slower where its banks stand out, quicker where they stand
+/// in), a brook; a ford,
 /// spread thin over its stones, runs half as fast again (D36).
 const RIVER_SPEED: i64 = 45;
 const BROOK_SPEED: u16 = 25;
@@ -96,15 +98,6 @@ const FORD_SPEED_PER_MILLE: i64 = 1500;
 /// same.
 const EDGE_SHIFT_M: i64 = 28;
 const SHORE_SHIFT_M: i64 = 20;
-
-/// The grain of a river's water line: each bank's line wanders up to
-/// this many millimetres either way, from a value noise on a lattice of
-/// [`GRAIN_CELL_TILES`] tiles, so the line is never smooth at the tile
-/// (the lead's verdict of 15 November 2026) and never speckled either
-/// (a lattice of one tile left lone tiles of water on the land). A
-/// brook's and a lake's lines keep theirs.
-const GRAIN_MM: i64 = 1500;
-const GRAIN_CELL_TILES: u32 = 3;
 
 /// The camp: on dry, gentle ground this many metres from a river (a
 /// brook's head may be a few tiles long).
@@ -174,11 +167,11 @@ struct Stretch {
     /// The water's level at each end (cm).
     level: (i64, i64),
     /// The half-width at `a` then at `b`, each on the left bank then the
-    /// right bank of the current (mm): a river's banks breathe each on
-    /// its own, a brook's hold their lines.
+    /// right bank of the current (mm): a river's banks walk each on its
+    /// own, a brook's hold their lines.
     half: ((i64, i64), (i64, i64)),
     /// The width the flow gives the water at each end, before its banks
-    /// breathe (mm).
+    /// walk (mm).
     width: (i64, i64),
     /// The mean depth the flow gives it at each end (cm; 0 on a brook).
     depth: (i64, i64),
@@ -189,10 +182,6 @@ struct Stretch {
     ford: bool,
     /// Its heading, as a current's (`map::current_code`).
     heading: u8,
-    /// What a pool or a narrows makes of the width at each end, per
-    /// mille (1000 outside one; a brook's is 1000), for the tests' look.
-    #[cfg(test)]
-    shape: (i64, i64),
 }
 
 /// What a stretch is at the point of it nearest to a tile.
@@ -204,8 +193,9 @@ struct Probe {
     half: i64,
     /// The water's level (cm).
     level: i64,
-    /// Its depth, what the width leaves of the flow (cm): deeper in a
-    /// narrows, shallower in a pool, never under a metre on a river.
+    /// Its depth, what the width leaves of the flow (cm): deeper where
+    /// the banks stand in, shallower where they stand out, never under a
+    /// metre on a river.
     depth: i64,
     /// Its current's speed (cm/s).
     speed: i64,
@@ -463,8 +453,6 @@ impl Window {
                     kind: Kind::River,
                     ford: u.ford,
                     heading: heading(b.0 - a.0, b.1 - a.1),
-                    #[cfg(test)]
-                    shape: (u.shape, v.shape),
                 });
             }
         }
@@ -541,8 +529,6 @@ impl Window {
                     kind: Kind::Brook,
                     ford: false,
                     heading: heading(b.0 - a.0, b.1 - a.1),
-                    #[cfg(test)]
-                    shape: (1000, 1000),
                 });
             }
         }
@@ -719,12 +705,10 @@ impl Window {
             });
         }
         let p = (x * 1000 + 500, y * 1000 + 500);
-        let grain = self.grain_mm(x, y);
         let mut best: Option<Wet> = None;
         for s in self.stretches_near(x, y) {
             let probe = s.probe(p);
-            let half = probe.half + if s.kind == Kind::River { grain } else { 0 };
-            if probe.d > half || best.is_some_and(|b| b.level <= probe.level) {
+            if probe.d > probe.half || best.is_some_and(|b| b.level <= probe.level) {
                 continue;
             }
             let (terrain, depth, speed) = match s.kind {
@@ -765,10 +749,8 @@ impl Window {
             h = level + (h - level) * w / 1000;
         }
         let p = (x * 1000 + 500, y * 1000 + 500);
-        let grain = self.grain_mm(x, y);
         for s in self.stretches_near(x, y) {
             let Probe { d, half, level, .. } = s.probe(p);
-            let half = half + if s.kind == Kind::River { grain } else { 0 };
             if d < half + s.bank {
                 let w = smooth((d - half) * 1000 / s.bank);
                 h = level + (h - level) * w / 1000;
@@ -798,32 +780,17 @@ impl Window {
         self.cell(&self.biome, sx.div_euclid(CELL), sy.div_euclid(CELL))
     }
 
-    /// How far the water line of a river moves out at tile `(x, y)`, in
-    /// millimetres, either way up to [`GRAIN_MM`]: a value noise keyed by
-    /// the tile's place on the region grid, so two windows that overlap
-    /// draw the same grain.
-    fn grain_mm(&self, x: i64, y: i64) -> i64 {
-        let s = roll(self.seed, purpose::PLAN_GRAIN, &[]);
-        let (xi, yi) = (
-            i32::try_from(self.origin.0 * CELL + x).expect("small"),
-            i32::try_from(self.origin.1 * CELL + y).expect("small"),
-        );
-        (i64::from(noise(s, GRAIN_CELL_TILES, xi, yi)) - 500) * 2 * GRAIN_MM / 1000
-    }
-
     /// The river's widths over the window, for a look at how the banks
-    /// breathe: the narrowest and the widest width (mm) of a river
-    /// stretch wholly inside the window and off any ford, the widest
-    /// over the narrowest within 500 m of each other along a river (per
-    /// mille), and how many pools and narrows the window's rivers hold.
+    /// walk: the narrowest and the widest width (mm) of a river stretch
+    /// wholly inside the window and off any ford, and the widest over the
+    /// narrowest within 500 m of each other along a river (per mille).
     #[cfg(test)]
-    pub(crate) fn river_breadth(&self) -> (i64, i64, i64, usize, usize) {
+    pub(crate) fn river_breadth(&self) -> (i64, i64, i64) {
         let inside = |p: (i64, i64)| {
             let side = i64::from(self.side) * 1000;
             (0..side).contains(&p.0) && (0..side).contains(&p.1)
         };
-        let (mut least, mut most, mut pools, mut narrows) = (i64::MAX, 0, 0, 0);
-        let mut before = 1000;
+        let (mut least, mut most) = (i64::MAX, 0);
         // The widths along the rivers, each river's run of stretches in
         // order through the window: `(how far along, width)`; a ford's
         // stretches count for the way along, not for the widths.
@@ -851,15 +818,6 @@ impl Window {
                 }
                 last_end = Some(s.b);
             }
-            let shape = s.shape.0;
-            if inside(s.a) {
-                if shape > 1000 && before <= 1000 {
-                    pools += 1;
-                } else if shape < 1000 && before >= 1000 {
-                    narrows += 1;
-                }
-            }
-            before = shape;
         }
         let mut spread = 0;
         for (_, run) in &runs {
@@ -877,7 +835,7 @@ impl Window {
                 }
             }
         }
-        (least, most, spread, pools, narrows)
+        (least, most, spread)
     }
 
     /// Tile `(x, y)` shifted up to `reach` metres either way by a noise

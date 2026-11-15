@@ -464,17 +464,15 @@ mod tests {
     /// (yellow) and the path from camp A to camp B (orange) when one
     /// exists. Run by hand: `SOUL_INVASION_DUMP=zone.ppm cargo test -p sim
     /// dump_vivarium -- --ignored`.
-    #[test]
-    #[ignore = "writes the vivarium's zone as an image for a look; run by hand"]
-    fn dump_vivarium() {
-        let path = std::env::var("SOUL_INVASION_DUMP").unwrap_or_else(|_| "vivarium.ppm".into());
-        let map = map();
-        let side = ZONE_2.side();
+    /// The square of `map` of `side` tiles from `(x0, y0)`, drawn tile
+    /// by tile as RGB bytes: the ground, the woods, the water by its
+    /// depth, the fords and the brooks.
+    fn draw(map: &Map, (x0, y0): (u32, u32), side: u32) -> Vec<u8> {
         let n = usize::try_from(side * side).expect("small");
         let mut rgb = vec![0_u8; 3 * n];
         for y in 0..side {
             for x in 0..side {
-                let p = pos((x, y));
+                let p = pos((x0 + x, y0 + y));
                 let depth = u32::from(map.depth(p));
                 let c: [u8; 3] = match map.get(p) {
                     Some(Terrain::Grass) => [190, 205, 140],
@@ -492,6 +490,54 @@ mod tests {
                 rgb[i..i + 3].copy_from_slice(&c);
             }
         }
+        rgb
+    }
+
+    /// Writes `rgb`, `side` tiles a side, as a binary PPM at `path`.
+    fn write_ppm(path: &str, side: u32, rgb: &[u8]) {
+        let mut out = format!("P6\n{side} {side}\n255\n").into_bytes();
+        out.extend_from_slice(rgb);
+        std::fs::write(path, out).expect("the image");
+    }
+
+    #[test]
+    #[ignore = "writes a 400 m reach of the valley's river as an image, to set beside the vivarium's; run by hand"]
+    fn dump_valley_reach() {
+        let path = std::env::var("SOUL_INVASION_DUMP").unwrap_or_else(|_| "vallee-400m.ppm".into());
+        let side = crate::VALLEY_SIZE;
+        let map = Map::valley(side, side, crate::VALLEY_SEED);
+        // The main river where it crosses the map's middle row: the
+        // widest run of water there.
+        let y = side / 2;
+        let (mut best, mut run) = ((0, 0), 0);
+        for x in 0..side {
+            if map.get(pos((x, y))) == Some(Terrain::Water) {
+                run += 1;
+                if run > best.1 {
+                    best = (x + 1 - run, run);
+                }
+            } else {
+                run = 0;
+            }
+        }
+        let reach = 400;
+        let centre = best.0 + best.1 / 2;
+        let x0 = centre.saturating_sub(reach / 2).min(side - reach);
+        let y0 = y - reach / 2;
+        eprintln!(
+            "valley: main river {} tiles wide at ({centre}, {y}); reach from ({x0}, {y0})",
+            best.1
+        );
+        write_ppm(&path, reach, &draw(&map, (x0, y0), reach));
+    }
+
+    #[test]
+    #[ignore = "writes the vivarium's zone as an image for a look; run by hand"]
+    fn dump_vivarium() {
+        let path = std::env::var("SOUL_INVASION_DUMP").unwrap_or_else(|_| "vivarium.ppm".into());
+        let map = map();
+        let side = ZONE_2.side();
+        let mut rgb = draw(&map, (0, 0), side);
         let mut mark = |(cx, cy): (u32, u32), c: [u8; 3], r: u32| {
             for y in cy.saturating_sub(r)..(cy + r + 1).min(side) {
                 for x in cx.saturating_sub(r)..(cx + r + 1).min(side) {
@@ -502,9 +548,9 @@ mod tests {
         };
         let (a, b) = (map.camp(), pos(ZONE_2.tile(ZONE_2.camp_b)));
         let reach = i32::try_from(side).expect("small");
-        let (least, most, spread, pools, narrows) = window().river_breadth();
+        let (least, most, spread) = window().river_breadth();
         eprintln!(
-            "river: width {least} to {most} mm (widest over narrowest {} per mille over the zone, {spread} within 500 m), {pools} pools, {narrows} narrows",
+            "river: width {least} to {most} mm (widest over narrowest {} per mille over the zone, {spread} within 500 m)",
             most * 1000 / least.max(1)
         );
         let fords: Vec<(i64, i64)> = (0..side)
@@ -545,8 +591,6 @@ mod tests {
         mark(ZONE_2.tile(ZONE_2.crossing), [250, 230, 40], 5);
         mark(ZONE_2.tile(ZONE_2.camp_a), [220, 30, 30], 5);
         mark(ZONE_2.tile(ZONE_2.camp_b), [220, 30, 30], 5);
-        let mut out = format!("P6\n{side} {side}\n255\n").into_bytes();
-        out.extend_from_slice(&rgb);
-        std::fs::write(path, out).expect("the image");
+        write_ppm(&path, side, &rgb);
     }
 }

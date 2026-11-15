@@ -18,21 +18,25 @@
 //!    segment's two ends, and rounded once more so the detail never
 //!    kinks: no turn sharper than [`SHARPEST_TURN_COS_MILLI`] between two
 //!    consecutive segments;
-//! 3. its **banks breathe**, each on its own (D36's rule for the valley):
-//!    the half-width of each bank wanders ±[`BREATH_PER_MILLE`] over
-//!    waves of [`BREATH_WAVE_WIDTHS`] river widths and ±[`RIPPLE_PER_MILLE`]
-//!    over short waves of [`RIPPLE_WAVE_WIDTHS_PER_MILLE`] widths, from
-//!    value noises keyed by the cell and the bank (so one bank bulges
-//!    while the other holds), calm at both ends of a cell's course so two
-//!    cells meet without a step; the depth takes what the width leaves,
-//!    so the flow is kept;
-//! 4. along the course, **pools and narrows** ([`feature`]): every
-//!    [`FEATURE_EVERY_CELLS`] cells of a stem, counted from its source,
-//!    the river opens to [`POOL_PER_MILLE`] of its width, more on one
-//!    bank than the other, or closes to [`NARROWS_PER_MILLE`], over
-//!    [`FEATURE_WIDTHS_PER_MILLE`] widths of length with a slow way in and
-//!    out, never at a cell's ends nor in a crossing's cell or the one
-//!    before or after it, so the ford's lens and the junctions stay calm;
+//! 3. a **tributary joins** the stem it drains to where its course first
+//!    comes within [`JOIN_REACH_WIDTHS`] of that stem's widths of the
+//!    stem's water ([`join`]): the rest of its course is dropped and its
+//!    end slides onto the stem, the stem growing to its downstream width
+//!    from there (the lead's rule of 15 November 2026: at the east
+//!    confluence of the vivarium the tributary ran alongside the stem for
+//!    300 m before the atlas's node, two rivers side by side);
+//! 4. its **banks walk** as the valley's do ([`walk_banks`], the rule of
+//!    `map::Rivers::breathe`, in widths rather than tiles): over each
+//!    cell's course, each bank on its own holds its line for a few steps,
+//!    then leaves it at a slope of 5.6° for a dozen to forty steps, out
+//!    or in, half the moves once off the line going back towards it,
+//!    within its reach; a step is a fifth of the river's nominal width
+//!    (the valley's tile for its river of five), so a 5 m brook, a 30 m
+//!    river and a 200 m river look alike at their scale. Both banks hold
+//!    their lines over the first and last [`CALM_STEPS`] of a cell's
+//!    course (a cell is computed without its neighbours, D39), around a
+//!    ford's bar and around a junction. The depth takes what the width
+//!    leaves, so the flow is kept (the window's rule);
 //! 5. the **ford** at an atlas crossing (`measure::passages` at
 //!    [`measure::DRY_CM`]): where the atlas finds the cell's river
 //!    crossed dry-shod, a bar [`FORD_BAR_WIDTHS_PER_MILLE`] river widths
@@ -46,15 +50,13 @@
 //! each looked at: a stem cut short at a span's edge differs from the
 //! whole one only within a few cells of that edge, and a window keeps a
 //! margin of two continent cells.
-//!
-//! The water line itself is given its grain at the tile, in the window
-//! (`Window::grain_mm`), not here.
 
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
 
 use super::region::{self, REGION_CELL_M, RIVER_DISCHARGE};
 use super::{Continent, isqrt, measure};
+use crate::r#gen::Lcg;
 use crate::r#gen::scatter::{key, purpose, roll};
 
 /// Millimetres a region cell.
@@ -86,67 +88,61 @@ const FINE_SMOOTH: u32 = 1;
 #[cfg(test)]
 const SHARPEST_TURN_COS_MILLI: i64 = 500;
 
-/// Each bank breathes this much either way, per mille of its half-width,
-/// over the long wave: two fifths (the project lead's verdict of
-/// 15 November 2026 in the game: at a fifth the banks still read as
-/// parallel; the valley's river doubled its width within twenty metres).
-pub(crate) const BREATH_PER_MILLE: i64 = 400;
-/// The breathing's wave, in river widths: a natural river alternates
-/// pools and riffles every five to seven widths (Leopold, Wolman and
-/// Miller 1964).
-const BREATH_WAVE_WIDTHS: i64 = 6;
-/// On top of the long wave, each bank ripples this much either way (per
-/// mille of its half-width) over short waves of this many river widths
-/// (per mille): two to three widths, the lead's figure, so the width
-/// changes within a few tens of metres and not only from cell to cell.
-pub(crate) const RIPPLE_PER_MILLE: i64 = 150;
-const RIPPLE_WAVE_WIDTHS_PER_MILLE: i64 = 2500;
-/// Most waves over one cell's course: the banks breathe on the fine
-/// course, some 300 points over a cell's 2 km, and a wave needs two.
-const BREATH_MOST_WAVES: i64 = 128;
-/// The banks hold their lines over this share (per mille) of a cell's
-/// course at each end, so the banks of two cells meet without a step and
-/// a junction stays calm (the valley's rule).
-const BREATH_CALM_PER_MILLE: i64 = 100;
-/// What a bank's half-width may come to, per mille of the half-width the
-/// flow gives it, once it breathes and the pools and narrows are laid
-/// over: never under half (a narrows at the bottom of a breath would
-/// leave a third, and the depth, which takes what the width leaves,
-/// would triple), never over two and a half times.
-pub(crate) const BANK_LEAST_PER_MILLE: i64 = 500;
-pub(crate) const BANK_MOST_PER_MILLE: i64 = 2500;
+/// The walker's step along the course, per mille of the river's nominal
+/// width: a fifth, the valley's tile for its river of five tiles (the
+/// valley walks its banks a tile at a time), so every figure below, the
+/// valley's in tiles, holds in widths.
+const WALK_STEP_PER_MILLE: i64 = 200;
+/// How fast a bank leaves its line, per mille of a step per step: the
+/// tangent of 5.6°, the valley's `BANK_SLOPE`, so a river widens or
+/// narrows slowly, never with a tooth.
+const BANK_SLOPE_PER_MILLE: i64 = 98;
+/// Steps a bank holds its line between two moves, at least and at most
+/// (the valley's `BANK_HOLD`).
+const BANK_HOLD_STEPS: (u32, u32) = (4, 12);
+/// Steps a move of a bank lasts, at least and at most (the valley's
+/// `BANK_SHIFT`): a move changes the bank by a quarter to four fifths of
+/// the width, so a widening arrives anywhere, lasts, and blends.
+const BANK_SHIFT_STEPS: (u32, u32) = (12, 40);
+/// How far a bank may stand inside its line and outside it, in steps of
+/// the slope (the valley's `BANK_REACH`): a fifth of the width in, 1.2
+/// widths out.
+const BANK_REACH_STEPS: (i64, i64) = (-10, 61);
+/// Steps of hold kept in hand before the way back to the line, so a bank
+/// never has to turn twice at once (the valley's).
+const BANK_SPARE_STEPS: usize = 6;
+/// Tries at the banks of one free stretch before leaving it straight.
+const BANK_TRIES: u32 = 30;
+/// Steps over which the banks hold their lines at both ends of a cell's
+/// course, around a ford's bar and around a junction: 1.2 widths, the
+/// valley's `CLEARANCE`. A cell's course is walked without its
+/// neighbours, so its banks must meet theirs at the nominal width.
+const CALM_STEPS: usize = 6;
+/// The width a river may come to as its banks walk, per mille of the
+/// width its flow gives it, narrowest and widest: three fifths (both
+/// banks a fifth in) and three times (the valley's pool of 18 tiles on a
+/// river of five, the widening the lead liked).
+pub(crate) const NARROWEST_PER_MILLE: i64 = 600;
+pub(crate) const WIDEST_PER_MILLE: i64 = 3000;
 
-/// A pool or a narrows about every this many metres along a river (150
-/// to 300 m, the lead's figure): a cell's course is cut in slots of this
-/// length and each slot's feature sits in the middle half of its slot,
-/// keyed by the cell and the slot, so a stem followed from anywhere
-/// places them the same.
-const FEATURE_EVERY_M: i64 = 225;
-/// No feature within this many river widths of a ford's bar, and the
-/// banks hold their lines over the bar and come to breathe again over
-/// this distance past it, so the ford's lens stands alone.
-const FEATURE_FORD_GAP_WIDTHS: i64 = 1;
-/// Pools over narrows, per mille of the features: more pools, a narrows
-/// being a brief thing.
-const POOL_SHARE_PER_MILLE: u64 = 600;
-/// A pool opens the river to this much of its width (per mille, the
-/// least and the most: 1.6 to 2 times), a narrows closes it to this
-/// much (0.6 times); the lead's figures.
-pub(crate) const POOL_PER_MILLE: (i64, i64) = (1600, 2000);
-pub(crate) const NARROWS_PER_MILLE: i64 = 600;
-/// A feature runs this long along the course, per mille of the river's
-/// width (the least and the most: one and a half to two widths), with
-/// a slow way in and out.
-const FEATURE_WIDTHS_PER_MILLE: (i64, i64) = (1500, 2000);
-/// A feature's way in and out takes this much of each half of its
-/// length (per mille), the middle holding its full opening: a pool is a
-/// reach of wider water, not a bead on the river (the first dump drew
-/// beads), and the river still doubles within a few tens of metres.
-const FEATURE_RAMP_PER_MILLE: i64 = 650;
-/// How much of a pool's opening the left bank takes, per mille (the
-/// least and the most): never half and half, so a pool bulges on one
-/// side more than the other, never a lens.
-const FEATURE_SKEW_PER_MILLE: (i64, i64) = (250, 750);
+/// A tributary joins the stem it drains to where its course first comes
+/// within this many of the stem's widths of the stem's water: one, so two
+/// waters a width apart are one.
+const JOIN_REACH_WIDTHS: i64 = 1;
+/// A tributary's end slides onto the stem it joins, the slide spread over
+/// the tributary's last [`JOIN_BLEND_M`] metres at least and
+/// [`JOIN_BLEND_PER_SHIFT`] times the slide at least, so its way in bends
+/// by about 30° at most and the course does not kink.
+const JOIN_BLEND_M: i64 = 50;
+const JOIN_BLEND_PER_SHIFT: i64 = 2;
+/// The stem's width grows to its downstream width from a junction over
+/// this many of the downstream widths (two) or [`JOIN_BLEND_M`], the
+/// longer: the water of both is there from the junction on.
+const JOIN_WIDEN_WIDTHS: i64 = 2;
+/// A tributary's course is looked at for its first contact with the stem
+/// over its last this many continent cells: the atlas sends the tributary
+/// to the stem's node, so the two run close only near it.
+const JOIN_LOOK_CELLS: usize = 2;
 
 /// A piece of a finished course is at least this long (mm): the
 /// rounding of a hairpin leaves specks a few millimetres apart, whose
@@ -159,11 +155,6 @@ const LEAST_PIECE_MM: i64 = 500;
 /// has no width, and the region's course makes one now and then at a
 /// cell's jittered node.
 const SPIKE_COS_MILLI: i64 = -900;
-
-/// A tributary's end slides onto the stem it joins (the rounding moved
-/// that stem off the node they shared), the slide spread over the
-/// tributary's last this many metres so its course does not kink.
-const JOIN_BLEND_M: i64 = 50;
 
 /// The ford at an atlas crossing: the bar's length along the course, per
 /// mille of the river's width (two to three widths), and how much wider
@@ -180,107 +171,18 @@ pub(crate) struct Node {
     /// The water's level (cm).
     pub(crate) level: i64,
     /// The half-width on the left bank and on the right bank of the
-    /// current, once the banks breathe (mm).
+    /// current, once the banks walk (mm).
     pub(crate) half: (i64, i64),
-    /// The width the flow gives the river here, before breathing (mm).
+    /// The width the flow gives the river here, before its banks walk
+    /// (mm).
     pub(crate) width: i64,
     /// The mean depth the flow gives it here (cm).
     pub(crate) depth: i64,
     /// On the ford's bar.
     pub(crate) ford: bool,
-    /// What a pool or a narrows makes of the width here, per mille:
-    /// 1000 outside one, over it in a pool, under it in a narrows.
-    pub(crate) shape: i64,
-    /// The continent cell whose course this point belongs to, and how
-    /// far along that course it lies (per mille): what the breathing and
-    /// the features are keyed by, so they are the same whatever the span.
+    /// The continent cell whose course this point belongs to: what the
+    /// banks' walk is keyed by, so it is the same whatever the span.
     pub(crate) cell: usize,
-    pub(crate) f: i64,
-}
-
-/// A pool or a narrows laid over one cell's course.
-#[derive(Debug, Clone, Copy)]
-struct Feature {
-    /// Its middle along the cell's course, per mille of the way.
-    centre: i64,
-    /// Half its length, per mille of the way.
-    half_len: i64,
-    /// What it makes of each bank's half-width at its middle, per mille
-    /// (the left bank, the right bank).
-    peak: (i64, i64),
-}
-
-impl Feature {
-    /// What the feature makes of each bank at `f` per mille of the way
-    /// along the cell's course: a smooth way in over the outer
-    /// [`FEATURE_RAMP_PER_MILLE`] of each half, whole over the middle,
-    /// nothing beyond its ends.
-    fn at(self, f: i64) -> (i64, i64) {
-        let t = (f - self.centre).abs() * 1000 / self.half_len.max(1);
-        if t >= 1000 {
-            return (1000, 1000);
-        }
-        let bump = smooth((1000 - t) * 1000 / FEATURE_RAMP_PER_MILLE);
-        (
-            1000 + (self.peak.0 - 1000) * bump / 1000,
-            1000 + (self.peak.1 - 1000) * bump / 1000,
-        )
-    }
-}
-
-/// The pools and narrows over one cell's course (`cell` in grid
-/// coordinates), for a river `width` wide (mm) whose course over the
-/// cell is `length` long (mm): one a slot of [`FEATURE_EVERY_M`], keyed
-/// by the cell and the slot, dropped where it would reach the calm ends
-/// of the course or come within `keep_out` (a point along the course and
-/// a reach, per mille) of a ford's bar.
-fn features(
-    seed: u64,
-    cell: (i32, i32),
-    width: i64,
-    length: i64,
-    keep_out: Option<(i64, i64)>,
-) -> Vec<Feature> {
-    let slots = (length / (FEATURE_EVERY_M * 1000)).max(1);
-    let slot_len = 1000 / slots;
-    let mut out = Vec::new();
-    for slot in 0..slots {
-        let draw = |k: u64| {
-            roll(
-                seed,
-                purpose::PLAN_POOL,
-                &[key(i64::from(cell.0)), key(i64::from(cell.1)), key(slot), k],
-            )
-        };
-        let pick = |k: u64, (lo, hi): (i64, i64)| {
-            lo + i64::try_from(draw(k) % u64::try_from(hi - lo + 1).expect("a range"))
-                .expect("small")
-        };
-        let open = if draw(0) % 1000 < POOL_SHARE_PER_MILLE {
-            pick(1, POOL_PER_MILLE)
-        } else {
-            NARROWS_PER_MILLE
-        };
-        let skew = pick(2, FEATURE_SKEW_PER_MILLE);
-        let peak = (
-            1000 + (open - 1000) * 2 * skew / 1000,
-            1000 + (open - 1000) * 2 * (1000 - skew) / 1000,
-        );
-        let half_len = pick(3, FEATURE_WIDTHS_PER_MILLE) * width / 2 / length.max(1);
-        let centre = slot * slot_len + slot_len / 4 + pick(4, (0, slot_len / 2));
-        if centre - half_len < BREATH_CALM_PER_MILLE
-            || centre + half_len > 1000 - BREATH_CALM_PER_MILLE
-            || keep_out.is_some_and(|(at, reach)| (centre - at).abs() < half_len + reach)
-        {
-            continue;
-        }
-        out.push(Feature {
-            centre,
-            half_len,
-            peak,
-        });
-    }
-    out
 }
 
 /// One river of the continent followed cell to cell, at the tile scale.
@@ -309,15 +211,6 @@ fn distance(a: (i64, i64), b: (i64, i64)) -> i64 {
 /// `a + (b - a) × num / den`, for a node's every number.
 fn between(a: Node, b: Node, num: i64, den: i64) -> Node {
     let mix = |x: i64, y: i64| x + (y - x) * num / den;
-    // Across two cells' courses the point keeps the nearer cell, its way
-    // along it run to the end or from the start: both ends are calm.
-    let (cell, f) = if a.cell == b.cell {
-        (a.cell, mix(a.f, b.f))
-    } else if 2 * num < den {
-        (a.cell, a.f + (1000 - a.f) * 2 * num / den)
-    } else {
-        (b.cell, b.f * (2 * num - den) / den)
-    };
     Node {
         p: (mix(a.p.0, b.p.0), mix(a.p.1, b.p.1)),
         level: mix(a.level, b.level),
@@ -325,9 +218,8 @@ fn between(a: Node, b: Node, num: i64, den: i64) -> Node {
         width: mix(a.width, b.width),
         depth: mix(a.depth, b.depth),
         ford: a.ford,
-        shape: mix(a.shape, b.shape),
-        cell,
-        f,
+        // Across two cells' courses the point keeps the nearer cell.
+        cell: if 2 * num < den { a.cell } else { b.cell },
     }
 }
 
@@ -439,140 +331,263 @@ fn course_turns_within(nodes: &[Node], cos_milli: i64) -> bool {
     })
 }
 
-/// A value in -500..=500 along one cell's course for one bank: `waves`
-/// lattice points over the course, smoothly interpolated at `f` per
-/// mille of the way along it.
-fn wave(seed: u64, cell: (i32, i32), bank: u64, waves: i64, f: i64) -> i64 {
-    let at = |k: i64| {
-        i64::try_from(
-            roll(
-                seed,
-                purpose::PLAN_BANK,
-                &[key(i64::from(cell.0)), key(i64::from(cell.1)), bank, key(k)],
-            ) % 1001,
-        )
-        .expect("small")
-            - 500
-    };
-    let u = f.clamp(0, 1000) * waves;
-    let (k, t) = (u.div_euclid(1000), u.rem_euclid(1000));
-    let s = smooth(t);
-    at(k) + (at(k + 1) - at(k)) * s / 1000
-}
-
-/// How far along a cell's course the banks breathe freely, per mille:
-/// up from nothing over the first [`BREATH_CALM_PER_MILLE`] of the way,
-/// down again over the last.
-fn breathing_room(f: i64) -> i64 {
-    let calm = BREATH_CALM_PER_MILLE;
-    if f < calm {
-        smooth(f * 1000 / calm)
-    } else if f > 1000 - calm {
-        smooth((1000 - f) * 1000 / calm)
-    } else {
-        1000
-    }
-}
-
-/// The nearest point of the polyline `nodes` to `p`: the point and its
+/// The nearest point to `p` of the segment from `a` to `b`, and its
 /// distance.
-fn nearest_on(nodes: &[Node], p: (i64, i64)) -> Option<((i64, i64), i64)> {
-    let mut best: Option<((i64, i64), i64)> = None;
-    for pair in nodes.windows(2) {
-        let (a, b) = (pair[0].p, pair[1].p);
-        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-        let len2 = dx * dx + dy * dy;
-        let t = if len2 == 0 {
-            0
-        } else {
-            ((p.0 - a.0) * dx + (p.1 - a.1) * dy).clamp(0, len2)
-        };
-        let q = if len2 == 0 {
-            a
-        } else {
-            (a.0 + dx * t / len2, a.1 + dy * t / len2)
-        };
-        let d = distance(p, q);
-        if best.is_none_or(|(_, bd)| d < bd) {
-            best = Some((q, d));
-        }
-    }
-    best
+fn to_segment(a: (i64, i64), b: (i64, i64), p: (i64, i64)) -> ((i64, i64), i64) {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len2 = dx * dx + dy * dy;
+    let q = if len2 == 0 {
+        a
+    } else {
+        let t = ((p.0 - a.0) * dx + (p.1 - a.1) * dy).clamp(0, len2);
+        (a.0 + dx * t / len2, a.1 + dy * t / len2)
+    };
+    (q, distance(p, q))
 }
 
-/// One cell's course as the breathing reads it.
-#[derive(Debug, Clone, Copy)]
-struct Course {
-    /// The cell, in grid coordinates.
-    xy: (i32, i32),
-    /// The width the flow gives the river over it (mm).
-    width: i64,
-    /// How long its course is (mm).
-    length: i64,
-}
-
-/// The banks of `nodes` breathe, each on its own, and take their pools
-/// and narrows: the long and the short waves of each bank, the features
-/// of each cell's course, calm at the ends of a cell's course and over
-/// a ford's bar (`fords`: the bars' middle nodes).
-fn breathe(seed: u64, nodes: &mut [Node], fords: &[usize], courses: &BTreeMap<usize, Course>) {
-    let mut along = vec![0; nodes.len()];
-    for j in 1..nodes.len() {
-        along[j] = along[j - 1] + distance(nodes[j - 1].p, nodes[j].p);
-    }
-    // Each bar: its middle node, its middle along the course (mm) and
-    // its half-length (mm).
-    let bars: Vec<(Node, i64, i64)> = fords
-        .iter()
-        .map(|&at| {
-            let w = nodes[at].width;
-            (nodes[at], along[at], w * FORD_BAR_WIDTHS_PER_MILLE / 2000)
+/// The nearest point to `p` of the polyline `nodes`: the point, its
+/// distance and its segment (from that node to the next).
+fn nearest_on(nodes: &[Node], p: (i64, i64)) -> Option<((i64, i64), i64, usize)> {
+    nodes
+        .windows(2)
+        .enumerate()
+        .map(|(s, pair)| {
+            let (q, d) = to_segment(pair[0].p, pair[1].p, p);
+            (q, d, s)
         })
-        .collect();
-    let mut shapes: BTreeMap<usize, Vec<Feature>> = BTreeMap::new();
-    for (j, node) in nodes.iter_mut().enumerate() {
-        let Some(&course) = courses.get(&node.cell) else {
+        .min_by_key(|&(_, d, _)| d)
+}
+
+/// The segments of a course by the 64 m square each runs through, for a
+/// quick look at what lies within reach of a point: a tributary's every
+/// node asks what the stem is near it.
+struct Near<'a> {
+    nodes: &'a [Node],
+    squares: BTreeMap<(i64, i64), Vec<usize>>,
+}
+
+impl<'a> Near<'a> {
+    fn new(nodes: &'a [Node]) -> Self {
+        let mut squares: BTreeMap<(i64, i64), Vec<usize>> = BTreeMap::new();
+        for (s, pair) in nodes.windows(2).enumerate() {
+            let (a, b) = (pair[0].p, pair[1].p);
+            for x in a.0.min(b.0).div_euclid(CELL_MM)..=a.0.max(b.0).div_euclid(CELL_MM) {
+                for y in a.1.min(b.1).div_euclid(CELL_MM)..=a.1.max(b.1).div_euclid(CELL_MM) {
+                    squares.entry((x, y)).or_default().push(s);
+                }
+            }
+        }
+        Self { nodes, squares }
+    }
+
+    /// The nearest point of the course within `reach` of `p`: the point,
+    /// its distance and its segment.
+    fn nearest(&self, p: (i64, i64), reach: i64) -> Option<((i64, i64), i64, usize)> {
+        let r = reach.div_euclid(CELL_MM) + 1;
+        let (cx, cy) = (p.0.div_euclid(CELL_MM), p.1.div_euclid(CELL_MM));
+        let mut best: Option<((i64, i64), i64, usize)> = None;
+        for x in cx - r..=cx + r {
+            for y in cy - r..=cy + r {
+                for &s in self.squares.get(&(x, y)).map_or(&[][..], Vec::as_slice) {
+                    let (q, d) = to_segment(self.nodes[s].p, self.nodes[s + 1].p, p);
+                    if d <= reach && best.is_none_or(|(_, bd, _)| d < bd) {
+                        best = Some((q, d, s));
+                    }
+                }
+            }
+        }
+        best
+    }
+}
+
+/// How far along `nodes` each lies, from the first (mm).
+fn along(nodes: &[Node]) -> Vec<i64> {
+    let mut out = vec![0; nodes.len()];
+    for j in 1..nodes.len() {
+        out[j] = out[j - 1] + distance(nodes[j - 1].p, nodes[j].p);
+    }
+    out
+}
+
+/// The last `n` nodes of `nodes` slide by `shift`, the slide spread over
+/// the course's last `blend` millimetres so it does not kink.
+fn slide_end(nodes: &mut [Node], shift: (i64, i64), blend: i64) {
+    let mut back = vec![0; nodes.len()];
+    for j in (0..nodes.len().saturating_sub(1)).rev() {
+        back[j] = back[j + 1] + distance(nodes[j].p, nodes[j + 1].p);
+    }
+    for (node, back) in nodes.iter_mut().zip(back) {
+        let w = smooth(1000 - back * 1000 / blend.max(1));
+        node.p = (node.p.0 + shift.0 * w / 1000, node.p.1 + shift.1 * w / 1000);
+    }
+}
+
+/// One bank over the nodes `0..=n` of a free stretch, standing on its
+/// line at both ends: how far out it stands at each, in steps of the
+/// slope, or none if this draw breaks a rule. `fits` tells whether the
+/// bank may stand `k` out at node `j`. The valley's `bank_profile`, less
+/// its rule about the centre's bends: a course here is rounded already.
+fn bank_profile(n: usize, fits: impl Fn(usize, i64) -> bool, rng: &mut Lcg) -> Option<Vec<i64>> {
+    let between = |rng: &mut Lcg, (lo, hi): (u32, u32)| lo + rng.next_below(hi - lo + 1);
+    let (inside, outside) = BANK_REACH_STEPS;
+    let (shortest, longest) = BANK_SHIFT_STEPS;
+    let spare = BANK_SPARE_STEPS;
+    let mut k = vec![0; n + 1];
+    let (mut j, mut out) = (0, 0_i64);
+    let mut hold = between(rng, BANK_HOLD_STEPS);
+    while j < n {
+        let back = usize::try_from(out.unsigned_abs()).expect("small");
+        if n - j < back {
+            return None;
+        }
+        let must_return = out != 0 && n - j <= back + spare;
+        if hold == 0 || must_return {
+            // A move from node j: back towards the line half the time
+            // once off it, else out or in; of a length that fits the
+            // reach and the width at every step and leaves room to come
+            // back.
+            let dir = if must_return || (out != 0 && rng.next_below(2) == 0) {
+                -out.signum()
+            } else if rng.next_below(2) == 0 {
+                1
+            } else {
+                -1
+            };
+            let span = (longest - shortest + 1) as usize;
+            let first = rng.next_below(longest - shortest + 1) as usize;
+            let lengths: Vec<usize> = if must_return {
+                vec![back]
+            } else {
+                (0..span)
+                    .map(|i| shortest as usize + (first + i) % span)
+                    .collect()
+            };
+            let chosen = lengths.into_iter().find(|&steps| {
+                let end = j + steps;
+                let last = out + dir * i64::try_from(steps).expect("small");
+                end <= n
+                    && (inside..=outside).contains(&last)
+                    && (must_return
+                        || n - end >= usize::try_from(last.unsigned_abs()).expect("small") + spare)
+                    && (1..=steps)
+                        .all(|i| fits(j + i, out + dir * i64::try_from(i).expect("small")))
+            });
+            if let Some(steps) = chosen {
+                for _ in 0..steps {
+                    out += dir;
+                    j += 1;
+                    k[j] = out;
+                }
+                hold = between(rng, BANK_HOLD_STEPS);
+                continue;
+            }
+        }
+        hold = hold.saturating_sub(1);
+        j += 1;
+        k[j] = out;
+    }
+    (k[n] == 0).then_some(k)
+}
+
+/// The two banks over the nodes `0..=n` of a free stretch, in steps of
+/// the slope, or none if no draw fits: first each bank on its own, the
+/// second fitting around the first; then, if that keeps failing, the
+/// first bank leaves the second its whole reach. `fits` tells whether the
+/// two banks may stand `total` steps out together. The valley's.
+fn banks_profile(
+    n: usize,
+    fits: impl Fn(i64) -> bool,
+    rng: &mut Lcg,
+) -> Option<(Vec<i64>, Vec<i64>)> {
+    let (inside, outside) = BANK_REACH_STEPS;
+    for attempt in 0..2 * BANK_TRIES {
+        let first_fits = |k: i64| attempt < BANK_TRIES || (fits(k + inside) && fits(k + outside));
+        let Some(one) = bank_profile(n, |_, k| first_fits(k), rng) else {
             continue;
         };
-        let (xy, width, length) = (course.xy, course.width, course.length);
-        let shape = shapes
-            .entry(node.cell)
-            .or_insert_with(|| {
-                let keep_out = bars
-                    .iter()
-                    .find(|&&(middle, _, _)| middle.cell == node.cell)
-                    .map(|&(middle, _, half_bar)| {
-                        let reach = half_bar + FEATURE_FORD_GAP_WIDTHS * width;
-                        (middle.f, reach * 1000 / length)
-                    });
-                features(seed, xy, width, length, keep_out)
-            })
-            .iter()
-            .find(|ft| (node.f - ft.centre).abs() < ft.half_len)
-            .map_or((1000, 1000), |ft| ft.at(node.f));
-        let bar_room = bars
-            .iter()
-            .map(|&(_, at, half_bar)| {
-                smooth(
-                    ((along[j] - at).abs() - half_bar) * 1000 / (FEATURE_FORD_GAP_WIDTHS * width),
-                )
-            })
-            .min()
-            .unwrap_or(1000);
-        let room = breathing_room(node.f) * bar_room / 1000;
-        let waves = (length / (BREATH_WAVE_WIDTHS * width)).clamp(1, BREATH_MOST_WAVES);
-        let ripples = ((length * 1000 + RIPPLE_WAVE_WIDTHS_PER_MILLE * width / 2)
-            / (RIPPLE_WAVE_WIDTHS_PER_MILLE * width))
-            .clamp(1, BREATH_MOST_WAVES);
-        let bank = |side: u64, shape: i64| {
-            let long = wave(seed, xy, side, waves, node.f) * BREATH_PER_MILLE / 500;
-            let short = wave(seed, xy, side + 2, ripples, node.f) * RIPPLE_PER_MILLE / 500;
-            let breath = 1000 + (long + short) * room / 1000;
-            let factor = (breath * shape / 1000).clamp(BANK_LEAST_PER_MILLE, BANK_MOST_PER_MILLE);
-            node.width / 2 * factor / 1000
+        let Some(other) = bank_profile(n, |j, k| fits(one[j] + k), rng) else {
+            continue;
         };
-        node.half = (bank(0, shape.0), bank(1, shape.1));
-        node.shape = i64::midpoint(shape.0, shape.1);
+        if (0..=n).all(|j| fits(one[j] + other[j])) {
+            return Some(if rng.next_below(2) == 0 {
+                (other, one)
+            } else {
+                (one, other)
+            });
+        }
+    }
+    None
+}
+
+/// The banks of one cell's course (`nodes`, the cell `xy` in grid
+/// coordinates, the river `width` wide there, mm) walk as the valley's
+/// do (see the module): drawn from a stream keyed by the cell, in steps
+/// of a fifth of the width along the course, calm over [`CALM_STEPS`] at
+/// both ends and around each of `quiet` (a node's index and a reach
+/// either way along the course, mm: a ford's bar, a junction).
+fn walk_banks(seed: u64, nodes: &mut [Node], xy: (i32, i32), width: i64, quiet: &[(usize, i64)]) {
+    let along = along(nodes);
+    let step = (width * WALK_STEP_PER_MILLE / 1000).max(1);
+    let Some(&length) = along.last() else {
+        return;
+    };
+    let n = usize::try_from(length / step).expect("small");
+    let calm_reach = i64::try_from(CALM_STEPS).expect("small") * step;
+    let mut calm: Vec<bool> = (0..=n)
+        .map(|s| s < CALM_STEPS || s + CALM_STEPS > n)
+        .collect();
+    for &(at, reach) in quiet {
+        let (lo, hi) = (
+            along[at] - reach - calm_reach,
+            along[at] + reach + calm_reach,
+        );
+        for (s, c) in calm.iter_mut().enumerate() {
+            let here = i64::try_from(s).expect("small") * step;
+            if (lo..=hi).contains(&here) {
+                *c = true;
+            }
+        }
+    }
+    let mut rng = Lcg::new(roll(
+        seed,
+        purpose::PLAN_BANK,
+        &[key(i64::from(xy.0)), key(i64::from(xy.1))],
+    ));
+    let narrowest = width * NARROWEST_PER_MILLE / 1000;
+    let widest = width * WIDEST_PER_MILLE / 1000;
+    let out_mm = |k: i64| k * BANK_SLOPE_PER_MILLE * step / 1000;
+    let fits = |total: i64| (narrowest..=widest).contains(&(width + out_mm(total)));
+    let mut banks = vec![(0, 0); n + 1];
+    let mut s = 0;
+    while s <= n {
+        if calm[s] {
+            s += 1;
+            continue;
+        }
+        let first = s;
+        while s <= n && !calm[s] {
+            s += 1;
+        }
+        // Nodes first - 1 (calm) to s (calm), as j = 0..=stretch.
+        let stretch = s - first + 1;
+        if let Some((left, right)) = banks_profile(stretch, fits, &mut rng) {
+            for j in 1..stretch {
+                banks[first - 1 + j] = (left[j], right[j]);
+            }
+        }
+    }
+    for (node, &at) in nodes.iter_mut().zip(&along) {
+        let (s, t) = (
+            usize::try_from(at / step).expect("small").min(n),
+            (at % step) * 1000 / step,
+        );
+        let next = banks[(s + 1).min(n)];
+        let mix =
+            |a: i64, b: i64| (a * 1000 + (b - a) * t) * BANK_SLOPE_PER_MILLE * step / 1_000_000;
+        node.half = (
+            node.width / 2 + mix(banks[s].0, next.0),
+            node.width / 2 + mix(banks[s].1, next.1),
+        );
     }
 }
 
@@ -598,6 +613,88 @@ fn spread_ford(nodes: &mut [Node], at: usize) {
         node.half = (node.half.0 * f / 1000, node.half.1 * f / 1000);
         node.ford = true;
     }
+}
+
+/// The width and depth the flow gives a river over one cell's course.
+#[derive(Debug, Clone, Copy)]
+struct Course {
+    /// The cell, in grid coordinates.
+    xy: (i32, i32),
+    /// The width the flow gives the river over it (mm).
+    width: i64,
+    /// The mean depth it gives it (cm).
+    depth: i64,
+}
+
+/// Tributary `k` of `stems` joins stem `main` where its course first
+/// comes within [`JOIN_REACH_WIDTHS`] of the stem's widths of the stem's
+/// water; its course is cut there and its end slides onto the stem (see
+/// the module). The stem grows to the width of `end`, the cell the atlas
+/// sends the tributary to (`courses`), from the junction on. Returns the
+/// stem's node the tributary joins at, or none if the two never come
+/// close (the end then slides onto the stem's nearest point).
+fn join(
+    stems: &mut [Stem],
+    k: usize,
+    main: usize,
+    end: usize,
+    courses: &BTreeMap<usize, Course>,
+) -> Option<usize> {
+    let anchor = stems[k].nodes[stems[k].nodes.len() - 1].p;
+    // The tributary's last cells.
+    let cells = &stems[k].cells;
+    let last_cells = &cells[cells.len().saturating_sub(JOIN_LOOK_CELLS)..];
+    let start = stems[k]
+        .nodes
+        .iter()
+        .position(|n| last_cells.contains(&n.cell))
+        .unwrap_or(0);
+    let reach = |w: i64| w / 2 + JOIN_REACH_WIDTHS * w;
+    let widest = stems[main].nodes.iter().map(|n| n.width).max().unwrap_or(0);
+    let near = Near::new(&stems[main].nodes);
+    let mut cut = None;
+    for j in start..stems[k].nodes.len() {
+        let p = stems[k].nodes[j].p;
+        if let Some((q, d, s)) = near.nearest(p, reach(widest))
+            && d <= reach(stems[main].nodes[s].width)
+        {
+            cut = Some((j, q, d, s));
+            break;
+        }
+    }
+    let Some((j, q, d, s)) = cut else {
+        // Never close: the end slides onto the stem's nearest point.
+        if let Some((q, d, _)) = nearest_on(&stems[main].nodes, anchor) {
+            let shift = (q.0 - anchor.0, q.1 - anchor.1);
+            let blend = (JOIN_BLEND_M * 1000).max(JOIN_BLEND_PER_SHIFT * d);
+            slide_end(&mut stems[k].nodes, shift, blend);
+        }
+        return None;
+    };
+    stems[k].nodes.truncate(j + 1);
+    let p = stems[k].nodes[j].p;
+    let shift = (q.0 - p.0, q.1 - p.1);
+    let blend = (JOIN_BLEND_M * 1000).max(JOIN_BLEND_PER_SHIFT * d);
+    slide_end(&mut stems[k].nodes, shift, blend);
+    // The stem carries both waters from the junction on: its width grows
+    // to the downstream cell's over a short way.
+    if let Some(&downstream) = courses.get(&end) {
+        let nodes = &mut stems[main].nodes;
+        let first = nodes
+            .iter()
+            .position(|n| n.cell == end)
+            .unwrap_or(nodes.len());
+        let along = along(nodes);
+        let widen = (JOIN_BLEND_M * 1000).max(JOIN_WIDEN_WIDTHS * downstream.width);
+        for m in s + 1..first {
+            let t = smooth((along[m] - along[s]) * 1000 / widen);
+            let node = &mut nodes[m];
+            node.width += (downstream.width - node.width) * t / 1000;
+            node.depth += (downstream.depth - node.depth) * t / 1000;
+            node.half = (node.width / 2, node.width / 2);
+        }
+    }
+    Some(s)
 }
 
 /// The river stems of `c` whose cells lie in `x` × `y` (continent
@@ -682,17 +779,12 @@ pub(crate) fn stems(c: &Continent, x: std::ops::Range<i32>, y: std::ops::Range<i
             let q = c.discharge[i];
             let width = (i64::try_from(measure::width_cm(q)).expect("small") * 10).max(2000);
             let depth = i64::try_from(measure::depth_cm(q)).expect("small");
-            let length: i64 = path
-                .windows(2)
-                .map(|w| distance(mm(w[0]), mm(w[1])))
-                .sum::<i64>()
-                .max(1);
             courses.insert(
                 i,
                 Course {
                     xy: (ix, iy),
                     width,
-                    length,
+                    depth,
                 },
             );
             let steps = i64::try_from(path.len() - 1).expect("small").max(1);
@@ -708,9 +800,7 @@ pub(crate) fn stems(c: &Continent, x: std::ops::Range<i32>, y: std::ops::Range<i
                     width,
                     depth,
                     ford: false,
-                    shape: 1000,
                     cell: i,
-                    f: j * 1000 / steps,
                 });
             }
         }
@@ -735,32 +825,21 @@ pub(crate) fn stems(c: &Continent, x: std::ops::Range<i32>, y: std::ops::Range<i
         });
     }
 
-    // A tributary's end slides onto the stem it joins.
+    // The tributaries join at first contact; the junctions, per stem.
+    let mut junctions: Vec<Vec<usize>> = vec![Vec::new(); out.len()];
     for k in 0..out.len() {
         let Some(main) = out[k].joins else {
             continue;
         };
-        let last = out[k].nodes[out[k].nodes.len() - 1].p;
-        let Some((target, _)) = nearest_on(&out[main].nodes, last) else {
-            continue;
-        };
-        let shift = (target.0 - last.0, target.1 - last.1);
-        let nodes = &mut out[k].nodes;
-        // How far back along the course each node lies, before any moves.
-        let mut back = vec![0; nodes.len()];
-        for j in (0..nodes.len() - 1).rev() {
-            back[j] = back[j + 1] + distance(nodes[j].p, nodes[j + 1].p);
-        }
-        for (node, back) in nodes.iter_mut().zip(back) {
-            let w = smooth(1000 - back * 1000 / (JOIN_BLEND_M * 1000));
-            node.p = (node.p.0 + shift.0 * w / 1000, node.p.1 + shift.1 * w / 1000);
+        if let Some(at) = join(&mut out, k, main, chains[k].1, &courses) {
+            junctions[main].push(at);
         }
     }
 
-    // The fords at the atlas's crossings: their bars' middles, then the
-    // banks' breath, pools and narrows around them, then the lens over
-    // each bar.
-    for stem in &mut out {
+    // The fords at the atlas's crossings: their bars' middles; then the
+    // banks' walk over each cell's course, calm around the bars and the
+    // junctions; then the lens over each bar.
+    for (stem, junctions) in out.iter_mut().zip(&junctions) {
         let mut fords = Vec::new();
         for &i in &stem.cells {
             if passages[i] != measure::Passage::Crossing {
@@ -775,7 +854,40 @@ pub(crate) fn stems(c: &Continent, x: std::ops::Range<i32>, y: std::ops::Range<i
                 fords.push(at);
             }
         }
-        breathe(seed, &mut stem.nodes, &fords, &courses);
+        let mut from = 0;
+        while from < stem.nodes.len() {
+            let cell = stem.nodes[from].cell;
+            let to = stem.nodes[from..]
+                .iter()
+                .position(|n| n.cell != cell)
+                .map_or(stem.nodes.len(), |len| from + len);
+            if let Some(&course) = courses.get(&cell) {
+                let quiet: Vec<(usize, i64)> = fords
+                    .iter()
+                    .filter(|&&at| (from..to).contains(&at))
+                    .map(|&at| {
+                        (
+                            at - from,
+                            stem.nodes[at].width * FORD_BAR_WIDTHS_PER_MILLE / 2000,
+                        )
+                    })
+                    .chain(
+                        junctions
+                            .iter()
+                            .filter(|&&at| (from..to).contains(&at))
+                            .map(|&at| (at - from, 0)),
+                    )
+                    .collect();
+                walk_banks(
+                    seed,
+                    &mut stem.nodes[from..to],
+                    course.xy,
+                    course.width,
+                    &quiet,
+                );
+            }
+            from = to;
+        }
         for &at in &fords {
             spread_ford(&mut stem.nodes, at);
         }
@@ -797,6 +909,13 @@ mod tests {
         stems(c, 0..side, 0..side)
     }
 
+    /// The farthest a bank stands in and out of its line, per mille of
+    /// the half-width the flow gives it, from the walker's reach.
+    fn bank_room() -> (i64, i64) {
+        let out = |k: i64| 1000 + k * BANK_SLOPE_PER_MILLE * WALK_STEP_PER_MILLE * 2 / 1000;
+        (out(BANK_REACH_STEPS.0), out(BANK_REACH_STEPS.1))
+    }
+
     #[test]
     fn no_turn_is_sharper_than_sixty_degrees() {
         for seed in 1..=3 {
@@ -813,17 +932,29 @@ mod tests {
     }
 
     #[test]
-    fn each_bank_stays_between_half_and_two_and_a_half_times_its_line() {
+    fn each_bank_stays_within_the_walkers_reach_and_the_width_within_its_room() {
         let c = continent(1);
+        let (least, most) = bank_room();
         for s in all_stems(&c) {
             for n in s.nodes.iter().filter(|n| !n.ford) {
+                // A node's own width may differ a little from its cell's
+                // (the blend across two cells, the growth past a
+                // junction): a twentieth of slack.
                 for half in [n.half.0, n.half.1] {
                     let (lo, hi) = (
-                        n.width / 2 * BANK_LEAST_PER_MILLE / 1000,
-                        n.width / 2 * BANK_MOST_PER_MILLE / 1000,
+                        n.width / 2 * (least - 50) / 1000,
+                        n.width / 2 * (most + 50) / 1000,
                     );
                     assert!((lo..=hi).contains(&half), "{half} for {}", n.width);
                 }
+                let total = n.half.0 + n.half.1;
+                assert!(
+                    (n.width * (NARROWEST_PER_MILLE - 50) / 1000
+                        ..=n.width * (WIDEST_PER_MILLE + 50) / 1000)
+                        .contains(&total),
+                    "{total} wide for {}",
+                    n.width
+                );
             }
         }
     }
@@ -872,46 +1003,115 @@ mod tests {
     }
 
     #[test]
-    fn the_two_banks_breathe_each_on_its_own() {
+    fn the_two_banks_walk_each_on_its_own() {
         let c = continent(1);
         let (mut apart, mut all) = (0, 0);
         for s in all_stems(&c) {
             for n in s.nodes.iter().filter(|n| !n.ford) {
-                let (l, r) = (n.half.0 - n.width / 2, n.half.1 - n.width / 2);
                 all += 1;
-                // One bank a tenth out while the other is a tenth in.
-                if (l > n.width / 20 && r < -n.width / 20)
-                    || (l < -n.width / 20 && r > n.width / 20)
-                {
+                // The banks stand a tenth of the width apart from each
+                // other's offset.
+                if (n.half.0 - n.half.1).abs() > n.width / 10 {
                     apart += 1;
                 }
             }
         }
         assert!(
-            apart * 10 > all,
-            "{apart} of {all} nodes have one bank out, the other in"
+            apart * 5 > all,
+            "{apart} of {all} nodes have their banks a tenth apart"
         );
     }
 
+    /// The runs of nodes of one cell along a stem: `(from, to)`.
+    fn cell_runs(s: &Stem) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let mut from = 0;
+        while from < s.nodes.len() {
+            let cell = s.nodes[from].cell;
+            let to = s.nodes[from..]
+                .iter()
+                .position(|n| n.cell != cell)
+                .map_or(s.nodes.len(), |len| from + len);
+            out.push((from, to));
+            from = to;
+        }
+        out
+    }
+
     #[test]
-    fn pools_and_narrows_lie_along_the_rivers_and_never_on_a_ford() {
+    fn the_banks_hold_their_lines_at_both_ends_of_a_cells_course() {
         let c = continent(1);
-        let (mut pools, mut narrows) = (0, 0);
+        let mut checked = 0;
         for s in all_stems(&c) {
-            let mut last = 1000;
-            for n in &s.nodes {
-                assert!(!n.ford || n.shape == 1000, "a ford's lens is calm: {n:?}");
-                if n.shape > 1000 && last <= 1000 {
-                    pools += 1;
-                } else if n.shape < 1000 && last >= 1000 {
-                    narrows += 1;
+            for (from, to) in cell_runs(&s) {
+                for n in [s.nodes[from], s.nodes[to - 1]] {
+                    if n.ford {
+                        continue;
+                    }
+                    assert_eq!(n.half, (n.width / 2, n.width / 2), "{n:?}");
+                    checked += 1;
                 }
-                last = n.shape;
+            }
+        }
+        assert!(checked > 100);
+    }
+
+    #[test]
+    fn each_bank_leaves_its_line_over_every_long_cell_course_and_never_the_same_way_twice() {
+        let c = continent(1);
+        let (mut long, mut levels) = (0, 0);
+        for s in all_stems(&c) {
+            for (from, to) in cell_runs(&s) {
+                let nodes = &s.nodes[from..to];
+                let width = nodes[0].width;
+                let along = along(nodes);
+                let length = along[nodes.len() - 1];
+                // Sixty steps of a fifth of a width: room for a hold, a
+                // move and the way back, twice over; a river wide enough
+                // for its nodes, 4 to 10 m apart, to resolve its steps.
+                if nodes.iter().any(|n| n.ford) || length < 12 * width || width < 20_000 {
+                    continue;
+                }
+                long += 1;
+                for bank in 0..2 {
+                    let offsets: Vec<i64> = nodes
+                        .iter()
+                        .map(|n| if bank == 0 { n.half.0 } else { n.half.1 } - n.width / 2)
+                        .collect();
+                    assert!(
+                        offsets.iter().any(|&o| o.abs() > width / 20),
+                        "a bank leaves its line over {length} mm of a {width} mm river"
+                    );
+                    // The sections where the bank holds its line (the
+                    // offset changes by less than half the slope's over
+                    // three nodes or more): no two in a row at the same
+                    // height.
+                    let mut plateaus: Vec<i64> = Vec::new();
+                    let mut run = 1;
+                    for j in 1..nodes.len() {
+                        let slope = (along[j] - along[j - 1]) * BANK_SLOPE_PER_MILLE / 2000;
+                        if (offsets[j] - offsets[j - 1]).abs() < slope {
+                            run += 1;
+                        } else {
+                            if run >= 3 {
+                                plateaus.push(offsets[j - 1]);
+                            }
+                            run = 1;
+                        }
+                    }
+                    for pair in plateaus.windows(2) {
+                        assert!(
+                            (pair[1] - pair[0]).abs() > width / 20,
+                            "two sections in a row at the same width: {plateaus:?}"
+                        );
+                    }
+                    levels += plateaus.len();
+                }
             }
         }
         assert!(
-            pools > narrows && narrows > 0,
-            "{pools} pools, {narrows} narrows"
+            long > 5 && levels > long,
+            "{long} long courses, {levels} plateaus"
         );
     }
 
@@ -957,7 +1157,7 @@ mod tests {
         for (k, s) in stems.iter().enumerate() {
             let last = s.nodes[s.nodes.len() - 1];
             if let Some(main) = s.joins {
-                let (_, d) = nearest_on(&stems[main].nodes, last.p).expect("a course");
+                let (_, d, _) = nearest_on(&stems[main].nodes, last.p).expect("a course");
                 assert!(d <= 1000, "stem {k} ends {d} mm off the stem it joins");
             } else {
                 let end = s.cells[s.cells.len() - 1];
@@ -968,6 +1168,46 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_tributary_joins_at_first_contact_and_never_runs_alongside() {
+        let c = continent(1);
+        let stems = all_stems(&c);
+        let mut tributaries = 0;
+        for (k, s) in stems.iter().enumerate() {
+            let Some(main) = s.joins else {
+                continue;
+            };
+            tributaries += 1;
+            let main = &stems[main].nodes;
+            let near = Near::new(main);
+            let last = s.nodes[s.nodes.len() - 1].p;
+            let (_, _, seg) = nearest_on(main, last).expect("a course");
+            let width = main[seg].width;
+            let widest = main.iter().map(|n| n.width).max().expect("nodes");
+            // Within a width of the stem's water only over its way in:
+            // the slide (twice up to one and a half widths) or 50 m.
+            let way_in = (JOIN_BLEND_M * 1000).max(3 * width);
+            let along = along(&s.nodes);
+            let end = along[along.len() - 1];
+            for (j, n) in s.nodes.iter().enumerate() {
+                if end - along[j] <= way_in {
+                    continue;
+                }
+                let Some((_, d, m)) = near.nearest(n.p, widest / 2 + JOIN_REACH_WIDTHS * widest)
+                else {
+                    continue;
+                };
+                let w = main[m].width;
+                assert!(
+                    d > w / 2 + JOIN_REACH_WIDTHS * w,
+                    "stem {k} runs {d} mm from a {w} mm stem {} mm before its end",
+                    end - along[j]
+                );
+            }
+        }
+        assert!(tributaries > 10, "{tributaries} tributaries");
     }
 
     #[test]
