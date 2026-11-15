@@ -1,0 +1,15 @@
+[package]
+name = "vivarium"
+description = "The vivarium (D41): a world of the simulation run headless and accelerated, with an HTML report per run. Depends on sim alone."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+sim = { path = "../sim" }
+
+[lints]
+workspace = true

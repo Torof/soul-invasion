@@ -187,6 +187,24 @@ riffle about 33 cm deep) but the window draws a river at its mean depth,
 1.5 m here, and no ford: today no path joins the two camps, and drawing the
 crossing is lot 1's first job.
 
+**Lot 1, the program (16 November 2026).** The `vivarium` crate
+(`server/vivarium`, depending on `sim` alone) bears a world as the server
+would (the content read from the same files), bears its people at the camp,
+runs the ticks with no clock and no network, and writes one HTML file: the
+factors named (the cadence, the world, the year, the brain, the food, the
+content's rates), the map with the camp, the living and the dead, four
+curves sampled 24 times a day (the living, mean hunger, thirst and
+fatigue), the chronicle (days, seasons, births, meals, drinks, deaths with
+their cause and place) and a page per person with its gauges; the speed in
+game years a minute on its own line, so the rest of the page is the same
+byte for byte for the same settings (tested). The cadence is one tick a
+game second, the plan's slow one: the needs drain by the game day, so the
+day's outcome does not depend on it. Without a brain the people stand where
+they were born and die of thirst, or of the nights' cold on the way there,
+which the chronicle says. The brain is the lot's second pull request, the
+two tribes the third (the crossing is not drawn yet, see lot 0), the point
+zero the fourth.
+
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
 slopes drawn by the client from them (D44), then the relief in the

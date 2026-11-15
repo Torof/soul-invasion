@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["sim", "protocol", "server"]
+members = ["sim", "protocol", "server", "vivarium"]
 
 [workspace.package]
 version = "0.0.1"
