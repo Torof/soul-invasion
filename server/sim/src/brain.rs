@@ -15,7 +15,7 @@
 //!
 //! 1. **Thirsty** (thirst at [`THIRSTY`] or more, or [`PARCHED`] while
 //!    asleep, which wakes it): to the nearest drinking place it knows,
-//!    and drinks there; knowing none, it goes looking ([`explore`]).
+//!    and drinks there; knowing none, it goes looking (`explore`).
 //! 2. **Hungry** (hunger at [`HUNGRY`] or more): to the nearest food it
 //!    knows, and eats it; knowing none, it goes looking.
 //! 3. **Night**: home to the camp, and sleeps within [`HOME_TILES`] of it.
