@@ -253,8 +253,16 @@ static var slopes_drawn := 0
 ## dials, each a shader parameter of the same name, so another biome can
 ## bring its own look without touching the shader. An image is given by
 ## its path. slope_streaks: the comets whose thin point goes toward the
-## crest; slope_turf: the lead's mountain grass (provisional: he wants a
-## short grass seen close, with stones and a few bushes). slope_break_turn:
+## crest; slope_turf_set: the lead's mountain grass as a family of tiles
+## of the same grass in different patterns, a shared border band so any
+## lays beside any (world/slope/mountain_turf.md), given as the tiles'
+## paths and built into one Texture2DArray at load, one layer a tile,
+## the shader choosing the layer cell by cell by a hash so the ground
+## reads uniform, not repeated; slope_turf_variants: how many tiles the
+## set holds, and slope_turf_angles: how many rows of them, one a
+## steepness (1 today: the array is laid out as angles × variants so the
+## slope's angle can index the rows later without the layout changing).
+## slope_break_turn:
 ## the streaks' turn, in degrees, on a side whose crest lies below (the
 ## lead's dial); slope_streak_mix and slope_streak_pale: how much the
 ## streaks' light pales the turf, and toward what (0: the turf alone, the
@@ -265,22 +273,30 @@ static var slopes_drawn := 0
 ## green, as the lead left it on 14 November 2026).
 const SLOPE_LOOK := {
 	"slope_streaks": "res://world/slope/slope_streaks.png",
-	"slope_turf": "res://world/slope/mountain_turf.png",
+	"slope_turf_set": [
+		"res://world/slope/mountain_turf_1.png",
+		"res://world/slope/mountain_turf_2.png",
+		"res://world/slope/mountain_turf_3.png",
+		"res://world/slope/mountain_turf_4.png",
+		"res://world/slope/mountain_turf_5.png",
+	],
+	"slope_turf_variants": 5,
+	"slope_turf_angles": 1,
 	"slope_break_turn": 165.0,
 	"slope_streak_mix": 0.0,
 	"slope_streak_pale": Vector3(0.92, 0.94, 0.59),
 	"slope_turf_px": 384.0,
 	"slope_tint": Vector3(0.94, 1.02, 0.92),
 }
-## The turf with tufts, bushes and stones (the lead's grass of
-## 13 November 2026) laid instead of the look's (the developer overlay's
-## key G).
-const SLOPE_TURF_BUSHES := "res://world/slope/mountain_turf_bushes.png"
 ## The rim a near face lays over the face behind a crest (off: the lead
 ## prefers the crests without it; the developer overlay's key R).
 static var slope_rim := false
-## The turf with bushes and stones instead of the look's (key G).
-static var slope_turf_with_bushes := false
+## The first tile alone instead of the whole set (the developer overlay's
+## key G: to see what the family brings against one tile repeated).
+static var slope_turf_single := false
+## The turf sets built so far, by their tiles' paths joined: a set is
+## built once and shared by every material and every toggle of key G.
+static var _turf_sets: Dictionary = {}
 ## The turf's repetition in canvas px as drawn now (the look's, or the
 ## developer overlay's key P).
 static var slope_turf_px: float = SLOPE_LOOK["slope_turf_px"]
@@ -300,17 +316,68 @@ static var flat_tint: Vector3 = FLAT_TINT
 
 
 ## The value of the look's dial `name` for the shader: the image loaded,
-## the turf the one with bushes when it is asked for, the turf's size as
-## set now.
+## the turf set built from its tiles (the first tile alone with key G,
+## and its count 1 then), the turf's size and tint as set now.
 static func _slope_dial(name: String) -> Variant:
-	if name == "slope_turf" and slope_turf_with_bushes:
-		return load(SLOPE_TURF_BUSHES)
+	if name == "slope_turf_set":
+		return slope_turf_set(_turf_paths())
+	if name == "slope_turf_variants":
+		return _turf_paths().size()
 	if name == "slope_turf_px":
 		return slope_turf_px
 	if name == "slope_tint":
 		return slope_tint
 	var value: Variant = SLOPE_LOOK[name]
 	return load(value) if value is String else value
+
+
+## The tiles of the turf as drawn now: the look's set, or its first tile
+## alone (key G).
+static func _turf_paths() -> PackedStringArray:
+	var paths := PackedStringArray(SLOPE_LOOK["slope_turf_set"])
+	return paths.slice(0, 1) if slope_turf_single else paths
+
+
+## The turf set of the tiles at `paths`, one layer a tile in their
+## order, with mipmaps (the shader reads it filter_linear_mipmap): built
+## once from the imported textures and kept. The tiles must share one
+## size and one format (1024 px, RGB), as the family does.
+static func slope_turf_set(paths: PackedStringArray) -> Texture2DArray:
+	var key := ";".join(paths)
+	if not _turf_sets.has(key):
+		var images: Array[Image] = []
+		for path: String in paths:
+			var image: Image = (load(path) as Texture2D).get_image()
+			image.generate_mipmaps()
+			images.append(image)
+		var set := Texture2DArray.new()
+		set.create_from_images(images)
+		_turf_sets[key] = set
+	return _turf_sets[key]
+
+
+## The ground shader's slope_turf_hash, bit for bit (Wellons' lowbias32
+## on 32 unsigned bits): the two multiplies are done in 16-bit halves so
+## nothing leaves 64 bits.
+static func slope_turf_hash(x: int) -> int:
+	x &= 0xFFFFFFFF
+	x ^= x >> 16
+	x = _mul32(x, 0x7feb352d)
+	x ^= x >> 15
+	x = _mul32(x, 0x846ca68b)
+	x ^= x >> 16
+	return x
+
+
+## `a` × `b` on 32 unsigned bits, as the GPU does it.
+static func _mul32(a: int, b: int) -> int:
+	return (a * (b & 0xFFFF) + (((a * (b >> 16)) & 0xFFFF) << 16)) & 0xFFFFFFFF
+
+
+## The tile the shader lays at `cell` of the turf's repetition, among
+## `variants` (the shader's slope_turf_variant, bit for bit).
+static func slope_turf_variant(cell: Vector2i, variants: int) -> int:
+	return slope_turf_hash((cell.x & 0xFFFFFFFF) ^ slope_turf_hash(cell.y)) % variants
 
 
 ## Sets the slope shader parameter `name` of every land's ground to
@@ -326,10 +393,12 @@ static func set_slope_turf_px(px: float) -> void:
 	set_slope_param("slope_turf_px", px)
 
 
-## The turf with bushes (true) or the look's turf.
-static func set_slope_turf_with_bushes(on: bool) -> void:
-	slope_turf_with_bushes = on
-	set_slope_param("slope_turf", _slope_dial("slope_turf"))
+## The first tile alone (true) or the look's whole set: the set and its
+## count go to the shader together.
+static func set_slope_turf_single(on: bool) -> void:
+	slope_turf_single = on
+	set_slope_param("slope_turf_set", _slope_dial("slope_turf_set"))
+	set_slope_param("slope_turf_variants", _slope_dial("slope_turf_variants"))
 
 
 static func set_slope_rim(on: bool) -> void:
