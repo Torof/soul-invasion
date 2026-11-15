@@ -1071,23 +1071,72 @@ fn judge_heights_of(cell: (i32, i32)) -> Verdict {
 /// The mountain cell the first sampling found worst (47 m a tile,
 /// 137,677 steps, 15 November 2026): no wall since the region's valleys
 /// have flanks, the rivers settle on the ground and the ground has its
-/// ceiling (`region::MAX_RISE_PER_MILLE`). The ceiling holds along the
-/// axes; along a diagonal the interpolation between cells overshoots
-/// it, and where the river's valley moved (its course thinned and
-/// meandered the same day) seven diagonal steps of 1.8 m appeared on a
-/// bare flank: the window is held to twice the net's step, not to none.
+/// ceiling (`region::MAX_RISE_PER_MILLE`); and no step at all since the
+/// window's waters pull the ground by a mean that drops none of them
+/// between two tiles, its brooks run on the ground they cross and end
+/// where they meet a river (seven steps of 1.8 m beside converging
+/// brooks the same day, blamed on the diagonal at first).
 #[test]
 fn the_mountain_cell_has_no_wall() {
     let verdict = judge_heights_of((631, 624));
     eprintln!("{}", verdict.line());
-    let steepest: i32 = verdict
-        .measures
-        .split("steepest step ")
-        .nth(1)
-        .and_then(|s| s.split(' ').next())
-        .and_then(|s| s.parse().ok())
-        .expect("the steepest step");
-    assert!(steepest <= 2 * STEP_DM, "{}", verdict.line());
+    assert!(
+        verdict.failures.iter().all(|(w, _)| *w != Invariant::Steps),
+        "{}",
+        verdict.line()
+    );
+}
+
+/// The windows of the sample whose ground stepped on 15 November 2026
+/// after the rivers took their natural courses (nine of 1.8 to 2.7 m
+/// on bare flanks, three in the mountains at 3.5 to 4.4 m, two of a
+/// step or so), measured that day: every step stood beside water, none
+/// came from the ground's ceiling or the interpolation between cells.
+/// The waters' pull dropped a water from its mean between two tiles
+/// (`window::pulled`), a brook's level fell evenly along a line that
+/// wandered across a flank (22 m under the ground), a tile of a steep
+/// river took the level of a stretch half a width downstream, and a
+/// brook ran up a falling river to its receiver's point 2 m under the
+/// surface. Judged on their heights alone: no step left.
+#[test]
+#[ignore = "fourteen windows' heights, minutes in release; run by hand: cargo test --release -p sim --lib plan::net::the_windows_whose -- --ignored --nocapture"]
+fn the_windows_whose_flanks_stepped_hold_no_step() {
+    const STEPPED: [(i32, i32); 14] = [
+        (224, 504),
+        (234, 464),
+        (389, 474),
+        (396, 467),
+        (436, 520),
+        (583, 581),
+        (605, 580),
+        (623, 599),
+        (627, 625),
+        (629, 624),
+        (631, 624),
+        (697, 94),
+        (724, 201),
+        (787, 719),
+    ];
+    let sampled = sample(continent());
+    let mut failed = Vec::new();
+    for &cell in &STEPPED {
+        assert!(
+            sampled.contains(&cell),
+            "{cell:?} is a window of the sample"
+        );
+        let verdict = judge_heights_of(cell);
+        eprintln!("{}", verdict.line());
+        if verdict.failures.iter().any(|(w, _)| *w == Invariant::Steps) {
+            failed.push(verdict.line());
+        }
+    }
+    assert!(
+        failed.is_empty(),
+        "{} of {} windows still step:\n{}",
+        failed.len(),
+        STEPPED.len(),
+        failed.join("\n")
+    );
 }
 
 /// The region's ground never rises faster than its ceiling between two
