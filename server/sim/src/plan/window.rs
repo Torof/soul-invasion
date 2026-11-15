@@ -464,7 +464,14 @@ impl Window {
         for y in 0..cells {
             for x in 0..cells {
                 let i = index(x, y);
-                height.push(region.height[i]);
+                // A lake cell's ground is its surface: the hollow under
+                // a lake is never seen, and read as ground it drew the
+                // shore down under the lake's level (15 November 2026).
+                height.push(if region.water[i] == Water::Lake {
+                    region.surface[i]
+                } else {
+                    region.height[i]
+                });
                 hills.push(if region.alluvium[i] {
                     i32::try_from(HILLS_ON_ALLUVIUM).expect("small")
                 } else {

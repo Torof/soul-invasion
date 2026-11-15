@@ -103,8 +103,9 @@ const PLAIN_CELLS: i64 = 3;
 const PLAIN_DISCHARGE: u64 = 5_000_000;
 
 /// A hollow is a lake when filled at least this deep (cm): shallower
-/// hollows of the detail are filled (a pond, a bog), else every dip of
-/// the noise would hold a lake.
+/// hollows of the detail are filled flat (a pond, a bog, the ground
+/// raised to the spill level), else every dip of the noise would hold a
+/// lake.
 const LAKE_MIN_CM: i32 = 800;
 
 /// A brook runs where at least this many cells drain: half a square
@@ -602,7 +603,17 @@ impl Region {
                     Water::Land
                 }
             })
-            .collect();
+            .collect::<Vec<Water>>();
+        // A hollow too shallow for a lake is a pond or a bog: filled
+        // flat to its spill level, so the ground holds no basin and a
+        // lake's shore, where the flood stood under `LAKE_MIN_CM`, lies
+        // at the lake's level and not metres under it (the net's `Steps`
+        // and `Pits` on lake shores, 15 November 2026).
+        for i in 0..n {
+            if !sea[i] && water[i] != Water::Lake {
+                height[i] = height[i].max(routing.filled[i]);
+            }
+        }
 
         // Biome and rock from the continent, their borders shifted.
         let mut biome = vec![Biome::Sea; n];

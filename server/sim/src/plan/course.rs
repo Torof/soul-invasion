@@ -641,7 +641,10 @@ fn settle(nodes: &mut [Node], ground: &dyn Fn((i64, i64)) -> Option<i64>) {
     let mut low = i64::MAX;
     for node in nodes.iter_mut() {
         if let Some(g) = ground(node.p) {
-            low = low.min(g);
+            // Never under the sea's level: ground below it is flooded
+            // to it (`Region`), and a river diving under it stepped
+            // where it met that water at the coast.
+            low = low.min(g.max(0));
         }
         node.level = node.level.min(low);
     }
