@@ -21,6 +21,37 @@ What remains to be decided, with the moment it will need to be settled.
 - ~~Visual rendering~~: pure 2D isometric, images generated with Midjourney under a style reference (6 November 2026, D02 settled, `07` and `09`). Still open: the animation tool for bodies, and whether ground overlays are content placed by the server or decoration scattered by the client.
 - ~~**Retention** of the event journal and snapshots (D28)~~ — decided 10 November 2026: no world journal (D17); the last three snapshots are kept, written every five minutes on the storage thread; a soul's deeds are kept until they unlock a title, power or skill.
 
+## Generator blind spots (15 November 2026)
+
+What the atlas → region → window generator does not do yet, found while building the continent's safety net (D41, `plan::net`, `windows_sheet`). Each line says what would reveal the gap; none is decided.
+
+- **Jungle and steppe have no species of their own**: every forest biome is drawn with the valley's kinds (`species.ron`: oak, pine, birch...), the jungle included; the open biomes' trees are the lone trees' kinds of the region's stands. Revealed by the jungle sheet beside the broadleaf one (the same dots), and by any species list per biome.
+- **Mountains**: no relief by altitude: no alpine meadow, no conifers above 1,500 m, no cliff, no scree; an alpine cell is a meadow with the region's slopes. Revealed by a window on a cell over 1,500 m (the net's hills stratum; seed 14 has under fifty alpine cells and no tundra, so the net cannot judge the cold biomes on it: run it on a cold seed).
+- **Coasts and the sea**: the window draws no sea. A coastal cell's sea is land below the sea's level, grass with trees, and the brooks that drain to the sea are dropped a cell short. Revealed by the net's coast stratum (`SeaAsLand`, dry brook ends) and the sheets of coastal cells.
+- **Deserts**: a meadow with the meadow's plants and no trees (the content asks none), no sand, no rock, no wadi. Revealed by the desert sheet.
+- **Lakes' shores**: a lake is a flat level with the ground drawn down to it over a wandering shore; no beach, no reed belt, no marsh; a brook ends at the lake cell's centre. Revealed by a lake cell among the sampled windows.
+- **Great rivers over 500 m³/s**: drawn at the width their flow gives them (`measure::width_cm`), no island, no arm; the atlas finds no dry-shod crossing on them, so a great river cuts the land for good (the atlas's detours measure it). Revealed by the net's great-river stratum: the ford check has nothing to check there.
+- **Marsh**: an open biome with the open ground's trees, no wet ground, no reeds, no standing water. Revealed by the marsh sheet.
+- **Rivers of 1 to 40 m³/s between the atlas's crossings**: the atlas's crossings are the only fords; a river whose mean depth is over 50 cm is water from bank to bank wherever the atlas found no crossing, so a small river cuts the land between its crossings (one ≤ 50 cm deep is a ford all along). Revealed by `measure::longest_dry_km` on the atlas and by a net invariant still to write: from any bank, a way across within a few kilometres.
+- **Tributaries' approach**: fixed in #239 (a tributary joins at first contact, tested on small continents); on seed 14 the sheets show the junctions, and the net has no invariant yet for two distinct courses running side by side. Revealed by an invariant on the distance between two stems' courses (never under two widths over 100 m unless they join).
+- **Seasons absent from the atlas**: the coldest season is estimated from the mean (`coldest_tenths`), the low water from a share of the discharge; the fords are drawn at the mean discharge. Revealed by a winter window: the river at low water, its fords elsewhere and wider.
+- **The continent born at every world birth**: seed 14 takes about 6 s (release) before a region or a window can be cut, paid by every server start and every test that reads the atlas. Revealed by the server's start time; a continent cached per seed, or a smaller atlas, would settle it.
+
+What the first sampling found (108 windows of seed 14, 54 of them breaking an invariant; the sheets in `content/ai-reserve/review/monde-genere/filet/`), left as findings:
+
+- **The woods are the same drawing in every window**: the valley's woods are keyed by the window's own tile coordinates (`Woods::new(side, side, ...)`), not the continent's, so every forest window of the atlas shows the same massifs, the same clearings and the same openings at the same places (the broadleaf, jungle, conifer and mixed sheets, tile for tile), and two windows that overlap do not agree. Revealed by any two sheets side by side; the fix is an origin for the woods' noises.
+- **Steps over 1.7 m a tile with no cliff**, 37 windows of 108: the region carves its river valleys with a wall at their rim (`region::VALLEY_CELLS`: the ground is capped near the river and left high beyond it, so one 64 m cell climbs up to 120 m, 190 %, just north of the vivarium's zone), and the mountains' slopes (conifer cells (629, 624), (631, 624), (224, 504): up to 47 m a tile, 137,677 steps in one window) are drawn as walkable ground, no rule reading the heights yet (D43).
+- **Straight reaches**, 26 windows: the centreline stays within a quarter width of a chord over 300 to 1,177 m (the vivarium's river: 675 m south of its crossing; a marsh river of 401 m³/s: 1,177 m); the great rivers cross whole 2 km tiles nearly straight (marsh sheet). The region's meanders (280 per mille at 64 m) and the fine detail (150 per mille) leave the eye a canal every few cells.
+- **The banks of the widest rivers step**: on rivers over 500 m³/s the walker's moves show as sawtooth widths (marsh sheet, 1,844 m³/s); the banks breathe everywhere (widest over narrowest within 500 m never under 1.19).
+- **Brooks in straight diagonals**: a brook runs from cell centre to cell centre of the 64 m grid, 16 m of jitter, so the plains show long 45° lines and right angles (the grassland, steppe and wooded-steppe sheets).
+- **The sea drawn as land**, 5 coastal windows: up to 2.9 million tiles of a window below the sea's level, dry, with trees.
+- **Pits**: a tile lower than its eight neighbours off the water in every window (the rounding of the hills' noise to the decimetre, up to a thousand a window, 1 dm deep) and, in 16 windows, pits of 2 to 6 dm.
+- **Lakes' shores in 64 m squares** (the steppe, desert and wooded-steppe sheets): the shore wanders 20 m, not enough to hide the cell.
+- **The steppe's open ground holds three to four times the trees asked** (4 windows, 2 to 3 a hectare for 0.7): the valley's groups along the woods and the water add to the content's count, which was tuned on grassland.
+- **A path over a crossing that does not wade the ford** (cell (222, 683), 116 m³/s): the two banks join by another way within 400 tiles.
+- **Biome borders in blocks** on the alpine sheet: the forest patches inside the alpine cells keep the 64 m cells' corners (the border wanders 28 m).
+- Seed 14 holds 3 alpine cells, 3 mixed-forest, 6 conifer and no tundra among the sampled: the cold biomes are barely measured on it.
+
 ## To be settled later
 
 - **Detailed reincarnation**: point scale, penalties, distinction between abandonment and death suffered.
