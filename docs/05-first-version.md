@@ -183,9 +183,10 @@ itself is cut in about 60 ms, but the continent it is cut from takes some
 6 s in release, so the world is born in about 6 s, not under the second
 the plan asked; the continent's cost is the thing to bring down or to keep,
 not the zone's. The atlas finds the crossing wadeable (a bar reach, its
-riffle about 33 cm deep) but the window draws a river at its mean depth,
-1.5 m here, and no ford: today no path joins the two camps, and drawing the
-crossing is lot 1's first job.
+riffle about 33 cm deep) but the window drew a river at its mean depth,
+1.5 m here, and no ford. Since the river and net mendings of 15 and 16
+November (D36, the net's `FordPath`) the window draws it: 1,636 ford tiles
+around (1312, 800), the one way between the camps.
 
 **Lot 1, the program (16 November 2026).** The `vivarium` crate
 (`server/vivarium`, depending on `sim` alone) bears a world as the server
@@ -202,8 +203,40 @@ game second, the plan's slow one: the needs drain by the game day, so the
 day's outcome does not depend on it. Without a brain the people stand where
 they were born and die of thirst, or of the nights' cold on the way there,
 which the chronicle says. The brain is the lot's second pull request, the
-two tribes the third (the crossing is not drawn yet, see lot 0), the point
-zero the fourth.
+two tribes the third, the point zero the fourth.
+
+**Lot 1, the point zero (16 November 2026).** The brain (`sim::brain`)
+pilots each body as a player would and thinks only when something changes
+for it: born, a gauge past a threshold, a stop, a refusal, a drink or a
+meal, nightfall, dawn. It looks as far as the ground lets it see and
+remembers the drinking places (one a chunk) and the food it saw; then,
+in order, thirsty (50, or 80 asleep) it goes to drink, hungry (50) to eat,
+at night home to sleep within 6 tiles of its camp, by day home; knowing no
+place it goes looking in rings out of its camp. Born at its camp it knows
+where the camp drinks (the tribe's knowledge of its land, until knowledge
+passes between people in V3). The two tribes are born at camp A
+(1952, 1952) and camp B (224, 224), 2,443 m apart, the river and its ford
+between them. Measured on the lead's laptop (release), the world born in
+14 s:
+
+| Run | Deaths | Run time | Game years a minute |
+|---|---|---|---|
+| 2 × 5 people, 10 days | none | 5.0 s | 5.5 |
+| 2 × 20 people, 2 years (100 days) | none | 20 s | 6.0 |
+| 2 × 150 people, 2 years | none | 152 s | 0.8 |
+
+The same settings give the same report twice (the timing line aside).
+Nobody dies: the world lays no food yet and hunger is paused, water is
+always near the camp, a night outside costs less vitality than the day
+gives back. They live too easily, as the plan expected: this is the point
+zero the next lots are measured against. Two things learnt: a thought cost
+4 ms when it tried every tile in sight as a place to drink and 40 ms when
+it made the ground's dead wood and pebbles to look for food among them
+(now it looks for water from the water, only from a new place, and for
+food among the items bodies laid: 0.4 ms); and every body of a tribe does
+the same thing at the same time (one camp, one rule), which the lot 2
+needs and the people's own traits will break. With 300 people the report
+weighs 38 MB (every thought on every page): to be cut when it matters.
 
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
