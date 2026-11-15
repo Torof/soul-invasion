@@ -17,6 +17,7 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
   --days N                 game days to run (default 10)
   --cadence N              ticks a game second (default 1; the game runs at 10)
   --seed N                 the run's seed (default 1)
+  --no-brain               the control run: nobody thinks, the people stand
   --content DIR            the content directory (default: content/, ../content/
                            or ../../content/, the first holding materials.ron)
   --out FILE               the report (default vivarium-report.html)
@@ -65,6 +66,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
                     u32::try_from(number(value(&mut i, "--cadence")?, "--cadence")?)
                         .map_err(|_| "--cadence: too high".to_owned())?;
             }
+            "--no-brain" => settings.brain = false,
             "--seed" => settings.seed = number(value(&mut i, "--seed")?, "--seed")?,
             "--content" => settings.content = Some(PathBuf::from(value(&mut i, "--content")?)),
             "--out" => out = PathBuf::from(value(&mut i, "--out")?),
@@ -169,6 +171,13 @@ mod tests {
     #[test]
     fn bad_options_are_refused_and_help_is_told() {
         assert!(parse(&args(&["--help"])).unwrap().is_none());
+        assert!(
+            !parse(&args(&["--no-brain"]))
+                .unwrap()
+                .unwrap()
+                .settings
+                .brain
+        );
         assert!(parse(&args(&["--days"])).is_err());
         assert!(parse(&args(&["--days", "ten"])).is_err());
         assert!(parse(&args(&["--world", "mars"])).is_err());

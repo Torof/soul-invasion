@@ -12,6 +12,7 @@
 // exceptions of today's generator allow floats where they stand.
 #![warn(clippy::float_arithmetic)]
 
+pub mod brain;
 pub mod changes;
 pub mod content;
 pub mod flora;
