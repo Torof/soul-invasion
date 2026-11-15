@@ -241,7 +241,66 @@ pub struct Body {
     /// walking body is not weighed every tick. Derived, never stored.
     #[serde(skip)]
     load_g: u32,
+    /// The work it is busy at, if any (D45): gathering, a pinch at a time.
+    #[serde(default)]
+    work: Option<Work>,
 }
+
+/// Work that lasts (D45): a body gathering from a tree or a plant, by
+/// hand, at its kind's rate, until the plant is bare, its hands and back
+/// are full, or it is told to do something else.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Work {
+    /// The chunk of what it gathers from.
+    pub chunk: ChunkPos,
+    /// What it gathers from.
+    pub bearer: crops::Bearer,
+    /// The material it gathers.
+    pub gives: String,
+    /// When it began.
+    pub since: Tick,
+    /// The grams gathered so far.
+    pub done_g: u32,
+    /// The carried item they go into, once the first pinch is taken.
+    pub into: Option<ItemId>,
+}
+
+/// Why a body stopped working.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkEnd {
+    /// Nothing is left of the crop on the plant (or its season is over).
+    Bare,
+    /// It carries all it can.
+    Full,
+    /// It was told to do something else, or fell asleep.
+    Interrupted,
+}
+
+/// What thirst rises by in one tick (in the gauge's fine units), for a
+/// day of `per_day` ticks: faster in the season's heat, and walking or
+/// working (`effort`).
+pub(crate) fn thirst_raise(
+    needs: &content::Needs,
+    season: Season,
+    effort: bool,
+    per_day: u64,
+) -> u64 {
+    let heat = u64::from(needs.thirst_heat_percent.get(season));
+    let effort = if effort {
+        u64::from(needs.thirst_effort_percent)
+    } else {
+        100
+    };
+    u64::from(needs.thirst_per_day) * GAUGE_SCALE * heat * effort / (per_day * 10_000)
+}
+
+/// The least a body gathers at a time, in grams: a pinch.
+const PINCH_G: u32 = 10;
+
+/// How near a tree or plant a body gathers from it, in millimetres: an
+/// arm's reach and a step.
+pub const GATHER_REACH_MM: i64 = 2500;
 
 impl Body {
     /// The body's id.
@@ -252,6 +311,11 @@ impl Body {
     /// How the body fares.
     pub fn condition(&self) -> &Condition {
         &self.condition
+    }
+
+    /// The work the body is busy at, if any (D45).
+    pub fn work(&self) -> Option<&Work> {
+        self.work.as_ref()
     }
 
     /// The item in hand, if any.
@@ -453,6 +517,10 @@ pub enum Refusal {
     NotFood,
     /// No running water there to drink.
     NotWater,
+    /// Nothing of that crop is on the plant now.
+    NothingRipe,
+    /// The food has spoiled.
+    Spoiled,
 }
 
 /// What a body that stopped for good short of its target sees barring
@@ -544,6 +612,39 @@ pub enum Intention {
         /// Where to.
         target: Pos,
     },
+    /// Gather by hand the crop giving `gives` from a tree or a plant
+    /// within reach (D45): work that lasts, a pinch at a time, into an
+    /// item carried, until the plant is bare, the body can carry no more,
+    /// or another intention comes.
+    Gather {
+        /// Who.
+        body: BodyId,
+        /// The chunk of the tree or plant.
+        chunk: ChunkPos,
+        /// The tree or plant.
+        source: crops::Source,
+        /// The material gathered.
+        gives: String,
+    },
+}
+
+impl Intention {
+    /// The body it is for.
+    pub fn body(&self) -> BodyId {
+        match *self {
+            Intention::MoveTo { body, .. }
+            | Intention::Eat { body, .. }
+            | Intention::PickUp { body, .. }
+            | Intention::Drop { body, .. }
+            | Intention::Hold { body, .. }
+            | Intention::Stow { body, .. }
+            | Intention::Drink { body, .. }
+            | Intention::Sleep { body }
+            | Intention::Wake { body }
+            | Intention::Teleport { body, .. }
+            | Intention::Gather { body, .. } => body,
+        }
+    }
 }
 
 /// How far ahead of a body that stopped for good it looks for what bars
@@ -692,6 +793,43 @@ pub enum Event {
         load_g: u32,
         /// Grams the body can carry.
         capacity_g: u32,
+    },
+    /// A body began to gather (D45). Seen by all.
+    WorkStarted {
+        /// Who.
+        body: BodyId,
+        /// What it gathers.
+        gives: String,
+    },
+    /// A body stopped gathering, and what it gathered. Seen by all.
+    WorkStopped {
+        /// Who.
+        body: BodyId,
+        /// What it gathered.
+        gives: String,
+        /// How much, in grams.
+        grams: u32,
+        /// Why it stopped.
+        why: WorkEnd,
+    },
+    /// A body could not begin to gather. Told to the pilot.
+    GatherRefused {
+        /// Who.
+        body: BodyId,
+        /// What it would have gathered.
+        gives: String,
+        /// Why not.
+        reason: Refusal,
+    },
+    /// Food spoiled and is gone (D16, D45), wherever it was: on the
+    /// ground, carried. Told when the day starts.
+    Spoiled {
+        /// The item.
+        item: ItemId,
+        /// Its material.
+        material: String,
+        /// Its grams.
+        grams: u32,
     },
     /// What a body holds in hand changed. Seen by all.
     BodyHolds {
@@ -1202,25 +1340,38 @@ impl World {
             return 0;
         };
         let taken = grams.min(ripe.grams);
-        if taken == 0 {
-            return 0;
+        self.record_pick(chunk, source, gives, ripe.year, taken);
+        taken
+    }
+
+    /// Counts `grams` picked of the crop giving `gives`, of `year`, on
+    /// `source` of `chunk` ([`World::pick`]); nothing when 0.
+    fn record_pick(
+        &mut self,
+        chunk: ChunkPos,
+        source: crops::Source,
+        gives: &str,
+        year: u64,
+        grams: u32,
+    ) {
+        if grams == 0 {
+            return;
         }
         let key = (source, gives.to_owned());
         let changes = Arc::make_mut(self.changes.entry(chunk).or_default());
         let before = changes
             .picked
             .get(&key)
-            .filter(|p| p.year == ripe.year)
+            .filter(|p| p.year == year)
             .map_or(0, |p| p.grams);
         changes.picked.insert(
             key,
             changes::Picked {
-                year: ripe.year,
-                grams: before + taken,
+                year,
+                grams: before + grams,
             },
         );
         changes.version += 1;
-        taken
     }
 
     /// The rock under each tile of `chunk`, row by row (D42), drawn from
@@ -1581,6 +1732,7 @@ impl World {
             held: None,
             carried: Vec::new(),
             load_g: 0,
+            work: None,
         });
         self.enter_chunk(id, pos.chunk());
         id
@@ -1665,6 +1817,7 @@ impl World {
         let now = self.time();
         if now.is_day_start() {
             events.push(Event::DayStarted { day: now.day });
+            self.spoil(rules, events);
         }
         if now.is_season_start() {
             events.push(Event::SeasonStarted {
@@ -1727,6 +1880,7 @@ impl World {
             }
         }
 
+        self.labour(rules, events);
         self.fare(rules, night, events);
     }
 
@@ -1820,12 +1974,14 @@ impl World {
         let per_day = self.calendar.ticks_per_day();
         let step = |rate_per_day: u32| u64::from(rate_per_day) * GAUGE_SCALE / per_day;
         let needs = &rules.needs;
+        let season = self.time().season;
         let mut died = Vec::new();
         for body in &mut self.bodies {
             let before = body.condition.summary();
+            let effort = !body.route.is_empty() || body.work.is_some();
             let c = &mut body.condition;
             c.hunger.raise(step(needs.hunger_per_day));
-            c.thirst.raise(step(needs.thirst_per_day));
+            c.thirst.raise(thirst_raise(needs, season, effort, per_day));
             if night {
                 c.cold.raise(step(needs.cold_per_day_at_night));
             } else {
@@ -1944,7 +2100,19 @@ impl World {
         {
             self.materialise(item);
         }
+        // Any other intention stops the work its body is busy at.
+        if !matches!(intention, Intention::Gather { .. })
+            && let Some(index) = self.index_of(intention.body())
+        {
+            self.stop_work(index, WorkEnd::Interrupted, events);
+        }
         match *intention {
+            Intention::Gather {
+                body: id,
+                chunk,
+                source,
+                ref gives,
+            } => self.gather(id, chunk, source, gives, rules, events),
             Intention::MoveTo { body: id, target } => {
                 let Some(index) = self.index_of(id) else {
                     events.push(Event::MoveRefused {
@@ -2125,6 +2293,253 @@ impl World {
     /// Eats a meal off `item`: all of it when it weighs no more than a
     /// meal ([`content::Needs::meal_g`]), which is then gone; else a
     /// meal's grams, the rest staying where it is.
+    /// Begins to gather ([`Intention::Gather`]): refused unless the tree
+    /// or plant is there, within reach ([`GATHER_REACH_MM`]), bears that
+    /// crop now, and the body can carry more. The body stops where it
+    /// stands, awake.
+    fn gather(
+        &mut self,
+        id: BodyId,
+        chunk: ChunkPos,
+        source: crops::Source,
+        gives: &str,
+        rules: &Content,
+        events: &mut Vec<Event>,
+    ) {
+        let refuse = |events: &mut Vec<Event>, reason| {
+            events.push(Event::GatherRefused {
+                body: id,
+                gives: gives.to_owned(),
+                reason,
+            });
+        };
+        let Some(index) = self.index_of(id) else {
+            return refuse(events, Refusal::Unknown);
+        };
+        let Some(bearer) = self
+            .bearers_in(chunk)
+            .into_iter()
+            .find(|b| b.source == source)
+        else {
+            return refuse(events, Refusal::Unknown);
+        };
+        let at = self.bodies[index].at;
+        let (dx, dy) = (i64::from(at.x - bearer.at.x), i64::from(at.y - bearer.at.y));
+        if dx * dx + dy * dy > GATHER_REACH_MM * GATHER_REACH_MM {
+            return refuse(events, Refusal::OutOfReach);
+        }
+        if !self
+            .ripe_on(chunk, &bearer)
+            .iter()
+            .any(|r| r.gives == gives)
+        {
+            return refuse(events, Refusal::NothingRipe);
+        }
+        if self.bodies[index].load_g >= rules.movement.carry_capacity_g {
+            return refuse(events, Refusal::TooHeavy);
+        }
+        self.stop_work(index, WorkEnd::Interrupted, events);
+        self.wake(index, events);
+        let since = self.tick;
+        let body = &mut self.bodies[index];
+        body.goal = None;
+        body.skirted = Skirted::Not;
+        if !body.route.is_empty() {
+            body.route.clear();
+            events.push(Event::BodyStopped {
+                body: id,
+                at: body.at,
+            });
+        }
+        body.work = Some(Work {
+            chunk,
+            bearer,
+            gives: gives.to_owned(),
+            since,
+            done_g: 0,
+            into: None,
+        });
+        events.push(Event::WorkStarted {
+            body: id,
+            gives: gives.to_owned(),
+        });
+    }
+
+    /// Moves every working body's work on (D45): what its kind's rate has
+    /// earned since it began, a pinch at least at a time ([`PINCH_G`]),
+    /// taken off the plant into the item it carries, until the plant is
+    /// bare or its load full. A body that walks or sleeps has stopped.
+    fn labour(&mut self, rules: &Content, events: &mut Vec<Event>) {
+        let per_hour = (self.calendar.ticks_per_day() / 24).max(1);
+        for index in 0..self.bodies.len() {
+            let body = &self.bodies[index];
+            let Some(work) = &body.work else {
+                continue;
+            };
+            if !body.route.is_empty() || body.condition.asleep {
+                self.stop_work(index, WorkEnd::Interrupted, events);
+                continue;
+            }
+            let rate = self
+                .crops
+                .iter()
+                .find(|c| c.on == work.bearer.kind && c.gives == work.gives)
+                .map_or(0, |c| c.per_hour_g);
+            let earned = u64::from(rate) * (self.tick.0 - work.since.0) / per_hour;
+            let due =
+                u32::try_from(earned.saturating_sub(u64::from(work.done_g))).unwrap_or(u32::MAX);
+            if rate > 0 && due < PINCH_G {
+                continue;
+            }
+            let work = work.clone();
+            let Some(left) = self
+                .ripe_on(work.chunk, &work.bearer)
+                .into_iter()
+                .find(|r| r.gives == work.gives)
+            else {
+                self.stop_work(index, WorkEnd::Bare, events);
+                continue;
+            };
+            let room = rules
+                .movement
+                .carry_capacity_g
+                .saturating_sub(self.bodies[index].load_g);
+            let grams = due.min(left.grams).min(room);
+            if grams > 0 {
+                self.record_pick(
+                    work.chunk,
+                    work.bearer.source,
+                    &work.gives,
+                    left.year,
+                    grams,
+                );
+                self.add_gathered(index, &work, grams, rules, events);
+            }
+            if grams == left.grams {
+                self.stop_work(index, WorkEnd::Bare, events);
+            } else if grams == room {
+                self.stop_work(index, WorkEnd::Full, events);
+            }
+        }
+    }
+
+    /// Puts `grams` just gathered in the item the work carries them in,
+    /// or in a new one, made now, in hand if the hand is free.
+    fn add_gathered(
+        &mut self,
+        index: usize,
+        work: &Work,
+        grams: u32,
+        rules: &Content,
+        events: &mut Vec<Event>,
+    ) {
+        let id = self.bodies[index].id;
+        let into = work.into.filter(|item| {
+            self.items.get(item).is_some_and(|i| {
+                i.material == work.gives && matches!(i.place, Place::Carried { body } if body == id)
+            })
+        });
+        let item = if let Some(item) = into {
+            if let Some(heap) = self.items.get_mut(&item) {
+                heap.mass_g += grams;
+            }
+            item
+        } else {
+            let item = ItemId(self.next_item);
+            self.next_item += 1;
+            self.items.insert(
+                item,
+                Item {
+                    id: item,
+                    material: work.gives.clone(),
+                    mass_g: grams,
+                    made: self.tick,
+                    place: Place::Carried { body: id },
+                },
+            );
+            let body = &mut self.bodies[index];
+            if body.held.is_none() {
+                body.held = Some(item);
+                events.push(Event::BodyHolds {
+                    body: id,
+                    item: Some(item),
+                });
+            } else {
+                body.carried.push(item);
+            }
+            item
+        };
+        if let Some(work) = self.bodies[index].work.as_mut() {
+            work.done_g += grams;
+            work.into = Some(item);
+        }
+        self.inventory_changed(index, rules, events);
+    }
+
+    /// Ends the work of the body at `index`, if it is busy, telling what
+    /// it gathered.
+    fn stop_work(&mut self, index: usize, why: WorkEnd, events: &mut Vec<Event>) {
+        if let Some(work) = self.bodies[index].work.take() {
+            events.push(Event::WorkStopped {
+                body: self.bodies[index].id,
+                gives: work.gives,
+                grams: work.done_g,
+                why,
+            });
+        }
+    }
+
+    /// Has `item` spoiled (D16, D45)? Food does, its content's days after
+    /// it was made; anything else never.
+    fn spoiled(&self, item: &Item, rules: &Content) -> bool {
+        rules
+            .material(&item.material)
+            .and_then(|m| m.food)
+            .is_some_and(|food| {
+                self.tick.0.saturating_sub(item.made.0)
+                    >= u64::from(food.keeps_days) * self.calendar.ticks_per_day()
+            })
+    }
+
+    /// Takes away the food that has spoiled, wherever it is (D45): on the
+    /// ground, carried. Done as each day starts; till then, spoiled food
+    /// is refused to who would eat it.
+    fn spoil(&mut self, rules: &Content, events: &mut Vec<Event>) {
+        let gone: Vec<ItemId> = self
+            .items
+            .values()
+            .filter(|item| self.spoiled(item, rules))
+            .map(|item| item.id)
+            .collect();
+        for id in gone {
+            let Some(item) = self.remove_item(id) else {
+                continue;
+            };
+            match item.place {
+                Place::Ground { pos } => events.push(Event::ItemRemoved {
+                    item: id,
+                    at: pos,
+                    version: self.chunk_version(pos.chunk()),
+                }),
+                Place::Carried { body } => {
+                    if let Some(index) = self.index_of(body) {
+                        let was_held = self.bodies[index].held == Some(id);
+                        self.bodies[index].let_go(id);
+                        self.inventory_changed(index, rules, events);
+                        if was_held {
+                            events.push(Event::BodyHolds { body, item: None });
+                        }
+                    }
+                }
+            }
+            events.push(Event::Spoiled {
+                item: id,
+                material: item.material,
+                grams: item.mass_g,
+            });
+        }
+    }
+
     fn eat(&mut self, id: BodyId, item: ItemId, rules: &Content, events: &mut Vec<Event>) {
         let Some(index) = self.index_of(id) else {
             return Self::refuse(events, id, ItemAct::Eat, item, Refusal::Unknown);
@@ -2140,6 +2555,9 @@ impl World {
         let Some(food) = rules.material(&material).and_then(|m| m.food) else {
             return Self::refuse(events, id, ItemAct::Eat, item, Refusal::NotFood);
         };
+        if self.item(item).is_some_and(|i| self.spoiled(i, rules)) {
+            return Self::refuse(events, id, ItemAct::Eat, item, Refusal::Spoiled);
+        }
         self.wake(index, events);
         let grams = mass_g.min(rules.needs.meal_g);
         let whole = grams == mass_g;

@@ -55,6 +55,9 @@ pub struct Crop {
     pub grams: (u32, u32, u32),
     /// How often its years are lean or rich.
     pub years: Years,
+    /// What one person gathers of it by hand in an hour of work, in
+    /// grams, while there is some on the plant.
+    pub per_hour_g: u32,
 }
 
 /// The chances in a hundred of a lean year and of a rich one; the other
@@ -105,6 +108,8 @@ pub fn check(crop: &Crop) -> Option<&'static str> {
         Some("grams: a tonne a plant at most")
     } else if u32::from(crop.years.lean) + u32::from(crop.years.rich) > 100 {
         Some("years: lean and rich make a hundred at most")
+    } else if !(1..=100_000).contains(&crop.per_hour_g) {
+        Some("per_hour_g is 1 to 100,000")
     } else {
         None
     }
@@ -188,7 +193,7 @@ pub(crate) fn bears(crop: &Crop, seed: u64, frame: Frame, at: FinePos, year: u64
 
 /// A plant's key in its chunk: its place from the chunk's corner, in
 /// millimetres. Plants keep their room, so two never share a place.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct PlantKey {
     /// Millimetres east of the chunk's corner.
     pub x_mm: u16,
@@ -214,7 +219,8 @@ impl PlantKey {
 /// What bears a crop, for the whole life of the world: a tree by its key,
 /// a plant by its place. Stable as the trees' keys are: the same every
 /// time its chunk is placed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Source {
     /// A tree of the chunk.
     Tree(TreeKey),
@@ -224,7 +230,7 @@ pub enum Source {
 
 /// A tree or a plant bearing crops in some season, as the world places
 /// it ([`crate::World::bearers_in`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bearer {
     /// Who it is.
     pub source: Source,
@@ -257,6 +263,7 @@ mod tests {
             until: (Season::Winter, 0),
             grams: (1000, 5000, 10_000),
             years: Years { lean: 25, rich: 25 },
+            per_hour_g: 2000,
         }
     }
 
@@ -547,5 +554,260 @@ mod tests {
                 "day {day}"
             );
         }
+    }
+
+    /// A body born on the free tile nearest `bearer`.
+    fn body_by(world: &mut crate::World, bearer: &Bearer) -> crate::BodyId {
+        let t = bearer.at.tile();
+        let near: Vec<crate::Pos> = {
+            let trunks = world.trunks();
+            let mut near: Vec<crate::Pos> = (-2..=2)
+                .flat_map(|dy| (-2..=2).map(move |dx| crate::Pos::new(t.x + dx, t.y + dy)))
+                .filter(|&p| world.map().is_passable(p) && !trunks.blocks(p))
+                .collect();
+            near.sort_by_key(|p| (p.x - t.x).pow(2) + (p.y - t.y).pow(2));
+            near
+        };
+        let body = world.spawn_body(near[0]);
+        let at = world.bodies().iter().find(|b| b.id() == body).unwrap().at();
+        let (dx, dy) = (i64::from(at.x - bearer.at.x), i64::from(at.y - bearer.at.y));
+        assert!(
+            dx * dx + dy * dy <= crate::GATHER_REACH_MM.pow(2),
+            "within reach"
+        );
+        body
+    }
+
+    fn gather(
+        body: crate::BodyId,
+        chunk: ChunkPos,
+        bearer: &Bearer,
+        gives: &str,
+    ) -> crate::Intention {
+        crate::Intention::Gather {
+            body,
+            chunk,
+            source: bearer.source,
+            gives: gives.to_owned(),
+        }
+    }
+
+    fn mass_of(world: &crate::World, item: crate::ItemId) -> u32 {
+        world.item(item).map_or(0, crate::Item::mass_g)
+    }
+
+    #[test]
+    fn gathering_a_hazel_takes_its_rate_an_hour_into_the_hand_until_it_is_bare() {
+        let (mut world, content, chunk, hazel) = valley_with("hazel");
+        run_to(&mut world, &content, 30);
+        let full = world.ripe_on(chunk, &hazel)[0].grams;
+        let body = body_by(&mut world, &hazel);
+        let mut events = Vec::new();
+        world.queue(gather(body, chunk, &hazel, "hazelnuts"));
+        world.advance(1, &content, &mut events);
+        assert!(events.contains(&crate::Event::WorkStarted {
+            body,
+            gives: "hazelnuts".to_owned()
+        }));
+        // An hour is 4 ticks of this short day: 2 kg an hour, 500 g a tick.
+        world.advance(2, &content, &mut events);
+        let held = world
+            .bodies()
+            .iter()
+            .find(|b| b.id() == body)
+            .unwrap()
+            .held();
+        let item = held.expect("the nuts in hand");
+        assert_eq!(mass_of(&world, item), full.min(1000));
+        assert_eq!(world.ripe_on(chunk, &hazel)[0].grams, full - full.min(1000));
+        // On until the hazel is bare: all of it in the hand, told once.
+        events.clear();
+        world.advance(40, &content, &mut events);
+        let stopped: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, crate::Event::WorkStopped { .. }))
+            .collect();
+        assert_eq!(
+            stopped,
+            [&crate::Event::WorkStopped {
+                body,
+                gives: "hazelnuts".to_owned(),
+                grams: full,
+                why: crate::WorkEnd::Bare,
+            }]
+        );
+        assert_eq!(mass_of(&world, item), full);
+        assert_eq!(world.ripe_on(chunk, &hazel), []);
+        let body_now = world.bodies().iter().find(|b| b.id() == body).unwrap();
+        assert!(body_now.work().is_none());
+    }
+
+    #[test]
+    fn a_full_load_or_another_intention_stops_the_work() {
+        let (mut world, mut content, chunk, hazel) = valley_with("hazel");
+        run_to(&mut world, &content, 30);
+        let body = body_by(&mut world, &hazel);
+        let mut events = Vec::new();
+        // Room for 300 g: full after a pinch or two.
+        content.movement.carry_capacity_g = 300;
+        world.queue(gather(body, chunk, &hazel, "hazelnuts"));
+        world.advance(6, &content, &mut events);
+        assert!(events.contains(&crate::Event::WorkStopped {
+            body,
+            gives: "hazelnuts".to_owned(),
+            grams: 300,
+            why: crate::WorkEnd::Full,
+        }));
+        // Refused with nothing more to carry.
+        events.clear();
+        world.queue(gather(body, chunk, &hazel, "hazelnuts"));
+        world.advance(1, &content, &mut events);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            crate::Event::GatherRefused {
+                reason: crate::Refusal::TooHeavy,
+                ..
+            }
+        )));
+        // Room again; another intention stops it, the nuts kept.
+        content.movement.carry_capacity_g = 20_000;
+        world.queue(gather(body, chunk, &hazel, "hazelnuts"));
+        world.advance(3, &content, &mut events);
+        events.clear();
+        world.queue(crate::Intention::Sleep { body });
+        world.advance(1, &content, &mut events);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            crate::Event::WorkStopped { why: crate::WorkEnd::Interrupted, grams, .. } if *grams > 0
+        )));
+        let load = world
+            .bodies()
+            .iter()
+            .find(|b| b.id() == body)
+            .unwrap()
+            .load_g();
+        assert!(load > 300, "{load}");
+    }
+
+    #[test]
+    fn gathering_is_refused_out_of_season_out_of_reach_and_where_nothing_stands() {
+        let (mut world, content, chunk, hazel) = valley_with("hazel");
+        let body = body_by(&mut world, &hazel);
+        let mut events = Vec::new();
+        let refused = |events: &[crate::Event]| {
+            events.iter().find_map(|e| match e {
+                crate::Event::GatherRefused { reason, .. } => Some(*reason),
+                _ => None,
+            })
+        };
+        world.queue(gather(body, chunk, &hazel, "hazelnuts"));
+        world.advance(1, &content, &mut events);
+        assert_eq!(
+            refused(&events),
+            Some(crate::Refusal::NothingRipe),
+            "spring"
+        );
+        run_to(&mut world, &content, 30);
+        events.clear();
+        let nowhere = Bearer {
+            source: Source::Plant(PlantKey { x_mm: 3, y_mm: 3 }),
+            ..hazel.clone()
+        };
+        world.queue(gather(body, chunk, &nowhere, "hazelnuts"));
+        world.advance(1, &content, &mut events);
+        assert_eq!(refused(&events), Some(crate::Refusal::Unknown));
+        let far = world.spawn_at_camp().unwrap();
+        events.clear();
+        world.queue(gather(far, chunk, &hazel, "hazelnuts"));
+        world.advance(1, &content, &mut events);
+        assert_eq!(refused(&events), Some(crate::Refusal::OutOfReach));
+    }
+
+    #[test]
+    fn food_spoils_after_its_days_is_refused_then_taken_away() {
+        let (mut world, mut content, _, _) = valley_with("hazel");
+        // Four days without water would kill the eater first.
+        content.needs.thirst_per_day = 0;
+        let body = world.spawn_at_camp().unwrap();
+        let at = world
+            .bodies()
+            .iter()
+            .find(|b| b.id() == body)
+            .unwrap()
+            .pos();
+        run_to(&mut world, &content, 1);
+        let berries = world.spawn_item("blackberries", 100, at);
+        let branch = world.spawn_item("branch", 1500, at);
+        let mut events = Vec::new();
+        // Three days keep: at the middle of day 4 it has spoiled, and the
+        // day has not started again to take it.
+        run_to(&mut world, &content, 4);
+        world.queue(crate::Intention::Eat {
+            body,
+            item: berries,
+        });
+        world.advance(1, &content, &mut events);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            crate::Event::ActRefused {
+                reason: crate::Refusal::Spoiled,
+                ..
+            }
+        )));
+        run_to(&mut world, &content, 5);
+        // Gone at the next dawn.
+        assert!(world.item(berries).is_none(), "spoiled berries are gone");
+        assert!(world.item(branch).is_some(), "wood does not spoil");
+    }
+
+    #[test]
+    fn a_spoiled_heap_is_told_when_the_day_starts() {
+        let (mut world, content, _, _) = valley_with("hazel");
+        let at = world.map().camp();
+        let berries = world.spawn_item("blackberries", 100, at);
+        let mut events = Vec::new();
+        world.advance(299, &content, &mut events); // to the last tick of day 2
+        assert!(world.item(berries).is_some());
+        world.advance(1, &content, &mut events); // dawn of day 3
+        assert!(events.contains(&crate::Event::Spoiled {
+            item: berries,
+            material: "blackberries".to_owned(),
+            grams: 100,
+        }));
+        assert!(world.item(berries).is_none());
+    }
+
+    #[test]
+    fn thirst_comes_faster_in_the_heat_and_at_work() {
+        let needs = content().needs;
+        let per_day = 100;
+        let rest_spring = crate::thirst_raise(&needs, Season::Spring, false, per_day);
+        let rest_summer = crate::thirst_raise(&needs, Season::Summer, false, per_day);
+        let work_summer = crate::thirst_raise(&needs, Season::Summer, true, per_day);
+        let rest_winter = crate::thirst_raise(&needs, Season::Winter, false, per_day);
+        assert_eq!(rest_summer * 100, rest_spring * 140);
+        assert_eq!(work_summer * 100, rest_summer * 150);
+        assert_eq!(rest_winter * 100, rest_spring * 80);
+        // In a world: a body born in spring and one born in summer, the
+        // same time at rest.
+        let (mut world, content, _, _) = valley_with("hazel");
+        let thirst = |world: &crate::World, id| {
+            world
+                .bodies()
+                .iter()
+                .find(|b| b.id() == id)
+                .unwrap()
+                .condition()
+                .thirst
+                .points()
+        };
+        let spring = world.spawn_at_camp().unwrap();
+        let mut events = Vec::new();
+        world.advance(20, &content, &mut events);
+        assert_eq!(thirst(&world, spring), 20, "a fifth of a spring day");
+        run_to(&mut world, &content, 15);
+        let summer = world.spawn_near(world.map().camp()).unwrap();
+        world.advance(20, &content, &mut events);
+        assert_eq!(thirst(&world, summer), 28, "a fifth of a summer day");
     }
 }

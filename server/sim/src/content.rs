@@ -190,6 +190,21 @@ impl Movement {
     }
 }
 
+/// 100 in every season: a rate as it is.
+fn every_season_100() -> BySeason<u32> {
+    BySeason {
+        spring: 100,
+        summer: 100,
+        autumn: 100,
+        winter: 100,
+    }
+}
+
+/// 100: a rate as it is.
+fn percent_100() -> u32 {
+    100
+}
+
 /// A value for each season (D09).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BySeason<T> {
@@ -226,6 +241,14 @@ pub struct Needs {
     pub hunger_per_day: u32,
     /// Thirst rises this much per day (D34, amended 13 November 2026).
     pub thirst_per_day: u32,
+    /// Thirst's rate by season, in percent of `thirst_per_day`: faster in
+    /// the heat (D45). All 100 when absent.
+    #[serde(default = "every_season_100")]
+    pub thirst_heat_percent: BySeason<u32>,
+    /// Thirst's rate while walking or working, in percent of the rest's.
+    /// 100 when absent.
+    #[serde(default = "percent_100")]
+    pub thirst_effort_percent: u32,
     /// Cold rises this much per day of night, without warmth.
     pub cold_per_day_at_night: u32,
     /// Cold falls this much per day of daylight.
@@ -669,6 +692,15 @@ impl Content {
             .any(|s| !(1..100).contains(&self.needs.night_from_percent.get(*s)))
         {
             return Err(ContentError::Needs("night_from_percent is 1 to 99"));
+        }
+        if Season::ALL
+            .iter()
+            .any(|s| !(1..=1000).contains(&self.needs.thirst_heat_percent.get(*s)))
+            || !(1..=1000).contains(&self.needs.thirst_effort_percent)
+        {
+            return Err(ContentError::Needs(
+                "thirst_heat_percent and thirst_effort_percent are 1 to 1000",
+            ));
         }
         if self.needs.kj_per_hunger_point == 0 {
             return Err(ContentError::Needs("kj_per_hunger_point must be positive"));

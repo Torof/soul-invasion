@@ -1042,18 +1042,7 @@ impl Shared {
     /// Sets a body's intention for the coming tick, replacing any earlier
     /// one: the latest wins.
     pub fn intend(&self, intention: Intention) {
-        let body = match &intention {
-            Intention::MoveTo { body, .. }
-            | Intention::Eat { body, .. }
-            | Intention::PickUp { body, .. }
-            | Intention::Drop { body, .. }
-            | Intention::Hold { body, .. }
-            | Intention::Stow { body, .. }
-            | Intention::Drink { body, .. }
-            | Intention::Sleep { body }
-            | Intention::Wake { body }
-            | Intention::Teleport { body, .. } => body.0,
-        };
+        let body = intention.body().0;
         self.intentions
             .lock()
             .expect("intentions not poisoned")
@@ -2706,11 +2695,15 @@ pub fn refusal_view(act: sim::ItemAct, reason: sim::Refusal) -> (ItemAct, Refusa
         sim::ItemAct::Eat => ItemAct::Eat,
     };
     let reason = match reason {
-        sim::Refusal::Unknown => Refusal::Unknown,
+        // Only the brains gather (D45): no player is told "nothing ripe"
+        // yet.
+        sim::Refusal::Unknown | sim::Refusal::NothingRipe => Refusal::Unknown,
         sim::Refusal::OutOfReach => Refusal::OutOfReach,
         sim::Refusal::NotCarried => Refusal::NotCarried,
         sim::Refusal::TooHeavy => Refusal::TooHeavy,
-        sim::Refusal::NotFood => Refusal::NotFood,
+        // Spoiled food is no food to whoever would eat it; the protocol
+        // does not tell them apart yet.
+        sim::Refusal::NotFood | sim::Refusal::Spoiled => Refusal::NotFood,
         sim::Refusal::NotWater => Refusal::NotWater,
     };
     (act, reason)

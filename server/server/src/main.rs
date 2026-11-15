@@ -524,7 +524,15 @@ fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
                 });
             }
         }
-        Event::BodyAte { .. } | Event::BodyDrank { .. } => {}
+        // Gathering is the brains' alone, and spoiled food goes as an item
+        // removed and an inventory changed, both told already: the
+        // protocol says nothing more yet (D45).
+        Event::BodyAte { .. }
+        | Event::BodyDrank { .. }
+        | Event::WorkStarted { .. }
+        | Event::WorkStopped { .. }
+        | Event::GatherRefused { .. }
+        | Event::Spoiled { .. } => {}
         Event::DrinkRefused { body, at, reason } => {
             shared.tell_pilot(*body, drink_refused_view(*body, *at, *reason));
         }
