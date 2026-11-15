@@ -35,6 +35,7 @@ use std::collections::BTreeMap;
 
 use super::course;
 use super::region::{self, REGION_CELL_M, Water};
+use super::vivarium::REGION_CELLS;
 use super::{Biome, Continent, Region, isqrt, measure};
 use crate::r#gen::scatter::{key, purpose, roll};
 use crate::r#gen::{noise, unit};
@@ -315,6 +316,26 @@ impl Window {
         let region = Region::around(&continent, centre, region::REGION_SIDE);
         let corner = Self::choose(&region, side);
         Self::cut(&continent, &region, corner, side)
+    }
+
+    /// The window of one continent cell of `continent`, 2 km a side
+    /// ([`super::CELL_M`]): cut from the region of [`REGION_CELLS`]
+    /// continent cells around `cell`, as the vivarium's zone is. The
+    /// unit the continent is sampled by (`plan::net`, `windows_sheet`).
+    ///
+    /// # Panics
+    ///
+    /// When `cell` is not a cell of the continent.
+    pub fn of_cell(continent: &Continent, cell: (i32, i32)) -> Self {
+        assert!(
+            continent.grid.inside(cell.0, cell.1),
+            "a cell of the continent"
+        );
+        let per = usize::try_from(region::PER_CELL).expect("positive");
+        let region = Region::around(continent, cell, REGION_CELLS * per);
+        let corner = REGION_CELLS / 2 * per;
+        let side = u32::try_from(super::CELL_M).expect("small");
+        Self::cut(continent, &region, (corner, corner), side)
     }
 
     /// Where to cut a window of `side` tiles in `region`, in its cells:
@@ -836,6 +857,25 @@ impl Window {
             }
         }
         (least, most, spread)
+    }
+
+    /// Where the window's brooks end, in tiles: the downstream end of
+    /// every brook stretch that no other brook stretch starts from (the
+    /// mouth on a river or a lake, or where the chain stops), for the
+    /// safety net to check that each lies in water or off the window.
+    #[cfg(test)]
+    pub(crate) fn brook_ends(&self) -> Vec<(i64, i64)> {
+        let starts: std::collections::BTreeSet<(i64, i64)> = self
+            .stretches
+            .iter()
+            .filter(|s| s.kind == Kind::Brook)
+            .map(|s| s.a)
+            .collect();
+        self.stretches
+            .iter()
+            .filter(|s| s.kind == Kind::Brook && !starts.contains(&s.b))
+            .map(|s| (s.b.0.div_euclid(1000), s.b.1.div_euclid(1000)))
+            .collect()
     }
 
     /// Tile `(x, y)` shifted up to `reach` metres either way by a noise

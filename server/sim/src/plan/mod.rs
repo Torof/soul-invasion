@@ -59,6 +59,8 @@
 pub mod climate;
 mod course;
 pub mod measure;
+#[cfg(test)]
+mod net;
 pub mod region;
 pub mod relief;
 pub mod vivarium;

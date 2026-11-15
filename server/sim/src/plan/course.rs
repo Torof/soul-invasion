@@ -86,7 +86,7 @@ const FINE_SMOOTH: u32 = 1;
 /// between the segments is 120° at least. What the tests hold the
 /// rounding to.
 #[cfg(test)]
-const SHARPEST_TURN_COS_MILLI: i64 = 500;
+pub(crate) const SHARPEST_TURN_COS_MILLI: i64 = 500;
 
 /// The walker's step along the course, per mille of the river's nominal
 /// width: a fifth, the valley's tile for its river of five tiles (the
@@ -321,7 +321,7 @@ fn turns_within(u: (i64, i64), v: (i64, i64), cos_milli: i64) -> bool {
 
 /// The sharpest turn along `nodes` stays within `cos_milli`.
 #[cfg(test)]
-fn course_turns_within(nodes: &[Node], cos_milli: i64) -> bool {
+pub(crate) fn course_turns_within(nodes: &[Node], cos_milli: i64) -> bool {
     nodes.windows(3).all(|w| {
         turns_within(
             (w[1].p.0 - w[0].p.0, w[1].p.1 - w[0].p.1),
