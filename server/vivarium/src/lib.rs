@@ -18,10 +18,11 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use sim::brain::{Brains, Why};
 use sim::content::Content;
 use sim::map::{Map, Pos, Terrain};
 use sim::time::Calendar;
-use sim::{BodyId, Death, Event, World};
+use sim::{BodyId, Death, Event, Intention, World};
 
 pub mod png;
 
@@ -61,6 +62,9 @@ pub struct Settings {
     /// The content directory, or the first of [`CONTENT_DIRS`] that holds
     /// `materials.ron`.
     pub content: Option<PathBuf>,
+    /// The people are piloted by the minimal brain ([`sim::brain`]);
+    /// false leaves them standing where they were born, the control run.
+    pub brain: bool,
 }
 
 impl Default for Settings {
@@ -72,6 +76,7 @@ impl Default for Settings {
             ticks_per_second: 1,
             seed: 1,
             content: None,
+            brain: true,
         }
     }
 }
@@ -181,6 +186,8 @@ pub struct Person {
     pub meals: (u32, u32),
     /// Times it drank.
     pub drinks: u32,
+    /// Times its brain thought.
+    pub thoughts: u64,
     /// Its own lines of the chronicle.
     pub entries: Vec<Entry>,
     /// Its gauges 24 times a day.
@@ -240,8 +247,12 @@ pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunErr
     let camp = world.map().camp();
     let mut people: BTreeMap<BodyId, Person> = BTreeMap::new();
     let mut chronicle = Vec::new();
+    let mut brains = Brains::new(settings.seed);
     for _ in 0..settings.people {
         if let Some(id) = world.spawn_at_camp() {
+            if settings.brain {
+                brains.adopt(&world, content, id);
+            }
             let at = world.body(id).map_or(camp, sim::Body::pos);
             let entry = Entry {
                 tick: 0,
@@ -325,9 +336,23 @@ pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunErr
                 _ => {}
             }
         }
+        for (body, decision) in brains.think(&world, content, &events) {
+            let person = people.entry(body).or_default();
+            person.entries.push(Entry {
+                tick,
+                day,
+                what: thought(&decision.intention, decision.why),
+            });
+            world.queue(decision.intention);
+        }
         if tick % ticks_per_sample == 0 {
             samples.push(sample(&world, &mut people));
         }
+    }
+    for (id, person) in &mut people {
+        person.thoughts = brains
+            .mind(*id)
+            .map_or(person.thoughts, sim::brain::Mind::thoughts);
     }
     let wall_s = started.elapsed().as_secs_f64();
     let (map_png, map_scale) = picture(&world);
@@ -358,6 +383,26 @@ pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunErr
         wall_s,
         birth_s,
     })
+}
+
+/// A decision in words, for the person's page.
+fn thought(intention: &Intention, why: Why) -> String {
+    let reason = match why {
+        Why::Thirst => "thirsty",
+        Why::Hunger => "hungry",
+        Why::Explore => "knows no place for it, goes looking",
+        Why::Night => "night",
+        Why::Home => "nothing pressing",
+    };
+    let act = match intention {
+        Intention::MoveTo { target, .. } => format!("walks to ({}, {})", target.x, target.y),
+        Intention::Drink { at, .. } => format!("drinks at ({}, {})", at.x, at.y),
+        Intention::Eat { item, .. } => format!("eats item {}", item.0),
+        Intention::Sleep { .. } => "lies down to sleep".to_owned(),
+        Intention::Wake { .. } => "gets up".to_owned(),
+        other => format!("{other:?}"),
+    };
+    format!("{reason}: {act}")
 }
 
 /// "person 3".
@@ -484,7 +529,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
 <li><b>Cadence</b>: {} tick a game second (the game runs at {}); the bodies' needs drain by the tick, so the day is {} ticks long.</li>\
 <li><b>The world</b>: {world}, {} × {} tiles of 1 m, the camp at ({}, {}).</li>\
 <li><b>The year</b>: {} days of {} game seconds (a day of the game is two hours of its clock), four seasons.</li>\
-<li><b>The brain</b>: none yet (lot 1, PR 2): the people stand where they were born.</li>\
+<li><b>The brain</b>: {}.</li>\
 <li><b>The food</b>: what the world lays on the ground today (the content's spawn rules), no season, no regrowth (lot 2).</li>\
 <li><b>The needs</b> (content/needs.ron, points of 100 a game day): {}.</li></ul>",
             s.ticks_per_second,
@@ -496,6 +541,11 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             self.camp.y,
             Calendar::DEFAULT_DAYS_PER_YEAR,
             Calendar::DEFAULT_SECONDS_PER_DAY,
+            if s.brain {
+                "the minimal one (sim::brain): it thinks only when something changes for its body, drinks when thirst passes 50 (wakes for it past 80), eats the food it saw when hunger passes 50, goes looking when it knows no place, goes home at night and sleeps within 6 tiles of the camp; it remembers the drinking places and the food it saw"
+            } else {
+                "none (the control run): the people stand where they were born"
+            },
             self.rates
                 .iter()
                 .map(|(name, rate)| format!("{name} {rate}"))
@@ -543,11 +593,12 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             };
             let _ = write!(
                 h,
-                "<details><summary>{} — {fate}; {} meals ({} g), drank {} times</summary>",
+                "<details><summary>{} — {fate}; {} meals ({} g), drank {} times, thought {} times</summary>",
                 name(*id),
                 person.meals.0,
                 person.meals.1,
-                person.drinks
+                person.drinks,
+                person.thoughts
             );
             h.push_str(&sparkline(&person.gauges, self.ticks));
             h.push_str("<table class=\"chronicle\">");
@@ -690,6 +741,7 @@ mod tests {
             ticks_per_second: 1,
             seed: 1,
             content: None,
+            brain: true,
         }
     }
 
@@ -767,7 +819,11 @@ mod tests {
         // Standing still with no brain, nobody drinks and nobody shelters:
         // the people die within the run, of thirst (D34: mortal in two to
         // three days) or of the nights' cold on the way there.
-        let settings = Settings { days: 6, ..small() };
+        let settings = Settings {
+            days: 6,
+            brain: false,
+            ..small()
+        };
         let report = run_with(&settings, content()).unwrap();
         let dead: Vec<_> = report
             .people
@@ -799,6 +855,7 @@ mod tests {
         assert!(html.contains("<h2>The map</h2>") && html.contains("data:image/png;base64,"));
         assert!(html.contains("<polyline") && html.contains("<h2>The chronicle</h2>"));
         assert!(html.contains("<details><summary>person 1 — died on day"));
+        assert!(html.contains("none (the control run)"));
         assert!(
             html.contains("thirst a day 100"),
             "the needs' rates are named with the factors"
@@ -810,5 +867,36 @@ mod tests {
         let report = run_with(&small(), content()).unwrap();
         assert_eq!(report.map_scale, 1);
         assert_eq!(&report.map_png[16..24], &[0, 0, 0, 50, 0, 0, 0, 50]);
+    }
+
+    #[test]
+    fn with_the_brain_nobody_dies_of_thirst_beside_the_river() {
+        // The plan's small trial: five people, the 50 × 50 patch, ten days.
+        let settings = Settings {
+            days: 10,
+            ..small()
+        };
+        let report = run_with(&settings, content()).unwrap();
+        for (id, person) in &report.people {
+            assert!(
+                !matches!(person.death, Some((_, Death::Dehydrated, _))),
+                "person {} died of thirst beside the river",
+                id.0
+            );
+            assert!(
+                person.drinks >= 10,
+                "person {} drank {} times in ten days",
+                id.0,
+                person.drinks
+            );
+            assert!(
+                person.thoughts > 0
+                    && person
+                        .entries
+                        .iter()
+                        .any(|e| e.what.starts_with("thirsty: "))
+            );
+        }
+        assert!(report.fixed().contains("the minimal one (sim::brain)"));
     }
 }
