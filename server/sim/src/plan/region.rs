@@ -11,14 +11,22 @@
 //! 2. The rivers: each continent river runs from a point in its cell to
 //!    the point of its receiver's, along a meandering line (midpoint
 //!    displacement, keyed by the two points), its level falling evenly
-//!    between the two cells' levels. Its channel is cut below that level
-//!    and its valley shaped around it.
+//!    between the two cells' levels, then settled on this ground (never
+//!    above it, never rising; `course::stems`, the courses the window
+//!    draws). Its channel is cut below that level and its valley shaped
+//!    around it: a floor, a foot, a flank of one slope up to the ground.
+//!    Then the ground's ceiling: nothing rises faster than 0.75 m a metre
+//!    ([`MAX_RISE_PER_MILLE`]).
 //! 3. The water: a priority flood from the sea and the region's edges
 //!    fills the hollows; those deep enough are lakes; brooks run where
 //!    enough ground drains.
 
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
+
+use super::course;
 use super::relief::{Routing, fbm};
-use super::{Biome, Continent, Grid, isqrt, measure};
+use super::{Biome, Continent, Grid, isqrt};
 use crate::r#gen::noise;
 use crate::r#gen::scatter::{key, purpose, roll};
 use crate::geology::Rock;
@@ -60,10 +68,34 @@ const NODE_JITTER: i64 = 9;
 const MEANDER_DEPTH: u32 = 5;
 const MEANDER_PER_MILLE: i64 = 280;
 
-/// A river's valley: how far it shapes the ground, in region cells, and
-/// how steeply its sides rise, in cm a cell (about 2 %).
+/// A river's valley, outward from the channel's edge in region cells: a
+/// floor rising `VALLEY_RISE_CM` a cell (about 2 %) over `VALLEY_CELLS`;
+/// then a concave foot of `VALLEY_FOOT_CELLS` whose slope grows evenly
+/// from the floor's to the flank's; then the flank, a plane at
+/// `VALLEY_FLANK_PER_MILLE` (0.4 m a metre, a grassy versant) up to
+/// wherever it meets the ground, so that higher ground means a longer
+/// flank and never a steeper one (the project lead's rules for relief,
+/// D44's drafts). The shoulder where the flank meets the ground is the
+/// window's: Catmull-Rom between the 64 m cells rounds the crease over a
+/// cell either way; a rounding drawn here would bite into the ground on
+/// either side of the crease, a trench along every river of a plain.
+/// Before 15 November 2026 the valley stopped at its floor's edge and the
+/// ground stood as it was beyond: a wall of up to 120 m in one cell (the
+/// net's `Steps`, 37 windows of 108).
 const VALLEY_CELLS: i64 = 8;
 const VALLEY_RISE_CM: i64 = 130;
+const VALLEY_FOOT_CELLS: i64 = 4;
+const VALLEY_FLANK_PER_MILLE: i64 = 400;
+
+/// The ground's ceiling off declared rock, per mille (0.75 m a metre, the
+/// project lead's rule; no cliff layer exists yet, so nothing is
+/// excepted). After the valleys, a pass (`limit_rise`) lowers every cell that
+/// rises faster than this from a lower one, so the window's tiles,
+/// interpolated between cells, never step more than the net's 1.7 m
+/// (Catmull-Rom overshoots a cell's chord by half at most: 1.125 m a
+/// tile, plus the small hills). A placeholder, like every value of the
+/// relief (D30).
+pub const MAX_RISE_PER_MILLE: i64 = 750;
 
 /// A river's flood plain, where alluvium lies: within this many cells of
 /// a river of at least this discharge.
@@ -71,8 +103,9 @@ const PLAIN_CELLS: i64 = 3;
 const PLAIN_DISCHARGE: u64 = 5_000_000;
 
 /// A hollow is a lake when filled at least this deep (cm): shallower
-/// hollows of the detail are filled (a pond, a bog), else every dip of
-/// the noise would hold a lake.
+/// hollows of the detail are filled flat (a pond, a bog, the ground
+/// raised to the spill level), else every dip of the noise would hold a
+/// lake.
 const LAKE_MIN_CM: i32 = 800;
 
 /// A brook runs where at least this many cells drain: half a square
@@ -127,6 +160,10 @@ pub struct Region {
     pub rock: Vec<Rock>,
     /// Whether alluvium covers it.
     pub alluvium: Vec<bool>,
+    /// The rivers' courses at the tile scale over the region and a margin
+    /// of two continent cells, their levels settled on this ground and
+    /// their valleys cut in it: what the window draws.
+    pub(crate) stems: Vec<course::Stem>,
 }
 
 /// The continent cell the atlas's region is centred on: a lowland river,
@@ -164,6 +201,78 @@ pub fn site(c: &Continent) -> (i32, i32) {
         }
     }
     best.map_or((side / 2, side / 2), |(_, i)| c.grid.xy(i))
+}
+
+/// The valley flank's rise, in cm a region cell.
+const fn flank_cm_per_cell() -> i64 {
+    VALLEY_FLANK_PER_MILLE * REGION_CELL_M / 10
+}
+
+/// The valley's ground over the river's level, `t` cells out from the
+/// channel's edge (cm): the floor, the foot, the flank (see
+/// [`VALLEY_CELLS`]). Never decreasing in `t`, so a cell cut to it always
+/// has a lower neighbour toward the river: no hollow is dug.
+fn valley_rise(t: i64) -> i64 {
+    let flank = flank_cm_per_cell();
+    if t <= VALLEY_CELLS {
+        return VALLEY_RISE_CM * t;
+    }
+    let floor = VALLEY_RISE_CM * VALLEY_CELLS;
+    let u = t - VALLEY_CELLS;
+    if u <= VALLEY_FOOT_CELLS {
+        // The slope grows evenly from the floor's to the flank's.
+        return floor
+            + VALLEY_RISE_CM * u
+            + (flank - VALLEY_RISE_CM) * u * u / (2 * VALLEY_FOOT_CELLS);
+    }
+    let foot = floor
+        + VALLEY_RISE_CM * VALLEY_FOOT_CELLS
+        + (flank - VALLEY_RISE_CM) * VALLEY_FOOT_CELLS / 2;
+    foot + flank * (u - VALLEY_FOOT_CELLS)
+}
+
+/// Lowers every cell that rises faster than [`MAX_RISE_PER_MILLE`] from a
+/// lower cell: the ground's lower envelope under planes of that slope,
+/// walked up from the low ground (Dijkstra over the eight neighbours, the
+/// diagonal √2 longer). It cuts and never fills, so the waters' levels
+/// and the valleys' floors stay; and it digs no hollow: a lowered cell
+/// sits exactly one step above the cell it was lowered from. A cell is
+/// changed only by cells lower than it within their difference over the
+/// rise, so the pass is local: a window `relief / rise` cells from the
+/// region's edge (3.3 km of relief over the 128 cells of
+/// [`Window::of_cell`](super::Window::of_cell)) gets the same ground as
+/// from a region of any size (D39).
+fn limit_rise(grid: Grid, height: &mut [i32]) {
+    let rise = i32::try_from(MAX_RISE_PER_MILLE * REGION_CELL_M / 10).expect("small");
+    let diagonal = rise * 1414 / 1000;
+    let mut heap: BinaryHeap<Reverse<(i32, u32)>> = height
+        .iter()
+        .enumerate()
+        .map(|(i, &h)| Reverse((h, u32::try_from(i).expect("a region's cells fit"))))
+        .collect();
+    while let Some(Reverse((h, i))) = heap.pop() {
+        let i = i as usize;
+        if h > height[i] {
+            continue;
+        }
+        let (x, y) = grid.xy(i);
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                if (dx, dy) == (0, 0) || !grid.inside(x + dx, y + dy) {
+                    continue;
+                }
+                let j = grid.index(x + dx, y + dy);
+                let cap = h + if dx != 0 && dy != 0 { diagonal } else { rise };
+                if cap < height[j] {
+                    height[j] = cap;
+                    heap.push(Reverse((
+                        cap,
+                        u32::try_from(j).expect("a region's cells fit"),
+                    )));
+                }
+            }
+        }
+    }
 }
 
 /// Catmull-Rom weights at `t` in 0..32, over 2 × 32³.
@@ -334,74 +443,133 @@ impl Region {
             height[i] = i32::try_from(base + amp * detail / (total * 500)).expect("small");
         }
 
-        // The rivers of the continent cells around, carved in.
+        // The rivers of the continent cells around, carved in along the
+        // courses the window draws (`course::stems`: rounded, refined,
+        // the tributaries cut at their junctions), so that the valley
+        // lies where the water will run. Each cell takes the valley of
+        // the nearest point of any course (the first in order on a tie),
+        // not the lowest: a mountain river falls metres a cell and
+        // meanders, so a lower reach downstream would otherwise cut the
+        // ground from under its own upper reach, which the window then
+        // drew as a dyke, the water metres above the ground beside it
+        // ((631, 624) of seed 14, 15 November 2026). Where two valleys
+        // meet, the ceiling below mends the step.
         let mut river = vec![false; n];
         let mut plain = vec![false; n];
+        let mut nearest = vec![i64::MAX; n];
+        let mut cap = vec![i32::MAX; n];
+        let mut floor = vec![i32::MIN; n];
         let margin = 2;
-        for y in (origin.1 - margin)..(origin.1 + cells + margin) {
-            for x in (origin.0 - margin)..(origin.0 + cells + margin) {
-                if !c.grid.inside(x, y) {
+        let cell_mm = REGION_CELL_M * 1000;
+        // The ground around a course's point, before the valleys: the
+        // lowest of the nine cells around it, none past the region.
+        let ground_around = |p: (i64, i64)| -> Option<i64> {
+            let (px, py) = (p.0.div_euclid(cell_mm) - ox, p.1.div_euclid(cell_mm) - oy);
+            let s = i64::try_from(side).expect("small");
+            if px < 1 || py < 1 || px >= s - 1 || py >= s - 1 {
+                return None;
+            }
+            let mut low = i64::MAX;
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let j = usize::try_from((py + dy) * s + px + dx).expect("inside");
+                    low = low.min(i64::from(height[j]));
+                }
+            }
+            Some(low)
+        };
+        let stems = course::stems(
+            c,
+            (origin.0 - margin)..(origin.0 + cells + margin),
+            (origin.1 - margin)..(origin.1 + cells + margin),
+            Some(&ground_around),
+        );
+        // The highest ground a course's cell can meet: the continent's
+        // surface around it plus the detail's full swing.
+        let highest = |i: usize| -> i64 {
+            let (x, y) = c.grid.xy(i);
+            let mut top = i64::MIN;
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let (x, y) = (x + dx, y + dy);
+                    top = top.max(i64::from(c.surface[at(x, y)]) + amplitude(x, y));
+                }
+            }
+            top
+        };
+        for stem in &stems {
+            let mut last: Option<(i64, i64)> = None;
+            for (k, node) in stem.nodes.iter().enumerate() {
+                // A sample every half cell along the course.
+                if last.is_some_and(|l| {
+                    (node.p.0 - l.0).abs().max((node.p.1 - l.1).abs()) < cell_mm / 2
+                }) && k + 1 < stem.nodes.len()
+                {
                     continue;
                 }
-                let i = c.grid.index(x, y);
-                let q = c.discharge[i];
-                if c.sea[i] || q < RIVER_DISCHARGE {
-                    continue;
-                }
-                let r = c.receiver[i] as usize;
-                let (rx, ry) = c.grid.xy(r);
-                let path = course(c.seed, node(c.seed, x, y), node(c.seed, rx, ry));
-                let (top, bottom) = (i64::from(c.surface[i]), i64::from(c.surface[r]));
-                let width = i64::try_from(measure::width_cm(q)).expect("small");
-                let depth = i64::try_from(measure::depth_cm(q)).expect("small");
-                let half_width = width / (REGION_CELL_M * 100) / 2;
-                let reach = VALLEY_CELLS + half_width;
-                let steps = path.len() - 1;
-                for (k, pair) in path.windows(2).enumerate() {
-                    let (a, b) = (pair[0], pair[1]);
-                    let samples = (b.0 - a.0).abs().max((b.1 - a.1).abs()).max(1);
-                    for s in 0..=samples {
-                        let (px, py) = (
-                            a.0 + (b.0 - a.0) * s / samples,
-                            a.1 + (b.1 - a.1) * s / samples,
-                        );
-                        // The level falls evenly along the course.
-                        let along = (k as i64) * samples + s;
-                        let level = top - (top - bottom) * along / (steps as i64 * samples);
-                        for dy in -reach..=reach {
-                            for dx in -reach..=reach {
-                                let (lx, ly) = (px + dx - ox, py + dy - oy);
-                                if lx < 0 || ly < 0 || lx >= side as i64 || ly >= side as i64 {
-                                    continue;
-                                }
-                                let j = usize::try_from(ly).expect("inside") * side
-                                    + usize::try_from(lx).expect("inside");
-                                if sea[j] {
-                                    continue;
-                                }
-                                let d = i64::try_from(isqrt(
-                                    u64::try_from(dx * dx + dy * dy).expect("square"),
-                                ))
-                                .expect("small");
-                                if d > reach {
-                                    continue;
-                                }
-                                let cap = if d <= half_width {
-                                    river[j] = true;
-                                    level - depth
-                                } else {
-                                    level + VALLEY_RISE_CM * (d - half_width)
-                                };
-                                height[j] = height[j].min(i32::try_from(cap).expect("small"));
-                                if q >= PLAIN_DISCHARGE && d <= half_width + PLAIN_CELLS {
-                                    plain[j] = true;
-                                }
-                            }
+                last = Some(node.p);
+                let (px, py) = (node.p.0.div_euclid(cell_mm), node.p.1.div_euclid(cell_mm));
+                let q = c.discharge[node.cell];
+                let level = node.level;
+                let depth = node.depth;
+                let half_width = node.width / 2 / cell_mm;
+                let climb = (highest(node.cell) - level).max(0);
+                let reach = half_width
+                    + VALLEY_CELLS
+                    + VALLEY_FOOT_CELLS
+                    + (climb + flank_cm_per_cell() - 1) / flank_cm_per_cell();
+                for dy in -reach..=reach {
+                    for dx in -reach..=reach {
+                        let (lx, ly) = (px + dx - ox, py + dy - oy);
+                        if lx < 0 || ly < 0 || lx >= side as i64 || ly >= side as i64 {
+                            continue;
                         }
+                        let j = usize::try_from(ly).expect("inside") * side
+                            + usize::try_from(lx).expect("inside");
+                        if sea[j] {
+                            continue;
+                        }
+                        let d2 = dx * dx + dy * dy;
+                        let d = i64::try_from(isqrt(u64::try_from(d2).expect("square")))
+                            .expect("small");
+                        if d > reach {
+                            continue;
+                        }
+                        if q >= PLAIN_DISCHARGE && d <= half_width + PLAIN_CELLS {
+                            plain[j] = true;
+                        }
+                        if d2 >= nearest[j] {
+                            continue;
+                        }
+                        nearest[j] = d2;
+                        river[j] = d <= half_width;
+                        cap[j] = i32::try_from(if d <= half_width {
+                            level - depth
+                        } else {
+                            level + valley_rise(d - half_width)
+                        })
+                        .expect("small");
+                        // The floor never lies under the water: a dip of
+                        // the detail beside the river is filled to its
+                        // level, else it was a lake lower than the river
+                        // a cell away, with a step between.
+                        floor[j] = if d <= half_width {
+                            cap[j]
+                        } else if d - half_width <= VALLEY_CELLS {
+                            i32::try_from(level).expect("small")
+                        } else {
+                            i32::MIN
+                        };
                     }
                 }
             }
         }
+        for (i, h) in height.iter_mut().enumerate() {
+            *h = (*h).clamp(floor[i], cap[i]);
+        }
+
+        // The ground's ceiling: no rise over `MAX_RISE_PER_MILLE`.
+        limit_rise(grid, &mut height);
 
         // The water: a flood from the sea and the edges.
         let outlet: Vec<bool> = (0..n)
@@ -435,7 +603,17 @@ impl Region {
                     Water::Land
                 }
             })
-            .collect();
+            .collect::<Vec<Water>>();
+        // A hollow too shallow for a lake is a pond or a bog: filled
+        // flat to its spill level, so the ground holds no basin and a
+        // lake's shore, where the flood stood under `LAKE_MIN_CM`, lies
+        // at the lake's level and not metres under it (the net's `Steps`
+        // and `Pits` on lake shores, 15 November 2026).
+        for i in 0..n {
+            if !sea[i] && water[i] != Water::Lake {
+                height[i] = height[i].max(routing.filled[i]);
+            }
+        }
 
         // Biome and rock from the continent, their borders shifted.
         let mut biome = vec![Biome::Sea; n];
@@ -487,6 +665,122 @@ impl Region {
             biome,
             rock,
             alluvium,
+            stems,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A cell lower than its eight neighbours, strictly.
+    fn hollows(grid: Grid, height: &[i32]) -> Vec<usize> {
+        let side = i32::try_from(grid.side).expect("small");
+        (0..grid.len())
+            .filter(|&i| {
+                let (x, y) = grid.xy(i);
+                x > 0
+                    && y > 0
+                    && x < side - 1
+                    && y < side - 1
+                    && (-1..=1).all(|dy| {
+                        (-1..=1).all(|dx| {
+                            (dx, dy) == (0, 0) || height[grid.index(x + dx, y + dy)] > height[i]
+                        })
+                    })
+            })
+            .collect()
+    }
+
+    /// The largest rise between two neighbours, orthogonal and diagonal.
+    fn steepest(grid: Grid, height: &[i32]) -> (i32, i32) {
+        let (mut orth, mut diag) = (0, 0);
+        for i in 0..grid.len() {
+            let (x, y) = grid.xy(i);
+            for (dx, dy) in [(1, 0), (0, 1), (1, 1), (1, -1)] {
+                if grid.inside(x + dx, y + dy) {
+                    let d = (height[grid.index(x + dx, y + dy)] - height[i]).abs();
+                    if dx != 0 && dy != 0 {
+                        diag = diag.max(d);
+                    } else {
+                        orth = orth.max(d);
+                    }
+                }
+            }
+        }
+        (orth, diag)
+    }
+
+    #[test]
+    fn the_valley_never_falls_outward_and_holds_its_three_slopes() {
+        let flank = flank_cm_per_cell();
+        assert_eq!(flank, 2560, "0.4 m a metre over a 64 m cell");
+        assert_eq!(valley_rise(0), 0);
+        for t in 0..60 {
+            let step = valley_rise(t + 1) - valley_rise(t);
+            assert!(step >= 0, "falls at {t}");
+            if t < VALLEY_CELLS {
+                assert_eq!(step, VALLEY_RISE_CM, "the floor at {t}");
+            } else if t < VALLEY_CELLS + VALLEY_FOOT_CELLS {
+                assert!(
+                    (VALLEY_RISE_CM..=flank).contains(&step),
+                    "the foot at {t}: {step}"
+                );
+            } else {
+                assert_eq!(step, flank, "the flank at {t}");
+            }
+        }
+        // The foot's slope grows: each step larger than the last.
+        for t in VALLEY_CELLS..VALLEY_CELLS + VALLEY_FOOT_CELLS {
+            assert!(valley_rise(t + 2) - valley_rise(t + 1) > valley_rise(t + 1) - valley_rise(t));
+        }
+    }
+
+    #[test]
+    fn the_ceiling_cuts_the_walls_fills_nothing_and_digs_no_hollow() {
+        let grid = Grid { side: 24 };
+        // A plateau 200 m over a plain, a hollow in the plateau, a wall
+        // along the plain's edge, and a dip in the plain: hollows exist
+        // before, and none may be added.
+        let before: Vec<i32> = (0..grid.len())
+            .map(|i| {
+                let (x, y) = grid.xy(i);
+                match (x, y) {
+                    (10, 6) => 15_000,
+                    (4, 18) => -300,
+                    _ if y < 12 => 20_000 + (x * 37 % 5) * 100,
+                    _ => (x * 53 % 7) * 100,
+                }
+            })
+            .collect();
+        let mut after = before.clone();
+        limit_rise(grid, &mut after);
+        let rise = i32::try_from(MAX_RISE_PER_MILLE * REGION_CELL_M / 10).expect("small");
+        let (orth, diag) = steepest(grid, &after);
+        assert!(orth <= rise, "{orth} cm a cell over {rise}");
+        assert!(diag <= rise * 1414 / 1000, "{diag} cm over a diagonal");
+        assert!(
+            before.iter().zip(&after).all(|(b, a)| a <= b),
+            "the pass only cuts"
+        );
+        assert!(
+            after.iter().zip(&before).any(|(a, b)| a < b),
+            "the wall was cut"
+        );
+        let plain = (0..grid.len()).filter(|&i| grid.xy(i).1 >= 12);
+        assert!(
+            plain.clone().all(|i| after[i] == before[i]),
+            "the plain, the low ground, is untouched"
+        );
+        let (h0, h1) = (hollows(grid, &before), hollows(grid, &after));
+        assert!(
+            h1.iter().all(|h| h0.contains(h)),
+            "new hollows: {h1:?} not in {h0:?}"
+        );
+        assert!(h1.contains(&grid.index(4, 18)), "the plain's dip stays");
+        let mut again = after.clone();
+        limit_rise(grid, &mut again);
+        assert_eq!(again, after, "a second pass changes nothing");
     }
 }
