@@ -14,7 +14,9 @@
 //!   corners rounded, each bank walking on its own as the valley's do,
 //!   tributaries joining at first contact, a ford across the river at
 //!   every crossing the atlas finds dry-shod); the region's
-//!   brooks from cell to receiver; its lakes, their shore drawn where
+//!   brooks from cell to receiver, each cell's line meandered and its
+//!   corner at the receiver rounded (`course::meander_line`); its
+//!   lakes, their shore drawn where
 //!   the interpolated share of lake cells passes a half. Each water lies
 //!   flat at its level, and the ground around it is drawn down to that
 //!   level over a bank, so water always sits in the low ground;
@@ -34,6 +36,7 @@
 
 use std::collections::BTreeMap;
 
+use super::course;
 use super::region::{self, REGION_CELL_M, Water};
 use super::vivarium::REGION_CELLS;
 use super::{Biome, Continent, Region, isqrt, measure};
@@ -70,6 +73,22 @@ const HILLS_ON_ALLUVIUM: i64 = 300;
 /// either way: off the 64 m grid, so a brook does not run in straight
 /// 45° steps.
 const BROOK_JITTER_M: i64 = 16;
+/// A brook's line from its cell's point to its receiver's meanders
+/// (`course::meander_line`): this many halvings (64 m down to 8 m),
+/// the first bending the line by this much of its length, least and
+/// most, to either side (a brook meanders more than a river, D36). Then
+/// each cell's piece, from the middle of its own line through its
+/// receiver's point to the middle of the receiver's line, is rounded by
+/// this many corner-cutting passes, so the right angles and the 45°
+/// steps of the 64 m grid's drainage (the grassland and steppe sheets
+/// of 15 November 2026) become bends. A piece is cut at the middle of
+/// an innermost, straight piece of the line, so two cells' pieces meet
+/// without a corner, and all of it is keyed by the cells, so any window
+/// draws the same brook (D39: a cell's piece reads its receiver and its
+/// receiver's receiver, two cells, the window's margin).
+const BROOK_MEANDER_DEPTH: u32 = 3;
+const BROOK_MEANDER_PER_MILLE: (i64, i64) = (120, 250);
+const BROOK_SMOOTH: u32 = 2;
 
 /// A brook's half-width, in millimetres: one or two tiles wide.
 const BROOK_HALF_MM: i64 = 1_100;
@@ -306,6 +325,43 @@ fn heading(dx: i64, dy: i64) -> u8 {
         }
     }
     u8::try_from(best.1).expect("below 16")
+}
+
+/// A point of a brook's line with its level: `(x, y, level)`, the
+/// window's millimetres and centimetres.
+type Levelled = (i64, i64, i64);
+
+/// The length of a line from `a` to `b` (mm).
+fn line_length(a: (i64, i64), b: (i64, i64)) -> i64 {
+    i64::try_from(isqrt(
+        u64::try_from((a.0 - b.0).pow(2) + (a.1 - b.1).pow(2)).expect("a square"),
+    ))
+    .expect("small")
+}
+
+/// One corner-cutting pass (Chaikin) over a line of points with their
+/// levels: every segment keeps its quarter and three-quarter points,
+/// the ends stay.
+fn cut_corners_levelled(points: &[Levelled]) -> Vec<Levelled> {
+    if points.len() < 3 {
+        return points.to_vec();
+    }
+    let mut out = Vec::with_capacity(2 * points.len());
+    out.push(points[0]);
+    for pair in points.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let at = |num: i64| {
+            (
+                a.0 + (b.0 - a.0) * num / 4,
+                a.1 + (b.1 - a.1) * num / 4,
+                a.2 + (b.2 - a.2) * num / 4,
+            )
+        };
+        out.push(at(1));
+        out.push(at(3));
+    }
+    out.push(points[points.len() - 1]);
+    out
 }
 
 /// What lies on a wet tile.
@@ -593,6 +649,144 @@ impl Window {
                 break;
             }
         }
+        // Where a cell's water goes, by what its receiver is: the point
+        // (window mm) and the level (cm) at it, or none on land or sea;
+        // a brook's point, a river's nearest point on its course, a
+        // lake's centre.
+        let river_stretches: Vec<Stretch> = stretches[..rivers].to_vec();
+        let brook_level_at = |r: usize, fallback: i64| -> i64 {
+            let (lx, ly) = local(r);
+            if is_brook(lx, ly) {
+                brook_level[usize::try_from(ly * cells + lx).expect("small")]
+            } else {
+                fallback
+            }
+        };
+        let point_of = |r: usize| -> Option<((i64, i64), i64)> {
+            let (lx, ly) = local(r);
+            let (gx, gy) = (lx + origin.0 - MARGIN, ly + origin.1 - MARGIN);
+            match region.water[r] {
+                Water::Brook => {
+                    let b = brook_point(gx, gy);
+                    // A receiver past the margin has no settled level:
+                    // its ground, clamped to the margin, serves.
+                    let level = brook_level_at(
+                        r,
+                        ground_of(
+                            seed,
+                            origin,
+                            cells,
+                            &height,
+                            &hills,
+                            b.0.div_euclid(1000),
+                            b.1.div_euclid(1000),
+                        ),
+                    );
+                    Some((b, level))
+                }
+                Water::River => {
+                    let c = mm((gx, gy));
+                    let mut best: Option<(i64, (i64, i64), i64)> = None;
+                    for s in &river_stretches {
+                        let Probe { d, level, .. } = s.probe(c);
+                        if best.is_none_or(|(bd, _, _)| d < bd) {
+                            let (dx, dy) = (s.b.0 - s.a.0, s.b.1 - s.a.1);
+                            let len2 = (dx * dx + dy * dy).max(1);
+                            let t = ((c.0 - s.a.0) * dx + (c.1 - s.a.1) * dy).clamp(0, len2);
+                            best = Some((d, (s.a.0 + dx * t / len2, s.a.1 + dy * t / len2), level));
+                        }
+                    }
+                    Some(
+                        best.map_or((c, i64::from(region.surface[r])), |(_, p, level)| {
+                            (p, level)
+                        }),
+                    )
+                }
+                Water::Lake => Some((mm((gx, gy)), i64::from(region.surface[r]))),
+                Water::Land | Water::Sea => None,
+            }
+        };
+        // A cell's meandered line to its receiver, each point with its
+        // level: `(x, y, level)`, the level falling evenly along it.
+        let line_of = |i: usize, from: ((i64, i64), i64), r: usize, to: ((i64, i64), i64)| {
+            let (ax, ay) = (
+                i64::try_from(i % rs_u).expect("small"),
+                i64::try_from(i / rs_u).expect("small"),
+            );
+            let (bx, by) = (
+                i64::try_from(r % rs_u).expect("small"),
+                i64::try_from(r / rs_u).expect("small"),
+            );
+            let keys = [
+                key(i64::from(region.origin.0) * per + ax),
+                key(i64::from(region.origin.1) * per + ay),
+                key(i64::from(region.origin.0) * per + bx),
+                key(i64::from(region.origin.1) * per + by),
+            ];
+            let points = course::meander_line(
+                seed,
+                purpose::PLAN_BROOK,
+                &keys,
+                from.0,
+                to.0,
+                BROOK_MEANDER_DEPTH,
+                BROOK_MEANDER_PER_MILLE,
+            );
+            let mut along = vec![0; points.len()];
+            for k in 1..points.len() {
+                along[k] = along[k - 1] + line_length(points[k - 1], points[k]);
+            }
+            let total = along[points.len() - 1].max(1);
+            let level_to = to.1.min(from.1);
+            points
+                .iter()
+                .zip(&along)
+                .map(|(&(x, y), &at)| (x, y, from.1 + (level_to - from.1) * at / total))
+                .collect::<Vec<Levelled>>()
+        };
+        // The cut of a line: the middle of the innermost piece after the
+        // line's own midpoint, and the two halves either side of it.
+        let cut = |line: &[Levelled]| -> (Vec<Levelled>, Vec<Levelled>) {
+            let mid = line.len() / 2;
+            let (a, b) = (line[mid], line[mid + 1]);
+            let c = (
+                i64::midpoint(a.0, b.0),
+                i64::midpoint(a.1, b.1),
+                i64::midpoint(a.2, b.2),
+            );
+            let mut head = line[..=mid].to_vec();
+            head.push(c);
+            let mut tail = vec![c];
+            tail.extend_from_slice(&line[mid + 1..]);
+            (head, tail)
+        };
+        let mut push_brook = |piece: &[Levelled]| {
+            let mut piece = piece.to_vec();
+            for _ in 0..BROOK_SMOOTH {
+                piece = cut_corners_levelled(&piece);
+            }
+            for pair in piece.windows(2) {
+                let (u, v) = (pair[0], pair[1]);
+                if (u.0, u.1) == (v.0, v.1) {
+                    continue;
+                }
+                stretches.push(Stretch {
+                    a: (u.0, u.1),
+                    b: (v.0, v.1),
+                    level: (u.2, v.2.min(u.2)),
+                    half: (
+                        (BROOK_HALF_MM, BROOK_HALF_MM),
+                        (BROOK_HALF_MM, BROOK_HALF_MM),
+                    ),
+                    width: (2 * BROOK_HALF_MM, 2 * BROOK_HALF_MM),
+                    depth: (0, 0),
+                    bank: BROOK_BANK_M * 1000,
+                    kind: Kind::Brook,
+                    ford: false,
+                    heading: heading(v.0 - u.0, v.1 - u.1),
+                });
+            }
+        };
         for y in 0..cells {
             for x in 0..cells {
                 let i = index(x, y);
@@ -604,71 +798,40 @@ impl Window {
                     continue;
                 }
                 let (gx, gy) = (origin.0 - MARGIN + x, origin.1 - MARGIN + y);
-                let (lx, ly) = local(r);
-                let (rx, ry) = (lx + origin.0 - MARGIN, ly + origin.1 - MARGIN);
-                let a = brook_point(gx, gy);
-                let from = brook_level[usize::try_from(y * cells + x).expect("small")];
-                let (b, to) = match region.water[r] {
-                    Water::Brook => {
-                        let b = brook_point(rx, ry);
-                        // A receiver past the margin has no settled level:
-                        // its ground, clamped to the margin, serves.
-                        let level = if is_brook(lx, ly) {
-                            brook_level[usize::try_from(ly * cells + lx).expect("small")]
-                        } else {
-                            ground_of(
-                                seed,
-                                origin,
-                                cells,
-                                &height,
-                                &hills,
-                                b.0.div_euclid(1000),
-                                b.1.div_euclid(1000),
-                            )
-                        };
-                        (b, level)
-                    }
-                    Water::River => {
-                        // Onto the nearest river stretch, at its level.
-                        let c = mm((rx, ry));
-                        let mut best: Option<(i64, (i64, i64), i64)> = None;
-                        for s in &stretches[..rivers] {
-                            let Probe { d, level, .. } = s.probe(c);
-                            if best.is_none_or(|(bd, _, _)| d < bd) {
-                                // The nearest point itself.
-                                let (dx, dy) = (s.b.0 - s.a.0, s.b.1 - s.a.1);
-                                let len2 = (dx * dx + dy * dy).max(1);
-                                let t = ((c.0 - s.a.0) * dx + (c.1 - s.a.1) * dy).clamp(0, len2);
-                                best = Some((
-                                    d,
-                                    (s.a.0 + dx * t / len2, s.a.1 + dy * t / len2),
-                                    level,
-                                ));
-                            }
-                        }
-                        match best {
-                            Some((_, p, level)) => (p, level.min(from)),
-                            None => (c, i64::from(region.surface[r])),
-                        }
-                    }
-                    Water::Lake => (mm((rx, ry)), i64::from(region.surface[r])),
-                    Water::Land | Water::Sea => continue,
+                let from = (
+                    brook_point(gx, gy),
+                    brook_level[usize::try_from(y * cells + x).expect("small")],
+                );
+                let Some(to) = point_of(r) else {
+                    continue;
                 };
-                stretches.push(Stretch {
-                    a,
-                    b,
-                    level: (from, to.min(from)),
-                    half: (
-                        (BROOK_HALF_MM, BROOK_HALF_MM),
-                        (BROOK_HALF_MM, BROOK_HALF_MM),
-                    ),
-                    width: (2 * BROOK_HALF_MM, 2 * BROOK_HALF_MM),
-                    depth: (0, 0),
-                    bank: BROOK_BANK_M * 1000,
-                    kind: Kind::Brook,
-                    ford: false,
-                    heading: heading(b.0 - a.0, b.1 - a.1),
+                let line = line_of(i, from, r, to);
+                let (head, tail) = cut(&line);
+                // A source's head: no brook drains into this cell.
+                let (cx, cy) = region.grid.xy(i);
+                let source = !super::NEIGHBOURS.iter().any(|&(dx, dy, _)| {
+                    region.grid.inside(cx + dx, cy + dy) && {
+                        let n = region.grid.index(cx + dx, cy + dy);
+                        region.water[n] == Water::Brook && region.receiver[n] as usize == i
+                    }
                 });
+                if source {
+                    push_brook(&head);
+                }
+                // The piece: through the receiver's point and on to the
+                // middle of the receiver's own line, where it is a brook
+                // with a receiver of its own.
+                let mut piece = tail;
+                let rr = region.receiver[r] as usize;
+                if region.water[r] == Water::Brook
+                    && rr != r
+                    && let Some(beyond) = point_of(rr)
+                {
+                    let next = line_of(r, to, rr, beyond);
+                    let (next_head, _) = cut(&next);
+                    piece.extend_from_slice(&next_head[1..]);
+                }
+                push_brook(&piece);
             }
         }
 
@@ -1041,6 +1204,16 @@ impl Window {
             .collect()
     }
 
+    /// The brook stretches, for the tests.
+    #[cfg(test)]
+    fn brook_stretches(&self) -> Vec<Stretch> {
+        self.stretches
+            .iter()
+            .filter(|s| s.kind == Kind::Brook)
+            .copied()
+            .collect()
+    }
+
     /// Tile `(x, y)` shifted up to `reach` metres either way by a noise
     /// of its own (`k`), so a border read there wanders.
     fn ragged(&self, x: i64, y: i64, k: u64, reach: i64) -> (i64, i64) {
@@ -1168,7 +1341,7 @@ mod tests {
     //! the same ground drawn through two windows holds the same things.
     //! Before 15 November 2026 every window held the same woods.
 
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use super::*;
     use crate::content::Species;
@@ -1245,6 +1418,77 @@ mod tests {
             "{common} trees of {} and {} stand at the same foot in cells {a:?} and {b:?}",
             ta.len(),
             tb.len()
+        );
+    }
+
+    /// The brooks of the vivarium's cell meander and run downhill: each
+    /// piece of a brook follows the piece before without a corner (no
+    /// turn over 60°) and without climbing, no reach of a brook stays
+    /// within a metre of a chord over 64 m (the region's cell: before
+    /// 15 November 2026 a brook ran straight from cell centre to cell
+    /// centre, in 45° diagonals and right angles), and the pieces are a
+    /// few metres long at most.
+    #[test]
+    fn the_brooks_meander_and_never_climb() {
+        let c = continent();
+        let window = Window::of_cell(c, ZONE_2.cell);
+        let brooks = window.brook_stretches();
+        assert!(brooks.len() > 100, "{} brook stretches", brooks.len());
+        let next: BTreeMap<(i64, i64), usize> =
+            brooks.iter().enumerate().map(|(k, s)| (s.a, k)).collect();
+        let length = |s: &Stretch| line_length(s.a, s.b);
+        let (mut joined, mut longest_straight) = (0, 0);
+        for s in &brooks {
+            assert!(s.level.0 >= s.level.1, "a brook climbs: {s:?}");
+            assert!(length(s) <= 8_000, "a piece of {} mm", length(s));
+            let Some(&k) = next.get(&s.b) else {
+                continue;
+            };
+            let t = &brooks[k];
+            joined += 1;
+            assert_eq!(
+                s.level.1, t.level.0,
+                "a brook climbs or drops at a join: {s:?} then {t:?}"
+            );
+            let (u, v) = (
+                (s.b.0 - s.a.0, s.b.1 - s.a.1),
+                (t.b.0 - t.a.0, t.b.1 - t.a.1),
+            );
+            let dot = u.0 * v.0 + u.1 * v.1;
+            let (uu, vv) = (u.0 * u.0 + u.1 * u.1, v.0 * v.0 + v.1 * v.1);
+            // cos ≥ 0.5 ⇔ dot ≥ 0 and 4 dot² ≥ uu vv.
+            assert!(
+                dot >= 0 && 4 * dot * dot >= uu * vv,
+                "a brook turns over 60° at {:?}",
+                s.b
+            );
+            // The chord from this piece's start along the chain: how far
+            // it stays within a metre.
+            let (mut end, mut chain) = (k, 0);
+            let mut points = vec![s.a, s.b];
+            loop {
+                points.push(brooks[end].b);
+                let (a, b) = (points[0], points[points.len() - 1]);
+                let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+                let off = |p: (i64, i64)| {
+                    ((dx * (p.1 - a.1) - dy * (p.0 - a.0)) / line_length(a, b).max(1)).abs()
+                };
+                if points.iter().any(|&p| off(p) > 1000) {
+                    break;
+                }
+                longest_straight = longest_straight.max(line_length(a, b));
+                chain += 1;
+                match next.get(&brooks[end].b) {
+                    Some(&k) if chain < 200 => end = k,
+                    _ => break,
+                }
+            }
+        }
+        assert!(joined > 100, "{joined} pieces follow another");
+        assert!(
+            longest_straight <= 64_000,
+            "a brook runs straight for {} m",
+            longest_straight / 1000
         );
     }
 

@@ -10,14 +10,23 @@
 //! region's ([`region::course`], midpoint displacement at the 64 m cell)
 //! concatenated over the cells, then:
 //!
-//! 1. **rounded** by corner cutting (Chaikin, [`COARSE_SMOOTH`] passes):
-//!    the right angle where one cell's course met the next becomes a
-//!    bend about a river's width in radius;
-//! 2. **refined** below the cell by more midpoint displacement
-//!    ([`FINE_DEPTH`] halvings, [`FINE_PER_MILLE`]), keyed by each
-//!    segment's two ends, and rounded once more so the detail never
-//!    kinks: no turn sharper than [`SHARPEST_TURN_COS_MILLI`] between two
-//!    consecutive segments;
+//! 1. **thinned to the river's scale** ([`thin`]): each cell's course
+//!    keeps a point every [`PIECE_WIDTHS`] widths (a region cell at
+//!    least), so a great river no longer follows the 64 m zigzag of the
+//!    region's grid (banks kinked in parallel every cell, a canal with
+//!    facets: the marsh sheet of 15 November 2026);
+//! 2. **meandered** ([`meander`]): each piece is bent to one side, the
+//!    pieces alternating or bending away from the thinned course's
+//!    corners, by [`MEANDER_PER_MILLE`] of its length, so no piece stays
+//!    straight (the region's displacement, drawn uniformly and truncated
+//!    to whole cells, left a straight reach every few cells: 26 windows
+//!    of 108), every shift keyed by its segment's two ends and no vertex
+//!    turning past [`SHARPEST_VERTEX_DEG`]; then **rounded** by corner
+//!    cutting (Chaikin, as many passes as bring the pieces under
+//!    [`SMOOTH_TO_MM`], [`smooth_passes`], each cell with its own count
+//!    over its own run, [`round_cells`]) so the course never kinks: no
+//!    turn sharper than [`SHARPEST_TURN_COS_MILLI`] between two
+//!    consecutive segments, and no bend tighter than the river's width;
 //! 3. its **level settles on the ground** ([`settle`]): never above the
 //!    ground beside it, never rising downstream;
 //! 4. a **tributary joins** the stem it drains to where its course first
@@ -65,24 +74,59 @@ use crate::r#gen::scatter::{key, purpose, roll};
 /// Millimetres a region cell.
 const CELL_MM: i64 = REGION_CELL_M * 1000;
 
-/// The course below the region's 64 m: halvings of midpoint displacement
-/// once the cell's course is rounded (one: its pieces of 8 to 20 m down
-/// to 4 to 10 m), and the largest sideways shift of a midpoint, per
-/// mille of its segment's length. Smaller than the region's 280: at a
-/// few metres a river's line is nearly smooth, and larger shifts drew a
-/// jagged bank.
-const FINE_DEPTH: u32 = 1;
-const FINE_PER_MILLE: i64 = 150;
-
-/// Corner-cutting passes (Chaikin) over the course at the cell's scale
-/// before the fine detail, and over the fine course after it. Each pass
+/// A cell's course is thinned to pieces of this many of the river's
+/// widths ([`PIECE_LEAST_CELLS`] region cells at least) before its
+/// meanders are drawn: half a meander's wavelength, about ten widths on
+/// a river, so the bends of a river are the size of the river. Below it
+/// the region's 64 m points are dropped: on a river 170 m wide they drew
+/// a canal kinked every cell, and on any river the region's drainage
+/// zigzags from cell to cell (south, south-west, south...), a staircase
+/// two cells of thinning straighten.
+const PIECE_WIDTHS: i64 = 5;
+const PIECE_LEAST_CELLS: i64 = 2;
+/// No piece shorter than this share of a piece (three quarters: the
+/// legs of every corner are then at least 1.9 widths, what
+/// [`SHARPEST_VERTEX_DEG`] counts on) nor longer than twice it (a long
+/// piece's straight legs, a dropped hairpin's for one, read as a
+/// straight reach): the thinning keeps the first, the meanders split
+/// what is over the second.
+const LEAST_PIECE_SHARE: (i64, i64) = (3, 4);
+const LONGEST_PIECE_SHARE: (i64, i64) = (3, 2);
+/// The meander of a piece: its midpoint is shifted sideways by this much
+/// of its length, least and most (a bend of 44° to 53° at the midpoint),
+/// so no piece stays straight and the course winds at the river's
+/// scale. The pieces of a cell's course bend to alternate sides, except
+/// next to a corner of the thinned course sharper than
+/// [`CORNER_COS_MILLI`] (30°): a piece leaving or reaching one bends
+/// away from it, and a piece between two that turn opposite ways bends
+/// away from the sharper. A bend into a corner stacks its turn on the
+/// corner's: the shift is capped so that the two together stay under
+/// [`SHARPEST_VERTEX_DEG`] ([`shift_cap_per_mille`]).
+const MEANDER_PER_MILLE: (i64, i64) = (200, 250);
+const CORNER_COS_MILLI: i64 = 866;
+/// The sharpest a vertex of the meandered course may turn, a corner of
+/// the thinned course and the bend stacked on it together: 70°
+/// ([`shift_cap_per_mille`], [`HAIRPIN_COS_MILLI`]). With legs of half
+/// a piece (1.9 widths at least, [`LEAST_PIECE_SHARE`]) the rounding
+/// then bends the course with a radius over the river's width (1.07
+/// widths at 70°), so the bank on the inside of a bend turns by 20° a
+/// step at most and never folds. Before 15 November 2026 the region's
+/// course bent a 114 m river with a radius of 75 m and its inner bank
+/// folded; halvings below the pieces (the fine detail of the first
+/// draft) shortened the legs and stacked their turns, and were dropped
+/// for the same reason.
+const SHARPEST_VERTEX_DEG: i64 = 70;
+/// Corner-cutting passes (Chaikin) over the meandered course. Each pass
 /// replaces a corner by two of about half its turn, a quarter of the
-/// segments in from it, so the right angle where one cell's course met
-/// the next (and the hairpin a jittered node sometimes makes) becomes a
-/// bend of about a river's width in radius, turning by a few degrees a
-/// piece; the one pass after keeps the fine detail from kinking.
-const COARSE_SMOOTH: u32 = 3;
-const FINE_SMOOTH: u32 = 1;
+/// segments in from it, so a corner of the course becomes a bend turning
+/// by a few degrees a piece. As many passes as bring a cell's pieces
+/// under this length (mm), at least [`LEAST_SMOOTH`] and at most
+/// [`MOST_SMOOTH`]: a small river's 128 m pieces take five, a great
+/// river's 855 m pieces eight, and both end with nodes 2 to 4 m apart,
+/// what the banks' walk and the window's stretches want.
+const SMOOTH_TO_MM: i64 = 4_000;
+const LEAST_SMOOTH: u32 = 3;
+const MOST_SMOOTH: u32 = 8;
 
 /// No turn sharper than this between two consecutive segments of a
 /// finished course, as the cosine of the turn × 1000: 60°, so the angle
@@ -152,11 +196,16 @@ const JOIN_LOOK_CELLS: usize = 2;
 /// turns mean nothing.
 const LEAST_PIECE_MM: i64 = 500;
 
-/// A point the course steps to and nearly straight back from is a
-/// spike, dropped before the rounding: the turn's cosine × 1000 at or
-/// under this (about 155°). Corner cutting cannot open a corner that
-/// has no width, and the region's course makes one now and then at a
-/// cell's jittered node.
+/// A point the course steps to and turns back from is a spike, dropped:
+/// the turn's cosine × 1000 under this. On the thinned course, before
+/// its meanders, any corner over 70° ([`HAIRPIN_COS_MILLI`]): the
+/// region's jittered nodes zigzag now and then within a cell (a turn of
+/// 90° then one of 117° on seed 1), a river does not turn back on
+/// itself within a few of its widths, and a sharper corner would bend
+/// the course tighter than the river's width ([`SHARPEST_VERTEX_DEG`]).
+/// On the rounded course, the specks the rounding leaves (about 155°,
+/// [`SPIKE_COS_MILLI`]).
+const HAIRPIN_COS_MILLI: i64 = 342;
 const SPIKE_COS_MILLI: i64 = -900;
 
 /// The ford at an atlas crossing: the bar's length along the course, per
@@ -234,39 +283,23 @@ fn between(a: Node, b: Node, num: i64, den: i64) -> Node {
     }
 }
 
-/// One corner-cutting pass (Chaikin): every segment keeps its quarter
-/// and three-quarter points, the ends stay.
-fn cut_corners(nodes: &[Node]) -> Vec<Node> {
-    if nodes.len() < 3 {
-        return nodes.to_vec();
-    }
-    let mut out = Vec::with_capacity(2 * nodes.len());
-    out.push(nodes[0]);
-    for pair in nodes.windows(2) {
-        out.push(between(pair[0], pair[1], 1, 4));
-        out.push(between(pair[0], pair[1], 3, 4));
-    }
-    out.push(nodes[nodes.len() - 1]);
-    out
-}
-
-/// The course steps to `b` from `a` and nearly straight back towards
-/// `c`: a spike ([`SPIKE_COS_MILLI`]).
-fn spikes(a: (i64, i64), b: (i64, i64), c: (i64, i64)) -> bool {
+/// The course steps to `b` from `a` and turns back towards `c` by more
+/// than `cos_milli` allows (the cosine of the turn × 1000, negative): a
+/// spike.
+fn spikes(a: (i64, i64), b: (i64, i64), c: (i64, i64), cos_milli: i64) -> bool {
     let (u, v) = ((b.0 - a.0, b.1 - a.1), (c.0 - b.0, c.1 - b.1));
-    let dot = i128::from(u.0) * i128::from(v.0) + i128::from(u.1) * i128::from(v.1);
-    let uu = i128::from(u.0).pow(2) + i128::from(u.1).pow(2);
-    let vv = i128::from(v.0).pow(2) + i128::from(v.1).pow(2);
-    // cos ≤ c < 0  ⇔  dot < 0 and dot² × 10⁶ ≥ c² × uu × vv.
-    dot < 0 && dot * dot * 1_000_000 >= i128::from(SPIKE_COS_MILLI).pow(2) * uu * vv
+    if (u.0, u.1) == (0, 0) || (v.0, v.1) == (0, 0) {
+        return false;
+    }
+    !turns_within(u, v, cos_milli)
 }
 
-/// The course without its spikes ([`spikes`]) and without pieces
-/// shorter than `least` (mm), the ends kept.
-fn tidy(nodes: &[Node], least: i64) -> Vec<Node> {
+/// The course without its spikes ([`spikes`], turns over `cos_milli`)
+/// and without pieces shorter than `least` (mm), the ends kept.
+fn tidy(nodes: &[Node], least: i64, cos_milli: i64) -> Vec<Node> {
     let mut out: Vec<Node> = Vec::with_capacity(nodes.len());
     for &n in nodes {
-        while out.len() >= 2 && spikes(out[out.len() - 2].p, out[out.len() - 1].p, n.p) {
+        while out.len() >= 2 && spikes(out[out.len() - 2].p, out[out.len() - 1].p, n.p, cos_milli) {
             out.pop();
         }
         if out.last().is_some_and(|last| distance(last.p, n.p) < least) {
@@ -286,38 +319,353 @@ fn tidy(nodes: &[Node], least: i64) -> Vec<Node> {
     out
 }
 
-/// Midpoint displacement of every segment, `depth` halvings, each
-/// midpoint shifted sideways by up to `per_mille` of its segment, keyed
-/// by the segment's two ends.
-fn refine(seed: u64, nodes: &[Node], depth: u32, per_mille: i64) -> Vec<Node> {
-    fn split(seed: u64, a: Node, b: Node, depth: u32, per_mille: i64, out: &mut Vec<Node>) {
+/// The nodes of one cell's course thinned to pieces of about `piece`
+/// millimetres: both ends kept, and between them every node at least
+/// [`LEAST_PIECE_SHARE`] of a piece along from the one kept before and
+/// from the end, so no piece is shorter than that share (a short piece
+/// between two corners bent the course tighter than the river's width)
+/// nor longer than about twice a piece. A course shorter than a piece
+/// keeps its two ends only.
+fn thin(nodes: &[Node], piece: i64) -> Vec<Node> {
+    if nodes.len() < 3 {
+        return nodes.to_vec();
+    }
+    let along = along(nodes);
+    let length = along[nodes.len() - 1];
+    let least = piece * LEAST_PIECE_SHARE.0 / LEAST_PIECE_SHARE.1;
+    let mut out = vec![nodes[0]];
+    let mut kept_at = 0;
+    for j in 1..nodes.len() - 1 {
+        if along[j] - kept_at >= least
+            && length - along[j] >= least
+            && nodes[j].p != out[out.len() - 1].p
+        {
+            out.push(nodes[j]);
+            kept_at = along[j];
+        }
+    }
+    out.push(nodes[nodes.len() - 1]);
+    out
+}
+
+/// A segment's midpoint shifted sideways by `per_mille` of its length
+/// (positive to the left of its way, seen with y downwards).
+fn shifted(a: Node, b: Node, per_mille: i64) -> Node {
+    let (dx, dy) = (b.p.0 - a.p.0, b.p.1 - a.p.1);
+    let mut mid = between(a, b, 1, 2);
+    mid.p = (
+        mid.p.0 - dy * per_mille / 1000,
+        mid.p.1 + dx * per_mille / 1000,
+    );
+    mid
+}
+
+/// The roll of a segment, keyed by its two ends.
+fn segment_roll(seed: u64, purpose: u64, a: (i64, i64), b: (i64, i64)) -> u64 {
+    roll(seed, purpose, &[key(a.0), key(a.1), key(b.0), key(b.1)])
+}
+
+/// The corner at `v` (reached from `p`, left towards `n`): the cosine of
+/// its turn × 1000, and the sign of a shift ([`shifted`]) that bends a
+/// piece either side of it into it (a positive shift of either piece
+/// bends it towards the side the corner turns to).
+fn corner(p: (i64, i64), v: (i64, i64), n: (i64, i64)) -> (i64, i64) {
+    let (u, w) = ((v.0 - p.0, v.1 - p.1), (n.0 - v.0, n.1 - v.1));
+    let dot = i128::from(u.0) * i128::from(w.0) + i128::from(u.1) * i128::from(w.1);
+    let uu = i128::from(u.0).pow(2) + i128::from(u.1).pow(2);
+    let vv = i128::from(w.0).pow(2) + i128::from(w.1).pow(2);
+    let cos_milli = if dot <= 0 || uu == 0 || vv == 0 {
+        0
+    } else {
+        i64::try_from(isqrt(
+            u64::try_from(dot * dot * 1_000_000 / (uu * vv)).expect("a cosine"),
+        ))
+        .expect("small")
+    };
+    let cross = i128::from(u.0) * i128::from(w.1) - i128::from(u.1) * i128::from(w.0);
+    (cos_milli.min(1000), if cross > 0 { 1 } else { -1 })
+}
+
+/// The most a piece may be shifted, per mille of its length, when its
+/// bend goes into a corner whose turn's cosine × 1000 is `cos_milli`:
+/// the corner's turn and the bend's (twice the arc tangent of twice the
+/// shift) together stay under [`SHARPEST_VERTEX_DEG`]; by bands of five
+/// degrees of the corner, from none to 70° (a sharper corner is a
+/// hairpin, dropped before).
+fn shift_cap_per_mille(cos_milli: i64) -> i64 {
+    // (cos × 1000 at the band's upper bound, the cap for that band):
+    // tan((70° − corner) / 2) / 2 at the band's sharpest corner.
+    const BANDS: [(i64, i64); 15] = [
+        (996, 315),
+        (985, 289),
+        (966, 260),
+        (940, 233),
+        (906, 208),
+        (866, 184),
+        (819, 161),
+        (766, 139),
+        (707, 117),
+        (643, 96),
+        (574, 66),
+        (500, 44),
+        (423, 22),
+        (342, 0),
+        (0, 0),
+    ];
+    // The last band with a cap is the sharpest vertex less five degrees.
+    debug_assert_eq!(
+        BANDS[BANDS.len() - 3].0,
+        423,
+        "{SHARPEST_VERTEX_DEG}° less 5°"
+    );
+    BANDS
+        .iter()
+        .find(|&&(at_most, _)| cos_milli >= at_most)
+        .map_or(0, |&(_, cap)| cap)
+}
+
+/// The meanders of one cell's run of a course: `run`, from the cell
+/// before's last node to the cell's last, thinned to its pieces of
+/// about `piece`, with the nodes `before` and `after` it, where there
+/// are any, telling where the corners at its ends are. A piece over
+/// [`LONGEST_PIECE_SHARE`] of a piece is first split evenly; then every
+/// piece is bent to one side by [`MEANDER_PER_MILLE`] of its length, the
+/// pieces to alternate sides unless a corner says otherwise, the bend
+/// capped where it goes into a corner ([`shift_cap_per_mille`]), every
+/// shift keyed by its segment's two ends (see the module). The run's
+/// two ends included.
+fn meander(
+    seed: u64,
+    before: Option<Node>,
+    run: &[Node],
+    after: Option<Node>,
+    piece: i64,
+) -> Vec<Node> {
+    // The pieces, none over the share.
+    let longest = piece * LONGEST_PIECE_SHARE.0 / LONGEST_PIECE_SHARE.1;
+    let mut nodes: Vec<Node> = Vec::with_capacity(run.len() * 2);
+    nodes.extend(before);
+    nodes.extend(run.first().copied());
+    for pair in run.windows(2) {
+        let parts = (distance(pair[0].p, pair[1].p) + longest.max(1) - 1) / longest.max(1);
+        let parts = parts.max(1);
+        for j in 1..=parts {
+            nodes.push(between(pair[0], pair[1], j, parts));
+        }
+    }
+    nodes.extend(after);
+    let (lo, hi) = (
+        usize::from(before.is_some()),
+        nodes.len() - 1 - usize::from(after.is_some()),
+    );
+    let (least, most) = MEANDER_PER_MILLE;
+    let mut out = Vec::with_capacity((hi - lo) * 2 + 1);
+    out.push(nodes[lo]);
+    for k in lo..hi {
+        let (a, b) = (nodes[k], nodes[k + 1]);
+        let r = segment_roll(seed, purpose::PLAN_FINE, a.p, b.p);
+        let magnitude = least + i64::try_from(r % 1000).expect("small") * (most - least) / 999;
+        // The corners at both ends: (cosine × 1000, the sign bending
+        // into it), where there is a node beyond.
+        let at_start = k.checked_sub(1).map(|j| corner(nodes[j].p, a.p, b.p));
+        let at_end = nodes.get(k + 2).map(|n| corner(a.p, b.p, n.p));
+        let sharp = |c: Option<(i64, i64)>| c.filter(|&(cos, _)| cos < CORNER_COS_MILLI);
+        let sign = match (sharp(at_start), sharp(at_end)) {
+            // Away from the sharper of two corners (or the one), and
+            // from both when they turn the same way.
+            (Some((start_cos, start_into)), Some((end_cos, end_into))) => {
+                if start_cos <= end_cos {
+                    -start_into
+                } else {
+                    -end_into
+                }
+            }
+            (Some((_, into)), None) | (None, Some((_, into))) => -into,
+            (None, None) => {
+                if (k - lo) % 2 == 0 {
+                    1
+                } else {
+                    -1
+                }
+            }
+        };
+        let cap = [at_start, at_end]
+            .into_iter()
+            .flatten()
+            .filter(|&(_, into)| into == sign)
+            .map(|(cos, _)| shift_cap_per_mille(cos))
+            .min()
+            .unwrap_or(most);
+        out.push(shifted(a, b, sign * magnitude.min(cap)));
+        out.push(b);
+    }
+    out
+}
+
+/// How many corner-cutting passes bring pieces of `piece` under
+/// [`SMOOTH_TO_MM`] (see the constants): set by the river's width,
+/// never by what a span measured, so every span rounds a cell alike.
+fn smooth_passes(piece: i64) -> u32 {
+    let mut passes = 0;
+    let mut piece = piece;
+    while piece > SMOOTH_TO_MM && passes < MOST_SMOOTH {
+        piece /= 2;
+        passes += 1;
+    }
+    passes.max(LEAST_SMOOTH)
+}
+
+/// The meanders of a line from `a` to `b` (mm), for the window's brooks:
+/// `depth` halvings of midpoint displacement, the first shifting the
+/// midpoint by `per_mille.0` to `per_mille.1` of the line's length to
+/// either side, the ones after by up to `per_mille.1` either way at the
+/// second and half as much at each after, each shift drawn from `seed`
+/// and `purpose` with `keys` and the segment's place in the line, so the
+/// same line gives the same meanders whichever window asks. Both ends
+/// included, `2^depth + 1` points.
+pub(crate) fn meander_line(
+    seed: u64,
+    purpose: u64,
+    keys: &[u64],
+    a: (i64, i64),
+    b: (i64, i64),
+    depth: u32,
+    per_mille: (i64, i64),
+) -> Vec<(i64, i64)> {
+    #[allow(clippy::too_many_arguments)]
+    fn split(
+        seed: u64,
+        purpose: u64,
+        keys: &[u64],
+        a: (i64, i64),
+        b: (i64, i64),
+        depth: u32,
+        per_mille: (i64, i64),
+        index: u64,
+        out: &mut Vec<(i64, i64)>,
+    ) {
         if depth == 0 {
             out.push(b);
             return;
         }
-        let (dx, dy) = (b.p.0 - a.p.0, b.p.1 - a.p.1);
-        let r = roll(
-            seed,
-            purpose::PLAN_FINE,
-            &[key(a.p.0), key(a.p.1), key(b.p.0), key(b.p.1)],
+        let mut k = keys.to_vec();
+        k.push(index);
+        let r = roll(seed, purpose, &k);
+        let shift = if index == 1 {
+            let magnitude = per_mille.0
+                + i64::try_from(r % 1000).expect("small") * (per_mille.1 - per_mille.0) / 999;
+            if (r >> 20) & 1 == 0 {
+                magnitude
+            } else {
+                -magnitude
+            }
+        } else {
+            // The halving's rank below the first: 1 at the second.
+            let rank = (u64::BITS - index.leading_zeros()).saturating_sub(2);
+            (i64::try_from(r % 2001).expect("small") - 1000) * per_mille.1 / 1000 / (1 << rank)
+        };
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let mid = (
+            i64::midpoint(a.0, b.0) - dy * shift / 1000,
+            i64::midpoint(a.1, b.1) + dx * shift / 1000,
         );
-        let shift = (i64::try_from(r % 2001).expect("small") - 1000) * per_mille / 1000;
-        let mut mid = between(a, b, 1, 2);
-        mid.p = (mid.p.0 - dy * shift / 1000, mid.p.1 + dx * shift / 1000);
-        split(seed, a, mid, depth - 1, per_mille, out);
-        split(seed, mid, b, depth - 1, per_mille, out);
+        split(
+            seed,
+            purpose,
+            keys,
+            a,
+            mid,
+            depth - 1,
+            per_mille,
+            2 * index,
+            out,
+        );
+        split(
+            seed,
+            purpose,
+            keys,
+            mid,
+            b,
+            depth - 1,
+            per_mille,
+            2 * index + 1,
+            out,
+        );
     }
-    let mut out = Vec::with_capacity(nodes.len() << depth);
-    out.push(nodes[0]);
-    for pair in nodes.windows(2) {
-        split(seed, pair[0], pair[1], depth, per_mille, &mut out);
+    let mut out = vec![a];
+    split(seed, purpose, keys, a, b, depth, per_mille, 1, &mut out);
+    out
+}
+
+/// The runs of nodes of one cell along a course: `(from, to)`.
+fn cell_runs(nodes: &[Node]) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while from < nodes.len() {
+        let cell = nodes[from].cell;
+        let to = nodes[from..]
+            .iter()
+            .position(|n| n.cell != cell)
+            .map_or(nodes.len(), |len| from + len);
+        out.push((from, to));
+        from = to;
+    }
+    out
+}
+
+/// The course rounded cell by cell: each cell's run of nodes, with two
+/// nodes of the cells either side, is cut by corners its own number of
+/// times (`passes` of its cell, [`smooth_passes`]), and what lies
+/// between the run's first node and its last is kept, by the control
+/// polygon's parameter (a node's index, in quarters at every pass). Two
+/// cells rounded by different counts meet on one curve, since the
+/// curve near a node depends on that node and its neighbours alone, and
+/// a span that holds a cell but not the next rounds it the same way (D39).
+fn round_cells(nodes: &[Node], passes: impl Fn(usize) -> u32) -> Vec<Node> {
+    let mut out = Vec::with_capacity(nodes.len() * 8);
+    for (from, to) in cell_runs(nodes) {
+        let (lo, hi) = (from.saturating_sub(2), (to + 2).min(nodes.len()));
+        let mut poly: Vec<(Node, i64)> = nodes[lo..hi]
+            .iter()
+            .enumerate()
+            .map(|(j, &n)| (n, i64::try_from(lo + j).expect("small")))
+            .collect();
+        let mut scale = 1;
+        for _ in 0..passes(nodes[from].cell) {
+            if poly.len() < 3 {
+                break;
+            }
+            let mut next = Vec::with_capacity(2 * poly.len());
+            next.push((poly[0].0, poly[0].1 * 4));
+            for pair in poly.windows(2) {
+                let ((a, pa), (b, pb)) = (pair[0], pair[1]);
+                next.push((between(a, b, 1, 4), 4 * pa + (pb - pa)));
+                next.push((between(a, b, 3, 4), 4 * pa + 3 * (pb - pa)));
+            }
+            next.push((poly[poly.len() - 1].0, poly[poly.len() - 1].1 * 4));
+            poly = next;
+            scale *= 4;
+        }
+        let (first, last) = (
+            i64::try_from(from).expect("small") * scale,
+            i64::try_from(to).expect("small") * scale,
+        );
+        // The run's own cell, whatever the neighbours' nodes mixed in.
+        let cell = nodes[from].cell;
+        out.extend(
+            poly.into_iter()
+                .filter(|&(_, p)| (first..last).contains(&p))
+                .map(|(mut n, _)| {
+                    n.cell = cell;
+                    n
+                }),
+        );
     }
     out
 }
 
 /// Two consecutive segments turn no more than `cos_milli` allows (the
 /// cosine of the turn, × 1000).
-#[cfg(test)]
 fn turns_within(u: (i64, i64), v: (i64, i64), cos_milli: i64) -> bool {
     let dot = i128::from(u.0) * i128::from(v.0) + i128::from(u.1) * i128::from(v.1);
     let uu = i128::from(u.0).pow(2) + i128::from(u.1).pow(2);
@@ -325,9 +673,14 @@ fn turns_within(u: (i64, i64), v: (i64, i64), cos_milli: i64) -> bool {
     if uu == 0 || vv == 0 {
         return true;
     }
-    // cos = dot / √(uu vv) ≥ c  ⇔  dot ≥ 0 and dot² × 10⁶ ≥ c² × uu × vv
-    // (for c ≥ 0).
-    dot >= 0 && dot * dot * 1_000_000 >= i128::from(cos_milli).pow(2) * uu * vv
+    // cos = dot / √(uu vv) ≥ c: for c ≥ 0, dot ≥ 0 and dot² × 10⁶ ≥
+    // c² × uu × vv; for c < 0, dot ≥ 0 or dot² × 10⁶ ≤ c² × uu × vv.
+    let c2 = i128::from(cos_milli).pow(2) * uu * vv;
+    if cos_milli >= 0 {
+        dot >= 0 && dot * dot * 1_000_000 >= c2
+    } else {
+        dot >= 0 || dot * dot * 1_000_000 <= c2
+    }
 }
 
 /// The sharpest turn along `nodes` stays within `cos_milli`.
@@ -587,18 +940,42 @@ fn walk_banks(seed: u64, nodes: &mut [Node], xy: (i32, i32), width: i64, quiet: 
             }
         }
     }
+    // Each node's banks from the steps' offsets around it, a cubic
+    // through them that never overshoots (Hermite, a step's tangent its
+    // move's where the move goes on through it and flat where a move
+    // begins, ends or turns): along a move the bank is the line the
+    // walker drew, and where a move begins or ends its heading turns
+    // over the step instead of at a corner, which showed on a wide
+    // river, a step being a fifth of its width (the marsh sheet of
+    // 15 November 2026). The offsets are in steps of the slope, so the
+    // cubic is taken in thousandths of a step.
+    let last = i64::try_from(n).expect("small");
+    let at_step = |s: i64, bank: usize| -> i64 {
+        let (left, right) = banks[usize::try_from(s.clamp(0, last)).expect("small")];
+        if bank == 0 { left } else { right }
+    };
+    let tangent = |s: i64, bank: usize| -> i64 {
+        let (before, after) = (
+            at_step(s, bank) - at_step(s - 1, bank),
+            at_step(s + 1, bank) - at_step(s, bank),
+        );
+        if before == after { before } else { 0 }
+    };
     for (node, &at) in nodes.iter_mut().zip(&along) {
-        let (s, t) = (
-            usize::try_from(at / step).expect("small").min(n),
-            (at % step) * 1000 / step,
-        );
-        let next = banks[(s + 1).min(n)];
-        let mix =
-            |a: i64, b: i64| (a * 1000 + (b - a) * t) * BANK_SLOPE_PER_MILLE * step / 1_000_000;
-        node.half = (
-            node.width / 2 + mix(banks[s].0, next.0),
-            node.width / 2 + mix(banks[s].1, next.1),
-        );
+        let s = (at / step).min(last);
+        let t = (at % step) * 1000 / step;
+        let cubic = |bank: usize| {
+            let (p1, p2) = (at_step(s, bank), at_step(s + 1, bank));
+            let (m1, m2) = (tangent(s, bank), tangent(s + 1, bank));
+            // Hermite with t in thousandths, the result × 1000.
+            let (t2, t3) = (t * t / 1000, t * t * t / 1_000_000);
+            let value = p1 * (2 * t3 - 3 * t2 + 1000)
+                + m1 * (t3 - 2 * t2 + t)
+                + p2 * (3 * t2 - 2 * t3)
+                + m2 * (t3 - t2);
+            value * BANK_SLOPE_PER_MILLE * step / 1_000_000
+        };
+        node.half = (node.width / 2 + cubic(0), node.width / 2 + cubic(1));
     }
 }
 
@@ -729,13 +1106,22 @@ fn join(
         .position(|n| last_cells.contains(&n.cell))
         .unwrap_or(0);
     let reach = |w: i64| w / 2 + JOIN_REACH_WIDTHS * w;
-    let widest = stems[main].nodes.iter().map(|n| n.width).max().unwrap_or(0);
+    // The stem's water at the junction is both waters': the width it has
+    // downstream of the junction, where the atlas sends the tributary.
+    let downstream_width = courses.get(&end).map_or(0, |c| c.width);
+    let widest = stems[main]
+        .nodes
+        .iter()
+        .map(|n| n.width)
+        .max()
+        .unwrap_or(0)
+        .max(downstream_width);
     let near = Near::new(&stems[main].nodes);
     let mut cut = None;
     for j in start..stems[k].nodes.len() {
         let p = stems[k].nodes[j].p;
         if let Some((q, d, s)) = near.nearest(p, reach(widest))
-            && d <= reach(stems[main].nodes[s].width)
+            && d <= reach(stems[main].nodes[s].width.max(downstream_width))
         {
             cut = Some((j, q, d, s));
             break;
@@ -763,9 +1149,13 @@ fn join(
     // to the downstream cell's over a short way.
     if let Some(&downstream) = courses.get(&end) {
         let nodes = &mut stems[main].nodes;
+        // Up to where the course's own width reaches the downstream
+        // cell's (the widths blend across the two cells' courses as
+        // they are rounded), never over a node already as wide.
         let first = nodes
             .iter()
-            .position(|n| n.cell == end)
+            .enumerate()
+            .position(|(m, n)| m > s && n.width >= downstream.width)
             .unwrap_or(nodes.len());
         let along = along(nodes);
         let widen = (JOIN_BLEND_M * 1000).max(JOIN_WIDEN_WIDTHS * downstream.width);
@@ -853,10 +1243,28 @@ pub(crate) fn stems(
         .flat_map(|(k, (cells, _))| cells.iter().map(move |&i| (i, k)))
         .collect();
 
+    // The stems before their tributaries: a tributary's course ends on
+    // the rounded course of the stem it drains to, so it must be drawn
+    // first. A chain is ready once the chain owning its end is drawn.
+    let mut order: Vec<usize> = Vec::with_capacity(chains.len());
+    let mut drawn = vec![false; chains.len()];
+    while order.len() < chains.len() {
+        let before = order.len();
+        for (k, (cells, end)) in chains.iter().enumerate() {
+            let ready = cells.contains(end) || owner.get(end).is_none_or(|&m| drawn[m]);
+            if !drawn[k] && ready {
+                drawn[k] = true;
+                order.push(k);
+            }
+        }
+        assert!(order.len() > before, "the waters form a tree");
+    }
+
     // Each chain's course, cell by cell, with its levels and widths.
-    let mut out: Vec<Stem> = Vec::with_capacity(chains.len());
+    let mut out: Vec<Option<Stem>> = vec![None; chains.len()];
     let mut courses: BTreeMap<usize, Course> = BTreeMap::new();
-    for (cells, end) in &chains {
+    for &chain in &order {
+        let (cells, end) = &chains[chain];
         let mut nodes: Vec<Node> = Vec::new();
         for (k, &i) in cells.iter().enumerate() {
             let r = cells.get(k + 1).copied().unwrap_or(*end);
@@ -876,31 +1284,70 @@ pub(crate) fn stems(
                 },
             );
             let steps = i64::try_from(path.len() - 1).expect("small").max(1);
-            for (j, &g) in path.iter().enumerate() {
-                if j == 0 && k > 0 {
-                    continue;
+            let mut raw: Vec<Node> = path
+                .iter()
+                .enumerate()
+                .map(|(j, &g)| {
+                    let j = i64::try_from(j).expect("small");
+                    Node {
+                        p: mm(g),
+                        level: top - (top - bottom) * j / steps,
+                        half: (width / 2, width / 2),
+                        width,
+                        depth,
+                        ford: false,
+                        cell: i,
+                    }
+                })
+                .collect();
+            // A tributary's last cell ends on the stem's course as drawn
+            // (rounded, it passes up to a piece from the atlas's node),
+            // at the point of it nearest that node, so the two meet.
+            if k + 1 == cells.len()
+                && let Some(main) = owner.get(end).and_then(|&m| out[m].as_ref())
+                && let Some((q, _, _)) = nearest_on(&main.nodes, mm(region::node(seed, rx, ry)))
+            {
+                // The stem's course may have cut the corner the atlas's
+                // node made (a hairpin dropped, up to a kilometre): the
+                // way there is paced like the region's path, a point a
+                // cell, so it gets its pieces and its meanders too.
+                let last = raw.pop().expect("a path");
+                let before = raw.last().copied().unwrap_or(last);
+                let steps = (distance(before.p, q) / CELL_MM).max(1);
+                for j in 1..=steps {
+                    let mut node = between(before, last, j, steps);
+                    node.p = (
+                        before.p.0 + (q.0 - before.p.0) * j / steps,
+                        before.p.1 + (q.1 - before.p.1) * j / steps,
+                    );
+                    raw.push(node);
                 }
-                let j = i64::try_from(j).expect("small");
-                nodes.push(Node {
-                    p: mm(g),
-                    level: top - (top - bottom) * j / steps,
-                    half: (width / 2, width / 2),
-                    width,
-                    depth,
-                    ford: false,
-                    cell: i,
-                });
             }
+            // The cell's course thinned to the river's scale (see the
+            // module); its first node is the cell before's last.
+            let piece = (PIECE_WIDTHS * width).max(PIECE_LEAST_CELLS * CELL_MM);
+            nodes.extend(thin(&raw, piece).into_iter().skip(usize::from(k > 0)));
         }
-        nodes = tidy(&nodes, 1);
-        for _ in 0..COARSE_SMOOTH {
-            nodes = cut_corners(&nodes);
+        // No hairpin; then each cell's meanders, each cell's rounding.
+        nodes = tidy(&nodes, 1, HAIRPIN_COS_MILLI);
+        let piece_of =
+            |cell: usize| (PIECE_WIDTHS * courses[&cell].width).max(PIECE_LEAST_CELLS * CELL_MM);
+        let mut meandered = Vec::with_capacity(nodes.len() * 2);
+        for (from, to) in cell_runs(&nodes) {
+            // A run's pieces start at the node before it, the cell
+            // before's last, so the piece between the two cells gets
+            // its meanders too.
+            let own = meander(
+                seed,
+                from.checked_sub(2).map(|j| nodes[j]),
+                &nodes[from.saturating_sub(1)..to],
+                nodes.get(to).copied(),
+                piece_of(nodes[from].cell),
+            );
+            meandered.extend(own.into_iter().skip(usize::from(from > 0)));
         }
-        nodes = refine(seed, &nodes, FINE_DEPTH, FINE_PER_MILLE);
-        for _ in 0..FINE_SMOOTH {
-            nodes = cut_corners(&nodes);
-        }
-        nodes = tidy(&nodes, LEAST_PIECE_MM);
+        nodes = round_cells(&meandered, |cell| smooth_passes(piece_of(cell)));
+        nodes = tidy(&nodes, LEAST_PIECE_MM, SPIKE_COS_MILLI);
         if let Some(ground) = ground {
             settle(&mut nodes, ground);
         }
@@ -909,12 +1356,13 @@ pub(crate) fn stems(
         } else {
             owner.get(end).copied()
         };
-        out.push(Stem {
+        out[chain] = Some(Stem {
             nodes,
             cells: cells.clone(),
             joins,
         });
     }
+    let mut out: Vec<Stem> = out.into_iter().map(|s| s.expect("drawn")).collect();
 
     // The tributaries join at first contact; the junctions, per stem.
     let mut junctions: Vec<Vec<usize>> = vec![Vec::new(); out.len()];
@@ -945,13 +1393,8 @@ pub(crate) fn stems(
                 fords.push(at);
             }
         }
-        let mut from = 0;
-        while from < stem.nodes.len() {
+        for (from, to) in cell_runs(&stem.nodes) {
             let cell = stem.nodes[from].cell;
-            let to = stem.nodes[from..]
-                .iter()
-                .position(|n| n.cell != cell)
-                .map_or(stem.nodes.len(), |len| from + len);
             if let Some(&course) = courses.get(&cell) {
                 let quiet: Vec<(usize, i64)> = fords
                     .iter()
@@ -977,7 +1420,6 @@ pub(crate) fn stems(
                     &quiet,
                 );
             }
-            from = to;
         }
         for &at in &fords {
             spread_ford(&mut stem.nodes, at);
@@ -1000,13 +1442,6 @@ mod tests {
         stems(c, 0..side, 0..side, None)
     }
 
-    /// The farthest a bank stands in and out of its line, per mille of
-    /// the half-width the flow gives it, from the walker's reach.
-    fn bank_room() -> (i64, i64) {
-        let out = |k: i64| 1000 + k * BANK_SLOPE_PER_MILLE * WALK_STEP_PER_MILLE * 2 / 1000;
-        (out(BANK_REACH_STEPS.0), out(BANK_REACH_STEPS.1))
-    }
-
     #[test]
     fn no_turn_is_sharper_than_sixty_degrees() {
         for seed in 1..=3 {
@@ -1014,6 +1449,29 @@ mod tests {
             let stems = all_stems(&c);
             assert!(!stems.is_empty(), "seed {seed} has rivers");
             for (k, s) in stems.iter().enumerate() {
+                if !course_turns_within(&s.nodes, SHARPEST_TURN_COS_MILLI) {
+                    for w in s.nodes.windows(3) {
+                        let (u, v) = (
+                            (w[1].p.0 - w[0].p.0, w[1].p.1 - w[0].p.1),
+                            (w[2].p.0 - w[1].p.0, w[2].p.1 - w[1].p.1),
+                        );
+                        if !turns_within(u, v, SHARPEST_TURN_COS_MILLI) {
+                            let (cos_milli, _) = corner(w[0].p, w[1].p, w[2].p);
+                            eprintln!(
+                                "seed {seed} stem {k}: a turn of cosine {cos_milli} at {:?} (cells {} {} {}, widths {} {} {}, pieces {} {} mm)",
+                                w[1].p,
+                                w[0].cell,
+                                w[1].cell,
+                                w[2].cell,
+                                w[0].width,
+                                w[1].width,
+                                w[2].width,
+                                distance(w[0].p, w[1].p),
+                                distance(w[1].p, w[2].p)
+                            );
+                        }
+                    }
+                }
                 assert!(
                     course_turns_within(&s.nodes, SHARPEST_TURN_COS_MILLI),
                     "seed {seed}, stem {k}"
@@ -1022,29 +1480,199 @@ mod tests {
         }
     }
 
+    /// The longest chord of `nodes` every node between whose ends lies
+    /// within a quarter of the width of it (a metre at least), mm: the
+    /// safety net's straight reach (`plan::net`).
+    fn longest_straight(nodes: &[Node]) -> i64 {
+        let off_line = |a: (i64, i64), b: (i64, i64), p: (i64, i64)| {
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            ((dx * (p.1 - a.1) - dy * (p.0 - a.0)) / distance(a, b).max(1)).abs()
+        };
+        let mut longest = 0;
+        for i in 0..nodes.len() {
+            let tolerance = (nodes[i].width / 4).max(1000);
+            for j in i + 1..nodes.len() {
+                if !(i + 1..j).all(|k| off_line(nodes[i].p, nodes[j].p, nodes[k].p) <= tolerance) {
+                    break;
+                }
+                longest = longest.max(distance(nodes[i].p, nodes[j].p));
+            }
+        }
+        longest
+    }
+
+    /// No reach of a river runs straight: within a quarter width of a
+    /// chord over 300 m or ten widths, the longer (the lead's rule of
+    /// 15 November 2026, the safety net's `StraightReach`; before, the
+    /// region's displacement left one every few cells: 26 windows of
+    /// 108, the vivarium's river straight for 675 m).
+    #[test]
+    fn no_reach_runs_straight() {
+        let mut stems_judged = 0;
+        for seed in 1..=3 {
+            let c = continent(seed);
+            for (k, s) in all_stems(&c).iter().enumerate() {
+                let width = s.nodes.iter().map(|n| n.width).max().unwrap_or(0);
+                let allowed = 300_000.max(10 * width);
+                let straight = longest_straight(&s.nodes);
+                if straight > allowed {
+                    // Where: the chord.
+                    let off_line = |a: (i64, i64), b: (i64, i64), p: (i64, i64)| {
+                        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+                        ((dx * (p.1 - a.1) - dy * (p.0 - a.0)) / distance(a, b).max(1)).abs()
+                    };
+                    let nodes = &s.nodes;
+                    let (mut bi, mut bj, mut best) = (0, 0, 0);
+                    for i in 0..nodes.len() {
+                        let tolerance = (nodes[i].width / 4).max(1000);
+                        for j in i + 1..nodes.len() {
+                            if !(i + 1..j)
+                                .all(|k| off_line(nodes[i].p, nodes[j].p, nodes[k].p) <= tolerance)
+                            {
+                                break;
+                            }
+                            if distance(nodes[i].p, nodes[j].p) > best {
+                                best = distance(nodes[i].p, nodes[j].p);
+                                bi = i;
+                                bj = j;
+                            }
+                        }
+                    }
+                    let along = along(nodes);
+                    eprintln!(
+                        "reach from {:?} to {:?}: nodes {bi}..{bj} of {} (along {} .. {} of {}), cells {:?}, joins {:?}, widths {} {}, fords {}",
+                        nodes[bi].p,
+                        nodes[bj].p,
+                        nodes.len(),
+                        along[bi],
+                        along[bj],
+                        along[nodes.len() - 1],
+                        {
+                            let mut v: Vec<usize> = nodes[bi..=bj].iter().map(|n| n.cell).collect();
+                            v.dedup();
+                            v
+                        },
+                        s.joins,
+                        nodes[bi].width,
+                        nodes[bj].width,
+                        nodes[bi..=bj].iter().filter(|n| n.ford).count()
+                    );
+                }
+                assert!(
+                    straight <= allowed,
+                    "seed {seed}, stem {k}: a straight reach of {} m on a river {} m wide, {} m allowed",
+                    straight / 1000,
+                    width / 1000,
+                    allowed / 1000
+                );
+                stems_judged += 1;
+            }
+        }
+        assert!(stems_judged > 30, "{stems_judged} stems judged");
+    }
+
+    /// The cosine × 1000 of every whole degree from 0 to 90.
+    const COS_MILLI_BY_DEGREE: [i64; 91] = [
+        1000, 1000, 999, 999, 998, 996, 995, 993, 990, 988, 985, 982, 978, 974, 970, 966, 961, 956,
+        951, 946, 940, 934, 927, 921, 914, 906, 899, 891, 883, 875, 866, 857, 848, 839, 829, 819,
+        809, 799, 788, 777, 766, 755, 743, 731, 719, 707, 695, 682, 669, 656, 643, 629, 616, 602,
+        588, 574, 559, 545, 530, 515, 500, 485, 469, 454, 438, 423, 407, 391, 375, 358, 342, 326,
+        309, 292, 276, 259, 242, 225, 208, 191, 174, 156, 139, 122, 105, 87, 70, 52, 35, 17, 0,
+    ];
+
+    /// Each bank, read at every node, turns by at most 20° a step of the
+    /// walker (a fifth of the width; a node of a small river is farther
+    /// than a step from the next, and is allowed that much more, up to
+    /// the course's own 60°), on every river of every width: the banks
+    /// of a great river stay smooth (the marsh sheet of 15 November 2026
+    /// showed them stepping), and no bend of the course is tighter than
+    /// its banks.
+    #[test]
+    fn the_banks_turn_gently_at_every_width() {
+        let (mut turns_judged, mut widest) = (0, 0);
+        for seed in 1..=3 {
+            let c = continent(seed);
+            for (k, s) in all_stems(&c).iter().enumerate() {
+                for (from, to) in cell_runs(&s.nodes) {
+                    let nodes = &s.nodes[from..to];
+                    let step = (nodes[0].width * WALK_STEP_PER_MILLE / 1000).max(1);
+                    widest = widest.max(nodes[0].width);
+                    for bank in 0..2 {
+                        let points: Vec<(i64, i64)> = (from..to)
+                            .filter(|&j| j + 1 < s.nodes.len())
+                            .map(|j| {
+                                let (n, ahead) = (s.nodes[j], s.nodes[j + 1].p);
+                                let (dx, dy) = (ahead.0 - n.p.0, ahead.1 - n.p.1);
+                                let len = distance(n.p, ahead).max(1);
+                                // The bank at the river's own width: where
+                                // the walker stands a bank out, a pool on
+                                // the inside of a bend may still fold.
+                                let (half, sign) = (n.width / 2, if bank == 0 { 1 } else { -1 });
+                                (
+                                    n.p.0 - sign * dy * half / len,
+                                    n.p.1 + sign * dx * half / len,
+                                )
+                            })
+                            .collect();
+                        for (j, w) in points.windows(3).enumerate() {
+                            let (u, v) = (
+                                (w[1].0 - w[0].0, w[1].1 - w[0].1),
+                                (w[2].0 - w[1].0, w[2].1 - w[1].1),
+                            );
+                            let shorter = distance(w[0], w[1]).min(distance(w[1], w[2]));
+                            let allowed = (20 * shorter.max(step) / step).min(60);
+                            let cos_milli =
+                                COS_MILLI_BY_DEGREE[usize::try_from(allowed).expect("small")];
+                            assert!(
+                                turns_within(u, v, cos_milli.max(SHARPEST_TURN_COS_MILLI)),
+                                "seed {seed}, stem {k}, bank {bank} turns over {allowed}° at node {j} of a {} mm river near {:?}: {:?}",
+                                nodes[0].width,
+                                w[1],
+                                &s.nodes[from + j.saturating_sub(2)..(from + j + 4).min(to)]
+                            );
+                            turns_judged += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            turns_judged > 1000 && widest > 30_000,
+            "{turns_judged} turns judged, widest river {widest} mm"
+        );
+    }
+
     #[test]
     fn each_bank_stays_within_the_walkers_reach_and_the_width_within_its_room() {
         let c = continent(1);
-        let (least, most) = bank_room();
         for s in all_stems(&c) {
             for n in s.nodes.iter().filter(|n| !n.ford) {
-                // A node's own width may differ a little from its cell's
-                // (the blend across two cells, the growth past a
-                // junction): a twentieth of slack.
+                // The walker steps in its cell's nominal width; a node's
+                // own width blends across two cells' courses and grows
+                // past a junction, so the banks are read as offsets from
+                // the node's own half-width, against the cell's.
+                let width = (i64::try_from(measure::width_cm(c.discharge[n.cell])).expect("small")
+                    * 10)
+                    .max(2000);
+                let step = width * WALK_STEP_PER_MILLE / 1000;
+                let out = |k: i64| k * BANK_SLOPE_PER_MILLE * step / 1000;
                 for half in [n.half.0, n.half.1] {
-                    let (lo, hi) = (
-                        n.width / 2 * (least - 50) / 1000,
-                        n.width / 2 * (most + 50) / 1000,
+                    let offset = half - n.width / 2;
+                    let (lo, hi) = (out(BANK_REACH_STEPS.0) - 1, out(BANK_REACH_STEPS.1) + 1);
+                    assert!(
+                        (lo..=hi).contains(&offset),
+                        "an offset of {offset} on a river of {width} (the node {} wide)",
+                        n.width
                     );
-                    assert!((lo..=hi).contains(&half), "{half} for {}", n.width);
                 }
-                let total = n.half.0 + n.half.1;
+                // The two banks' cubics between two steps may sum to a
+                // quarter of a step more than the walker's own line.
+                let total = n.half.0 + n.half.1 - n.width + width;
                 assert!(
-                    (n.width * (NARROWEST_PER_MILLE - 50) / 1000
-                        ..=n.width * (WIDEST_PER_MILLE + 50) / 1000)
+                    (width * NARROWEST_PER_MILLE / 1000 - out(1)
+                        ..=width * WIDEST_PER_MILLE / 1000 + out(1))
                         .contains(&total),
-                    "{total} wide for {}",
-                    n.width
+                    "{total} wide for {width}: {n:?}"
                 );
             }
         }
@@ -1113,28 +1741,12 @@ mod tests {
         );
     }
 
-    /// The runs of nodes of one cell along a stem: `(from, to)`.
-    fn cell_runs(s: &Stem) -> Vec<(usize, usize)> {
-        let mut out = Vec::new();
-        let mut from = 0;
-        while from < s.nodes.len() {
-            let cell = s.nodes[from].cell;
-            let to = s.nodes[from..]
-                .iter()
-                .position(|n| n.cell != cell)
-                .map_or(s.nodes.len(), |len| from + len);
-            out.push((from, to));
-            from = to;
-        }
-        out
-    }
-
     #[test]
     fn the_banks_hold_their_lines_at_both_ends_of_a_cells_course() {
         let c = continent(1);
         let mut checked = 0;
         for s in all_stems(&c) {
-            for (from, to) in cell_runs(&s) {
+            for (from, to) in cell_runs(&s.nodes) {
                 for n in [s.nodes[from], s.nodes[to - 1]] {
                     if n.ford {
                         continue;
@@ -1152,7 +1764,7 @@ mod tests {
         let c = continent(1);
         let (mut long, mut levels) = (0, 0);
         for s in all_stems(&c) {
-            for (from, to) in cell_runs(&s) {
+            for (from, to) in cell_runs(&s.nodes) {
                 let nodes = &s.nodes[from..to];
                 let width = nodes[0].width;
                 let along = along(nodes);
@@ -1177,7 +1789,7 @@ mod tests {
                     // offset changes by less than half the slope's over
                     // three nodes or more): no two in a row at the same
                     // height.
-                    let mut plateaus: Vec<i64> = Vec::new();
+                    let mut plateaus: Vec<(i64, usize)> = Vec::new();
                     let mut run = 1;
                     for j in 1..nodes.len() {
                         let slope = (along[j] - along[j - 1]) * BANK_SLOPE_PER_MILLE / 2000;
@@ -1185,15 +1797,20 @@ mod tests {
                             run += 1;
                         } else {
                             if run >= 3 {
-                                plateaus.push(offsets[j - 1]);
+                                plateaus.push((offsets[j - 1], j - 1));
                             }
                             run = 1;
                         }
                     }
+                    // Two sections in a row stand at least a step of the
+                    // slope apart (a move back to the line may be one
+                    // step long).
+                    let one_step =
+                        BANK_SLOPE_PER_MILLE * (width * WALK_STEP_PER_MILLE / 1000) / 1000;
                     for pair in plateaus.windows(2) {
                         assert!(
-                            (pair[1] - pair[0]).abs() > width / 20,
-                            "two sections in a row at the same width: {plateaus:?}"
+                            (pair[1].0 - pair[0].0).abs() > one_step / 2,
+                            "two sections in a row at the same width: {plateaus:?}, width {width}"
                         );
                     }
                     levels += plateaus.len();
