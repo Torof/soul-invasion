@@ -46,11 +46,11 @@ uniform int slopes_drawn = 0;
 // provisional, a short grass seen close is wanted) carries the UP: its
 // blades point up the screen, never down. Both are laid in canvas space,
 // SLOPE_STREAK_PX and slope_turf_px a repetition, the turf toned by
-// SLOPE_TINT.
+// slope_tint (a dial of the look, ChunkView.SLOPE_LOOK).
 uniform sampler2D slope_streaks : repeat_enable, filter_linear_mipmap;
 uniform sampler2D slope_turf : repeat_enable, filter_linear_mipmap;
 const float SLOPE_STREAK_PX = 768.0;
-const vec3 SLOPE_TINT = vec3(0.94, 1.02, 0.92);
+uniform vec3 slope_tint : source_color = vec3(0.94, 1.02, 0.92);
 // The look's dials (ChunkView.SLOPE_LOOK sets them, so another biome can
 // change them without touching the shader): a side whose crest lies
 // below (the ground rising toward the viewer) has its streaks turned by
@@ -379,7 +379,7 @@ bool slope_lit(vec2 p, vec2 canvas, vec2 dx, vec2 dy, out vec3 lit) {
 	}
 	vec2 flip = vec2(fx, 1.0);
 	vec3 turf = textureGrad(slope_turf, canvas / slope_turf_px * flip,
-		dx / slope_turf_px * flip, dy / slope_turf_px * flip).rgb * SLOPE_TINT;
+		dx / slope_turf_px * flip, dy / slope_turf_px * flip).rgb * slope_tint;
 	lit = mix(turf, slope_streak_pale, light * slope_streak_mix);
 	if (rim) {
 		lit *= SLOPE_RIM_SHADE;

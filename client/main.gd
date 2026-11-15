@@ -73,7 +73,8 @@ func _ready() -> void:
 			add_child(_watchdog))
 	# Development: the slopes' readout and dials (dev/slope_overlay.gd), on
 	# a --dev server whose chunks carry heights (D43, D44): the altitude,
-	# summit or col, keys 1/0, G, R and P. It shows nothing on a flat world.
+	# summit or col, keys 1/0, G, R and P, the tints' arrows. It shows nothing
+	# on a flat world.
 	Net.dev_overview.connect(func(_c: int, _w: int, _h: int, _cells: String) -> void:
 		if _slopes == null:
 			_slopes = SlopeOverlay.new()
