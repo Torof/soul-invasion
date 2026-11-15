@@ -13,7 +13,9 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
                            seconds to be born), or a patch of the valley
                            (default: patch)
   --side N                 the patch's side in tiles (default 50)
-  --people N               people born at the camp (default 5)
+  --people N               people born at each camp (default 5)
+  --tribes N               1 or 2 tribes, each at its own camp (default: 2 on
+                           the vivarium's world, 1 on a patch)
   --days N                 game days to run (default 10)
   --cadence N              ticks a game second (default 1; the game runs at 10)
   --seed N                 the run's seed (default 1)
@@ -34,6 +36,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
     let mut side = 50;
     let mut world = "patch".to_owned();
     let mut out = PathBuf::from("vivarium-report.html");
+    let mut tribes: Option<u32> = None;
     let mut i = 0;
     let value = |i: &mut usize, name: &str| -> Result<String, String> {
         *i += 1;
@@ -67,6 +70,12 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
                         .map_err(|_| "--cadence: too high".to_owned())?;
             }
             "--no-brain" => settings.brain = false,
+            "--tribes" => {
+                tribes = Some(
+                    u32::try_from(number(value(&mut i, "--tribes")?, "--tribes")?)
+                        .map_err(|_| "--tribes: 1 or 2".to_owned())?,
+                );
+            }
             "--seed" => settings.seed = number(value(&mut i, "--seed")?, "--seed")?,
             "--content" => settings.content = Some(PathBuf::from(value(&mut i, "--content")?)),
             "--out" => out = PathBuf::from(value(&mut i, "--out")?),
@@ -79,6 +88,13 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
         "patch" => WorldKind::Patch { side },
         other => return Err(format!("--world: vivarium or patch, not {other}")),
     };
+    settings.tribes = tribes.unwrap_or(match settings.world {
+        WorldKind::Vivarium => 2,
+        WorldKind::Patch { .. } => 1,
+    });
+    if !(1..=2).contains(&settings.tribes) {
+        return Err("--tribes: 1 or 2".to_owned());
+    }
     if side < 8 {
         return Err("--side: 8 tiles at least".to_owned());
     }
@@ -158,6 +174,10 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(options.settings.world, WorldKind::Vivarium);
+        assert_eq!(
+            options.settings.tribes, 2,
+            "two tribes by default on the vivarium's world"
+        );
         assert_eq!(options.settings.people, 150);
         assert_eq!(options.settings.days, 100);
         assert_eq!(options.settings.ticks_per_second, 10);
@@ -183,5 +203,14 @@ mod tests {
         assert!(parse(&args(&["--world", "mars"])).is_err());
         assert!(parse(&args(&["--side", "4"])).is_err());
         assert!(parse(&args(&["--bogus"])).is_err());
+        assert!(parse(&args(&["--tribes", "3"])).is_err());
+        assert_eq!(
+            parse(&args(&["--tribes", "2"]))
+                .unwrap()
+                .unwrap()
+                .settings
+                .tribes,
+            2
+        );
     }
 }

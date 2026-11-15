@@ -65,6 +65,11 @@ pub struct Settings {
     /// The people are piloted by the minimal brain ([`sim::brain`]);
     /// false leaves them standing where they were born, the control run.
     pub brain: bool,
+    /// How many tribes, each born at its own camp with `people` people:
+    /// 1, or 2 (D41: two tribes either side of the river; on the
+    /// vivarium's world camp A and camp B of lot 0, on a patch the camp
+    /// and its mirror across the patch's middle).
+    pub tribes: u32,
 }
 
 impl Default for Settings {
@@ -77,6 +82,7 @@ impl Default for Settings {
             seed: 1,
             content: None,
             brain: true,
+            tribes: 1,
         }
     }
 }
@@ -164,6 +170,8 @@ pub struct Sample {
     pub tick: u64,
     /// Bodies alive.
     pub alive: u32,
+    /// Bodies alive of tribe A and of tribe B.
+    pub alive_by_tribe: [u32; 2],
     /// Mean hunger of the living, points (0–100).
     pub hunger: u32,
     /// Mean thirst of the living.
@@ -178,8 +186,12 @@ pub type Gauges = (u64, u32, u32, u32, u32);
 /// One person's page.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Person {
+    /// Its tribe: 0 for A, 1 for B.
+    pub tribe: u8,
     /// Where it was born.
     pub born_at: Option<Pos>,
+    /// Where it stood at the end of the run.
+    pub last_at: Option<Pos>,
     /// When and of what it died, and where.
     pub death: Option<(u64, Death, Pos)>,
     /// Meals eaten, and grams in all.
@@ -201,8 +213,8 @@ pub struct Report {
     pub settings: Settings,
     /// Tiles a side of the world, and its camp.
     pub map_side: (u32, u32),
-    /// The camp.
-    pub camp: Pos,
+    /// The tribes' camps, A first.
+    pub camps: Vec<Pos>,
     /// Ticks run.
     pub ticks: u64,
     /// The chronicle, in order.
@@ -244,24 +256,36 @@ pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunErr
     };
     let birth_s = born.elapsed().as_secs_f64();
     let map_side = (world.map().width(), world.map().height());
-    let camp = world.map().camp();
+    let camps = camps(settings, world.map());
     let mut people: BTreeMap<BodyId, Person> = BTreeMap::new();
     let mut chronicle = Vec::new();
     let mut brains = Brains::new(settings.seed);
-    for _ in 0..settings.people {
-        if let Some(id) = world.spawn_at_camp() {
+    for (tribe, &camp) in camps.iter().enumerate() {
+        let tribe = u8::try_from(tribe).expect("two tribes at most");
+        for _ in 0..settings.people {
+            let Some(id) = world.spawn_near(camp) else {
+                continue;
+            };
             if settings.brain {
-                brains.adopt(&world, content, id);
+                brains.adopt_at(&world, content, id, camp);
             }
             let at = world.body(id).map_or(camp, sim::Body::pos);
             let entry = Entry {
                 tick: 0,
                 day: 1,
-                what: format!("{} is born at ({}, {}), by the camp", name(id), at.x, at.y),
+                what: format!(
+                    "{} of tribe {} is born at ({}, {}), by its camp",
+                    name(id),
+                    tribe_name(tribe),
+                    at.x,
+                    at.y
+                ),
             };
             chronicle.push(entry.clone());
-            people.entry(id).or_default().born_at = Some(at);
-            people.entry(id).or_default().entries.push(entry);
+            let person = people.entry(id).or_default();
+            person.tribe = tribe;
+            person.born_at = Some(at);
+            person.entries.push(entry);
         }
     }
     let started = Instant::now();
@@ -353,9 +377,13 @@ pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunErr
         person.thoughts = brains
             .mind(*id)
             .map_or(person.thoughts, sim::brain::Mind::thoughts);
+        person.last_at = world
+            .body(*id)
+            .map(sim::Body::pos)
+            .or(person.death.map(|d| d.2));
     }
     let wall_s = started.elapsed().as_secs_f64();
-    let (map_png, map_scale) = picture(&world);
+    let (map_png, map_scale) = picture(&world, &camps);
     let needs = &content.needs;
     let rates = vec![
         ("hunger a day", needs.hunger_per_day),
@@ -373,7 +401,7 @@ pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunErr
         settings: settings.clone(),
         rates,
         map_side,
-        camp,
+        camps,
         ticks,
         chronicle,
         samples,
@@ -405,6 +433,35 @@ fn thought(intention: &Intention, why: Why) -> String {
     format!("{reason}: {act}")
 }
 
+/// The camps of the run's tribes, A first: the map's camp; then, for a
+/// second tribe, camp B of the vivarium's zone, or on a patch the camp's
+/// mirror across the patch's middle.
+fn camps(settings: &Settings, map: &Map) -> Vec<Pos> {
+    let a = map.camp();
+    let mut camps = vec![a];
+    if settings.tribes >= 2 {
+        camps.push(match settings.world {
+            WorldKind::Vivarium => {
+                let (x, y) = sim::plan::ZONE_2.tile(sim::plan::ZONE_2.camp_b);
+                Pos::new(
+                    i32::try_from(x).expect("on the map"),
+                    i32::try_from(y).expect("on the map"),
+                )
+            }
+            WorldKind::Patch { side } => {
+                let last = i32::try_from(side).expect("small") - 1;
+                Pos::new(last - a.x, last - a.y)
+            }
+        });
+    }
+    camps
+}
+
+/// "A", "B".
+fn tribe_name(tribe: u8) -> char {
+    char::from(b'A' + tribe)
+}
+
 /// "person 3".
 fn name(id: BodyId) -> String {
     format!("person {}", id.0)
@@ -414,12 +471,15 @@ fn name(id: BodyId) -> String {
 fn sample(world: &World, people: &mut BTreeMap<BodyId, Person>) -> Sample {
     let tick = world.tick().0;
     let (mut alive, mut hunger, mut thirst, mut fatigue) = (0_u32, 0_u32, 0_u32, 0_u32);
+    let mut alive_by_tribe = [0_u32; 2];
     for body in world.bodies() {
         let condition = body.condition();
         if condition.vitality.points() == 0 {
             continue;
         }
         alive += 1;
+        let tribe = people.get(&body.id()).map_or(0, |p| p.tribe);
+        alive_by_tribe[usize::from(tribe.min(1))] += 1;
         hunger += condition.hunger.points();
         thirst += condition.thirst.points();
         fatigue += condition.fatigue.points();
@@ -435,6 +495,7 @@ fn sample(world: &World, people: &mut BTreeMap<BodyId, Person>) -> Sample {
     Sample {
         tick,
         alive,
+        alive_by_tribe,
         hunger: mean(hunger),
         thirst: mean(thirst),
         fatigue: mean(fatigue),
@@ -444,7 +505,7 @@ fn sample(world: &World, people: &mut BTreeMap<BodyId, Person>) -> Sample {
 /// The map as a picture: one pixel a few tiles, so the picture is at
 /// most 512 px a side; the terrain under the pixel's centre, the camp in
 /// red, the living in white, the dead in black.
-fn picture(world: &World) -> (Vec<u8>, u32) {
+fn picture(world: &World, camps: &[Pos]) -> (Vec<u8>, u32) {
     let map = world.map();
     let scale = map.width().max(map.height()).div_ceil(512).max(1);
     let (w, h) = (map.width().div_ceil(scale), map.height().div_ceil(scale));
@@ -482,7 +543,9 @@ fn picture(world: &World) -> (Vec<u8>, u32) {
             }
         }
     };
-    dot(map.camp(), [220, 40, 40], 3);
+    for &camp in camps {
+        dot(camp, [220, 40, 40], 3);
+    }
     for body in world.bodies() {
         let dead = body.condition().vitality.points() == 0;
         dot(
@@ -520,14 +583,18 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         let alive = self.samples.last().map_or(0, |last| last.alive);
         let _ = write!(
             h,
-            "<p>Seed {}, {} people born at the camp, {} game days ({} ticks). At the end: {alive} alive, {deaths} dead.</p>",
-            s.seed, s.people, s.days, self.ticks
+            "<p>Seed {}, {} people born at each of {} camp(s), {} game days ({} ticks). At the end: {alive} alive, {deaths} dead.</p>",
+            s.seed,
+            s.people,
+            self.camps.len(),
+            s.days,
+            self.ticks
         );
         let _ = write!(
             h,
             "<h2>The factors</h2><ul class=\"factors\">\
 <li><b>Cadence</b>: {} tick a game second (the game runs at {}); the bodies' needs drain by the tick, so the day is {} ticks long.</li>\
-<li><b>The world</b>: {world}, {} × {} tiles of 1 m, the camp at ({}, {}).</li>\
+<li><b>The world</b>: {world}, {} × {} tiles of 1 m; {}.</li>\
 <li><b>The year</b>: {} days of {} game seconds (a day of the game is two hours of its clock), four seasons.</li>\
 <li><b>The brain</b>: {}.</li>\
 <li><b>The food</b>: what the world lays on the ground today (the content's spawn rules), no season, no regrowth (lot 2).</li>\
@@ -537,8 +604,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             u64::from(s.ticks_per_second) * u64::from(Calendar::DEFAULT_SECONDS_PER_DAY),
             self.map_side.0,
             self.map_side.1,
-            self.camp.x,
-            self.camp.y,
+            self.camps_words(),
             Calendar::DEFAULT_DAYS_PER_YEAR,
             Calendar::DEFAULT_SECONDS_PER_DAY,
             if s.brain {
@@ -593,8 +659,9 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             };
             let _ = write!(
                 h,
-                "<details><summary>{} — {fate}; {} meals ({} g), drank {} times, thought {} times</summary>",
+                "<details><summary>{} (tribe {}) — {fate}; {} meals ({} g), drank {} times, thought {} times</summary>",
                 name(*id),
+                tribe_name(person.tribe),
                 person.meals.0,
                 person.meals.1,
                 person.drinks,
@@ -618,6 +685,31 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             "<p class=\"note\">One game year is {days_per_year} days; the speed below counts years of game a minute of wall clock.</p>"
         );
         h
+    }
+
+    /// "camp A at (x, y), camp B at (x, y), 2443 m apart".
+    fn camps_words(&self) -> String {
+        let mut words: Vec<String> = self
+            .camps
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                format!(
+                    "camp {} at ({}, {})",
+                    tribe_name(u8::try_from(i).expect("two at most")),
+                    c.x,
+                    c.y
+                )
+            })
+            .collect();
+        if let [a, b] = self.camps[..] {
+            let (dx, dy) = (i64::from(a.x - b.x), i64::from(a.y - b.y));
+            words.push(format!(
+                "{} m apart as the crow flies",
+                (dx * dx + dy * dy).isqrt()
+            ));
+        }
+        words.join(", ")
     }
 
     /// Ticks a game day of this run.
@@ -650,7 +742,8 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         const W: u64 = 900;
         const H: u64 = 220;
         let ticks = self.ticks.max(1);
-        let people = u64::from(self.settings.people.max(1));
+        let tribes = u64::try_from(self.camps.len()).expect("small");
+        let people = u64::from(self.settings.people.max(1)) * tribes;
         let x = |tick: u64| tick * W / ticks;
         let line = |name: &str, colour: &str, values: &dyn Fn(&Sample) -> u64, top: u64| {
             let points: Vec<String> = self
@@ -674,14 +767,34 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             );
         }
         format!(
-            "<svg width=\"{W}\" height=\"{}\" viewBox=\"0 0 {W} {}\" style=\"font-family:system-ui\">{days}{}{}{}{}</svg>\
-<p><span style=\"color:#222\">■ alive (of {people})</span> <span style=\"color:#c33\">■ hunger</span> <span style=\"color:#36c\">■ thirst</span> <span style=\"color:#993\">■ fatigue</span>, the gauges in points of 100.</p>",
+            "<svg width=\"{W}\" height=\"{}\" viewBox=\"0 0 {W} {}\" style=\"font-family:system-ui\">{days}{}{}{}{}{}</svg>\
+<p><span style=\"color:#222\">■ alive (of {people})</span>{} <span style=\"color:#c33\">■ hunger</span> <span style=\"color:#36c\">■ thirst</span> <span style=\"color:#993\">■ fatigue</span>, the gauges in points of 100.</p>",
             H + 16,
             H + 16,
             line("alive", "#222", &|s| u64::from(s.alive), people),
+            if tribes == 2 {
+                line(
+                    "alive, tribe A",
+                    "#a55",
+                    &|s| u64::from(s.alive_by_tribe[0]),
+                    people,
+                ) + &line(
+                    "alive, tribe B",
+                    "#5a5",
+                    &|s| u64::from(s.alive_by_tribe[1]),
+                    people,
+                )
+            } else {
+                String::new()
+            },
             line("hunger", "#c33", &|s| u64::from(s.hunger), 100),
             line("thirst", "#36c", &|s| u64::from(s.thirst), 100),
             line("fatigue", "#993", &|s| u64::from(s.fatigue), 100),
+            if tribes == 2 {
+                " <span style=\"color:#a55\">■ alive, tribe A</span> <span style=\"color:#5a5\">■ alive, tribe B</span>"
+            } else {
+                ""
+            },
         )
     }
 }
@@ -742,6 +855,7 @@ mod tests {
             seed: 1,
             content: None,
             brain: true,
+            tribes: 1,
         }
     }
 
@@ -793,9 +907,9 @@ mod tests {
         for person in report.people.values() {
             let at = person.born_at.expect("born somewhere");
             assert!(
-                (at.x - report.camp.x).abs() <= 3 && (at.y - report.camp.y).abs() <= 3,
+                (at.x - report.camps[0].x).abs() <= 3 && (at.y - report.camps[0].y).abs() <= 3,
                 "born by the camp: {at:?} against {:?}",
-                report.camp
+                report.camps[0]
             );
             let expected = match person.death {
                 None => 1 + 48,
@@ -854,7 +968,7 @@ mod tests {
         let html = report.fixed();
         assert!(html.contains("<h2>The map</h2>") && html.contains("data:image/png;base64,"));
         assert!(html.contains("<polyline") && html.contains("<h2>The chronicle</h2>"));
-        assert!(html.contains("<details><summary>person 1 — died on day"));
+        assert!(html.contains("<details><summary>person 1 (tribe A) — died on day"));
         assert!(html.contains("none (the control run)"));
         assert!(
             html.contains("thirst a day 100"),
@@ -898,5 +1012,62 @@ mod tests {
             );
         }
         assert!(report.fixed().contains("the minimal one (sim::brain)"));
+    }
+
+    #[test]
+    fn two_tribes_are_born_at_their_two_camps_and_live_there() {
+        let settings = Settings {
+            tribes: 2,
+            days: 4,
+            ..small()
+        };
+        let report = run_with(&settings, content()).unwrap();
+        assert_eq!(report.camps.len(), 2);
+        assert_eq!(report.people.len(), 10, "five a tribe");
+        let far = |a: Pos, b: Pos| (a.x - b.x).abs().max((a.y - b.y).abs());
+        for person in report.people.values() {
+            let home = report.camps[usize::from(person.tribe)];
+            let other = report.camps[1 - usize::from(person.tribe)];
+            assert!(far(person.born_at.unwrap(), home) <= 3, "born by its camp");
+            assert!(person.death.is_none(), "nobody dies in four days");
+            let end = person.last_at.unwrap();
+            assert!(
+                far(end, home) < far(end, other),
+                "it stays on its own side: {end:?}"
+            );
+        }
+        assert_eq!(report.samples[0].alive_by_tribe, [5, 5]);
+        let html = report.fixed();
+        assert!(html.contains("camp B at") && html.contains("(tribe B)"));
+    }
+
+    /// The plan's small trial on the real world: two tribes of five, either
+    /// side of the river, ten days. Run by hand: the continent is born
+    /// first, some fifteen seconds in release.
+    #[test]
+    #[ignore = "the vivarium's world takes some 15 s to be born; run by hand: cargo test --release -p vivarium -- --ignored"]
+    fn two_tribes_of_five_live_ten_days_either_side_of_the_river() {
+        let settings = Settings {
+            world: WorldKind::Vivarium,
+            tribes: 2,
+            days: 10,
+            ..small()
+        };
+        let report = run_with(&settings, content()).unwrap();
+        for (id, person) in &report.people {
+            assert!(
+                person.death.is_none(),
+                "person {} died: {:?}",
+                id.0,
+                person.death
+            );
+            let home = report.camps[usize::from(person.tribe)];
+            let end = person.last_at.unwrap();
+            assert!(
+                (end.x - home.x).abs() <= 64 && (end.y - home.y).abs() <= 64,
+                "person {} ends by its own camp, not stuck away: {end:?} against {home:?}",
+                id.0
+            );
+        }
     }
 }
