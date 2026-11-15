@@ -265,9 +265,53 @@ pub(crate) struct Grid {
     pub(crate) offset_rows: bool,
 }
 
+/// Where a map lies on its world: its tile (0, 0) in the world's tiles.
+/// Everything drawn from the seed and a position (the woods' noises and
+/// round patches, the trees' grids, the plants, the rocks, the hills) is
+/// keyed on the world's position, not the map's, so the same ground
+/// drawn through two maps holds the same things and two windows of the
+/// continent differ (D39; the windows all held the same woods before
+/// 15 November 2026). The valley's frame is the origin: its draws are
+/// what they were.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct Frame {
+    x: i32,
+    y: i32,
+}
+
+impl Frame {
+    /// The frame of a map that is its own world: the valley's.
+    pub(crate) const ORIGIN: Self = Self { x: 0, y: 0 };
+
+    /// The frame of a map whose tile (0, 0) is the world's tile `at`.
+    pub(crate) const fn at((x, y): (i32, i32)) -> Self {
+        Self { x, y }
+    }
+
+    /// The world's tile under the map's tile `(x, y)`.
+    pub(crate) const fn tile(self, x: i32, y: i32) -> (i32, i32) {
+        (x + self.x, y + self.y)
+    }
+
+    /// The same, as hash keys.
+    pub(crate) fn keys(self, x: i32, y: i32) -> (u64, u64) {
+        let (x, y) = self.tile(x, y);
+        (key(i64::from(x)), key(i64::from(y)))
+    }
+
+    /// The world's millimetres under the map's millimetre `(x, y)`.
+    pub(crate) fn mm(self, x: i32, y: i32) -> (i64, i64) {
+        (
+            i64::from(x) + i64::from(self.x) * 1000,
+            i64::from(y) + i64::from(self.y) * 1000,
+        )
+    }
+}
+
 impl Grid {
-    /// The point of cell `(cx, cy)` for `seed` and `purpose`.
-    pub(crate) fn point(&self, seed: u64, purpose: u64, cx: i64, cy: i64) -> FinePos {
+    /// The point of the world's cell `(cx, cy)` for `seed` and `purpose`,
+    /// in the millimetres of the map framed by `frame`.
+    pub(crate) fn point(&self, frame: Frame, seed: u64, purpose: u64, cx: i64, cy: i64) -> FinePos {
         debug_assert!(self.jitter * 2 < self.cell, "jitter under half a cell");
         let c = i64::from(self.cell);
         let shift = if self.offset_rows && cy.rem_euclid(2) == 1 {
@@ -281,34 +325,32 @@ impl Grid {
                 self.jitter,
             ))
         };
-        let x = cx * c + c / 2 + shift + nudge(0);
-        let y = cy * c + c / 2 + nudge(1);
+        let (ox, oy) = frame.mm(0, 0);
+        let x = cx * c + c / 2 + shift + nudge(0) - ox;
+        let y = cy * c + c / 2 + nudge(1) - oy;
         FinePos::new(
             i32::try_from(x).expect("on the grid of fine positions"),
             i32::try_from(y).expect("on the grid of fine positions"),
         )
     }
 
-    /// The cells whose point may fall in the rectangle from `(x0, y0)`
-    /// included to `(x1, y1)` excluded, in millimetres, row by row: a few
-    /// more than those whose point does, which the caller keeps by where
-    /// the point lands.
+    /// The world's cells whose point may fall in the rectangle from
+    /// `(x0, y0)` included to `(x1, y1)` excluded, in the millimetres of
+    /// the map framed by `frame`, row by row: a few more than those whose
+    /// point does, which the caller keeps by where the point lands.
     pub(crate) fn cells_over(
         &self,
+        frame: Frame,
         (x0, y0): (i32, i32),
         (x1, y1): (i32, i32),
     ) -> impl Iterator<Item = (i64, i64)> {
         let c = i64::from(self.cell);
+        let (x0, y0) = frame.mm(x0, y0);
+        let (x1, y1) = frame.mm(x1, y1);
         // A point lies within its cell, shifted by at most half a cell
         // more: one cell of margin on each side covers it.
-        let (cx0, cx1) = (
-            i64::from(x0).div_euclid(c) - 1,
-            i64::from(x1).div_euclid(c) + 1,
-        );
-        let (cy0, cy1) = (
-            i64::from(y0).div_euclid(c) - 1,
-            i64::from(y1).div_euclid(c) + 1,
-        );
+        let (cx0, cx1) = (x0.div_euclid(c) - 1, x1.div_euclid(c) + 1);
+        let (cy0, cy1) = (y0.div_euclid(c) - 1, y1.div_euclid(c) + 1);
         (cy0..=cy1).flat_map(move |cy| (cx0..=cx1).map(move |cx| (cx, cy)))
     }
 
@@ -323,7 +365,7 @@ impl Grid {
 mod tests {
     //! Golden values: a change that moves one of them moves every tree.
 
-    use super::{Grid, chance, offset, purpose, roll, weighted};
+    use super::{Frame, Grid, chance, offset, purpose, roll, weighted};
 
     #[test]
     fn purposes_are_all_different() {
@@ -390,7 +432,7 @@ mod tests {
         let mut points = Vec::new();
         for cy in -6..6 {
             for cx in -6..6 {
-                let p = grid.point(1, purpose::TREE_CELL, cx, cy);
+                let p = grid.point(Frame::ORIGIN, 1, purpose::TREE_CELL, cx, cy);
                 // Within its cell, shifted half a cell on odd rows.
                 let shift = if cy.rem_euclid(2) == 1 { 2000 } else { 0 };
                 let centre = (cx * 4000 + 2000 + shift, cy * 4000 + 2000);
@@ -406,7 +448,7 @@ mod tests {
             }
         }
         assert_eq!(
-            grid.point(1, purpose::TREE_CELL, 3, -2),
+            grid.point(Frame::ORIGIN, 1, purpose::TREE_CELL, 3, -2),
             crate::map::FinePos::new(14_770, -5_258)
         );
     }
@@ -419,10 +461,10 @@ mod tests {
             offset_rows: true,
         };
         let (lo, hi) = ((32_000, -32_000), (64_000, 0));
-        let listed: Vec<_> = grid.cells_over(lo, hi).collect();
+        let listed: Vec<_> = grid.cells_over(Frame::ORIGIN, lo, hi).collect();
         for cy in -20..20 {
             for cx in -5..25 {
-                let p = grid.point(5, purpose::TREE_CELL, cx, cy);
+                let p = grid.point(Frame::ORIGIN, 5, purpose::TREE_CELL, cx, cy);
                 if (lo.0..hi.0).contains(&p.x) && (lo.1..hi.1).contains(&p.y) {
                     assert!(listed.contains(&(cx, cy)), "{cx}, {cy}");
                 }

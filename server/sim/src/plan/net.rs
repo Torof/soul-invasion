@@ -162,13 +162,13 @@ fn walk(terrain: Terrain) -> Option<u32> {
 }
 
 /// The continent of seed 14, born once for the module.
-fn continent() -> &'static Continent {
+pub(crate) fn continent() -> &'static Continent {
     static CONTINENT: OnceLock<Continent> = OnceLock::new();
     CONTINENT.get_or_init(|| Continent::new(VIVARIUM_SEED))
 }
 
 /// The repository's kinds of tree and open biomes' trees.
-fn content() -> (Vec<Species>, OpenGround) {
+pub(crate) fn content() -> (Vec<Species>, OpenGround) {
     (
         ron::from_str(include_str!("../../../../content/species.ron")).expect("species.ron"),
         ron::from_str(include_str!("../../../../content/open_ground.ron"))
@@ -193,7 +193,7 @@ fn river_class(m3s: u64) -> usize {
 /// The sampled cells of `c`: for every land biome present, the
 /// highest-rolled cells of each stratum ([`STRATA`]), the vivarium's
 /// cell first. Deterministic: the same continent gives the same cells.
-fn sample(c: &Continent) -> Vec<(i32, i32)> {
+pub(crate) fn sample(c: &Continent) -> Vec<(i32, i32)> {
     let grid = c.grid;
     let side = i32::try_from(grid.side).expect("small");
     // Per biome and stratum, the best `(roll, cell)` pairs.
