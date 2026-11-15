@@ -33,6 +33,7 @@ func _init() -> void:
 	_test_a_flat_chunk_has_no_heights_and_a_chunks_heights_are_kept()
 	_test_the_slopes_are_read_over_two_tiles_and_off_until_a_chunk_has_heights()
 	_test_the_slope_overlay_tells_a_summit_and_a_col_from_a_ring()
+	_test_the_slope_turf_is_a_family_of_tiles_chosen_per_cell()
 	_test_the_tint_dials_turn_the_flat_grass_and_the_slope_turf_and_reset()
 	_test_tree_images_are_clean()
 	_test_tree_feet_are_whole()
@@ -2724,10 +2725,10 @@ func _test_the_slopes_are_read_over_two_tiles_and_off_until_a_chunk_has_heights(
 	ChunkView.set_slopes_drawn(0)
 	var grass := ChunkView.ground_material("grass")
 	_check(grass.get_shader_parameter("slopes_drawn") == 0 and grass.get_shader_parameter("slope_index") == HeightIndex.texture(), "the ground draws no slope until a chunk has heights, and reads the slope index")
-	_check(is_equal_approx(float(grass.get_shader_parameter("slope_break_turn")), 165.0) and grass.get_shader_parameter("slope_turf") != null and grass.get_shader_parameter("slope_streaks") != null, "the look's dials and images are on the ground: %s" % grass.get_shader_parameter("slope_break_turn"))
-	for image: String in ["slope_streaks", "slope_turf"]:
-		_check(ResourceLoader.exists(ChunkView.SLOPE_LOOK[image]), "%s is there" % image)
-	_check(ResourceLoader.exists(ChunkView.SLOPE_TURF_BUSHES), "the turf with bushes is there")
+	_check(is_equal_approx(float(grass.get_shader_parameter("slope_break_turn")), 165.0) and grass.get_shader_parameter("slope_turf_set") != null and grass.get_shader_parameter("slope_streaks") != null, "the look's dials and images are on the ground: %s" % grass.get_shader_parameter("slope_break_turn"))
+	_check(ResourceLoader.exists(ChunkView.SLOPE_LOOK["slope_streaks"]), "the streaks are there")
+	for tile: String in ChunkView.SLOPE_LOOK["slope_turf_set"]:
+		_check(ResourceLoader.exists(tile), "%s is there" % tile)
 	# A 4 × 4 chunk rising 1 m a tile along x (10 dm), flat along y.
 	var ramp := PackedInt32Array()
 	for y in 4:
@@ -2740,6 +2741,65 @@ func _test_the_slopes_are_read_over_two_tiles_and_off_until_a_chunk_has_heights(
 	_check(is_equal_approx(HeightIndex.rise(Vector2i(199, 301), Vector2i(1, 0)), 0.0), "a tile no chunk said has no rise")
 	HeightIndex.clear()
 	_check(is_equal_approx(HeightIndex.rise(Vector2i(202, 301), Vector2i(1, 0)), 0.0) and not HeightIndex.any, "cleared, the slopes are gone")
+
+
+## The turf family (D44): the look names N tiles, built at load into one
+## texture array of N layers (angles × variants, angles 1 today) that
+## every land's ground carries with its count; the shader lays one tile
+## a cell of the turf's repetition by a hash ChunkView mirrors bit for
+## bit (lowbias32), which spreads the tiles over the cells, every tile
+## used and none dominant; with one tile every cell reads layer 0, so
+## the picture is the single texture's as before; the overlay's key G
+## swaps the family for its first tile alone and back.
+func _test_the_slope_turf_is_a_family_of_tiles_chosen_per_cell() -> void:
+	for dial: String in ["slope_streaks", "slope_turf_set", "slope_turf_variants", "slope_turf_angles", "slope_break_turn", "slope_streak_mix", "slope_streak_pale", "slope_turf_px", "slope_tint"]:
+		_check(ChunkView.SLOPE_LOOK.has(dial), "the look keeps its dial %s" % dial)
+	var tiles: Array = ChunkView.SLOPE_LOOK["slope_turf_set"]
+	var variants: int = ChunkView.SLOPE_LOOK["slope_turf_variants"]
+	_check(tiles.size() == 5 and variants == 5 and int(ChunkView.SLOPE_LOOK["slope_turf_angles"]) == 1, "the family holds five tiles, one row of angles: %d tiles, %d variants" % [tiles.size(), variants])
+	var family := ChunkView.slope_turf_set(PackedStringArray(tiles))
+	_check(family.get_layers() == 5 and family.get_width() == 1536 and family.get_height() == 1536, "the set is a texture array of five layers of 1536 px: %d layers, %d px" % [family.get_layers(), family.get_width()])
+	_check(ChunkView.slope_turf_set(PackedStringArray(tiles)) == family, "built once and kept")
+	var grass := ChunkView.ground_material("grass")
+	var forest := ChunkView.ground_material("forest")
+	var water := ChunkView.ground_material("water")
+	_check(grass.get_shader_parameter("slope_turf_set") == family and forest.get_shader_parameter("slope_turf_set") == family and int(grass.get_shader_parameter("slope_turf_variants")) == 5 and int(grass.get_shader_parameter("slope_turf_angles")) == 1 and water.get_shader_parameter("slope_turf_set") == null, "every land's ground carries the set and its counts, not the water")
+	# The hash, against lowbias32's known values (the shader's, bit for bit).
+	_check(ChunkView.slope_turf_hash(0) == 0 and ChunkView.slope_turf_hash(1) == 1753845952 and ChunkView.slope_turf_hash(123456789) == 2834422664 and ChunkView.slope_turf_hash(-1) == 1734902346 and ChunkView.slope_turf_hash(-7) == 2805832651, "the hash is lowbias32 on 32 unsigned bits, negatives as the GPU reads them: %d %d %d" % [ChunkView.slope_turf_hash(1), ChunkView.slope_turf_hash(-1), ChunkView.slope_turf_hash(-7)])
+	var counts := PackedInt32Array()
+	counts.resize(5)
+	for x in range(-10, 10):
+		for y in range(-10, 10):
+			var variant := ChunkView.slope_turf_variant(Vector2i(x, y), 5)
+			_check(variant >= 0 and variant < 5, "a cell's tile is one of the five")
+			counts[variant] += 1
+	var spread := true
+	for count in counts:
+		spread = spread and count > 0 and count <= 160
+	_check(spread, "over 20 × 20 cells every tile is laid and none covers over 40 %%: %s" % counts)
+	_check(ChunkView.slope_turf_variant(Vector2i(3, 4), 5) != ChunkView.slope_turf_variant(Vector2i(4, 3), 5) or ChunkView.slope_turf_variant(Vector2i(1, 2), 5) != ChunkView.slope_turf_variant(Vector2i(2, 1), 5), "x and y are not interchangeable")
+	# One tile: every cell reads layer 0 and the array is the one texture.
+	var single := ChunkView.slope_turf_set(PackedStringArray([tiles[0]]))
+	var all_zero := true
+	for x in range(-10, 10):
+		for y in range(-10, 10):
+			all_zero = all_zero and ChunkView.slope_turf_variant(Vector2i(x, y), 1) == 0
+	_check(single.get_layers() == 1 and single.get_width() == 1536 and all_zero, "with one tile the array has one layer and every cell reads it: unchanged")
+	var shader := FileAccess.get_file_as_string("res://world/ground.gdshader")
+	_check(shader.contains("uniform sampler2DArray slope_turf_set : repeat_enable, filter_linear_mipmap_anisotropic;") and shader.contains("uniform int slope_turf_variants = 1;") and shader.contains("uniform int slope_turf_angles = 1;") and not shader.contains("sampler2D slope_turf "), "the shader reads the set as a texture array with the counts, one variant by default")
+	_check(shader.contains("x *= 0x7feb352du;") and shader.contains("x *= 0x846ca68bu;") and shader.contains("angle * slope_turf_variants + slope_turf_variant(ivec2(floor(turf_uv)))"), "the shader's hash is lowbias32 and its layer is angle × variants + variant")
+	# Key G: the first tile alone, then the family back.
+	var ramp := PackedInt32Array()
+	ramp.resize(16)
+	HeightIndex.write(Vector2i(200, 300), 4, ramp)
+	var overlay := SlopeOverlay.new()
+	root.add_child(overlay)
+	overlay._unhandled_key_input(_key(KEY_G, false, false))
+	_check(ChunkView.slope_turf_single and grass.get_shader_parameter("slope_turf_set") == single and int(forest.get_shader_parameter("slope_turf_variants")) == 1 and overlay._label.text.contains("tile 1 alone"), "G lays the first tile alone on every ground, count 1, and the line says so")
+	overlay._unhandled_key_input(_key(KEY_G, false, false))
+	_check(not ChunkView.slope_turf_single and grass.get_shader_parameter("slope_turf_set") == family and int(grass.get_shader_parameter("slope_turf_variants")) == 5 and overlay._label.text.contains("family of 5"), "G again lays the family back")
+	overlay.free()
+	HeightIndex.clear()
 
 
 ## The tint dials (D44, the overlay's second line): the slope turf's tint

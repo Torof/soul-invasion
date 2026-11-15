@@ -40,15 +40,26 @@ uniform int slopes_drawn = 0;
 // The two layers. The streaks (client/world/slope/slope_streaks.png,
 // drawn by a script: soft comets, wide at the lower left, thin point at
 // the upper right, no tuft) carry the SENSE: their thin point goes toward
-// the crest. The turf (mountain_turf.png, the lead's mountain grass of
-// 14 November 2026, or mountain_turf_bushes.png, his grass with tufts,
-// bushes and stones of 13 November; ChunkView sets which; both
-// provisional, a short grass seen close is wanted) carries the UP: its
-// blades point up the screen, never down. Both are laid in canvas space,
-// SLOPE_STREAK_PX and slope_turf_px a repetition, the turf toned by
-// slope_tint (a dial of the look, ChunkView.SLOPE_LOOK).
+// the crest. The turf (client/world/slope/mountain_turf_1.png … _5.png,
+// the lead's mountain grass drawn by our renderer, a family of tiles of
+// the same grass in different patterns with a shared border band, so any
+// tile lays beside any other without a seam; mountain_turf.md) carries
+// the UP: its blades point up the screen, never down. Both are laid in
+// canvas space, SLOPE_STREAK_PX and slope_turf_px a repetition, the turf
+// toned by slope_tint (a dial of the look, ChunkView.SLOPE_LOOK).
+// The turf is a texture array (ChunkView builds it at load from the
+// tiles): one layer a tile, chosen per CELL of the turf's repetition so
+// the ground reads uniform, not repeated (slope_turf_variant). The array
+// is laid out for a second index to come, the slope's steepness (an
+// angle set, not drawn yet): layer = angle * slope_turf_variants +
+// variant, slope_turf_angles rows of slope_turf_variants tiles, so the
+// angle will index the rows without the layout changing. With one tile
+// (variants 1, angles 1) every cell reads layer 0 and the picture is
+// the single texture's, pixel for pixel.
 uniform sampler2D slope_streaks : repeat_enable, filter_linear_mipmap;
-uniform sampler2D slope_turf : repeat_enable, filter_linear_mipmap;
+uniform sampler2DArray slope_turf_set : repeat_enable, filter_linear_mipmap_anisotropic;
+uniform int slope_turf_variants = 1;
+uniform int slope_turf_angles = 1;
 const float SLOPE_STREAK_PX = 768.0;
 uniform vec3 slope_tint : source_color = vec3(0.94, 1.02, 0.92);
 // The look's dials (ChunkView.SLOPE_LOOK sets them, so another biome can
@@ -330,6 +341,28 @@ void offset_cells(vec2 canvas, out vec4 w, out vec4 ox, out vec4 oy) {
 		offset_hash(i + vec2(0.0, 1.0), 7.0), offset_hash(i + vec2(1.0, 1.0), 7.0));
 }
 
+// A cheap integer hash of 32 bits (Wellons' lowbias32: two multiplies,
+// three shifts; every bit of the input moves every bit of the output,
+// so neighbouring cells get unrelated values). ChunkView.slope_turf_hash
+// mirrors it bit for bit, so the choice can be tested off the GPU.
+uint slope_turf_hash(uint x) {
+	x ^= x >> 16u;
+	x *= 0x7feb352du;
+	x ^= x >> 15u;
+	x *= 0x846ca68bu;
+	x ^= x >> 16u;
+	return x;
+}
+
+// The turf tile laid at `cell`, a cell of the turf's repetition on the
+// canvas (the turf's UV floored, after the `fx` mirror, so a mirrored
+// slope still chooses once a cell): hash(x, y) mod slope_turf_variants.
+// ChunkView.slope_turf_variant mirrors it.
+int slope_turf_variant(ivec2 cell) {
+	uint h = slope_turf_hash(uint(cell.x) ^ slope_turf_hash(uint(cell.y)));
+	return int(h % uint(slope_turf_variants));
+}
+
 // The slopes' one rule (the lead, 14 November 2026 in the evening:
 // "the best picture we have ever had"). Where the ground at map point
 // `p` (tiles) slopes, `lit` is the slope's colour at canvas point
@@ -378,7 +411,13 @@ bool slope_lit(vec2 p, vec2 canvas, vec2 dx, vec2 dy, out vec3 lit) {
 			lay * (dx / SLOPE_STREAK_PX), lay * (dy / SLOPE_STREAK_PX)).r;
 	}
 	vec2 flip = vec2(fx, 1.0);
-	vec3 turf = textureGrad(slope_turf, canvas / slope_turf_px * flip,
+	vec2 turf_uv = canvas / slope_turf_px * flip;
+	// The tile of this cell; the angle row is 0 until the angle set comes
+	// (then: the row from `s`, below slope_turf_angles).
+	int angle = 0;
+	int layer = min(angle * slope_turf_variants + slope_turf_variant(ivec2(floor(turf_uv))),
+		slope_turf_angles * slope_turf_variants - 1);
+	vec3 turf = textureGrad(slope_turf_set, vec3(turf_uv, float(layer)),
 		dx / slope_turf_px * flip, dy / slope_turf_px * flip).rgb * slope_tint;
 	lit = mix(turf, slope_streak_pale, light * slope_streak_mix);
 	if (rim) {

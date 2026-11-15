@@ -4,8 +4,8 @@ extends Node
 ## scene once a --dev server is reached. It shows nothing until a chunk
 ## carries heights (D43). Then, a line says how the slopes are drawn and
 ## the keys: 1 the slopes (the ground shader's one rule), 0 the flat
-## ground, to compare; G the turf with bushes and stones; R the rim; P the
-## turf's size. A second line gives the tints as drawn and their dials
+## ground, to compare; G the turf's first tile alone instead of the family
+## of five, to see what the family brings; R the rim; P the turf's size. A second line gives the tints as drawn and their dials
 ## (the project lead's ask of 15 November 2026, to tune the flat grass
 ## and the slope turf live and read the numbers off the screen): the
 ## arrows with Shift turn the flat grass's tint, with Ctrl the slope
@@ -184,7 +184,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if key == null or not key.pressed or key.echo or not HeightIndex.any:
 		return
 	if key.keycode == KEY_G:
-		ChunkView.set_slope_turf_with_bushes(not ChunkView.slope_turf_with_bushes)
+		ChunkView.set_slope_turf_single(not ChunkView.slope_turf_single)
 		_apply()
 		get_viewport().set_input_as_handled()
 		return
@@ -256,7 +256,7 @@ static func tint_words(tint: Vector3) -> String:
 
 
 func _apply() -> void:
-	var turf := "turf with bushes" if ChunkView.slope_turf_with_bushes else "mountain turf"
+	var turf := "turf tile 1 alone" if ChunkView.slope_turf_single else "turf family of %d" % ChunkView.SLOPE_LOOK["slope_turf_variants"]
 	var rim := "rim" if ChunkView.slope_rim else "no rim"
 	var slopes := "Slopes — %s, %s, %s, turf %d px (P)   (keys 1, 0, G, R and P)" % [MODES[mode], turf, rim, roundi(ChunkView.slope_turf_px)]
 	var tints := "Tints — flat %s · slope %s   (Shift+arrows flat, Ctrl+arrows slope: ↑↓ brightness, ←→ warmth; Backspace resets)" % [tint_words(ChunkView.flat_tint), tint_words(ChunkView.slope_tint)]
