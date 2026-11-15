@@ -1087,6 +1087,8 @@ func _test_a_redraw_rebuilds_only_when_the_ground_around_changed() -> void:
 func _test_the_watchdog_reports_a_stalled_frame() -> void:
 	_check(not DevWatchdog.report_due(1.9, 0.0) and DevWatchdog.report_due(2.0, 0.0), "the first report at 2 s")
 	_check(not DevWatchdog.report_due(4.0, 2.0) and DevWatchdog.report_due(5.0, 2.0), "then one every 3 s")
+	var watcher := FileAccess.get_file_as_string("res://dev/watcher.gd")
+	_check(not DevWatchdog.held and watcher.contains("DevWatchdog.held = true") and FileAccess.get_file_as_string("res://dev/watchdog.gd").contains("and not held:"), "the watcher's restart holds the watchdog while the project imports, so a long import is reported, never given up on")
 	var line := DevWatchdog.report(2.5, 120, DevWatchdog.CHUNK_BUILD)
 	_check(line.contains("2.5 s") and line.contains("frame 120") and line.contains("chunk build"), "the report says how long, which frame and what was running: %s" % line)
 	_check(DevWatchdog.phase_name(99) == "?" and DevWatchdog.phase_name(DevWatchdog.NETWORK).begins_with("network messages"), "every phase has a name")
