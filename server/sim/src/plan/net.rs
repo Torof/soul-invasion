@@ -841,11 +841,39 @@ fn judge_ford(
         );
         return;
     }
-    let n = fords.len() as i64;
-    let (fx, fy) = fords.iter().fold((0_i64, 0_i64), |s, &(x, y)| {
-        (s.0 + x as i64, s.1 + y as i64)
-    });
-    let f = (fx / n * 1000 + 500, fy / n * 1000 + 500);
+    // The crossing's ford is the bar the course spread (`Node::ford`),
+    // not every ford tile of the window: a river whose banks stand out
+    // runs under half a metre deep in reaches of its own, drawn as
+    // fords all along (a known gap, `docs/06`), and the centroid of
+    // them all fell on dry ground off the river at (222, 683) of seed
+    // 14 (15 November 2026), both "banks" on one side and the path
+    // between them never wading.
+    let bar: Vec<(i64, i64)> = runs
+        .iter()
+        .flatten()
+        .filter(|node| node.ford)
+        .map(|node| node.p)
+        .collect();
+    let f = if bar.is_empty() {
+        let n = fords.len() as i64;
+        let (fx, fy) = fords.iter().fold((0_i64, 0_i64), |s, &(x, y)| {
+            (s.0 + x as i64, s.1 + y as i64)
+        });
+        (fx / n * 1000 + 500, fy / n * 1000 + 500)
+    } else {
+        let n = bar.len() as i64;
+        let (fx, fy) = bar
+            .iter()
+            .fold((0_i64, 0_i64), |s, p| (s.0 + p.0, s.1 + p.1));
+        (fx / n, fy / n)
+    };
+    let _ = write!(
+        verdict.measures,
+        ", the bar's {} nodes at ({}, {})",
+        bar.len(),
+        f.0 / 1000,
+        f.1 / 1000
+    );
     // The river's direction at the ford: the nearest node's segment.
     let mut nearest: Option<(i64, (i64, i64), i64)> = None;
     for run in runs {
@@ -1290,6 +1318,29 @@ fn a_tile_is_the_same_through_two_windows() {
 #[test]
 fn the_steppe_lake_shore_holds_no_pit() {
     let verdict = judge_heights_of((390, 476));
+    eprintln!("{}", verdict.line());
+    assert!(verdict.failures.is_empty(), "{}", verdict.line());
+}
+
+/// The crossing the net found "unwaded" on 15 November 2026 ((222, 683)
+/// of seed 14, 116 m³/s): the judge read the ford from every ford tile
+/// of the window, shallow reaches included, and its centroid fell on dry
+/// ground; it reads the course's bar now, and the path wades it.
+#[test]
+fn the_crossing_of_the_broadleaf_window_is_waded() {
+    let c = continent();
+    let cell = (222, 683);
+    let passages = measure::passages(c, measure::DRY_CM);
+    assert_eq!(passages[c.grid.index(cell.0, cell.1)], Passage::Crossing);
+    let window = Window::of_cell(c, cell);
+    let map = Map::on_window(window.clone(), c.seed);
+    let tiles = Tiles::read(&map);
+    let runs = runs_in(c, &window, cell);
+    let mut verdict = Verdict {
+        cell,
+        ..Verdict::default()
+    };
+    judge_ford(&mut verdict, &map, &tiles, &runs, true);
     eprintln!("{}", verdict.line());
     assert!(verdict.failures.is_empty(), "{}", verdict.line());
 }
