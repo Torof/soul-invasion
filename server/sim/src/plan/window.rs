@@ -9,7 +9,8 @@
 //!   crease at a cell's border), plus small hills of a few metres
 //!   (cubic lattice noise, three octaves), flattened on alluvium;
 //! - **the water**: the continent's rivers along their natural courses
-//!   (`course`: the region's meanders carried down to the tile, their
+//!   (`course`, the region's own stems, whose levels settled on its
+//!   ground and whose valleys it cut: the meanders carried down to the tile, their
 //!   corners rounded, each bank walking on its own as the valley's do,
 //!   tributaries joining at first contact, a ford across the river at
 //!   every crossing the atlas finds dry-shod); the region's
@@ -33,7 +34,6 @@
 
 use std::collections::BTreeMap;
 
-use super::course;
 use super::region::{self, REGION_CELL_M, Water};
 use super::vivarium::REGION_CELLS;
 use super::{Biome, Continent, Region, isqrt, measure};
@@ -146,6 +146,46 @@ fn cubic(at: impl Fn(i64, i64) -> i64, f: i64, u: i64, v: i64) -> i64 {
         sum += wyb * (row / whole);
     }
     sum / whole
+}
+
+/// A cell grid of `cells` a side read at cell `(i, j)` of the window (0
+/// is the window's first cell), clamped to the margins.
+fn cell_of<T: Copy>(grid: &[T], cells: i64, i: i64, j: i64) -> T {
+    let c = |v: i64| (v + MARGIN).clamp(0, cells - 1);
+    grid[usize::try_from(c(j) * cells + c(i)).expect("inside")]
+}
+
+/// The ground at tile `(x, y)` before the water, from the window's cell
+/// grids (`cells` a side): the region's heights and the small hills (cm),
+/// the hills keyed on the continent's tile (`origin`, the window's corner
+/// in region cells) so two windows draw the same hills on the same ground.
+fn ground_of(
+    seed: u64,
+    origin: (i64, i64),
+    cells: i64,
+    height: &[i32],
+    hills: &[i32],
+    x: i64,
+    y: i64,
+) -> i64 {
+    let smooth_at = |grid: &[i32]| {
+        cubic(
+            |i, j| i64::from(cell_of(grid, cells, i, j)),
+            CELL,
+            x - CELL / 2,
+            y - CELL / 2,
+        )
+    };
+    let base = smooth_at(height);
+    let strength = smooth_at(hills);
+    let mut sum = 0;
+    let (wx, wy) = (x + origin.0 * CELL, y + origin.1 * CELL);
+    for (k, &(cell, amplitude)) in HILLS.iter().enumerate() {
+        let s = roll(seed, purpose::PLAN_HILLS, &[k as u64]);
+        let node = |i: i64, j: i64| i64::from(unit(&[s, key(i), key(j)])) - 500;
+        sum += cubic(node, cell, wx, wy) * amplitude / 500;
+    }
+    base + sum * strength.clamp(0, 1000) / 1000
 }
 
 /// What runs on a stretch of water.
@@ -449,13 +489,8 @@ impl Window {
 
         // The rivers, along their natural courses, segment by segment.
         let mut stretches = Vec::new();
-        let span = i32::try_from(n / per + 3).expect("small");
-        let (kx, ky) = (
-            i32::try_from(origin.0.div_euclid(per)).expect("small"),
-            i32::try_from(origin.1.div_euclid(per)).expect("small"),
-        );
         let shift = (origin.0 * CELL * 1000, origin.1 * CELL * 1000);
-        for stem in course::stems(continent, kx - 2..kx + span, ky - 2..ky + span) {
+        for stem in &region.stems {
             for pair in stem.nodes.windows(2) {
                 let (u, v) = (pair[0], pair[1]);
                 let (a, b) = (
@@ -490,6 +525,67 @@ impl Window {
             let c = mm((gx, gy));
             (c.0 + jitter(0), c.1 + jitter(1))
         };
+        // A brook runs on the ground the window draws, read at its own
+        // point, not at its cell's centre (on a flank the ground falls
+        // metres within a cell), and never rises: a point's level is the
+        // lowest of its ground and of every brook point upstream of it,
+        // so two brooks meeting at a point meet at one level (a window of
+        // the mountains stepped 3 m where they did not, 15 November 2026).
+        let rs_u = region.grid.side;
+        let region_cell =
+            |x: i64, y: i64| usize::try_from((cy0 + y) * rs + cx0 + x).expect("inside");
+        let local = |i: usize| {
+            (
+                i64::try_from(i % rs_u).expect("small") - cx0,
+                i64::try_from(i / rs_u).expect("small") - cy0,
+            )
+        };
+        let is_brook = |x: i64, y: i64| {
+            (0..cells).contains(&x)
+                && (0..cells).contains(&y)
+                && region.water[region_cell(x, y)] == Water::Brook
+        };
+        let mut brook_level = vec![i64::MAX; total];
+        for y in 0..cells {
+            for x in 0..cells {
+                if is_brook(x, y) {
+                    let p = brook_point(origin.0 - MARGIN + x, origin.1 - MARGIN + y);
+                    brook_level[usize::try_from(y * cells + x).expect("small")] = ground_of(
+                        seed,
+                        origin,
+                        cells,
+                        &height,
+                        &hills,
+                        p.0.div_euclid(1000),
+                        p.1.div_euclid(1000),
+                    );
+                }
+            }
+        }
+        loop {
+            let mut changed = false;
+            for y in 0..cells {
+                for x in 0..cells {
+                    if !is_brook(x, y) {
+                        continue;
+                    }
+                    let (rx, ry) = local(region.receiver[region_cell(x, y)] as usize);
+                    if (rx, ry) != (x, y) && is_brook(rx, ry) {
+                        let (i, r) = (
+                            usize::try_from(y * cells + x).expect("small"),
+                            usize::try_from(ry * cells + rx).expect("small"),
+                        );
+                        if brook_level[i] < brook_level[r] {
+                            brook_level[r] = brook_level[i];
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
         for y in 0..cells {
             for x in 0..cells {
                 let i = index(x, y);
@@ -501,15 +597,30 @@ impl Window {
                     continue;
                 }
                 let (gx, gy) = (origin.0 - MARGIN + x, origin.1 - MARGIN + y);
-                let rs_u = region.grid.side;
-                let (rx, ry) = (
-                    i64::try_from(r % rs_u).expect("small") - cx0 + origin.0 - MARGIN,
-                    i64::try_from(r / rs_u).expect("small") - cy0 + origin.1 - MARGIN,
-                );
+                let (lx, ly) = local(r);
+                let (rx, ry) = (lx + origin.0 - MARGIN, ly + origin.1 - MARGIN);
                 let a = brook_point(gx, gy);
-                let from = i64::from(region.surface[i]);
+                let from = brook_level[usize::try_from(y * cells + x).expect("small")];
                 let (b, to) = match region.water[r] {
-                    Water::Brook => (brook_point(rx, ry), i64::from(region.surface[r])),
+                    Water::Brook => {
+                        let b = brook_point(rx, ry);
+                        // A receiver past the margin has no settled level:
+                        // its ground, clamped to the margin, serves.
+                        let level = if is_brook(lx, ly) {
+                            brook_level[usize::try_from(ly * cells + lx).expect("small")]
+                        } else {
+                            ground_of(
+                                seed,
+                                origin,
+                                cells,
+                                &height,
+                                &hills,
+                                b.0.div_euclid(1000),
+                                b.1.div_euclid(1000),
+                            )
+                        };
+                        (b, level)
+                    }
                     Water::River => {
                         // Onto the nearest river stretch, at its level.
                         let c = mm((rx, ry));
@@ -659,8 +770,7 @@ impl Window {
     /// The value of a cell grid at cell `(i, j)` of the window (0 is the
     /// window's first cell), clamped to the margins.
     fn cell<T: Copy>(&self, grid: &[T], i: i64, j: i64) -> T {
-        let c = |v: i64| (v + MARGIN).clamp(0, self.cells - 1);
-        grid[usize::try_from(c(j) * self.cells + c(i)).expect("inside")]
+        cell_of(grid, self.cells, i, j)
     }
 
     /// A cell grid read at tile `(x, y)` by Catmull-Rom between the cells'
@@ -672,16 +782,15 @@ impl Window {
     /// The ground at tile `(x, y)` before the water: the region's and the
     /// small hills (cm).
     fn ground(&self, x: i64, y: i64) -> i64 {
-        let base = Self::smooth_at(|i, j| i64::from(self.cell(&self.height, i, j)), x, y);
-        let strength = Self::smooth_at(|i, j| i64::from(self.cell(&self.hills, i, j)), x, y);
-        let mut hills = 0;
-        let (wx, wy) = self.world(x, y);
-        for (k, &(cell, amplitude)) in HILLS.iter().enumerate() {
-            let s = roll(self.seed, purpose::PLAN_HILLS, &[k as u64]);
-            let node = |i: i64, j: i64| i64::from(unit(&[s, key(i), key(j)])) - 500;
-            hills += cubic(node, cell, wx, wy) * amplitude / 500;
-        }
-        base + hills * strength.clamp(0, 1000) / 1000
+        ground_of(
+            self.seed,
+            self.origin,
+            self.cells,
+            &self.height,
+            &self.hills,
+            x,
+            y,
+        )
     }
 
     /// The share of lake around tile `(x, y)`, per mille (above 500 is a
@@ -787,12 +896,41 @@ impl Window {
             let w = smooth((500 - share) * 2);
             h = level + (h - level) * w / 1000;
         }
+        // Every water within its bank draws the ground down to its own
+        // level, the nearest the most: the pull is the strongest one's,
+        // the level a mean of the waters' weighted by the cube of each
+        // pull, a water lagging behind the strongest left out the more
+        // the strongest nears its edge, so the ground at a water's edge
+        // is that water's level alone. One water gives the bank's plain blend; two reaches of a
+        // mountain river a cell apart and 20 m apart in level, or two
+        // brooks converging on a flank, give a saddle between them with
+        // no step (15 November 2026; drawing each bank in turn stepped at
+        // the higher edge).
         let p = (x * 1000 + 500, y * 1000 + 500);
+        let mut pulls: Vec<(i64, i64)> = Vec::new();
+        let mut strongest = 0;
         for s in self.stretches_near(x, y) {
             let Probe { d, half, level, .. } = s.probe(p);
             if d < half + s.bank {
-                let w = smooth((d - half) * 1000 / s.bank);
-                h = level + (h - level) * w / 1000;
+                let t = 1000 - smooth((d - half) * 1000 / s.bank);
+                strongest = strongest.max(t);
+                pulls.push((t, level));
+            }
+        }
+        if strongest > 0 {
+            let (mut weighted, mut weights) = (0_i64, 0_i64);
+            for (t, level) in pulls {
+                // Its share shrinks with its lag behind the strongest,
+                // and the room for a lag closes as the strongest nears
+                // a water's edge: there, only that water counts.
+                let share = (1000 - (strongest - t) * 1000 / (1001 - strongest)).max(0);
+                let w = t * t * t * share / 1000;
+                weighted += w * level;
+                weights += w;
+            }
+            if weights > 0 {
+                let level = weighted / weights;
+                h = level + (h - level) * (1000 - strongest) / 1000;
             }
         }
         h

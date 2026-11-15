@@ -18,14 +18,17 @@
 //!    segment's two ends, and rounded once more so the detail never
 //!    kinks: no turn sharper than [`SHARPEST_TURN_COS_MILLI`] between two
 //!    consecutive segments;
-//! 3. a **tributary joins** the stem it drains to where its course first
+//! 3. its **level settles on the ground** ([`settle`]): never above the
+//!    ground beside it, never rising downstream;
+//! 4. a **tributary joins** the stem it drains to where its course first
 //!    comes within [`JOIN_REACH_WIDTHS`] of that stem's widths of the
 //!    stem's water ([`join`]): the rest of its course is dropped and its
-//!    end slides onto the stem, the stem growing to its downstream width
+//!    end slides onto the stem, its last reach falling to the stem's level
+//!    there ([`regrade_end`]), the stem growing to its downstream width
 //!    from there (the lead's rule of 15 November 2026: at the east
 //!    confluence of the vivarium the tributary ran alongside the stem for
 //!    300 m before the atlas's node, two rivers side by side);
-//! 4. its **banks walk** as the valley's do ([`walk_banks`], the rule of
+//! 5. its **banks walk** as the valley's do ([`walk_banks`], the rule of
 //!    `map::Rivers::breathe`, in widths rather than tiles): over each
 //!    cell's course, each bank on its own holds its line for a few steps,
 //!    then leaves it at a slope of 5.6° for a dozen to forty steps, out
@@ -37,7 +40,7 @@
 //!    course (a cell is computed without its neighbours, D39), around a
 //!    ford's bar and around a junction. The depth takes what the width
 //!    leaves, so the flow is kept (the window's rule);
-//! 5. the **ford** at an atlas crossing (`measure::passages` at
+//! 6. the **ford** at an atlas crossing (`measure::passages` at
 //!    [`measure::DRY_CM`]): where the atlas finds the cell's river
 //!    crossed dry-shod, a bar [`FORD_BAR_WIDTHS_PER_MILLE`] river widths
 //!    long lies across the stem at the point nearest the cell's centre,
@@ -162,6 +165,14 @@ const SPIKE_COS_MILLI: i64 = -900;
 /// wider than the river around it (D36).
 pub(crate) const FORD_BAR_WIDTHS_PER_MILLE: i64 = 2500;
 const FORD_LENS_PER_MILLE: i64 = 300;
+
+/// The steepest a river's surface falls, per mille (0.15 m a metre, a
+/// torrent): where its level dives to the ground ([`settle`]), the dive
+/// is spread upstream at this slope. Steeper, the water and the banks
+/// stepped over the net's 1.7 m a tile across a bend: the surface folds
+/// around it, and two tiles side by side lie on points of the course
+/// metres apart along it. No cliff layer exists yet, so no waterfall.
+const STEEPEST_FALL_PER_MILLE: i64 = 150;
 
 /// A point of a river's course, in absolute millimetres.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -615,6 +626,71 @@ fn spread_ford(nodes: &mut [Node], at: usize) {
     }
 }
 
+/// The water never runs above the ground beside it, and never falls in a
+/// step: along the course,
+/// each node's level is the lower of the atlas's (falling evenly from
+/// cell to cell) and the lowest ground met so far at any node (`ground`,
+/// the region's before its valleys are cut, around the point), so the
+/// level never rises downstream and the river dives into a dip of the
+/// ground instead of crossing it in the air. Before 15 November 2026 the
+/// level was the atlas's alone: in the mountains, where the region's
+/// detail swings 100 m and more, the river ran up to 54 m above the
+/// ground and the window raised the ground to its water, a dyke with a
+/// 47 m step ((631, 624) of seed 14).
+fn settle(nodes: &mut [Node], ground: &dyn Fn((i64, i64)) -> Option<i64>) {
+    let mut low = i64::MAX;
+    for node in nodes.iter_mut() {
+        if let Some(g) = ground(node.p) {
+            low = low.min(g);
+        }
+        node.level = node.level.min(low);
+    }
+    // No waterfall: where the water dives, it starts falling upstream of
+    // the dip, at `STEEPEST_FALL_PER_MILLE` at most.
+    for j in (1..nodes.len()).rev() {
+        let fall = distance(nodes[j - 1].p, nodes[j].p) * STEEPEST_FALL_PER_MILLE / 10_000;
+        nodes[j - 1].level = nodes[j - 1].level.min(nodes[j].level + fall);
+    }
+}
+
+/// The water's level at `q`, a point of segment `s` of `nodes` (cm).
+fn level_on(nodes: &[Node], s: usize, q: (i64, i64)) -> i64 {
+    let (a, b) = (nodes[s], nodes[s + 1]);
+    let len = distance(a.p, b.p);
+    if len == 0 {
+        return a.level;
+    }
+    a.level + (b.level - a.level) * distance(a.p, q) / len
+}
+
+/// A tributary cut short meets its stem at the stem's level `target`,
+/// not at the level its own course had there: its levels from node
+/// `from` on fall evenly to `target`, from the latest node at or above
+/// it, and where its whole course lies lower (the stem is higher than
+/// the ground the atlas gave the tributary), the water stands at the
+/// stem's level, never flowing uphill. Before 15 November 2026 the cut
+/// kept the tributary's own levels, so in the mountains it reached the
+/// stem up to 50 m above it and the window raised the ground to its
+/// water: a dyke beside the stem ((631, 624) of seed 14).
+fn regrade_end(nodes: &mut [Node], from: usize, target: i64) {
+    let Some(last) = nodes.len().checked_sub(1) else {
+        return;
+    };
+    let mut m0 = from.min(last);
+    while m0 > 0 && nodes[m0].level < target {
+        m0 -= 1;
+    }
+    let along = along(nodes);
+    let (l0, a0) = (nodes[m0].level, along[m0]);
+    let span = (along[last] - a0).max(1);
+    for m in m0..=last {
+        nodes[m].level = l0 + (target - l0) * (along[m] - a0) / span;
+    }
+    for node in nodes.iter_mut() {
+        node.level = node.level.max(target);
+    }
+}
+
 /// The width and depth the flow gives a river over one cell's course.
 #[derive(Debug, Clone, Copy)]
 struct Course {
@@ -664,10 +740,12 @@ fn join(
     }
     let Some((j, q, d, s)) = cut else {
         // Never close: the end slides onto the stem's nearest point.
-        if let Some((q, d, _)) = nearest_on(&stems[main].nodes, anchor) {
+        if let Some((q, d, s)) = nearest_on(&stems[main].nodes, anchor) {
             let shift = (q.0 - anchor.0, q.1 - anchor.1);
             let blend = (JOIN_BLEND_M * 1000).max(JOIN_BLEND_PER_SHIFT * d);
             slide_end(&mut stems[k].nodes, shift, blend);
+            let target = level_on(&stems[main].nodes, s, q);
+            regrade_end(&mut stems[k].nodes, start, target);
         }
         return None;
     };
@@ -676,6 +754,8 @@ fn join(
     let shift = (q.0 - p.0, q.1 - p.1);
     let blend = (JOIN_BLEND_M * 1000).max(JOIN_BLEND_PER_SHIFT * d);
     slide_end(&mut stems[k].nodes, shift, blend);
+    let target = level_on(&stems[main].nodes, s, q);
+    regrade_end(&mut stems[k].nodes, start, target);
     // The stem carries both waters from the junction on: its width grows
     // to the downstream cell's over a short way.
     if let Some(&downstream) = courses.get(&end) {
@@ -700,7 +780,12 @@ fn join(
 /// The river stems of `c` whose cells lie in `x` × `y` (continent
 /// cells): see the module.
 #[allow(clippy::too_many_lines)]
-pub(crate) fn stems(c: &Continent, x: std::ops::Range<i32>, y: std::ops::Range<i32>) -> Vec<Stem> {
+pub(crate) fn stems(
+    c: &Continent,
+    x: std::ops::Range<i32>,
+    y: std::ops::Range<i32>,
+    ground: Option<&dyn Fn((i64, i64)) -> Option<i64>>,
+) -> Vec<Stem> {
     let seed = c.seed;
     let is_river = |i: usize| !c.sea[i] && c.discharge[i] >= RIVER_DISCHARGE;
     let in_span = |i: usize| {
@@ -813,6 +898,9 @@ pub(crate) fn stems(c: &Continent, x: std::ops::Range<i32>, y: std::ops::Range<i
             nodes = cut_corners(&nodes);
         }
         nodes = tidy(&nodes, LEAST_PIECE_MM);
+        if let Some(ground) = ground {
+            settle(&mut nodes, ground);
+        }
         let joins = if cells.contains(end) {
             None
         } else {
@@ -906,7 +994,7 @@ mod tests {
 
     fn all_stems(c: &Continent) -> Vec<Stem> {
         let side = i32::try_from(c.grid.side).expect("small");
-        stems(c, 0..side, 0..side)
+        stems(c, 0..side, 0..side, None)
     }
 
     /// The farthest a bank stands in and out of its line, per mille of
@@ -1115,6 +1203,84 @@ mod tests {
         );
     }
 
+    fn flat_nodes(levels: &[i64]) -> Vec<Node> {
+        levels
+            .iter()
+            .enumerate()
+            .map(|(j, &level)| Node {
+                p: (i64::try_from(j).expect("small") * 10_000, 0),
+                level,
+                half: (2000, 2000),
+                width: 4000,
+                depth: 50,
+                ford: false,
+                cell: 0,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_water_settles_on_the_ground_and_never_falls_in_a_step() {
+        // The atlas's line falls 10 m over 100 m; the ground dips 30 m
+        // under it at the sixth node.
+        let mut nodes = flat_nodes(&(0..11).map(|j| 10_000 - j * 100).collect::<Vec<_>>());
+        let ground = |p: (i64, i64)| {
+            Some(if (50_000..=60_000).contains(&p.0) {
+                6_500
+            } else {
+                20_000
+            })
+        };
+        settle(&mut nodes, &ground);
+        let levels: Vec<i64> = nodes.iter().map(|n| n.level).collect();
+        assert!(
+            levels.windows(2).all(|w| w[0] >= w[1]),
+            "never rises: {levels:?}"
+        );
+        assert!(
+            levels[5] <= 6_500 && levels[10] <= 6_500,
+            "dives and stays: {levels:?}"
+        );
+        let fall = 10_000 * STEEPEST_FALL_PER_MILLE / 10_000;
+        assert!(
+            levels.windows(2).all(|w| w[0] - w[1] <= fall),
+            "no step over {fall} cm in 10 m: {levels:?}"
+        );
+        assert!(levels[0] < 10_000, "the dive starts upstream of the dip");
+        // No ground known: the atlas's line stands.
+        let mut plain = flat_nodes(&[500, 400, 300]);
+        settle(&mut plain, &|_| None);
+        assert_eq!(
+            plain.iter().map(|n| n.level).collect::<Vec<_>>(),
+            [500, 400, 300]
+        );
+    }
+
+    #[test]
+    fn a_tributary_cut_short_meets_its_stem_at_the_stems_level() {
+        // Above the stem: the last reach falls to it.
+        let mut nodes = flat_nodes(&[900, 800, 700, 600, 500]);
+        regrade_end(&mut nodes, 2, 100);
+        let levels: Vec<i64> = nodes.iter().map(|n| n.level).collect();
+        assert_eq!(levels[..2], [900, 800]);
+        assert_eq!(levels[2], 700);
+        assert_eq!(levels[4], 100);
+        assert!(levels.windows(2).all(|w| w[0] >= w[1]), "{levels:?}");
+        // The stem higher than the reach's start: the regrade begins
+        // where the course was still above it.
+        let mut nodes = flat_nodes(&[900, 800, 700, 600, 500]);
+        regrade_end(&mut nodes, 3, 750);
+        let levels: Vec<i64> = nodes.iter().map(|n| n.level).collect();
+        assert_eq!(levels[..2], [900, 800]);
+        assert_eq!(levels[4], 750);
+        assert!(levels.windows(2).all(|w| w[0] >= w[1]), "{levels:?}");
+        // The stem higher than the whole course: the water stands at its
+        // level, never flowing uphill.
+        let mut nodes = flat_nodes(&[400, 300, 200]);
+        regrade_end(&mut nodes, 1, 1000);
+        assert!(nodes.iter().all(|n| n.level == 1000));
+    }
+
     #[test]
     fn the_same_continent_gives_the_same_stems_whatever_the_span() {
         let c = continent(2);
@@ -1126,7 +1292,7 @@ mod tests {
         }
         // A span of the middle: every point of its stems four cells in
         // from the span's edges is a point of a whole stem.
-        let part = stems(&c, 32..96, 32..96);
+        let part = stems(&c, 32..96, 32..96, None);
         let per = i64::from(region::PER_CELL);
         let inner = |p: (i64, i64)| {
             let cell = |v: i64| v / (CELL_MM * per);

@@ -56,7 +56,7 @@ const EDGE_CELLS: i32 = 6;
 fn main() {
     let mut args = std::env::args().skip(1);
     let out = PathBuf::from(args.next().unwrap_or_else(|| {
-        eprintln!("usage: windows_sheet DIR [SEED]");
+        eprintln!("usage: windows_sheet DIR [SEED [BIOME,BIOME,...]]");
         std::process::exit(2);
     }));
     let seed: u64 = args

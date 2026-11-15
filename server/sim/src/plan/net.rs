@@ -276,12 +276,11 @@ enum Invariant {
 /// they are (this module measures, it does not fix; the whole sample's
 /// findings are in `docs/06-open-questions.md`): the river's
 /// centreline runs straight for 675 m south of the crossing (a quarter
-/// width off a chord over 22 widths), and the region carves its river
-/// valleys with a wall at their rim (`region::VALLEY_CELLS`: the ground
-/// is capped near the river and left high beyond, so one 64 m cell
-/// climbs up to 120 m, 190 %, just north of the zone). Each is struck
-/// out here the day the generator mends it, and the test says so.
-const KNOWN_ON_THE_VIVARIUM_CELL: [Invariant; 2] = [Invariant::StraightReach, Invariant::Steps];
+/// width off a chord over 22 widths). Struck the same day: the walls at
+/// the rim of the region's river valleys (`Steps`; the valleys have
+/// flanks since, `region::VALLEY_CELLS`). Each is struck out here the
+/// day the generator mends it, and the test says so.
+const KNOWN_ON_THE_VIVARIUM_CELL: [Invariant; 1] = [Invariant::StraightReach];
 
 /// What a window was measured at, and where it failed.
 #[derive(Debug, Default)]
@@ -643,7 +642,7 @@ fn runs_in(c: &Continent, window: &Window, cell: (i32, i32)) -> Vec<Vec<course::
     let inside = |p: (i64, i64)| (0..side_mm).contains(&p.0) && (0..side_mm).contains(&p.1);
     let mut runs = Vec::new();
     // The span the window reads its stems over (`Window::cut`).
-    for stem in course::stems(c, cell.0 - 2..cell.0 + 4, cell.1 - 2..cell.1 + 4) {
+    for stem in course::stems(c, cell.0 - 2..cell.0 + 4, cell.1 - 2..cell.1 + 4, None) {
         let mut run: Vec<course::Node> = Vec::new();
         for node in &stem.nodes {
             let p = (node.p.0 - shift.0, node.p.1 - shift.1);
@@ -1052,6 +1051,99 @@ fn the_sample_covers_the_continent() {
 #[test]
 fn the_vivarium_cell_holds_the_invariants() {
     net_over(&[ZONE_2.cell], &KNOWN_ON_THE_VIVARIUM_CELL);
+}
+
+/// The heights alone of a window (no trees: seconds), judged.
+fn judge_heights_of(cell: (i32, i32)) -> Verdict {
+    let c = continent();
+    let window = Window::of_cell(c, cell);
+    let map = Map::on_window(window, c.seed);
+    let tiles = Tiles::read(&map);
+    let mut verdict = Verdict {
+        cell,
+        ..Verdict::default()
+    };
+    judge_heights(&mut verdict, &tiles);
+    verdict
+}
+
+/// The mountain cell the first sampling found worst (47 m a tile,
+/// 137,677 steps, 15 November 2026): no step since the region's valleys
+/// have flanks, the rivers settle on the ground and the ground has its
+/// ceiling (`region::MAX_RISE_PER_MILLE`).
+#[test]
+fn the_mountain_cell_has_no_step() {
+    let verdict = judge_heights_of((631, 624));
+    eprintln!("{}", verdict.line());
+    assert!(
+        !verdict.failures.iter().any(|(w, _)| *w == Invariant::Steps),
+        "{}",
+        verdict.line()
+    );
+}
+
+/// The region's ground never rises faster than its ceiling between two
+/// cells, on the vivarium's region: the window's tiles, interpolated
+/// between cells, then never step over the net's 1.7 m.
+#[test]
+fn the_vivarium_region_rises_under_the_ceiling() {
+    let c = continent();
+    let region = super::Region::around(c, ZONE_2.cell, 10 * 32);
+    let side = i32::try_from(region.grid.side).expect("small");
+    let rise =
+        i32::try_from(super::region::MAX_RISE_PER_MILLE * REGION_CELL_M / 10).expect("small");
+    let (mut orth, mut diag) = (0, 0);
+    for i in 0..region.grid.len() {
+        let (x, y) = region.grid.xy(i);
+        for (dx, dy) in [(1, 0), (0, 1), (1, 1), (1, -1)] {
+            if x + dx < side && (0..side).contains(&(y + dy)) {
+                let d = (region.height[region.grid.index(x + dx, y + dy)] - region.height[i]).abs();
+                if dx != 0 && dy != 0 {
+                    diag = diag.max(d);
+                } else {
+                    orth = orth.max(d);
+                }
+            }
+        }
+    }
+    eprintln!("steepest rise between cells: {orth} cm orthogonal, {diag} cm diagonal");
+    assert!(orth <= rise, "{orth} cm a cell over the ceiling {rise}");
+    assert!(diag <= rise * 1414 / 1000, "{diag} cm over a diagonal");
+}
+
+/// A tile is the same through two windows (D39): the vivarium's cell cut
+/// from its own region and from the region centred one cell east, whose
+/// stems, valleys and ceiling were worked out over a span shifted by
+/// 2 km, give the same heights and the same waters.
+#[test]
+fn a_tile_is_the_same_through_two_windows() {
+    let c = continent();
+    let own = Window::of_cell(c, ZONE_2.cell);
+    let per = usize::try_from(super::region::PER_CELL).expect("positive");
+    let shifted = super::Region::around(c, (ZONE_2.cell.0 + 1, ZONE_2.cell.1), 10 * per);
+    let corner = (
+        usize::try_from(ZONE_2.cell.0 - shifted.origin.0).expect("inside") * per,
+        usize::try_from(ZONE_2.cell.1 - shifted.origin.1).expect("inside") * per,
+    );
+    let other = Window::cut(c, &shifted, corner, own.side());
+    assert_eq!(own.origin(), other.origin());
+    let side = i64::from(own.side());
+    let (mut tiles, mut differ, mut worst) = (0, 0, 0);
+    for y in (3..side).step_by(7) {
+        for x in (5..side).step_by(7) {
+            tiles += 1;
+            let (a, b) = (own.height_dm(x, y), other.height_dm(x, y));
+            if a != b || own.wet(x, y).map(|w| w.terrain) != other.wet(x, y).map(|w| w.terrain) {
+                differ += 1;
+                worst = worst.max((i32::from(a) - i32::from(b)).abs());
+            }
+        }
+    }
+    eprintln!("{tiles} tiles compared, {differ} differ, worst {worst} dm");
+    assert_eq!(
+        differ, 0,
+        "{differ} of {tiles} tiles differ, worst {worst} dm"
+    );
 }
 
 /// The whole sample (minutes: run by hand, see the module).
