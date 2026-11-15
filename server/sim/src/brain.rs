@@ -96,6 +96,8 @@ enum Doing {
 pub struct Mind {
     /// Its camp: where it goes at night and by day, and goes looking from.
     home: Pos,
+    /// Where it last looked for water from: it looks again only elsewhere.
+    looked_from: Option<Pos>,
     /// The drinking places it knows, one a chunk.
     water: BTreeMap<ChunkPos, DrinkingPlace>,
     /// The food it saw, and where.
@@ -118,6 +120,7 @@ impl Mind {
     fn new(home: Pos) -> Self {
         Self {
             home,
+            looked_from: None,
             water: BTreeMap::new(),
             food: BTreeMap::new(),
             doing: Doing::Nothing,
@@ -300,20 +303,24 @@ fn walkable(map: &Map, rules: &Content, pos: Pos) -> bool {
         .is_some_and(|t| rules.movement.cost(t).is_some())
 }
 
+/// A tile and its eight neighbours, itself first, then in a fixed order.
+const AROUND: [(i32, i32); 9] = [
+    (0, 0),
+    (0, -1),
+    (1, 0),
+    (0, 1),
+    (-1, 0),
+    (1, -1),
+    (1, 1),
+    (-1, 1),
+    (-1, -1),
+];
+
 /// The drinkable tile `pos` can drink from (itself first, then its
 /// neighbours in a fixed order), if any.
 fn water_by(map: &Map, pos: Pos) -> Option<Pos> {
-    std::iter::once((0, 0))
-        .chain([
-            (0, -1),
-            (1, 0),
-            (0, 1),
-            (-1, 0),
-            (1, -1),
-            (1, 1),
-            (-1, 1),
-            (-1, -1),
-        ])
+    AROUND
+        .iter()
         .map(|(dx, dy)| Pos::new(pos.x + dx, pos.y + dy))
         .find(|p| map.get(*p).is_some_and(Terrain::is_drinkable))
 }
@@ -369,25 +376,37 @@ fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind) {
     )
     .unwrap_or(1);
     let in_sight = |p: Pos| (p.x - at.x).abs() <= sight && (p.y - at.y).abs() <= sight;
-    // Water: the nearest drinking place of each chunk in sight.
-    for y in at.y - sight..=at.y + sight {
-        for x in at.x - sight..=at.x + sight {
-            let stand = Pos::new(x, y);
-            if !walkable(map, rules, stand) {
-                continue;
-            }
-            let Some(water) = water_by(map, stand) else {
-                continue;
-            };
-            let place = DrinkingPlace { stand, water };
-            mind.water
-                .entry(stand.chunk())
-                .and_modify(|known| {
-                    if far(stand, at) < far(known.stand, at) {
-                        *known = place;
+    // Water: the nearest drinking place of each chunk in sight, looked
+    // for only when the body stands somewhere new (the ground does not
+    // change under it), and from the water: each drinkable tile, then the
+    // walkable tiles around it. A thought cost four milliseconds when it
+    // tried every tile in sight as a place to stand.
+    if mind.looked_from != Some(at) {
+        mind.looked_from = Some(at);
+        for y in at.y - sight..=at.y + sight {
+            for x in at.x - sight..=at.x + sight {
+                let water = Pos::new(x, y);
+                if !map.get(water).is_some_and(Terrain::is_drinkable) {
+                    continue;
+                }
+                for (dx, dy) in AROUND {
+                    let stand = Pos::new(x + dx, y + dy);
+                    if !in_sight(stand) || !walkable(map, rules, stand) {
+                        continue;
                     }
-                })
-                .or_insert(place);
+                    let place = DrinkingPlace { stand, water };
+                    mind.water
+                        .entry(stand.chunk())
+                        .and_modify(|known| {
+                            if (far(stand, at), stand.y, stand.x)
+                                < (far(known.stand, at), known.stand.y, known.stand.x)
+                            {
+                                *known = place;
+                            }
+                        })
+                        .or_insert(place);
+                }
+            }
         }
     }
     // Food: what lies in the chunks in sight, within sight.
@@ -914,6 +933,30 @@ mod tests {
         assert!(
             (at.x - 150).abs() <= HOME_TILES && (at.y - 150).abs() <= HOME_TILES,
             "back at its camp for the night: {at:?}"
+        );
+    }
+
+    #[test]
+    fn it_looks_for_water_only_from_a_new_place() {
+        let world = field(64, 40, Pos::new(5, 5));
+        let rules = rules();
+        let mut mind = Mind::new(Pos::new(5, 5));
+        look(&world, &rules, Pos::new(5, 5), &mut mind);
+        let seen: Vec<_> = mind.drinking_places().copied().collect();
+        assert!(!seen.is_empty() && seen.iter().all(|p| p.stand.x == 39 || p.stand.x == 41));
+        assert!(seen.iter().all(|p| p.water.x == 40));
+        mind.water.clear();
+        look(&world, &rules, Pos::new(5, 5), &mut mind);
+        assert_eq!(
+            mind.drinking_places().count(),
+            0,
+            "the same place: not looked at again"
+        );
+        look(&world, &rules, Pos::new(6, 5), &mut mind);
+        assert_eq!(
+            mind.drinking_places().count(),
+            seen.len(),
+            "a new place: looked at"
         );
     }
 }
