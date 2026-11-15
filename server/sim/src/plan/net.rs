@@ -1168,6 +1168,86 @@ fn the_vivarium_region_rises_under_the_ceiling() {
     assert!(diag <= rise * 1414 / 1000, "{diag} cm over a diagonal");
 }
 
+/// A river reaches the sea's level only at the sea: the region's detail
+/// swings no deeper than the ground stands above the sea, and a river
+/// settles on a lake's surface, not its bed, so no inland dip or lake
+/// drags a river down to the sea's level for the rest of its course (a
+/// steppe 33 m up ran its river at the sea's level, (391, 441) of seed
+/// 14, and a river that crossed a lake of the atlas kept its bed's level
+/// for 7 km, (438, 376); 15 November 2026, the net's `SeaAsLand`).
+#[test]
+fn rivers_reach_the_sea_level_only_at_the_sea() {
+    let c = continent();
+    for cell in [(391, 441), (438, 376)] {
+        let region = super::Region::around(c, cell, 10 * 32);
+        let side = i64::try_from(region.grid.side).expect("small");
+        let origin = (
+            i64::from(region.origin.0) * 32,
+            i64::from(region.origin.1) * 32,
+        );
+        let by_the_sea = |p: (i64, i64)| {
+            let (px, py) = (
+                p.0.div_euclid(REGION_CELL_M * 1000) - origin.0,
+                p.1.div_euclid(REGION_CELL_M * 1000) - origin.1,
+            );
+            (-2..=2).any(|dy| {
+                (-2..=2).any(|dx| {
+                    let (x, y) = (px + dx, py + dy);
+                    (0..side).contains(&x)
+                        && (0..side).contains(&y)
+                        && region.water[usize::try_from(y * side + x).expect("inside")]
+                            == super::region::Water::Sea
+                })
+            })
+        };
+        let (mut nodes, mut inland_at_sea) = (0, 0);
+        for node in region.stems.iter().flat_map(|s| &s.nodes) {
+            nodes += 1;
+            if node.level <= 0 && !by_the_sea(node.p) {
+                inland_at_sea += 1;
+            }
+        }
+        eprintln!("{cell:?}: {nodes} river nodes, {inland_at_sea} at the sea's level off the sea");
+        assert_eq!(
+            inland_at_sea, 0,
+            "{cell:?}: rivers at the sea's level inland"
+        );
+    }
+}
+
+/// The windows whose land the net found under the sea's level on 15
+/// November 2026 (river beds settled at it, coastal land the detail and
+/// the small hills dug under it), and the lake beside its river that
+/// stepped 1.8 m ((149, 564)), judged on their heights alone: no dry tile
+/// under the sea's level, no step. The coastal windows whose sea is drawn
+/// as land are left out: the window draws no sea yet (`docs/06`).
+#[test]
+#[ignore = "five windows' heights, minutes in release; run by hand: cargo test --release -p sim --lib plan::net::the_land_under -- --ignored --nocapture"]
+fn the_land_under_the_sea_stands_above_it() {
+    let c = continent();
+    let mut failed = Vec::new();
+    for cell in [(391, 441), (438, 376), (787, 719), (288, 569), (149, 564)] {
+        let map = Map::on_window(Window::of_cell(c, cell), c.seed);
+        let tiles = Tiles::read(&map);
+        let below = (0..tiles.side * tiles.side)
+            .filter(|&i| tiles.terrain[i] == Terrain::Grass && tiles.height[i] < 0)
+            .count();
+        let mut verdict = Verdict {
+            cell,
+            ..Verdict::default()
+        };
+        judge_heights(&mut verdict, &tiles);
+        eprintln!(
+            "{}; {below} dry tiles under the sea's level",
+            verdict.line()
+        );
+        if below > 0 || verdict.failures.iter().any(|(w, _)| *w == Invariant::Steps) {
+            failed.push(format!("{}; {below} under the sea", verdict.line()));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
 /// A tile is the same through two windows (D39): the vivarium's cell cut
 /// from its own region and from the region centred one cell east, whose
 /// stems, valleys and ceiling were worked out over a span shifted by

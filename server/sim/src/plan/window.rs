@@ -211,7 +211,14 @@ fn ground_of(
         let node = |i: i64, j: i64| i64::from(unit(&[s, key(i), key(j)])) - 500;
         sum += cubic(node, cell, wx, wy) * amplitude / 500;
     }
-    base + sum * strength.clamp(0, 1000) / 1000
+    let h = base + sum * strength.clamp(0, 1000) / 1000;
+    // The small hills never dig under the sea's level on land, as the
+    // region's detail never does (`Region::around`): a river's floor at
+    // its mouth and a coastal flat lie at that level exactly, and a dip
+    // of a decimetre there read as the sea drawn as land (the net's
+    // `SeaAsLand`, 15 November 2026). The sea's own ground, under that
+    // level, is left as it is: the window draws no sea yet.
+    if base >= 0 { h.max(0) } else { h }
 }
 
 /// The ground `h` (cm) at point `p` (window mm) drawn down to the
