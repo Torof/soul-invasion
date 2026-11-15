@@ -24,7 +24,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rusqlite::{Connection, OptionalExtension, params};
-use sim::changes::{ChunkChanges, Construction, Planted, Stage};
+use sim::changes::{ChunkChanges, Construction, Picked, Planted, Stage};
+use sim::crops::{PlantKey, Source};
 use sim::ground::Version;
 use sim::trees::TreeKey;
 use sim::{CHUNK_SIZE, ChunkPos, Content, Pos, World};
@@ -35,7 +36,8 @@ pub const SNAPSHOT_FORMAT_VERSION: u32 = 12;
 
 /// Version of a chunk's changes as stored (`encode_changes`). Bump on any
 /// change to their bytes, and read the old ones in `decode_changes`.
-pub const CHUNK_CHANGES_FORMAT_VERSION: u32 = 1;
+/// 2 (16 November 2026): the crops picked (D45), a fifth list.
+pub const CHUNK_CHANGES_FORMAT_VERSION: u32 = 2;
 
 /// Snapshots kept: the latest and two before it. Every one used to be
 /// kept, a full copy of the world each game day (18 MB on the valley).
@@ -322,13 +324,16 @@ impl Storage for Sqlite {
     }
 }
 
-/// A chunk's changes as stored, format 1: four lists, each its length
+/// A chunk's changes as stored, format 2: five lists, each its length
 /// then its entries, every number a LEB128 varint (a byte under 128).
+/// Format 1 was the first four.
 /// The taken slots and the felled trees' keys ([`TreeKey::bits`]) in
 /// order, each as its distance from the one before: about a byte an
 /// entry. A planted tree: its key, its species' id (length, then UTF-8),
 /// its stage (0 to 3), its day. A construction: its kind's id, its tile
-/// in the chunk (`y × 32 + x`), its day.
+/// in the chunk (`y × 32 + x`), its day. A crop picked: what bore it (0
+/// and a tree's key, or 1 and a plant's place in millimetres, east then
+/// south), the material's id, the crop's year, the grams taken.
 fn encode_changes(chunk: ChunkPos, changes: &ChunkChanges) -> Vec<u8> {
     fn varint(out: &mut Vec<u8>, mut value: u64) {
         while value >= 0x80 {
@@ -378,11 +383,30 @@ fn encode_changes(chunk: ChunkPos, changes: &ChunkChanges) -> Vec<u8> {
         );
         varint(&mut out, built.day);
     }
+    varint(&mut out, changes.picked.len() as u64);
+    for ((source, gives), picked) in &changes.picked {
+        match source {
+            Source::Tree(key) => {
+                varint(&mut out, 0);
+                varint(&mut out, u64::from(key.bits()));
+            }
+            Source::Plant(key) => {
+                varint(&mut out, 1);
+                varint(&mut out, u64::from(key.x_mm));
+                varint(&mut out, u64::from(key.y_mm));
+            }
+        }
+        text(&mut out, gives);
+        varint(&mut out, picked.year);
+        varint(&mut out, u64::from(picked.grams));
+    }
     out
 }
 
 /// The changes [`encode_changes`] wrote for `chunk` at `version`, in
-/// `format`; `None` if the bytes are damaged or the format unknown.
+/// `format` (1 or 2); `None` if the bytes are damaged or the format
+/// unknown.
+#[allow(clippy::too_many_lines)]
 fn decode_changes(
     chunk: ChunkPos,
     version: Version,
@@ -434,7 +458,7 @@ fn decode_changes(
             String::from_utf8(text.to_vec()).ok()
         }
     }
-    if format != CHUNK_CHANGES_FORMAT_VERSION {
+    if !(1..=CHUNK_CHANGES_FORMAT_VERSION).contains(&format) {
         return None;
     }
     let mut bytes = Bytes(data);
@@ -474,6 +498,31 @@ fn decode_changes(
         );
         let day = bytes.varint()?;
         changes.built.push(Construction { kind, at, day });
+    }
+    if format >= 2 {
+        let side_mm = side * 1000;
+        for _ in 0..bytes.count()? {
+            let source = match bytes.varint()? {
+                0 => Source::Tree(TreeKey::from_bits(u16::try_from(bytes.varint()?).ok()?)?),
+                1 => {
+                    let (x, y) = (bytes.varint()?, bytes.varint()?);
+                    if x >= side_mm || y >= side_mm {
+                        return None;
+                    }
+                    Source::Plant(PlantKey {
+                        x_mm: u16::try_from(x).ok()?,
+                        y_mm: u16::try_from(y).ok()?,
+                    })
+                }
+                _ => return None,
+            };
+            let gives = bytes.text()?;
+            let year = bytes.varint()?;
+            let grams = u32::try_from(bytes.varint()?).ok()?;
+            changes
+                .picked
+                .insert((source, gives), Picked { year, grams });
+        }
     }
     bytes.0.is_empty().then_some(changes)
 }
@@ -956,6 +1005,26 @@ mod tests {
                 },
             );
         }
+        a.picked.insert(
+            (Source::Tree(key(0x0888)), "hazelnuts".to_owned()),
+            Picked {
+                year: 3,
+                grams: 4200,
+            },
+        );
+        a.picked.insert(
+            (
+                Source::Plant(PlantKey {
+                    x_mm: 31_999,
+                    y_mm: 0,
+                }),
+                "blackberries".to_owned(),
+            ),
+            Picked {
+                year: u64::MAX,
+                grams: u32::MAX,
+            },
+        );
         a.built.push(Construction {
             kind: "hut".to_owned(),
             at: Pos::new(east.origin().x + 31, east.origin().y + 31),
@@ -974,6 +1043,32 @@ mod tests {
     }
 
     #[test]
+    fn chunk_changes_of_format_1_are_read_with_nothing_picked() {
+        // Format 1 was format 2 without its fifth list.
+        for (chunk, mut changes) in every_kind_of_change() {
+            changes.picked.clear();
+            let mut bytes = encode_changes(chunk, &changes);
+            assert_eq!(bytes.pop(), Some(0), "an empty fifth list");
+            let back = decode_changes(chunk, changes.version, 1, &bytes);
+            assert_eq!(back.as_ref(), Some(&changes));
+        }
+        // A plant's place outside its chunk is damage.
+        let mut far = ChunkChanges::default();
+        far.picked.insert(
+            (
+                Source::Plant(PlantKey {
+                    x_mm: 32_000,
+                    y_mm: 0,
+                }),
+                "x".to_owned(),
+            ),
+            Picked { year: 0, grams: 1 },
+        );
+        let bytes = encode_changes(ChunkPos::new(0, 0), &far);
+        assert_eq!(decode_changes(ChunkPos::new(0, 0), 1, 2, &bytes), None);
+    }
+
+    #[test]
     fn chunk_changes_round_trip_through_sqlite() {
         // The bytes alone, every kind of change, and nothing at all.
         for (chunk, changes) in every_kind_of_change() {
@@ -981,20 +1076,21 @@ mod tests {
             let back = decode_changes(chunk, changes.version, CHUNK_CHANGES_FORMAT_VERSION, &bytes);
             assert_eq!(back.as_ref(), Some(&changes));
             // Damaged bytes are refused, never misread.
+            let format = CHUNK_CHANGES_FORMAT_VERSION;
             for cut in 0..bytes.len() {
                 assert_eq!(
-                    decode_changes(chunk, 1, 1, &bytes[..cut]),
+                    decode_changes(chunk, 1, format, &bytes[..cut]),
                     None,
                     "cut at {cut}"
                 );
             }
             let mut longer = bytes.clone();
             longer.push(0);
-            assert_eq!(decode_changes(chunk, 1, 1, &longer), None);
-            assert_eq!(decode_changes(chunk, 1, 2, &bytes), None, "unknown format");
+            assert_eq!(decode_changes(chunk, 1, format, &longer), None);
+            assert_eq!(decode_changes(chunk, 1, 3, &bytes), None, "unknown format");
         }
         let none = ChunkChanges::default();
-        assert_eq!(encode_changes(ChunkPos::new(0, 0), &none), [0, 0, 0, 0]);
+        assert_eq!(encode_changes(ChunkPos::new(0, 0), &none), [0, 0, 0, 0, 0]);
         // Through a database file, closed and opened again.
         let (dir, path) = temp_db("round-trip");
         let mut world = world_at(6);

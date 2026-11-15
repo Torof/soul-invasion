@@ -1,0 +1,35 @@
+// What the trees and plants bear to whoever gathers it, and when
+// (docs/04-architecture.md D45; the values: content/ai-reserve/review/
+// vivarium/nourriture.md, read by the project lead on 14 November 2026).
+//
+// A crop is worked out from the date, never stored: on any day a plant
+// bears what its kind gives that season of that year, less what men
+// picked from it (the chunk's changes). What is not picked by its end is
+// gone: fallen, eaten by the animals. Every number is a placeholder to
+// tune by reading the vivarium's report.
+//
+// on:      the kind bearing it: a tree's id (species.ron) or a plant's
+//          (flora.ron).
+// gives:   the material (materials.ron). A kind gives a material once.
+// from:    when it comes on the plant: (season, how far into it in
+//          hundredths: 0 its first day, 100 its end).
+// until:   when it is gone, the same way; before `from`, in the next year
+//          (rose hips through the winter). (spring, 0) to (winter, 100):
+//          all year.
+// grams:   what one plant bears in a (lean, usual, rich) year; each plant
+//          bears a share of its own, three quarters to five quarters.
+// years:   in a hundred years, how many are lean and how many rich; the
+//          rest are usual. A kind has the same year over a kilometre of
+//          the world, as the oaks of a country mast together.
+(
+    crops: [
+        // The winter's store: 3 to 10 kg a tree, years of plenty and
+        // lean years.
+        (on: "hazel", gives: "hazelnuts", from: (autumn, 0), until: (winter, 0),
+         grams: (1000, 5000, 10000), years: (lean: 25, rich: 25)),
+        // A summer's end's fruit, 1 to 2 kg a bush, gone in days once
+        // picked.
+        (on: "bramble", gives: "blackberries", from: (summer, 60), until: (autumn, 60),
+         grams: (500, 1500, 2000), years: (lean: 15, rich: 15)),
+    ],
+)
