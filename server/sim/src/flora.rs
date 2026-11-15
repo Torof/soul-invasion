@@ -36,7 +36,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::r#gen::scatter::purpose;
+use crate::r#gen::scatter::{Frame, key, purpose};
 use crate::r#gen::{hash, noise, unit};
 use crate::map::{CHUNK_SIZE, ChunkPos, FinePos, Map, Pos, Terrain};
 use crate::woods::Habitat;
@@ -336,9 +336,9 @@ fn ground_at(map: &Map, seed: u64, pos: Pos, distance: i32) -> Ground {
         places.push("bank");
     }
     let trees = i32::from(map.trees(pos));
+    let (wx, wy) = Frame::at(map.origin()).tile(pos.x, pos.y);
     let background = 20
-        + i32::try_from(noise(seed ^ purpose::WETNESS, WET_CELL, pos.x, pos.y)).expect("small")
-            / 20
+        + i32::try_from(noise(seed ^ purpose::WETNESS, WET_CELL, wx, wy)).expect("small") / 20
         + trees / 6;
     let near_water = if distance == 0 {
         100
@@ -437,6 +437,8 @@ pub fn plants_in(
 ) -> Vec<Plant> {
     let size = i32::try_from(CHUNK_SIZE).expect("small chunk");
     let origin = Pos::new(chunk.x * size, chunk.y * size);
+    // The draws are keyed on the world's position (`Frame`).
+    let frame = Frame::at(map.origin());
     let inside = |at: FinePos| {
         let t = at.tile();
         (origin.x..origin.x + size).contains(&t.x) && (origin.y..origin.y + size).contains(&t.y)
@@ -485,15 +487,8 @@ pub fn plants_in(
                 continue;
             };
             let chance = kind.per_thousand * fit(kind, best[k], ground) / 1000;
-            #[allow(clippy::cast_sign_loss)]
-            if unit(&[
-                seed,
-                purpose::FLORA_TRUNK,
-                k as u64,
-                tree.at.x as u64,
-                tree.at.y as u64,
-            ]) >= chance
-            {
+            let (wx, wy) = frame.mm(tree.at.x, tree.at.y);
+            if unit(&[seed, purpose::FLORA_TRUNK, k as u64, key(wx), key(wy)]) >= chance {
                 continue;
             }
             plants.push(Plant {
@@ -510,7 +505,9 @@ pub fn plants_in(
             if !here.rooted {
                 continue;
             }
-            let breath = 300 + noise(seed ^ purpose::FLORA_BREATH, BREATH_CELL, tx, ty) * 14 / 10;
+            let (wx, wy) = frame.tile(tx, ty);
+            let (kx, ky) = frame.keys(tx, ty);
+            let breath = 300 + noise(seed ^ purpose::FLORA_BREATH, BREATH_CELL, wx, wy) * 14 / 10;
             for (k, kind) in kinds.iter().enumerate() {
                 if kind.family == Family::Tree
                     || kind.on == GrowsOn::Trunk
@@ -526,8 +523,8 @@ pub fn plants_in(
                 let stand = u64::from(noise(
                     seed ^ hash(&[purpose::FLORA_STAND, k as u64]),
                     STAND_CELL,
-                    tx,
-                    ty,
+                    wx,
+                    wy,
                 )) + 50;
                 let stand = stand * stand * 2860 / 1_102_500;
                 // A chance in a million: the density, times the niche, the
@@ -538,9 +535,7 @@ pub fn plants_in(
                     * stand
                     * u64::from(breath)
                     / 1_000_000_000;
-                #[allow(clippy::cast_sign_loss)]
-                let roll =
-                    hash(&[seed, purpose::FLORA_PATCH, k as u64, tx as u64, ty as u64]) % 1_000_000;
+                let roll = hash(&[seed, purpose::FLORA_PATCH, k as u64, kx, ky]) % 1_000_000;
                 if roll >= chance {
                     continue;
                 }
@@ -568,6 +563,7 @@ pub fn plants_in(
                     kind,
                     k,
                     pos,
+                    (kx, ky),
                     seed,
                     &mut taken,
                     &mut plants,
@@ -590,6 +586,7 @@ fn lay_patch(
     kind: &Kind,
     k: usize,
     pos: Pos,
+    world: (u64, u64),
     seed: u64,
     taken: &mut Vec<FinePos>,
     plants: &mut Vec<Plant>,
@@ -598,14 +595,14 @@ fn lay_patch(
     free: &dyn Fn(&[FinePos], FinePos, i32) -> bool,
 ) {
     let centre = pos.centre();
-    #[allow(clippy::cast_sign_loss)]
+    // Drawn from the tile's place on the world (`Frame`).
     let roll = |n: u32, salt: u64| {
         hash(&[
             seed,
             purpose::FLORA_PATCH,
             k as u64,
-            pos.x as u64,
-            pos.y as u64,
+            world.0,
+            world.1,
             u64::from(n),
             salt,
         ])

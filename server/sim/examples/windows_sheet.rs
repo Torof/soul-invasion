@@ -9,11 +9,12 @@
 //! trees a hectare). Nothing here enters the game.
 //!
 //! ```text
-//! cargo run --release -p sim --example windows_sheet -- DIR [SEED]
+//! cargo run --release -p sim --example windows_sheet -- DIR [SEED [BIOMES]]
 //! ```
 //!
 //! Writes `DIR/<biome>.png` and `DIR/filet.html`, and prints one line a
-//! window.
+//! window. `BIOMES` keeps only the sheets named, by their file names,
+//! separated by commas (`broadleaf,grassland`).
 
 // Drawing code reads as arithmetic: `x`, `y`, `i`, `c`, `h`.
 #![allow(
@@ -61,6 +62,9 @@ fn main() {
     let seed: u64 = args
         .next()
         .map_or(VIVARIUM_SEED, |s| s.parse().expect("a seed"));
+    let only: Option<Vec<String>> = args
+        .next()
+        .map(|list| list.split(',').map(str::to_owned).collect());
     std::fs::create_dir_all(&out).expect("the output folder");
     let species: Vec<Species> =
         ron::from_str(include_str!("../../../content/species.ron")).expect("species.ron");
@@ -74,6 +78,12 @@ fn main() {
     );
     let mut page = String::new();
     for biome in Biome::LAND {
+        if only
+            .as_ref()
+            .is_some_and(|names| !names.iter().any(|n| n == biome_name(biome)))
+        {
+            continue;
+        }
         let cells = pick(&continent, biome);
         if cells.is_empty() {
             continue;

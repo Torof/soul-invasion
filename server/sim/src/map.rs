@@ -451,7 +451,7 @@ impl Map {
                 .into_iter()
                 .map(|(x, y, w)| (x, y, w.terrain, w.depth, w.current)),
         );
-        let woods = Woods::new(side, side, 0, seed, window.camp());
+        let woods = Woods::on_world(side, seed, window.camp(), window.tile_origin());
         Self {
             spec: MapSpec::Valley {
                 width: side,
@@ -467,6 +467,21 @@ impl Map {
             edits: BTreeMap::new(),
             heights: None,
             camp_at: None,
+        }
+    }
+
+    /// Where the map's tile (0, 0) lies on its world, in tiles: (0, 0) on
+    /// the valley, which is its own world; on a window of the atlas, the
+    /// window's corner on the continent. Everything drawn from the seed
+    /// and a position (the woods, the trees, the plants, the rocks, the
+    /// hills) is keyed on the world's position, so the same ground drawn
+    /// through two windows holds the same things and two windows of the
+    /// continent differ (D39).
+    #[must_use]
+    pub fn origin(&self) -> (i32, i32) {
+        match &self.ground {
+            Made::Valley(land) => land.relief().map_or((0, 0), Window::tile_origin),
+            Made::Filled(_) => (0, 0),
         }
     }
 

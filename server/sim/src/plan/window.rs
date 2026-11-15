@@ -596,6 +596,23 @@ impl Window {
         self.origin
     }
 
+    /// The window's north-west corner in the continent's tiles: where
+    /// the map cut from it lies on the world ([`crate::Map::origin`]).
+    #[must_use]
+    pub fn tile_origin(&self) -> (i32, i32) {
+        (
+            i32::try_from(self.origin.0 * CELL).expect("the continent fits in i32 tiles"),
+            i32::try_from(self.origin.1 * CELL).expect("the continent fits in i32 tiles"),
+        )
+    }
+
+    /// The continent's tile under the window's tile `(x, y)`: what the
+    /// noises are keyed on, so two windows draw the same hills and
+    /// borders on the same ground and different ones elsewhere.
+    fn world(&self, x: i64, y: i64) -> (i64, i64) {
+        (x + self.origin.0 * CELL, y + self.origin.1 * CELL)
+    }
+
     /// The camp: dry, gentle ground near a river, the nearest such to the
     /// window's centre, unless set ([`Window::with_camp`]).
     pub fn camp(&self) -> (u32, u32) {
@@ -658,10 +675,11 @@ impl Window {
         let base = Self::smooth_at(|i, j| i64::from(self.cell(&self.height, i, j)), x, y);
         let strength = Self::smooth_at(|i, j| i64::from(self.cell(&self.hills, i, j)), x, y);
         let mut hills = 0;
+        let (wx, wy) = self.world(x, y);
         for (k, &(cell, amplitude)) in HILLS.iter().enumerate() {
             let s = roll(self.seed, purpose::PLAN_HILLS, &[k as u64]);
             let node = |i: i64, j: i64| i64::from(unit(&[s, key(i), key(j)])) - 500;
-            hills += cubic(node, cell, x, y) * amplitude / 500;
+            hills += cubic(node, cell, wx, wy) * amplitude / 500;
         }
         base + hills * strength.clamp(0, 1000) / 1000
     }
@@ -881,11 +899,12 @@ impl Window {
     /// Tile `(x, y)` shifted up to `reach` metres either way by a noise
     /// of its own (`k`), so a border read there wanders.
     fn ragged(&self, x: i64, y: i64, k: u64, reach: i64) -> (i64, i64) {
+        let (wx, wy) = self.world(x, y);
         let shift = |k: u64| {
             let s = roll(self.seed, purpose::PLAN_EDGE, &[k]);
             let (xi, yi) = (
-                i32::try_from(x).expect("small"),
-                i32::try_from(y).expect("small"),
+                i32::try_from(wx).expect("the continent fits in i32 tiles"),
+                i32::try_from(wy).expect("the continent fits in i32 tiles"),
             );
             let n = (i64::from(noise(s, 40, xi, yi)) - 500) * 2
                 + i64::from(noise(s ^ 1, 11, xi, yi))
@@ -995,5 +1014,199 @@ impl Window {
             r += 4;
         }
         (self.side / 2, self.side / 2)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The windows are keyed on the continent (D39): two cells differ, and
+    //! the same ground drawn through two windows holds the same things.
+    //! Before 15 November 2026 every window held the same woods.
+
+    use std::collections::BTreeSet;
+
+    use super::*;
+    use crate::content::Species;
+    use crate::flora;
+    use crate::geology::Geology;
+    use crate::map::{ChunkPos, Map, Pos};
+    use crate::open_ground::OpenGround;
+    use crate::plan::net::{content, continent, sample};
+    use crate::plan::{VIVARIUM_SEED, ZONE_2};
+    use crate::trees;
+
+    /// The trees of the chunks `chunks` of `map`: foot (mm) and kind.
+    fn trees_of(
+        map: &Map,
+        species: &[Species],
+        open: &OpenGround,
+        chunks: impl Iterator<Item = (i32, i32)>,
+    ) -> BTreeSet<(i32, i32, usize)> {
+        let seed = VIVARIUM_SEED;
+        chunks
+            .flat_map(|(cx, cy)| trees::trees_in(map, species, open, seed, ChunkPos::new(cx, cy)))
+            .map(|t| (t.at.x, t.at.y, t.species))
+            .collect()
+    }
+
+    /// The chunks of the square from chunk `lo` to chunk `hi` excluded.
+    fn block(lo: i32, hi: i32) -> impl Iterator<Item = (i32, i32)> {
+        (lo..hi).flat_map(move |cy| (lo..hi).map(move |cx| (cx, cy)))
+    }
+
+    #[test]
+    fn two_cells_of_the_continent_hold_different_woods() {
+        let c = continent();
+        let (species, open) = content();
+        // The vivarium's cell and the next sampled cell in a forest biome.
+        let cells = sample(c);
+        let a = cells[0];
+        let b = *cells
+            .iter()
+            .find(|&&cell| cell != a && c.biome[c.grid.index(cell.0, cell.1)].is_forest())
+            .expect("a second forest cell");
+        let maps = [a, b].map(|cell| Map::on_window(Window::of_cell(c, cell), c.seed));
+        // The density of trees, tile by tile over the whole window: the
+        // same drawing would agree everywhere.
+        let side = i32::try_from(maps[0].width()).expect("small");
+        let mut same = 0_u64;
+        for y in 0..side {
+            for x in 0..side {
+                let p = Pos::new(x, y);
+                same += u64::from(maps[0].trees(p) == maps[1].trees(p));
+            }
+        }
+        let share = same * 1000 / u64::try_from(side * side).expect("positive");
+        assert!(
+            share < 900,
+            "{share} per mille of the tiles hold the same density"
+        );
+        // The trees of the heart of each window, foot by foot.
+        let [ta, tb] = maps
+            .iter()
+            .map(|m| trees_of(m, &species, &open, block(24, 40)))
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("two");
+        assert!(
+            ta.len() > 200 && tb.len() > 200,
+            "{} and {} trees",
+            ta.len(),
+            tb.len()
+        );
+        let common = ta.intersection(&tb).count();
+        assert!(
+            common * 10 < ta.len().min(tb.len()),
+            "{common} trees of {} and {} stand at the same foot in cells {a:?} and {b:?}",
+            ta.len(),
+            tb.len()
+        );
+    }
+
+    #[test]
+    fn the_same_ground_through_two_windows_holds_the_same_things() {
+        let c = continent();
+        let (species, open) = content();
+        let kinds = flora::parse(include_str!("../../../../content/flora.ron")).expect("flora.ron");
+        let geology: Geology =
+            ron::from_str(include_str!("../../../../content/geology.ron")).expect("geology.ron");
+        let per = usize::try_from(region::PER_CELL).expect("positive");
+        let region = Region::around(c, ZONE_2.cell, REGION_CELLS * per);
+        let corner = REGION_CELLS / 2 * per;
+        let side = u32::try_from(super::super::CELL_M).expect("small");
+        // Window B is window A moved by `shift` region cells south-east.
+        let shift = 4_usize;
+        let a = Window::cut(c, &region, (corner, corner), side);
+        let b = Window::cut(c, &region, (corner + shift, corner + shift), side);
+        let cells = i64::try_from(shift).expect("small");
+        assert_eq!(b.origin(), (a.origin().0 + cells, a.origin().1 + cells));
+        // The same move in tiles.
+        let step = i32::try_from(cells * CELL).expect("small");
+        let (ma, mb) = (Map::on_window(a, c.seed), Map::on_window(b, c.seed));
+        // A block of 8 × 8 chunks in A, far from both windows' edges (the
+        // forest's depth looks 55 tiles) and from both camps (the camp
+        // clearing is each window's own).
+        let (lo, hi) = (16, 24);
+        let chunks = i32::try_from(CHUNK_SIZE).expect("small");
+        let tiles = (
+            lo * chunks..hi * chunks,
+            (lo * chunks - step)..(hi * chunks - step),
+        );
+        for (map, range) in [(&ma, &tiles.0), (&mb, &tiles.1)] {
+            let camp = map.camp();
+            assert!(
+                !(range.start - 32..range.end + 32).contains(&camp.x)
+                    || !(range.start - 32..range.end + 32).contains(&camp.y),
+                "the camp {camp:?} lies by the compared block"
+            );
+        }
+        let mut forest = 0;
+        for y in tiles.0.clone() {
+            for x in tiles.0.clone() {
+                let (pa, pb) = (Pos::new(x, y), Pos::new(x - step, y - step));
+                let read = |m: &Map, p: Pos| {
+                    (
+                        m.get(p),
+                        m.trees(p),
+                        m.habitat(p),
+                        m.depth(p),
+                        m.elevation(p),
+                        m.biome(p),
+                    )
+                };
+                assert_eq!(
+                    read(&ma, pa),
+                    read(&mb, pb),
+                    "tile {pa:?} of A, {pb:?} of B"
+                );
+                forest += i32::from(ma.trees(pa) > 0);
+            }
+        }
+        assert!(forest > 1000, "{forest} wooded tiles compared");
+        let ta = trees_of(&ma, &species, &open, block(lo, hi));
+        let tb: BTreeSet<_> = trees_of(
+            &mb,
+            &species,
+            &open,
+            block(lo - step / chunks, hi - step / chunks),
+        )
+        .into_iter()
+        .map(|(x, y, k)| (x + step * 1000, y + step * 1000, k))
+        .collect();
+        assert!(ta.len() > 200, "{} trees", ta.len());
+        assert_eq!(ta, tb, "the trees of the block");
+        // One chunk's plants and rocks too.
+        let (ca, cb) = (
+            ChunkPos::new(lo, lo),
+            ChunkPos::new(lo - step / chunks, lo - step / chunks),
+        );
+        let at = |m: &Map, chunk: ChunkPos| trees::trees_in(m, &species, &open, c.seed, chunk);
+        let (fa, fb) = (at(&ma, ca), at(&mb, cb));
+        let feet = |list: &[trees::Tree]| -> Vec<flora::TreeAt<'_>> {
+            list.iter()
+                .map(|t| flora::TreeAt {
+                    at: t.at,
+                    species: &species[t.species].id,
+                })
+                .collect()
+        };
+        let plants = |m: &Map,
+                      chunk: ChunkPos,
+                      list: &[trees::Tree],
+                      dx: i32|
+         -> BTreeSet<(i32, i32, u16)> {
+            flora::plants_in(m, &kinds, &feet(list), c.seed, chunk)
+                .into_iter()
+                .map(|p| (p.at.x + dx, p.at.y + dx, p.kind))
+                .collect()
+        };
+        let (pa, pb) = (plants(&ma, ca, &fa, 0), plants(&mb, cb, &fb, step * 1000));
+        assert!(pa.len() > 20, "{} plants", pa.len());
+        assert_eq!(pa, pb, "the plants of the chunk");
+        assert_eq!(
+            geology.rocks_in(c.seed, ca, ma.origin()),
+            geology.rocks_in(c.seed, cb, mb.origin()),
+            "the rocks of the chunk"
+        );
     }
 }

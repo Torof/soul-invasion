@@ -3884,7 +3884,10 @@ mod tests {
         let chunk = ChunkPos::new(3, 4);
         let rocks = new.rocks_in(chunk).expect("version 2 has rocks");
         assert_eq!(rocks.len(), 32 * 32);
-        assert_eq!(*rocks, *content.geology.rocks_in(VALLEY_SEED, chunk));
+        assert_eq!(
+            *rocks,
+            *content.geology.rocks_in(VALLEY_SEED, chunk, (0, 0))
+        );
         assert!(new.rocks_in(ChunkPos::new(8, 0)).is_none(), "off the map");
         let old = World::on_valley(
             Calendar::default(),

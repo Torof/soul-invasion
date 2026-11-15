@@ -299,7 +299,7 @@ impl Ground {
         if let Some(rocks) = self.lock().rocks.get(&chunk) {
             return Some(Arc::clone(rocks));
         }
-        let rocks: Arc<[Rock]> = geology.rocks_in(seed, chunk).into();
+        let rocks: Arc<[Rock]> = geology.rocks_in(seed, chunk, map.origin()).into();
         self.lock().rocks.insert(chunk, Arc::clone(&rocks));
         Some(rocks)
     }

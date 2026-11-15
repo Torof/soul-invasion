@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::r#gen::scatter::{purpose, roll, weighted};
 use crate::r#gen::{lattice, noise_by};
-use crate::map::{CHUNK_SIZE, ChunkPos};
+use crate::map::{CHUNK_SIZE, ChunkPos, Pos};
 
 /// The rock a place stands on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -155,13 +155,16 @@ impl Geology {
         )
     }
 
-    /// The rock under each tile of `chunk`, row by row from its north-west
-    /// corner, as [`Geology::rock_at`] gives them: the few lattice points
-    /// and sites the chunk needs are drawn once.
+    /// The rock under each tile of `chunk` of a map whose tile (0, 0) is
+    /// the world's tile `frame` ([`crate::Map::origin`]; the valley's is
+    /// (0, 0)), row by row from the chunk's north-west corner, as
+    /// [`Geology::rock_at`] gives them at the world's tiles: the few
+    /// lattice points and sites the chunk needs are drawn once.
     #[must_use]
-    pub fn rocks_in(&self, seed: u64, chunk: ChunkPos) -> Vec<Rock> {
+    pub fn rocks_in(&self, seed: u64, chunk: ChunkPos, frame: (i32, i32)) -> Vec<Rock> {
         let side = i32::try_from(CHUNK_SIZE).expect("small chunk side");
         let origin = chunk.origin();
+        let origin = Pos::new(origin.x + frame.0, origin.y + frame.1);
         let (x0, y0) = (i64::from(origin.x), i64::from(origin.y));
         let (x1, y1) = (x0 + i64::from(side) - 1, y0 + i64::from(side) - 1);
         let borders = Self::border_seeds(seed);
@@ -270,7 +273,7 @@ mod tests {
         let mut borders = 0;
         for (cx, cy) in [(0, 0), (1, 0), (0, 1), (5, 3), (-2, -1), (7, 7)] {
             let chunk = ChunkPos::new(cx, cy);
-            let rocks = geology.rocks_in(9, chunk);
+            let rocks = geology.rocks_in(9, chunk, (0, 0));
             let origin = chunk.origin();
             for (k, rock) in rocks.iter().enumerate() {
                 let k = i32::try_from(k).unwrap();
@@ -284,7 +287,11 @@ mod tests {
             if rocks.iter().any(|r| *r != rocks[0]) {
                 borders += 1;
             }
-            assert_eq!(rocks, geology.rocks_in(9, chunk), "the same every time");
+            assert_eq!(
+                rocks,
+                geology.rocks_in(9, chunk, (0, 0)),
+                "the same every time"
+            );
         }
         assert!(borders >= 1, "some chunk holds a border");
     }

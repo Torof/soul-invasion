@@ -61,7 +61,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::content::{MOST_SPREAD_M, Species};
 use crate::r#gen::noise;
-use crate::r#gen::scatter::{self, Grid, key, purpose};
+use crate::r#gen::scatter::{self, Frame, Grid, key, purpose};
 use crate::map::{CHUNK_SIZE, ChunkPos, FinePos, MM_PER_TILE, Map, Pos, Terrain};
 use crate::open_ground::OpenGround;
 use crate::woods::{Habitat, Woods};
@@ -137,10 +137,18 @@ impl TreeKey {
     ///
     /// If the cell is not near the chunk, or the member beyond a group:
     /// no tree standing in the chunk is.
-    fn on(grid: TreeGrid, chunk: ChunkPos, (cx, cy): (i64, i64), member: u64) -> Self {
-        let first =
-            |origin: i32| i64::from(origin * MM_PER_TILE).div_euclid(i64::from(grid.cell()));
+    fn on(
+        grid: TreeGrid,
+        frame: Frame,
+        chunk: ChunkPos,
+        (cx, cy): (i64, i64),
+        member: u64,
+    ) -> Self {
+        // The world's cell holding the chunk's corner (the cells are the
+        // world's, `Frame`).
+        let first = |origin: i64| origin.div_euclid(i64::from(grid.cell()));
         let origin = chunk.origin();
+        let origin = frame.mm(origin.x * MM_PER_TILE, origin.y * MM_PER_TILE);
         let relative = |c: i64, first: i64| {
             i8::try_from(c - first)
                 .ok()
@@ -153,7 +161,7 @@ impl TreeKey {
             .expect("a group holds eight trees at most");
         Self {
             grid,
-            cell: (relative(cx, first(origin.x)), relative(cy, first(origin.y))),
+            cell: (relative(cx, first(origin.0)), relative(cy, first(origin.1))),
             member,
         }
     }
@@ -305,6 +313,9 @@ struct Planting<'a> {
     /// ground, 15 November 2026).
     open: &'a OpenGround,
     seed: u64,
+    /// Where the map lies on its world: every draw is keyed on the
+    /// world's position (`Frame`).
+    frame: Frame,
     /// The seed of the density noise (`Woods::stocking`).
     density: u64,
     mothers: Vec<Mother>,
@@ -335,6 +346,7 @@ impl<'a> Planting<'a> {
             species,
             open,
             seed,
+            frame: Frame::at(map.origin()),
             density: Woods::density_seed(seed),
             mothers: Vec::new(),
             stands: (0..species.len() as u64)
@@ -368,11 +380,13 @@ impl<'a> Planting<'a> {
                 }
             }
         }
+        let frame = planting.frame;
         for (cx, cy) in MOTHER_GRID.cells_over(
+            frame,
             (lo.0 - margin, lo.1 - margin),
             (hi.0 + margin, hi.1 + margin),
         ) {
-            let at = MOTHER_GRID.point(seed, purpose::TREE_MOTHER, cx, cy);
+            let at = MOTHER_GRID.point(frame, seed, purpose::TREE_MOTHER, cx, cy);
             let habitat = planting.habitat(at.tile());
             let roll = scatter::roll(seed, purpose::TREE_MOTHER, &[key(cx), key(cy), 2]);
             if let Some(kind) = planting.stand_pick(at.tile(), habitat, roll, false, |_| true) {
@@ -391,7 +405,7 @@ impl<'a> Planting<'a> {
         {
             return habitat;
         }
-        let (x, y) = (key(i64::from(tile.x)), key(i64::from(tile.y)));
+        let (x, y) = self.frame.keys(tile.x, tile.y);
         let spread = u64::try_from(ROCK_REACH).expect("positive");
         let reach = i64::from(ROCK_REACH / 2)
             + i64::try_from(
@@ -489,9 +503,9 @@ impl<'a> Planting<'a> {
                     return suits * (floor * floor / 1000 * STAND_FLOOR / 1000).max(1);
                 }
                 let (stand, detail) = self.stands[i];
-                let strength = (u64::from(noise(stand, STAND_CELL, tile.x, tile.y))
-                    * (1000 - STAND_DETAIL)
-                    + u64::from(noise(detail, STAND_DETAIL_CELL, tile.x, tile.y)) * STAND_DETAIL)
+                let (x, y) = self.frame.tile(tile.x, tile.y);
+                let strength = (u64::from(noise(stand, STAND_CELL, x, y)) * (1000 - STAND_DETAIL)
+                    + u64::from(noise(detail, STAND_DETAIL_CELL, x, y)) * STAND_DETAIL)
                     / 1000
                     + STAND_FLOOR;
                 // The fifth power (or the cube), kept under 2^64: strength
@@ -530,14 +544,16 @@ impl<'a> Planting<'a> {
     /// How close the trees stand at `tile`, in thousandths of the chance
     /// a cell holds one (`Woods::stocking`).
     fn stocking(&self, tile: Pos) -> u32 {
-        Woods::stocking(self.density, tile.x, tile.y)
+        let (x, y) = self.frame.tile(tile.x, tile.y);
+        Woods::stocking(self.density, x, y)
     }
 
     /// Whether the opening square around `at` is an opening.
     fn opening(&self, at: FinePos) -> bool {
+        let (x, y) = self.frame.mm(at.x, at.y);
         let (gx, gy) = Grid::parent(
-            i64::from(at.x.div_euclid(CELL)),
-            i64::from(at.y.div_euclid(CELL)),
+            x.div_euclid(i64::from(CELL)),
+            y.div_euclid(i64::from(CELL)),
             i64::from(GAP_SIDE / CELL),
         );
         scatter::chance(
@@ -641,8 +657,8 @@ impl Planting<'_> {
         let mut bigs = Vec::new();
         let reach = BIG_CLEAR + CELL;
         let around = ((lo.0 - reach, lo.1 - reach), (hi.0 + reach, hi.1 + reach));
-        for (cx, cy) in BIG_GRID.cells_over(around.0, around.1) {
-            let at = BIG_GRID.point(self.seed, purpose::TREE_BIG, cx, cy);
+        for (cx, cy) in BIG_GRID.cells_over(self.frame, around.0, around.1) {
+            let at = BIG_GRID.point(self.frame, self.seed, purpose::TREE_BIG, cx, cy);
             let tile = at.tile();
             let habitat = self.habitat(tile);
             if !in_the_woods(habitat)
@@ -660,7 +676,7 @@ impl Planting<'_> {
                 bigs.push(Tree {
                     at,
                     species: kind,
-                    key: TreeKey::on(TreeGrid::Big, at.tile().chunk(), (cx, cy), 0),
+                    key: TreeKey::on(TreeGrid::Big, self.frame, at.tile().chunk(), (cx, cy), 0),
                 });
             }
         }
@@ -678,8 +694,8 @@ impl Planting<'_> {
         );
         let big = |k: usize| self.species[k].big;
         let clear = i64::from(BIG_CLEAR);
-        for (cx, cy) in GRID.cells_over(lo, hi) {
-            let at = GRID.point(self.seed, purpose::TREE_CELL, cx, cy);
+        for (cx, cy) in GRID.cells_over(self.frame, lo, hi) {
+            let at = GRID.point(self.frame, self.seed, purpose::TREE_CELL, cx, cy);
             let tile = at.tile();
             if tile.chunk() != chunk {
                 continue;
@@ -726,7 +742,7 @@ impl Planting<'_> {
                 trees.push(Tree {
                     at,
                     species: kind,
-                    key: TreeKey::on(TreeGrid::Narrow, chunk, (cx, cy), 0),
+                    key: TreeKey::on(TreeGrid::Narrow, self.frame, chunk, (cx, cy), 0),
                 });
             }
         }
@@ -758,8 +774,8 @@ impl Planting<'_> {
                 Habitat::Meadow | Habitat::Lone | Habitat::Clearing
             ) && !by_the_water(map, tile)
         };
-        for (cx, cy) in MEADOW_GRID.cells_over(lo, hi) {
-            let centre = MEADOW_GRID.point(self.seed, purpose::TREE_MEADOW, cx, cy);
+        for (cx, cy) in MEADOW_GRID.cells_over(self.frame, lo, hi) {
+            let centre = MEADOW_GRID.point(self.frame, self.seed, purpose::TREE_MEADOW, cx, cy);
             let near_the_chunk =
                 (lo.0..hi.0).contains(&centre.x) && (lo.1..hi.1).contains(&centre.y);
             if !near_the_chunk || !open(self.map, centre.tile()) {
@@ -810,7 +826,7 @@ impl Planting<'_> {
                     trees.push(Tree {
                         at,
                         species: kind,
-                        key: TreeKey::on(TreeGrid::Meadow, chunk, (cx, cy), n as u64),
+                        key: TreeKey::on(TreeGrid::Meadow, self.frame, chunk, (cx, cy), n as u64),
                     });
                 }
             }
@@ -1043,7 +1059,7 @@ mod tests {
         // A key is the cell, not the place: the chunk's trees hold the
         // same keys however far the chunk lies (a negative chunk too).
         let far = ChunkPos::new(-5, 9);
-        let key = TreeKey::on(TreeGrid::Narrow, far, (-52, 96), 0);
+        let key = TreeKey::on(TreeGrid::Narrow, Frame::ORIGIN, far, (-52, 96), 0);
         assert_eq!(key.cell, (2, 0));
         assert_eq!(TreeKey::from_bits(key.bits()), Some(key));
         assert_eq!(TreeKey::from_bits(3 << 11), None, "no fourth grid");

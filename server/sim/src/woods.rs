@@ -43,6 +43,13 @@
 //! cell on a grid in absolute coordinates, each from a hash of the seed
 //! and its cell (`gen::scatter`): the same anywhere, in any order.
 //!
+//! Every noise and every cell is keyed on the **world's** position, not
+//! the map's (`gen::scatter::Frame`): a window of the atlas
+//! draws the woods of its place on the continent, so two windows differ
+//! and the same ground drawn through two windows holds the same woods
+//! (D39; before 15 November 2026 every window held the same woods). The
+//! valley is its own world: its woods are what they were.
+//!
 //! A tile is forest ([`crate::map::Terrain::Forest`]) where the density
 //! reaches `FOREST`: the wood and the heart. The edge, copses, riverside and brookside trees
 //! stand on grass. Which species grows where comes with the trees
@@ -56,7 +63,7 @@
 
 use std::sync::{Mutex, PoisonError};
 
-use crate::r#gen::scatter::{self, key, purpose};
+use crate::r#gen::scatter::{self, Frame, key, purpose};
 use crate::r#gen::{Groves, noise};
 use crate::lru::Lru;
 #[cfg(test)]
@@ -107,7 +114,10 @@ pub struct Woods {
     rim: u64,
     riparian: u64,
     /// The same wetness the brooks rise from.
-    wet: Groves,
+    wet: Wetness,
+    /// Where the map lies on its world: what the noises and the patches'
+    /// cells are keyed on.
+    frame: Frame,
     width: u32,
     height: u32,
     cliff_rows: u32,
@@ -117,12 +127,22 @@ pub struct Woods {
     memo: PatchMemo,
 }
 
-/// The round patches decided lately, by kind and cell, `None` for a cell
-/// holding none: each is decided by its cell alone, once for the many
-/// chunks it may reach rather than once a chunk. Bounded
+/// Where the ground is wet, thickening the woods a little: the valley's
+/// lattice (the brooks rise from the same one; drawn row by row, it
+/// depends on the map's width, so it cannot be keyed on the world) or,
+/// on a window of the atlas, a noise on the world's position.
+#[derive(Debug, Clone)]
+enum Wetness {
+    Lattice(Groves),
+    Noise(u64),
+}
+
+/// The round patches decided lately, by kind and the world's cell, `None`
+/// for a cell holding none: each is decided by its cell alone, once for
+/// the many chunks it may reach rather than once a chunk. Bounded
 /// (`PATCH_MEMO`), the least recently used out first.
 #[derive(Debug)]
-struct PatchMemo(Mutex<Lru<(u64, u32, u32), Option<Patch>>>);
+struct PatchMemo(Mutex<Lru<(u64, i64, i64), Option<Patch>>>);
 
 /// Round patches' cells remembered at most: the small woods', clearings'
 /// and copses' cells within reach of the far view's 2 km (about 3,300
@@ -140,8 +160,8 @@ impl PatchMemo {
     fn patch(
         &self,
         purpose: u64,
-        cx: u32,
-        cy: u32,
+        cx: i64,
+        cy: i64,
         decide: impl FnOnce() -> Option<Patch>,
     ) -> Option<Patch> {
         let key = (purpose, cx, cy);
@@ -188,6 +208,9 @@ impl Woods {
     const DETAIL: i64 = 260;
     const FINE: i64 = 90;
     const WET: i64 = 120;
+    /// Cell of the wetness noise on a window of the atlas (tiles): the
+    /// valley's lattice's.
+    const WET_CELL: u32 = 32;
     /// Rows of wood at the cliff's foot, and their pull at the foot.
     const CLIFF_ROWS: i64 = 10;
     const CLIFF: i64 = 200;
@@ -270,10 +293,38 @@ impl Woods {
     const RAGGED: i64 = 500;
     const RAGGED_CELL: u32 = 7;
 
-    /// The woods of a map of `width` by `height` below `cliff_rows`, with
-    /// the camp clearing at `camp`.
+    /// The woods of the valley, a map of `width` by `height` that is its
+    /// own world, below `cliff_rows`, with the camp clearing at `camp`.
     #[must_use]
     pub fn new(width: u32, height: u32, cliff_rows: u32, seed: u64, camp: (u32, u32)) -> Self {
+        let wet = Wetness::Lattice(Groves::with_cell(
+            width,
+            height,
+            seed ^ purpose::WETNESS,
+            32,
+        ));
+        Self::framed(width, height, cliff_rows, seed, camp, Frame::ORIGIN, wet)
+    }
+
+    /// The woods of a window of the atlas, `side` tiles a side, whose
+    /// tile (0, 0) is the world's tile `origin` ([`crate::Map::origin`]):
+    /// the woods of its place on the continent, with the camp clearing at
+    /// `camp` (the window's own).
+    #[must_use]
+    pub fn on_world(side: u32, seed: u64, camp: (u32, u32), origin: (i32, i32)) -> Self {
+        let wet = Wetness::Noise(seed ^ purpose::WETNESS);
+        Self::framed(side, side, 0, seed, camp, Frame::at(origin), wet)
+    }
+
+    fn framed(
+        width: u32,
+        height: u32,
+        cliff_rows: u32,
+        seed: u64,
+        camp: (u32, u32),
+        frame: Frame,
+        wet: Wetness,
+    ) -> Self {
         let noise_seed = |salt: u64| scatter::roll(seed, salt, &[]);
         Self {
             seed,
@@ -282,13 +333,22 @@ impl Woods {
             fine: noise_seed(purpose::WOODS_FINE),
             rim: noise_seed(purpose::WOODS_RIM),
             riparian: noise_seed(purpose::WOODS_RIPARIAN),
-            wet: Groves::with_cell(width, height, seed ^ purpose::WETNESS, 32),
+            wet,
+            frame,
             width,
             height,
             cliff_rows,
             camp: (i64::from(camp.0) * 1000, i64::from(camp.1) * 1000),
             memo: PatchMemo::new(),
         }
+    }
+
+    /// The world's tile under the map's tile `(x, y)`.
+    fn world(&self, x: u32, y: u32) -> (i32, i32) {
+        self.frame.tile(
+            i32::try_from(x).expect("map fits in i32"),
+            i32::try_from(y).expect("map fits in i32"),
+        )
     }
 
     /// The woods of the tiles `x0..x1` × `y0..y1` before the forest's
@@ -312,7 +372,7 @@ impl Woods {
         to_point: impl Fn(u32, u32) -> (u8, u8),
     ) -> Draft {
         let rect = (x0, y0, x1, y1);
-        let area = (self.width, self.height, self.cliff_rows);
+        let area = ((self.width, self.height, self.cliff_rows), self.frame);
         // Small woods rise in the open.
         let woodlet_fits =
             |x: u32, y: u32| land(x, y) && self.pull(x, y, to_point(x, y), &[]) < Self::LEVEL;
@@ -506,14 +566,15 @@ impl Woods {
     }
 
     /// The round patches of `rule` for `purpose` that may reach the tiles
-    /// `x0..x1` × `y0..y1`: on a grid of `rule.cell` tiles in absolute
-    /// coordinates, a cell holds one with `rule.chance` thousandths, its
-    /// centre anywhere in the cell, where it `fits`; (x, y, radius) in
-    /// thousandths of a tile. Each is decided by its own cell alone, so a
-    /// rectangle sees the same patches as the whole map, those too far to
-    /// reach it aside.
+    /// `x0..x1` × `y0..y1` of a map framed by `frame`: on a grid of
+    /// `rule.cell` tiles in the world's coordinates, a cell holds one with
+    /// `rule.chance` thousandths, its centre anywhere in the cell, where
+    /// it `fits` (a centre off the map holds none); (x, y, radius) in
+    /// thousandths of a tile of the map. Each is decided by its own cell
+    /// alone, so a rectangle sees the same patches as the whole map, those
+    /// too far to reach it aside.
     fn patches_in(
-        (width, height, cliff_rows): (u32, u32, u32),
+        ((width, height, cliff_rows), frame): ((u32, u32, u32), Frame),
         seed: u64,
         purpose: u64,
         rule: PatchRule,
@@ -522,39 +583,43 @@ impl Woods {
         memo: Option<&PatchMemo>,
     ) -> Vec<Patch> {
         let mut out = Vec::new();
-        let side = u64::from(rule.cell) * 1000;
+        let side = i64::from(rule.cell) * 1000;
         let reach = Self::reach(i64::from(rule.radius.1));
-        // The cells whose patches may reach the rectangle, on the map.
-        let cells = |lo: u32, hi: u32, last: u32| {
-            let side = i64::from(rule.cell) * 1000;
-            let first = (i64::from(lo) * 1000 - reach).max(0) / side;
-            let end = (i64::from(hi) * 1000 + reach) / side;
-            let first = u32::try_from(first).expect("on the map");
-            let end = u32::try_from(end).map_or(last, |e| e.min(last));
+        // The map's corner on the world, in thousandths of a tile.
+        let (ox, oy) = frame.mm(0, 0);
+        // The world's cells whose patches may reach the rectangle.
+        let cells = |lo: u32, hi: u32, origin: i64| {
+            let first = (i64::from(lo) * 1000 + origin - reach).div_euclid(side);
+            let end = (i64::from(hi) * 1000 + origin + reach).div_euclid(side);
             first..=end
         };
-        let decide = |cx: u32, cy: u32| -> Option<Patch> {
-            let keys = |n: u64| [key(i64::from(cx)), key(i64::from(cy)), n];
+        let decide = |cx: i64, cy: i64| -> Option<Patch> {
+            let keys = |n: u64| [key(cx), key(cy), n];
             if !scatter::chance(rule.chance, seed, purpose, &keys(0)) {
                 return None;
             }
-            let x = u64::from(cx) * side + scatter::roll(seed, purpose, &keys(1)) % side;
-            let y = u64::from(cy) * side + scatter::roll(seed, purpose, &keys(2)) % side;
+            let draw = |n: u64, below: i64| {
+                i64::try_from(scatter::roll(seed, purpose, &keys(n)) % key(below)).expect("small")
+            };
+            // The centre on the world, then on the map.
+            let x = cx * side + draw(1, side) - ox;
+            let y = cy * side + draw(2, side) - oy;
             let (lo, hi) = rule.radius;
-            let r = u64::from(lo) + scatter::roll(seed, purpose, &keys(3)) % u64::from(hi - lo + 1);
-            let (tx, ty) = (x / 1000, y / 1000);
-            if tx >= u64::from(width) || ty >= u64::from(height) || ty < u64::from(cliff_rows) {
+            let r = i64::from(lo) + draw(3, i64::from(hi - lo + 1));
+            let (tx, ty) = (x.div_euclid(1000), y.div_euclid(1000));
+            if !(0..i64::from(width)).contains(&tx)
+                || !(i64::from(cliff_rows)..i64::from(height)).contains(&ty)
+            {
                 return None;
             }
             let (tx, ty) = (
                 u32::try_from(tx).expect("on the map"),
                 u32::try_from(ty).expect("on the map"),
             );
-            let at = |v: u64| i64::try_from(v).expect("on the map");
-            fits(tx, ty).then(|| (at(x), at(y), at(r)))
+            fits(tx, ty).then_some((x, y, r))
         };
-        for cy in cells(y0, y1, height / rule.cell) {
-            for cx in cells(x0, x1, width / rule.cell) {
+        for cy in cells(y0, y1, oy) {
+            for cx in cells(x0, x1, ox) {
                 let patch = match memo {
                     Some(memo) => memo.patch(purpose, cx, cy, || decide(cx, cy)),
                     None => decide(cx, cy),
@@ -606,13 +671,8 @@ impl Woods {
     /// `(x, y)`, in thousandths: below nothing on a bare stretch (down to
     /// -1000 at the barest), above nothing where the water draws trees
     /// (up to 1000 on the thickest stretch).
-    fn riparian_lift(riparian: u64, x: u32, y: u32) -> i64 {
-        let n = i64::from(noise(
-            riparian,
-            Self::RIPARIAN_CELL,
-            i32::try_from(x).expect("map fits in i32"),
-            i32::try_from(y).expect("map fits in i32"),
-        ));
+    fn riparian_lift(riparian: u64, (x, y): (i32, i32)) -> i64 {
+        let n = i64::from(noise(riparian, Self::RIPARIAN_CELL, x, y));
         let bare = Self::RIPARIAN_BARE;
         if n < bare {
             -(bare - n) * 1000 / bare
@@ -727,15 +787,16 @@ impl Woods {
     /// near (none to leave them out), and the water's draw (or a bare
     /// stretch's opening) near a river or a brook.
     fn pull(&self, x: u32, y: u32, to: (u8, u8), woodlets: &[Patch]) -> i64 {
-        let (ix, iy) = (
-            i32::try_from(x).expect("map fits in i32"),
-            i32::try_from(y).expect("map fits in i32"),
-        );
+        let (ix, iy) = self.world(x, y);
         let centred = |v: u32| i64::from(v) - 500;
+        let wet = match &self.wet {
+            Wetness::Lattice(groves) => groves.value(x, y),
+            Wetness::Noise(seed) => noise(*seed, Self::WET_CELL, ix, iy),
+        };
         let mut m = i64::from(noise(self.massif, Self::MASSIF_CELL, ix, iy))
             + Self::DETAIL * centred(noise(self.detail, Self::DETAIL_CELL, ix, iy)) / 1000
             + Self::FINE * centred(noise(self.fine, Self::FINE_CELL, ix, iy)) / 1000
-            + Self::WET * centred(self.wet.value(x, y)) / 1000;
+            + Self::WET * centred(wet) / 1000;
         let below = i64::from(y) - i64::from(self.cliff_rows);
         if below < Self::CLIFF_ROWS {
             m += Self::CLIFF * (Self::CLIFF_ROWS - below) / Self::CLIFF_ROWS;
@@ -786,7 +847,7 @@ impl Woods {
 
     /// The riparian lift at `(x, y)` (`Woods::riparian_lift`).
     fn lift(&self, x: u32, y: u32) -> i64 {
-        Self::riparian_lift(self.riparian, x, y)
+        Self::riparian_lift(self.riparian, self.world(x, y))
     }
 
     /// What the small `woodlets` near add to the pull at `(x, y)`.
@@ -801,12 +862,8 @@ impl Woods {
             return 0;
         }
         let (px, py) = (i64::from(x) * 1000, i64::from(y) * 1000);
-        let rim = noise(
-            self.rim,
-            Self::RAGGED_CELL,
-            i32::try_from(x).expect("map fits in i32"),
-            i32::try_from(y).expect("map fits in i32"),
-        );
+        let (wx, wy) = self.world(x, y);
+        let rim = noise(self.rim, Self::RAGGED_CELL, wx, wy);
         let ragged = 1000 + Self::RAGGED * (i64::from(rim) - 500) / 1000;
         patches
             .iter()
@@ -1032,8 +1089,7 @@ mod tests {
                     let habitat = map.habitat(pos);
                     let i = usize::try_from(y * SIZE + x).unwrap();
                     let (river, brook) = (to_river[i], to_brook[i]);
-                    let (ux, uy) = (u32::try_from(x).unwrap(), u32::try_from(y).unwrap());
-                    let lift = Woods::riparian_lift(riparian, ux, uy);
+                    let lift = Woods::riparian_lift(riparian, (x, y));
                     match habitat {
                         // The heart lies behind an edge: no open meadow
                         // right beside it.
@@ -1212,7 +1268,7 @@ mod tests {
         let rule = Woods::COPSES;
         let all = |(w, h)| {
             Woods::patches_in(
-                (w, h, 0),
+                ((w, h, 0), Frame::ORIGIN),
                 9,
                 purpose::WOODS_COPSE,
                 rule,
