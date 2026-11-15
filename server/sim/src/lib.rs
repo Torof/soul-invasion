@@ -1461,7 +1461,13 @@ impl World {
     /// born there (provisional, until souls choose their bodies, D34).
     /// `None` when the map has no such tile.
     pub fn spawn_at_camp(&mut self) -> Option<BodyId> {
-        let camp = self.map.camp();
+        self.spawn_near(self.map.camp())
+    }
+
+    /// A body is born on the free grass nearest `camp`, as at the map's
+    /// camp ([`World::spawn_at_camp`]): a tribe's own camp (D41, the
+    /// vivarium's two tribes). None when no free grass is left.
+    pub fn spawn_near(&mut self, camp: Pos) -> Option<BodyId> {
         let taken: BTreeSet<Pos> = self.bodies.iter().map(Body::pos).collect();
         let reach =
             i32::try_from(self.map.width().max(self.map.height())).expect("map fits in i32");

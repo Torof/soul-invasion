@@ -91,9 +91,11 @@ enum Doing {
     Home,
 }
 
-/// One body's mind: its memory of places and what it is about.
+/// One body's mind: its home, its memory of places and what it is about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mind {
+    /// Its camp: where it goes at night and by day, and goes looking from.
+    home: Pos,
     /// The drinking places it knows, one a chunk.
     water: BTreeMap<ChunkPos, DrinkingPlace>,
     /// The food it saw, and where.
@@ -113,8 +115,9 @@ pub struct Mind {
 }
 
 impl Mind {
-    fn new() -> Self {
+    fn new(home: Pos) -> Self {
         Self {
+            home,
             water: BTreeMap::new(),
             food: BTreeMap::new(),
             doing: Doing::Nothing,
@@ -140,6 +143,11 @@ impl Mind {
     pub fn thoughts(&self) -> u64 {
         self.thoughts
     }
+
+    /// Its camp.
+    pub fn home(&self) -> Pos {
+        self.home
+    }
 }
 
 /// How far from the camp the camp's water is looked for, in tiles.
@@ -150,8 +158,8 @@ pub const CAMP_WATER_TILES: i32 = 2048;
 pub struct Brains {
     minds: BTreeMap<BodyId, Mind>,
     seed: u64,
-    /// The camp's water, found once: (the camp, its nearest drinking place).
-    camp_water: Option<(Pos, Option<DrinkingPlace>)>,
+    /// Each camp's water, found once: its nearest drinking place.
+    camp_water: BTreeMap<Pos, Option<DrinkingPlace>>,
 }
 
 impl Brains {
@@ -160,7 +168,7 @@ impl Brains {
         Self {
             minds: BTreeMap::new(),
             seed,
-            camp_water: None,
+            camp_water: BTreeMap::new(),
         }
     }
 
@@ -169,12 +177,18 @@ impl Brains {
     /// place nearest the camp, within [`CAMP_WATER_TILES`] (the tribe's
     /// knowledge of its land, until knowledge is passed on by people, V3).
     pub fn adopt(&mut self, world: &World, rules: &Content, body: BodyId) {
-        let camp = world.map().camp();
-        if self.camp_water.is_none_or(|(at, _)| at != camp) {
-            self.camp_water = Some((camp, nearest_drinking_place(world.map(), rules, camp)));
-        }
-        let mind = self.minds.entry(body).or_insert_with(Mind::new);
-        if let Some((_, Some(place))) = self.camp_water {
+        self.adopt_at(world, rules, body, world.map().camp());
+    }
+
+    /// The same, the body's home being the camp at `home` (a tribe's own
+    /// camp, D41: the vivarium's two tribes live on two camps).
+    pub fn adopt_at(&mut self, world: &World, rules: &Content, body: BodyId, home: Pos) {
+        let water = *self
+            .camp_water
+            .entry(home)
+            .or_insert_with(|| nearest_drinking_place(world.map(), rules, home));
+        let mind = self.minds.entry(body).or_insert_with(|| Mind::new(home));
+        if let Some(place) = water {
             mind.water.insert(place.stand.chunk(), place);
         }
     }
@@ -348,7 +362,7 @@ fn far(a: Pos, b: Pos) -> i64 {
 /// that half-side.
 fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind) {
     let map = world.map();
-    let camp = map.camp();
+    let camp = mind.home;
     let sight = i32::try_from(
         map.get(at)
             .map_or(1, |terrain| rules.movement.sight_tiles(terrain)),
@@ -441,7 +455,7 @@ fn decide(
     let c = body.condition();
     let here = body.pos();
     let map = world.map();
-    let camp = map.camp();
+    let camp = mind.home;
     let decision = |intention, why| Some(Decision { intention, why });
     let (thirsty, parched, hungry, asleep) = pasts(world, id);
     if asleep && !parched {
@@ -539,7 +553,7 @@ fn decide(
     )
 }
 
-/// The body goes looking for what it needs: a spiral out of the camp,
+/// The body goes looking for what it needs: a spiral out of its camp,
 /// eight legs a ring, each ring a sight's length wider than the last (the
 /// first direction chosen by the seed and the body), clamped to the map;
 /// from each leg's end it looks, so the rings it walks sweep the land.
@@ -576,7 +590,7 @@ fn explore(
         i32::try_from(map.width()).expect("fits") - 1,
         i32::try_from(map.height()).expect("fits") - 1,
     );
-    let camp = map.camp();
+    let camp = mind.home;
     let out = reach.saturating_mul(ring);
     let target = Pos::new(
         camp.x.saturating_add(dx.saturating_mul(out)).clamp(0, w),
@@ -833,7 +847,7 @@ mod tests {
     #[test]
     fn going_looking_it_walks_out_of_the_camp_in_rings() {
         let world = field(1000, 999, Pos::new(5, 5));
-        let mut mind = Mind::new();
+        let mut mind = Mind::new(Pos::new(5, 5));
         let targets: Vec<Pos> = (0..16)
             .map(|_| {
                 match explore(
@@ -861,6 +875,45 @@ mod tests {
             targets[8..].iter().any(|p| ring(*p) > 60)
                 && targets[8..].iter().all(|p| ring(*p) <= 120),
             "the second twice as wide: {targets:?}"
+        );
+    }
+
+    #[test]
+    fn each_body_goes_home_to_its_own_camp() {
+        let mut world = field(200, 100, Pos::new(5, 5));
+        world.spawn_body(Pos::new(150, 150));
+        let rules = rules();
+        let mut brains = Brains::new(7);
+        brains.adopt(&world, &rules, BodyId(1));
+        brains.adopt_at(&world, &rules, BodyId(2), Pos::new(150, 150));
+        assert_eq!(brains.mind(BodyId(2)).unwrap().home(), Pos::new(150, 150));
+        // Its own camp's water: the river at column 100, the bank at 101.
+        let places: Vec<_> = brains
+            .mind(BodyId(2))
+            .unwrap()
+            .drinking_places()
+            .copied()
+            .collect();
+        assert_eq!(
+            places,
+            vec![DrinkingPlace {
+                stand: Pos::new(101, 150),
+                water: Pos::new(100, 150)
+            }]
+        );
+        world.bodies[1].condition.thirst = Gauge::at(60);
+        let (events, _) = run(&mut world, &mut brains, 7200);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::BodyDrank {
+                body: BodyId(2),
+                ..
+            }
+        )));
+        let at = world.bodies[1].pos();
+        assert!(
+            (at.x - 150).abs() <= HOME_TILES && (at.y - 150).abs() <= HOME_TILES,
+            "back at its camp for the night: {at:?}"
         );
     }
 }
