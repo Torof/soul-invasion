@@ -234,6 +234,8 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 			for dial: String in SLOPE_LOOK:
 				material.set_shader_parameter(dial, _slope_dial(dial))
 		apply_spec(material, terrain, false)
+		if terrain == FLAT_TERRAIN and flat_tint != FLAT_TINT:
+			material.set_shader_parameter("base_tint", flat_tint)
 		pin_flow_time(material)
 		_ground_materials[terrain] = material
 	return _ground_materials[terrain]
@@ -258,7 +260,9 @@ static var slopes_drawn := 0
 ## streaks' light pales the turf, and toward what (0: the turf alone, the
 ## streaks not read; 0.2 showed the sense without being seen; the lead's
 ## choice of 14 November 2026 at night); slope_turf_px: the turf's
-## repetition on the canvas, in pixels (the lead's choice, 384).
+## repetition on the canvas, in pixels (the lead's choice, 384);
+## slope_tint: what the turf's colours are multiplied by (a touch toward
+## green, as the lead left it on 14 November 2026).
 const SLOPE_LOOK := {
 	"slope_streaks": "res://world/slope/slope_streaks.png",
 	"slope_turf": "res://world/slope/mountain_turf.png",
@@ -266,6 +270,7 @@ const SLOPE_LOOK := {
 	"slope_streak_mix": 0.0,
 	"slope_streak_pale": Vector3(0.92, 0.94, 0.59),
 	"slope_turf_px": 384.0,
+	"slope_tint": Vector3(0.94, 1.02, 0.92),
 }
 ## The turf with tufts, bushes and stones (the lead's grass of
 ## 13 November 2026) laid instead of the look's (the developer overlay's
@@ -279,6 +284,19 @@ static var slope_turf_with_bushes := false
 ## The turf's repetition in canvas px as drawn now (the look's, or the
 ## developer overlay's key P).
 static var slope_turf_px: float = SLOPE_LOOK["slope_turf_px"]
+## The slope turf's tint as drawn now: the look's, or the developer
+## overlay's tint dials (Ctrl with the arrows; the project lead's ask of
+## 15 November 2026, to tune the turf live and read the numbers off the
+## overlay; what he keeps goes into the look by hand).
+static var slope_tint: Vector3 = SLOPE_LOOK["slope_tint"]
+## The flat grass: the meadow's terrain, whose one material every chunk
+## shares, and its tint (the shader's base_tint; the spec gives the grass
+## none, so white) as drawn now: the spec's, or the developer overlay's
+## tint dials (Shift with the arrows). The forest floor and the water keep
+## their own base_tint from the spec.
+const FLAT_TERRAIN := "grass"
+const FLAT_TINT := Vector3.ONE
+static var flat_tint: Vector3 = FLAT_TINT
 
 
 ## The value of the look's dial `name` for the shader: the image loaded,
@@ -289,6 +307,8 @@ static func _slope_dial(name: String) -> Variant:
 		return load(SLOPE_TURF_BUSHES)
 	if name == "slope_turf_px":
 		return slope_turf_px
+	if name == "slope_tint":
+		return slope_tint
 	var value: Variant = SLOPE_LOOK[name]
 	return load(value) if value is String else value
 
@@ -320,6 +340,25 @@ static func set_slope_rim(on: bool) -> void:
 static func set_slopes_drawn(mode: int) -> void:
 	slopes_drawn = mode
 	set_slope_param("slopes_drawn", mode)
+
+
+static func set_slope_tint(tint: Vector3) -> void:
+	slope_tint = tint
+	set_slope_param("slope_tint", tint)
+
+
+## Sets the flat grass's tint (base_tint) on the meadow's material, the
+## one every chunk's meadow shares; a material made later gets it too.
+static func set_flat_tint(tint: Vector3) -> void:
+	flat_tint = tint
+	if _ground_materials.has(FLAT_TERRAIN):
+		(_ground_materials[FLAT_TERRAIN] as ShaderMaterial).set_shader_parameter("base_tint", tint)
+
+
+## Both tints back to the look's and the spec's (the overlay's Backspace).
+static func reset_tints() -> void:
+	set_slope_tint(SLOPE_LOOK["slope_tint"])
+	set_flat_tint(FLAT_TINT)
 
 
 ## Development: with SOUL_INVASION_WATER_TIME set to a number of seconds,

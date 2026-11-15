@@ -5,7 +5,14 @@ extends Node
 ## carries heights (D43). Then, a line says how the slopes are drawn and
 ## the keys: 1 the slopes (the ground shader's one rule), 0 the flat
 ## ground, to compare; G the turf with bushes and stones; R the rim; P the
-## turf's size. Below it, the altitude of the tile the piloted body stands
+## turf's size. A second line gives the tints as drawn and their dials
+## (the project lead's ask of 15 November 2026, to tune the flat grass
+## and the slope turf live and read the numbers off the screen): the
+## arrows with Shift turn the flat grass's tint, with Ctrl the slope
+## turf's; up and down its brightness, right and left its warmth;
+## Backspace puts both back. Arrows with a modifier, so the keys are the
+## same on an AZERTY keyboard and need no numpad. Below it, the altitude
+## of the tile the piloted body stands
 ## on (the project lead's ask, 13 November 2026), with its trend over the
 ## last few seconds, the height of the tile under the mouse against the
 ## body's, and whether the body stands on a summit or a col. A developer's
@@ -25,6 +32,13 @@ const RING_TILES := 8.0
 const RING_MARGIN_M := 1.0
 ## The turf's sizes key P cycles, in canvas px a repetition.
 const TURF_SIZES: Array[float] = [768.0, 512.0, 384.0, 256.0]
+## A step of the tint dials: brightness on the three channels, warmth on
+## the red one (down: toward green; up: toward yellow).
+const BRIGHTER := 1.05
+const DIMMER := 0.95
+const WARMER := 1.03
+const COOLER := 0.97
+const TINT_KEYS: Array[Key] = [KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT]
 const MINUS := "−"
 
 ## The world view (duck-typed: naming WorldView would tie this script to
@@ -53,7 +67,8 @@ func _ready() -> void:
 	_label.add_theme_constant_override("outline_size", 4)
 	layer.add_child(_label)
 	_altitude = Label.new()
-	_altitude.position = Vector2(12, 68)
+	# Below the two lines of the dials' label.
+	_altitude.position = Vector2(12, 92)
 	_altitude.add_theme_color_override("font_color", Color.WHITE)
 	_altitude.add_theme_color_override("font_outline_color", Color.BLACK)
 	_altitude.add_theme_constant_override("outline_size", 6)
@@ -184,6 +199,16 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		_apply()
 		get_viewport().set_input_as_handled()
 		return
+	if key.keycode == KEY_BACKSPACE:
+		ChunkView.reset_tints()
+		_apply()
+		get_viewport().set_input_as_handled()
+		return
+	if key.keycode in TINT_KEYS and (key.shift_pressed or key.ctrl_pressed):
+		_turn_tint(key)
+		_apply()
+		get_viewport().set_input_as_handled()
+		return
 	var chosen := key.keycode - KEY_0
 	if chosen < 0 or chosen >= MODES.size():
 		return
@@ -193,7 +218,46 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	get_viewport().set_input_as_handled()
 
 
+## One arrow with Shift (the flat grass) or Ctrl (the slope turf; it wins
+## when both are held): up or down a step of brightness, right or left a
+## step of warmth.
+func _turn_tint(key: InputEventKey) -> void:
+	var tint: Vector3 = ChunkView.slope_tint if key.ctrl_pressed else ChunkView.flat_tint
+	match key.keycode:
+		KEY_UP:
+			tint = brighter(tint, true)
+		KEY_DOWN:
+			tint = brighter(tint, false)
+		KEY_RIGHT:
+			tint = warmer(tint, true)
+		KEY_LEFT:
+			tint = warmer(tint, false)
+	if key.ctrl_pressed:
+		ChunkView.set_slope_tint(tint)
+	else:
+		ChunkView.set_flat_tint(tint)
+
+
+## The tint a step brighter (×BRIGHTER on the three channels) or dimmer.
+static func brighter(tint: Vector3, up: bool) -> Vector3:
+	return tint * (BRIGHTER if up else DIMMER)
+
+
+## The tint a step warmer (the red ×WARMER, toward yellow) or cooler
+## (toward green).
+static func warmer(tint: Vector3, up: bool) -> Vector3:
+	return Vector3(tint.x * (WARMER if up else COOLER), tint.y, tint.z)
+
+
+## "(0.94, 1.02, 0.92)": a tint's three channels to two decimals, as the
+## project lead reads them out.
+static func tint_words(tint: Vector3) -> String:
+	return "(%.2f, %.2f, %.2f)" % [tint.x, tint.y, tint.z]
+
+
 func _apply() -> void:
 	var turf := "turf with bushes" if ChunkView.slope_turf_with_bushes else "mountain turf"
 	var rim := "rim" if ChunkView.slope_rim else "no rim"
-	_label.text = "Slopes — %s, %s, %s, turf %d px (P)   (keys 1, 0, G, R and P)" % [MODES[mode], turf, rim, roundi(ChunkView.slope_turf_px)]
+	var slopes := "Slopes — %s, %s, %s, turf %d px (P)   (keys 1, 0, G, R and P)" % [MODES[mode], turf, rim, roundi(ChunkView.slope_turf_px)]
+	var tints := "Tints — flat %s · slope %s   (Shift+arrows flat, Ctrl+arrows slope: ↑↓ brightness, ←→ warmth; Backspace resets)" % [tint_words(ChunkView.flat_tint), tint_words(ChunkView.slope_tint)]
+	_label.text = slopes + "\n" + tints

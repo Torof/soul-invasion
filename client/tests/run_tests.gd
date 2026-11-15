@@ -33,6 +33,7 @@ func _init() -> void:
 	_test_a_flat_chunk_has_no_heights_and_a_chunks_heights_are_kept()
 	_test_the_slopes_are_read_over_two_tiles_and_off_until_a_chunk_has_heights()
 	_test_the_slope_overlay_tells_a_summit_and_a_col_from_a_ring()
+	_test_the_tint_dials_turn_the_flat_grass_and_the_slope_turf_and_reset()
 	_test_tree_images_are_clean()
 	_test_tree_feet_are_whole()
 	_test_loading_waits_for_the_valley()
@@ -96,6 +97,7 @@ func _init() -> void:
 ## Once the main loop runs: the tests that wait for frames, then the end.
 func _initialize() -> void:
 	await process_frame
+	_test_the_tint_keys_step_the_tints_and_backspace_resets()
 	print("client tests: %d checks, %d failures" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
 
@@ -2738,6 +2740,73 @@ func _test_the_slopes_are_read_over_two_tiles_and_off_until_a_chunk_has_heights(
 	_check(is_equal_approx(HeightIndex.rise(Vector2i(199, 301), Vector2i(1, 0)), 0.0), "a tile no chunk said has no rise")
 	HeightIndex.clear()
 	_check(is_equal_approx(HeightIndex.rise(Vector2i(202, 301), Vector2i(1, 0)), 0.0) and not HeightIndex.any, "cleared, the slopes are gone")
+
+
+## The tint dials (D44, the overlay's second line): the slope turf's tint
+## is a uniform of the look with the lead's value as its default, set on
+## every land's ground and not the water's; the flat grass's tint is the
+## meadow's base_tint, on its material alone (the forest floor keeps its
+## own); the overlay's arrows with Shift and Ctrl step them and Backspace
+## puts both back, the line showing the numbers.
+func _test_the_tint_dials_turn_the_flat_grass_and_the_slope_turf_and_reset() -> void:
+	var shader := FileAccess.get_file_as_string("res://world/ground.gdshader")
+	var look: Vector3 = ChunkView.SLOPE_LOOK["slope_tint"]
+	_check(shader.contains("uniform vec3 slope_tint : source_color = vec3(0.94, 1.02, 0.92);") and not shader.contains("SLOPE_TINT"), "the slope tint is a uniform whose default is the look's value")
+	_check(look == Vector3(0.94, 1.02, 0.92) and ChunkView.slope_tint == look and ChunkView.flat_tint == Vector3.ONE, "the tints start at the look's and the spec's")
+	var grass := ChunkView.ground_material("grass")
+	var forest := ChunkView.ground_material("forest")
+	var water := ChunkView.ground_material("water")
+	var forest_base: Variant = forest.get_shader_parameter("base_tint")
+	_check(grass.get_shader_parameter("slope_tint") == look and forest.get_shader_parameter("slope_tint") == look, "every land's ground carries the look's slope tint")
+	ChunkView.set_slope_tint(Vector3(0.5, 0.6, 0.7))
+	_check(grass.get_shader_parameter("slope_tint") == Vector3(0.5, 0.6, 0.7) and forest.get_shader_parameter("slope_tint") == Vector3(0.5, 0.6, 0.7) and water.get_shader_parameter("slope_tint") == null, "a slope tint set reaches every land's ground, not the water's")
+	ChunkView.set_flat_tint(Vector3(0.9, 0.9, 0.9))
+	_check(grass.get_shader_parameter("base_tint") == Vector3(0.9, 0.9, 0.9) and forest.get_shader_parameter("base_tint") == forest_base, "a flat tint set reaches the meadow's material and leaves the forest floor its own")
+	ChunkView.reset_tints()
+	_check(grass.get_shader_parameter("slope_tint") == look and grass.get_shader_parameter("base_tint") == Vector3.ONE and ChunkView.flat_tint == Vector3.ONE, "reset puts both tints back")
+	_check(SlopeOverlay.brighter(Vector3.ONE, true).is_equal_approx(Vector3(1.05, 1.05, 1.05)) and SlopeOverlay.brighter(Vector3.ONE, false).is_equal_approx(Vector3(0.95, 0.95, 0.95)), "a step of brightness is ×1.05 or ×0.95 on the three channels")
+	_check(SlopeOverlay.warmer(Vector3.ONE, true).is_equal_approx(Vector3(1.03, 1.0, 1.0)) and SlopeOverlay.warmer(Vector3.ONE, false).is_equal_approx(Vector3(0.97, 1.0, 1.0)), "a step of warmth is ×1.03 or ×0.97 on the red channel")
+	_check(SlopeOverlay.tint_words(look) == "(0.94, 1.02, 0.92)", "the tints are told to two decimals: %s" % SlopeOverlay.tint_words(look))
+
+
+## The overlay's keys themselves, on an overlay in the running tree (its
+## labels are made on _ready): Shift+arrows the flat grass, Ctrl+arrows
+## the slope turf, an arrow alone nothing, Backspace both back.
+func _test_the_tint_keys_step_the_tints_and_backspace_resets() -> void:
+	var look: Vector3 = ChunkView.SLOPE_LOOK["slope_tint"]
+	var grass := ChunkView.ground_material("grass")
+	var forest := ChunkView.ground_material("forest")
+	ChunkView.reset_tints()
+	var ramp := PackedInt32Array()
+	ramp.resize(16)
+	HeightIndex.write(Vector2i(200, 300), 4, ramp)
+	var overlay := SlopeOverlay.new()
+	root.add_child(overlay)
+	overlay._unhandled_key_input(_key(KEY_UP, true, false))
+	_check(grass.get_shader_parameter("base_tint").is_equal_approx(Vector3(1.05, 1.05, 1.05)), "Shift+Up brightens the flat grass")
+	overlay._unhandled_key_input(_key(KEY_LEFT, true, false))
+	_check(ChunkView.flat_tint.is_equal_approx(Vector3(1.05 * 0.97, 1.05, 1.05)) and ChunkView.slope_tint == look, "Shift+Left cools the flat grass and leaves the slope")
+	overlay._unhandled_key_input(_key(KEY_DOWN, false, true))
+	overlay._unhandled_key_input(_key(KEY_RIGHT, false, true))
+	_check(forest.get_shader_parameter("slope_tint").is_equal_approx(Vector3(0.94 * 0.95 * 1.03, 1.02 * 0.95, 0.92 * 0.95)), "Ctrl+Down then Ctrl+Right dim and warm the slope turf on every ground")
+	overlay._apply()
+	_check(overlay._label.text.contains("flat (1.02, 1.05, 1.05)") and overlay._label.text.contains("slope (0.92, 0.97, 0.87)") and overlay._label.text.contains("Shift+arrows"), "the line tells both tints and the keys: %s" % overlay._label.text)
+	overlay._unhandled_key_input(_key(KEY_LEFT, false, false))
+	_check(ChunkView.flat_tint.is_equal_approx(Vector3(1.05 * 0.97, 1.05, 1.05)), "an arrow alone turns nothing")
+	overlay._unhandled_key_input(_key(KEY_BACKSPACE, false, false))
+	_check(ChunkView.flat_tint == Vector3.ONE and ChunkView.slope_tint == look and grass.get_shader_parameter("base_tint") == Vector3.ONE and overlay._label.text.contains("slope (0.94, 1.02, 0.92)"), "Backspace puts both back and the line says so")
+	overlay.free()
+	HeightIndex.clear()
+
+
+## A key press, with Shift or Ctrl held.
+static func _key(keycode: Key, shift: bool, ctrl: bool) -> InputEventKey:
+	var key := InputEventKey.new()
+	key.keycode = keycode
+	key.pressed = true
+	key.shift_pressed = shift
+	key.ctrl_pressed = ctrl
+	return key
 
 
 func _test_the_slope_overlay_tells_a_summit_and_a_col_from_a_ring() -> void:
