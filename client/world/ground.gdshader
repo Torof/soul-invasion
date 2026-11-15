@@ -50,16 +50,27 @@ uniform int slopes_drawn = 0;
 // The turf is a texture array (ChunkView builds it at load from the
 // tiles): one layer a tile, chosen per CELL of the turf's repetition so
 // the ground reads uniform, not repeated (slope_turf_variant). The array
-// is laid out for a second index to come, the slope's steepness (an
-// angle set, not drawn yet): layer = angle * slope_turf_variants +
-// variant, slope_turf_angles rows of slope_turf_variants tiles, so the
-// angle will index the rows without the layout changing. With one tile
-// (variants 1, angles 1) every cell reads layer 0 and the picture is
-// the single texture's, pixel for pixel.
+// has slope_turf_angles rows of slope_turf_variants tiles, one row a
+// crest angle (the same grass, its crests climbing at 20, 32, 43 or 55
+// degrees; the lead's choice of 16 November 2026), and the cell's
+// steepness chooses the row (slope_turf_row): layer = angle *
+// slope_turf_variants + variant. With one tile (variants 1, angles 1)
+// every cell reads layer 0 and the picture is the single texture's,
+// pixel for pixel.
 uniform sampler2D slope_streaks : repeat_enable, filter_linear_mipmap;
 uniform sampler2DArray slope_turf_set : repeat_enable, filter_linear_mipmap_anisotropic;
 uniform int slope_turf_variants = 1;
 uniform int slope_turf_angles = 1;
+// The row for a cell: its steepness s (metres a tile, read at the
+// cell's middle so the whole cell lays one tile) gives the crest's angle
+// slope_angle_first + slope_angle_per_metre * s degrees, bounded to
+// slope_angle_last, and the row is the nearest of the slope_turf_angles
+// rows drawn evenly from first to last. slope_angle_per_metre is the
+// lead's dial (ChunkView.SLOPE_LOOK; the developer overlay's Page Up
+// and Page Down): where the first row ends and the last begins.
+uniform float slope_angle_first = 20.0;
+uniform float slope_angle_last = 55.0;
+uniform float slope_angle_per_metre = 60.0;
 const float SLOPE_STREAK_PX = 768.0;
 uniform vec3 slope_tint : source_color = vec3(0.94, 1.02, 0.92);
 // The look's dials (ChunkView.SLOPE_LOOK sets them, so another biome can
@@ -363,6 +374,23 @@ int slope_turf_variant(ivec2 cell) {
 	return int(h % uint(slope_turf_variants));
 }
 
+// The row of the array for `cell` of the turf's repetition (see
+// slope_angle_first): the cell's middle, in canvas px (`flip` the
+// mirror), back to a map point, its steepness read there, then the
+// angle and the nearest row.
+int slope_turf_row(vec2 cell, vec2 flip) {
+	if (slope_turf_angles <= 1) {
+		return 0;
+	}
+	vec2 middle = (cell + 0.5) * slope_turf_px * flip;
+	vec2 at = 0.5 * vec2(middle.x / TILE_HALF_PX.x + middle.y / TILE_HALF_PX.y,
+		middle.y / TILE_HALF_PX.y - middle.x / TILE_HALF_PX.x);
+	float s = length(texture(slope_index, at / index_tiles).rg);
+	float deg = min(slope_angle_first + slope_angle_per_metre * s, slope_angle_last);
+	float step = (slope_angle_last - slope_angle_first) / float(slope_turf_angles - 1);
+	return clamp(int(round((deg - slope_angle_first) / step)), 0, slope_turf_angles - 1);
+}
+
 // The slopes' one rule (the lead, 14 November 2026 in the evening:
 // "the best picture we have ever had"). Where the ground at map point
 // `p` (tiles) slopes, `lit` is the slope's colour at canvas point
@@ -412,10 +440,10 @@ bool slope_lit(vec2 p, vec2 canvas, vec2 dx, vec2 dy, out vec3 lit) {
 	}
 	vec2 flip = vec2(fx, 1.0);
 	vec2 turf_uv = canvas / slope_turf_px * flip;
-	// The tile of this cell; the angle row is 0 until the angle set comes
-	// (then: the row from `s`, below slope_turf_angles).
-	int angle = 0;
-	int layer = min(angle * slope_turf_variants + slope_turf_variant(ivec2(floor(turf_uv))),
+	// The tile of this cell: the row its steepness gives, the tile its hash.
+	vec2 cell = floor(turf_uv);
+	int angle = slope_turf_row(cell, flip);
+	int layer = min(angle * slope_turf_variants + slope_turf_variant(ivec2(cell)),
 		slope_turf_angles * slope_turf_variants - 1);
 	vec3 turf = textureGrad(slope_turf_set, vec3(turf_uv, float(layer)),
 		dx / slope_turf_px * flip, dy / slope_turf_px * flip).rgb * slope_tint;
