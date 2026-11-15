@@ -259,9 +259,15 @@ static var slopes_drawn := 0
 ## paths and built into one Texture2DArray at load, one layer a tile,
 ## the shader choosing the layer cell by cell by a hash so the ground
 ## reads uniform, not repeated; slope_turf_variants: how many tiles the
-## set holds, and slope_turf_angles: how many rows of them, one a
-## steepness (1 today: the array is laid out as angles × variants so the
-## slope's angle can index the rows later without the layout changing).
+## set holds, and slope_turf_angles: how many rows of them, one a crest
+## angle, the array laid out as angles × variants (layer = angle ×
+## variants + variant); slope_angle_first and slope_angle_last: the
+## crest angles of the first and the last row, in degrees, the rows
+## between evenly spaced (the lead's choice of 16 November 2026: four
+## rows, 20 to 55); slope_angle_per_metre: the lead's dial, the degrees
+## a cell's steepness (metres a tile) adds to the first angle, bounded to
+## the last, before the nearest row is taken (the developer overlay's
+## Page Up and Page Down, Backspace resets).
 ## slope_break_turn:
 ## the streaks' turn, in degrees, on a side whose crest lies below (the
 ## lead's dial); slope_streak_mix and slope_streak_pale: how much the
@@ -274,14 +280,32 @@ static var slopes_drawn := 0
 const SLOPE_LOOK := {
 	"slope_streaks": "res://world/slope/slope_streaks.png",
 	"slope_turf_set": [
-		"res://world/slope/mountain_turf_1.png",
-		"res://world/slope/mountain_turf_2.png",
-		"res://world/slope/mountain_turf_3.png",
-		"res://world/slope/mountain_turf_4.png",
-		"res://world/slope/mountain_turf_5.png",
+		"res://world/slope/mountain_turf_20_1.png",
+		"res://world/slope/mountain_turf_20_2.png",
+		"res://world/slope/mountain_turf_20_3.png",
+		"res://world/slope/mountain_turf_20_4.png",
+		"res://world/slope/mountain_turf_20_5.png",
+		"res://world/slope/mountain_turf_32_1.png",
+		"res://world/slope/mountain_turf_32_2.png",
+		"res://world/slope/mountain_turf_32_3.png",
+		"res://world/slope/mountain_turf_32_4.png",
+		"res://world/slope/mountain_turf_32_5.png",
+		"res://world/slope/mountain_turf_43_1.png",
+		"res://world/slope/mountain_turf_43_2.png",
+		"res://world/slope/mountain_turf_43_3.png",
+		"res://world/slope/mountain_turf_43_4.png",
+		"res://world/slope/mountain_turf_43_5.png",
+		"res://world/slope/mountain_turf_55_1.png",
+		"res://world/slope/mountain_turf_55_2.png",
+		"res://world/slope/mountain_turf_55_3.png",
+		"res://world/slope/mountain_turf_55_4.png",
+		"res://world/slope/mountain_turf_55_5.png",
 	],
 	"slope_turf_variants": 5,
-	"slope_turf_angles": 1,
+	"slope_turf_angles": 4,
+	"slope_angle_first": 20.0,
+	"slope_angle_last": 55.0,
+	"slope_angle_per_metre": 60.0,
 	"slope_break_turn": 165.0,
 	"slope_streak_mix": 0.0,
 	"slope_streak_pale": Vector3(0.92, 0.94, 0.59),
@@ -305,6 +329,8 @@ static var slope_turf_px: float = SLOPE_LOOK["slope_turf_px"]
 ## 15 November 2026, to tune the turf live and read the numbers off the
 ## overlay; what he keeps goes into the look by hand).
 static var slope_tint: Vector3 = SLOPE_LOOK["slope_tint"]
+## The angle dial as set now: the look's, or the developer overlay's.
+static var slope_angle_per_metre: float = SLOPE_LOOK["slope_angle_per_metre"]
 ## The flat grass: the meadow's terrain, whose one material every chunk
 ## shares, and its tint (the shader's base_tint; the spec gives the grass
 ## none, so white) as drawn now: the spec's, or the developer overlay's
@@ -317,12 +343,16 @@ static var flat_tint: Vector3 = FLAT_TINT
 
 ## The value of the look's dial `name` for the shader: the image loaded,
 ## the turf set built from its tiles (the first tile alone with key G,
-## and its count 1 then), the turf's size and tint as set now.
+## and its counts 1 then), the turf's size, tint and angle dial as set now.
 static func _slope_dial(name: String) -> Variant:
 	if name == "slope_turf_set":
 		return slope_turf_set(_turf_paths())
 	if name == "slope_turf_variants":
-		return _turf_paths().size()
+		return 1 if slope_turf_single else SLOPE_LOOK[name]
+	if name == "slope_turf_angles":
+		return 1 if slope_turf_single else SLOPE_LOOK[name]
+	if name == "slope_angle_per_metre":
+		return slope_angle_per_metre
 	if name == "slope_turf_px":
 		return slope_turf_px
 	if name == "slope_tint":
@@ -341,14 +371,16 @@ static func _turf_paths() -> PackedStringArray:
 ## The turf set of the tiles at `paths`, one layer a tile in their
 ## order, with mipmaps (the shader reads it filter_linear_mipmap_anisotropic): built
 ## once from the imported textures and kept. The tiles must share one
-## size and one format (1536 px, RGB), as the family does.
+## size and one format (1536 px, compressed BPTC with their mipmaps at
+## import), as the family does.
 static func slope_turf_set(paths: PackedStringArray) -> Texture2DArray:
 	var key := ";".join(paths)
 	if not _turf_sets.has(key):
 		var images: Array[Image] = []
 		for path: String in paths:
 			var image: Image = (load(path) as Texture2D).get_image()
-			image.generate_mipmaps()
+			if not image.is_compressed():
+				image.generate_mipmaps()
 			images.append(image)
 		var set := Texture2DArray.new()
 		set.create_from_images(images)
@@ -394,11 +426,30 @@ static func set_slope_turf_px(px: float) -> void:
 
 
 ## The first tile alone (true) or the look's whole set: the set and its
-## count go to the shader together.
+## counts go to the shader together.
 static func set_slope_turf_single(on: bool) -> void:
 	slope_turf_single = on
 	set_slope_param("slope_turf_set", _slope_dial("slope_turf_set"))
 	set_slope_param("slope_turf_variants", _slope_dial("slope_turf_variants"))
+	set_slope_param("slope_turf_angles", _slope_dial("slope_turf_angles"))
+
+
+## The angle dial (slope_angle_per_metre), on every land's ground.
+static func set_slope_angle_per_metre(per_metre: float) -> void:
+	slope_angle_per_metre = per_metre
+	set_slope_param("slope_angle_per_metre", per_metre)
+
+
+## The row of the turf array for a cell of steepness `s` (metres a
+## tile) among `angles` rows: the shader's slope_turf_row, the angle
+## first + per_metre × s bounded to last, then the nearest row.
+static func slope_turf_row(s: float, angles: int, per_metre: float = slope_angle_per_metre) -> int:
+	if angles <= 1:
+		return 0
+	var first: float = SLOPE_LOOK["slope_angle_first"]
+	var last: float = SLOPE_LOOK["slope_angle_last"]
+	var deg := minf(first + per_metre * s, last)
+	return clampi(roundi((deg - first) / ((last - first) / float(angles - 1))), 0, angles - 1)
 
 
 static func set_slope_rim(on: bool) -> void:
@@ -424,10 +475,12 @@ static func set_flat_tint(tint: Vector3) -> void:
 		(_ground_materials[FLAT_TERRAIN] as ShaderMaterial).set_shader_parameter("base_tint", tint)
 
 
-## Both tints back to the look's and the spec's (the overlay's Backspace).
+## Both tints back to the look's and the spec's, and the angle dial to
+## the look's (the overlay's Backspace).
 static func reset_tints() -> void:
 	set_slope_tint(SLOPE_LOOK["slope_tint"])
 	set_flat_tint(FLAT_TINT)
+	set_slope_angle_per_metre(SLOPE_LOOK["slope_angle_per_metre"])
 
 
 ## Development: with SOUL_INVASION_WATER_TIME set to a number of seconds,

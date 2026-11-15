@@ -2,28 +2,29 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://b7tlfa2rgyo1g"
-path="res://.godot/imported/mountain_turf_1.png-bec7f2328cc4b2a232066c7fee0c1295.ctex"
+uid="uid://qvlmgc214jfr"
+path.bptc="res://.godot/imported/mountain_turf_55_2.png-6a3a6b4e4ed88cb43263ae0a344c366b.bptc.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc"],
+"vram_texture": true
 }
 
 [deps]
 
-source_file="res://world/slope/mountain_turf_1.png"
-dest_files=["res://.godot/imported/mountain_turf_1.png-bec7f2328cc4b2a232066c7fee0c1295.ctex"]
+source_file="res://world/slope/mountain_turf_55_2.png"
+dest_files=["res://.godot/imported/mountain_turf_55_2.png-6a3a6b4e4ed88cb43263ae0a344c366b.bptc.ctex"]
 
 [params]
 
-compress/mode=0
-compress/high_quality=false
+compress/mode=2
+compress/high_quality=true
 compress/lossy_quality=0.7
 compress/uastc_level=0
 compress/rdo_quality_loss=0.0
 compress/hdr_compression=1
 compress/normal_map=0
 compress/channel_pack=0
-mipmaps/generate=false
+mipmaps/generate=true
 mipmaps/limit=-1
 roughness/mode=0
 roughness/src_normal=""
