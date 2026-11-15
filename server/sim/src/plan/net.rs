@@ -1322,6 +1322,16 @@ fn the_steppe_lake_shore_holds_no_pit() {
     assert!(verdict.failures.is_empty(), "{}", verdict.line());
 }
 
+/// The three windows whose steppe held 1.8 to 2.9 trees a hectare for
+/// the 0.7 asked on 15 November 2026, judged whole with their trees: the
+/// groups by the woods and the water come at the steppe's rate
+/// (`trees::EDGE_REFERENCE`).
+#[test]
+#[ignore = "three windows with their trees, a minute in release; run by hand: cargo test --release -p sim --lib plan::net::the_steppe_windows -- --ignored --nocapture"]
+fn the_steppe_windows_hold_the_steppe_density() {
+    net_over(&[(538, 611), (390, 476), (234, 464)], &[]);
+}
+
 /// The crossing the net found "unwaded" on 15 November 2026 ((222, 683)
 /// of seed 14, 116 m³/s): the judge read the ford from every ford tile
 /// of the window, shallow reaches included, and its centroid fell on dry
