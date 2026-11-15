@@ -339,9 +339,9 @@ static func _turf_paths() -> PackedStringArray:
 
 
 ## The turf set of the tiles at `paths`, one layer a tile in their
-## order, with mipmaps (the shader reads it filter_linear_mipmap): built
+## order, with mipmaps (the shader reads it filter_linear_mipmap_anisotropic): built
 ## once from the imported textures and kept. The tiles must share one
-## size and one format (1024 px, RGB), as the family does.
+## size and one format (1536 px, RGB), as the family does.
 static func slope_turf_set(paths: PackedStringArray) -> Texture2DArray:
 	var key := ";".join(paths)
 	if not _turf_sets.has(key):

@@ -2758,7 +2758,7 @@ func _test_the_slope_turf_is_a_family_of_tiles_chosen_per_cell() -> void:
 	var variants: int = ChunkView.SLOPE_LOOK["slope_turf_variants"]
 	_check(tiles.size() == 5 and variants == 5 and int(ChunkView.SLOPE_LOOK["slope_turf_angles"]) == 1, "the family holds five tiles, one row of angles: %d tiles, %d variants" % [tiles.size(), variants])
 	var family := ChunkView.slope_turf_set(PackedStringArray(tiles))
-	_check(family.get_layers() == 5 and family.get_width() == 1024 and family.get_height() == 1024, "the set is a texture array of five layers of 1024 px: %d layers, %d px" % [family.get_layers(), family.get_width()])
+	_check(family.get_layers() == 5 and family.get_width() == 1536 and family.get_height() == 1536, "the set is a texture array of five layers of 1536 px: %d layers, %d px" % [family.get_layers(), family.get_width()])
 	_check(ChunkView.slope_turf_set(PackedStringArray(tiles)) == family, "built once and kept")
 	var grass := ChunkView.ground_material("grass")
 	var forest := ChunkView.ground_material("forest")
@@ -2784,9 +2784,9 @@ func _test_the_slope_turf_is_a_family_of_tiles_chosen_per_cell() -> void:
 	for x in range(-10, 10):
 		for y in range(-10, 10):
 			all_zero = all_zero and ChunkView.slope_turf_variant(Vector2i(x, y), 1) == 0
-	_check(single.get_layers() == 1 and single.get_width() == 1024 and all_zero, "with one tile the array has one layer and every cell reads it: unchanged")
+	_check(single.get_layers() == 1 and single.get_width() == 1536 and all_zero, "with one tile the array has one layer and every cell reads it: unchanged")
 	var shader := FileAccess.get_file_as_string("res://world/ground.gdshader")
-	_check(shader.contains("uniform sampler2DArray slope_turf_set : repeat_enable, filter_linear_mipmap;") and shader.contains("uniform int slope_turf_variants = 1;") and shader.contains("uniform int slope_turf_angles = 1;") and not shader.contains("sampler2D slope_turf "), "the shader reads the set as a texture array with the counts, one variant by default")
+	_check(shader.contains("uniform sampler2DArray slope_turf_set : repeat_enable, filter_linear_mipmap_anisotropic;") and shader.contains("uniform int slope_turf_variants = 1;") and shader.contains("uniform int slope_turf_angles = 1;") and not shader.contains("sampler2D slope_turf "), "the shader reads the set as a texture array with the counts, one variant by default")
 	_check(shader.contains("x *= 0x7feb352du;") and shader.contains("x *= 0x846ca68bu;") and shader.contains("angle * slope_turf_variants + slope_turf_variant(ivec2(floor(turf_uv)))"), "the shader's hash is lowbias32 and its layer is angle × variants + variant")
 	# Key G: the first tile alone, then the family back.
 	var ramp := PackedInt32Array()

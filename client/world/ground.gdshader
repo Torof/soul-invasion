@@ -57,7 +57,7 @@ uniform int slopes_drawn = 0;
 // (variants 1, angles 1) every cell reads layer 0 and the picture is
 // the single texture's, pixel for pixel.
 uniform sampler2D slope_streaks : repeat_enable, filter_linear_mipmap;
-uniform sampler2DArray slope_turf_set : repeat_enable, filter_linear_mipmap;
+uniform sampler2DArray slope_turf_set : repeat_enable, filter_linear_mipmap_anisotropic;
 uniform int slope_turf_variants = 1;
 uniform int slope_turf_angles = 1;
 const float SLOPE_STREAK_PX = 768.0;
