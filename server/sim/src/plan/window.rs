@@ -100,6 +100,13 @@ const BROOK_BANK_M: i64 = 20;
 const RIVER_BANK_M: i64 = 24;
 const RIVER_BANK_PER_DEPTH_M: i64 = 32;
 
+/// The mean level of the waters pulling on a tile weighs each by the
+/// inverse of its distance past its edge (mm), softened by this much so
+/// a tile on the very edge divides by nothing: 10 cm, so that a second
+/// water a few metres off weighs a few per cent there.
+const PULL_SOFTEN_MM: i64 = 100;
+const PULL_SCALE: i64 = 1_000_000;
+
 /// A river whose mean depth is this or less is a ford all along, walked
 /// through (cm): the atlas's dry-shod depth, the one its crossings are
 /// found at ([`measure::passages`]).
@@ -205,6 +212,57 @@ fn ground_of(
         sum += cubic(node, cell, wx, wy) * amplitude / 500;
     }
     base + sum * strength.clamp(0, 1000) / 1000
+}
+
+/// The ground `h` (cm) at point `p` (window mm) drawn down to the
+/// waters of `stretches` within their banks: every water within its
+/// bank pulls the ground to its own level, the nearest the most. The
+/// pull is the strongest one's; the level a mean of the waters' weighted
+/// by the inverse of each one's distance past its edge, so at a water's
+/// edge the ground is that water's level alone, and between two waters
+/// it runs straight from the one's level to the other's. One water
+/// gives the bank's plain blend; two reaches of a mountain river a cell
+/// apart and 20 m apart in level, or two brooks converging on a flank,
+/// give a ramp between them with no step (15 November 2026; drawing
+/// each bank in turn stepped at the higher edge, and weighting by the
+/// cube of each pull with the laggards left out as the strongest neared
+/// its edge dropped a water from the mean between two tiles: steps of
+/// 1.8 to 4.4 m beside converging brooks in twelve windows of the net).
+fn pulled<'a>(h: i64, p: (i64, i64), stretches: impl Iterator<Item = &'a Stretch>) -> i64 {
+    let mut pulls: Vec<(i64, i64, i64)> = Vec::new();
+    let mut strongest = 0;
+    for s in stretches {
+        let reach = s.widest() + s.bank;
+        if p.0 < s.a.0.min(s.b.0) - reach
+            || p.0 > s.a.0.max(s.b.0) + reach
+            || p.1 < s.a.1.min(s.b.1) - reach
+            || p.1 > s.a.1.max(s.b.1) + reach
+        {
+            continue;
+        }
+        let Probe { d, half, level, .. } = s.probe(p);
+        if d < half + s.bank {
+            let t = 1000 - smooth((d - half) * 1000 / s.bank);
+            strongest = strongest.max(t);
+            pulls.push((t, d - half, level));
+        }
+    }
+    if strongest == 0 {
+        return h;
+    }
+    let (mut weighted, mut weights) = (0_i64, 0_i64);
+    for (t, past, level) in pulls {
+        // The pull fades to nothing at the bank's edge, so a water
+        // entering the bank adds nothing at first.
+        let w = t * PULL_SCALE / (past + PULL_SOFTEN_MM);
+        weighted += w * level;
+        weights += w;
+    }
+    if weights == 0 {
+        return h;
+    }
+    let level = weighted / weights;
+    level + (h - level) * (1000 - strongest) / 1000
 }
 
 /// What runs on a stretch of water.
@@ -588,12 +646,6 @@ impl Window {
             let c = mm((gx, gy));
             (c.0 + jitter(0), c.1 + jitter(1))
         };
-        // A brook runs on the ground the window draws, read at its own
-        // point, not at its cell's centre (on a flank the ground falls
-        // metres within a cell), and never rises: a point's level is the
-        // lowest of its ground and of every brook point upstream of it,
-        // so two brooks meeting at a point meet at one level (a window of
-        // the mountains stepped 3 m where they did not, 15 November 2026).
         let rs_u = region.grid.side;
         let region_cell =
             |x: i64, y: i64| usize::try_from((cy0 + y) * rs + cx0 + x).expect("inside");
@@ -608,20 +660,162 @@ impl Window {
                 && (0..cells).contains(&y)
                 && region.water[region_cell(x, y)] == Water::Brook
         };
+        let river_stretches: Vec<Stretch> = stretches[..rivers].to_vec();
+        // The ground a brook runs on at a point (window mm): the window's,
+        // drawn down to the rivers' banks (before 15 November 2026 the raw
+        // ground: beside a river falling 15 %, a brook's source read the
+        // ground 2.5 m under the river's surface and the brook ran into
+        // the river that far under it, (396, 467) of seed 14).
+        let ground_under = |p: (i64, i64)| -> i64 {
+            pulled(
+                ground_of(
+                    seed,
+                    origin,
+                    cells,
+                    &height,
+                    &hills,
+                    p.0.div_euclid(1000),
+                    p.1.div_euclid(1000),
+                ),
+                p,
+                river_stretches.iter(),
+            )
+        };
+        // Where a cell's water goes, by what its receiver is: the point
+        // (window mm), or none on land or sea; a brook's point, a
+        // river's point nearest to where the water comes `from` (before
+        // 15 November 2026, nearest to the receiver's centre: a brook
+        // beside a falling river's lower reach ran up along it to join
+        // the higher one, 2 m under its surface, (396, 467) of seed
+        // 14), a lake's centre; with the water's level there for a river
+        // or a lake.
+        let target_of = |r: usize, from: (i64, i64)| -> Option<((i64, i64), Option<i64>)> {
+            let (lx, ly) = local(r);
+            let (gx, gy) = (lx + origin.0 - MARGIN, ly + origin.1 - MARGIN);
+            match region.water[r] {
+                Water::Brook => Some((brook_point(gx, gy), None)),
+                Water::River => {
+                    let c = from;
+                    let mut best: Option<(i64, (i64, i64), i64)> = None;
+                    for s in &river_stretches {
+                        let Probe { d, level, .. } = s.probe(c);
+                        if best.is_none_or(|(bd, _, _)| d < bd) {
+                            let (dx, dy) = (s.b.0 - s.a.0, s.b.1 - s.a.1);
+                            let len2 = (dx * dx + dy * dy).max(1);
+                            let t = ((c.0 - s.a.0) * dx + (c.1 - s.a.1) * dy).clamp(0, len2);
+                            best = Some((d, (s.a.0 + dx * t / len2, s.a.1 + dy * t / len2), level));
+                        }
+                    }
+                    Some(
+                        best.map_or((c, Some(i64::from(region.surface[r]))), |(_, p, level)| {
+                            (p, Some(level))
+                        }),
+                    )
+                }
+                Water::Lake => Some((mm((gx, gy)), Some(i64::from(region.surface[r])))),
+                Water::Land | Water::Sea => None,
+            }
+        };
+        // A cell's meandered line to its receiver, cut where it first
+        // enters a river's water, with the river's level there (before
+        // 15 November 2026 it ran on to the river's point, up to a cell
+        // along the river, metres under its surface where the river
+        // fell).
+        let meander_of = |i: usize, from: (i64, i64), r: usize, to: (i64, i64)| {
+            let (ax, ay) = (
+                i64::try_from(i % rs_u).expect("small"),
+                i64::try_from(i / rs_u).expect("small"),
+            );
+            let (bx, by) = (
+                i64::try_from(r % rs_u).expect("small"),
+                i64::try_from(r / rs_u).expect("small"),
+            );
+            let keys = [
+                key(i64::from(region.origin.0) * per + ax),
+                key(i64::from(region.origin.1) * per + ay),
+                key(i64::from(region.origin.0) * per + bx),
+                key(i64::from(region.origin.1) * per + by),
+            ];
+            let mut points = course::meander_line(
+                seed,
+                purpose::PLAN_BROOK,
+                &keys,
+                from,
+                to,
+                BROOK_MEANDER_DEPTH,
+                BROOK_MEANDER_PER_MILLE,
+            );
+            // The first point of the line, walked a metre at a time,
+            // within a river's water, and the river's level there: among
+            // the river stretches near the line's span.
+            let (lo, hi) = points.iter().fold(
+                ((i64::MAX, i64::MAX), (i64::MIN, i64::MIN)),
+                |(lo, hi), &(x, y)| ((lo.0.min(x), lo.1.min(y)), (hi.0.max(x), hi.1.max(y))),
+            );
+            let near: Vec<&Stretch> = river_stretches
+                .iter()
+                .filter(|s| {
+                    let w = s.widest();
+                    s.a.0.max(s.b.0) + w >= lo.0
+                        && s.a.0.min(s.b.0) - w <= hi.0
+                        && s.a.1.max(s.b.1) + w >= lo.1
+                        && s.a.1.min(s.b.1) - w <= hi.1
+                })
+                .collect();
+            let river_at = |p: (i64, i64)| -> Option<(i64, i64)> {
+                let mut hit: Option<(i64, i64)> = None;
+                for s in &near {
+                    let probe = s.probe(p);
+                    if probe.d <= probe.half && hit.is_none_or(|(d, _)| probe.d < d) {
+                        hit = Some((probe.d, probe.level));
+                    }
+                }
+                hit
+            };
+            let mut river = None;
+            'walk: for k in 1..points.len() {
+                let (u, v) = (points[k - 1], points[k]);
+                let steps = (line_length(u, v) / 1000).max(1);
+                for n in 1..=steps {
+                    let p = (u.0 + (v.0 - u.0) * n / steps, u.1 + (v.1 - u.1) * n / steps);
+                    if let Some((_, level)) = river_at(p) {
+                        points.truncate(k);
+                        points.push(p);
+                        river = Some(level);
+                        break 'walk;
+                    }
+                }
+            }
+            // Three points at least: the cut below needs them.
+            while points.len() < 3 {
+                let (u, v) = (points[0], points[1]);
+                points.insert(1, (i64::midpoint(u.0, v.0), i64::midpoint(u.1, v.1)));
+            }
+            (points, river)
+        };
+        // A brook runs on the ground the window draws, read at its own
+        // point, not at its cell's centre (on a flank the ground falls
+        // metres within a cell), and never rises: a point's level is the
+        // lowest of its ground and of every brook point upstream of it
+        // whose line reaches it (one cut short by a river lowers nothing
+        // beyond the river), so two brooks meeting at a point meet at one
+        // level (a window of the mountains stepped 3 m where they did
+        // not, 15 November 2026).
         let mut brook_level = vec![i64::MAX; total];
+        let mut reaches = vec![false; total];
         for y in 0..cells {
             for x in 0..cells {
-                if is_brook(x, y) {
-                    let p = brook_point(origin.0 - MARGIN + x, origin.1 - MARGIN + y);
-                    brook_level[usize::try_from(y * cells + x).expect("small")] = ground_of(
-                        seed,
-                        origin,
-                        cells,
-                        &height,
-                        &hills,
-                        p.0.div_euclid(1000),
-                        p.1.div_euclid(1000),
-                    );
+                if !is_brook(x, y) {
+                    continue;
+                }
+                let i = usize::try_from(y * cells + x).expect("small");
+                let p = brook_point(origin.0 - MARGIN + x, origin.1 - MARGIN + y);
+                brook_level[i] = ground_under(p);
+                let r = region.receiver[region_cell(x, y)] as usize;
+                if r != region_cell(x, y)
+                    && let Some((to, _)) = target_of(r, p)
+                {
+                    reaches[i] = meander_of(region_cell(x, y), p, r, to).1.is_none();
                 }
             }
         }
@@ -638,7 +832,7 @@ impl Window {
                             usize::try_from(y * cells + x).expect("small"),
                             usize::try_from(ry * cells + rx).expect("small"),
                         );
-                        if brook_level[i] < brook_level[r] {
+                        if reaches[i] && brook_level[i] < brook_level[r] {
                             brook_level[r] = brook_level[i];
                             changed = true;
                         }
@@ -649,11 +843,6 @@ impl Window {
                 break;
             }
         }
-        // Where a cell's water goes, by what its receiver is: the point
-        // (window mm) and the level (cm) at it, or none on land or sea;
-        // a brook's point, a river's nearest point on its course, a
-        // lake's centre.
-        let river_stretches: Vec<Stretch> = stretches[..rivers].to_vec();
         let brook_level_at = |r: usize, fallback: i64| -> i64 {
             let (lx, ly) = local(r);
             if is_brook(lx, ly) {
@@ -662,87 +851,50 @@ impl Window {
                 fallback
             }
         };
-        let point_of = |r: usize| -> Option<((i64, i64), i64)> {
-            let (lx, ly) = local(r);
-            let (gx, gy) = (lx + origin.0 - MARGIN, ly + origin.1 - MARGIN);
-            match region.water[r] {
-                Water::Brook => {
-                    let b = brook_point(gx, gy);
-                    // A receiver past the margin has no settled level:
-                    // its ground, clamped to the margin, serves.
-                    let level = brook_level_at(
-                        r,
-                        ground_of(
-                            seed,
-                            origin,
-                            cells,
-                            &height,
-                            &hills,
-                            b.0.div_euclid(1000),
-                            b.1.div_euclid(1000),
-                        ),
-                    );
-                    Some((b, level))
-                }
-                Water::River => {
-                    let c = mm((gx, gy));
-                    let mut best: Option<(i64, (i64, i64), i64)> = None;
-                    for s in &river_stretches {
-                        let Probe { d, level, .. } = s.probe(c);
-                        if best.is_none_or(|(bd, _, _)| d < bd) {
-                            let (dx, dy) = (s.b.0 - s.a.0, s.b.1 - s.a.1);
-                            let len2 = (dx * dx + dy * dy).max(1);
-                            let t = ((c.0 - s.a.0) * dx + (c.1 - s.a.1) * dy).clamp(0, len2);
-                            best = Some((d, (s.a.0 + dx * t / len2, s.a.1 + dy * t / len2), level));
-                        }
-                    }
-                    Some(
-                        best.map_or((c, i64::from(region.surface[r])), |(_, p, level)| {
-                            (p, level)
-                        }),
-                    )
-                }
-                Water::Lake => Some((mm((gx, gy)), i64::from(region.surface[r]))),
-                Water::Land | Water::Sea => None,
-            }
+        // Where a cell's water goes: the point and the level at it. A
+        // brook receiver past the margin has no settled level: its
+        // ground, clamped to the margin, serves.
+        let point_of = |r: usize, from: (i64, i64)| -> Option<((i64, i64), i64)> {
+            let (p, level) = target_of(r, from)?;
+            Some((
+                p,
+                level.unwrap_or_else(|| brook_level_at(r, ground_under(p))),
+            ))
         };
         // A cell's meandered line to its receiver, each point with its
-        // level: `(x, y, level)`, the level falling evenly along it.
+        // level: `(x, y, level)`, and whether it was cut short by a river.
         let line_of = |i: usize, from: ((i64, i64), i64), r: usize, to: ((i64, i64), i64)| {
-            let (ax, ay) = (
-                i64::try_from(i % rs_u).expect("small"),
-                i64::try_from(i / rs_u).expect("small"),
-            );
-            let (bx, by) = (
-                i64::try_from(r % rs_u).expect("small"),
-                i64::try_from(r / rs_u).expect("small"),
-            );
-            let keys = [
-                key(i64::from(region.origin.0) * per + ax),
-                key(i64::from(region.origin.1) * per + ay),
-                key(i64::from(region.origin.0) * per + bx),
-                key(i64::from(region.origin.1) * per + by),
-            ];
-            let points = course::meander_line(
-                seed,
-                purpose::PLAN_BROOK,
-                &keys,
-                from.0,
-                to.0,
-                BROOK_MEANDER_DEPTH,
-                BROOK_MEANDER_PER_MILLE,
-            );
-            let mut along = vec![0; points.len()];
-            for k in 1..points.len() {
-                along[k] = along[k - 1] + line_length(points[k - 1], points[k]);
-            }
-            let total = along[points.len() - 1].max(1);
-            let level_to = to.1.min(from.1);
-            points
+            let (points, river) = meander_of(i, from.0, r, to.0);
+            let last = points.len() - 1;
+            // Into a river, the river's level where the line meets it,
+            // even above the brook's own: a brook whose source lies
+            // under the surface of the river it joins (a river falling
+            // at its steepest keeps its surface over the region's ground
+            // by up to half a cell's fall; the window's bank hides it)
+            // rises to it over its last stretch. The one climb a brook
+            // makes; the rivers in the air are the course's finding.
+            let level_to = river.unwrap_or(to.1.min(from.1));
+            // The level follows the ground under the line, never rising
+            // and never under the receiver's level, which the last point
+            // takes. Before 15 November 2026 it fell evenly along the
+            // line: on a flank, the line's excursions across the slope
+            // put the water up to 22 m under the ground or above it, and
+            // the bank pulled the ground to it in walls ((629, 624) of
+            // seed 14, 444 steps).
+            let mut level = from.1;
+            let line = points
                 .iter()
-                .zip(&along)
-                .map(|(&(x, y), &at)| (x, y, from.1 + (level_to - from.1) * at / total))
-                .collect::<Vec<Levelled>>()
+                .enumerate()
+                .map(|(k, &(x, y))| {
+                    level = if k == last {
+                        level_to
+                    } else {
+                        ground_under((x, y)).clamp(level_to.min(level), level)
+                    };
+                    (x, y, level)
+                })
+                .collect::<Vec<Levelled>>();
+            (line, river.is_some())
         };
         // The cut of a line: the middle of the innermost piece after the
         // line's own midpoint, and the two halves either side of it.
@@ -773,7 +925,7 @@ impl Window {
                 stretches.push(Stretch {
                     a: (u.0, u.1),
                     b: (v.0, v.1),
-                    level: (u.2, v.2.min(u.2)),
+                    level: (u.2, v.2),
                     half: (
                         (BROOK_HALF_MM, BROOK_HALF_MM),
                         (BROOK_HALF_MM, BROOK_HALF_MM),
@@ -802,10 +954,10 @@ impl Window {
                     brook_point(gx, gy),
                     brook_level[usize::try_from(y * cells + x).expect("small")],
                 );
-                let Some(to) = point_of(r) else {
+                let Some(to) = point_of(r, from.0) else {
                     continue;
                 };
-                let line = line_of(i, from, r, to);
+                let (line, cut_short) = line_of(i, from, r, to);
                 let (head, tail) = cut(&line);
                 // A source's head: no brook drains into this cell.
                 let (cx, cy) = region.grid.xy(i);
@@ -823,11 +975,12 @@ impl Window {
                 // with a receiver of its own.
                 let mut piece = tail;
                 let rr = region.receiver[r] as usize;
-                if region.water[r] == Water::Brook
+                if !cut_short
+                    && region.water[r] == Water::Brook
                     && rr != r
-                    && let Some(beyond) = point_of(rr)
+                    && let Some(beyond) = point_of(rr, to.0)
                 {
-                    let next = line_of(r, to, rr, beyond);
+                    let (next, _) = line_of(r, to, rr, beyond);
                     let (next_head, _) = cut(&next);
                     piece.extend_from_slice(&next_head[1..]);
                 }
@@ -1011,7 +1164,13 @@ impl Window {
     }
 
     /// The water on tile `(x, y)`, if any: a lake first, else the lowest
-    /// of the stretches covering it.
+    /// of the stretches covering it for what it is (a ford, how deep,
+    /// its current), at a level that is the mean of all the stretches
+    /// covering it, each weighted by how far within its water the tile
+    /// lies. The lowest alone gave a tile the level of a stretch half a
+    /// width downstream (a steep river's stretches reach a tile through
+    /// their ends): 1.9 m under the water beside it ((178, 659) of seed
+    /// 14, 15 November 2026).
     pub fn wet(&self, x: i64, y: i64) -> Option<Wet> {
         let (share, level) = self.lake_at(x, y);
         if share > 500 {
@@ -1024,9 +1183,16 @@ impl Window {
         }
         let p = (x * 1000 + 500, y * 1000 + 500);
         let mut best: Option<Wet> = None;
+        let (mut weighted, mut weights) = (0_i64, 0_i64);
         for s in self.stretches_near(x, y) {
             let probe = s.probe(p);
-            if probe.d > probe.half || best.is_some_and(|b| b.level <= probe.level) {
+            if probe.d > probe.half {
+                continue;
+            }
+            let w = probe.half - probe.d + 1;
+            weighted += w * probe.level;
+            weights += w;
+            if best.is_some_and(|b| b.level <= probe.level) {
                 continue;
             }
             let (terrain, depth, speed) = match s.kind {
@@ -1050,6 +1216,9 @@ impl Window {
                 level: probe.level,
             });
         }
+        if let Some(wet) = &mut best {
+            wet.level = weighted / weights;
+        }
         best
     }
 
@@ -1066,44 +1235,11 @@ impl Window {
             let w = smooth((500 - share) * 2);
             h = level + (h - level) * w / 1000;
         }
-        // Every water within its bank draws the ground down to its own
-        // level, the nearest the most: the pull is the strongest one's,
-        // the level a mean of the waters' weighted by the cube of each
-        // pull, a water lagging behind the strongest left out the more
-        // the strongest nears its edge, so the ground at a water's edge
-        // is that water's level alone. One water gives the bank's plain blend; two reaches of a
-        // mountain river a cell apart and 20 m apart in level, or two
-        // brooks converging on a flank, give a saddle between them with
-        // no step (15 November 2026; drawing each bank in turn stepped at
-        // the higher edge).
-        let p = (x * 1000 + 500, y * 1000 + 500);
-        let mut pulls: Vec<(i64, i64)> = Vec::new();
-        let mut strongest = 0;
-        for s in self.stretches_near(x, y) {
-            let Probe { d, half, level, .. } = s.probe(p);
-            if d < half + s.bank {
-                let t = 1000 - smooth((d - half) * 1000 / s.bank);
-                strongest = strongest.max(t);
-                pulls.push((t, level));
-            }
-        }
-        if strongest > 0 {
-            let (mut weighted, mut weights) = (0_i64, 0_i64);
-            for (t, level) in pulls {
-                // Its share shrinks with its lag behind the strongest,
-                // and the room for a lag closes as the strongest nears
-                // a water's edge: there, only that water counts.
-                let share = (1000 - (strongest - t) * 1000 / (1001 - strongest)).max(0);
-                let w = t * t * t * share / 1000;
-                weighted += w * level;
-                weights += w;
-            }
-            if weights > 0 {
-                let level = weighted / weights;
-                h = level + (h - level) * (1000 - strongest) / 1000;
-            }
-        }
-        h
+        pulled(
+            h,
+            (x * 1000 + 500, y * 1000 + 500),
+            self.stretches_near(x, y),
+        )
     }
 
     /// The height of tile `(x, y)` in decimetres, as the wire carries it.
