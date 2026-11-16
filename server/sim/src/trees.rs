@@ -64,6 +64,7 @@ use crate::r#gen::noise;
 use crate::r#gen::scatter::{self, Frame, Grid, key, purpose};
 use crate::map::{CHUNK_SIZE, ChunkPos, FinePos, MM_PER_TILE, Map, Pos, Terrain};
 use crate::open_ground::OpenGround;
+use crate::plan::Biome;
 use crate::woods::{Habitat, Woods};
 
 /// A tree standing on the ground.
@@ -278,6 +279,11 @@ const MEADOW_GRID: Grid = Grid {
 const MEADOW_NEAR: u32 = 420;
 const MEADOW_REACH: i32 = 40;
 const MEADOW_FAR: u64 = 576;
+/// The open biome the groups by the woods and the water were tuned on
+/// (the valley's grassland): another open biome's ground holds them in
+/// the proportion of its groves a square kilometre to this one's
+/// (`content/open_ground.ron`), never more.
+const EDGE_REFERENCE: Biome = Biome::Grassland;
 /// A group: 3 to 8 trees within `GROUP_RADIUS` millimetres of its centre,
 /// kept `GROUP_APART` apart.
 const GROUP_SMALLEST: u64 = 3;
@@ -854,13 +860,29 @@ impl Planting<'_> {
             (None, None) => (roll % 1_000_000 < MEADOW_FAR).then_some(1),
             // An open biome's ground: its groves and lone trees, in
             // millionths a cell, the groups by the woods keeping their
-            // chance where it is the greater.
+            // chance where it is the greater. The groups by the woods
+            // and the water are the valley's, tuned on its grassland:
+            // on another open biome's ground they come in the
+            // proportion of its groves to the grassland's, so a
+            // steppe's brooks are lined at a steppe's rate. Before 15
+            // November 2026 they came at the valley's rate everywhere,
+            // and a steppe cut by brooks held 1.8 to 2.9 trees a hectare
+            // for the 0.7 asked (the net's `OpenDensity`, three windows
+            // of seed 14).
             (near, Some(open)) => {
                 let stocking = self.stocking(tile);
                 let own =
                     |per_km2: u32| u64::from(per_km2) * MEADOW_CELL_M2 * u64::from(stocking) / 1000;
+                let share = self
+                    .open
+                    .of(EDGE_REFERENCE)
+                    .filter(|g| g.groves_per_km2 > 0)
+                    .map_or(1000, |g| {
+                        (u64::from(open.groves_per_km2) * 1000 / u64::from(g.groves_per_km2))
+                            .min(1000)
+                    });
                 let grove = near
-                    .map_or(0, |d| u64::from(by_the_woods(d, stocking)) * 1000)
+                    .map_or(0, |d| u64::from(by_the_woods(d, stocking)) * share)
                     .max(own(open.groves_per_km2));
                 let lone = if near.is_some() { 0 } else { MEADOW_FAR }.max(own(open.lone_per_km2));
                 let drawn = roll % 1_000_000;

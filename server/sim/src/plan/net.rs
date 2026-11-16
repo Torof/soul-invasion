@@ -841,11 +841,39 @@ fn judge_ford(
         );
         return;
     }
-    let n = fords.len() as i64;
-    let (fx, fy) = fords.iter().fold((0_i64, 0_i64), |s, &(x, y)| {
-        (s.0 + x as i64, s.1 + y as i64)
-    });
-    let f = (fx / n * 1000 + 500, fy / n * 1000 + 500);
+    // The crossing's ford is the bar the course spread (`Node::ford`),
+    // not every ford tile of the window: a river whose banks stand out
+    // runs under half a metre deep in reaches of its own, drawn as
+    // fords all along (a known gap, `docs/06`), and the centroid of
+    // them all fell on dry ground off the river at (222, 683) of seed
+    // 14 (15 November 2026), both "banks" on one side and the path
+    // between them never wading.
+    let bar: Vec<(i64, i64)> = runs
+        .iter()
+        .flatten()
+        .filter(|node| node.ford)
+        .map(|node| node.p)
+        .collect();
+    let f = if bar.is_empty() {
+        let n = fords.len() as i64;
+        let (fx, fy) = fords.iter().fold((0_i64, 0_i64), |s, &(x, y)| {
+            (s.0 + x as i64, s.1 + y as i64)
+        });
+        (fx / n * 1000 + 500, fy / n * 1000 + 500)
+    } else {
+        let n = bar.len() as i64;
+        let (fx, fy) = bar
+            .iter()
+            .fold((0_i64, 0_i64), |s, p| (s.0 + p.0, s.1 + p.1));
+        (fx / n, fy / n)
+    };
+    let _ = write!(
+        verdict.measures,
+        ", the bar's {} nodes at ({}, {})",
+        bar.len(),
+        f.0 / 1000,
+        f.1 / 1000
+    );
     // The river's direction at the ford: the nearest node's segment.
     let mut nearest: Option<(i64, (i64, i64), i64)> = None;
     for run in runs {
@@ -1168,6 +1196,86 @@ fn the_vivarium_region_rises_under_the_ceiling() {
     assert!(diag <= rise * 1414 / 1000, "{diag} cm over a diagonal");
 }
 
+/// A river reaches the sea's level only at the sea: the region's detail
+/// swings no deeper than the ground stands above the sea, and a river
+/// settles on a lake's surface, not its bed, so no inland dip or lake
+/// drags a river down to the sea's level for the rest of its course (a
+/// steppe 33 m up ran its river at the sea's level, (391, 441) of seed
+/// 14, and a river that crossed a lake of the atlas kept its bed's level
+/// for 7 km, (438, 376); 15 November 2026, the net's `SeaAsLand`).
+#[test]
+fn rivers_reach_the_sea_level_only_at_the_sea() {
+    let c = continent();
+    for cell in [(391, 441), (438, 376)] {
+        let region = super::Region::around(c, cell, 10 * 32);
+        let side = i64::try_from(region.grid.side).expect("small");
+        let origin = (
+            i64::from(region.origin.0) * 32,
+            i64::from(region.origin.1) * 32,
+        );
+        let by_the_sea = |p: (i64, i64)| {
+            let (px, py) = (
+                p.0.div_euclid(REGION_CELL_M * 1000) - origin.0,
+                p.1.div_euclid(REGION_CELL_M * 1000) - origin.1,
+            );
+            (-2..=2).any(|dy| {
+                (-2..=2).any(|dx| {
+                    let (x, y) = (px + dx, py + dy);
+                    (0..side).contains(&x)
+                        && (0..side).contains(&y)
+                        && region.water[usize::try_from(y * side + x).expect("inside")]
+                            == super::region::Water::Sea
+                })
+            })
+        };
+        let (mut nodes, mut inland_at_sea) = (0, 0);
+        for node in region.stems.iter().flat_map(|s| &s.nodes) {
+            nodes += 1;
+            if node.level <= 0 && !by_the_sea(node.p) {
+                inland_at_sea += 1;
+            }
+        }
+        eprintln!("{cell:?}: {nodes} river nodes, {inland_at_sea} at the sea's level off the sea");
+        assert_eq!(
+            inland_at_sea, 0,
+            "{cell:?}: rivers at the sea's level inland"
+        );
+    }
+}
+
+/// The windows whose land the net found under the sea's level on 15
+/// November 2026 (river beds settled at it, coastal land the detail and
+/// the small hills dug under it), and the lake beside its river that
+/// stepped 1.8 m ((149, 564)), judged on their heights alone: no dry tile
+/// under the sea's level, no step. The coastal windows whose sea is drawn
+/// as land are left out: the window draws no sea yet (`docs/06`).
+#[test]
+#[ignore = "five windows' heights, minutes in release; run by hand: cargo test --release -p sim --lib plan::net::the_land_under -- --ignored --nocapture"]
+fn the_land_under_the_sea_stands_above_it() {
+    let c = continent();
+    let mut failed = Vec::new();
+    for cell in [(391, 441), (438, 376), (787, 719), (288, 569), (149, 564)] {
+        let map = Map::on_window(Window::of_cell(c, cell), c.seed);
+        let tiles = Tiles::read(&map);
+        let below = (0..tiles.side * tiles.side)
+            .filter(|&i| tiles.terrain[i] == Terrain::Grass && tiles.height[i] < 0)
+            .count();
+        let mut verdict = Verdict {
+            cell,
+            ..Verdict::default()
+        };
+        judge_heights(&mut verdict, &tiles);
+        eprintln!(
+            "{}; {below} dry tiles under the sea's level",
+            verdict.line()
+        );
+        if below > 0 || verdict.failures.iter().any(|(w, _)| *w == Invariant::Steps) {
+            failed.push(format!("{}; {below} under the sea", verdict.line()));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
 /// A tile is the same through two windows (D39): the vivarium's cell cut
 /// from its own region and from the region centred one cell east, whose
 /// stems, valleys and ceiling were worked out over a span shifted by
@@ -1201,6 +1309,50 @@ fn a_tile_is_the_same_through_two_windows() {
         differ, 0,
         "{differ} of {tiles} tiles differ, worst {worst} dm"
     );
+}
+
+/// The steppe window the net found pitted on 15 November 2026 ((390, 476)
+/// of seed 14: five pits of 2 to 3 dm on the shore of a lake 6 m below
+/// the ground): the shore's wander no longer runs back on itself
+/// (`window::SHORE_WANDER_CELLS`), so the shore's slope holds no pit.
+#[test]
+fn the_steppe_lake_shore_holds_no_pit() {
+    let verdict = judge_heights_of((390, 476));
+    eprintln!("{}", verdict.line());
+    assert!(verdict.failures.is_empty(), "{}", verdict.line());
+}
+
+/// The three windows whose steppe held 1.8 to 2.9 trees a hectare for
+/// the 0.7 asked on 15 November 2026, judged whole with their trees: the
+/// groups by the woods and the water come at the steppe's rate
+/// (`trees::EDGE_REFERENCE`).
+#[test]
+#[ignore = "three windows with their trees, a minute in release; run by hand: cargo test --release -p sim --lib plan::net::the_steppe_windows -- --ignored --nocapture"]
+fn the_steppe_windows_hold_the_steppe_density() {
+    net_over(&[(538, 611), (390, 476), (234, 464)], &[]);
+}
+
+/// The crossing the net found "unwaded" on 15 November 2026 ((222, 683)
+/// of seed 14, 116 m³/s): the judge read the ford from every ford tile
+/// of the window, shallow reaches included, and its centroid fell on dry
+/// ground; it reads the course's bar now, and the path wades it.
+#[test]
+fn the_crossing_of_the_broadleaf_window_is_waded() {
+    let c = continent();
+    let cell = (222, 683);
+    let passages = measure::passages(c, measure::DRY_CM);
+    assert_eq!(passages[c.grid.index(cell.0, cell.1)], Passage::Crossing);
+    let window = Window::of_cell(c, cell);
+    let map = Map::on_window(window.clone(), c.seed);
+    let tiles = Tiles::read(&map);
+    let runs = runs_in(c, &window, cell);
+    let mut verdict = Verdict {
+        cell,
+        ..Verdict::default()
+    };
+    judge_ford(&mut verdict, &map, &tiles, &runs, true);
+    eprintln!("{}", verdict.line());
+    assert!(verdict.failures.is_empty(), "{}", verdict.line());
 }
 
 /// The whole sample (minutes: run by hand, see the module).

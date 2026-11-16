@@ -411,11 +411,28 @@ impl Region {
             }
         };
         let total: i64 = DETAIL_OCTAVES.iter().map(|o| o.1).sum();
+        // How far the continent's lakes and filled hollows stand over its
+        // ground (0 off them and on the sea): near a lake, the lake's
+        // surface is what a river settles on (`ground_around`), never its
+        // bed.
+        let lake_depth = |x: i32, y: i32| {
+            let i = at(x, y);
+            if c.sea[i] {
+                0
+            } else {
+                i64::from(c.surface[i] - c.height[i])
+            }
+        };
         let mut height = vec![0_i32; n];
+        let mut lake_surface = vec![i32::MIN; n];
         let mut sea = vec![false; n];
         for i in 0..n {
             let (gx, gy) = abs(i);
             let base = interpolate(&ground, gx, gy);
+            let depth = interpolate(&lake_depth, gx, gy);
+            if depth > 0 {
+                lake_surface[i] = i32::try_from(base + depth).expect("small");
+            }
             let (cx, cy, _, _) = frame(gx, gy);
             let near_sea = (0..2).any(|dy| {
                 (0..2).any(|dx| {
@@ -430,7 +447,14 @@ impl Region {
                 height[i] = i32::try_from(base).expect("small");
                 continue;
             }
-            let amp = interpolate(&amplitude, gx, gy).max(0);
+            // The detail never swings deeper than the ground stands above
+            // the sea: a lowland's dips stay over the sea's level. Before
+            // 15 November 2026 a steppe 33 m up swung over 33 m, its river
+            // settled on a dip at the sea's level and kept that level for
+            // the rest of its course, 33 m under the plain ((391, 441) of
+            // seed 14), and coastal land fell under the sea's level
+            // ((787, 719), (288, 569); the net's `SeaAsLand`).
+            let amp = interpolate(&amplitude, gx, gy).clamp(0, base.max(0));
             let mut detail = 0_i64;
             for (k, &(cell, w)) in DETAIL_OCTAVES.iter().enumerate() {
                 let s = roll(c.seed, purpose::PLAN_DETAIL, &[k as u64]);
@@ -462,7 +486,14 @@ impl Region {
         let margin = 2;
         let cell_mm = REGION_CELL_M * 1000;
         // The ground around a course's point, before the valleys: the
-        // lowest of the nine cells around it, none past the region.
+        // lowest of the nine cells around it, none past the region; on a
+        // lake of the continent its surface, not its bed. A river crossing
+        // a lake cell of the atlas (its bed 24 m under the lake's surface)
+        // dived to the bed, clamped to the sea's level, and kept that
+        // level for the rest of its course: 7 km at the sea's level
+        // through land 14 m up ((438, 376) of seed 14, 15 November 2026;
+        // the net's `SeaAsLand`), and a tributary fell 3.4 m in a few
+        // metres to meet its stem so lowered ((149, 564), `Steps`).
         let ground_around = |p: (i64, i64)| -> Option<i64> {
             let (px, py) = (p.0.div_euclid(cell_mm) - ox, p.1.div_euclid(cell_mm) - oy);
             let s = i64::try_from(side).expect("small");
@@ -473,7 +504,7 @@ impl Region {
             for dy in -1..=1 {
                 for dx in -1..=1 {
                     let j = usize::try_from((py + dy) * s + px + dx).expect("inside");
-                    low = low.min(i64::from(height[j]));
+                    low = low.min(i64::from(height[j].max(lake_surface[j])));
                 }
             }
             Some(low)
