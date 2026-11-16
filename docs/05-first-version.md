@@ -279,6 +279,16 @@ second summer, between the spring's leaves and the grain; tribe B is
 never thin. The gap is a gap of species: more fruits and vegetables come
 next.
 
+**More of the valley** (16 November 2026): 8 shrubs (red currant,
+blackcurrant, gooseberry, bilberry, cornelian cherry, wild grape,
+strawberry tree, blackthorn) and 11 plants (wild asparagus, hop, sorrel,
+lamb's lettuce, chickweed, purslane, fat hen, wild onion, silverweed,
+arrowhead, water chestnut), each with its crop, without images yet (the
+client draws a kind it has no image of as nothing). Burdock is left out:
+its root is mistaken for deadly nightshade's. Two tribes of five, two
+years: nobody dies, nobody is ever thin, each tribe gathers some
+2.5 GJ a year.
+
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
 slopes drawn by the client from them (D44), then the relief in the

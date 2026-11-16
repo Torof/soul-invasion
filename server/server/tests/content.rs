@@ -60,6 +60,26 @@ fn energy_per_kilogram_gives_a_piece_what_it_gave_before() {
         ("flax_seeds", 2200),
         ("cattail_root", 300),
         ("oyster_mushrooms", 140),
+        // More of the valley (16 November 2026).
+        ("asparagus_shoots", 85),
+        ("hop_shoots", 100),
+        ("sorrel_leaves", 90),
+        ("lambs_lettuce", 90),
+        ("chickweed", 80),
+        ("purslane", 80),
+        ("fat_hen_leaves", 180),
+        ("red_currants", 230),
+        ("blackcurrants", 260),
+        ("gooseberries", 190),
+        ("bilberries", 240),
+        ("cornels", 280),
+        ("grapes", 290),
+        ("arbutus_berries", 330),
+        ("sloes", 200),
+        ("wild_onions", 170),
+        ("silverweed_root", 300),
+        ("arrowhead_tubers", 400),
+        ("water_chestnuts", 400),
     ];
     for (id, kj) in before {
         let material = content.material(id).expect(id);

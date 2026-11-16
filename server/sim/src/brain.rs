@@ -562,25 +562,7 @@ fn look(
                 }
             }
         }
-        if mind.plants.len() > MEMORY_PLANTS {
-            // The farthest go, all at once: a look over a reed bed adds
-            // thousands.
-            let mut ranked: Vec<_> = mind
-                .plants
-                .iter()
-                .map(|(key, plant)| {
-                    let best = kj_per_hour(rules, &plant.kind, None);
-                    (
-                        std::cmp::Reverse(worth(best, far(plant.at.tile(), at))),
-                        *key,
-                    )
-                })
-                .collect();
-            ranked.select_nth_unstable(MEMORY_PLANTS);
-            for (_, key) in &ranked[MEMORY_PLANTS..] {
-                mind.plants.remove(key);
-            }
-        }
+        forget_the_least(world, rules, at, mind);
     }
     // Kept small: the nearest to the camp.
     while mind.water.len() > MEMORY_PLACES {
@@ -791,6 +773,37 @@ fn food_in_season(world: &World, rules: &Content, kind: &str) -> Option<(String,
 /// The day of the world, counted from its first.
 fn today(world: &World) -> u64 {
     world.tick().0 / world.calendar().ticks_per_day().max(1)
+}
+
+/// Past [`MEMORY_PLANTS`], forgets the plants worth least from `at`.
+fn forget_the_least(world: &World, rules: &Content, at: Pos, mind: &mut Mind) {
+    if mind.plants.len() > MEMORY_PLANTS {
+        // The least worth go, all at once: a look over a reed bed adds
+        // thousands. What bears now comes first, by what an hour of it
+        // gives now; then the rest by its best crop: a fruit bush out
+        // of season does not crowd out the spring's leaves.
+        let mut rate: BTreeMap<&str, (bool, u64)> = BTreeMap::new();
+        let mut ranked: Vec<_> = mind
+            .plants
+            .iter()
+            .map(|(key, plant)| {
+                let (now, best) = *rate.entry(plant.kind.as_str()).or_insert_with(|| {
+                    match food_in_season(world, rules, &plant.kind) {
+                        Some((gives, _)) => (true, kj_per_hour(rules, &plant.kind, Some(&gives))),
+                        None => (false, kj_per_hour(rules, &plant.kind, None)),
+                    }
+                });
+                (
+                    std::cmp::Reverse((now, worth(best, far(plant.at.tile(), at)))),
+                    *key,
+                )
+            })
+            .collect();
+        ranked.select_nth_unstable(MEMORY_PLANTS);
+        for (_, key) in &ranked[MEMORY_PLANTS..] {
+            mind.plants.remove(key);
+        }
+    }
 }
 
 /// What an hour of gathering a plant of `kind` gives, in kilojoules: of
@@ -1226,6 +1239,43 @@ mod tests {
         assert_eq!(
             plant_to_gather(&world, &rules, here, &mind).map(|t| t.0),
             Some(plant(1))
+        );
+    }
+
+    #[test]
+    fn it_forgets_what_bears_out_of_season_before_what_bears_now() {
+        let (world, rules, id, _) = by_a_ripe_bramble(0);
+        let here = world.body(id).unwrap().pos();
+        let chunk = here.chunk();
+        let plant = |x_mm| {
+            (
+                chunk,
+                Source::Plant(crate::crops::PlantKey { x_mm, y_mm: 1 }),
+            )
+        };
+        let known = |tiles: i32, kind: &str| KnownPlant {
+            at: FinePos::new(here.centre().x + tiles * 1000, here.centre().y),
+            kind: kind.to_owned(),
+            spent: None,
+        };
+        let mut mind = Mind::new(here);
+        // Wild garlic at its feet, an hour of it worth more than of
+        // blackberries, but in the spring; one bramble bearing now,
+        // farther.
+        let garlic = u16::try_from(MEMORY_PLANTS).unwrap();
+        for x_mm in 0..garlic {
+            mind.plants.insert(plant(x_mm), known(0, "wild_garlic"));
+        }
+        mind.plants.insert(plant(garlic), known(20, "bramble"));
+        forget_the_least(&world, &rules, here, &mut mind);
+        assert_eq!(mind.plants.len(), MEMORY_PLANTS);
+        assert!(
+            mind.plants.contains_key(&plant(garlic)),
+            "the bramble stays"
+        );
+        assert_eq!(
+            plant_to_gather(&world, &rules, here, &mind).map(|t| t.0),
+            Some(plant(garlic))
         );
     }
 
