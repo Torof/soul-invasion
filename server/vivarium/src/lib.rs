@@ -423,10 +423,10 @@ pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunErr
         }
         if tick % ticks_per_sample == 0 {
             let now = sample(&world, &mut people);
-            for tribe in 0..tribes {
+            for (tribe, &starving) in now.starving_by_tribe.iter().enumerate().take(tribes) {
                 food.entry((u8::try_from(tribe).expect("two"), year))
                     .or_default()
-                    .starving_samples += u64::from(now.starving_by_tribe[tribe]);
+                    .starving_samples += u64::from(starving);
             }
             samples.push(now);
         }
