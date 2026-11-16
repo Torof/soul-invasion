@@ -3074,8 +3074,8 @@ mod tests {
         // November 2026 sent them before the generator had versions
         // (FNV-1a of their bytes, end to end): a world made by the first
         // generator sends them byte for byte. Re-pinned on 16 November
-        // 2026 for 19 more shrubs and plants (the plants' bytes, 1,015,322
-        // before).
+        // 2026 for 19 more shrubs and plants (1,015,322 bytes before),
+        // then for six fruit and nut trees (1,225,292).
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
         let content = crate::content::load(&dir).expect("repository content");
         let map = Map::valley_by(sim::map::FIRST_GENERATOR, 768, 768, sim::VALLEY_SEED);
@@ -3091,7 +3091,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!((print, bytes), (0xf840_5889_83f2_b493, 1_225_292));
+        assert_eq!((print, bytes), (0xc7d2_5d62_5cc0_1194, 1_226_087));
     }
 
     #[test]
