@@ -122,5 +122,20 @@
          grams: (50, 100, 150), years: (lean: 10, rich: 10), per_hour_g: 500),
         (on: "water_chestnut", gives: "water_chestnuts", from: (autumn, 0), until: (winter, 50),
          grams: (50, 150, 250), years: (lean: 15, rich: 15), per_hour_g: 800),
+        // The fruit and nut trees (16 November 2026): cherries and
+        // mulberries for the summer, pears, figs, walnuts and chestnuts for
+        // the autumn and the winter's store.
+        (on: "wild_cherry", gives: "cherries", from: (summer, 0), until: (summer, 40),
+         grams: (5000, 15000, 30000), years: (lean: 25, rich: 20), per_hour_g: 3000),
+        (on: "mulberry", gives: "mulberries", from: (summer, 20), until: (summer, 80),
+         grams: (3000, 8000, 15000), years: (lean: 15, rich: 15), per_hour_g: 2500),
+        (on: "wild_fig", gives: "figs", from: (summer, 60), until: (autumn, 50),
+         grams: (2000, 6000, 12000), years: (lean: 20, rich: 15), per_hour_g: 2500),
+        (on: "wild_pear", gives: "pears", from: (autumn, 0), until: (autumn, 80),
+         grams: (5000, 15000, 25000), years: (lean: 20, rich: 20), per_hour_g: 4000),
+        (on: "walnut", gives: "walnuts", from: (autumn, 20), until: (winter, 30),
+         grams: (5000, 15000, 30000), years: (lean: 25, rich: 25), per_hour_g: 2000),
+        (on: "chestnut", gives: "chestnuts", from: (autumn, 20), until: (winter, 20),
+         grams: (10000, 30000, 60000), years: (lean: 25, rich: 25), per_hour_g: 3000),
     ],
 )

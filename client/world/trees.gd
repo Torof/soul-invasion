@@ -186,6 +186,26 @@ static func sharpness(zoom: float) -> float:
 	return -clampf((zoom - 0.5) / 0.5, 0.0, 1.0)
 
 
+## Kinds of tree with no images of their own yet, drawn with another's
+## (the fruit and nut trees of 16 November 2026, until their art).
+const STAND_INS := {
+	"wild_cherry": "wild_apple",
+	"mulberry": "wild_apple",
+	"wild_pear": "wild_apple",
+	"walnut": "oak",
+	"chestnut": "linden",
+	"wild_fig": "hazel",
+}
+
+
+## The kind whose images a tree of `species` is drawn with: its own, or
+## its stand-in's while it has none.
+static func looks_as(species: String) -> String:
+	if STAND_INS.has(species) and paths(species).is_empty():
+		return STAND_INS[species]
+	return species
+
+
 ## The paths of the images of a kind of tree: `<id>_adult_01_summer.webp`,
 ## `_02`, ... (found once, kept).
 static func paths(species: String) -> PackedStringArray:
@@ -870,9 +890,12 @@ class Stand:
 			if k == null:
 				k = kinds.size()
 				which[species] = k
-				kinds.append(species)
+				# A kind drawn with a stand-in's images keeps its own height;
+				# the images are read for the tallest drawn with them.
+				var looks := Trees.looks_as(species)
+				kinds.append(looks)
 				heights.append(int(tree_heights.get(species, 400)))
-				Trees._heights[species] = heights[-1]
+				Trees._heights[looks] = maxi(int(Trees._heights.get(looks, 0)), heights[-1])
 			kind[i] = k
 		if n == 0:
 			built = true
