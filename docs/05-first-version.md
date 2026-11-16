@@ -251,6 +251,23 @@ its camp roams far from it, so the plants it remembers must be the nearest
 to where it is, not to its camp; and bushes seen across a river are tried
 one after the other unless the whole patch is left for the day.
 
+**Lot 2, the valley's food** (16 November 2026, the same trial with
+nineteen crops): nobody dies, the run takes about 115 s. Each tribe
+gathers about 2.1 GJ a year, near nine tenths of its need, and spends
+about 40 person-days a year at full hunger instead of 130. The winter is
+carried by haws and rose hips on the branch, the summer by grain and peas,
+the spring stays the lean season (dandelion leaves, cattail roots).
+Nothing spoils: hungry people eat what they pick. No hazelnut is gathered:
+the brain remembers the 256 plants nearest to it, so in a meadow the
+hazels are crowded out, and it does not yet prefer the richer food. Three
+things learnt: a gathering asked which plant it was by placing the
+chunk's flora again (now held per chunk); looking for water at every new
+tile cost three quarters of a thought by a lake shore (now every 8
+tiles); and a walk to the water stopped short far from the camp made a
+tribe forget its only water and die of cold lost (now it goes back to the
+camp first). With every thought on every page, the report of this run
+weighs 63 MB.
+
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
 slopes drawn by the client from them (D44), then the relief in the

@@ -1255,7 +1255,13 @@ impl World {
     /// the same every time. The plants are placed from the map, the seed
     /// and the trees around (a few milliseconds a chunk), and only when a
     /// kind of the flora bears something.
-    pub fn bearers_in(&self, chunk: ChunkPos) -> Vec<crops::Bearer> {
+    pub fn bearers_in(&self, chunk: ChunkPos) -> Arc<[crops::Bearer]> {
+        self.ground_cache
+            .bearers_in(chunk, || self.place_bearers(chunk))
+    }
+
+    /// The trees and plants of `chunk` bearing a crop, placed now.
+    fn place_bearers(&self, chunk: ChunkPos) -> Vec<crops::Bearer> {
         let bears = |id: &str| self.crops.iter().any(|c| c.on == id);
         let mut out: Vec<crops::Bearer> = self
             .trees_in(chunk)
@@ -1329,8 +1335,9 @@ impl World {
     pub fn pick(&mut self, chunk: ChunkPos, source: crops::Source, gives: &str, grams: u32) -> u32 {
         let Some(bearer) = self
             .bearers_in(chunk)
-            .into_iter()
+            .iter()
             .find(|b| b.source == source)
+            .cloned()
         else {
             return 0;
         };
@@ -2322,8 +2329,9 @@ impl World {
         };
         let Some(bearer) = self
             .bearers_in(chunk)
-            .into_iter()
+            .iter()
             .find(|b| b.source == source)
+            .cloned()
         else {
             return refuse(events, Refusal::Unknown);
         };

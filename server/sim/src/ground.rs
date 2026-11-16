@@ -29,6 +29,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crate::content::Species;
+use crate::crops::Bearer;
 use crate::geology::{Geology, Rock};
 use crate::lru::Lru;
 use crate::map::{CHUNK_SIZE, ChunkPos, Map, PATH_REACH, Pos};
@@ -74,6 +75,11 @@ struct Held {
     /// The rock under each tile of a chunk (`geology`), on a map that has
     /// it: never changed by men, so held by the chunk alone.
     rocks: Lru<ChunkPos, Arc<[Rock]>>,
+    /// The trees and plants of a chunk bearing a crop (D45), placed from
+    /// the map, the seed, the content and the trees around: as the rocks,
+    /// held by chunk alone, for no man changes a tree yet. Felling, when
+    /// it comes, places a chunk's bearers and its neighbours' again.
+    bearers: Lru<ChunkPos, Arc<[Bearer]>>,
 }
 
 /// A chunk's trees as placed, with the tiles their trunks block: made
@@ -190,6 +196,7 @@ impl Ground {
                 trees: Lru::new(capacity),
                 versions: BTreeMap::new(),
                 rocks: Lru::new(capacity),
+                bearers: Lru::new(capacity),
             }),
         }
     }
@@ -279,6 +286,22 @@ impl Ground {
         let placed = Placed::new(chunk, trees::trees_in(map, species, open, seed, chunk));
         self.lock().trees.insert(key, placed.clone());
         placed
+    }
+
+    /// The trees and plants of `chunk` bearing a crop: held, or else
+    /// placed now by `place` and held. A gathering asks which plant it is
+    /// at each start, and a meadow holds thousands.
+    pub fn bearers_in(
+        &self,
+        chunk: ChunkPos,
+        place: impl FnOnce() -> Vec<Bearer>,
+    ) -> Arc<[Bearer]> {
+        if let Some(bearers) = self.lock().bearers.get(&chunk) {
+            return Arc::clone(bearers);
+        }
+        let bearers: Arc<[Bearer]> = place().into();
+        self.lock().bearers.insert(chunk, Arc::clone(&bearers));
+        bearers
     }
 
     /// The rock under each tile of `chunk`, row by row
