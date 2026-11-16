@@ -41,6 +41,24 @@ fn energy_per_kilogram_gives_a_piece_what_it_gave_before() {
         // The crops of lot 2 (D45): a handful of each.
         ("hazelnuts", 2600),
         ("blackberries", 180),
+        // Lot 2's whole list (nourriture.md, 16 November 2026).
+        ("nettle_leaves", 170),
+        ("garlic_leaves", 150),
+        ("dandelion_leaves", 190),
+        ("watercress", 45),
+        ("linden_leaves", 200),
+        ("strawberries", 130),
+        ("raspberries", 220),
+        ("peas", 1400),
+        ("grain", 1400),
+        ("chanterelles", 130),
+        ("crab_apples", 200),
+        ("haws", 380),
+        ("rose_hips", 650),
+        ("porcini", 120),
+        ("flax_seeds", 2200),
+        ("cattail_root", 300),
+        ("oyster_mushrooms", 140),
     ];
     for (id, kj) in before {
         let material = content.material(id).expect(id);

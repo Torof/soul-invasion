@@ -61,6 +61,11 @@ pub const MEMORY_PLACES: usize = 64;
 /// to where it last looked are kept. It gathers where it roams, and a
 /// tribe whose water is far from its camp roams far from it.
 pub const MEMORY_PLANTS: usize = 256;
+/// How far, in tiles, a body walks before it looks again for drinking
+/// places and for trees and plants bearing food: a lake shore holds
+/// thousands of tiles of water, a meadow thousands of plants, and its
+/// sight is far wider than that.
+pub const LOOK_STEP: i32 = 8;
 /// The food a body gathers by day before it rests, in kilojoules: three
 /// days of a person's needs.
 pub const STOCK_KJ: u64 = 30_000;
@@ -132,6 +137,10 @@ pub struct Mind {
     home: Pos,
     /// Where it last looked for water from: it looks again only elsewhere.
     looked_from: Option<Pos>,
+    /// Where it last looked for trees and plants bearing food from.
+    plants_from: Option<Pos>,
+    /// Where its last leg of looking around set off from.
+    set_off_from: Option<Pos>,
     /// The drinking places it knows, one a chunk.
     water: BTreeMap<ChunkPos, DrinkingPlace>,
     /// The food it saw, and where.
@@ -160,6 +169,8 @@ impl Mind {
         Self {
             home,
             looked_from: None,
+            set_off_from: None,
+            plants_from: None,
             water: BTreeMap::new(),
             food: BTreeMap::new(),
             plants: BTreeMap::new(),
@@ -441,11 +452,14 @@ fn look(
     .unwrap_or(1);
     let in_sight = |p: Pos| (p.x - at.x).abs() <= sight && (p.y - at.y).abs() <= sight;
     // Water: the nearest drinking place of each chunk in sight, looked
-    // for only when the body stands somewhere new (the ground does not
-    // change under it), and from the water: each drinkable tile, then the
+    // for only when the body stands some steps from where it last looked
+    // ([`LOOK_STEP`]; the ground does not change under it), and from the
+    // water: each drinkable tile, then the
     // walkable tiles around it. A thought cost four milliseconds when it
     // tried every tile in sight as a place to stand.
-    let new_place = mind.looked_from != Some(at);
+    let new_place = mind
+        .looked_from
+        .is_none_or(|from| (from.x - at.x).abs().max((from.y - at.y).abs()) >= LOOK_STEP);
     if new_place {
         mind.looked_from = Some(at);
         for y in at.y - sight..=at.y + sight {
@@ -506,9 +520,14 @@ fn look(
             }
         }
     }
-    // Trees and plants bearing food, seen from a new place only: placing
-    // a chunk's plants costs a few milliseconds.
-    if new_place {
+    // Trees and plants bearing food, seen again only some steps away:
+    // the brains place a chunk's plants once, but a meadow holds
+    // thousands to look over.
+    let moved = mind
+        .plants_from
+        .is_none_or(|from| (from.x - at.x).abs().max((from.y - at.y).abs()) >= LOOK_STEP);
+    if moved {
+        mind.plants_from = Some(at);
         let bears_food = |kind: &str| {
             rules
                 .crops
@@ -521,8 +540,9 @@ fn look(
                 let placed = bearers.entry(chunk).or_insert_with(|| {
                     world
                         .bearers_in(chunk)
-                        .into_iter()
+                        .iter()
                         .filter(|b| bears_food(&b.kind))
+                        .cloned()
                         .collect()
                 });
                 for bearer in placed.iter() {
@@ -538,14 +558,18 @@ fn look(
                 }
             }
         }
-        while mind.plants.len() > MEMORY_PLANTS {
-            let farthest = *mind
+        if mind.plants.len() > MEMORY_PLANTS {
+            // The farthest go, all at once: a look over a reed bed adds
+            // thousands.
+            let mut ranked: Vec<_> = mind
                 .plants
                 .iter()
-                .max_by_key(|(key, plant)| (far(plant.at.tile(), at), **key))
-                .map(|(key, _)| key)
-                .expect("not empty");
-            mind.plants.remove(&farthest);
+                .map(|(key, plant)| (far(plant.at.tile(), at), *key))
+                .collect();
+            ranked.select_nth_unstable(MEMORY_PLANTS);
+            for (_, key) in &ranked[MEMORY_PLANTS..] {
+                mind.plants.remove(key);
+            }
         }
     }
     // Kept small: the nearest to the camp.
@@ -625,10 +649,29 @@ fn decide(
             .min_by_key(|place| (far(place.stand, here), place.stand.y, place.stand.x))
             .copied();
         if let Some(place) = nearest {
+            let at_camp =
+                (here.x - camp.x).abs() <= HOME_TILES && (here.y - camp.y).abs() <= HOME_TILES;
             if mind.doing == Doing::ToDrink(place) && mind.stopped {
-                // It stopped short of it: forget it, look again.
-                mind.water.retain(|_, p| *p != place);
-                mind.due = true;
+                if at_camp {
+                    // Stopped short of it from its camp: forget it, look
+                    // again.
+                    mind.water.retain(|_, p| *p != place);
+                    mind.due = true;
+                    return None;
+                }
+                // Stopped short far from its camp: the way it knows to the
+                // water starts at the camp. It goes back there first.
+                mind.doing = Doing::Home;
+                return decision(
+                    Intention::MoveTo {
+                        body: id,
+                        target: camp,
+                    },
+                    Why::Thirst,
+                );
+            }
+            if mind.doing == Doing::Home && !mind.stopped && !at_camp {
+                // On its way back to the camp: it goes on.
                 return None;
             }
             mind.doing = Doing::ToDrink(place);
@@ -640,7 +683,7 @@ fn decide(
                 Why::Thirst,
             );
         }
-        return Some(explore(map, rules, id, here, mind, seed, Why::Thirst));
+        return go_looking(map, rules, id, here, mind, seed, Why::Thirst);
     }
     if hungry {
         if let Some(item) = carried_food(world, rules, id) {
@@ -682,7 +725,7 @@ fn decide(
             .iter()
             .any(|crop| food_in_season(world, rules, &crop.on).is_some());
         if !night && ripe_somewhere {
-            return Some(explore(map, rules, id, here, mind, seed, Why::Hunger));
+            return go_looking(map, rules, id, here, mind, seed, Why::Hunger);
         }
     }
     if !night
@@ -888,6 +931,28 @@ pub fn carried_kj(world: &World, rules: &Content, id: BodyId) -> u64 {
             })
             .sum()
     })
+}
+
+/// The body goes looking for what it needs ([`explore`]), unless its
+/// last leg went nowhere: hemmed in, it waits for the next change (the
+/// night, the day, a need growing pressing) rather than ask leg after leg
+/// at once, each one out of a wider ring.
+fn go_looking(
+    map: &Map,
+    rules: &Content,
+    id: BodyId,
+    here: Pos,
+    mind: &mut Mind,
+    seed: u64,
+    need: Why,
+) -> Option<Decision> {
+    if matches!(mind.doing, Doing::Exploring(_)) && mind.stopped && mind.set_off_from == Some(here)
+    {
+        mind.doing = Doing::Nothing;
+        return None;
+    }
+    mind.set_off_from = Some(here);
+    Some(explore(map, rules, id, here, mind, seed, need))
 }
 
 /// The body goes looking for what it needs: a spiral out of its camp,
@@ -1390,7 +1455,62 @@ mod tests {
     }
 
     #[test]
-    fn it_looks_for_water_only_from_a_new_place() {
+    fn stopped_short_of_the_water_far_from_its_camp_it_goes_back_there_first() {
+        let mut world = field(64, 40, Pos::new(25, 5));
+        thirst(&mut world, 60);
+        let rules = rules();
+        let id = world.bodies[0].id();
+        let mut mind = Mind::new(Pos::new(5, 5));
+        let place = DrinkingPlace {
+            stand: Pos::new(39, 5),
+            water: Pos::new(40, 5),
+        };
+        mind.water.insert(place.stand.chunk(), place);
+        mind.doing = Doing::ToDrink(place);
+        mind.stopped = true;
+        let decision = decide(&world, &rules, id, &mut mind, 7).expect("a decision");
+        assert_eq!(
+            decision,
+            Decision {
+                intention: Intention::MoveTo {
+                    body: id,
+                    target: Pos::new(5, 5)
+                },
+                why: Why::Thirst
+            }
+        );
+        assert_eq!(mind.drinking_places().count(), 1, "it keeps the place");
+        // On its way: it goes on.
+        mind.stopped = false;
+        assert_eq!(decide(&world, &rules, id, &mut mind, 7), None);
+        // Stopped short of it from the camp: it forgets it.
+        world.bodies[0].at = Pos::new(5, 5).centre();
+        mind.doing = Doing::ToDrink(place);
+        mind.stopped = true;
+        assert_eq!(decide(&world, &rules, id, &mut mind, 7), None);
+        assert_eq!(mind.drinking_places().count(), 0);
+    }
+
+    #[test]
+    fn hemmed_in_it_waits_for_the_next_change_rather_than_ask_leg_after_leg() {
+        let mut world = field(64, 99, Pos::new(25, 5));
+        thirst(&mut world, 60);
+        let rules = rules();
+        let id = world.bodies[0].id();
+        let mut mind = Mind::new(Pos::new(5, 5));
+        let first = decide(&world, &rules, id, &mut mind, 7).expect("it goes looking");
+        assert_eq!(first.why, Why::Explore);
+        // The leg ended where it set off.
+        mind.stopped = true;
+        assert_eq!(decide(&world, &rules, id, &mut mind, 7), None);
+        assert_eq!(mind.doing, Doing::Nothing);
+        // The next change: it tries a leg again.
+        mind.stopped = false;
+        assert!(decide(&world, &rules, id, &mut mind, 7).is_some());
+    }
+
+    #[test]
+    fn it_looks_for_water_only_some_steps_away() {
         let world = field(64, 40, Pos::new(5, 5));
         let rules = rules();
         let mut mind = Mind::new(Pos::new(5, 5));
@@ -1424,10 +1544,14 @@ mod tests {
             &mut mind,
             &mut BTreeMap::new(),
         );
-        assert_eq!(
-            mind.drinking_places().count(),
-            seen.len(),
-            "a new place: looked at"
+        assert_eq!(mind.drinking_places().count(), 0, "a step away: not yet");
+        look(
+            &world,
+            &rules,
+            Pos::new(5 + LOOK_STEP, 5),
+            &mut mind,
+            &mut BTreeMap::new(),
         );
+        assert!(mind.drinking_places().count() > 0, "a new place: looked at");
     }
 }

@@ -1,6 +1,9 @@
 // What the trees and plants bear to whoever gathers it, and when
 // (docs/04-architecture.md D45; the values: content/ai-reserve/review/
-// vivarium/nourriture.md, read by the project lead on 14 November 2026).
+// vivarium/nourriture.md, read by the project lead on 14 November 2026;
+// its list taken whole on 16 November, but what hides an effect (D30):
+// acorns, elder, plantain, fern, field mushroom, parasol and the deadly
+// ones bear nothing here).
 //
 // A crop is worked out from the date, never stored: on any day a plant
 // bears what its kind gives that season of that year, less what men
@@ -33,5 +36,44 @@
         // picked.
         (on: "bramble", gives: "blackberries", from: (summer, 60), until: (autumn, 60),
          grams: (500, 1500, 2000), years: (lean: 15, rich: 15), per_hour_g: 1000),
+        // Spring, the season of hunger: leaves, worth little.
+        (on: "nettle", gives: "nettle_leaves", from: (spring, 0), until: (summer, 30),
+         grams: (100, 200, 300), years: (lean: 10, rich: 10), per_hour_g: 1000),
+        (on: "wild_garlic", gives: "garlic_leaves", from: (spring, 0), until: (spring, 100),
+         grams: (30, 50, 80), years: (lean: 10, rich: 10), per_hour_g: 600),
+        (on: "dandelion", gives: "dandelion_leaves", from: (spring, 0), until: (summer, 50),
+         grams: (50, 100, 150), years: (lean: 10, rich: 10), per_hour_g: 500),
+        (on: "watercress", gives: "watercress", from: (spring, 0), until: (autumn, 100),
+         grams: (50, 100, 150), years: (lean: 10, rich: 10), per_hour_g: 600),
+        (on: "linden", gives: "linden_leaves", from: (spring, 0), until: (spring, 100),
+         grams: (300, 600, 1000), years: (lean: 10, rich: 10), per_hour_g: 800),
+        // Summer: the first fruits, peas, grain, the first mushrooms.
+        (on: "wild_strawberry", gives: "strawberries", from: (summer, 0), until: (summer, 50),
+         grams: (20, 50, 80), years: (lean: 15, rich: 15), per_hour_g: 300),
+        (on: "raspberry", gives: "raspberries", from: (summer, 0), until: (summer, 100),
+         grams: (200, 500, 700), years: (lean: 15, rich: 15), per_hour_g: 800),
+        (on: "wild_pea", gives: "peas", from: (summer, 0), until: (summer, 100),
+         grams: (20, 50, 100), years: (lean: 15, rich: 15), per_hour_g: 300),
+        (on: "wild_cereal", gives: "grain", from: (summer, 60), until: (autumn, 30),
+         grams: (30, 60, 100), years: (lean: 15, rich: 15), per_hour_g: 1000),
+        (on: "chanterelle", gives: "chanterelles", from: (summer, 0), until: (autumn, 100),
+         grams: (50, 150, 250), years: (lean: 30, rich: 20), per_hour_g: 600),
+        // Autumn gives more than can be eaten.
+        (on: "wild_apple", gives: "crab_apples", from: (summer, 70), until: (autumn, 100),
+         grams: (10000, 20000, 30000), years: (lean: 20, rich: 20), per_hour_g: 4000),
+        (on: "porcini", gives: "porcini", from: (summer, 60), until: (autumn, 100),
+         grams: (100, 200, 400), years: (lean: 30, rich: 20), per_hour_g: 1000),
+        (on: "wild_flax", gives: "flax_seeds", from: (summer, 60), until: (autumn, 30),
+         grams: (10, 20, 40), years: (lean: 15, rich: 15), per_hour_g: 200),
+        // Through the winter: haws and hips stay on the branch, oyster
+        // mushrooms on the trunks, cattail roots in the mud all year.
+        (on: "hawthorn", gives: "haws", from: (autumn, 0), until: (winter, 100),
+         grams: (1000, 2000, 3000), years: (lean: 15, rich: 15), per_hour_g: 1000),
+        (on: "dog_rose", gives: "rose_hips", from: (autumn, 0), until: (winter, 100),
+         grams: (300, 700, 1000), years: (lean: 15, rich: 15), per_hour_g: 500),
+        (on: "oyster_mushroom", gives: "oyster_mushrooms", from: (autumn, 30), until: (winter, 100),
+         grams: (100, 300, 500), years: (lean: 20, rich: 20), per_hour_g: 800),
+        (on: "cattail", gives: "cattail_root", from: (spring, 0), until: (winter, 100),
+         grams: (300, 400, 500), years: (lean: 5, rich: 5), per_hour_g: 500),
     ],
 )

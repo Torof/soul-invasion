@@ -456,7 +456,12 @@ pub(crate) mod tests {
         for y in 0..side {
             for x in 0..side {
                 let chunk = ChunkPos::new(x, y);
-                if let Some(bearer) = world.bearers_in(chunk).into_iter().find(|b| b.kind == kind) {
+                if let Some(bearer) = world
+                    .bearers_in(chunk)
+                    .iter()
+                    .find(|b| b.kind == kind)
+                    .cloned()
+                {
                     return (world, content, chunk, bearer);
                 }
             }
