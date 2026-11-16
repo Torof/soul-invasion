@@ -36,17 +36,21 @@
         // picked.
         (on: "bramble", gives: "blackberries", from: (summer, 60), until: (autumn, 60),
          grams: (500, 1500, 2000), years: (lean: 15, rich: 15), per_hour_g: 1000),
-        // Spring, the season of hunger: leaves, worth little.
+        // Spring, the renewal: leaves by the armful, roots, inner bark. A
+        // rich season (the project lead, 16 November 2026): hunger kills
+        // through predators and men later, not through spring.
         (on: "nettle", gives: "nettle_leaves", from: (spring, 0), until: (summer, 30),
-         grams: (100, 200, 300), years: (lean: 10, rich: 10), per_hour_g: 1000),
+         grams: (200, 400, 600), years: (lean: 10, rich: 10), per_hour_g: 1500),
         (on: "wild_garlic", gives: "garlic_leaves", from: (spring, 0), until: (spring, 100),
-         grams: (30, 50, 80), years: (lean: 10, rich: 10), per_hour_g: 600),
+         grams: (60, 100, 160), years: (lean: 10, rich: 10), per_hour_g: 1500),
         (on: "dandelion", gives: "dandelion_leaves", from: (spring, 0), until: (summer, 50),
-         grams: (50, 100, 150), years: (lean: 10, rich: 10), per_hour_g: 500),
+         grams: (100, 200, 300), years: (lean: 10, rich: 10), per_hour_g: 1500),
         (on: "watercress", gives: "watercress", from: (spring, 0), until: (autumn, 100),
          grams: (50, 100, 150), years: (lean: 10, rich: 10), per_hour_g: 600),
         (on: "linden", gives: "linden_leaves", from: (spring, 0), until: (spring, 100),
-         grams: (300, 600, 1000), years: (lean: 10, rich: 10), per_hour_g: 800),
+         grams: (600, 1200, 2000), years: (lean: 10, rich: 10), per_hour_g: 1500),
+        (on: "pine", gives: "pine_bark", from: (spring, 0), until: (summer, 0),
+         grams: (500, 800, 1200), years: (lean: 10, rich: 10), per_hour_g: 600),
         // Summer: the first fruits, peas, grain, the first mushrooms.
         (on: "wild_strawberry", gives: "strawberries", from: (summer, 0), until: (summer, 50),
          grams: (20, 50, 80), years: (lean: 15, rich: 15), per_hour_g: 300),
@@ -74,6 +78,6 @@
         (on: "oyster_mushroom", gives: "oyster_mushrooms", from: (autumn, 30), until: (winter, 100),
          grams: (100, 300, 500), years: (lean: 20, rich: 20), per_hour_g: 800),
         (on: "cattail", gives: "cattail_root", from: (spring, 0), until: (winter, 100),
-         grams: (300, 400, 500), years: (lean: 5, rich: 5), per_hour_g: 500),
+         grams: (1000, 1500, 2000), years: (lean: 5, rich: 5), per_hour_g: 1000),
     ],
 )

@@ -268,6 +268,17 @@ tribe forget its only water and die of cold lost (now it goes back to the
 camp first). With every thought on every page, the report of this run
 weighs 63 MB.
 
+**Lot 3, the fat reserve** (16 November 2026, D46). Five people on the
+50 × 50 patch, nothing to eat in spring: thin from the third day, weak
+near the fifth, all dead on the seventh, of hunger. Two tribes of five,
+two years, with the spring of lot 2: nine of ten died of hunger, in
+spring or the summer after (leaves gave some 1,000 kJ an hour of
+gathering against a need of 10,000 a day). With the richer spring the
+project lead asked for: three die, all of tribe A at the start of the
+second summer, between the spring's leaves and the grain; tribe B is
+never thin. The gap is a gap of species: more fruits and vegetables come
+next.
+
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
 slopes drawn by the client from them (D44), then the relief in the
