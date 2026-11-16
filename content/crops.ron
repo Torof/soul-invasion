@@ -21,15 +21,17 @@
 // years:   in a hundred years, how many are lean and how many rich; the
 //          rest are usual. A kind has the same year over a kilometre of
 //          the world, as the oaks of a country mast together.
+// per_hour_g: what one person gathers of it by hand in an hour of work
+//          (a 24th of the game day), while there is some on the plant.
 (
     crops: [
         // The winter's store: 3 to 10 kg a tree, years of plenty and
         // lean years.
         (on: "hazel", gives: "hazelnuts", from: (autumn, 0), until: (winter, 0),
-         grams: (1000, 5000, 10000), years: (lean: 25, rich: 25)),
+         grams: (1000, 5000, 10000), years: (lean: 25, rich: 25), per_hour_g: 2000),
         // A summer's end's fruit, 1 to 2 kg a bush, gone in days once
         // picked.
         (on: "bramble", gives: "blackberries", from: (summer, 60), until: (autumn, 60),
-         grams: (500, 1500, 2000), years: (lean: 15, rich: 15)),
+         grams: (500, 1500, 2000), years: (lean: 15, rich: 15), per_hour_g: 1000),
     ],
 )

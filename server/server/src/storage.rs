@@ -32,7 +32,7 @@ use sim::{CHUNK_SIZE, ChunkPos, Content, Pos, World};
 
 /// Version of the serialized `World` inside a snapshot. Bump on any change
 /// to `World`'s shape, and add a migration in `decode_world`.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 12;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 13;
 
 /// Version of a chunk's changes as stored (`encode_changes`). Bump on any
 /// change to their bytes, and read the old ones in `decode_changes`.
@@ -550,6 +550,7 @@ fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<Wo
             9 => migrate_v9_to_v10(&data)?,
             10 => migrate_v10_to_v11(&data, content)?,
             11 => migrate_v11_to_v12(&data)?,
+            12 => migrate_v12_to_v13(&data)?,
             _ => unreachable!("every version below the current one has a migration"),
         };
         version += 1;
@@ -741,6 +742,21 @@ fn migrate_v11_to_v12(data: &str) -> Result<String, StorageError> {
             condition
                 .entry("thirst")
                 .or_insert_with(|| quenched.clone());
+        }
+    }
+    Ok(old.to_string())
+}
+
+/// v13: a body may be busy at work that lasts (D45, gathering). A world
+/// saved before has every body idle.
+fn migrate_v12_to_v13(data: &str) -> Result<String, StorageError> {
+    let mut old: serde_json::Value = serde_json::from_str(data)?;
+    if let Some(bodies) = old["bodies"].as_array_mut() {
+        for body in bodies
+            .iter_mut()
+            .filter_map(serde_json::Value::as_object_mut)
+        {
+            body.entry("work").or_insert(serde_json::Value::Null);
         }
     }
     Ok(old.to_string())
@@ -1264,6 +1280,37 @@ mod tests {
         assert_eq!(
             today.body(body).unwrap().condition(),
             world.body(body).unwrap().condition()
+        );
+    }
+
+    #[test]
+    fn a_v12_world_has_its_bodies_idle() {
+        let content = content();
+        let mut world = World::with_valley(Calendar::new(2, 3).unwrap(), &content, 256);
+        let body = world.spawn_at_camp().expect("a body at the camp");
+        let mut old: serde_json::Value = serde_json::to_value(&world).unwrap();
+        for body in old["bodies"].as_array_mut().unwrap() {
+            assert!(body.as_object_mut().unwrap().remove("work").is_some());
+        }
+        let mut storage = Sqlite::in_memory(content.clone()).unwrap();
+        storage
+            .conn
+            .execute(
+                "INSERT INTO snapshots (tick, format_version, data) VALUES (0, 12, ?1)",
+                [old.to_string()],
+            )
+            .unwrap();
+        let back = storage.latest_world().unwrap().unwrap();
+        assert!(back.body(body).unwrap().work().is_none());
+        // Today's worlds write the field, and read it back.
+        let json = serde_json::to_value(&world).unwrap();
+        assert_eq!(json["bodies"][0]["work"], serde_json::Value::Null);
+        let mut storage = Sqlite::in_memory(content).unwrap();
+        storage.save_world(&world).unwrap();
+        let today = storage.latest_world().unwrap().unwrap();
+        assert_eq!(
+            today.body(body).unwrap().work(),
+            world.body(body).unwrap().work()
         );
     }
 
