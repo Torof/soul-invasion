@@ -830,6 +830,8 @@ pub enum Event {
         material: String,
         /// Its grams.
         grams: u32,
+        /// Who carried it, if anyone.
+        holder: Option<BodyId>,
     },
     /// What a body holds in hand changed. Seen by all.
     BodyHolds {
@@ -2011,7 +2013,9 @@ impl World {
                 }
             }
             let mut cause = None;
-            if c.hunger.is_full() {
+            // A hunger that does no harm (starving_per_day 0, lot 2's
+            // gauge) neither kills nor keeps a body from healing.
+            if c.hunger.is_full() && needs.starving_per_day > 0 {
                 c.vitality.lower(step(needs.starving_per_day));
                 cause = Some(Death::Starved);
             }
@@ -2489,6 +2493,12 @@ impl World {
         }
     }
 
+    /// Has the item `id` spoiled (D16, D45)? False when there is no such
+    /// item.
+    pub fn is_spoiled(&self, id: ItemId, rules: &Content) -> bool {
+        self.item(id).is_some_and(|item| self.spoiled(item, rules))
+    }
+
     /// Has `item` spoiled (D16, D45)? Food does, its content's days after
     /// it was made; anything else never.
     fn spoiled(&self, item: &Item, rules: &Content) -> bool {
@@ -2532,10 +2542,15 @@ impl World {
                     }
                 }
             }
+            let holder = match item.place {
+                Place::Carried { body } => Some(body),
+                Place::Ground { .. } => None,
+            };
             events.push(Event::Spoiled {
                 item: id,
                 material: item.material,
                 grams: item.mass_g,
+                holder,
             });
         }
     }

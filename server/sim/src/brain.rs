@@ -16,10 +16,20 @@
 //! 1. **Thirsty** (thirst at [`THIRSTY`] or more, or [`PARCHED`] while
 //!    asleep, which wakes it): to the nearest drinking place it knows,
 //!    and drinks there; knowing none, it goes looking (`explore`).
-//! 2. **Hungry** (hunger at [`HUNGRY`] or more): to the nearest food it
-//!    knows, and eats it; knowing none, it goes looking.
+//! 2. **Hungry** (hunger at [`HUNGRY`] or more): it eats what it carries
+//!    (what spoils first, first); else the nearest food it saw lying;
+//!    else it gathers from the nearest tree or plant it knows bearing food
+//!    now (D45); knowing none, it goes looking.
 //! 3. **Night**: home to the camp, and sleeps within [`HOME_TILES`] of it.
-//! 4. Otherwise, by day: home to the camp if it is away, and waits there.
+//! 4. **By day, a store**: while it carries less than [`STOCK_KJ`], it
+//!    gathers from the nearest tree or plant it knows bearing food now.
+//!    It works at it until the plant is bare or its load full (or night,
+//!    thirst or hunger calls it away).
+//! 5. Otherwise, by day: home to the camp if it is away, and waits there.
+//!
+//! It remembers the trees and plants bearing food it saw (D45), as it
+//! remembers water; one it found bare, or could not reach, it leaves
+//! alone until that crop's next year.
 //!
 //! Every choice comes with its reason ([`Why`]), so the vivarium's report
 //! can say why a body did what it did. Everything is deterministic: the
@@ -28,8 +38,9 @@
 use std::collections::BTreeMap;
 
 use crate::content::Content;
-use crate::map::{ChunkPos, Map, Pos, Terrain};
-use crate::{BodyId, Event, Intention, ItemId, World};
+use crate::crops::{self, Bearer, Source};
+use crate::map::{ChunkPos, FinePos, Map, Pos, Terrain};
+use crate::{BodyId, Event, GATHER_REACH_MM, Intention, ItemId, World};
 
 /// Thirst from which a body goes to drink: half a game day without
 /// water (thirst rises 100 points a day), so it drinks before the night
@@ -46,6 +57,13 @@ pub const HOME_TILES: i32 = 6;
 /// How many drinking places and how many foods a body remembers: the
 /// nearest to the camp are kept.
 pub const MEMORY_PLACES: usize = 64;
+/// How many trees and plants bearing food a body remembers: the nearest
+/// to where it last looked are kept. It gathers where it roams, and a
+/// tribe whose water is far from its camp roams far from it.
+pub const MEMORY_PLANTS: usize = 256;
+/// The food a body gathers by day before it rests, in kilojoules: three
+/// days of a person's needs.
+pub const STOCK_KJ: u64 = 30_000;
 
 /// Why a body was asked to do something.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +78,8 @@ pub enum Why {
     Night,
     /// Day, nothing pressing: it walks home.
     Home,
+    /// Day, carrying less than its store: it gathers (D45).
+    Gather,
 }
 
 /// A thought: what a body was asked, and why.
@@ -89,6 +109,20 @@ enum Doing {
     ToEat(ItemId, Pos),
     Exploring(Why),
     Home,
+    ToGather(ChunkPos, Source),
+    Gathering(ChunkPos, Source),
+}
+
+/// A tree or plant bearing food that a body saw (D45).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnownPlant {
+    /// Where it stands.
+    pub at: FinePos,
+    /// Its kind's id.
+    pub kind: String,
+    /// The crop's year it was found bare in, or out of reach: left alone
+    /// until the next.
+    pub spent: Option<u64>,
 }
 
 /// One body's mind: its home, its memory of places and what it is about.
@@ -102,6 +136,8 @@ pub struct Mind {
     water: BTreeMap<ChunkPos, DrinkingPlace>,
     /// The food it saw, and where.
     food: BTreeMap<ItemId, Pos>,
+    /// The trees and plants bearing food it saw.
+    plants: BTreeMap<(ChunkPos, Source), KnownPlant>,
     doing: Doing,
     /// Which thresholds its gauges were past when it last thought:
     /// thirsty, parched, hungry, asleep.
@@ -110,6 +146,9 @@ pub struct Mind {
     due: bool,
     /// Its walk ended since it last thought (it arrived, or was stopped).
     stopped: bool,
+    /// The chunks whose plants it could not walk to, and the day it
+    /// tried: left alone until the next day, when it may stand elsewhere.
+    out_of_reach: BTreeMap<ChunkPos, u64>,
     /// How many times it went looking: the next direction.
     walks: u64,
     /// How many times it thought.
@@ -123,13 +162,20 @@ impl Mind {
             looked_from: None,
             water: BTreeMap::new(),
             food: BTreeMap::new(),
+            plants: BTreeMap::new(),
             doing: Doing::Nothing,
             past: (false, false, false, false),
             due: true,
             stopped: false,
+            out_of_reach: BTreeMap::new(),
             walks: 0,
             thoughts: 0,
         }
+    }
+
+    /// The trees and plants bearing food it knows.
+    pub fn known_plants(&self) -> impl Iterator<Item = (&(ChunkPos, Source), &KnownPlant)> {
+        self.plants.iter()
     }
 
     /// The drinking places it knows.
@@ -163,6 +209,10 @@ pub struct Brains {
     seed: u64,
     /// Each camp's water, found once: its nearest drinking place.
     camp_water: BTreeMap<Pos, Option<DrinkingPlace>>,
+    /// The trees and plants bearing food of each chunk a body looked at,
+    /// placed once for all the minds: they never change (no felling yet),
+    /// and placing a chunk's plants costs a few milliseconds.
+    bearers: BTreeMap<ChunkPos, Vec<Bearer>>,
 }
 
 impl Brains {
@@ -172,6 +222,7 @@ impl Brains {
             minds: BTreeMap::new(),
             seed,
             camp_water: BTreeMap::new(),
+            bearers: BTreeMap::new(),
         }
     }
 
@@ -214,6 +265,7 @@ impl Brains {
         self.notice(events);
         let mut decisions = Vec::new();
         let seed = self.seed;
+        let bearers = &mut self.bearers;
         self.minds.retain(|&id, mind| {
             let Some(body) = world.body(id) else {
                 return false;
@@ -232,7 +284,7 @@ impl Brains {
             }
             mind.due = false;
             mind.thoughts += 1;
-            look(world, rules, body.pos(), mind);
+            look(world, rules, body.pos(), mind, bearers);
             if let Some(decision) = decide(world, rules, id, mind, seed) {
                 decisions.push((id, decision));
             }
@@ -258,7 +310,12 @@ impl Brains {
                 | Event::DrinkRefused { body, .. }
                 | Event::ActRefused { body, .. }
                 | Event::BodyDrank { body, .. }
-                | Event::BodyAte { body, .. } => *body,
+                | Event::BodyAte { body, .. }
+                | Event::WorkStopped { body, .. }
+                | Event::GatherRefused { body, .. }
+                | Event::Spoiled {
+                    holder: Some(body), ..
+                } => *body,
                 _ => continue,
             };
             if let Some(mind) = self.minds.get_mut(&body) {
@@ -367,7 +424,14 @@ fn far(a: Pos, b: Pos) -> i64 {
 /// sight go into its memory, the food it remembers in sight but no longer
 /// sees is forgotten. Sight is the ground's under its feet, a square of
 /// that half-side.
-fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind) {
+#[allow(clippy::too_many_lines)] // one reading, top to bottom, of what it sees or does
+fn look(
+    world: &World,
+    rules: &Content,
+    at: Pos,
+    mind: &mut Mind,
+    bearers: &mut BTreeMap<ChunkPos, Vec<Bearer>>,
+) {
     let map = world.map();
     let camp = mind.home;
     let sight = i32::try_from(
@@ -381,7 +445,8 @@ fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind) {
     // change under it), and from the water: each drinkable tile, then the
     // walkable tiles around it. A thought cost four milliseconds when it
     // tried every tile in sight as a place to stand.
-    if mind.looked_from != Some(at) {
+    let new_place = mind.looked_from != Some(at);
+    if new_place {
         mind.looked_from = Some(at);
         for y in at.y - sight..=at.y + sight {
             for x in at.x - sight..=at.x + sight {
@@ -441,6 +506,48 @@ fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind) {
             }
         }
     }
+    // Trees and plants bearing food, seen from a new place only: placing
+    // a chunk's plants costs a few milliseconds.
+    if new_place {
+        let bears_food = |kind: &str| {
+            rules
+                .crops
+                .iter()
+                .any(|crop| crop.on == kind && is_food(&crop.gives))
+        };
+        for cy in low.y..=high.y {
+            for cx in low.x..=high.x {
+                let chunk = ChunkPos::new(cx, cy);
+                let placed = bearers.entry(chunk).or_insert_with(|| {
+                    world
+                        .bearers_in(chunk)
+                        .into_iter()
+                        .filter(|b| bears_food(&b.kind))
+                        .collect()
+                });
+                for bearer in placed.iter() {
+                    if in_sight(bearer.at.tile()) {
+                        mind.plants
+                            .entry((chunk, bearer.source))
+                            .or_insert_with(|| KnownPlant {
+                                at: bearer.at,
+                                kind: bearer.kind.clone(),
+                                spent: None,
+                            });
+                    }
+                }
+            }
+        }
+        while mind.plants.len() > MEMORY_PLANTS {
+            let farthest = *mind
+                .plants
+                .iter()
+                .max_by_key(|(key, plant)| (far(plant.at.tile(), at), **key))
+                .map(|(key, _)| key)
+                .expect("not empty");
+            mind.plants.remove(&farthest);
+        }
+    }
     // Kept small: the nearest to the camp.
     while mind.water.len() > MEMORY_PLACES {
         let farthest = *mind
@@ -463,6 +570,7 @@ fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind) {
 }
 
 /// What the body decides, now that it looked.
+#[allow(clippy::too_many_lines)] // one reading, top to bottom, of what it sees or does
 fn decide(
     world: &World,
     rules: &Content,
@@ -477,6 +585,24 @@ fn decide(
     let camp = mind.home;
     let decision = |intention, why| Some(Decision { intention, why });
     let (thirsty, parched, hungry, asleep) = pasts(world, id);
+    let night = world.is_night(rules);
+    if let Doing::Gathering(chunk, source) = mind.doing {
+        if body.work().is_some() {
+            // At work: it goes on unless thirst, hunger or night calls.
+            if !thirsty && !hungry && !night {
+                return None;
+            }
+        } else {
+            // The work ended, or was refused: bare now, it is spent.
+            mind.doing = Doing::Nothing;
+            spend_if_bare(world, rules, mind, chunk, source);
+        }
+    }
+    if let Doing::ToGather(chunk, source) = mind.doing
+        && mind.stopped
+    {
+        stopped_short(world, rules, id, mind, chunk, source);
+    }
     if asleep && !parched {
         mind.doing = Doing::Nothing;
         return None;
@@ -517,6 +643,10 @@ fn decide(
         return Some(explore(map, rules, id, here, mind, seed, Why::Thirst));
     }
     if hungry {
+        if let Some(item) = carried_food(world, rules, id) {
+            mind.doing = Doing::Nothing;
+            return decision(Intention::Eat { body: id, item }, Why::Hunger);
+        }
         let nearest = mind
             .food
             .iter()
@@ -541,10 +671,27 @@ fn decide(
                 Why::Hunger,
             );
         }
-        return Some(explore(map, rules, id, here, mind, seed, Why::Hunger));
+        if let Some(target) = plant_to_gather(world, rules, here, mind) {
+            return go_gather(world, rules, id, mind, target, Why::Hunger);
+        }
+        // It knows the seasons: it goes looking by day, and only when
+        // something is ripe somewhere. Out of season it bears its hunger
+        // by its camp.
+        let ripe_somewhere = rules
+            .crops
+            .iter()
+            .any(|crop| food_in_season(world, rules, &crop.on).is_some());
+        if !night && ripe_somewhere {
+            return Some(explore(map, rules, id, here, mind, seed, Why::Hunger));
+        }
+    }
+    if !night
+        && carried_kj(world, rules, id) < STOCK_KJ
+        && let Some(target) = plant_to_gather(world, rules, here, mind)
+    {
+        return go_gather(world, rules, id, mind, target, Why::Gather);
     }
     let home = (here.x - camp.x).abs() <= HOME_TILES && (here.y - camp.y).abs() <= HOME_TILES;
-    let night = world.is_night(rules);
     if home {
         mind.doing = Doing::Nothing;
         if night && !c.asleep {
@@ -570,6 +717,177 @@ fn decide(
         },
         why,
     )
+}
+
+/// A tree or plant to gather from, and the crop: the key, the material,
+/// the crop's year.
+type Target = ((ChunkPos, Source), String, u64);
+
+/// The food crop of `kind` on the plant now, if any: the material and the
+/// crop's year.
+fn food_in_season(world: &World, rules: &Content, kind: &str) -> Option<(String, u64)> {
+    rules.crops.iter().find_map(|crop| {
+        if crop.on != kind || rules.material(&crop.gives).is_none_or(|m| m.food.is_none()) {
+            return None;
+        }
+        let year = crops::in_season(crop, world.calendar(), world.tick())?;
+        Some((crop.gives.clone(), year))
+    })
+}
+
+/// The day of the world, counted from its first.
+fn today(world: &World) -> u64 {
+    world.tick().0 / world.calendar().ticks_per_day().max(1)
+}
+
+/// The nearest tree or plant it knows bearing food now, not spent for
+/// that crop's year.
+fn plant_to_gather(world: &World, rules: &Content, here: Pos, mind: &Mind) -> Option<Target> {
+    let today = today(world);
+    mind.plants
+        .iter()
+        .filter(|(key, _)| mind.out_of_reach.get(&key.0) != Some(&today))
+        .filter_map(|(key, plant)| {
+            let (gives, year) = food_in_season(world, rules, &plant.kind)?;
+            (plant.spent != Some(year)).then_some((*key, plant, gives, year))
+        })
+        .min_by_key(|(key, plant, ..)| (far(plant.at.tile(), here), *key))
+        .map(|(key, _, gives, year)| (key, gives, year))
+}
+
+/// Walks to the tree or plant `target`, or gathers from it when within
+/// reach.
+fn go_gather(
+    world: &World,
+    rules: &Content,
+    id: BodyId,
+    mind: &mut Mind,
+    (key, gives, _): Target,
+    why: Why,
+) -> Option<Decision> {
+    let body = world.body(id)?;
+    let plant = mind.plants.get(&key)?.clone();
+    let (dx, dy) = (
+        i64::from(body.at().x - plant.at.x),
+        i64::from(body.at().y - plant.at.y),
+    );
+    if dx * dx + dy * dy <= GATHER_REACH_MM * GATHER_REACH_MM {
+        mind.doing = Doing::Gathering(key.0, key.1);
+        return Some(Decision {
+            intention: Intention::Gather {
+                body: id,
+                chunk: key.0,
+                source: key.1,
+                gives,
+            },
+            why,
+        });
+    }
+    // A tree's trunk takes its tile: it stands beside it.
+    let tile = plant.at.tile();
+    let here = body.pos();
+    let target = match key.1 {
+        Source::Plant(_) => tile,
+        Source::Tree(_) => AROUND
+            .iter()
+            .filter(|&&(dx, dy)| (dx, dy) != (0, 0))
+            .map(|&(dx, dy)| Pos::new(tile.x + dx, tile.y + dy))
+            .filter(|&p| walkable(world.map(), rules, p))
+            .min_by_key(|&p| (far(p, here), p.y, p.x))
+            .unwrap_or(tile),
+    };
+    mind.doing = Doing::ToGather(key.0, key.1);
+    Some(Decision {
+        intention: Intention::MoveTo { body: id, target },
+        why,
+    })
+}
+
+/// A walk to a plant ended. Out of reach of it, it stopped short: the
+/// way there is not one it knows. The plant is left for the year, its
+/// whole patch for the day, or it would try every bush beyond the same
+/// river one after the other.
+fn stopped_short(
+    world: &World,
+    rules: &Content,
+    id: BodyId,
+    mind: &mut Mind,
+    chunk: ChunkPos,
+    source: Source,
+) {
+    mind.doing = Doing::Nothing;
+    let (Some(body), Some(plant)) = (world.body(id), mind.plants.get_mut(&(chunk, source))) else {
+        return;
+    };
+    let (dx, dy) = (
+        i64::from(body.at().x - plant.at.x),
+        i64::from(body.at().y - plant.at.y),
+    );
+    if dx * dx + dy * dy <= GATHER_REACH_MM * GATHER_REACH_MM {
+        return;
+    }
+    if let Some((_, year)) = food_in_season(world, rules, &plant.kind) {
+        plant.spent = Some(year);
+    }
+    let today = today(world);
+    mind.out_of_reach.retain(|_, day| *day == today);
+    mind.out_of_reach.insert(chunk, today);
+}
+
+/// After a work ended or was refused: the plant is spent for the year
+/// when nothing of its food is left on it.
+fn spend_if_bare(world: &World, rules: &Content, mind: &mut Mind, chunk: ChunkPos, source: Source) {
+    let Some(plant) = mind.plants.get_mut(&(chunk, source)) else {
+        return;
+    };
+    let Some((gives, year)) = food_in_season(world, rules, &plant.kind) else {
+        return;
+    };
+    let bearer = Bearer {
+        source,
+        at: plant.at,
+        kind: plant.kind.clone(),
+    };
+    if !world
+        .ripe_on(chunk, &bearer)
+        .iter()
+        .any(|r| r.gives == gives)
+    {
+        plant.spent = Some(year);
+    }
+}
+
+/// The food the body carries that it should eat first: what spoils
+/// first, not yet spoiled.
+fn carried_food(world: &World, rules: &Content, id: BodyId) -> Option<ItemId> {
+    let body = world.body(id)?;
+    body.inventory()
+        .filter_map(|item| world.item(item))
+        .filter_map(|item| {
+            let food = rules.material(item.material())?.food?;
+            if world.is_spoiled(item.id(), rules) {
+                return None;
+            }
+            let ends =
+                item.made().0 + u64::from(food.keeps_days) * world.calendar().ticks_per_day();
+            Some((ends, item.id()))
+        })
+        .min()
+        .map(|(_, item)| item)
+}
+
+/// The energy of the food the body carries, not spoiled, in kilojoules.
+pub fn carried_kj(world: &World, rules: &Content, id: BodyId) -> u64 {
+    world.body(id).map_or(0, |body| {
+        body.inventory()
+            .filter_map(|item| world.item(item))
+            .filter(|item| !world.is_spoiled(item.id(), rules))
+            .filter_map(|item| {
+                let food = rules.material(item.material())?.food?;
+                Some(u64::from(food.energy_kj(item.mass_g())))
+            })
+            .sum()
+    })
 }
 
 /// The body goes looking for what it needs: a spiral out of its camp,
@@ -686,6 +1004,141 @@ mod tests {
             brains.adopt(world, &rules, body.id());
         }
         brains
+    }
+
+    /// Runs the valley `world` for `ticks` ticks, the brain piloting.
+    fn run_valley(
+        world: &mut World,
+        rules: &Content,
+        brains: &mut Brains,
+        ticks: u64,
+    ) -> (Vec<Event>, Vec<(BodyId, Decision)>) {
+        let (mut all, mut decided) = (Vec::new(), Vec::new());
+        let mut events = Vec::new();
+        for _ in 0..ticks {
+            events.clear();
+            world.step(rules, &mut events);
+            for (body, decision) in brains.think(world, rules, &events) {
+                world.queue(decision.intention.clone());
+                decided.push((body, decision));
+            }
+            all.extend(events.iter().cloned());
+        }
+        (all, decided)
+    }
+
+    /// The valley at midday of day 28, blackberries ripe, and a body
+    /// born beside a bramble, with `hunger`, piloted.
+    fn by_a_ripe_bramble(hunger: u32) -> (World, Content, BodyId, Brains) {
+        use crate::crops::tests::{body_by, run_to, valley_with};
+        let (mut world, rules, _, bramble) = valley_with("bramble");
+        run_to(&mut world, &rules, 28);
+        let id = body_by(&mut world, &bramble);
+        let body = world.bodies.iter_mut().find(|b| b.id() == id).unwrap();
+        body.condition.hunger = Gauge::at(hunger);
+        let mut brains = Brains::new(7);
+        brains.adopt(&world, &rules, id);
+        (world, rules, id, brains)
+    }
+
+    #[test]
+    fn a_hungry_body_gathers_the_ripe_bramble_beside_it_and_eats() {
+        let (mut world, rules, id, mut brains) = by_a_ripe_bramble(60);
+        let (events, decided) = run_valley(&mut world, &rules, &mut brains, 30);
+        assert!(
+            matches!(
+                decided[0].1,
+                Decision { intention: Intention::Gather { ref gives, .. }, why: Why::Hunger }
+                    if gives == "blackberries"
+            ),
+            "it gathers first: {:?}",
+            decided[0]
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::WorkStopped { body, grams, .. }
+                if *body == id && *grams > 0)),
+            "it picked some"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::BodyAte { body, .. } if *body == id)),
+            "then ate what it carries: {decided:?}"
+        );
+    }
+
+    #[test]
+    fn by_day_carrying_little_it_gathers_a_store() {
+        let (mut world, rules, id, mut brains) = by_a_ripe_bramble(0);
+        assert_eq!(carried_kj(&world, &rules, id), 0);
+        let (_, decided) = run_valley(&mut world, &rules, &mut brains, 30);
+        assert!(
+            matches!(
+                decided[0].1,
+                Decision {
+                    intention: Intention::Gather { .. },
+                    why: Why::Gather
+                }
+            ),
+            "{:?}",
+            decided[0]
+        );
+        assert!(
+            carried_kj(&world, &rules, id) > 0,
+            "it carries what it picked"
+        );
+    }
+
+    #[test]
+    fn stopped_short_of_a_plant_it_leaves_its_patch_for_the_day() {
+        let (mut world, rules, id, mut brains) = by_a_ripe_bramble(0);
+        let mind = brains.minds.get_mut(&id).unwrap();
+        let here = world.body(id).unwrap().pos();
+        // Two brambles of one patch, said far away, out of reach.
+        let chunk = here.chunk();
+        let far_at = FinePos::new(here.centre().x + 20_000, here.centre().y);
+        let plant = |x_mm| {
+            (
+                chunk,
+                Source::Plant(crate::crops::PlantKey { x_mm, y_mm: 1 }),
+            )
+        };
+        mind.plants.clear();
+        for x_mm in [1, 2] {
+            mind.plants.insert(
+                plant(x_mm),
+                KnownPlant {
+                    at: far_at,
+                    kind: "bramble".to_owned(),
+                    spent: None,
+                },
+            );
+        }
+        mind.doing = Doing::ToGather(plant(1).0, plant(1).1);
+        mind.stopped = true;
+        stopped_short(&world, &rules, id, mind, plant(1).0, plant(1).1);
+        assert_eq!(mind.doing, Doing::Nothing);
+        assert_eq!(
+            mind.plants[&plant(1)].spent,
+            Some(1),
+            "this one for the year"
+        );
+        assert_eq!(
+            plant_to_gather(&world, &rules, here, mind),
+            None,
+            "the patch today"
+        );
+        let next_day = world.tick().0 + world.calendar().ticks_per_day();
+        let mut events = Vec::new();
+        world.advance(next_day - world.tick().0, &rules, &mut events);
+        let mind = brains.minds.get(&id).unwrap();
+        assert_eq!(
+            plant_to_gather(&world, &rules, here, mind).map(|t| t.0),
+            Some(plant(2)),
+            "the next day, the other one"
+        );
     }
 
     #[test]
@@ -941,18 +1394,36 @@ mod tests {
         let world = field(64, 40, Pos::new(5, 5));
         let rules = rules();
         let mut mind = Mind::new(Pos::new(5, 5));
-        look(&world, &rules, Pos::new(5, 5), &mut mind);
+        look(
+            &world,
+            &rules,
+            Pos::new(5, 5),
+            &mut mind,
+            &mut BTreeMap::new(),
+        );
         let seen: Vec<_> = mind.drinking_places().copied().collect();
         assert!(!seen.is_empty() && seen.iter().all(|p| p.stand.x == 39 || p.stand.x == 41));
         assert!(seen.iter().all(|p| p.water.x == 40));
         mind.water.clear();
-        look(&world, &rules, Pos::new(5, 5), &mut mind);
+        look(
+            &world,
+            &rules,
+            Pos::new(5, 5),
+            &mut mind,
+            &mut BTreeMap::new(),
+        );
         assert_eq!(
             mind.drinking_places().count(),
             0,
             "the same place: not looked at again"
         );
-        look(&world, &rules, Pos::new(6, 5), &mut mind);
+        look(
+            &world,
+            &rules,
+            Pos::new(6, 5),
+            &mut mind,
+            &mut BTreeMap::new(),
+        );
         assert_eq!(
             mind.drinking_places().count(),
             seen.len(),
