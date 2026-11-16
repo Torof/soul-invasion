@@ -10,9 +10,8 @@
 //                          10.6 h of night cost a body sleeping outside 43
 //                          points of vitality, which the day gives back; at
 //                          50 % it would lose 25 a day and die in winter.
-// hunger_per_day:          0 — paused while there is no food to gather
-//                          (10 November 2026; 33 filled the gauge in
-//                          three days). Back when gathering comes.
+// hunger_per_day:          100 — a day's food, 10,000 kJ, fills it (lot 2,
+//                          16 November 2026: gathering came).
 // thirst_per_day:          100 — a game day without drinking fills it
 //                          (D34, 13 November 2026), in the cool of spring,
 //                          at rest.
@@ -24,20 +23,25 @@
 // cold_relief_per_day:     600 — four hours of daylight undo it.
 // fatigue_per_day_awake:   120 — twenty hours awake fill the gauge.
 // rest_per_day_asleep:     300 — eight hours of sleep empty it.
-// starving_per_day:        100 — a day at full hunger kills.
+// starving_per_day:        0 — hunger is a gauge only until lot 3's fat
+//                          reserve: with two crops (hazel, bramble) and a
+//                          run born in spring, 100 killed everyone in two
+//                          days, before anything bore (the project lead's
+//                          fallback of 16 November 2026). The report counts
+//                          the days spent at full hunger instead.
 // freezing_per_day:        400 — six hours at full cold kill: a summer
 //                          night outside hurts but does not kill.
 // dehydration_per_day:     50 — two days at full thirst kill: a body dies
 //                          on the third day without water, as people do.
 // vitality_regain_per_day: 50 — two days fed, warm and rested to heal.
-// kj_per_hunger_point:     25 — a handful of berries (100 g, 250 kJ)
-//                          relieves 10 points, a meal of meat (300 g,
-//                          360 kJ) 14.
+// kj_per_hunger_point:     100 — the gauge is a day's 10,000 kJ: a meal of
+//                          hazelnuts (300 g, 7,800 kJ) relieves 78 points,
+//                          a handful of berries (100 g, 250 kJ) 2.
 // meal_g:                  300 — grams eaten at most in one act; the rest
 //                          of the item stays (D35).
 (
     night_from_percent: (spring: 58, summer: 64, autumn: 58, winter: 56),
-    hunger_per_day: 0,
+    hunger_per_day: 100,
     thirst_per_day: 100,
     thirst_heat_percent: (spring: 100, summer: 140, autumn: 100, winter: 80),
     thirst_effort_percent: 150,
@@ -45,10 +49,10 @@
     cold_relief_per_day: 600,
     fatigue_per_day_awake: 120,
     rest_per_day_asleep: 300,
-    starving_per_day: 100,
+    starving_per_day: 0,
     freezing_per_day: 400,
     dehydration_per_day: 50,
     vitality_regain_per_day: 50,
-    kj_per_hunger_point: 25,
+    kj_per_hunger_point: 100,
     meal_g: 300,
 )

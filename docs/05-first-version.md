@@ -238,6 +238,19 @@ the same thing at the same time (one camp, one rule), which the lot 2
 needs and the people's own traits will break. With 300 people the report
 weighs 38 MB (every thought on every page): to be cut when it matters.
 
+**Lot 2, the brain gathers** (16 November 2026, two tribes of five, two
+years, release): nobody dies, the run takes about 60 s after the world's
+birth. Each tribe gathers 0.8 to 1.5 GJ a year, eats nearly all of it and
+loses 1 to 3 % to spoilage; that is about half of what five people need
+(10 MJ a day each), and they spend about half of their days at full
+hunger, harmless while hunger is a gauge. They gather from the
+blackberries' ripening (day 20 of the year) to the hazelnuts' end, and go
+hungry through winter and spring: with two crops only, a store does not
+outlast the season. Two things learnt: a tribe whose water is far from
+its camp roams far from it, so the plants it remembers must be the nearest
+to where it is, not to its camp; and bushes seen across a river are tried
+one after the other unless the whole patch is left for the day.
+
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
 slopes drawn by the client from them (D44), then the relief in the

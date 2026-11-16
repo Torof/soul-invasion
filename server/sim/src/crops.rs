@@ -124,12 +124,13 @@ fn point((season, into): (Season, u8)) -> u64 {
     index as u64 * 100 + u64::from(into)
 }
 
-/// The year whose crop is on the plant at `tick`: this year's, last
+/// The year whose crop is on the plant at `tick`, counted as the
+/// calendar counts them (the world is born in year 1): this year's, last
 /// year's if it runs into this one, or `None` out of its season.
 #[must_use]
 pub fn in_season(crop: &Crop, calendar: &Calendar, tick: Tick) -> Option<u64> {
     let per_year = calendar.ticks_per_day() * u64::from(calendar.days_per_year());
-    let year = tick.0 / per_year;
+    let year = tick.0 / per_year + 1;
     // Compared in four hundredths of a year, without rounding.
     let at = u128::from(tick.0 % per_year) * 400;
     let mark = |p: u64| u128::from(p.min(400)) * u128::from(per_year);
@@ -139,7 +140,7 @@ pub fn in_season(crop: &Crop, calendar: &Calendar, tick: Tick) -> Option<u64> {
     } else if at >= from {
         Some(year)
     } else if at < until {
-        year.checked_sub(1)
+        (year > 1).then(|| year - 1)
     } else {
         None
     }
@@ -252,7 +253,7 @@ pub struct Ripe {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn hazel() -> Crop {
@@ -299,11 +300,11 @@ mod tests {
             .collect();
         let autumns: Vec<u64> = (25..37).chain(75..87).collect();
         assert_eq!(on, autumns);
-        assert_eq!(in_season(&hazel, &calendar, midday(30)), Some(0));
-        assert_eq!(in_season(&hazel, &calendar, midday(80)), Some(1));
+        assert_eq!(in_season(&hazel, &calendar, midday(30)), Some(1));
+        assert_eq!(in_season(&hazel, &calendar, midday(80)), Some(2));
         // The first tick of autumn bears; the first of winter does not.
-        assert_eq!(in_season(&hazel, &calendar, Tick(2500)), Some(0));
-        assert_eq!(in_season(&hazel, &calendar, Tick(3749)), Some(0));
+        assert_eq!(in_season(&hazel, &calendar, Tick(2500)), Some(1));
+        assert_eq!(in_season(&hazel, &calendar, Tick(3749)), Some(1));
         assert_eq!(in_season(&hazel, &calendar, Tick(3750)), None);
     }
 
@@ -316,9 +317,9 @@ mod tests {
             ..hazel()
         };
         assert_eq!(in_season(&hips, &calendar, midday(30)), None);
-        assert_eq!(in_season(&hips, &calendar, midday(32)), Some(0));
-        assert_eq!(in_season(&hips, &calendar, midday(45)), Some(0));
-        assert_eq!(in_season(&hips, &calendar, midday(51)), Some(0));
+        assert_eq!(in_season(&hips, &calendar, midday(32)), Some(1));
+        assert_eq!(in_season(&hips, &calendar, midday(45)), Some(1));
+        assert_eq!(in_season(&hips, &calendar, midday(51)), Some(1));
         assert_eq!(in_season(&hips, &calendar, midday(54)), None);
         // The first spring of the world bears no crop of a year before it.
         assert_eq!(in_season(&hips, &calendar, midday(1)), None);
@@ -392,7 +393,7 @@ mod tests {
         for day in [0, 13, 49, 50, 99] {
             assert_eq!(
                 in_season(&year_round, &calendar, midday(day)),
-                Some(day / 50)
+                Some(day / 50 + 1)
             );
         }
         assert!(
@@ -433,7 +434,7 @@ mod tests {
     }
 
     /// The repository's content, crops included.
-    fn content() -> crate::Content {
+    pub(crate) fn content() -> crate::Content {
         crate::Content::from_ron(
             include_str!("../../../content/materials.ron"),
             include_str!("../../../content/spawns.ron"),
@@ -448,7 +449,7 @@ mod tests {
 
     /// The valley on a short calendar (a day of 100 ticks, 50 days a
     /// year), and the first bearer of `kind` in it, with its chunk.
-    fn valley_with(kind: &str) -> (crate::World, crate::Content, ChunkPos, Bearer) {
+    pub(crate) fn valley_with(kind: &str) -> (crate::World, crate::Content, ChunkPos, Bearer) {
         let content = content();
         let world = crate::World::with_valley(calendar(), &content, 256);
         let side = 256 / i32::try_from(CHUNK_SIZE).unwrap();
@@ -464,7 +465,7 @@ mod tests {
     }
 
     /// Runs `world` to the middle of `day`.
-    fn run_to(world: &mut crate::World, content: &crate::Content, day: u64) {
+    pub(crate) fn run_to(world: &mut crate::World, content: &crate::Content, day: u64) {
         let target = midday(day).0;
         let mut events = Vec::new();
         world.advance(target - world.tick().0, content, &mut events);
@@ -478,13 +479,13 @@ mod tests {
         run_to(&mut world, &content, 30);
         let crop = &content.crops[0];
         let frame = Frame::at(world.map().origin());
-        let full = bears(crop, world.seed(), frame, hazel.at, 0);
+        let full = bears(crop, world.seed(), frame, hazel.at, 1);
         let ripe = world.ripe_on(chunk, &hazel);
         assert_eq!(
             ripe,
             [Ripe {
                 gives: "hazelnuts".to_owned(),
-                year: 0,
+                year: 1,
                 grams: full
             }]
         );
@@ -509,9 +510,9 @@ mod tests {
         run_to(&mut world, &content, 40);
         assert_eq!(world.ripe_on(chunk, &hazel), []);
         run_to(&mut world, &content, 80);
-        let next = bears(crop, world.seed(), frame, hazel.at, 1);
+        let next = bears(crop, world.seed(), frame, hazel.at, 2);
         assert_eq!(world.ripe_on(chunk, &hazel)[0].grams, next);
-        assert_eq!(world.ripe_on(chunk, &hazel)[0].year, 1);
+        assert_eq!(world.ripe_on(chunk, &hazel)[0].year, 2);
     }
 
     #[test]
@@ -528,7 +529,7 @@ mod tests {
         assert_eq!(world.pick(chunk, bramble.source, "blackberries", 100), 100);
         let picked = &world.changes_in(chunk).unwrap().picked;
         let taken = picked[&(bramble.source, "blackberries".to_owned())];
-        assert_eq!((taken.year, taken.grams), (0, 100));
+        assert_eq!((taken.year, taken.grams), (1, 100));
         // The same bearers, placed again.
         assert!(world.bearers_in(chunk).contains(&bramble));
     }
@@ -557,7 +558,7 @@ mod tests {
     }
 
     /// A body born on the free tile nearest `bearer`.
-    fn body_by(world: &mut crate::World, bearer: &Bearer) -> crate::BodyId {
+    pub(crate) fn body_by(world: &mut crate::World, bearer: &Bearer) -> crate::BodyId {
         let t = bearer.at.tile();
         let near: Vec<crate::Pos> = {
             let trunks = world.trunks();
@@ -773,6 +774,7 @@ mod tests {
             item: berries,
             material: "blackberries".to_owned(),
             grams: 100,
+            holder: None,
         }));
         assert!(world.item(berries).is_none());
     }
