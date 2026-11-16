@@ -32,7 +32,7 @@ use sim::{CHUNK_SIZE, ChunkPos, Content, Pos, World};
 
 /// Version of the serialized `World` inside a snapshot. Bump on any change
 /// to `World`'s shape, and add a migration in `decode_world`.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 13;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 14;
 
 /// Version of a chunk's changes as stored (`encode_changes`). Bump on any
 /// change to their bytes, and read the old ones in `decode_changes`.
@@ -551,6 +551,7 @@ fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<Wo
             10 => migrate_v10_to_v11(&data, content)?,
             11 => migrate_v11_to_v12(&data)?,
             12 => migrate_v12_to_v13(&data)?,
+            13 => migrate_v13_to_v14(&data)?,
             _ => unreachable!("every version below the current one has a migration"),
         };
         version += 1;
@@ -757,6 +758,22 @@ fn migrate_v12_to_v13(data: &str) -> Result<String, StorageError> {
             .filter_map(serde_json::Value::as_object_mut)
         {
             body.entry("work").or_insert(serde_json::Value::Null);
+        }
+    }
+    Ok(old.to_string())
+}
+
+/// v14: a body has a fat reserve (lot 3), what it misses and what it
+/// ate today. A world saved before has every reserve full.
+fn migrate_v13_to_v14(data: &str) -> Result<String, StorageError> {
+    let mut old: serde_json::Value = serde_json::from_str(data)?;
+    if let Some(bodies) = old["bodies"].as_array_mut() {
+        for condition in bodies
+            .iter_mut()
+            .filter_map(|body| body["condition"].as_object_mut())
+        {
+            condition.entry("deficit_j").or_insert(0.into());
+            condition.entry("eaten_today_j").or_insert(0.into());
         }
     }
     Ok(old.to_string())
@@ -1312,6 +1329,30 @@ mod tests {
             today.body(body).unwrap().work(),
             world.body(body).unwrap().work()
         );
+    }
+
+    #[test]
+    fn a_v13_world_has_its_reserves_full() {
+        let content = content();
+        let mut world = World::with_valley(Calendar::new(2, 3).unwrap(), &content, 256);
+        let body = world.spawn_at_camp().expect("a body at the camp");
+        let mut old: serde_json::Value = serde_json::to_value(&world).unwrap();
+        for body in old["bodies"].as_array_mut().unwrap() {
+            let condition = body["condition"].as_object_mut().unwrap();
+            assert!(condition.remove("deficit_j").is_some());
+            assert!(condition.remove("eaten_today_j").is_some());
+        }
+        let mut storage = Sqlite::in_memory(content.clone()).unwrap();
+        storage
+            .conn
+            .execute(
+                "INSERT INTO snapshots (tick, format_version, data) VALUES (0, 13, ?1)",
+                [old.to_string()],
+            )
+            .unwrap();
+        let back = storage.latest_world().unwrap().unwrap();
+        let condition = back.body(body).unwrap().condition();
+        assert_eq!((condition.deficit_j, condition.eaten_today_j), (0, 0));
     }
 
     #[test]

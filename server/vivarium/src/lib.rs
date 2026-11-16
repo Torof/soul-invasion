@@ -174,8 +174,12 @@ pub struct Sample {
     pub alive: u32,
     /// Bodies alive of tribe A and of tribe B.
     pub alive_by_tribe: [u32; 2],
-    /// The living at full hunger, by tribe.
-    pub starving_by_tribe: [u32; 2],
+    /// The living thin, by tribe: under half their fat reserve (lot 3).
+    pub thin_by_tribe: [u32; 2],
+    /// The living weak, by tribe: under a fifth of it.
+    pub weak_by_tribe: [u32; 2],
+    /// The mean fat reserve of the living, by tribe, in percent of full.
+    pub reserve_by_tribe: [u32; 2],
     /// Mean hunger of the living, points (0–100).
     pub hunger: u32,
     /// Mean thirst of the living.
@@ -184,8 +188,9 @@ pub struct Sample {
     pub fatigue: u32,
 }
 
-/// A person's gauges at a tick: (tick, vitality, hunger, thirst, fatigue).
-pub type Gauges = (u64, u32, u32, u32, u32);
+/// A person's gauges at a tick: (tick, vitality, hunger, thirst, fatigue,
+/// fat reserve in percent).
+pub type Gauges = (u64, u32, u32, u32, u32, u32);
 
 /// One person's page.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -310,7 +315,7 @@ pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunErr
     // "hour" of the curves is a twenty-fourth of it, 300 game seconds.
     let ticks_per_sample = (calendar.ticks_per_day() / 24).max(1);
     let ticks = u64::from(settings.days) * calendar.ticks_per_day();
-    let mut samples = vec![sample(&world, &mut people)];
+    let mut samples = vec![sample(&world, content, &mut people)];
     let mut events = Vec::new();
     for _ in 0..ticks {
         events.clear();
@@ -422,11 +427,13 @@ pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunErr
             world.queue(decision.intention);
         }
         if tick % ticks_per_sample == 0 {
-            let now = sample(&world, &mut people);
-            for (tribe, &starving) in now.starving_by_tribe.iter().enumerate().take(tribes) {
-                food.entry((u8::try_from(tribe).expect("two"), year))
-                    .or_default()
-                    .starving_samples += u64::from(starving);
+            let now = sample(&world, content, &mut people);
+            for tribe in 0..tribes.min(2) {
+                let balance = food
+                    .entry((u8::try_from(tribe).expect("two"), year))
+                    .or_default();
+                balance.thin_samples += u64::from(now.thin_by_tribe[tribe]);
+                balance.weak_samples += u64::from(now.weak_by_tribe[tribe]);
             }
             samples.push(now);
         }
@@ -459,7 +466,15 @@ pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunErr
         ("thirst a day", needs.thirst_per_day),
         ("cold a day of night", needs.cold_per_day_at_night),
         ("fatigue a day awake", needs.fatigue_per_day_awake),
-        ("vitality lost a day starving", needs.starving_per_day),
+        (
+            "vitality lost a day starving, the fat reserve spent",
+            needs.starving_per_day,
+        ),
+        ("fat reserve, kJ", needs.reserve_kj),
+        (
+            "a day's eating at most, % of the need",
+            needs.intake_ceiling_percent,
+        ),
         (
             "vitality lost a day at full thirst",
             needs.dehydration_per_day,
@@ -519,9 +534,10 @@ pub struct Balance {
     pub spoiled_kj: u64,
     /// Carried by its living at the year's end (or the run's).
     pub end_kj: u64,
-    /// Samples (24 a day) of a living person at full hunger: a person-day
-    /// is 24.
-    pub starving_samples: u64,
+    /// Samples (24 a day) of a living person thin: a person-day is 24.
+    pub thin_samples: u64,
+    /// Samples of a living person weak.
+    pub weak_samples: u64,
 }
 
 impl Balance {
@@ -597,11 +613,13 @@ fn name(id: BodyId) -> String {
 }
 
 /// The people now, and each one's gauges into its page.
-fn sample(world: &World, people: &mut BTreeMap<BodyId, Person>) -> Sample {
+fn sample(world: &World, content: &Content, people: &mut BTreeMap<BodyId, Person>) -> Sample {
     let tick = world.tick().0;
+    let needs = &content.needs;
     let (mut alive, mut hunger, mut thirst, mut fatigue) = (0_u32, 0_u32, 0_u32, 0_u32);
     let mut alive_by_tribe = [0_u32; 2];
-    let mut starving_by_tribe = [0_u32; 2];
+    let (mut thin_by_tribe, mut weak_by_tribe) = ([0_u32; 2], [0_u32; 2]);
+    let mut reserve_sum = [0_u32; 2];
     for body in world.bodies() {
         let condition = body.condition();
         if condition.vitality.points() == 0 {
@@ -609,10 +627,14 @@ fn sample(world: &World, people: &mut BTreeMap<BodyId, Person>) -> Sample {
         }
         alive += 1;
         let tribe = people.get(&body.id()).map_or(0, |p| p.tribe);
-        alive_by_tribe[usize::from(tribe.min(1))] += 1;
-        if condition.hunger.is_full() {
-            starving_by_tribe[usize::from(tribe.min(1))] += 1;
-        }
+        let t = usize::from(tribe.min(1));
+        alive_by_tribe[t] += 1;
+        thin_by_tribe[t] += u32::from(condition.is_thin(needs));
+        weak_by_tribe[t] += u32::from(condition.is_weak(needs));
+        let reserve =
+            u32::try_from(condition.reserve_left_j(needs) * 100 / needs.reserve_j().max(1))
+                .expect("a percent");
+        reserve_sum[t] += reserve;
         hunger += condition.hunger.points();
         thirst += condition.thirst.points();
         fatigue += condition.fatigue.points();
@@ -622,14 +644,19 @@ fn sample(world: &World, people: &mut BTreeMap<BodyId, Person>) -> Sample {
             condition.hunger.points(),
             condition.thirst.points(),
             condition.fatigue.points(),
+            reserve,
         ));
     }
     let mean = |sum: u32| sum.checked_div(alive).unwrap_or(0);
+    let reserve_by_tribe =
+        [0, 1].map(|t| reserve_sum[t].checked_div(alive_by_tribe[t]).unwrap_or(0));
     Sample {
         tick,
         alive,
         alive_by_tribe,
-        starving_by_tribe,
+        thin_by_tribe,
+        weak_by_tribe,
+        reserve_by_tribe,
         hunger: mean(hunger),
         thirst: mean(thirst),
         fatigue: mean(fatigue),
@@ -695,14 +722,17 @@ impl Report {
     /// The food, year by year and tribe by tribe (lot 2's measure).
     fn food_table(&self) -> String {
         let mut h = String::from(
-            "<h2>The food, year by year</h2><p>In kilojoules (a person needs about 10,000 a day). Carried: what the tribe's living carry. Lost: what the flows do not tell, left on the ground by the dead. Days at full hunger: person-days.</p>\
-<table><tr><th>Tribe</th><th>Year</th><th>Carried at the start</th><th>Gathered</th><th>Eaten</th><th>Spoiled</th><th>Carried at the end</th><th>Lost</th><th>Days at full hunger</th></tr>",
+            "<h2>The food, year by year</h2><p>In kilojoules (a person needs about 10,000 a day). Carried: what the tribe's living carry. Lost: what the flows do not tell, left on the ground by the dead. Days thin and weak: person-days under half and under a fifth of the fat reserve.</p>\
+<table><tr><th>Tribe</th><th>Year</th><th>Carried at the start</th><th>Gathered</th><th>Eaten</th><th>Spoiled</th><th>Carried at the end</th><th>Lost</th><th>Days thin</th><th>Days weak</th></tr>",
         );
         for (&(tribe, year), b) in &self.food {
-            let tenths = b.starving_samples * 10 / 24;
+            let days = |samples: u64| {
+                let tenths = samples * 10 / 24;
+                format!("{}.{}", tenths / 10, tenths % 10)
+            };
             let _ = write!(
                 h,
-                "<tr><td>{}</td><td>{year}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}.{}</td></tr>",
+                "<tr><td>{}</td><td>{year}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
                 tribe_name(tribe),
                 b.start_kj,
                 b.gathered_kj,
@@ -710,8 +740,8 @@ impl Report {
                 b.spoiled_kj,
                 b.end_kj,
                 b.lost_kj(),
-                tenths / 10,
-                tenths % 10
+                days(b.thin_samples),
+                days(b.weak_samples)
             );
         }
         h.push_str("</table>");
@@ -806,8 +836,9 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         for (id, person) in &self.people {
             let fate = match &person.death {
                 Some((tick, cause, at)) => format!(
-                    "died on day {} (tick {tick}) {} at ({}, {})",
+                    "died on day {} (tick {tick}, {}) {} at ({}, {})",
                     tick / self.ticks_per_day().max(1) + 1,
+                    self.season_of(*tick),
                     match cause {
                         Death::Starved => "of hunger",
                         Death::Froze => "of cold",
@@ -874,6 +905,25 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
     }
 
     /// Ticks a game day of this run.
+    /// The season and year of `tick`, as "winter of year 2".
+    fn season_of(&self, tick: u64) -> String {
+        Calendar::new(
+            self.settings.ticks_per_second,
+            Calendar::DEFAULT_SECONDS_PER_DAY,
+        )
+        .map_or_else(
+            |_| String::new(),
+            |calendar| {
+                let time = calendar.time_at(sim::Tick(tick));
+                format!(
+                    "{} of year {}",
+                    format!("{:?}", time.season).to_lowercase(),
+                    time.year
+                )
+            },
+        )
+    }
+
     fn ticks_per_day(&self) -> u64 {
         u64::from(self.settings.ticks_per_second) * u64::from(Calendar::DEFAULT_SECONDS_PER_DAY)
     }
@@ -929,7 +979,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         }
         format!(
             "<svg width=\"{W}\" height=\"{}\" viewBox=\"0 0 {W} {}\" style=\"font-family:system-ui\">{days}{}{}{}{}{}</svg>\
-<p><span style=\"color:#222\">■ alive (of {people})</span>{} <span style=\"color:#c33\">■ hunger</span> <span style=\"color:#36c\">■ thirst</span> <span style=\"color:#993\">■ fatigue</span>, the gauges in points of 100.</p>",
+<p><span style=\"color:#222\">■ alive (of {people})</span>{} <span style=\"color:#c33\">■ hunger</span> <span style=\"color:#d80\">■ fat reserve, tribe A</span>{} <span style=\"color:#36c\">■ thirst</span> <span style=\"color:#993\">■ fatigue</span>, the gauges in points of 100.</p>",
             H + 16,
             H + 16,
             line("alive", "#222", &|s| u64::from(s.alive), people),
@@ -948,11 +998,32 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             } else {
                 String::new()
             },
-            line("hunger", "#c33", &|s| u64::from(s.hunger), 100),
+            line("hunger", "#c33", &|s| u64::from(s.hunger), 100)
+                + &line(
+                    "fat reserve, tribe A",
+                    "#d80",
+                    &|s| u64::from(s.reserve_by_tribe[0]),
+                    100,
+                )
+                + &if tribes == 2 {
+                    line(
+                        "fat reserve, tribe B",
+                        "#a6d",
+                        &|s| u64::from(s.reserve_by_tribe[1]),
+                        100,
+                    )
+                } else {
+                    String::new()
+                },
             line("thirst", "#36c", &|s| u64::from(s.thirst), 100),
             line("fatigue", "#993", &|s| u64::from(s.fatigue), 100),
             if tribes == 2 {
                 " <span style=\"color:#a55\">■ alive, tribe A</span> <span style=\"color:#5a5\">■ alive, tribe B</span>"
+            } else {
+                ""
+            },
+            if tribes == 2 {
+                " <span style=\"color:#a6d\">■ fat reserve, tribe B</span>"
             } else {
                 ""
             },
@@ -961,7 +1032,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
 }
 
 /// A person's gauges over the run as a small SVG: vitality black,
-/// hunger red, thirst blue, fatigue olive.
+/// hunger red, thirst blue, fatigue olive, fat reserve orange.
 fn sparkline(gauges: &[Gauges], ticks: u64) -> String {
     const W: u64 = 600;
     const H: u64 = 60;
@@ -977,7 +1048,8 @@ fn sparkline(gauges: &[Gauges], ticks: u64) -> String {
         )
     };
     format!(
-        "<svg width=\"{W}\" height=\"{H}\" viewBox=\"0 0 {W} {H}\">{}{}{}{}</svg>",
+        "<svg width=\"{W}\" height=\"{H}\" viewBox=\"0 0 {W} {H}\">{}{}{}{}{}</svg>",
+        line("#d80", &|g| g.5),
         line("#222", &|g| g.1),
         line("#c33", &|g| g.2),
         line("#36c", &|g| g.3),
@@ -1147,11 +1219,15 @@ mod tests {
     #[test]
     fn with_the_brain_nobody_dies_of_thirst_beside_the_river() {
         // The plan's small trial: five people, the 50 × 50 patch, ten days.
+        // Thirst alone: the patch bears nothing in spring, and since lot 3
+        // a body without food dies on its seventh day.
         let settings = Settings {
             days: 10,
             ..small()
         };
-        let report = run_with(&settings, content()).unwrap();
+        let mut content = content().clone();
+        content.needs.hunger_per_day = 0;
+        let report = run_with(&settings, &content).unwrap();
         for (id, person) in &report.people {
             assert!(
                 !matches!(person.death, Some((_, Death::Dehydrated, _))),

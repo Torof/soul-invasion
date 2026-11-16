@@ -92,6 +92,11 @@ impl Gauge {
     fn lower(&mut self, by: u64) {
         self.0 = self.0.saturating_sub(by);
     }
+
+    /// Sets it finely, in millionths of a point, at most full.
+    fn set_fine(&mut self, fine: u64) {
+        self.0 = fine.min(u64::from(GAUGE_MAX) * GAUGE_SCALE);
+    }
 }
 
 /// A part of a body that can be wounded (D33, D34).
@@ -156,7 +161,9 @@ pub enum Death {
 pub struct Condition {
     /// Life left; zero is death.
     pub vitality: Gauge,
-    /// Need for food.
+    /// Need for food: the appetite, what is missing from the fat reserve
+    /// and can still be eaten today (lot 3), a point for
+    /// [`content::Needs::kj_per_hunger_point`].
     pub hunger: Gauge,
     /// Need for water (D34, amended 13 November 2026).
     pub thirst: Gauge,
@@ -168,6 +175,14 @@ pub struct Condition {
     pub asleep: bool,
     /// Wounds by limb.
     pub wounds: Vec<Wound>,
+    /// What is missing from the fat reserve, in joules: 0 full, the
+    /// content's whole reserve spent (lot 3).
+    #[serde(default)]
+    pub deficit_j: u64,
+    /// What it ate since the day began, in joules: a day's intake has a
+    /// ceiling.
+    #[serde(default)]
+    pub eaten_today_j: u64,
 }
 
 impl Condition {
@@ -181,7 +196,52 @@ impl Condition {
             fatigue: Gauge::at(0),
             asleep: false,
             wounds: Vec::new(),
+            deficit_j: 0,
+            eaten_today_j: 0,
         }
+    }
+
+    /// What is left of the fat reserve, in joules.
+    #[must_use]
+    pub fn reserve_left_j(&self, needs: &content::Needs) -> u64 {
+        needs.reserve_j().saturating_sub(self.deficit_j)
+    }
+
+    /// Thin: under the content's share of its reserve.
+    #[must_use]
+    pub fn is_thin(&self, needs: &content::Needs) -> bool {
+        self.reserve_left_j(needs) * 100 < needs.reserve_j() * u64::from(needs.thin_percent)
+    }
+
+    /// Weak: under a smaller share; it walks and works slower.
+    #[must_use]
+    pub fn is_weak(&self, needs: &content::Needs) -> bool {
+        self.reserve_left_j(needs) * 100 < needs.reserve_j() * u64::from(needs.weak_percent)
+    }
+
+    /// Its pace, walking and working, in percent of its own.
+    #[must_use]
+    pub fn pace_percent(&self, needs: &content::Needs) -> u32 {
+        if self.is_weak(needs) {
+            needs.weak_pace_percent
+        } else {
+            100
+        }
+    }
+
+    /// What it can still eat today, in joules: what its reserve misses,
+    /// at most what is left of the day's ceiling.
+    #[must_use]
+    pub fn room_j(&self, needs: &content::Needs) -> u64 {
+        self.deficit_j
+            .min(needs.intake_ceiling_j().saturating_sub(self.eaten_today_j))
+    }
+
+    /// Sets hunger from the room it has to eat.
+    fn set_appetite(&mut self, needs: &content::Needs) {
+        let per_point_j = u64::from(needs.kj_per_hunger_point) * 1000;
+        self.hunger
+            .set_fine(self.room_j(needs) * GAUGE_SCALE / per_point_j.max(1));
     }
 
     /// The whole points of every gauge and the sleep flag: what a client
@@ -521,6 +581,9 @@ pub enum Refusal {
     NothingRipe,
     /// The food has spoiled.
     Spoiled,
+    /// The body can eat no more today: its reserve is full, or it ate
+    /// the day's ceiling.
+    Sated,
 }
 
 /// What a body that stopped for good short of its target sees barring
@@ -1511,7 +1574,8 @@ impl World {
             body.route.iter().copied(),
             &self.map,
             &rules.movement,
-            loaded_speed(&rules.movement, body.load_g),
+            loaded_speed(&rules.movement, body.load_g) * body.condition.pace_percent(&rules.needs)
+                / 100,
             f64::from(self.calendar.ticks_per_second()),
             self.tick.0,
         )
@@ -1871,7 +1935,10 @@ impl World {
             if self.bodies[index].route.is_empty() {
                 continue;
             }
-            let speed = loaded_speed(&rules.movement, self.bodies[index].load_g);
+            let body = &self.bodies[index];
+            let speed = loaded_speed(&rules.movement, body.load_g)
+                * body.condition.pace_percent(&rules.needs)
+                / 100;
             let before = self.bodies[index].pos().chunk();
             walk(
                 &mut self.bodies[index],
@@ -1890,7 +1957,7 @@ impl World {
         }
 
         self.labour(rules, events);
-        self.fare(rules, night, events);
+        self.fare(rules, night, now.is_day_start(), events);
     }
 
     /// Tells the world which bodies a player pilots, all of them: their
@@ -1979,17 +2046,26 @@ impl World {
     }
 
     /// Lets every body hunger, freeze, tire, rest, heal — and die.
-    fn fare(&mut self, rules: &Content, night: bool, events: &mut Vec<Event>) {
+    fn fare(&mut self, rules: &Content, night: bool, day_start: bool, events: &mut Vec<Event>) {
         let per_day = self.calendar.ticks_per_day();
         let step = |rate_per_day: u32| u64::from(rate_per_day) * GAUGE_SCALE / per_day;
         let needs = &rules.needs;
+        // What a body burns this tick, in joules: whole, the remainders
+        // carried over the day, so a day burns its need exactly.
+        let need = needs.need_j_per_day();
+        let tick = self.tick.0;
+        let burn = need * tick / per_day - need * tick.saturating_sub(1) / per_day;
         let season = self.time().season;
         let mut died = Vec::new();
         for body in &mut self.bodies {
             let before = body.condition.summary();
             let effort = !body.route.is_empty() || body.work.is_some();
             let c = &mut body.condition;
-            c.hunger.raise(step(needs.hunger_per_day));
+            c.deficit_j = (c.deficit_j + burn).min(needs.reserve_j());
+            if day_start {
+                c.eaten_today_j = 0;
+            }
+            c.set_appetite(needs);
             c.thirst.raise(thirst_raise(needs, season, effort, per_day));
             if night {
                 c.cold.raise(step(needs.cold_per_day_at_night));
@@ -2020,9 +2096,9 @@ impl World {
                 }
             }
             let mut cause = None;
-            // A hunger that does no harm (starving_per_day 0, lot 2's
-            // gauge) neither kills nor keeps a body from healing.
-            if c.hunger.is_full() && needs.starving_per_day > 0 {
+            // Hunger itself does no harm: the reserve is burnt first, and
+            // only a spent one starves (lot 3).
+            if c.deficit_j >= needs.reserve_j() && needs.starving_per_day > 0 {
                 c.vitality.lower(step(needs.starving_per_day));
                 cause = Some(Death::Starved);
             }
@@ -2396,7 +2472,9 @@ impl World {
                 .crops
                 .iter()
                 .find(|c| c.on == work.bearer.kind && c.gives == work.gives)
-                .map_or(0, |c| c.per_hour_g);
+                .map_or(0, |c| c.per_hour_g)
+                * body.condition.pace_percent(&rules.needs)
+                / 100;
             let earned = u64::from(rate) * (self.tick.0 - work.since.0) / per_hour;
             let due =
                 u32::try_from(earned.saturating_sub(u64::from(work.done_g))).unwrap_or(u32::MAX);
@@ -2581,12 +2659,24 @@ impl World {
         if self.item(item).is_some_and(|i| self.spoiled(i, rules)) {
             return Self::refuse(events, id, ItemAct::Eat, item, Refusal::Spoiled);
         }
+        // A kilojoule a kilogram is a joule a gram: what it can still eat
+        // today, in grams of this food.
+        let needs = &rules.needs;
+        let room_g =
+            self.bodies[index].condition.room_j(needs) / u64::from(food.energy_kj_per_kg).max(1);
+        let grams = mass_g
+            .min(needs.meal_g)
+            .min(u32::try_from(room_g).unwrap_or(u32::MAX));
+        if grams == 0 {
+            return Self::refuse(events, id, ItemAct::Eat, item, Refusal::Sated);
+        }
         self.wake(index, events);
-        let grams = mass_g.min(rules.needs.meal_g);
         let whole = grams == mass_g;
-        let relief = u64::from(grams) * u64::from(food.energy_kj_per_kg) * GAUGE_SCALE
-            / (1000 * u64::from(rules.needs.kj_per_hunger_point));
-        self.bodies[index].condition.hunger.lower(relief);
+        let eaten_j = u64::from(grams) * u64::from(food.energy_kj_per_kg);
+        let c = &mut self.bodies[index].condition;
+        c.deficit_j = c.deficit_j.saturating_sub(eaten_j);
+        c.eaten_today_j += eaten_j;
+        c.set_appetite(needs);
         match place {
             Place::Ground { pos } if whole => {
                 self.remove_item(item);
@@ -4776,13 +4866,22 @@ mod tests {
     fn a_meal_takes_at_most_its_grams_and_leaves_the_rest() {
         let mut w = fed_world();
         let mut events = Vec::new();
-        w.advance(1000, &rules(), &mut events); // hunger 33
+        // Room to eat it all: a reserve short of 5,000 kJ, no ceiling to
+        // speak of.
+        let rules = || {
+            let mut rules = rules();
+            rules.needs.reserve_kj = 100_000;
+            rules.needs.intake_ceiling_percent = 10_000;
+            rules
+        };
+        w.advance(1000, &rules(), &mut events);
+        w.bodies[0].condition.deficit_j = 5_000_000;
         let meal = rules().needs.meal_g;
         assert_eq!(meal, 300);
         // A heap on the ground: a meal off it, the rest stays, told as
         // gone and laid again, lighter.
         let heap = w.spawn_item("berries", 350, Pos::new(2, 2));
-        let before = condition(&w).hunger.points();
+        let before = condition(&w).deficit_j;
         events.clear();
         w.queue(Intention::Eat {
             body: BodyId(1),
@@ -4790,8 +4889,9 @@ mod tests {
         });
         w.step(&rules(), &mut events);
         assert_eq!(w.item(heap).map(Item::mass_g), Some(50));
-        // 300 g at 2,500 kJ a kilogram: 750 kJ, 30 points.
-        assert_eq!(condition(&w).hunger.points(), before - 30);
+        // 300 g at 2,500 kJ a kilogram: 750 kJ back in the reserve, a
+        // tick's need (825 J) out.
+        assert_eq!(condition(&w).deficit_j, before + 825 - 750_000);
         assert!(events.contains(&Event::BodyAte {
             body: BodyId(1),
             item: heap,
@@ -4845,6 +4945,119 @@ mod tests {
             body: BodyId(1),
             item: None,
         }));
+    }
+
+    /// The repository's needs (`content/needs.ron`) on the sample's
+    /// other rules, thirst and cold off: a body's food alone.
+    fn reserve_rules() -> Content {
+        let mut rules = rules();
+        rules.needs = ron::from_str(include_str!("../../../content/needs.ron")).unwrap();
+        rules.needs.thirst_per_day = 0;
+        rules.needs.cold_per_day_at_night = 0;
+        rules
+    }
+
+    #[test]
+    fn without_food_a_body_grows_thin_then_weak_and_dies_when_its_reserve_is_spent() {
+        let rules = reserve_rules();
+        let mut w = World::empty(
+            Calendar::new(1, 7200).unwrap(),
+            Map::filled(4, 4, Terrain::Grass),
+        );
+        w.spawn_body(Pos::new(1, 1));
+        let day = w.calendar().ticks_per_day();
+        let mut events = Vec::new();
+        let at = |w: &World| w.body(BodyId(1)).map(|b| b.condition().clone());
+        // A day without food: hungry, its reserve a sixth short.
+        w.advance(day, &rules, &mut events);
+        let c = at(&w).unwrap();
+        assert_eq!(c.hunger.points(), 100);
+        assert!(!c.is_thin(&rules.needs));
+        // Thin after three days, weak after about five (4.8).
+        w.advance(2 * day + 1, &rules, &mut events);
+        assert!(at(&w).unwrap().is_thin(&rules.needs));
+        assert!(!at(&w).unwrap().is_weak(&rules.needs));
+        w.advance(day * 18 / 10, &rules, &mut events);
+        let c = at(&w).unwrap();
+        assert!(c.is_weak(&rules.needs));
+        assert_eq!(c.pace_percent(&rules.needs), 70);
+        assert_eq!(c.vitality.points(), 100, "the reserve is burnt first");
+        // Spent after six days, dead in the seventh.
+        w.advance(day * 12 / 10, &rules, &mut events);
+        assert_eq!(at(&w).unwrap().reserve_left_j(&rules.needs), 0);
+        assert!(at(&w).is_some());
+        w.advance(day + 1, &rules, &mut events);
+        assert!(at(&w).is_none(), "dead");
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::BodyDied {
+                cause: Death::Starved,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn eating_fills_the_reserve_at_most_the_days_ceiling_and_a_sated_body_refuses() {
+        // A need of 10,000 kJ a day: 15,000 a day at most.
+        let rules = reserve_rules();
+        let mut w = fed_world();
+        let body = BodyId(1);
+        // Half its reserve spent: room for 30,000 kJ, more than a day's.
+        w.bodies[0].condition.deficit_j = 30_000_000;
+        // 10 kg of berries, 2,500 kJ a kilogram.
+        let food = w.spawn_item("berries", 10_000, Pos::new(1, 1));
+        let mut events = Vec::new();
+        let mut eaten = 0;
+        for _ in 0..40 {
+            events.clear();
+            w.queue(Intention::Eat { body, item: food });
+            w.step(&rules, &mut events);
+            eaten += events
+                .iter()
+                .filter_map(|e| match e {
+                    Event::BodyAte { energy_kj, .. } => Some(*energy_kj),
+                    _ => None,
+                })
+                .sum::<u32>();
+        }
+        // The day's ceiling: 150 % of 10,000 kJ.
+        assert!((14_900..=15_000).contains(&eaten), "{eaten}");
+        assert!(events.contains(&Event::ActRefused {
+            body,
+            act: ItemAct::Eat,
+            item: food,
+            reason: Refusal::Sated,
+        }));
+        assert_eq!(condition(&w).hunger.points(), 0, "no appetite left today");
+        // The next day, room again.
+        w.advance(1000, &rules, &mut events);
+        assert!(condition(&w).hunger.points() > 0);
+    }
+
+    #[test]
+    fn a_weak_body_walks_slower() {
+        let rules = reserve_rules();
+        let mut w = World::empty(
+            Calendar::new(10, 7200).unwrap(),
+            Map::filled(64, 4, Terrain::Grass),
+        );
+        let fit = w.spawn_body(Pos::new(1, 1));
+        let weak = w.spawn_body(Pos::new(1, 2));
+        w.bodies[1].condition.deficit_j = rules.needs.reserve_j() * 9 / 10;
+        for (body, y) in [(fit, 1), (weak, 2)] {
+            w.queue(Intention::MoveTo {
+                body,
+                target: Pos::new(60, y),
+            });
+        }
+        let mut events = Vec::new();
+        w.advance(100, &rules, &mut events);
+        let x = |id| w.body(id).unwrap().at().x;
+        let (fit_mm, weak_mm) = (x(fit) - 1500, x(weak) - 1500);
+        assert!(fit_mm > 0);
+        let percent = weak_mm * 100 / fit_mm;
+        assert!((68..=72).contains(&percent), "{percent} %");
     }
 
     /// The sample rules with a body that never thirsts: for the tests of
@@ -5012,10 +5225,12 @@ mod tests {
         let mut w = fed_world();
         let mut events = Vec::new();
         let rules = without_thirst;
-        // Three days to full hunger, then a day at full hunger to die.
-        w.advance(3_100, &rules(), &mut events);
+        // Four days to spend the reserve (3,300 kJ at 825 a day), then a
+        // day on nothing to die.
+        w.advance(4_100, &rules(), &mut events);
+        assert_eq!(condition(&w).deficit_j, rules().needs.reserve_j(), "spent");
         assert_eq!(condition(&w).hunger.points(), 100);
-        // Three nights outside have cost vitality, but not life.
+        // Four nights outside have cost vitality, but not life.
         assert!(condition(&w).vitality.points() > 0);
         events.clear();
         w.advance(1_000, &rules(), &mut events);
@@ -5506,6 +5721,9 @@ mod tests {
             },
         );
         assert_eq!(load(&w), branch_g + 100);
+        // Hungry enough to eat them.
+        let index = w.index_of(body).unwrap();
+        w.bodies[index].condition.deficit_j = 1_000_000;
         act(
             &mut w,
             Intention::Eat {

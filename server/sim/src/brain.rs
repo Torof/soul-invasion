@@ -57,10 +57,14 @@ pub const HOME_TILES: i32 = 6;
 /// How many drinking places and how many foods a body remembers: the
 /// nearest to the camp are kept.
 pub const MEMORY_PLACES: usize = 64;
-/// How many trees and plants bearing food a body remembers: the nearest
-/// to where it last looked are kept. It gathers where it roams, and a
-/// tribe whose water is far from its camp roams far from it.
+/// How many trees and plants bearing food a body remembers: those worth
+/// most from where it last looked are kept (what an hour gives at best,
+/// less the farther, [`WORTH_HALF_TILES`]). It gathers where it roams, and
+/// a tribe whose water is far from its camp roams far from it.
 pub const MEMORY_PLANTS: usize = 256;
+/// How far, in tiles, a plant's worth is halved: a body weighs what an
+/// hour of gathering gives against the walk there.
+pub const WORTH_HALF_TILES: u64 = 32;
 /// How far, in tiles, a body walks before it looks again for drinking
 /// places and for trees and plants bearing food: a lake shore holds
 /// thousands of tiles of water, a meadow thousands of plants, and its
@@ -564,7 +568,13 @@ fn look(
             let mut ranked: Vec<_> = mind
                 .plants
                 .iter()
-                .map(|(key, plant)| (far(plant.at.tile(), at), *key))
+                .map(|(key, plant)| {
+                    let best = kj_per_hour(rules, &plant.kind, None);
+                    (
+                        std::cmp::Reverse(worth(best, far(plant.at.tile(), at))),
+                        *key,
+                    )
+                })
                 .collect();
             ranked.select_nth_unstable(MEMORY_PLANTS);
             for (_, key) in &ranked[MEMORY_PLANTS..] {
@@ -783,8 +793,30 @@ fn today(world: &World) -> u64 {
     world.tick().0 / world.calendar().ticks_per_day().max(1)
 }
 
-/// The nearest tree or plant it knows bearing food now, not spent for
-/// that crop's year.
+/// What an hour of gathering a plant of `kind` gives, in kilojoules: of
+/// the crop giving `gives`, or of its best crop.
+fn kj_per_hour(rules: &Content, kind: &str, gives: Option<&str>) -> u64 {
+    rules
+        .crops
+        .iter()
+        .filter(|crop| crop.on == kind && gives.is_none_or(|g| g == crop.gives))
+        .filter_map(|crop| {
+            let food = rules.material(&crop.gives)?.food?;
+            Some(u64::from(crop.per_hour_g) * u64::from(food.energy_kj_per_kg) / 1000)
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// What a plant giving `kj_per_hour` is worth `tiles` away: halved at
+/// [`WORTH_HALF_TILES`].
+fn worth(kj_per_hour: u64, tiles: i64) -> u64 {
+    let tiles = u64::try_from(tiles).unwrap_or(0);
+    kj_per_hour * WORTH_HALF_TILES / (WORTH_HALF_TILES + tiles)
+}
+
+/// The tree or plant it knows bearing food now worth most, not spent for
+/// that crop's year: what an hour of it gives, less the farther.
 fn plant_to_gather(world: &World, rules: &Content, here: Pos, mind: &Mind) -> Option<Target> {
     let today = today(world);
     mind.plants
@@ -794,7 +826,11 @@ fn plant_to_gather(world: &World, rules: &Content, here: Pos, mind: &Mind) -> Op
             let (gives, year) = food_in_season(world, rules, &plant.kind)?;
             (plant.spent != Some(year)).then_some((*key, plant, gives, year))
         })
-        .min_by_key(|(key, plant, ..)| (far(plant.at.tile(), here), *key))
+        .max_by_key(|(key, plant, gives, _)| {
+            let tiles = far(plant.at.tile(), here);
+            let value = worth(kj_per_hour(rules, &plant.kind, Some(gives)), tiles);
+            (value, std::cmp::Reverse(tiles), std::cmp::Reverse(*key))
+        })
         .map(|(key, _, gives, year)| (key, gives, year))
 }
 
@@ -1100,6 +1136,9 @@ mod tests {
         run_to(&mut world, &rules, 28);
         let id = body_by(&mut world, &bramble);
         let body = world.bodies.iter_mut().find(|b| b.id() == id).unwrap();
+        // Its reserve short of `hunger` points' worth: as hungry.
+        body.condition.deficit_j =
+            u64::from(hunger) * u64::from(rules.needs.kj_per_hunger_point) * 1000;
         body.condition.hunger = Gauge::at(hunger);
         let mut brains = Brains::new(7);
         brains.adopt(&world, &rules, id);
@@ -1153,6 +1192,40 @@ mod tests {
         assert!(
             carried_kj(&world, &rules, id) > 0,
             "it carries what it picked"
+        );
+    }
+
+    #[test]
+    fn it_gathers_the_richer_crop_unless_it_is_too_far() {
+        let (world, rules, id, _) = by_a_ripe_bramble(0);
+        let here = world.body(id).unwrap().pos();
+        let chunk = here.chunk();
+        let at = |tiles: i32| FinePos::new(here.centre().x + tiles * 1000, here.centre().y);
+        let plant = |x_mm| {
+            (
+                chunk,
+                Source::Plant(crate::crops::PlantKey { x_mm, y_mm: 1 }),
+            )
+        };
+        let mut mind = Mind::new(here);
+        let known = |at, kind: &str| KnownPlant {
+            at,
+            kind: kind.to_owned(),
+            spent: None,
+        };
+        mind.plants.insert(plant(1), known(at(0), "bramble"));
+        mind.plants.insert(plant(2), known(at(10), "hazel"));
+        // Blackberries give 1,800 kJ an hour, hazelnuts 52,000: the hazel
+        // ten tiles off is worth the walk.
+        assert_eq!(
+            plant_to_gather(&world, &rules, here, &mind).map(|t| t.0),
+            Some(plant(2))
+        );
+        // A thousand tiles off, it is not.
+        mind.plants.insert(plant(2), known(at(1000), "hazel"));
+        assert_eq!(
+            plant_to_gather(&world, &rules, here, &mind).map(|t| t.0),
+            Some(plant(1))
         );
     }
 
@@ -1286,6 +1359,8 @@ mod tests {
     fn a_hungry_body_eats_the_food_it_saw() {
         let mut world = field(64, 60, Pos::new(5, 5));
         let berries = world.spawn_item("berries", 100, Pos::new(15, 9));
+        world.bodies[0].condition.deficit_j =
+            u64::from(HUNGRY + 10) * u64::from(rules().needs.kj_per_hunger_point) * 1000;
         world.bodies[0].condition.hunger = Gauge::at(HUNGRY + 10);
         let mut brains = piloted(&world);
         let (events, decided) = run(&mut world, &mut brains, 600);
