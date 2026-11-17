@@ -1075,7 +1075,7 @@ pub(crate) mod tests {
         };
         let (usual, lean, rich) = (year(0, 0), year(100, 0), year(0, 100));
         assert_eq!(
-            fruit_at(&hazel_tree, &[usual.clone()], 30, &tree, None),
+            fruit_at(&hazel_tree, std::slice::from_ref(&usual), 30, &tree, None),
             Fruit::Full
         );
         assert_eq!(
@@ -1164,7 +1164,7 @@ pub(crate) mod tests {
             .trees_in(chunk)
             .iter()
             .find(|t| Source::Tree(t.key) == hazel.source)
-            .cloned()
+            .copied()
             .unwrap();
         let oak = (0..8)
             .flat_map(|y| (0..8).map(move |x| ChunkPos::new(x, y)))
@@ -1173,7 +1173,7 @@ pub(crate) mod tests {
                     .trees_in(c)
                     .iter()
                     .find(|t| content.species[t.species].id == "oak")
-                    .map(|t| (c, t.clone()))
+                    .map(|t| (c, *t))
             })
             .expect("oaks in the valley");
         assert_eq!(

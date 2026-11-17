@@ -524,6 +524,12 @@ fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
                 });
             }
         }
+        Event::CropPicked { chunk, version } => {
+            // The fruit its trees show follows what is left (D48).
+            if let Some(changes) = world.changes_in(*chunk) {
+                shared.crop_picked(*chunk, &changes.picked, *version);
+            }
+        }
         // Gathering is the brains' alone, and spoiled food goes as an item
         // removed and an inventory changed, both told already: the
         // protocol says nothing more yet (D45).
