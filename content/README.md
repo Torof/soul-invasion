@@ -23,8 +23,8 @@ real values live in a private repository (D30). Files here hold placeholders.
   chalk, sandstone): their size, how their borders wander, how often
   each rock comes. Drawn on worlds of the generator's version 2 on.
 - `species.ron` — the kinds of tree: height, the habitats each grows in,
-  how far its seeds fall (D37, D40). The client finds a tree's images by
-  its id.
+  how far its seeds fall (D37, D40), and when its fruit shows on it
+  (`fruit`, D48). The client finds a tree's images by its id.
 - `flora.ron` — the shrubs, plants and mushrooms, and where each grows
   (D37).
 - `crops.ron` — what the trees and plants bear to whoever gathers it,

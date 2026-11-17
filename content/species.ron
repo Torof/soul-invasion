@@ -13,6 +13,12 @@
 // spread_m: how far its seeds fall from a mother tree, in metres (4 to
 //           36): heavy seeds close, in tight groups; light ones far.
 // pioneer:  the first to grow back in the woods' openings.
+// fruit:    when its fruit shows on the tree (D48): Some((from: (season,
+//           hundredths), until: (season, hundredths))), as a crop's in
+//           crops.ron (until before from: into the next year). Out of it,
+//           or without it, the tree is drawn bare; in it, laden, or as
+//           much as is left of its crop when one of crops.ron is in
+//           season. The windows below are placeholders, to tune by eye.
 //
 // Within a habitat, one kind dominates each stand of a few hundred metres
 // (the weight here times a power of its stand's strength at the place;
@@ -20,13 +26,19 @@
 // trees then take the kind of a mother tree near them (D37, D40).
 [
     (id: "oak", name: "Oak", height_m: 22.0, big: true, spread_m: 12,
-        habitats: { heart: 50, wood: 45, edge: 20, copse: 50, lone: 60 }),
+        habitats: { heart: 50, wood: 45, edge: 20, copse: 50, lone: 60 },
+        // Acorns.
+        fruit: Some((from: (autumn, 0), until: (winter, 0)))),
     (id: "pine", name: "Scots pine", height_m: 25.0, big: true, spread_m: 28,
-        habitats: { heart: 15, wood: 15, edge: 5, cliff_foot: 100, lone: 10 }),
+        habitats: { heart: 15, wood: 15, edge: 5, cliff_foot: 100, lone: 10 },
+        // Cones.
+        fruit: Some((from: (autumn, 0), until: (winter, 50)))),
     (id: "birch", name: "Birch", height_m: 18.0, spread_m: 34, pioneer: true,
         habitats: { heart: 5, wood: 10, edge: 45, cliff_foot: 20, lone: 35 }),
     (id: "hazel", name: "Hazel", height_m: 5.0, spread_m: 10,
-        habitats: { heart: 6, wood: 12, edge: 35, copse: 15, lone: 10 }),
+        habitats: { heart: 6, wood: 12, edge: 35, copse: 15, lone: 10 },
+        // Hazelnuts.
+        fruit: Some((from: (autumn, 0), until: (winter, 0)))),
     (id: "willow", name: "Willow", height_m: 12.0, spread_m: 24,
         habitats: { riverside: 100 }),
     (id: "wild_apple", name: "Wild apple", height_m: 6.0, spread_m: 14,
@@ -39,7 +51,9 @@
     (id: "linden", name: "Linden", height_m: 25.0, big: true, spread_m: 18,
         habitats: { heart: 30, wood: 35, copse: 15 }),
     (id: "yew", name: "Yew", height_m: 12.0, spread_m: 12,
-        habitats: { heart: 2, wood: 1 }),
+        habitats: { heart: 2, wood: 1 },
+        // Arils.
+        fruit: Some((from: (autumn, 0), until: (autumn, 80)))),
     // Fruit and nut trees (16 November 2026), for the vivarium's food;
     // without images of their own yet: the client draws each with a
     // stand-in's (client/world/trees.gd, STAND_INS).

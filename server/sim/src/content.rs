@@ -560,6 +560,10 @@ pub struct Species {
     /// A pioneer: the first to grow back in the openings of the woods.
     #[serde(default)]
     pub pioneer: bool,
+    /// When its fruit shows on the tree (D48), if it shows any: acorns,
+    /// nuts, cones. Out of it, or without it, the tree is drawn bare.
+    #[serde(default)]
+    pub fruit: Option<crate::crops::FruitWindow>,
 }
 
 /// Farthest a species' seeds may fall ([`Species::spread_m`]): the trees
@@ -842,6 +846,9 @@ impl Content {
             }
             if !(4..=MOST_SPREAD_M).contains(&species.spread_m) {
                 return Err(invalid("spread_m is 4 to 36"));
+            }
+            if let Some(what) = species.fruit.as_ref().and_then(crate::crops::check_window) {
+                return Err(invalid(what));
             }
         }
         Ok(())
@@ -1348,6 +1355,19 @@ mod tests {
             r#"[(id: "oak", name: "Oak", height_m: 4.0, habitats: { heart: 1 }, spread_m: 80)]"#;
         assert!(matches!(
             base().with_species(far).unwrap_err(),
+            ContentError::Species { .. }
+        ));
+        let fruit = r#"[(id: "oak", name: "Oak", height_m: 4.0, habitats: { heart: 1 },
+                        fruit: Some((from: (autumn, 0), until: (winter, 0))))]"#;
+        let content = base().with_species(fruit).unwrap();
+        assert_eq!(
+            content.species[0].fruit.map(|w| (w.from, w.until)),
+            Some(((Season::Autumn, 0), (Season::Winter, 0)))
+        );
+        let no_time = r#"[(id: "oak", name: "Oak", height_m: 4.0, habitats: { heart: 1 },
+                          fruit: Some((from: (autumn, 0), until: (autumn, 0))))]"#;
+        assert!(matches!(
+            base().with_species(no_time).unwrap_err(),
             ContentError::Species { .. }
         ));
         let giant = r#"[(id: "oak", name: "Oak", height_m: 400.0, habitats: { heart: 1 })]"#;
