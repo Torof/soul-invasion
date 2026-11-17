@@ -312,6 +312,159 @@ pub struct Needs {
     /// 70 when absent.
     #[serde(default = "percent_70")]
     pub weak_pace_percent: u32,
+    /// How needs, pace and strength go with age and sex, and the carried
+    /// infant (lot 3 B). Absent: every body as a grown man.
+    #[serde(default)]
+    pub ages: Ages,
+}
+
+/// Ages and sexes (lot 3 B, decided 17 November 2026): what a body needs
+/// against a grown man, how fast it goes and what it carries, and the
+/// infant carried and nursed until it is weaned. Ages in game years
+/// ([`crate::time::Calendar::days_per_year`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ages {
+    /// A body's need, its reserve and its strength by age, in percent of
+    /// a grown man's: (years, percent), the ages rising, straight lines
+    /// between them, the last held after.
+    pub need_by_age: Vec<(u32, u32)>,
+    /// A woman's, in percent of a man's of her age, from `woman_from_years`.
+    pub woman_percent: u32,
+    /// The age from which a woman needs `woman_percent`.
+    pub woman_from_years: u32,
+    /// A woman nursing an infant needs this much of her own need, in
+    /// percent; the infant then burns nothing of its own.
+    pub nursing_percent: u32,
+    /// The age an infant is weaned at: until then it is carried, does not
+    /// walk, and lives on its carrier's milk.
+    pub weaned_years: u32,
+    /// Children under this age and the old over `slow_over_years` walk
+    /// and gather at `slow_pace_percent` of a grown body's pace.
+    pub slow_under_years: u32,
+    /// See `slow_under_years`.
+    pub slow_over_years: u32,
+    /// See `slow_under_years`.
+    pub slow_pace_percent: u32,
+    /// An infant's mass on its carrier, in grams: (at birth, weaned),
+    /// straight between.
+    pub infant_mass_g: (u32, u32),
+    /// How far an orphaned infant is taken by the nearest woman, in tiles;
+    /// with none that near, it is left where its carrier died.
+    pub adopt_within_tiles: u32,
+}
+
+impl Default for Ages {
+    fn default() -> Self {
+        Self {
+            need_by_age: vec![(0, 100)],
+            woman_percent: 100,
+            woman_from_years: 0,
+            nursing_percent: 100,
+            weaned_years: 0,
+            slow_under_years: 0,
+            slow_over_years: u32::MAX,
+            slow_pace_percent: 100,
+            infant_mass_g: (0, 0),
+            adopt_within_tiles: 0,
+        }
+    }
+}
+
+/// A body's sex (lot 3 B).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum Sex {
+    /// A woman or a girl.
+    Female,
+    /// A man or a boy.
+    Male,
+}
+
+impl Ages {
+    /// The need, reserve and strength of a body `age_milli` thousandths of
+    /// a year old, of `sex`, in thousandths of a grown man's.
+    #[must_use]
+    pub fn size_permille(&self, age_milli: u64, sex: Sex) -> u32 {
+        let percent_milli =
+            |(years, percent): (u32, u32)| (u64::from(years) * 1000, u64::from(percent) * 10);
+        let points: Vec<(u64, u64)> = self
+            .need_by_age
+            .iter()
+            .copied()
+            .map(percent_milli)
+            .collect();
+        let mut size = points.last().map_or(1000, |p| p.1);
+        if let Some(first) = points.first()
+            && age_milli <= first.0
+        {
+            size = first.1;
+        }
+        for pair in points.windows(2) {
+            let ((a, pa), (b, pb)) = (pair[0], pair[1]);
+            if (a..b).contains(&age_milli) {
+                size = if pb >= pa {
+                    pa + (pb - pa) * (age_milli - a) / (b - a)
+                } else {
+                    pa - (pa - pb) * (age_milli - a) / (b - a)
+                };
+                break;
+            }
+        }
+        if sex == Sex::Female && age_milli >= u64::from(self.woman_from_years) * 1000 {
+            size = size * u64::from(self.woman_percent) / 100;
+        }
+        u32::try_from(size).unwrap_or(u32::MAX)
+    }
+
+    /// Whether a body that old is still an infant, carried.
+    #[must_use]
+    pub fn is_infant(&self, age_milli: u64) -> bool {
+        age_milli < u64::from(self.weaned_years) * 1000
+    }
+
+    /// Its pace from its age, in percent.
+    #[must_use]
+    pub fn age_pace_percent(&self, age_milli: u64) -> u32 {
+        let years = age_milli / 1000;
+        if years < u64::from(self.slow_under_years) || years >= u64::from(self.slow_over_years) {
+            self.slow_pace_percent
+        } else {
+            100
+        }
+    }
+
+    /// An infant's mass at that age, in grams.
+    #[must_use]
+    pub fn infant_mass_g(&self, age_milli: u64) -> u32 {
+        let (birth, weaned) = (
+            u64::from(self.infant_mass_g.0),
+            u64::from(self.infant_mass_g.1),
+        );
+        let span = u64::from(self.weaned_years) * 1000;
+        if span == 0 {
+            return self.infant_mass_g.1;
+        }
+        let at = age_milli.min(span);
+        u32::try_from(birth + weaned.saturating_sub(birth) * at / span).unwrap_or(u32::MAX)
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        let rising = self.need_by_age.windows(2).all(|p| p[0].0 < p[1].0);
+        if self.need_by_age.is_empty()
+            || !rising
+            || self.need_by_age.iter().any(|p| p.1 == 0)
+            || self.woman_percent == 0
+            || self.nursing_percent < 100
+            || !(1..=100).contains(&self.slow_pace_percent)
+            || self.infant_mass_g.0 > self.infant_mass_g.1
+        {
+            return Err(ContentError::Needs(
+                "ages: need_by_age not empty, its ages rising and its percents positive; \
+                 woman_percent positive, nursing_percent at least 100, slow_pace_percent 1 to 100, \
+                 infant_mass_g rising",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Needs {
@@ -786,7 +939,8 @@ impl Content {
         if self.needs.meal_g == 0 {
             return Err(ContentError::Needs("meal_g must be positive"));
         }
-        self.needs.validate_reserve()
+        self.needs.validate_reserve()?;
+        self.needs.ages.validate()
     }
 
     /// Checks the movement rules (D32).

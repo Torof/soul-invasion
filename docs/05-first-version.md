@@ -295,6 +295,17 @@ their crops, drawn with a stand-in's images until their own (D39). Two tribes, t
 half thin in all in its first year; the tribes gather cherries and
 walnuts among the rest.
 
+**Lot 3 B, ages and sexes** (17 November 2026, D47). A woman alone with
+her infant on the patch, nothing to eat: she dies of hunger on the
+eighth day, and her infant, left with nobody to carry it, dies the next
+night. Two tribes of five adults, three children (3, 7 and 11) and an
+infant each, two years: at first the children died of hunger beside fed
+adults (hunger counted in a grown man's points, a child of three was
+seldom hungry enough to eat; seven of eighteen died); with hunger in
+points of each body's own need, all eighteen live, the two infants are
+weaned on day 76 and walk, tribe A is thin some fifty person-days in
+two years, tribe B never.
+
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
 slopes drawn by the client from them (D44), then the relief in the

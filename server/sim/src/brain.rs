@@ -595,6 +595,10 @@ fn decide(
     seed: u64,
 ) -> Option<Decision> {
     let body = world.body(id)?;
+    // An infant thinks nothing yet: it is carried and nursed (lot 3 B).
+    if world.is_infant(body, rules) {
+        return None;
+    }
     let c = body.condition();
     let here = body.pos();
     let map = world.map();

@@ -32,7 +32,7 @@ use sim::{CHUNK_SIZE, ChunkPos, Content, Pos, World};
 
 /// Version of the serialized `World` inside a snapshot. Bump on any change
 /// to `World`'s shape, and add a migration in `decode_world`.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 14;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 15;
 
 /// Version of a chunk's changes as stored (`encode_changes`). Bump on any
 /// change to their bytes, and read the old ones in `decode_changes`.
@@ -552,6 +552,7 @@ fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<Wo
             11 => migrate_v11_to_v12(&data)?,
             12 => migrate_v12_to_v13(&data)?,
             13 => migrate_v13_to_v14(&data)?,
+            14 => migrate_v14_to_v15(&data)?,
             _ => unreachable!("every version below the current one has a migration"),
         };
         version += 1;
@@ -774,6 +775,36 @@ fn migrate_v13_to_v14(data: &str) -> Result<String, StorageError> {
         {
             condition.entry("deficit_j").or_insert(0.into());
             condition.entry("eaten_today_j").or_insert(0.into());
+        }
+    }
+    Ok(old.to_string())
+}
+
+/// v15: a body has a birth day and a sex (lot 3 B). A body saved before
+/// is a grown one, twenty to thirty years old today, a woman or a man,
+/// both drawn from its id so the same world migrates the same.
+fn migrate_v14_to_v15(data: &str) -> Result<String, StorageError> {
+    let mut old: serde_json::Value = serde_json::from_str(data)?;
+    let calendar: sim::Calendar = serde_json::from_value(old["calendar"].clone())?;
+    let tick = old["tick"].as_u64().unwrap_or(0);
+    let today = i64::try_from(tick / calendar.ticks_per_day().max(1)).unwrap_or(0);
+    let per_year = i64::from(calendar.days_per_year());
+    if let Some(bodies) = old["bodies"].as_array_mut() {
+        for body in bodies.iter_mut().filter_map(|b| b.as_object_mut()) {
+            let id = body
+                .get("id")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            // A plain mix of the id (splitmix64's finaliser).
+            let mut h = id.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            h = (h ^ (h >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            h = (h ^ (h >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            h ^= h >> 31;
+            let days =
+                (20 * per_year) + i64::try_from(h % 1000).unwrap_or(0) * 10 * per_year / 1000;
+            body.entry("born_day").or_insert((today - days).into());
+            let sex = if (h >> 32) & 1 == 0 { "Female" } else { "Male" };
+            body.entry("sex").or_insert(sex.into());
         }
     }
     Ok(old.to_string())
@@ -1353,6 +1384,38 @@ mod tests {
         let back = storage.latest_world().unwrap().unwrap();
         let condition = back.body(body).unwrap().condition();
         assert_eq!((condition.deficit_j, condition.eaten_today_j), (0, 0));
+    }
+
+    #[test]
+    fn a_v14_world_has_grown_bodies_of_both_sexes() {
+        let content = content();
+        let mut world = World::with_valley(Calendar::default(), &content, 256);
+        let bodies: Vec<_> = (0..12)
+            .map(|_| world.spawn_at_camp().expect("a body at the camp"))
+            .collect();
+        let mut old: serde_json::Value = serde_json::to_value(&world).unwrap();
+        for body in old["bodies"].as_array_mut().unwrap() {
+            let body = body.as_object_mut().unwrap();
+            assert!(body.remove("born_day").is_some());
+            assert!(body.remove("sex").is_some());
+        }
+        let mut storage = Sqlite::in_memory(content.clone()).unwrap();
+        storage
+            .conn
+            .execute(
+                "INSERT INTO snapshots (tick, format_version, data) VALUES (0, 14, ?1)",
+                [old.to_string()],
+            )
+            .unwrap();
+        let back = storage.latest_world().unwrap().unwrap();
+        let mut sexes = std::collections::BTreeSet::new();
+        for id in bodies {
+            let body = back.body(id).unwrap();
+            let years = back.age_milli(body) / 1000;
+            assert!((20..30).contains(&years), "{years} years");
+            sexes.insert(body.sex());
+        }
+        assert_eq!(sexes.len(), 2, "women and men");
     }
 
     #[test]
