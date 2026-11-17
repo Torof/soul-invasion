@@ -1434,7 +1434,7 @@ mod tests {
         }
         assert_eq!(report.samples[0].alive_by_tribe, [5, 5]);
         let html = report.fixed();
-        assert!(html.contains("camp B at") && html.contains("(tribe B)"));
+        assert!(html.contains("camp B at") && html.contains("(tribe B, "));
     }
 
     /// The plan's small trial on the real world: two tribes of five, either
