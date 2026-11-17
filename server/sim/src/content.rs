@@ -205,6 +205,26 @@ fn percent_100() -> u32 {
     100
 }
 
+fn reserve_kj_60000() -> u32 {
+    60_000
+}
+
+fn percent_150() -> u32 {
+    150
+}
+
+fn percent_50() -> u32 {
+    50
+}
+
+fn percent_20() -> u32 {
+    20
+}
+
+fn percent_70() -> u32 {
+    70
+}
+
 /// A value for each season (D09).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BySeason<T> {
@@ -237,7 +257,8 @@ pub struct Needs {
     /// Where night begins, in percent of the day, by season: the day
     /// starts at dawn, and summer's light lasts longer (D09).
     pub night_from_percent: BySeason<u32>,
-    /// Hunger rises this much per day.
+    /// Hunger rises this much per day; with `kj_per_hunger_point`, what
+    /// a body burns a day, in kilojoules: its need.
     pub hunger_per_day: u32,
     /// Thirst rises this much per day (D34, amended 13 November 2026).
     pub thirst_per_day: u32,
@@ -257,7 +278,7 @@ pub struct Needs {
     pub fatigue_per_day_awake: u32,
     /// Fatigue falls this much per day asleep.
     pub rest_per_day_asleep: u32,
-    /// Vitality lost per day while hunger is at its maximum.
+    /// Vitality lost per day once the fat reserve is spent.
     pub starving_per_day: u32,
     /// Vitality lost per day while cold is at its maximum.
     pub freezing_per_day: u32,
@@ -270,6 +291,63 @@ pub struct Needs {
     /// Grams a body eats at most in one act: a meal (D35); the rest of
     /// the item stays.
     pub meal_g: u32,
+    /// The fat reserve of a body, full, in kilojoules (lot 3): what it
+    /// burns comes out of it, what it eats goes back in. 60,000 when
+    /// absent.
+    #[serde(default = "reserve_kj_60000")]
+    pub reserve_kj: u32,
+    /// What a body can eat in a day, in percent of its need: a reserve
+    /// is not made again in one meal. 150 when absent.
+    #[serde(default = "percent_150")]
+    pub intake_ceiling_percent: u32,
+    /// Under this share of its reserve, in percent, a body is thin. 50
+    /// when absent.
+    #[serde(default = "percent_50")]
+    pub thin_percent: u32,
+    /// Under this share, it is weak: it walks and works slower. 20 when
+    /// absent.
+    #[serde(default = "percent_20")]
+    pub weak_percent: u32,
+    /// A weak body's pace, walking and working, in percent of its own.
+    /// 70 when absent.
+    #[serde(default = "percent_70")]
+    pub weak_pace_percent: u32,
+}
+
+impl Needs {
+    /// Checks the fat reserve's values (lot 3).
+    fn validate_reserve(&self) -> Result<(), ContentError> {
+        if self.reserve_kj == 0
+            || self.intake_ceiling_percent < 100
+            || self.weak_percent > self.thin_percent
+            || self.thin_percent > 100
+            || !(1..=100).contains(&self.weak_pace_percent)
+        {
+            return Err(ContentError::Needs(
+                "reserve_kj is positive, intake_ceiling_percent at least 100, \
+                 weak_percent at most thin_percent at most 100, weak_pace_percent 1 to 100",
+            ));
+        }
+        Ok(())
+    }
+
+    /// What a body burns a day, in joules.
+    #[must_use]
+    pub fn need_j_per_day(&self) -> u64 {
+        u64::from(self.hunger_per_day) * u64::from(self.kj_per_hunger_point) * 1000
+    }
+
+    /// The full reserve, in joules.
+    #[must_use]
+    pub fn reserve_j(&self) -> u64 {
+        u64::from(self.reserve_kj) * 1000
+    }
+
+    /// What a body can eat in a day, in joules.
+    #[must_use]
+    pub fn intake_ceiling_j(&self) -> u64 {
+        self.need_j_per_day() * u64::from(self.intake_ceiling_percent) / 100
+    }
 }
 
 /// Everything loaded from the content files, validated.
@@ -708,7 +786,7 @@ impl Content {
         if self.needs.meal_g == 0 {
             return Err(ContentError::Needs("meal_g must be positive"));
         }
-        Ok(())
+        self.needs.validate_reserve()
     }
 
     /// Checks the movement rules (D32).
@@ -810,6 +888,8 @@ pub const SAMPLE_NEEDS: &str = r"(
     vitality_regain_per_day: 50,
     kj_per_hunger_point: 25,
     meal_g: 300,
+    reserve_kj: 3300,
+    intake_ceiling_percent: 400,
 )";
 
 /// Spawn rules of [`Content::sample`].
@@ -927,6 +1007,25 @@ mod tests {
                 .unwrap_err(),
             ContentError::Needs("meal_g must be positive")
         ));
+        for (from, to) in [
+            ("reserve_kj: 3300", "reserve_kj: 0"),
+            ("intake_ceiling_percent: 400", "intake_ceiling_percent: 99"),
+            (
+                "meal_g: 300,",
+                "meal_g: 300, thin_percent: 10, weak_percent: 20,",
+            ),
+            ("meal_g: 300,", "meal_g: 300, weak_pace_percent: 0,"),
+        ] {
+            let bad = SAMPLE_NEEDS.replacen(from, to, 1);
+            assert!(
+                matches!(
+                    Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, SAMPLE_MOVEMENT, &bad)
+                        .unwrap_err(),
+                    ContentError::Needs(what) if what.starts_with("reserve_kj")
+                ),
+                "{to}"
+            );
+        }
         assert!(matches!(
             Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, SAMPLE_MOVEMENT, "nope")
                 .unwrap_err(),

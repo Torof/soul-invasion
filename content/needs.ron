@@ -10,8 +10,10 @@
 //                          10.6 h of night cost a body sleeping outside 43
 //                          points of vitality, which the day gives back; at
 //                          50 % it would lose 25 a day and die in winter.
-// hunger_per_day:          100 — a day's food, 10,000 kJ, fills it (lot 2,
-//                          16 November 2026: gathering came).
+// hunger_per_day:          100 — with kj_per_hunger_point, a body burns
+//                          10,000 kJ a day, out of its fat reserve; hunger
+//                          is the appetite, what the reserve misses and
+//                          can still be eaten today (lot 3).
 // thirst_per_day:          100 — a game day without drinking fills it
 //                          (D34, 13 November 2026), in the cool of spring,
 //                          at rest.
@@ -23,12 +25,8 @@
 // cold_relief_per_day:     600 — four hours of daylight undo it.
 // fatigue_per_day_awake:   120 — twenty hours awake fill the gauge.
 // rest_per_day_asleep:     300 — eight hours of sleep empty it.
-// starving_per_day:        0 — hunger is a gauge only until lot 3's fat
-//                          reserve: with two crops (hazel, bramble) and a
-//                          run born in spring, 100 killed everyone in two
-//                          days, before anything bore (the project lead's
-//                          fallback of 16 November 2026). The report counts
-//                          the days spent at full hunger instead.
+// starving_per_day:        100 — once the reserve is spent, a day kills
+//                          (lot 3, 16 November 2026).
 // freezing_per_day:        400 — six hours at full cold kill: a summer
 //                          night outside hurts but does not kill.
 // dehydration_per_day:     50 — two days at full thirst kill: a body dies
@@ -39,6 +37,15 @@
 //                          a handful of berries (100 g, 250 kJ) 2.
 // meal_g:                  300 — grams eaten at most in one act; the rest
 //                          of the item stays (D35).
+// reserve_kj:              60000 — six days of need: without food a body
+//                          is thin on the third day, weak near the fifth,
+//                          its reserve spent on the sixth, dead on the
+//                          seventh (lot 3, decided 16 November 2026).
+// intake_ceiling_percent:  150 — a day's eating, in percent of the need:
+//                          a spent reserve takes twelve days to make again.
+// thin_percent:            50 — thin under half its reserve.
+// weak_percent:            20 — weak under a fifth: it walks and gathers
+// weak_pace_percent:       70 — at seven tenths of its pace.
 (
     night_from_percent: (spring: 58, summer: 64, autumn: 58, winter: 56),
     hunger_per_day: 100,
@@ -49,10 +56,15 @@
     cold_relief_per_day: 600,
     fatigue_per_day_awake: 120,
     rest_per_day_asleep: 300,
-    starving_per_day: 0,
+    starving_per_day: 100,
     freezing_per_day: 400,
     dehydration_per_day: 50,
     vitality_regain_per_day: 50,
     kj_per_hunger_point: 100,
     meal_g: 300,
+    reserve_kj: 60000,
+    intake_ceiling_percent: 150,
+    thin_percent: 50,
+    weak_percent: 20,
+    weak_pace_percent: 70,
 )

@@ -2697,7 +2697,8 @@ pub fn refusal_view(act: sim::ItemAct, reason: sim::Refusal) -> (ItemAct, Refusa
     let reason = match reason {
         // Only the brains gather (D45): no player is told "nothing ripe"
         // yet.
-        sim::Refusal::Unknown | sim::Refusal::NothingRipe => Refusal::Unknown,
+        // Nor "sated" (lot 3): the protocol does not tell it yet.
+        sim::Refusal::Unknown | sim::Refusal::NothingRipe | sim::Refusal::Sated => Refusal::Unknown,
         sim::Refusal::OutOfReach => Refusal::OutOfReach,
         sim::Refusal::NotCarried => Refusal::NotCarried,
         sim::Refusal::TooHeavy => Refusal::TooHeavy,
