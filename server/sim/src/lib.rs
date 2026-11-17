@@ -281,8 +281,7 @@ impl Condition {
     /// need: a child is as hungry as a man when it misses as much of its
     /// day as he does of his (lot 3 B).
     fn set_appetite(&mut self, needs: &content::Needs) {
-        let per_point_j =
-            u64::from(needs.kj_per_hunger_point) * u64::from(self.burn_permille);
+        let per_point_j = u64::from(needs.kj_per_hunger_point) * u64::from(self.burn_permille);
         self.hunger
             .set_fine(self.room_j(needs) * GAUGE_SCALE / per_point_j.max(1));
     }
