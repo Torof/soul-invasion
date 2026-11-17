@@ -1,7 +1,7 @@
 # trees
 
-The trees standing in the woods (D37): six species, adult, two variants
-each (`<species>_adult_<nn>_summer.webp`; the client takes `_01`, `_02`, … up to the first missing number), drawn by the client on
+The trees standing in the woods (D37): adult, one image a species (two for
+the willow, see below) (`<species>_adult_<nn>_summer.webp`; the client takes `_01`, `_02`, … up to the first missing number), drawn by the client on
 the point where the server says the trunk meets the ground.
 
 - **Format**: sized by D39's sharpness rule (10 November 2026): originals
@@ -98,3 +98,5 @@ grass at the foot of their trunk. Causes and fixes:
   the tree's own outline.
 - The client checks that every tree's foot is whole: no hole, no speck
   apart from it.
+
+**17 November 2026, one image a species**: the project lead's decision ("une espèce, une image et le masque des fruits"), the variety now coming from the many species. Kept: version 01 of oak, pine, birch, hazel, wild apple, ash, linden and yew; version 02 of the alder, renamed `_01` (fuller, a double trunk); both willows, since the willow lines every bank and one image repeated there would show. The other images left the game for the reserve (`content/ai-reserve/sources/trees/retired-2026-11-17/`).

@@ -450,10 +450,14 @@ func _test_trees_stand_on_their_foot() -> void:
 	var tall := Scale.shown(4.0) * Iso.PX_PER_M
 	_check(absf(r.size.y - tall) <= tall * Trees.SIZE_JITTER + 0.01, "a tree's size stays within its jitter")
 	_check(Trees.rect(at, 400, oak[0]) == r and Trees.variant(at, 2) == Trees.variant(at, 2), "the same tree every time")
+	# One image a species, two for the willow that lines every bank.
+	_check(oak.size() == 1, "the oak has one image")
+	var willow: Array = Trees.textures("willow")
+	_check(willow.size() == 2, "the willow has two images")
 	var shown := {}
 	for i in 20:
-		shown[Trees.variant(Vector2(1000 * i + 300, 4_500), oak.size())] = true
-	_check(shown.size() == oak.size(), "neighbouring oaks show every image")
+		shown[Trees.variant(Vector2(1000 * i + 300, 4_500), willow.size())] = true
+	_check(shown.size() == willow.size(), "neighbouring willows show both images")
 
 
 ## The water's line, one convolution of the tiles, gives at the lattice
