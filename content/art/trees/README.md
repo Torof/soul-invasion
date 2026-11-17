@@ -100,3 +100,17 @@ grass at the foot of their trunk. Causes and fixes:
   apart from it.
 
 **17 November 2026, one image a species**: the project lead's decision ("une espèce, une image et le masque des fruits"), the variety now coming from the many species. Kept: version 01 of oak, pine, birch, hazel, wild apple, ash, linden and yew; version 02 of the alder, renamed `_01` (fuller, a double trunk); both willows, since the willow lines every bank and one image repeated there would show. The other images left the game for the reserve (`content/ai-reserve/sources/trees/retired-2026-11-17/`).
+
+**17 November 2026, fruit in three states (D48)**: the oak, the hazel, the
+yew and the pine have three images each: `<id>_adult_01_summer.webp`
+bare, `_fruit1` with a third of their fruit, `_fruit2` laden, all three the
+same size and frame. The project lead added the fruit to the bare tree with
+a Midjourney edit and chose one result per tree (oak 5 with two more
+clusters, hazel 1, yew 1, pine 0; `content/ai-reserve/review/fruits-arbres/`).
+The bare and the third are that edit with whole clusters of fruit taken
+away and the original tree put back in their place, so the three differ
+only where the fruit is. The edit had darkened the foliage: each state was
+given its old version's colours with `match_tree_colours.py` (one mapping
+for the three), cut and sized as `flora_art.py --trees` does, at the bare
+image's frame, and the white left inside the crown where fruit was taken
+out filled with the leaves around it.

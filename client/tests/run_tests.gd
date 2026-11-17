@@ -882,10 +882,13 @@ func _test_the_golden_chunk_decodes() -> void:
 func _test_a_tree_shows_its_fruit_with_the_images_of_that_fruit() -> void:
 	_check(Trees.fruit_path(Trees.DIR + "oak_adult_01_summer.webp", 2) == Trees.DIR + "oak_adult_01_summer_fruit2.webp", "the laden image beside the bare one")
 	_check(Trees.with_fruit("oak", Trees.FRUIT_NONE) == "oak", "no fruit: the kind's own images")
-	# No image of fruit in the repository yet: every kind falls back.
+	# The oak, the hazel, the yew and the pine are drawn with their fruit;
+	# a kind without those images (the birch) falls back to its own.
 	for fruit in [Trees.FRUIT_THIRD, Trees.FRUIT_FULL]:
-		_check(Trees.paths("oak@fruit%d" % fruit).is_empty(), "no oak with fruit drawn yet")
-		_check(Trees.with_fruit("oak", fruit) == "oak", "drawn bare while its images of fruit are missing")
+		for kind in ["oak", "hazel", "yew", "pine"]:
+			_check(Trees.with_fruit(kind, fruit) == "%s@fruit%d" % [kind, fruit], "%s drawn with its fruit %d" % [kind, fruit])
+		_check(Trees.paths("birch@fruit%d" % fruit).is_empty(), "no birch with fruit drawn")
+		_check(Trees.with_fruit("birch", fruit) == "birch", "drawn bare while its images of fruit are missing")
 	_check(Trees.base_of("oak@fruit2") == "oak" and Trees.base_of("oak") == "oak", "a key's kind")
 	# Once a kind has them (put here as the paths found), its trees take them.
 	var key := "hazel@fruit2"
@@ -893,7 +896,6 @@ func _test_a_tree_shows_its_fruit_with_the_images_of_that_fruit() -> void:
 	# (The hazel's own files stand in for them, to be read.)
 	Trees._paths[key] = Trees.paths("hazel")
 	_check(Trees.with_fruit("hazel", Trees.FRUIT_FULL) == key, "laden: the laden images")
-	_check(Trees.with_fruit("hazel", Trees.FRUIT_THIRD) == "hazel", "a third, none yet: bare")
 	var trees := PackedInt32Array([0, 0, 0, 0, 4_000, 0, 0, 8_000, 0])
 	var stand := Trees.Stand.new(trees, {"hazel": 500}, PackedStringArray(["hazel"]), PackedByteArray([2, 0]))
 	_check(Array(stand.kinds) == [key, "hazel"] and Array(stand.kind) == [0, 1, 1], "each tree its fruit's images, the last none: %s %s" % [stand.kinds, stand.kind])
