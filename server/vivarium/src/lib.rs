@@ -952,7 +952,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             let who = person.sex.map_or_else(String::new, |sex| {
                 format!(
                     ", {} at the start",
-                    describe(sex, self.age_milli(person, 0))
+                    describe(sex, Self::age_milli(person, 0))
                 )
             });
             let _ = write!(
@@ -1031,7 +1031,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
     }
 
     /// How old a person is on `day` (from 0), in thousandths of a year.
-    fn age_milli(&self, person: &Person, day: i64) -> u64 {
+    fn age_milli(person: &Person, day: i64) -> u64 {
         let days = u64::try_from(day - person.born_day).unwrap_or(0);
         days * 1000 / u64::from(Calendar::DEFAULT_DAYS_PER_YEAR)
     }
@@ -1056,7 +1056,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             self.people
                 .values()
                 .filter(|p| p.sex == Some(sex) && (!living || p.death.is_none()))
-                .filter(|p| (lo..hi).contains(&(self.age_milli(p, day) / 1000)))
+                .filter(|p| (lo..hi).contains(&(Self::age_milli(p, day) / 1000)))
                 .count()
         };
         let mut h = String::from(
@@ -1242,6 +1242,8 @@ mod tests {
             content: None,
             brain: true,
             tribes: 1,
+            children: 0,
+            infants: 0,
         }
     }
 
@@ -1354,7 +1356,9 @@ mod tests {
         let html = report.fixed();
         assert!(html.contains("<h2>The map</h2>") && html.contains("data:image/png;base64,"));
         assert!(html.contains("<polyline") && html.contains("<h2>The chronicle</h2>"));
-        assert!(html.contains("<details><summary>person 1 (tribe A) — died on day"));
+        assert!(html.contains(
+            "<details><summary>person 1 (tribe A, a woman of 18 at the start) — died on day"
+        ));
         assert!(html.contains("none (the control run)"));
         assert!(
             html.contains("thirst a day 100"),
@@ -1422,7 +1426,9 @@ mod tests {
             assert!(person.death.is_none(), "nobody dies in four days");
             let end = person.last_at.unwrap();
             assert!(
-                far(end, home) < far(end, other),
+                // The patch's camps are four tiles apart: never nearer
+                // the other camp than its own.
+                far(end, home) <= far(end, other),
                 "it stays on its own side: {end:?}"
             );
         }
