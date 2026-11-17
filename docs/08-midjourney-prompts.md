@@ -240,15 +240,7 @@ The grass family today (all 1024 × 1024, 4 × 4 m, notes beside each file in `c
 
 **Sister of a validated ground** (variety without a new prompt): the prompt of the ground as written in its note, the ground attached as style reference, `--sw 100`. Keep the ones whose mean RGB is within six points of the original and whose tufts are radial.
 
-**`ground_water_01_summer.png`** — 4×4 m, not generated yet
-```
-top-down seamless ground texture, calm clear river water, soft blue-green, a few faint ripples only, uniform and calm, seen exactly from above, no perspective, flat even lighting with no vignette and no shadows, very low contrast, thin subtle outlines only, drawn in the same flat cel-shaded style as the reference, game texture --ar 1:1 --tile --sw 100 --s 50 --no photo, realistic, waves, foam, fish, rocks, pebbles, plants, reflections, sparkle, sun, shadows, vignette, text
-```
-
-**`ground_ford_01_summer.png`** — 4×4 m, not generated yet
-```
-top-down seamless ground texture, shallow clear water over small rounded pebbles, a river ford, the pebbles small and even, the water a faint blue-green veil, uniform and calm, seen exactly from above, no perspective, flat even lighting with no vignette and no shadows, very low contrast, thin subtle outlines only, drawn in the same flat cel-shaded style as the reference, game texture --ar 1:1 --tile --sw 100 --s 50 --no photo, realistic, large rocks, boulders, waves, foam, fish, plants, reflections, sparkle, shadows, vignette, text
-```
+The river's water, its banks and the brook beds, which also draw the fords, were made on Scenario (their notes in `content/art/ground/`); the water and ford prompts once here were removed on 17 November 2026.
 
 **`ground_rock_01_summer.png`** — 4×4 m, not generated yet
 ```
@@ -256,6 +248,8 @@ top-down seamless ground texture, grey-green bare rock with a few thin cracks, m
 ```
 
 ### Overlays (top-down, five pieces per sheet, cut out one by one and scattered on cells)
+
+**Made on 6 November 2026**: the tufts, flowers and pebbles the client scatters near the water are in `content/art/decor/` (`client/world/ground.json`, `decor`); dead leaves and moss are not made yet.
 
 **Risk**: a carpet instead of separate pieces, a ground painted under them, a shadow. **Rule**: five pieces, far apart, on pure white; we cut each one out. Reject any variation where pieces touch or where ground shows.
 
@@ -312,7 +306,7 @@ single 2D game asset, a primitive lean-to shelter made of stacked branches and l
 single 2D game asset, a primitive wooden rack of lashed poles with strips of meat hanging to dry, about two metres long, alone, high-angle three-quarter view, thick dark outlines, flat cel shading, lit from the front left, no cast shadow, floating on a plain pure white background with nothing else --ar 4:3 --sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png --no ground, grass, soil, shadow, scenery, background, frame, text, watermark
 ```
 
-### Trees (six species, adult, two variants each; ages later)
+### Trees (adult, one image a species since 17 November 2026; ages later)
 
 **Made on 8 November 2026** with the prompt below, one per species and variant (the descriptions are in `content/art/trees/README.md`), the style reference **and** a clean oak on pure white as a second reference (`::2`); the chosen image is then edited in Midjourney to remove what is wrong, keeping every colour.
 ```

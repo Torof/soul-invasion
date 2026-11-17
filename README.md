@@ -19,11 +19,13 @@ rebirth is a skill).
 | [`docs/`](docs/README.md) | Vision, lore, game systems, architecture decisions, first-version scope, open questions. **Start here.** |
 | `server/` | Rust workspace: `sim` (pure simulation), `protocol` (wire contract), `server` (network, persistence, loop). |
 | `client/` | Godot 4 client (GDScript). Displays the world, transmits intentions, decides nothing. |
-| `content/` | World data (materials, species, names…) in RON, read by the server. |
+| `content/` | World data (materials, trees and plants, needs…) in RON, read by the server, and the game's art. |
 
 ## Status
 
-Milestone 1 of the first version, *The Tribe*: the skeleton. See
+Milestone 2 of the first version, *The Tribe*: surviving, built through
+the vivarium, a world of NPCs alone under glass (D41). Milestone 1, the
+skeleton, was done on 5 November 2026. See
 [`docs/05-first-version.md`](docs/05-first-version.md).
 
 ## Building

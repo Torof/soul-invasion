@@ -92,18 +92,22 @@ step names the decisions it settles, which are discussed and recorded in
 spatial scale (D31), movement (D32), content as data (D15, D27), views by
 chunk (D08).
 
-**Decisions still to take, in the order they block**
+**Decisions still to take, in the order they block** (17 November 2026: 1 to 4 are settled, the rest stand)
 
 1. **The state of a body** — vitality, needs (hunger, cold, fatigue), wounds
    by limb. Everything rests on it: needs, combat, animals, aging.
+   — **Settled** (D34, #21).
 2. **Combat** (D33) — tempo, gestures and guards, simultaneous resolution,
    wounds, the engagement window, composable commands without
    conditionals. Converged on 5 November 2026; written with step 3.
+   — **Settled** (D33); the code comes with the animals.
 3. **Death and provisional reattachment** — the soul takes the first free
    body until milestone 5 brings the choice of body and rebirth.
+   — **Settled** (D34, #21; amended in #225: a body is born at the camp).
 4. **Objects and carrying** — what an item is in hand, carried, laid down;
    a tool made of parts (D15). Settles the weapon model for combat and the
-   crafting model.
+   crafting model. — **Settled** (D35, #30, #227); the parts and
+   processes come with crafting.
 5. **Perception** (D18) — line of sight, light, sound, awareness. Founds
    vigilance in combat, assassination, witnesses, fleeing animals.
 6. **The interface of intentions** — the context menu on a tile or item;
@@ -120,8 +124,8 @@ chunk (D08).
 |---|---|---|
 | 1 | Content in data: materials, spawn rules, items on the ground — **done** (#16, #17) | — |
 | 2 | Fine movement, terrain costs — **done** (#17) | D32 amended |
-| 3 | The state of a body and its needs; night; eating off the ground; sleeping; death and reattachment | 1, 2 (D33 written), 3 |
-| 4 | Pick up, carry, lay down, eat; inventory; context menu; names on hover | 4, 6 |
+| 3 | The state of a body and its needs; night; eating off the ground; sleeping; death and reattachment — **done** (#21, #22) | 1, 2 (D33 written), 3 |
+| 4 | Pick up, carry, lay down, eat; inventory; context menu; names on hover — **done** (#29, #30) | 4, 6 |
 | 5 | Crafting by assembly: parts, processes, computed qualities | 4 (continued) |
 | 6 | Fire and shelter: warmth, cooking, smoking; felling, building | — |
 | 7 | Perception: line of sight, light, awareness | 5 |

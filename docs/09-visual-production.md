@@ -9,7 +9,7 @@ The charter says: do little, but very well; ship early; depth before size. Miles
 ## 2. How we work
 
 - **Partnership.** Nothing is produced, coded or modified without the project lead's explicit approval. We list, validate, then produce.
-- **Generation tools** (7 November 2026): **Midjourney finds the identity, Scenario fabricates.** Midjourney (flat-rate plan) is for exploring a look: the lead generates, the AI writes the prompts (`08-midjourney-prompts.md`), analyses, cuts out, integrates. Scenario (paid by credits) is for producing a whole set once its use is settled to the pixel: the AI drives it directly, with a style model trained on validated images (`soul-invasion-ground-style-v1`, a Z-Image LoRA: in-game ground views and Midjourney bank references), image-to-image from schematics rendered by the client's benches so the geometry is ours and the look is the style model's. Every batch is priced before it runs and kept under a ceiling the lead sets. First set made this way: the 48 bank pieces (`content/art/shore_pieces/`).
+- **Generation tools** (7 November 2026): **Midjourney finds the identity, Scenario fabricates.** Midjourney (flat-rate plan) is for exploring a look: the lead generates, the AI writes the prompts (`08-midjourney-prompts.md`), analyses, cuts out, integrates. Scenario (paid by credits) is for producing a whole set once its use is settled to the pixel: the AI drives it directly, with a style model trained on validated images (`soul-invasion-ground-style-v1`, a Z-Image LoRA: in-game ground views and Midjourney bank references), image-to-image from schematics rendered by the client's benches so the geometry is ours and the look is the style model's. Every batch is priced before it runs and kept under a ceiling the lead sets. First set made this way: the 48 bank pieces of 8 November 2026, gone since the bank is drawn by the water meshes (D36, 11 November 2026); the river's water, banks and brook beds in `content/art/ground/` are Scenario's.
 - **Elements, the method that works** (8 November 2026): the style reference is kept (without it Midjourney loses both the style and the three-quarter view); it adds things around the element (a patch of ground, a shadow, bushes at the foot), so the image chosen is opened in Midjourney's **edit** mode and what is wrong is removed (asking to keep every colour exactly as it is: the edit tends to shift them); then it is cut out of its plain background. Prompts start with the isolation ("a single isolated …, nothing else in the image").
 - **Style reference** mandatory in every prompt: `--sref https://cdn.midjourney.com/0fb23b62-fb63-43e8-8f0d-ccb4fdcf6751/0_3.png` (`content/references/style-ref-01.png`).
 - Every validated image lives in `content/art/` (content, CC BY-NC-SA 4.0) **at the size the game uses**, with a note beside it giving its prompt and date. Midjourney sources stay out of the repository.
@@ -26,7 +26,7 @@ Three approaches were weighed: diamond tiles drawn one by one, a fully painted s
 - Water, wind in the grass and trees, day and night, the fire as the only light at night, cast shadows: shaders and 2D lights in Godot, no image needed.
 - **No map loading, ever**: the world arrives by chunks around the body and is drawn continuously.
 - **Open roofs**: a building is walls on cells and a roof drawn above; when a watched body is inside, the roof is not drawn. A layer, not a problem.
-- **Relief** comes later as **whole levels** (a cliff, a terrace), never as a continuous slope.
+- **Relief** comes later as **whole levels** (a cliff, a terrace), never as a continuous slope. *Amended (D43, D44, 14 November 2026)*: every tile carries a height, and the client draws the slopes over the flat 2:1 canvas from those heights; cliffs and terraces as whole levels are still to come.
 - The ground changes **by cell** (a worn path, a ploughed field, a dug pit) — the natural model of a grid.
 
 ## 4. The format contract
@@ -70,12 +70,13 @@ Every image obeys it, so that it has a place, a scale and an anchor the day it i
 
 The library of prompts is `08-midjourney-prompts.md`; only what a milestone needs is taken from it.
 
-**Batch 1 — now (milestone 2, pull requests 4 to 6: what the game already shows)** — about 22 images
-- Grounds: grass ×2, forest floor ×1, ford / shallow water ×1, water ×1, cliff rock ×1 — the five terrains of the valley.
-- Overlays: flowers, dead leaves, pebbles, moss.
-- The **ten materials** as items on the ground: flint, pebble, branch, log, fibres, berries, hide, meat, bone, corpse — one sheet.
-- Fire in three states, branch shelter, meat drying rack (pull request 6).
-- Trees: the six species of section 6, adult, two variants each (8 November 2026), placed by the server from the woods' density (D37). Young and old ages later.
+**Batch 1 — made (6 to 17 November 2026)**: what the game shows today, every file with its note in `content/art/`.
+- Grounds (`content/art/ground/`, named by `client/world/ground.json`): the grass family for the meadow and the woods; the river's water, banks and brook beds, made on Scenario; the fords are drawn with the brook beds. A cliff-rock ground is still to make.
+- Decorations (`content/art/decor/`): tufts, flowers and pebbles, scattered by the client on the land near the water (no effect on the game).
+- Plants (`content/art/flora/`): one atlas for the kinds of `content/flora.ron`.
+- Trees (`content/art/trees/`): the species of `content/species.ron`, adult, placed by the server from the woods' density (D37). **Since 17 November 2026, one image a species** (the project lead's decision, "une espèce, une image et le masque des fruits"): with sixteen species the variety comes from their mix, and a second image is drawn only where one species lines a whole place (the willow, along every bank, keeps two). The images taken out stay in the reserve (`content/ai-reserve/sources/trees/retired-2026-11-17/`). Young, medium and stump later, for that one image.
+
+**Still to make for milestone 2**: the materials as items on the ground (one sheet), the fire in three states, the branch shelter, the meat drying rack.
 
 **Batch 2 — pull requests 5 and 8**: tools (sharp flake, cordage, spear, stone axe); the **hunter** (model and four views); **one predator and one prey** (four views, walking, attacking, dead); the scale lineup of `08`.
 
@@ -85,29 +86,14 @@ The library of prompts is `08-midjourney-prompts.md`; only what a milestone need
 
 ## 6. The tree species and their role
 
-Kept from version 0.1, to be used when trees become objects. **Everything that grows is useful for something.** Names may be adapted to our world later.
+**Everything that grows is useful for something.** The species, their heights (D40) and where they grow are content, in `content/species.ron`; what they bear and when, in `content/crops.ron`. Names may be adapted to our world later.
 
-| Species | Where | Role in game | Silhouette |
-|---|---|---|---|
-| Oak | Meadow, open forest | Abundant hardwood, acorns | Wide, stocky, massive trunk, cloud-like foliage |
-| Birch | Forest edge | Useful bark, light wood | Thin, straight, white trunk with black marks, light foliage |
-| Pine | Plateau, cliff top | Resin, straight timber | Tall, bare trunk, dark parasol at the top |
-| Willow | Riverside | Supple branches for ties and basketry | Leaning, branches hanging to the ground |
-| Hazel | Forest edge, undergrowth | Hazelnuts, straight shoots (spears) | Several stems from the ground, tall bush |
-| Wild apple | Meadow | Fruit | Small, round, visible red apples |
-
-Ages: young (thin, light foliage), adult, old (wider, gnarled, darker, sometimes a dead branch), giant (rare). Heights relative to a human: young 2, adult 4, old 5, giant 8. The older the tree, the more wood it yields. The trunk stays clear on the lower third so bodies walk behind it.
+Ages (17 November 2026): young, medium and stump to come for each species' one image; the older the tree, the more wood it yields. The trunk stays clear on the lower third so bodies walk behind it.
 
 ## 7. Settled and open
 
 **Settled**: 1 cell = 1 m; 2D isometric at 64 × 32 px per cell; grounds top-down and seamless over 4 × 4 m, without outline or shadow; elements three-quarter on white, anchored at the base of their footprint; four facings mirrored into eight for bodies; whole structures first, modular walls later; summer only; production by batch, when needed.
 
-**Open**: the pixel size of the first real cut-outs after the first batch is seen on screen (64 px per metre may become 80 or 96); how ground overlays are placed (per cell by the server as content, or scattered by the client as decoration — the first keeps D03 pure, the second is cheaper); the animation tool for bodies.
+**Settled since**: the pixel size, each image at its size on screen at zoom 2.5 (10 November 2026, §4, weight rules); ground overlays scattered by the client as decorations, a client-side trial with no effect on the game (6 November 2026, `client/world/ground.json`, `decor`).
 
-## 8. Next steps
-
-1. The client goes to 64 × 32 px per cell and draws the ground from top-down textures through a shader (small pull request).
-2. Batch 1 prompts, each with its file name, footprint and anchor, from `08`.
-3. Generation by the lead; joint selection; the chosen images into `content/art/` with their notes.
-4. Integration: ground textures, item sheet, fire and shelters as pull request 6 lands.
-5. Judge the result on screen; fix the open points of section 7; then batch 2.
+**Open**: the animation tool for bodies.

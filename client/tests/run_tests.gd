@@ -99,6 +99,7 @@ func _init() -> void:
 func _initialize() -> void:
 	await process_frame
 	_test_the_tint_keys_step_the_tints_and_backspace_resets()
+	_test_the_turf_keys_lay_one_tile_and_turn_the_angle_dial()
 	print("client tests: %d checks, %d failures" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
 
@@ -452,10 +453,14 @@ func _test_trees_stand_on_their_foot() -> void:
 	var tall := Scale.shown(4.0) * Iso.PX_PER_M
 	_check(absf(r.size.y - tall) <= tall * Trees.SIZE_JITTER + 0.01, "a tree's size stays within its jitter")
 	_check(Trees.rect(at, 400, oak[0]) == r and Trees.variant(at, 2) == Trees.variant(at, 2), "the same tree every time")
+	# One image a species, two for the willow that lines every bank.
+	_check(oak.size() == 1, "the oak has one image")
+	var willow: Array = Trees.textures("willow")
+	_check(willow.size() == 2, "the willow has two images")
 	var shown := {}
 	for i in 20:
-		shown[Trees.variant(Vector2(1000 * i + 300, 4_500), oak.size())] = true
-	_check(shown.size() == oak.size(), "neighbouring oaks show every image")
+		shown[Trees.variant(Vector2(1000 * i + 300, 4_500), willow.size())] = true
+	_check(shown.size() == willow.size(), "neighbouring willows show both images")
 
 
 ## The water's line, one convolution of the tiles, gives at the lattice
@@ -1102,6 +1107,8 @@ func _test_a_redraw_rebuilds_only_when_the_ground_around_changed() -> void:
 func _test_the_watchdog_reports_a_stalled_frame() -> void:
 	_check(not DevWatchdog.report_due(1.9, 0.0) and DevWatchdog.report_due(2.0, 0.0), "the first report at 2 s")
 	_check(not DevWatchdog.report_due(4.0, 2.0) and DevWatchdog.report_due(5.0, 2.0), "then one every 3 s")
+	var watcher := FileAccess.get_file_as_string("res://dev/watcher.gd")
+	_check(not DevWatchdog.held and watcher.contains("DevWatchdog.held = true") and FileAccess.get_file_as_string("res://dev/watchdog.gd").contains("and not held:"), "the watcher's restart holds the watchdog while the project imports, so a long import is reported, never given up on")
 	var line := DevWatchdog.report(2.5, 120, DevWatchdog.CHUNK_BUILD)
 	_check(line.contains("2.5 s") and line.contains("frame 120") and line.contains("chunk build"), "the report says how long, which frame and what was running: %s" % line)
 	_check(DevWatchdog.phase_name(99) == "?" and DevWatchdog.phase_name(DevWatchdog.NETWORK).begins_with("network messages"), "every phase has a name")
@@ -2768,18 +2775,26 @@ func _test_the_slopes_are_read_over_two_tiles_and_off_until_a_chunk_has_heights(
 ## the picture is the single texture's as before; the overlay's key G
 ## swaps the family for its first tile alone and back.
 func _test_the_slope_turf_is_a_family_of_tiles_chosen_per_cell() -> void:
-	for dial: String in ["slope_streaks", "slope_turf_set", "slope_turf_variants", "slope_turf_angles", "slope_break_turn", "slope_streak_mix", "slope_streak_pale", "slope_turf_px", "slope_tint"]:
+	for dial: String in ["slope_streaks", "slope_turf_set", "slope_turf_variants", "slope_turf_angles", "slope_angle_first", "slope_angle_last", "slope_angle_per_metre", "slope_break_turn", "slope_streak_mix", "slope_streak_pale", "slope_turf_px", "slope_tint"]:
 		_check(ChunkView.SLOPE_LOOK.has(dial), "the look keeps its dial %s" % dial)
 	var tiles: Array = ChunkView.SLOPE_LOOK["slope_turf_set"]
 	var variants: int = ChunkView.SLOPE_LOOK["slope_turf_variants"]
-	_check(tiles.size() == 5 and variants == 5 and int(ChunkView.SLOPE_LOOK["slope_turf_angles"]) == 1, "the family holds five tiles, one row of angles: %d tiles, %d variants" % [tiles.size(), variants])
+	_check(tiles.size() == 20 and variants == 5 and int(ChunkView.SLOPE_LOOK["slope_turf_angles"]) == 4, "the family holds four rows of five tiles: %d tiles, %d variants" % [tiles.size(), variants])
+	_check(tiles[0].ends_with("mountain_turf_20_1.png") and tiles[5].ends_with("mountain_turf_32_1.png") and tiles[19].ends_with("mountain_turf_55_5.png"), "the rows go from 20 to 55 degrees, five tiles a row, in order")
 	var family := ChunkView.slope_turf_set(PackedStringArray(tiles))
-	_check(family.get_layers() == 5 and family.get_width() == 1536 and family.get_height() == 1536, "the set is a texture array of five layers of 1536 px: %d layers, %d px" % [family.get_layers(), family.get_width()])
+	_check(family.get_layers() == 20 and family.get_width() == 1536 and family.get_height() == 1536, "the set is a texture array of twenty layers of 1536 px: %d layers, %d px" % [family.get_layers(), family.get_width()])
 	_check(ChunkView.slope_turf_set(PackedStringArray(tiles)) == family, "built once and kept")
 	var grass := ChunkView.ground_material("grass")
 	var forest := ChunkView.ground_material("forest")
 	var water := ChunkView.ground_material("water")
-	_check(grass.get_shader_parameter("slope_turf_set") == family and forest.get_shader_parameter("slope_turf_set") == family and int(grass.get_shader_parameter("slope_turf_variants")) == 5 and int(grass.get_shader_parameter("slope_turf_angles")) == 1 and water.get_shader_parameter("slope_turf_set") == null, "every land's ground carries the set and its counts, not the water")
+	_check(grass.get_shader_parameter("slope_turf_set") == family and forest.get_shader_parameter("slope_turf_set") == family and int(grass.get_shader_parameter("slope_turf_variants")) == 5 and int(grass.get_shader_parameter("slope_turf_angles")) == 4 and is_equal_approx(float(forest.get_shader_parameter("slope_angle_per_metre")), 60.0) and water.get_shader_parameter("slope_turf_set") == null, "every land's ground carries the set, its counts and the angle dial, not the water")
+	# The row from the steepness: 20° + 60°/m × rise, to 55°, the nearest of four rows (20, 32, 43, 55).
+	_check(ChunkView.slope_turf_row(0.0, 4, 60.0) == 0 and ChunkView.slope_turf_row(0.08, 4, 60.0) == 0 and ChunkView.slope_turf_row(0.2, 4, 60.0) == 1 and ChunkView.slope_turf_row(0.4, 4, 60.0) == 2 and ChunkView.slope_turf_row(0.6, 4, 60.0) == 3 and ChunkView.slope_turf_row(5.0, 4, 60.0) == 3, "the steepness gives the row: flat 0, 0.2 m the second, 0.4 m the third, 0.6 m and beyond the last")
+	_check(ChunkView.slope_turf_row(0.2, 4, 120.0) == 2 and ChunkView.slope_turf_row(0.2, 4, 0.0) == 0 and ChunkView.slope_turf_row(5.0, 1, 60.0) == 0, "the dial scales the rise; with one row every cell reads row 0")
+	var rows_in_order := true
+	for i in range(1, 60):
+		rows_in_order = rows_in_order and ChunkView.slope_turf_row(i * 0.02, 4, 60.0) >= ChunkView.slope_turf_row((i - 1) * 0.02, 4, 60.0)
+	_check(rows_in_order, "a steeper cell never takes a gentler row")
 	# The hash, against lowbias32's known values (the shader's, bit for bit).
 	_check(ChunkView.slope_turf_hash(0) == 0 and ChunkView.slope_turf_hash(1) == 1753845952 and ChunkView.slope_turf_hash(123456789) == 2834422664 and ChunkView.slope_turf_hash(-1) == 1734902346 and ChunkView.slope_turf_hash(-7) == 2805832651, "the hash is lowbias32 on 32 unsigned bits, negatives as the GPU reads them: %d %d %d" % [ChunkView.slope_turf_hash(1), ChunkView.slope_turf_hash(-1), ChunkView.slope_turf_hash(-7)])
 	var counts := PackedInt32Array()
@@ -2803,19 +2818,8 @@ func _test_the_slope_turf_is_a_family_of_tiles_chosen_per_cell() -> void:
 	_check(single.get_layers() == 1 and single.get_width() == 1536 and all_zero, "with one tile the array has one layer and every cell reads it: unchanged")
 	var shader := FileAccess.get_file_as_string("res://world/ground.gdshader")
 	_check(shader.contains("uniform sampler2DArray slope_turf_set : repeat_enable, filter_linear_mipmap_anisotropic;") and shader.contains("uniform int slope_turf_variants = 1;") and shader.contains("uniform int slope_turf_angles = 1;") and not shader.contains("sampler2D slope_turf "), "the shader reads the set as a texture array with the counts, one variant by default")
-	_check(shader.contains("x *= 0x7feb352du;") and shader.contains("x *= 0x846ca68bu;") and shader.contains("angle * slope_turf_variants + slope_turf_variant(ivec2(floor(turf_uv)))"), "the shader's hash is lowbias32 and its layer is angle × variants + variant")
-	# Key G: the first tile alone, then the family back.
-	var ramp := PackedInt32Array()
-	ramp.resize(16)
-	HeightIndex.write(Vector2i(200, 300), 4, ramp)
-	var overlay := SlopeOverlay.new()
-	root.add_child(overlay)
-	overlay._unhandled_key_input(_key(KEY_G, false, false))
-	_check(ChunkView.slope_turf_single and grass.get_shader_parameter("slope_turf_set") == single and int(forest.get_shader_parameter("slope_turf_variants")) == 1 and overlay._label.text.contains("tile 1 alone"), "G lays the first tile alone on every ground, count 1, and the line says so")
-	overlay._unhandled_key_input(_key(KEY_G, false, false))
-	_check(not ChunkView.slope_turf_single and grass.get_shader_parameter("slope_turf_set") == family and int(grass.get_shader_parameter("slope_turf_variants")) == 5 and overlay._label.text.contains("family of 5"), "G again lays the family back")
-	overlay.free()
-	HeightIndex.clear()
+	_check(shader.contains("x *= 0x7feb352du;") and shader.contains("x *= 0x846ca68bu;") and shader.contains("angle * slope_turf_variants + slope_turf_variant(ivec2(cell))") and shader.contains("int angle = slope_turf_row(cell, flip);"), "the shader's hash is lowbias32 and its layer is the steepness's row × variants + the hash's variant")
+	_check(shader.contains("uniform float slope_angle_first = 20.0;") and shader.contains("uniform float slope_angle_last = 55.0;") and shader.contains("uniform float slope_angle_per_metre = 60.0;") and shader.contains("texture(slope_index, at / index_tiles)"), "the shader's row reads the steepness at the cell's middle, 20° + 60°/m × rise to 55° by default")
 
 
 ## The tint dials (D44, the overlay's second line): the slope turf's tint
@@ -2902,3 +2906,34 @@ func _test_the_slope_overlay_tells_a_summit_and_a_col_from_a_ring() -> void:
 	_check(SlopeOverlay.classify_ring(100.0, flat) == "", "a ring within a metre is flat")
 	summit[3] = -1.0
 	_check(SlopeOverlay.classify_ring(100.0, summit) == "", "an unknown height on the ring says nothing")
+
+
+## The overlay's turf keys, on an overlay in the running tree: G the
+## first tile alone and the family back, Page Up and Page Down the
+## angle dial, Backspace the dial back.
+func _test_the_turf_keys_lay_one_tile_and_turn_the_angle_dial() -> void:
+	var tiles: Array = ChunkView.SLOPE_LOOK["slope_turf_set"]
+	var family := ChunkView.slope_turf_set(PackedStringArray(tiles))
+	var single := ChunkView.slope_turf_set(PackedStringArray([tiles[0]]))
+	var grass := ChunkView.ground_material("grass")
+	var forest := ChunkView.ground_material("forest")
+	# Key G: the first tile alone, then the family back.
+	var ramp := PackedInt32Array()
+	ramp.resize(16)
+	HeightIndex.write(Vector2i(200, 300), 4, ramp)
+	var overlay := SlopeOverlay.new()
+	root.add_child(overlay)
+	overlay._unhandled_key_input(_key(KEY_G, false, false))
+	_check(ChunkView.slope_turf_single and grass.get_shader_parameter("slope_turf_set") == single and int(forest.get_shader_parameter("slope_turf_variants")) == 1 and int(forest.get_shader_parameter("slope_turf_angles")) == 1 and overlay._label.text.contains("tile 1 alone"), "G lays the first tile alone on every ground, counts 1, and the line says so")
+	overlay._unhandled_key_input(_key(KEY_G, false, false))
+	_check(not ChunkView.slope_turf_single and grass.get_shader_parameter("slope_turf_set") == family and int(grass.get_shader_parameter("slope_turf_variants")) == 5 and int(grass.get_shader_parameter("slope_turf_angles")) == 4 and overlay._label.text.contains("family of 5 × 4 angles"), "G again lays the family back")
+	# Page Up and Page Down: the angle dial, 5 °/m a press, never below 0; Backspace puts it back.
+	overlay._unhandled_key_input(_key(KEY_PAGEUP, false, false))
+	_check(is_equal_approx(ChunkView.slope_angle_per_metre, 65.0) and is_equal_approx(float(forest.get_shader_parameter("slope_angle_per_metre")), 65.0) and overlay._label.text.contains("20° + 65°/m × rise, to 55°"), "Page Up adds 5 °/m on every ground and the line says so")
+	for i in 20:
+		overlay._unhandled_key_input(_key(KEY_PAGEDOWN, false, false))
+	_check(is_equal_approx(ChunkView.slope_angle_per_metre, 0.0) and is_equal_approx(float(grass.get_shader_parameter("slope_angle_per_metre")), 0.0), "Page Down takes 5 °/m and stops at 0")
+	overlay._unhandled_key_input(_key(KEY_BACKSPACE, false, false))
+	_check(is_equal_approx(ChunkView.slope_angle_per_metre, 60.0) and is_equal_approx(float(grass.get_shader_parameter("slope_angle_per_metre")), 60.0), "Backspace puts the dial back to the look's")
+	overlay.free()
+	HeightIndex.clear()
