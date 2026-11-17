@@ -55,18 +55,27 @@
         // Arils.
         fruit: Some((from: (autumn, 0), until: (autumn, 80)))),
     // Fruit and nut trees (16 November 2026), for the vivarium's food;
-    // without images of their own yet: the client draws each with a
-    // stand-in's (client/world/trees.gd, STAND_INS).
+    // those without images of their own yet are drawn with a stand-in's
+    // (client/world/trees.gd, STAND_INS). Their fruit shows while their
+    // crop of crops.ron is in season.
     (id: "wild_cherry", name: "Wild cherry", height_m: 20.0, spread_m: 20,
         habitats: { wood: 10, edge: 25, copse: 20, lone: 15 }),
     (id: "mulberry", name: "Mulberry", height_m: 10.0, spread_m: 16,
-        habitats: { edge: 10, copse: 15, lone: 20, riverside: 5 }),
+        habitats: { edge: 10, copse: 15, lone: 20, riverside: 5 },
+        // Mulberries.
+        fruit: Some((from: (summer, 20), until: (summer, 80)))),
     (id: "wild_pear", name: "Wild pear", height_m: 12.0, spread_m: 14,
-        habitats: { edge: 5, copse: 30, lone: 35 }),
+        habitats: { edge: 5, copse: 30, lone: 35 },
+        // Pears.
+        fruit: Some((from: (autumn, 0), until: (autumn, 80)))),
     (id: "walnut", name: "Walnut", height_m: 25.0, big: true, spread_m: 8,
-        habitats: { edge: 5, copse: 20, lone: 30, riverside: 10 }),
+        habitats: { edge: 5, copse: 20, lone: 30, riverside: 10 },
+        // Walnuts.
+        fruit: Some((from: (autumn, 20), until: (winter, 30)))),
     (id: "chestnut", name: "Sweet chestnut", height_m: 28.0, big: true, spread_m: 8,
-        habitats: { wood: 25, edge: 15, copse: 15 }),
+        habitats: { wood: 25, edge: 15, copse: 15 },
+        // Chestnuts.
+        fruit: Some((from: (autumn, 20), until: (winter, 20)))),
     (id: "wild_fig", name: "Wild fig", height_m: 6.0, spread_m: 20,
         habitats: { cliff_foot: 30, lone: 5 }),
 ]
