@@ -240,15 +240,7 @@ The grass family today (all 1024 × 1024, 4 × 4 m, notes beside each file in `c
 
 **Sister of a validated ground** (variety without a new prompt): the prompt of the ground as written in its note, the ground attached as style reference, `--sw 100`. Keep the ones whose mean RGB is within six points of the original and whose tufts are radial.
 
-**`ground_water_01_summer.png`** — 4×4 m, not generated yet
-```
-top-down seamless ground texture, calm clear river water, soft blue-green, a few faint ripples only, uniform and calm, seen exactly from above, no perspective, flat even lighting with no vignette and no shadows, very low contrast, thin subtle outlines only, drawn in the same flat cel-shaded style as the reference, game texture --ar 1:1 --tile --sw 100 --s 50 --no photo, realistic, waves, foam, fish, rocks, pebbles, plants, reflections, sparkle, sun, shadows, vignette, text
-```
-
-**`ground_ford_01_summer.png`** — 4×4 m, not generated yet
-```
-top-down seamless ground texture, shallow clear water over small rounded pebbles, a river ford, the pebbles small and even, the water a faint blue-green veil, uniform and calm, seen exactly from above, no perspective, flat even lighting with no vignette and no shadows, very low contrast, thin subtle outlines only, drawn in the same flat cel-shaded style as the reference, game texture --ar 1:1 --tile --sw 100 --s 50 --no photo, realistic, large rocks, boulders, waves, foam, fish, plants, reflections, sparkle, shadows, vignette, text
-```
+The river's water, its banks and the brook beds, which also draw the fords, were made on Scenario (their notes in `content/art/ground/`); the water and ford prompts once here were removed on 17 November 2026.
 
 **`ground_rock_01_summer.png`** — 4×4 m, not generated yet
 ```
@@ -256,6 +248,8 @@ top-down seamless ground texture, grey-green bare rock with a few thin cracks, m
 ```
 
 ### Overlays (top-down, five pieces per sheet, cut out one by one and scattered on cells)
+
+**Made on 6 November 2026**: the tufts, flowers and pebbles the client scatters near the water are in `content/art/decor/` (`client/world/ground.json`, `decor`); dead leaves and moss are not made yet.
 
 **Risk**: a carpet instead of separate pieces, a ground painted under them, a shadow. **Rule**: five pieces, far apart, on pure white; we cut each one out. Reject any variation where pieces touch or where ground shows.
 
