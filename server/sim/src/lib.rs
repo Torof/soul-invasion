@@ -37,7 +37,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 pub use content::{
-    BySeason, Content, ContentError, Food, Look, Material, MaterialKind, Movement, Needs, Spawn,
+    Ages, BySeason, Content, ContentError, Food, Look, Material, MaterialKind, Movement, Needs,
+    Sex, Spawn,
 };
 pub use geology::{Geology, Rock};
 pub use map::{
@@ -183,6 +184,26 @@ pub struct Condition {
     /// ceiling.
     #[serde(default)]
     pub eaten_today_j: u64,
+    /// Its size against a grown man, in thousandths, from its age and sex
+    /// (lot 3 B): its reserve and what it carries. Derived each tick,
+    /// never stored.
+    #[serde(skip, default = "permille_1000")]
+    pub size_permille: u32,
+    /// What it burns against a grown man, in thousandths: its size, more
+    /// for a nursing woman. Derived, never stored.
+    #[serde(skip, default = "permille_1000")]
+    pub burn_permille: u32,
+    /// Its pace from its age, in percent. Derived, never stored.
+    #[serde(skip, default = "percent_100")]
+    pub age_pace_percent: u32,
+}
+
+fn permille_1000() -> u32 {
+    1000
+}
+
+fn percent_100() -> u32 {
+    100
 }
 
 impl Condition {
@@ -198,48 +219,69 @@ impl Condition {
             wounds: Vec::new(),
             deficit_j: 0,
             eaten_today_j: 0,
+            size_permille: 1000,
+            burn_permille: 1000,
+            age_pace_percent: 100,
         }
     }
 
     /// What is left of the fat reserve, in joules.
     #[must_use]
     pub fn reserve_left_j(&self, needs: &content::Needs) -> u64 {
-        needs.reserve_j().saturating_sub(self.deficit_j)
+        self.reserve_j(needs).saturating_sub(self.deficit_j)
+    }
+
+    /// Its whole reserve, in joules: the content's for a grown man, to its
+    /// size.
+    #[must_use]
+    pub fn reserve_j(&self, needs: &content::Needs) -> u64 {
+        needs.reserve_j() * u64::from(self.size_permille) / 1000
+    }
+
+    /// What it burns a day, in joules.
+    #[must_use]
+    pub fn need_j_per_day(&self, needs: &content::Needs) -> u64 {
+        needs.need_j_per_day() * u64::from(self.burn_permille) / 1000
     }
 
     /// Thin: under the content's share of its reserve.
     #[must_use]
     pub fn is_thin(&self, needs: &content::Needs) -> bool {
-        self.reserve_left_j(needs) * 100 < needs.reserve_j() * u64::from(needs.thin_percent)
+        self.reserve_left_j(needs) * 100 < self.reserve_j(needs) * u64::from(needs.thin_percent)
     }
 
     /// Weak: under a smaller share; it walks and works slower.
     #[must_use]
     pub fn is_weak(&self, needs: &content::Needs) -> bool {
-        self.reserve_left_j(needs) * 100 < needs.reserve_j() * u64::from(needs.weak_percent)
+        self.reserve_left_j(needs) * 100 < self.reserve_j(needs) * u64::from(needs.weak_percent)
     }
 
-    /// Its pace, walking and working, in percent of its own.
+    /// Its pace, walking and working, in percent of a grown body's: slower
+    /// weak, slower young or old.
     #[must_use]
     pub fn pace_percent(&self, needs: &content::Needs) -> u32 {
-        if self.is_weak(needs) {
+        let weak = if self.is_weak(needs) {
             needs.weak_pace_percent
         } else {
             100
-        }
+        };
+        weak * self.age_pace_percent / 100
     }
 
     /// What it can still eat today, in joules: what its reserve misses,
     /// at most what is left of the day's ceiling.
     #[must_use]
     pub fn room_j(&self, needs: &content::Needs) -> u64 {
+        let ceiling = self.need_j_per_day(needs) * u64::from(needs.intake_ceiling_percent) / 100;
         self.deficit_j
-            .min(needs.intake_ceiling_j().saturating_sub(self.eaten_today_j))
+            .min(ceiling.saturating_sub(self.eaten_today_j))
     }
 
-    /// Sets hunger from the room it has to eat.
+    /// Sets hunger from the room it has to eat, in points of its own
+    /// need: a child is as hungry as a man when it misses as much of its
+    /// day as he does of his (lot 3 B).
     fn set_appetite(&mut self, needs: &content::Needs) {
-        let per_point_j = u64::from(needs.kj_per_hunger_point) * 1000;
+        let per_point_j = u64::from(needs.kj_per_hunger_point) * u64::from(self.burn_permille);
         self.hunger
             .set_fine(self.room_j(needs) * GAUGE_SCALE / per_point_j.max(1));
     }
@@ -304,6 +346,30 @@ pub struct Body {
     /// The work it is busy at, if any (D45): gathering, a pinch at a time.
     #[serde(default)]
     work: Option<Work>,
+    /// The day it was born, counted from the world's first (before it:
+    /// negative). Lot 3 B.
+    #[serde(default = "born_grown")]
+    born_day: i64,
+    /// Woman or man (lot 3 B).
+    #[serde(default = "male")]
+    sex: Sex,
+    /// The body carrying it, an infant not yet weaned (lot 3 B).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    carried_by: Option<BodyId>,
+    /// Grams of the infants it carries, on top of its load. Derived each
+    /// tick, never stored.
+    #[serde(skip)]
+    carrying_g: u32,
+}
+
+/// A body of before ages: twenty-five years old at the world's first day,
+/// in years of the default calendar's days.
+fn born_grown() -> i64 {
+    -25 * i64::from(Calendar::DEFAULT_DAYS_PER_YEAR)
+}
+
+fn male() -> Sex {
+    Sex::Male
 }
 
 /// Work that lasts (D45): a body gathering from a tree or a plant, by
@@ -428,6 +494,37 @@ impl Body {
     /// Grams the body carries in all, as last weighed.
     pub fn load_g(&self) -> u32 {
         self.load_g
+    }
+
+    /// The day it was born, counted from the world's first.
+    pub fn born_day(&self) -> i64 {
+        self.born_day
+    }
+
+    /// Woman or man.
+    pub fn sex(&self) -> Sex {
+        self.sex
+    }
+
+    /// The body carrying it, if it is an infant carried.
+    pub fn carried_by(&self) -> Option<BodyId> {
+        self.carried_by
+    }
+
+    /// What it can carry, in grams: the content's for a grown body, to its
+    /// size, less the infants it carries.
+    pub fn capacity_g(&self, movement: &Movement) -> u32 {
+        let size = u64::from(self.condition.size_permille.min(1000));
+        let own = u64::from(movement.carry_capacity_g) * size / 1000;
+        u32::try_from(own)
+            .unwrap_or(u32::MAX)
+            .saturating_sub(self.carrying_g)
+    }
+
+    /// What weighs on its walk, in grams: its load and the infants it
+    /// carries.
+    fn burden_g(&self) -> u32 {
+        self.load_g.saturating_add(self.carrying_g)
     }
 }
 
@@ -1574,7 +1671,8 @@ impl World {
             body.route.iter().copied(),
             &self.map,
             &rules.movement,
-            loaded_speed(&rules.movement, body.load_g) * body.condition.pace_percent(&rules.needs)
+            loaded_speed(&rules.movement, body.burden_g())
+                * body.condition.pace_percent(&rules.needs)
                 / 100,
             f64::from(self.calendar.ticks_per_second()),
             self.tick.0,
@@ -1806,9 +1904,52 @@ impl World {
             carried: Vec::new(),
             load_g: 0,
             work: None,
+            born_day: born_grown(),
+            sex: Sex::Male,
+            carried_by: None,
+            carrying_g: 0,
         });
         self.enter_chunk(id, pos.chunk());
         id
+    }
+
+    /// The world's day now, counted from its first.
+    pub fn today(&self) -> i64 {
+        i64::try_from(self.tick.0 / self.calendar.ticks_per_day().max(1)).unwrap_or(i64::MAX)
+    }
+
+    /// How old a body is, in thousandths of a game year (lot 3 B).
+    pub fn age_milli(&self, body: &Body) -> u64 {
+        let days = u64::try_from(self.today() - body.born_day).unwrap_or(0);
+        days * 1000 / u64::from(self.calendar.days_per_year().max(1))
+    }
+
+    /// Sets a body's birth and sex (lot 3 B): `age_days` old today.
+    pub fn set_birth(&mut self, id: BodyId, age_days: u64, sex: Sex) {
+        let today = self.today();
+        if let Some(index) = self.index_of(id) {
+            let body = &mut self.bodies[index];
+            body.born_day = today - i64::try_from(age_days).unwrap_or(i64::MAX);
+            body.sex = sex;
+        }
+    }
+
+    /// Gives the infant `infant` to `carrier` to carry and nurse (lot 3 B):
+    /// it stands where its carrier stands from now on. False when either
+    /// is unknown or they are the same.
+    pub fn carry(&mut self, carrier: BodyId, infant: BodyId) -> bool {
+        if carrier == infant || self.index_of(carrier).is_none() {
+            return false;
+        }
+        let Some(index) = self.index_of(infant) else {
+            return false;
+        };
+        let body = &mut self.bodies[index];
+        body.carried_by = Some(carrier);
+        body.route.clear();
+        body.goal = None;
+        body.work = None;
+        true
     }
 
     /// Adds a body on the grass nearest the camp where no body stands and
@@ -1910,6 +2051,21 @@ impl World {
         // of work (D32).
         let pending = std::mem::take(&mut self.pending);
         for intention in pending {
+            // An infant does nothing of itself: carried, or left where its
+            // carrier died, it cannot walk (lot 3 B).
+            let infant = self
+                .body(intention.body())
+                .is_some_and(|b| self.is_infant(b, rules));
+            if infant {
+                if let Intention::MoveTo { body, target } = intention {
+                    events.push(Event::MoveRefused {
+                        body,
+                        target,
+                        reason: Blockage::NoWay,
+                    });
+                }
+                continue;
+            }
             if let Intention::MoveTo { body, target } = intention {
                 let lane = self.lane(body);
                 self.searches.ask(body, Some(target), lane);
@@ -1936,7 +2092,7 @@ impl World {
                 continue;
             }
             let body = &self.bodies[index];
-            let speed = loaded_speed(&rules.movement, body.load_g)
+            let speed = loaded_speed(&rules.movement, body.burden_g())
                 * body.condition.pace_percent(&rules.needs)
                 / 100;
             let before = self.bodies[index].pos().chunk();
@@ -1956,6 +2112,7 @@ impl World {
             }
         }
 
+        self.follow_carriers();
         self.labour(rules, events);
         self.fare(rules, night, now.is_day_start(), events);
     }
@@ -2046,22 +2203,153 @@ impl World {
     }
 
     /// Lets every body hunger, freeze, tire, rest, heal — and die.
+    /// Whether a body is still an infant, carried and nursed (lot 3 B).
+    pub fn is_infant(&self, body: &Body, rules: &Content) -> bool {
+        rules.needs.ages.is_infant(self.age_milli(body))
+    }
+
+    /// Sets each body's size, burn and pace from its age and sex, and
+    /// what its carrier bears of it; weans the infants grown old enough:
+    /// set down where their carrier stands, they walk from now on.
+    fn grow(&mut self, rules: &Content, events: &mut Vec<Event>) {
+        let ages = &rules.needs.ages;
+        let mut carrying: BTreeMap<BodyId, u32> = BTreeMap::new();
+        for index in 0..self.bodies.len() {
+            let age = self.age_milli(&self.bodies[index]);
+            let body = &mut self.bodies[index];
+            let Some(carrier) = body.carried_by else {
+                continue;
+            };
+            if ages.is_infant(age) {
+                *carrying.entry(carrier).or_default() += ages.infant_mass_g(age);
+            } else {
+                body.carried_by = None;
+                events.push(Event::BodyStopped {
+                    body: body.id,
+                    at: body.at,
+                });
+            }
+        }
+        for index in 0..self.bodies.len() {
+            let age = self.age_milli(&self.bodies[index]);
+            let body = &mut self.bodies[index];
+            let size = ages.size_permille(age, body.sex);
+            body.carrying_g = carrying.get(&body.id).copied().unwrap_or(0);
+            let nursing = body.sex == Sex::Female && body.carrying_g > 0;
+            let c = &mut body.condition;
+            c.size_permille = size;
+            c.burn_permille = if nursing {
+                size * ages.nursing_percent / 100
+            } else {
+                size
+            };
+            c.age_pace_percent = ages.age_pace_percent(age);
+        }
+    }
+
+    /// The infants stand where their carriers stand.
+    fn follow_carriers(&mut self) {
+        let at: BTreeMap<BodyId, FinePos> = self.bodies.iter().map(|b| (b.id, b.at)).collect();
+        for index in 0..self.bodies.len() {
+            let Some(carrier) = self.bodies[index].carried_by else {
+                continue;
+            };
+            let Some(&there) = at.get(&carrier) else {
+                continue;
+            };
+            let before = self.bodies[index].pos().chunk();
+            self.bodies[index].at = there;
+            let after = there.tile().chunk();
+            if after != before {
+                let id = self.bodies[index].id;
+                self.leave_chunk(id, before);
+                self.enter_chunk(id, after);
+            }
+        }
+    }
+
+    /// The infants a dead carrier bore go to the nearest woman within the
+    /// content's reach, grown and not carried herself; with none, they
+    /// are left where it died.
+    fn orphan(&mut self, carrier: BodyId, at: Pos, rules: &Content) {
+        let ages = &rules.needs.ages;
+        let reach = i32::try_from(ages.adopt_within_tiles).unwrap_or(i32::MAX);
+        let woman_from = u64::from(ages.woman_from_years) * 1000;
+        let nurse = self
+            .bodies
+            .iter()
+            .filter(|b| {
+                b.sex == Sex::Female && b.carried_by.is_none() && self.age_milli(b) >= woman_from
+            })
+            .map(|b| {
+                let p = b.pos();
+                ((p.x - at.x).abs().max((p.y - at.y).abs()), b.id)
+            })
+            .filter(|&(d, _)| d <= reach)
+            .min()
+            .map(|(_, id)| id);
+        for body in &mut self.bodies {
+            if body.carried_by == Some(carrier) {
+                body.carried_by = nurse;
+            }
+        }
+    }
+
+    /// Every body's state as a carrier, for the infants it nurses: whether
+    /// it has milk (a woman whose reserve is not spent), its cold, fatigue
+    /// and sleep.
+    fn carriers(&self, needs: &content::Needs) -> BTreeMap<BodyId, (bool, Gauge, Gauge, bool)> {
+        self.bodies
+            .iter()
+            .map(|b| {
+                let c = &b.condition;
+                let milk = b.sex == Sex::Female && c.deficit_j < c.reserve_j(needs);
+                (b.id, (milk, c.cold, c.fatigue, c.asleep))
+            })
+            .collect()
+    }
+
     fn fare(&mut self, rules: &Content, night: bool, day_start: bool, events: &mut Vec<Event>) {
         let per_day = self.calendar.ticks_per_day();
         let step = |rate_per_day: u32| u64::from(rate_per_day) * GAUGE_SCALE / per_day;
         let needs = &rules.needs;
-        // What a body burns this tick, in joules: whole, the remainders
-        // carried over the day, so a day burns its need exactly.
-        let need = needs.need_j_per_day();
         let tick = self.tick.0;
-        let burn = need * tick / per_day - need * tick.saturating_sub(1) / per_day;
         let season = self.time().season;
+        self.grow(rules, events);
+        let carriers = self.carriers(needs);
         let mut died = Vec::new();
         for body in &mut self.bodies {
             let before = body.condition.summary();
             let effort = !body.route.is_empty() || body.work.is_some();
+            let nursed = body.carried_by.and_then(|by| carriers.get(&by)).copied();
             let c = &mut body.condition;
-            c.deficit_j = (c.deficit_j + burn).min(needs.reserve_j());
+            // What it burns this tick, in joules: whole, the remainders
+            // carried over the day, so a day burns its need exactly. An
+            // infant nursed burns nothing of its own: its carrier does.
+            let need = c.need_j_per_day(needs);
+            let burn = need * tick / per_day - need * tick.saturating_sub(1) / per_day;
+            if let Some((true, cold, fatigue, asleep)) = nursed {
+                // On its carrier's breast and back: fed, watered, as warm
+                // and as rested as she is.
+                if day_start {
+                    c.eaten_today_j = 0;
+                }
+                c.deficit_j = c.deficit_j.saturating_sub(burn);
+                c.set_appetite(needs);
+                c.vitality.raise(step(needs.vitality_regain_per_day));
+                c.thirst = Gauge::at(0);
+                c.cold = cold;
+                c.fatigue = fatigue;
+                c.asleep = asleep;
+                if c.summary() != before {
+                    events.push(Event::ConditionChanged {
+                        body: body.id,
+                        summary: c.summary(),
+                    });
+                }
+                continue;
+            }
+            c.deficit_j = (c.deficit_j + burn).min(c.reserve_j(needs));
             if day_start {
                 c.eaten_today_j = 0;
             }
@@ -2098,7 +2386,7 @@ impl World {
             let mut cause = None;
             // Hunger itself does no harm: the reserve is burnt first, and
             // only a spent one starves (lot 3).
-            if c.deficit_j >= needs.reserve_j() && needs.starving_per_day > 0 {
+            if c.deficit_j >= c.reserve_j(needs) && needs.starving_per_day > 0 {
                 c.vitality.lower(step(needs.starving_per_day));
                 cause = Some(Death::Starved);
             }
@@ -2135,6 +2423,7 @@ impl World {
         let body = self.bodies.remove(index);
         let at = body.pos();
         self.leave_chunk(id, at.chunk());
+        self.orphan(id, at, rules);
         for item in body.inventory().collect::<Vec<_>>() {
             let Some(dropped) = self.items.get_mut(&item) else {
                 continue;
@@ -2296,7 +2585,7 @@ impl World {
             held: body.held,
             carried: body.carried.clone(),
             load_g: body.load_g,
-            capacity_g: rules.movement.carry_capacity_g,
+            capacity_g: body.capacity_g(&rules.movement),
         });
     }
 
@@ -2423,7 +2712,7 @@ impl World {
         {
             return refuse(events, Refusal::NothingRipe);
         }
-        if self.bodies[index].load_g >= rules.movement.carry_capacity_g {
+        if self.bodies[index].load_g >= self.bodies[index].capacity_g(&rules.movement) {
             return refuse(events, Refusal::TooHeavy);
         }
         self.stop_work(index, WorkEnd::Interrupted, events);
@@ -2490,9 +2779,8 @@ impl World {
                 self.stop_work(index, WorkEnd::Bare, events);
                 continue;
             };
-            let room = rules
-                .movement
-                .carry_capacity_g
+            let room = self.bodies[index]
+                .capacity_g(&rules.movement)
                 .saturating_sub(self.bodies[index].load_g);
             let grams = due.min(left.grams).min(room);
             if grams > 0 {
@@ -2747,7 +3035,9 @@ impl World {
             Err(reason) => return Self::refuse(events, id, ItemAct::PickUp, item, reason),
         };
         let mass = self.item(item).map_or(0, Item::mass_g);
-        if self.bodies[index].load_g.saturating_add(mass) > rules.movement.carry_capacity_g {
+        if self.bodies[index].load_g.saturating_add(mass)
+            > self.bodies[index].capacity_g(&rules.movement)
+        {
             return Self::refuse(events, id, ItemAct::PickUp, item, Refusal::TooHeavy);
         }
         self.wake(index, events);
@@ -5058,6 +5348,159 @@ mod tests {
         assert!(fit_mm > 0);
         let percent = weak_mm * 100 / fit_mm;
         assert!((68..=72).contains(&percent), "{percent} %");
+    }
+
+    /// A grass strip with a woman of 25 and an infant of half a year she
+    /// carries, under the repository's needs (lot 3 B).
+    fn mother_and_infant() -> (World, Content, BodyId, BodyId) {
+        let rules = reserve_rules();
+        let mut w = World::empty(
+            Calendar::new(1, 7200).unwrap(),
+            Map::filled(64, 8, Terrain::Grass),
+        );
+        let year = u64::from(w.calendar().days_per_year());
+        let mother = w.spawn_body(Pos::new(1, 1));
+        let infant = w.spawn_body(Pos::new(2, 1));
+        w.set_birth(mother, 25 * year, Sex::Female);
+        w.set_birth(infant, year / 2, Sex::Male);
+        assert!(w.carry(mother, infant));
+        (w, rules, mother, infant)
+    }
+
+    #[test]
+    fn needs_go_with_age_and_sex() {
+        let ages = reserve_rules().needs.ages;
+        let size = |years: u64, sex| ages.size_permille(years * 1000, sex);
+        assert_eq!(size(0, Sex::Male), 300, "an infant");
+        assert_eq!(size(2, Sex::Male), 400, "a child of two");
+        assert_eq!(size(8, Sex::Male), 650, "halfway to fourteen");
+        assert_eq!(size(14, Sex::Male), 900);
+        assert_eq!(size(30, Sex::Male), 1000, "a man");
+        assert_eq!(size(30, Sex::Female), 850, "a woman");
+        assert_eq!(size(60, Sex::Male), 850, "the old");
+        assert_eq!(size(8, Sex::Female), 650, "a girl as a boy");
+        assert_eq!(ages.age_pace_percent(8_000), 70);
+        assert_eq!(ages.age_pace_percent(30_000), 100);
+        assert_eq!(ages.age_pace_percent(60_000), 70);
+        assert_eq!(ages.infant_mass_g(0), 3500);
+        assert_eq!(ages.infant_mass_g(2000), 12000);
+    }
+
+    #[test]
+    fn a_nursing_woman_burns_for_two_and_her_infant_burns_nothing() {
+        let (mut w, rules, mother, infant) = mother_and_infant();
+        let day = w.calendar().ticks_per_day();
+        let mut events = Vec::new();
+        w.advance(day, &rules, &mut events);
+        let need = rules.needs.need_j_per_day();
+        let mum = w.body(mother).unwrap().condition();
+        // 85 % of a man's need, and a quarter more for the milk.
+        let expected = need * (850 * 125 / 100) / 1000;
+        assert!(
+            mum.deficit_j.abs_diff(expected) <= 2,
+            "{} against {expected}",
+            mum.deficit_j
+        );
+        let baby = w.body(infant).unwrap().condition();
+        assert_eq!(baby.deficit_j, 0, "fed");
+        assert!(baby.thirst.is_empty(), "and watered");
+        assert_eq!(
+            baby.size_permille, 326,
+            "half a year and a day: 30 to 40 %, a quarter of the way and more"
+        );
+    }
+
+    #[test]
+    fn an_infant_goes_where_its_carrier_goes_and_weighs_on_her() {
+        let (mut w, rules, mother, infant) = mother_and_infant();
+        let mut events = Vec::new();
+        w.advance(1, &rules, &mut events);
+        let capacity = w.body(mother).unwrap().capacity_g(&rules.movement);
+        let alone = rules.movement.carry_capacity_g * 850 / 1000;
+        assert!(capacity < alone - 5000, "{capacity} g left of {alone}");
+        w.queue(Intention::MoveTo {
+            body: mother,
+            target: Pos::new(40, 1),
+        });
+        w.queue(Intention::MoveTo {
+            body: infant,
+            target: Pos::new(1, 6),
+        });
+        events.clear();
+        w.advance(200, &rules, &mut events);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::MoveRefused { body, .. } if *body == infant)),
+            "an infant does not walk"
+        );
+        let (m, i) = (w.body(mother).unwrap().at(), w.body(infant).unwrap().at());
+        assert!(m.x > 10_000, "she walked");
+        assert_eq!(i, m, "carried along");
+    }
+
+    #[test]
+    fn an_orphan_is_taken_by_the_nearest_woman_or_left_to_starve() {
+        let (mut w, rules, mother, infant) = mother_and_infant();
+        let year = u64::from(w.calendar().days_per_year());
+        let aunt = w.spawn_body(Pos::new(30, 1));
+        w.set_birth(aunt, 30 * year, Sex::Female);
+        let man = w.spawn_body(Pos::new(3, 1));
+        w.set_birth(man, 30 * year, Sex::Male);
+        let mut events = Vec::new();
+        w.die(mother, Death::Starved, &rules, &mut events);
+        assert_eq!(
+            w.body(infant).unwrap().carried_by(),
+            Some(aunt),
+            "a woman, not the nearer man"
+        );
+        w.die(aunt, Death::Starved, &rules, &mut events);
+        assert_eq!(w.body(infant).unwrap().carried_by(), None, "nobody left");
+        w.advance(w.calendar().ticks_per_day(), &rules, &mut events);
+        assert!(w.body(infant).unwrap().condition().deficit_j > 0, "no milk");
+    }
+
+    #[test]
+    fn a_child_is_as_hungry_as_a_man_missing_as_much_of_his_day() {
+        let rules = reserve_rules();
+        let mut w = World::empty(
+            Calendar::new(1, 7200).unwrap(),
+            Map::filled(16, 4, Terrain::Grass),
+        );
+        let year = u64::from(w.calendar().days_per_year());
+        let man = w.spawn_body(Pos::new(1, 1));
+        let boy = w.spawn_body(Pos::new(2, 1));
+        w.set_birth(boy, 2 * year + 1, Sex::Male);
+        let mut events = Vec::new();
+        w.advance(w.calendar().ticks_per_day() / 2, &rules, &mut events);
+        let hunger = |id| w.body(id).unwrap().condition().hunger.points();
+        assert_eq!(hunger(man), 50, "half a day missed");
+        assert_eq!(hunger(boy), hunger(man), "the same share of his own");
+    }
+
+    #[test]
+    fn an_infant_is_weaned_at_two_and_walks() {
+        let (mut w, rules, mother, infant) = mother_and_infant();
+        let year = u64::from(w.calendar().days_per_year());
+        w.set_birth(infant, 2 * year - 1, Sex::Male);
+        let mut events = Vec::new();
+        w.advance(w.calendar().ticks_per_day() + 1, &rules, &mut events);
+        let child = w.body(infant).unwrap();
+        assert_eq!(child.carried_by(), None);
+        assert!(!w.is_infant(child, &rules));
+        assert_eq!(
+            child.condition().age_pace_percent,
+            70,
+            "a child goes slower"
+        );
+        let mum = w.body(mother).unwrap();
+        assert_eq!(mum.condition().burn_permille, 850, "no more milk to make");
+        w.queue(Intention::MoveTo {
+            body: infant,
+            target: Pos::new(1, 6),
+        });
+        w.advance(200, &rules, &mut events);
+        assert_ne!(w.body(infant).unwrap().at(), w.body(mother).unwrap().at());
     }
 
     /// The sample rules with a body that never thirsts: for the tests of

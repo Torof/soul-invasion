@@ -13,7 +13,11 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
                            seconds to be born), or a patch of the valley
                            (default: patch)
   --side N                 the patch's side in tiles (default 50)
-  --people N               people born at each camp (default 5)
+  --people N               people born at each camp (default 5): grown
+                           women and men in turn, 18 to 40 years old
+  --children N             children at each camp too, 3 to 11 (default 0)
+  --infants N              infants of half a year at each camp, each carried
+                           by one of its women (default 0)
   --tribes N               1 or 2 tribes, each at its own camp (default: 2 on
                            the vivarium's world, 1 on a patch)
   --days N                 game days to run (default 10)
@@ -59,6 +63,15 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--people" => {
                 settings.people = u32::try_from(number(value(&mut i, "--people")?, "--people")?)
                     .map_err(|_| "--people: too many".to_owned())?;
+            }
+            "--children" => {
+                settings.children =
+                    u32::try_from(number(value(&mut i, "--children")?, "--children")?)
+                        .map_err(|_| "--children: too many".to_owned())?;
+            }
+            "--infants" => {
+                settings.infants = u32::try_from(number(value(&mut i, "--infants")?, "--infants")?)
+                    .map_err(|_| "--infants: too many".to_owned())?;
             }
             "--days" => {
                 settings.days = u32::try_from(number(value(&mut i, "--days")?, "--days")?)

@@ -22,7 +22,7 @@ use sim::brain::{Brains, Why};
 use sim::content::Content;
 use sim::map::{Map, Pos, Terrain};
 use sim::time::Calendar;
-use sim::{BodyId, Death, Event, Intention, World};
+use sim::{BodyId, Death, Event, Intention, Sex, World};
 
 pub mod png;
 
@@ -70,6 +70,12 @@ pub struct Settings {
     /// vivarium's world camp A and camp B of lot 0, on a patch the camp
     /// and its mirror across the patch's middle).
     pub tribes: u32,
+    /// Children born at each camp beside the `people` (lot 3 B): from three
+    /// to eleven years old, boys and girls in turn.
+    pub children: u32,
+    /// Infants of half a year at each camp, each carried and nursed by a
+    /// woman of the tribe, one a woman (lot 3 B).
+    pub infants: u32,
 }
 
 impl Default for Settings {
@@ -83,6 +89,8 @@ impl Default for Settings {
             content: None,
             brain: true,
             tribes: 1,
+            children: 0,
+            infants: 0,
         }
     }
 }
@@ -197,6 +205,12 @@ pub type Gauges = (u64, u32, u32, u32, u32, u32);
 pub struct Person {
     /// Its tribe: 0 for A, 1 for B.
     pub tribe: u8,
+    /// Woman or man; its birth day, from the world's first (lot 3 B).
+    pub sex: Option<Sex>,
+    /// See `sex`.
+    pub born_day: i64,
+    /// Who carries it, an infant, as last seen.
+    pub carrier: Option<BodyId>,
     /// Where it was born.
     pub born_at: Option<Pos>,
     /// Where it stood at the end of the run.
@@ -273,29 +287,76 @@ pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunErr
     let mut brains = Brains::new(settings.seed);
     for (tribe, &camp) in camps.iter().enumerate() {
         let tribe = u8::try_from(tribe).expect("two tribes at most");
-        for _ in 0..settings.people {
+        // Who is born at the camp (lot 3 B): grown women and men in turn,
+        // from 18 to 40 years old; children; infants, each on a woman.
+        let per_year = u64::from(calendar.days_per_year());
+        let mut born: Vec<(u64, Sex, bool)> = Vec::new();
+        for k in 0..settings.people {
+            let years = 18 + u64::from(k) * 22 / u64::from(settings.people.max(1));
+            let sex = if k % 2 == 0 { Sex::Female } else { Sex::Male };
+            born.push((years * per_year + u64::from(k) * 7, sex, false));
+        }
+        for k in 0..settings.children {
+            let years =
+                3 + u64::from(k) * 8 / u64::from(settings.children.saturating_sub(1).max(1));
+            let sex = if k % 2 == 0 { Sex::Male } else { Sex::Female };
+            born.push((years * per_year + u64::from(k) * 5, sex, false));
+        }
+        for k in 0..settings.infants {
+            let sex = if k % 2 == 0 { Sex::Female } else { Sex::Male };
+            born.push((per_year / 2, sex, true));
+        }
+        let mut women: Vec<BodyId> = Vec::new();
+        for (age_days, sex, infant) in born {
             let Some(id) = world.spawn_near(camp) else {
                 continue;
             };
+            world.set_birth(id, age_days, sex);
+            let mut carrier = None;
+            if infant {
+                if women.is_empty() {
+                    continue;
+                }
+                let nurse = women.remove(0);
+                world.carry(nurse, id);
+                carrier = Some(nurse);
+            } else if sex == Sex::Female && age_days >= 18 * per_year {
+                women.push(id);
+            }
             if settings.brain {
                 brains.adopt_at(&world, content, id, camp);
             }
             let at = world.body(id).map_or(camp, sim::Body::pos);
-            let entry = Entry {
-                tick: 0,
-                day: 1,
-                what: format!(
-                    "{} of tribe {} is born at ({}, {}), by its camp",
+            let who = describe(sex, age_days * 1000 / per_year.max(1));
+            let what = match carrier {
+                Some(nurse) => format!(
+                    "{} of tribe {}, {who}, is born at ({}, {}), carried by {}",
+                    name(id),
+                    tribe_name(tribe),
+                    at.x,
+                    at.y,
+                    name(nurse)
+                ),
+                None => format!(
+                    "{} of tribe {}, {who}, is born at ({}, {}), by its camp",
                     name(id),
                     tribe_name(tribe),
                     at.x,
                     at.y
                 ),
             };
+            let entry = Entry {
+                tick: 0,
+                day: 1,
+                what,
+            };
             chronicle.push(entry.clone());
             let person = people.entry(id).or_default();
             person.tribe = tribe;
             person.born_at = Some(at);
+            person.sex = Some(sex);
+            person.born_day = world.body(id).map_or(0, sim::Body::born_day);
+            person.carrier = carrier;
             person.entries.push(entry);
         }
     }
@@ -427,6 +488,25 @@ pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunErr
             world.queue(decision.intention);
         }
         if tick % ticks_per_sample == 0 {
+            for (id, person) in &mut people {
+                let Some(body) = world.body(*id) else {
+                    continue;
+                };
+                let now = body.carried_by();
+                if now != person.carrier {
+                    let what = match now {
+                        Some(nurse) => format!("{} is taken by {}", name(*id), name(nurse)),
+                        None if world.is_infant(body, content) => {
+                            format!("{} is left alone, nobody to carry it", name(*id))
+                        }
+                        None => format!("{} is weaned: it walks", name(*id)),
+                    };
+                    let entry = Entry { tick, day, what };
+                    chronicle.push(entry.clone());
+                    person.entries.push(entry);
+                    person.carrier = now;
+                }
+            }
             let now = sample(&world, content, &mut people);
             for tribe in 0..tribes.min(2) {
                 let balance = food
@@ -605,6 +685,25 @@ fn camps(settings: &Settings, map: &Map) -> Vec<Pos> {
 /// "A", "B".
 fn tribe_name(tribe: u8) -> char {
     char::from(b'A' + tribe)
+}
+
+/// "a woman of 25", "a boy of 7", "an infant girl of 0.5": a person's sex
+/// and age in years.
+fn describe(sex: Sex, age_milli: u64) -> String {
+    let years = age_milli / 1000;
+    let noun = match (sex, years) {
+        (Sex::Female, 0..=1) => "an infant girl",
+        (Sex::Male, 0..=1) => "an infant boy",
+        (Sex::Female, 2..=13) => "a girl",
+        (Sex::Male, 2..=13) => "a boy",
+        (Sex::Female, _) => "a woman",
+        (Sex::Male, _) => "a man",
+    };
+    if years < 2 {
+        format!("{noun} of {}.{}", years, age_milli % 1000 / 100)
+    } else {
+        format!("{noun} of {years}")
+    }
 }
 
 /// "person 3".
@@ -818,6 +917,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         h.push_str("<h2>The curves</h2>");
         h.push_str(&self.curves());
         h.push_str(&self.food_table());
+        h.push_str(&self.ages_table());
         let _ = write!(
             h,
             "<h2>The chronicle</h2><p>{} lines.</p><table class=\"chronicle\">",
@@ -849,9 +949,15 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                 ),
                 None => "alive at the end".to_owned(),
             };
+            let who = person.sex.map_or_else(String::new, |sex| {
+                format!(
+                    ", {} at the start",
+                    describe(sex, Self::age_milli(person, 0))
+                )
+            });
             let _ = write!(
                 h,
-                "<details><summary>{} (tribe {}) — {fate}; {} meals ({} g), drank {} times, thought {} times</summary>",
+                "<details><summary>{} (tribe {}{who}) — {fate}; {} meals ({} g), drank {} times, thought {} times</summary>",
                 name(*id),
                 tribe_name(person.tribe),
                 person.meals.0,
@@ -922,6 +1028,53 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                 )
             },
         )
+    }
+
+    /// How old a person is on `day` (from 0), in thousandths of a year.
+    fn age_milli(person: &Person, day: i64) -> u64 {
+        let days = u64::try_from(day - person.born_day).unwrap_or(0);
+        days * 1000 / u64::from(Calendar::DEFAULT_DAYS_PER_YEAR)
+    }
+
+    /// The people by age and sex, at the start and the living at the end
+    /// (lot 3 B).
+    fn ages_table(&self) -> String {
+        const BANDS: [(u64, u64, &str); 7] = [
+            (0, 2, "0–1"),
+            (2, 6, "2–5"),
+            (6, 12, "6–11"),
+            (12, 18, "12–17"),
+            (18, 40, "18–39"),
+            (40, 55, "40–54"),
+            (55, u64::MAX, "55 and over"),
+        ];
+        if self.people.values().all(|p| p.sex.is_none()) {
+            return String::new();
+        }
+        let end = i64::try_from(self.ticks / self.ticks_per_day().max(1)).unwrap_or(0);
+        let count = |day: i64, living: bool, sex: Sex, (lo, hi): (u64, u64)| {
+            self.people
+                .values()
+                .filter(|p| p.sex == Some(sex) && (!living || p.death.is_none()))
+                .filter(|p| (lo..hi).contains(&(Self::age_milli(p, day) / 1000)))
+                .count()
+        };
+        let mut h = String::from(
+            "<h2>The ages</h2><p>The people by age and sex, in game years (50 days): at the start, and the living at the end.</p>\
+             <table class=\"food\"><tr><th>Years</th><th>Women, start</th><th>Men, start</th><th>Women, end</th><th>Men, end</th></tr>",
+        );
+        for (lo, hi, label) in BANDS {
+            let _ = write!(
+                h,
+                "<tr><td>{label}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                count(0, false, Sex::Female, (lo, hi)),
+                count(0, false, Sex::Male, (lo, hi)),
+                count(end, true, Sex::Female, (lo, hi)),
+                count(end, true, Sex::Male, (lo, hi)),
+            );
+        }
+        h.push_str("</table>");
+        h
     }
 
     fn ticks_per_day(&self) -> u64 {
@@ -1089,6 +1242,8 @@ mod tests {
             content: None,
             brain: true,
             tribes: 1,
+            children: 0,
+            infants: 0,
         }
     }
 
@@ -1201,7 +1356,9 @@ mod tests {
         let html = report.fixed();
         assert!(html.contains("<h2>The map</h2>") && html.contains("data:image/png;base64,"));
         assert!(html.contains("<polyline") && html.contains("<h2>The chronicle</h2>"));
-        assert!(html.contains("<details><summary>person 1 (tribe A) — died on day"));
+        assert!(html.contains(
+            "<details><summary>person 1 (tribe A, a woman of 18 at the start) — died on day"
+        ));
         assert!(html.contains("none (the control run)"));
         assert!(
             html.contains("thirst a day 100"),
@@ -1269,13 +1426,15 @@ mod tests {
             assert!(person.death.is_none(), "nobody dies in four days");
             let end = person.last_at.unwrap();
             assert!(
-                far(end, home) < far(end, other),
+                // The patch's camps are four tiles apart: never nearer
+                // the other camp than its own.
+                far(end, home) <= far(end, other),
                 "it stays on its own side: {end:?}"
             );
         }
         assert_eq!(report.samples[0].alive_by_tribe, [5, 5]);
         let html = report.fixed();
-        assert!(html.contains("camp B at") && html.contains("(tribe B)"));
+        assert!(html.contains("camp B at") && html.contains("(tribe B, "));
     }
 
     /// The plan's small trial on the real world: two tribes of five, either
