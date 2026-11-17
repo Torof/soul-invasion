@@ -162,6 +162,9 @@ func restart() -> void:
 	await get_tree().process_frame
 	var project := ProjectSettings.globalize_path("res://")
 	var output: Array = []
+	# The import holds the main thread, longer than the watchdog's patience
+	# when the turf tiles changed: held, it reports and never gives up.
+	DevWatchdog.held = true
 	OS.execute(OS.get_executable_path(), ["--headless", "--path", project, "--import"], output)
 	# The project named outright: the engine keeps no `--path` among the
 	# arguments it hands back, and the client may run from anywhere.

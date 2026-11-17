@@ -39,6 +39,8 @@ const DIMMER := 0.95
 const WARMER := 1.03
 const COOLER := 0.97
 const TINT_KEYS: Array[Key] = [KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT]
+## The angle dial's step, degrees a metre of rise (Page Up and Page Down).
+const ANGLE_STEP := 5.0
 const MINUS := "−"
 
 ## The world view (duck-typed: naming WorldView would tie this script to
@@ -199,6 +201,12 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		_apply()
 		get_viewport().set_input_as_handled()
 		return
+	if key.keycode == KEY_PAGEUP or key.keycode == KEY_PAGEDOWN:
+		var step := ANGLE_STEP if key.keycode == KEY_PAGEUP else -ANGLE_STEP
+		ChunkView.set_slope_angle_per_metre(maxf(0.0, ChunkView.slope_angle_per_metre + step))
+		_apply()
+		get_viewport().set_input_as_handled()
+		return
 	if key.keycode == KEY_BACKSPACE:
 		ChunkView.reset_tints()
 		_apply()
@@ -256,8 +264,9 @@ static func tint_words(tint: Vector3) -> String:
 
 
 func _apply() -> void:
-	var turf := "turf tile 1 alone" if ChunkView.slope_turf_single else "turf family of %d" % ChunkView.SLOPE_LOOK["slope_turf_variants"]
+	var turf := "turf tile 1 alone" if ChunkView.slope_turf_single else "turf family of %d × %d angles" % [ChunkView.SLOPE_LOOK["slope_turf_variants"], ChunkView.SLOPE_LOOK["slope_turf_angles"]]
 	var rim := "rim" if ChunkView.slope_rim else "no rim"
 	var slopes := "Slopes — %s, %s, %s, turf %d px (P)   (keys 1, 0, G, R and P)" % [MODES[mode], turf, rim, roundi(ChunkView.slope_turf_px)]
+	var angle := "Angle — %d° + %d°/m × rise, to %d°   (PgUp/PgDn: the °/m)" % [roundi(ChunkView.SLOPE_LOOK["slope_angle_first"]), roundi(ChunkView.slope_angle_per_metre), roundi(ChunkView.SLOPE_LOOK["slope_angle_last"])]
 	var tints := "Tints — flat %s · slope %s   (Shift+arrows flat, Ctrl+arrows slope: ↑↓ brightness, ←→ warmth; Backspace resets)" % [tint_words(ChunkView.flat_tint), tint_words(ChunkView.slope_tint)]
-	_label.text = slopes + "\n" + tints
+	_label.text = slopes + "   " + angle + "\n" + tints

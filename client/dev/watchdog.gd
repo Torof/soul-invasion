@@ -28,6 +28,11 @@ const CHUNK_BUILD := 4
 const TREES := 5
 const PHASES := ["elsewhere (the engine: rendering, input, the display server)", "network messages (a burst of chunks, at a login or a teleport, takes a second or two: that is loading, not a freeze)", "world view step", "chunk redraw", "chunk build (ground, bank, brooks)", "planting a chunk's trees"]
 static var phase := ELSEWHERE
+## The main thread is busy on purpose and known to be (the watcher's
+## restart importing the project, which with twenty compressed turf
+## tiles takes longer than DEAD_SECONDS): the stall is reported, never
+## given up on.
+static var held := false
 
 var _thread: Thread
 var _stop := false
@@ -81,7 +86,7 @@ func _watch() -> void:
 		if report_due(stalled, reported):
 			reported = stalled
 			printerr(report(stalled, frame, phase))
-		if stalled >= DEAD_SECONDS and OS.get_name() == "Linux":
+		if stalled >= DEAD_SECONDS and OS.get_name() == "Linux" and not held:
 			printerr("watchdog: given up after %.1f s: asking the crash handler for the main thread's backtrace" % stalled)
 			OS.execute("kill", ["-SEGV", str(OS.get_process_id())])
 			return
