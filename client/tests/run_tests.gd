@@ -422,7 +422,8 @@ func _owned(lines: Array, lo: Vector2i, hi: Vector2i) -> Array:
 
 
 func _test_trees_stand_on_their_foot() -> void:
-	# Every kind of tree of the content has at least one image, sharp
+	# Every kind of tree of the content has at least one image (or a
+	# stand-in's), sharp
 	# enough for its height on screen (D40) up close.
 	var text := FileAccess.get_file_as_string("res://../content/species.ron")
 	if text.is_empty():
@@ -436,7 +437,8 @@ func _test_trees_stand_on_their_foot() -> void:
 		heights[m.get_string(1)] = float(m.get_string(2))
 	_check(ids.size() >= 6, "the content names its kinds of tree: %s" % [ids])
 	for id: String in ids:
-		var images := Trees.textures(id)
+		# Or its stand-in's, until its own (Trees.STAND_INS).
+		var images := Trees.textures(Trees.looks_as(id))
 		_check(not images.is_empty(), "the %s has an image" % id)
 		for t: Texture2D in images:
 			_check(t.get_height() >= 760, "%s image is tall enough: %d" % [id, t.get_height()])
@@ -868,6 +870,20 @@ func _test_the_golden_chunk_decodes() -> void:
 	_check(Array(stand.kinds) == ["birch", "oak"] and stand.at[1] == Vector2(13_500, -5_750), "a stand reads the trees as they come")
 	stand.release()
 
+
+
+## A kind of tree with no images of its own yet is drawn with its
+## stand-in's, at its own height.
+func _test_a_tree_without_images_is_drawn_with_a_stand_in() -> void:
+	_check(Trees.paths("wild_cherry").is_empty(), "the wild cherry has no images yet")
+	_check(not Trees.paths("wild_apple").is_empty(), "the wild apple has")
+	_check(Trees.looks_as("wild_cherry") == "wild_apple", "a cherry looks as an apple")
+	_check(Trees.looks_as("oak") == "oak", "an oak looks as itself")
+	var trees := PackedInt32Array([0, 0, 0, 1, 4_000, 0])
+	var stand := Trees.Stand.new(trees, {"wild_cherry": 2_000, "wild_apple": 600}, PackedStringArray(["wild_cherry", "wild_apple"]))
+	_check(Array(stand.kinds) == ["wild_apple", "wild_apple"], "both drawn with the apple's images: %s" % [stand.kinds])
+	_check(stand.heights[0] == 2_000 and stand.heights[1] == 600, "each at its own height: %s" % [stand.heights])
+	stand.release()
 
 ## Every tree image stands on its foot (no empty rows under it, so it is
 ## anchored where it stands) and holds no pale opaque speck of the

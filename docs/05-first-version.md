@@ -289,6 +289,12 @@ its root is mistaken for deadly nightshade's. Two tribes of five, two
 years: nobody dies, nobody is ever thin, each tribe gathers some
 2.5 GJ a year.
 
+**The fruit and nut trees** (16 November 2026): wild cherry, mulberry,
+wild pear, walnut, sweet chestnut and wild fig in `species.ron`, with
+their crops, drawn with a stand-in's images until their own (D39). Two tribes, two years: nobody dies, tribe B a day and a
+half thin in all in its first year; the tribes gather cherries and
+walnuts among the rest.
+
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
 slopes drawn by the client from them (D44), then the relief in the

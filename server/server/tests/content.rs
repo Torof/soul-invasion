@@ -80,6 +80,13 @@ fn energy_per_kilogram_gives_a_piece_what_it_gave_before() {
         ("silverweed_root", 300),
         ("arrowhead_tubers", 400),
         ("water_chestnuts", 400),
+        // The fruit and nut trees (16 November 2026).
+        ("cherries", 260),
+        ("mulberries", 180),
+        ("figs", 310),
+        ("pears", 240),
+        ("walnuts", 2600),
+        ("chestnuts", 800),
     ];
     for (id, kj) in before {
         let material = content.material(id).expect(id);
