@@ -30,12 +30,17 @@ use futures_util::{SinkExt, StreamExt};
 use protocol::{
     Blockage, BodyState, ChunkFrame, ClientMessage, Clock, Condition, DeathCause, FloraView,
     ItemAct, ItemState, ItemView, MaterialView, NaturalItem, PROTOCOL_VERSION, Point, Refusal,
-    Season, ServerMessage, Side, SpeciesView, Standing, StoredItem, Terrain, Thought, decode,
-    encode, encode_chunk,
+    Season, ServerMessage, Side, SpeciesView, Standing, StandingTree, StoredItem, Terrain, Thought,
+    decode, encode, encode_chunk,
 };
+use sim::changes::Picked;
+use sim::crops::{Crop, Source};
 use sim::ground::{Ground, Version};
 use sim::lru::Lru;
-use sim::{BodyId, CHUNK_SIZE, ChunkPos, Content, FinePos, Intention, ItemId, Map, Pos, World};
+use sim::{
+    BodyId, CHUNK_SIZE, Calendar, ChunkPos, Content, FinePos, Intention, ItemId, Map, Pos, Tick,
+    World,
+};
 
 use crate::interest::{self, Inbox, Router};
 use crate::pool::ChunkPool;
@@ -324,6 +329,10 @@ pub struct Shared {
     flora_wire: Vec<Option<u8>>,
     /// The seed the trees and the flora are placed with (the map's).
     seed: u64,
+    /// The content's crops, and the world's calendar: the fruit a tree
+    /// shows follows from them, the date and the picks (D48).
+    crops: Vec<Crop>,
+    calendar: Calendar,
     /// The plants of the chunks asked for lately, at most
     /// [`PLANT_CACHE_CHUNKS`] chunks (the cost follows the chunks in use,
     /// never the map's size nor the land visited, D39). Shared, so a hit
@@ -475,7 +484,15 @@ struct Items {
     /// Absent means 0. Grows with the chunks men changed, never with the
     /// land visited.
     versions: BTreeMap<ChunkPos, Version>,
+    /// What men picked of the crops of each chunk (D45), as the
+    /// simulation told it: the fruit its trees show follows (D48). Grows
+    /// with the chunks men picked in, never with the land.
+    picked: BTreeMap<ChunkPos, Arc<Picks>>,
 }
+
+/// What men picked of a chunk's crops ([`sim::changes::ChunkChanges`]'s
+/// `picked`).
+type Picks = BTreeMap<(Source, String), Picked>;
 
 impl Items {
     /// Notes `chunk`'s version after a change.
@@ -497,7 +514,9 @@ pub struct ChunkGround {
     /// Its version when its trees were placed.
     version: sim::ground::Version,
     tiles: Vec<Terrain>,
-    trees: Vec<Standing>,
+    /// Its trees, as placed: the fruit each shows is worked out as the
+    /// frame is made (D48).
+    trees: Arc<[sim::trees::Tree]>,
     plants: Vec<Standing>,
     currents: Vec<u16>,
     /// Its tiles' heights in decimetres; empty in a world with no relief.
@@ -507,8 +526,9 @@ pub struct ChunkGround {
 }
 
 /// A chunk frame's key in the cache: the chunk, the version its trees
-/// were placed at, its version as the frame carries it.
-type FrameKey = (ChunkPos, Version, Version);
+/// were placed at, its version as the frame carries it, and the fruit
+/// phase its trees' fruit was worked out in ([`sim::crops::fruit_phase`]).
+type FrameKey = (ChunkPos, Version, Version, u64);
 
 /// A chunk as it leaves: its frame, encoded once for every client, and
 /// the bodies standing in it now, which follow it in their own message.
@@ -520,6 +540,8 @@ pub struct ChunkSend {
     pub bodies: Vec<BodyState>,
     /// The chunk's version the frame carries.
     pub version: Version,
+    /// The fruit phase its trees' fruit was worked out in (D48).
+    pub phase: u64,
 }
 
 /// Millimetres from the corner of `chunk` to `at`, as a frame carries
@@ -677,6 +699,11 @@ impl Shared {
                 .chunk_changes()
                 .map(|(chunk, changes)| (chunk, changes.version))
                 .collect(),
+            picked: world
+                .chunk_changes()
+                .filter(|(_, changes)| !changes.picked.is_empty())
+                .map(|(chunk, changes)| (chunk, Arc::new(changes.picked.clone())))
+                .collect(),
             ..Items::default()
         };
         for item in world.items() {
@@ -718,6 +745,8 @@ impl Shared {
             flora_kinds: content.flora.clone(),
             flora_wire,
             seed: world.seed(),
+            crops: content.crops.clone(),
+            calendar: *world.calendar(),
             plants: Mutex::new(Lru::new(PLANT_CACHE_CHUNKS)),
             frames: Mutex::new(Lru::new(FRAME_CACHE_CHUNKS)),
             far_views: Mutex::new(Lru::new(FAR_VIEWS_HELD)),
@@ -802,8 +831,10 @@ impl Shared {
             );
             if let Some(ground) = self.chunk_ground(chunk) {
                 let natural = ground.natural.clone();
+                // Fruit as on the world's first day: the identity is not
+                // the date's.
                 if let Ok(frame) = self
-                    .frame_of(ground, &natural, &[], 0)
+                    .frame_of(ground, &natural, &[], 0, Tick(0), None)
                     .and_then(|f| Ok(encode_chunk(&f)?))
                 {
                     hash.write(&frame);
@@ -971,6 +1002,27 @@ impl Shared {
             .get(&chunk)
             .copied()
             .unwrap_or(0)
+    }
+
+    /// Records what men picked of `chunk`'s crops now (`picked`, the
+    /// chunk's changes'), and its version right after it (D45, D48): its
+    /// frame shows the fruit left on its trees.
+    pub fn crop_picked(&self, chunk: ChunkPos, picked: &Picks, version: Version) {
+        let mut items = self.items.lock().expect("items not poisoned");
+        items.picked.insert(chunk, Arc::new(picked.clone()));
+        items.changed(chunk, version);
+    }
+
+    /// The fruit phase now ([`sim::crops::fruit_phase`]): which fruit
+    /// windows and tree crops are open. A frame made in another phase may
+    /// show its trees' fruit wrong (D48).
+    pub fn fruit_phase(&self) -> u64 {
+        sim::crops::fruit_phase(
+            &self.tree_kinds,
+            &self.crops,
+            &self.calendar,
+            Tick(self.tick.load(Ordering::Relaxed)),
+        )
     }
 
     /// Forgets an item that was on the ground, and records its chunk's
@@ -1224,9 +1276,13 @@ impl Shared {
         let chunk = ground.chunk;
         // Gathered together, as the items' events see them, so the frame
         // and its version agree.
-        let (natural, stored, version) = self.ground_items(chunk, &ground.natural);
+        let (natural, stored, version, picked) = self.ground_items(chunk, &ground.natural);
         let bodies = self.bodies_in(chunk);
-        let key = (chunk, ground.version, version);
+        // The fruit as of now: the frame is the same bytes for every
+        // client until a window or a crop opens or shuts (D48).
+        let tick = Tick(self.tick.load(Ordering::Relaxed));
+        let phase = sim::crops::fruit_phase(&self.tree_kinds, &self.crops, &self.calendar, tick);
+        let key = (chunk, ground.version, version, phase);
         let held = self
             .frames
             .lock()
@@ -1236,9 +1292,14 @@ impl Shared {
         let frame = if let Some(frame) = held {
             frame
         } else {
-            let frame = Bytes::from(encode_chunk(
-                &self.frame_of(ground, &natural, &stored, version)?,
-            )?);
+            let frame = Bytes::from(encode_chunk(&self.frame_of(
+                ground,
+                &natural,
+                &stored,
+                version,
+                tick,
+                picked.as_deref(),
+            )?)?);
             self.frames
                 .lock()
                 .expect("frames not poisoned")
@@ -1249,18 +1310,45 @@ impl Shared {
             frame,
             bodies,
             version,
+            phase,
         })
     }
 
-    /// The frame of a chunk's ground and items, at `version`.
+    /// The frame of a chunk's ground and items, at `version`, its trees'
+    /// fruit as of `tick` with `picked` its picks (D48).
     fn frame_of(
         &self,
         ground: ChunkGround,
         natural: &[ItemState],
         stored: &[ItemState],
         version: Version,
+        tick: Tick,
+        picked: Option<&Picks>,
     ) -> Result<ChunkFrame, BoxError> {
         let chunk = ground.chunk;
+        let trees = ground
+            .trees
+            .iter()
+            .map(|tree| {
+                let (dx, dy) = offset_in(chunk, tree.at).ok_or("a tree off its chunk")?;
+                let fruit = sim::crops::fruit_on(
+                    &self.tree_kinds[tree.species],
+                    &self.crops,
+                    &self.calendar,
+                    tick,
+                    self.seed,
+                    self.map.origin(),
+                    tree,
+                    picked,
+                );
+                Ok(StandingTree {
+                    dx,
+                    dy,
+                    kind: u8::try_from(tree.species)?,
+                    fruit: fruit as u8,
+                })
+            })
+            .collect::<Result<Vec<_>, BoxError>>()?;
         // A material the client was not told of (none in the content's
         // catalogue) goes as an index past the list: unknown to the
         // client, as its id was before.
@@ -1296,7 +1384,7 @@ impl Shared {
             tiles: ground.tiles,
             currents: ground.currents,
             heights: ground.heights,
-            trees: ground.trees,
+            trees,
             plants: ground.plants,
             natural,
             stored,
@@ -1361,10 +1449,11 @@ impl Shared {
         for t in &f.trees {
             writeln!(
                 out,
-                "  tree {} at +{} mm, +{} mm",
+                "  tree {} at +{} mm, +{} mm, fruit {}",
                 name(&species, t.kind.into()),
                 t.dx,
-                t.dy
+                t.dy,
+                t.fruit
             )?;
         }
         for p in &f.plants {
@@ -1423,13 +1512,13 @@ impl Shared {
     }
 
     /// The items lying in `chunk`: its `natural` ones, those taken
-    /// excepted, and the stored ones, each in the order of their ids; and
-    /// the chunk's version.
+    /// excepted, and the stored ones, each in the order of their ids; the
+    /// chunk's version, and what men picked of its crops at that version.
     fn ground_items(
         &self,
         chunk: ChunkPos,
         natural: &[ItemState],
-    ) -> (Vec<ItemState>, Vec<ItemState>, Version) {
+    ) -> (Vec<ItemState>, Vec<ItemState>, Version, Option<Arc<Picks>>) {
         // Filtered and gathered under the lock `item_removed` holds, so an
         // item taken meanwhile shows either here or nowhere.
         let items = self.items.lock().expect("items not poisoned");
@@ -1440,33 +1529,23 @@ impl Shared {
             .collect();
         let mut stored = items.stored.get(&chunk).cloned().unwrap_or_default();
         let version = items.versions.get(&chunk).copied().unwrap_or(0);
+        let picked = items.picked.get(&chunk).cloned();
         drop(items);
         natural.sort_by_key(|i| i.id);
         stored.sort_by_key(|i| i.id);
-        (natural, stored, version)
+        (natural, stored, version, picked)
     }
 
     /// The trees standing in `chunk`, placed from the map and the seed
     /// the first time they are asked for ([`Ground::trees_in`]).
-    fn trees_in(&self, chunk: ChunkPos) -> Vec<Standing> {
-        self.ground
-            .trees_in(
-                &self.map,
-                &self.tree_kinds,
-                &self.open_ground,
-                self.seed,
-                chunk,
-            )
-            .iter()
-            .map(|tree| {
-                let (dx, dy) = offset_in(chunk, tree.at).expect("a tree stands in its chunk");
-                Standing {
-                    dx,
-                    dy,
-                    kind: u8::try_from(tree.species).expect("at most 256 kinds of tree"),
-                }
-            })
-            .collect()
+    fn trees_in(&self, chunk: ChunkPos) -> Arc<[sim::trees::Tree]> {
+        self.ground.trees_in(
+            &self.map,
+            &self.tree_kinds,
+            &self.open_ground,
+            self.seed,
+            chunk,
+        )
     }
 
     /// The trees of `chunk` and of the eight chunks around it, as the
@@ -1937,9 +2016,10 @@ enum Outgoing {
     /// A chunk built on the pool, finished with what stands and lies in
     /// it when it leaves.
     Chunk(ChunkGround),
-    /// A chunk the client keeps at this version: `chunk_same` instead of
-    /// its frame, if the version has not moved when it leaves.
-    Same(ChunkPos, Version),
+    /// A chunk the client keeps at this version and fruit phase (`None`:
+    /// not known, D48): `chunk_same` instead of its frame, if neither has
+    /// moved when it leaves.
+    Same(ChunkPos, Version, Option<u64>),
     /// A message as is (the far view).
     Frame(Message),
 }
@@ -1954,11 +2034,14 @@ enum Built {
 
 /// A chunk in view whose frame (or `chunk_same`) left: the version of the
 /// frame the client was given, what it keeps once the chunk leaves its
-/// view, and the version it knows, the frame's then each item event's.
+/// view, and the version it knows, the frame's then each item event's;
+/// and the fruit phase of its frame (D48), `None` when not known (a frame
+/// the client kept from an earlier connection).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Held {
     frame: Version,
     known: Version,
+    phase: Option<u64>,
 }
 
 /// A connection past its handshake: what its client holds, what waits to
@@ -2000,12 +2083,14 @@ struct Link {
     /// The chunks in view whose frame left: what the client holds.
     sent: BTreeMap<ChunkPos, Held>,
     /// The frames the client keeps of chunks no longer in view, as it
-    /// keeps them (D4): the chunk and its frame's version, the least
+    /// keeps them (D4): the chunk and its frame's version and fruit phase
+    /// (D48; `None` for those kept from an earlier connection), the least
     /// recently hidden forgotten first, at most
     /// [`protocol::CHUNK_CACHE_CHUNKS`]. When one comes back into view at
-    /// that version, `chunk_same` goes instead of the frame. A guess:
-    /// should the client not hold it, it says so and gets the frame.
-    cache: Lru<ChunkPos, Version>,
+    /// that version and phase, `chunk_same` goes instead of the frame. A
+    /// guess: should the client not hold it, it says so and gets the
+    /// frame.
+    cache: Lru<ChunkPos, (Version, Option<u64>)>,
     /// The bodies the client was told of and not told to forget: all
     /// within range, as last told.
     known: BTreeSet<u32>,
@@ -2114,23 +2199,27 @@ impl Link {
         match self.ground.pop_front() {
             None => Ok(None),
             Some(Outgoing::Frame(message)) => Ok(Some(message)),
-            Some(Outgoing::Same(chunk, version)) => {
-                if self.shared.chunk_version(chunk) != version {
+            Some(Outgoing::Same(chunk, version, phase)) => {
+                if self.shared.chunk_version(chunk) != version
+                    || phase.is_some_and(|p| p != self.shared.fruit_phase())
+                {
                     // Changed since it was asked for: the frame, built.
                     self.build(chunk);
                     return Ok(None);
                 }
                 self.awaiting.remove(&chunk);
                 let bodies = self.bodies_seen_in(chunk);
-                self.same(chunk, version, bodies).map(Some)
+                self.same(chunk, version, phase, bodies).map(Some)
             }
             Some(Outgoing::Chunk(ground)) => {
                 let chunk = ground.chunk;
                 let sent = self.shared.chunk_send_of(ground)?;
-                // Kept by the client since the connection began (`hello`'s
-                // `held`) and unchanged: no frame.
-                if self.cache.remove(&chunk) == Some(sent.version) {
-                    return self.same(chunk, sent.version, sent.bodies).map(Some);
+                // Kept by the client and unchanged, its fruit too: no
+                // frame.
+                if self.cache.remove(&chunk) == Some((sent.version, Some(sent.phase))) {
+                    return self
+                        .same(chunk, sent.version, Some(sent.phase), sent.bodies)
+                        .map(Some);
                 }
                 self.tell_bodies(chunk, sent.bodies)?;
                 self.sent.insert(
@@ -2138,6 +2227,7 @@ impl Link {
                     Held {
                         frame: sent.version,
                         known: sent.version,
+                        phase: Some(sent.phase),
                     },
                 );
                 Ok(Some(Message::Binary(sent.frame)))
@@ -2145,11 +2235,13 @@ impl Link {
         }
     }
 
-    /// `chunk_same` for `chunk`, held at `version`, with the bodies in it.
+    /// `chunk_same` for `chunk`, held at `version` and fruit `phase`,
+    /// with the bodies in it.
     fn same(
         &mut self,
         chunk: ChunkPos,
         version: Version,
+        phase: Option<u64>,
         bodies: Vec<BodyState>,
     ) -> Result<Message, BoxError> {
         self.tell_bodies(chunk, bodies)?;
@@ -2158,6 +2250,7 @@ impl Link {
             Held {
                 frame: version,
                 known: version,
+                phase,
             },
         );
         let same = ServerMessage::ChunkSame {
@@ -2202,8 +2295,10 @@ impl Link {
         }
         // The newest, should there be too many.
         let skip = held.chunks.len().saturating_sub(protocol::HELD_CHUNKS_MAX);
+        // Their fruit phase is not known: kept, and sent again at the next
+        // dawn should the fruit have changed (`refresh`, D48).
         for &(x, y, version) in held.chunks.iter().skip(skip) {
-            self.cache.insert(ChunkPos::new(x, y), version);
+            self.cache.insert(ChunkPos::new(x, y), (version, None));
         }
     }
 
@@ -2248,10 +2343,11 @@ impl Link {
         if !self.awaiting.insert(chunk) {
             return; // already asked for, not back yet
         }
-        if let Some(version) = self.cache.remove(&chunk)
+        if let Some((version, phase)) = self.cache.remove(&chunk)
             && version == self.shared.chunk_version(chunk)
+            && phase.is_none_or(|p| p == self.shared.fruit_phase())
         {
-            self.ground.push_back(Outgoing::Same(chunk, version));
+            self.ground.push_back(Outgoing::Same(chunk, version, phase));
             return;
         }
         self.build(chunk);
@@ -2294,8 +2390,8 @@ impl Link {
             match out {
                 Outgoing::Chunk(g) if !self.view.chunks.contains(&g.chunk) => {}
                 // Still kept by the client, never shown: kept here too.
-                Outgoing::Same(chunk, version) if !self.view.chunks.contains(&chunk) => {
-                    self.cache.insert(chunk, version);
+                Outgoing::Same(chunk, version, phase) if !self.view.chunks.contains(&chunk) => {
+                    self.cache.insert(chunk, (version, phase));
                 }
                 out => self.ground.push_back(out),
             }
@@ -2305,7 +2401,7 @@ impl Link {
             // What the client held goes to its cache; a chunk never sent
             // is only forgotten here.
             if let Some(held) = self.sent.remove(&chunk) {
-                self.cache.insert(chunk, held.frame);
+                self.cache.insert(chunk, (held.frame, held.phase));
             }
         }
         if let Some(window) = self.view.window_rect()
@@ -2436,6 +2532,7 @@ impl Link {
         match published {
             Published::DayStarted { day, tick } => {
                 self.event(&ServerMessage::DayStarted { day, tick });
+                self.refresh();
             }
             Published::NightFell { day } => {
                 self.event(&ServerMessage::NightFell { day });
@@ -2544,6 +2641,29 @@ impl Link {
         }
     }
 
+    /// Sends again the chunks in view the client may hold wrong (at each
+    /// dawn, and when it fell behind): those whose version moved past what
+    /// it was told (a crop picked: no event tells it, D48) and those whose
+    /// frame shows the fruit of another phase, or of a phase not known
+    /// (D48). A fruit window or a crop that opens or shuts reaches the
+    /// client within a day; on any other day nothing goes.
+    fn refresh(&mut self) {
+        let phase = self.shared.fruit_phase();
+        let stale: Vec<ChunkPos> = self
+            .sent
+            .iter()
+            .filter(|(chunk, held)| {
+                held.phase != Some(phase) || self.shared.chunk_version(**chunk) != held.known
+            })
+            .map(|(chunk, _)| *chunk)
+            .collect();
+        for chunk in stale {
+            if self.awaiting.insert(chunk) {
+                self.build(chunk);
+            }
+        }
+    }
+
     /// The client fell behind the world by `skipped` published messages
     /// it will never see: rather than a world with holes in it, it is
     /// told again, with today's messages, the state of what it holds. The
@@ -2616,18 +2736,9 @@ impl Link {
             });
         }
 
-        // The chunks whose items the client may hold wrong: sent again.
-        let stale: Vec<ChunkPos> = self
-            .sent
-            .iter()
-            .filter(|(chunk, held)| shared.chunk_version(**chunk) != held.known)
-            .map(|(chunk, _)| *chunk)
-            .collect();
-        for chunk in stale {
-            if self.awaiting.insert(chunk) {
-                self.build(chunk);
-            }
-        }
+        // The chunks whose items or fruit the client may hold wrong: sent
+        // again.
+        self.refresh();
 
         if let Some(body) = own_death {
             match shared.death_of(body) {
@@ -2879,7 +2990,7 @@ mod tests {
         y: i32,
         frame: Bytes,
         tiles: Vec<Terrain>,
-        trees: Vec<Standing>,
+        trees: Vec<StandingTree>,
         items: Vec<ItemState>,
         bodies: Vec<BodyState>,
     }
@@ -3075,7 +3186,8 @@ mod tests {
         // (FNV-1a of their bytes, end to end): a world made by the first
         // generator sends them byte for byte. Re-pinned on 16 November
         // 2026 for 19 more shrubs and plants (1,015,322 bytes before),
-        // then for six fruit and nut trees (1,225,292).
+        // then for six fruit and nut trees (1,225,292), then for the
+        // fruit each tree shows, a byte a tree (1,226,087, D48).
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
         let content = crate::content::load(&dir).expect("repository content");
         let map = Map::valley_by(sim::map::FIRST_GENERATOR, 768, 768, sim::VALLEY_SEED);
@@ -3091,7 +3203,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!((print, bytes), (0xc7d2_5d62_5cc0_1194, 1_226_087));
+        assert_eq!((print, bytes), (0x7c1f_d1dc_d41f_c5ae, 1_234_476));
     }
 
     #[test]
@@ -3108,7 +3220,7 @@ mod tests {
         let mut misses = Vec::new();
         for &chunk in &chunks {
             // Straight from the generator, as the message tells them.
-            let fresh: Vec<Standing> = sim::trees::trees_in(
+            let fresh: Vec<StandingTree> = sim::trees::trees_in(
                 &shared.map,
                 &shared.tree_kinds,
                 &shared.open_ground,
@@ -3118,10 +3230,12 @@ mod tests {
             .into_iter()
             .map(|tree| {
                 let (dx, dy) = offset_in(chunk, tree.at).unwrap();
-                Standing {
+                StandingTree {
                     dx,
                     dy,
                     kind: u8::try_from(tree.species).unwrap(),
+                    // The world's first day, in spring: no fruit (D48).
+                    fruit: protocol::FRUIT_NONE,
                 }
             })
             .collect();
@@ -3448,6 +3562,7 @@ mod tests {
                         frame,
                         bodies: vec![],
                         version: 0,
+                        phase: 0,
                     },
                 ))),
                 _ => {}
@@ -3648,6 +3763,172 @@ mod tests {
             Out::Chunk(Sent { x, .. }) if *x > home.x + VIEW_RADIUS
         )));
         assert!(link.sent.keys().eq(link.view.chunks.iter()));
+    }
+
+    /// The fruit a world of the repository's content shows (D48): its
+    /// shared state, and the tick of the middle of the first autumn's
+    /// second day.
+    fn fruiting() -> (World, Arc<Shared>, Tick) {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+        let content = crate::content::load(&dir).expect("repository content");
+        let world = World::with_valley(Calendar::default(), &content, 768);
+        let shared = Arc::new(Shared::new(&world, &content, 1, 1.0));
+        let calendar = *world.calendar();
+        let day = calendar.ticks_per_day();
+        let autumn = Tick(day * (u64::from(calendar.days_per_year()) / 2 + 1) + day / 2);
+        (world, shared, autumn)
+    }
+
+    #[test]
+    fn a_frame_shows_the_fruit_of_its_trees_as_of_now_and_of_the_picks() {
+        let (world, shared, autumn) = fruiting();
+        let oak = shared
+            .tree_kinds
+            .iter()
+            .position(|s| s.id == "oak")
+            .unwrap();
+        let hazel = shared
+            .tree_kinds
+            .iter()
+            .position(|s| s.id == "hazel")
+            .unwrap();
+        let chunk = View::window(&shared.map, shared.map.camp().chunk())
+            .into_iter()
+            .find(|&c| {
+                let trees = world.trees_in(c);
+                trees.iter().any(|t| t.species == oak) && trees.iter().any(|t| t.species == hazel)
+            })
+            .expect("oaks and hazels around the camp");
+        let fruit = |shared: &Shared, kind: usize| -> Vec<u8> {
+            let sent = shared.chunk_message(chunk).unwrap();
+            protocol::decode_chunk(&sent.frame)
+                .unwrap()
+                .trees
+                .iter()
+                .filter(|t| usize::from(t.kind) == kind)
+                .map(|t| t.fruit)
+                .collect()
+        };
+        // Spring: no fruit anywhere.
+        let spring = shared.chunk_message(chunk).unwrap();
+        assert!(
+            fruit(&shared, oak)
+                .iter()
+                .all(|&f| f == protocol::FRUIT_NONE)
+        );
+        // Autumn: the acorns, and the hazelnuts as much as each bears; a
+        // frame of another phase, encoded anew.
+        shared.tick.store(autumn.0, Ordering::Relaxed);
+        let laden = shared.chunk_message(chunk).unwrap();
+        assert_ne!(laden.phase, spring.phase);
+        assert_ne!(laden.frame, spring.frame);
+        assert!(
+            fruit(&shared, oak)
+                .iter()
+                .all(|&f| f == protocol::FRUIT_FULL)
+        );
+        let hazels = fruit(&shared, hazel);
+        assert!(
+            hazels.iter().all(|&f| f != protocol::FRUIT_NONE),
+            "{hazels:?}"
+        );
+        // A hazel picked bare shows none, in a frame of the chunk's new
+        // version.
+        let picked_tree = world
+            .trees_in(chunk)
+            .iter()
+            .find(|t| t.species == hazel)
+            .unwrap()
+            .key;
+        let picks = BTreeMap::from([(
+            (Source::Tree(picked_tree), "hazelnuts".to_owned()),
+            Picked {
+                year: 1,
+                grams: u32::MAX,
+            },
+        )]);
+        shared.crop_picked(chunk, &picks, 1);
+        let after = shared.chunk_message(chunk).unwrap();
+        assert_eq!(after.version, 1);
+        let now = fruit(&shared, hazel);
+        assert_eq!(now[0], protocol::FRUIT_NONE, "picked bare");
+        assert_eq!(now[1..], hazels[1..], "the others as they were");
+    }
+
+    #[test]
+    fn a_link_sends_again_at_dawn_the_chunks_whose_fruit_changed() {
+        let (_world, shared, autumn) = fruiting();
+        let pool = Arc::new(ChunkPool::new(3));
+        let (mut link, mut results) = link(&shared, &pool, None);
+        let home = link.home();
+        link.move_view(home);
+        settle(&mut link, &mut results);
+        drain(&mut link);
+        let total = link.sent.len();
+        let dawn = |link: &mut Link, day: u64| {
+            let tick = shared.tick.load(Ordering::Relaxed);
+            link.forward(Published::DayStarted { day, tick });
+        };
+        // A dawn with the same fruit sends nothing again.
+        dawn(&mut link, 1);
+        assert!(link.awaiting.is_empty());
+        // The first dawn of autumn sends the whole view again, once.
+        shared.tick.store(autumn.0, Ordering::Relaxed);
+        dawn(&mut link, 26);
+        assert_eq!(link.awaiting.len(), total);
+        settle(&mut link, &mut results);
+        let out = drain(&mut link);
+        let frames = out.iter().filter(|o| matches!(o, Out::Chunk(_))).count();
+        assert_eq!(frames, total);
+        dawn(&mut link, 27);
+        assert!(link.awaiting.is_empty(), "nothing changed since");
+        // A crop picked moves the chunk's version, which no event told the
+        // client: its chunk alone is sent again at the next dawn.
+        shared.crop_picked(home, &BTreeMap::new(), 1);
+        dawn(&mut link, 28);
+        assert_eq!(link.awaiting.iter().copied().collect::<Vec<_>>(), [home]);
+        settle(&mut link, &mut results);
+        drain(&mut link);
+
+        // A client back with the chunks it kept: `chunk_same`, their fruit
+        // unknown, so they are sent again at the next dawn.
+        let (mut back, mut results) = link_with_held(&shared, &pool);
+        let home = back.home();
+        back.move_view(home);
+        // The kept ones leave as they are drained, the picked one once
+        // built.
+        let mut out = drain(&mut back);
+        settle(&mut back, &mut results);
+        out.extend(drain(&mut back));
+        let same = out
+            .iter()
+            .filter(|o| matches!(o, Out::Message(ServerMessage::ChunkSame { .. })))
+            .count();
+        assert_eq!(same, back.view.len() - 1, "all kept but the picked one");
+        dawn(&mut back, 29);
+        assert_eq!(back.awaiting.len(), same);
+        settle(&mut back, &mut results);
+        drain(&mut back);
+        dawn(&mut back, 30);
+        assert!(back.awaiting.is_empty());
+    }
+
+    /// A watcher's link whose client kept every chunk of the view of the
+    /// map's middle at version 0 (`hello`'s `held`).
+    fn link_with_held(
+        shared: &Arc<Shared>,
+        pool: &Arc<ChunkPool>,
+    ) -> (Link, mpsc::UnboundedReceiver<Built>) {
+        let (mut link, results) = link(shared, pool, None);
+        let chunks = View::window(&shared.map, link.home())
+            .into_iter()
+            .map(|c| (c.x, c.y, 0))
+            .collect();
+        link.held(&protocol::HeldChunks {
+            world: shared.world_id().to_owned(),
+            chunks,
+        });
+        (link, results)
     }
 
     #[test]

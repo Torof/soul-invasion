@@ -493,9 +493,10 @@ async fn hello_world_view_and_ping() {
                     ..
                 } = frame;
                 let side = i32::try_from(CHUNK_SIZE).unwrap() * sim::MM_PER_TILE;
-                for p in plants.iter().chain(&trees) {
+                let places = plants.iter().map(|p| (p.dx, p.dy));
+                for p in places.chain(trees.iter().map(|t| (t.dx, t.dy))) {
                     assert!(
-                        i32::from(p.dx) < side && i32::from(p.dy) < side,
+                        i32::from(p.0) < side && i32::from(p.1) < side,
                         "a tree or a plant stands in its chunk"
                     );
                 }

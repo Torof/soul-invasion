@@ -376,9 +376,11 @@ func _on_chunk(x: int, y: int, chunk: Dictionary) -> void:
 	var codes: PackedByteArray = chunk["tiles"]
 	var currents: PackedInt32Array = chunk["currents"]
 	var trees: PackedInt32Array = chunk["trees"]
+	var fruit: PackedByteArray = chunk.get("fruit", PackedByteArray())
 	var plants: PackedInt32Array = chunk["plants"]
 	var items: Array = chunk["items"]
-	var trees_hash := hash(trees)
+	# The fruit too (D48): a tree whose fruit changed is drawn anew.
+	var trees_hash := hash([trees, fruit])
 	var plants_hash := hash(plants)
 	# The chunk is held as data, its tiles laid in the terrain grid where
 	# the chunks around read their borders; a chunk sent again keeps its
@@ -416,7 +418,7 @@ func _on_chunk(x: int, y: int, chunk: Dictionary) -> void:
 		var old: Trees.Stand = _trees.get(key)
 		if old != null:
 			old.release()
-		_trees[key] = Trees.Stand.new(trees, _tree_heights, _species_ids)
+		_trees[key] = Trees.Stand.new(trees, _tree_heights, _species_ids, fruit)
 		_trees_version += 1
 	var view: ChunkView = _chunks.get(key)
 	if view != null:

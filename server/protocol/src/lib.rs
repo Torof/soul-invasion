@@ -92,7 +92,10 @@ use serde::{Deserialize, Serialize};
 ///   decimetres above the sea, after the currents; a world with no
 ///   relief (the valley, every world but the test worlds, `--world
 ///   test:*`) sends none and its frames are byte for byte as before.
-pub const PROTOCOL_VERSION: u32 = 25;
+/// - v26: the fruit a tree shows (D48, 17 November 2026): each tree of a
+///   chunk frame carries one byte more, its fruit (0 none, 1 a third, 2
+///   laden), after its species.
+pub const PROTOCOL_VERSION: u32 = 26;
 
 /// Chunks whose frames a client keeps after they left its view, the
 /// least recently hidden forgotten first (D4): about 3 MB of frames. The
@@ -766,18 +769,40 @@ pub fn decode<'a, T: Deserialize<'a>>(text: &'a str) -> Result<T, serde_json::Er
     serde_json::from_str(text)
 }
 
-/// A tree or a plant in a [`ChunkFrame`]: where it stands in its chunk
-/// and its kind.
+/// A plant in a [`ChunkFrame`]: where it stands in its chunk and its
+/// kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Standing {
     /// Millimetres east of the chunk's north-west corner.
     pub dx: u16,
     /// Millimetres south of it.
     pub dy: u16,
-    /// A tree's species, an index into [`ServerMessage::WorldState`]'s
-    /// `species`; a plant's kind, into its `flora`.
+    /// Its kind, an index into [`ServerMessage::WorldState`]'s `flora`.
     pub kind: u8,
 }
+
+/// A tree in a [`ChunkFrame`]: where it stands in its chunk, its species
+/// and the fruit it shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StandingTree {
+    /// Millimetres east of the chunk's north-west corner.
+    pub dx: u16,
+    /// Millimetres south of it.
+    pub dy: u16,
+    /// Its species, an index into [`ServerMessage::WorldState`]'s
+    /// `species`.
+    pub kind: u8,
+    /// The fruit it shows (D48): [`FRUIT_NONE`], [`FRUIT_THIRD`] or
+    /// [`FRUIT_FULL`]; the client draws the image of that state.
+    pub fruit: u8,
+}
+
+/// A tree shows no fruit ([`StandingTree::fruit`]).
+pub const FRUIT_NONE: u8 = 0;
+/// A tree shows some fruit: a third.
+pub const FRUIT_THIRD: u8 = 1;
+/// A tree is laden.
+pub const FRUIT_FULL: u8 = 2;
 
 /// A natural item in a [`ChunkFrame`]: what the ground itself drops. Its
 /// id and its tile follow from the chunk and the slot (`sim::items`): id
@@ -824,7 +849,7 @@ pub struct StoredItem {
 ///   brook) in tile order;
 /// - heights, when flag 1 is set: one `i16` per tile in tile order, in
 ///   decimetres above the sea (2 KB a chunk of 32 × 32);
-/// - trees: `n u16`, then `n × (dx u16, dy u16, species u8)`;
+/// - trees: `n u16`, then `n × (dx u16, dy u16, species u8, fruit u8)`;
 /// - plants: `n u16`, then `n × (dx u16, dy u16, kind u8)`;
 /// - natural items: `n u16`, then `n × (slot u16, material u8)`;
 /// - stored items: `n u16`, then `n × (id u64, dx u8, dy u8, material u16,
@@ -852,7 +877,7 @@ pub struct ChunkFrame {
     /// the test worlds').
     pub heights: Vec<i16>,
     /// Every tree standing in this chunk.
-    pub trees: Vec<Standing>,
+    pub trees: Vec<StandingTree>,
     /// Every plant standing in this chunk.
     pub plants: Vec<Standing>,
     /// The ground's own items still lying in this chunk.
@@ -1022,7 +1047,8 @@ pub fn encode_chunk(chunk: &ChunkFrame) -> Result<Vec<u8>, FrameError> {
             + chunk.tiles.len()
             + 2 * chunk.heights.len()
             + 8
-            + 5 * (chunk.trees.len() + chunk.plants.len())
+            + 6 * chunk.trees.len()
+            + 5 * chunk.plants.len()
             + 3 * chunk.natural.len()
             + 16 * chunk.stored.len(),
     );
@@ -1041,13 +1067,17 @@ pub fn encode_chunk(chunk: &ChunkFrame) -> Result<Vec<u8>, FrameError> {
     for height in &chunk.heights {
         out.extend_from_slice(&height.to_le_bytes());
     }
-    for standing in [&chunk.trees, &chunk.plants] {
-        out.extend_from_slice(&count(standing.len())?);
-        for s in standing {
-            out.extend_from_slice(&s.dx.to_le_bytes());
-            out.extend_from_slice(&s.dy.to_le_bytes());
-            out.push(s.kind);
-        }
+    out.extend_from_slice(&count(chunk.trees.len())?);
+    for t in &chunk.trees {
+        out.extend_from_slice(&t.dx.to_le_bytes());
+        out.extend_from_slice(&t.dy.to_le_bytes());
+        out.extend_from_slice(&[t.kind, t.fruit]);
+    }
+    out.extend_from_slice(&count(chunk.plants.len())?);
+    for s in &chunk.plants {
+        out.extend_from_slice(&s.dx.to_le_bytes());
+        out.extend_from_slice(&s.dy.to_le_bytes());
+        out.push(s.kind);
     }
     out.extend_from_slice(&count(chunk.natural.len())?);
     for item in &chunk.natural {
@@ -1085,6 +1115,20 @@ impl Reader<'_> {
 
     fn u16(&mut self) -> Result<u16, FrameError> {
         self.take().map(u16::from_le_bytes)
+    }
+
+    fn trees(&mut self) -> Result<Vec<StandingTree>, FrameError> {
+        let n = self.u16()?;
+        (0..n)
+            .map(|_| {
+                Ok(StandingTree {
+                    dx: self.u16()?,
+                    dy: self.u16()?,
+                    kind: self.u8()?,
+                    fruit: self.u8()?,
+                })
+            })
+            .collect()
     }
 
     fn standing(&mut self) -> Result<Vec<Standing>, FrameError> {
@@ -1135,7 +1179,7 @@ pub fn decode_chunk(bytes: &[u8]) -> Result<ChunkFrame, FrameError> {
     } else {
         Vec::new()
     };
-    let trees = r.standing()?;
+    let trees = r.trees()?;
     let plants = r.standing()?;
     let n = r.u16()?;
     let natural = (0..n)
@@ -1617,15 +1661,17 @@ mod tests {
                 5, 4, 3, 2,
             ],
             trees: vec![
-                Standing {
+                StandingTree {
                     dx: 31_999,
                     dy: 0,
                     kind: 2,
+                    fruit: FRUIT_FULL,
                 },
-                Standing {
+                StandingTree {
                     dx: 1_500,
                     dy: 2_250,
                     kind: 0,
+                    fruit: FRUIT_THIRD,
                 },
             ],
             plants: vec![Standing {
@@ -1662,10 +1708,11 @@ mod tests {
             .map(|i| i16::try_from(i * 7 - 3000).unwrap())
             .collect();
         dense.trees = (0..400_u16)
-            .map(|i| Standing {
+            .map(|i| StandingTree {
                 dx: i * 80,
                 dy: 32_000 - i * 80,
                 kind: u8::try_from(i % 7).unwrap(),
+                fruit: u8::try_from(i % 3).unwrap(),
             })
             .collect();
         dense.plants = (0..2_000_u16)

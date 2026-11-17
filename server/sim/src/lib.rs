@@ -961,6 +961,14 @@ pub enum Event {
         /// What it gathers.
         gives: String,
     },
+    /// A crop of `chunk` was picked (D45), and the chunk's version right
+    /// after it: the fruit its tree shows may have changed (D48).
+    CropPicked {
+        /// Which chunk.
+        chunk: ChunkPos,
+        /// Its version now ([`World::chunk_version`]).
+        version: ground::Version,
+    },
     /// A body stopped gathering, and what it gathered. Seen by all.
     WorkStopped {
         /// Who.
@@ -1486,6 +1494,20 @@ impl World {
                 })
             })
             .collect()
+    }
+
+    /// The fruit `tree`, of `chunk`, shows now (D48, [`crops::fruit_on`]).
+    pub fn fruit_on(&self, chunk: ChunkPos, tree: &trees::Tree) -> crops::Fruit {
+        crops::fruit_on(
+            &self.species[tree.species],
+            &self.crops,
+            &self.calendar,
+            self.tick,
+            self.seed(),
+            self.map.origin(),
+            tree,
+            self.changes_in(chunk).map(|c| &c.picked),
+        )
     }
 
     /// Picks up to `grams` of the crop giving `gives` on `source`, of
@@ -2791,6 +2813,10 @@ impl World {
                     left.year,
                     grams,
                 );
+                events.push(Event::CropPicked {
+                    chunk: work.chunk,
+                    version: self.chunk_version(work.chunk),
+                });
                 self.add_gathered(index, &work, grams, rules, events);
             }
             if grams == left.grams {
