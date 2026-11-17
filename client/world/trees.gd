@@ -206,18 +206,63 @@ static func looks_as(species: String) -> String:
 	return species
 
 
+## The fruit a tree shows (D48): the server says which, a byte a tree
+## (Protocol.decode_chunk's `fruit`); no fruit is the kind's own images.
+const FRUIT_NONE := 0
+const FRUIT_THIRD := 1
+const FRUIT_FULL := 2
+## Between a kind's id and its fruit in the key its images of that fruit
+## are held by (`with_fruit`): `oak@fruit2`.
+const FRUIT_KEY := "@fruit"
+
+
+## The key a tree drawn as `looks` (looks_as) showing `fruit` is drawn
+## with: `<looks>@fruit1` (a third) or `<looks>@fruit2` (laden) while its
+## kind has the images of that fruit, else `looks` itself, its images
+## without fruit (most kinds have none yet). Each key's images are held
+## and read as a kind's are: only while a stand shows a tree with them.
+static func with_fruit(looks: String, fruit: int) -> String:
+	if fruit <= FRUIT_NONE:
+		return looks
+	var key := "%s%s%d" % [looks, FRUIT_KEY, mini(fruit, FRUIT_FULL)]
+	return looks if paths(key).is_empty() else key
+
+
+## The kind whose images `key` (with_fruit) is of, its fruit aside.
+static func base_of(key: String) -> String:
+	return key.get_slice(FRUIT_KEY, 0)
+
+
+## The image of `fruit` beside a kind's image at `path`:
+## `<id>_adult_01_summer.webp` -> `<id>_adult_01_summer_fruit2.webp`.
+static func fruit_path(path: String, fruit: int) -> String:
+	return "%s_fruit%d.webp" % [path.trim_suffix(".webp"), fruit]
+
+
 ## The paths of the images of a kind of tree: `<id>_adult_01_summer.webp`,
-## `_02`, ... (found once, kept).
+## `_02`, ... (found once, kept). For a key of a fruit (with_fruit), the
+## images of that fruit beside each of them (fruit_path), the same size
+## as theirs, in their order: all of them, or none when one is missing
+## (the kind is then drawn without fruit).
 static func paths(species: String) -> PackedStringArray:
 	if not _paths.has(species):
 		var found := PackedStringArray()
-		var n := 1
-		while true:
-			var path := DIR + "%s_adult_%02d_summer.webp" % [species, n]
-			if not ResourceLoader.exists(path):
-				break
-			found.append(path)
-			n += 1
+		if species.contains(FRUIT_KEY):
+			var fruit := int(species.get_slice(FRUIT_KEY, 1))
+			for path: String in paths(base_of(species)):
+				var beside := fruit_path(path, fruit)
+				if not ResourceLoader.exists(beside):
+					found.clear()
+					break
+				found.append(beside)
+		else:
+			var n := 1
+			while true:
+				var path := DIR + "%s_adult_%02d_summer.webp" % [species, n]
+				if not ResourceLoader.exists(path):
+					break
+				found.append(path)
+				n += 1
 		_paths[species] = found
 	return _paths[species]
 
@@ -561,7 +606,9 @@ static func _place(species: String, reads: Array) -> void:
 	var ids: Variant = _image_ids.get(species)
 	if ids == null:
 		var list := PackedInt32Array()
-		var list_paths := paths(species)
+		# The outlines are the images' without fruit (the same crown): an
+		# image of a fruit takes its kind's.
+		var list_paths := paths(base_of(species))
 		for i in found.size():
 			var t: Texture2D = found[i]
 			list.append(_images.size())
@@ -860,8 +907,10 @@ class Stand:
 	## `trees`: as a chunk brings them (Protocol.decode_chunk: three ints
 	## a tree, its species' index in `species_ids`, then where it stands, x
 	## and y, in millimetres), or as dictionaries ({"at": {x, y},
-	## "species"}); `heights`: species id -> height in centimetres.
-	func _init(trees: Variant = [], tree_heights: Dictionary = {}, species_ids := PackedStringArray()) -> void:
+	## "species"}); `heights`: species id -> height in centimetres; `fruit`:
+	## the fruit each tree shows (Protocol.decode_chunk's), none for a tree
+	## past it.
+	func _init(trees: Variant = [], tree_heights: Dictionary = {}, species_ids := PackedStringArray(), fruit := PackedByteArray()) -> void:
 		var packed: bool = trees is PackedInt32Array
 		var triples: PackedInt32Array = trees if packed else PackedInt32Array()
 		var listed: Array = [] if packed else trees
@@ -886,13 +935,15 @@ class Stand:
 				# As Net.point reads it.
 				var place: Variant = t.get("at", {})
 				at[i] = Vector2(float(place.get("x", 0)), float(place.get("y", 0))) if place is Dictionary else Vector2.ZERO
-			var k: Variant = which.get(species)
+			var shows := int(fruit[i]) if i < fruit.size() else Trees.FRUIT_NONE
+			var k: Variant = which.get("%s|%d" % [species, shows])
 			if k == null:
 				k = kinds.size()
-				which[species] = k
+				which["%s|%d" % [species, shows]] = k
 				# A kind drawn with a stand-in's images keeps its own height;
-				# the images are read for the tallest drawn with them.
-				var looks := Trees.looks_as(species)
+				# the images are read for the tallest drawn with them. Its
+				# fruit's, if it has them (D48).
+				var looks := Trees.with_fruit(Trees.looks_as(species), shows)
 				kinds.append(looks)
 				heights.append(int(tree_heights.get(species, 400)))
 				Trees._heights[looks] = maxi(int(Trees._heights.get(looks, 0)), heights[-1])

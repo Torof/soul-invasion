@@ -30,6 +30,7 @@ func _init() -> void:
 	_test_each_ground_canvas_covers_only_its_rows()
 	_test_currents_decode()
 	_test_the_golden_chunk_decodes()
+	_test_a_tree_shows_its_fruit_with_the_images_of_that_fruit()
 	_test_a_flat_chunk_has_no_heights_and_a_chunks_heights_are_kept()
 	_test_the_slopes_are_read_over_two_tiles_and_off_until_a_chunk_has_heights()
 	_test_the_slope_overlay_tells_a_summit_and_a_col_from_a_ring()
@@ -848,7 +849,7 @@ func _test_currents_decode() -> void:
 ## this test or the server's.
 func _test_the_golden_chunk_decodes() -> void:
 	var bytes := FileAccess.get_file_as_bytes("res://tests/fixtures/chunk_v17.bin")
-	_check(bytes.size() == 119, "the golden chunk is there: %d bytes" % bytes.size())
+	_check(bytes.size() == 121, "the golden chunk is there: %d bytes" % bytes.size())
 	var c := Protocol.decode_chunk(bytes, PackedStringArray(["m0", "m1", "m2", "m3", "m4"]))
 	_check(not c.is_empty(), "the golden chunk decodes")
 	if c.is_empty():
@@ -858,6 +859,7 @@ func _test_the_golden_chunk_decodes() -> void:
 	_check(c["currents"] == PackedInt32Array([0, 0, 1059, 50, 3073, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4095]), "its currents: %s" % c["currents"])
 	_check(c["heights"] == PackedInt32Array([0, 1, -1, 7, 32767, -32768, 120, 121, 0, 0, 0, 0, 5, 4, 3, 2]), "its heights: %s" % c["heights"])
 	_check(c["trees"] == PackedInt32Array([2, 43_999, -8_000, 0, 13_500, -5_750]), "its trees: %s" % c["trees"])
+	_check(c["fruit"] == PackedByteArray([2, 1]), "their fruit, laden and a third: %s" % c["fruit"])
 	_check(c["plants"] == PackedInt32Array([11, 12_700, -4_100]), "its plants: %s" % c["plants"])
 	var items: Array = c["items"]
 	_check(items == [
@@ -871,6 +873,40 @@ func _test_the_golden_chunk_decodes() -> void:
 	_check(Array(stand.kinds) == ["birch", "oak"] and stand.at[1] == Vector2(13_500, -5_750), "a stand reads the trees as they come")
 	stand.release()
 
+
+
+## A tree showing fruit (D48) is drawn with its kind's images of that
+## fruit, `<id>_adult_01_summer_fruit1.webp` (a third) or `_fruit2`
+## (laden), held under their own key; with its kind's own while it has
+## none of them, every image of the kind needing its own.
+func _test_a_tree_shows_its_fruit_with_the_images_of_that_fruit() -> void:
+	_check(Trees.fruit_path(Trees.DIR + "oak_adult_01_summer.webp", 2) == Trees.DIR + "oak_adult_01_summer_fruit2.webp", "the laden image beside the bare one")
+	_check(Trees.with_fruit("oak", Trees.FRUIT_NONE) == "oak", "no fruit: the kind's own images")
+	# No image of fruit in the repository yet: every kind falls back.
+	for fruit in [Trees.FRUIT_THIRD, Trees.FRUIT_FULL]:
+		_check(Trees.paths("oak@fruit%d" % fruit).is_empty(), "no oak with fruit drawn yet")
+		_check(Trees.with_fruit("oak", fruit) == "oak", "drawn bare while its images of fruit are missing")
+	_check(Trees.base_of("oak@fruit2") == "oak" and Trees.base_of("oak") == "oak", "a key's kind")
+	# Once a kind has them (put here as the paths found), its trees take them.
+	var key := "hazel@fruit2"
+	var saved: Variant = Trees._paths.get(key)
+	# (The hazel's own files stand in for them, to be read.)
+	Trees._paths[key] = Trees.paths("hazel")
+	_check(Trees.with_fruit("hazel", Trees.FRUIT_FULL) == key, "laden: the laden images")
+	_check(Trees.with_fruit("hazel", Trees.FRUIT_THIRD) == "hazel", "a third, none yet: bare")
+	var trees := PackedInt32Array([0, 0, 0, 0, 4_000, 0, 0, 8_000, 0])
+	var stand := Trees.Stand.new(trees, {"hazel": 500}, PackedStringArray(["hazel"]), PackedByteArray([2, 0]))
+	_check(Array(stand.kinds) == [key, "hazel"] and Array(stand.kind) == [0, 1, 1], "each tree its fruit's images, the last none: %s %s" % [stand.kinds, stand.kind])
+	_check(stand.heights[0] == 500, "at its kind's height")
+	Trees.poll(Time.get_ticks_msec(), true)
+	_check(stand.built and Trees.loaded(key), "its images of fruit read as a kind's")
+	stand.release()
+	Trees._let_go.erase(key)
+	Trees._unload(key)
+	if saved == null:
+		Trees._paths.erase(key)
+	else:
+		Trees._paths[key] = saved
 
 
 ## A kind of tree with no images of its own yet is drawn with its
