@@ -882,10 +882,10 @@ func _test_the_golden_chunk_decodes() -> void:
 func _test_a_tree_shows_its_fruit_with_the_images_of_that_fruit() -> void:
 	_check(Trees.fruit_path(Trees.DIR + "oak_adult_01_summer.webp", 2) == Trees.DIR + "oak_adult_01_summer_fruit2.webp", "the laden image beside the bare one")
 	_check(Trees.with_fruit("oak", Trees.FRUIT_NONE) == "oak", "no fruit: the kind's own images")
-	# The oak, the hazel, the yew and the pine are drawn with their fruit;
-	# a kind without those images (the birch) falls back to its own.
+	# The kinds with images of their fruit are drawn with it; a kind
+	# without those images (the birch) falls back to its own.
 	for fruit in [Trees.FRUIT_THIRD, Trees.FRUIT_FULL]:
-		for kind in ["oak", "hazel", "yew", "pine"]:
+		for kind in ["oak", "hazel", "yew", "pine", "mulberry", "wild_pear", "walnut", "chestnut"]:
 			_check(Trees.with_fruit(kind, fruit) == "%s@fruit%d" % [kind, fruit], "%s drawn with its fruit %d" % [kind, fruit])
 		_check(Trees.paths("birch@fruit%d" % fruit).is_empty(), "no birch with fruit drawn")
 		_check(Trees.with_fruit("birch", fruit) == "birch", "drawn bare while its images of fruit are missing")

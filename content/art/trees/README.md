@@ -114,3 +114,23 @@ given its old version's colours with `match_tree_colours.py` (one mapping
 for the three), cut and sized as `flora_art.py --trees` does, at the bare
 image's frame, and the white left inside the crown where fruit was taken
 out filled with the leaves around it.
+
+**17 November 2026, four fruit trees of their own**: the mulberry, the
+sweet chestnut, the walnut and the wild pear stop being drawn with a
+stand-in's images (`STAND_INS` in `client/world/trees.gd`). The project
+lead made each tree laden in Midjourney (mulberry 2, chestnut 3 of the
+first batch, walnut 1, pear 3), then the same tree without its fruit
+with a Midjourney edit (mulberry 0, chestnut 1, walnut 1, pear 0). Here the
+fruitless edit is the base: the bare state is that edit, the laden one the
+edit with every fruit of the laden original pasted on it (the original
+aligned on the base's crown, the fruit picked by colour, kept only where
+it lies on the base's tree), the third the same with a third of the
+clusters, spread out. The edit's foliage was lighter or darker than the
+laden original's (the walnut much darker): one `match_tree_colours.py`
+mapping, from the laden state to the original, was given to the three.
+Then cut and sized at the bare state's frame as above. The walnut's and
+the chestnut's sources came out shorter than their shipped size (2,203 and
+1,881 px against 2,660 and 2,816): enlarged to it (Lanczos) before the
+sharpening, so the card reads them at the same zooms as the other trees. Their fruit shows
+while their crop is in season (`content/species.ron`). The fig waits for
+its own redo.
