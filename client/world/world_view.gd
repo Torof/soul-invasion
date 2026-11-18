@@ -145,9 +145,11 @@ var _far_dirty := true
 var _far_complete := false
 ## The kinds of shrub, plant and mushroom (Net.flora), and the plants of
 ## each chunk held, as received (Protocol.decode_chunk: three ints a plant,
-## its kind, then where it stands, x and y, in millimetres).
+## its kind, then where it stands, x and y, in millimetres), and the fruit
+## each shows (its `plant_fruit`, D48).
 var _flora: Array = []
 var _plants: Dictionary = {}
+var _plant_fruit: Dictionary = {}
 ## The trees under a point are found without looking at every tree
 ## (see-through), by the cells of the screen each stand knows its trees by.
 const TREE_CELL_PX := Trees.Stand.CELL_PX
@@ -328,6 +330,7 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 	_trees.clear()
 	_trees_hash.clear()
 	_plants.clear()
+	_plant_fruit.clear()
 	_plants_hash.clear()
 	_trees_version += 1
 	_items_version += 1
@@ -378,10 +381,12 @@ func _on_chunk(x: int, y: int, chunk: Dictionary) -> void:
 	var trees: PackedInt32Array = chunk["trees"]
 	var fruit: PackedByteArray = chunk.get("fruit", PackedByteArray())
 	var plants: PackedInt32Array = chunk["plants"]
+	var plant_fruit: PackedByteArray = chunk.get("plant_fruit", PackedByteArray())
 	var items: Array = chunk["items"]
-	# The fruit too (D48): a tree whose fruit changed is drawn anew.
+	# The fruit too (D48): a tree or a shrub whose fruit changed is drawn
+	# anew.
 	var trees_hash := hash([trees, fruit])
-	var plants_hash := hash(plants)
+	var plants_hash := hash([plants, plant_fruit])
 	# The chunk is held as data, its tiles laid in the terrain grid where
 	# the chunks around read their borders; a chunk sent again keeps its
 	# stand when its trees are the same (the tiles never change, D31).
@@ -414,6 +419,7 @@ func _on_chunk(x: int, y: int, chunk: Dictionary) -> void:
 	_trees_hash[key] = trees_hash
 	_plants_hash[key] = plants_hash
 	_plants[key] = plants
+	_plant_fruit[key] = plant_fruit
 	if not same_stand:
 		var old: Trees.Stand = _trees.get(key)
 		if old != null:
@@ -426,7 +432,7 @@ func _on_chunk(x: int, y: int, chunk: Dictionary) -> void:
 		# (ChunkView.show_chunk), its trees and plants only if they did.
 		if not same_nodes:
 			_plant_chunk(key, view)
-			view.show_plants(plants, _flora)
+			view.show_plants(plants, _flora, plant_fruit)
 			_standing_changed = true
 			_trees_changed = true
 		view.show_chunk(key * _chunk_size, _chunk_size, codes, items, _looks)
@@ -666,7 +672,7 @@ func _build_chunk(key: Vector2i, at_once: bool) -> void:
 		_paced[key] = true
 	_ledger.mark_built(key)
 	_plant_chunk(key, view)
-	view.show_plants(_plants[key], _flora, true)
+	view.show_plants(_plants[key], _flora, _plant_fruit.get(key, PackedByteArray()), true)
 	view.show_chunk(key * _chunk_size, _chunk_size, _tiles[key], _items[key], _looks)
 	# Its ground and its plants worked out on a worker from now
 	# (ChunkView.start_build).
@@ -956,6 +962,7 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 		_trees_hash.erase(key)
 		_trees_version += 1
 		_plants.erase(key)
+		_plant_fruit.erase(key)
 		_plants_hash.erase(key)
 		_arrival.erase(key)
 		_reach_dirty = true
@@ -1333,7 +1340,7 @@ func _plant_chunk(key: Vector2i, view: ChunkView) -> void:
 	tall.y_sort_enabled = true
 	tall.use_parent_material = true
 	holder.add_child(tall)
-	var plants := PlantStand.new(_plants.get(key, PackedInt32Array()), _flora)
+	var plants := PlantStand.new(_plants.get(key, PackedInt32Array()), _flora, _plant_fruit.get(key, PackedByteArray()))
 	plants.parent = tall.get_canvas_item()
 	_plant_stands[key] = plants
 	# Among the chunks' holders, in the order the server sent the chunks:

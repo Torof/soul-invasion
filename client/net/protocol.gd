@@ -8,7 +8,7 @@ extends RefCounted
 ## of truth. Every JSON message is a dictionary with a snake_case `type`
 ## field; a chunk frame decodes into packed arrays (`decode_chunk`).
 
-const PROTOCOL_VERSION := 26
+const PROTOCOL_VERSION := 27
 ## Chunk frames kept after they left the view (FrameCache), as the
 ## server's mirror of them.
 const CHUNK_CACHE_CHUNKS := 1500
@@ -130,6 +130,8 @@ static func decode(text: String) -> Dictionary:
 ##   in millimetres from the grid's origin, x and y;
 ## - `fruit`: PackedByteArray, the fruit each tree shows, in the order of
 ##   `trees` (D48): 0 none, 1 a third, 2 laden;
+## - `plant_fruit`: PackedByteArray, the fruit each plant shows, in the
+##   order of `plants`, as the trees' (a berry shrub's, D48);
 ## - `items`: Array of {id, x, y, material}, in the order of their ids; a
 ##   stored item says its own grams too (`mass_g`), a natural one weighs
 ##   its material's piece.
@@ -167,30 +169,28 @@ static func decode_chunk(bytes: PackedByteArray, materials: PackedStringArray) -
 			at += 2
 	var x0 := cx * side * 1000
 	var y0 := cy * side * 1000
-	# Trees then plants: a tree has its fruit after its kind (6 bytes), a
-	# plant none (5).
+	# Trees then plants, each with its fruit after its kind (6 bytes).
 	var standing: Array[PackedInt32Array] = []
-	var fruit := PackedByteArray()
-	for list in 2:
-		var stride := 6 if list == 0 else 5
+	var fruits: Array[PackedByteArray] = []
+	for _list in 2:
 		if at + 2 > size:
 			return {}
 		var n := bytes.decode_u16(at)
 		at += 2
-		if at + n * stride > size:
+		if at + n * 6 > size:
 			return {}
 		var out := PackedInt32Array()
 		out.resize(n * 3)
-		if list == 0:
-			fruit.resize(n)
+		var fruit := PackedByteArray()
+		fruit.resize(n)
 		for i in n:
 			out[i * 3] = bytes[at + 4]
 			out[i * 3 + 1] = x0 + bytes.decode_u16(at)
 			out[i * 3 + 2] = y0 + bytes.decode_u16(at + 2)
-			if list == 0:
-				fruit[i] = bytes[at + 5]
-			at += stride
+			fruit[i] = bytes[at + 5]
+			at += 6
 		standing.append(out)
+		fruits.append(fruit)
 	var items: Array = []
 	if at + 2 > size:
 		return {}
@@ -237,8 +237,9 @@ static func decode_chunk(bytes: PackedByteArray, materials: PackedStringArray) -
 		"currents": currents,
 		"heights": heights,
 		"trees": standing[0],
-		"fruit": fruit,
+		"fruit": fruits[0],
 		"plants": standing[1],
+		"plant_fruit": fruits[1],
 		"items": items,
 	}
 

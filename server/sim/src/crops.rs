@@ -220,10 +220,10 @@ fn usual_on(crop: &Crop, seed: u64, frame: Frame, at: FinePos) -> u32 {
         .expect("under five quarters of a tonne")
 }
 
-/// When a kind of tree shows its fruit (D48, `species.ron`'s `fruit`):
-/// from a point of the year to another, as a crop's ([`Crop::from`],
-/// [`Crop::until`]), running into the next year when it ends before it
-/// starts.
+/// When a kind of tree or shrub shows its fruit (D48, `species.ron`'s
+/// and `flora.ron`'s `fruit`): from a point of the year to another, as a
+/// crop's ([`Crop::from`], [`Crop::until`]), running into the next year
+/// when it ends before it starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FruitWindow {
@@ -252,8 +252,8 @@ pub fn window_open(window: &FruitWindow, calendar: &Calendar, tick: Tick) -> boo
     span_year(window.from, window.until, calendar, tick).is_some()
 }
 
-/// How much fruit a tree shows (D48): the client draws its image of that
-/// state. On the wire, 0, 1 and 2.
+/// How much fruit a tree or a shrub shows (D48): the client draws its
+/// image of that state. On the wire, 0, 1 and 2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Fruit {
     /// No fruit: out of its window, or picked bare.
@@ -267,16 +267,8 @@ pub enum Fruit {
 
 /// The fruit `tree` (of `species`, its crops among `crops`) shows at
 /// `tick` (D48), on a map whose corner is `origin` in the world
-/// ([`crate::map::Map::origin`]), with `picked` its chunk's picks:
-///
-/// - out of its species' fruit window, or without one: [`Fruit::Empty`];
-/// - in it, when a crop of its species is in season: what is left on the
-///   tree of this year's crop against what it bears in a usual year: two
-///   thirds of it or more [`Fruit::Full`], less but something
-///   [`Fruit::Third`], nothing [`Fruit::Empty`] (the best of its crops in
-///   season, should it have two);
-/// - in it with no crop in season (acorns, cones: fruit no one gathers):
-///   [`Fruit::Full`].
+/// ([`crate::map::Map::origin`]), with `picked` its chunk's picks: the
+/// rule of `fruit_of`.
 #[allow(clippy::too_many_arguments, reason = "the rule's inputs, each its own")]
 #[must_use]
 pub fn fruit_on(
@@ -289,26 +281,96 @@ pub fn fruit_on(
     tree: &crate::trees::Tree,
     picked: Option<&BTreeMap<(Source, String), Picked>>,
 ) -> Fruit {
+    fruit_of(
+        species.fruit.as_ref(),
+        &species.id,
+        Source::Tree(tree.key),
+        tree.at,
+        crops,
+        calendar,
+        tick,
+        seed,
+        origin,
+        picked,
+    )
+}
+
+/// The fruit a plant of `kind` (a shrub of `flora.ron`), standing at `at`
+/// in `chunk`, shows at `tick` (D48), as a tree's ([`fruit_on`]): its
+/// picks are its place's ([`PlantKey`]). None off its chunk.
+#[allow(clippy::too_many_arguments, reason = "the rule's inputs, each its own")]
+#[must_use]
+pub fn plant_fruit_on(
+    kind: &crate::flora::Kind,
+    crops: &[Crop],
+    calendar: &Calendar,
+    tick: Tick,
+    seed: u64,
+    origin: (i32, i32),
+    chunk: ChunkPos,
+    at: FinePos,
+    picked: Option<&BTreeMap<(Source, String), Picked>>,
+) -> Fruit {
+    let Some(key) = PlantKey::of(chunk, at) else {
+        return Fruit::Empty;
+    };
+    fruit_of(
+        kind.fruit.as_ref(),
+        &kind.id,
+        Source::Plant(key),
+        at,
+        crops,
+        calendar,
+        tick,
+        seed,
+        origin,
+        picked,
+    )
+}
+
+/// The fruit `source`, a tree or a plant of the kind `kind` standing at
+/// `at`, shows at `tick` (D48), its kind's fruit window `window`:
+///
+/// - out of its window, or without one: [`Fruit::Empty`];
+/// - in it, when a crop of its kind is in season: what is left on it of
+///   this year's crop against what it bears in a usual year: two thirds
+///   of it or more [`Fruit::Full`], less but something [`Fruit::Third`],
+///   nothing [`Fruit::Empty`] (the best of its crops in season, should it
+///   have two);
+/// - in it with no crop in season (acorns, cones: fruit no one gathers):
+///   [`Fruit::Full`].
+#[allow(clippy::too_many_arguments, reason = "the rule's inputs, each its own")]
+fn fruit_of(
+    window: Option<&FruitWindow>,
+    kind: &str,
+    source: Source,
+    at: FinePos,
+    crops: &[Crop],
+    calendar: &Calendar,
+    tick: Tick,
+    seed: u64,
+    origin: (i32, i32),
+    picked: Option<&BTreeMap<(Source, String), Picked>>,
+) -> Fruit {
     let frame = Frame::at(origin);
-    let Some(window) = &species.fruit else {
+    let Some(window) = window else {
         return Fruit::Empty;
     };
     if !window_open(window, calendar, tick) {
         return Fruit::Empty;
     }
-    let source = Source::Tree(tree.key);
     crops
         .iter()
-        .filter(|crop| crop.on == species.id)
+        .filter(|crop| crop.on == kind)
         .filter_map(|crop| {
             let year = in_season(crop, calendar, tick)?;
-            let grams = bears(crop, seed, frame, tree.at, year);
+            let grams = bears(crop, seed, frame, at, year);
             let taken = picked
                 .and_then(|p| p.get(&(source, crop.gives.clone())))
                 .filter(|p| p.year == year)
                 .map_or(0, |p| p.grams);
             let left = u64::from(grams.saturating_sub(taken));
-            let usual = u64::from(usual_on(crop, seed, frame, tree.at));
+            let usual = u64::from(usual_on(crop, seed, frame, at));
             Some(if left == 0 {
                 Fruit::Empty
             } else if left * 3 >= usual * 2 {
@@ -321,26 +383,32 @@ pub fn fruit_on(
         .unwrap_or(Fruit::Full)
 }
 
-/// Which fruit windows and tree crops are open at `tick`, as one number
-/// (D48): the fruit every tree shows follows from it, the seed and the
-/// picks. It changes only when a window or a crop of a tree with a window
-/// opens or shuts, or a crop's year turns: the server sends a chunk again
-/// when it does.
+/// Which fruit windows, of the trees (`species`) and of the shrubs
+/// (`flora`), and which of their crops are open at `tick`, as one number
+/// (D48): the fruit every tree and shrub shows follows from it, the seed
+/// and the picks. It changes only when a window or a crop of a kind with
+/// a window opens or shuts, or a crop's year turns: the server sends a
+/// chunk again when it does.
 #[must_use]
 pub fn fruit_phase(
     species: &[crate::content::Species],
+    flora: &[crate::flora::Kind],
     crops: &[Crop],
     calendar: &Calendar,
     tick: Tick,
 ) -> u64 {
     const PURPOSE: u64 = 0x4652_5554; // "FRUT"
     let mut values = vec![PURPOSE];
-    for kind in species {
-        let Some(window) = &kind.fruit else {
+    let windows = species
+        .iter()
+        .map(|s| (s.id.as_str(), s.fruit.as_ref()))
+        .chain(flora.iter().map(|k| (k.id.as_str(), k.fruit.as_ref())));
+    for (id, window) in windows {
+        let Some(window) = window else {
             continue;
         };
         values.push(u64::from(window_open(window, calendar, tick)));
-        for crop in crops.iter().filter(|c| c.on == kind.id) {
+        for crop in crops.iter().filter(|c| c.on == id) {
             values.push(in_season(crop, calendar, tick).map_or(0, |year| year + 1));
         }
     }
@@ -1136,7 +1204,7 @@ pub(crate) mod tests {
             fruiting("oak", (Season::Autumn, 0), (Season::Winter, 50)),
         ];
         let crops = [hazel()];
-        let phase = |day| fruit_phase(&kinds, &crops, &calendar, midday(day));
+        let phase = |day| fruit_phase(&kinds, &[], &crops, &calendar, midday(day));
         // Spring and summer: nothing open, one phase.
         assert_eq!(phase(1), phase(20));
         // Autumn opens both windows and the crop.
@@ -1153,7 +1221,7 @@ pub(crate) mod tests {
             fruit: None,
             ..fruiting("hazel", (Season::Autumn, 0), (Season::Winter, 0))
         }];
-        let flat = |day| fruit_phase(&windowless, &crops, &calendar, midday(day));
+        let flat = |day| fruit_phase(&windowless, &[], &crops, &calendar, midday(day));
         assert_eq!(flat(1), flat(30));
     }
 
@@ -1201,5 +1269,185 @@ pub(crate) mod tests {
         assert_eq!(world.fruit_on(chunk, &tree), Fruit::Third);
         world.pick(chunk, hazel.source, "hazelnuts", 1);
         assert_eq!(world.fruit_on(chunk, &tree), Fruit::Empty, "picked bare");
+    }
+
+    /// The repository's kind of shrub `id`, and its crops.
+    fn shrub(id: &str) -> (crate::flora::Kind, Vec<Crop>) {
+        let content = content();
+        let kind = content.flora.iter().find(|k| k.id == id).unwrap().clone();
+        let crops = content.crops.into_iter().filter(|c| c.on == id).collect();
+        (kind, crops)
+    }
+
+    /// The fruit of a plant of `kind` bearing `crops`, standing at `at` in
+    /// chunk (0, 0), at the middle of `day`, with `picked`.
+    fn plant_fruit_at(
+        kind: &crate::flora::Kind,
+        crops: &[Crop],
+        day: u64,
+        at: FinePos,
+        picked: Option<&BTreeMap<(Source, String), Picked>>,
+    ) -> Fruit {
+        let chunk = ChunkPos::new(0, 0);
+        plant_fruit_on(
+            kind,
+            crops,
+            &calendar(),
+            midday(day),
+            7,
+            (0, 0),
+            chunk,
+            at,
+            picked,
+        )
+    }
+
+    #[test]
+    fn the_berry_shrubs_show_their_fruit_while_their_crop_is_on() {
+        let content = content();
+        let fruiting: Vec<&str> = content
+            .flora
+            .iter()
+            .filter(|k| k.fruit.is_some())
+            .map(|k| k.id.as_str())
+            .collect();
+        assert_eq!(fruiting.len(), 14, "{fruiting:?}");
+        for kind in content.flora.iter().filter(|k| k.fruit.is_some()) {
+            let window = kind.fruit.unwrap();
+            for crop in content.crops.iter().filter(|c| c.on == kind.id) {
+                assert_eq!(
+                    (window.from, window.until),
+                    (crop.from, crop.until),
+                    "{}",
+                    kind.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_shrub_shows_no_berries_out_of_its_window_and_without_one() {
+        // Blackberries: late summer to the autumn's middle, days 20 to 32.5.
+        let (bramble, crops) = shrub("bramble");
+        let at = FinePos::new(10_500, 10_500);
+        for day in [0, 10, 19, 33, 45] {
+            assert_eq!(
+                plant_fruit_at(&bramble, &crops, day, at, None),
+                Fruit::Empty,
+                "day {day}"
+            );
+        }
+        let bare = crate::flora::Kind {
+            fruit: None,
+            ..bramble
+        };
+        assert_eq!(plant_fruit_at(&bare, &crops, 25, at, None), Fruit::Empty);
+        // Off its chunk, no plant is there.
+        let (bramble, crops) = shrub("bramble");
+        let off = FinePos::new(-500, 10_500);
+        assert_eq!(
+            plant_fruit_at(&bramble, &crops, 25, off, None),
+            Fruit::Empty
+        );
+    }
+
+    #[test]
+    fn a_shrub_in_season_is_laden_then_picked_to_a_third_then_bare() {
+        let (bramble, crops) = shrub("bramble");
+        let usual: Vec<Crop> = crops
+            .iter()
+            .map(|c| Crop {
+                years: Years { lean: 0, rich: 0 },
+                ..c.clone()
+            })
+            .collect();
+        let at = FinePos::new(10_500, 10_500);
+        assert_eq!(plant_fruit_at(&bramble, &usual, 25, at, None), Fruit::Full);
+        let grams = bears(&usual[0], 7, Frame::ORIGIN, at, 1);
+        let key = PlantKey::of(ChunkPos::new(0, 0), at).unwrap();
+        let picked = |grams| {
+            BTreeMap::from([(
+                (Source::Plant(key), "blackberries".to_owned()),
+                Picked { year: 1, grams },
+            )])
+        };
+        let shows = |p: &BTreeMap<_, _>| plant_fruit_at(&bramble, &usual, 25, at, Some(p));
+        assert_eq!(shows(&picked(grams / 4)), Fruit::Full);
+        assert_eq!(shows(&picked(grams / 2)), Fruit::Third, "picked to a third");
+        assert_eq!(shows(&picked(grams)), Fruit::Empty, "picked bare");
+        // Another plant's picks take nothing off this one.
+        let next = FinePos::new(10_600, 10_500);
+        let elsewhere = plant_fruit_at(&bramble, &usual, 25, next, Some(&picked(grams)));
+        assert_eq!(elsewhere, Fruit::Full);
+        // The elder bears nothing here (D30): laden through its window.
+        let (elder, none) = shrub("elder");
+        assert_eq!(none, []);
+        assert_eq!(plant_fruit_at(&elder, &none, 25, at, None), Fruit::Full);
+        assert_eq!(plant_fruit_at(&elder, &none, 35, at, None), Fruit::Empty);
+    }
+
+    #[test]
+    fn the_fruit_phase_moves_with_the_shrubs_windows_and_crops() {
+        let calendar = calendar();
+        let (bramble, crops) = shrub("bramble");
+        let phase = |kinds: &[crate::flora::Kind], day| {
+            fruit_phase(&[], kinds, &crops, &calendar, midday(day))
+        };
+        let kinds = [bramble.clone()];
+        assert_eq!(phase(&kinds, 1), phase(&kinds, 19));
+        assert_ne!(
+            phase(&kinds, 19),
+            phase(&kinds, 21),
+            "the blackberries come"
+        );
+        assert_eq!(phase(&kinds, 21), phase(&kinds, 31));
+        assert_ne!(phase(&kinds, 31), phase(&kinds, 34), "and go");
+        let windowless = [crate::flora::Kind {
+            fruit: None,
+            ..bramble
+        }];
+        assert_eq!(phase(&windowless, 1), phase(&windowless, 25));
+    }
+
+    #[test]
+    fn the_valley_s_brambles_show_their_berries() {
+        let (mut world, content, chunk, bramble) = valley_with("bramble");
+        let plant = crate::flora::Plant {
+            at: bramble.at,
+            kind: u16::try_from(
+                content
+                    .flora
+                    .iter()
+                    .position(|k| k.id == "bramble")
+                    .unwrap(),
+            )
+            .unwrap(),
+        };
+        assert_eq!(
+            world.plant_fruit_on(chunk, &plant),
+            Fruit::Empty,
+            "nothing in spring"
+        );
+        run_to(&mut world, &content, 25); // late summer
+        let crop = content.crops.iter().find(|c| c.on == "bramble").unwrap();
+        let frame = Frame::at(world.map().origin());
+        let full = bears(crop, world.seed(), frame, bramble.at, 1);
+        let usual = usual_on(crop, world.seed(), frame, bramble.at);
+        assert_eq!(
+            world.plant_fruit_on(chunk, &plant),
+            if full * 3 >= usual * 2 {
+                Fruit::Full
+            } else {
+                Fruit::Third
+            }
+        );
+        world.pick(chunk, bramble.source, "blackberries", full - 1);
+        assert_eq!(world.plant_fruit_on(chunk, &plant), Fruit::Third);
+        world.pick(chunk, bramble.source, "blackberries", 1);
+        assert_eq!(
+            world.plant_fruit_on(chunk, &plant),
+            Fruit::Empty,
+            "picked bare"
+        );
     }
 }

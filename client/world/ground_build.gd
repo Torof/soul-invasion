@@ -101,7 +101,7 @@ static func compute(input: Dictionary) -> Dictionary:
 		result["water_usec"] = int(out[4])
 	_brooks(input, prepared, current, result)
 	var plants: Array = input["plants"]
-	result["plant_draws"] = ChunkView.PlantLayer.draws_of(plants[0], plants[1]) if not plants.is_empty() else null
+	result["plant_draws"] = ChunkView.PlantLayer.draws_of(plants[0], plants[1], plants[2]) if not plants.is_empty() else null
 	result["decor"] = _decor(input, win, codes)
 	return result
 

@@ -1510,6 +1510,22 @@ impl World {
         )
     }
 
+    /// The fruit `plant`, of `chunk`, shows now (D48,
+    /// [`crops::plant_fruit_on`]): a berry shrub's, as a tree's.
+    pub fn plant_fruit_on(&self, chunk: ChunkPos, plant: &flora::Plant) -> crops::Fruit {
+        crops::plant_fruit_on(
+            &self.flora[usize::from(plant.kind)],
+            &self.crops,
+            &self.calendar,
+            self.tick,
+            self.seed(),
+            self.map.origin(),
+            chunk,
+            plant.at,
+            self.changes_in(chunk).map(|c| &c.picked),
+        )
+    }
+
     /// Picks up to `grams` of the crop giving `gives` on `source`, of
     /// `chunk` (D45): the grams taken, at most what is left on it now, 0
     /// if none is there. Counted in the chunk's changes, whose version
