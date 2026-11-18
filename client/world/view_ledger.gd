@@ -125,6 +125,24 @@ static func nearest_first(keys: Array[Vector2i], ledger: ViewLedger, centre: Vec
 	return sorted
 
 
+## Builds the margin's chunks `keys` (`build`, called with each), nearest
+## `centre` first, within `budget_usec` of the main thread counted from
+## the first build and at least one: whether some are left for the next
+## frame. The sort is not counted: at a far zoom it alone took the whole
+## budget, so no chunk of the margin was ever built and the reach was
+## planned again every frame of a still camera (audit F4, 19 November
+## 2026: 3.4 ms of script a frame at zoom 0.4).
+func build_paced(keys: Array[Vector2i], centre: Vector2, budget_usec: int, build: Callable) -> bool:
+	var started := -1
+	for key: Vector2i in nearest_first(keys, self, centre):
+		if started >= 0 and Time.get_ticks_usec() - started >= budget_usec:
+			return true
+		if started < 0:
+			started = Time.get_ticks_usec()
+		build.call(key)
+	return false
+
+
 ## Whether chunk `key`'s diamond of ground touches `rect` (the world's
 ## pixels), exactly: in tile space the rect is a band in x - y and in
 ## x + y, the chunk a square (its tiles' diamonds start half a tile before

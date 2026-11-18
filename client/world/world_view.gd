@@ -604,13 +604,9 @@ func _update_reach() -> void:
 	for key: Vector2i in plan["at_once"]:
 		_build_chunk(key, true)
 	var paced: Array[Vector2i] = plan["paced"]
-	var started := Time.get_ticks_usec()
-	for key: Vector2i in ViewLedger.nearest_first(paced, _ledger, _ledger.seen.get_center()):
-		if Time.get_ticks_usec() - started >= BUILD_BUDGET_USEC:
-			# The rest next frame.
-			_reach_dirty = true
-			break
-		_build_chunk(key, false)
+	if _ledger.build_paced(paced, _ledger.seen.get_center(), BUILD_BUDGET_USEC, func(key: Vector2i) -> void: _build_chunk(key, false)):
+		# The rest next frame.
+		_reach_dirty = true
 	for key: Vector2i in plan["release"]:
 		_release_chunk(key)
 	if moved:

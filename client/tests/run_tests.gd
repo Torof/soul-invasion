@@ -1548,6 +1548,24 @@ func _test_the_reach_s_margin_grows_as_the_zoom_pulls_back() -> void:
 	_check(three > one and ledger.reach.encloses(ledger.shown), "a wider margin reaches more chunks: %d -> %d" % [one, three])
 	var keys: Array[Vector2i] = [Vector2i(25, 25), Vector2i(20, 20), Vector2i(22, 20)]
 	_check(ViewLedger.nearest_first(keys, ledger, screen.get_center()) == [Vector2i(20, 20), Vector2i(22, 20), Vector2i(25, 25)], "the margin built nearest the screen's middle first")
+	# Built within the budget counted from the first build, and at least
+	# one a frame: with no budget left, one a frame, nearest first, then
+	# none left (at zoom 0.4 sorting the margin alone took the budget, none
+	# was ever built and the reach was planned again every frame, F4).
+	var built: Array[Vector2i] = []
+	var build := func(key: Vector2i) -> void: built.append(key)
+	var left := [] as Array[Vector2i]
+	left.assign(keys)
+	var frames := 0
+	while frames < 10:
+		frames += 1
+		var more := ledger.build_paced(left, screen.get_center(), 0, build)
+		left.assign(keys.filter(func(k: Vector2i) -> bool: return not built.has(k)))
+		if not more:
+			break
+	_check(built == [Vector2i(20, 20), Vector2i(22, 20), Vector2i(25, 25)] and frames == 3, "with no budget, one chunk a frame, nearest first, then done: %s in %d frames" % [built, frames])
+	built.clear()
+	_check(not ledger.build_paced(keys, screen.get_center(), 1_000_000, build) and built.size() == 3, "within the budget, all of them at once")
 
 
 ## The fog's uniforms go to the graphics card only when their value
