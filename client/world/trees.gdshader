@@ -128,13 +128,17 @@ void fragment() {
 		float k = clamp((up - still) / (1.0 - still), 0.0, 1.0);
 		x -= bend_px * k * k;
 		vec2 uv = vec2(x / width_px, UV.y);
+		// One mipmap level sharper than the hardware picks: sharp up close,
+		// still no shimmer far away. Read before any pixel is discarded: the
+		// card picks the level from neighbouring pixels, and next to
+		// discarded ones (past the image's side) it picked a tiny level,
+		// whose blur of the crown drew a thin dark line along the image's
+		// edge, swaying with the tree.
+		vec4 c = texture(TEXTURE, uv, mip_bias);
 		// Clear pixels are discarded: no blending with what lies beneath.
 		if (uv.x < 0.0 || uv.x > 1.0) {
 			discard;
 		} else {
-			// One mipmap level sharper than the hardware picks: sharp up close,
-			// still no shimmer far away.
-			vec4 c = texture(TEXTURE, uv, mip_bias);
 			// Nothing more to do where the image is clear (between the
 			// branches, around the crown): most of the quad.
 			if (c.a <= 0.0) {
