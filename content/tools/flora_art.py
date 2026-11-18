@@ -53,7 +53,7 @@ from collections import deque
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 
 # The sharpness rule: pixels per shown metre = PX_PER_M (Iso.PX_PER_M, at
 # zoom 1) x ZOOM_MAX (the camera stops there) x a screen's stretch of the
@@ -99,9 +99,20 @@ def save_webp(image, path):
     image.save(path, "WEBP", lossless=True, quality=100, method=6, exact=True)
 
 
+SMALL_UP_TO = 0.3
+SMALL_TIMES = 2.0
+GROWN_FROM = 1.0
+
+
 def shown(metres):
-    """The height a thing is drawn at (D40, the client's Scale.shown): true
+    """The height a thing is drawn at (D40, the client's Scale.shown): twice
+    its height up to SMALL_UP_TO, growing more slowly up to GROWN_FROM, true
     up to 3 m, eased above."""
+    if metres <= SMALL_UP_TO:
+        return metres * SMALL_TIMES
+    small = SMALL_UP_TO * SMALL_TIMES
+    if metres < GROWN_FROM:
+        return small + (metres - SMALL_UP_TO) * (GROWN_FROM - small) / (GROWN_FROM - SMALL_UP_TO)
     return metres if metres <= 3.0 else 3.0 * (metres / 3.0) ** 0.5
 
 
@@ -472,8 +483,9 @@ def enclosed(clear):
     return np.asarray(pad)[1:-1, 1:-1] == 255
 
 
-def ink(image, px, keep_holes=False):
-    """`image` (a tree, RGBA) with its ink line, `px` wide. With
+def ink(image, px, keep_holes=False, close=INK_CLOSE, rounding=INK_ROUND, margin=INK_MARGIN):
+    """`image` (a tree or a plant, RGBA) with its ink line, `px` wide,
+    its silhouette first closed by `close` px and rounded by `rounding`. With
     `keep_holes`, the holes inside the tree (the gaps between the trunks
     of a tree of many stems) keep their own drawn line: only the outer
     edge is inked.
@@ -481,14 +493,14 @@ def ink(image, px, keep_holes=False):
     The canvas grows by a margin left, right and on top, where the line
     reaches past the cropped tree: cut there, it showed as a straight black
     line at the image's edges. The margin holds the line's outer half and
-    INK_MARGIN more. Not at the bottom: the foot stays where it was."""
-    margin = int(np.ceil(px / 2)) + INK_MARGIN
+    `margin` more. Not at the bottom: the foot stays where it was."""
+    margin = int(np.ceil(px / 2)) + margin
     src = np.asarray(image.convert("RGBA")).astype(np.float32)
     a = np.zeros((src.shape[0] + margin, src.shape[1] + 2 * margin, 4), np.float32)
     a[margin:, margin:margin + src.shape[1]] = src
     mask = a[..., 3] >= 128
-    closed = ink_shrink(ink_grow(mask, INK_CLOSE), INK_CLOSE)
-    blurred = Image.fromarray(closed.astype(np.uint8) * 255).filter(ImageFilter.GaussianBlur(INK_ROUND))
+    closed = ink_shrink(ink_grow(mask, close), close) if close else mask
+    blurred = Image.fromarray(closed.astype(np.uint8) * 255).filter(ImageFilter.GaussianBlur(rounding))
     drawn = np.asarray(blurred) >= 128
     holes = enclosed(~drawn) if keep_holes else np.zeros_like(drawn)
     # The line follows `shape`: the tree with its holes filled when they
@@ -525,6 +537,74 @@ def ink(image, px, keep_holes=False):
     a[..., :3] = rgb
     a[..., 3] = np.where(holes, 0.0, np.where(shape, 255.0, w_out * 255))
     return Image.fromarray(np.clip(np.round(a), 0, 255).astype(np.uint8))
+
+
+# Plants whose source kept some of its pale ground at the foot (a cream
+# smudge under the asparagus, a patch under the silverweed): their pale,
+# nearly colourless pixels (each channel above GROUND_LIGHT, at most
+# GROUND_GREY apart) are cleared. Only these: it would take white flowers.
+GROUND_CLEAR = ("wild_asparagus", "silverweed")
+GROUND_LIGHT = 165
+GROUND_GREY = 50
+
+
+def clear_ground(image):
+    """`image` without its pale, nearly colourless pixels."""
+    a = np.asarray(image.convert("RGBA")).copy()
+    rgb = a[..., :3].astype(np.int16)
+    lo, hi = rgb.min(axis=2), rgb.max(axis=2)
+    a[..., 3][(lo > GROUND_LIGHT) & (hi - lo <= GROUND_GREY)] = 0
+    return Image.fromarray(a)
+
+
+# The small plants (SMALL_UP_TO and under, true height: chickweed,
+# strawberry, plantain, dandelion...), drawn twice their height, also get
+# livelier colours (SMALL_VIVID saturation, SMALL_BRIGHT brightness) and
+# INK_SMALL_LINE: green on green, the grass swallowed them.
+SMALL_VIVID = 1.3
+SMALL_BRIGHT = 1.08
+INK_SMALL_LINE = 2
+
+# The plants' line (D39 flora), only where it helps a full, simple shape
+# stand out: the shrubs of at least INK_SHRUB_MIN_PX shipped (INK_SHRUB_LINE,
+# about a tree's line for their size; the strawberry is a small plant),
+# the fern (INK_SOLID: compact, no gaps; INK_SOLID_LINE, closing nothing) and
+# the large mushrooms (at least INK_MUSHROOM_MIN_PX shipped;
+# INK_MUSHROOM_LINE, barely closed). The flowers, the small plants, the stems
+# and blades and the small mushrooms have none: a line ate their details.
+# The margin is the line's outer half and INK_PLANT_MARGIN: the client fits
+# the whole image to the plant's height, so every pixel above it makes the
+# plant a little smaller.
+INK_SHRUB_LINE = 4
+INK_SHRUB_MIN_PX = 130
+INK_SOLID = ("fern",)
+INK_SOLID_LINE = 4
+INK_MUSHROOM_MIN_PX = 40
+INK_MUSHROOM_LINE = 2
+INK_PLANT_MARGIN = 1
+
+
+def vivid(image):
+    """`image` with SMALL_VIVID saturation and SMALL_BRIGHT brightness."""
+    alpha = image.getchannel("A")
+    rgb = ImageEnhance.Brightness(ImageEnhance.Color(image.convert("RGB")).enhance(SMALL_VIVID)).enhance(SMALL_BRIGHT)
+    rgb.putalpha(alpha)
+    return rgb
+
+
+def ink_plant(image, kind, section, tall, metres):
+    """`image` (a plant of `kind`, in `section`, `tall` px high shipped,
+    `metres` its true height) with its line, when it has one."""
+    scale = image.height / tall
+    if section != "mushrooms" and metres <= SMALL_UP_TO:
+        return ink(vivid(image), INK_SMALL_LINE * scale, close=1, rounding=0.6, margin=INK_PLANT_MARGIN)
+    if section == "shrubs" and tall >= INK_SHRUB_MIN_PX:
+        return ink(image, INK_SHRUB_LINE * scale, margin=INK_PLANT_MARGIN)
+    if kind in INK_SOLID:
+        return ink(image, INK_SOLID_LINE * scale, close=0, rounding=0.8, margin=INK_PLANT_MARGIN)
+    if section == "mushrooms" and tall >= INK_MUSHROOM_MIN_PX:
+        return ink(image, INK_MUSHROOM_LINE * scale, close=1, rounding=0.8, margin=INK_PLANT_MARGIN)
+    return image
 
 
 def species_heights(content):
@@ -669,6 +749,9 @@ def main():
             image = cut(path, keep_white=(section == "mushrooms"), work=work_height(tall))
             image = fit(image, tall, original, path.name, short)
             image = image.filter(ImageFilter.UnsharpMask(radius=1.0, percent=50, threshold=2))
+            if kind in GROUND_CLEAR:
+                image = clear_ground(image)
+            image = ink_plant(image, kind, section, tall, height)
             plants.append((f"{kind}_{n}", image))
     if plants:
         rects, height = pack(plants)

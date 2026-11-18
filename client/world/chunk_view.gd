@@ -1131,14 +1131,14 @@ var _plants_due: Array = []
 
 const FLORA_ATLAS := "res://art/flora/atlas.webp"
 const FLORA_RECTS := "res://art/flora/atlas.json"
-## From this height, in metres, a plant stands among the trees and the
+## From this true height, in metres, a plant stands among the trees and the
 ## bodies, sorted by its foot (WorldView: a bramble hides a body behind
 ## it); shorter ones lie on the ground's own layer.
 const PLANT_STANDING_M := 0.9
 ## The world's scale (D40): under 3 m everything is drawn at its true
 ## height; above, heights ease towards reality (Scale.shown). Small
 ## plants, which the light grass swallows, are drawn a little brighter
-## (SMALL_LIGHT, below SMALL_M).
+## (SMALL_LIGHT, below SMALL_M, their true height).
 const SMALL_M := 0.7
 const SMALL_LIGHT := Color(1.18, 1.18, 1.1)
 static var _flora_atlas: Texture2D
@@ -1169,18 +1169,23 @@ static func flora_variants(id: String) -> Array:
 
 
 ## The height a plant of `kind` is drawn at, in metres (SCALE_POWER).
+## The true height of a plant of `kind`, in metres.
+static func true_height(kind: Dictionary) -> float:
+	return float(kind.get("height_cm", 30)) / 100.0
+
+
 static func shown_height(kind: Dictionary) -> float:
 	return Scale.shown(float(kind.get("height_cm", 30)) / 100.0)
 
 
 ## The tint a plant of `kind` is drawn with: brighter when small.
 static func plant_tint(kind: Dictionary) -> Color:
-	return SMALL_LIGHT if shown_height(kind) < SMALL_M else Color.WHITE
+	return SMALL_LIGHT if true_height(kind) < SMALL_M else Color.WHITE
 
 
 ## Whether a plant of `kind` stands among the trees (PLANT_STANDING_M).
 static func plant_stands(kind: Dictionary) -> bool:
-	return shown_height(kind) >= PLANT_STANDING_M
+	return true_height(kind) >= PLANT_STANDING_M
 
 
 ## The atlas region a plant of `kind` at `at` takes (its variant).
