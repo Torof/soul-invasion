@@ -198,3 +198,18 @@ Midjourney edit made for the fruit states of 17 November, darker, with
 small red arils left in its crown. It is made again from its own clean
 source (`yew_01.png`), alone with `flora_art.py --trees`, so it has the
 ink line and no red speck; the other trees were left as they were.
+
+**18 November 2026, the wild fig and a new wild apple**: the last stand-in
+goes (`STAND_INS` is empty: every kind has its own image). The project lead
+made both in Midjourney with the style board; the fig is an edit of his
+first fig, its leaves made bigger, the apple image 2 of its grid: a
+leaning trunk in an S, an open crown in clumps. Both are drawn without
+fruit, for the sprites (D48). The old wild apple's sources went to
+`content/ai-reserve/sources/trees/identite-2026-11-18/anciennes-sources/`.
+- The fig is a tree of many stems. The thick ink ringed the narrow gaps
+  between its trunks with black, as slits; `INK_KEEP_HOLES` in
+  `flora_art.py` names the kinds whose holes (clear parts not joined to the
+  image's border) keep their own drawn line, only the outer edge inked.
+- The apple's foot had a few thin blades of grass. Clearing the grass by
+  its colour took the olive bark with it, so its recipe in
+  `clean_tree_feet.py` only rounds the foot, which takes the blades.

@@ -186,11 +186,9 @@ static func sharpness(zoom: float) -> float:
 	return -clampf((zoom - 0.5) / 0.5, 0.0, 1.0)
 
 
-## Kinds of tree with no images of their own yet, drawn with another's
-## (fruit trees of 16 November 2026 still without their own art).
-const STAND_INS := {
-	"wild_fig": "hazel",
-}
+## Kinds of tree with no images of their own yet, drawn with another's:
+## none since 18 November 2026, kept for the kinds to come.
+const STAND_INS := {}
 
 
 ## The kind whose images a tree of `species` is drawn with: its own, or

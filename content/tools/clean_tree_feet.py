@@ -58,8 +58,10 @@ RECIPES = {
     # Tufts of grass on both sides, some pale, and a grey ring around the
     # outline.
     "ash_02": {"band": 0.07, "halo": True, "grass": True, "grass_saturation": 0.15, "smooth": 5},
-    # A torn foot, left so when the grass and flowers were painted out.
-    "wild_apple_01": {"band": 0.09, "smooth": 6},
+    # A few thin blades of grass at the foot (the wild apple drawn on
+    # 18 November 2026): rounding the foot takes them, where clearing the
+    # grass by its colour took the olive bark too.
+    "wild_apple_01": {"band": 0.06, "smooth": 6},
     # A patch of white ground with grass strokes to the right of the foot.
     "yew_01": {"band": 0.07, "grass": True, "ground": True, "span": (370, 1058), "smooth": 7},
     # Tufts of dry grass in front of and between the roots.

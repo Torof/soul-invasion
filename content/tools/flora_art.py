@@ -52,7 +52,7 @@ from collections import deque
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter
 
 # The sharpness rule: pixels per shown metre = PX_PER_M (Iso.PX_PER_M, at
 # zoom 1) x ZOOM_MAX (the camera stops there) x a screen's stretch of the
@@ -300,6 +300,9 @@ def bleed(image, passes=8):
 # Trees pale by nature (the birch's and the ash's bark, the linden's
 # flowers), left as they are by `clear_pale`.
 PALE_TREES = ("birch", "ash", "linden")
+# Trees of many stems: the gaps between their trunks keep their own drawn
+# line, the thick ink ringed them as black slits.
+INK_KEEP_HOLES = ("wild_fig",)
 
 
 def clear_pale(image):
@@ -379,13 +382,29 @@ def fill_from_around(rgb, known, todo, passes=60):
     return rgb
 
 
-def ink(image, px):
-    """`image` (a tree, RGBA) with its ink line, `px` wide."""
+def enclosed(clear):
+    """The parts of `clear` (a mask) not joined to the image's border."""
+    # A copy: an image made from an array shares its memory, read only,
+    # and the fill would leave it unchanged.
+    pad = Image.fromarray(np.pad(clear, 1, constant_values=True).astype(np.uint8) * 255).copy()
+    ImageDraw.floodfill(pad, (0, 0), 128)
+    return np.asarray(pad)[1:-1, 1:-1] == 255
+
+
+def ink(image, px, keep_holes=False):
+    """`image` (a tree, RGBA) with its ink line, `px` wide. With
+    `keep_holes`, the holes inside the tree (the gaps between the trunks
+    of a tree of many stems) keep their own drawn line: only the outer
+    edge is inked."""
     a = np.asarray(image.convert("RGBA")).astype(np.float32)
     mask = a[..., 3] >= 128
     closed = ink_shrink(ink_grow(mask, INK_CLOSE), INK_CLOSE)
     blurred = Image.fromarray(closed.astype(np.uint8) * 255).filter(ImageFilter.GaussianBlur(INK_ROUND))
-    shape = np.asarray(blurred) >= 128
+    drawn = np.asarray(blurred) >= 128
+    holes = enclosed(~drawn) if keep_holes else np.zeros_like(drawn)
+    # The line follows `shape`: the tree with its holes filled when they
+    # keep their own line.
+    shape = drawn | holes
     half = px / 2
     n = int(np.ceil(half)) + 1
     # Depth inside the shape (1 on its edge) and distance outside it.
@@ -404,7 +423,9 @@ def ink(image, px):
     w_out = np.clip(half + 1 - away, 0, 1) * ~shape
     # Colours taken 2 px inside the drawing, never from its cut edge, which
     # holds some of the cream background.
-    rgb = fill_from_around(a[..., :3], ink_shrink(mask, 2) & shape, shape & ~ink_shrink(mask, 2))
+    # A hole takes the colours around it too, though clear: the texture's
+    # filtering mixes them into its rim.
+    rgb = fill_from_around(a[..., :3], ink_shrink(mask, 2) & drawn, shape & ~ink_shrink(mask, 2))
     lighter = rgb.mean(axis=2) > INK.mean()
     k = (w_in * lighter)[..., None]
     rgb = rgb * (1 - k) + INK * k
@@ -413,7 +434,7 @@ def ink(image, px):
     # as pale specks along the line.
     rgb[~shape] = INK
     a[..., :3] = rgb
-    a[..., 3] = np.where(shape, 255.0, w_out * 255)
+    a[..., 3] = np.where(holes, 0.0, np.where(shape, 255.0, w_out * 255))
     return Image.fromarray(np.clip(np.round(a), 0, 255).astype(np.uint8))
 
 
@@ -545,7 +566,7 @@ def main():
                 image = clear_pale(image)
             # The line is INK_PX at the shipped size: thinner in the pixels
             # of an image short of it, which the client magnifies.
-            image = ink(image, INK_PX * image.height / tall)
+            image = ink(image, INK_PX * image.height / tall, kind.startswith(INK_KEEP_HOLES))
             target = art / "trees" / f"{kind}_adult_{n}_summer.webp"
             save_webp(image, target)
             print("tree", target.name, image.size)
