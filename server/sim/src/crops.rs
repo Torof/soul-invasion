@@ -244,7 +244,7 @@ fn level_of_share(share: u64) -> u8 {
 
 /// The crop `crop` on its plant at `tick`, at the calendar's tick: the
 /// year whose crop it is and how much of it is on the plant then, out of
-/// what the plant bears that year ([`share_on`]); `None` out of its
+/// what the plant bears that year (`share_on`); `None` out of its
 /// season.
 #[must_use]
 pub fn on_plant(crop: &Crop, calendar: &Calendar, tick: Tick) -> Option<(u64, u64)> {
@@ -371,7 +371,7 @@ pub fn window_open(window: &FruitWindow, calendar: &Calendar, tick: Tick) -> boo
 /// The fruit `tree` (of `species`, its crops among `crops`) shows at
 /// `tick` (D48), on a map whose corner is `origin` in the world
 /// ([`crate::map::Map::origin`]), with `picked` its chunk's picks: a
-/// level, 0 to [`LEVELS`] ([`fruit_of`]).
+/// level, 0 to [`LEVELS`] (`fruit_of`).
 #[allow(clippy::too_many_arguments, reason = "the rule's inputs, each its own")]
 #[must_use]
 pub fn fruit_on(
