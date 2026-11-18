@@ -325,14 +325,20 @@ def clear_pale(image):
 # notches and holes (INK_CLOSE px) and rounded (INK_ROUND, a blur), so the
 # line runs on like a drawn one instead of ringing every gap; the bottom of
 # a notch it closes takes the colours of the leaves around it. The canvas
-# grows by a margin left, right and on top so the line is never cut (cut,
-# it showed as a straight black line swaying at the image's edges); the
+# grows by a margin left, right and on top so the line is never cut, nor
+# touches the edge of the smaller mipmap levels (INK_MARGIN): cut, it showed
+# as a straight black line swaying at the image's edges; the
 # foot stays at the bottom. `outlines.json` and the fruit points are found
 # again after. A line already darker than the ink is left as it is.
 INK = np.array([12, 14, 10], np.float32)
 INK_PX = 9
 INK_CLOSE = 5
 INK_ROUND = 2.0
+# Clear pixels kept around the line: a mipmap level n texels down averages
+# 2**n of them, and the camera's farthest zoom (0.4) reads the level a 16th
+# of the size on a small screen; with fewer, the line touched the edge of
+# those levels and showed there, thin, at the trees' sides.
+INK_MARGIN = 16
 
 
 def _step(mask, grow_it, diagonal):
@@ -400,9 +406,11 @@ def ink(image, px, keep_holes=False):
 
     The canvas grows by a margin left, right and on top, where the line
     reaches past the cropped tree: cut there, it showed as a straight black
-    line at the image's edges, swaying with the crown. Not at the bottom:
-    the foot stays where it was."""
-    margin = int(np.ceil(px / 2)) + 3
+    line at the image's edges, swaying with the crown. The margin holds the
+    line's outer half and INK_MARGIN more, so that the smaller mipmap
+    levels the graphics card reads from afar stay clear at their edges too.
+    Not at the bottom: the foot stays where it was."""
+    margin = int(np.ceil(px / 2)) + INK_MARGIN
     src = np.asarray(image.convert("RGBA")).astype(np.float32)
     a = np.zeros((src.shape[0] + margin, src.shape[1] + 2 * margin, 4), np.float32)
     a[margin:, margin:margin + src.shape[1]] = src

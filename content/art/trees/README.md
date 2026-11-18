@@ -251,3 +251,18 @@ stays where it was. The thirteen images inked with `--ink` were inked
 again from their state before the line (commit 73a0d04), the four made
 from their sources (wild cherry, yew, wild apple, wild fig) made again;
 `outlines.json` and the fruit points were found again.
+- Same day, a margin wide enough for the mipmaps: with half the line and
+  3 px, the line still showed, thinner. The graphics card reads smaller
+  mipmap levels from afar (a quarter and an eighth of the size at the
+  farthest zoom, 0.4, on the project lead's screen), and there the margin
+  shrank to a texel or two and the line touched the edge again. The
+  margin is now half the line and INK_MARGIN (16 px): the levels down to
+  an eighth are clear at their edges (read from the imported textures);
+  the sixteenth, read only on a small screen at the farthest zoom, is not.
+  About +4 % of the trees' video memory.
+- The wild cherry, the wild fig and nine fruit sheets had come in with
+  Godot's import defaults for a new file (uncompressed, no mipmaps: four
+  times the memory, a shimmer from afar); they now import as every tree
+  does, and a client test checks it for every tree image and fruit sheet.
+  Compressed, the fig's smooth pale grey bark reads as pale specks to the
+  test: it is pale by nature, as the birch's.

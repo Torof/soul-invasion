@@ -3,27 +3,28 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://bn6a3i37gfq17"
-path="res://.godot/imported/mulberry.webp-be1cad93d8d3a777d2093d0021a022b5.ctex"
+path.bptc="res://.godot/imported/mulberry.webp-be1cad93d8d3a777d2093d0021a022b5.bptc.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc"],
+"vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/trees/fruit/mulberry.webp"
-dest_files=["res://.godot/imported/mulberry.webp-be1cad93d8d3a777d2093d0021a022b5.ctex"]
+dest_files=["res://.godot/imported/mulberry.webp-be1cad93d8d3a777d2093d0021a022b5.bptc.ctex"]
 
 [params]
 
-compress/mode=0
-compress/high_quality=false
+compress/mode=2
+compress/high_quality=true
 compress/lossy_quality=0.7
 compress/uastc_level=0
 compress/rdo_quality_loss=0.0
 compress/hdr_compression=1
 compress/normal_map=0
 compress/channel_pack=0
-mipmaps/generate=false
+mipmaps/generate=true
 mipmaps/limit=-1
 roughness/mode=0
 roughness/src_normal=""

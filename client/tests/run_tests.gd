@@ -43,6 +43,7 @@ func _init() -> void:
 	_test_the_slope_turf_is_a_family_of_tiles_chosen_per_cell()
 	_test_the_tint_dials_turn_the_flat_grass_and_the_slope_turf_and_reset()
 	_test_tree_images_are_clean()
+	_test_tree_images_import_compressed_with_mipmaps()
 	_test_tree_feet_are_whole()
 	_test_loading_waits_for_the_valley()
 	_test_dev_map_turns_as_the_game()
@@ -925,6 +926,23 @@ func _test_a_tree_without_images_is_drawn_with_a_stand_in() -> void:
 	_check(stand.heights[0] == 2_000 and stand.heights[1] == 600, "each at its own height: %s" % [stand.heights])
 	stand.release()
 
+## Every tree image and fruit sheet is imported compressed for the
+## graphics card, with its mipmaps (as every tree before it): Godot's
+## defaults for a new file are neither, four times the memory and a
+## shimmer from afar (the wild cherry, the wild fig and nine fruit sheets
+## came in so on 18 November 2026).
+func _test_tree_images_import_compressed_with_mipmaps() -> void:
+	var files: Array[String] = []
+	for dir: String in [Trees.DIR, Trees.DIR.path_join("fruit")]:
+		for file in DirAccess.get_files_at(dir):
+			if file.ends_with(".webp.import"):
+				files.append(dir.path_join(file))
+	_check(files.size() >= 28, "the trees' and fruit's images are found: %d" % files.size())
+	for path in files:
+		var text := FileAccess.get_file_as_string(path)
+		_check(text.contains("compress/mode=2") and text.contains("mipmaps/generate=true"), "%s is compressed, with mipmaps" % path.get_file())
+
+
 ## Every tree image stands on its foot (no empty rows under it, so it is
 ## anchored where it stands) and holds no pale opaque speck of the
 ## background it was cut from (the birches, white of bark, aside).
@@ -948,8 +966,8 @@ func _test_tree_images_are_clean() -> void:
 				break
 		_check(foot, "%s stands on its foot" % file)
 		# Pale by nature: the birch's and the ash's bark, the linden's
-		# flowers.
-		if file.begins_with("birch") or file.begins_with("ash") or file.begins_with("linden"):
+		# flowers, the wild fig's smooth grey bark.
+		if file.begins_with("birch") or file.begins_with("ash") or file.begins_with("linden") or file.begins_with("wild_fig"):
 			continue
 		# A speck is the white background left in the image: pale and
 		# colourless. The light the trees are drawn with is pale too, but
