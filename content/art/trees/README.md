@@ -239,3 +239,15 @@ style reference, and picked one sheet of four per kind (the sheets in
   line) are kept clear. The pear's points were found again the same way.
 - The white between a pair of cherries' stalks is enclosed by the fruit;
   such patches wider than ENCLOSED_WHITE are background too.
+
+**18 November 2026, the line no longer cut at the image's edges**: the
+trees are cropped to themselves, so the crown touches the image's left,
+right or top edge, and the ink line, drawn half outside, was cut there.
+In the game this showed as a straight black line at the edges of most
+trees, swaying with the crown (the project lead saw it on the oaks, the
+chestnuts, the apples). `ink()` now grows the canvas by a margin (half the
+line and 3 px) left, right and on top, never at the bottom, so the foot
+stays where it was. The thirteen images inked with `--ink` were inked
+again from their state before the line (commit 73a0d04), the four made
+from their sources (wild cherry, yew, wild apple, wild fig) made again;
+`outlines.json` and the fruit points were found again.

@@ -325,9 +325,10 @@ def clear_pale(image):
 # notches and holes (INK_CLOSE px) and rounded (INK_ROUND, a blur), so the
 # line runs on like a drawn one instead of ringing every gap; the bottom of
 # a notch it closes takes the colours of the leaves around it. The canvas
-# keeps its size: the line is cut at the image's edges, so the foot, the
-# outline of `outlines.json` and the fruit points stay where they were. A
-# line already darker than the ink is left as it is.
+# grows by a margin left, right and on top so the line is never cut (cut,
+# it showed as a straight black line swaying at the image's edges); the
+# foot stays at the bottom. `outlines.json` and the fruit points are found
+# again after. A line already darker than the ink is left as it is.
 INK = np.array([12, 14, 10], np.float32)
 INK_PX = 9
 INK_CLOSE = 5
@@ -395,8 +396,16 @@ def ink(image, px, keep_holes=False):
     """`image` (a tree, RGBA) with its ink line, `px` wide. With
     `keep_holes`, the holes inside the tree (the gaps between the trunks
     of a tree of many stems) keep their own drawn line: only the outer
-    edge is inked."""
-    a = np.asarray(image.convert("RGBA")).astype(np.float32)
+    edge is inked.
+
+    The canvas grows by a margin left, right and on top, where the line
+    reaches past the cropped tree: cut there, it showed as a straight black
+    line at the image's edges, swaying with the crown. Not at the bottom:
+    the foot stays where it was."""
+    margin = int(np.ceil(px / 2)) + 3
+    src = np.asarray(image.convert("RGBA")).astype(np.float32)
+    a = np.zeros((src.shape[0] + margin, src.shape[1] + 2 * margin, 4), np.float32)
+    a[margin:, margin:margin + src.shape[1]] = src
     mask = a[..., 3] >= 128
     closed = ink_shrink(ink_grow(mask, INK_CLOSE), INK_CLOSE)
     blurred = Image.fromarray(closed.astype(np.uint8) * 255).filter(ImageFilter.GaussianBlur(INK_ROUND))
@@ -526,7 +535,7 @@ def ink_shipped(art, names, tree_zoom):
         kind = re.match(r"(.+)_adult_\d\d_summer\.webp$", name).group(1)
         tall = target_px(trees[kind], tree_zoom)
         image = Image.open(path)
-        save_webp(ink(image, INK_PX * image.height / tall), path)
+        save_webp(ink(image, INK_PX * image.height / tall, kind.startswith(INK_KEEP_HOLES)), path)
         print("inked", name, image.size)
 
 
