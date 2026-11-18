@@ -95,7 +95,10 @@ use serde::{Deserialize, Serialize};
 /// - v26: the fruit a tree shows (D48, 17 November 2026): each tree of a
 ///   chunk frame carries one byte more, its fruit (0 none, 1 a third, 2
 ///   laden), after its species.
-pub const PROTOCOL_VERSION: u32 = 26;
+/// - v27: the berries a shrub shows (D48, 18 November 2026): each plant
+///   of a chunk frame carries one byte more, its fruit, after its kind,
+///   as a tree's.
+pub const PROTOCOL_VERSION: u32 = 27;
 
 /// Chunks whose frames a client keeps after they left its view, the
 /// least recently hidden forgotten first (D4): about 3 MB of frames. The
@@ -769,8 +772,8 @@ pub fn decode<'a, T: Deserialize<'a>>(text: &'a str) -> Result<T, serde_json::Er
     serde_json::from_str(text)
 }
 
-/// A plant in a [`ChunkFrame`]: where it stands in its chunk and its
-/// kind.
+/// A plant in a [`ChunkFrame`]: where it stands in its chunk, its kind
+/// and the fruit it shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Standing {
     /// Millimetres east of the chunk's north-west corner.
@@ -779,6 +782,9 @@ pub struct Standing {
     pub dy: u16,
     /// Its kind, an index into [`ServerMessage::WorldState`]'s `flora`.
     pub kind: u8,
+    /// The fruit it shows (D48), as a tree's ([`StandingTree::fruit`]): a
+    /// berry shrub's; [`FRUIT_NONE`] for a kind without a fruit window.
+    pub fruit: u8,
 }
 
 /// A tree in a [`ChunkFrame`]: where it stands in its chunk, its species
@@ -797,11 +803,12 @@ pub struct StandingTree {
     pub fruit: u8,
 }
 
-/// A tree shows no fruit ([`StandingTree::fruit`]).
+/// A tree or a plant shows no fruit ([`StandingTree::fruit`],
+/// [`Standing::fruit`]).
 pub const FRUIT_NONE: u8 = 0;
-/// A tree shows some fruit: a third.
+/// A tree or a plant shows some fruit: a third.
 pub const FRUIT_THIRD: u8 = 1;
-/// A tree is laden.
+/// A tree or a plant is laden.
 pub const FRUIT_FULL: u8 = 2;
 
 /// A natural item in a [`ChunkFrame`]: what the ground itself drops. Its
@@ -850,7 +857,7 @@ pub struct StoredItem {
 /// - heights, when flag 1 is set: one `i16` per tile in tile order, in
 ///   decimetres above the sea (2 KB a chunk of 32 × 32);
 /// - trees: `n u16`, then `n × (dx u16, dy u16, species u8, fruit u8)`;
-/// - plants: `n u16`, then `n × (dx u16, dy u16, kind u8)`;
+/// - plants: `n u16`, then `n × (dx u16, dy u16, kind u8, fruit u8)`;
 /// - natural items: `n u16`, then `n × (slot u16, material u8)`;
 /// - stored items: `n u16`, then `n × (id u64, dx u8, dy u8, material u16,
 ///   mass_g u32)`.
@@ -1077,7 +1084,7 @@ pub fn encode_chunk(chunk: &ChunkFrame) -> Result<Vec<u8>, FrameError> {
     for s in &chunk.plants {
         out.extend_from_slice(&s.dx.to_le_bytes());
         out.extend_from_slice(&s.dy.to_le_bytes());
-        out.push(s.kind);
+        out.extend_from_slice(&[s.kind, s.fruit]);
     }
     out.extend_from_slice(&count(chunk.natural.len())?);
     for item in &chunk.natural {
@@ -1139,6 +1146,7 @@ impl Reader<'_> {
                     dx: self.u16()?,
                     dy: self.u16()?,
                     kind: self.u8()?,
+                    fruit: self.u8()?,
                 })
             })
             .collect()
@@ -1674,11 +1682,20 @@ mod tests {
                     fruit: FRUIT_THIRD,
                 },
             ],
-            plants: vec![Standing {
-                dx: 700,
-                dy: 3_900,
-                kind: 11,
-            }],
+            plants: vec![
+                Standing {
+                    dx: 700,
+                    dy: 3_900,
+                    kind: 11,
+                    fruit: FRUIT_NONE,
+                },
+                Standing {
+                    dx: 2_000,
+                    dy: 100,
+                    kind: 3,
+                    fruit: FRUIT_FULL,
+                },
+            ],
             natural: vec![
                 NaturalItem {
                     slot: 1 << 6 | 3,
@@ -1720,6 +1737,7 @@ mod tests {
                 dx: i * 16,
                 dy: i,
                 kind: u8::try_from(i % 40).unwrap(),
+                fruit: u8::try_from(i % 3).unwrap(),
             })
             .collect();
         let empty = ChunkFrame {

@@ -1107,8 +1107,9 @@ var _decor_cache: Array = []
 ## sized by its kind's height. One layer a chunk, drawn once, above the
 ## ground and below the trees. `with_ground`: worked out on a worker with
 ## the chunk's ground and laid with it (a chunk being built, C3), rather
-## than here (plants changed on a chunk built).
-func show_plants(plants: PackedInt32Array, flora: Array, with_ground := false) -> void:
+## than here (plants changed on a chunk built). `fruit`: the fruit each
+## plant shows (Protocol.decode_chunk's `plant_fruit`, D48).
+func show_plants(plants: PackedInt32Array, flora: Array, fruit: PackedByteArray, with_ground := false) -> void:
 	var layer: PlantLayer = get_node_or_null("Plants")
 	if layer == null:
 		layer = PlantLayer.new()
@@ -1118,14 +1119,14 @@ func show_plants(plants: PackedInt32Array, flora: Array, with_ground := false) -
 		layer.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 		add_child(layer)
 	if with_ground:
-		_plants_due = [plants, flora]
+		_plants_due = [plants, flora, fruit]
 		return
 	_plants_due = []
-	layer.set_plants(plants, flora)
+	layer.set_plants(plants, flora, fruit)
 
 
-## The plants to work out with the next ground ([plants, flora]; empty:
-## none).
+## The plants to work out with the next ground ([plants, flora, fruit];
+## empty: none).
 var _plants_due: Array = []
 
 
@@ -1143,9 +1144,26 @@ const SMALL_M := 0.7
 const SMALL_LIGHT := Color(1.18, 1.18, 1.1)
 static var _flora_atlas: Texture2D
 static var _flora_rects: Dictionary = {}
+## The berries a shrub shows (D48), as a tree's fruit (Trees.FRUIT_*): the
+## server says which, a byte a plant (Protocol.decode_chunk's
+## `plant_fruit`). A shrub's image is drawn bare and its berries over it,
+## small sprites hung at points found on each image. FLORA_FRUIT holds,
+## per image of the atlas ("<id>_<nn>"), its size and its points (pixels
+## from its top-left corner, the first third spread over the bush), and
+## per kind its sprites' rectangles in `<id>.webp`, its sheet. Without
+## them, a shrub is drawn bare.
+const FLORA_FRUIT_DIR := "res://art/flora/fruit/"
+const FLORA_FRUIT := FLORA_FRUIT_DIR + "fruit.json"
+## "<id>_<nn>" -> its berries' points, 0..1 across and down its image.
+static var _berry_points: Dictionary = {}
+## Kind id -> [its sheet, its sprites' rectangles (Array of Rect2)], for
+## the kinds with both. Read with the atlas, on the main thread, and kept
+## (a few kilobytes a kind): a worker only reads them.
+static var _berry_kinds: Dictionary = {}
 
 
-## The flora's atlas and its rectangles ("<id>_<nn>" -> Rect2).
+## The flora's atlas and its rectangles ("<id>_<nn>" -> Rect2), and the
+## shrubs' berries (read_berries).
 static func flora_atlas() -> Texture2D:
 	if _flora_atlas == null and ResourceLoader.exists(FLORA_ATLAS):
 		_flora_atlas = load(FLORA_ATLAS)
@@ -1154,7 +1172,57 @@ static func flora_atlas() -> Texture2D:
 			for key: String in parsed:
 				var r: Array = parsed[key]
 				_flora_rects[key] = Rect2(r[0], r[1], r[2], r[3])
+		read_berries()
 	return _flora_atlas
+
+
+## Reads the shrubs' berries (FLORA_FRUIT) and their sheets; none when
+## the file is not there.
+static func read_berries() -> void:
+	var data: Dictionary = {}
+	var sheets: Dictionary = {}
+	if FileAccess.file_exists(FLORA_FRUIT):
+		var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(FLORA_FRUIT))
+		if parsed is Dictionary:
+			data = parsed
+	for kind: String in data.get("kinds", {}):
+		var path := FLORA_FRUIT_DIR + kind + ".webp"
+		if ResourceLoader.exists(path):
+			sheets[kind] = load(path)
+	set_berries(data, sheets)
+
+
+## Sets the shrubs' berries from `data` (FLORA_FRUIT's form) and `sheets`
+## (kind id -> its texture): a kind without its sheet or its sprites shows
+## none.
+static func set_berries(data: Dictionary, sheets: Dictionary) -> void:
+	_berry_points = {}
+	_berry_kinds = {}
+	var images: Variant = data.get("images", {})
+	if images is Dictionary:
+		for key: String in images:
+			var entry: Variant = images[key]
+			if not entry is Dictionary:
+				continue
+			var size: Array = entry.get("image", [])
+			if size.size() != 2 or float(size[0]) <= 0.0 or float(size[1]) <= 0.0:
+				continue
+			var points := PackedVector2Array()
+			for p: Array in entry.get("points", []):
+				points.append(Vector2(float(p[0]) / float(size[0]), float(p[1]) / float(size[1])))
+			_berry_points[key] = points
+	var kinds: Variant = data.get("kinds", {})
+	if kinds is Dictionary:
+		for kind: String in kinds:
+			var entry: Variant = kinds[kind]
+			var sheet: Variant = sheets.get(kind)
+			if not entry is Dictionary or not sheet is Texture2D:
+				continue
+			var sprites: Array = []
+			for r: Array in entry.get("sprites", []):
+				sprites.append(Rect2(float(r[0]), float(r[1]), float(r[2]), float(r[3])))
+			if not sprites.is_empty():
+				_berry_kinds[kind] = [sheet, sprites]
 
 
 ## The atlas rectangles of a kind's images, `_01`, `_02`, ...
@@ -1193,7 +1261,47 @@ static func plant_region(at: Vector2, kind: Dictionary) -> Rect2:
 	var variants := flora_variants(str(kind.get("id", "")))
 	if variants.is_empty():
 		return Rect2()
-	return variants[int(Trees.place_hash(at, 9) * variants.size()) % variants.size()]
+	return variants[plant_variant(at, variants.size())]
+
+
+## Which of `count` images a plant at `at` shows (0 the first, `_01`).
+static func plant_variant(at: Vector2, count: int) -> int:
+	return int(Trees.place_hash(at, 9) * count) % count
+
+
+## The berries (D48) a plant of `kind` at `at` hangs when it shows
+## `fruit`, drawn at `rect` from its atlas region `region`: [texture rect,
+## sprite region, sheet] each, in drawing order; none without their data
+## (read_berries). Each sprite hangs from the middle of its top edge at
+## its point, at its plant's scale (its texels its plant's size); which
+## sprite, and which way it faces (a rectangle of negative width: drawn
+## flipped where it stands), follow from the plant's place, as a tree's
+## fruit. Pure: a worker may run it once the atlas is read.
+static func berries_of(at: Vector2, kind: Dictionary, rect: Rect2, region: Rect2, fruit: int) -> Array:
+	var out: Array = []
+	var id := str(kind.get("id", ""))
+	var looks: Variant = _berry_kinds.get(id)
+	if fruit <= Trees.FRUIT_NONE or looks == null or region.size.y <= 0.0:
+		return out
+	var count := flora_variants(id).size()
+	if count == 0:
+		return out
+	var key := "%s_%02d" % [id, plant_variant(at, count) + 1]
+	var points: PackedVector2Array = _berry_points.get(key, PackedVector2Array())
+	var n := Trees.fruit_shown(points.size(), fruit)
+	var sheet: Texture2D = looks[0]
+	var sprites: Array = looks[1]
+	var scale := rect.size.y / region.size.y
+	var place := Vector2i(int(at.x), int(at.y))
+	for k in n:
+		var s: Rect2 = sprites[StableHash.below([place.x, place.y, 13, k], sprites.size())]
+		var size := s.size * scale
+		var top := rect.position + points[k] * rect.size - Vector2(size.x / 2.0, 0.0)
+		if StableHash.below([place.x, place.y, 17, k], 2) == 1:
+			out.append([Rect2(top + Vector2(size.x, 0.0), Vector2(-size.x, size.y)), s, sheet])
+		else:
+			out.append([Rect2(top, size), s, sheet])
+	return out
 
 
 ## Where a plant of `kind` at `at` (millimetres) is drawn on screen, with
@@ -1210,20 +1318,24 @@ static func plant_rect(at: Vector2, kind: Dictionary, region: Rect2) -> Rect2:
 
 class PlantLayer:
 	extends Node2D
-	## [texture rect, atlas region], nearest the back first.
+	## [texture rect, atlas region, tint], nearest the back first; a
+	## shrub's berries right after it, [texture rect, region, tint, sheet].
 	var _draws: Array = []
 
-	func set_plants(plants: PackedInt32Array, flora: Array) -> void:
-		set_draws(draws_of(plants, flora))
+	func set_plants(plants: PackedInt32Array, flora: Array, fruit := PackedByteArray()) -> void:
+		set_draws(draws_of(plants, flora, fruit))
 
 	func set_draws(draws: Array) -> void:
 		_draws = draws
 		queue_redraw()
 
 	## What `plants` (as received: kind, x, y each) draw on the layer,
-	## nearest the back first: [texture rect, atlas region, tint]. Pure: a
-	## worker may run it once the atlas is read (ChunkView.flora_atlas).
-	static func draws_of(plants: PackedInt32Array, flora: Array) -> Array:
+	## nearest the back first: [texture rect, atlas region, tint], each
+	## followed by its berries (ChunkView.berries_of) when it shows some
+	## (`fruit`, one a plant: Protocol.decode_chunk's `plant_fruit`),
+	## [texture rect, region, tint, sheet]. Pure: a worker may run it once
+	## the atlas is read (ChunkView.flora_atlas).
+	static func draws_of(plants: PackedInt32Array, flora: Array, fruit := PackedByteArray()) -> Array:
 		var draws: Array = []
 		var sorted: Array = range(0, plants.size(), 3)
 		# Drawn from the back to the front (the screen's depth is x + y),
@@ -1243,7 +1355,12 @@ class PlantLayer:
 			var region := ChunkView.plant_region(at, kind)
 			if region.size == Vector2.ZERO:
 				continue
-			draws.append([ChunkView.plant_rect(at, kind, region), region, ChunkView.plant_tint(kind)])
+			var rect := ChunkView.plant_rect(at, kind, region)
+			var tint := ChunkView.plant_tint(kind)
+			draws.append([rect, region, tint])
+			var shows := fruit[i / 3] if i / 3 < fruit.size() else Trees.FRUIT_NONE
+			for b: Array in ChunkView.berries_of(at, kind, rect, region, shows):
+				draws.append([b[0], b[1], tint, b[2]])
 		return draws
 
 	func _draw() -> void:
@@ -1251,7 +1368,8 @@ class PlantLayer:
 		if atlas == null:
 			return
 		for d: Array in _draws:
-			draw_texture_rect_region(atlas, d[0], d[1], d[2])
+			var texture: Texture2D = d[3] if d.size() > 3 else atlas
+			draw_texture_rect_region(texture, d[0], d[1], d[2])
 
 
 ## Whether the chunk has built its ground at least once.

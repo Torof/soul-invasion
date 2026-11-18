@@ -128,6 +128,10 @@ pub struct Kind {
     /// When it would be in season, for later.
     #[serde(default)]
     pub season: String,
+    /// When its fruit shows on it (D48), if it shows any: a shrub's
+    /// berries, hips, sloes. Out of it, or without it, it is drawn bare.
+    #[serde(default)]
+    pub fruit: Option<crate::crops::FruitWindow>,
 }
 
 fn default_family() -> Family {
@@ -216,6 +220,9 @@ pub fn check(kind: &Kind, trees: &[&str]) -> Option<&'static str> {
     }
     if kind.per_thousand > 1000 {
         return Some("per_thousand is above 1000");
+    }
+    if let Some(what) = kind.fruit.as_ref().and_then(crate::crops::check_window) {
+        return Some(what);
     }
     let radius = match kind.grouping {
         Grouping::Single => 0.0,

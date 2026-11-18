@@ -38,6 +38,7 @@ func _init() -> void:
 	_test_currents_decode()
 	_test_the_golden_chunk_decodes()
 	_test_a_tree_shows_its_fruit_as_sprites_at_its_points()
+	_test_a_shrub_shows_its_berries_as_sprites_at_its_points()
 	_test_a_flat_chunk_has_no_heights_and_a_chunks_heights_are_kept()
 	_test_the_slopes_are_read_over_two_tiles_and_off_until_a_chunk_has_heights()
 	_test_the_slope_overlay_tells_a_summit_and_a_col_from_a_ring()
@@ -867,7 +868,7 @@ func _test_currents_decode() -> void:
 ## this test or the server's.
 func _test_the_golden_chunk_decodes() -> void:
 	var bytes := FileAccess.get_file_as_bytes("res://tests/fixtures/chunk_v17.bin")
-	_check(bytes.size() == 121, "the golden chunk is there: %d bytes" % bytes.size())
+	_check(bytes.size() == 128, "the golden chunk is there: %d bytes" % bytes.size())
 	var c := Protocol.decode_chunk(bytes, PackedStringArray(["m0", "m1", "m2", "m3", "m4"]))
 	_check(not c.is_empty(), "the golden chunk decodes")
 	if c.is_empty():
@@ -878,7 +879,8 @@ func _test_the_golden_chunk_decodes() -> void:
 	_check(c["heights"] == PackedInt32Array([0, 1, -1, 7, 32767, -32768, 120, 121, 0, 0, 0, 0, 5, 4, 3, 2]), "its heights: %s" % c["heights"])
 	_check(c["trees"] == PackedInt32Array([2, 43_999, -8_000, 0, 13_500, -5_750]), "its trees: %s" % c["trees"])
 	_check(c["fruit"] == PackedByteArray([2, 1]), "their fruit, laden and a third: %s" % c["fruit"])
-	_check(c["plants"] == PackedInt32Array([11, 12_700, -4_100]), "its plants: %s" % c["plants"])
+	_check(c["plants"] == PackedInt32Array([11, 12_700, -4_100, 3, 14_000, -7_900]), "its plants: %s" % c["plants"])
+	_check(c["plant_fruit"] == PackedByteArray([0, 2]), "their fruit, none and laden: %s" % c["plant_fruit"])
 	var items: Array = c["items"]
 	_check(items == [
 		{"id": 281_474_976_710_698, "x": 15, "y": -7, "material": "", "mass_g": 70_123},
@@ -937,6 +939,67 @@ func _test_a_tree_without_images_is_drawn_with_a_stand_in() -> void:
 	_check(stand.heights[0] == 2_000 and stand.heights[1] == 600, "each at its own height: %s" % [stand.heights])
 	stand.release()
 
+## A shrub showing berries (D48) is drawn bare with its berries' sprites
+## hung at its image's points, right after it, at its scale: all of them
+## laden, the first third a third laden, none without its data.
+func _test_a_shrub_shows_its_berries_as_sprites_at_its_points() -> void:
+	var flora := [
+		{"id": "bramble", "name": "Bramble", "family": "shrub", "height_cm": 60},
+		{"id": "elder", "name": "Elder", "family": "shrub", "height_cm": 250},
+	]
+	_check(ChunkView.flora_atlas() != null, "the flora's atlas loads")
+	var at := Vector2(3_500, 7_500)
+	var region := ChunkView.plant_region(at, flora[0])
+	var variant := ChunkView.plant_variant(at, ChunkView.flora_variants("bramble").size())
+	_check(ChunkView.flora_variants("bramble")[variant] == region, "a plant's variant is its region's")
+	# A tiny data of its own: six points on each bramble image, two sprites.
+	var sheet := ImageTexture.create_from_image(Image.create(16, 8, false, Image.FORMAT_RGBA8))
+	var images := {}
+	for n in ChunkView.flora_variants("bramble").size():
+		var r: Rect2 = ChunkView.flora_variants("bramble")[n]
+		var points: Array = []
+		for k in 6:
+			points.append([r.size.x * (k + 1) / 7.0, r.size.y / 2.0])
+		images["bramble_%02d" % (n + 1)] = {"image": [r.size.x, r.size.y], "points": points}
+	ChunkView.set_berries({"images": images, "kinds": {"bramble": {"sprites": [[0, 0, 8, 8], [8, 0, 8, 8]]}}}, {"bramble": sheet})
+	var rect := ChunkView.plant_rect(at, flora[0], region)
+	var full := ChunkView.berries_of(at, flora[0], rect, region, Trees.FRUIT_FULL)
+	var third := ChunkView.berries_of(at, flora[0], rect, region, Trees.FRUIT_THIRD)
+	_check(full.size() == 6 and third.size() == 2, "laden, all six; a third, the first two: %d %d" % [full.size(), third.size()])
+	_check(ChunkView.berries_of(at, flora[0], rect, region, Trees.FRUIT_NONE).is_empty(), "none shows none")
+	_check(ChunkView.berries_of(at, flora[1], rect, region, Trees.FRUIT_FULL).is_empty(), "a kind without data shows none")
+	var scale := rect.size.y / region.size.y
+	var hung := true
+	for k in full.size():
+		var b: Array = full[k]
+		var r: Rect2 = b[0]
+		var point := rect.position + Vector2(rect.size.x * (k + 1) / 7.0, rect.size.y / 2.0)
+		# A sprite hangs from the middle of its top edge, flipped or not.
+		var middle := r.position.x + r.size.x / 2.0
+		hung = hung and is_equal_approx(middle, point.x) and is_equal_approx(r.position.y, point.y)
+		hung = hung and is_equal_approx(absf(r.size.x), 8.0 * scale) and is_equal_approx(r.size.y, 8.0 * scale)
+		hung = hung and b[2] == sheet and (b[1] == Rect2(0, 0, 8, 8) or b[1] == Rect2(8, 0, 8, 8))
+	_check(hung, "each sprite hangs from its point at its plant's scale")
+	_check(str(full) == str(ChunkView.berries_of(at, flora[0], rect, region, Trees.FRUIT_FULL)), "the same every time")
+	# The layer draws each shrub's berries right after it, with its tint.
+	var plants := PackedInt32Array([0, int(at.x), int(at.y), 0, 9_000, 9_000])
+	var draws := ChunkView.PlantLayer.draws_of(plants, flora, PackedByteArray([2, 0]))
+	_check(draws.size() == 2 + 6 and draws[0].size() == 3 and draws[1].size() == 4 and draws[1][3] == sheet and draws[6].size() == 4 and draws[7].size() == 3, "a laden bramble, then its six berries, then a bare one: %d" % draws.size())
+	_check(ChunkView.PlantLayer.draws_of(plants, flora).size() == 2, "without fruit, bare")
+	# A tall shrub among the trees keeps its berries for its canvas item.
+	var tall := [{"id": "bramble", "name": "Bramble", "family": "shrub", "height_cm": 90}]
+	var stand := PlantStand.new(PackedInt32Array([0, int(at.x), int(at.y)]), tall, PackedByteArray([1]))
+	_check(stand.size() == 1 and (stand.berries.get(0, []) as Array).size() == 2, "a tall bramble a third laden hangs two")
+	var parent := RenderingServer.canvas_item_create()
+	stand.parent = parent
+	stand.show_cells(Trees.Stand.cell_range(stand.rect(0)))
+	_check(stand.items.has(0), "shown with its berries")
+	stand.release()
+	RenderingServer.free_rid(parent)
+	# The game's own data, as read (none while its art is not there).
+	ChunkView.read_berries()
+
+
 ## Every tree image and fruit sheet is imported compressed for the
 ## graphics card, with its mipmaps (as every tree before it): Godot's
 ## defaults for a new file are neither, four times the memory and a
@@ -944,11 +1007,11 @@ func _test_a_tree_without_images_is_drawn_with_a_stand_in() -> void:
 ## came in so on 18 November 2026).
 func _test_tree_images_import_compressed_with_mipmaps() -> void:
 	var files: Array[String] = []
-	for dir: String in [Trees.DIR, Trees.DIR.path_join("fruit")]:
+	for dir: String in [Trees.DIR, Trees.DIR.path_join("fruit"), "res://art/flora/fruit"]:
 		for file in DirAccess.get_files_at(dir):
 			if file.ends_with(".webp.import"):
 				files.append(dir.path_join(file))
-	_check(files.size() >= 28, "the trees' and fruit's images are found: %d" % files.size())
+	_check(files.size() >= 42, "the trees', their fruit's and the berries' images are found: %d" % files.size())
 	for path in files:
 		var text := FileAccess.get_file_as_string(path)
 		_check(text.contains("compress/mode=2") and text.contains("mipmaps/generate=true"), "%s is compressed, with mipmaps" % path.get_file())

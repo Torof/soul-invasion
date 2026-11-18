@@ -15,6 +15,9 @@ var feet := PackedVector2Array()
 var rects := PackedVector2Array()
 ## Each plant's region of the flora's atlas: position then size.
 var regions := PackedVector2Array()
+## Plant index -> its berries (ChunkView.berries_of: [texture rect,
+## sprite region, sheet] each), for the plants showing some (D48).
+var berries: Dictionary = {}
 ## How many of the cells shown each plant's image covers.
 var refs := PackedByteArray()
 ## Cell of the screen (Trees.Stand.CELL_PX) -> PackedInt32Array, the plants
@@ -31,8 +34,9 @@ var parent := RID()
 
 ## `plants`: as a chunk brings them (kind, x, y each, in millimetres), in
 ## the server's order; only those that stand (ChunkView.plant_stands) and
-## have an image are kept. `flora`: the kinds, by index.
-func _init(plants := PackedInt32Array(), flora: Array = []) -> void:
+## have an image are kept. `flora`: the kinds, by index. `fruit`: the
+## fruit each plant shows (Protocol.decode_chunk's `plant_fruit`, D48).
+func _init(plants := PackedInt32Array(), flora: Array = [], fruit := PackedByteArray()) -> void:
 	var lo := Vector2i(1 << 30, 1 << 30)
 	var hi := -lo
 	for p in range(0, plants.size(), 3):
@@ -50,6 +54,10 @@ func _init(plants := PackedInt32Array(), flora: Array = []) -> void:
 		rects.append(r.size)
 		regions.append(cut.position)
 		regions.append(cut.size)
+		var shows := fruit[p / 3] if p / 3 < fruit.size() else Trees.FRUIT_NONE
+		var hung := ChunkView.berries_of(at, flora[k], r, cut, shows)
+		if not hung.is_empty():
+			berries[i] = hung
 		var a := Vector2i((r.position / Trees.Stand.CELL_PX).floor())
 		var b := Vector2i((r.end / Trees.Stand.CELL_PX).floor())
 		lo = Vector2i(mini(lo.x, a.x), mini(lo.y, a.y))
@@ -122,6 +130,11 @@ func _show(i: int) -> void:
 	if atlas != null:
 		var r := rect(i)
 		RenderingServer.canvas_item_add_texture_rect_region(item, Rect2(r.position - feet[i], r.size), atlas.get_rid(), region(i))
+		# Its berries over it, in its own canvas item (D48).
+		for b: Array in berries.get(i, []):
+			var at: Rect2 = b[0]
+			var sheet: Texture2D = b[2]
+			RenderingServer.canvas_item_add_texture_rect_region(item, Rect2(at.position - feet[i], at.size), sheet.get_rid(), b[1])
 
 
 func _hide(i: int) -> void:

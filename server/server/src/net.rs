@@ -1014,11 +1014,13 @@ impl Shared {
     }
 
     /// The fruit phase now ([`sim::crops::fruit_phase`]): which fruit
-    /// windows and tree crops are open. A frame made in another phase may
-    /// show its trees' fruit wrong (D48).
+    /// windows and crops of the trees and the shrubs are open. A frame
+    /// made in another phase may show its trees' and shrubs' fruit wrong
+    /// (D48).
     pub fn fruit_phase(&self) -> u64 {
         sim::crops::fruit_phase(
             &self.tree_kinds,
+            &self.flora_kinds,
             &self.crops,
             &self.calendar,
             Tick(self.tick.load(Ordering::Relaxed)),
@@ -1281,7 +1283,7 @@ impl Shared {
         // The fruit as of now: the frame is the same bytes for every
         // client until a window or a crop opens or shuts (D48).
         let tick = Tick(self.tick.load(Ordering::Relaxed));
-        let phase = sim::crops::fruit_phase(&self.tree_kinds, &self.crops, &self.calendar, tick);
+        let phase = self.fruit_phase_at(tick);
         let key = (chunk, ground.version, version, phase);
         let held = self
             .frames
@@ -1314,8 +1316,19 @@ impl Shared {
         })
     }
 
+    /// The fruit phase at `tick` ([`Shared::fruit_phase`]).
+    fn fruit_phase_at(&self, tick: Tick) -> u64 {
+        sim::crops::fruit_phase(
+            &self.tree_kinds,
+            &self.flora_kinds,
+            &self.crops,
+            &self.calendar,
+            tick,
+        )
+    }
+
     /// The frame of a chunk's ground and items, at `version`, its trees'
-    /// fruit as of `tick` with `picked` its picks (D48).
+    /// and shrubs' fruit as of `tick` with `picked` its picks (D48).
     fn frame_of(
         &self,
         ground: ChunkGround,
@@ -1385,10 +1398,56 @@ impl Shared {
             currents: ground.currents,
             heights: ground.heights,
             trees,
-            plants: ground.plants,
+            plants: self.plants_fruit(chunk, ground.plants, tick, picked),
             natural,
             stored,
         })
+    }
+
+    /// `plants`, of `chunk`, each with the fruit it shows as of `tick`
+    /// with `picked` its chunk's picks (D48): a berry shrub's, as a
+    /// tree's; none for a kind without a fruit window.
+    fn plants_fruit(
+        &self,
+        chunk: ChunkPos,
+        mut plants: Vec<Standing>,
+        tick: Tick,
+        picked: Option<&Picks>,
+    ) -> Vec<Standing> {
+        // The kinds the client knows, by their index on the wire.
+        let mut kinds: Vec<Option<&sim::flora::Kind>> = vec![None; self.flora.len()];
+        for (kind, wire) in self.flora_kinds.iter().zip(&self.flora_wire) {
+            if let Some(slot) = wire.and_then(|w| kinds.get_mut(usize::from(w))) {
+                *slot = Some(kind).filter(|k| k.fruit.is_some());
+            }
+        }
+        if kinds.iter().all(Option::is_none) {
+            return plants;
+        }
+        let origin = chunk.origin();
+        let mm = sim::MM_PER_TILE;
+        for plant in &mut plants {
+            let Some(kind) = kinds.get(usize::from(plant.kind)).copied().flatten() else {
+                continue;
+            };
+            let at = FinePos::new(
+                origin.x * mm + i32::from(plant.dx),
+                origin.y * mm + i32::from(plant.dy),
+            );
+            let fruit = sim::crops::plant_fruit_on(
+                kind,
+                &self.crops,
+                &self.calendar,
+                tick,
+                self.seed,
+                self.map.origin(),
+                chunk,
+                at,
+                picked,
+            );
+            plant.fruit = fruit as u8;
+        }
+        plants
     }
 
     /// Development (`--dump-chunk`): `chunk` as a client decodes it from
@@ -1459,10 +1518,11 @@ impl Shared {
         for p in &f.plants {
             writeln!(
                 out,
-                "  plant {} at +{} mm, +{} mm",
+                "  plant {} at +{} mm, +{} mm, fruit {}",
                 name(&flora, p.kind.into()),
                 p.dx,
-                p.dy
+                p.dy,
+                p.fruit
             )?;
         }
         for n in &f.natural {
@@ -1611,7 +1671,14 @@ impl Shared {
                         .copied()
                         .flatten()?;
                     let (dx, dy) = offset_in(chunk, p.at).expect("a plant stands in its chunk");
-                    Some(Standing { dx, dy, kind })
+                    // Its fruit is worked out as the frame is made (D48).
+                    let fruit = protocol::FRUIT_NONE;
+                    Some(Standing {
+                        dx,
+                        dy,
+                        kind,
+                        fruit,
+                    })
                 })
                 .collect();
         // Placed with no lock held: two connections missing the same
@@ -3187,7 +3254,8 @@ mod tests {
         // generator sends them byte for byte. Re-pinned on 16 November
         // 2026 for 19 more shrubs and plants (1,015,322 bytes before),
         // then for six fruit and nut trees (1,225,292), then for the
-        // fruit each tree shows, a byte a tree (1,226,087, D48).
+        // fruit each tree shows, a byte a tree (1,226,087, D48), then for
+        // the berries each shrub shows, a byte a plant (1,234,476).
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
         let content = crate::content::load(&dir).expect("repository content");
         let map = Map::valley_by(sim::map::FIRST_GENERATOR, 768, 768, sim::VALLEY_SEED);
@@ -3203,7 +3271,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!((print, bytes), (0x7c1f_d1dc_d41f_c5ae, 1_234_476));
+        assert_eq!((print, bytes), (0x8e46_3fa7_f6e3_39aa, 1_338_344));
     }
 
     #[test]
@@ -3853,6 +3921,79 @@ mod tests {
         let now = fruit(&shared, hazel);
         assert_eq!(now[0], protocol::FRUIT_NONE, "picked bare");
         assert_eq!(now[1..], hazels[1..], "the others as they were");
+    }
+
+    #[test]
+    fn a_frame_shows_the_berries_of_its_shrubs_as_of_now_and_of_the_picks() {
+        let (world, shared, _) = fruiting();
+        let calendar = *world.calendar();
+        let day = calendar.ticks_per_day();
+        // Late summer: the blackberries are on, and the elderberries no one
+        // gathers here (D30).
+        let late_summer = Tick(day * (u64::from(calendar.days_per_year()) * 45 / 100) + day / 2);
+        let wire = |id: &str| {
+            let index = shared.flora.iter().position(|k| k.id == id).unwrap();
+            u8::try_from(index).unwrap()
+        };
+        let (bramble, elder) = (wire("bramble"), wire("elder"));
+        let plants = |chunk: ChunkPos, kind: u8| -> Vec<Standing> {
+            let sent = shared.chunk_message(chunk).unwrap();
+            protocol::decode_chunk(&sent.frame)
+                .unwrap()
+                .plants
+                .into_iter()
+                .filter(|p| p.kind == kind)
+                .collect()
+        };
+        let fruit =
+            |chunk, kind| -> Vec<u8> { plants(chunk, kind).iter().map(|p| p.fruit).collect() };
+        let window = View::window(&shared.map, shared.map.camp().chunk());
+        let with = |kind| {
+            window
+                .iter()
+                .copied()
+                .find(|&c| !plants(c, kind).is_empty())
+                .expect("around the camp")
+        };
+        let (brambles, elders) = (with(bramble), with(elder));
+        // Spring: no berries.
+        assert!(
+            fruit(brambles, bramble)
+                .iter()
+                .all(|&f| f == protocol::FRUIT_NONE)
+        );
+        assert!(
+            fruit(elders, elder)
+                .iter()
+                .all(|&f| f == protocol::FRUIT_NONE)
+        );
+        shared.tick.store(late_summer.0, Ordering::Relaxed);
+        let on = fruit(brambles, bramble);
+        assert!(on.contains(&protocol::FRUIT_FULL), "laden: {on:?}");
+        assert!(on.iter().all(|&f| f != protocol::FRUIT_NONE), "{on:?}");
+        assert!(
+            fruit(elders, elder)
+                .iter()
+                .all(|&f| f == protocol::FRUIT_FULL)
+        );
+        // A bramble picked bare shows none, in a frame of the chunk's new
+        // version; the others as they were.
+        let first = plants(brambles, bramble)[0];
+        let key = sim::crops::PlantKey {
+            x_mm: first.dx,
+            y_mm: first.dy,
+        };
+        let picks = BTreeMap::from([(
+            (Source::Plant(key), "blackberries".to_owned()),
+            Picked {
+                year: 1,
+                grams: u32::MAX,
+            },
+        )]);
+        shared.crop_picked(brambles, &picks, 1);
+        let now = fruit(brambles, bramble);
+        assert_eq!(now[0], protocol::FRUIT_NONE, "picked bare");
+        assert_eq!(now[1..], on[1..]);
     }
 
     #[test]

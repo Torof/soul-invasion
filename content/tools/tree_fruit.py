@@ -7,6 +7,16 @@ numpy. From the repository's root:
 
     python3 content/tools/tree_fruit.py sprites <id> <reference> <cell>... [--px N]
     python3 content/tools/tree_fruit.py points <id>
+    python3 content/tools/tree_fruit.py --flora sprites|points ...
+
+With `--flora`, the same for a berry shrub of the flora (D48, amended on
+18 November 2026): its sprites go to `art/flora/fruit/<id>.webp` and
+`art/flora/fruit/fruit.json`, and `points` works on each of the kind's
+images in the flora's atlas (`art/flora/atlas.webp`, by its `atlas.json`
+name, `bramble_01`), brought up to FLORA_WORK px high to be read with the
+trees' measures, then back: the points are in the atlas image's own pixels,
+`image` its rectangle's size. Berries hang lower on a bush than fruit in a
+crown: down to FLORA_LOWEST of its height.
 
 `sprites`: each <cell> is `<image>:<row>:<column>`, one cell of a
 Midjourney sheet of four (2 x 2) showing whole fruit on white, or
@@ -55,6 +65,10 @@ SPRITE_PX = 130
 PAD = 8
 COUNT = 30
 SPACING = 140
+FLORA = Path(__file__).resolve().parents[1] / "art" / "flora"
+FLORA_WORK = 2000
+LOWEST = 0.70
+FLORA_LOWEST = 0.85
 QUANTILES = np.linspace(0, 1, 101)
 
 
@@ -207,9 +221,9 @@ def make_sprites(kind, reference, cells, px=SPRITE_PX):
     print(f"{kind}: {len(rects)} sprites, {sheet.width} x {sheet.height}")
 
 
-def find_points(path, foot):
-    """The points of one tree image (see the module's docstring)."""
-    t = Image.open(path).convert("RGBA")
+def find_points(t, foot, lowest=LOWEST):
+    """The points of one tree image `t` (see the module's docstring)."""
+    t = t.convert("RGBA")
     a = np.asarray(t).astype(float)
     h, s, v = hsv(a[..., :3])
     opaque = a[..., 3] > 250
@@ -229,7 +243,7 @@ def find_points(path, foot):
     top, bottom = rows[0], rows[-1]
     cand = []
     for y, x in zip(*np.nonzero(edge)):
-        if not top + 0.05 * (bottom - top) <= y <= top + 0.70 * (bottom - top):
+        if not top + 0.05 * (bottom - top) <= y <= top + lowest * (bottom - top):
             continue
         feet = ((y + 10, x), (y + fh // 2, x - fw // 3), (y + fh // 2, x + fw // 3), (y + fh - 10, x), (y + fh // 2, x))
         if all(0 <= py < ok.shape[0] and 0 <= px < ok.shape[1] and ok[py, px] for py, px in feet):
@@ -239,7 +253,7 @@ def find_points(path, foot):
     # have few dark edges.
     for y, x in zip(*np.nonzero(leaf[::8, ::8])):
         y, x = 8 * y, 8 * x
-        if not top + 0.05 * (bottom - top) <= y <= top + 0.70 * (bottom - top):
+        if not top + 0.05 * (bottom - top) <= y <= top + lowest * (bottom - top):
             continue
         feet = ((y + 10, x), (y + fh // 2, x - fw // 3), (y + fh // 2, x + fw // 3), (y + fh - 10, x), (y + fh // 2, x))
         if all(0 <= py < ok.shape[0] and 0 <= px < ok.shape[1] and ok[py, px] for py, px in feet):
@@ -270,14 +284,39 @@ def make_points(kind):
         sys.exit(f"{kind}: no sprites yet (run `sprites` first)")
     foot = (max(r[2] for r in rects), max(r[3] for r in rects))
     for path in sorted(ART.glob(f"{kind}_adult_*_summer.webp")):
-        (w, h), points = find_points(path, foot)
+        (w, h), points = find_points(Image.open(path), foot)
         data["images"][path.name] = {"image": [padded(w), padded(h)], "points": points}
         print(f"{path.name}: {len(points)} points")
     save(data)
 
 
+def make_flora_points(kind):
+    data = load()
+    rects = data["kinds"].get(kind, {}).get("sprites", [])
+    if not rects:
+        sys.exit(f"{kind}: no sprites yet (run `sprites` first)")
+    atlas = Image.open(FLORA / "atlas.webp")
+    names = json.loads((FLORA / "atlas.json").read_text())
+    for name, (x, y, w, h) in sorted(names.items()):
+        if name.rsplit("_", 1)[0] != kind:
+            continue
+        k = FLORA_WORK / h
+        work = atlas.crop((x, y, x + w, y + h)).resize((round(w * k), FLORA_WORK), Image.LANCZOS)
+        foot = (round(max(r[2] for r in rects) * k), round(max(r[3] for r in rects) * k))
+        _, points = find_points(work, foot, FLORA_LOWEST)
+        data["images"][name] = {"image": [w, h], "points": [[round(px / k), round(py / k)] for px, py in points]}
+        print(f"{name}: {len(points)} points")
+    save(data)
+
+
 def main():
+    global ART, FRUIT, DATA
     args = sys.argv[1:]
+    flora = "--flora" in args
+    if flora:
+        args.remove("--flora")
+        ART, FRUIT = FLORA, FLORA / "fruit"
+        DATA = FRUIT / "fruit.json"
     px = SPRITE_PX
     if "--px" in args:
         i = args.index("--px")
@@ -286,7 +325,7 @@ def main():
     if len(args) >= 4 and args[0] == "sprites":
         make_sprites(args[1], args[2], args[3:], px)
     elif len(args) == 2 and args[0] == "points":
-        make_points(args[1])
+        (make_flora_points if flora else make_points)(args[1])
     else:
         sys.exit(__doc__)
 

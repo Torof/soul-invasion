@@ -525,7 +525,7 @@ fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
             }
         }
         Event::CropPicked { chunk, version } => {
-            // The fruit its trees show follows what is left (D48).
+            // The fruit its trees and shrubs show follows what is left (D48).
             if let Some(changes) = world.changes_in(*chunk) {
                 shared.crop_picked(*chunk, &changes.picked, *version);
             }
