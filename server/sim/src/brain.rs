@@ -81,6 +81,18 @@ pub const STOCK_KJ: u64 = 30_000;
 /// (a plant picked bare while it ripens, a load already full), a
 /// livelock that cost 80 to 95 % of the tick (audit of 18 Nov 2026).
 pub const RETRY_HOURS: u64 = 1;
+/// The dawn and the nightfall make every mind think, not all in one
+/// tick: each within this many game seconds after, by its body's id (a
+/// dawn cost up to 116 ms with every mind at once). So does a gauge
+/// past a threshold: a tribe born at once grows hungry in one tick.
+pub const WAKE_SPREAD_SECONDS: u64 = 60;
+/// How many chunks' trees and plants the brains place a game second at
+/// most, spread evenly over its ticks (one a tick at the game's ten):
+/// placing one costs 15 to 30 ms on the vivarium's land, and a body
+/// seeing new land sees some twenty-five at once. The rest are placed at
+/// the next turns, and the body learns their plants then. A second, not
+/// a tick, so that what a body knows does not hang on the cadence.
+pub const COLD_CHUNKS_PER_SECOND: u64 = 10;
 
 /// Why a body was asked to do something.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,6 +186,12 @@ pub struct Mind {
     /// The chunks whose plants it could not walk to, and the day it
     /// tried: left alone until the next day, when it may stand elsewhere.
     out_of_reach: BTreeMap<ChunkPos, u64>,
+    /// The chunks in sight from `plants_from` whose plants were not
+    /// placed yet ([`COLD_CHUNKS_PER_SECOND`]): learnt at the next turns.
+    unseen: Vec<ChunkPos>,
+    /// The tick it thinks at for the dawn or the nightfall
+    /// ([`WAKE_SPREAD_SECONDS`]), unless it thought since.
+    wake_at: Option<u64>,
     /// How many times it went looking: the next direction.
     walks: u64,
     /// How many times it thought.
@@ -195,8 +213,22 @@ impl Mind {
             due: true,
             stopped: false,
             out_of_reach: BTreeMap::new(),
+            unseen: Vec::new(),
+            wake_at: None,
             walks: 0,
             thoughts: 0,
+        }
+    }
+
+    /// Something every mind hears at once (the dawn, the nightfall) or
+    /// a gauge past a threshold: it thinks in its own tick, `body`'s id
+    /// modulo `spread` ticks after `now` ([`WAKE_SPREAD_SECONDS`]).
+    fn wake(&mut self, body: BodyId, now: u64, spread: u64) {
+        let at = now + u64::from(body.0) % spread;
+        if at == now {
+            self.due = true;
+        } else {
+            self.wake_at = Some(self.wake_at.map_or(at, |w| w.min(at)));
         }
     }
 
@@ -239,7 +271,82 @@ pub struct Brains {
     /// The trees and plants bearing food of each chunk a body looked at,
     /// placed once for all the minds: they never change (no felling yet),
     /// and placing a chunk's plants costs a few milliseconds.
-    bearers: BTreeMap<ChunkPos, Vec<Bearer>>,
+    bearers: Placed,
+}
+
+/// The trees and plants bearing food of the chunks the minds looked at,
+/// and how many more this turn may place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Placed {
+    chunks: BTreeMap<ChunkPos, Vec<Bearer>>,
+    /// Chunks this turn may still place ([`COLD_CHUNKS_PER_SECOND`]).
+    left: u64,
+}
+
+/// How many chunks the turn after the tick `now` may place: the
+/// second's [`COLD_CHUNKS_PER_SECOND`], spread evenly over its ticks.
+fn cold_chunks_at(world: &World, now: u64) -> u64 {
+    let tps = u64::from(world.calendar().ticks_per_second()).max(1);
+    now * COLD_CHUNKS_PER_SECOND / tps - now.saturating_sub(1) * COLD_CHUNKS_PER_SECOND / tps
+}
+
+impl Placed {
+    fn new() -> Self {
+        Self {
+            chunks: BTreeMap::new(),
+            left: u64::MAX,
+        }
+    }
+
+    /// The trees and plants bearing food of `chunk`; placed now if they
+    /// are not yet and the turn allows one more, else `None`.
+    fn get(&mut self, world: &World, rules: &Content, chunk: ChunkPos) -> Option<&[Bearer]> {
+        if !self.chunks.contains_key(&chunk) {
+            if self.left == 0 {
+                return None;
+            }
+            self.left -= 1;
+            self.chunks
+                .insert(chunk, food_bearers_in(world, rules, chunk));
+        }
+        self.chunks.get(&chunk).map(Vec::as_slice)
+    }
+
+    /// Places `chunk`'s now, out of any turn's count.
+    fn warm(&mut self, world: &World, rules: &Content, chunk: ChunkPos) {
+        self.chunks
+            .entry(chunk)
+            .or_insert_with(|| food_bearers_in(world, rules, chunk));
+    }
+}
+
+/// Is `material` food?
+fn is_food(rules: &Content, material: &str) -> bool {
+    rules.material(material).is_some_and(|m| m.food.is_some())
+}
+
+/// The trees and plants of `chunk` that bear food in some season.
+fn food_bearers_in(world: &World, rules: &Content, chunk: ChunkPos) -> Vec<Bearer> {
+    world
+        .bearers_in(chunk)
+        .iter()
+        .filter(|b| {
+            rules
+                .crops
+                .iter()
+                .any(|crop| crop.on == b.kind && is_food(rules, &crop.gives))
+        })
+        .cloned()
+        .collect()
+}
+
+/// How far a body standing on `at` sees, in tiles.
+fn sight_at(map: &Map, rules: &Content, at: Pos) -> i32 {
+    i32::try_from(
+        map.get(at)
+            .map_or(1, |terrain| rules.movement.sight_tiles(terrain)),
+    )
+    .unwrap_or(1)
 }
 
 impl Brains {
@@ -249,7 +356,7 @@ impl Brains {
             minds: BTreeMap::new(),
             seed,
             camp_water: BTreeMap::new(),
-            bearers: BTreeMap::new(),
+            bearers: Placed::new(),
         }
     }
 
@@ -263,12 +370,37 @@ impl Brains {
 
     /// The same, the body's home being the camp at `home` (a tribe's own
     /// camp, D41: the vivarium's two tribes live on two camps).
+    /// The trees and plants in sight of the camp and of the body are
+    /// placed now, not at the first turn (2.5 to 3.5 ms a chunk, some
+    /// twenty-five chunks).
     pub fn adopt_at(&mut self, world: &World, rules: &Content, body: BodyId, home: Pos) {
+        let stands = world.body(body).map(crate::Body::pos);
+        for from in std::iter::once(home).chain(stands) {
+            let reach = sight_at(world.map(), rules, from) + HOME_TILES;
+            let low = Pos::new(from.x - reach, from.y - reach).chunk();
+            let high = Pos::new(from.x + reach, from.y + reach).chunk();
+            for cy in low.y..=high.y {
+                for cx in low.x..=high.x {
+                    self.bearers.warm(world, rules, ChunkPos::new(cx, cy));
+                }
+            }
+        }
         let water = *self
             .camp_water
             .entry(home)
             .or_insert_with(|| nearest_drinking_place(world.map(), rules, home));
-        let mind = self.minds.entry(body).or_insert_with(|| Mind::new(home));
+        let now = world.tick().0;
+        let first = now + u64::from(body.0) % wake_spread(world);
+        let mind = self.minds.entry(body).or_insert_with(|| {
+            // Its first thought too in its own tick: a tribe born at once
+            // does not think all in one.
+            let mut mind = Mind::new(home);
+            if first > now + 1 {
+                mind.due = false;
+                mind.wake_at = Some(first);
+            }
+            mind
+        });
         if let Some(place) = water {
             mind.water.insert(place.stand.chunk(), place);
         }
@@ -290,8 +422,12 @@ impl Brains {
         events: &[Event],
     ) -> Vec<(BodyId, Decision)> {
         self.notice(events, world);
+        let now = world.tick().0;
+        self.bearers.left = cold_chunks_at(world, now);
+        self.learn_unseen(world, rules);
         let mut decisions = Vec::new();
         let seed = self.seed;
+        let spread = wake_spread(world);
         let bearers = &mut self.bearers;
         self.minds.retain(|&id, mind| {
             let Some(body) = world.body(id) else {
@@ -303,13 +439,19 @@ impl Brains {
             }
             let past = pasts(world, id);
             if past != mind.past {
+                // A gauge past a threshold: in its own tick too, as the
+                // dawn (a tribe born at once grows hungry at once).
                 mind.past = past;
+                mind.wake(id, now, spread);
+            }
+            if mind.wake_at.is_some_and(|tick| now >= tick) {
                 mind.due = true;
             }
             if !mind.due {
                 return true;
             }
             mind.due = false;
+            mind.wake_at = None;
             mind.thoughts += 1;
             look(world, rules, body.pos(), mind, bearers);
             if let Some(decision) = decide(world, rules, id, mind, seed) {
@@ -321,13 +463,44 @@ impl Brains {
         decisions
     }
 
+    /// The plants of the chunks the minds saw last turns and could not
+    /// place then ([`COLD_CHUNKS_PER_SECOND`]), as many as this turn allows,
+    /// the minds in turn: learnt without a thought.
+    fn learn_unseen(&mut self, world: &World, rules: &Content) {
+        for (&id, mind) in &mut self.minds {
+            if mind.unseen.is_empty() {
+                continue;
+            }
+            let Some(at) = mind.plants_from.filter(|_| world.body(id).is_some()) else {
+                mind.unseen.clear();
+                continue;
+            };
+            let sight = sight_at(world.map(), rules, at);
+            let unseen = std::mem::take(&mut mind.unseen);
+            let mut learnt = false;
+            for chunk in unseen {
+                if learn_plants(world, rules, &mut self.bearers, mind, chunk, at, sight) {
+                    learnt = true;
+                } else {
+                    mind.unseen.push(chunk);
+                }
+            }
+            if learnt {
+                forget_the_least(world, rules, at, mind);
+            }
+        }
+    }
+
     /// Marks the minds the tick's events concern.
     fn notice(&mut self, events: &[Event], world: &World) {
         for event in events {
             let body = match event {
                 Event::DayStarted { .. } | Event::NightFell { .. } => {
-                    for mind in self.minds.values_mut() {
-                        mind.due = true;
+                    // Each in its tick, by its id: not all at once.
+                    let now = world.tick().0;
+                    let spread = wake_spread(world);
+                    for (id, mind) in &mut self.minds {
+                        mind.wake(*id, now, spread);
                     }
                     continue;
                 }
@@ -459,20 +632,10 @@ fn far(a: Pos, b: Pos) -> i64 {
 /// sees is forgotten. Sight is the ground's under its feet, a square of
 /// that half-side.
 #[allow(clippy::too_many_lines)] // one reading, top to bottom, of what it sees or does
-fn look(
-    world: &World,
-    rules: &Content,
-    at: Pos,
-    mind: &mut Mind,
-    bearers: &mut BTreeMap<ChunkPos, Vec<Bearer>>,
-) {
+fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind, bearers: &mut Placed) {
     let map = world.map();
     let camp = mind.home;
-    let sight = i32::try_from(
-        map.get(at)
-            .map_or(1, |terrain| rules.movement.sight_tiles(terrain)),
-    )
-    .unwrap_or(1);
+    let sight = sight_at(map, rules, at);
     let in_sight = |p: Pos| (p.x - at.x).abs() <= sight && (p.y - at.y).abs() <= sight;
     // Water: the nearest drinking place of each chunk in sight, looked
     // for only when the body stands some steps from where it last looked
@@ -517,7 +680,7 @@ fn look(
         Pos::new(at.x - sight, at.y - sight).chunk(),
         Pos::new(at.x + sight, at.y + sight).chunk(),
     );
-    let is_food = |material: &str| rules.material(material).is_some_and(|m| m.food.is_some());
+    let is_food = |material: &str| is_food(rules, material);
     if rules.spawns.iter().any(|spawn| is_food(&spawn.material)) {
         // The ground lays food of itself: every item of the chunks in sight.
         for cy in low.y..=high.y {
@@ -551,35 +714,16 @@ fn look(
         .is_none_or(|from| (from.x - at.x).abs().max((from.y - at.y).abs()) >= LOOK_STEP);
     if moved {
         mind.plants_from = Some(at);
-        let bears_food = |kind: &str| {
-            rules
-                .crops
-                .iter()
-                .any(|crop| crop.on == kind && is_food(&crop.gives))
-        };
-        for cy in low.y..=high.y {
-            for cx in low.x..=high.x {
-                let chunk = ChunkPos::new(cx, cy);
-                let placed = bearers.entry(chunk).or_insert_with(|| {
-                    world
-                        .bearers_in(chunk)
-                        .iter()
-                        .filter(|b| bears_food(&b.kind))
-                        .cloned()
-                        .collect()
-                });
-                for bearer in placed.iter() {
-                    if in_sight(bearer.at.tile()) {
-                        mind.plants
-                            .entry((chunk, bearer.source))
-                            .or_insert_with(|| KnownPlant {
-                                at: bearer.at,
-                                kind: bearer.kind.clone(),
-                                spent: None,
-                                not_before: None,
-                            });
-                    }
-                }
+        mind.unseen.clear();
+        // The nearest chunks first: a turn may not place them all.
+        let mut chunks: Vec<ChunkPos> = (low.y..=high.y)
+            .flat_map(|cy| (low.x..=high.x).map(move |cx| ChunkPos::new(cx, cy)))
+            .collect();
+        let own = at.chunk();
+        chunks.sort_by_key(|c| ((c.x - own.x).abs().max((c.y - own.y).abs()), c.y, c.x));
+        for chunk in chunks {
+            if !learn_plants(world, rules, bearers, mind, chunk, at, sight) {
+                mind.unseen.push(chunk);
             }
         }
         forget_the_least(world, rules, at, mind);
@@ -603,6 +747,37 @@ fn look(
             .expect("not empty");
         mind.food.remove(&farthest);
     }
+}
+
+/// The trees and plants bearing food of `chunk` that a body at `at`
+/// seeing `sight` tiles sees go into its memory; `false` if the chunk's
+/// could not be placed this turn.
+fn learn_plants(
+    world: &World,
+    rules: &Content,
+    bearers: &mut Placed,
+    mind: &mut Mind,
+    chunk: ChunkPos,
+    at: Pos,
+    sight: i32,
+) -> bool {
+    let Some(placed) = bearers.get(world, rules, chunk) else {
+        return false;
+    };
+    for bearer in placed {
+        let tile = bearer.at.tile();
+        if (tile.x - at.x).abs() <= sight && (tile.y - at.y).abs() <= sight {
+            mind.plants
+                .entry((chunk, bearer.source))
+                .or_insert_with(|| KnownPlant {
+                    at: bearer.at,
+                    kind: bearer.kind.clone(),
+                    spent: None,
+                    not_before: None,
+                });
+        }
+    }
+    true
 }
 
 /// What the body decides, now that it looked.
@@ -800,6 +975,11 @@ fn food_in_season(world: &World, rules: &Content, kind: &str) -> Option<(String,
 /// The day of the world, counted from its first.
 fn today(world: &World) -> u64 {
     world.tick().0 / world.calendar().ticks_per_day().max(1)
+}
+
+/// [`WAKE_SPREAD_SECONDS`] in ticks.
+fn wake_spread(world: &World) -> u64 {
+    (WAKE_SPREAD_SECONDS * u64::from(world.calendar().ticks_per_second())).max(1)
 }
 
 /// A game hour, in ticks: a 24th of the day.
@@ -1321,6 +1501,78 @@ mod tests {
     }
 
     #[test]
+    fn the_dawn_wakes_the_minds_one_after_the_other() {
+        let mut world = field(64, 40, Pos::new(5, 5));
+        for x in 6..12 {
+            world.spawn_body(Pos::new(x, 6));
+        }
+        let rules = rules();
+        let mut brains = piloted(&world);
+        run(&mut world, &mut brains, 20);
+        let thoughts = |b: &Brains| -> BTreeMap<BodyId, u64> {
+            b.minds.iter().map(|(id, m)| (*id, m.thoughts)).collect()
+        };
+        let before = thoughts(&brains);
+        let dawn = world.tick().0;
+        let spread = WAKE_SPREAD_SECONDS * u64::from(world.calendar().ticks_per_second());
+        brains.think(&world, &rules, &[Event::DayStarted { day: 2 }]);
+        assert_eq!(thoughts(&brains), before, "none in the dawn's own tick");
+        let mut woke: BTreeMap<BodyId, u64> = BTreeMap::new();
+        let mut events = Vec::new();
+        for _ in 0..spread {
+            world.advance(1, &rules, &mut events);
+            brains.think(&world, &rules, &[]);
+            for (id, n) in thoughts(&brains) {
+                if n > before[&id] {
+                    woke.entry(id).or_insert(world.tick().0 - dawn);
+                }
+            }
+        }
+        for id in before.keys() {
+            assert_eq!(
+                woke.get(id),
+                Some(&(u64::from(id.0) % spread)),
+                "{id:?} thinks in its own tick"
+            );
+        }
+    }
+
+    #[test]
+    fn new_land_is_placed_a_few_chunks_a_turn_and_learnt_whole() {
+        use crate::crops::tests::{body_by, run_to, valley_with};
+        let (mut world, rules, _, bramble) = valley_with("bramble");
+        run_to(&mut world, &rules, 28);
+        let id = body_by(&mut world, &bramble);
+        let at = world.body(id).unwrap().pos();
+        let mut brains = Brains::new(7);
+        // Not adopted: nothing in sight placed beforehand.
+        brains.minds.insert(id, Mind::new(world.map().camp()));
+        let per_turn = usize::try_from(cold_chunks_at(&world, world.tick().0)).unwrap();
+        assert!(per_turn > 0);
+        brains.think(&world, &rules, &[]);
+        assert_eq!(brains.bearers.chunks.len(), per_turn);
+        let unseen = brains.minds[&id].unseen.len();
+        assert!(unseen > 0, "the rest waits");
+        let mut turns = 0;
+        while !brains.minds[&id].unseen.is_empty() {
+            brains.think(&world, &rules, &[]);
+            turns += 1;
+            assert!(brains.bearers.chunks.len() <= per_turn * (turns + 1));
+        }
+        assert_eq!(turns, unseen.div_ceil(per_turn));
+        assert_eq!(brains.minds[&id].thoughts, 1, "learnt without a thought");
+        // It knows what one look placing everything at once knows.
+        let mut all = Placed::new();
+        for chunk in brains.bearers.chunks.keys() {
+            all.warm(&world, &rules, *chunk);
+        }
+        let mut whole = Mind::new(world.map().camp());
+        look(&world, &rules, at, &mut whole, &mut all);
+        assert!(!whole.plants.is_empty());
+        assert!(whole.plants.keys().eq(brains.minds[&id].plants.keys()));
+    }
+
+    #[test]
     fn it_gathers_the_richer_crop_unless_it_is_too_far() {
         let (world, rules, id, _) = by_a_ripe_bramble(0);
         let here = world.body(id).unwrap().pos();
@@ -1491,9 +1743,10 @@ mod tests {
             1,
             "its gauges rose, no threshold crossed"
         );
-        // Thirst crosses the threshold: one more thought, a walk.
+        // Thirst crosses the threshold: one more thought, a walk, in its
+        // own tick (body 1: the next one, WAKE_SPREAD_SECONDS).
         thirst(&mut world, THIRSTY);
-        let (_, decided) = run(&mut world, &mut brains, 1);
+        let (_, decided) = run(&mut world, &mut brains, 2);
         assert_eq!(decided.len(), 1);
         assert_eq!(brains.mind(BodyId(1)).unwrap().thoughts(), 2);
     }
@@ -1759,7 +2012,7 @@ mod tests {
             &rules,
             Pos::new(5, 5),
             &mut mind,
-            &mut BTreeMap::new(),
+            &mut Placed::new(),
         );
         let seen: Vec<_> = mind.drinking_places().copied().collect();
         assert!(!seen.is_empty() && seen.iter().all(|p| p.stand.x == 39 || p.stand.x == 41));
@@ -1770,7 +2023,7 @@ mod tests {
             &rules,
             Pos::new(5, 5),
             &mut mind,
-            &mut BTreeMap::new(),
+            &mut Placed::new(),
         );
         assert_eq!(
             mind.drinking_places().count(),
@@ -1782,7 +2035,7 @@ mod tests {
             &rules,
             Pos::new(6, 5),
             &mut mind,
-            &mut BTreeMap::new(),
+            &mut Placed::new(),
         );
         assert_eq!(mind.drinking_places().count(), 0, "a step away: not yet");
         look(
@@ -1790,7 +2043,7 @@ mod tests {
             &rules,
             Pos::new(5 + LOOK_STEP, 5),
             &mut mind,
-            &mut BTreeMap::new(),
+            &mut Placed::new(),
         );
         assert!(mind.drinking_places().count() > 0, "a new place: looked at");
     }
