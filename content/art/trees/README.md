@@ -266,3 +266,16 @@ from their sources (wild cherry, yew, wild apple, wild fig) made again;
   does, and a client test checks it for every tree image and fruit sheet.
   Compressed, the fig's smooth pale grey bark reads as pale specks to the
   test: it is pale by nature, as the birch's.
+- Same day, the 16 px margin taken out again: the line at the trees'
+  sides came from the shader (it read the texture after discarding the
+  pixels past the image's side, and the card then picked a tiny mipmap
+  level beside them), fixed in `trees.gdshader`; the line stayed gone
+  without the margin. INK_MARGIN is 3: the line is still never cut.
+
+**18 November 2026, a second oak and a second wild cherry**: the oak
+covers large stands, where one drawing showed repeated (the project
+lead's decision); the second oak (`oak_02.png`) has the cartoon trunk he
+prefers, smooth and warm, and a round crown. The second wild cherry
+(`wild_cherry_02.png`) is broad and rounded beside the tall first one.
+Both made on a square frame, so short of their target (reported by
+`flora_art.py`, read whole from a farther zoom like the first oak).

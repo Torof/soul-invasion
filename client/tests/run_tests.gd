@@ -3,8 +3,9 @@ extends SceneTree
 ## Tree kinds whose image is shorter than their size calls for (their
 ## Midjourney source was too small, 18 November 2026): the walnut, the
 ## sweet chestnut, and the oak and the alder drawn anew that day (made on
-## a square frame), until they are made again bigger.
-const SHORT_TREE_IMAGES := ["walnut", "chestnut", "oak", "alder"]
+## a square frame), the wild cherry's second image (square too), until
+## they are made again bigger.
+const SHORT_TREE_IMAGES := ["walnut", "chestnut", "oak", "alder", "wild_cherry"]
 ## Minimal headless test runner for the client.
 ##
 ## Run with: godot --headless --path client -s tests/run_tests.gd
@@ -461,8 +462,10 @@ func _test_trees_stand_on_their_foot() -> void:
 	var tall := Scale.shown(4.0) * Iso.PX_PER_M
 	_check(absf(r.size.y - tall) <= tall * Trees.SIZE_JITTER + 0.01, "a tree's size stays within its jitter")
 	_check(Trees.rect(at, 400, oak[0]) == r and Trees.variant(at, 2) == Trees.variant(at, 2), "the same tree every time")
-	# One image a species, two for the willow that lines every bank.
-	_check(oak.size() == 1, "the oak has one image")
+	# One image a species; two for the willow that lines every bank and
+	# for the oak, whose large stands showed one drawing repeated
+	# (18 November 2026).
+	_check(oak.size() == 2, "the oak has two images")
 	var willow: Array = Trees.textures("willow")
 	_check(willow.size() == 2, "the willow has two images")
 	var shown := {}
