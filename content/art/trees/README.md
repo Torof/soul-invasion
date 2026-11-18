@@ -167,3 +167,18 @@ way to make a tree taller in pixels. The linden is 2,504 px, near its
 `flora_art.py` now clears the pale, colourless pixels left of the white
 background inside a tree (`clear_pale`, the client test's own measure),
 except on the birch, the ash and the linden, pale by nature.
+
+**18 November 2026, the ink line**: every tree has a dark outline at least
+9 px wide at the shipped size (`INK_PX` in `flora_art.py`, about the
+walnut's own line), the project lead's wish ("un contour un peu dessiné,
+fort et épais… ça fait vraiment ressortir l'arbre"). It lies half outside
+the silhouette and half inside, so the leaves of the edge stay seen; the
+silhouette is first closed over small notches and holes and slightly
+rounded, so the line runs on like a drawn one, and the bottom of a notch
+it closes takes the leaves' colours. A line already darker is left as it
+is: the trees drawn with a thick outline barely change. The canvas keeps
+its size (the line is cut at the image's edges), so the foot, the
+outlines and the fruit points do not move. Made with each tree from now
+on; the fifteen images already shipped were given it once with
+`flora_art.py --ink` (run again, it would draw a second line). Weight:
+about +1 % on disk, nothing in video memory.
