@@ -5,15 +5,20 @@ and the points of each of its images where they hang.
 Development tool, run by hand; the game never runs it. Needs Pillow and
 numpy. From the repository's root:
 
-    python3 content/tools/tree_fruit.py sprites <id> <reference> <cell>...
+    python3 content/tools/tree_fruit.py sprites <id> <reference> <cell>... [--px N]
     python3 content/tools/tree_fruit.py points <id>
 
 `sprites`: each <cell> is `<image>:<row>:<column>`, one cell of a
-Midjourney sheet of four (2 x 2) showing whole fruit on white. Each fruit
-is cut from the white, the little green leaves at its stalk taken away,
-its colours brought to those of the fruit in <reference> (the tree drawn
-with its fruit: quantile by quantile on the fruit's skin, per channel),
-the cut tip of its stalk trimmed, and sized SPRITE_PX high. They go side
+Midjourney sheet of four (2 x 2) showing whole fruit on white, or
+`<image>:<row>:<column>:180` for a fruit drawn stalk down. Each fruit
+is cut from the white (the white joined to the cell's border), the cut
+tip of its stalk trimmed, and sized `--px` high (SPRITE_PX unless given:
+fruit differ in size). With a <reference> (the tree drawn with its fruit),
+the little green leaves at its stalk are taken away and its colours
+brought to those of the fruit there (quantile by quantile on the fruit's
+skin, per channel): the pear's way, its sheet edited from a laden tree.
+With `-`, the fruit keeps its own colours and its green (a husk, a burr):
+the fruit drawn on their own on 18 November 2026. They go side
 by side into one image, `art/trees/fruit/<id>.webp` (one texture for the
 kind: a tree's fruit is drawn in one call), each centred on its stalk so
 that it hangs from the middle of its top edge.
@@ -22,7 +27,8 @@ that it hangs from the middle of its top edge.
 the places a fruit hangs from: the lower edge of a lit leaf, where dark
 outlines meet, the fruit's whole footprint under it inside the crown and
 clear of the branches and the trunk (brown), at least SPACING px apart,
-at most COUNT. They are ordered so that the first third is spread over
+at most COUNT; then, where those are too few, any place in the foliage
+the fruit fits, lit leaves first. They are ordered so that the first third is spread over
 the crown (farthest point first): a tree a third laden shows those.
 
 Both write `art/trees/fruit/fruit.json`: per kind its sprites'
@@ -36,7 +42,7 @@ from collections import deque
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter
 
 ART = Path(__file__).resolve().parents[1] / "art" / "trees"
 FRUIT = ART / "fruit"
@@ -47,8 +53,8 @@ SPRITE_PX = 130
 # Room around each sprite in its image, so the smaller mipmap levels do
 # not bleed one into the next.
 PAD = 8
-COUNT = 16
-SPACING = 175
+COUNT = 30
+SPACING = 140
 QUANTILES = np.linspace(0, 1, 101)
 
 
@@ -97,22 +103,49 @@ def largest(mask, step=4):
     return grow(keep[: mask.shape[0], : mask.shape[1]], step + 1)
 
 
-def sprite(rgb, target):
+# A patch of white enclosed by the fruit wider than this (in a cell's
+# pixels) is background too (between a pair of cherries' stalks); a
+# highlight is smaller.
+ENCLOSED_WHITE = 1500
+
+
+def background(rgb):
+    """The white around the fruit: near-white pixels joined to the border,
+    and the large patches of it the fruit encloses (a pale highlight inside
+    the fruit stays)."""
+    white = rgb.min(2) > 225
+    pad = Image.fromarray(np.pad(white, 1, constant_values=True).astype(np.uint8) * 255).copy()
+    ImageDraw.floodfill(pad, (0, 0), 128)
+    a = np.asarray(pad).copy()
+    for y, x in zip(*np.nonzero(a == 255)):
+        if a[y, x] != 255:
+            continue
+        one = Image.fromarray(a).copy()
+        ImageDraw.floodfill(one, (int(x), int(y)), 64)
+        patch = np.asarray(one) == 64
+        a[patch] = 128 if patch.sum() > ENCLOSED_WHITE else 0
+    return grow(a[1:-1, 1:-1] == 128, 2)
+
+
+def sprite(rgb, target, px):
     """One fruit from a cell on white, recoloured to `target` (per channel
-    quantiles of the reference's skin), trimmed and centred on its stalk."""
-    m = skin(rgb)
-    out = rgb.copy()
-    for c in range(3):
-        out[..., c] = np.interp(rgb[..., c], np.quantile(rgb[m][:, c], QUANTILES), target[c])
-    weight = np.asarray(Image.fromarray((m * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(2))) / 255.0
-    rgb = rgb + (out - rgb) * weight[..., None]
-    alpha = np.clip((245 - rgb.min(2)) / 20, 0, 1)
-    green = (rgb[..., 1] > rgb[..., 0] + 8) & (rgb[..., 1] > rgb[..., 2] + 8)
-    alpha[green] = 0
+    quantiles of the reference's skin) unless None, trimmed and centred on
+    its stalk."""
+    if target is not None:
+        m = skin(rgb)
+        out = rgb.copy()
+        for c in range(3):
+            out[..., c] = np.interp(rgb[..., c], np.quantile(rgb[m][:, c], QUANTILES), target[c])
+        weight = np.asarray(Image.fromarray((m * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(2))) / 255.0
+        rgb = rgb + (out - rgb) * weight[..., None]
+    alpha = np.where(background(rgb), np.clip((245 - rgb.min(2)) / 20, 0, 1), 1.0)
+    if target is not None:
+        green = (rgb[..., 1] > rgb[..., 0] + 8) & (rgb[..., 1] > rgb[..., 2] + 8)
+        alpha[green] = 0
     alpha *= largest(alpha > 0.5)
     im = Image.fromarray(np.dstack([rgb, alpha * 255]).clip(0, 255).astype(np.uint8), "RGBA")
     im = im.crop(im.getbbox())
-    im = im.resize((round(im.width * SPRITE_PX / im.height), SPRITE_PX), Image.LANCZOS)
+    im = im.resize((round(im.width * px / im.height), px), Image.LANCZOS)
     # The stalk's cut tip goes: the top 45 % of the narrow part.
     solid = np.asarray(im)[..., 3] > 128
     widths = solid.sum(1)
@@ -130,10 +163,14 @@ def sprite(rgb, target):
 
 
 def cell(spec):
+    turn = 0
+    if spec.endswith(":180"):
+        spec, turn = spec[:-4], 180
     path, row, column = spec.rsplit(":", 2)
     im = Image.open(path).convert("RGB")
     w, h = im.width // 2, im.height // 2
-    return np.asarray(im.crop((int(column) * w, int(row) * h, (int(column) + 1) * w, (int(row) + 1) * h))).astype(float)
+    im = im.crop((int(column) * w, int(row) * h, (int(column) + 1) * w, (int(row) + 1) * h)).rotate(turn)
+    return np.asarray(im).astype(float)
 
 
 def padded(n):
@@ -149,12 +186,14 @@ def save(data):
     DATA.write_text(json.dumps(data, sort_keys=True, separators=(",", ":")) + "\n")
 
 
-def make_sprites(kind, reference, cells):
-    ref = np.asarray(Image.open(reference).convert("RGB")).astype(float)
-    target = [np.quantile(ref[skin(ref)][:, c], QUANTILES) for c in range(3)]
-    sprites = [sprite(cell(c), target) for c in cells]
+def make_sprites(kind, reference, cells, px=SPRITE_PX):
+    target = None
+    if reference != "-":
+        ref = np.asarray(Image.open(reference).convert("RGB")).astype(float)
+        target = [np.quantile(ref[skin(ref)][:, c], QUANTILES) for c in range(3)]
+    sprites = [sprite(cell(c), target, px) for c in cells]
     width = sum(s.width + 2 * PAD for s in sprites)
-    sheet = Image.new("RGBA", (width, SPRITE_PX + 2 * PAD))
+    sheet = Image.new("RGBA", (width, px + 2 * PAD))
     rects, x = [], 0
     for s in sprites:
         sheet.alpha_composite(s, (x + PAD, PAD))
@@ -175,7 +214,10 @@ def find_points(path, foot):
     h, s, v = hsv(a[..., :3])
     opaque = a[..., 3] > 250
     leaf = opaque & (h > 65) & (h < 175) & (v > 0.25)
+    # The branches and the trunk: brown, and wider than a drawn line (the
+    # fig's and the apple's leaves are outlined in brown).
     brown = opaque & (h > 5) & (h < 50) & (s > 0.2) & (v > 0.15)
+    brown = grow(~grow(~brown, 3), 3)
     dark = opaque & (v < 0.22)
     # The lower edge of a lit leaf: dark outline, the leaf just above, the
     # shade below.
@@ -192,6 +234,16 @@ def find_points(path, foot):
         feet = ((y + 10, x), (y + fh // 2, x - fw // 3), (y + fh // 2, x + fw // 3), (y + fh - 10, x), (y + fh // 2, x))
         if all(0 <= py < ok.shape[0] and 0 <= px < ok.shape[1] and ok[py, px] for py, px in feet):
             cand.append((meet[y, x], int(x), int(y)))
+    # Then any place in the foliage the fruit fits, lit leaves first, after
+    # the edges: trees drawn with thin brown lines (the fig, the apple)
+    # have few dark edges.
+    for y, x in zip(*np.nonzero(leaf[::8, ::8])):
+        y, x = 8 * y, 8 * x
+        if not top + 0.05 * (bottom - top) <= y <= top + 0.70 * (bottom - top):
+            continue
+        feet = ((y + 10, x), (y + fh // 2, x - fw // 3), (y + fh // 2, x + fw // 3), (y + fh - 10, x), (y + fh // 2, x))
+        if all(0 <= py < ok.shape[0] and 0 <= px < ok.shape[1] and ok[py, px] for py, px in feet):
+            cand.append((v[y, x] - 2.0, int(x), int(y)))
     cand.sort(reverse=True)
     chosen = []
     for _, x, y in cand:
@@ -225,10 +277,16 @@ def make_points(kind):
 
 
 def main():
-    if len(sys.argv) >= 5 and sys.argv[1] == "sprites":
-        make_sprites(sys.argv[2], sys.argv[3], sys.argv[4:])
-    elif len(sys.argv) == 3 and sys.argv[1] == "points":
-        make_points(sys.argv[2])
+    args = sys.argv[1:]
+    px = SPRITE_PX
+    if "--px" in args:
+        i = args.index("--px")
+        px = int(args[i + 1])
+        del args[i:i + 2]
+    if len(args) >= 4 and args[0] == "sprites":
+        make_sprites(args[1], args[2], args[3:], px)
+    elif len(args) == 2 and args[0] == "points":
+        make_points(args[1])
     else:
         sys.exit(__doc__)
 

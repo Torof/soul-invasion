@@ -5,6 +5,8 @@ Development tool, run by hand; the game never runs it. Needs Pillow and
 numpy. From the repository's root:
 
     python3 content/tools/flora_art.py <sources> content/art [--trees [--tree-zoom Z]]
+    python3 content/tools/flora_art.py --ink content/art <tree image>...
+    python3 content/tools/flora_art.py --recolour <tree image>...
 
 <sources> holds one image per kind and variant, on a white background,
 named `<id>_<nn>.png` (`bramble_01.png`), as `content/ai-reserve/sources/flora/`.
@@ -51,7 +53,7 @@ from collections import deque
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter
 
 # The sharpness rule: pixels per shown metre = PX_PER_M (Iso.PX_PER_M, at
 # zoom 1) x ZOOM_MAX (the camera stops there) x a screen's stretch of the
@@ -296,6 +298,235 @@ def bleed(image, passes=8):
     return Image.fromarray(out, "RGBA")
 
 
+# Trees pale by nature (the birch's and the ash's bark, the linden's
+# flowers), left as they are by `clear_pale`.
+PALE_TREES = ("birch", "ash", "linden")
+# Trees of many stems: the gaps between their trunks keep their own drawn
+# line, the thick ink ringed them as black slits.
+INK_KEEP_HOLES = ("wild_fig",)
+
+
+def clear_pale(image):
+    """Clears what is left of the white background inside a tree: pale,
+    colourless pixels (a sliver along a hole's rim, a dot between leaves),
+    the client's test `has no pale specks` reading them so. The light the
+    trees are drawn with is pale too, but yellow, and stays."""
+    a = np.asarray(image).copy()
+    rgb = a[..., :3].astype(np.int16)
+    lo, hi = rgb.min(axis=2), rgb.max(axis=2)
+    pale = (a[..., 3] > 102) & (lo > 186) & (hi - lo <= 20)
+    a[..., 3][pale] = 0
+    return Image.fromarray(a)
+
+
+# The ink line (18 November 2026): every tree gets a dark outline at least
+# INK_PX wide at the shipped size (307.2 px a shown metre; the walnut's own
+# line is about 7), half outside its silhouette and half inside, so the
+# leaves of the edge stay seen. The silhouette is first closed over small
+# notches and holes (INK_CLOSE px) and rounded (INK_ROUND, a blur), so the
+# line runs on like a drawn one instead of ringing every gap; the bottom of
+# a notch it closes takes the colours of the leaves around it. The canvas
+# grows by a margin left, right and on top so the line is never cut
+# (INK_MARGIN beyond its outer half); the
+# foot stays at the bottom. `outlines.json` and the fruit points are found
+# again after. A line already darker than the ink is left as it is.
+# Colours brought into line, an image at a time: its leaves or its bark (in
+# CIE Lab, the mean and spread of each part) moved to a target, so a tree
+# matches its kind's other image or stops standing out. The two oaks share
+# one green, between their own two; the second oak's bark loses the orange
+# that stood out (its mean the first oak's bark, darker, its spread of
+# colour narrowed).
+OAK_LEAVES = ((40.0, -22.6, 20.0), (12.6, 7.9, 7.2))
+RECOLOUR = {
+    "oak_01": {"leaves": OAK_LEAVES},
+    "oak_02": {"leaves": OAK_LEAVES, "bark": ((36.0, 4.3, 20.3), (10.8, 3.7, 2.6))},
+}
+SRGB_TO_XYZ = np.array([[0.4124, 0.3576, 0.1805], [0.2126, 0.7152, 0.0722], [0.0193, 0.1192, 0.9505]])
+WHITE = np.array([0.95047, 1.0, 1.08883])
+
+
+def to_lab(rgb):
+    c = rgb / 255.0
+    c = np.where(c > 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
+    xyz = c @ SRGB_TO_XYZ.T / WHITE
+    f = np.where(xyz > 0.008856, np.cbrt(xyz), 7.787 * xyz + 16 / 116)
+    return np.stack([116 * f[..., 1] - 16, 500 * (f[..., 0] - f[..., 1]), 200 * (f[..., 1] - f[..., 2])], -1)
+
+
+def from_lab(lab):
+    fy = (lab[..., 0] + 16) / 116
+    f = np.stack([fy + lab[..., 1] / 500, fy, fy - lab[..., 2] / 200], -1)
+    xyz = np.where(f ** 3 > 0.008856, f ** 3, (f - 16 / 116) / 7.787) * WHITE
+    c = np.clip(xyz @ np.linalg.inv(SRGB_TO_XYZ).T, 0, 1)
+    c = np.where(c > 0.0031308, 1.055 * c ** (1 / 2.4) - 0.055, 12.92 * c)
+    return np.clip(c * 255, 0, 255)
+
+
+def colour_parts(lab, alpha):
+    """How much each pixel is leaf and bark (0 to 1, soft at the borders of
+    their hues); the ink and the greys are neither."""
+    hue = np.degrees(np.arctan2(lab[..., 2], lab[..., 1])) % 360
+    chroma = np.hypot(lab[..., 1], lab[..., 2])
+    lit = np.clip((lab[..., 0] - 12) / 10, 0, 1) * np.clip((chroma - 4) / 6, 0, 1) * (alpha > 0)
+
+    def band(lo, hi, soft):
+        return np.clip(np.minimum(hue - lo, hi - hue) / soft + 0.5, 0, 1)
+
+    return {"leaves": band(100, 200, 20) * lit, "bark": band(20, 95, 15) * lit}
+
+
+def recolour(image, name):
+    """`image` (the tree `name`, as `oak_02`) with its parts brought to
+    their RECOLOUR targets; unchanged when it has none."""
+    recipe = RECOLOUR.get(name)
+    if not recipe:
+        return image
+    a = np.asarray(image.convert("RGBA")).astype(np.float64)
+    lab = to_lab(a[..., :3])
+    parts = colour_parts(lab, a[..., 3])
+    out = lab.copy()
+    for part, (mean, spread) in recipe.items():
+        w = parts[part]
+        m = (lab * w[..., None]).sum((0, 1)) / w.sum()
+        s = np.sqrt(((lab - m) ** 2 * w[..., None]).sum((0, 1)) / w.sum())
+        moved = (lab - m) * (np.array(spread) / s) + np.array(mean)
+        out += (moved - lab) * w[..., None]
+    a[..., :3] = from_lab(out)
+    return Image.fromarray(np.clip(np.round(a), 0, 255).astype(np.uint8))
+
+
+def recolour_shipped(names):
+    """The shipped tree images `names` (paths) with their RECOLOUR, in
+    place."""
+    for path in map(Path, names):
+        m = re.match(r"(.+)_adult_(\d\d)_summer\.webp$", path.name)
+        save_webp(recolour(Image.open(path), f"{m.group(1)}_{m.group(2)}"), path)
+        print("recoloured", path.name)
+
+
+INK = np.array([12, 14, 10], np.float32)
+INK_PX = 9
+INK_CLOSE = 5
+INK_ROUND = 2.0
+# Clear pixels kept around the line, so it is never cut at the image's
+# edge. (A 16 px margin, for the smaller mipmap levels, was tried and taken
+# out: the thin dark line at the trees' sides came from the shader's
+# mipmap pick, fixed in trees.gdshader.)
+INK_MARGIN = 3
+
+
+def _step(mask, grow_it, diagonal):
+    p = np.pad(mask, 1, constant_values=not grow_it)
+    n = (p[:-2, 1:-1], p[2:, 1:-1], p[1:-1, :-2], p[1:-1, 2:])
+    if diagonal:
+        n += (p[:-2, :-2], p[:-2, 2:], p[2:, :-2], p[2:, 2:])
+    out = mask.copy()
+    for m in n:
+        out = out | m if grow_it else out & m
+    return out
+
+
+def ink_grow(mask, r):
+    for i in range(r):
+        mask = _step(mask, True, i % 2)
+    return mask
+
+
+def ink_shrink(mask, r):
+    for i in range(r):
+        mask = _step(mask, False, i % 2)
+    return mask
+
+
+def fill_from_around(rgb, known, todo, passes=60):
+    """The colours of the `todo` pixels taken from their known neighbours,
+    ring by ring."""
+    rgb, known = rgb.copy(), known.copy()
+    h, w = known.shape
+    for _ in range(passes):
+        if not (todo & ~known).any():
+            break
+        p = np.pad(rgb, ((1, 1), (1, 1), (0, 0)))
+        k = np.pad(known, 1).astype(np.float32)
+        total = np.zeros_like(rgb)
+        count = np.zeros(known.shape, np.float32)
+        for dy in range(3):
+            for dx in range(3):
+                if dy == dx == 1:
+                    continue
+                kk = k[dy:dy + h, dx:dx + w]
+                total += p[dy:dy + h, dx:dx + w] * kk[..., None]
+                count += kk
+        new = todo & ~known & (count > 0)
+        rgb[new] = total[new] / count[new][:, None]
+        known |= new
+    return rgb
+
+
+def enclosed(clear):
+    """The parts of `clear` (a mask) not joined to the image's border."""
+    # A copy: an image made from an array shares its memory, read only,
+    # and the fill would leave it unchanged.
+    pad = Image.fromarray(np.pad(clear, 1, constant_values=True).astype(np.uint8) * 255).copy()
+    ImageDraw.floodfill(pad, (0, 0), 128)
+    return np.asarray(pad)[1:-1, 1:-1] == 255
+
+
+def ink(image, px, keep_holes=False):
+    """`image` (a tree, RGBA) with its ink line, `px` wide. With
+    `keep_holes`, the holes inside the tree (the gaps between the trunks
+    of a tree of many stems) keep their own drawn line: only the outer
+    edge is inked.
+
+    The canvas grows by a margin left, right and on top, where the line
+    reaches past the cropped tree: cut there, it showed as a straight black
+    line at the image's edges. The margin holds the line's outer half and
+    INK_MARGIN more. Not at the bottom: the foot stays where it was."""
+    margin = int(np.ceil(px / 2)) + INK_MARGIN
+    src = np.asarray(image.convert("RGBA")).astype(np.float32)
+    a = np.zeros((src.shape[0] + margin, src.shape[1] + 2 * margin, 4), np.float32)
+    a[margin:, margin:margin + src.shape[1]] = src
+    mask = a[..., 3] >= 128
+    closed = ink_shrink(ink_grow(mask, INK_CLOSE), INK_CLOSE)
+    blurred = Image.fromarray(closed.astype(np.uint8) * 255).filter(ImageFilter.GaussianBlur(INK_ROUND))
+    drawn = np.asarray(blurred) >= 128
+    holes = enclosed(~drawn) if keep_holes else np.zeros_like(drawn)
+    # The line follows `shape`: the tree with its holes filled when they
+    # keep their own line.
+    shape = drawn | holes
+    half = px / 2
+    n = int(np.ceil(half)) + 1
+    # Depth inside the shape (1 on its edge) and distance outside it.
+    depth = np.zeros(shape.shape, np.float32)
+    m = shape.copy()
+    for _ in range(n + 1):
+        depth += m
+        m = ink_shrink(m, 1)
+    away = np.full(shape.shape, n + 2, np.float32)
+    m = shape.copy()
+    for i in range(1, n + 2):
+        g = ink_grow(m, 1)
+        away[g & ~m] = i
+        m = g
+    w_in = np.clip(half + 1 - depth, 0, 1) * shape
+    w_out = np.clip(half + 1 - away, 0, 1) * ~shape
+    # Colours taken 2 px inside the drawing, never from its cut edge, which
+    # holds some of the cream background.
+    # A hole takes the colours around it too, though clear: the texture's
+    # filtering mixes them into its rim.
+    rgb = fill_from_around(a[..., :3], ink_shrink(mask, 2) & drawn, shape & ~ink_shrink(mask, 2))
+    lighter = rgb.mean(axis=2) > INK.mean()
+    k = (w_in * lighter)[..., None]
+    rgb = rgb * (1 - k) + INK * k
+    # Outside, the ink's colour everywhere, even where clear: a compressed
+    # texture mixes the colours of a block, and the white left there showed
+    # as pale specks along the line.
+    rgb[~shape] = INK
+    a[..., :3] = rgb
+    a[..., 3] = np.where(holes, 0.0, np.where(shape, 255.0, w_out * 255))
+    return Image.fromarray(np.clip(np.round(a), 0, 255).astype(np.uint8))
+
+
 def species_heights(content):
     text = (content / "species.ron").read_text()
     return {m[0]: float(m[1]) for m in re.findall(r'id: "([a-z_]+)".*?height_m: ([0-9.]+)', text, re.S)}
@@ -374,6 +605,20 @@ def size_decor(art, short):
                 short.append(f"{path.name}: {image.width} px wide, shipped target {wide}")
 
 
+def ink_shipped(art, names, tree_zoom):
+    """Gives the ink line to tree images already shipped (`art/trees/`),
+    once: run again, it would draw a second line outside the first."""
+    art = Path(art)
+    trees = species_heights(art.parent)
+    for name in names:
+        path = art / "trees" / name
+        kind = re.match(r"(.+)_adult_\d\d_summer\.webp$", name).group(1)
+        tall = target_px(trees[kind], tree_zoom)
+        image = Image.open(path)
+        save_webp(ink(image, INK_PX * image.height / tall, kind.startswith(INK_KEEP_HOLES)), path)
+        print("inked", name, image.size)
+
+
 def main():
     args = sys.argv[1:]
     make_trees = "--trees" in args
@@ -384,6 +629,12 @@ def main():
         i = args.index("--tree-zoom")
         tree_zoom = float(args[i + 1])
         del args[i:i + 2]
+    if args and args[0] == "--recolour":
+        recolour_shipped(args[1:])
+        return
+    if args and args[0] == "--ink":
+        ink_shipped(args[1], args[2:], tree_zoom)
+        return
     sources, art = Path(args[0]), Path(args[1])
     content = art.parent
     trees = species_heights(content)
@@ -403,6 +654,12 @@ def main():
             image = trim_to_foot(cut(path, keep_white=False, tree=True, work=work_height(tall)))
             image = fit(image, tall, original, path.name, short)
             image = image.filter(ImageFilter.UnsharpMask(radius=1.2, percent=60, threshold=2))
+            if not kind.startswith(PALE_TREES):
+                image = clear_pale(image)
+            image = recolour(image, f"{kind}_{n}")
+            # The line is INK_PX at the shipped size: thinner in the pixels
+            # of an image short of it, which the client magnifies.
+            image = ink(image, INK_PX * image.height / tall, kind.startswith(INK_KEEP_HOLES))
             target = art / "trees" / f"{kind}_adult_{n}_summer.webp"
             save_webp(image, target)
             print("tree", target.name, image.size)

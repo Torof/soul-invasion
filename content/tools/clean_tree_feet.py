@@ -27,6 +27,8 @@ height), in this order:
   the grass clearing took (pale, nearly colourless pixels);
 - `span`: clears what stands left or right of the foot (x from, x to, in
   the original's pixels: a patch of ground running off to the side);
+- `close`: fills a gap closed all round within the foot, however wide
+  (between two trunks that touch just above the ground);
 - `smooth`: rounds the foot's outline (a closing then an opening, of that
   radius in pixels): the notches the grass left, a ragged edge;
 then holes left inside the trunk are filled with the bark around them, what
@@ -46,19 +48,20 @@ import flora_art  # noqa: E402
 
 # id: what to do. Each line says why (what the original shows).
 RECIPES = {
-    # Two tufts of grass either side of the foot, the colour of the bark's
-    # light green rim: cut off where they stand out of the trunk.
-    "alder_01": {"band": 0.06, "span": (695, 880), "smooth": 4},
+    # Small tufts of grass at the foot of both trunks, and the gap between
+    # them closed under the point where they touch (the alder drawn on
+    # 18 November 2026).
+    "alder_01": {"band": 0.08, "grass": True, "close": True, "smooth": 4},
     # Grass all along the foot, on a dark strip of ground running off both
     # sides.
     "alder_02": {"band": 0.05, "grass": True, "span": (585, 1035), "smooth": 6},
     # Tufts of grass on both sides, some pale, and a grey ring around the
     # outline.
     "ash_02": {"band": 0.07, "halo": True, "grass": True, "grass_saturation": 0.15, "smooth": 5},
-    # A torn, ragged foot with no outline (as Midjourney redrew it).
-    "linden_01": {"band": 0.09, "smooth": 6},
-    # A torn foot, left so when the grass and flowers were painted out.
-    "wild_apple_01": {"band": 0.09, "smooth": 6},
+    # A few thin blades of grass at the foot (the wild apple drawn on
+    # 18 November 2026): rounding the foot takes them, where clearing the
+    # grass by its colour took the olive bark too.
+    "wild_apple_01": {"band": 0.06, "smooth": 6},
     # A patch of white ground with grass strokes to the right of the foot.
     "yew_01": {"band": 0.07, "grass": True, "ground": True, "span": (370, 1058), "smooth": 7},
     # Tufts of dry grass in front of and between the roots.
@@ -259,6 +262,17 @@ def clean(rgb, recipe):
     # filled; what opens on the background is background.
     holes = band & ~keep & ~reached(~keep, ~sil & ~band | ~grow(sil, 2))
     keep |= holes
+    if recipe.get("close"):
+        # A gap closed all round within the foot (between two trunks that
+        # touch above it) is filled too, however wide: the ground must not
+        # show through the foot. Channels under 3 px (where the trunks
+        # nearly touch) count as closed: the background is reached through
+        # the free space shrunk by 2 px, then grown back.
+        rim = np.zeros((h, w), bool)
+        rim[0], rim[-1], rim[:, 0], rim[:, -1] = True, True, True, True
+        free = ~grow(keep, 2)
+        outside = grow(reached(free, free & (rim | ~band)), 3)
+        keep |= band & ~keep & ~outside
     # The foot's outline rounded, then one piece.
     keep = np.where(band, smooth(keep, recipe.get("smooth", 4)), keep)
     labels, sizes = pieces(keep)

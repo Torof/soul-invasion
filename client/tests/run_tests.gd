@@ -1,9 +1,11 @@
 extends SceneTree
 
 ## Tree kinds whose image is shorter than their size calls for (their
-## Midjourney source was too small, 18 November 2026): the walnut and the
-## sweet chestnut, until they are made again bigger.
-const SHORT_TREE_IMAGES := ["walnut", "chestnut"]
+## Midjourney source was too small, 18 November 2026): the walnut, the
+## sweet chestnut, and the oak and the alder drawn anew that day (made on
+## a square frame), the wild cherry's second image (square too), until
+## they are made again bigger.
+const SHORT_TREE_IMAGES := ["walnut", "chestnut", "oak", "alder", "wild_cherry"]
 ## Minimal headless test runner for the client.
 ##
 ## Run with: godot --headless --path client -s tests/run_tests.gd
@@ -42,6 +44,7 @@ func _init() -> void:
 	_test_the_slope_turf_is_a_family_of_tiles_chosen_per_cell()
 	_test_the_tint_dials_turn_the_flat_grass_and_the_slope_turf_and_reset()
 	_test_tree_images_are_clean()
+	_test_tree_images_import_compressed_with_mipmaps()
 	_test_tree_feet_are_whole()
 	_test_loading_waits_for_the_valley()
 	_test_dev_map_turns_as_the_game()
@@ -459,8 +462,10 @@ func _test_trees_stand_on_their_foot() -> void:
 	var tall := Scale.shown(4.0) * Iso.PX_PER_M
 	_check(absf(r.size.y - tall) <= tall * Trees.SIZE_JITTER + 0.01, "a tree's size stays within its jitter")
 	_check(Trees.rect(at, 400, oak[0]) == r and Trees.variant(at, 2) == Trees.variant(at, 2), "the same tree every time")
-	# One image a species, two for the willow that lines every bank.
-	_check(oak.size() == 1, "the oak has one image")
+	# One image a species; two for the willow that lines every bank and
+	# for the oak, whose large stands showed one drawing repeated
+	# (18 November 2026).
+	_check(oak.size() == 2, "the oak has two images")
 	var willow: Array = Trees.textures("willow")
 	_check(willow.size() == 2, "the willow has two images")
 	var shown := {}
@@ -911,18 +916,35 @@ func _test_a_tree_shows_its_fruit_as_sprites_at_its_points() -> void:
 	stand.release()
 
 
-## A kind of tree with no images of its own yet is drawn with its
-## stand-in's, at its own height.
+## A kind of tree with no images of its own yet would be drawn with its
+## stand-in's, at its own height; since 18 November 2026 every kind has
+## its own.
 func _test_a_tree_without_images_is_drawn_with_a_stand_in() -> void:
-	_check(Trees.paths("wild_cherry").is_empty(), "the wild cherry has no images yet")
-	_check(not Trees.paths("wild_apple").is_empty(), "the wild apple has")
-	_check(Trees.looks_as("wild_cherry") == "wild_apple", "a cherry looks as an apple")
-	_check(Trees.looks_as("oak") == "oak", "an oak looks as itself")
+	_check(Trees.STAND_INS.is_empty(), "no tree borrows another's images: %s" % [Trees.STAND_INS])
+	for id: String in ["wild_cherry", "wild_fig", "wild_apple", "oak"]:
+		_check(not Trees.paths(id).is_empty() and Trees.looks_as(id) == id, "the %s looks as itself" % id)
 	var trees := PackedInt32Array([0, 0, 0, 1, 4_000, 0])
-	var stand := Trees.Stand.new(trees, {"wild_cherry": 2_000, "wild_apple": 600}, PackedStringArray(["wild_cherry", "wild_apple"]))
-	_check(Array(stand.kinds) == ["wild_apple", "wild_apple"], "both drawn with the apple's images: %s" % [stand.kinds])
+	var stand := Trees.Stand.new(trees, {"wild_fig": 2_000, "hazel": 600}, PackedStringArray(["wild_fig", "hazel"]))
+	_check(Array(stand.kinds) == ["wild_fig", "hazel"], "each drawn with its own images: %s" % [stand.kinds])
 	_check(stand.heights[0] == 2_000 and stand.heights[1] == 600, "each at its own height: %s" % [stand.heights])
 	stand.release()
+
+## Every tree image and fruit sheet is imported compressed for the
+## graphics card, with its mipmaps (as every tree before it): Godot's
+## defaults for a new file are neither, four times the memory and a
+## shimmer from afar (the wild cherry, the wild fig and nine fruit sheets
+## came in so on 18 November 2026).
+func _test_tree_images_import_compressed_with_mipmaps() -> void:
+	var files: Array[String] = []
+	for dir: String in [Trees.DIR, Trees.DIR.path_join("fruit")]:
+		for file in DirAccess.get_files_at(dir):
+			if file.ends_with(".webp.import"):
+				files.append(dir.path_join(file))
+	_check(files.size() >= 28, "the trees' and fruit's images are found: %d" % files.size())
+	for path in files:
+		var text := FileAccess.get_file_as_string(path)
+		_check(text.contains("compress/mode=2") and text.contains("mipmaps/generate=true"), "%s is compressed, with mipmaps" % path.get_file())
+
 
 ## Every tree image stands on its foot (no empty rows under it, so it is
 ## anchored where it stands) and holds no pale opaque speck of the
@@ -947,8 +969,8 @@ func _test_tree_images_are_clean() -> void:
 				break
 		_check(foot, "%s stands on its foot" % file)
 		# Pale by nature: the birch's and the ash's bark, the linden's
-		# flowers.
-		if file.begins_with("birch") or file.begins_with("ash") or file.begins_with("linden"):
+		# flowers, the wild fig's smooth grey bark.
+		if file.begins_with("birch") or file.begins_with("ash") or file.begins_with("linden") or file.begins_with("wild_fig"):
 			continue
 		# A speck is the white background left in the image: pale and
 		# colourless. The light the trees are drawn with is pale too, but
