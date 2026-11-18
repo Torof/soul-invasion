@@ -2929,7 +2929,17 @@ func _test_the_slope_turf_is_a_family_of_tiles_chosen_per_cell() -> void:
 	var grass := ChunkView.ground_material("grass")
 	var forest := ChunkView.ground_material("forest")
 	var water := ChunkView.ground_material("water")
+	# While no slope is drawn the ground carries a 1 × 1 stand-in, not the
+	# 63 MB set (audit F5); the set goes on with the first slope.
+	var was_drawn := ChunkView.slopes_drawn
+	ChunkView.set_slopes_drawn(0)
+	var stand_in := grass.get_shader_parameter("slope_turf_set") as Texture2DArray
+	_check(stand_in == ChunkView.turf_stand_in() and stand_in.get_layers() == 1 and stand_in.get_width() == 1 and forest.get_shader_parameter("slope_turf_set") == stand_in, "with no slope drawn the land's grounds carry a one-texel stand-in, not the set")
+	ChunkView.set_slopes_drawn(1)
 	_check(grass.get_shader_parameter("slope_turf_set") == family and forest.get_shader_parameter("slope_turf_set") == family and int(grass.get_shader_parameter("slope_turf_variants")) == 5 and int(grass.get_shader_parameter("slope_turf_angles")) == 4 and is_equal_approx(float(forest.get_shader_parameter("slope_angle_per_metre")), 60.0) and water.get_shader_parameter("slope_turf_set") == null, "every land's ground carries the set, its counts and the angle dial, not the water")
+	ChunkView.set_slopes_drawn(0)
+	_check(grass.get_shader_parameter("slope_turf_set") == stand_in, "the slopes off, the stand-in is back")
+	ChunkView.set_slopes_drawn(was_drawn)
 	# The row from the steepness: 20° + 60°/m × rise, to 55°, the nearest of four rows (20, 32, 43, 55).
 	_check(ChunkView.slope_turf_row(0.0, 4, 60.0) == 0 and ChunkView.slope_turf_row(0.08, 4, 60.0) == 0 and ChunkView.slope_turf_row(0.2, 4, 60.0) == 1 and ChunkView.slope_turf_row(0.4, 4, 60.0) == 2 and ChunkView.slope_turf_row(0.6, 4, 60.0) == 3 and ChunkView.slope_turf_row(5.0, 4, 60.0) == 3, "the steepness gives the row: flat 0, 0.2 m the second, 0.4 m the third, 0.6 m and beyond the last")
 	_check(ChunkView.slope_turf_row(0.2, 4, 120.0) == 2 and ChunkView.slope_turf_row(0.2, 4, 0.0) == 0 and ChunkView.slope_turf_row(5.0, 1, 60.0) == 0, "the dial scales the rise; with one row every cell reads row 0")
@@ -3059,6 +3069,8 @@ func _test_the_turf_keys_lay_one_tile_and_turn_the_angle_dial() -> void:
 	var single := ChunkView.slope_turf_set(PackedStringArray([tiles[0]]))
 	var grass := ChunkView.ground_material("grass")
 	var forest := ChunkView.ground_material("forest")
+	var was_drawn := ChunkView.slopes_drawn
+	ChunkView.set_slopes_drawn(1)
 	# Key G: the first tile alone, then the family back.
 	var ramp := PackedInt32Array()
 	ramp.resize(16)
@@ -3079,3 +3091,4 @@ func _test_the_turf_keys_lay_one_tile_and_turn_the_angle_dial() -> void:
 	_check(is_equal_approx(ChunkView.slope_angle_per_metre, 60.0) and is_equal_approx(float(grass.get_shader_parameter("slope_angle_per_metre")), 60.0), "Backspace puts the dial back to the look's")
 	overlay.free()
 	HeightIndex.clear()
+	ChunkView.set_slopes_drawn(was_drawn)

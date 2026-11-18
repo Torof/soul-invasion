@@ -344,9 +344,13 @@ static var flat_tint: Vector3 = FLAT_TINT
 ## The value of the look's dial `name` for the shader: the image loaded,
 ## the turf set built from its tiles (the first tile alone with key G,
 ## and its counts 1 then), the turf's size, tint and angle dial as set now.
+## While no slope is drawn the set is a 1 × 1 stand-in: the shader reads
+## the turf only on a slope, and the twenty layers weigh 63 MB of video
+## memory that a world with no heights never shows (audit F5, 18 Nov
+## 2026). set_slopes_drawn puts the set on with the first slope.
 static func _slope_dial(name: String) -> Variant:
 	if name == "slope_turf_set":
-		return slope_turf_set(_turf_paths())
+		return slope_turf_set(_turf_paths()) if slopes_drawn > 0 else turf_stand_in()
 	if name == "slope_turf_variants":
 		return 1 if slope_turf_single else SLOPE_LOOK[name]
 	if name == "slope_turf_angles":
@@ -386,6 +390,19 @@ static func slope_turf_set(paths: PackedStringArray) -> Texture2DArray:
 		set.create_from_images(images)
 		_turf_sets[key] = set
 	return _turf_sets[key]
+
+
+## The turf set's stand-in while no slope is drawn: one layer of one
+## texel, made once.
+static func turf_stand_in() -> Texture2DArray:
+	if _turf_stand_in == null:
+		var images: Array[Image] = [Image.create(1, 1, false, Image.FORMAT_RGBA8)]
+		_turf_stand_in = Texture2DArray.new()
+		_turf_stand_in.create_from_images(images)
+	return _turf_stand_in
+
+
+static var _turf_stand_in: Texture2DArray
 
 
 ## The ground shader's slope_turf_hash, bit for bit (Wellons' lowbias32
@@ -457,8 +474,11 @@ static func set_slope_rim(on: bool) -> void:
 	set_slope_param("slope_rim", on)
 
 
+## The slopes drawn or not; the turf set goes on with them (built the
+## first time) and the stand-in back when they are off.
 static func set_slopes_drawn(mode: int) -> void:
 	slopes_drawn = mode
+	set_slope_param("slope_turf_set", _slope_dial("slope_turf_set"))
 	set_slope_param("slopes_drawn", mode)
 
 
