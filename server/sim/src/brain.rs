@@ -21,15 +21,18 @@
 //!    else it gathers from the nearest tree or plant it knows bearing food
 //!    now (D45); knowing none, it goes looking.
 //! 3. **Night**: home to the camp, and sleeps within [`HOME_TILES`] of it.
-//! 4. **By day, a store**: while it carries less than [`STOCK_KJ`], it
-//!    gathers from the nearest tree or plant it knows bearing food now.
+//! 4. **By day, a store**: while it carries less than [`STOCK_KJ`] and
+//!    its load is not full, it gathers from the nearest tree or plant it
+//!    knows bearing food now.
 //!    It works at it until the plant is bare or its load full (or night,
 //!    thirst or hunger calls it away).
 //! 5. Otherwise, by day: home to the camp if it is away, and waits there.
 //!
 //! It remembers the trees and plants bearing food it saw (D45), as it
 //! remembers water; one it found bare, or could not reach, it leaves
-//! alone until that crop's next year.
+//! alone until that crop's next year; one whose gather the world refused
+//! (nothing ripe on it yet, its load full), for [`RETRY_HOURS`]. Hungry,
+//! it gathers only while its load is not full either.
 //!
 //! Every choice comes with its reason ([`Why`]), so the vivarium's report
 //! can say why a body did what it did. Everything is deterministic: the
@@ -73,6 +76,11 @@ pub const LOOK_STEP: i32 = 8;
 /// The food a body gathers by day before it rests, in kilojoules: three
 /// days of a person's needs.
 pub const STOCK_KJ: u64 = 30_000;
+/// How long, in game hours, a body leaves alone a plant whose gather was
+/// refused: asked again at once, the same refusal came back every tick
+/// (a plant picked bare while it ripens, a load already full), a
+/// livelock that cost 80 to 95 % of the tick (audit of 18 Nov 2026).
+pub const RETRY_HOURS: u64 = 1;
 
 /// Why a body was asked to do something.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +140,10 @@ pub struct KnownPlant {
     /// The crop's year it was found bare in, or out of reach: left alone
     /// until the next.
     pub spent: Option<u64>,
+    /// The tick before which it is left alone: a gather of it was refused
+    /// (nothing ripe on it yet, the body's load full, ...). It tries
+    /// again [`RETRY_HOURS`] later, or another plant meanwhile.
+    pub not_before: Option<u64>,
 }
 
 /// One body's mind: its home, its memory of places and what it is about.
@@ -277,7 +289,7 @@ impl Brains {
         rules: &Content,
         events: &[Event],
     ) -> Vec<(BodyId, Decision)> {
-        self.notice(events);
+        self.notice(events, world);
         let mut decisions = Vec::new();
         let seed = self.seed;
         let bearers = &mut self.bearers;
@@ -310,7 +322,7 @@ impl Brains {
     }
 
     /// Marks the minds the tick's events concern.
-    fn notice(&mut self, events: &[Event]) {
+    fn notice(&mut self, events: &[Event], world: &World) {
         for event in events {
             let body = match event {
                 Event::DayStarted { .. } | Event::NightFell { .. } => {
@@ -349,6 +361,13 @@ impl Brains {
                 }
                 if let Event::DrinkRefused { at, .. } = event {
                     mind.water.retain(|_, place| place.water != *at);
+                }
+                if let (Event::GatherRefused { .. }, Doing::Gathering(chunk, source)) =
+                    (event, mind.doing)
+                    && let Some(plant) = mind.plants.get_mut(&(chunk, source))
+                {
+                    // Whatever the reason, not again before a later hour.
+                    plant.not_before = Some(world.tick().0 + RETRY_HOURS * hour(world));
                 }
             }
         }
@@ -557,6 +576,7 @@ fn look(
                                 at: bearer.at,
                                 kind: bearer.kind.clone(),
                                 spent: None,
+                                not_before: None,
                             });
                     }
                 }
@@ -605,6 +625,8 @@ fn decide(
     let camp = mind.home;
     let decision = |intention, why| Some(Decision { intention, why });
     let (thirsty, parched, hungry, asleep) = pasts(world, id);
+    // The world refuses a gather to a body whose load is full.
+    let can_carry = body.load_g() < body.capacity_g(&rules.movement);
     let night = world.is_night(rules);
     if let Doing::Gathering(chunk, source) = mind.doing {
         if body.work().is_some() {
@@ -710,7 +732,7 @@ fn decide(
                 Why::Hunger,
             );
         }
-        if let Some(target) = plant_to_gather(world, rules, here, mind) {
+        if can_carry && let Some(target) = plant_to_gather(world, rules, here, mind) {
             return go_gather(world, rules, id, mind, target, Why::Hunger);
         }
         // It knows the seasons: it goes looking by day, and only when
@@ -725,6 +747,7 @@ fn decide(
         }
     }
     if !night
+        && can_carry
         && carried_kj(world, rules, id) < STOCK_KJ
         && let Some(target) = plant_to_gather(world, rules, here, mind)
     {
@@ -777,6 +800,11 @@ fn food_in_season(world: &World, rules: &Content, kind: &str) -> Option<(String,
 /// The day of the world, counted from its first.
 fn today(world: &World) -> u64 {
     world.tick().0 / world.calendar().ticks_per_day().max(1)
+}
+
+/// A game hour, in ticks: a 24th of the day.
+fn hour(world: &World) -> u64 {
+    (world.calendar().ticks_per_day() / 24).max(1)
 }
 
 /// Past [`MEMORY_PLANTS`], forgets the plants worth least from `at`.
@@ -833,12 +861,17 @@ fn worth(kj_per_hour: u64, tiles: i64) -> u64 {
 }
 
 /// The tree or plant it knows bearing food now worth most, not spent for
-/// that crop's year: what an hour of it gives, less the farther.
+/// that crop's year nor left alone for now: what an hour of it gives,
+/// less the farther.
 fn plant_to_gather(world: &World, rules: &Content, here: Pos, mind: &Mind) -> Option<Target> {
     let today = today(world);
+    let now = world.tick().0;
     mind.plants
         .iter()
-        .filter(|(key, _)| mind.out_of_reach.get(&key.0) != Some(&today))
+        .filter(|(key, plant)| {
+            mind.out_of_reach.get(&key.0) != Some(&today)
+                && plant.not_before.is_none_or(|tick| now >= tick)
+        })
         .filter_map(|(key, plant)| {
             let (gives, year) = food_in_season(world, rules, &plant.kind)?;
             (plant.spent != Some(year)).then_some((*key, plant, gives, year))
@@ -1220,6 +1253,74 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_gather_is_not_asked_again_at_the_next_tick() {
+        use crate::Refusal;
+        use crate::crops::tests::{body_by, run_to, valley_with};
+        let (mut world, rules, chunk, bramble) = valley_with("bramble");
+        // Day 21: the blackberries still ripen. Picked bare, the bramble
+        // has nothing ripe, yet it is not spent: more comes. (Picked well
+        // past bare: on this short calendar a tick ripens grams, on the
+        // game's a dandelion ripens a gram in some minutes.)
+        run_to(&mut world, &rules, 21);
+        let crop = rules
+            .crops
+            .iter()
+            .find(|c| c.gives == "blackberries")
+            .unwrap();
+        assert!(crops::ripening(crop, world.calendar(), world.tick()));
+        let year = world.ripe_on(chunk, &bramble)[0].year;
+        world.record_pick(chunk, bramble.source, "blackberries", year, 1_000_000);
+        assert_eq!(world.ripe_on(chunk, &bramble), []);
+        let id = body_by(&mut world, &bramble);
+        let mut brains = Brains::new(7);
+        brains.adopt(&world, &rules, id);
+        let ticks = hour(&world);
+        let (events, decided) = run_valley(&mut world, &rules, &mut brains, ticks);
+        let asked = |d: &Decision| matches!(&d.intention, Intention::Gather { source, .. } if *source == bramble.source);
+        assert!(asked(&decided[0].1), "it asks the bramble beside it first");
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                Event::GatherRefused {
+                    reason: Refusal::NothingRipe,
+                    ..
+                }
+            )),
+            "refused: nothing ripe"
+        );
+        assert_eq!(
+            decided.iter().filter(|(_, d)| asked(d)).count(),
+            1,
+            "not asked again within the hour: {decided:?}"
+        );
+        let plant = &brains.mind(id).unwrap().plants[&(chunk, bramble.source)];
+        assert!(plant.not_before.is_some_and(|t| t > world.tick().0));
+        assert_eq!(plant.spent, None, "not spent: it comes back to it");
+    }
+
+    #[test]
+    fn a_body_whose_load_is_full_does_not_choose_to_gather() {
+        for hunger in [0, 60] {
+            let (mut world, rules, id, mut brains) = by_a_ripe_bramble(hunger);
+            let body = world.bodies.iter_mut().find(|b| b.id() == id).unwrap();
+            body.load_g = body.capacity_g(&rules.movement);
+            let (events, decided) = run_valley(&mut world, &rules, &mut brains, 30);
+            assert!(
+                !decided
+                    .iter()
+                    .any(|(_, d)| matches!(d.intention, Intention::Gather { .. })),
+                "hunger {hunger}: {decided:?}"
+            );
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, Event::GatherRefused { .. })),
+                "hunger {hunger}"
+            );
+        }
+    }
+
+    #[test]
     fn it_gathers_the_richer_crop_unless_it_is_too_far() {
         let (world, rules, id, _) = by_a_ripe_bramble(0);
         let here = world.body(id).unwrap().pos();
@@ -1236,6 +1337,7 @@ mod tests {
             at,
             kind: kind.to_owned(),
             spent: None,
+            not_before: None,
         };
         mind.plants.insert(plant(1), known(at(0), "bramble"));
         mind.plants.insert(plant(2), known(at(10), "hazel"));
@@ -1268,6 +1370,7 @@ mod tests {
             at: FinePos::new(here.centre().x + tiles * 1000, here.centre().y),
             kind: kind.to_owned(),
             spent: None,
+            not_before: None,
         };
         let mut mind = Mind::new(here);
         // Wild garlic at its feet, an hour of it worth more than of
@@ -1312,6 +1415,7 @@ mod tests {
                     at: far_at,
                     kind: "bramble".to_owned(),
                     spent: None,
+                    not_before: None,
                 },
             );
         }
