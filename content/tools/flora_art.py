@@ -6,6 +6,7 @@ numpy. From the repository's root:
 
     python3 content/tools/flora_art.py <sources> content/art [--trees [--tree-zoom Z]]
     python3 content/tools/flora_art.py --ink content/art <tree image>...
+    python3 content/tools/flora_art.py --recolour <tree image>...
 
 <sources> holds one image per kind and variant, on a white background,
 named `<id>_<nn>.png` (`bramble_01.png`), as `content/ai-reserve/sources/flora/`.
@@ -329,6 +330,80 @@ def clear_pale(image):
 # (INK_MARGIN beyond its outer half); the
 # foot stays at the bottom. `outlines.json` and the fruit points are found
 # again after. A line already darker than the ink is left as it is.
+# Colours brought into line, an image at a time: its leaves or its bark (in
+# CIE Lab, the mean and spread of each part) moved to a target, so a tree
+# matches its kind's other image or stops standing out. The two oaks share
+# one green, between their own two; the second oak's bark loses the orange
+# that stood out (its mean the first oak's bark, darker, its spread of
+# colour narrowed).
+OAK_LEAVES = ((40.0, -22.6, 20.0), (12.6, 7.9, 7.2))
+RECOLOUR = {
+    "oak_01": {"leaves": OAK_LEAVES},
+    "oak_02": {"leaves": OAK_LEAVES, "bark": ((36.0, 4.3, 20.3), (10.8, 3.7, 2.6))},
+}
+SRGB_TO_XYZ = np.array([[0.4124, 0.3576, 0.1805], [0.2126, 0.7152, 0.0722], [0.0193, 0.1192, 0.9505]])
+WHITE = np.array([0.95047, 1.0, 1.08883])
+
+
+def to_lab(rgb):
+    c = rgb / 255.0
+    c = np.where(c > 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
+    xyz = c @ SRGB_TO_XYZ.T / WHITE
+    f = np.where(xyz > 0.008856, np.cbrt(xyz), 7.787 * xyz + 16 / 116)
+    return np.stack([116 * f[..., 1] - 16, 500 * (f[..., 0] - f[..., 1]), 200 * (f[..., 1] - f[..., 2])], -1)
+
+
+def from_lab(lab):
+    fy = (lab[..., 0] + 16) / 116
+    f = np.stack([fy + lab[..., 1] / 500, fy, fy - lab[..., 2] / 200], -1)
+    xyz = np.where(f ** 3 > 0.008856, f ** 3, (f - 16 / 116) / 7.787) * WHITE
+    c = np.clip(xyz @ np.linalg.inv(SRGB_TO_XYZ).T, 0, 1)
+    c = np.where(c > 0.0031308, 1.055 * c ** (1 / 2.4) - 0.055, 12.92 * c)
+    return np.clip(c * 255, 0, 255)
+
+
+def colour_parts(lab, alpha):
+    """How much each pixel is leaf and bark (0 to 1, soft at the borders of
+    their hues); the ink and the greys are neither."""
+    hue = np.degrees(np.arctan2(lab[..., 2], lab[..., 1])) % 360
+    chroma = np.hypot(lab[..., 1], lab[..., 2])
+    lit = np.clip((lab[..., 0] - 12) / 10, 0, 1) * np.clip((chroma - 4) / 6, 0, 1) * (alpha > 0)
+
+    def band(lo, hi, soft):
+        return np.clip(np.minimum(hue - lo, hi - hue) / soft + 0.5, 0, 1)
+
+    return {"leaves": band(100, 200, 20) * lit, "bark": band(20, 95, 15) * lit}
+
+
+def recolour(image, name):
+    """`image` (the tree `name`, as `oak_02`) with its parts brought to
+    their RECOLOUR targets; unchanged when it has none."""
+    recipe = RECOLOUR.get(name)
+    if not recipe:
+        return image
+    a = np.asarray(image.convert("RGBA")).astype(np.float64)
+    lab = to_lab(a[..., :3])
+    parts = colour_parts(lab, a[..., 3])
+    out = lab.copy()
+    for part, (mean, spread) in recipe.items():
+        w = parts[part]
+        m = (lab * w[..., None]).sum((0, 1)) / w.sum()
+        s = np.sqrt(((lab - m) ** 2 * w[..., None]).sum((0, 1)) / w.sum())
+        moved = (lab - m) * (np.array(spread) / s) + np.array(mean)
+        out += (moved - lab) * w[..., None]
+    a[..., :3] = from_lab(out)
+    return Image.fromarray(np.clip(np.round(a), 0, 255).astype(np.uint8))
+
+
+def recolour_shipped(names):
+    """The shipped tree images `names` (paths) with their RECOLOUR, in
+    place."""
+    for path in map(Path, names):
+        m = re.match(r"(.+)_adult_(\d\d)_summer\.webp$", path.name)
+        save_webp(recolour(Image.open(path), f"{m.group(1)}_{m.group(2)}"), path)
+        print("recoloured", path.name)
+
+
 INK = np.array([12, 14, 10], np.float32)
 INK_PX = 9
 INK_CLOSE = 5
@@ -554,6 +629,9 @@ def main():
         i = args.index("--tree-zoom")
         tree_zoom = float(args[i + 1])
         del args[i:i + 2]
+    if args and args[0] == "--recolour":
+        recolour_shipped(args[1:])
+        return
     if args and args[0] == "--ink":
         ink_shipped(args[1], args[2:], tree_zoom)
         return
@@ -578,6 +656,7 @@ def main():
             image = image.filter(ImageFilter.UnsharpMask(radius=1.2, percent=60, threshold=2))
             if not kind.startswith(PALE_TREES):
                 image = clear_pale(image)
+            image = recolour(image, f"{kind}_{n}")
             # The line is INK_PX at the shipped size: thinner in the pixels
             # of an image short of it, which the client magnifies.
             image = ink(image, INK_PX * image.height / tall, kind.startswith(INK_KEEP_HOLES))
