@@ -1052,6 +1052,10 @@ func start_build() -> void:
 	if signature == _last_signature or signature == _task_signature:
 		return
 	_drop_task()
+	# The flora's atlas and the berries are read here, on the main thread,
+	# before any worker reads them (draws_of): read first on a worker, they
+	# raced the main thread (audit F6, 19 November 2026).
+	flora_atlas()
 	var input := _gather(true)
 	_task_out = []
 	_task = WorkerThreadPool.add_task(GroundBuild.run.bind(input, _task_out), true, "chunk ground")
