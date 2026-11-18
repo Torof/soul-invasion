@@ -192,3 +192,9 @@ shadow) and was made alone with `flora_art.py --trees` from a sources
 folder holding only it, so it has the ink line and the other trees were
 left as they were. It carries no fruit yet (the content gives it none).
 The wild fig is the last tree still drawn with a stand-in's (the hazel's).
+
+**18 November 2026, the yew back to its source**: the yew shipped was a
+Midjourney edit made for the fruit states of 17 November, darker, with
+small red arils left in its crown. It is made again from its own clean
+source (`yew_01.png`), alone with `flora_art.py --trees`, so it has the
+ink line and no red speck; the other trees were left as they were.
