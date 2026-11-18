@@ -39,6 +39,7 @@ func _init() -> void:
 	_test_the_golden_chunk_decodes()
 	_test_a_tree_shows_its_fruit_as_sprites_at_its_points()
 	_test_a_shrub_shows_its_berries_as_sprites_at_its_points()
+	_test_the_berries_lie_in_the_flora_atlas_clear_of_the_plants()
 	_test_a_flat_chunk_has_no_heights_and_a_chunks_heights_are_kept()
 	_test_the_slopes_are_read_over_two_tiles_and_off_until_a_chunk_has_heights()
 	_test_the_slope_overlay_tells_a_summit_and_a_col_from_a_ring()
@@ -957,7 +958,6 @@ func _test_a_shrub_shows_its_berries_as_sprites_at_its_points() -> void:
 	var variant := ChunkView.plant_variant(at, ChunkView.flora_variants("bramble").size())
 	_check(ChunkView.flora_variants("bramble")[variant] == region, "a plant's variant is its region's")
 	# A tiny data of its own: six points on each bramble image, two sprites.
-	var sheet := ImageTexture.create_from_image(Image.create(16, 8, false, Image.FORMAT_RGBA8))
 	var images := {}
 	for n in ChunkView.flora_variants("bramble").size():
 		var r: Rect2 = ChunkView.flora_variants("bramble")[n]
@@ -965,7 +965,7 @@ func _test_a_shrub_shows_its_berries_as_sprites_at_its_points() -> void:
 		for k in 6:
 			points.append([r.size.x * (k + 1) / 7.0, r.size.y / 2.0])
 		images["bramble_%02d" % (n + 1)] = {"image": [r.size.x, r.size.y], "points": points}
-	ChunkView.set_berries({"images": images, "kinds": {"bramble": {"sprites": [[0, 0, 8, 8], [8, 0, 8, 8]]}}}, {"bramble": sheet})
+	ChunkView.set_berries({"images": images, "kinds": {"bramble": {"sprites": [[0, 0, 8, 8], [8, 0, 8, 8]]}}})
 	var rect := ChunkView.plant_rect(at, flora[0], region)
 	var full := ChunkView.berries_of(at, flora[0], rect, region, Trees.FRUIT_LEVELS)
 	var half := ChunkView.berries_of(at, flora[0], rect, region, 4)
@@ -983,13 +983,17 @@ func _test_a_shrub_shows_its_berries_as_sprites_at_its_points() -> void:
 		var middle := r.position.x + r.size.x / 2.0
 		hung = hung and is_equal_approx(middle, point.x) and is_equal_approx(r.position.y, point.y)
 		hung = hung and is_equal_approx(absf(r.size.x), 8.0 * scale) and is_equal_approx(r.size.y, 8.0 * scale)
-		hung = hung and b[2] == sheet and (b[1] == Rect2(0, 0, 8, 8) or b[1] == Rect2(8, 0, 8, 8))
+		hung = hung and b.size() == 2 and (b[1] == Rect2(0, 0, 8, 8) or b[1] == Rect2(8, 0, 8, 8))
 	_check(hung, "each sprite hangs from its point at its plant's scale")
 	_check(str(full) == str(ChunkView.berries_of(at, flora[0], rect, region, Trees.FRUIT_LEVELS)), "the same every time")
-	# The layer draws each shrub's berries right after it, with its tint.
+	# The layer draws each shrub's berries right after it, with its tint,
+	# from the same atlas: every draw is [rect, atlas region, tint].
 	var plants := PackedInt32Array([0, int(at.x), int(at.y), 0, 9_000, 9_000])
 	var draws := ChunkView.PlantLayer.draws_of(plants, flora, PackedByteArray([8, 0]))
-	_check(draws.size() == 2 + 6 and draws[0].size() == 3 and draws[1].size() == 4 and draws[1][3] == sheet and draws[6].size() == 4 and draws[7].size() == 3, "a laden bramble, then its six berries, then a bare one: %d" % draws.size())
+	var one_texture := true
+	for d: Array in draws:
+		one_texture = one_texture and d.size() == 3
+	_check(draws.size() == 2 + 6 and one_texture and draws[0][1] == region and draws[1][1] in [Rect2(0, 0, 8, 8), Rect2(8, 0, 8, 8)] and draws[6][1] in [Rect2(0, 0, 8, 8), Rect2(8, 0, 8, 8)] and ChunkView.flora_variants("bramble").has(draws[7][1]), "a laden bramble, then its six berries, then a bare one, all from the atlas: %d" % draws.size())
 	_check(ChunkView.PlantLayer.draws_of(plants, flora).size() == 2, "without fruit, bare")
 	# A tall shrub among the trees keeps its berries for its canvas item.
 	var tall := [{"id": "bramble", "name": "Bramble", "family": "shrub", "height_cm": 90}]
@@ -1005,6 +1009,35 @@ func _test_a_shrub_shows_its_berries_as_sprites_at_its_points() -> void:
 	ChunkView.read_berries()
 
 
+## The shrubs' berries are sprites of the flora's atlas (audit F3,
+## 19 November 2026), so a plant and its berries draw from one texture:
+## each kind's sprites inside the atlas, in a block on a 64-px grid and at
+## least 32 px clear of every plant's image, so no mipmap level a plant is
+## read at mixes the two, and no berry sheet of their own any more.
+func _test_the_berries_lie_in_the_flora_atlas_clear_of_the_plants() -> void:
+	var atlas := ChunkView.flora_atlas()
+	var fruit: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(ChunkView.FLORA_FRUIT))
+	var plants: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(ChunkView.FLORA_RECTS))
+	var whole := Rect2(Vector2.ZERO, atlas.get_size())
+	var kinds: Dictionary = fruit["kinds"]
+	_check(kinds.size() >= 14, "the berry kinds are there: %d" % kinds.size())
+	for kind: String in kinds:
+		var sprites: Array = kinds[kind]["sprites"]
+		var block := Rect2()
+		for r: Array in sprites:
+			var sprite := Rect2(r[0], r[1], r[2], r[3])
+			block = sprite if block.size == Vector2.ZERO else block.merge(sprite)
+		_check(whole.encloses(block), "%s's berries lie in the atlas" % kind)
+		var around := block.grow(8 + 32)
+		var clear := true
+		for name: String in plants:
+			var p: Array = plants[name]
+			clear = clear and not around.intersects(Rect2(p[0], p[1], p[2], p[3]))
+		_check(clear, "%s's berries are 32 px clear of every plant" % kind)
+		_check(int(block.position.x - 8) % 64 == 0 and int(block.position.y - 8) % 64 == 0, "%s's block starts on the 64-px grid: %s" % [kind, block.position])
+		_check(not ResourceLoader.exists("res://art/flora/fruit/%s.webp" % kind), "%s has no sheet of its own" % kind)
+
+
 ## Every tree image and fruit sheet is imported compressed for the
 ## graphics card, with its mipmaps (as every tree before it): Godot's
 ## defaults for a new file are neither, four times the memory and a
@@ -1012,11 +1045,11 @@ func _test_a_shrub_shows_its_berries_as_sprites_at_its_points() -> void:
 ## came in so on 18 November 2026).
 func _test_tree_images_import_compressed_with_mipmaps() -> void:
 	var files: Array[String] = []
-	for dir: String in [Trees.DIR, Trees.DIR.path_join("fruit"), "res://art/flora/fruit"]:
+	for dir: String in [Trees.DIR, Trees.DIR.path_join("fruit"), "res://art/flora"]:
 		for file in DirAccess.get_files_at(dir):
 			if file.ends_with(".webp.import"):
 				files.append(dir.path_join(file))
-	_check(files.size() >= 42, "the trees', their fruit's and the berries' images are found: %d" % files.size())
+	_check(files.size() >= 31, "the trees', their fruit's images and the flora's atlas are found: %d" % files.size())
 	for path in files:
 		var text := FileAccess.get_file_as_string(path)
 		_check(text.contains("compress/mode=2") and text.contains("mipmaps/generate=true"), "%s is compressed, with mipmaps" % path.get_file())

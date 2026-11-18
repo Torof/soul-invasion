@@ -10,8 +10,10 @@ numpy. From the repository's root:
     python3 content/tools/tree_fruit.py --flora sprites|points ...
 
 With `--flora`, the same for a berry shrub of the flora (D48, amended on
-18 November 2026): its sprites go to `art/flora/fruit/<id>.webp` and
-`art/flora/fruit/fruit.json`, and `points` works on each of the kind's
+18 November 2026): its sprites go into the flora's atlas, as one block in
+place of the kind's old one (`flora_art.put_berries`: one texture with the
+plants, audit F3 of 19 November 2026), their rectangles in the atlas in
+`art/flora/fruit.json`, and `points` works on each of the kind's
 images in the flora's atlas (`art/flora/atlas.webp`, by its `atlas.json`
 name, `bramble_01`), brought up to FLORA_WORK px high to be read with the
 trees' measures, then back: the points are in the atlas image's own pixels,
@@ -54,6 +56,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
+import flora_art
+
 ART = Path(__file__).resolve().parents[1] / "art" / "trees"
 FRUIT = ART / "fruit"
 DATA = FRUIT / "fruit.json"
@@ -66,6 +70,7 @@ PAD = 8
 COUNT = 30
 SPACING = 140
 FLORA = Path(__file__).resolve().parents[1] / "art" / "flora"
+FLORA_MODE = False
 FLORA_WORK = 2000
 LOWEST = 0.70
 FLORA_LOWEST = 0.85
@@ -213,6 +218,10 @@ def make_sprites(kind, reference, cells, px=SPRITE_PX):
         sheet.alpha_composite(s, (x + PAD, PAD))
         rects.append([x + PAD, PAD, s.width, s.height])
         x += s.width + 2 * PAD
+    if FLORA_MODE:
+        flora_art.put_berries(FLORA.parent, {kind: (sheet, rects)})
+        print(f"{kind}: {len(rects)} sprites, {sheet.width} x {sheet.height}, in the flora's atlas")
+        return
     FRUIT.mkdir(parents=True, exist_ok=True)
     sheet.save(FRUIT / f"{kind}.webp", "WEBP", lossless=True, quality=100, method=6, exact=True)
     data = load()
@@ -310,13 +319,13 @@ def make_flora_points(kind):
 
 
 def main():
-    global ART, FRUIT, DATA
+    global ART, FRUIT, DATA, FLORA_MODE
     args = sys.argv[1:]
     flora = "--flora" in args
     if flora:
         args.remove("--flora")
-        ART, FRUIT = FLORA, FLORA / "fruit"
-        DATA = FRUIT / "fruit.json"
+        ART, FRUIT, FLORA_MODE = FLORA, FLORA, True
+        DATA = FLORA / "fruit.json"
     px = SPRITE_PX
     if "--px" in args:
         i = args.index("--px")

@@ -13,6 +13,11 @@ calls (D39). Two images a kind; the client picks one by the plant's place.
   bottom middle is the plant's foot. Images start on a 4-pixel block, 8
   pixels apart. Transparent background; the clear pixels around each plant
   carry its colour, so it does not darken far away.
+- **Berries** (D48): the berry shrubs' fruit sprites are in the same atlas,
+  each kind's as one block where the atlas is clear (64-px grid, 32 px from
+  any plant), their rectangles and each image's points in `fruit.json`
+  (`content/tools/tree_fruit.py --flora`, `content/tools/flora_art.py`): a
+  plant and its berries draw from one texture.
 - **Made**: 9 November 2026 on Midjourney by the project lead, one prompt a
   kind and variant (`content/ai-reserve/notes/flora-prompts.md`), the
   style reference in each; wild flax, woad and yarrow made again as plants
