@@ -134,3 +134,17 @@ the chestnut's sources came out shorter than their shipped size (2,203 and
 sharpening, so the card reads them at the same zooms as the other trees. Their fruit shows
 while their crop is in season (`content/species.ron`). The fig waits for
 its own redo.
+
+**18 November 2026, fruit as sprites (D48)**: the three images a tree of
+17 November (bare, `_fruit1`, `_fruit2`) were too heavy and are gone; every
+tree keeps its bare image only. The fruit is drawn over it as sprites
+(`fruit/<id>.webp`, `fruit/fruit.json`, made with
+`content/tools/tree_fruit.py`). The wild pear is the first: a new tree,
+less heavily outlined than the first one (first sheet of 18 November,
+variant 2, with a Midjourney edit taking away its grass and shadow), and
+four pears made whole on white in Midjourney (two single, two pairs),
+brought to the colours of the first tree's pears. The other kinds with a
+fruit window are drawn bare until their fruit is made.
+The walnut and the sweet chestnut are back to the size their sources give
+(2,203 and 1,881 px high, short of 2,660 and 2,816): nothing is enlarged.
+They are read whole from a farther zoom until they are made again bigger.

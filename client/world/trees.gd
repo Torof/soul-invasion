@@ -203,62 +203,102 @@ static func looks_as(species: String) -> String:
 
 
 ## The fruit a tree shows (D48): the server says which, a byte a tree
-## (Protocol.decode_chunk's `fruit`); no fruit is the kind's own images.
+## (Protocol.decode_chunk's `fruit`). A kind's image is drawn bare, and
+## its fruit over it: small sprites of the fruit, hung at points found on
+## each image (content/tools/tree_fruit.py): all of them laden, the first
+## third of them (spread over the crown) a third laden.
 const FRUIT_NONE := 0
 const FRUIT_THIRD := 1
 const FRUIT_FULL := 2
-## Between a kind's id and its fruit in the key its images of that fruit
-## are held by (`with_fruit`): `oak@fruit2`.
-const FRUIT_KEY := "@fruit"
+## Each kind's fruit, `<id>.webp` (its sprites side by side), and
+## FRUIT_DATA: per kind its sprites' rectangles in it, per tree image its
+## points (texels, as the outlines).
+const FRUIT_DIR := DIR + "fruit/"
+const FRUIT_DATA := FRUIT_DIR + "fruit.json"
+## A fruit's marker for the sway shader (trees.gdshader): alpha
+## FRUIT_ALPHA, plus 0.02 for each see-through flag of its tree.
+const FRUIT_ALPHA := 0.8
+static var _fruit_data: Dictionary = {}
+static var _fruit_read := false
+## kind -> its fruit's texture, or null when it has none (read once: a
+## few kilobytes, kept).
+static var _fruit_sheets: Dictionary = {}
+## Each image's fruit points, by its index (image_index): 0..1 across and
+## down the image, as its outline.
+static var _fruit_points: Array[PackedVector2Array] = []
 
 
-## The key a tree drawn as `looks` (looks_as) showing `fruit` is drawn
-## with: `<looks>@fruit1` (a third) or `<looks>@fruit2` (laden) while its
-## kind has the images of that fruit, else `looks` itself, its images
-## without fruit (most kinds have none yet). Each key's images are held
-## and read as a kind's are: only while a stand shows a tree with them.
-static func with_fruit(looks: String, fruit: int) -> String:
+static func _fruit() -> Dictionary:
+	if not _fruit_read:
+		_fruit_read = true
+		if FileAccess.file_exists(FRUIT_DATA):
+			var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(FRUIT_DATA))
+			if parsed is Dictionary:
+				_fruit_data = parsed
+	return _fruit_data
+
+
+## The texture of `kind`'s fruit, null when it has none.
+static func fruit_sheet(kind: String) -> Texture2D:
+	if not _fruit_sheets.has(kind):
+		var path := FRUIT_DIR + kind + ".webp"
+		_fruit_sheets[kind] = load(path) if not fruit_sprites(kind).is_empty() and ResourceLoader.exists(path) else null
+	return _fruit_sheets[kind]
+
+
+## The rectangles of `kind`'s fruit sprites in its texture (fruit_sheet).
+static func fruit_sprites(kind: String) -> Array[Rect2]:
+	var found: Array[Rect2] = []
+	var entry: Variant = (_fruit().get("kinds", {}) as Dictionary).get(kind)
+	if entry is Dictionary:
+		for r: Array in entry.get("sprites", []):
+			found.append(Rect2(float(r[0]), float(r[1]), float(r[2]), float(r[3])))
+	return found
+
+
+## The fruit points of the image at `path`, 0..1 across and down it.
+static func _points_of(path: String) -> PackedVector2Array:
+	var points := PackedVector2Array()
+	var entry: Variant = (_fruit().get("images", {}) as Dictionary).get(path.get_file())
+	if entry is Dictionary:
+		var size: Array = entry.get("image", [])
+		if size.size() == 2:
+			for p: Array in entry.get("points", []):
+				points.append(Vector2(float(p[0]) / float(size[0]), float(p[1]) / float(size[1])))
+	return points
+
+
+## The fruit points of the image at `index` (image_index).
+static func fruit_points(index: int) -> PackedVector2Array:
+	return _fruit_points[index] if index >= 0 and index < _fruit_points.size() else PackedVector2Array()
+
+
+## How many of `count` points carry a fruit when a tree shows `fruit`.
+static func fruit_shown(count: int, fruit: int) -> int:
 	if fruit <= FRUIT_NONE:
-		return looks
-	var key := "%s%s%d" % [looks, FRUIT_KEY, mini(fruit, FRUIT_FULL)]
-	return looks if paths(key).is_empty() else key
+		return 0
+	return count if fruit >= FRUIT_FULL else ceili(count / 3.0)
 
 
-## The kind whose images `key` (with_fruit) is of, its fruit aside.
-static func base_of(key: String) -> String:
-	return key.get_slice(FRUIT_KEY, 0)
-
-
-## The image of `fruit` beside a kind's image at `path`:
-## `<id>_adult_01_summer.webp` -> `<id>_adult_01_summer_fruit2.webp`.
-static func fruit_path(path: String, fruit: int) -> String:
-	return "%s_fruit%d.webp" % [path.trim_suffix(".webp"), fruit]
+## The marker of a fruit hung `up` (0 the foot, 1 the top) on a tree
+## `height_px` tall at `at`, with its see-through `flags` (marker): the
+## shader bends it with the crown there, its tree's phase.
+static func fruit_marker(height_px: float, up: float, at: Vector2, flags: int) -> Color:
+	return Color(clampf(height_px / 1280.0, 0.0, 1.0), clampf(up, 0.0, 1.0), place_hash(at, 11), FRUIT_ALPHA + 0.02 * float(flags))
 
 
 ## The paths of the images of a kind of tree: `<id>_adult_01_summer.webp`,
-## `_02`, ... (found once, kept). For a key of a fruit (with_fruit), the
-## images of that fruit beside each of them (fruit_path), the same size
-## as theirs, in their order: all of them, or none when one is missing
-## (the kind is then drawn without fruit).
+## `_02`, ... (found once, kept).
 static func paths(species: String) -> PackedStringArray:
 	if not _paths.has(species):
 		var found := PackedStringArray()
-		if species.contains(FRUIT_KEY):
-			var fruit := int(species.get_slice(FRUIT_KEY, 1))
-			for path: String in paths(base_of(species)):
-				var beside := fruit_path(path, fruit)
-				if not ResourceLoader.exists(beside):
-					found.clear()
-					break
-				found.append(beside)
-		else:
-			var n := 1
-			while true:
-				var path := DIR + "%s_adult_%02d_summer.webp" % [species, n]
-				if not ResourceLoader.exists(path):
-					break
-				found.append(path)
-				n += 1
+		var n := 1
+		while true:
+			var path := DIR + "%s_adult_%02d_summer.webp" % [species, n]
+			if not ResourceLoader.exists(path):
+				break
+			found.append(path)
+			n += 1
 		_paths[species] = found
 	return _paths[species]
 
@@ -602,9 +642,7 @@ static func _place(species: String, reads: Array) -> void:
 	var ids: Variant = _image_ids.get(species)
 	if ids == null:
 		var list := PackedInt32Array()
-		# The outlines are the images' without fruit (the same crown): an
-		# image of a fruit takes its kind's.
-		var list_paths := paths(base_of(species))
+		var list_paths := paths(species)
 		for i in found.size():
 			var t: Texture2D = found[i]
 			list.append(_images.size())
@@ -623,6 +661,7 @@ static func _place(species: String, reads: Array) -> void:
 				_hulls[-1] = outline
 				triangles = Geometry2D.triangulate_polygon(outline)
 			_hull_indices.append(triangles)
+			_fruit_points.append(_points_of(list_paths[i]))
 		_image_ids[species] = list
 	else:
 		# The same indices as the first time: a stand keeps its indices.
@@ -889,6 +928,8 @@ class Stand:
 	var kinds := PackedStringArray()
 	## Each tree's kind, an index in `kinds`.
 	var kind := PackedByteArray()
+	## The fruit each tree shows (Trees.FRUIT_NONE ...).
+	var fruit := PackedByteArray()
 	## Each kind's height in centimetres, in the order of `kinds`.
 	var heights := PackedInt32Array()
 	## Whether the rectangles and cells are worked out (the images are in).
@@ -906,7 +947,7 @@ class Stand:
 	## "species"}); `heights`: species id -> height in centimetres; `fruit`:
 	## the fruit each tree shows (Protocol.decode_chunk's), none for a tree
 	## past it.
-	func _init(trees: Variant = [], tree_heights: Dictionary = {}, species_ids := PackedStringArray(), fruit := PackedByteArray()) -> void:
+	func _init(trees: Variant = [], tree_heights: Dictionary = {}, species_ids := PackedStringArray(), shows := PackedByteArray()) -> void:
 		var packed: bool = trees is PackedInt32Array
 		var triples: PackedInt32Array = trees if packed else PackedInt32Array()
 		var listed: Array = [] if packed else trees
@@ -918,6 +959,7 @@ class Stand:
 		flags.resize(n)
 		refs.resize(n)
 		kind.resize(n)
+		fruit.resize(n)
 		var which: Dictionary = {}
 		for i in n:
 			var species: String
@@ -931,15 +973,14 @@ class Stand:
 				# As Net.point reads it.
 				var place: Variant = t.get("at", {})
 				at[i] = Vector2(float(place.get("x", 0)), float(place.get("y", 0))) if place is Dictionary else Vector2.ZERO
-			var shows := int(fruit[i]) if i < fruit.size() else Trees.FRUIT_NONE
-			var k: Variant = which.get("%s|%d" % [species, shows])
+			fruit[i] = shows[i] if i < shows.size() else Trees.FRUIT_NONE
+			var k: Variant = which.get(species)
 			if k == null:
 				k = kinds.size()
-				which["%s|%d" % [species, shows]] = k
+				which[species] = k
 				# A kind drawn with a stand-in's images keeps its own height;
-				# the images are read for the tallest drawn with them. Its
-				# fruit's, if it has them (D48).
-				var looks := Trees.with_fruit(Trees.looks_as(species), shows)
+				# the images are read for the tallest drawn with them.
+				var looks := Trees.looks_as(species)
 				kinds.append(looks)
 				heights.append(int(tree_heights.get(species, 400)))
 				Trees._heights[looks] = maxi(int(Trees._heights.get(looks, 0)), heights[-1])
@@ -1073,6 +1114,47 @@ class Stand:
 		colours.fill(Trees.marker(r.size.y, at[i], flags[i]))
 		RenderingServer.canvas_item_clear(item)
 		RenderingServer.canvas_item_add_triangle_array(item, Trees.hull_indices(index), points, colours, outline, PackedInt32Array(), PackedFloat32Array(), Trees.image(index).get_rid())
+		if fruit[i] > Trees.FRUIT_NONE:
+			_draw_fruit(i, item, r, origin, index)
+
+	## Tree `i`'s fruit (D48) over it, in one call: each sprite hangs from
+	## the middle of its top edge at its point, at the image's scale, one
+	## of the kind's sprites and its side picked by the tree's place.
+	func _draw_fruit(i: int, item: RID, r: Rect2, origin: Vector2, index: int) -> void:
+		var looks := kinds[kind[i]]
+		var sheet := Trees.fruit_sheet(looks)
+		var sprites := Trees.fruit_sprites(looks)
+		var at_points := Trees.fruit_points(index)
+		var n := Trees.fruit_shown(at_points.size(), fruit[i])
+		if sheet == null or sprites.is_empty() or n == 0:
+			return
+		var scale := r.size.y / float(Trees.image(index).get_height())
+		var sheet_size := Vector2(sheet.get_size())
+		var points := PackedVector2Array()
+		var uvs := PackedVector2Array()
+		var colours := PackedColorArray()
+		var indices := PackedInt32Array()
+		var place := Vector2i(int(at[i].x), int(at[i].y))
+		for k in n:
+			var p := at_points[k]
+			var s := sprites[StableHash.below([place.x, place.y, 13, k], sprites.size())]
+			var size := s.size * scale
+			var top := origin + p * r.size - Vector2(size.x / 2.0, 0.0)
+			var u0 := s.position.x / sheet_size.x
+			var u1 := s.end.x / sheet_size.x
+			if StableHash.below([place.x, place.y, 17, k], 2) == 1:
+				var swap := u0
+				u0 = u1
+				u1 = swap
+			var v0 := s.position.y / sheet_size.y
+			var v1 := s.end.y / sheet_size.y
+			var base := points.size()
+			points.append_array([top, top + Vector2(size.x, 0.0), top + size, top + Vector2(0.0, size.y)])
+			uvs.append_array([Vector2(u0, v0), Vector2(u1, v0), Vector2(u1, v1), Vector2(u0, v1)])
+			var c := Trees.fruit_marker(r.size.y, 1.0 - p.y, at[i], flags[i])
+			colours.append_array([c, c, c, c])
+			indices.append_array([base, base + 1, base + 2, base, base + 2, base + 3])
+		RenderingServer.canvas_item_add_triangle_array(item, indices, points, colours, uvs, PackedInt32Array(), PackedFloat32Array(), sheet.get_rid())
 
 	## Sets tree `i`'s see-through flags (Trees.marker), redrawn if shown.
 	func set_flags(i: int, f: int) -> void:
