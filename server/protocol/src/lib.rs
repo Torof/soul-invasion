@@ -98,7 +98,11 @@ use serde::{Deserialize, Serialize};
 /// - v27: the berries a shrub shows (D48, 18 November 2026): each plant
 ///   of a chunk frame carries one byte more, its fruit, after its kind,
 ///   as a tree's.
-pub const PROTOCOL_VERSION: u32 = 27;
+/// - v28: a load, not three states (D48, 18 November 2026): the fruit
+///   byte of a tree and of a plant is the level of the fruit it shows, 0
+///   (none) to [`FRUIT_LEVELS`] (a rich year at its peak); the layout is
+///   v27's.
+pub const PROTOCOL_VERSION: u32 = 28;
 
 /// Chunks whose frames a client keeps after they left its view, the
 /// least recently hidden forgotten first (D4): about 3 MB of frames. The
@@ -798,18 +802,17 @@ pub struct StandingTree {
     /// Its species, an index into [`ServerMessage::WorldState`]'s
     /// `species`.
     pub kind: u8,
-    /// The fruit it shows (D48): [`FRUIT_NONE`], [`FRUIT_THIRD`] or
-    /// [`FRUIT_FULL`]; the client draws the image of that state.
+    /// The fruit it shows (D48): its level, [`FRUIT_NONE`] to
+    /// [`FRUIT_LEVELS`]; the client hangs that share of its fruit.
     pub fruit: u8,
 }
 
 /// A tree or a plant shows no fruit ([`StandingTree::fruit`],
 /// [`Standing::fruit`]).
 pub const FRUIT_NONE: u8 = 0;
-/// A tree or a plant shows some fruit: a third.
-pub const FRUIT_THIRD: u8 = 1;
-/// A tree or a plant is laden.
-pub const FRUIT_FULL: u8 = 2;
+/// A tree or a plant shows the load of a rich year at its peak: the top
+/// level of its fruit (`sim::crops::LEVELS`).
+pub const FRUIT_LEVELS: u8 = 8;
 
 /// A natural item in a [`ChunkFrame`]: what the ground itself drops. Its
 /// id and its tile follow from the chunk and the slot (`sim::items`): id
@@ -1673,13 +1676,13 @@ mod tests {
                     dx: 31_999,
                     dy: 0,
                     kind: 2,
-                    fruit: FRUIT_FULL,
+                    fruit: FRUIT_LEVELS,
                 },
                 StandingTree {
                     dx: 1_500,
                     dy: 2_250,
                     kind: 0,
-                    fruit: FRUIT_THIRD,
+                    fruit: 3,
                 },
             ],
             plants: vec![
@@ -1693,7 +1696,7 @@ mod tests {
                     dx: 2_000,
                     dy: 100,
                     kind: 3,
-                    fruit: FRUIT_FULL,
+                    fruit: 5,
                 },
             ],
             natural: vec![
@@ -1729,7 +1732,7 @@ mod tests {
                 dx: i * 80,
                 dy: 32_000 - i * 80,
                 kind: u8::try_from(i % 7).unwrap(),
-                fruit: u8::try_from(i % 3).unwrap(),
+                fruit: u8::try_from(i % 9).unwrap(),
             })
             .collect();
         dense.plants = (0..2_000_u16)
@@ -1737,7 +1740,7 @@ mod tests {
                 dx: i * 16,
                 dy: i,
                 kind: u8::try_from(i % 40).unwrap(),
-                fruit: u8::try_from(i % 3).unwrap(),
+                fruit: u8::try_from(i % 9).unwrap(),
             })
             .collect();
         let empty = ChunkFrame {

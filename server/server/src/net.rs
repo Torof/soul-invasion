@@ -490,6 +490,9 @@ struct Items {
     picked: BTreeMap<ChunkPos, Arc<Picks>>,
 }
 
+// The fruit's levels on the wire are the simulation's (D48).
+const _: () = assert!(protocol::FRUIT_LEVELS == sim::crops::LEVELS);
+
 /// What men picked of a chunk's crops ([`sim::changes::ChunkChanges`]'s
 /// `picked`).
 type Picks = BTreeMap<(Source, String), Picked>;
@@ -1358,7 +1361,7 @@ impl Shared {
                     dx,
                     dy,
                     kind: u8::try_from(tree.species)?,
-                    fruit: fruit as u8,
+                    fruit,
                 })
             })
             .collect::<Result<Vec<_>, BoxError>>()?;
@@ -1445,7 +1448,7 @@ impl Shared {
                 at,
                 picked,
             );
-            plant.fruit = fruit as u8;
+            plant.fruit = fruit;
         }
         plants
     }
@@ -3884,17 +3887,14 @@ mod tests {
                 .iter()
                 .all(|&f| f == protocol::FRUIT_NONE)
         );
-        // Autumn: the acorns, and the hazelnuts as much as each bears; a
-        // frame of another phase, encoded anew.
+        // Autumn: the acorns ripening, all of a level, and the hazelnuts
+        // as much as each bears; a frame of another phase, encoded anew.
         shared.tick.store(autumn.0, Ordering::Relaxed);
         let laden = shared.chunk_message(chunk).unwrap();
         assert_ne!(laden.phase, spring.phase);
         assert_ne!(laden.frame, spring.frame);
-        assert!(
-            fruit(&shared, oak)
-                .iter()
-                .all(|&f| f == protocol::FRUIT_FULL)
-        );
+        let acorns = fruit(&shared, oak);
+        assert!(acorns[0] > protocol::FRUIT_NONE && acorns.iter().all(|&f| f == acorns[0]));
         let hazels = fruit(&shared, hazel);
         assert!(
             hazels.iter().all(|&f| f != protocol::FRUIT_NONE),
@@ -3928,8 +3928,8 @@ mod tests {
         let (world, shared, _) = fruiting();
         let calendar = *world.calendar();
         let day = calendar.ticks_per_day();
-        // Late summer: the blackberries are on, and the elderberries no one
-        // gathers here (D30).
+        // Late summer: the blackberries are ripe, and the elderberries no
+        // one gathers here (D30) on their plateau.
         let late_summer = Tick(day * (u64::from(calendar.days_per_year()) * 45 / 100) + day / 2);
         let wire = |id: &str| {
             let index = shared.flora.iter().position(|k| k.id == id).unwrap();
@@ -3969,12 +3969,11 @@ mod tests {
         );
         shared.tick.store(late_summer.0, Ordering::Relaxed);
         let on = fruit(brambles, bramble);
-        assert!(on.contains(&protocol::FRUIT_FULL), "laden: {on:?}");
-        assert!(on.iter().all(|&f| f != protocol::FRUIT_NONE), "{on:?}");
+        assert!(on.iter().all(|&f| f > protocol::FRUIT_NONE), "{on:?}");
         assert!(
             fruit(elders, elder)
                 .iter()
-                .all(|&f| f == protocol::FRUIT_FULL)
+                .all(|&f| f == protocol::FRUIT_LEVELS)
         );
         // A bramble picked bare shows none, in a frame of the chunk's new
         // version; the others as they were.
@@ -3992,7 +3991,7 @@ mod tests {
         )]);
         shared.crop_picked(brambles, &picks, 1);
         let now = fruit(brambles, bramble);
-        assert_eq!(now[0], protocol::FRUIT_NONE, "picked bare");
+        assert_eq!(now[0], protocol::FRUIT_NONE, "picked bare: lower");
         assert_eq!(now[1..], on[1..]);
     }
 

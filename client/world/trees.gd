@@ -199,14 +199,15 @@ static func looks_as(species: String) -> String:
 	return species
 
 
-## The fruit a tree shows (D48): the server says which, a byte a tree
-## (Protocol.decode_chunk's `fruit`). A kind's image is drawn bare, and
-## its fruit over it: small sprites of the fruit, hung at points found on
-## each image (content/tools/tree_fruit.py): all of them laden, the first
-## third of them (spread over the crown) a third laden.
+## The fruit a tree shows (D48): the server says how much, a level a tree
+## (Protocol.decode_chunk's `fruit`), from FRUIT_NONE to FRUIT_LEVELS (the
+## load of a rich year at its peak; the server's `crops::LEVELS`). A
+## kind's image is drawn bare, and its fruit over it: small sprites of the
+## fruit, hung at points found on each image (content/tools/tree_fruit.py),
+## ordered so that any first ones are spread over the crown: that share of
+## them, the level's eighths.
 const FRUIT_NONE := 0
-const FRUIT_THIRD := 1
-const FRUIT_FULL := 2
+const FRUIT_LEVELS := 8
 ## Each kind's fruit, `<id>.webp` (its sprites side by side), and
 ## FRUIT_DATA: per kind its sprites' rectangles in it, per tree image its
 ## points (texels, as the outlines).
@@ -270,11 +271,10 @@ static func fruit_points(index: int) -> PackedVector2Array:
 	return _fruit_points[index] if index >= 0 and index < _fruit_points.size() else PackedVector2Array()
 
 
-## How many of `count` points carry a fruit when a tree shows `fruit`.
+## How many of `count` points carry a fruit when a tree shows the level
+## `fruit`: that share of them, rounded.
 static func fruit_shown(count: int, fruit: int) -> int:
-	if fruit <= FRUIT_NONE:
-		return 0
-	return count if fruit >= FRUIT_FULL else ceili(count / 3.0)
+	return roundi(count * clampi(fruit, FRUIT_NONE, FRUIT_LEVELS) / float(FRUIT_LEVELS))
 
 
 ## The marker of a fruit hung `up` (0 the foot, 1 the top) on a tree
@@ -925,7 +925,8 @@ class Stand:
 	var kinds := PackedStringArray()
 	## Each tree's kind, an index in `kinds`.
 	var kind := PackedByteArray()
-	## The fruit each tree shows (Trees.FRUIT_NONE ...).
+	## The fruit each tree shows, its level (Trees.FRUIT_NONE to
+	## Trees.FRUIT_LEVELS).
 	var fruit := PackedByteArray()
 	## Each kind's height in centimetres, in the order of `kinds`.
 	var heights := PackedInt32Array()

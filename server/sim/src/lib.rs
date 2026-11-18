@@ -1472,7 +1472,8 @@ impl World {
     }
 
     /// The crops on `bearer`, of `chunk`, now (D45): those in season,
-    /// each with what is left of it after what men picked; none empty.
+    /// each with what is on the plant now as it ripens and falls (D48,
+    /// [`crops::Ripen`]) less what men picked this year; none empty.
     pub fn ripe_on(&self, chunk: ChunkPos, bearer: &crops::Bearer) -> Vec<crops::Ripe> {
         let frame = r#gen::scatter::Frame::at(self.map.origin());
         let picked = self.changes_in(chunk).map(|c| &c.picked);
@@ -1480,8 +1481,14 @@ impl World {
             .iter()
             .filter(|crop| crop.on == bearer.kind)
             .filter_map(|crop| {
-                let year = crops::in_season(crop, &self.calendar, self.tick)?;
-                let grams = crops::bears(crop, self.seed(), frame, bearer.at, year);
+                let (year, grams) = crops::there(
+                    crop,
+                    &self.calendar,
+                    self.tick,
+                    self.seed(),
+                    frame,
+                    bearer.at,
+                )?;
                 let taken = picked
                     .and_then(|p| p.get(&(bearer.source, crop.gives.clone())))
                     .filter(|p| p.year == year)
@@ -1497,7 +1504,7 @@ impl World {
     }
 
     /// The fruit `tree`, of `chunk`, shows now (D48, [`crops::fruit_on`]).
-    pub fn fruit_on(&self, chunk: ChunkPos, tree: &trees::Tree) -> crops::Fruit {
+    pub fn fruit_on(&self, chunk: ChunkPos, tree: &trees::Tree) -> u8 {
         crops::fruit_on(
             &self.species[tree.species],
             &self.crops,
@@ -1512,7 +1519,7 @@ impl World {
 
     /// The fruit `plant`, of `chunk`, shows now (D48,
     /// [`crops::plant_fruit_on`]): a berry shrub's, as a tree's.
-    pub fn plant_fruit_on(&self, chunk: ChunkPos, plant: &flora::Plant) -> crops::Fruit {
+    pub fn plant_fruit_on(&self, chunk: ChunkPos, plant: &flora::Plant) -> u8 {
         crops::plant_fruit_on(
             &self.flora[usize::from(plant.kind)],
             &self.crops,

@@ -6,8 +6,8 @@
 // ones bear nothing here).
 //
 // A crop is worked out from the date, never stored: on any day a plant
-// bears what its kind gives that season of that year, less what men
-// picked from it (the chunk's changes). What is not picked by its end is
+// bears what its kind gives that season of that year, as far as it has
+// ripened (`ripen`), less what men picked from it (the chunk's changes). What is not picked by its end is
 // gone: fallen, eaten by the animals. Every number is a placeholder to
 // tune by reading the vivarium's report.
 //
@@ -26,6 +26,15 @@
 //          the world, as the oaks of a country mast together.
 // per_hour_g: what one person gathers of it by hand in an hour of work
 //          (a 24th of the game day), while there is some on the plant.
+// ripen:   how it comes and goes over its span (D48), in hundredths of
+//          the span from `from` to `until`: (rise: R, fall: F), R + F at
+//          most 100. On the plant: none at `from`, rising evenly to the
+//          whole year's crop over the first R, the whole until the last
+//          F, falling evenly to none at `until`. What can be picked on a
+//          day is that share of the year's crop, less what was picked;
+//          the load a plant shows follows it. Absent: (rise: 20, fall:
+//          30). A crop there all year (roots, bulbs) neither rises nor
+//          falls: (rise: 0, fall: 0).
 (
     crops: [
         // The winter's store: 3 to 10 kg a tree, years of plenty and
@@ -78,7 +87,8 @@
         (on: "oyster_mushroom", gives: "oyster_mushrooms", from: (autumn, 30), until: (winter, 100),
          grams: (100, 300, 500), years: (lean: 20, rich: 20), per_hour_g: 800),
         (on: "cattail", gives: "cattail_root", from: (spring, 0), until: (winter, 100),
-         grams: (1000, 1500, 2000), years: (lean: 5, rich: 5), per_hour_g: 1000),
+         grams: (1000, 1500, 2000), years: (lean: 5, rich: 5), per_hour_g: 1000,
+         ripen: (rise: 0, fall: 0)),
         // More of the valley (16 November 2026). Spring: shoots and leaves.
         (on: "wild_asparagus", gives: "asparagus_shoots", from: (spring, 20), until: (spring, 100),
          grams: (50, 100, 150), years: (lean: 15, rich: 15), per_hour_g: 300),
@@ -115,7 +125,8 @@
         (on: "blackthorn", gives: "sloes", from: (autumn, 50), until: (winter, 100),
          grams: (1000, 2000, 3000), years: (lean: 15, rich: 15), per_hour_g: 1200),
         (on: "wild_onion", gives: "wild_onions", from: (spring, 0), until: (winter, 100),
-         grams: (20, 40, 60), years: (lean: 5, rich: 5), per_hour_g: 300),
+         grams: (20, 40, 60), years: (lean: 5, rich: 5), per_hour_g: 300,
+         ripen: (rise: 0, fall: 0)),
         (on: "silverweed", gives: "silverweed_root", from: (autumn, 0), until: (spring, 30),
          grams: (30, 60, 100), years: (lean: 10, rich: 10), per_hour_g: 400),
         (on: "arrowhead", gives: "arrowhead_tubers", from: (autumn, 30), until: (spring, 40),
