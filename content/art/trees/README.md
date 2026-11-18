@@ -145,3 +145,6 @@ variant 2, with a Midjourney edit taking away its grass and shadow), and
 four pears made whole on white in Midjourney (two single, two pairs),
 brought to the colours of the first tree's pears. The other kinds with a
 fruit window are drawn bare until their fruit is made.
+The walnut and the sweet chestnut are back to the size their sources give
+(2,203 and 1,881 px high, short of 2,660 and 2,816): nothing is enlarged.
+They are read whole from a farther zoom until they are made again bigger.
