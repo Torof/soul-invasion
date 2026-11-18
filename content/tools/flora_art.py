@@ -296,6 +296,24 @@ def bleed(image, passes=8):
     return Image.fromarray(out, "RGBA")
 
 
+# Trees pale by nature (the birch's and the ash's bark, the linden's
+# flowers), left as they are by `clear_pale`.
+PALE_TREES = ("birch", "ash", "linden")
+
+
+def clear_pale(image):
+    """Clears what is left of the white background inside a tree: pale,
+    colourless pixels (a sliver along a hole's rim, a dot between leaves),
+    the client's test `has no pale specks` reading them so. The light the
+    trees are drawn with is pale too, but yellow, and stays."""
+    a = np.asarray(image).copy()
+    rgb = a[..., :3].astype(np.int16)
+    lo, hi = rgb.min(axis=2), rgb.max(axis=2)
+    pale = (a[..., 3] > 102) & (lo > 186) & (hi - lo <= 20)
+    a[..., 3][pale] = 0
+    return Image.fromarray(a)
+
+
 def species_heights(content):
     text = (content / "species.ron").read_text()
     return {m[0]: float(m[1]) for m in re.findall(r'id: "([a-z_]+)".*?height_m: ([0-9.]+)', text, re.S)}
@@ -403,6 +421,8 @@ def main():
             image = trim_to_foot(cut(path, keep_white=False, tree=True, work=work_height(tall)))
             image = fit(image, tall, original, path.name, short)
             image = image.filter(ImageFilter.UnsharpMask(radius=1.2, percent=60, threshold=2))
+            if not kind.startswith(PALE_TREES):
+                image = clear_pale(image)
             target = art / "trees" / f"{kind}_adult_{n}_summer.webp"
             save_webp(image, target)
             print("tree", target.name, image.size)

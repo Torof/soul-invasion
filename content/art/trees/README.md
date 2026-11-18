@@ -148,3 +148,22 @@ fruit window are drawn bare until their fruit is made.
 The walnut and the sweet chestnut are back to the size their sources give
 (2,203 and 1,881 px high, short of 2,660 and 2,816): nothing is enlarged.
 They are read whole from a farther zoom until they are made again bigger.
+
+**18 November 2026, oak, alder and linden drawn anew**: the project lead
+found them hard to tell apart by their leaves. Each was first made as a
+realistic photograph in Midjourney, then redrawn in the game's style with
+that photograph as the image prompt and our hazel, yew and sweet chestnut
+as style references, then cleared of its grass and shadow by a Midjourney
+edit. The oak: a broad, twisted, knotted trunk, lobed leaves in the lit
+clusters. The alder: narrow, conical and dark, two trunks, round leaves.
+The linden: tall and regular, heart-shaped leaves (the other versions
+drew maple leaves). They keep their own colours (no `match_tree_colours`:
+they are new identities). The oak and the alder were made on a square
+frame and are short of their size (1,850 and 1,886 px high, for 2,496 and
+2,257): nothing is enlarged; a tall frame (`--ar 1:2` or `2:3`) is the
+way to make a tree taller in pixels. The linden is 2,504 px, near its
+2,660. The old sources are kept in
+`content/ai-reserve/sources/trees/identite-2026-11-18/anciennes-sources/`.
+`flora_art.py` now clears the pale, colourless pixels left of the white
+background inside a tree (`clear_pale`, the client test's own measure),
+except on the birch, the ash and the linden, pale by nature.

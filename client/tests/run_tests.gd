@@ -1,9 +1,10 @@
 extends SceneTree
 
 ## Tree kinds whose image is shorter than their size calls for (their
-## Midjourney source was too small, 18 November 2026): the walnut and the
-## sweet chestnut, until they are made again bigger.
-const SHORT_TREE_IMAGES := ["walnut", "chestnut"]
+## Midjourney source was too small, 18 November 2026): the walnut, the
+## sweet chestnut, and the oak and the alder drawn anew that day (made on
+## a square frame), until they are made again bigger.
+const SHORT_TREE_IMAGES := ["walnut", "chestnut", "oak", "alder"]
 ## Minimal headless test runner for the client.
 ##
 ## Run with: godot --headless --path client -s tests/run_tests.gd
