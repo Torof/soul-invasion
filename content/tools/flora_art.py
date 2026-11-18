@@ -53,7 +53,7 @@ from collections import deque
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 
 # The sharpness rule: pixels per shown metre = PX_PER_M (Iso.PX_PER_M, at
 # zoom 1) x ZOOM_MAX (the camera stops there) x a screen's stretch of the
@@ -99,9 +99,20 @@ def save_webp(image, path):
     image.save(path, "WEBP", lossless=True, quality=100, method=6, exact=True)
 
 
+SMALL_UP_TO = 0.3
+SMALL_TIMES = 2.0
+GROWN_FROM = 1.0
+
+
 def shown(metres):
-    """The height a thing is drawn at (D40, the client's Scale.shown): true
+    """The height a thing is drawn at (D40, the client's Scale.shown): twice
+    its height up to SMALL_UP_TO, growing more slowly up to GROWN_FROM, true
     up to 3 m, eased above."""
+    if metres <= SMALL_UP_TO:
+        return metres * SMALL_TIMES
+    small = SMALL_UP_TO * SMALL_TIMES
+    if metres < GROWN_FROM:
+        return small + (metres - SMALL_UP_TO) * (GROWN_FROM - small) / (GROWN_FROM - SMALL_UP_TO)
     return metres if metres <= 3.0 else 3.0 * (metres / 3.0) ** 0.5
 
 
@@ -528,6 +539,32 @@ def ink(image, px, keep_holes=False, close=INK_CLOSE, rounding=INK_ROUND, margin
     return Image.fromarray(np.clip(np.round(a), 0, 255).astype(np.uint8))
 
 
+# Plants whose source kept some of its pale ground at the foot (a cream
+# smudge under the asparagus, a patch under the silverweed): their pale,
+# nearly colourless pixels (each channel above GROUND_LIGHT, at most
+# GROUND_GREY apart) are cleared. Only these: it would take white flowers.
+GROUND_CLEAR = ("wild_asparagus", "silverweed")
+GROUND_LIGHT = 165
+GROUND_GREY = 50
+
+
+def clear_ground(image):
+    """`image` without its pale, nearly colourless pixels."""
+    a = np.asarray(image.convert("RGBA")).copy()
+    rgb = a[..., :3].astype(np.int16)
+    lo, hi = rgb.min(axis=2), rgb.max(axis=2)
+    a[..., 3][(lo > GROUND_LIGHT) & (hi - lo <= GROUND_GREY)] = 0
+    return Image.fromarray(a)
+
+
+# The small plants (SMALL_UP_TO and under, true height: chickweed,
+# strawberry, plantain, dandelion...), drawn twice their height, also get
+# livelier colours (SMALL_VIVID saturation, SMALL_BRIGHT brightness) and
+# INK_SMALL_LINE: green on green, the grass swallowed them.
+SMALL_VIVID = 1.3
+SMALL_BRIGHT = 1.08
+INK_SMALL_LINE = 2
+
 # The plants' line (D39 flora), only where it helps a full, simple shape
 # stand out: the shrubs of at least INK_SHRUB_MIN_PX shipped (INK_SHRUB_LINE,
 # about a tree's line for their size; the strawberry is a small plant),
@@ -547,10 +584,20 @@ INK_MUSHROOM_LINE = 2
 INK_PLANT_MARGIN = 1
 
 
-def ink_plant(image, kind, section, tall):
-    """`image` (a plant of `kind`, in `section`, `tall` px high shipped)
-    with its line, when it has one."""
+def vivid(image):
+    """`image` with SMALL_VIVID saturation and SMALL_BRIGHT brightness."""
+    alpha = image.getchannel("A")
+    rgb = ImageEnhance.Brightness(ImageEnhance.Color(image.convert("RGB")).enhance(SMALL_VIVID)).enhance(SMALL_BRIGHT)
+    rgb.putalpha(alpha)
+    return rgb
+
+
+def ink_plant(image, kind, section, tall, metres):
+    """`image` (a plant of `kind`, in `section`, `tall` px high shipped,
+    `metres` its true height) with its line, when it has one."""
     scale = image.height / tall
+    if section != "mushrooms" and metres <= SMALL_UP_TO:
+        return ink(vivid(image), INK_SMALL_LINE * scale, close=1, rounding=0.6, margin=INK_PLANT_MARGIN)
     if section == "shrubs" and tall >= INK_SHRUB_MIN_PX:
         return ink(image, INK_SHRUB_LINE * scale, margin=INK_PLANT_MARGIN)
     if kind in INK_SOLID:
@@ -702,7 +749,9 @@ def main():
             image = cut(path, keep_white=(section == "mushrooms"), work=work_height(tall))
             image = fit(image, tall, original, path.name, short)
             image = image.filter(ImageFilter.UnsharpMask(radius=1.0, percent=50, threshold=2))
-            image = ink_plant(image, kind, section, tall)
+            if kind in GROUND_CLEAR:
+                image = clear_ground(image)
+            image = ink_plant(image, kind, section, tall, height)
             plants.append((f"{kind}_{n}", image))
     if plants:
         rects, height = pack(plants)

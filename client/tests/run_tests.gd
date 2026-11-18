@@ -689,9 +689,17 @@ func _test_plants_are_named_and_coloured() -> void:
 	var r := ChunkView.plant_rect(Vector2(3500, 7500), flora[1], region)
 	var foot := Iso.point_to_screen(Vector2(3500, 7500))
 	_check(is_equal_approx(r.end.y, foot.y) and is_equal_approx(r.get_center().x, foot.x), "a plant's foot is on its place")
-	_check(is_equal_approx(Scale.shown(2.0), 2.0) and is_equal_approx(Scale.shown(0.08), 0.08), "under 3 m, the true height")
+	_check(is_equal_approx(Scale.shown(2.0), 2.0) and is_equal_approx(Scale.shown(1.0), 1.0), "from 1 to 3 m, the true height")
+	_check(is_equal_approx(Scale.shown(0.08), 0.16) and is_equal_approx(Scale.shown(0.3), 0.6), "up to 30 cm, twice the height")
+	var rising := true
+	var last := -1.0
+	for i: int in range(0, 61):
+		var h := Scale.shown(i * 0.05)
+		rising = rising and h > last
+		last = h
+	_check(rising, "a taller thing is never drawn shorter")
 	_check(Scale.shown(20.0) > 6.5 and Scale.shown(20.0) < 12.0 and is_equal_approx(Scale.shown(3.0), 3.0), "above, eased towards reality, without a jump")
-	_check(r.size.y < 0.2 * Iso.PX_PER_M, "a mushroom stays small")
+	_check(r.size.y < 0.4 * Iso.PX_PER_M, "a mushroom stays small, though drawn twice its height")
 	_check(ChunkView.plant_tint(flora[1]) != Color.WHITE and ChunkView.plant_tint(flora[0]) == Color.WHITE, "small plants are drawn brighter")
 	_check(ChunkView.plant_stands(flora[0]) and not ChunkView.plant_stands(flora[1]), "a bramble stands among the trees, a mushroom lies on the ground")
 
