@@ -1144,12 +1144,13 @@ const SMALL_M := 0.7
 const SMALL_LIGHT := Color(1.18, 1.18, 1.1)
 static var _flora_atlas: Texture2D
 static var _flora_rects: Dictionary = {}
-## The berries a shrub shows (D48), as a tree's fruit (Trees.FRUIT_*): the
-## server says which, a byte a plant (Protocol.decode_chunk's
-## `plant_fruit`). A shrub's image is drawn bare and its berries over it,
-## small sprites hung at points found on each image. FLORA_FRUIT holds,
-## per image of the atlas ("<id>_<nn>"), its size and its points (pixels
-## from its top-left corner, the first third spread over the bush), and
+## The berries a shrub shows (D48), as a tree's fruit: the server says
+## how much, a level a plant (Protocol.decode_chunk's `plant_fruit`),
+## Trees.FRUIT_NONE to Trees.FRUIT_LEVELS. A shrub's image is drawn bare
+## and its berries over it, small sprites hung at points found on each
+## image, that share of them (Trees.fruit_shown). FLORA_FRUIT holds, per
+## image of the atlas ("<id>_<nn>"), its size and its points (pixels from
+## its top-left corner, ordered so any first ones spread over the bush), and
 ## per kind its sprites' rectangles in `<id>.webp`, its sheet. Without
 ## them, a shrub is drawn bare.
 const FLORA_FRUIT_DIR := "res://art/flora/fruit/"
@@ -1269,8 +1270,8 @@ static func plant_variant(at: Vector2, count: int) -> int:
 	return int(Trees.place_hash(at, 9) * count) % count
 
 
-## The berries (D48) a plant of `kind` at `at` hangs when it shows
-## `fruit`, drawn at `rect` from its atlas region `region`: [texture rect,
+## The berries (D48) a plant of `kind` at `at` hangs when it shows the
+## level `fruit`, drawn at `rect` from its atlas region `region`: [texture rect,
 ## sprite region, sheet] each, in drawing order; none without their data
 ## (read_berries). Each sprite hangs from the middle of its top edge at
 ## its point, at its plant's scale (its texels its plant's size); which

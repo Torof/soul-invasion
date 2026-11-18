@@ -878,9 +878,9 @@ func _test_the_golden_chunk_decodes() -> void:
 	_check(c["currents"] == PackedInt32Array([0, 0, 1059, 50, 3073, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4095]), "its currents: %s" % c["currents"])
 	_check(c["heights"] == PackedInt32Array([0, 1, -1, 7, 32767, -32768, 120, 121, 0, 0, 0, 0, 5, 4, 3, 2]), "its heights: %s" % c["heights"])
 	_check(c["trees"] == PackedInt32Array([2, 43_999, -8_000, 0, 13_500, -5_750]), "its trees: %s" % c["trees"])
-	_check(c["fruit"] == PackedByteArray([2, 1]), "their fruit, laden and a third: %s" % c["fruit"])
+	_check(c["fruit"] == PackedByteArray([8, 3]), "their fruit, full and three eighths: %s" % c["fruit"])
 	_check(c["plants"] == PackedInt32Array([11, 12_700, -4_100, 3, 14_000, -7_900]), "its plants: %s" % c["plants"])
-	_check(c["plant_fruit"] == PackedByteArray([0, 2]), "their fruit, none and laden: %s" % c["plant_fruit"])
+	_check(c["plant_fruit"] == PackedByteArray([0, 5]), "their fruit, none and five eighths: %s" % c["plant_fruit"])
 	var items: Array = c["items"]
 	_check(items == [
 		{"id": 281_474_976_710_698, "x": 15, "y": -7, "material": "", "mass_g": 70_123},
@@ -896,11 +896,15 @@ func _test_the_golden_chunk_decodes() -> void:
 
 
 ## A tree showing fruit (D48) is drawn bare with its fruit's sprites hung
-## at its image's points: all of them laden, the first third a third
-## laden; a kind without sprites (the birch) is drawn bare.
+## at its image's points: its level's share of them, the first ones
+## (spread over the crown); a kind without sprites (the birch) is drawn
+## bare.
 func _test_a_tree_shows_its_fruit_as_sprites_at_its_points() -> void:
-	_check(Trees.fruit_shown(16, Trees.FRUIT_NONE) == 0 and Trees.fruit_shown(16, Trees.FRUIT_THIRD) == 6 and Trees.fruit_shown(16, Trees.FRUIT_FULL) == 16, "none, a third (rounded up), all")
-	_check(Trees.fruit_shown(0, Trees.FRUIT_FULL) == 0, "no points, no fruit")
+	_check(Trees.FRUIT_LEVELS == 8, "eight levels, as the server's")
+	var shown := [0, 1, 4, 7, 8].map(func(level: int) -> int: return Trees.fruit_shown(16, level))
+	_check(shown == [0, 2, 8, 14, 16], "the level's share of the points: %s" % [shown])
+	_check(Trees.fruit_shown(30, 4) == 15 and Trees.fruit_shown(5, 3) == 2, "rounded: %d %d" % [Trees.fruit_shown(30, 4), Trees.fruit_shown(5, 3)])
+	_check(Trees.fruit_shown(0, Trees.FRUIT_LEVELS) == 0, "no points, no fruit")
 	_check(Trees.fruit_sprites("wild_pear").size() == 4 and Trees.fruit_sheet("wild_pear") != null, "the pear has four sprites in one texture")
 	_check(Trees.fruit_sprites("birch").is_empty() and Trees.fruit_sheet("birch") == null, "the birch has none")
 	var sheet := Trees.fruit_sheet("wild_pear")
@@ -921,8 +925,8 @@ func _test_a_tree_shows_its_fruit_as_sprites_at_its_points() -> void:
 		_check(c.b == Trees.marker(900.0, Vector2(1, 2), flags).b, "the fruit sways in its tree's phase")
 	# Every tree's fruit, whatever it shows, is one kind (its images bare).
 	var trees := PackedInt32Array([0, 0, 0, 0, 4_000, 0, 0, 8_000, 0])
-	var stand := Trees.Stand.new(trees, {"wild_pear": 1_200}, PackedStringArray(["wild_pear"]), PackedByteArray([2, 1]))
-	_check(Array(stand.kinds) == ["wild_pear"] and Array(stand.fruit) == [2, 1, 0], "one kind, each tree its fruit, the last none: %s %s" % [stand.kinds, stand.fruit])
+	var stand := Trees.Stand.new(trees, {"wild_pear": 1_200}, PackedStringArray(["wild_pear"]), PackedByteArray([8, 3]))
+	_check(Array(stand.kinds) == ["wild_pear"] and Array(stand.fruit) == [8, 3, 0], "one kind, each tree its fruit, the last none: %s %s" % [stand.kinds, stand.fruit])
 	stand.release()
 
 
@@ -940,8 +944,8 @@ func _test_a_tree_without_images_is_drawn_with_a_stand_in() -> void:
 	stand.release()
 
 ## A shrub showing berries (D48) is drawn bare with its berries' sprites
-## hung at its image's points, right after it, at its scale: all of them
-## laden, the first third a third laden, none without its data.
+## hung at its image's points, right after it, at its scale: its level's
+## share of them, the first ones, none without its data.
 func _test_a_shrub_shows_its_berries_as_sprites_at_its_points() -> void:
 	var flora := [
 		{"id": "bramble", "name": "Bramble", "family": "shrub", "height_cm": 60},
@@ -963,11 +967,12 @@ func _test_a_shrub_shows_its_berries_as_sprites_at_its_points() -> void:
 		images["bramble_%02d" % (n + 1)] = {"image": [r.size.x, r.size.y], "points": points}
 	ChunkView.set_berries({"images": images, "kinds": {"bramble": {"sprites": [[0, 0, 8, 8], [8, 0, 8, 8]]}}}, {"bramble": sheet})
 	var rect := ChunkView.plant_rect(at, flora[0], region)
-	var full := ChunkView.berries_of(at, flora[0], rect, region, Trees.FRUIT_FULL)
-	var third := ChunkView.berries_of(at, flora[0], rect, region, Trees.FRUIT_THIRD)
-	_check(full.size() == 6 and third.size() == 2, "laden, all six; a third, the first two: %d %d" % [full.size(), third.size()])
+	var full := ChunkView.berries_of(at, flora[0], rect, region, Trees.FRUIT_LEVELS)
+	var half := ChunkView.berries_of(at, flora[0], rect, region, 4)
+	_check(full.size() == 6 and half.size() == 3, "level 8, all six; level 4, the first three: %d %d" % [full.size(), half.size()])
+	_check(str(half) == str(full.slice(0, 3)), "the first ones, as the full load hangs them")
 	_check(ChunkView.berries_of(at, flora[0], rect, region, Trees.FRUIT_NONE).is_empty(), "none shows none")
-	_check(ChunkView.berries_of(at, flora[1], rect, region, Trees.FRUIT_FULL).is_empty(), "a kind without data shows none")
+	_check(ChunkView.berries_of(at, flora[1], rect, region, Trees.FRUIT_LEVELS).is_empty(), "a kind without data shows none")
 	var scale := rect.size.y / region.size.y
 	var hung := true
 	for k in full.size():
@@ -980,16 +985,16 @@ func _test_a_shrub_shows_its_berries_as_sprites_at_its_points() -> void:
 		hung = hung and is_equal_approx(absf(r.size.x), 8.0 * scale) and is_equal_approx(r.size.y, 8.0 * scale)
 		hung = hung and b[2] == sheet and (b[1] == Rect2(0, 0, 8, 8) or b[1] == Rect2(8, 0, 8, 8))
 	_check(hung, "each sprite hangs from its point at its plant's scale")
-	_check(str(full) == str(ChunkView.berries_of(at, flora[0], rect, region, Trees.FRUIT_FULL)), "the same every time")
+	_check(str(full) == str(ChunkView.berries_of(at, flora[0], rect, region, Trees.FRUIT_LEVELS)), "the same every time")
 	# The layer draws each shrub's berries right after it, with its tint.
 	var plants := PackedInt32Array([0, int(at.x), int(at.y), 0, 9_000, 9_000])
-	var draws := ChunkView.PlantLayer.draws_of(plants, flora, PackedByteArray([2, 0]))
+	var draws := ChunkView.PlantLayer.draws_of(plants, flora, PackedByteArray([8, 0]))
 	_check(draws.size() == 2 + 6 and draws[0].size() == 3 and draws[1].size() == 4 and draws[1][3] == sheet and draws[6].size() == 4 and draws[7].size() == 3, "a laden bramble, then its six berries, then a bare one: %d" % draws.size())
 	_check(ChunkView.PlantLayer.draws_of(plants, flora).size() == 2, "without fruit, bare")
 	# A tall shrub among the trees keeps its berries for its canvas item.
 	var tall := [{"id": "bramble", "name": "Bramble", "family": "shrub", "height_cm": 90}]
-	var stand := PlantStand.new(PackedInt32Array([0, int(at.x), int(at.y)]), tall, PackedByteArray([1]))
-	_check(stand.size() == 1 and (stand.berries.get(0, []) as Array).size() == 2, "a tall bramble a third laden hangs two")
+	var stand := PlantStand.new(PackedInt32Array([0, int(at.x), int(at.y)]), tall, PackedByteArray([4]))
+	_check(stand.size() == 1 and (stand.berries.get(0, []) as Array).size() == 3, "a tall bramble at level 4 hangs three")
 	var parent := RenderingServer.canvas_item_create()
 	stand.parent = parent
 	stand.show_cells(Trees.Stand.cell_range(stand.rect(0)))

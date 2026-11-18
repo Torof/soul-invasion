@@ -8,7 +8,7 @@ extends RefCounted
 ## of truth. Every JSON message is a dictionary with a snake_case `type`
 ## field; a chunk frame decodes into packed arrays (`decode_chunk`).
 
-const PROTOCOL_VERSION := 27
+const PROTOCOL_VERSION := 28
 ## Chunk frames kept after they left the view (FrameCache), as the
 ## server's mirror of them.
 const CHUNK_CACHE_CHUNKS := 1500
@@ -129,7 +129,8 @@ static func decode(text: String) -> Dictionary:
 ##   index into `world_state`'s `species` or `flora`), then where it stands
 ##   in millimetres from the grid's origin, x and y;
 ## - `fruit`: PackedByteArray, the fruit each tree shows, in the order of
-##   `trees` (D48): 0 none, 1 a third, 2 laden;
+##   `trees` (D48): its level, 0 none to Trees.FRUIT_LEVELS (8) a rich
+##   year at its peak;
 ## - `plant_fruit`: PackedByteArray, the fruit each plant shows, in the
 ##   order of `plants`, as the trees' (a berry shrub's, D48);
 ## - `items`: Array of {id, x, y, material}, in the order of their ids; a

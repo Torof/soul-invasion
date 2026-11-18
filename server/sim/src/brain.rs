@@ -931,7 +931,8 @@ fn stopped_short(
 }
 
 /// After a work ended or was refused: the plant is spent for the year
-/// when nothing of its food is left on it.
+/// when nothing of its food is left on it and its crop is ripe (D48:
+/// while it ripens, more comes).
 fn spend_if_bare(world: &World, rules: &Content, mind: &mut Mind, chunk: ChunkPos, source: Source) {
     let Some(plant) = mind.plants.get_mut(&(chunk, source)) else {
         return;
@@ -944,10 +945,16 @@ fn spend_if_bare(world: &World, rules: &Content, mind: &mut Mind, chunk: ChunkPo
         at: plant.at,
         kind: plant.kind.clone(),
     };
-    if !world
-        .ripe_on(chunk, &bearer)
+    let ripening = rules
+        .crops
         .iter()
-        .any(|r| r.gives == gives)
+        .filter(|crop| crop.on == plant.kind && crop.gives == gives)
+        .any(|crop| crops::ripening(crop, world.calendar(), world.tick()));
+    if !ripening
+        && !world
+            .ripe_on(chunk, &bearer)
+            .iter()
+            .any(|r| r.gives == gives)
     {
         plant.spent = Some(year);
     }
