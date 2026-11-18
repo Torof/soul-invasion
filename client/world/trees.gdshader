@@ -6,6 +6,10 @@
 // towards the top. Gusts pass across the valley, so neighbours bend
 // together. The polygon the tree is drawn as leaves room either side of
 // the image for the bent crown (its UVs run past 0..1 there).
+// A tree's fruit (D48, Trees.Stand._draw_fruit) is drawn after it, alpha
+// 0.80 to 0.86 (0.02 a see-through flag), red its tree's height, green how
+// high it hangs on it (0 the foot, 1 the top), blue its tree's phase: it
+// moves with the crown there, whole.
 shader_type canvas_item;
 
 uniform sampler2D noise_texture : repeat_enable, filter_linear;
@@ -45,6 +49,7 @@ uniform float see_through = 0.25;
 uniform float see_rim = 18.0;
 
 varying float is_tree;
+varying float is_fruit;
 varying vec2 local;
 varying float front_of_body;
 varying float hides_mouse;
@@ -52,8 +57,28 @@ varying float bend_px;
 varying float width_px;
 varying float seed;
 
+// How far the top of a tree `height` px tall, of phase `phase`, standing
+// at `at`, is bent at `time`.
+float bend_at(vec2 at, float height, float phase, float time) {
+	float wind = smoothstep(0.45, 0.8, texture(noise_texture, at * gust_scale + vec2(time * gust_speed, 0.0)).r);
+	float rock = sin(time * rock_speed + phase) * 0.7 + sin(time * rock_speed * 1.9 + phase * 1.7) * 0.3;
+	return (rock * (sway + gust * wind) + gust * wind * 0.5) * height;
+}
+
 void vertex() {
 	is_tree = (COLOR.a > 0.9 && COLOR.a < 0.98) ? 1.0 : 0.0;
+	is_fruit = (COLOR.a > 0.79 && COLOR.a < 0.87) ? 1.0 : 0.0;
+	if (is_fruit > 0.5) {
+		float flags = round((COLOR.a - 0.8) / 0.02);
+		front_of_body = mod(flags, 2.0);
+		hides_mouse = floor(flags / 2.0);
+		vec2 at = (MODEL_MATRIX * vec4(VERTEX, 0.0, 1.0)).xy;
+		// The crown at the fruit's height moves the image right by the bend
+		// there (the tree's fragment reads it from that far left).
+		float k = clamp((COLOR.g - still) / (1.0 - still), 0.0, 1.0);
+		VERTEX.x += bend_at(at, COLOR.r * 1280.0, COLOR.b * 6.2831853, TIME) * k * k;
+		local = at;
+	}
 	if (is_tree > 0.5) {
 		float height = COLOR.r * 1280.0;
 		float phase = COLOR.b * 6.2831853;
@@ -64,9 +89,7 @@ void vertex() {
 		front_of_body = mod(flags, 2.0);
 		hides_mouse = floor(flags / 2.0);
 		vec2 at = (MODEL_MATRIX * vec4(VERTEX, 0.0, 1.0)).xy;
-		float wind = smoothstep(0.45, 0.8, texture(noise_texture, at * gust_scale + vec2(TIME * gust_speed, 0.0)).r);
-		float rock = sin(TIME * rock_speed + phase) * 0.7 + sin(TIME * rock_speed * 1.9 + phase * 1.7) * 0.3;
-		bend_px = (rock * (sway + gust * wind) + gust * wind * 0.5) * height;
+		bend_px = bend_at(at, height, phase, TIME);
 		// The image's width, from its height and the texture's proportions.
 		vec2 size = 1.0 / TEXTURE_PIXEL_SIZE;
 		width_px = height * size.x / size.y;
@@ -76,8 +99,28 @@ void vertex() {
 	}
 }
 
+// See through a tree (and its fruit) within the circles that apply to it
+// (its flags, standing at `here`): what is left of `alpha`.
+float seen(float alpha, float in_front, float hides, vec2 here) {
+	float body_on = in_front * body_reveal;
+	float mouse_on = hides * mouse_reveal;
+	if (body_on + mouse_on > 0.0) {
+		float in_body = (1.0 - smoothstep(body_radius - see_rim, body_radius, distance(here, body_at))) * body_on;
+		float in_mouse = (1.0 - smoothstep(mouse_radius - see_rim, mouse_radius, distance(here, mouse_at))) * mouse_on;
+		return alpha * (1.0 - max(in_body, in_mouse) * (1.0 - see_through));
+	}
+	return alpha;
+}
+
 void fragment() {
-	if (is_tree > 0.5) {
+	if (is_fruit > 0.5) {
+		vec4 c = texture(TEXTURE, UV, mip_bias);
+		if (c.a <= 0.0) {
+			discard;
+		}
+		c.a = seen(c.a, front_of_body, hides_mouse, local);
+		COLOR = c;
+	} else if (is_tree > 0.5) {
 		// The image's own coordinates (the polygon's UVs), in pixels, then
 		// bent: more towards the top, nothing over the still lower part.
 		float x = UV.x * width_px;
@@ -113,13 +156,7 @@ void fragment() {
 				}
 				// See through it, within the circles that apply to it: only
 				// for the few trees flagged, while a circle is open.
-				float body_on = front_of_body * body_reveal;
-				float mouse_on = hides_mouse * mouse_reveal;
-				if (body_on + mouse_on > 0.0) {
-					float in_body = (1.0 - smoothstep(body_radius - see_rim, body_radius, distance(local, body_at))) * body_on;
-					float in_mouse = (1.0 - smoothstep(mouse_radius - see_rim, mouse_radius, distance(local, mouse_at))) * mouse_on;
-					c.a *= 1.0 - max(in_body, in_mouse) * (1.0 - see_through);
-				}
+				c.a = seen(c.a, front_of_body, hides_mouse, local);
 				COLOR = c;
 			}
 		}

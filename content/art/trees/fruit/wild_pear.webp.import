@@ -2,8 +2,8 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://dwsq25ykbyunk"
-path.bptc="res://.godot/imported/oak_adult_01_summer_fruit2.webp-591130fe1aa932c30233d16ab39d3659.bptc.ctex"
+uid="uid://bamixp11dqd2u"
+path.bptc="res://.godot/imported/wild_pear.webp-e8d8729109a9dd9b3c38965a37ae5b71.bptc.ctex"
 metadata={
 "imported_formats": ["s3tc_bptc"],
 "vram_texture": true
@@ -11,8 +11,8 @@ metadata={
 
 [deps]
 
-source_file="res://art/trees/oak_adult_01_summer_fruit2.webp"
-dest_files=["res://.godot/imported/oak_adult_01_summer_fruit2.webp-591130fe1aa932c30233d16ab39d3659.bptc.ctex"]
+source_file="res://art/trees/fruit/wild_pear.webp"
+dest_files=["res://.godot/imported/wild_pear.webp-e8d8729109a9dd9b3c38965a37ae5b71.bptc.ctex"]
 
 [params]
 
