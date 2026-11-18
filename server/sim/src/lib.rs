@@ -1475,32 +1475,64 @@ impl World {
     /// each with what is on the plant now as it ripens and falls (D48,
     /// [`crops::Ripen`]) less what men picked this year; none empty.
     pub fn ripe_on(&self, chunk: ChunkPos, bearer: &crops::Bearer) -> Vec<crops::Ripe> {
-        let frame = r#gen::scatter::Frame::at(self.map.origin());
-        let picked = self.changes_in(chunk).map(|c| &c.picked);
         self.crops
             .iter()
             .filter(|crop| crop.on == bearer.kind)
             .filter_map(|crop| {
-                let (year, grams) = crops::there(
-                    crop,
-                    &self.calendar,
-                    self.tick,
-                    self.seed(),
-                    frame,
-                    bearer.at,
-                )?;
-                let taken = picked
-                    .and_then(|p| p.get(&(bearer.source, crop.gives.clone())))
-                    .filter(|p| p.year == year)
-                    .map_or(0, |p| p.grams);
-                let left = grams.saturating_sub(taken);
-                (left > 0).then(|| crops::Ripe {
+                let (year, grams) = self.left_of(chunk, bearer.source, bearer.at, crop)?;
+                Some(crops::Ripe {
                     gives: crop.gives.clone(),
                     year,
-                    grams: left,
+                    grams,
                 })
             })
             .collect()
+    }
+
+    /// [`World::ripe_on`] for one crop, the one giving `gives` on the
+    /// tree or plant `source` of `chunk`, of `kind`, standing at `at`:
+    /// its year and the grams on it now, if any. Nothing is allocated:
+    /// the brains and the gatherers ask it often.
+    pub fn ripe_of(
+        &self,
+        chunk: ChunkPos,
+        source: crops::Source,
+        at: FinePos,
+        kind: &str,
+        gives: &str,
+    ) -> Option<(u64, u32)> {
+        self.crops
+            .iter()
+            .filter(|crop| crop.on == kind && crop.gives == gives)
+            .find_map(|crop| self.left_of(chunk, source, at, crop))
+    }
+
+    /// What is left now of `crop` on the tree or plant `source` of
+    /// `chunk`, standing at `at`: its year and grams, `None` when nothing.
+    fn left_of(
+        &self,
+        chunk: ChunkPos,
+        source: crops::Source,
+        at: FinePos,
+        crop: &crops::Crop,
+    ) -> Option<(u64, u32)> {
+        let frame = r#gen::scatter::Frame::at(self.map.origin());
+        let (year, grams) = crops::there(crop, &self.calendar, self.tick, self.seed(), frame, at)?;
+        // Looked up without making the key's text: the picks of one
+        // source sit together, few of them.
+        let taken = self
+            .changes_in(chunk)
+            .and_then(|c| {
+                c.picked
+                    .range((source, String::new())..)
+                    .take_while(|((s, _), _)| *s == source)
+                    .find(|((_, g), _)| *g == crop.gives)
+                    .map(|(_, p)| *p)
+            })
+            .filter(|p| p.year == year)
+            .map_or(0, |p| p.grams);
+        let left = grams.saturating_sub(taken);
+        (left > 0).then_some((year, left))
     }
 
     /// The fruit `tree`, of `chunk`, shows now (D48, [`crops::fruit_on`]).
@@ -1546,15 +1578,11 @@ impl World {
         else {
             return 0;
         };
-        let Some(ripe) = self
-            .ripe_on(chunk, &bearer)
-            .into_iter()
-            .find(|r| r.gives == gives)
-        else {
+        let Some((year, left)) = self.ripe_of(chunk, source, bearer.at, &bearer.kind, gives) else {
             return 0;
         };
-        let taken = grams.min(ripe.grams);
-        self.record_pick(chunk, source, gives, ripe.year, taken);
+        let taken = grams.min(left);
+        self.record_pick(chunk, source, gives, year, taken);
         taken
     }
 
@@ -2293,13 +2321,14 @@ impl World {
     }
 
     /// The infants stand where their carriers stand.
+    /// Carriers are never carried themselves: each is looked up where
+    /// it stands, no map of every body made a tick.
     fn follow_carriers(&mut self) {
-        let at: BTreeMap<BodyId, FinePos> = self.bodies.iter().map(|b| (b.id, b.at)).collect();
         for index in 0..self.bodies.len() {
             let Some(carrier) = self.bodies[index].carried_by else {
                 continue;
             };
-            let Some(&there) = at.get(&carrier) else {
+            let Some(there) = self.index_of(carrier).map(|i| self.bodies[i].at) else {
                 continue;
             };
             let before = self.bodies[index].pos().chunk();
@@ -2750,10 +2779,9 @@ impl World {
         if dx * dx + dy * dy > GATHER_REACH_MM * GATHER_REACH_MM {
             return refuse(events, Refusal::OutOfReach);
         }
-        if !self
-            .ripe_on(chunk, &bearer)
-            .iter()
-            .any(|r| r.gives == gives)
+        if self
+            .ripe_of(chunk, source, bearer.at, &bearer.kind, gives)
+            .is_none()
         {
             return refuse(events, Refusal::NothingRipe);
         }
@@ -2816,33 +2844,29 @@ impl World {
                 continue;
             }
             let work = work.clone();
-            let Some(left) = self
-                .ripe_on(work.chunk, &work.bearer)
-                .into_iter()
-                .find(|r| r.gives == work.gives)
-            else {
+            let Some((year, left)) = self.ripe_of(
+                work.chunk,
+                work.bearer.source,
+                work.bearer.at,
+                &work.bearer.kind,
+                &work.gives,
+            ) else {
                 self.stop_work(index, WorkEnd::Bare, events);
                 continue;
             };
             let room = self.bodies[index]
                 .capacity_g(&rules.movement)
                 .saturating_sub(self.bodies[index].load_g);
-            let grams = due.min(left.grams).min(room);
+            let grams = due.min(left).min(room);
             if grams > 0 {
-                self.record_pick(
-                    work.chunk,
-                    work.bearer.source,
-                    &work.gives,
-                    left.year,
-                    grams,
-                );
+                self.record_pick(work.chunk, work.bearer.source, &work.gives, year, grams);
                 events.push(Event::CropPicked {
                     chunk: work.chunk,
                     version: self.chunk_version(work.chunk),
                 });
                 self.add_gathered(index, &work, grams, rules, events);
             }
-            if grams == left.grams {
+            if grams == left {
                 self.stop_work(index, WorkEnd::Bare, events);
             } else if grams == room {
                 self.stop_work(index, WorkEnd::Full, events);

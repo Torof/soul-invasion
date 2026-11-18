@@ -42,6 +42,7 @@ use std::collections::BTreeMap;
 
 use crate::content::Content;
 use crate::crops::{self, Bearer, Source};
+use crate::lru::Lru;
 use crate::map::{ChunkPos, FinePos, Map, Pos, Terrain};
 use crate::{BodyId, Event, GATHER_REACH_MM, Intention, ItemId, World};
 
@@ -93,6 +94,10 @@ pub const WAKE_SPREAD_SECONDS: u64 = 60;
 /// the next turns, and the body learns their plants then. A second, not
 /// a tick, so that what a body knows does not hang on the cadence.
 pub const COLD_CHUNKS_PER_SECOND: u64 = 10;
+/// How many chunks' trees and plants bearing food the brains hold, the
+/// least lately used forgotten first (placed again if seen again): as
+/// many as the world's own trees ([`crate::ground::TREE_CACHE_CHUNKS`]).
+pub const BEARER_CHUNKS: usize = crate::ground::TREE_CACHE_CHUNKS;
 
 /// Why a body was asked to do something.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,7 +283,9 @@ pub struct Brains {
 /// and how many more this turn may place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Placed {
-    chunks: BTreeMap<ChunkPos, Vec<Bearer>>,
+    /// Bounded, the least lately used going first: the land the minds
+    /// saw grows with their wanderings.
+    chunks: Lru<ChunkPos, Vec<Bearer>>,
     /// Chunks this turn may still place ([`COLD_CHUNKS_PER_SECOND`]).
     left: u64,
 }
@@ -293,7 +300,7 @@ fn cold_chunks_at(world: &World, now: u64) -> u64 {
 impl Placed {
     fn new() -> Self {
         Self {
-            chunks: BTreeMap::new(),
+            chunks: Lru::new(BEARER_CHUNKS),
             left: u64::MAX,
         }
     }
@@ -301,7 +308,7 @@ impl Placed {
     /// The trees and plants bearing food of `chunk`; placed now if they
     /// are not yet and the turn allows one more, else `None`.
     fn get(&mut self, world: &World, rules: &Content, chunk: ChunkPos) -> Option<&[Bearer]> {
-        if !self.chunks.contains_key(&chunk) {
+        if !self.chunks.contains(&chunk) {
             if self.left == 0 {
                 return None;
             }
@@ -314,9 +321,10 @@ impl Placed {
 
     /// Places `chunk`'s now, out of any turn's count.
     fn warm(&mut self, world: &World, rules: &Content, chunk: ChunkPos) {
-        self.chunks
-            .entry(chunk)
-            .or_insert_with(|| food_bearers_in(world, rules, chunk));
+        if !self.chunks.contains(&chunk) {
+            self.chunks
+                .insert(chunk, food_bearers_in(world, rules, chunk));
+        }
     }
 }
 
@@ -476,16 +484,12 @@ impl Brains {
                 continue;
             };
             let sight = sight_at(world.map(), rules, at);
-            let unseen = std::mem::take(&mut mind.unseen);
-            let mut learnt = false;
-            for chunk in unseen {
-                if learn_plants(world, rules, &mut self.bearers, mind, chunk, at, sight) {
-                    learnt = true;
-                } else {
-                    mind.unseen.push(chunk);
-                }
-            }
-            if learnt {
+            let before = mind.unseen.len();
+            let plants = &mut mind.plants;
+            mind.unseen.retain(|&chunk| {
+                !learn_plants(world, rules, &mut self.bearers, plants, chunk, at, sight)
+            });
+            if mind.unseen.len() < before {
                 forget_the_least(world, rules, at, mind);
             }
         }
@@ -722,7 +726,7 @@ fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind, bearers: &mut 
         let own = at.chunk();
         chunks.sort_by_key(|c| ((c.x - own.x).abs().max((c.y - own.y).abs()), c.y, c.x));
         for chunk in chunks {
-            if !learn_plants(world, rules, bearers, mind, chunk, at, sight) {
+            if !learn_plants(world, rules, bearers, &mut mind.plants, chunk, at, sight) {
                 mind.unseen.push(chunk);
             }
         }
@@ -756,7 +760,7 @@ fn learn_plants(
     world: &World,
     rules: &Content,
     bearers: &mut Placed,
-    mind: &mut Mind,
+    plants: &mut BTreeMap<(ChunkPos, Source), KnownPlant>,
     chunk: ChunkPos,
     at: Pos,
     sight: i32,
@@ -767,7 +771,7 @@ fn learn_plants(
     for bearer in placed {
         let tile = bearer.at.tile();
         if (tile.x - at.x).abs() <= sight && (tile.y - at.y).abs() <= sight {
-            mind.plants
+            plants
                 .entry((chunk, bearer.source))
                 .or_insert_with(|| KnownPlant {
                     at: bearer.at,
@@ -958,17 +962,17 @@ fn decide(
 
 /// A tree or plant to gather from, and the crop: the key, the material,
 /// the crop's year.
-type Target = ((ChunkPos, Source), String, u64);
+type Target<'a> = ((ChunkPos, Source), &'a str, u64);
 
 /// The food crop of `kind` on the plant now, if any: the material and the
 /// crop's year.
-fn food_in_season(world: &World, rules: &Content, kind: &str) -> Option<(String, u64)> {
+fn food_in_season<'a>(world: &World, rules: &'a Content, kind: &str) -> Option<(&'a str, u64)> {
     rules.crops.iter().find_map(|crop| {
         if crop.on != kind || rules.material(&crop.gives).is_none_or(|m| m.food.is_none()) {
             return None;
         }
         let year = crops::in_season(crop, world.calendar(), world.tick())?;
-        Some((crop.gives.clone(), year))
+        Some((crop.gives.as_str(), year))
     })
 }
 
@@ -1001,7 +1005,7 @@ fn forget_the_least(world: &World, rules: &Content, at: Pos, mind: &mut Mind) {
             .map(|(key, plant)| {
                 let (now, best) = *rate.entry(plant.kind.as_str()).or_insert_with(|| {
                     match food_in_season(world, rules, &plant.kind) {
-                        Some((gives, _)) => (true, kj_per_hour(rules, &plant.kind, Some(&gives))),
+                        Some((gives, _)) => (true, kj_per_hour(rules, &plant.kind, Some(gives))),
                         None => (false, kj_per_hour(rules, &plant.kind, None)),
                     }
                 });
@@ -1043,7 +1047,12 @@ fn worth(kj_per_hour: u64, tiles: i64) -> u64 {
 /// The tree or plant it knows bearing food now worth most, not spent for
 /// that crop's year nor left alone for now: what an hour of it gives,
 /// less the farther.
-fn plant_to_gather(world: &World, rules: &Content, here: Pos, mind: &Mind) -> Option<Target> {
+fn plant_to_gather<'a>(
+    world: &World,
+    rules: &'a Content,
+    here: Pos,
+    mind: &Mind,
+) -> Option<Target<'a>> {
     let today = today(world);
     let now = world.tick().0;
     mind.plants
@@ -1071,7 +1080,7 @@ fn go_gather(
     rules: &Content,
     id: BodyId,
     mind: &mut Mind,
-    (key, gives, _): Target,
+    (key, gives, _): Target<'_>,
     why: Why,
 ) -> Option<Decision> {
     let body = world.body(id)?;
@@ -1087,7 +1096,7 @@ fn go_gather(
                 body: id,
                 chunk: key.0,
                 source: key.1,
-                gives,
+                gives: gives.to_owned(),
             },
             why,
         });
@@ -1153,21 +1162,15 @@ fn spend_if_bare(world: &World, rules: &Content, mind: &mut Mind, chunk: ChunkPo
     let Some((gives, year)) = food_in_season(world, rules, &plant.kind) else {
         return;
     };
-    let bearer = Bearer {
-        source,
-        at: plant.at,
-        kind: plant.kind.clone(),
-    };
     let ripening = rules
         .crops
         .iter()
         .filter(|crop| crop.on == plant.kind && crop.gives == gives)
         .any(|crop| crops::ripening(crop, world.calendar(), world.tick()));
     if !ripening
-        && !world
-            .ripe_on(chunk, &bearer)
-            .iter()
-            .any(|r| r.gives == gives)
+        && world
+            .ripe_of(chunk, source, plant.at, &plant.kind, gives)
+            .is_none()
     {
         plant.spent = Some(year);
     }
@@ -1570,6 +1573,23 @@ mod tests {
         look(&world, &rules, at, &mut whole, &mut all);
         assert!(!whole.plants.is_empty());
         assert!(whole.plants.keys().eq(brains.minds[&id].plants.keys()));
+    }
+
+    #[test]
+    fn the_brains_hold_the_plants_of_a_bounded_land() {
+        let world = field(64, 40, Pos::new(5, 5));
+        let rules = rules();
+        let mut placed = Placed::new();
+        let many = i32::try_from(BEARER_CHUNKS).unwrap() + 10;
+        for x in 0..many {
+            placed.warm(&world, &rules, ChunkPos::new(x, 0));
+        }
+        assert_eq!(placed.chunks.len(), BEARER_CHUNKS);
+        assert!(
+            !placed.chunks.contains(&ChunkPos::new(0, 0)),
+            "the least lately used went first"
+        );
+        assert!(placed.chunks.contains(&ChunkPos::new(many - 1, 0)));
     }
 
     #[test]

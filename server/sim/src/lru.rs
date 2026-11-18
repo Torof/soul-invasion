@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 
 /// A cache of at most `capacity` entries; inserting into a full cache
 /// first drops the entry read or written longest ago.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Lru<K, V> {
     /// Entries held, at most.
     capacity: usize,
@@ -91,6 +91,11 @@ impl<K: Ord + Copy, V> Lru<K, V> {
             self.entries.remove(&oldest);
         }
         self.recency.insert(stamp, key);
+    }
+
+    /// The keys held, in their order (not by use).
+    pub fn keys(&self) -> impl Iterator<Item = &K> {
+        self.entries.keys()
     }
 
     /// Takes `key`'s entry out, if any.
