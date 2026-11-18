@@ -268,7 +268,7 @@ pub enum Fruit {
 /// The fruit `tree` (of `species`, its crops among `crops`) shows at
 /// `tick` (D48), on a map whose corner is `origin` in the world
 /// ([`crate::map::Map::origin`]), with `picked` its chunk's picks: the
-/// rule of [`fruit_of`].
+/// rule of `fruit_of`.
 #[allow(clippy::too_many_arguments, reason = "the rule's inputs, each its own")]
 #[must_use]
 pub fn fruit_on(
