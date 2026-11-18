@@ -915,13 +915,13 @@ func _test_a_tree_shows_its_fruit_as_sprites_at_its_points() -> void:
 ## A kind of tree with no images of its own yet is drawn with its
 ## stand-in's, at its own height.
 func _test_a_tree_without_images_is_drawn_with_a_stand_in() -> void:
-	_check(Trees.paths("wild_cherry").is_empty(), "the wild cherry has no images yet")
-	_check(not Trees.paths("wild_apple").is_empty(), "the wild apple has")
-	_check(Trees.looks_as("wild_cherry") == "wild_apple", "a cherry looks as an apple")
-	_check(Trees.looks_as("oak") == "oak", "an oak looks as itself")
+	_check(Trees.paths("wild_fig").is_empty(), "the wild fig has no images yet")
+	_check(not Trees.paths("hazel").is_empty(), "the hazel has")
+	_check(Trees.looks_as("wild_fig") == "hazel", "a fig looks as a hazel")
+	_check(Trees.looks_as("wild_cherry") == "wild_cherry", "a cherry looks as itself now")
 	var trees := PackedInt32Array([0, 0, 0, 1, 4_000, 0])
-	var stand := Trees.Stand.new(trees, {"wild_cherry": 2_000, "wild_apple": 600}, PackedStringArray(["wild_cherry", "wild_apple"]))
-	_check(Array(stand.kinds) == ["wild_apple", "wild_apple"], "both drawn with the apple's images: %s" % [stand.kinds])
+	var stand := Trees.Stand.new(trees, {"wild_fig": 2_000, "hazel": 600}, PackedStringArray(["wild_fig", "hazel"]))
+	_check(Array(stand.kinds) == ["hazel", "hazel"], "both drawn with the hazel's images: %s" % [stand.kinds])
 	_check(stand.heights[0] == 2_000 and stand.heights[1] == 600, "each at its own height: %s" % [stand.heights])
 	stand.release()
 

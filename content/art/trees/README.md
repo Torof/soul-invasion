@@ -182,3 +182,13 @@ outlines and the fruit points do not move. Made with each tree from now
 on; the fifteen images already shipped were given it once with
 `flora_art.py --ink` (run again, it would draw a second line). Weight:
 about +1 % on disk, nothing in video memory.
+
+**18 November 2026, the wild cherry of its own**: the wild cherry stops
+being drawn with the wild apple's images. The project lead made it in
+Midjourney with the new identity's style board (image 4 of the second
+grid): a slim red-brown trunk banded across, the bark a cherry is known
+by, and an oval crown of toothed leaves. It came clean (no grass, no
+shadow) and was made alone with `flora_art.py --trees` from a sources
+folder holding only it, so it has the ink line and the other trees were
+left as they were. It carries no fruit yet (the content gives it none).
+The wild fig is the last tree still drawn with a stand-in's (the hazel's).

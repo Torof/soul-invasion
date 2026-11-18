@@ -189,7 +189,6 @@ static func sharpness(zoom: float) -> float:
 ## Kinds of tree with no images of their own yet, drawn with another's
 ## (fruit trees of 16 November 2026 still without their own art).
 const STAND_INS := {
-	"wild_cherry": "wild_apple",
 	"wild_fig": "hazel",
 }
 
