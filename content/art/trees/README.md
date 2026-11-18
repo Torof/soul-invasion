@@ -213,3 +213,29 @@ fruit, for the sprites (D48). The old wild apple's sources went to
 - The apple's foot had a few thin blades of grass. Clearing the grass by
   its colour took the olive bark with it, so its recipe in
   `clean_tree_feet.py` only rounds the foot, which takes the blades.
+
+**18 November 2026, every fruit tree's fruit**: the oak, hazel, pine, yew,
+walnut, sweet chestnut, mulberry, wild cherry, wild apple and wild fig
+get their fruit sprites, as the pear did (D48). The project lead made each
+fruit in Midjourney as a sheet of four whole fruit on white, the tree as
+style reference, and picked one sheet of four per kind (the sheets in
+`content/ai-reserve/sources/trees/fruit-2026-11-18/<id>.png`). Made with:
+
+    tree_fruit.py sprites <id> - <sheet>:0:0 <sheet>:0:1 <sheet>:1:0 <sheet>:1:1 --px N
+    tree_fruit.py points <id>
+
+- `-` as reference: the fruit keep their own colours, and their green (a
+  husk, a burr); only the pear's sheet, edited from a laden tree, is
+  recoloured.
+- A size each, against the pear's 130 px: acorns 90, hazelnuts 100, pine
+  cones 110 (drawn stalk down, turned with `:180`), yew arils 70,
+  walnuts 105, chestnut burrs 110, mulberries 75, cherries 95, crab apples
+  105, figs 100.
+- The project lead wants trees well laden ("des arbres bien chargés"):
+  up to 30 fruit a tree (COUNT), 140 px apart (SPACING), where there were
+  16 and 175. The fig and the apple, outlined in thin brown lines, had
+  almost no dark leaf edges to hang fruit from: places anywhere in the
+  foliage now follow the edges, and only the branches (brown wider than a
+  line) are kept clear. The pear's points were found again the same way.
+- The white between a pair of cherries' stalks is enclosed by the fruit;
+  such patches wider than ENCLOSED_WHITE are background too.
