@@ -1305,6 +1305,9 @@ static var _flora_rects: Dictionary = {}
 ## berries are drawn from one texture, so the plants' batch stays whole
 ## (audit F3, 19 November 2026). Without them, a shrub is drawn bare.
 const FLORA_FRUIT := "res://art/flora/fruit.json"
+## The flora's atlas's size in texels, read with it on the main thread
+## (zero until then): a worker only reads it (PlantLayer.arrays_of).
+static var flora_atlas_size := Vector2.ZERO
 ## "<id>_<nn>" -> its berries' points, 0..1 across and down its image.
 static var _berry_points: Dictionary = {}
 ## Kind id -> its sprites' rectangles in the atlas (Array of Rect2), for
@@ -1318,6 +1321,7 @@ static var _berry_kinds: Dictionary = {}
 static func flora_atlas() -> Texture2D:
 	if _flora_atlas == null and ResourceLoader.exists(FLORA_ATLAS):
 		_flora_atlas = load(FLORA_ATLAS)
+		flora_atlas_size = Vector2(_flora_atlas.get_size())
 		var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(FLORA_RECTS))
 		if parsed is Dictionary:
 			for key: String in parsed:
@@ -1460,16 +1464,84 @@ static func plant_rect(at: Vector2, kind: Dictionary, region: Rect2) -> Rect2:
 
 class PlantLayer:
 	extends Node2D
-	## [texture rect, atlas region, tint], nearest the back first; a
-	## shrub's berries right after it, from the same atlas.
-	var _draws: Array = []
+	## The layer's drawing as one triangle array (arrays_of): [points,
+	## uvs, colours, indices], or empty.
+	var _arrays: Array = []
 
 	func set_plants(plants: PackedInt32Array, flora: Array, fruit := PackedByteArray()) -> void:
-		set_draws(draws_of(plants, flora, fruit))
+		set_arrays(arrays_of(draws_of(plants, flora, fruit), ChunkView.flora_atlas_size))
 
-	func set_draws(draws: Array) -> void:
-		_draws = draws
+	func set_arrays(arrays: Array) -> void:
+		_arrays = arrays
 		queue_redraw()
+
+	## How many plants and berries the layer draws (the tests).
+	func quads() -> int:
+		return 0 if _arrays.is_empty() else (_arrays[0] as PackedVector2Array).size() / 4
+
+	## `draws` (draws_of) as one triangle array of `atlas` (its size in
+	## texels): [points, uvs, colours, indices], two triangles a draw in
+	## their order, so each draws over those before it as when they were
+	## one rect command each, and the GPU keeps a few vertices a plant or
+	## a berry rather than a command (audit F7: 100,000 berries held at
+	## peak fruit were 120 MB of the renderer's buffers). A rect of
+	## negative width is laid as the renderer lays such a rect: over its
+	## width from its position, the image mirrored. Empty when there is
+	## nothing to draw or no atlas. Pure: a worker may run it.
+	static func arrays_of(draws: Array, atlas: Vector2) -> Array:
+		var n := draws.size()
+		if n == 0 or atlas.x <= 0.0 or atlas.y <= 0.0:
+			return []
+		var points := PackedVector2Array()
+		var uvs := PackedVector2Array()
+		var colours := PackedColorArray()
+		var indices := PackedInt32Array()
+		points.resize(n * 4)
+		uvs.resize(n * 4)
+		colours.resize(n * 4)
+		indices.resize(n * 6)
+		# The region in the atlas's units as the renderer works it out for
+		# a rect (its corner and size times the texel's size, its far
+		# corner their sum), with the same rounding: Vector2 holds 32-bit
+		# floats, as the GPU does.
+		var texel := Vector2(1.0 / atlas.x, 1.0 / atlas.y)
+		for j in n:
+			var d: Array = draws[j]
+			var r: Rect2 = d[0]
+			var cut: Rect2 = d[1]
+			var tint: Color = d[2]
+			var top_left := r.position
+			var far := r.position + r.size.abs()
+			var uv0 := cut.position * texel
+			var uv1 := uv0 + (cut.size * texel).abs()
+			var u0 := uv0.x
+			var u1 := uv1.x
+			if r.size.x < 0.0:
+				u0 = uv1.x
+				u1 = uv0.x
+			var v0 := uv0.y
+			var v1 := uv1.y
+			var v := j * 4
+			points[v] = top_left
+			points[v + 1] = Vector2(far.x, top_left.y)
+			points[v + 2] = far
+			points[v + 3] = Vector2(top_left.x, far.y)
+			uvs[v] = Vector2(u0, v0)
+			uvs[v + 1] = Vector2(u1, v0)
+			uvs[v + 2] = Vector2(u1, v1)
+			uvs[v + 3] = Vector2(u0, v1)
+			colours[v] = tint
+			colours[v + 1] = tint
+			colours[v + 2] = tint
+			colours[v + 3] = tint
+			var t := j * 6
+			indices[t] = v
+			indices[t + 1] = v + 1
+			indices[t + 2] = v + 2
+			indices[t + 3] = v
+			indices[t + 4] = v + 2
+			indices[t + 5] = v + 3
+		return [points, uvs, colours, indices]
 
 	## What `plants` (as received: kind, x, y each) draw on the layer,
 	## nearest the back first: [texture rect, atlas region, tint], each
@@ -1507,10 +1579,10 @@ class PlantLayer:
 
 	func _draw() -> void:
 		var atlas := ChunkView.flora_atlas()
-		if atlas == null:
+		if atlas == null or _arrays.is_empty():
 			return
-		for d: Array in _draws:
-			draw_texture_rect_region(atlas, d[0], d[1], d[2])
+		RenderingServer.canvas_item_add_triangle_array(get_canvas_item(), _arrays[3], _arrays[0], _arrays[2], _arrays[1],
+			PackedInt32Array(), PackedFloat32Array(), atlas.get_rid())
 
 
 ## Whether the chunk has built its ground at least once.
@@ -1664,7 +1736,7 @@ func _lay(result: Dictionary, signature: int) -> void:
 	if plants is Array and not _plants_due.is_empty():
 		var layer: PlantLayer = get_node_or_null("Plants")
 		if layer != null:
-			layer.set_draws(plants)
+			layer.set_arrays(plants)
 		_plants_due = []
 	GroundIndex.write(_origin, _size, result["bits"], result["corners"])
 	var rows: Dictionary = result["rows"]

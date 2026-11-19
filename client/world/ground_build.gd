@@ -29,7 +29,7 @@ const BROOK_READ := BrookLines.MARGIN + 2
 ## none), "water_usec" (its time, -1 when no water), "brooks" (the
 ## ribbons' arrays, or null without a brook), "brook_lines" (the lines,
 ## drawn flat when the brook's art is missing), "arrows", "plant_draws"
-## (the plants' layer, ChunkView.PlantLayer.draws_of; null when none was
+## (the plants' layer, ChunkView.PlantLayer.arrays_of; null when none was
 ## asked for).
 static func compute(input: Dictionary) -> Dictionary:
 	var origin: Vector2i = input["origin"]
@@ -96,7 +96,8 @@ static func compute(input: Dictionary) -> Dictionary:
 		result["water_usec"] = int(out[4])
 	_brooks(input, prepared, current, result)
 	var plants: Array = input["plants"]
-	result["plant_draws"] = ChunkView.PlantLayer.draws_of(plants[0], plants[1], plants[2]) if not plants.is_empty() else null
+	result["plant_draws"] = ChunkView.PlantLayer.arrays_of(ChunkView.PlantLayer.draws_of(plants[0], plants[1], plants[2]),
+		ChunkView.flora_atlas_size) if not plants.is_empty() else null
 	result["decor"] = _decor(input, win, codes)
 	return result
 
