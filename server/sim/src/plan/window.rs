@@ -282,6 +282,159 @@ fn pulled<'a>(h: i64, p: (i64, i64), stretches: impl Iterator<Item = &'a Stretch
     level + (h - level) * (1000 - strongest) / 1000
 }
 
+/// The river stretches of a cut by where they lie: each filed under the
+/// squares of [`RiverIndex::SQUARE_MM`] its bank reaches (its widest
+/// water and its bank either side), by its rank, ascending. Every read
+/// gives what a scan of all the stretches gives, in the same order.
+struct RiverIndex {
+    /// The north-west corner of the squares (mm), and squares a side.
+    corner: (i64, i64),
+    wide: i64,
+    high: i64,
+    squares: Vec<Vec<u32>>,
+}
+
+impl RiverIndex {
+    /// The side of a square (mm): four region cells.
+    const SQUARE_MM: i64 = 4 * CELL * 1000;
+
+    /// What a stretch's bank reaches: `(x0, y0, x1, y1)`, inclusive (mm).
+    fn reach(s: &Stretch) -> (i64, i64, i64, i64) {
+        let reach = s.widest() + s.bank;
+        (
+            s.a.0.min(s.b.0) - reach,
+            s.a.1.min(s.b.1) - reach,
+            s.a.0.max(s.b.0) + reach,
+            s.a.1.max(s.b.1) + reach,
+        )
+    }
+
+    fn new(stretches: &[Stretch]) -> Self {
+        let (mut x0, mut y0, mut x1, mut y1) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
+        for s in stretches {
+            let r = Self::reach(s);
+            (x0, y0, x1, y1) = (x0.min(r.0), y0.min(r.1), x1.max(r.2), y1.max(r.3));
+        }
+        if stretches.is_empty() {
+            (x0, y0, x1, y1) = (0, 0, 0, 0);
+        }
+        let corner = (
+            x0.div_euclid(Self::SQUARE_MM) * Self::SQUARE_MM,
+            y0.div_euclid(Self::SQUARE_MM) * Self::SQUARE_MM,
+        );
+        let wide = (x1 - corner.0).div_euclid(Self::SQUARE_MM) + 1;
+        let high = (y1 - corner.1).div_euclid(Self::SQUARE_MM) + 1;
+        let mut index = Self {
+            corner,
+            wide,
+            high,
+            squares: vec![Vec::new(); usize::try_from(wide * high).expect("small")],
+        };
+        for (k, s) in stretches.iter().enumerate() {
+            let (x0, y0, x1, y1) = Self::reach(s);
+            let ((i0, j0), (i1, j1)) = (index.square((x0, y0)), index.square((x1, y1)));
+            for j in j0..=j1 {
+                for i in i0..=i1 {
+                    let at = index.at(i, j).expect("on the squares");
+                    index.squares[at].push(u32::try_from(k).expect("few stretches"));
+                }
+            }
+        }
+        index
+    }
+
+    /// The square of point `p`, maybe off the squares.
+    fn square(&self, p: (i64, i64)) -> (i64, i64) {
+        (
+            (p.0 - self.corner.0).div_euclid(Self::SQUARE_MM),
+            (p.1 - self.corner.1).div_euclid(Self::SQUARE_MM),
+        )
+    }
+
+    /// Square `(i, j)` by its index, if it is one.
+    fn at(&self, i: i64, j: i64) -> Option<usize> {
+        ((0..self.wide).contains(&i) && (0..self.high).contains(&j))
+            .then(|| usize::try_from(j * self.wide + i).expect("small"))
+    }
+
+    /// The stretches whose bank may reach point `p`: every one that
+    /// does, and others, by rank.
+    fn reaching(&self, p: (i64, i64)) -> impl Iterator<Item = usize> + '_ {
+        let (i, j) = self.square(p);
+        self.at(i, j)
+            .map_or(&[][..], |at| &self.squares[at][..])
+            .iter()
+            .map(|&k| k as usize)
+    }
+
+    /// The stretches whose bank may reach `lo..=hi` (mm): every one that
+    /// does, and others, by rank, each once.
+    fn over(&self, lo: (i64, i64), hi: (i64, i64)) -> Vec<usize> {
+        let ((i0, j0), (i1, j1)) = (self.square(lo), self.square(hi));
+        let mut found = Vec::new();
+        for j in j0.max(0)..=j1.min(self.high - 1) {
+            for i in i0.max(0)..=i1.min(self.wide - 1) {
+                let at = self.at(i, j).expect("on the squares");
+                found.extend(self.squares[at].iter().map(|&k| k as usize));
+            }
+        }
+        found.sort_unstable();
+        found.dedup();
+        found
+    }
+
+    /// The stretch of `stretches` (those indexed) nearest to `p`, the
+    /// first by rank of the nearest: rings of squares around `p`'s,
+    /// until no stretch beyond can come as near.
+    fn nearest(&self, stretches: &[Stretch], p: (i64, i64)) -> Option<usize> {
+        let (pi, pj) = self.square(p);
+        let mut best: Option<(i64, usize)> = None;
+        for ring in 0_i64.. {
+            if ring > 0 {
+                // The squares seen hold every stretch whose bank reaches
+                // them; any other lies wholly past them, at least
+                // `ring - 1` squares from `p`.
+                let seen = ring - 1;
+                if best.is_some_and(|(d, _)| d < seen * Self::SQUARE_MM) {
+                    break;
+                }
+                if pi - seen <= 0
+                    && pj - seen <= 0
+                    && pi + seen >= self.wide - 1
+                    && pj + seen >= self.high - 1
+                {
+                    break;
+                }
+            }
+            let mut look = |i: i64, j: i64| {
+                let Some(at) = self.at(i, j) else {
+                    return;
+                };
+                for &k in &self.squares[at] {
+                    let k = k as usize;
+                    let d = stretches[k].probe(p).d;
+                    if best.is_none_or(|(bd, bk)| (d, k) < (bd, bk)) {
+                        best = Some((d, k));
+                    }
+                }
+            };
+            // The ring's squares on the index: its top and bottom rows
+            // whole, its two ends on the rows between.
+            for j in (pj - ring).max(0)..=(pj + ring).min(self.high - 1) {
+                if (j - pj).abs() == ring {
+                    for i in (pi - ring).max(0)..=(pi + ring).min(self.wide - 1) {
+                        look(i, j);
+                    }
+                } else {
+                    look(pi - ring, j);
+                    look(pi + ring, j);
+                }
+            }
+        }
+        best.map(|(_, k)| k)
+    }
+}
+
 /// What runs on a stretch of water.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -678,6 +831,11 @@ impl Window {
                 && region.water[region_cell(x, y)] == Water::Brook
         };
         let river_stretches: Vec<Stretch> = stretches[..rivers].to_vec();
+        // The region's rivers by where they lie: a brook reads only the
+        // stretches near it (19 November 2026: each read scanned every
+        // river stretch of the region, so the cut grew with the region
+        // and the window's area together, 32 s for 8 km).
+        let river_index = RiverIndex::new(&river_stretches);
         // The ground a brook runs on at a point (window mm): the window's,
         // drawn down to the rivers' banks (before 15 November 2026 the raw
         // ground: beside a river falling 15 %, a brook's source read the
@@ -695,7 +853,7 @@ impl Window {
                     p.1.div_euclid(1000),
                 ),
                 p,
-                river_stretches.iter(),
+                river_index.reaching(p).map(|k| &river_stretches[k]),
             )
         };
         // Where a cell's water goes, by what its receiver is: the point
@@ -713,16 +871,14 @@ impl Window {
                 Water::Brook => Some((brook_point(gx, gy), None)),
                 Water::River => {
                     let c = from;
-                    let mut best: Option<(i64, (i64, i64), i64)> = None;
-                    for s in &river_stretches {
+                    let best = river_index.nearest(&river_stretches, c).map(|k| {
+                        let s = &river_stretches[k];
                         let Probe { d, level, .. } = s.probe(c);
-                        if best.is_none_or(|(bd, _, _)| d < bd) {
-                            let (dx, dy) = (s.b.0 - s.a.0, s.b.1 - s.a.1);
-                            let len2 = (dx * dx + dy * dy).max(1);
-                            let t = ((c.0 - s.a.0) * dx + (c.1 - s.a.1) * dy).clamp(0, len2);
-                            best = Some((d, (s.a.0 + dx * t / len2, s.a.1 + dy * t / len2), level));
-                        }
-                    }
+                        let (dx, dy) = (s.b.0 - s.a.0, s.b.1 - s.a.1);
+                        let len2 = (dx * dx + dy * dy).max(1);
+                        let t = ((c.0 - s.a.0) * dx + (c.1 - s.a.1) * dy).clamp(0, len2);
+                        (d, (s.a.0 + dx * t / len2, s.a.1 + dy * t / len2), level)
+                    });
                     Some(
                         best.map_or((c, Some(i64::from(region.surface[r]))), |(_, p, level)| {
                             (p, Some(level))
@@ -769,8 +925,10 @@ impl Window {
                 ((i64::MAX, i64::MAX), (i64::MIN, i64::MIN)),
                 |(lo, hi), &(x, y)| ((lo.0.min(x), lo.1.min(y)), (hi.0.max(x), hi.1.max(y))),
             );
-            let near: Vec<&Stretch> = river_stretches
-                .iter()
+            let near: Vec<&Stretch> = river_index
+                .over(lo, hi)
+                .into_iter()
+                .map(|k| &river_stretches[k])
                 .filter(|s| {
                     let w = s.widest();
                     s.a.0.max(s.b.0) + w >= lo.0
@@ -1005,9 +1163,17 @@ impl Window {
             }
         }
 
-        // Each stretch, filed under the chunks its bank reaches.
+        // Each stretch, filed under the chunks its bank reaches; the
+        // region's river stretches reaching none are dropped.
         let chunks = i64::from(side / CHUNK_SIZE);
         let chunk_mm = i64::from(CHUNK_SIZE) * 1000;
+        stretches.retain(|s| {
+            let reach = s.widest() + s.bank;
+            let lo = |a: i64, b: i64| ((a.min(b) - reach).div_euclid(chunk_mm)).max(0);
+            let hi = |a: i64, b: i64| ((a.max(b) + reach).div_euclid(chunk_mm)).min(chunks - 1);
+            s.kind == Kind::Brook
+                || (lo(s.a.0, s.b.0) <= hi(s.a.0, s.b.0) && lo(s.a.1, s.b.1) <= hi(s.a.1, s.b.1))
+        });
         let mut by_chunk = vec![Vec::new(); usize::try_from(chunks * chunks).expect("small")];
         for (k, s) in stretches.iter().enumerate() {
             let reach = s.widest() + s.bank;
@@ -1386,48 +1552,19 @@ impl Window {
         (x + shift(k), y + shift(k + 1))
     }
 
-    /// Every wet tile, row by row: `(x, y, wet)`.
+    /// Every wet tile, row by row: `(x, y, wet)`. The whole window at
+    /// once, for the sheets and the tests: the map asks chunk by chunk
+    /// ([`Window::waters_of_chunk`]).
     pub fn waters(&self) -> Vec<(u32, u32, Wet)> {
         let side = i64::from(self.side);
         let mut found: BTreeMap<(i64, i64), Wet> = BTreeMap::new();
-        let mut look = |x: i64, y: i64| {
-            if (0..side).contains(&x)
-                && (0..side).contains(&y)
-                && !found.contains_key(&(y, x))
+        self.wet_candidates((0, 0, side, side), self.stretches.iter(), |x, y| {
+            if !found.contains_key(&(y, x))
                 && let Some(wet) = self.wet(x, y)
             {
                 found.insert((y, x), wet);
             }
-        };
-        for s in &self.stretches {
-            let widest = s.widest();
-            let lo = |a: i64, b: i64| (a.min(b) - widest).div_euclid(1000);
-            let hi = |a: i64, b: i64| (a.max(b) + widest).div_euclid(1000);
-            for y in lo(s.a.1, s.b.1)..=hi(s.a.1, s.b.1) {
-                for x in lo(s.a.0, s.b.0)..=hi(s.a.0, s.b.0) {
-                    let probe = s.probe((x * 1000 + 500, y * 1000 + 500));
-                    if probe.d <= probe.half {
-                        look(x, y);
-                    }
-                }
-            }
-        }
-        // The lakes: the tiles of their cells and the cells around.
-        let n = self.cells - 2 * MARGIN;
-        for j in -1..=n {
-            for i in -1..=n {
-                let near_lake = (-1..=1)
-                    .any(|b| (-1..=1).any(|a| self.cell(&self.lake, i + a, j + b) != NO_LAKE));
-                if !near_lake {
-                    continue;
-                }
-                for y in j * CELL..(j + 1) * CELL {
-                    for x in i * CELL..(i + 1) * CELL {
-                        look(x, y);
-                    }
-                }
-            }
-        }
+        });
         found
             .into_iter()
             .map(|((y, x), wet)| {
@@ -1438,6 +1575,94 @@ impl Window {
                 )
             })
             .collect()
+    }
+
+    /// The wet tiles of chunk `(cx, cy)` of the window, row by row: those
+    /// of [`Window::waters`] lying in it, found from the stretches filed
+    /// under the chunk and the lakes beside its cell alone, so the map
+    /// makes its water chunk by chunk with no scan of the whole window
+    /// (19 November 2026: the scan was 3 to 8 s of the vivarium's
+    /// birth). Empty off the window.
+    pub(crate) fn waters_of_chunk(&self, cx: u32, cy: u32) -> Vec<(u32, u32, Wet)> {
+        let chunks = self.side / CHUNK_SIZE;
+        if cx >= chunks || cy >= chunks {
+            return Vec::new();
+        }
+        let (x0, y0) = (i64::from(cx * CHUNK_SIZE), i64::from(cy * CHUNK_SIZE));
+        let side = i64::from(CHUNK_SIZE);
+        let mut seen = [false; (CHUNK_SIZE * CHUNK_SIZE) as usize];
+        let filed = &self.by_chunk[(cy * chunks + cx) as usize];
+        self.wet_candidates(
+            (x0, y0, x0 + side, y0 + side),
+            filed.iter().map(|&k| &self.stretches[k as usize]),
+            |x, y| {
+                seen[usize::try_from((y - y0) * side + x - x0).expect("in the chunk")] = true;
+            },
+        );
+        let mut found = Vec::new();
+        for (k, _) in seen.iter().enumerate().filter(|(_, seen)| **seen) {
+            let k = i64::try_from(k).expect("small");
+            let (x, y) = (x0 + k % side, y0 + k / side);
+            if let Some(wet) = self.wet(x, y) {
+                found.push((
+                    u32::try_from(x).expect("inside"),
+                    u32::try_from(y).expect("inside"),
+                    wet,
+                ));
+            }
+        }
+        found
+    }
+
+    /// The tiles of `x0..x1` × `y0..y1` (clipped to the window) that may
+    /// be wet, each as `look(x, y)`, some more than once: within the water
+    /// of one of `stretches`, or in a cell of a lake or beside one. Every
+    /// wet tile is among them; [`Window::wet`] says which are.
+    fn wet_candidates<'a>(
+        &self,
+        (x0, y0, x1, y1): (i64, i64, i64, i64),
+        stretches: impl Iterator<Item = &'a Stretch>,
+        mut look: impl FnMut(i64, i64),
+    ) {
+        let side = i64::from(self.side);
+        let (x0, y0, x1, y1) = (x0.max(0), y0.max(0), x1.min(side), y1.min(side));
+        for s in stretches {
+            let widest = s.widest();
+            let lo = |a: i64, b: i64| (a.min(b) - widest).div_euclid(1000);
+            let hi = |a: i64, b: i64| (a.max(b) + widest).div_euclid(1000);
+            for y in lo(s.a.1, s.b.1).max(y0)..=hi(s.a.1, s.b.1).min(y1 - 1) {
+                for x in lo(s.a.0, s.b.0).max(x0)..=hi(s.a.0, s.b.0).min(x1 - 1) {
+                    let probe = s.probe((x * 1000 + 500, y * 1000 + 500));
+                    if probe.d <= probe.half {
+                        look(x, y);
+                    }
+                }
+            }
+        }
+        // The lakes: the tiles of their cells and the cells around.
+        let n = self.cells - 2 * MARGIN;
+        let (i0, i1) = (
+            x0.div_euclid(CELL).max(-1),
+            (x1 - 1).div_euclid(CELL).min(n),
+        );
+        let (j0, j1) = (
+            y0.div_euclid(CELL).max(-1),
+            (y1 - 1).div_euclid(CELL).min(n),
+        );
+        for j in j0..=j1 {
+            for i in i0..=i1 {
+                let near_lake = (-1..=1)
+                    .any(|b| (-1..=1).any(|a| self.cell(&self.lake, i + a, j + b) != NO_LAKE));
+                if !near_lake {
+                    continue;
+                }
+                for y in (j * CELL).max(y0)..((j + 1) * CELL).min(y1) {
+                    for x in (i * CELL).max(x0)..((i + 1) * CELL).min(x1) {
+                        look(x, y);
+                    }
+                }
+            }
+        }
     }
 
     /// The camp: searched in growing squares from the window's centre,
@@ -1592,6 +1817,85 @@ mod tests {
     /// 15 November 2026 it wandered as fast as the forest's border and
     /// folded, and the shore's slope held pits of 2 to 3 dm ((390, 476)
     /// of seed 14).
+    /// The river index gives what a scan of every stretch gives: the
+    /// stretches whose bank reaches a point or a box among its own, and
+    /// the same nearest, the first by rank on a tie; near the stretches,
+    /// far from them and off the index.
+    #[test]
+    fn the_river_index_reads_as_a_scan_of_every_stretch() {
+        let mut state = 7_u64;
+        let mut next = |n: i64| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            i64::try_from((state >> 33) % u64::try_from(n).expect("positive")).expect("small")
+        };
+        let area = 20_000_000;
+        let mut stretches = Vec::new();
+        for k in 0..3000 {
+            // Rivers in runs of short stretches, and a few long ones.
+            let a = (next(area), next(area));
+            let reach = if k % 50 == 0 { 400_000 } else { 30_000 };
+            let b = (a.0 + next(2 * reach) - reach, a.1 + next(2 * reach) - reach);
+            let half = (next(60_000), next(60_000));
+            stretches.push(Stretch {
+                a,
+                b,
+                level: (0, 0),
+                half: (half, (half.1, half.0)),
+                width: (half.0 + half.1, half.0 + half.1),
+                depth: (100, 100),
+                bank: next(40_000),
+                kind: Kind::River,
+                ford: false,
+                heading: 0,
+            });
+        }
+        // Two stretches the same: a tie on the nearest.
+        stretches.push(stretches[10]);
+        let index = RiverIndex::new(&stretches);
+        for _ in 0..4000 {
+            let p = (next(2 * area) - area / 2, next(2 * area) - area / 2);
+            let reaching: Vec<usize> = index.reaching(p).collect();
+            assert!(reaching.is_sorted());
+            for (k, s) in stretches.iter().enumerate() {
+                let (x0, y0, x1, y1) = RiverIndex::reach(s);
+                if (x0..=x1).contains(&p.0) && (y0..=y1).contains(&p.1) {
+                    assert!(reaching.contains(&k), "{k} reaches {p:?}");
+                }
+            }
+            let scan =
+                stretches
+                    .iter()
+                    .enumerate()
+                    .fold(None, |best: Option<(i64, usize)>, (k, s)| {
+                        let d = s.probe(p).d;
+                        if best.is_none_or(|(bd, _)| d < bd) {
+                            Some((d, k))
+                        } else {
+                            best
+                        }
+                    });
+            assert_eq!(index.nearest(&stretches, p), scan.map(|(_, k)| k), "{p:?}");
+            let hi = (p.0 + next(300_000), p.1 + next(300_000));
+            let over = index.over(p, hi);
+            assert!(over.is_sorted() && over.windows(2).all(|w| w[0] != w[1]));
+            for (k, s) in stretches.iter().enumerate() {
+                let w = s.widest();
+                if s.a.0.max(s.b.0) + w >= p.0
+                    && s.a.0.min(s.b.0) - w <= hi.0
+                    && s.a.1.max(s.b.1) + w >= p.1
+                    && s.a.1.min(s.b.1) - w <= hi.1
+                {
+                    assert!(over.contains(&k), "{k} over {p:?}..{hi:?}");
+                }
+            }
+        }
+        // The tie: the first of the two is the nearest at its own end.
+        assert_eq!(index.nearest(&stretches, stretches[10].a), Some(10));
+        assert_eq!(RiverIndex::new(&[]).nearest(&[], (5, 5)), None);
+    }
+
     #[test]
     fn the_lake_shore_never_runs_back_on_itself() {
         let w = zone_window();

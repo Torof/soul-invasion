@@ -59,23 +59,74 @@ pub const WOODS_CACHE_CHUNKS: usize = {
     4 * with_rim * with_rim
 };
 
-/// The rivers' result, kept sparse: per chunk holding water, its water
-/// tiles; a bit per chunk that it holds any.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A map's water, by chunk: the valley's, kept sparse from what its
+/// rivers painted; or a window's, made chunk by chunk from the atlas's
+/// window as it is read (19 November 2026: the window's whole water was
+/// scanned at birth, 3 to 8 s of the vivarium's), the chunks read lately
+/// held.
+#[derive(Debug)]
 pub(crate) struct Waters {
     width: u32,
     height: u32,
     chunks_wide: u32,
-    /// One bit a chunk, row by row: does it hold any water?
-    wet: Vec<u64>,
-    /// The water of each chunk holding some, by its index row by row.
-    chunks: BTreeMap<u32, WetChunk>,
+    source: Source,
 }
+
+/// Where a map's water comes from.
+#[derive(Debug)]
+enum Source {
+    /// Kept whole, sparse.
+    Sparse {
+        /// One bit a chunk, row by row: does it hold any water?
+        wet: Vec<u64>,
+        /// The water of each chunk holding some, by its index row by row.
+        chunks: BTreeMap<u32, WetChunk>,
+    },
+    /// Made per chunk from the window ([`Window::waters_of_chunk`]).
+    Window {
+        window: Arc<Window>,
+        /// This water among the others (`LANDS`), for the threads' recent
+        /// chunks.
+        id: u64,
+        /// The chunks made lately, by index; a dry chunk is an empty one.
+        held: Mutex<Lru<u32, Arc<WetChunk>>>,
+    },
+}
+
+impl Clone for Waters {
+    /// The same water, a window's caches empty.
+    fn clone(&self) -> Self {
+        let source = match &self.source {
+            Source::Sparse { wet, chunks } => Source::Sparse {
+                wet: wet.clone(),
+                chunks: chunks.clone(),
+            },
+            Source::Window { window, .. } => Source::window(Arc::clone(window)),
+        };
+        Self { source, ..*self }
+    }
+}
+
+impl Source {
+    fn window(window: Arc<Window>) -> Self {
+        Self::Window {
+            window,
+            id: LANDS.fetch_add(1, Ordering::Relaxed),
+            held: Mutex::new(Lru::new(WET_CACHE_CHUNKS)),
+        }
+    }
+}
+
+/// Chunks of a window's water held at most: those of the tiles held
+/// ([`TILE_CACHE_CHUNKS`]), each made from its water and the water two
+/// chunks around it. A dry chunk costs its entry; a wet one about 6
+/// bytes a water tile: some 2 MB when full.
+const WET_CACHE_CHUNKS: usize = TILE_CACHE_CHUNKS;
 
 /// The water tiles of a chunk, by their place in it (row by row),
 /// ascending: about 6 bytes a water tile.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-struct WetChunk {
+pub(crate) struct WetChunk {
     at: Vec<u16>,
     /// What lies there: a brook, a ford, water; `None` for a tile with a
     /// current but no water (none today, kept as the rivers say).
@@ -86,19 +137,41 @@ struct WetChunk {
     current: Vec<u16>,
 }
 
+impl WetChunk {
+    /// The water of chunk `pos` of the atlas's `window`.
+    fn of_window(window: &Window, pos: ChunkPos) -> Self {
+        let mut wet = Self::default();
+        let (cx, cy) = (
+            u32::try_from(pos.x).expect("on the map"),
+            u32::try_from(pos.y).expect("on the map"),
+        );
+        for (x, y, tile) in window.waters_of_chunk(cx, cy) {
+            let (_, place) = place(1, x % CHUNK_SIZE, y % CHUNK_SIZE);
+            wet.at.push(place);
+            wet.terrain.push(Some(tile.terrain));
+            wet.depth.push(tile.depth);
+            wet.current.push(tile.current);
+        }
+        wet
+    }
+}
+
+/// The chunk of `(x, y)` on a map `chunks_wide` chunks wide, by its
+/// index row by row, and the tile's place in it.
+fn place(chunks_wide: u32, x: u32, y: u32) -> (u32, u16) {
+    let chunk = (y / CHUNK_SIZE) * chunks_wide + x / CHUNK_SIZE;
+    let place = (y % CHUNK_SIZE) * CHUNK_SIZE + x % CHUNK_SIZE;
+    (chunk, u16::try_from(place).expect("within a chunk"))
+}
+
 impl Waters {
     /// The water the `rivers` painted, kept sparse: their working arrays
     /// go with them.
     pub(crate) fn from_rivers(rivers: &Rivers, width: u32, height: u32) -> Self {
         let chunks_wide = width.div_ceil(CHUNK_SIZE);
         let chunks_high = height.div_ceil(CHUNK_SIZE);
-        let mut waters = Self {
-            width,
-            height,
-            chunks_wide,
-            wet: vec![0; (chunks_wide * chunks_high).div_ceil(64) as usize],
-            chunks: BTreeMap::new(),
-        };
+        let mut wet = vec![0_u64; (chunks_wide * chunks_high).div_ceil(64) as usize];
+        let mut chunks: BTreeMap<u32, WetChunk> = BTreeMap::new();
         for y in 0..height {
             for x in 0..width {
                 let depth = rivers.depth_at(x, y);
@@ -106,83 +179,92 @@ impl Waters {
                 if depth == 0 && current == 0 {
                     continue;
                 }
-                let (chunk, place) = waters.place(x, y);
-                waters.wet[chunk as usize / 64] |= 1 << (chunk % 64);
-                let wet = waters.chunks.entry(chunk).or_default();
-                wet.at.push(place);
-                wet.terrain.push(rivers.at(x, y));
-                wet.depth.push(depth);
-                wet.current.push(current);
+                let (chunk, place) = place(chunks_wide, x, y);
+                wet[chunk as usize / 64] |= 1 << (chunk % 64);
+                let tiles = chunks.entry(chunk).or_default();
+                tiles.at.push(place);
+                tiles.terrain.push(rivers.at(x, y));
+                tiles.depth.push(depth);
+                tiles.current.push(current);
             }
         }
-        waters
-    }
-
-    /// The water of `tiles`, `(x, y, terrain, depth, current)` row by row
-    /// over the map, kept sparse.
-    pub(crate) fn from_tiles(
-        width: u32,
-        height: u32,
-        tiles: impl IntoIterator<Item = (u32, u32, Terrain, u8, u16)>,
-    ) -> Self {
-        let chunks_wide = width.div_ceil(CHUNK_SIZE);
-        let chunks_high = height.div_ceil(CHUNK_SIZE);
-        let mut waters = Self {
+        Self {
             width,
             height,
             chunks_wide,
-            wet: vec![0; (chunks_wide * chunks_high).div_ceil(64) as usize],
-            chunks: BTreeMap::new(),
-        };
-        for (x, y, terrain, depth, current) in tiles {
-            let (chunk, place) = waters.place(x, y);
-            waters.wet[chunk as usize / 64] |= 1 << (chunk % 64);
-            let wet = waters.chunks.entry(chunk).or_default();
-            debug_assert!(wet.at.last().is_none_or(|&p| p < place), "row by row");
-            wet.at.push(place);
-            wet.terrain.push(Some(terrain));
-            wet.depth.push(depth);
-            wet.current.push(current);
+            source: Source::Sparse { wet, chunks },
         }
-        waters
     }
 
-    /// The chunk of `(x, y)`, by its index, and the tile's place in it.
-    fn place(&self, x: u32, y: u32) -> (u32, u16) {
-        let chunk = (y / CHUNK_SIZE) * self.chunks_wide + x / CHUNK_SIZE;
-        let place = (y % CHUNK_SIZE) * CHUNK_SIZE + x % CHUNK_SIZE;
-        (chunk, u16::try_from(place).expect("within a chunk"))
-    }
-
-    /// The water of the chunk of index `chunk`, if it holds any.
-    fn chunk(&self, chunk: u32) -> Option<&WetChunk> {
-        if self.wet[chunk as usize / 64] & (1 << (chunk % 64)) == 0 {
-            return None;
+    /// The water of the atlas's `window`, made per chunk as it is read.
+    pub(crate) fn on_window(window: Arc<Window>) -> Self {
+        let side = window.side();
+        Self {
+            width: side,
+            height: side,
+            chunks_wide: side.div_ceil(CHUNK_SIZE),
+            source: Source::window(window),
         }
-        self.chunks.get(&chunk)
     }
 
-    /// The water tile at `(x, y)`, as its rank in its chunk's lists.
-    fn find(&self, x: u32, y: u32) -> Option<(&WetChunk, usize)> {
-        let (chunk, place) = self.place(x, y);
-        let wet = self.chunk(chunk)?;
-        let k = wet.at.binary_search(&place).ok()?;
-        Some((wet, k))
+    /// The water of the chunk of index `chunk`, if it holds any, handed
+    /// to `f`.
+    fn with_chunk<R>(&self, chunk: u32, f: impl FnOnce(Option<&WetChunk>) -> R) -> R {
+        match &self.source {
+            Source::Sparse { wet, chunks } => {
+                if wet[chunk as usize / 64] & (1 << (chunk % 64)) == 0 {
+                    return f(None);
+                }
+                f(chunks.get(&chunk))
+            }
+            Source::Window { window, id, held } => {
+                let pos = ChunkPos::new(
+                    i32::try_from(chunk % self.chunks_wide).expect("few chunks"),
+                    i32::try_from(chunk / self.chunks_wide).expect("few chunks"),
+                );
+                let lock = || held.lock().unwrap_or_else(PoisonError::into_inner);
+                let wet = recent(
+                    |r| &mut r.wet,
+                    *id,
+                    pos,
+                    || {
+                        let found = lock().get(&chunk).map(Arc::clone);
+                        found.unwrap_or_else(|| {
+                            let made = Arc::new(WetChunk::of_window(window, pos));
+                            lock().insert(chunk, Arc::clone(&made));
+                            made
+                        })
+                    },
+                );
+                f((!wet.at.is_empty()).then_some(&*wet))
+            }
+        }
+    }
+
+    /// The water tile at `(x, y)`: `f` of its chunk's lists and its rank
+    /// in them, or `None` on land.
+    fn find<R>(&self, x: u32, y: u32, f: impl FnOnce(&WetChunk, usize) -> R) -> Option<R> {
+        let (chunk, place) = place(self.chunks_wide, x, y);
+        self.with_chunk(chunk, |wet| {
+            let wet = wet?;
+            let k = wet.at.binary_search(&place).ok()?;
+            Some(f(wet, k))
+        })
     }
 
     /// What is at `(x, y)`: `None` on land, a brook, a ford or water.
     pub(crate) fn at(&self, x: u32, y: u32) -> Option<Terrain> {
-        self.find(x, y).and_then(|(wet, k)| wet.terrain[k])
+        self.find(x, y, |wet, k| wet.terrain[k]).flatten()
     }
 
     /// How deep the water is at `(x, y)`, in half-metres; 0 on land.
     pub(crate) fn depth(&self, x: u32, y: u32) -> u8 {
-        self.find(x, y).map_or(0, |(wet, k)| wet.depth[k])
+        self.find(x, y, |wet, k| wet.depth[k]).unwrap_or(0)
     }
 
     /// Where the water runs at `(x, y)` (`map::current_code`); 0 on land.
     pub(crate) fn current(&self, x: u32, y: u32) -> u16 {
-        self.find(x, y).map_or(0, |(wet, k)| wet.current[k])
+        self.find(x, y, |wet, k| wet.current[k]).unwrap_or(0)
     }
 
     /// The water tiles of the chunks crossing `x0..x1` × `y0..y1` (clipped
@@ -198,19 +280,21 @@ impl Waters {
             for cx in x0.max(0) / side..=last(x1, self.width) {
                 let chunk =
                     u32::try_from(cy * i64::from(self.chunks_wide) + cx).expect("on the map");
-                let Some(wet) = self.chunk(chunk) else {
-                    continue;
-                };
                 let (ox, oy) = (
                     u32::try_from(cx * side).expect("on the map"),
                     u32::try_from(cy * side).expect("on the map"),
                 );
-                for (k, place) in wet.at.iter().enumerate() {
-                    if let Some(terrain) = wet.terrain[k] {
-                        let place = u32::from(*place);
-                        f(ox + place % CHUNK_SIZE, oy + place / CHUNK_SIZE, terrain);
+                self.with_chunk(chunk, |wet| {
+                    let Some(wet) = wet else {
+                        return;
+                    };
+                    for (k, place) in wet.at.iter().enumerate() {
+                        if let Some(terrain) = wet.terrain[k] {
+                            let place = u32::from(*place);
+                            f(ox + place % CHUNK_SIZE, oy + place / CHUNK_SIZE, terrain);
+                        }
                     }
-                }
+                });
             }
         }
     }
@@ -349,6 +433,7 @@ const RECENT_CHUNKS: usize = 4;
 struct Recent {
     tiles: RecentList<ChunkTiles>,
     woods: RecentList<ChunkWoods>,
+    wet: RecentList<WetChunk>,
 }
 
 /// A thread's recent chunks of one kind: land, chunk, what was made.
@@ -680,7 +765,10 @@ mod tests {
         }
         assert!(wet > 1000, "{wet} water tiles");
         // A few chunks hold water; the others are a bit each.
-        assert!(waters.chunks.len() < (width.div_ceil(32) * height.div_ceil(32)) as usize);
+        let Source::Sparse { chunks, .. } = &waters.source else {
+            unreachable!("a valley's water is sparse");
+        };
+        assert!(chunks.len() < (width.div_ceil(32) * height.div_ceil(32)) as usize);
         // The distances to the waters, point by point and swept over a
         // chunk, agree with the whole map swept at once.
         let to_river = Woods::to_water(width, height, &rivers, false, Woods::RIVER_REACH);
@@ -736,6 +824,51 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A window's water made chunk by chunk, read in any order and
+    /// after eviction, is the whole window's scan tile for tile: what
+    /// the map kept whole until 19 November 2026.
+    #[test]
+    fn a_windows_water_made_per_chunk_is_its_whole_scan() {
+        use crate::plan::{Continent, Region, region};
+        let mut wet_tiles = 0;
+        for seed in [1, 2, 3, 5] {
+            let continent = Continent::with(seed, 128, None);
+            let site = region::site(&continent);
+            let region = Region::around(&continent, site, 256);
+            let corner = Window::choose(&region, 1024);
+            let window = Arc::new(Window::cut(&continent, &region, corner, 1024));
+            let whole: BTreeMap<(u32, u32), crate::plan::window::Wet> = window
+                .waters()
+                .into_iter()
+                .map(|(x, y, wet)| ((x, y), wet))
+                .collect();
+            wet_tiles += whole.len();
+            let mut waters = Waters::on_window(Arc::clone(&window));
+            // Room for few chunks: read last chunk first, then again
+            // first chunk first, each made again after its eviction.
+            if let Source::Window { held, .. } = &mut waters.source {
+                *held = Mutex::new(Lru::new(3));
+            }
+            let chunks = window.side() / CHUNK_SIZE;
+            let order: Vec<u32> = (0..chunks * chunks)
+                .rev()
+                .chain(0..chunks * chunks)
+                .collect();
+            for chunk in order {
+                let (x0, y0) = (chunk % chunks * CHUNK_SIZE, chunk / chunks * CHUNK_SIZE);
+                for y in y0..y0 + CHUNK_SIZE {
+                    for x in x0..x0 + CHUNK_SIZE {
+                        let wet = whole.get(&(x, y));
+                        assert_eq!(waters.at(x, y), wet.map(|w| w.terrain), "{seed} ({x}, {y})");
+                        assert_eq!(waters.depth(x, y), wet.map_or(0, |w| w.depth));
+                        assert_eq!(waters.current(x, y), wet.map_or(0, |w| w.current));
+                    }
+                }
+            }
+        }
+        assert!(wet_tiles > 10_000, "{wet_tiles} water tiles");
     }
 
     #[test]

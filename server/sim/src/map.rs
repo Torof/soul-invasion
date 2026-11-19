@@ -443,14 +443,8 @@ impl Map {
     /// same window from `seed` and the map's side.
     pub(crate) fn on_window_by(window: Window, seed: u64, generator: u32) -> Self {
         let side = window.side();
-        let waters = Waters::from_tiles(
-            side,
-            side,
-            window
-                .waters()
-                .into_iter()
-                .map(|(x, y, w)| (x, y, w.terrain, w.depth, w.current)),
-        );
+        let window = std::sync::Arc::new(window);
+        let waters = Waters::on_window(std::sync::Arc::clone(&window));
         let woods = Woods::on_world(side, seed, window.camp(), window.tile_origin());
         Self {
             spec: MapSpec::Valley {
@@ -462,7 +456,7 @@ impl Map {
             width: side,
             height: side,
             ground: Made::Valley(Box::new(
-                Land::new(side, side, 0, waters, woods).on_window(std::sync::Arc::new(window)),
+                Land::new(side, side, 0, waters, woods).on_window(window),
             )),
             edits: BTreeMap::new(),
             heights: None,
