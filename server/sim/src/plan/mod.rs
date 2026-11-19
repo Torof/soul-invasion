@@ -58,6 +58,7 @@
 
 pub mod climate;
 mod course;
+mod kept;
 pub mod measure;
 #[cfg(test)]
 mod net;
@@ -70,6 +71,7 @@ use crate::r#gen::hash;
 use crate::geology::Rock;
 
 pub use climate::{Biome, RIVER_ML, Reach};
+pub use kept::born_within;
 pub use measure::Numbers;
 pub use region::Region;
 pub use relief::{Stroke, StrokeKind};

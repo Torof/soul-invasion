@@ -16,6 +16,12 @@
 //! birth, drawn at random when its database is made, is folded in too: a
 //! world made anew (`--reset`) never shares an identity with the old one.
 //!
+//! Apart from the world, in a file of its own ([`ContinentStore`], 19
+//! November 2026): the continents of the atlas, born once and read back
+//! at every later start, so a window is cut from its continent again
+//! with no birth. Not the world's state: the same for every world of a
+//! seed, kept across `--reset` and by ephemeral worlds.
+//!
 //! Formats are versioned from day one (D21): the database schema through
 //! SQLite's `user_version`, each snapshot through its own format version,
 //! each chunk's changes through theirs.
@@ -27,6 +33,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use sim::changes::{ChunkChanges, Construction, Picked, Planted, Stage};
 use sim::crops::{PlantKey, Source};
 use sim::ground::Version;
+use sim::plan::Continent;
 use sim::trees::TreeKey;
 use sim::{CHUNK_SIZE, ChunkPos, Content, Pos, World};
 
@@ -531,6 +538,106 @@ fn decode_changes(
 /// get anywhere near the sign bit.
 fn db_int(value: u64) -> i64 {
     i64::try_from(value).expect("tick or sequence number fits in i64")
+}
+
+/// Schema of the continents' file, as [`MIGRATIONS`] for the world's:
+/// the index + 1 is the version in its `user_version`.
+const CONTINENT_MIGRATIONS: &[&str] = &[
+    // v1 (19 November 2026): a continent a seed and side. `data` is
+    // `Continent::to_bytes` (its own layout version and checksum inside),
+    // `fingerprint` `Continent::fingerprint`, checked on reading.
+    "CREATE TABLE continents (
+         seed        INTEGER NOT NULL,
+         side        INTEGER NOT NULL,
+         fingerprint INTEGER NOT NULL,
+         data        BLOB    NOT NULL,
+         saved_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+         PRIMARY KEY (seed, side)
+     );",
+];
+
+/// The continents of the atlas born once and kept (D28, 19 November
+/// 2026), in a SQLite file of their own: the vivarium's continent (1,024
+/// cells a side, about 60 MB) takes 6 to 13 s and 140 MB at its peak to
+/// be born, and is the same at every start of a world of its seed.
+#[derive(Debug)]
+pub struct ContinentStore {
+    conn: Connection,
+}
+
+impl ContinentStore {
+    /// Opens (or creates) the continents' file.
+    pub fn open(path: &std::path::Path) -> Result<Self, StorageError> {
+        Self::from_connection(Connection::open(path)?)
+    }
+
+    /// In memory, for the tests.
+    pub fn in_memory() -> Result<Self, StorageError> {
+        Self::from_connection(Connection::open_in_memory()?)
+    }
+
+    fn from_connection(mut conn: Connection) -> Result<Self, StorageError> {
+        let found: u32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        let supported = u32::try_from(CONTINENT_MIGRATIONS.len()).expect("few migrations");
+        if found > supported {
+            return Err(StorageError::SchemaTooNew { found, supported });
+        }
+        for (index, sql) in CONTINENT_MIGRATIONS.iter().enumerate().skip(found as usize) {
+            let version = u32::try_from(index + 1).expect("few migrations");
+            let tx = conn.transaction()?;
+            tx.execute_batch(sql)?;
+            tx.pragma_update(None, "user_version", version)?;
+            tx.commit()?;
+        }
+        Ok(Self { conn })
+    }
+
+    /// The continent of `seed`, `side` cells a side, kept whole and
+    /// undamaged; `None` when there is none, or when it is damaged (it is
+    /// then born again, and kept in its place).
+    pub fn load(&self, seed: u64, side: usize) -> Result<Option<Continent>, StorageError> {
+        let side = i64::try_from(side).expect("a small side");
+        let row: Option<(i64, Vec<u8>)> = self
+            .conn
+            .query_row(
+                "SELECT fingerprint, data FROM continents WHERE seed = ?1 AND side = ?2",
+                params![db_bits(seed), side],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((fingerprint, data)) = row else {
+            return Ok(None);
+        };
+        let whole = Continent::from_bytes(&data).filter(|c| {
+            c.seed == seed
+                && i64::try_from(c.grid.side) == Ok(side)
+                && db_bits(c.fingerprint()) == fingerprint
+        });
+        if whole.is_none() {
+            println!("note: the kept continent of seed {seed} is damaged: born again");
+        }
+        Ok(whole)
+    }
+
+    /// Keeps `continent`, in place of any kept of its seed and side.
+    pub fn keep(&self, continent: &Continent) -> Result<(), StorageError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO continents (seed, side, fingerprint, data)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                db_bits(continent.seed),
+                i64::try_from(continent.grid.side).expect("a small side"),
+                db_bits(continent.fingerprint()),
+                continent.to_bytes(),
+            ],
+        )?;
+        Ok(())
+    }
+}
+
+/// A seed or a fingerprint as SQLite's signed integer, bit for bit.
+fn db_bits(value: u64) -> i64 {
+    i64::from_le_bytes(value.to_le_bytes())
 }
 
 /// Turns stored snapshot data into a `World`, migrating old formats.
@@ -1039,6 +1146,94 @@ mod tests {
 
     /// A database file of its own, in a fresh directory removed by the
     /// caller.
+    #[test]
+    fn a_continent_is_kept_whole_and_a_damaged_one_left_out() {
+        let store = ContinentStore::in_memory().unwrap();
+        assert!(store.load(1, 64).unwrap().is_none());
+        let (a, b) = (Continent::with(1, 64, None), Continent::with(2, 64, None));
+        store.keep(&a).unwrap();
+        store.keep(&b).unwrap();
+        // Kept again: replaced, not doubled.
+        store.keep(&a).unwrap();
+        let count: i64 = store
+            .conn
+            .query_row("SELECT count(*) FROM continents", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(store.load(1, 64).unwrap().unwrap().to_bytes(), a.to_bytes());
+        assert_eq!(store.load(2, 64).unwrap().unwrap().to_bytes(), b.to_bytes());
+        assert!(store.load(1, 128).unwrap().is_none(), "another side");
+        // A wrong fingerprint, or damaged bytes: left out, to be born again.
+        store
+            .conn
+            .execute("UPDATE continents SET fingerprint = 7 WHERE seed = 1", [])
+            .unwrap();
+        store
+            .conn
+            .execute("UPDATE continents SET data = x'00' WHERE seed = 2", [])
+            .unwrap();
+        assert!(store.load(1, 64).unwrap().is_none());
+        assert!(store.load(2, 64).unwrap().is_none());
+        // A newer file is refused.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "user_version", 9).unwrap();
+        assert!(matches!(
+            ContinentStore::from_connection(conn).unwrap_err(),
+            StorageError::SchemaTooNew {
+                found: 9,
+                supported: 1
+            }
+        ));
+    }
+
+    /// The vivarium's world made again on its continent kept in the
+    /// continents' file is the world its birth gave, tile for tile, and
+    /// nothing is born.
+    #[test]
+    fn a_kept_continent_gives_back_the_world_its_birth_gave() {
+        use crate::cli::TestWorld;
+        use crate::test_world::make;
+        use sim::plan::{CONTINENT_SIDE, VIVARIUM_SEED, born_within};
+        let (dir, path) = temp_db("continent");
+        let calendar = Calendar::new(2, 3).unwrap();
+        let (world, born) = born_within(Vec::new(), || {
+            make(TestWorld::Vivarium, calendar, &content())
+        });
+        assert_eq!(born.len(), 1, "the vivarium's continent born");
+        ContinentStore::open(&path).unwrap().keep(&born[0]).unwrap();
+        let kept = ContinentStore::open(&path)
+            .unwrap()
+            .load(VIVARIUM_SEED, CONTINENT_SIDE)
+            .unwrap()
+            .expect("kept");
+        assert_eq!(kept.to_bytes(), born[0].to_bytes());
+        drop(born);
+        let (again, born) = born_within(vec![kept], || {
+            make(TestWorld::Vivarium, calendar, &content())
+        });
+        assert!(born.is_empty(), "nothing born again");
+        assert_eq!(again.map().spec(), world.map().spec());
+        // Every fourth chunk each way, tile for tile.
+        let (a, b) = (world.map(), again.map());
+        for cy in (0..a.chunks_high()).step_by(4) {
+            for cx in (0..a.chunks_wide()).step_by(4) {
+                let chunk = ChunkPos::new(i32::try_from(cx).unwrap(), i32::try_from(cy).unwrap());
+                assert_eq!(a.chunk_heights(chunk), b.chunk_heights(chunk));
+                for k in 0..CHUNK_SIZE * CHUNK_SIZE {
+                    let pos = Pos::new(
+                        chunk.x * CHUNK_SIZE.cast_signed() + (k % CHUNK_SIZE).cast_signed(),
+                        chunk.y * CHUNK_SIZE.cast_signed() + (k / CHUNK_SIZE).cast_signed(),
+                    );
+                    assert_eq!(a.get(pos), b.get(pos), "{pos:?}");
+                    assert_eq!(a.depth(pos), b.depth(pos), "{pos:?}");
+                    assert_eq!(a.current(pos), b.current(pos), "{pos:?}");
+                    assert_eq!(a.trees(pos), b.trees(pos), "{pos:?}");
+                }
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     fn temp_db(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         let dir =
             std::env::temp_dir().join(format!("soul-invasion-test-{}-{name}", std::process::id()));

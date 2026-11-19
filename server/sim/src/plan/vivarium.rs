@@ -100,8 +100,10 @@ impl Zone {
     /// zone's cell, refined ([`Region::around`]), and the zone cut from it
     /// ([`Window::cut`]).
     #[must_use]
+    /// The continent is born, or read from the ones kept
+    /// ([`super::born_within`]).
     pub fn window(&self, seed: u64) -> Window {
-        self.window_on(&Continent::new(seed))
+        super::kept::with_continent(seed, super::CONTINENT_SIDE, |c| self.window_on(c))
     }
 
     /// The window of the zone on `continent`, born already: the road of
