@@ -29,5 +29,11 @@ must_use_candidate = "allow"
 unsafe_code = "forbid"
 missing_docs = "warn"
 
+# The simulation's tests run its generators over whole continents: they
+# need it optimised. Dependencies stay at 0: measured 19 November 2026
+# (whole `cargo test --workspace`, 16 threads, two runs each), opt-level 3
+# for every dependency, with sim at 2 or 3, saved no test time (the server's
+# tests 30-35 s at 0, 37-38 s at 3; sim's lib 73 s either way) and cost
+# 90 s more on a cold build (92 s -> 182-189 s).
 [profile.dev.package.sim]
 opt-level = 2
