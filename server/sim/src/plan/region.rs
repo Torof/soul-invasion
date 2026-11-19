@@ -481,6 +481,41 @@ impl Region {
         // drew as a dyke, the water metres above the ground beside it
         // ((631, 624) of seed 14, 15 November 2026). Where two valleys
         // meet, the ceiling below mends the step.
+        // The outlets of the region's flood: the sea and the edges.
+        let outlet: Vec<bool> = (0..n)
+            .map(|i| {
+                let (x, y) = grid.xy(i);
+                let s = i32::try_from(side).expect("small");
+                sea[i] || x == 0 || y == 0 || x == s - 1 || y == s - 1
+            })
+            .collect();
+        // The lakes the ground holds before any river is carved, by a
+        // lake of the continent (its cell or one beside it): no course
+        // carves there, the lake is the water. A course's valley floor,
+        // raised to the water's level beside it, stood as strips of land
+        // across a lake, and as tongues of land where a river came into
+        // one (the great forest lake of seed 14, 19 and 20 November 2026).
+        // Away from the continent's lakes nothing changes, and the second
+        // flood is not run.
+        let by_lake: Vec<bool> = (0..n)
+            .map(|i| {
+                let (gx, gy) = abs(i);
+                let (cx, cy) = (
+                    i32::try_from(gx.div_euclid(per)).expect("small"),
+                    i32::try_from(gy.div_euclid(per)).expect("small"),
+                );
+                (-1..=1).any(|b| (-1..=1).any(|a| c.lake[at(cx + a, cy + b)]))
+            })
+            .collect();
+        let held: Vec<bool> = if by_lake.iter().any(|&b| b) {
+            let mut before = Routing::new(n);
+            before.route_from(grid, &height, &outlet, &sea);
+            (0..n)
+                .map(|i| by_lake[i] && !sea[i] && before.filled[i] > height[i])
+                .collect()
+        } else {
+            vec![false; n]
+        };
         let mut river = vec![false; n];
         let mut plain = vec![false; n];
         let mut nearest = vec![i64::MAX; n];
@@ -568,7 +603,7 @@ impl Region {
                         }
                         let j = usize::try_from(ly).expect("inside") * side
                             + usize::try_from(lx).expect("inside");
-                        if sea[j] {
+                        if sea[j] || held[j] {
                             continue;
                         }
                         let d2 = dx * dx + dy * dy;
@@ -614,13 +649,6 @@ impl Region {
         limit_rise(grid, &mut height);
 
         // The water: a flood from the sea and the edges.
-        let outlet: Vec<bool> = (0..n)
-            .map(|i| {
-                let (x, y) = grid.xy(i);
-                let s = i32::try_from(side).expect("small");
-                sea[i] || x == 0 || y == 0 || x == s - 1 || y == s - 1
-            })
-            .collect();
         let mut routing = Routing::new(n);
         routing.route_from(grid, &height, &outlet, &sea);
         let mut area: Vec<u32> = vec![1; n];
