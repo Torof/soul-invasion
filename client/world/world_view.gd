@@ -303,6 +303,8 @@ func _ready() -> void:
 ## quitting never leaves a worker in a script while the engine shuts down.
 func _exit_tree() -> void:
 	ChunkView.finish_all()
+	HeightIndex.settle()
+	ChunkView.poll_turf(true)
 	for stand: Trees.Stand in _trees.values():
 		stand.release()
 	for plants: PlantStand in _plant_stands.values():
@@ -431,8 +433,7 @@ func _on_chunk(x: int, y: int, chunk: Dictionary) -> void:
 		# carries any; a world with no heights never gets here and its
 		# picture is what it was.
 		HeightIndex.write(key * _chunk_size, _chunk_size, heights)
-		if ChunkView.slopes_drawn == 0:
-			ChunkView.set_slopes_drawn(1)
+		ChunkView.want_slopes()
 		if _far.visible and _any_relief(heights):
 			# A relief is drawn with no fog, to be seen clearly (the project
 			# lead's call, 13 November 2026; the fog's return with the relief
@@ -1284,7 +1285,10 @@ func _step(delta: float) -> void:
 	_update_far_hole()
 	_cull_standing()
 	_update_see_through(delta)
-	# The grounds the workers finished, nearest the camera first.
+	# The slopes and the turf the workers finished (HeightIndex,
+	# ChunkView.poll_turf), then the grounds, nearest the camera first.
+	HeightIndex.lay_ready()
+	ChunkView.poll_turf()
 	ChunkView.lay_ready(LAY_BUDGET_USEC, _camera.position)
 	for queued: Variant in _to_redraw.take(RedrawQueue.BUDGET_USEC, ChunkView.redraw_usec):
 		(queued as ChunkView).queue_redraw()

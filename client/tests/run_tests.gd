@@ -44,6 +44,8 @@ func _init() -> void:
 	_test_the_berries_lie_in_the_flora_atlas_clear_of_the_plants()
 	_test_a_flat_chunk_has_no_heights_and_a_chunks_heights_are_kept()
 	_test_the_slopes_are_read_over_two_tiles_and_off_until_a_chunk_has_heights()
+	_test_the_slopes_worked_out_on_workers_give_the_same_bytes()
+	_test_the_turf_set_is_made_off_the_main_thread_from_the_same_images()
 	_test_the_slope_overlay_tells_a_summit_and_a_col_from_a_ring()
 	_test_the_slope_turf_is_a_family_of_tiles_chosen_per_cell()
 	_test_the_tint_dials_turn_the_flat_grass_and_the_slope_turf_and_reset()
@@ -3305,6 +3307,91 @@ func _test_the_slopes_are_read_over_two_tiles_and_off_until_a_chunk_has_heights(
 	_check(is_equal_approx(HeightIndex.rise(Vector2i(199, 301), Vector2i(1, 0)), 0.0), "a tile no chunk said has no rise")
 	HeightIndex.clear()
 	_check(is_equal_approx(HeightIndex.rise(Vector2i(202, 301), Vector2i(1, 0)), 0.0) and not HeightIndex.any, "cleared, the slopes are gone")
+
+
+## The slopes worked out on the workers (step 4 of the lightening, 19
+## November 2026) give the slope texture the same bytes, chunk after
+## chunk, as working them out in line did: overlapping chunks, one across
+## the ring's corner, one sent again with other heights; a ground laid
+## through a ticket has the slopes of the chunks come before it.
+func _test_the_slopes_worked_out_on_workers_give_the_same_bytes() -> void:
+	HeightIndex.clear()
+	var tiles := GroundIndex.TILES
+	var heights := PackedInt32Array()
+	heights.resize(tiles * tiles)
+	var known := PackedByteArray()
+	known.resize(tiles * tiles)
+	var expected := PackedByteArray()
+	expected.resize(tiles * tiles * 4)
+	var chunks := [[Vector2i(200, 300), 0], [Vector2i(206, 300), 1], [Vector2i(203, 305), 2],
+		[Vector2i(tiles - 3, tiles - 4), 3], [Vector2i(-2, -1), 4], [Vector2i(206, 300), 5]]
+	var size := 6
+	var first := 0
+	for chunk: Array in chunks:
+		var lo: Vector2i = chunk[0]
+		var seed: int = chunk[1]
+		var said := PackedInt32Array()
+		for y in size:
+			for x in size:
+				said.append((x * 37 + y * 11 + seed * 53) % 97 * 3 - 120 + seed * x * y)
+		HeightIndex.write(lo, size, said)
+		if first == 0:
+			first = HeightIndex.ticket()
+		# The same, in line, as before the workers.
+		for y in size:
+			for x in size:
+				var i := posmod(lo.y + y, tiles) * tiles + posmod(lo.x + x, tiles)
+				heights[i] = said[y * size + x]
+				known[i] = 1
+		for y in range(-HeightIndex.SPAN, size + HeightIndex.SPAN):
+			for x in range(-HeightIndex.SPAN, size + HeightIndex.SPAN):
+				var tile := Vector2i(lo.x + x, lo.y + y)
+				var i := posmod(tile.y, tiles) * tiles + posmod(tile.x, tiles)
+				if known[i] == 0:
+					continue
+				expected.encode_half(4 * i, HeightIndex._rise_in(heights, known, tile, Vector2i(1, 0)))
+				expected.encode_half(4 * i + 2, HeightIndex._rise_in(heights, known, tile, Vector2i(0, 1)))
+	HeightIndex.lay_through(first)
+	_check(HeightIndex.pending() == chunks.size() - 1, "laid through the first chunk's ticket, the others are still under way or waiting: %d" % HeightIndex.pending())
+	_check(HeightIndex.settle() == chunks.size() - 1 and HeightIndex.pending() == 0, "settled, every chunk's slopes are laid")
+	_check(HeightIndex.bytes() == expected, "the slope texture holds the same bytes as working the slopes out in line")
+	var steep := 0
+	for i in range(0, expected.size(), 4):
+		if expected.decode_half(i) != 0.0:
+			steep += 1
+	_check(steep > 100, "and the chunks did slope: %d tiles" % steep)
+	HeightIndex.clear()
+	_check(HeightIndex.bytes().count(0) == tiles * tiles * 4, "cleared, the texture is empty")
+
+
+## The turf set is made on a worker (step 4 of the lightening): its tiles'
+## images are read from their imported files, the same bytes as the loaded
+## textures give back; the slopes go on once it is made and the loading
+## screen waits for it meanwhile.
+func _test_the_turf_set_is_made_off_the_main_thread_from_the_same_images() -> void:
+	var tiles: Array = ChunkView.SLOPE_LOOK["slope_turf_set"]
+	for path: String in tiles:
+		var read := ChunkView.imported_image(path)
+		var loaded := (load(path) as Texture2D).get_image()
+		_check(read != null and loaded != null and read.get_format() == loaded.get_format() and read.get_size() == loaded.get_size() and read.has_mipmaps() == loaded.has_mipmaps() and read.get_data() == loaded.get_data(), "%s read from its imported file is the loaded texture's image, mipmaps too" % path.get_file())
+	_check(ChunkView.imported_image("res://world/ground.json") == null, "a file with no image is refused")
+	var was_drawn := ChunkView.slopes_drawn
+	ChunkView.set_slopes_drawn(0)
+	var paths := PackedStringArray(tiles)
+	var made := ChunkView.make_turf_set(paths, true)
+	var kept := ChunkView.slope_turf_set(paths)
+	_check(made != null and made.get_layers() == kept.get_layers() and made.get_width() == kept.get_width() and made.get_format() == kept.get_format() and made.has_mipmaps() == kept.has_mipmaps(), "the set made off the main thread is made of those images, as the one kept")
+	var grass := ChunkView.ground_material("grass")
+	ChunkView.want_slopes()
+	_check(ChunkView.slopes_drawn == 1 and grass.get_shader_parameter("slope_turf_set") == kept and not ChunkView.turf_pending(), "the set made already, the slopes go on at once")
+	ChunkView.set_slopes_drawn(0)
+	ChunkView._turf_sets.clear()
+	ChunkView.want_slopes()
+	_check(ChunkView.turf_pending() and ChunkView.slopes_drawn == 0 and grass.get_shader_parameter("slope_turf_set") == ChunkView.turf_stand_in(), "otherwise a worker makes it, and the slopes wait for it")
+	ChunkView.poll_turf(true)
+	var set := grass.get_shader_parameter("slope_turf_set") as Texture2DArray
+	_check(not ChunkView.turf_pending() and ChunkView.slopes_drawn == 1 and set != null and set.get_layers() == 20 and ChunkView.slope_turf_set(paths) == set, "made, the slopes go on with it, and it is kept")
+	ChunkView.set_slopes_drawn(was_drawn)
 
 
 ## The turf family (D44): the look names N tiles, built at load into one

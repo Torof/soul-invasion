@@ -79,7 +79,8 @@ func _process(delta: float) -> void:
 		progress.window_received = Net.window_received()
 		# And the tree images being read (Trees.poll), so no tree shows up
 		# a moment after the ground, nor sharpens a moment after.
-		if progress.done(Time.get_ticks_msec()) and Trees.loading().is_empty() and Trees.sharpening().is_empty():
+		# And the slopes' turf being made (ChunkView.want_slopes).
+		if progress.done(Time.get_ticks_msec()) and Trees.loading().is_empty() and Trees.sharpening().is_empty() and not ChunkView.turf_pending():
 			_finished = true
 	else:
 		_fade += delta / FADE_SECONDS

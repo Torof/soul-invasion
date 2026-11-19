@@ -380,16 +380,109 @@ static func _turf_paths() -> PackedStringArray:
 static func slope_turf_set(paths: PackedStringArray) -> Texture2DArray:
 	var key := ";".join(paths)
 	if not _turf_sets.has(key):
-		var images: Array[Image] = []
-		for path: String in paths:
-			var image: Image = (load(path) as Texture2D).get_image()
-			if not image.is_compressed():
-				image.generate_mipmaps()
-			images.append(image)
-		var set := Texture2DArray.new()
-		set.create_from_images(images)
-		_turf_sets[key] = set
+		_turf_sets[key] = make_turf_set(paths)
 	return _turf_sets[key]
+
+
+## The turf set made from its tiles: their images read from the imported
+## files (`imported_image`, any thread), or, failing that, from the loaded
+## textures (main thread: the graphics card gives each back).
+static func make_turf_set(paths: PackedStringArray, any_thread := false) -> Texture2DArray:
+	var images: Array[Image] = []
+	for path: String in paths:
+		var image := imported_image(path)
+		if image == null:
+			if any_thread:
+				return null
+			image = (load(path) as Texture2D).get_image()
+		if not image.is_compressed():
+			image.generate_mipmaps()
+		images.append(image)
+	var set := Texture2DArray.new()
+	set.create_from_images(images)
+	return set
+
+
+## The image of an imported texture as its import wrote it (the `.ctex`
+## the `.import` file points to: Godot's "GST2" header, then the image,
+## mipmaps included, as the graphics card takes it), read with no
+## graphics card, so on any thread; null when the file is not one raw
+## image of that kind. The same bytes the loaded texture gives back
+## (`get_image`), without the round trip through the graphics card.
+static func imported_image(path: String) -> Image:
+	var config := ConfigFile.new()
+	if config.load(path + ".import") != OK:
+		return null
+	var imported := str(config.get_value("remap", "path.bptc", config.get_value("remap", "path", "")))
+	var file := FileAccess.open(imported, FileAccess.READ) if imported != "" else null
+	if file == null or file.get_length() < CTEX_DATA or file.get_buffer(4).get_string_from_ascii() != "GST2":
+		return null
+	file.seek(CTEX_IMAGE)
+	if file.get_32() != 0:
+		return null
+	var width := file.get_16()
+	var height := file.get_16()
+	var mipmaps := file.get_32()
+	var format := file.get_32()
+	if format < 0 or format >= Image.FORMAT_MAX:
+		return null
+	var data := file.get_buffer(file.get_length() - CTEX_DATA)
+	# The size the image takes, its mipmaps too, or the file is not one.
+	if data.size() != Image.create_empty(width, height, mipmaps > 0, format).get_data_size():
+		return null
+	return Image.create_from_data(width, height, mipmaps > 0, format, data)
+
+
+## Where a `.ctex` file says its image (data format, size, mipmaps,
+## format) and where the image's bytes begin.
+const CTEX_IMAGE := 0x24
+const CTEX_DATA := 0x34
+
+
+## The turf set made on a worker (step 4 of the lightening, 19 November
+## 2026: 86 to 175 ms of the main thread at the first chunk with heights,
+## behind the loading screen): the world view asks for the slopes with
+## `want_slopes`; they go on (set_slopes_drawn) once the set is made,
+## and the loading screen waits for it (`turf_pending`).
+static var _turf_task := -1
+static var _turf_out: Array = []
+
+
+## The slopes wanted (the first chunk with heights): on at once if the
+## set is made, else once a worker has made it (`poll_turf`).
+static func want_slopes() -> void:
+	if slopes_drawn > 0 or _turf_task >= 0:
+		return
+	var key := ";".join(_turf_paths())
+	if _turf_sets.has(key):
+		set_slopes_drawn(1)
+		return
+	_turf_out = []
+	_turf_task = WorkerThreadPool.add_task(_make_turf.bind(_turf_paths(), _turf_out), true, "turf set")
+
+
+static func _make_turf(paths: PackedStringArray, out: Array) -> void:
+	out.append(make_turf_set(paths, true))
+
+
+## Puts the slopes on once the worker made the set (made here, in line,
+## if the worker could not read the tiles' files). `wait`: waits for the
+## worker (quitting, the tests).
+static func poll_turf(wait := false) -> void:
+	if _turf_task < 0 or not (wait or WorkerThreadPool.is_task_completed(_turf_task)):
+		return
+	WorkerThreadPool.wait_for_task_completion(_turf_task)
+	_turf_task = -1
+	var set: Texture2DArray = _turf_out[0] if not _turf_out.is_empty() else null
+	_turf_out = []
+	if set != null:
+		_turf_sets[";".join(_turf_paths())] = set
+	set_slopes_drawn(1)
+
+
+## Whether the turf set is being made for the slopes.
+static func turf_pending() -> bool:
+	return _turf_task >= 0
 
 
 ## The turf set's stand-in while no slope is drawn: one layer of one
@@ -1049,6 +1142,8 @@ var _task := -1
 var _task_signature := 0
 var _task_input: Dictionary = {}
 var _task_state: GroundTask
+## The slopes' ticket (HeightIndex.ticket) when the ground was gathered.
+var _heights_ticket := 0
 ## Built the frame it is first drawn, whatever its turn: the world view
 ## sets it for a chunk the screen may show (C1: every chunk on screen has
 ## its ground and its water the frame it shows), and it is spent by that
@@ -1645,6 +1740,8 @@ func _draw_ground_layers() -> void:
 ## it (a copy of the world view's, for a worker: `for_worker`), which
 ## terrains have a texture, the decorations' rules and images.
 func _gather(for_worker: bool) -> Dictionary:
+	# The slopes of the chunks come so far are laid with this ground.
+	_heights_ticket = HeightIndex.ticket()
 	WaterMeshes.warm(_size)
 	if not _plants_due.is_empty():
 		flora_atlas()
@@ -1725,6 +1822,9 @@ static func _decor_rules() -> Array:
 ## and the brooks' ribbons made from their arrays. The main thread's
 ## whole share of a build.
 func _lay(result: Dictionary, signature: int) -> void:
+	# The slopes under it first (HeightIndex: on the workers, mostly done
+	# by now): a ground never shows before its slopes.
+	HeightIndex.lay_through(_heights_ticket)
 	var started := Time.get_ticks_usec()
 	var t := DevTiming.start()
 	_last_signature = signature
