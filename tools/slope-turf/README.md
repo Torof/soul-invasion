@@ -21,7 +21,7 @@ it as on the single tile before:
 ```sh
 for A in 20 32 43 55; do for S in 1 2 3 4 5; do
   python3 tools/slope-turf/slope_turf.py out/tile-$A-$S.png \
-    --game client/world/slope/mountain_turf_${A}_$S.png \
+    --game client/world/slope/mountain_turf_${A}_$S.webp \
     --angle $A --seed $S --out-side 1536 --family 7 --margin 32 --blend 96 \
     --cream-none 1.0 --cream-a 0 --masses 0 --fur 0 --fat 0 \
     --thin 1.5 --dark-w 1.15 --wedge-l 0.85 --shade-w 0 --shade-a 0 \

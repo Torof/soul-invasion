@@ -75,7 +75,10 @@ pub(crate) fn noise(seed: u64, cell: u32, x: i32, y: i32) -> u32 {
 }
 
 /// The value of [`noise`]'s lattice point `(i, j)`, in 0..1000.
-#[allow(clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_sign_loss,
+    reason = "values checked non-negative by the surrounding rule"
+)]
 pub(crate) fn lattice(seed: u64, i: i64, j: i64) -> i64 {
     i64::from(unit(&[seed, i as u64, j as u64]))
 }

@@ -1341,7 +1341,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one straight reading, top to bottom; splitting it would scatter the rule"
+    )]
     fn server_messages_round_trip() {
         let messages = [
             ServerMessage::Welcome {

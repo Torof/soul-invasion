@@ -1793,19 +1793,31 @@ impl View {
 }
 
 /// A mass in grams, for the wire.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "values bounded by the world size and the content ranges; values checked non-negative by the surrounding rule"
+)]
 fn grams(mass_kg: f32) -> u32 {
     (mass_kg * 1000.0).round().clamp(0.0, 1e9) as u32
 }
 
 /// A length in metres as whole centimetres, for the wire.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "values bounded by the world size and the content ranges; values checked non-negative by the surrounding rule"
+)]
 fn centimetres(metres: f32) -> u32 {
     (metres * 100.0).round().clamp(0.0, 1e9) as u32
 }
 
 /// A pace as thousandths, for the wire; absurd paces saturate.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "values bounded by the world size and the content ranges; values checked non-negative by the surrounding rule"
+)]
 fn permille(time_scale: f64) -> u32 {
     (time_scale * 1000.0)
         .round()
@@ -1901,7 +1913,10 @@ impl Drop for Cradle {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one straight reading, top to bottom; splitting it would scatter the rule"
+)]
 async fn handle_connection(
     stream: TcpStream,
     peer: SocketAddr,

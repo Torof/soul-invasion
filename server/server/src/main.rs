@@ -440,7 +440,10 @@ fn shared_state(world: &World, opts: &Options, content: &Content, lineage: Linea
 /// Tells the connections and the pilots what one event means to them
 /// (D29: the simulation thread publishes; the router hands each event to
 /// the connections it concerns, D5).
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one straight reading, top to bottom; splitting it would scatter the rule"
+)]
 fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
     let tick = world.tick().0;
     // Publishing to no subscriber is not an error: nobody is

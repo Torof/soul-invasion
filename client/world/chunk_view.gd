@@ -168,7 +168,7 @@ static func noise_source() -> FastNoiseLite:
 ## Made once from the noise and kept in the user folder: a million pixels
 ## take a second to pack in a script.
 const DETAIL_SIDE := 1024
-const DETAIL_CACHE := "user://water_detail_%d.png" % DETAIL_SIDE
+const DETAIL_CACHE := "user://water_detail_%d.webp" % DETAIL_SIDE
 static var _detail_texture: Texture2D
 
 
@@ -278,28 +278,28 @@ static var slopes_drawn := 0
 ## slope_tint: what the turf's colours are multiplied by (a touch toward
 ## green, as the lead left it on 14 November 2026).
 const SLOPE_LOOK := {
-	"slope_streaks": "res://world/slope/slope_streaks.png",
+	"slope_streaks": "res://world/slope/slope_streaks.webp",
 	"slope_turf_set": [
-		"res://world/slope/mountain_turf_20_1.png",
-		"res://world/slope/mountain_turf_20_2.png",
-		"res://world/slope/mountain_turf_20_3.png",
-		"res://world/slope/mountain_turf_20_4.png",
-		"res://world/slope/mountain_turf_20_5.png",
-		"res://world/slope/mountain_turf_32_1.png",
-		"res://world/slope/mountain_turf_32_2.png",
-		"res://world/slope/mountain_turf_32_3.png",
-		"res://world/slope/mountain_turf_32_4.png",
-		"res://world/slope/mountain_turf_32_5.png",
-		"res://world/slope/mountain_turf_43_1.png",
-		"res://world/slope/mountain_turf_43_2.png",
-		"res://world/slope/mountain_turf_43_3.png",
-		"res://world/slope/mountain_turf_43_4.png",
-		"res://world/slope/mountain_turf_43_5.png",
-		"res://world/slope/mountain_turf_55_1.png",
-		"res://world/slope/mountain_turf_55_2.png",
-		"res://world/slope/mountain_turf_55_3.png",
-		"res://world/slope/mountain_turf_55_4.png",
-		"res://world/slope/mountain_turf_55_5.png",
+		"res://world/slope/mountain_turf_20_1.webp",
+		"res://world/slope/mountain_turf_20_2.webp",
+		"res://world/slope/mountain_turf_20_3.webp",
+		"res://world/slope/mountain_turf_20_4.webp",
+		"res://world/slope/mountain_turf_20_5.webp",
+		"res://world/slope/mountain_turf_32_1.webp",
+		"res://world/slope/mountain_turf_32_2.webp",
+		"res://world/slope/mountain_turf_32_3.webp",
+		"res://world/slope/mountain_turf_32_4.webp",
+		"res://world/slope/mountain_turf_32_5.webp",
+		"res://world/slope/mountain_turf_43_1.webp",
+		"res://world/slope/mountain_turf_43_2.webp",
+		"res://world/slope/mountain_turf_43_3.webp",
+		"res://world/slope/mountain_turf_43_4.webp",
+		"res://world/slope/mountain_turf_43_5.webp",
+		"res://world/slope/mountain_turf_55_1.webp",
+		"res://world/slope/mountain_turf_55_2.webp",
+		"res://world/slope/mountain_turf_55_3.webp",
+		"res://world/slope/mountain_turf_55_4.webp",
+		"res://world/slope/mountain_turf_55_5.webp",
 	],
 	"slope_turf_variants": 5,
 	"slope_turf_angles": 4,

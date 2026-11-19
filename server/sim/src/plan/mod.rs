@@ -53,7 +53,8 @@
 #![allow(
     clippy::many_single_char_names,
     clippy::needless_range_loop,
-    clippy::cast_possible_wrap
+    clippy::cast_possible_wrap,
+    reason = "short names follow the maths they transcribe; the index is used for several arrays at once; values bounded by the world size and the content ranges"
 )]
 
 pub mod climate;
@@ -119,20 +120,31 @@ impl Grid {
     }
 
     /// The index of cell `(x, y)`, which must be inside.
-    #[allow(clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "values checked non-negative by the surrounding rule"
+    )]
     pub fn index(self, x: i32, y: i32) -> usize {
         debug_assert!(self.inside(x, y));
         y as usize * self.side + x as usize
     }
 
     /// The coordinates of cell `i`.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "values bounded by the world size and the content ranges"
+    )]
     pub fn xy(self, i: usize) -> (i32, i32) {
         ((i % self.side) as i32, (i / self.side) as i32)
     }
 
     /// Whether `(x, y)` is a cell of the grid.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "values bounded by the world size and the content ranges"
+    )]
     pub fn inside(self, x: i32, y: i32) -> bool {
         let s = self.side as i32;
         x >= 0 && y >= 0 && x < s && y < s
@@ -240,7 +252,10 @@ impl Continent {
     pub fn fingerprint(&self) -> u64 {
         let mut h = hash(&[self.seed, self.grid.side as u64]);
         for i in 0..self.grid.len() {
-            #[allow(clippy::cast_sign_loss)]
+            #[allow(
+                clippy::cast_sign_loss,
+                reason = "values checked non-negative by the surrounding rule"
+            )]
             let v = [
                 h,
                 u64::from(self.height[i] as u32),

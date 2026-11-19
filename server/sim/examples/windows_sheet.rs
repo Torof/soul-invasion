@@ -20,7 +20,8 @@
 #![allow(
     clippy::many_single_char_names,
     clippy::cast_precision_loss,
-    clippy::cast_possible_truncation
+    clippy::cast_possible_truncation,
+    reason = "short names follow the maths they transcribe; small counts and coordinates, far below the float precision limit; values bounded by the world size and the content ranges"
 )]
 
 use std::collections::BTreeMap;

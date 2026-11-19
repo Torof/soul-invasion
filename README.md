@@ -30,9 +30,11 @@ skeleton, was done on 5 November 2026. See
 
 ## Building
 
-- Server: install Rust (`rustup`), then `cd server && cargo test && cargo run`.
-- Client: install Godot 4.7, open `client/project.godot`, or run the headless
-  tests with `godot --headless --path client -s tests/run_tests.gd`.
+- Server: install Rust (`rustup`), then `cd server && cargo test && cargo run -p server`.
+- Client: install Godot 4.7, import the project once with
+  `godot --headless --path client --import`, then open `client/project.godot`,
+  or run the headless tests with
+  `godot --headless --path client -s tests/run_tests.gd`.
 
 ## Contributing
 

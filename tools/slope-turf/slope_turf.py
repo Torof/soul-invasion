@@ -716,5 +716,6 @@ if __name__ == '__main__':
     if getattr(args, 'family_counts', None):
         print(f'   family elements {args.family_counts[0]}, tile elements {args.family_counts[1]}')
     if args.game:
-        for_game(im).save(args.game)
+        lossless = {"lossless": True, "quality": 100, "method": 6, "exact": True}
+        for_game(im).save(args.game, **(lossless if args.game.endswith(".webp") else {}))
         print(f'-> {args.game}')

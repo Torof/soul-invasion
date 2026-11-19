@@ -466,7 +466,10 @@ const MARSH_DROP_CM: i32 = 60;
 const MARSH_ARIDITY: i64 = 600;
 
 /// Passes 5 and 6: climate, discharge and biomes over a relief.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one straight reading, top to bottom; splitting it would scatter the rule"
+)]
 pub(crate) fn settle(seed: u64, grid: Grid, relief: Relief) -> Continent {
     let n = grid.len();
     let north = north_latitude(seed);
@@ -603,7 +606,10 @@ fn smooth(grid: Grid, values: &[i32], radius: usize) -> Vec<i32> {
 /// from each way the wind can blow ([`SWEEPS`]), mixed at each cell by
 /// the wind there: Earth's zonal pattern turned by the seed, wandering
 /// from place to place, and turned along the ranges it meets.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one straight reading, top to bottom; splitting it would scatter the rule"
+)]
 fn rain(
     seed: u64,
     grid: Grid,

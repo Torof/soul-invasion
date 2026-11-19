@@ -338,7 +338,10 @@ pub(crate) fn course(seed: u64, a: (i64, i64), b: (i64, i64)) -> Vec<(i64, i64)>
 
 impl Region {
     /// The region `side` cells a side centred on continent cell `centre`.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one straight reading, top to bottom; splitting it would scatter the rule"
+    )]
     pub fn around(c: &Continent, centre: (i32, i32), side: usize) -> Self {
         let grid = Grid { side };
         let n = grid.len();

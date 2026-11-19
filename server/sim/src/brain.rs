@@ -237,19 +237,9 @@ impl Mind {
         }
     }
 
-    /// The trees and plants bearing food it knows.
-    pub fn known_plants(&self) -> impl Iterator<Item = (&(ChunkPos, Source), &KnownPlant)> {
-        self.plants.iter()
-    }
-
     /// The drinking places it knows.
     pub fn drinking_places(&self) -> impl Iterator<Item = &DrinkingPlace> {
         self.water.values()
-    }
-
-    /// The food it knows.
-    pub fn known_food(&self) -> impl Iterator<Item = (&ItemId, &Pos)> {
-        self.food.iter()
     }
 
     /// How many times it thought.
@@ -635,7 +625,10 @@ fn far(a: Pos, b: Pos) -> i64 {
 /// sight go into its memory, the food it remembers in sight but no longer
 /// sees is forgotten. Sight is the ground's under its feet, a square of
 /// that half-side.
-#[allow(clippy::too_many_lines)] // one reading, top to bottom, of what it sees or does
+#[allow(
+    clippy::too_many_lines,
+    reason = "one straight reading, top to bottom; splitting it would scatter the rule"
+)] // one reading, top to bottom, of what it sees or does
 fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind, bearers: &mut Placed) {
     let map = world.map();
     let camp = mind.home;
@@ -785,7 +778,10 @@ fn learn_plants(
 }
 
 /// What the body decides, now that it looked.
-#[allow(clippy::too_many_lines)] // one reading, top to bottom, of what it sees or does
+#[allow(
+    clippy::too_many_lines,
+    reason = "one straight reading, top to bottom; splitting it would scatter the rule"
+)] // one reading, top to bottom, of what it sees or does
 fn decide(
     world: &World,
     rules: &Content,

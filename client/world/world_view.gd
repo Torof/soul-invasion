@@ -1181,11 +1181,6 @@ func plants_on(tile: Vector2i) -> Array:
 	return kinds
 
 
-## Zoom clamped to the allowed range.
-static func clamp_zoom(zoom: float) -> float:
-	return clampf(zoom, ZOOM_MIN, ZOOM_MAX)
-
-
 func _process(delta: float) -> void:
 	var timing := DevTiming.start()
 	DevWatchdog.phase = DevWatchdog.WORLD_STEP

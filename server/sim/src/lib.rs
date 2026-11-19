@@ -3230,7 +3230,10 @@ impl World {
     /// off is refused, saying what the body sees barring its way, a body
     /// looking again that cannot stops for good.
     // One arm for each way of setting off, each telling what it does.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one straight reading, top to bottom; splitting it would scatter the rule"
+    )]
     fn set_off(
         &mut self,
         index: usize,
@@ -3556,7 +3559,11 @@ fn loaded_speed(movement: &Movement, load_g: u32) -> u32 {
 }
 
 // Not generation: a body's walk is worked out in floats.
-#[allow(clippy::cast_possible_truncation, clippy::float_arithmetic)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::float_arithmetic,
+    reason = "values bounded by the world size and the content ranges; float maths of the simulation, the same result on every run"
+)]
 /// Moves a walking body for one tick ([`stride`]), telling the tile it
 /// steps onto and its stop.
 fn walk(
@@ -3596,7 +3603,10 @@ fn walk(
 
 /// The speed a body standing at `at` walks at this tick, in millimetres a
 /// tick: the terrain's, under `speed_percent` (its load).
-#[allow(clippy::float_arithmetic)]
+#[allow(
+    clippy::float_arithmetic,
+    reason = "float maths of the simulation, the same result on every run"
+)]
 fn pace(
     at: FinePos,
     map: &Map,
@@ -3619,7 +3629,11 @@ fn pace(
 /// One tick of a walk: as far along the route as the speed of the
 /// terrain the body stands on allows, waypoint after waypoint, each one
 /// reached handed to `reached`.
-#[allow(clippy::cast_possible_truncation, clippy::float_arithmetic)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::float_arithmetic,
+    reason = "values bounded by the world size and the content ranges; float maths of the simulation, the same result on every run"
+)]
 fn stride(
     at: &mut FinePos,
     route: &mut VecDeque<FinePos>,
@@ -3658,7 +3672,10 @@ fn stride(
 /// two of them it walks straight at one pace, so a client that moves it
 /// by time between them shows it where the world has it (A6). The last
 /// point is the end of the route.
-#[allow(clippy::float_arithmetic)]
+#[allow(
+    clippy::float_arithmetic,
+    reason = "float maths of the simulation, the same result on every run"
+)]
 pub fn timeline(
     at: FinePos,
     route: impl IntoIterator<Item = FinePos>,
@@ -5928,7 +5945,10 @@ mod tests {
             let (mut from, mut from_tick) = (start, now);
             for &(to, at) in &timeline {
                 if tick < at {
-                    #[allow(clippy::cast_precision_loss)]
+                    #[allow(
+                        clippy::cast_precision_loss,
+                        reason = "small counts and coordinates, far below the float precision limit"
+                    )]
                     let f = (tick - from_tick) as f64 / (at - from_tick) as f64;
                     return (
                         f64::from(from.x) + f64::from(to.x - from.x) * f,

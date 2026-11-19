@@ -1405,7 +1405,8 @@ mod tests {
         clippy::cast_precision_loss,
         clippy::cast_sign_loss,
         clippy::many_single_char_names,
-        clippy::too_many_lines
+        clippy::too_many_lines,
+        reason = "values bounded by the world size and the content ranges; small counts and coordinates, far below the float precision limit; values checked non-negative by the surrounding rule; short names follow the maths they transcribe; one straight reading, top to bottom; splitting it would scatter the rule"
     )]
     fn dump_forest() {
         let var = |name: &str| std::env::var(name).ok();

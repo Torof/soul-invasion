@@ -7,7 +7,8 @@
 #![allow(
     clippy::cast_possible_wrap,
     clippy::cast_sign_loss,
-    clippy::similar_names
+    clippy::similar_names,
+    reason = "values bounded by the world size and the content ranges; values checked non-negative by the surrounding rule; paired names of one geometry"
 )]
 
 use sim::map::{CHUNK_SIZE, ChunkPos, Map, Pos};

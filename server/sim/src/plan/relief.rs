@@ -963,7 +963,11 @@ impl Routing {
 
     /// Routes the water over `height` to the cells in `outlet`, each at
     /// its own height (at least 0), or at 0 if it is in `sea`.
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "values checked non-negative by the surrounding rule; values bounded by the world size and the content ranges"
+    )]
     pub(crate) fn route_from(&mut self, grid: Grid, height: &[i32], outlet: &[bool], sea: &[bool]) {
         let n = grid.len();
         let top = height.iter().copied().max().unwrap_or(0).max(0) as usize;
