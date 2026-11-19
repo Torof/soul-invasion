@@ -70,6 +70,12 @@ const RECONNECT_AFTER := 3.0
 ## Seconds between two attempts while this client has never been
 ## welcomed yet (the server just starting beside it): sooner.
 const FIRST_TRY_AFTER := 0.3
+## The main thread's time a frame for the messages come in, in
+## microseconds: at least one is handled, the rest wait for the next frame
+## in the order they came. Before (audit F2, 18 November 2026), a frame
+## handled all of them: the 361 chunks of a login in one frame of 0.4 to
+## 0.6 s, the eight the screen shows built only after the others.
+const PACKET_BUDGET_USEC := 6000
 
 var _peer := WebSocketPeer.new()
 var _state := WebSocketPeer.STATE_CLOSED
@@ -189,7 +195,10 @@ func _process(_delta: float) -> void:
 		if not _hello_sent:
 			_hello_sent = true
 			_send(Protocol.hello(world_id, frames.held()))
+		var started := Time.get_ticks_usec()
 		while _peer.get_available_packet_count() > 0:
+			if Time.get_ticks_usec() - started >= PACKET_BUDGET_USEC:
+				break
 			var t := DevTiming.start()
 			DevWatchdog.phase = DevWatchdog.NETWORK
 			var packet := _peer.get_packet()
