@@ -1430,11 +1430,31 @@ pub(crate) fn stems(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::OnceLock;
+
     use super::*;
 
-    /// A small continent, as the relief look test's tests use.
-    fn continent(seed: u64) -> Continent {
-        Continent::with(seed, 128, None)
+    /// The seeds of the small continents the tests read: 1 to 3.
+    const SEEDS: usize = 3;
+
+    /// A small continent, as the relief look test's tests use: born once
+    /// for the module's tests, which only read it.
+    fn continent(seed: u64) -> &'static Continent {
+        static CONTINENTS: [OnceLock<Continent>; SEEDS] = [const { OnceLock::new() }; SEEDS];
+        CONTINENTS[seed_index(seed)].get_or_init(|| Continent::with(seed, 128, None))
+    }
+
+    /// The whole stems of the continent of `seed`, drawn once for the
+    /// module's tests, which only read them.
+    fn shared_stems(seed: u64) -> &'static [Stem] {
+        static STEMS: [OnceLock<Vec<Stem>>; SEEDS] = [const { OnceLock::new() }; SEEDS];
+        STEMS[seed_index(seed)].get_or_init(|| all_stems(continent(seed)))
+    }
+
+    fn seed_index(seed: u64) -> usize {
+        let i = usize::try_from(seed).expect("small") - 1;
+        assert!(i < SEEDS, "seed {seed} is not shared");
+        i
     }
 
     fn all_stems(c: &Continent) -> Vec<Stem> {
@@ -1446,7 +1466,7 @@ mod tests {
     fn no_turn_is_sharper_than_sixty_degrees() {
         for seed in 1..=3 {
             let c = continent(seed);
-            let stems = all_stems(&c);
+            let stems = shared_stems(c.seed);
             assert!(!stems.is_empty(), "seed {seed} has rivers");
             for (k, s) in stems.iter().enumerate() {
                 if !course_turns_within(&s.nodes, SHARPEST_TURN_COS_MILLI) {
@@ -1511,7 +1531,7 @@ mod tests {
         let mut stems_judged = 0;
         for seed in 1..=3 {
             let c = continent(seed);
-            for (k, s) in all_stems(&c).iter().enumerate() {
+            for (k, s) in shared_stems(c.seed).iter().enumerate() {
                 let width = s.nodes.iter().map(|n| n.width).max().unwrap_or(0);
                 let allowed = 300_000.max(10 * width);
                 let straight = longest_straight(&s.nodes);
@@ -1592,7 +1612,7 @@ mod tests {
         let (mut turns_judged, mut widest) = (0, 0);
         for seed in 1..=3 {
             let c = continent(seed);
-            for (k, s) in all_stems(&c).iter().enumerate() {
+            for (k, s) in shared_stems(c.seed).iter().enumerate() {
                 for (from, to) in cell_runs(&s.nodes) {
                     let nodes = &s.nodes[from..to];
                     let step = (nodes[0].width * WALK_STEP_PER_MILLE / 1000).max(1);
@@ -1645,7 +1665,7 @@ mod tests {
     #[test]
     fn each_bank_stays_within_the_walkers_reach_and_the_width_within_its_room() {
         let c = continent(1);
-        for s in all_stems(&c) {
+        for s in shared_stems(c.seed) {
             for n in s.nodes.iter().filter(|n| !n.ford) {
                 // The walker steps in its cell's nominal width; a node's
                 // own width blends across two cells' courses and grows
@@ -1699,8 +1719,8 @@ mod tests {
         let c = continent(1);
         let reach = 500_000;
         let mut best = 0;
-        for s in all_stems(&c) {
-            let widths = widths_along(&s);
+        for s in shared_stems(c.seed) {
+            let widths = widths_along(s);
             for (i, &(from, _)) in widths.iter().enumerate() {
                 let (mut lo, mut hi) = (i64::MAX, 0);
                 for &(at, w) in &widths[i..] {
@@ -1725,7 +1745,7 @@ mod tests {
     fn the_two_banks_walk_each_on_its_own() {
         let c = continent(1);
         let (mut apart, mut all) = (0, 0);
-        for s in all_stems(&c) {
+        for s in shared_stems(c.seed) {
             for n in s.nodes.iter().filter(|n| !n.ford) {
                 all += 1;
                 // The banks stand a tenth of the width apart from each
@@ -1745,7 +1765,7 @@ mod tests {
     fn the_banks_hold_their_lines_at_both_ends_of_a_cells_course() {
         let c = continent(1);
         let mut checked = 0;
-        for s in all_stems(&c) {
+        for s in shared_stems(c.seed) {
             for (from, to) in cell_runs(&s.nodes) {
                 for n in [s.nodes[from], s.nodes[to - 1]] {
                     if n.ford {
@@ -1763,7 +1783,7 @@ mod tests {
     fn each_bank_leaves_its_line_over_every_long_cell_course_and_never_the_same_way_twice() {
         let c = continent(1);
         let (mut long, mut levels) = (0, 0);
-        for s in all_stems(&c) {
+        for s in shared_stems(c.seed) {
             for (from, to) in cell_runs(&s.nodes) {
                 let nodes = &s.nodes[from..to];
                 let width = nodes[0].width;
@@ -1904,15 +1924,15 @@ mod tests {
     #[test]
     fn the_same_continent_gives_the_same_stems_whatever_the_span() {
         let c = continent(2);
-        let whole = all_stems(&c);
-        let again = all_stems(&c);
+        let whole = shared_stems(2);
+        let again = all_stems(c);
         assert_eq!(whole.len(), again.len());
         for (a, b) in whole.iter().zip(&again) {
             assert_eq!(a.nodes, b.nodes);
         }
         // A span of the middle: every point of its stems four cells in
         // from the span's edges is a point of a whole stem.
-        let part = stems(&c, 32..96, 32..96, None);
+        let part = stems(c, 32..96, 32..96, None);
         let per = i64::from(region::PER_CELL);
         let inner = |p: (i64, i64)| {
             let cell = |v: i64| v / (CELL_MM * per);
@@ -1939,7 +1959,7 @@ mod tests {
     #[test]
     fn every_stem_reaches_the_sea_or_the_water_it_joins() {
         let c = continent(1);
-        let stems = all_stems(&c);
+        let stems = shared_stems(c.seed);
         for (k, s) in stems.iter().enumerate() {
             let last = s.nodes[s.nodes.len() - 1];
             if let Some(main) = s.joins {
@@ -1959,7 +1979,7 @@ mod tests {
     #[test]
     fn a_tributary_joins_at_first_contact_and_never_runs_alongside() {
         let c = continent(1);
-        let stems = all_stems(&c);
+        let stems = shared_stems(c.seed);
         let mut tributaries = 0;
         for (k, s) in stems.iter().enumerate() {
             let Some(main) = s.joins else {
@@ -1999,13 +2019,13 @@ mod tests {
     #[test]
     fn a_crossing_bears_a_ford_of_two_to_three_widths() {
         let c = continent(1);
-        let passages = measure::passages(&c, measure::DRY_CM);
+        let passages = measure::passages(c, measure::DRY_CM);
         let crossings = passages
             .iter()
             .filter(|&&p| p == measure::Passage::Crossing)
             .count();
         let mut whole_bars = 0;
-        for s in all_stems(&c) {
+        for s in shared_stems(c.seed) {
             let crossings_here = s
                 .cells
                 .iter()

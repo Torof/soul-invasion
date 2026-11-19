@@ -1503,7 +1503,7 @@ mod tests {
     use crate::geology::Geology;
     use crate::map::{ChunkPos, Map, Pos};
     use crate::open_ground::OpenGround;
-    use crate::plan::net::{content, continent, sample};
+    use crate::plan::net::{content, continent, sample, zone_map, zone_window};
     use crate::plan::{VIVARIUM_SEED, ZONE_2};
     use crate::trees;
 
@@ -1537,7 +1537,10 @@ mod tests {
             .iter()
             .find(|&&cell| cell != a && c.biome[c.grid.index(cell.0, cell.1)].is_forest())
             .expect("a second forest cell");
-        let maps = [a, b].map(|cell| Map::on_window(Window::of_cell(c, cell), c.seed));
+        // The vivarium's cell is the shared one.
+        assert_eq!(a, ZONE_2.cell);
+        let mb = Map::on_window(Window::of_cell(c, b), c.seed);
+        let maps = [zone_map(), &mb];
         // The density of trees, tile by tile over the whole window: the
         // same drawing would agree everywhere.
         let side = i32::try_from(maps[0].width()).expect("small");
@@ -1591,7 +1594,7 @@ mod tests {
     /// of seed 14).
     #[test]
     fn the_lake_shore_never_runs_back_on_itself() {
-        let w = Window::of_cell(continent(), ZONE_2.cell);
+        let w = zone_window();
         let side = i64::from(w.side());
         let (mut back, mut folds) = (0, 0);
         for y in (0..side - 1).step_by(7) {
@@ -1610,8 +1613,7 @@ mod tests {
 
     #[test]
     fn the_brooks_meander_and_never_climb() {
-        let c = continent();
-        let window = Window::of_cell(c, ZONE_2.cell);
+        let window = zone_window();
         let brooks = window.brook_stretches();
         assert!(brooks.len() > 100, "{} brook stretches", brooks.len());
         let next: BTreeMap<(i64, i64), usize> =
@@ -1691,7 +1693,9 @@ mod tests {
         assert_eq!(b.origin(), (a.origin().0 + cells, a.origin().1 + cells));
         // The same move in tiles.
         let step = i32::try_from(cells * CELL).expect("small");
-        let (ma, mb) = (Map::on_window(a, c.seed), Map::on_window(b, c.seed));
+        // Window A is the vivarium's cell's own: its map is the shared one.
+        assert_eq!(a.origin(), zone_window().origin());
+        let (ma, mb) = (zone_map(), &Map::on_window(b, c.seed));
         // A block of 8 × 8 chunks in A, far from both windows' edges (the
         // forest's depth looks 55 tiles) and from both camps (the camp
         // clearing is each window's own).
@@ -1701,7 +1705,7 @@ mod tests {
             lo * chunks..hi * chunks,
             (lo * chunks - step)..(hi * chunks - step),
         );
-        for (map, range) in [(&ma, &tiles.0), (&mb, &tiles.1)] {
+        for (map, range) in [(ma, &tiles.0), (mb, &tiles.1)] {
             let camp = map.camp();
             assert!(
                 !(range.start - 32..range.end + 32).contains(&camp.x)
@@ -1723,18 +1727,14 @@ mod tests {
                         m.biome(p),
                     )
                 };
-                assert_eq!(
-                    read(&ma, pa),
-                    read(&mb, pb),
-                    "tile {pa:?} of A, {pb:?} of B"
-                );
+                assert_eq!(read(ma, pa), read(mb, pb), "tile {pa:?} of A, {pb:?} of B");
                 forest += i32::from(ma.trees(pa) > 0);
             }
         }
         assert!(forest > 1000, "{forest} wooded tiles compared");
-        let ta = trees_of(&ma, &species, &open, block(lo, hi));
+        let ta = trees_of(ma, &species, &open, block(lo, hi));
         let tb: BTreeSet<_> = trees_of(
-            &mb,
+            mb,
             &species,
             &open,
             block(lo - step / chunks, hi - step / chunks),
@@ -1750,7 +1750,7 @@ mod tests {
             ChunkPos::new(lo - step / chunks, lo - step / chunks),
         );
         let at = |m: &Map, chunk: ChunkPos| trees::trees_in(m, &species, &open, c.seed, chunk);
-        let (fa, fb) = (at(&ma, ca), at(&mb, cb));
+        let (fa, fb) = (at(ma, ca), at(mb, cb));
         let feet = |list: &[trees::Tree]| -> Vec<flora::TreeAt<'_>> {
             list.iter()
                 .map(|t| flora::TreeAt {
@@ -1769,7 +1769,7 @@ mod tests {
                 .map(|p| (p.at.x + dx, p.at.y + dx, p.kind))
                 .collect()
         };
-        let (pa, pb) = (plants(&ma, ca, &fa, 0), plants(&mb, cb, &fb, step * 1000));
+        let (pa, pb) = (plants(ma, ca, &fa, 0), plants(mb, cb, &fb, step * 1000));
         assert!(pa.len() > 20, "{} plants", pa.len());
         assert_eq!(pa, pb, "the plants of the chunk");
         assert_eq!(

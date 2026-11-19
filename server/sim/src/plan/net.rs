@@ -167,6 +167,21 @@ pub(crate) fn continent() -> &'static Continent {
     CONTINENT.get_or_init(|| Continent::new(VIVARIUM_SEED))
 }
 
+/// The window of the vivarium's own cell ([`ZONE_2`]) on [`continent`],
+/// cut once for the plan's tests, which only read it.
+pub(crate) fn zone_window() -> &'static Window {
+    static WINDOW: OnceLock<Window> = OnceLock::new();
+    WINDOW.get_or_init(|| Window::of_cell(continent(), ZONE_2.cell))
+}
+
+/// The look test's map (generator 3) of [`zone_window`], made once for
+/// the plan's tests, which only read it (its chunks are made on demand
+/// and held, so a test reads the chunks another made).
+pub(crate) fn zone_map() -> &'static Map {
+    static MAP: OnceLock<Map> = OnceLock::new();
+    MAP.get_or_init(|| Map::on_window(zone_window().clone(), continent().seed))
+}
+
 /// The repository's kinds of tree and open biomes' trees.
 pub(crate) fn content() -> (Vec<Species>, OpenGround) {
     (
@@ -967,22 +982,29 @@ fn judge(
         flow_m3s: c.cubic_metres(i),
         ..Verdict::default()
     };
-    let window = Window::of_cell(c, cell);
-    let map = Map::on_window(window.clone(), c.seed);
-    let tiles = Tiles::read(&map);
-    let trees = trees::everywhere(&map, species, open, c.seed);
-    judge_trees(&mut verdict, &map, &tiles, &trees, open);
+    // The vivarium's cell is the shared one.
+    let made;
+    let (window, map) = if cell == ZONE_2.cell && c.seed == VIVARIUM_SEED {
+        (zone_window(), zone_map())
+    } else {
+        let window = Window::of_cell(c, cell);
+        made = (Map::on_window(window.clone(), c.seed), window);
+        (&made.1, &made.0)
+    };
+    let tiles = Tiles::read(map);
+    let trees = trees::everywhere(map, species, open, c.seed);
+    judge_trees(&mut verdict, map, &tiles, &trees, open);
     judge_heights(&mut verdict, &tiles);
-    let runs = runs_in(c, &window, cell);
+    let runs = runs_in(c, window, cell);
     judge_rivers(&mut verdict, &runs);
     judge_ford(
         &mut verdict,
-        &map,
+        map,
         &tiles,
         &runs,
         passages[i] == Passage::Crossing,
     );
-    judge_brooks(&mut verdict, &window, &tiles);
+    judge_brooks(&mut verdict, window, &tiles);
     verdict
 }
 
@@ -1283,7 +1305,7 @@ fn the_land_under_the_sea_stands_above_it() {
 #[test]
 fn a_tile_is_the_same_through_two_windows() {
     let c = continent();
-    let own = Window::of_cell(c, ZONE_2.cell);
+    let own = zone_window();
     let per = usize::try_from(super::region::PER_CELL).expect("positive");
     let shifted = super::Region::around(c, (ZONE_2.cell.0 + 1, ZONE_2.cell.1), 10 * per);
     let corner = (
