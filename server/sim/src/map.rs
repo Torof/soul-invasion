@@ -3644,6 +3644,18 @@ mod tests {
         to: Pos,
         cost: impl Fn(Terrain) -> Option<u32>,
     ) -> Option<Vec<Pos>> {
+        unbounded_path_on(map, &map.tiles(), from, to, cost)
+    }
+
+    /// [`unbounded_path`] on `tiles`, the map's tiles read once
+    /// ([`Map::tiles`]) for many searches.
+    fn unbounded_path_on(
+        map: &Map,
+        tiles: &[Terrain],
+        from: Pos,
+        to: Pos,
+        cost: impl Fn(Terrain) -> Option<u32>,
+    ) -> Option<Vec<Pos>> {
         if from == to {
             return Some(Vec::new());
         }
@@ -3658,7 +3670,6 @@ mod tests {
         let estimate = |a: Pos| octile(a, to) * cheapest / STRAIGHT_COST;
         let start = map.index(from)?;
         let goal = map.index(to)?;
-        let tiles = map.tiles();
         let mut best = vec![u32::MAX; tiles.len()];
         let mut came_from: Vec<Option<usize>> = vec![None; tiles.len()];
         let mut open = BinaryHeap::new();
@@ -3740,10 +3751,11 @@ mod tests {
             [(256, 1, 300, 256), (256, 7, 300, 256), (768, 1, 120, 250)]
         {
             let map = Map::valley(size, size, seed);
+            let tiles = map.tiles();
             for (a, b) in random_pairs(&map, seed ^ u64::from(size), count, reach) {
                 for cost in [walk, valley_walk] {
                     let path = map.path(a, b, cost);
-                    let unbounded = unbounded_path(&map, a, b, cost);
+                    let unbounded = unbounded_path_on(&map, &tiles, a, b, cost);
                     if path.is_none() && unbounded.is_some() {
                         // The only way leaves the square around `a`.
                         detours += 1;

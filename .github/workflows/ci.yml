@@ -122,6 +122,19 @@ jobs:
           unzip -q godot.zip
           sudo mv "Godot_v${GODOT_VERSION}-stable_linux.x86_64" /usr/local/bin/godot
           godot --version
+      - name: Import cache
+        if: steps.changed.outputs.run == 'true'
+        uses: actions/cache@v6
+        # What the import makes (`client/.godot`) follows from the assets,
+        # their import settings (`*.import`), the project's (`project.godot`)
+        # and Godot's version: the key hashes all of them (every file of the
+        # client and of the art but the scripts), so any change to one gives
+        # a new key and a fresh import. No fallback to an older key: a cache
+        # is only ever restored for the very assets it was imported from, so
+        # a stale one cannot hide an import that breaks.
+        with:
+          path: client/.godot
+          key: godot-import-${{ env.GODOT_VERSION }}-${{ hashFiles('client/**', 'content/art/**', '!client/**/*.gd', '!client/**/*.uid') }}
       - name: Import project
         if: steps.changed.outputs.run == 'true'
         run: godot --headless --path client --import

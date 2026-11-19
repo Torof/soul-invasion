@@ -167,6 +167,21 @@ pub(crate) fn continent() -> &'static Continent {
     CONTINENT.get_or_init(|| Continent::new(VIVARIUM_SEED))
 }
 
+/// The window of the vivarium's own cell ([`ZONE_2`]) on [`continent`],
+/// cut once for the plan's tests, which only read it.
+pub(crate) fn zone_window() -> &'static Window {
+    static WINDOW: OnceLock<Window> = OnceLock::new();
+    WINDOW.get_or_init(|| Window::of_cell(continent(), ZONE_2.cell))
+}
+
+/// The look test's map (generator 3) of [`zone_window`], made once for
+/// the plan's tests, which only read it (its chunks are made on demand
+/// and held, so a test reads the chunks another made).
+pub(crate) fn zone_map() -> &'static Map {
+    static MAP: OnceLock<Map> = OnceLock::new();
+    MAP.get_or_init(|| Map::on_window(zone_window().clone(), continent().seed))
+}
+
 /// The repository's kinds of tree and open biomes' trees.
 pub(crate) fn content() -> (Vec<Species>, OpenGround) {
     (
@@ -323,15 +338,29 @@ struct Tiles {
 }
 
 impl Tiles {
+    /// Every tile's terrain, height, biome and meadow.
     fn read(map: &Map) -> Self {
+        Self::read_with(map, true)
+    }
+
+    /// The ground alone: every tile's terrain and height, the biome and
+    /// the meadow left unread (empty), for the judges that read nothing
+    /// else (heights, ford, brooks): the woods of the window, which the
+    /// meadow is read from, are not made.
+    fn ground(map: &Map) -> Self {
+        Self::read_with(map, false)
+    }
+
+    fn read_with(map: &Map, whole: bool) -> Self {
         let side = usize::try_from(map.width()).expect("small");
         let n = side * side;
+        let lived = if whole { n } else { 0 };
         let mut tiles = Self {
             side,
             terrain: vec![Terrain::Rock; n],
             height: vec![0; n],
-            biome: vec![Biome::Sea; n],
-            meadow: vec![false; n],
+            biome: vec![Biome::Sea; lived],
+            meadow: vec![false; lived],
         };
         let chunks = i32::try_from(map.chunks_wide()).expect("small");
         let cs = usize::try_from(CHUNK_SIZE).expect("small");
@@ -349,6 +378,9 @@ impl Tiles {
                     let i = y * side + x;
                     tiles.terrain[i] = *t;
                     tiles.height[i] = *h;
+                    if !whole {
+                        continue;
+                    }
                     let p = Pos::new(
                         i32::try_from(x).expect("small"),
                         i32::try_from(y).expect("small"),
@@ -669,26 +701,30 @@ fn distance(a: (i64, i64), b: (i64, i64)) -> i64 {
     .expect("small")
 }
 
-/// How far `p` lies off the line through `a` and `b` (mm).
-fn off_line(a: (i64, i64), b: (i64, i64), p: (i64, i64)) -> i64 {
-    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-    let len = distance(a, b).max(1);
-    ((dx * (p.1 - a.1) - dy * (p.0 - a.0)) / len).abs()
-}
-
 /// The longest straight reach of `run` (mm): the longest chord every
 /// node between whose ends lies within the deviation allowed.
+///
+/// A node lies within it when its distance off the chord, rounded down
+/// (mm), is at most the deviation: `|cross| / chord <= t`, which is `|cross| < (t + 1) × chord`, so the
+/// chord's length is worked out once per chord and no node divides.
 fn longest_straight(run: &[course::Node]) -> i64 {
     let mut longest = 0;
     for i in 0..run.len() {
         let tolerance =
             (run[i].width * STRAIGHT_DEVIATION_PER_MILLE / 1000).max(STRAIGHT_DEVIATION_LEAST_MM);
+        let a = run[i].p;
         for j in i + 1..run.len() {
-            let straight = (i + 1..j).all(|k| off_line(run[i].p, run[j].p, run[k].p) <= tolerance);
+            let b = run[j].p;
+            let chord = distance(a, b);
+            let limit = (tolerance + 1) * chord.max(1);
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            let straight = run[i + 1..j]
+                .iter()
+                .all(|n| (dx * (n.p.1 - a.1) - dy * (n.p.0 - a.0)).abs() < limit);
             if !straight {
                 break;
             }
-            longest = longest.max(distance(run[i].p, run[j].p));
+            longest = longest.max(chord);
         }
     }
     longest
@@ -967,22 +1003,29 @@ fn judge(
         flow_m3s: c.cubic_metres(i),
         ..Verdict::default()
     };
-    let window = Window::of_cell(c, cell);
-    let map = Map::on_window(window.clone(), c.seed);
-    let tiles = Tiles::read(&map);
-    let trees = trees::everywhere(&map, species, open, c.seed);
-    judge_trees(&mut verdict, &map, &tiles, &trees, open);
+    // The vivarium's cell is the shared one.
+    let made;
+    let (window, map) = if cell == ZONE_2.cell && c.seed == VIVARIUM_SEED {
+        (zone_window(), zone_map())
+    } else {
+        let window = Window::of_cell(c, cell);
+        made = (Map::on_window(window.clone(), c.seed), window);
+        (&made.1, &made.0)
+    };
+    let tiles = Tiles::read(map);
+    let trees = trees::everywhere(map, species, open, c.seed);
+    judge_trees(&mut verdict, map, &tiles, &trees, open);
     judge_heights(&mut verdict, &tiles);
-    let runs = runs_in(c, &window, cell);
+    let runs = runs_in(c, window, cell);
     judge_rivers(&mut verdict, &runs);
     judge_ford(
         &mut verdict,
-        &map,
+        map,
         &tiles,
         &runs,
         passages[i] == Passage::Crossing,
     );
-    judge_brooks(&mut verdict, &window, &tiles);
+    judge_brooks(&mut verdict, window, &tiles);
     verdict
 }
 
@@ -1087,7 +1130,7 @@ fn judge_heights_of(cell: (i32, i32)) -> Verdict {
     let c = continent();
     let window = Window::of_cell(c, cell);
     let map = Map::on_window(window, c.seed);
-    let tiles = Tiles::read(&map);
+    let tiles = Tiles::ground(&map);
     let mut verdict = Verdict {
         cell,
         ..Verdict::default()
@@ -1256,7 +1299,7 @@ fn the_land_under_the_sea_stands_above_it() {
     let mut failed = Vec::new();
     for cell in [(391, 441), (438, 376), (787, 719), (288, 569), (149, 564)] {
         let map = Map::on_window(Window::of_cell(c, cell), c.seed);
-        let tiles = Tiles::read(&map);
+        let tiles = Tiles::ground(&map);
         let below = (0..tiles.side * tiles.side)
             .filter(|&i| tiles.terrain[i] == Terrain::Grass && tiles.height[i] < 0)
             .count();
@@ -1283,7 +1326,7 @@ fn the_land_under_the_sea_stands_above_it() {
 #[test]
 fn a_tile_is_the_same_through_two_windows() {
     let c = continent();
-    let own = Window::of_cell(c, ZONE_2.cell);
+    let own = zone_window();
     let per = usize::try_from(super::region::PER_CELL).expect("positive");
     let shifted = super::Region::around(c, (ZONE_2.cell.0 + 1, ZONE_2.cell.1), 10 * per);
     let corner = (
@@ -1344,7 +1387,7 @@ fn the_crossing_of_the_broadleaf_window_is_waded() {
     assert_eq!(passages[c.grid.index(cell.0, cell.1)], Passage::Crossing);
     let window = Window::of_cell(c, cell);
     let map = Map::on_window(window.clone(), c.seed);
-    let tiles = Tiles::read(&map);
+    let tiles = Tiles::ground(&map);
     let runs = runs_in(c, &window, cell);
     let mut verdict = Verdict {
         cell,

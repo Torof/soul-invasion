@@ -101,13 +101,18 @@ impl Zone {
     /// ([`Window::cut`]).
     #[must_use]
     pub fn window(&self, seed: u64) -> Window {
-        let continent = Continent::new(seed);
+        self.window_on(&Continent::new(seed))
+    }
+
+    /// The window of the zone on `continent`, born already: the road of
+    /// [`Zone::window`] past the continent's birth.
+    pub(crate) fn window_on(&self, continent: &Continent) -> Window {
         let region = Region::around(
-            &continent,
+            continent,
             self.cell,
             REGION_CELLS * usize::try_from(super::region::PER_CELL).expect("positive"),
         );
-        Window::cut(&continent, &region, self.corner, self.side()).with_camp(self.tile(self.camp_a))
+        Window::cut(continent, &region, self.corner, self.side()).with_camp(self.tile(self.camp_a))
     }
 }
 
@@ -124,17 +129,20 @@ mod tests {
     use crate::trees::{Tree, TreeGrid};
     use crate::woods::Habitat;
 
-    /// The zone's window, born once for the tests below: the continent of
-    /// seed 14 takes some six seconds, the region 60 ms, the cut 4 ms
-    /// (release, 14 November 2026).
+    /// The zone's window, born once for the tests below on the continent
+    /// the net's tests share ([`crate::plan::net::continent`]): the
+    /// continent of seed 14 takes some six seconds, the region 60 ms, the
+    /// cut 4 ms (release, 14 November 2026).
     fn window() -> &'static Window {
         static WINDOW: OnceLock<Window> = OnceLock::new();
-        WINDOW.get_or_init(|| ZONE_2.window(VIVARIUM_SEED))
+        WINDOW.get_or_init(|| ZONE_2.window_on(crate::plan::net::continent()))
     }
 
-    /// The vivarium's map on the shared window.
-    fn map() -> Map {
-        Map::on_window_by(window().clone(), VIVARIUM_SEED, VIVARIUM_GENERATOR)
+    /// The vivarium's map on the shared window, made once for the tests
+    /// below, which only read it (its chunks are made on demand and held).
+    fn map() -> &'static Map {
+        static MAP: OnceLock<Map> = OnceLock::new();
+        MAP.get_or_init(|| Map::on_window_by(window().clone(), VIVARIUM_SEED, VIVARIUM_GENERATOR))
     }
 
     fn pos((x, y): (u32, u32)) -> Pos {
@@ -321,7 +329,7 @@ mod tests {
     fn the_open_ground_is_inhabited_and_the_forest_unchanged() {
         let map = map();
         let (species, open) = content();
-        let all = trees(&map, &species, &open);
+        let all = trees(map, &species, &open);
         let grass = open.of(Biome::Grassland).expect("grassland is inhabited");
         // Grassland tiles that are open ground (the biome's, not a wood
         // inside it), and the trees standing on them.
@@ -416,10 +424,10 @@ mod tests {
         let bare = OpenGround {
             biomes: BTreeMap::new(),
         };
-        let without = trees(&map, &species, &bare);
+        let without = trees(map, &species, &bare);
         let woods = |list: &[Tree]| -> Vec<Tree> {
             list.iter()
-                .filter(|t| in_the_woods(&map, t.at.tile()))
+                .filter(|t| in_the_woods(map, t.at.tile()))
                 .copied()
                 .collect()
         };
@@ -437,7 +445,7 @@ mod tests {
             ChunkPos::new(20, 3),
             ChunkPos::new(33, 33),
         ] {
-            let alone = crate::trees::trees_in(&map, &species, &open, VIVARIUM_SEED, chunk);
+            let alone = crate::trees::trees_in(map, &species, &open, VIVARIUM_SEED, chunk);
             let among: Vec<Tree> = all
                 .iter()
                 .filter(|t| t.at.tile().chunk() == chunk)
@@ -537,7 +545,7 @@ mod tests {
         let path = std::env::var("SOUL_INVASION_DUMP").unwrap_or_else(|_| "vivarium.ppm".into());
         let map = map();
         let side = ZONE_2.side();
-        let mut rgb = draw(&map, (0, 0), side);
+        let mut rgb = draw(map, (0, 0), side);
         let mut mark = |(cx, cy): (u32, u32), c: [u8; 3], r: u32| {
             for y in cy.saturating_sub(r)..(cy + r + 1).min(side) {
                 for x in cx.saturating_sub(r)..(cx + r + 1).min(side) {
