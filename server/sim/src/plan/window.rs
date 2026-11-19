@@ -1554,7 +1554,7 @@ impl Window {
 
     /// Every wet tile, row by row: `(x, y, wet)`. The whole window at
     /// once, for the sheets and the tests: the map asks chunk by chunk
-    /// ([`Window::waters_of_chunk`]).
+    /// (`Window::waters_of_chunk`).
     pub fn waters(&self) -> Vec<(u32, u32, Wet)> {
         let side = i64::from(self.side);
         let mut found: BTreeMap<(i64, i64), Wet> = BTreeMap::new();
