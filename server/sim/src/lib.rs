@@ -1882,6 +1882,18 @@ impl World {
         here
     }
 
+    /// The stored items lying in `chunk`, in no order: what bodies laid
+    /// there, not the ground's own natural items ([`Self::items_in`] gives
+    /// both). A brain looking for food reads these, chunk by chunk, rather
+    /// than every item of the world.
+    pub fn laid_in(&self, chunk: ChunkPos) -> impl Iterator<Item = &Item> + '_ {
+        self.ground
+            .get(&chunk)
+            .into_iter()
+            .flatten()
+            .filter_map(|id| self.items.get(id))
+    }
+
     /// A stored item by id (natural items are stored once taken).
     pub fn item(&self, id: ItemId) -> Option<&Item> {
         self.items.get(&id)
