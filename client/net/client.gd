@@ -12,6 +12,10 @@ signal clock(clock: Dictionary)
 ## The kinds of tree, sent with the world's state, before it.
 signal species(species: Array)
 signal chunk(x: int, y: int, chunk: Dictionary)
+## The fruit of a chunk held moved, nothing else of it (protocol v29,
+## D48): the level each of its trees and plants shows now, in the order of
+## its frame (Protocol.decode_chunk's `fruit` and `plant_fruit`).
+signal chunk_fruit(x: int, y: int, fruit: PackedByteArray, plant_fruit: PackedByteArray)
 ## The bodies standing in a chunk, right after its frame (when any).
 signal chunk_bodies(x: int, y: int, bodies: Array)
 ## The kinds of shrub, plant and mushroom ({id, name, family, height_cm}),
@@ -66,6 +70,12 @@ const RECONNECT_AFTER := 3.0
 ## Seconds between two attempts while this client has never been
 ## welcomed yet (the server just starting beside it): sooner.
 const FIRST_TRY_AFTER := 0.3
+## The main thread's time a frame for the messages come in, in
+## microseconds: at least one is handled, the rest wait for the next frame
+## in the order they came. Before (audit F2, 18 November 2026), a frame
+## handled all of them: the 361 chunks of a login in one frame of 0.4 to
+## 0.6 s, the eight the screen shows built only after the others.
+const PACKET_BUDGET_USEC := 6000
 
 var _peer := WebSocketPeer.new()
 var _state := WebSocketPeer.STATE_CLOSED
@@ -87,6 +97,15 @@ var world_id := ""
 ## chunks held are kept, not built again.
 var same_world := false
 
+## The window of chunks held, as the server's last `view` told it, and
+## those of it not received yet on this connection, as a frame or a
+## `chunk_same` (chunk -> true): the loading screen lifts once none is
+## left (window_received). The server sends `view` before the chunks.
+var window := Rect2i()
+var _window_told := false
+var _window_due: Dictionary = {}
+var _received_here: Dictionary = {}
+
 ## True once the server has welcomed us.
 var is_ready := false
 ## Whether the server runs with --dev (it sent its overview).
@@ -100,6 +119,9 @@ func connect_to(url: String = DEFAULT_URL) -> void:
 	is_ready = false
 	dev = false
 	body = -1
+	_window_told = false
+	_window_due.clear()
+	_received_here.clear()
 	_url = url
 	_reconnect_in = 0.0
 	_peer = WebSocketPeer.new()
@@ -185,7 +207,10 @@ func _process(_delta: float) -> void:
 		if not _hello_sent:
 			_hello_sent = true
 			_send(Protocol.hello(world_id, frames.held()))
+		var started := Time.get_ticks_usec()
 		while _peer.get_available_packet_count() > 0:
+			if Time.get_ticks_usec() - started >= PACKET_BUDGET_USEC:
+				break
 			var t := DevTiming.start()
 			DevWatchdog.phase = DevWatchdog.NETWORK
 			var packet := _peer.get_packet()
@@ -234,6 +259,7 @@ func _handle_chunk(bytes: PackedByteArray) -> void:
 		push_warning("a chunk frame that does not decode (%d bytes)" % bytes.size())
 		return
 	frames.received(Vector2i(int(decoded["x"]), int(decoded["y"])), bytes)
+	_came(Vector2i(int(decoded["x"]), int(decoded["y"])))
 	chunk.emit(int(decoded["x"]), int(decoded["y"]), decoded)
 
 
@@ -242,16 +268,60 @@ func _handle_chunk(bytes: PackedByteArray) -> void:
 func _same(x: int, y: int, version: int) -> void:
 	var key := Vector2i(x, y)
 	match frames.same(key, version):
+		FrameCache.HELD:
+			_came(key)
 		FrameCache.RESTORED:
+			_came(key)
 			var decoded := Protocol.decode_chunk(frames.live[key], _material_ids)
 			chunk.emit(x, y, decoded)
 		FrameCache.MISSING:
 			_send(Protocol.chunk_missing(x, y))
 
 
+## Chunk `key` came on this connection (its frame, or `chunk_same`).
+func _came(key: Vector2i) -> void:
+	_received_here[key] = true
+	_window_due.erase(key)
+
+
+## Whether every chunk of the window held came on this connection: false
+## until the server told the window (`view`).
+func window_received() -> bool:
+	return _window_told and _window_due.is_empty()
+
+
+## `chunk_fruit` (v29, D48): the levels put in the frame held, so a later
+## `chunk_same` shows them, and told; if the chunk is not held at that
+## version with as many trees and plants, the server is told it is
+## missing and sends its frame.
+func _fruit(x: int, y: int, version: int, trees: String, plants: String) -> void:
+	var key := Vector2i(x, y)
+	var fruit := Protocol.fruit_levels(trees)
+	var plant_fruit := Protocol.fruit_levels(plants)
+	var held: PackedByteArray = frames.live.get(key, PackedByteArray())
+	var with := PackedByteArray()
+	if fruit["ok"] and plant_fruit["ok"] and FrameCache.version_of(held) == version:
+		with = Protocol.with_fruit(held, fruit["levels"], plant_fruit["levels"])
+	if with.is_empty():
+		_send(Protocol.chunk_missing(x, y))
+		return
+	frames.live[key] = with
+	chunk_fruit.emit(x, y, fruit["levels"], plant_fruit["levels"])
+
+
 ## `view`: the chunks held outside the window are left, their frames kept.
-func _view(window: Rect2i) -> void:
-	for key in frames.view(window):
+func _view(held: Rect2i) -> void:
+	window = held
+	_window_told = true
+	_window_due.clear()
+	for key: Vector2i in _received_here.keys():
+		if not held.has_point(key):
+			_received_here.erase(key)
+	for y in range(held.position.y, held.end.y):
+		for x in range(held.position.x, held.end.x):
+			if not _received_here.has(Vector2i(x, y)):
+				_window_due[Vector2i(x, y)] = true
+	for key in frames.view(held):
 		chunk_hidden.emit(key.x, key.y)
 
 
@@ -290,6 +360,14 @@ func _handle(message: Dictionary) -> void:
 			chunk_bodies.emit(int(message.get("x", 0)), int(message.get("y", 0)), message.get("bodies", []))
 		"chunk_same":
 			_same(int(message.get("x", 0)), int(message.get("y", 0)), int(message.get("version", -1)))
+		"chunk_fruit":
+			_fruit(
+				int(message.get("x", 0)),
+				int(message.get("y", 0)),
+				int(message.get("version", -1)),
+				str(message.get("trees", "")),
+				str(message.get("plants", ""))
+			)
 		"view":
 			_view(Rect2i(
 				int(message.get("x", 0)),

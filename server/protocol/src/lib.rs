@@ -102,7 +102,11 @@ use serde::{Deserialize, Serialize};
 ///   byte of a tree and of a plant is the level of the fruit it shows, 0
 ///   (none) to [`FRUIT_LEVELS`] (a rich year at its peak); the layout is
 ///   v27's.
-pub const PROTOCOL_VERSION: u32 = 28;
+/// - v29: the fruit alone (D48, 19 November 2026): when only the fruit
+///   of a chunk the client holds moved (a dawn), `chunk_fruit` carries
+///   its trees' and plants' levels, one digit each, instead of its whole
+///   frame; nothing goes for a chunk whose levels did not move.
+pub const PROTOCOL_VERSION: u32 = 29;
 
 /// Chunks whose frames a client keeps after they left its view, the
 /// least recently hidden forgotten first (D4): about 3 MB of frames. The
@@ -525,6 +529,25 @@ pub enum ServerMessage {
         /// The version of its frame.
         version: u32,
     },
+    /// The fruit of a chunk the client holds at `version` (D48): the level
+    /// each of its trees and plants shows now, in the order of its frame,
+    /// one digit each ([`fruit_digits`]). Sent in place of its frame when
+    /// nothing else of it moved (a dawn), only when a level did; the
+    /// client puts the levels in the frame it keeps too. If it does not
+    /// hold the chunk at that version with as many trees and plants, it
+    /// answers [`ClientMessage::ChunkMissing`] and gets the frame.
+    ChunkFruit {
+        /// Column of chunks.
+        x: i32,
+        /// Row of chunks.
+        y: i32,
+        /// The version of the frame the client holds.
+        version: u32,
+        /// Its trees' levels, [`FRUIT_NONE`] to [`FRUIT_LEVELS`].
+        trees: String,
+        /// Its plants' levels, as the trees'.
+        plants: String,
+    },
     /// The window of chunks the client holds, in chunks: every chunk held
     /// outside it is left (with the bodies in it), kept in the client's
     /// cache in the order of their rows, then columns. Sent each time the
@@ -813,6 +836,28 @@ pub const FRUIT_NONE: u8 = 0;
 /// A tree or a plant shows the load of a rich year at its peak: the top
 /// level of its fruit (`sim::crops::LEVELS`).
 pub const FRUIT_LEVELS: u8 = 8;
+
+// A level is one digit on the wire ([`fruit_digits`]).
+const _: () = assert!(FRUIT_LEVELS <= 9);
+
+/// Fruit levels as [`ServerMessage::ChunkFruit`] carries them: one digit
+/// a tree or a plant, `'0'` for [`FRUIT_NONE`].
+#[must_use]
+pub fn fruit_digits(levels: &[u8]) -> String {
+    levels
+        .iter()
+        .map(|&level| char::from(b'0' + level.min(FRUIT_LEVELS)))
+        .collect()
+}
+
+/// The levels of [`fruit_digits`]; `None` if a character is not a level.
+#[must_use]
+pub fn fruit_levels(digits: &str) -> Option<Vec<u8>> {
+    digits
+        .bytes()
+        .map(|c| c.checked_sub(b'0').filter(|&level| level <= FRUIT_LEVELS))
+        .collect()
+}
 
 /// A natural item in a [`ChunkFrame`]: what the ground itself drops. Its
 /// id and its tile follow from the chunk and the slot (`sim::items`): id
@@ -1156,6 +1201,33 @@ impl Reader<'_> {
     }
 }
 
+/// The fruit a chunk frame shows ([`encode_chunk`]): its trees' levels,
+/// then its plants', in its order, read without decoding the rest.
+///
+/// # Errors
+///
+/// When the bytes end before its plants.
+pub fn frame_fruit(bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>), FrameError> {
+    let mut r = Reader { bytes };
+    let [_, _, _, _, _, _, _, _, _, _, _, _, flags, side, _, _] = r.take::<CHUNK_HEADER>()?;
+    let tiles = usize::from(side) * usize::from(side);
+    let codes = r.bytes.get(..tiles).ok_or(FrameError::Length)?;
+    let mut skip = tiles;
+    if flags & CHUNK_HAS_WATER != 0 {
+        skip += 2 * codes
+            .iter()
+            .filter(|&&code| terrain_of_code(code).is_some_and(is_water))
+            .count();
+    }
+    if flags & CHUNK_HAS_HEIGHTS != 0 {
+        skip += 2 * tiles;
+    }
+    r.bytes = r.bytes.get(skip..).ok_or(FrameError::Length)?;
+    let trees = r.trees()?.iter().map(|t| t.fruit).collect();
+    let plants = r.standing()?.iter().map(|p| p.fruit).collect();
+    Ok((trees, plants))
+}
+
 /// Reads a chunk frame ([`encode_chunk`]).
 ///
 /// # Errors
@@ -1336,6 +1408,13 @@ mod tests {
                 x: 5,
                 y: -4,
                 version: 3,
+            },
+            ServerMessage::ChunkFruit {
+                x: -5,
+                y: 4,
+                version: 2,
+                trees: fruit_digits(&[0, 8, 3]),
+                plants: String::new(),
             },
             ServerMessage::View {
                 x: -2,
@@ -1720,6 +1799,24 @@ mod tests {
     }
 
     #[test]
+    fn fruit_levels_go_as_one_digit_each() {
+        let levels: Vec<u8> = (0..=FRUIT_LEVELS).collect();
+        let digits = fruit_digits(&levels);
+        assert_eq!(digits, "012345678");
+        assert_eq!(fruit_levels(&digits), Some(levels));
+        assert_eq!(fruit_levels(""), Some(vec![]));
+        assert_eq!(fruit_levels("19"), None, "past the top level");
+        assert_eq!(fruit_levels("1a"), None);
+        // A frame ending before its plants (the reference's last 40
+        // bytes: its plants and items): no fruit read.
+        let bytes = encode_chunk(&reference_chunk()).unwrap();
+        assert_eq!(
+            frame_fruit(&bytes[..bytes.len() - 40]),
+            Err(FrameError::Length)
+        );
+    }
+
+    #[test]
     fn chunk_frames_round_trip() {
         let mut dense = reference_chunk();
         dense.tiles = vec![Terrain::Forest; 32 * 32];
@@ -1758,6 +1855,15 @@ mod tests {
         for chunk in [reference_chunk(), dense, empty] {
             let bytes = encode_chunk(&chunk).unwrap();
             assert_eq!(decode_chunk(&bytes).unwrap(), chunk);
+            let fruit = frame_fruit(&bytes).unwrap();
+            assert_eq!(
+                fruit,
+                (
+                    chunk.trees.iter().map(|t| t.fruit).collect(),
+                    chunk.plants.iter().map(|p| p.fruit).collect()
+                ),
+                "the fruit read alone is the frame's"
+            );
         }
         let empty_bytes = encode_chunk(&ChunkFrame {
             x: 0,

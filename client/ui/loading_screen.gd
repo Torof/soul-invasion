@@ -76,6 +76,7 @@ func _process(delta: float) -> void:
 		progress.fields = ChunkView.waiting.size()
 		var world := get_tree().get_first_node_in_group("world_views")
 		progress.view_ready = world != null and bool(world.call("reach_ready"))
+		progress.window_received = Net.window_received()
 		# And the tree images being read (Trees.poll), so no tree shows up
 		# a moment after the ground, nor sharpens a moment after.
 		if progress.done(Time.get_ticks_msec()) and Trees.loading().is_empty() and Trees.sharpening().is_empty():

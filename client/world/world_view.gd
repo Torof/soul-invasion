@@ -150,6 +150,15 @@ var _far_complete := false
 var _flora: Array = []
 var _plants: Dictionary = {}
 var _plant_fruit: Dictionary = {}
+## The trees of each chunk held, as received (Protocol.decode_chunk: three
+## ints a tree), for their hash when only their fruit moves.
+var _tree_list: Dictionary = {}
+## The chunks built whose fruit moved (`chunk_fruit`, D48) and is not drawn
+## again yet: chunk -> [its trees' levels, whether its plants' moved].
+## Drawn again in place, never their ground, nearest the camera first, as
+## many as fit FRUIT_BUDGET_USEC of a frame (at least one).
+var _fruit_due: Dictionary = {}
+const FRUIT_BUDGET_USEC := 1000
 ## The trees under a point are found without looking at every tree
 ## (see-through), by the cells of the screen each stand knows its trees by.
 const TREE_CELL_PX := Trees.Stand.CELL_PX
@@ -219,6 +228,7 @@ func _ready() -> void:
 	_camera.zoom = Vector2.ONE * DEFAULT_ZOOM
 	Net.world_state.connect(_on_world_state)
 	Net.chunk.connect(_on_chunk)
+	Net.chunk_fruit.connect(_on_chunk_fruit)
 	Net.chunk_bodies.connect(_on_chunk_bodies)
 	_far = FarView.new()
 	add_child(_far)
@@ -332,6 +342,8 @@ func _on_world_state(width: int, height: int, chunk_size: int, materials: Array,
 		stand.release()
 	_trees.clear()
 	_trees_hash.clear()
+	_tree_list.clear()
+	_fruit_due.clear()
 	_plants.clear()
 	_plant_fruit.clear()
 	_plants_hash.clear()
@@ -379,6 +391,10 @@ func _set_night(night: bool) -> void:
 ## trees, plants (packed arrays) and items.
 func _on_chunk(x: int, y: int, chunk: Dictionary) -> void:
 	var key := Vector2i(x, y)
+	if _fruit_due.has(key):
+		# Its fruit drawn first, as the frame's stand and plants are
+		# compared with what is shown.
+		_show_fruit(key)
 	var codes: PackedByteArray = chunk["tiles"]
 	var currents: PackedInt32Array = chunk["currents"]
 	var trees: PackedInt32Array = chunk["trees"]
@@ -420,6 +436,7 @@ func _on_chunk(x: int, y: int, chunk: Dictionary) -> void:
 	_items[key] = items
 	_items_version += 1
 	_trees_hash[key] = trees_hash
+	_tree_list[key] = trees
 	_plants_hash[key] = plants_hash
 	_plants[key] = plants
 	_plant_fruit[key] = plant_fruit
@@ -452,6 +469,71 @@ func _on_chunk(x: int, y: int, chunk: Dictionary) -> void:
 		_camera.position = Iso.tile_to_screen(middle.x, middle.y)
 		_camera_placed = true
 	queue_redraw()
+
+
+## A chunk's fruit alone (protocol v29, D48), at a dawn: its trees and
+## plants show the new levels, nothing else of it is touched (its ground,
+## its neighbours, the far view). Not built: its data alone. Built: drawn
+## again in place, a few chunks a frame (_show_fruit_due).
+func _on_chunk_fruit(x: int, y: int, fruit: PackedByteArray, plant_fruit: PackedByteArray) -> void:
+	var key := Vector2i(x, y)
+	var stand: Trees.Stand = _trees.get(key)
+	if stand == null:
+		return
+	var due: Array = _fruit_due.get(key, [stand.fruit, false])
+	var plants_moved: bool = _plant_fruit.get(key, PackedByteArray()) != plant_fruit
+	if (due[0] as PackedByteArray) == fruit and not plants_moved:
+		return
+	_trees_hash[key] = hash([_tree_list.get(key, PackedInt32Array()), fruit])
+	_plant_fruit[key] = plant_fruit
+	_plants_hash[key] = hash([_plants.get(key, PackedInt32Array()), plant_fruit])
+	if _chunks.has(key):
+		_fruit_due[key] = [fruit, plants_moved or bool(due[1])]
+	else:
+		_fruit_due.erase(key)
+		stand.set_fruit(fruit)
+
+
+## Draws again the fruit of the chunks built whose fruit moved, nearest
+## the camera first, as many as fit FRUIT_BUDGET_USEC (at least one).
+func _show_fruit_due() -> void:
+	if _fruit_due.is_empty():
+		return
+	var t := DevTiming.start()
+	var camera := _camera.position
+	var keys: Array = _fruit_due.keys()
+	var distance := func(key: Vector2i) -> float:
+		var view: ChunkView = _chunks.get(key)
+		return view.centre_px().distance_squared_to(camera) if view != null else -1.0
+	keys.sort_custom(func(a: Vector2i, b: Vector2i) -> bool: return distance.call(a) < distance.call(b))
+	var started := Time.get_ticks_usec()
+	var shown := 0
+	for key: Vector2i in keys:
+		if shown > 0 and Time.get_ticks_usec() - started >= FRUIT_BUDGET_USEC:
+			break
+		_show_fruit(key)
+		shown += 1
+	DevTiming.add("fruit shown", t)
+
+
+## Chunk `key`'s fruit as `_fruit_due` holds it, drawn: its trees', and its
+## plants' (the tall ones in their canvas items, the low ones on its plant
+## layer) if they moved and it is built.
+func _show_fruit(key: Vector2i) -> void:
+	var due: Array = _fruit_due[key]
+	_fruit_due.erase(key)
+	var stand: Trees.Stand = _trees.get(key)
+	if stand != null:
+		stand.set_fruit(due[0])
+	var view: ChunkView = _chunks.get(key)
+	if not due[1] or view == null:
+		return
+	var plants: PackedInt32Array = _plants.get(key, PackedInt32Array())
+	var fruit: PackedByteArray = _plant_fruit.get(key, PackedByteArray())
+	var tall: PlantStand = _plant_stands.get(key)
+	if tall != null:
+		tall.set_fruit(plants, _flora, fruit)
+	view.show_plants(plants, _flora, fruit)
 
 
 ## The bodies standing in a chunk, told right after its frame.
@@ -959,6 +1041,8 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 		_currents.erase(key)
 		_trees.erase(key)
 		_trees_hash.erase(key)
+		_tree_list.erase(key)
+		_fruit_due.erase(key)
 		_trees_version += 1
 		_plants.erase(key)
 		_plant_fruit.erase(key)
@@ -1174,6 +1258,7 @@ func _step(delta: float) -> void:
 	_clamp_camera()
 	_snap_camera()
 	_update_reach()
+	_show_fruit_due()
 	_update_far_hole()
 	_cull_standing()
 	_update_see_through(delta)
