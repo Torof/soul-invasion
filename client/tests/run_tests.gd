@@ -66,6 +66,7 @@ func _init() -> void:
 	_test_the_items_mesh_is_built_once_per_change()
 	_test_the_redraw_queue_holds_each_chunk_once_and_paces_itself()
 	_test_a_redraw_rebuilds_only_when_the_ground_around_changed()
+	_test_no_shipped_script_names_a_dev_class()
 	_test_the_watchdog_reports_a_stalled_frame()
 	_test_trees_are_drawn_only_where_the_view_reaches()
 	_test_tall_plants_are_drawn_only_where_the_view_reaches()
@@ -1391,11 +1392,37 @@ func _test_a_redraw_rebuilds_only_when_the_ground_around_changed() -> void:
 ## The development watchdog (only with --dev) reports a frame that takes
 ## over STALL_SECONDS, then every REPORT_EVERY, saying what the main
 ## thread was doing.
+func _test_no_shipped_script_names_a_dev_class() -> void:
+	# The export leaves dev/ out (export_presets.cfg): a shipped script that
+	# named DevWatcher, SlopeOverlay or GroundLab would no longer parse there.
+	_check(FileAccess.get_file_as_string("res://export_presets.cfg").contains("dev/*"), "the export leaves dev/ out")
+	var names: Array[String] = []
+	for file in DirAccess.get_files_at("res://dev"):
+		if file.ends_with(".gd"):
+			for line in FileAccess.get_file_as_string("res://dev/" + file).split("\n"):
+				if line.begins_with("class_name "):
+					names.append(line.substr(11).strip_edges())
+	var offenders: Array[String] = []
+	var todo: Array[String] = ["res://"]
+	while not todo.is_empty():
+		var dir: String = todo.pop_back()
+		for sub in DirAccess.get_directories_at(dir):
+			if not (dir == "res://" and sub in ["dev", "tests", "tools", "art"]) and not sub.begins_with("."):
+				todo.append(dir + sub + "/")
+		for file in DirAccess.get_files_at(dir):
+			if file.ends_with(".gd"):
+				var text := FileAccess.get_file_as_string(dir + file)
+				for n in names:
+					if text.contains(n):
+						offenders.append(dir + file)
+	_check(offenders.is_empty(), "shipped scripts name nothing of dev/: %s" % str(offenders))
+
+
 func _test_the_watchdog_reports_a_stalled_frame() -> void:
 	_check(not DevWatchdog.report_due(1.9, 0.0) and DevWatchdog.report_due(2.0, 0.0), "the first report at 2 s")
 	_check(not DevWatchdog.report_due(4.0, 2.0) and DevWatchdog.report_due(5.0, 2.0), "then one every 3 s")
 	var watcher := FileAccess.get_file_as_string("res://dev/watcher.gd")
-	_check(not DevWatchdog.held and watcher.contains("DevWatchdog.held = true") and FileAccess.get_file_as_string("res://dev/watchdog.gd").contains("and not held:"), "the watcher's restart holds the watchdog while the project imports, so a long import is reported, never given up on")
+	_check(not DevWatchdog.held and watcher.contains("DevWatchdog.held = true") and FileAccess.get_file_as_string("res://diag/watchdog.gd").contains("and not held:"), "the watcher's restart holds the watchdog while the project imports, so a long import is reported, never given up on")
 	var line := DevWatchdog.report(2.5, 120, DevWatchdog.CHUNK_BUILD)
 	_check(line.contains("2.5 s") and line.contains("frame 120") and line.contains("chunk build"), "the report says how long, which frame and what was running: %s" % line)
 	_check(DevWatchdog.phase_name(99) == "?" and DevWatchdog.phase_name(DevWatchdog.NETWORK).begins_with("network messages"), "every phase has a name")
