@@ -10,6 +10,12 @@
 // 0.80 to 0.86 (0.02 a see-through flag), red its tree's height, green how
 // high it hangs on it (0 the foot, 1 the top), blue its tree's phase: it
 // moves with the crown there, whole.
+// Everything else on the canvas (the tall plants, the bodies) is drawn as
+// Godot's default canvas shader draws it: its colour times its image.
+// Godot reads TEXTURE at UV into COLOR before fragment() runs; a tree reads
+// its own image, bent, so that read was a second one for every tree pixel.
+// fragment() writes COLOR first and never reads it: the driver drops the
+// engine's read, and each pixel samples its image once.
 shader_type canvas_item;
 
 uniform sampler2D noise_texture : repeat_enable, filter_linear;
@@ -56,6 +62,8 @@ varying float hides_mouse;
 varying float bend_px;
 varying float width_px;
 varying float seed;
+// The vertex colour (with its modulate), for what is neither tree nor fruit.
+varying vec4 tint;
 
 // How far the top of a tree `height` px tall, of phase `phase`, standing
 // at `at`, is bent at `time`.
@@ -66,6 +74,7 @@ float bend_at(vec2 at, float height, float phase, float time) {
 }
 
 void vertex() {
+	tint = COLOR;
 	is_tree = (COLOR.a > 0.9 && COLOR.a < 0.98) ? 1.0 : 0.0;
 	is_fruit = (COLOR.a > 0.79 && COLOR.a < 0.87) ? 1.0 : 0.0;
 	if (is_fruit > 0.5) {
@@ -113,6 +122,9 @@ float seen(float alpha, float in_front, float hides, vec2 here) {
 }
 
 void fragment() {
+	// Written before anything else, on every path (discarded ones too):
+	// the engine's own read of TEXTURE into COLOR is never used.
+	COLOR = vec4(0.0);
 	if (is_fruit > 0.5) {
 		vec4 c = texture(TEXTURE, UV, mip_bias);
 		if (c.a <= 0.0) {
@@ -164,5 +176,8 @@ void fragment() {
 				COLOR = c;
 			}
 		}
+	} else {
+		// Neither tree nor fruit: what the default canvas shader draws.
+		COLOR = tint * texture(TEXTURE, UV);
 	}
 }
