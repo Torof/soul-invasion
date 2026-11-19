@@ -1105,6 +1105,28 @@ func _test_a_shrub_shows_its_berries_as_sprites_at_its_points() -> void:
 		one_texture = one_texture and d.size() == 3
 	_check(draws.size() == 2 + 6 and one_texture and draws[0][1] == region and draws[1][1] in [Rect2(0, 0, 8, 8), Rect2(8, 0, 8, 8)] and draws[6][1] in [Rect2(0, 0, 8, 8), Rect2(8, 0, 8, 8)] and ChunkView.flora_variants("bramble").has(draws[7][1]), "a laden bramble, then its six berries, then a bare one, all from the atlas: %d" % draws.size())
 	_check(ChunkView.PlantLayer.draws_of(plants, flora).size() == 2, "without fruit, bare")
+	# Drawn as one triangle array: a quad a draw, in their order (each over
+	# those before it), the tint as given (a small plant's is above 1), a
+	# rect of negative width laid over its width from its position,
+	# mirrored, as the renderer lays it.
+	var atlas := Vector2(64, 32)
+	var arrays := ChunkView.PlantLayer.arrays_of([[Rect2(10, 20, 8, 16), Rect2(8, 0, 8, 16), ChunkView.SMALL_LIGHT],
+		[Rect2(30, 20, -4, 4), Rect2(0, 0, 8, 8), Color.WHITE]], atlas)
+	var points: PackedVector2Array = arrays[0]
+	var uvs: PackedVector2Array = arrays[1]
+	var colours: PackedColorArray = arrays[2]
+	var indices: PackedInt32Array = arrays[3]
+	_check(points == PackedVector2Array([Vector2(10, 20), Vector2(18, 20), Vector2(18, 36), Vector2(10, 36), Vector2(30, 20), Vector2(34, 20), Vector2(34, 24), Vector2(30, 24)]), "each draw a quad over its rect, in order: %s" % points)
+	_check(uvs.slice(0, 4) == PackedVector2Array([Vector2(0.125, 0), Vector2(0.25, 0), Vector2(0.25, 0.5), Vector2(0.125, 0.5)]), "its region of the atlas")
+	_check(uvs.slice(4, 8) == PackedVector2Array([Vector2(0.125, 0), Vector2(0, 0), Vector2(0, 0.25), Vector2(0.125, 0.25)]), "a negative width mirrors the image")
+	_check(colours[0] == ChunkView.SMALL_LIGHT and colours[3] == ChunkView.SMALL_LIGHT and colours[4] == Color.WHITE, "the tint kept, above 1 too")
+	_check(indices == PackedInt32Array([0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]), "two triangles a quad, in the draws' order")
+	_check(ChunkView.PlantLayer.arrays_of([], atlas).is_empty() and ChunkView.PlantLayer.arrays_of(draws, Vector2.ZERO).is_empty(), "nothing to draw, or no atlas: nothing")
+	var layer := ChunkView.PlantLayer.new()
+	ChunkView.flora_atlas()
+	layer.set_plants(plants, flora, PackedByteArray([8, 0]))
+	_check(layer.quads() == draws.size(), "the layer holds a quad a draw: %d" % layer.quads())
+	layer.free()
 	# A tall shrub among the trees keeps its berries for its canvas item.
 	var tall := [{"id": "bramble", "name": "Bramble", "family": "shrub", "height_cm": 90}]
 	var stand := PlantStand.new(PackedInt32Array([0, int(at.x), int(at.y)]), tall, PackedByteArray([4]))
