@@ -26,6 +26,12 @@ OPTIONS:
                            resumes from it when it exists.
     --ephemeral            Keep the world in memory only; nothing is saved.
     --reset                Erase the data file first and start a new world.
+    --continents <PATH>    SQLite file keeping the atlas's continents once
+                           born (default continents.sqlite), for the worlds
+                           cut from them (plan:<SEED>, vivarium): a later
+                           start reads its continent there instead of
+                           bearing it again. Kept by --reset and by
+                           ephemeral worlds: it is no world's state.
     --time-scale <X>       Paced mode: run X times faster than real time
                            (default 1.0). Does not change the rules, only the
                            pace (D09).
@@ -115,6 +121,9 @@ pub const DEFAULT_LISTEN: &str = "127.0.0.1:7777";
 /// Default database file.
 pub const DEFAULT_DATA: &str = "world.sqlite";
 
+/// Default file of the continents kept.
+pub const DEFAULT_CONTINENTS: &str = "continents.sqlite";
+
 /// Where the world is persisted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DataLocation {
@@ -137,6 +146,8 @@ pub struct Options {
     pub data: DataLocation,
     /// Erase the data file before starting: a new world.
     pub reset: bool,
+    /// Where the atlas's continents are kept once born.
+    pub continents: PathBuf,
     /// Paced mode speed factor.
     pub time_scale: f64,
     /// Connections served at once, at most (paced mode only).
@@ -190,6 +201,19 @@ pub enum TestWorld {
     Vivarium,
 }
 
+impl TestWorld {
+    /// The seed of the atlas's continent the world is cut from, if it is
+    /// cut from one.
+    #[must_use]
+    pub fn continent_seed(self) -> Option<u64> {
+        match self {
+            Self::Plan(seed) => Some(seed),
+            Self::Vivarium => Some(sim::plan::VIVARIUM_SEED),
+            _ => None,
+        }
+    }
+}
+
 /// When a paced server places the plants of the view around the camp,
 /// where the first bodies stand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,6 +233,7 @@ impl Default for Options {
             listen: DEFAULT_LISTEN.parse().expect("valid default address"),
             data: DataLocation::File(PathBuf::from(DEFAULT_DATA)),
             reset: false,
+            continents: PathBuf::from(DEFAULT_CONTINENTS),
             time_scale: 1.0,
             max_connections: DEFAULT_MAX_CONNECTIONS,
             chunk_threads: None,
@@ -285,6 +310,7 @@ impl Options {
                 "--data" => opts.data = DataLocation::File(value(arg, args.next())?),
                 "--ephemeral" => opts.data = DataLocation::Ephemeral,
                 "--reset" => opts.reset = true,
+                "--continents" => opts.continents = value(arg, args.next())?,
                 "--dev" => opts.dev = true,
                 "--dump-chunk" => {
                     let raw: String = value(arg, args.next())?;
@@ -497,6 +523,16 @@ mod tests {
         assert_eq!(
             Options::parse(["--data", "/tmp/w.sqlite"]).unwrap().data,
             DataLocation::File(PathBuf::from("/tmp/w.sqlite"))
+        );
+        assert_eq!(
+            Options::parse(["--continents", "/tmp/c.sqlite"])
+                .unwrap()
+                .continents,
+            PathBuf::from("/tmp/c.sqlite")
+        );
+        assert_eq!(
+            Options::default().continents,
+            PathBuf::from(DEFAULT_CONTINENTS)
         );
         assert_eq!(
             Options::parse(["--ephemeral"]).unwrap().data,

@@ -13,13 +13,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use protocol::ServerMessage;
-use server::cli::{CliError, DataLocation, USAGE, WarmUp};
+use server::cli::{CliError, DataLocation, TestWorld, USAGE, WarmUp};
 use server::content;
 use server::net::{
     Published, Shared, blocked_view, condition_view, drink_refused_view, refusal_view,
     refused_view, season_view, serve, thinks_view,
 };
 use server::pool::{ChunkPool, chunk_threads};
+use server::storage::ContinentStore;
 use server::{Lineage, Options, Sqlite, Storage, StorageError, run_headless, run_paced};
 use sim::{Content, Event, World};
 use tokio::net::TcpListener;
@@ -145,23 +146,53 @@ fn open_world(
         }
     };
 
-    let world = if let Some(world) = storage.latest_world()? {
-        println!(
-            "world: resumed at tick {} (day {})",
-            world.tick().0,
-            world.time().day
-        );
-        if world.calendar() != &opts.calendar {
-            println!("note: the world's own calendar wins over the command line");
+    // A world cut from the atlas: its continent read where it was kept,
+    // else born and kept there for the next start (D28, 19 November
+    // 2026). Only the test worlds are cut from it today, and they are
+    // never saved: no stored world needs one.
+    let (continents, known) = match opts.world.and_then(TestWorld::continent_seed) {
+        Some(seed) => {
+            let store = ContinentStore::open(&opts.continents)?;
+            let kept = store.load(seed, sim::plan::CONTINENT_SIDE)?;
+            println!(
+                "continent of seed {seed}: {} {}",
+                if kept.is_some() {
+                    "read from"
+                } else {
+                    "to be born and kept in"
+                },
+                opts.continents.display()
+            );
+            (Some(store), kept.into_iter().collect())
         }
-        world
-    } else if let Some(test) = opts.world {
-        println!("world: new, the test world {test:?} (never for play)");
-        server::test_world::make(test, opts.calendar, content)
-    } else {
-        println!("world: new");
-        World::with_valley(opts.calendar, content, opts.valley_size)
+        None => (None, Vec::new()),
     };
+    let (world, born) = sim::plan::born_within(known, || -> Result<World, BoxError> {
+        Ok(if let Some(world) = storage.latest_world()? {
+            println!(
+                "world: resumed at tick {} (day {})",
+                world.tick().0,
+                world.time().day
+            );
+            if world.calendar() != &opts.calendar {
+                println!("note: the world's own calendar wins over the command line");
+            }
+            world
+        } else if let Some(test) = opts.world {
+            println!("world: new, the test world {test:?} (never for play)");
+            server::test_world::make(test, opts.calendar, content)
+        } else {
+            println!("world: new");
+            World::with_valley(opts.calendar, content, opts.valley_size)
+        })
+    });
+    let world = world?;
+    if let Some(store) = &continents {
+        for continent in &born {
+            store.keep(continent)?;
+        }
+    }
+    drop(born);
 
     let lasting = matches!(opts.data, DataLocation::File(_)) && opts.dump_chunk.is_none();
     let lineage = if lasting {

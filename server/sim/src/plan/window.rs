@@ -481,12 +481,15 @@ impl Window {
     /// The look test's window for `seed`: the atlas's continent and
     /// region ([`region::site`]), and the window of `side` tiles chosen
     /// in it ([`Window::choose`]).
+    /// The continent is born, or read from the ones kept
+    /// ([`super::born_within`]).
     pub fn atlas(seed: u64, side: u32) -> Self {
-        let continent = Continent::new(seed);
-        let centre = region::site(&continent);
-        let region = Region::around(&continent, centre, region::REGION_SIDE);
-        let corner = Self::choose(&region, side);
-        Self::cut(&continent, &region, corner, side)
+        super::kept::with_continent(seed, super::CONTINENT_SIDE, |continent| {
+            let centre = region::site(continent);
+            let region = Region::around(continent, centre, region::REGION_SIDE);
+            let corner = Self::choose(&region, side);
+            Self::cut(continent, &region, corner, side)
+        })
     }
 
     /// The window of one continent cell of `continent`, 2 km a side
