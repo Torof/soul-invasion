@@ -344,9 +344,13 @@ static var flat_tint: Vector3 = FLAT_TINT
 ## The value of the look's dial `name` for the shader: the image loaded,
 ## the turf set built from its tiles (the first tile alone with key G,
 ## and its counts 1 then), the turf's size, tint and angle dial as set now.
+## While no slope is drawn the set is a 1 × 1 stand-in: the shader reads
+## the turf only on a slope, and the twenty layers weigh 63 MB of video
+## memory that a world with no heights never shows (audit F5, 18 Nov
+## 2026). set_slopes_drawn puts the set on with the first slope.
 static func _slope_dial(name: String) -> Variant:
 	if name == "slope_turf_set":
-		return slope_turf_set(_turf_paths())
+		return slope_turf_set(_turf_paths()) if slopes_drawn > 0 else turf_stand_in()
 	if name == "slope_turf_variants":
 		return 1 if slope_turf_single else SLOPE_LOOK[name]
 	if name == "slope_turf_angles":
@@ -386,6 +390,19 @@ static func slope_turf_set(paths: PackedStringArray) -> Texture2DArray:
 		set.create_from_images(images)
 		_turf_sets[key] = set
 	return _turf_sets[key]
+
+
+## The turf set's stand-in while no slope is drawn: one layer of one
+## texel, made once.
+static func turf_stand_in() -> Texture2DArray:
+	if _turf_stand_in == null:
+		var images: Array[Image] = [Image.create(1, 1, false, Image.FORMAT_RGBA8)]
+		_turf_stand_in = Texture2DArray.new()
+		_turf_stand_in.create_from_images(images)
+	return _turf_stand_in
+
+
+static var _turf_stand_in: Texture2DArray
 
 
 ## The ground shader's slope_turf_hash, bit for bit (Wellons' lowbias32
@@ -457,8 +474,11 @@ static func set_slope_rim(on: bool) -> void:
 	set_slope_param("slope_rim", on)
 
 
+## The slopes drawn or not; the turf set goes on with them (built the
+## first time) and the stand-in back when they are off.
 static func set_slopes_drawn(mode: int) -> void:
 	slopes_drawn = mode
+	set_slope_param("slope_turf_set", _slope_dial("slope_turf_set"))
 	set_slope_param("slopes_drawn", mode)
 
 
@@ -993,16 +1013,42 @@ var _last_signature := 0
 ## worked out on a worker thread (GroundBuild, C3, 11 November 2026) and
 ## laid on the main thread when done, nearest the camera first, as many a
 ## frame as fit the world view's budget (`lay_ready`). `waiting`: the
-## chunks whose ground is on a worker or done and not yet laid.
+## chunks whose ground waits its turn, is on a worker, or is done and not
+## yet laid.
 static var waiting: Array = []
 ## The tasks whose chunk went or asked for a newer ground meanwhile:
-## waited for once done, their result dropped.
+## dropped (a worker that has not started one skips it), waited for once
+## done, their result forgotten.
 static var _orphans: Array[int] = []
-## The ground under way: its task (-1: none), the signature it is for,
-## where the worker puts its result.
+## The grounds on the workers at most at a time, the screen's own aside
+## (`build_at_once`: given out at once): the others wait their turn in
+## `_turns` and are given out nearest the camera first (`lay_ready`), so
+## a worker is free for the ground the screen reaches next, and a chunk
+## the camera left before its turn costs nothing. Half the processor's
+## threads: the rest for the main thread and the renderer. Before (audit
+## F6, 19 November 2026), every ground went to the workers at once, the
+## dropped ones too, and at forced peak fruit (a thicket's ground 0.5 to
+## 7 s on a worker) the main thread, waiting for the screen's ground
+## behind all of them, did not finish a frame for 20 s.
+static var builds_at_once := maxi(1, OS.get_processor_count() / 2)
+## The chunks whose ground is gathered and waits for a worker.
+static var _turns: Array = []
+## The grounds on the workers as last counted (`lay_ready`), plus those
+## given out since.
+static var _running := 0
+## Where the camera was at the last `lay_ready`: the turns go nearest it.
+static var _camera_px := Vector2.ZERO
+## Guards GroundTask's `started` and `dropped` between the main thread
+## and the workers.
+static var _task_lock := Mutex.new()
+## The ground under way: its task (-1: none, or still waiting its turn),
+## the signature it is for, what the worker reads (kept until it is given
+## out, to work it out in line if the screen gets there first) and where
+## it puts its result.
 var _task := -1
 var _task_signature := 0
-var _task_out: Array = []
+var _task_input: Dictionary = {}
+var _task_state: GroundTask
 ## Built the frame it is first drawn, whatever its turn: the world view
 ## sets it for a chunk the screen may show (C1: every chunk on screen has
 ## its ground and its water the frame it shows), and it is spent by that
@@ -1023,30 +1069,85 @@ func centre_px() -> Vector2:
 	return Iso.tile_to_screen(_origin.x + _size / 2, _origin.y + _size / 2)
 
 
-## Starts working out the chunk's ground on a worker if the tiles around
-## changed since it was last laid and no worker is on it already: called
-## when the chunk is built (WorldView._build_chunk), so it is under way
-## before the chunk is first drawn, and on every redraw.
+## A ground given to a worker: whether the worker started it or the main
+## thread dropped it first (under `_task_lock`), and its result.
+class GroundTask:
+	extends RefCounted
+	var started := false
+	var dropped := false
+	var out: Array = []
+
+
+## Starts working out the chunk's ground if the tiles around changed since
+## it was last laid and no worker is on it already: given to a worker at
+## once if the screen may show it (`build_at_once`) or a worker is free,
+## else it waits its turn (`_turns`). Called when the chunk is built
+## (WorldView._build_chunk), so it is under way before the chunk is first
+## drawn, and on every redraw.
 func start_build() -> void:
 	var signature := _terrain_signature()
 	if signature == _last_signature or signature == _task_signature:
 		return
 	_drop_task()
-	var input := _gather(true)
-	_task_out = []
-	_task = WorkerThreadPool.add_task(GroundBuild.run.bind(input, _task_out), true, "chunk ground")
+	# The flora's atlas and the berries are read here, on the main thread,
+	# before any worker reads them (draws_of): read first on a worker, they
+	# raced the main thread (audit F6, 19 November 2026).
+	flora_atlas()
+	_task_input = _gather(true)
 	_task_signature = signature
 	if not waiting.has(self):
 		waiting.append(self)
+	if build_at_once or _running < builds_at_once:
+		_give_out()
+	else:
+		_turns.append(self)
 
 
-## The task under way, if any, is left to finish on its own.
+## The screen may show the chunk this frame (`build_at_once`): its ground,
+## if it waits its turn, goes to a worker now, so the grounds the screen
+## reaches together are worked out together and the frame waits for them
+## once, not one after the other.
+func hurry() -> void:
+	build_at_once = true
+	if _task < 0 and not _task_input.is_empty():
+		_turns.erase(self)
+		_give_out()
+
+
+## Gives the gathered ground to a worker.
+func _give_out() -> void:
+	_task_state = GroundTask.new()
+	_task = WorkerThreadPool.add_task(_work.bind(_task_input, _task_state), true, "chunk ground")
+	_task_input = {}
+	_running += 1
+
+
+## On a worker: works out the ground, unless it was dropped before the
+## worker got to it.
+static func _work(input: Dictionary, state: GroundTask) -> void:
+	_task_lock.lock()
+	var skip := state.dropped
+	state.started = not skip
+	_task_lock.unlock()
+	if not skip:
+		state.out.append(GroundBuild.compute(input))
+
+
+## Drops the ground under way, if any: one still waiting its turn is
+## forgotten; one on a worker is dropped (skipped if not started yet) and
+## waited for once done (`_orphans`).
 func _drop_task() -> void:
 	if _task >= 0:
+		_task_lock.lock()
+		_task_state.dropped = true
+		_task_lock.unlock()
 		_orphans.append(_task)
+	elif not _task_input.is_empty():
+		_turns.erase(self)
 	_task = -1
 	_task_signature = 0
-	_task_out = []
+	_task_input = {}
+	_task_state = null
 	waiting.erase(self)
 
 
@@ -1055,32 +1156,65 @@ func ground_ready() -> bool:
 	return _task >= 0 and WorkerThreadPool.is_task_completed(_task)
 
 
-## Lays the ground the worker worked out (waiting for it if it is not
-## done), for the signature it was started for.
+## Lays the ground worked out for the signature it was started for: the
+## worker's, waited for if it is not done (one ground: never one waiting
+## behind the others, those are in `_turns`), or, still waiting its turn,
+## worked out here in line (the same, bit for bit).
 func _lay_task() -> void:
 	var signature := _task_signature
-	WorkerThreadPool.wait_for_task_completion(_task)
-	var result: Dictionary = _task_out[0] if not _task_out.is_empty() else {}
+	var result: Dictionary = {}
+	if _task >= 0:
+		WorkerThreadPool.wait_for_task_completion(_task)
+		_running = maxi(_running - 1, 0)
+		result = _task_state.out[0] if not _task_state.out.is_empty() else {}
+	elif not _task_input.is_empty():
+		_turns.erase(self)
+		result = GroundBuild.compute(_task_input)
 	_task = -1
 	_task_signature = 0
-	_task_out = []
+	_task_input = {}
+	_task_state = null
 	waiting.erase(self)
 	if not result.is_empty():
 		_lay(result, signature)
+
+
+## Waits for every ground on the workers (dropped first: those not started
+## are skipped) and forgets the ones waiting their turn: called when the
+## world view leaves the tree (the game quits), so no worker is still in a
+## script while the engine shuts down. How many tasks were waited for.
+static func finish_all() -> int:
+	for chunk: Variant in waiting.duplicate():
+		if is_instance_valid(chunk):
+			(chunk as ChunkView)._drop_task()
+	waiting.clear()
+	_turns.clear()
+	var tasks := _orphans.duplicate()
+	_orphans.clear()
+	for task: int in tasks:
+		WorkerThreadPool.wait_for_task_completion(task)
+	_running = 0
+	return tasks.size()
 
 
 ## Lays the grounds done on the workers, nearest `camera_px` first, as
 ## many as fit `budget_usec` of the main thread (at least one), and
 ## forgets the tasks dropped once they are done. How many were laid.
 static func lay_ready(budget_usec: int, camera_px: Vector2) -> int:
+	_camera_px = camera_px
 	for i in range(_orphans.size() - 1, -1, -1):
 		if WorkerThreadPool.is_task_completed(_orphans[i]):
 			WorkerThreadPool.wait_for_task_completion(_orphans[i])
 			_orphans.remove_at(i)
 	var done: Array = []
+	_running = _orphans.size()
 	for chunk: Variant in waiting:
-		if is_instance_valid(chunk) and (chunk as ChunkView).ground_ready():
-			done.append(chunk)
+		if is_instance_valid(chunk) and (chunk as ChunkView)._task >= 0:
+			if (chunk as ChunkView).ground_ready():
+				done.append(chunk)
+			else:
+				_running += 1
+	_give_turns()
 	if done.is_empty():
 		return 0
 	done.sort_custom(func(a: ChunkView, b: ChunkView) -> bool:
@@ -1094,6 +1228,22 @@ static func lay_ready(budget_usec: int, camera_px: Vector2) -> int:
 		chunk.queue_redraw()
 		laid += 1
 	return laid
+
+
+## Gives the grounds waiting their turn to the workers free, nearest the
+## camera first.
+static func _give_turns() -> void:
+	while _running < builds_at_once and not _turns.is_empty():
+		var best := 0
+		var best_d := INF
+		for i in _turns.size():
+			var d := (_turns[i] as ChunkView).centre_px().distance_squared_to(_camera_px)
+			if d < best_d:
+				best = i
+				best_d = d
+		var chunk: ChunkView = _turns[best]
+		_turns.remove_at(best)
+		chunk._give_out()
 
 
 ## The chunk's own drawing kept between redraws: flat tiles [points,
@@ -1151,14 +1301,14 @@ static var _flora_rects: Dictionary = {}
 ## image, that share of them (Trees.fruit_shown). FLORA_FRUIT holds, per
 ## image of the atlas ("<id>_<nn>"), its size and its points (pixels from
 ## its top-left corner, ordered so any first ones spread over the bush), and
-## per kind its sprites' rectangles in `<id>.webp`, its sheet. Without
-## them, a shrub is drawn bare.
-const FLORA_FRUIT_DIR := "res://art/flora/fruit/"
-const FLORA_FRUIT := FLORA_FRUIT_DIR + "fruit.json"
+## per kind its sprites' rectangles in the flora's atlas: a plant and its
+## berries are drawn from one texture, so the plants' batch stays whole
+## (audit F3, 19 November 2026). Without them, a shrub is drawn bare.
+const FLORA_FRUIT := "res://art/flora/fruit.json"
 ## "<id>_<nn>" -> its berries' points, 0..1 across and down its image.
 static var _berry_points: Dictionary = {}
-## Kind id -> [its sheet, its sprites' rectangles (Array of Rect2)], for
-## the kinds with both. Read with the atlas, on the main thread, and kept
+## Kind id -> its sprites' rectangles in the atlas (Array of Rect2), for
+## the kinds with some. Read with the atlas, on the main thread, and kept
 ## (a few kilobytes a kind): a worker only reads them.
 static var _berry_kinds: Dictionary = {}
 
@@ -1177,26 +1327,20 @@ static func flora_atlas() -> Texture2D:
 	return _flora_atlas
 
 
-## Reads the shrubs' berries (FLORA_FRUIT) and their sheets; none when
-## the file is not there.
+## Reads the shrubs' berries (FLORA_FRUIT); none when the file is not
+## there.
 static func read_berries() -> void:
 	var data: Dictionary = {}
-	var sheets: Dictionary = {}
 	if FileAccess.file_exists(FLORA_FRUIT):
 		var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(FLORA_FRUIT))
 		if parsed is Dictionary:
 			data = parsed
-	for kind: String in data.get("kinds", {}):
-		var path := FLORA_FRUIT_DIR + kind + ".webp"
-		if ResourceLoader.exists(path):
-			sheets[kind] = load(path)
-	set_berries(data, sheets)
+	set_berries(data)
 
 
-## Sets the shrubs' berries from `data` (FLORA_FRUIT's form) and `sheets`
-## (kind id -> its texture): a kind without its sheet or its sprites shows
-## none.
-static func set_berries(data: Dictionary, sheets: Dictionary) -> void:
+## Sets the shrubs' berries from `data` (FLORA_FRUIT's form): a kind
+## without sprites shows none.
+static func set_berries(data: Dictionary) -> void:
 	_berry_points = {}
 	_berry_kinds = {}
 	var images: Variant = data.get("images", {})
@@ -1216,14 +1360,13 @@ static func set_berries(data: Dictionary, sheets: Dictionary) -> void:
 	if kinds is Dictionary:
 		for kind: String in kinds:
 			var entry: Variant = kinds[kind]
-			var sheet: Variant = sheets.get(kind)
-			if not entry is Dictionary or not sheet is Texture2D:
+			if not entry is Dictionary:
 				continue
 			var sprites: Array = []
 			for r: Array in entry.get("sprites", []):
 				sprites.append(Rect2(float(r[0]), float(r[1]), float(r[2]), float(r[3])))
 			if not sprites.is_empty():
-				_berry_kinds[kind] = [sheet, sprites]
+				_berry_kinds[kind] = sprites
 
 
 ## The atlas rectangles of a kind's images, `_01`, `_02`, ...
@@ -1272,7 +1415,7 @@ static func plant_variant(at: Vector2, count: int) -> int:
 
 ## The berries (D48) a plant of `kind` at `at` hangs when it shows the
 ## level `fruit`, drawn at `rect` from its atlas region `region`: [texture rect,
-## sprite region, sheet] each, in drawing order; none without their data
+## the sprite's region of the atlas] each, in drawing order; none without their data
 ## (read_berries). Each sprite hangs from the middle of its top edge at
 ## its point, at its plant's scale (its texels its plant's size); which
 ## sprite, and which way it faces (a rectangle of negative width: drawn
@@ -1281,8 +1424,8 @@ static func plant_variant(at: Vector2, count: int) -> int:
 static func berries_of(at: Vector2, kind: Dictionary, rect: Rect2, region: Rect2, fruit: int) -> Array:
 	var out: Array = []
 	var id := str(kind.get("id", ""))
-	var looks: Variant = _berry_kinds.get(id)
-	if fruit <= Trees.FRUIT_NONE or looks == null or region.size.y <= 0.0:
+	var sprites: Array = _berry_kinds.get(id, [])
+	if fruit <= Trees.FRUIT_NONE or sprites.is_empty() or region.size.y <= 0.0:
 		return out
 	var count := flora_variants(id).size()
 	if count == 0:
@@ -1290,8 +1433,6 @@ static func berries_of(at: Vector2, kind: Dictionary, rect: Rect2, region: Rect2
 	var key := "%s_%02d" % [id, plant_variant(at, count) + 1]
 	var points: PackedVector2Array = _berry_points.get(key, PackedVector2Array())
 	var n := Trees.fruit_shown(points.size(), fruit)
-	var sheet: Texture2D = looks[0]
-	var sprites: Array = looks[1]
 	var scale := rect.size.y / region.size.y
 	var place := Vector2i(int(at.x), int(at.y))
 	for k in n:
@@ -1299,9 +1440,9 @@ static func berries_of(at: Vector2, kind: Dictionary, rect: Rect2, region: Rect2
 		var size := s.size * scale
 		var top := rect.position + points[k] * rect.size - Vector2(size.x / 2.0, 0.0)
 		if StableHash.below([place.x, place.y, 17, k], 2) == 1:
-			out.append([Rect2(top + Vector2(size.x, 0.0), Vector2(-size.x, size.y)), s, sheet])
+			out.append([Rect2(top + Vector2(size.x, 0.0), Vector2(-size.x, size.y)), s])
 		else:
-			out.append([Rect2(top, size), s, sheet])
+			out.append([Rect2(top, size), s])
 	return out
 
 
@@ -1320,7 +1461,7 @@ static func plant_rect(at: Vector2, kind: Dictionary, region: Rect2) -> Rect2:
 class PlantLayer:
 	extends Node2D
 	## [texture rect, atlas region, tint], nearest the back first; a
-	## shrub's berries right after it, [texture rect, region, tint, sheet].
+	## shrub's berries right after it, from the same atlas.
 	var _draws: Array = []
 
 	func set_plants(plants: PackedInt32Array, flora: Array, fruit := PackedByteArray()) -> void:
@@ -1334,7 +1475,7 @@ class PlantLayer:
 	## nearest the back first: [texture rect, atlas region, tint], each
 	## followed by its berries (ChunkView.berries_of) when it shows some
 	## (`fruit`, one a plant: Protocol.decode_chunk's `plant_fruit`),
-	## [texture rect, region, tint, sheet]. Pure: a worker may run it once
+	## with its tint. Pure: a worker may run it once
 	## the atlas is read (ChunkView.flora_atlas).
 	static func draws_of(plants: PackedInt32Array, flora: Array, fruit := PackedByteArray()) -> Array:
 		var draws: Array = []
@@ -1361,7 +1502,7 @@ class PlantLayer:
 			draws.append([rect, region, tint])
 			var shows := fruit[i / 3] if i / 3 < fruit.size() else Trees.FRUIT_NONE
 			for b: Array in ChunkView.berries_of(at, kind, rect, region, shows):
-				draws.append([b[0], b[1], tint, b[2]])
+				draws.append([b[0], b[1], tint])
 		return draws
 
 	func _draw() -> void:
@@ -1369,8 +1510,7 @@ class PlantLayer:
 		if atlas == null:
 			return
 		for d: Array in _draws:
-			var texture: Texture2D = d[3] if d.size() > 3 else atlas
-			draw_texture_rect_region(texture, d[0], d[1], d[2])
+			draw_texture_rect_region(atlas, d[0], d[1], d[2])
 
 
 ## Whether the chunk has built its ground at least once.

@@ -22,11 +22,6 @@ const READ := WaterMeshes.READ
 const BROOK_READ := BrookLines.MARGIN + 2
 
 
-## Runs `compute(input)` and puts its result in `out` (a worker's task).
-static func run(input: Dictionary, out: Array) -> void:
-	out.append(compute(input))
-
-
 ## The chunk's ground from `input` (ChunkView._gather): "flats" [points,
 ## colour], "decor" [texture, rect, tint], "bits" and "corners" (the
 ## ground index's bytes, GroundIndex.write), "rows" (terrain -> the

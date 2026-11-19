@@ -39,6 +39,7 @@ func _init() -> void:
 	_test_the_golden_chunk_decodes()
 	_test_a_tree_shows_its_fruit_as_sprites_at_its_points()
 	_test_a_shrub_shows_its_berries_as_sprites_at_its_points()
+	_test_the_berries_lie_in_the_flora_atlas_clear_of_the_plants()
 	_test_a_flat_chunk_has_no_heights_and_a_chunks_heights_are_kept()
 	_test_the_slopes_are_read_over_two_tiles_and_off_until_a_chunk_has_heights()
 	_test_the_slope_overlay_tells_a_summit_and_a_col_from_a_ring()
@@ -69,6 +70,7 @@ func _init() -> void:
 	_test_trees_sort_with_bodies_by_their_foot()
 	_test_the_bounds_held_are_kept_as_chunks_come_and_go()
 	_test_grounds_built_on_workers_are_laid_nearest_first_within_the_budget()
+	_test_grounds_wait_their_turn_and_quitting_waits_for_them()
 	_test_the_reach_s_margin_grows_as_the_zoom_pulls_back()
 	_test_a_drag_is_smoothed_and_the_view_laid_on_whole_pixels()
 	_test_the_fog_uniforms_are_sent_only_when_they_change()
@@ -957,7 +959,6 @@ func _test_a_shrub_shows_its_berries_as_sprites_at_its_points() -> void:
 	var variant := ChunkView.plant_variant(at, ChunkView.flora_variants("bramble").size())
 	_check(ChunkView.flora_variants("bramble")[variant] == region, "a plant's variant is its region's")
 	# A tiny data of its own: six points on each bramble image, two sprites.
-	var sheet := ImageTexture.create_from_image(Image.create(16, 8, false, Image.FORMAT_RGBA8))
 	var images := {}
 	for n in ChunkView.flora_variants("bramble").size():
 		var r: Rect2 = ChunkView.flora_variants("bramble")[n]
@@ -965,7 +966,7 @@ func _test_a_shrub_shows_its_berries_as_sprites_at_its_points() -> void:
 		for k in 6:
 			points.append([r.size.x * (k + 1) / 7.0, r.size.y / 2.0])
 		images["bramble_%02d" % (n + 1)] = {"image": [r.size.x, r.size.y], "points": points}
-	ChunkView.set_berries({"images": images, "kinds": {"bramble": {"sprites": [[0, 0, 8, 8], [8, 0, 8, 8]]}}}, {"bramble": sheet})
+	ChunkView.set_berries({"images": images, "kinds": {"bramble": {"sprites": [[0, 0, 8, 8], [8, 0, 8, 8]]}}})
 	var rect := ChunkView.plant_rect(at, flora[0], region)
 	var full := ChunkView.berries_of(at, flora[0], rect, region, Trees.FRUIT_LEVELS)
 	var half := ChunkView.berries_of(at, flora[0], rect, region, 4)
@@ -983,13 +984,17 @@ func _test_a_shrub_shows_its_berries_as_sprites_at_its_points() -> void:
 		var middle := r.position.x + r.size.x / 2.0
 		hung = hung and is_equal_approx(middle, point.x) and is_equal_approx(r.position.y, point.y)
 		hung = hung and is_equal_approx(absf(r.size.x), 8.0 * scale) and is_equal_approx(r.size.y, 8.0 * scale)
-		hung = hung and b[2] == sheet and (b[1] == Rect2(0, 0, 8, 8) or b[1] == Rect2(8, 0, 8, 8))
+		hung = hung and b.size() == 2 and (b[1] == Rect2(0, 0, 8, 8) or b[1] == Rect2(8, 0, 8, 8))
 	_check(hung, "each sprite hangs from its point at its plant's scale")
 	_check(str(full) == str(ChunkView.berries_of(at, flora[0], rect, region, Trees.FRUIT_LEVELS)), "the same every time")
-	# The layer draws each shrub's berries right after it, with its tint.
+	# The layer draws each shrub's berries right after it, with its tint,
+	# from the same atlas: every draw is [rect, atlas region, tint].
 	var plants := PackedInt32Array([0, int(at.x), int(at.y), 0, 9_000, 9_000])
 	var draws := ChunkView.PlantLayer.draws_of(plants, flora, PackedByteArray([8, 0]))
-	_check(draws.size() == 2 + 6 and draws[0].size() == 3 and draws[1].size() == 4 and draws[1][3] == sheet and draws[6].size() == 4 and draws[7].size() == 3, "a laden bramble, then its six berries, then a bare one: %d" % draws.size())
+	var one_texture := true
+	for d: Array in draws:
+		one_texture = one_texture and d.size() == 3
+	_check(draws.size() == 2 + 6 and one_texture and draws[0][1] == region and draws[1][1] in [Rect2(0, 0, 8, 8), Rect2(8, 0, 8, 8)] and draws[6][1] in [Rect2(0, 0, 8, 8), Rect2(8, 0, 8, 8)] and ChunkView.flora_variants("bramble").has(draws[7][1]), "a laden bramble, then its six berries, then a bare one, all from the atlas: %d" % draws.size())
 	_check(ChunkView.PlantLayer.draws_of(plants, flora).size() == 2, "without fruit, bare")
 	# A tall shrub among the trees keeps its berries for its canvas item.
 	var tall := [{"id": "bramble", "name": "Bramble", "family": "shrub", "height_cm": 90}]
@@ -1005,6 +1010,35 @@ func _test_a_shrub_shows_its_berries_as_sprites_at_its_points() -> void:
 	ChunkView.read_berries()
 
 
+## The shrubs' berries are sprites of the flora's atlas (audit F3,
+## 19 November 2026), so a plant and its berries draw from one texture:
+## each kind's sprites inside the atlas, in a block on a 64-px grid and at
+## least 32 px clear of every plant's image, so no mipmap level a plant is
+## read at mixes the two, and no berry sheet of their own any more.
+func _test_the_berries_lie_in_the_flora_atlas_clear_of_the_plants() -> void:
+	var atlas := ChunkView.flora_atlas()
+	var fruit: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(ChunkView.FLORA_FRUIT))
+	var plants: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(ChunkView.FLORA_RECTS))
+	var whole := Rect2(Vector2.ZERO, atlas.get_size())
+	var kinds: Dictionary = fruit["kinds"]
+	_check(kinds.size() >= 14, "the berry kinds are there: %d" % kinds.size())
+	for kind: String in kinds:
+		var sprites: Array = kinds[kind]["sprites"]
+		var block := Rect2()
+		for r: Array in sprites:
+			var sprite := Rect2(r[0], r[1], r[2], r[3])
+			block = sprite if block.size == Vector2.ZERO else block.merge(sprite)
+		_check(whole.encloses(block), "%s's berries lie in the atlas" % kind)
+		var around := block.grow(8 + 32)
+		var clear := true
+		for name: String in plants:
+			var p: Array = plants[name]
+			clear = clear and not around.intersects(Rect2(p[0], p[1], p[2], p[3]))
+		_check(clear, "%s's berries are 32 px clear of every plant" % kind)
+		_check(int(block.position.x - 8) % 64 == 0 and int(block.position.y - 8) % 64 == 0, "%s's block starts on the 64-px grid: %s" % [kind, block.position])
+		_check(not ResourceLoader.exists("res://art/flora/fruit/%s.webp" % kind), "%s has no sheet of its own" % kind)
+
+
 ## Every tree image and fruit sheet is imported compressed for the
 ## graphics card, with its mipmaps (as every tree before it): Godot's
 ## defaults for a new file are neither, four times the memory and a
@@ -1012,11 +1046,11 @@ func _test_a_shrub_shows_its_berries_as_sprites_at_its_points() -> void:
 ## came in so on 18 November 2026).
 func _test_tree_images_import_compressed_with_mipmaps() -> void:
 	var files: Array[String] = []
-	for dir: String in [Trees.DIR, Trees.DIR.path_join("fruit"), "res://art/flora/fruit"]:
+	for dir: String in [Trees.DIR, Trees.DIR.path_join("fruit"), "res://art/flora"]:
 		for file in DirAccess.get_files_at(dir):
 			if file.ends_with(".webp.import"):
 				files.append(dir.path_join(file))
-	_check(files.size() >= 42, "the trees', their fruit's and the berries' images are found: %d" % files.size())
+	_check(files.size() >= 31, "the trees', their fruit's images and the flora's atlas are found: %d" % files.size())
 	for path in files:
 		var text := FileAccess.get_file_as_string(path)
 		_check(text.contains("compress/mode=2") and text.contains("mipmaps/generate=true"), "%s is compressed, with mipmaps" % path.get_file())
@@ -1456,6 +1490,10 @@ func _test_a_drag_is_smoothed_and_the_view_laid_on_whole_pixels() -> void:
 func _test_grounds_built_on_workers_are_laid_nearest_first_within_the_budget() -> void:
 	var was: Array = ChunkView.waiting
 	ChunkView.waiting = []
+	# Room on the workers for the four below (a test machine may have few
+	# threads: the turns are tested on their own).
+	var was_at_once := ChunkView.builds_at_once
+	ChunkView.builds_at_once = 8
 	var map_size := WaterMeshes.map_size
 	WaterMeshes.map_size = Vector2i(1024, 1024)
 	var tiles: Array = []
@@ -1528,6 +1566,86 @@ func _test_grounds_built_on_workers_are_laid_nearest_first_within_the_budget() -
 		TerrainGrid.clear(at, 32)
 	WaterMeshes.map_size = map_size
 	ChunkView.waiting = was
+	ChunkView.builds_at_once = was_at_once
+
+
+## At most ChunkView.builds_at_once grounds are on the workers, the
+## screen's own aside (given out at once): the others wait their turn and
+## are given out nearest the camera first, or at once when the screen
+## reaches them (`hurry`); one drawn before its turn is worked out in
+## line, the same; one dropped before its turn
+## costs no task, and a worker skips a ground dropped before it started;
+## quitting waits for every ground on the workers (audit F6: the main
+## thread waited 20 s behind every ground and every dropped one).
+func _test_grounds_wait_their_turn_and_quitting_waits_for_them() -> void:
+	var was: Array = ChunkView.waiting
+	var was_at_once := ChunkView.builds_at_once
+	ChunkView.waiting = []
+	ChunkView.builds_at_once = 1
+	var map_size := WaterMeshes.map_size
+	WaterMeshes.map_size = Vector2i(1024, 1024)
+	var tiles: Array = []
+	for y in 32:
+		for x in 32:
+			tiles.append("forest" if x < 10 else ("water" if x >= 24 else "grass"))
+	var make := func(at: Vector2i) -> ChunkView:
+		var view := ChunkView.new()
+		view.show_chunk(at, 32, tiles, [], {})
+		return view
+	ChunkView.lay_ready(0, Vector2.ZERO)
+	var first: ChunkView = make.call(Vector2i(64, 64))
+	var second: ChunkView = make.call(Vector2i(160, 96))
+	var third: ChunkView = make.call(Vector2i(96, 128))
+	for view: ChunkView in [first, second, third]:
+		view.start_build()
+	_check(first._task >= 0 and second._task < 0 and third._task < 0 and ChunkView._turns.size() == 2 and ChunkView.waiting.size() == 3, "one ground on a worker, two waiting their turn")
+	var screen: ChunkView = make.call(Vector2i(192, 192))
+	screen.build_at_once = true
+	screen.start_build()
+	_check(screen._task >= 0, "the screen's own given out at once")
+	# Reached by the screen before its turn: worked out here, the same as
+	# built in line.
+	var inline: ChunkView = make.call(Vector2i(96, 128))
+	inline._draw_ground_layers()
+	third._lay_task()
+	_check(third.is_built() and not ChunkView._turns.has(third) and not ChunkView.waiting.has(third), "before its turn: worked out in line and laid")
+	_check(third._flats.size() == inline._flats.size() and third._decor_cache.size() == inline._decor_cache.size(), "the same flat tiles and decorations")
+	var orphans := ChunkView._orphans.size()
+	second.free()
+	_check(ChunkView._turns.is_empty() and ChunkView._orphans.size() == orphans and ChunkView.waiting.size() == 2, "freed before its turn: forgotten, no task")
+	# The turns go nearest the camera first.
+	first._lay_task()
+	screen._lay_task()
+	var busy: ChunkView = make.call(Vector2i(320, 320))
+	var far: ChunkView = make.call(Vector2i(32, 32))
+	var near: ChunkView = make.call(Vector2i(256, 256))
+	for view: ChunkView in [busy, far, near]:
+		view.start_build()
+	_check(busy._task >= 0 and far._task < 0 and near._task < 0, "the worker busy: two waiting their turn")
+	while not busy.ground_ready():
+		OS.delay_msec(1)
+	_check(ChunkView.lay_ready(1_000_000, Iso.tile_to_screen(270, 270)) == 1 and busy.is_built(), "the done one laid")
+	_check(near._task >= 0 and far._task < 0, "and the nearest given out next")
+	far.hurry()
+	_check(far._task >= 0 and far.build_at_once and ChunkView._turns.is_empty(), "the screen reaching one: given out at once, past its turn")
+	# A worker skips a ground dropped before it started.
+	var input := inline._gather(true)
+	var dropped := ChunkView.GroundTask.new()
+	dropped.dropped = true
+	ChunkView._work(input, dropped)
+	var kept := ChunkView.GroundTask.new()
+	ChunkView._work(input, kept)
+	_check(dropped.out.is_empty() and not dropped.started and kept.started and kept.out.size() == 1, "a dropped ground skipped, a kept one worked out")
+	# Quitting: every ground on the workers waited for, the turns forgotten.
+	_check(ChunkView.finish_all() >= 1, "quitting waits for the ground on a worker")
+	_check(ChunkView.waiting.is_empty() and ChunkView._turns.is_empty() and ChunkView._orphans.is_empty() and near._task < 0 and far._task < 0, "nothing left under way")
+	for view: ChunkView in [first, third, screen, inline, busy, far, near]:
+		view.free()
+	for at: Vector2i in [Vector2i(64, 64), Vector2i(160, 96), Vector2i(96, 128), Vector2i(192, 192), Vector2i(320, 320), Vector2i(32, 32), Vector2i(256, 256)]:
+		TerrainGrid.clear(at, 32)
+	WaterMeshes.map_size = map_size
+	ChunkView.waiting = was
+	ChunkView.builds_at_once = was_at_once
 
 
 ## The camera's reach is the screen and a margin of chunks that grows as
@@ -1548,6 +1666,24 @@ func _test_the_reach_s_margin_grows_as_the_zoom_pulls_back() -> void:
 	_check(three > one and ledger.reach.encloses(ledger.shown), "a wider margin reaches more chunks: %d -> %d" % [one, three])
 	var keys: Array[Vector2i] = [Vector2i(25, 25), Vector2i(20, 20), Vector2i(22, 20)]
 	_check(ViewLedger.nearest_first(keys, ledger, screen.get_center()) == [Vector2i(20, 20), Vector2i(22, 20), Vector2i(25, 25)], "the margin built nearest the screen's middle first")
+	# Built within the budget counted from the first build, and at least
+	# one a frame: with no budget left, one a frame, nearest first, then
+	# none left (at zoom 0.4 sorting the margin alone took the budget, none
+	# was ever built and the reach was planned again every frame, F4).
+	var built: Array[Vector2i] = []
+	var build := func(key: Vector2i) -> void: built.append(key)
+	var left := [] as Array[Vector2i]
+	left.assign(keys)
+	var frames := 0
+	while frames < 10:
+		frames += 1
+		var more := ledger.build_paced(left, screen.get_center(), 0, build)
+		left.assign(keys.filter(func(k: Vector2i) -> bool: return not built.has(k)))
+		if not more:
+			break
+	_check(built == [Vector2i(20, 20), Vector2i(22, 20), Vector2i(25, 25)] and frames == 3, "with no budget, one chunk a frame, nearest first, then done: %s in %d frames" % [built, frames])
+	built.clear()
+	_check(not ledger.build_paced(keys, screen.get_center(), 1_000_000, build) and built.size() == 3, "within the budget, all of them at once")
 
 
 ## The fog's uniforms go to the graphics card only when their value
@@ -2929,7 +3065,17 @@ func _test_the_slope_turf_is_a_family_of_tiles_chosen_per_cell() -> void:
 	var grass := ChunkView.ground_material("grass")
 	var forest := ChunkView.ground_material("forest")
 	var water := ChunkView.ground_material("water")
+	# While no slope is drawn the ground carries a 1 × 1 stand-in, not the
+	# 63 MB set (audit F5); the set goes on with the first slope.
+	var was_drawn := ChunkView.slopes_drawn
+	ChunkView.set_slopes_drawn(0)
+	var stand_in := grass.get_shader_parameter("slope_turf_set") as Texture2DArray
+	_check(stand_in == ChunkView.turf_stand_in() and stand_in.get_layers() == 1 and stand_in.get_width() == 1 and forest.get_shader_parameter("slope_turf_set") == stand_in, "with no slope drawn the land's grounds carry a one-texel stand-in, not the set")
+	ChunkView.set_slopes_drawn(1)
 	_check(grass.get_shader_parameter("slope_turf_set") == family and forest.get_shader_parameter("slope_turf_set") == family and int(grass.get_shader_parameter("slope_turf_variants")) == 5 and int(grass.get_shader_parameter("slope_turf_angles")) == 4 and is_equal_approx(float(forest.get_shader_parameter("slope_angle_per_metre")), 60.0) and water.get_shader_parameter("slope_turf_set") == null, "every land's ground carries the set, its counts and the angle dial, not the water")
+	ChunkView.set_slopes_drawn(0)
+	_check(grass.get_shader_parameter("slope_turf_set") == stand_in, "the slopes off, the stand-in is back")
+	ChunkView.set_slopes_drawn(was_drawn)
 	# The row from the steepness: 20° + 60°/m × rise, to 55°, the nearest of four rows (20, 32, 43, 55).
 	_check(ChunkView.slope_turf_row(0.0, 4, 60.0) == 0 and ChunkView.slope_turf_row(0.08, 4, 60.0) == 0 and ChunkView.slope_turf_row(0.2, 4, 60.0) == 1 and ChunkView.slope_turf_row(0.4, 4, 60.0) == 2 and ChunkView.slope_turf_row(0.6, 4, 60.0) == 3 and ChunkView.slope_turf_row(5.0, 4, 60.0) == 3, "the steepness gives the row: flat 0, 0.2 m the second, 0.4 m the third, 0.6 m and beyond the last")
 	_check(ChunkView.slope_turf_row(0.2, 4, 120.0) == 2 and ChunkView.slope_turf_row(0.2, 4, 0.0) == 0 and ChunkView.slope_turf_row(5.0, 1, 60.0) == 0, "the dial scales the rise; with one row every cell reads row 0")
@@ -3059,6 +3205,8 @@ func _test_the_turf_keys_lay_one_tile_and_turn_the_angle_dial() -> void:
 	var single := ChunkView.slope_turf_set(PackedStringArray([tiles[0]]))
 	var grass := ChunkView.ground_material("grass")
 	var forest := ChunkView.ground_material("forest")
+	var was_drawn := ChunkView.slopes_drawn
+	ChunkView.set_slopes_drawn(1)
 	# Key G: the first tile alone, then the family back.
 	var ramp := PackedInt32Array()
 	ramp.resize(16)
@@ -3079,3 +3227,4 @@ func _test_the_turf_keys_lay_one_tile_and_turn_the_angle_dial() -> void:
 	_check(is_equal_approx(ChunkView.slope_angle_per_metre, 60.0) and is_equal_approx(float(grass.get_shader_parameter("slope_angle_per_metre")), 60.0), "Backspace puts the dial back to the look's")
 	overlay.free()
 	HeightIndex.clear()
+	ChunkView.set_slopes_drawn(was_drawn)

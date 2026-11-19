@@ -37,7 +37,10 @@ Kinds of `content/species.ron` (trees) go to `art/trees/` as
 `<id>_adult_<nn>_summer.webp`. The rest go into one atlas,
 `art/flora/atlas.webp`, with `art/flora/atlas.json` giving each image's
 rectangle: one texture for all the flora, so the client draws it in a few
-draw calls (D39); the client sets each plant's size on screen. Last, the
+draw calls (D39); the client sets each plant's size on screen. The
+shrubs' berries (tree_fruit.py --flora) are in the same atlas, where it is
+clear (place_berries), their rectangles in `art/flora/fruit.json`: a new
+atlas carries them over from the old one. Last, the
 decorations of `art/decor/` wider than their target (their width on screen
 is `size_m` of the ground spec's "decor" entry) are reduced in place.
 
@@ -73,6 +76,17 @@ ATLAS_WIDTH = 4096
 # mixes two plants and the mipmaps of one do not reach the next.
 BLOCK = 4
 PAD = 8
+# The shrubs' berries (D48) are in the atlas too, so a plant and its
+# berries draw from one texture and the plants' batch stays whole (audit
+# F3, 19 November 2026): each kind's sprites as one block, side by side
+# BERRY_PAD apart and from the block's edge (tree_fruit.py's sheet), put
+# where the atlas is clear, on a BERRY_ALIGN grid (its mipmaps, down to
+# that many times smaller, are those of the block alone) and BERRY_CLEAR
+# pixels from anything drawn (no mipmap level a plant is read at mixes
+# the two). Their rectangles in the atlas are `fruit.json`'s.
+BERRY_PAD = 8
+BERRY_ALIGN = 64
+BERRY_CLEAR = 32
 # Colour distance (0..441) still counted as the background, and as a
 # shadow: light (above SHADOW_LIGHT) and nearly colourless.
 BG_TOLERANCE = 42
@@ -666,6 +680,99 @@ def pack(plants):
     return rects, up(max(y + h for _, y, _, h in rects.values()))
 
 
+def read_fruit(art):
+    """The shrubs' berries, `art/flora/fruit.json` (tree_fruit.py --flora):
+    per image of the atlas its points, per kind its sprites' rectangles in
+    the atlas."""
+    path = Path(art) / "flora" / "fruit.json"
+    return json.loads(path.read_text()) if path.exists() else {"kinds": {}, "images": {}}
+
+
+def write_fruit(art, fruit):
+    """Writes `art/flora/fruit.json` (as tree_fruit.py does)."""
+    path = Path(art) / "flora" / "fruit.json"
+    path.write_text(json.dumps(fruit, sort_keys=True, separators=(",", ":")) + "\n")
+
+
+def berry_box(sprites):
+    """The block around a kind's sprites (their rectangles in the atlas),
+    BERRY_PAD from them: (left, top, right, bottom)."""
+    return (min(r[0] for r in sprites) - BERRY_PAD, min(r[1] for r in sprites) - BERRY_PAD,
+            max(r[0] + r[2] for r in sprites) + BERRY_PAD, max(r[1] + r[3] for r in sprites) + BERRY_PAD)
+
+
+def berry_block(atlas, sprites):
+    """A kind's berries cut from the atlas: its block (berry_box) and its
+    sprites' rectangles in it."""
+    box = berry_box(sprites)
+    return atlas.crop(box), [[r[0] - box[0], r[1] - box[1], r[2], r[3]] for r in sprites]
+
+
+def clear_berries(atlas, sprites):
+    """Clears a kind's block of berries from the atlas."""
+    box = berry_box(sprites)
+    atlas.paste(Image.new("RGBA", (box[2] - box[0], box[3] - box[1]), (0, 0, 0, 0)), box[:2])
+
+
+def place_berries(atlas, rects, blocks, fruit):
+    """Puts each kind's block (`blocks`: kind -> (image, its sprites'
+    rectangles in it)) where the atlas is clear (BERRY_ALIGN,
+    BERRY_CLEAR) of every pixel drawn and every plant's rectangle (`rects`,
+    `atlas.json`'s: a plant's image is drawn whole, its clear corners
+    too), largest first, its pixels as they are, and gives `fruit`'s kinds
+    their sprites' rectangles in the atlas. The atlas grows by whole
+    blocks of BERRY_ALIGN when it has no room left."""
+    taken = np.asarray(atlas)[..., 3] > 0
+    for x, y, w, h in rects.values():
+        taken[y:y + h, x:x + w] = True
+    for kind, (image, sprites) in sorted(blocks.items(), key=lambda b: (-b[1][0].width * b[1][0].height, b[0])):
+        w, h = image.size
+        spot = None
+        while spot is None:
+            # A summed-area table: whether a rectangle holds anything, at once.
+            sums = np.pad(taken.cumsum(0).cumsum(1), ((1, 0), (1, 0)))
+            height, width = taken.shape
+
+            def clear(x0, y0, x1, y1):
+                x0, y0, x1, y1 = max(x0, 0), max(y0, 0), min(x1, width), min(y1, height)
+                return sums[y1, x1] - sums[y0, x1] - sums[y1, x0] + sums[y0, x0] == 0
+
+            for y in range(0, height - h + 1, BERRY_ALIGN):
+                for x in range(0, width - w + 1, BERRY_ALIGN):
+                    if clear(x - BERRY_CLEAR, y - BERRY_CLEAR, x + w + BERRY_CLEAR, y + h + BERRY_CLEAR):
+                        spot = (x, y)
+                        break
+                if spot:
+                    break
+            if spot is None:
+                grown = Image.new("RGBA", (atlas.width, atlas.height + BERRY_ALIGN), (0, 0, 0, 0))
+                grown.paste(atlas, (0, 0))
+                atlas = grown
+                taken = np.pad(taken, ((0, BERRY_ALIGN), (0, 0)))
+        x, y = spot
+        atlas.paste(image, (x, y))
+        taken[y:y + h, x:x + w] = True
+        fruit["kinds"].setdefault(kind, {})["sprites"] = [[x + r[0], y + r[1], r[2], r[3]] for r in sprites]
+    return atlas
+
+
+def put_berries(art, blocks):
+    """Puts the kinds' new blocks of berries (`blocks`, as place_berries)
+    into the shipped atlas, each in place of its kind's old one, and
+    writes the atlas and `fruit.json`."""
+    flora = Path(art) / "flora"
+    atlas = Image.open(flora / "atlas.webp").convert("RGBA")
+    rects = json.loads((flora / "atlas.json").read_text())
+    fruit = read_fruit(art)
+    for kind in blocks:
+        old = fruit["kinds"].get(kind, {}).get("sprites", [])
+        if old:
+            clear_berries(atlas, old)
+    atlas = place_berries(atlas, rects, blocks, fruit)
+    save_webp(atlas, flora / "atlas.webp")
+    write_fruit(art, fruit)
+
+
 def size_decor(art, short):
     """Reduces in place the decorations wider than their shipped width
     (the client draws them `size_m` wide, ChunkView._draw_decor). They have
@@ -754,16 +861,25 @@ def main():
             image = ink_plant(image, kind, section, tall, height)
             plants.append((f"{kind}_{n}", image))
     if plants:
+        # The berries the shipped atlas holds go into the new one.
+        fruit = read_fruit(art)
+        blocks = {}
+        if (art / "flora" / "atlas.webp").exists():
+            old = Image.open(art / "flora" / "atlas.webp").convert("RGBA")
+            blocks = {kind: berry_block(old, entry["sprites"])
+                      for kind, entry in fruit["kinds"].items() if entry.get("sprites")}
         rects, height = pack(plants)
         atlas = Image.new("RGBA", (ATLAS_WIDTH, height), (0, 0, 0, 0))
         for name, image in plants:
             r = rects[name]
             atlas.alpha_composite(image, (r[0], r[1]))
         atlas = bleed(atlas)
+        atlas = place_berries(atlas, rects, blocks, fruit)
         (art / "flora").mkdir(exist_ok=True)
         save_webp(atlas, art / "flora" / "atlas.webp")
         (art / "flora" / "atlas.json").write_text(json.dumps(dict(sorted(rects.items())), indent=1) + "\n")
-        print(len(plants), "plants in an atlas of", atlas.size)
+        write_fruit(art, fruit)
+        print(len(plants), "plants and", len(blocks), "kinds of berries in an atlas of", atlas.size)
     size_decor(art, short)
     for line in short:
         print("smaller than its target (to make again to be as sharp):", line)

@@ -15,8 +15,8 @@ var feet := PackedVector2Array()
 var rects := PackedVector2Array()
 ## Each plant's region of the flora's atlas: position then size.
 var regions := PackedVector2Array()
-## Plant index -> its berries (ChunkView.berries_of: [texture rect,
-## sprite region, sheet] each), for the plants showing some (D48).
+## Plant index -> its berries (ChunkView.berries_of: [texture rect, the
+## sprite's region of the atlas] each), for the plants showing some (D48).
 var berries: Dictionary = {}
 ## How many of the cells shown each plant's image covers.
 var refs := PackedByteArray()
@@ -130,11 +130,11 @@ func _show(i: int) -> void:
 	if atlas != null:
 		var r := rect(i)
 		RenderingServer.canvas_item_add_texture_rect_region(item, Rect2(r.position - feet[i], r.size), atlas.get_rid(), region(i))
-		# Its berries over it, in its own canvas item (D48).
+		# Its berries over it, in its own canvas item, from the same atlas
+		# (D48).
 		for b: Array in berries.get(i, []):
 			var at: Rect2 = b[0]
-			var sheet: Texture2D = b[2]
-			RenderingServer.canvas_item_add_texture_rect_region(item, Rect2(at.position - feet[i], at.size), sheet.get_rid(), b[1])
+			RenderingServer.canvas_item_add_texture_rect_region(item, Rect2(at.position - feet[i], at.size), atlas.get_rid(), b[1])
 
 
 func _hide(i: int) -> void:
