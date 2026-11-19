@@ -542,6 +542,14 @@ impl Region {
                     continue;
                 }
                 last = Some(node.p);
+                // A course through a lake of the continent carves nothing:
+                // its valley floor, raised to the water's level on either
+                // side, stood as strips of land across the lake (the great
+                // forest lake and the jungle lake of seed 14, 19 November
+                // 2026). The lake is the water there.
+                if c.lake[node.cell] {
+                    continue;
+                }
                 let (px, py) = (node.p.0.div_euclid(cell_mm), node.p.1.div_euclid(cell_mm));
                 let q = c.discharge[node.cell];
                 let level = node.level;
@@ -816,5 +824,43 @@ mod tests {
         let mut again = after.clone();
         limit_rise(grid, &mut again);
         assert_eq!(again, after, "a second pass changes nothing");
+    }
+
+    /// The region cells inside a lake of the continent (its cell and the
+    /// eight around all lake) that are not lake water.
+    fn dry_in_lakes(centre: (i32, i32)) -> usize {
+        let c = crate::plan::net::continent();
+        let r = Region::around(c, centre, 1024);
+        let cs = i32::try_from(c.grid.side).expect("small");
+        (0..r.grid.len())
+            .filter(|&i| {
+                let (x, y) = r.grid.xy(i);
+                let (cx, cy) = (
+                    r.origin.0 + x.div_euclid(PER_CELL),
+                    r.origin.1 + y.div_euclid(PER_CELL),
+                );
+                let deep = (-1..=1).all(|b| {
+                    (-1..=1).all(|a| {
+                        let (u, v) = (cx + a, cy + b);
+                        (0..cs).contains(&u) && (0..cs).contains(&v) && c.lake[c.grid.index(u, v)]
+                    })
+                });
+                deep && r.water[i] != Water::Lake
+            })
+            .count()
+    }
+
+    #[test]
+    #[ignore = "two regions of seed 14, a minute in release; run by hand: cargo test --release -p sim --lib plan::region::no_strip -- --ignored"]
+    fn no_strip_of_land_crosses_a_lake() {
+        // The great forest lake and the jungle lake of seed 14, where the
+        // courses through them stood as strips of land (19 November 2026).
+        for centre in [(648, 406), (580, 770)] {
+            assert_eq!(
+                dry_in_lakes(centre),
+                0,
+                "dry cells in the lake around {centre:?}"
+            );
+        }
     }
 }
