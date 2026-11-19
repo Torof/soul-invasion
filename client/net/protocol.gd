@@ -3,26 +3,37 @@ extends RefCounted
 ## Wire encoding for client <-> server messages.
 ##
 ## This is the only place on the client that knows the messages are JSON
-## and that a chunk travels as a binary frame (architecture decisions D25,
-## D26). It mirrors the Rust `protocol` crate, which is the single source
-## of truth. Every JSON message is a dictionary with a snake_case `type`
-## field; a chunk frame decodes into packed arrays (`decode_chunk`).
+## and that a chunk and the far view travel as binary messages
+## (architecture decisions D25, D26). It mirrors the Rust `protocol` crate,
+## which is the single source of truth. Every JSON message is a dictionary
+## with a snake_case `type` field; a binary message starts with its kind
+## (`binary_kind`): a chunk frame decodes into packed arrays
+## (`decode_chunk`), the far view into its letters (`decode_far_view`).
 
-const PROTOCOL_VERSION := 29
+const PROTOCOL_VERSION := 30
 ## Chunk frames kept after they left the view (FrameCache), as the
 ## server's mirror of them.
 const CHUNK_CACHE_CHUNKS := 1500
 ## Entries of `hello`'s `held` the server reads at most.
 const HELD_CHUNKS_MAX := 2048
 
-## Bytes of a chunk frame's header.
+## The kind of a binary message, its first byte: a chunk frame.
+const BINARY_CHUNK := 0
+## The kind of a binary message: the far view.
+const BINARY_FAR_VIEW := 1
+## Bytes of a chunk frame's header; the length of its ground follows.
 const CHUNK_HEADER := 16
+## Bytes of the far view's header.
+const FAR_VIEW_HEADER := 16
 ## Flag of a chunk frame: the chunk has water, its currents follow.
 const CHUNK_HAS_WATER := 1
 ## Flag of a chunk frame: the chunk has heights, they follow the currents.
 const CHUNK_HAS_HEIGHTS := 2
 ## The bit that marks a natural item's id (`sim::items::NATURAL`).
 const NATURAL := 1 << 52
+## The kind of a tree or a plant whose palette index is past its chunk's
+## palette: past every list of `world_state`, so unknown.
+const UNKNOWN_KIND := 0xFFFF
 ## A chunk coordinate in a natural item's id: 18 bits.
 const CHUNK_MASK := (1 << 18) - 1
 
@@ -115,8 +126,15 @@ static func decode(text: String) -> Dictionary:
 	return {}
 
 
+## The kind of a binary message (BINARY_CHUNK, BINARY_FAR_VIEW), -1 for
+## no bytes at all.
+static func binary_kind(bytes: PackedByteArray) -> int:
+	return bytes[0] if bytes.size() > 0 else -1
+
+
 ## Decodes a chunk's binary frame (the layout in the Rust `ChunkFrame`'s
-## doc). `materials`: the content ids of `world_state`'s materials, in
+## doc, protocol v30: tiles as a palette and runs, kinds through a
+## palette). `materials`: the content ids of `world_state`'s materials, in
 ## order. Returns an empty dictionary if the bytes are not a whole frame;
 ## else:
 ## - `x`, `y`, `version`: the chunk and its version;
@@ -136,20 +154,52 @@ static func decode(text: String) -> Dictionary:
 ## - `items`: Array of {id, x, y, material}, in the order of their ids; a
 ##   stored item says its own grams too (`mass_g`), a natural one weighs
 ##   its material's piece.
+## The growth stage each tree and plant carries (the high four bits of its
+## fruit byte, 0 for all today) is not read yet.
 static func decode_chunk(bytes: PackedByteArray, materials: PackedStringArray) -> Dictionary:
 	var size := bytes.size()
-	if size < CHUNK_HEADER:
+	if size < CHUNK_HEADER + 4 or bytes[0] != BINARY_CHUNK:
 		return {}
-	var cx := bytes.decode_s32(0)
-	var cy := bytes.decode_s32(4)
-	var version := bytes.decode_u32(8)
-	var flags := bytes.decode_u8(12)
-	var side := bytes.decode_u8(13)
+	var flags := bytes[1]
+	var side := bytes[2]
+	var cx := bytes.decode_s32(4)
+	var cy := bytes.decode_s32(8)
+	var version := bytes.decode_u32(12)
 	var tiles_n := side * side
-	var at := CHUNK_HEADER + tiles_n
-	if size < at:
+	var at := CHUNK_HEADER + 4
+	var ground_end := at + bytes.decode_u32(CHUNK_HEADER)
+	if ground_end > size or at >= size:
 		return {}
-	var tiles := bytes.slice(CHUNK_HEADER, at)
+	var palette_n := bytes[at]
+	at += 1
+	if at + palette_n > size:
+		return {}
+	var palette := bytes.slice(at, at + palette_n)
+	at += palette_n
+	var tiles := PackedByteArray()
+	if palette_n == 1:
+		tiles.resize(tiles_n)
+		tiles.fill(palette[0])
+	elif palette_n > 1:
+		var told := 0
+		while told < tiles_n:
+			if at + 1 >= size or bytes[at] >= palette_n:
+				return {}
+			var code := palette[bytes[at]]
+			var length := bytes[at + 1]
+			at += 2
+			if length >= 0x80:
+				var run := _varint(bytes, at - 1)
+				if run.y < 0:
+					return {}
+				length = run.x
+				at = run.y
+			if length == 0 or length > tiles_n - told:
+				return {}
+			tiles.append_array(_filled(code, tiles_n).slice(0, length))
+			told += length
+	elif tiles_n > 0:
+		return {}
 	var currents := PackedInt32Array()
 	if flags & CHUNK_HAS_WATER:
 		currents.resize(tiles_n)
@@ -168,9 +218,13 @@ static func decode_chunk(bytes: PackedByteArray, materials: PackedStringArray) -
 		for i in tiles_n:
 			heights[i] = bytes.decode_s16(at)
 			at += 2
+	if at != ground_end:
+		return {}
 	var x0 := cx * side * 1000
 	var y0 := cy * side * 1000
-	# Trees then plants, each with its fruit after its kind (6 bytes).
+	# Trees then plants: their kinds' palette, then each one in 6 bytes,
+	# its palette index and its growth byte (stage << 4 | fruit) after
+	# its place.
 	var standing: Array[PackedInt32Array] = []
 	var fruits: Array[PackedByteArray] = []
 	for _list in 2:
@@ -178,18 +232,32 @@ static func decode_chunk(bytes: PackedByteArray, materials: PackedStringArray) -
 			return {}
 		var n := bytes.decode_u16(at)
 		at += 2
-		if at + n * 6 > size:
-			return {}
 		var out := PackedInt32Array()
 		out.resize(n * 3)
 		var fruit := PackedByteArray()
 		fruit.resize(n)
-		for i in n:
-			out[i * 3] = bytes[at + 4]
-			out[i * 3 + 1] = x0 + bytes.decode_u16(at)
-			out[i * 3 + 2] = y0 + bytes.decode_u16(at + 2)
-			fruit[i] = bytes[at + 5]
-			at += 6
+		if n > 0:
+			if at >= size:
+				return {}
+			var kinds_n := bytes[at]
+			at += 1
+			if at + kinds_n * 2 + n * 6 > size:
+				return {}
+			# Every index a byte can say: one past the palette names a
+			# kind past every list (UNKNOWN_KIND), unknown as a kind past
+			# `world_state`'s lists is.
+			var kinds := PackedInt32Array()
+			kinds.resize(256)
+			kinds.fill(UNKNOWN_KIND)
+			for k in kinds_n:
+				kinds[k] = bytes.decode_u16(at + k * 2)
+			at += kinds_n * 2
+			for i in n:
+				out[i * 3] = kinds[bytes[at + 4]]
+				out[i * 3 + 1] = x0 + bytes.decode_u16(at)
+				out[i * 3 + 2] = y0 + bytes.decode_u16(at + 2)
+				fruit[i] = bytes[at + 5] & 0x0F
+				at += 6
 		standing.append(out)
 		fruits.append(fruit)
 	var items: Array = []
@@ -261,37 +329,123 @@ static func fruit_levels(digits: String) -> Dictionary:
 
 
 ## A chunk frame with the fruit of its trees and plants put in (D48,
-## `chunk_fruit`): the same bytes but the fruit byte of each. Empty if
-## the frame does not hold as many trees and plants (or is cut short).
+## `chunk_fruit`): the same bytes but the fruit of each (the low four
+## bits of its growth byte, its stage kept). Empty if the frame does not
+## hold as many trees and plants (or is cut short).
 static func with_fruit(bytes: PackedByteArray, trees: PackedByteArray, plants: PackedByteArray) -> PackedByteArray:
 	var size := bytes.size()
-	if size < CHUNK_HEADER:
+	if size < CHUNK_HEADER + 4 or bytes[0] != BINARY_CHUNK:
 		return PackedByteArray()
-	var flags := bytes.decode_u8(12)
-	var side := bytes.decode_u8(13)
-	var tiles_n := side * side
-	var at := CHUNK_HEADER + tiles_n
-	if size < at:
-		return PackedByteArray()
-	if flags & CHUNK_HAS_WATER:
-		for i in tiles_n:
-			var code := bytes[CHUNK_HEADER + i]
-			if code == TerrainGrid.WATER or code == TerrainGrid.FORD or code == TerrainGrid.BROOK:
-				at += 2
-	if flags & CHUNK_HAS_HEIGHTS:
-		at += tiles_n * 2
+	var at := CHUNK_HEADER + 4 + bytes.decode_u32(CHUNK_HEADER)
 	var out := bytes.duplicate()
 	for fruit: PackedByteArray in [trees, plants]:
 		if at + 2 > size:
 			return PackedByteArray()
 		var n := bytes.decode_u16(at)
 		at += 2
-		if n != fruit.size() or at + n * 6 > size:
+		if n != fruit.size():
+			return PackedByteArray()
+		if n == 0:
+			continue
+		if at >= size:
+			return PackedByteArray()
+		at += 1 + bytes[at] * 2
+		if at + n * 6 > size:
 			return PackedByteArray()
 		for i in n:
-			out[at + i * 6 + 5] = fruit[i]
+			var growth := at + i * 6 + 5
+			out[growth] = (bytes[growth] & 0xF0) | (fruit[i] & 0x0F)
 		at += n * 6
 	return out
+
+
+## Decodes the far view's binary message (the layout in the Rust
+## `FarView`'s doc): {cell, x, y, width, height, cells}, `cells` one letter
+## a cell row by row (`g` grass, `f` forest, `w` river, `o` ford, `b`
+## brook, `r` rock, `.` past the map), as the JSON far view of protocol
+## v29 carried them. Empty if the bytes are not a whole far view.
+static func decode_far_view(bytes: PackedByteArray) -> Dictionary:
+	var size := bytes.size()
+	if size < FAR_VIEW_HEADER or bytes[0] != BINARY_FAR_VIEW:
+		return {}
+	var width := bytes.decode_u16(12)
+	var height := bytes.decode_u16(14)
+	var total := width * height
+	var pieces := PackedStringArray()
+	var told := 0
+	var at := FAR_VIEW_HEADER
+	while told < total:
+		if at >= size:
+			return {}
+		if at + 1 >= size:
+			return {}
+		var letter := bytes[at]
+		var length := bytes[at + 1]
+		at += 2
+		if length >= 0x80:
+			var run := _varint(bytes, at - 1)
+			if run.y < 0:
+				return {}
+			length = run.x
+			at = run.y
+		if length == 0 or length > total - told:
+			return {}
+		pieces.append(_letters[letter].repeat(length))
+		told += length
+	if at != size:
+		return {}
+	return {
+		"cell": bytes.decode_u16(2),
+		"x": bytes.decode_s32(4),
+		"y": bytes.decode_s32(8),
+		"width": width,
+		"height": height,
+		"cells": "".join(pieces),
+	}
+
+
+## A varint (LEB128, seven bits a byte, the low ones first) at `at`: its
+## value and where the next field starts; y -1 when cut short or past 32
+## bits.
+static func _varint(bytes: PackedByteArray, at: int) -> Vector2i:
+	var n := 0
+	var shift := 0
+	var size := bytes.size()
+	while at < size and shift <= 28:
+		var byte := bytes[at]
+		at += 1
+		n |= (byte & 0x7F) << shift
+		if byte & 0x80 == 0:
+			return Vector2i(n, at) if n <= 0x7FFFFFFF else Vector2i(0, -1)
+		shift += 7
+	return Vector2i(0, -1)
+
+
+## Tiles of one terrain by its code, filled once and sliced: a run of the
+## tiles.
+static var _fills: Array[PackedByteArray] = []
+## Each byte as a one-letter string: a run of the far view.
+static var _letters: PackedStringArray = _all_letters()
+
+
+## At least `n` bytes of `code`.
+static func _filled(code: int, n: int) -> PackedByteArray:
+	if _fills.size() <= code:
+		_fills.resize(code + 1)
+	if _fills[code].size() < n:
+		var fill := PackedByteArray()
+		fill.resize(maxi(n, 1024))
+		fill.fill(code)
+		_fills[code] = fill
+	return _fills[code]
+
+
+## The 256 one-letter strings, by byte.
+static func _all_letters() -> PackedStringArray:
+	var letters := PackedStringArray()
+	for b in 256:
+		letters.append(String.chr(b))
+	return letters
 
 
 ## A material's content id by its index, "" past the list.

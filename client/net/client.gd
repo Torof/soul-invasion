@@ -216,6 +216,8 @@ func _process(_delta: float) -> void:
 			var packet := _peer.get_packet()
 			if _peer.was_string_packet():
 				_handle(Protocol.decode(packet.get_string_from_utf8()))
+			elif Protocol.binary_kind(packet) == Protocol.BINARY_FAR_VIEW:
+				_handle_far_view(packet)
 			else:
 				_handle_chunk(packet)
 			DevWatchdog.phase = DevWatchdog.ELSEWHERE
@@ -261,6 +263,16 @@ func _handle_chunk(bytes: PackedByteArray) -> void:
 	frames.received(Vector2i(int(decoded["x"]), int(decoded["y"])), bytes)
 	_came(Vector2i(int(decoded["x"]), int(decoded["y"])))
 	chunk.emit(int(decoded["x"]), int(decoded["y"]), decoded)
+
+
+## The far view's binary message: decoded (Protocol.decode_far_view) and
+## told.
+func _handle_far_view(bytes: PackedByteArray) -> void:
+	var far := Protocol.decode_far_view(bytes)
+	if far.is_empty():
+		push_warning("a far view that does not decode (%d bytes)" % bytes.size())
+		return
+	far_view.emit(int(far["cell"]), int(far["x"]), int(far["y"]), int(far["width"]), int(far["height"]), str(far["cells"]))
 
 
 ## `chunk_same`: the chunk is held at that version already, or kept out
@@ -377,15 +389,6 @@ func _handle(message: Dictionary) -> void:
 			))
 		"body_left":
 			body_left.emit(int(message.get("body", -1)))
-		"far_view":
-			far_view.emit(
-				int(message.get("cell", 8)),
-				int(message.get("x", 0)),
-				int(message.get("y", 0)),
-				int(message.get("width", 0)),
-				int(message.get("height", 0)),
-				str(message.get("cells", ""))
-			)
 		"dev_overview":
 			dev = true
 			dev_overview.emit(

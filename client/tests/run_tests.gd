@@ -37,6 +37,7 @@ func _init() -> void:
 	_test_each_ground_canvas_covers_only_its_rows()
 	_test_currents_decode()
 	_test_the_golden_chunk_decodes()
+	_test_the_golden_far_view_decodes()
 	_test_a_chunks_fruit_alone_comes_into_its_frame()
 	_test_a_tree_shows_its_fruit_as_sprites_at_its_points()
 	_test_a_shrub_shows_its_berries_as_sprites_at_its_points()
@@ -906,12 +907,13 @@ func _test_currents_decode() -> void:
 
 
 ## The chunk frame the server's protocol writes (its test
-## `the_golden_chunk_is_the_clients` keeps tests/fixtures/chunk_v17.bin):
+## `the_golden_chunk_is_the_clients` keeps tests/fixtures/chunk_v30.bin):
 ## every field read back. A change of the layout on one side only breaks
 ## this test or the server's.
 func _test_the_golden_chunk_decodes() -> void:
-	var bytes := FileAccess.get_file_as_bytes("res://tests/fixtures/chunk_v17.bin")
-	_check(bytes.size() == 128, "the golden chunk is there: %d bytes" % bytes.size())
+	var bytes := FileAccess.get_file_as_bytes("res://tests/fixtures/chunk_v30.bin")
+	_check(bytes.size() == 157, "the golden chunk is there: %d bytes" % bytes.size())
+	_check(Protocol.binary_kind(bytes) == Protocol.BINARY_CHUNK, "a chunk frame")
 	var c := Protocol.decode_chunk(bytes, PackedStringArray(["m0", "m1", "m2", "m3", "m4"]))
 	_check(not c.is_empty(), "the golden chunk decodes")
 	if c.is_empty():
@@ -922,7 +924,7 @@ func _test_the_golden_chunk_decodes() -> void:
 	_check(c["heights"] == PackedInt32Array([0, 1, -1, 7, 32767, -32768, 120, 121, 0, 0, 0, 0, 5, 4, 3, 2]), "its heights: %s" % c["heights"])
 	_check(c["trees"] == PackedInt32Array([2, 43_999, -8_000, 0, 13_500, -5_750]), "its trees: %s" % c["trees"])
 	_check(c["fruit"] == PackedByteArray([8, 3]), "their fruit, full and three eighths: %s" % c["fruit"])
-	_check(c["plants"] == PackedInt32Array([11, 12_700, -4_100, 3, 14_000, -7_900]), "its plants: %s" % c["plants"])
+	_check(c["plants"] == PackedInt32Array([11, 12_700, -4_100, 300, 14_000, -7_900]), "its plants, a kind past 255 among them: %s" % c["plants"])
 	_check(c["plant_fruit"] == PackedByteArray([0, 5]), "their fruit, none and five eighths: %s" % c["plant_fruit"])
 	var items: Array = c["items"]
 	_check(items == [
@@ -930,12 +932,37 @@ func _test_the_golden_chunk_decodes() -> void:
 		{"id": 4_503_668_346_716_227, "x": 13, "y": -8, "material": "m4"},
 		{"id": 4_503_668_346_717_120, "x": 15, "y": -5, "material": "m0"},
 	], "its items: %s" % [items])
-	_check(Protocol.decode_chunk(bytes.slice(0, 86), PackedStringArray()).is_empty(), "a frame cut short is refused")
+	for cut in [10, 30, 86, 120, bytes.size() - 1]:
+		_check(Protocol.decode_chunk(bytes.slice(0, cut), PackedStringArray()).is_empty(), "a frame cut short is refused: %d bytes" % cut)
+	var longer := bytes.duplicate()
+	longer.append(0)
+	_check(Protocol.decode_chunk(longer, PackedStringArray()).is_empty(), "a frame with bytes past it is refused")
 	var dry := Protocol.decode_chunk(bytes, PackedStringArray())
 	var stand := Trees.Stand.new(dry["trees"], {"oak": 2_200}, PackedStringArray(["oak", "pine", "birch"]))
 	_check(Array(stand.kinds) == ["birch", "oak"] and stand.at[1] == Vector2(13_500, -5_750), "a stand reads the trees as they come")
 	stand.release()
 
+
+
+## The far view the server's protocol writes (its test
+## `the_golden_far_view_is_the_clients` keeps tests/fixtures/far_v30.bin,
+## protocol v30): its runs read back as the letters the JSON far view
+## carried, and the net tells them as before.
+func _test_the_golden_far_view_decodes() -> void:
+	var bytes := FileAccess.get_file_as_bytes("res://tests/fixtures/far_v30.bin")
+	_check(Protocol.binary_kind(bytes) == Protocol.BINARY_FAR_VIEW, "a far view")
+	var far := Protocol.decode_far_view(bytes)
+	var cells := "..gggg" + "f".repeat(130) + "wobr"
+	_check(far == {"cell": 8, "x": -3, "y": 40, "width": 20, "height": 7, "cells": cells}, "every field read back: %s" % [far])
+	_check(Protocol.decode_far_view(bytes.slice(0, bytes.size() - 1)).is_empty(), "a far view cut short is refused")
+	_check(Protocol.decode_chunk(bytes, PackedStringArray()).is_empty(), "a far view is no chunk")
+	_check(Protocol.decode_far_view(FileAccess.get_file_as_bytes("res://tests/fixtures/chunk_v30.bin")).is_empty(), "a chunk is no far view")
+	var net: Node = load("res://net/client.gd").new()
+	var told: Array = []
+	net.far_view.connect(func(cell: int, x: int, y: int, width: int, height: int, letters: String) -> void: told.append([cell, x, y, width, height, letters]))
+	net._handle_far_view(bytes)
+	_check(told == [[8, -3, 40, 20, 7, cells]], "the net tells it as the JSON far view was told")
+	net.free()
 
 
 ## Protocol v29 (D48): a chunk's fruit alone, its levels one digit a tree
@@ -947,7 +974,7 @@ func _test_a_chunks_fruit_alone_comes_into_its_frame() -> void:
 	_check(levels["ok"] and levels["levels"] == PackedByteArray([0, 8, 1, 2]), "digits read as levels: %s" % [levels])
 	_check(not Protocol.fruit_levels("19")["ok"] and not Protocol.fruit_levels("1a")["ok"], "past the top level, or no digit: refused")
 	_check(Protocol.fruit_levels("")["ok"], "no tree: no level")
-	var bytes := FileAccess.get_file_as_bytes("res://tests/fixtures/chunk_v17.bin")
+	var bytes := FileAccess.get_file_as_bytes("res://tests/fixtures/chunk_v30.bin")
 	var with := Protocol.with_fruit(bytes, PackedByteArray([1, 3]), PackedByteArray([7, 0]))
 	var before := Protocol.decode_chunk(bytes, PackedStringArray())
 	var after := Protocol.decode_chunk(with, PackedStringArray())
@@ -2671,9 +2698,9 @@ func _test_tree_outlines_hold_every_texel() -> void:
 static func _frame_header(x: int, y: int, version: int) -> PackedByteArray:
 	var bytes := PackedByteArray()
 	bytes.resize(Protocol.CHUNK_HEADER)
-	bytes.encode_s32(0, x)
-	bytes.encode_s32(4, y)
-	bytes.encode_u32(8, version)
+	bytes.encode_s32(4, x)
+	bytes.encode_s32(8, y)
+	bytes.encode_u32(12, version)
 	return bytes
 
 
@@ -2714,7 +2741,7 @@ func _test_the_net_knows_when_the_window_came() -> void:
 	_check(not net.window_received(), "no window told yet: not received")
 	net._handle({"type": "view", "x": 3, "y": -2, "width": 2, "height": 1})
 	_check(not net.window_received(), "the window told, nothing came")
-	net._handle_chunk(FileAccess.get_file_as_bytes("res://tests/fixtures/chunk_v17.bin"))
+	net._handle_chunk(FileAccess.get_file_as_bytes("res://tests/fixtures/chunk_v30.bin"))
 	_check(not net.window_received(), "one of two came")
 	net.frames.received(Vector2i(4, -2), _frame_header(4, -2, 0))
 	net._handle({"type": "chunk_same", "x": 4, "y": -2, "version": 0})
@@ -3108,12 +3135,14 @@ func _test_the_recentre_button_shows_while_the_camera_does_not_follow() -> void:
 func _test_a_flat_chunk_has_no_heights_and_a_chunks_heights_are_kept() -> void:
 	var bytes := PackedByteArray()
 	bytes.resize(Protocol.CHUNK_HEADER)
-	bytes.encode_s32(0, 3)
-	bytes.encode_s32(4, -2)
-	bytes.encode_u32(8, 7)
-	bytes.encode_u8(12, 0)
-	bytes.encode_u8(13, 2)
-	bytes.append_array(PackedByteArray([1, 1, 1, 1]))
+	bytes.encode_u8(0, Protocol.BINARY_CHUNK)
+	bytes.encode_u8(1, 0)
+	bytes.encode_u8(2, 2)
+	bytes.encode_s32(4, 3)
+	bytes.encode_s32(8, -2)
+	bytes.encode_u32(12, 7)
+	# Its ground, two bytes: a palette of one terrain, grass.
+	bytes.append_array(PackedByteArray([2, 0, 0, 0, 1, 1]))
 	bytes.append_array(PackedByteArray([0, 0, 0, 0, 0, 0, 0, 0]))
 	var flat := Protocol.decode_chunk(bytes, PackedStringArray())
 	_check(not flat.is_empty() and (flat["heights"] as PackedInt32Array).is_empty(), "a flat world's chunk has no heights")

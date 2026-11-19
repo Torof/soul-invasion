@@ -28,10 +28,10 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
-    Blockage, BodyState, ChunkFrame, ClientMessage, Clock, Condition, DeathCause, FloraView,
-    ItemAct, ItemState, ItemView, MaterialView, NaturalItem, PROTOCOL_VERSION, Point, Refusal,
-    Season, ServerMessage, Side, SpeciesView, Standing, StandingTree, StoredItem, Terrain, Thought,
-    decode, encode, encode_chunk,
+    Blockage, BodyState, ChunkFrame, ClientMessage, Clock, Condition, DeathCause, FarView,
+    FloraView, ItemAct, ItemState, ItemView, MaterialView, NaturalItem, PROTOCOL_VERSION, Point,
+    Refusal, Season, ServerMessage, Side, SpeciesView, Standing, StandingTree, StoredItem, Terrain,
+    Thought, decode, encode, encode_chunk, encode_far_view,
 };
 use sim::changes::Picked;
 use sim::crops::{Crop, Source};
@@ -326,7 +326,7 @@ pub struct Shared {
     flora_kinds: Vec<sim::flora::Kind>,
     /// Index in `flora` of each kind of the content's flora (`None` for
     /// the trees still to come).
-    flora_wire: Vec<Option<u8>>,
+    flora_wire: Vec<Option<u16>>,
     /// The seed the trees and the flora are placed with (the map's).
     seed: u64,
     /// The content's crops, and the world's calendar: the fruit a tree
@@ -656,10 +656,10 @@ pub fn far_centre(chunk: ChunkPos) -> ChunkPos {
     ChunkPos::new(middle(chunk.x), middle(chunk.y))
 }
 
-/// The land around chunk `centre`, coarse (`ServerMessage::FarView`), for
-/// the client to draw past the chunks it holds: what can be seen from
-/// afar anyway, never what lies in it (bodies, items).
-pub fn far_view(map: &Map, centre: ChunkPos) -> ServerMessage {
+/// The land around chunk `centre`, coarse ([`FarView`], a binary
+/// message), for the client to draw past the chunks it holds: what can be
+/// seen from afar anyway, never what lies in it (bodies, items).
+pub fn far_view(map: &Map, centre: ChunkPos) -> FarView {
     let cell = i32::try_from(FAR_CELL).expect("small");
     let size = i32::try_from(CHUNK_SIZE).expect("small");
     let half = i32::try_from(FAR_CELLS / 2).expect("small");
@@ -668,13 +668,14 @@ pub fn far_view(map: &Map, centre: ChunkPos) -> ServerMessage {
         (centre.y * size + size / 2).div_euclid(cell),
     );
     let (x, y) = (cx - half, cy - half);
-    ServerMessage::FarView {
-        cell: FAR_CELL,
+    let small = |n: u32| u16::try_from(n).expect("small");
+    FarView {
+        cell: small(FAR_CELL),
         x,
         y,
-        width: FAR_CELLS,
-        height: FAR_CELLS,
-        cells: coarse(map, FAR_CELL, x, y, FAR_CELLS, FAR_CELLS),
+        width: small(FAR_CELLS),
+        height: small(FAR_CELLS),
+        cells: coarse(map, FAR_CELL, x, y, FAR_CELLS, FAR_CELLS).into_bytes(),
     }
 }
 
@@ -809,9 +810,9 @@ impl Shared {
         if let Some(message) = lock().get(&centre).cloned() {
             return Some(message);
         }
-        match encode(&far_view(&self.map, centre)) {
-            Ok(text) => {
-                let message = Message::text(text);
+        match encode_far_view(&far_view(&self.map, centre)) {
+            Ok(bytes) => {
+                let message = Message::Binary(Bytes::from(bytes));
                 lock().insert(centre, message.clone());
                 Some(message)
             }
@@ -1429,7 +1430,8 @@ impl Shared {
                 Ok(StandingTree {
                     dx,
                     dy,
-                    kind: u8::try_from(tree.species)?,
+                    kind: u16::try_from(tree.species)?,
+                    stage: protocol::STAGE_GROWN,
                     fruit,
                 })
             })
@@ -1749,6 +1751,7 @@ impl Shared {
                         dx,
                         dy,
                         kind,
+                        stage: protocol::STAGE_GROWN,
                         fruit,
                     })
                 })
@@ -1767,7 +1770,7 @@ impl Shared {
 /// The kinds of shrub, plant and mushroom as clients need them, and the
 /// index of each kind of the content's flora among them (`None` for the
 /// trees still to come).
-fn flora_views(content: &Content) -> (Vec<FloraView>, Vec<Option<u8>>) {
+fn flora_views(content: &Content) -> (Vec<FloraView>, Vec<Option<u16>>) {
     let mut flora = Vec::new();
     let flora_wire = content
         .flora
@@ -1785,7 +1788,7 @@ fn flora_views(content: &Content) -> (Vec<FloraView>, Vec<Option<u8>>) {
                 family: family.to_owned(),
                 height_cm: centimetres(k.height_m),
             });
-            Some(u8::try_from(flora.len() - 1).expect("at most 256 kinds of flora"))
+            Some(u16::try_from(flora.len() - 1).expect("at most 65,536 kinds of flora"))
         })
         .collect();
     (flora, flora_wire)
@@ -3268,6 +3271,7 @@ mod tests {
     enum Out {
         Message(ServerMessage),
         Chunk(Sent),
+        Far(FarView),
     }
 
     fn shared(max_connections: usize) -> Shared {
@@ -3434,7 +3438,10 @@ mod tests {
         // 2026 for 19 more shrubs and plants (1,015,322 bytes before),
         // then for six fruit and nut trees (1,225,292), then for the
         // fruit each tree shows, a byte a tree (1,226,087, D48), then for
-        // the berries each shrub shows, a byte a plant (1,234,476).
+        // the berries each shrub shows, a byte a plant (1,234,476), then
+        // for protocol v30's compact frames (1,338,344 bytes before; their
+        // content, decoded and written again in v29's layout, gave v29's
+        // print and bytes exactly, 19 November 2026).
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
         let content = crate::content::load(&dir).expect("repository content");
         let map = Map::valley_by(sim::map::FIRST_GENERATOR, 768, 768, sim::VALLEY_SEED);
@@ -3450,7 +3457,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!((print, bytes), (0x8e46_3fa7_f6e3_39aa, 1_338_344));
+        assert_eq!((print, bytes), (0x1ba8_6abb_49e0_e4d2, 787_681));
     }
 
     #[test]
@@ -3480,7 +3487,8 @@ mod tests {
                 StandingTree {
                     dx,
                     dy,
-                    kind: u8::try_from(tree.species).unwrap(),
+                    kind: u16::try_from(tree.species).unwrap(),
+                    stage: protocol::STAGE_GROWN,
                     // The world's first day, in spring: no fruit (D48).
                     fruit: protocol::FRUIT_NONE,
                 }
@@ -3803,6 +3811,13 @@ mod tests {
                     }
                     message => out.push(Out::Message(message)),
                 },
+                Some(Message::Binary(far))
+                    if protocol::binary_kind(&far) == Some(protocol::BINARY_FAR_VIEW) =>
+                {
+                    out.push(Out::Far(
+                        protocol::decode_far_view(&far).expect("a far view"),
+                    ));
+                }
                 Some(Message::Binary(frame)) => out.push(Out::Chunk(Sent::of(
                     &link.shared,
                     ChunkSend {
@@ -3869,10 +3884,10 @@ mod tests {
         // dropped when it comes.
         link.far_view(away);
         settle(&mut link, &mut results);
-        let far: Vec<ServerMessage> = drain(&mut link)
+        let far: Vec<FarView> = drain(&mut link)
             .into_iter()
             .filter_map(|out| match out {
-                Out::Message(m @ ServerMessage::FarView { .. }) => Some(m),
+                Out::Far(far) => Some(far),
                 _ => None,
             })
             .collect();
@@ -3894,8 +3909,11 @@ mod tests {
         let first = shared.far_view_message(away).expect("encodable");
         let again = shared.far_view_message(away).expect("encodable");
         assert_eq!(first, again);
+        let Message::Binary(first) = first else {
+            panic!("a binary message");
+        };
         assert_eq!(
-            decode::<ServerMessage>(first.to_text().expect("text")).expect("the protocol"),
+            protocol::decode_far_view(&first).expect("the protocol"),
             far_view(&shared.map, away)
         );
     }
@@ -3966,16 +3984,14 @@ mod tests {
         let shared = shared(1);
         let map = &shared.map;
         let home = far_centre(shared.position_of(1).expect("body 1").chunk());
-        let cells = |m: &ServerMessage| match m {
-            ServerMessage::FarView {
-                cell,
-                x,
-                y,
-                width,
-                cells,
-                ..
-            } => (*cell, *x, *y, *width, cells.clone()),
-            other => panic!("not a far view: {other:?}"),
+        let cells = |m: &FarView| {
+            (
+                u32::from(m.cell),
+                m.x,
+                m.y,
+                u32::from(m.width),
+                m.cells.clone(),
+            )
         };
         let size = i32::try_from(CHUNK_SIZE / FAR_CELL).expect("small");
         for (dx, dy) in [
@@ -4017,7 +4033,7 @@ mod tests {
                 "on whole chunks"
             );
             let w = i32::try_from(width).expect("small");
-            let (own, grid) = (own.as_bytes(), grid.as_bytes());
+            let (own, grid) = (own.as_slice(), grid.as_slice());
             let mut shared_cells = 0;
             for j in 0..w {
                 for i in 0..w {
@@ -4144,10 +4160,7 @@ mod tests {
             Out::Chunk(Sent { x, y, bodies, .. })
                 if ChunkPos::new(*x, *y) == home && bodies.iter().any(|b| b.id == 1)
         ));
-        assert!(matches!(
-            out.last(),
-            Some(Out::Message(ServerMessage::FarView { .. }))
-        ));
+        assert!(matches!(out.last(), Some(Out::Far(_))));
         assert_eq!(link.sent.len(), total);
         assert!(link.known.contains(&1));
 
@@ -4285,10 +4298,10 @@ mod tests {
         let late_summer = Tick(day * (u64::from(calendar.days_per_year()) * 45 / 100) + day / 2);
         let wire = |id: &str| {
             let index = shared.flora.iter().position(|k| k.id == id).unwrap();
-            u8::try_from(index).unwrap()
+            u16::try_from(index).unwrap()
         };
         let (bramble, elder) = (wire("bramble"), wire("elder"));
-        let plants = |chunk: ChunkPos, kind: u8| -> Vec<Standing> {
+        let plants = |chunk: ChunkPos, kind: u16| -> Vec<Standing> {
             let sent = shared.chunk_message(chunk).unwrap();
             protocol::decode_chunk(&sent.frame)
                 .unwrap()
