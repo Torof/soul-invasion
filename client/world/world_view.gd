@@ -284,7 +284,10 @@ func _ready() -> void:
 
 
 ## The trees' canvas items belong to no node: given back and freed here.
+## The grounds on the workers are waited for (ChunkView.finish_all), so
+## quitting never leaves a worker in a script while the engine shuts down.
 func _exit_tree() -> void:
+	ChunkView.finish_all()
 	for stand: Trees.Stand in _trees.values():
 		stand.release()
 	for plants: PlantStand in _plant_stands.values():
@@ -634,7 +637,7 @@ func _hurry_paced() -> void:
 		if view == null or view.is_built():
 			_paced.erase(key)
 		elif _ledger.touches(_ledger.shown, key):
-			view.build_at_once = true
+			view.hurry()
 			view.queue_redraw()
 			_paced.erase(key)
 

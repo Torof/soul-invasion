@@ -70,6 +70,7 @@ func _init() -> void:
 	_test_trees_sort_with_bodies_by_their_foot()
 	_test_the_bounds_held_are_kept_as_chunks_come_and_go()
 	_test_grounds_built_on_workers_are_laid_nearest_first_within_the_budget()
+	_test_grounds_wait_their_turn_and_quitting_waits_for_them()
 	_test_the_reach_s_margin_grows_as_the_zoom_pulls_back()
 	_test_a_drag_is_smoothed_and_the_view_laid_on_whole_pixels()
 	_test_the_fog_uniforms_are_sent_only_when_they_change()
@@ -1489,6 +1490,10 @@ func _test_a_drag_is_smoothed_and_the_view_laid_on_whole_pixels() -> void:
 func _test_grounds_built_on_workers_are_laid_nearest_first_within_the_budget() -> void:
 	var was: Array = ChunkView.waiting
 	ChunkView.waiting = []
+	# Room on the workers for the four below (a test machine may have few
+	# threads: the turns are tested on their own).
+	var was_at_once := ChunkView.builds_at_once
+	ChunkView.builds_at_once = 8
 	var map_size := WaterMeshes.map_size
 	WaterMeshes.map_size = Vector2i(1024, 1024)
 	var tiles: Array = []
@@ -1561,6 +1566,86 @@ func _test_grounds_built_on_workers_are_laid_nearest_first_within_the_budget() -
 		TerrainGrid.clear(at, 32)
 	WaterMeshes.map_size = map_size
 	ChunkView.waiting = was
+	ChunkView.builds_at_once = was_at_once
+
+
+## At most ChunkView.builds_at_once grounds are on the workers, the
+## screen's own aside (given out at once): the others wait their turn and
+## are given out nearest the camera first, or at once when the screen
+## reaches them (`hurry`); one drawn before its turn is worked out in
+## line, the same; one dropped before its turn
+## costs no task, and a worker skips a ground dropped before it started;
+## quitting waits for every ground on the workers (audit F6: the main
+## thread waited 20 s behind every ground and every dropped one).
+func _test_grounds_wait_their_turn_and_quitting_waits_for_them() -> void:
+	var was: Array = ChunkView.waiting
+	var was_at_once := ChunkView.builds_at_once
+	ChunkView.waiting = []
+	ChunkView.builds_at_once = 1
+	var map_size := WaterMeshes.map_size
+	WaterMeshes.map_size = Vector2i(1024, 1024)
+	var tiles: Array = []
+	for y in 32:
+		for x in 32:
+			tiles.append("forest" if x < 10 else ("water" if x >= 24 else "grass"))
+	var make := func(at: Vector2i) -> ChunkView:
+		var view := ChunkView.new()
+		view.show_chunk(at, 32, tiles, [], {})
+		return view
+	ChunkView.lay_ready(0, Vector2.ZERO)
+	var first: ChunkView = make.call(Vector2i(64, 64))
+	var second: ChunkView = make.call(Vector2i(160, 96))
+	var third: ChunkView = make.call(Vector2i(96, 128))
+	for view: ChunkView in [first, second, third]:
+		view.start_build()
+	_check(first._task >= 0 and second._task < 0 and third._task < 0 and ChunkView._turns.size() == 2 and ChunkView.waiting.size() == 3, "one ground on a worker, two waiting their turn")
+	var screen: ChunkView = make.call(Vector2i(192, 192))
+	screen.build_at_once = true
+	screen.start_build()
+	_check(screen._task >= 0, "the screen's own given out at once")
+	# Reached by the screen before its turn: worked out here, the same as
+	# built in line.
+	var inline: ChunkView = make.call(Vector2i(96, 128))
+	inline._draw_ground_layers()
+	third._lay_task()
+	_check(third.is_built() and not ChunkView._turns.has(third) and not ChunkView.waiting.has(third), "before its turn: worked out in line and laid")
+	_check(third._flats.size() == inline._flats.size() and third._decor_cache.size() == inline._decor_cache.size(), "the same flat tiles and decorations")
+	var orphans := ChunkView._orphans.size()
+	second.free()
+	_check(ChunkView._turns.is_empty() and ChunkView._orphans.size() == orphans and ChunkView.waiting.size() == 2, "freed before its turn: forgotten, no task")
+	# The turns go nearest the camera first.
+	first._lay_task()
+	screen._lay_task()
+	var busy: ChunkView = make.call(Vector2i(320, 320))
+	var far: ChunkView = make.call(Vector2i(32, 32))
+	var near: ChunkView = make.call(Vector2i(256, 256))
+	for view: ChunkView in [busy, far, near]:
+		view.start_build()
+	_check(busy._task >= 0 and far._task < 0 and near._task < 0, "the worker busy: two waiting their turn")
+	while not busy.ground_ready():
+		OS.delay_msec(1)
+	_check(ChunkView.lay_ready(1_000_000, Iso.tile_to_screen(270, 270)) == 1 and busy.is_built(), "the done one laid")
+	_check(near._task >= 0 and far._task < 0, "and the nearest given out next")
+	far.hurry()
+	_check(far._task >= 0 and far.build_at_once and ChunkView._turns.is_empty(), "the screen reaching one: given out at once, past its turn")
+	# A worker skips a ground dropped before it started.
+	var input := inline._gather(true)
+	var dropped := ChunkView.GroundTask.new()
+	dropped.dropped = true
+	ChunkView._work(input, dropped)
+	var kept := ChunkView.GroundTask.new()
+	ChunkView._work(input, kept)
+	_check(dropped.out.is_empty() and not dropped.started and kept.started and kept.out.size() == 1, "a dropped ground skipped, a kept one worked out")
+	# Quitting: every ground on the workers waited for, the turns forgotten.
+	_check(ChunkView.finish_all() >= 1, "quitting waits for the ground on a worker")
+	_check(ChunkView.waiting.is_empty() and ChunkView._turns.is_empty() and ChunkView._orphans.is_empty() and near._task < 0 and far._task < 0, "nothing left under way")
+	for view: ChunkView in [first, third, screen, inline, busy, far, near]:
+		view.free()
+	for at: Vector2i in [Vector2i(64, 64), Vector2i(160, 96), Vector2i(96, 128), Vector2i(192, 192), Vector2i(320, 320), Vector2i(32, 32), Vector2i(256, 256)]:
+		TerrainGrid.clear(at, 32)
+	WaterMeshes.map_size = map_size
+	ChunkView.waiting = was
+	ChunkView.builds_at_once = was_at_once
 
 
 ## The camera's reach is the screen and a margin of chunks that grows as
