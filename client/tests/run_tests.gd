@@ -37,6 +37,7 @@ func _init() -> void:
 	_test_each_ground_canvas_covers_only_its_rows()
 	_test_currents_decode()
 	_test_the_golden_chunk_decodes()
+	_test_a_chunks_fruit_alone_comes_into_its_frame()
 	_test_a_tree_shows_its_fruit_as_sprites_at_its_points()
 	_test_a_shrub_shows_its_berries_as_sprites_at_its_points()
 	_test_the_berries_lie_in_the_flora_atlas_clear_of_the_plants()
@@ -897,6 +898,47 @@ func _test_the_golden_chunk_decodes() -> void:
 
 
 
+## Protocol v29 (D48): a chunk's fruit alone, its levels one digit a tree
+## or a plant, goes into the frame held (so a later `chunk_same` shows
+## it) and is told; the rest of the frame is untouched. A frame with
+## other counts, or levels that are not levels, are refused.
+func _test_a_chunks_fruit_alone_comes_into_its_frame() -> void:
+	var levels := Protocol.fruit_levels("0812")
+	_check(levels["ok"] and levels["levels"] == PackedByteArray([0, 8, 1, 2]), "digits read as levels: %s" % [levels])
+	_check(not Protocol.fruit_levels("19")["ok"] and not Protocol.fruit_levels("1a")["ok"], "past the top level, or no digit: refused")
+	_check(Protocol.fruit_levels("")["ok"], "no tree: no level")
+	var bytes := FileAccess.get_file_as_bytes("res://tests/fixtures/chunk_v17.bin")
+	var with := Protocol.with_fruit(bytes, PackedByteArray([1, 3]), PackedByteArray([7, 0]))
+	var before := Protocol.decode_chunk(bytes, PackedStringArray())
+	var after := Protocol.decode_chunk(with, PackedStringArray())
+	_check(after["fruit"] == PackedByteArray([1, 3]) and after["plant_fruit"] == PackedByteArray([7, 0]), "the levels put in: %s %s" % [after.get("fruit"), after.get("plant_fruit")])
+	var differ := 0
+	for i in bytes.size():
+		differ += int(bytes[i] != with[i])
+	after["fruit"] = before["fruit"]
+	after["plant_fruit"] = before["plant_fruit"]
+	_check(str(after) == str(before) and differ == 3, "nothing else of the frame moved: %d bytes" % differ)
+	_check(Protocol.with_fruit(bytes, PackedByteArray([1]), PackedByteArray([7, 0])).is_empty(), "another count of trees: refused")
+	_check(Protocol.with_fruit(bytes, PackedByteArray([1, 3]), PackedByteArray()).is_empty(), "another count of plants: refused")
+	_check(Protocol.with_fruit(bytes.slice(0, 60), PackedByteArray([1, 3]), PackedByteArray([7, 0])).is_empty(), "a frame cut short: refused")
+	# The net puts them in the frame held, and tells them.
+	var net: Node = load("res://net/client.gd").new()
+	var told: Array = []
+	net.chunk_fruit.connect(func(x: int, y: int, fruit: PackedByteArray, plant_fruit: PackedByteArray) -> void:
+		told.append([x, y, fruit, plant_fruit]))
+	net.frames.received(Vector2i(3, -2), bytes)
+	net._handle(Protocol.decode('{"type":"chunk_fruit","x":3,"y":-2,"version":7,"trees":"13","plants":"70"}'))
+	_check(told == [[3, -2, PackedByteArray([1, 3]), PackedByteArray([7, 0])]], "told: %s" % [told])
+	_check(net.frames.live[Vector2i(3, -2)] == with, "the frame held carries them")
+	net.free()
+	# A stand shows them in place: its trees' levels set (none shown here,
+	# so none drawn again).
+	var trees := PackedInt32Array([0, 0, 0, 0, 4_000, 0])
+	var stand := Trees.Stand.new(trees, {"wild_pear": 1_200}, PackedStringArray(["wild_pear"]), PackedByteArray([8, 3]))
+	_check(stand.set_fruit(PackedByteArray([2, 3])) == 0 and stand.fruit == PackedByteArray([2, 3]), "the stand's levels moved: %s" % [stand.fruit])
+	stand.release()
+
+
 ## A tree showing fruit (D48) is drawn bare with its fruit's sprites hung
 ## at its image's points: its level's share of them, the first ones
 ## (spread over the crown); a kind without sprites (the birch) is drawn
@@ -1004,6 +1046,14 @@ func _test_a_shrub_shows_its_berries_as_sprites_at_its_points() -> void:
 	stand.parent = parent
 	stand.show_cells(Trees.Stand.cell_range(stand.rect(0)))
 	_check(stand.items.has(0), "shown with its berries")
+	# Its fruit alone moves (`chunk_fruit`): its berries as a stand made
+	# anew hangs them, drawn again in place.
+	var item: RID = stand.items[0]
+	stand.set_fruit(PackedInt32Array([0, int(at.x), int(at.y)]), tall, PackedByteArray([8]))
+	var anew := PlantStand.new(PackedInt32Array([0, int(at.x), int(at.y)]), tall, PackedByteArray([8]))
+	_check(str(stand.berries) == str(anew.berries) and (stand.berries[0] as Array).size() == 6 and stand.items[0] == item, "level 8 now: six, in the same canvas item")
+	stand.set_fruit(PackedInt32Array([0, int(at.x), int(at.y)]), tall, PackedByteArray([0]))
+	_check(stand.berries.is_empty(), "picked bare: none")
 	stand.release()
 	RenderingServer.free_rid(parent)
 	# The game's own data, as read (none while its art is not there).

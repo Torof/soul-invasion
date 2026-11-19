@@ -8,7 +8,7 @@ extends RefCounted
 ## of truth. Every JSON message is a dictionary with a snake_case `type`
 ## field; a chunk frame decodes into packed arrays (`decode_chunk`).
 
-const PROTOCOL_VERSION := 28
+const PROTOCOL_VERSION := 29
 ## Chunk frames kept after they left the view (FrameCache), as the
 ## server's mirror of them.
 const CHUNK_CACHE_CHUNKS := 1500
@@ -243,6 +243,55 @@ static func decode_chunk(bytes: PackedByteArray, materials: PackedStringArray) -
 		"plant_fruit": fruits[1],
 		"items": items,
 	}
+
+
+## The levels `chunk_fruit` carries (protocol v29, D48): one digit a tree
+## or a plant, 0 none to Trees.FRUIT_LEVELS. `ok` false: a character is
+## not a level.
+static func fruit_levels(digits: String) -> Dictionary:
+	var levels := digits.to_ascii_buffer()
+	if levels.size() != digits.length():
+		return {"ok": false, "levels": PackedByteArray()}
+	for i in levels.size():
+		var level := levels[i] - 48
+		if level < 0 or level > Trees.FRUIT_LEVELS:
+			return {"ok": false, "levels": PackedByteArray()}
+		levels[i] = level
+	return {"ok": true, "levels": levels}
+
+
+## A chunk frame with the fruit of its trees and plants put in (D48,
+## `chunk_fruit`): the same bytes but the fruit byte of each. Empty if
+## the frame does not hold as many trees and plants (or is cut short).
+static func with_fruit(bytes: PackedByteArray, trees: PackedByteArray, plants: PackedByteArray) -> PackedByteArray:
+	var size := bytes.size()
+	if size < CHUNK_HEADER:
+		return PackedByteArray()
+	var flags := bytes.decode_u8(12)
+	var side := bytes.decode_u8(13)
+	var tiles_n := side * side
+	var at := CHUNK_HEADER + tiles_n
+	if size < at:
+		return PackedByteArray()
+	if flags & CHUNK_HAS_WATER:
+		for i in tiles_n:
+			var code := bytes[CHUNK_HEADER + i]
+			if code == TerrainGrid.WATER or code == TerrainGrid.FORD or code == TerrainGrid.BROOK:
+				at += 2
+	if flags & CHUNK_HAS_HEIGHTS:
+		at += tiles_n * 2
+	var out := bytes.duplicate()
+	for fruit: PackedByteArray in [trees, plants]:
+		if at + 2 > size:
+			return PackedByteArray()
+		var n := bytes.decode_u16(at)
+		at += 2
+		if n != fruit.size() or at + n * 6 > size:
+			return PackedByteArray()
+		for i in n:
+			out[at + i * 6 + 5] = fruit[i]
+		at += n * 6
+	return out
 
 
 ## A material's content id by its index, "" past the list.

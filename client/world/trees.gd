@@ -1164,6 +1164,22 @@ class Stand:
 
 	## Gives every canvas item back and lets its kinds go (the chunk is
 	## going): their images are freed after the grace if no stand holds them.
+	## Shows `shows` as the trees' fruit (D48, `chunk_fruit`): each tree
+	## shown whose level moved is drawn again in its own canvas item, as
+	## it would be drawn anew; the others are not touched. How many were
+	## drawn again.
+	func set_fruit(shows: PackedByteArray) -> int:
+		var drawn := 0
+		for i in fruit.size():
+			var level := shows[i] if i < shows.size() else Trees.FRUIT_NONE
+			if level == fruit[i]:
+				continue
+			fruit[i] = level
+			if items.has(i):
+				_draw(i, items[i], Iso.point_to_screen(at[i]))
+				drawn += 1
+		return drawn
+
 	func release() -> void:
 		for i: int in items.keys():
 			_hide(i)

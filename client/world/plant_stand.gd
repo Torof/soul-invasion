@@ -126,6 +126,11 @@ func _show(i: int) -> void:
 	RenderingServer.canvas_item_set_draw_index(item, i)
 	RenderingServer.canvas_item_set_transform(item, Transform2D(0.0, feet[i]))
 	items[i] = item
+	_paint(i, item)
+
+
+## Draws plant `i` and its berries in its canvas item.
+func _paint(i: int, item: RID) -> void:
 	var atlas := ChunkView.flora_atlas()
 	if atlas != null:
 		var r := rect(i)
@@ -135,6 +140,32 @@ func _show(i: int) -> void:
 		for b: Array in berries.get(i, []):
 			var at: Rect2 = b[0]
 			RenderingServer.canvas_item_add_texture_rect_region(item, Rect2(at.position - feet[i], at.size), atlas.get_rid(), b[1])
+
+
+## Shows `fruit` as the plants' berries (D48, `chunk_fruit`), `plants` and
+## `flora` as given when made: each plant shown whose berries changed is
+## drawn again in its own canvas item, as it would be drawn anew.
+func set_fruit(plants: PackedInt32Array, flora: Array, fruit: PackedByteArray) -> void:
+	var i := 0
+	for p in range(0, plants.size(), 3):
+		var k := plants[p]
+		if k < 0 or k >= flora.size() or not ChunkView.plant_stands(flora[k]):
+			continue
+		var at := Vector2(plants[p + 1], plants[p + 2])
+		var cut := ChunkView.plant_region(at, flora[k])
+		if cut.size == Vector2.ZERO:
+			continue
+		var shows := fruit[p / 3] if p / 3 < fruit.size() else Trees.FRUIT_NONE
+		var hung := ChunkView.berries_of(at, flora[k], rect(i), cut, shows)
+		if hung != berries.get(i, []):
+			if hung.is_empty():
+				berries.erase(i)
+			else:
+				berries[i] = hung
+			if items.has(i):
+				RenderingServer.canvas_item_clear(items[i])
+				_paint(i, items[i])
+		i += 1
 
 
 func _hide(i: int) -> void:

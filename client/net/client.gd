@@ -12,6 +12,10 @@ signal clock(clock: Dictionary)
 ## The kinds of tree, sent with the world's state, before it.
 signal species(species: Array)
 signal chunk(x: int, y: int, chunk: Dictionary)
+## The fruit of a chunk held moved, nothing else of it (protocol v29,
+## D48): the level each of its trees and plants shows now, in the order of
+## its frame (Protocol.decode_chunk's `fruit` and `plant_fruit`).
+signal chunk_fruit(x: int, y: int, fruit: PackedByteArray, plant_fruit: PackedByteArray)
 ## The bodies standing in a chunk, right after its frame (when any).
 signal chunk_bodies(x: int, y: int, bodies: Array)
 ## The kinds of shrub, plant and mushroom ({id, name, family, height_cm}),
@@ -249,6 +253,25 @@ func _same(x: int, y: int, version: int) -> void:
 			_send(Protocol.chunk_missing(x, y))
 
 
+## `chunk_fruit` (v29, D48): the levels put in the frame held, so a later
+## `chunk_same` shows them, and told; if the chunk is not held at that
+## version with as many trees and plants, the server is told it is
+## missing and sends its frame.
+func _fruit(x: int, y: int, version: int, trees: String, plants: String) -> void:
+	var key := Vector2i(x, y)
+	var fruit := Protocol.fruit_levels(trees)
+	var plant_fruit := Protocol.fruit_levels(plants)
+	var held: PackedByteArray = frames.live.get(key, PackedByteArray())
+	var with := PackedByteArray()
+	if fruit["ok"] and plant_fruit["ok"] and FrameCache.version_of(held) == version:
+		with = Protocol.with_fruit(held, fruit["levels"], plant_fruit["levels"])
+	if with.is_empty():
+		_send(Protocol.chunk_missing(x, y))
+		return
+	frames.live[key] = with
+	chunk_fruit.emit(x, y, fruit["levels"], plant_fruit["levels"])
+
+
 ## `view`: the chunks held outside the window are left, their frames kept.
 func _view(window: Rect2i) -> void:
 	for key in frames.view(window):
@@ -290,6 +313,14 @@ func _handle(message: Dictionary) -> void:
 			chunk_bodies.emit(int(message.get("x", 0)), int(message.get("y", 0)), message.get("bodies", []))
 		"chunk_same":
 			_same(int(message.get("x", 0)), int(message.get("y", 0)), int(message.get("version", -1)))
+		"chunk_fruit":
+			_fruit(
+				int(message.get("x", 0)),
+				int(message.get("y", 0)),
+				int(message.get("version", -1)),
+				str(message.get("trees", "")),
+				str(message.get("plants", ""))
+			)
 		"view":
 			_view(Rect2i(
 				int(message.get("x", 0)),

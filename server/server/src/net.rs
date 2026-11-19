@@ -2086,10 +2086,10 @@ enum Outgoing {
     /// A chunk built on the pool, finished with what stands and lies in
     /// it when it leaves.
     Chunk(ChunkGround),
-    /// A chunk the client keeps at this version and fruit phase (`None`:
-    /// not known, D48): `chunk_same` instead of its frame, if neither has
-    /// moved when it leaves.
-    Same(ChunkPos, Version, Option<u64>),
+    /// A chunk the client keeps, as it keeps it: `chunk_same` instead of
+    /// its frame, if neither its version nor its fruit phase has moved
+    /// when it leaves.
+    Same(ChunkPos, Kept),
     /// A message as is (the far view).
     Frame(Message),
 }
@@ -2105,13 +2105,47 @@ enum Built {
 /// A chunk in view whose frame (or `chunk_same`) left: the version of the
 /// frame the client was given, what it keeps once the chunk leaves its
 /// view, and the version it knows, the frame's then each item event's;
-/// and the fruit phase of its frame (D48), `None` when not known (a frame
-/// the client kept from an earlier connection).
+/// the fruit phase of its frame (D48), and the fruit it shows
+/// ([`fruit_signature`]), each `None` when not known (a frame the client
+/// kept from an earlier connection).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Held {
     frame: Version,
     known: Version,
     phase: Option<u64>,
+    fruit: Option<u64>,
+}
+
+impl Held {
+    /// The frame as the client keeps it once the chunk leaves its view.
+    fn kept(self) -> Kept {
+        Kept {
+            version: self.frame,
+            phase: self.phase,
+            fruit: self.fruit,
+        }
+    }
+}
+
+/// A frame the client keeps out of view (D4): its version, the fruit
+/// phase it was made in and the fruit it shows (D48), these two `None`
+/// when not known (kept from an earlier connection).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Kept {
+    version: Version,
+    phase: Option<u64>,
+    fruit: Option<u64>,
+}
+
+/// The fruit a frame shows, as a number: two frames of a chunk show the
+/// same fruit if their signatures are equal (D48). The levels of its
+/// trees then of its plants ([`protocol::frame_fruit`]), hashed.
+fn fruit_signature(trees: &[u8], plants: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    trees.hash(&mut hasher);
+    plants.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// A connection past its handshake: what its client holds, what waits to
@@ -2160,7 +2194,7 @@ struct Link {
     /// that version and phase, `chunk_same` goes instead of the frame. A
     /// guess: should the client not hold it, it says so and gets the
     /// frame.
-    cache: Lru<ChunkPos, (Version, Option<u64>)>,
+    cache: Lru<ChunkPos, Kept>,
     /// The bodies the client was told of and not told to forget: all
     /// within range, as last told.
     known: BTreeSet<u32>,
@@ -2269,9 +2303,9 @@ impl Link {
         match self.ground.pop_front() {
             None => Ok(None),
             Some(Outgoing::Frame(message)) => Ok(Some(message)),
-            Some(Outgoing::Same(chunk, version, phase)) => {
-                if self.shared.chunk_version(chunk) != version
-                    || phase.is_some_and(|p| p != self.shared.fruit_phase())
+            Some(Outgoing::Same(chunk, kept)) => {
+                if self.shared.chunk_version(chunk) != kept.version
+                    || kept.phase.is_some_and(|p| p != self.shared.fruit_phase())
                 {
                     // Changed since it was asked for: the frame, built.
                     self.build(chunk);
@@ -2279,17 +2313,45 @@ impl Link {
                 }
                 self.awaiting.remove(&chunk);
                 let bodies = self.bodies_seen_in(chunk);
-                self.same(chunk, version, phase, bodies).map(Some)
+                self.same(chunk, kept, bodies).map(Some)
             }
             Some(Outgoing::Chunk(ground)) => {
                 let chunk = ground.chunk;
                 let sent = self.shared.chunk_send_of(ground)?;
                 // Kept by the client and unchanged, its fruit too: no
                 // frame.
-                if self.cache.remove(&chunk) == Some((sent.version, Some(sent.phase))) {
-                    return self
-                        .same(chunk, sent.version, Some(sent.phase), sent.bodies)
-                        .map(Some);
+                if let Some(kept) = self.cache.remove(&chunk)
+                    && kept.version == sent.version
+                    && kept.phase == Some(sent.phase)
+                {
+                    return self.same(chunk, kept, sent.bodies).map(Some);
+                }
+                let (trees, plants) = protocol::frame_fruit(&sent.frame)?;
+                let fruit = fruit_signature(&trees, &plants);
+                // Held at this version already (sent again at a dawn): all
+                // but its fruit is as the client holds it (D48).
+                if let Some(held) = self.sent.get(&chunk).copied()
+                    && held.known == sent.version
+                {
+                    self.sent.insert(
+                        chunk,
+                        Held {
+                            phase: Some(sent.phase),
+                            fruit: Some(fruit),
+                            ..held
+                        },
+                    );
+                    if held.fruit == Some(fruit) {
+                        return Ok(None);
+                    }
+                    let message = ServerMessage::ChunkFruit {
+                        x: chunk.x,
+                        y: chunk.y,
+                        version: held.frame,
+                        trees: protocol::fruit_digits(&trees),
+                        plants: protocol::fruit_digits(&plants),
+                    };
+                    return Ok(Some(Message::text(encode(&message)?)));
                 }
                 self.tell_bodies(chunk, sent.bodies)?;
                 self.sent.insert(
@@ -2298,6 +2360,7 @@ impl Link {
                         frame: sent.version,
                         known: sent.version,
                         phase: Some(sent.phase),
+                        fruit: Some(fruit),
                     },
                 );
                 Ok(Some(Message::Binary(sent.frame)))
@@ -2305,28 +2368,27 @@ impl Link {
         }
     }
 
-    /// `chunk_same` for `chunk`, held at `version` and fruit `phase`,
-    /// with the bodies in it.
+    /// `chunk_same` for `chunk`, held as `kept`, with the bodies in it.
     fn same(
         &mut self,
         chunk: ChunkPos,
-        version: Version,
-        phase: Option<u64>,
+        kept: Kept,
         bodies: Vec<BodyState>,
     ) -> Result<Message, BoxError> {
         self.tell_bodies(chunk, bodies)?;
         self.sent.insert(
             chunk,
             Held {
-                frame: version,
-                known: version,
-                phase,
+                frame: kept.version,
+                known: kept.version,
+                phase: kept.phase,
+                fruit: kept.fruit,
             },
         );
         let same = ServerMessage::ChunkSame {
             x: chunk.x,
             y: chunk.y,
-            version,
+            version: kept.version,
         };
         Ok(Message::text(encode(&same)?))
     }
@@ -2368,7 +2430,14 @@ impl Link {
         // Their fruit phase is not known: kept, and sent again at the next
         // dawn should the fruit have changed (`refresh`, D48).
         for &(x, y, version) in held.chunks.iter().skip(skip) {
-            self.cache.insert(ChunkPos::new(x, y), (version, None));
+            self.cache.insert(
+                ChunkPos::new(x, y),
+                Kept {
+                    version,
+                    phase: None,
+                    fruit: None,
+                },
+            );
         }
     }
 
@@ -2413,11 +2482,11 @@ impl Link {
         if !self.awaiting.insert(chunk) {
             return; // already asked for, not back yet
         }
-        if let Some((version, phase)) = self.cache.remove(&chunk)
-            && version == self.shared.chunk_version(chunk)
-            && phase.is_none_or(|p| p == self.shared.fruit_phase())
+        if let Some(kept) = self.cache.remove(&chunk)
+            && kept.version == self.shared.chunk_version(chunk)
+            && kept.phase.is_none_or(|p| p == self.shared.fruit_phase())
         {
-            self.ground.push_back(Outgoing::Same(chunk, version, phase));
+            self.ground.push_back(Outgoing::Same(chunk, kept));
             return;
         }
         self.build(chunk);
@@ -2460,8 +2529,8 @@ impl Link {
             match out {
                 Outgoing::Chunk(g) if !self.view.chunks.contains(&g.chunk) => {}
                 // Still kept by the client, never shown: kept here too.
-                Outgoing::Same(chunk, version, phase) if !self.view.chunks.contains(&chunk) => {
-                    self.cache.insert(chunk, (version, phase));
+                Outgoing::Same(chunk, kept) if !self.view.chunks.contains(&chunk) => {
+                    self.cache.insert(chunk, kept);
                 }
                 out => self.ground.push_back(out),
             }
@@ -2471,7 +2540,7 @@ impl Link {
             // What the client held goes to its cache; a chunk never sent
             // is only forgotten here.
             if let Some(held) = self.sent.remove(&chunk) {
-                self.cache.insert(chunk, (held.frame, held.phase));
+                self.cache.insert(chunk, held.kept());
             }
         }
         if let Some(window) = self.view.window_rect()
@@ -2716,7 +2785,9 @@ impl Link {
     /// it was told (a crop picked: no event tells it, D48) and those whose
     /// frame shows the fruit of another phase, or of a phase not known
     /// (D48). A fruit window or a crop that opens or shuts reaches the
-    /// client within a day; on any other day nothing goes.
+    /// client within a day; on any other day nothing goes. A chunk whose
+    /// version did not move goes as its fruit alone, and only if its
+    /// levels moved (`chunk_fruit`, [`Link::next_output`]).
     fn refresh(&mut self) {
         let phase = self.shared.fruit_phase();
         let stale: Vec<ChunkPos> = self
@@ -4012,16 +4083,36 @@ mod tests {
         // A dawn with the same fruit sends nothing again.
         dawn(&mut link, 1);
         assert!(link.awaiting.is_empty());
-        // The first dawn of autumn sends the whole view again, once.
+        // The first dawn of autumn looks at the whole view again, once,
+        // and sends no frame: the fruit alone of the chunks whose levels
+        // moved (v29), as a frame made now shows them.
         shared.tick.store(autumn.0, Ordering::Relaxed);
         dawn(&mut link, 26);
         assert_eq!(link.awaiting.len(), total);
         settle(&mut link, &mut results);
         let out = drain(&mut link);
         let frames = out.iter().filter(|o| matches!(o, Out::Chunk(_))).count();
-        assert_eq!(frames, total);
+        assert_eq!(frames, 0, "no frame: nothing but the fruit moved");
+        let fruit = fruit_sent(&shared, &out);
+        assert_ne!(fruit.len(), 0, "the levels of some chunks moved");
+        let dawns = |out: &[Out]| {
+            out.iter()
+                .filter(|o| matches!(o, Out::Message(ServerMessage::DayStarted { .. })))
+                .count()
+        };
+        assert_eq!(fruit.len() + dawns(&out), out.len(), "nothing else");
         dawn(&mut link, 27);
         assert!(link.awaiting.is_empty(), "nothing changed since");
+        // A dawn whose phase moved but none of the levels in view (most
+        // chunks on many dawns): looked at again, nothing sent.
+        for held in link.sent.values_mut() {
+            held.phase = Some(0);
+        }
+        dawn(&mut link, 27);
+        assert_eq!(link.awaiting.len(), total);
+        settle(&mut link, &mut results);
+        let out = drain(&mut link);
+        assert_eq!(out.len(), dawns(&out), "the dawn alone");
         // A crop picked moves the chunk's version, which no event told the
         // client: its chunk alone is sent again at the next dawn.
         shared.crop_picked(home, &BTreeMap::new(), 1);
@@ -4048,9 +4139,38 @@ mod tests {
         dawn(&mut back, 29);
         assert_eq!(back.awaiting.len(), same);
         settle(&mut back, &mut results);
-        drain(&mut back);
+        // Their fruit not known: told, each, but no frame.
+        let out = drain(&mut back);
+        assert_eq!(fruit_sent(&shared, &out).len(), same);
+        assert_eq!(out.len(), same + dawns(&out), "no frame");
         dawn(&mut back, 30);
         assert!(back.awaiting.is_empty());
+    }
+
+    /// The chunks whose fruit alone was sent (`chunk_fruit`) in `out`,
+    /// each checked against a frame of it made now: the same levels, and
+    /// the version the client holds (0 here: no item moved).
+    fn fruit_sent(shared: &Shared, out: &[Out]) -> Vec<ChunkPos> {
+        out.iter()
+            .filter_map(|o| match o {
+                Out::Message(ServerMessage::ChunkFruit {
+                    x,
+                    y,
+                    version,
+                    trees,
+                    plants,
+                }) => {
+                    let chunk = ChunkPos::new(*x, *y);
+                    let frame = shared.chunk_message(chunk).unwrap().frame;
+                    let (t, p) = protocol::frame_fruit(&frame).unwrap();
+                    assert_eq!(protocol::fruit_levels(trees), Some(t), "{chunk:?}");
+                    assert_eq!(protocol::fruit_levels(plants), Some(p), "{chunk:?}");
+                    assert_eq!(*version, 0);
+                    Some(chunk)
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// A watcher's link whose client kept every chunk of the view of the
