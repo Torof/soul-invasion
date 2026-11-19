@@ -55,6 +55,7 @@ func _init() -> void:
 	_test_perf_overlay_reports()
 	_test_plants_are_named_and_coloured()
 	_test_trees_sharpness_eases_with_the_zoom()
+	_test_the_sway_shader_reads_each_pixel_once()
 	_test_the_zoom_steps_through_round_levels_up_to_2_5()
 	_test_the_bounds_of_the_chunks_held()
 	_test_the_camera_stops_at_the_band()
@@ -663,6 +664,34 @@ func _test_each_ground_canvas_covers_only_its_rows() -> void:
 	_check(GroundBuild.rows_of(PackedByteArray([1, 0, 1, 1, 0, 0, 1, 1, 0]), 3, 1) == PackedInt32Array([0, 0, 1, 2, 2, 0, 3, 1, 0, 2, 2, 3]), "runs split where they change")
 	view.free()
 	TerrainGrid.clear(origin, 32)
+
+
+## The standing layer's shader (trees.gdshader) writes COLOR first and
+## never reads it in fragment(): Godot's own read of TEXTURE into COLOR is
+## then dead code the driver drops, and a tree pixel samples its image once
+## (the double read cost 1.2 to 1.4 ms of a forest frame, 19 Nov 2026).
+## What is neither tree nor fruit is drawn as the default shader draws it.
+func _test_the_sway_shader_reads_each_pixel_once() -> void:
+	var code := FileAccess.get_file_as_string("res://world/trees.gdshader")
+	var start := code.find("void fragment() {")
+	_check(start >= 0, "the sway shader has a fragment()")
+	var body := code.substr(start + "void fragment() {".length())
+	var statements := PackedStringArray()
+	for line in body.split("\n"):
+		var s := line.strip_edges()
+		if not s.is_empty() and not s.begins_with("//"):
+			statements.append(s)
+	_check(statements.size() > 0 and statements[0] == "COLOR = vec4(0.0);", "COLOR is written before anything else: %s" % (statements[0] if statements.size() > 0 else ""))
+	# Every COLOR left once the comments are dropped is written, never read.
+	var statements_only := "\n".join(statements)
+	var reads := 0
+	var at := statements_only.find("COLOR")
+	while at >= 0:
+		if statements_only.substr(at, 8) != "COLOR = ":
+			reads += 1
+		at = statements_only.find("COLOR", at + 5)
+	_check(reads == 0, "fragment() never reads COLOR (%d reads)" % reads)
+	_check(statements.has("COLOR = tint * texture(TEXTURE, UV);"), "the rest is drawn as the default shader draws it")
 
 
 func _test_trees_sharpness_eases_with_the_zoom() -> void:
@@ -3171,7 +3200,7 @@ func _test_the_slope_turf_is_a_family_of_tiles_chosen_per_cell() -> void:
 	var tiles: Array = ChunkView.SLOPE_LOOK["slope_turf_set"]
 	var variants: int = ChunkView.SLOPE_LOOK["slope_turf_variants"]
 	_check(tiles.size() == 20 and variants == 5 and int(ChunkView.SLOPE_LOOK["slope_turf_angles"]) == 4, "the family holds four rows of five tiles: %d tiles, %d variants" % [tiles.size(), variants])
-	_check(tiles[0].ends_with("mountain_turf_20_1.png") and tiles[5].ends_with("mountain_turf_32_1.png") and tiles[19].ends_with("mountain_turf_55_5.png"), "the rows go from 20 to 55 degrees, five tiles a row, in order")
+	_check(tiles[0].ends_with("mountain_turf_20_1.webp") and tiles[5].ends_with("mountain_turf_32_1.webp") and tiles[19].ends_with("mountain_turf_55_5.webp"), "the rows go from 20 to 55 degrees, five tiles a row, in order")
 	var family := ChunkView.slope_turf_set(PackedStringArray(tiles))
 	_check(family.get_layers() == 20 and family.get_width() == 1536 and family.get_height() == 1536, "the set is a texture array of twenty layers of 1536 px: %d layers, %d px" % [family.get_layers(), family.get_width()])
 	_check(ChunkView.slope_turf_set(PackedStringArray(tiles)) == family, "built once and kept")

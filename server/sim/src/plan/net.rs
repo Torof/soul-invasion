@@ -31,7 +31,8 @@
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::too_many_lines
+    clippy::too_many_lines,
+    reason = "float maths of the simulation, the same result on every run; small counts and coordinates, far below the float precision limit; values bounded by the world size and the content ranges; values checked non-negative by the surrounding rule; one straight reading, top to bottom; splitting it would scatter the rule"
 )]
 
 use std::collections::{BTreeMap, VecDeque};
@@ -441,12 +442,18 @@ impl Tiles {
 }
 
 /// Hectares of `tiles` tiles.
-#[allow(clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "small counts and coordinates, far below the float precision limit"
+)]
 fn ha(tiles: u64) -> f64 {
     tiles as f64 / 10_000.0
 }
 
-#[allow(clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "small counts and coordinates, far below the float precision limit"
+)]
 fn per_ha(count: usize, tiles: u64) -> f64 {
     count as f64 / ha(tiles)
 }

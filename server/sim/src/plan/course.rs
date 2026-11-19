@@ -532,7 +532,7 @@ pub(crate) fn meander_line(
     depth: u32,
     per_mille: (i64, i64),
 ) -> Vec<(i64, i64)> {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "the rule's inputs, each its own")]
     fn split(
         seed: u64,
         purpose: u64,
@@ -1172,7 +1172,10 @@ fn join(
 
 /// The river stems of `c` whose cells lie in `x` × `y` (continent
 /// cells): see the module.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one straight reading, top to bottom; splitting it would scatter the rule"
+)]
 pub(crate) fn stems(
     c: &Continent,
     x: std::ops::Range<i32>,

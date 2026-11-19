@@ -163,7 +163,10 @@ impl Item {
 
 /// The roll of `rule` on `tile`, 0 to 999: the piece is there when it is
 /// under the rule's chance.
-#[allow(clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_sign_loss,
+    reason = "values checked non-negative by the surrounding rule"
+)]
 fn roll(seed: u64, tile: Pos, rule: usize) -> u64 {
     hash(&[
         seed ^ purpose::NATURAL_ITEM,

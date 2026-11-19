@@ -406,7 +406,10 @@ fn encode_changes(chunk: ChunkPos, changes: &ChunkChanges) -> Vec<u8> {
 /// The changes [`encode_changes`] wrote for `chunk` at `version`, in
 /// `format` (1 or 2); `None` if the bytes are damaged or the format
 /// unknown.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one straight reading, top to bottom; splitting it would scatter the rule"
+)]
 fn decode_changes(
     chunk: ChunkPos,
     version: Version,
