@@ -162,8 +162,13 @@ const FRUIT_BUDGET_USEC := 1000
 ## The trees under a point are found without looking at every tree
 ## (see-through), by the cells of the screen each stand knows its trees by.
 const TREE_CELL_PX := Trees.Stand.CELL_PX
-## body id -> the node drawing it.
+## body id -> the node drawing it: only the bodies the screen may show
+## (BodyCrowd) have one.
 var _body_nodes: Dictionary = {}
+## Which bodies the screen may show: only those are walked on each frame.
+var _crowd := BodyCrowd.new()
+## The world's tick the last frame walked the bodies to.
+var _step_now := 0.0
 ## The trees whose see-through flags are set, to clear them later:
 ## Vector3i(chunk x, chunk y, tree index) -> true.
 var _flagged: Dictionary = {}
@@ -376,6 +381,7 @@ func _forget_bodies() -> void:
 	_body_nodes.clear()
 	_flagged.clear()
 	_bodies.clear()
+	_crowd.clear()
 	_holds.clear()
 
 
@@ -546,7 +552,7 @@ func _on_chunk_bodies(_x: int, _y: int, bodies: Array) -> void:
 		# walked on from there, to its next waypoint on time.
 		var now := _now()
 		var id := int(b.get("id", -1))
-		_place(id, BodyWalk.told(_bodies.get(id, {}), Net.point(b.get("at", {})), route,
+		_place(id, BodyWalk.told(_shown(id), Net.point(b.get("at", {})), route,
 			Net.arrivals(b.get("arrivals", [])), now, int(b.get("speed_cm_per_s", 0)) * 10.0, now))
 		_bodies[int(b.get("id", -1))]["asleep"] = bool(b.get("asleep", false))
 		var holds: Variant = b.get("holds")
@@ -599,6 +605,7 @@ func _on_body_sleeps(body: int, asleep: bool) -> void:
 
 func _on_body_died(body: int, _cause: String) -> void:
 	_bodies.erase(body)
+	_crowd.forget(body)
 	queue_redraw()
 
 
@@ -1050,9 +1057,10 @@ func _on_chunk_hidden(x: int, y: int) -> void:
 		_arrival.erase(key)
 		_reach_dirty = true
 		_redraw_neighbours(key)
-	for id in _bodies.keys():
-		if Iso.chunk_of(_tile_of(_bodies[id]["at"]), _chunk_size) == key:
+	for id: int in _bodies.keys():
+		if Iso.chunk_of(_tile_of(_shown(id)["at"]), _chunk_size) == key:
 			_bodies.erase(id)
+			_crowd.forget(id)
 	queue_redraw()
 
 
@@ -1064,7 +1072,7 @@ func _on_body_walks(body: int, at: Vector2, route: Array, arrivals: Array, speed
 	_clock.catch_up(float(tick), Time.get_ticks_msec())
 	if body == _piloted:
 		_blocked.clear()
-	_place(body, BodyWalk.told(_bodies.get(body, {}), at, route, arrivals, float(tick), speed_cm_per_s * 10.0, _now()))
+	_place(body, BodyWalk.told(_shown(body), at, route, arrivals, float(tick), speed_cm_per_s * 10.0, _now()))
 	queue_redraw()
 
 
@@ -1126,6 +1134,7 @@ func glide_to(at: Vector2) -> void:
 
 func _on_body_left(body: int) -> void:
 	_bodies.erase(body)
+	_crowd.forget(body)
 	_holds.erase(body)
 	queue_redraw()
 
@@ -1136,10 +1145,21 @@ func _place(body: int, walk: Dictionary) -> void:
 	var first_sight := not _bodies.has(body)
 	walk["asleep"] = _bodies[body]["asleep"] if not first_sight else false
 	_bodies[body] = walk
+	_crowd.told(body, walk)
 	var at: Vector2 = walk["at"]
 	if first_sight and body == _piloted:
 		_camera.position = Iso.point_to_screen(at)
 		_camera_placed = true
+
+
+## Body `id`'s walk as shown (empty when unknown): one off screen, not
+## walked on each frame (BodyCrowd), is walked on first to where the last
+## frame had it, as if it had been.
+func _shown(id: int) -> Dictionary:
+	var walk: Dictionary = _bodies.get(id, {})
+	if not walk.is_empty() and not _crowd.shown.has(id):
+		BodyWalk.advance(walk, 0.0, _step_now)
+	return walk
 
 
 func _clear_target() -> void:
@@ -1155,7 +1175,8 @@ static func _tile_of(mm: Vector2) -> Vector2i:
 ## What stands or lies on a tile, as words for a tooltip.
 func _describe(tile: Vector2i) -> String:
 	var lines: PackedStringArray = []
-	for id: int in _bodies:
+	# The tile is on screen: the bodies on it are among those shown.
+	for id: int in _crowd.shown:
 		if _tile_of(_bodies[id]["at"]) == tile:
 			var line := Tooltip.describe_body(id, _bodies[id]["asleep"], id == _piloted)
 			var holds: Dictionary = _holds.get(id, {})
@@ -1229,11 +1250,13 @@ func _clamp_camera() -> void:
 func _step(delta: float) -> void:
 	var moving := false
 	var now := _now()
-	for id: int in _bodies:
-		# Walk along the route by time (BodyWalk); the server's stop
-		# message snaps the body wherever it really ended.
-		if BodyWalk.advance(_bodies[id], delta, now):
-			moving = true
+	_step_now = now
+	# Walk along the route by time (BodyWalk); the server's stop message
+	# snaps the body wherever it really ended. The piloted body first, the
+	# camera follows it; the others once the camera has moved, those the
+	# screen may show only (BodyCrowd).
+	if _bodies.has(_piloted):
+		moving = BodyWalk.advance(_bodies[_piloted], delta, now)
 	_pan(delta)
 	if _glide.active:
 		var to := _glide_to
@@ -1252,6 +1275,10 @@ func _step(delta: float) -> void:
 	_update_limit()
 	_clamp_camera()
 	_snap_camera()
+	_crowd.keep(_piloted, _bodies)
+	_crowd.watch(_seen(), _bodies)
+	if _crowd.step(_bodies, delta, now, _piloted):
+		moving = true
 	_update_reach()
 	_show_fruit_due()
 	_update_far_hole()
@@ -1443,14 +1470,15 @@ func _plant_chunk(key: Vector2i, view: ChunkView) -> void:
 	shadows.queue_redraw()
 
 
-## One node per body on the standing layer, at its feet; redrawn every
-## frame (a handful of bodies, their pose and what they hold change).
+## One node per body the screen may show (BodyCrowd), on the standing
+## layer at its feet; redrawn only when what draw_body draws changed (who
+## is piloted, asleep, what it holds), moved without a redraw.
 func _sync_bodies() -> void:
 	for id: int in _body_nodes.keys():
-		if not _bodies.has(id):
+		if not _crowd.shown.has(id):
 			_body_nodes[id].queue_free()
 			_body_nodes.erase(id)
-	for id: int in _bodies:
+	for id: int in _crowd.shown:
 		var node: BodyNode = _body_nodes.get(id)
 		if node == null:
 			node = BodyNode.new()
@@ -1459,8 +1487,21 @@ func _sync_bodies() -> void:
 			node.use_parent_material = true
 			_standing.add_child(node)
 			_body_nodes[id] = node
-		node.position = Iso.point_to_screen(_bodies[id]["at"]) + Vector2(0, 2)
-		node.queue_redraw()
+		var walk: Dictionary = _bodies[id]
+		var feet := Iso.point_to_screen(walk["at"]) + Vector2(0, 2)
+		if node.position != feet:
+			node.position = feet
+		var holds: Dictionary = _holds.get(id, {})
+		var held := Color.TRANSPARENT
+		if not holds.is_empty():
+			held = _looks.get(str(holds.get("material", "")), Color.MAGENTA)
+		var piloted := id == _piloted
+		var asleep: bool = walk["asleep"]
+		if node.drawn_piloted != piloted or node.drawn_asleep != asleep or node.drawn_held != held:
+			node.drawn_piloted = piloted
+			node.drawn_asleep = asleep
+			node.drawn_held = held
+			node.queue_redraw()
 
 
 ## A body on the standing layer; the world view draws it.
@@ -1468,6 +1509,10 @@ class BodyNode:
 	extends Node2D
 	var view: Node
 	var id := -1
+	## What it was last drawn as (WorldView._sync_bodies).
+	var drawn_piloted := false
+	var drawn_asleep := false
+	var drawn_held := Color(-1, -1, -1, -1)
 
 	func _draw() -> void:
 		view.draw_body(self, id)
@@ -1563,7 +1608,8 @@ func _see_through_flags(at: Vector2, r: Rect2, mouse: Vector2, behind: float) ->
 func _nearest_depth_near(mouse: Vector2) -> float:
 	var reach := MOUSE_SEE_M * Iso.PX_PER_M
 	var nearest := INF
-	for id: int in _bodies:
+	# The mouse is on screen: the bodies near it are among those shown.
+	for id: int in _crowd.shown:
 		var b: Vector2 = _bodies[id]["at"]
 		if Iso.point_to_screen(b).distance_to(mouse) < reach * 1.5:
 			nearest = minf(nearest, b.x + b.y)

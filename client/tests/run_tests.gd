@@ -97,6 +97,7 @@ func _init() -> void:
 	_test_the_net_keeps_the_chunks_of_the_same_world_only()
 	_test_a_body_told_at_each_chunk_keeps_walking_its_route()
 	_test_a_new_route_told_while_walking_turns_from_where_the_body_is_shown()
+	_test_only_the_bodies_the_screen_may_show_are_walked_and_one_coming_in_is_where_it_should_be()
 	_test_the_clock_catches_up_with_the_ticks_walks_are_told_at()
 	_test_a_blocked_body_is_decoded_and_its_notice_shows_then_fades()
 	_test_a_refused_order_says_why_in_a_thought()
@@ -2774,6 +2775,77 @@ func _test_the_net_keeps_the_chunks_of_the_same_world_only() -> void:
 	net._handle({"type": "world_state", "world": "second", "materials": []})
 	_check(not net.same_world and net.frames.live.is_empty() and net.frames.kept_count() == 0, "another world: nothing reused")
 	net.free()
+
+
+## A crowd costs what the screen shows (BodyCrowd): of bodies walking
+## all around, only those the screen may show are walked on; one whose
+## walk brings it on screen, or which the screen pans onto, is shown at
+## once where its walk has it, every frame.
+func _test_only_the_bodies_the_screen_may_show_are_walked_and_one_coming_in_is_where_it_should_be() -> void:
+	var crowd := BodyCrowd.new()
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 11
+	var bodies := {}
+	var truth := {}
+	for id in 300:
+		var at := Vector2(rng.randf_range(-100000, 250000), rng.randf_range(-100000, 250000))
+		var route: Array = []
+		var arrivals: Array = []
+		var p := at
+		for leg in 5:
+			p += Vector2(rng.randf_range(-1, 1), rng.randf_range(-1, 1)).normalized() * rng.randf_range(2000, 30000)
+			route.append(p)
+			arrivals.append(40 * (leg + 1) + rng.randi_range(0, 30))
+		var walk := BodyWalk.told({}, at, route, arrivals, 0.0, 1400.0, 0.0) if id % 7 != 0 else BodyWalk.standing(at)
+		bodies[id] = walk
+		truth[id] = walk.duplicate(true)
+		crowd.told(id, walk)
+	# One body walks from far off the screen straight across it.
+	bodies[999] = BodyWalk.told({}, Vector2(-60000, 60000), [Vector2(-30000, 60000), Vector2(0, 60000), Vector2(60000, 60000), Vector2(120000, 60000)], [60, 120, 240, 360], 0.0, 1400.0, 0.0)
+	truth[999] = (bodies[999] as Dictionary).duplicate(true)
+	crowd.told(999, bodies[999])
+	var screen := Vector2(1280, 720) / 0.4
+	var centre := Iso.point_to_screen(Vector2(60000, 60000))
+	var wrong := 0
+	var hidden_shown := 0
+	var most := 0
+	var crossed := false
+	for frame in 400:
+		var now := frame * 1.0
+		# The camera pans east for a while, then jumps (a teleport).
+		if frame == 300:
+			centre = Iso.point_to_screen(Vector2(20000, 100000))
+		else:
+			centre += Vector2(6, 2)
+		var seen := Rect2(centre - screen / 2.0, screen)
+		crowd.watch(seen, bodies)
+		crowd.step(bodies, 0.0, now)
+		most = maxi(most, crowd.shown.size())
+		for id: int in bodies:
+			var want: Dictionary = truth[id]
+			BodyWalk.advance(want, 0.0, now)
+			if not seen.has_point(Iso.point_to_screen(want["at"])):
+				continue
+			if id == 999:
+				crossed = true
+			if not crowd.shown.has(id):
+				hidden_shown += 1
+			elif (bodies[id]["at"] as Vector2).distance_to(want["at"]) > 0.01:
+				wrong += 1
+	_check(crossed, "the body walking in crosses the screen")
+	_check(hidden_shown == 0, "every body on screen is shown (%d frames left one out)" % hidden_shown)
+	_check(wrong == 0, "every body on screen stands where its walk has it (%d frames off)" % wrong)
+	_check(most > 0 and most < 150, "only some of the crowd are walked on (%d of 301 at most)" % most)
+	# One off the screen whose walk never comes near is left as it was.
+	crowd.clear()
+	var away := BodyWalk.told({}, Vector2(500000, 500000), [Vector2(510000, 500000)], [100], 0.0, 1400.0, 0.0)
+	var kept: Dictionary = away.duplicate(true)
+	crowd.watch(Rect2(centre - screen / 2.0, screen), {7: away})
+	crowd.step({7: away}, 0.0, 50.0)
+	_check(not crowd.shown.has(7) and away == kept, "a body far off the screen is not walked on")
+	crowd.keep(7, {7: away})
+	crowd.step({7: away}, 0.0, 50.0)
+	_check(crowd.shown.has(7) and (away["at"] as Vector2).distance_to(Vector2(505000, 500000)) < 1.0, "the piloted body is always walked on")
 
 
 func _test_a_body_told_at_each_chunk_keeps_walking_its_route() -> void:
