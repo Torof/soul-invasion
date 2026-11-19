@@ -195,6 +195,7 @@ static func _lay_first() -> void:
 		_image.blit_rect(region, Rect2i(0, wy, wx, side - wy), Vector2i(x0, 0))
 		if wx < side:
 			_image.blit_rect(region, Rect2i(wx, wy, side - wx, side - wy), Vector2i(0, 0))
+	GroundPages.changed_tiles(from, side)
 	if _texture != null and not _upload_due:
 		_upload_due = true
 		_upload.call_deferred()
