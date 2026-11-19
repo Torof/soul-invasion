@@ -361,13 +361,6 @@ pub fn check_window(window: &FruitWindow) -> Option<&'static str> {
     }
 }
 
-/// Is `window` open at `tick`? As a crop, a window running into the next
-/// year is shut in the world's first spring: there was no autumn before.
-#[must_use]
-pub fn window_open(window: &FruitWindow, calendar: &Calendar, tick: Tick) -> bool {
-    span_year(window.from, window.until, calendar, tick).is_some()
-}
-
 /// The fruit `tree` (of `species`, its crops among `crops`) shows at
 /// `tick` (D48), on a map whose corner is `origin` in the world
 /// ([`crate::map::Map::origin`]), with `picked` its chunk's picks: a

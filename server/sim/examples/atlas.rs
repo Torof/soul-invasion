@@ -15,7 +15,10 @@
 //! (`common/png.rs`, a small deflate), so the atlas adds no dependency.
 
 // Drawing code reads as arithmetic: `x`, `y`, `i`, `c`, `r`, `h`.
-#![allow(clippy::many_single_char_names)]
+#![allow(
+    clippy::many_single_char_names,
+    reason = "short names follow the maths they transcribe"
+)]
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -671,7 +674,10 @@ fn table(rows: &[Row]) -> String {
     s
 }
 
-#[allow(clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "small counts and coordinates, far below the float precision limit"
+)]
 fn secs(ms: u128) -> f64 {
     let ms = u32::try_from(ms).unwrap_or(u32::MAX);
     f64::from(ms) / 1000.0

@@ -1056,7 +1056,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one straight reading, top to bottom; splitting it would scatter the rule"
+    )]
     fn a_wild_valley_is_mostly_forest_with_woods_along_its_waters() {
         const SIZE: i32 = 512;
         let (mut land_all, mut forest_all) = (0, 0);

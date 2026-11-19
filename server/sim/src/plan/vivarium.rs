@@ -325,7 +325,11 @@ mod tests {
     /// were; no tree stands in or by the water; the same trees whatever
     /// the order and the chunk.
     #[test]
-    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::too_many_lines,
+        reason = "small counts and coordinates, far below the float precision limit; one straight reading, top to bottom; splitting it would scatter the rule"
+    )]
     fn the_open_ground_is_inhabited_and_the_forest_unchanged() {
         let map = map();
         let (species, open) = content();

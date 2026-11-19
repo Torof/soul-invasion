@@ -128,7 +128,10 @@ impl FinePos {
 
     /// Straight-line distance to another position, in millimetres.
     // Not generation (it moves bodies): floats are allowed here, and stay.
-    #[allow(clippy::disallowed_methods)]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the one place this call is meant to be made"
+    )]
     pub fn distance_to(self, other: Self) -> f64 {
         let dx = f64::from(other.x - self.x);
         let dy = f64::from(other.y - self.y);
@@ -1078,7 +1081,10 @@ impl Map {
     /// whatever it is. The route's last point is `to` when nothing stops
     /// it; empty when it cannot set off.
     // Not generation: floats, as in `first_block`.
-    #[allow(clippy::float_arithmetic)]
+    #[allow(
+        clippy::float_arithmetic,
+        reason = "float maths of the simulation, the same result on every run"
+    )]
     pub fn walk_straight(
         &self,
         from: FinePos,
@@ -1130,7 +1136,10 @@ impl Map {
     /// looked for every quarter metre along the line (D32). `None` when
     /// the line is clear, or still barred where it leaves that square.
     // Not generation: floats, as in `first_block`.
-    #[allow(clippy::float_arithmetic)]
+    #[allow(
+        clippy::float_arithmetic,
+        reason = "float maths of the simulation, the same result on every run"
+    )]
     pub fn past_obstacle(
         &self,
         from: FinePos,
@@ -1183,7 +1192,8 @@ impl Map {
     #[allow(
         clippy::float_arithmetic,
         clippy::cast_possible_truncation,
-        clippy::too_many_lines
+        clippy::too_many_lines,
+        reason = "float maths of the simulation, the same result on every run; values bounded by the world size and the content ranges; one straight reading, top to bottom; splitting it would scatter the rule"
     )]
     pub fn skirt(
         &self,
@@ -1345,7 +1355,10 @@ impl Map {
     /// again within 3 m past the obstacle, or no way joins it within
     /// [`SIDESTEP_REACH`] tiles of the stop.
     // Not generation: floats, as in `first_block`.
-    #[allow(clippy::float_arithmetic)]
+    #[allow(
+        clippy::float_arithmetic,
+        reason = "float maths of the simulation, the same result on every run"
+    )]
     fn sidestep(
         &self,
         stop: FinePos,
@@ -1438,7 +1451,11 @@ pub fn line_clear(a: FinePos, b: FinePos, allowed: impl Fn(Pos) -> bool) -> bool
 /// first tile it may not enter (`a` itself when it is that close). For a
 /// player's walk when no path is found within reach (D31, D32).
 // Not generation: floats, as in `first_block`.
-#[allow(clippy::cast_possible_truncation, clippy::float_arithmetic)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::float_arithmetic,
+    reason = "values bounded by the world size and the content ranges; float maths of the simulation, the same result on every run"
+)]
 pub fn line_reach(a: FinePos, b: FinePos, allowed: impl Fn(Pos) -> bool) -> FinePos {
     let Some(t) = first_block(a, b, allowed) else {
         return b;
@@ -1489,7 +1506,10 @@ pub const SIDESTEPS: u32 = 32;
 /// before going round. A waypoint moves to a point 15 cm or more inside
 /// its tile, on a grid of 10 cm, the segments before and after it still
 /// clear; with none such, it stays.
-#[allow(clippy::float_arithmetic)]
+#[allow(
+    clippy::float_arithmetic,
+    reason = "float maths of the simulation, the same result on every run"
+)]
 fn ease_forward(
     stop: FinePos,
     heading: (f64, f64),
@@ -1524,7 +1544,10 @@ fn ease_forward(
 
 /// Where the segment from `a` to `b` (0 at `a`, 1 at `b`) last runs
 /// 15 cm or more inside `tile`, if it does.
-#[allow(clippy::float_arithmetic)]
+#[allow(
+    clippy::float_arithmetic,
+    reason = "float maths of the simulation, the same result on every run"
+)]
 fn exit_from(a: FinePos, b: FinePos, tile: Pos) -> Option<f64> {
     let (x0, y0) = (f64::from(a.x), f64::from(a.y));
     let (dx, dy) = (f64::from(b.x) - x0, f64::from(b.y) - y0);
@@ -1559,7 +1582,11 @@ fn squared(a: FinePos, b: FinePos) -> i64 {
 
 /// The point at `t` along the segment from `a` to `b` (0 at `a`, 1 at
 /// `b`), to the millimetre.
-#[allow(clippy::cast_possible_truncation, clippy::float_arithmetic)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::float_arithmetic,
+    reason = "values bounded by the world size and the content ranges; float maths of the simulation, the same result on every run"
+)]
 fn along(a: FinePos, b: FinePos, t: f64) -> FinePos {
     FinePos::new(
         a.x + (f64::from(b.x - a.x) * t).round() as i32,
@@ -1572,7 +1599,11 @@ fn along(a: FinePos, b: FinePos, t: f64) -> FinePos {
 /// as entering; `None` when it never does.
 // Not generation (it pulls a walked path taut): floats are allowed here,
 // and stay.
-#[allow(clippy::cast_possible_truncation, clippy::float_arithmetic)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::float_arithmetic,
+    reason = "values bounded by the world size and the content ranges; float maths of the simulation, the same result on every run"
+)]
 fn first_block(a: FinePos, b: FinePos, allowed: impl Fn(Pos) -> bool) -> Option<f64> {
     let scale = f64::from(MM_PER_TILE);
     let (x0, y0) = (f64::from(a.x) / scale, f64::from(a.y) / scale);
@@ -1641,7 +1672,10 @@ fn first_block(a: FinePos, b: FinePos, allowed: impl Fn(Pos) -> bool) -> Option<
 /// not count. Tests only: the check a walk must pass, made apart from
 /// the walk's own (`first_block`).
 #[cfg(test)]
-#[allow(clippy::float_arithmetic)]
+#[allow(
+    clippy::float_arithmetic,
+    reason = "float maths of the simulation, the same result on every run"
+)]
 pub(crate) fn enters(a: FinePos, b: FinePos, tile: Pos) -> bool {
     let (x0, y0) = (f64::from(a.x), f64::from(a.y));
     let (dx, dy) = (f64::from(b.x) - x0, f64::from(b.y) - y0);
@@ -3420,12 +3454,6 @@ impl Rivers {
                 }
             }
         }
-    }
-
-    /// Where the water runs at `(x, y)`: its heading (as the centre paths',
-    /// 0 to 15) and speed in centimetres a second; `None` on land.
-    pub fn current_at(&self, x: u32, y: u32) -> Option<(u8, u16)> {
-        decode_current(self.current_code_at(x, y))
     }
 
     /// Where the water runs at `(x, y)`, as `current_code`: 0 on land.

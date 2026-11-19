@@ -270,7 +270,10 @@ pub fn run(settings: &Settings) -> Result<Report, RunError> {
 }
 
 /// [`run`] with the content already read.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one straight reading, top to bottom; splitting it would scatter the rule"
+)]
 pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunError> {
     let calendar = Calendar::new(settings.ticks_per_second, Calendar::DEFAULT_SECONDS_PER_DAY)
         .map_err(RunError::Calendar)?;
@@ -849,7 +852,10 @@ impl Report {
 
     /// The part of the report that depends on the settings alone: the
     /// same settings give the same text, byte for byte.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one straight reading, top to bottom; splitting it would scatter the rule"
+    )]
     pub fn fixed(&self) -> String {
         let s = &self.settings;
         let days_per_year = f64::from(Calendar::DEFAULT_DAYS_PER_YEAR);
@@ -1083,7 +1089,10 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
 
     /// The timing line: what changes from one machine or run to the next.
     // Display only, never simulation: a speed for the lead to read.
-    #[allow(clippy::float_arithmetic)]
+    #[allow(
+        clippy::float_arithmetic,
+        reason = "float maths of the simulation, the same result on every run"
+    )]
     pub fn timing(&self) -> String {
         let days_per_year = f64::from(Calendar::DEFAULT_DAYS_PER_YEAR);
         let years = f64::from(self.settings.days) / days_per_year;

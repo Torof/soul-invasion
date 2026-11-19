@@ -3142,7 +3142,7 @@ func _test_the_slope_turf_is_a_family_of_tiles_chosen_per_cell() -> void:
 	var tiles: Array = ChunkView.SLOPE_LOOK["slope_turf_set"]
 	var variants: int = ChunkView.SLOPE_LOOK["slope_turf_variants"]
 	_check(tiles.size() == 20 and variants == 5 and int(ChunkView.SLOPE_LOOK["slope_turf_angles"]) == 4, "the family holds four rows of five tiles: %d tiles, %d variants" % [tiles.size(), variants])
-	_check(tiles[0].ends_with("mountain_turf_20_1.png") and tiles[5].ends_with("mountain_turf_32_1.png") and tiles[19].ends_with("mountain_turf_55_5.png"), "the rows go from 20 to 55 degrees, five tiles a row, in order")
+	_check(tiles[0].ends_with("mountain_turf_20_1.webp") and tiles[5].ends_with("mountain_turf_32_1.webp") and tiles[19].ends_with("mountain_turf_55_5.webp"), "the rows go from 20 to 55 degrees, five tiles a row, in order")
 	var family := ChunkView.slope_turf_set(PackedStringArray(tiles))
 	_check(family.get_layers() == 20 and family.get_width() == 1536 and family.get_height() == 1536, "the set is a texture array of twenty layers of 1536 px: %d layers, %d px" % [family.get_layers(), family.get_width()])
 	_check(ChunkView.slope_turf_set(PackedStringArray(tiles)) == family, "built once and kept")

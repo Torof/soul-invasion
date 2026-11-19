@@ -8,7 +8,10 @@
 //! forest's edge, two pixels a tile), and prints the counts. PPM files
 //! convert to PNG with `ImageMagick` (`convert zone.ppm zone.png`).
 
-#![allow(clippy::cast_precision_loss)]
+#![allow(
+    clippy::cast_precision_loss,
+    reason = "small counts and coordinates, far below the float precision limit"
+)]
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

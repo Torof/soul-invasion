@@ -25,7 +25,8 @@
 #![allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    reason = "values bounded by the world size and the content ranges; small counts and coordinates, far below the float precision limit; values checked non-negative by the surrounding rule"
 )]
 // Generation is integer-only (D24; linted from `lib.rs` and
 // `sim/clippy.toml`). Known exceptions, each allowed where it stands, go
@@ -434,7 +435,10 @@ fn fit(kind: &Kind, best: u32, ground: &Ground) -> u32 {
 /// in the chunk and around it), for `seed`. Sorted by place, so the same
 /// every time.
 #[must_use]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one straight reading, top to bottom; splitting it would scatter the rule"
+)]
 pub fn plants_in(
     map: &Map,
     kinds: &[Kind],
@@ -550,7 +554,10 @@ pub fn plants_in(
                     // Float exception, to go when the generator is rewritten:
                     // metres to millimetres in floats (the content gives the
                     // reach in metres).
-                    #[allow(clippy::float_arithmetic)]
+                    #[allow(
+                        clippy::float_arithmetic,
+                        reason = "float maths of the simulation, the same result on every run"
+                    )]
                     let reach = (host.within_m * 1000.0) as i32;
                     let centre = pos.centre();
                     let near = trees.iter().any(|t| {
@@ -588,7 +595,11 @@ pub fn plants_in(
 /// The plants of one patch of `kind` started at `pos`, those that fall in
 /// the chunk (`inside`), on ground where it grows (`grows`), and find
 /// room.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "the rule's inputs, each its own; one straight reading of the patch"
+)]
 fn lay_patch(
     kind: &Kind,
     k: usize,
@@ -636,21 +647,27 @@ fn lay_patch(
             #[allow(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
-                clippy::float_arithmetic
+                clippy::float_arithmetic,
+                reason = "values bounded by the world size and the content ranges; values checked non-negative by the surrounding rule; float maths of the simulation, the same result on every run"
             )]
             let n = ((std::f32::consts::PI * r * r * density) as u32).clamp(1, MOST_IN_PATCH);
-            #[allow(clippy::cast_possible_truncation, clippy::float_arithmetic)]
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::float_arithmetic,
+                reason = "values bounded by the world size and the content ranges; float maths of the simulation, the same result on every run"
+            )]
             let reach = (r * 1000.0) as i32;
             (0..n)
                 .filter_map(|i| {
                     let (dx, dy) = (jitter(i, 3, reach), jitter(i, 4, reach));
                     // Within the circle, and thinner towards its rim.
-                    #[allow(clippy::float_arithmetic, clippy::disallowed_methods)]
+                    #[allow(clippy::float_arithmetic, clippy::disallowed_methods, reason = "float maths of the simulation, the same result on every run; the one place this call is meant to be made")]
                     let d = (f64::from(dx).hypot(f64::from(dy)) / f64::from(reach.max(1))) as f32;
                     #[allow(
                         clippy::cast_possible_truncation,
                         clippy::cast_sign_loss,
-                        clippy::float_arithmetic
+                        clippy::float_arithmetic,
+                        reason = "values bounded by the world size and the content ranges; values checked non-negative by the surrounding rule; float maths of the simulation, the same result on every run"
                     )]
                     let keep = d <= 1.0 && (roll(i, 5) % 1000) as f32 >= d * d * 600.0;
                     keep.then(|| FinePos::new(centre.x + dx, centre.y + dy))
@@ -664,19 +681,21 @@ fn lay_patch(
             #[allow(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
-                clippy::float_arithmetic
+                clippy::float_arithmetic,
+                reason = "values bounded by the world size and the content ranges; values checked non-negative by the surrounding rule; float maths of the simulation, the same result on every run"
             )]
             let n = ((std::f32::consts::TAU * r * 1.6) as u32).clamp(5, MOST_IN_PATCH);
             (0..n)
                 .map(|i| {
-                    #[allow(clippy::cast_precision_loss, clippy::float_arithmetic)]
+                    #[allow(clippy::cast_precision_loss, clippy::float_arithmetic, reason = "small counts and coordinates, far below the float precision limit; float maths of the simulation, the same result on every run")]
                     let angle = std::f32::consts::TAU * i as f32 / n as f32;
-                    #[allow(clippy::float_arithmetic)]
+                    #[allow(clippy::float_arithmetic, reason = "float maths of the simulation, the same result on every run")]
                     let wobble = 1.0 + (jitter(i, 6, 100) as f32) / 1000.0;
                     #[allow(
                         clippy::cast_possible_truncation,
                         clippy::float_arithmetic,
-                        clippy::disallowed_methods
+                        clippy::disallowed_methods,
+                        reason = "values bounded by the world size and the content ranges; float maths of the simulation, the same result on every run; the one place this call is meant to be made"
                     )]
                     FinePos::new(
                         centre.x + (angle.cos() * r * wobble * 1000.0) as i32,

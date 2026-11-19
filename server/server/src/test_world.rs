@@ -177,7 +177,10 @@ fn mountain_window(origin: (f64, f64), side: u32) -> Vec<i16> {
                 f64::from(u32::try_from(i / side).expect("small")),
             );
             let dm = (mountain_at(u0 + x + 0.5, v0 + y + 0.5) * 10.0).round();
-            #[allow(clippy::cast_possible_truncation)]
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "values bounded by the world size and the content ranges"
+            )]
             let dm = dm.clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
             dm
         })
@@ -279,7 +282,10 @@ pub fn massif_heights() -> Vec<i16> {
             let edge = x.min(y).min(last - x).min(last - y);
             let edge = f64::from(u32::try_from(edge).expect("small"));
             let weight = smooth(margin, margin + fade, edge);
-            #[allow(clippy::cast_possible_truncation)]
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "values bounded by the world size and the content ranges"
+            )]
             let dm = (weight * f64::from(h)).round() as i16;
             dm
         })
@@ -465,7 +471,10 @@ pub fn shapes_heights() -> Vec<i16> {
                 f64::from(u32::try_from(i / side).expect("small")),
             );
             let dm = ((SHAPES_BASE_M + shapes_rise((x + 0.5, y + 0.5))) * 10.0).round();
-            #[allow(clippy::cast_possible_truncation)]
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "values bounded by the world size and the content ranges"
+            )]
             let dm = dm.clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
             dm
         })
@@ -709,7 +718,10 @@ pub fn sens_heights() -> Vec<i16> {
             );
             let rise: f64 = sens_rises((x + 0.5, y + 0.5)).iter().sum();
             let dm = ((SENS_BASE_M + rise) * 10.0).round();
-            #[allow(clippy::cast_possible_truncation)]
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "values bounded by the world size and the content ranges"
+            )]
             let dm = dm.clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
             dm
         })
@@ -794,7 +806,10 @@ pub fn relief_mountain_heights() -> Vec<i16> {
             let edge = f64::from(u32::try_from(edge).expect("small"));
             let weight = smooth(0.0, fade, edge);
             let dm = (base + weight * (f64::from(h) + shift - base)).round();
-            #[allow(clippy::cast_possible_truncation)]
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "values bounded by the world size and the content ranges"
+            )]
             let dm = dm.clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
             dm
         })

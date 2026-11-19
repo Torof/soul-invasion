@@ -379,7 +379,10 @@ async fn next_day(socket: &mut Socket) -> (u64, u64) {
 }
 
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one straight reading, top to bottom; splitting it would scatter the rule"
+)]
 async fn hello_world_view_and_ping() {
     // The days are long: the bodies stand awake and alive while the view
     // comes, however slowly (the published days have their own test).
@@ -2334,7 +2337,10 @@ async fn a_reconnection_to_the_same_world_sends_no_frame_for_the_chunks_held() {
 /// server walks it: every chunk change along the straight segments.
 fn chunk_changes(at: Point, route: &[Point]) -> usize {
     let chunk = |x: f64, y: f64| {
-        #[allow(clippy::cast_possible_truncation)]
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "values bounded by the world size and the content ranges"
+        )]
         let mm = |v: f64| v.round() as i32;
         FinePos::new(mm(x), mm(y)).tile().chunk()
     };
@@ -2342,7 +2348,11 @@ fn chunk_changes(at: Point, route: &[Point]) -> usize {
     let mut last = chunk(f64::from(at.x), f64::from(at.y));
     for &next in route {
         let (dx, dy) = (f64::from(next.x - from.x), f64::from(next.y - from.y));
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "values bounded by the world size and the content ranges; values checked non-negative by the surrounding rule"
+        )]
         let steps = (dx.hypot(dy) / 10.0).ceil() as u32;
         for i in 1..=steps {
             let t = f64::from(i) / f64::from(steps);
@@ -2360,7 +2370,10 @@ fn chunk_changes(at: Point, route: &[Point]) -> usize {
 /// Where a walk told at `at` at `tick`, reaching `route`'s waypoints at
 /// `arrivals`, has the body at `now`: moved by time between them, as the
 /// client walks it.
-#[allow(clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "small counts and coordinates, far below the float precision limit"
+)]
 fn walked_to(at: Point, tick: u64, route: &[Point], arrivals: &[u64], now: u64) -> (f64, f64) {
     let (mut from, mut from_tick) = (at, tick);
     for (&to, &arrival) in route.iter().zip(arrivals) {
@@ -2417,7 +2430,10 @@ fn about(message: &ServerMessage) -> Option<u32> {
 }
 
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one straight reading, top to bottom; splitting it would scatter the rule"
+)]
 async fn a_walker_is_heard_within_range_at_each_chunk_it_walks_into_and_nowhere_else() {
     let server = Server::start_with(&["--dev", "--time-scale", "50"]);
     let (mut walker, body) = join(&server).await;

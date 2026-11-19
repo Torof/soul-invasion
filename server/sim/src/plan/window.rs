@@ -561,7 +561,10 @@ impl Window {
 
     /// The window of `side` tiles (a multiple of 64) whose north-west
     /// corner is cell `corner` of `region`, cut from `continent`.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one straight reading, top to bottom; splitting it would scatter the rule"
+    )]
     pub fn cut(continent: &Continent, region: &Region, corner: (usize, usize), side: u32) -> Self {
         assert!(
             side.is_multiple_of(CHUNK_SIZE) && i64::from(side) % CELL == 0,

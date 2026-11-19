@@ -185,7 +185,11 @@ pub struct GameTime {
 impl GameTime {
     /// Position within the day, from 0.0 (day start) to just under 1.0.
     // Not generation: a fraction for display and light, never stored.
-    #[allow(clippy::cast_precision_loss, clippy::float_arithmetic)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::float_arithmetic,
+        reason = "small counts and coordinates, far below the float precision limit; float maths of the simulation, the same result on every run"
+    )]
     pub fn day_fraction(&self) -> f64 {
         self.tick_of_day as f64 / self.ticks_per_day as f64
     }

@@ -2,7 +2,10 @@
 //! water that never runs uphill, lakes filled to their outlet, rivers
 //! that all reach the sea. On small continents, so the tests stay quick.
 
-#![allow(clippy::many_single_char_names)]
+#![allow(
+    clippy::many_single_char_names,
+    reason = "short names follow the maths they transcribe"
+)]
 
 use sim::plan::{Continent, Region, region};
 

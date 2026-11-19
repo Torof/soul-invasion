@@ -66,7 +66,7 @@ pub(crate) mod purpose {
     pub(crate) const WOODS_RIM: u64 = 0x001a_99ed;
     /// (No longer drawn since 10 November 2026; kept so no new purpose
     /// takes it.)
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(not(test), allow(dead_code, reason = "read by tests and Debug only"))]
     pub(crate) const WOODS_PATCHES: u64 = 0x0a4_7eee;
     /// The rivers' stream (an older salt, added to the seed).
     pub(crate) const RIVERS: u64 = 0x5157;
@@ -242,7 +242,10 @@ pub(crate) fn weighted(weights: &[u64], roll: u64) -> Option<usize> {
 
 /// A coordinate as a hash key (two's complement: negative cells are keys
 /// like any other).
-#[allow(clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_sign_loss,
+    reason = "values checked non-negative by the surrounding rule"
+)]
 pub(crate) const fn key(v: i64) -> u64 {
     v as u64
 }

@@ -37,10 +37,10 @@ const float SHARPEN = 0.5;
 // ground slopes, and the meadow at random offsets against repetition.
 uniform sampler2D slope_index : filter_linear, repeat_enable;
 uniform int slopes_drawn = 0;
-// The two layers. The streaks (client/world/slope/slope_streaks.png,
+// The two layers. The streaks (client/world/slope/slope_streaks.webp,
 // drawn by a script: soft comets, wide at the lower left, thin point at
 // the upper right, no tuft) carry the SENSE: their thin point goes toward
-// the crest. The turf (client/world/slope/mountain_turf_1.png … _5.png,
+// the crest. The turf (client/world/slope/mountain_turf_1.webp … _5.webp,
 // the lead's mountain grass drawn by our renderer, a family of tiles of
 // the same grass in different patterns with a shared border band, so any
 // tile lays beside any other without a seam; mountain_turf.md) carries

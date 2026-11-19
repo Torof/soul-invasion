@@ -64,7 +64,8 @@ impl Material {
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        clippy::float_arithmetic
+        clippy::float_arithmetic,
+        reason = "values bounded by the world size and the content ranges; values checked non-negative by the surrounding rule; float maths of the simulation, the same result on every run"
     )]
     pub fn mass_g(&self) -> u32 {
         (self.mass_kg * 1000.0).round().clamp(0.0, 1e9) as u32
@@ -494,12 +495,6 @@ impl Needs {
     #[must_use]
     pub fn reserve_j(&self) -> u64 {
         u64::from(self.reserve_kj) * 1000
-    }
-
-    /// What a body can eat in a day, in joules.
-    #[must_use]
-    pub fn intake_ceiling_j(&self) -> u64 {
-        self.need_j_per_day() * u64::from(self.intake_ceiling_percent) / 100
     }
 }
 
