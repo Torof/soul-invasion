@@ -516,6 +516,15 @@ pub struct ChunkGround {
     pub chunk: ChunkPos,
     /// Its version when its trees were placed.
     version: sim::ground::Version,
+    /// What the map and the seed give it; `None` when its frame, at its
+    /// versions and the fruit phase, was held when the pool looked
+    /// ([`Shared::chunk_ground_cached`]): nothing was made again.
+    made: Option<Made>,
+}
+
+/// What the map and the seed give a chunk ([`ChunkGround`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Made {
     tiles: Vec<Terrain>,
     /// Its trees, as placed: the fruit each shows is worked out as the
     /// frame is made (D48).
@@ -631,6 +640,21 @@ pub const FAR_CELLS: u32 = 256;
 /// Chunks the body may go from the far view's centre before it is sent
 /// again.
 pub const FAR_RESEND: i32 = 16;
+/// Chunks a side of the far view's grid: the far view is centred on the
+/// middle of the grid's square the body stands in ([`far_centre`]), so
+/// it is counted once for a region, whoever stands where in it, and
+/// every player there is sent the same bytes.
+pub const FAR_GRID: i32 = 16;
+
+/// The centre of the far view sent to a body in `chunk`: the middle chunk
+/// of its square of the grid ([`FAR_GRID`]). The window is cut on the
+/// same cells wherever it is centred, so a cell shows the same land in
+/// any far view that holds it.
+#[must_use]
+pub fn far_centre(chunk: ChunkPos) -> ChunkPos {
+    let middle = |c: i32| c.div_euclid(FAR_GRID) * FAR_GRID + FAR_GRID / 2;
+    ChunkPos::new(middle(chunk.x), middle(chunk.y))
+}
 
 /// The land around chunk `centre`, coarse (`ServerMessage::FarView`), for
 /// the client to draw past the chunks it holds: what can be seen from
@@ -833,11 +857,11 @@ impl Shared {
                 i32::try_from(h * qy / 4).unwrap_or(0),
             );
             if let Some(ground) = self.chunk_ground(chunk) {
-                let natural = ground.natural.clone();
+                let natural = ground.made.as_ref().map(|m| m.natural.clone());
                 // Fruit as on the world's first day: the identity is not
                 // the date's.
                 if let Ok(frame) = self
-                    .frame_of(ground, &natural, &[], 0, Tick(0), None)
+                    .frame_of(ground, &natural.unwrap_or_default(), &[], 0, Tick(0), None)
                     .and_then(|f| Ok(encode_chunk(&f)?))
                 {
                     hash.write(&frame);
@@ -1248,6 +1272,7 @@ impl Shared {
         self.chunk_ground(chunk).map(|ground| {
             self.chunk_send_of(ground)
                 .expect("a chunk the frame carries")
+                .expect("a ground made whole")
         })
     }
 
@@ -1261,27 +1286,67 @@ impl Shared {
         Some(ChunkGround {
             chunk,
             version,
-            tiles: tiles.into_iter().map(terrain_view).collect(),
-            trees: self.trees_in(chunk),
-            plants: self.plants_in(chunk),
-            currents: self.map.chunk_currents(chunk)?,
-            heights: self.map.chunk_heights(chunk).unwrap_or_default(),
-            natural: self.natural_items(chunk),
+            made: Some(Made {
+                tiles: tiles.into_iter().map(terrain_view).collect(),
+                trees: self.trees_in(chunk),
+                plants: self.plants_in(chunk),
+                currents: self.map.chunk_currents(chunk)?,
+                heights: self.map.chunk_heights(chunk).unwrap_or_default(),
+                natural: self.natural_items(chunk),
+            }),
         })
+    }
+
+    /// `chunk`'s ground as the pool builds it, the cache looked at first:
+    /// when the frame of the chunk at its versions now and in the fruit
+    /// phase now is held, nothing is made again (its natural items alone
+    /// cost a millisecond); else [`Shared::chunk_ground`]. Should the key
+    /// move before the frame leaves, [`Shared::chunk_send_of`] says so and
+    /// the chunk is built again, whole. `None` off the map.
+    pub fn chunk_ground_cached(&self, chunk: ChunkPos) -> Option<ChunkGround> {
+        // The key in the order the frame reads it: the ground's version
+        // first, as the trees are placed after it.
+        let version = self.ground.version(chunk);
+        let key = (
+            chunk,
+            version,
+            self.chunk_version(chunk),
+            self.fruit_phase(),
+        );
+        // Only a chunk of the map was ever framed.
+        if self
+            .frames
+            .lock()
+            .expect("frames not poisoned")
+            .contains(&key)
+        {
+            return Some(ChunkGround {
+                chunk,
+                version,
+                made: None,
+            });
+        }
+        self.chunk_ground(chunk)
     }
 
     /// A chunk's ground finished with what stands and lies on it now:
     /// its frame, encoded once per version of its ground and of its items
     /// and the same bytes then for every client, and the bodies in it.
+    /// `None` only for a ground the pool found held
+    /// ([`Shared::chunk_ground_cached`]) whose frame is not held any more
+    /// (its versions or the fruit phase moved since, or the cache let it
+    /// go): it is to be built again, whole.
     ///
     /// # Errors
     ///
     /// When the chunk cannot be framed ([`encode_chunk`]).
-    pub fn chunk_send_of(&self, ground: ChunkGround) -> Result<ChunkSend, BoxError> {
+    pub fn chunk_send_of(&self, ground: ChunkGround) -> Result<Option<ChunkSend>, BoxError> {
         let chunk = ground.chunk;
+        let no_items: &[ItemState] = &[];
         // Gathered together, as the items' events see them, so the frame
         // and its version agree.
-        let (natural, stored, version, picked) = self.ground_items(chunk, &ground.natural);
+        let (natural, stored, version, picked) =
+            self.ground_items(chunk, ground.made.as_ref().map_or(no_items, |m| &m.natural));
         let bodies = self.bodies_in(chunk);
         // The fruit as of now: the frame is the same bytes for every
         // client until a window or a crop opens or shuts (D48).
@@ -1297,6 +1362,9 @@ impl Shared {
         let frame = if let Some(frame) = held {
             frame
         } else {
+            if ground.made.is_none() {
+                return Ok(None);
+            }
             let frame = Bytes::from(encode_chunk(&self.frame_of(
                 ground,
                 &natural,
@@ -1311,12 +1379,12 @@ impl Shared {
                 .insert(key, frame.clone());
             frame
         };
-        Ok(ChunkSend {
+        Ok(Some(ChunkSend {
             frame,
             bodies,
             version,
             phase,
-        })
+        }))
     }
 
     /// The fruit phase at `tick` ([`Shared::fruit_phase`]).
@@ -1342,6 +1410,7 @@ impl Shared {
         picked: Option<&Picks>,
     ) -> Result<ChunkFrame, BoxError> {
         let chunk = ground.chunk;
+        let ground = ground.made.ok_or("a ground made whole")?;
         let trees = ground
             .trees
             .iter()
@@ -1462,7 +1531,7 @@ impl Shared {
     pub fn dump_chunk(&self, chunk: ChunkPos) -> Result<String, BoxError> {
         use std::fmt::Write as _;
         let ground = self.chunk_ground(chunk).ok_or("off the map")?;
-        let sent = self.chunk_send_of(ground)?;
+        let sent = self.chunk_send_of(ground)?.ok_or("a ground made whole")?;
         let f = protocol::decode_chunk(&sent.frame)?;
         let side = f.tiles.len().isqrt().max(1);
         let mut out = format!(
@@ -2317,7 +2386,13 @@ impl Link {
             }
             Some(Outgoing::Chunk(ground)) => {
                 let chunk = ground.chunk;
-                let sent = self.shared.chunk_send_of(ground)?;
+                let Some(sent) = self.shared.chunk_send_of(ground)? else {
+                    // Its frame held when the pool looked, not any more:
+                    // built again, whole this time.
+                    self.awaiting.insert(chunk);
+                    self.build_whole(chunk, true);
+                    return Ok(None);
+                };
                 // Kept by the client and unchanged, its fruit too: no
                 // frame.
                 if let Some(kept) = self.cache.remove(&chunk)
@@ -2492,8 +2567,15 @@ impl Link {
         self.build(chunk);
     }
 
-    /// Asks the pool for `chunk`'s ground.
+    /// Asks the pool for `chunk`'s ground, its frame looked for in the
+    /// cache first ([`Shared::chunk_ground_cached`]).
     fn build(&mut self, chunk: ChunkPos) {
+        self.build_whole(chunk, false);
+    }
+
+    /// Asks the pool for `chunk`'s ground: made `whole` whatever the cache
+    /// holds ([`Shared::chunk_ground`]), else the cache looked at first.
+    fn build_whole(&mut self, chunk: ChunkPos, whole: bool) {
         let (shared, wanted, results) = (
             Arc::clone(&self.shared),
             Arc::clone(&self.wanted),
@@ -2505,7 +2587,12 @@ impl Link {
                 if !wanted.lock().expect("wanted not poisoned").contains(&chunk) {
                     return; // left the view before its turn came
                 }
-                if let Some(ground) = shared.chunk_ground(chunk) {
+                let ground = if whole {
+                    shared.chunk_ground(chunk)
+                } else {
+                    shared.chunk_ground_cached(chunk)
+                };
+                if let Some(ground) = ground {
                     let _ = results.send(Built::Ground(ground));
                 }
             }),
@@ -2605,11 +2692,14 @@ impl Link {
         }
     }
 
-    /// Asks the pool for the far view around `centre`, after the chunks
-    /// asked before it in the lane; it goes in the ground lane when back
+    /// Asks the pool for the far view for a body in `chunk`, centred on
+    /// its square of the grid ([`far_centre`]), after the chunks asked
+    /// before it in the lane; it goes in the ground lane when back
     /// (`far_built`). Counting it reads 2 km of land, made per chunk: never
-    /// on the network's threads.
-    fn far_view(&mut self, centre: ChunkPos) {
+    /// on the network's threads, and once for every body of the square
+    /// while the far views held keep it.
+    fn far_view(&mut self, chunk: ChunkPos) {
+        let centre = far_centre(chunk);
         self.view.far = Some(centre);
         self.far_awaited = Some(centre);
         let (shared, results) = (Arc::clone(&self.shared), self.results.clone());
@@ -3738,7 +3828,7 @@ mod tests {
         for _ in &chunks {
             let ground = rx.recv_timeout(Duration::from_secs(60)).expect("built");
             let chunk = ground.chunk;
-            let pooled = Sent::of(&shared, shared.chunk_send_of(ground).unwrap());
+            let pooled = Sent::of(&shared, shared.chunk_send_of(ground).unwrap().unwrap());
             let inline = sent(&shared, chunk).expect("on the map");
             assert_eq!(pooled, inline, "{chunk:?}");
             with_bodies += usize::from(!pooled.bodies.is_empty());
@@ -3754,6 +3844,8 @@ mod tests {
         let (mut link, mut results) = link(&shared, &pool, Some(1));
         let home = link.home();
         let away = ChunkPos::new(home.x + FAR_RESEND + 1, home.y);
+        let (home, away) = (far_centre(home), far_centre(away));
+        assert_ne!(home, away, "two squares of the grid");
         // Asked for, nothing waits in the ground lane: the network's
         // thread counted nothing.
         link.far_view(home);
@@ -3791,6 +3883,180 @@ mod tests {
             decode::<ServerMessage>(first.to_text().expect("text")).expect("the protocol"),
             far_view(&shared.map, away)
         );
+    }
+
+    #[test]
+    fn the_pool_looks_in_the_frame_cache_before_making_a_chunk_again() {
+        let shared = shared(1);
+        let chunk = shared.position_of(1).expect("body 1").chunk();
+        let send = |ground: ChunkGround| shared.chunk_send_of(ground).expect("framed");
+        // Cold: made whole, framed, held.
+        let cold = shared.chunk_ground_cached(chunk).expect("on the map");
+        assert!(cold.made.is_some(), "nothing held yet");
+        let first = send(cold).expect("made whole");
+        // Warm: nothing made again, the very same bytes.
+        let warm = shared.chunk_ground_cached(chunk).expect("on the map");
+        assert!(warm.made.is_none(), "its frame is held: nothing made again");
+        let again = send(warm.clone()).expect("held");
+        assert_eq!(
+            again.frame.as_ptr(),
+            first.frame.as_ptr(),
+            "the very same bytes"
+        );
+        assert_eq!(
+            Sent::of(&shared, again),
+            Sent::of(&shared, shared.chunk_message(chunk).expect("a chunk"))
+        );
+        // The chunk changes before the warm ground leaves: it is to be
+        // built again, whole, and then framed at its new version.
+        shared.crop_picked(chunk, &BTreeMap::new(), 1);
+        assert!(send(warm).is_none(), "its frame is not held any more");
+        let changed = shared.chunk_ground_cached(chunk).expect("on the map");
+        assert!(changed.made.is_some(), "a new version: made whole");
+        let changed = send(changed).expect("made whole");
+        assert_eq!(changed.version, 1);
+        assert_ne!(changed.frame, first.frame);
+    }
+
+    #[test]
+    fn a_chunk_whose_held_frame_went_meanwhile_is_built_again_whole() {
+        let shared = Arc::new(shared(1));
+        let pool = Arc::new(ChunkPool::new(1));
+        let (mut link, mut results) = link(&shared, &pool, Some(1));
+        let home = link.home();
+        link.move_view(home);
+        settle(&mut link, &mut results);
+        drain(&mut link);
+        // The pool found its frame held; the chunk changed before it left.
+        let held = shared.chunk_ground_cached(home).expect("on the map");
+        assert!(held.made.is_none());
+        shared.crop_picked(home, &BTreeMap::new(), 1);
+        link.ground.push_back(Outgoing::Chunk(held));
+        assert!(
+            link.next_output().expect("encodable").is_none(),
+            "nothing sent"
+        );
+        assert!(link.awaiting.contains(&home), "asked for again");
+        settle(&mut link, &mut results);
+        let out = drain(&mut link);
+        assert!(
+            matches!(out.as_slice(), [Out::Chunk(c)] if (c.x, c.y) == (home.x, home.y)),
+            "its frame, at its new version: {out:?}"
+        );
+        assert_eq!(link.sent.get(&home).map(|h| h.frame), Some(1));
+    }
+
+    #[test]
+    fn the_far_view_is_one_for_a_square_of_the_grid_and_its_cells_never_move() {
+        let shared = shared(1);
+        let map = &shared.map;
+        let home = far_centre(shared.position_of(1).expect("body 1").chunk());
+        let cells = |m: &ServerMessage| match m {
+            ServerMessage::FarView {
+                cell,
+                x,
+                y,
+                width,
+                cells,
+                ..
+            } => (*cell, *x, *y, *width, cells.clone()),
+            other => panic!("not a far view: {other:?}"),
+        };
+        let size = i32::try_from(CHUNK_SIZE / FAR_CELL).expect("small");
+        for (dx, dy) in [
+            (-8, -8),
+            (-1, 3),
+            (0, 0),
+            (7, 7),
+            (8, 8),
+            (-9, 0),
+            (23, -17),
+        ] {
+            let chunk = ChunkPos::new(home.x + dx, home.y + dy);
+            let centre = far_centre(chunk);
+            // Every chunk of a square: one centre, so one message, held
+            // once and the very same bytes for every body there.
+            let square = |c: i32| c.div_euclid(FAR_GRID);
+            assert_eq!(
+                (square(centre.x), square(centre.y)),
+                (square(chunk.x), square(chunk.y))
+            );
+            assert_eq!(centre, far_centre(centre), "{chunk:?}");
+            let shared_bytes = shared
+                .far_view_message(far_centre(chunk))
+                .expect("encodable");
+            assert_eq!(
+                shared_bytes,
+                shared.far_view_message(centre).expect("encodable"),
+                "{chunk:?}"
+            );
+            // A far view centred on the body's own chunk, as before the
+            // grid, and the grid's: each cell they both hold shows the
+            // same land (the picture does not change).
+            let (cell, ox, oy, width, own) = cells(&far_view(map, chunk));
+            let (_, gx, gy, _, grid) = cells(&far_view(map, centre));
+            assert_eq!(cell, FAR_CELL);
+            assert_eq!(
+                ((gx - ox) % size, (gy - oy) % size),
+                (0, 0),
+                "on whole chunks"
+            );
+            let w = i32::try_from(width).expect("small");
+            let (own, grid) = (own.as_bytes(), grid.as_bytes());
+            let mut shared_cells = 0;
+            for j in 0..w {
+                for i in 0..w {
+                    let (u, v) = (ox + i - gx, oy + j - gy);
+                    if (0..w).contains(&u) && (0..w).contains(&v) {
+                        let at = |x: i32, y: i32| usize::try_from(y * w + x).expect("in");
+                        assert_eq!(own[at(i, j)], grid[at(u, v)], "{chunk:?} cell {i},{j}");
+                        shared_cells += 1;
+                    }
+                }
+            }
+            assert!(shared_cells >= (w - 2 * 9 * size).pow(2), "{chunk:?}");
+        }
+        assert_eq!(
+            shared
+                .far_views
+                .lock()
+                .expect("far views not poisoned")
+                .len(),
+            [(-8, -8), (8, 8), (-9, 0), (23, -17)]
+                .iter()
+                .map(|&(dx, dy)| far_centre(ChunkPos::new(home.x + dx, home.y + dy)))
+                .collect::<BTreeSet<_>>()
+                .len(),
+            "counted once a square"
+        );
+    }
+
+    #[test]
+    fn the_far_view_always_reaches_well_past_where_the_camera_stops() {
+        // The body walks; the far view is sent again once it is more than
+        // FAR_RESEND chunks from its centre. Wherever it stands, the far
+        // view reaches past the camera's stop (the view's 288 tiles and
+        // fog A's 5) by at least as much as before the grid, when it was
+        // centred on the body's own chunk.
+        let half = i32::try_from(FAR_CELLS * FAR_CELL / 2).expect("small");
+        let size = i32::try_from(CHUNK_SIZE).expect("small");
+        let mut sent = far_centre(ChunkPos::new(0, 0));
+        let mut least = i32::MAX;
+        for x in 0..2000 {
+            let chunk = ChunkPos::new(x / 3, x / 7);
+            if (sent.x - chunk.x).abs().max((sent.y - chunk.y).abs()) > FAR_RESEND {
+                sent = far_centre(chunk);
+            }
+            // From the farthest tile of the body's chunk to the edge.
+            let reach = |c: i32, body: i32| half - (c - body).abs() * size - size / 2;
+            least = least
+                .min(reach(sent.x, chunk.x))
+                .min(reach(sent.y, chunk.y));
+        }
+        // Before the grid: FAR_RESEND chunks off at worst.
+        let before = half - FAR_RESEND * size - size;
+        assert!(least >= before, "{least} tiles at worst, {before} before");
+        assert!(least > 288 + 5, "past the camera's stop");
     }
 
     #[test]
@@ -4331,8 +4597,27 @@ mod tests {
                 })
                 .collect()
         };
+        // The pool's path: the frame cache looked at first.
+        let time_cached = |chunks: &BTreeSet<ChunkPos>| -> Vec<Duration> {
+            chunks
+                .iter()
+                .map(|&chunk| {
+                    let started = Instant::now();
+                    let ground = shared.chunk_ground_cached(chunk).expect("on the map");
+                    let message = shared.chunk_send_of(ground).expect("framed");
+                    let took = started.elapsed();
+                    std::hint::black_box(message);
+                    took
+                })
+                .collect()
+        };
         report("login view, cold", time_each(&login));
-        report("login view, warm", time_each(&login));
+        // Alternated: made whole (as before the cache was looked at
+        // first), then the pool's path.
+        for _ in 0..3 {
+            report("login view, warm, made whole", time_each(&login));
+            report("login view, warm, cache first", time_cached(&login));
+        }
         report("teleport view, cold", time_each(&away));
         report("teleport view, warm", time_each(&away));
 
