@@ -23,7 +23,7 @@ var capacity := Protocol.CHUNK_CACHE_CHUNKS
 
 ## A frame's version, from its header.
 static func version_of(bytes: PackedByteArray) -> int:
-	return bytes.decode_u32(8) if bytes.size() >= Protocol.CHUNK_HEADER else -1
+	return bytes.decode_u32(12) if bytes.size() >= Protocol.CHUNK_HEADER else -1
 
 
 ## A frame received for `key`: in view now.

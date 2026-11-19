@@ -106,7 +106,14 @@ use serde::{Deserialize, Serialize};
 ///   of a chunk the client holds moved (a dawn), `chunk_fruit` carries
 ///   its trees' and plants' levels, one digit each, instead of its whole
 ///   frame; nothing goes for a chunk whose levels did not move.
-pub const PROTOCOL_VERSION: u32 = 29;
+/// - v30: compact frames and room to grow (19 November 2026): a binary
+///   message starts with its kind ([`BINARY_CHUNK`], [`BINARY_FAR_VIEW`]);
+///   a chunk frame's tiles go as a palette and runs, its trees' and
+///   plants' kinds through a palette of `u16` indices (a planet's
+///   species), their fruit byte keeps its high four bits for a growth
+///   stage (0 today), and the length of its ground is in its head; the
+///   far view is a binary message of runs ([`FarView`]) instead of JSON.
+pub const PROTOCOL_VERSION: u32 = 30;
 
 /// Chunks whose frames a client keeps after they left its view, the
 /// least recently hidden forgotten first (D4): about 3 MB of frames. The
@@ -567,26 +574,6 @@ pub enum ServerMessage {
         /// The nonce from the ping.
         nonce: u64,
     },
-    /// The land around the body, coarse, for the client to draw past the
-    /// chunks it holds (in a haze): sent after the first chunks, and again
-    /// when the body has gone far from its centre. What can be seen from
-    /// afar anyway, nothing that lies on it.
-    FarView {
-        /// Tiles each cell stands for, either way.
-        cell: u32,
-        /// Column of the first cell, in cells (cell x spans tiles
-        /// `x × cell .. (x + 1) × cell`).
-        x: i32,
-        /// Row of the first cell, in cells.
-        y: i32,
-        /// Cells across.
-        width: u32,
-        /// Cells down.
-        height: u32,
-        /// One letter a cell, row by row: `g` grass, `f` forest, `w` river,
-        /// `o` ford, `b` brook, `r` rock, `.` past the map.
-        cells: String,
-    },
     /// Development only, sent after [`ServerMessage::WorldState`] when the
     /// server runs with `--dev`: the whole map, coarse, for an overview
     /// to teleport from. Its presence tells the client the development
@@ -799,8 +786,8 @@ pub fn decode<'a, T: Deserialize<'a>>(text: &'a str) -> Result<T, serde_json::Er
     serde_json::from_str(text)
 }
 
-/// A plant in a [`ChunkFrame`]: where it stands in its chunk, its kind
-/// and the fruit it shows.
+/// A plant in a [`ChunkFrame`]: where it stands in its chunk, its kind,
+/// its growth stage and the fruit it shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Standing {
     /// Millimetres east of the chunk's north-west corner.
@@ -808,14 +795,17 @@ pub struct Standing {
     /// Millimetres south of it.
     pub dy: u16,
     /// Its kind, an index into [`ServerMessage::WorldState`]'s `flora`.
-    pub kind: u8,
+    pub kind: u16,
+    /// Its growth stage, [`STAGE_GROWN`] for every plant today: room kept
+    /// on the wire for the stages to come (at most [`STAGE_MOST`]).
+    pub stage: u8,
     /// The fruit it shows (D48), as a tree's ([`StandingTree::fruit`]): a
     /// berry shrub's; [`FRUIT_NONE`] for a kind without a fruit window.
     pub fruit: u8,
 }
 
-/// A tree in a [`ChunkFrame`]: where it stands in its chunk, its species
-/// and the fruit it shows.
+/// A tree in a [`ChunkFrame`]: where it stands in its chunk, its species,
+/// its growth stage and the fruit it shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StandingTree {
     /// Millimetres east of the chunk's north-west corner.
@@ -824,11 +814,20 @@ pub struct StandingTree {
     pub dy: u16,
     /// Its species, an index into [`ServerMessage::WorldState`]'s
     /// `species`.
-    pub kind: u8,
+    pub kind: u16,
+    /// Its growth stage, [`STAGE_GROWN`] for every tree today: room kept
+    /// on the wire for the stages to come (at most [`STAGE_MOST`]).
+    pub stage: u8,
     /// The fruit it shows (D48): its level, [`FRUIT_NONE`] to
     /// [`FRUIT_LEVELS`]; the client hangs that share of its fruit.
     pub fruit: u8,
 }
+
+/// The growth stage of every tree and plant today ([`StandingTree::stage`]):
+/// grown. The stages to come will be told by number.
+pub const STAGE_GROWN: u8 = 0;
+/// The highest growth stage a frame can carry: four bits.
+pub const STAGE_MOST: u8 = 15;
 
 /// A tree or a plant shows no fruit ([`StandingTree::fruit`],
 /// [`Standing::fruit`]).
@@ -893,19 +892,32 @@ pub struct StoredItem {
 /// bodies apart ([`ServerMessage::ChunkBodies`]). Chunk (0, 0) holds tiles
 /// `(0..side, 0..side)`.
 ///
-/// The frame, little-endian:
+/// The frame, little-endian (protocol v30), a binary message of kind
+/// [`BINARY_CHUNK`]:
 ///
-/// - header, 16 bytes: `x i32`, `y i32`, `version u32`, `flags u8` (bit 0:
-///   the chunk has water, so currents follow the tiles), `side u8`, two
-///   bytes 0; flag 1: the chunk has heights, which follow the currents;
-/// - tiles: `side × side` bytes, row by row from the north-west corner,
-///   each a [`Terrain`] code ([`terrain_code`]);
+/// - header, 16 bytes: `kind u8` (0), `flags u8` (bit 0: the chunk has
+///   water, so currents follow the tiles; bit 1: it has heights, which
+///   follow the currents), `side u8`, a byte 0, `x i32`, `y i32`,
+///   `version u32`;
+/// - `ground u32`: the bytes of the tiles, currents and heights that
+///   follow, so that a reader of what stands on it skips them at once;
+/// - tiles, as a palette and runs: `k u8` and the `k` [`Terrain`] codes
+///   ([`terrain_code`]) the chunk holds, in the order they first come;
+///   then, when `k` is more than 1, runs `(index u8, length varint)` of
+///   tiles of the same palette entry, row by row from the north-west
+///   corner, until the `side × side` tiles are told (when `k` is 1 every
+///   tile is that one); a varint is LEB128, seven bits a byte, the low
+///   ones first;
 /// - currents, when flag 0 is set: one `u16` per water tile (river, ford,
 ///   brook) in tile order;
 /// - heights, when flag 1 is set: one `i16` per tile in tile order, in
 ///   decimetres above the sea (2 KB a chunk of 32 × 32);
-/// - trees: `n u16`, then `n × (dx u16, dy u16, species u8, fruit u8)`;
-/// - plants: `n u16`, then `n × (dx u16, dy u16, kind u8, fruit u8)`;
+/// - trees: `n u16`, then, when `n` is not 0, the palette of their
+///   species, `k u8` and `k × species u16` (indices into `WorldState`'s
+///   `species`, in the order they first come), then `n × (dx u16, dy u16,
+///   palette index u8, growth u8)`; the growth byte holds the fruit level
+///   in its low four bits and the growth stage in its high four;
+/// - plants: the same, their kinds indices into `WorldState`'s `flora`;
 /// - natural items: `n u16`, then `n × (slot u16, material u8)`;
 /// - stored items: `n u16`, then `n × (id u64, dx u8, dy u8, material u16,
 ///   mass_g u32)`.
@@ -1003,21 +1015,42 @@ pub const CHUNK_HAS_WATER: u8 = 1;
 /// currents.
 pub const CHUNK_HAS_HEIGHTS: u8 = 2;
 
-/// A chunk frame that cannot be written or read.
+/// The kind of a binary message, its first byte ([`binary_kind`]): a
+/// chunk frame ([`encode_chunk`]).
+pub const BINARY_CHUNK: u8 = 0;
+/// The kind of a binary message: the far view ([`encode_far_view`]).
+pub const BINARY_FAR_VIEW: u8 = 1;
+
+/// The kind of a binary message ([`BINARY_CHUNK`], [`BINARY_FAR_VIEW`]),
+/// `None` for no bytes at all.
+#[must_use]
+pub fn binary_kind(bytes: &[u8]) -> Option<u8> {
+    bytes.first().copied()
+}
+
+/// A binary message that cannot be written or read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrameError {
     /// The tiles are not a square of at most 255 on a side, or the
     /// currents are not one a tile, or the heights neither none nor one a
-    /// tile.
+    /// tile; or the far view's cells are not its width times its height.
     Shape,
     /// A dry tile has a current: it would be lost on the wire.
     DryCurrent,
-    /// More than 65,535 of something.
+    /// More than 65,535 of something, or more than 255 entries in a
+    /// palette.
     TooMany,
-    /// The bytes end too early, or go on past the frame.
+    /// The bytes end too early, or go on past the message.
     Length,
     /// A tile code no terrain has.
     Terrain(u8),
+    /// Runs that do not tell every tile or cell once, or a palette index
+    /// past its palette.
+    Runs,
+    /// A fruit level or a growth stage past 15: four bits each.
+    Growth,
+    /// The message is not of the kind read.
+    Kind(u8),
 }
 
 impl std::fmt::Display for FrameError {
@@ -1025,12 +1058,18 @@ impl std::fmt::Display for FrameError {
         match self {
             Self::Shape => write!(
                 f,
-                "tiles not a square, or currents or heights not one a tile"
+                "tiles not a square, or currents or heights not one a tile, or cells not width × height"
             ),
             Self::DryCurrent => write!(f, "a current on a dry tile"),
-            Self::TooMany => write!(f, "more than 65535 of a kind of thing"),
-            Self::Length => write!(f, "the frame's length does not match its content"),
+            Self::TooMany => write!(f, "more than 65535 of a kind of thing, or 255 in a palette"),
+            Self::Length => write!(f, "the message's length does not match its content"),
             Self::Terrain(code) => write!(f, "unknown terrain code {code}"),
+            Self::Runs => write!(
+                f,
+                "runs that do not tell every tile once, or past the palette"
+            ),
+            Self::Growth => write!(f, "a fruit level or a growth stage past 15"),
+            Self::Kind(kind) => write!(f, "a binary message of another kind ({kind})"),
         }
     }
 }
@@ -1078,13 +1117,85 @@ fn count(n: usize) -> Result<[u8; 2], FrameError> {
         .map_err(|_| FrameError::TooMany)
 }
 
+/// Writes `n` as a varint (LEB128: seven bits a byte, the low ones
+/// first, the top bit set on every byte but the last).
+fn varint(out: &mut Vec<u8>, mut n: u32) {
+    while n >= 0x80 {
+        out.push((n & 0x7F).to_le_bytes()[0] | 0x80);
+        n >>= 7;
+    }
+    out.push(n.to_le_bytes()[0]);
+}
+
+/// The distinct values of `values` in the order they first come (at most
+/// 255), and the index of each value into them.
+fn palette<T: Copy + PartialEq>(
+    values: impl Iterator<Item = T>,
+) -> Result<(Vec<T>, Vec<u8>), FrameError> {
+    let mut entries: Vec<T> = Vec::new();
+    let mut indices = Vec::new();
+    for value in values {
+        let index = if let Some(i) = entries.iter().position(|&e| e == value) {
+            i
+        } else {
+            entries.push(value);
+            entries.len() - 1
+        };
+        indices.push(u8::try_from(index).map_err(|_| FrameError::TooMany)?);
+    }
+    Ok((entries, indices))
+}
+
+/// Writes `values` as runs `(value u8, length varint)`, in their order.
+fn runs(out: &mut Vec<u8>, values: &[u8]) {
+    let mut rest = values;
+    while let Some(&first) = rest.first() {
+        let length = rest.iter().take_while(|&&v| v == first).count();
+        out.push(first);
+        varint(
+            out,
+            u32::try_from(length).expect("a frame's tiles or cells"),
+        );
+        rest = &rest[length..];
+    }
+}
+
+/// A tree or a plant as the frame writes it: `(dx, dy, kind, stage,
+/// fruit)`.
+type Placed = (u16, u16, u16, u8, u8);
+
+/// Writes trees or plants: `n u16`, their kinds' palette when there are
+/// any, then each one's place, palette index and growth byte. Each is
+/// `(dx, dy, kind, stage, fruit)`.
+fn write_standing(out: &mut Vec<u8>, standing: &[Placed]) -> Result<(), FrameError> {
+    out.extend_from_slice(&count(standing.len())?);
+    if standing.is_empty() {
+        return Ok(());
+    }
+    let (kinds, indices) = palette(standing.iter().map(|s| s.2))?;
+    out.push(u8::try_from(kinds.len()).map_err(|_| FrameError::TooMany)?);
+    for kind in kinds {
+        out.extend_from_slice(&kind.to_le_bytes());
+    }
+    for (&(dx, dy, _, stage, fruit), index) in standing.iter().zip(indices) {
+        if stage > STAGE_MOST || fruit > 15 {
+            return Err(FrameError::Growth);
+        }
+        out.extend_from_slice(&dx.to_le_bytes());
+        out.extend_from_slice(&dy.to_le_bytes());
+        out.extend_from_slice(&[index, stage << 4 | fruit]);
+    }
+    Ok(())
+}
+
 /// Writes a chunk frame (the layout in [`ChunkFrame`]'s doc).
 ///
 /// # Errors
 ///
 /// When the tiles are not a square of at most 255 on a side or the
-/// currents not one a tile, when a dry tile has a current, or when there
-/// are more than 65,535 of some thing.
+/// currents not one a tile, when a dry tile has a current, when there
+/// are more than 65,535 of some thing or 255 kinds in a palette, or a
+/// fruit level or a growth stage is past 15.
 pub fn encode_chunk(chunk: &ChunkFrame) -> Result<Vec<u8>, FrameError> {
     let side = chunk.tiles.len().isqrt();
     if side * side != chunk.tiles.len()
@@ -1099,19 +1210,28 @@ pub fn encode_chunk(chunk: &ChunkFrame) -> Result<Vec<u8>, FrameError> {
     let flags = if wet { CHUNK_HAS_WATER } else { 0 } | if high { CHUNK_HAS_HEIGHTS } else { 0 };
     let mut out = Vec::with_capacity(
         CHUNK_HEADER
-            + chunk.tiles.len()
+            + 4
+            + 64
             + 2 * chunk.heights.len()
-            + 8
+            + 64
             + 6 * chunk.trees.len()
-            + 5 * chunk.plants.len()
+            + 6 * chunk.plants.len()
             + 3 * chunk.natural.len()
             + 16 * chunk.stored.len(),
     );
+    out.extend_from_slice(&[BINARY_CHUNK, flags, side, 0]);
     out.extend_from_slice(&chunk.x.to_le_bytes());
     out.extend_from_slice(&chunk.y.to_le_bytes());
     out.extend_from_slice(&chunk.version.to_le_bytes());
-    out.extend_from_slice(&[flags, side, 0, 0]);
-    out.extend(chunk.tiles.iter().map(|&t| terrain_code(t)));
+    // The ground's length, written once it is known.
+    let ground_at = out.len();
+    out.extend_from_slice(&[0; 4]);
+    let (terrains, indices) = palette(chunk.tiles.iter().map(|&t| terrain_code(t)))?;
+    out.push(u8::try_from(terrains.len()).map_err(|_| FrameError::TooMany)?);
+    out.extend_from_slice(&terrains);
+    if terrains.len() > 1 {
+        runs(&mut out, &indices);
+    }
     for (&tile, &current) in chunk.tiles.iter().zip(&chunk.currents) {
         if is_water(tile) {
             out.extend_from_slice(&current.to_le_bytes());
@@ -1122,18 +1242,20 @@ pub fn encode_chunk(chunk: &ChunkFrame) -> Result<Vec<u8>, FrameError> {
     for height in &chunk.heights {
         out.extend_from_slice(&height.to_le_bytes());
     }
-    out.extend_from_slice(&count(chunk.trees.len())?);
-    for t in &chunk.trees {
-        out.extend_from_slice(&t.dx.to_le_bytes());
-        out.extend_from_slice(&t.dy.to_le_bytes());
-        out.extend_from_slice(&[t.kind, t.fruit]);
-    }
-    out.extend_from_slice(&count(chunk.plants.len())?);
-    for s in &chunk.plants {
-        out.extend_from_slice(&s.dx.to_le_bytes());
-        out.extend_from_slice(&s.dy.to_le_bytes());
-        out.extend_from_slice(&[s.kind, s.fruit]);
-    }
+    let ground = u32::try_from(out.len() - ground_at - 4).map_err(|_| FrameError::TooMany)?;
+    out[ground_at..ground_at + 4].copy_from_slice(&ground.to_le_bytes());
+    let trees: Vec<_> = chunk
+        .trees
+        .iter()
+        .map(|t| (t.dx, t.dy, t.kind, t.stage, t.fruit))
+        .collect();
+    write_standing(&mut out, &trees)?;
+    let plants: Vec<_> = chunk
+        .plants
+        .iter()
+        .map(|p| (p.dx, p.dy, p.kind, p.stage, p.fruit))
+        .collect();
+    write_standing(&mut out, &plants)?;
     out.extend_from_slice(&count(chunk.natural.len())?);
     for item in &chunk.natural {
         out.extend_from_slice(&item.slot.to_le_bytes());
@@ -1149,7 +1271,7 @@ pub fn encode_chunk(chunk: &ChunkFrame) -> Result<Vec<u8>, FrameError> {
     Ok(out)
 }
 
-/// Reads a chunk frame byte by byte.
+/// Reads a binary message byte by byte.
 struct Reader<'a> {
     bytes: &'a [u8],
 }
@@ -1172,32 +1294,104 @@ impl Reader<'_> {
         self.take().map(u16::from_le_bytes)
     }
 
-    fn trees(&mut self) -> Result<Vec<StandingTree>, FrameError> {
+    fn u32(&mut self) -> Result<u32, FrameError> {
+        self.take().map(u32::from_le_bytes)
+    }
+
+    fn skip(&mut self, n: usize) -> Result<(), FrameError> {
+        self.bytes = self.bytes.get(n..).ok_or(FrameError::Length)?;
+        Ok(())
+    }
+
+    /// A varint ([`varint`]) of at most 32 bits.
+    fn varint(&mut self) -> Result<u32, FrameError> {
+        let mut n: u32 = 0;
+        for shift in (0..35).step_by(7) {
+            let byte = self.u8()?;
+            let bits = u32::from(byte & 0x7F);
+            if shift == 28 && bits > 0x0F {
+                return Err(FrameError::Runs);
+            }
+            n |= bits << shift;
+            if byte & 0x80 == 0 {
+                return Ok(n);
+            }
+        }
+        Err(FrameError::Runs)
+    }
+
+    /// Runs ([`runs`]) of `n` values in all.
+    fn runs(&mut self, n: usize) -> Result<Vec<u8>, FrameError> {
+        let mut values = Vec::with_capacity(n);
+        while values.len() < n {
+            let value = self.u8()?;
+            let length = usize::try_from(self.varint()?).map_err(|_| FrameError::Runs)?;
+            if length == 0 || length > n - values.len() {
+                return Err(FrameError::Runs);
+            }
+            values.resize(values.len() + length, value);
+        }
+        Ok(values)
+    }
+
+    /// Trees or plants ([`write_standing`]), each `(dx, dy, kind, stage,
+    /// fruit)`.
+    fn standing(&mut self) -> Result<Vec<Placed>, FrameError> {
         let n = self.u16()?;
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        let k = self.u8()?;
+        let kinds = (0..k).map(|_| self.u16()).collect::<Result<Vec<_>, _>>()?;
         (0..n)
             .map(|_| {
-                Ok(StandingTree {
-                    dx: self.u16()?,
-                    dy: self.u16()?,
-                    kind: self.u8()?,
-                    fruit: self.u8()?,
-                })
+                let (dx, dy) = (self.u16()?, self.u16()?);
+                let kind = *kinds.get(usize::from(self.u8()?)).ok_or(FrameError::Runs)?;
+                let growth = self.u8()?;
+                Ok((dx, dy, kind, growth >> 4, growth & 0x0F))
             })
             .collect()
     }
 
-    fn standing(&mut self) -> Result<Vec<Standing>, FrameError> {
-        let n = self.u16()?;
-        (0..n)
+    /// A chunk's `side × side` tiles: its palette, then its runs when the
+    /// palette holds more than one terrain.
+    fn tiles(&mut self, side: usize) -> Result<Vec<Terrain>, FrameError> {
+        let entries = self.u8()?;
+        let terrains = (0..entries)
             .map(|_| {
-                Ok(Standing {
-                    dx: self.u16()?,
-                    dy: self.u16()?,
-                    kind: self.u8()?,
-                    fruit: self.u8()?,
-                })
+                let code = self.u8()?;
+                terrain_of_code(code).ok_or(FrameError::Terrain(code))
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        match terrains.as_slice() {
+            [] if side == 0 => Ok(Vec::new()),
+            [] => Err(FrameError::Runs),
+            [only] => Ok(vec![*only; side * side]),
+            _ => self
+                .runs(side * side)?
+                .into_iter()
+                .map(|i| {
+                    terrains
+                        .get(usize::from(i))
+                        .copied()
+                        .ok_or(FrameError::Runs)
+                })
+                .collect(),
+        }
+    }
+
+    /// A chunk frame's header and ground's length: its flags, side, x, y
+    /// and version.
+    fn chunk_header(&mut self) -> Result<(u8, u8, i32, i32, u32, usize), FrameError> {
+        let [kind, flags, side, _] = self.take::<4>()?;
+        if kind != BINARY_CHUNK {
+            return Err(FrameError::Kind(kind));
+        }
+        let x = i32::from_le_bytes(self.take()?);
+        let y = i32::from_le_bytes(self.take()?);
+        let version = self.u32()?;
+        let ground = usize::try_from(self.u32()?).map_err(|_| FrameError::Length)?;
+        Ok((flags, side, x, y, version, ground))
     }
 }
 
@@ -1206,25 +1400,13 @@ impl Reader<'_> {
 ///
 /// # Errors
 ///
-/// When the bytes end before its plants.
+/// When the bytes end before its plants, or are not a chunk frame.
 pub fn frame_fruit(bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>), FrameError> {
     let mut r = Reader { bytes };
-    let [_, _, _, _, _, _, _, _, _, _, _, _, flags, side, _, _] = r.take::<CHUNK_HEADER>()?;
-    let tiles = usize::from(side) * usize::from(side);
-    let codes = r.bytes.get(..tiles).ok_or(FrameError::Length)?;
-    let mut skip = tiles;
-    if flags & CHUNK_HAS_WATER != 0 {
-        skip += 2 * codes
-            .iter()
-            .filter(|&&code| terrain_of_code(code).is_some_and(is_water))
-            .count();
-    }
-    if flags & CHUNK_HAS_HEIGHTS != 0 {
-        skip += 2 * tiles;
-    }
-    r.bytes = r.bytes.get(skip..).ok_or(FrameError::Length)?;
-    let trees = r.trees()?.iter().map(|t| t.fruit).collect();
-    let plants = r.standing()?.iter().map(|p| p.fruit).collect();
+    let (_, _, _, _, _, ground) = r.chunk_header()?;
+    r.skip(ground)?;
+    let trees = r.standing()?.iter().map(|t| t.4).collect();
+    let plants = r.standing()?.iter().map(|p| p.4).collect();
     Ok((trees, plants))
 }
 
@@ -1232,21 +1414,17 @@ pub fn frame_fruit(bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>), FrameError> {
 ///
 /// # Errors
 ///
-/// When the bytes are not a whole frame and nothing more, or a tile code
-/// is no terrain's.
+/// When the bytes are not a whole frame and nothing more, a tile code is
+/// no terrain's, or runs or palettes do not hold together.
 pub fn decode_chunk(bytes: &[u8]) -> Result<ChunkFrame, FrameError> {
     let mut r = Reader { bytes };
-    let x = i32::from_le_bytes(r.take()?);
-    let y = i32::from_le_bytes(r.take()?);
-    let version = u32::from_le_bytes(r.take()?);
-    let [flags, side, _, _] = r.take::<4>()?;
-    let side = usize::from(side);
-    let tiles = (0..side * side)
-        .map(|_| {
-            let code = r.u8()?;
-            terrain_of_code(code).ok_or(FrameError::Terrain(code))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let (flags, side, x, y, version, ground) = r.chunk_header()?;
+    let after_ground = r
+        .bytes
+        .len()
+        .checked_sub(ground)
+        .ok_or(FrameError::Length)?;
+    let tiles = r.tiles(usize::from(side))?;
     let mut currents = vec![0; tiles.len()];
     if flags & CHUNK_HAS_WATER != 0 {
         for (current, &tile) in currents.iter_mut().zip(&tiles) {
@@ -1262,8 +1440,31 @@ pub fn decode_chunk(bytes: &[u8]) -> Result<ChunkFrame, FrameError> {
     } else {
         Vec::new()
     };
-    let trees = r.trees()?;
-    let plants = r.standing()?;
+    if r.bytes.len() != after_ground {
+        return Err(FrameError::Length);
+    }
+    let trees = r
+        .standing()?
+        .into_iter()
+        .map(|(dx, dy, kind, stage, fruit)| StandingTree {
+            dx,
+            dy,
+            kind,
+            stage,
+            fruit,
+        })
+        .collect();
+    let plants = r
+        .standing()?
+        .into_iter()
+        .map(|(dx, dy, kind, stage, fruit)| Standing {
+            dx,
+            dy,
+            kind,
+            stage,
+            fruit,
+        })
+        .collect();
     let n = r.u16()?;
     let natural = (0..n)
         .map(|_| {
@@ -1281,7 +1482,7 @@ pub fn decode_chunk(bytes: &[u8]) -> Result<ChunkFrame, FrameError> {
                 dx: r.u8()?,
                 dy: r.u8()?,
                 material: r.u16()?,
-                mass_g: u32::from_le_bytes(r.take()?),
+                mass_g: r.u32()?,
             })
         })
         .collect::<Result<Vec<_>, FrameError>>()?;
@@ -1299,6 +1500,88 @@ pub fn decode_chunk(bytes: &[u8]) -> Result<ChunkFrame, FrameError> {
         plants,
         natural,
         stored,
+    })
+}
+
+/// Bytes of the far view's header ([`encode_far_view`]).
+pub const FAR_VIEW_HEADER: usize = 16;
+
+/// The land around the body, coarse, for the client to draw past the
+/// chunks it holds (in a haze): sent after the first chunks, and again
+/// when the body has gone far from its centre. What can be seen from afar
+/// anyway, nothing that lies on it. A binary message of kind
+/// [`BINARY_FAR_VIEW`] since protocol v30 (a JSON message before),
+/// little-endian:
+///
+/// - header, 16 bytes: `kind u8` (1), a byte 0, `cell u16`, `x i32`,
+///   `y i32`, `width u16`, `height u16`;
+/// - the cells as runs `(letter u8, length varint)` row by row (the
+///   varint as a chunk frame's), until the `width × height` cells are
+///   told.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FarView {
+    /// Tiles each cell stands for, either way.
+    pub cell: u16,
+    /// Column of the first cell, in cells (cell x spans tiles
+    /// `x × cell .. (x + 1) × cell`).
+    pub x: i32,
+    /// Row of the first cell, in cells.
+    pub y: i32,
+    /// Cells across.
+    pub width: u16,
+    /// Cells down.
+    pub height: u16,
+    /// One letter a cell, row by row: `g` grass, `f` forest, `w` river,
+    /// `o` ford, `b` brook, `r` rock, `.` past the map.
+    pub cells: Vec<u8>,
+}
+
+/// Writes the far view (the layout in [`FarView`]'s doc).
+///
+/// # Errors
+///
+/// When its cells are not its width times its height.
+pub fn encode_far_view(far: &FarView) -> Result<Vec<u8>, FrameError> {
+    if far.cells.len() != usize::from(far.width) * usize::from(far.height) {
+        return Err(FrameError::Shape);
+    }
+    let mut out = Vec::with_capacity(FAR_VIEW_HEADER + far.cells.len() / 4);
+    out.extend_from_slice(&[BINARY_FAR_VIEW, 0]);
+    out.extend_from_slice(&far.cell.to_le_bytes());
+    out.extend_from_slice(&far.x.to_le_bytes());
+    out.extend_from_slice(&far.y.to_le_bytes());
+    out.extend_from_slice(&far.width.to_le_bytes());
+    out.extend_from_slice(&far.height.to_le_bytes());
+    runs(&mut out, &far.cells);
+    Ok(out)
+}
+
+/// Reads the far view ([`encode_far_view`]).
+///
+/// # Errors
+///
+/// When the bytes are not a whole far view and nothing more.
+pub fn decode_far_view(bytes: &[u8]) -> Result<FarView, FrameError> {
+    let mut r = Reader { bytes };
+    let [kind, _] = r.take::<2>()?;
+    if kind != BINARY_FAR_VIEW {
+        return Err(FrameError::Kind(kind));
+    }
+    let cell = r.u16()?;
+    let x = i32::from_le_bytes(r.take()?);
+    let y = i32::from_le_bytes(r.take()?);
+    let (width, height) = (r.u16()?, r.u16()?);
+    let cells = r.runs(usize::from(width) * usize::from(height))?;
+    if !r.bytes.is_empty() {
+        return Err(FrameError::Length);
+    }
+    Ok(FarView {
+        cell,
+        x,
+        y,
+        width,
+        height,
+        cells,
     })
 }
 
@@ -1428,14 +1711,6 @@ mod tests {
                 width: 2,
                 height: 2,
                 cells: "gfwr".to_owned(),
-            },
-            ServerMessage::FarView {
-                cell: 8,
-                x: -3,
-                y: 40,
-                width: 2,
-                height: 1,
-                cells: ".g".to_owned(),
             },
             ServerMessage::ProtocolMismatch { expected: 1 },
             ServerMessage::DayStarted {
@@ -1755,12 +2030,14 @@ mod tests {
                     dx: 31_999,
                     dy: 0,
                     kind: 2,
+                    stage: STAGE_GROWN,
                     fruit: FRUIT_LEVELS,
                 },
                 StandingTree {
                     dx: 1_500,
                     dy: 2_250,
                     kind: 0,
+                    stage: STAGE_MOST,
                     fruit: 3,
                 },
             ],
@@ -1769,12 +2046,14 @@ mod tests {
                     dx: 700,
                     dy: 3_900,
                     kind: 11,
+                    stage: STAGE_GROWN,
                     fruit: FRUIT_NONE,
                 },
                 Standing {
                     dx: 2_000,
                     dy: 100,
-                    kind: 3,
+                    kind: 300,
+                    stage: 2,
                     fruit: 5,
                 },
             ],
@@ -1807,8 +2086,8 @@ mod tests {
         assert_eq!(fruit_levels(""), Some(vec![]));
         assert_eq!(fruit_levels("19"), None, "past the top level");
         assert_eq!(fruit_levels("1a"), None);
-        // A frame ending before its plants (the reference's last 40
-        // bytes: its plants and items): no fruit read.
+        // A frame ending within its plants (the reference's last 45
+        // bytes are its plants and items): no fruit read.
         let bytes = encode_chunk(&reference_chunk()).unwrap();
         assert_eq!(
             frame_fruit(&bytes[..bytes.len() - 40]),
@@ -1828,7 +2107,8 @@ mod tests {
             .map(|i| StandingTree {
                 dx: i * 80,
                 dy: 32_000 - i * 80,
-                kind: u8::try_from(i % 7).unwrap(),
+                kind: i % 7 * 100,
+                stage: u8::try_from(i % 16).unwrap(),
                 fruit: u8::try_from(i % 9).unwrap(),
             })
             .collect();
@@ -1836,7 +2116,8 @@ mod tests {
             .map(|i| Standing {
                 dx: i * 16,
                 dy: i,
-                kind: u8::try_from(i % 40).unwrap(),
+                kind: i % 255,
+                stage: STAGE_GROWN,
                 fruit: u8::try_from(i % 9).unwrap(),
             })
             .collect();
@@ -1880,9 +2161,63 @@ mod tests {
         .unwrap();
         assert_eq!(
             empty_bytes.len(),
-            CHUNK_HEADER + 32 * 32 + 4 * 2,
-            "a dry chunk carries no currents, a flat world no heights"
+            CHUNK_HEADER + 4 + 2 + 4 * 2,
+            "one terrain: its palette alone; a dry chunk carries no currents, a flat world no heights"
         );
+        // A chunk of two terrains: its palette and two runs.
+        let mut halves = decode_chunk(&empty_bytes).unwrap();
+        halves.tiles[512..].fill(Terrain::Forest);
+        let bytes = encode_chunk(&halves).unwrap();
+        assert_eq!(bytes.len(), CHUNK_HEADER + 4 + 3 + 2 * 3 + 4 * 2);
+        assert_eq!(decode_chunk(&bytes).unwrap(), halves);
+    }
+
+    #[test]
+    fn the_far_view_round_trips_as_runs() {
+        let mut cells = vec![b'.'; 300];
+        cells.extend(std::iter::repeat_n(b'g', 200));
+        cells.extend(b"fwobr");
+        cells.extend(std::iter::repeat_n(b'f', 495));
+        let far = FarView {
+            cell: 8,
+            x: -3,
+            y: 40,
+            width: 50,
+            height: 20,
+            cells,
+        };
+        let bytes = encode_far_view(&far).unwrap();
+        assert_eq!(binary_kind(&bytes), Some(BINARY_FAR_VIEW));
+        // 8 runs, 3 of them longer than 127 (a varint of two bytes).
+        assert_eq!(bytes.len(), FAR_VIEW_HEADER + 8 * 2 + 3);
+        assert_eq!(decode_far_view(&bytes).unwrap(), far);
+        assert_eq!(
+            decode_far_view(&bytes[..bytes.len() - 1]),
+            Err(FrameError::Length)
+        );
+        let mut longer = bytes.clone();
+        longer.extend([b'g', 1]);
+        assert_eq!(
+            decode_far_view(&longer),
+            Err(FrameError::Length),
+            "past the cells"
+        );
+        let mut overlong = bytes.clone();
+        // The last run, 495 cells (0xEF 0x03): one more than is left.
+        let last = overlong.len() - 2;
+        overlong[last] += 1;
+        assert_eq!(
+            decode_far_view(&overlong),
+            Err(FrameError::Runs),
+            "a run past the cells"
+        );
+        assert_eq!(decode_chunk(&bytes), Err(FrameError::Kind(BINARY_FAR_VIEW)));
+        let chunk = encode_chunk(&reference_chunk()).unwrap();
+        assert_eq!(binary_kind(&chunk), Some(BINARY_CHUNK));
+        assert_eq!(decode_far_view(&chunk), Err(FrameError::Kind(BINARY_CHUNK)));
+        let ragged = FarView { width: 49, ..far };
+        assert_eq!(encode_far_view(&ragged), Err(FrameError::Shape));
+        assert_eq!(binary_kind(&[]), None);
     }
 
     #[test]
@@ -1904,20 +2239,82 @@ mod tests {
         let mut longer = bytes.clone();
         longer.push(0);
         assert_eq!(decode_chunk(&longer), Err(FrameError::Length));
-        let mut unknown = bytes;
-        unknown[CHUNK_HEADER] = 9;
+        let mut unknown = bytes.clone();
+        // The first terrain of the palette, after the ground's length and
+        // the palette's size.
+        unknown[CHUNK_HEADER + 4 + 1] = 9;
         assert_eq!(decode_chunk(&unknown), Err(FrameError::Terrain(9)));
+        let mut past = bytes;
+        // The first run's palette index.
+        let k = usize::from(past[CHUNK_HEADER + 4]);
+        past[CHUNK_HEADER + 4 + 1 + k] = 200;
+        assert_eq!(decode_chunk(&past), Err(FrameError::Runs));
+        // A stage or a fruit level past four bits.
+        let mut grown = reference_chunk();
+        grown.trees[0].stage = STAGE_MOST + 1;
+        assert_eq!(encode_chunk(&grown), Err(FrameError::Growth));
+        let mut laden = reference_chunk();
+        laden.plants[0].fruit = 16;
+        assert_eq!(encode_chunk(&laden), Err(FrameError::Growth));
+        // More than 255 kinds in a chunk: past what a palette holds.
+        let mut many = reference_chunk();
+        many.plants = (0..256_u16)
+            .map(|kind| Standing {
+                dx: kind,
+                dy: 0,
+                kind,
+                stage: STAGE_GROWN,
+                fruit: FRUIT_NONE,
+            })
+            .collect();
+        assert_eq!(encode_chunk(&many), Err(FrameError::TooMany));
+        many.plants.pop();
+        assert_eq!(
+            decode_chunk(&encode_chunk(&many).unwrap()).unwrap(),
+            many,
+            "255 kinds fit"
+        );
+    }
+
+    /// The far view the client's tests decode
+    /// (`client/tests/fixtures/far_v30.bin`), written again as the golden
+    /// chunk is (`SOUL_WRITE_GOLDEN=1`).
+    #[test]
+    fn the_golden_far_view_is_the_clients() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../client/tests/fixtures/far_v30.bin");
+        let mut cells = b"..gggg".to_vec();
+        cells.extend(std::iter::repeat_n(b'f', 130));
+        cells.extend(b"wobr");
+        let far = FarView {
+            cell: 8,
+            x: -3,
+            y: 40,
+            width: 20,
+            height: 7,
+            cells,
+        };
+        let bytes = encode_far_view(&far).unwrap();
+        if std::env::var_os("SOUL_WRITE_GOLDEN").is_some() {
+            std::fs::write(&path, &bytes).unwrap();
+        }
+        let golden = std::fs::read(&path).expect("the golden far view, written");
+        assert_eq!(
+            golden, bytes,
+            "the layout changed: write the golden far view again"
+        );
+        assert_eq!(decode_far_view(&golden).unwrap(), far);
     }
 
     /// The golden bytes the client's tests decode
-    /// (`client/tests/fixtures/chunk_v17.bin`): a change of the layout on
+    /// (`client/tests/fixtures/chunk_v30.bin`): a change of the layout on
     /// this side breaks this test until the file is written again
     /// (`SOUL_WRITE_GOLDEN=1`), and then the client's test until the
     /// client reads the new layout.
     #[test]
     fn the_golden_chunk_is_the_clients() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../client/tests/fixtures/chunk_v17.bin");
+            .join("../../client/tests/fixtures/chunk_v30.bin");
         let bytes = encode_chunk(&reference_chunk()).unwrap();
         if std::env::var_os("SOUL_WRITE_GOLDEN").is_some() {
             std::fs::write(&path, &bytes).unwrap();

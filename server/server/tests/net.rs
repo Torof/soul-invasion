@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
-    Blockage, ChunkFrame, ClientMessage, PROTOCOL_VERSION, Point, ServerMessage, decode,
-    decode_chunk, encode,
+    BINARY_FAR_VIEW, Blockage, ChunkFrame, ClientMessage, FarView, PROTOCOL_VERSION, Point,
+    ServerMessage, binary_kind, decode, decode_chunk, decode_far_view, encode,
 };
 use server::net::VIEW_RADIUS;
 use sim::{BodyId, CHUNK_SIZE, Calendar, ChunkPos, FinePos, Pos, World};
@@ -307,7 +307,7 @@ async fn send(socket: &mut Socket, message: &ClientMessage) {
 /// condition to its pilot, sleep, night, items coming and going.
 fn ambient(message: &Got) -> bool {
     let Got::M(message) = message else {
-        return false;
+        return matches!(message, Got::Far(_));
     };
     matches!(
         message,
@@ -319,7 +319,6 @@ fn ambient(message: &Got) -> bool {
             | ServerMessage::ItemRemoved { .. }
             | ServerMessage::BodyHolds { .. }
             | ServerMessage::Inventory { .. }
-            | ServerMessage::FarView { .. }
     )
 }
 
@@ -344,6 +343,7 @@ async fn receive(socket: &mut Socket) -> Option<Got> {
 enum Got {
     M(ServerMessage),
     Chunk(ChunkFrame),
+    Far(FarView),
 }
 
 /// Next server message of any kind, or `None` once the server closed
@@ -360,6 +360,9 @@ async fn receive_any(socket: &mut Socket) -> Option<Got> {
                 return Some(Got::M(
                     decode(text.as_str()).expect("server speaks the protocol"),
                 ));
+            }
+            Some(Ok(Message::Binary(far))) if binary_kind(&far) == Some(BINARY_FAR_VIEW) => {
+                return Some(Got::Far(decode_far_view(&far).expect("a far view")));
             }
             Some(Ok(Message::Binary(frame))) => {
                 return Some(Got::Chunk(decode_chunk(&frame).expect("a chunk frame")));
@@ -463,9 +466,9 @@ async fn hello_world_view_and_ping() {
                 if ambient(&message)
                     && !matches!(
                         message,
-                        Got::M(ServerMessage::FarView { .. } | ServerMessage::ChunkBodies { .. })
+                        Got::Far(_) | Got::M(ServerMessage::ChunkBodies { .. })
                     ) => {}
-            Some(Got::M(ServerMessage::FarView {
+            Some(Got::Far(FarView {
                 cell,
                 width,
                 height,
@@ -537,7 +540,7 @@ async fn hello_world_view_and_ping() {
     // pool after the chunks asked before it: it may come after them.
     while far.is_none() {
         match receive_any(&mut socket).await {
-            Some(Got::M(ServerMessage::FarView {
+            Some(Got::Far(FarView {
                 cell,
                 width,
                 height,
@@ -549,9 +552,9 @@ async fn hello_world_view_and_ping() {
         }
     }
     let (cell, width, height, cells) = far.expect("the far view after the chunks");
-    assert_eq!(cells.len(), (width * height) as usize);
+    assert_eq!(cells.len(), usize::from(width) * usize::from(height));
     assert!(cell >= 8 && width >= 128);
-    assert!(cells.contains('f') && cells.contains('g'));
+    assert!(cells.contains(&b'f') && cells.contains(&b'g'));
     assert!(
         seen_items > 100,
         "{seen_items} items in view: the ground is scattered"
@@ -1165,7 +1168,7 @@ async fn with_dev_the_client_gets_the_overview_and_may_teleport() {
     while chunks < window_len(world, start_of(world, body).chunk()) {
         match receive(&mut socket).await {
             Some(Got::Chunk(_)) => chunks += 1,
-            Some(Got::M(_)) => {}
+            Some(Got::M(_) | Got::Far(_)) => {}
             None => panic!("disconnected before the window was sent"),
         }
     }
@@ -2043,7 +2046,7 @@ impl Holder {
                     .retain(|(cx, cy), _| (*x..*x + w).contains(cx) && (*y..*y + h).contains(cy));
             }
             Got::M(ServerMessage::WorldState { world, .. }) => self.world.clone_from(world),
-            Got::M(_) => return false,
+            Got::M(_) | Got::Far(_) => return false,
         }
         true
     }
