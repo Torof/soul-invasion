@@ -1421,15 +1421,16 @@ mod tests {
         let far = |a: Pos, b: Pos| (a.x - b.x).abs().max((a.y - b.y).abs());
         for person in report.people.values() {
             let home = report.camps[usize::from(person.tribe)];
-            let other = report.camps[1 - usize::from(person.tribe)];
             assert!(far(person.born_at.unwrap(), home) <= 3, "born by its camp");
             assert!(person.death.is_none(), "nobody dies in four days");
             let end = person.last_at.unwrap();
             assert!(
-                // The patch's camps are four tiles apart: never nearer
-                // the other camp than its own.
-                far(end, home) <= far(end, other),
-                "it stays on its own side: {end:?}"
+                // The patch's camps are four tiles apart, nearer than
+                // [`HOME_TILES`]: at home by its own camp, which may be
+                // as near the other (a body that gathers walks about
+                // its camp, since the brain's gather loop was fixed).
+                far(end, home) <= sim::brain::HOME_TILES,
+                "it lives at its own camp: {end:?}, its camp {home:?}"
             );
         }
         assert_eq!(report.samples[0].alive_by_tribe, [5, 5]);
