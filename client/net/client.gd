@@ -97,6 +97,15 @@ var world_id := ""
 ## chunks held are kept, not built again.
 var same_world := false
 
+## The window of chunks held, as the server's last `view` told it, and
+## those of it not received yet on this connection, as a frame or a
+## `chunk_same` (chunk -> true): the loading screen lifts once none is
+## left (window_received). The server sends `view` before the chunks.
+var window := Rect2i()
+var _window_told := false
+var _window_due: Dictionary = {}
+var _received_here: Dictionary = {}
+
 ## True once the server has welcomed us.
 var is_ready := false
 ## Whether the server runs with --dev (it sent its overview).
@@ -110,6 +119,9 @@ func connect_to(url: String = DEFAULT_URL) -> void:
 	is_ready = false
 	dev = false
 	body = -1
+	_window_told = false
+	_window_due.clear()
+	_received_here.clear()
 	_url = url
 	_reconnect_in = 0.0
 	_peer = WebSocketPeer.new()
@@ -247,6 +259,7 @@ func _handle_chunk(bytes: PackedByteArray) -> void:
 		push_warning("a chunk frame that does not decode (%d bytes)" % bytes.size())
 		return
 	frames.received(Vector2i(int(decoded["x"]), int(decoded["y"])), bytes)
+	_came(Vector2i(int(decoded["x"]), int(decoded["y"])))
 	chunk.emit(int(decoded["x"]), int(decoded["y"]), decoded)
 
 
@@ -255,11 +268,26 @@ func _handle_chunk(bytes: PackedByteArray) -> void:
 func _same(x: int, y: int, version: int) -> void:
 	var key := Vector2i(x, y)
 	match frames.same(key, version):
+		FrameCache.HELD:
+			_came(key)
 		FrameCache.RESTORED:
+			_came(key)
 			var decoded := Protocol.decode_chunk(frames.live[key], _material_ids)
 			chunk.emit(x, y, decoded)
 		FrameCache.MISSING:
 			_send(Protocol.chunk_missing(x, y))
+
+
+## Chunk `key` came on this connection (its frame, or `chunk_same`).
+func _came(key: Vector2i) -> void:
+	_received_here[key] = true
+	_window_due.erase(key)
+
+
+## Whether every chunk of the window held came on this connection: false
+## until the server told the window (`view`).
+func window_received() -> bool:
+	return _window_told and _window_due.is_empty()
 
 
 ## `chunk_fruit` (v29, D48): the levels put in the frame held, so a later
@@ -282,8 +310,18 @@ func _fruit(x: int, y: int, version: int, trees: String, plants: String) -> void
 
 
 ## `view`: the chunks held outside the window are left, their frames kept.
-func _view(window: Rect2i) -> void:
-	for key in frames.view(window):
+func _view(held: Rect2i) -> void:
+	window = held
+	_window_told = true
+	_window_due.clear()
+	for key: Vector2i in _received_here.keys():
+		if not held.has_point(key):
+			_received_here.erase(key)
+	for y in range(held.position.y, held.end.y):
+		for x in range(held.position.x, held.end.x):
+			if not _received_here.has(Vector2i(x, y)):
+				_window_due[Vector2i(x, y)] = true
+	for key in frames.view(held):
 		chunk_hidden.emit(key.x, key.y)
 
 

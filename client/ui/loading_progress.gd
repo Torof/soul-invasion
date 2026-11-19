@@ -2,11 +2,14 @@ class_name LoadingProgress
 extends RefCounted
 ## Whether the world is ready to be shown, from what has come in: the
 ## server's welcome and world, the chunks sent around the body, and the
-## chunks built. The server does not say how many chunks it will send, so
-## the world counts as in once none has come for QUIET_MSEC and every one
-## that came is built. Pure arithmetic, no node: testable headless.
+## chunks built. The world counts as in once every chunk of the window the
+## server said it holds (`view`) came, the screen's are built and every
+## one that came is built. Pure arithmetic, no node: testable headless.
+## Before (audit F3, 18 November 2026), it waited for no chunk to come for
+## QUIET_MSEC as well: 0.5 s more on every login.
 
-## How long without a new chunk before the sending counts as over.
+## After a teleport onto the tile the body stands on no chunk comes: how
+## long since the screen came up before that counts as over.
 const QUIET_MSEC := 500
 
 var has_world := false
@@ -15,7 +18,8 @@ var built := 0
 ## Grounds still being built on a worker or waiting to be laid, water
 ## meshes included (ChunkView.waiting).
 var fields := 0
-var _last_chunk_msec := -1
+## Whether every chunk of the window held came (Net.window_received).
+var window_received := false
 ## Whether the world view already holds and has built all the screen may
 ## show (WorldView.reach_ready): after a teleport onto the tile the body
 ## stands on no chunk comes, and the world counts as in on this instead,
@@ -29,18 +33,16 @@ func start(now_msec: int) -> void:
 	_started_msec = now_msec
 
 
-## A chunk came in at `now_msec`.
-func chunk_came(now_msec: int) -> void:
+## A chunk came in (at `_now_msec`).
+func chunk_came(_now_msec: int) -> void:
 	received += 1
-	_last_chunk_msec = now_msec
 
 
 ## Whether everything sent is in and drawn.
 func done(now_msec: int) -> bool:
 	if received == 0:
 		return has_world and view_ready and _started_msec >= 0 and now_msec - _started_msec >= QUIET_MSEC and fields == 0
-	return has_world and now_msec - _last_chunk_msec >= QUIET_MSEC \
-		and built >= received and fields == 0
+	return has_world and window_received and view_ready and built >= received and fields == 0
 
 
 ## How far along, 0 to 1: the world's arrival first, then the building.

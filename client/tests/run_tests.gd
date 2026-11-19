@@ -91,6 +91,7 @@ func _init() -> void:
 	_test_tree_images_hold_their_finest_level_only_up_close()
 	_test_tree_outlines_hold_every_texel()
 	_test_the_frame_cache_keeps_what_left_the_view()
+	_test_the_net_knows_when_the_window_came()
 	_test_the_net_keeps_the_chunks_of_the_same_world_only()
 	_test_a_body_told_at_each_chunk_keeps_walking_its_route()
 	_test_a_new_route_told_while_walking_turns_from_where_the_body_is_shown()
@@ -759,16 +760,23 @@ func _test_loading_waits_for_the_valley() -> void:
 	_check(not p.done(10_000), "the world but no chunk yet: loading")
 	p.chunk_came(1_000)
 	p.chunk_came(1_100)
+	p.view_ready = true
+	p.window_received = true
 	p.built = 1
 	_check(not p.done(5_000), "a chunk still to build: loading")
 	p.built = 2
-	_check(not p.done(1_200), "chunks may still be coming: loading")
+	p.window_received = false
+	_check(not p.done(5_000), "chunks of the window still to come: loading")
+	p.window_received = true
+	p.view_ready = false
+	_check(not p.done(5_000), "the screen's chunks not built: loading")
+	p.view_ready = true
 	p.fields = 1
 	_check(not p.done(5_000), "a riverbank still smoothing: loading")
 	p.fields = 0
-	_check(p.done(1_100 + LoadingProgress.QUIET_MSEC) and p.fraction() == 1.0, "all in, all built, quiet: done")
+	_check(p.done(1_100) and p.fraction() == 1.0, "the window in, all built: done at once, no quiet wait")
 	p.chunk_came(2_000)
-	_check(p.fraction() < 1.0 and p.stage() == "Laying the ground", "a new chunk sets it back")
+	_check(p.fraction() < 1.0 and p.stage() == "Laying the ground" and not p.done(2_000), "a new chunk sets it back")
 	# A teleport onto the tile the body stands on: no chunk comes; the
 	# screen lifts once the view holds what the screen shows, and quiet.
 	var still := LoadingProgress.new()
@@ -782,7 +790,10 @@ func _test_loading_waits_for_the_valley() -> void:
 	_check(not still.done(9_000), "a ground still on a worker: loading")
 	still.fields = 0
 	still.chunk_came(3_600)
-	_check(not still.done(3_600 + LoadingProgress.QUIET_MSEC - 1) and still.done(3_600 + LoadingProgress.QUIET_MSEC) == (still.built >= 1), "a chunk came after all: waited for as before")
+	_check(not still.done(9_000), "a chunk came after all, its window not told: loading")
+	still.window_received = true
+	still.built = 1
+	_check(still.done(3_600), "its window in and built: done")
 
 
 ## The bounds of the chunks held, in chunks.
@@ -2664,6 +2675,29 @@ func _test_the_frame_cache_keeps_what_left_the_view() -> void:
 	_check(not Protocol.hello().has("held"), "a first hello holds nothing")
 	cache.clear()
 	_check(cache.live.is_empty() and cache.kept_count() == 0, "cleared")
+
+
+## Audit F3: the net knows when every chunk of the window the server
+## told (`view`) came on this connection, as a frame or a `chunk_same`
+## for a frame held; the loading screen lifts on it.
+func _test_the_net_knows_when_the_window_came() -> void:
+	var net: Node = load("res://net/client.gd").new()
+	_check(not net.window_received(), "no window told yet: not received")
+	net._handle({"type": "view", "x": 3, "y": -2, "width": 2, "height": 1})
+	_check(not net.window_received(), "the window told, nothing came")
+	net._handle_chunk(FileAccess.get_file_as_bytes("res://tests/fixtures/chunk_v17.bin"))
+	_check(not net.window_received(), "one of two came")
+	net.frames.received(Vector2i(4, -2), _frame_header(4, -2, 0))
+	net._handle({"type": "chunk_same", "x": 4, "y": -2, "version": 0})
+	_check(net.window_received(), "the other held already, told so: all came")
+	net._handle({"type": "view", "x": 4, "y": -2, "width": 2, "height": 1})
+	_check(not net.window_received(), "the window moved: its new chunk still to come")
+	net.frames.received(Vector2i(5, -2), _frame_header(5, -2, 1))
+	net._handle({"type": "chunk_same", "x": 5, "y": -2, "version": 1})
+	_check(net.window_received(), "and come")
+	net.connect_to("ws://127.0.0.1:1")
+	_check(not net.window_received(), "a new connection: its window not told yet")
+	net.free()
 
 
 ## D4: the view message lets go of what lies outside, and a reconnection
