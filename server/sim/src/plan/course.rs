@@ -1503,19 +1503,28 @@ mod tests {
     /// The longest chord of `nodes` every node between whose ends lies
     /// within a quarter of the width of it (a metre at least), mm: the
     /// safety net's straight reach (`plan::net`).
+    ///
+    /// A node lies within the tolerance when its distance off the chord,
+    /// rounded down, is at most the tolerance: `|cross| / chord <= t`,
+    /// which is `|cross| < (t + 1) × chord`, so the chord's length is
+    /// worked out once per chord and no node divides.
     fn longest_straight(nodes: &[Node]) -> i64 {
-        let off_line = |a: (i64, i64), b: (i64, i64), p: (i64, i64)| {
-            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-            ((dx * (p.1 - a.1) - dy * (p.0 - a.0)) / distance(a, b).max(1)).abs()
-        };
         let mut longest = 0;
         for i in 0..nodes.len() {
             let tolerance = (nodes[i].width / 4).max(1000);
+            let a = nodes[i].p;
             for j in i + 1..nodes.len() {
-                if !(i + 1..j).all(|k| off_line(nodes[i].p, nodes[j].p, nodes[k].p) <= tolerance) {
+                let b = nodes[j].p;
+                let chord = distance(a, b);
+                let limit = (tolerance + 1) * chord.max(1);
+                let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+                if !nodes[i + 1..j]
+                    .iter()
+                    .all(|n| (dx * (n.p.1 - a.1) - dy * (n.p.0 - a.0)).abs() < limit)
+                {
                     break;
                 }
-                longest = longest.max(distance(nodes[i].p, nodes[j].p));
+                longest = longest.max(chord);
             }
         }
         longest
