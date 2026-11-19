@@ -94,6 +94,19 @@ pub const WAKE_SPREAD_SECONDS: u64 = 60;
 /// the next turns, and the body learns their plants then. A second, not
 /// a tick, so that what a body knows does not hang on the cadence.
 pub const COLD_CHUNKS_PER_SECOND: u64 = 10;
+/// How much the brains think a game second at most, spread evenly over
+/// its ticks, in work: a thought counts one, and each chunk its look
+/// reads for trees and plants one more (a look over new land reads some
+/// twenty-five, and costs ten times a thought that does not move). The
+/// minds due past a turn's share wait for the next turn, still due, in
+/// turn by their bodies' ids from the first one that waited; the work a
+/// turn spent past its share (its last thought ran whole) is repaid by
+/// the next. A count, not a clock (D24). Only crowds larger than today's
+/// ask so much at once: 800 people of two tribes asked at most 6,377 in
+/// a tick of the game's ten in their first day (some 30 ms), 7,978 in a
+/// tick of a second; a work costs some 5 µs, so a full share of the
+/// game's ten some 50 ms.
+pub const THOUGHT_WORK_PER_SECOND: u64 = 100_000;
 /// How many chunks' trees and plants bearing food the brains hold, the
 /// least lately used forgotten first (placed again if seen again): as
 /// many as the world's own trees ([`crate::ground::TREE_CACHE_CHUNKS`]).
@@ -274,6 +287,18 @@ pub struct Brains {
     shores: Lru<ChunkPos, Vec<Shore>>,
     /// The content's kinds bearing food, numbered, and what each bears now.
     food: Food,
+    /// How much the brains think a game second at most
+    /// ([`THOUGHT_WORK_PER_SECOND`]).
+    work_per_second: u64,
+    /// Work spent past the last turn's share, repaid by the next.
+    owed: u64,
+    /// The first mind left waiting by the last turn: the next turn starts
+    /// with it.
+    next: Option<BodyId>,
+    /// How many due minds the last turn left waiting.
+    waiting: usize,
+    /// The work the last turn did.
+    work: u64,
 }
 
 /// The content's kinds of trees and plants bearing food, numbered, and
@@ -454,8 +479,14 @@ struct Placed {
 /// How many chunks the turn after the tick `now` may place: the
 /// second's [`COLD_CHUNKS_PER_SECOND`], spread evenly over its ticks.
 fn cold_chunks_at(world: &World, now: u64) -> u64 {
+    tick_share(world, now, COLD_CHUNKS_PER_SECOND)
+}
+
+/// The tick `now`'s share of `per_second`, spread evenly over the second's
+/// ticks: the shares of a second's ticks add up to it.
+fn tick_share(world: &World, now: u64, per_second: u64) -> u64 {
     let tps = u64::from(world.calendar().ticks_per_second()).max(1);
-    now * COLD_CHUNKS_PER_SECOND / tps - now.saturating_sub(1) * COLD_CHUNKS_PER_SECOND / tps
+    now * per_second / tps - now.saturating_sub(1) * per_second / tps
 }
 
 impl Placed {
@@ -528,6 +559,11 @@ impl Brains {
             bearers: Placed::new(),
             shores: Lru::new(BEARER_CHUNKS),
             food: Food::default(),
+            work_per_second: THOUGHT_WORK_PER_SECOND,
+            owed: 0,
+            next: None,
+            waiting: 0,
+            work: 0,
         }
     }
 
@@ -583,6 +619,17 @@ impl Brains {
         self.minds.get(&body)
     }
 
+    /// How many due minds the last turn left waiting for the next
+    /// ([`THOUGHT_WORK_PER_SECOND`]): none while the crowd fits.
+    pub fn waiting(&self) -> usize {
+        self.waiting
+    }
+
+    /// The work the last turn did ([`THOUGHT_WORK_PER_SECOND`]'s count).
+    pub fn work(&self) -> u64 {
+        self.work
+    }
+
     /// The id of the kind numbered `kind` ([`KnownPlant::kind`]), if the
     /// brains numbered it.
     pub fn kind_name(&self, kind: u16) -> Option<&str> {
@@ -590,9 +637,10 @@ impl Brains {
     }
 
     /// One turn, after a tick of `world` that produced `events`: the
-    /// minds something changed for think, and what they decide is given
-    /// back, to be queued for the next tick. Minds whose body is gone
-    /// (dead) are forgotten.
+    /// minds something changed for think, as many as the turn's share of
+    /// [`THOUGHT_WORK_PER_SECOND`] allows, and what they decide is given
+    /// back by their bodies' ids, to be queued for the next tick. Minds
+    /// whose body is gone (dead) are forgotten.
     pub fn think(
         &mut self,
         world: &World,
@@ -603,20 +651,13 @@ impl Brains {
         let now = world.tick().0;
         self.bearers.left = cold_chunks_at(world, now);
         self.learn_unseen(world, rules);
-        let mut decisions = Vec::new();
-        let seed = self.seed;
         let spread = wake_spread(world);
-        let mut land = Land {
-            bearers: &mut self.bearers,
-            shores: &mut self.shores,
-            food: &mut self.food,
-        };
+        // Who is gone, and who is due.
         self.minds.retain(|&id, mind| {
             let Some(body) = world.body(id) else {
                 return false;
             };
-            let condition = body.condition();
-            if condition.vitality.points() == 0 {
+            if body.condition().vitality.points() == 0 {
                 return false;
             }
             let past = pasts(world, id);
@@ -629,20 +670,52 @@ impl Brains {
             if mind.wake_at.is_some_and(|tick| now >= tick) {
                 mind.due = true;
             }
-            if !mind.due {
-                return true;
+            true
+        });
+        // The due think, by their ids from the first one the last turn
+        // left waiting, while the turn's share of work lasts.
+        let cap = tick_share(world, now, self.work_per_second);
+        let allowance = cap.saturating_sub(self.owed);
+        self.owed = self.owed.saturating_sub(cap);
+        let from = self.next.take().unwrap_or(BodyId(0));
+        let due: Vec<BodyId> = self
+            .minds
+            .range(from..)
+            .chain(self.minds.range(..from))
+            .filter(|(_, mind)| mind.due)
+            .map(|(&id, _)| id)
+            .collect();
+        let mut decisions = Vec::new();
+        let seed = self.seed;
+        let mut land = Land {
+            bearers: &mut self.bearers,
+            shores: &mut self.shores,
+            food: &mut self.food,
+        };
+        let mut used = 0;
+        self.waiting = 0;
+        for (i, &id) in due.iter().enumerate() {
+            if used >= allowance {
+                self.next = Some(id);
+                self.waiting = due.len() - i;
+                break;
             }
+            let (Some(mind), Some(body)) = (self.minds.get_mut(&id), world.body(id)) else {
+                continue;
+            };
             mind.due = false;
             mind.wake_at = None;
             mind.thoughts += 1;
             land.food.refresh(world, rules);
-            look(world, rules, body.pos(), mind, &mut land);
+            used += 1 + look(world, rules, body.pos(), mind, &mut land);
             if let Some(decision) = decide(world, rules, land.food, id, mind, seed) {
                 decisions.push((id, decision));
             }
             mind.stopped = false;
-            true
-        });
+        }
+        self.owed += used.saturating_sub(allowance);
+        self.work = used;
+        decisions.sort_by_key(|(id, _)| *id);
         decisions
     }
 
@@ -818,12 +891,13 @@ fn far(a: Pos, b: Pos) -> i64 {
 /// The body at `at` looks around: the drinking places and the food in
 /// sight go into its memory, the food it remembers in sight but no longer
 /// sees is forgotten. Sight is the ground's under its feet, a square of
-/// that half-side.
+/// that half-side. Gives back how many chunks it read for trees and
+/// plants ([`THOUGHT_WORK_PER_SECOND`]).
 #[allow(
     clippy::too_many_lines,
     reason = "one straight reading, top to bottom; splitting it would scatter the rule"
 )] // one reading, top to bottom, of what it sees or does
-fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind, land: &mut Land<'_>) {
+fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind, land: &mut Land<'_>) -> u64 {
     let map = world.map();
     let camp = mind.home;
     let sight = sight_at(map, rules, at);
@@ -923,6 +997,7 @@ fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind, land: &mut Lan
     let moved = mind
         .plants_from
         .is_none_or(|from| (from.x - at.x).abs().max((from.y - at.y).abs()) >= LOOK_STEP);
+    let mut read = 0;
     if moved {
         mind.plants_from = Some(at);
         mind.unseen.clear();
@@ -930,6 +1005,7 @@ fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind, land: &mut Lan
         let mut chunks: Vec<ChunkPos> = (low.y..=high.y)
             .flat_map(|cy| (low.x..=high.x).map(move |cx| ChunkPos::new(cx, cy)))
             .collect();
+        read = u64::try_from(chunks.len()).expect("fits");
         let own = at.chunk();
         chunks.sort_by_key(|c| ((c.x - own.x).abs().max((c.y - own.y).abs()), c.y, c.x));
         let mut seen = Vec::new();
@@ -966,6 +1042,7 @@ fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind, land: &mut Lan
             .expect("not empty");
         mind.food.remove(&farthest);
     }
+    read
 }
 
 /// The trees and plants bearing food of `chunk` that a body at `at`
@@ -2523,5 +2600,86 @@ mod tests {
             found = found.max(before.len());
         }
         assert!(found > 3, "the valley's river seen");
+    }
+
+    /// `count` bodies on a field with a river, piloted, all due at once.
+    fn crowd(count: i32) -> (World, Brains) {
+        let mut world = field(64, 40, Pos::new(5, 5));
+        for k in 1..count {
+            world.spawn_body(Pos::new(5 + k % 8, 5 + k / 8));
+        }
+        let mut brains = piloted(&world);
+        for mind in brains.minds.values_mut() {
+            mind.due = true;
+            mind.wake_at = None;
+        }
+        (world, brains)
+    }
+
+    #[test]
+    fn past_its_share_of_work_the_due_minds_wait_their_turn_and_none_for_ever() {
+        let rules = rules();
+        let (mut world, mut brains) = crowd(30);
+        // Calendar of one tick a second: a turn's share is the second's,
+        // some four thoughts (a look over new land reads 25 chunks here).
+        brains.work_per_second = 100;
+        world.advance(1, &rules, &mut Vec::new());
+        let thoughts =
+            |brains: &Brains| -> Vec<u64> { brains.minds.values().map(Mind::thoughts).collect() };
+        let decided = brains.think(&world, &rules, &[]);
+        assert!(decided.is_sorted_by_key(|(id, _)| *id));
+        let first: Vec<u64> = thoughts(&brains);
+        let thought = first.iter().filter(|&&n| n == 1).count();
+        assert!(thought > 0 && thought < 30, "{thought} thought");
+        assert_eq!(brains.waiting(), 30 - thought);
+        // Those that thought are the first by id; the others wait, due.
+        assert!(first.is_sorted_by(|a, b| a >= b));
+        assert!(brains.minds.values().all(|m| m.due == (m.thoughts == 0)));
+        // The next turns go on from the first that waited; what a turn
+        // spent past its share, less than a thought, is repaid.
+        let mut turns = 1;
+        while brains.waiting() > 0 {
+            let waited = brains.next.unwrap();
+            assert!(brains.owed < 26);
+            brains.think(&world, &rules, &[]);
+            turns += 1;
+            assert_eq!(
+                brains.minds[&waited].thoughts, 1,
+                "the first that waited thinks first"
+            );
+            assert!(turns < 30, "none waits for ever");
+        }
+        assert!(thoughts(&brains).iter().all(|&n| n == 1), "each once");
+        assert!(turns > 2);
+    }
+
+    #[test]
+    fn while_the_crowd_fits_its_share_the_budget_changes_nothing() {
+        let rules = rules();
+        let run = |work_per_second| {
+            let (mut world, mut brains) = crowd(30);
+            for body in &mut world.bodies {
+                body.condition.thirst = Gauge::at(60);
+            }
+            brains.work_per_second = work_per_second;
+            let mut waited = 0;
+            let (mut all, mut events) = (Vec::new(), Vec::new());
+            for _ in 0..3000 {
+                events.clear();
+                world.step(&rules, &mut events);
+                for (body, decision) in brains.think(&world, &rules, &events) {
+                    world.queue(decision.intention.clone());
+                    all.push((world.tick(), body, decision));
+                }
+                waited += brains.waiting();
+            }
+            (all, world.bodies().to_vec(), waited)
+        };
+        let (decided, bodies, waited) = run(THOUGHT_WORK_PER_SECOND);
+        assert_eq!(waited, 0, "the crowd fits");
+        assert!(decided.len() > 30);
+        let (unbound, unbound_bodies, _) = run(1 << 40);
+        assert_eq!(decided, unbound);
+        assert_eq!(bodies, unbound_bodies);
     }
 }
