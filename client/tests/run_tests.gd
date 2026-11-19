@@ -66,6 +66,7 @@ func _init() -> void:
 	_test_the_items_mesh_is_built_once_per_change()
 	_test_the_redraw_queue_holds_each_chunk_once_and_paces_itself()
 	_test_a_redraw_rebuilds_only_when_the_ground_around_changed()
+	_test_no_shipped_script_names_a_dev_class()
 	_test_the_watchdog_reports_a_stalled_frame()
 	_test_trees_are_drawn_only_where_the_view_reaches()
 	_test_tall_plants_are_drawn_only_where_the_view_reaches()
@@ -97,6 +98,7 @@ func _init() -> void:
 	_test_the_net_keeps_the_chunks_of_the_same_world_only()
 	_test_a_body_told_at_each_chunk_keeps_walking_its_route()
 	_test_a_new_route_told_while_walking_turns_from_where_the_body_is_shown()
+	_test_only_the_bodies_the_screen_may_show_are_walked_and_one_coming_in_is_where_it_should_be()
 	_test_the_clock_catches_up_with_the_ticks_walks_are_told_at()
 	_test_a_blocked_body_is_decoded_and_its_notice_shows_then_fades()
 	_test_a_refused_order_says_why_in_a_thought()
@@ -1413,11 +1415,37 @@ func _test_a_redraw_rebuilds_only_when_the_ground_around_changed() -> void:
 ## The development watchdog (only with --dev) reports a frame that takes
 ## over STALL_SECONDS, then every REPORT_EVERY, saying what the main
 ## thread was doing.
+func _test_no_shipped_script_names_a_dev_class() -> void:
+	# The export leaves dev/ out (export_presets.cfg): a shipped script that
+	# named DevWatcher, SlopeOverlay or GroundLab would no longer parse there.
+	_check(FileAccess.get_file_as_string("res://export_presets.cfg").contains("dev/*"), "the export leaves dev/ out")
+	var names: Array[String] = []
+	for file in DirAccess.get_files_at("res://dev"):
+		if file.ends_with(".gd"):
+			for line in FileAccess.get_file_as_string("res://dev/" + file).split("\n"):
+				if line.begins_with("class_name "):
+					names.append(line.substr(11).strip_edges())
+	var offenders: Array[String] = []
+	var todo: Array[String] = ["res://"]
+	while not todo.is_empty():
+		var dir: String = todo.pop_back()
+		for sub in DirAccess.get_directories_at(dir):
+			if not (dir == "res://" and sub in ["dev", "tests", "tools", "art"]) and not sub.begins_with("."):
+				todo.append(dir + sub + "/")
+		for file in DirAccess.get_files_at(dir):
+			if file.ends_with(".gd"):
+				var text := FileAccess.get_file_as_string(dir + file)
+				for n in names:
+					if text.contains(n):
+						offenders.append(dir + file)
+	_check(offenders.is_empty(), "shipped scripts name nothing of dev/: %s" % str(offenders))
+
+
 func _test_the_watchdog_reports_a_stalled_frame() -> void:
 	_check(not DevWatchdog.report_due(1.9, 0.0) and DevWatchdog.report_due(2.0, 0.0), "the first report at 2 s")
 	_check(not DevWatchdog.report_due(4.0, 2.0) and DevWatchdog.report_due(5.0, 2.0), "then one every 3 s")
 	var watcher := FileAccess.get_file_as_string("res://dev/watcher.gd")
-	_check(not DevWatchdog.held and watcher.contains("DevWatchdog.held = true") and FileAccess.get_file_as_string("res://dev/watchdog.gd").contains("and not held:"), "the watcher's restart holds the watchdog while the project imports, so a long import is reported, never given up on")
+	_check(not DevWatchdog.held and watcher.contains("DevWatchdog.held = true") and FileAccess.get_file_as_string("res://diag/watchdog.gd").contains("and not held:"), "the watcher's restart holds the watchdog while the project imports, so a long import is reported, never given up on")
 	var line := DevWatchdog.report(2.5, 120, DevWatchdog.CHUNK_BUILD)
 	_check(line.contains("2.5 s") and line.contains("frame 120") and line.contains("chunk build"), "the report says how long, which frame and what was running: %s" % line)
 	_check(DevWatchdog.phase_name(99) == "?" and DevWatchdog.phase_name(DevWatchdog.NETWORK).begins_with("network messages"), "every phase has a name")
@@ -2796,6 +2824,77 @@ func _test_the_net_keeps_the_chunks_of_the_same_world_only() -> void:
 	net._handle({"type": "world_state", "world": "second", "materials": []})
 	_check(not net.same_world and net.frames.live.is_empty() and net.frames.kept_count() == 0, "another world: nothing reused")
 	net.free()
+
+
+## A crowd costs what the screen shows (BodyCrowd): of bodies walking
+## all around, only those the screen may show are walked on; one whose
+## walk brings it on screen, or which the screen pans onto, is shown at
+## once where its walk has it, every frame.
+func _test_only_the_bodies_the_screen_may_show_are_walked_and_one_coming_in_is_where_it_should_be() -> void:
+	var crowd := BodyCrowd.new()
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 11
+	var bodies := {}
+	var truth := {}
+	for id in 300:
+		var at := Vector2(rng.randf_range(-100000, 250000), rng.randf_range(-100000, 250000))
+		var route: Array = []
+		var arrivals: Array = []
+		var p := at
+		for leg in 5:
+			p += Vector2(rng.randf_range(-1, 1), rng.randf_range(-1, 1)).normalized() * rng.randf_range(2000, 30000)
+			route.append(p)
+			arrivals.append(40 * (leg + 1) + rng.randi_range(0, 30))
+		var walk := BodyWalk.told({}, at, route, arrivals, 0.0, 1400.0, 0.0) if id % 7 != 0 else BodyWalk.standing(at)
+		bodies[id] = walk
+		truth[id] = walk.duplicate(true)
+		crowd.told(id, walk)
+	# One body walks from far off the screen straight across it.
+	bodies[999] = BodyWalk.told({}, Vector2(-60000, 60000), [Vector2(-30000, 60000), Vector2(0, 60000), Vector2(60000, 60000), Vector2(120000, 60000)], [60, 120, 240, 360], 0.0, 1400.0, 0.0)
+	truth[999] = (bodies[999] as Dictionary).duplicate(true)
+	crowd.told(999, bodies[999])
+	var screen := Vector2(1280, 720) / 0.4
+	var centre := Iso.point_to_screen(Vector2(60000, 60000))
+	var wrong := 0
+	var hidden_shown := 0
+	var most := 0
+	var crossed := false
+	for frame in 400:
+		var now := frame * 1.0
+		# The camera pans east for a while, then jumps (a teleport).
+		if frame == 300:
+			centre = Iso.point_to_screen(Vector2(20000, 100000))
+		else:
+			centre += Vector2(6, 2)
+		var seen := Rect2(centre - screen / 2.0, screen)
+		crowd.watch(seen, bodies)
+		crowd.step(bodies, 0.0, now)
+		most = maxi(most, crowd.shown.size())
+		for id: int in bodies:
+			var want: Dictionary = truth[id]
+			BodyWalk.advance(want, 0.0, now)
+			if not seen.has_point(Iso.point_to_screen(want["at"])):
+				continue
+			if id == 999:
+				crossed = true
+			if not crowd.shown.has(id):
+				hidden_shown += 1
+			elif (bodies[id]["at"] as Vector2).distance_to(want["at"]) > 0.01:
+				wrong += 1
+	_check(crossed, "the body walking in crosses the screen")
+	_check(hidden_shown == 0, "every body on screen is shown (%d frames left one out)" % hidden_shown)
+	_check(wrong == 0, "every body on screen stands where its walk has it (%d frames off)" % wrong)
+	_check(most > 0 and most < 150, "only some of the crowd are walked on (%d of 301 at most)" % most)
+	# One off the screen whose walk never comes near is left as it was.
+	crowd.clear()
+	var away := BodyWalk.told({}, Vector2(500000, 500000), [Vector2(510000, 500000)], [100], 0.0, 1400.0, 0.0)
+	var kept: Dictionary = away.duplicate(true)
+	crowd.watch(Rect2(centre - screen / 2.0, screen), {7: away})
+	crowd.step({7: away}, 0.0, 50.0)
+	_check(not crowd.shown.has(7) and away == kept, "a body far off the screen is not walked on")
+	crowd.keep(7, {7: away})
+	crowd.step({7: away}, 0.0, 50.0)
+	_check(crowd.shown.has(7) and (away["at"] as Vector2).distance_to(Vector2(505000, 500000)) < 1.0, "the piloted body is always walked on")
 
 
 func _test_a_body_told_at_each_chunk_keeps_walking_its_route() -> void:
