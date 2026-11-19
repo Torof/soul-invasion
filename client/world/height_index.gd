@@ -101,19 +101,50 @@ static func _work(heights: PackedInt32Array, known: PackedByteArray, from: Vecto
 	out.append(slopes_of(heights, known, from, side))
 
 
-## The slopes' image of the `side` × `side` tiles from `from`.
+## The slopes' image of the `side` × `side` tiles from `from`: the heights
+## around them copied once into a window of their own (no ring arithmetic
+## a read), then each tile's rise as `rise` works it out.
 static func slopes_of(heights: PackedInt32Array, known: PackedByteArray, from: Vector2i, side: int) -> Image:
+	var w := side + 2 * SPAN
+	var h := PackedInt32Array()
+	h.resize(w * w)
+	var k := PackedByteArray()
+	k.resize(w * w)
+	for y in w:
+		var row := posmod(from.y - SPAN + y, TILES) * TILES
+		for x in w:
+			var i := row + posmod(from.x - SPAN + x, TILES)
+			h[y * w + x] = heights[i]
+			k[y * w + x] = known[i]
 	var bytes := PackedByteArray()
 	bytes.resize(side * side * 4)
 	for y in side:
 		for x in side:
-			var tile := Vector2i(from.x + x, from.y + y)
-			if known[_index(tile.x, tile.y)] == 0:
+			var at := (y + SPAN) * w + x + SPAN
+			if k[at] == 0:
 				continue
 			var o := 4 * (y * side + x)
-			bytes.encode_half(o, _rise_in(heights, known, tile, Vector2i(1, 0)))
-			bytes.encode_half(o + 2, _rise_in(heights, known, tile, Vector2i(0, 1)))
+			bytes.encode_half(o, _rise_at(h, k, at, 1))
+			bytes.encode_half(o + 2, _rise_at(h, k, at, w))
 	return Image.create_from_data(side, side, false, Image.FORMAT_RGH, bytes)
+
+
+## `_rise_in` on a window: the tile at `at`, a step along the axis `step`
+## entries away.
+static func _rise_at(h: PackedInt32Array, k: PackedByteArray, at: int, step: int) -> float:
+	var ahead := 0
+	for n in range(SPAN, 0, -1):
+		if k[at + n * step] != 0:
+			ahead = n
+			break
+	var behind := 0
+	for n in range(SPAN, 0, -1):
+		if k[at - n * step] != 0:
+			behind = n
+			break
+	if ahead + behind == 0:
+		return 0.0
+	return (h[at + ahead * step] - h[at - behind * step]) / 10.0 / (ahead + behind)
 
 
 ## Lays the slopes the workers are done with, in the order the chunks
