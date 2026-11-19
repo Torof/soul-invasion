@@ -113,23 +113,30 @@ const float SLOPE_SHOWN_AT = 0.5 * (SLOPE_SHOW_FROM + SLOPE_SHOW_FULL);
 const float OFFSET_CELL_PX = 150.0;
 
 uniform sampler2D noise_texture : repeat_enable, filter_linear;
-// Noise period, in texture units (one unit is one texture, four metres).
-uniform float noise_scale = 0.09;
-// Period of the zones where one shifted variant is laid: wide and few,
-// so the ground stays calm; the cuts between them are short.
-uniform float variant_scale = 0.05;
+// The ground as a map of numbers (GroundMasks, the project lead's
+// validation of 19 November 2026): the layers' weights worked out on the
+// processor at every tile corner, from the same noise, and read here
+// filtered, the four corners of a tile interpolated over it. R the
+// sibling, G the second (or the share of bare spots kept, for a terrain
+// without a second), B the worn grass (or the corner's variant, for a
+// terrain laid in variants), A the dry tone. Their numbers (scales,
+// covers, softness) are GroundMasks.DEFAULTS and ground.json's.
+uniform sampler2D ground_masks : filter_linear, repeat_enable;
+// A variant's byte in B: its three bits times this (GroundMasks).
+const float VARIANT_STEP = 36.0;
 // Where the shifted copies are taken from, in texture units.
 uniform vec2 second_offset = vec2(0.37, 0.63);
 // Whether the textures are laid in shifted variants (the woods) or as
-// they are (the meadow, whose sister already breaks the repetition).
+// they are (the meadow, whose sister already breaks the repetition):
+// the variant chosen by zones of noise, wide and few, so the ground
+// stays calm, the cuts between them short (GroundMasks).
 uniform bool has_variants = false;
 // A sister image of the ground (same grass, drawn differently), blended
 // with the first over slow noise.
 uniform sampler2D sibling_texture : repeat_enable, filter_linear_mipmap;
 uniform bool has_sibling = false;
-// Share of the ground the sibling covers, and a tint to bring its tone
-// to the first image's when the two differ (white: none).
-uniform float sibling_cover = 0.5;
+// A tint to bring the sibling's tone to the first image's when the two
+// differ (white: none).
 uniform vec3 sibling_tint : source_color = vec3(1.0);
 // Share of the base's bare spots (its brown pixels) kept; the others
 // show the sibling's grass instead. Needs a sibling.
@@ -139,25 +146,13 @@ uniform float bare_keep = 1.0;
 // "second" over wide areas, "worn" in a few spots.
 uniform sampler2D second_texture : repeat_enable, filter_linear_mipmap;
 uniform bool has_second = false;
-uniform float second_scale = 0.03;
-uniform float second_cover = 0.35;
-// Width of the fade at a patch's edge (0.1 is a crisp spot; 0.3 or more
-// melts one water into another).
-uniform float second_softness = 0.1;
 uniform sampler2D worn_texture : repeat_enable, filter_linear_mipmap;
 uniform bool has_worn = false;
-// Period of the patches, in texture units, and how much ground they take.
-uniform float worn_scale = 0.05;
-uniform float worn_cover = 0.15;
-uniform float worn_softness = 0.1;
 // Tone variation without another image: the same texture, tinted a
 // little (drier, lighter) over wide slow zones. Same tufts by
 // construction; strength and pace are numbers.
 uniform vec3 dry_tint : source_color = vec3(1.07, 1.03, 0.86);
-uniform float dry_scale = 0.018;
-uniform float dry_cover = 0.5;
 uniform float dry_strength = 0.6;
-uniform float dry_softness = 0.3;
 // The terrain's own tone over everything: white for the meadow, darker
 // and cooler for the shade of the woods.
 uniform vec3 base_tint : source_color = vec3(1.0);
@@ -218,28 +213,36 @@ uniform float current_cover = 0.3;
 // negative, the clock's own.
 uniform float flow_time = -1.0;
 
-// Soft patches covering about `cover` of the ground, from the noise read
-// at `scale` with an offset so each layer has its own shape.
-float patches(vec2 uv, float scale, vec2 shift, float cover, float softness) {
-	float m = texture(noise_texture, uv * scale + shift).r;
-	float threshold = 1.0 - cover;
-	return smoothstep(threshold - softness, threshold + softness, m);
-}
-
-// A texture laid in four variants shifted (never turned), chosen by three
-// soft noises, so the four-metre grid is out of phase from one zone to
-// the next.
+// A texture laid in four variants shifted (never turned), chosen by
+// three soft noises (GroundMasks), so the four-metre grid is out of phase
+// from one zone to the next.
 vec2 uv_b(vec2 uv) { return uv + second_offset; }
 vec2 uv_c(vec2 uv) { return uv + vec2(0.11, 0.47); }
 vec2 uv_d(vec2 uv) { return uv + vec2(0.73, 0.29); }
-vec3 variant_weights(vec2 uv) {
-	if (!has_variants) {
-		return vec3(0.0);
+// A corner's variant, from its byte in the masks' B: the three weights,
+// each all or nothing.
+vec3 variant_bits(float b) {
+	int v = int(round(b * 255.0 / VARIANT_STEP));
+	return vec3(float(v & 1), float((v >> 1) & 1), float((v >> 2) & 1));
+}
+// The variants' weights in tile `cell` at `f` across it: the four
+// corners' (one gather of the masks' B) interpolated over the tile, as
+// the project lead validated them (19 November 2026), or, with
+// VARIANT_PER_TILE, the tile's own variant, the one most of its corners
+// have.
+const bool VARIANT_PER_TILE = true;
+vec3 corner_variants(vec2 cell, vec2 f) {
+	// Gathered at the tile's far corner: corners (x, y + 1), (x + 1,
+	// y + 1), (x + 1, y) and (x, y) of the tile, whatever the rounding.
+	vec4 g = textureGather(ground_masks, (cell + 1.0) / index_tiles, 2);
+	vec3 c00 = variant_bits(g.w);
+	vec3 c10 = variant_bits(g.z);
+	vec3 c01 = variant_bits(g.x);
+	vec3 c11 = variant_bits(g.y);
+	if (VARIANT_PER_TILE) {
+		return step(vec3(0.5), (c00 + c10 + c01 + c11) * 0.25);
 	}
-	float n1 = texture(noise_texture, uv * variant_scale).r;
-	float n2 = texture(noise_texture, uv * variant_scale * 0.7 + vec2(0.41, 0.17)).r;
-	float n3 = texture(noise_texture, uv * variant_scale * 1.3 + vec2(0.89, 0.61)).r;
-	return vec3(smoothstep(0.47, 0.53, n1), smoothstep(0.47, 0.53, n2), smoothstep(0.47, 0.53, n3));
+	return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
 }
 // A texture's four variants blended by the weights, reading only the
 // variants whose weight is not zero
@@ -454,6 +457,69 @@ bool slope_lit(vec2 p, vec2 canvas, vec2 dx, vec2 dy, out vec3 lit) {
 	return true;
 }
 
+#ifdef UNIFORM_TILES
+// The uniform tiles (GroundMasks): one image covers the tile whole, so
+// the pixel is that image, read once (the base at its random offsets on
+// a relief world, as the full path reads it), toned by the dry zones
+// where the full path tones it; the slope over it as everywhere. The
+// chunk draws only these tiles with it, so nothing is discarded.
+void fragment() {
+	vec2 uv = UV;
+	vec2 duv_x = dFdx(uv) * SHARPEN;
+	vec2 duv_y = dFdy(uv) * SHARPEN;
+	vec2 at = uv * 4.0;
+	vec2 canvas = vec2(at.x - at.y, at.x + at.y) * TILE_HALF_PX;
+	vec2 canvas_dx = vec2(duv_x.x - duv_x.y, duv_x.x + duv_x.y) * 4.0 * TILE_HALF_PX;
+	vec2 canvas_dy = vec2(duv_y.x - duv_y.y, duv_y.x + duv_y.y) * 4.0 * TILE_HALF_PX;
+	vec3 slope = vec3(0.0);
+	if (slopes_drawn > 0 && slope_lit(at, canvas, canvas_dx, canvas_dy, slope)) {
+		COLOR = vec4(slope, 1.0);
+	} else {
+		// Every layer's weight is the same at the four corners (0 or 1),
+		// the variant too: the filtered read gives them exactly.
+		vec4 masks = texture(ground_masks, (at + 0.5) / index_tiles);
+		vec3 vw = has_variants ? variant_bits(masks.b) : vec3(0.0);
+		vec4 ground;
+		bool toned = true;
+		if (has_worn && !has_variants && masks.b > 0.5) {
+			ground = varied_once(worn_texture, uv, vw, duv_x, duv_y);
+			toned = false;
+		} else if (has_second && masks.g > 0.5) {
+			ground = varied_once(second_texture, uv, vw, duv_x, duv_y);
+			toned = false;
+		} else if (has_sibling && masks.r > 0.5) {
+			ground = varied_once(sibling_texture, uv, vw, duv_x, duv_y);
+			ground.rgb *= sibling_tint;
+		} else if (slopes_drawn > 0) {
+			vec4 cell_w;
+			vec4 cell_ox;
+			vec4 cell_oy;
+			offset_cells(canvas, cell_w, cell_ox, cell_oy);
+			ground = cell_w.x * varied_once_builtin(TEXTURE, uv + vec2(cell_ox.x, cell_oy.x), vw, duv_x, duv_y)
+				+ cell_w.y * varied_once_builtin(TEXTURE, uv + vec2(cell_ox.y, cell_oy.y), vw, duv_x, duv_y)
+				+ cell_w.z * varied_once_builtin(TEXTURE, uv + vec2(cell_ox.z, cell_oy.z), vw, duv_x, duv_y)
+				+ cell_w.w * varied_once_builtin(TEXTURE, uv + vec2(cell_ox.w, cell_oy.w), vw, duv_x, duv_y);
+		} else {
+			ground = varied_once_builtin(TEXTURE, uv, vw, duv_x, duv_y);
+		}
+		// The base's bare spots not kept take the sibling's grass (all of
+		// them or none on a uniform tile: masks.g is 0 or 1).
+		if (has_sibling && !has_second && bare_keep < 1.0 && masks.r < 0.5 && masks.g < 0.5) {
+			float bare = smoothstep(0.0, 0.08, ground.r - ground.g);
+			if (bare > 0.0) {
+				vec4 sibling = varied_once(sibling_texture, uv, vw, duv_x, duv_y);
+				ground = mix(ground, vec4(sibling.rgb * sibling_tint, sibling.a), bare);
+			}
+		}
+		// The dry zones tone the base and the sibling, laid before them;
+		// the second and the worn grass are laid after.
+		if (toned && dry_strength > 0.0) {
+			ground.rgb = mix(ground.rgb, ground.rgb * dry_tint, masks.a * dry_strength);
+		}
+		COLOR = vec4(ground.rgb * base_tint, 1.0);
+	}
+}
+#else
 void fragment() {
 	vec2 uv = UV;
 	// The clock the streaks run by (pinned by flow_time in development).
@@ -521,9 +587,16 @@ float grain = 0.0;
 // layers are read with (varied_once).
 vec3 vw = vec3(0.0);
 vec4 ground = vec4(0.0, 0.0, 0.0, 1.0);
+// The layers' weights at this point, from the tile's corners (GroundMasks).
+vec4 masks = vec4(0.0);
 if (!sloped) {
 	grain = (texture(noise_texture, uv * 0.8 + vec2(0.37, 0.19)).r - 0.5) * 2.0 * meet_grain;
-	vw = variant_weights(uv);
+	if (has_sibling || has_second || has_worn || dry_strength > 0.0) {
+		masks = texture(ground_masks, (at + 0.5) / index_tiles);
+	}
+	if (has_variants) {
+		vw = corner_variants(cell, in_cell);
+	}
 }
 if (sloped) {
 	// Nothing of the meadow shows.
@@ -543,16 +616,14 @@ if (sloped) {
 // Each layer is read only where it can show (meet_shows): the same
 // picture, fewer reads.
 if (has_sibling && !sloped) {
-	float n = texture(noise_texture, uv * noise_scale).r;
-	float threshold = 1.0 - sibling_cover;
-	float weight = smoothstep(threshold - 0.15, threshold + 0.15, n);
+	float weight = masks.r;
 	// The base's bare spots (its brown pixels) not kept take the
 	// sibling's grass: read only on a bare pixel.
 	float bare_taken = 0.0;
 	if (bare_keep < 1.0) {
 		float bare = smoothstep(0.0, 0.08, ground.r - ground.g);
 		if (bare > 0.0) {
-			float kept = patches(uv, 0.06, vec2(0.9, 0.4), bare_keep, 0.1);
+			float kept = masks.g;
 			bare_taken = bare * (1.0 - kept);
 		}
 	}
@@ -564,20 +635,18 @@ if (has_sibling && !sloped) {
 }
 // Dry zones: a soft, wide mask; the tint is applied at most at
 // dry_strength so the change stays a half-tone.
-if (!sloped) {
-	float d = texture(noise_texture, uv * dry_scale + vec2(0.8, 0.1)).r;
-	float dry_threshold = 1.0 - dry_cover;
-	float dry = smoothstep(dry_threshold - dry_softness, dry_threshold + dry_softness, d) * dry_strength;
+if (!sloped && dry_strength > 0.0) {
+	float dry = masks.a * dry_strength;
 	ground.rgb = mix(ground.rgb, ground.rgb * dry_tint, dry);
 }
 if (has_second && !sloped) {
-	float w2 = patches(uv, second_scale, vec2(0.2, 0.7), second_cover, second_softness);
+	float w2 = masks.g;
 	if (meet_shows(ground, w2, grain)) {
 		ground = meet(ground, varied_once(second_texture, uv, vw, duv_x, duv_y), w2, grain);
 	}
 }
-if (has_worn && !sloped) {
-	float w3 = patches(uv, worn_scale, vec2(0.5, 0.25), worn_cover, worn_softness);
+if (has_worn && !has_variants && !sloped) {
+	float w3 = masks.b;
 	if (meet_shows(ground, w3, grain)) {
 		ground = meet(ground, varied_once(worn_texture, uv, vw, duv_x, duv_y), w3, grain);
 	}
@@ -653,3 +722,4 @@ if (has_bank) {
 COLOR = vec4(sloped ? slope : ground.rgb * vertex_tint, alpha);
 }
 }
+#endif

@@ -139,16 +139,34 @@ var currents_of: Callable
 
 
 ## The seamless noise every ground material blends with, made here, no
-## image needed.
+## image needed: the image of noise_image, which the ground's masks
+## (GroundMasks) read on the processor, byte for byte the same.
 static func noise_texture() -> Texture2D:
 	if _noise_texture == null:
-		var texture := NoiseTexture2D.new()
-		texture.noise = noise_source()
-		texture.seamless = true
-		texture.width = 256
-		texture.height = 256
-		_noise_texture = texture
+		_noise_texture = ImageTexture.create_from_image(noise_image())
 	return _noise_texture
+
+
+## The noise's image, GroundMasks.NOISE_SIDE pixels a side, one byte a
+## pixel, made once (as NoiseTexture2D made it: seamless, normalised).
+static var _noise_image: Image
+static var _noise_bytes := PackedByteArray()
+
+
+static func noise_image() -> Image:
+	if _noise_image == null:
+		var side := GroundMasks.NOISE_SIDE
+		_noise_image = noise_source().get_seamless_image(side, side)
+		if _noise_image.get_format() != Image.FORMAT_L8:
+			_noise_image.convert(Image.FORMAT_L8)
+	return _noise_image
+
+
+## The noise image's bytes, read by the workers (shared, never written).
+static func noise_bytes() -> PackedByteArray:
+	if _noise_bytes.is_empty():
+		_noise_bytes = noise_image().get_data()
+	return _noise_bytes
 
 
 ## The noise itself (the ground shader's, and what the water meshes read
@@ -218,12 +236,17 @@ static func make_detail_image() -> Image:
 
 ## The ground material of a terrain: the blending shader with the
 ## terrain's layers. Shared by every chunk. A layer whose image is not
-## there yet is simply off.
-static func ground_material(terrain: String = "grass") -> ShaderMaterial:
-	if not _ground_materials.has(terrain):
+## there yet is simply off. `uniform_tiles`: the cheap material for the
+## tiles one image covers whole (GroundMasks), the same shader built with
+## UNIFORM_TILES.
+static func ground_material(terrain: String = "grass", uniform_tiles := false) -> ShaderMaterial:
+	var key := material_key(terrain, uniform_tiles)
+	if not _ground_materials.has(key):
 		var material := ShaderMaterial.new()
-		material.shader = load("res://world/ground.gdshader")
+		material.shader = uniform_shader() if uniform_tiles else load(GROUND_SHADER)
 		material.set_shader_parameter("noise_texture", noise_texture())
+		if GroundMasks.TERRAINS.has(terrain):
+			material.set_shader_parameter("ground_masks", GroundMasks.texture(terrain))
 		material.set_shader_parameter("ground_index", GroundIndex.texture())
 		material.set_shader_parameter("index_bit", int(GroundIndex.BITS.get(terrain, 0)))
 		material.set_shader_parameter("index_tiles", float(GroundIndex.TILES))
@@ -233,12 +256,36 @@ static func ground_material(terrain: String = "grass") -> ShaderMaterial:
 			material.set_shader_parameter("slope_rim", slope_rim)
 			for dial: String in SLOPE_LOOK:
 				material.set_shader_parameter(dial, _slope_dial(dial))
-		apply_spec(material, terrain, false)
+		apply_spec(material, terrain, false, key)
 		if terrain == FLAT_TERRAIN and flat_tint != FLAT_TINT:
 			material.set_shader_parameter("base_tint", flat_tint)
 		pin_flow_time(material)
-		_ground_materials[terrain] = material
-	return _ground_materials[terrain]
+		_ground_materials[key] = material
+	return _ground_materials[key]
+
+
+const GROUND_SHADER := "res://world/ground.gdshader"
+## The define that makes ground.gdshader the uniform tiles' cheap shader.
+const UNIFORM_DEFINE := "#define UNIFORM_TILES\n"
+static var _uniform_shader: Shader
+
+
+## The key of a terrain's material in _ground_materials (and of its
+## canvas in a chunk's _grounds).
+static func material_key(terrain: String, uniform_tiles: bool) -> String:
+	return terrain + "/uniform" if uniform_tiles else terrain
+
+
+## The terrain of a material's key.
+static func terrain_of_key(key: String) -> String:
+	return key.trim_suffix("/uniform")
+
+
+static func uniform_shader() -> Shader:
+	if _uniform_shader == null:
+		_uniform_shader = Shader.new()
+		_uniform_shader.code = UNIFORM_DEFINE + (load(GROUND_SHADER) as Shader).code
+	return _uniform_shader
 
 
 ## Whether the land's grounds draw the slopes (D44): 1 where a chunk has
@@ -584,8 +631,9 @@ static func set_slope_tint(tint: Vector3) -> void:
 ## one every chunk's meadow shares; a material made later gets it too.
 static func set_flat_tint(tint: Vector3) -> void:
 	flat_tint = tint
-	if _ground_materials.has(FLAT_TERRAIN):
-		(_ground_materials[FLAT_TERRAIN] as ShaderMaterial).set_shader_parameter("base_tint", tint)
+	for key: String in [FLAT_TERRAIN, material_key(FLAT_TERRAIN, true)]:
+		if _ground_materials.has(key):
+			(_ground_materials[key] as ShaderMaterial).set_shader_parameter("base_tint", tint)
 
 
 ## Both tints back to the look's and the spec's, and the angle dial to
@@ -655,7 +703,7 @@ static func _plain_shader() -> Shader:
 ## Gives a terrain's material its layers and numbers from the spec. With
 ## `fresh`, the images are read straight from their files (a live
 ## reload); otherwise through the import.
-static func apply_spec(material: ShaderMaterial, terrain: String, fresh: bool) -> void:
+static func apply_spec(material: ShaderMaterial, terrain: String, fresh: bool, key := terrain) -> void:
 	var layers := ground_layers(terrain)
 	for layer in LAYERS:
 		var path: String = str(layers.get(layer, ""))
@@ -666,21 +714,23 @@ static func apply_spec(material: ShaderMaterial, terrain: String, fresh: bool) -
 			material.set_shader_parameter(layer + "_texture", texture)
 		material.set_shader_parameter("has_" + layer, texture != null)
 	var params := ground_params(terrain)
-	for name in _applied.get(terrain, []):
+	for name in _applied.get(key, []):
 		if not params.has(name):
 			material.set_shader_parameter(name, null)
 	for name in params:
 		material.set_shader_parameter(name, params[name])
-	_applied[terrain] = params.keys()
+	_applied[key] = params.keys()
 
 
 ## The child canvas of a terrain, made on first use: it carries the
 ## terrain's material and sits under the chunk's own drawing (the items).
-func _ground_of(terrain: String) -> GroundCanvas:
-	var canvas: GroundCanvas = _grounds.get(terrain)
+func _ground_of(terrain: String, uniform_tiles := false) -> GroundCanvas:
+	var key := material_key(terrain, uniform_tiles)
+	var canvas: GroundCanvas = _grounds.get(key)
 	if canvas == null:
 		canvas = GroundCanvas.new()
 		canvas.terrain = terrain
+		canvas.uniform_tiles = uniform_tiles
 		# Low enough that the fog's veil (FarView.VEIL_Z) lies over the
 		# ground and under what stands on it.
 		canvas.z_index = -6 + int(GROUND_ORDER.get(terrain, 0))
@@ -688,9 +738,9 @@ func _ground_of(terrain: String) -> GroundCanvas:
 		# mipmaps, a level sharper (the shader), so the zoom never shimmers.
 		canvas.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 		canvas.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
-		canvas.material = ground_material(terrain)
+		canvas.material = ground_material(terrain, uniform_tiles)
 		add_child(canvas)
-		_grounds[terrain] = canvas
+		_grounds[key] = canvas
 	return canvas
 
 
@@ -701,6 +751,8 @@ func _ground_of(terrain: String) -> GroundCanvas:
 class GroundCanvas:
 	extends Node2D
 	var terrain := ""
+	## The cheap canvas of the terrain's uniform tiles (GroundMasks).
+	var uniform_tiles := false
 	## The chunk covered: its north-west tile and its side.
 	var origin := Vector2i.ZERO
 	var size := 0
@@ -924,7 +976,9 @@ static func reload_art() -> void:
 		_spec = spec
 	_decor.clear()
 	var shader := Shader.new()
-	shader.code = FileAccess.get_file_as_string("res://world/ground.gdshader")
+	shader.code = FileAccess.get_file_as_string(GROUND_SHADER)
+	_uniform_shader = Shader.new()
+	_uniform_shader.code = UNIFORM_DEFINE + shader.code
 	for terrain in _spec:
 		var path := ground_path(terrain)
 		var texture := fresh_texture(path) if path != "" else null
@@ -932,10 +986,10 @@ static func reload_art() -> void:
 			_ground_cache[terrain] = texture
 		elif path == "":
 			_ground_cache.erase(terrain)
-	for terrain in _ground_materials:
-		var material: ShaderMaterial = _ground_materials[terrain]
-		material.shader = shader
-		apply_spec(material, terrain, true)
+	for key: String in _ground_materials:
+		var material: ShaderMaterial = _ground_materials[key]
+		material.shader = _uniform_shader if key.ends_with("/uniform") else shader
+		apply_spec(material, terrain_of_key(key), true, key)
 	# The water meshes' shaders likewise (their include is read by the
 	# shader's own loader from the file beside it).
 	for pair: Array in [[_water_mesh_material, "res://world/water_mesh.gdshader"], [_water_bank_material, "res://world/water_bank.gdshader"]]:
@@ -1778,7 +1832,14 @@ func _gather(for_worker: bool) -> Dictionary:
 	if win.has(TerrainGrid.BROOK):
 		var m := GroundBuild.BROOK_READ
 		brook_win = TerrainGrid.window(_origin - Vector2i(m, m), _size + 2 * m, _size + 2 * m)
+	# The land's masks (GroundMasks): the terrains drawn, their numbers,
+	# the noise's bytes.
+	var masks := {}
+	for terrain: String in GroundMasks.TERRAINS:
+		if ground_texture(terrain) != null:
+			masks[terrain] = GroundMasks.spec_of(terrain)
 	return {
+		"masks": masks, "noise": noise_bytes(),
 		"origin": _origin, "size": _size, "win": win, "codes": _codes, "brook_win": brook_win,
 		"bit_of": bit_of, "colours": colours, "fringe": fringe_rules, "current": current,
 		"decor": _decor_rules(), "brook_bed": str(ground_layers("water").get("brook1", "")) != "",
@@ -1839,17 +1900,19 @@ func _lay(result: Dictionary, signature: int) -> void:
 			layer.set_arrays(plants)
 		_plants_due = []
 	GroundIndex.write(_origin, _size, result["bits"], result["corners"])
-	var rows: Dictionary = result["rows"]
-	for terrain: String in GroundIndex.BITS:
-		var rects: PackedInt32Array = rows.get(terrain, PackedInt32Array())
-		var shown := not rects.is_empty()
-		if shown or _grounds.has(terrain):
-			var canvas := _ground_of(terrain)
-			canvas.origin = _origin
-			canvas.size = _size
-			canvas.rows = rects
-			canvas.shown = shown
-			canvas.queue_redraw()
+	GroundMasks.write(_origin, _size, result["masks"])
+	for uniform_tiles: bool in [false, true]:
+		var rows: Dictionary = result["uniform_rows" if uniform_tiles else "rows"]
+		for terrain: String in GroundIndex.BITS:
+			var rects: PackedInt32Array = rows.get(terrain, PackedInt32Array())
+			var shown := not rects.is_empty()
+			if shown or _grounds.has(material_key(terrain, uniform_tiles)):
+				var canvas := _ground_of(terrain, uniform_tiles)
+				canvas.origin = _origin
+				canvas.size = _size
+				canvas.rows = rects
+				canvas.shown = shown
+				canvas.queue_redraw()
 	var water_usec: int = result["water_usec"]
 	if water_usec >= 0:
 		var laid := Time.get_ticks_usec()

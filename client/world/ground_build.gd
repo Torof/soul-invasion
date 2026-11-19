@@ -20,12 +20,18 @@ const READ := WaterMeshes.READ
 ## How far around the chunk the brooks are read: their window
 ## (BrookLines.MARGIN) and the tile around its ends.
 const BROOK_READ := BrookLines.MARGIN + 2
+## A terrain's tile drawn by its full canvas, or by its cheap one.
+const MIXED := 1
+const UNIFORM := 2
 
 
 ## The chunk's ground from `input` (ChunkView._gather): "flats" [points,
 ## colour], "decor" [texture, rect, tint], "bits" and "corners" (the
-## ground index's bytes, GroundIndex.write), "rows" (terrain -> the
-## tiles its canvas draws, as rectangles of whole rows: rows_of), "water" and "bank" (WaterMeshes.build's arrays, empty when
+## ground index's bytes, GroundIndex.write), "masks" (terrain -> its
+## masks at the chunk's corners, GroundMasks.masks_of, for the terrains
+## of `input["masks"]`), "rows" (terrain -> the tiles its full canvas
+## draws, as rectangles of whole rows: rows_of), "uniform_rows" (terrain
+## -> its uniform tiles, drawn by its cheap canvas), "water" and "bank" (WaterMeshes.build's arrays, empty when
 ## none), "water_usec" (its time, -1 when no water), "brooks" (the
 ## ribbons' arrays, or null without a brook), "brook_lines" (the lines,
 ## drawn flat when the brook's art is missing), "arrows", "plant_draws"
@@ -81,11 +87,38 @@ static func compute(input: Dictionary) -> Dictionary:
 		for x in size:
 			if WaterMeshes.is_water(win[(y + READ) * side + x + READ]):
 				bits[y * size + x] |= bit_of[land_around(win, x + READ, y + READ, true, size)]
+	# The land's masks at every corner (GroundMasks), and each terrain's
+	# tiles split: the uniform ones for its cheap canvas, the rest for its
+	# full one.
+	var masks := {}
+	var planes := {}
+	var specs: Dictionary = input.get("masks", {})
+	var noise: PackedByteArray = input.get("noise", PackedByteArray())
+	for terrain: String in specs:
+		masks[terrain] = GroundMasks.masks_of(origin, size, specs[terrain], noise, planes)
 	var rows := {}
+	var uniform_rows := {}
 	for terrain: String in GroundIndex.BITS:
-		rows[terrain] = rows_of(bits, size, canvas_mask(terrain))
+		var mask := canvas_mask(terrain)
+		if not masks.has(terrain):
+			rows[terrain] = rows_of(bits, size, mask)
+			continue
+		var own := int(GroundIndex.BITS[terrain])
+		var spec: Dictionary = specs[terrain]
+		var terrain_masks: PackedByteArray = masks[terrain]
+		var split := PackedByteArray()
+		split.resize(size * size)
+		for y in size:
+			for x in size:
+				var b := bits[y * size + x]
+				if b & mask == 0:
+					continue
+				var whole := b & own != 0 and GroundMasks.uniform_layer(terrain_masks, size, x, y, spec) >= 0
+				split[y * size + x] = UNIFORM if whole else MIXED
+		rows[terrain] = rows_of(split, size, MIXED)
+		uniform_rows[terrain] = rows_of(split, size, UNIFORM)
 	var current: Callable = input["current"]
-	var result := {"flats": flats, "bits": bits, "corners": corners, "rows": rows,
+	var result := {"flats": flats, "bits": bits, "corners": corners, "rows": rows, "uniform_rows": uniform_rows, "masks": masks,
 		"water": {}, "bank": {}, "water_usec": -1, "brooks": null, "brook_lines": [], "arrows": []}
 	var prepared := WaterMeshes.prepare(win, origin, size, current)
 	if not prepared.is_empty():

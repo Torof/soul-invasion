@@ -35,6 +35,8 @@ func _init() -> void:
 	_test_the_terrain_grid_holds_bytes()
 	_test_the_ground_index_says_what_each_canvas_draws()
 	_test_each_ground_canvas_covers_only_its_rows()
+	_test_the_ground_masks_are_the_noise_at_the_corners()
+	_test_a_tile_is_uniform_when_one_image_covers_it()
 	_test_currents_decode()
 	_test_the_golden_chunk_decodes()
 	_test_the_golden_far_view_decodes()
@@ -618,17 +620,19 @@ func _test_the_ground_index_says_what_each_canvas_draws() -> void:
 	_check(at.call(24, 5)[0] == grass and at.call(25, 5)[0] == 0 and at.call(30, 5)[0] == 0, "the grass lies under the water at the bank only, the water meshes draw the rest: %s %s %s" % [at.call(24, 5), at.call(25, 5), at.call(30, 5)])
 	var shown: Array = []
 	for child in view.get_children():
-		if child is ChunkView.GroundCanvas and (child as ChunkView.GroundCanvas).shown:
+		if child is ChunkView.GroundCanvas and (child as ChunkView.GroundCanvas).shown and not shown.has((child as ChunkView.GroundCanvas).terrain):
 			shown.append((child as ChunkView.GroundCanvas).terrain)
 	shown.sort()
-	_check(shown == ["forest", "grass"], "one canvas a terrain drawn, none for the water: %s" % [shown])
+	_check(shown == ["forest", "grass"], "the forest's canvases and the grass's drawn, none for the water: %s" % [shown])
 	view.free()
 	TerrainGrid.clear(origin, 32)
 
 
-## Each ground canvas draws the rows of tiles it covers, not the whole
-## chunk (B9): its rectangles cover exactly the tiles whose index bits
-## meet its mask (the forest's own and its spill), each once, and a run
+## Each terrain's ground canvases draw the rows of tiles they cover, not
+## the whole chunk (B9): the full canvas's rectangles and the cheap one's
+## (its uniform tiles, GroundMasks) cover together exactly the tiles
+## whose index bits meet the terrain's mask (the forest's own and its
+## spill), each once, the cheap one the terrain's own tiles only; a run
 ## going on from the row above extends its rectangle.
 func _test_each_ground_canvas_covers_only_its_rows() -> void:
 	var origin := Vector2i(352, 320)
@@ -643,31 +647,124 @@ func _test_each_ground_canvas_covers_only_its_rows() -> void:
 	view.show_chunk(origin, 32, tiles, [], {})
 	view._draw_ground_layers()
 	WaterMeshes.map_size = map_size
-	var rects := {}
+	# terrain -> how many of its canvases cover each tile.
+	var covered := {}
+	var spilled := 0
 	for child in view.get_children():
 		if child is ChunkView.GroundCanvas and (child as ChunkView.GroundCanvas).shown:
 			var canvas := child as ChunkView.GroundCanvas
-			rects[canvas.terrain] = canvas.rows
-			var mask := GroundBuild.canvas_mask(canvas.terrain)
-			var covered := PackedByteArray()
-			covered.resize(32 * 32)
+			if not covered.has(canvas.terrain):
+				var counts := PackedByteArray()
+				counts.resize(32 * 32)
+				covered[canvas.terrain] = counts
+			var counts: PackedByteArray = covered[canvas.terrain]
 			for r in range(0, canvas.rows.size(), 4):
 				for y in range(canvas.rows[r + 1], canvas.rows[r + 3]):
 					for x in range(canvas.rows[r], canvas.rows[r + 2]):
-						covered[y * 32 + x] += 1
-			var wrong := 0
-			for y in 32:
-				for x in 32:
-					var own := int(GroundIndex.at(origin + Vector2i(x, y))[0]) & mask != 0
-					if covered[y * 32 + x] != (1 if own else 0):
-						wrong += 1
-			_check(wrong == 0, "the %s canvas covers its own tiles, each once, and no other: %d wrong" % [canvas.terrain, wrong])
-	_check(rects.keys().size() == 2 and rects.has("forest") and rects.has("grass"), "the forest and the grass are drawn, the water by its meshes: %s" % [rects.keys()])
-	_check(rects.get("forest") == PackedInt32Array([0, 0, 13, 32]), "the wood and its spill over the glade and the meadow, one rectangle: %s" % [rects.get("forest")])
-	_check(rects.get("grass") == PackedInt32Array([10, 0, 25, 32, 3, 10, 6, 13]), "the meadow to the bank, and the glade apart: %s" % [rects.get("grass")])
+						counts[y * 32 + x] += 1
+						if canvas.uniform_tiles and int(GroundIndex.at(origin + Vector2i(x, y))[0]) & int(GroundIndex.BITS[canvas.terrain]) == 0:
+							spilled += 1
+			covered[canvas.terrain] = counts
+	for terrain: String in covered:
+		var mask := GroundBuild.canvas_mask(terrain)
+		var counts: PackedByteArray = covered[terrain]
+		var wrong := 0
+		for y in 32:
+			for x in 32:
+				var own := int(GroundIndex.at(origin + Vector2i(x, y))[0]) & mask != 0
+				if counts[y * 32 + x] != (1 if own else 0):
+					wrong += 1
+		_check(wrong == 0, "the %s canvases cover its own tiles, each once, and no other: %d wrong" % [terrain, wrong])
+	_check(spilled == 0, "a cheap canvas draws its terrain's own tiles only, never the forest's spill: %d" % spilled)
+	_check(covered.keys().size() == 2 and covered.has("forest") and covered.has("grass"), "the forest and the grass are drawn, the water by its meshes: %s" % [covered.keys()])
 	_check(GroundBuild.rows_of(PackedByteArray([1, 0, 1, 1, 0, 0, 1, 1, 0]), 3, 1) == PackedInt32Array([0, 0, 1, 2, 2, 0, 3, 1, 0, 2, 2, 3]), "runs split where they change")
 	view.free()
 	TerrainGrid.clear(origin, 32)
+
+
+## The ground's masks (GroundMasks, G1): at every corner of a chunk, each
+## layer's weight is the shader's old per-pixel rule (the smoothstep of
+## the noise image read bilinear at the corner's texture coordinates),
+## read here from the image itself; the chunk's masks land in the masks'
+## image at its corners, across the map's repetition.
+func _test_the_ground_masks_are_the_noise_at_the_corners() -> void:
+	var noise := ChunkView.noise_image()
+	_check(noise.get_width() == GroundMasks.NOISE_SIDE and noise.get_format() == Image.FORMAT_L8, "the noise is one byte a pixel, %d a side" % GroundMasks.NOISE_SIDE)
+	var read := func(p: Vector2) -> float:
+		var s := p * float(GroundMasks.NOISE_SIDE) - Vector2(0.5, 0.5)
+		var i := Vector2i(floori(s.x), floori(s.y))
+		var f := s - Vector2(i)
+		var px := func(dx: int, dy: int) -> float:
+			return noise.get_pixel(posmod(i.x + dx, GroundMasks.NOISE_SIDE), posmod(i.y + dy, GroundMasks.NOISE_SIDE)).r
+		return lerpf(lerpf(px.call(0, 0), px.call(1, 0), f.x), lerpf(px.call(0, 1), px.call(1, 1), f.x), f.y)
+	var origin := Vector2i(1184, 1568)
+	var worst := 0
+	for terrain: String in GroundMasks.TERRAINS:
+		var spec := GroundMasks.spec_of(terrain)
+		var masks := GroundMasks.masks_of(origin, 32, spec, ChunkView.noise_bytes())
+		_check(masks.size() == 33 * 33 * 4, "a byte a mask at each of the chunk's corners")
+		for corner: Vector2i in [Vector2i(0, 0), Vector2i(7, 3), Vector2i(19, 31), Vector2i(32, 32)]:
+			var uv := Vector2(origin + corner) / ChunkView.GROUND_METRES
+			var o := 4 * (corner.y * 33 + corner.x)
+			var sib_t := 1.0 - float(spec["sibling_cover"])
+			worst = maxi(worst, absi(masks[o] - roundi(smoothstep(sib_t - 0.15, sib_t + 0.15, read.call(uv * float(spec["noise_scale"]))) * 255.0)))
+			var dry_t := 1.0 - float(spec["dry_cover"])
+			var dry := smoothstep(dry_t - float(spec["dry_softness"]), dry_t + float(spec["dry_softness"]), read.call(uv * float(spec["dry_scale"]) + Vector2(0.8, 0.1)))
+			worst = maxi(worst, absi(masks[o + 3] - roundi(dry * 255.0)))
+			if terrain == "grass":
+				var second_t := 1.0 - float(spec["second_cover"])
+				var second := smoothstep(second_t - float(spec["second_softness"]), second_t + float(spec["second_softness"]), read.call(uv * float(spec["second_scale"]) + Vector2(0.2, 0.7)))
+				worst = maxi(worst, absi(masks[o + 1] - roundi(second * 255.0)))
+				var worn_t := 1.0 - float(spec["worn_cover"])
+				var worn := smoothstep(worn_t - float(spec["worn_softness"]), worn_t + float(spec["worn_softness"]), read.call(uv * float(spec["worn_scale"]) + Vector2(0.5, 0.25)))
+				worst = maxi(worst, absi(masks[o + 2] - roundi(worn * 255.0)))
+			else:
+				var kept_t := 1.0 - float(spec["bare_keep"])
+				worst = maxi(worst, absi(masks[o + 1] - roundi(smoothstep(kept_t - 0.1, kept_t + 0.1, read.call(uv * 0.06 + Vector2(0.9, 0.4))) * 255.0)))
+				var vs := float(spec["variant_scale"])
+				var right: bool = read.call(uv * vs * 0.7 + Vector2(0.41, 0.17)) >= 0.5
+				var bits := 2 + 4 * int(read.call(uv * vs * 1.3 + Vector2(0.89, 0.61)) >= 0.5) if right else int(read.call(uv * vs) >= 0.5)
+				_check(masks[o + 2] == bits * GroundMasks.VARIANT_STEP, "the forest's variant at corner %s: %d, the noise says %d" % [corner, masks[o + 2], bits])
+	_check(worst <= 1, "each mask is the noise's weight at its corner, to a byte: off by %d at worst" % worst)
+	# Written near the repetition's corner: the far corners wrap.
+	var lo := Vector2i(GroundMasks.TILES - 32, 3 * GroundMasks.TILES - 32)
+	var grass := GroundMasks.masks_of(lo, 32, GroundMasks.spec_of("grass"), ChunkView.noise_bytes())
+	GroundMasks.write(lo, 32, {"grass": grass})
+	var o := 4 * (32 * 33 + 32)
+	_check(GroundMasks.at("grass", lo + Vector2i(32, 32)) == grass.slice(o, o + 4), "the far corner lands across the repetition: %s" % GroundMasks.at("grass", Vector2i.ZERO))
+	_check(GroundMasks.at("grass", lo + Vector2i(5, 9)) == grass.slice(4 * (9 * 33 + 5), 4 * (9 * 33 + 5) + 4), "and a corner inside at its place")
+
+
+## A tile is uniform, drawn by the cheap canvas, only when each layer its
+## terrain has is all or nothing at its four corners: the layer on top
+## then covers it whole; the forest's bare spots must all be kept where
+## its base shows, and its four corners share one variant.
+func _test_a_tile_is_uniform_when_one_image_covers_it() -> void:
+	var grass := GroundMasks.spec_of("grass")
+	var forest := GroundMasks.spec_of("forest")
+	# One tile (a chunk of side 1): its four corners' RGBA.
+	var tile := func(r: Array, g: Array, b: Array, a: Array) -> PackedByteArray:
+		var out := PackedByteArray()
+		for i in 4:
+			out.append_array([r[i], g[i], b[i], a[i]])
+		return out
+	var none := [0, 0, 0, 0]
+	var full := [255, 255, 255, 255]
+	var dry := [0, 40, 200, 255]
+	var layer := func(masks: PackedByteArray, spec: Dictionary) -> int: return GroundMasks.uniform_layer(masks, 1, 0, 0, spec)
+	_check(layer.call(tile.call(none, none, none, dry), grass) == GroundMasks.Layer.BASE, "the meadow's base alone, whatever the dry tone")
+	_check(layer.call(tile.call(full, none, none, dry), grass) == GroundMasks.Layer.SIBLING, "its sibling whole")
+	_check(layer.call(tile.call(full, full, none, none), grass) == GroundMasks.Layer.SECOND, "the second over the sibling")
+	_check(layer.call(tile.call(full, full, full, none), grass) == GroundMasks.Layer.WORN, "the worn grass over both")
+	_check(layer.call(tile.call([0, 0, 0, 128], none, none, none), grass) == -1, "a sibling's border: mixed")
+	_check(layer.call(tile.call(none, none, [0, 255, 255, 255], none), grass) == -1, "a worn spot's edge: mixed")
+	_check(layer.call(tile.call(none, full, none, none), forest) == GroundMasks.Layer.BASE, "the forest floor with its bare spots kept")
+	_check(layer.call(tile.call(none, none, none, none), forest) == GroundMasks.Layer.BASE, "or all taken by the sibling")
+	_check(layer.call(tile.call(none, [0, 0, 255, 255], none, none), forest) == -1, "some kept, some taken: mixed")
+	_check(layer.call(tile.call(full, none, none, none), forest) == GroundMasks.Layer.SIBLING, "its sibling whole, bare spots or not")
+	var v := GroundMasks.VARIANT_STEP
+	_check(layer.call(tile.call(none, full, [v, v, v, v], none), forest) == GroundMasks.Layer.BASE, "one variant at the four corners")
+	_check(layer.call(tile.call(none, full, [v, v, 0, v], none), forest) == -1, "two variants: mixed")
 
 
 ## The standing layer's shader (trees.gdshader) writes COLOR first and
