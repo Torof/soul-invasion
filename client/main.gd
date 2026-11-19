@@ -45,7 +45,7 @@ func _ready() -> void:
 	# Development aid: with SOUL_INVASION_WATCH set, the ground shader and
 	# textures are reloaded live when their files change (dev/watcher.gd).
 	if not OS.get_environment("SOUL_INVASION_WATCH").is_empty():
-		add_child(DevWatcher.new())
+		_add_dev("watcher")
 	var shot := OS.get_environment("SOUL_INVASION_SCREENSHOT")
 	if not shot.is_empty():
 		_screenshot_then_quit(shot)
@@ -66,7 +66,7 @@ func _ready() -> void:
 	add_child(perf)
 	_perf = perf
 	Net.dev_overview.connect(func(_c: int, _w: int, _h: int, _cells: String) -> void: perf.enable())
-	# Development: a watchdog that reports a frozen main thread (dev/watchdog.gd).
+	# Development: a watchdog that reports a frozen main thread (diag/watchdog.gd).
 	Net.dev_overview.connect(func(_c: int, _w: int, _h: int, _cells: String) -> void:
 		if _watchdog == null:
 			_watchdog = DevWatchdog.new()
@@ -77,12 +77,23 @@ func _ready() -> void:
 	# on a flat world.
 	Net.dev_overview.connect(func(_c: int, _w: int, _h: int, _cells: String) -> void:
 		if _slopes == null:
-			_slopes = SlopeOverlay.new()
-			_slopes.world = _world
-			add_child(_slopes))
+			_slopes = _add_dev("slope_overlay")
+			if _slopes != null:
+				_slopes.set("world", _world))
 
 
 var _perf: PerfOverlay
+
+
+## A development tool from dev/, which the export leaves out: loaded by path
+## so that no shipped script names its class. Null when it is not there.
+func _add_dev(tool: String) -> Node:
+	var path := "res://dev/%s.gd" % tool
+	if not ResourceLoader.exists(path):
+		return null
+	var node: Node = (load(path) as GDScript).new()
+	add_child(node)
+	return node
 
 
 ## The recentre button (bottom right), the body's thoughts (top right) and
