@@ -270,11 +270,31 @@ pub fn run(settings: &Settings) -> Result<Report, RunError> {
 }
 
 /// [`run`] with the content already read.
+///
+/// # Errors
+///
+/// As [`run`].
+pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunError> {
+    run_watched(settings, content, &mut |_, _| {})
+}
+
+/// [`run_with`], with `watch` called on the world at every dawn (the
+/// day that begins), where the scenario tests check the world's
+/// invariants ([`sim::invariants::breaches`]); the product's run passes
+/// nothing and pays nothing.
+///
+/// # Errors
+///
+/// As [`run_with`].
 #[allow(
     clippy::too_many_lines,
     reason = "one straight reading, top to bottom; splitting it would scatter the rule"
 )]
-pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunError> {
+pub fn run_watched(
+    settings: &Settings,
+    content: &Content,
+    watch: &mut dyn FnMut(&World, u64),
+) -> Result<Report, RunError> {
     let calendar = Calendar::new(settings.ticks_per_second, Calendar::DEFAULT_SECONDS_PER_DAY)
         .map_err(RunError::Calendar)?;
     let born = Instant::now();
@@ -367,10 +387,10 @@ pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunErr
     let per_year = calendar.ticks_per_day() * u64::from(calendar.days_per_year());
     let mut food: BTreeMap<(u8, u64), Balance> = BTreeMap::new();
     let first = reserves(&world, content, &people);
-    for (tribe, &kj) in first.iter().enumerate().take(tribes) {
+    for (tribe, &j) in first.iter().enumerate().take(tribes) {
         food.entry((u8::try_from(tribe).expect("two"), 1))
             .or_default()
-            .start_kj = kj;
+            .start_j = j;
     }
     let tribe_of =
         |people: &BTreeMap<BodyId, Person>, body: BodyId| people.get(&body).map_or(0, |p| p.tribe);
@@ -399,7 +419,9 @@ pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunErr
                 } => {
                     let energy = kj(content, gives, *grams);
                     let tribe = tribe_of(&people, *body);
-                    food.entry((tribe, year)).or_default().gathered_kj += energy;
+                    food.entry((tribe, year))
+                        .or_default()
+                        .gathered(content, gives, *grams);
                     people.entry(*body).or_default().entries.push(Entry {
                         tick,
                         day,
@@ -414,18 +436,23 @@ pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunErr
                 } => {
                     let energy = kj(content, material, *grams);
                     let tribe = tribe_of(&people, *body);
-                    food.entry((tribe, year)).or_default().spoiled_kj += energy;
+                    food.entry((tribe, year))
+                        .or_default()
+                        .spoiled(content, material, *grams);
                     people.entry(*body).or_default().entries.push(Entry {
                         tick,
                         day,
                         what: format!("{grams} g of {material} it carried spoil ({energy} kJ)"),
                     });
                 }
-                Event::DayStarted { day } => chronicle.push(Entry {
-                    tick,
-                    day: *day,
-                    what: format!("day {day} begins"),
-                }),
+                Event::DayStarted { day } => {
+                    chronicle.push(Entry {
+                        tick,
+                        day: *day,
+                        what: format!("day {day} begins"),
+                    });
+                    watch(&world, *day);
+                }
                 Event::SeasonStarted { year, season } => chronicle.push(Entry {
                     tick,
                     day,
@@ -459,7 +486,9 @@ pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunErr
                     ..
                 } => {
                     let tribe = tribe_of(&people, *body);
-                    food.entry((tribe, year)).or_default().eaten_kj += u64::from(*energy_kj);
+                    food.entry((tribe, year))
+                        .or_default()
+                        .eaten(content, material, *grams);
                     let person = people.entry(*body).or_default();
                     person.meals.0 += 1;
                     person.meals.1 += grams;
@@ -479,6 +508,16 @@ pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunErr
                     });
                 }
                 _ => {}
+            }
+        }
+        // The brain lets a mind go once its body's vitality is under a
+        // point, a little before the body dies: what it thought is read
+        // now, or its page would say 0 (audit of 20 November 2026, F8).
+        for body in world.bodies() {
+            if body.condition().vitality.points() == 0
+                && let Some(mind) = brains.mind(body.id())
+            {
+                people.entry(body.id()).or_default().thoughts = mind.thoughts();
             }
         }
         for (body, decision) in brains.think(&world, content, &events) {
@@ -523,11 +562,11 @@ pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunErr
         // The year's last tick, or the run's: what the living carry.
         if tick % per_year == 0 || tick == ticks {
             let carried = reserves(&world, content, &people);
-            for (tribe, &kj) in carried.iter().enumerate().take(tribes) {
+            for (tribe, &j) in carried.iter().enumerate().take(tribes) {
                 let t = u8::try_from(tribe).expect("two");
-                food.entry((t, year)).or_default().end_kj = kj;
+                food.entry((t, year)).or_default().end_j = j;
                 if tick < ticks {
-                    food.entry((t, year + 1)).or_default().start_kj = kj;
+                    food.entry((t, year + 1)).or_default().start_j = j;
                 }
             }
         }
@@ -603,20 +642,24 @@ fn thought(intention: &Intention, why: Why) -> String {
     format!("{reason}: {act}")
 }
 
-/// A tribe's food over a year (lot 2, D45), in kilojoules: what came in,
+/// A tribe's food over a year (lot 2, D45), in joules: what came in,
 /// what went out, and what it carried at the year's start and end.
+/// Joules, not kilojoules: a gather of a few grams rounded down to the
+/// kilojoule, eaten later as one stack rounded down once, left the
+/// balance short, and "lost" went negative (audit of 20 November 2026,
+/// F5); counted whole, the flows add up exactly.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Balance {
     /// Carried by its living at the year's start.
-    pub start_kj: u64,
+    pub start_j: u64,
     /// Gathered.
-    pub gathered_kj: u64,
+    pub gathered_j: u64,
     /// Eaten.
-    pub eaten_kj: u64,
+    pub eaten_j: u64,
     /// Spoiled while carried.
-    pub spoiled_kj: u64,
+    pub spoiled_j: u64,
     /// Carried by its living at the year's end (or the run's).
-    pub end_kj: u64,
+    pub end_j: u64,
     /// Samples (24 a day) of a living person thin: a person-day is 24.
     pub thin_samples: u64,
     /// Samples of a living person weak.
@@ -624,19 +667,36 @@ pub struct Balance {
 }
 
 impl Balance {
-    /// What is not told by the flows: lost with the dead (what they
-    /// carried is left on the ground).
-    pub fn lost_kj(&self) -> i64 {
-        let flows = i128::from(self.start_kj) + i128::from(self.gathered_kj)
-            - i128::from(self.eaten_kj)
-            - i128::from(self.spoiled_kj)
-            - i128::from(self.end_kj);
+    /// Counts `grams` of `material` gathered.
+    pub fn gathered(&mut self, content: &Content, material: &str, grams: u32) {
+        self.gathered_j += joules(content, material, grams);
+    }
+
+    /// Counts `grams` of `material` eaten.
+    pub fn eaten(&mut self, content: &Content, material: &str, grams: u32) {
+        self.eaten_j += joules(content, material, grams);
+    }
+
+    /// Counts `grams` of `material` spoiled while carried.
+    pub fn spoiled(&mut self, content: &Content, material: &str, grams: u32) {
+        self.spoiled_j += joules(content, material, grams);
+    }
+
+    /// What is not told by the flows, in joules: lost with the dead (what
+    /// they carried is left on the ground). Never negative: nothing
+    /// enters a pack outside the flows.
+    pub fn lost_j(&self) -> i64 {
+        let flows = i128::from(self.start_j) + i128::from(self.gathered_j)
+            - i128::from(self.eaten_j)
+            - i128::from(self.spoiled_j)
+            - i128::from(self.end_j);
         i64::try_from(flows).unwrap_or(i64::MAX)
     }
 }
 
-/// The energy of `grams` of `material`, in kilojoules: 0 if it is no
-/// food.
+/// The energy of `grams` of `material`, in kilojoules rounded down: 0
+/// if it is no food. For the chronicle's words; the balance counts in
+/// joules ([`joules`]).
 fn kj(content: &Content, material: &str, grams: u32) -> u64 {
     content
         .material(material)
@@ -644,7 +704,18 @@ fn kj(content: &Content, material: &str, grams: u32) -> u64 {
         .map_or(0, |food| u64::from(food.energy_kj(grams)))
 }
 
-/// The food each tribe's living carry, spoiled or not, in kilojoules.
+/// The energy of `grams` of `material`, in joules, exact: 0 if it is no
+/// food.
+fn joules(content: &Content, material: &str, grams: u32) -> u64 {
+    content
+        .material(material)
+        .and_then(|m| m.food)
+        .map_or(0, |food| {
+            u64::from(grams) * u64::from(food.energy_kj_per_kg)
+        })
+}
+
+/// The food each tribe's living carry, spoiled or not, in joules.
 fn reserves(world: &World, content: &Content, people: &BTreeMap<BodyId, Person>) -> [u64; 2] {
     let mut out = [0; 2];
     for body in world.bodies() {
@@ -655,7 +726,7 @@ fn reserves(world: &World, content: &Content, people: &BTreeMap<BodyId, Person>)
         out[usize::from(tribe.min(1))] += body
             .inventory()
             .filter_map(|item| world.item(item))
-            .map(|item| kj(content, item.material(), item.mass_g()))
+            .map(|item| joules(content, item.material(), item.mass_g()))
             .sum::<u64>();
     }
     out
@@ -836,12 +907,12 @@ impl Report {
                 h,
                 "<tr><td>{}</td><td>{year}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
                 tribe_name(tribe),
-                b.start_kj,
-                b.gathered_kj,
-                b.eaten_kj,
-                b.spoiled_kj,
-                b.end_kj,
-                b.lost_kj(),
+                b.start_j / 1000,
+                b.gathered_j / 1000,
+                b.eaten_j / 1000,
+                b.spoiled_j / 1000,
+                b.end_j / 1000,
+                b.lost_j() / 1000,
                 days(b.thin_samples),
                 days(b.weak_samples)
             );
@@ -888,11 +959,11 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         let _ = write!(
             h,
             "<h2>The factors</h2><ul class=\"factors\">\
-<li><b>Cadence</b>: {} tick a game second (the game runs at {}); the bodies' needs drain by the tick, so the day is {} ticks long.</li>\
+<li><b>Cadence</b>: {} tick(s) a game second (the game runs at {}), the day {} ticks long. The needs and the gathering are worked out by the game day and hour, so they do not depend on it; but a thought takes a tick and a refused act costs one, so the outcome moves with the cadence (20 November 2026, F2): judge at the game's.</li>\
 <li><b>The world</b>: {world}, {} × {} tiles of 1 m; {}.</li>\
 <li><b>The year</b>: {} days of {} game seconds (a day of the game is two hours of its clock), four seasons.</li>\
 <li><b>The brain</b>: {}.</li>\
-<li><b>The food</b>: the crops of content/crops.ron (D45), on the trees and plants in their season, more some years than others, whole again the next year; gathered by hand at their rate an hour; spoiled after their days. Hunger is a gauge only (no death of hunger until lot 3's fat reserve).</li>\
+<li><b>The food</b>: the crops of content/crops.ron (D45), on the trees and plants in their season, more some years than others, whole again the next year; gathered by hand at their rate an hour; spoiled after their days. Hunger is the appetite on a fat reserve (D46): the reserve spent, the body starves.</li>\
 <li><b>The needs</b> (content/needs.ron, points of 100 a game day): {}.</li></ul>",
             s.ticks_per_second,
             Calendar::DEFAULT_TICKS_PER_SECOND,
@@ -1256,6 +1327,163 @@ mod tests {
         }
     }
 
+    /// The run as a scenario test sees it: the world's invariants
+    /// checked at every dawn ([`sim::invariants::breaches`]), no food
+    /// lost outside the flows, and every dead person's thoughts kept.
+    fn run_checked(settings: &Settings, content: &Content) -> Report {
+        let report = run_watched(settings, content, &mut |world, day| {
+            let found = sim::invariants::breaches(world, content);
+            assert!(found.is_empty(), "day {day}: {found:?}");
+        })
+        .unwrap();
+        for (&(tribe, year), balance) in &report.food {
+            assert!(
+                balance.lost_j() >= 0,
+                "tribe {tribe} year {year}: food came from nowhere, lost {} J",
+                balance.lost_j()
+            );
+        }
+        if settings.brain {
+            for (id, person) in &report.people {
+                assert!(
+                    person.death.is_none() || person.thoughts > 0,
+                    "person {} died and its page says it never thought",
+                    id.0
+                );
+            }
+        }
+        report
+    }
+
+    /// A person's deaths as "name, day N, of cause", in id order.
+    fn deaths(report: &Report) -> Vec<String> {
+        report
+            .people
+            .iter()
+            .filter_map(|(id, person)| {
+                person.death.map(|(tick, cause, _)| {
+                    format!(
+                        "{}, day {}, {cause:?}",
+                        name(*id),
+                        tick / report.ticks_per_day().max(1) + 1
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// Gathers of a few grams rounded down to the kilojoule, eaten as one
+    /// stack rounded down once, left "lost" negative in the audit's runs
+    /// (−1,068 kJ over 158,891 gathers of about 9 g). Counted in joules,
+    /// the flows add up exactly.
+    #[test]
+    fn the_balance_counts_in_joules_so_rounding_never_loses_food() {
+        let content = content();
+        let (material, kj_per_kg) = content
+            .materials
+            .iter()
+            .find_map(|m| m.food.map(|f| (m.id.clone(), f.energy_kj_per_kg)))
+            .expect("a food");
+        let mut balance = Balance::default();
+        for _ in 0..3 {
+            balance.gathered(content, &material, 9);
+        }
+        balance.eaten(content, &material, 27);
+        assert_eq!(balance.gathered_j, 27 * u64::from(kj_per_kg));
+        assert_eq!(balance.lost_j(), 0, "{balance:?}");
+    }
+
+    /// On the patch in spring nothing grows, and since lot 3 a body
+    /// without food dies on its seventh day: its page must still say what
+    /// it thought, read before its mind goes with it.
+    #[test]
+    fn the_dead_keep_what_they_thought() {
+        let settings = Settings { days: 8, ..small() };
+        let report = run_checked(&settings, content());
+        let dead: Vec<_> = report
+            .people
+            .values()
+            .filter(|p| p.death.is_some())
+            .collect();
+        assert!(
+            !dead.is_empty(),
+            "somebody starves on the bare patch in eight days"
+        );
+        for person in dead {
+            assert!(person.thoughts > 0, "{:?}", person.death);
+        }
+    }
+
+    /// `05`'s D47 trial (lot 3 B, 17 November 2026): two tribes of five
+    /// grown, three children and an infant, "all eighteen live". Run on
+    /// 20 November 2026 (audit F4, 30 days, cadence 1, release, 32 s):
+    /// **two die**, person 10 of tribe B of hunger on day 19 and person
+    /// 18, the infant she carried, of thirst on day 21. The text predates
+    /// D48 and the brain's changes; the band's hunger is the sim phase's
+    /// (F1). Until then this test fails and says who died and when.
+    #[test]
+    #[ignore = "the D47 trial, 30 days on the vivarium's world, some 30 s in release; fails today (F4): cargo test --release -p vivarium -- --ignored the_d47_trial"]
+    fn the_d47_trial_two_tribes_with_children_and_infants_live_thirty_days() {
+        let settings = Settings {
+            world: WorldKind::Vivarium,
+            tribes: 2,
+            children: 3,
+            infants: 1,
+            days: 30,
+            ..small()
+        };
+        let report = run_checked(&settings, content());
+        let deaths = deaths(&report);
+        for death in &deaths {
+            eprintln!("{death}");
+        }
+        assert!(
+            deaths.is_empty(),
+            "all eighteen live (05, lot 3 B): {deaths:?}"
+        );
+    }
+
+    /// D24: the cadence (ticks a game second) must not change the outcome.
+    /// It does (audit of 20 November 2026, F2): the needs and the gathering
+    /// are integrated by the game day and hour, but every thought becomes
+    /// an intention on the next tick, a refused act costs a whole tick,
+    /// and a walk drops its leftover budget on the tick it ends
+    /// (`sim::stride`), so a tick is time a body loses, and a game second
+    /// is one tick at cadence 1 and a tenth at cadence 10. Measured on
+    /// the D47 trial, 30 days, release: cadence 1, 2 dead (person 10,
+    /// hunger, day 19; person 18, thirst, day 21), tribes A and B gathered
+    /// 2,123,166 and 1,960,304 kJ; cadence 10, 0 dead, 2,135,674 and
+    /// 2,229,475 kJ. The audit's 68 people over 14
+    /// days: 53 dead at cadence 1, 38 at cadence 10; 3,765 against 4,827
+    /// kJ a person-day. Whether the vivarium judges at the game's cadence
+    /// (10, about 1.3× the computing time) or an act is to cost game
+    /// time rather than ticks is the lead's call; until then this test
+    /// fails and shows the gap.
+    #[test]
+    #[ignore = "two 30-day runs on the vivarium's world, some 75 s in release; fails today (F2): cargo test --release -p vivarium -- --ignored the_cadence"]
+    fn the_cadence_does_not_change_who_lives_nor_what_they_gather() {
+        let trial = |ticks_per_second: u32| {
+            let settings = Settings {
+                world: WorldKind::Vivarium,
+                tribes: 2,
+                children: 3,
+                infants: 1,
+                days: 30,
+                ticks_per_second,
+                ..small()
+            };
+            let report = run_checked(&settings, content());
+            let gathered: Vec<u64> = report.food.values().map(|b| b.gathered_j / 1000).collect();
+            (deaths(&report), gathered)
+        };
+        let slow = trial(1);
+        let game = trial(10);
+        eprintln!("cadence 1: {:?}, gathered {:?} kJ", slow.0, slow.1);
+        eprintln!("cadence 10: {:?}, gathered {:?} kJ", game.0, game.1);
+        assert_eq!(slow.0, game.0, "the same deaths at both cadences");
+        assert_eq!(slow.1, game.1, "the same food gathered at both cadences");
+    }
+
     #[test]
     fn the_content_is_found_from_the_working_directory_or_given() {
         let given = Settings {
@@ -1393,7 +1621,7 @@ mod tests {
         };
         let mut content = content().clone();
         content.needs.hunger_per_day = 0;
-        let report = run_with(&settings, &content).unwrap();
+        let report = run_checked(&settings, &content);
         for (id, person) in &report.people {
             assert!(
                 !matches!(person.death, Some((_, Death::Dehydrated, _))),
@@ -1424,7 +1652,7 @@ mod tests {
             days: 4,
             ..small()
         };
-        let report = run_with(&settings, content()).unwrap();
+        let report = run_checked(&settings, content());
         assert_eq!(report.camps.len(), 2);
         assert_eq!(report.people.len(), 10, "five a tribe");
         let far = |a: Pos, b: Pos| (a.x - b.x).abs().max((a.y - b.y).abs());

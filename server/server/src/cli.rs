@@ -23,10 +23,10 @@ OPTIONS:
     --days <N>             Stop after N full game days (optional in paced mode).
     --listen <ADDR>        Paced mode: WebSocket listen address
                            (default 127.0.0.1:7777; port 0 picks a free port).
-    --data <PATH>          SQLite file holding the world's snapshots and
-                           event journal (default world.sqlite). The world
-                           resumes from it when it exists. A second server
-                           on the same file is refused (<PATH>.lock).
+    --data <PATH>          SQLite file holding the world's snapshots
+                           (default world.sqlite). The world resumes from
+                           it when it exists. A second server on the same
+                           file is refused (<PATH>.lock).
     --ephemeral            Keep the world in memory only; nothing is saved.
     --reset                Erase the data file first and start a new world.
     --continents <PATH>    SQLite file keeping the atlas's continents once
@@ -199,7 +199,8 @@ pub struct Options {
     pub days: Option<u64>,
     /// WebSocket listen address (paced mode only).
     pub listen: SocketAddr,
-    /// Where snapshots and the event journal go.
+    /// Where the snapshots go (no journal since D17's amendment of 10
+    /// November 2026).
     pub data: DataLocation,
     /// Erase the data file before starting: a new world.
     pub reset: bool,

@@ -1592,9 +1592,10 @@ pub fn decode_far_view(bytes: &[u8]) -> Result<FarView, FrameError> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn client_messages_round_trip() {
-        let messages = [
+    /// One of each client message, with its fields filled: the round
+    /// trip's list and the client's golden (`client_messages_v30.jsonl`).
+    fn every_client_message() -> Vec<ClientMessage> {
+        vec![
             ClientMessage::Hello {
                 protocol_version: PROTOCOL_VERSION,
                 held: None,
@@ -1618,21 +1619,201 @@ mod tests {
             ClientMessage::Wake,
             ClientMessage::DevTeleport { x: 1500, y: -2 },
             ClientMessage::ChunkMissing { x: 3, y: -1 },
-        ];
-        for message in messages {
+        ]
+    }
+
+    #[test]
+    fn client_messages_round_trip() {
+        for message in every_client_message() {
             let text = encode(&message).unwrap();
             let back: ClientMessage = decode(&text).unwrap();
             assert_eq!(message, back);
         }
     }
 
+    /// The tag of a client message on the wire; exhaustive, so a new
+    /// variant is added here, to [`CLIENT_KINDS`] and to
+    /// [`every_client_message`] together.
+    fn client_kind(message: &ClientMessage) -> &'static str {
+        match message {
+            ClientMessage::Hello { .. } => "hello",
+            ClientMessage::Ping { .. } => "ping",
+            ClientMessage::MoveTo { .. } => "move_to",
+            ClientMessage::Eat { .. } => "eat",
+            ClientMessage::PickUp { .. } => "pick_up",
+            ClientMessage::Drop { .. } => "drop",
+            ClientMessage::Hold { .. } => "hold",
+            ClientMessage::Stow { .. } => "stow",
+            ClientMessage::Drink { .. } => "drink",
+            ClientMessage::Sleep => "sleep",
+            ClientMessage::Wake => "wake",
+            ClientMessage::DevTeleport { .. } => "dev_teleport",
+            ClientMessage::ChunkMissing { .. } => "chunk_missing",
+        }
+    }
+
+    /// Every kind of client message, as tagged on the wire.
+    const CLIENT_KINDS: [&str; 13] = [
+        "hello",
+        "ping",
+        "move_to",
+        "eat",
+        "pick_up",
+        "drop",
+        "hold",
+        "stow",
+        "drink",
+        "sleep",
+        "wake",
+        "dev_teleport",
+        "chunk_missing",
+    ];
+
+    /// The tag of a server message on the wire; exhaustive, so a new
+    /// variant is added here, to [`SERVER_KINDS`] and to
+    /// [`every_server_message`] together.
+    fn server_kind(message: &ServerMessage) -> &'static str {
+        match message {
+            ServerMessage::Welcome { .. } => "welcome",
+            ServerMessage::WorldState { .. } => "world_state",
+            ServerMessage::ChunkBodies { .. } => "chunk_bodies",
+            ServerMessage::ChunkSame { .. } => "chunk_same",
+            ServerMessage::ChunkFruit { .. } => "chunk_fruit",
+            ServerMessage::View { .. } => "view",
+            ServerMessage::Pong { .. } => "pong",
+            ServerMessage::DevOverview { .. } => "dev_overview",
+            ServerMessage::ProtocolMismatch { .. } => "protocol_mismatch",
+            ServerMessage::DayStarted { .. } => "day_started",
+            ServerMessage::SeasonStarted { .. } => "season_started",
+            ServerMessage::NightFell { .. } => "night_fell",
+            ServerMessage::BodyCondition { .. } => "body_condition",
+            ServerMessage::BodySleeps { .. } => "body_sleeps",
+            ServerMessage::BodyDied { .. } => "body_died",
+            ServerMessage::BodyAssigned { .. } => "body_assigned",
+            ServerMessage::ItemAdded { .. } => "item_added",
+            ServerMessage::ItemRemoved { .. } => "item_removed",
+            ServerMessage::ActRefused { .. } => "act_refused",
+            ServerMessage::DrinkRefused { .. } => "drink_refused",
+            ServerMessage::Inventory { .. } => "inventory",
+            ServerMessage::BodyHolds { .. } => "body_holds",
+            ServerMessage::BodyWalks { .. } => "body_walks",
+            ServerMessage::BodyStopped { .. } => "body_stopped",
+            ServerMessage::BodyLeft { .. } => "body_left",
+            ServerMessage::MoveRefused { .. } => "move_refused",
+            ServerMessage::BodyBlocked { .. } => "body_blocked",
+            ServerMessage::BodyThinks { .. } => "body_thinks",
+        }
+    }
+
+    /// Every kind of server message, as tagged on the wire.
+    const SERVER_KINDS: [&str; 28] = [
+        "welcome",
+        "world_state",
+        "chunk_bodies",
+        "chunk_same",
+        "chunk_fruit",
+        "view",
+        "pong",
+        "dev_overview",
+        "protocol_mismatch",
+        "day_started",
+        "season_started",
+        "night_fell",
+        "body_condition",
+        "body_sleeps",
+        "body_died",
+        "body_assigned",
+        "item_added",
+        "item_removed",
+        "act_refused",
+        "drink_refused",
+        "inventory",
+        "body_holds",
+        "body_walks",
+        "body_stopped",
+        "body_left",
+        "move_refused",
+        "body_blocked",
+        "body_thinks",
+    ];
+
+    /// The lists hold every kind of message, and the tags on the wire
+    /// are the kinds the client switches on.
     #[test]
+    fn the_lists_hold_every_kind_of_message() {
+        for kinds in [&CLIENT_KINDS[..], &SERVER_KINDS[..]] {
+            let mut sorted = kinds.to_vec();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(sorted.len(), kinds.len(), "a kind twice: {kinds:?}");
+        }
+        for kind in CLIENT_KINDS {
+            let message = every_client_message()
+                .into_iter()
+                .find(|m| client_kind(m) == kind)
+                .unwrap_or_else(|| panic!("no {kind} in every_client_message"));
+            assert!(
+                encode(&message)
+                    .unwrap()
+                    .starts_with(&format!("{{\"type\":\"{kind}\"")),
+                "{kind} is not its tag on the wire"
+            );
+        }
+        for kind in SERVER_KINDS {
+            let message = every_server_message()
+                .into_iter()
+                .find(|m| server_kind(m) == kind)
+                .unwrap_or_else(|| panic!("no {kind} in every_server_message"));
+            assert!(
+                encode(&message)
+                    .unwrap()
+                    .starts_with(&format!("{{\"type\":\"{kind}\"")),
+                "{kind} is not its tag on the wire"
+            );
+        }
+    }
+
+    /// The JSON the server writes for one of each message, kept for the
+    /// client's tests (`client/tests/fixtures/*_messages_v30.jsonl`, a
+    /// message a line): the client decodes every server message and reads
+    /// its fields back, and builds every client message the same. A key
+    /// renamed on one side only breaks this test or the client's. Written
+    /// when absent, compared otherwise: a change of the wire is a change
+    /// of the golden, on purpose.
+    #[test]
+    fn the_golden_messages_are_the_clients() {
+        let fixtures =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../client/tests/fixtures");
+        let server: Vec<String> = every_server_message()
+            .iter()
+            .map(|m| encode(m).unwrap())
+            .collect();
+        let client: Vec<String> = every_client_message()
+            .iter()
+            .map(|m| encode(m).unwrap())
+            .collect();
+        for (name, lines) in [
+            ("server_messages_v30.jsonl", server),
+            ("client_messages_v30.jsonl", client),
+        ] {
+            let path = fixtures.join(name);
+            let text = lines.join("\n") + "\n";
+            if !path.exists() {
+                std::fs::write(&path, &text).unwrap();
+            }
+            let golden = std::fs::read_to_string(&path).expect("the golden messages, written");
+            assert_eq!(golden, text, "the wire changed: write {name} again");
+        }
+    }
+
+    /// One of each server message, with its fields filled: the round
+    /// trip's list and the client's golden (`server_messages_v30.jsonl`).
     #[allow(
         clippy::too_many_lines,
         reason = "one straight reading, top to bottom; splitting it would scatter the rule"
     )]
-    fn server_messages_round_trip() {
-        let messages = [
+    fn every_server_message() -> Vec<ServerMessage> {
+        vec![
             ServerMessage::Welcome {
                 protocol_version: PROTOCOL_VERSION,
                 tick: 7,
@@ -1854,8 +2035,12 @@ mod tests {
                 thought: Thought::NoWay,
                 at: Point { x: 3, y: 4 },
             },
-        ];
-        for message in messages {
+        ]
+    }
+
+    #[test]
+    fn server_messages_round_trip() {
+        for message in every_server_message() {
             let text = encode(&message).unwrap();
             let back: ServerMessage = decode(&text).unwrap();
             assert_eq!(message, back);

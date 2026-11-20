@@ -22,6 +22,7 @@ pub mod geology;
 // its file `gen.rs`.
 pub(crate) mod r#gen;
 pub mod ground;
+pub mod invariants;
 pub mod items;
 pub mod land;
 pub mod lru;

@@ -56,7 +56,7 @@ pub fn run_headless(
 /// `before_tick` runs just before each tick: this is where the server
 /// hands the world the intentions that arrived from clients. `on_tick`
 /// is called after every tick with the events of that tick (often none);
-/// this is where the server notifies clients and the event journal.
+/// this is where the server notifies clients.
 ///
 /// Uses a fixed-step accumulator: if the machine falls behind, several
 /// ticks run back to back to catch up, and the rules never see the
