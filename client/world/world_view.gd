@@ -141,6 +141,7 @@ var _plant_stands: Dictionary = {}
 ## the view's limit once every chunk under it is built: looked at again
 ## when a chunk comes, goes or builds, or the limit moves.
 var _far: FarView
+var _pages: GroundPages
 var _far_dirty := true
 var _far_complete := false
 ## The kinds of shrub, plant and mushroom (Net.flora), and the plants of
@@ -237,6 +238,9 @@ func _ready() -> void:
 	Net.chunk_bodies.connect(_on_chunk_bodies)
 	_far = FarView.new()
 	add_child(_far)
+	# The land's ground, baked into screen pages (GroundPages, D39).
+	_pages = GroundPages.new(self)
+	add_child(_pages)
 	Net.far_view.connect(_far.show_far)
 	Net.flora.connect(func(flora: Array) -> void: _flora = flora)
 	Net.species.connect(func(species: Array) -> void:
@@ -754,6 +758,7 @@ func _build_chunk(key: Vector2i, at_once: bool) -> void:
 	for other: Vector2i in _chunks:
 		if int(_arrival.get(other, 0)) < rank:
 			before += 1
+	view.rank = rank
 	_ground.add_child(view)
 	_ground.move_child(view, before)
 	_chunks[key] = view
@@ -867,7 +872,13 @@ func counts() -> Dictionary:
 	for stand: Trees.Stand in _trees.values():
 		trees += stand.size()
 		drawn += stand.items.size()
-	return {"chunks": _tiles.size(), "built": _chunks.size(), "in_line": ChunkView.in_line, "leaving": _ledger.leaving.size(), "stale": _ledger.stale.size(), "trees": trees, "trees_drawn": drawn, "bodies": _bodies.size()}
+	return {"chunks": _tiles.size(), "built": _chunks.size(), "in_line": ChunkView.in_line, "leaving": _ledger.leaving.size(), "stale": _ledger.stale.size(), "trees": trees, "trees_drawn": drawn, "bodies": _bodies.size(), "ground_pages": _pages.counts()}
+
+
+## Development: the land's ground drawn through its screen pages or live
+## (GroundPages; the before and after of a capture, in one run).
+func set_ground_pages(on: bool) -> void:
+	GroundPages.set_enabled(on, get_tree())
 
 
 ## The tile the piloted body stands on, or (-1, -1) when there is none.

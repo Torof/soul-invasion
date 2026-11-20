@@ -35,6 +35,7 @@ func _init() -> void:
 	_test_the_terrain_grid_holds_bytes()
 	_test_the_ground_index_says_what_each_canvas_draws()
 	_test_each_ground_canvas_covers_only_its_rows()
+	_test_the_ground_pages_render_what_came_in_or_changed()
 	_test_currents_decode()
 	_test_the_golden_chunk_decodes()
 	_test_the_golden_far_view_decodes()
@@ -668,6 +669,75 @@ func _test_each_ground_canvas_covers_only_its_rows() -> void:
 	_check(GroundBuild.rows_of(PackedByteArray([1, 0, 1, 1, 0, 0, 1, 1, 0]), 3, 1) == PackedInt32Array([0, 0, 1, 2, 2, 0, 3, 1, 0, 2, 2, 3]), "runs split where they change")
 	view.free()
 	TerrainGrid.clear(origin, 32)
+
+
+## The land's screen pages (GroundPages, PageLedger, D39): the screen's own
+## pages are rendered at once, the ring's a few a frame nearest first; the
+## camera sliding renders only the pages it brings in; a change of the
+## ground renders the pages over it, a new scale or look every page.
+func _test_the_ground_pages_render_what_came_in_or_changed() -> void:
+	var size := PageLedger.SIZE
+	_check(PageLedger.most_held(Vector2(3072, 1728)) == 48, "48 pages at most for the 3072 x 1728 screen: %d" % PageLedger.most_held(Vector2(3072, 1728)))
+	var ledger := PageLedger.new()
+	# A screen of 3 x 2 pages, laid on the grid.
+	var screen := Rect2(0, 0, 3 * size, 2 * size)
+	_check(ledger.see(screen, 6.0).is_empty(), "nothing dropped at first")
+	_check(ledger.pages.size() == 5 * 4 and ledger.stale() == 20, "the screen and its ring held, all stale: %d pages, %d stale" % [ledger.pages.size(), ledger.stale()])
+	var first := ledger.due()
+	var on_screen := 0
+	for key in first:
+		if PageLedger.rect_of(key).intersects(screen):
+			on_screen += 1
+	_check(first.size() == 6 + PageLedger.AHEAD_PER_FRAME and on_screen == 6, "the screen's 6 pages at once and %d of the ring: %s" % [PageLedger.AHEAD_PER_FRAME, first])
+	var frames := 1
+	while ledger.stale() > 0 and frames < 10:
+		ledger.due()
+		frames += 1
+	_check(frames == ceili(14.0 / PageLedger.AHEAD_PER_FRAME), "the ring done a few pages a frame: %d frames" % frames)
+	_check(ledger.due().is_empty(), "nothing more to render while nothing moves")
+	# The camera slides by whole pixels inside the ring: nothing new.
+	_check(ledger.see(screen.grow_individual(-100, -37, 100, 37), 6.0).is_empty() and ledger.due().is_empty(), "a slide within the ring renders nothing")
+	# A slide of a page to the east: a column comes in, one goes.
+	var east := Rect2(screen.position + Vector2(size, 0), screen.size)
+	var dropped := ledger.see(east, 6.0)
+	var due := ledger.due()
+	_check(dropped.size() == 4 and dropped.all(func(k: Vector2i) -> bool: return k.x == -1), "the west column dropped: %s" % [dropped])
+	_check(due.size() == 4 and due.all(func(k: Vector2i) -> bool: return k.x == 4), "the column brought in rendered, none other: %s" % [due])
+	# The ground under one point changes: the page over it again.
+	ledger.dirty(Rect2(size * 2 + 10, size + 10, 20, 20))
+	var again := ledger.due()
+	_check(again.size() == 1 and again[0] == Vector2i(2, 1), "a change renders the page over it: %s" % [again])
+	# On a corner of four pages: the four.
+	ledger.dirty(Rect2(size * 2 - 3, size - 3, 6, 6))
+	_check(ledger.due().size() == 4, "a change across a corner renders its four pages")
+	ledger.dirty(Rect2(-50 * size, 0, 10, 10))
+	_check(ledger.stale() == 0, "a change off the pages renders nothing")
+	# The night (a look): every page, the screen's at once.
+	ledger.dirty_all()
+	_check(ledger.stale() == 20 and ledger.due().size() == 6 + PageLedger.AHEAD_PER_FRAME, "a new look renders every page, the screen's first")
+	while ledger.stale() > 0:
+		ledger.due()
+	# A zoom step: every page dropped and held anew.
+	dropped = ledger.see(east, 4.8)
+	_check(dropped.size() == 20 and ledger.stale() == 20, "a new scale drops every page: %d dropped, %d stale" % [dropped.size(), ledger.stale()])
+	# A teleport: the screen far away, every page new.
+	while ledger.stale() > 0:
+		ledger.due()
+	dropped = ledger.see(Rect2(Vector2(90000, -40000), screen.size), 4.8)
+	_check(dropped.size() == 20 and ledger.stale() == ledger.pages.size(), "a teleport renders every page there")
+	# A screen off the grid: its pages and ring, floors below zero.
+	ledger = PageLedger.new()
+	ledger.see(Rect2(-700, -10, 3072, 1728), 6.0)
+	_check(ledger.pages.has(Vector2i(-2, -1)) and ledger.pages.has(Vector2i(5, 3)) and ledger.pages.size() <= PageLedger.most_held(Vector2(3072, 1728)), "a screen off the grid held whole: %d pages" % ledger.pages.size())
+	# A chunk's ground laid: the pages over its diamond, grown by a tile.
+	GroundPages._changed.clear()
+	GroundPages.changed_tiles(Vector2i(32, 64), 32)
+	var r: Rect2 = GroundPages._changed[0] if not GroundPages._changed.is_empty() else Rect2()
+	var top := Iso.tile_to_screen(32, 64)
+	var bottom := Iso.tile_to_screen(64, 96)
+	_check(r.has_point(top) and r.has_point(bottom) and r.has_point(Iso.tile_to_screen(64, 64)) and r.has_point(Iso.tile_to_screen(32, 96)), "a chunk's change covers its diamond: %s" % r)
+	_check(r.size.x < 34 * Iso.TILE_W + 2 * Iso.TILE_H + 1 and r.size.y < 34 * Iso.TILE_H + 2 * Iso.TILE_H + 1, "and not much more: %s" % r)
+	GroundPages._changed.clear()
 
 
 ## The standing layer's shader (trees.gdshader) writes COLOR first and

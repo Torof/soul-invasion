@@ -49,6 +49,7 @@ static func write(lo: Vector2i, size: int, bits: PackedByteArray, corners: Packe
 			if x < size and y < size:
 				_bytes[o] = bits[y * size + x]
 			_bytes[o + 1] = corners[y * c + x]
+	GroundPages.changed_tiles(lo, size)
 	if not _upload_due:
 		_upload_due = true
 		_upload.call_deferred()

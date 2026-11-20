@@ -63,6 +63,10 @@ var _complete := false
 ## The frame the hole became complete: drawn from the next one on, so a
 ## chunk whose canvases draw a frame after its own never shows nothing.
 var _complete_since := -1
+## Its drawing on the land's canvas while the land is drawn through
+## screen pages (GroundPages): the far land lies under the near one there,
+## as it does on the screen.
+var _paged := RID()
 
 
 ## A veil: its layer, its material, the ground it leaves clear and the
@@ -84,6 +88,8 @@ class Veil:
 
 func _ready() -> void:
 	add_to_group("far_views")
+	# Drawn again when the land's pages are turned on or off.
+	add_to_group("ground_canvases")
 	# Below every layer of the chunks' ground (as low as -5 with theirs).
 	z_index = -20
 	# A little grain, so the far land is not flat colour.
@@ -170,6 +176,7 @@ func show_far(cell: int, x: int, y: int, width: int, height: int, cells: String)
 		for i in width:
 			image.set_pixel(i, j, colours.get(cells[j * width + i], Color(0, 0, 0, 0)))
 	_texture = ImageTexture.create_from_image(image)
+	GroundPages.changed_look()
 	queue_redraw()
 
 
@@ -290,6 +297,7 @@ func _process(_delta: float) -> void:
 
 ## Draws everything again (F7 changed the way).
 func redraw_fog() -> void:
+	GroundPages.changed_look()
 	queue_redraw()
 	_haze.layer.queue_redraw()
 	_cover.layer.queue_redraw()
@@ -372,7 +380,38 @@ static func fog_distance(t: Vector2, lo: Vector2, hi: Vector2, corner: float) ->
 	return q.max(Vector2.ZERO).length() + minf(maxf(q.x, q.y), 0.0) - r
 
 
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_PREDELETE and _paged.is_valid():
+		RenderingServer.free_rid(_paged)
+	elif what == NOTIFICATION_VISIBILITY_CHANGED and _paged.is_valid():
+		RenderingServer.canvas_item_set_visible(_paged, is_visible_in_tree())
+		GroundPages.changed_look()
+
+
+## The item it draws on: its own, or on the land's canvas while the land
+## is drawn through its pages, made there with what its node carries (its
+## z, its grain, its filtering). The hole changing changes no page: it is
+## cut only where the near ground is opaque (limit_built).
+func _target() -> RID:
+	if not GroundPages.enabled:
+		if _paged.is_valid():
+			RenderingServer.free_rid(_paged)
+			_paged = RID()
+		return get_canvas_item()
+	if not _paged.is_valid():
+		_paged = RenderingServer.canvas_item_create()
+		RenderingServer.canvas_item_set_parent(_paged, GroundPages.root())
+		RenderingServer.canvas_item_set_z_index(_paged, z_index)
+		RenderingServer.canvas_item_set_default_texture_filter(_paged, RenderingServer.CANVAS_ITEM_TEXTURE_FILTER_LINEAR)
+		RenderingServer.canvas_item_set_material(_paged, material.get_rid())
+		RenderingServer.canvas_item_set_visible(_paged, is_visible_in_tree())
+	RenderingServer.canvas_item_clear(_paged)
+	RenderingServer.canvas_item_set_transform(_paged, get_global_transform())
+	return _paged
+
+
 func _draw() -> void:
+	var item := _target()
 	if _texture == null or drawing == Drawing.OFF:
 		return
 	var corner := Vector2(_origin * _cell) - Vector2(0.5, 0.5)
@@ -380,9 +419,9 @@ func _draw() -> void:
 	var holed := drawing == Drawing.RINGS and hole_drawn(_complete, _complete_since, Engine.get_process_frames())
 	if not holed:
 		var t := tile_space() * Transform2D(0.0, Vector2(_cell, _cell), 0.0, corner)
-		draw_set_transform_matrix(t)
-		draw_texture(_texture, Vector2.ZERO)
-		draw_set_transform_matrix(Transform2D.IDENTITY)
+		RenderingServer.canvas_item_add_set_transform(item, t)
+		RenderingServer.canvas_item_add_texture_rect(item, Rect2(Vector2.ZERO, _texture.get_size()), _texture.get_rid())
+		RenderingServer.canvas_item_add_set_transform(item, Transform2D.IDENTITY)
 		return
 	var mesh := ring(Rect2(corner, extent), _hole, 0.0, 0.0)
 	var tiles: PackedVector2Array = mesh["points"]
@@ -393,7 +432,7 @@ func _draw() -> void:
 		points.append(tile_space() * p)
 		uvs.append((p - corner) / extent)
 		colours.append(Color.WHITE)
-	RenderingServer.canvas_item_add_triangle_array(get_canvas_item(), mesh["indices"], points, colours, uvs,
+	RenderingServer.canvas_item_add_triangle_array(item, mesh["indices"], points, colours, uvs,
 		PackedInt32Array(), PackedFloat32Array(), _texture.get_rid())
 
 

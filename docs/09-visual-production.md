@@ -62,7 +62,8 @@ Every image obeys it, so that it has a place, a scale and an anchor the day it i
 | Bodies and animals (to come) | nothing yet | **24 MB** | cut-out puppets (rule 3), the region's species (a puppet about 0.5–1.5 MB) |
 | Buildings and items (to come) | nothing yet | **24 MB** | one culture's set at a time (a 3×3 hut about 1.5 MB) |
 | UI, fields and effects | small fixed grids (the ground index, the fog), not yet measured apart | **16 MB** | grids of fixed size, never growing with the map (D39) |
-| **Total** | about 55 MB at the forest heart | **184 MB** | fits a 2 GB graphics card with room |
+| Ground pages (20 November 2026) | the land baked into 512-pixel screen pages (D39): 2 MB a page, the screen and a ring of 256 px; 96 MB at 3072 × 1728 | **by the screen: 40 MB at 1366 × 768, 60 MB at 1080p, 96 MB at 3072 × 1728, 140 MB in 4K** | follows the screen's size alone, never the map or the content; nothing that changes often is drawn into them |
+| **Total** | about 55 MB at the forest heart, plus the ground pages | **184 MB, plus the ground pages** (about 245 MB at 1080p) | fits a 2 GB graphics card with room |
 
 **Identity: a cartoon, pretty and readable before realistic.** Heights and proportions follow D40, but where realism and a clear, pleasant image disagree, the image wins.
 

@@ -104,6 +104,9 @@ const ITEM_RADIUS := 4.5
 
 var _origin := Vector2i.ZERO
 var _size := 32
+## Its rank among the chunks, in the order the server sent them (the
+## world view's): where two chunks' grounds overlap, the later one shows.
+var rank := 0
 
 
 ## terrain -> the child canvas drawing that terrain's textured tiles
@@ -525,6 +528,7 @@ static func slope_turf_variant(cell: Vector2i, variants: int) -> int:
 ## Sets the slope shader parameter `name` of every land's ground to
 ## `value`.
 static func set_slope_param(name: String, value: Variant) -> void:
+	GroundPages.changed_look()
 	for terrain: String in _ground_materials:
 		if terrain != "water":
 			(_ground_materials[terrain] as ShaderMaterial).set_shader_parameter(name, value)
@@ -584,6 +588,7 @@ static func set_slope_tint(tint: Vector3) -> void:
 ## one every chunk's meadow shares; a material made later gets it too.
 static func set_flat_tint(tint: Vector3) -> void:
 	flat_tint = tint
+	GroundPages.changed_look()
 	if _ground_materials.has(FLAT_TERRAIN):
 		(_ground_materials[FLAT_TERRAIN] as ShaderMaterial).set_shader_parameter("base_tint", tint)
 
@@ -626,6 +631,7 @@ static func average_colour(terrain: String) -> Color:
 ## (the grounds', the banks', the brooks') swapped for one that does
 ## nothing, to measure what they cost the graphics card; and back.
 static func set_plain_ground(on: bool) -> void:
+	GroundPages.changed_look()
 	var materials: Array = _ground_materials.values()
 	if _brook_material != null:
 		materials.append(_brook_material)
@@ -656,6 +662,7 @@ static func _plain_shader() -> Shader:
 ## `fresh`, the images are read straight from their files (a live
 ## reload); otherwise through the import.
 static func apply_spec(material: ShaderMaterial, terrain: String, fresh: bool) -> void:
+	GroundPages.changed_look()
 	var layers := ground_layers(terrain)
 	for layer in LAYERS:
 		var path: String = str(layers.get(layer, ""))
@@ -708,8 +715,47 @@ class GroundCanvas:
 	var rows := PackedInt32Array()
 	## Whether the terrain has any tile to draw in the chunk.
 	var shown := false
+	## Its drawing on the land's canvas while the land is drawn through
+	## screen pages (GroundPages), and where it lies, in world pixels.
+	var _paged := RID()
+	var _paged_rect := Rect2()
+
+	func _enter_tree() -> void:
+		add_to_group("ground_canvases")
+
+	func _notification(what: int) -> void:
+		if what == NOTIFICATION_PREDELETE and _paged.is_valid():
+			GroundPages.changed(_paged_rect)
+			RenderingServer.free_rid(_paged)
+
+	## The item it draws on in the land's canvas, made on first use with
+	## what its own node carries (its z, its material, its texture
+	## filtering) and its chunk's rank.
+	func _paged_item() -> RID:
+		if not _paged.is_valid():
+			_paged = RenderingServer.canvas_item_create()
+			RenderingServer.canvas_item_set_parent(_paged, GroundPages.root())
+			RenderingServer.canvas_item_set_z_index(_paged, z_index)
+			RenderingServer.canvas_item_set_default_texture_filter(_paged, RenderingServer.CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS)
+			RenderingServer.canvas_item_set_default_texture_repeat(_paged, RenderingServer.CANVAS_ITEM_TEXTURE_REPEAT_ENABLED)
+			if material != null:
+				RenderingServer.canvas_item_set_material(_paged, material.get_rid())
+		var chunk := get_parent() as ChunkView
+		RenderingServer.canvas_item_set_draw_index(_paged, chunk.rank if chunk != null else 0)
+		RenderingServer.canvas_item_set_transform(_paged, get_global_transform())
+		return _paged
 
 	func _draw() -> void:
+		var item := get_canvas_item()
+		if _paged.is_valid():
+			GroundPages.changed(_paged_rect)
+			if GroundPages.enabled:
+				RenderingServer.canvas_item_clear(_paged)
+			else:
+				RenderingServer.free_rid(_paged)
+				_paged = RID()
+		if GroundPages.enabled:
+			item = _paged_item()
 		if not shown or size <= 0 or rows.is_empty():
 			return
 		var points := PackedVector2Array()
@@ -728,8 +774,14 @@ class GroundCanvas:
 		colours.resize(points.size())
 		colours.fill(Color.WHITE)
 		var texture := ChunkView.ground_texture(terrain)
-		RenderingServer.canvas_item_add_triangle_array(get_canvas_item(), indices, points, colours, uvs,
+		RenderingServer.canvas_item_add_triangle_array(item, indices, points, colours, uvs,
 				PackedInt32Array(), PackedFloat32Array(), texture.get_rid() if texture != null else RID())
+		if _paged.is_valid():
+			var bounds := Rect2(points[0], Vector2.ZERO)
+			for p in points:
+				bounds = bounds.expand(p)
+			_paged_rect = get_global_transform() * bounds
+			GroundPages.changed(_paged_rect)
 
 
 ## The river as two meshes a chunk (WaterMeshes, D36): a water mesh and a
