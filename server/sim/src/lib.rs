@@ -1255,8 +1255,12 @@ fn write_map<S: serde::Serializer>(map: &Arc<Map>, serializer: S) -> Result<S::O
     serde::Serialize::serialize(map.as_ref(), serializer)
 }
 
+/// The map from its stored spec, checked first (`MapSpec::check`): a
+/// crafted size or generator is refused, never made.
 fn read_map<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Arc<Map>, D::Error> {
-    <Map as serde::Deserialize>::deserialize(deserializer).map(Arc::new)
+    let spec = <map::MapSpec as serde::Deserialize>::deserialize(deserializer)?;
+    spec.check().map_err(serde::de::Error::custom)?;
+    Ok(Arc::new(Map::from(spec)))
 }
 
 fn write_items<S: serde::Serializer>(

@@ -86,6 +86,24 @@ pub enum StorageError {
         /// Version this build knows.
         supported: u32,
     },
+    /// The file, or what it holds, is not a save this server can use:
+    /// a foreign SQLite file, a crafted value out of range. Refused with
+    /// its reason, never adopted or guessed at.
+    #[error("refused: {0}")]
+    Refused(String),
+    /// The storage thread panicked: a bug in the save path, reported as
+    /// a failed save instead of silencing every later one.
+    #[error("the storage thread panicked: {0}")]
+    WriterPanicked(String),
+    /// The file could not be created.
+    #[error("cannot create {path}: {source}")]
+    Create {
+        /// The file.
+        path: std::path::PathBuf,
+        /// The error.
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 /// Where the world's state lives.
@@ -176,26 +194,43 @@ pub struct Sqlite {
     /// or written: a checkpoint writes only the chunks whose version
     /// differs. Grows with what men change, never with the land.
     written: BTreeMap<ChunkPos, Version>,
+    /// Whether the world was read from an older snapshot because the
+    /// latest was damaged: the run then counts as a crash (D28, the
+    /// project lead's decision of 20 November 2026).
+    fell_back: bool,
 }
 
 impl Sqlite {
-    /// Opens (or creates) the database file and brings its schema up to date.
+    /// Opens (or creates) the database file and brings its schema up to
+    /// date. A new file is the owner's alone (mode 0600); a file that is
+    /// not a Soul Invasion save is refused.
     pub fn open(path: &std::path::Path, content: Arc<Content>) -> Result<Self, StorageError> {
-        Self::from_connection(Connection::open(path)?, content)
+        create_private(path)?;
+        Self::from_connection(
+            Connection::open(path)?,
+            content,
+            &path.display().to_string(),
+        )
     }
 
     /// An in-memory database: nothing survives the process.
     pub fn in_memory(content: Arc<Content>) -> Result<Self, StorageError> {
-        Self::from_connection(Connection::open_in_memory()?, content)
+        Self::from_connection(Connection::open_in_memory()?, content, "memory")
     }
 
-    fn from_connection(conn: Connection, content: Arc<Content>) -> Result<Self, StorageError> {
+    fn from_connection(
+        conn: Connection,
+        content: Arc<Content>,
+        label: &str,
+    ) -> Result<Self, StorageError> {
+        refuse_foreign(&conn, "snapshots", label)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         let mut storage = Self {
             conn,
             content,
             written: BTreeMap::new(),
+            fell_back: false,
         };
         storage.migrate()?;
         Ok(storage)
@@ -226,19 +261,61 @@ impl Sqlite {
 }
 
 impl Storage for Sqlite {
+    /// The latest snapshot; when it is damaged, the one before it (the
+    /// kept ones are a margin for this, D28), the damaged rows dropped
+    /// and the run counted as a crash. A snapshot of a newer format is
+    /// not damage: it is refused, so an older build never buries what a
+    /// newer one wrote.
     fn latest_world(&mut self) -> Result<Option<World>, StorageError> {
-        let row: Option<(u32, String)> = self
-            .conn
-            .query_row(
-                "SELECT format_version, data FROM snapshots ORDER BY tick DESC, rowid DESC LIMIT 1",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        let Some((version, data)) = row else {
-            return Ok(None);
+        use rusqlite::types::Value;
+        let mut kept = self.conn.prepare(
+            "SELECT rowid, tick, format_version, data FROM snapshots \
+             ORDER BY tick DESC, rowid DESC LIMIT ?1",
+        )?;
+        let rows: Vec<(i64, Value, Value, Value)> = kept
+            .query_map([KEPT_SNAPSHOTS], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<Result<_, _>>()?;
+        drop(kept);
+        let mut damaged: Vec<i64> = Vec::new();
+        let mut first_error = None;
+        let mut found = None;
+        for (rowid, tick, version, data) in rows {
+            match decode_row(&version, &data, &self.content) {
+                Ok(world) => {
+                    found = Some(world);
+                    break;
+                }
+                Err(e) if is_damage(&e) => {
+                    eprintln!("note: the snapshot at tick {tick:?} is damaged: {e}");
+                    damaged.push(rowid);
+                    first_error.get_or_insert(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        let Some(mut world) = found else {
+            return match first_error {
+                None => Ok(None),
+                Some(e) => Err(StorageError::Refused(format!(
+                    "every kept snapshot is damaged, the latest: {e}"
+                ))),
+            };
         };
-        let mut world = decode_world(version, &data, &self.content)?;
+        if !damaged.is_empty() {
+            eprintln!(
+                "note: falling back to the snapshot at tick {}: {} damaged snapshot(s) dropped, \
+                 the run counts as a crash",
+                world.tick().0,
+                damaged.len()
+            );
+            for rowid in damaged {
+                self.conn
+                    .execute("DELETE FROM snapshots WHERE rowid = ?1", [rowid])?;
+            }
+            self.fell_back = true;
+        }
         let mut rows = self
             .conn
             .prepare("SELECT x, y, version, format_version, data FROM chunk_changes")?;
@@ -271,7 +348,7 @@ impl Storage for Sqlite {
         let tx = self.conn.transaction()?;
         tx.execute(
             "INSERT INTO snapshots (tick, format_version, data) VALUES (?1, ?2, ?3)",
-            params![db_int(world.tick().0), SNAPSHOT_FORMAT_VERSION, data],
+            params![db_int(world.tick().0)?, SNAPSHOT_FORMAT_VERSION, data],
         )?;
         // The chunks men changed since the last checkpoint, alone.
         let moved: Vec<(ChunkPos, Version)> = world
@@ -289,7 +366,7 @@ impl Storage for Sqlite {
                     chunk.y,
                     version,
                     CHUNK_CHANGES_FORMAT_VERSION,
-                    db_int(world.tick().0),
+                    db_int(world.tick().0)?,
                     encode_changes(chunk, changes),
                 ],
             )?;
@@ -315,14 +392,26 @@ impl Storage for Sqlite {
             tx.query_row("SELECT birth, epoch, clean FROM run_state", [], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })?;
-        let epoch = if clean { epoch } else { epoch + 1 };
+        // A world read from an older snapshot lost what came after it,
+        // as a crash does (D28, 20 November 2026).
+        let epoch = if clean && !self.fell_back {
+            epoch
+        } else {
+            epoch.checked_add(1).ok_or_else(|| {
+                StorageError::Refused("the world's epoch is at its maximum".to_owned())
+            })?
+        };
+        let lineage = Lineage {
+            birth: birth.cast_unsigned(),
+            epoch: u64::try_from(epoch).map_err(|_| {
+                StorageError::Refused(format!("the world's epoch is negative ({epoch})"))
+            })?,
+        };
         tx.execute("UPDATE run_state SET epoch = ?1, clean = 0", [epoch])?;
         tx.commit()?;
         self.conn.pragma_update(None, "synchronous", "NORMAL")?;
-        Ok(Lineage {
-            birth: birth.cast_unsigned(),
-            epoch: u64::try_from(epoch).expect("a positive epoch"),
-        })
+        self.fell_back = false;
+        Ok(lineage)
     }
 
     fn mark_clean_stop(&mut self) -> Result<(), StorageError> {
@@ -537,10 +626,91 @@ fn decode_changes(
     bytes.0.is_empty().then_some(changes)
 }
 
-/// SQLite integers are signed 64-bit; ticks and sequence numbers never
-/// get anywhere near the sign bit.
-fn db_int(value: u64) -> i64 {
-    i64::try_from(value).expect("tick or sequence number fits in i64")
+/// SQLite integers are signed 64-bit; ticks never get anywhere near the
+/// sign bit (29 billion years at ten a second). A crafted one is refused.
+fn db_int(value: u64) -> Result<i64, StorageError> {
+    i64::try_from(value)
+        .map_err(|_| StorageError::Refused(format!("tick {value} is beyond the database's range")))
+}
+
+/// A stored snapshot's row as a world, whatever its columns hold: a
+/// column of the wrong type is damage, like unreadable data.
+fn decode_row(
+    version: &rusqlite::types::Value,
+    data: &rusqlite::types::Value,
+    content: &Content,
+) -> Result<World, StorageError> {
+    use rusqlite::types::Value;
+    let (Value::Integer(version), Value::Text(data)) = (version, data) else {
+        return Err(StorageError::Refused(
+            "the snapshot's columns are not an integer and a text".to_owned(),
+        ));
+    };
+    let version = u32::try_from(*version).map_err(|_| StorageError::UnsupportedSnapshot {
+        found: 0,
+        supported: SNAPSHOT_FORMAT_VERSION,
+    })?;
+    let world = decode_world(version, data, content)?;
+    // Never written by this server: a tick it could not save again.
+    db_int(world.tick().0)?;
+    Ok(world)
+}
+
+/// Whether a snapshot's error means the row is damaged (unreadable,
+/// crafted, of no format any build wrote), so the one before it may be
+/// read instead; a format newer than this build is not damage.
+fn is_damage(e: &StorageError) -> bool {
+    match e {
+        StorageError::Serialization(_) | StorageError::Refused(_) => true,
+        StorageError::UnsupportedSnapshot { found, .. } => *found == 0,
+        _ => false,
+    }
+}
+
+/// Refuses a file that is not this server's: a SQLite file of another
+/// program (tables of its own and no schema version), or one that claims
+/// a version without the `table` every version has. Checked before the
+/// file is touched (no journal mode set, no table added).
+fn refuse_foreign(conn: &Connection, table: &str, label: &str) -> Result<(), StorageError> {
+    let version: u32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let tables: u32 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table'",
+        [],
+        |row| row.get(0),
+    )?;
+    let ours: bool = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [table],
+        |row| row.get::<_, u32>(0).map(|n| n > 0),
+    )?;
+    if tables > 0 && (version == 0 || !ours) {
+        return Err(StorageError::Refused(format!(
+            "{label} is not a Soul Invasion save (schema version {version}, {tables} table(s))"
+        )));
+    }
+    Ok(())
+}
+
+/// Makes the file if it is missing, readable by its owner alone (0600):
+/// a world, and later the souls, are nobody else's on a shared host.
+/// SQLite gives the file 0644 when it makes it, and its WAL and shared
+/// memory files take the main file's mode.
+fn create_private(path: &std::path::Path) -> Result<(), StorageError> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    match options.open(path) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(source) => Err(StorageError::Create {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
 }
 
 /// Schema of the continents' file, as [`MIGRATIONS`] for the world's:
@@ -569,17 +739,20 @@ pub struct ContinentStore {
 }
 
 impl ContinentStore {
-    /// Opens (or creates) the continents' file.
+    /// Opens (or creates) the continents' file, the owner's alone when
+    /// made here; a file that is not one of these is refused.
     pub fn open(path: &std::path::Path) -> Result<Self, StorageError> {
-        Self::from_connection(Connection::open(path)?)
+        create_private(path)?;
+        Self::from_connection(Connection::open(path)?, &path.display().to_string())
     }
 
     /// In memory, for the tests.
     pub fn in_memory() -> Result<Self, StorageError> {
-        Self::from_connection(Connection::open_in_memory()?)
+        Self::from_connection(Connection::open_in_memory()?, "memory")
     }
 
-    fn from_connection(mut conn: Connection) -> Result<Self, StorageError> {
+    fn from_connection(mut conn: Connection, label: &str) -> Result<Self, StorageError> {
+        refuse_foreign(&conn, "continents", label)?;
         let found: u32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         let supported = u32::try_from(CONTINENT_MIGRATIONS.len()).expect("few migrations");
         if found > supported {
@@ -643,8 +816,16 @@ fn db_bits(value: u64) -> i64 {
     i64::from_le_bytes(value.to_le_bytes())
 }
 
-/// Turns stored snapshot data into a `World`, migrating old formats.
+/// Turns stored snapshot data into a `World`, migrating old formats. A
+/// format no build wrote (0) or newer than this one is refused.
 fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<World, StorageError> {
+    let unsupported = || StorageError::UnsupportedSnapshot {
+        found: format_version,
+        supported: SNAPSHOT_FORMAT_VERSION,
+    };
+    if format_version == 0 {
+        return Err(unsupported());
+    }
     let mut version = format_version;
     let mut data = data.to_owned();
     while version < SNAPSHOT_FORMAT_VERSION {
@@ -663,7 +844,7 @@ fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<Wo
             12 => migrate_v12_to_v13(&data)?,
             13 => migrate_v13_to_v14(&data)?,
             14 => migrate_v14_to_v15(&data)?,
-            _ => unreachable!("every version below the current one has a migration"),
+            _ => return Err(unsupported()),
         };
         version += 1;
     }
@@ -674,10 +855,7 @@ fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<Wo
         world.take_content(content);
         Ok(world)
     } else {
-        Err(StorageError::UnsupportedSnapshot {
-            found: version,
-            supported: SNAPSHOT_FORMAT_VERSION,
-        })
+        Err(unsupported())
     }
 }
 
@@ -1006,7 +1184,7 @@ mod tests {
             [],
         )
         .unwrap();
-        let mut storage = Sqlite::from_connection(conn, content()).unwrap();
+        let mut storage = Sqlite::from_connection(conn, content(), "test").unwrap();
         storage.save_world(&world_at(4)).unwrap();
         assert_eq!(storage.schema_version().unwrap(), 4);
         let journal: i64 = storage
@@ -1181,7 +1359,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.pragma_update(None, "user_version", 9).unwrap();
         assert!(matches!(
-            ContinentStore::from_connection(conn).unwrap_err(),
+            ContinentStore::from_connection(conn, "test").unwrap_err(),
             StorageError::SchemaTooNew {
                 found: 9,
                 supported: 1
@@ -1716,17 +1894,199 @@ mod tests {
                 chunk.x,
                 chunk.y,
                 world.chunk_version(chunk),
-                db_int(world.tick().0)
+                db_int(world.tick().0).unwrap()
             )),
             "{rows:?}"
         );
         assert_eq!(
             rows.iter()
-                .filter(|r| r.3 == db_int(world.tick().0))
+                .filter(|r| r.3 == db_int(world.tick().0).unwrap())
                 .count(),
             1,
             "{rows:?}"
         );
+    }
+
+    /// Writes a snapshot row of today's format from `data`, as a hand
+    /// (or a disk fault) would.
+    fn insert_snapshot(storage: &Sqlite, tick: i64, format: u32, data: &str) {
+        storage
+            .conn
+            .execute(
+                "INSERT INTO snapshots (tick, format_version, data) VALUES (?1, ?2, ?3)",
+                params![tick, format, data],
+            )
+            .unwrap();
+    }
+
+    fn snapshots(storage: &Sqlite) -> Vec<i64> {
+        let mut rows = storage
+            .conn
+            .prepare("SELECT tick FROM snapshots ORDER BY tick")
+            .unwrap();
+        rows.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_damaged_latest_snapshot_falls_back_to_the_one_before_as_a_crash() {
+        let mut storage = Sqlite::in_memory(content()).unwrap();
+        for ticks in [10, 20, 30] {
+            storage.save_world(&world_at(ticks)).unwrap();
+        }
+        storage
+            .conn
+            .execute("UPDATE snapshots SET data = '[1' WHERE tick = 30", [])
+            .unwrap();
+
+        let world = storage.latest_world().unwrap().expect("the one before");
+        assert_eq!(world.tick(), Tick(20));
+        // The damaged row is gone, so the next checkpoint is the newest.
+        assert_eq!(snapshots(&storage), vec![10, 20]);
+        // A clean stop, but the fallback lost play: a crash to clients.
+        assert_eq!(storage.begin_run().unwrap().epoch, 1);
+        storage.save_world(&world_at(25)).unwrap();
+        assert_eq!(storage.latest_world().unwrap().unwrap().tick(), Tick(25));
+        // Read again, nothing is damaged: no second crash.
+        storage.mark_clean_stop().unwrap();
+        assert_eq!(storage.begin_run().unwrap().epoch, 1);
+    }
+
+    #[test]
+    fn a_snapshot_of_format_zero_is_refused_not_a_panic() {
+        let mut storage = Sqlite::in_memory(content()).unwrap();
+        insert_snapshot(&storage, 7, 0, "{}");
+        let err = storage.latest_world().unwrap_err();
+        assert!(
+            matches!(err, StorageError::Refused(ref what) if what.contains("every kept snapshot is damaged")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_newer_snapshot_in_front_is_refused_not_skipped() {
+        let mut storage = Sqlite::in_memory(content()).unwrap();
+        storage.save_world(&world_at(10)).unwrap();
+        insert_snapshot(&storage, 20, 99, "{}");
+        let err = storage.latest_world().unwrap_err();
+        assert!(
+            matches!(err, StorageError::UnsupportedSnapshot { found: 99, .. }),
+            "{err}"
+        );
+        assert_eq!(snapshots(&storage), vec![10, 20], "nothing dropped");
+    }
+
+    type Craft = Box<dyn Fn(&mut serde_json::Value)>;
+
+    #[test]
+    fn crafted_snapshots_are_refused_not_panics() {
+        let sound = serde_json::to_value(world_at(4)).unwrap();
+        let crafted: [(&str, Craft); 6] = [
+            (
+                "calendar.ticks_per_second 0",
+                Box::new(|v| {
+                    v["calendar"]["ticks_per_second"] = 0.into();
+                }),
+            ),
+            (
+                "calendar.days_per_year 0",
+                Box::new(|v| {
+                    v["calendar"]["days_per_year"] = 0.into();
+                }),
+            ),
+            (
+                "a map of 4,000,000 tiles a side",
+                Box::new(|v| {
+                    v["map"]["width"] = 4_000_000.into();
+                    v["map"]["height"] = 4_000_000.into();
+                }),
+            ),
+            (
+                "generator 99",
+                Box::new(|v| v["map"]["generator"] = 99.into()),
+            ),
+            (
+                "the vivarium's generator on another size",
+                Box::new(|v| {
+                    v["map"]["generator"] = 4.into();
+                }),
+            ),
+            ("tick past i64", Box::new(|v| v["tick"] = u64::MAX.into())),
+        ];
+        for (what, craft) in crafted {
+            let mut data = sound.clone();
+            craft(&mut data);
+            let mut storage = Sqlite::in_memory(content()).unwrap();
+            insert_snapshot(&storage, 4, SNAPSHOT_FORMAT_VERSION, &data.to_string());
+            match storage.latest_world() {
+                Ok(Some(world)) => {
+                    let _ = world.time();
+                    panic!("{what}: accepted");
+                }
+                Ok(None) => panic!("{what}: not seen"),
+                Err(e) => assert!(matches!(e, StorageError::Refused(_)), "{what}: {e}"),
+            }
+        }
+    }
+
+    #[test]
+    fn an_epoch_at_its_maximum_is_refused() {
+        let mut storage = Sqlite::in_memory(content()).unwrap();
+        storage
+            .conn
+            .execute("UPDATE run_state SET epoch = ?1, clean = 0", [i64::MAX])
+            .unwrap();
+        let err = storage.begin_run().unwrap_err();
+        assert!(matches!(err, StorageError::Refused(_)), "{err}");
+    }
+
+    #[test]
+    fn a_foreign_sqlite_file_is_refused_not_adopted() {
+        let (dir, path) = temp_db("foreign");
+        let foreign = Connection::open(&path).unwrap();
+        foreign
+            .execute_batch("CREATE TABLE notes (id INTEGER PRIMARY KEY, text TEXT);")
+            .unwrap();
+        drop(foreign);
+        let err = Sqlite::open(&path, content()).unwrap_err();
+        assert!(
+            matches!(err, StorageError::Refused(ref what) if what.contains("not a Soul Invasion save")),
+            "{err}"
+        );
+        // Untouched: its table alone, no schema version, no WAL.
+        let foreign = Connection::open(&path).unwrap();
+        let version: u32 = foreign
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 0);
+        assert!(!dir.join("world.sqlite-wal").exists());
+        let err = ContinentStore::open(&path).unwrap_err();
+        assert!(matches!(err, StorageError::Refused(_)), "{err}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_world_file_is_made_for_its_owner_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, path) = temp_db("private");
+        let mut storage = Sqlite::open(&path, content()).unwrap();
+        storage.save_world(&world_at(4)).unwrap();
+        let mode = |name: &str| {
+            std::fs::metadata(dir.join(name)).map_or_else(
+                |_| panic!("{name} exists"),
+                |m| m.permissions().mode() & 0o777,
+            )
+        };
+        assert_eq!(mode("world.sqlite"), 0o600);
+        assert_eq!(mode("world.sqlite-wal"), 0o600);
+        drop(storage);
+        let continents = dir.join("continents.sqlite");
+        ContinentStore::open(&continents).unwrap();
+        assert_eq!(mode("continents.sqlite"), 0o600);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1753,7 +2113,7 @@ mod tests {
     fn newer_schema_is_refused() {
         let conn = Connection::open_in_memory().unwrap();
         conn.pragma_update(None, "user_version", 42).unwrap();
-        let err = Sqlite::from_connection(conn, content()).unwrap_err();
+        let err = Sqlite::from_connection(conn, content(), "test").unwrap_err();
         assert!(matches!(
             err,
             StorageError::SchemaTooNew {

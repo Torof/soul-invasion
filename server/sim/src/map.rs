@@ -268,6 +268,68 @@ fn first_generator() -> u32 {
     FIRST_GENERATOR
 }
 
+/// The most tiles a map has on a side: a crafted spec past it is
+/// refused before anything is allocated for it (the waters alone take
+/// ten bytes a tile while they are made; four million a side asked for
+/// a thousand billion).
+pub const MAX_SIDE: u32 = 1 << 14;
+
+/// Why a stored spec cannot make a map.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MapSpecError {
+    /// A side of zero, or past [`MAX_SIDE`].
+    #[error("a map of {width} × {height} tiles: a side is 1 to {MAX_SIDE}")]
+    Size {
+        /// Columns.
+        width: u32,
+        /// Rows.
+        height: u32,
+    },
+    /// No generator of this build.
+    #[error("generator version {0} is unknown to this build (1 to {VIVARIUM_GENERATOR})")]
+    Generator(u32),
+    /// A window of the atlas is square, the vivarium's of one size.
+    #[error("generator version {generator} makes a map of {side} tiles a side only")]
+    Window {
+        /// The generator.
+        generator: u32,
+        /// The side it makes, or 0 for any square.
+        side: u32,
+    },
+}
+
+impl MapSpec {
+    /// Checks that this build can make the map, before anything is made:
+    /// a stored or crafted spec is refused with the reason rather than
+    /// allocated for or fallen through to today's generator.
+    pub fn check(&self) -> Result<(), MapSpecError> {
+        let (width, height) = match *self {
+            MapSpec::Filled { width, height, .. } | MapSpec::Valley { width, height, .. } => {
+                (width, height)
+            }
+        };
+        if !(1..=MAX_SIDE).contains(&width) || !(1..=MAX_SIDE).contains(&height) {
+            return Err(MapSpecError::Size { width, height });
+        }
+        if let MapSpec::Valley { generator, .. } = *self {
+            if !(FIRST_GENERATOR..=VIVARIUM_GENERATOR).contains(&generator) {
+                return Err(MapSpecError::Generator(generator));
+            }
+            let side = match generator {
+                PLAN_GENERATOR => Some(0),
+                VIVARIUM_GENERATOR => Some(crate::plan::ZONE_2.side()),
+                _ => None,
+            };
+            if let Some(side) = side
+                && (width != height || (side != 0 && width != side))
+            {
+                return Err(MapSpecError::Window { generator, side });
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The grid. Stored as its spec alone (D31): the tiles are generated
 /// again on load. A valley holds only its waters, sparse; the rest of a
 /// chunk (terrain, density of trees, habitat) is made when it is read
@@ -3560,6 +3622,46 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+
+    #[test]
+    fn a_spec_this_build_cannot_make_is_refused_before_anything_is_made() {
+        let valley = |width, height, generator| MapSpec::Valley {
+            width,
+            height,
+            seed: 1,
+            generator,
+        };
+        assert_eq!(valley(256, 256, GENERATOR).check(), Ok(()));
+        assert_eq!(valley(MAX_SIDE, MAX_SIDE, FIRST_GENERATOR).check(), Ok(()));
+        assert!(matches!(
+            valley(4_000_000, 4_000_000, GENERATOR).check(),
+            Err(MapSpecError::Size { .. })
+        ));
+        assert!(matches!(
+            valley(0, 256, GENERATOR).check(),
+            Err(MapSpecError::Size { .. })
+        ));
+        assert_eq!(
+            valley(256, 256, 99).check(),
+            Err(MapSpecError::Generator(99))
+        );
+        assert!(matches!(
+            valley(256, 512, PLAN_GENERATOR).check(),
+            Err(MapSpecError::Window { .. })
+        ));
+        assert!(matches!(
+            valley(256, 256, VIVARIUM_GENERATOR).check(),
+            Err(MapSpecError::Window { .. })
+        ));
+        let zone = crate::plan::ZONE_2.side();
+        assert_eq!(valley(zone, zone, VIVARIUM_GENERATOR).check(), Ok(()));
+        let filled = MapSpec::Filled {
+            width: MAX_SIDE + 1,
+            height: 1,
+            terrain: Terrain::Grass,
+        };
+        assert!(matches!(filled.check(), Err(MapSpecError::Size { .. })));
+    }
 
     #[test]
     fn a_map_is_written_as_its_spec_and_read_back_whole() {

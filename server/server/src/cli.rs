@@ -62,7 +62,7 @@ OPTIONS:
     --days-per-year <N>    Calendar: game days per year, four seasons
                            (default 50, at least 4).
     --valley-size <N>      A new world's valley, N tiles on a side (default
-                           3072, at least 256). A smaller one starts far
+                           3072, 256 to 16384). A smaller one starts far
                            faster: for tests and development.
     --seed <N>             The seed a new world's valley is cut from. Without
                            it, a world is cut from a seed drawn at its birth
@@ -167,7 +167,7 @@ fn check_values(opts: &Options) -> Result<(), CliError> {
     if opts.chunk_threads == Some(0) {
         return Err(invalid("--chunk-threads", "0".to_owned()));
     }
-    if opts.valley_size < 256 {
+    if opts.valley_size < 256 || opts.valley_size > sim::map::MAX_SIDE {
         return Err(invalid("--valley-size", opts.valley_size.to_string()));
     }
     let limits = opts.limits;
