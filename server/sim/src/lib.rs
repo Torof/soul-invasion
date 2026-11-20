@@ -789,6 +789,19 @@ pub enum Intention {
 }
 
 impl Intention {
+    /// The act on an item it asks for, and the item, if it is one.
+    #[must_use]
+    pub fn item_act(&self) -> Option<(ItemAct, ItemId)> {
+        match *self {
+            Intention::Eat { item, .. } => Some((ItemAct::Eat, item)),
+            Intention::PickUp { item, .. } => Some((ItemAct::PickUp, item)),
+            Intention::Drop { item, .. } => Some((ItemAct::Drop, item)),
+            Intention::Hold { item, .. } => Some((ItemAct::Hold, item)),
+            Intention::Stow { item, .. } => Some((ItemAct::Stow, item)),
+            _ => None,
+        }
+    }
+
     /// The body it is for.
     pub fn body(&self) -> BodyId {
         match *self {
@@ -1332,8 +1345,27 @@ impl<'de> serde::Deserialize<'de> for World {
 /// minutes of walking (D31).
 pub const VALLEY_SIZE: u32 = 3072;
 
-/// Seed of the first version's valley.
+/// Seed of the first version's valley: the public development seed, the
+/// one every test world and every `--dev` server is cut from. A real
+/// world is cut from a seed drawn at its birth and never told (the
+/// security audit of 20 November 2026, F1; the project lead's call Q3).
 pub const VALLEY_SEED: u64 = 1;
+
+/// How far a body's eyes carry, in metres (a tile is a metre, D31): the
+/// project lead's call of 11 November 2026 for how far other bodies are
+/// told (the server's creature range takes it from here), and how far an
+/// act on an item is answered truly (`World::sight`).
+pub const EYES_RANGE_M: i32 = 150;
+
+/// Whether `b` lies within the eyes' range of `a` ([`EYES_RANGE_M`]).
+#[must_use]
+pub fn within_eyes(a: Pos, b: Pos) -> bool {
+    let (dx, dy) = (
+        i64::from(a.x) - i64::from(b.x),
+        i64::from(a.y) - i64::from(b.y),
+    );
+    dx * dx + dy * dy <= i64::from(EYES_RANGE_M).pow(2)
+}
 
 impl World {
     /// Creates the first version's valley at tick zero, with nobody in
@@ -2552,15 +2584,18 @@ impl World {
     }
 
     fn apply(&mut self, intention: &Intention, rules: &Content, events: &mut Vec<Event>) {
-        // An act on a natural item makes it a stored one first, then goes
-        // as for any other.
-        if let Intention::Eat { item, .. }
-        | Intention::PickUp { item, .. }
-        | Intention::Drop { item, .. }
-        | Intention::Hold { item, .. }
-        | Intention::Stow { item, .. } = *intention
-        {
-            self.materialise(item);
+        // An act on an item is judged by the body's reach and eyes before
+        // anything is done or told of the item (the security audit of 20
+        // November 2026, F2 and M1); one on a natural item then makes it
+        // a stored one, and goes as for any other.
+        if let Some((act, item)) = intention.item_act() {
+            let body = intention.body();
+            if let Some(index) = self.index_of(body) {
+                if let Err(reason) = self.sight(index, item) {
+                    return Self::refuse(events, body, act, item, reason);
+                }
+                self.materialise(item);
+            }
         }
         // Any other intention stops the work its body is busy at.
         if !matches!(intention, Intention::Gather { .. })
@@ -2623,25 +2658,53 @@ impl World {
         }
     }
 
-    /// Where an item is relative to a body: within reach on the ground,
-    /// carried by it, or neither.
-    fn reach(&self, index: usize, item: ItemId) -> Result<Place, Refusal> {
+    /// Judges an act on `item` by the body's reach and eyes, before
+    /// anything is done or told of the item. `Ok` when the body carries
+    /// it, or it lies on the body's tile or next to it (a natural item
+    /// not yet made counts where its id says it would lie). Otherwise the
+    /// true reason within the eyes' range ([`EYES_RANGE_M`]): `OutOfReach`
+    /// for a piece on the ground, or a natural slot whatever it holds,
+    /// `NotCarried` for one another body has; past the eyes, one and the
+    /// same `Unknown` whether the item exists or not, as for an id that
+    /// names nothing: a refusal tells nothing of what lies beyond the
+    /// eyes, and a far natural item is never made for a probe (the
+    /// security audit of 20 November 2026, F2 and M1).
+    fn sight(&self, index: usize, item: ItemId) -> Result<(), Refusal> {
         let body = &self.bodies[index];
-        let Some(found) = self.item(item) else {
-            return Err(Refusal::Unknown);
-        };
-        match found.place {
-            Place::Carried { body: carrier } if carrier == body.id => Ok(found.place),
-            Place::Carried { .. } => Err(Refusal::NotCarried),
-            Place::Ground { pos } => {
-                let here = body.pos();
-                if (pos.x - here.x).abs() <= 1 && (pos.y - here.y).abs() <= 1 {
-                    Ok(found.place)
-                } else {
-                    Err(Refusal::OutOfReach)
-                }
+        let (at, reason) = match self.item(item).map(|found| found.place) {
+            Some(Place::Carried { body: carrier }) if carrier == body.id => return Ok(()),
+            Some(Place::Carried { body: carrier }) => {
+                let Some(carrier) = self.index_of(carrier) else {
+                    return Err(Refusal::Unknown);
+                };
+                (self.bodies[carrier].pos(), Refusal::NotCarried)
             }
+            Some(Place::Ground { pos }) => (pos, Refusal::OutOfReach),
+            None => match items::tile_of(item) {
+                Some(tile) => (tile, Refusal::OutOfReach),
+                None => return Err(Refusal::Unknown),
+            },
+        };
+        let here = body.pos();
+        if (at.x - here.x).abs() <= 1 && (at.y - here.y).abs() <= 1 {
+            match reason {
+                Refusal::NotCarried => Err(reason),
+                _ => Ok(()),
+            }
+        } else if within_eyes(here, at) {
+            Err(reason)
+        } else {
+            Err(Refusal::Unknown)
         }
+    }
+
+    /// Where an item is relative to a body: within reach on the ground,
+    /// carried by it, or neither ([`World::sight`] says why not).
+    fn reach(&self, index: usize, item: ItemId) -> Result<Place, Refusal> {
+        self.sight(index, item)?;
+        self.item(item)
+            .map(|found| found.place)
+            .ok_or(Refusal::Unknown)
     }
 
     fn refuse(events: &mut Vec<Event>, body: BodyId, act: ItemAct, item: ItemId, reason: Refusal) {
@@ -5091,6 +5154,163 @@ mod tests {
             "{per_thousand}‰ branches"
         );
         assert_eq!(a.items_in(ChunkPos::new(-1, -1)), [] as [Item; 0]);
+    }
+
+    /// What a body is told when it tries an act on `item`.
+    fn probe(w: &mut World, content: &Content, body: BodyId, intention: Intention) -> Refusal {
+        let mut events = Vec::new();
+        w.queue(intention);
+        w.step(content, &mut events);
+        events
+            .iter()
+            .find_map(|e| match e {
+                Event::ActRefused {
+                    body: b, reason, ..
+                } if *b == body => Some(*reason),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("not refused: {events:?}"))
+    }
+
+    /// A natural item lying between `min` and `max` tiles of `from`.
+    fn natural_item_from(w: &World, from: Pos, min: i64, max: i64) -> Item {
+        (0..24)
+            .flat_map(|y| (0..24).map(move |x| ChunkPos::new(x, y)))
+            .flat_map(|c| w.items_in(c))
+            .find(|i| {
+                let p = i.pos().unwrap();
+                let (dx, dy) = (i64::from(p.x - from.x), i64::from(p.y - from.y));
+                let d2 = dx * dx + dy * dy;
+                d2 >= min * min && d2 <= max * max && w.map().is_passable(p)
+            })
+            .expect("a natural item at that distance")
+    }
+
+    #[test]
+    fn an_act_on_an_item_past_the_eyes_is_refused_unknown_and_makes_nothing() {
+        // The security audit of 20 November 2026, F2 and M1: past the
+        // eyes, a refusal is the same whether the item lies there, is
+        // carried by someone, or does not exist, and a probe writes
+        // nothing into the world.
+        let content = Content::sample();
+        let mut w = World::with_valley(Calendar::new(10, 100_000).unwrap(), &content, 768);
+        let body = w.spawn_at_camp().expect("grass by the camp");
+        let here = w.body(body).unwrap().pos();
+        let far = natural_item_from(&w, here, i64::from(EYES_RANGE_M) + 40, 600);
+        let there = far.pos().unwrap();
+        assert!(!within_eyes(here, there));
+        // A slot of the same chunk that holds nothing: a rule no content has.
+        let empty = items::natural_in_slot(there.chunk(), items::slot_of(far.id()) | 63).unwrap();
+        assert!(items::natural_item(w.map(), &content.spawns, w.seed(), empty).is_none());
+
+        for item in [far.id(), empty] {
+            for intention in [
+                Intention::PickUp { body, item },
+                Intention::Eat { body, item },
+                Intention::Hold { body, item },
+                Intention::Stow { body, item },
+                Intention::Drop { body, item },
+            ] {
+                assert_eq!(probe(&mut w, &content, body, intention), Refusal::Unknown);
+            }
+        }
+        // Nothing made, nothing marked, no chunk changed.
+        assert!(w.item(far.id()).is_none());
+        assert!(!w.is_taken(far.id()));
+        assert_eq!(w.chunk_version(there.chunk()), 0);
+        assert_eq!(w.chunk_changes().count(), 0);
+        assert_eq!(w.items().count(), 0);
+
+        // A stored item lying there, and one a body there carries: the same.
+        let dropped = w.spawn_item("flint", 100, there);
+        let other = w.spawn_body(there);
+        let mut events = Vec::new();
+        w.queue(Intention::PickUp {
+            body: other,
+            item: far.id(),
+        });
+        w.step(&content, &mut events);
+        assert!(w.body(other).unwrap().has(far.id()));
+        for item in [dropped, far.id()] {
+            for intention in [
+                Intention::PickUp { body, item },
+                Intention::Hold { body, item },
+                Intention::Drop { body, item },
+            ] {
+                assert_eq!(probe(&mut w, &content, body, intention), Refusal::Unknown);
+            }
+        }
+    }
+
+    #[test]
+    fn within_the_eyes_an_act_is_refused_for_its_true_reason() {
+        let content = Content::sample();
+        let mut w = World::with_valley(Calendar::new(10, 100_000).unwrap(), &content, 768);
+        let body = w.spawn_at_camp().expect("grass by the camp");
+        let here = w.body(body).unwrap().pos();
+        let near = natural_item_from(&w, here, 4, i64::from(EYES_RANGE_M) - 20);
+        let there = near.pos().unwrap();
+        assert!(within_eyes(here, there));
+        // Lying within the eyes but not within reach: out of reach, and
+        // still not made.
+        assert_eq!(
+            probe(
+                &mut w,
+                &content,
+                body,
+                Intention::PickUp {
+                    body,
+                    item: near.id()
+                }
+            ),
+            Refusal::OutOfReach
+        );
+        assert!(w.item(near.id()).is_none(), "judged from its id alone");
+        // A slot there that holds nothing: the same as one that does.
+        let empty = items::natural_in_slot(there.chunk(), items::slot_of(near.id()) | 63).unwrap();
+        assert_eq!(
+            probe(
+                &mut w,
+                &content,
+                body,
+                Intention::PickUp { body, item: empty }
+            ),
+            Refusal::OutOfReach
+        );
+        // Carried by a body within the eyes: not carried.
+        let other = w.spawn_body(there);
+        let mut events = Vec::new();
+        w.queue(Intention::PickUp {
+            body: other,
+            item: near.id(),
+        });
+        w.step(&content, &mut events);
+        assert!(w.body(other).unwrap().has(near.id()));
+        assert_eq!(
+            probe(
+                &mut w,
+                &content,
+                body,
+                Intention::Hold {
+                    body,
+                    item: near.id()
+                }
+            ),
+            Refusal::NotCarried
+        );
+        // An id that names nothing at all: unknown, wherever one stands.
+        assert_eq!(
+            probe(
+                &mut w,
+                &content,
+                body,
+                Intention::PickUp {
+                    body,
+                    item: ItemId(999)
+                }
+            ),
+            Refusal::Unknown
+        );
     }
 
     #[test]

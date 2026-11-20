@@ -20,9 +20,15 @@ use crate::net::Published;
 
 /// How far a body sees other bodies (creatures, men), in metres, measured
 /// between the centres of the chunks they stand in: the project lead's
-/// call (11 November 2026). Less than the land's view (608 m across, D08):
-/// a body is seen within about 150 m, never past 6 chunks (192 m).
-pub const BODY_RANGE_M: i32 = 150;
+/// call (11 November 2026), the simulation's [`sim::EYES_RANGE_M`]. Less
+/// than the land's view (608 m across, D08): a body is seen within about
+/// 150 m, never past 6 chunks (192 m). What men do to the ground (an
+/// item picked up or laid down) is told within the same range, not the
+/// view: a tile changing 200 m away told where a hidden body acted (the
+/// security audit of 20 November 2026, F6). The chunk's version moves
+/// all the same, and the chunk is sent again when it comes within range
+/// or at the next dawn.
+pub const BODY_RANGE_M: i32 = sim::EYES_RANGE_M;
 
 /// Is `chunk` within the creatures' range of a body standing in
 /// `centre`? Within [`BODY_RANGE_M`] between the chunks' centres: a disc
@@ -154,11 +160,11 @@ impl Router {
                 None
             }
             Published::ItemAdded { ref item, .. } => {
-                near(&self.view, &mut to, sim::Pos::new(item.x, item.y).chunk());
+                near(&self.range, &mut to, sim::Pos::new(item.x, item.y).chunk());
                 None
             }
             Published::ItemRemoved { at, .. } => {
-                near(&self.view, &mut to, at.chunk());
+                near(&self.range, &mut to, at.chunk());
                 None
             }
             Published::BodyWalks { body, from: at, .. }
@@ -285,6 +291,18 @@ mod tests {
             2,
             "its own body's walk and the night"
         );
+
+        // What men do to the ground goes as far as the bodies, not the
+        // view (F6): a chunk in view past the range hears nothing.
+        router.set_interest(far.id, &BTreeSet::from([here, there]), &set(there));
+        router.publish(&Published::ItemRemoved {
+            item: 5,
+            at: Pos::new(70, 70),
+            version: 1,
+        });
+        assert_eq!(got(&mut near).len(), 1);
+        assert!(got(&mut far).is_empty(), "in view, past the eyes");
+        router.set_interest(far.id, &set(there), &set(there));
 
         // A connection whose queue is full misses the rest and knows it.
         for _ in 0..10 {

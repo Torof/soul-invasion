@@ -259,6 +259,9 @@ impl Server {
                 "86400",
             ])
             .args(["--content", content_dir().to_str().expect("a UTF-8 path")])
+            // The public development seed, the one `standard_world` is
+            // cut from: without it a world's seed is drawn at birth.
+            .args(["--seed", "1"])
             .args(extra)
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -1910,30 +1913,41 @@ async fn eating_takes_an_item_within_reach_and_refuses_the_rest() {
     let (mut watcher, _) = join(&server).await;
     let body = body.expect("pilots body 1");
 
-    // An item far away cannot be eaten from here.
+    // An item far away cannot be eaten from here: out of reach within
+    // the eyes, and past them unknown, as if it were not there (the
+    // security audit of 20 November 2026, F2).
     let world = standard_world();
     let here = start_of(world, body);
-    let far = ground_items(world)
+    let apart = |i: &sim::Item| {
+        let p = i.pos().expect("on the ground");
+        (p.x - here.x).abs().max((p.y - here.y).abs())
+    };
+    let farthest = ground_items(world)
         .into_iter()
-        .max_by_key(|i| {
-            let p = i.pos().expect("on the ground");
-            (p.x - here.x).abs() + (p.y - here.y).abs()
+        .max_by_key(apart)
+        .expect("items in the valley");
+    assert!(apart(&farthest) > sim::EYES_RANGE_M);
+    let near = ground_items(world)
+        .into_iter()
+        .find(|i| (3..=sim::EYES_RANGE_M / 2).contains(&apart(i)))
+        .expect("an item within the eyes");
+    for (item, expected) in [
+        (farthest.id().0, protocol::Refusal::Unknown),
+        (near.id().0, protocol::Refusal::OutOfReach),
+    ] {
+        send(&mut pilot, &ClientMessage::Eat { item }).await;
+        let refused = wait_for(&mut pilot, |m| match m {
+            ServerMessage::ActRefused {
+                body: who,
+                act: protocol::ItemAct::Eat,
+                item,
+                reason,
+            } if *who == body => Some((*item, *reason)),
+            _ => None,
         })
-        .expect("items in the valley")
-        .id()
-        .0;
-    send(&mut pilot, &ClientMessage::Eat { item: far }).await;
-    let refused = wait_for(&mut pilot, |m| match m {
-        ServerMessage::ActRefused {
-            body: who,
-            act: protocol::ItemAct::Eat,
-            item,
-            reason,
-        } if *who == body => Some((*item, *reason)),
-        _ => None,
-    })
-    .await;
-    assert_eq!(refused, (far, protocol::Refusal::OutOfReach));
+        .await;
+        assert_eq!(refused, (item, expected));
+    }
 
     // Walk to the nearest berries, then eat them: the watcher sees them go.
     let world = standard_world();
@@ -1995,7 +2009,9 @@ async fn a_starved_body_dies_and_its_pilot_is_born_again_at_the_camp() {
     let body = body.expect("pilots body 1");
 
     let cause = wait_for(&mut pilot, |m| match m {
-        ServerMessage::BodyDied { body: who, cause } if *who == body => Some(*cause),
+        ServerMessage::BodyDied { body: who, cause } if *who == body => {
+            Some(cause.expect("its own pilot is told why"))
+        }
         _ => None,
     })
     .await;
@@ -2405,9 +2421,9 @@ async fn a_chunk_the_client_lacks_after_all_is_sent_when_it_says_so() {
 
 #[tokio::test]
 async fn a_reconnection_to_the_same_world_sends_no_frame_for_the_chunks_held() {
-    // A server, then another on the same world (as after a restart).
+    // A connection that leaves, then comes back to the same world.
+    let server = Server::start();
     let (held, world_id) = {
-        let server = Server::start();
         let (mut socket, body) = welcome(&server).await;
         let mut holder = Holder::default();
         holder
@@ -2421,7 +2437,6 @@ async fn a_reconnection_to_the_same_world_sends_no_frame_for_the_chunks_held() {
         (held, holder.world)
     };
     assert_eq!(world_id.len(), 16, "{world_id}");
-    let server = Server::start();
     for (world, sends_frames) in [
         (world_id.clone(), false),
         ("another world".to_owned(), true),
@@ -2459,6 +2474,38 @@ async fn a_reconnection_to_the_same_world_sends_no_frame_for_the_chunks_held() {
         }
         drop(socket);
     }
+
+    // An ephemeral world started again, on the same seed, is another
+    // world: its identity is drawn at birth, not made of the seed (the
+    // security audit of 20 November 2026, K1). The chunks held are sent
+    // again.
+    let restarted = Server::start();
+    let mut socket = restarted.connect().await;
+    send(
+        &mut socket,
+        &ClientMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            held: Some(protocol::HeldChunks {
+                world: world_id.clone(),
+                chunks: held.clone(),
+            }),
+        },
+    )
+    .await;
+    let body = match receive(&mut socket).await {
+        Some(Got::M(ServerMessage::Welcome { body, .. })) => body,
+        other => panic!("expected welcome, got {other:?}"),
+    };
+    let mut holder = Holder::default();
+    let (frames, sames) = holder
+        .fill(&mut socket, home_of(standard_world(), body))
+        .await;
+    assert_ne!(holder.world, world_id, "another world to a client");
+    assert!(sames.is_empty(), "nothing held is reused");
+    assert_eq!(
+        frames.len(),
+        window_len(standard_world(), home_of(standard_world(), body))
+    );
 }
 
 // --- Interest by place (D5, A6) ------------------------------------------
