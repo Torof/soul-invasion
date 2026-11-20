@@ -571,6 +571,44 @@ impl Species {
     }
 }
 
+/// Gauge points a day, percents past the ones already bounded, grams of
+/// a meal, kilojoules of a point: a thousand times today's values.
+const MILLION: u64 = 1_000_000;
+/// Weights and small percents, where only the ratio counts.
+const WEIGHT: u64 = 10_000;
+/// Tiles of sight, within, reach, spread; years of an age; metres.
+const THOUSAND: u64 = 1000;
+
+/// [`Content::validate_bounds`]: `value` at most `max`, else the refusal
+/// naming the file and the field.
+fn at_most(
+    file: &'static str,
+    field: impl Into<String>,
+    value: impl Into<u64>,
+    max: u64,
+) -> Result<(), ContentError> {
+    if value.into() > max {
+        return Err(ContentError::TooLarge {
+            file,
+            field: field.into(),
+            max,
+        });
+    }
+    Ok(())
+}
+
+/// [`at_most`] for a length in metres: finite, a kilometre at most.
+fn metres(file: &'static str, field: impl Into<String>, value: f32) -> Result<(), ContentError> {
+    if !(value.is_finite() && value <= 1000.0) {
+        return Err(ContentError::TooLarge {
+            file,
+            field: field.into(),
+            max: THOUSAND,
+        });
+    }
+    Ok(())
+}
+
 /// Why content was refused.
 #[derive(Debug, thiserror::Error)]
 pub enum ContentError {
@@ -635,6 +673,17 @@ pub enum ContentError {
         /// What is wrong.
         what: &'static str,
     },
+    /// A value is past what the simulation can carry in its arithmetic
+    /// (a rate, a mass, a budget): the file and the field are named.
+    #[error("{file}: {field} is at most {max}")]
+    TooLarge {
+        /// The file.
+        file: &'static str,
+        /// The field, with the entry's id where there are several.
+        field: String,
+        /// The ceiling.
+        max: u64,
+    },
     /// The movement rules are incomplete or senseless.
     #[error("movement: {0}")]
     Movement(&'static str),
@@ -687,6 +736,7 @@ impl Content {
             crops: Vec::new(),
         };
         content.validate()?;
+        content.validate_bounds()?;
         for index in 0..content.spawns.len() {
             content.spawns[index].piece_g = content
                 .material(&content.spawns[index].material)
@@ -725,6 +775,7 @@ impl Content {
             source,
         })?;
         self.geology.check().map_err(ContentError::Geology)?;
+        self.validate_bounds()?;
         Ok(self)
     }
 
@@ -747,6 +798,7 @@ impl Content {
             source,
         })?;
         self.validate_crops()?;
+        self.validate_bounds()?;
         Ok(self)
     }
 
@@ -945,6 +997,206 @@ impl Content {
         self.needs.ages.validate()
     }
 
+    /// Refuses the values the simulation cannot carry (audit of 20
+    /// November 2026, S4): a rate, a mass or a budget at `u32::MAX`
+    /// overflowed the gauges' arithmetic or let one search run a whole
+    /// tick. Each ceiling is far above today's values (ten times at the
+    /// least, mostly a thousand) and far below what overflows.
+    pub fn validate_bounds(&self) -> Result<(), ContentError> {
+        self.validate_bounds_of_bodies()?;
+        self.validate_bounds_of_land()
+    }
+
+    /// [`Content::validate_bounds`]: the needs and the movement.
+    fn validate_bounds_of_bodies(&self) -> Result<(), ContentError> {
+        let movement = &self.movement;
+        at_most(
+            "movement.ron",
+            "walk_speed_cm_per_s",
+            movement.walk_speed_cm_per_s,
+            100 * THOUSAND,
+        )?;
+        for (terrain, cost) in &movement.terrain_costs {
+            if let Some(cost) = cost {
+                at_most(
+                    "movement.ron",
+                    format!("terrain_costs.{terrain:?}"),
+                    *cost,
+                    WEIGHT,
+                )?;
+            }
+        }
+        at_most(
+            "movement.ron",
+            "carry_capacity_g",
+            movement.carry_capacity_g,
+            100 * MILLION,
+        )?;
+        for (terrain, sight) in &movement.sight_tiles {
+            at_most(
+                "movement.ron",
+                format!("sight_tiles.{terrain:?}"),
+                *sight,
+                WEIGHT,
+            )?;
+        }
+        at_most(
+            "movement.ron",
+            "path_budget_tiles",
+            movement.path_budget_tiles,
+            MILLION,
+        )?;
+        at_most(
+            "movement.ron",
+            "search_work_per_tick",
+            movement.search_work_per_tick,
+            10 * MILLION,
+        )?;
+
+        let needs = &self.needs;
+        for (field, value) in [
+            ("hunger_per_day", needs.hunger_per_day),
+            ("thirst_per_day", needs.thirst_per_day),
+            ("cold_per_day_at_night", needs.cold_per_day_at_night),
+            ("cold_relief_per_day", needs.cold_relief_per_day),
+            ("fatigue_per_day_awake", needs.fatigue_per_day_awake),
+            ("rest_per_day_asleep", needs.rest_per_day_asleep),
+            ("starving_per_day", needs.starving_per_day),
+            ("freezing_per_day", needs.freezing_per_day),
+            ("dehydration_per_day", needs.dehydration_per_day),
+            ("vitality_regain_per_day", needs.vitality_regain_per_day),
+            ("kj_per_hunger_point", needs.kj_per_hunger_point),
+            ("meal_g", needs.meal_g),
+        ] {
+            at_most("needs.ron", field, value, MILLION)?;
+        }
+        at_most("needs.ron", "reserve_kj", needs.reserve_kj, 1000 * MILLION)?;
+        at_most(
+            "needs.ron",
+            "intake_ceiling_percent",
+            needs.intake_ceiling_percent,
+            WEIGHT,
+        )?;
+        let ages = &needs.ages;
+        for &(years, percent) in &ages.need_by_age {
+            at_most("needs.ron", "ages.need_by_age (years)", years, THOUSAND)?;
+            at_most("needs.ron", "ages.need_by_age (percent)", percent, WEIGHT)?;
+        }
+        for (field, value) in [
+            ("ages.woman_percent", ages.woman_percent),
+            ("ages.nursing_percent", ages.nursing_percent),
+            ("ages.adopt_within_tiles", ages.adopt_within_tiles),
+        ] {
+            at_most("needs.ron", field, value, WEIGHT)?;
+        }
+        // Not `slow_over_years`: only compared with an age, and `u32::MAX`
+        // is its "never" when the ages are absent.
+        for (field, value) in [
+            ("ages.woman_from_years", ages.woman_from_years),
+            ("ages.weaned_years", ages.weaned_years),
+            ("ages.slow_under_years", ages.slow_under_years),
+        ] {
+            at_most("needs.ron", field, value, THOUSAND)?;
+        }
+        at_most(
+            "needs.ron",
+            "ages.infant_mass_g",
+            ages.infant_mass_g.1,
+            MILLION,
+        )
+    }
+
+    /// [`Content::validate_bounds`]: the materials, what lies on the
+    /// ground, the trees, the plants, the rock and the crops.
+    fn validate_bounds_of_land(&self) -> Result<(), ContentError> {
+        for material in &self.materials {
+            let field = |name: &str| format!("material `{}`: {name}", material.id);
+            metres("materials.ron", field("mass_kg"), material.mass_kg)?;
+            if let Some(food) = &material.food {
+                at_most(
+                    "materials.ron",
+                    field("food.energy_kj_per_kg"),
+                    food.energy_kj_per_kg,
+                    MILLION,
+                )?;
+                at_most(
+                    "materials.ron",
+                    field("food.keeps_days"),
+                    food.keeps_days,
+                    MILLION,
+                )?;
+            }
+        }
+        for (index, spawn) in self.spawns.iter().enumerate() {
+            if let Some(near) = spawn.near {
+                at_most(
+                    "spawns.ron",
+                    format!("rule {index}: near.within"),
+                    near.within,
+                    THOUSAND,
+                )?;
+            }
+        }
+
+        for species in &self.species {
+            let field = |name: &str| format!("species `{}`: {name}", species.id);
+            metres("species.ron", field("height_m"), species.height_m)?;
+            at_most("species.ron", field("spread_m"), species.spread_m, THOUSAND)?;
+            for (habitat, weight) in &species.habitats {
+                at_most(
+                    "species.ron",
+                    field(&format!("habitats.{habitat:?}")),
+                    *weight,
+                    WEIGHT,
+                )?;
+            }
+        }
+        for kind in &self.flora {
+            let field = |name: &str| format!("plant `{}`: {name}", kind.id);
+            metres("flora.ron", field("height_m"), kind.height_m)?;
+            at_most(
+                "flora.ron",
+                field("per_thousand"),
+                kind.per_thousand,
+                THOUSAND,
+            )?;
+            for (habitat, weight) in &kind.habitats {
+                at_most(
+                    "flora.ron",
+                    field(&format!("habitats.{habitat}")),
+                    *weight,
+                    WEIGHT,
+                )?;
+            }
+            if let Some(host) = &kind.host {
+                metres("flora.ron", field("host.within_m"), host.within_m)?;
+            }
+        }
+        let geology = &self.geology;
+        for (field, value) in [
+            ("region_m", geology.region_m),
+            ("border_cell_m", geology.border_cell_m),
+            ("border_shift_m", geology.border_shift_m),
+        ] {
+            at_most("geology.ron", field, value, MILLION)?;
+        }
+        for (rock, weight) in &geology.weights {
+            at_most("geology.ron", format!("weights.{rock:?}"), *weight, WEIGHT)?;
+        }
+        for crop in &self.crops {
+            let field = |name: &str| format!("crop `{}` on `{}`: {name}", crop.gives, crop.on);
+            for (name, grams) in [
+                ("grams (lean)", crop.grams.0),
+                ("grams (usual)", crop.grams.1),
+                ("grams (rich)", crop.grams.2),
+                ("per_hour_g", crop.per_hour_g),
+            ] {
+                at_most("crops.ron", field(name), grams, MILLION)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Checks the movement rules (D32).
     fn validate_movement(&self) -> Result<(), ContentError> {
         if self.movement.walk_speed_cm_per_s == 0 {
@@ -1139,6 +1391,17 @@ mod tests {
         ));
         let greedy =
             SAMPLE_MOVEMENT.replacen("player_share_percent: 50", "player_share_percent: 101", 1);
+        let endless = SAMPLE_MOVEMENT.replacen(
+            "search_work_per_tick: 60000",
+            "search_work_per_tick: 4294967295",
+            1,
+        );
+        let err =
+            Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, &endless, SAMPLE_NEEDS).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "movement.ron: search_work_per_tick is at most 10000000"
+        );
         assert!(matches!(
             Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, &greedy, SAMPLE_NEEDS).unwrap_err(),
             ContentError::Movement("player_share_percent is 0 to 100")
@@ -1381,5 +1644,43 @@ mod tests {
         base()
             .with_species(include_str!("../../../content/species.ron"))
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod bounds_tests {
+    use super::*;
+
+    #[test]
+    fn a_rate_the_gauges_cannot_carry_is_refused_naming_the_file_and_field() {
+        let flood = SAMPLE_NEEDS.replacen("thirst_per_day: 100", "thirst_per_day: 4294967295", 1);
+        assert_ne!(flood, SAMPLE_NEEDS);
+        let err = Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, SAMPLE_MOVEMENT, &flood)
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ContentError::TooLarge {
+                    file: "needs.ron",
+                    ref field,
+                    max: 1_000_000
+                } if field == "thirst_per_day"
+            ),
+            "{err}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "needs.ron: thirst_per_day is at most 1000000"
+        );
+        // The sample itself, and so the repository's placeholders, pass.
+        Content::from_ron(
+            SAMPLE_MATERIALS,
+            SAMPLE_SPAWNS,
+            SAMPLE_MOVEMENT,
+            SAMPLE_NEEDS,
+        )
+        .unwrap()
+        .validate_bounds()
+        .unwrap();
     }
 }
