@@ -1354,7 +1354,7 @@ pub const VALLEY_SEED: u64 = 1;
 /// How far a body's eyes carry, in metres (a tile is a metre, D31): the
 /// project lead's call of 11 November 2026 for how far other bodies are
 /// told (the server's creature range takes it from here), and how far an
-/// act on an item is answered truly ([`World::sight`]).
+/// act on an item is answered truly (`World::sight`).
 pub const EYES_RANGE_M: i32 = 150;
 
 /// Whether `b` lies within the eyes' range of `a` ([`EYES_RANGE_M`]).

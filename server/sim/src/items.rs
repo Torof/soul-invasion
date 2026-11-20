@@ -121,7 +121,7 @@ pub fn natural_items(map: &Map, spawns: &[Spawn], seed: u64, chunk: ChunkPos) ->
 /// map and no roll: where the piece lies if the ground drops it at all.
 /// `None` for an id that is not a natural item's or that names no tile of
 /// its chunk. What an act on a far item is judged by before anything is
-/// made of it ([`crate::World::sight`]).
+/// made of it (`World::sight`).
 #[must_use]
 pub fn tile_of(id: ItemId) -> Option<Pos> {
     if !is_natural(id) {
