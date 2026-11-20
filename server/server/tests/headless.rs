@@ -81,6 +81,56 @@ fn paced_run_with_a_day_limit_stops_on_its_own() {
     );
 }
 
+/// The security audit of 20 November 2026: two servers on one world file
+/// would braid two worlds into one database. The second is refused while
+/// the first runs, and served once it has stopped.
+#[test]
+fn a_second_server_on_the_same_world_file_is_refused() {
+    use std::io::{BufRead, BufReader};
+
+    let dir = std::env::temp_dir().join(format!("soul-invasion-lock-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let data = dir.join("world.sqlite");
+    let data = data.to_str().unwrap();
+
+    let mut first = server()
+        .args(["--no-warm-up", "--data", data, "--listen", "127.0.0.1:0"])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("server binary runs");
+    let mut lines = BufReader::new(first.stdout.take().unwrap()).lines();
+    for line in lines.by_ref() {
+        if line.unwrap().starts_with("listening on ") {
+            break;
+        }
+    }
+    std::thread::spawn(move || for _ in lines {});
+
+    let second = server()
+        .args(["--no-warm-up", "--data", data, "--listen", "127.0.0.1:0"])
+        .output()
+        .expect("server binary runs");
+    assert!(!second.status.success(), "the second server started");
+    let stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        stderr.contains("held by another server"),
+        "stderr: {stderr}"
+    );
+
+    first.kill().unwrap();
+    first.wait().unwrap();
+    let third = server()
+        .args(["--data", data, "--headless", "--days", "1"])
+        .output()
+        .expect("server binary runs");
+    assert!(
+        third.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&third.stderr)
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn the_world_resumes_from_its_database() {
     let dir = std::env::temp_dir().join(format!("soul-invasion-resume-{}", std::process::id()));

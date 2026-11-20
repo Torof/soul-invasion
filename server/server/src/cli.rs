@@ -8,6 +8,8 @@ use std::path::PathBuf;
 
 use sim::Calendar;
 
+use crate::net::Limits;
+
 /// Usage text printed by `--help`.
 pub const USAGE: &str = "\
 soul-invasion server
@@ -23,7 +25,8 @@ OPTIONS:
                            (default 127.0.0.1:7777; port 0 picks a free port).
     --data <PATH>          SQLite file holding the world's snapshots and
                            event journal (default world.sqlite). The world
-                           resumes from it when it exists.
+                           resumes from it when it exists. A second server
+                           on the same file is refused (<PATH>.lock).
     --ephemeral            Keep the world in memory only; nothing is saved.
     --reset                Erase the data file first and start a new world.
     --continents <PATH>    SQLite file keeping the atlas's continents once
@@ -37,6 +40,15 @@ OPTIONS:
                            pace (D09).
     --max-connections <N>  Paced mode: clients served at once, at most
                            (default 64). Further connections are refused.
+    --connections-per-address <N>
+                           Paced mode: clients served at once from one
+                           address, at most (default 8).
+    --ping-every <SECS>    Paced mode: a WebSocket ping to every client
+                           this often (default 20); its transport answers.
+    --drop-silent-after <SECS>
+                           Paced mode: a client from which nothing came
+                           for this long, pings included, is dropped
+                           (default 60; at least --ping-every).
     --chunk-threads <N>    Paced mode: threads building the chunks of the
                            clients' views, beside the network (default: the
                            machine's hardware threads less three, from 1 to
@@ -133,6 +145,46 @@ pub enum DataLocation {
     Ephemeral,
 }
 
+/// The values as given: the paced mode's pace and counts positive, the
+/// valley big enough, and the connection limits each positive with a
+/// connection kept at least as long as a ping's interval.
+fn check_values(opts: &Options) -> Result<(), CliError> {
+    let invalid = |option: &str, value: String| CliError::InvalidValue {
+        option: option.to_owned(),
+        value,
+    };
+    if !(opts.time_scale.is_finite() && opts.time_scale > 0.0) {
+        return Err(invalid("--time-scale", opts.time_scale.to_string()));
+    }
+    if opts.max_connections == 0 {
+        return Err(invalid("--max-connections", "0".to_owned()));
+    }
+    if opts.chunk_threads == Some(0) {
+        return Err(invalid("--chunk-threads", "0".to_owned()));
+    }
+    if opts.valley_size < 256 {
+        return Err(invalid("--valley-size", opts.valley_size.to_string()));
+    }
+    let limits = opts.limits;
+    if limits.connections_per_address == 0 {
+        return Err(invalid("--connections-per-address", "0".to_owned()));
+    }
+    if limits.ping_every.is_zero() {
+        return Err(invalid("--ping-every", "0".to_owned()));
+    }
+    if limits.drop_silent_after < limits.ping_every {
+        return Err(invalid(
+            "--drop-silent-after",
+            format!(
+                "{} (less than --ping-every {})",
+                limits.drop_silent_after.as_secs(),
+                limits.ping_every.as_secs()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Parsed command-line options.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Options {
@@ -152,6 +204,8 @@ pub struct Options {
     pub time_scale: f64,
     /// Connections served at once, at most (paced mode only).
     pub max_connections: usize,
+    /// What bounds a connection's life (paced mode only).
+    pub limits: Limits,
     /// Threads of the chunk pool, or `None` to size it from the machine.
     pub chunk_threads: Option<usize>,
     /// Content directory, or `None` to look in the default places.
@@ -236,6 +290,7 @@ impl Default for Options {
             continents: PathBuf::from(DEFAULT_CONTINENTS),
             time_scale: 1.0,
             max_connections: DEFAULT_MAX_CONNECTIONS,
+            limits: Limits::default(),
             chunk_threads: None,
             content: None,
             calendar: Calendar::default(),
@@ -353,6 +408,11 @@ impl Options {
                 "--no-warm-up" => opts.warm_up = WarmUp::OnDemand,
                 "--time-scale" => opts.time_scale = value(arg, args.next())?,
                 "--max-connections" => opts.max_connections = value(arg, args.next())?,
+                "--connections-per-address" => {
+                    opts.limits.connections_per_address = value(arg, args.next())?;
+                }
+                "--ping-every" => opts.limits.ping_every = seconds(arg, args.next())?,
+                "--drop-silent-after" => opts.limits.drop_silent_after = seconds(arg, args.next())?,
                 "--chunk-threads" => opts.chunk_threads = Some(value(arg, args.next())?),
                 "--content" => opts.content = Some(value(arg, args.next())?),
                 "--ticks-per-second" => ticks_per_second = value(arg, args.next())?,
@@ -365,30 +425,7 @@ impl Options {
         if opts.headless && opts.days.is_none() {
             return Err(CliError::HeadlessNeedsDays);
         }
-        if !(opts.time_scale.is_finite() && opts.time_scale > 0.0) {
-            return Err(CliError::InvalidValue {
-                option: "--time-scale".to_owned(),
-                value: opts.time_scale.to_string(),
-            });
-        }
-        if opts.max_connections == 0 {
-            return Err(CliError::InvalidValue {
-                option: "--max-connections".to_owned(),
-                value: "0".to_owned(),
-            });
-        }
-        if opts.chunk_threads == Some(0) {
-            return Err(CliError::InvalidValue {
-                option: "--chunk-threads".to_owned(),
-                value: "0".to_owned(),
-            });
-        }
-        if opts.valley_size < 256 {
-            return Err(CliError::InvalidValue {
-                option: "--valley-size".to_owned(),
-                value: opts.valley_size.to_string(),
-            });
-        }
+        check_values(&opts)?;
         if opts.world.is_some() {
             // A test world is never saved: its heights live in no snapshot.
             opts.data = DataLocation::Ephemeral;
@@ -410,6 +447,11 @@ where
         option: option.to_owned(),
         value: raw.as_ref().to_owned(),
     })
+}
+
+/// A whole number of seconds.
+fn seconds<S: AsRef<str>>(option: &str, raw: Option<S>) -> Result<std::time::Duration, CliError> {
+    value(option, raw).map(std::time::Duration::from_secs)
 }
 
 #[cfg(test)]
@@ -598,6 +640,44 @@ mod tests {
             Some(PathBuf::from("/srv/content"))
         );
         assert_eq!(Options::parse(Vec::<&str>::new()).unwrap().content, None);
+    }
+
+    #[test]
+    fn connection_limits_are_parsed_and_checked() {
+        let opts = Options::parse([
+            "--connections-per-address",
+            "3",
+            "--ping-every",
+            "7",
+            "--drop-silent-after",
+            "21",
+        ])
+        .unwrap();
+        assert_eq!(opts.limits.connections_per_address, 3);
+        assert_eq!(opts.limits.ping_every.as_secs(), 7);
+        assert_eq!(opts.limits.drop_silent_after.as_secs(), 21);
+        assert_eq!(
+            Options::parse(Vec::<&str>::new()).unwrap().limits,
+            Limits::default()
+        );
+        assert_eq!(
+            Options::parse(["--connections-per-address", "0"]),
+            Err(CliError::InvalidValue {
+                option: "--connections-per-address".into(),
+                value: "0".into(),
+            })
+        );
+        assert_eq!(
+            Options::parse(["--ping-every", "0"]),
+            Err(CliError::InvalidValue {
+                option: "--ping-every".into(),
+                value: "0".into(),
+            })
+        );
+        assert!(matches!(
+            Options::parse(["--ping-every", "30", "--drop-silent-after", "10"]),
+            Err(CliError::InvalidValue { option, .. }) if option == "--drop-silent-after"
+        ));
     }
 
     #[test]
