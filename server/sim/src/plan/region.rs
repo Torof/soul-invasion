@@ -108,6 +108,15 @@ const PLAIN_DISCHARGE: u64 = 5_000_000;
 /// lake.
 const LAKE_MIN_CM: i32 = 800;
 
+/// A course within this much (cm) under the water a lake holds before
+/// any carving runs at the lake's level: it is the lake's own river (its
+/// feeder or its outlet) and carves nothing in that water. Deeper under it,
+/// the course cuts through as a river cuts through any hollow.
+const LAKE_HOLD_TOLERANCE_CM: i64 = 500;
+
+/// No water held on a cell before the carving.
+const NO_HOLD: i32 = i32::MIN;
+
 /// A brook runs where at least this many cells drain: half a square
 /// kilometre (122 cells of 64 m).
 const BROOK_CELLS: u32 = 122;
@@ -507,14 +516,27 @@ impl Region {
                 (-1..=1).any(|b| (-1..=1).any(|a| c.lake[at(cx + a, cy + b)]))
             })
             .collect();
-        let held: Vec<bool> = if by_lake.iter().any(|&b| b) {
+        // Held at the water's level: a course carves there only when it
+        // runs well under that water (`LAKE_HOLD_TOLERANCE_CM`). A perched
+        // lake beside a gorge, its water 140 m over the river the
+        // continent sends past it ((149, 564) of seed 14), is cut through
+        // as before: holding it left the window's river trenching its
+        // banks, with steps along them and a 140 m wall at its edge (the
+        // net's `Steps` and `SeaAsLand`, the audit of 20 November 2026).
+        let held: Vec<i32> = if by_lake.iter().any(|&b| b) {
             let mut before = Routing::new(n);
             before.route_from(grid, &height, &outlet, &sea);
             (0..n)
-                .map(|i| by_lake[i] && !sea[i] && before.filled[i] > height[i])
+                .map(|i| {
+                    if by_lake[i] && !sea[i] && before.filled[i] > height[i] {
+                        before.filled[i]
+                    } else {
+                        NO_HOLD
+                    }
+                })
                 .collect()
         } else {
-            vec![false; n]
+            vec![NO_HOLD; n]
         };
         let mut river = vec![false; n];
         let mut plain = vec![false; n];
@@ -577,14 +599,6 @@ impl Region {
                     continue;
                 }
                 last = Some(node.p);
-                // A course through a lake of the continent carves nothing:
-                // its valley floor, raised to the water's level on either
-                // side, stood as strips of land across the lake (the great
-                // forest lake and the jungle lake of seed 14, 19 November
-                // 2026). The lake is the water there.
-                if c.lake[node.cell] {
-                    continue;
-                }
                 let (px, py) = (node.p.0.div_euclid(cell_mm), node.p.1.div_euclid(cell_mm));
                 let q = c.discharge[node.cell];
                 let level = node.level;
@@ -603,7 +617,10 @@ impl Region {
                         }
                         let j = usize::try_from(ly).expect("inside") * side
                             + usize::try_from(lx).expect("inside");
-                        if sea[j] || held[j] {
+                        if sea[j]
+                            || (held[j] != NO_HOLD
+                                && level + LAKE_HOLD_TOLERANCE_CM >= i64::from(held[j]))
+                        {
                             continue;
                         }
                         let d2 = dx * dx + dy * dy;
