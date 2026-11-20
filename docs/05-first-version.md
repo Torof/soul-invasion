@@ -203,8 +203,17 @@ fatigue), the chronicle (days, seasons, births, meals, drinks, deaths with
 their cause and place) and a page per person with its gauges; the speed in
 game years a minute on its own line, so the rest of the page is the same
 byte for byte for the same settings (tested). The cadence is one tick a
-game second, the plan's slow one: the needs drain by the game day, so the
-day's outcome does not depend on it. Without a brain the people stand where
+game second, the plan's slow one. The needs and the gathering are worked
+out by the game day and hour, so they do not depend on it; but a thought
+becomes an intention on the next tick and a refused act costs a whole
+tick, so the outcome does move with the cadence (audit of 20 November
+2026, F2: the D47 trial below loses two in thirty days at cadence 1 and
+nobody at cadence 10; the audit's sixty-eight people over fourteen days,
+53 dead against 38, 3,765 against 4,827 kJ a person-day). Whether the
+vivarium judges at the game's cadence, about 1.3× the computing time, is
+the lead's call; until then the vivarium's test
+`the_cadence_does_not_change_who_lives_nor_what_they_gather` is kept
+`#[ignore]`d and fails. Without a brain the people stand where
 they were born and die of thirst, or of the nights' cold on the way there,
 which the chronicle says. The brain is the lot's second pull request, the
 two tribes the third, the point zero the fourth.
@@ -310,6 +319,17 @@ points of each body's own need, all eighteen live, the two infants are
 weaned on day 76 and walk, tribe A is thin some fifty person-days in
 two years, tribe B never.
 
+*The trial no longer holds (audit of 20 November 2026, F4).* Run again
+that day for thirty days at cadence 1: **two die**, a woman of tribe B of
+hunger on day 19 and the infant she carried of thirst on day 21; at
+cadence 10 all eighteen live (F2). The text above predates D48 (18
+November) and the brain's changes; the band's hunger is the sim phase's
+matter (F1: the tribe forages as one body and never leaves its first 300
+m). The vivarium's test
+`the_d47_trial_two_tribes_with_children_and_infants_live_thirty_days`
+(`#[ignore]`d, some 30 s in release) runs the trial, prints every death
+with its day and cause, and fails until the trial holds again.
+
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
 slopes drawn by the client from them (D44), then the relief in the
@@ -334,7 +354,7 @@ What the skeleton is: a Rust server (`sim`, `protocol`, `server`), a Godot clien
 
 The first version wants about fifteen NPCs: the budget is not a concern for a long while. These numbers are the baseline to compare against at the next audits.
 
-**Dependencies**: 8 direct, 72 crates in the normal tree, no duplicate versions, licences and advisories checked by `cargo deny` on every commit. Most of the tree is tokio and tungstenite: the price of WebSocket.
+**Dependencies**: 8 direct, 72 crates in the normal tree, no duplicate versions, licences and advisories checked by `cargo deny` on every push to `main` and on every pull request that touches the dependencies or the CI (20 November 2026). Most of the tree is tokio and tungstenite: the price of WebSocket.
 
 **Security review of the listener** — found and fixed in the audit: silent TCP connections were kept forever (the handshake deadline only started after the WebSocket upgrade); no limit on message size (64 MiB by default); no limit on the number of connections; a client could flood intentions, each refusal being broadcast to everyone. Now: deadline on the upgrade too, 4 KiB messages, `--max-connections` (default 64), one pending intention per body per tick, refusals to the pilot alone. Each has a test.
 
