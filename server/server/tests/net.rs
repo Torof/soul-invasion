@@ -2795,9 +2795,7 @@ async fn a_walker_is_heard_within_range_at_each_chunk_it_walks_into_and_nowhere_
     // chunk east within it.
     let six_east = Pos::new((home.x + 6) * side + side / 2, start.y);
     // Out of range, the camp's bodies are forgotten.
-    let there = teleport(&mut edge, edge_body, six_east, body)
-        .await
-        .chunk();
+    let there = teleport(&mut edge, edge_body, six_east, body).await.chunk();
     assert_eq!(there.x, home.x + 6, "teleported six chunks east");
     assert!((there.y - home.y).abs() <= 2, "{there:?}");
 
