@@ -169,18 +169,23 @@ static func noise_source() -> FastNoiseLite:
 ## scales ground.gdshader read them (R the grass edge's rag, G its tufts,
 ## B the water's lap, A the ripples' grain), so one read gives the four.
 ## Made once from the noise and kept in the user folder: a million pixels
-## take a second to pack in a script.
+## take a second to pack in a script. Saved as PNG under a `.png` name:
+## `Image.load_from_file` picks its decoder by the extension, and under
+## the `.webp` name it bore until 20 November 2026 the file never loaded
+## and was made again at every start (the second security audit, N5).
+## The tests point `detail_cache` at a folder of their own, so they never
+## write in the player's.
 const DETAIL_SIDE := 1024
-const DETAIL_CACHE := "user://water_detail_%d.webp" % DETAIL_SIDE
+static var detail_cache := "user://water_detail_%d.png" % DETAIL_SIDE
 static var _detail_texture: Texture2D
 
 
 static func detail_texture() -> Texture2D:
 	if _detail_texture == null:
-		var image: Image = Image.load_from_file(ProjectSettings.globalize_path(DETAIL_CACHE)) if FileAccess.file_exists(DETAIL_CACHE) else null
+		var image: Image = Image.load_from_file(ProjectSettings.globalize_path(detail_cache)) if FileAccess.file_exists(detail_cache) else null
 		if image == null or image.get_width() != DETAIL_SIDE:
 			image = make_detail_image()
-			image.save_png(DETAIL_CACHE)
+			image.save_png(detail_cache)
 		image.generate_mipmaps()
 		_detail_texture = ImageTexture.create_from_image(image)
 	return _detail_texture

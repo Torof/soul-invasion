@@ -910,6 +910,17 @@ func food_within_reach() -> int:
 	return -1
 
 
+## Whether `id` is an item this view draws: on the ground of a chunk it
+## holds, as the server last told it (A4: an act on one past the eyes is
+## refused `unknown`, worded "too far to tell").
+func knows_item(id: int) -> bool:
+	for key in _items:
+		for item in _items[key]:
+			if int(item.get("id", -1)) == id:
+				return true
+	return false
+
+
 ## The id of any item within reach, or -1.
 func item_within_reach() -> int:
 	var items := items_within_reach()

@@ -25,6 +25,14 @@ const BINARY_FAR_VIEW := 1
 const CHUNK_HEADER := 16
 ## Bytes of the far view's header.
 const FAR_VIEW_HEADER := 16
+## The most cells a far view may hold: the server's is 256 × 256 (the
+## Rust `FAR_CELLS`). A message says its own size (two u16, up to
+## 65535 × 65535) and its runs are built by `repeat` before anything else
+## looks at them: a hostile server, or a man in the middle on `ws://`,
+## made 22 bytes into millions of letters (the second security audit of
+## 20 November 2026, C2). Anything past this is refused before a run is
+## built.
+const FAR_VIEW_CELLS_MAX := 256 * 256
 ## Flag of a chunk frame: the chunk has water, its currents follow.
 const CHUNK_HAS_WATER := 1
 ## Flag of a chunk frame: the chunk has heights, they follow the currents.
@@ -371,6 +379,8 @@ static func decode_far_view(bytes: PackedByteArray) -> Dictionary:
 	var width := bytes.decode_u16(12)
 	var height := bytes.decode_u16(14)
 	var total := width * height
+	if total > FAR_VIEW_CELLS_MAX:
+		return {}
 	var pieces := PackedStringArray()
 	var told := 0
 	var at := FAR_VIEW_HEADER
