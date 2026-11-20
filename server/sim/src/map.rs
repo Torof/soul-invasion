@@ -136,11 +136,14 @@ impl FinePos {
     // Not generation (it moves bodies): floats are allowed here, and stay.
     #[allow(
         clippy::disallowed_methods,
+        clippy::float_arithmetic,
         reason = "the one place this call is meant to be made"
     )]
     pub fn distance_to(self, other: Self) -> f64 {
-        let dx = f64::from(other.x - self.x);
-        let dy = f64::from(other.y - self.y);
+        // Widened first: two positions at the ends of `i32` (a client's
+        // coordinates, D03) must not overflow the subtraction.
+        let dx = f64::from(other.x) - f64::from(self.x);
+        let dy = f64::from(other.y) - f64::from(self.y);
         dx.hypot(dy)
     }
 }
@@ -666,6 +669,27 @@ impl Map {
     /// Rows.
     pub fn height(&self) -> u32 {
         self.height
+    }
+
+    /// `pos` brought within [`MAX_SIDE`] tiles of the map's edges: itself
+    /// when it is already there, else the nearest such tile. A client's
+    /// walk target (D03) goes through this before any search holds it,
+    /// so that no arithmetic of the walk can overflow (a coordinate at
+    /// the ends of `i32` killed the debug server: the second audit of 20
+    /// November 2026). A target off the map keeps its direction and stays
+    /// off the map: the walk toward it stops at the map's edge, as before.
+    #[must_use]
+    pub fn clamp(&self, pos: Pos) -> Pos {
+        let margin = i32::try_from(MAX_SIDE).expect("a small constant");
+        let past = |side: u32| {
+            i32::try_from(side)
+                .unwrap_or(i32::MAX)
+                .saturating_add(margin)
+        };
+        Pos::new(
+            pos.x.clamp(-margin, past(self.width)),
+            pos.y.clamp(-margin, past(self.height)),
+        )
     }
 
     /// All tiles, row by row from the north-west corner: every chunk of

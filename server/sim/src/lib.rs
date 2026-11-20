@@ -2142,6 +2142,18 @@ impl World {
 
     /// Queues an intention for the next tick.
     pub fn queue(&mut self, intention: Intention) {
+        // A walk's target is brought near the map here, before any lane
+        // or search holds it: a client's coordinate at the ends of `i32`
+        // (D03) overflowed the walk's arithmetic (the second audit of 20
+        // November 2026). A target off the map stays off the map: the
+        // walk toward it stops at the map's edge, as before.
+        let intention = match intention {
+            Intention::MoveTo { body, target } => Intention::MoveTo {
+                body,
+                target: self.map.clamp(target),
+            },
+            other => other,
+        };
         self.pending.push(intention);
     }
 
@@ -3925,6 +3937,41 @@ mod tests {
         w.advance(3, &rules(), &mut events);
         assert!(!events.iter().any(|e| matches!(e, Event::DayStarted { .. })));
         assert_eq!(w.time().day, 1);
+    }
+
+    /// The second audit of 20 November 2026 (report 6): on a real valley,
+    /// whose waters and woods make the walk skirt obstacles, a `move_to`
+    /// at the ends of `i32` went through `FinePos::distance_to` and
+    /// overflowed, killing the lead's debug server with one message. The
+    /// open field above never skirts anything, so it never saw it.
+    #[test]
+    fn a_walk_toward_the_ends_of_i32_on_a_valley_never_overflows() {
+        let rules = rules();
+        let mut w = World::with_valley(Calendar::new(10, 100).unwrap(), &rules, 256);
+        let start = (0..256 * 256)
+            .map(|i| Pos::new(i % 256, i / 256))
+            .find(|&p| {
+                w.map()
+                    .get(p)
+                    .is_some_and(|t| rules.movement.cost(t).is_some())
+            })
+            .expect("a walkable tile");
+        let body = w.spawn_body(start);
+        for target in [
+            Pos::new(i32::MIN, 0),
+            Pos::new(i32::MIN, i32::MIN),
+            Pos::new(i32::MAX, i32::MAX),
+            Pos::new(0, i32::MAX),
+            Pos::new(-2_145_000, 7),
+        ] {
+            let mut events = Vec::new();
+            w.queue(Intention::MoveTo { body, target });
+            // Sixty ticks: the overflow came on the first one; the body
+            // must stay alive on this cold valley long enough.
+            w.advance(60, &rules, &mut events);
+            let at = w.body(body).expect("the body").pos();
+            assert!(w.map().get(at).is_some(), "move_to {target:?}: at {at:?}");
+        }
     }
 
     /// A client's coordinates reach the simulation unchecked (D03): a
