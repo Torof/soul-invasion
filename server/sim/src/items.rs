@@ -117,6 +117,26 @@ pub fn natural_items(map: &Map, spawns: &[Spawn], seed: u64, chunk: ChunkPos) ->
     out
 }
 
+/// The tile a natural item's id names, read from the id alone, with no
+/// map and no roll: where the piece lies if the ground drops it at all.
+/// `None` for an id that is not a natural item's or that names no tile of
+/// its chunk. What an act on a far item is judged by before anything is
+/// made of it ([`crate::World::sight`]).
+#[must_use]
+pub fn tile_of(id: ItemId) -> Option<Pos> {
+    if !is_natural(id) {
+        return None;
+    }
+    let slot = id.0 & ((1 << SLOT_BITS) - 1);
+    let index = i32::try_from(slot >> RULE_BITS).expect("a tile of its chunk");
+    let side = i32::try_from(CHUNK_SIZE).expect("small chunk");
+    if index >= side * side {
+        return None;
+    }
+    let origin = chunk_of(id).origin();
+    Some(Pos::new(origin.x + index % side, origin.y + index / side))
+}
+
 /// The natural item `id` names, if the ground drops it: the very piece
 /// [`natural_items`] lists for its chunk, found alone in a few hundred
 /// nanoseconds instead of making the whole chunk's. `None` for an id
@@ -129,13 +149,7 @@ pub fn natural_item(map: &Map, spawns: &[Spawn], seed: u64, id: ItemId) -> Optio
     }
     let slot = id.0 & ((1 << SLOT_BITS) - 1);
     let rule = usize::try_from(slot & ((1 << RULE_BITS) - 1)).expect("few rules");
-    let index = i32::try_from(slot >> RULE_BITS).expect("a tile of its chunk");
-    let side = i32::try_from(CHUNK_SIZE).expect("small chunk");
-    if index >= side * side {
-        return None;
-    }
-    let origin = chunk_of(id).origin();
-    let tile = Pos::new(origin.x + index % side, origin.y + index / side);
+    let tile = tile_of(id)?;
     let spawn = spawns.get(rule)?;
     let terrain = map.get(tile)?;
     if spawn.terrain != terrain
