@@ -789,6 +789,28 @@ pub fn decode<'a, T: Deserialize<'a>>(text: &'a str) -> Result<T, serde_json::Er
     serde_json::from_str(text)
 }
 
+/// The fields of `text` that `decoded`, read from it, does not know: a
+/// newer client's, or a probe's. They are ignored when decoding (D26: the
+/// protocol stays forward compatible), and the server tells them once a
+/// connection (the security audit of 20 November 2026, finding N10). The
+/// known fields are those `decoded` writes back, so a field written only
+/// when set (`hello`'s `held`) is not told as known when absent.
+#[must_use]
+pub fn unknown_fields<T: Serialize>(text: &str, decoded: &T) -> Vec<String> {
+    let Ok(serde_json::Value::Object(given)) = serde_json::from_str::<serde_json::Value>(text)
+    else {
+        return Vec::new();
+    };
+    let Ok(serde_json::Value::Object(known)) = serde_json::to_value(decoded) else {
+        return Vec::new();
+    };
+    given
+        .keys()
+        .filter(|key| !known.contains_key(key.as_str()))
+        .cloned()
+        .collect()
+}
+
 /// A plant in a [`ChunkFrame`]: where it stands in its chunk, its kind,
 /// its growth stage and the fruit it shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1739,6 +1761,29 @@ mod tests {
 
     /// The lists hold every kind of message, and the tags on the wire
     /// are the kinds the client switches on.
+    /// Finding N10: a message with fields the protocol does not know
+    /// decodes as the same message without them (D26), and the unknown
+    /// fields are told by name; a message as encoded has none.
+    #[test]
+    fn unknown_fields_are_ignored_when_decoding_and_told_by_name() {
+        let message = ClientMessage::MoveTo { x: 10, y: -3 };
+        let clean = encode(&message).unwrap();
+        assert_eq!(decode::<ClientMessage>(&clean).unwrap(), message);
+        assert_eq!(unknown_fields(&clean, &message), Vec::<String>::new());
+
+        let probed = clean.replacen('{', r#"{"evil":[1,2,3],"zzz":null,"#, 1);
+        let decoded: ClientMessage = decode(&probed).unwrap();
+        assert_eq!(decoded, message, "the unknown fields change nothing");
+        assert_eq!(unknown_fields(&probed, &decoded), ["evil", "zzz"]);
+
+        let sleep: ClientMessage = decode(r#"{"type":"sleep","x":1}"#).unwrap();
+        assert_eq!(sleep, ClientMessage::Sleep);
+        assert_eq!(unknown_fields(r#"{"type":"sleep","x":1}"#, &sleep), ["x"]);
+
+        // What is not an object has no fields to tell.
+        assert_eq!(unknown_fields("[1]", &message), Vec::<String>::new());
+    }
+
     #[test]
     fn the_lists_hold_every_kind_of_message() {
         for kinds in [&CLIENT_KINDS[..], &SERVER_KINDS[..]] {

@@ -26,6 +26,14 @@
 //! holds at most [`Limits::connections_per_address`] places; what a
 //! client's bad messages write to the log is escaped, bounded and capped
 //! ([`Complaints`]).
+//!
+//! The leftovers of that audit (lot F): an address opens at most
+//! [`Limits::sessions_per_address`] connections a minute, and its
+//! refusals are logged once a minute (N8); a `chunk_missing` is honoured
+//! once, in answer to a `chunk_same` or a `chunk_fruit`, and counted as a
+//! bad message otherwise (N7); under `--dev` a connection teleports at
+//! most once every [`TELEPORT_EVERY`] (N3); a message's unknown fields
+//! are ignored as before (D26), and told once a connection (N10).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
@@ -86,6 +94,52 @@ pub struct Limits {
     /// household behind one address, or a few clients on a development
     /// machine; a hundred from one address is a flood.
     pub connections_per_address: usize,
+    /// Connections one address may open within [`SESSIONS_WINDOW`], at
+    /// most (finding N8): sixty, a connection a second on average, far
+    /// above a client reconnecting and far below a connect-and-leave loop
+    /// (170 a second measured), which costs a core and three log lines a
+    /// session. Past it the address's connections are closed before the
+    /// upgrade, at no cost but an accept.
+    pub sessions_per_address: u32,
+    /// The least time between two teleports one connection may ask for
+    /// under `--dev` ([`TELEPORT_EVERY`] unless the command line says;
+    /// zero: no limit, for the tests that hop about). Finding N3.
+    pub teleport_every: Duration,
+}
+
+/// The window [`Limits::sessions_per_address`] is counted in, and how
+/// long an address's refusals are logged once.
+pub const SESSIONS_WINDOW: Duration = Duration::from_secs(60);
+
+/// The least time between two teleports one connection may ask for under
+/// `--dev` (finding N3). A teleport moves the whole view: 361 chunks to
+/// build on the pool, about a processor-second cold, and the trunks of
+/// the chunks around the target worked out on the simulation thread.
+/// The simulation applies at most one a tick a body; one a second a
+/// connection is ten times cheaper and more than a hand clicks the
+/// overview. A teleport asked sooner is dropped: the client asks again.
+pub const TELEPORT_EVERY: Duration = Duration::from_secs(1);
+
+/// What lets an act through at most once every so often: the first at
+/// once, the next once the interval has passed since the last let through.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Throttle {
+    last: Option<Instant>,
+}
+
+impl Throttle {
+    /// Whether an act at `now` goes through, `every` after the last one
+    /// that did.
+    pub fn allow(&mut self, now: Instant, every: Duration) -> bool {
+        if self
+            .last
+            .is_some_and(|last| now.saturating_duration_since(last) < every)
+        {
+            return false;
+        }
+        self.last = Some(now);
+        true
+    }
 }
 
 impl Default for Limits {
@@ -94,6 +148,8 @@ impl Default for Limits {
             ping_every: Duration::from_secs(20),
             drop_silent_after: Duration::from_secs(60),
             connections_per_address: 8,
+            sessions_per_address: 60,
+            teleport_every: TELEPORT_EVERY,
         }
     }
 }
@@ -538,8 +594,9 @@ pub struct Shared {
     connections: AtomicUsize,
     /// What bounds a connection's life.
     limits: Limits,
-    /// Connections currently served, by address.
-    per_address: Mutex<BTreeMap<IpAddr, usize>>,
+    /// Connections currently served, and opened or refused lately, by
+    /// address (findings N4, N8).
+    per_address: Mutex<BTreeMap<IpAddr, AddressRecord>>,
     /// The latest intention of each body, taken by the simulation thread
     /// before each tick.
     intentions: Mutex<BTreeMap<u32, Intention>>,
@@ -852,8 +909,9 @@ impl Drop for Admission<'_> {
             .lock()
             .expect("per_address not poisoned");
         if let Some(mine) = by_address.get_mut(&self.address) {
-            *mine = mine.saturating_sub(1);
-            if *mine == 0 {
+            mine.places = mine.places.saturating_sub(1);
+            // The record stays while its window counts the sessions.
+            if mine.is_stale(Instant::now()) {
                 by_address.remove(&self.address);
             }
         }
@@ -868,6 +926,9 @@ pub enum Refused {
     Full(usize),
     /// The address's places are taken ([`Limits::connections_per_address`]).
     Address(usize),
+    /// The address opened its connections for the minute
+    /// ([`Limits::sessions_per_address`], finding N8).
+    Rate(u32),
 }
 
 impl std::fmt::Display for Refused {
@@ -875,7 +936,58 @@ impl std::fmt::Display for Refused {
         match self {
             Self::Full(n) => write!(f, "refused, {n} connections already"),
             Self::Address(n) => write!(f, "refused, {n} connections already from this address"),
+            Self::Rate(n) => write!(f, "refused, {n} connections from this address this minute"),
         }
+    }
+}
+
+/// A connection not admitted: why, and whether it is the address's first
+/// refusal of the window, the one to log (the rest are counted: a
+/// connect-and-leave loop wrote a line a try, finding N8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotAdmitted {
+    /// Why.
+    pub why: Refused,
+    /// Whether to log it.
+    pub first: bool,
+}
+
+/// What one address holds and did lately.
+#[derive(Debug, Clone, Copy)]
+struct AddressRecord {
+    /// Connections served now.
+    places: usize,
+    /// When the current window began.
+    window: Instant,
+    /// Connections admitted within the window.
+    sessions: u32,
+    /// Connections refused within the window.
+    refused: u32,
+}
+
+impl AddressRecord {
+    fn new(now: Instant) -> Self {
+        Self {
+            places: 0,
+            window: now,
+            sessions: 0,
+            refused: 0,
+        }
+    }
+
+    /// Starts a new window if the current one is over.
+    fn turn(&mut self, now: Instant) {
+        if now.saturating_duration_since(self.window) >= SESSIONS_WINDOW {
+            self.window = now;
+            self.sessions = 0;
+            self.refused = 0;
+        }
+    }
+
+    /// Whether nothing holds the record any more: no place taken and the
+    /// window over.
+    fn is_stale(&self, now: Instant) -> bool {
+        self.places == 0 && now.saturating_duration_since(self.window) >= SESSIONS_WINDOW
     }
 }
 
@@ -1279,16 +1391,42 @@ impl Shared {
 
     /// Takes a place for a new connection from `address`, or the refusal:
     /// all places taken, or the address's places taken.
-    pub fn admit(&self, address: IpAddr) -> Result<Admission<'_>, Refused> {
+    pub fn admit(&self, address: IpAddr) -> Result<Admission<'_>, NotAdmitted> {
+        self.admit_at(address, Instant::now())
+    }
+
+    /// [`Shared::admit`] as of `now`: the sessions of an address are
+    /// counted by the minute ([`Limits::sessions_per_address`], finding
+    /// N8), and a refused connection is the address's first of the minute
+    /// or not ([`NotAdmitted::first`]).
+    pub fn admit_at(&self, address: IpAddr, now: Instant) -> Result<Admission<'_>, NotAdmitted> {
         let mut by_address = self.per_address.lock().expect("per_address not poisoned");
-        let mine = by_address.entry(address).or_insert(0);
-        if *mine >= self.limits.connections_per_address {
-            return Err(Refused::Address(self.limits.connections_per_address));
+        if !by_address.contains_key(&address) {
+            // A new address: the records nothing holds any more go, so
+            // the map holds the addresses of the last minute at most.
+            by_address.retain(|_, record| !record.is_stale(now));
+        }
+        let mine = by_address
+            .entry(address)
+            .or_insert_with(|| AddressRecord::new(now));
+        mine.turn(now);
+        let refuse = |mine: &mut AddressRecord, why| {
+            mine.refused = mine.refused.saturating_add(1);
+            Err(NotAdmitted {
+                why,
+                first: mine.refused == 1,
+            })
+        };
+        if mine.sessions >= self.limits.sessions_per_address {
+            return refuse(mine, Refused::Rate(self.limits.sessions_per_address));
+        }
+        if mine.places >= self.limits.connections_per_address {
+            return refuse(mine, Refused::Address(self.limits.connections_per_address));
         }
         let mut current = self.connections.load(Ordering::Relaxed);
         loop {
             if current >= self.max_connections {
-                return Err(Refused::Full(self.max_connections));
+                return refuse(mine, Refused::Full(self.max_connections));
             }
             match self.connections.compare_exchange_weak(
                 current,
@@ -1297,7 +1435,8 @@ impl Shared {
                 Ordering::Relaxed,
             ) {
                 Ok(_) => {
-                    *mine += 1;
+                    mine.places += 1;
+                    mine.sessions = mine.sessions.saturating_add(1);
                     return Ok(Admission {
                         shared: self,
                         address,
@@ -1314,8 +1453,7 @@ impl Shared {
             .lock()
             .expect("per_address not poisoned")
             .get(&address)
-            .copied()
-            .unwrap_or(0)
+            .map_or(0, |record| record.places)
     }
 
     /// Connections currently served.
@@ -2137,17 +2275,25 @@ pub async fn serve(
                     tokio::spawn(async move {
                         let _admission = match shared.admit(peer.ip()) {
                             Ok(admission) => admission,
-                            Err(refused) => {
+                            Err(refusal) => {
                                 // Dropping the stream closes it; the client sees
-                                // the connection end before any upgrade.
-                                eprintln!("connection {peer}: {refused}");
+                                // the connection end before any upgrade. The
+                                // address's first refusal of the minute is
+                                // logged, the rest are not (finding N8).
+                                if refusal.first {
+                                    eprintln!(
+                                        "connection {peer}: {} (this address's next refusals are not logged for a minute)",
+                                        refusal.why
+                                    );
+                                }
                                 return;
                             }
                         };
-                        if let Err(e) = handle_connection(stream, peer, &shared, &pool, shutdown).await {
-                            eprintln!("connection {peer}: {e}");
+                        // One line a session's end, its error folded in (N8).
+                        match handle_connection(stream, peer, &shared, &pool, shutdown).await {
+                            Ok(()) => println!("connection {peer}: closed"),
+                            Err(e) => eprintln!("connection {peer}: closed: {e}"),
                         }
-                        println!("connection {peer}: closed");
                     });
                 }
                 Err(e) => eprintln!("accept failed: {e}"),
@@ -2219,9 +2365,14 @@ async fn handle_connection(
         return Ok(());
     };
     let mut ws = upgraded?;
-    println!("connection {peer}: opened");
     let limits = shared.limits();
     let mut complaints = Complaints::default();
+    // Under `--dev`, when this connection last teleported (N3).
+    let mut teleports = Throttle::default();
+    // Whether this connection was told once of a message's unknown fields
+    // (N10): the check costs a second reading of the message, paid until
+    // the first is found and no further.
+    let mut unknown_told = false;
 
     // Subscribe before answering hello so nothing is missed between the
     // welcome tick and the first published message.
@@ -2320,7 +2471,27 @@ async fn handle_connection(
                         last_heard = Instant::now();
                         match message {
                             Message::Close(_) => return Ok(()),
-                            Message::Text(text) => match decode::<ClientMessage>(text.as_str()) {
+                            Message::Text(text) => {
+                              let decoded = decode::<ClientMessage>(text.as_str());
+                              // Unknown fields are ignored (D26: a newer client
+                              // may add some) and told once a connection (N10).
+                              if let Ok(message) = &decoded
+                                  && !unknown_told
+                              {
+                                  let unknown = protocol::unknown_fields(text.as_str(), message);
+                                  if !unknown.is_empty() {
+                                      unknown_told = true;
+                                      match complaints.note() {
+                                          Complaint::Logged => eprintln!(
+                                              "connection {peer}: unknown fields ignored (told once): {}",
+                                              loggable(&unknown.join(", "))
+                                          ),
+                                          Complaint::Silent => {}
+                                          Complaint::TooMany => return Err(too_many(complaints)),
+                                      }
+                                  }
+                              }
+                              match decoded {
                                 Ok(ClientMessage::Ping { nonce }) => {
                                     link.event(&ServerMessage::Pong { nonce });
                                 }
@@ -2329,7 +2500,15 @@ async fn handle_connection(
                                     return Ok(());
                                 }
                                 Ok(ClientMessage::ChunkMissing { x, y }) => {
-                                    link.missing(ChunkPos::new(x, y));
+                                    // Honoured once, in answer to a `chunk_same` or
+                                    // a `chunk_fruit`; a repeat is a bad message (N7).
+                                    if !link.missing(ChunkPos::new(x, y)) {
+                                        match complaints.note() {
+                                            Complaint::Logged => eprintln!("connection {peer}: chunk_missing for a chunk whose frame was sent, ignored"),
+                                            Complaint::Silent => {}
+                                            Complaint::TooMany => return Err(too_many(complaints)),
+                                        }
+                                    }
                                 }
                                 Ok(ClientMessage::DevTeleport { .. }) if !shared.is_dev() => {
                                     match complaints.note() {
@@ -2338,6 +2517,10 @@ async fn handle_connection(
                                         Complaint::TooMany => return Err(too_many(complaints)),
                                     }
                                 }
+                                // At most one teleport every `teleport_every` a
+                                // connection (N3): a view a tick is a flood.
+                                Ok(ClientMessage::DevTeleport { .. })
+                                    if !teleports.allow(Instant::now(), limits.teleport_every) => {}
                                 Ok(message) => {
                                     if let Some(body) = link.pilot.body {
                                         shared.intend(intention_of(BodyId(body), &message));
@@ -2351,7 +2534,8 @@ async fn handle_connection(
                                     Complaint::Silent => {}
                                     Complaint::TooMany => return Err(too_many(complaints)),
                                 },
-                            },
+                              }
+                            }
                             // Binary frames are not part of the protocol; ping/pong
                             // frames are handled by the WebSocket layer itself.
                             _ => {}
@@ -2441,6 +2625,10 @@ enum Built {
     Ground(ChunkGround),
     /// The far view around a chunk, encoded.
     Far(ChunkPos, Message),
+    /// Nothing: the job found its chunk no longer wanted. Told all the
+    /// same, so every job given yields a result and a chunk the pool
+    /// refused ([`Link::deferred`]) is asked again as the lane drains.
+    Skipped,
 }
 
 /// A chunk in view whose frame (or `chunk_same`) left: the version of the
@@ -2448,13 +2636,16 @@ enum Built {
 /// view, and the version it knows, the frame's then each item event's;
 /// the fruit phase of its frame (D48), and the fruit it shows
 /// ([`fruit_signature`]), each `None` when not known (a frame the client
-/// kept from an earlier connection).
+/// kept from an earlier connection). `told`: a `chunk_same` or a
+/// `chunk_fruit` left for it, which one `chunk_missing` may answer; a
+/// frame left otherwise, and a `chunk_missing` is a repeat (N7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Held {
     frame: Version,
     known: Version,
     phase: Option<u64>,
     fruit: Option<u64>,
+    told: bool,
 }
 
 impl Held {
@@ -2546,6 +2737,12 @@ struct Link {
     /// The far view asked of the pool and not back yet: the chunk it
     /// centres on.
     far_awaited: Option<ChunkPos>,
+    /// The chunks the pool refused, its lane full
+    /// ([`crate::pool::LANE_JOBS_MOST`], finding N9), and whether whole:
+    /// asked again, one a result, as the lane's jobs are done.
+    deferred: BTreeMap<ChunkPos, bool>,
+    /// The far view the pool refused, asked again likewise.
+    deferred_far: Option<ChunkPos>,
     /// Where the pool's jobs send what they built.
     results: mpsc::UnboundedSender<Built>,
 }
@@ -2592,6 +2789,8 @@ impl Link {
             events: VecDeque::new(),
             ground: VecDeque::new(),
             far_awaited: None,
+            deferred: BTreeMap::new(),
+            deferred_far: None,
             results,
         }
     }
@@ -2694,6 +2893,7 @@ impl Link {
                         Held {
                             phase: Some(sent.phase),
                             fruit: Some(fruit),
+                            told: held.fruit != Some(fruit),
                             ..held
                         },
                     );
@@ -2717,6 +2917,7 @@ impl Link {
                         known: sent.version,
                         phase: Some(sent.phase),
                         fruit: Some(fruit),
+                        told: false,
                     },
                 );
                 Ok(Some(Message::Binary(sent.frame)))
@@ -2739,6 +2940,7 @@ impl Link {
                 known: kept.version,
                 phase: kept.phase,
                 fruit: kept.fruit,
+                told: true,
             },
         );
         let same = ServerMessage::ChunkSame {
@@ -2797,20 +2999,53 @@ impl Link {
         }
     }
 
-    /// The client does not hold `chunk` as `chunk_same` said: its frame,
-    /// if still in view.
-    fn missing(&mut self, chunk: ChunkPos) {
+    /// The client does not hold `chunk` as `chunk_same` (or `chunk_fruit`)
+    /// said: its frame, if still in view. Honoured once an answer: a
+    /// `chunk_missing` for a chunk whose frame itself left is a repeat,
+    /// which made the server send seventeen times the bytes it received
+    /// (N7); `false` then, and the frame is not built again, as for a
+    /// chunk in view whose frame is on its way. A chunk no longer in view
+    /// is a late answer, and nothing.
+    fn missing(&mut self, chunk: ChunkPos) -> bool {
         self.cache.remove(&chunk);
-        if self.sent.remove(&chunk).is_some() && self.awaiting.insert(chunk) {
-            self.build(chunk);
+        match self.sent.get(&chunk) {
+            Some(held) if held.told => {
+                self.sent.remove(&chunk);
+                if self.awaiting.insert(chunk) {
+                    self.build(chunk);
+                }
+                true
+            }
+            Some(_) => false,
+            None => !self.view.chunks.contains(&chunk),
         }
     }
 
-    /// What the pool built: a chunk's ground or the far view.
+    /// What the pool built: a chunk's ground or the far view, or nothing
+    /// for a chunk gone from the view. One job done, one refused chunk
+    /// asked again (N9).
     fn built(&mut self, built: Built) {
         match built {
             Built::Ground(ground) => self.ground_built(ground),
             Built::Far(centre, message) => self.far_built(centre, message),
+            Built::Skipped => {}
+        }
+        self.resume_deferred();
+    }
+
+    /// Asks the pool again for one of what it refused: the far view
+    /// first, then a chunk still awaited (whatever was answered or left
+    /// the view meanwhile is forgotten).
+    fn resume_deferred(&mut self) {
+        if let Some(chunk) = self.deferred_far.take() {
+            self.far_view(chunk);
+            return;
+        }
+        while let Some((chunk, whole)) = self.deferred.pop_first() {
+            if self.awaiting.contains(&chunk) {
+                self.build_whole(chunk, whole);
+                return;
+            }
         }
     }
 
@@ -2862,7 +3097,7 @@ impl Link {
             Arc::clone(&self.wanted),
             self.results.clone(),
         );
-        self.pool.submit(
+        let given = self.pool.submit(
             self.lane,
             Box::new(move || {
                 if !wanted
@@ -2870,18 +3105,22 @@ impl Link {
                     .unwrap_or_else(PoisonError::into_inner)
                     .contains(&chunk)
                 {
-                    return; // left the view before its turn came
+                    // Left the view before its turn came.
+                    let _ = results.send(Built::Skipped);
+                    return;
                 }
                 let ground = if whole {
                     shared.chunk_ground(chunk)
                 } else {
                     shared.chunk_ground_cached(chunk)
                 };
-                if let Some(ground) = ground {
-                    let _ = results.send(Built::Ground(ground));
-                }
+                let _ = results.send(ground.map_or(Built::Skipped, Built::Ground));
             }),
         );
+        if !given {
+            // The lane is full (N9): asked again as its jobs are done.
+            self.deferred.insert(chunk, whole);
+        }
     }
 
     /// Moves the view to `centre`, telling the client the window it now
@@ -2909,6 +3148,7 @@ impl Link {
         }
         for &chunk in &hidden {
             self.awaiting.remove(&chunk);
+            self.deferred.remove(&chunk);
             // What the client held goes to its cache; a chunk never sent
             // is only forgotten here.
             if let Some(held) = self.sent.remove(&chunk) {
@@ -2993,17 +3233,22 @@ impl Link {
         self.view.far = Some(centre);
         self.far_awaited = Some(centre);
         let (shared, results) = (Arc::clone(&self.shared), self.results.clone());
-        self.pool.submit(
+        let given = self.pool.submit(
             self.lane,
             Box::new(move || {
                 if results.is_closed() {
                     return; // the connection is gone
                 }
-                if let Some(message) = shared.far_view_message(centre) {
-                    let _ = results.send(Built::Far(centre, message));
-                }
+                let _ = results.send(
+                    shared
+                        .far_view_message(centre)
+                        .map_or(Built::Skipped, |message| Built::Far(centre, message)),
+                );
             }),
         );
+        if !given {
+            self.deferred_far = Some(chunk);
+        }
     }
 
     /// Provisional (D34, amended on 13 November 2026): a pilot whose body
@@ -3596,7 +3841,7 @@ mod tests {
         let first = shared.admit(HOME).expect("first place");
         let second = shared.admit(AWAY).expect("second place");
         assert_eq!(
-            shared.admit(HOME).err(),
+            shared.admit(HOME).err().map(|r| r.why),
             Some(Refused::Full(2)),
             "no third place"
         );
@@ -3620,7 +3865,10 @@ mod tests {
         });
         let first = shared.admit(HOME).expect("first place");
         let second = shared.admit(HOME).expect("second place");
-        assert_eq!(shared.admit(HOME).err(), Some(Refused::Address(2)));
+        assert_eq!(
+            shared.admit(HOME).err().map(|r| r.why),
+            Some(Refused::Address(2))
+        );
         assert_eq!(shared.connections_from(HOME), 2);
         let other = shared.admit(AWAY).expect("another address is served");
         drop(first);
@@ -3632,6 +3880,61 @@ mod tests {
         assert_eq!(shared.connections(), 0);
         assert_eq!(shared.connections_from(HOME), 0);
         assert_eq!(shared.connections_from(AWAY), 0);
+    }
+
+    /// Finding N8: an address opens at most `sessions_per_address`
+    /// connections a minute, places given back or not; the minute over,
+    /// it opens them again. Its first refusal of the minute is the one
+    /// to log, the next are not.
+    #[test]
+    fn an_address_opens_at_most_its_sessions_a_minute() {
+        let mut shared = shared(10);
+        shared.set_limits(Limits {
+            sessions_per_address: 2,
+            ..Limits::default()
+        });
+        let now = Instant::now();
+        drop(shared.admit_at(HOME, now).expect("first session"));
+        drop(shared.admit_at(HOME, now).expect("second session"));
+        assert_eq!(shared.connections_from(HOME), 0, "both given back");
+        let Err(refused) = shared.admit_at(HOME, now + Duration::from_secs(30)) else {
+            panic!("a third within the minute is refused");
+        };
+        assert_eq!(refused.why, Refused::Rate(2));
+        assert!(refused.first, "the first refusal is logged");
+        let Err(again) = shared.admit_at(HOME, now + Duration::from_secs(31)) else {
+            panic!("still refused");
+        };
+        assert!(!again.first, "the next refusals are not logged");
+        drop(
+            shared
+                .admit_at(AWAY, now + Duration::from_secs(31))
+                .expect("another address is served"),
+        );
+        let later = shared
+            .admit_at(HOME, now + SESSIONS_WINDOW + Duration::from_secs(1))
+            .expect("the minute over, the address is served again");
+        drop(later);
+        assert_eq!(shared.connections(), 0);
+    }
+
+    /// Finding N3: a connection teleports at most once every
+    /// `TELEPORT_EVERY`; a teleport asked sooner is dropped.
+    #[test]
+    fn a_throttle_lets_one_act_through_an_interval() {
+        let mut throttle = Throttle::default();
+        let now = Instant::now();
+        assert!(throttle.allow(now, TELEPORT_EVERY), "the first at once");
+        assert!(!throttle.allow(now + Duration::from_millis(100), TELEPORT_EVERY));
+        assert!(!throttle.allow(now + Duration::from_millis(999), TELEPORT_EVERY));
+        assert!(throttle.allow(now + TELEPORT_EVERY, TELEPORT_EVERY));
+        assert!(
+            !throttle.allow(
+                now + TELEPORT_EVERY + Duration::from_millis(500),
+                TELEPORT_EVERY
+            ),
+            "counted from the last let through"
+        );
     }
 
     /// Finding N5: a client's bytes never reach the terminal as they
@@ -4184,14 +4487,18 @@ mod tests {
         while link.has_output() {
             match link.next_output().expect("encodable") {
                 Some(Message::Text(text)) => match decode(text.as_str()).expect("the protocol") {
-                    ServerMessage::ChunkBodies { x, y, bodies } => {
-                        let Some(Out::Chunk(chunk)) = out.last_mut() else {
-                            panic!("bodies after anything but their chunk");
-                        };
-                        assert_eq!((chunk.x, chunk.y), (x, y), "the bodies of their chunk");
-                        assert!(chunk.bodies.is_empty() && !bodies.is_empty());
-                        chunk.bodies = bodies;
-                    }
+                    ServerMessage::ChunkBodies { x, y, bodies } => match out.last_mut() {
+                        Some(Out::Chunk(chunk)) => {
+                            assert_eq!((chunk.x, chunk.y), (x, y), "the bodies of their chunk");
+                            assert!(chunk.bodies.is_empty() && !bodies.is_empty());
+                            chunk.bodies = bodies;
+                        }
+                        // A chunk_same brings its bodies along as a frame does.
+                        Some(Out::Message(ServerMessage::ChunkSame { x: sx, y: sy, .. })) => {
+                            assert_eq!((*sx, *sy), (x, y), "the bodies of their chunk");
+                        }
+                        _ => panic!("bodies after anything but their chunk"),
+                    },
                     message => out.push(Out::Message(message)),
                 },
                 Some(Message::Binary(far))
@@ -4229,13 +4536,13 @@ mod tests {
         let lane = pool.lane();
         for &chunk in &chunks {
             let (shared, tx) = (Arc::clone(&shared), tx.clone());
-            pool.submit(
+            assert!(pool.submit(
                 lane,
                 Box::new(move || {
                     tx.send(shared.chunk_ground(chunk).expect("on the map"))
                         .unwrap();
                 }),
-            );
+            ));
         }
         let mut with_bodies = 0;
         for _ in &chunks {
@@ -4247,6 +4554,71 @@ mod tests {
             with_bodies += usize::from(!pooled.bodies.is_empty());
         }
         assert!(with_bodies >= 1, "the bodies are added as the frame leaves");
+    }
+
+    /// Finding N7: `chunk_missing` is honoured once, in answer to a
+    /// `chunk_same`; asked for a chunk whose frame itself left, it is a
+    /// repeat and builds nothing; asked again after the frame it brought,
+    /// a repeat as well.
+    #[test]
+    fn a_chunk_missing_is_honoured_once_an_answer_and_never_for_a_frame_sent() {
+        let world = players();
+        let shared = Arc::new(Shared::new(&world, &Content::sample(), 4, 1.0));
+        let pool = Arc::new(ChunkPool::new(1));
+        let (mut first, mut results) = link(&shared, &pool, None);
+        let centre = shared.centre_chunk();
+        first.move_view(centre);
+        settle(&mut first, &mut results);
+        let out = drain(&mut first);
+        let frames = out.iter().filter(|o| matches!(o, Out::Chunk(_))).count();
+        assert!(frames > 0, "the view's frames left");
+        assert!(first.sent.values().all(|held| !held.told));
+
+        // A chunk_missing for a chunk whose frame left: a repeat.
+        assert!(!first.missing(centre), "a frame was sent: not honoured");
+        assert_eq!(first.awaiting, BTreeSet::new(), "nothing is built again");
+        assert!(first.sent.contains_key(&centre));
+        // For a chunk out of view: a late answer, nothing wrong.
+        let far = ChunkPos::new(centre.x + 100, centre.y + 100);
+        assert!(first.missing(far));
+
+        // The same view again on a new link that holds every frame: each
+        // chunk goes as chunk_same, which one chunk_missing may answer.
+        let (mut again, mut results) = link(&shared, &pool, None);
+        let held = protocol::HeldChunks {
+            world: shared.world_id().to_owned(),
+            chunks: first
+                .sent
+                .iter()
+                .map(|(c, h)| (c.x, c.y, h.frame))
+                .collect(),
+        };
+        again.held(&held);
+        again.move_view(centre);
+        // Nothing of the pool: every chunk goes as chunk_same, as it leaves.
+        let out = drain(&mut again);
+        assert!(
+            out.iter().all(|o| !matches!(o, Out::Chunk(_))),
+            "no frame: the client holds them all"
+        );
+        assert!(again.sent.values().all(|held| held.told));
+        assert!(again.missing(centre), "an answer to chunk_same: honoured");
+        assert!(again.awaiting.contains(&centre), "the frame is built");
+        assert!(!again.missing(centre), "a second chunk_missing is a repeat");
+        settle(&mut again, &mut results);
+        let out = drain(&mut again);
+        assert_eq!(
+            out.iter()
+                .filter(|o| matches!(o, Out::Chunk(c) if (c.x, c.y) == (centre.x, centre.y)))
+                .count(),
+            1,
+            "the frame, once"
+        );
+        assert!(!again.sent[&centre].told);
+        assert!(
+            !again.missing(centre),
+            "and after the frame, a repeat again"
+        );
     }
 
     #[test]
