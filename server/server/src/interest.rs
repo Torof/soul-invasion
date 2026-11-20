@@ -18,33 +18,42 @@ use tokio::sync::mpsc;
 
 use crate::net::Published;
 
-/// How far a body sees other bodies (creatures, men), in metres, measured
-/// between the centres of the chunks they stand in: the project lead's
-/// call (11 November 2026), the simulation's [`sim::EYES_RANGE_M`]. Less
-/// than the land's view (608 m across, D08): a body is seen within about
-/// 150 m, never past 6 chunks (192 m). What men do to the ground (an
-/// item picked up or laid down) is told within the same range, not the
-/// view: a tile changing 200 m away told where a hidden body acted (the
+/// How far a body sees other bodies (creatures, men), in metres: the
+/// project lead's call (11 November 2026), the simulation's
+/// [`sim::EYES_RANGE_M`]. Less than the land's view (608 m across, D08):
+/// a body is seen within 150 m. What men do to the ground (an item
+/// picked up or laid down) is told within the same range, not the view:
+/// a tile changing 200 m away told where a hidden body acted (the
 /// security audit of 20 November 2026, F6). The chunk's version moves
 /// all the same, and the chunk is sent again when it comes within range
-/// or at the next dawn.
+/// or at the next dawn. The range is kept here by chunk: every chunk a
+/// tile of which may lie within 150 m of the body, so that an item change
+/// judged in metres (`net`'s `sees_ground`, as `World::sight` judges an
+/// act) is never missed for want of its chunk (the second security audit
+/// of 20 November 2026, A3: the disc of chunk centres fell short of 150 m
+/// at the edge of a chunk, and reached past it elsewhere).
 pub const BODY_RANGE_M: i32 = sim::EYES_RANGE_M;
 
 /// Is `chunk` within the creatures' range of a body standing in
-/// `centre`? Within [`BODY_RANGE_M`] between the chunks' centres: a disc
-/// of chunks, 4 either way along the axes.
+/// `centre`? When the nearest tiles of the two chunks lie within
+/// [`BODY_RANGE_M`] of each other: 5 chunks either way along the axes
+/// (the fifth chunk's near edge is 129 m from the far edge of the
+/// body's), fewer on the diagonals.
 pub fn in_body_range(centre: ChunkPos, chunk: ChunkPos) -> bool {
     let side = i64::from(CHUNK_SIZE);
-    let (dx, dy) = (
-        i64::from(chunk.x - centre.x) * side,
-        i64::from(chunk.y - centre.y) * side,
-    );
+    // Between the nearest tiles of the two chunks along one axis: none
+    // when they share a column or a row.
+    let gap = |d: i32| {
+        let d = i64::from(d).abs();
+        if d == 0 { 0 } else { (d - 1) * side + 1 }
+    };
+    let (dx, dy) = (gap(chunk.x - centre.x), gap(chunk.y - centre.y));
     dx * dx + dy * dy <= i64::from(BODY_RANGE_M) * i64::from(BODY_RANGE_M)
 }
 
 /// The chunks within the creatures' range of `centre`, clipped to the map.
 pub fn body_range(map: &Map, centre: ChunkPos) -> BTreeSet<ChunkPos> {
-    let reach = BODY_RANGE_M / i32::try_from(CHUNK_SIZE).expect("a small chunk");
+    let reach = BODY_RANGE_M / i32::try_from(CHUNK_SIZE).expect("a small chunk") + 1;
     let mut chunks = BTreeSet::new();
     for dy in -reach..=reach {
         for dx in -reach..=reach {
@@ -255,13 +264,38 @@ mod tests {
         }
     }
 
+    /// The second security audit of 20 November 2026, A3: every chunk a
+    /// tile of which may lie within 150 m of the body is in range (its
+    /// nearest tile, not its centre), so a change 147 m away in the
+    /// fifth chunk east is heard.
     #[test]
-    fn the_range_is_a_disc_of_150_m_between_chunk_centres() {
+    fn the_range_holds_every_chunk_whose_tiles_come_within_150_m() {
         let c = ChunkPos::new(10, 10);
-        assert!(in_body_range(c, ChunkPos::new(14, 10)));
-        assert!(!in_body_range(c, ChunkPos::new(15, 10)));
-        assert!(in_body_range(c, ChunkPos::new(13, 13)));
-        assert!(!in_body_range(c, ChunkPos::new(14, 13)));
+        assert!(
+            in_body_range(c, ChunkPos::new(15, 10)),
+            "129 m between the nearest tiles"
+        );
+        assert!(!in_body_range(c, ChunkPos::new(16, 10)), "161 m");
+        assert!(
+            in_body_range(c, ChunkPos::new(14, 14)),
+            "97 m either way: 137 m"
+        );
+        assert!(
+            !in_body_range(c, ChunkPos::new(15, 15)),
+            "129 m either way: 182 m"
+        );
+        assert!(
+            in_body_range(c, ChunkPos::new(15, 13)),
+            "129 and 65 m: 144 m"
+        );
+        assert!(
+            !in_body_range(c, ChunkPos::new(15, 14)),
+            "129 and 97 m: 161 m"
+        );
+        assert!(
+            in_body_range(c, ChunkPos::new(5, 7)),
+            "the same the other way"
+        );
     }
 
     #[test]

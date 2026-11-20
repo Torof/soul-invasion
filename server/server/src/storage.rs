@@ -198,9 +198,24 @@ pub struct Sqlite {
     /// latest was damaged: the run then counts as a crash (D28, the
     /// project lead's decision of 20 November 2026).
     fell_back: bool,
+    /// After a fallback, how many chunks of the land a checkpoint newer
+    /// than the resumed snapshot wrote: their changes (what men took,
+    /// felled or built) stay as the lost run left them, while what they
+    /// gave is in nobody's hands (the second security audit of 20
+    /// November 2026, C1; said, not undone: the lead's call of that day).
+    land_lost: usize,
 }
 
 impl Sqlite {
+    /// After the last read, how many chunks of the land a checkpoint newer
+    /// than the resumed snapshot had written: zero unless the read fell
+    /// back to an older snapshot (the second security audit of 20
+    /// November 2026, C1).
+    #[must_use]
+    pub fn land_changes_lost(&self) -> usize {
+        self.land_lost
+    }
+
     /// Opens (or creates) the database file and brings its schema up to
     /// date. A new file is the owner's alone (mode 0600); a file that is
     /// not a Soul Invasion save is refused.
@@ -231,6 +246,7 @@ impl Sqlite {
             content,
             written: BTreeMap::new(),
             fell_back: false,
+            land_lost: 0,
         };
         storage.migrate()?;
         Ok(storage)
@@ -268,6 +284,7 @@ impl Storage for Sqlite {
     /// newer one wrote.
     fn latest_world(&mut self) -> Result<Option<World>, StorageError> {
         use rusqlite::types::Value;
+        self.land_lost = 0;
         let mut kept = self.conn.prepare(
             "SELECT rowid, tick, format_version, data FROM snapshots \
              ORDER BY tick DESC, rowid DESC LIMIT ?1",
@@ -304,11 +321,21 @@ impl Storage for Sqlite {
             };
         };
         if !damaged.is_empty() {
+            // The chunks a later checkpoint changed: their rows are the
+            // newest the lost run wrote, past the snapshot resumed.
+            let lost: i64 = self.conn.query_row(
+                "SELECT count(*) FROM chunk_changes WHERE tick > ?1",
+                [db_int(world.tick().0)?],
+                |row| row.get(0),
+            )?;
+            self.land_lost = usize::try_from(lost).unwrap_or(usize::MAX);
             eprintln!(
                 "note: falling back to the snapshot at tick {}: {} damaged snapshot(s) dropped, \
-                 the run counts as a crash",
+                 the run counts as a crash; {} change(s) of the land lost (chunks changed after \
+                 that tick keep their changes, what they gave is in nobody's hands)",
                 world.tick().0,
-                damaged.len()
+                damaged.len(),
+                lost
             );
             for rowid in damaged {
                 self.conn
@@ -1943,6 +1970,7 @@ mod tests {
 
         let world = storage.latest_world().unwrap().expect("the one before");
         assert_eq!(world.tick(), Tick(20));
+        assert_eq!(storage.land_changes_lost(), 0, "nothing of the land moved");
         // The damaged row is gone, so the next checkpoint is the newest.
         assert_eq!(snapshots(&storage), vec![10, 20]);
         // A clean stop, but the fallback lost play: a crash to clients.
@@ -1952,6 +1980,50 @@ mod tests {
         // Read again, nothing is damaged: no second crash.
         storage.mark_clean_stop().unwrap();
         assert_eq!(storage.begin_run().unwrap().epoch, 1);
+    }
+
+    /// The second security audit of 20 November 2026, C1: a fallback keeps
+    /// the land as the lost run left it; it says how many chunks.
+    #[test]
+    fn a_fallback_says_how_many_chunks_of_the_land_it_loses() {
+        let mut storage = Sqlite::in_memory(content()).unwrap();
+        storage.save_world(&world_at(10)).unwrap();
+        // The land changed in two chunks before the snapshot at 20: kept
+        // with it, nothing lost.
+        let mut world = world_at(20);
+        for (chunk, changes) in every_kind_of_change() {
+            world.restore_changes(chunk, changes);
+        }
+        storage.save_world(&world).unwrap();
+        // One more chunk changed by the lost run, at 30.
+        let mut world = world_at(30);
+        for (chunk, changes) in every_kind_of_change() {
+            world.restore_changes(chunk, changes);
+        }
+        let later = ChunkChanges {
+            version: 1,
+            taken: [7].into(),
+            ..ChunkChanges::default()
+        };
+        world.restore_changes(ChunkPos::new(5, 5), later);
+        storage.save_world(&world).unwrap();
+        storage
+            .conn
+            .execute("UPDATE snapshots SET data = '[1' WHERE tick = 30", [])
+            .unwrap();
+
+        let world = storage.latest_world().unwrap().expect("the one before");
+        assert_eq!(world.tick(), Tick(20));
+        assert_eq!(storage.land_changes_lost(), 1, "the chunk changed at 30");
+        assert_eq!(
+            world.chunk_changes().count(),
+            3,
+            "the land stays as the lost run left it"
+        );
+        // A fallback is said once: read again, nothing is lost.
+        assert_eq!(storage.begin_run().unwrap().epoch, 1);
+        storage.latest_world().unwrap().expect("sound");
+        assert_eq!(storage.land_changes_lost(), 0);
     }
 
     #[test]

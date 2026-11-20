@@ -59,7 +59,7 @@ use sim::{
 };
 
 use crate::interest::{self, Inbox, Router};
-use crate::pool::ChunkPool;
+use crate::pool::{Answer, ChunkPool};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::WebSocketStream;
@@ -163,6 +163,15 @@ pub const COMPLAINTS_LOGGED: u32 = 10;
 /// client and is closed (finding N6).
 pub const COMPLAINTS_MAX: u32 = 100;
 const _: () = assert!(COMPLAINTS_LOGGED < COMPLAINTS_MAX);
+
+/// Bad-message lines one address may put in the log within
+/// [`SESSIONS_WINDOW`], over all its connections: three connections'
+/// worth. A loop of connect, ten bad messages and close got every
+/// connection's own ten lines and filled the log at 692 KiB/s (the
+/// second security audit of 20 November 2026, A2); past this the
+/// address's bad messages are counted, never written, until the window
+/// turns.
+pub const COMPLAINTS_LOGGED_PER_ADDRESS: u32 = 3 * COMPLAINTS_LOGGED;
 
 /// Longest client-derived text a log line carries, in bytes (finding
 /// N5): enough to show what was wrong, never a page.
@@ -963,6 +972,9 @@ struct AddressRecord {
     sessions: u32,
     /// Connections refused within the window.
     refused: u32,
+    /// Bad-message lines written within the window, over all the
+    /// address's connections (A2).
+    logged: u32,
 }
 
 impl AddressRecord {
@@ -972,6 +984,7 @@ impl AddressRecord {
             window: now,
             sessions: 0,
             refused: 0,
+            logged: 0,
         }
     }
 
@@ -981,6 +994,7 @@ impl AddressRecord {
             self.window = now;
             self.sessions = 0;
             self.refused = 0;
+            self.logged = 0;
         }
     }
 
@@ -1448,6 +1462,35 @@ impl Shared {
                 Err(seen) => current = seen,
             }
         }
+    }
+
+    /// May one more bad message from `address` be written in the log? Its
+    /// lines are budgeted by the minute over all its connections
+    /// ([`COMPLAINTS_LOGGED_PER_ADDRESS`], finding A2); the log says once
+    /// when the budget is spent. An address not admitted through
+    /// [`Shared::admit`] has no record and every line.
+    pub fn complaint_logged(&self, address: IpAddr) -> bool {
+        self.complaint_logged_at(address, Instant::now())
+    }
+
+    /// [`Shared::complaint_logged`] as of `now`.
+    pub fn complaint_logged_at(&self, address: IpAddr, now: Instant) -> bool {
+        let mut by_address = self
+            .per_address
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(mine) = by_address.get_mut(&address) else {
+            return true;
+        };
+        mine.turn(now);
+        mine.logged = mine.logged.saturating_add(1);
+        if mine.logged == COMPLAINTS_LOGGED_PER_ADDRESS + 1 {
+            eprintln!(
+                "address {address}: {COMPLAINTS_LOGGED_PER_ADDRESS} bad messages logged within \
+                 a minute, its next ones are counted and not logged"
+            );
+        }
+        mine.logged <= COMPLAINTS_LOGGED_PER_ADDRESS
     }
 
     /// Connections currently served from `address`.
@@ -2484,7 +2527,7 @@ async fn handle_connection(
                                   let unknown = protocol::unknown_fields(text.as_str(), message);
                                   if !unknown.is_empty() {
                                       unknown_told = true;
-                                      match complaints.note() {
+                                      match noted(&mut complaints, shared, peer.ip()) {
                                           Complaint::Logged => eprintln!(
                                               "connection {peer}: unknown fields ignored (told once): {}",
                                               loggable(&unknown.join(", "))
@@ -2506,7 +2549,7 @@ async fn handle_connection(
                                     // Honoured once, in answer to a `chunk_same` or
                                     // a `chunk_fruit`; a repeat is a bad message (N7).
                                     if !link.missing(ChunkPos::new(x, y)) {
-                                        match complaints.note() {
+                                        match noted(&mut complaints, shared, peer.ip()) {
                                             Complaint::Logged => eprintln!("connection {peer}: chunk_missing for a chunk whose frame was sent, ignored"),
                                             Complaint::Silent => {}
                                             Complaint::TooMany => return Err(too_many(complaints)),
@@ -2514,7 +2557,7 @@ async fn handle_connection(
                                     }
                                 }
                                 Ok(ClientMessage::DevTeleport { .. }) if !shared.is_dev() => {
-                                    match complaints.note() {
+                                    match noted(&mut complaints, shared, peer.ip()) {
                                         Complaint::Logged => eprintln!("connection {peer}: teleport refused, the server is not in --dev"),
                                         Complaint::Silent => {}
                                         Complaint::TooMany => return Err(too_many(complaints)),
@@ -2529,7 +2572,7 @@ async fn handle_connection(
                                         shared.intend(intention_of(BodyId(body), &message));
                                     }
                                 }
-                                Err(e) => match complaints.note() {
+                                Err(e) => match noted(&mut complaints, shared, peer.ip()) {
                                     Complaint::Logged => eprintln!(
                                         "connection {peer}: undecodable message ignored: {}",
                                         loggable(&e.to_string())
@@ -2598,6 +2641,17 @@ async fn handle_connection(
     drop(writer_tx);
     let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
     outcome
+}
+
+/// One more bad message on a connection: counted for it
+/// ([`Complaints::note`]) and, when its line would be written, for its
+/// address too (A2): past the address's budget of the minute the line is
+/// not written.
+fn noted(complaints: &mut Complaints, shared: &Shared, address: IpAddr) -> Complaint {
+    match complaints.note() {
+        Complaint::Logged if !shared.complaint_logged(address) => Complaint::Silent,
+        verdict => verdict,
+    }
 }
 
 /// The error that closes a connection past [`COMPLAINTS_MAX`] bad messages.
@@ -2856,10 +2910,9 @@ impl Link {
             None => Ok(None),
             Some(Outgoing::Frame(message)) => Ok(Some(message)),
             Some(Outgoing::Same(chunk, kept)) => {
-                if self.shared.chunk_version(chunk) != kept.version
-                    || kept.phase.is_some_and(|p| p != self.shared.fruit_phase())
-                {
-                    // Changed since it was asked for: the frame, built.
+                if !self.still_held(chunk, kept) {
+                    // Changed in sight since it was asked for: the frame,
+                    // built.
                     self.build(chunk);
                     return Ok(None);
                 }
@@ -2896,7 +2949,10 @@ impl Link {
                         Held {
                             phase: Some(sent.phase),
                             fruit: Some(fruit),
-                            told: held.fruit != Some(fruit),
+                            // A `chunk_same` still waiting for its answer
+                            // keeps waiting (lot F's F1: a dawn between a
+                            // `chunk_same` and its `chunk_missing` forgot it).
+                            told: held.told || held.fruit != Some(fruit),
                             ..held
                         },
                     );
@@ -3077,13 +3133,28 @@ impl Link {
             return; // already asked for, not back yet
         }
         if let Some(kept) = self.cache.remove(&chunk)
-            && kept.version == self.shared.chunk_version(chunk)
-            && kept.phase.is_none_or(|p| p == self.shared.fruit_phase())
+            && self.still_held(chunk, kept)
         {
             self.ground.push_back(Outgoing::Same(chunk, kept));
             return;
         }
         self.build(chunk);
+    }
+
+    /// May the frame the client keeps as `kept` stand for `chunk`
+    /// (`chunk_same`)? When nothing of the chunk moved and its fruit is of
+    /// this phase; and, past the eyes, whatever moved in it: what men did
+    /// to a chunk out of the creatures' range is not told, neither by an
+    /// event (F6) nor by a version a reconnecting or returning client
+    /// could compare with its own (the second security audit of 20
+    /// November 2026, C1: 360 `chunk_same` and one fresh frame told where
+    /// a hidden body had picked something up, 200 m away). The client's
+    /// version is kept as what it knows, so the frame goes when the chunk
+    /// comes within range (`move_range`) or at dawn (`refresh`: the daily,
+    /// chunk-coarse tell the lead accepted on 20 November 2026).
+    fn still_held(&self, chunk: ChunkPos, kept: Kept) -> bool {
+        kept.phase.is_none_or(|p| p == self.shared.fruit_phase())
+            && (kept.version == self.shared.chunk_version(chunk) || !self.range.contains(&chunk))
     }
 
     /// Asks the pool for `chunk`'s ground, its frame looked for in the
@@ -3100,6 +3171,8 @@ impl Link {
             Arc::clone(&self.wanted),
             self.results.clone(),
         );
+        // Answered whatever becomes of the job, a panic included (F2).
+        let answer = Answer::new(results, Built::Skipped);
         let given = self.pool.submit(
             self.lane,
             Box::new(move || {
@@ -3109,7 +3182,6 @@ impl Link {
                     .contains(&chunk)
                 {
                     // Left the view before its turn came.
-                    let _ = results.send(Built::Skipped);
                     return;
                 }
                 let ground = if whole {
@@ -3117,7 +3189,7 @@ impl Link {
                 } else {
                     shared.chunk_ground_cached(chunk)
                 };
-                let _ = results.send(ground.map_or(Built::Skipped, Built::Ground));
+                answer.send(ground.map_or(Built::Skipped, Built::Ground));
             }),
         );
         if !given {
@@ -3235,14 +3307,15 @@ impl Link {
         let centre = far_centre(chunk);
         self.view.far = Some(centre);
         self.far_awaited = Some(centre);
-        let (shared, results) = (Arc::clone(&self.shared), self.results.clone());
+        let shared = Arc::clone(&self.shared);
+        let answer = Answer::new(self.results.clone(), Built::Skipped);
         let given = self.pool.submit(
             self.lane,
             Box::new(move || {
-                if results.is_closed() {
+                if answer.is_closed() {
                     return; // the connection is gone
                 }
-                let _ = results.send(
+                answer.send(
                     shared
                         .far_view_message(centre)
                         .map_or(Built::Skipped, |message| Built::Far(centre, message)),
@@ -3330,13 +3403,13 @@ impl Link {
             // within range or at dawn (`move_range`, `refresh`).
             Published::ItemAdded { item, version } => {
                 let at = Pos::new(item.x, item.y);
-                if self.sees(at) {
+                if self.sees_ground(at) {
                     self.item_changed(at.chunk(), version);
                     self.event(&ServerMessage::ItemAdded { item });
                 }
             }
             Published::ItemRemoved { item, at, version } => {
-                if self.sees(at) {
+                if self.sees_ground(at) {
                     self.item_changed(at.chunk(), version);
                     self.event(&ServerMessage::ItemRemoved {
                         item,
@@ -3400,6 +3473,31 @@ impl Link {
     /// Is this tile within the creatures' range, its bodies told?
     fn sees(&self, at: Pos) -> bool {
         self.range.contains(&at.chunk())
+    }
+
+    /// Is this tile within the eyes, what men do to its ground told? In
+    /// a chunk of the creatures' range and within [`sim::EYES_RANGE_M`]
+    /// of the eye, in metres, as `World::sight` judges an act on it: an
+    /// item change 147 m away is told whatever its chunk, one 151 m away
+    /// is not (the second security audit of 20 November 2026, A3: by
+    /// chunk, a change within 150 m went untold at the edge of a chunk
+    /// while the refusal of an act on it said the truth). The bodies stay
+    /// told by chunk, as since D18's stand-in.
+    fn sees_ground(&self, at: Pos) -> bool {
+        self.sees(at) && sim::within_eyes(self.eye(), at)
+    }
+
+    /// Where this connection looks from: the piloted body's tile, or the
+    /// middle of the view's home chunk for a watcher.
+    fn eye(&self) -> Pos {
+        self.pilot
+            .body
+            .and_then(|body| self.shared.position_of(body))
+            .unwrap_or_else(|| {
+                let half = i32::try_from(CHUNK_SIZE / 2).expect("a small chunk");
+                let origin = self.home().origin();
+                Pos::new(origin.x + half, origin.y + half)
+            })
     }
 
     /// Tells the client where `body` is and where it is going.
@@ -4563,6 +4661,255 @@ mod tests {
     /// `chunk_same`; asked for a chunk whose frame itself left, it is a
     /// repeat and builds nothing; asked again after the frame it brought,
     /// a repeat as well.
+    /// Moves the view to `centre` and reads everything that leaves for
+    /// it: what the client holds answers at once, the rest once the pool
+    /// built it.
+    fn arrive(
+        link: &mut Link,
+        results: &mut mpsc::UnboundedReceiver<Built>,
+        centre: ChunkPos,
+    ) -> Vec<Out> {
+        link.move_view(centre);
+        let mut out = drain(link);
+        settle(link, results);
+        out.extend(drain(link));
+        out
+    }
+
+    /// The second security audit of 20 November 2026, C1: a chunk past
+    /// the eyes keeps the version the client holds. Reconnecting with
+    /// every frame (`hello`'s `held`) or walking back into it, the client
+    /// is answered `chunk_same` though a hidden body changed the chunk's
+    /// items; the frame goes when the chunk comes within range, and at
+    /// dawn (the daily tell the lead accepted).
+    #[test]
+    fn a_chunk_past_the_eyes_keeps_the_version_the_client_holds() {
+        let content = Content::sample();
+        let mut world = World::with_valley(Calendar::default(), &content, 768);
+        let body = world.spawn_at_camp().expect("grass by the camp");
+        let home = world.body(body).expect("born").pos().chunk();
+        let shared = Arc::new(Shared::new(&world, &content, 2, 1.0));
+        let pool = Arc::new(ChunkPool::new(1));
+        // Seven chunks east (or west), in view and past the eyes; two,
+        // within them.
+        let dir = if shared.map.has_chunk(ChunkPos::new(home.x + 7, home.y)) {
+            1
+        } else {
+            -1
+        };
+        let far = ChunkPos::new(home.x + 7 * dir, home.y);
+        let near = ChunkPos::new(home.x + 2 * dir, home.y);
+        let (mut first, mut results) = link(&shared, &pool, Some(body.0));
+        arrive(&mut first, &mut results, home);
+        assert!(first.view.chunks.contains(&far) && !first.range.contains(&far));
+        assert!(first.range.contains(&near));
+        let held = protocol::HeldChunks {
+            world: shared.world_id().to_owned(),
+            chunks: first
+                .sent
+                .iter()
+                .map(|(c, h)| (c.x, c.y, h.frame))
+                .collect(),
+        };
+        let frames_of = |out: &[Out]| -> Vec<(i32, i32)> {
+            out.iter()
+                .filter_map(|o| match o {
+                    Out::Chunk(c) => Some((c.x, c.y)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let same_at = |out: &[Out], chunk: ChunkPos, at: Version| {
+            out.iter().any(|o| {
+                matches!(o, Out::Message(ServerMessage::ChunkSame { x, y, version })
+                    if (*x, *y, *version) == (chunk.x, chunk.y, at))
+            })
+        };
+
+        // A hidden body changes the items of both chunks. Reconnecting
+        // with every frame: the chunk in sight comes fresh, the one past
+        // the eyes as the client holds it.
+        shared.crop_picked(far, &BTreeMap::new(), 1);
+        shared.crop_picked(near, &BTreeMap::new(), 1);
+        let (mut again, mut results) = link(&shared, &pool, Some(body.0));
+        again.held(&held);
+        let out = arrive(&mut again, &mut results, home);
+        assert_eq!(
+            frames_of(&out),
+            [(near.x, near.y)],
+            "the chunk in sight alone"
+        );
+        assert!(
+            same_at(&out, far, 0),
+            "past the eyes: as the client holds it"
+        );
+        assert_eq!(again.sent[&far].known, 0, "what the client knows");
+
+        // Walking away (the chunk leaves the view) and back: the same.
+        shared.crop_picked(far, &BTreeMap::new(), 2);
+        let away = ChunkPos::new(home.x - 3 * dir, home.y);
+        arrive(&mut again, &mut results, away);
+        assert!(!again.sent.contains_key(&far), "out of view");
+        let out = arrive(&mut again, &mut results, home);
+        assert_eq!(frames_of(&out), [], "nothing fresh on the way back");
+        assert!(same_at(&out, far, 0));
+
+        // Coming within range: the frame, as it is now.
+        let close = ChunkPos::new(home.x + 4 * dir, home.y);
+        let before: BTreeSet<ChunkPos> = again.sent.keys().copied().collect();
+        let out = arrive(&mut again, &mut results, close);
+        assert!(again.range.contains(&far));
+        let fresh: Vec<(i32, i32)> = frames_of(&out)
+            .into_iter()
+            .filter(|&(x, y)| before.contains(&ChunkPos::new(x, y)))
+            .collect();
+        assert_eq!(
+            fresh,
+            [(far.x, far.y)],
+            "within the eyes now, the rest held"
+        );
+        assert_eq!(again.sent[&far].known, 2);
+
+        // Out of range again and changed since: the dawn refreshes it.
+        arrive(&mut again, &mut results, home);
+        shared.crop_picked(far, &BTreeMap::new(), 3);
+        again.refresh();
+        settle(&mut again, &mut results);
+        assert_eq!(frames_of(&drain(&mut again)), [(far.x, far.y)], "at dawn");
+    }
+
+    /// The second security audit of 20 November 2026, A3: an item change
+    /// is told within 150 m of the body, in metres, as `World::sight`
+    /// judges an act on it, whatever the chunk.
+    #[test]
+    fn an_item_change_is_told_within_150_m_in_metres_whatever_the_chunk() {
+        let content = Content::sample();
+        let mut world = World::with_valley(Calendar::default(), &content, 768);
+        let body = world.spawn_at_camp().expect("grass by the camp");
+        let at = world.body(body).expect("born").pos();
+        let shared = Arc::new(Shared::new(&world, &content, 2, 1.0));
+        let pool = Arc::new(ChunkPool::new(1));
+        let (mut pilot, mut results) = link(&shared, &pool, Some(body.0));
+        arrive(&mut pilot, &mut results, at.chunk());
+        assert_eq!(pilot.eye(), at);
+        // East or west, so that 147 m away lies in the fifth chunk: past a
+        // disc of chunk centres (four chunks), within the eyes.
+        let side = i32::try_from(CHUNK_SIZE).expect("small");
+        let dir = if at.x.rem_euclid(side) >= 13 { 1 } else { -1 };
+        let near = Pos::new(at.x + 147 * dir, at.y);
+        let far = Pos::new(at.x + 151 * dir, at.y);
+        assert_eq!((near.chunk().x - at.chunk().x).abs(), 5);
+        assert_eq!(
+            near.chunk(),
+            far.chunk(),
+            "one chunk, either side of the line"
+        );
+        assert!(pilot.view.chunks.contains(&near.chunk()), "in view");
+        let removed = |out: &[Out]| {
+            out.iter()
+                .any(|m| matches!(m, Out::Message(ServerMessage::ItemRemoved { .. })))
+        };
+        let told = |pilot: &mut Link, item: u64, at: Pos| {
+            pilot.forward(Published::ItemRemoved {
+                item,
+                at,
+                version: 1,
+            });
+            removed(&drain(pilot))
+        };
+        assert!(told(&mut pilot, 7, near), "147 m: told");
+        assert!(!told(&mut pilot, 8, far), "151 m: not told");
+        // On the diagonal, 155 m away in the fourth chunk: its centre
+        // was within the disc of chunk centres; the tile is not.
+        let dy = if shared
+            .map
+            .has_chunk(ChunkPos::new(at.chunk().x, at.chunk().y + 4))
+        {
+            1
+        } else {
+            -1
+        };
+        let diagonal = Pos::new(at.x + 110 * dir, at.y + 110 * dy);
+        assert!((diagonal.chunk().x - at.chunk().x).abs() <= 4);
+        assert!(
+            !told(&mut pilot, 9, diagonal),
+            "155 m on the diagonal: not told"
+        );
+        assert!(
+            told(&mut pilot, 10, Pos::new(at.x + 100 * dir, at.y + 100 * dy)),
+            "141 m"
+        );
+    }
+
+    /// Lot F's F1 (the second security audit of 20 November 2026): a dawn
+    /// that sends a chunk again while its `chunk_same` waits for the
+    /// client's answer must not forget that a `chunk_missing` is owed.
+    #[test]
+    fn a_dawn_does_not_forget_a_chunk_same_still_waiting_for_its_answer() {
+        let world = players();
+        let shared = Arc::new(Shared::new(&world, &Content::sample(), 4, 1.0));
+        let pool = Arc::new(ChunkPool::new(1));
+        let (mut link, mut results) = link(&shared, &pool, None);
+        let home = link.home();
+        arrive(&mut link, &mut results, home);
+        // Away and back: the frames the client kept answer as chunk_same.
+        arrive(
+            &mut link,
+            &mut results,
+            ChunkPos::new(home.x + VIEW_RADIUS + 3, home.y),
+        );
+        let out = arrive(&mut link, &mut results, home);
+        assert!(out.iter().any(|o| matches!(o, Out::Message(ServerMessage::ChunkSame { x, y, .. }) if (*x, *y) == (home.x, home.y))));
+        assert!(link.sent[&home].told, "a chunk_missing is owed");
+        // A dawn before the answer comes, the fruit phase not the one the
+        // chunk was sent in: the chunk is looked at again, nothing moved.
+        link.sent.get_mut(&home).expect("held").phase = Some(u64::MAX);
+        link.refresh();
+        settle(&mut link, &mut results);
+        let out = drain(&mut link);
+        assert!(out.is_empty(), "nothing moved: no frame, no fruit: {out:?}");
+        assert!(
+            link.sent[&home].told,
+            "the chunk_same still waits for its answer"
+        );
+        assert!(link.missing(home), "honoured");
+    }
+
+    /// The second security audit of 20 November 2026, A2: an address's
+    /// bad-message lines are budgeted by the minute over all its
+    /// connections, so a loop of connect, complain and leave stops filling
+    /// the log after three connections' worth.
+    #[test]
+    fn an_address_s_bad_messages_are_logged_within_its_budget_of_the_minute() {
+        let shared = shared(10);
+        let start = Instant::now();
+        let mut written = 0;
+        for session in 0..5_u32 {
+            let admission = shared.admit_at(HOME, start).expect("admitted");
+            for _ in 0..COMPLAINTS_LOGGED {
+                if shared.complaint_logged_at(HOME, start) {
+                    written += 1;
+                }
+            }
+            drop(admission);
+            if session < 3 {
+                assert_eq!(written, (session + 1) * COMPLAINTS_LOGGED, "its own lines");
+            }
+        }
+        assert_eq!(
+            written, COMPLAINTS_LOGGED_PER_ADDRESS,
+            "three connections' worth, then nothing"
+        );
+        // Another address has its own budget.
+        let other = shared.admit_at(AWAY, start).expect("admitted");
+        assert!(shared.complaint_logged_at(AWAY, start));
+        drop(other);
+        // The window over: the budget is whole again.
+        let later = start + SESSIONS_WINDOW;
+        let _admission = shared.admit_at(HOME, later).expect("admitted");
+        assert!(shared.complaint_logged_at(HOME, later));
+    }
+
     #[test]
     fn a_chunk_missing_is_honoured_once_an_answer_and_never_for_a_frame_sent() {
         let world = players();

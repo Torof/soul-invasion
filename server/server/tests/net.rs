@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
@@ -29,12 +29,38 @@ type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 /// hunger and the berries at the forest's edge that the game has paused
 /// while gathering is to come (10 November 2026): eating, starving and
 /// what a body is told of them are still the server's to get right.
-fn content_dir() -> &'static std::path::Path {
-    static DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
-    DIR.get_or_init(|| {
+fn content_dir() -> Arc<ContentDir> {
+    static DIR: Mutex<Weak<ContentDir>> = Mutex::new(Weak::new());
+    let mut slot = DIR.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(dir) = slot.upgrade() {
+        return dir;
+    }
+    let dir = Arc::new(ContentDir::make());
+    *slot = Arc::downgrade(&dir);
+    dir
+}
+
+/// The tests' content directory, shared by the servers running at once
+/// and removed when the last of them is gone (the second security audit
+/// of 20 November 2026, F6: 350 of them were left in `/tmp`); its name
+/// is this run's own, and a directory already there is somebody else's.
+struct ContentDir {
+    path: std::path::PathBuf,
+}
+
+impl ContentDir {
+    fn make() -> Self {
+        static RUNS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
-        let dir = std::env::temp_dir().join(format!("soul-invasion-net-content-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("a test content directory");
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        let dir = std::env::temp_dir().join(format!(
+            "soul-invasion-net-content-{}-{nanos}-{}",
+            std::process::id(),
+            RUNS.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&dir).expect("a test content directory of this run's own");
         for entry in std::fs::read_dir(&repo).expect("repository content") {
             let path = entry.expect("an entry").path();
             if path.extension().is_some_and(|e| e == "ron") {
@@ -53,8 +79,14 @@ fn content_dir() -> &'static std::path::Path {
                 std::fs::write(dir.join(path.file_name().expect("a name")), text).expect("written");
             }
         }
-        dir
-    })
+        Self { path: dir }
+    }
+}
+
+impl Drop for ContentDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
 }
 
 /// The items lying in the standard world: the ground's, made per chunk.
@@ -67,7 +99,7 @@ fn ground_items(world: &World) -> Vec<sim::Item> {
 }
 
 fn rules() -> sim::Content {
-    server::content::load(content_dir()).expect("the tests' content")
+    server::content::load(&content_dir().path).expect("the tests' content")
 }
 
 /// The tests' valley: smaller than the game's (`--valley-size`), so each
@@ -232,6 +264,8 @@ const SHORT_DAYS: [&str; 2] = ["--seconds-per-day", "1"];
 struct Server {
     child: Child,
     addr: String,
+    /// The content it reads: kept until the server is gone.
+    _content: Arc<ContentDir>,
 }
 
 impl Server {
@@ -247,6 +281,7 @@ impl Server {
     /// option overrides the defaults.
     fn start_with(extra: &[&str]) -> Self {
         standard_world();
+        let content = content_dir();
         let mut child = Command::new(env!("CARGO_BIN_EXE_server"))
             .args(["--valley-size", &VALLEY.to_string()])
             .args([
@@ -258,7 +293,7 @@ impl Server {
                 "--seconds-per-day",
                 "86400",
             ])
-            .args(["--content", content_dir().to_str().expect("a UTF-8 path")])
+            .args(["--content", content.path.to_str().expect("a UTF-8 path")])
             // The public development seed, the one `standard_world` is
             // cut from: without it a world's seed is drawn at birth.
             .args(["--seed", "1"])
@@ -282,7 +317,11 @@ impl Server {
         // Keep draining stdout so the server never blocks on a full pipe.
         std::thread::spawn(move || for _ in lines {});
 
-        Self { child, addr }
+        Self {
+            child,
+            addr,
+            _content: content,
+        }
     }
 
     async fn connect(&self) -> Socket {
@@ -2516,6 +2555,124 @@ async fn a_reconnection_to_the_same_world_sends_no_frame_for_the_chunks_held() {
     );
 }
 
+/// Reconnects with the chunks `held`, as a client coming back does, and
+/// reads the view: the body it pilots, the frames and the `chunk_same`.
+async fn reconnect_holding(
+    server: &Server,
+    held: &Holder,
+) -> (Socket, u32, Vec<(i32, i32)>, Vec<(i32, i32)>) {
+    let mut socket = server.connect().await;
+    send(
+        &mut socket,
+        &ClientMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            held: Some(protocol::HeldChunks {
+                world: held.world.clone(),
+                chunks: held.in_view.iter().map(|(&(x, y), &v)| (x, y, v)).collect(),
+            }),
+        },
+    )
+    .await;
+    let body = match receive(&mut socket).await {
+        Some(Got::M(ServerMessage::Welcome { body, .. })) => body.expect("pilots a body"),
+        other => panic!("expected welcome, got {other:?}"),
+    };
+    let mut holder = Holder::default();
+    let (frames, sames) = holder
+        .fill(&mut socket, home_of(standard_world(), Some(body)))
+        .await;
+    (socket, body, frames, sames)
+}
+
+/// Sets `body` down on `at` by a teleport and waits for it to stand.
+async fn set_down(socket: &mut Socket, body: u32, at: Pos) {
+    send(socket, &ClientMessage::DevTeleport { x: at.x, y: at.y }).await;
+    wait_for(socket, |m| match m {
+        ServerMessage::BodyStopped {
+            body: who,
+            at: here,
+        } if *who == body => {
+            assert_eq!(tile(*here), at, "set down where asked");
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+}
+
+/// The second security audit of 20 November 2026, C1 (the chunk-version
+/// oracle past the eyes): A holds its view; B picks up an item 200 tiles
+/// from A, in A's view and past its eyes; A hears nothing (F6) and, coming
+/// back with every frame it holds, learns nothing either: `chunk_same`
+/// for every chunk. An item taken within A's eyes is another matter: the
+/// chunk's frame comes fresh.
+#[tokio::test]
+async fn a_chunk_past_the_eyes_keeps_its_version_on_a_reconnection() {
+    let server = Server::start_with(&["--dev", "--teleport-every", "0", "--time-scale", "20"]);
+    let (mut a, a_body) = welcome(&server).await;
+    let a_body = a_body.expect("pilots a body");
+    let world = standard_world();
+    let start = start_of(world, a_body);
+    let mut held = Holder::default();
+    held.fill(&mut a, start.chunk()).await;
+    let (mut b, b_body) = join(&server).await;
+    let b_body = b_body.expect("pilots a body");
+
+    // An item in A's view, 200 tiles or more from A, and the nearest one.
+    let items = ground_items(world);
+    let distance = |item: &sim::Item| {
+        let p = item.pos().expect("on the ground");
+        (p.x - start.x).abs().max((p.y - start.y).abs())
+    };
+    let far = items
+        .iter()
+        .filter(|i| {
+            let c = i.pos().expect("on the ground").chunk();
+            held.in_view.contains_key(&(c.x, c.y)) && distance(i) >= 200
+        })
+        .min_by_key(|i| distance(i))
+        .expect("an item far in the view");
+    let far_at = far.pos().expect("on the ground");
+    let near = items
+        .iter()
+        .min_by_key(|i| distance(i))
+        .expect("items in the valley");
+    let near_at = near.pos().expect("on the ground");
+    assert!(distance(near) < 100, "{near_at:?} within A's eyes");
+
+    // B takes the far item: A hears nothing of it (F6)...
+    let standing = teleport(&mut b, b_body, far_at, a_body).await;
+    assert_eq!(standing, far_at);
+    send(&mut b, &ClientMessage::PickUp { item: far.id().0 }).await;
+    wait_for(&mut b, |m| match m {
+        ServerMessage::ItemRemoved { item, .. } if *item == far.id().0 => Some(()),
+        _ => None,
+    })
+    .await;
+    // ...and learns nothing of it coming back with every frame.
+    drop(a);
+    let (mut a, body, frames, sames) = reconnect_holding(&server, &held).await;
+    assert_eq!(body, a_body, "its body again");
+    assert!(frames.is_empty(), "fresh frames past the eyes: {frames:?}");
+    assert_eq!(sames.len(), held.in_view.len());
+
+    // B takes the near item: A sees it, and coming back with the frame it
+    // held of that chunk, gets it fresh; the far chunk still as held.
+    set_down(&mut b, b_body, near_at).await;
+    send(&mut b, &ClientMessage::PickUp { item: near.id().0 }).await;
+    wait_for(&mut a, |m| match m {
+        ServerMessage::ItemRemoved { item, .. } if *item == near.id().0 => Some(()),
+        _ => None,
+    })
+    .await;
+    drop(a);
+    let (_a, _, frames, sames) = reconnect_holding(&server, &held).await;
+    let near_chunk = (near_at.chunk().x, near_at.chunk().y);
+    assert_eq!(frames, [near_chunk], "the chunk in sight, fresh");
+    assert_eq!(sames.len(), held.in_view.len() - 1);
+    assert!(sames.contains(&(far_at.chunk().x, far_at.chunk().y)));
+}
+
 // --- Interest by place (D5, A6) ------------------------------------------
 
 /// The chunks a body walking from `at` along `route` steps into, as the
@@ -2631,15 +2788,15 @@ async fn a_walker_is_heard_within_range_at_each_chunk_it_walks_into_and_nowhere_
     let home = start.chunk();
     let side = i32::try_from(CHUNK_SIZE).expect("small chunk");
 
-    // The edge's body five chunks east, on the walker's row: the walker's
-    // chunk is in its view (nine chunks) but out of its range (150 m,
-    // four chunks along a row), the next chunk east within it.
-    let five_east = Pos::new((home.x + 5) * side + side / 2, start.y);
+    // The edge's body six chunks east, on the walker's row: the walker's
+    // chunk is in its view (nine chunks) but out of its range (150 m:
+    // five chunks along a row, every chunk a tile of which may lie within
+    // 150 m, the second security audit of 20 November 2026, A3), the next
+    // chunk east within it.
+    let six_east = Pos::new((home.x + 6) * side + side / 2, start.y);
     // Out of range, the camp's bodies are forgotten.
-    let there = teleport(&mut edge, edge_body, five_east, body)
-        .await
-        .chunk();
-    assert_eq!(there.x, home.x + 5, "teleported five chunks east");
+    let there = teleport(&mut edge, edge_body, six_east, body).await.chunk();
+    assert_eq!(there.x, home.x + 6, "teleported six chunks east");
     assert!((there.y - home.y).abs() <= 2, "{there:?}");
 
     // The walker walks into the next chunk east, a few tiles deep, in

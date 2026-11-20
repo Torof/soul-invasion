@@ -47,6 +47,49 @@ pub const LANE_JOBS_MOST: usize = 512;
 /// A piece of work for the pool.
 pub type Job = Box<dyn FnOnce() + Send + 'static>;
 
+/// A job's answer, owed whatever becomes of the job: [`Answer::send`]
+/// gives it; dropped without, as when the job panics and unwinds through
+/// the worker's `catch_unwind`, the fallback goes in its place. Whoever
+/// waits on the result (a connection whose next deferred chunk is asked
+/// for as each result comes back) is never left waiting for a result
+/// that never comes (the second security audit of 20 November 2026, F2).
+#[derive(Debug)]
+pub struct Answer<T> {
+    sender: tokio::sync::mpsc::UnboundedSender<T>,
+    fallback: Option<T>,
+}
+
+impl<T> Answer<T> {
+    /// An answer owed on `sender`: `fallback` unless [`Answer::send`]
+    /// gives another.
+    pub fn new(sender: tokio::sync::mpsc::UnboundedSender<T>, fallback: T) -> Self {
+        Self {
+            sender,
+            fallback: Some(fallback),
+        }
+    }
+
+    /// Whether nobody listens any more (the connection is gone).
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.sender.is_closed()
+    }
+
+    /// Gives the answer; nothing goes if nobody listens.
+    pub fn send(mut self, value: T) {
+        self.fallback = None;
+        let _ = self.sender.send(value);
+    }
+}
+
+impl<T> Drop for Answer<T> {
+    fn drop(&mut self) {
+        if let Some(fallback) = self.fallback.take() {
+            let _ = self.sender.send(fallback);
+        }
+    }
+}
+
 /// A pool of threads running jobs lane by lane. Dropping it lets the
 /// jobs started finish, drops the ones waiting and joins the threads.
 pub struct ChunkPool {
@@ -275,6 +318,56 @@ mod tests {
             .collect();
         assert_eq!(ran, ["a0", "b0", "a1", "b1", "a2"]);
         assert_eq!(pool.waiting(), 0);
+    }
+
+    /// The second security audit of 20 November 2026, F2: a job that
+    /// panics before answering still answers, with the fallback, so a
+    /// deferred chunk waiting on the next result is asked for.
+    #[test]
+    fn a_panicking_job_still_answers_with_the_fallback() {
+        let pool = ChunkPool::new(1);
+        let lane = pool.lane();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<&'static str>();
+        let answer = Answer::new(tx.clone(), "skipped");
+        assert!(pool.submit(
+            lane,
+            Box::new(move || {
+                let ground: Vec<&'static str> = Vec::new();
+                answer.send(ground[7]); // a bug in one chunk's work
+            }),
+        ));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let got = loop {
+            if let Ok(got) = rx.try_recv() {
+                break got;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no answer from the job"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(got, "skipped", "the fallback, in the panicked job's place");
+        // A job that answers sends its own answer, once.
+        let answer = Answer::new(tx, "skipped");
+        assert!(pool.submit(lane, Box::new(move || answer.send("built"))));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let got = loop {
+            if let Ok(got) = rx.try_recv() {
+                break got;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no answer from the job"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(got, "built");
+        drop(pool);
+        assert!(
+            rx.try_recv().is_err(),
+            "nothing else: no fallback after an answer"
+        );
     }
 
     #[test]
