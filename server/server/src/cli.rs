@@ -43,6 +43,14 @@ OPTIONS:
     --connections-per-address <N>
                            Paced mode: clients served at once from one
                            address, at most (default 8).
+    --sessions-per-address <N>
+                           Paced mode: connections one address may open a
+                           minute, at most (default 60); the next are
+                           closed before the upgrade.
+    --teleport-every <SECS>
+                           Paced mode, with --dev: a client teleports at most
+                           once this often (default 1); a teleport asked
+                           sooner is dropped. 0: no limit (tests).
     --ping-every <SECS>    Paced mode: a WebSocket ping to every client
                            this often (default 20); its transport answers.
     --drop-silent-after <SECS>
@@ -173,6 +181,9 @@ fn check_values(opts: &Options) -> Result<(), CliError> {
     let limits = opts.limits;
     if limits.connections_per_address == 0 {
         return Err(invalid("--connections-per-address", "0".to_owned()));
+    }
+    if limits.sessions_per_address == 0 {
+        return Err(invalid("--sessions-per-address", "0".to_owned()));
     }
     if limits.ping_every.is_zero() {
         return Err(invalid("--ping-every", "0".to_owned()));
@@ -427,6 +438,10 @@ impl Options {
                 "--connections-per-address" => {
                     opts.limits.connections_per_address = value(arg, args.next())?;
                 }
+                "--sessions-per-address" => {
+                    opts.limits.sessions_per_address = value(arg, args.next())?;
+                }
+                "--teleport-every" => opts.limits.teleport_every = seconds(arg, args.next())?,
                 "--ping-every" => opts.limits.ping_every = seconds(arg, args.next())?,
                 "--drop-silent-after" => opts.limits.drop_silent_after = seconds(arg, args.next())?,
                 "--chunk-threads" => opts.chunk_threads = Some(value(arg, args.next())?),
@@ -674,9 +689,22 @@ mod tests {
             "7",
             "--drop-silent-after",
             "21",
+            "--sessions-per-address",
+            "5",
+            "--teleport-every",
+            "0",
         ])
         .unwrap();
         assert_eq!(opts.limits.connections_per_address, 3);
+        assert_eq!(opts.limits.sessions_per_address, 5);
+        assert!(opts.limits.teleport_every.is_zero(), "0: no limit");
+        assert_eq!(
+            Options::parse(["--sessions-per-address", "0"]),
+            Err(CliError::InvalidValue {
+                option: "--sessions-per-address".into(),
+                value: "0".into(),
+            })
+        );
         assert_eq!(opts.limits.ping_every.as_secs(), 7);
         assert_eq!(opts.limits.drop_silent_after.as_secs(), 21);
         assert_eq!(

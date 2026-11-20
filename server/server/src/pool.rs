@@ -38,6 +38,12 @@ pub fn chunk_threads(cores: usize) -> usize {
     cores.saturating_sub(3).clamp(1, CHUNK_THREADS_MOST)
 }
 
+/// Jobs one lane holds waiting, at most: a whole view (361 chunks and
+/// its far view) and a part of the next, so a walk never meets it; a view
+/// moved at every tick (a teleport a tick) does, and is told to ask again
+/// later (finding N9).
+pub const LANE_JOBS_MOST: usize = 512;
+
 /// A piece of work for the pool.
 pub type Job = Box<dyn FnOnce() + Send + 'static>;
 
@@ -109,14 +115,22 @@ impl ChunkPool {
         lane
     }
 
-    /// Gives `job` to `lane`, to run after the lane's earlier jobs.
-    pub fn submit(&self, lane: u64, job: Job) {
+    /// Gives `job` to `lane`, to run after the lane's earlier jobs. Refused
+    /// (`false`, the job dropped) when the lane already holds
+    /// [`LANE_JOBS_MOST`] jobs waiting, or the pool is closed: the caller
+    /// asks again once one of its jobs is done. Jobs come nearest the body
+    /// first, so what is refused is the farthest.
+    #[must_use = "a refused job is to be given again later"]
+    pub fn submit(&self, lane: u64, job: Job) -> bool {
         let mut guard = self.inner.lock();
         let queue = &mut *guard;
         if queue.closed {
-            return;
+            return false;
         }
         let jobs = queue.lanes.entry(lane).or_default();
+        if jobs.len() >= LANE_JOBS_MOST {
+            return false;
+        }
         if jobs.is_empty() {
             queue.turn.push_back(lane);
         }
@@ -124,6 +138,12 @@ impl ChunkPool {
         queue.waiting += 1;
         drop(guard);
         self.inner.ready.notify_one();
+        true
+    }
+
+    /// Jobs waiting in `lane`.
+    pub fn waiting_in(&self, lane: u64) -> usize {
+        self.inner.lock().lanes.get(&lane).map_or(0, VecDeque::len)
     }
 
     /// Jobs given and not yet started.
@@ -230,23 +250,23 @@ mod tests {
         let (gate_tx, gate_rx) = mpsc::channel::<()>();
         let (started_tx, started_rx) = mpsc::channel::<()>();
         let (a, b) = (pool.lane(), pool.lane());
-        pool.submit(
+        assert!(pool.submit(
             a,
             Box::new(move || {
                 started_tx.send(()).unwrap();
                 gate_rx.recv().expect("released");
             }),
-        );
+        ));
         started_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("the thread holds the first job");
         for i in 0..3 {
             let tx = tx.clone();
-            pool.submit(a, Box::new(move || tx.send(format!("a{i}")).unwrap()));
+            assert!(pool.submit(a, Box::new(move || tx.send(format!("a{i}")).unwrap())));
         }
         for i in 0..2 {
             let tx = tx.clone();
-            pool.submit(b, Box::new(move || tx.send(format!("b{i}")).unwrap()));
+            assert!(pool.submit(b, Box::new(move || tx.send(format!("b{i}")).unwrap())));
         }
         assert_eq!(pool.waiting(), 5);
         gate_tx.send(()).unwrap();
@@ -261,20 +281,75 @@ mod tests {
     fn a_panicking_job_does_not_take_its_thread_with_it() {
         let pool = ChunkPool::new(1);
         let lane = pool.lane();
-        pool.submit(lane, Box::new(|| panic!("a bug in one chunk's work")));
+        assert!(pool.submit(lane, Box::new(|| panic!("a bug in one chunk's work"))));
         let (tx, rx) = mpsc::channel();
-        pool.submit(
+        assert!(pool.submit(
             lane,
             Box::new(move || {
                 tx.send(()).unwrap();
             }),
-        );
+        ));
         assert!(
             rx.recv_timeout(Duration::from_secs(5)).is_ok(),
             "the only thread died with the job before"
         );
         // The queue's lock was not poisoned by the panic either.
         assert_eq!(pool.waiting(), 0);
+    }
+
+    /// Finding N9: a lane holds at most `LANE_JOBS_MOST` jobs waiting; the
+    /// next is refused and dropped, another lane is not, and once a job of
+    /// the full lane is done it takes one more.
+    #[test]
+    fn a_lane_holds_at_most_its_jobs_waiting_and_the_next_is_refused() {
+        let pool = ChunkPool::new(1);
+        let (gate_tx, gate_rx) = mpsc::channel::<()>();
+        let (started_tx, started_rx) = mpsc::channel::<()>();
+        let (a, b) = (pool.lane(), pool.lane());
+        // The thread is held by a first job, so the rest wait in the lane.
+        assert!(pool.submit(
+            a,
+            Box::new(move || {
+                started_tx.send(()).unwrap();
+                gate_rx.recv().expect("released");
+            }),
+        ));
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the thread holds the first job");
+        let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let job = || {
+            let ran = Arc::clone(&ran);
+            Box::new(move || {
+                ran.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }) as Job
+        };
+        for _ in 0..LANE_JOBS_MOST {
+            assert!(pool.submit(a, job()), "a lane takes LANE_JOBS_MOST jobs");
+        }
+        assert!(!pool.submit(a, job()), "the next is refused");
+        assert!(!pool.submit(a, job()), "and the next");
+        assert_eq!(pool.waiting_in(a), LANE_JOBS_MOST);
+        assert_eq!(pool.waiting(), LANE_JOBS_MOST);
+        assert!(pool.submit(b, job()), "another lane is not full");
+        assert_eq!(pool.waiting(), LANE_JOBS_MOST + 1);
+        gate_tx.send(()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while pool.waiting() > 0 {
+            assert!(std::time::Instant::now() < deadline, "the jobs run");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(pool.submit(a, job()), "room again once a job is done");
+        while pool.waiting() > 0 {
+            assert!(std::time::Instant::now() < deadline, "the last job runs");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        drop(pool);
+        assert_eq!(
+            ran.load(std::sync::atomic::Ordering::Relaxed),
+            LANE_JOBS_MOST + 2,
+            "every accepted job ran once, the refused ones never"
+        );
     }
 
     #[test]
@@ -287,13 +362,13 @@ mod tests {
             let lane = pool.lane();
             for _ in 0..50 {
                 let (count, tx) = (Arc::clone(&count), tx.clone());
-                pool.submit(
+                assert!(pool.submit(
                     lane,
                     Box::new(move || {
                         count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         tx.send(()).unwrap();
                     }),
-                );
+                ));
             }
         }
         for _ in 0..250 {

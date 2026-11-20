@@ -989,7 +989,15 @@ async fn a_walk_is_seen_whole_while_another_client_builds_cold_views() {
     // far away again and again: each teleport a cold view of 361 chunks.
     // Nothing of the walk is lost or held back: C sees it start and stop,
     // A gets the ground it walks into and its own stop.
-    let server = Server::start_with(&["--dev", "--time-scale", "20", "--chunk-threads", "2"]);
+    let server = Server::start_with(&[
+        "--dev",
+        "--teleport-every",
+        "0",
+        "--time-scale",
+        "20",
+        "--chunk-threads",
+        "2",
+    ]);
     let (mut walker, body) = join(&server).await;
     let (mut watcher, _) = join(&server).await;
     let (hopper, hopping) = join(&server).await;
@@ -1650,7 +1658,7 @@ async fn stand_at(socket: &mut Socket, who: u32, at: Pos) -> Pos {
 
 #[tokio::test]
 async fn a_blocked_body_is_told_to_its_pilot_alone() {
-    let server = Server::start_with(&["--dev"]);
+    let server = Server::start_with(&["--dev", "--teleport-every", "0"]);
     let (mut pilot, body) = join(&server).await;
     let (mut other, other_body) = join(&server).await;
     let body = body.expect("pilots body 1");
@@ -2318,7 +2326,7 @@ async fn wait_item(socket: &mut Socket, holder: &mut Holder, item: u64, added: b
 
 #[tokio::test]
 async fn a_return_sends_again_only_the_chunk_where_an_item_was_taken_or_dropped() {
-    let server = Server::start_with(&["--dev", "--time-scale", "20"]);
+    let server = Server::start_with(&["--dev", "--teleport-every", "0", "--time-scale", "20"]);
     let (mut socket, body) = welcome(&server).await;
     let body = body.expect("pilots a body");
     let mut holder = Holder::default();
@@ -2612,7 +2620,7 @@ fn about(message: &ServerMessage) -> Option<u32> {
     reason = "one straight reading, top to bottom; splitting it would scatter the rule"
 )]
 async fn a_walker_is_heard_within_range_at_each_chunk_it_walks_into_and_nowhere_else() {
-    let server = Server::start_with(&["--dev", "--time-scale", "50"]);
+    let server = Server::start_with(&["--dev", "--teleport-every", "0", "--time-scale", "50"]);
     let (mut walker, body) = join(&server).await;
     let (mut near, _) = join(&server).await;
     let (mut edge, edge_body) = join(&server).await;
@@ -2714,7 +2722,7 @@ async fn a_walker_is_heard_within_range_at_each_chunk_it_walks_into_and_nowhere_
 
 #[tokio::test]
 async fn a_client_far_from_a_walker_hears_nothing_of_it() {
-    let server = Server::start_with(&["--dev", "--time-scale", "50"]);
+    let server = Server::start_with(&["--dev", "--teleport-every", "0", "--time-scale", "50"]);
     let (mut walker, body) = join(&server).await;
     let (mut near, _) = join(&server).await;
     let (mut far, far_body) = join(&server).await;
@@ -2852,5 +2860,106 @@ async fn the_mountain_test_world_starts_and_sends_its_heights() {
     assert!(
         frame.heights.iter().any(|&h| h > 100),
         "a mountain, not a plain"
+    );
+}
+
+/// Finding N3: under `--dev`, a connection teleports at most once every
+/// `TELEPORT_EVERY`. A second teleport asked within that time is dropped:
+/// the body stays where the first put it; one asked after it goes.
+#[tokio::test]
+async fn a_second_teleport_within_the_interval_is_dropped() {
+    let server = Server::start_with(&["--dev"]);
+    let (mut pilot, body) = join(&server).await;
+    let body = body.expect("pilots a body");
+    let world = standard_world();
+    let start = start_of(world, body);
+    let first = world
+        .map()
+        .nearest(Pos::new(start.x - 300, start.y + 200), sim::Terrain::Grass)
+        .expect("grass far away");
+    let second = world
+        .map()
+        .nearest(Pos::new(start.x + 300, start.y - 200), sim::Terrain::Grass)
+        .expect("grass the other way");
+    send(
+        &mut pilot,
+        &ClientMessage::DevTeleport {
+            x: first.x,
+            y: first.y,
+        },
+    )
+    .await;
+    send(
+        &mut pilot,
+        &ClientMessage::DevTeleport {
+            x: second.x,
+            y: second.y,
+        },
+    )
+    .await;
+    // The body stops where the first teleport put it...
+    let stopped_at = loop {
+        match receive(&mut pilot).await {
+            Some(Got::M(ServerMessage::BodyStopped { body: who, at })) if who == body => break at,
+            Some(_) => {}
+            None => panic!("disconnected"),
+        }
+    };
+    assert_eq!(tile(stopped_at), first);
+    // ...and nowhere else over the next ticks: the second was dropped.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    send(&mut pilot, &ClientMessage::Ping { nonce: 9 }).await;
+    loop {
+        match receive(&mut pilot).await {
+            Some(Got::M(ServerMessage::Pong { nonce: 9 })) => break,
+            Some(Got::M(ServerMessage::BodyStopped { body: who, at })) if who == body => {
+                panic!("a second teleport went through, to {:?}", tile(at));
+            }
+            Some(_) => {}
+            None => panic!("disconnected"),
+        }
+    }
+    // The interval over, a teleport goes again.
+    tokio::time::sleep(server::net::TELEPORT_EVERY).await;
+    send(
+        &mut pilot,
+        &ClientMessage::DevTeleport {
+            x: second.x,
+            y: second.y,
+        },
+    )
+    .await;
+    loop {
+        match receive(&mut pilot).await {
+            Some(Got::M(ServerMessage::BodyStopped { body: who, at })) if who == body => {
+                assert_eq!(tile(at), second);
+                break;
+            }
+            Some(_) => {}
+            None => panic!("disconnected"),
+        }
+    }
+}
+
+/// Finding N8: an address opens at most `--sessions-per-address`
+/// connections a minute, closed or not; the next is closed before any
+/// upgrade, at the cost of an accept.
+#[tokio::test]
+async fn an_address_opening_connections_in_a_loop_is_closed_before_the_upgrade() {
+    let server = Server::start_with(&["--sessions-per-address", "2"]);
+    for _ in 0..2 {
+        let (socket, body) = welcome(&server).await;
+        assert!(body.is_some(), "a session is served");
+        drop(socket);
+    }
+    let third = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio_tungstenite::connect_async(format!("ws://{}", server.addr)),
+    )
+    .await
+    .expect("closed promptly");
+    assert!(
+        third.is_err(),
+        "the address's third connection of the minute gets no upgrade"
     );
 }
