@@ -85,7 +85,7 @@ pub fn run_paced(
         }
 
         let now = Instant::now();
-        owed += now.duration_since(last);
+        owed = owed_after(owed, now.duration_since(last));
         last = now;
 
         while owed >= tick_duration && !reached_limit(world) && !stop.load(Ordering::Relaxed) {
@@ -109,6 +109,18 @@ pub fn run_paced(
 /// quickly even with a very slow calendar.
 const MAX_SLEEP: Duration = Duration::from_millis(50);
 
+/// The most real time the paced loop owes the world: a stall longer
+/// than this (a slow machine, a pause) is not caught up tick by tick,
+/// the world runs that much late instead. Unbounded, a machine whose
+/// ticks cost more than their share would catch up flat out for ever.
+const MAX_OWED: Duration = Duration::from_secs(1);
+
+/// What the loop owes the world after `elapsed` more real time, at most
+/// [`MAX_OWED`].
+fn owed_after(owed: Duration, elapsed: Duration) -> Duration {
+    owed.saturating_add(elapsed).min(MAX_OWED)
+}
+
 /// Real duration of one tick at the given resolution and speed factor.
 fn tick_duration(ticks_per_second: u32, time_scale: f64) -> Duration {
     Duration::from_secs_f64(1.0 / (f64::from(ticks_per_second) * time_scale))
@@ -116,6 +128,20 @@ fn tick_duration(ticks_per_second: u32, time_scale: f64) -> Duration {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_time_owed_to_the_world_is_bounded() {
+        use super::{Duration, MAX_OWED, owed_after};
+        let tick = Duration::from_millis(100);
+        assert_eq!(owed_after(Duration::ZERO, tick), tick);
+        assert_eq!(owed_after(tick, tick), 2 * tick);
+        assert_eq!(
+            owed_after(Duration::ZERO, Duration::from_secs(60)),
+            MAX_OWED
+        );
+        assert_eq!(owed_after(MAX_OWED, tick), MAX_OWED);
+        assert_eq!(owed_after(Duration::ZERO, Duration::MAX), MAX_OWED);
+    }
+
     use super::*;
     use sim::{Calendar, Content};
 

@@ -31,7 +31,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
@@ -432,6 +432,15 @@ impl Birth {
 }
 
 /// State shared between the simulation thread and all connections.
+///
+/// Its locks are taken with the guard recovered should a panic have
+/// poisoned them (`PoisonError::into_inner`): every section under one
+/// is a few plain inserts, removes or reads of a map, a queue or a
+/// cache, whole at any point a panic could unwind through (an allocation
+/// that fails aborts, it does not unwind), and a cache entry at worst
+/// stale is made again. A poisoned lock would otherwise turn the next
+/// tick into a panic of the simulation thread, and the whole world's
+/// loss of its last minutes, for a bug in one connection's task.
 #[derive(Debug)]
 pub struct Shared {
     /// The world's current tick, updated by the simulation thread.
@@ -986,7 +995,11 @@ impl Shared {
     /// on the chunk pool, never on the network's threads. `None` if it
     /// could not be encoded.
     pub fn far_view_message(&self, centre: ChunkPos) -> Option<Message> {
-        let lock = || self.far_views.lock().expect("far views not poisoned");
+        let lock = || {
+            self.far_views
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+        };
         if let Some(message) = lock().get(&centre).cloned() {
             return Some(message);
         }
@@ -1077,7 +1090,7 @@ impl Shared {
     /// The router, locked: by the simulation thread at each event, by a
     /// connection as its view moves.
     fn router(&self) -> std::sync::MutexGuard<'_, Router> {
-        self.router.lock().expect("router not poisoned")
+        self.router.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Records where a walking body is and the rest of its walk, as the
@@ -1104,7 +1117,7 @@ impl Shared {
     /// The bodies, locked: taken for a moment by the simulation thread
     /// at each event, and by a connection reading one body or a chunk's.
     fn bodies(&self) -> std::sync::MutexGuard<'_, Bodies> {
-        self.bodies.lock().expect("bodies not poisoned")
+        self.bodies.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Records a body's position as it crosses into another tile at
@@ -1143,7 +1156,7 @@ impl Shared {
     pub fn body_died(&self, body: BodyId, cause: DeathCause) -> Option<Pos> {
         self.deaths
             .lock()
-            .expect("deaths not poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .insert(body.0, cause);
         self.bodies().remove(body.0).map(|state| tile_of(state.at))
     }
@@ -1152,7 +1165,7 @@ impl Shared {
     pub fn death_of(&self, body: u32) -> Option<DeathCause> {
         self.deaths
             .lock()
-            .expect("deaths not poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .get(&body)
             .copied()
     }
@@ -1172,7 +1185,7 @@ impl Shared {
     /// right after it ([`World::chunk_version`]).
     pub fn item_added(&self, item: ItemState, version: Version) {
         let chunk = Pos::new(item.x, item.y).chunk();
-        let mut items = self.items.lock().expect("items not poisoned");
+        let mut items = self.items.lock().unwrap_or_else(PoisonError::into_inner);
         items.stored.entry(chunk).or_default().push(item);
         items.changed(chunk, version);
     }
@@ -1182,7 +1195,7 @@ impl Shared {
     pub fn chunk_version(&self, chunk: ChunkPos) -> Version {
         self.items
             .lock()
-            .expect("items not poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .versions
             .get(&chunk)
             .copied()
@@ -1193,7 +1206,7 @@ impl Shared {
     /// chunk's changes'), and its version right after it (D45, D48): its
     /// frame shows the fruit left on its trees.
     pub fn crop_picked(&self, chunk: ChunkPos, picked: &Picks, version: Version) {
-        let mut items = self.items.lock().expect("items not poisoned");
+        let mut items = self.items.lock().unwrap_or_else(PoisonError::into_inner);
         items.picked.insert(chunk, Arc::new(picked.clone()));
         items.changed(chunk, version);
     }
@@ -1218,7 +1231,7 @@ impl Shared {
         // Under the one lock `ground_items` holds while it gathers a
         // chunk's: a chunk sent at the same moment sees the item either
         // there or gone, never twice, and the version that goes with it.
-        let mut items = self.items.lock().expect("items not poisoned");
+        let mut items = self.items.lock().unwrap_or_else(PoisonError::into_inner);
         if sim::items::is_natural(item) {
             items.taken.insert(item);
         }
@@ -1316,13 +1329,18 @@ impl Shared {
         let body = intention.body().0;
         self.intentions
             .lock()
-            .expect("intentions not poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .insert(body, intention);
     }
 
     /// Takes every pending intention, in body order, leaving none.
     pub fn take_intentions(&self) -> Vec<Intention> {
-        let taken = std::mem::take(&mut *self.intentions.lock().expect("intentions not poisoned"));
+        let taken = std::mem::take(
+            &mut *self
+                .intentions
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
         taken.into_values().collect()
     }
 
@@ -1332,7 +1350,7 @@ impl Shared {
         if let Some(pilot) = self
             .pilots
             .lock()
-            .expect("pilot set not poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .get(&body.0)
         {
             let _ = pilot.try_send(message);
@@ -1345,7 +1363,7 @@ impl Shared {
     pub fn piloted(&self) -> Vec<BodyId> {
         self.pilots
             .lock()
-            .expect("pilot set not poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .keys()
             .map(|id| BodyId(*id))
             .collect()
@@ -1353,7 +1371,7 @@ impl Shared {
 
     /// Gives the connection the free body with the lowest id, if any.
     fn take_body(&self, private: mpsc::Sender<ServerMessage>) -> Option<u32> {
-        let mut pilots = self.pilots.lock().expect("pilot set not poisoned");
+        let mut pilots = self.pilots.lock().unwrap_or_else(PoisonError::into_inner);
         let free = self
             .bodies()
             .by_id
@@ -1376,7 +1394,7 @@ impl Shared {
         if free.is_none() {
             self.births
                 .lock()
-                .expect("births not poisoned")
+                .unwrap_or_else(PoisonError::into_inner)
                 .push(Birth {
                     private,
                     born: born.clone(),
@@ -1405,7 +1423,7 @@ impl Shared {
     /// Takes every connection waiting for a body, in the order they
     /// asked, leaving none.
     fn take_births(&self) -> Vec<Birth> {
-        std::mem::take(&mut *self.births.lock().expect("births not poisoned"))
+        std::mem::take(&mut *self.births.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
     /// Records a body just born at the camp for the connection that
@@ -1414,7 +1432,7 @@ impl Shared {
     fn body_born(&self, birth: Birth, state: BodyState) {
         let (body, at) = (state.id, tile_of(state.at));
         {
-            let mut pilots = self.pilots.lock().expect("pilot set not poisoned");
+            let mut pilots = self.pilots.lock().unwrap_or_else(PoisonError::into_inner);
             pilots.insert(body, birth.private);
             self.bodies().insert(state);
         }
@@ -1427,7 +1445,7 @@ impl Shared {
     fn release_body(&self, body: u32) {
         self.pilots
             .lock()
-            .expect("pilot set not poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .remove(&body);
     }
 
@@ -1507,7 +1525,7 @@ impl Shared {
         if self
             .frames
             .lock()
-            .expect("frames not poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .contains(&key)
         {
             return Some(ChunkGround {
@@ -1546,7 +1564,7 @@ impl Shared {
         let held = self
             .frames
             .lock()
-            .expect("frames not poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .get(&key)
             .cloned();
         let frame = if let Some(frame) = held {
@@ -1565,7 +1583,7 @@ impl Shared {
             )?)?);
             self.frames
                 .lock()
-                .expect("frames not poisoned")
+                .unwrap_or_else(PoisonError::into_inner)
                 .insert(key, frame.clone());
             frame
         };
@@ -1844,7 +1862,7 @@ impl Shared {
     ) -> (Vec<ItemState>, Vec<ItemState>, Version, Option<Arc<Picks>>) {
         // Filtered and gathered under the lock `item_removed` holds, so an
         // item taken meanwhile shows either here or nowhere.
-        let items = self.items.lock().expect("items not poisoned");
+        let items = self.items.lock().unwrap_or_else(PoisonError::into_inner);
         let mut natural: Vec<ItemState> = natural
             .iter()
             .filter(|i| !items.taken.contains(&ItemId(i.id)))
@@ -1910,7 +1928,7 @@ impl Shared {
         let held = self
             .plants
             .lock()
-            .expect("plants not poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .get(&chunk)
             .map(Arc::clone);
         if let Some(plants) = held {
@@ -1950,7 +1968,7 @@ impl Shared {
         // replaces the first.
         self.plants
             .lock()
-            .expect("plants not poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .insert(chunk, Arc::from(plants.as_slice()));
         plants
     }
@@ -2536,7 +2554,10 @@ impl Drop for Link {
     fn drop(&mut self) {
         // The jobs still waiting in the lane find nothing wanted and
         // build nothing for a connection that is gone.
-        self.wanted.lock().expect("wanted not poisoned").clear();
+        self.wanted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
         self.shared.router().unsubscribe(self.conn);
     }
 }
@@ -2844,7 +2865,11 @@ impl Link {
         self.pool.submit(
             self.lane,
             Box::new(move || {
-                if !wanted.lock().expect("wanted not poisoned").contains(&chunk) {
+                if !wanted
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .contains(&chunk)
+                {
                     return; // left the view before its turn came
                 }
                 let ground = if whole {
@@ -2867,7 +2892,7 @@ impl Link {
         let (mut shown, mut hidden) = self.view.recentre(&self.shared.map, centre);
         self.wanted
             .lock()
-            .expect("wanted not poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .clone_from(&self.view.chunks);
         shown.sort_by_key(|c| ((c.x - centre.x).pow(2) + (c.y - centre.y).pow(2), c.y, c.x));
         hidden.sort_by_key(|c| (c.y, c.x));
@@ -3540,6 +3565,20 @@ mod tests {
     /// A small valley (the rules are the same, and it is made in a
     /// fraction of the time) where three bodies were born at the camp,
     /// as for three players.
+    #[test]
+    fn a_poisoned_lock_is_recovered_not_a_second_panic() {
+        let shared = Arc::new(Shared::new(&players(), &Content::sample(), 1, 1.0));
+        let poisoner = Arc::clone(&shared);
+        let _ = std::thread::spawn(move || {
+            let _held = poisoner.intentions.lock().unwrap();
+            panic!("a bug in a connection's task while it queues an intention");
+        })
+        .join();
+        assert!(shared.intentions.is_poisoned());
+        // The simulation thread's next tick goes on with what is there.
+        assert_eq!(shared.take_intentions().len(), 0);
+    }
+
     fn players() -> World {
         let mut world = World::with_valley(Calendar::default(), &Content::sample(), 768);
         for _ in 0..3 {
@@ -4246,7 +4285,7 @@ mod tests {
             shared
                 .far_views
                 .lock()
-                .expect("far views not poisoned")
+                .unwrap_or_else(PoisonError::into_inner)
                 .contains(&c)
         };
         assert!(held(home) && held(away));
@@ -4395,7 +4434,7 @@ mod tests {
             shared
                 .far_views
                 .lock()
-                .expect("far views not poisoned")
+                .unwrap_or_else(PoisonError::into_inner)
                 .len(),
             [(-8, -8), (8, 8), (-9, 0), (23, -17)]
                 .iter()
