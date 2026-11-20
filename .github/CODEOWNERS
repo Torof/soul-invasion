@@ -14,13 +14,21 @@
 /server/Cargo.lock          @Torof
 /server/*/Cargo.toml        @Torof
 /server/deny.toml           @Torof
+/server/rust-toolchain.toml @Torof
 /client/project.godot       @Torof
+/client/override.cfg        @Torof
+/client/export_presets.cfg  @Torof
 
-# Persistence schema and migrations
-/server/server/migrations/  @Torof
+# Cargo configuration, wherever it sits: it can replace a dependency's
+# source or the compiler while Cargo.lock stays identical
+.cargo/                     @Torof
+
+# Persistence schema (the CREATE TABLE statements live in storage.rs)
+/server/server/src/storage.rs @Torof
 
 # The rules of the project itself
 /.github/                   @Torof
+/.github/workflows/protected-areas.yml @Torof
 /LICENSE                    @Torof
 /docs/LICENSE               @Torof
 /CLAUDE.md                  @Torof

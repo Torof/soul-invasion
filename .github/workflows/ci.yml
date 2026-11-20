@@ -11,6 +11,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   GODOT_VERSION: 4.7.2
+  # From SHA512-SUMS.txt of the same release (github.com/godotengine/godot/releases):
+  # a download that does not match is refused. Update both together.
+  GODOT_SHA512: 9aa00f7a605200940bce3027a567b782f49bd8e940dd06ae9e987bd65aee1b1467edd56ed84fcdcbdd44354bf613bdbb4e5d2913e925850368e150c59ed54c65
 
 jobs:
   server:
@@ -20,7 +23,7 @@ jobs:
       run:
         working-directory: server
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: What changed
         working-directory: .
         id: changed
@@ -39,11 +42,11 @@ jobs:
           else
             echo "run=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         if: steps.changed.outputs.run == 'true'
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: steps.changed.outputs.run == 'true'
         with:
           workspaces: server
@@ -69,7 +72,7 @@ jobs:
     name: Dependency audit (licenses, advisories)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: What changed
         id: changed
         # On a pull request only what it touches is checked:
@@ -87,7 +90,7 @@ jobs:
           else
             echo "run=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: EmbarkStudios/cargo-deny-action@17aeb3c839e42274e2b8adf721c8c65edfdc74dd # v2.1.3
         if: steps.changed.outputs.run == 'true'
         with:
           manifest-path: server/Cargo.toml
@@ -97,7 +100,7 @@ jobs:
     name: Client (Godot)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: What changed
         id: changed
         # On a pull request only what it touches is checked:
@@ -119,12 +122,13 @@ jobs:
         if: steps.changed.outputs.run == 'true'
         run: |
           curl -sSfL -o godot.zip "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          echo "${GODOT_SHA512}  godot.zip" | sha512sum --check --strict
           unzip -q godot.zip
           sudo mv "Godot_v${GODOT_VERSION}-stable_linux.x86_64" /usr/local/bin/godot
           godot --version
       - name: Import cache
         if: steps.changed.outputs.run == 'true'
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         # What the import makes (`client/.godot`) follows from the assets,
         # their import settings (`*.import`), the project's (`project.godot`)
         # and Godot's version: the key hashes all of them (every file of the
