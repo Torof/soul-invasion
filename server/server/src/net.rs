@@ -907,7 +907,7 @@ impl Drop for Admission<'_> {
             .shared
             .per_address
             .lock()
-            .expect("per_address not poisoned");
+            .unwrap_or_else(PoisonError::into_inner);
         if let Some(mine) = by_address.get_mut(&self.address) {
             mine.places = mine.places.saturating_sub(1);
             // The record stays while its window counts the sessions.
@@ -1400,7 +1400,10 @@ impl Shared {
     /// N8), and a refused connection is the address's first of the minute
     /// or not ([`NotAdmitted::first`]).
     pub fn admit_at(&self, address: IpAddr, now: Instant) -> Result<Admission<'_>, NotAdmitted> {
-        let mut by_address = self.per_address.lock().expect("per_address not poisoned");
+        let mut by_address = self
+            .per_address
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if !by_address.contains_key(&address) {
             // A new address: the records nothing holds any more go, so
             // the map holds the addresses of the last minute at most.
@@ -1451,7 +1454,7 @@ impl Shared {
     pub fn connections_from(&self, address: IpAddr) -> usize {
         self.per_address
             .lock()
-            .expect("per_address not poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .get(&address)
             .map_or(0, |record| record.places)
     }
