@@ -1,0 +1,14 @@
+{"type":"hello","protocol_version":30}
+{"type":"hello","protocol_version":30,"held":{"world":"0123456789abcdef","chunks":[[3,-1,0],[4,7,12]]}}
+{"type":"ping","nonce":42}
+{"type":"move_to","x":3,"y":-1}
+{"type":"eat","item":12}
+{"type":"pick_up","item":12}
+{"type":"drop","item":12}
+{"type":"hold","item":12}
+{"type":"stow","item":12}
+{"type":"drink","x":4,"y":-2}
+{"type":"sleep"}
+{"type":"wake"}
+{"type":"dev_teleport","x":1500,"y":-2}
+{"type":"chunk_missing","x":3,"y":-1}

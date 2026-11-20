@@ -39,6 +39,8 @@ func _init() -> void:
 	_test_currents_decode()
 	_test_the_golden_chunk_decodes()
 	_test_the_golden_far_view_decodes()
+	_test_the_golden_server_messages_are_handled()
+	_test_the_golden_client_messages_are_built_the_same()
 	_test_a_chunks_fruit_alone_comes_into_its_frame()
 	_test_a_tree_shows_its_fruit_as_sprites_at_its_points()
 	_test_a_shrub_shows_its_berries_as_sprites_at_its_points()
@@ -978,6 +980,184 @@ func _test_currents_decode() -> void:
 	_check(south.distance_to(Vector2(0, 0.5)) < 1e-4, "heading 0 runs +y at 0.5 m/s: %s" % south)
 	var east := WaterMeshes.current_vector(4 * 256 + 35)
 	_check(east.distance_to(Vector2(0.35, 0)) < 1e-4, "heading 4 runs +x: %s" % east)
+
+
+## The lines of a golden file the server's protocol tests keep
+## (`the_golden_messages_are_the_clients`), decoded; a line that does not
+## decode is a failed check.
+func _golden_messages(name: String) -> Array[Dictionary]:
+	var text := FileAccess.get_file_as_string("res://tests/fixtures/" + name)
+	var out: Array[Dictionary] = []
+	for line in text.split("\n", false):
+		var message := Protocol.decode(line)
+		_check(not message.is_empty(), "%s: a golden line decodes: %s" % [name, line.left(60)])
+		if not message.is_empty():
+			out.append(message)
+	return out
+
+
+## One of each server message, as the server writes it (its test
+## `the_golden_messages_are_the_clients` keeps
+## tests/fixtures/server_messages_v30.jsonl), handled by the client as a
+## message from the socket: every signal fires with the fields read back.
+## A key renamed on one side only breaks this test or the server's.
+func _test_the_golden_server_messages_are_handled() -> void:
+	var messages := _golden_messages("server_messages_v30.jsonl")
+	_check(messages.size() == 35, "35 golden server messages: %d" % messages.size())
+	var ClientScript: GDScript = load("res://net/client.gd")
+	var net: Node = ClientScript.new()
+	var got: Array = []
+	var note := func(kind: String) -> Callable:
+		return func(a: Variant = null, b: Variant = null, c: Variant = null, d: Variant = null, e: Variant = null, f: Variant = null) -> void:
+			got.append([kind, a, b, c, d, e, f])
+	net.connected.connect(note.call("connected"))
+	net.world_state.connect(note.call("world_state"))
+	net.clock.connect(note.call("clock"))
+	net.species.connect(note.call("species"))
+	net.flora.connect(note.call("flora"))
+	net.chunk_bodies.connect(note.call("chunk_bodies"))
+	net.body_walks.connect(note.call("body_walks"))
+	net.body_stopped.connect(note.call("body_stopped"))
+	net.body_left.connect(note.call("body_left"))
+	net.move_refused.connect(note.call("move_refused"))
+	net.body_blocked.connect(note.call("body_blocked"))
+	net.body_thinks.connect(note.call("body_thinks"))
+	net.body_condition.connect(note.call("body_condition"))
+	net.body_sleeps.connect(note.call("body_sleeps"))
+	net.body_died.connect(note.call("body_died"))
+	net.body_assigned.connect(note.call("body_assigned"))
+	net.item_added.connect(note.call("item_added"))
+	net.item_removed.connect(note.call("item_removed"))
+	net.act_refused.connect(note.call("act_refused"))
+	net.inventory.connect(note.call("inventory"))
+	net.body_holds.connect(note.call("body_holds"))
+	net.night_fell.connect(note.call("night_fell"))
+	net.season_started.connect(note.call("season_started"))
+	net.drink_refused.connect(note.call("drink_refused"))
+	net.day_started.connect(note.call("day_started"))
+	net.disconnected.connect(note.call("disconnected"))
+	net.dev_overview.connect(note.call("dev_overview"))
+	var kinds := {}
+	for message in messages:
+		var kind := str(message.get("type", ""))
+		kinds[kind] = true
+		match kind:
+			# These two answer the server on the socket (`chunk_missing`)
+			# when the chunk is not held: their fields are read here instead.
+			"chunk_same":
+				_check([int(message["x"]), int(message["y"]), int(message["version"])] == [5, -4, 3], "chunk_same carries x, y, version")
+			"chunk_fruit":
+				_check([int(message["x"]), int(message["y"]), int(message["version"]), str(message["trees"]), str(message["plants"])] == [-5, 4, 2, "083", ""], "chunk_fruit carries x, y, version, trees, plants")
+				_check(Protocol.fruit_levels(str(message["trees"]))["levels"] == PackedByteArray([0, 8, 3]), "its trees' fruit decodes to levels")
+			_:
+				net._handle(message)
+	_check(kinds.size() == 28, "28 kinds of server message: %d" % kinds.size())
+	var found := func(kind: String) -> Array:
+		for g: Array in got:
+			if g[0] == kind:
+				return g
+		return []
+	var has := func(expected: Array) -> bool:
+		for g: Array in got:
+			if g.slice(0, expected.size()) == expected:
+				return true
+		return false
+	_check(has.call(["connected", 7, 1]), "welcome: tick 7, body 1")
+	_check(has.call(["connected", 7, -1]), "welcome without a body: -1")
+	_check(net.window == Rect2i(-2, 3, 19, 17), "view: the window held is %s" % net.window)
+	_check(has.call(["dev_overview", 8, 2, 2, "gfwr"]), "dev_overview: cell, width, height, cells")
+	var mismatch: Array = found.call("disconnected")
+	_check(mismatch.size() > 1 and str(mismatch[1]).begins_with("server expects protocol v1"), "protocol_mismatch: expected, got %s" % [mismatch])
+	_check(has.call(["day_started", 2, 72000]), "day_started: day, tick")
+	_check(has.call(["season_started", 2, "autumn"]), "season_started: year, season")
+	_check(has.call(["night_fell", 3]), "night_fell: day")
+	_check(has.call(["body_sleeps", 2, true]), "body_sleeps: body, asleep")
+	_check(has.call(["body_died", 1, "froze"]), "body_died: body, cause")
+	_check(has.call(["body_died", 2, ""]), "body_died without a cause (the lead's secret, lot B): an empty cause")
+	_check(has.call(["body_assigned", 2]), "body_assigned: body")
+	_check(has.call(["body_assigned", -1]), "body_assigned without a body: -1")
+	_check(has.call(["item_removed", 12, 1, 2]), "item_removed: item, x, y")
+	_check(has.call(["act_refused", 1, "pick_up", 12, "too_heavy"]), "act_refused: body, act, item, reason")
+	_check(has.call(["drink_refused", 1, 3, -4, "not_water"]), "drink_refused: body, x, y, reason")
+	_check(has.call(["body_holds", 1, {}]), "body_holds without an item: {}")
+	_check(has.call(["body_stopped", 1, Vector2(6500, 9500)]), "body_stopped: body, at")
+	_check(has.call(["body_left", 1]), "body_left: body")
+	_check(has.call(["move_refused", 1, 4, 5, "water"]), "move_refused: body, x, y, reason")
+	_check(has.call(["body_blocked", 1, Vector2(34700, 40500), 40, 40, "water"]), "body_blocked: body, at, x, y, reason")
+	_check(has.call(["body_blocked", 1, Vector2.ZERO, 4, 5, "no_way"]), "body_blocked on the spot: no_way")
+	_check(has.call(["body_thinks", 1, "skirting", "left", Vector2(7500, 2500)]), "body_thinks: skirting left")
+	_check(has.call(["body_thinks", 1, "skirting", "right", Vector2.ZERO]), "body_thinks: skirting right")
+	_check(has.call(["body_thinks", 1, "way_seen", "", Vector2(1, 2)]), "body_thinks: way seen, no side")
+	_check(has.call(["body_thinks", 1, "no_way", "", Vector2(3, 4)]), "body_thinks: no way")
+	_check(has.call(["body_walks", 1, Vector2(4500, 5500), [Vector2(6500, 5500), Vector2(6500, 9500)], [23, 51], 143, 9]), "body_walks: body, at, route, arrivals, speed, tick")
+	_check(has.call(["world_state", 256, 256, 32]), "world_state: width, height, chunk_size")
+	var world: Array = found.call("world_state")
+	_check(world.size() > 5 and world[4] is Array and world[4].size() == 1 and str(world[4][0].get("id")) == "flint" and int(world[4][0].get("mass_g")) == 400 and world[5] == true, "world_state: its materials and the night")
+	var species: Array = found.call("species")
+	_check(species.size() > 1 and species[1] is Array and species[1].size() == 1 and str(species[1][0].get("id")) == "oak" and int(species[1][0].get("height_cm")) == 400, "world_state: its species")
+	var flora: Array = found.call("flora")
+	_check(flora.size() > 1 and flora[1] is Array and flora[1].size() == 1 and str(flora[1][0].get("family")) == "shrub", "world_state: its flora")
+	var clock: Array = found.call("clock")
+	_check(clock.size() > 1 and clock[1] is Dictionary and int(clock[1].get("ticks_per_day")) == 72000 and int(clock[1].get("days_per_year")) == 50 and int(clock[1].get("time_scale_permille")) == 1000, "world_state: its clock")
+	var bodies: Array = found.call("chunk_bodies")
+	_check(bodies.size() > 3 and bodies[1] == 5 and bodies[2] == -1 and bodies[3] is Array and bodies[3].size() == 1, "chunk_bodies: x, y and one body")
+	if bodies.size() > 3 and bodies[3] is Array and bodies[3].size() == 1:
+		var b: Dictionary = bodies[3][0]
+		_check(int(b.get("id")) == 1 and ClientScript.point(b.get("at")) == Vector2(160500, 500) and int(b.get("speed_cm_per_s")) == 143 and b.get("asleep") == false, "chunk_bodies: the body's id, place, pace and sleep")
+		_check(b.get("holds") is Dictionary and str(b["holds"].get("material")) == "flint" and int(b["holds"].get("mass_g")) == 400 and ClientScript.arrivals(b.get("arrivals")) == [80], "chunk_bodies: what it holds and its arrivals")
+	var condition: Array = found.call("body_condition")
+	_check(condition.size() > 2 and condition[1] == 1 and condition[2] is Dictionary and [int(condition[2].get("vitality")), int(condition[2].get("hunger")), int(condition[2].get("thirst")), int(condition[2].get("cold")), int(condition[2].get("fatigue")), condition[2].get("asleep")] == [88, 40, 75, 0, 65, false], "body_condition: the six gauges")
+	var added: Array = found.call("item_added")
+	_check(added.size() > 1 and added[1] is Dictionary and int(added[1].get("id")) == 77 and [int(added[1].get("x")), int(added[1].get("y"))] == [1, 2] and str(added[1].get("material")) == "corpse" and int(added[1].get("mass_g")) == 60000, "item_added: the item, its place, material and mass")
+	var inventory: Array = found.call("inventory")
+	_check(inventory.size() > 5 and inventory[1] == 1 and inventory[2] is Dictionary and int(inventory[2].get("id")) == 5 and inventory[3] is Array and inventory[3].size() == 1 and str(inventory[3][0].get("material")) == "berries" and inventory[4] == 500 and inventory[5] == 20000, "inventory: body, held, carried, load, capacity")
+	net.free()
+
+
+## One of each client message, as the server expects it (its test
+## `the_golden_messages_are_the_clients` keeps
+## tests/fixtures/client_messages_v30.jsonl): the client builds the same
+## from the same values, `stow` and `chunk_missing` included.
+func _test_the_golden_client_messages_are_built_the_same() -> void:
+	var messages := _golden_messages("client_messages_v30.jsonl")
+	_check(messages.size() == 14, "14 golden client messages: %d" % messages.size())
+	var kinds := {}
+	for golden in messages:
+		var kind := str(golden.get("type", ""))
+		kinds[kind] = true
+		var built := {}
+		match kind:
+			"hello":
+				built = Protocol.hello("0123456789abcdef", [[3, -1, 0], [4, 7, 12]]) if golden.has("held") else Protocol.hello()
+			"ping":
+				built = Protocol.ping(42)
+			"move_to":
+				built = Protocol.move_to(3, -1)
+			"eat":
+				built = Protocol.eat(12)
+			"pick_up":
+				built = Protocol.pick_up(12)
+			"drop":
+				built = Protocol.drop(12)
+			"hold":
+				built = Protocol.hold(12)
+			"stow":
+				built = Protocol.stow(12)
+			"drink":
+				built = Protocol.drink(4, -2)
+			"sleep":
+				built = Protocol.sleep()
+			"wake":
+				built = Protocol.wake()
+			"dev_teleport":
+				built = Protocol.dev_teleport(1500, -2)
+			"chunk_missing":
+				built = Protocol.chunk_missing(3, -1)
+		_check(not built.is_empty(), "the client builds a %s" % kind)
+		# Both through JSON, so the numbers compare alike.
+		var same := Protocol.decode(Protocol.encode(built))
+		_check(same == golden, "%s is built as the server expects: %s against %s" % [kind, Protocol.encode(built), Protocol.encode(golden)])
+	_check(kinds.size() == 13, "13 kinds of client message: %d" % kinds.size())
 
 
 ## The chunk frame the server's protocol writes (its test
