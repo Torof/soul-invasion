@@ -36,11 +36,15 @@ static func load_line(load_g: int, capacity_g: int) -> String:
 	return "%.1f / %.1f kg" % [load_g / 1000.0, capacity_g / 1000.0]
 
 
-## Words for a refusal: "cannot pick up: too heavy".
-static func refusal_words(act: String, reason: String) -> String:
+## Words for a refusal: "cannot pick up: too heavy". `unknown` means
+## nothing of the thing is known from where the body stands (the server
+## says no more of what lies past the eyes): for a thing this client
+## draws (`seen`, in a chunk it holds), "too far to tell"; else "no such
+## thing" (the second security audit of 20 November 2026, A4).
+static func refusal_words(act: String, reason: String, seen := false) -> String:
 	var acts := {"pick_up": "pick up", "drop": "drop", "hold": "hold", "stow": "stow", "eat": "eat", "drink": "drink"}
 	var reasons := {
-		"unknown": "no such thing",
+		"unknown": "too far to tell" if seen else "no such thing",
 		"out_of_reach": "out of reach",
 		"not_carried": "not carried",
 		"too_heavy": "too heavy",

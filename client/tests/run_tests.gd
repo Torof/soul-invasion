@@ -13,9 +13,17 @@ const SHORT_TREE_IMAGES := ["walnut", "chestnut", "oak", "alder", "wild_cherry"]
 
 var _failures := 0
 var _checks := 0
+## A folder of this run's own for what the client would keep in the
+## player's `user://` (the water detail's cache): the tests never write
+## there (the second security audit of 20 November 2026, N5). Removed at
+## the end.
+var _scratch := ""
 
 
 func _init() -> void:
+	_scratch = OS.get_temp_dir().path_join("soul-invasion-client-tests-%d" % OS.get_process_id())
+	DirAccess.make_dir_recursive_absolute(_scratch)
+	ChunkView.detail_cache = _scratch.path_join("water_detail_%d.png" % ChunkView.DETAIL_SIDE)
 	_test_protocol_round_trip()
 	_test_protocol_rejects_garbage()
 	_test_protocol_wire_format_matches_server()
@@ -39,6 +47,8 @@ func _init() -> void:
 	_test_currents_decode()
 	_test_the_golden_chunk_decodes()
 	_test_the_golden_far_view_decodes()
+	_test_a_far_view_past_the_servers_size_is_refused_before_it_is_built()
+	_test_the_water_detail_cache_is_read_back_from_its_file()
 	_test_the_golden_server_messages_are_handled()
 	_test_the_golden_client_messages_are_built_the_same()
 	_test_a_chunks_fruit_alone_comes_into_its_frame()
@@ -123,8 +133,18 @@ func _initialize() -> void:
 	await process_frame
 	_test_the_tint_keys_step_the_tints_and_backspace_resets()
 	_test_the_turf_keys_lay_one_tile_and_turn_the_angle_dial()
+	_remove_scratch()
 	print("client tests: %d checks, %d failures" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
+
+
+## Removes the run's folder and what the tests left in it.
+func _remove_scratch() -> void:
+	if _scratch.is_empty() or not DirAccess.dir_exists_absolute(_scratch):
+		return
+	for name in DirAccess.get_files_at(_scratch):
+		DirAccess.remove_absolute(_scratch.path_join(name))
+	DirAccess.remove_absolute(_scratch)
 
 
 func _check(condition: bool, what: String) -> void:
@@ -237,6 +257,12 @@ func _test_inventory_lines_and_refusals() -> void:
 	_check(Tooltip.load_line(1900, 20000) == "1.9 / 20.0 kg", "the load over the capacity")
 	_check(Tooltip.refusal_words("pick_up", "too_heavy") == "cannot pick up: too heavy", "a refusal in words")
 	_check(Tooltip.refusal_words("eat", "not_food") == "cannot eat: not food", "another")
+	# A4 (the second security audit of 20 November 2026): `unknown` on a
+	# thing the client draws is a thing past the eyes, not a thing that
+	# is not there.
+	_check(Tooltip.refusal_words("pick_up", "unknown") == "cannot pick up: no such thing", "unknown, unseen")
+	_check(Tooltip.refusal_words("pick_up", "unknown", true) == "cannot pick up: too far to tell", "unknown, but drawn: too far")
+	_check(Tooltip.refusal_words("pick_up", "out_of_reach", true) == "cannot pick up: out of reach", "the other reasons as before")
 
 
 func _test_the_year_and_its_seasons() -> void:
@@ -1217,6 +1243,56 @@ func _test_the_golden_far_view_decodes() -> void:
 	net._handle_far_view(bytes)
 	_check(told == [[8, -3, 40, 20, 7, cells]], "the net tells it as the JSON far view was told")
 	net.free()
+
+
+## A far view's bytes for `width` × `height` cells of one letter, in one
+## run (the audit's `4-far-view-bomb.gd`): 22 bytes for four million cells.
+func _far_view_of_one_run(width: int, height: int) -> PackedByteArray:
+	var bytes := PackedByteArray()
+	bytes.resize(Protocol.FAR_VIEW_HEADER)
+	bytes[0] = Protocol.BINARY_FAR_VIEW
+	bytes.encode_u16(2, 8)
+	bytes.encode_s32(4, 0)
+	bytes.encode_s32(8, 0)
+	bytes.encode_u16(12, width)
+	bytes.encode_u16(14, height)
+	bytes.append(103) # 'g'
+	var n := width * height
+	while true:
+		var byte := n & 0x7F
+		n >>= 7
+		if n > 0:
+			bytes.append(byte | 0x80)
+		else:
+			bytes.append(byte)
+			break
+	return bytes
+
+
+## The second security audit of 20 November 2026, C2: the far view's size
+## comes from the message, and its runs were built before anything checked
+## it (22 bytes into four million letters, 16 MB). The server's far view,
+## 256 × 256, decodes; one cell more is refused before a run is built.
+func _test_a_far_view_past_the_servers_size_is_refused_before_it_is_built() -> void:
+	var whole := Protocol.decode_far_view(_far_view_of_one_run(256, 256))
+	_check(whole.get("width", 0) == 256 and str(whole.get("cells", "")).length() == Protocol.FAR_VIEW_CELLS_MAX, "the server's far view decodes whole")
+	_check(Protocol.decode_far_view(_far_view_of_one_run(257, 256)).is_empty(), "one cell past the server's: refused")
+	var before := OS.get_static_memory_usage()
+	_check(Protocol.decode_far_view(_far_view_of_one_run(2048, 2048)).is_empty(), "the audit's bomb: refused")
+	_check(OS.get_static_memory_usage() - before < (1 << 20), "and nothing built for it")
+
+
+## The second security audit of 20 November 2026, N5: the water detail's
+## cache, saved as PNG under a `.webp` name, never loaded and was made
+## again at every start. Made once here, in this run's own folder, it
+## reads back from its file.
+func _test_the_water_detail_cache_is_read_back_from_its_file() -> void:
+	_check(ChunkView.detail_cache.begins_with(_scratch), "the tests' own folder, not the player's")
+	# Made by an earlier test's water material, or here: either way kept.
+	_check(ChunkView.detail_texture() != null, "the detail texture is made")
+	_check(FileAccess.file_exists(ChunkView.detail_cache), "and kept")
+	var back := Image.load_from_file(ProjectSettings.globalize_path(ChunkView.detail_cache))
+	_check(back != null and back.get_width() == ChunkView.DETAIL_SIDE, "the file reads back as the image saved: its name says its format")
 
 
 ## Protocol v29 (D48): a chunk's fruit alone, its levels one digit a tree

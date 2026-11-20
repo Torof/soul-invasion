@@ -22,6 +22,10 @@ var _has_clock := false
 ## The bubbles, set by the main scene: beside this panel in the
 ## interface, shown even while it is hidden.
 var speech: SpeechBubble
+## Whether an item (by id) is one the world view draws: a refusal of an
+## act on it is worded for a thing seen, past the eyes (A4). Unset, every
+## thing is unseen.
+var sees_item: Callable
 var thoughts: ThoughtBubble
 
 
@@ -83,8 +87,9 @@ func _on_body_condition(body: int, condition: Dictionary) -> void:
 	_body_label.text = "body %d%s" % [_body, " — asleep" if asleep else ""]
 
 
-func _on_act_refused(_body: int, act: String, _item: int, reason: String) -> void:
-	set_state(Tooltip.refusal_words(act, reason))
+func _on_act_refused(_body: int, act: String, item: int, reason: String) -> void:
+	var seen := sees_item.is_valid() and bool(sees_item.call(item))
+	set_state(Tooltip.refusal_words(act, reason, seen))
 
 
 func _on_body_died(body: int, cause: String) -> void:
