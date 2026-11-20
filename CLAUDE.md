@@ -33,6 +33,13 @@ conductor: vision, decisions, practices, audits, security. The AI writes the cod
   request, and never merges one by hand.** The AI works from the project
   lead's GitHub account, so this is a matter of trust, not of mechanics:
   the label is the project lead's decision and theirs alone.
+- **The label comes last.** The project lead adds it after the final
+  commit, once the pull request is complete. A pull request that changes
+  after its label (a new commit, a force push) asks for the label again:
+  say so in the pull request, and never push on a labelled one.
+- Before any pull request touching `server/sim/src/plan`, run the ignored
+  `plan::net` tests by hand (`cargo test --release -p sim --lib plan::net -- --ignored`)
+  and say so in the pull request.
 - Never add a dependency, change the protocol, change a storage schema or
   touch `.github/` without saying so explicitly in the pull request.
 - Hidden game rules (karma, the Emperor's tree, titles) are **content**, never

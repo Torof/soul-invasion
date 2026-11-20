@@ -7,6 +7,23 @@ name: Protected areas
 # Why a label and not a GitHub review: the AI opens pull requests from the
 # project lead's own account, and GitHub does not let an author approve their
 # own pull request. The label is the project lead's explicit approval.
+#
+# What the pull request may not influence (audit of 20 November 2026, R2, R3):
+#   - the rules: CODEOWNERS is read from the base branch through the API,
+#     never from the pull request's head, so a pull request that edits
+#     CODEOWNERS is judged by the rules it tries to change;
+#   - the list: a renamed file counts under its old path too, so a file
+#     moved out of a protected area still needs the label;
+#   - nothing is checked out: the job has no copy of the pull request.
+# What remains with GitHub's settings, not with this file: on `pull_request`
+# the workflow file itself comes from the pull request's head. Branch
+# protection must require this check from GitHub Actions only (not "any
+# source"), and a ruleset may require `main`'s copy of this workflow.
+# `pull_request_target` is not used: GitHub blocks it by default on public
+# repositories (see auto-merge.yml).
+#
+# Token: `contents: read` (CODEOWNERS of the base branch) and
+# `pull-requests: read` (the pull request's file list). Nothing else.
 
 on:
   pull_request:
@@ -21,9 +38,17 @@ jobs:
     name: Protected areas
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - name: Read CODEOWNERS from the base branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        # The base branch as it is now (its tip, not the sha the pull
+        # request was opened against): the rules in force at merge time.
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/contents/.github/CODEOWNERS?ref=${BASE_REF}" \
+            -H "Accept: application/vnd.github.raw+json" > CODEOWNERS
+          echo "CODEOWNERS read from ${BASE_REF}: $(grep -c '@' CODEOWNERS) rules."
       - name: List changed files
-        id: changes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
@@ -31,15 +56,20 @@ jobs:
         # stops at 100 files, and a larger pull request (#215, 239 files)
         # merged with its protected files unseen (12 November 2026). The
         # API itself lists at most 3,000 files: past that, refuse.
+        # A rename gives `filename` (new path) and `previous_filename` (old
+        # path): both are checked, so a file moved out of a protected area
+        # still needs the label.
         run: |
-          gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --jq '.[].filename' > changed.txt
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" \
+            --jq '.[] | "\(.filename)\t\(.previous_filename // "")"' > files.tsv
           total=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" --jq '.changed_files')
-          listed=$(wc -l < changed.txt)
+          listed=$(wc -l < files.tsv)
           echo "Changed files: ${listed} listed of ${total}."
           if [ "${listed}" -lt "${total}" ]; then
             echo "Not every changed file could be listed: split the pull request."
             exit 1
           fi
+          tr '\t' '\n' < files.tsv | grep -v '^$' > changed.txt
       - name: Compare with CODEOWNERS
         env:
           APPROVED: ${{ contains(github.event.pull_request.labels.*.name, 'lead-approved') }}
@@ -58,7 +88,7 @@ jobs:
               return re.compile(("^" if anchored else "(^|.*/)") + body + "$")
 
           rules = []
-          with open(".github/CODEOWNERS", encoding="utf-8") as f:
+          with open("CODEOWNERS", encoding="utf-8") as f:
               for line in f:
                   line = line.split("#", 1)[0].strip()
                   if line:

@@ -21,6 +21,10 @@
 
 # Secrets never live in this repository (see docs/04-architecture.md, D30)
 .env
+.env.*
+
+# AI session settings and worktrees, local to one machine
+.claude/
 
 # Generated images kept outside git (content/ai-reserve/README.md there):
 # the inbox of new ones, the full-size sources of the game's art, the style
