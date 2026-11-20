@@ -66,7 +66,10 @@ fn run(opts: &Options) -> Result<(), BoxError> {
     );
 
     let stop = Arc::new(AtomicBool::new(false));
-    let (mut world, persister, lineage) = open_world(opts, &content, Arc::clone(&stop))?;
+    // The lock on the world file lives as long as this run (D28, amended
+    // 20 November 2026).
+    let (mut world, persister, lineage, _world_lock) =
+        open_world(opts, &content, Arc::clone(&stop))?;
     let calendar = *world.calendar();
     println!(
         "calendar: {} ticks/s, {} s/day ({} ticks/day), {} days/year",
@@ -120,9 +123,11 @@ fn open_world(
     opts: &Options,
     content: &Arc<Content>,
     stop: Arc<AtomicBool>,
-) -> Result<(World, Persister, Lineage), BoxError> {
+) -> Result<(World, Persister, Lineage, Option<std::fs::File>), BoxError> {
+    let mut world_lock = None;
     let mut storage: Box<dyn Storage + Send> = match &opts.data {
         DataLocation::File(path) => {
+            world_lock = Some(lock_world_file(path)?);
             if opts.reset {
                 // The database and SQLite's sidecar files, if any.
                 for suffix in ["", "-wal", "-shm", "-journal"] {
@@ -204,7 +209,37 @@ fn open_world(
     // A game with players saves every few real minutes; a headless run,
     // which plays days in seconds, at each new game day.
     let every = (!opts.headless).then_some(CHECKPOINT_EVERY);
-    Ok((world, Persister::new(storage, stop, every), lineage))
+    Ok((
+        world,
+        Persister::new(storage, stop, every),
+        lineage,
+        world_lock,
+    ))
+}
+
+/// Holds the world file for this server alone (the security audit of 20
+/// November 2026): a sidecar `<path>.lock`, locked for the process's
+/// life. A second server on the same file is refused at once, instead of
+/// two servers braiding their snapshots into one database. The kernel
+/// releases the lock when the process ends, however it ends.
+fn lock_world_file(path: &std::path::Path) -> Result<std::fs::File, BoxError> {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".lock");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&name)?;
+    match lock.try_lock() {
+        Ok(()) => Ok(lock),
+        Err(std::fs::TryLockError::WouldBlock) => Err(format!(
+            "the world file {} is held by another server ({} is locked)",
+            path.display(),
+            std::path::Path::new(&name).display()
+        )
+        .into()),
+        Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
+    }
 }
 
 /// How often a game with players saves the world: a crash loses at most
@@ -455,6 +490,7 @@ async fn stop_signal() -> &'static str {
 /// ask, the world's lineage folded into its identity.
 fn shared_state(world: &World, opts: &Options, content: &Content, lineage: Lineage) -> Shared {
     let mut shared = Shared::new(world, content, opts.max_connections, opts.time_scale);
+    shared.set_limits(opts.limits);
     shared.fold_lineage(lineage.birth, lineage.epoch);
     // Tests read this line: keep its shape stable.
     println!("world id: {} (epoch {})", shared.world_id(), lineage.epoch);

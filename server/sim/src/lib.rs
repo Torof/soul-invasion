@@ -1661,7 +1661,7 @@ impl World {
             (-r..=r)
                 .flat_map(|dy| (-r..=r).map(move |dx| (dx, dy)))
                 .filter(|(dx, dy)| dx.abs() == r || dy.abs() == r)
-                .map(|(dx, dy)| Pos::new(target.x + dx, target.y + dy))
+                .map(|(dx, dy)| Pos::new(target.x.saturating_add(dx), target.y.saturating_add(dy)))
                 .find(|p| open(*p))
         })
     }
@@ -2733,7 +2733,9 @@ impl World {
             return refuse(events, Refusal::Unknown);
         };
         let here = self.bodies[index].pos();
-        if (at.x - here.x).abs() > 1 || (at.y - here.y).abs() > 1 {
+        // Unsigned distances: a tile at the ends of i32 (a client's
+        // coordinates, D03) is out of reach, not an overflow.
+        if at.x.abs_diff(here.x) > 1 || at.y.abs_diff(here.y) > 1 {
             return refuse(events, Refusal::OutOfReach);
         }
         if !self.map.get(at).is_some_and(Terrain::is_drinkable) {
@@ -3386,7 +3388,10 @@ impl World {
         let straight = self
             .map
             .walk_straight(from, target.centre(), sight, cost, blocked);
-        let seen = |p: Pos| (p.x - tile.x).abs() <= sight && (p.y - tile.y).abs() <= sight;
+        let seen = |p: Pos| {
+            p.x.abs_diff(tile.x) <= sight.unsigned_abs()
+                && p.y.abs_diff(tile.y) <= sight.unsigned_abs()
+        };
         let end = straight.last().copied().unwrap_or(from);
         // Straight on while nothing in sight stops it; and a target seen on
         // ground it may not enter is only walked toward.
@@ -3557,8 +3562,10 @@ impl World {
 /// The square of the distance between two fine points, in square
 /// millimetres.
 fn squared_mm(a: FinePos, b: FinePos) -> u64 {
-    let (dx, dy) = (i64::from(a.x - b.x), i64::from(a.y - b.y));
-    (dx * dx + dy * dy).unsigned_abs()
+    // Unsigned and saturating: a target at the ends of the fine grid (a
+    // client's coordinates, D03) is far, not an overflow.
+    let (dx, dy) = (u64::from(a.x.abs_diff(b.x)), u64::from(a.y.abs_diff(b.y)));
+    (dx * dx).saturating_add(dy * dy)
 }
 
 /// Walking speed under a load, in percent of the unloaded speed: linear
@@ -3850,6 +3857,79 @@ mod tests {
         w.advance(3, &rules(), &mut events);
         assert!(!events.iter().any(|e| matches!(e, Event::DayStarted { .. })));
         assert_eq!(w.time().day, 1);
+    }
+
+    /// A client's coordinates reach the simulation unchecked (D03): a
+    /// target at the ends of `i32` or just past the map's edge never
+    /// overflows (the debug build keeps overflow checks on). A walk toward
+    /// it stops at the map's edge, as toward any target off the map; a
+    /// teleport stands the body on the map or is refused; a drink is
+    /// refused.
+    #[test]
+    fn targets_off_the_map_are_refused_or_stopped_not_overflowed() {
+        let rules = rules();
+        let edge = [
+            Pos::new(i32::MIN, i32::MIN),
+            Pos::new(i32::MAX, i32::MAX),
+            Pos::new(i32::MIN, 0),
+            Pos::new(0, i32::MAX),
+            Pos::new(3_000_000, 0),
+            Pos::new(8, 0),
+            Pos::new(0, 8),
+            Pos::new(-1, 0),
+            Pos::new(0, -1),
+        ];
+        for target in edge {
+            let mut w = open_field();
+            let mut events = Vec::new();
+            go(&mut w, target);
+            w.advance(300, &rules, &mut events);
+            let at = w.body(BodyId(1)).expect("body 1").pos();
+            assert!(w.map().get(at).is_some(), "move_to {target:?}: at {at:?}");
+            assert!(
+                events.iter().any(|e| matches!(
+                    e,
+                    Event::BodyStopped {
+                        body: BodyId(1),
+                        ..
+                    } | Event::MoveRefused {
+                        body: BodyId(1),
+                        ..
+                    }
+                )),
+                "move_to {target:?}: {events:?}"
+            );
+
+            events.clear();
+            w.queue(Intention::Teleport {
+                body: BodyId(1),
+                target,
+            });
+            w.advance(1, &rules, &mut events);
+            let at = w.body(BodyId(1)).expect("body 1").pos();
+            assert!(w.map().get(at).is_some(), "teleport {target:?}: at {at:?}");
+            assert!(
+                events.iter().any(|e| matches!(
+                    e,
+                    Event::MoveRefused { body: BodyId(1), target: t, reason: Blockage::NoWay } if *t == target
+                ) || matches!(e, Event::BodyMoved { body: BodyId(1), .. })),
+                "teleport {target:?}: {events:?}"
+            );
+
+            events.clear();
+            w.queue(Intention::Drink {
+                body: BodyId(1),
+                at: target,
+            });
+            w.advance(1, &rules, &mut events);
+            assert!(
+                events.iter().any(|e| matches!(
+                    e,
+                    Event::DrinkRefused { body: BodyId(1), at, reason: Refusal::OutOfReach | Refusal::NotWater } if *at == target
+                )),
+                "drink {target:?}: {events:?}"
+            );
+        }
     }
 
     #[test]

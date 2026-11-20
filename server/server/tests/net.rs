@@ -14,10 +14,11 @@ use protocol::{
     BINARY_FAR_VIEW, Blockage, ChunkFrame, ClientMessage, FarView, PROTOCOL_VERSION, Point,
     ServerMessage, binary_kind, decode, decode_chunk, decode_far_view, encode,
 };
-use server::net::VIEW_RADIUS;
+use server::net::{COMPLAINTS_MAX, VIEW_RADIUS};
 use sim::{BodyId, CHUNK_SIZE, Calendar, ChunkPos, FinePos, Pos, World};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -1458,6 +1459,132 @@ async fn connections_beyond_the_limit_are_refused() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!("the place was never given back");
+}
+
+/// Finding N2 (the lead's decision Q2): an upgrade carrying an `Origin`
+/// header is a browser page and is refused; the Godot client sends none.
+#[tokio::test]
+async fn an_upgrade_with_an_origin_header_is_refused() {
+    let server = Server::start();
+    let mut page = format!("ws://{}", server.addr)
+        .into_client_request()
+        .expect("a request");
+    page.headers_mut()
+        .insert("Origin", "https://evil.example".parse().expect("a header"));
+    let refused = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio_tungstenite::connect_async(page),
+    )
+    .await
+    .expect("answered promptly");
+    match refused {
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            assert_eq!(response.status(), 403);
+        }
+        other => panic!("not refused with 403: {other:?}"),
+    }
+
+    // The same server serves an upgrade without one.
+    let (_socket, body) = join(&server).await;
+    assert_eq!(body, Some(1));
+}
+
+/// Finding N4: an address holds at most `--connections-per-address`
+/// places, given back when a connection ends.
+#[tokio::test]
+async fn connections_beyond_an_address_s_places_are_refused() {
+    let server = Server::start_with(&["--connections-per-address", "2"]);
+    let (first, _) = join(&server).await;
+    let (mut second, _) = join(&server).await;
+    let third = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio_tungstenite::connect_async(format!("ws://{}", server.addr)),
+    )
+    .await
+    .expect("refused promptly");
+    assert!(
+        third.is_err(),
+        "no upgrade for a third connection from this address"
+    );
+
+    send(&mut second, &ClientMessage::Ping { nonce: 5 }).await;
+    assert_eq!(
+        receive(&mut second).await,
+        Some(Got::M(ServerMessage::Pong { nonce: 5 }))
+    );
+
+    drop(first);
+    for _ in 0..50 {
+        if tokio_tungstenite::connect_async(format!("ws://{}", server.addr))
+            .await
+            .is_ok()
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the address's place was never given back");
+}
+
+/// Finding N4: the server pings each connection and drops one silent for
+/// `--drop-silent-after`; a client that answers the pings (its transport
+/// does, as Godot's) stays, however idle.
+#[tokio::test]
+async fn a_silent_connection_is_dropped_and_one_answering_pings_is_kept() {
+    let server = Server::start_with(&["--ping-every", "1", "--drop-silent-after", "2"]);
+    let (mut idle, _) = join(&server).await;
+    let (mut silent, _) = join(&server).await;
+
+    // The idle one reads: the pings get their pongs. Four seconds, past
+    // two silences.
+    let until = Instant::now() + Duration::from_secs(4);
+    while Instant::now() < until {
+        let next = tokio::time::timeout(Duration::from_millis(200), idle.next()).await;
+        assert!(
+            !matches!(next, Ok(None | Some(Err(_) | Ok(Message::Close(_))))),
+            "the idle client answering pings was dropped: {next:?}"
+        );
+    }
+    // The silent one never read: no pong went. What it buffered ends
+    // with the server's close.
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(Ok(frame)) = silent.next().await {
+            if matches!(frame, Message::Close(_)) {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "the silent connection was never dropped");
+
+    // The idle one is still served.
+    send(&mut idle, &ClientMessage::Ping { nonce: 9 }).await;
+    assert_eq!(
+        receive(&mut idle).await,
+        Some(Got::M(ServerMessage::Pong { nonce: 9 }))
+    );
+}
+
+/// Finding N6: a connection sending bad messages past the cap is closed.
+#[tokio::test]
+async fn a_connection_sending_too_many_bad_messages_is_closed() {
+    let server = Server::start();
+    let (mut socket, _) = join(&server).await;
+    for _ in 0..=COMPLAINTS_MAX {
+        socket
+            .send(Message::text("{\"type\":\"\u{1b}]0;PWNED\u{7}\"}"))
+            .await
+            .expect("sent");
+    }
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(Ok(frame)) = socket.next().await {
+            if matches!(frame, Message::Close(_)) {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "the connection was never closed");
 }
 
 #[tokio::test]

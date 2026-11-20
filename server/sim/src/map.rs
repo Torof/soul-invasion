@@ -78,11 +78,17 @@ impl Pos {
         self.x != other.x && self.y != other.y
     }
 
-    /// The centre of this tile, in millimetres.
+    /// The centre of this tile, in millimetres. Saturating: a tile far
+    /// off any map (a client's coordinates, D03) gives a point at the
+    /// edge of the fine grid, never an overflow.
     pub fn centre(self) -> FinePos {
         FinePos::new(
-            self.x * MM_PER_TILE + MM_PER_TILE / 2,
-            self.y * MM_PER_TILE + MM_PER_TILE / 2,
+            self.x
+                .saturating_mul(MM_PER_TILE)
+                .saturating_add(MM_PER_TILE / 2),
+            self.y
+                .saturating_mul(MM_PER_TILE)
+                .saturating_add(MM_PER_TILE / 2),
         )
     }
 
@@ -936,7 +942,12 @@ impl Map {
         if from == to {
             return (Some(Vec::new()), 0);
         }
-        let within = |pos: Pos| (pos.x - from.x).abs() <= reach && (pos.y - from.y).abs() <= reach;
+        // Unsigned distances: a target at the ends of i32 is far, not an
+        // overflow.
+        let within = |pos: Pos| {
+            pos.x.abs_diff(from.x) <= reach.unsigned_abs()
+                && pos.y.abs_diff(from.y) <= reach.unsigned_abs()
+        };
         let cost_at = |pos: Pos| {
             if blocked(pos) {
                 None
@@ -1089,7 +1100,8 @@ impl Map {
     ) -> Vec<FinePos> {
         let open = |pos: Pos| !blocked(pos) && self.get(pos).and_then(&cost).is_some();
         let seen = |pos: Pos| {
-            (pos.x - from.tile().x).abs() <= sight && (pos.y - from.tile().y).abs() <= sight
+            pos.x.abs_diff(from.tile().x) <= sight.unsigned_abs()
+                && pos.y.abs_diff(from.tile().y) <= sight.unsigned_abs()
         };
         let mut route = Vec::new();
         let mut at = from;
@@ -1149,7 +1161,10 @@ impl Map {
         if length <= 0.0 {
             return None;
         }
-        let within = |p: Pos| (p.x - start.x).abs() <= reach && (p.y - start.y).abs() <= reach;
+        let within = |p: Pos| {
+            p.x.abs_diff(start.x) <= reach.unsigned_abs()
+                && p.y.abs_diff(start.y) <= reach.unsigned_abs()
+        };
         let mut along_t = t;
         let mut barred = false;
         while along_t <= 1.0 {

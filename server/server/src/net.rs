@@ -18,13 +18,21 @@
 //! `max_connections` clients are served at once; and a body keeps only the
 //! latest intention per tick, so a flooding client costs one path search
 //! per tick and bothers nobody else.
+//!
+//! The door, from the security audit of 20 November 2026 (D25, amended):
+//! an upgrade carrying an `Origin` header is a browser page, never the
+//! Godot client, and is refused; a connection is pinged at an interval
+//! and dropped once silent for [`Limits::drop_silent_after`]; an address
+//! holds at most [`Limits::connections_per_address`] places; what a
+//! client's bad messages write to the log is escaped, bounded and capped
+//! ([`Complaints`]).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
@@ -47,6 +55,8 @@ use crate::pool::ChunkPool;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{Bytes, Message};
 
@@ -57,6 +67,140 @@ pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Largest incoming message, in bytes. Client messages are a few dozen
 /// bytes; anything near this limit is not our client.
 pub const MAX_MESSAGE_BYTES: usize = 4096;
+
+/// What bounds a connection's life, from the server's flags (the
+/// security audit of 20 November 2026, finding N4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// A WebSocket ping is sent to every connection this often. The
+    /// transport answers it on the client's side (Godot's included), so
+    /// a player who leaves the game open stays; a peer that vanished
+    /// does not. Twenty seconds: a handful of frames an hour, and a lost
+    /// peer found within a minute.
+    pub ping_every: Duration,
+    /// A connection from which nothing came for this long, pings
+    /// included, is dropped: sixty seconds, three pings missed, enough
+    /// for a laptop waking up.
+    pub drop_silent_after: Duration,
+    /// Connections served at once from one address, at most. Eight: a
+    /// household behind one address, or a few clients on a development
+    /// machine; a hundred from one address is a flood.
+    pub connections_per_address: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            ping_every: Duration::from_secs(20),
+            drop_silent_after: Duration::from_secs(60),
+            connections_per_address: 8,
+        }
+    }
+}
+
+/// Log lines written for one connection's bad messages (undecodable, or
+/// refused tools); the rest are counted silently. Ten says what is wrong;
+/// a thousand fills the disk (finding N6).
+pub const COMPLAINTS_LOGGED: u32 = 10;
+
+/// Bad messages one connection may send in all; past that it is not our
+/// client and is closed (finding N6).
+pub const COMPLAINTS_MAX: u32 = 100;
+const _: () = assert!(COMPLAINTS_LOGGED < COMPLAINTS_MAX);
+
+/// Longest client-derived text a log line carries, in bytes (finding
+/// N5): enough to show what was wrong, never a page.
+pub const LOGGED_TEXT_MAX: usize = 200;
+
+/// Client-derived text as it may go to the log: control characters and
+/// quotes escaped, cut at [`LOGGED_TEXT_MAX`] bytes. A client's bytes
+/// never reach the terminal as they are (finding N5): no title set, no
+/// screen cleared, no fake line.
+pub fn loggable(text: &str) -> String {
+    let mut out = String::new();
+    for c in text.chars() {
+        if out.len() >= LOGGED_TEXT_MAX {
+            out.push_str("...");
+            break;
+        }
+        out.extend(c.escape_debug());
+    }
+    out
+}
+
+/// What one connection's bad messages cost the log: the first
+/// [`COMPLAINTS_LOGGED`] are written, the rest counted, and past
+/// [`COMPLAINTS_MAX`] the connection is closed (findings N5, N6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Complaints {
+    count: u32,
+    logged: u32,
+    max: u32,
+}
+
+/// What to do with one more bad message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Complaint {
+    /// Write it.
+    Logged,
+    /// Count it, write nothing.
+    Silent,
+    /// The cap is passed: close the connection.
+    TooMany,
+}
+
+impl Default for Complaints {
+    fn default() -> Self {
+        Self::new(COMPLAINTS_LOGGED, COMPLAINTS_MAX)
+    }
+}
+
+impl Complaints {
+    /// A budget of `logged` lines and `max` bad messages in all.
+    pub fn new(logged: u32, max: u32) -> Self {
+        Self {
+            count: 0,
+            logged,
+            max,
+        }
+    }
+
+    /// Notes one more bad message.
+    pub fn note(&mut self) -> Complaint {
+        self.count = self.count.saturating_add(1);
+        if self.count > self.max {
+            Complaint::TooMany
+        } else if self.count <= self.logged {
+            Complaint::Logged
+        } else {
+            Complaint::Silent
+        }
+    }
+
+    /// Bad messages noted so far.
+    pub fn count(self) -> u32 {
+        self.count
+    }
+}
+
+/// The upgrade's door (D25, amended 20 November 2026, the lead's decision
+/// Q2): a request carrying an `Origin` header comes from a browser page,
+/// never from the Godot desktop client, and is refused with 403. Any
+/// page open in a player's browser could otherwise drive the server on
+/// 127.0.0.1 (finding N2). A web client, should one come, would need an
+/// allowlist here instead.
+#[allow(
+    clippy::result_large_err,
+    reason = "the shape tungstenite's handshake callback asks for"
+)]
+pub fn refuse_origin(request: &Request, response: Response) -> Result<Response, ErrorResponse> {
+    if request.headers().contains_key("origin") {
+        let mut refused = ErrorResponse::new(Some("browser pages are not served".to_owned()));
+        *refused.status_mut() = StatusCode::FORBIDDEN;
+        return Err(refused);
+    }
+    Ok(response)
+}
 
 /// Largest `hello`, in bytes: the one message that may carry the chunks a
 /// client holds ([`protocol::HELD_CHUNKS_MAX`] entries, about 25 bytes
@@ -383,6 +527,10 @@ pub struct Shared {
     max_connections: usize,
     /// Connections currently served.
     connections: AtomicUsize,
+    /// What bounds a connection's life.
+    limits: Limits,
+    /// Connections currently served, by address.
+    per_address: Mutex<BTreeMap<IpAddr, usize>>,
     /// The latest intention of each body, taken by the simulation thread
     /// before each tick.
     intentions: Mutex<BTreeMap<u32, Intention>>,
@@ -679,16 +827,46 @@ pub fn far_view(map: &Map, centre: ChunkPos) -> FarView {
     }
 }
 
-/// A served connection's place among the `max_connections`, given back
-/// when dropped.
+/// A served connection's place among the `max_connections` and among
+/// its address's, given back when dropped.
 #[derive(Debug)]
 pub struct Admission<'a> {
     shared: &'a Shared,
+    address: IpAddr,
 }
 
 impl Drop for Admission<'_> {
     fn drop(&mut self) {
+        let mut by_address = self
+            .shared
+            .per_address
+            .lock()
+            .expect("per_address not poisoned");
+        if let Some(mine) = by_address.get_mut(&self.address) {
+            *mine = mine.saturating_sub(1);
+            if *mine == 0 {
+                by_address.remove(&self.address);
+            }
+        }
         self.shared.connections.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// Why a connection was not admitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refused {
+    /// All the places are taken (`max_connections`).
+    Full(usize),
+    /// The address's places are taken ([`Limits::connections_per_address`]).
+    Address(usize),
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Full(n) => write!(f, "refused, {n} connections already"),
+            Self::Address(n) => write!(f, "refused, {n} connections already from this address"),
+        }
     }
 }
 
@@ -792,6 +970,8 @@ impl Shared {
             world: String::new(),
             max_connections,
             connections: AtomicUsize::new(0),
+            limits: Limits::default(),
+            per_address: Mutex::new(BTreeMap::new()),
             intentions: Mutex::new(BTreeMap::new()),
             pilots: Mutex::new(BTreeMap::new()),
             births: Mutex::new(Vec::new()),
@@ -1097,12 +1277,28 @@ impl Shared {
         self.bodies().in_chunk(chunk)
     }
 
-    /// Takes a place for a new connection, or `None` when all are taken.
-    pub fn admit(&self) -> Option<Admission<'_>> {
+    /// Sets what bounds a connection's life (the server's flags).
+    pub fn set_limits(&mut self, limits: Limits) {
+        self.limits = limits;
+    }
+
+    /// What bounds a connection's life.
+    pub fn limits(&self) -> Limits {
+        self.limits
+    }
+
+    /// Takes a place for a new connection from `address`, or the refusal:
+    /// all places taken, or the address's places taken.
+    pub fn admit(&self, address: IpAddr) -> Result<Admission<'_>, Refused> {
+        let mut by_address = self.per_address.lock().expect("per_address not poisoned");
+        let mine = by_address.entry(address).or_insert(0);
+        if *mine >= self.limits.connections_per_address {
+            return Err(Refused::Address(self.limits.connections_per_address));
+        }
         let mut current = self.connections.load(Ordering::Relaxed);
         loop {
             if current >= self.max_connections {
-                return None;
+                return Err(Refused::Full(self.max_connections));
             }
             match self.connections.compare_exchange_weak(
                 current,
@@ -1110,10 +1306,26 @@ impl Shared {
                 Ordering::Relaxed,
                 Ordering::Relaxed,
             ) {
-                Ok(_) => return Some(Admission { shared: self }),
+                Ok(_) => {
+                    *mine += 1;
+                    return Ok(Admission {
+                        shared: self,
+                        address,
+                    });
+                }
                 Err(seen) => current = seen,
             }
         }
+    }
+
+    /// Connections currently served from `address`.
+    pub fn connections_from(&self, address: IpAddr) -> usize {
+        self.per_address
+            .lock()
+            .expect("per_address not poisoned")
+            .get(&address)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Connections currently served.
@@ -1928,11 +2140,14 @@ pub async fn serve(
                     let pool = Arc::clone(&pool);
                     let shutdown = shutdown.clone();
                     tokio::spawn(async move {
-                        let Some(_admission) = shared.admit() else {
-                            // Dropping the stream closes it; the client sees
-                            // the connection end before any upgrade.
-                            eprintln!("connection {peer}: refused, {} connections already", shared.max_connections);
-                            return;
+                        let _admission = match shared.admit(peer.ip()) {
+                            Ok(admission) => admission,
+                            Err(refused) => {
+                                // Dropping the stream closes it; the client sees
+                                // the connection end before any upgrade.
+                                eprintln!("connection {peer}: {refused}");
+                                return;
+                            }
                         };
                         if let Err(e) = handle_connection(stream, peer, &shared, &pool, shutdown).await {
                             eprintln!("connection {peer}: {e}");
@@ -2002,13 +2217,16 @@ async fn handle_connection(
     let config = WebSocketConfig::default()
         .max_message_size(Some(HELLO_MAX_BYTES))
         .max_frame_size(Some(HELLO_MAX_BYTES));
-    let upgrade = tokio_tungstenite::accept_async_with_config(stream, Some(config));
+    let upgrade =
+        tokio_tungstenite::accept_hdr_async_with_config(stream, refuse_origin, Some(config));
     let Ok(upgraded) = tokio::time::timeout(HANDSHAKE_TIMEOUT, upgrade).await else {
         // Silent TCP connections are dropped without ceremony.
         return Ok(());
     };
     let mut ws = upgraded?;
     println!("connection {peer}: opened");
+    let limits = shared.limits();
+    let mut complaints = Complaints::default();
 
     // Subscribe before answering hello so nothing is missed between the
     // welcome tick and the first published message.
@@ -2083,6 +2301,16 @@ async fn handle_connection(
     link.move_view(centre);
     link.far_view(centre);
 
+    // The last moment anything came from the client, pongs included: a
+    // ping goes every `ping_every`, and a connection silent for
+    // `drop_silent_after` is dropped (finding N4).
+    let mut last_heard = Instant::now();
+    let mut ping = tokio::time::interval_at(
+        tokio::time::Instant::now() + limits.ping_every,
+        limits.ping_every,
+    );
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     let outcome: Result<(), BoxError> = async {
         loop {
             // Checked here, not as the queue leaves: a client whose wire
@@ -2090,38 +2318,60 @@ async fn handle_connection(
             link.check_pace()?;
             tokio::select! {
                 incoming = reader.next() => match incoming {
-                    None | Some(Ok(Message::Close(_))) => return Ok(()),
-                    Some(Err(e)) => return Err(e.into()),
                     Some(Ok(message)) if message.len() > MAX_MESSAGE_BYTES => {
                         return Err(format!("a message of {} bytes, past the limit", message.len()).into());
                     }
-                    Some(Ok(Message::Text(text))) => match decode::<ClientMessage>(text.as_str()) {
-                        Ok(ClientMessage::Ping { nonce }) => {
-                            link.event(&ServerMessage::Pong { nonce });
+                    Some(Ok(message)) => {
+                        last_heard = Instant::now();
+                        match message {
+                            Message::Close(_) => return Ok(()),
+                            Message::Text(text) => match decode::<ClientMessage>(text.as_str()) {
+                                Ok(ClientMessage::Ping { nonce }) => {
+                                    link.event(&ServerMessage::Pong { nonce });
+                                }
+                                Ok(ClientMessage::Hello { .. }) => {
+                                    // A second hello is a client bug; drop the connection.
+                                    return Ok(());
+                                }
+                                Ok(ClientMessage::ChunkMissing { x, y }) => {
+                                    link.missing(ChunkPos::new(x, y));
+                                }
+                                Ok(ClientMessage::DevTeleport { .. }) if !shared.is_dev() => {
+                                    match complaints.note() {
+                                        Complaint::Logged => eprintln!("connection {peer}: teleport refused, the server is not in --dev"),
+                                        Complaint::Silent => {}
+                                        Complaint::TooMany => return Err(too_many(complaints)),
+                                    }
+                                }
+                                Ok(message) => {
+                                    if let Some(body) = link.pilot.body {
+                                        shared.intend(intention_of(BodyId(body), &message));
+                                    }
+                                }
+                                Err(e) => match complaints.note() {
+                                    Complaint::Logged => eprintln!(
+                                        "connection {peer}: undecodable message ignored: {}",
+                                        loggable(&e.to_string())
+                                    ),
+                                    Complaint::Silent => {}
+                                    Complaint::TooMany => return Err(too_many(complaints)),
+                                },
+                            },
+                            // Binary frames are not part of the protocol; ping/pong
+                            // frames are handled by the WebSocket layer itself.
+                            _ => {}
                         }
-                        Ok(ClientMessage::Hello { .. }) => {
-                            // A second hello is a client bug; drop the connection.
-                            return Ok(());
-                        }
-                        Ok(ClientMessage::ChunkMissing { x, y }) => {
-                            link.missing(ChunkPos::new(x, y));
-                        }
-                        Ok(ClientMessage::DevTeleport { .. }) if !shared.is_dev() => {
-                            eprintln!("connection {peer}: teleport refused, the server is not in --dev");
-                        }
-                        Ok(message) => {
-                            if let Some(body) = link.pilot.body {
-                                shared.intend(intention_of(BodyId(body), &message));
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("connection {peer}: undecodable message ignored: {e}");
-                        }
-                    },
-                    // Binary frames are not part of the protocol; ping/pong frames
-                    // are handled by the WebSocket layer itself.
-                    Some(Ok(_)) => {}
+                    }
+                    None => return Ok(()),
+                    Some(Err(e)) => return Err(e.into()),
                 },
+                _ = ping.tick() => {
+                    let silent = last_heard.elapsed();
+                    if silent >= limits.drop_silent_after {
+                        return Err(format!("silent for {} s, dropped", silent.as_secs()).into());
+                    }
+                    link.ping();
+                }
                 message = inbox.events.recv() => match message {
                     Some(published) => {
                         if link.forward(published) {
@@ -2166,6 +2416,15 @@ async fn handle_connection(
     drop(writer_tx);
     let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
     outcome
+}
+
+/// The error that closes a connection past [`COMPLAINTS_MAX`] bad messages.
+fn too_many(complaints: Complaints) -> BoxError {
+    format!(
+        "{} bad messages, more than {COMPLAINTS_MAX}: not our client",
+        complaints.count()
+    )
+    .into()
 }
 
 /// What a connection has to send: the lane a message goes in.
@@ -2357,6 +2616,12 @@ impl Link {
                 self.peer
             ),
         }
+    }
+
+    /// A WebSocket ping, in the events lane: the transport on the other
+    /// side answers it, and the answer is heard here.
+    fn ping(&mut self) {
+        self.events.push_back(Message::Ping(Bytes::new()));
     }
 
     /// An error once the client let more than [`EVENT_QUEUE_LIMIT`]
@@ -3289,18 +3554,103 @@ mod tests {
         world
     }
 
+    const HOME: IpAddr = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+    const AWAY: IpAddr = IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 7));
+
     #[test]
     fn admissions_are_counted_and_given_back() {
         let shared = shared(2);
-        let first = shared.admit().expect("first place");
-        let second = shared.admit().expect("second place");
-        assert!(shared.admit().is_none(), "no third place");
+        let first = shared.admit(HOME).expect("first place");
+        let second = shared.admit(AWAY).expect("second place");
+        assert_eq!(
+            shared.admit(HOME).err(),
+            Some(Refused::Full(2)),
+            "no third place"
+        );
         assert_eq!(shared.connections(), 2);
         drop(first);
         assert_eq!(shared.connections(), 1);
-        let third = shared.admit().expect("the place is free again");
+        let third = shared.admit(HOME).expect("the place is free again");
         drop((second, third));
         assert_eq!(shared.connections(), 0);
+        assert_eq!(shared.connections_from(HOME), 0);
+    }
+
+    /// Finding N4: an address holds at most `connections_per_address`
+    /// places, whatever is left for the others.
+    #[test]
+    fn an_address_holds_at_most_its_places() {
+        let mut shared = shared(10);
+        shared.set_limits(Limits {
+            connections_per_address: 2,
+            ..Limits::default()
+        });
+        let first = shared.admit(HOME).expect("first place");
+        let second = shared.admit(HOME).expect("second place");
+        assert_eq!(shared.admit(HOME).err(), Some(Refused::Address(2)));
+        assert_eq!(shared.connections_from(HOME), 2);
+        let other = shared.admit(AWAY).expect("another address is served");
+        drop(first);
+        assert_eq!(shared.connections_from(HOME), 1);
+        let third = shared
+            .admit(HOME)
+            .expect("the address's place is free again");
+        drop((second, third, other));
+        assert_eq!(shared.connections(), 0);
+        assert_eq!(shared.connections_from(HOME), 0);
+        assert_eq!(shared.connections_from(AWAY), 0);
+    }
+
+    /// Finding N5: a client's bytes never reach the terminal as they
+    /// are: control characters escaped, the text bounded.
+    #[test]
+    fn client_text_in_the_log_is_escaped_and_bounded() {
+        let hostile = "\u{1b}]0;PWNED\u{7}\u{1b}[2J\nserver stopped\r\"quoted\"";
+        let shown = loggable(hostile);
+        assert!(!shown.chars().any(char::is_control), "{shown}");
+        assert_eq!(
+            shown,
+            "\\u{1b}]0;PWNED\\u{7}\\u{1b}[2J\\nserver stopped\\r\\\"quoted\\\""
+        );
+        assert_eq!(loggable("plain text, accents é"), "plain text, accents é");
+        let long = "x".repeat(LOGGED_TEXT_MAX * 3);
+        let shown = loggable(&long);
+        assert!(shown.len() <= LOGGED_TEXT_MAX + 3, "{}", shown.len());
+        assert!(shown.ends_with("..."));
+    }
+
+    /// Finding N6: a connection's bad messages write a few lines, then
+    /// nothing, then close it.
+    #[test]
+    fn complaints_are_logged_then_counted_then_too_many() {
+        let mut complaints = Complaints::new(2, 5);
+        assert_eq!(complaints.note(), Complaint::Logged);
+        assert_eq!(complaints.note(), Complaint::Logged);
+        assert_eq!(complaints.note(), Complaint::Silent);
+        assert_eq!(complaints.note(), Complaint::Silent);
+        assert_eq!(complaints.note(), Complaint::Silent);
+        assert_eq!(complaints.note(), Complaint::TooMany);
+        assert_eq!(complaints.count(), 6);
+    }
+
+    /// Finding N2, the lead's decision Q2: an upgrade carrying `Origin`
+    /// is refused, one without is accepted.
+    #[test]
+    fn an_upgrade_with_an_origin_header_is_refused() {
+        let plain = Request::builder()
+            .uri("ws://127.0.0.1:7777/")
+            .body(())
+            .expect("a request");
+        assert!(refuse_origin(&plain, Response::new(())).is_ok());
+        for origin in ["https://evil.example", "null", "http://localhost:7777"] {
+            let page = Request::builder()
+                .uri("ws://127.0.0.1:7777/")
+                .header("Origin", origin)
+                .body(())
+                .expect("a request");
+            let refused = refuse_origin(&page, Response::new(())).expect_err(origin);
+            assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        }
     }
 
     #[test]
