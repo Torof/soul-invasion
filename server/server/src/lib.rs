@@ -9,6 +9,7 @@ pub mod cli;
 pub mod content;
 pub mod interest;
 pub mod net;
+pub mod persist;
 pub mod pool;
 pub mod run;
 pub mod secret;
