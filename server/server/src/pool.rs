@@ -149,11 +149,19 @@ impl Drop for ChunkPool {
 }
 
 impl Inner {
+    /// The queue, recovered if a panic poisoned its lock: every step
+    /// under it is a plain push or pop, so the queue is whole at any
+    /// point a panic could unwind through (an allocation that fails
+    /// aborts, it does not unwind).
     fn lock(&self) -> std::sync::MutexGuard<'_, Queue> {
-        self.queue.lock().expect("the pool's queue is not poisoned")
+        self.queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// A worker's life: the next job of the next lane, until closed.
+    /// A worker's life: the next job of the next lane, until closed. A
+    /// job that panics is told, and the worker goes on: a bug in one
+    /// chunk's work must not leave the pool a thread short for good.
     fn work(&self) {
         loop {
             let job = {
@@ -168,10 +176,12 @@ impl Inner {
                     queue = self
                         .ready
                         .wait(queue)
-                        .expect("the pool's queue is not poisoned");
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                 }
             };
-            job();
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).is_err() {
+                eprintln!("a chunk job panicked (above); its thread goes on");
+            }
         }
     }
 }
@@ -244,6 +254,26 @@ mod tests {
             .map(|_| rx.recv_timeout(Duration::from_secs(5)).expect("a job ran"))
             .collect();
         assert_eq!(ran, ["a0", "b0", "a1", "b1", "a2"]);
+        assert_eq!(pool.waiting(), 0);
+    }
+
+    #[test]
+    fn a_panicking_job_does_not_take_its_thread_with_it() {
+        let pool = ChunkPool::new(1);
+        let lane = pool.lane();
+        pool.submit(lane, Box::new(|| panic!("a bug in one chunk's work")));
+        let (tx, rx) = mpsc::channel();
+        pool.submit(
+            lane,
+            Box::new(move || {
+                tx.send(()).unwrap();
+            }),
+        );
+        assert!(
+            rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "the only thread died with the job before"
+        );
+        // The queue's lock was not poisoned by the panic either.
         assert_eq!(pool.waiting(), 0);
     }
 

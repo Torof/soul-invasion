@@ -19,9 +19,10 @@ use server::net::{
     Published, Shared, blocked_view, condition_view, drink_refused_view, refusal_view,
     refused_view, season_view, serve, thinks_view,
 };
+use server::persist::{CHECKPOINT_EVERY, Persister};
 use server::pool::{ChunkPool, chunk_threads};
 use server::storage::ContinentStore;
-use server::{Lineage, Options, Sqlite, Storage, StorageError, run_headless, run_paced};
+use server::{Lineage, Options, Sqlite, Storage, run_headless, run_paced};
 use sim::{Content, Event, World};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -246,108 +247,6 @@ fn lock_world_file(path: &std::path::Path) -> Result<std::fs::File, BoxError> {
         )
         .into()),
         Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
-    }
-}
-
-/// How often a game with players saves the world: a crash loses at most
-/// this much play, which the project lead accepts (D28).
-const CHECKPOINT_EVERY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
-
-/// What the simulation hands the storage thread: a copy of the world, to
-/// snapshot. Cheap: the map is shared, not copied; bodies, items and
-/// trees are.
-enum Write {
-    /// A checkpoint.
-    Snapshot(Box<World>),
-    /// The final snapshot of a clean stop, followed by its mark.
-    Last(Box<World>),
-}
-
-/// Takes snapshots for the simulation loop, on a
-/// thread of its own: the simulation only copies what it hands over, and
-/// never waits for the disk (D29).
-///
-/// The first failure stops the writer and asks the loop to stop;
-/// [`Persister::finish`] reports it.
-struct Persister {
-    sender: Option<std::sync::mpsc::Sender<Write>>,
-    writer: Option<std::thread::JoinHandle<Result<(), StorageError>>>,
-    /// Real time between snapshots; `None`: at each new game day.
-    every: Option<std::time::Duration>,
-    last: std::time::Instant,
-}
-
-impl Persister {
-    fn new(
-        storage: Box<dyn Storage + Send>,
-        stop: Arc<AtomicBool>,
-        every: Option<std::time::Duration>,
-    ) -> Self {
-        let (sender, receiver) = std::sync::mpsc::channel::<Write>();
-        let writer = std::thread::Builder::new()
-            .name("storage".to_owned())
-            .spawn(move || {
-                let mut storage = storage;
-                for write in receiver {
-                    let (world, last) = match write {
-                        Write::Snapshot(world) => (world, false),
-                        Write::Last(world) => (world, true),
-                    };
-                    let saved = storage.save_world(&world).and_then(|()| {
-                        // Only once its final snapshot is written: a run
-                        // that ends otherwise (a panic) is a crash.
-                        if last {
-                            storage.mark_clean_stop()
-                        } else {
-                            Ok(())
-                        }
-                    });
-                    if let Err(e) = saved {
-                        eprintln!("persistence failed, stopping: {e}");
-                        stop.store(true, Ordering::Relaxed);
-                        return Err(e);
-                    }
-                }
-                Ok(())
-            })
-            .expect("the storage thread starts");
-        Self {
-            sender: Some(sender),
-            writer: Some(writer),
-            every,
-            last: std::time::Instant::now(),
-        }
-    }
-
-    /// Hands over a copy of the world when a snapshot is due.
-    fn on_tick(&mut self, world: &World, events: &[Event]) {
-        let due = match self.every {
-            Some(every) => self.last.elapsed() >= every,
-            None => events.iter().any(|e| matches!(e, Event::DayStarted { .. })),
-        };
-        if due {
-            self.last = std::time::Instant::now();
-            self.send(Write::Snapshot(Box::new(world.clone())));
-        }
-    }
-
-    fn send(&mut self, write: Write) {
-        // A writer that has stopped has failed: `finish` reports why.
-        if self.sender.as_ref().is_some_and(|s| s.send(write).is_err()) {
-            self.sender = None;
-        }
-    }
-
-    /// The final snapshot and the clean stop's mark, written before
-    /// returning; or the failure that interrupted the run.
-    fn finish(mut self, world: &World) -> Result<(), StorageError> {
-        self.send(Write::Last(Box::new(world.clone())));
-        drop(self.sender.take());
-        self.writer
-            .take()
-            .expect("finished once")
-            .join()
-            .expect("the storage thread does not panic")
     }
 }
 
@@ -740,104 +639,5 @@ fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
         Event::BodyThinks { body, thought, at } => {
             shared.tell_pilot(*body, thinks_view(*body, *thought, *at));
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Persister;
-    use server::{Storage, StorageError};
-    use sim::{BodyId, Calendar, Event, FinePos, Map, Terrain, World};
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
-
-    /// A storage that writes down what it is asked, and fails on demand.
-    struct Recorder {
-        log: Arc<Mutex<Vec<String>>>,
-        fail: bool,
-    }
-
-    impl Storage for Recorder {
-        fn latest_world(&mut self) -> Result<Option<World>, StorageError> {
-            Ok(None)
-        }
-        fn save_world(&mut self, world: &World) -> Result<(), StorageError> {
-            if self.fail {
-                return Err(StorageError::UnsupportedSnapshot {
-                    found: 0,
-                    supported: 0,
-                });
-            }
-            self.log
-                .lock()
-                .unwrap()
-                .push(format!("snapshot {}", world.tick().0));
-            Ok(())
-        }
-        fn begin_run(&mut self) -> Result<server::Lineage, StorageError> {
-            Ok(server::Lineage::default())
-        }
-        fn mark_clean_stop(&mut self) -> Result<(), StorageError> {
-            self.log.lock().unwrap().push("clean stop".to_owned());
-            Ok(())
-        }
-    }
-
-    fn world() -> World {
-        World::empty(
-            Calendar::new(2, 3).unwrap(),
-            Map::filled(8, 8, Terrain::Grass),
-        )
-    }
-
-    #[test]
-    fn the_storage_thread_saves_when_due_and_last_the_final_snapshot() {
-        let log = Arc::new(Mutex::new(Vec::new()));
-        let stop = Arc::new(AtomicBool::new(false));
-        let storage = Box::new(Recorder {
-            log: Arc::clone(&log),
-            fail: false,
-        });
-        let moved = Event::BodyStopped {
-            body: BodyId(1),
-            at: FinePos::new(500, 500),
-        };
-        let w = world();
-        // At each new game day (headless): only the day's start saves.
-        let mut daily = Persister::new(storage, Arc::clone(&stop), None);
-        daily.on_tick(&w, std::slice::from_ref(&moved));
-        daily.on_tick(&w, &[Event::DayStarted { day: 2 }]);
-        daily.finish(&w).unwrap();
-        assert_eq!(
-            *log.lock().unwrap(),
-            ["snapshot 0", "snapshot 0", "clean stop"]
-        );
-        // Due at every tick, as if minutes had passed: each tick saves.
-        log.lock().unwrap().clear();
-        let storage = Box::new(Recorder {
-            log: Arc::clone(&log),
-            fail: false,
-        });
-        let mut timed = Persister::new(storage, Arc::clone(&stop), Some(std::time::Duration::ZERO));
-        timed.on_tick(&w, std::slice::from_ref(&moved));
-        timed.on_tick(&w, &[moved]);
-        timed.finish(&w).unwrap();
-        assert_eq!(
-            *log.lock().unwrap(),
-            ["snapshot 0", "snapshot 0", "snapshot 0", "clean stop"]
-        );
-        assert!(!stop.load(Ordering::Relaxed));
-    }
-
-    #[test]
-    fn a_failing_storage_stops_the_loop_and_finish_reports_it() {
-        let stop = Arc::new(AtomicBool::new(false));
-        let storage = Box::new(Recorder {
-            log: Arc::new(Mutex::new(Vec::new())),
-            fail: true,
-        });
-        let persister = Persister::new(storage, Arc::clone(&stop), None);
-        assert!(persister.finish(&world()).is_err());
-        assert!(stop.load(Ordering::Relaxed));
     }
 }

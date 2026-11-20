@@ -53,16 +53,36 @@ impl Season {
     ];
 }
 
-/// The rhythm of a world's time.
+/// The rhythm of a world's time. Read back through [`Calendar::new`]'s
+/// checks: a stored or crafted calendar with a zero length is refused,
+/// not divided by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "StoredCalendar")]
 pub struct Calendar {
     ticks_per_second: u32,
     seconds_per_day: u32,
     /// Absent from a calendar saved before the year existed (and from
     /// the old snapshots the storage's first migrations read): it takes
     /// the provisional year.
+    days_per_year: u32,
+}
+
+/// A calendar as stored: the same fields, checked on reading.
+#[derive(Deserialize)]
+struct StoredCalendar {
+    ticks_per_second: u32,
+    seconds_per_day: u32,
     #[serde(default = "default_days_per_year")]
     days_per_year: u32,
+}
+
+impl TryFrom<StoredCalendar> for Calendar {
+    type Error = CalendarError;
+
+    fn try_from(stored: StoredCalendar) -> Result<Self, CalendarError> {
+        Self::new(stored.ticks_per_second, stored.seconds_per_day)?
+            .with_days_per_year(stored.days_per_year)
+    }
 }
 
 fn default_days_per_year() -> u32 {
@@ -208,6 +228,16 @@ impl GameTime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stored_calendar_with_a_zero_length_is_refused() {
+        let read = |json: &str| serde_json::from_str::<Calendar>(json);
+        assert!(read(r#"{"ticks_per_second":0,"seconds_per_day":60}"#).is_err());
+        assert!(read(r#"{"ticks_per_second":10,"seconds_per_day":0}"#).is_err());
+        assert!(read(r#"{"ticks_per_second":10,"seconds_per_day":60,"days_per_year":0}"#).is_err());
+        let old = read(r#"{"ticks_per_second":10,"seconds_per_day":60}"#).unwrap();
+        assert_eq!(old.days_per_year(), Calendar::DEFAULT_DAYS_PER_YEAR);
+    }
 
     #[test]
     fn default_calendar_is_ten_ticks_and_two_hours() {
