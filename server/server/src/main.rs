@@ -113,8 +113,8 @@ fn run(opts: &Options) -> Result<(), BoxError> {
 
 /// Opens storage and loads the latest world from it, or creates a new one.
 /// Also starts the run: the world's lineage, its epoch one more if the
-/// last run crashed (all 0 for an ephemeral world, so that two servers on
-/// the same seed are the same world to a client, and for `--dump-chunk`,
+/// last run crashed (all 0 for an ephemeral world, which then gets a birth
+/// of its own when its identity is made, and for `--dump-chunk`,
 /// which only looks and must not take the clean stop's mark).
 fn open_world(
     opts: &Options,
@@ -182,8 +182,15 @@ fn open_world(
             println!("world: new, the test world {test:?} (never for play)");
             server::test_world::make(test, opts.calendar, content)
         } else {
+            // Its seed is the world's secret (F1): chosen here, kept in
+            // the snapshot, never printed.
             println!("world: new");
-            World::with_valley(opts.calendar, content, opts.valley_size)
+            let seed = server::secret::world_seed(opts);
+            World::on_valley(
+                opts.calendar,
+                content,
+                sim::Map::valley(opts.valley_size, opts.valley_size, seed),
+            )
         })
     });
     let world = world?;

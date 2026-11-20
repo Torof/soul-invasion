@@ -11,6 +11,7 @@ pub mod interest;
 pub mod net;
 pub mod pool;
 pub mod run;
+pub mod secret;
 pub mod storage;
 pub mod test_world;
 

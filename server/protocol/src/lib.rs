@@ -635,8 +635,11 @@ pub enum ServerMessage {
     BodyDied {
         /// Who.
         body: u32,
-        /// Of what.
-        cause: DeathCause,
+        /// Of what: told to the dead body's own pilot, and to it alone; a
+        /// witness gets no `cause` (the security audit of 20 November
+        /// 2026, M2). The field is left out, not sent null.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cause: Option<DeathCause>,
     },
     /// The pilot's body changed: after a death, the first free body, or
     /// none to watch. The chunks around it follow.
@@ -1760,7 +1763,11 @@ mod tests {
             },
             ServerMessage::BodyDied {
                 body: 1,
-                cause: DeathCause::Froze,
+                cause: Some(DeathCause::Froze),
+            },
+            ServerMessage::BodyDied {
+                body: 2,
+                cause: None,
             },
             ServerMessage::BodyAssigned { body: Some(2) },
             ServerMessage::BodyAssigned { body: None },

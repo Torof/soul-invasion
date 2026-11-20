@@ -52,6 +52,11 @@ OPTIONS:
     --valley-size <N>      A new world's valley, N tiles on a side (default
                            3072, at least 256). A smaller one starts far
                            faster: for tests and development.
+    --seed <N>             The seed a new world's valley is cut from. Without
+                           it, a world is cut from a seed drawn at its birth
+                           and never told (its secret), save under --dev,
+                           which keeps the public development seed, 1. A
+                           world keeps its seed for life.
     --world flat:<N>       A test world instead of the valley: N × N tiles
                            of grass (at least 8), the camp in the middle.
     --world test:marches   The steps test: 30 × 30 tiles of grass with a
@@ -165,6 +170,10 @@ pub struct Options {
     pub dump_chunk: Option<(i32, i32)>,
     /// A new world's valley, tiles on a side.
     pub valley_size: u32,
+    /// The seed a new world's valley is cut from, when asked for
+    /// (`--seed`); else drawn at birth, or the public one under `--dev`
+    /// ([`crate::secret::world_seed`]).
+    pub seed: Option<u64>,
     /// A test world instead of the valley (`--world`); always ephemeral.
     pub world: Option<TestWorld>,
     /// When the plants of the view around the camp are placed (paced mode).
@@ -242,6 +251,7 @@ impl Default for Options {
             dev: false,
             dump_chunk: None,
             valley_size: sim::VALLEY_SIZE,
+            seed: None,
             world: None,
             warm_up: WarmUp::BeforeListening,
         }
@@ -287,6 +297,12 @@ impl fmt::Display for CliError {
 
 impl std::error::Error for CliError {}
 
+/// `X,Y` as a chunk's coordinates.
+fn chunk_pair(raw: &str) -> Option<(i32, i32)> {
+    let (x, y) = raw.split_once(',')?;
+    Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+}
+
 impl Options {
     /// Parses options from an argument list (without the program name).
     pub fn parse<I, S>(args: I) -> Result<Self, CliError>
@@ -314,15 +330,14 @@ impl Options {
                 "--dev" => opts.dev = true,
                 "--dump-chunk" => {
                     let raw: String = value(arg, args.next())?;
-                    let parsed = raw
-                        .split_once(',')
-                        .and_then(|(x, y)| Some((x.trim().parse().ok()?, y.trim().parse().ok()?)));
-                    opts.dump_chunk = Some(parsed.ok_or(CliError::InvalidValue {
+                    let invalid = || CliError::InvalidValue {
                         option: arg.to_owned(),
-                        value: raw,
-                    })?);
+                        value: raw.clone(),
+                    };
+                    opts.dump_chunk = Some(chunk_pair(&raw).ok_or_else(invalid)?);
                 }
                 "--valley-size" => opts.valley_size = value(arg, args.next())?,
+                "--seed" => opts.seed = Some(value(arg, args.next())?),
                 "--world" => {
                     let raw: String = value(arg, args.next())?;
                     let world = match raw.as_str() {
@@ -459,6 +474,13 @@ mod tests {
                 value: "nowhere".into()
             })
         );
+    }
+
+    #[test]
+    fn a_seed_is_asked_for_or_none() {
+        assert_eq!(Options::parse(Vec::<&str>::new()).unwrap().seed, None);
+        assert_eq!(Options::parse(["--seed", "7"]).unwrap().seed, Some(7));
+        assert!(Options::parse(["--seed", "valley"]).is_err());
     }
 
     #[test]
