@@ -1418,11 +1418,15 @@ mod tests {
     /// grown, three children and an infant, "all eighteen live". Run on
     /// 20 November 2026 (audit F4, 30 days, cadence 1, release, 32 s):
     /// **two die**, person 10 of tribe B of hunger on day 19 and person
-    /// 18, the infant she carried, of thirst on day 21. The text predates
-    /// D48 and the brain's changes; the band's hunger is the sim phase's
-    /// (F1). Until then this test fails and says who died and when.
+    /// 18, the infant she carried, of thirst on day 21. The whole tribe
+    /// was under-fed (4,100 kJ a person-day gathered against some 8,000
+    /// of need): the brains walked from crumb to crumb, ranking a plant
+    /// by what an hour of a full one gives, and a hungry body never
+    /// slept. **Holds again since 21 November 2026** (the point zero of
+    /// the sim phase): nobody dies, 18 alive, the run in 15 s instead of
+    /// 34, and it says who died and when if it fails.
     #[test]
-    #[ignore = "the D47 trial, 30 days on the vivarium's world, some 30 s in release; fails today (F4): cargo test --release -p vivarium -- --ignored the_d47_trial"]
+    #[ignore = "the D47 trial, 30 days on the vivarium's world, some 15 s in release: cargo test --release -p vivarium -- --ignored the_d47_trial"]
     fn the_d47_trial_two_tribes_with_children_and_infants_live_thirty_days() {
         let settings = Settings {
             world: WorldKind::Vivarium,
@@ -1455,7 +1459,10 @@ mod tests {
     /// 2,123,166 and 1,960,304 kJ; cadence 10, 0 dead, 2,135,674 and
     /// 2,229,475 kJ. The audit's 68 people over 14
     /// days: 53 dead at cadence 1, 38 at cadence 10; 3,765 against 4,827
-    /// kJ a person-day. Whether the vivarium judges at the game's cadence
+    /// kJ a person-day. On 21 November 2026, the point zero regained:
+    /// nobody dies at either cadence, and the tribes gather 2,333,626 and
+    /// 2,303,091 kJ at cadence 1 against 2,342,799 and 2,198,479 at 10:
+    /// the gap is the food alone. Whether the vivarium judges at the game's cadence
     /// (10, about 1.3× the computing time) or an act is to cost game
     /// time rather than ticks is the lead's call; until then this test
     /// fails and shows the gap.
