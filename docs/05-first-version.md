@@ -330,6 +330,23 @@ m). The vivarium's test
 (`#[ignore]`d, some 30 s in release) runs the trial, prints every death
 with its day and cause, and fails until the trial holds again.
 
+**The point zero regained** (21 November 2026, the sim phase's first
+step, the project lead's go). The D47 trial run again: nobody dies, the
+run takes 15 s on the wall instead of 34 (2.5 game years a minute at
+cadence 1). The cause of the two deaths was the whole tribe's: it
+gathered some 4,100 kJ a person-day against 8,000 of need and lived on
+its reserve, because the brain walked from crumb to crumb (a plant ranked
+by what an hour of a full one gives, while each held a trickle) and a
+hungry body never slept (hunger came before the night). D41 amended: a
+plant is worth what is left on it, none under ten minutes of work, and
+a hungry body sleeps at night unless its reserve is weak. Thin
+person-days 58 and 30 → 0 and 26, thoughts a person down fifteenfold,
+food gathered up a tenth, the people ranging up to 1,350 tiles from
+their camps by day and home at night. The cadence trial (F2) still
+differs at cadence 10 in food alone (2.33 and 2.30 GJ against 2.34 and
+2.20), nobody dying at either; the plan's small trial, two tribes of
+five for ten days, holds again too.
+
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
 slopes drawn by the client from them (D44), then the relief in the
