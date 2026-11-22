@@ -1680,22 +1680,25 @@ fn learn_plants(
     };
     for (bearer, kind) in placed.food() {
         let tile = bearer.at.tile();
+        if (tile.x - at.x).abs() > sight || (tile.y - at.y).abs() > sight {
+            continue;
+        }
         let key = (chunk, bearer.source);
-        if (tile.x - at.x).abs() <= sight
-            && (tile.y - at.y).abs() <= sight
-            && !known.contains_key(&key)
+        // The bar first: most of a meadow is under it, and the memory
+        // is searched only for what is not.
+        if bar.is_some_and(|bar| !bar.admits(food, at, key, kind, tile)) || known.contains_key(&key)
         {
-            let plant = KnownPlant {
+            continue;
+        }
+        seen.push((
+            key,
+            KnownPlant {
                 at: bearer.at,
                 kind,
                 spent: None,
                 not_before: None,
-            };
-            if bar.is_some_and(|bar| rank(food, at, bar.half_tiles, key, &plant) >= bar.rank) {
-                continue;
-            }
-            seen.push((key, plant));
-        }
+            },
+        ));
     }
     true
 }
@@ -1707,8 +1710,58 @@ type Rank = (std::cmp::Reverse<(bool, u64)>, (ChunkPos, Source));
 /// The rank of the plant a full memory keeps last, from where its body
 /// looks: a plant seen that does not outrank it cannot enter.
 struct Bar {
-    rank: Rank,
+    /// Whether that plant bears now.
+    now: bool,
+    /// Its worth from where the body looks ([`worth`]).
+    worth: u64,
+    /// Its key, breaking ties.
+    key: (ChunkPos, Source),
+    /// The body's way ([`Ways::worth_half_tiles`]).
     half_tiles: u64,
+}
+
+impl Bar {
+    /// The rank it stands at.
+    #[cfg(test)]
+    fn rank_of(&self) -> Rank {
+        (std::cmp::Reverse((self.now, self.worth)), self.key)
+    }
+
+    /// The bar at `rank`, for a body whose way is `half_tiles`.
+    fn at(rank: Rank, half_tiles: u64) -> Self {
+        let (std::cmp::Reverse((now, worth)), key) = rank;
+        Self {
+            now,
+            worth,
+            key,
+            half_tiles,
+        }
+    }
+
+    /// Does a plant of `kind` standing on `tile`, known under `key`,
+    /// outrank the bar for a body at `at`: [`rank`] under the bar's,
+    /// worked out without dividing, for every plant in sight asks it.
+    /// What bears now beats what does not; then the worth, `kj × half /
+    /// (half + far)`, compared through its products; then the key.
+    fn admits(&self, food: &Food, at: Pos, key: (ChunkPos, Source), kind: u16, tile: Pos) -> bool {
+        let (now, kj) = match food.now(kind) {
+            Some(bears) => (true, bears.kj),
+            None => (false, food.best_kj[usize::from(kind)]),
+        };
+        if now != self.now {
+            return now;
+        }
+        let half = self.half_tiles.max(1);
+        let tiles = u64::try_from(far(tile, at)).unwrap_or(0);
+        // worth = kj × half / (half + tiles), a whole quotient: it is
+        // above the bar's when kj × half reaches the next multiple, equal
+        // when it reaches the bar's own.
+        let (above, over) = (kj * half, half + tiles);
+        if above >= (self.worth + 1) * over {
+            return true;
+        }
+        above >= self.worth * over && key < self.key
+    }
 }
 
 /// The rank of `plant`, known under `key`, for a body at `at` whose way
@@ -1750,7 +1803,7 @@ fn memory_bar(
         .iter()
         .map(|(key, plant)| rank(food, at, half_tiles, *key, plant))
         .max()
-        .map(|rank| Bar { rank, half_tiles })
+        .map(|rank| Bar::at(rank, half_tiles))
 }
 
 /// The minds' shared land, borrowed for a turn: the plants placed, the
@@ -2938,6 +2991,62 @@ mod tests {
         look(&world, &rules, at, &mut whole, &mut land);
         assert!(!whole.plants.is_empty());
         assert!(whole.plants.keys().eq(brains.minds[&id].plants.keys()));
+    }
+
+    #[test]
+    fn the_memory_bar_admits_exactly_what_outranks_it() {
+        // Two kinds: 0 bears now (kj 900), 1 does not (best 1,200).
+        let food = Food {
+            now: vec![
+                Some(Bears {
+                    crop: 0,
+                    year: 1,
+                    kj: 900,
+                }),
+                None,
+            ],
+            best_kj: vec![900, 1200],
+            ..Food::default()
+        };
+        let at = Pos::new(100, 100);
+        let plant = |kind, dx: i32, dy: i32, x_mm| {
+            (
+                (
+                    Pos::new(100 + dx, 100 + dy).chunk(),
+                    Source::Plant(crate::crops::PlantKey { x_mm, y_mm: 1 }),
+                ),
+                KnownPlant {
+                    at: Pos::new(100 + dx, 100 + dy).centre(),
+                    kind,
+                    spent: None,
+                    not_before: None,
+                },
+            )
+        };
+        let mut plants = Vec::new();
+        for kind in 0..2 {
+            for d in [0, 1, 3, 7, 16, 40, 60] {
+                for x_mm in [1, 2] {
+                    plants.push(plant(kind, d, d / 2, x_mm));
+                }
+            }
+        }
+        let mut checked = 0;
+        for half_tiles in [1, 32, 64, 1 << 20] {
+            for (bar_key, bar_plant) in &plants {
+                let bar = Bar::at(rank(&food, at, half_tiles, *bar_key, bar_plant), half_tiles);
+                for (key, p) in &plants {
+                    let under = rank(&food, at, half_tiles, *key, p) < bar.rank_of();
+                    assert_eq!(
+                        bar.admits(&food, at, *key, p.kind, p.at.tile()),
+                        under,
+                        "half {half_tiles}, bar {bar_key:?}, plant {key:?}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 1000);
     }
 
     #[test]
