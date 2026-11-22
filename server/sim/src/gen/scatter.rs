@@ -160,9 +160,8 @@ pub(crate) mod purpose {
     pub(crate) const TRIAL_DIRECTION: u64 = 0x0d50_d1e4;
     /// See `TRIAL_WILL`.
     pub(crate) const TRIAL_COPY: u64 = 0x0d50_c0b1;
-    /// See `TRIAL_WILL`. Unused since D55 (the way copied is the one
-    /// heard); kept so that the older salts keep their values (D24).
-    #[allow(dead_code, reason = "D24: the older salts keep their values")]
+    /// See `TRIAL_WILL`. Since D55 only the control without the fire draws
+    /// the way copied (the fire copies the way heard).
     pub(crate) const TRIAL_COPY_WAY: u64 = 0x0d50_c0b2;
     /// See `TRIAL_WILL`.
     pub(crate) const TRIAL_COPY_LOSS: u64 = 0x0d50_1055;

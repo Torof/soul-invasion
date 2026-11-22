@@ -751,6 +751,10 @@ pub struct Mind {
     /// The day it last changed its ways (a trial started, a way copied or
     /// kept): the relative judge leaves its days out for `trial_days`.
     changed_day: Option<u64>,
+    /// The day it last weighed copying a camp-mate at lay-down: the
+    /// control without the fire ([`Brains::imitate_at_camp`]), once a
+    /// night.
+    copied_night: Option<u64>,
     /// Where it last looked for water from: it looks again only elsewhere.
     looked_from: Option<Pos>,
     /// Where it last looked for trees and plants bearing food from.
@@ -810,6 +814,7 @@ impl Mind {
             judged: None,
             water_found: Vec::new(),
             changed_day: None,
+            copied_night: None,
             looked_from: None,
             set_off_from: None,
             plants_from: None,
@@ -1931,7 +1936,11 @@ impl Brains {
         self.work = used;
         self.pending.extend(pending);
         for id in lay_down {
-            self.join_fire(world, rules, id);
+            if rules.needs.fire.on() {
+                self.join_fire(world, rules, id);
+            } else {
+                self.imitate_at_camp(world, rules, id);
+            }
         }
         decisions.sort_by_key(|(id, _)| *id);
         decisions
@@ -2346,6 +2355,86 @@ impl Brains {
         {
             return;
         }
+        let lost = copy_way(mind, way, &theirs, seed, &keys, trials);
+        mind.changed_day = Some(day);
+        self.news.push(News::Copied {
+            body: id,
+            from,
+            way,
+            lost,
+            before,
+            after: mind.ways,
+            at: world.tick().0,
+        });
+    }
+
+    /// The control without the fire (`--no-fire`, D55): the imitation of
+    /// before the fire, kept exactly so that a pair with and without the
+    /// fire measures the fire and nothing else. At night at its camp,
+    /// `id` may copy one way of the mate who fared best over `trial_days`
+    /// (the fewest days of distress, gathered a day breaking ties,
+    /// [`Lately::fared`]), better than it did; the chance is
+    /// `imitate_percent` scaled by that mate's will. The way is drawn
+    /// among those that differ; with `imitate_loss_percent` a numeric way
+    /// lands halfway between its own and the mate's. A body under a trial
+    /// copies nothing: the world is judging it. Copying the home moves the
+    /// body's home: that is how a camp moves. It reads the mate's mind,
+    /// which the fire never does.
+    fn imitate_at_camp(&mut self, world: &World, rules: &Content, id: BodyId) {
+        let trials = &rules.needs.trials;
+        let day = today(world);
+        let Some(body) = world.body(id) else {
+            return;
+        };
+        let here = body.pos();
+        let Some(mind) = self.minds.get(&id) else {
+            return;
+        };
+        if mind.copied_night == Some(day) || mind.trial.is_some() {
+            return;
+        }
+        let camp = mind.ways.home;
+        if (here.x - camp.x).abs() > HOME_TILES || (here.y - camp.y).abs() > HOME_TILES {
+            return;
+        }
+        let own = mind.lately(trials.trial_days).fared();
+        let dusk = mind.home_at_dusk;
+        let reach = i32::try_from(trials.imitate_tiles).unwrap_or(i32::MAX);
+        let best = self
+            .minds
+            .iter()
+            .filter(|(mate, m)| **mate != id && m.home_at_dusk == dusk)
+            .filter_map(|(&mate, m)| {
+                let at = world.body(mate)?.pos();
+                ((at.x - here.x).abs() <= reach && (at.y - here.y).abs() <= reach)
+                    .then(|| (m.lately(trials.trial_days).fared(), mate, m.ways, m.will))
+            })
+            .filter(|(fared, ..)| *fared > own)
+            .max_by_key(|(fared, mate, ..)| (*fared, std::cmp::Reverse(*mate)));
+        let mind = self.minds.get_mut(&id).expect("its mind");
+        mind.copied_night = Some(day);
+        let Some((_, from, theirs, will)) = best else {
+            return;
+        };
+        let before = mind.ways;
+        let seed = world.seed();
+        let keys = [u64::from(id.0), day];
+        if scatter::roll(seed, purpose::TRIAL_COPY, &keys) % 100
+            >= u64::from(trials.imitate_percent) * u64::from(will) / 100
+        {
+            return;
+        }
+        let differ: Vec<Way> = Way::ALL
+            .into_iter()
+            .filter(|way| !way.same(&mind.ways, &theirs))
+            .collect();
+        if differ.is_empty() {
+            return;
+        }
+        let pick = usize::try_from(scatter::roll(seed, purpose::TRIAL_COPY_WAY, &keys))
+            .unwrap_or(0)
+            % differ.len();
+        let way = differ[pick];
         let lost = copy_way(mind, way, &theirs, seed, &keys, trials);
         mind.changed_day = Some(day);
         self.news.push(News::Copied {
@@ -6110,6 +6199,172 @@ mod tests {
         let lake = World::empty(Calendar::new(1, 7200).unwrap(), map);
         let mind = knowing(Pos::new(1952, 100));
         assert_eq!(new_home(&lake, &rules, &food, id, &mind, 1, 2000), None);
+    }
+
+    #[test]
+    fn without_the_fire_the_best_mate_is_the_least_distressed_gathered_kj_breaking_ties() {
+        let mut world = field(64, 40, Pos::new(5, 5));
+        world.spawn_body(Pos::new(6, 5));
+        world.spawn_body(Pos::new(7, 5));
+        let (me, a, b) = (BodyId(1), BodyId(2), BodyId(3));
+        let rules = trials_at(100, 0);
+        assert!(!rules.needs.fire.on(), "the control: no fire");
+        let day = |kj| Day {
+            gathered_kj: kj,
+            ..Day::default()
+        };
+        let camp = |a_day: Day, b_day: Day| {
+            let mut brains = piloted(&world);
+            brains.minds.get_mut(&me).unwrap().days = vec![day(1000)];
+            let m = brains.minds.get_mut(&a).unwrap();
+            m.days = vec![a_day];
+            m.ways.sleep_out = true;
+            m.will = 100;
+            let m = brains.minds.get_mut(&b).unwrap();
+            m.days = vec![b_day];
+            m.ways.stock_kj = STOCK_KJ * 2;
+            m.will = 100;
+            brains.imitate_at_camp(&world, &rules, me);
+            (brains.news(), *brains.mind(me).unwrap().ways())
+        };
+        // A gathered most but was thirsty, B gathered less than me: none
+        // fared better than me, nothing copied.
+        let (news, ways) = camp(
+            Day {
+                thirsty: true,
+                ..day(3000)
+            },
+            day(500),
+        );
+        assert!(news.is_empty(), "{news:?}");
+        assert_eq!(ways, Ways::at(Pos::new(5, 5)));
+        // A gathered most but froze one night; B, less, in no distress:
+        // B fared best, its store is copied.
+        let (news, ways) = camp(
+            Day {
+                cold: true,
+                ..day(3000)
+            },
+            day(2000),
+        );
+        assert!(
+            matches!(news[..], [News::Copied { body, from, way: Way::StockKj, .. }] if body == me && from == b),
+            "{news:?}"
+        );
+        assert_eq!(ways.stock_kj, STOCK_KJ * 2);
+        assert!(!ways.sleep_out);
+        // Neither in distress: the gathered kJ break the tie, A's night out
+        // is copied.
+        let (news, ways) = camp(day(3000), day(2000));
+        assert!(
+            matches!(news[..], [News::Copied { from, way: Way::SleepOut, .. }] if from == a),
+            "{news:?}"
+        );
+        assert!(ways.sleep_out);
+    }
+
+    #[test]
+    fn without_the_fire_a_body_at_the_camp_copies_the_best_mates_way_losing_a_step_at_times() {
+        let mut world = field(64, 40, Pos::new(5, 5));
+        world.spawn_body(Pos::new(6, 5));
+        world.spawn_body(Pos::new(7, 5));
+        let (me, mate, far) = (BodyId(1), BodyId(2), BodyId(3));
+        let copy = |rules: &Content| {
+            let mut brains = piloted(&world);
+            let day = |kj| Day {
+                gathered_kj: kj,
+                ..Day::default()
+            };
+            brains.minds.get_mut(&me).unwrap().days = vec![day(1000)];
+            let m = brains.minds.get_mut(&mate).unwrap();
+            m.days = vec![day(3000)];
+            m.ways.worth_half_tiles = WORTH_HALF_TILES * 2;
+            m.will = 100;
+            // Farther than imitate_tiles, gathering most of all: not a mate tonight.
+            let f = brains.minds.get_mut(&far).unwrap();
+            f.days = vec![day(9000)];
+            f.ways.stock_kj = 1;
+            brains.minds.get_mut(&far).unwrap().home_at_dusk = Pos::new(50, 5);
+            brains.imitate_at_camp(&world, rules, me);
+            (brains.news(), *brains.mind(me).unwrap().ways())
+        };
+        let (news, ways) = copy(&trials_at(100, 0));
+        assert_eq!(ways.worth_half_tiles, WORTH_HALF_TILES * 2, "copied whole");
+        assert!(
+            matches!(news[..], [News::Copied { body, from, way: Way::WorthHalfTiles, lost: false, .. }] if body == me && from == mate),
+            "{news:?}"
+        );
+        let (news, ways) = copy(&trials_at(100, 100));
+        assert_eq!(
+            ways.worth_half_tiles,
+            WORTH_HALF_TILES * 3 / 2,
+            "halfway: one and a half"
+        );
+        assert!(
+            matches!(news[..], [News::Copied { lost: true, .. }]),
+            "{news:?}"
+        );
+        assert_eq!(ways.stock_kj, STOCK_KJ, "the far one's way not copied");
+        // The chance scaled by the mate's will: at will 0, never.
+        let mut brains = piloted(&world);
+        brains.minds.get_mut(&mate).unwrap().days = vec![Day {
+            gathered_kj: 3000,
+            ..Day::default()
+        }];
+        brains.minds.get_mut(&mate).unwrap().ways.sleep_out = true;
+        brains.minds.get_mut(&mate).unwrap().will = 0;
+        brains.imitate_at_camp(&world, &trials_at(100, 0), me);
+        let news = brains.news();
+        assert!(news.is_empty(), "{news:?}");
+        // Once a night only, and never under a trial.
+        let rules = trials_at(100, 0);
+        let mut brains = piloted(&world);
+        brains.minds.get_mut(&mate).unwrap().days = vec![Day {
+            gathered_kj: 3000,
+            ..Day::default()
+        }];
+        brains.minds.get_mut(&mate).unwrap().will = 100;
+        brains.minds.get_mut(&mate).unwrap().ways.home = Pos::new(9, 9);
+        brains.imitate_at_camp(&world, &rules, me);
+        assert_eq!(
+            brains.mind(me).unwrap().home(),
+            Pos::new(9, 9),
+            "the camp moved"
+        );
+        brains.minds.get_mut(&mate).unwrap().ways.sleep_out = true;
+        brains.imitate_at_camp(&world, &rules, me);
+        assert!(!brains.mind(me).unwrap().ways().sleep_out, "once a night");
+        let mut brains = piloted(&world);
+        brains.minds.get_mut(&mate).unwrap().days = vec![Day {
+            gathered_kj: 3000,
+            ..Day::default()
+        }];
+        brains.minds.get_mut(&mate).unwrap().will = 100;
+        brains.minds.get_mut(&mate).unwrap().ways.sleep_out = true;
+        let mind = brains.minds.get_mut(&me).unwrap();
+        mind.trial = Some(Trial {
+            way: Way::StockKj,
+            before: mind.ways,
+            started_day: 0,
+            before_days: Lately::default(),
+            heard: HeardDays::default(),
+        });
+        brains.imitate_at_camp(&world, &rules, me);
+        assert!(brains.news().is_empty(), "under a trial, it copies nothing");
+        // With the fire lit, lying down joins the fire and copies nothing
+        // by itself: the mate's mind is not read.
+        let mut lit = trials_at(100, 0);
+        lit.needs.fire = Fire::placeholders();
+        let mut brains = piloted(&world);
+        brains.minds.get_mut(&mate).unwrap().days = vec![Day {
+            gathered_kj: 3000,
+            ..Day::default()
+        }];
+        brains.minds.get_mut(&mate).unwrap().will = 100;
+        brains.minds.get_mut(&mate).unwrap().ways.sleep_out = true;
+        brains.join_fire(&world, &lit, me);
+        assert!(brains.news().is_empty(), "the fire reads no mind");
+        assert!(brains.at_fire.values().any(|set| set.contains(&me)));
     }
 
     #[test]
