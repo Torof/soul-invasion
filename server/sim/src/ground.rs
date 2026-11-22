@@ -32,7 +32,7 @@ use crate::content::Species;
 use crate::crops::Bearer;
 use crate::geology::{Geology, Rock};
 use crate::lru::Lru;
-use crate::map::{CHUNK_SIZE, ChunkPos, Map, PATH_REACH, Pos};
+use crate::map::{CHUNK_SIZE, ChunkPos, Map, PATH_REACH, Pos, Terrain};
 use crate::open_ground::OpenGround;
 use crate::trees::{self, Tree};
 
@@ -68,6 +68,9 @@ struct Held {
     /// The trees of a chunk at a version and the tiles their trunks
     /// block, the least recently used out first.
     trees: Lru<(ChunkPos, Version), Placed>,
+    /// The walkable pieces of a chunk at a version, under a set of
+    /// walkable terrains ([`Links`]), the least recently used out first.
+    links: Lru<(ChunkPos, Version, u8), Arc<Links>>,
     /// The chunks changed by men, with how many times: absent means 0.
     /// Grows with what men change, never with the land visited; the
     /// versions of the world's chunk changes, set as they change.
@@ -144,6 +147,105 @@ impl Trunks {
     }
 }
 
+/// Which terrains a body may walk under a cost rule: a bit per
+/// [`Terrain::rank`], set when `cost` gives the terrain a cost.
+#[must_use]
+pub fn walkable_mask(cost: impl Fn(Terrain) -> Option<u32>) -> u8 {
+    Terrain::ALL
+        .iter()
+        .filter(|t| cost(**t).is_some())
+        .fold(0, |mask, t| mask | 1 << t.rank())
+}
+
+/// The walkable pieces of one chunk (D32, `foule/chemins.md` §2): a
+/// label per tile, 0 where a body may not stand (terrain the rule does
+/// not walk, a trunk, beyond the map's edge), the same label for two
+/// tiles joined by walkable ground within the chunk. Four neighbours
+/// make a piece: a diagonal step never cuts a corner, so it always has a
+/// a straight way round, and the pieces are exactly what a path can join.
+/// Derived from the chunk's terrain and trunks, never stored; 2 KB a
+/// chunk, held by the [`Ground`] with the trees.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Links {
+    labels: Box<[u16]>,
+    /// How many pieces: the labels run 1 to `pieces`.
+    pieces: u16,
+}
+
+impl Links {
+    /// The pieces of `chunk` on `map`, walking the terrains of `mask`
+    /// ([`walkable_mask`]) and never a tile of `trunks`.
+    #[must_use]
+    pub fn of(map: &Map, chunk: ChunkPos, mask: u8, trunks: &Trunks) -> Self {
+        let side = CHUNK_SIZE as usize;
+        let origin = chunk.origin();
+        let mut open = vec![false; side * side];
+        if let Some(tiles) = map.chunk(chunk) {
+            for (i, terrain) in tiles.iter().enumerate() {
+                let pos = Pos::new(
+                    origin.x + i32::try_from(i % side).expect("in its chunk"),
+                    origin.y + i32::try_from(i / side).expect("in its chunk"),
+                );
+                let on_map = u32::try_from(pos.x).is_ok_and(|x| x < map.width())
+                    && u32::try_from(pos.y).is_ok_and(|y| y < map.height());
+                open[i] = on_map && mask >> terrain.rank() & 1 == 1 && !trunks.blocks(pos);
+            }
+        }
+        let mut labels = vec![0u16; side * side].into_boxed_slice();
+        let mut pieces = 0u16;
+        let mut stack = Vec::new();
+        for start in 0..open.len() {
+            if !open[start] || labels[start] != 0 {
+                continue;
+            }
+            pieces += 1;
+            labels[start] = pieces;
+            stack.push(start);
+            while let Some(i) = stack.pop() {
+                let (x, y) = (i % side, i / side);
+                let around = [
+                    (x > 0).then(|| i - 1),
+                    (x + 1 < side).then(|| i + 1),
+                    (y > 0).then(|| i - side),
+                    (y + 1 < side).then(|| i + side),
+                ];
+                for j in around.into_iter().flatten() {
+                    if open[j] && labels[j] == 0 {
+                        labels[j] = pieces;
+                        stack.push(j);
+                    }
+                }
+            }
+        }
+        Self { labels, pieces }
+    }
+
+    /// The piece of a tile of this chunk, by its column and row within
+    /// the chunk; 0 where a body may not stand.
+    #[must_use]
+    pub fn label(&self, x: usize, y: usize) -> u16 {
+        self.labels[y * CHUNK_SIZE as usize + x]
+    }
+
+    /// The piece of `pos`, a tile of this chunk; 0 where a body may not
+    /// stand.
+    #[must_use]
+    pub fn label_at(&self, pos: Pos) -> u16 {
+        let side = i32::try_from(CHUNK_SIZE).expect("small chunk side");
+        let (x, y) = (pos.x.rem_euclid(side), pos.y.rem_euclid(side));
+        self.label(
+            usize::try_from(x).expect("non-negative"),
+            usize::try_from(y).expect("non-negative"),
+        )
+    }
+
+    /// How many pieces the chunk has.
+    #[must_use]
+    pub fn pieces(&self) -> u16 {
+        self.pieces
+    }
+}
+
 /// The trunks of the chunks one walk is planned over, looked up tile by
 /// tile ([`Ground::trunks_at`]): each chunk's bitmap is taken from the
 /// [`Ground`] once and kept for the lookup's life, which is one plan, the
@@ -186,6 +288,184 @@ impl TrunkLookup<'_> {
         *self.last.borrow_mut() = Some((chunk, trunks));
         blocks
     }
+
+    /// May a path join `from` to `to` within `reach` tiles of `from` on
+    /// each axis, walking the terrains of `mask` ([`walkable_mask`]) and
+    /// round these trunks? The pre-test of `foule/chemins.md` §2 (D32):
+    /// the walkable pieces of the chunks the square touches
+    /// ([`Links`]), joined wherever two pieces meet across a chunk's
+    /// edge, whole chunks and all. "No" is sure: a path within the
+    /// square is a path over those chunks, so none exists. "Maybe" costs
+    /// the search as ever. `from` may stand on a trunk (a search leaves
+    /// its first tile whatever it is): it joins through the tiles beside
+    /// it. `to` is expected walkable, as the search checks first.
+    #[must_use]
+    pub fn may_join(&self, from: Pos, to: Pos, reach: i32, mask: u8) -> bool {
+        let (Ok(width), Ok(height)) = (
+            i32::try_from(self.map.width()),
+            i32::try_from(self.map.height()),
+        ) else {
+            return true;
+        };
+        let reach = reach.saturating_abs();
+        let square = Square {
+            x0: from.x.saturating_sub(reach).max(0),
+            y0: from.y.saturating_sub(reach).max(0),
+            x1: from.x.saturating_add(reach).min(width - 1),
+            y1: from.y.saturating_add(reach).min(height - 1),
+        };
+        if square.x0 > square.x1 || square.y0 > square.y1 {
+            return true;
+        }
+        let links_of = |chunk: ChunkPos| {
+            self.ground
+                .links_in(self.map, self.species, self.open, self.seed, chunk, mask)
+        };
+        // Both in one chunk and one piece: joined, nothing to assemble.
+        let goal = links_of(to.chunk());
+        let goal_label = goal.label_at(to);
+        if from.chunk() == to.chunk() && goal.label_at(from) == goal_label && goal_label != 0 {
+            return true;
+        }
+        let mut joined = Joined::over(&square, links_of);
+        let Some(goal) = joined.piece(to) else {
+            return true;
+        };
+        // Where the search sets out from: its first tile, or the tiles
+        // beside it when it stands on a trunk.
+        let starts = [
+            from,
+            Pos::new(from.x + 1, from.y),
+            Pos::new(from.x - 1, from.y),
+            Pos::new(from.x, from.y + 1),
+            Pos::new(from.x, from.y - 1),
+        ];
+        starts
+            .into_iter()
+            .any(|start| joined.piece(start) == Some(goal))
+    }
+}
+
+/// The tiles a search may touch: a square clipped to the map.
+struct Square {
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+}
+
+/// The pieces of the chunks a square touches, joined across the chunks'
+/// edges: a union-find over them, one id a piece.
+struct Joined {
+    square: Square,
+    corner: ChunkPos,
+    cols: usize,
+    links: Vec<Arc<Links>>,
+    /// The first id of each chunk's pieces, and one past the last.
+    first: Vec<usize>,
+    parent: Vec<usize>,
+}
+
+impl Joined {
+    /// The pieces of the chunks `square` touches, each chunk's by
+    /// `links_of`, joined wherever two walkable tiles meet across an
+    /// edge between two of those chunks.
+    fn over(square: &Square, links_of: impl Fn(ChunkPos) -> Arc<Links>) -> Self {
+        let side = i32::try_from(CHUNK_SIZE).expect("small chunk side");
+        let corner = ChunkPos::new(square.x0.div_euclid(side), square.y0.div_euclid(side));
+        let cols = usize::try_from(square.x1.div_euclid(side) - corner.x + 1).expect("positive");
+        let rows = usize::try_from(square.y1.div_euclid(side) - corner.y + 1).expect("positive");
+        let links: Vec<Arc<Links>> = (0..rows)
+            .flat_map(|r| (0..cols).map(move |c| (r, c)))
+            .map(|(r, c)| {
+                links_of(ChunkPos::new(
+                    corner.x + i32::try_from(c).expect("few"),
+                    corner.y + i32::try_from(r).expect("few"),
+                ))
+            })
+            .collect();
+        let mut first = Vec::with_capacity(links.len() + 1);
+        first.push(0usize);
+        for l in &links {
+            first.push(first.last().expect("one at least") + usize::from(l.pieces()));
+        }
+        let parent = (0..*first.last().expect("one at least")).collect();
+        let mut joined = Self {
+            square: Square { ..*square },
+            corner,
+            cols,
+            links,
+            first,
+            parent,
+        };
+        let edge = CHUNK_SIZE as usize - 1;
+        for r in 0..rows {
+            for c in 0..cols {
+                let slot = r * cols + c;
+                if c + 1 < cols {
+                    for k in 0..=edge {
+                        let (a, b) = (
+                            joined.links[slot].label(edge, k),
+                            joined.links[slot + 1].label(0, k),
+                        );
+                        if a != 0 && b != 0 {
+                            joined.join((slot, a), (slot + 1, b));
+                        }
+                    }
+                }
+                if r + 1 < rows {
+                    for k in 0..=edge {
+                        let (a, b) = (
+                            joined.links[slot].label(k, edge),
+                            joined.links[slot + cols].label(k, 0),
+                        );
+                        if a != 0 && b != 0 {
+                            joined.join((slot, a), (slot + cols, b));
+                        }
+                    }
+                }
+            }
+        }
+        joined
+    }
+
+    /// The id of a chunk's piece.
+    fn id(&self, (slot, label): (usize, u16)) -> usize {
+        self.first[slot] + usize::from(label) - 1
+    }
+
+    /// The root of a piece's set, the paths halved on the way.
+    fn root(&mut self, mut i: usize) -> usize {
+        while self.parent[i] != i {
+            self.parent[i] = self.parent[self.parent[i]];
+            i = self.parent[i];
+        }
+        i
+    }
+
+    /// Joins two pieces' sets.
+    fn join(&mut self, a: (usize, u16), b: (usize, u16)) {
+        let (a, b) = (self.root(self.id(a)), self.root(self.id(b)));
+        if a != b {
+            self.parent[a.max(b)] = a.min(b);
+        }
+    }
+
+    /// The set of the piece a tile of the square stands in, if a body may
+    /// stand there.
+    fn piece(&mut self, pos: Pos) -> Option<usize> {
+        let s = &self.square;
+        if !(s.x0..=s.x1).contains(&pos.x) || !(s.y0..=s.y1).contains(&pos.y) {
+            return None;
+        }
+        let chunk = pos.chunk();
+        let slot = usize::try_from(chunk.y - self.corner.y).expect("in the square") * self.cols
+            + usize::try_from(chunk.x - self.corner.x).expect("in the square");
+        let label = self.links[slot].label_at(pos);
+        (label != 0)
+            .then(|| self.id((slot, label)))
+            .map(|id| self.root(id))
+    }
 }
 
 impl Default for Ground {
@@ -205,6 +485,7 @@ impl Ground {
         Self {
             held: Mutex::new(Held {
                 trees: Lru::new(capacity),
+                links: Lru::new(capacity),
                 versions: BTreeMap::new(),
                 rocks: Lru::new(capacity),
                 bearers: Lru::new(capacity),
@@ -255,6 +536,33 @@ impl Ground {
         chunk: ChunkPos,
     ) -> Arc<Trunks> {
         self.placed(map, species, open, seed, chunk).trunks
+    }
+
+    /// The walkable pieces of `chunk` at its current version under the
+    /// terrains of `mask` ([`Links`], [`walkable_mask`]): held, or else
+    /// worked out now from the chunk's terrain and trunks, and held.
+    #[must_use]
+    pub fn links_in(
+        &self,
+        map: &Map,
+        species: &[Species],
+        open: &OpenGround,
+        seed: u64,
+        chunk: ChunkPos,
+        mask: u8,
+    ) -> Arc<Links> {
+        let key = {
+            let mut held = self.lock();
+            let key = (chunk, held.versions.get(&chunk).copied().unwrap_or(0), mask);
+            if let Some(links) = held.links.get(&key) {
+                return Arc::clone(links);
+            }
+            key
+        };
+        let trunks = self.trunks_in(map, species, open, seed, chunk);
+        let links = Arc::new(Links::of(map, chunk, mask, &trunks));
+        self.lock().links.insert(key, Arc::clone(&links));
+        links
     }
 
     /// A lookup of the trunks tile by tile, for one walk's plan.

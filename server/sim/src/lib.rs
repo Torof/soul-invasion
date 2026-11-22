@@ -3625,7 +3625,15 @@ impl World {
         let trunks = self.trunks();
         let blocked = |p: Pos| trunks.blocks(p);
         let budget = movement.path_budget_tiles;
-        let (path, mut work) = self.map.search(tile, target, sight, budget, cost, blocked);
+        // Before an A*, the pre-test by the chunks' pieces (D32): a
+        // target no walkable ground joins within the square is refused
+        // at once, with no tile expanded.
+        let mask = ground::walkable_mask(cost);
+        let (path, mut work) =
+            self.map
+                .search_gated(tile, target, sight, budget, cost, blocked, || {
+                    trunks.may_join(tile, target, sight, mask)
+                });
         if let Some(path) = path {
             return (
                 Plan::Path(self.map.pull_around(from, &path, cost, blocked)),
@@ -3653,7 +3661,11 @@ impl World {
         if !seen(target)
             && let Some(past) = self.map.past_obstacle(end, target.centre(), sight, open)
         {
-            let (path, spent) = self.map.search(tile, past, sight, budget, cost, blocked);
+            let (path, spent) =
+                self.map
+                    .search_gated(tile, past, sight, budget, cost, blocked, || {
+                        trunks.may_join(tile, past, sight, mask)
+                    });
             work += spent;
             if let Some(path) = path.filter(|p| !p.is_empty()) {
                 return (
@@ -4003,6 +4015,99 @@ mod tests {
         let mut world = World::with_valley(Calendar::new(2, 2).unwrap(), &rules(), 768);
         world.spawn_at_camp().expect("grass by the camp");
         world
+    }
+
+    /// The pre-test by the chunks' pieces (D32) against the plain A*, over
+    /// random pairs within a sight: the same path or none in every case,
+    /// the same work on a path found, and a refusal by the pre-test only
+    /// where the A* found nothing either. The pairs found, the pairs the
+    /// pre-test refused.
+    fn pieces_against_the_search(
+        world: &World,
+        seed: u64,
+        count: usize,
+        reach: i32,
+        budget: u32,
+    ) -> (usize, usize) {
+        let rules = rules();
+        let movement = &rules.movement;
+        let cost = |t: Terrain| movement.cost(t);
+        let trunks = world.trunks();
+        let blocked = |p: Pos| trunks.blocks(p);
+        let mask = ground::walkable_mask(cost);
+        let map = world.map();
+        let mut rng = crate::r#gen::Lcg::new(seed);
+        let (mut found, mut refused, mut done) = (0, 0, 0);
+        let side = |n: u32| i32::try_from(n).expect("small map");
+        let span = u32::try_from(2 * reach + 1).expect("small reach");
+        while done < count {
+            let a = Pos::new(
+                side(rng.next_below(map.width())),
+                side(rng.next_below(map.height())),
+            );
+            let b = Pos::new(
+                a.x + side(rng.next_below(span)) - reach,
+                a.y + side(rng.next_below(span)) - reach,
+            );
+            if map.get(b).is_none() {
+                continue;
+            }
+            done += 1;
+            let plain = map.search(a, b, reach, budget, cost, blocked);
+            let mut gate_said = None;
+            let gated = map.search_gated(a, b, reach, budget, cost, blocked, || {
+                let may = trunks.may_join(a, b, reach, mask);
+                gate_said = Some(may);
+                may
+            });
+            assert_eq!(gated.0, plain.0, "{a:?} -> {b:?}: the same path or none");
+            match gate_said {
+                Some(false) => {
+                    assert_eq!(plain.0, None, "{a:?} -> {b:?}: refused, yet a way");
+                    assert_eq!(gated.1, budget.saturating_add(1));
+                    refused += 1;
+                }
+                _ => assert_eq!(gated.1, plain.1, "{a:?} -> {b:?}: the same work"),
+            }
+            found += usize::from(plain.0.is_some());
+        }
+        (found, refused)
+    }
+
+    #[test]
+    fn the_pieces_pre_test_refuses_only_what_no_path_joins_on_the_valley() {
+        // The game's valley, trunks and all, with no budget: a refusal by
+        // the pieces is a pair truly apart within the square.
+        let world = World::with_valley(Calendar::new(2, 2).unwrap(), &rules(), 768);
+        let (found, refused) = pieces_against_the_search(&world, 11, 600, 60, u32::MAX);
+        assert!(
+            found > 200 && refused > 10,
+            "both cases seen: {found}, {refused}"
+        );
+        // And under the game's budget: the refusals the search pays for.
+        let (found, refused) = pieces_against_the_search(&world, 12, 600, 60, 1_500);
+        assert!(
+            found > 200 && refused > 10,
+            "both cases seen: {found}, {refused}"
+        );
+    }
+
+    #[test]
+    fn the_pieces_pre_test_refuses_only_what_no_path_joins_on_the_vivarium() {
+        let map = Map::on_window_by(
+            crate::plan::zone_window().clone(),
+            crate::plan::VIVARIUM_SEED,
+            map::VIVARIUM_GENERATOR,
+        );
+        let world = World::on_valley(Calendar::new(2, 2).unwrap(), &rules(), map);
+        // The zone is one land for the most part: few pairs are apart.
+        let (found, refused) = pieces_against_the_search(&world, 13, 600, 60, 1_500);
+        assert!(
+            found > 200 && refused > 0,
+            "both cases seen: {found}, {refused}"
+        );
+        let (found, _) = pieces_against_the_search(&world, 14, 300, 25, u32::MAX);
+        assert!(found > 50, "ways found in the forest: {found}");
     }
 
     fn open_field() -> World {

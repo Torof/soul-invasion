@@ -201,6 +201,19 @@ impl Terrain {
         Self::Rock,
     ];
 
+    /// This terrain's place in [`Terrain::ALL`].
+    #[must_use]
+    pub const fn rank(self) -> usize {
+        match self {
+            Self::Grass => 0,
+            Self::Forest => 1,
+            Self::Water => 2,
+            Self::Ford => 3,
+            Self::Brook => 4,
+            Self::Rock => 5,
+        }
+    }
+
     /// Can a body ever stand here? The content's movement rules refine
     /// this with a cost; they cannot make water or rock walkable.
     pub fn is_passable(self) -> bool {
@@ -1025,6 +1038,33 @@ impl Map {
         cost: impl Fn(Terrain) -> Option<u32>,
         blocked: impl Fn(Pos) -> bool,
     ) -> (Option<Vec<Pos>>, u32) {
+        self.search_gated(from, to, reach, budget, cost, blocked, || true)
+    }
+
+    /// [`Map::search`] asked first, once its cheap refusals are past and
+    /// before it expands a tile, whether a path `may_join` the two: a
+    /// pre-test by the chunks' walkable pieces
+    /// ([`crate::ground::TrunkLookup::may_join`], D32), which answers
+    /// "no" only when no path exists within the square at all. On a "no"
+    /// the search answers `None` without expanding anything and counts
+    /// the whole budget as spent, as the search that reaches its budget
+    /// does (the one that exhausts a small enclosure under the budget
+    /// counted fewer; the work cap of a tick is the only reader). On a
+    /// "maybe" it runs as ever and finds the same path.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the search's bounds, costs and gate, each its own"
+    )]
+    pub(crate) fn search_gated(
+        &self,
+        from: Pos,
+        to: Pos,
+        reach: i32,
+        budget: u32,
+        cost: impl Fn(Terrain) -> Option<u32>,
+        blocked: impl Fn(Pos) -> bool,
+        may_join: impl FnOnce() -> bool,
+    ) -> (Option<Vec<Pos>>, u32) {
         if from == to {
             return (Some(Vec::new()), 0);
         }
@@ -1043,6 +1083,9 @@ impl Map {
         };
         if !within(to) || self.get(from).and_then(&cost).is_none() || cost_at(to).is_none() {
             return (None, 0);
+        }
+        if !may_join() {
+            return (None, budget.saturating_add(1));
         }
         // The heuristic must not overestimate: scale it by the cheapest
         // terrain there is.
