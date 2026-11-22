@@ -35,7 +35,8 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
                            continents/ (where a run keeps it; same pages)
   --helpers N              threads placing the chunks' plants ahead of the
                            bodies (default 1; 0 = the simulation thread
-                           alone); the pages are the same either way
+                           alone, for runs side by side); the pages are the
+                           same either way
   --content DIR            the content directory (default: content/, ../content/
                            or ../../content/, the first holding materials.ron)
   --out FILE               the report (default vivarium-report.html); its

@@ -146,6 +146,25 @@ class Expansion(unittest.TestCase):
         self.assertEqual(lab.expand({}), [])
 
 
+class Commands(unittest.TestCase):
+    def test_runs_side_by_side_get_no_helpers_and_a_run_alone_keeps_the_default(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = {"out": d, "runs": [{"name": "t", "args": "--world vivarium --people 2 --days 1",
+                                        "seeds": [1, 2]}]}
+            many = lab.Series(plan, 2, "/bin/true", d, version={})
+            cmd = many.command(many.runs[0])
+            self.assertEqual(cmd[cmd.index("--helpers") + 1], "0")
+            self.assertEqual(cmd[-1], os.path.join(d, many.runs[0]["name"] + ".html"))
+            one_at_a_time = lab.Series(plan, 1, "/bin/true", d, version={})
+            self.assertNotIn("--helpers", one_at_a_time.command(one_at_a_time.runs[0]))
+            said = {"out": d, "runs": [{"name": "t", "args": "--world vivarium --people 2 --helpers 2",
+                                        "seeds": [1, 2]}]}
+            kept = lab.Series(said, 2, "/bin/true", d, version={})
+            cmd = kept.command(kept.runs[0])
+            self.assertEqual(cmd.count("--helpers"), 1)
+            self.assertEqual(cmd[cmd.index("--helpers") + 1], "2")
+
+
 class Seeds(unittest.TestCase):
     def test_lists_ranges_and_mixes(self):
         self.assertEqual(lab.parse_seeds("1,2,3"), [1, 2, 3])
