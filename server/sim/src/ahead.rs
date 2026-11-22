@@ -16,7 +16,9 @@
 //! The helpers are workers of the one simulation thread (D29), not a second
 //! simulation: they decide nothing, write nothing a rule reads, and the
 //! simulation never waits for them. Plain `std::thread`s, a channel of
-//! hints the simulation never blocks on, no dependency.
+//! hints the simulation never blocks on, no dependency. The ground's caches
+//! are the caller's to size ([`Ground::widen`]): the helpers fill them with
+//! the land around the bodies, more than four views' worth on a long run.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -271,10 +273,6 @@ impl Placer {
             return None;
         }
         let placing = Placing::of(world);
-        let map = world.map();
-        placing
-            .ground
-            .widen(map.chunks_wide() as usize * map.chunks_high() as usize);
         let placed = Arc::new(AtomicU64::new(0));
         let (hints, threads): (Vec<_>, Vec<_>) = (0..helpers)
             .map(|k| {
