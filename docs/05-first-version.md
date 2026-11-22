@@ -409,6 +409,26 @@ in the review folder; the `#[ignore]`d test
 pair and holds: a trial kept, a way copied, the band not extinct, the
 same trials from the same seed (5 min in release).
 
+**Lightening of the simulation, PR 1 (22 November 2026).** The lead
+asked for runs "beaucoup plus rapides", measured first, with the same
+results before and after (D24). The profile of the two tribes of 25 over
+40 days read, with call stacks: the brain was 38 % of the process (the
+plants placed as the minds learn them, 19 %), the world's step 37 % (the
+walks planned, 30 %), the birth 17 %; and a quarter of the whole was the
+**reading of a tile's terrain** (`Land::terrain`), through a thread's
+list of four recent chunks searched and reordered at every read and the
+chunk cloned out, the land's lock and cache behind it. The terrain was
+already made once a chunk and held (D51); the reading is now a thread's
+direct table of 16 × 16 chunk slots, read in place, and the trunks'
+lookup of a walk's planning keeps the chunk read last. The vivarium's
+pair runs in **−22 to −27 %** of its time (run 58.9 → 46.1 s and 67.9 →
+49.8 s, alternated on a loaded machine), the page's hash without its
+timings unchanged on both runs. What was found and not touched, for PR 2:
+the plants placed a chunk (~6 ms, 1,360 chunks a run, already held),
+`crops::text_key` hashing a name's bytes through a fresh `Vec` at every
+call, the known plants' map, and the birth, whose continent the server
+keeps in SQLite but the `vivarium` binary bears anew (10 s).
+
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
 slopes drawn by the client from them (D44), then the relief in the
