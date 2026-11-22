@@ -15,9 +15,9 @@
 // module also holds geometry for moving bodies, which is not generation:
 // `FinePos::distance_to` and `line_clear` allow floats where they stand.
 
+use std::cell::RefCell;
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
-use std::hash::{BuildHasherDefault, Hasher};
+use std::collections::{BTreeMap, BinaryHeap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
@@ -1096,55 +1096,12 @@ impl Map {
             .unwrap_or(STRAIGHT_COST);
         let estimate = |a: Pos| octile(a, to) * cheapest / STRAIGHT_COST;
         // A* with an octile heuristic. Ties break on insertion order so
-        // the path is the same on every machine.
-        let mut reached = Reached::default();
-        let mut open = BinaryHeap::new();
-        let mut pushed = 0u64;
-        let mut expanded = 0u32;
-        reached.improve(from, 0, 0);
-        open.push(Reverse((estimate(from), pushed, from)));
-
-        while let Some(Reverse((guess, _, here))) = open.pop() {
-            if here == to {
-                return (Some(reached.walk_back(from, to)), expanded);
-            }
-            let cost_here = reached.cost(here);
-            if guess > cost_here + estimate(here) {
-                // A stale entry: the tile was reached more cheaply since,
-                // and expanded from there already; expanding it again
-                // would change nothing.
-                continue;
-            }
-            expanded += 1;
-            if expanded > budget {
-                // The effort is spent: the body walks straight instead.
-                return (None, expanded);
-            }
-            for (step, next) in (0u8..).zip(here.neighbours()) {
-                if !within(next) {
-                    continue;
-                }
-                let Some(terrain_cost) = cost_at(next) else {
-                    continue;
-                };
-                let step_cost = if here.is_diagonal_to(next) {
-                    if cost_at(Pos::new(here.x, next.y)).is_none()
-                        || cost_at(Pos::new(next.x, here.y)).is_none()
-                    {
-                        continue; // no cutting corners
-                    }
-                    DIAGONAL_COST
-                } else {
-                    STRAIGHT_COST
-                };
-                let cost = cost_here + step_cost * terrain_cost / STRAIGHT_COST;
-                if reached.improve(next, cost, step) {
-                    pushed += 1;
-                    open.push(Reverse((cost + estimate(next), pushed, next)));
-                }
-            }
-        }
-        (None, expanded)
+        // the path is the same on every machine. The arena is the
+        // thread's, taken for the search and given back after it.
+        let mut arena = ARENA.with_borrow_mut(std::mem::take);
+        let out = arena.search(from, to, reach, budget, &estimate, &cost_at);
+        ARENA.with_borrow_mut(|held| *held = arena);
+        out
     }
 
     /// Pulls a tile path taut into straight segments from `from`: each
@@ -1839,62 +1796,93 @@ pub(crate) fn enters(a: FinePos, b: FinePos, tile: Pos) -> bool {
     t0 < t1
 }
 
-/// Tiles of a chunk: the size of a page of [`Reached`].
-const PAGE: usize = (CHUNK_SIZE * CHUNK_SIZE) as usize;
-
-/// The tiles one path search has reached, kept in pages of a chunk: for
-/// each tile, its cheapest cost so far and the step that reached it. Its
-/// memory follows the chunks the search touches, never the map's size
-/// (D31, D39).
-#[derive(Default)]
-struct Reached {
-    /// The first slot of each chunk's page.
-    pages: HashMap<ChunkPos, usize, BuildHasherDefault<ChunkHasher>>,
-    /// Per slot, the cheapest cost so far; `u32::MAX` when not reached.
-    cost: Vec<u32>,
-    /// Per slot, which of [`Pos::neighbours`] of the previous tile this
-    /// one is.
-    step: Vec<u8>,
-    /// The page looked up last: most tiles a search looks at are in the
-    /// chunk of the tile before.
-    last: Option<(ChunkPos, usize)>,
+thread_local! {
+    /// One search arena a thread (`foule/chemins.md` §2, D32): the open
+    /// set and the tiles reached, kept from one search to the next and
+    /// cleared by a stamp, never zeroed. A thread searching within a
+    /// sight of 60 holds 121² slots, about 130 KB; one searching within
+    /// [`PATH_REACH`] about 3 MB, once.
+    static ARENA: RefCell<Arena> = RefCell::new(Arena::default());
 }
 
-impl Reached {
-    /// The slot of a tile, making its chunk's page when it has none.
-    fn slot(&mut self, pos: Pos) -> usize {
-        let chunk = pos.chunk();
-        let first = match self.last {
-            Some((known, first)) if known == chunk => first,
-            _ => {
-                let fresh = self.cost.len();
-                let first = *self.pages.entry(chunk).or_insert(fresh);
-                if first == fresh {
-                    self.cost.resize(fresh + PAGE, u32::MAX);
-                    self.step.resize(fresh + PAGE, 0);
-                }
-                self.last = Some((chunk, first));
-                first
-            }
-        };
-        let origin = chunk.origin();
-        let side = i32::try_from(CHUNK_SIZE).expect("small chunk side");
-        first
-            + usize::try_from((pos.y - origin.y) * side + (pos.x - origin.x)).expect("in its chunk")
+/// The memory of one A* search, reused: for each slot of the square
+/// searched (`side` a side, its north-west corner at `corner`), the
+/// search that last touched it (`stamp`; a slot not stamped by this
+/// search is unreached), its cheapest cost so far and the step that
+/// reached it; and the open set. Sized to the largest square searched so
+/// far, never to the map (D31, D39).
+struct Arena {
+    side: usize,
+    corner: Pos,
+    /// This search's stamp; a slot's `stamp` equal to it means reached.
+    now: u32,
+    stamp: Vec<u32>,
+    cost: Vec<u32>,
+    /// Which of [`Pos::neighbours`] of the previous tile this one is.
+    step: Vec<u8>,
+    open: BinaryHeap<Reverse<(u32, u64, Pos)>>,
+}
+
+impl Default for Arena {
+    fn default() -> Self {
+        Self {
+            side: 0,
+            corner: Pos::new(0, 0),
+            now: 0,
+            stamp: Vec::new(),
+            cost: Vec::new(),
+            step: Vec::new(),
+            open: BinaryHeap::new(),
+        }
+    }
+}
+
+impl Arena {
+    /// Readies the arena for a search within `reach` of `from`: a fresh
+    /// stamp, slots enough for the square, nothing cleared.
+    fn begin(&mut self, from: Pos, reach: i32) {
+        let reach = reach.saturating_abs();
+        self.side = usize::try_from(2 * i64::from(reach) + 1).expect("small reach");
+        self.corner = Pos::new(from.x.saturating_sub(reach), from.y.saturating_sub(reach));
+        let slots = self.side * self.side;
+        if self.stamp.len() < slots {
+            self.stamp.resize(slots, 0);
+            self.cost.resize(slots, u32::MAX);
+            self.step.resize(slots, 0);
+        }
+        self.now = self.now.wrapping_add(1);
+        if self.now == 0 {
+            // Once in four billion searches: every old stamp forgotten.
+            self.stamp.fill(0);
+            self.now = 1;
+        }
+        self.open.clear();
     }
 
-    /// The cheapest cost found so far to `pos`.
-    fn cost(&mut self, pos: Pos) -> u32 {
+    /// The slot of a tile of the square.
+    fn slot(&self, pos: Pos) -> usize {
+        let x = usize::try_from(pos.x.wrapping_sub(self.corner.x)).expect("in the square");
+        let y = usize::try_from(pos.y.wrapping_sub(self.corner.y)).expect("in the square");
+        y * self.side + x
+    }
+
+    /// The cheapest cost found so far to `pos`; `u32::MAX` unreached.
+    fn cost(&self, pos: Pos) -> u32 {
         let slot = self.slot(pos);
-        self.cost[slot]
+        if self.stamp[slot] == self.now {
+            self.cost[slot]
+        } else {
+            u32::MAX
+        }
     }
 
     /// Records reaching `pos` at `cost` by `step` if that is cheaper than
     /// before; says whether it was.
     fn improve(&mut self, pos: Pos, cost: u32, step: u8) -> bool {
         let slot = self.slot(pos);
-        let better = cost < self.cost[slot];
+        let better = self.stamp[slot] != self.now || cost < self.cost[slot];
         if better {
+            self.stamp[slot] = self.now;
             self.cost[slot] = cost;
             self.step[slot] = step;
         }
@@ -1903,46 +1891,83 @@ impl Reached {
 
     /// The path from `from` to `to`, not including `from`, following the
     /// recorded steps back.
-    fn walk_back(&mut self, from: Pos, to: Pos) -> Vec<Pos> {
+    fn walk_back(&self, from: Pos, to: Pos) -> Vec<Pos> {
         let offsets = Pos::new(0, 0).neighbours();
         let mut path = Vec::new();
         let mut at = to;
         while at != from {
             path.push(at);
-            let slot = self.slot(at);
-            let back = offsets[usize::from(self.step[slot])];
+            let back = offsets[usize::from(self.step[self.slot(at)])];
             at = Pos::new(at.x - back.x, at.y - back.y);
         }
         path.reverse();
         path
     }
-}
 
-/// Hashes a chunk for [`Reached`]: a multiply and a fold, no random keys,
-/// so a search does the same work on every run (D24). Its table is only
-/// looked up, never iterated, so the hash cannot change a path.
-#[derive(Default)]
-struct ChunkHasher(u64);
+    /// The A* of [`Map::search_gated`], past its checks: the path and the
+    /// tiles expanded. `estimate` never overestimates; `cost_at` is
+    /// `None` where a body may not step.
+    fn search(
+        &mut self,
+        from: Pos,
+        to: Pos,
+        reach: i32,
+        budget: u32,
+        estimate: &impl Fn(Pos) -> u32,
+        cost_at: &impl Fn(Pos) -> Option<u32>,
+    ) -> (Option<Vec<Pos>>, u32) {
+        let within = |pos: Pos| {
+            pos.x.abs_diff(from.x) <= reach.unsigned_abs()
+                && pos.y.abs_diff(from.y) <= reach.unsigned_abs()
+        };
+        self.begin(from, reach);
+        let mut pushed = 0u64;
+        let mut expanded = 0u32;
+        self.improve(from, 0, 0);
+        self.open.push(Reverse((estimate(from), pushed, from)));
 
-impl ChunkHasher {
-    fn mix(&mut self, word: u64) {
-        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    }
-}
-
-impl Hasher for ChunkHasher {
-    fn finish(&self) -> u64 {
-        self.0 ^ (self.0 >> 32)
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.mix(u64::from(byte));
+        while let Some(Reverse((guess, _, here))) = self.open.pop() {
+            if here == to {
+                return (Some(self.walk_back(from, to)), expanded);
+            }
+            let cost_here = self.cost(here);
+            if guess > cost_here + estimate(here) {
+                // A stale entry: the tile was reached more cheaply since,
+                // and expanded from there already; expanding it again
+                // would change nothing.
+                continue;
+            }
+            expanded += 1;
+            if expanded > budget {
+                // The effort is spent: the body walks straight instead.
+                return (None, expanded);
+            }
+            for (step, next) in (0u8..).zip(here.neighbours()) {
+                if !within(next) {
+                    continue;
+                }
+                let Some(terrain_cost) = cost_at(next) else {
+                    continue;
+                };
+                let step_cost = if here.is_diagonal_to(next) {
+                    if cost_at(Pos::new(here.x, next.y)).is_none()
+                        || cost_at(Pos::new(next.x, here.y)).is_none()
+                    {
+                        continue; // no cutting corners
+                    }
+                    DIAGONAL_COST
+                } else {
+                    STRAIGHT_COST
+                };
+                let cost = cost_here + step_cost * terrain_cost / STRAIGHT_COST;
+                if self.improve(next, cost, step) {
+                    pushed += 1;
+                    self.open
+                        .push(Reverse((cost + estimate(next), pushed, next)));
+                }
+            }
         }
-    }
-
-    fn write_i32(&mut self, n: i32) {
-        self.mix(u64::from(n.cast_unsigned()));
+        (None, expanded)
     }
 }
 
