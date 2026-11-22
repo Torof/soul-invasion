@@ -30,6 +30,9 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
   --no-brain               the control run: nobody thinks, the people stand
   --no-trials              the control run of D50: nobody tries a way nor
                            copies one (the content's trials replaced by none)
+  --no-continent-cache     bear the vivarium's continent anew instead of
+                           reading it from ${XDG_CACHE_HOME:-~/.cache}/soul-sim/
+                           continents/ (where a run keeps it; same pages)
   --content DIR            the content directory (default: content/, ../content/
                            or ../../content/, the first holding materials.ron)
   --out FILE               the report (default vivarium-report.html); its
@@ -91,6 +94,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             }
             "--no-brain" => settings.brain = false,
             "--no-trials" => settings.trials = false,
+            "--no-continent-cache" => settings.continents = None,
             "--fed" => settings.fed = true,
             "--ages" => {
                 let text = value(&mut i, "--ages")?;
@@ -271,6 +275,22 @@ mod tests {
                 .unwrap()
                 .settings
                 .trials
+        );
+        assert!(
+            parse(&args(&["--no-continent-cache"]))
+                .unwrap()
+                .unwrap()
+                .settings
+                .continents
+                .is_none()
+        );
+        assert!(
+            parse(&args(&[]))
+                .unwrap()
+                .unwrap()
+                .settings
+                .continents
+                .is_some()
         );
         assert!(parse(&args(&["--days"])).is_err());
         assert!(parse(&args(&["--days", "ten"])).is_err());
