@@ -1291,6 +1291,7 @@ impl Brains {
             let before = mind.unseen.len();
             let plants = &mind.plants;
             let mut seen = Vec::new();
+            let bar = memory_bar(&self.food, at, plants, mind.ways.worth_half_tiles);
             mind.unseen.retain(|&chunk| {
                 !learn_plants(
                     world,
@@ -1299,6 +1300,7 @@ impl Brains {
                     plants,
                     &mut seen,
                     (chunk, at, sight),
+                    bar.as_ref(),
                 )
             });
             if mind.unseen.len() < before {
@@ -1570,6 +1572,7 @@ fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind, land: &mut Lan
         let own = at.chunk();
         chunks.sort_by_key(|c| ((c.x - own.x).abs().max((c.y - own.y).abs()), c.y, c.x));
         let mut seen = Vec::new();
+        let bar = memory_bar(land.food, at, &mind.plants, mind.ways.worth_half_tiles);
         for chunk in chunks {
             if !learn_plants(
                 world,
@@ -1578,6 +1581,7 @@ fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind, land: &mut Lan
                 &mind.plants,
                 &mut seen,
                 (chunk, at, sight),
+                bar.as_ref(),
             ) {
                 mind.unseen.push(chunk);
             }
@@ -1616,7 +1620,10 @@ fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind, land: &mut Lan
 /// seeing `sight` tiles sees and does not know yet (`known`) go to
 /// `seen`, for [`remember`]; `false` if the chunk's could not be placed
 /// this turn. A chunk's plants are each of a key of their own (D45: a
-/// plant keeps its room), so none goes twice.
+/// plant keeps its room), so none goes twice. Under `bar` (the rank of
+/// the plant known worth least, [`memory_bar`]), only what outranks it
+/// goes: the rest could not enter a full memory, and a meadow in sight
+/// holds a thousand of them.
 fn learn_plants(
     world: &World,
     bearers: &mut Placed,
@@ -1624,6 +1631,7 @@ fn learn_plants(
     known: &BTreeMap<(ChunkPos, Source), KnownPlant>,
     seen: &mut Vec<((ChunkPos, Source), KnownPlant)>,
     (chunk, at, sight): (ChunkPos, Pos, i32),
+    bar: Option<&Bar>,
 ) -> bool {
     let Some(placed) = bearers.get(world, food, chunk) else {
         return false;
@@ -1635,18 +1643,72 @@ fn learn_plants(
             && (tile.y - at.y).abs() <= sight
             && !known.contains_key(&key)
         {
-            seen.push((
-                key,
-                KnownPlant {
-                    at: held.at,
-                    kind: held.kind,
-                    spent: None,
-                    not_before: None,
-                },
-            ));
+            let plant = KnownPlant {
+                at: held.at,
+                kind: held.kind,
+                spent: None,
+                not_before: None,
+            };
+            if bar.is_some_and(|bar| rank(food, at, bar.half_tiles, key, &plant) >= bar.rank) {
+                continue;
+            }
+            seen.push((key, plant));
         }
     }
     true
+}
+
+/// A plant's place in a memory's ranking ([`remember`]): the lower, the
+/// better kept; total, the key breaking ties.
+type Rank = (std::cmp::Reverse<(bool, u64)>, (ChunkPos, Source));
+
+/// The rank of the plant a full memory keeps last, from where its body
+/// looks: a plant seen that does not outrank it cannot enter.
+struct Bar {
+    rank: Rank,
+    half_tiles: u64,
+}
+
+/// The rank of `plant`, known under `key`, for a body at `at` whose way
+/// halves a plant's worth at `half_tiles` tiles: what bears now comes
+/// first, by what an hour of it gives now; then the rest by its best
+/// crop: a fruit bush out of season does not crowd out the spring's
+/// leaves.
+fn rank(
+    food: &Food,
+    at: Pos,
+    half_tiles: u64,
+    key: (ChunkPos, Source),
+    plant: &KnownPlant,
+) -> Rank {
+    let (now, best) = match food.now(plant.kind) {
+        Some(bears) => (true, bears.kj),
+        None => (false, food.best_kj[usize::from(plant.kind)]),
+    };
+    (
+        std::cmp::Reverse((now, worth(best, far(plant.at.tile(), at), half_tiles))),
+        key,
+    )
+}
+
+/// The bar of a memory full to [`MEMORY_PLANTS`], for a body at `at`:
+/// the rank of the plant it holds worth least, which any plant must
+/// outrank to be remembered ([`remember`] keeps the same set, learning
+/// all then forgetting). `None` while the memory has room.
+fn memory_bar(
+    food: &Food,
+    at: Pos,
+    plants: &BTreeMap<(ChunkPos, Source), KnownPlant>,
+    half_tiles: u64,
+) -> Option<Bar> {
+    if plants.len() < MEMORY_PLANTS {
+        return None;
+    }
+    plants
+        .iter()
+        .map(|(key, plant)| rank(food, at, half_tiles, *key, plant))
+        .max()
+        .map(|rank| Bar { rank, half_tiles })
 }
 
 /// The minds' shared land, borrowed for a turn: the plants placed, the
@@ -1873,19 +1935,8 @@ fn remember(
         return;
     }
     // The least worth go, all at once: a look over a reed bed adds
-    // thousands. What bears now comes first, by what an hour of it
-    // gives now; then the rest by its best crop: a fruit bush out
-    // of season does not crowd out the spring's leaves.
-    let rank = |key: (ChunkPos, Source), plant: &KnownPlant| {
-        let (now, best) = match food.now(plant.kind) {
-            Some(bears) => (true, bears.kj),
-            None => (false, food.best_kj[usize::from(plant.kind)]),
-        };
-        (
-            std::cmp::Reverse((now, worth(best, far(plant.at.tile(), at), half_tiles))),
-            key,
-        )
-    };
+    // thousands ([`rank`]).
+    let rank = |key: (ChunkPos, Source), plant: &KnownPlant| rank(food, at, half_tiles, key, plant);
     // Each with where it is: known (`None`), or seen and its place.
     let mut ranked: Vec<_> = plants
         .iter()
