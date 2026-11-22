@@ -70,7 +70,8 @@
 //! section `trials` holds every number ([`crate::content::Trials`]);
 //! absent, nobody tries anything.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::content::{Content, Trials};
 use crate::crops::{self, Bearer, Source};
@@ -155,9 +156,15 @@ pub const COLD_CHUNKS_PER_SECOND: u64 = 10;
 /// tick of a second; a work costs some 5 µs, so a full share of the
 /// game's ten some 50 ms.
 pub const THOUGHT_WORK_PER_SECOND: u64 = 100_000;
-/// How many chunks' trees and plants bearing food the brains hold, the
-/// least lately used forgotten first (placed again if seen again): as
-/// many as the world's own trees ([`crate::ground::TREE_CACHE_CHUNKS`]).
+/// How many chunks' trees and plants bearing food the brains hold at
+/// least, the least lately used forgotten first (placed again if seen
+/// again): as many as the world's own trees
+/// ([`crate::ground::TREE_CACHE_CHUNKS`], four views), widened to the
+/// chunks of the world they think in ([`Brains::think`]): two tribes
+/// wander over more than four views, and a chunk forgotten was placed
+/// again at some milliseconds (the vivarium's world has 4,624 chunks; the
+/// valley 9,216, a chunk's bearers some 34 bytes each, held once with the
+/// world's, S4). The same for the shores to drink from.
 pub const BEARER_CHUNKS: usize = crate::ground::TREE_CACHE_CHUNKS;
 
 /// Why a body was asked to do something.
@@ -610,6 +617,9 @@ pub struct Brains {
     shores: Lru<ChunkPos, Vec<Shore>>,
     /// The content's kinds bearing food, numbered, and what each bears now.
     food: Food,
+    /// The minds whose last look left chunks `unseen`, learnt at the next
+    /// turns ([`Brains::learn_unseen`]): the others are not swept.
+    pending: BTreeSet<BodyId>,
     /// How much the brains think a game second at most
     /// ([`THOUGHT_WORK_PER_SECOND`]).
     work_per_second: u64,
@@ -730,12 +740,26 @@ impl Food {
     }
 }
 
-/// A tree or plant bearing food as the brains hold it: its kind numbered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A chunk's trees and plants bearing a crop as the brains hold them:
+/// the world's own, held once with it, and beside each its kind's number
+/// ([`Food::numbers`]), [`NOT_FOOD`] for one bearing no food.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Held {
-    source: Source,
-    at: FinePos,
-    kind: u16,
+    bearers: Arc<[Bearer]>,
+    kinds: Box<[u16]>,
+}
+
+/// The kind's number of a bearer whose crops are not food.
+const NOT_FOOD: u16 = u16::MAX;
+
+impl Held {
+    /// The chunk's bearers of food, each with its kind's number.
+    fn food(&self) -> impl Iterator<Item = (&Bearer, u16)> {
+        self.bearers
+            .iter()
+            .zip(&self.kinds)
+            .filter_map(|(bearer, &kind)| (kind != NOT_FOOD).then_some((bearer, kind)))
+    }
 }
 
 /// A tile a body may stand on to drink from the water around it.
@@ -799,7 +823,7 @@ fn shores_in(map: &Map, rules: &Content, chunk: ChunkPos) -> Vec<Shore> {
 struct Placed {
     /// Bounded, the least lately used going first: the land the minds
     /// saw grows with their wanderings.
-    chunks: Lru<ChunkPos, Vec<Held>>,
+    chunks: Lru<ChunkPos, Held>,
     /// Chunks this turn may still place ([`COLD_CHUNKS_PER_SECOND`]).
     left: u64,
 }
@@ -827,7 +851,7 @@ impl Placed {
 
     /// The trees and plants bearing food of `chunk`; placed now if they
     /// are not yet and the turn allows one more, else `None`.
-    fn get(&mut self, world: &World, food: &Food, chunk: ChunkPos) -> Option<&[Held]> {
+    fn get(&mut self, world: &World, food: &Food, chunk: ChunkPos) -> Option<&Held> {
         if !self.chunks.contains(&chunk) {
             if self.left == 0 {
                 return None;
@@ -836,7 +860,7 @@ impl Placed {
             self.chunks
                 .insert(chunk, food_bearers_in(world, food, chunk));
         }
-        self.chunks.get(&chunk).map(Vec::as_slice)
+        self.chunks.get(&chunk)
     }
 
     /// Places `chunk`'s now, out of any turn's count.
@@ -853,19 +877,15 @@ fn is_food(rules: &Content, material: &str) -> bool {
     rules.material(material).is_some_and(|m| m.food.is_some())
 }
 
-/// The trees and plants of `chunk` that bear food in some season.
-fn food_bearers_in(world: &World, food: &Food, chunk: ChunkPos) -> Vec<Held> {
-    world
-        .bearers_in(chunk)
+/// The trees and plants of `chunk` bearing a crop, as the world places
+/// them, each with its kind's number among the kinds bearing food.
+fn food_bearers_in(world: &World, food: &Food, chunk: ChunkPos) -> Held {
+    let bearers = world.bearers_in(chunk);
+    let kinds = bearers
         .iter()
-        .filter_map(|b: &Bearer| {
-            Some(Held {
-                source: b.source,
-                at: b.at,
-                kind: *food.numbers.get(&b.kind)?,
-            })
-        })
-        .collect()
+        .map(|b: &Bearer| food.numbers.get(&*b.kind).copied().unwrap_or(NOT_FOOD))
+        .collect();
+    Held { bearers, kinds }
 }
 
 /// How far a body standing on `at` sees, in tiles.
@@ -887,6 +907,7 @@ impl Brains {
             bearers: Placed::new(),
             shores: Lru::new(BEARER_CHUNKS),
             food: Food::default(),
+            pending: BTreeSet::new(),
             work_per_second: THOUGHT_WORK_PER_SECOND,
             owed: 0,
             next: None,
@@ -991,9 +1012,14 @@ impl Brains {
         self.count_gathers(events, rules);
         let now = world.tick().0;
         self.bearers.left = cold_chunks_at(world, now);
+        let chunks = world.map().chunks_wide() as usize * world.map().chunks_high() as usize;
+        self.bearers.chunks.widen(chunks);
+        self.shores.widen(chunks);
         self.learn_unseen(world, rules);
         let spread = wake_spread(world);
-        // Who is gone, and who is due.
+        // Who is gone, and who is due: the due noted on the way, by their
+        // ids, rather than swept again.
+        let mut due: Vec<BodyId> = Vec::new();
         self.minds.retain(|&id, mind| {
             let Some(body) = world.body(id) else {
                 return false;
@@ -1014,6 +1040,9 @@ impl Brains {
             if mind.wake_at.is_some_and(|tick| now >= tick) {
                 mind.due = true;
             }
+            if mind.due {
+                due.push(id);
+            }
             true
         });
         if std::mem::take(&mut self.dusk) {
@@ -1025,13 +1054,8 @@ impl Brains {
         let allowance = cap.saturating_sub(self.owed);
         self.owed = self.owed.saturating_sub(cap);
         let from = self.next.take().unwrap_or(BodyId(0));
-        let due: Vec<BodyId> = self
-            .minds
-            .range(from..)
-            .chain(self.minds.range(..from))
-            .filter(|(_, mind)| mind.due)
-            .map(|(&id, _)| id)
-            .collect();
+        let first = due.partition_point(|&id| id < from);
+        due.rotate_left(first);
         let mut decisions = Vec::new();
         let seed = self.seed;
         let mut land = Land {
@@ -1042,6 +1066,7 @@ impl Brains {
         let mut used = 0;
         self.waiting = 0;
         let mut lay_down = Vec::new();
+        let mut pending = Vec::new();
         for (i, &id) in due.iter().enumerate() {
             if used >= allowance {
                 self.next = Some(id);
@@ -1056,6 +1081,9 @@ impl Brains {
             mind.thoughts += 1;
             land.food.refresh(world, rules);
             used += 1 + look(world, rules, body.pos(), mind, &mut land);
+            if !mind.unseen.is_empty() {
+                pending.push(id);
+            }
             if let Some(decision) = decide(world, rules, land.food, id, mind, seed) {
                 if decision.why == Why::Night
                     && matches!(decision.intention, Intention::Sleep { .. })
@@ -1068,6 +1096,7 @@ impl Brains {
         }
         self.owed += used.saturating_sub(allowance);
         self.work = used;
+        self.pending.extend(pending);
         for id in lay_down {
             self.imitate(world, rules, id);
         }
@@ -1289,12 +1318,22 @@ impl Brains {
     /// place then ([`COLD_CHUNKS_PER_SECOND`]), as many as this turn allows,
     /// the minds in turn: learnt without a thought.
     fn learn_unseen(&mut self, world: &World, rules: &Content) {
-        for (&id, mind) in &mut self.minds {
-            if mind.unseen.is_empty() {
+        if self.pending.is_empty() {
+            return;
+        }
+        let pending: Vec<BodyId> = self.pending.iter().copied().collect();
+        for id in pending {
+            let Some(mind) = self
+                .minds
+                .get_mut(&id)
+                .filter(|mind| !mind.unseen.is_empty())
+            else {
+                self.pending.remove(&id);
                 continue;
-            }
+            };
             let Some(at) = mind.plants_from.filter(|_| world.body(id).is_some()) else {
                 mind.unseen.clear();
+                self.pending.remove(&id);
                 continue;
             };
             self.food.refresh(world, rules);
@@ -1302,6 +1341,7 @@ impl Brains {
             let before = mind.unseen.len();
             let plants = &mind.plants;
             let mut seen = Vec::new();
+            let bar = memory_bar(&self.food, at, plants, mind.ways.worth_half_tiles);
             mind.unseen.retain(|&chunk| {
                 !learn_plants(
                     world,
@@ -1310,6 +1350,7 @@ impl Brains {
                     plants,
                     &mut seen,
                     (chunk, at, sight),
+                    bar.as_ref(),
                 )
             });
             if mind.unseen.len() < before {
@@ -1320,6 +1361,9 @@ impl Brains {
                     seen,
                     mind.ways.worth_half_tiles,
                 );
+            }
+            if mind.unseen.is_empty() {
+                self.pending.remove(&id);
             }
         }
     }
@@ -1595,6 +1639,7 @@ fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind, land: &mut Lan
         let own = at.chunk();
         chunks.sort_by_key(|c| ((c.x - own.x).abs().max((c.y - own.y).abs()), c.y, c.x));
         let mut seen = Vec::new();
+        let bar = memory_bar(land.food, at, &mind.plants, mind.ways.worth_half_tiles);
         for chunk in chunks {
             if !learn_plants(
                 world,
@@ -1603,6 +1648,7 @@ fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind, land: &mut Lan
                 &mind.plants,
                 &mut seen,
                 (chunk, at, sight),
+                bar.as_ref(),
             ) {
                 mind.unseen.push(chunk);
             }
@@ -1641,7 +1687,10 @@ fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind, land: &mut Lan
 /// seeing `sight` tiles sees and does not know yet (`known`) go to
 /// `seen`, for [`remember`]; `false` if the chunk's could not be placed
 /// this turn. A chunk's plants are each of a key of their own (D45: a
-/// plant keeps its room), so none goes twice.
+/// plant keeps its room), so none goes twice. Under `bar` (the rank of
+/// the plant known worth least, [`memory_bar`]), only what outranks it
+/// goes: the rest could not enter a full memory, and a meadow in sight
+/// holds a thousand of them.
 fn learn_plants(
     world: &World,
     bearers: &mut Placed,
@@ -1649,29 +1698,137 @@ fn learn_plants(
     known: &BTreeMap<(ChunkPos, Source), KnownPlant>,
     seen: &mut Vec<((ChunkPos, Source), KnownPlant)>,
     (chunk, at, sight): (ChunkPos, Pos, i32),
+    bar: Option<&Bar>,
 ) -> bool {
     let Some(placed) = bearers.get(world, food, chunk) else {
         return false;
     };
-    for held in placed {
-        let tile = held.at.tile();
-        let key = (chunk, held.source);
-        if (tile.x - at.x).abs() <= sight
-            && (tile.y - at.y).abs() <= sight
-            && !known.contains_key(&key)
-        {
-            seen.push((
-                key,
-                KnownPlant {
-                    at: held.at,
-                    kind: held.kind,
-                    spent: None,
-                    not_before: None,
-                },
-            ));
+    for (bearer, kind) in placed.food() {
+        let tile = bearer.at.tile();
+        if (tile.x - at.x).abs() > sight || (tile.y - at.y).abs() > sight {
+            continue;
         }
+        let key = (chunk, bearer.source);
+        // The bar first: most of a meadow is under it, and the memory
+        // is searched only for what is not.
+        if bar.is_some_and(|bar| !bar.admits(food, at, key, kind, tile)) || known.contains_key(&key)
+        {
+            continue;
+        }
+        seen.push((
+            key,
+            KnownPlant {
+                at: bearer.at,
+                kind,
+                spent: None,
+                not_before: None,
+            },
+        ));
     }
     true
+}
+
+/// A plant's place in a memory's ranking ([`remember`]): the lower, the
+/// better kept; total, the key breaking ties.
+type Rank = (std::cmp::Reverse<(bool, u64)>, (ChunkPos, Source));
+
+/// The rank of the plant a full memory keeps last, from where its body
+/// looks: a plant seen that does not outrank it cannot enter.
+struct Bar {
+    /// Whether that plant bears now.
+    now: bool,
+    /// Its worth from where the body looks ([`worth`]).
+    worth: u64,
+    /// Its key, breaking ties.
+    key: (ChunkPos, Source),
+    /// The body's way ([`Ways::worth_half_tiles`]).
+    half_tiles: u64,
+}
+
+impl Bar {
+    /// The rank it stands at.
+    #[cfg(test)]
+    fn rank_of(&self) -> Rank {
+        (std::cmp::Reverse((self.now, self.worth)), self.key)
+    }
+
+    /// The bar at `rank`, for a body whose way is `half_tiles`.
+    fn at(rank: Rank, half_tiles: u64) -> Self {
+        let (std::cmp::Reverse((now, worth)), key) = rank;
+        Self {
+            now,
+            worth,
+            key,
+            half_tiles,
+        }
+    }
+
+    /// Does a plant of `kind` standing on `tile`, known under `key`,
+    /// outrank the bar for a body at `at`: [`rank`] under the bar's,
+    /// worked out without dividing, for every plant in sight asks it.
+    /// What bears now beats what does not; then the worth, `kj × half /
+    /// (half + far)`, compared through its products; then the key.
+    fn admits(&self, food: &Food, at: Pos, key: (ChunkPos, Source), kind: u16, tile: Pos) -> bool {
+        let (now, kj) = match food.now(kind) {
+            Some(bears) => (true, bears.kj),
+            None => (false, food.best_kj[usize::from(kind)]),
+        };
+        if now != self.now {
+            return now;
+        }
+        let half = self.half_tiles.max(1);
+        let tiles = u64::try_from(far(tile, at)).unwrap_or(0).isqrt();
+        // worth = kj × half / (half + tiles), tiles as [`worth`] takes
+        // them, a whole quotient: it is above the bar's when kj × half
+        // reaches the next multiple, equal when it reaches the bar's own.
+        let (above, over) = (kj * half, half + tiles);
+        if above >= (self.worth + 1) * over {
+            return true;
+        }
+        above >= self.worth * over && key < self.key
+    }
+}
+
+/// The rank of `plant`, known under `key`, for a body at `at` whose way
+/// halves a plant's worth at `half_tiles` tiles: what bears now comes
+/// first, by what an hour of it gives now; then the rest by its best
+/// crop: a fruit bush out of season does not crowd out the spring's
+/// leaves.
+fn rank(
+    food: &Food,
+    at: Pos,
+    half_tiles: u64,
+    key: (ChunkPos, Source),
+    plant: &KnownPlant,
+) -> Rank {
+    let (now, best) = match food.now(plant.kind) {
+        Some(bears) => (true, bears.kj),
+        None => (false, food.best_kj[usize::from(plant.kind)]),
+    };
+    (
+        std::cmp::Reverse((now, worth(best, far(plant.at.tile(), at), half_tiles))),
+        key,
+    )
+}
+
+/// The bar of a memory full to [`MEMORY_PLANTS`], for a body at `at`:
+/// the rank of the plant it holds worth least, which any plant must
+/// outrank to be remembered ([`remember`] keeps the same set, learning
+/// all then forgetting). `None` while the memory has room.
+fn memory_bar(
+    food: &Food,
+    at: Pos,
+    plants: &BTreeMap<(ChunkPos, Source), KnownPlant>,
+    half_tiles: u64,
+) -> Option<Bar> {
+    if plants.len() < MEMORY_PLANTS {
+        return None;
+    }
+    plants
+        .iter()
+        .map(|(key, plant)| rank(food, at, half_tiles, *key, plant))
+        .max()
+        .map(|rank| Bar::at(rank, half_tiles))
 }
 
 /// The minds' shared land, borrowed for a turn: the plants placed, the
@@ -1709,6 +1866,12 @@ fn decide(
     // The world refuses a gather to a body whose load is full.
     let can_carry = body.load_g() < body.capacity_g(&rules.movement);
     let night = world.is_night(rules);
+    // The plant worth gathering, chosen once a thought: hunger and the
+    // day's gathering ask the same question of the same memory.
+    let mut chosen: Option<Option<Target<'_>>> = None;
+    let mut to_gather = |mind: &Mind| {
+        *chosen.get_or_insert_with(|| plant_to_gather(world, rules, food, here, mind))
+    };
     if let Doing::Gathering(chunk, source) = mind.doing {
         if body.work().is_some() {
             // At work: it goes on unless thirst, hunger or night calls.
@@ -1818,7 +1981,7 @@ fn decide(
                 Why::Hunger,
             );
         }
-        if can_carry && let Some(target) = plant_to_gather(world, rules, food, here, mind) {
+        if can_carry && let Some(target) = to_gather(mind) {
             return go_gather(world, rules, id, mind, target, Why::Hunger);
         }
         // It knows the seasons: it goes looking by day, and only when
@@ -1832,7 +1995,7 @@ fn decide(
     if !night
         && can_carry
         && carried_kj(world, rules, id) < mind.ways.stock_kj
-        && let Some(target) = plant_to_gather(world, rules, food, here, mind)
+        && let Some(target) = to_gather(mind)
     {
         return go_gather(world, rules, id, mind, target, Why::Gather);
     }
@@ -1901,19 +2064,8 @@ fn remember(
         return;
     }
     // The least worth go, all at once: a look over a reed bed adds
-    // thousands. What bears now comes first, by what an hour of it
-    // gives now; then the rest by its best crop: a fruit bush out
-    // of season does not crowd out the spring's leaves.
-    let rank = |key: (ChunkPos, Source), plant: &KnownPlant| {
-        let (now, best) = match food.now(plant.kind) {
-            Some(bears) => (true, bears.kj),
-            None => (false, food.best_kj[usize::from(plant.kind)]),
-        };
-        (
-            std::cmp::Reverse((now, worth(best, far(plant.at.tile(), at), half_tiles))),
-            key,
-        )
-    };
+    // thousands ([`rank`]).
+    let rank = |key: (ChunkPos, Source), plant: &KnownPlant| rank(food, at, half_tiles, key, plant);
     // Each with where it is: known (`None`), or seen and its place.
     let mut ranked: Vec<_> = plants
         .iter()
@@ -2001,8 +2153,7 @@ fn plant_to_gather<'a>(
             // What an hour of it gives of what is left on it now: a
             // plant holding crumbs is left alone.
             let crop = &rules.crops[bears.crop];
-            let (_, left_g) =
-                world.ripe_of(key.0, key.1, plant.at, food.name(plant.kind), &crop.gives)?;
+            let (_, left_g) = world.ripe_of_crop(key.0, key.1, plant.at, bears.crop)?;
             let kj = kj_of_an_hour(bears.kj, crop.per_hour_g, left_g)?;
             Some((*key, plant, bears, kj))
         })
@@ -2361,10 +2512,9 @@ fn new_home(
         if plant.spent == Some(bears.year) {
             continue;
         }
-        let crop = &rules.crops[bears.crop];
         let at = plant.at.tile();
         if world
-            .ripe_of(chunk, source, plant.at, food.name(plant.kind), &crop.gives)
+            .ripe_of_crop(chunk, source, plant.at, bears.crop)
             .is_none()
         {
             continue;
@@ -2895,6 +3045,62 @@ mod tests {
         look(&world, &rules, at, &mut whole, &mut land);
         assert!(!whole.plants.is_empty());
         assert!(whole.plants.keys().eq(brains.minds[&id].plants.keys()));
+    }
+
+    #[test]
+    fn the_memory_bar_admits_exactly_what_outranks_it() {
+        // Two kinds: 0 bears now (kj 900), 1 does not (best 1,200).
+        let food = Food {
+            now: vec![
+                Some(Bears {
+                    crop: 0,
+                    year: 1,
+                    kj: 900,
+                }),
+                None,
+            ],
+            best_kj: vec![900, 1200],
+            ..Food::default()
+        };
+        let at = Pos::new(100, 100);
+        let plant = |kind, dx: i32, dy: i32, x_mm| {
+            (
+                (
+                    Pos::new(100 + dx, 100 + dy).chunk(),
+                    Source::Plant(crate::crops::PlantKey { x_mm, y_mm: 1 }),
+                ),
+                KnownPlant {
+                    at: Pos::new(100 + dx, 100 + dy).centre(),
+                    kind,
+                    spent: None,
+                    not_before: None,
+                },
+            )
+        };
+        let mut plants = Vec::new();
+        for kind in 0..2 {
+            for d in [0, 1, 3, 7, 16, 40, 60] {
+                for x_mm in [1, 2] {
+                    plants.push(plant(kind, d, d / 2, x_mm));
+                }
+            }
+        }
+        let mut checked = 0;
+        for half_tiles in [1, 32, 64, 1 << 20] {
+            for (bar_key, bar_plant) in &plants {
+                let bar = Bar::at(rank(&food, at, half_tiles, *bar_key, bar_plant), half_tiles);
+                for (key, p) in &plants {
+                    let under = rank(&food, at, half_tiles, *key, p) < bar.rank_of();
+                    assert_eq!(
+                        bar.admits(&food, at, *key, p.kind, p.at.tile()),
+                        under,
+                        "half {half_tiles}, bar {bar_key:?}, plant {key:?}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 1000);
     }
 
     #[test]

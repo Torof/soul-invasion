@@ -50,6 +50,13 @@ impl<K: Ord + Copy, V> Lru<K, V> {
         self.capacity
     }
 
+    /// Holds up to `capacity` entries from now on, if that is more than
+    /// it does: a cache sized for a view, widened to a whole world. Never
+    /// narrowed; nothing is dropped.
+    pub fn widen(&mut self, capacity: usize) {
+        self.capacity = self.capacity.max(capacity);
+    }
+
     /// Entries held now.
     #[must_use]
     pub fn len(&self) -> usize {

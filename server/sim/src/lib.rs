@@ -1328,6 +1328,11 @@ pub struct World {
     /// from the date, and only what men picked is kept.
     #[serde(skip)]
     crops: Vec<crops::Crop>,
+    /// Each crop's kind's key ([`crops::key_of`]), worked out once with
+    /// the content: the brains ask what is ripe for every plant they
+    /// know at every choice. Not stored; made again with the content.
+    #[serde(skip)]
+    crop_keys: Vec<u64>,
     /// The trees of the chunks asked for lately, placed once and shared
     /// ([`ground::Ground`]) with the server's threads, which take a handle
     /// as they take the map ([`World::shared_ground`]). Derived from the
@@ -1404,6 +1409,7 @@ impl<'de> serde::Deserialize<'de> for World {
             open_ground: open_ground::OpenGround::default(),
             flora: Vec::new(),
             crops: Vec::new(),
+            crop_keys: Vec::new(),
             ground_cache: Arc::new(ground::Ground::default()),
         };
         let standing: Vec<_> = world
@@ -1509,6 +1515,7 @@ impl World {
             open_ground: open_ground::OpenGround::default(),
             flora: Vec::new(),
             crops: Vec::new(),
+            crop_keys: Vec::new(),
             ground_cache: Arc::new(ground::Ground::default()),
         }
     }
@@ -1526,6 +1533,7 @@ impl World {
         self.open_ground.clone_from(&content.open_ground);
         self.flora.clone_from(&content.flora);
         self.crops.clone_from(&content.crops);
+        self.crop_keys = self.crops.iter().map(crops::key_of).collect();
         for index in 0..self.bodies.len() {
             self.refresh_load(index);
         }
@@ -1555,43 +1563,51 @@ impl World {
             .bearers_in(chunk, || self.place_bearers(chunk))
     }
 
-    /// The trees and plants of `chunk` bearing a crop, placed now.
+    /// The trees and plants of `chunk` bearing a crop, placed now. Each
+    /// kind's name is made once and shared by its bearers; the trees
+    /// around are read where the land holds them.
     fn place_bearers(&self, chunk: ChunkPos) -> Vec<crops::Bearer> {
         let bears = |id: &str| self.crops.iter().any(|c| c.on == id);
+        // A kind's shared name, `None` for one bearing nothing.
+        let named = |id: &str| bears(id).then(|| Arc::<str>::from(id));
+        let species: Vec<Option<Arc<str>>> =
+            self.species.iter().map(|kind| named(&kind.id)).collect();
         let mut out: Vec<crops::Bearer> = self
             .trees_in(chunk)
             .iter()
-            .filter(|tree| bears(&self.species[tree.species].id))
-            .map(|tree| crops::Bearer {
-                source: crops::Source::Tree(tree.key),
-                at: tree.at,
-                kind: self.species[tree.species].id.clone(),
+            .filter_map(|tree| {
+                Some(crops::Bearer {
+                    source: crops::Source::Tree(tree.key),
+                    at: tree.at,
+                    kind: Arc::clone(species[tree.species].as_ref()?),
+                })
             })
             .collect();
-        if !self.flora.iter().any(|kind| bears(&kind.id)) {
+        let flora: Vec<Option<Arc<str>>> = self.flora.iter().map(|kind| named(&kind.id)).collect();
+        if flora.iter().all(Option::is_none) {
             return out;
         }
-        let around: Vec<trees::Tree> = (-1..=1)
+        let around: Vec<Arc<[trees::Tree]>> = (-1..=1)
             .flat_map(|dy| (-1..=1).map(move |dx| ChunkPos::new(chunk.x + dx, chunk.y + dy)))
-            .flat_map(|near| self.trees_in(near).to_vec())
+            .map(|near| self.trees_in(near))
             .collect();
         let near: Vec<flora::TreeAt<'_>> = around
             .iter()
+            .flat_map(|trees| trees.iter())
             .map(|tree| flora::TreeAt {
                 at: tree.at,
                 species: self.species[tree.species].id.as_str(),
             })
             .collect();
         for plant in flora::plants_in(&self.map, &self.flora, &near, self.seed(), chunk) {
-            let kind = &self.flora[usize::from(plant.kind)];
-            if !bears(&kind.id) {
+            let Some(kind) = &flora[usize::from(plant.kind)] else {
                 continue;
-            }
+            };
             if let Some(key) = crops::PlantKey::of(chunk, plant.at) {
                 out.push(crops::Bearer {
                     source: crops::Source::Plant(key),
                     at: plant.at,
-                    kind: kind.id.clone(),
+                    kind: Arc::clone(kind),
                 });
             }
         }
@@ -1604,9 +1620,10 @@ impl World {
     pub fn ripe_on(&self, chunk: ChunkPos, bearer: &crops::Bearer) -> Vec<crops::Ripe> {
         self.crops
             .iter()
-            .filter(|crop| crop.on == bearer.kind)
-            .filter_map(|crop| {
-                let (year, grams) = self.left_of(chunk, bearer.source, bearer.at, crop)?;
+            .enumerate()
+            .filter(|(_, crop)| *crop.on == *bearer.kind)
+            .filter_map(|(i, crop)| {
+                let (year, grams) = self.left_of(chunk, bearer.source, bearer.at, i)?;
                 Some(crops::Ripe {
                     gives: crop.gives.clone(),
                     year,
@@ -1630,21 +1647,43 @@ impl World {
     ) -> Option<(u64, u32)> {
         self.crops
             .iter()
-            .filter(|crop| crop.on == kind && crop.gives == gives)
-            .find_map(|crop| self.left_of(chunk, source, at, crop))
+            .enumerate()
+            .filter(|(_, crop)| crop.on == kind && crop.gives == gives)
+            .find_map(|(i, _)| self.left_of(chunk, source, at, i))
     }
 
-    /// What is left now of `crop` on the tree or plant `source` of
-    /// `chunk`, standing at `at`: its year and grams, `None` when nothing.
+    /// [`World::ripe_of`] for the crop at `crop` in the content's order
+    /// (the brains hold that number, numbering what each kind bears): its
+    /// year and the grams on it now, if any. Asked by number, nothing is
+    /// compared: the brains ask it for every plant they know at every
+    /// choice. The crop's own, not a twin's of the same kind and material:
+    /// the content gives each kind one crop a material.
+    pub fn ripe_of_crop(
+        &self,
+        chunk: ChunkPos,
+        source: crops::Source,
+        at: FinePos,
+        crop: usize,
+    ) -> Option<(u64, u32)> {
+        (crop < self.crops.len()).then(|| self.left_of(chunk, source, at, crop))?
+    }
+
+    /// What is left now of the crop at `crop` on the tree or plant
+    /// `source` of `chunk`, standing at `at`: its year and grams, `None`
+    /// when nothing.
     fn left_of(
         &self,
         chunk: ChunkPos,
         source: crops::Source,
         at: FinePos,
-        crop: &crops::Crop,
+        crop: usize,
     ) -> Option<(u64, u32)> {
         let frame = r#gen::scatter::Frame::at(self.map.origin());
-        let (year, grams) = crops::there(crop, &self.calendar, self.tick, self.seed(), frame, at)?;
+        let key = self.crop_keys.get(crop).copied();
+        let crop = &self.crops[crop];
+        let key = key.unwrap_or_else(|| crops::key_of(crop));
+        let (year, grams) =
+            crops::there_keyed(crop, key, &self.calendar, self.tick, self.seed(), frame, at)?;
         // Looked up without making the key's text: the picks of one
         // source sit together, few of them.
         let taken = self
@@ -3055,7 +3094,7 @@ impl World {
             let rate = self
                 .crops
                 .iter()
-                .find(|c| c.on == work.bearer.kind && c.gives == work.gives)
+                .find(|c| *c.on == *work.bearer.kind && c.gives == work.gives)
                 .map_or(0, |c| c.per_hour_g)
                 * body.condition.pace_percent(&rules.needs)
                 / 100;

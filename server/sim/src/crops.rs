@@ -25,12 +25,13 @@
 //! are, so a crop is the same seen through any map.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
 use crate::changes::Picked;
-use crate::r#gen::hash;
 use crate::r#gen::scatter::Frame;
+use crate::r#gen::{hash, hash_of};
 use crate::map::{CHUNK_SIZE, ChunkPos, FinePos, MM_PER_TILE};
 use crate::time::{Calendar, Season, Tick};
 use crate::trees::TreeKey;
@@ -272,14 +273,38 @@ pub(crate) fn there(
     frame: Frame,
     at: FinePos,
 ) -> Option<(u64, u32)> {
+    there_keyed(crop, key_of(crop), calendar, tick, seed, frame, at)
+}
+
+/// [`there`], the crop's kind's key ([`key_of`]) given rather than hashed
+/// again: the brains ask it for every plant they know at every choice.
+pub(crate) fn there_keyed(
+    crop: &Crop,
+    on_key: u64,
+    calendar: &Calendar,
+    tick: Tick,
+    seed: u64,
+    frame: Frame,
+    at: FinePos,
+) -> Option<(u64, u32)> {
     let (year, share) = on_plant(crop, calendar, tick)?;
-    let grams = u64::from(bears(crop, seed, frame, at, year)) * share / WHOLE;
+    let grams = u64::from(bears_keyed(crop, on_key, seed, frame, at, year)) * share / WHOLE;
     Some((year, u32::try_from(grams).expect("at most what it bears")))
 }
 
-/// A number for a text (an id), the same on every machine.
+/// The number standing for `crop`'s kind in its draws (a hash of its
+/// id), the same on every machine; worked out once a crop by those who
+/// ask often.
+#[must_use]
+pub fn key_of(crop: &Crop) -> u64 {
+    text_key(&crop.on)
+}
+
+/// A number for a text (an id), the same on every machine: the hash of
+/// its bytes, read as they come (the brains ask it millions of times a
+/// run; collecting them first cost an allocation each).
 fn text_key(text: &str) -> u64 {
-    hash(&text.bytes().map(u64::from).collect::<Vec<_>>())
+    hash_of(text.bytes().map(u64::from))
 }
 
 /// A whole number as a hash key.
@@ -288,13 +313,20 @@ fn key(value: i64) -> u64 {
 }
 
 /// What year `crop`'s kind has in `year` around the world's tile `tile`.
+#[cfg(test)]
 pub(crate) fn year_of(crop: &Crop, seed: u64, tile: (i32, i32), year: u64) -> Year {
+    year_of_keyed(crop, key_of(crop), seed, tile, year)
+}
+
+/// What year `crop`'s kind has in `year` around the world's tile `tile`;
+/// the kind's key ([`key_of`]) given.
+fn year_of_keyed(crop: &Crop, on_key: u64, seed: u64, tile: (i32, i32), year: u64) -> Year {
     const PURPOSE: u64 = 0x4d41_5354; // "MAST"
     let (rx, ry) = (tile.0.div_euclid(MAST_CELL), tile.1.div_euclid(MAST_CELL));
     let roll = hash(&[
         PURPOSE,
         seed,
-        text_key(&crop.on),
+        on_key,
         year,
         key(i64::from(rx)),
         key(i64::from(ry)),
@@ -310,23 +342,35 @@ pub(crate) fn year_of(crop: &Crop, seed: u64, tile: (i32, i32), year: u64) -> Ye
 
 /// What a plant of `crop`'s kind standing at `at` bears in `year`, in
 /// grams, before anything is picked.
+#[cfg(test)]
 pub(crate) fn bears(crop: &Crop, seed: u64, frame: Frame, at: FinePos, year: u64) -> u32 {
+    bears_keyed(crop, key_of(crop), seed, frame, at, year)
+}
+
+/// What a plant of `crop`'s kind standing at `at` bears in `year`, in
+/// grams, before anything is picked; the kind's key ([`key_of`]) given.
+fn bears_keyed(crop: &Crop, on_key: u64, seed: u64, frame: Frame, at: FinePos, year: u64) -> u32 {
     let tile = at.tile();
-    let base = match year_of(crop, seed, frame.tile(tile.x, tile.y), year) {
+    let base = match year_of_keyed(crop, on_key, seed, frame.tile(tile.x, tile.y), year) {
         Year::Lean => crop.grams.0,
         Year::Usual => crop.grams.1,
         Year::Rich => crop.grams.2,
     };
-    u32::try_from(u64::from(base) * share(crop, seed, frame, at) / 1000)
+    u32::try_from(u64::from(base) * share_keyed(on_key, seed, frame, at) / 1000)
         .expect("under five quarters of a tonne")
 }
 
 /// The share of its kind's crop a plant of `crop`'s kind standing at
 /// `at` bears, in thousandths: 750 to 1250.
 fn share(crop: &Crop, seed: u64, frame: Frame, at: FinePos) -> u64 {
+    share_keyed(key_of(crop), seed, frame, at)
+}
+
+/// [`share`], the kind's key given.
+fn share_keyed(on_key: u64, seed: u64, frame: Frame, at: FinePos) -> u64 {
     const PURPOSE: u64 = 0x5348_4152; // "SHAR"
     let (x, y) = frame.mm(at.x, at.y);
-    750 + hash(&[PURPOSE, seed, text_key(&crop.on), key(x), key(y)]) % 501
+    750 + hash(&[PURPOSE, seed, on_key, key(x), key(y)]) % 501
 }
 
 /// What a plant of `crop`'s kind standing at `at` bears in a rich year,
@@ -568,8 +612,27 @@ pub struct Bearer {
     pub source: Source,
     /// Where it stands.
     pub at: FinePos,
-    /// Its kind's id (`hazel`, `bramble`).
-    pub kind: String,
+    /// Its kind's id (`hazel`, `bramble`), shared by the chunk's bearers
+    /// of that kind: a meadow holds a thousand, each once named.
+    /// Written and read as the text itself (a snapshot's JSON is as
+    /// before, D28).
+    #[serde(with = "shared_text")]
+    pub kind: Arc<str>,
+}
+
+/// A shared text written and read as a plain string.
+mod shared_text {
+    use std::sync::Arc;
+
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(text: &Arc<str>, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(text)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Arc<str>, D::Error> {
+        String::deserialize(deserializer).map(Arc::from)
+    }
 }
 
 /// A crop on its plant now.
@@ -791,7 +854,7 @@ pub(crate) mod tests {
                 if let Some(bearer) = world
                     .bearers_in(chunk)
                     .iter()
-                    .find(|b| b.kind == kind)
+                    .find(|b| *b.kind == *kind)
                     .cloned()
                 {
                     return (world, content, chunk, bearer);

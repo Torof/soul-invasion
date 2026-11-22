@@ -429,6 +429,29 @@ the plants placed a chunk (~6 ms, 1,360 chunks a run, already held),
 call, the known plants' map, and the birth, whose continent the server
 keeps in SQLite but the `vivarium` binary bears anew (10 s).
 
+**Lightening of the simulation, PR 2 (22 November 2026).** The brain,
+nothing visible changing (D51 amended). The brain audit of the day read it
+at 65 % of the loop once the terrain was cheap: placing the plants of a
+chunk as the minds learn them (39 %), choosing the plant to gather by
+re-reading every known plant in the world by name (30 %), learning and
+re-ranking at every look a thousand plants a full memory could not keep
+(20 %). Six steps, one commit each, the pair of 25 a camp hashing the same
+after each (page without its timings, JSON without `meta.timing`): what is
+ripe asked by the crop's number and the name hashed without a vector; a
+look keeping only what outranks the plant its memory holds last; the plant
+to gather chosen once a thought; a chunk's bearers held once with the
+world's, their kind's name shared; only the minds concerned swept; the
+bearers' and shores' caches widened to the world's chunks. Measured on a quiet machine, reference and new alternated: the
+pair's CPU **31.9 → 26.5 s** with trials, 31.7 → 26.2 s without (−17 %,
+the birth's 8 s unchanged), the brain **15.2 → 11.4 s (−25 %)** and 63 →
+59 % of the loop, the plant's choice halved, the plants ranked divided by
+six, peak memory 146 → 140 MB; 250 days 313 → 200 s under load, pages the
+same. Placing a chunk's plants (6.1 s of the 11.4) is now the brain's
+cost, intrinsic to `flora::plants_in`.
+Left for the lead, as rules: the audit's S7–S13 (think before looking,
+choose once an hour, remember patches, a hunger hysteresis, a shorter
+plant sight, the worth's distance).
+
 **D50 b, the judge counts every distress** (22 November 2026, D50
 amended; after #308's deaths of thirst and cold). The day a mind closes at
 nightfall records every distress (gathered kJ, thin, thirsty, cold the
