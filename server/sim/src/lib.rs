@@ -513,6 +513,19 @@ impl Body {
         !self.route.is_empty()
     }
 
+    /// Is the body pausing on its way: stopped where its straight walk
+    /// ended, short of a goal it keeps, to look again for a way from
+    /// there at the next tick (D32)? Its stop is told as any other
+    /// ([`Event::BodyStopped`], so that whoever saw it set off stops it
+    /// too), but its walk is not over: a pilot that reads a stop as the
+    /// end of the walk reads this one wrong.
+    pub fn is_pausing(&self) -> bool {
+        self.route.is_empty()
+            && self
+                .goal
+                .is_some_and(|goal| self.at != goal.target.centre())
+    }
+
     /// Grams the body carries in all, as last weighed.
     pub fn load_g(&self) -> u32 {
         self.load_g

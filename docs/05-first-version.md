@@ -503,6 +503,38 @@ standard plans live in `tools/lab/plans/` (a band of 25 over five years,
 two tribes of 25 over twenty years, the same over ten seeds), and the first
 comparison offered on a series is "the same plan under another version".
 
+**Three defects of the brain, and the squared distance** (22 November
+2026; D45 and D50 b amended; the probe `soif-tribu-A-2026-11-22.md`, the
+audit and the brief in `content/ai-reserve/review/vivarium/allegement/`).
+Tribe A died of thirst with its water 354 tiles from the camp, for two
+reasons that were not the distance: a body walking straight beyond its
+sight stops 30 cm short of each trunk to look again (D32), and the brain
+read that pause as a stop, "stopped short far from the camp: back to the
+camp first", 241 times in 25 days, every one with a goal still set; and a
+parched body does not sleep, so at full fatigue the world laid it down,
+the brain's next order woke it, it walked a tick and fell again, 8,000 to
+11,000 decisions in a day and a half, dead standing. Both corrected on the
+brain's side, the protocol unchanged: a pause (`Body::is_pausing`) is
+neither a thought nor a stop; a sleeper at `COLLAPSED` (90) or more is
+asked nothing until it has slept a tenth of its gauge off. Third, the
+home step refused any direction whose far end left the map, so on the
+2,176-tile world no adult of will ever tried its home: the step now
+shortens to the edge less the margin, along the axes it moves on (the
+lead: the edge is physics, one walks until the land ends). And a plant's
+worth was halved at the square of 32 tiles, not at 32 (audit P7). The
+red `a_piloted_body_on_the_valley…` (thirst 100, fatigue full at tick 83)
+is green. *Measured, the same pair as D50 b over 250 days, seed 1,
+cadence 1, `origin/main`'s binary against this one, four runs at once*:
+**with trials, 47 alive and 20 dead before, 65 alive and 5 dead after**;
+tribe A before 18 alive, 14 dead of thirst, 3 of cold, 1 of illness, 1 in
+childbirth, 2 home trials (2 kept); after 33 alive, none of thirst or
+cold, 2 of illness, 1 of hunger, 1 in childbirth, 172 trials (70 before),
+20 of the home (11 kept); tribe B before 29 alive, 1 dead, 7 home trials;
+after 32 alive, 1 dead, 38 home trials (21 kept), its camp at (724, 250)
+at the median against (224, 224). **Without trials, 50 alive and 19 dead
+before, 74 alive and 5 dead after** (tribe A's 9 of thirst and 7 of cold
+gone). Wall 277 to 467 s a run, more people walking after than before.
+
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
 slopes drawn by the client from them (D44), then the relief in the
