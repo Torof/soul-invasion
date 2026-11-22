@@ -462,7 +462,7 @@ gather chosen once an hour; a memory of places (squares of 16 tiles, 48
 of them) instead of 256 bushes, the plant picked on arrival. Measured on
 the 250-day pair of 25 a camp against lightening 2's binary (CPU of the
 process, loaded machine): CPU 363 → 144 s with trials (S11 199, S10 128, S8 126, S9 144), 406 → 122 s without; alive, deaths, births, kept trials and gathered kJ a person within the runs' own noise (65 → 69 alive of 72–73 with trials, 1.77 → 1.81 GJ a person); the 20-year pair side by side:
-TODO-NUM-1000. Outcomes within the run's noise; S8 changed nothing on the
+wall 1,109 → 671 s with trials (−40 %), 1,022 → 669 s without (−35 %); alive 54 → 62 and 56 → 83, deaths 28 → 29 and 34 → 39 (none of hunger after), births 32 → 41 and 40 → 71; 18 to 11 minutes, not yet 5. Outcomes within the run's noise; S8 changed nothing on the
 pair.
 
 **D50 b, the judge counts every distress** (22 November 2026, D50
