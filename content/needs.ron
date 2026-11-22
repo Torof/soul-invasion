@@ -89,4 +89,36 @@
         infant_mass_g: (3500, 12000),
         adopt_within_tiles: 64,
     ),
+    // Births, background deaths and kinship (lot 3 C, decided by the
+    // project lead on 21 November 2026; D49). Placeholders (D30). Played
+    // only in a world whose `life` is on: the vivarium's, never the game's.
+    // A woman of 16 to 42 with more than 80 % of her reserve, carrying no
+    // infant, whose spouse is alive within 64 tiles, conceives with a 40 %
+    // chance at the start of each season; she carries three seasons at
+    // 110 % of her need, and loses the child if she grows weak. 51 % of
+    // the newborn are boys; 1 % of the mothers die giving birth. The chance
+    // to die in a year by age, in per mille (150 in the first year, 50 to
+    // four, 10 to thirty-nine, 20 to fifty-four, 50 to sixty-nine, 150
+    // from seventy), drawn every day with the year's chance shared over its
+    // days: of illness before sixty, of old age from then. At 16, or once
+    // widowed, a body takes the nearest unmarried body of the other sex
+    // within 64 tiles, aged 16 to 50, that is neither parent, child nor
+    // sibling, half-siblings included.
+    life: (
+        fertile_years: (16, 42),
+        conceive_reserve_percent: 80,
+        mate_within_tiles: 64,
+        conceive_percent: 40,
+        pregnancy_seasons: 3,
+        pregnant_percent: 110,
+        lose_when_weak: true,
+        boys_percent: 51,
+        childbirth_death_percent: 1,
+        death_by_age: [
+            (0, 150), (1, 50), (4, 50), (5, 10), (14, 10), (15, 10), (39, 10),
+            (40, 20), (54, 20), (55, 50), (69, 50), (70, 150),
+        ],
+        old_age_from_years: 60,
+        mate_years: (16, 50),
+    ),
 )

@@ -405,8 +405,8 @@ pub enum Published {
         body: u32,
         /// Where.
         at: Pos,
-        /// Of what.
-        cause: DeathCause,
+        /// Of what; none for a cause the protocol does not carry (D49).
+        cause: Option<DeathCause>,
     },
     /// An item appeared on the ground.
     ItemAdded {
@@ -575,7 +575,7 @@ pub struct Shared {
     pub day: AtomicU64,
     /// The latest deaths and their cause, for a connection that fell
     /// behind the world while its own body died.
-    deaths: Mutex<Lru<u32, DeathCause>>,
+    deaths: Mutex<Lru<u32, Option<DeathCause>>>,
     /// Simulation ticks per game second.
     ticks_per_second: u32,
     /// Ticks per game day.
@@ -1005,6 +1005,19 @@ impl AddressRecord {
     }
 }
 
+/// A death's cause as the wire carries it: the three the protocol names;
+/// the life rule's (D49: childbirth, illness, old age) as none, the way a
+/// witness is told of a death, until births come to the game and the
+/// protocol learns them. Nothing changes on the wire.
+pub fn wire_cause(cause: sim::Death) -> Option<DeathCause> {
+    match cause {
+        sim::Death::Starved => Some(DeathCause::Starved),
+        sim::Death::Froze => Some(DeathCause::Froze),
+        sim::Death::Dehydrated => Some(DeathCause::Dehydrated),
+        sim::Death::Childbirth | sim::Death::Illness | sim::Death::OldAge => None,
+    }
+}
+
 impl Shared {
     /// Creates the shared state from the world as it is at startup.
     #[allow(
@@ -1277,9 +1290,10 @@ impl Shared {
         changed
     }
 
-    /// Forgets a dead body, remembering of what it died; returns the
-    /// tile it died on, if it was known.
-    pub fn body_died(&self, body: BodyId, cause: DeathCause) -> Option<Pos> {
+    /// Forgets a dead body, remembering of what it died (none for a cause
+    /// the protocol does not carry); returns the tile it died on, if it
+    /// was known.
+    pub fn body_died(&self, body: BodyId, cause: Option<DeathCause>) -> Option<Pos> {
         self.deaths
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -1287,13 +1301,15 @@ impl Shared {
         self.bodies().remove(body.0).map(|state| tile_of(state.at))
     }
 
-    /// What `body` died of, if it died lately.
+    /// What `body` died of, if it died lately: none too when it died of
+    /// a cause the protocol does not carry (D49).
     pub fn death_of(&self, body: u32) -> Option<DeathCause> {
         self.deaths
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(&body)
             .copied()
+            .flatten()
     }
 
     /// Records that a day began.
@@ -3393,7 +3409,7 @@ impl Link {
                     // body fall, not why (the audit's M2).
                     self.event(&ServerMessage::BodyDied {
                         body,
-                        cause: own.then_some(cause),
+                        cause: own.then_some(cause).flatten(),
                     });
                 }
                 return own;
@@ -4406,8 +4422,11 @@ mod tests {
             "no change the second time"
         );
         assert!(shared.body_state(1).unwrap().asleep);
-        assert_eq!(shared.body_died(BodyId(1), DeathCause::Starved), Some(here));
-        assert_eq!(shared.body_died(BodyId(1), DeathCause::Froze), None);
+        assert_eq!(
+            shared.body_died(BodyId(1), Some(DeathCause::Starved)),
+            Some(here)
+        );
+        assert_eq!(shared.body_died(BodyId(1), Some(DeathCause::Froze)), None);
         assert_eq!(shared.death_of(1), Some(DeathCause::Froze));
         assert!(shared.body_state(1).is_none());
         let corpse = ItemState {
@@ -5208,7 +5227,7 @@ mod tests {
         let (tx, _private) = mpsc::channel(PRIVATE_CAPACITY);
         assert_eq!(shared.take_body(tx), Some(1));
         let (mut link, mut results, mut born) = link_born(&shared, &pool, Some(1));
-        shared.body_died(BodyId(1), DeathCause::Starved);
+        shared.body_died(BodyId(1), Some(DeathCause::Starved));
 
         link.reassign();
         assert_eq!(link.pilot.body, None, "it waits for its birth");
@@ -5493,6 +5512,49 @@ mod tests {
     }
 
     #[test]
+    fn a_death_of_a_cause_the_protocol_lacks_is_told_without_it_even_to_its_pilot() {
+        // The life rule's deaths (D49) stay off the wire until births come
+        // to the game: the protocol does not change, the pilot is told as
+        // a witness would be.
+        assert_eq!(wire_cause(sim::Death::Starved), Some(DeathCause::Starved));
+        for cause in [
+            sim::Death::Childbirth,
+            sim::Death::Illness,
+            sim::Death::OldAge,
+        ] {
+            assert_eq!(wire_cause(cause), None, "{cause:?}");
+        }
+        let content = Content::sample();
+        let mut world = World::with_valley(Calendar::default(), &content, 768);
+        let body = world.spawn_at_camp().expect("grass by the camp");
+        let at = world.body(body).expect("born").pos();
+        let shared = Arc::new(Shared::new(&world, &content, 2, 1.0));
+        let pool = Arc::new(ChunkPool::new(1));
+        let (mut pilot, mut results) = link(&shared, &pool, Some(body.0));
+        pilot.move_view(at.chunk());
+        settle(&mut pilot, &mut results);
+        drain(&mut pilot);
+        assert_eq!(
+            shared.body_died(body, wire_cause(sim::Death::OldAge)),
+            Some(at)
+        );
+        assert_eq!(shared.death_of(body.0), None, "nothing to tell later");
+        pilot.forward(Published::BodyDied {
+            body: body.0,
+            at,
+            cause: None,
+        });
+        let out = drain(&mut pilot);
+        assert!(
+            out.iter().any(|m| matches!(
+                m,
+                Out::Message(ServerMessage::BodyDied { body: b, cause: None }) if *b == body.0
+            )),
+            "{out:?}"
+        );
+    }
+
+    #[test]
     fn a_witness_is_told_a_death_without_its_cause_and_the_ground_within_the_eyes_only() {
         // The security audit of 20 November 2026: M2, the cause of a
         // death is the pilot's alone; F6, what men do to the ground is
@@ -5515,7 +5577,7 @@ mod tests {
         let death = Published::BodyDied {
             body: body.0,
             at,
-            cause: DeathCause::Starved,
+            cause: Some(DeathCause::Starved),
         };
         witness.forward(death.clone());
         pilot.forward(death);
@@ -5695,7 +5757,7 @@ mod tests {
             .iter()
             .find(|&&b| b != 1)
             .expect("another body");
-        shared.body_died(BodyId(other), DeathCause::Starved);
+        shared.body_died(BodyId(other), Some(DeathCause::Starved));
         let at = shared.position_of(1).expect("body 1");
         shared.item_added(
             ItemState {
@@ -5753,7 +5815,7 @@ mod tests {
 
         // Its own body died meanwhile: told with the cause, then another
         // body is taken and the view moves there.
-        shared.body_died(BodyId(1), DeathCause::Froze);
+        shared.body_died(BodyId(1), Some(DeathCause::Froze));
         link.resync(2);
         let out = drain(&mut link);
         assert!(out.iter().any(|m| matches!(

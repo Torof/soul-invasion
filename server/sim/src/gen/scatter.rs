@@ -132,9 +132,23 @@ pub(crate) mod purpose {
     pub(crate) const PLAN_ECOTONE: u64 = 0x91a7_ec07;
     pub(crate) const PLAN_REACH: u64 = 0x91a7_4eac;
 
+    /// The life rule's draws (lot 3 C, D49), not generation but salted
+    /// apart from it: the hour of a body's daily draw, a woman's
+    /// conception at a season's start, a newborn's sex, a mother's death
+    /// in childbirth, a body's death of illness or old age.
+    pub(crate) const LIFE_HOUR: u64 = 0x11fe_4042;
+    /// See `LIFE_HOUR`.
+    pub(crate) const LIFE_CONCEIVE: u64 = 0x11fe_c04c;
+    /// See `LIFE_HOUR`.
+    pub(crate) const LIFE_SEX: u64 = 0x11fe_5e35;
+    /// See `LIFE_HOUR`.
+    pub(crate) const LIFE_CHILDBIRTH: u64 = 0x11fe_b147;
+    /// See `LIFE_HOUR`.
+    pub(crate) const LIFE_DEATH: u64 = 0x11fe_dea7;
+
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 55] = [
+    pub(crate) const ALL: [u64; 60] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -190,6 +204,11 @@ pub(crate) mod purpose {
         PLAN_WARMTH,
         PLAN_ECOTONE,
         PLAN_REACH,
+        LIFE_HOUR,
+        LIFE_CONCEIVE,
+        LIFE_SEX,
+        LIFE_CHILDBIRTH,
+        LIFE_DEATH,
     ];
 }
 

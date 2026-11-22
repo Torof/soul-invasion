@@ -514,7 +514,12 @@ fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
         | Event::WorkStarted { .. }
         | Event::WorkStopped { .. }
         | Event::GatherRefused { .. }
-        | Event::Spoiled { .. } => {}
+        | Event::Spoiled { .. }
+        // Births, lost pregnancies and couples are the vivarium's (D49):
+        // the life rule is off in the game and the protocol says nothing.
+        | Event::BodyBorn { .. }
+        | Event::PregnancyLost { .. }
+        | Event::Coupled { .. } => {}
         Event::DrinkRefused { body, at, reason } => {
             shared.tell_pilot(*body, drink_refused_view(*body, *at, *reason));
         }
@@ -610,11 +615,7 @@ fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
             body, cause, at, ..
         } => {
             println!("tick {tick}: body {} died ({cause:?}) at {at:?}", body.0);
-            let cause = match cause {
-                sim::Death::Starved => protocol::DeathCause::Starved,
-                sim::Death::Froze => protocol::DeathCause::Froze,
-                sim::Death::Dehydrated => protocol::DeathCause::Dehydrated,
-            };
+            let cause = server::net::wire_cause(*cause);
             shared.body_died(*body, cause);
             shared.publish(&Published::BodyDied {
                 body: body.0,
