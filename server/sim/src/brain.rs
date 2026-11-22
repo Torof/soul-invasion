@@ -897,6 +897,15 @@ fn sight_at(map: &Map, rules: &Content, at: Pos) -> i32 {
     .unwrap_or(1)
 }
 
+/// How far a body standing on `at` sees the trees and plants bearing
+/// food, in tiles: its sight, and no farther than the content's
+/// `thought.plant_sight_tiles` (D53: a bush is told from the grass closer
+/// than a lake or a walker; sight 60 on grass read 18 chunks a look, and
+/// placing their plants was the brain's first cost).
+fn plant_sight_at(map: &Map, rules: &Content, at: Pos) -> i32 {
+    sight_at(map, rules, at).min(i32::try_from(rules.needs.thought.plant_sight_tiles).unwrap_or(1))
+}
+
 impl Brains {
     /// No minds yet; `seed` chooses where they go looking.
     pub fn new(seed: u64) -> Self {
@@ -1337,7 +1346,7 @@ impl Brains {
                 continue;
             };
             self.food.refresh(world, rules);
-            let sight = sight_at(world.map(), rules, at);
+            let sight = plant_sight_at(world.map(), rules, at);
             let before = mind.unseen.len();
             let plants = &mind.plants;
             let mut seen = Vec::new();
@@ -1623,7 +1632,8 @@ fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind, land: &mut Lan
     }
     // Trees and plants bearing food, seen again only some steps away:
     // the brains place a chunk's plants once, but a meadow holds
-    // thousands to look over.
+    // thousands to look over. Seen closer than the horizon (D53,
+    // [`plant_sight_at`]): the chunks within that sight.
     let moved = mind
         .plants_from
         .is_none_or(|from| (from.x - at.x).abs().max((from.y - at.y).abs()) >= LOOK_STEP);
@@ -1631,6 +1641,11 @@ fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind, land: &mut Lan
     if moved {
         mind.plants_from = Some(at);
         mind.unseen.clear();
+        let sight = plant_sight_at(map, rules, at);
+        let (low, high) = (
+            Pos::new(at.x - sight, at.y - sight).chunk(),
+            Pos::new(at.x + sight, at.y + sight).chunk(),
+        );
         // The nearest chunks first: a turn may not place them all.
         let mut chunks: Vec<ChunkPos> = (low.y..=high.y)
             .flat_map(|cy| (low.x..=high.x).map(move |cx| ChunkPos::new(cx, cy)))
@@ -3009,7 +3024,10 @@ mod tests {
     #[test]
     fn new_land_is_placed_a_few_chunks_a_turn_and_learnt_whole() {
         use crate::crops::tests::{body_by, run_to, valley_with};
-        let (mut world, rules, _, bramble) = valley_with("bramble");
+        let (mut world, mut rules, _, bramble) = valley_with("bramble");
+        // Plants seen as far as the terrain's sight (60 on grass, 25
+        // chunks): more than a turn places (D53's 30 tiles see nine).
+        rules.needs.thought.plant_sight_tiles = 60;
         run_to(&mut world, &rules, 28);
         let id = body_by(&mut world, &bramble);
         let at = world.body(id).unwrap().pos();
@@ -3045,6 +3063,43 @@ mod tests {
         look(&world, &rules, at, &mut whole, &mut land);
         assert!(!whole.plants.is_empty());
         assert!(whole.plants.keys().eq(brains.minds[&id].plants.keys()));
+    }
+
+    #[test]
+    fn plants_are_seen_no_farther_than_the_thoughts_sight_water_at_the_terrains() {
+        use crate::crops::tests::{body_by, run_to, valley_with};
+        let (mut world, mut rules, _, bramble) = valley_with("bramble");
+        run_to(&mut world, &rules, 28);
+        let id = body_by(&mut world, &bramble);
+        let at = world.body(id).unwrap().pos();
+        let within = |mind: &Mind, tiles: i32| {
+            mind.plants.values().all(|p| {
+                (p.at.tile().x - at.x).abs() <= tiles && (p.at.tile().y - at.y).abs() <= tiles
+            })
+        };
+        let short = i32::try_from(rules.needs.thought.plant_sight_tiles).unwrap();
+        let sight = sight_at(world.map(), &rules, at);
+        assert!(
+            short < sight,
+            "the test wants a sight shorter than the terrain's"
+        );
+        let mut near = Mind::new(world.map().camp());
+        look_alone(&world, &rules, at, &mut near);
+        assert!(!near.plants.is_empty());
+        assert!(
+            within(&near, short),
+            "a plant seen past the thought's sight"
+        );
+        // With the terrain's sight for plants too, it sees farther.
+        rules.needs.thought.plant_sight_tiles = u32::try_from(sight).unwrap();
+        let mut far_sighted = Mind::new(world.map().camp());
+        look_alone(&world, &rules, at, &mut far_sighted);
+        assert!(
+            !within(&far_sighted, short),
+            "nothing seen between 30 and 60 tiles"
+        );
+        // The water is seen at the terrain's sight either way.
+        assert_eq!(near.water, far_sighted.water);
     }
 
     #[test]

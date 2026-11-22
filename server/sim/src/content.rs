@@ -326,6 +326,42 @@ pub struct Needs {
     /// nobody tries anything nor copies anybody.
     #[serde(default)]
     pub trials: Trials,
+    /// The rules of thought that keep a mind light (D53). Absent: the
+    /// placeholders of `content/needs.ron`.
+    #[serde(default)]
+    pub thought: Thought,
+}
+
+/// The rules of thought that make a mind light (D53, decided by the
+/// project lead on 22 November 2026): perceptions and gestures, never an
+/// outcome. Placeholders (D30).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Thought {
+    /// How far, in tiles on each axis, a body sees the trees and plants
+    /// bearing food (its sight for water and for others is the terrain's,
+    /// `movement.ron`): a bush is told from the grass closer than a lake
+    /// or a walker.
+    pub plant_sight_tiles: u32,
+}
+
+impl Default for Thought {
+    /// The placeholders of `content/needs.ron`.
+    fn default() -> Self {
+        Self {
+            plant_sight_tiles: 30,
+        }
+    }
+}
+
+impl Thought {
+    fn validate(&self) -> Result<(), ContentError> {
+        if self.plant_sight_tiles == 0 {
+            return Err(ContentError::Needs(
+                "thought: plant_sight_tiles is 1 tile or more",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// How the brains try, judge and copy their ways (D50, decided 22 November
@@ -1207,7 +1243,8 @@ impl Content {
         self.needs.validate_reserve()?;
         self.needs.ages.validate()?;
         self.needs.life.validate()?;
-        self.needs.trials.validate()
+        self.needs.trials.validate()?;
+        self.needs.thought.validate()
     }
 
     /// Refuses the values the simulation cannot carry (audit of 20
@@ -1360,6 +1397,12 @@ impl Content {
             "trials.new_home_walk_tiles",
             trials.new_home_walk_tiles,
             MILLION,
+        )?;
+        at_most(
+            "needs.ron",
+            "thought.plant_sight_tiles",
+            self.needs.thought.plant_sight_tiles,
+            THOUSAND,
         )?;
         Ok(())
     }

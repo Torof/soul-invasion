@@ -158,4 +158,18 @@
         imitate_percent: 20,
         imitate_loss_percent: 25,
     ),
+    // The rules of thought that keep a mind light (D53, decided by the
+    // project lead on 22 November 2026): perceptions and gestures, never
+    // an outcome rule. Placeholders (D30), tuned by reading the vivarium's
+    // page, never to a result.
+    // plant_sight_tiles: 30 — a body tells a tree or plant bearing food
+    //                    from the land 30 tiles away on each axis, not at
+    //                    the horizon (its sight for water and for others
+    //                    stays the terrain's, movement.ron, 60 on grass):
+    //                    one does not see the berries of a bush at the
+    //                    horizon. Bodies rake their land tighter and
+    //                    discover it more slowly, mostly in the first days.
+    thought: (
+        plant_sight_tiles: 30,
+    ),
 )
