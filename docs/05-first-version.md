@@ -645,8 +645,31 @@ of 0 never tries, a kept trial raises the will by five and an abandoned
 one lowers it; every trial heard at the fire is a lesson that weighs the
 listener's next choice of a trial: a weight, never a ban, dated, heeded
 whole by the timid and in part by the adventurer. Placeholders in
-`needs.ron`, section `trials`. Measured (the five-year try of §7 and the
-twenty-year pair) below, once run.
+`needs.ron`, section `trials`. **The five-year try** (band of 25 at camp
+A, seed 1, cadence 1, one binary, with and without `--no-fire`, the
+control imitating by proximity as before): alive 29 / 31, dead 3 / 3
+(illness and childbirth, none of want), gathered 55.4 / 55.2 million kJ;
+the food the tribe carried at noon, year by year, 579 / 495, 875 / 797,
+826 / 791, 987 / 958, 832 / 834 thousand kJ (the fire ahead four years
+of five); places known by the living at each year's end 173 / 209, 273 /
+267, 390 / 326, 417 / 290, 440 / 446, 72 % of the living's records heard
+from a teller; a kept way copied within three days for 4 of 7 kept
+trials with the fire, 1 of 13 without; 6,610 rumours dispelled in five
+years (27 a day: a told place found bare at a look), 79 % told the same
+evening; kept trials 7 / 13 against 46 on `main` before the will, one
+contradicting pair each against six; trials 0.17 / 0.21 a person-year
+against 0.66 on `main`; the same binary ran in 23.7 s with the fire and
+24.0 s without. The twenty-year pair is on pull request #322.
+
+**Lot 4, PR 2: the report and the lab tell the fire** (23 November 2026,
+D41 amended). The JSON keys of the proposal's §3 and the will's
+(`records[]`, `hearth[]`, `people[].believes[]`, `people[].will_start`,
+`found[].heard.*`, `found[].by_will[]`, `years[].knowledge`,
+`years[].fire`, `years[].food.stored_kj`, `years[].ways.stock_kj`,
+`meta.memory`), the chronicle's sentences for trials told and rumours
+dispelled, the lab's sections (Ce que la tribu sait, Qui a osé quoi, Ce
+que X croit, Qui a dit quoi à qui, Rumeurs) and its `-feu` / `-sansfeu`
+variant; `docs/10` says every key.
 
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the

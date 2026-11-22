@@ -37,8 +37,9 @@ exit "${FAKE_EXIT:-0}"
 """
 
 
-def fixture(seed=1, trials=True):
-    """A tiny data file written by hand after docs/10-vivarium-data.md: two tribes, two years."""
+def fixture(seed=1, trials=True, fire=False):
+    """A tiny data file written by hand after docs/10-vivarium-data.md: two tribes, two years;
+    with `fire`, the keys of D55 (lot 4, PR 2) too."""
     def year(tribe, yr, pop_before, pop, births, deaths, trials_n, kept, copied, camp):
         total = sum(deaths.values())
         return {"tribe": tribe, "year": yr, "first_day": (yr - 1) * 50 + 1, "last_day": yr * 50,
@@ -66,7 +67,7 @@ def fixture(seed=1, trials=True):
     kept_trial = {"day": 10, "step": "wider", "words": "searches twice as wide", "judged_day": 15, "kept": True}
     lost_trial = {"day": 20, "step": "sleep_out", "words": "sleeps out", "judged_day": 25, "kept": False}
     n = 20
-    return {
+    d = {
         "meta": {"format": 1, "settings": {"world": "vivarium", "side": None, "people": 2, "children": 0, "infants": 0,
                                            "adult_years": [18, 40], "fed": False, "brain": True, "tribes": 2, "days": 100,
                                            "ticks_per_second": 1, "seed": seed, "trials": trials, "content": "content"},
@@ -98,6 +99,47 @@ def fixture(seed=1, trials=True):
         "map": {"data_uri": "data:image/png;base64,iVBORw0KGgo=", "tiles_per_pixel": 1, "tiles": [64, 64], "pixels": [64, 64],
                 "legend": {"camp": [220, 40, 40], "alive": [255, 255, 255], "dead": [0, 0, 0]}},
     }
+    if fire:
+        d["meta"]["settings"]["fire"] = True
+        d["meta"]["memory"] = {"written": 5, "freed": 1, "held": 4}
+        for y in d["years"]:
+            a = y["tribe"] == "A"
+            y["fire"] = {"nights": 40 if a else 0, "told": 120 if a else 0, "heard": 300 if a else 0, "dispelled": 2 if a else 0}
+            y["knowledge"] = {"places": 30 * y["year"] if a else 5, "recorded": 20 if a else 0, "heard_only": 3 if a else 0,
+                              "accesses": 40 if a else 0, "accesses_heard": 30 if a else 0}
+            y["food"]["stored_kj"] = {"noon_mean": 400 * y["year"], "noon_min": 100, "end": 500}
+            if y["ways"]:
+                y["ways"]["stock_kj"] = {"q1": 15000, "median": 15000, "q3": 30000}
+        d["found"][0]["heard"] = {"trials": 1, "copies": 1, "dispelled": 2}
+        d["found"][0]["by_will"] = [{"band": "timid", "from": 0, "to": 20, "tried": 1, "kept": 1},
+                                    {"band": "middling", "from": 21, "to": 50, "tried": 1, "kept": 0},
+                                    {"band": "bold", "from": 51, "to": 100, "tried": 0, "kept": 0}]
+        d["found"][1]["heard"] = {"trials": 0, "copies": 0, "dispelled": 0}
+        d["found"][1]["by_will"] = []
+        for p in d["people"]:
+            p["will_start"] = 10 if p["id"] == 1 else 50
+            p["believes"] = []
+            for t in p["trials"]:
+                t["will"] = 10
+                t["heard"] = t["step"] == "wider"
+        d["people"][0]["believes"] = [{"place": [16, 16], "record": 1, "seen": True, "by": 1, "day": 12},
+                                      {"place": [32, 16], "record": 2, "seen": False, "by": 2, "day": 30}]
+        d["people"][0]["lines"].append({"day": 16, "tick": 384, "what": "at the fire, person 1 says its searches twice as wide did it good; person 2 believed it"})
+        d["people"][1]["lines"].append({"day": 40, "tick": 960, "what": "person 2 finds nothing where person 1 had said: the place is bare"})
+        d["records"] = [{"id": 1, "kind": "place", "day": 12, "witness": 1, "refs": 1, "place": [16, 16], "states": [[0, 2]],
+                         "way": None, "up": None, "kept": None, "will": None, "present": None, "told": None},
+                        {"id": 2, "kind": "place", "day": 20, "witness": 2, "refs": 1, "place": [32, 16], "states": [[1, 1]],
+                         "way": None, "up": None, "kept": None, "will": None, "present": None, "told": None},
+                        {"id": 3, "kind": "place", "day": 40, "witness": 2, "refs": 1, "place": [32, 16], "states": [],
+                         "way": None, "up": None, "kept": None, "will": None, "present": None, "told": None},
+                        {"id": 4, "kind": "trial", "day": 15, "witness": 1, "refs": 2, "place": None, "states": None,
+                         "way": "worth_half_tiles", "up": True, "kept": True, "will": 10, "present": None, "told": None}]
+        d["hearth"] = [{"tribe": "A", "nights": [{"day": 15, "camp": [10, 10], "present": 2, "told": [{"record": 4, "by": 1}, {"record": 1, "by": 1}]},
+                                                 {"day": 40, "camp": [10, 10], "present": 2, "told": [{"record": 3, "by": 2}]}]},
+                       {"tribe": "B", "nights": []}]
+        d["rumours"] = [{"day": 40, "tribe": "A", "body": 2, "place": [32, 16], "record": 2, "from": 1},
+                        {"day": 60, "tribe": "A", "body": 3, "place": [32, 16], "record": 2, "from": 1}]
+    return d
 
 
 def fake_series(runs_dir, name, version, seeds=(1,), source="etalon-test", json_for=None):
@@ -129,6 +171,17 @@ class Expansion(unittest.TestCase):
         self.assertEqual([r["trials"] for r in runs], [True, False, True, False])
         self.assertEqual([r["seed"] for r in runs], [1, 1, 2, 2])
         self.assertTrue(all(r["base"] == "v" for r in runs))
+
+    def test_with_and_without_fire_doubles_again(self):
+        runs = lab.expand({"runs": [{"name": "v", "args": "--world vivarium", "seeds": [1],
+                                     "with_and_without_trials": True, "with_and_without_fire": True}]})
+        self.assertEqual([r["name"] for r in runs], ["v-s1-avec-feu", "v-s1-avec-sansfeu", "v-s1-sans-feu", "v-s1-sans-sansfeu"])
+        self.assertEqual([(r["trials"], r["fire"]) for r in runs], [(True, True), (True, False), (False, True), (False, False)])
+        self.assertEqual(runs[1]["args"][-3:], ["--seed", "1", "--no-fire"])
+        self.assertEqual(runs[3]["args"][-4:], ["--seed", "1", "--no-trials", "--no-fire"])
+        alone = lab.expand({"runs": [{"name": "f", "seeds": [2], "with_and_without_fire": True}]})
+        self.assertEqual([r["name"] for r in alone], ["f-s2-feu", "f-s2-sansfeu"])
+        self.assertTrue(all(r["fire"] for r in lab.expand({"runs": [{"name": "d", "seeds": [1]}]})))
 
     def test_seeds_only(self):
         runs = lab.expand({"runs": [{"name": "p", "args": ["--world", "patch"], "seeds": [7]}]})
@@ -231,8 +284,15 @@ class Form(unittest.TestCase):
         self.assertEqual(run["args"], "--world vivarium --tribes 2 --people 25 --children 3 --fed --days 1000")
         self.assertEqual(run["seeds"], [1, 2, 3])
         self.assertTrue(run["with_and_without_trials"])
+        self.assertFalse(run["with_and_without_fire"])
         self.assertEqual(plan["lab"]["jobs"], 4)
         self.assertEqual(len(lab.expand(plan)), 6)
+        with_fire = lab.plan_from_form(dict(self.FIELDS, both_fire="on"), "/runs", "/bin/viv", "/c", now=0)
+        self.assertTrue(with_fire["runs"][0]["with_and_without_fire"])
+        self.assertEqual(len(lab.expand(with_fire)), 12)
+        self.assertEqual(lab.form_from_plan(with_fire)["both_fire"], "on")
+        self.assertEqual(lab.form_from_plan({"runs": [{"name": "x", "with_and_without_fire": True}]})["both_fire"], "on")
+        self.assertEqual(lab.form_from_plan(plan)["both_fire"], "")
 
     def test_defaults_are_left_out_and_patch_side_is_kept(self):
         f = dict(lab.FORM_DEFAULTS, name="p", side="80", cadence="10")
@@ -417,6 +477,51 @@ class Reading(unittest.TestCase):
         self.assertIn('class="arrow bad"', reading.tiles_html(sm, other))      # one more death by want: worse
         other["want"], other["background"] = 2, 1
         self.assertIn('class="arrow good" title="-1 par rapport à l’autre côté">↓ -1', reading.tiles_html(sm, other))
+
+    def test_the_fire_sections_read_the_keys_of_d55(self):
+        d = fixture(fire=True)
+        self.assertTrue(reading.has_fire_data(d))
+        self.assertFalse(reading.has_fire_data(self.d))
+        self.assertIn("avec feu", reading.settings_fr(d))
+        self.assertIn("sans feu (témoin", reading.settings_fr({"meta": {"settings": {"fire": False}}}))
+        sm = reading.summary(d)
+        self.assertEqual((sm["heard_trials"], sm["heard_copies"], sm["dispelled"]), (1, 1, 2))
+        self.assertEqual(sm["knowledge"]["places"], 65)
+        self.assertEqual(sm["knowledge"]["by_tribe"], {"A": 60, "B": 5})
+        self.assertAlmostEqual(sm["knowledge"]["heard_share"], 0.75)
+        know = reading.knowledge_html(d)
+        self.assertIn("<h2>Ce que la tribu sait</h2>", know)
+        self.assertIn("65 lieux connus (tribu A 60, tribu B 5), dont 3 que personne de vivant n'a vus lui-même ; 75% des souvenirs", know)
+        self.assertEqual(know.count("<svg"), 2)
+        self.assertIn("<td class=n>40</td><td class=n>120</td><td class=n>300</td><td class=n>2</td>", know)
+        dared = reading.dared_html(d)
+        self.assertIn("<h2>Qui a osé quoi</h2>", dared)
+        self.assertIn("<td>personne 1</td><td>A</td><td class=n>10 → 50</td><td class=n>2</td><td class=n>1</td><td class=n>1</td>", dared)
+        self.assertIn("frileux (0–20)", dared)
+        nights = reading.nights_html(d)
+        self.assertIn("Tribu A, 2 nuits gardées au foyer", nights)
+        self.assertIn("personne 1 : un essai gardé le jour 15 : la distance de recherche en plus", nights)
+        self.assertIn("personne 1 : un lieu (16, 16), 1 sorte de nourriture, vu le jour 12", nights)
+        self.assertIn("personne 2 : un lieu (32, 16), nu, vu le jour 40", nights)
+        rum = reading.rumours_html(d)
+        self.assertIn("an 1 : 1 rumeur dissipée", rum)
+        self.assertIn("an 2 : 1 rumeur dissipée", rum)
+        self.assertIn("jour 40, personne 2 va où personne 1 avait dit (32, 16) et ne trouve rien", rum)
+        self.assertIn("aucune rumeur dissipée", reading.rumours_html(self.d))
+        bel = reading.believes_html(d, d["people"][0])
+        self.assertIn("Ce qu'il croit : 2 lieux, 1 vu, 1 entendu", bel)
+        self.assertIn("<td>(32, 16)</td><td>entendu de personne 2</td><td class=n>30</td>", bel)
+        self.assertIn("non : un souvenir plus récent le contredit", bel)
+        self.assertIn("<td>(16, 16)</td><td>vu lui-même</td><td class=n>12</td><td>un lieu (16, 16), 1 sorte de nourriture, vu le jour 12</td><td>oui</td>", bel)
+        self.assertEqual(reading.believes_html(d, d["people"][1]), "")
+        page = reading.run_body({"name": "s", "version": None}, {"name": "r", "state": "fini", "seed": 1}, d)
+        for section in ("Ce que la tribu sait", "Qui a osé quoi", "Qui a dit quoi à qui", "Rumeurs", "Ce qu'il croit"):
+            self.assertIn(section, page)
+        self.assertIn("10 → 50", reading.people_table(d))
+        self.assertIn("porté à midi moy. / min", reading.years_table(d))
+        self.assertIn("<td class=n>400 / 100</td><td class=n>15\u202f000 / 15\u202f000 / 30\u202f000</td>", reading.years_table(d))
+        old = reading.run_body({"name": "s", "version": None}, {"name": "r", "state": "fini", "seed": 1}, self.d)
+        self.assertNotIn("Ce que la tribu sait", old)
 
     def test_settings_in_french(self):
         s = reading.settings_fr(self.d)
@@ -729,7 +834,7 @@ class Version(unittest.TestCase):
     def test_standard_plans_exist_and_expand(self):
         names = lab.Lab(tempfile.mkdtemp(prefix="lab-std-"), "/bin/true", "/c", 1).standard_plans()
         self.assertEqual(names, ["etalon-bande-25-5ans", "etalon-deux-tribus-25-20ans", "etalon-dix-graines"])
-        for name, count in (("etalon-bande-25-5ans", 2), ("etalon-deux-tribus-25-20ans", 2), ("etalon-dix-graines", 20)):
+        for name, count in (("etalon-bande-25-5ans", 4), ("etalon-deux-tribus-25-20ans", 4), ("etalon-dix-graines", 40)):
             with open(os.path.join(lab.STANDARD_PLANS, name + ".json")) as f:
                 plan = json.load(f)
             self.assertTrue(plan["question"])

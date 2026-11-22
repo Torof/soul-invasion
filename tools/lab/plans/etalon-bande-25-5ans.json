@@ -2,6 +2,6 @@
  "question": "Une bande de 25 au camp A (15 adultes, 7 enfants, 3 nourrissons) sur cinq ans : combien survivent, de quoi meurent-ils, que gardent les épreuves ? Avec et sans épreuves, graine 1.",
  "runs": [
   {"name": "bande-25", "args": "--world vivarium --tribes 1 --people 15 --children 7 --infants 3 --days 250 --cadence 1",
-   "seeds": [1], "with_and_without_trials": true}
+   "seeds": [1], "with_and_without_trials": true, "with_and_without_fire": true}
  ]
 }

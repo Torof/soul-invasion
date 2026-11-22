@@ -17,20 +17,24 @@
 
 use serde_json::{Map, Value, json};
 
+use sim::brain::Way;
 use sim::map::Pos;
 use sim::{BodyId, Death, Sex};
 
 use crate::{
-    DEATHS, Person, Report, STEPS, Step, TrialLine, WorldKind, is_life_line, is_trial_line, name,
-    thinned, tribe_name,
+    DEATHS, Person, Report, STEPS, Step, TrialLine, WILL_BANDS, WorldKind, is_fire_line,
+    is_life_line, is_trial_line, name, thinned, tribe_name,
 };
 
 /// The top-level keys, in the order they are written.
-const ORDER: [&str; 8] = [
+const ORDER: [&str; 11] = [
     "meta",
     "years",
     "found",
     "people",
+    "records",
+    "hearth",
+    "rumours",
     "curves",
     "presence",
     "positions",
@@ -67,6 +71,15 @@ const fn step_key(step: Step) -> &'static str {
 }
 
 /// `[x, y]`.
+const fn way_key(way: Way) -> &'static str {
+    match way {
+        Way::WorthHalfTiles => "worth_half_tiles",
+        Way::SleepOut => "sleep_out",
+        Way::StockKj => "stock_kj",
+        Way::Home => "home",
+    }
+}
+
 fn pos(p: Pos) -> Value {
     json!([p.x, p.y])
 }
@@ -98,6 +111,8 @@ fn trial(t: &TrialLine) -> Value {
         "words": t.step,
         "judged_day": t.judged.map(|(day, _)| day),
         "kept": t.judged.map(|(_, kept)| kept),
+        "will": t.will,
+        "heard": t.heard,
     })
 }
 
@@ -188,6 +203,9 @@ impl Report {
             "years": self.years_json(),
             "found": self.found_json(),
             "people": self.people_json(),
+            "records": self.records_json(),
+            "hearth": self.hearth_json(),
+            "rumours": self.rumours_json(),
             "curves": self.curves_json(),
             "presence": self.presence_json(),
             "positions": self.positions_json(),
@@ -265,7 +283,83 @@ impl Report {
             "ticks_per_day": self.ticks_per_day(),
             "ticks": self.ticks,
             "rates": self.rates.iter().map(|(name, rate)| json!({"name": name, "rate": rate})).collect::<Vec<_>>(),
+            "memory": {
+                "written": self.memory_counts.0,
+                "freed": self.memory_counts.1,
+                "held": self.records.len(),
+            },
         })
+    }
+
+    /// The records of the common memory at the end (D55); a key of another
+    /// kind is `null`.
+    fn records_json(&self) -> Value {
+        Value::Array(
+            self.records
+                .iter()
+                .map(|r| {
+                    json!({
+                        "id": r.id,
+                        "kind": r.kind,
+                        "day": r.day,
+                        "witness": r.witness.map(id),
+                        "refs": r.refs,
+                        "place": r.place.map(|(x, y)| [x, y]),
+                        "states": (r.kind == "place").then(|| r.states.iter().map(|&(k, b)| [u32::from(k), u32::from(b)]).collect::<Vec<_>>()),
+                        "way": r.way.map(way_key),
+                        "up": r.up,
+                        "kept": r.kept,
+                        "will": r.will,
+                        "present": (r.kind == "night").then_some(r.present),
+                        "told": (r.kind == "night").then_some(r.told),
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// The nights the hearths hold at the end (D55), by tribe.
+    fn hearth_json(&self) -> Value {
+        let tribes = u8::try_from(self.camps.len()).unwrap_or(u8::MAX);
+        Value::Array(
+            (0..tribes)
+                .map(|tribe| {
+                    let nights: Vec<Value> = self
+                        .nights
+                        .iter()
+                        .filter(|n| n.tribe == tribe)
+                        .map(|n| {
+                            json!({
+                                "day": n.day,
+                                "camp": pos(n.camp),
+                                "present": n.present,
+                                "told": n.told.iter().map(|&(record, by)| json!({"record": record, "by": id(by)})).collect::<Vec<_>>(),
+                            })
+                        })
+                        .collect();
+                    json!({"tribe": tribe_name(tribe).to_string(), "nights": nights})
+                })
+                .collect(),
+        )
+    }
+
+    /// The rumours dispelled (D55), in order.
+    fn rumours_json(&self) -> Value {
+        Value::Array(
+            self.rumours
+                .iter()
+                .map(|r| {
+                    json!({
+                        "day": r.day,
+                        "tribe": tribe_name(r.tribe).to_string(),
+                        "body": id(r.body),
+                        "place": [r.place.0, r.place.1],
+                        "record": r.record,
+                        "from": id(r.from),
+                    })
+                })
+                .collect(),
+        )
     }
 
     fn years_json(&self) -> Value {
@@ -296,8 +390,15 @@ impl Report {
                         "lost_kj": b.lost_j() / 1000,
                         "thin_hours": b.thin_samples,
                         "weak_hours": b.weak_samples,
+                        "stored_kj": {
+                            "noon_mean": b.noon_mean_j().map(|j| j / 1000),
+                            "noon_min": b.noon_min_j.map(|j| j / 1000),
+                            "end": b.end_j / 1000,
+                        },
                     })
                 });
+                let fire = self.fire.get(&(y.tribe, y.year)).copied().unwrap_or_default();
+                let knowledge = self.knowledge.get(&(y.tribe, y.year)).copied();
                 json!({
                     "tribe": tribe_name(y.tribe).to_string(),
                     "year": y.year,
@@ -327,6 +428,24 @@ impl Report {
                         "sleep_out": y.ways.sleep_out,
                         "median_worth_tiles": y.ways.median_worth_tiles,
                         "median_stock_kj": y.ways.median_stock_kj,
+                        "stock_kj": {
+                            "q1": y.ways.stock_kj_quartiles[0],
+                            "median": y.ways.stock_kj_quartiles[1],
+                            "q3": y.ways.stock_kj_quartiles[2],
+                        },
+                    })),
+                    "fire": {
+                        "nights": fire.nights,
+                        "told": fire.told,
+                        "heard": fire.heard,
+                        "dispelled": fire.dispelled,
+                    },
+                    "knowledge": knowledge.map(|k| json!({
+                        "places": k.places,
+                        "recorded": k.recorded,
+                        "heard_only": k.heard_only,
+                        "accesses": k.accesses,
+                        "accesses_heard": k.accesses_heard,
                     })),
                     "camp": pos_or_null(y.ways.camp),
                     "food": food,
@@ -347,6 +466,18 @@ impl Report {
                         "tried": by_step(&found.tried),
                         "kept": by_step(&found.kept),
                         "copied": by_step(&found.copied),
+                        "heard": {
+                            "trials": found.heard_trials,
+                            "copies": found.heard_copies,
+                            "dispelled": found.dispelled,
+                        },
+                        "by_will": WILL_BANDS.iter().zip(found.by_will.iter()).map(|(&(band, from, to), &(tried, kept))| json!({
+                            "band": band,
+                            "from": from,
+                            "to": to,
+                            "tried": tried,
+                            "kept": kept,
+                        })).collect::<Vec<_>>(),
                     })
                 })
                 .collect(),
@@ -372,7 +503,7 @@ impl Report {
         let lines: Vec<Value> = person
             .entries
             .iter()
-            .filter(|e| is_life_line(&e.what) || is_trial_line(&e.what))
+            .filter(|e| is_life_line(&e.what) || is_trial_line(&e.what) || is_fire_line(&e.what))
             .map(|e| json!({"day": e.day, "tick": e.tick, "what": e.what}))
             .collect();
         json!({
@@ -394,6 +525,14 @@ impl Report {
             "children": person.children.len(),
             "lost": person.lost,
             "will": person.will,
+            "will_start": person.will_start,
+            "believes": person.believes.iter().map(|&((x, y), access)| json!({
+                "place": [x, y],
+                "record": access.record,
+                "seen": access.is_own(body),
+                "by": id(access.by),
+                "day": access.day,
+            })).collect::<Vec<_>>(),
             "ways": person.ways.as_ref().map(|w| json!({
                 "worth_half_tiles": w.worth_half_tiles,
                 "sleep_out": w.sleep_out,
