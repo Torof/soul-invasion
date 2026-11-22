@@ -19,6 +19,7 @@ It is the project's **shared reference**: every work session starts by re-readin
 | `07-style-bible.md` | The visual identity: reference, line, palette, light, camera |
 | `08-midjourney-prompts.md` | The prompts for producing scenery, animals and camp elements |
 | `09-visual-production.md` | Visual production: the rendering choice, the format contract every image obeys, what is produced and when |
+| `10-vivarium-data.md` | The vivarium's report as data: every key of the JSON file written beside each page, its unit, since when |
 
 The validated images live in `content/art/` (content, CC BY-NC-SA), each with a note giving its prompt and date.
 
