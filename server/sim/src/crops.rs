@@ -25,6 +25,7 @@
 //! are, so a crop is the same seen through any map.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -570,8 +571,27 @@ pub struct Bearer {
     pub source: Source,
     /// Where it stands.
     pub at: FinePos,
-    /// Its kind's id (`hazel`, `bramble`).
-    pub kind: String,
+    /// Its kind's id (`hazel`, `bramble`), shared by the chunk's bearers
+    /// of that kind: a meadow holds a thousand, each once named.
+    /// Written and read as the text itself (a snapshot's JSON is as
+    /// before, D28).
+    #[serde(with = "shared_text")]
+    pub kind: Arc<str>,
+}
+
+/// A shared text written and read as a plain string.
+mod shared_text {
+    use std::sync::Arc;
+
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(text: &Arc<str>, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(text)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Arc<str>, D::Error> {
+        String::deserialize(deserializer).map(Arc::from)
+    }
 }
 
 /// A crop on its plant now.
@@ -793,7 +813,7 @@ pub(crate) mod tests {
                 if let Some(bearer) = world
                     .bearers_in(chunk)
                     .iter()
-                    .find(|b| b.kind == kind)
+                    .find(|b| *b.kind == *kind)
                     .cloned()
                 {
                     return (world, content, chunk, bearer);

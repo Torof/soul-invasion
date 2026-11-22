@@ -71,6 +71,7 @@
 //! absent, nobody tries anything.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use crate::content::{Content, Trials};
 use crate::crops::{self, Bearer, Source};
@@ -719,12 +720,26 @@ impl Food {
     }
 }
 
-/// A tree or plant bearing food as the brains hold it: its kind numbered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A chunk's trees and plants bearing a crop as the brains hold them:
+/// the world's own, held once with it, and beside each its kind's number
+/// ([`Food::numbers`]), [`NOT_FOOD`] for one bearing no food.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Held {
-    source: Source,
-    at: FinePos,
-    kind: u16,
+    bearers: Arc<[Bearer]>,
+    kinds: Box<[u16]>,
+}
+
+/// The kind's number of a bearer whose crops are not food.
+const NOT_FOOD: u16 = u16::MAX;
+
+impl Held {
+    /// The chunk's bearers of food, each with its kind's number.
+    fn food(&self) -> impl Iterator<Item = (&Bearer, u16)> {
+        self.bearers
+            .iter()
+            .zip(&self.kinds)
+            .filter_map(|(bearer, &kind)| (kind != NOT_FOOD).then_some((bearer, kind)))
+    }
 }
 
 /// A tile a body may stand on to drink from the water around it.
@@ -788,7 +803,7 @@ fn shores_in(map: &Map, rules: &Content, chunk: ChunkPos) -> Vec<Shore> {
 struct Placed {
     /// Bounded, the least lately used going first: the land the minds
     /// saw grows with their wanderings.
-    chunks: Lru<ChunkPos, Vec<Held>>,
+    chunks: Lru<ChunkPos, Held>,
     /// Chunks this turn may still place ([`COLD_CHUNKS_PER_SECOND`]).
     left: u64,
 }
@@ -816,7 +831,7 @@ impl Placed {
 
     /// The trees and plants bearing food of `chunk`; placed now if they
     /// are not yet and the turn allows one more, else `None`.
-    fn get(&mut self, world: &World, food: &Food, chunk: ChunkPos) -> Option<&[Held]> {
+    fn get(&mut self, world: &World, food: &Food, chunk: ChunkPos) -> Option<&Held> {
         if !self.chunks.contains(&chunk) {
             if self.left == 0 {
                 return None;
@@ -825,7 +840,7 @@ impl Placed {
             self.chunks
                 .insert(chunk, food_bearers_in(world, food, chunk));
         }
-        self.chunks.get(&chunk).map(Vec::as_slice)
+        self.chunks.get(&chunk)
     }
 
     /// Places `chunk`'s now, out of any turn's count.
@@ -842,19 +857,15 @@ fn is_food(rules: &Content, material: &str) -> bool {
     rules.material(material).is_some_and(|m| m.food.is_some())
 }
 
-/// The trees and plants of `chunk` that bear food in some season.
-fn food_bearers_in(world: &World, food: &Food, chunk: ChunkPos) -> Vec<Held> {
-    world
-        .bearers_in(chunk)
+/// The trees and plants of `chunk` bearing a crop, as the world places
+/// them, each with its kind's number among the kinds bearing food.
+fn food_bearers_in(world: &World, food: &Food, chunk: ChunkPos) -> Held {
+    let bearers = world.bearers_in(chunk);
+    let kinds = bearers
         .iter()
-        .filter_map(|b: &Bearer| {
-            Some(Held {
-                source: b.source,
-                at: b.at,
-                kind: *food.numbers.get(&b.kind)?,
-            })
-        })
-        .collect()
+        .map(|b: &Bearer| food.numbers.get(&*b.kind).copied().unwrap_or(NOT_FOOD))
+        .collect();
+    Held { bearers, kinds }
 }
 
 /// How far a body standing on `at` sees, in tiles.
@@ -1636,16 +1647,16 @@ fn learn_plants(
     let Some(placed) = bearers.get(world, food, chunk) else {
         return false;
     };
-    for held in placed {
-        let tile = held.at.tile();
-        let key = (chunk, held.source);
+    for (bearer, kind) in placed.food() {
+        let tile = bearer.at.tile();
+        let key = (chunk, bearer.source);
         if (tile.x - at.x).abs() <= sight
             && (tile.y - at.y).abs() <= sight
             && !known.contains_key(&key)
         {
             let plant = KnownPlant {
-                at: held.at,
-                kind: held.kind,
+                at: bearer.at,
+                kind,
                 spent: None,
                 not_before: None,
             };
