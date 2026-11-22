@@ -342,6 +342,11 @@ pub struct Thought {
     /// `movement.ron`): a bush is told from the grass closer than a lake
     /// or a walker.
     pub plant_sight_tiles: u32,
+    /// Hungry from the brain's threshold (50), a body counts as fed again
+    /// only under this many points of hunger: one does not re-decide a
+    /// meal at every mouthful, nor think of hunger ninety times a day
+    /// while it hovers at the threshold.
+    pub fed_under: u32,
 }
 
 impl Default for Thought {
@@ -349,6 +354,7 @@ impl Default for Thought {
     fn default() -> Self {
         Self {
             plant_sight_tiles: 30,
+            fed_under: 30,
         }
     }
 }
@@ -358,6 +364,11 @@ impl Thought {
         if self.plant_sight_tiles == 0 {
             return Err(ContentError::Needs(
                 "thought: plant_sight_tiles is 1 tile or more",
+            ));
+        }
+        if self.fed_under > 100 {
+            return Err(ContentError::Needs(
+                "thought: fed_under is a point of a 0 to 100 gauge",
             ));
         }
         Ok(())

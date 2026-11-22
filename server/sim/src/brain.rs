@@ -16,7 +16,8 @@
 //! 1. **Thirsty** (thirst at [`THIRSTY`] or more, or [`PARCHED`] while
 //!    asleep, which wakes it): to the nearest drinking place it knows,
 //!    and drinks there; knowing none, it goes looking (`explore`).
-//! 2. **Hungry** (hunger at [`HUNGRY`] or more): it eats what it carries
+//! 2. **Hungry** (hunger at [`HUNGRY`] or more, and until it falls under
+//!    the content's `thought.fed_under`, D53): it eats what it carries
 //!    (what spoils first, first); else, by day or while its reserve is
 //!    weak, the nearest food it saw lying; else it gathers from the tree
 //!    or plant it knows bearing food now (D45) worth most: what an hour
@@ -95,7 +96,10 @@ pub const PARCHED: u32 = 80;
 /// of its pilot and fell again a tick later: eight thousand decisions a
 /// day and no progress (22 November 2026).
 pub const COLLAPSED: u32 = 90;
-/// Hunger from which a body goes to eat.
+/// Hunger from which a body goes to eat; it counts as fed again only
+/// under the content's `thought.fed_under` (D53: a hysteresis, so that it
+/// finishes its meal and does not think of hunger every quarter of an
+/// hour while it hovers at the threshold).
 pub const HUNGRY: u32 = 50;
 /// How near the camp a body counts as home, in tiles (a little more than
 /// the ring the bodies are born in).
@@ -1039,7 +1043,7 @@ impl Brains {
             if body.condition().cold.is_full() {
                 mind.cold_night = true;
             }
-            let past = pasts(world, id);
+            let past = pasts(world, rules, id, mind.past.2);
             if past != mind.past {
                 // A gauge past a threshold: in its own tick too, as the
                 // dawn (a tribe born at once grows hungry at once).
@@ -1446,15 +1450,24 @@ impl Brains {
 /// Which thresholds the body's gauges are past: (thirsty, parched,
 /// hungry, asleep, collapsed). Collapsed: asleep with its fatigue at
 /// [`COLLAPSED`] or more; it thinks again when it has slept under it.
-fn pasts(world: &World, id: BodyId) -> (bool, bool, bool, bool, bool) {
+/// Hungry: at [`HUNGRY`] or more, and, `was_hungry` (hungry when it last
+/// thought), until its hunger falls under the content's
+/// `thought.fed_under` (D53).
+fn pasts(
+    world: &World,
+    rules: &Content,
+    id: BodyId,
+    was_hungry: bool,
+) -> (bool, bool, bool, bool, bool) {
     world
         .body(id)
         .map_or((false, false, false, false, false), |body| {
             let c = body.condition();
+            let hunger = c.hunger.points();
             (
                 c.thirst.points() >= THIRSTY,
                 c.thirst.points() >= PARCHED,
-                c.hunger.points() >= HUNGRY,
+                hunger >= HUNGRY || (was_hungry && hunger >= rules.needs.thought.fed_under),
                 c.asleep,
                 c.asleep && c.fatigue.points() >= COLLAPSED,
             )
@@ -1877,7 +1890,7 @@ fn decide(
     let map = world.map();
     let camp = mind.ways.home;
     let decision = |intention, why| Some(Decision { intention, why });
-    let (thirsty, parched, hungry, asleep, collapsed) = pasts(world, id);
+    let (thirsty, parched, hungry, asleep, collapsed) = pasts(world, rules, id, mind.past.2);
     // The world refuses a gather to a body whose load is full.
     let can_carry = body.load_g() < body.capacity_g(&rules.movement);
     let night = world.is_night(rules);
@@ -3314,6 +3327,55 @@ mod tests {
             plant_to_gather(&world, &rules, &food, here, mind).map(|t| t.0),
             Some(plant(2)),
             "the next day, the other one"
+        );
+    }
+
+    #[test]
+    fn hungry_at_the_threshold_a_body_stays_hungry_until_fed_under_the_contents() {
+        let mut world = field(16, 40, Pos::new(5, 5));
+        let rules = rules();
+        let id = world.bodies[0].id();
+        let fed = rules.needs.thought.fed_under;
+        assert!(fed < HUNGRY);
+        let hungry_at = |world: &mut World, points: u32, was: bool| {
+            world.bodies[0].condition.hunger = Gauge::at(points);
+            pasts(world, &rules, id, was).2
+        };
+        assert!(
+            !hungry_at(&mut world, HUNGRY - 1, false),
+            "under the threshold, not yet"
+        );
+        assert!(hungry_at(&mut world, HUNGRY, false), "at the threshold");
+        assert!(
+            hungry_at(&mut world, HUNGRY - 1, true),
+            "a mouthful does not feed it"
+        );
+        assert!(hungry_at(&mut world, fed, true), "nor the next");
+        assert!(
+            !hungry_at(&mut world, fed - 1, true),
+            "fed under the content's point"
+        );
+        assert!(
+            !hungry_at(&mut world, fed, false),
+            "between the two, not hungry if it was not"
+        );
+        // Piloted beside a ripe bramble, hungry at 52: once its hunger
+        // is under the threshold it is still hungry, and goes on eating.
+        let (mut world, rules, id, mut brains) = by_a_ripe_bramble(HUNGRY + 2);
+        let mut ticks = 0;
+        while world.body(id).unwrap().condition().hunger.points() >= HUNGRY {
+            run_valley(&mut world, &rules, &mut brains, 10);
+            ticks += 10;
+            assert!(ticks < 3000, "it never ate under the threshold");
+        }
+        assert!(
+            brains.minds[&id].past.2,
+            "under the threshold, still hungry"
+        );
+        let (_, decided) = run_valley(&mut world, &rules, &mut brains, 300);
+        assert!(
+            decided.iter().any(|(_, d)| d.why == Why::Hunger),
+            "it goes on eating for hunger: {decided:?}"
         );
     }
 

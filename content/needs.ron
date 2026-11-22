@@ -169,7 +169,15 @@
     //                    one does not see the berries of a bush at the
     //                    horizon. Bodies rake their land tighter and
     //                    discover it more slowly, mostly in the first days.
+    // fed_under:         30 — hungry from 50 points, a body counts as fed
+    //                    again only under 30: it finishes its meal instead
+    //                    of leaving at the first mouthful, and thinks of
+    //                    hunger when it crosses the threshold, not every
+    //                    quarter of an hour while it hovers there (90 to
+    //                    115 thoughts a body-day in the brain audit of 22
+    //                    November 2026).
     thought: (
         plant_sight_tiles: 30,
+        fed_under: 30,
     ),
 )
