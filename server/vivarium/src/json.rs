@@ -7,7 +7,10 @@
 //! the timing), `years` (each tribe's year in numbers, with its food),
 //! `found` (each tribe's trials by the kind of the step), `people` (a line
 //! per person with its life lines only), `curves` (the samples thinned as
-//! the page thins them). The chronicle is not in it: it is on the page.
+//! the page thins them), `presence` (where each tribe's living were, by
+//! year and cell), `positions` (every living body at noon, day by day, for
+//! the lab's map of the movements), `map` (the page's picture). The
+//! chronicle is not in it: it is on the page.
 //!
 //! Everything is deterministic but `meta.timing` (the wall and birth
 //! seconds, and the date of the run from the OS clock).
@@ -23,8 +26,15 @@ use crate::{
 };
 
 /// The top-level keys, in the order they are written.
-const ORDER: [&str; 7] = [
-    "meta", "years", "found", "people", "curves", "presence", "map",
+const ORDER: [&str; 8] = [
+    "meta",
+    "years",
+    "found",
+    "people",
+    "curves",
+    "presence",
+    "positions",
+    "map",
 ];
 
 /// The format marker: raised when a key changes meaning or goes; a new key
@@ -146,6 +156,28 @@ fn layout(value: &Value, depth: usize, out: &mut String) {
     }
 }
 
+/// Writes an array with one item a line, each item laid out by [`layout`]:
+/// `positions` is a thousand days of fifty bodies, one line a day reads
+/// and `grep`s, where one line of a megabyte would not.
+fn layout_lines(value: &Value, depth: usize, out: &mut String) {
+    let Value::Array(items) = value else {
+        return layout(value, depth, out);
+    };
+    if items.is_empty() {
+        out.push_str("[]");
+        return;
+    }
+    out.push('[');
+    for (i, item) in items.iter().enumerate() {
+        out.push_str(if i > 0 { ",\n" } else { "\n" });
+        out.push_str(&"  ".repeat(depth + 1));
+        layout(item, depth + 1, out);
+    }
+    out.push('\n');
+    out.push_str(&"  ".repeat(depth));
+    out.push(']');
+}
+
 impl Report {
     /// The report as data, as `docs/10-vivarium-data.md` lays it out,
     /// without `meta.timing`: the same settings give the same value.
@@ -158,6 +190,7 @@ impl Report {
             "people": self.people_json(),
             "curves": self.curves_json(),
             "presence": self.presence_json(),
+            "positions": self.positions_json(),
             "map": self.map_json(),
         })
     }
@@ -188,7 +221,11 @@ impl Report {
             out.push_str(if i > 0 { ",\n  " } else { "\n  " });
             out.push_str(&Value::String((*key).to_owned()).to_string());
             out.push_str(": ");
-            layout(&value[*key], 1, &mut out);
+            if *key == "positions" {
+                layout_lines(&value[*key], 1, &mut out);
+            } else {
+                layout(&value[*key], 1, &mut out);
+            }
         }
         out.push_str("\n}\n");
         out
@@ -424,6 +461,23 @@ impl Report {
         )
     }
 
+    /// Every living body at noon, day by day: `[[day, [[id, x, y], …]], …]`,
+    /// days in order, bodies in id order.
+    fn positions_json(&self) -> Value {
+        Value::Array(
+            self.positions
+                .iter()
+                .map(|(day, standing)| {
+                    let bodies: Vec<Value> = standing
+                        .iter()
+                        .map(|&(body, p)| json!([body.0, p.x, p.y]))
+                        .collect();
+                    json!([day, bodies])
+                })
+                .collect(),
+        )
+    }
+
     /// The page's picture of the map, as the page embeds it, with what is
     /// needed to draw on it.
     fn map_json(&self) -> Value {
@@ -467,5 +521,16 @@ mod tests {
             out,
             "{\n  \"a\": [1, [2, 3]],\n  \"b\": {\n    \"c\": null\n  },\n  \"d\": {}\n}"
         );
+    }
+
+    #[test]
+    fn the_lines_layout_puts_one_item_a_line() {
+        let value = json!([[1, [[7, 2, 3]]], [2, []]]);
+        let mut out = String::new();
+        layout_lines(&value, 1, &mut out);
+        assert_eq!(out, "[\n    [1, [[7, 2, 3]]],\n    [2, []]\n  ]");
+        let mut empty = String::new();
+        layout_lines(&json!([]), 1, &mut empty);
+        assert_eq!(empty, "[]");
     }
 }

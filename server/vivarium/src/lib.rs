@@ -671,6 +671,10 @@ pub struct Report {
     /// Where each tribe's living were, by (tribe, year): counted once a
     /// day at noon, by cell of [`PRESENCE_CELL_TILES`].
     pub presence: BTreeMap<(u8, u64), Presence>,
+    /// Where every living body stood at noon, day by day (22 November
+    /// 2026, for the lab's map of the movements): `(day, [(id, pos), …])`,
+    /// days in order, bodies in id order.
+    pub positions: Vec<(u64, Vec<(BodyId, Pos)>)>,
     /// The homes moved over the run, in order (D50).
     pub home_moves: Vec<HomeMove>,
     /// Seconds the run took on the wall.
@@ -906,6 +910,7 @@ pub fn run_watched(
     let mut trials: Vec<TrialEvent> = Vec::new();
     let mut ways_in_use: BTreeMap<(u8, u64), WaysInUse> = BTreeMap::new();
     let mut presence: BTreeMap<(u8, u64), Presence> = BTreeMap::new();
+    let mut positions: Vec<(u64, Vec<(BodyId, Pos)>)> = Vec::new();
     let mut home_moves: Vec<HomeMove> = Vec::new();
     // The homes under trial, (before, after), to tell where a given-up
     // home goes back to.
@@ -1284,8 +1289,10 @@ pub fn run_watched(
                 step: kind,
             });
         }
-        // Noon: where the living stand, by cell (the lab's map).
+        // Noon: where the living stand, by cell (the lab's map) and one
+        // by one (its map of the movements).
         if tick % calendar.ticks_per_day() == calendar.ticks_per_day() / 2 {
+            let mut standing: Vec<(BodyId, Pos)> = Vec::new();
             for body in world.bodies() {
                 if body.condition().vitality.points() == 0 {
                     continue;
@@ -1298,7 +1305,10 @@ pub fn run_watched(
                     .or_default()
                     .entry((cell(pos.x), cell(pos.y)))
                     .or_default() += 1;
+                standing.push((body.id(), pos));
             }
+            standing.sort_unstable_by_key(|&(id, _)| id);
+            positions.push((day, standing));
         }
         if tick % ticks_per_sample == 0 {
             for (id, person) in &mut people {
@@ -1394,6 +1404,7 @@ pub fn run_watched(
         trials,
         ways_in_use,
         presence,
+        positions,
         home_moves,
         map_side,
         camps,
@@ -4141,6 +4152,54 @@ mod tests {
                 .starts_with("data:image/png;base64,")
         );
         assert_eq!(value["map"]["tiles"], json!([50, 50]));
+    }
+
+    #[test]
+    fn the_positions_are_the_living_at_each_noon_in_id_order() {
+        let settings = Settings { days: 3, ..small() };
+        let report = run_checked(&settings, content());
+        let per_day = report.ticks_per_day();
+        assert_eq!(
+            report
+                .positions
+                .iter()
+                .map(|(day, _)| *day)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        let mut listed = 0_u32;
+        for (day, standing) in &report.positions {
+            assert!(!standing.is_empty(), "day {day}: nobody at noon");
+            let noon = (day - 1) * per_day + per_day / 2;
+            for pair in standing.windows(2) {
+                assert!(pair[0].0 < pair[1].0, "day {day}: ids out of order");
+            }
+            for &(id, pos) in standing {
+                let person = report.people.get(&id).expect("a body is a person");
+                assert!(
+                    person.death.is_none_or(|(tick, ..)| tick >= noon),
+                    "day {day}: person {} was dead at noon",
+                    id.0
+                );
+                assert!((0..50).contains(&pos.x) && (0..50).contains(&pos.y));
+            }
+            listed += u32::try_from(standing.len()).unwrap();
+        }
+        // The presence grid counts the same bodies at the same noons.
+        let counted: u32 = report.presence.values().flat_map(|c| c.values()).sum();
+        assert_eq!(listed, counted);
+        let value = report.json_value();
+        let days = value["positions"].as_array().unwrap();
+        assert_eq!(days.len(), 3);
+        assert_eq!(days[0][0], 1);
+        let first = &report.positions[0].1[0];
+        assert_eq!(days[0][1][0], json!([first.0.0, first.1.x, first.1.y]));
+        let text = report.json();
+        assert!(
+            text.contains("\n  \"positions\": [\n    [1, [["),
+            "a day a line: {}",
+            &text[text.find("\"positions\"").unwrap()..][..40]
+        );
     }
 
     #[test]

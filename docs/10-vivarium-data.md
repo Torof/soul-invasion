@@ -9,9 +9,11 @@ The file is written by `server/vivarium/src/json.rs` (`Report::json`), the only 
 are on their own lines, arrays inline, so it reads and stays small: a run of two tribes of 25 over
 twenty years weighs some 300 KB of data, plus the map's picture (`map.data_uri`, about 760 KB on
 the vivarium's world: the PNG is stored uncompressed, as on the page), against several megabytes
-for its page. Nothing in it is per tick: the curves are the samples the page already thins to at
-most 1,200 points, and the presence grid counts the living once a day. **The chronicle is not in
-the file**: it is on the page, and the people's own lines of life are under `people`.
+for its page, and the bodies' positions at noon (`positions`, one day a line) some 20 bytes a body
+a day: 50 bodies over twenty years weigh about a megabyte. Nothing in it is per tick: the curves
+are the samples the page already thins to at most 1,200 points, and the presence grid and the
+positions take the living once a day. **The chronicle is not in the file**: it is on the page,
+and the people's own lines of life are under `people`.
 
 Everything is deterministic (the same settings give the same file, byte for byte) but
 `meta.timing`: the wall and birth seconds, and `run_date`, the date of the run read from the OS
@@ -157,6 +159,7 @@ clock, the only field no seed decides.
 | `presence[].year` | The year | integer |
 | `presence[].cell_tiles` | The side of a cell, 32 | tiles |
 | `presence[].cells` | Each cell where somebody stood at noon, with the count of living bodies there over the year's noons (one a day); cells at zero omitted; `cx = x / 32`, `cy = y / 32` | `[[cx, cy, count], …]` |
+| `positions` | Where every living body stood at noon, day by day (the lab's map of the movements): each day in order, with its living bodies in id order, each `[id, x, y]`; a body dead by noon is not there, so a day's list is the living of `people` that noon. One day a line in the file | `[[day, [[id, x, y], …]], …]` |
 | `map.data_uri` | The page's picture of the map at the run's end, the same PNG: the terrain, the camps red, the living white, the dead black | `"data:image/png;base64,…"` |
 | `map.tiles_per_pixel` | The scale: one pixel is so many tiles a side (5 on the vivarium's world) | tiles |
 | `map.tiles` | The world's size | `[width, height]` tiles |
@@ -168,5 +171,6 @@ clock, the only field no seed decides.
 - The chronicle (on the page), the map's picture, the families' pages (worked out from `people`:
   mother, father, spouses, children), the ages table (worked out from `born_day` and `sex`).
 - The camp's median position per day: the vivarium works it out once a year (`years[].camp`), not
-  per day. The presence grid (`presence`) is the one thing sampled for the data alone, once a day
-  at noon: where the living of each tribe were.
+  per day; the lab can take it from `positions` (the median of a tribe's bodies at noon). The
+  presence grid (`presence`) and the positions (`positions`) are the two things sampled for the
+  data alone, once a day at noon: where the living of each tribe were, and each body one by one.
