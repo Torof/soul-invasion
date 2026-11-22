@@ -2336,11 +2336,13 @@ fn start_trial(
 /// when the drawn one has nothing, a seeded direction when neither has;
 /// then the nearest walkable tile back along that line. Nothing says
 /// "stay near water": the judge counts the thirsty days, and the tribe
-/// finds it or not. The map's edge is physics, not a rule: a direction
-/// that leaves the map is not drawn, and the new home lies inside the map
-/// less a margin of half the step (the vivarium's world has an edge; the
+/// finds it or not. The map's edge is physics, not a rule: one walks
+/// until the land ends (the lead, 22 November 2026), so a step that would
+/// leave the map shortens to the edge less a margin of half the step,
+/// along each axis it moves on (the vivarium's world has an edge; the
 /// planet will have none, only its ocean). `None` when the home can go
-/// nowhere: no home trial that day.
+/// nowhere: nothing left between the home and the margin that way, or no
+/// walkable tile on the shortened line; no home trial that day.
 fn new_home(
     world: &World,
     rules: &Content,
@@ -2402,22 +2404,29 @@ fn new_home(
         i32::try_from(map.width()).expect("fits") - 1,
         i32::try_from(map.height()).expect("fits") - 1,
     );
-    let far_end = Pos::new(
-        home.x.saturating_add(dx.saturating_mul(tiles)),
-        home.y.saturating_add(dy.saturating_mul(tiles)),
-    );
-    if far_end.x < 0 || far_end.x > w || far_end.y < 0 || far_end.y > h {
-        // No land that way: the direction is not drawn.
+    let margin = tiles / 2;
+    // How far the step may go along one axis before the margin: the whole
+    // step on an axis it does not move on.
+    let reach = |d: i32, at: i32, end: i32| match d {
+        0 => tiles,
+        d if d > 0 => end - margin - at,
+        _ => at - margin,
+    };
+    let step = tiles.min(reach(dx, home.x, w)).min(reach(dy, home.y, h));
+    if step <= 0 {
+        // No land that way: the home already stands at the margin, or past
+        // it, on an axis the step moves on.
         return None;
     }
-    let margin = tiles / 2;
-    let inside =
-        |at: Pos| at.x >= margin && at.x <= w - margin && at.y >= margin && at.y <= h - margin;
+    let inside = |at: Pos| {
+        (dx == 0 || (margin..=w - margin).contains(&at.x))
+            && (dy == 0 || (margin..=h - margin).contains(&at.y))
+    };
     // Back along the line from the far end to the home: the first
     // walkable tile, inside the margin and away from the home.
-    (1..=tiles)
+    (1..=step)
         .rev()
-        .map(|step| Pos::new(home.x + dx * step, home.y + dy * step))
+        .map(|k| Pos::new(home.x + dx * k, home.y + dy * k))
         .find(|&at| walkable(map, rules, at))
         .filter(|&at| at != home && inside(at))
 }
@@ -4235,9 +4244,14 @@ mod tests {
         // Water known north-west: that way leaves the map, no home.
         let mind = knowing(Pos::new(0, 0));
         assert_eq!(new_home(&world, &rules, &food, id, &mind, 1, 20), None);
-        // Water known east: (25, 5) is on the map but within the margin.
+        // Water known east: (25, 5) is inside the margin along the axis
+        // the step moves on; the home's own row near the edge is where it
+        // stands, not where it walks.
         let mind = knowing(Pos::new(30, 5));
-        assert_eq!(new_home(&world, &rules, &food, id, &mind, 1, 20), None);
+        assert_eq!(
+            new_home(&world, &rules, &food, id, &mind, 1, 20),
+            Some(Pos::new(25, 5))
+        );
         // Water known south-east: the home goes there.
         let mind = knowing(Pos::new(30, 30));
         assert_eq!(
@@ -4246,7 +4260,13 @@ mod tests {
         );
         // A body whose home can go nowhere tries another way that day:
         // over forty days of trials, never its home, and the three others.
+        // Its home at the corner, the water known beyond it: the step
+        // north-west, whole or a quarter of it, has no land before the
+        // margin (a home at (5, 5) with a quarter step of 5 would go three
+        // tiles: the edge is physics, one walks until the margin).
+        let home = Pos::new(1, 1);
         let mut mind = knowing(Pos::new(0, 0));
+        mind.ways.home = home;
         let mut ways_tried = std::collections::BTreeSet::new();
         for day in 0..40 {
             mind.trial = None;
@@ -4259,6 +4279,57 @@ mod tests {
         }
         assert_eq!(ways_tried.len(), 3, "{ways_tried:?}");
         assert_eq!(mind.ways.home, home);
+    }
+
+    #[test]
+    fn at_the_maps_edge_the_home_step_shortens_to_the_margin() {
+        // The vivarium's world is 2,176 tiles a side and the step 2,000: a
+        // home at (1952, 1952) could go nowhere whole, and no adult of
+        // will tried its home in twenty years (2 home trials in tribe A
+        // against 36–52 of every other way). The edge is physics (the
+        // lead, 22 November 2026): the step shortens to the edge less the
+        // margin of half the step.
+        let world = field(2176, -1, Pos::new(5, 5));
+        let rules = trials_at(100, 0);
+        let food = food_now(&world, &rules);
+        let id = BodyId(1);
+        let home = Pos::new(1952, 1952);
+        let knowing = |stand: Pos| {
+            let mut mind = Mind::new(home);
+            mind.water.insert(
+                stand.chunk(),
+                DrinkingPlace {
+                    stand,
+                    water: stand,
+                },
+            );
+            mind
+        };
+        // Water known north: 952 tiles north, at the margin.
+        let mind = knowing(Pos::new(1952, 100));
+        assert_eq!(
+            new_home(&world, &rules, &food, id, &mind, 1, 2000),
+            Some(Pos::new(1952, 1000))
+        );
+        // Water known north-west: the shorter reach, the northern one, on
+        // both axes of the diagonal.
+        let mind = knowing(Pos::new(100, 100));
+        assert_eq!(
+            new_home(&world, &rules, &food, id, &mind, 1, 2000),
+            Some(Pos::new(1000, 1000))
+        );
+        // Water known south: the home stands past the margin that way.
+        let mind = knowing(Pos::new(1952, 2100));
+        assert_eq!(new_home(&world, &rules, &food, id, &mind, 1, 2000), None);
+        // A lake over the whole shortened line north: no walkable tile
+        // inside the margin, no home.
+        let mut map = Map::filled(2176, 2176, Terrain::Grass).with_camp(5, 5);
+        for y in 1000..1952 {
+            map.set(Pos::new(1952, y), Terrain::Water);
+        }
+        let lake = World::empty(Calendar::new(1, 7200).unwrap(), map);
+        let mind = knowing(Pos::new(1952, 100));
+        assert_eq!(new_home(&lake, &rules, &food, id, &mind, 1, 2000), None);
     }
 
     #[test]
