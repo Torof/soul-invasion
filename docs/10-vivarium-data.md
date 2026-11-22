@@ -50,6 +50,7 @@ clock, the only field no seed decides.
 | `meta.settings.ticks_per_second` | The cadence: ticks a game second (the game runs at 10) | ticks |
 | `meta.settings.seed` | The run's seed | integer |
 | `meta.settings.trials` | The brains try, judge and copy their ways (false: `--no-trials`) | boolean |
+| `meta.settings.fire` | The evening fire and the common memory, D55 (false: `--no-fire`); since 23 November 2026 | boolean |
 | `meta.settings.content` | The content directory given, its last component; `null` when found from the working directory | string |
 | `meta.map_tiles` | The world's size | `[width, height]` tiles |
 | `meta.camps` | The camps' starting positions, A first | `[[x, y], …]` |
