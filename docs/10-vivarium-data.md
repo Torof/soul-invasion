@@ -200,7 +200,7 @@ clock, the only field no seed decides.
 | `hearth[].nights[].present` | How many lay down | count |
 | `hearth[].nights[].told[].record` | A record told | integer |
 | `hearth[].nights[].told[].by` | Its teller | integer |
-| `rumours[].day` | A rumour dispelled (D55): the day | day |
+| `rumours[].day` | A rumour dispelled (D55), the first 1,000 of the run only (the counts in `years[].fire.dispelled` take them all; a camp of 25 dispels about 27 a day, mostly at a look in passing): the day | day |
 | `rumours[].tribe` | The tribe of who went | `"A"` or `"B"` |
 | `rumours[].body` | Who went where a teller had said and found nothing | integer |
 | `rumours[].place` | The place | `[x, y]` |

@@ -1953,6 +1953,13 @@ fn knowledge_of(
     out
 }
 
+/// How many rumours dispelled the report keeps one by one (`rumours[]`
+/// and the chronicle's sentence): the first so many; the counts
+/// (`years[].fire.dispelled`, `found[].heard.dispelled`) take them all. A
+/// camp of 25 dispels about 27 a day, mostly at a look in passing: written
+/// one by one over twenty years they made the data file 17 MB.
+pub const RUMOURS_KEPT: usize = 1000;
+
 /// The fire's tallies over a run (D55).
 #[derive(Debug, Default)]
 struct FireTally {
@@ -2061,6 +2068,9 @@ fn fire_news(
         } => {
             let tribe = tribe_of(people, *body);
             tally.fire.entry((tribe, scene.year)).or_default().dispelled += 1;
+            if tally.rumours.len() >= RUMOURS_KEPT {
+                return true;
+            }
             tally.rumours.push(Rumour {
                 day: scene.day,
                 tribe,
