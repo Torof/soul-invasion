@@ -250,7 +250,7 @@ impl World {
     }
 
     /// Couples now every body of the mating years without a spouse, by the
-    /// daily rule ([`World::couple`]), the lowest id first: the vivarium's
+    /// daily rule (`World::couple`), the lowest id first: the vivarium's
     /// departure pairs its adults on day one rather than at their own hours
     /// (lot 3 C), so its children can be given parents among the couples.
     /// Nothing when `life` is off; `Event::Coupled` for each pair made.
