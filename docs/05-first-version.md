@@ -452,6 +452,19 @@ Left for the lead, as rules: the audit's S7–S13 (think before looking,
 choose once an hour, remember patches, a hunger hysteresis, a shorter
 plant sight, the worth's distance).
 
+**Lightening of the simulation, PR 3 (22 November 2026, D53).** The four
+rules of thought the lead decided from the audit, behaviour this time
+(the pages change), each a perception or a gesture and never an outcome
+rule, one commit each, the new numbers placeholders in
+`content/needs.ron`'s `thought` section: plants seen at 30 tiles, not at
+the horizon; hungry from 50 and fed again only under 30; the plant to
+gather chosen once an hour; a memory of places (squares of 16 tiles, 48
+of them) instead of 256 bushes, the plant picked on arrival. Measured on
+the 250-day pair of 25 a camp against lightening 2's binary (CPU of the
+process, loaded machine): CPU 363 → 144 s with trials (S11 199, S10 128, S8 126, S9 144), 406 → 122 s without; alive, deaths, births, kept trials and gathered kJ a person within the runs' own noise (65 → 69 alive of 72–73 with trials, 1.77 → 1.81 GJ a person); the 20-year pair side by side:
+wall 1,109 → 671 s with trials (−40 %), 1,022 → 669 s without (−35 %); alive 54 → 62 and 56 → 83, deaths 28 → 29 and 34 → 39 (none of hunger after), births 32 → 41 and 40 → 71; 18 to 11 minutes, not yet 5. Outcomes within the run's noise; S8 changed nothing on the
+pair.
+
 **D50 b, the judge counts every distress** (22 November 2026, D50
 amended; after #308's deaths of thirst and cold). The day a mind closes at
 nightfall records every distress (gathered kJ, thin, thirsty, cold the

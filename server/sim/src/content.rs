@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::map::Terrain;
+use crate::map::{CHUNK_SIZE, Terrain};
 use crate::time::Season;
 use crate::woods::Habitat;
 
@@ -326,6 +326,83 @@ pub struct Needs {
     /// nobody tries anything nor copies anybody.
     #[serde(default)]
     pub trials: Trials,
+    /// The rules of thought that keep a mind light (D53). Absent: the
+    /// placeholders of `content/needs.ron`.
+    #[serde(default)]
+    pub thought: Thought,
+}
+
+/// The rules of thought that make a mind light (D53, decided by the
+/// project lead on 22 November 2026): perceptions and gestures, never an
+/// outcome. Placeholders (D30).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Thought {
+    /// How far, in tiles on each axis, a body sees the trees and plants
+    /// bearing food (its sight for water and for others is the terrain's,
+    /// `movement.ron`): a bush is told from the grass closer than a lake
+    /// or a walker.
+    pub plant_sight_tiles: u32,
+    /// Hungry from the brain's threshold (50), a body counts as fed again
+    /// only under this many points of hunger: one does not re-decide a
+    /// meal at every mouthful, nor think of hunger ninety times a day
+    /// while it hovers at the threshold.
+    pub fed_under: u32,
+    /// How long, in game hours, a body sticks to the tree or plant it
+    /// chose to gather from: chosen again only after that long, or when
+    /// the plant is spent or out of reach, or another need calls. One
+    /// looks at the pantry once in a while, not at every step.
+    pub plant_choice_hours: u32,
+    /// The side, in tiles, of a place a body remembers trees and plants
+    /// bearing food by (a corner, not a bush): divides a chunk's side
+    /// ([`crate::map::CHUNK_SIZE`]), so a place lies in one chunk.
+    pub place_tiles: u32,
+    /// How many such places a body remembers: those worth most from
+    /// where it last looked.
+    pub places_remembered: u32,
+}
+
+impl Default for Thought {
+    /// The placeholders of `content/needs.ron`.
+    fn default() -> Self {
+        Self {
+            plant_sight_tiles: 30,
+            fed_under: 30,
+            plant_choice_hours: 1,
+            place_tiles: 16,
+            places_remembered: 48,
+        }
+    }
+}
+
+impl Thought {
+    fn validate(&self) -> Result<(), ContentError> {
+        if self.plant_sight_tiles == 0 {
+            return Err(ContentError::Needs(
+                "thought: plant_sight_tiles is 1 tile or more",
+            ));
+        }
+        if self.fed_under > 100 {
+            return Err(ContentError::Needs(
+                "thought: fed_under is a point of a 0 to 100 gauge",
+            ));
+        }
+        if self.plant_choice_hours == 0 {
+            return Err(ContentError::Needs(
+                "thought: plant_choice_hours is an hour or more",
+            ));
+        }
+        if self.place_tiles == 0 || !CHUNK_SIZE.is_multiple_of(self.place_tiles) {
+            return Err(ContentError::Needs(
+                "thought: place_tiles is 1 tile or more and divides a chunk's side",
+            ));
+        }
+        if self.places_remembered == 0 {
+            return Err(ContentError::Needs(
+                "thought: places_remembered is 1 or more",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// How the brains try, judge and copy their ways (D50, decided 22 November
@@ -1207,7 +1284,8 @@ impl Content {
         self.needs.validate_reserve()?;
         self.needs.ages.validate()?;
         self.needs.life.validate()?;
-        self.needs.trials.validate()
+        self.needs.trials.validate()?;
+        self.needs.thought.validate()
     }
 
     /// Refuses the values the simulation cannot carry (audit of 20
@@ -1361,6 +1439,22 @@ impl Content {
             trials.new_home_walk_tiles,
             MILLION,
         )?;
+        for (field, value) in [
+            (
+                "thought.plant_sight_tiles",
+                self.needs.thought.plant_sight_tiles,
+            ),
+            (
+                "thought.plant_choice_hours",
+                self.needs.thought.plant_choice_hours,
+            ),
+            (
+                "thought.places_remembered",
+                self.needs.thought.places_remembered,
+            ),
+        ] {
+            at_most("needs.ron", field, value, THOUSAND)?;
+        }
         Ok(())
     }
 
