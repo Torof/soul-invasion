@@ -1,7 +1,9 @@
 //! The vivarium (D41): a world of the simulation under glass, run headless
 //! and accelerated, with no network and no clock, and an HTML report per
 //! run the project lead reads: the map, four curves, the chronicle, a
-//! page per person, the speed and the named factors.
+//! page per person, the speed and the named factors; and, beside the page,
+//! the same report as data, a JSON file the laboratory (D52) reads
+//! ([`json`], `docs/10-vivarium-data.md`).
 //!
 //! This crate depends on `sim` alone. The world is born as the server
 //! would bear it (the content read from the same files), the people are
@@ -24,6 +26,7 @@ use sim::map::{Map, Pos, Terrain};
 use sim::time::Calendar;
 use sim::{BodyId, Death, Event, Intention, Sex, World};
 
+pub mod json;
 pub mod png;
 
 /// Where the content is looked for when no directory is given: as the
@@ -432,6 +435,35 @@ pub struct TrialEvent {
     pub step: Step,
 }
 
+/// A home moved (D50), for the data (22 November 2026): by a trial, by a
+/// copy, or back again when a trial of the home is given up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HomeMove {
+    /// The tick.
+    pub tick: u64,
+    /// The day (from 1).
+    pub day: u64,
+    /// Whose.
+    pub body: BodyId,
+    /// Its tribe.
+    pub tribe: u8,
+    /// The home before.
+    pub from: Pos,
+    /// The home after.
+    pub to: Pos,
+    /// "trial", "copy" or "reverted".
+    pub how: &'static str,
+}
+
+/// The side of a cell of the presence grid, in tiles: where each tribe's
+/// living stood at noon, counted by the year (22 November 2026, for the
+/// lab's map). The vivarium's world of 2,176 tiles is 68 × 68 cells.
+pub const PRESENCE_CELL_TILES: u32 = 32;
+
+/// Where a tribe's living were over a year: bodies counted once a day at
+/// noon, by cell of [`PRESENCE_CELL_TILES`] a side, keyed `(cx, cy)`.
+pub type Presence = BTreeMap<(u32, u32), u32>;
+
 /// A tribe's ways at a year's end (D50): of its living with a mind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct WaysInUse {
@@ -636,6 +668,15 @@ pub struct Report {
     pub trials: Vec<TrialEvent>,
     /// Each tribe's ways at each year's end (D50): by (tribe, year).
     pub ways_in_use: BTreeMap<(u8, u64), WaysInUse>,
+    /// Where each tribe's living were, by (tribe, year): counted once a
+    /// day at noon, by cell of [`PRESENCE_CELL_TILES`].
+    pub presence: BTreeMap<(u8, u64), Presence>,
+    /// Where every living body stood at noon, day by day (22 November
+    /// 2026, for the lab's map of the movements): `(day, [(id, pos), …])`,
+    /// days in order, bodies in id order.
+    pub positions: Vec<(u64, Vec<(BodyId, Pos)>)>,
+    /// The homes moved over the run, in order (D50).
+    pub home_moves: Vec<HomeMove>,
     /// Seconds the run took on the wall.
     pub wall_s: f64,
     /// Seconds the world took to be born.
@@ -868,6 +909,12 @@ pub fn run_watched(
     let mut food: BTreeMap<(u8, u64), Balance> = BTreeMap::new();
     let mut trials: Vec<TrialEvent> = Vec::new();
     let mut ways_in_use: BTreeMap<(u8, u64), WaysInUse> = BTreeMap::new();
+    let mut presence: BTreeMap<(u8, u64), Presence> = BTreeMap::new();
+    let mut positions: Vec<(u64, Vec<(BodyId, Pos)>)> = Vec::new();
+    let mut home_moves: Vec<HomeMove> = Vec::new();
+    // The homes under trial, (before, after), to tell where a given-up
+    // home goes back to.
+    let mut home_trials: BTreeMap<BodyId, (Pos, Pos)> = BTreeMap::new();
     let first = reserves(&world, content, &people);
     for (tribe, &j) in first.iter().enumerate().take(tribes) {
         food.entry((u8::try_from(tribe).expect("two"), 1))
@@ -1105,6 +1152,47 @@ pub fn run_watched(
         // The trials (D50): what the brains tried, judged and copied, in
         // the chronicle, on the person's page and in the counters.
         for news in brains.news() {
+            let home_move = |body: BodyId, from: Pos, to: Pos, how: &'static str| HomeMove {
+                tick,
+                day,
+                body,
+                tribe: tribe_of(&people, body),
+                from,
+                to,
+                how,
+            };
+            match &news {
+                News::Trying {
+                    body,
+                    way: Way::Home,
+                    before,
+                    after,
+                    ..
+                } => {
+                    home_moves.push(home_move(*body, before.home, after.home, "trial"));
+                    home_trials.insert(*body, (before.home, after.home));
+                }
+                News::Tried {
+                    body,
+                    way: Way::Home,
+                    kept,
+                    ..
+                } => {
+                    if let Some((before, after)) = home_trials.remove(body)
+                        && !kept
+                    {
+                        home_moves.push(home_move(*body, after, before, "reverted"));
+                    }
+                }
+                News::Copied {
+                    body,
+                    way: Way::Home,
+                    before,
+                    after,
+                    ..
+                } => home_moves.push(home_move(*body, before.home, after.home, "copy")),
+                _ => {}
+            }
             let (body, what, told, way, kind) = match &news {
                 News::Trying {
                     body,
@@ -1201,6 +1289,27 @@ pub fn run_watched(
                 step: kind,
             });
         }
+        // Noon: where the living stand, by cell (the lab's map) and one
+        // by one (its map of the movements).
+        if tick % calendar.ticks_per_day() == calendar.ticks_per_day() / 2 {
+            let mut standing: Vec<(BodyId, Pos)> = Vec::new();
+            for body in world.bodies() {
+                if body.condition().vitality.points() == 0 {
+                    continue;
+                }
+                let tribe = tribe_of(&people, body.id());
+                let pos = body.pos();
+                let cell = |c: i32| u32::try_from(c).unwrap_or(0) / PRESENCE_CELL_TILES;
+                *presence
+                    .entry((tribe, year))
+                    .or_default()
+                    .entry((cell(pos.x), cell(pos.y)))
+                    .or_default() += 1;
+                standing.push((body.id(), pos));
+            }
+            standing.sort_unstable_by_key(|&(id, _)| id);
+            positions.push((day, standing));
+        }
         if tick % ticks_per_sample == 0 {
             for (id, person) in &mut people {
                 let Some(body) = world.body(*id) else {
@@ -1294,6 +1403,9 @@ pub fn run_watched(
         food,
         trials,
         ways_in_use,
+        presence,
+        positions,
+        home_moves,
         map_side,
         camps,
         ticks,
@@ -2828,6 +2940,7 @@ mod tests {
     use std::sync::OnceLock;
 
     use super::*;
+    use serde_json::json;
 
     /// The content, read once from the repository's `content/`.
     fn content() -> &'static Content {
@@ -3823,5 +3936,282 @@ mod tests {
                 id.0
             );
         }
+    }
+
+    /// The keys of `docs/10-vivarium-data.md`: the first column of its
+    /// table, `[]` for every element of an array, `*` for any key.
+    fn documented_keys() -> Vec<String> {
+        let doc = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/10-vivarium-data.md"),
+        )
+        .expect("docs/10 is in the repository");
+        doc.lines()
+            .filter_map(|line| {
+                let rest = line.strip_prefix("| `")?;
+                Some(rest[..rest.find('`')?].to_owned())
+            })
+            .collect()
+    }
+
+    /// Whether `path` is in `value`: a key present (`null` counts, and a
+    /// `null` or an empty array on the way has nothing more to check) in
+    /// every element of every array on the way.
+    fn has_path(value: &serde_json::Value, path: &str) -> bool {
+        let (head, tail) = path
+            .split_once('.')
+            .map_or((path, None), |(h, t)| (h, Some(t)));
+        let (key, array) = head.strip_suffix("[]").map_or((head, false), |k| (k, true));
+        let rest = |v: &serde_json::Value| v.is_null() || tail.is_none_or(|t| has_path(v, t));
+        let Some(object) = value.as_object() else {
+            return false;
+        };
+        let targets: Vec<&serde_json::Value> = if key == "*" {
+            object.values().collect()
+        } else {
+            match object.get(key) {
+                Some(v) => vec![v],
+                None => return false,
+            }
+        };
+        targets.iter().all(|next| {
+            if array {
+                next.as_array().is_some_and(|items| items.iter().all(rest))
+            } else {
+                rest(next)
+            }
+        })
+    }
+
+    /// Every key path of `value`, `[]` for an array of objects; arrays
+    /// of scalars and of arrays are leaves.
+    fn paths_of(value: &serde_json::Value, prefix: &str, out: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (key, item) in fields {
+                    let path = if prefix.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{prefix}.{key}")
+                    };
+                    out.push(path.clone());
+                    paths_of(item, &path, out);
+                }
+            }
+            serde_json::Value::Array(items) if items.iter().any(serde_json::Value::is_object) => {
+                let last = out.pop().expect("the array's own path");
+                out.push(format!("{last}[]"));
+                for item in items {
+                    paths_of(item, &format!("{last}[]"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether `path` is one of `documented`, or leads to one (`years[]`
+    /// to `years[].tribe`), `*` matching any one key.
+    fn documented(path: &str, documented: &[String]) -> bool {
+        documented.iter().any(|doc| {
+            let a: Vec<&str> = doc.split('.').collect();
+            let b: Vec<&str> = path.split('.').collect();
+            a.len() >= b.len()
+                && a.iter()
+                    .zip(&b)
+                    .all(|(x, y)| *x == "*" || x.trim_end_matches("[]") == y.trim_end_matches("[]"))
+        })
+    }
+
+    #[test]
+    fn the_data_holds_the_documented_keys_and_no_other() {
+        let settings = Settings {
+            days: 6,
+            tribes: 2,
+            ..small()
+        };
+        let report = run_checked(&settings, &forced_trials());
+        assert!(
+            !report.trials.is_empty(),
+            "trials are forced, so there are some"
+        );
+        let text = report.json();
+        let value: serde_json::Value = serde_json::from_str(&text).expect("the file parses");
+        assert_eq!(value["meta"]["format"], json::FORMAT);
+        let date = value["meta"]["timing"]["run_date"].as_str().unwrap();
+        assert!(date.len() == 20 && date.ends_with('Z'), "{date}");
+        assert_eq!(
+            value["people"].as_array().unwrap().len(),
+            report.people.len()
+        );
+        assert_eq!(
+            value["curves"]["alive_by_tribe"].as_array().unwrap().len(),
+            2
+        );
+        assert!(value["curves"]["points"].as_u64().unwrap() <= 1200);
+        let keys = documented_keys();
+        assert!(keys.len() > 100, "docs/10 lists {} keys", keys.len());
+        for key in &keys {
+            assert!(has_path(&value, key), "{key} is documented but not written");
+        }
+        let mut written = Vec::new();
+        paths_of(&value, "", &mut written);
+        written.sort();
+        written.dedup();
+        for path in &written {
+            assert!(
+                documented(path, &keys),
+                "{path} is written but not documented"
+            );
+        }
+    }
+
+    #[test]
+    fn the_data_years_agree_with_the_page() {
+        let settings = Settings {
+            days: 6,
+            tribes: 2,
+            ..small()
+        };
+        let report = run_checked(&settings, &forced_trials());
+        let value = report.json_value();
+        let html = report.html();
+        let years = value["years"].as_array().unwrap();
+        assert_eq!(years.len(), report.years().len());
+        for (y, year) in years.iter().zip(report.years()) {
+            let d = &y["deaths"];
+            let row = format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td>",
+                y["tribe"].as_str().unwrap(),
+                y["year"],
+                y["population"]
+            );
+            assert!(html.contains(&row), "{row} is not on the page");
+            let causes = format!(
+                "<td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}",
+                y["births"], d["illness"], d["old_age"], d["childbirth"], d["hunger"]
+            );
+            assert!(html.contains(&causes), "{causes} is not on the page");
+            assert_eq!(y["population"], year.population);
+            assert_eq!(y["births"], year.births);
+            assert_eq!(y["deaths_total"], year.deaths.iter().sum::<u32>());
+            assert_eq!(y["trials"], year.trials);
+            assert_eq!(y["kept"], year.kept);
+            assert_eq!(y["copied"], year.copied);
+            let food = &report.food[&(year.tribe, year.year)];
+            assert_eq!(y["food"]["gathered_kj"], food.gathered_j / 1000);
+            let food_row = format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td>",
+                y["tribe"].as_str().unwrap(),
+                y["year"],
+                y["food"]["start_kj"],
+                y["food"]["gathered_kj"],
+                y["food"]["eaten_kj"]
+            );
+            assert!(html.contains(&food_row), "{food_row} is not on the page");
+        }
+        for (id, person) in &report.people {
+            let p = value["people"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["id"] == id.0)
+                .expect("every person is in the data");
+            match person.death {
+                Some((tick, ..)) => assert_eq!(p["died"]["day"], tick / report.ticks_per_day() + 1),
+                None => assert!(p["died"].is_null()),
+            }
+            assert_eq!(p["trials"].as_array().unwrap().len(), person.trials.len());
+        }
+    }
+
+    #[test]
+    fn the_presence_counts_the_living_once_a_day_at_noon() {
+        let settings = Settings { days: 3, ..small() };
+        let report = run_checked(&settings, content());
+        let counted: u32 = report.presence.values().flat_map(|c| c.values()).sum();
+        let people = u32::try_from(report.people.len()).unwrap();
+        assert!(
+            counted > 0 && counted <= people * 3,
+            "{counted} standings for {people} people over three noons"
+        );
+        assert!(
+            report
+                .presence
+                .keys()
+                .all(|&(tribe, year)| tribe == 0 && year == 1)
+        );
+        for &(cx, cy) in report.presence.values().flat_map(BTreeMap::keys) {
+            assert!(cx < 50_u32.div_ceil(PRESENCE_CELL_TILES));
+            assert!(cy < 50_u32.div_ceil(PRESENCE_CELL_TILES));
+        }
+        let value = report.json_value();
+        assert_eq!(value["presence"][0]["cell_tiles"], PRESENCE_CELL_TILES);
+        assert!(
+            value["map"]["data_uri"]
+                .as_str()
+                .unwrap()
+                .starts_with("data:image/png;base64,")
+        );
+        assert_eq!(value["map"]["tiles"], json!([50, 50]));
+    }
+
+    #[test]
+    fn the_positions_are_the_living_at_each_noon_in_id_order() {
+        let settings = Settings { days: 3, ..small() };
+        let report = run_checked(&settings, content());
+        let per_day = report.ticks_per_day();
+        assert_eq!(
+            report
+                .positions
+                .iter()
+                .map(|(day, _)| *day)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        let mut listed = 0_u32;
+        for (day, standing) in &report.positions {
+            assert!(!standing.is_empty(), "day {day}: nobody at noon");
+            let noon = (day - 1) * per_day + per_day / 2;
+            for pair in standing.windows(2) {
+                assert!(pair[0].0 < pair[1].0, "day {day}: ids out of order");
+            }
+            for &(id, pos) in standing {
+                let person = report.people.get(&id).expect("a body is a person");
+                assert!(
+                    person.death.is_none_or(|(tick, ..)| tick >= noon),
+                    "day {day}: person {} was dead at noon",
+                    id.0
+                );
+                assert!((0..50).contains(&pos.x) && (0..50).contains(&pos.y));
+            }
+            listed += u32::try_from(standing.len()).unwrap();
+        }
+        // The presence grid counts the same bodies at the same noons.
+        let counted: u32 = report.presence.values().flat_map(|c| c.values()).sum();
+        assert_eq!(listed, counted);
+        let value = report.json_value();
+        let days = value["positions"].as_array().unwrap();
+        assert_eq!(days.len(), 3);
+        assert_eq!(days[0][0], 1);
+        let first = &report.positions[0].1[0];
+        assert_eq!(days[0][1][0], json!([first.0.0, first.1.x, first.1.y]));
+        let text = report.json();
+        assert!(
+            text.contains("\n  \"positions\": [\n    [1, [["),
+            "a day a line: {}",
+            &text[text.find("\"positions\"").unwrap()..][..40]
+        );
+    }
+
+    #[test]
+    fn the_same_settings_give_the_same_data() {
+        let a = run_with(&small(), content()).unwrap();
+        let b = run_with(&small(), content()).unwrap();
+        assert_eq!(a.json_value(), b.json_value());
+        let strip = |text: String| -> serde_json::Value {
+            let mut v: serde_json::Value = serde_json::from_str(&text).unwrap();
+            v["meta"].as_object_mut().unwrap().remove("timing");
+            v
+        };
+        assert_eq!(strip(a.json()), strip(b.json()));
     }
 }

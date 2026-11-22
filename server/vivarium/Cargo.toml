@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 sim = { path = "../sim" }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true
