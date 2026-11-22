@@ -1294,6 +1294,13 @@ pub struct World {
     /// start of the next one. Never persisted: a restart drops them.
     #[serde(skip)]
     pending: Vec<Intention>,
+    /// Whether the bodies' size, burn and pace must be set again before
+    /// the day's first tick ([`World::grow`]): raised whenever what they
+    /// follow may have changed between two days (a body added, carried,
+    /// set down, orphaned or dead; a pregnancy; the life rule; the
+    /// content; a load). Never persisted: a loaded world grows at once.
+    #[serde(skip)]
+    grow_due: bool,
     /// The path searches waiting for their turn, orders and looks again,
     /// in two lanes ([`Searches`], D32). Never persisted, as `pending`.
     #[serde(skip)]
@@ -1402,6 +1409,7 @@ impl<'de> serde::Deserialize<'de> for World {
             ground: BTreeMap::new(),
             spawns: Vec::new(),
             pending: Vec::new(),
+            grow_due: true,
             searches: Searches::default(),
             piloted: BTreeSet::new(),
             species: Vec::new(),
@@ -1508,6 +1516,7 @@ impl World {
             ground: BTreeMap::new(),
             spawns: Vec::new(),
             pending: Vec::new(),
+            grow_due: true,
             searches: Searches::default(),
             piloted: BTreeSet::new(),
             species: Vec::new(),
@@ -1527,6 +1536,7 @@ impl World {
     /// again under the content's masses ([`Body::load_g`]), and one
     /// standing in a trunk's tile is let out of it.
     pub fn take_content(&mut self, content: &Content) {
+        self.grow_due = true;
         self.species.clone_from(&content.species);
         self.spawns.clone_from(&content.spawns);
         self.geology.clone_from(&content.geology);
@@ -2171,6 +2181,7 @@ impl World {
             pregnant: None,
         });
         self.enter_chunk(id, pos.chunk());
+        self.grow_due = true;
         id
     }
 
@@ -2192,6 +2203,7 @@ impl World {
             let body = &mut self.bodies[index];
             body.born_day = today - i64::try_from(age_days).unwrap_or(i64::MAX);
             body.sex = sex;
+            self.grow_due = true;
         }
     }
 
@@ -2222,6 +2234,7 @@ impl World {
         body.route.clear();
         body.goal = None;
         body.work = None;
+        self.grow_due = true;
         true
     }
 
@@ -2588,6 +2601,7 @@ impl World {
                 body.carried_by = nurse;
             }
         }
+        self.grow_due = true;
     }
 
     /// Every body's state as a carrier, for the infants it nurses: whether
@@ -2610,8 +2624,18 @@ impl World {
         let needs = &rules.needs;
         let tick = self.tick.0;
         let season = self.time().season;
-        self.grow(rules, events);
-        let carriers = self.carriers(needs);
+        // Size, burn and pace follow the age, which moves once a day,
+        // and what changed among the bodies since (`grow_due`).
+        if day_start || self.grow_due {
+            self.grow(rules, events);
+            self.grow_due = false;
+        }
+        // The carriers' state is read for the nursed infants alone.
+        let carriers = if self.bodies.iter().any(|b| b.carried_by.is_some()) {
+            self.carriers(needs)
+        } else {
+            BTreeMap::new()
+        };
         let mut died = Vec::new();
         for body in &mut self.bodies {
             let before = body.condition.summary();
@@ -2716,6 +2740,7 @@ impl World {
             return;
         };
         let body = self.bodies.remove(index);
+        self.grow_due = true;
         let at = body.pos();
         self.leave_chunk(id, at.chunk());
         self.orphan(id, at, rules);

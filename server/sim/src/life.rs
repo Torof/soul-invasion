@@ -44,6 +44,7 @@ impl World {
     /// world saved before it; the vivarium turns it on.
     pub fn set_life(&mut self, on: bool) {
         self.life = on;
+        self.grow_due = true;
     }
 
     /// The tick of the day a body's daily draws fall on, its own, from
@@ -116,6 +117,7 @@ impl World {
                     since_day: today,
                     father,
                 });
+                self.grow_due = true;
             }
         }
     }
@@ -163,6 +165,7 @@ impl World {
         for (mother, at) in lost {
             if let Some(index) = self.index_of(mother) {
                 self.bodies[index].pregnant = None;
+                self.grow_due = true;
                 events.push(Event::PregnancyLost { mother, at });
             }
         }
@@ -183,6 +186,7 @@ impl World {
         let Some(pregnancy) = self.bodies[index].pregnant.take() else {
             return;
         };
+        self.grow_due = true;
         let at = self.bodies[index].pos();
         let today = self.today();
         let seed = self.seed();
@@ -352,9 +356,11 @@ mod tests {
         id
     }
 
+    /// Changes a body by hand, as a rule would: the bodies grow again.
     fn set(w: &mut World, id: BodyId, change: impl FnOnce(&mut Body)) {
         let index = w.index_of(id).unwrap();
         change(&mut w.bodies[index]);
+        w.grow_due = true;
     }
 
     fn wed(w: &mut World, a: BodyId, b: BodyId) {
