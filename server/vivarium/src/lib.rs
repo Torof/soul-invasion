@@ -18,8 +18,8 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use sim::brain::{Brains, Why};
-use sim::content::Content;
+use sim::brain::{Brains, News, Way, Ways, Why};
+use sim::content::{Content, Trials};
 use sim::map::{Map, Pos, Terrain};
 use sim::time::Calendar;
 use sim::{BodyId, Death, Event, Intention, Sex, World};
@@ -84,6 +84,10 @@ pub struct Settings {
     /// nobody grows thin or weak and the births are read apart from the
     /// food (F1). A named factor of the run, shown in the report.
     pub fed: bool,
+    /// The brains try, judge and copy their ways (D50); false is the
+    /// control run beside each trial run (`--no-trials`): the content's
+    /// `trials` section is replaced by one where nobody tries anything.
+    pub trials: bool,
 }
 
 impl Default for Settings {
@@ -101,6 +105,7 @@ impl Default for Settings {
             infants: 0,
             adult_years: (18, 40),
             fed: false,
+            trials: true,
         }
     }
 }
@@ -253,10 +258,76 @@ pub struct Person {
     pub drinks: u32,
     /// Times its brain thought.
     pub thoughts: u64,
+    /// Its will, 0 to 100 (D50), once its mind was read.
+    pub will: Option<u8>,
+    /// Its ways at the end of the run, or at its death (D50).
+    pub ways: Option<Ways>,
+    /// Its trials, in order (D50).
+    pub trials: Vec<TrialLine>,
+    /// Ways it copied from camp-mates (D50).
+    pub copied: u32,
     /// Its own lines of the chronicle.
     pub entries: Vec<Entry>,
     /// Its gauges 24 times a day.
     pub gauges: Vec<Gauges>,
+}
+
+/// One trial of a person (D50), as its page tells it: "day 212, searches
+/// twice as wide, and keeps it (day 217)".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrialLine {
+    /// The day it started (from 1).
+    pub day: u64,
+    /// The way moved.
+    pub way: Way,
+    /// The step, in words ([`step_words`]).
+    pub step: String,
+    /// The day the world judged it (from 1) and whether it was kept;
+    /// `None` while under trial, or when the body died mid-trial.
+    pub judged: Option<(u64, bool)>,
+}
+
+/// What a trial or a copy did, for the counters per year (D50).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Told {
+    /// A trial started.
+    Trying,
+    /// A trial judged: kept or not.
+    Tried(bool),
+    /// A way copied from a camp-mate.
+    Copied,
+}
+
+/// A trial, a judgement or a copy of the run (D50), for the counters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrialEvent {
+    /// The tick.
+    pub tick: u64,
+    /// The day (from 1).
+    pub day: u64,
+    /// Whose.
+    pub body: BodyId,
+    /// Its tribe.
+    pub tribe: u8,
+    /// What.
+    pub told: Told,
+    /// The way.
+    pub way: Way,
+}
+
+/// A tribe's ways at a year's end (D50): of its living with a mind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WaysInUse {
+    /// Minds read.
+    pub minds: u32,
+    /// How many sleep out.
+    pub sleep_out: u32,
+    /// The median of `worth_half_tiles`.
+    pub median_worth_tiles: u64,
+    /// The median of `stock_kj`.
+    pub median_stock_kj: u64,
+    /// The camp: the median home (median x, median y).
+    pub camp: Option<Pos>,
 }
 
 /// How a person came into a family (lot 3 C).
@@ -336,6 +407,16 @@ pub struct Year {
     /// Women of the fertile years alive at the year's end, and how many of
     /// them have no living spouse and no man of the tribe they could take.
     pub fertile: (u32, u32),
+    /// Trials started in the year (D50).
+    pub trials: u32,
+    /// Trials judged in the year and kept.
+    pub kept: u32,
+    /// Ways copied from camp-mates in the year.
+    pub copied: u32,
+    /// Homes moved in the year: by a trial of the home, or by copying it.
+    pub homes_moved: u32,
+    /// The ways in use at the year's end.
+    pub ways: WaysInUse,
 }
 
 /// The causes of death, in the order of [`Year::deaths`].
@@ -388,6 +469,19 @@ fn is_life_line(what: &str) -> bool {
     .any(|key| what.contains(key))
 }
 
+/// Whether a line of a person's page is one of its trials (D50): shown
+/// past [`FULL_LINES_DAYS`] like the lines of life.
+fn is_trial_line(what: &str) -> bool {
+    [
+        "tries a way",
+        "keeps its way",
+        "gives up its way",
+        "copies ",
+    ]
+    .iter()
+    .any(|key| what.contains(key))
+}
+
 /// Every `n`th of `items`, so that at most [`CURVE_POINTS`] remain.
 fn thinned<T>(items: &[T]) -> impl Iterator<Item = &T> {
     let step = items.len().div_ceil(CURVE_POINTS).max(1);
@@ -421,6 +515,10 @@ pub struct Report {
     pub rates: Vec<(&'static str, u32)>,
     /// Each tribe's food, year by year (lot 2): by (tribe, year).
     pub food: BTreeMap<(u8, u64), Balance>,
+    /// The trials, judgements and copies of the run, in order (D50).
+    pub trials: Vec<TrialEvent>,
+    /// Each tribe's ways at each year's end (D50): by (tribe, year).
+    pub ways_in_use: BTreeMap<(u8, u64), WaysInUse>,
     /// Seconds the run took on the wall.
     pub wall_s: f64,
     /// Seconds the world took to be born.
@@ -465,12 +563,19 @@ pub fn run_watched(
     // Food without limit (lot 3 C, trial 1): hunger a day is 0, the fat
     // reserve is never drawn on, so the births are read apart from the
     // food. The content is otherwise the one given.
-    let fed_content;
-    let content = if settings.fed {
-        let mut fed = content.clone();
-        fed.needs.hunger_per_day = 0;
-        fed_content = fed;
-        &fed_content
+    // The control run (D50, `--no-trials`): the content's trials replaced
+    // by none, so nobody tries nor copies anything.
+    let own_content;
+    let content = if settings.fed || !settings.trials {
+        let mut own = content.clone();
+        if settings.fed {
+            own.needs.hunger_per_day = 0;
+        }
+        if !settings.trials {
+            own.needs.trials = Trials::default();
+        }
+        own_content = own;
+        &own_content
     } else {
         content
     };
@@ -644,6 +749,8 @@ pub fn run_watched(
     let tribes = camps.len();
     let per_year = calendar.ticks_per_day() * u64::from(calendar.days_per_year());
     let mut food: BTreeMap<(u8, u64), Balance> = BTreeMap::new();
+    let mut trials: Vec<TrialEvent> = Vec::new();
+    let mut ways_in_use: BTreeMap<(u8, u64), WaysInUse> = BTreeMap::new();
     let first = reserves(&world, content, &people);
     for (tribe, &j) in first.iter().enumerate().take(tribes) {
         food.entry((u8::try_from(tribe).expect("two"), 1))
@@ -737,6 +844,8 @@ pub fn run_watched(
                     // turn, is read now, or its page would say 0.
                     if let Some(mind) = brains.mind(*body) {
                         person.thoughts = mind.thoughts();
+                        person.will = Some(mind.will());
+                        person.ways = Some(*mind.ways());
                     }
                 }
                 Event::BodyAte {
@@ -851,7 +960,10 @@ pub fn run_watched(
             if body.condition().vitality.points() == 0
                 && let Some(mind) = brains.mind(body.id())
             {
-                people.entry(body.id()).or_default().thoughts = mind.thoughts();
+                let person = people.entry(body.id()).or_default();
+                person.thoughts = mind.thoughts();
+                person.will = Some(mind.will());
+                person.ways = Some(*mind.ways());
             }
         }
         for (body, decision) in brains.think(&world, content, &events) {
@@ -862,6 +974,91 @@ pub fn run_watched(
                 what: thought(&decision.intention, decision.why),
             });
             world.queue(decision.intention);
+        }
+        // The trials (D50): what the brains tried, judged and copied, in
+        // the chronicle, on the person's page and in the counters.
+        for news in brains.news() {
+            let (body, what, told, way) = match &news {
+                News::Trying {
+                    body,
+                    way,
+                    before,
+                    after,
+                    ..
+                } => {
+                    let step = step_words(*way, before, after);
+                    let person = people.entry(*body).or_default();
+                    person.trials.push(TrialLine {
+                        day,
+                        way: *way,
+                        step: step.clone(),
+                        judged: None,
+                    });
+                    (
+                        *body,
+                        format!("{} tries a way: {step}", name(*body)),
+                        Told::Trying,
+                        *way,
+                    )
+                }
+                News::Tried {
+                    body, way, kept, ..
+                } => {
+                    let person = people.entry(*body).or_default();
+                    let step = person
+                        .trials
+                        .iter_mut()
+                        .rev()
+                        .find(|t| t.way == *way && t.judged.is_none())
+                        .map(|t| {
+                            t.judged = Some((day, *kept));
+                            t.step.clone()
+                        })
+                        .unwrap_or_default();
+                    let verdict = if *kept {
+                        "keeps its way"
+                    } else {
+                        "gives up its way"
+                    };
+                    (
+                        *body,
+                        format!("{} {verdict}: {step}", name(*body)),
+                        Told::Tried(*kept),
+                        *way,
+                    )
+                }
+                News::Copied {
+                    body,
+                    from,
+                    way,
+                    lost,
+                    after,
+                    ..
+                } => {
+                    let person = people.entry(*body).or_default();
+                    person.copied += 1;
+                    let what = format!(
+                        "{} copies {}{}: {}",
+                        name(*body),
+                        name(*from),
+                        if *lost { ", losing a step" } else { "" },
+                        way_words(*way, after)
+                    );
+                    (*body, what, Told::Copied, *way)
+                }
+            };
+            let entry = Entry { tick, day, what };
+            chronicle.push(entry.clone());
+            let tribe = tribe_of(&people, body);
+            people.entry(body).or_default().entries.push(entry);
+            trials.push(TrialEvent {
+                tick,
+                day,
+                body,
+                tribe,
+                told,
+                way,
+            });
         }
         if tick % ticks_per_sample == 0 {
             for (id, person) in &mut people {
@@ -893,7 +1090,8 @@ pub fn run_watched(
             }
             samples.push(now);
         }
-        // The year's last tick, or the run's: what the living carry.
+        // The year's last tick, or the run's: what the living carry, and
+        // the ways in use (D50).
         if tick % per_year == 0 || tick == ticks {
             let carried = reserves(&world, content, &people);
             for (tribe, &j) in carried.iter().enumerate().take(tribes) {
@@ -902,10 +1100,15 @@ pub fn run_watched(
                 if tick < ticks {
                     food.entry((t, year + 1)).or_default().start_j = j;
                 }
+                ways_in_use.insert((t, year), ways_in_use_of(&world, &brains, &people, t));
             }
         }
     }
     for (id, person) in &mut people {
+        if let Some(mind) = brains.mind(*id) {
+            person.will = Some(mind.will());
+            person.ways = Some(*mind.ways());
+        }
         person.thoughts = brains
             .mind(*id)
             .map_or(person.thoughts, sim::brain::Mind::thoughts);
@@ -948,6 +1151,8 @@ pub fn run_watched(
         settings: settings.clone(),
         rates,
         food,
+        trials,
+        ways_in_use,
         map_side,
         camps,
         ticks,
@@ -981,6 +1186,86 @@ fn thought(intention: &Intention, why: Why) -> String {
         other => format!("{other:?}"),
     };
     format!("{reason}: {act}")
+}
+
+/// A step of a trial in words (D50): what moved, from what to what.
+/// "searches twice as wide (worth halved at 64 tiles instead of 32)".
+#[must_use]
+pub fn step_words(way: Way, before: &Ways, after: &Ways) -> String {
+    let twice = |a: u64, b: u64| if b > a { "twice" } else { "half" };
+    match way {
+        Way::WorthHalfTiles => format!(
+            "searches {} as wide (worth halved at {} tiles instead of {})",
+            twice(before.worth_half_tiles, after.worth_half_tiles),
+            after.worth_half_tiles,
+            before.worth_half_tiles
+        ),
+        Way::StockKj => format!(
+            "stores {} as much ({} kJ instead of {})",
+            twice(before.stock_kj, after.stock_kj),
+            after.stock_kj,
+            before.stock_kj
+        ),
+        Way::SleepOut | Way::Home => way_words(way, after),
+    }
+}
+
+/// A way in words (D50), as it stands in `ways`: "sleeps out where night
+/// finds it", "sets its home at (120, 44)".
+#[must_use]
+pub fn way_words(way: Way, ways: &Ways) -> String {
+    match way {
+        Way::WorthHalfTiles => format!(
+            "searches with worth halved at {} tiles",
+            ways.worth_half_tiles
+        ),
+        Way::SleepOut if ways.sleep_out => "sleeps out where night finds it".to_owned(),
+        Way::SleepOut => "comes home to sleep".to_owned(),
+        Way::StockKj => format!("stores {} kJ before resting", ways.stock_kj),
+        Way::Home => format!("sets its home at ({}, {})", ways.home.x, ways.home.y),
+    }
+}
+
+/// The ways of tribe `tribe`'s living with a mind (D50): how many sleep
+/// out, the medians, the camp as the median home.
+fn ways_in_use_of(
+    world: &World,
+    brains: &Brains,
+    people: &BTreeMap<BodyId, Person>,
+    tribe: u8,
+) -> WaysInUse {
+    let mut ways: Vec<Ways> = world
+        .bodies()
+        .iter()
+        .filter(|b| b.condition().vitality.points() > 0)
+        .filter(|b| people.get(&b.id()).is_some_and(|p| p.tribe == tribe))
+        .filter_map(|b| brains.mind(b.id()).map(|m| *m.ways()))
+        .collect();
+    if ways.is_empty() {
+        return WaysInUse::default();
+    }
+    let median = |values: &mut Vec<i64>| -> i64 {
+        values.sort_unstable();
+        values[values.len() / 2]
+    };
+    let mid = ways.len() / 2;
+    ways.sort_by_key(|w| w.worth_half_tiles);
+    let median_worth_tiles = ways[mid].worth_half_tiles;
+    ways.sort_by_key(|w| w.stock_kj);
+    let median_stock_kj = ways[mid].stock_kj;
+    let mut xs: Vec<i64> = ways.iter().map(|w| i64::from(w.home.x)).collect();
+    let mut ys: Vec<i64> = ways.iter().map(|w| i64::from(w.home.y)).collect();
+    let camp = Pos::new(
+        i32::try_from(median(&mut xs)).unwrap_or(0),
+        i32::try_from(median(&mut ys)).unwrap_or(0),
+    );
+    WaysInUse {
+        minds: u32::try_from(ways.len()).unwrap_or(u32::MAX),
+        sleep_out: u32::try_from(ways.iter().filter(|w| w.sleep_out).count()).unwrap_or(u32::MAX),
+        median_worth_tiles,
+        median_stock_kj,
+        camp: Some(camp),
+    }
 }
 
 /// A tribe's food over a year (lot 2, D45), in joules: what came in,
@@ -1304,6 +1589,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
 <li><b>The world</b>: {world}, {} × {} tiles of 1 m; {}.</li>\
 <li><b>The year</b>: {} days of {} game seconds (a day of the game is two hours of its clock), four seasons.</li>\
 <li><b>The brain</b>: {}.</li>\
+<li><b>The trials</b> (D50): {}.</li>\
 <li><b>Life</b> (D49): on, as in every vivarium world and never in the game: women conceive, people couple and die of illness and old age, by content/needs.ron's life section; the departure pairs the grown by the sim's own rule and gives the children a mother and a father among the camp's couples{}.</li>\
 <li><b>The food</b>: the crops of content/crops.ron (D45), on the trees and plants in their season, more some years than others, whole again the next year; gathered by hand at their rate an hour; spoiled after their days. Hunger is the appetite on a fat reserve (D46): the reserve spent, the body starves.</li>\
 <li><b>The needs</b> (content/needs.ron, points of 100 a game day): {}.</li></ul>",
@@ -1316,9 +1602,14 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             Calendar::DEFAULT_DAYS_PER_YEAR,
             Calendar::DEFAULT_SECONDS_PER_DAY,
             if s.brain {
-                "the minimal one (sim::brain): it thinks only when something changes for its body, drinks when thirst passes 50 (wakes for it past 80); when hunger passes 50 it eats what it carries, else the food it saw, else gathers from the nearest tree or plant it knows bearing food; by day it gathers until it carries three days of food (30,000 kJ); goes looking when it knows no place (for food: by day, and only when something is ripe somewhere), goes home at night and sleeps within 6 tiles of the camp; it remembers the drinking places, the food and the trees and plants bearing food it saw"
+                "the minimal one (sim::brain): it thinks only when something changes for its body, drinks when thirst passes 50 (wakes for it past 80); when hunger passes 50 it eats what it carries, else the food it saw, else gathers from the nearest tree or plant it knows bearing food; by day it gathers until it carries its store (three days of food, 30,000 kJ, by default); goes looking when it knows no place (for food: by day, and only when something is ripe somewhere), goes home at night and sleeps within 6 tiles of the camp (or sleeps out, if that is its way); it remembers the drinking places, the food and the trees and plants bearing food it saw. Its ways (how far a plant is worth going, whether it sleeps out, how much it stores, where home is) are its own, D50"
             } else {
                 "none (the control run): the people stand where they were born"
+            },
+            if s.trials && s.brain {
+                "on: a body in distress (hungry at nightfall, or a day without a gather) for content/needs.ron's trial_after_days running may try one way moved by one step, with a daily chance by its will; after trial_days the world has judged (kept if it gathered more a day and was thin no more often, else reverted); at night at the camp a body may copy one way from the camp-mate who gathered most a day lately, the more readily the greater that mate's will, a copy losing a step at times; children follow their mother's home every night"
+            } else {
+                "off (the control run, --no-trials): nobody tries nor copies anything"
             },
             if s.fed {
                 "; <b>food without limit</b>: hunger a day is 0, nobody grows thin or weak, so the births are read apart from the food"
@@ -1681,6 +1972,29 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                     });
                     y.fertile.0 += u32::from(!possible);
                 }
+                // The trials (D50).
+                for t in self
+                    .trials
+                    .iter()
+                    .filter(|t| t.tribe == tribe && t.day > before && t.day <= end)
+                {
+                    match t.told {
+                        Told::Trying => {
+                            y.trials += 1;
+                            y.homes_moved += u32::from(t.way == Way::Home);
+                        }
+                        Told::Tried(kept) => y.kept += u32::from(kept),
+                        Told::Copied => {
+                            y.copied += 1;
+                            y.homes_moved += u32::from(t.way == Way::Home);
+                        }
+                    }
+                }
+                y.ways = self
+                    .ways_in_use
+                    .get(&(tribe, year))
+                    .copied()
+                    .unwrap_or_default();
                 out.push(y);
             }
         }
@@ -1705,8 +2019,8 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
     /// fertile women without a possible spouse.
     fn tribes_table(&self) -> String {
         let mut h = String::from(
-            "<h2>The tribes, year by year</h2><p>Population at the year's end and its growth over the year; births; deaths by cause, with the season of each death of hunger; the mean years between a birth and its mother's birth before it; the children born in the run who turned fifteen by then, and how many lived to it; the women of 16 to 42 alive, and how many of them have no living spouse and no man of the tribe of 16 to 50, unwed and not their kin, to take.</p>\
-<table><tr><th>Tribe</th><th>Year</th><th>Population</th><th>Growth</th><th>Births</th><th>Illness</th><th>Old age</th><th>Childbirth</th><th>Hunger</th><th>Thirst</th><th>Cold</th><th>Birth interval</th><th>Reached 15</th><th>Fertile women without a possible spouse</th></tr>",
+            "<h2>The tribes, year by year</h2><p>Population at the year's end and its growth over the year; births; deaths by cause, with the season of each death of hunger; the mean years between a birth and its mother's birth before it; the children born in the run who turned fifteen by then, and how many lived to it; the women of 16 to 42 alive, and how many of them have no living spouse and no man of the tribe of 16 to 50, unwed and not their kin, to take. The trials (D50): trials started in the year, those judged and kept, the ways copied from camp-mates, the homes moved (by a trial or a copy), the ways in use at the year's end among the living, and the camp (the median home of the living).</p>\
+<table><tr><th>Tribe</th><th>Year</th><th>Population</th><th>Growth</th><th>Births</th><th>Illness</th><th>Old age</th><th>Childbirth</th><th>Hunger</th><th>Thirst</th><th>Cold</th><th>Birth interval</th><th>Reached 15</th><th>Fertile women without a possible spouse</th><th>Trials</th><th>Kept</th><th>Copied</th><th>Homes moved</th><th>Ways at the year's end</th><th>Camp</th></tr>",
         );
         for y in self.years() {
             let growth = if y.population_before == 0 {
@@ -1744,9 +2058,24 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             } else {
                 format!("{} of {}", y.fifteen.0, y.fifteen.1)
             };
+            let ways = if y.ways.minds == 0 {
+                "—".to_owned()
+            } else {
+                format!(
+                    "{} of {} sleep out; worth halved at {} tiles, store {} kJ (medians)",
+                    y.ways.sleep_out,
+                    y.ways.minds,
+                    y.ways.median_worth_tiles,
+                    y.ways.median_stock_kj
+                )
+            };
+            let camp = y
+                .ways
+                .camp
+                .map_or_else(|| "—".to_owned(), |c| format!("({}, {})", c.x, c.y));
             let _ = write!(
                 h,
-                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{growth}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{hunger}</td><td>{}</td><td>{}</td><td>{interval}</td><td>{fifteen}</td><td>{} of {}</td></tr>",
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{growth}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{hunger}</td><td>{}</td><td>{}</td><td>{interval}</td><td>{fifteen}</td><td>{} of {}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{ways}</td><td>{camp}</td></tr>",
                 tribe_name(y.tribe),
                 y.year,
                 y.population,
@@ -1757,7 +2086,11 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                 y.deaths[4],
                 y.deaths[5],
                 y.fertile.0,
-                y.fertile.1
+                y.fertile.1,
+                y.trials,
+                y.kept,
+                y.copied,
+                y.homes_moved
             );
         }
         h.push_str("</table>");
@@ -1790,16 +2123,43 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         });
         let _ = write!(
             h,
-            "<details><summary>{} (tribe {}{who}) — {fate}; {} meals ({} g), drank {} times, thought {} times, gathered {} kJ</summary>",
+            "<details><summary>{} (tribe {}{who}) — {fate}; {} meals ({} g), drank {} times, thought {} times, gathered {} kJ{}</summary>",
             name(id),
             tribe_name(person.tribe),
             person.meals.0,
             person.meals.1,
             person.drinks,
             person.thoughts,
-            person.gathered_j / 1000
+            person.gathered_j / 1000,
+            person
+                .will
+                .map_or_else(String::new, |will| format!("; will {will}"))
         );
         h.push_str(&sparkline(&person.gauges, self.ticks));
+        if let Some(ways) = &person.ways {
+            let _ = write!(
+                h,
+                "<p>Its ways (D50) at the end: worth halved at {} tiles, {}, stores {} kJ before resting, home at ({}, {}); {} trials, {} ways copied.</p>",
+                ways.worth_half_tiles,
+                if ways.sleep_out {
+                    "sleeps out where night finds it"
+                } else {
+                    "comes home to sleep"
+                },
+                ways.stock_kj,
+                ways.home.x,
+                ways.home.y,
+                person.trials.len(),
+                person.copied
+            );
+        }
+        if !person.trials.is_empty() {
+            h.push_str("<ul class=\"trials\">");
+            for trial in &person.trials {
+                let _ = write!(h, "<li>{}</li>", escape(&Self::trial_words(trial)));
+            }
+            h.push_str("</ul>");
+        }
         let full = self.settings.days <= FULL_LINES_DAYS;
         if !full {
             let _ = write!(
@@ -1808,7 +2168,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                 person
                     .entries
                     .iter()
-                    .filter(|e| !is_life_line(&e.what))
+                    .filter(|e| !is_life_line(&e.what) && !is_trial_line(&e.what))
                     .count()
             );
         }
@@ -1816,7 +2176,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         for entry in person
             .entries
             .iter()
-            .filter(|e| full || is_life_line(&e.what))
+            .filter(|e| full || is_life_line(&e.what) || is_trial_line(&e.what))
         {
             let _ = write!(
                 h,
@@ -1828,6 +2188,18 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         }
         h.push_str("</table></details>");
         h
+    }
+
+    /// A trial in words (D50): "day 212, searches twice as wide (worth
+    /// halved at 64 tiles instead of 32), and keeps it (day 217)".
+    #[must_use]
+    pub fn trial_words(trial: &TrialLine) -> String {
+        let verdict = match trial.judged {
+            Some((day, true)) => format!(", and keeps it (day {day})"),
+            Some((day, false)) => format!(", and gives it up (day {day})"),
+            None => ", still under trial".to_owned(),
+        };
+        format!("day {}, {}{verdict}", trial.day, trial.step)
     }
 
     /// Days a person was thin and weak, in tenths, from its gauges (24 a
@@ -2307,6 +2679,7 @@ mod tests {
             infants: 0,
             adult_years: (18, 40),
             fed: false,
+            trials: true,
         }
     }
 
@@ -2376,13 +2749,19 @@ mod tests {
         assert_eq!(balance.lost_j(), 0, "{balance:?}");
     }
 
-    /// On the patch in spring nothing grows, and since lot 3 a body
-    /// without food dies on its seventh day: its page must still say what
-    /// it thought, read before its mind goes with it.
+    /// On the patch in spring little grows, and since lot 3 a body
+    /// without food dies when its fat reserve is spent: its page must
+    /// still say what it thought, read before its mind goes with it. The
+    /// reserve is set short here (60,000 kJ, six days, the value before 22
+    /// November 2026: with 300 MJ nobody starves in a month on the patch),
+    /// so that somebody dies in eight days: the rule under test is the
+    /// page, not the reserve.
     #[test]
     fn the_dead_keep_what_they_thought() {
         let settings = Settings { days: 8, ..small() };
-        let report = run_checked(&settings, content());
+        let mut content = content().clone();
+        content.needs.reserve_kj = 60_000;
+        let report = run_checked(&settings, &content);
         let dead: Vec<_> = report
             .people
             .values()
@@ -2472,6 +2851,206 @@ mod tests {
         eprintln!("cadence 10: {:?}, gathered {:?} kJ", game.0, game.1);
         assert_eq!(slow.0, game.0, "the same deaths at both cadences");
         assert_eq!(slow.1, game.1, "the same food gathered at both cadences");
+    }
+
+    /// The content's trials forced (D50): a day of distress is enough, the
+    /// chances are whole, a trial lasts two days.
+    fn forced_trials() -> Content {
+        let mut content = content().clone();
+        content.needs.trials = Trials {
+            trial_after_days: 1,
+            trial_days: 2,
+            try_percent_by_will: vec![(0, 100)],
+            far_home_from_will: 70,
+            new_home_walk_tiles: 10,
+            imitate_tiles: 12,
+            imitate_percent: 100,
+            imitate_loss_percent: 50,
+        };
+        content
+    }
+
+    /// D50 in the report: every trial, judgement and copy is a line of the
+    /// chronicle and of the person's page, the person's page tells its
+    /// will and its ways, and the tribe's year counts them; the control
+    /// run (`--no-trials`) counts and tells nothing.
+    #[test]
+    fn the_trials_are_told_on_the_pages_and_counted_by_the_year() {
+        let settings = Settings { days: 6, ..small() };
+        let report = run_checked(&settings, &forced_trials());
+        let started = report
+            .trials
+            .iter()
+            .filter(|t| t.told == Told::Trying)
+            .count();
+        assert!(started > 0, "hungry on the patch, somebody tries");
+        let judged = report
+            .trials
+            .iter()
+            .filter(|t| matches!(t.told, Told::Tried(_)))
+            .count();
+        assert!(
+            judged > 0,
+            "and is judged within six days: {:?}",
+            report.trials
+        );
+        let year = &report.years()[0];
+        assert_eq!(usize::try_from(year.trials).unwrap(), started);
+        assert!(year.kept <= year.trials);
+        assert!(year.ways.minds > 0 && year.ways.camp.is_some());
+        let homes = report
+            .trials
+            .iter()
+            .filter(|t| {
+                t.way == Way::Home && t.told != Told::Tried(true) && t.told != Told::Tried(false)
+            })
+            .count();
+        assert_eq!(usize::try_from(year.homes_moved).unwrap(), homes);
+        let html = report.fixed();
+        assert!(
+            html.contains(" tries a way: "),
+            "the chronicle names each trial"
+        );
+        assert!(
+            html.contains(" keeps its way: ") || html.contains(" gives up its way: "),
+            "and each judgement"
+        );
+        assert!(html.contains("<th>Trials</th><th>Kept</th><th>Copied</th><th>Homes moved</th>"));
+        assert!(html.contains("<b>The trials</b> (D50): on"));
+        for (id, person) in &report.people {
+            assert!(
+                person.will.is_some(),
+                "person {}: its will on its page",
+                id.0
+            );
+            assert!(person.ways.is_some());
+            let page = report.person_html(*id, person);
+            assert!(page.contains("; will ") && page.contains("Its ways (D50) at the end: "));
+            for trial in &person.trials {
+                let words = Report::trial_words(trial);
+                assert!(
+                    words.starts_with(&format!("day {}, ", trial.day)),
+                    "{words}"
+                );
+                assert!(page.contains(&escape(&words)), "{words}");
+                assert!(
+                    person.entries.iter().any(|e| e.what.contains(&trial.step)),
+                    "its own line: {trial:?}"
+                );
+            }
+        }
+        let twice = report
+            .people
+            .values()
+            .flat_map(|p| p.trials.iter())
+            .find(|t| t.way == Way::WorthHalfTiles)
+            .map(|t| t.step.clone());
+        if let Some(step) = twice {
+            assert!(
+                step.contains("searches twice as wide") || step.contains("searches half as wide"),
+                "{step}"
+            );
+        }
+    }
+
+    /// The control run (`--no-trials`, D50): nothing happens, nothing is
+    /// counted, and the page says so.
+    #[test]
+    fn the_control_run_tries_and_copies_nothing() {
+        let settings = Settings {
+            days: 6,
+            trials: false,
+            ..small()
+        };
+        let control = run_checked(&settings, &forced_trials());
+        assert!(control.trials.is_empty(), "{:?}", control.trials);
+        let year = &control.years()[0];
+        assert_eq!(
+            (year.trials, year.kept, year.copied, year.homes_moved),
+            (0, 0, 0, 0)
+        );
+        assert!(
+            control
+                .people
+                .values()
+                .all(|p| p.trials.is_empty() && p.copied == 0)
+        );
+        assert!(
+            control
+                .people
+                .values()
+                .all(|p| p.ways == Some(Ways::at(control.camps[0])))
+        );
+        let html = control.fixed();
+        assert!(!html.contains(" tries a way: "));
+        assert!(html.contains("<b>The trials</b> (D50): off"));
+    }
+
+    /// D50's tiny first (the brief of 22 November 2026): one band of 25
+    /// (15 grown, 7 children, 3 infants) at camp A of the vivarium's
+    /// world, five years, cadence 1, seed 1, with and without trials. With
+    /// trials at least one trial is kept and one way copied, the band is
+    /// not extinct at five years, and two runs with the same seed give the
+    /// same trials (D24). The living of both runs are numbers written on
+    /// the page and in `docs/05`, not an assertion: the project lead
+    /// expects more deaths at first and fewer after ("au début plus de
+    /// morts, après moins de morts… et on grandit", 22 November 2026), and
+    /// nothing is tuned here. Measured on 22 November 2026 (release, seed
+    /// 1): with trials 14 alive and 17 dead at five years (49 trials, 27
+    /// kept, 114 copied, 6 homes moved), without 19 alive and 12 dead.
+    #[test]
+    #[ignore = "three 5-year runs on the vivarium's world, some 5 min in release: cargo test --release -p vivarium -- --ignored the_d50_band"]
+    fn the_d50_band_of_25_five_years_with_and_without_trials() {
+        let band = |trials: bool| {
+            let settings = Settings {
+                world: WorldKind::Vivarium,
+                tribes: 1,
+                people: 15,
+                children: 7,
+                infants: 3,
+                days: 250,
+                trials,
+                ..small()
+            };
+            // The world's invariants at every dawn; not the food balance:
+            // the living eat the food the dead left on the ground, which
+            // the balance counts as come from nowhere the year after (a
+            // limit of the balance, not of D50).
+            let content = content();
+            let report = run_watched(&settings, content, &mut |world, day| {
+                let found = sim::invariants::breaches(world, content);
+                assert!(found.is_empty(), "day {day}: {found:?}");
+            })
+            .unwrap();
+            let years = report.years();
+            let alive = report.samples.last().map_or(0, |s| s.alive);
+            let (trials, kept, copied, homes) = years.iter().fold((0, 0, 0, 0), |a, y| {
+                (
+                    a.0 + y.trials,
+                    a.1 + y.kept,
+                    a.2 + y.copied,
+                    a.3 + y.homes_moved,
+                )
+            });
+            eprintln!(
+                "trials {}: {alive} alive at five years, {} dead ({}); {trials} trials, {kept} kept, {copied} copied, {homes} homes moved; camp {:?}; {:.0} s",
+                if settings.trials { "on" } else { "off" },
+                deaths(&report).len(),
+                deaths(&report).join("; "),
+                years.last().and_then(|y| y.ways.camp),
+                report.wall_s
+            );
+            (alive, kept, copied, report.trials)
+        };
+        let (alive, kept, copied, trials) = band(true);
+        let (alive_without, ..) = band(false);
+        eprintln!("alive at five years: {alive} with trials, {alive_without} without");
+        assert!(kept > 0, "at least one trial kept in five years");
+        assert!(copied > 0, "at least one way copied in five years");
+        assert!(alive > 0, "the band is not extinct at five years");
+        let again = band(true);
+        assert_eq!(trials, again.3, "the same seed gives the same trials");
+        assert_eq!(alive, again.0);
     }
 
     /// The departure paired (lot 3 C): the grown are coupled on day one by
@@ -2977,8 +3556,9 @@ mod tests {
     #[test]
     fn with_the_brain_nobody_dies_of_thirst_beside_the_river() {
         // The plan's small trial: five people, the 50 × 50 patch, ten days.
-        // Thirst alone: the patch bears nothing in spring, and since lot 3
-        // a body without food dies on its seventh day.
+        // Thirst alone: the patch bears nothing in spring (and hunger is
+        // off here, so the fat reserve, 300 MJ since 22 November 2026, is
+        // not even drawn on).
         let settings = Settings {
             days: 10,
             ..small()
@@ -3011,9 +3591,12 @@ mod tests {
 
     #[test]
     fn two_tribes_are_born_at_their_two_camps_and_live_there() {
+        // The control run (D50): with trials, a body in distress on the
+        // bare patch may set its home elsewhere by the fourth day.
         let settings = Settings {
             tribes: 2,
             days: 4,
+            trials: false,
             ..small()
         };
         let report = run_checked(&settings, content());

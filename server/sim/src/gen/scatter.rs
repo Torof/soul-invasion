@@ -146,9 +146,28 @@ pub(crate) mod purpose {
     /// See `LIFE_HOUR`.
     pub(crate) const LIFE_DEATH: u64 = 0x11fe_dea7;
 
+    /// The brains' trials (D50), salted apart too: a body's will at
+    /// adoption, whether it starts a trial today, which way it moves and
+    /// which way round, the direction of a new home knowing no plant,
+    /// whether it copies a camp-mate tonight, which way, and whether the
+    /// copy loses a step.
+    pub(crate) const TRIAL_WILL: u64 = 0x0d50_3111;
+    /// See `TRIAL_WILL`.
+    pub(crate) const TRIAL_TRY: u64 = 0x0d50_7e57;
+    /// See `TRIAL_WILL`.
+    pub(crate) const TRIAL_WAY: u64 = 0x0d50_3a7a;
+    /// See `TRIAL_WILL`.
+    pub(crate) const TRIAL_DIRECTION: u64 = 0x0d50_d1e4;
+    /// See `TRIAL_WILL`.
+    pub(crate) const TRIAL_COPY: u64 = 0x0d50_c0b1;
+    /// See `TRIAL_WILL`.
+    pub(crate) const TRIAL_COPY_WAY: u64 = 0x0d50_c0b2;
+    /// See `TRIAL_WILL`.
+    pub(crate) const TRIAL_COPY_LOSS: u64 = 0x0d50_1055;
+
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 60] = [
+    pub(crate) const ALL: [u64; 67] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -209,6 +228,13 @@ pub(crate) mod purpose {
         LIFE_SEX,
         LIFE_CHILDBIRTH,
         LIFE_DEATH,
+        TRIAL_WILL,
+        TRIAL_TRY,
+        TRIAL_WAY,
+        TRIAL_DIRECTION,
+        TRIAL_COPY,
+        TRIAL_COPY_WAY,
+        TRIAL_COPY_LOSS,
     ];
 }
 

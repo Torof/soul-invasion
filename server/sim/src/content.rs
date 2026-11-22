@@ -322,6 +322,94 @@ pub struct Needs {
     /// and even present, it plays only in a world whose `life` is on.
     #[serde(default)]
     pub life: Life,
+    /// The trials, selection and imitation of the brains (D50). Absent:
+    /// nobody tries anything nor copies anybody.
+    #[serde(default)]
+    pub trials: Trials,
+}
+
+/// How the brains try, judge and copy their ways (D50, decided 22 November
+/// 2026). Every value is a D30 placeholder, tuned by reading the
+/// vivarium's page, never to remove the difficulty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Trials {
+    /// Days of distress in a row (hungry at the day's end, or a day with
+    /// no gather at all) before a body may start a trial.
+    pub trial_after_days: u32,
+    /// How many days a trial lasts, and how many days before it the
+    /// judgement compares them with; also the days imitation looks back on.
+    pub trial_days: u32,
+    /// The daily chance to start a trial, in percent, by will: (will,
+    /// percent), the wills rising, straight lines between the points, the
+    /// first held before and the last after.
+    pub try_percent_by_will: Vec<(u32, u32)>,
+    /// From this will, a trial of the home may set it a whole
+    /// `new_home_walk_tiles` away; under it, a quarter of that.
+    pub far_home_from_will: u32,
+    /// How far a trial moves the home, in tiles, towards where the body
+    /// knows the most plants still bearing.
+    pub new_home_walk_tiles: u32,
+    /// At night at the camp, a body copies only from a camp-mate within
+    /// this many tiles.
+    pub imitate_tiles: u32,
+    /// Its chance to copy one way a night, in percent, scaled by the
+    /// mate's will (will 100: the whole percent; will 50: half).
+    pub imitate_percent: u32,
+    /// The chance, in percent, that a copied numeric way loses a step: the
+    /// copy lands halfway between its own value and the mate's (a search
+    /// twice as wide copied becomes one and a half times as wide).
+    pub imitate_loss_percent: u32,
+}
+
+impl Default for Trials {
+    /// Nobody tries anything nor copies anybody.
+    fn default() -> Self {
+        Self {
+            trial_after_days: 0,
+            trial_days: 1,
+            try_percent_by_will: vec![(0, 0)],
+            far_home_from_will: 100,
+            new_home_walk_tiles: 0,
+            imitate_tiles: 0,
+            imitate_percent: 0,
+            imitate_loss_percent: 0,
+        }
+    }
+}
+
+impl Trials {
+    /// The daily chance, in percent, that a body of `will` starts a trial
+    /// once in distress long enough.
+    #[must_use]
+    pub fn try_percent(&self, will: u8) -> u64 {
+        along(&self.try_percent_by_will, u64::from(will) * 1000, 1)
+    }
+
+    /// Whether anybody ever tries or copies anything.
+    #[must_use]
+    pub fn on(&self) -> bool {
+        self.try_percent_by_will.iter().any(|p| p.1 > 0) || self.imitate_percent > 0
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        let rising = self.try_percent_by_will.windows(2).all(|p| p[0].0 < p[1].0);
+        let percent = |v: u32| v <= 100;
+        if self.try_percent_by_will.is_empty()
+            || !rising
+            || self.try_percent_by_will.iter().any(|p| !percent(p.1))
+            || !percent(self.far_home_from_will)
+            || !percent(self.imitate_percent)
+            || !percent(self.imitate_loss_percent)
+            || self.trial_days == 0
+        {
+            return Err(ContentError::Needs(
+                "trials: try_percent_by_will not empty, its wills rising and its percents at \
+                 most 100; far_home_from_will, imitate_percent and imitate_loss_percent at \
+                 most 100; trial_days positive",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Ages and sexes (lot 3 B, decided 17 November 2026): what a body needs
@@ -1118,7 +1206,8 @@ impl Content {
         }
         self.needs.validate_reserve()?;
         self.needs.ages.validate()?;
-        self.needs.life.validate()
+        self.needs.life.validate()?;
+        self.needs.trials.validate()
     }
 
     /// Refuses the values the simulation cannot carry (audit of 20
@@ -1258,6 +1347,20 @@ impl Content {
         ] {
             at_most("needs.ron", field, value, WEIGHT)?;
         }
+        let trials = &self.needs.trials;
+        for (field, value) in [
+            ("trials.trial_after_days", trials.trial_after_days),
+            ("trials.trial_days", trials.trial_days),
+            ("trials.imitate_tiles", trials.imitate_tiles),
+        ] {
+            at_most("needs.ron", field, value, THOUSAND)?;
+        }
+        at_most(
+            "needs.ron",
+            "trials.new_home_walk_tiles",
+            trials.new_home_walk_tiles,
+            MILLION,
+        )?;
         Ok(())
     }
 
