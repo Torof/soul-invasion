@@ -148,9 +148,15 @@ pub const COLD_CHUNKS_PER_SECOND: u64 = 10;
 /// tick of a second; a work costs some 5 µs, so a full share of the
 /// game's ten some 50 ms.
 pub const THOUGHT_WORK_PER_SECOND: u64 = 100_000;
-/// How many chunks' trees and plants bearing food the brains hold, the
-/// least lately used forgotten first (placed again if seen again): as
-/// many as the world's own trees ([`crate::ground::TREE_CACHE_CHUNKS`]).
+/// How many chunks' trees and plants bearing food the brains hold at
+/// least, the least lately used forgotten first (placed again if seen
+/// again): as many as the world's own trees
+/// ([`crate::ground::TREE_CACHE_CHUNKS`], four views), widened to the
+/// chunks of the world they think in ([`Brains::think`]): two tribes
+/// wander over more than four views, and a chunk forgotten was placed
+/// again at some milliseconds (the vivarium's world has 4,624 chunks; the
+/// valley 9,216, a chunk's bearers some 34 bytes each, held once with the
+/// world's, S4). The same for the shores to drink from.
 pub const BEARER_CHUNKS: usize = crate::ground::TREE_CACHE_CHUNKS;
 
 /// Why a body was asked to do something.
@@ -995,6 +1001,9 @@ impl Brains {
         self.count_gathers(events, rules);
         let now = world.tick().0;
         self.bearers.left = cold_chunks_at(world, now);
+        let chunks = world.map().chunks_wide() as usize * world.map().chunks_high() as usize;
+        self.bearers.chunks.widen(chunks);
+        self.shores.widen(chunks);
         self.learn_unseen(world, rules);
         let spread = wake_spread(world);
         // Who is gone, and who is due: the due noted on the way, by their
