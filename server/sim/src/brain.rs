@@ -78,7 +78,7 @@ use crate::crops::{self, Bearer, Source};
 use crate::r#gen::scatter::{self, purpose};
 use crate::lru::Lru;
 use crate::map::{CHUNK_SIZE, ChunkPos, FinePos, Map, Pos, Terrain};
-use crate::{BodyId, Event, GATHER_REACH_MM, Intention, ItemId, World};
+use crate::{Body, BodyId, Event, GATHER_REACH_MM, Intention, ItemId, World};
 
 /// Thirst from which a body goes to drink: half a game day without
 /// water (thirst rises 100 points a day), so it drinks before the night
@@ -87,6 +87,14 @@ pub const THIRSTY: u32 = 50;
 /// Thirst from which a sleeping body wakes to drink: it would not
 /// otherwise last the night.
 pub const PARCHED: u32 = 80;
+/// Fatigue at or above which a sleeping body stays down even parched: it
+/// collapsed of fatigue (the world lays a body down at 100 wherever it
+/// stands) and does not rise before it has slept a tenth of its gauge off
+/// (48 game minutes at the content's rest); then thirst drives it on.
+/// Without it, a parched body collapsed on its way rose at each order
+/// of its pilot and fell again a tick later: eight thousand decisions a
+/// day and no progress (22 November 2026).
+pub const COLLAPSED: u32 = 90;
 /// Hunger from which a body goes to eat.
 pub const HUNGRY: u32 = 50;
 /// How near the camp a body counts as home, in tiles (a little more than
@@ -464,11 +472,14 @@ pub struct Mind {
     plants: BTreeMap<(ChunkPos, Source), KnownPlant>,
     doing: Doing,
     /// Which thresholds its gauges were past when it last thought:
-    /// thirsty, parched, hungry, asleep.
-    past: (bool, bool, bool, bool),
+    /// thirsty, parched, hungry, asleep, collapsed.
+    past: (bool, bool, bool, bool, bool),
     /// Something changed: it thinks at the next turn.
     due: bool,
-    /// Its walk ended since it last thought (it arrived, or was stopped).
+    /// Its walk ended since it last thought: it arrived, or was stopped
+    /// for good (blocked, refused). A pause on a straight walk, the goal
+    /// kept while the body looks again for a way, is not one
+    /// ([`Body::is_pausing`]).
     stopped: bool,
     /// The chunks whose plants it could not walk to, and the day it
     /// tried: left alone until the next day, when it may stand elsewhere.
@@ -504,7 +515,7 @@ impl Mind {
             food: BTreeMap::new(),
             plants: BTreeMap::new(),
             doing: Doing::Nothing,
-            past: (false, false, false, false),
+            past: (false, false, false, false, false),
             due: true,
             stopped: false,
             out_of_reach: BTreeMap::new(),
@@ -1384,6 +1395,16 @@ impl Brains {
                 } => *body,
                 _ => continue,
             };
+            if matches!(event, Event::BodyStopped { .. })
+                && world.body(body).is_some_and(Body::is_pausing)
+            {
+                // A pause on a straight walk, its goal kept: the body
+                // looks again for a way at the next tick and goes on by
+                // itself. Not a stop, and nothing to think about: read as
+                // one, each trunk on a far walk sent it back to its camp
+                // (22 November 2026).
+                continue;
+            }
             if let Some(mind) = self.minds.get_mut(&body) {
                 mind.due = true;
                 if matches!(
@@ -1414,17 +1435,21 @@ impl Brains {
 }
 
 /// Which thresholds the body's gauges are past: (thirsty, parched,
-/// hungry, asleep).
-fn pasts(world: &World, id: BodyId) -> (bool, bool, bool, bool) {
-    world.body(id).map_or((false, false, false, false), |body| {
-        let c = body.condition();
-        (
-            c.thirst.points() >= THIRSTY,
-            c.thirst.points() >= PARCHED,
-            c.hunger.points() >= HUNGRY,
-            c.asleep,
-        )
-    })
+/// hungry, asleep, collapsed). Collapsed: asleep with its fatigue at
+/// [`COLLAPSED`] or more; it thinks again when it has slept under it.
+fn pasts(world: &World, id: BodyId) -> (bool, bool, bool, bool, bool) {
+    world
+        .body(id)
+        .map_or((false, false, false, false, false), |body| {
+            let c = body.condition();
+            (
+                c.thirst.points() >= THIRSTY,
+                c.thirst.points() >= PARCHED,
+                c.hunger.points() >= HUNGRY,
+                c.asleep,
+                c.asleep && c.fatigue.points() >= COLLAPSED,
+            )
+        })
 }
 
 /// Can a body stand on `pos`?
@@ -1837,7 +1862,7 @@ fn decide(
     let map = world.map();
     let camp = mind.ways.home;
     let decision = |intention, why| Some(Decision { intention, why });
-    let (thirsty, parched, hungry, asleep) = pasts(world, id);
+    let (thirsty, parched, hungry, asleep, collapsed) = pasts(world, id);
     // The world refuses a gather to a body whose load is full.
     let can_carry = body.load_g() < body.capacity_g(&rules.movement);
     let night = world.is_night(rules);
@@ -1864,7 +1889,10 @@ fn decide(
     {
         stopped_short(world, food, id, mind, chunk, source);
     }
-    if asleep && !parched {
+    // Asleep, it sleeps on unless parched (D45: a parched body does not
+    // sleep), and even parched while it lies collapsed of fatigue: a walk
+    // would wake it for a tick and lay it down again.
+    if asleep && (!parched || collapsed) {
         mind.doing = Doing::Nothing;
         return None;
     }
@@ -2087,10 +2115,14 @@ fn kj_of_an_hour(kj_per_hour: u64, per_hour_g: u32, left_g: u32) -> Option<u64> 
     Some(kj_per_hour * u64::from(left_g.min(per_hour_g)) / u64::from(per_hour_g.max(1)))
 }
 
-/// What a plant giving `kj_per_hour` is worth `tiles` away: halved at
-/// `half_tiles` (the body's way, [`WORTH_HALF_TILES`] by default).
-fn worth(kj_per_hour: u64, tiles: i64, half_tiles: u64) -> u64 {
-    let tiles = u64::try_from(tiles).unwrap_or(0);
+/// What a plant giving `kj_per_hour` is worth at `far_squared` (the
+/// squared distance [`far`] gives): halved at `half_tiles` tiles (the
+/// body's way, [`WORTH_HALF_TILES`] by default). Until 22 November 2026
+/// the squared distance was taken for tiles, so the worth was halved at
+/// about 6 tiles, not 32, and the way "twice as far" only reached 1.4
+/// times farther (the brain audit's P7).
+fn worth(kj_per_hour: u64, far_squared: i64, half_tiles: u64) -> u64 {
+    let tiles = u64::try_from(far_squared).unwrap_or(0).isqrt();
     let half_tiles = half_tiles.max(1);
     kj_per_hour * half_tiles / (half_tiles + tiles)
 }
@@ -2455,11 +2487,13 @@ fn start_trial(
 /// when the drawn one has nothing, a seeded direction when neither has;
 /// then the nearest walkable tile back along that line. Nothing says
 /// "stay near water": the judge counts the thirsty days, and the tribe
-/// finds it or not. The map's edge is physics, not a rule: a direction
-/// that leaves the map is not drawn, and the new home lies inside the map
-/// less a margin of half the step (the vivarium's world has an edge; the
+/// finds it or not. The map's edge is physics, not a rule: one walks
+/// until the land ends (the lead, 22 November 2026), so a step that would
+/// leave the map shortens to the edge less a margin of half the step,
+/// along each axis it moves on (the vivarium's world has an edge; the
 /// planet will have none, only its ocean). `None` when the home can go
-/// nowhere: no home trial that day.
+/// nowhere: nothing left between the home and the margin that way, or no
+/// walkable tile on the shortened line; no home trial that day.
 fn new_home(
     world: &World,
     rules: &Content,
@@ -2520,22 +2554,29 @@ fn new_home(
         i32::try_from(map.width()).expect("fits") - 1,
         i32::try_from(map.height()).expect("fits") - 1,
     );
-    let far_end = Pos::new(
-        home.x.saturating_add(dx.saturating_mul(tiles)),
-        home.y.saturating_add(dy.saturating_mul(tiles)),
-    );
-    if far_end.x < 0 || far_end.x > w || far_end.y < 0 || far_end.y > h {
-        // No land that way: the direction is not drawn.
+    let margin = tiles / 2;
+    // How far the step may go along one axis before the margin: the whole
+    // step on an axis it does not move on.
+    let reach = |d: i32, at: i32, end: i32| match d {
+        0 => tiles,
+        d if d > 0 => end - margin - at,
+        _ => at - margin,
+    };
+    let step = tiles.min(reach(dx, home.x, w)).min(reach(dy, home.y, h));
+    if step <= 0 {
+        // No land that way: the home already stands at the margin, or past
+        // it, on an axis the step moves on.
         return None;
     }
-    let margin = tiles / 2;
-    let inside =
-        |at: Pos| at.x >= margin && at.x <= w - margin && at.y >= margin && at.y <= h - margin;
+    let inside = |at: Pos| {
+        (dx == 0 || (margin..=w - margin).contains(&at.x))
+            && (dy == 0 || (margin..=h - margin).contains(&at.y))
+    };
     // Back along the line from the far end to the home: the first
     // walkable tile, inside the margin and away from the home.
-    (1..=tiles)
+    (1..=step)
         .rev()
-        .map(|step| Pos::new(home.x + dx * step, home.y + dy * step))
+        .map(|k| Pos::new(home.x + dx * k, home.y + dy * k))
         .find(|&at| walkable(map, rules, at))
         .filter(|&at| at != home && inside(at))
 }
@@ -2679,7 +2720,18 @@ mod tests {
         body.condition.hunger = Gauge::at(hunger);
         let mut brains = Brains::new(7);
         brains.adopt(&world, &rules, id);
+        near_sighted(&mut brains, id);
         (world, rules, id, brains)
+    }
+
+    /// Makes `id` weigh nearness hard (a plant's worth halved at a tile):
+    /// the bramble beside it stays its choice, while the valley holds
+    /// richer plants a short walk away that the default way (halved at 32
+    /// tiles, [`worth_is_halved_at_half_tiles_not_at_their_square`]) would
+    /// send it to. The tests on the bramble are about hunger, stores and
+    /// night, not about the choice of plant.
+    fn near_sighted(brains: &mut Brains, id: BodyId) {
+        brains.minds.get_mut(&id).unwrap().ways.worth_half_tiles = 1;
     }
 
     #[test]
@@ -2754,6 +2806,7 @@ mod tests {
         let id = body_by(&mut world, &bramble);
         let mut brains = Brains::new(7);
         brains.adopt(&world, &rules, id);
+        near_sighted(&mut brains, id);
         let ticks = hour(&world);
         let (events, decided) = run_valley(&mut world, &rules, &mut brains, ticks);
         let asked = |d: &Decision| matches!(&d.intention, Intention::Gather { source, .. } if *source == bramble.source);
@@ -2868,6 +2921,7 @@ mod tests {
             body.condition.hunger = Gauge::at(HUNGRY + 10);
             let mut brains = Brains::new(7);
             brains.adopt(&world, &rules, id);
+            near_sighted(&mut brains, id);
             let ticks = hour(&world);
             let (_, decided) = run_valley(&mut world, &rules, &mut brains, ticks);
             decided
@@ -3066,6 +3120,18 @@ mod tests {
             "the least lately used went first"
         );
         assert!(placed.chunks.contains(&ChunkPos::new(many - 1, 0)));
+    }
+
+    #[test]
+    fn worth_is_halved_at_half_tiles_not_at_their_square() {
+        // 32 tiles off, the worth is halved; 6 tiles off (whose square
+        // is near 32) it is barely dented.
+        assert_eq!(worth(1000, far(Pos::new(0, 0), Pos::new(32, 0)), 32), 500);
+        assert_eq!(worth(1000, far(Pos::new(0, 0), Pos::new(6, 0)), 32), 842);
+        // Twice as far (64 tiles) is worth a third, not a fifth.
+        assert_eq!(worth(1000, far(Pos::new(0, 0), Pos::new(64, 0)), 32), 333);
+        // A way reaching twice as far halves at 64 tiles.
+        assert_eq!(worth(1000, far(Pos::new(0, 0), Pos::new(64, 0)), 64), 500);
     }
 
     #[test]
@@ -3316,9 +3382,10 @@ mod tests {
     #[test]
     fn a_sleeper_wakes_only_when_parched() {
         let mut world = field(64, 40, Pos::new(5, 5));
-        // Asleep and tired: it would sleep on (a rested body wakes with the day).
+        // Asleep and tired, short of collapsed: it would sleep on (a rested
+        // body wakes with the day).
         world.bodies[0].condition.asleep = true;
-        world.bodies[0].condition.fatigue = Gauge::at(90);
+        world.bodies[0].condition.fatigue = Gauge::at(COLLAPSED - 10);
         thirst(&mut world, THIRSTY + 5);
         let mut brains = piloted(&world);
         let (_, decided) = run(&mut world, &mut brains, 10);
@@ -3331,6 +3398,55 @@ mod tests {
             "parched: it gets up and goes to drink"
         );
         assert!(events.iter().any(|e| matches!(e, Event::BodyDrank { .. })));
+    }
+
+    #[test]
+    fn collapsed_of_fatigue_it_stays_down_until_it_has_slept_some_then_drinks() {
+        // A field of 140 tiles, the river down column 130, the body at
+        // the camp (5, 5) parched and a point short of collapsing: it sets
+        // off for the water it knows, collapses on the way (the world lays
+        // it down at full fatigue), and lies there until its fatigue is
+        // under `COLLAPSED`, asked nothing meanwhile; then it rises, walks
+        // on and drinks (22 November 2026: three bodies of the vivarium
+        // died of thirst standing, woken at every tick by their pilot).
+        let mut world = field(140, 130, Pos::new(5, 5));
+        thirst(&mut world, PARCHED + 5);
+        world.bodies[0].condition.fatigue = Gauge::at(99);
+        let mut brains = piloted(&world);
+        let id = world.bodies[0].id();
+        // Awake a point of fatigue: 60 ticks at 120 points a day of 7,200.
+        let (events, decided) = run(&mut world, &mut brains, 70);
+        assert_eq!(decided.len(), 1, "one walk to the water: {decided:?}");
+        assert!(matches!(decided[0].1.intention, Intention::MoveTo { .. }));
+        let body = world.body(id).unwrap();
+        let c = body.condition();
+        assert!(
+            c.asleep && c.fatigue.points() >= COLLAPSED,
+            "laid down at full fatigue, resting since: {:?}",
+            c.summary()
+        );
+        assert!(!body.is_walking(), "collapsed on its way");
+        let collapsed_at = body.pos();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::BodyStopped { .. }))
+        );
+        // A tenth of the gauge takes 240 ticks at 300 points a day asleep.
+        let (_, decided) = run(&mut world, &mut brains, 200);
+        assert!(decided.is_empty(), "it stays down: {decided:?}");
+        let body = world.body(id).unwrap();
+        assert!(body.condition().asleep && body.pos() == collapsed_at);
+        let (events, decided) = run(&mut world, &mut brains, 700);
+        assert!(
+            events.iter().any(|e| matches!(e, Event::BodyDrank { .. })),
+            "risen under {COLLAPSED}, it walked on and drank: {decided:?}"
+        );
+        let drink = decided
+            .iter()
+            .position(|(_, d)| matches!(d.intention, Intention::Drink { .. }))
+            .expect("a drink");
+        assert!(drink <= 2, "a walk or two, then the drink: {decided:?}");
     }
 
     #[test]
@@ -3489,6 +3605,61 @@ mod tests {
             None
         );
         assert_eq!(mind.drinking_places().count(), 0);
+    }
+
+    #[test]
+    fn pausing_before_a_rock_on_its_way_to_the_water_it_does_not_turn_back() {
+        // A field of 140 tiles, the camp at (5, 5), a wall of rock down
+        // column 70 from the map's edge to row 70, one pool at (120, 62);
+        // the body at (20, 62) knows the pool, out of its sight (60
+        // tiles). It walks straight (D32), stops short of the wall, its
+        // goal kept, looks again, goes round the wall's end and drinks:
+        // the stop before the wall is a pause, not a "stopped short far
+        // from the camp" that sends it back there first (22 November
+        // 2026: 241 such returns in 25 days of the vivarium).
+        let mut map = Map::filled(140, 140, Terrain::Grass).with_camp(5, 5);
+        for y in 0..=70 {
+            map.set(Pos::new(70, y), Terrain::Rock);
+        }
+        map.set(Pos::new(120, 62), Terrain::Water);
+        let mut world = World::empty(Calendar::new(1, 7200).unwrap(), map);
+        let id = world.spawn_body(Pos::new(20, 62));
+        thirst(&mut world, 60);
+        let mut brains = piloted(&world);
+        let place = DrinkingPlace {
+            stand: Pos::new(119, 62),
+            water: Pos::new(120, 62),
+        };
+        let mind = brains.minds.get_mut(&id).unwrap();
+        mind.water.clear();
+        mind.water.insert(place.stand.chunk(), place);
+        let (events, decided) = run(&mut world, &mut brains, 3000);
+        // Up to its drink (quenched, it walks home: another matter).
+        let drank = events
+            .iter()
+            .position(|e| matches!(e, Event::BodyDrank { .. }))
+            .expect("it drank");
+        let before = &events[..drank];
+        let stops = before
+            .iter()
+            .filter(|e| matches!(e, Event::BodyStopped { .. }))
+            .count();
+        assert_eq!(stops, 2, "it paused before the wall, then arrived");
+        assert!(
+            !before
+                .iter()
+                .any(|e| matches!(e, Event::BodyBlocked { .. })),
+            "nothing barred it for good"
+        );
+        let camp = Pos::new(5, 5);
+        assert!(
+            !decided.iter().any(|(_, d)| d.why == Why::Thirst
+                && matches!(
+                    d.intention,
+                    Intention::MoveTo { target, .. } if target == camp
+                )),
+            "thirsty, it never went back to the camp first: {decided:?}"
+        );
     }
 
     #[test]
@@ -3861,11 +4032,15 @@ mod tests {
         assert_eq!(mind.home(), home);
         for tiles in [0, 1, 32, 1000] {
             assert_eq!(
-                worth(2850, tiles, WORTH_HALF_TILES),
+                worth(2850, tiles * tiles, WORTH_HALF_TILES),
                 2850 * WORTH_HALF_TILES / (WORTH_HALF_TILES + u64::try_from(tiles).unwrap())
             );
         }
-        assert_eq!(worth(1000, 64, 64), 500, "a way twice as wide halves at 64");
+        assert_eq!(
+            worth(1000, 64 * 64, 64),
+            500,
+            "a way twice as wide halves at 64"
+        );
         // The content's trials absent: nobody tries nor copies.
         assert!(!rules().needs.trials.on());
     }
@@ -4275,9 +4450,14 @@ mod tests {
         // Water known north-west: that way leaves the map, no home.
         let mind = knowing(Pos::new(0, 0));
         assert_eq!(new_home(&world, &rules, &food, id, &mind, 1, 20), None);
-        // Water known east: (25, 5) is on the map but within the margin.
+        // Water known east: (25, 5) is inside the margin along the axis
+        // the step moves on; the home's own row near the edge is where it
+        // stands, not where it walks.
         let mind = knowing(Pos::new(30, 5));
-        assert_eq!(new_home(&world, &rules, &food, id, &mind, 1, 20), None);
+        assert_eq!(
+            new_home(&world, &rules, &food, id, &mind, 1, 20),
+            Some(Pos::new(25, 5))
+        );
         // Water known south-east: the home goes there.
         let mind = knowing(Pos::new(30, 30));
         assert_eq!(
@@ -4286,7 +4466,13 @@ mod tests {
         );
         // A body whose home can go nowhere tries another way that day:
         // over forty days of trials, never its home, and the three others.
+        // Its home at the corner, the water known beyond it: the step
+        // north-west, whole or a quarter of it, has no land before the
+        // margin (a home at (5, 5) with a quarter step of 5 would go three
+        // tiles: the edge is physics, one walks until the margin).
+        let home = Pos::new(1, 1);
         let mut mind = knowing(Pos::new(0, 0));
+        mind.ways.home = home;
         let mut ways_tried = std::collections::BTreeSet::new();
         for day in 0..40 {
             mind.trial = None;
@@ -4299,6 +4485,57 @@ mod tests {
         }
         assert_eq!(ways_tried.len(), 3, "{ways_tried:?}");
         assert_eq!(mind.ways.home, home);
+    }
+
+    #[test]
+    fn at_the_maps_edge_the_home_step_shortens_to_the_margin() {
+        // The vivarium's world is 2,176 tiles a side and the step 2,000: a
+        // home at (1952, 1952) could go nowhere whole, and no adult of
+        // will tried its home in twenty years (2 home trials in tribe A
+        // against 36–52 of every other way). The edge is physics (the
+        // lead, 22 November 2026): the step shortens to the edge less the
+        // margin of half the step.
+        let world = field(2176, -1, Pos::new(5, 5));
+        let rules = trials_at(100, 0);
+        let food = food_now(&world, &rules);
+        let id = BodyId(1);
+        let home = Pos::new(1952, 1952);
+        let knowing = |stand: Pos| {
+            let mut mind = Mind::new(home);
+            mind.water.insert(
+                stand.chunk(),
+                DrinkingPlace {
+                    stand,
+                    water: stand,
+                },
+            );
+            mind
+        };
+        // Water known north: 952 tiles north, at the margin.
+        let mind = knowing(Pos::new(1952, 100));
+        assert_eq!(
+            new_home(&world, &rules, &food, id, &mind, 1, 2000),
+            Some(Pos::new(1952, 1000))
+        );
+        // Water known north-west: the shorter reach, the northern one, on
+        // both axes of the diagonal.
+        let mind = knowing(Pos::new(100, 100));
+        assert_eq!(
+            new_home(&world, &rules, &food, id, &mind, 1, 2000),
+            Some(Pos::new(1000, 1000))
+        );
+        // Water known south: the home stands past the margin that way.
+        let mind = knowing(Pos::new(1952, 2100));
+        assert_eq!(new_home(&world, &rules, &food, id, &mind, 1, 2000), None);
+        // A lake over the whole shortened line north: no walkable tile
+        // inside the margin, no home.
+        let mut map = Map::filled(2176, 2176, Terrain::Grass).with_camp(5, 5);
+        for y in 1000..1952 {
+            map.set(Pos::new(1952, y), Terrain::Water);
+        }
+        let lake = World::empty(Calendar::new(1, 7200).unwrap(), map);
+        let mind = knowing(Pos::new(1952, 100));
+        assert_eq!(new_home(&lake, &rules, &food, id, &mind, 1, 2000), None);
     }
 
     #[test]
