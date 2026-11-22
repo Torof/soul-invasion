@@ -409,6 +409,53 @@ in the review folder; the `#[ignore]`d test
 pair and holds: a trial kept, a way copied, the band not extinct, the
 same trials from the same seed (5 min in release).
 
+**D50 b, the judge counts every distress** (22 November 2026, D50
+amended; after #308's deaths of thirst and cold). The day a mind closes at
+nightfall records every distress (gathered kJ, thin, thirsty, cold the
+night before, hungry, bare); a trial is kept only if nothing worsened and
+one thing improved (gathered a day, thin days, thirsty days, cold days);
+the mate copied is the one with the fewest days of distress, gathered kJ
+breaking ties; a home trial goes towards the plants known bearing or
+towards the nearest water known, half and half (the lead: a tribe's
+decision, not a rule of ours), and never past the map's edge (a margin of
+half the step). Nothing else tuned; same pairs as #308, release, cadence
+1, seed 1 (the four runs at once on 16 cores, so the wall times are not
+#308's). *One band of 25 at camp A, five years*: **with trials 11 alive
+and 18 dead** (62 trials, 30 kept, 49 copied, no home moved; 13 of the
+dead of thirst, 3 of cold, 1 of hunger; #308: 13 alive and 17 dead);
+**without, 19 alive and 12 dead**, the same run to the tick as #308's
+control. Deaths by year with trials 2, 6, 9, 1, 0 (#308: 5, 4, 3, 0, 5);
+without 1, 1, 2, 3, 5. What the band found: sleep out tried 22, kept 9,
+copied 12 (and "sleep at home" copied 14 back); search wider 12 / 8 / 5,
+narrower 8 / 4 / 7; store more 8 / 5 / 6, less 11 / 4 / 5; at five years 7
+of 11 sleep out. *Two tribes of 25, twenty years*: **with trials 38 alive
+and 41 dead** (#308: 5 and 53); **without, 20 alive and 50 dead** (as
+#308). Tribe A with trials: 9 alive (#308: 3; control 2), 23 dead (13 of
+thirst, 4 of cold, 6 of illness), 182 trials, 74 kept, 251 copied, no
+home moved (the quarter step of 500 tiles from (1952, 1952) leaves only
+the north-west inside the margin, and no trial drew it); found: sleep out
+27 / 13 / 34, sleep at home 31 / 10 / 30, wider 34 / 11 / 48, narrower 25
+/ 9 / 59, store more 33 / 21 / 37, less 32 / 10 / 43; at the end 2 of 9
+sleep out, worth and store back at the medians 32 tiles and 30,000 kJ.
+Tribe B with trials: **29 alive** (#308: 2; control 18), 18 dead (12 of
+illness, 3 of thirst, 3 of cold), 22 births, 664 trials, 311 kept, 561
+copied, 17 homes moved (8 kept) and the camp still at (224, 224) at the
+median; found: sleep out 137 / 65 / 57, sleep at home 71 / 27 / 81, wider
+107 / 50 / 71, narrower 105 / 55 / 65, store more 131 / 71 / 132, less 96
+/ 35 / 155; at the end 10 of 29 sleep out. The curve turns within twenty
+years where #308's did not: the deaths of thirst fall from 14 and 13 to
+13 and 3, the camp no longer drifts to the edge, and tribe B grows. The
+band of five years does worse than #308's (its first years are bolder:
+sleep out tried 22 times), measured, not tuned. Wall: band 171 s with
+trials and 228 s without; two tribes 3,442 s with trials (38 alive at the
+end) and 903 s without. The day costs more with trials because the world
+does more, not the judge: over the same 100 days, two tribes, #308's
+binary 169 s (40 alive), this one 238 s (49 alive), its control 150 s
+(53 alive); a probe over 30 days gives `World::step` 26.9 s with trials
+against 15.9 s without, `Brains::think` 20.6 s against 20.3 s. The
+vivarium prints one line a year on stderr (alive, dead so far, seconds)
+so nobody waits blind.
+
 **The laboratory** (22 November 2026, D52). The simulation phase works by
 series of runs, so the series get a tool: `tools/lab/`, a local page on the
 standard library alone that creates a series from a form (the question,
