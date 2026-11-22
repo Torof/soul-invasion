@@ -96,6 +96,11 @@ pub struct Settings {
     /// ([`continents`]): `None` for no cache (`--no-continent-cache`),
     /// the continent born at every run. The patch worlds never use it.
     pub continents: Option<PathBuf>,
+    /// Helper threads placing the chunks' bearers ahead of the bodies
+    /// (`sim::ahead`, D51 amended): 0 is the one simulation thread alone.
+    /// The pages are the same whatever the number; only the wall changes,
+    /// so it is told with the timing, never with the settings.
+    pub helpers: u32,
 }
 
 impl Default for Settings {
@@ -115,9 +120,15 @@ impl Default for Settings {
             fed: false,
             trials: true,
             continents: Some(continents::default_dir()),
+            helpers: 1,
         }
     }
 }
+
+/// Ticks between two hints to the helpers placing bearers ahead
+/// (`sim::ahead::Placer::follow`): at the vivarium's cadence a body walks
+/// some twenty tiles between two, under the two chunks of lead.
+const FOLLOW_EVERY_TICKS: u64 = 16;
 
 /// Why a run could not start.
 #[derive(Debug)]
@@ -687,6 +698,13 @@ pub struct Report {
     pub wall_s: f64,
     /// Seconds the world took to be born.
     pub birth_s: f64,
+    /// Chunks whose bearers the helper threads placed ahead of the bodies
+    /// (`sim::ahead`): 0 without helpers. Timing, never simulation.
+    pub placed_ahead: u64,
+    /// Chunks whose bearers were placed in all, by the helpers and by the
+    /// simulation thread (the same chunk twice when both placed it at
+    /// once). Timing too.
+    pub placed: u64,
 }
 
 /// Runs the vivarium with `settings` and reports.
@@ -780,6 +798,9 @@ pub fn run_watched(
     let mut people: BTreeMap<BodyId, Person> = BTreeMap::new();
     let mut chronicle = Vec::new();
     let mut brains = Brains::new(settings.seed);
+    // The helpers placing bearers ahead (D51 amended), told where the
+    // bodies are every few ticks; `None` with `--helpers 0`.
+    let placer = sim::ahead::Placer::spawn(&world, usize::try_from(settings.helpers).unwrap_or(1));
     // Who is born at each camp: (its id, its tribe, grown or not).
     let mut departure: Vec<(BodyId, u8, bool)> = Vec::new();
     for (tribe, &camp) in camps.iter().enumerate() {
@@ -958,10 +979,19 @@ pub fn run_watched(
     let ticks_per_sample = (calendar.ticks_per_day() / 24).max(1);
     let ticks = u64::from(settings.days) * calendar.ticks_per_day();
     let mut samples = vec![sample(&world, content, &mut people)];
+    // The helpers set off from the camps before the first tick.
+    if let Some(placer) = &placer {
+        placer.follow(&world, content);
+    }
     for _ in 0..ticks {
         events.clear();
         world.step(content, &mut events);
         let tick = world.tick().0;
+        if let Some(placer) = &placer
+            && tick.is_multiple_of(FOLLOW_EVERY_TICKS)
+        {
+            placer.follow(&world, content);
+        }
         let day = world.time().day;
         // The year whose ticks are elapsing, as the calendar counts (from
         // 1): the tick that starts a year still closes the one before.
@@ -970,10 +1000,11 @@ pub fn run_watched(
             // One plain line a year on stderr, so nobody waits blind on a
             // long run.
             eprintln!(
-                "year {year}: {} alive, {} dead so far, {:.0} s",
+                "year {year}: {} alive, {} dead so far, {:.0} s, {} chunks placed ahead",
                 world.bodies().len(),
                 people.values().filter(|p| p.death.is_some()).count(),
-                started.elapsed().as_secs_f64()
+                started.elapsed().as_secs_f64(),
+                placer.as_ref().map_or(0, sim::ahead::Placer::placed)
             );
         }
         for event in &events {
@@ -1404,6 +1435,9 @@ pub fn run_watched(
             .collect();
     }
     let wall_s = started.elapsed().as_secs_f64();
+    let placed_ahead = placer.as_ref().map_or(0, sim::ahead::Placer::placed);
+    drop(placer);
+    let placed_in_all = world.shared_ground().bearers_placed();
     let (map_png, map_scale) = picture(&world, &camps);
     let needs = &content.needs;
     let rates = vec![
@@ -1445,6 +1479,8 @@ pub fn run_watched(
         map_scale,
         wall_s,
         birth_s,
+        placed_ahead,
+        placed: placed_in_all,
     })
 }
 
@@ -1884,7 +1920,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             Calendar::DEFAULT_DAYS_PER_YEAR,
             Calendar::DEFAULT_SECONDS_PER_DAY,
             if s.brain {
-                "the minimal one (sim::brain): it thinks only when something changes for its body, drinks when thirst passes 50 (wakes for it past 80); when hunger passes 50 it eats what it carries, else the food it saw, else gathers from the nearest tree or plant it knows bearing food; by day it gathers until it carries its store (three days of food, 30,000 kJ, by default); goes looking when it knows no place (for food: by day, and only when something is ripe somewhere), goes home at night and sleeps within 6 tiles of the camp (or sleeps out, if that is its way); it remembers the drinking places, the food and the trees and plants bearing food it saw. Its ways (how far a plant is worth going, whether it sleeps out, how much it stores, where home is) are its own, D50"
+                "the minimal one (sim::brain): it thinks only when something changes for its body, drinks when thirst passes 50 (wakes for it past 80); when hunger passes 50 (and until it falls under content/needs.ron's fed_under, D53) it eats what it carries, else the food it saw, else goes to the place it knows bearing food worth most and picks a tree or plant there, chosen once an hour; by day it gathers until it carries its store (three days of food, 30,000 kJ, by default); goes looking when it knows no place (for food: by day, and only when something is ripe somewhere), goes home at night and sleeps within 6 tiles of the camp (or sleeps out, if that is its way); it remembers the drinking places, the food and the places where it saw trees and plants bearing food (corners of place_tiles, not bushes), seen within plant_sight_tiles. Its ways (how far a plant is worth going, whether it sleeps out, how much it stores, where home is) are its own, D50"
             } else {
                 "none (the control run): the people stand where they were born"
             },
@@ -2834,8 +2870,13 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         let minutes = self.wall_s / 60.0;
         let speed = if minutes > 0.0 { years / minutes } else { 0.0 };
         format!(
-            "<p id=\"timing\">The world was born in {:.2} s; the run took {:.2} s on the wall: <b>{speed:.1} game years a minute</b>.</p>",
-            self.birth_s, self.wall_s
+            "<p id=\"timing\">The world was born in {:.2} s; the run took {:.2} s on the wall: <b>{speed:.1} game years a minute</b>. {} chunks' plants placed, {} of them ahead by {} helper thread{}.</p>",
+            self.birth_s,
+            self.wall_s,
+            self.placed,
+            self.placed_ahead,
+            self.settings.helpers,
+            if self.settings.helpers == 1 { "" } else { "s" }
         )
     }
 
@@ -2996,6 +3037,7 @@ mod tests {
             fed: false,
             trials: true,
             continents: None,
+            helpers: 1,
         }
     }
 

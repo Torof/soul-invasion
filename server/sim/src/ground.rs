@@ -83,6 +83,9 @@ struct Held {
     /// held by chunk alone, for no man changes a tree yet. Felling, when
     /// it comes, places a chunk's bearers and its neighbours' again.
     bearers: Lru<ChunkPos, Arc<[Bearer]>>,
+    /// How many times a chunk's bearers were placed into `bearers`, in
+    /// all: what the placing cost, read by the vivarium's timing.
+    bearers_placed: u64,
 }
 
 /// A chunk's trees as placed, with the tiles their trunks block: made
@@ -489,6 +492,7 @@ impl Ground {
                 versions: BTreeMap::new(),
                 rocks: Lru::new(capacity),
                 bearers: Lru::new(capacity),
+                bearers_placed: 0,
             }),
         }
     }
@@ -620,8 +624,39 @@ impl Ground {
             return Arc::clone(bearers);
         }
         let bearers: Arc<[Bearer]> = place().into();
-        self.lock().bearers.insert(chunk, Arc::clone(&bearers));
+        let mut held = self.lock();
+        held.bearers.insert(chunk, Arc::clone(&bearers));
+        held.bearers_placed += 1;
         bearers
+    }
+
+    /// How many times a chunk's bearers were placed, in all, by every
+    /// thread: the chunks placed, plus the few two threads placed at once.
+    #[must_use]
+    pub fn bearers_placed(&self) -> u64 {
+        self.lock().bearers_placed
+    }
+
+    /// Holds the trees, rocks and bearers of up to `chunks` chunks from
+    /// now on, if that is more than it does ([`Lru::widen`]): the helpers
+    /// placing ahead ([`crate::ahead`]) fill the caches with the land
+    /// around the bodies, which on the vivarium's world exceeds the four
+    /// views they were sized for, and a chunk's bearers read the trees of
+    /// the nine chunks around it: forgotten, they would only be placed
+    /// again, by the helper and by the simulation thread alike.
+    pub fn widen(&self, chunks: usize) {
+        let mut held = self.lock();
+        held.trees.widen(chunks);
+        held.links.widen(chunks);
+        held.rocks.widen(chunks);
+        held.bearers.widen(chunks);
+    }
+
+    /// Are `chunk`'s bearers held? Does not count as a use: a helper
+    /// placing ahead asks before it places ([`crate::ahead`]).
+    #[must_use]
+    pub fn holds_bearers(&self, chunk: ChunkPos) -> bool {
+        self.lock().bearers.contains(&chunk)
     }
 
     /// The rock under each tile of `chunk`, row by row

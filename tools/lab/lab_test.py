@@ -283,19 +283,64 @@ class Reading(unittest.TestCase):
 
     def test_the_verdict_in_everyday_french(self):
         v = reading.verdict(self.d)
-        self.assertEqual(v, "Après 2 ans, 3 des 4 du départ sont vivants, et l’enfant né en route n’a pas survécu. "
-                            "Ils ont surtout manqué de nourriture (1 des 2 morts), en hiver. Une technique gardée : chercher plus loin.")
+        self.assertEqual(v, "2 morts de manque : 1 de faim, 1 de froid, en hiver ; aucun mort de fond. "
+                            "Après 2 ans, 3 des 4 du départ sont vivants, et l’enfant né en route n’a pas survécu. Une technique gardée : chercher plus loin.")
         self.assertTrue(reading.verdict(fixture(trials=False)).endswith("Les épreuves étaient coupées (c’est le témoin) : rien à garder."))
         for p in self.d["people"]:
             p["died"] = p["died"] or {"day": 95, "cause": "thirst", "season": "winter", "at": [1, 1]}
-        self.assertTrue(reading.verdict(self.d).startswith("Après 2 ans, plus personne : les 4 du départ sont morts, et l’enfant né en route aussi. "
-                                                          "Ils ont surtout manqué d’eau (3 des 5 morts), en hiver."))
+        self.assertTrue(reading.verdict(self.d).startswith("5 morts de manque : 1 de faim, 3 de soif, 1 de froid, en hiver ; aucun mort de fond. "
+                                                          "Après 2 ans, plus personne : les 4 du départ sont morts, et l’enfant né en route aussi."))
         self.assertIn("Aucune technique", reading.verdict(self.d))
         alone = fixture()
         alone["people"] = alone["people"][:2]
         alone["years"] = alone["years"][:2]
         alone["found"] = alone["found"][:1]
         self.assertIn("Personne n’est mort.", reading.verdict(alone))
+
+    def test_deaths_by_want_stand_apart_from_the_background(self):
+        sm = reading.summary(self.d)
+        self.assertEqual((sm["want"], sm["background"]), (2, 0))
+        self.assertEqual(sm["want_by"], {"hunger": 1, "thirst": 0, "cold": 1})
+        self.assertEqual(sm["background_by"], {"illness": 0, "old_age": 0, "childbirth": 0})
+        # an illness, an old age, a cause the lab does not know: all background
+        self.d["people"][1]["died"] = {"day": 60, "tick": 1440, "cause": "illness", "season": "summer", "at": [10, 10]}
+        self.d["people"][4]["died"] = {"day": 80, "tick": 1920, "cause": "plague", "season": "autumn", "at": [50, 50]}
+        self.d["people"][0]["died"] = {"day": 85, "tick": 2040, "cause": "old_age", "season": "autumn", "at": [50, 50]}
+        sm = reading.summary(self.d)
+        self.assertEqual((sm["want"], sm["background"], sm["dead"]), (2, 3, 5))
+        self.assertEqual(sm["background_by"], {"illness": 1, "old_age": 1, "childbirth": 0, "plague": 1})
+        self.assertTrue(reading.verdict(self.d, sm).startswith(
+            "2 morts de manque : 1 de faim, 1 de froid, en hiver ; 3 morts de fond : maladie 1, vieillesse 1, plague 1. Après 2 ans, plus personne"))
+        # the want deaths spread over seasons: "le plus souvent"
+        self.d["people"][2]["died"]["season"] = "summer"
+        self.d["people"][3]["died"]["season"] = "summer"
+        self.d["people"][4]["died"]["cause"] = "thirst"
+        self.d["people"][4]["died"]["season"] = "winter"
+        self.assertTrue(reading.verdict(self.d).startswith("3 morts de manque : 1 de faim, 1 de soif, 1 de froid, le plus souvent en été ; 2 morts de fond : maladie 1, vieillesse 1."))
+        # only background deaths
+        for p in self.d["people"]:
+            if p["died"] and reading.is_want(p["died"]["cause"]):
+                p["died"]["cause"] = "illness"
+        self.assertTrue(reading.verdict(self.d).startswith("Aucun mort de manque ; 5 morts de fond : maladie 4, vieillesse 1."))
+
+    def test_the_stock_tile_reads_the_food_of_the_last_year(self):
+        st = reading.stock(self.d)
+        self.assertEqual((st["kj"], st["start_kj"], st["by_tribe"], st["year"]), (1000, 0, {"A": 500, "B": 500}, 2))
+        self.assertAlmostEqual(st["days_per_person"], 1000 / 3 / 10000)
+        tiles = reading.tiles_html(reading.summary(self.d))
+        self.assertIn(f'<div class="tile stock"><div class=v>{reading.fmt(1000)}</div><div class=k>nourriture stockée (kJ)</div>', tiles)
+        self.assertIn("≈ 0 jour de vivres par vivant · début de l’an 2 : 0 · A 500, B 500", tiles)
+        other = reading.summary(fixture())
+        other["stock"]["kj"] = 400
+        self.assertIn(f'<div class="tile stock"><div class=v>{reading.fmt(1000)}<span class="arrow good" title="+600', reading.tiles_html(reading.summary(self.d), other))
+        for y in self.d["years"]:
+            del y["food"]
+        sm = reading.summary(self.d)
+        self.assertIsNone(sm["stock"])
+        tiles = reading.tiles_html(sm, other)
+        self.assertIn(f'<div class="tile stock"><div class="v text">{reading.NO_STOCK}</div>', tiles)
+        self.assertIn("aucune clé <code>years[].food</code>", tiles)
+        self.assertNotIn("arrow", tiles.split('class="tile stock"')[1].split("</div></div>")[0])
 
     def test_days_ages_and_places_in_words(self):
         self.assertEqual(reading.day_fr(self.d, 112), "an 3, printemps, jour 112")
@@ -338,13 +383,21 @@ class Reading(unittest.TestCase):
         sm = reading.summary(self.d)
         self.assertEqual((sm["techniques"], sm["alive_start"]), (1, 3))
         tiles = reading.tiles_html(sm)
-        self.assertEqual(tiles.count('<div class="tile'), 4)
+        self.assertEqual(tiles.count('<div class="tile'), 6)
+        self.assertEqual([c for c in ("alive", "want", "background", "births", "stock", "kept") if f'<div class="tile {c}">' in tiles],
+                         ["alive", "want", "background", "births", "stock", "kept"])
+        self.assertNotIn('<div class="tile dead">', tiles)
+        self.assertIn('<div class=v>2</div><div class=k>morts de manque</div><div class=s><span class="cause" style="color:#c0392b">faim</span> 1 · '
+                      '<span class="cause" style="color:#2980b9">soif</span> 0 · <span class="cause" style="color:#7f8c8d">froid</span> 1</div>', tiles)
+        self.assertIn('<div class=v>0</div><div class=k>morts de fond</div><div class=s><span class="cause" style="color:#8e44ad">maladie</span> 0 · ', tiles)
         self.assertNotIn("arrow", tiles)
         other = reading.summary(fixture(trials=False))
         tiles = reading.tiles_html(sm, other)
         self.assertIn('class="arrow good" title="+1 par rapport à l’autre côté">↑ +1', tiles)
-        other["dead"] = 1
-        self.assertIn('class="arrow bad"', reading.tiles_html(sm, other))      # one more dead: worse
+        other["want"] = 1
+        self.assertIn('class="arrow bad"', reading.tiles_html(sm, other))      # one more death by want: worse
+        other["want"], other["background"] = 2, 1
+        self.assertIn('class="arrow good" title="-1 par rapport à l’autre côté">↓ -1', reading.tiles_html(sm, other))
 
     def test_settings_in_french(self):
         s = reading.settings_fr(self.d)
@@ -441,6 +494,23 @@ class Curves(unittest.TestCase):
         self.assertIn("réserve de graisse", reading.reserve_chart(d).svg("r"))
         self.assertEqual(reading.year_marks(d, None, "alive"), ([50], [5], ["an 1, jour 50 : 5"]))
 
+    def test_the_want_chart_stacks_red_under_grey_per_tribe(self):
+        d = fixture()
+        d["years"][0]["deaths"]["illness"] = 2        # tribe A, year 1: two background deaths
+        svg = reading.want_chart(d, wide=True).svg("morts par an")
+        self.assertIn('viewBox="0 0 1000 150"', svg)
+        self.assertIn('class="winter"', svg)
+        self.assertEqual(svg.count(f'fill="{reading.WANT_COLOR}"'), 2)           # A hunger (year 2), B cold (year 2)
+        self.assertEqual(svg.count(f'fill="{reading.BACKGROUND_COLOR}"'), 1)     # A illness (year 1)
+        self.assertIn("<title>tribu A, an 1 : 0 mort de manque, 2 de fond (maladie 2)</title>", svg)
+        self.assertIn("<title>tribu A, an 2 : 1 mort de manque, 0 de fond (faim 1)</title>", svg)
+        self.assertIn("<title>tribu B, an 2 : 1 mort de manque, 0 de fond (froid 1)</title>", svg)
+        self.assertIn(f'stroke="{reading.TRIBE_COLOR["A"]}"', svg)
+        self.assertIn(f'stroke="{reading.TRIBE_COLOR["B"]}"', svg)
+        # the same x scale as the population curve above it
+        self.assertEqual(reading.want_chart(d, wide=True).x(70), reading.population_chart(d, wide=True).x(70))
+        self.assertIn('viewBox="0 0 660 230"', reading.want_chart(d).svg(""))
+
     def test_two_runs_share_one_chart(self):
         a, b = fixture(), fixture(trials=False)
         b["curves"]["alive_by_tribe"][0] = [9] * 20
@@ -492,6 +562,7 @@ class SeriesReading(unittest.TestCase):
         line = reading.key_line(s, self.lab.store)
         self.assertIn("4/4 runs lus", line)
         self.assertIn("avec épreuves : 3,0 vivants", line)
+        self.assertIn("morts de manque : 8 (faim 4, froid 4) · morts de fond : 0 · 4 naissances", line)
         self.assertIn("4 naissances", line)
         autre = next(x for x in self.series if x["name"] == "autre")
         self.assertIn("aucune donnée lue", reading.key_line(autre, self.lab.store))
@@ -504,14 +575,31 @@ class SeriesReading(unittest.TestCase):
         serie = reading.serie_body(s["etalon-test-1"], self.series, self.lab.store)
         self.assertIn("Comparer avec la version…", serie)
         self.assertIn("def5678", serie)
-        self.assertIn('<p class=verdict>Avec les épreuves, 3 vivants à la fin en moyenne sur 2 runs ; sans, 3 sur 2 runs. Les épreuves ne changent rien.</p>', serie)
+        self.assertIn('<p class=verdict>Avec les épreuves, 3 vivants à la fin et 2 morts de manque en moyenne sur 2 runs ; '
+                      'sans, 3 vivants et 2 morts de manque sur 2 runs. Les épreuves ne changent rien.</p>', serie)
+        self.assertIn("<th class=n>vivants</th><th class=n>morts de manque</th><th class=n>morts de fond</th><th class=n>naissances</th>", serie)
+        self.assertIn("<h2>Morts de manque et de fond</h2><ul><li>avec épreuves : <b>2,0</b> morts de manque en moyenne sur 2 runs (de 2 à 2), et 0,0 morts de fond (de 0 à 0)</li>", serie)
+        agg = {True: {"n": 2, "mean": 4.0, "want": {"mean": 1.0}}, False: {"n": 2, "mean": 2.0, "want": {"mean": 3.0}}}
+        self.assertEqual(reading.series_verdict(agg, 4, 4), "Avec les épreuves, 4 vivants à la fin et 1 mort de manque en moyenne sur 2 runs ; "
+                                                             "sans, 2 vivants et 3 morts de manque sur 2 runs. Les épreuves gardent 2 vivants de plus et épargnent 2 morts de manque.")
+        agg[False]["want"]["mean"] = 0.5
+        self.assertTrue(reading.series_verdict(agg, 4, 4).endswith("Les épreuves gardent 2 vivants de plus et ajoutent 0,5 mort de manque."))
+        agg[True]["mean"] = 0.5
+        self.assertTrue(reading.series_verdict(agg, 4, 4).endswith("Les épreuves coûtent 1,5 vivant et ajoutent 0,5 mort de manque."))
+        agg[True]["mean"] = 2.0
+        agg[True]["want"]["mean"] = 0.5
+        self.assertTrue(reading.series_verdict(agg, 4, 4).endswith("Les épreuves ne changent rien."))
         self.assertIn("Population de tous les runs", serie)
         self.assertIn("écart-type", serie)
         run = reading.run_body(s["etalon-test-1"], s["etalon-test-1"]["runs"][0], self.lab.store.load("etalon-test-1", "t-s1-avec"))
-        for part in ("<p class=verdict>Après 2 ans, 3 des 4", '<div class="tile alive">', "<h2>La carte</h2>", 'class="winter"',
+        for part in ("<p class=verdict>2 morts de manque : 1 de faim, 1 de froid, en hiver ; aucun mort de fond. Après 2 ans, 3 des 4", '<div class="tile alive">', "<h2>La carte</h2>", 'class="winter"',
                      "<h2>La population</h2>", "<h2>Ce qu’ils ont trouvé</h2>", "<h2>Les morts</h2>", "<h2>Les naissances</h2>",
-                     "<h2>Les gens à la fin</h2>", "<summary>Le détail</summary>", "Année par année", "La vie de chacun (5)"):
+                     "<h2>Les gens à la fin</h2>", "<summary>Le détail</summary>", "Année par année", "La vie de chacun (5)",
+                     '<div class="tile want">', '<div class="tile background">', '<div class="tile stock">',
+                     'aria-label="morts de manque et de fond par an"', "A à gauche de l’année, B à droite"):
             self.assertIn(part, run)
+        self.assertLess(run.index('aria-label="population par tribu"'), run.index('aria-label="morts de manque et de fond par an"'))
+        self.assertLess(run.index('aria-label="morts de manque et de fond par an"'), run.index("<h2>Ce qu’ils ont trouvé</h2>"))
         order = [run.index(x) for x in ("<p class=verdict>", "<div class=tiles>", "<h2>La carte</h2>", "<h2>La population</h2>",
                                         "<h2>Ce qu’ils ont trouvé</h2>", "<h2>Les morts</h2>", "<h2>Les naissances</h2>",
                                         "<h2>Les gens à la fin</h2>", "<details class=detail>")]
@@ -545,7 +633,13 @@ class SeriesReading(unittest.TestCase):
         self.assertEqual(left, [])
         body = reading.compare_series_body(s["etalon-test-1"], s["etalon-test-2"], self.lab.store)
         self.assertIn("Comparer deux versions", body)
-        self.assertIn("<p class=verdict>La version B contre la version A : avec épreuves, pareil ; sans épreuves, pareil.</p>", body)
+        self.assertIn("<p class=verdict>La version B contre la version A : avec épreuves, pareil et autant de morts de manque ; "
+                      "sans épreuves, pareil et autant de morts de manque.</p>", body)
+        self.assertIn("<th>vivants A → B</th><th>morts de manque</th><th>morts de fond</th><th>naissances</th>", body)
+        self.assertIn("<h2>Morts de manque et de fond</h2>", body)
+        agg_a = {True: {"mean": 3.0, "want": {"mean": 2.0}}}
+        agg_b = {True: {"mean": 5.0, "want": {"mean": 0.5}}, False: {"mean": 1.0, "want": {"mean": 1.0}}}
+        self.assertEqual(reading.compare_verdict(agg_a, agg_b), "La version B contre la version A : avec épreuves, 2 vivants de plus et 1,5 mort de manque de moins.")
         self.assertIn("graine par graine", body)
         self.assertEqual(body.count("face à face"), 4)
         self.assertIn("3 → - ", body)                        # t-s2-sans has no data in the second series

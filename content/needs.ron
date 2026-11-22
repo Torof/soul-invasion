@@ -158,4 +158,46 @@
         imitate_percent: 20,
         imitate_loss_percent: 25,
     ),
+    // The rules of thought that keep a mind light (D53, decided by the
+    // project lead on 22 November 2026): perceptions and gestures, never
+    // an outcome rule. Placeholders (D30), tuned by reading the vivarium's
+    // page, never to a result.
+    // plant_sight_tiles: 30 — a body tells a tree or plant bearing food
+    //                    from the land 30 tiles away on each axis, not at
+    //                    the horizon (its sight for water and for others
+    //                    stays the terrain's, movement.ron, 60 on grass):
+    //                    one does not see the berries of a bush at the
+    //                    horizon. Bodies rake their land tighter and
+    //                    discover it more slowly, mostly in the first days.
+    // fed_under:         30 — hungry from 50 points, a body counts as fed
+    //                    again only under 30: it finishes its meal instead
+    //                    of leaving at the first mouthful, and thinks of
+    //                    hunger when it crosses the threshold, not every
+    //                    quarter of an hour while it hovers there (90 to
+    //                    115 thoughts a body-day in the brain audit of 22
+    //                    November 2026).
+    // plant_choice_hours: 1 — the tree or plant to gather from is chosen
+    //                    once a game hour, not at every thought: a body
+    //                    sticks to its choice unless the plant is spent or
+    //                    out of reach, or a need calls (one looks at the
+    //                    pantry once in a while). It may keep a target a
+    //                    few minutes while a neighbour plant just overtook
+    //                    it by a gram.
+    // place_tiles:       16 — a body remembers the places where it saw
+    //                    trees and plants bearing food, squares of 16
+    //                    tiles on a side (a quarter of a chunk), with what
+    //                    and how many, not every bush; arrived at one, it
+    //                    looks again and picks the plant. Nobody remembers
+    //                    every bush. It walks to a corner and hesitates a
+    //                    little there.
+    // places_remembered: 48 — how many such places it keeps in mind, those
+    //                    worth most from where it last looked (a few
+    //                    dozen corners, where it remembered 256 bushes).
+    thought: (
+        plant_sight_tiles: 30,
+        fed_under: 30,
+        plant_choice_hours: 1,
+        place_tiles: 16,
+        places_remembered: 48,
+    ),
 )

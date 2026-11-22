@@ -39,6 +39,13 @@ SIDE_COLOR = {"a": "#1f6f8b", "b": "#c2571a"}       # the two sides of a compari
 TRIALS_COLOR = {True: "#c2571a", False: "#1f6f8b"}  # orange with trials, blue without
 BIRTH_COLOR = "#3a8f4a"
 ALIVE_COLOR, DEAD_COLOR, KEPT_COLOR = "#2b7a3d", "#b3261e", "#c2571a"
+# Deaths by want are the brain's figure (22 November 2026); the rest is the background curve (D49):
+# illness, old age, childbirth, and any cause the lab does not know yet.
+WANT_CAUSES = ("hunger", "thirst", "cold")
+BACKGROUND_CAUSES = ("illness", "old_age", "childbirth")
+WANT_COLOR, BACKGROUND_COLOR = "#b3261e", "#8a8f98"
+NO_STOCK = "pas dans les données"
+KJ_PER_PERSON_DAY = 10000      # what a person eats in a day (docs/10)
 NO_DATA = "pas de données, relancer avec le vivarium récent"
 NO_POSITIONS = "pas de positions dans ce run"
 SEASON_ALL = ["spring", "summer", "autumn", "winter"]   # the year cut in four, spring first (time.rs)
@@ -282,10 +289,16 @@ def summary(d):
             deaths[died.get("cause", "?")] = deaths.get(died.get("cause", "?"), 0) + 1
     found = d.get("found", [])
     totals = {t: sum(sum((f.get(t) or {}).values()) for f in found) for t in ("tried", "kept", "copied")}
+    cs = causes(d)
     return {
         "alive": sum(1 for p in people if not p.get("died")),
         "dead": sum(deaths.values()),
-        "deaths": {c: deaths.get(c, 0) for c in causes(d)},
+        "deaths": {c: deaths.get(c, 0) for c in cs},
+        "want": sum(n for c, n in deaths.items() if c in WANT_CAUSES),
+        "background": sum(n for c, n in deaths.items() if c not in WANT_CAUSES),
+        "want_by": {c: deaths.get(c, 0) for c in WANT_CAUSES},
+        "background_by": {c: deaths.get(c, 0) for c in BACKGROUND_CAUSES + tuple(c for c in cs if c not in WANT_CAUSES + BACKGROUND_CAUSES)},
+        "stock": stock(d),
         "births": sum(1 for p in people if p.get("born") != "start"),
         "start": sum(1 for p in people if p.get("born") == "start"),
         "trials": totals["tried"], "kept": totals["kept"], "copied": totals["copied"],
@@ -295,6 +308,24 @@ def summary(d):
         "years": last_year(d),
         "days": (d.get("meta") or {}).get("settings", {}).get("days"),
     }
+
+
+def is_want(cause):
+    return cause in WANT_CAUSES
+
+
+def stock(d):
+    """The tribe's stored food: what the living carried at the end of the run's last year
+    (`years[].food.end_kj`, summed over the tribes), with the year's start, the share of each tribe
+    and the days of food it makes per living person. None when no year carries `food`."""
+    ys = [y for y in years_of(d) if y.get("year") == last_year(d) and y.get("food")]
+    if not ys:
+        return None
+    end = sum(y["food"].get("end_kj") or 0 for y in ys)
+    alive = sum(y.get("population") or 0 for y in ys)
+    return {"kj": end, "start_kj": sum(y["food"].get("start_kj") or 0 for y in ys),
+            "by_tribe": {y["tribe"]: y["food"].get("end_kj") or 0 for y in ys},
+            "days_per_person": end / alive / KJ_PER_PERSON_DAY if alive else None, "year": last_year(d)}
 
 
 def last_kept(p):
@@ -577,6 +608,38 @@ def births_deaths_chart(d, label=None, chart=None, slot=(0, 1), tag=""):
                 chart.bar(x0 + w * 0.52, x0 + w * 0.92, base, base + v, CAUSE_COLOR.get(c, "#333"),
                           f"{pre}an {yr} : {v} mort{'s' if v > 1 else ''} de {cause_fr(c)}", stroke="#fff")
                 base += v
+    return chart
+
+
+def want_chart(d, wide=False):
+    """Per year and per tribe, a small bar stacked in two: the deaths by want (red) under the
+    background deaths (grey); the bar's outline is the tribe's colour. `wide`: the run page's form,
+    the same width and x scale as the population curve above it."""
+    yd = year_days(d)
+    ts = tribes(d)
+    per = {}
+    for y in years_of(d):
+        dd = y.get("deaths") or {}
+        want = sum(n for c, n in dd.items() if is_want(c))
+        per[(y.get("year", 0), y.get("tribe"))] = (want, sum(dd.values()) - want, dd)
+    n_years = max((yr for yr, _ in per), default=1)
+    days = (d.get("curves") or {}).get("days") or []
+    top = max([w + b for w, b, _ in per.values()] + [1])
+    chart = Chart(0, max(days[-1] if days else 1, yd), top, "années", "morts dans l’année", yd,
+                  size=(1000, 150) if wide else None, winters=wide)     # the population curve's x scale
+    n = max(1, len(ts))
+    for (yr, t), (want, background, dd) in sorted(per.items(), key=lambda kv: (kv[0][0], str(kv[0][1]))):
+        i = ts.index(t) if t in ts else 0
+        x0 = (yr - 1) * yd + i * yd / n
+        w = yd / n
+        words = ", ".join(f"{cause_fr(c)} {fmt(v)}" for c, v in dd.items() if v)
+        title = f"tribu {t}, an {yr} : {plural(want, 'mort')} de manque, {fmt(background)} de fond" + (f" ({words})" if words else "")
+        stroke = tribe_color(t, i)
+        x1 = min(x0 + w * 0.88, chart.xhi)       # a last year cut short by the run's end
+        if want:
+            chart.bar(x0 + w * 0.12, x1, 0, want, WANT_COLOR, title, stroke=stroke)
+        if background:
+            chart.bar(x0 + w * 0.12, x1, want, want + background, BACKGROUND_COLOR, title, stroke=stroke)
     return chart
 
 
@@ -1016,8 +1079,7 @@ def verdict(d, sm=None):
     """The run in three everyday sentences: who is alive, what killed, what was kept."""
     sm = sm or summary(d)
     settings = (d.get("meta") or {}).get("settings") or {}
-    people = d.get("people", [])
-    alive, start, births, dead = sm["alive"], sm["start"], sm["births"], sm["dead"]
+    alive, start, births = sm["alive"], sm["start"], sm["births"]
     when = f"Après {plural(sm['years'], 'an')}" if sm["years"] else f"Après {plural(run_days(d), 'jour')}"
     alive_start = sm["alive_start"]
     alive_born = alive - alive_start
@@ -1037,26 +1099,7 @@ def verdict(d, sm=None):
         elif births:
             first += f", {'et' if alive_start else 'mais'} {fmt(alive_born)} des {plural(births, 'enfant')} nés en route"
         first += "."
-    if not dead:
-        second = "Personne n’est mort."
-    else:
-        c, n = max(sm["deaths"].items(), key=lambda x: x[1])
-        seasons = {}
-        for p in people:
-            died = p.get("died")
-            if died and died.get("cause") == c and died.get("season"):
-                seasons[died["season"]] = seasons.get(died["season"], 0) + 1
-        season = max(seasons, key=seasons.get) if seasons else None
-        plural_v, single_v = CAUSE_VERDICT.get(c, (f"sont morts de {cause_fr(c)}", f"est mort de {cause_fr(c)}"))
-        subject = "Les femmes" if c == "childbirth" else "Ils"
-        when_s = (f", {SEASON_IN.get(season, season)}" if dead == 1 or seasons.get(season, 0) == n else f", le plus souvent {SEASON_IN.get(season, season)}") if season else ""
-        if dead == 1:
-            second = f"Le seul mort {single_v}{when_s}."
-        elif n == dead:
-            second = f"Tous les morts {plural_v}{when_s}."
-        else:
-            aux, rest = plural_v.split(" ", 1)
-            second = f"{subject} {aux} surtout {rest} ({fmt(n)} des {plural(dead, 'mort')}){when_s}."
+    deaths = deaths_sentence(d, sm)
     if not settings.get("trials", True):
         third = "Les épreuves étaient coupées (c’est le témoin) : rien à garder."
     else:
@@ -1070,26 +1113,72 @@ def verdict(d, sm=None):
             names = [kind_fr(k) for k, _ in held]
             count = {2: "Deux", 3: "Trois", 4: "Quatre", 5: "Cinq"}.get(len(held), fmt(len(held)))
             third = f"{count} techniques gardées : {', '.join(names[:-1])} et {names[-1]}."
-    return f"{first} {second} {third}"
+    return f"{deaths} {first} {third}"
+
+
+def deaths_sentence(d, sm):
+    """The deaths by want first, each cause counted, then the background deaths:
+    "3 morts de manque : 1 de faim, 2 de froid, le plus souvent en hiver ; 24 morts de fond : maladie 22, vieillesse 2."
+    """
+    want, background = sm["want"], sm["background"]
+    if not want and not background:
+        return "Personne n’est mort."
+    if want:
+        seasons = {}
+        for p in d.get("people", []):
+            died = p.get("died")
+            if died and is_want(died.get("cause")) and died.get("season"):
+                seasons[died["season"]] = seasons.get(died["season"], 0) + 1
+        season = max(seasons, key=seasons.get) if seasons else None
+        when = "" if not season else (f", {SEASON_IN.get(season, season)}" if seasons[season] == want
+                                       else f", le plus souvent {SEASON_IN.get(season, season)}")
+        first = f"{plural(want, 'mort')} de manque : " + ", ".join(f"{fmt(n)} de {cause_fr(c)}" for c, n in sm["want_by"].items() if n) + when
+    else:
+        first = "Aucun mort de manque"
+    if background:
+        second = f"{plural(background, 'mort')} de fond : " + ", ".join(f"{cause_fr(c)} {fmt(n)}" for c, n in sm["background_by"].items() if n)
+    else:
+        second = "aucun mort de fond"
+    return f"{first} ; {second}."
+
+
+def stock_sub(st):
+    """The small line under the stock tile: days of food per living person, the year's start, each tribe."""
+    if st is None:
+        return "aucune clé <code>years[].food</code> dans ce run"
+    parts = []
+    if st["days_per_person"] is not None:
+        parts.append(f"≈ {plural(round(st['days_per_person']), 'jour')} de vivres par vivant")
+    parts.append(f"début de l’an {fmt(st['year'])} : {fmt(st['start_kj'])}")
+    if len(st["by_tribe"]) > 1:
+        parts.append(", ".join(f"{h(t)} {fmt(kj)}" for t, kj in st["by_tribe"].items()))
+    return " · ".join(parts)
 
 
 def tiles_html(sm, other=None, label=None):
-    """Four big tiles: alive, dead, births, techniques kept; with `other`, a coloured arrow up or down."""
-    def tile(cls, title, value, ref, sub, good_up=True):
+    """Six big tiles: alive, deaths by want, background deaths, births, stored food, techniques kept;
+    with `other`, a coloured arrow up or down."""
+    def tile(cls, title, value, ref, sub, good_up=True, text=None):
         arrow = ""
         if other is not None and ref is not None and value is not None and value != ref:
             dv = value - ref
             good = (dv > 0) == good_up
             arrow = (f'<span class="arrow {"good" if good else "bad"}" title="{"+" if dv > 0 else ""}{fmt(dv)} par rapport à l’autre côté">'
                      f'{"↑" if dv > 0 else "↓"} {"+" if dv > 0 else ""}{fmt(dv)}</span>')
-        return f'<div class="tile {cls}"><div class=v>{fmt(value)}{arrow}</div><div class=k>{h(title)}</div><div class=s>{sub}</div></div>'
+        shown = f'<div class="v text">{h(text)}</div>' if text else f"<div class=v>{fmt(value)}{arrow}</div>"
+        return f'<div class="tile {cls}">{shown}<div class=k>{h(title)}</div><div class=s>{sub}</div></div>'
     o = other or {}
-    top = sorted(((c, n) for c, n in sm["deaths"].items() if n), key=lambda x: -x[1])[:3]
-    deaths_sub = ", ".join(f"{cause_html(c)} {n}" for c, n in top) or "aucun"
+    st = sm.get("stock")
+    ost = o.get("stock")
     tiles = [tile("alive", "vivants à la fin", sm["alive"], o.get("alive"), f"{fmt(sm['start'])} au départ, {plural(sm['years'], 'an')}"),
-             tile("dead", "morts", sm["dead"], o.get("dead"), deaths_sub, good_up=False),
+             tile("want", "morts de manque", sm["want"], o.get("want"),
+                  " · ".join(f"{cause_html(c)} {fmt(n)}" for c, n in sm["want_by"].items()), good_up=False),
+             tile("background", "morts de fond", sm["background"], o.get("background"),
+                  " · ".join(f"{cause_html(c)} {fmt(n)}" for c, n in sm["background_by"].items()), good_up=False),
              tile("births", "naissances", sm["births"], o.get("births"),
                   f"{fmt(sm['alive'] - sm['alive_start'])} encore vivant{'s' if sm['alive'] - sm['alive_start'] > 1 else ''}" if sm["births"] else "aucune"),
+             tile("stock", "nourriture stockée (kJ)", st["kj"] if st else None, ost["kj"] if ost else None, stock_sub(st),
+                  text=None if st else NO_STOCK),
              tile("kept", "techniques gardées", sm["techniques"], o.get("techniques"),
                   f"{plural(sm['kept'], 'essai')} gardé{'s' if sm['kept'] > 1 else ''} sur {fmt(sm['trials'])}, {plural(sm['copied'], 'copie')}")]
     return f'<div class=tiles>{"<div class=tilelabel>" + h(label) + "</div>" if label else ""}{"".join(tiles)}</div>'
@@ -1146,6 +1235,9 @@ def run_body(s, r, d):
     body.append("<h2>La carte</h2><p class=caption>Où ils étaient, jour après jour : faites glisser le curseur ou appuyez sur Lire.</p>" + map_svg(d, "m1"))
     body.append("<h2>La population</h2><p class=caption>Les vivants jour par jour, par tribu ; les hivers en bleu pâle, les années en bas.</p>"
                 + population_chart(d, wide=True).svg("population par tribu"))
+    body.append("<p class=caption>Dessous, les morts de chaque année par tribu : en rouge ceux de manque (faim, soif, froid), en gris ceux "
+                "de fond (maladie, vieillesse, couches) ; le contour dit la tribu, A à gauche de l’année"
+                + (", B à droite" if len(ts) > 1 else "") + ".</p>" + want_chart(d, wide=True).svg("morts de manque et de fond par an"))
     body.append("<h2>Ce qu’ils ont trouvé</h2><p class=caption>Les techniques essayées, gardées et copiées, tribu par tribu.</p>" + techniques_html(d))
     body.append(deaths_table(d))
     body.append(births_table(d))
@@ -1175,11 +1267,20 @@ def aggregates(values):
             "sd": statistics.stdev(values) if len(values) > 1 else 0.0}
 
 
-def aggregates_html(agg, label):
+def aggregates_html(agg, label, what="vivants"):
     if not agg:
         return f"<li>{h(label)} : aucun run lu</li>"
-    return (f"<li>{h(label)} : <b>{fmt(agg['mean'])}</b> vivants en moyenne sur {agg['n']} run{'s' if agg['n'] > 1 else ''} "
+    return (f"<li>{h(label)} : <b>{fmt(agg['mean'])}</b> {h(what)} en moyenne sur {agg['n']} run{'s' if agg['n'] > 1 else ''} "
             f"(de {fmt(agg['min'])} à {fmt(agg['max'])}, écart-type {fmt(agg['sd'])})</li>")
+
+
+def want_aggregates_html(agg, label):
+    """The two figures of a series' summary: deaths by want and background deaths, with/without."""
+    if not agg:
+        return f"<li>{h(label)} : aucun run lu</li>"
+    w, b = agg["want"], agg["background"]
+    return (f"<li>{h(label)} : <b>{fmt(w['mean'])}</b> morts de manque en moyenne sur {w['n']} run{'s' if w['n'] > 1 else ''} "
+            f"(de {fmt(w['min'])} à {fmt(w['max'])}), et {fmt(b['mean'])} morts de fond (de {fmt(b['min'])} à {fmt(b['max'])})</li>")
 
 
 def series_numbers(s, store):
@@ -1191,8 +1292,11 @@ def series_numbers(s, store):
         rows.append((r, d, sm))
     agg = {}
     for trials in (True, False):
-        vals = [sm["alive"] for r, _d, sm in rows if sm and r.get("trials", True) == trials]
-        agg[trials] = aggregates(vals)
+        sms = [sm for r, _d, sm in rows if sm and r.get("trials", True) == trials]
+        agg[trials] = aggregates([sm["alive"] for sm in sms])
+        if agg[trials]:
+            agg[trials]["want"] = aggregates([sm["want"] for sm in sms])
+            agg[trials]["background"] = aggregates([sm["background"] for sm in sms])
     return rows, agg
 
 
@@ -1207,15 +1311,17 @@ def key_line(s, store):
         a = agg[trials]
         if a:
             parts.append(f"{label} : {fmt(a['mean'])} vivants" + (f" (de {fmt(a['min'])} à {fmt(a['max'])})" if a["n"] > 1 else ""))
-    deaths = {}
-    births = 0
+    want, background, births = {}, {}, 0
     for _r, _d, sm in rows:
         if sm:
             births += sm["births"]
-            for c, n in sm["deaths"].items():
-                deaths[c] = deaths.get(c, 0) + n
-    if deaths:
-        parts.append("morts : " + ", ".join(f"{cause_fr(c)} {n}" for c, n in sorted(deaths.items(), key=lambda x: -x[1]) if n))
+            for c, n in sm["want_by"].items():
+                want[c] = want.get(c, 0) + n
+            for c, n in sm["background_by"].items():
+                background[c] = background.get(c, 0) + n
+    for name, by in (("morts de manque", want), ("morts de fond", background)):
+        detail = ", ".join(f"{cause_fr(c)} {n}" for c, n in sorted(by.items(), key=lambda x: -x[1]) if n)
+        parts.append(f"{name} : {sum(by.values())}" + (f" ({detail})" if detail else ""))
     parts.append(f"{births} naissance{'s' if births > 1 else ''}")
     return " · ".join(parts)
 
@@ -1226,14 +1332,21 @@ def series_verdict(agg, read, total):
         return f"Aucun run lu encore sur {total}."
     a, b = agg.get(True), agg.get(False)
     if a and b:
-        gap = a["mean"] - b["mean"]
-        says = "Les épreuves ne changent rien." if abs(gap) < 0.5 else f"Les épreuves gardent {more_or_less(gap)}."
-        return (f"Avec les épreuves, {mean_fr(a['mean'])} vivants à la fin en moyenne sur {plural(a['n'], 'run')} ; "
-                f"sans, {mean_fr(b['mean'])} sur {plural(b['n'], 'run')}. {says}")
+        gap, want_gap = a["mean"] - b["mean"], a["want"]["mean"] - b["want"]["mean"]
+        effects = ([f"gardent {more_or_less(gap)}" if gap > 0 else f"coûtent {mean_fr(-gap)} vivant{'s' if -gap >= 2 else ''}"] if abs(gap) >= 0.5 else []) + \
+            ([f"{'épargnent' if want_gap < 0 else 'ajoutent'} {want_fr(abs(want_gap))}"] if abs(want_gap) >= 0.5 else [])
+        says = "Les épreuves ne changent rien." if not effects else f"Les épreuves {' et '.join(effects)}."
+        return (f"Avec les épreuves, {mean_fr(a['mean'])} vivants à la fin et {want_fr(a['want']['mean'])} en moyenne sur {plural(a['n'], 'run')} ; "
+                f"sans, {mean_fr(b['mean'])} vivants et {want_fr(b['want']['mean'])} sur {plural(b['n'], 'run')}. {says}")
     one = a or b
     label = "avec les épreuves" if a else "sans les épreuves"
-    return f"{mean_fr(one['mean'])} vivants à la fin en moyenne sur {plural(one['n'], 'run')} {label}" + \
-        (f" (de {fmt(one['min'])} à {fmt(one['max'])})." if one["n"] > 1 else ".")
+    return f"{mean_fr(one['mean'])} vivants à la fin et {want_fr(one['want']['mean'])} en moyenne sur {plural(one['n'], 'run')} {label}" + \
+        (f" (de {fmt(one['min'])} à {fmt(one['max'])} vivants)." if one["n"] > 1 else ".")
+
+
+def want_fr(x):
+    """`2 morts de manque`, `1,5 mort de manque`, `0 mort de manque` for a mean."""
+    return f"{mean_fr(x)} mort{'s' if round(x, 1) >= 2 else ''} de manque"
 
 
 def mean_fr(x):
@@ -1255,7 +1368,9 @@ def compare_verdict(agg_a, agg_b):
     for trials, label in ((True, "avec épreuves"), (False, "sans épreuves")):
         a, b = agg_a.get(trials), agg_b.get(trials)
         if a and b:
-            parts.append(f"{label}, {more_or_less(b['mean'] - a['mean'])}")
+            want_gap = b["want"]["mean"] - a["want"]["mean"]
+            want = "autant de morts de manque" if abs(want_gap) < 0.5 else f"{want_fr(abs(want_gap))} de {'plus' if want_gap > 0 else 'moins'}"
+            parts.append(f"{label}, {more_or_less(b['mean'] - a['mean'])} et {want}")
     if not parts:
         return "Rien à comparer encore : aucune paire de runs lue des deux côtés."
     return "La version B contre la version A : " + " ; ".join(parts) + "."
@@ -1301,16 +1416,17 @@ def serie_body(s, all_series, store):
     for r, d, sm in rows:
         link = f'<a href="{run_url(s["name"], r["name"])}">{h(r["name"])}</a>'
         if sm:
-            cells = (f"<td class=n>{fmt(sm['alive'])}</td><td class=n>{fmt(sm['dead'])}</td><td class=n>{fmt(sm['births'])}</td>"
-                     f"<td class=n>{fmt(sm['kept'])} / {fmt(sm['trials'])}</td>")
+            cells = (f"<td class=n>{fmt(sm['alive'])}</td><td class=n>{fmt(sm['want'])}</td><td class=n>{fmt(sm['background'])}</td>"
+                     f"<td class=n>{fmt(sm['births'])}</td><td class=n>{fmt(sm['kept'])} / {fmt(sm['trials'])}</td>")
         else:
-            cells = f'<td colspan=4 class=muted>{NO_DATA if r["state"] not in ("en cours", "attend") else "en cours, année " + fmt(r.get("year"))}</td>'
+            cells = f'<td colspan=5 class=muted>{NO_DATA if r["state"] not in ("en cours", "attend") else "en cours, année " + fmt(r.get("year"))}</td>'
         trs.append(f"<tr><td>{link}</td><td class=n>{r.get('seed', '')}</td><td>{trials_tag(r)}</td><td><span class=etat>{h(r['state'])}</span></td>"
                    f"{cells}<td class=n>{secs(r.get('elapsed'))}</td><td>"
                    + (f'<a href="{r["page"]}">page</a> ' if r.get("page") else "") + (f'<a href="{r["log"]}">log</a>' if r.get("log") else "") + "</td></tr>")
-    body.append('<h2>Les runs</h2><table class=clean><thead><tr><th>run</th><th>graine</th><th>épreuves</th><th>état</th><th class=n>vivants</th><th class=n>morts</th>'
+    body.append('<h2>Les runs</h2><table class=clean><thead><tr><th>run</th><th>graine</th><th>épreuves</th><th>état</th><th class=n>vivants</th><th class=n>morts de manque</th><th class=n>morts de fond</th>'
                 f'<th class=n>naissances</th><th class=n>gardés / essais</th><th class=n>temps</th><th></th></tr></thead><tbody>{"".join(trs)}</tbody></table>')
     body.append("<h2>Vivants à la fin</h2><ul>" + aggregates_html(agg[True], "avec épreuves") + aggregates_html(agg[False], "sans épreuves") + "</ul>")
+    body.append("<h2>Morts de manque et de fond</h2><ul>" + want_aggregates_html(agg[True], "avec épreuves") + want_aggregates_html(agg[False], "sans épreuves") + "</ul>")
     # overlaid population curves
     chart = None
     for r, d, _sm in rows:
@@ -1476,8 +1592,8 @@ def compare_series_body(sa, sb, store):
         cause_cells = "".join(cell("deaths", c) for c in cs) if cs else ""
         link = f'<a href="{compare_url(f"{sa["name"]}/{ra["name"]}", f"{sb["name"]}/{rb["name"]}")}">face à face</a>' if rb else '<span class=muted>sans pair en B</span>'
         rows.append((cs, f"<tr><td>{h(ra['name'])}</td><td class=n>{ra.get('seed', '')}</td><td>{trials_tag(ra)}</td>"
-                     + (cell("alive") + cell("dead") + cell("births") + cell("kept") + cause_cells if sma or smb
-                        else f'<td colspan={5 + len(cs)} class=muted>{NO_DATA}</td>')
+                     + (cell("alive") + cell("want") + cell("background") + cell("births") + cell("kept") + cause_cells if sma or smb
+                        else f'<td colspan={6 + len(cs)} class=muted>{NO_DATA}</td>')
                      + f"<td>{link}</td></tr>"))
         for d, trials_on, color in ((da, ra.get("trials", True), SIDE_COLOR["a"]), (db, (rb or {}).get("trials", True), SIDE_COLOR["b"])):
             if not d:
@@ -1507,7 +1623,7 @@ def compare_series_body(sa, sb, store):
         for c in cs:
             if c not in all_causes:
                 all_causes.append(c)
-    head = ("<tr><th>run</th><th>graine</th><th>épreuves</th><th>vivants A → B</th><th>morts</th><th>naissances</th><th>gardés</th>"
+    head = ("<tr><th>run</th><th>graine</th><th>épreuves</th><th>vivants A → B</th><th>morts de manque</th><th>morts de fond</th><th>naissances</th><th>gardés</th>"
             + "".join(f"<th>{h(cause_fr(c))}</th>" for c in all_causes) + "<th></th></tr>")
     body.append(f'<h2>Run par run</h2><div class=scroll><table class=clean><thead>{head}</thead><tbody>{"".join(r for _, r in rows)}</tbody></table></div>')
     if left:
@@ -1517,6 +1633,8 @@ def compare_series_body(sa, sb, store):
     body.insert(1, f"<p class=verdict>{h(compare_verdict(agg_a, agg_b))}</p>")
     body.append("<h2>Vivants à la fin</h2><div class=cols2><div><h3>A</h3><ul>" + aggregates_html(agg_a[True], "avec épreuves") + aggregates_html(agg_a[False], "sans épreuves")
                 + "</ul></div><div><h3>B</h3><ul>" + aggregates_html(agg_b[True], "avec épreuves") + aggregates_html(agg_b[False], "sans épreuves") + "</ul></div></div>")
+    body.append("<h2>Morts de manque et de fond</h2><div class=cols2><div><h3>A</h3><ul>" + want_aggregates_html(agg_a[True], "avec épreuves") + want_aggregates_html(agg_a[False], "sans épreuves")
+                + "</ul></div><div><h3>B</h3><ul>" + want_aggregates_html(agg_b[True], "avec épreuves") + want_aggregates_html(agg_b[False], "sans épreuves") + "</ul></div></div>")
     if chart:
         chart.legend_item(SIDE_COLOR["a"], "A, avec épreuves")
         chart.legend_item(SIDE_COLOR["a"], "A, sans", dash=True)

@@ -663,7 +663,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn calendar() -> Calendar {
+    pub(crate) fn calendar() -> Calendar {
         Calendar::new(1, 100).unwrap()
     }
 

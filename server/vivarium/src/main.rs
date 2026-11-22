@@ -33,6 +33,9 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
   --no-continent-cache     bear the vivarium's continent anew instead of
                            reading it from ${XDG_CACHE_HOME:-~/.cache}/soul-sim/
                            continents/ (where a run keeps it; same pages)
+  --helpers N              threads placing the chunks' plants ahead of the
+                           bodies (default 1; 0 = the simulation thread
+                           alone); the pages are the same either way
   --content DIR            the content directory (default: content/, ../content/
                            or ../../content/, the first holding materials.ron)
   --out FILE               the report (default vivarium-report.html); its
@@ -95,6 +98,10 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--no-brain" => settings.brain = false,
             "--no-trials" => settings.trials = false,
             "--no-continent-cache" => settings.continents = None,
+            "--helpers" => {
+                settings.helpers = u32::try_from(number(value(&mut i, "--helpers")?, "--helpers")?)
+                    .map_err(|_| "--helpers: too many".to_owned())?;
+            }
             "--fed" => settings.fed = true,
             "--ages" => {
                 let text = value(&mut i, "--ages")?;
@@ -292,6 +299,15 @@ mod tests {
                 .continents
                 .is_some()
         );
+        assert_eq!(
+            parse(&args(&["--helpers", "0"]))
+                .unwrap()
+                .unwrap()
+                .settings
+                .helpers,
+            0
+        );
+        assert!(parse(&args(&["--helpers", "two"])).is_err());
         assert!(parse(&args(&["--days"])).is_err());
         assert!(parse(&args(&["--days", "ten"])).is_err());
         assert!(parse(&args(&["--world", "mars"])).is_err());
