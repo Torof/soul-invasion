@@ -571,6 +571,27 @@ at the median against (224, 224). **Without trials, 50 alive and 19 dead
 before, 74 alive and 5 dead after** (tribe A's 9 of thirst and 7 of cold
 gone). Wall 277 to 467 s a run, more people walking after than before.
 
+**Lot 4 of the simulation, PR 1: the hearth and the common memory** (23
+November 2026, D55; D50 amended; the proposal
+`content/ai-reserve/review/vivarium/lot-4/proposition-feu-memoire-commune.md`
+taken whole by the lead on 22 November 2026). Every thing known is a
+record written once in the world's store (`sim::memory`), numbered,
+dated, signed by its first witness; a body carries accesses, never
+copies, and a record is freed at its last access. At the evening fire
+(`Brains::vigil`, read at dawn for the night that closed) those who came
+home tell what changed for them in the day, by numbers; each listener
+keeps what it can by its credit in the teller (a function, judged once),
+a child fewer than a grown one. A place heard is a target worth less,
+corrected at the first look; a rumour found false is told that night and
+dies by the gesture that made it. Imitation copies only a way heard said
+(nobody reads a mind any more), a trial in distress tries a kept way
+heard first, and the judge compares a trial with the heard days of the
+mates who changed nothing, with the body's own days before only when it
+heard nobody. Placeholders in `content/needs.ron`, section `fire`
+(D30); `--no-fire` in the vivarium as the control; nothing stored, no
+protocol change, no dependency. The pair and the five-year try are
+measured after PR 1 b (the will and the lessons), and written here then.
+
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
 slopes drawn by the client from them (D44), then the relief in the
