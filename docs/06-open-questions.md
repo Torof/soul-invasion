@@ -61,6 +61,7 @@ What the first sampling found (108 windows of seed 14, 54 of them breaking an in
 - **Seizure of power** in the tribe (strength and prestige).
 - **Intuitions** of skilled characters.
 - **AI-generated speech** for NPCs, then free conversation.
+- **AI to invent for the NPCs**: closed on 22 November 2026 (D50). The project lead: "je suis vraiment pas pour l'IA. Si on peut l'éviter, je suis carrément pour." NPCs invent by their own trials, judged by the world, kept by selection and spread by imitation; the code holds gestures and physics, never outcomes. No AI in the game, in the tick or beside it; the line of `docs/03` about an AI judging free-form inventions "in the long term" stays a possibility for judging, not for inventing.
 - **Multiplayer**, hosting, costs, moderation. Before exposing the server beyond `127.0.0.1`: TLS, an idle timeout or server-side ping for clients that stop reading, rate-limited logging (milestone 1 audit).
 - **End of the world** and nihilists: how hard it should be.
 - **Final name** of the game (check the availability of "Soul Invasion") and name of the world.

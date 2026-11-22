@@ -5827,22 +5827,23 @@ mod tests {
         let day = w.calendar().ticks_per_day();
         let mut events = Vec::new();
         let at = |w: &World| w.body(BodyId(1)).map(|b| b.condition().clone());
-        // A day without food: hungry, its reserve a sixth short.
+        // A day without food: hungry, its reserve a thirtieth short (300
+        // MJ since 22 November 2026, D46 amended; it was 60 MJ, six days).
         w.advance(day, &rules, &mut events);
         let c = at(&w).unwrap();
         assert_eq!(c.hunger.points(), 100);
         assert!(!c.is_thin(&rules.needs));
-        // Thin after three days, weak after about five (4.8).
-        w.advance(2 * day + 1, &rules, &mut events);
+        // Thin after fifteen days, weak after twenty-four.
+        w.advance(14 * day + 1, &rules, &mut events);
         assert!(at(&w).unwrap().is_thin(&rules.needs));
         assert!(!at(&w).unwrap().is_weak(&rules.needs));
-        w.advance(day * 18 / 10, &rules, &mut events);
+        w.advance(9 * day, &rules, &mut events);
         let c = at(&w).unwrap();
         assert!(c.is_weak(&rules.needs));
         assert_eq!(c.pace_percent(&rules.needs), 70);
         assert_eq!(c.vitality.points(), 100, "the reserve is burnt first");
-        // Spent after six days, dead in the seventh.
-        w.advance(day * 12 / 10, &rules, &mut events);
+        // Spent after thirty days, dead in the thirty-first.
+        w.advance(6 * day, &rules, &mut events);
         assert_eq!(at(&w).unwrap().reserve_left_j(&rules.needs), 0);
         assert!(at(&w).is_some());
         w.advance(day + 1, &rules, &mut events);

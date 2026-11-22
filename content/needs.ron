@@ -37,12 +37,17 @@
 //                          a handful of berries (100 g, 250 kJ) 2.
 // meal_g:                  300 — grams eaten at most in one act; the rest
 //                          of the item stays (D35).
-// reserve_kj:              60000 — six days of need: without food a body
-//                          is thin on the third day, weak near the fifth,
-//                          its reserve spent on the sixth, dead on the
-//                          seventh (lot 3, decided 16 November 2026).
+// reserve_kj:              300000 — a grown adult's fat is 10 to 15 kg,
+//                          300 to 500 MJ: six to eight weeks without
+//                          food (decided 22 November 2026, D46 amended;
+//                          it was 60,000, six days, from 16 November).
+//                          Thirty days of need: without food a body is
+//                          thin on the sixteenth day, weak on the
+//                          twenty-fifth, its reserve spent on the
+//                          thirty-first, dead the day after. Thin and
+//                          weak stay in percent of the reserve.
 // intake_ceiling_percent:  150 — a day's eating, in percent of the need:
-//                          a spent reserve takes twelve days to make again.
+//                          a spent reserve takes sixty days to make again.
 // thin_percent:            50 — thin under half its reserve.
 // weak_percent:            20 — weak under a fifth: it walks and gathers
 // weak_pace_percent:       70 — at seven tenths of its pace.
@@ -62,7 +67,7 @@
     vitality_regain_per_day: 50,
     kj_per_hunger_point: 100,
     meal_g: 300,
-    reserve_kj: 60000,
+    reserve_kj: 300000,
     intake_ceiling_percent: 150,
     thin_percent: 50,
     weak_percent: 20,
@@ -120,5 +125,33 @@
         ],
         old_age_from_years: 60,
         mate_years: (16, 50),
+    ),
+    // Trials, selection and imitation (D50, decided by the project lead on
+    // 22 November 2026): the NPCs invent by their own trials, judged by
+    // the world, kept by selection and spread by imitation; no AI.
+    // Placeholders (D30), tuned by reading the vivarium's page, never to
+    // remove the difficulty. A body in distress (hungry at the day's end,
+    // or a day with no gather at all) for 3 days running may start a
+    // trial, with a daily chance by its will (2 % at will 0, 30 % at will
+    // 100, a straight line between): one of its ways moved by one step
+    // (a search twice or half as wide, a night out or back home, a store
+    // twice or half as large, or its home set 2,000 tiles towards where it
+    // knows the most plants still bearing; a quarter of that under will
+    // 70). After 5 days the world has judged: kept if it gathered more a
+    // day than in the 5 days before and was thin no more often, else
+    // reverted. At night at the camp a body copies one way from the
+    // camp-mate within 12 tiles who gathered most a day over the last 5
+    // days (more than itself), with a 20 % chance scaled by that mate's
+    // will; one copy in four lands halfway (a search twice as wide copied
+    // becomes one and a half times as wide).
+    trials: (
+        trial_after_days: 3,
+        trial_days: 5,
+        try_percent_by_will: [(0, 2), (100, 30)],
+        far_home_from_will: 70,
+        new_home_walk_tiles: 2000,
+        imitate_tiles: 12,
+        imitate_percent: 20,
+        imitate_loss_percent: 25,
     ),
 )

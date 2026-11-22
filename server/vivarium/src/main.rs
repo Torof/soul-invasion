@@ -28,6 +28,8 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
   --cadence N              ticks a game second (default 1; the game runs at 10)
   --seed N                 the run's seed (default 1)
   --no-brain               the control run: nobody thinks, the people stand
+  --no-trials              the control run of D50: nobody tries a way nor
+                           copies one (the content's trials replaced by none)
   --content DIR            the content directory (default: content/, ../content/
                            or ../../content/, the first holding materials.ron)
   --out FILE               the report (default vivarium-report.html)
@@ -87,6 +89,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
                         .map_err(|_| "--cadence: too high".to_owned())?;
             }
             "--no-brain" => settings.brain = false,
+            "--no-trials" => settings.trials = false,
             "--fed" => settings.fed = true,
             "--ages" => {
                 let text = value(&mut i, "--ages")?;
@@ -236,6 +239,13 @@ mod tests {
                 .unwrap()
                 .settings
                 .brain
+        );
+        assert!(
+            !parse(&args(&["--no-trials"]))
+                .unwrap()
+                .unwrap()
+                .settings
+                .trials
         );
         assert!(parse(&args(&["--days"])).is_err());
         assert!(parse(&args(&["--days", "ten"])).is_err());

@@ -368,6 +368,47 @@ possible spouse while the mother lives. The run took 46 s on the wall
 those invariants. The second trial, two tribes of 125 over ten seeds, is
 PR 3.
 
+**D50, the first trials** (22 November 2026, D50; D46 amended: the fat
+reserve is 300 MJ). The brain's constants became ways on each mind (how
+far a plant is worth going, sleeping out or at home, the store, the home),
+with a will per body; a body in distress for three days may try one way
+moved by one step, the world judges after five days, and at night at the
+camp a body may copy the way of the camp-mate who gathered most. Every
+number is `needs.ron`'s `trials` section. *Tiny first, one band of 25 (15
+grown, 7 children, 3 infants) at camp A of the vivarium's world, five
+years, cadence 1, seed 1, release*: **with trials 14 alive and 17 dead**
+(49 trials, 27 kept, 114 ways copied, 6 homes moved; 11 of the dead of
+thirst, 3 of cold); **without, 19 alive and 12 dead** (8 of thirst, 3 of
+cold). Deaths by year with trials: 5, 4, 3, 4, 2; without: 1, 1, 2, 6, 7
+(the control dies later, of the same thirst by camp A). Births: 3, 1, 1
+with; 4, 0, 1 without. *Then the two tribes of 25 (camps A and B), twenty
+years*: **with trials 5 alive and 53 dead; without, 20 alive and 50
+dead.** Tribe A with trials, year by year (deaths / births): 5/0, 4/3,
+3/1, 4/0, 2/1, 3/0, 1/0, 0/0, 3/0, 0/1, then 0 to 1 a year and no birth,
+3 alive at twenty years (121 trials, 57 kept, 187 copied, 10 homes
+moved; at the end 2 of 3 sleep out, worth halved at 136 tiles, store
+60,000 kJ); without trials 1/0, 1/4, 2/0, 6/1, 7/0, 3/1, 2/1, 1/0, 3/0,
+0/2, 2/0, then 0 to 3 a year, 2 alive. Tribe B with trials: 3/0, 2/1,
+3/0, 2/1, 3/0, 2/0, 2/0, 5/0, 0/0, 1/0, 1/0, 0, 1, then nothing, **2
+alive** (235 trials, 104 kept, 144 copied, 44 homes moved: its camp went
+from (224, 224) to the map's west edge, (0, 224), (0, 724), (0, 2000),
+(0, 1500); at the end nobody sleeps out, worth halved at 24 tiles, store
+435,000 kJ); without trials 1/0, 0/2, 1/1, 0/0, 0/0, 0/3, 1/2, 2/1, 1/0,
+2/0, 4/0, then 0 to 2 a year and 1 birth, **18 alive**. The curve the
+project lead expects ("au début plus de morts, après moins de morts… et
+on grandit") does not turn within twenty years on this world: the deaths
+with trials come earlier and the births fewer, and tribe B, which lives
+without them, dwindles with them. What the pages show, not tuned (the
+lead's rule): most deaths are of thirst in both runs; sleeping out costs
+deaths of cold; a trial of the home towards a seeded direction stops at
+the map's edge on this 2,176-tile world, and the band follows. The pages
+`2026-11-22-essais-bande-25.html`, `…-temoin-bande-25.html`,
+`…-essais-deux-tribus-25.html` and `…-temoin-deux-tribus-25.html` are
+in the review folder; the `#[ignore]`d test
+`the_d50_band_of_25_five_years_with_and_without_trials` runs the band's
+pair and holds: a trial kept, a way copied, the band not extinct, the
+same trials from the same seed (5 min in release).
+
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
 slopes drawn by the client from them (D44), then the relief in the
