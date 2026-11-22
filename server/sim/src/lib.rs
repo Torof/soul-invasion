@@ -403,14 +403,24 @@ pub struct Work {
     pub chunk: ChunkPos,
     /// What it gathers from.
     pub bearer: crops::Bearer,
-    /// The material it gathers.
-    pub gives: String,
+    /// The material it gathers. Shared, not copied, by what reads it a
+    /// tick; written and read as the text itself (a snapshot's JSON is as
+    /// before, D28).
+    #[serde(with = "crops::shared_text")]
+    pub gives: Arc<str>,
     /// When it began.
     pub since: Tick,
     /// The grams gathered so far.
     pub done_g: u32,
     /// The carried item they go into, once the first pinch is taken.
     pub into: Option<ItemId>,
+    /// The crop it gathers, in the content's order: found by name when
+    /// the work begins and kept, so its rate and what is left of it are
+    /// asked by number at every tick ([`World::ripe_of_crop`]). Never
+    /// stored: found again by name at the first tick after a load, or
+    /// after the content changed.
+    #[serde(skip)]
+    pub crop: Option<usize>,
 }
 
 /// Why a body stopped working.
@@ -1537,6 +1547,9 @@ impl World {
     /// standing in a trunk's tile is let out of it.
     pub fn take_content(&mut self, content: &Content) {
         self.grow_due = true;
+        for work in self.bodies.iter_mut().filter_map(|b| b.work.as_mut()) {
+            work.crop = None;
+        }
         self.species.clone_from(&content.species);
         self.spawns.clone_from(&content.spawns);
         self.geology.clone_from(&content.geology);
@@ -1678,6 +1691,15 @@ impl World {
         (crop < self.crops.len()).then(|| self.left_of(chunk, source, at, crop))?
     }
 
+    /// The crop giving `gives` on the kind `kind`, in the content's order
+    /// ([`World::ripe_of_crop`]'s number): the first such, and the only
+    /// one, the content giving each kind one crop a material.
+    fn crop_of(&self, kind: &str, gives: &str) -> Option<usize> {
+        self.crops
+            .iter()
+            .position(|crop| crop.on == kind && crop.gives == gives)
+    }
+
     /// What is left now of the crop at `crop` on the tree or plant
     /// `source` of `chunk`, standing at `at`: its year and grams, `None`
     /// when nothing.
@@ -1775,20 +1797,29 @@ impl World {
         if grams == 0 {
             return;
         }
-        let key = (source, gives.to_owned());
         let changes = Arc::make_mut(self.changes.entry(chunk).or_default());
-        let before = changes
+        // Looked up without making the key's text, as `left_of` reads it:
+        // the key is made only for a crop picked for the first time.
+        let known = changes
             .picked
-            .get(&key)
-            .filter(|p| p.year == year)
-            .map_or(0, |p| p.grams);
-        changes.picked.insert(
-            key,
-            changes::Picked {
-                year,
-                grams: before + grams,
-            },
-        );
+            .range_mut((source, String::new())..)
+            .take_while(|((s, _), _)| *s == source)
+            .find(|((_, g), _)| *g == gives)
+            .map(|(_, p)| p);
+        match known {
+            Some(picked) => {
+                let before = if picked.year == year { picked.grams } else { 0 };
+                *picked = changes::Picked {
+                    year,
+                    grams: before + grams,
+                };
+            }
+            None => {
+                changes
+                    .picked
+                    .insert((source, gives.to_owned()), changes::Picked { year, grams });
+            }
+        }
         changes.version += 1;
     }
 
@@ -2937,6 +2968,11 @@ impl World {
     /// Weighs a body's load again and tells what it carries now.
     fn inventory_changed(&mut self, index: usize, rules: &Content, events: &mut Vec<Event>) {
         self.refresh_load(index);
+        self.inventory_told(index, rules, events);
+    }
+
+    /// Tells that a body's inventory changed, its load kept already.
+    fn inventory_told(&self, index: usize, rules: &Content, events: &mut Vec<Event>) {
         let body = &self.bodies[index];
         events.push(Event::InventoryChanged {
             body: body.id,
@@ -3065,10 +3101,8 @@ impl World {
         if dx * dx + dy * dy > GATHER_REACH_MM * GATHER_REACH_MM {
             return refuse(events, Refusal::OutOfReach);
         }
-        if self
-            .ripe_of(chunk, source, bearer.at, &bearer.kind, gives)
-            .is_none()
-        {
+        let crop = self.crop_of(&bearer.kind, gives);
+        if crop.is_none_or(|c| self.ripe_of_crop(chunk, source, bearer.at, c).is_none()) {
             return refuse(events, Refusal::NothingRipe);
         }
         if self.bodies[index].load_g >= self.bodies[index].capacity_g(&rules.movement) {
@@ -3090,10 +3124,11 @@ impl World {
         body.work = Some(Work {
             chunk,
             bearer,
-            gives: gives.to_owned(),
+            gives: Arc::from(gives),
             since,
             done_g: 0,
             into: None,
+            crop,
         });
         events.push(Event::WorkStarted {
             body: id,
@@ -3116,11 +3151,11 @@ impl World {
                 self.stop_work(index, WorkEnd::Interrupted, events);
                 continue;
             }
-            let rate = self
-                .crops
-                .iter()
-                .find(|c| *c.on == *work.bearer.kind && c.gives == work.gives)
-                .map_or(0, |c| c.per_hour_g)
+            // The crop by number: kept with the work, or found again by
+            // name after a load.
+            let kept = work.crop;
+            let crop = kept.or_else(|| self.crop_of(&work.bearer.kind, &work.gives));
+            let rate = crop.map_or(0, |c| self.crops[c].per_hour_g)
                 * body.condition.pace_percent(&rules.needs)
                 / 100;
             let earned = u64::from(rate) * (self.tick.0 - work.since.0) / per_hour;
@@ -3129,14 +3164,15 @@ impl World {
             if rate > 0 && due < PINCH_G {
                 continue;
             }
-            let work = work.clone();
-            let Some((year, left)) = self.ripe_of(
-                work.chunk,
-                work.bearer.source,
-                work.bearer.at,
-                &work.bearer.kind,
-                &work.gives,
-            ) else {
+            let (chunk, source, at) = (work.chunk, work.bearer.source, work.bearer.at);
+            let gives = Arc::clone(&work.gives);
+            if kept.is_none()
+                && let Some(work) = self.bodies[index].work.as_mut()
+            {
+                work.crop = crop;
+            }
+            let Some((year, left)) = crop.and_then(|c| self.ripe_of_crop(chunk, source, at, c))
+            else {
                 self.stop_work(index, WorkEnd::Bare, events);
                 continue;
             };
@@ -3145,12 +3181,12 @@ impl World {
                 .saturating_sub(self.bodies[index].load_g);
             let grams = due.min(left).min(room);
             if grams > 0 {
-                self.record_pick(work.chunk, work.bearer.source, &work.gives, year, grams);
+                self.record_pick(chunk, source, &gives, year, grams);
                 events.push(Event::CropPicked {
-                    chunk: work.chunk,
-                    version: self.chunk_version(work.chunk),
+                    chunk,
+                    version: self.chunk_version(chunk),
                 });
-                self.add_gathered(index, &work, grams, rules, events);
+                self.add_gathered(index, &gives, grams, rules, events);
             }
             if grams == left {
                 self.stop_work(index, WorkEnd::Bare, events);
@@ -3165,17 +3201,21 @@ impl World {
     fn add_gathered(
         &mut self,
         index: usize,
-        work: &Work,
+        gives: &str,
         grams: u32,
         rules: &Content,
         events: &mut Vec<Event>,
     ) {
         let id = self.bodies[index].id;
-        let into = work.into.filter(|item| {
-            self.items.get(item).is_some_and(|i| {
-                i.material == work.gives && matches!(i.place, Place::Carried { body } if body == id)
-            })
-        });
+        let into = self.bodies[index]
+            .work
+            .as_ref()
+            .and_then(|w| w.into)
+            .filter(|item| {
+                self.items.get(item).is_some_and(|i| {
+                    i.material == gives && matches!(i.place, Place::Carried { body } if body == id)
+                })
+            });
         let item = if let Some(item) = into {
             if let Some(heap) = self.items.get_mut(&item) {
                 heap.mass_g += grams;
@@ -3188,7 +3228,7 @@ impl World {
                 item,
                 Item {
                     id: item,
-                    material: work.gives.clone(),
+                    material: gives.to_owned(),
                     mass_g: grams,
                     made: self.tick,
                     place: Place::Carried { body: id },
@@ -3210,7 +3250,10 @@ impl World {
             work.done_g += grams;
             work.into = Some(item);
         }
-        self.inventory_changed(index, rules, events);
+        // The grams added, the load not re-weighed: every change of an
+        // inventory keeps `load_g` the items' sum.
+        self.bodies[index].load_g += grams;
+        self.inventory_told(index, rules, events);
     }
 
     /// Ends the work of the body at `index`, if it is busy, telling what
@@ -3219,7 +3262,7 @@ impl World {
         if let Some(work) = self.bodies[index].work.take() {
             events.push(Event::WorkStopped {
                 body: self.bodies[index].id,
-                gives: work.gives,
+                gives: work.gives.to_string(),
                 grams: work.done_g,
                 why,
             });

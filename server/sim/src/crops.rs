@@ -621,7 +621,7 @@ pub struct Bearer {
 }
 
 /// A shared text written and read as a plain string.
-mod shared_text {
+pub(crate) mod shared_text {
     use std::sync::Arc;
 
     use serde::{Deserialize, Deserializer, Serializer};
