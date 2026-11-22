@@ -1315,6 +1315,11 @@ pub struct World {
     /// from the date, and only what men picked is kept.
     #[serde(skip)]
     crops: Vec<crops::Crop>,
+    /// Each crop's kind's key ([`crops::key_of`]), worked out once with
+    /// the content: the brains ask what is ripe for every plant they
+    /// know at every choice. Not stored; made again with the content.
+    #[serde(skip)]
+    crop_keys: Vec<u64>,
     /// The trees of the chunks asked for lately, placed once and shared
     /// ([`ground::Ground`]) with the server's threads, which take a handle
     /// as they take the map ([`World::shared_ground`]). Derived from the
@@ -1391,6 +1396,7 @@ impl<'de> serde::Deserialize<'de> for World {
             open_ground: open_ground::OpenGround::default(),
             flora: Vec::new(),
             crops: Vec::new(),
+            crop_keys: Vec::new(),
             ground_cache: Arc::new(ground::Ground::default()),
         };
         let standing: Vec<_> = world
@@ -1496,6 +1502,7 @@ impl World {
             open_ground: open_ground::OpenGround::default(),
             flora: Vec::new(),
             crops: Vec::new(),
+            crop_keys: Vec::new(),
             ground_cache: Arc::new(ground::Ground::default()),
         }
     }
@@ -1513,6 +1520,7 @@ impl World {
         self.open_ground.clone_from(&content.open_ground);
         self.flora.clone_from(&content.flora);
         self.crops.clone_from(&content.crops);
+        self.crop_keys = self.crops.iter().map(crops::key_of).collect();
         for index in 0..self.bodies.len() {
             self.refresh_load(index);
         }
@@ -1599,9 +1607,10 @@ impl World {
     pub fn ripe_on(&self, chunk: ChunkPos, bearer: &crops::Bearer) -> Vec<crops::Ripe> {
         self.crops
             .iter()
-            .filter(|crop| *crop.on == *bearer.kind)
-            .filter_map(|crop| {
-                let (year, grams) = self.left_of(chunk, bearer.source, bearer.at, crop)?;
+            .enumerate()
+            .filter(|(_, crop)| *crop.on == *bearer.kind)
+            .filter_map(|(i, crop)| {
+                let (year, grams) = self.left_of(chunk, bearer.source, bearer.at, i)?;
                 Some(crops::Ripe {
                     gives: crop.gives.clone(),
                     year,
@@ -1625,8 +1634,9 @@ impl World {
     ) -> Option<(u64, u32)> {
         self.crops
             .iter()
-            .filter(|crop| crop.on == kind && crop.gives == gives)
-            .find_map(|crop| self.left_of(chunk, source, at, crop))
+            .enumerate()
+            .filter(|(_, crop)| crop.on == kind && crop.gives == gives)
+            .find_map(|(i, _)| self.left_of(chunk, source, at, i))
     }
 
     /// [`World::ripe_of`] for the crop at `crop` in the content's order
@@ -1642,20 +1652,25 @@ impl World {
         at: FinePos,
         crop: usize,
     ) -> Option<(u64, u32)> {
-        self.left_of(chunk, source, at, self.crops.get(crop)?)
+        (crop < self.crops.len()).then(|| self.left_of(chunk, source, at, crop))?
     }
 
-    /// What is left now of `crop` on the tree or plant `source` of
-    /// `chunk`, standing at `at`: its year and grams, `None` when nothing.
+    /// What is left now of the crop at `crop` on the tree or plant
+    /// `source` of `chunk`, standing at `at`: its year and grams, `None`
+    /// when nothing.
     fn left_of(
         &self,
         chunk: ChunkPos,
         source: crops::Source,
         at: FinePos,
-        crop: &crops::Crop,
+        crop: usize,
     ) -> Option<(u64, u32)> {
         let frame = r#gen::scatter::Frame::at(self.map.origin());
-        let (year, grams) = crops::there(crop, &self.calendar, self.tick, self.seed(), frame, at)?;
+        let key = self.crop_keys.get(crop).copied();
+        let crop = &self.crops[crop];
+        let key = key.unwrap_or_else(|| crops::key_of(crop));
+        let (year, grams) =
+            crops::there_keyed(crop, key, &self.calendar, self.tick, self.seed(), frame, at)?;
         // Looked up without making the key's text: the picks of one
         // source sit together, few of them.
         let taken = self
