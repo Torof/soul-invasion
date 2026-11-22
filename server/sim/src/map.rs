@@ -1409,6 +1409,7 @@ impl Map {
             };
             if tile != stop.tile()
                 && open(tile)
+                && Self::joins_within(stop.tile(), tile, SIDESTEP_REACH, open)
                 && let Some(path) = self.path_around(
                     stop.tile(),
                     tile,
@@ -1438,6 +1439,48 @@ impl Map {
             }
         }
         None
+    }
+
+    /// Does walkable ground join `from` to `to` within `reach` tiles of
+    /// `from` on each axis (`reach` at most 5: the square's 121 tiles
+    /// are the bits of one word)? A flood of the square over `open`
+    /// tiles, four neighbours (a diagonal step never cuts a corner, so
+    /// it always has a straight way round), `from` left whatever it is.
+    /// "No" is exactly what [`Map::path_around`] in the same square
+    /// answers, in a tenth of the time; on "yes" the search runs, and
+    /// finds the way (the sidesteps of a straight walk, D32).
+    fn joins_within(from: Pos, to: Pos, reach: i32, open: impl Fn(Pos) -> bool) -> bool {
+        debug_assert!((0..=5).contains(&reach), "a square of 121 tiles at most");
+        let side = 2 * reach + 1;
+        let bit = |p: Pos| -> Option<u32> {
+            let (x, y) = (p.x - from.x + reach, p.y - from.y + reach);
+            (x >= 0 && y >= 0 && x < side && y < side)
+                .then(|| u32::try_from(y * side + x).expect("within the square"))
+        };
+        let Some(goal) = bit(to) else {
+            return false;
+        };
+        let Some(start) = bit(from) else {
+            return false;
+        };
+        let mut seen: u128 = 1 << start;
+        let mut todo = vec![from];
+        while let Some(p) = todo.pop() {
+            for next in p.neighbours().into_iter().take(4) {
+                let Some(b) = bit(next) else {
+                    continue;
+                };
+                if seen >> b & 1 == 1 || !open(next) {
+                    continue;
+                }
+                if b == goal {
+                    return true;
+                }
+                seen |= 1 << b;
+                todo.push(next);
+            }
+        }
+        false
     }
 
     #[cfg(test)]
