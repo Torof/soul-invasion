@@ -15,6 +15,10 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
   --side N                 the patch's side in tiles (default 50)
   --people N               people born at each camp (default 5): grown
                            women and men in turn, 18 to 40 years old
+  --ages LO-HI             the grown people's ages, spread from LO to HI
+                           years (default 18-40; 20-20 for a couple of 20)
+  --fed                    food without limit: hunger a day is 0, nobody
+                           grows thin (lot 3 C, trial 1)
   --children N             children at each camp too, 3 to 11 (default 0)
   --infants N              infants of half a year at each camp, each carried
                            by one of its women (default 0)
@@ -83,6 +87,21 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
                         .map_err(|_| "--cadence: too high".to_owned())?;
             }
             "--no-brain" => settings.brain = false,
+            "--fed" => settings.fed = true,
+            "--ages" => {
+                let text = value(&mut i, "--ages")?;
+                let (lo, hi) = text
+                    .split_once('-')
+                    .ok_or_else(|| format!("--ages: LO-HI, not {text}"))?;
+                let years = |part: &str| -> Result<u32, String> {
+                    u32::try_from(number(part.to_owned(), "--ages")?)
+                        .map_err(|_| "--ages: too old".to_owned())
+                };
+                settings.adult_years = (years(lo)?, years(hi)?);
+                if settings.adult_years.0 > settings.adult_years.1 {
+                    return Err(format!("--ages: LO above HI: {text}"));
+                }
+            }
             "--tribes" => {
                 tribes = Some(
                     u32::try_from(number(value(&mut i, "--tribes")?, "--tribes")?)
@@ -199,6 +218,13 @@ mod tests {
         assert_eq!(options.out, PathBuf::from("r.html"));
         let patch = parse(&args(&["--side", "80"])).unwrap().unwrap();
         assert_eq!(patch.settings.world, WorldKind::Patch { side: 80 });
+        let couple = parse(&args(&["--ages", "20-20", "--fed", "--people", "2"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(couple.settings.adult_years, (20, 20));
+        assert!(couple.settings.fed);
+        assert!(parse(&args(&["--ages", "20"])).is_err());
+        assert!(parse(&args(&["--ages", "30-20"])).is_err());
     }
 
     #[test]

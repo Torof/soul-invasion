@@ -76,6 +76,14 @@ pub struct Settings {
     /// Infants of half a year at each camp, each carried and nursed by a
     /// woman of the tribe, one a woman (lot 3 B).
     pub infants: u32,
+    /// The grown people's ages at the start, in years, spread evenly from
+    /// the first to the second (18 to 40 by default; (20, 20) for a couple
+    /// of twenty, lot 3 C's first trial).
+    pub adult_years: (u32, u32),
+    /// Food without limit (lot 3 C, trial 1): hunger a day is set to 0, so
+    /// nobody grows thin or weak and the births are read apart from the
+    /// food (F1). A named factor of the run, shown in the report.
+    pub fed: bool,
 }
 
 impl Default for Settings {
@@ -91,6 +99,8 @@ impl Default for Settings {
             tribes: 1,
             children: 0,
             infants: 0,
+            adult_years: (18, 40),
+            fed: false,
         }
     }
 }
@@ -217,6 +227,26 @@ pub struct Person {
     pub last_at: Option<Pos>,
     /// When and of what it died, and where.
     pub death: Option<(u64, Death, Pos)>,
+    /// Born during the run (D49), not at the departure.
+    pub born_in_run: bool,
+    /// Its mother and father, when known (D49; the departure gives the
+    /// camp's children and infants parents among its couples).
+    pub mother: Option<BodyId>,
+    /// See `mother`.
+    pub father: Option<BodyId>,
+    /// Its spouses in order, with the day each was taken (from 1): the
+    /// last is its spouse, alive or dead.
+    pub couplings: Vec<(u64, BodyId)>,
+    /// Its children: those whose mother or father it is, in birth order.
+    pub children: Vec<BodyId>,
+    /// The days it lost an unborn child (from 1).
+    pub lost: Vec<u64>,
+    /// Carrying an unborn child at the end of the run.
+    pub pregnant: bool,
+    /// The infants it nursed at the end of the run.
+    pub nursing: Vec<BodyId>,
+    /// What it gathered over the run, in joules.
+    pub gathered_j: u64,
     /// Meals eaten, and grams in all.
     pub meals: (u32, u32),
     /// Times it drank.
@@ -227,6 +257,141 @@ pub struct Person {
     pub entries: Vec<Entry>,
     /// Its gauges 24 times a day.
     pub gauges: Vec<Gauges>,
+}
+
+/// How a person came into a family (lot 3 C).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arrival {
+    /// At the departure, day one.
+    Start,
+    /// Born into it.
+    Born,
+    /// Turned sixteen: a family of its own.
+    Grown,
+    /// Married into the family of this woman.
+    Married(BodyId),
+}
+
+/// Why a person left a family (lot 3 C).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Leaving {
+    /// Turned sixteen: a family of its own.
+    Grown,
+    /// Married: into the family of this woman.
+    Married(BodyId),
+    /// Died.
+    Died,
+}
+
+/// A person's time in a family (lot 3 C): from a day, until a day and a
+/// reason, or to the end of the run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Membership {
+    /// Who.
+    pub who: BodyId,
+    /// The first day (from 1).
+    pub from_day: u64,
+    /// How it came.
+    pub arrived: Arrival,
+    /// The day it left and why; `None` while it is still in at the end.
+    pub until: Option<(u64, Leaving)>,
+}
+
+/// A family of the report (lot 3 C, D41): a couple and its children under
+/// sixteen, named by the mother ("the family of person 7"); a single adult
+/// is a family of one. Worked out from the people: `sim` keeps no family.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Family {
+    /// Its tribe.
+    pub tribe: u8,
+    /// Everyone who was in it, in the order of the ids, then of the days.
+    pub members: Vec<Membership>,
+    /// Its lines: arrivals, births, lost pregnancies, weanings, departures
+    /// and deaths, in order.
+    pub lines: Vec<Entry>,
+}
+
+/// A tribe's year in numbers (lot 3 C, the proposal's section 2 and 4.2).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Year {
+    /// The tribe.
+    pub tribe: u8,
+    /// The year (from 1).
+    pub year: u64,
+    /// Alive at the year's end (or the run's).
+    pub population: u32,
+    /// Alive at the year's start.
+    pub population_before: u32,
+    /// Born in the year.
+    pub births: u32,
+    /// Died in the year, by cause, in the order of [`DEATHS`].
+    pub deaths: [u32; 6],
+    /// The season of each death of hunger.
+    pub hunger_seasons: Vec<String>,
+    /// Days between a birth of the year and its mother's birth before it.
+    pub intervals_days: Vec<u64>,
+    /// Children born in the run who turned fifteen by the year's end, and
+    /// how many of them were alive to.
+    pub fifteen: (u32, u32),
+    /// Women of the fertile years alive at the year's end, and how many of
+    /// them have no living spouse and no man of the tribe they could take.
+    pub fertile: (u32, u32),
+}
+
+/// The causes of death, in the order of [`Year::deaths`].
+pub const DEATHS: [Death; 6] = [
+    Death::Illness,
+    Death::OldAge,
+    Death::Childbirth,
+    Death::Starved,
+    Death::Dehydrated,
+    Death::Froze,
+];
+
+/// "of hunger", "in childbirth".
+fn cause_words(cause: Death) -> &'static str {
+    match cause {
+        Death::Starved => "of hunger",
+        Death::Froze => "of cold",
+        Death::Dehydrated => "of thirst",
+        Death::Childbirth => "in childbirth",
+        Death::Illness => "of illness",
+        Death::OldAge => "of old age",
+    }
+}
+
+/// Up to this many game days (two years), a person's page shows every
+/// line of its life, thoughts and gathers included; past it, only the
+/// lines of life (birth, spouse, children, weaning, death), with the count
+/// of the rest: a couple's twenty years wrote 640,000 rows and 65 MB.
+pub const FULL_LINES_DAYS: u32 = 100;
+
+/// At most this many points on a curve: a sample every so many is drawn
+/// when the run has more, so twenty years weigh what two do.
+const CURVE_POINTS: usize = 1200;
+
+/// Whether a line of a person's page is one of its life: birth, spouse,
+/// children, weaning, loss, death; not a thought, a meal, a drink or a
+/// gather.
+fn is_life_line(what: &str) -> bool {
+    [
+        "is born",
+        "become spouses",
+        "is the child of",
+        "is weaned",
+        "is taken by",
+        "is left alone",
+        "loses the child",
+        "dies ",
+    ]
+    .iter()
+    .any(|key| what.contains(key))
+}
+
+/// Every `n`th of `items`, so that at most [`CURVE_POINTS`] remain.
+fn thinned<T>(items: &[T]) -> impl Iterator<Item = &T> {
+    let step = items.len().div_ceil(CURVE_POINTS).max(1);
+    items.iter().step_by(step)
 }
 
 /// What a run produced.
@@ -297,25 +462,46 @@ pub fn run_watched(
 ) -> Result<Report, RunError> {
     let calendar = Calendar::new(settings.ticks_per_second, Calendar::DEFAULT_SECONDS_PER_DAY)
         .map_err(RunError::Calendar)?;
+    // Food without limit (lot 3 C, trial 1): hunger a day is 0, the fat
+    // reserve is never drawn on, so the births are read apart from the
+    // food. The content is otherwise the one given.
+    let fed_content;
+    let content = if settings.fed {
+        let mut fed = content.clone();
+        fed.needs.hunger_per_day = 0;
+        fed_content = fed;
+        &fed_content
+    } else {
+        content
+    };
     let born = Instant::now();
     let mut world = match settings.world {
         WorldKind::Vivarium => World::on_valley(calendar, content, Map::vivarium()),
         WorldKind::Patch { side } => World::with_valley(calendar, content, side),
     };
+    // The vivarium's worlds live (D49): births, couples, illness and old
+    // age; the game's never do.
+    world.set_life(true);
     let birth_s = born.elapsed().as_secs_f64();
     let map_side = (world.map().width(), world.map().height());
     let camps = camps(settings, world.map());
     let mut people: BTreeMap<BodyId, Person> = BTreeMap::new();
     let mut chronicle = Vec::new();
     let mut brains = Brains::new(settings.seed);
+    // Who is born at each camp: (its id, its tribe, grown or not).
+    let mut departure: Vec<(BodyId, u8, bool)> = Vec::new();
     for (tribe, &camp) in camps.iter().enumerate() {
         let tribe = u8::try_from(tribe).expect("two tribes at most");
         // Who is born at the camp (lot 3 B): grown women and men in turn,
-        // from 18 to 40 years old; children; infants, each on a woman.
+        // from `adult_years` (18 to 40 by default); children; infants, each
+        // on a woman.
         let per_year = u64::from(calendar.days_per_year());
         let mut born: Vec<(u64, Sex, bool)> = Vec::new();
+        let (lo, hi) = settings.adult_years;
         for k in 0..settings.people {
-            let years = 18 + u64::from(k) * 22 / u64::from(settings.people.max(1));
+            let years = u64::from(lo)
+                + u64::from(k) * u64::from(hi.saturating_sub(lo))
+                    / u64::from(settings.people.max(1));
             let sex = if k % 2 == 0 { Sex::Female } else { Sex::Male };
             born.push((years * per_year + u64::from(k) * 7, sex, false));
         }
@@ -381,6 +567,78 @@ pub fn run_watched(
             person.born_day = world.body(id).map_or(0, sim::Body::born_day);
             person.carrier = carrier;
             person.entries.push(entry);
+            departure.push((id, tribe, !infant && age_days >= 16 * per_year));
+        }
+    }
+    // The departure paired (lot 3 C): the grown are coupled at once by the
+    // sim's own rule (the nearest of the other sex, kin barred), then each
+    // child and infant is given a mother and a father among its camp's
+    // couples, the infant's nurse being its mother.
+    let mut events = Vec::new();
+    world.couple_all(content, &mut events);
+    for event in &events {
+        if let Event::Coupled { a, b } = event {
+            let entry = Entry {
+                tick: 0,
+                day: 1,
+                what: format!("{} and {} become spouses", name(*a), name(*b)),
+            };
+            chronicle.push(entry.clone());
+            for (who, other) in [(*a, *b), (*b, *a)] {
+                let person = people.entry(who).or_default();
+                person.couplings.push((1, other));
+                person.entries.push(entry.clone());
+            }
+        }
+    }
+    for tribe in 0..camps.len() {
+        let tribe = u8::try_from(tribe).expect("two tribes at most");
+        let couples: Vec<(BodyId, BodyId)> = departure
+            .iter()
+            .filter(|&&(_, t, grown)| t == tribe && grown)
+            .filter_map(|&(id, ..)| {
+                let body = world.body(id)?;
+                (body.sex() == Sex::Female).then_some((id, body.spouse()?))
+            })
+            .collect();
+        let young: Vec<BodyId> = departure
+            .iter()
+            .filter(|&&(_, t, grown)| t == tribe && !grown)
+            .map(|&(id, ..)| id)
+            .collect();
+        for (k, id) in young.into_iter().enumerate() {
+            let parents = match world.body(id).and_then(sim::Body::carried_by) {
+                Some(nurse) => Some((nurse, world.body(nurse).and_then(sim::Body::spouse))),
+                None if couples.is_empty() => None,
+                None => couples
+                    .get(k % couples.len())
+                    .map(|&(mother, father)| (mother, Some(father))),
+            };
+            let Some((mother, father)) = parents else {
+                continue;
+            };
+            world.set_parents(id, Some(mother), father);
+            let entry = Entry {
+                tick: 0,
+                day: 1,
+                what: match father {
+                    Some(father) => format!(
+                        "{} is the child of {} and {}",
+                        name(id),
+                        name(mother),
+                        name(father)
+                    ),
+                    None => format!("{} is the child of {}", name(id), name(mother)),
+                },
+            };
+            chronicle.push(entry.clone());
+            let person = people.entry(id).or_default();
+            person.mother = Some(mother);
+            person.father = father;
+            person.entries.push(entry);
+            for parent in std::iter::once(mother).chain(father) {
+                people.entry(parent).or_default().children.push(id);
+            }
         }
     }
     let tribes = camps.len();
@@ -400,7 +658,6 @@ pub fn run_watched(
     let ticks_per_sample = (calendar.ticks_per_day() / 24).max(1);
     let ticks = u64::from(settings.days) * calendar.ticks_per_day();
     let mut samples = vec![sample(&world, content, &mut people)];
-    let mut events = Vec::new();
     for _ in 0..ticks {
         events.clear();
         world.step(content, &mut events);
@@ -422,7 +679,9 @@ pub fn run_watched(
                     food.entry((tribe, year))
                         .or_default()
                         .gathered(content, gives, *grams);
-                    people.entry(*body).or_default().entries.push(Entry {
+                    let person = people.entry(*body).or_default();
+                    person.gathered_j += joules(content, gives, *grams);
+                    person.entries.push(Entry {
                         tick,
                         day,
                         what: format!("gathers {grams} g of {gives} ({energy} kJ), stops: {why:?}"),
@@ -464,14 +723,7 @@ pub fn run_watched(
                     let what = format!(
                         "{} dies {} at ({}, {})",
                         name(*body),
-                        match cause {
-                            Death::Starved => "of hunger",
-                            Death::Froze => "of cold",
-                            Death::Dehydrated => "of thirst",
-                            Death::Childbirth => "in childbirth",
-                            Death::Illness => "of illness",
-                            Death::OldAge => "of old age",
-                        },
+                        cause_words(*cause),
                         at.x,
                         at.y
                     );
@@ -480,6 +732,12 @@ pub fn run_watched(
                     let person = people.entry(*body).or_default();
                     person.death = Some((tick, *cause, *at));
                     person.entries.push(entry);
+                    // A death of illness, old age or childbirth (D49) comes
+                    // with no warning: its mind, still here until the brain's
+                    // turn, is read now, or its page would say 0.
+                    if let Some(mind) = brains.mind(*body) {
+                        person.thoughts = mind.thoughts();
+                    }
                 }
                 Event::BodyAte {
                     body,
@@ -509,6 +767,79 @@ pub fn run_watched(
                         day,
                         what: format!("drinks at ({}, {})", at.x, at.y),
                     });
+                }
+                // The registry of kinship (lot 3 C, D49): a birth opens a
+                // page in its mother's tribe, carried by her, with a mind
+                // for the day it is weaned; the parents gain a child.
+                Event::BodyBorn {
+                    body,
+                    mother,
+                    father,
+                    at,
+                } => {
+                    let tribe = tribe_of(&people, *mother);
+                    let sex = world.body(*body).map_or(Sex::Female, sim::Body::sex);
+                    let entry = Entry {
+                        tick,
+                        day,
+                        what: format!(
+                            "{}, {}, is born to {} and {} at ({}, {})",
+                            name(*body),
+                            if sex == Sex::Male { "a boy" } else { "a girl" },
+                            name(*mother),
+                            name(*father),
+                            at.x,
+                            at.y
+                        ),
+                    };
+                    chronicle.push(entry.clone());
+                    if settings.brain {
+                        brains.adopt_at(&world, content, *body, camps[usize::from(tribe)]);
+                    }
+                    let child = people.entry(*body).or_default();
+                    child.tribe = tribe;
+                    child.born_at = Some(*at);
+                    child.sex = Some(sex);
+                    child.born_day = world.body(*body).map_or(0, sim::Body::born_day);
+                    child.born_in_run = true;
+                    child.mother = Some(*mother);
+                    child.father = Some(*father);
+                    child.carrier = Some(*mother);
+                    child.entries.push(entry.clone());
+                    for parent in [*mother, *father] {
+                        let person = people.entry(parent).or_default();
+                        person.children.push(*body);
+                        person.entries.push(entry.clone());
+                    }
+                }
+                Event::PregnancyLost { mother, at } => {
+                    let entry = Entry {
+                        tick,
+                        day,
+                        what: format!(
+                            "{}, grown weak, loses the child she carried at ({}, {})",
+                            name(*mother),
+                            at.x,
+                            at.y
+                        ),
+                    };
+                    chronicle.push(entry.clone());
+                    let person = people.entry(*mother).or_default();
+                    person.lost.push(day);
+                    person.entries.push(entry);
+                }
+                Event::Coupled { a, b } => {
+                    let entry = Entry {
+                        tick,
+                        day,
+                        what: format!("{} and {} become spouses", name(*a), name(*b)),
+                    };
+                    chronicle.push(entry.clone());
+                    for (who, other) in [(*a, *b), (*b, *a)] {
+                        let person = people.entry(who).or_default();
+                        person.couplings.push((day, other));
+                        person.entries.push(entry.clone());
+                    }
                 }
                 _ => {}
             }
@@ -582,6 +913,13 @@ pub fn run_watched(
             .body(*id)
             .map(sim::Body::pos)
             .or(person.death.map(|d| d.2));
+        person.pregnant = world.body(*id).is_some_and(|b| b.pregnant().is_some());
+        person.nursing = world
+            .bodies()
+            .iter()
+            .filter(|b| b.carried_by() == Some(*id))
+            .map(sim::Body::id)
+            .collect();
     }
     let wall_s = started.elapsed().as_secs_f64();
     let (map_png, map_scale) = picture(&world, &camps);
@@ -966,6 +1304,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
 <li><b>The world</b>: {world}, {} × {} tiles of 1 m; {}.</li>\
 <li><b>The year</b>: {} days of {} game seconds (a day of the game is two hours of its clock), four seasons.</li>\
 <li><b>The brain</b>: {}.</li>\
+<li><b>Life</b> (D49): on, as in every vivarium world and never in the game: women conceive, people couple and die of illness and old age, by content/needs.ron's life section; the departure pairs the grown by the sim's own rule and gives the children a mother and a father among the camp's couples{}.</li>\
 <li><b>The food</b>: the crops of content/crops.ron (D45), on the trees and plants in their season, more some years than others, whole again the next year; gathered by hand at their rate an hour; spoiled after their days. Hunger is the appetite on a fat reserve (D46): the reserve spent, the body starves.</li>\
 <li><b>The needs</b> (content/needs.ron, points of 100 a game day): {}.</li></ul>",
             s.ticks_per_second,
@@ -980,6 +1319,11 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                 "the minimal one (sim::brain): it thinks only when something changes for its body, drinks when thirst passes 50 (wakes for it past 80); when hunger passes 50 it eats what it carries, else the food it saw, else gathers from the nearest tree or plant it knows bearing food; by day it gathers until it carries three days of food (30,000 kJ); goes looking when it knows no place (for food: by day, and only when something is ripe somewhere), goes home at night and sleeps within 6 tiles of the camp; it remembers the drinking places, the food and the trees and plants bearing food it saw"
             } else {
                 "none (the control run): the people stand where they were born"
+            },
+            if s.fed {
+                "; <b>food without limit</b>: hunger a day is 0, nobody grows thin or weak, so the births are read apart from the food"
+            } else {
+                ""
             },
             self.rates
                 .iter()
@@ -997,6 +1341,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         h.push_str("<h2>The curves</h2>");
         h.push_str(&self.curves());
         h.push_str(&self.food_table());
+        h.push_str(&self.tribes_table());
         h.push_str(&self.ages_table());
         let _ = write!(
             h,
@@ -1012,45 +1357,538 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                 escape(&entry.what)
             );
         }
-        h.push_str("</table><h2>The people</h2>");
-        for (id, person) in &self.people {
-            let fate = match &person.death {
-                Some((tick, cause, at)) => format!(
-                    "died on day {} (tick {tick}, {}) {} at ({}, {})",
-                    tick / self.ticks_per_day().max(1) + 1,
-                    self.season_of(*tick),
-                    match cause {
-                        Death::Starved => "of hunger",
-                        Death::Froze => "of cold",
-                        Death::Dehydrated => "of thirst",
-                        Death::Childbirth => "in childbirth",
-                        Death::Illness => "of illness",
-                        Death::OldAge => "of old age",
-                    },
-                    at.x,
-                    at.y
-                ),
-                None => "alive at the end".to_owned(),
+        h.push_str("</table>");
+        h.push_str(&self.families_html());
+        let _ = write!(
+            h,
+            "<p class=\"note\">One game year is {days_per_year} days; the speed below counts years of game a minute of wall clock.</p>"
+        );
+        h
+    }
+
+    /// The day (from 1) of `tick`.
+    fn day_of(&self, tick: u64) -> u64 {
+        tick / self.ticks_per_day().max(1) + 1
+    }
+
+    /// The day (from 1) a person was born on, 1 for those born before the
+    /// world.
+    fn birth_day(person: &Person) -> u64 {
+        u64::try_from(person.born_day + 1).unwrap_or(0).max(1)
+    }
+
+    /// The day (from 1) a person died on, if it did.
+    fn death_day(&self, person: &Person) -> Option<u64> {
+        person.death.map(|(tick, ..)| self.day_of(tick))
+    }
+
+    /// Whether a person is alive at the end of `day`.
+    fn alive_on(&self, person: &Person, day: u64) -> bool {
+        Self::birth_day(person) <= day && self.death_day(person).is_none_or(|d| d > day)
+    }
+
+    /// How old a person is at the end of `day` (from 1), in years.
+    fn years_on(person: &Person, day: u64) -> u64 {
+        Self::age_milli(person, i64::try_from(day).unwrap_or(i64::MAX) - 1) / 1000
+    }
+
+    /// The day (from 1) a person turns `years`.
+    fn birthday(person: &Person, years: i64) -> u64 {
+        u64::try_from(person.born_day + years * i64::from(Calendar::DEFAULT_DAYS_PER_YEAR) + 1)
+            .unwrap_or(0)
+    }
+
+    /// The last day of the run (from 1).
+    fn last_day(&self) -> u64 {
+        u64::from(self.settings.days).max(1)
+    }
+
+    /// A person's living spouse at the end of `day`, if any: its last
+    /// coupling by then, when that spouse is alive.
+    fn spouse_on(&self, person: &Person, day: u64) -> Option<BodyId> {
+        person
+            .couplings
+            .iter()
+            .rev()
+            .find(|(d, _)| *d <= day)
+            .map(|(_, s)| *s)
+            .filter(|s| self.people.get(s).is_some_and(|sp| self.alive_on(sp, day)))
+    }
+
+    /// Whether two people are kin too near to couple (D49): parent and
+    /// child, or siblings, half-siblings included.
+    fn kin(a: (BodyId, &Person), b: (BodyId, &Person)) -> bool {
+        let parent = |p: BodyId, c: &Person| c.mother == Some(p) || c.father == Some(p);
+        let share = |x: Option<BodyId>, y: Option<BodyId>| x.is_some() && x == y;
+        parent(a.0, b.1)
+            || parent(b.0, a.1)
+            || share(a.1.mother, b.1.mother)
+            || share(a.1.father, b.1.father)
+    }
+
+    /// The families (lot 3 C, D41): a couple and its children under
+    /// sixteen, named by the mother; a single adult a family of one. A
+    /// child is in its mother's family until sixteen, then in its own; a
+    /// man joins his wife's when he marries and stays in it widowed; a
+    /// woman of sixteen heads her own. Worked out from the people.
+    #[must_use]
+    pub fn families(&self) -> BTreeMap<BodyId, Family> {
+        let mut families: BTreeMap<BodyId, Family> = BTreeMap::new();
+        for (&id, person) in &self.people {
+            let start = if person.born_in_run {
+                Self::birth_day(person)
+            } else {
+                1
             };
-            let who = person.sex.map_or_else(String::new, |sex| {
+            let sixteen = Self::birthday(person, 16);
+            let woman = person.sex == Some(Sex::Female);
+            let end = self.death_day(person);
+            let last = end.unwrap_or(self.last_day());
+            // The head of its first family, and how it came.
+            let (mut head, mut arrived) = if start < sixteen {
+                (
+                    person.mother.unwrap_or(id),
+                    if person.born_in_run {
+                        Arrival::Born
+                    } else {
+                        Arrival::Start
+                    },
+                )
+            } else if woman {
+                (id, Arrival::Start)
+            } else {
+                let wife = person
+                    .couplings
+                    .first()
+                    .filter(|(day, _)| *day == start)
+                    .map(|(_, s)| *s);
+                (wife.unwrap_or(id), Arrival::Start)
+            };
+            let mut from = start;
+            // Its moves: sixteen, then each coupling, in the order of the days.
+            let mut moves: Vec<(u64, Option<BodyId>)> = Vec::new();
+            if sixteen > start && sixteen <= last {
+                moves.push((sixteen, None));
+            }
+            for &(day, spouse) in &person.couplings {
+                if day > start && day <= last {
+                    moves.push((day, Some(spouse)));
+                }
+            }
+            moves.sort_by_key(|&(day, spouse)| (day, spouse.is_some()));
+            for (day, spouse) in moves {
+                let (next, leaving, coming) = match spouse {
+                    None => (id, Leaving::Grown, Arrival::Grown),
+                    Some(s) if woman => (id, Leaving::Married(s), Arrival::Married(s)),
+                    Some(s) => (s, Leaving::Married(s), Arrival::Married(s)),
+                };
+                if next == head {
+                    continue;
+                }
+                families.entry(head).or_default().members.push(Membership {
+                    who: id,
+                    from_day: from,
+                    arrived,
+                    until: Some((day, leaving)),
+                });
+                head = next;
+                arrived = coming;
+                from = day;
+            }
+            families.entry(head).or_default().members.push(Membership {
+                who: id,
+                from_day: from,
+                arrived,
+                until: end.map(|day| (day, Leaving::Died)),
+            });
+        }
+        for (&head, family) in &mut families {
+            family.tribe = self.people.get(&head).map_or(0, |p| p.tribe);
+            family.members.sort_by_key(|m| (m.who, m.from_day));
+            family.lines = self.family_lines(head, &family.members);
+        }
+        families
+    }
+
+    /// A family's lines, in order: who came and how, who was born, lost a
+    /// child, was weaned, left and why, died and of what.
+    fn family_lines(&self, head: BodyId, members: &[Membership]) -> Vec<Entry> {
+        let per_day = self.ticks_per_day();
+        let mut lines: Vec<Entry> = Vec::new();
+        let line = |day: u64, what: String| Entry {
+            tick: day.saturating_sub(1) * per_day,
+            day,
+            what,
+        };
+        for m in members {
+            let Some(person) = self.people.get(&m.who) else {
+                continue;
+            };
+            let who = name(m.who);
+            let what = match m.arrived {
+                Arrival::Start => format!(
+                    "{who}, {}, at the start",
+                    person
+                        .sex
+                        .map_or_else(String::new, |sex| describe(sex, Self::age_milli(person, 0)))
+                ),
+                Arrival::Born => format!(
+                    "{who}, {}, is born to {} and {}",
+                    match person.sex {
+                        Some(Sex::Male) => "a boy",
+                        _ => "a girl",
+                    },
+                    person.mother.map_or_else(|| "nobody".to_owned(), name),
+                    person.father.map_or_else(|| "nobody".to_owned(), name)
+                ),
+                Arrival::Grown => format!("{who} turns 16 and founds this family"),
+                Arrival::Married(s) if s == head => format!("{who} marries {} and joins", name(s)),
+                Arrival::Married(s) => format!("{who} marries {} and heads this family", name(s)),
+            };
+            lines.push(line(m.from_day, what));
+            let until = m.until.map_or(self.last_day(), |(day, _)| day);
+            for &day in person
+                .lost
+                .iter()
+                .filter(|d| (m.from_day..=until).contains(d))
+            {
+                lines.push(line(day, format!("{who} loses the child she carried")));
+            }
+            for entry in person.entries.iter().filter(|e| {
+                (m.from_day..=until).contains(&e.day)
+                    && (e.what.contains("is weaned")
+                        || e.what.contains("is taken by")
+                        || e.what.contains("is left alone"))
+            }) {
+                lines.push(entry.clone());
+            }
+            match m.until {
+                Some((day, Leaving::Grown)) => {
+                    lines.push(line(
+                        day,
+                        format!("{who} turns 16 and leaves for a family of its own"),
+                    ));
+                }
+                Some((day, Leaving::Married(s))) => {
+                    lines.push(line(
+                        day,
+                        format!(
+                            "{who} marries {} and leaves for the family of {}",
+                            name(s),
+                            name(s)
+                        ),
+                    ));
+                }
+                Some((day, Leaving::Died)) => {
+                    let (tick, cause, at) = person.death.expect("died");
+                    lines.push(Entry {
+                        tick,
+                        day,
+                        what: format!(
+                            "{who} dies {} at ({}, {}), {}",
+                            cause_words(cause),
+                            at.x,
+                            at.y,
+                            describe(
+                                person.sex.unwrap_or(Sex::Male),
+                                Self::age_milli(person, i64::try_from(day).unwrap_or(0) - 1)
+                            )
+                        ),
+                    });
+                }
+                None => {}
+            }
+        }
+        lines.sort_by_key(|e| e.tick);
+        lines
+    }
+
+    /// Each tribe's years in numbers (lot 3 C).
+    #[must_use]
+    pub fn years(&self) -> Vec<Year> {
+        let per_year = u64::from(Calendar::DEFAULT_DAYS_PER_YEAR);
+        let last = self.last_day();
+        let count = last.div_ceil(per_year);
+        let people = |tribe: u8| self.people.iter().filter(move |(_, p)| p.tribe == tribe);
+        let mut out = Vec::new();
+        for tribe in 0..u8::try_from(self.camps.len()).unwrap_or(1) {
+            for year in 1..=count {
+                let before = (year - 1) * per_year;
+                let end = (year * per_year).min(last);
+                let alive = |day: u64| {
+                    u32::try_from(people(tribe).filter(|(_, p)| self.alive_on(p, day)).count())
+                        .unwrap_or(u32::MAX)
+                };
+                let mut y = Year {
+                    tribe,
+                    year,
+                    population: alive(end),
+                    population_before: if year == 1 { alive(1) } else { alive(before) },
+                    ..Year::default()
+                };
+                for (_, p) in people(tribe) {
+                    let born = Self::birth_day(p);
+                    if p.born_in_run && born > before && born <= end {
+                        y.births += 1;
+                        if let Some(earlier) = p
+                            .mother
+                            .and_then(|m| self.people.get(&m))
+                            .map(|m| m.children.iter().filter_map(|c| self.people.get(c)))
+                            .and_then(|children| {
+                                children.map(Self::birth_day).filter(|&d| d < born).max()
+                            })
+                        {
+                            y.intervals_days.push(born - earlier);
+                        }
+                    }
+                    if let Some((tick, cause, _)) = p.death {
+                        let day = self.day_of(tick);
+                        if day > before && day <= end {
+                            if let Some(i) = DEATHS.iter().position(|&c| c == cause) {
+                                y.deaths[i] += 1;
+                            }
+                            if cause == Death::Starved {
+                                y.hunger_seasons.push(self.season_name(tick));
+                            }
+                        }
+                    }
+                    if p.born_in_run {
+                        let fifteen = Self::birthday(p, 15);
+                        if fifteen <= end {
+                            y.fifteen.1 += 1;
+                            y.fifteen.0 += u32::from(self.alive_on(p, fifteen));
+                        }
+                    }
+                }
+                // The fertile women without a possible spouse at the year's end.
+                for (&id, w) in people(tribe) {
+                    if w.sex != Some(Sex::Female)
+                        || !self.alive_on(w, end)
+                        || !(16..=42).contains(&Self::years_on(w, end))
+                    {
+                        continue;
+                    }
+                    y.fertile.1 += 1;
+                    if self.spouse_on(w, end).is_some() {
+                        continue;
+                    }
+                    let possible = people(tribe).any(|(&m, man)| {
+                        man.sex == Some(Sex::Male)
+                            && self.alive_on(man, end)
+                            && (16..=50).contains(&Self::years_on(man, end))
+                            && self.spouse_on(man, end).is_none()
+                            && !Self::kin((id, w), (m, man))
+                    });
+                    y.fertile.0 += u32::from(!possible);
+                }
+                out.push(y);
+            }
+        }
+        out
+    }
+
+    /// "spring", "winter": the season of `tick`.
+    fn season_name(&self, tick: u64) -> String {
+        Calendar::new(
+            self.settings.ticks_per_second,
+            Calendar::DEFAULT_SECONDS_PER_DAY,
+        )
+        .map_or_else(
+            |_| String::new(),
+            |calendar| format!("{:?}", calendar.time_at(sim::Tick(tick)).season).to_lowercase(),
+        )
+    }
+
+    /// The tribes, year by year (lot 3 C): population and its growth,
+    /// births, deaths by cause, the seasons of the deaths of hunger, the
+    /// mean interval between births, the children reaching fifteen and the
+    /// fertile women without a possible spouse.
+    fn tribes_table(&self) -> String {
+        let mut h = String::from(
+            "<h2>The tribes, year by year</h2><p>Population at the year's end and its growth over the year; births; deaths by cause, with the season of each death of hunger; the mean years between a birth and its mother's birth before it; the children born in the run who turned fifteen by then, and how many lived to it; the women of 16 to 42 alive, and how many of them have no living spouse and no man of the tribe of 16 to 50, unwed and not their kin, to take.</p>\
+<table><tr><th>Tribe</th><th>Year</th><th>Population</th><th>Growth</th><th>Births</th><th>Illness</th><th>Old age</th><th>Childbirth</th><th>Hunger</th><th>Thirst</th><th>Cold</th><th>Birth interval</th><th>Reached 15</th><th>Fertile women without a possible spouse</th></tr>",
+        );
+        for y in self.years() {
+            let growth = if y.population_before == 0 {
+                "—".to_owned()
+            } else {
+                let tenths = (i64::from(y.population) - i64::from(y.population_before)) * 1000
+                    / i64::from(y.population_before);
+                format!(
+                    "{}{}.{} %",
+                    if tenths < 0 { "−" } else { "+" },
+                    tenths.abs() / 10,
+                    tenths.abs() % 10
+                )
+            };
+            let interval = if y.intervals_days.is_empty() {
+                "—".to_owned()
+            } else {
+                let mean_tenths = y.intervals_days.iter().sum::<u64>() * 10
+                    / (u64::from(Calendar::DEFAULT_DAYS_PER_YEAR)
+                        * u64::try_from(y.intervals_days.len()).unwrap_or(1));
+                format!(
+                    "{}.{} years ({} births)",
+                    mean_tenths / 10,
+                    mean_tenths % 10,
+                    y.intervals_days.len()
+                )
+            };
+            let hunger = if y.hunger_seasons.is_empty() {
+                y.deaths[3].to_string()
+            } else {
+                format!("{} ({})", y.deaths[3], y.hunger_seasons.join(", "))
+            };
+            let fifteen = if y.fifteen.1 == 0 {
+                "—".to_owned()
+            } else {
+                format!("{} of {}", y.fifteen.0, y.fifteen.1)
+            };
+            let _ = write!(
+                h,
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{growth}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{hunger}</td><td>{}</td><td>{}</td><td>{interval}</td><td>{fifteen}</td><td>{} of {}</td></tr>",
+                tribe_name(y.tribe),
+                y.year,
+                y.population,
+                y.births,
+                y.deaths[0],
+                y.deaths[1],
+                y.deaths[2],
+                y.deaths[4],
+                y.deaths[5],
+                y.fertile.0,
+                y.fertile.1
+            );
+        }
+        h.push_str("</table>");
+        h
+    }
+
+    /// The person's page: its summary line, its sparkline and its lines.
+    fn person_html(&self, id: BodyId, person: &Person) -> String {
+        let mut h = String::new();
+        let fate = match &person.death {
+            Some((tick, cause, at)) => format!(
+                "died on day {} (tick {tick}, {}) {} at ({}, {})",
+                self.day_of(*tick),
+                self.season_of(*tick),
+                cause_words(*cause),
+                at.x,
+                at.y
+            ),
+            None => "alive at the end".to_owned(),
+        };
+        let who = person.sex.map_or_else(String::new, |sex| {
+            if person.born_in_run {
+                format!(", born on day {}", Self::birth_day(person))
+            } else {
                 format!(
                     ", {} at the start",
                     describe(sex, Self::age_milli(person, 0))
                 )
-            });
+            }
+        });
+        let _ = write!(
+            h,
+            "<details><summary>{} (tribe {}{who}) — {fate}; {} meals ({} g), drank {} times, thought {} times, gathered {} kJ</summary>",
+            name(id),
+            tribe_name(person.tribe),
+            person.meals.0,
+            person.meals.1,
+            person.drinks,
+            person.thoughts,
+            person.gathered_j / 1000
+        );
+        h.push_str(&sparkline(&person.gauges, self.ticks));
+        let full = self.settings.days <= FULL_LINES_DAYS;
+        if !full {
             let _ = write!(
                 h,
-                "<details><summary>{} (tribe {}{who}) — {fate}; {} meals ({} g), drank {} times, thought {} times</summary>",
-                name(*id),
-                tribe_name(person.tribe),
-                person.meals.0,
-                person.meals.1,
-                person.drinks,
-                person.thoughts
+                "<p>The lines of its life; its {} lines of thought, meals, drinks and gathers are not shown (a run over {FULL_LINES_DAYS} days).</p>",
+                person
+                    .entries
+                    .iter()
+                    .filter(|e| !is_life_line(&e.what))
+                    .count()
             );
-            h.push_str(&sparkline(&person.gauges, self.ticks));
+        }
+        h.push_str("<table class=\"chronicle\">");
+        for entry in person
+            .entries
+            .iter()
+            .filter(|e| full || is_life_line(&e.what))
+        {
+            let _ = write!(
+                h,
+                "<tr><td>day {} · tick {}</td><td>{}</td></tr>",
+                entry.day,
+                entry.tick,
+                escape(&entry.what)
+            );
+        }
+        h.push_str("</table></details>");
+        h
+    }
+
+    /// Days a person was thin and weak, in tenths, from its gauges (24 a
+    /// day): its fat reserve under half, under a fifth.
+    fn thin_weak_days(person: &Person) -> (u64, u64) {
+        let count = |under: u32| {
+            u64::try_from(person.gauges.iter().filter(|g| g.5 < under).count()).unwrap_or(0) * 10
+                / 24
+        };
+        (count(50), count(20))
+    }
+
+    /// The families' pages (lot 3 C): each with its members, their age, sex
+    /// and state, its births and deaths, its food and its lines.
+    fn families_html(&self) -> String {
+        let families = self.families();
+        let mut h = format!(
+            "<h2>The families</h2><p>{} families: a couple and its children under sixteen, named by the mother; a single adult is a family of one. A child leaves at sixteen for a family of its own, a man for his wife's when he marries; each move is a line in both. Days thin and weak: under half and under a fifth of the fat reserve. The reserve curve is the mean fat reserve of the members alive, in percent; gathered: what its members gathered over the whole run.</p>",
+            families.len()
+        );
+        for (head, family) in &families {
+            let in_at_end: Vec<&Membership> = family
+                .members
+                .iter()
+                .filter(|m| m.until.is_none())
+                .collect();
+            let births = family
+                .members
+                .iter()
+                .filter(|m| m.arrived == Arrival::Born)
+                .count();
+            let deaths = family
+                .members
+                .iter()
+                .filter(|m| matches!(m.until, Some((_, Leaving::Died))))
+                .count();
+            let _ = write!(
+                h,
+                "<details class=\"family\"><summary><b>The family of {}</b> (tribe {}): {} in it at the end, {} born into it, {} died in it</summary>",
+                name(*head),
+                tribe_name(family.tribe),
+                in_at_end.len(),
+                births,
+                deaths
+            );
+            h.push_str("<table><tr><th>Member</th><th>Who</th><th>In the family</th><th>State at the end</th><th>Days thin</th><th>Days weak</th><th>Gathered, kJ</th></tr>");
+            let mut gathered = 0;
+            for m in &family.members {
+                if let Some(person) = self.people.get(&m.who) {
+                    gathered += person.gathered_j;
+                    h.push_str(&self.member_row(*head, m, person));
+                }
+            }
+            let _ = write!(
+                h,
+                "</table><p>Gathered by its members over the run: {} kJ.</p>",
+                gathered / 1000
+            );
+            h.push_str(&self.family_curve(family));
             h.push_str("<table class=\"chronicle\">");
-            for entry in &person.entries {
+            for entry in &family.lines {
                 let _ = write!(
                     h,
                     "<tr><td>day {} · tick {}</td><td>{}</td></tr>",
@@ -1059,13 +1897,146 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                     escape(&entry.what)
                 );
             }
-            h.push_str("</table></details>");
+            h.push_str("</table>");
+            let mut shown = std::collections::BTreeSet::new();
+            for m in &family.members {
+                if let Some(person) = self.people.get(&m.who)
+                    && shown.insert(m.who)
+                {
+                    h.push_str(&self.person_html(m.who, person));
+                }
+            }
+            h.push_str("</details>");
         }
+        h
+    }
+
+    /// A member's row of its family's table: who it is, its time in the
+    /// family, its state at the end, its days thin and weak, what it
+    /// gathered.
+    fn member_row(&self, head: BodyId, m: &Membership, person: &Person) -> String {
+        let last = self.last_day();
+        let mut h = String::new();
+        let on = m.until.map_or(last, |(day, _)| day);
+        let role = if m.who == head {
+            if person.sex == Some(Sex::Female) {
+                "the mother"
+            } else {
+                "alone"
+            }
+        } else if person.couplings.iter().any(|(_, s)| *s == head) {
+            "the father"
+        } else if person.mother == Some(head)
+            || person.father.is_some_and(|f| {
+                self.people
+                    .get(&head)
+                    .is_some_and(|hd| hd.couplings.iter().any(|(_, s)| *s == f))
+            })
+        {
+            if person.sex == Some(Sex::Male) {
+                "a son"
+            } else {
+                "a daughter"
+            }
+        } else {
+            "—"
+        };
+        let who = format!(
+            "{role}, {}",
+            describe(
+                person.sex.unwrap_or(Sex::Male),
+                Self::age_milli(person, i64::try_from(on).unwrap_or(0) - 1)
+            )
+        );
+        let span = match m.until {
+            None => format!("from day {} to the end", m.from_day),
+            Some((day, Leaving::Grown)) => {
+                format!("from day {} to day {day}, left at 16", m.from_day)
+            }
+            Some((day, Leaving::Married(s))) => {
+                format!("from day {} to day {day}, married {}", m.from_day, name(s))
+            }
+            Some((day, Leaving::Died)) => format!(
+                "from day {} to day {day}, died {}",
+                m.from_day,
+                person.death.map_or("", |d| cause_words(d.1))
+            ),
+        };
+        let mut state: Vec<String> = Vec::new();
+        if m.until.is_none() {
+            if person.pregnant {
+                state.push("pregnant".to_owned());
+            }
+            for infant in &person.nursing {
+                state.push(format!("nursing {}", name(*infant)));
+            }
+            if person.carrier.is_some() {
+                state.push("carried".to_owned());
+            }
+            if state.is_empty() {
+                state.push("alive".to_owned());
+            }
+        } else {
+            state.push("gone".to_owned());
+        }
+        let (thin, weak) = Self::thin_weak_days(person);
         let _ = write!(
             h,
-            "<p class=\"note\">One game year is {days_per_year} days; the speed below counts years of game a minute of wall clock.</p>"
+            "<tr><td>{}</td><td>{who}</td><td>{span}</td><td>{}</td><td>{}.{}</td><td>{}.{}</td><td>{}</td></tr>",
+            name(m.who),
+            state.join(", "),
+            thin / 10,
+            thin % 10,
+            weak / 10,
+            weak % 10,
+            person.gathered_j / 1000
         );
         h
+    }
+
+    /// A family's curve: the members alive (black, against the most it
+    /// held) and their mean fat reserve (orange, percent), from the
+    /// members' own gauges while they were in it.
+    fn family_curve(&self, family: &Family) -> String {
+        const W: u64 = 600;
+        const H: u64 = 60;
+        let per_day = self.ticks_per_day();
+        let mut at: BTreeMap<u64, (u64, u64)> = BTreeMap::new();
+        for m in &family.members {
+            let Some(person) = self.people.get(&m.who) else {
+                continue;
+            };
+            let from = (m.from_day - 1) * per_day;
+            let until = m.until.map_or(u64::MAX, |(day, _)| day * per_day);
+            for g in person
+                .gauges
+                .iter()
+                .filter(|g| (from..until).contains(&g.0))
+            {
+                let slot = at.entry(g.0).or_default();
+                slot.0 += 1;
+                slot.1 += u64::from(g.5);
+            }
+        }
+        let most = at.values().map(|s| s.0).max().unwrap_or(1).max(1);
+        let ticks = self.ticks.max(1);
+        let at: Vec<(u64, (u64, u64))> = at.into_iter().collect();
+        let line = |colour: &str, pick: &dyn Fn(&(u64, u64)) -> u64| {
+            let points: Vec<String> = thinned(&at)
+                .map(|(tick, slot)| {
+                    format!("{},{}", tick * W / ticks, H - pick(slot).min(100) * H / 100)
+                })
+                .collect();
+            format!(
+                "<polyline fill=\"none\" stroke=\"{colour}\" stroke-width=\"1\" points=\"{}\"/>",
+                points.join(" ")
+            )
+        };
+        format!(
+            "<svg width=\"{W}\" height=\"{H}\" viewBox=\"0 0 {W} {H}\">{}{}</svg><p><span style=\"color:#222\">■ members alive (of {most})</span> <span style=\"color:#d80\">■ mean fat reserve, %</span></p>",
+            line("#222", &|s| s.0 * 100 / most),
+            line("#d80", &|s| s.1 / s.0.max(1)),
+        )
     }
 
     /// "camp A at (x, y), camp B at (x, y), 2443 m apart".
@@ -1139,6 +2110,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             self.people
                 .values()
                 .filter(|p| p.sex == Some(sex) && (!living || p.death.is_none()))
+                .filter(|p| living || !p.born_in_run)
                 .filter(|p| (lo..hi).contains(&(Self::age_milli(p, day) / 1000)))
                 .count()
         };
@@ -1193,12 +2165,16 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         const H: u64 = 220;
         let ticks = self.ticks.max(1);
         let tribes = u64::try_from(self.camps.len()).expect("small");
-        let people = u64::from(self.settings.people.max(1)) * tribes;
+        let people = (u64::from(self.settings.people.max(1)) * tribes).max(
+            self.samples
+                .iter()
+                .map(|s| u64::from(s.alive))
+                .max()
+                .unwrap_or(0),
+        );
         let x = |tick: u64| tick * W / ticks;
         let line = |name: &str, colour: &str, values: &dyn Fn(&Sample) -> u64, top: u64| {
-            let points: Vec<String> = self
-                .samples
-                .iter()
+            let points: Vec<String> = thinned(&self.samples)
                 .map(|s| format!("{},{}", x(s.tick), H - values(s) * H / top.max(1)))
                 .collect();
             format!(
@@ -1277,8 +2253,7 @@ fn sparkline(gauges: &[Gauges], ticks: u64) -> String {
     const H: u64 = 60;
     let ticks = ticks.max(1);
     let line = |colour: &str, pick: &dyn Fn(&Gauges) -> u32| {
-        let points: Vec<String> = gauges
-            .iter()
+        let points: Vec<String> = thinned(gauges)
             .map(|g| format!("{},{}", g.0 * W / ticks, H - u64::from(pick(g)) * H / 100))
             .collect();
         format!(
@@ -1330,6 +2305,8 @@ mod tests {
             tribes: 1,
             children: 0,
             infants: 0,
+            adult_years: (18, 40),
+            fed: false,
         }
     }
 
@@ -1488,6 +2465,380 @@ mod tests {
         eprintln!("cadence 10: {:?}, gathered {:?} kJ", game.0, game.1);
         assert_eq!(slow.0, game.0, "the same deaths at both cadences");
         assert_eq!(slow.1, game.1, "the same food gathered at both cadences");
+    }
+
+    /// The departure paired (lot 3 C): the grown are coupled on day one by
+    /// the sim's own rule, every child has a mother and a father among the
+    /// camp's couples, an infant's nurse is its mother, and the families
+    /// follow: the woman heads, her husband and her children are in hers.
+    #[test]
+    fn the_departure_pairs_the_grown_and_gives_the_young_parents() {
+        let settings = Settings {
+            people: 4,
+            children: 2,
+            infants: 1,
+            days: 1,
+            ..small()
+        };
+        let report = run_checked(&settings, content());
+        assert_eq!(report.people.len(), 7);
+        let spouses = report
+            .chronicle
+            .iter()
+            .filter(|e| e.day == 1 && e.what.contains("become spouses"))
+            .count();
+        assert_eq!(spouses, 2, "two couples of the four grown");
+        let grown: Vec<_> = report
+            .people
+            .values()
+            .filter(|p| !p.born_in_run && Report::years_on(p, 1) >= 16)
+            .collect();
+        assert_eq!(grown.len(), 4);
+        for person in &grown {
+            assert_eq!(person.couplings.len(), 1, "{person:?}");
+            assert_eq!(person.couplings[0].0, 1);
+        }
+        for (id, child) in report
+            .people
+            .iter()
+            .filter(|(_, p)| Report::years_on(p, 1) < 16)
+        {
+            let mother = child.mother.expect("a mother");
+            let father = child.father.expect("a father");
+            let she = &report.people[&mother];
+            assert_eq!(she.sex, Some(Sex::Female));
+            assert_eq!(
+                she.couplings.first().map(|c| c.1),
+                Some(father),
+                "the father is her spouse"
+            );
+            assert!(she.children.contains(id) && report.people[&father].children.contains(id));
+            if let Some(nurse) = child.carrier {
+                assert_eq!(nurse, mother, "the nurse is the mother");
+            }
+        }
+        let families = report.families();
+        assert_eq!(families.len(), 2, "two couples, two families: {families:?}");
+        for (head, family) in &families {
+            assert_eq!(
+                report.people[head].sex,
+                Some(Sex::Female),
+                "named by the mother"
+            );
+            let husband = report.people[head].couplings[0].1;
+            assert!(
+                family
+                    .members
+                    .iter()
+                    .any(|m| m.who == husband && m.until.is_none())
+            );
+            for m in &family.members {
+                let p = &report.people[&m.who];
+                assert!(
+                    m.who == *head || m.who == husband || p.mother == Some(*head),
+                    "{m:?} in the family of {head:?}"
+                );
+            }
+        }
+        let html = report.fixed();
+        assert!(
+            html.contains("<h2>The families</h2>")
+                && html.contains("<b>The family of person 1</b>")
+        );
+        assert!(html.contains("is the child of") && html.contains("become spouses"));
+        assert!(html.contains("<h2>The tribes, year by year</h2>"));
+    }
+
+    /// The registry (lot 3 C): the families and the years are worked out
+    /// from the people. A child is in its mother's family from its birth to
+    /// its death or its sixteenth year, then in its own; a man joins his
+    /// wife's when he marries; the year counts births, deaths by cause, the
+    /// interval between births and the fertile women without a spouse.
+    fn peopled_report() -> (Report, BodyId, BodyId) {
+        let mut report = run_with(&small(), content()).unwrap();
+        let per_day = report.ticks_per_day();
+        let (mother, father) = (BodyId(1), report.people[&BodyId(1)].couplings[0].1);
+        assert_eq!(report.people[&mother].sex, Some(Sex::Female));
+        let child = |born_day: i64, sex: Sex, born_in_run: bool| Person {
+            tribe: 0,
+            sex: Some(sex),
+            born_day,
+            mother: Some(mother),
+            father: Some(father),
+            born_in_run,
+            ..Person::default()
+        };
+        // Born on day 1, dies of illness on day 2.
+        let mut first = child(0, Sex::Male, true);
+        first.death = Some((per_day + 10, Death::Illness, Pos::new(1, 1)));
+        report.people.insert(BodyId(100), first);
+        // Born on day 2, alive.
+        report
+            .people
+            .insert(BodyId(101), child(1, Sex::Female, true));
+        // Turns sixteen on day 2.
+        report.people.insert(
+            BodyId(102),
+            child(
+                1 - 16 * i64::from(Calendar::DEFAULT_DAYS_PER_YEAR),
+                Sex::Male,
+                false,
+            ),
+        );
+        report.people.get_mut(&mother).unwrap().children =
+            vec![BodyId(100), BodyId(101), BodyId(102)];
+        // A single woman marries a man on day 2.
+        let single = *report
+            .people
+            .iter()
+            .find(|(_, p)| p.sex == Some(Sex::Female) && p.couplings.is_empty())
+            .map(|(id, _)| id)
+            .expect("five people, three women, one unwed");
+        let mut groom = Person {
+            tribe: 0,
+            sex: Some(Sex::Male),
+            born_day: -30 * i64::from(Calendar::DEFAULT_DAYS_PER_YEAR),
+            couplings: vec![(2, single)],
+            ..Person::default()
+        };
+        groom.entries.clear();
+        report.people.insert(BodyId(103), groom);
+        report
+            .people
+            .get_mut(&single)
+            .unwrap()
+            .couplings
+            .push((2, BodyId(103)));
+        (report, mother, single)
+    }
+
+    #[test]
+    fn the_families_follow_the_people() {
+        let (report, mother, single) = peopled_report();
+        let families = report.families();
+        let hers = &families[&mother];
+        let of = |who: u32| {
+            hers.members
+                .iter()
+                .find(|m| m.who == BodyId(who))
+                .copied()
+                .unwrap_or_else(|| panic!("person {who} in the family of the mother"))
+        };
+        assert_eq!(of(100).arrived, Arrival::Born);
+        assert_eq!(of(100).until, Some((2, Leaving::Died)));
+        assert_eq!((of(101).from_day, of(101).until), (2, None));
+        assert_eq!(of(102).until, Some((2, Leaving::Grown)));
+        assert_eq!(
+            families[&BodyId(102)].members,
+            vec![Membership {
+                who: BodyId(102),
+                from_day: 2,
+                arrived: Arrival::Grown,
+                until: None
+            }]
+        );
+        let wife = &families[&single];
+        assert_eq!(wife.members.len(), 2, "{wife:?}");
+        assert!(wife.members.iter().any(|m| m.who == BodyId(103)
+            && m.from_day == 2
+            && m.arrived == Arrival::Married(single)));
+        assert_eq!(
+            families[&BodyId(103)].members[0].until,
+            Some((2, Leaving::Married(single))),
+            "a line in the old family"
+        );
+        let words: Vec<&str> = hers.lines.iter().map(|e| e.what.as_str()).collect();
+        assert!(
+            words
+                .iter()
+                .any(|w| w.starts_with("person 100, a boy, is born to person 1 and"))
+        );
+        assert!(
+            words
+                .iter()
+                .any(|w| w.starts_with("person 100 dies of illness"))
+        );
+        assert!(words.contains(&"person 102 turns 16 and leaves for a family of its own"));
+        assert!(
+            families[&BodyId(103)]
+                .lines
+                .iter()
+                .any(|e| e.what.contains("leaves for the family of"))
+        );
+    }
+
+    #[test]
+    fn the_years_count_births_deaths_intervals_and_lone_women() {
+        let (mut report, _, single) = peopled_report();
+        let years = report.years();
+        assert_eq!(years.len(), 1);
+        let y = &years[0];
+        assert_eq!(
+            (y.population_before, y.population),
+            (5 + 1 + 1 + 1, 5 + 1 + 1 + 1)
+        );
+        assert_eq!(y.births, 2);
+        assert_eq!(y.deaths, [1, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            y.intervals_days,
+            vec![1],
+            "the second child a day after the first"
+        );
+        assert_eq!(y.fifteen, (0, 0), "nobody is fifteen yet");
+        // Three women of the fertile years; the single one married on day 2.
+        assert_eq!(y.fertile, (0, 3));
+        report.people.get_mut(&single).unwrap().couplings.clear();
+        report.people.remove(&BodyId(103));
+        assert_eq!(
+            report.years()[0].fertile,
+            (0, 3),
+            "the boy of sixteen, no kin of hers, is a possible spouse"
+        );
+        report.people.remove(&BodyId(102));
+        assert_eq!(
+            report.years()[0].fertile,
+            (1, 3),
+            "no unwed man left for her"
+        );
+        let html = report.fixed();
+        assert!(
+            html.contains("+60.0 %") || html.contains("+0.0 %"),
+            "{}",
+            &html[html.find("The tribes").unwrap()..][..600]
+        );
+    }
+
+    /// Lot 3 C's first trial (the proposal's section 4.1): a couple of
+    /// twenty alone on the patch, food without limit, twenty years. Births
+    /// some three years apart; the children weaned at two, who walk; deaths
+    /// of the curve alone (illness, old age, childbirth), none of want;
+    /// the couple's children never pairing with each other; the family
+    /// neither dying out nor exploding. Prints the numbers for `docs/05`;
+    /// writes the page to `$VIVARIUM_OUT` when set.
+    #[test]
+    #[ignore = "twenty years at cadence 1, some 50 s in release: VIVARIUM_OUT=page.html cargo test --release -p vivarium -- --ignored one_couple"]
+    fn one_couple_alone_and_fed_twenty_years() {
+        let settings = Settings {
+            people: 2,
+            adult_years: (20, 20),
+            fed: true,
+            days: 20 * Calendar::DEFAULT_DAYS_PER_YEAR,
+            ..small()
+        };
+        let report = run_checked(&settings, content());
+        if let Ok(out) = std::env::var("VIVARIUM_OUT") {
+            std::fs::write(&out, report.html()).expect("the page is written");
+        }
+        let (wife, husband) = (BodyId(1), BodyId(2));
+        assert_eq!(
+            report.people[&wife].couplings.first().map(|c| c.1),
+            Some(husband)
+        );
+        let per_year = u64::from(Calendar::DEFAULT_DAYS_PER_YEAR);
+        let children: Vec<(BodyId, &Person)> = report
+            .people
+            .iter()
+            .filter(|(_, p)| p.born_in_run)
+            .map(|(id, p)| (*id, p))
+            .collect();
+        assert!(
+            children.len() >= 3,
+            "births in twenty years: {}",
+            children.len()
+        );
+        for (_, child) in &children {
+            assert_eq!((child.mother, child.father), (Some(wife), Some(husband)));
+        }
+        let mut intervals = Vec::new();
+        for pair in children.windows(2) {
+            let (earlier, later) = (pair[0].1, pair[1].1);
+            let gap = Report::birth_day(later) - Report::birth_day(earlier);
+            intervals.push(gap);
+            let earlier_lived_to_two = report
+                .death_day(earlier)
+                .is_none_or(|d| d >= Report::birthday(earlier, 2));
+            if earlier_lived_to_two {
+                assert!(gap * 10 >= 25 * per_year, "{gap} days between two births");
+            }
+        }
+        let mean_tenths = intervals.iter().sum::<u64>() * 10 / (per_year * intervals.len() as u64);
+        assert!(
+            (20..=50).contains(&mean_tenths),
+            "mean interval {mean_tenths} tenths of a year"
+        );
+        let weaned = weaned_at_two(&report, &children);
+        let deaths = deaths_of_the_curve(&report);
+        for (id, p) in &report.people {
+            for &(day, spouse) in p.couplings.iter().filter(|(day, _)| *day > 1) {
+                let other = &report.people[&spouse];
+                assert!(
+                    !Report::kin((*id, p), (spouse, other)),
+                    "person {} and person {} are kin and became spouses on day {day}",
+                    id.0,
+                    spouse.0
+                );
+            }
+        }
+        let alive = report.samples.last().map_or(0, |s| s.alive);
+        assert!((1..=30).contains(&alive), "{alive} alive at the end");
+        eprintln!(
+            "trial 1: {} births, intervals {intervals:?} days (mean {}.{} years), {weaned} weaned at two, {alive} alive at the end, deaths: {deaths:?}, {:.1} s on the wall",
+            children.len(),
+            mean_tenths / 10,
+            mean_tenths % 10,
+            report.wall_s
+        );
+    }
+
+    /// How many of `children` were weaned at two, each checked: within a
+    /// day of its second birthday, and walking and thinking after it.
+    fn weaned_at_two(report: &Report, children: &[(BodyId, &Person)]) -> usize {
+        let mut weaned = 0;
+        for (_, child) in children {
+            let two = Report::birthday(child, 2);
+            if two + 1 > report.last_day() || report.death_day(child).is_some_and(|d| d <= two) {
+                continue;
+            }
+            let day = child
+                .entries
+                .iter()
+                .find(|e| e.what.contains("is weaned"))
+                .map(|e| e.day)
+                .expect("weaned at two");
+            assert!(
+                day.abs_diff(two) <= 1,
+                "weaned on day {day}, two on day {two}"
+            );
+            assert!(
+                child.thoughts > 0 && child.entries.iter().any(|e| e.what.contains("walks to")),
+                "a weaned child walks"
+            );
+            weaned += 1;
+        }
+        weaned
+    }
+
+    /// Every death in words, each checked to be of the curve (illness, old
+    /// age, childbirth): with food without limit nobody dies of want.
+    fn deaths_of_the_curve(report: &Report) -> Vec<String> {
+        let mut deaths = Vec::new();
+        for (id, p) in &report.people {
+            if let Some((tick, cause, _)) = p.death {
+                assert!(
+                    matches!(cause, Death::Illness | Death::OldAge | Death::Childbirth),
+                    "person {} died {cause:?} with food without limit",
+                    id.0
+                );
+                deaths.push(format!(
+                    "person {} {} on day {} at {}",
+                    id.0,
+                    cause_words(cause),
+                    report.day_of(tick),
+                    Report::years_on(p, report.day_of(tick))
+                ));
+            }
+        }
+        deaths
     }
 
     #[test]

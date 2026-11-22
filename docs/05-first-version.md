@@ -330,6 +330,27 @@ m). The vivarium's test
 (`#[ignore]`d, some 30 s in release) runs the trial, prints every death
 with its day and cause, and fails until the trial holds again.
 
+**Lot 3 C, births, deaths and families** (21 and 22 November 2026, D49,
+D41 amended). The life rule in `sim` (#306): conception once a season,
+three seasons of pregnancy, birth where the mother stands, a death curve
+by age drawn daily, illness under sixty and old age from it, a spouse
+taken among the unwed who are no kin; off in the game. The vivarium
+turns it on, pairs the grown at the departure and gives the children
+parents, keeps the registry of kinship and deaths in its report and
+writes **one page per family** with counters per tribe and per year.
+*Trial 1, a couple of twenty alone on the 50 × 50 patch, food without
+limit (hunger a day 0), twenty years, cadence 1, release, seed 1*:
+**6 births**, 2.8 to 3.7 years apart (138 to 187 days; mean 3.2 years),
+all six weaned at two to the day and walking after; **one death**, the
+mother, of illness at 39 in the last year; nobody of want; 7 alive at the
+end; the eldest leaves the family at 16 in year 18 and pairs with nobody
+(his sisters are his kin and under sixteen); no fertile woman without a
+possible spouse while the mother lives. The run took 46 s on the wall
+(26 game years a minute), its page 0.5 MB. The test
+`one_couple_alone_and_fed_twenty_years` (`#[ignore]`d) runs it and holds
+those invariants. The second trial, two tribes of 125 over ten seeds, is
+PR 3.
+
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
 slopes drawn by the client from them (D44), then the relief in the
