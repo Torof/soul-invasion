@@ -92,7 +92,9 @@ pub struct Settings {
     /// `trials` section is replaced by one where nobody tries anything.
     pub trials: bool,
     /// Helper threads placing the chunks' bearers ahead of the bodies
-    /// (`sim::ahead`, D51 amended): 0 is the one simulation thread alone.
+    /// (`sim::ahead`, D51 amended): 0 is the one simulation thread alone
+    /// (the lab's choice for a series of runs side by side, each helper
+    /// taking a fifth of a core more).
     /// The pages are the same whatever the number; only the wall changes,
     /// so it is told with the timing, never with the settings.
     pub helpers: u32,
@@ -769,6 +771,14 @@ pub fn run_watched(
     let mut people: BTreeMap<BodyId, Person> = BTreeMap::new();
     let mut chronicle = Vec::new();
     let mut brains = Brains::new(settings.seed);
+    // The ground's caches (trees, rocks, bearers) widened from four views
+    // to the world's chunks (D51 amended): over a long run the bodies see
+    // more land than four views, and at the cap the caches thrashed from
+    // day 59 on, each chunk's bearers placing nine chunks' trees again.
+    let map = world.map();
+    world
+        .shared_ground()
+        .widen(map.chunks_wide() as usize * map.chunks_high() as usize);
     // The helpers placing bearers ahead (D51 amended), told where the
     // bodies are every few ticks; `None` with `--helpers 0`.
     let placer = sim::ahead::Placer::spawn(&world, usize::try_from(settings.helpers).unwrap_or(1));
