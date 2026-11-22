@@ -249,6 +249,20 @@ impl World {
         }
     }
 
+    /// Couples now every body of the mating years without a spouse, by the
+    /// daily rule (`World::couple`), the lowest id first: the vivarium's
+    /// departure pairs its adults on day one rather than at their own hours
+    /// (lot 3 C), so its children can be given parents among the couples.
+    /// Nothing when `life` is off; `Event::Coupled` for each pair made.
+    pub fn couple_all(&mut self, rules: &Content, events: &mut Vec<Event>) {
+        if !self.life {
+            return;
+        }
+        for index in 0..self.bodies.len() {
+            self.couple(index, rules, events);
+        }
+    }
+
     /// A body of the content's mating years without a spouse takes the
     /// nearest body of the other sex within the content's reach, of those
     /// years, without a spouse, that is not its kin (`are_kin`); the
@@ -897,5 +911,48 @@ mod tests {
         let before: World = serde_json::from_value(old).unwrap();
         assert!(!before.life());
         assert_eq!(kin(&before, child), (None, None, None, None));
+    }
+
+    /// The vivarium's departure (lot 3 C): `couple_all` pairs every unwed
+    /// body of the mating years at once by the daily rule, kin barred, and
+    /// `set_parents` gives a child its mother and father; a body is never
+    /// its own parent. With life off, nobody is coupled.
+    #[test]
+    fn the_departure_couples_everyone_at_once_and_gives_children_parents() {
+        let rules = fed_rules();
+        let mut w = world();
+        let wife = person(&mut w, 10, 5, 25, Sex::Female);
+        let husband = person(&mut w, 12, 5, 27, Sex::Male);
+        let maid = person(&mut w, 20, 5, 19, Sex::Female);
+        let boy = person(&mut w, 11, 5, 7, Sex::Male);
+        let mut events = Vec::new();
+        w.couple_all(&rules, &mut events);
+        let coupled: Vec<(BodyId, BodyId)> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Coupled { a, b } => Some((*a, *b)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            coupled,
+            vec![(wife, husband)],
+            "one pair, the nearest; the boy too young, the maid left alone"
+        );
+        assert_eq!(w.body(maid).unwrap().spouse(), None);
+        w.set_parents(boy, Some(wife), Some(husband));
+        let child = w.body(boy).unwrap();
+        assert_eq!(
+            (child.mother(), child.father()),
+            (Some(wife), Some(husband))
+        );
+        w.set_parents(boy, Some(boy), None);
+        assert_eq!(w.body(boy).unwrap().mother(), None, "never its own parent");
+        let mut off = world_with(false);
+        let a = person(&mut off, 10, 5, 25, Sex::Female);
+        person(&mut off, 12, 5, 27, Sex::Male);
+        let mut events = Vec::new();
+        off.couple_all(&rules, &mut events);
+        assert!(events.is_empty() && off.body(a).unwrap().spouse().is_none());
     }
 }

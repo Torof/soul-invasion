@@ -2143,6 +2143,18 @@ impl World {
         }
     }
 
+    /// Sets a body's parents (D49) when it was not born in the world: the
+    /// vivarium's departure gives its children and infants a mother and a
+    /// father among the camp's couples (lot 3 C). Nothing for an unknown
+    /// body; a body is never its own parent.
+    pub fn set_parents(&mut self, id: BodyId, mother: Option<BodyId>, father: Option<BodyId>) {
+        if let Some(index) = self.index_of(id) {
+            let body = &mut self.bodies[index];
+            body.mother = mother.filter(|&m| m != id);
+            body.father = father.filter(|&f| f != id);
+        }
+    }
+
     /// Gives the infant `infant` to `carrier` to carry and nurse (lot 3 B):
     /// it stands where its carrier stands from now on. False when either
     /// is unknown or they are the same.
