@@ -70,7 +70,7 @@
 //! section `trials` holds every number ([`crate::content::Trials`]);
 //! absent, nobody tries anything.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::content::{Content, Trials};
@@ -600,6 +600,9 @@ pub struct Brains {
     shores: Lru<ChunkPos, Vec<Shore>>,
     /// The content's kinds bearing food, numbered, and what each bears now.
     food: Food,
+    /// The minds whose last look left chunks `unseen`, learnt at the next
+    /// turns ([`Brains::learn_unseen`]): the others are not swept.
+    pending: BTreeSet<BodyId>,
     /// How much the brains think a game second at most
     /// ([`THOUGHT_WORK_PER_SECOND`]).
     work_per_second: u64,
@@ -887,6 +890,7 @@ impl Brains {
             bearers: Placed::new(),
             shores: Lru::new(BEARER_CHUNKS),
             food: Food::default(),
+            pending: BTreeSet::new(),
             work_per_second: THOUGHT_WORK_PER_SECOND,
             owed: 0,
             next: None,
@@ -993,7 +997,9 @@ impl Brains {
         self.bearers.left = cold_chunks_at(world, now);
         self.learn_unseen(world, rules);
         let spread = wake_spread(world);
-        // Who is gone, and who is due.
+        // Who is gone, and who is due: the due noted on the way, by their
+        // ids, rather than swept again.
+        let mut due: Vec<BodyId> = Vec::new();
         self.minds.retain(|&id, mind| {
             let Some(body) = world.body(id) else {
                 return false;
@@ -1014,6 +1020,9 @@ impl Brains {
             if mind.wake_at.is_some_and(|tick| now >= tick) {
                 mind.due = true;
             }
+            if mind.due {
+                due.push(id);
+            }
             true
         });
         if std::mem::take(&mut self.dusk) {
@@ -1025,13 +1034,8 @@ impl Brains {
         let allowance = cap.saturating_sub(self.owed);
         self.owed = self.owed.saturating_sub(cap);
         let from = self.next.take().unwrap_or(BodyId(0));
-        let due: Vec<BodyId> = self
-            .minds
-            .range(from..)
-            .chain(self.minds.range(..from))
-            .filter(|(_, mind)| mind.due)
-            .map(|(&id, _)| id)
-            .collect();
+        let first = due.partition_point(|&id| id < from);
+        due.rotate_left(first);
         let mut decisions = Vec::new();
         let seed = self.seed;
         let mut land = Land {
@@ -1042,6 +1046,7 @@ impl Brains {
         let mut used = 0;
         self.waiting = 0;
         let mut lay_down = Vec::new();
+        let mut pending = Vec::new();
         for (i, &id) in due.iter().enumerate() {
             if used >= allowance {
                 self.next = Some(id);
@@ -1056,6 +1061,9 @@ impl Brains {
             mind.thoughts += 1;
             land.food.refresh(world, rules);
             used += 1 + look(world, rules, body.pos(), mind, &mut land);
+            if !mind.unseen.is_empty() {
+                pending.push(id);
+            }
             if let Some(decision) = decide(world, rules, land.food, id, mind, seed) {
                 if decision.why == Why::Night
                     && matches!(decision.intention, Intention::Sleep { .. })
@@ -1068,6 +1076,7 @@ impl Brains {
         }
         self.owed += used.saturating_sub(allowance);
         self.work = used;
+        self.pending.extend(pending);
         for id in lay_down {
             self.imitate(world, rules, id);
         }
@@ -1289,12 +1298,22 @@ impl Brains {
     /// place then ([`COLD_CHUNKS_PER_SECOND`]), as many as this turn allows,
     /// the minds in turn: learnt without a thought.
     fn learn_unseen(&mut self, world: &World, rules: &Content) {
-        for (&id, mind) in &mut self.minds {
-            if mind.unseen.is_empty() {
+        if self.pending.is_empty() {
+            return;
+        }
+        let pending: Vec<BodyId> = self.pending.iter().copied().collect();
+        for id in pending {
+            let Some(mind) = self
+                .minds
+                .get_mut(&id)
+                .filter(|mind| !mind.unseen.is_empty())
+            else {
+                self.pending.remove(&id);
                 continue;
-            }
+            };
             let Some(at) = mind.plants_from.filter(|_| world.body(id).is_some()) else {
                 mind.unseen.clear();
+                self.pending.remove(&id);
                 continue;
             };
             self.food.refresh(world, rules);
@@ -1322,6 +1341,9 @@ impl Brains {
                     seen,
                     mind.ways.worth_half_tiles,
                 );
+            }
+            if mind.unseen.is_empty() {
+                self.pending.remove(&id);
             }
         }
     }
