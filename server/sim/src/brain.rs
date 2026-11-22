@@ -17,9 +17,14 @@
 //!    asleep, which wakes it): to the nearest drinking place it knows,
 //!    and drinks there; knowing none, it goes looking (`explore`).
 //! 2. **Hungry** (hunger at [`HUNGRY`] or more): it eats what it carries
-//!    (what spoils first, first); else the nearest food it saw lying;
-//!    else it gathers from the nearest tree or plant it knows bearing food
-//!    now (D45); knowing none, it goes looking.
+//!    (what spoils first, first); else, by day or while its reserve is
+//!    weak, the nearest food it saw lying; else it gathers from the tree
+//!    or plant it knows bearing food now (D45) worth most: what an hour
+//!    of it gives of what is left on it, less the farther, and none
+//!    holding less than [`GATHER_MIN_MINUTES`] of work; knowing none, it
+//!    goes looking. A hungry body whose reserve is not weak sleeps at
+//!    night like the others (the D47 trial of 21 November 2026: hungry
+//!    all day, a body never slept and walked twenty-two hours a day).
 //! 3. **Night**: home to the camp, and sleeps within [`HOME_TILES`] of it.
 //! 4. **By day, a store**: while it carries less than [`STOCK_KJ`] and
 //!    its load is not full, it gathers from the nearest tree or plant it
@@ -82,6 +87,13 @@ pub const STOCK_KJ: u64 = 30_000;
 /// (a plant picked bare while it ripens, a load already full), a
 /// livelock that cost 80 to 95 % of the tick (audit of 18 Nov 2026).
 pub const RETRY_HOURS: u64 = 1;
+/// A plant holding less than this many minutes of gathering is not
+/// worth the walk: with the fruit ripening along its season (D48), a
+/// meadow holds a trickle on each of thousands of plants, and a body
+/// that ranked them by what an hour of a full one gives spent its days
+/// walking from crumb to crumb (the D47 trial of 21 November 2026: one
+/// to thirty grams a gather, 400 to 2,000 kJ an hour of gathering).
+pub const GATHER_MIN_MINUTES: u32 = 10;
 /// The dawn and the nightfall make every mind think, not all in one
 /// tick: each within this many game seconds after, by its body's id (a
 /// dawn cost up to 116 ms with every mind at once). So does a gauge
@@ -1192,11 +1204,13 @@ fn decide(
         }
         return go_looking(map, rules, id, here, mind, seed, Why::Thirst);
     }
-    if hungry {
-        if let Some(item) = carried_food(world, rules, id) {
-            mind.doing = Doing::Nothing;
-            return decision(Intention::Eat { body: id, item }, Why::Hunger);
-        }
+    if hungry && let Some(item) = carried_food(world, rules, id) {
+        mind.doing = Doing::Nothing;
+        return decision(Intention::Eat { body: id, item }, Why::Hunger);
+    }
+    // Hungry by night, it sleeps on it unless its reserve is weak: the
+    // night's gathering gave crumbs and cost the sleep.
+    if hungry && (!night || c.is_weak(&rules.needs)) {
         let nearest = mind
             .food
             .iter()
@@ -1352,6 +1366,16 @@ fn kj_per_hour(rules: &Content, kind: &str, gives: Option<&str>) -> u64 {
         .unwrap_or(0)
 }
 
+/// What an hour of a plant giving `kj_per_hour` of a full one, gathered
+/// at `per_hour_g`, gives when `left_g` is left on it: an hour of it or
+/// all of it, and nothing under [`GATHER_MIN_MINUTES`] of work.
+fn kj_of_an_hour(kj_per_hour: u64, per_hour_g: u32, left_g: u32) -> Option<u64> {
+    if u64::from(left_g) * 60 < u64::from(per_hour_g) * u64::from(GATHER_MIN_MINUTES) {
+        return None;
+    }
+    Some(kj_per_hour * u64::from(left_g.min(per_hour_g)) / u64::from(per_hour_g.max(1)))
+}
+
 /// What a plant giving `kj_per_hour` is worth `tiles` away: halved at
 /// [`WORTH_HALF_TILES`].
 fn worth(kj_per_hour: u64, tiles: i64) -> u64 {
@@ -1379,17 +1403,26 @@ fn plant_to_gather<'a>(
         })
         .filter_map(|(key, plant)| {
             let bears = food.now(plant.kind)?;
-            (plant.spent != Some(bears.year)).then_some((*key, plant, bears))
+            if plant.spent == Some(bears.year) {
+                return None;
+            }
+            // What an hour of it gives of what is left on it now: a
+            // plant holding crumbs is left alone.
+            let crop = &rules.crops[bears.crop];
+            let (_, left_g) =
+                world.ripe_of(key.0, key.1, plant.at, food.name(plant.kind), &crop.gives)?;
+            let kj = kj_of_an_hour(bears.kj, crop.per_hour_g, left_g)?;
+            Some((*key, plant, bears, kj))
         })
-        .max_by_key(|(key, plant, bears)| {
+        .max_by_key(|(key, plant, _, kj)| {
             let tiles = far(plant.at.tile(), here);
             (
-                worth(bears.kj, tiles),
+                worth(*kj, tiles),
                 std::cmp::Reverse(tiles),
                 std::cmp::Reverse(*key),
             )
         })
-        .map(|(key, _, bears)| (key, rules.crops[bears.crop].gives.as_str(), bears.year))
+        .map(|(key, _, bears, _)| (key, rules.crops[bears.crop].gives.as_str(), bears.year))
 }
 
 /// Walks to the tree or plant `target`, or gathers from it when within
@@ -1783,7 +1816,7 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_gather_is_not_asked_again_at_the_next_tick() {
+    fn it_does_not_ask_a_plant_holding_nothing_and_a_refused_gather_waits_an_hour() {
         use crate::Refusal;
         use crate::crops::tests::{body_by, run_to, valley_with};
         let (mut world, rules, chunk, bramble) = valley_with("bramble");
@@ -1807,25 +1840,140 @@ mod tests {
         let ticks = hour(&world);
         let (events, decided) = run_valley(&mut world, &rules, &mut brains, ticks);
         let asked = |d: &Decision| matches!(&d.intention, Intention::Gather { source, .. } if *source == bramble.source);
-        assert!(asked(&decided[0].1), "it asks the bramble beside it first");
+        // Since 21 November 2026 it reads what is left on a plant before
+        // walking to it: a bare one is not asked, so nothing is refused.
         assert!(
-            events.iter().any(|e| matches!(
-                e,
-                Event::GatherRefused {
-                    reason: Refusal::NothingRipe,
-                    ..
-                }
-            )),
-            "refused: nothing ripe"
+            !decided.iter().any(|(_, d)| asked(d)),
+            "not asked while it holds nothing: {decided:?}"
         );
-        assert_eq!(
-            decided.iter().filter(|(_, d)| asked(d)).count(),
-            1,
-            "not asked again within the hour: {decided:?}"
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::GatherRefused { .. })),
+            "nothing to refuse"
         );
         let plant = &brains.mind(id).unwrap().plants[&(chunk, bramble.source)];
-        assert!(plant.not_before.is_some_and(|t| t > world.tick().0));
         assert_eq!(plant.spent, None, "not spent: it comes back to it");
+        // A gather the world refuses all the same (a load full as it
+        // began, a crumb picked by another just before): not asked again
+        // before a later hour.
+        let mind = brains.minds.get_mut(&id).unwrap();
+        mind.doing = Doing::Gathering(chunk, bramble.source);
+        let refused = Event::GatherRefused {
+            body: id,
+            gives: "blackberries".to_owned(),
+            reason: Refusal::NothingRipe,
+        };
+        brains.notice(&[refused], &world);
+        let plant = &brains.mind(id).unwrap().plants[&(chunk, bramble.source)];
+        assert!(plant.not_before.is_some_and(|t| t > world.tick().0));
+    }
+
+    #[test]
+    fn it_leaves_a_plant_holding_crumbs_and_ranks_the_rest_by_what_is_left() {
+        // An hour of a full dandelion gives 1,500 g; ten minutes, 250 g.
+        assert_eq!(kj_of_an_hour(2850, 1500, 249), None, "crumbs");
+        assert_eq!(kj_of_an_hour(2850, 1500, 250), Some(475), "ten minutes");
+        assert_eq!(kj_of_an_hour(2850, 1500, 750), Some(1425), "half an hour");
+        assert_eq!(
+            kj_of_an_hour(2850, 1500, 9000),
+            Some(2850),
+            "an hour at most"
+        );
+        // The hazel ten tiles off beats the bramble beside it by what an
+        // hour of a full one gives; picked down to crumbs, it is left
+        // alone and the bramble is gathered; both bare, nothing is.
+        let (mut world, rules, id, _) = by_a_ripe_bramble(0);
+        let here = world.body(id).unwrap().pos();
+        let chunk = here.chunk();
+        let at = |tiles: i32| FinePos::new(here.centre().x + tiles * 1000, here.centre().y);
+        let plant = |x_mm| {
+            (
+                chunk,
+                Source::Plant(crate::crops::PlantKey { x_mm, y_mm: 1 }),
+            )
+        };
+        let mut mind = Mind::new(here);
+        let food = food_now(&world, &rules);
+        let known = |at, kind: &str| KnownPlant {
+            at,
+            kind: food.numbers[kind],
+            spent: None,
+            not_before: None,
+        };
+        mind.plants.insert(plant(1), known(at(0), "bramble"));
+        mind.plants.insert(plant(2), known(at(10), "hazel"));
+        let chosen = |world: &World, mind: &Mind| {
+            plant_to_gather(world, &rules, &food, here, mind).map(|t| t.0)
+        };
+        assert_eq!(chosen(&world, &mind), Some(plant(2)), "the hazel, full");
+        let hazel = rules.crops.iter().find(|c| c.gives == "hazelnuts").unwrap();
+        let (year, left) = world
+            .ripe_of(chunk, plant(2).1, at(10), "hazel", "hazelnuts")
+            .unwrap();
+        let crumbs = hazel.per_hour_g * GATHER_MIN_MINUTES / 60 - 1;
+        world.record_pick(chunk, plant(2).1, "hazelnuts", year, left - crumbs);
+        assert_eq!(
+            chosen(&world, &mind),
+            Some(plant(1)),
+            "the hazel holds crumbs: the bramble"
+        );
+        let (year, left) = world
+            .ripe_of(chunk, plant(1).1, at(0), "bramble", "blackberries")
+            .unwrap();
+        world.record_pick(chunk, plant(1).1, "blackberries", year, left);
+        assert_eq!(
+            chosen(&world, &mind),
+            None,
+            "both bare: nothing worth a step"
+        );
+    }
+
+    #[test]
+    fn hungry_by_night_it_sleeps_unless_its_reserve_is_weak() {
+        use crate::crops::tests::{body_by, run_to, valley_with};
+        let night_by_the_bramble = |deficit_percent: u64| {
+            let (mut world, rules, _, bramble) = valley_with("bramble");
+            run_to(&mut world, &rules, 28);
+            let mut events = Vec::new();
+            for _ in 0..world.calendar().ticks_per_day() {
+                events.clear();
+                world.step(&rules, &mut events);
+                if events.iter().any(|e| matches!(e, Event::NightFell { .. })) {
+                    break;
+                }
+            }
+            assert!(world.is_night(&rules), "night fell");
+            let id = body_by(&mut world, &bramble);
+            let body = world.bodies.iter_mut().find(|b| b.id() == id).unwrap();
+            body.condition.deficit_j =
+                body.condition.reserve_j(&rules.needs) * deficit_percent / 100;
+            body.condition.hunger = Gauge::at(HUNGRY + 10);
+            let mut brains = Brains::new(7);
+            brains.adopt(&world, &rules, id);
+            let ticks = hour(&world);
+            let (_, decided) = run_valley(&mut world, &rules, &mut brains, ticks);
+            decided
+        };
+        // Hungry with half its reserve left: it sleeps on it.
+        let decided = night_by_the_bramble(50);
+        assert!(
+            !decided.iter().any(|(_, d)| d.why == Why::Hunger),
+            "no gathering by night: {decided:?}"
+        );
+        assert!(
+            decided.iter().any(|(_, d)| d.why == Why::Night),
+            "it goes home or sleeps: {decided:?}"
+        );
+        // Weak, under a fifth of its reserve: it gathers the bramble by night.
+        let decided = night_by_the_bramble(90);
+        assert!(
+            decided
+                .iter()
+                .any(|(_, d)| d.why == Why::Hunger
+                    && matches!(d.intention, Intention::Gather { .. })),
+            "weak, it gathers by night: {decided:?}"
+        );
     }
 
     #[test]
