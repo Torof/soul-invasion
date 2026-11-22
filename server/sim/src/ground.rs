@@ -155,6 +155,9 @@ pub struct TrunkLookup<'a> {
     open: &'a OpenGround,
     seed: u64,
     seen: RefCell<BTreeMap<ChunkPos, Arc<Trunks>>>,
+    /// The chunk looked up last: a search's tiles mostly follow one
+    /// another within a chunk, and need no lookup in `seen`.
+    last: RefCell<Option<(ChunkPos, Arc<Trunks>)>>,
 }
 
 impl TrunkLookup<'_> {
@@ -162,17 +165,25 @@ impl TrunkLookup<'_> {
     #[must_use]
     pub fn blocks(&self, pos: Pos) -> bool {
         let chunk = pos.chunk();
+        if let Some((known, trunks)) = &*self.last.borrow()
+            && *known == chunk
+        {
+            return trunks.blocks(pos);
+        }
         if !self.map.has_chunk(chunk) {
             return false;
         }
-        if let Some(trunks) = self.seen.borrow().get(&chunk) {
-            return trunks.blocks(pos);
-        }
-        let trunks = self
-            .ground
-            .trunks_in(self.map, self.species, self.open, self.seed, chunk);
+        // The borrow of `seen` ends before it is borrowed to insert.
+        let seen = self.seen.borrow().get(&chunk).map(Arc::clone);
+        let trunks = seen.unwrap_or_else(|| {
+            let trunks = self
+                .ground
+                .trunks_in(self.map, self.species, self.open, self.seed, chunk);
+            self.seen.borrow_mut().insert(chunk, Arc::clone(&trunks));
+            trunks
+        });
         let blocks = trunks.blocks(pos);
-        self.seen.borrow_mut().insert(chunk, trunks);
+        *self.last.borrow_mut() = Some((chunk, trunks));
         blocks
     }
 }
@@ -262,6 +273,7 @@ impl Ground {
             open,
             seed,
             seen: RefCell::new(BTreeMap::new()),
+            last: RefCell::new(None),
         }
     }
 

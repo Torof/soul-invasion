@@ -223,7 +223,9 @@ impl Waters {
                     i32::try_from(chunk / self.chunks_wide).expect("few chunks"),
                 );
                 let lock = || held.lock().unwrap_or_else(PoisonError::into_inner);
-                let wet = recent(
+                // `f` is called once, in whichever branch has the chunk.
+                let f = RefCell::new(Some(f));
+                recent(
                     |r| &mut r.wet,
                     *id,
                     pos,
@@ -235,8 +237,11 @@ impl Waters {
                             made
                         })
                     },
-                );
-                f((!wet.at.is_empty()).then_some(&*wet))
+                    |wet| {
+                        let f = f.borrow_mut().take().expect("read once");
+                        f((!wet.at.is_empty()).then_some(wet))
+                    },
+                )
             }
         }
     }
@@ -421,57 +426,86 @@ struct Held {
 /// land by its number.
 static LANDS: AtomicU64 = AtomicU64::new(0);
 
-/// Chunks of tiles and of woods each thread keeps at hand, the latest
-/// read first.
-const RECENT_CHUNKS: usize = 4;
+/// Slots of chunks of each kind a thread keeps at hand, a square of
+/// [`RECENT_SIDE`] chunks a side laid over the map: a chunk's slot is its
+/// place in that square, so chunks apart by less than the side never
+/// share one, and a search window (19 × 19 chunks, [`PATH_REACH`]) or a
+/// chunk's placing with its rim (3 × 3) finds its chunks at hand. Memory
+/// a thread, every slot full: `RECENT_SLOTS` × (1.2 KB of tiles + 2 KB of
+/// woods + a wet chunk) ≈ 1 MB at most, pinned past the land's caches.
+const RECENT_SLOTS: usize = RECENT_SIDE * RECENT_SIDE;
+const RECENT_SIDE: usize = 16;
 
-/// The chunks a thread read last, by land: most reads follow one another
-/// in a chunk or two (a path search, a chunk's trees and plants), and
-/// need neither the lock nor the cache's order. A chunk never changes, so
-/// one held here a while after the cache let it go is still right.
+/// The chunks a thread read last, by land, a slot a chunk: most reads
+/// follow one another in a chunk or two (a path search, a chunk's trees
+/// and plants), and need neither the lock nor the cache's order. A chunk
+/// never changes, so one held here a while after the cache let it go is
+/// still right. Before 22 November 2026 this was a list of four, searched
+/// and reordered at each read, the chunk cloned out (`Arc`): the tiles
+/// read by the path searches were a quarter of a vivarium run (D51).
 #[derive(Default)]
 struct Recent {
-    tiles: RecentList<ChunkTiles>,
-    woods: RecentList<ChunkWoods>,
-    wet: RecentList<WetChunk>,
+    tiles: RecentTable<ChunkTiles>,
+    woods: RecentTable<ChunkWoods>,
+    wet: RecentTable<WetChunk>,
 }
 
-/// A thread's recent chunks of one kind: land, chunk, what was made.
-type RecentList<T> = Vec<(u64, ChunkPos, Arc<T>)>;
+/// A thread's recent chunks of one kind, [`RECENT_SLOTS`] slots once
+/// used: land, chunk, what was made.
+type RecentTable<T> = Vec<Option<(u64, ChunkPos, Arc<T>)>>;
 
 thread_local! {
     static RECENT: RefCell<Recent> = RefCell::new(Recent::default());
 }
 
-/// The entry of `land` and `chunk` among a thread's recent chunks
-/// (`pick` chooses tiles or woods), or else `fetch`ed (the thread's list
-/// not borrowed meanwhile) and put first.
-fn recent<T>(
-    pick: fn(&mut Recent) -> &mut RecentList<T>,
+/// The slot of `chunk` among a thread's recent chunks.
+#[allow(
+    clippy::cast_sign_loss,
+    reason = "the chunk's place in a square tiling: only the low bits matter"
+)]
+fn slot_of(chunk: ChunkPos) -> usize {
+    let side = i32::try_from(RECENT_SIDE).expect("small");
+    ((chunk.x & (side - 1)) + (chunk.y & (side - 1)) * side) as usize
+}
+
+/// `read` of the entry of `land` and `chunk` among a thread's recent
+/// chunks (`pick` chooses tiles, woods or wet), or else of the chunk
+/// `fetch`ed (the thread's table not borrowed meanwhile) and put in its
+/// slot. The chunk is read in place, never cloned out.
+fn recent<T, R>(
+    pick: fn(&mut Recent) -> &mut RecentTable<T>,
     land: u64,
     chunk: ChunkPos,
     fetch: impl FnOnce() -> Arc<T>,
-) -> Arc<T> {
+    read: impl Fn(&T) -> R,
+) -> R {
+    let slot = slot_of(chunk);
     let held = RECENT.with_borrow_mut(|r| {
-        let list = pick(r);
-        let k = list
-            .iter()
-            .position(|(l, c, _)| *l == land && *c == chunk)?;
-        let entry = list.remove(k);
-        let value = Arc::clone(&entry.2);
-        list.insert(0, entry);
-        Some(value)
+        let table = pick(r);
+        match table.get(slot) {
+            Some(Some((l, c, value))) if *l == land && *c == chunk => Some(read(value)),
+            _ => None,
+        }
     });
     if let Some(value) = held {
         return value;
     }
     let value = fetch();
+    let out = read(&value);
     RECENT.with_borrow_mut(|r| {
-        let list = pick(r);
-        list.insert(0, (land, chunk, Arc::clone(&value)));
-        list.truncate(RECENT_CHUNKS);
+        let table = pick(r);
+        if table.is_empty() {
+            table.resize_with(RECENT_SLOTS, || None);
+        }
+        table[slot] = Some((land, chunk, value));
     });
-    value
+    out
+}
+
+/// How many chunks of tiles this thread holds at hand (tests).
+#[cfg(test)]
+fn recent_tiles_held() -> usize {
+    RECENT.with_borrow(|r| r.tiles.iter().flatten().count())
 }
 
 impl Clone for Land {
@@ -570,8 +604,13 @@ impl Land {
             i32::try_from(y / CHUNK_SIZE).expect("on the map"),
         );
         let place = ((y % CHUNK_SIZE) * CHUNK_SIZE + x % CHUNK_SIZE) as usize;
-        let tiles = recent(|r| &mut r.tiles, self.id, chunk, || self.tiles(chunk));
-        tiles.terrain[place]
+        recent(
+            |r| &mut r.tiles,
+            self.id,
+            chunk,
+            || self.tiles(chunk),
+            |tiles| tiles.terrain[place],
+        )
     }
 
     /// The density of trees and the habitat of the tile `(x, y)` of the
@@ -582,8 +621,13 @@ impl Land {
             i32::try_from(y / CHUNK_SIZE).expect("on the map"),
         );
         let place = ((y % CHUNK_SIZE) * CHUNK_SIZE + x % CHUNK_SIZE) as usize;
-        let woods = recent(|r| &mut r.woods, self.id, chunk, || self.woods(chunk));
-        (woods.density[place], woods.habitat[place])
+        recent(
+            |r| &mut r.woods,
+            self.id,
+            chunk,
+            || self.woods(chunk),
+            |woods| (woods.density[place], woods.habitat[place]),
+        )
     }
 
     /// A chunk's tiles: held, or else made now and held.
@@ -898,6 +942,52 @@ mod tests {
             let place = ((y - y0) * CHUNK_SIZE + (x - x0)) as usize;
             assert_eq!(land.terrain(x, y), tiles.terrain[place]);
             assert_eq!(land.wood(x, y), (wood.density[place], wood.habitat[place]));
+        }
+    }
+
+    /// A thread's recent chunks fill at most their slots, and a tile read
+    /// through them is the generator's, whichever chunk held the slot
+    /// before: 20 × 20 chunks read over a 16 × 16 table, chunks sixteen
+    /// apart taking turns in one slot.
+    #[test]
+    fn a_threads_recent_chunks_are_bounded_and_read_the_generators_tiles() {
+        let (width, height) = (640, 640);
+        let (_, waters, woods, cliff_rows) = parts(width, height, 7);
+        let land = Land::new(width, height, cliff_rows, waters, woods);
+        let chunks = i32::try_from(width / CHUNK_SIZE).expect("few chunks");
+        assert!(chunks * chunks > i32::try_from(RECENT_SLOTS).expect("small"));
+        let tile_of = |chunk: ChunkPos, k: u32| {
+            let (x0, y0) = (
+                u32::try_from(chunk.x).expect("on the map") * CHUNK_SIZE,
+                u32::try_from(chunk.y).expect("on the map") * CHUNK_SIZE,
+            );
+            (x0 + k % CHUNK_SIZE, y0 + (k * 7) % CHUNK_SIZE)
+        };
+        for cy in 0..chunks {
+            for cx in 0..chunks {
+                let (x, y) = tile_of(ChunkPos::new(cx, cy), 3);
+                let _ = land.terrain(x, y);
+            }
+        }
+        assert!(
+            recent_tiles_held() <= RECENT_SLOTS,
+            "{}",
+            recent_tiles_held()
+        );
+        // Two chunks of one slot, read in turn: each tile is its own chunk's.
+        let (a, b) = (ChunkPos::new(2, 3), ChunkPos::new(18, 3));
+        assert_eq!(slot_of(a), slot_of(b));
+        let (made_a, made_b) = (land.make_tiles(a), land.make_tiles(b));
+        for k in 0..CHUNK_SIZE {
+            for (chunk, made) in [(a, &made_a), (b, &made_b)] {
+                let (x, y) = tile_of(chunk, k);
+                let place = ((y % CHUNK_SIZE) * CHUNK_SIZE + x % CHUNK_SIZE) as usize;
+                assert_eq!(
+                    land.terrain(x, y),
+                    made.terrain[place],
+                    "{chunk:?} ({x}, {y})"
+                );
+            }
         }
     }
 
