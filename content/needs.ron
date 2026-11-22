@@ -176,8 +176,16 @@
     //                    quarter of an hour while it hovers there (90 to
     //                    115 thoughts a body-day in the brain audit of 22
     //                    November 2026).
+    // plant_choice_hours: 1 — the tree or plant to gather from is chosen
+    //                    once a game hour, not at every thought: a body
+    //                    sticks to its choice unless the plant is spent or
+    //                    out of reach, or a need calls (one looks at the
+    //                    pantry once in a while). It may keep a target a
+    //                    few minutes while a neighbour plant just overtook
+    //                    it by a gram.
     thought: (
         plant_sight_tiles: 30,
         fed_under: 30,
+        plant_choice_hours: 1,
     ),
 )

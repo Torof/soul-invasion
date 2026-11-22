@@ -31,7 +31,9 @@
 //!    its load is not full, it gathers from the nearest tree or plant it
 //!    knows bearing food now.
 //!    It works at it until the plant is bare or its load full (or night,
-//!    thirst or hunger calls it away).
+//!    thirst or hunger calls it away). The plant is chosen once in the
+//!    content's `thought.plant_choice_hours` (D53): on its way to one it
+//!    sticks to it unless it is spent or out of reach, or a need calls.
 //! 5. Otherwise, by day: home to the camp if it is away, and waits there.
 //!
 //! It remembers the trees and plants bearing food it saw (D45), as it
@@ -494,6 +496,9 @@ pub struct Mind {
     /// The tick it thinks at for the dawn or the nightfall
     /// ([`WAKE_SPREAD_SECONDS`]), unless it thought since.
     wake_at: Option<u64>,
+    /// The tick it chose the plant it is going to gather from at: kept
+    /// for the content's `thought.plant_choice_hours` (D53).
+    chose_at: Option<u64>,
     /// How many times it went looking: the next direction.
     walks: u64,
     /// How many times it thought.
@@ -525,6 +530,7 @@ impl Mind {
             out_of_reach: BTreeMap::new(),
             unseen: Vec::new(),
             wake_at: None,
+            chose_at: None,
             walks: 0,
             thoughts: 0,
         }
@@ -1894,12 +1900,7 @@ fn decide(
     // The world refuses a gather to a body whose load is full.
     let can_carry = body.load_g() < body.capacity_g(&rules.movement);
     let night = world.is_night(rules);
-    // The plant worth gathering, chosen once a thought: hunger and the
-    // day's gathering ask the same question of the same memory.
-    let mut chosen: Option<Option<Target<'_>>> = None;
-    let mut to_gather = |mind: &Mind| {
-        *chosen.get_or_insert_with(|| plant_to_gather(world, rules, food, here, mind))
-    };
+    let now = world.tick().0;
     if let Doing::Gathering(chunk, source) = mind.doing {
         if body.work().is_some() {
             // At work: it goes on unless thirst, hunger or night calls.
@@ -1917,6 +1918,18 @@ fn decide(
     {
         stopped_short(world, food, id, mind, chunk, source);
     }
+    // The plant worth gathering, chosen once a thought: hunger and the
+    // day's gathering ask the same question of the same memory. And once
+    // an hour (D53): the one it is going to is kept while it holds, with
+    // whether the choice is fresh.
+    let kept = kept_target(world, rules, food, mind, now);
+    let mut chosen: Option<(Option<Target<'_>>, bool)> = None;
+    let mut to_gather = |mind: &Mind| {
+        *chosen.get_or_insert_with(|| match kept {
+            Some(target) => (Some(target), false),
+            None => (plant_to_gather(world, rules, food, here, mind), true),
+        })
+    };
     // Asleep, it sleeps on unless parched (D45: a parched body does not
     // sleep), and even parched while it lies collapsed of fatigue: a walk
     // would wake it for a tick and lay it down again.
@@ -2009,7 +2022,10 @@ fn decide(
                 Why::Hunger,
             );
         }
-        if can_carry && let Some(target) = to_gather(mind) {
+        if can_carry && let (Some(target), fresh) = to_gather(mind) {
+            if fresh {
+                mind.chose_at = Some(now);
+            }
             return go_gather(world, rules, id, mind, target, Why::Hunger);
         }
         // It knows the seasons: it goes looking by day, and only when
@@ -2023,8 +2039,11 @@ fn decide(
     if !night
         && can_carry
         && carried_kj(world, rules, id) < mind.ways.stock_kj
-        && let Some(target) = to_gather(mind)
+        && let (Some(target), fresh) = to_gather(mind)
     {
+        if fresh {
+            mind.chose_at = Some(now);
+        }
         return go_gather(world, rules, id, mind, target, Why::Gather);
     }
     let home = (here.x - camp.x).abs() <= HOME_TILES && (here.y - camp.y).abs() <= HOME_TILES;
@@ -2153,6 +2172,42 @@ fn worth(kj_per_hour: u64, far_squared: i64, half_tiles: u64) -> u64 {
     let tiles = u64::try_from(far_squared).unwrap_or(0).isqrt();
     let half_tiles = half_tiles.max(1);
     kj_per_hour * half_tiles / (half_tiles + tiles)
+}
+
+/// The tree or plant the body is going to gather from, kept (D53): chosen
+/// less than the content's `thought.plant_choice_hours` ago, still known
+/// and bearing, not spent for the crop's year, not left alone for now,
+/// its patch within reach today. `None` once it is gathering, or stopped
+/// short (`stopped_short` ran), or anything else came between: the plant
+/// is chosen again.
+fn kept_target<'a>(
+    world: &World,
+    rules: &'a Content,
+    food: &Food,
+    mind: &Mind,
+    now: u64,
+) -> Option<Target<'a>> {
+    let Doing::ToGather(chunk, source) = mind.doing else {
+        return None;
+    };
+    let chose_at = mind.chose_at?;
+    let hours = u64::from(rules.needs.thought.plant_choice_hours);
+    if now >= chose_at.saturating_add(hours.saturating_mul(hour(world))) {
+        return None;
+    }
+    let plant = mind.plants.get(&(chunk, source))?;
+    let bears = food.now(plant.kind)?;
+    if plant.spent == Some(bears.year)
+        || plant.not_before.is_some_and(|tick| now < tick)
+        || mind.out_of_reach.get(&chunk) == Some(&today(world))
+    {
+        return None;
+    }
+    Some((
+        (chunk, source),
+        rules.crops[bears.crop].gives.as_str(),
+        bears.year,
+    ))
 }
 
 /// The tree or plant it knows bearing food now worth most, not spent for
@@ -3235,6 +3290,67 @@ mod tests {
         assert_eq!(
             plant_to_gather(&world, &rules, &food, here, &mind).map(|t| t.0),
             Some(plant(1))
+        );
+    }
+
+    #[test]
+    fn it_sticks_to_the_plant_it_chose_for_an_hour_unless_it_is_spent() {
+        let (mut world, rules, id, _) = by_a_ripe_bramble(0);
+        let here = world.body(id).unwrap().pos();
+        let chunk = here.chunk();
+        let at = |tiles: i32| FinePos::new(here.centre().x + tiles * 1000, here.centre().y);
+        let plant = |x_mm| {
+            (
+                chunk,
+                Source::Plant(crate::crops::PlantKey { x_mm, y_mm: 1 }),
+            )
+        };
+        let mut mind = Mind::new(here);
+        let mut food = food_now(&world, &rules);
+        let (bramble, hazel) = (food.numbers["bramble"], food.numbers["hazel"]);
+        let known = |at, kind: u16| KnownPlant {
+            at,
+            kind,
+            spent: None,
+            not_before: None,
+        };
+        mind.plants.insert(plant(1), known(at(0), bramble));
+        mind.plants.insert(plant(2), known(at(10), hazel));
+        let going_to = |world: &World, food: &Food, mind: &mut Mind| {
+            decide(world, &rules, food, id, mind, 7);
+            match mind.doing {
+                Doing::ToGather(_, source) => source,
+                other => panic!("not going to gather: {other:?}"),
+            }
+        };
+        // By day with no store, it sets off for the hazel ten tiles off.
+        assert_eq!(going_to(&world, &food, &mut mind), plant(2).1);
+        let chose_at = mind.chose_at.expect("a fresh choice");
+        // A hazel four tiles off would now rank first: half an hour later
+        // it keeps its choice.
+        mind.plants.insert(plant(3), known(at(4), hazel));
+        let mut events = Vec::new();
+        let half = hour(&world) / 2;
+        world.advance(half, &rules, &mut events);
+        food.refresh(&world, &rules);
+        assert_eq!(going_to(&world, &food, &mut mind), plant(2).1);
+        assert_eq!(mind.chose_at, Some(chose_at), "not chosen again");
+        // The hour over, it chooses again, and takes the nearer one.
+        world.advance(hour(&world) - half, &rules, &mut events);
+        food.refresh(&world, &rules);
+        assert_eq!(going_to(&world, &food, &mut mind), plant(3).1);
+        assert_eq!(mind.chose_at, Some(world.tick().0));
+        // Spent for the year, it is left at once for another: the hazel
+        // ten tiles off again.
+        mind.plants.get_mut(&plant(3)).unwrap().spent = Some(food.now(hazel).unwrap().year);
+        assert_eq!(going_to(&world, &food, &mut mind), plant(2).1);
+        // Its patch out of reach today, likewise: nothing of this chunk.
+        mind.out_of_reach.insert(chunk, today(&world));
+        decide(&world, &rules, &food, id, &mut mind, 7);
+        assert!(
+            !matches!(mind.doing, Doing::ToGather(c, _) if c == chunk),
+            "the patch is left: {:?}",
+            mind.doing
         );
     }
 

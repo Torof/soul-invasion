@@ -347,6 +347,11 @@ pub struct Thought {
     /// meal at every mouthful, nor think of hunger ninety times a day
     /// while it hovers at the threshold.
     pub fed_under: u32,
+    /// How long, in game hours, a body sticks to the tree or plant it
+    /// chose to gather from: chosen again only after that long, or when
+    /// the plant is spent or out of reach, or another need calls. One
+    /// looks at the pantry once in a while, not at every step.
+    pub plant_choice_hours: u32,
 }
 
 impl Default for Thought {
@@ -355,6 +360,7 @@ impl Default for Thought {
         Self {
             plant_sight_tiles: 30,
             fed_under: 30,
+            plant_choice_hours: 1,
         }
     }
 }
@@ -369,6 +375,11 @@ impl Thought {
         if self.fed_under > 100 {
             return Err(ContentError::Needs(
                 "thought: fed_under is a point of a 0 to 100 gauge",
+            ));
+        }
+        if self.plant_choice_hours == 0 {
+            return Err(ContentError::Needs(
+                "thought: plant_choice_hours is an hour or more",
             ));
         }
         Ok(())
@@ -1409,12 +1420,18 @@ impl Content {
             trials.new_home_walk_tiles,
             MILLION,
         )?;
-        at_most(
-            "needs.ron",
-            "thought.plant_sight_tiles",
-            self.needs.thought.plant_sight_tiles,
-            THOUSAND,
-        )?;
+        for (field, value) in [
+            (
+                "thought.plant_sight_tiles",
+                self.needs.thought.plant_sight_tiles,
+            ),
+            (
+                "thought.plant_choice_hours",
+                self.needs.thought.plant_choice_hours,
+            ),
+        ] {
+            at_most("needs.ron", field, value, THOUSAND)?;
+        }
         Ok(())
     }
 
