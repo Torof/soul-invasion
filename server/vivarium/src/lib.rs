@@ -282,6 +282,8 @@ pub struct TrialLine {
     pub way: Way,
     /// The step, in words ([`step_words`]).
     pub step: String,
+    /// The step by its kind.
+    pub kind: Step,
     /// The day the world judged it (from 1) and whether it was kept;
     /// `None` while under trial, or when the body died mid-trial.
     pub judged: Option<(u64, bool)>,
@@ -296,6 +298,119 @@ pub enum Told {
     Tried(bool),
     /// A way copied from a camp-mate.
     Copied,
+}
+
+/// A step of a way by its kind (D50 b): what a trial tried, or a copy took,
+/// so the page can say which techniques came out of a run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Step {
+    /// Searches wider: `worth_half_tiles` up.
+    Wider,
+    /// Searches narrower: `worth_half_tiles` down.
+    Narrower,
+    /// Sleeps out where night finds it.
+    SleepOut,
+    /// Comes home to sleep.
+    SleepHome,
+    /// Stores more before resting.
+    StoreMore,
+    /// Stores less before resting.
+    StoreLess,
+    /// Its home moved.
+    HomeMoved,
+}
+
+/// Every [`Step`], in the order of the page.
+pub const STEPS: [Step; 7] = [
+    Step::Wider,
+    Step::Narrower,
+    Step::SleepOut,
+    Step::SleepHome,
+    Step::StoreMore,
+    Step::StoreLess,
+    Step::HomeMoved,
+];
+
+impl Step {
+    /// The kind of the step that took `way` from `before` to `after`.
+    #[must_use]
+    pub fn of(way: Way, before: &Ways, after: &Ways) -> Self {
+        match way {
+            Way::WorthHalfTiles if after.worth_half_tiles > before.worth_half_tiles => Self::Wider,
+            Way::WorthHalfTiles => Self::Narrower,
+            Way::SleepOut if after.sleep_out => Self::SleepOut,
+            Way::SleepOut => Self::SleepHome,
+            Way::StockKj if after.stock_kj > before.stock_kj => Self::StoreMore,
+            Way::StockKj => Self::StoreLess,
+            Way::Home => Self::HomeMoved,
+        }
+    }
+
+    /// The kind of a step of `way` whose direction is not known (a
+    /// judgement with no trial of the body on record): the first of its
+    /// way.
+    #[must_use]
+    pub const fn of_way(way: Way) -> Self {
+        match way {
+            Way::WorthHalfTiles => Self::Wider,
+            Way::SleepOut => Self::SleepOut,
+            Way::StockKj => Self::StoreMore,
+            Way::Home => Self::HomeMoved,
+        }
+    }
+
+    /// The step in two or three words.
+    #[must_use]
+    pub const fn words(self) -> &'static str {
+        match self {
+            Self::Wider => "search wider",
+            Self::Narrower => "search narrower",
+            Self::SleepOut => "sleep out",
+            Self::SleepHome => "sleep at home",
+            Self::StoreMore => "store more",
+            Self::StoreLess => "store less",
+            Self::HomeMoved => "home moved",
+        }
+    }
+}
+
+/// What a tribe found over a run (D50 b): its trials by the kind of the
+/// step, those kept, and the copies, indexed as [`STEPS`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Found {
+    /// Trials started, by kind.
+    pub tried: [u32; 7],
+    /// Trials judged and kept, by kind.
+    pub kept: [u32; 7],
+    /// Ways copied from camp-mates, by kind.
+    pub copied: [u32; 7],
+}
+
+impl Found {
+    /// "search wider 3 / 1 / 2, sleep out 4 / 2 / 7, …": tried, kept and
+    /// copied of every kind that happened.
+    #[must_use]
+    pub fn words(&self) -> String {
+        let parts: Vec<String> = STEPS
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.tried[*i] + self.kept[*i] + self.copied[*i] > 0)
+            .map(|(i, step)| {
+                format!(
+                    "{} {} / {} / {}",
+                    step.words(),
+                    self.tried[i],
+                    self.kept[i],
+                    self.copied[i]
+                )
+            })
+            .collect();
+        if parts.is_empty() {
+            "nothing".to_owned()
+        } else {
+            parts.join(", ")
+        }
+    }
 }
 
 /// A trial, a judgement or a copy of the run (D50), for the counters.
@@ -313,6 +428,8 @@ pub struct TrialEvent {
     pub told: Told,
     /// The way.
     pub way: Way,
+    /// The step by its kind.
+    pub step: Step,
 }
 
 /// A tribe's ways at a year's end (D50): of its living with a mind.
@@ -773,6 +890,16 @@ pub fn run_watched(
         // The year whose ticks are elapsing, as the calendar counts (from
         // 1): the tick that starts a year still closes the one before.
         let year = (tick - 1) / per_year + 1;
+        if tick.is_multiple_of(per_year) {
+            // One plain line a year on stderr, so nobody waits blind on a
+            // long run.
+            eprintln!(
+                "year {year}: {} alive, {} dead so far, {:.0} s",
+                world.bodies().len(),
+                people.values().filter(|p| p.death.is_some()).count(),
+                started.elapsed().as_secs_f64()
+            );
+        }
         for event in &events {
             match event {
                 Event::WorkStopped {
@@ -978,7 +1105,7 @@ pub fn run_watched(
         // The trials (D50): what the brains tried, judged and copied, in
         // the chronicle, on the person's page and in the counters.
         for news in brains.news() {
-            let (body, what, told, way) = match &news {
+            let (body, what, told, way, kind) = match &news {
                 News::Trying {
                     body,
                     way,
@@ -987,11 +1114,13 @@ pub fn run_watched(
                     ..
                 } => {
                     let step = step_words(*way, before, after);
+                    let kind = Step::of(*way, before, after);
                     let person = people.entry(*body).or_default();
                     person.trials.push(TrialLine {
                         day,
                         way: *way,
                         step: step.clone(),
+                        kind,
                         judged: None,
                     });
                     (
@@ -999,22 +1128,25 @@ pub fn run_watched(
                         format!("{} tries a way: {step}", name(*body)),
                         Told::Trying,
                         *way,
+                        kind,
                     )
                 }
                 News::Tried {
                     body, way, kept, ..
                 } => {
                     let person = people.entry(*body).or_default();
-                    let step = person
+                    let (step, kind) = person
                         .trials
                         .iter_mut()
                         .rev()
                         .find(|t| t.way == *way && t.judged.is_none())
-                        .map(|t| {
-                            t.judged = Some((day, *kept));
-                            t.step.clone()
-                        })
-                        .unwrap_or_default();
+                        .map_or_else(
+                            || (String::new(), Step::of_way(*way)),
+                            |t| {
+                                t.judged = Some((day, *kept));
+                                (t.step.clone(), t.kind)
+                            },
+                        );
                     let verdict = if *kept {
                         "keeps its way"
                     } else {
@@ -1025,6 +1157,7 @@ pub fn run_watched(
                         format!("{} {verdict}: {step}", name(*body)),
                         Told::Tried(*kept),
                         *way,
+                        kind,
                     )
                 }
                 News::Copied {
@@ -1032,6 +1165,7 @@ pub fn run_watched(
                     from,
                     way,
                     lost,
+                    before,
                     after,
                     ..
                 } => {
@@ -1044,7 +1178,13 @@ pub fn run_watched(
                         if *lost { ", losing a step" } else { "" },
                         way_words(*way, after)
                     );
-                    (*body, what, Told::Copied, *way)
+                    (
+                        *body,
+                        what,
+                        Told::Copied,
+                        *way,
+                        Step::of(*way, before, after),
+                    )
                 }
             };
             let entry = Entry { tick, day, what };
@@ -1058,6 +1198,7 @@ pub fn run_watched(
                 tribe,
                 told,
                 way,
+                step: kind,
             });
         }
         if tick % ticks_per_sample == 0 {
@@ -1607,7 +1748,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                 "none (the control run): the people stand where they were born"
             },
             if s.trials && s.brain {
-                "on: a body in distress (hungry at nightfall, or a day without a gather) for content/needs.ron's trial_after_days running may try one way moved by one step, with a daily chance by its will; after trial_days the world has judged (kept if it gathered more a day and was thin no more often, else reverted); at night at the camp a body may copy one way from the camp-mate who gathered most a day lately, the more readily the greater that mate's will, a copy losing a step at times; children follow their mother's home every night"
+                "on: a body in distress (hungry at nightfall, or a day without a gather) for content/needs.ron's trial_after_days running may try one way moved by one step, with a daily chance by its will; after trial_days the world has judged on every distress (kept if nothing worsened and one thing improved over gathered a day, thin days, thirsty days and cold nights, else reverted); a home trial goes towards the plants known bearing or the nearest water known, half and half, never past the map's edge; at night at the camp a body may copy one way from the camp-mate who fared best lately (the fewest days of distress, gathered kJ breaking ties), the more readily the greater that mate's will, a copy losing a step at times; children follow their mother's home every night"
             } else {
                 "off (the control run, --no-trials): nobody tries nor copies anything"
             },
@@ -1894,6 +2035,25 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         lines
     }
 
+    /// What `tribe` found over the run (D50 b): its trials, those kept and
+    /// its copies, by the kind of the step.
+    #[must_use]
+    pub fn found(&self, tribe: u8) -> Found {
+        let mut found = Found::default();
+        for t in self.trials.iter().filter(|t| t.tribe == tribe) {
+            let i = STEPS
+                .iter()
+                .position(|s| *s == t.step)
+                .expect("one of seven");
+            match t.told {
+                Told::Trying => found.tried[i] += 1,
+                Told::Tried(kept) => found.kept[i] += u32::from(kept),
+                Told::Copied => found.copied[i] += 1,
+            }
+        }
+        found
+    }
+
     /// Each tribe's years in numbers (lot 3 C).
     #[must_use]
     pub fn years(&self) -> Vec<Year> {
@@ -2094,6 +2254,19 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             );
         }
         h.push_str("</table>");
+        if self.trials.is_empty() {
+            return h;
+        }
+        h.push_str("<p>What each tribe found over the run (D50 b), by the kind of the step: trials started / kept / ways copied.</p><ul>");
+        for tribe in 0..u8::try_from(self.camps.len()).unwrap_or(u8::MAX) {
+            let _ = write!(
+                h,
+                "<li>Tribe {}: {}.</li>",
+                tribe_name(tribe),
+                self.found(tribe).words()
+            );
+        }
+        h.push_str("</ul>");
         h
     }
 
