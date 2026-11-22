@@ -1334,113 +1334,37 @@ impl Map {
             }
         }
         let (_, first) = first?;
-        // As far as it spreads in sight, and the bank along it.
+        // As far as it spreads in sight, and the bank along it. The
+        // thread's arena, stamped for this skirt, nothing zeroed.
         let cells = usize::try_from(side_len * side_len).expect("a small square");
-        let mut obstacle = vec![false; cells];
-        let mut bank = vec![false; cells];
+        let mut arena = SKIRT_ARENA.with_borrow_mut(std::mem::take);
+        arena.begin(cells);
+        let now = arena.now;
         let mut todo = VecDeque::from([first]);
-        obstacle[index(first)?] = true;
+        arena.obstacle[index(first)?] = now;
+        arena.obstacles.push(index(first)?);
         while let Some(p) = todo.pop_front() {
             for dy in -SKIRT_SIDE..=SKIRT_SIDE {
                 for dx in -SKIRT_SIDE..=SKIRT_SIDE {
                     if let Some(i) = index(Pos::new(p.x + dx, p.y + dy)) {
-                        bank[i] = true;
+                        arena.bank[i] = now;
                     }
                 }
             }
             for next in p.neighbours() {
                 if let Some(i) = index(next)
-                    && !obstacle[i]
+                    && arena.obstacle[i] != now
                     && barred(next)
                 {
-                    obstacle[i] = true;
+                    arena.obstacle[i] = now;
+                    arena.obstacles.push(i);
                     todo.push_back(next);
                 }
             }
         }
-        // Along the bank from where the body stands, each tile on the side
-        // of the first step that reached it.
-        let heading = (toward.x - start.x, toward.y - start.y);
-        let side_of = |p: Pos| {
-            let (vx, vy) = (p.x - start.x, p.y - start.y);
-            if heading.0 * vy - heading.1 * vx < 0 {
-                Side::Left
-            } else {
-                Side::Right
-            }
-        };
-        let walkable = |p: Pos| p == start || open(p);
-        let on_bank = |p: Pos| index(p).is_some_and(|i| bank[i] && !obstacle[i]) && walkable(p);
-        let mut steps = vec![u32::MAX; cells];
-        let mut from = vec![usize::MAX; cells];
-        let mut sides = vec![Side::Right; cells];
-        let origin = index(start)?;
-        steps[origin] = 0;
-        let mut todo = VecDeque::from([start]);
-        let most = u32::try_from((reach * 5 / 6).max(3)).unwrap_or(3);
-        while let Some(p) = todo.pop_front() {
-            let i = index(p)?;
-            if steps[i] >= most {
-                continue;
-            }
-            for next in p.neighbours() {
-                if !on_bank(next) {
-                    continue;
-                }
-                if p.is_diagonal_to(next)
-                    && (!walkable(Pos::new(p.x, next.y)) || !walkable(Pos::new(next.x, p.y)))
-                {
-                    continue; // no cutting corners
-                }
-                let j = index(next)?;
-                if steps[j] != u32::MAX {
-                    continue;
-                }
-                steps[j] = steps[i] + 1;
-                from[j] = i;
-                sides[j] = if i == origin { side_of(next) } else { sides[i] };
-                todo.push_back(next);
-            }
-        }
-        // Each side's farthest point, then the better of the two.
-        let mut best: [Option<(u32, u32, usize)>; 2] = [None, None];
-        for (i, &n) in steps.iter().enumerate() {
-            if n == u32::MAX || n < 3 {
-                continue;
-            }
-            let k = usize::from(sides[i] == Side::Right);
-            let crow = octile(pos_at(i), toward);
-            let better = best[k].is_none_or(|(m, c, _)| n > m || n == m && crow < c);
-            if better {
-                best[k] = Some((n, crow, i));
-            }
-        }
-        // Of the two, nearer the target; on a tie, where the obstacle in
-        // sight ends sooner (less of it on that side); then the right.
-        let mut spread = [0u32; 2];
-        for (i, _) in obstacle.iter().enumerate().filter(|(_, p)| **p) {
-            spread[usize::from(side_of(pos_at(i)) == Side::Right)] += 1;
-        }
-        let (side, end) = match best {
-            [None, None] => return None,
-            [Some((_, _, i)), None] => (Side::Left, i),
-            [None, Some((_, _, i))] => (Side::Right, i),
-            [Some((_, l, li)), Some((_, r, ri))] => {
-                if (l, spread[0]) < (r, spread[1]) {
-                    (Side::Left, li)
-                } else {
-                    (Side::Right, ri)
-                }
-            }
-        };
-        let mut path = Vec::new();
-        let mut i = end;
-        while i != origin {
-            path.push(pos_at(i));
-            i = from[i];
-        }
-        path.reverse();
-        Some((side, path))
+        let out = skirt_along(&mut arena, (at, toward, reach), index, pos_at, open);
+        SKIRT_ARENA.with_borrow_mut(|held| *held = arena);
+        out
     }
 
     /// The way round the obstacle a straight walk from `a` toward `b`
@@ -1794,6 +1718,173 @@ pub(crate) fn enters(a: FinePos, b: FinePos, tile: Pos) -> bool {
         }
     }
     t0 < t1
+}
+
+/// The second half of [`Map::skirt`], the obstacle and its bank
+/// flooded in `arena`: along the bank from where the body stands,
+/// each side's farthest point, the better of the two.
+fn skirt_along(
+    arena: &mut SkirtArena,
+    (at, toward, reach): (FinePos, Pos, i32),
+    index: impl Fn(Pos) -> Option<usize>,
+    pos_at: impl Fn(usize) -> Pos,
+    open: impl Fn(Pos) -> bool,
+) -> Option<(Side, Vec<Pos>)> {
+    let start = at.tile();
+    let now = arena.now;
+    // Along the bank from where the body stands, each tile on the side
+    // of the first step that reached it.
+    let heading = (toward.x - start.x, toward.y - start.y);
+    let side_of = |p: Pos| {
+        let (vx, vy) = (p.x - start.x, p.y - start.y);
+        if heading.0 * vy - heading.1 * vx < 0 {
+            Side::Left
+        } else {
+            Side::Right
+        }
+    };
+    let walkable = |p: Pos| p == start || open(p);
+    let on_bank = |arena: &SkirtArena, p: Pos| {
+        index(p).is_some_and(|i| arena.bank[i] == now && arena.obstacle[i] != now) && walkable(p)
+    };
+    let origin = index(start)?;
+    arena.reach(origin, 0, usize::MAX, Side::Right);
+    let mut todo = VecDeque::from([start]);
+    let most = u32::try_from((reach * 5 / 6).max(3)).unwrap_or(3);
+    while let Some(p) = todo.pop_front() {
+        let i = index(p)?;
+        if arena.steps[i] >= most {
+            continue;
+        }
+        for next in p.neighbours() {
+            if !on_bank(arena, next) {
+                continue;
+            }
+            if p.is_diagonal_to(next)
+                && (!walkable(Pos::new(p.x, next.y)) || !walkable(Pos::new(next.x, p.y)))
+            {
+                continue; // no cutting corners
+            }
+            let j = index(next)?;
+            if arena.reached[j] == now {
+                continue;
+            }
+            let side = if i == origin {
+                side_of(next)
+            } else {
+                arena.sides[i]
+            };
+            arena.reach(j, arena.steps[i] + 1, i, side);
+            todo.push_back(next);
+        }
+    }
+    // Each side's farthest point, then the better of the two: the
+    // tiles reached read in the order of the square, as a sweep of
+    // it would, so a tie falls the same way.
+    arena.reaches.sort_unstable();
+    let mut best: [Option<(u32, u32, usize)>; 2] = [None, None];
+    for &i in &arena.reaches {
+        let n = arena.steps[i];
+        if n < 3 {
+            continue;
+        }
+        let k = usize::from(arena.sides[i] == Side::Right);
+        let crow = octile(pos_at(i), toward);
+        let better = best[k].is_none_or(|(m, c, _)| n > m || n == m && crow < c);
+        if better {
+            best[k] = Some((n, crow, i));
+        }
+    }
+    // Of the two, nearer the target; on a tie, where the obstacle in
+    // sight ends sooner (less of it on that side); then the right.
+    let mut spread = [0u32; 2];
+    for &i in &arena.obstacles {
+        spread[usize::from(side_of(pos_at(i)) == Side::Right)] += 1;
+    }
+    let (side, end) = match best {
+        [None, None] => return None,
+        [Some((_, _, i)), None] => (Side::Left, i),
+        [None, Some((_, _, i))] => (Side::Right, i),
+        [Some((_, l, li)), Some((_, r, ri))] => {
+            if (l, spread[0]) < (r, spread[1]) {
+                (Side::Left, li)
+            } else {
+                (Side::Right, ri)
+            }
+        }
+    };
+    let mut path = Vec::new();
+    let mut i = end;
+    while i != origin {
+        path.push(pos_at(i));
+        i = arena.from[i];
+    }
+    path.reverse();
+    Some((side, path))
+}
+
+thread_local! {
+    /// One skirt arena a thread ([`Map::skirt`]): the five arrays of the
+    /// sight square kept from one skirt to the next and cleared by a
+    /// stamp, never zeroed. About 25 bytes a cell, 370 KB for a sight of
+    /// 60, once.
+    static SKIRT_ARENA: RefCell<SkirtArena> = RefCell::new(SkirtArena::default());
+}
+
+/// The memory of one [`Map::skirt`], reused: per cell of the sight
+/// square, the skirt that last marked it an obstacle, a bank tile or a
+/// tile reached along the bank (`now` means this one), the steps to it,
+/// the cell it was reached from and the side it lies on; and the lists
+/// of the cells marked, so the sweeps read those alone.
+#[derive(Default)]
+struct SkirtArena {
+    /// This skirt's stamp.
+    now: u32,
+    obstacle: Vec<u32>,
+    bank: Vec<u32>,
+    reached: Vec<u32>,
+    steps: Vec<u32>,
+    from: Vec<usize>,
+    sides: Vec<Side>,
+    /// The cells marked obstacle, in the order found.
+    obstacles: Vec<usize>,
+    /// The cells reached along the bank, in the order reached.
+    reaches: Vec<usize>,
+}
+
+impl SkirtArena {
+    /// Readies the arena for a skirt over `cells`: a fresh stamp, cells
+    /// enough, the lists emptied, nothing else cleared.
+    fn begin(&mut self, cells: usize) {
+        if self.obstacle.len() < cells {
+            self.obstacle.resize(cells, 0);
+            self.bank.resize(cells, 0);
+            self.reached.resize(cells, 0);
+            self.steps.resize(cells, u32::MAX);
+            self.from.resize(cells, usize::MAX);
+            self.sides.resize(cells, Side::Right);
+        }
+        self.now = self.now.wrapping_add(1);
+        if self.now == 0 {
+            // Once in four billion skirts: every old stamp forgotten.
+            self.obstacle.fill(0);
+            self.bank.fill(0);
+            self.reached.fill(0);
+            self.now = 1;
+        }
+        self.obstacles.clear();
+        self.reaches.clear();
+    }
+
+    /// Marks cell `i` reached along the bank in `steps` from the start,
+    /// from cell `from`, on `side`.
+    fn reach(&mut self, i: usize, steps: u32, from: usize, side: Side) {
+        self.reached[i] = self.now;
+        self.steps[i] = steps;
+        self.from[i] = from;
+        self.sides[i] = side;
+        self.reaches.push(i);
+    }
 }
 
 thread_local! {
