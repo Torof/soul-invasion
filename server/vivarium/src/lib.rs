@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use sim::brain::{Brains, News, Way, Ways, Why};
-use sim::content::{Content, Trials};
+use sim::content::{Content, Fire, Trials};
 use sim::map::{Map, Pos, Terrain};
 use sim::time::Calendar;
 use sim::{BodyId, Death, Event, Intention, Sex, World};
@@ -48,6 +48,10 @@ pub enum WorldKind {
 }
 
 /// What a run is given.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "four switches of a run, each read by its name"
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     /// The world.
@@ -91,6 +95,10 @@ pub struct Settings {
     /// control run beside each trial run (`--no-trials`): the content's
     /// `trials` section is replaced by one where nobody tries anything.
     pub trials: bool,
+    /// The evening fire and the common memory (D55); false is the control
+    /// run beside each run with the fire (`--no-fire`): the content's
+    /// `fire` section is replaced by one where nobody tells anything.
+    pub fire: bool,
 }
 
 impl Default for Settings {
@@ -109,6 +117,7 @@ impl Default for Settings {
             adult_years: (18, 40),
             fed: false,
             trials: true,
+            fire: true,
         }
     }
 }
@@ -724,13 +733,16 @@ pub fn run_watched(
     // The control run (D50, `--no-trials`): the content's trials replaced
     // by none, so nobody tries nor copies anything.
     let own_content;
-    let content = if settings.fed || !settings.trials {
+    let content = if settings.fed || !settings.trials || !settings.fire {
         let mut own = content.clone();
         if settings.fed {
             own.needs.hunger_per_day = 0;
         }
         if !settings.trials {
             own.needs.trials = Trials::default();
+        }
+        if !settings.fire {
+            own.needs.fire = Fire::default();
         }
         own_content = own;
         &own_content
@@ -1248,6 +1260,9 @@ pub fn run_watched(
                         kind,
                     )
                 }
+                // The fire's news (D55) reach the page in its own pull
+                // request (the lab's sections); the chronicle stays as it is.
+                News::Told { .. } | News::Heard { .. } | News::Dispelled { .. } => continue,
                 News::Copied {
                     body,
                     from,
@@ -2966,6 +2981,7 @@ mod tests {
             adult_years: (18, 40),
             fed: false,
             trials: true,
+            fire: true,
         }
     }
 
