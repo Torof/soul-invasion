@@ -465,6 +465,20 @@ process, loaded machine): CPU 363 → 144 s with trials (S11 199, S10 128, S8 12
 wall 1,109 → 671 s with trials (−40 %), 1,022 → 669 s without (−35 %); alive 54 → 62 and 56 → 83, deaths 28 → 29 and 34 → 39 (none of hunger after), births 32 → 41 and 40 → 71; 18 to 11 minutes, not yet 5. Outcomes within the run's noise; S8 changed nothing on the
 pair.
 
+**Lightening of the simulation, PR 4 (22 November 2026): the plants placed ahead.** The
+lead's yes to the parallel study's alternative (a): a chunk's bearers, 39 % of the brain
+once the rest was light, are placed on a helper thread ahead of the bodies (`sim::ahead`,
+D51 amended), the simulation thread finding them placed in the ground's shared cache; the
+same bearers either way, by construction. The vivarium takes `--helpers N` (default 1; 0
+is the simulation thread alone). Measured on a quiet machine, 0 and 1 helper alternated:
+the pair's loop over 40 days **−23 %** (32.7 → 24.7 s), the process's CPU +18 % (chunks
+placed that nobody looked at); over 250 days **−50 %** (187 → 93 s), of which the ground's
+caches widened to the world's chunks (which the helper brings) give nearly all: at 1,764
+chunks they thrashed from day 59 on. Pages and JSON identical with 0, 1 and 2 helpers on
+both pairs. The study of 22 November (`proposition-pensee-parallele.md`) had read the
+limit right: a chunk costs the helper 4 to 9 ms, the time a body walks a hundred tiles at
+this cadence, so a lead of two chunks covers two thirds of the placings and no more.
+
 **D50 b, the judge counts every distress** (22 November 2026, D50
 amended; after #308's deaths of thirst and cold). The day a mind closes at
 nightfall records every distress (gathered kJ, thin, thirsty, cold the
