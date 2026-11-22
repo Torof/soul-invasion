@@ -188,13 +188,15 @@ pub struct Step {
 
 impl Step {
     /// A body's step: where it stands, where its route ends, how far it
-    /// sees from its tile.
+    /// sees plants from its tile: the terrain's sight, no farther than
+    /// `plant_sight_tiles` (D53), as a look reads them.
     fn of(world: &World, rules: &Content, body: &Body) -> Self {
         let at = body.pos();
         let sight = world
             .map()
             .get(at)
-            .map_or(1, |terrain| rules.movement.sight_tiles(terrain));
+            .map_or(1, |terrain| rules.movement.sight_tiles(terrain))
+            .min(rules.needs.thought.plant_sight_tiles);
         Self {
             at,
             to: body.route().last().map(FinePos::tile),
