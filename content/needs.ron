@@ -183,9 +183,21 @@
     //                    pantry once in a while). It may keep a target a
     //                    few minutes while a neighbour plant just overtook
     //                    it by a gram.
+    // place_tiles:       16 — a body remembers the places where it saw
+    //                    trees and plants bearing food, squares of 16
+    //                    tiles on a side (a quarter of a chunk), with what
+    //                    and how many, not every bush; arrived at one, it
+    //                    looks again and picks the plant. Nobody remembers
+    //                    every bush. It walks to a corner and hesitates a
+    //                    little there.
+    // places_remembered: 48 — how many such places it keeps in mind, those
+    //                    worth most from where it last looked (a few
+    //                    dozen corners, where it remembered 256 bushes).
     thought: (
         plant_sight_tiles: 30,
         fed_under: 30,
         plant_choice_hours: 1,
+        place_tiles: 16,
+        places_remembered: 48,
     ),
 )

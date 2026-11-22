@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::map::Terrain;
+use crate::map::{CHUNK_SIZE, Terrain};
 use crate::time::Season;
 use crate::woods::Habitat;
 
@@ -352,6 +352,13 @@ pub struct Thought {
     /// the plant is spent or out of reach, or another need calls. One
     /// looks at the pantry once in a while, not at every step.
     pub plant_choice_hours: u32,
+    /// The side, in tiles, of a place a body remembers trees and plants
+    /// bearing food by (a corner, not a bush): divides a chunk's side
+    /// ([`crate::map::CHUNK_SIZE`]), so a place lies in one chunk.
+    pub place_tiles: u32,
+    /// How many such places a body remembers: those worth most from
+    /// where it last looked.
+    pub places_remembered: u32,
 }
 
 impl Default for Thought {
@@ -361,6 +368,8 @@ impl Default for Thought {
             plant_sight_tiles: 30,
             fed_under: 30,
             plant_choice_hours: 1,
+            place_tiles: 16,
+            places_remembered: 48,
         }
     }
 }
@@ -380,6 +389,16 @@ impl Thought {
         if self.plant_choice_hours == 0 {
             return Err(ContentError::Needs(
                 "thought: plant_choice_hours is an hour or more",
+            ));
+        }
+        if self.place_tiles == 0 || !CHUNK_SIZE.is_multiple_of(self.place_tiles) {
+            return Err(ContentError::Needs(
+                "thought: place_tiles is 1 tile or more and divides a chunk's side",
+            ));
+        }
+        if self.places_remembered == 0 {
+            return Err(ContentError::Needs(
+                "thought: places_remembered is 1 or more",
             ));
         }
         Ok(())
@@ -1428,6 +1447,10 @@ impl Content {
             (
                 "thought.plant_choice_hours",
                 self.needs.thought.plant_choice_hours,
+            ),
+            (
+                "thought.places_remembered",
+                self.needs.thought.places_remembered,
             ),
         ] {
             at_most("needs.ron", field, value, THOUSAND)?;
