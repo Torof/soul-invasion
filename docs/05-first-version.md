@@ -452,6 +452,20 @@ Left for the lead, as rules: the audit's S7–S13 (think before looking,
 choose once an hour, remember patches, a hunger hysteresis, a shorter
 plant sight, the worth's distance).
 
+**Lightening of the simulation, PR 3 (22 November 2026): the plants placed ahead.** The
+lead's yes to the parallel study's alternative (a): a chunk's bearers, 39 % of the brain
+once the rest was light, are placed on a helper thread ahead of the bodies (`sim::ahead`,
+D51 amended), the simulation thread finding them placed in the ground's shared cache; the
+same bearers either way, by construction. The vivarium takes `--helpers N` (default 1; 0
+is the simulation thread alone). Measured on a quiet machine, 0 and 1 helper alternated:
+the pair's loop over 40 days **−23 %** (32.7 → 24.7 s), the process's CPU +18 % (chunks
+placed that nobody looked at); over 250 days **−50 %** (187 → 93 s), of which the ground's
+caches widened to the world's chunks (which the helper brings) give nearly all: at 1,764
+chunks they thrashed from day 59 on. Pages and JSON identical with 0, 1 and 2 helpers on
+both pairs. The study of 22 November (`proposition-pensee-parallele.md`) had read the
+limit right: a chunk costs the helper 4 to 9 ms, the time a body walks a hundred tiles at
+this cadence, so a lead of two chunks covers two thirds of the placings and no more.
+
 **D50 b, the judge counts every distress** (22 November 2026, D50
 amended; after #308's deaths of thirst and cold). The day a mind closes at
 nightfall records every distress (gathered kJ, thin, thirsty, cold the
