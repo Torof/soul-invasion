@@ -456,6 +456,17 @@ against 15.9 s without, `Brains::think` 20.6 s against 20.3 s. The
 vivarium prints one line a year on stderr (alive, dead so far, seconds)
 so nobody waits blind.
 
+**The laboratory** (22 November 2026, D52). The simulation phase works by
+series of runs, so the series get a tool: `tools/lab/`, a local page on the
+standard library alone that creates a series from a form (the question,
+the world, the people, the days, the seeds, with and without trials, the
+cadence), launches it and follows it live, with a stop button; it absorbs
+the local launcher `soul-runs` (same plan format, same output layout), so
+the plans of lot 3 C keep working. Its first pull request builds the
+"Nouvelle série" and "En cours" screens; "Lire / Comparer" (reports,
+tables, curves, comparisons) comes once the vivarium writes its report as
+JSON beside the page.
+
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
 slopes drawn by the client from them (D44), then the relief in the
