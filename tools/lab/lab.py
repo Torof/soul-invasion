@@ -767,7 +767,7 @@ h1{font-size:1.5em;font-weight:650;margin:.3em 0 .4em}h2{font-size:1.25em;font-w
 .tile{background:#fff;border-radius:12px;padding:1em 1.2em;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 .tile .v{font-size:2.6em;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums}.tile .k{color:#4b5563;font-size:.95em;margin-top:.1em}
 .tile .s{color:#8a8f98;font-size:.85em;margin-top:.35em}
-.tile.alive .v{color:#2b7a3d}.tile.dead .v{color:#b3261e}.tile.births .v{color:#3a8f4a}.tile.kept .v{color:#c2571a}
+.tile.alive .v{color:#2b7a3d}.tile.want .v{color:#b3261e}.tile.background .v{color:#6b7280}.tile.births .v{color:#3a8f4a}.tile.stock .v{color:#8a6d1f}.tile.kept .v{color:#c2571a}.tile .v.text{font-size:1.15em;line-height:2.5}
 .tilelabel{font-weight:700;font-size:1.3em;align-self:center;color:#6b7280}
 .arrow{font-size:.42em;font-weight:600;margin-left:.4em;vertical-align:middle;padding:.1em .5em;border-radius:1em}
 .arrow.good{background:#d8efd3;color:#1f6b2a}.arrow.bad{background:#f6d3cf;color:#8a2a22}

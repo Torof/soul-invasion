@@ -89,26 +89,40 @@ Three screens:
   links to `synthese.html` and to each run's page and log.
 - **Lire / Comparer**: the series, newest first, each with its state, its
   version and change sentence, and a line of key numbers (runs read, alive
-  at the end with and without trials, deaths by cause, births); a form with
-  two selects to compare any two series or runs. Then:
+  at the end with and without trials, deaths by want with their causes,
+  background deaths, births); a form with two selects to compare any two
+  series or runs. Then:
   - `/serie/<serie>`: the question, the version, a one-sentence verdict
-    (the mean alive with and without trials), "**Comparer avec la
+    (the mean alive and the mean deaths by want, with and without trials,
+    and what the trials change), "**Comparer avec la
     version…**" (the other series made from the same plan: same plan name or
     identical runs once expanded, newest first, with their version and
     sentence), a second control for two runs of the series, a table with one
-    row per run (seed, with/without, state, alive, dead, births, kept/trials,
-    time), the mean, min, max and standard deviation of alive at the end for
-    "with" and "without", and the population curves of every run overlaid
+    row per run (seed, with/without, state, alive, deaths by want, background
+    deaths, births, kept/trials, time), the mean, min, max and standard
+    deviation of alive at the end for "with" and "without", the same for the
+    deaths by want and the background deaths, and the population curves of
+    every run overlaid
     (with in green, without in ochre).
   - `/run/<serie>/<name>`: **the page one understands at a glance** (22
     November 2026, after the lead's reading of the first screens). From top
     to bottom: the header (series, version, seed, with/without, links);
-    **the verdict**, three sentences in everyday French ("Après 5 ans, 9
-    des 25 du départ sont vivants, et 2 des 4 enfants nés en route. Ils ont
-    surtout manqué d'eau (13 des 18 morts), le plus souvent en été. Une
-    technique gardée : chercher plus loin."); **four tiles** with one big
-    number each (alive in green, dead in red, births, techniques carried
-    at the end in orange); **the map of movements over time**: the
+    **the verdict**, three sentences in everyday French, the deaths by want
+    first since they are the brain's figure (22 November 2026: since #314
+    most deaths are the background curve of D49, so "alive at the end" no
+    longer measures the brain): "3 morts de manque : 1 de faim, 2 de froid,
+    en automne ; 24 morts de fond : maladie 22, vieillesse 2. Après 5 ans, 9
+    des 25 du départ sont vivants, et 2 des 4 enfants nés en route. Une
+    technique gardée : chercher plus loin."; **six tiles** with one big
+    number each (alive in green; **deaths by want** in red, hunger, thirst
+    and cold underneath; **background deaths** in grey, illness, old age and
+    childbirth underneath, and any cause the lab does not know yet; births;
+    **the tribe's stored food** in kJ, what the living carried at the end
+    of the run's last year, `years[].food.end_kj` summed over the tribes,
+    with the days of food it makes per living person at 10,000 kJ a day,
+    the year's start and each tribe's share, or "pas dans les données" when
+    no year carries `food`; techniques carried at the end in orange);
+    **the map of movements over time**: the
     vivarium's picture with a day slider and play/pause, the living as
     dots coloured by tribe with their trail of the last days (from the
     JSON key `positions`, one sample a day at noon; "pas de positions dans
@@ -117,7 +131,11 @@ Three screens:
     they die, the camp at every year's end joined by its path, the day
     shown as "an 3, printemps, jour 112", and the year's presence heatmap
     as an option; **the population curve** alone, the whole width, years
-    marked and winters shaded; **"Ce qu'ils ont trouvé"**: per tribe, the
+    marked and winters shaded, and under it, on the same x scale, **the
+    deaths of each year per tribe** as a small bar stacked in two, the
+    deaths by want in red under the background deaths in grey, the bar's
+    outline in the tribe's colour (A left of the year, B right), the
+    causes on hover; **"Ce qu'ils ont trouvé"**: per tribe, the
     techniques told in sentences, then a small table (technique, first
     kept when and by whom, copied by, carried at the end, what it
     changes); the three tables **"Les morts"** (who, when, age at death,
@@ -131,10 +149,14 @@ Three screens:
     lines of everyone. Ages are in game years of `days_per_year` days.
   - `/compare?a=…&b=…`: a one-sentence verdict (B against A), then two
     series (run by run, paired by seed and
-    with/without: the key numbers with the differences highlighted, the
-    population curves overlaid, the cultures side by side, a link to each
-    pair's face-to-face page) or two runs (each side's verdict, the tiles
-    with a green or red arrow for the difference, the four curves overlaid, A solid and B dashed, the maps side by side,
+    with/without: the key numbers, alive, deaths by want, background
+    deaths, births, kept and each cause, with the differences highlighted,
+    the aggregates of alive and of the two kinds of deaths, the population
+    curves overlaid, the cultures side by side, a link to each pair's
+    face-to-face page; the verdict gives B against A in alive and in deaths
+    by want) or two runs (each side's verdict, the six tiles with a green
+    or red arrow for the difference, fewer deaths by want and more stored
+    food being better, the four curves overlaid, A solid and B dashed, the maps side by side,
     the discoveries side by side).
 
 Everything on these pages is read from the runs' `NAME.json` (the
@@ -208,9 +230,11 @@ Standard library `unittest`: the plan expansion (seeds × with/without),
 the seeds field, the parsing of the year lines, the state machine, the
 form to plan and back, the reading of a run's data (a fixture written by
 hand after `docs/10`), the kinds read from the data, the story and
-table of techniques, the verdict sentence, days, ages and places in
-words, the three tables of the run page, the tiles and their arrows, the
-curves' scaling, the map and its `positions` fixture, the series' aggregates, the
+table of techniques, the verdict sentence, the deaths by want apart from
+the background (an unknown cause counts as background), the stored food
+and its missing-key tile, days, ages and places in words, the three
+tables of the run page, the tiles and their arrows, the curves' scaling,
+the stacked bar of deaths per year, the map and its `positions` fixture, the series' aggregates, the
 compare pages, the version record (a temporary git repository), the
 standard plans, the routes, and three end-to-end runs with a shell script
 in place of the vivarium (a series to its synthesis; the `run` command
