@@ -404,14 +404,24 @@ pub struct Work {
     pub chunk: ChunkPos,
     /// What it gathers from.
     pub bearer: crops::Bearer,
-    /// The material it gathers.
-    pub gives: String,
+    /// The material it gathers. Shared, not copied, by what reads it a
+    /// tick; written and read as the text itself (a snapshot's JSON is as
+    /// before, D28).
+    #[serde(with = "crops::shared_text")]
+    pub gives: Arc<str>,
     /// When it began.
     pub since: Tick,
     /// The grams gathered so far.
     pub done_g: u32,
     /// The carried item they go into, once the first pinch is taken.
     pub into: Option<ItemId>,
+    /// The crop it gathers, in the content's order: found by name when
+    /// the work begins and kept, so its rate and what is left of it are
+    /// asked by number at every tick ([`World::ripe_of_crop`]). Never
+    /// stored: found again by name at the first tick after a load, or
+    /// after the content changed.
+    #[serde(skip)]
+    pub crop: Option<usize>,
 }
 
 /// Why a body stopped working.
@@ -1295,6 +1305,13 @@ pub struct World {
     /// start of the next one. Never persisted: a restart drops them.
     #[serde(skip)]
     pending: Vec<Intention>,
+    /// Whether the bodies' size, burn and pace must be set again before
+    /// the day's first tick ([`World::grow`]): raised whenever what they
+    /// follow may have changed between two days (a body added, carried,
+    /// set down, orphaned or dead; a pregnancy; the life rule; the
+    /// content; a load). Never persisted: a loaded world grows at once.
+    #[serde(skip)]
+    grow_due: bool,
     /// The path searches waiting for their turn, orders and looks again,
     /// in two lanes ([`Searches`], D32). Never persisted, as `pending`.
     #[serde(skip)]
@@ -1403,6 +1420,7 @@ impl<'de> serde::Deserialize<'de> for World {
             ground: BTreeMap::new(),
             spawns: Vec::new(),
             pending: Vec::new(),
+            grow_due: true,
             searches: Searches::default(),
             piloted: BTreeSet::new(),
             species: Vec::new(),
@@ -1509,6 +1527,7 @@ impl World {
             ground: BTreeMap::new(),
             spawns: Vec::new(),
             pending: Vec::new(),
+            grow_due: true,
             searches: Searches::default(),
             piloted: BTreeSet::new(),
             species: Vec::new(),
@@ -1528,6 +1547,10 @@ impl World {
     /// again under the content's masses ([`Body::load_g`]), and one
     /// standing in a trunk's tile is let out of it.
     pub fn take_content(&mut self, content: &Content) {
+        self.grow_due = true;
+        for work in self.bodies.iter_mut().filter_map(|b| b.work.as_mut()) {
+            work.crop = None;
+        }
         self.species.clone_from(&content.species);
         self.spawns.clone_from(&content.spawns);
         self.geology.clone_from(&content.geology);
@@ -1633,6 +1656,15 @@ impl World {
         (crop < self.crops.len()).then(|| self.left_of(chunk, source, at, crop))?
     }
 
+    /// The crop giving `gives` on the kind `kind`, in the content's order
+    /// ([`World::ripe_of_crop`]'s number): the first such, and the only
+    /// one, the content giving each kind one crop a material.
+    fn crop_of(&self, kind: &str, gives: &str) -> Option<usize> {
+        self.crops
+            .iter()
+            .position(|crop| crop.on == kind && crop.gives == gives)
+    }
+
     /// What is left now of the crop at `crop` on the tree or plant
     /// `source` of `chunk`, standing at `at`: its year and grams, `None`
     /// when nothing.
@@ -1730,20 +1762,29 @@ impl World {
         if grams == 0 {
             return;
         }
-        let key = (source, gives.to_owned());
         let changes = Arc::make_mut(self.changes.entry(chunk).or_default());
-        let before = changes
+        // Looked up without making the key's text, as `left_of` reads it:
+        // the key is made only for a crop picked for the first time.
+        let known = changes
             .picked
-            .get(&key)
-            .filter(|p| p.year == year)
-            .map_or(0, |p| p.grams);
-        changes.picked.insert(
-            key,
-            changes::Picked {
-                year,
-                grams: before + grams,
-            },
-        );
+            .range_mut((source, String::new())..)
+            .take_while(|((s, _), _)| *s == source)
+            .find(|((_, g), _)| *g == gives)
+            .map(|(_, p)| p);
+        match known {
+            Some(picked) => {
+                let before = if picked.year == year { picked.grams } else { 0 };
+                *picked = changes::Picked {
+                    year,
+                    grams: before + grams,
+                };
+            }
+            None => {
+                changes
+                    .picked
+                    .insert((source, gives.to_owned()), changes::Picked { year, grams });
+            }
+        }
         changes.version += 1;
     }
 
@@ -2136,6 +2177,7 @@ impl World {
             pregnant: None,
         });
         self.enter_chunk(id, pos.chunk());
+        self.grow_due = true;
         id
     }
 
@@ -2157,6 +2199,7 @@ impl World {
             let body = &mut self.bodies[index];
             body.born_day = today - i64::try_from(age_days).unwrap_or(i64::MAX);
             body.sex = sex;
+            self.grow_due = true;
         }
     }
 
@@ -2187,6 +2230,7 @@ impl World {
         body.route.clear();
         body.goal = None;
         body.work = None;
+        self.grow_due = true;
         true
     }
 
@@ -2553,6 +2597,7 @@ impl World {
                 body.carried_by = nurse;
             }
         }
+        self.grow_due = true;
     }
 
     /// Every body's state as a carrier, for the infants it nurses: whether
@@ -2575,8 +2620,18 @@ impl World {
         let needs = &rules.needs;
         let tick = self.tick.0;
         let season = self.time().season;
-        self.grow(rules, events);
-        let carriers = self.carriers(needs);
+        // Size, burn and pace follow the age, which moves once a day,
+        // and what changed among the bodies since (`grow_due`).
+        if day_start || self.grow_due {
+            self.grow(rules, events);
+            self.grow_due = false;
+        }
+        // The carriers' state is read for the nursed infants alone.
+        let carriers = if self.bodies.iter().any(|b| b.carried_by.is_some()) {
+            self.carriers(needs)
+        } else {
+            BTreeMap::new()
+        };
         let mut died = Vec::new();
         for body in &mut self.bodies {
             let before = body.condition.summary();
@@ -2681,6 +2736,7 @@ impl World {
             return;
         };
         let body = self.bodies.remove(index);
+        self.grow_due = true;
         let at = body.pos();
         self.leave_chunk(id, at.chunk());
         self.orphan(id, at, rules);
@@ -2877,6 +2933,11 @@ impl World {
     /// Weighs a body's load again and tells what it carries now.
     fn inventory_changed(&mut self, index: usize, rules: &Content, events: &mut Vec<Event>) {
         self.refresh_load(index);
+        self.inventory_told(index, rules, events);
+    }
+
+    /// Tells that a body's inventory changed, its load kept already.
+    fn inventory_told(&self, index: usize, rules: &Content, events: &mut Vec<Event>) {
         let body = &self.bodies[index];
         events.push(Event::InventoryChanged {
             body: body.id,
@@ -3005,10 +3066,8 @@ impl World {
         if dx * dx + dy * dy > GATHER_REACH_MM * GATHER_REACH_MM {
             return refuse(events, Refusal::OutOfReach);
         }
-        if self
-            .ripe_of(chunk, source, bearer.at, &bearer.kind, gives)
-            .is_none()
-        {
+        let crop = self.crop_of(&bearer.kind, gives);
+        if crop.is_none_or(|c| self.ripe_of_crop(chunk, source, bearer.at, c).is_none()) {
             return refuse(events, Refusal::NothingRipe);
         }
         if self.bodies[index].load_g >= self.bodies[index].capacity_g(&rules.movement) {
@@ -3030,10 +3089,11 @@ impl World {
         body.work = Some(Work {
             chunk,
             bearer,
-            gives: gives.to_owned(),
+            gives: Arc::from(gives),
             since,
             done_g: 0,
             into: None,
+            crop,
         });
         events.push(Event::WorkStarted {
             body: id,
@@ -3056,11 +3116,11 @@ impl World {
                 self.stop_work(index, WorkEnd::Interrupted, events);
                 continue;
             }
-            let rate = self
-                .crops
-                .iter()
-                .find(|c| *c.on == *work.bearer.kind && c.gives == work.gives)
-                .map_or(0, |c| c.per_hour_g)
+            // The crop by number: kept with the work, or found again by
+            // name after a load.
+            let kept = work.crop;
+            let crop = kept.or_else(|| self.crop_of(&work.bearer.kind, &work.gives));
+            let rate = crop.map_or(0, |c| self.crops[c].per_hour_g)
                 * body.condition.pace_percent(&rules.needs)
                 / 100;
             let earned = u64::from(rate) * (self.tick.0 - work.since.0) / per_hour;
@@ -3069,14 +3129,15 @@ impl World {
             if rate > 0 && due < PINCH_G {
                 continue;
             }
-            let work = work.clone();
-            let Some((year, left)) = self.ripe_of(
-                work.chunk,
-                work.bearer.source,
-                work.bearer.at,
-                &work.bearer.kind,
-                &work.gives,
-            ) else {
+            let (chunk, source, at) = (work.chunk, work.bearer.source, work.bearer.at);
+            let gives = Arc::clone(&work.gives);
+            if kept.is_none()
+                && let Some(work) = self.bodies[index].work.as_mut()
+            {
+                work.crop = crop;
+            }
+            let Some((year, left)) = crop.and_then(|c| self.ripe_of_crop(chunk, source, at, c))
+            else {
                 self.stop_work(index, WorkEnd::Bare, events);
                 continue;
             };
@@ -3085,12 +3146,12 @@ impl World {
                 .saturating_sub(self.bodies[index].load_g);
             let grams = due.min(left).min(room);
             if grams > 0 {
-                self.record_pick(work.chunk, work.bearer.source, &work.gives, year, grams);
+                self.record_pick(chunk, source, &gives, year, grams);
                 events.push(Event::CropPicked {
-                    chunk: work.chunk,
-                    version: self.chunk_version(work.chunk),
+                    chunk,
+                    version: self.chunk_version(chunk),
                 });
-                self.add_gathered(index, &work, grams, rules, events);
+                self.add_gathered(index, &gives, grams, rules, events);
             }
             if grams == left {
                 self.stop_work(index, WorkEnd::Bare, events);
@@ -3105,17 +3166,21 @@ impl World {
     fn add_gathered(
         &mut self,
         index: usize,
-        work: &Work,
+        gives: &str,
         grams: u32,
         rules: &Content,
         events: &mut Vec<Event>,
     ) {
         let id = self.bodies[index].id;
-        let into = work.into.filter(|item| {
-            self.items.get(item).is_some_and(|i| {
-                i.material == work.gives && matches!(i.place, Place::Carried { body } if body == id)
-            })
-        });
+        let into = self.bodies[index]
+            .work
+            .as_ref()
+            .and_then(|w| w.into)
+            .filter(|item| {
+                self.items.get(item).is_some_and(|i| {
+                    i.material == gives && matches!(i.place, Place::Carried { body } if body == id)
+                })
+            });
         let item = if let Some(item) = into {
             if let Some(heap) = self.items.get_mut(&item) {
                 heap.mass_g += grams;
@@ -3128,7 +3193,7 @@ impl World {
                 item,
                 Item {
                     id: item,
-                    material: work.gives.clone(),
+                    material: gives.to_owned(),
                     mass_g: grams,
                     made: self.tick,
                     place: Place::Carried { body: id },
@@ -3150,7 +3215,10 @@ impl World {
             work.done_g += grams;
             work.into = Some(item);
         }
-        self.inventory_changed(index, rules, events);
+        // The grams added, the load not re-weighed: every change of an
+        // inventory keeps `load_g` the items' sum.
+        self.bodies[index].load_g += grams;
+        self.inventory_told(index, rules, events);
     }
 
     /// Ends the work of the body at `index`, if it is busy, telling what
@@ -3159,7 +3227,7 @@ impl World {
         if let Some(work) = self.bodies[index].work.take() {
             events.push(Event::WorkStopped {
                 body: self.bodies[index].id,
-                gives: work.gives,
+                gives: work.gives.to_string(),
                 grams: work.done_g,
                 why,
             });
@@ -3590,7 +3658,15 @@ impl World {
         let trunks = self.trunks();
         let blocked = |p: Pos| trunks.blocks(p);
         let budget = movement.path_budget_tiles;
-        let (path, mut work) = self.map.search(tile, target, sight, budget, cost, blocked);
+        // Before an A*, the pre-test by the chunks' pieces (D32): a
+        // target no walkable ground joins within the square is refused
+        // at once, with no tile expanded.
+        let mask = ground::walkable_mask(cost);
+        let (path, mut work) =
+            self.map
+                .search_gated(tile, target, sight, budget, cost, blocked, || {
+                    trunks.may_join(tile, target, sight, mask)
+                });
         if let Some(path) = path {
             return (
                 Plan::Path(self.map.pull_around(from, &path, cost, blocked)),
@@ -3618,7 +3694,11 @@ impl World {
         if !seen(target)
             && let Some(past) = self.map.past_obstacle(end, target.centre(), sight, open)
         {
-            let (path, spent) = self.map.search(tile, past, sight, budget, cost, blocked);
+            let (path, spent) =
+                self.map
+                    .search_gated(tile, past, sight, budget, cost, blocked, || {
+                        trunks.may_join(tile, past, sight, mask)
+                    });
             work += spent;
             if let Some(path) = path.filter(|p| !p.is_empty()) {
                 return (
@@ -3968,6 +4048,99 @@ mod tests {
         let mut world = World::with_valley(Calendar::new(2, 2).unwrap(), &rules(), 768);
         world.spawn_at_camp().expect("grass by the camp");
         world
+    }
+
+    /// The pre-test by the chunks' pieces (D32) against the plain A*, over
+    /// random pairs within a sight: the same path or none in every case,
+    /// the same work on a path found, and a refusal by the pre-test only
+    /// where the A* found nothing either. The pairs found, the pairs the
+    /// pre-test refused.
+    fn pieces_against_the_search(
+        world: &World,
+        seed: u64,
+        count: usize,
+        reach: i32,
+        budget: u32,
+    ) -> (usize, usize) {
+        let rules = rules();
+        let movement = &rules.movement;
+        let cost = |t: Terrain| movement.cost(t);
+        let trunks = world.trunks();
+        let blocked = |p: Pos| trunks.blocks(p);
+        let mask = ground::walkable_mask(cost);
+        let map = world.map();
+        let mut rng = crate::r#gen::Lcg::new(seed);
+        let (mut found, mut refused, mut done) = (0, 0, 0);
+        let side = |n: u32| i32::try_from(n).expect("small map");
+        let span = u32::try_from(2 * reach + 1).expect("small reach");
+        while done < count {
+            let a = Pos::new(
+                side(rng.next_below(map.width())),
+                side(rng.next_below(map.height())),
+            );
+            let b = Pos::new(
+                a.x + side(rng.next_below(span)) - reach,
+                a.y + side(rng.next_below(span)) - reach,
+            );
+            if map.get(b).is_none() {
+                continue;
+            }
+            done += 1;
+            let plain = map.search(a, b, reach, budget, cost, blocked);
+            let mut gate_said = None;
+            let gated = map.search_gated(a, b, reach, budget, cost, blocked, || {
+                let may = trunks.may_join(a, b, reach, mask);
+                gate_said = Some(may);
+                may
+            });
+            assert_eq!(gated.0, plain.0, "{a:?} -> {b:?}: the same path or none");
+            match gate_said {
+                Some(false) => {
+                    assert_eq!(plain.0, None, "{a:?} -> {b:?}: refused, yet a way");
+                    assert_eq!(gated.1, budget.saturating_add(1));
+                    refused += 1;
+                }
+                _ => assert_eq!(gated.1, plain.1, "{a:?} -> {b:?}: the same work"),
+            }
+            found += usize::from(plain.0.is_some());
+        }
+        (found, refused)
+    }
+
+    #[test]
+    fn the_pieces_pre_test_refuses_only_what_no_path_joins_on_the_valley() {
+        // The game's valley, trunks and all, with no budget: a refusal by
+        // the pieces is a pair truly apart within the square.
+        let world = World::with_valley(Calendar::new(2, 2).unwrap(), &rules(), 768);
+        let (found, refused) = pieces_against_the_search(&world, 11, 600, 60, u32::MAX);
+        assert!(
+            found > 200 && refused > 10,
+            "both cases seen: {found}, {refused}"
+        );
+        // And under the game's budget: the refusals the search pays for.
+        let (found, refused) = pieces_against_the_search(&world, 12, 600, 60, 1_500);
+        assert!(
+            found > 200 && refused > 10,
+            "both cases seen: {found}, {refused}"
+        );
+    }
+
+    #[test]
+    fn the_pieces_pre_test_refuses_only_what_no_path_joins_on_the_vivarium() {
+        let map = Map::on_window_by(
+            crate::plan::zone_window().clone(),
+            crate::plan::VIVARIUM_SEED,
+            map::VIVARIUM_GENERATOR,
+        );
+        let world = World::on_valley(Calendar::new(2, 2).unwrap(), &rules(), map);
+        // The zone is one land for the most part: few pairs are apart.
+        let (found, refused) = pieces_against_the_search(&world, 13, 600, 60, 1_500);
+        assert!(
+            found > 200 && refused > 0,
+            "both cases seen: {found}, {refused}"
+        );
+        let (found, _) = pieces_against_the_search(&world, 14, 300, 25, u32::MAX);
+        assert!(found > 50, "ways found in the forest: {found}");
     }
 
     fn open_field() -> World {
