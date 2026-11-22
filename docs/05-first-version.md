@@ -452,6 +452,23 @@ Left for the lead, as rules: the audit's S7–S13 (think before looking,
 choose once an hour, remember patches, a hunger hysteresis, a shorter
 plant sight, the worth's distance).
 
+**Lightening of the simulation, PR 4 (22 November 2026).** The world's
+step, nothing visible changing (D51 amended). The step audit read it at
+43.5 % of the loop after lightening 2, the routes 76 % of it: the A*
+spending its whole budget of 1,500 tiles to say "no way in sight" before
+a river was 85 % of the tiles expanded. The lead: "à part S12, on peut
+absolument toutes les faire". Seven steps, one commit each, the pair of
+25 a camp hashing the same after each, on 250 days and with infants too:
+a connectivity pre-test by chunk before every A* (each chunk's walkable
+pieces, joined across the sight square: a target nothing joins is refused
+with no tile expanded, the plan of `foule/chemins.md` §2 never coded); the
+A* arena and the skirt's five windows reused, stamped, never zeroed; a
+straight walk's sidesteps answered by a flood before the small A*; the
+bodies grown once a day and the carriers read only when someone is
+carried; the gatherer asking by its crop's number, borrowing, keeping its
+key; the vivarium's continent kept on disk between runs (a cache of the
+tool, `--no-continent-cache` to bear it anew). Measured on the loaded machine, reference and new alternated: the pair's process CPU **37.8 → 20.0 s** (−47 %), the world's step by the probe **12.1 → 5.6 s (−53 %)** and 44 → 32 % of the loop (the pre-test alone −34 %), the birth **5.9 → 0.3 s** (the continent read, not born), peak memory 132 → 122 MB; 250 days 429 → 175 s under load, pages the same. Left to PR 5 (D54), the rules of the route the lead chose: a lower path budget, a shorter sight in the open, and looking again toward the window's best edge after a skirt instead of giving up.
+
 **D50 b, the judge counts every distress** (22 November 2026, D50
 amended; after #308's deaths of thirst and cold). The day a mind closes at
 nightfall records every distress (gathered kJ, thin, thirsty, cold the
