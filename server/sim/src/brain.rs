@@ -47,17 +47,24 @@
 //! day are **ways** on each mind ([`Ways`]): how far a plant is worth
 //! going, whether it sleeps out, how much it stores, where home is. At
 //! nightfall each mind closes its day: what it gathered, whether it is
-//! thin, whether it is in **distress** (hungry at the day's end, or a day
-//! with no gather at all). Distressed for `trial_after_days` running, it
+//! thin, thirsty or hungry, whether the night before froze it, whether
+//! the day was bare, and whether it is in **distress** (hungry at the
+//! day's end, or a day with no gather at all). Distressed for
+//! `trial_after_days` running, it
 //! may start a **trial** (a daily chance by its **will**, a placeholder
 //! drawn from the world's seed and its id until the souls' Willpower
 //! comes, D30): one way moved by one step, drawn from the seed, its id
-//! and the day. After `trial_days` the world has **judged**: the way is
-//! kept if it gathered more a day than before and was thin no more often,
-//! else reverted. Lying down at its camp at night, a body may **copy** one
-//! way from the camp-mate who gathered most a day lately, the more
-//! readily the greater that mate's will, sometimes losing a step to the
-//! copy. Children follow their mother's home every night, a carried
+//! and the day. After `trial_days` the world has **judged** on every
+//! distress: the way is kept if nothing worsened and one thing improved
+//! (gathered a day, thin days, thirsty days, cold days), else reverted. A
+//! new home goes towards where it knows the most plants still bearing or
+//! towards the nearest drinking place it knows, half and half, and never
+//! past the map's edge. Lying down
+//! at its camp at night, a body may **copy** one way from the camp-mate
+//! who fared best lately (the fewest days of distress, gathered kJ
+//! breaking ties), the more readily the greater that mate's will,
+//! sometimes losing a step to the copy. Children follow their mother's
+//! home every night, a carried
 //! infant its carrier's. The brain tells these in its [`News`], drained
 //! by the vivarium after each turn ([`Brains::news`]). The content's
 //! section `trials` holds every number ([`crate::content::Trials`]);
@@ -290,19 +297,78 @@ pub struct Trial {
     pub before: Ways,
     /// The day it started (the day closing at that nightfall).
     pub started_day: u64,
-    /// What the `trial_days` before gathered a day, in kilojoules.
-    pub before_kj_per_day: u64,
-    /// How many of those days ended thin.
-    pub before_thin_days: u32,
+    /// What the `trial_days` before gave: the judge compares against it.
+    pub before_days: Lately,
 }
 
-/// One day as a mind closed it at nightfall (D50).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One day as a mind closed it at nightfall (D50): what it gathered, and
+/// every distress of the day.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "five marks of one day, each read by its name"
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct Day {
     /// Gathered over the day, in kilojoules.
     gathered_kj: u64,
     /// Thin at nightfall.
     thin: bool,
+    /// Thirsty at nightfall ([`THIRSTY`] or more).
+    thirsty: bool,
+    /// Cold the night before: its cold was full, its vitality drained.
+    cold: bool,
+    /// Hungry at nightfall ([`HUNGRY`] or more).
+    hungry: bool,
+    /// Nothing gathered at all.
+    bare: bool,
+}
+
+impl Day {
+    /// A day of distress: any of its marks.
+    fn distress(self) -> bool {
+        self.thin || self.thirsty || self.cold || self.hungry || self.bare
+    }
+}
+
+/// What a mind's last days gave (D50): what the judge compares and what
+/// the camp-mates look at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Lately {
+    /// Gathered a day, in kilojoules.
+    pub kj_per_day: u64,
+    /// Days ended thin.
+    pub thin_days: u32,
+    /// Days ended thirsty.
+    pub thirsty_days: u32,
+    /// Days whose night before was cold.
+    pub cold_days: u32,
+    /// Days of distress of any kind (thin, thirsty, cold, hungry, bare).
+    pub distress_days: u32,
+}
+
+impl Lately {
+    /// The judge's verdict (D50 b): nothing worsened and one thing
+    /// improved, over gathered a day, thin days, thirsty days and cold
+    /// days.
+    #[must_use]
+    pub fn better_than(&self, before: &Self) -> bool {
+        let worse = self.kj_per_day < before.kj_per_day
+            || self.thin_days > before.thin_days
+            || self.thirsty_days > before.thirsty_days
+            || self.cold_days > before.cold_days;
+        let better = self.kj_per_day > before.kj_per_day
+            || self.thin_days < before.thin_days
+            || self.thirsty_days < before.thirsty_days
+            || self.cold_days < before.cold_days;
+        !worse && better
+    }
+
+    /// How well it fared, the greater the better: the fewest days of
+    /// distress, gathered a day breaking ties.
+    #[must_use]
+    pub fn fared(&self) -> (std::cmp::Reverse<u32>, u64) {
+        (std::cmp::Reverse(self.distress_days), self.kj_per_day)
+    }
 }
 
 /// What the brain tells of its trials (D50), drained with
@@ -343,7 +409,9 @@ pub enum News {
         way: Way,
         /// The copy lost a step: it landed halfway.
         lost: bool,
-        /// Its ways after the copy.
+        /// Its ways before the copy.
+        before: Ways,
+        /// Its ways after it.
         after: Ways,
         /// The tick.
         at: u64,
@@ -366,6 +434,8 @@ pub struct Mind {
     distress_days: u32,
     /// Its last days, the oldest first: at most twice `trial_days`.
     days: Vec<Day>,
+    /// Its cold was full since the last nightfall: the night froze it.
+    cold_night: bool,
     /// The trial under way, if any.
     trial: Option<Trial>,
     /// Its home at the last nightfall: the camp-mates are those sharing it.
@@ -416,6 +486,7 @@ impl Mind {
             gathered_today_kj: 0,
             distress_days: 0,
             days: Vec::new(),
+            cold_night: false,
             trial: None,
             home_at_dusk: home,
             copied_night: None,
@@ -484,20 +555,28 @@ impl Mind {
         self.distress_days
     }
 
-    /// What it gathered a day over its last `days` days closed, in
-    /// kilojoules, and how many of them ended thin: over the days it has
-    /// when it has fewer; (0, 0) with none.
-    fn lately(&self, days: u32) -> (u64, u32) {
+    /// What its last `days` days closed gave: gathered a day and the days
+    /// of each distress, over the days it has when it has fewer; all
+    /// zero with none.
+    fn lately(&self, days: u32) -> Lately {
         let n = usize::try_from(days)
             .unwrap_or(usize::MAX)
             .min(self.days.len());
         if n == 0 {
-            return (0, 0);
+            return Lately::default();
         }
         let last = &self.days[self.days.len() - n..];
         let kj: u64 = last.iter().map(|d| d.gathered_kj).sum();
-        let thin = u32::try_from(last.iter().filter(|d| d.thin).count()).unwrap_or(u32::MAX);
-        (kj / u64::try_from(n).expect("fits"), thin)
+        let count = |f: fn(&Day) -> bool| {
+            u32::try_from(last.iter().filter(|d| f(d)).count()).unwrap_or(u32::MAX)
+        };
+        Lately {
+            kj_per_day: kj / u64::try_from(n).expect("fits"),
+            thin_days: count(|d| d.thin),
+            thirsty_days: count(|d| d.thirsty),
+            cold_days: count(|d| d.cold),
+            distress_days: count(|d| d.distress()),
+        }
     }
 }
 
@@ -911,6 +990,9 @@ impl Brains {
             if body.condition().vitality.points() == 0 {
                 return false;
             }
+            if body.condition().cold.is_full() {
+                mind.cold_night = true;
+            }
             let past = pasts(world, id);
             if past != mind.past {
                 // A gauge past a threshold: in its own tick too, as the
@@ -1002,9 +1084,10 @@ impl Brains {
         }
     }
 
-    /// The nightfall closes every mind's day (D50): its gather and its
-    /// thinness go to its days, its distress is counted, a trial under
-    /// way long enough is judged, else one may start; then the children
+    /// The nightfall closes every mind's day (D50): its gather and every
+    /// distress of the day (thin, thirsty, hungry, cold the night before,
+    /// bare) go to its days, its distress is counted, a trial under way
+    /// long enough is judged on them all, else one may start; then the children
     /// take their mother's home (their father's without one), the carried
     /// infants their carrier's, and each mind notes its home for the
     /// night's camp-mates.
@@ -1024,12 +1107,18 @@ impl Brains {
             if world.is_infant(body, rules) {
                 // Carried and nursed: no day of its own yet.
                 mind.distress_days = 0;
+                mind.cold_night = false;
                 continue;
             }
             let c = body.condition();
+            let hungry = c.hunger.points() >= HUNGRY;
             mind.days.push(Day {
                 gathered_kj,
                 thin: c.is_thin(&rules.needs),
+                thirsty: c.thirst.points() >= THIRSTY,
+                cold: std::mem::take(&mut mind.cold_night),
+                hungry,
+                bare: gathered_kj == 0,
             });
             let keep = usize::try_from(trials.trial_days)
                 .unwrap_or(usize::MAX)
@@ -1037,7 +1126,6 @@ impl Brains {
             if mind.days.len() > keep.max(2) {
                 mind.days.remove(0);
             }
-            let hungry = c.hunger.points() >= HUNGRY;
             mind.distress_days = if hungry || gathered_kj == 0 {
                 mind.distress_days.saturating_add(1)
             } else {
@@ -1046,8 +1134,9 @@ impl Brains {
             if let Some(trial) = mind.trial
                 && day >= trial.started_day + u64::from(trials.trial_days)
             {
-                let (kj, thin) = mind.lately(trials.trial_days);
-                let kept = kj > trial.before_kj_per_day && thin <= trial.before_thin_days;
+                let kept = mind
+                    .lately(trials.trial_days)
+                    .better_than(&trial.before_days);
                 if !kept {
                     trial.way.copy(&mut mind.ways, &trial.before);
                 }
@@ -1098,9 +1187,10 @@ impl Brains {
 
     /// `id` lies down at its camp for the night (D50): once a night, it
     /// may copy one way from the camp-mate (the same home at nightfall,
-    /// within `imitate_tiles` of it, not under a trial itself) who
-    /// gathered most a day over the last `trial_days`, more than it did;
-    /// the chance is `imitate_percent` scaled by that mate's will. The way
+    /// within `imitate_tiles` of it, not under a trial itself) who fared
+    /// best over the last `trial_days` (the fewest days of distress,
+    /// gathered a day breaking ties, [`Lately::fared`]), better than it
+    /// did; the chance is `imitate_percent` scaled by that mate's will. The way
     /// is drawn among those that differ; with `imitate_loss_percent` a
     /// numeric way lands halfway between its own and the mate's. A body
     /// under a trial copies nothing: the world is judging it. Copying the
@@ -1122,7 +1212,7 @@ impl Brains {
         if (here.x - camp.x).abs() > HOME_TILES || (here.y - camp.y).abs() > HOME_TILES {
             return;
         }
-        let own = mind.lately(trials.trial_days).0;
+        let own = mind.lately(trials.trial_days).fared();
         let dusk = mind.home_at_dusk;
         let reach = i32::try_from(trials.imitate_tiles).unwrap_or(i32::MAX);
         let best = self
@@ -1132,15 +1222,16 @@ impl Brains {
             .filter_map(|(&mate, m)| {
                 let at = world.body(mate)?.pos();
                 ((at.x - here.x).abs() <= reach && (at.y - here.y).abs() <= reach)
-                    .then(|| (m.lately(trials.trial_days).0, mate, m.ways, m.will))
+                    .then(|| (m.lately(trials.trial_days).fared(), mate, m.ways, m.will))
             })
-            .filter(|(kj, ..)| *kj > own)
-            .max_by_key(|(kj, mate, ..)| (*kj, std::cmp::Reverse(*mate)));
+            .filter(|(fared, ..)| *fared > own)
+            .max_by_key(|(fared, mate, ..)| (*fared, std::cmp::Reverse(*mate)));
         let mind = self.minds.get_mut(&id).expect("its mind");
         mind.copied_night = Some(day);
         let Some((_, from, theirs, will)) = best else {
             return;
         };
+        let before = mind.ways;
         let seed = world.seed();
         let keys = [u64::from(id.0), day];
         if scatter::roll(seed, purpose::TRIAL_COPY, &keys) % 100
@@ -1177,6 +1268,7 @@ impl Brains {
             from,
             way,
             lost,
+            before,
             after: mind.ways,
             at: world.tick().0,
         });
@@ -2134,8 +2226,10 @@ const DIRECTIONS: [(i32, i32); 8] = [
 /// from the world's seed, its id and the day: the worth distance twice or
 /// half, the night out flipped, the store twice or half, or the home moved
 /// [`will_step`] tiles towards where it knows the most plants still
-/// bearing. A child (under sixteen) does not try its home: it takes its
-/// mother's every night. The trial records what the days before gave.
+/// bearing or the nearest drinking place it knows ([`new_home`]). A child
+/// (under sixteen) does not try its home: it takes its mother's every
+/// night; a body whose home can go nowhere (the map's edge) tries another
+/// way that day. The trial records what the days before gave.
 fn start_trial(
     world: &World,
     rules: &Content,
@@ -2146,9 +2240,23 @@ fn start_trial(
     day: u64,
 ) -> Option<News> {
     let trials = &rules.needs.trials;
-    let ways: &[Way] = if child { &Way::ALL[..3] } else { &Way::ALL };
     let r = scatter::roll(world.seed(), purpose::TRIAL_WAY, &[u64::from(id.0), day]);
-    let way = ways[usize::try_from(r % u64::try_from(ways.len()).expect("four")).expect("small")];
+    let draw = |ways: &[Way]| {
+        ways[usize::try_from(r % u64::try_from(ways.len()).expect("four")).expect("small")]
+    };
+    let mut way = if child {
+        draw(&Way::ALL[..3])
+    } else {
+        draw(&Way::ALL)
+    };
+    let mut home = None;
+    if way == Way::Home {
+        let tiles = will_step(mind.will, trials);
+        home = new_home(world, rules, food, id, mind, day, tiles);
+        if home.is_none() {
+            way = draw(&Way::ALL[..3]);
+        }
+    }
     let up = (r >> 8).is_multiple_of(2);
     let before = mind.ways;
     match way {
@@ -2167,22 +2275,17 @@ fn start_trial(
                 (before.stock_kj / 2).max(1)
             };
         }
-        Way::Home => {
-            let tiles = will_step(mind.will, trials);
-            mind.ways.home = new_home(world, rules, food, id, mind, day, tiles);
-        }
+        Way::Home => mind.ways.home = home.expect("drawn only with a home to go to"),
     }
     if mind.ways == before {
-        // Nothing moved (a home that could go nowhere): no trial.
+        // Nothing moved (a step that stays, at 1): no trial.
         return None;
     }
-    let (before_kj_per_day, before_thin_days) = mind.lately(trials.trial_days);
     mind.trial = Some(Trial {
         way,
         before,
         started_day: day,
-        before_kj_per_day,
-        before_thin_days,
+        before_days: mind.lately(trials.trial_days),
     });
     Some(News::Trying {
         body: id,
@@ -2193,11 +2296,19 @@ fn start_trial(
     })
 }
 
-/// Where a trial sets `id`'s home (D50): `tiles` from its home towards the
-/// direction (of eight) where it knows the most plants still bearing
-/// (what is left on them now, [`World::ripe_of`]), else a direction drawn
-/// from the seed, its id and the day; on the map, and on the nearest
-/// walkable tile back along that line (the home itself if none).
+/// Where a trial sets `id`'s home (D50): `tiles` from its home towards one
+/// of two things it perceives, drawn half and half from the seed, its id
+/// and the day (D50 b): the direction (of eight) where it knows the most
+/// plants still bearing (what is left on them now, [`World::ripe_of`]),
+/// or the direction of the nearest drinking place it knows; the other
+/// when the drawn one has nothing, a seeded direction when neither has;
+/// then the nearest walkable tile back along that line. Nothing says
+/// "stay near water": the judge counts the thirsty days, and the tribe
+/// finds it or not. The map's edge is physics, not a rule: a direction
+/// that leaves the map is not drawn, and the new home lies inside the map
+/// less a margin of half the step (the vivarium's world has an edge; the
+/// planet will have none, only its ocean). `None` when the home can go
+/// nowhere: no home trial that day.
 fn new_home(
     world: &World,
     rules: &Content,
@@ -2206,7 +2317,7 @@ fn new_home(
     mind: &Mind,
     day: u64,
     tiles: i32,
-) -> Pos {
+) -> Option<Pos> {
     let home = mind.ways.home;
     let mut counts = [0_u32; 8];
     for (&(chunk, source), plant) in &mind.plants {
@@ -2230,36 +2341,53 @@ fn new_home(
         }
         counts[octant(dx, dy)] += 1;
     }
-    let (dx, dy) = if counts.iter().all(|&n| n == 0) {
-        let r = scatter::roll(
-            world.seed(),
-            purpose::TRIAL_DIRECTION,
-            &[u64::from(id.0), day],
-        );
-        DIRECTIONS[usize::try_from(r % 8).expect("under eight")]
-    } else {
-        let best = (0..8)
+    let plants = counts.iter().any(|&n| n > 0).then(|| {
+        (0..8)
             .max_by_key(|&i| (counts[i], std::cmp::Reverse(i)))
-            .expect("eight");
-        DIRECTIONS[best]
+            .expect("eight")
+    });
+    let water = mind
+        .water
+        .values()
+        .map(|place| place.stand)
+        .filter(|&at| at != home)
+        .min_by_key(|&at| (far(home, at), at.x, at.y))
+        .map(|at| octant(at.x - home.x, at.y - home.y));
+    let r = scatter::roll(
+        world.seed(),
+        purpose::TRIAL_DIRECTION,
+        &[u64::from(id.0), day],
+    );
+    let drawn = if r.is_multiple_of(2) {
+        plants.or(water)
+    } else {
+        water.or(plants)
     };
+    let (dx, dy) =
+        DIRECTIONS[drawn.unwrap_or_else(|| usize::try_from((r >> 1) % 8).expect("under eight"))];
     let map = world.map();
     let (w, h) = (
         i32::try_from(map.width()).expect("fits") - 1,
         i32::try_from(map.height()).expect("fits") - 1,
     );
-    // Back along the line from the far end to the home: the first
-    // walkable tile.
-    for step in (1..=tiles).rev() {
-        let at = Pos::new(
-            home.x.saturating_add(dx.saturating_mul(step)).clamp(0, w),
-            home.y.saturating_add(dy.saturating_mul(step)).clamp(0, h),
-        );
-        if walkable(map, rules, at) {
-            return at;
-        }
+    let far_end = Pos::new(
+        home.x.saturating_add(dx.saturating_mul(tiles)),
+        home.y.saturating_add(dy.saturating_mul(tiles)),
+    );
+    if far_end.x < 0 || far_end.x > w || far_end.y < 0 || far_end.y > h {
+        // No land that way: the direction is not drawn.
+        return None;
     }
-    home
+    let margin = tiles / 2;
+    let inside =
+        |at: Pos| at.x >= margin && at.x <= w - margin && at.y >= margin && at.y <= h - margin;
+    // Back along the line from the far end to the home: the first
+    // walkable tile, inside the margin and away from the home.
+    (1..=tiles)
+        .rev()
+        .map(|step| Pos::new(home.x + dx * step, home.y + dy * step))
+        .find(|&at| walkable(map, rules, at))
+        .filter(|&at| at != home && inside(at))
 }
 
 /// Which of the eight [`DIRECTIONS`] `(dx, dy)` points to: by the signs,
@@ -3640,7 +3768,14 @@ mod tests {
             let trial = mind.trial().unwrap();
             assert_eq!((trial.way, trial.before), (*way, *before));
             assert_eq!(trial.started_day, 0);
-            assert_eq!((trial.before_kj_per_day, trial.before_thin_days), (0, 0));
+            assert_eq!(
+                trial.before_days,
+                Lately {
+                    distress_days: 1,
+                    ..Lately::default()
+                },
+                "the bare day before"
+            );
             *ways_tried.entry(*way).or_insert(0) += 1;
         }
         assert!(ways_tried.len() >= 3, "the draws spread: {ways_tried:?}");
@@ -3654,82 +3789,185 @@ mod tests {
         assert!(news.is_empty(), "{news:?}");
     }
 
-    #[test]
-    fn the_worlds_judgement_keeps_a_better_way_and_reverts_a_worse_one() {
+    /// A trial of the worth distance judged at its second nightfall
+    /// (`trial_days`: 2) against `before`: `first` is its first day as
+    /// closed; the second day's gather, thinness, thirst and cold are set
+    /// on the body and its mind. Whether it was kept, and the worth after.
+    fn judged(
+        before: Lately,
+        first: Day,
+        kj: u64,
+        thin: bool,
+        thirsty: bool,
+        cold: bool,
+    ) -> (bool, u64) {
         let rules = trials_at(0, 0);
         let id = BodyId(1);
-        let judge = |after_kj: [u64; 2], after_thin: [bool; 2]| {
-            // Day two closes (trial_days: 2) on a body born then.
-            let mut world = World::empty(
-                Calendar::new(1, 7200).unwrap(),
-                Map::filled(64, 64, Terrain::Grass).with_camp(5, 5),
-            );
-            let mut events = Vec::new();
-            world.advance(2 * world.calendar().ticks_per_day(), &rules, &mut events);
-            world.spawn_body(Pos::new(5, 5));
-            if after_thin[1] {
-                world.bodies[0].condition.deficit_j =
-                    world.bodies[0].condition.reserve_j(&rules.needs) * 6 / 10;
-            }
-            let mut brains = piloted(&world);
-            let mind = brains.minds.get_mut(&id).unwrap();
-            let before = *mind.ways();
-            mind.ways.worth_half_tiles *= 2;
-            mind.trial = Some(Trial {
-                way: Way::WorthHalfTiles,
-                before,
-                started_day: 0,
-                before_kj_per_day: 1000,
-                before_thin_days: 1,
-            });
-            mind.days = vec![Day {
-                gathered_kj: after_kj[0],
-                thin: after_thin[0],
-            }];
-            mind.gathered_today_kj = after_kj[1];
-            let news = nightfall(&world, &rules, &mut brains);
-            let mind = brains.mind(id).unwrap();
-            assert!(mind.trial().is_none(), "judged");
-            (news, mind.ways().worth_half_tiles)
+        let mut world = World::empty(
+            Calendar::new(1, 7200).unwrap(),
+            Map::filled(64, 64, Terrain::Grass).with_camp(5, 5),
+        );
+        let mut events = Vec::new();
+        world.advance(2 * world.calendar().ticks_per_day(), &rules, &mut events);
+        world.spawn_body(Pos::new(5, 5));
+        if thin {
+            world.bodies[0].condition.deficit_j =
+                world.bodies[0].condition.reserve_j(&rules.needs) * 6 / 10;
+        }
+        if thirsty {
+            thirst(&mut world, THIRSTY);
+        }
+        let mut brains = piloted(&world);
+        let mind = brains.minds.get_mut(&id).unwrap();
+        let ways = *mind.ways();
+        mind.ways.worth_half_tiles *= 2;
+        mind.trial = Some(Trial {
+            way: Way::WorthHalfTiles,
+            before: ways,
+            started_day: 0,
+            before_days: before,
+        });
+        mind.days = vec![first];
+        mind.gathered_today_kj = kj;
+        mind.cold_night = cold;
+        let news = nightfall(&world, &rules, &mut brains);
+        let mind = brains.mind(id).unwrap();
+        assert!(mind.trial().is_none(), "judged");
+        let kept = match news[..] {
+            [
+                News::Tried {
+                    body,
+                    way: Way::WorthHalfTiles,
+                    kept,
+                    ..
+                },
+            ] if body == id => kept,
+            _ => panic!("{news:?}"),
+        };
+        (kept, mind.ways().worth_half_tiles)
+    }
+
+    #[test]
+    fn the_worlds_judgement_keeps_a_better_way_and_reverts_a_worse_one() {
+        let before = Lately {
+            kj_per_day: 1000,
+            thin_days: 1,
+            ..Lately::default()
+        };
+        let day = |kj, thin| Day {
+            gathered_kj: kj,
+            thin,
+            ..Day::default()
         };
         // More a day, thin no more often: kept.
-        let (news, worth) = judge([1500, 1500], [false, true]);
-        assert_eq!(worth, WORTH_HALF_TILES * 2);
-        assert!(
-            matches!(news[..], [News::Tried { body, way: Way::WorthHalfTiles, kept: true, .. }] if body == id),
-            "{news:?}"
+        assert_eq!(
+            judged(before, day(1500, false), 1500, true, false, false),
+            (true, WORTH_HALF_TILES * 2)
         );
         // More a day but thin more often: reverted.
-        let (news, worth) = judge([1500, 1500], [true, true]);
-        assert_eq!(worth, WORTH_HALF_TILES);
-        assert!(
-            matches!(news[..], [News::Tried { kept: false, .. }]),
-            "{news:?}"
+        assert_eq!(
+            judged(before, day(1500, true), 1500, true, false, false),
+            (false, WORTH_HALF_TILES)
         );
-        // Not more a day: reverted.
-        let (news, worth) = judge([1000, 1000], [false, false]);
-        assert_eq!(worth, WORTH_HALF_TILES);
-        assert!(
-            matches!(news[..], [News::Tried { kept: false, .. }]),
-            "{news:?}"
+        // Nothing better: reverted.
+        assert_eq!(
+            judged(before, day(1000, true), 1000, false, false, false),
+            (false, WORTH_HALF_TILES)
+        );
+        // The same a day, thin less often: kept.
+        assert_eq!(
+            judged(before, day(1000, false), 1000, false, false, false),
+            (true, WORTH_HALF_TILES * 2)
         );
     }
 
     #[test]
-    fn a_new_home_goes_towards_the_plants_it_knows_bearing_else_a_seeded_way() {
+    fn a_trial_that_gathers_more_but_thirsts_or_freezes_more_is_reverted() {
+        let before = Lately {
+            kj_per_day: 1000,
+            cold_days: 1,
+            ..Lately::default()
+        };
+        let day = |kj| Day {
+            gathered_kj: kj,
+            ..Day::default()
+        };
+        // Half as much more a day, but thirsty at the second nightfall:
+        // one thirsty day where there was none: reverted.
+        assert_eq!(
+            judged(before, day(1500), 1500, false, true, false),
+            (false, WORTH_HALF_TILES)
+        );
+        // More a day, cold no more often (one night, as before): kept.
+        assert_eq!(
+            judged(before, day(1500), 1500, false, false, true),
+            (true, WORTH_HALF_TILES * 2)
+        );
+        // More a day, but cold two nights where it was one: reverted.
+        assert_eq!(
+            judged(
+                before,
+                Day {
+                    cold: true,
+                    ..day(1500)
+                },
+                1500,
+                false,
+                false,
+                true
+            ),
+            (false, WORTH_HALF_TILES)
+        );
+        // The same a day, no cold night where there was one: kept.
+        assert_eq!(
+            judged(before, day(1000), 1000, false, false, false),
+            (true, WORTH_HALF_TILES * 2)
+        );
+        // The days as closed carry every distress, and a day of any is a
+        // day of distress.
+        let world = field(64, 40, Pos::new(5, 5));
+        let mut brains = piloted(&world);
+        let mind = brains.minds.get_mut(&BodyId(1)).unwrap();
+        mind.days = vec![
+            day(1000),
+            Day {
+                thirsty: true,
+                ..day(2000)
+            },
+            Day {
+                hungry: true,
+                bare: true,
+                ..day(0)
+            },
+        ];
+        assert_eq!(
+            mind.lately(5),
+            Lately {
+                kj_per_day: 1000,
+                thin_days: 0,
+                thirsty_days: 1,
+                cold_days: 0,
+                distress_days: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn a_new_home_goes_towards_the_plants_it_knows_bearing_or_the_water_it_knows() {
         let (world, rules, id, _) = by_a_ripe_bramble(0);
         let mut rules = rules;
         rules.needs.trials = trials_at(100, 0).needs.trials;
-        let here = world.body(id).unwrap().pos();
-        let chunk = here.chunk();
+        let chunk = world.body(id).unwrap().pos().chunk();
         let food = food_now(&world, &rules);
-        let mut mind = Mind::new(here);
-        // Knowing nothing bearing: the seeded direction, 20 tiles off.
-        let seeded = new_home(&world, &rules, &food, id, &mind, 3, 20);
-        assert_ne!(seeded, here);
-        // Along one of the eight lines, 20 tiles off or the nearest
-        // walkable tile back from there.
-        let (dx, dy) = ((seeded.x - here.x).abs(), (seeded.y - here.y).abs());
+        // The home in the middle of the 256-tile valley: no edge near.
+        let home = Pos::new(128, 128);
+        let mut mind = Mind::new(home);
+        // Knowing nothing bearing and no water: the seeded direction, 20
+        // tiles off, along one of the eight lines or the nearest walkable
+        // tile back from there; the same again.
+        let seeded = new_home(&world, &rules, &food, id, &mind, 3, 20).unwrap();
+        assert_ne!(seeded, home);
+        let (dx, dy) = ((seeded.x - home.x).abs(), (seeded.y - home.y).abs());
         assert!(
             dx.max(dy) <= 20 && (dx == 0 || dy == 0 || dx == dy),
             "{seeded:?}"
@@ -3737,15 +3975,17 @@ mod tests {
         assert!(walkable(world.map(), &rules, seeded));
         assert_eq!(
             new_home(&world, &rules, &food, id, &mind, 3, 20),
-            seeded,
+            Some(seeded),
             "the same again"
         );
-        // Three brambles known north-east of the camp, bearing: that way.
+        // Three brambles known north-east of the home, bearing, and a
+        // drinking place south-west of it: half the days one, half the
+        // other, by the seeded draw.
         let bramble = food.numbers["bramble"];
         for k in 1..=3u16 {
             let at = FinePos::new(
-                here.centre().x + 5000,
-                here.centre().y - i32::from(k) * 3000,
+                home.centre().x + 5000,
+                home.centre().y - i32::from(k) * 3000,
             );
             mind.plants.insert(
                 (
@@ -3760,17 +4000,43 @@ mod tests {
                 },
             );
         }
-        let towards = new_home(&world, &rules, &food, id, &mind, 3, 20);
-        assert!(
-            towards.x > here.x && towards.y < here.y,
-            "north-east: {towards:?}"
-        );
+        let north_east = |at: Pos| at.x > home.x && at.y < home.y;
+        let south_west = |at: Pos| at.x < home.x && at.y > home.y;
+        let towards = new_home(&world, &rules, &food, id, &mind, 3, 20).unwrap();
+        assert!(north_east(towards), "only the plants known: {towards:?}");
         assert!(walkable(world.map(), &rules, towards));
-        // Spent for the year, they do not count.
+        let well = Pos::new(home.x - 30, home.y + 30);
+        mind.water.insert(
+            well.chunk(),
+            DrinkingPlace {
+                stand: well,
+                water: well,
+            },
+        );
+        let (mut plants, mut water) = (0, 0);
+        for day in 0..20 {
+            let at = new_home(&world, &rules, &food, id, &mind, day, 20).unwrap();
+            if north_east(at) {
+                plants += 1;
+            } else if south_west(at) {
+                water += 1;
+            } else {
+                panic!("day {day}: {at:?}");
+            }
+        }
+        assert!(
+            plants >= 5 && water >= 5,
+            "{plants} towards the plants, {water} towards the water"
+        );
+        // Spent for the year, the plants do not count: the water, every
+        // day.
         for plant in mind.plants.values_mut() {
             plant.spent = Some(1);
         }
-        assert_eq!(new_home(&world, &rules, &food, id, &mind, 3, 20), seeded);
+        for day in 0..20 {
+            let at = new_home(&world, &rules, &food, id, &mind, day, 20).unwrap();
+            assert!(south_west(at), "day {day}: {at:?}");
+        }
         // The step follows the will: a quarter under far_home_from_will.
         assert_eq!(will_step(69, &rules.needs.trials), 5);
         assert_eq!(will_step(70, &rules.needs.trials), 20);
@@ -3778,6 +4044,116 @@ mod tests {
         assert_eq!(octant(10, 6), 1);
         assert_eq!(octant(0, -3), 6);
         assert_eq!(octant(-9, -2), 4);
+    }
+
+    #[test]
+    fn no_home_past_the_maps_edge_and_the_body_tries_another_way_instead() {
+        // A field of 64 tiles, the home at (5, 5): a step of 20 keeps the
+        // home 10 tiles inside the edge.
+        let world = field(64, -1, Pos::new(5, 5));
+        let rules = trials_at(100, 0);
+        let food = food_now(&world, &rules);
+        let id = BodyId(1);
+        let home = Pos::new(5, 5);
+        let knowing = |stand: Pos| {
+            let mut mind = Mind::new(home);
+            mind.water.insert(
+                stand.chunk(),
+                DrinkingPlace {
+                    stand,
+                    water: stand,
+                },
+            );
+            mind
+        };
+        // Water known north-west: that way leaves the map, no home.
+        let mind = knowing(Pos::new(0, 0));
+        assert_eq!(new_home(&world, &rules, &food, id, &mind, 1, 20), None);
+        // Water known east: (25, 5) is on the map but within the margin.
+        let mind = knowing(Pos::new(30, 5));
+        assert_eq!(new_home(&world, &rules, &food, id, &mind, 1, 20), None);
+        // Water known south-east: the home goes there.
+        let mind = knowing(Pos::new(30, 30));
+        assert_eq!(
+            new_home(&world, &rules, &food, id, &mind, 1, 20),
+            Some(Pos::new(25, 25))
+        );
+        // A body whose home can go nowhere tries another way that day:
+        // over forty days of trials, never its home, and the three others.
+        let mut mind = knowing(Pos::new(0, 0));
+        let mut ways_tried = std::collections::BTreeSet::new();
+        for day in 0..40 {
+            mind.trial = None;
+            if let Some(News::Trying { way, .. }) =
+                start_trial(&world, &rules, &food, id, &mut mind, false, day)
+            {
+                assert_ne!(way, Way::Home, "day {day}");
+                ways_tried.insert(way);
+            }
+        }
+        assert_eq!(ways_tried.len(), 3, "{ways_tried:?}");
+        assert_eq!(mind.ways.home, home);
+    }
+
+    #[test]
+    fn the_best_mate_is_the_least_distressed_gathered_kj_breaking_ties() {
+        let mut world = field(64, 40, Pos::new(5, 5));
+        world.spawn_body(Pos::new(6, 5));
+        world.spawn_body(Pos::new(7, 5));
+        let (me, a, b) = (BodyId(1), BodyId(2), BodyId(3));
+        let rules = trials_at(100, 0);
+        let day = |kj| Day {
+            gathered_kj: kj,
+            ..Day::default()
+        };
+        let camp = |a_day: Day, b_day: Day| {
+            let mut brains = piloted(&world);
+            brains.minds.get_mut(&me).unwrap().days = vec![day(1000)];
+            let m = brains.minds.get_mut(&a).unwrap();
+            m.days = vec![a_day];
+            m.ways.sleep_out = true;
+            m.will = 100;
+            let m = brains.minds.get_mut(&b).unwrap();
+            m.days = vec![b_day];
+            m.ways.stock_kj = STOCK_KJ * 2;
+            m.will = 100;
+            brains.imitate(&world, &rules, me);
+            (brains.news(), *brains.mind(me).unwrap().ways())
+        };
+        // A gathered most but was thirsty, B gathered less than me: none
+        // fared better than me, nothing copied.
+        let (news, ways) = camp(
+            Day {
+                thirsty: true,
+                ..day(3000)
+            },
+            day(500),
+        );
+        assert!(news.is_empty(), "{news:?}");
+        assert_eq!(ways, Ways::at(Pos::new(5, 5)));
+        // A gathered most but froze one night; B, less, in no distress:
+        // B fared best, its store is copied.
+        let (news, ways) = camp(
+            Day {
+                cold: true,
+                ..day(3000)
+            },
+            day(2000),
+        );
+        assert!(
+            matches!(news[..], [News::Copied { body, from, way: Way::StockKj, .. }] if body == me && from == b),
+            "{news:?}"
+        );
+        assert_eq!(ways.stock_kj, STOCK_KJ * 2);
+        assert!(!ways.sleep_out);
+        // Neither in distress: the gathered kJ break the tie, A's night out
+        // is copied.
+        let (news, ways) = camp(day(3000), day(2000));
+        assert!(
+            matches!(news[..], [News::Copied { from, way: Way::SleepOut, .. }] if from == a),
+            "{news:?}"
+        );
+        assert!(ways.sleep_out);
     }
 
     #[test]
@@ -3790,7 +4166,7 @@ mod tests {
             let mut brains = piloted(&world);
             let day = |kj| Day {
                 gathered_kj: kj,
-                thin: false,
+                ..Day::default()
             };
             brains.minds.get_mut(&me).unwrap().days = vec![day(1000)];
             let m = brains.minds.get_mut(&mate).unwrap();
@@ -3826,7 +4202,7 @@ mod tests {
         let mut brains = piloted(&world);
         brains.minds.get_mut(&mate).unwrap().days = vec![Day {
             gathered_kj: 3000,
-            thin: false,
+            ..Day::default()
         }];
         brains.minds.get_mut(&mate).unwrap().ways.sleep_out = true;
         brains.minds.get_mut(&mate).unwrap().will = 0;
@@ -3838,7 +4214,7 @@ mod tests {
         let mut brains = piloted(&world);
         brains.minds.get_mut(&mate).unwrap().days = vec![Day {
             gathered_kj: 3000,
-            thin: false,
+            ..Day::default()
         }];
         brains.minds.get_mut(&mate).unwrap().will = 100;
         brains.minds.get_mut(&mate).unwrap().ways.home = Pos::new(9, 9);
@@ -3854,7 +4230,7 @@ mod tests {
         let mut brains = piloted(&world);
         brains.minds.get_mut(&mate).unwrap().days = vec![Day {
             gathered_kj: 3000,
-            thin: false,
+            ..Day::default()
         }];
         brains.minds.get_mut(&mate).unwrap().will = 100;
         brains.minds.get_mut(&mate).unwrap().ways.sleep_out = true;
@@ -3863,8 +4239,7 @@ mod tests {
             way: Way::StockKj,
             before: mind.ways,
             started_day: 0,
-            before_kj_per_day: 0,
-            before_thin_days: 0,
+            before_days: Lately::default(),
         });
         brains.imitate(&world, &rules, me);
         assert!(brains.news().is_empty(), "under a trial, it copies nothing");
