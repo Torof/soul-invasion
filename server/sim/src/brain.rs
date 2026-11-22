@@ -77,7 +77,7 @@ use crate::crops::{self, Bearer, Source};
 use crate::r#gen::scatter::{self, purpose};
 use crate::lru::Lru;
 use crate::map::{CHUNK_SIZE, ChunkPos, FinePos, Map, Pos, Terrain};
-use crate::{BodyId, Event, GATHER_REACH_MM, Intention, ItemId, World};
+use crate::{Body, BodyId, Event, GATHER_REACH_MM, Intention, ItemId, World};
 
 /// Thirst from which a body goes to drink: half a game day without
 /// water (thirst rises 100 points a day), so it drinks before the night
@@ -461,7 +461,10 @@ pub struct Mind {
     past: (bool, bool, bool, bool),
     /// Something changed: it thinks at the next turn.
     due: bool,
-    /// Its walk ended since it last thought (it arrived, or was stopped).
+    /// Its walk ended since it last thought: it arrived, or was stopped
+    /// for good (blocked, refused). A pause on a straight walk, the goal
+    /// kept while the body looks again for a way, is not one
+    /// ([`Body::is_pausing`]).
     stopped: bool,
     /// The chunks whose plants it could not walk to, and the day it
     /// tried: left alone until the next day, when it may stand elsewhere.
@@ -1340,6 +1343,16 @@ impl Brains {
                 } => *body,
                 _ => continue,
             };
+            if matches!(event, Event::BodyStopped { .. })
+                && world.body(body).is_some_and(Body::is_pausing)
+            {
+                // A pause on a straight walk, its goal kept: the body
+                // looks again for a way at the next tick and goes on by
+                // itself. Not a stop, and nothing to think about: read as
+                // one, each trunk on a far walk sent it back to its camp
+                // (22 November 2026).
+                continue;
+            }
             if let Some(mind) = self.minds.get_mut(&body) {
                 mind.due = true;
                 if matches!(
@@ -3312,6 +3325,61 @@ mod tests {
             None
         );
         assert_eq!(mind.drinking_places().count(), 0);
+    }
+
+    #[test]
+    fn pausing_before_a_rock_on_its_way_to_the_water_it_does_not_turn_back() {
+        // A field of 140 tiles, the camp at (5, 5), a wall of rock down
+        // column 70 from the map's edge to row 70, one pool at (120, 62);
+        // the body at (20, 62) knows the pool, out of its sight (60
+        // tiles). It walks straight (D32), stops short of the wall, its
+        // goal kept, looks again, goes round the wall's end and drinks:
+        // the stop before the wall is a pause, not a "stopped short far
+        // from the camp" that sends it back there first (22 November
+        // 2026: 241 such returns in 25 days of the vivarium).
+        let mut map = Map::filled(140, 140, Terrain::Grass).with_camp(5, 5);
+        for y in 0..=70 {
+            map.set(Pos::new(70, y), Terrain::Rock);
+        }
+        map.set(Pos::new(120, 62), Terrain::Water);
+        let mut world = World::empty(Calendar::new(1, 7200).unwrap(), map);
+        let id = world.spawn_body(Pos::new(20, 62));
+        thirst(&mut world, 60);
+        let mut brains = piloted(&world);
+        let place = DrinkingPlace {
+            stand: Pos::new(119, 62),
+            water: Pos::new(120, 62),
+        };
+        let mind = brains.minds.get_mut(&id).unwrap();
+        mind.water.clear();
+        mind.water.insert(place.stand.chunk(), place);
+        let (events, decided) = run(&mut world, &mut brains, 3000);
+        // Up to its drink (quenched, it walks home: another matter).
+        let drank = events
+            .iter()
+            .position(|e| matches!(e, Event::BodyDrank { .. }))
+            .expect("it drank");
+        let before = &events[..drank];
+        let stops = before
+            .iter()
+            .filter(|e| matches!(e, Event::BodyStopped { .. }))
+            .count();
+        assert_eq!(stops, 2, "it paused before the wall, then arrived");
+        assert!(
+            !before
+                .iter()
+                .any(|e| matches!(e, Event::BodyBlocked { .. })),
+            "nothing barred it for good"
+        );
+        let camp = Pos::new(5, 5);
+        assert!(
+            !decided.iter().any(|(_, d)| d.why == Why::Thirst
+                && matches!(
+                    d.intention,
+                    Intention::MoveTo { target, .. } if target == camp
+                )),
+            "thirsty, it never went back to the camp first: {decided:?}"
+        );
     }
 
     #[test]
