@@ -1935,10 +1935,14 @@ fn kj_of_an_hour(kj_per_hour: u64, per_hour_g: u32, left_g: u32) -> Option<u64> 
     Some(kj_per_hour * u64::from(left_g.min(per_hour_g)) / u64::from(per_hour_g.max(1)))
 }
 
-/// What a plant giving `kj_per_hour` is worth `tiles` away: halved at
-/// `half_tiles` (the body's way, [`WORTH_HALF_TILES`] by default).
-fn worth(kj_per_hour: u64, tiles: i64, half_tiles: u64) -> u64 {
-    let tiles = u64::try_from(tiles).unwrap_or(0);
+/// What a plant giving `kj_per_hour` is worth at `far_squared` (the
+/// squared distance [`far`] gives): halved at `half_tiles` tiles (the
+/// body's way, [`WORTH_HALF_TILES`] by default). Until 22 November 2026
+/// the squared distance was taken for tiles, so the worth was halved at
+/// about 6 tiles, not 32, and the way "twice as far" only reached 1.4
+/// times farther (the brain audit's P7).
+fn worth(kj_per_hour: u64, far_squared: i64, half_tiles: u64) -> u64 {
+    let tiles = u64::try_from(far_squared).unwrap_or(0).isqrt();
     let half_tiles = half_tiles.max(1);
     kj_per_hour * half_tiles / (half_tiles + tiles)
 }
@@ -2529,7 +2533,18 @@ mod tests {
         body.condition.hunger = Gauge::at(hunger);
         let mut brains = Brains::new(7);
         brains.adopt(&world, &rules, id);
+        near_sighted(&mut brains, id);
         (world, rules, id, brains)
+    }
+
+    /// Makes `id` weigh nearness hard (a plant's worth halved at a tile):
+    /// the bramble beside it stays its choice, while the valley holds
+    /// richer plants a short walk away that the default way (halved at 32
+    /// tiles, [`worth_is_halved_at_half_tiles_not_at_their_square`]) would
+    /// send it to. The tests on the bramble are about hunger, stores and
+    /// night, not about the choice of plant.
+    fn near_sighted(brains: &mut Brains, id: BodyId) {
+        brains.minds.get_mut(&id).unwrap().ways.worth_half_tiles = 1;
     }
 
     #[test]
@@ -2604,6 +2619,7 @@ mod tests {
         let id = body_by(&mut world, &bramble);
         let mut brains = Brains::new(7);
         brains.adopt(&world, &rules, id);
+        near_sighted(&mut brains, id);
         let ticks = hour(&world);
         let (events, decided) = run_valley(&mut world, &rules, &mut brains, ticks);
         let asked = |d: &Decision| matches!(&d.intention, Intention::Gather { source, .. } if *source == bramble.source);
@@ -2718,6 +2734,7 @@ mod tests {
             body.condition.hunger = Gauge::at(HUNGRY + 10);
             let mut brains = Brains::new(7);
             brains.adopt(&world, &rules, id);
+            near_sighted(&mut brains, id);
             let ticks = hour(&world);
             let (_, decided) = run_valley(&mut world, &rules, &mut brains, ticks);
             decided
@@ -2860,6 +2877,18 @@ mod tests {
             "the least lately used went first"
         );
         assert!(placed.chunks.contains(&ChunkPos::new(many - 1, 0)));
+    }
+
+    #[test]
+    fn worth_is_halved_at_half_tiles_not_at_their_square() {
+        // 32 tiles off, the worth is halved; 6 tiles off (whose square
+        // is near 32) it is barely dented.
+        assert_eq!(worth(1000, far(Pos::new(0, 0), Pos::new(32, 0)), 32), 500);
+        assert_eq!(worth(1000, far(Pos::new(0, 0), Pos::new(6, 0)), 32), 842);
+        // Twice as far (64 tiles) is worth a third, not a fifth.
+        assert_eq!(worth(1000, far(Pos::new(0, 0), Pos::new(64, 0)), 32), 333);
+        // A way reaching twice as far halves at 64 tiles.
+        assert_eq!(worth(1000, far(Pos::new(0, 0), Pos::new(64, 0)), 64), 500);
     }
 
     #[test]
@@ -3655,11 +3684,15 @@ mod tests {
         assert_eq!(mind.home(), home);
         for tiles in [0, 1, 32, 1000] {
             assert_eq!(
-                worth(2850, tiles, WORTH_HALF_TILES),
+                worth(2850, tiles * tiles, WORTH_HALF_TILES),
                 2850 * WORTH_HALF_TILES / (WORTH_HALF_TILES + u64::try_from(tiles).unwrap())
             );
         }
-        assert_eq!(worth(1000, 64, 64), 500, "a way twice as wide halves at 64");
+        assert_eq!(
+            worth(1000, 64 * 64, 64),
+            500,
+            "a way twice as wide halves at 64"
+        );
         // The content's trials absent: nobody tries nor copies.
         assert!(!rules().needs.trials.on());
     }
