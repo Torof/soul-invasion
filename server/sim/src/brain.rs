@@ -1746,6 +1746,12 @@ fn decide(
     // The world refuses a gather to a body whose load is full.
     let can_carry = body.load_g() < body.capacity_g(&rules.movement);
     let night = world.is_night(rules);
+    // The plant worth gathering, chosen once a thought: hunger and the
+    // day's gathering ask the same question of the same memory.
+    let mut chosen: Option<Option<Target<'_>>> = None;
+    let mut to_gather = |mind: &Mind| {
+        *chosen.get_or_insert_with(|| plant_to_gather(world, rules, food, here, mind))
+    };
     if let Doing::Gathering(chunk, source) = mind.doing {
         if body.work().is_some() {
             // At work: it goes on unless thirst, hunger or night calls.
@@ -1852,7 +1858,7 @@ fn decide(
                 Why::Hunger,
             );
         }
-        if can_carry && let Some(target) = plant_to_gather(world, rules, food, here, mind) {
+        if can_carry && let Some(target) = to_gather(mind) {
             return go_gather(world, rules, id, mind, target, Why::Hunger);
         }
         // It knows the seasons: it goes looking by day, and only when
@@ -1866,7 +1872,7 @@ fn decide(
     if !night
         && can_carry
         && carried_kj(world, rules, id) < mind.ways.stock_kj
-        && let Some(target) = plant_to_gather(world, rules, food, here, mind)
+        && let Some(target) = to_gather(mind)
     {
         return go_gather(world, rules, id, mind, target, Why::Gather);
     }
