@@ -86,6 +86,14 @@ pub const THIRSTY: u32 = 50;
 /// Thirst from which a sleeping body wakes to drink: it would not
 /// otherwise last the night.
 pub const PARCHED: u32 = 80;
+/// Fatigue at or above which a sleeping body stays down even parched: it
+/// collapsed of fatigue (the world lays a body down at 100 wherever it
+/// stands) and does not rise before it has slept a tenth of its gauge off
+/// (48 game minutes at the content's rest); then thirst drives it on.
+/// Without it, a parched body collapsed on its way rose at each order
+/// of its pilot and fell again a tick later: eight thousand decisions a
+/// day and no progress (22 November 2026).
+pub const COLLAPSED: u32 = 90;
 /// Hunger from which a body goes to eat.
 pub const HUNGRY: u32 = 50;
 /// How near the camp a body counts as home, in tiles (a little more than
@@ -457,8 +465,8 @@ pub struct Mind {
     plants: BTreeMap<(ChunkPos, Source), KnownPlant>,
     doing: Doing,
     /// Which thresholds its gauges were past when it last thought:
-    /// thirsty, parched, hungry, asleep.
-    past: (bool, bool, bool, bool),
+    /// thirsty, parched, hungry, asleep, collapsed.
+    past: (bool, bool, bool, bool, bool),
     /// Something changed: it thinks at the next turn.
     due: bool,
     /// Its walk ended since it last thought: it arrived, or was stopped
@@ -500,7 +508,7 @@ impl Mind {
             food: BTreeMap::new(),
             plants: BTreeMap::new(),
             doing: Doing::Nothing,
-            past: (false, false, false, false),
+            past: (false, false, false, false, false),
             due: true,
             stopped: false,
             out_of_reach: BTreeMap::new(),
@@ -1383,17 +1391,21 @@ impl Brains {
 }
 
 /// Which thresholds the body's gauges are past: (thirsty, parched,
-/// hungry, asleep).
-fn pasts(world: &World, id: BodyId) -> (bool, bool, bool, bool) {
-    world.body(id).map_or((false, false, false, false), |body| {
-        let c = body.condition();
-        (
-            c.thirst.points() >= THIRSTY,
-            c.thirst.points() >= PARCHED,
-            c.hunger.points() >= HUNGRY,
-            c.asleep,
-        )
-    })
+/// hungry, asleep, collapsed). Collapsed: asleep with its fatigue at
+/// [`COLLAPSED`] or more; it thinks again when it has slept under it.
+fn pasts(world: &World, id: BodyId) -> (bool, bool, bool, bool, bool) {
+    world
+        .body(id)
+        .map_or((false, false, false, false, false), |body| {
+            let c = body.condition();
+            (
+                c.thirst.points() >= THIRSTY,
+                c.thirst.points() >= PARCHED,
+                c.hunger.points() >= HUNGRY,
+                c.asleep,
+                c.asleep && c.fatigue.points() >= COLLAPSED,
+            )
+        })
 }
 
 /// Can a body stand on `pos`?
@@ -1693,7 +1705,7 @@ fn decide(
     let map = world.map();
     let camp = mind.ways.home;
     let decision = |intention, why| Some(Decision { intention, why });
-    let (thirsty, parched, hungry, asleep) = pasts(world, id);
+    let (thirsty, parched, hungry, asleep, collapsed) = pasts(world, id);
     // The world refuses a gather to a body whose load is full.
     let can_carry = body.load_g() < body.capacity_g(&rules.movement);
     let night = world.is_night(rules);
@@ -1714,7 +1726,10 @@ fn decide(
     {
         stopped_short(world, food, id, mind, chunk, source);
     }
-    if asleep && !parched {
+    // Asleep, it sleeps on unless parched (D45: a parched body does not
+    // sleep), and even parched while it lies collapsed of fatigue: a walk
+    // would wake it for a tick and lay it down again.
+    if asleep && (!parched || collapsed) {
         mind.doing = Doing::Nothing;
         return None;
     }
@@ -3152,9 +3167,10 @@ mod tests {
     #[test]
     fn a_sleeper_wakes_only_when_parched() {
         let mut world = field(64, 40, Pos::new(5, 5));
-        // Asleep and tired: it would sleep on (a rested body wakes with the day).
+        // Asleep and tired, short of collapsed: it would sleep on (a rested
+        // body wakes with the day).
         world.bodies[0].condition.asleep = true;
-        world.bodies[0].condition.fatigue = Gauge::at(90);
+        world.bodies[0].condition.fatigue = Gauge::at(COLLAPSED - 10);
         thirst(&mut world, THIRSTY + 5);
         let mut brains = piloted(&world);
         let (_, decided) = run(&mut world, &mut brains, 10);
@@ -3167,6 +3183,55 @@ mod tests {
             "parched: it gets up and goes to drink"
         );
         assert!(events.iter().any(|e| matches!(e, Event::BodyDrank { .. })));
+    }
+
+    #[test]
+    fn collapsed_of_fatigue_it_stays_down_until_it_has_slept_some_then_drinks() {
+        // A field of 140 tiles, the river down column 130, the body at
+        // the camp (5, 5) parched and a point short of collapsing: it sets
+        // off for the water it knows, collapses on the way (the world lays
+        // it down at full fatigue), and lies there until its fatigue is
+        // under `COLLAPSED`, asked nothing meanwhile; then it rises, walks
+        // on and drinks (22 November 2026: three bodies of the vivarium
+        // died of thirst standing, woken at every tick by their pilot).
+        let mut world = field(140, 130, Pos::new(5, 5));
+        thirst(&mut world, PARCHED + 5);
+        world.bodies[0].condition.fatigue = Gauge::at(99);
+        let mut brains = piloted(&world);
+        let id = world.bodies[0].id();
+        // Awake a point of fatigue: 60 ticks at 120 points a day of 7,200.
+        let (events, decided) = run(&mut world, &mut brains, 70);
+        assert_eq!(decided.len(), 1, "one walk to the water: {decided:?}");
+        assert!(matches!(decided[0].1.intention, Intention::MoveTo { .. }));
+        let body = world.body(id).unwrap();
+        let c = body.condition();
+        assert!(
+            c.asleep && c.fatigue.points() >= COLLAPSED,
+            "laid down at full fatigue, resting since: {:?}",
+            c.summary()
+        );
+        assert!(!body.is_walking(), "collapsed on its way");
+        let collapsed_at = body.pos();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::BodyStopped { .. }))
+        );
+        // A tenth of the gauge takes 240 ticks at 300 points a day asleep.
+        let (_, decided) = run(&mut world, &mut brains, 200);
+        assert!(decided.is_empty(), "it stays down: {decided:?}");
+        let body = world.body(id).unwrap();
+        assert!(body.condition().asleep && body.pos() == collapsed_at);
+        let (events, decided) = run(&mut world, &mut brains, 700);
+        assert!(
+            events.iter().any(|e| matches!(e, Event::BodyDrank { .. })),
+            "risen under {COLLAPSED}, it walked on and drank: {decided:?}"
+        );
+        let drink = decided
+            .iter()
+            .position(|(_, d)| matches!(d.intention, Intention::Drink { .. }))
+            .expect("a drink");
+        assert!(drink <= 2, "a walk or two, then the drink: {decided:?}");
     }
 
     #[test]
