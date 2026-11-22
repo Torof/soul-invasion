@@ -550,9 +550,22 @@ impl HeardDays {
 struct Judged {
     way: Way,
     after: Ways,
+    /// The direction of the step ([`step_up`]).
+    up: bool,
     kept: bool,
     before: Lately,
     during: Lately,
+}
+
+/// The direction of a step of `way` from `before` to `after`: wider or
+/// narrower, more store or less, out or home, a home moved (always up).
+fn step_up(way: Way, before: &Ways, after: &Ways) -> bool {
+    match way {
+        Way::WorthHalfTiles => after.worth_half_tiles > before.worth_half_tiles,
+        Way::StockKj => after.stock_kj > before.stock_kj,
+        Way::SleepOut => after.sleep_out,
+        Way::Home => true,
+    }
 }
 
 /// One day as a mind closed it at nightfall (D50): what it gathered, and
@@ -952,6 +965,7 @@ fn judge(rules: &Content, body: &Body, mind: &Mind, trial: &Trial) -> (bool, Jud
         Judged {
             way: trial.way,
             after: mind.ways,
+            up: step_up(trial.way, &trial.before, &mind.ways),
             kept,
             before: trial.before_days,
             during,
@@ -1060,6 +1074,18 @@ impl Mind {
                 .is_some_and(|c| day < c + u64::from(rules.needs.trials.trial_days))
     }
 
+    /// The will acquired (D50, amended): a kept trial raises it by
+    /// `will_step_kept`, an abandoned one lowers it by `will_step_lost`,
+    /// within 0 to 100. A trait moved by one's own experience.
+    fn learn_will(&mut self, trials: &Trials, kept: bool) {
+        let will = if kept {
+            (u32::from(self.will) + trials.will_step_kept).min(100)
+        } else {
+            u32::from(self.will).saturating_sub(trials.will_step_lost)
+        };
+        self.will = u8::try_from(will).expect("at most 100");
+    }
+
     /// Drops every access it holds: the body is gone.
     fn forget_all(&mut self, memory: &mut Store) {
         for place in self.places.values_mut() {
@@ -1081,7 +1107,8 @@ impl Mind {
         }
     }
 
-    /// Holds a heard kept way: at most `heard_max`, the oldest dropped.
+    /// Holds a heard trial (a kept way, a lesson): at most `heard_max`,
+    /// the oldest dropped.
     fn hold_way(&mut self, access: Access, fire: &Fire, memory: &mut Store) {
         self.heard_ways.push(access);
         let keep = usize::try_from(fire.heard_max).unwrap_or(usize::MAX).max(1);
@@ -1114,6 +1141,7 @@ impl Mind {
                 day,
                 way: judged.way,
                 after: judged.after,
+                up: judged.up,
                 kept: judged.kept,
                 will: self.will,
                 before: judged.before,
@@ -1277,7 +1305,9 @@ impl Mind {
                 trim_water(self, camp);
                 false
             }
-            Some(Record::Trial { kept: true, .. }) => {
+            Some(Record::Trial { .. }) => {
+                // Kept or given up: a kept way to copy or try, a lesson
+                // either way (D50, amended).
                 memory.hold(record);
                 self.hold_way(access, fire, memory);
                 true
@@ -1773,10 +1803,11 @@ impl Brains {
             // Its first thought too in its own tick: a tribe born at once
             // does not think all in one.
             let mut mind = Mind::new(home);
-            mind.will = u8::try_from(
-                scatter::roll(world.seed(), purpose::TRIAL_WILL, &[u64::from(body.0)]) % 101,
-            )
-            .expect("under 101");
+            // Its innate will (D50, amended): a skewed draw from the
+            // seed and its id, a child's the same way (no inheritance).
+            mind.will = rules.needs.trials.will_at(
+                scatter::roll(world.seed(), purpose::TRIAL_WILL, &[u64::from(body.0)]) % 1001,
+            );
             if first > now + 1 {
                 mind.due = false;
                 mind.wake_at = Some(first);
@@ -2018,6 +2049,7 @@ impl Brains {
                 && day >= trial.started_day + u64::from(trials.trial_days)
             {
                 let (kept, judged) = judge(rules, body, mind, &trial);
+                mind.learn_will(trials, kept);
                 if kept {
                     mind.changed_day = Some(day);
                 } else {
@@ -3759,24 +3791,32 @@ fn start_trial(
             });
         }
     }
+    // The candidates, each weighed by the lessons it heard (D50,
+    // amended): a weight, never a ban.
     let r = scatter::roll(seed, purpose::TRIAL_WAY, &[u64::from(id.0), day]);
-    let draw = |ways: &[Way]| {
-        ways[usize::try_from(r % u64::try_from(ways.len()).expect("four")).expect("small")]
+    let mut candidates = lessons(rules, memory, mind, day, child);
+    let draw = |candidates: &[(Way, bool, u64)], r: u64| {
+        let total: u64 = candidates.iter().map(|c| c.2).sum();
+        let mut at = r % total.max(1);
+        for &(way, up, weight) in candidates {
+            if at < weight {
+                return (way, up);
+            }
+            at -= weight;
+        }
+        let last = candidates.last().expect("a candidate at least");
+        (last.0, last.1)
     };
-    let mut way = if child {
-        draw(&Way::ALL[..3])
-    } else {
-        draw(&Way::ALL)
-    };
+    let (mut way, mut up) = draw(&candidates, r);
     let mut home = None;
     if way == Way::Home {
         let tiles = will_step(mind.will, trials);
         home = new_home(world, rules, food, id, mind, day, tiles);
         if home.is_none() {
-            way = draw(&Way::ALL[..3]);
+            candidates.retain(|c| c.0 != Way::Home);
+            (way, up) = draw(&candidates, r >> 8);
         }
     }
-    let up = (r >> 8).is_multiple_of(2);
     let before = mind.ways;
     match way {
         Way::WorthHalfTiles => {
@@ -3814,6 +3854,70 @@ fn start_trial(
         after: mind.ways,
         at: world.tick().0,
     })
+}
+
+/// The steps `mind` may try on `day`, each with its weight (D50, amended
+/// by the lessons of D55): the worth distance twice or half, the night
+/// out or home, the store twice or half, the home moved (not for a
+/// child). Each starts at 100; each trial heard at the fire of the same
+/// change (the same way, the same direction) adds `lesson_weight` if it
+/// was kept and takes it away if it was given up, whole for
+/// `lesson_days`, half for as long again, nothing after, scaled by how
+/// much a body of this will heeds the lessons (`lesson_heed_by_will`);
+/// never under `lesson_floor`: a weight, never a ban.
+fn lessons(
+    rules: &Content,
+    memory: &Store,
+    mind: &Mind,
+    day: u64,
+    child: bool,
+) -> Vec<(Way, bool, u64)> {
+    let trials = &rules.needs.trials;
+    let heed = trials.heed_percent(mind.will);
+    let mut candidates: Vec<(Way, bool, u64)> = vec![
+        (Way::WorthHalfTiles, true, 100),
+        (Way::WorthHalfTiles, false, 100),
+        (Way::SleepOut, !mind.ways.sleep_out, 100),
+        (Way::StockKj, true, 100),
+        (Way::StockKj, false, 100),
+    ];
+    if !child {
+        candidates.push((Way::Home, true, 100));
+    }
+    if trials.lesson_weight == 0 || trials.lesson_days == 0 {
+        return candidates;
+    }
+    let floor = u64::from(trials.lesson_floor);
+    for access in &mind.heard_ways {
+        let Some(Record::Trial {
+            way,
+            up,
+            kept,
+            day: rec_day,
+            ..
+        }) = memory.get(access.record)
+        else {
+            continue;
+        };
+        let age = day.saturating_sub(u64::from(*rec_day));
+        let whole = u64::from(trials.lesson_days);
+        let factor = if age < whole {
+            100
+        } else if age < 2 * whole {
+            50
+        } else {
+            0
+        };
+        let delta = u64::from(trials.lesson_weight) * factor / 100 * heed / 100;
+        if let Some(c) = candidates.iter_mut().find(|c| c.0 == *way && c.1 == *up) {
+            c.2 = if *kept {
+                c.2 + delta
+            } else {
+                c.2.saturating_sub(delta).max(floor)
+            };
+        }
+    }
+    candidates
 }
 
 /// The kept way `id` heard that it would try first (D55): among the
@@ -5660,6 +5764,7 @@ mod tests {
             imitate_tiles: 12,
             imitate_percent: percent,
             imitate_loss_percent: loss,
+            ..Trials::default()
         };
         rules
     }
@@ -6468,7 +6573,16 @@ mod tests {
     /// [`trials_at`] (100, 0), the fire on with the content's placeholders.
     fn fire_rules() -> Content {
         let mut rules = crate::crops::tests::content();
-        rules.needs.trials = trials_at(100, 0).needs.trials;
+        let forced = trials_at(100, 0).needs.trials;
+        rules.needs.trials = Trials {
+            trial_after_days: forced.trial_after_days,
+            trial_days: forced.trial_days,
+            try_percent_by_will: forced.try_percent_by_will,
+            new_home_walk_tiles: forced.new_home_walk_tiles,
+            imitate_percent: forced.imitate_percent,
+            imitate_loss_percent: forced.imitate_loss_percent,
+            ..rules.needs.trials
+        };
         rules.needs.fire = Fire::placeholders();
         rules
     }
@@ -6574,6 +6688,7 @@ mod tests {
             day,
             way,
             after,
+            up: true,
             kept: true,
             will,
             before: Lately::default(),
@@ -6933,6 +7048,7 @@ mod tests {
             day: 1,
             way: Way::Home,
             after: home,
+            up: true,
             kept: true,
             will: 50,
             before: Lately::default(),
@@ -7142,6 +7258,7 @@ mod tests {
         mind.judged = Some(Judged {
             way: Way::StockKj,
             after: mind.ways,
+            up: true,
             kept: true,
             before: Lately::default(),
             during: Lately::default(),
@@ -7185,5 +7302,269 @@ mod tests {
             told(&night(&mut world, &rules, &mut brains, &[teller, listener])),
             1
         );
+    }
+
+    // The will and the lessons (D50 amended, 23 November 2026).
+
+    #[test]
+    fn the_innate_will_is_drawn_skewed_most_timid_an_adventurer_or_two_in_twenty_five() {
+        let rules = fire_rules();
+        let trials = &rules.needs.trials;
+        assert_eq!(trials.will_at(0), 5);
+        assert_eq!(trials.will_at(800), 20);
+        assert_eq!(trials.will_at(930), 40);
+        assert_eq!(trials.will_at(1000), 90);
+        let wills: Vec<u8> = (0..1000).map(|p| trials.will_at(p)).collect();
+        let timid = wills.iter().filter(|&&w| w <= 20).count();
+        let bold = wills.iter().filter(|&&w| w >= 60).count();
+        assert!(timid >= 800, "{timid}");
+        assert!(
+            (20..=70).contains(&bold),
+            "{bold} of 1,000: one or two in twenty-five"
+        );
+        // Over a tribe, drawn from the seed and the ids: the same shape,
+        // and the same every time.
+        let mut many = field(64, 40, Pos::new(5, 5));
+        for k in 0..99 {
+            many.spawn_body(Pos::new(6 + k % 10, 6 + k / 10));
+        }
+        let wills: Vec<u8> = piloted_with(&many, &rules)
+            .minds
+            .values()
+            .map(Mind::will)
+            .collect();
+        assert_eq!(
+            wills,
+            piloted_with(&many, &rules)
+                .minds
+                .values()
+                .map(Mind::will)
+                .collect::<Vec<_>>()
+        );
+        let timid = wills.iter().filter(|&&w| w <= 20).count();
+        let bold = wills.iter().filter(|&&w| w >= 60).count();
+        assert!(
+            timid >= 70 && (1..=12).contains(&bold),
+            "timid {timid}, bold {bold}: {wills:?}"
+        );
+        // Flat without a table, as before.
+        assert_eq!(Trials::default().will_at(500), 50);
+    }
+
+    #[test]
+    fn a_will_of_zero_never_tries() {
+        let mut rules = fire_rules();
+        rules.needs.trials.try_percent_by_will = crate::crops::tests::content()
+            .needs
+            .trials
+            .try_percent_by_will;
+        assert_eq!(rules.needs.trials.try_percent(0), 0);
+        assert!(rules.needs.trials.try_percent(100) > 0);
+        let mut world = World::empty(
+            Calendar::new(1, 7200).unwrap(),
+            Map::filled(64, 64, Terrain::Grass).with_camp(5, 5),
+        );
+        let mut events = Vec::new();
+        world.advance(2 * world.calendar().ticks_per_day(), &rules, &mut events);
+        world.spawn_body(Pos::new(5, 5));
+        let mut brains = piloted_with(&world, &rules);
+        let mind = brains.minds.get_mut(&BodyId(1)).unwrap();
+        mind.will = 0;
+        mind.distress_days = 100;
+        for _ in 0..30 {
+            let news = nightfall(&world, &rules, &mut brains);
+            assert!(news.is_empty(), "{news:?}");
+            brains.minds.get_mut(&BodyId(1)).unwrap().distress_days = 100;
+        }
+    }
+
+    #[test]
+    fn a_kept_trial_raises_the_will_and_an_abandoned_one_lowers_it_within_bounds() {
+        let rules = fire_rules();
+        let judged = |will: u8, kept: bool| {
+            let mut world = World::empty(
+                Calendar::new(1, 7200).unwrap(),
+                Map::filled(64, 64, Terrain::Grass).with_camp(5, 5),
+            );
+            let mut events = Vec::new();
+            world.advance(2 * world.calendar().ticks_per_day(), &rules, &mut events);
+            world.spawn_body(Pos::new(5, 5));
+            let mut brains = piloted_with(&world, &rules);
+            let mind = brains.minds.get_mut(&BodyId(1)).unwrap();
+            mind.will = will;
+            let ways = mind.ways;
+            mind.ways.stock_kj *= 2;
+            mind.trial = Some(Trial {
+                way: Way::StockKj,
+                before: ways,
+                started_day: 0,
+                before_days: Lately {
+                    kj_per_day: if kept { 100 } else { 5000 },
+                    ..Lately::default()
+                },
+                heard: HeardDays::default(),
+            });
+            let kj = 1000;
+            mind.days = vec![Day {
+                gathered_kj: kj,
+                ..Day::default()
+            }];
+            mind.gathered_today_kj = kj;
+            let news = nightfall(&world, &rules, &mut brains);
+            assert!(
+                matches!(news[..], [News::Tried { kept: k, .. }] if k == kept),
+                "{news:?}"
+            );
+            brains.mind(BodyId(1)).unwrap().will()
+        };
+        assert_eq!(judged(50, true), 55);
+        assert_eq!(judged(50, false), 45);
+        assert_eq!(judged(98, true), 100, "bounded above");
+        assert_eq!(judged(3, false), 0, "bounded below");
+    }
+
+    /// `me` holds a heard trial record of `way` `up`, `kept`, dated `day`.
+    fn heard_lesson(brains: &mut Brains, me: BodyId, (way, up, kept, day): (Way, bool, bool, u32)) {
+        let (record, _) = brains.memory.intern(Record::Trial {
+            body: BodyId(2),
+            day,
+            way,
+            after: Ways::at(Pos::new(5, 5)),
+            up,
+            kept,
+            will: 50,
+            before: Lately::default(),
+            during: Lately::default(),
+        });
+        brains.minds.get_mut(&me).unwrap().heard_ways.push(Access {
+            record,
+            by: BodyId(2),
+            day,
+        });
+    }
+
+    fn weight_of(candidates: &[(Way, bool, u64)], way: Way, up: bool) -> u64 {
+        candidates
+            .iter()
+            .find(|c| c.0 == way && c.1 == up)
+            .unwrap()
+            .2
+    }
+
+    #[test]
+    fn a_heard_failure_lowers_the_candidate_a_success_raises_it_by_the_listeners_will_and_it_fades()
+    {
+        let rules = fire_rules();
+        let (_, mut brains) = camp_of(1, &rules);
+        let me = BodyId(1);
+        let weights = |brains: &Brains, will: u8, day: u64| {
+            let mut mind = brains.mind(me).unwrap().clone();
+            mind.will = will;
+            lessons(&rules, &brains.memory, &mind, day, false)
+        };
+        let before = weights(&brains, 0, 10);
+        assert!(before.iter().all(|c| c.2 == 100), "{before:?}");
+        assert_eq!(before.len(), 6);
+        assert_eq!(
+            lessons(&rules, &brains.memory, brains.mind(me).unwrap(), 10, true).len(),
+            5,
+            "a child: no home"
+        );
+        // A failure heard of storing more, a success of sleeping out.
+        heard_lesson(&mut brains, me, (Way::StockKj, true, false, 10));
+        heard_lesson(&mut brains, me, (Way::SleepOut, true, true, 10));
+        let timid = weights(&brains, 0, 10);
+        assert_eq!(
+            weight_of(&timid, Way::StockKj, true),
+            50,
+            "a failure: half the weight"
+        );
+        assert_eq!(
+            weight_of(&timid, Way::StockKj, false),
+            100,
+            "not the other direction"
+        );
+        assert_eq!(
+            weight_of(&timid, Way::SleepOut, true),
+            150,
+            "a success: half more"
+        );
+        let bold = weights(&brains, 100, 10);
+        assert_eq!(
+            weight_of(&bold, Way::StockKj, true),
+            85,
+            "an adventurer heeds 30 %"
+        );
+        assert_eq!(weight_of(&bold, Way::SleepOut, true), 115);
+        // Two failures more: never under the floor.
+        heard_lesson(&mut brains, me, (Way::StockKj, true, false, 11));
+        heard_lesson(&mut brains, me, (Way::StockKj, true, false, 12));
+        assert_eq!(
+            weight_of(&weights(&brains, 0, 12), Way::StockKj, true),
+            10,
+            "a weight, never a ban"
+        );
+        // A lesson fades: half after lesson_days, nothing after twice.
+        assert_eq!(
+            weight_of(&weights(&brains, 0, 10 + 50), Way::SleepOut, true),
+            125
+        );
+        assert_eq!(
+            weight_of(&weights(&brains, 0, 10 + 100), Way::SleepOut, true),
+            100
+        );
+    }
+
+    #[test]
+    fn an_adventurer_tries_what_the_timid_gave_up() {
+        let rules = fire_rules();
+        let (world, mut brains) = camp_of(1, &rules);
+        let me = BodyId(1);
+        // Every change but one heard given up, twice each (a teller judges
+        // one trial of a way a day: each on its own day).
+        for (i, (way, up)) in [
+            (Way::WorthHalfTiles, true),
+            (Way::WorthHalfTiles, false),
+            (Way::SleepOut, true),
+            (Way::StockKj, true),
+            (Way::Home, true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let day = u32::try_from(i).unwrap();
+            heard_lesson(&mut brains, me, (way, up, false, 1 + 2 * day));
+            heard_lesson(&mut brains, me, (way, up, false, 2 + 2 * day));
+        }
+        let food = brains.food.clone();
+        let tries = |brains: &Brains, will: u8| {
+            let mut given_up = 0;
+            for day in 10..50 {
+                let mut mind = brains.mind(me).unwrap().clone();
+                mind.will = will;
+                if let Some(News::Trying {
+                    way, before, after, ..
+                }) = start_trial(
+                    &world,
+                    &rules,
+                    &food,
+                    &brains.memory,
+                    me,
+                    &mut mind,
+                    true,
+                    day,
+                ) && (way != Way::StockKj || step_up(way, &before, &after))
+                {
+                    given_up += 1;
+                }
+            }
+            given_up
+        };
+        let (timid, bold) = (tries(&brains, 0), tries(&brains, 100));
+        assert!(
+            timid < bold,
+            "the timid tried the given-up {timid} times in 40 days, the adventurer {bold}"
+        );
+        assert!(timid <= 12, "{timid}");
     }
 }

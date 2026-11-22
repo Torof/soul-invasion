@@ -638,6 +638,16 @@ heard nobody. Placeholders in `content/needs.ron`, section `fire`
 protocol change, no dependency. The pair and the five-year try are
 measured after PR 1 b (the will and the lessons), and written here then.
 
+**Lot 4, PR 1 b: the will and the lessons** (23 November 2026, D50
+amended, D55 extended; the lead's yes of 22 November, late). The will is
+drawn skewed (most timid, one or two adventurers in twenty-five), a will
+of 0 never tries, a kept trial raises the will by five and an abandoned
+one lowers it; every trial heard at the fire is a lesson that weighs the
+listener's next choice of a trial: a weight, never a ban, dated, heeded
+whole by the timid and in part by the adventurer. Placeholders in
+`needs.ron`, section `trials`. Measured (the five-year try of §7 and the
+twenty-year pair) below, once run.
+
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
 slopes drawn by the client from them (D44), then the relief in the

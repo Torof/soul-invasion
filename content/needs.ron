@@ -148,15 +148,47 @@
     // itself), with a 20 % chance scaled by that mate's will; one copy in
     // four lands halfway (a search twice as wide copied becomes one and a
     // half times as wide).
+    // The will and the lessons (D50 amended, D55; the project lead, 22
+    // November 2026, late: "la volonté, elle est à la fois innée, mais
+    // aussi acquise… la plupart des gens sont frileux… très peu de gens
+    // sont des aventuriers", and "les leçons d'historien").
+    // try_percent_by_will: a floor at zero: a will of 0 never tries.
+    // will_innate:       the innate will drawn skewed, by percentile of the
+    //                    bodies: the 80 % most timid between 5 and 20, the
+    //                    next between 20 and 40, the last 7 % up to 90: one
+    //                    or two adventurers in twenty-five. Drawn from the
+    //                    seed and the body's id, a child's too (no
+    //                    inheritance: the souls' question, open).
+    // will_step_kept:  5 — a kept trial raises its body's will by five,
+    // will_step_lost:  5 — an abandoned one lowers it by five, within 0 to
+    //                    100: a trait moved by one's own experience.
+    // lesson_weight:  50 — a trial heard at the fire of the same change
+    //                    (the same way, the same direction) adds half the
+    //                    base weight of 100 to that candidate if it was
+    //                    kept, takes it away if it was abandoned,
+    // lesson_days:    50 — whole for a year, half for the next, nothing
+    //                    after; a weight, never a ban:
+    // lesson_floor:   10 — a candidate keeps a tenth of its base weight at
+    //                    the least (what failed for one may work for
+    //                    another);
+    // lesson_heed_by_will: the timid heed the lessons whole (100 % at will
+    //                    0), the adventurer in part (30 % at will 100).
     trials: (
         trial_after_days: 3,
         trial_days: 5,
-        try_percent_by_will: [(0, 2), (100, 30)],
+        try_percent_by_will: [(0, 0), (100, 30)],
         far_home_from_will: 70,
         new_home_walk_tiles: 2000,
         imitate_tiles: 12,
         imitate_percent: 20,
         imitate_loss_percent: 25,
+        will_innate: [(0, 5), (80, 20), (93, 40), (100, 90)],
+        will_step_kept: 5,
+        will_step_lost: 5,
+        lesson_weight: 50,
+        lesson_days: 50,
+        lesson_floor: 10,
+        lesson_heed_by_will: [(0, 100), (100, 30)],
     ),
     // The rules of thought that keep a mind light (D53, decided by the
     // project lead on 22 November 2026): perceptions and gestures, never

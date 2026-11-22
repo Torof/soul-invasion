@@ -91,6 +91,9 @@ pub enum Record {
         way: Way,
         /// Its ways as tried.
         after: Ways,
+        /// The direction of the step: wider or narrower, more store or
+        /// less, out or home; a home moved is always up.
+        up: bool,
         /// Kept.
         kept: bool,
         /// Its will when judged (D50): the prestige a listener weighs.
