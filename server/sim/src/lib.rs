@@ -1621,6 +1621,22 @@ impl World {
             .find_map(|crop| self.left_of(chunk, source, at, crop))
     }
 
+    /// [`World::ripe_of`] for the crop at `crop` in the content's order
+    /// (the brains hold that number, numbering what each kind bears): its
+    /// year and the grams on it now, if any. Asked by number, nothing is
+    /// compared: the brains ask it for every plant they know at every
+    /// choice. The crop's own, not a twin's of the same kind and material:
+    /// the content gives each kind one crop a material.
+    pub fn ripe_of_crop(
+        &self,
+        chunk: ChunkPos,
+        source: crops::Source,
+        at: FinePos,
+        crop: usize,
+    ) -> Option<(u64, u32)> {
+        self.left_of(chunk, source, at, self.crops.get(crop)?)
+    }
+
     /// What is left now of `crop` on the tree or plant `source` of
     /// `chunk`, standing at `at`: its year and grams, `None` when nothing.
     fn left_of(

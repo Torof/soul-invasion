@@ -29,8 +29,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::changes::Picked;
-use crate::r#gen::hash;
 use crate::r#gen::scatter::Frame;
+use crate::r#gen::{hash, hash_of};
 use crate::map::{CHUNK_SIZE, ChunkPos, FinePos, MM_PER_TILE};
 use crate::time::{Calendar, Season, Tick};
 use crate::trees::TreeKey;
@@ -277,9 +277,11 @@ pub(crate) fn there(
     Some((year, u32::try_from(grams).expect("at most what it bears")))
 }
 
-/// A number for a text (an id), the same on every machine.
+/// A number for a text (an id), the same on every machine: the hash of
+/// its bytes, read as they come (the brains ask it millions of times a
+/// run; collecting them first cost an allocation each).
 fn text_key(text: &str) -> u64 {
-    hash(&text.bytes().map(u64::from).collect::<Vec<_>>())
+    hash_of(text.bytes().map(u64::from))
 }
 
 /// A whole number as a hash key.

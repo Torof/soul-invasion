@@ -44,6 +44,12 @@ const GOLDEN: u64 = 0x9e37_79b9_7f4a_7c15;
 /// own constant "purpose" among the numbers, so that two layers drawing
 /// at the same place do not draw the same thing.
 pub(crate) fn hash(values: &[u64]) -> u64 {
+    hash_of(values.iter().copied())
+}
+
+/// [`hash`] of the numbers an iterator yields, in their order: the same
+/// hash as of the slice of them, with nothing collected first.
+pub(crate) fn hash_of(values: impl IntoIterator<Item = u64>) -> u64 {
     let mut h: u64 = GOLDEN;
     for v in values {
         h ^= v

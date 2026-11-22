@@ -1969,8 +1969,7 @@ fn plant_to_gather<'a>(
             // What an hour of it gives of what is left on it now: a
             // plant holding crumbs is left alone.
             let crop = &rules.crops[bears.crop];
-            let (_, left_g) =
-                world.ripe_of(key.0, key.1, plant.at, food.name(plant.kind), &crop.gives)?;
+            let (_, left_g) = world.ripe_of_crop(key.0, key.1, plant.at, bears.crop)?;
             let kj = kj_of_an_hour(bears.kj, crop.per_hour_g, left_g)?;
             Some((*key, plant, bears, kj))
         })
@@ -2327,10 +2326,9 @@ fn new_home(
         if plant.spent == Some(bears.year) {
             continue;
         }
-        let crop = &rules.crops[bears.crop];
         let at = plant.at.tile();
         if world
-            .ripe_of(chunk, source, plant.at, food.name(plant.kind), &crop.gives)
+            .ripe_of_crop(chunk, source, plant.at, bears.crop)
             .is_none()
         {
             continue;
