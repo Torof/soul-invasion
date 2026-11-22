@@ -1,6 +1,6 @@
 //! `vivarium`: runs a world under glass and writes its report.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use vivarium::{Settings, WorldKind, run};
@@ -32,7 +32,8 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
                            copies one (the content's trials replaced by none)
   --content DIR            the content directory (default: content/, ../content/
                            or ../../content/, the first holding materials.ron)
-  --out FILE               the report (default vivarium-report.html)
+  --out FILE               the report (default vivarium-report.html); its
+                           data is written beside it, FILE with .json
   --help                   this";
 
 /// What the command line asks.
@@ -136,6 +137,12 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
     Ok(Some(Options { settings, out }))
 }
 
+/// Where the report's data goes: beside the page, the same stem with
+/// `.json` (`r.html` → `r.json`, `report` → `report.json`).
+fn json_path(out: &Path) -> PathBuf {
+    out.with_extension("json")
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let options = match parse(&args) {
@@ -160,6 +167,11 @@ fn main() -> ExitCode {
         eprintln!("vivarium: cannot write {}: {error}", options.out.display());
         return ExitCode::FAILURE;
     }
+    let data = json_path(&options.out);
+    if let Err(error) = std::fs::write(&data, report.json()) {
+        eprintln!("vivarium: cannot write {}: {error}", data.display());
+        return ExitCode::FAILURE;
+    }
     let alive = report.samples.last().map_or(0, |s| s.alive);
     let dead = report.people.values().filter(|p| p.death.is_some()).count();
     println!(
@@ -179,6 +191,19 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_data_goes_beside_the_page() {
+        assert_eq!(json_path(Path::new("r.html")), PathBuf::from("r.json"));
+        assert_eq!(
+            json_path(Path::new("out/report")),
+            PathBuf::from("out/report.json")
+        );
+        assert_eq!(
+            json_path(Path::new("a.b/vivarium-report.html")),
+            PathBuf::from("a.b/vivarium-report.json")
+        );
     }
 
     #[test]
