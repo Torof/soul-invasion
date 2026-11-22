@@ -317,6 +317,11 @@ pub struct Needs {
     /// infant (lot 3 B). Absent: every body as a grown man.
     #[serde(default)]
     pub ages: Ages,
+    /// Births, background deaths and kinship (lot 3 C, D49). Absent: a
+    /// world where nobody is born, couples or dies of anything but want;
+    /// and even present, it plays only in a world whose `life` is on.
+    #[serde(default)]
+    pub life: Life,
 }
 
 /// Ages and sexes (lot 3 B, decided 17 November 2026): what a body needs
@@ -380,36 +385,154 @@ pub enum Sex {
     Male,
 }
 
+/// Births, background deaths and kinship (lot 3 C, decided 21 November
+/// 2026; D49). Every value is a D30 placeholder. Ages in game years; what
+/// is counted in years follows the season, what is counted in days
+/// follows the day.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Life {
+    /// A woman conceives from the first age to the last, both included.
+    pub fertile_years: (u32, u32),
+    /// She conceives only with more than this share of her fat reserve, in
+    /// percent: a thin woman does not.
+    pub conceive_reserve_percent: u32,
+    /// Her spouse must be alive within this many tiles; a body takes a
+    /// spouse within as many.
+    pub mate_within_tiles: u32,
+    /// Her chance to conceive at the start of a season, in percent.
+    pub conceive_percent: u32,
+    /// A pregnancy lasts this many seasons (a quarter of the year each).
+    pub pregnancy_seasons: u32,
+    /// A pregnant woman needs this much of her own need, in percent.
+    pub pregnant_percent: u32,
+    /// A weak woman (under `Needs::weak_percent`) loses the child.
+    pub lose_when_weak: bool,
+    /// The share of boys among the newborn, in percent.
+    pub boys_percent: u32,
+    /// The mother's chance to die giving birth, in percent.
+    pub childbirth_death_percent: u32,
+    /// The chance to die in a year by age, in thousandths: (years, per
+    /// mille), the ages rising, straight lines between them, the last
+    /// held after. Drawn every day with the year's chance divided by its
+    /// days.
+    pub death_by_age: Vec<(u32, u32)>,
+    /// From this age a background death is of old age; before, of illness.
+    pub old_age_from_years: u32,
+    /// A body takes a spouse from the first age to the last, both
+    /// included, and is taken as one between them.
+    pub mate_years: (u32, u32),
+}
+
+impl Default for Life {
+    /// Nobody conceives, couples or dies of age or illness.
+    fn default() -> Self {
+        Self {
+            fertile_years: (0, 0),
+            conceive_reserve_percent: 100,
+            mate_within_tiles: 0,
+            conceive_percent: 0,
+            pregnancy_seasons: 1,
+            pregnant_percent: 100,
+            lose_when_weak: false,
+            boys_percent: 50,
+            childbirth_death_percent: 0,
+            death_by_age: vec![(0, 0)],
+            old_age_from_years: 0,
+            mate_years: (0, 0),
+        }
+    }
+}
+
+impl Life {
+    /// The chance to die within a year at `age_milli` thousandths of a
+    /// year, in thousandths.
+    #[must_use]
+    pub fn death_permille_per_year(&self, age_milli: u64) -> u64 {
+        along(&self.death_by_age, age_milli, 1)
+    }
+
+    /// The chance to die today, in millionths: the year's, shared out
+    /// over its days, so a longer year does not kill more a year.
+    #[must_use]
+    pub fn death_ppm_per_day(&self, age_milli: u64, days_per_year: u32) -> u64 {
+        self.death_permille_per_year(age_milli) * 1000 / u64::from(days_per_year.max(1))
+    }
+
+    /// Whether a woman that old conceives.
+    #[must_use]
+    pub fn is_fertile(&self, age_milli: u64) -> bool {
+        let years = age_milli / 1000;
+        (u64::from(self.fertile_years.0)..=u64::from(self.fertile_years.1)).contains(&years)
+    }
+
+    /// Whether a body that old takes, and is taken as, a spouse.
+    #[must_use]
+    pub fn mates(&self, age_milli: u64) -> bool {
+        let years = age_milli / 1000;
+        (u64::from(self.mate_years.0)..=u64::from(self.mate_years.1)).contains(&years)
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        let rising = self.death_by_age.windows(2).all(|p| p[0].0 < p[1].0);
+        let percent = |v: u32| v <= 100;
+        if self.death_by_age.is_empty()
+            || !rising
+            || self.death_by_age.iter().any(|p| p.1 > 1000)
+            || self.fertile_years.0 > self.fertile_years.1
+            || self.mate_years.0 > self.mate_years.1
+            || !percent(self.conceive_reserve_percent)
+            || !percent(self.conceive_percent)
+            || !percent(self.boys_percent)
+            || !percent(self.childbirth_death_percent)
+            || self.pregnancy_seasons == 0
+            || self.pregnant_percent < 100
+        {
+            return Err(ContentError::Needs(
+                "life: death_by_age not empty, its ages rising and its per mille at most 1000; \
+                 fertile_years and mate_years rising; the percents at most 100; \
+                 pregnancy_seasons positive, pregnant_percent at least 100",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The value at `age_milli` thousandths of a year along `points`: (years,
+/// value), the ages rising, each value scaled by `scale`, straight lines
+/// between the points, the first held before and the last after.
+fn along(points: &[(u32, u32)], age_milli: u64, scale: u64) -> u64 {
+    let milli = |(years, value): (u32, u32)| (u64::from(years) * 1000, u64::from(value) * scale);
+    let points: Vec<(u64, u64)> = points.iter().copied().map(milli).collect();
+    let mut at = points.last().map_or(0, |p| p.1);
+    if let Some(first) = points.first()
+        && age_milli <= first.0
+    {
+        at = first.1;
+    }
+    for pair in points.windows(2) {
+        let ((a, va), (b, vb)) = (pair[0], pair[1]);
+        if (a..b).contains(&age_milli) {
+            at = if vb >= va {
+                va + (vb - va) * (age_milli - a) / (b - a)
+            } else {
+                va - (va - vb) * (age_milli - a) / (b - a)
+            };
+            break;
+        }
+    }
+    at
+}
+
 impl Ages {
     /// The need, reserve and strength of a body `age_milli` thousandths of
     /// a year old, of `sex`, in thousandths of a grown man's.
     #[must_use]
     pub fn size_permille(&self, age_milli: u64, sex: Sex) -> u32 {
-        let percent_milli =
-            |(years, percent): (u32, u32)| (u64::from(years) * 1000, u64::from(percent) * 10);
-        let points: Vec<(u64, u64)> = self
-            .need_by_age
-            .iter()
-            .copied()
-            .map(percent_milli)
-            .collect();
-        let mut size = points.last().map_or(1000, |p| p.1);
-        if let Some(first) = points.first()
-            && age_milli <= first.0
-        {
-            size = first.1;
-        }
-        for pair in points.windows(2) {
-            let ((a, pa), (b, pb)) = (pair[0], pair[1]);
-            if (a..b).contains(&age_milli) {
-                size = if pb >= pa {
-                    pa + (pb - pa) * (age_milli - a) / (b - a)
-                } else {
-                    pa - (pa - pb) * (age_milli - a) / (b - a)
-                };
-                break;
-            }
-        }
+        let mut size = if self.need_by_age.is_empty() {
+            1000
+        } else {
+            along(&self.need_by_age, age_milli, 10)
+        };
         if sex == Sex::Female && age_milli >= u64::from(self.woman_from_years) * 1000 {
             size = size * u64::from(self.woman_percent) / 100;
         }
@@ -994,7 +1117,8 @@ impl Content {
             return Err(ContentError::Needs("meal_g must be positive"));
         }
         self.needs.validate_reserve()?;
-        self.needs.ages.validate()
+        self.needs.ages.validate()?;
+        self.needs.life.validate()
     }
 
     /// Refuses the values the simulation cannot carry (audit of 20
@@ -1103,7 +1227,38 @@ impl Content {
             "ages.infant_mass_g",
             ages.infant_mass_g.1,
             MILLION,
-        )
+        )?;
+        self.validate_bounds_of_life()
+    }
+
+    /// [`Content::validate_bounds`]: the life rule (D49), whose ages and
+    /// shares are small numbers.
+    fn validate_bounds_of_life(&self) -> Result<(), ContentError> {
+        let life = &self.needs.life;
+        for &(years, permille) in &life.death_by_age {
+            at_most("needs.ron", "life.death_by_age (years)", years, THOUSAND)?;
+            at_most(
+                "needs.ron",
+                "life.death_by_age (per mille)",
+                permille,
+                THOUSAND,
+            )?;
+        }
+        for (field, value) in [
+            ("life.fertile_years", life.fertile_years.1),
+            ("life.mate_years", life.mate_years.1),
+            ("life.old_age_from_years", life.old_age_from_years),
+            ("life.pregnancy_seasons", life.pregnancy_seasons),
+        ] {
+            at_most("needs.ron", field, value, THOUSAND)?;
+        }
+        for (field, value) in [
+            ("life.mate_within_tiles", life.mate_within_tiles),
+            ("life.pregnant_percent", life.pregnant_percent),
+        ] {
+            at_most("needs.ron", field, value, WEIGHT)?;
+        }
+        Ok(())
     }
 
     /// [`Content::validate_bounds`]: the materials, what lies on the

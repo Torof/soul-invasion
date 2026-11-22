@@ -39,7 +39,7 @@ use sim::{CHUNK_SIZE, ChunkPos, Content, Pos, World};
 
 /// Version of the serialized `World` inside a snapshot. Bump on any change
 /// to `World`'s shape, and add a migration in `decode_world`.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 15;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 16;
 
 /// Version of a chunk's changes as stored (`encode_changes`). Bump on any
 /// change to their bytes, and read the old ones in `decode_changes`.
@@ -871,6 +871,7 @@ fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<Wo
             12 => migrate_v12_to_v13(&data)?,
             13 => migrate_v13_to_v14(&data)?,
             14 => migrate_v14_to_v15(&data)?,
+            15 => migrate_v15_to_v16(data),
             _ => return Err(unsupported()),
         };
         version += 1;
@@ -1123,6 +1124,14 @@ fn migrate_v14_to_v15(data: &str) -> Result<String, StorageError> {
         }
     }
     Ok(old.to_string())
+}
+
+/// v16: a body has a mother, a father, a spouse and the child it carries
+/// unborn, and the world whether the life rule plays (lot 3 C, D49). A
+/// world saved before has none of them and the rule off, which is what
+/// the fields read as when absent: the data is the same.
+fn migrate_v15_to_v16(data: String) -> String {
+    data
 }
 
 fn standard_world_at_old_tick(data: &str, content: &Content) -> Result<String, StorageError> {
@@ -1819,6 +1828,54 @@ mod tests {
             sexes.insert(body.sex());
         }
         assert_eq!(sexes.len(), 2, "women and men");
+    }
+
+    #[test]
+    fn a_v15_world_has_no_kin_no_pregnancy_and_the_life_rule_off() {
+        let content = content();
+        let mut world = World::with_valley(Calendar::default(), &content, 256);
+        let bodies: Vec<_> = (0..4)
+            .map(|_| world.spawn_at_camp().expect("a body at the camp"))
+            .collect();
+        let mut old: serde_json::Value = serde_json::to_value(&world).unwrap();
+        assert!(old.as_object_mut().unwrap().remove("life").is_some());
+        for body in old["bodies"].as_array_mut().unwrap() {
+            let body = body.as_object_mut().unwrap();
+            for field in ["mother", "father", "spouse", "pregnant"] {
+                assert!(body.remove(field).is_none(), "{field}: absent when none");
+            }
+        }
+        let mut storage = Sqlite::in_memory(content.clone()).unwrap();
+        storage
+            .conn
+            .execute(
+                "INSERT INTO snapshots (tick, format_version, data) VALUES (0, 15, ?1)",
+                [old.to_string()],
+            )
+            .unwrap();
+        let back = storage.latest_world().unwrap().unwrap();
+        assert!(!back.life(), "the rule is off in a world saved before it");
+        for id in bodies {
+            let body = back.body(id).unwrap();
+            assert_eq!(body.mother(), None);
+            assert_eq!(body.father(), None);
+            assert_eq!(body.spouse(), None);
+            assert_eq!(body.pregnant(), None);
+        }
+        // Saved again, the world is v16 and keeps the rule's switch.
+        let mut on = back;
+        on.set_life(true);
+        storage.save_world(&on).unwrap();
+        let version: u32 = storage
+            .conn
+            .query_row(
+                "SELECT format_version FROM snapshots ORDER BY tick DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SNAPSHOT_FORMAT_VERSION);
+        assert!(storage.latest_world().unwrap().unwrap().life());
     }
 
     #[test]

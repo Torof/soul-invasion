@@ -170,7 +170,7 @@ mod tests {
     use crate::brain::Brains;
     use crate::crops::tests::{body_by, run_to, valley_with};
     use crate::map::Pos;
-    use crate::{Event, Gauge, Intention};
+    use crate::{Death, Event, Gauge, Intention};
 
     /// The valley with a bramble, a body born beside it and piloted by
     /// the brain, hungry enough to gather and eat.
@@ -209,6 +209,19 @@ mod tests {
                 .any(|e| matches!(e, Event::WorkStopped { body, grams, .. } if *body == id && *grams > 0));
             let found = breaches(&world, &rules);
             assert!(found.is_empty(), "tick {tick}: {found:?}");
+            // The life rule is off in the game (D49): nobody is born, and
+            // nobody dies of anything but want.
+            assert!(
+                !events.iter().any(|e| matches!(
+                    e,
+                    Event::BodyBorn { .. }
+                        | Event::BodyDied {
+                            cause: Death::Childbirth | Death::Illness | Death::OldAge,
+                            ..
+                        }
+                )),
+                "tick {tick}: {events:?}"
+            );
         }
         assert!(
             picked && ate,

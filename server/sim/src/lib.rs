@@ -25,6 +25,7 @@ pub mod ground;
 pub mod invariants;
 pub mod items;
 pub mod land;
+pub mod life;
 pub mod lru;
 pub mod map;
 pub mod open_ground;
@@ -38,10 +39,11 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 pub use content::{
-    Ages, BySeason, Content, ContentError, Food, Look, Material, MaterialKind, Movement, Needs,
-    Sex, Spawn,
+    Ages, BySeason, Content, ContentError, Food, Life, Look, Material, MaterialKind, Movement,
+    Needs, Sex, Spawn,
 };
 pub use geology::{Geology, Rock};
+pub use life::Pregnancy;
 pub use map::{
     CHUNK_SIZE, ChunkPos, FinePos, MM_PER_TILE, Map, MapSpec, Pos, Side, Terrain, line_clear,
 };
@@ -156,6 +158,12 @@ pub enum Death {
     Froze,
     /// Vitality drained by thirst.
     Dehydrated,
+    /// A mother, giving birth (lot 3 C, D49).
+    Childbirth,
+    /// The background death of a body under the content's old age (D49).
+    Illness,
+    /// The background death of an old body (D49).
+    OldAge,
 }
 
 /// The state of a body: what hurts and what kills (D34).
@@ -361,6 +369,19 @@ pub struct Body {
     /// tick, never stored.
     #[serde(skip)]
     carrying_g: u32,
+    /// Its mother, when born in the world (lot 3 C, D49); kept after her
+    /// death, ids never being reused. Absent from a snapshot when unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mother: Option<BodyId>,
+    /// Its father, as its mother.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    father: Option<BodyId>,
+    /// Its spouse, alive: cleared when the spouse dies (D49).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    spouse: Option<BodyId>,
+    /// The child a woman carries, not yet born (D49).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pregnant: Option<Pregnancy>,
 }
 
 /// A body of before ages: twenty-five years old at the world's first day,
@@ -510,6 +531,26 @@ impl Body {
     /// The body carrying it, if it is an infant carried.
     pub fn carried_by(&self) -> Option<BodyId> {
         self.carried_by
+    }
+
+    /// Its mother, when it was born in the world (D49).
+    pub fn mother(&self) -> Option<BodyId> {
+        self.mother
+    }
+
+    /// Its father, when it was born in the world (D49).
+    pub fn father(&self) -> Option<BodyId> {
+        self.father
+    }
+
+    /// Its living spouse, if any (D49).
+    pub fn spouse(&self) -> Option<BodyId> {
+        self.spouse
+    }
+
+    /// The child it carries unborn, if any (D49).
+    pub fn pregnant(&self) -> Option<Pregnancy> {
+        self.pregnant
     }
 
     /// What it can carry, in grams: the content's for a grown body, to its
@@ -1044,6 +1085,31 @@ pub enum Event {
         /// Its chunk's version right after it ([`World::chunk_version`]).
         version: ground::Version,
     },
+    /// A child was born where its mother stood, carried by her (D49).
+    BodyBorn {
+        /// The newborn.
+        body: BodyId,
+        /// Its mother.
+        mother: BodyId,
+        /// Its father: her spouse when she conceived.
+        father: BodyId,
+        /// Where.
+        at: Pos,
+    },
+    /// A pregnant woman grew weak and lost the child (D49).
+    PregnancyLost {
+        /// Who.
+        mother: BodyId,
+        /// Where she stood.
+        at: Pos,
+    },
+    /// Two bodies became spouses (D49).
+    Coupled {
+        /// The one whose daily hour it was.
+        a: BodyId,
+        /// The nearest it could take.
+        b: BodyId,
+    },
     /// A body died; it is now a corpse item.
     BodyDied {
         /// Who.
@@ -1165,6 +1231,11 @@ impl Searches {
 pub struct World {
     calendar: Calendar,
     tick: Tick,
+    /// Whether bodies are born, couple and die of illness and old age
+    /// (lot 3 C, D49): off in the game, on in the vivarium alone. A world
+    /// saved before it has it off.
+    #[serde(default)]
+    life: bool,
     /// Shared, never changed once made: copying the world (to save it on
     /// another thread) and the network's view of the ground take a handle,
     /// not the tiles.
@@ -1285,6 +1356,10 @@ struct Stored {
     next_item: u64,
     #[serde(default)]
     natural: bool,
+    /// Whether the life rule plays (D49); a world saved before it has it
+    /// off (format 16).
+    #[serde(default)]
+    life: bool,
     /// The natural items taken, as snapshots held them up to format 8:
     /// since, each chunk's changes hold its own, stored beside.
     #[serde(default)]
@@ -1297,6 +1372,7 @@ impl<'de> serde::Deserialize<'de> for World {
         let mut world = Self {
             calendar: stored.calendar,
             tick: stored.tick,
+            life: stored.life,
             map: stored.map,
             bodies: stored.bodies,
             next_body: stored.next_body,
@@ -1401,6 +1477,7 @@ impl World {
         Self {
             calendar,
             tick: Tick(0),
+            life: false,
             map: Arc::new(map),
             bodies: Vec::new(),
             next_body: 1,
@@ -2013,6 +2090,12 @@ impl World {
     /// If `pos` is not a passable tile of the map.
     pub fn spawn_body(&mut self, pos: Pos) -> BodyId {
         assert!(self.map.is_passable(pos), "spawn on a passable tile");
+        self.add_body(pos)
+    }
+
+    /// Adds a body standing at `pos`, grown, a man, with no kin: the
+    /// callers set what differs.
+    fn add_body(&mut self, pos: Pos) -> BodyId {
         let id = BodyId(self.next_body);
         self.next_body += 1;
         self.bodies.push(Body {
@@ -2030,6 +2113,10 @@ impl World {
             sex: Sex::Male,
             carried_by: None,
             carrying_g: 0,
+            mother: None,
+            father: None,
+            spouse: None,
+            pregnant: None,
         });
         self.enter_chunk(id, pos.chunk());
         id
@@ -2172,6 +2259,7 @@ impl World {
                 year: now.year,
                 season: now.season,
             });
+            self.conceive(rules, now.year, now.season);
         }
         let night = self.is_night(rules);
         if night && !was_night {
@@ -2249,6 +2337,7 @@ impl World {
         self.follow_carriers();
         self.labour(rules, events);
         self.fare(rules, night, now.is_day_start(), events);
+        self.live(rules, now.tick_of_day, events);
     }
 
     /// Tells the world which bodies a player pilots, all of them: their
@@ -2347,6 +2436,7 @@ impl World {
     /// set down where their carrier stands, they walk from now on.
     fn grow(&mut self, rules: &Content, events: &mut Vec<Event>) {
         let ages = &rules.needs.ages;
+        let life = self.life;
         let mut carrying: BTreeMap<BodyId, u32> = BTreeMap::new();
         for index in 0..self.bodies.len() {
             let age = self.age_milli(&self.bodies[index]);
@@ -2372,8 +2462,14 @@ impl World {
             let nursing = body.sex == Sex::Female && body.carrying_g > 0;
             let c = &mut body.condition;
             c.size_permille = size;
+            // A nursing woman needs more; a pregnant one too (D49, when
+            // the life rule plays), the nursing taking over once the child
+            // is born. One adopting an infant while she carries another
+            // unborn needs the nursing's.
             c.burn_permille = if nursing {
                 size * ages.nursing_percent / 100
+            } else if life && body.pregnant.is_some() {
+                size * rules.needs.life.pregnant_percent / 100
             } else {
                 size
             };
@@ -2559,6 +2655,13 @@ impl World {
         let at = body.pos();
         self.leave_chunk(id, at.chunk());
         self.orphan(id, at, rules);
+        // The dead leaves the world and keeps nothing of it; its children
+        // keep its id as their parent, its spouse is widowed (D49).
+        for other in &mut self.bodies {
+            if other.spouse == Some(id) {
+                other.spouse = None;
+            }
+        }
         for item in body.inventory().collect::<Vec<_>>() {
             let Some(dropped) = self.items.get_mut(&item) else {
                 continue;

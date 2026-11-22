@@ -468,6 +468,9 @@ pub fn run_watched(
                             Death::Starved => "of hunger",
                             Death::Froze => "of cold",
                             Death::Dehydrated => "of thirst",
+                            Death::Childbirth => "in childbirth",
+                            Death::Illness => "of illness",
+                            Death::OldAge => "of old age",
                         },
                         at.x,
                         at.y
@@ -1020,6 +1023,9 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                         Death::Starved => "of hunger",
                         Death::Froze => "of cold",
                         Death::Dehydrated => "of thirst",
+                        Death::Childbirth => "in childbirth",
+                        Death::Illness => "of illness",
+                        Death::OldAge => "of old age",
                     },
                     at.x,
                     at.y
