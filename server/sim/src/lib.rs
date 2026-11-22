@@ -12,6 +12,7 @@
 // exceptions of today's generator allow floats where they stand.
 #![warn(clippy::float_arithmetic)]
 
+pub mod ahead;
 pub mod brain;
 pub mod changes;
 pub mod content;
@@ -1561,58 +1562,22 @@ impl World {
     /// kind of the flora bears something.
     pub fn bearers_in(&self, chunk: ChunkPos) -> Arc<[crops::Bearer]> {
         self.ground_cache
-            .bearers_in(chunk, || self.place_bearers(chunk))
+            .bearers_in(chunk, || self.placing().place(chunk))
     }
 
-    /// The trees and plants of `chunk` bearing a crop, placed now. Each
-    /// kind's name is made once and shared by its bearers; the trees
-    /// around are read where the land holds them.
-    fn place_bearers(&self, chunk: ChunkPos) -> Vec<crops::Bearer> {
-        let bears = |id: &str| self.crops.iter().any(|c| c.on == id);
-        // A kind's shared name, `None` for one bearing nothing.
-        let named = |id: &str| bears(id).then(|| Arc::<str>::from(id));
-        let species: Vec<Option<Arc<str>>> =
-            self.species.iter().map(|kind| named(&kind.id)).collect();
-        let mut out: Vec<crops::Bearer> = self
-            .trees_in(chunk)
-            .iter()
-            .filter_map(|tree| {
-                Some(crops::Bearer {
-                    source: crops::Source::Tree(tree.key),
-                    at: tree.at,
-                    kind: Arc::clone(species[tree.species].as_ref()?),
-                })
-            })
-            .collect();
-        let flora: Vec<Option<Arc<str>>> = self.flora.iter().map(|kind| named(&kind.id)).collect();
-        if flora.iter().all(Option::is_none) {
-            return out;
+    /// What placing a chunk's bearers reads, borrowed from this world
+    /// ([`ahead::Parts`]): the helpers placing ahead hold their own copy
+    /// ([`ahead::Placing`]) and place the same.
+    fn placing(&self) -> ahead::Parts<'_> {
+        ahead::Parts {
+            map: &self.map,
+            species: &self.species,
+            open: &self.open_ground,
+            flora: &self.flora,
+            crops: &self.crops,
+            seed: self.seed(),
+            ground: &self.ground_cache,
         }
-        let around: Vec<Arc<[trees::Tree]>> = (-1..=1)
-            .flat_map(|dy| (-1..=1).map(move |dx| ChunkPos::new(chunk.x + dx, chunk.y + dy)))
-            .map(|near| self.trees_in(near))
-            .collect();
-        let near: Vec<flora::TreeAt<'_>> = around
-            .iter()
-            .flat_map(|trees| trees.iter())
-            .map(|tree| flora::TreeAt {
-                at: tree.at,
-                species: self.species[tree.species].id.as_str(),
-            })
-            .collect();
-        for plant in flora::plants_in(&self.map, &self.flora, &near, self.seed(), chunk) {
-            let Some(kind) = &flora[usize::from(plant.kind)] else {
-                continue;
-            };
-            if let Some(key) = crops::PlantKey::of(chunk, plant.at) {
-                out.push(crops::Bearer {
-                    source: crops::Source::Plant(key),
-                    at: plant.at,
-                    kind: Arc::clone(kind),
-                });
-            }
-        }
-        out
     }
 
     /// The crops on `bearer`, of `chunk`, now (D45): those in season,

@@ -211,6 +211,9 @@ impl Report {
                     "wall_s": self.wall_s,
                     "birth_s": self.birth_s,
                     "run_date": iso_utc(now),
+                    "helpers": self.settings.helpers,
+                    "placed": self.placed,
+                    "placed_ahead": self.placed_ahead,
                 }),
             );
         }
