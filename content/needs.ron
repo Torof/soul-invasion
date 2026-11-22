@@ -136,14 +136,18 @@
     // 100, a straight line between): one of its ways moved by one step
     // (a search twice or half as wide, a night out or back home, a store
     // twice or half as large, or its home set 2,000 tiles towards where it
-    // knows the most plants still bearing; a quarter of that under will
-    // 70). After 5 days the world has judged: kept if it gathered more a
-    // day than in the 5 days before and was thin no more often, else
+    // knows the most plants still bearing or towards the nearest drinking
+    // place it knows, half and half; a quarter of that under will 70; the
+    // vivarium's world ends at its edge, D50 b, 22 November 2026). After 5
+    // days the world has judged on every
+    // distress: kept if nothing worsened and one thing improved (gathered
+    // a day, days thin, days thirsty at nightfall, nights cold), else
     // reverted. At night at the camp a body copies one way from the
-    // camp-mate within 12 tiles who gathered most a day over the last 5
-    // days (more than itself), with a 20 % chance scaled by that mate's
-    // will; one copy in four lands halfway (a search twice as wide copied
-    // becomes one and a half times as wide).
+    // camp-mate within 12 tiles who fared best over the last 5 days (the
+    // fewest days of distress, gathered kJ breaking ties; better than
+    // itself), with a 20 % chance scaled by that mate's will; one copy in
+    // four lands halfway (a search twice as wide copied becomes one and a
+    // half times as wide).
     trials: (
         trial_after_days: 3,
         trial_days: 5,
