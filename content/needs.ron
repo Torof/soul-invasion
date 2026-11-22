@@ -200,4 +200,38 @@
         place_tiles: 16,
         places_remembered: 48,
     ),
+    // The evening fire and the common memory (D55, lot 4 of the
+    // simulation, decided by the project lead on 22 November 2026). Every
+    // thing known is a record written once in the world's store, numbered,
+    // dated, signed by its first witness; a body carries accesses (numbers),
+    // never copies. At night those who came home to the camp tell what
+    // changed for them in the day, by numbers, not contents; each listener
+    // gains an access with its own credit, judged once. Placeholders
+    // (D30), tuned by reading the vivarium's page, never to a result.
+    // told_per_night:  6 — a present body tells at most six things a night:
+    //                   its way judged today, the water it found, then the
+    //                   places that changed for it (seen other kinds,
+    //                   another state, or nothing), by their value from
+    //                   the camp. One talks of an evening, not of a life.
+    // heard_max:      24 — a grown listener keeps at most 24 told things a
+    //                   night (the attention of an evening), the strongest
+    //                   credit first, the younger record next; and holds at
+    //                   most 24 heard kept ways.
+    // heard_by_age:      a child keeps fewer: 6 at two years, 12 at eight,
+    //                   20 at fourteen, 24 from sixteen, straight lines
+    //                   between (a table by age, as need_by_age).
+    // place_buckets: (1, 4) — a kind at a place is told in three states by
+    //                   how many of its plants held food worth a step:
+    //                   bare (none), some (1 to 3), full (4 and more), so
+    //                   that one berry more does not make a record more.
+    // hearth_nights:  50 — a camp's hearth keeps its last 50 nights (a
+    //                   year): what the tribe knows is their union; a
+    //                   record nobody holds any more is freed.
+    fire: (
+        told_per_night: 6,
+        heard_max: 24,
+        heard_by_age: [(2, 6), (8, 12), (14, 20), (16, 24)],
+        place_buckets: (1, 4),
+        hearth_nights: 50,
+    ),
 )
