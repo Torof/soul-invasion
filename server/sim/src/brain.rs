@@ -1777,10 +1777,10 @@ impl Bar {
             return now;
         }
         let half = self.half_tiles.max(1);
-        let tiles = u64::try_from(far(tile, at)).unwrap_or(0);
-        // worth = kj × half / (half + tiles), a whole quotient: it is
-        // above the bar's when kj × half reaches the next multiple, equal
-        // when it reaches the bar's own.
+        let tiles = u64::try_from(far(tile, at)).unwrap_or(0).isqrt();
+        // worth = kj × half / (half + tiles), tiles as [`worth`] takes
+        // them, a whole quotient: it is above the bar's when kj × half
+        // reaches the next multiple, equal when it reaches the bar's own.
         let (above, over) = (kj * half, half + tiles);
         if above >= (self.worth + 1) * over {
             return true;
