@@ -36,9 +36,33 @@ HOW_FR = {"trial": "essai", "copy": "copie", "reverted": "abandon"}
 TRIBE_COLOR = {"A": "#1f6f8b", "B": "#c2571a"}
 OTHER_COLORS = ["#2e8b57", "#8e44ad", "#b7950b", "#444"]
 SIDE_COLOR = {"a": "#1f6f8b", "b": "#c2571a"}       # the two sides of a comparison
-TRIALS_COLOR = {True: "#2b7a3d", False: "#9c6b1f"}  # with trials, without
+TRIALS_COLOR = {True: "#c2571a", False: "#1f6f8b"}  # orange with trials, blue without
 BIRTH_COLOR = "#3a8f4a"
+ALIVE_COLOR, DEAD_COLOR, KEPT_COLOR = "#2b7a3d", "#b3261e", "#c2571a"
 NO_DATA = "pas de données, relancer avec le vivarium récent"
+NO_POSITIONS = "pas de positions dans ce run"
+SEASON_ALL = ["spring", "summer", "autumn", "winter"]   # the year cut in four, spring first (time.rs)
+SEASON_IN = {"winter": "en hiver", "spring": "au printemps", "summer": "en été", "autumn": "en automne"}
+# What a technique changes, in one clause, for the techniques' table and the verdict.
+KIND_CHANGE = {
+    "wider": "on cherche la nourriture deux fois plus loin du camp",
+    "narrower": "on cherche la nourriture deux fois moins loin, près du camp",
+    "sleep_out": "on dort là où la nuit tombe au lieu de rentrer au camp",
+    "sleep_home": "on rentre dormir au camp",
+    "store_more": "on garde plus de nourriture en réserve avant de se reposer",
+    "store_less": "on garde moins de nourriture en réserve avant de se reposer",
+    "home_moved": "on installe la maison ailleurs",
+}
+# The verdict's phrase for the main cause of death: (plural subject, singular subject).
+CAUSE_VERDICT = {
+    "hunger": ("ont manqué de nourriture", "a manqué de nourriture"),
+    "thirst": ("ont manqué d’eau", "a manqué d’eau"),
+    "cold": ("sont morts de froid", "est mort de froid"),
+    "illness": ("ont été emportés par la maladie", "a été emporté par la maladie"),
+    "childbirth": ("sont mortes en couches", "est morte en couches"),
+    "old_age": ("sont morts de vieillesse", "est mort de vieillesse"),
+}
+COMPASS = ["l’est", "le sud-est", "le sud", "le sud-ouest", "l’ouest", "le nord-ouest", "le nord", "le nord-est"]
 
 h = html.escape
 
@@ -74,6 +98,88 @@ def person_fr(name_or_id):
     if isinstance(name_or_id, int):
         return f"personne {name_or_id}"
     return str(name_or_id).replace("person ", "personne ")
+
+
+def plural(n, word, suffix="s"):
+    """`3 morts`, `1 mort`, `0 mort`."""
+    return f"{fmt(n)} {word}{suffix if (n or 0) > 1 else ''}"
+
+
+def season_of(d, day):
+    """The season of a day of the run: the year is cut in four, spring first (time.rs)."""
+    yd = year_days(d)
+    doy = (int(day) - 1) % yd
+    return SEASON_ALL[min(3, doy * 4 // yd)]
+
+
+def day_fr(d, day):
+    """`an 3, printemps, jour 112` for a day of the run; `-` for None."""
+    if day is None:
+        return "-"
+    yd = year_days(d)
+    return f"an {(int(day) - 1) // yd + 1}, {SEASON_FR[season_of(d, day)]}, jour {fmt(int(day))}"
+
+
+def age_days(d, p, at_day=None):
+    """A person's age in days on `at_day` (the run's last day by default), or None when unknown."""
+    if at_day is None:
+        at_day = run_days(d)
+    if p.get("born") == "start":
+        start = p.get("age_days_at_start")
+        if start is None:
+            return None
+        return start + at_day - 1
+    born = p.get("born_day") or p.get("born")
+    if not isinstance(born, int):
+        return None
+    return max(0, at_day - born)
+
+
+def age_fr(d, days_old):
+    """`32 ans`, `1 an`, `23 jours` (under a year), in game years of `days_per_year`."""
+    if days_old is None:
+        return "-"
+    yd = year_days(d)
+    if days_old < yd:
+        return plural(days_old, "jour")
+    return plural(days_old // yd, "an")
+
+
+def run_days(d):
+    """The run's last day: the settings' days, else the last year's last day."""
+    days = ((d.get("meta") or {}).get("settings") or {}).get("days")
+    if days:
+        return int(days)
+    return max((y.get("last_day") or 0 for y in d.get("years", [])), default=0)
+
+
+def camp_at(d, tribe, day=None):
+    """The tribe's camp at `day`: the start camp, then the camp at the end of each year passed."""
+    ts = tribes(d)
+    camps = (d.get("meta") or {}).get("camps") or []
+    i = ts.index(tribe) if tribe in ts else 0
+    camp = camps[i] if i < len(camps) else None
+    for y in years_of(d, tribe):
+        if day is not None and (y.get("last_day") or y.get("year", 0) * year_days(d)) > day:
+            break
+        if y.get("camp"):
+            camp = y["camp"]
+    return camp
+
+
+def where_fr(d, tribe, at, day=None):
+    """`à 140 m du camp, vers le nord-est`, or `au camp` within ten metres; `-` without a place."""
+    if not at:
+        return "-"
+    camp = camp_at(d, tribe, day)
+    if not camp:
+        return f"en ({at[0]}, {at[1]})"
+    dx, dy = at[0] - camp[0], at[1] - camp[1]
+    dist = math.hypot(dx, dy)
+    if dist < 10:
+        return "au camp"
+    sector = int(((math.degrees(math.atan2(dy, dx)) + 360 + 22.5) % 360) // 45)
+    return f"à {fmt(int(round(dist)))} m du camp, vers {COMPASS[sector]}"
 
 
 # --- the data of one run -------------------------------------------------------
@@ -184,9 +290,31 @@ def summary(d):
         "start": sum(1 for p in people if p.get("born") == "start"),
         "trials": totals["tried"], "kept": totals["kept"], "copied": totals["copied"],
         "homes_moved": sum(y.get("homes_moved") or 0 for y in d.get("years", [])),
+        "techniques": sum(1 for n in carried(d).values() if n),
+        "alive_start": sum(1 for p in people if not p.get("died") and p.get("born") == "start"),
         "years": last_year(d),
         "days": (d.get("meta") or {}).get("settings", {}).get("days"),
     }
+
+
+def last_kept(p):
+    """The kind of a person's last kept trial: the technique it carries; None without."""
+    kept = [t for t in p.get("trials") or [] if t.get("kept")]
+    if not kept:
+        return None
+    return max(kept, key=lambda t: t.get("judged_day") or t.get("day") or 0).get("step")
+
+
+def carried(d, tribe=None):
+    """Per kind, how many living carry it at the end (their last kept trial), one tribe or all."""
+    out = {}
+    for p in d.get("people", []):
+        if p.get("died") or (tribe is not None and p.get("tribe") != tribe):
+            continue
+        k = last_kept(p)
+        if k is not None:
+            out[k] = out.get(k, 0) + 1
+    return out
 
 
 def settings_fr(d):
@@ -248,7 +376,9 @@ class Chart:
 
     W, H, L, R, T, B = 660, 230, 50, 14, 12, 34
 
-    def __init__(self, xlo, xhi, ytop, xlabel, ylabel, year_days=50, pct=False):
+    def __init__(self, xlo, xhi, ytop, xlabel, ylabel, year_days=50, pct=False, size=None, winters=False):
+        if size:
+            self.W, self.H = size
         self.xlabel, self.ylabel = xlabel, ylabel
         self.year_days = year_days
         self.x = Scale(xlo, xhi, self.L, self.W - self.R)
@@ -257,6 +387,7 @@ class Chart:
         self.parts = []
         self.legend = []
         self.xlo, self.xhi = xlo, xhi
+        self.winters = winters
 
     def line(self, xs, ys, color, name=None, dash=False, width=1.6):
         pts = " ".join(f"{self.x(x):.1f},{self.y(y):.1f}" for x, y in zip(xs, ys) if y is not None)
@@ -292,6 +423,16 @@ class Chart:
 
     def svg(self, title=""):
         g = [f'<svg class="chart" viewBox="0 0 {self.W} {self.H}" role="img" aria-label="{h(title)}">']
+        # winters shaded: the last quarter of every year
+        if self.winters:
+            yd = self.year_days
+            yr = 0
+            while yr * yd < self.xhi:
+                w0, w1 = max(self.xlo, yr * yd + math.ceil(yd * 3 / 4) + 1), min(self.xhi, (yr + 1) * yd)
+                if w1 > w0:
+                    g.append(f'<rect class="winter" x="{self.x(w0):.1f}" y="{self.T}" width="{self.x(w1) - self.x(w0):.1f}" '
+                             f'height="{self.H - self.B - self.T}" fill="#dde6ee"><title>hiver de l’an {yr + 1}</title></rect>')
+                yr += 1
         # grid and y axis
         for v in y_ticks(self.ytop):
             py = self.y(v)
@@ -352,15 +493,19 @@ def year_marks(d, tribe_index, curve):
     return xs, ys, ts
 
 
-def population_chart(d, label=None, color_of=None, dash=False, chart=None, hover=True):
-    """Alive per tribe over the days; `color_of(tribe, i)` picks the colour."""
+def population_chart(d, label=None, color_of=None, dash=False, chart=None, hover=True, wide=False):
+    """Alive per tribe over the days; `color_of(tribe, i)` picks the colour. `wide`: the run
+    page's form, the whole width, years marked and winters shaded."""
     c = d.get("curves") or {}
     days = c.get("days") or []
     by_tribe = c.get("alive_by_tribe") or []
     ts = tribes(d)
     top = max((max(v) for v in by_tribe if v), default=1)
     if chart is None:
-        chart = Chart(0, max(days[-1] if days else 1, year_days(d)), top, "années", "vivants", year_days(d))
+        chart = Chart(0, max(days[-1] if days else 1, year_days(d)), top, "années", "vivants", year_days(d),
+                      size=(1000, 260) if wide else None, winters=wide)
+        if wide:
+            chart.legend_item("#dde6ee", "hivers")
     else:
         chart.ytop = nice_max(max(chart.ytop, top))
         chart.y = Scale(0, chart.ytop, chart.H - chart.B, chart.T)
@@ -467,16 +612,64 @@ def kept_chart(d, label=None, color_of=None, chart=None, slot=(0, 1)):
 
 MAP_JS = """
 document.querySelectorAll('[data-map]').forEach(m => {
-  const groups = m.querySelectorAll('g[data-year]'), buttons = m.querySelectorAll('button[data-year]');
-  const show = y => { groups.forEach(g => g.style.display = g.dataset.year === y ? 'inline' : 'none'); buttons.forEach(b => b.classList.toggle('on', b.dataset.year === y)); };
-  buttons.forEach(b => b.onclick = () => show(b.dataset.year));
+  const data = JSON.parse(m.querySelector('script[type="application/json"]').textContent);
+  const days = data.days, dpy = data.dpy, seasons = ['printemps', 'été', 'automne', 'hiver'];
+  const slider = m.querySelector('input[type=range]'), when = m.querySelector('.when'), play = m.querySelector('[data-play]');
+  const heat = m.querySelector('[data-heat]'), groups = m.querySelectorAll('g[data-year]');
+  const deaths = m.querySelectorAll('[data-death]'), camps = m.querySelectorAll('[data-camp-year]');
+  const dots = m.querySelector('g.dots'), r = data.r, pos = data.positions || [];
+  const colour = id => data.colors[data.tribe[id]] || '#444';
+  const sampleAt = day => { let k = -1; for (let i = 0; i < pos.length && pos[i][0] <= day; i++) k = i; return k; };
+  function show(day) {
+    const year = Math.floor((day - 1) / dpy) + 1, doy = (day - 1) % dpy;
+    when.textContent = 'an ' + year + ', ' + seasons[Math.min(3, Math.floor(doy * 4 / dpy))] + ', jour ' + day;
+    deaths.forEach(g => g.style.display = +g.dataset.death <= day ? 'inline' : 'none');
+    const passed = day >= days ? data.lastYear : year - 1;
+    camps.forEach(c => c.style.display = +c.dataset.campYear <= passed ? 'inline' : 'none');
+    const shown = Math.min(year, data.lastYear);
+    groups.forEach(g => g.style.display = heat.checked && +g.dataset.year === shown ? 'inline' : 'none');
+    if (!pos.length) return;
+    const k = sampleAt(day);
+    let out = '';
+    if (k >= 0) {
+      const trail = {};
+      for (let i = Math.max(0, k - 4); i < k; i++) for (const [id, x, y] of pos[i][1]) (trail[id] = trail[id] || []).push(x + ',' + y);
+      for (const [id, x, y] of pos[k][1]) {
+        const c = colour(id);
+        if (trail[id]) out += `<polyline fill="none" stroke="${c}" stroke-opacity=".45" stroke-width="${r / 3}" points="${trail[id].join(' ')} ${x},${y}"/>`;
+        out += `<circle cx="${x}" cy="${y}" r="${r}" fill="${c}" stroke="#fff" stroke-width="${r / 4}"><title>${data.names[id] || id}, jour ${pos[k][0]}</title></circle>`;
+      }
+    }
+    dots.innerHTML = out;
+  }
+  slider.oninput = () => show(+slider.value);
+  heat.onchange = () => show(+slider.value);
+  let timer = null;
+  const stop = () => { clearInterval(timer); timer = null; play.textContent = '▶ Lire'; };
+  play.onclick = () => {
+    if (timer) return stop();
+    if (+slider.value >= days) slider.value = 1;
+    play.textContent = '❚❚ Pause';
+    timer = setInterval(() => { if (+slider.value >= days) return stop(); slider.value = +slider.value + 1; show(+slider.value); }, 100);
+  };
+  show(+slider.value);
 });
 """
 
 
+def positions_of(d):
+    """The daily positions `[[day, [[id, x, y], …]], …]`, sorted by day; `[]` when the key is missing."""
+    pos = d.get("positions")
+    if not isinstance(pos, list):
+        return []
+    return sorted((p for p in pos if isinstance(p, list) and len(p) == 2 and isinstance(p[1], list)), key=lambda p: p[0])
+
+
 def map_svg(d, uid, side="", show_deaths=True):
-    """The map's picture with, per tribe, the camps' trail by year, the presence heatmap
-    of a chosen year (buttons; the last year without script) and the deaths' places."""
+    """The map of movements over time: the vivarium's picture with a day slider (play/pause),
+    the living as dots coloured by tribe (from `positions`, when the run has them) with their
+    trail of the last days, the dead as a small cross where they fell from the day they die,
+    the camp's path year by year, and, as an option, the year's presence heatmap."""
     m = d.get("map") or {}
     uri = m.get("data_uri")
     tiles = m.get("tiles") or (d.get("meta") or {}).get("map_tiles")
@@ -485,9 +678,11 @@ def map_svg(d, uid, side="", show_deaths=True):
     W, Hh = tiles
     fs = max(8, W / 60)
     ts = tribes(d)
-    parts = [f'<svg viewBox="0 0 {W} {Hh}" class="map" role="img" aria-label="carte du run">',
+    days = run_days(d) or 1
+    pos = positions_of(d)
+    parts = [f'<svg viewBox="0 0 {W} {Hh}" class="map" role="img" aria-label="carte du run{" " + h(side) if side else ""}">',
              f'<image href="{h(uri)}" x="0" y="0" width="{W}" height="{Hh}" style="image-rendering:pixelated"/>']
-    # presence heatmap, one group a year, the last one shown
+    # presence heatmap, one group a year, the last one shown without script
     presence = d.get("presence") or []
     years = sorted({p.get("year") for p in presence if p.get("year") is not None})
     peak = max((c[2] for p in presence for c in (p.get("cells") or [])), default=1)
@@ -504,17 +699,7 @@ def map_svg(d, uid, side="", show_deaths=True):
                 parts.append(f'<rect x="{cx * cell}" y="{cy * cell}" width="{cell}" height="{cell}" fill="{color}" '
                              f'fill-opacity="{o:.2f}"><title>tribu {h(p["tribe"])}, an {yr} : {n} présence(s) à midi</title></rect>')
         parts.append("</g>")
-    # deaths' places
-    if show_deaths:
-        for p in d.get("people", []):
-            died = p.get("died")
-            if died and died.get("at"):
-                x, y = died["at"]
-                r = fs * 0.5
-                parts.append(f'<g stroke="#111" stroke-width="{fs / 8:.2f}"><line x1="{x - r}" y1="{y - r}" x2="{x + r}" y2="{y + r}"/>'
-                             f'<line x1="{x - r}" y1="{y + r}" x2="{x + r}" y2="{y - r}"/>'
-                             f'<title>{h(person_fr(p.get("name", p.get("id"))))} ({h(p.get("tribe", ""))}) meurt de {h(cause_fr(died.get("cause", "?")))} le jour {died.get("day")}</title></g>')
-    # camp trail, one a tribe
+    # the camps' path, one a tribe: the whole path light, a marker at every year's end
     for i, t in enumerate(ts):
         color = tribe_color(t, i)
         pts = [(y["year"], y["camp"]) for y in years_of(d, t) if y.get("camp")]
@@ -522,21 +707,47 @@ def map_svg(d, uid, side="", show_deaths=True):
         if i < len(camps):
             pts.insert(0, (0, camps[i]))
         if len(pts) > 1:
-            parts.append(f'<polyline fill="none" stroke="{color}" stroke-width="{fs / 5:.2f}" stroke-opacity="0.9" '
+            parts.append(f'<polyline fill="none" stroke="{color}" stroke-width="{fs / 5:.2f}" stroke-opacity="0.7" stroke-dasharray="{fs / 3:.1f} {fs / 4:.1f}" '
                          f'points="{" ".join(f"{p[0]},{p[1]}" for _, p in pts)}"/>')
         for yr, (x, y) in pts:
-            parts.append(f'<circle cx="{x}" cy="{y}" r="{fs / 3:.2f}" fill="{color}" stroke="#fff" stroke-width="{fs / 10:.2f}">'
-                         f'<title>tribu {h(t)}, {"départ" if yr == 0 else f"fin de l’an {yr}"} : camp en ({x}, {y})</title></circle>')
-            parts.append(f'<text x="{x + fs * 0.45:.1f}" y="{y - fs * 0.3:.1f}" font-size="{fs:.1f}" fill="{color}" '
-                         f'stroke="#fff" stroke-width="{fs / 6:.2f}" paint-order="stroke" font-weight="700">{yr}</text>')
-    parts.append("</svg>")
-    buttons = "".join(f'<button type="button" data-year="{yr}" class="{"on" if yr == years[-1] else ""}">an {yr}</button>'
-                      for yr in years)
-    legend = " · ".join(f'<span style="color:{tribe_color(t, i)}">■ tribu {h(t)}</span>' for i, t in enumerate(ts))
-    return (f'<div class="mapbox" data-map="{h(uid)}">{"".join(parts)}'
-            f'<p class="muted">{legend} · chemin des camps année par année (le chiffre est l’année), '
-            f'présence à midi de l’année choisie (plus foncé : plus souvent), × les morts{" " + h(side) if side else ""}.</p>'
-            f'<p class="years">{buttons}</p></div>')
+            parts.append(f'<g data-camp-year="{yr}"><rect x="{x - fs / 3:.1f}" y="{y - fs / 3:.1f}" width="{fs / 1.5:.1f}" height="{fs / 1.5:.1f}" '
+                         f'transform="rotate(45 {x} {y})" fill="{color}" stroke="#fff" stroke-width="{fs / 10:.2f}">'
+                         f'<title>tribu {h(t)}, {"départ" if yr == 0 else f"fin de l’an {yr}"} : camp en ({x}, {y})</title></rect>'
+                         f'<text x="{x + fs * 0.45:.1f}" y="{y - fs * 0.3:.1f}" font-size="{fs:.1f}" fill="{color}" '
+                         f'stroke="#fff" stroke-width="{fs / 6:.2f}" paint-order="stroke" font-weight="700">{yr}</text></g>')
+    # the deaths' places, each shown from its day
+    if show_deaths:
+        for p in d.get("people", []):
+            died = p.get("died")
+            if died and died.get("at"):
+                x, y = died["at"]
+                r = fs * 0.45
+                parts.append(f'<g data-death="{died.get("day") or 0}" stroke="#111" stroke-width="{fs / 7:.2f}" stroke-linecap="round">'
+                             f'<line x1="{x - r}" y1="{y - r}" x2="{x + r}" y2="{y + r}"/>'
+                             f'<line x1="{x - r}" y1="{y + r}" x2="{x + r}" y2="{y - r}"/>'
+                             f'<title>{h(person_fr(p.get("name", p.get("id"))))} ({h(p.get("tribe", ""))}) meurt de {h(cause_fr(died.get("cause", "?")))}, '
+                             f'{h(day_fr(d, died.get("day")))}</title></g>')
+    parts.append('<g class="dots"></g></svg>')
+    data = {"days": days, "dpy": year_days(d), "lastYear": years[-1] if years else last_year(d), "r": round(fs * 0.4, 1),
+            "positions": pos,
+            "tribe": {str(p.get("id")): p.get("tribe") for p in d.get("people", [])},
+            "colors": {t: tribe_color(t, i) for i, t in enumerate(ts)},
+            "names": {str(p.get("id")): person_fr(p.get("name", p.get("id"))) for p in d.get("people", [])}}
+    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+    who = ", ".join(f'<span style="color:{tribe_color(t, i)}">● tribu {h(t)}</span>' for i, t in enumerate(ts))
+    legend = (f"{who} : les vivants ce jour-là, avec leur trace des derniers jours · × un mort, là où il est tombé · "
+              f"◆ le camp à la fin de chaque année (le chiffre est l’année), relié par son chemin.")
+    if not pos:
+        legend = (f'<b>{NO_POSITIONS}</b> : les vivants ne sont pas dessinés jour par jour (le vivarium récent les écrit) ; '
+                  f'le curseur fait défiler le camp et les morts au fil des jours. {who} · × un mort, là où il est tombé · '
+                  f'◆ le camp à la fin de chaque année (le chiffre est l’année).')
+    controls = (f'<p class="timeline"><button type="button" data-play>▶ Lire</button> '
+                f'<input type="range" min="1" max="{days}" value="{days}" step="1" aria-label="jour"> '
+                f'<span class="when">{h(day_fr(d, days))}</span></p>'
+                f'<p class="muted small"><label><input type="checkbox" data-heat{"" if pos else " checked"}> '
+                f'Montrer aussi où ils ont le plus été dans l’année affichée (plus foncé : plus souvent)</label></p>')
+    return (f'<div class="mapbox" data-map="{h(uid)}">{"".join(parts)}{controls}'
+            f'<p class="legend">{legend}</p><script type="application/json">{payload}</script></div>')
 
 
 # --- the discoveries, told as a story of techniques --------------------------
@@ -588,48 +799,62 @@ def culture_line(d, tribe):
 
 
 def story_html(d, tribe):
-    """The discoveries of a tribe in plain French sentences."""
+    """The techniques of a tribe told in plain French sentences."""
     found = next((f for f in d.get("found", []) if f.get("tribe") == tribe), {})
     tried = sum((found.get("tried") or {}).values())
     kept = sum((found.get("kept") or {}).values())
     copied = sum((found.get("copied") or {}).values())
     disc = discoveries(d, tribe)
     s = (d.get("meta") or {}).get("settings") or {}
-    lines = [f"<p><b>Tribu {h(tribe)}</b> : {tried} essai{'s' if tried > 1 else ''}, {kept} gardé{'s' if kept > 1 else ''}, "
-             f"{copied} copié{'s' if copied > 1 else ''}"
-             + (" — les épreuves étaient coupées (témoin)." if not s.get("trials", True) else ".") + "</p>"]
-    kept_kinds = [x for x in disc if x["kept"]]
-    lost_kinds = [x for x in disc if not x["kept"] and x["tried"]]
-    if kept_kinds:
-        items = []
-        for x in kept_kinds:
-            first = (f"gardé la première fois le jour {x['first'][0]} par la {h(person_fr(x['first'][1]))}"
-                     if x["first"] else "gardé (par qui et quand : non lu)")
-            use = (f"{x['holders']} vivant{'s' if x['holders'] > 1 else ''} l’{'ont' if x['holders'] > 1 else 'a'} encore pour dernier essai gardé à la fin"
-                   if x["holders"] else "plus personne ne l’a pour dernier essai gardé à la fin")
-            items.append(f"<li><b>{h(kind_fr(x['kind']).capitalize())}</b> : {first} ; essayé {x['tried']} fois, gardé {x['kept']}, "
-                         f"copié {x['copied']} ; {use}.</li>")
-        lines.append("<p>Ce que les recherches ont apporté :</p><ul>" + "".join(items) + "</ul>")
-    elif tried:
-        lines.append("<p>Les recherches n’ont rien apporté : aucun essai n’a passé le jugement.</p>")
+    many = len(tribes(d)) > 1
+    who = f"La tribu {h(tribe)}" if many else "La bande"
+    if not s.get("trials", True):
+        return f"<p>{who} n’a rien cherché : les épreuves étaient coupées (c’est le témoin).</p>"
+    if not tried:
+        return f"<p>{who} n’a rien essayé.</p>"
+    lines = [f"<p>{who} a tenté {plural(tried, 'essai')} ; {plural(kept, 'essai')} {'ont' if kept > 1 else 'a'} passé le jugement et "
+             f"{'ont' if kept > 1 else 'a'} été gardé{'s' if kept > 1 else ''}, et {fmt(copied)} fois quelqu’un a copié la façon d’un voisin.</p>"]
+    held = sorted([x for x in disc if x["holders"]], key=lambda x: -x["holders"])
+    if held:
+        items = ", ".join(f"<b>{h(kind_fr(x['kind']))}</b> ({plural(x['holders'], 'vivant')} la port{'e' if x['holders'] == 1 else 'ent'})"
+                          for x in held)
+        lines.append(f"<p>Ce qui reste à la fin : {items}.</p>")
+    elif kept:
+        lines.append("<p>Rien n’est resté : les façons gardées en route ont toutes été abandonnées ou leurs porteurs sont morts.</p>")
     else:
-        lines.append("<p>Aucune recherche.</p>")
-    if lost_kinds:
+        lines.append("<p>Les recherches n’ont rien apporté : aucun essai n’a passé le jugement.</p>")
+    dropped = [x for x in disc if x["kept"] and not x["holders"]]
+    if dropped and held:
+        lines.append("<p>Gardé un temps puis abandonné : " + ", ".join(h(kind_fr(x["kind"])) for x in dropped) + ".</p>")
+    lost = [x for x in disc if not x["kept"] and x["tried"]]
+    if lost:
         lines.append("<p>Essayé sans succès : " + ", ".join(
-            f"{h(kind_fr(x['kind']))} ({x['tried']} essai{'s' if x['tried'] > 1 else ''}"
-            + (f", mais {x['copied']} copie{'s' if x['copied'] > 1 else ''} d’un voisin qui l’avait déjà" if x["copied"] else "") + ")"
-            for x in lost_kinds) + ".</p>")
-    lines.append(f"<p><b>La culture de la tribu à la fin</b> : {h(culture_line(d, tribe))}.</p>")
+            f"{h(kind_fr(x['kind']))} ({plural(x['tried'], 'essai')}"
+            + (f", mais {plural(x['copied'], 'copie')} d’un voisin qui l’avait déjà" if x["copied"] else "") + ")"
+            for x in lost) + ".</p>")
     return "".join(lines)
 
 
 def found_table(d, tribe):
-    disc = discoveries(d, tribe)
+    """The techniques' small table: technique, first kept when and by whom, copied, carried, what it changes."""
+    disc = [x for x in discoveries(d, tribe) if x["kept"] or x["copied"]]
     if not disc:
-        return '<p class="muted">rien d’essayé</p>'
-    rows = "".join(f"<tr><td>{h(kind_fr(x['kind']))}</td><td class=n>{x['tried']}</td><td class=n>{x['kept']}</td>"
-                   f"<td class=n>{x['copied']}</td><td class=n>{x['holders']}</td></tr>" for x in disc)
-    return f"<table><tr><th>façon</th><th>essayé</th><th>gardé</th><th>copié</th><th>portée à la fin</th></tr>{rows}</table>"
+        return ""
+    rows = []
+    for x in sorted(disc, key=lambda x: (-x["holders"], -x["kept"])):
+        first = f"{h(day_fr(d, x['first'][0]))}</td><td>{h(person_fr(x['first'][1]))}" if x["first"] else '<span class=muted>jamais gardée</span></td><td>-'
+        rows.append(f"<tr><td><b>{h(kind_fr(x['kind']))}</b></td><td>{first}</td><td class=n>{fmt(x['copied'])}</td>"
+                    f"<td class=n>{fmt(x['holders'])}</td><td class=muted>{h(KIND_CHANGE.get(x['kind'], x['kind']))}</td></tr>")
+    return ('<table class="clean"><thead><tr><th>Technique</th><th>Gardée la première fois</th><th>Par</th><th class=n>Copiée par</th>'
+            '<th class=n>Portée à la fin</th><th>Ce que ça change</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table>")
+
+
+def techniques_html(d):
+    """The techniques found, tribe by tribe: the story, then the small table."""
+    out = []
+    for t in tribes(d):
+        out.append(f'<section class="tribe">{story_html(d, t)}{found_table(d, t)}</section>')
+    return "".join(out) or '<p class="muted">aucune tribu lue</p>'
 
 
 def kept_list(d, tribe, limit=200):
@@ -690,13 +915,84 @@ def hours_to_days(hours):
     return round(hours / 24, 1)
 
 
+def cause_html(c):
+    return f'<span class="cause" style="color:{CAUSE_COLOR.get(c, "#333")}">{h(cause_fr(c))}</span>'
+
+
+def table_html(title, caption, head, rows, empty, cls="clean"):
+    """A titled table: title, one-line caption, full-word headers, zebra rows (the CSS), no borders."""
+    out = [f"<h2>{h(title)}</h2><p class=caption>{h(caption)}</p>"]
+    if not rows:
+        out.append(f'<p class="muted">{h(empty)}</p>')
+    else:
+        ths = "".join(f'<th{" class=n" if right else ""}>{h(t)}</th>' for t, right in head)
+        out.append(f'<table class="{cls}"><thead><tr>{ths}</tr></thead><tbody>{"".join(rows)}</tbody></table>')
+    return "".join(out)
+
+
+def deaths_table(d):
+    """« Les morts » : who, when, age at death, cause in words, where (from the camp)."""
+    many = len(tribes(d)) > 1
+    rows = []
+    for p in sorted((p for p in d.get("people", []) if p.get("died")), key=lambda p: p["died"].get("day") or 0):
+        died = p["died"]
+        rows.append(f"<tr><td>{h(person_fr(p.get('name', p.get('id'))))}{' (' + h(p.get('tribe', '')) + ')' if many else ''}</td>"
+                    f"<td>{h(day_fr(d, died.get('day')))}</td><td class=n>{h(age_fr(d, age_days(d, p, died.get('day'))))}</td>"
+                    f"<td>{cause_html(died.get('cause', '?'))}</td><td>{h(where_fr(d, p.get('tribe'), died.get('at'), died.get('day')))}</td></tr>")
+    return table_html("Les morts", "Chaque mort du run, dans l’ordre des jours : qui, quand, à quel âge, de quoi, et où par rapport au camp de sa tribu cette année-là.",
+                      [("Qui", False), ("Quand", False), ("Âge à la mort", True), ("De quoi", False), ("Où", False)],
+                      rows, "Personne n’est mort.")
+
+
+def births_table(d):
+    """« Les naissances » : who, when, mother, father, alive at the end?"""
+    many = len(tribes(d)) > 1
+    rows = []
+    for p in sorted((p for p in d.get("people", []) if p.get("born") != "start"), key=lambda p: p.get("born_day") or p.get("born") or 0):
+        died = p.get("died")
+        fate = ('<span class=alive>oui</span>' if not died else
+                f'<span class=dead>non</span> : {"morte" if p.get("sex") == "woman" else "mort"} de {h(cause_fr(died.get("cause", "?")))} '
+                f'à {h(age_fr(d, age_days(d, p, died.get("day"))))}')
+        rows.append(f"<tr><td>{h(person_fr(p.get('name', p.get('id'))))}{' (' + h(p.get('tribe', '')) + ')' if many else ''}</td>"
+                    f"<td>{h(day_fr(d, p.get('born_day') or p.get('born')))}</td>"
+                    f"<td>{h(person_fr(p['mother'])) if p.get('mother') is not None else '-'}</td>"
+                    f"<td>{h(person_fr(p['father'])) if p.get('father') is not None else '-'}</td><td>{fate}</td></tr>")
+    return table_html("Les naissances", "Chaque enfant né pendant le run : qui, quand, de qui, et s’il est vivant à la fin.",
+                      [("Qui", False), ("Quand", False), ("Mère", False), ("Père", False), ("Vivant à la fin ?", False)],
+                      rows, "Aucune naissance.")
+
+
+def people_end_table(d):
+    """« Les gens à la fin » : name, tribe, sex, fate, age at the end or at death, children, techniques carried."""
+    rows = []
+    people = sorted(d.get("people", []), key=lambda p: (1 if p.get("died") else 0, p.get("tribe", ""), p.get("id", 0)))
+    for p in people:
+        died = p.get("died")
+        woman = p.get("sex") == "woman"
+        if died:
+            fate = f'<span class=dead>{"morte" if woman else "mort"}</span>, {h(day_fr(d, died.get("day")))} ({h(cause_fr(died.get("cause", "?")))})'
+            age = age_fr(d, age_days(d, p, died.get("day")))
+        else:
+            fate = f'<span class=alive>{"vivante" if woman else "vivant"}</span>'
+            age = age_fr(d, age_days(d, p))
+        techs = sorted({t.get("step") for t in p.get("trials") or [] if t.get("kept") and t.get("step")}, key=lambda k: (kinds(d) + [k]).index(k))
+        tech_txt = ", ".join(h(kind_fr(k)) for k in techs) or '<span class=muted>aucune</span>'
+        rows.append(f"<tr><td>{h(person_fr(p.get('name', p.get('id'))))}</td><td>{h(p.get('tribe', ''))}</td>"
+                    f"<td>{h(SEX_FR.get(p.get('sex'), p.get('sex') or '-'))}</td><td>{fate}</td><td class=n>{h(age)}</td>"
+                    f"<td class=n>{fmt(p.get('children'))}</td><td>{tech_txt}</td></tr>")
+    return table_html("Les gens à la fin", "Tout le monde, les vivants d’abord : son sort, son âge à la fin ou à sa mort, ses enfants, les techniques qu’il a gardées en route.",
+                      [("Qui", False), ("Tribu", False), ("Sexe", False), ("Sort", False), ("Âge à la fin, ou à la mort", True),
+                       ("Enfants", True), ("Techniques portées", False)],
+                      rows, "Personne.")
+
+
 def people_table(d):
     rows = []
     for p in sorted(d.get("people", []), key=lambda p: (p.get("tribe", ""), p.get("id", 0))):
         died = p.get("died")
         death = (f"jour {died.get('day')}, {h(cause_fr(died.get('cause', '?')))}"
                  + (f" ({h(SEASON_FR.get(died.get('season'), died.get('season') or ''))})" if died.get("season") else "")) if died else "vivant"
-        born = "au départ" + (f" ({p['age_days_at_start'] // 365} ans)" if p.get("age_days_at_start") is not None else "") \
+        born = "au départ" + (f" ({age_fr(d, p['age_days_at_start'])})" if p.get("age_days_at_start") is not None else "") \
             if p.get("born") == "start" else f"jour {p.get('born')}"
         ways = p.get("ways") or {}
         way_txt = (f"{'dort dehors' if ways.get('sleep_out') else 'dort au camp'}, cherche jusqu'à {fmt(ways.get('worth_half_tiles'))} tuiles, "
@@ -716,27 +1012,87 @@ def people_table(d):
             f"{''.join(rows)}</table>")
 
 
-def cards_html(sm, other=None, label=None):
-    """The summary cards; with `other`, the difference to it is highlighted."""
-    def card(title, value, ref=None, sub=""):
-        delta = ""
-        if other is not None and ref is not None and value is not None:
+def verdict(d, sm=None):
+    """The run in three everyday sentences: who is alive, what killed, what was kept."""
+    sm = sm or summary(d)
+    settings = (d.get("meta") or {}).get("settings") or {}
+    people = d.get("people", [])
+    alive, start, births, dead = sm["alive"], sm["start"], sm["births"], sm["dead"]
+    when = f"Après {plural(sm['years'], 'an')}" if sm["years"] else f"Après {plural(run_days(d), 'jour')}"
+    alive_start = sm["alive_start"]
+    alive_born = alive - alive_start
+    if alive == 0:
+        first = f"{when}, plus personne : les {fmt(start)} du départ sont morts" + \
+            ("" if not births else ", et l’enfant né en route aussi" if births == 1 else f", et les {plural(births, 'enfant')} nés en route aussi") + "."
+    else:
+        if alive_start == 0:
+            first = f"{when}, plus aucun des {fmt(start)} du départ n’est vivant"
+        else:
+            first = f"{when}, {fmt(alive_start)} des {fmt(start)} du départ {'sont vivants' if alive_start > 1 else 'est vivant'}"
+        if births and alive_born == 0:
+            first += ", et l’enfant né en route n’a pas survécu" if births == 1 else f", et aucun des {plural(births, 'enfant')} nés en route n’a survécu"
+        elif births and alive_born == births:
+            first += ", mais l’enfant né en route l’est" if births == 1 and not alive_start else \
+                (", et l’enfant né en route aussi" if births == 1 else f", {'et' if alive_start else 'mais'} les {plural(births, 'enfant')} nés en route aussi")
+        elif births:
+            first += f", {'et' if alive_start else 'mais'} {fmt(alive_born)} des {plural(births, 'enfant')} nés en route"
+        first += "."
+    if not dead:
+        second = "Personne n’est mort."
+    else:
+        c, n = max(sm["deaths"].items(), key=lambda x: x[1])
+        seasons = {}
+        for p in people:
+            died = p.get("died")
+            if died and died.get("cause") == c and died.get("season"):
+                seasons[died["season"]] = seasons.get(died["season"], 0) + 1
+        season = max(seasons, key=seasons.get) if seasons else None
+        plural_v, single_v = CAUSE_VERDICT.get(c, (f"sont morts de {cause_fr(c)}", f"est mort de {cause_fr(c)}"))
+        subject = "Les femmes" if c == "childbirth" else "Ils"
+        when_s = (f", {SEASON_IN.get(season, season)}" if dead == 1 or seasons.get(season, 0) == n else f", le plus souvent {SEASON_IN.get(season, season)}") if season else ""
+        if dead == 1:
+            second = f"Le seul mort {single_v}{when_s}."
+        elif n == dead:
+            second = f"Tous les morts {plural_v}{when_s}."
+        else:
+            aux, rest = plural_v.split(" ", 1)
+            second = f"{subject} {aux} surtout {rest} ({fmt(n)} des {plural(dead, 'mort')}){when_s}."
+    if not settings.get("trials", True):
+        third = "Les épreuves étaient coupées (c’est le témoin) : rien à garder."
+    else:
+        held = sorted(((k, n) for k, n in carried(d).items() if n), key=lambda x: (-x[1], kinds(d).index(x[0]) if x[0] in kinds(d) else 99))
+        if not held:
+            third = (f"Aucune technique n’est portée à la fin, malgré {plural(sm['kept'], 'essai')} gardé{'s' if sm['kept'] > 1 else ''} en route."
+                     if sm["kept"] else "Aucune technique gardée.")
+        elif len(held) == 1:
+            third = f"Une technique gardée : {kind_fr(held[0][0])}."
+        else:
+            names = [kind_fr(k) for k, _ in held]
+            count = {2: "Deux", 3: "Trois", 4: "Quatre", 5: "Cinq"}.get(len(held), fmt(len(held)))
+            third = f"{count} techniques gardées : {', '.join(names[:-1])} et {names[-1]}."
+    return f"{first} {second} {third}"
+
+
+def tiles_html(sm, other=None, label=None):
+    """Four big tiles: alive, dead, births, techniques kept; with `other`, a coloured arrow up or down."""
+    def tile(cls, title, value, ref, sub, good_up=True):
+        arrow = ""
+        if other is not None and ref is not None and value is not None and value != ref:
             dv = value - ref
-            if dv:
-                delta = f'<span class="delta {"plus" if dv > 0 else "minus"}">{"+" if dv > 0 else ""}{fmt(dv)}</span>'
-        return f'<div class=card><div class=k>{h(title)}</div><div class=v>{fmt(value)}{delta}</div><div class=s>{sub}</div></div>'
+            good = (dv > 0) == good_up
+            arrow = (f'<span class="arrow {"good" if good else "bad"}" title="{"+" if dv > 0 else ""}{fmt(dv)} par rapport à l’autre côté">'
+                     f'{"↑" if dv > 0 else "↓"} {"+" if dv > 0 else ""}{fmt(dv)}</span>')
+        return f'<div class="tile {cls}"><div class=v>{fmt(value)}{arrow}</div><div class=k>{h(title)}</div><div class=s>{sub}</div></div>'
     o = other or {}
-    deaths_sub = ", ".join(f"{h(cause_fr(c))} {n}" + (f' <span class="delta {"plus" if n - o["deaths"].get(c, 0) > 0 else "minus"}">{n - o["deaths"].get(c, 0):+d}</span>'
-                                                      if other is not None and n - o["deaths"].get(c, 0) else "")
-                           for c, n in sm["deaths"].items() if n or (other is not None and o.get("deaths", {}).get(c)))
-    cards = [card("vivants à la fin", sm["alive"], o.get("alive"), f"{sm['start']} au départ, {sm['years']} an{'s' if sm['years'] > 1 else ''}"),
-             card("morts", sm["dead"], o.get("dead"), deaths_sub or "aucun"),
-             card("naissances", sm["births"], o.get("births")),
-             card("essais", sm["trials"], o.get("trials"), f"gardés {sm['kept']}"
-                  + (f' <span class="delta {"plus" if sm["kept"] - o["kept"] > 0 else "minus"}">{sm["kept"] - o["kept"]:+d}</span>' if other is not None and sm["kept"] != o.get("kept") else "")
-                  + f", copiés {sm['copied']}"),
-             card("maisons déplacées", sm["homes_moved"], o.get("homes_moved"))]
-    return f'<div class=cards>{"<div class=cardlabel>" + h(label) + "</div>" if label else ""}{"".join(cards)}</div>'
+    top = sorted(((c, n) for c, n in sm["deaths"].items() if n), key=lambda x: -x[1])[:3]
+    deaths_sub = ", ".join(f"{cause_html(c)} {n}" for c, n in top) or "aucun"
+    tiles = [tile("alive", "vivants à la fin", sm["alive"], o.get("alive"), f"{fmt(sm['start'])} au départ, {plural(sm['years'], 'an')}"),
+             tile("dead", "morts", sm["dead"], o.get("dead"), deaths_sub, good_up=False),
+             tile("births", "naissances", sm["births"], o.get("births"),
+                  f"{fmt(sm['alive'] - sm['alive_start'])} encore vivant{'s' if sm['alive'] - sm['alive_start'] > 1 else ''}" if sm["births"] else "aucune"),
+             tile("kept", "techniques gardées", sm["techniques"], o.get("techniques"),
+                  f"{plural(sm['kept'], 'essai')} gardé{'s' if sm['kept'] > 1 else ''} sur {fmt(sm['trials'])}, {plural(sm['copied'], 'copie')}")]
+    return f'<div class=tiles>{"<div class=tilelabel>" + h(label) + "</div>" if label else ""}{"".join(tiles)}</div>'
 
 
 # --- the pages' bodies ------------------------------------------------------------
@@ -786,19 +1142,27 @@ def run_body(s, r, d):
         return head + f'<p class="err">{NO_DATA}.{h(live)}</p>'
     sm = summary(d)
     ts = tribes(d)
-    body = [head, f"<p class=settings>{h(settings_fr(d))}</p>", cards_html(sm)]
-    body.append("<h2>Courbes</h2><div class=charts>")
-    body.append(population_chart(d).svg("population par tribu"))
-    body.append(births_deaths_chart(d).svg("naissances et morts par an"))
-    body.append(kept_chart(d).svg("essais gardés par an"))
-    body.append(reserve_chart(d).svg("réserve moyenne"))
-    body.append("</div>")
-    body.append("<h2>La carte</h2>" + map_svg(d, "m1"))
-    body.append("<h2>Les découvertes</h2>")
+    body = [head, f"<p class=verdict>{h(verdict(d, sm))}</p>", tiles_html(sm)]
+    body.append("<h2>La carte</h2><p class=caption>Où ils étaient, jour après jour : faites glisser le curseur ou appuyez sur Lire.</p>" + map_svg(d, "m1"))
+    body.append("<h2>La population</h2><p class=caption>Les vivants jour par jour, par tribu ; les hivers en bleu pâle, les années en bas.</p>"
+                + population_chart(d, wide=True).svg("population par tribu"))
+    body.append("<h2>Ce qu’ils ont trouvé</h2><p class=caption>Les techniques essayées, gardées et copiées, tribu par tribu.</p>" + techniques_html(d))
+    body.append(deaths_table(d))
+    body.append(births_table(d))
+    body.append(people_end_table(d))
+    detail = [f"<p class=settings>{h(settings_fr(d))}</p>"]
     for t in ts:
-        body.append(f'<section class=tribe>{story_html(d, t)}<div class=cols>{found_table(d, t)}<div><p class=muted>Les essais gardés, par jour :</p>{kept_list(d, t)}</div></div></section>')
-    body.append("<h2>Année par année</h2>" + years_table(d))
-    body.append(f"<h2>Les gens ({len(d.get('people', []))})</h2>" + people_table(d))
+        detail.append(f"<p><b>La culture de la tribu {h(t)} à la fin</b> : {h(culture_line(d, t))}.</p>")
+    detail.append("<h3>Les autres courbes</h3><div class=charts>")
+    detail.append(births_deaths_chart(d).svg("naissances et morts par an"))
+    detail.append(kept_chart(d).svg("essais gardés par an"))
+    detail.append(reserve_chart(d).svg("réserve moyenne"))
+    detail.append("</div>")
+    for t in ts:
+        detail.append(f"<h3>Les essais gardés de la tribu {h(t)}, par jour</h3>{kept_list(d, t)}")
+    detail.append("<h3>Année par année</h3>" + years_table(d))
+    detail.append(f"<h3>La vie de chacun ({len(d.get('people', []))})</h3>" + people_table(d))
+    body.append(f'<details class=detail><summary>Le détail</summary>{"".join(detail)}</details>')
     body.append(f"<script>{MAP_JS}</script>")
     return "".join(body)
 
@@ -856,6 +1220,47 @@ def key_line(s, store):
     return " · ".join(parts)
 
 
+def series_verdict(agg, read, total):
+    """One sentence for a series: the mean alive with and without trials, and what it says."""
+    if not read:
+        return f"Aucun run lu encore sur {total}."
+    a, b = agg.get(True), agg.get(False)
+    if a and b:
+        gap = a["mean"] - b["mean"]
+        says = "Les épreuves ne changent rien." if abs(gap) < 0.5 else f"Les épreuves gardent {more_or_less(gap)}."
+        return (f"Avec les épreuves, {mean_fr(a['mean'])} vivants à la fin en moyenne sur {plural(a['n'], 'run')} ; "
+                f"sans, {mean_fr(b['mean'])} sur {plural(b['n'], 'run')}. {says}")
+    one = a or b
+    label = "avec les épreuves" if a else "sans les épreuves"
+    return f"{mean_fr(one['mean'])} vivants à la fin en moyenne sur {plural(one['n'], 'run')} {label}" + \
+        (f" (de {fmt(one['min'])} à {fmt(one['max'])})." if one["n"] > 1 else ".")
+
+
+def mean_fr(x):
+    """A mean for a sentence: `3` when whole, else one decimal (`2,5`)."""
+    r = round(x, 1)
+    return fmt(int(r)) if r == int(r) else fmt(r)
+
+
+def more_or_less(gap):
+    """`pareil`, `2 vivants de plus`, `1,5 vivant de moins` for a difference of means."""
+    if abs(gap) < 0.5:
+        return "pareil"
+    return f"{mean_fr(abs(gap))} vivant{'s' if abs(gap) >= 2 else ''} de {'plus' if gap > 0 else 'moins'}"
+
+
+def compare_verdict(agg_a, agg_b):
+    """One sentence for two versions: B against A, with trials then without."""
+    parts = []
+    for trials, label in ((True, "avec épreuves"), (False, "sans épreuves")):
+        a, b = agg_a.get(trials), agg_b.get(trials)
+        if a and b:
+            parts.append(f"{label}, {more_or_less(b['mean'] - a['mean'])}")
+    if not parts:
+        return "Rien à comparer encore : aucune paire de runs lue des deux côtés."
+    return "La version B contre la version A : " + " ; ".join(parts) + "."
+
+
 def same_plan(s, others):
     """The other series made from the same plan (same plan name or identical runs), newest first."""
     out = []
@@ -889,7 +1294,8 @@ def serie_body(s, all_series, store):
     run_opts = "".join(f'<option value="{h(s["name"])}/{h(r["name"])}">{h(r["name"])}</option>' for r in s["runs"])
     runs_cmp = (f'<form class=inline method=get action="/compare"><label>Deux runs de la série : <select name=a>{run_opts}</select></label> '
                 f'<label>et <select name=b>{run_opts}</select></label> <button>Comparer</button></form>')
-    body = [head, f"<div class=controls>{versions}{runs_cmp}</div>"]
+    body = [head, f"<p class=verdict>{h(series_verdict(agg, sum(1 for _r, d, _sm in rows if d), len(rows)))}</p>",
+            f"<div class=controls>{versions}{runs_cmp}</div>"]
     # table
     trs = []
     for r, d, sm in rows:
@@ -902,8 +1308,8 @@ def serie_body(s, all_series, store):
         trs.append(f"<tr><td>{link}</td><td class=n>{r.get('seed', '')}</td><td>{trials_tag(r)}</td><td><span class=etat>{h(r['state'])}</span></td>"
                    f"{cells}<td class=n>{secs(r.get('elapsed'))}</td><td>"
                    + (f'<a href="{r["page"]}">page</a> ' if r.get("page") else "") + (f'<a href="{r["log"]}">log</a>' if r.get("log") else "") + "</td></tr>")
-    body.append("<h2>Les runs</h2><table><tr><th>run</th><th>graine</th><th>épreuves</th><th>état</th><th>vivants</th><th>morts</th>"
-                f"<th>naissances</th><th>gardés / essais</th><th>temps</th><th></th></tr>{''.join(trs)}</table>")
+    body.append('<h2>Les runs</h2><table class=clean><thead><tr><th>run</th><th>graine</th><th>épreuves</th><th>état</th><th class=n>vivants</th><th class=n>morts</th>'
+                f'<th class=n>naissances</th><th class=n>gardés / essais</th><th class=n>temps</th><th></th></tr></thead><tbody>{"".join(trs)}</tbody></table>')
     body.append("<h2>Vivants à la fin</h2><ul>" + aggregates_html(agg[True], "avec épreuves") + aggregates_html(agg[False], "sans épreuves") + "</ul>")
     # overlaid population curves
     chart = None
@@ -996,8 +1402,10 @@ def compare_runs_body(sa, ra, da, sb, rb, db, title=True):
         body.append(f'<p class="err">{NO_DATA} : {h(", ".join(missing))}.</p>')
         return "".join(body)
     sma, smb = summary(da), summary(db)
-    body.append(f'<div class=cols2>{cards_html(sma, smb, "A")}{cards_html(smb, sma, "B")}</div>'
-                '<p class=muted>Sous chaque nombre, en couleur, l’écart à l’autre côté.</p>')
+    body.append(f'<div class=cols2><p class="verdict small"><b style="color:{SIDE_COLOR["a"]}">A.</b> {h(verdict(da, sma))}</p>'
+                f'<p class="verdict small"><b style="color:{SIDE_COLOR["b"]}">B.</b> {h(verdict(db, smb))}</p></div>')
+    body.append(f'<div class=cols2>{tiles_html(sma, smb, "A")}{tiles_html(smb, sma, "B")}</div>'
+                '<p class=muted>À côté de chaque nombre, la flèche dit l’écart à l’autre côté : vert quand c’est mieux, rouge quand c’est pire.</p>')
     body.append("<h2>Courbes superposées</h2><div class=charts>")
     ch = population_chart(da, "A", side_colors("a"))
     population_chart(db, "B", side_colors("b"), dash=True, chart=ch)
@@ -1101,11 +1509,12 @@ def compare_series_body(sa, sb, store):
                 all_causes.append(c)
     head = ("<tr><th>run</th><th>graine</th><th>épreuves</th><th>vivants A → B</th><th>morts</th><th>naissances</th><th>gardés</th>"
             + "".join(f"<th>{h(cause_fr(c))}</th>" for c in all_causes) + "<th></th></tr>")
-    body.append(f"<h2>Run par run</h2><div class=scroll><table>{head}{''.join(r for _, r in rows)}</table></div>")
+    body.append(f'<h2>Run par run</h2><div class=scroll><table class=clean><thead>{head}</thead><tbody>{"".join(r for _, r in rows)}</tbody></table></div>')
     if left:
         body.append("<p class=muted>Sans pair en A : " + ", ".join(h(r["name"]) for r in left) + ".</p>")
     agg_a = series_numbers(sa, store)[1]
     agg_b = series_numbers(sb, store)[1]
+    body.insert(1, f"<p class=verdict>{h(compare_verdict(agg_a, agg_b))}</p>")
     body.append("<h2>Vivants à la fin</h2><div class=cols2><div><h3>A</h3><ul>" + aggregates_html(agg_a[True], "avec épreuves") + aggregates_html(agg_a[False], "sans épreuves")
                 + "</ul></div><div><h3>B</h3><ul>" + aggregates_html(agg_b[True], "avec épreuves") + aggregates_html(agg_b[False], "sans épreuves") + "</ul></div></div>")
     if chart:
@@ -1115,5 +1524,5 @@ def compare_series_body(sa, sb, store):
         chart.legend_item(SIDE_COLOR["b"], "B, sans", dash=True)
         body.append("<h2>Population de tous les runs</h2>" + chart.svg("population de tous les runs"))
     if cultures:
-        body.append("<h2>Les cultures à la fin</h2><table><tr><th>run</th><th>A</th><th>B</th></tr>" + "".join(cultures) + "</table>")
+        body.append("<h2>Les cultures à la fin</h2><table class=clean><thead><tr><th>run</th><th>A</th><th>B</th></tr></thead><tbody>" + "".join(cultures) + "</tbody></table>")
     return "".join(body)

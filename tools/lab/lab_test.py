@@ -267,13 +267,84 @@ class Reading(unittest.TestCase):
         self.assertEqual([(x["kind"], x["tried"], x["kept"], x["copied"], x["first"], x["holders"]) for x in disc],
                          [("wider", 1, 1, 1, (15, "person 1"), 1), ("sleep_out", 1, 0, 0, None, 0)])
         story = reading.story_html(self.d, "A")
-        self.assertIn("gardé la première fois le jour 15 par la personne 1", story)
-        self.assertIn("Chercher plus loin", story)
+        self.assertIn("La tribu A a tenté 2 essais ; 1 essai a passé le jugement", story)
+        self.assertIn("Ce qui reste à la fin : <b>chercher plus loin</b> (1 vivant la porte)", story)
         self.assertIn("Essayé sans succès : dormir dehors (1 essai)", story)
-        self.assertIn("La culture de la tribu à la fin", story)
         self.assertIn("2 vivants à la fin (2 esprits lus)", reading.culture_line(self.d, "A"))
-        self.assertIn("Aucune recherche", reading.story_html(self.d, "B"))
+        self.assertIn("La tribu B n’a rien essayé", reading.story_html(self.d, "B"))
+        self.assertIn("étaient coupées", reading.story_html(fixture(trials=False), "A"))
+        table = reading.found_table(self.d, "A")
+        self.assertIn("<th>Gardée la première fois</th>", table)
+        self.assertIn("<td>an 1, été, jour 15</td><td>personne 1</td><td class=n>1</td><td class=n>1</td>", table)
+        self.assertIn("deux fois plus loin du camp", table)
+        self.assertEqual(table.count("<tr>"), 2)                    # the header and the one kept kind
+        self.assertEqual(reading.found_table(self.d, "B"), "")
         self.assertIn("jour 15, personne 1 : chercher plus loin, garde", reading.kept_list(self.d, "A"))
+
+    def test_the_verdict_in_everyday_french(self):
+        v = reading.verdict(self.d)
+        self.assertEqual(v, "Après 2 ans, 3 des 4 du départ sont vivants, et l’enfant né en route n’a pas survécu. "
+                            "Ils ont surtout manqué de nourriture (1 des 2 morts), en hiver. Une technique gardée : chercher plus loin.")
+        self.assertTrue(reading.verdict(fixture(trials=False)).endswith("Les épreuves étaient coupées (c’est le témoin) : rien à garder."))
+        for p in self.d["people"]:
+            p["died"] = p["died"] or {"day": 95, "cause": "thirst", "season": "winter", "at": [1, 1]}
+        self.assertTrue(reading.verdict(self.d).startswith("Après 2 ans, plus personne : les 4 du départ sont morts, et l’enfant né en route aussi. "
+                                                          "Ils ont surtout manqué d’eau (3 des 5 morts), en hiver."))
+        self.assertIn("Aucune technique", reading.verdict(self.d))
+        alone = fixture()
+        alone["people"] = alone["people"][:2]
+        alone["years"] = alone["years"][:2]
+        alone["found"] = alone["found"][:1]
+        self.assertIn("Personne n’est mort.", reading.verdict(alone))
+
+    def test_days_ages_and_places_in_words(self):
+        self.assertEqual(reading.day_fr(self.d, 112), "an 3, printemps, jour 112")
+        self.assertEqual(reading.day_fr(self.d, 50), "an 1, hiver, jour 50")
+        self.assertEqual([reading.season_of(self.d, day) for day in (1, 13, 14, 26, 38, 39)],
+                         ["spring", "spring", "summer", "autumn", "autumn", "winter"])
+        self.assertEqual(reading.age_fr(self.d, 7300 + 99), "147 ans")      # game years of 50 days
+        self.assertEqual(reading.age_fr(self.d, 40), "40 jours")
+        self.assertEqual(reading.age_days(self.d, self.d["people"][2], 70), 40)   # born day 30, dead day 70
+        self.assertEqual(reading.age_days(self.d, self.d["people"][0]), 7300 + 99)
+        self.assertEqual(reading.where_fr(self.d, "A", [11, 12], 70), "au camp")
+        self.assertEqual(reading.where_fr(self.d, "A", [200, 10], 70), "à 190 m du camp, vers l’est")
+        self.assertEqual(reading.where_fr(self.d, "A", [12, 150], 100), "à 139 m du camp, vers le sud")
+        self.assertEqual(reading.where_fr(self.d, "A", None), "-")
+
+    def test_the_three_tables_of_the_run_page(self):
+        deaths = reading.deaths_table(self.d)
+        self.assertIn("<h2>Les morts</h2>", deaths)
+        self.assertIn("<th>Qui</th><th>Quand</th><th class=n>Âge à la mort</th><th>De quoi</th><th>Où</th>", deaths)
+        self.assertEqual(deaths.count("<tr>"), 3)
+        self.assertIn("<td>personne 3 (A)</td><td>an 2, été, jour 70</td><td class=n>40 jours</td>", deaths)
+        self.assertIn(">faim</span></td><td>au camp</td>", deaths)
+        births = reading.births_table(self.d)
+        self.assertIn("<h2>Les naissances</h2>", births)
+        self.assertEqual(births.count("<tr>"), 2)
+        self.assertIn("<td>personne 3 (A)</td><td>an 1, automne, jour 30</td><td>-</td><td>-</td><td><span class=dead>non</span> : mort de faim à 40 jours</td>", births)
+        people = reading.people_end_table(self.d)
+        self.assertIn("<h2>Les gens à la fin</h2>", people)
+        self.assertEqual(people.count("<tr>"), 6)
+        rows = people.split("<tr>")
+        self.assertIn("vivante", rows[2])                 # the living first (rows[1] is the header)
+        self.assertIn("<td>chercher plus loin</td>", rows[2])
+        self.assertIn("<span class=dead>mort</span>, an 2, été, jour 70 (faim)", people)
+        empty = fixture()
+        empty["people"] = [p for p in empty["people"] if not p["died"] and p["born"] == "start"]
+        self.assertIn("Personne n’est mort.", reading.deaths_table(empty))
+        self.assertIn("Aucune naissance.", reading.births_table(empty))
+
+    def test_tiles_count_the_techniques_and_point_the_arrows(self):
+        sm = reading.summary(self.d)
+        self.assertEqual((sm["techniques"], sm["alive_start"]), (1, 3))
+        tiles = reading.tiles_html(sm)
+        self.assertEqual(tiles.count('<div class="tile'), 4)
+        self.assertNotIn("arrow", tiles)
+        other = reading.summary(fixture(trials=False))
+        tiles = reading.tiles_html(sm, other)
+        self.assertIn('class="arrow good" title="+1 par rapport à l’autre côté">↑ +1', tiles)
+        other["dead"] = 1
+        self.assertIn('class="arrow bad"', reading.tiles_html(sm, other))      # one more dead: worse
 
     def test_settings_in_french(self):
         s = reading.settings_fr(self.d)
@@ -291,18 +362,41 @@ class Reading(unittest.TestCase):
         self.assertEqual(reading.hours_to_days(36), 1.5)
 
     def test_map_draws_trail_heat_and_deaths(self):
-        svg = reading.map_svg(self.d, "m")
+        html_ = reading.map_svg(self.d, "m")
+        svg = html_[html_.index("<svg"):html_.index("</svg>") + 6]
         self.assertIn('viewBox="0 0 64 64"', svg)
         self.assertEqual(svg.count("<g data-year="), 2)
         self.assertIn('data-year="1" display="none"', svg)
         self.assertNotIn('data-year="2" display="none"', svg)
         import xml.etree.ElementTree as ET
-        ET.fromstring(svg.replace("&nbsp;", " "))   # well-formed: it is drawn inline
+        ET.fromstring(svg)                                     # well-formed: it is drawn inline
         self.assertIn("points=\"10,10 10,10 12,11\"", svg)        # tribe A: start, year 1, year 2
+        self.assertEqual(svg.count("data-camp-year="), 6)       # start and two years, two tribes
         self.assertEqual(svg.count("meurt de"), 2)
-        self.assertEqual(svg.count("<button"), 2)
+        self.assertIn('<g data-death="70"', svg)
+        self.assertIn('<g class="dots"></g>', svg)
+        self.assertIn('<input type="range" min="1" max="100" value="100"', html_)
+        self.assertIn("an 2, hiver, jour 100", html_)
+        self.assertIn(reading.NO_POSITIONS, html_)
+        self.assertIn('data-heat checked', html_)                # without positions, the heatmap is shown
+        payload = json.loads(html_[html_.index('<script type="application/json">') + 32:html_.rindex("</script>")])
+        self.assertEqual((payload["days"], payload["dpy"], payload["lastYear"], payload["positions"]), (100, 50, 2, []))
+        self.assertEqual(payload["tribe"]["4"], "B")
+        self.assertEqual(payload["names"]["1"], "personne 1")
         self.d["map"] = {}
         self.assertIn(reading.NO_DATA, reading.map_svg(self.d, "m"))
+
+    def test_map_reads_the_positions_fixture(self):
+        # `positions`: one sample a day at noon, [[day, [[id, x, y], …]], …] (docs/10, being added)
+        self.d["positions"] = [[2, [[1, 12, 10], [2, 11, 11], [5, 52, 50]]], [1, [[1, 10, 10], [2, 11, 10], [4, 50, 50], [5, 51, 50]]]]
+        html_ = reading.map_svg(self.d, "m")
+        self.assertNotIn(reading.NO_POSITIONS, html_)
+        self.assertIn('data-heat>', html_)                      # with positions, the heatmap is an option, off
+        payload = json.loads(html_[html_.index('<script type="application/json">') + 32:html_.rindex("</script>")])
+        self.assertEqual([p[0] for p in payload["positions"]], [1, 2])           # sorted by day
+        self.assertEqual(payload["positions"][1][1][0], [1, 12, 10])
+        self.assertEqual(reading.positions_of({"positions": "nope"}), [])
+        self.assertEqual(reading.positions_of({}), [])
 
     def test_store_reads_and_caches(self):
         with tempfile.TemporaryDirectory() as d:
@@ -410,14 +504,22 @@ class SeriesReading(unittest.TestCase):
         serie = reading.serie_body(s["etalon-test-1"], self.series, self.lab.store)
         self.assertIn("Comparer avec la version…", serie)
         self.assertIn("def5678", serie)
+        self.assertIn('<p class=verdict>Avec les épreuves, 3 vivants à la fin en moyenne sur 2 runs ; sans, 3 sur 2 runs. Les épreuves ne changent rien.</p>', serie)
         self.assertIn("Population de tous les runs", serie)
         self.assertIn("écart-type", serie)
         run = reading.run_body(s["etalon-test-1"], s["etalon-test-1"]["runs"][0], self.lab.store.load("etalon-test-1", "t-s1-avec"))
-        for part in ("Courbes", "La carte", "Les découvertes", "Année par année", "Les gens (5)", "vivants à la fin"):
+        for part in ("<p class=verdict>Après 2 ans, 3 des 4", '<div class="tile alive">', "<h2>La carte</h2>", 'class="winter"',
+                     "<h2>La population</h2>", "<h2>Ce qu’ils ont trouvé</h2>", "<h2>Les morts</h2>", "<h2>Les naissances</h2>",
+                     "<h2>Les gens à la fin</h2>", "<summary>Le détail</summary>", "Année par année", "La vie de chacun (5)"):
             self.assertIn(part, run)
+        order = [run.index(x) for x in ("<p class=verdict>", "<div class=tiles>", "<h2>La carte</h2>", "<h2>La population</h2>",
+                                        "<h2>Ce qu’ils ont trouvé</h2>", "<h2>Les morts</h2>", "<h2>Les naissances</h2>",
+                                        "<h2>Les gens à la fin</h2>", "<details class=detail>")]
+        self.assertEqual(order, sorted(order))
+        self.assertLess(run.index("Année par année"), run.index("</details>"))
         empty = reading.run_body(s["autre"], s["autre"]["runs"][0], None)
         self.assertIn(reading.NO_DATA, empty)
-        self.assertNotIn("Courbes", empty)
+        self.assertNotIn("La carte", empty)
         self.assertIn(reading.NO_DATA, reading.serie_body(s["autre"], self.series, self.lab.store))
 
     def test_compare_two_runs_highlights_the_differences(self):
@@ -426,10 +528,13 @@ class SeriesReading(unittest.TestCase):
         db = self.lab.store.load("etalon-test-1", "t-s1-sans")
         body = reading.compare_runs_body(s["etalon-test-1"], s["etalon-test-1"]["runs"][0], da,
                                          s["etalon-test-1"], s["etalon-test-1"]["runs"][1], db)
-        self.assertIn('class="delta minus">-2', body)       # trials: 2 against 0
-        self.assertIn('class="delta plus">+2', body)
+        self.assertIn('class="arrow good" title="+1 par rapport à l’autre côté">↑ +1', body)    # one technique against none
+        self.assertIn('class="arrow bad" title="-1 par rapport à l’autre côté">↓ -1', body)
         self.assertEqual(body.count("<svg"), 6)              # four charts, two maps
-        self.assertEqual(body.count("La culture de la tribu à la fin"), 4)
+        self.assertEqual(body.count('<p class="verdict small">'), 2)
+        self.assertEqual(body.count("Une technique gardée"), 1)
+        self.assertEqual(body.count("Ce qui reste à la fin"), 1)
+        self.assertEqual(body.count("<section class=tribe>"), 4)
         missing = reading.compare_runs_body(s["etalon-test-1"], s["etalon-test-1"]["runs"][0], da, s["autre"], s["autre"]["runs"][0], None)
         self.assertIn(reading.NO_DATA, missing)
 
@@ -440,6 +545,7 @@ class SeriesReading(unittest.TestCase):
         self.assertEqual(left, [])
         body = reading.compare_series_body(s["etalon-test-1"], s["etalon-test-2"], self.lab.store)
         self.assertIn("Comparer deux versions", body)
+        self.assertIn("<p class=verdict>La version B contre la version A : avec épreuves, pareil ; sans épreuves, pareil.</p>", body)
         self.assertIn("graine par graine", body)
         self.assertEqual(body.count("face à face"), 4)
         self.assertIn("3 → - ", body)                        # t-s2-sans has no data in the second series
@@ -458,7 +564,7 @@ class SeriesReading(unittest.TestCase):
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         try:
             for path, code, needle in (("/lire", 200, "Lire / Comparer"), ("/serie/etalon-test-1", 200, "Comparer avec la version"),
-                                       ("/run/etalon-test-1/t-s1-avec", 200, "Les découvertes"),
+                                       ("/run/etalon-test-1/t-s1-avec", 200, "Ce qu’ils ont trouvé"),
                                        ("/run/autre/t-s1-avec", 200, reading.NO_DATA),
                                        ("/compare?a=etalon-test-1&b=etalon-test-2", 200, "Comparer deux versions"),
                                        ("/compare?a=etalon-test-1/t-s1-avec&b=etalon-test-2/t-s1-avec", 200, "Comparer deux runs"),

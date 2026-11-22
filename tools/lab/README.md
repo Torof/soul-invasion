@@ -91,7 +91,8 @@ Three screens:
   version and change sentence, and a line of key numbers (runs read, alive
   at the end with and without trials, deaths by cause, births); a form with
   two selects to compare any two series or runs. Then:
-  - `/serie/<serie>`: the question, the version, "**Comparer avec la
+  - `/serie/<serie>`: the question, the version, a one-sentence verdict
+    (the mean alive with and without trials), "**Comparer avec la
     version…**" (the other series made from the same plan: same plan name or
     identical runs once expanded, newest first, with their version and
     sentence), a second control for two runs of the series, a table with one
@@ -99,29 +100,50 @@ Three screens:
     time), the mean, min, max and standard deviation of alive at the end for
     "with" and "without", and the population curves of every run overlaid
     (with in green, without in ochre).
-  - `/run/<serie>/<name>`: the header (question, settings, where the run is),
-    the cards (alive, dead by cause, births, trials / kept / copied, homes
-    moved), four curves (population per tribe, births and deaths per year
-    stacked by cause, trials kept per year, mean fat reserve), **the map**
-    (the vivarium's picture with, per tribe, the camps' trail year by year,
-    the presence heatmap of the year chosen by the buttons, the deaths'
-    places), **the discoveries** told as a story of techniques per tribe
-    (what was found, first kept when and by whom, how many copied it, who
-    still holds it at the end, and the tribe's culture at the end in one
-    line), the kinds and the kept trials by day, the yearly table with the
-    food, and the people (a compact row each, the life lines under a
-    `<details>`).
-  - `/compare?a=…&b=…`: two series (run by run, paired by seed and
+  - `/run/<serie>/<name>`: **the page one understands at a glance** (22
+    November 2026, after the lead's reading of the first screens). From top
+    to bottom: the header (series, version, seed, with/without, links);
+    **the verdict**, three sentences in everyday French ("Après 5 ans, 9
+    des 25 du départ sont vivants, et 2 des 4 enfants nés en route. Ils ont
+    surtout manqué d'eau (13 des 18 morts), le plus souvent en été. Une
+    technique gardée : chercher plus loin."); **four tiles** with one big
+    number each (alive in green, dead in red, births, techniques carried
+    at the end in orange); **the map of movements over time**: the
+    vivarium's picture with a day slider and play/pause, the living as
+    dots coloured by tribe with their trail of the last days (from the
+    JSON key `positions`, one sample a day at noon; "pas de positions dans
+    ce run" when the key is missing, the slider then moving the camp and
+    the deaths only), the dead as a cross where they fell from the day
+    they die, the camp at every year's end joined by its path, the day
+    shown as "an 3, printemps, jour 112", and the year's presence heatmap
+    as an option; **the population curve** alone, the whole width, years
+    marked and winters shaded; **"Ce qu'ils ont trouvé"**: per tribe, the
+    techniques told in sentences, then a small table (technique, first
+    kept when and by whom, copied by, carried at the end, what it
+    changes); the three tables **"Les morts"** (who, when, age at death,
+    cause, where from the camp), **"Les naissances"** (who, when, mother,
+    father, alive at the end?) and **"Les gens à la fin"** (name, tribe,
+    sex, fate, age at the end or at death, children, techniques carried),
+    each with a title, a one-line caption, full-word headers, zebra rows
+    and no borders; and, folded under **"Le détail"**: the settings, the
+    cultures, the other curves (births and deaths by cause, trials kept,
+    fat reserve), the kept trials by day, the yearly table and the life
+    lines of everyone. Ages are in game years of `days_per_year` days.
+  - `/compare?a=…&b=…`: a one-sentence verdict (B against A), then two
+    series (run by run, paired by seed and
     with/without: the key numbers with the differences highlighted, the
     population curves overlaid, the cultures side by side, a link to each
-    pair's face-to-face page) or two runs (cards with the differences,
-    the four curves overlaid, A solid and B dashed, the maps side by side,
+    pair's face-to-face page) or two runs (each side's verdict, the tiles
+    with a green or red arrow for the difference, the four curves overlaid, A solid and B dashed, the maps side by side,
     the discoveries side by side).
 
 Everything on these pages is read from the runs' `NAME.json` (the
 vivarium's data, `docs/10-vivarium-data.md`), never from their pages. The
-curves are inline SVG drawn by Python; the only script picks the year of
-the heatmap. A run without data (an old vivarium, a run still going) shows
+curves are inline SVG drawn by Python; the only script drives the map's
+day slider (and the heatmap's year). The look is shared by every page:
+light background, system font, no cell borders, colours that mean
+something (green alive, red hunger, blue thirst, grey cold, orange with
+trials, blue without). A run without data (an old vivarium, a run still going) shows
 "pas de données, relancer avec le vivarium récent" and its live line. The
 kinds of steps and the causes of death are read from the data: a new kind
 appears by itself, named by its key until the lab learns its French.
@@ -185,8 +207,10 @@ python3 -I tools/lab/lab_test.py
 Standard library `unittest`: the plan expansion (seeds × with/without),
 the seeds field, the parsing of the year lines, the state machine, the
 form to plan and back, the reading of a run's data (a fixture written by
-hand after `docs/10`), the kinds read from the data, the story of
-techniques, the curves' scaling, the map, the series' aggregates, the
+hand after `docs/10`), the kinds read from the data, the story and
+table of techniques, the verdict sentence, days, ages and places in
+words, the three tables of the run page, the tiles and their arrows, the
+curves' scaling, the map and its `positions` fixture, the series' aggregates, the
 compare pages, the version record (a temporary git repository), the
 standard plans, the routes, and three end-to-end runs with a shell script
 in place of the vivarium (a series to its synthesis; the `run` command
