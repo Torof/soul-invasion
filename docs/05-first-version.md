@@ -467,6 +467,22 @@ the plans of lot 3 C keep working. Its first pull request builds the
 tables, curves, comparisons) comes once the vivarium writes its report as
 JSON beside the page.
 
+**The laboratory, PR 2** (22 November 2026). The vivarium writes its data
+as JSON beside each page (D41 amended), and the lab reads it, never the
+page: a run (the cards, four curves, the map with the camps' trail, the
+presence heatmap and the deaths, the discoveries told as a story of
+techniques per tribe, the yearly table, the people), a series (one row per
+run, the mean and spread of the survivors with and without trials, every
+population curve overlaid) and a comparison (two versions of the same plan
+run by run, or two runs face to face, differences highlighted). The lead's
+correction after PR 1 shapes it: the AI session launches, the lead reads
+and compares. So every series records its version (the binary's git commit
+and branch, one sentence of what changed), a command line `lab.py run
+PLAN --change "…"` launches a series detached from any server, three
+standard plans live in `tools/lab/plans/` (a band of 25 over five years,
+two tribes of 25 over twenty years, the same over ten seeds), and the first
+comparison offered on a series is "the same plan under another version".
+
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
 slopes drawn by the client from them (D44), then the relief in the

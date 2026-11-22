@@ -1,10 +1,17 @@
-# lab — the laboratory: series of vivarium runs, created and followed from a page (D52)
+# lab — the laboratory: series of vivarium runs, created, followed, read and compared (D52)
 
 `lab.py` is a small local web server, standard library only, that creates
-series of `vivarium` runs (D41) from a form and follows them live. It is a
-tool run by hand on the developer's machine; the game never runs it and
-depends on nothing here. Nothing goes outward: it serves on `127.0.0.1`
-only, opens no browser, and its pages load no external resource.
+series of `vivarium` runs (D41) from a form, follows them live, and reads
+their data (`reading.py`: a run, a series, two runs or two versions face to
+face). It is a tool run by hand on the developer's machine; the game never
+runs it and depends on nothing here. Nothing goes outward: it serves on
+`127.0.0.1` only, opens no browser, and its pages load no external resource.
+
+The division of labour, in the lead's words (22 November 2026): the AI
+session launches the series after every change of the simulation, the lead
+reads and compares. So every series carries its **version** (the git
+commit and branch of the binary's worktree, and one sentence of what
+changed), and comparing means first **the same plan under two versions**.
 
 ## Start it
 
@@ -19,12 +26,50 @@ vivarium to launch; the lab never builds it: a series whose binary is
 missing or being rebuilt waits and retries every five seconds),
 `--content <repo>/content` (the content directory given to every run;
 defaults to the content of the checkout holding `lab.py`), `--jobs N`
-(runs at a time when a plan says nothing; defaults to the cores minus two).
+(runs at a time when a plan says nothing; defaults to the cores minus two),
+`--worktree DIR` (the git worktree the binary was built from: its commit
+and branch are recorded as the version of every series launched here;
+without it the version reads "inconnu").
+
+## Launch from the command line (the AI session's way)
+
+```sh
+python3 -I tools/lab/lab.py run tools/lab/plans/etalon-bande-25-5ans.json \
+    --change "D50 b : le juge compte la soif" --worktree ~/.cache/soul-sim/wt-x \
+    --binary ~/.cache/soul-sim/target/release/vivarium [--content DIR] [--runs-dir DIR] [--name NAME] [--jobs N]
+```
+
+Reads any plan file (the standard plans below, or a `soul-runs` plan),
+names the series `<plan stem>-<date and time>` (or `--name`), writes it
+under `<runs-dir>/plans/`, records the version (`git rev-parse` in
+`--worktree`, or the plan's `worktree` field; `--change` is the sentence)
+and starts the series **detached**: a child `lab.py run … --attached` owns
+the runs to their end and writes `serie.json`, the parent prints the folder
+and the URL and returns. A server's "En cours" screen sees the series
+through its files ("en cours (hors labo)"), and "Lire / Comparer" reads it
+once its runs have written their data. `--content` defaults to
+`<worktree>/content` when a worktree is given. `--attached` runs in the
+foreground until the end (exit code 0 when every run finished).
+
+### The standard plans, `tools/lab/plans/`
+
+- `etalon-bande-25-5ans.json`: one band of 25 at camp A (15 adults, 7
+  children, 3 infants), 250 days, with and without trials, seed 1 (two runs,
+  about three minutes each).
+- `etalon-deux-tribus-25-20ans.json`: two tribes of 25 adults, 1,000 days,
+  seed 1, with and without (two runs, about an hour each).
+- `etalon-dix-graines.json`: the same over seeds 1 to 10 (twenty runs), for
+  when the lightening makes them cheap.
+
+After every change of the simulation, the AI session runs the first two with
+`--change "…"` and the lead compares the versions from the series' page.
+The form's "Les plans étalons" table launches the same plans from the
+browser (a change sentence is required there too).
 
 Open the printed URL yourself. Ctrl-C (or `kill PID`) stops the lab and
 ends the runs it launched; series launched elsewhere are untouched.
 
-Two screens for now:
+Three screens:
 
 - **Nouvelle série**: the form. The question, the world (`vivarium` or a
   `patch` of the valley with its side), the tribes, the grown people,
@@ -42,6 +87,44 @@ Two screens for now:
   lab has **Arrêter**, with the confirmation in the page; it kills that
   series' own processes only. A finished series shows its final line and
   links to `synthese.html` and to each run's page and log.
+- **Lire / Comparer**: the series, newest first, each with its state, its
+  version and change sentence, and a line of key numbers (runs read, alive
+  at the end with and without trials, deaths by cause, births); a form with
+  two selects to compare any two series or runs. Then:
+  - `/serie/<serie>`: the question, the version, "**Comparer avec la
+    version…**" (the other series made from the same plan: same plan name or
+    identical runs once expanded, newest first, with their version and
+    sentence), a second control for two runs of the series, a table with one
+    row per run (seed, with/without, state, alive, dead, births, kept/trials,
+    time), the mean, min, max and standard deviation of alive at the end for
+    "with" and "without", and the population curves of every run overlaid
+    (with in green, without in ochre).
+  - `/run/<serie>/<name>`: the header (question, settings, where the run is),
+    the cards (alive, dead by cause, births, trials / kept / copied, homes
+    moved), four curves (population per tribe, births and deaths per year
+    stacked by cause, trials kept per year, mean fat reserve), **the map**
+    (the vivarium's picture with, per tribe, the camps' trail year by year,
+    the presence heatmap of the year chosen by the buttons, the deaths'
+    places), **the discoveries** told as a story of techniques per tribe
+    (what was found, first kept when and by whom, how many copied it, who
+    still holds it at the end, and the tribe's culture at the end in one
+    line), the kinds and the kept trials by day, the yearly table with the
+    food, and the people (a compact row each, the life lines under a
+    `<details>`).
+  - `/compare?a=…&b=…`: two series (run by run, paired by seed and
+    with/without: the key numbers with the differences highlighted, the
+    population curves overlaid, the cultures side by side, a link to each
+    pair's face-to-face page) or two runs (cards with the differences,
+    the four curves overlaid, A solid and B dashed, the maps side by side,
+    the discoveries side by side).
+
+Everything on these pages is read from the runs' `NAME.json` (the
+vivarium's data, `docs/10-vivarium-data.md`), never from their pages. The
+curves are inline SVG drawn by Python; the only script picks the year of
+the heatmap. A run without data (an old vivarium, a run still going) shows
+"pas de données, relancer avec le vivarium récent" and its live line. The
+kinds of steps and the causes of death are read from the data: a new kind
+appears by itself, named by its key until the lab learns its French.
 
 ## The plan format (shared with `soul-runs`)
 
@@ -55,9 +138,15 @@ Two screens for now:
     {"name": "vivarium-25", "args": "--world vivarium --tribes 2 --people 25 --days 1000",
      "seeds": [1, 2, 3], "with_and_without_trials": true}
   ],
-  "lab": {"form": {"...": "the form's fields, for Dupliquer"}, "jobs": 8, "created": "2026-11-22T15:04:00"}
+  "change": "D50 b : le juge compte la soif",
+  "worktree": "~/.cache/soul-sim/wt-x",
+  "lab": {"form": {"...": "the form's fields, for Dupliquer"}, "jobs": 8, "created": "2026-11-22T15:04:00",
+          "source": "etalon-bande-25-5ans"}
 }
 ```
+
+`change`, `worktree` and `lab.source` (the standard plan a series was made
+from) are the lab's own too; `soul-runs` ignores them.
 
 Expansion: one run per seed, named `<name>-s<seed>`; with
 `with_and_without_trials`, two per seed, `-avec` and `-sans` (the latter
@@ -72,7 +161,9 @@ first run's `args`.
 ```
 <runs-dir>/plans/<name>.json      the plan
 <runs-dir>/<name>/serie.json      {"plan", "runs": [{name, base, seed, trials, args,
-                                   started, ended, wall, pid, stopped}], "lab": {pid, jobs, note}}
+                                   started, ended, wall, pid, stopped}], "lab": {pid, jobs, note},
+                                   "version": {commit, branch, dirty, change, worktree, binary, binary_mtime}}
+<runs-dir>/<name>/NAME.json       the vivarium's data (docs/10), what "Lire / Comparer" reads
 <runs-dir>/<name>/NAME.log        the run's stderr and stdout (`year N: A alive, D dead so far, S s`)
 <runs-dir>/<name>/NAME.html       the vivarium's report (`--out`)
 <runs-dir>/<name>/NAME.exit       the exit code, written when the run ends
@@ -93,14 +184,10 @@ python3 -I tools/lab/lab_test.py
 
 Standard library `unittest`: the plan expansion (seeds × with/without),
 the seeds field, the parsing of the year lines, the state machine, the
-form to plan and back, and two end-to-end runs with a shell script in
-place of the vivarium (a series to its synthesis; a stop that kills only
-its own runs). Under a second.
-
-## What PR 2 adds
-
-The third screen, **Lire / Comparer**, once the vivarium writes its report
-as JSON beside the HTML page: reports per series, tables and curves (alive,
-deaths by cause, births, trials kept) across seeds, and comparisons between
-series (with against without trials, one content value against another).
-Reading parses the JSON, never the pages.
+form to plan and back, the reading of a run's data (a fixture written by
+hand after `docs/10`), the kinds read from the data, the story of
+techniques, the curves' scaling, the map, the series' aggregates, the
+compare pages, the version record (a temporary git repository), the
+standard plans, the routes, and three end-to-end runs with a shell script
+in place of the vivarium (a series to its synthesis; the `run` command
+line; a stop that kills only its own runs). About two seconds.

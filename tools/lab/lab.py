@@ -4,10 +4,21 @@
     python3 -I tools/lab/lab.py [--port 8765] [--runs-dir ~/.cache/soul-sim/runs]
                                 [--binary PATH] [--content DIR] [--jobs N]
 
-Serves two pages on 127.0.0.1 only: "Nouvelle série" (a form that writes a
-plan and launches it) and "En cours" (every series under the runs directory,
-with its live table, refreshed every two seconds). Pure standard library,
-nothing outward, no external resource in the pages.
+Serves three pages on 127.0.0.1 only: "Nouvelle série" (a form that writes a
+plan and launches it), "En cours" (every series under the runs directory,
+with its live table, refreshed every two seconds) and "Lire / Comparer"
+(a run, a series, two runs or two versions face to face, read from the
+vivarium's JSON by `reading.py`). Pure standard library, nothing outward,
+no external resource in the pages.
+
+    python3 -I tools/lab/lab.py run PLAN.json --change "what changed" [--worktree DIR]
+                                [--binary PATH] [--content DIR] [--name NAME] [--attached]
+
+launches a series from a plan file without the browser (the standard plans
+live in `tools/lab/plans/`), detached from any server: the "En cours" screen
+sees it through its `serie.json`. Every series records the version of the
+binary it ran: the git commit and branch of `--worktree` (or the plan's
+`worktree`), "inconnu" without one, and the `--change` sentence.
 
 The plan format and the output layout are those of `soul-runs`, the local
 launcher the lab absorbs: a plan is `<runs-dir>/plans/<name>.json`, a series
@@ -35,6 +46,10 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:  # `-I` leaves the script's own folder out of the path
+    sys.path.insert(0, HERE)
+import reading  # noqa: E402
+
 REPO = os.path.dirname(os.path.dirname(HERE))
 HOME = os.path.expanduser("~")
 DEFAULT_RUNS = os.path.join(HOME, ".cache", "soul-sim", "runs")
@@ -52,7 +67,9 @@ FORM_DEFAULTS = {
     "name": "", "question": "", "run_name": "", "world": "patch", "side": "50",
     "tribes": "", "people": "5", "children": "0", "infants": "0", "ages": "18-40",
     "fed": "", "days": "10", "seeds": "1", "both": "", "cadence": "1", "jobs": "",
+    "change": "",
 }
+STANDARD_PLANS = os.path.join(HERE, "plans")
 
 
 # --- the plan: expansion, seeds, form ---------------------------------------
@@ -180,6 +197,7 @@ def plan_from_form(fields, runs_dir, binary, content, now=None):
     created = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now))
     return {
         "question": f["question"],
+        "change": f["change"],
         "binary": binary,
         "content": content,
         "out": os.path.join(runs_dir, name),
@@ -197,6 +215,7 @@ def form_from_plan(plan, name=""):
         f.update({k: str(v) for k, v in lab["form"].items() if k in FORM_DEFAULTS})
     else:
         f["question"] = plan.get("question", "")
+        f["change"] = plan.get("change", "")
         runs = plan.get("runs") or [{}]
         r = runs[0]
         f["run_name"] = r.get("name", "")
@@ -312,6 +331,44 @@ def save_state(out, plan, runs, extra=None):
     os.replace(tmp, os.path.join(out, "serie.json"))
 
 
+def git_word(worktree, *args):
+    try:
+        r = subprocess.run(["git", "-C", worktree, *args], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def version_of(worktree, binary, change=""):
+    """The version a series ran: the commit and branch of the binary's worktree, the change sentence.
+
+    `commit` and `branch` are "inconnu" without a worktree or when git says
+    nothing; `dirty` tells whether the worktree had uncommitted changes.
+    """
+    v = {"commit": "inconnu", "branch": "inconnu", "dirty": False, "change": change or "",
+         "worktree": os.path.abspath(os.path.expanduser(worktree)) if worktree else None,
+         "binary": binary, "binary_mtime": None}
+    try:
+        v["binary_mtime"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(os.path.getmtime(binary)))
+    except OSError:
+        pass
+    if v["worktree"]:
+        commit = git_word(v["worktree"], "rev-parse", "--short", "HEAD")
+        branch = git_word(v["worktree"], "rev-parse", "--abbrev-ref", "HEAD")
+        status = git_word(v["worktree"], "status", "--porcelain", "--untracked-files=no")
+        if commit:
+            v["commit"] = commit
+        if branch:
+            v["branch"] = branch
+        v["dirty"] = bool(status)
+    return v
+
+
+def signature(plan):
+    """What makes two series "the same plan": its expanded runs' names and args."""
+    return json.dumps([(r["name"], r["args"]) for r in expand(plan)], ensure_ascii=False)
+
+
 # --- the synthesis page (soul-runs' layout) -------------------------------
 
 def parse_tables(page):
@@ -376,11 +433,12 @@ td,th{{border:1px solid #999;padding:3px 8px;text-align:left}}pre{{background:#e
 class Series:
     """One plan, launched: `jobs` runs at a time, PIDs held here, files as soul-runs."""
 
-    def __init__(self, plan, jobs, binary, content):
+    def __init__(self, plan, jobs, binary, content, version=None):
         self.plan = plan
         self.out = os.path.expanduser(plan["out"])
         self.binary = os.path.expanduser(plan.get("binary") or binary)
         self.content = os.path.expanduser(plan.get("content") or content)
+        self.version = version or version_of(None, self.binary, plan.get("change", ""))
         self.jobs = max(1, int(jobs))
         self.runs = expand(plan)
         if not self.runs:
@@ -405,7 +463,7 @@ class Series:
 
     def _save(self):
         save_state(self.out, self.plan, self.runs,
-                   {"lab": {"pid": os.getpid(), "jobs": self.jobs, "note": self.note}})
+                   {"lab": {"pid": os.getpid(), "jobs": self.jobs, "note": self.note}, "version": self.version})
 
     def pid_alive(self, name):
         with self.lock:
@@ -490,15 +548,23 @@ class Series:
         self.note = "arrêtée par le bouton"
 
 
+def lab_plan_name(plan, name):
+    """The plan a series was made from: the standard plan's stem, else the series' own name."""
+    lab = plan.get("lab") or {}
+    return lab.get("source") or name
+
+
 class Lab:
     """What the server knows: the runs directory, the defaults, the series it owns."""
 
-    def __init__(self, runs_dir, binary, content, jobs):
+    def __init__(self, runs_dir, binary, content, jobs, worktree=None):
         self.runs_dir = os.path.abspath(os.path.expanduser(runs_dir))
         self.plans_dir = os.path.join(self.runs_dir, "plans")
         self.binary = os.path.abspath(os.path.expanduser(binary))
         self.content = os.path.abspath(os.path.expanduser(content))
         self.jobs = jobs
+        self.worktree = worktree
+        self.store = reading.Store(self.runs_dir)
         self.owned = {}
         self.lock = threading.Lock()
         os.makedirs(self.plans_dir, exist_ok=True)
@@ -525,8 +591,39 @@ class Lab:
             json.dump(plan, f, indent=1, ensure_ascii=False)
         os.replace(tmp, path)
 
+    def standard_plans(self):
+        """The standard plans shipped in the repository (`tools/lab/plans/`), by name."""
+        try:
+            return sorted(n[:-5] for n in os.listdir(STANDARD_PLANS) if n.endswith(".json") and NAME_RE.match(n[:-5]))
+        except OSError:
+            return []
+
+    def plan_from_file(self, path, name=None, change="", worktree=None, now=None):
+        """A plan read from a file (a standard plan, or any plan), made a new series.
+
+        The series is named `name`, else `<file stem>-<date and time>`, so every
+        launch of a standard plan is a new series: the versions compare.
+        """
+        with open(path) as f:
+            plan = json.load(f)
+        if not isinstance(plan, dict) or not plan.get("runs"):
+            raise ValueError(f"{path} : pas un plan (il faut une liste runs)")
+        stem = os.path.splitext(os.path.basename(path))[0]
+        name = name or f"{stem}-{time.strftime('%Y%m%d-%H%M%S', time.localtime(now))}"
+        if not NAME_RE.match(name):
+            raise ValueError("nom de série : lettres, chiffres, point, tiret, souligné (80 au plus)")
+        plan["out"] = os.path.join(self.runs_dir, name)
+        if change:
+            plan["change"] = change
+        if worktree:
+            plan["worktree"] = os.path.abspath(os.path.expanduser(worktree))
+        lab = plan.setdefault("lab", {})
+        lab.setdefault("source", stem)
+        lab["created"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now))
+        return name, plan
+
     # series
-    def launch(self, plan):
+    def launch(self, plan, change=None):
         out = os.path.abspath(os.path.expanduser(plan.get("out") or ""))
         if not out or os.path.dirname(out) != self.runs_dir:
             raise ValueError(f'le dossier "out" du plan doit être un sous-dossier direct de {self.runs_dir}')
@@ -534,7 +631,10 @@ class Lab:
             if self.is_running(out):
                 raise ValueError("cette série tourne encore : arrêtez-la d'abord")
             jobs = (plan.get("lab") or {}).get("jobs") or self.jobs
-            s = Series(plan, jobs, self.binary, self.content)
+            binary = os.path.expanduser(plan.get("binary") or self.binary)
+            version = version_of(plan.get("worktree") or self.worktree, binary,
+                                 change if change is not None else plan.get("change", ""))
+            s = Series(plan, jobs, self.binary, self.content, version)
             s.start()
             self.owned[out] = s
         return s
@@ -566,6 +666,16 @@ class Lab:
             s.stop()
         for s in series:
             s.thread.join(timeout=8)
+
+    def find(self, serie, run=None):
+        """A series by name (and one of its runs), from `series()`; None when absent."""
+        for s in self.series():
+            if s["name"] == serie:
+                if run is None:
+                    return s, None
+                r = next((r for r in s["runs"] if r["name"] == run), None)
+                return (s, r) if r else None
+        return None
 
     def series(self):
         """Every series under the runs directory, newest first, with its live table."""
@@ -612,17 +722,26 @@ class Lab:
                      f"{', ' + str(sum(s.startswith('ÉCHEC') for s in states)) + ' en échec' if any(s.startswith('ÉCHEC') for s in states) else ''}"
                      f"{', ' + str(sum(s == 'arrêté' for s in states)) + ' arrêté(s)' if any(s == 'arrêté' for s in states) else ''}"
                      f", {int(elapsed)} s") if ended else ""
+            version = st.get("version") or {"commit": "inconnu", "branch": "inconnu", "change": plan.get("change", "")}
+            try:
+                sig = signature(plan)
+            except (KeyError, TypeError, ValueError):
+                sig = None
             out.append({
                 "name": name, "dir": name, "question": plan.get("question", ""),
+                "version": version, "plan_name": lab_plan_name(plan, name), "signature": sig,
                 "state": state, "owned": owned is not None, "elapsed": int(elapsed),
                 "note": (owned.note if owned else lab.get("note", "")) or "",
                 "jobs": lab.get("jobs"), "created": (plan.get("lab") or {}).get("created", ""),
                 "sort": max(starts) if starts else os.path.getmtime(os.path.join(d, "serie.json")),
                 "synthese": f"/runs/{urllib.parse.quote(name)}/synthese.html" if synth else None,
                 "final": final,
-                "runs": [dict(r, page=f"/runs/{urllib.parse.quote(name)}/{urllib.parse.quote(r['page'])}" if r["page"] else None,
-                              log=f"/runs/{urllib.parse.quote(name)}/{urllib.parse.quote(r['log'])}" if r["log"] else None)
-                         for r in runs],
+                "runs": [dict(r, seed=orig.get("seed"), trials=orig.get("trials", True),
+                              page=f"/runs/{urllib.parse.quote(name)}/{urllib.parse.quote(r['page'])}" if r["page"] else None,
+                              log=f"/runs/{urllib.parse.quote(name)}/{urllib.parse.quote(r['log'])}" if r["log"] else None,
+                              data=os.path.exists(os.path.join(d, r["name"] + ".json")),
+                              read=f"/run/{urllib.parse.quote(name)}/{urllib.parse.quote(r['name'])}")
+                         for r, orig in zip(runs, st["runs"])],
             })
         out.sort(key=lambda s: s["sort"], reverse=True)
         return out
@@ -653,6 +772,25 @@ button.main{background:#2f3e46;color:#fff;border-color:#2f3e46}button.danger{bac
 .warn{color:#8a4b00}.err{background:#f3b1a9;padding:.6em 1em;border-radius:4px}
 .plans td form{display:inline;margin-right:.4em}
 .confirm{display:inline-block;margin-left:.6em}.muted{color:#777}
+.version code{background:#eee;padding:0 .3em;border-radius:3px}
+.cards{display:flex;flex-wrap:wrap;gap:.6em;margin:.6em 0;align-items:stretch}
+.card{background:#fff;border:1px solid #c9c6bd;border-radius:6px;padding:.5em .9em;min-width:9em}
+.card .k{color:#666;font-size:13px}.card .v{font-size:1.6em;font-weight:700}.card .s{color:#555;font-size:13px}
+.cardlabel{font-weight:700;font-size:1.2em;align-self:center;padding:0 .4em}
+.delta{font-size:.7em;font-weight:600;margin-left:.4em;padding:0 .35em;border-radius:3px}
+.delta.plus{background:#d8efd3;color:#1f6b2a}.delta.minus{background:#f6d3cf;color:#8a2a22}.delta.zero{background:#eee;color:#777}
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:.8em}
+svg.chart{width:100%;height:auto;background:#fff;border:1px solid #c9c6bd;border-radius:6px;font-family:system-ui,sans-serif}
+.mapbox{background:#fff;border:1px solid #c9c6bd;border-radius:6px;padding:.5em}svg.map{width:100%;height:auto;display:block}
+.years button{margin:0 .2em .2em 0;padding:.1em .5em;font-size:13px}.years button.on{background:#2f3e46;color:#fff;border-color:#2f3e46}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:1em;align-items:start}.cols2{display:grid;grid-template-columns:1fr 1fr;gap:1em;align-items:start}
+@media (max-width:900px){.cols,.cols2{grid-template-columns:1fr}}
+section.tribe{background:#fff;border:1px solid #c9c6bd;border-radius:6px;padding:.6em 1em;margin:0 0 .8em}
+section.tribe p{margin:.3em 0}section.tribe ul,ol.kept{margin:.2em 0 .4em;padding-left:1.4em}ol.kept{font-size:13px;max-height:22em;overflow:auto}
+.scroll{overflow-x:auto}table.years,table.people{font-size:13px}details summary{cursor:pointer;color:#2f3e46;font-weight:600}
+ul.lines{font-size:12px;columns:2;margin:.2em 0}.settings{color:#444}.controls{background:#fff;border:1px solid #c9c6bd;border-radius:6px;padding:.6em 1em;margin:.6em 0}
+form.inline{display:inline-block;margin:.2em 1em .2em 0}form.inline select{max-width:28em}
+.plans input[type=text]{width:16em}
 """
 
 
@@ -737,6 +875,8 @@ def form_page(lab, fields, port, error="", title="Nouvelle série"):
 <span class="hint">Le dossier des runs et le nom du plan : <code>{h(lab.runs_dir)}/&lt;nom&gt;/</code>, <code>plans/&lt;nom&gt;.json</code>.</span>
 <label for="question">Question</label><textarea id="question" name="question" class="wide" style="grid-column:2">{h(f['question'])}</textarea>
 <span class="hint">Ce que la série doit répondre ; recopiée en tête de la synthèse.</span>
+<label for="change">Ce qui a changé</label><input type="text" id="change" name="change" value="{h(f['change'])}" style="max-width:100%" placeholder="D50 b : le juge compte la soif">
+<span class="hint">Une phrase sur la version du vivarium qui tourne ; gardée avec son commit dans <code>serie.json</code>, affichée partout où la série paraît.</span>
 <label for="world">Monde</label><select id="world" name="world"><option value="vivarium"{sel('world', 'vivarium')}>vivarium (zone 2 de la graine 14, 2 176 m)</option><option value="patch"{sel('world', 'patch')}>patch de la vallée</option></select>
 <label for="side" id="side-row-label">Côté du patch</label><span id="side-row"><input type="number" id="side" name="side" min="8" value="{h(f['side'])}"> tuiles</span>
 <label for="tribes">Tribus</label><select id="tribes" name="tribes"><option value=""{sel('tribes', '')}>défaut du monde (2 sur le vivarium, 1 sur un patch)</option><option value="1"{sel('tribes', '1')}>1</option><option value="2"{sel('tribes', '2')}>2</option></select>
@@ -761,21 +901,70 @@ def form_page(lab, fields, port, error="", title="Nouvelle série"):
     plans = lab.plans()
     plan_rows = "".join(
         f'<tr><td>{h(p)}</td><td>'
-        f'<form method="post" action="/relancer"><input type="hidden" name="plan" value="{h(p)}"><button>Relancer</button></form>'
+        f'<form method="post" action="/relancer"><input type="hidden" name="plan" value="{h(p)}">'
+        f'<input type="text" name="change" placeholder="ce qui a changé"> <button>Relancer</button></form>'
         f'<form method="get" action="/nouvelle"><input type="hidden" name="plan" value="{h(p)}"><button>Dupliquer en changeant…</button></form>'
         f'</td></tr>' for p in plans)
-    plans_html = (f'<h2>Les plans existants</h2><table class="plans"><tr><th>plan</th><th></th></tr>{plan_rows}</table>'
+    plans_html = (f'<h2>Les plans existants</h2><p class="muted">Relancer refait la série dans le même dossier (les anciens fichiers sont effacés) ; '
+                  f'pour comparer deux versions, lancez plutôt un plan étalon ci-dessous, qui fait une série neuve à chaque fois.</p>'
+                  f'<table class="plans"><tr><th>plan</th><th></th></tr>{plan_rows}</table>'
                   if plans else '<p class="muted">Aucun plan encore dans <code>plans/</code>.</p>')
+    standard = lab.standard_plans()
+    std_rows = "".join(
+        f'<tr><td>{h(p)}</td><td>{h(standard_question(p))}</td><td>'
+        f'<form method="post" action="/etalon"><input type="hidden" name="plan" value="{h(p)}">'
+        f'<input type="text" name="change" placeholder="ce qui a changé" required> <button class="main">Lancer une série</button></form></td></tr>'
+        for p in standard)
+    std_html = (f'<h2>Les plans étalons</h2><p class="muted">Dans le dépôt, <code>tools/lab/plans/</code> : chaque lancement fait une série neuve '
+                f'<code>&lt;plan&gt;-&lt;date&gt;</code> avec sa version, à comparer depuis « Lire / Comparer ». '
+                f'En ligne de commande : <code>python3 -I tools/lab/lab.py run tools/lab/plans/&lt;plan&gt;.json --change "…" --worktree DIR</code>.</p>'
+                f'<table class="plans"><tr><th>plan</th><th>question</th><th></th></tr>{std_rows}</table>') if standard else ""
     body = (f'<h1>{h(title)}</h1>{err}<form class="f" method="post" action="/creer">{rows}</form>'
-            f'<script>{FORM_JS}</script>{plans_html}')
+            f'<script>{FORM_JS}</script>{std_html}{plans_html}')
     return page(title, body, "nouvelle", port)
 
 
-def later_page(port):
-    body = ('<h1>Lire / Comparer</h1><p>Cet écran vient dans la PR 2 du laboratoire, une fois que le vivarium écrit '
-            'son rapport en JSON : comptes rendus, tableaux, courbes, comparaisons de séries. '
-            'En attendant, chaque série finie a sa <b>synthèse</b> depuis l\'écran <a href="/">En cours</a>.</p>')
-    return page("Lire / Comparer", body, "lire", port)
+def standard_question(name):
+    try:
+        with open(os.path.join(STANDARD_PLANS, name + ".json")) as f:
+            return json.load(f).get("question", "")
+    except (OSError, ValueError):
+        return ""
+
+
+def not_found(port, what="Page introuvable"):
+    return page("Introuvable", f"<h1>{html.escape(what)}</h1><p><a href=\"/lire\">Lire / Comparer</a></p>", "lire", port)
+
+
+def target(lab, spec):
+    """`serie` or `serie/run` → (series, run or None), or a French reason."""
+    parts = [p for p in (spec or "").split("/") if p]
+    if not parts or len(parts) > 2 or not all(NAME_RE.match(p) for p in parts):
+        return None, f"cible invalide : {spec!r}"
+    found = lab.find(*parts)
+    if not found:
+        return None, f"introuvable : {spec}"
+    return found, None
+
+
+def compare_page(lab, a, b, port):
+    ta, ea = target(lab, a)
+    tb, eb = target(lab, b)
+    if ea or eb:
+        return page("Comparer", f'<h1>Comparer</h1><p class="err">{html.escape(ea or eb)}</p>', "lire", port), 404
+    (sa, ra), (sb, rb) = ta, tb
+    if ra is None and rb is None:
+        body = reading.compare_series_body(sa, sb, lab.store)
+    else:
+        if ra is None:
+            ra = sa["runs"][0] if sa["runs"] else None
+        if rb is None:
+            rb = sb["runs"][0] if sb["runs"] else None
+        if ra is None or rb is None:
+            return page("Comparer", '<h1>Comparer</h1><p class="err">une des séries n’a aucun run</p>', "lire", port), 404
+        body = reading.compare_runs_body(sa, ra, lab.store.load(sa["name"], ra["name"]),
+                                         sb, rb, lab.store.load(sb["name"], rb["name"]))
+    return page("Comparer", body, "lire", port), 200
 
 
 # --- the server ---------------------------------------------------------------
@@ -808,7 +997,7 @@ class Handler(BaseHTTPRequestHandler):
     def _page(self, body, code=200):
         self._send(code, body, headers=[("Content-Security-Policy",
                                          "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
-                                         "connect-src 'self'; form-action 'self'; base-uri 'none'")])
+                                         "img-src data:; connect-src 'self'; form-action 'self'; base-uri 'none'")])
 
     def _redirect(self, where):
         self.send_response(303)
@@ -833,7 +1022,23 @@ class Handler(BaseHTTPRequestHandler):
             self._page(form_page(self.lab, fields, self.port, error,
                                  f"Nouvelle série, d'après {name}" if name else "Nouvelle série"))
         elif url.path == "/lire":
-            self._page(later_page(self.port))
+            self._page(page("Lire / Comparer", reading.lire_body(self.lab.series(), self.lab.store), "lire", self.port))
+        elif url.path.startswith("/serie/"):
+            found, err = target(self.lab, urllib.parse.unquote(url.path[len("/serie/"):]))
+            if err or found[1] is not None:
+                self._page(not_found(self.port, "Série introuvable"), 404)
+            else:
+                self._page(page(f"Série {found[0]['name']}", reading.serie_body(found[0], self.lab.series(), self.lab.store), "lire", self.port))
+        elif url.path.startswith("/run/"):
+            found, err = target(self.lab, urllib.parse.unquote(url.path[len("/run/"):]))
+            if err or found[1] is None:
+                self._page(not_found(self.port, "Run introuvable"), 404)
+            else:
+                s, r = found
+                self._page(page(f"Run {r['name']}", reading.run_body(s, r, self.lab.store.load(s["name"], r["name"])), "lire", self.port))
+        elif url.path == "/compare":
+            body, code = compare_page(self.lab, (q.get("a") or [""])[0], (q.get("b") or [""])[0], self.port)
+            self._page(body, code)
         elif url.path == "/api/series":
             self._send(200, json.dumps(self.lab.series(), ensure_ascii=False), "application/json; charset=utf-8")
         elif url.path.startswith("/runs/"):
@@ -898,6 +1103,22 @@ class Handler(BaseHTTPRequestHandler):
                     plan = self.lab.load_plan(name)
                 except OSError:
                     raise ValueError(f"plan {name!r} introuvable") from None
+                change = (fields.get("change") or "").strip()
+                if change:
+                    plan["change"] = change
+                    self.lab.write_plan(name, plan)
+                self.lab.launch(plan)
+                self._redirect("/")
+            elif url.path == "/etalon":
+                name = fields.get("plan", "")
+                if name not in self.lab.standard_plans():
+                    raise ValueError(f"plan étalon {name!r} introuvable")
+                change = (fields.get("change") or "").strip()
+                if not change:
+                    raise ValueError("dites ce qui a changé : la phrase est gardée avec la version de la série")
+                serie, plan = self.lab.plan_from_file(os.path.join(STANDARD_PLANS, name + ".json"), change=change,
+                                                      worktree=self.lab.worktree)
+                self.lab.write_plan(serie, plan)
                 self.lab.launch(plan)
                 self._redirect("/")
             elif url.path == "/arreter":
@@ -915,15 +1136,84 @@ class Handler(BaseHTTPRequestHandler):
                 self._page(page("Refusé", f"<h1>Impossible</h1><p>{html.escape(str(e))}</p><p><a href=\"/\">Retour</a></p>", "", self.port), 400)
 
 
+def run_cli(argv):
+    """`lab.py run PLAN --change "…"`: launch a series from a plan file, detached, without the server.
+
+    The parent writes the plan under `<runs-dir>/plans/<name>.json`, starts a
+    child `lab.py run … --attached` in its own session and returns at once; the
+    child owns the runs to the end and writes `serie.json` (its pid under
+    `lab.pid`), so the "En cours" screen sees the series through its files.
+    `--attached` runs in the foreground instead (the tests, or waiting for it).
+    """
+    ap = argparse.ArgumentParser(prog="lab.py run", description="Launch a series from a plan file, without the browser.")
+    ap.add_argument("plan", help="a plan file (tools/lab/plans/*.json, or any soul-runs plan)")
+    ap.add_argument("--change", default="", help='what changed in the simulation, one sentence ("D50 b : le juge compte la soif")')
+    ap.add_argument("--worktree", help="the git worktree the binary was built from: its commit and branch are recorded")
+    ap.add_argument("--binary", help=f"the vivarium to run (default: the plan's, else {DEFAULT_BIN})")
+    ap.add_argument("--content", help="the content directory (default: the plan's, else <worktree>/content, else the repository's)")
+    ap.add_argument("--runs-dir", default=DEFAULT_RUNS)
+    ap.add_argument("--name", help="the series' name (default: <plan stem>-<date>)")
+    ap.add_argument("--jobs", type=int, help="runs at a time (default: the plan's, else the cores minus two)")
+    ap.add_argument("--attached", action="store_true", help="run in the foreground until the series ends")
+    a = ap.parse_args(argv)
+    content = a.content
+    if not content and a.worktree and os.path.isdir(os.path.join(os.path.expanduser(a.worktree), "content")):
+        content = os.path.join(os.path.expanduser(a.worktree), "content")
+    lab = Lab(a.runs_dir, a.binary or DEFAULT_BIN, content or DEFAULT_CONTENT, a.jobs or DEFAULT_JOBS, a.worktree)
+    try:
+        name, plan = lab.plan_from_file(a.plan, a.name, a.change, a.worktree)
+    except (OSError, ValueError) as e:
+        print(f"lab: {e}", file=sys.stderr)
+        return 2
+    if a.binary:
+        plan["binary"] = os.path.abspath(os.path.expanduser(a.binary))
+    if content:
+        plan["content"] = os.path.abspath(os.path.expanduser(content))
+    if a.jobs:
+        plan.setdefault("lab", {})["jobs"] = a.jobs
+    if os.path.exists(plan["out"]) and lab.is_running(plan["out"]):
+        print(f"lab: la série {name} tourne encore", file=sys.stderr)
+        return 1
+    lab.write_plan(name, plan)
+    if not a.attached:
+        os.makedirs(plan["out"], exist_ok=True)
+        cmd = [sys.executable, "-I", os.path.abspath(__file__), "run", lab.plan_path(name), "--attached",
+               "--name", name, "--runs-dir", lab.runs_dir, "--change", a.change]
+        if a.worktree:
+            cmd += ["--worktree", a.worktree]
+        with open(os.path.join(plan["out"], "lab.log"), "a") as log:
+            p = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+        print(f"série {name} lancée (pid {p.pid}) : {plan['out']}\n  à lire : http://127.0.0.1:8765/serie/{urllib.parse.quote(name)}")
+        return 0
+    s = lab.launch(plan, a.change)
+
+    def leave(*_):
+        lab.stop_all()
+        os._exit(1)
+
+    signal.signal(signal.SIGINT, leave)
+    signal.signal(signal.SIGTERM, leave)
+    print(f"lab: série {name} ({len(s.runs)} runs, {s.jobs} à la fois) → {s.out}", file=sys.stderr)
+    while not s.done:
+        time.sleep(0.5)
+    status = [run_status(s.out, r, time.time(), False)["state"] for r in s.runs]
+    print(f"lab: série {name} terminée : {', '.join(status)}", file=sys.stderr)
+    return 0 if all(st == "fini" for st in status) else 1
+
+
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "run":
+        return run_cli(argv[1:])
     ap = argparse.ArgumentParser(description="The laboratory: create and follow series of vivarium runs.")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--runs-dir", default=DEFAULT_RUNS)
     ap.add_argument("--binary", default=DEFAULT_BIN)
     ap.add_argument("--content", default=DEFAULT_CONTENT)
     ap.add_argument("--jobs", type=int, default=DEFAULT_JOBS, help="runs at a time when the plan says nothing")
+    ap.add_argument("--worktree", help="the git worktree the binary was built from, recorded as the version of every series launched here")
     a = ap.parse_args(argv)
-    lab = Lab(a.runs_dir, a.binary, a.content, a.jobs)
+    lab = Lab(a.runs_dir, a.binary, a.content, a.jobs, a.worktree)
     Handler.lab = lab
     Handler.port = a.port
     server = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
