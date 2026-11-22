@@ -473,9 +473,19 @@ class Series:
     def stop(self):
         self.stop_event.set()
 
+    def command(self, r):
+        """The vivarium's command line for run `r`. Several runs side by side get
+        `--helpers 0` (unless the plan says otherwise): a helper thread placing the
+        plants ahead takes about a fifth of a core more, which a series spends
+        better on another run; a run alone keeps the vivarium's default."""
+        args = list(r["args"])
+        if self.jobs > 1 and len(self.runs) > 1 and "--helpers" not in args:
+            args += ["--helpers", "0"]
+        return ([self.binary, "--content", self.content] + args
+                + ["--out", os.path.join(self.out, r["name"] + ".html")])
+
     def _launch(self, r):
-        cmd = ([self.binary, "--content", self.content] + r["args"]
-               + ["--out", os.path.join(self.out, r["name"] + ".html")])
+        cmd = self.command(r)
         with open(os.path.join(self.out, r["name"] + ".log"), "w") as log:
             p = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT,
                                  stdin=subprocess.DEVNULL, start_new_session=True)

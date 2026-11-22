@@ -74,6 +74,8 @@ use crate::geology::Rock;
 pub use climate::{Biome, RIVER_ML, Reach};
 pub use kept::born_within;
 pub use measure::Numbers;
+#[cfg(test)]
+pub(crate) use net::zone_window;
 pub use region::Region;
 pub use relief::{Stroke, StrokeKind};
 pub use vivarium::{VIVARIUM_SEED, ZONE_2, Zone};

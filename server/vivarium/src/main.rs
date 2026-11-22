@@ -33,9 +33,13 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
   --no-fire                the control run of D55: no evening fire, nobody
                            tells nor hears anything (the content's fire
                            replaced by none)
+  --no-continent-cache     bear the vivarium's continent anew instead of
+                           reading it from ${XDG_CACHE_HOME:-~/.cache}/soul-sim/
+                           continents/ (where a run keeps it; same pages)
   --helpers N              threads placing the chunks' plants ahead of the
                            bodies (default 1; 0 = the simulation thread
-                           alone); the pages are the same either way
+                           alone, for runs side by side); the pages are the
+                           same either way
   --content DIR            the content directory (default: content/, ../content/
                            or ../../content/, the first holding materials.ron)
   --out FILE               the report (default vivarium-report.html); its
@@ -98,6 +102,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--no-brain" => settings.brain = false,
             "--no-trials" => settings.trials = false,
             "--no-fire" => settings.fire = false,
+            "--no-continent-cache" => settings.continents = None,
             "--helpers" => {
                 settings.helpers = u32::try_from(number(value(&mut i, "--helpers")?, "--helpers")?)
                     .map_err(|_| "--helpers: too many".to_owned())?;
@@ -282,6 +287,22 @@ mod tests {
                 .unwrap()
                 .settings
                 .trials
+        );
+        assert!(
+            parse(&args(&["--no-continent-cache"]))
+                .unwrap()
+                .unwrap()
+                .settings
+                .continents
+                .is_none()
+        );
+        assert!(
+            parse(&args(&[]))
+                .unwrap()
+                .unwrap()
+                .settings
+                .continents
+                .is_some()
         );
         assert_eq!(
             parse(&args(&["--helpers", "0"]))

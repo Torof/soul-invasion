@@ -62,7 +62,7 @@ clock, the only field no seed decides.
 | `meta.timing.wall_s` | The run's wall time | seconds |
 | `meta.timing.birth_s` | The world's birth | seconds |
 | `meta.timing.run_date` | When the run was written, from the OS clock | `"2026-11-22T15:04:00Z"`, UTC |
-| `meta.timing.helpers` | Helper threads placing the chunks' plants ahead of the bodies (`--helpers`, D51 amended); 0 is the simulation thread alone. Timing: the pages are the same whatever the number | count |
+| `meta.timing.helpers` | Helper threads placing the chunks' plants ahead of the bodies (`--helpers`, D51 amended); 0 is the simulation thread alone, what the lab passes for runs side by side. Timing: the pages are the same whatever the number | count |
 | `meta.timing.placed` | Chunks whose plants were placed over the run, by the helpers and the simulation thread together (a chunk twice when both placed it at once) | count |
 | `meta.timing.placed_ahead` | Of those, the chunks the helpers placed ahead | count |
 | `years[].tribe` | The tribe | `"A"` or `"B"` |

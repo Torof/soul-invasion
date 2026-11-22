@@ -26,6 +26,7 @@ use sim::map::{Map, Pos, Terrain};
 use sim::time::Calendar;
 use sim::{BodyId, Death, Event, Intention, Sex, World};
 
+pub mod continents;
 pub mod json;
 pub mod png;
 
@@ -99,8 +100,14 @@ pub struct Settings {
     /// run beside each run with the fire (`--no-fire`): the content's
     /// `fire` section is replaced by one where nobody tells anything.
     pub fire: bool,
+    /// Where the vivarium's continent is kept between runs
+    /// ([`continents`]): `None` for no cache (`--no-continent-cache`),
+    /// the continent born at every run. The patch worlds never use it.
+    pub continents: Option<PathBuf>,
     /// Helper threads placing the chunks' bearers ahead of the bodies
-    /// (`sim::ahead`, D51 amended): 0 is the one simulation thread alone.
+    /// (`sim::ahead`, D51 amended): 0 is the one simulation thread alone
+    /// (the lab's choice for a series of runs side by side, each helper
+    /// taking a fifth of a core more).
     /// The pages are the same whatever the number; only the wall changes,
     /// so it is told with the timing, never with the settings.
     pub helpers: u32,
@@ -123,6 +130,7 @@ impl Default for Settings {
             fed: false,
             trials: true,
             fire: true,
+            continents: Some(continents::default_dir()),
             helpers: 1,
         }
     }
@@ -726,6 +734,29 @@ pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunErr
     run_watched(settings, content, &mut |_, _| {})
 }
 
+/// The vivarium's map ([`Map::vivarium`]), its continent read from the
+/// run's cache of continents when it is kept there, and kept there once
+/// born ([`continents`]); born at every run without a cache. The same
+/// map either way (D28, amended 19 November 2026).
+fn vivarium_map(settings: &Settings) -> Map {
+    let Some(dir) = &settings.continents else {
+        return Map::vivarium();
+    };
+    let known = continents::read(dir, sim::plan::VIVARIUM_SEED, sim::plan::CONTINENT_SIDE)
+        .into_iter()
+        .collect();
+    let (map, born) = sim::plan::born_within(known, Map::vivarium);
+    for continent in &born {
+        if let Err(err) = continents::keep(dir, continent) {
+            eprintln!(
+                "note: the continent could not be kept under {}: {err}",
+                dir.display()
+            );
+        }
+    }
+    map
+}
+
 /// [`run_with`], with `watch` called on the world at every dawn (the
 /// day that begins), where the scenario tests check the world's
 /// invariants ([`sim::invariants::breaches`]); the product's run passes
@@ -769,7 +800,7 @@ pub fn run_watched(
     };
     let born = Instant::now();
     let mut world = match settings.world {
-        WorldKind::Vivarium => World::on_valley(calendar, content, Map::vivarium()),
+        WorldKind::Vivarium => World::on_valley(calendar, content, vivarium_map(settings)),
         WorldKind::Patch { side } => World::with_valley(calendar, content, side),
     };
     // The vivarium's worlds live (D49): births, couples, illness and old
@@ -781,6 +812,14 @@ pub fn run_watched(
     let mut people: BTreeMap<BodyId, Person> = BTreeMap::new();
     let mut chronicle = Vec::new();
     let mut brains = Brains::new(settings.seed);
+    // The ground's caches (trees, rocks, bearers) widened from four views
+    // to the world's chunks (D51 amended): over a long run the bodies see
+    // more land than four views, and at the cap the caches thrashed from
+    // day 59 on, each chunk's bearers placing nine chunks' trees again.
+    let map = world.map();
+    world
+        .shared_ground()
+        .widen(map.chunks_wide() as usize * map.chunks_high() as usize);
     // The helpers placing bearers ahead (D51 amended), told where the
     // bodies are every few ticks; `None` with `--helpers 0`.
     let placer = sim::ahead::Placer::spawn(&world, usize::try_from(settings.helpers).unwrap_or(1));
@@ -3023,6 +3062,7 @@ mod tests {
             fed: false,
             trials: true,
             fire: true,
+            continents: None,
             helpers: 1,
         }
     }
@@ -3151,6 +3191,53 @@ mod tests {
             deaths.is_empty(),
             "all eighteen live (05, lot 3 B): {deaths:?}"
         );
+    }
+
+    /// The vivarium's continent kept on disk and read back gives the very
+    /// pages the born one gives (D28 amended 19 November 2026; lightening
+    /// 4's S7): the report's data, timings apart, is the same born, kept
+    /// and read, or born with no cache at all.
+    #[test]
+    #[ignore = "the vivarium's continent born twice, some 20 s in release: cargo test --release -p vivarium -- --ignored the_kept_continent"]
+    fn the_kept_continent_gives_the_pages_the_born_one_gives() {
+        let dir = std::env::temp_dir().join(format!(
+            "soul-vivarium-kept-continent-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let settings = Settings {
+            world: WorldKind::Vivarium,
+            tribes: 2,
+            days: 2,
+            continents: Some(dir.clone()),
+            ..small()
+        };
+        let data = |report: &Report| {
+            let mut value = report.json_value();
+            value
+                .as_object_mut()
+                .and_then(|o| o.get_mut("meta"))
+                .and_then(|m| m.as_object_mut())
+                .map(|m| m.remove("timing"));
+            value
+        };
+        let born = run_checked(&settings, content());
+        assert!(
+            continents::path_of(&dir, sim::plan::VIVARIUM_SEED, sim::plan::CONTINENT_SIDE)
+                .is_file(),
+            "the born continent is kept"
+        );
+        let kept = run_checked(&settings, content());
+        let apart = run_checked(
+            &Settings {
+                continents: None,
+                ..settings
+            },
+            content(),
+        );
+        assert_eq!(data(&kept), data(&born), "kept and read: the same data");
+        assert_eq!(data(&apart), data(&born), "no cache: the same data");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// D24: the cadence (ticks a game second) must not change the outcome.

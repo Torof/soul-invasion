@@ -15,9 +15,9 @@
 // module also holds geometry for moving bodies, which is not generation:
 // `FinePos::distance_to` and `line_clear` allow floats where they stand.
 
+use std::cell::RefCell;
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
-use std::hash::{BuildHasherDefault, Hasher};
+use std::collections::{BTreeMap, BinaryHeap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
@@ -200,6 +200,19 @@ impl Terrain {
         Self::Brook,
         Self::Rock,
     ];
+
+    /// This terrain's place in [`Terrain::ALL`].
+    #[must_use]
+    pub const fn rank(self) -> usize {
+        match self {
+            Self::Grass => 0,
+            Self::Forest => 1,
+            Self::Water => 2,
+            Self::Ford => 3,
+            Self::Brook => 4,
+            Self::Rock => 5,
+        }
+    }
 
     /// Can a body ever stand here? The content's movement rules refine
     /// this with a cost; they cannot make water or rock walkable.
@@ -1025,6 +1038,33 @@ impl Map {
         cost: impl Fn(Terrain) -> Option<u32>,
         blocked: impl Fn(Pos) -> bool,
     ) -> (Option<Vec<Pos>>, u32) {
+        self.search_gated(from, to, reach, budget, cost, blocked, || true)
+    }
+
+    /// [`Map::search`] asked first, once its cheap refusals are past and
+    /// before it expands a tile, whether a path `may_join` the two: a
+    /// pre-test by the chunks' walkable pieces
+    /// ([`crate::ground::TrunkLookup::may_join`], D32), which answers
+    /// "no" only when no path exists within the square at all. On a "no"
+    /// the search answers `None` without expanding anything and counts
+    /// the whole budget as spent, as the search that reaches its budget
+    /// does (the one that exhausts a small enclosure under the budget
+    /// counted fewer; the work cap of a tick is the only reader). On a
+    /// "maybe" it runs as ever and finds the same path.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the search's bounds, costs and gate, each its own"
+    )]
+    pub(crate) fn search_gated(
+        &self,
+        from: Pos,
+        to: Pos,
+        reach: i32,
+        budget: u32,
+        cost: impl Fn(Terrain) -> Option<u32>,
+        blocked: impl Fn(Pos) -> bool,
+        may_join: impl FnOnce() -> bool,
+    ) -> (Option<Vec<Pos>>, u32) {
         if from == to {
             return (Some(Vec::new()), 0);
         }
@@ -1044,6 +1084,9 @@ impl Map {
         if !within(to) || self.get(from).and_then(&cost).is_none() || cost_at(to).is_none() {
             return (None, 0);
         }
+        if !may_join() {
+            return (None, budget.saturating_add(1));
+        }
         // The heuristic must not overestimate: scale it by the cheapest
         // terrain there is.
         let cheapest = Terrain::ALL
@@ -1053,55 +1096,12 @@ impl Map {
             .unwrap_or(STRAIGHT_COST);
         let estimate = |a: Pos| octile(a, to) * cheapest / STRAIGHT_COST;
         // A* with an octile heuristic. Ties break on insertion order so
-        // the path is the same on every machine.
-        let mut reached = Reached::default();
-        let mut open = BinaryHeap::new();
-        let mut pushed = 0u64;
-        let mut expanded = 0u32;
-        reached.improve(from, 0, 0);
-        open.push(Reverse((estimate(from), pushed, from)));
-
-        while let Some(Reverse((guess, _, here))) = open.pop() {
-            if here == to {
-                return (Some(reached.walk_back(from, to)), expanded);
-            }
-            let cost_here = reached.cost(here);
-            if guess > cost_here + estimate(here) {
-                // A stale entry: the tile was reached more cheaply since,
-                // and expanded from there already; expanding it again
-                // would change nothing.
-                continue;
-            }
-            expanded += 1;
-            if expanded > budget {
-                // The effort is spent: the body walks straight instead.
-                return (None, expanded);
-            }
-            for (step, next) in (0u8..).zip(here.neighbours()) {
-                if !within(next) {
-                    continue;
-                }
-                let Some(terrain_cost) = cost_at(next) else {
-                    continue;
-                };
-                let step_cost = if here.is_diagonal_to(next) {
-                    if cost_at(Pos::new(here.x, next.y)).is_none()
-                        || cost_at(Pos::new(next.x, here.y)).is_none()
-                    {
-                        continue; // no cutting corners
-                    }
-                    DIAGONAL_COST
-                } else {
-                    STRAIGHT_COST
-                };
-                let cost = cost_here + step_cost * terrain_cost / STRAIGHT_COST;
-                if reached.improve(next, cost, step) {
-                    pushed += 1;
-                    open.push(Reverse((cost + estimate(next), pushed, next)));
-                }
-            }
-        }
-        (None, expanded)
+        // the path is the same on every machine. The arena is the
+        // thread's, taken for the search and given back after it.
+        let mut arena = ARENA.with_borrow_mut(std::mem::take);
+        let out = arena.search(from, to, reach, budget, &estimate, &cost_at);
+        ARENA.with_borrow_mut(|held| *held = arena);
+        out
     }
 
     /// Pulls a tile path taut into straight segments from `from`: each
@@ -1334,113 +1334,37 @@ impl Map {
             }
         }
         let (_, first) = first?;
-        // As far as it spreads in sight, and the bank along it.
+        // As far as it spreads in sight, and the bank along it. The
+        // thread's arena, stamped for this skirt, nothing zeroed.
         let cells = usize::try_from(side_len * side_len).expect("a small square");
-        let mut obstacle = vec![false; cells];
-        let mut bank = vec![false; cells];
+        let mut arena = SKIRT_ARENA.with_borrow_mut(std::mem::take);
+        arena.begin(cells);
+        let now = arena.now;
         let mut todo = VecDeque::from([first]);
-        obstacle[index(first)?] = true;
+        arena.obstacle[index(first)?] = now;
+        arena.obstacles.push(index(first)?);
         while let Some(p) = todo.pop_front() {
             for dy in -SKIRT_SIDE..=SKIRT_SIDE {
                 for dx in -SKIRT_SIDE..=SKIRT_SIDE {
                     if let Some(i) = index(Pos::new(p.x + dx, p.y + dy)) {
-                        bank[i] = true;
+                        arena.bank[i] = now;
                     }
                 }
             }
             for next in p.neighbours() {
                 if let Some(i) = index(next)
-                    && !obstacle[i]
+                    && arena.obstacle[i] != now
                     && barred(next)
                 {
-                    obstacle[i] = true;
+                    arena.obstacle[i] = now;
+                    arena.obstacles.push(i);
                     todo.push_back(next);
                 }
             }
         }
-        // Along the bank from where the body stands, each tile on the side
-        // of the first step that reached it.
-        let heading = (toward.x - start.x, toward.y - start.y);
-        let side_of = |p: Pos| {
-            let (vx, vy) = (p.x - start.x, p.y - start.y);
-            if heading.0 * vy - heading.1 * vx < 0 {
-                Side::Left
-            } else {
-                Side::Right
-            }
-        };
-        let walkable = |p: Pos| p == start || open(p);
-        let on_bank = |p: Pos| index(p).is_some_and(|i| bank[i] && !obstacle[i]) && walkable(p);
-        let mut steps = vec![u32::MAX; cells];
-        let mut from = vec![usize::MAX; cells];
-        let mut sides = vec![Side::Right; cells];
-        let origin = index(start)?;
-        steps[origin] = 0;
-        let mut todo = VecDeque::from([start]);
-        let most = u32::try_from((reach * 5 / 6).max(3)).unwrap_or(3);
-        while let Some(p) = todo.pop_front() {
-            let i = index(p)?;
-            if steps[i] >= most {
-                continue;
-            }
-            for next in p.neighbours() {
-                if !on_bank(next) {
-                    continue;
-                }
-                if p.is_diagonal_to(next)
-                    && (!walkable(Pos::new(p.x, next.y)) || !walkable(Pos::new(next.x, p.y)))
-                {
-                    continue; // no cutting corners
-                }
-                let j = index(next)?;
-                if steps[j] != u32::MAX {
-                    continue;
-                }
-                steps[j] = steps[i] + 1;
-                from[j] = i;
-                sides[j] = if i == origin { side_of(next) } else { sides[i] };
-                todo.push_back(next);
-            }
-        }
-        // Each side's farthest point, then the better of the two.
-        let mut best: [Option<(u32, u32, usize)>; 2] = [None, None];
-        for (i, &n) in steps.iter().enumerate() {
-            if n == u32::MAX || n < 3 {
-                continue;
-            }
-            let k = usize::from(sides[i] == Side::Right);
-            let crow = octile(pos_at(i), toward);
-            let better = best[k].is_none_or(|(m, c, _)| n > m || n == m && crow < c);
-            if better {
-                best[k] = Some((n, crow, i));
-            }
-        }
-        // Of the two, nearer the target; on a tie, where the obstacle in
-        // sight ends sooner (less of it on that side); then the right.
-        let mut spread = [0u32; 2];
-        for (i, _) in obstacle.iter().enumerate().filter(|(_, p)| **p) {
-            spread[usize::from(side_of(pos_at(i)) == Side::Right)] += 1;
-        }
-        let (side, end) = match best {
-            [None, None] => return None,
-            [Some((_, _, i)), None] => (Side::Left, i),
-            [None, Some((_, _, i))] => (Side::Right, i),
-            [Some((_, l, li)), Some((_, r, ri))] => {
-                if (l, spread[0]) < (r, spread[1]) {
-                    (Side::Left, li)
-                } else {
-                    (Side::Right, ri)
-                }
-            }
-        };
-        let mut path = Vec::new();
-        let mut i = end;
-        while i != origin {
-            path.push(pos_at(i));
-            i = from[i];
-        }
-        path.reverse();
-        Some((side, path))
+        let out = skirt_along(&mut arena, (at, toward, reach), index, pos_at, open);
+        SKIRT_ARENA.with_borrow_mut(|held| *held = arena);
+        out
     }
 
     /// The way round the obstacle a straight walk from `a` toward `b`
@@ -1485,6 +1409,7 @@ impl Map {
             };
             if tile != stop.tile()
                 && open(tile)
+                && Self::joins_within(stop.tile(), tile, SIDESTEP_REACH, open)
                 && let Some(path) = self.path_around(
                     stop.tile(),
                     tile,
@@ -1514,6 +1439,48 @@ impl Map {
             }
         }
         None
+    }
+
+    /// Does walkable ground join `from` to `to` within `reach` tiles of
+    /// `from` on each axis (`reach` at most 5: the square's 121 tiles
+    /// are the bits of one word)? A flood of the square over `open`
+    /// tiles, four neighbours (a diagonal step never cuts a corner, so
+    /// it always has a straight way round), `from` left whatever it is.
+    /// "No" is exactly what [`Map::path_around`] in the same square
+    /// answers, in a tenth of the time; on "yes" the search runs, and
+    /// finds the way (the sidesteps of a straight walk, D32).
+    fn joins_within(from: Pos, to: Pos, reach: i32, open: impl Fn(Pos) -> bool) -> bool {
+        debug_assert!((0..=5).contains(&reach), "a square of 121 tiles at most");
+        let side = 2 * reach + 1;
+        let bit = |p: Pos| -> Option<u32> {
+            let (x, y) = (p.x - from.x + reach, p.y - from.y + reach);
+            (x >= 0 && y >= 0 && x < side && y < side)
+                .then(|| u32::try_from(y * side + x).expect("within the square"))
+        };
+        let Some(goal) = bit(to) else {
+            return false;
+        };
+        let Some(start) = bit(from) else {
+            return false;
+        };
+        let mut seen: u128 = 1 << start;
+        let mut todo = vec![from];
+        while let Some(p) = todo.pop() {
+            for next in p.neighbours().into_iter().take(4) {
+                let Some(b) = bit(next) else {
+                    continue;
+                };
+                if seen >> b & 1 == 1 || !open(next) {
+                    continue;
+                }
+                if b == goal {
+                    return true;
+                }
+                seen |= 1 << b;
+                todo.push(next);
+            }
+        }
+        false
     }
 
     #[cfg(test)]
@@ -1796,62 +1763,260 @@ pub(crate) fn enters(a: FinePos, b: FinePos, tile: Pos) -> bool {
     t0 < t1
 }
 
-/// Tiles of a chunk: the size of a page of [`Reached`].
-const PAGE: usize = (CHUNK_SIZE * CHUNK_SIZE) as usize;
-
-/// The tiles one path search has reached, kept in pages of a chunk: for
-/// each tile, its cheapest cost so far and the step that reached it. Its
-/// memory follows the chunks the search touches, never the map's size
-/// (D31, D39).
-#[derive(Default)]
-struct Reached {
-    /// The first slot of each chunk's page.
-    pages: HashMap<ChunkPos, usize, BuildHasherDefault<ChunkHasher>>,
-    /// Per slot, the cheapest cost so far; `u32::MAX` when not reached.
-    cost: Vec<u32>,
-    /// Per slot, which of [`Pos::neighbours`] of the previous tile this
-    /// one is.
-    step: Vec<u8>,
-    /// The page looked up last: most tiles a search looks at are in the
-    /// chunk of the tile before.
-    last: Option<(ChunkPos, usize)>,
+/// The second half of [`Map::skirt`], the obstacle and its bank
+/// flooded in `arena`: along the bank from where the body stands,
+/// each side's farthest point, the better of the two.
+fn skirt_along(
+    arena: &mut SkirtArena,
+    (at, toward, reach): (FinePos, Pos, i32),
+    index: impl Fn(Pos) -> Option<usize>,
+    pos_at: impl Fn(usize) -> Pos,
+    open: impl Fn(Pos) -> bool,
+) -> Option<(Side, Vec<Pos>)> {
+    let start = at.tile();
+    let now = arena.now;
+    // Along the bank from where the body stands, each tile on the side
+    // of the first step that reached it.
+    let heading = (toward.x - start.x, toward.y - start.y);
+    let side_of = |p: Pos| {
+        let (vx, vy) = (p.x - start.x, p.y - start.y);
+        if heading.0 * vy - heading.1 * vx < 0 {
+            Side::Left
+        } else {
+            Side::Right
+        }
+    };
+    let walkable = |p: Pos| p == start || open(p);
+    let on_bank = |arena: &SkirtArena, p: Pos| {
+        index(p).is_some_and(|i| arena.bank[i] == now && arena.obstacle[i] != now) && walkable(p)
+    };
+    let origin = index(start)?;
+    arena.reach(origin, 0, usize::MAX, Side::Right);
+    let mut todo = VecDeque::from([start]);
+    let most = u32::try_from((reach * 5 / 6).max(3)).unwrap_or(3);
+    while let Some(p) = todo.pop_front() {
+        let i = index(p)?;
+        if arena.steps[i] >= most {
+            continue;
+        }
+        for next in p.neighbours() {
+            if !on_bank(arena, next) {
+                continue;
+            }
+            if p.is_diagonal_to(next)
+                && (!walkable(Pos::new(p.x, next.y)) || !walkable(Pos::new(next.x, p.y)))
+            {
+                continue; // no cutting corners
+            }
+            let j = index(next)?;
+            if arena.reached[j] == now {
+                continue;
+            }
+            let side = if i == origin {
+                side_of(next)
+            } else {
+                arena.sides[i]
+            };
+            arena.reach(j, arena.steps[i] + 1, i, side);
+            todo.push_back(next);
+        }
+    }
+    // Each side's farthest point, then the better of the two: the
+    // tiles reached read in the order of the square, as a sweep of
+    // it would, so a tie falls the same way.
+    arena.reaches.sort_unstable();
+    let mut best: [Option<(u32, u32, usize)>; 2] = [None, None];
+    for &i in &arena.reaches {
+        let n = arena.steps[i];
+        if n < 3 {
+            continue;
+        }
+        let k = usize::from(arena.sides[i] == Side::Right);
+        let crow = octile(pos_at(i), toward);
+        let better = best[k].is_none_or(|(m, c, _)| n > m || n == m && crow < c);
+        if better {
+            best[k] = Some((n, crow, i));
+        }
+    }
+    // Of the two, nearer the target; on a tie, where the obstacle in
+    // sight ends sooner (less of it on that side); then the right.
+    let mut spread = [0u32; 2];
+    for &i in &arena.obstacles {
+        spread[usize::from(side_of(pos_at(i)) == Side::Right)] += 1;
+    }
+    let (side, end) = match best {
+        [None, None] => return None,
+        [Some((_, _, i)), None] => (Side::Left, i),
+        [None, Some((_, _, i))] => (Side::Right, i),
+        [Some((_, l, li)), Some((_, r, ri))] => {
+            if (l, spread[0]) < (r, spread[1]) {
+                (Side::Left, li)
+            } else {
+                (Side::Right, ri)
+            }
+        }
+    };
+    let mut path = Vec::new();
+    let mut i = end;
+    while i != origin {
+        path.push(pos_at(i));
+        i = arena.from[i];
+    }
+    path.reverse();
+    Some((side, path))
 }
 
-impl Reached {
-    /// The slot of a tile, making its chunk's page when it has none.
-    fn slot(&mut self, pos: Pos) -> usize {
-        let chunk = pos.chunk();
-        let first = match self.last {
-            Some((known, first)) if known == chunk => first,
-            _ => {
-                let fresh = self.cost.len();
-                let first = *self.pages.entry(chunk).or_insert(fresh);
-                if first == fresh {
-                    self.cost.resize(fresh + PAGE, u32::MAX);
-                    self.step.resize(fresh + PAGE, 0);
-                }
-                self.last = Some((chunk, first));
-                first
-            }
-        };
-        let origin = chunk.origin();
-        let side = i32::try_from(CHUNK_SIZE).expect("small chunk side");
-        first
-            + usize::try_from((pos.y - origin.y) * side + (pos.x - origin.x)).expect("in its chunk")
+thread_local! {
+    /// One skirt arena a thread ([`Map::skirt`]): the five arrays of the
+    /// sight square kept from one skirt to the next and cleared by a
+    /// stamp, never zeroed. About 25 bytes a cell, 370 KB for a sight of
+    /// 60, once.
+    static SKIRT_ARENA: RefCell<SkirtArena> = RefCell::new(SkirtArena::default());
+}
+
+/// The memory of one [`Map::skirt`], reused: per cell of the sight
+/// square, the skirt that last marked it an obstacle, a bank tile or a
+/// tile reached along the bank (`now` means this one), the steps to it,
+/// the cell it was reached from and the side it lies on; and the lists
+/// of the cells marked, so the sweeps read those alone.
+#[derive(Default)]
+struct SkirtArena {
+    /// This skirt's stamp.
+    now: u32,
+    obstacle: Vec<u32>,
+    bank: Vec<u32>,
+    reached: Vec<u32>,
+    steps: Vec<u32>,
+    from: Vec<usize>,
+    sides: Vec<Side>,
+    /// The cells marked obstacle, in the order found.
+    obstacles: Vec<usize>,
+    /// The cells reached along the bank, in the order reached.
+    reaches: Vec<usize>,
+}
+
+impl SkirtArena {
+    /// Readies the arena for a skirt over `cells`: a fresh stamp, cells
+    /// enough, the lists emptied, nothing else cleared.
+    fn begin(&mut self, cells: usize) {
+        if self.obstacle.len() < cells {
+            self.obstacle.resize(cells, 0);
+            self.bank.resize(cells, 0);
+            self.reached.resize(cells, 0);
+            self.steps.resize(cells, u32::MAX);
+            self.from.resize(cells, usize::MAX);
+            self.sides.resize(cells, Side::Right);
+        }
+        self.now = self.now.wrapping_add(1);
+        if self.now == 0 {
+            // Once in four billion skirts: every old stamp forgotten.
+            self.obstacle.fill(0);
+            self.bank.fill(0);
+            self.reached.fill(0);
+            self.now = 1;
+        }
+        self.obstacles.clear();
+        self.reaches.clear();
     }
 
-    /// The cheapest cost found so far to `pos`.
-    fn cost(&mut self, pos: Pos) -> u32 {
+    /// Marks cell `i` reached along the bank in `steps` from the start,
+    /// from cell `from`, on `side`.
+    fn reach(&mut self, i: usize, steps: u32, from: usize, side: Side) {
+        self.reached[i] = self.now;
+        self.steps[i] = steps;
+        self.from[i] = from;
+        self.sides[i] = side;
+        self.reaches.push(i);
+    }
+}
+
+thread_local! {
+    /// One search arena a thread (`foule/chemins.md` §2, D32): the open
+    /// set and the tiles reached, kept from one search to the next and
+    /// cleared by a stamp, never zeroed. A thread searching within a
+    /// sight of 60 holds 121² slots, about 130 KB; one searching within
+    /// [`PATH_REACH`] about 3 MB, once.
+    static ARENA: RefCell<Arena> = RefCell::new(Arena::default());
+}
+
+/// The memory of one A* search, reused: for each slot of the square
+/// searched (`side` a side, its north-west corner at `corner`), the
+/// search that last touched it (`stamp`; a slot not stamped by this
+/// search is unreached), its cheapest cost so far and the step that
+/// reached it; and the open set. Sized to the largest square searched so
+/// far, never to the map (D31, D39).
+struct Arena {
+    side: usize,
+    corner: Pos,
+    /// This search's stamp; a slot's `stamp` equal to it means reached.
+    now: u32,
+    stamp: Vec<u32>,
+    cost: Vec<u32>,
+    /// Which of [`Pos::neighbours`] of the previous tile this one is.
+    step: Vec<u8>,
+    open: BinaryHeap<Reverse<(u32, u64, Pos)>>,
+}
+
+impl Default for Arena {
+    fn default() -> Self {
+        Self {
+            side: 0,
+            corner: Pos::new(0, 0),
+            now: 0,
+            stamp: Vec::new(),
+            cost: Vec::new(),
+            step: Vec::new(),
+            open: BinaryHeap::new(),
+        }
+    }
+}
+
+impl Arena {
+    /// Readies the arena for a search within `reach` of `from`: a fresh
+    /// stamp, slots enough for the square, nothing cleared.
+    fn begin(&mut self, from: Pos, reach: i32) {
+        let reach = reach.saturating_abs();
+        self.side = usize::try_from(2 * i64::from(reach) + 1).expect("small reach");
+        self.corner = Pos::new(from.x.saturating_sub(reach), from.y.saturating_sub(reach));
+        let slots = self.side * self.side;
+        if self.stamp.len() < slots {
+            self.stamp.resize(slots, 0);
+            self.cost.resize(slots, u32::MAX);
+            self.step.resize(slots, 0);
+        }
+        self.now = self.now.wrapping_add(1);
+        if self.now == 0 {
+            // Once in four billion searches: every old stamp forgotten.
+            self.stamp.fill(0);
+            self.now = 1;
+        }
+        self.open.clear();
+    }
+
+    /// The slot of a tile of the square.
+    fn slot(&self, pos: Pos) -> usize {
+        let x = usize::try_from(pos.x.wrapping_sub(self.corner.x)).expect("in the square");
+        let y = usize::try_from(pos.y.wrapping_sub(self.corner.y)).expect("in the square");
+        y * self.side + x
+    }
+
+    /// The cheapest cost found so far to `pos`; `u32::MAX` unreached.
+    fn cost(&self, pos: Pos) -> u32 {
         let slot = self.slot(pos);
-        self.cost[slot]
+        if self.stamp[slot] == self.now {
+            self.cost[slot]
+        } else {
+            u32::MAX
+        }
     }
 
     /// Records reaching `pos` at `cost` by `step` if that is cheaper than
     /// before; says whether it was.
     fn improve(&mut self, pos: Pos, cost: u32, step: u8) -> bool {
         let slot = self.slot(pos);
-        let better = cost < self.cost[slot];
+        let better = self.stamp[slot] != self.now || cost < self.cost[slot];
         if better {
+            self.stamp[slot] = self.now;
             self.cost[slot] = cost;
             self.step[slot] = step;
         }
@@ -1860,46 +2025,83 @@ impl Reached {
 
     /// The path from `from` to `to`, not including `from`, following the
     /// recorded steps back.
-    fn walk_back(&mut self, from: Pos, to: Pos) -> Vec<Pos> {
+    fn walk_back(&self, from: Pos, to: Pos) -> Vec<Pos> {
         let offsets = Pos::new(0, 0).neighbours();
         let mut path = Vec::new();
         let mut at = to;
         while at != from {
             path.push(at);
-            let slot = self.slot(at);
-            let back = offsets[usize::from(self.step[slot])];
+            let back = offsets[usize::from(self.step[self.slot(at)])];
             at = Pos::new(at.x - back.x, at.y - back.y);
         }
         path.reverse();
         path
     }
-}
 
-/// Hashes a chunk for [`Reached`]: a multiply and a fold, no random keys,
-/// so a search does the same work on every run (D24). Its table is only
-/// looked up, never iterated, so the hash cannot change a path.
-#[derive(Default)]
-struct ChunkHasher(u64);
+    /// The A* of [`Map::search_gated`], past its checks: the path and the
+    /// tiles expanded. `estimate` never overestimates; `cost_at` is
+    /// `None` where a body may not step.
+    fn search(
+        &mut self,
+        from: Pos,
+        to: Pos,
+        reach: i32,
+        budget: u32,
+        estimate: &impl Fn(Pos) -> u32,
+        cost_at: &impl Fn(Pos) -> Option<u32>,
+    ) -> (Option<Vec<Pos>>, u32) {
+        let within = |pos: Pos| {
+            pos.x.abs_diff(from.x) <= reach.unsigned_abs()
+                && pos.y.abs_diff(from.y) <= reach.unsigned_abs()
+        };
+        self.begin(from, reach);
+        let mut pushed = 0u64;
+        let mut expanded = 0u32;
+        self.improve(from, 0, 0);
+        self.open.push(Reverse((estimate(from), pushed, from)));
 
-impl ChunkHasher {
-    fn mix(&mut self, word: u64) {
-        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    }
-}
-
-impl Hasher for ChunkHasher {
-    fn finish(&self) -> u64 {
-        self.0 ^ (self.0 >> 32)
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.mix(u64::from(byte));
+        while let Some(Reverse((guess, _, here))) = self.open.pop() {
+            if here == to {
+                return (Some(self.walk_back(from, to)), expanded);
+            }
+            let cost_here = self.cost(here);
+            if guess > cost_here + estimate(here) {
+                // A stale entry: the tile was reached more cheaply since,
+                // and expanded from there already; expanding it again
+                // would change nothing.
+                continue;
+            }
+            expanded += 1;
+            if expanded > budget {
+                // The effort is spent: the body walks straight instead.
+                return (None, expanded);
+            }
+            for (step, next) in (0u8..).zip(here.neighbours()) {
+                if !within(next) {
+                    continue;
+                }
+                let Some(terrain_cost) = cost_at(next) else {
+                    continue;
+                };
+                let step_cost = if here.is_diagonal_to(next) {
+                    if cost_at(Pos::new(here.x, next.y)).is_none()
+                        || cost_at(Pos::new(next.x, here.y)).is_none()
+                    {
+                        continue; // no cutting corners
+                    }
+                    DIAGONAL_COST
+                } else {
+                    STRAIGHT_COST
+                };
+                let cost = cost_here + step_cost * terrain_cost / STRAIGHT_COST;
+                if self.improve(next, cost, step) {
+                    pushed += 1;
+                    self.open
+                        .push(Reverse((cost + estimate(next), pushed, next)));
+                }
+            }
         }
-    }
-
-    fn write_i32(&mut self, n: i32) {
-        self.mix(u64::from(n.cast_unsigned()));
+        (None, expanded)
     }
 }
 
