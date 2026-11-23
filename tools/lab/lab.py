@@ -66,7 +66,7 @@ BINARY_RETRY_S = 5.0
 FORM_DEFAULTS = {
     "name": "", "question": "", "run_name": "", "world": "patch", "side": "50",
     "tribes": "", "people": "5", "children": "0", "infants": "0", "ages": "18-40",
-    "fed": "", "days": "10", "seeds": "1", "both": "", "cadence": "1", "jobs": "",
+    "fed": "", "days": "10", "seeds": "1", "both": "", "both_fire": "", "cadence": "1", "jobs": "",
     "change": "",
 }
 STANDARD_PLANS = os.path.join(HERE, "plans")
@@ -82,10 +82,12 @@ def arg_list(a):
 
 
 def expand(plan):
-    """The runs a plan asks for: seeds × (with, without trials), soul-runs' rule.
+    """The runs a plan asks for: seeds × (with, without trials) × (with, without
+    the fire), soul-runs' rule.
 
     A `--seed` inside the args wins over the `seeds` list; `--no-trials` in the
-    args makes every variant a control run.
+    args makes every variant a control run; `with_and_without_fire` doubles the
+    runs again, `-feu` and `-sansfeu` (the latter with `--no-fire`, D55).
     """
     runs = []
     for r in plan.get("runs", []):
@@ -99,14 +101,20 @@ def expand(plan):
         variants = [(False, "")]
         if r.get("with_and_without_trials"):
             variants = [(False, "-avec"), (True, "-sans")]
+        fires = [(False, "")]
+        if r.get("with_and_without_fire"):
+            fires = [(False, "-feu"), (True, "-sansfeu")]
         for seed in seeds:
             for no_trials, tag in variants:
-                args = base + ["--seed", str(seed)]
-                if no_trials and "--no-trials" not in args:
-                    args.append("--no-trials")
-                runs.append({"name": f"{r['name']}-s{seed}{tag}", "base": r["name"],
-                             "seed": seed, "trials": "--no-trials" not in args,
-                             "args": args})
+                for no_fire, fire_tag in fires:
+                    args = base + ["--seed", str(seed)]
+                    if no_trials and "--no-trials" not in args:
+                        args.append("--no-trials")
+                    if no_fire and "--no-fire" not in args:
+                        args.append("--no-fire")
+                    runs.append({"name": f"{r['name']}-s{seed}{tag}{fire_tag}", "base": r["name"],
+                                 "seed": seed, "trials": "--no-trials" not in args,
+                                 "fire": "--no-fire" not in args, "args": args})
     return runs
 
 
@@ -194,6 +202,7 @@ def plan_from_form(fields, runs_dir, binary, content, now=None):
     f["seeds"] = ",".join(str(s) for s in seeds)
     f["fed"] = "on" if f["fed"] else ""
     f["both"] = "on" if f["both"] else ""
+    f["both_fire"] = "on" if f["both_fire"] else ""
     created = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now))
     return {
         "question": f["question"],
@@ -202,7 +211,8 @@ def plan_from_form(fields, runs_dir, binary, content, now=None):
         "content": content,
         "out": os.path.join(runs_dir, name),
         "runs": [{"name": run_name, "args": " ".join(args), "seeds": seeds,
-                  "with_and_without_trials": bool(f["both"])}],
+                  "with_and_without_trials": bool(f["both"]),
+                  "with_and_without_fire": bool(f["both_fire"])}],
         "lab": {"form": f, "jobs": jobs, "created": created},
     }
 
@@ -221,6 +231,7 @@ def form_from_plan(plan, name=""):
         f["run_name"] = r.get("name", "")
         f["seeds"] = ",".join(str(s) for s in r.get("seeds") or [1])
         f["both"] = "on" if r.get("with_and_without_trials") else ""
+        f["both_fire"] = "on" if r.get("with_and_without_fire") else ""
         args = arg_list(r.get("args"))
         flags = {"--world": "world", "--side": "side", "--tribes": "tribes", "--people": "people",
                  "--children": "children", "--infants": "infants", "--ages": "ages",
@@ -410,7 +421,7 @@ def synthesis(out, plan, runs, pid_alive=lambda name: False):
             vals += f"<td>{' · '.join(parts) if parts else '-'}</td>"
         v = lambda x: "-" if x is None else x  # noqa: E731
         body.append(f"<tr><td>{h(r['name'])}</td><td>{r['seed']}</td>"
-                    f"<td>{'avec' if r['trials'] else 'sans'}</td><td>{h(s['state'])}</td>"
+                    f"<td>{'avec' if r['trials'] else 'sans'}{'' if r.get('fire', True) else ', sans feu'}</td><td>{h(s['state'])}</td>"
                     f"<td>{v(s['alive'])}</td><td>{v(s['dead'])}</td><td>{s['elapsed']} s</td>"
                     f"<td>{link}</td>{vals}</tr>")
     q = h(plan.get("question") or "(pas de question dans le plan)")
@@ -915,6 +926,7 @@ def form_page(lab, fields, port, error="", title="Nouvelle série"):
 <label for="seeds">Graines</label><input type="text" id="seeds" name="seeds" value="{h(f['seeds'])}">
 <span class="hint">Une liste (1,2,3) ou une plage (1-10), ou les deux (1-3,7). Un run par graine.</span>
 <label for="both">Avec et sans épreuves</label><span><input type="checkbox" id="both" name="both"{chk('both')}> deux runs par graine : <code>-avec</code> et <code>-sans</code> (<code>--no-trials</code>, le témoin de D50)</span>
+<label for="both_fire">Avec et sans feu</label><span><input type="checkbox" id="both_fire" name="both_fire"{chk('both_fire')}> deux runs de plus par graine : <code>-feu</code> et <code>-sansfeu</code> (<code>--no-fire</code>, le témoin de D55 : l'imitation d'avant le feu)</span>
 <label for="cadence">Cadence</label><span><input type="number" id="cadence" name="cadence" min="1" value="{h(f['cadence'])}"> ticks par seconde de jeu <span id="cadence-warn" class="warn"></span></span>
 <span class="hint">1 par défaut ; le jeu tourne à 10, dix fois plus lent.</span>
 <label for="jobs">Runs à la fois</label><input type="number" id="jobs" name="jobs" min="1" value="{h(f['jobs'])}" placeholder="{DEFAULT_JOBS}">

@@ -645,8 +645,47 @@ of 0 never tries, a kept trial raises the will by five and an abandoned
 one lowers it; every trial heard at the fire is a lesson that weighs the
 listener's next choice of a trial: a weight, never a ban, dated, heeded
 whole by the timid and in part by the adventurer. Placeholders in
-`needs.ron`, section `trials`. Measured (the five-year try of §7 and the
-twenty-year pair) below, once run.
+`needs.ron`, section `trials`. **The five-year try** (band of 25 at camp
+A, seed 1, cadence 1, one binary, with and without `--no-fire`, the
+control imitating by proximity as before): alive 29 / 31, dead 3 / 3
+(illness and childbirth, none of want), gathered 55.4 / 55.2 million kJ;
+the food the tribe carried at noon, year by year, 579 / 495, 875 / 797,
+826 / 791, 987 / 958, 832 / 834 thousand kJ (the fire ahead four years
+of five); places known by the living at each year's end 173 / 209, 273 /
+267, 390 / 326, 417 / 290, 440 / 446, 72 % of the living's records heard
+from a teller; a kept way copied within three days for 4 of 7 kept
+trials with the fire, 1 of 13 without; 6,610 rumours dispelled in five
+years (27 a day: a told place found bare at a look), 79 % told the same
+evening; kept trials 7 / 13 against 46 on `main` before the will, one
+contradicting pair each against six; trials 0.17 / 0.21 a person-year
+against 0.66 on `main`; the same binary ran in 23.7 s with the fire and
+24.0 s without. **The twenty-year pair** (two tribes of 25, seed 1,
+cadence 1; `main` of 23 November against the branch with and without the
+fire): alive 51 / 64 / 63, dead 26 / 29 / 27, every one of illness (one
+of childbirth without the fire), none of want in any run, so the share of
+hunger cannot be read; births 27 / 43 / 40; gathered 455.8 / 499.5 /
+482.7 million kJ; the food the tribe carried at noon, the mean of the
+forty tribe-years, 1,798 thousand kJ with the fire against 1,278 without
+(+41 %, the fire ahead 38 times of 40); the median `stock_kj` stays at
+30,000 for twenty years without the fire and climbs with it to 60,000
+(tribe A) and 120,000 (tribe B); thin person-hours 0 with the fire, 3,971
+without; kept ways contradicting in pairs 82 / 6 / 19, kept trials 517 /
+71 / 163, trials a person-year 1.24 / 0.23 / 0.31; the common memory
+wrote 115,251 records and held 5,995 at the end. The time could not be
+read on the shared machine that night (`main` 211 s of run and 346 s of
+CPU; the fire 238 then 260 s, without it 211 then 191 s, for the same
+computation): to be measured again on a quiet machine before the rule of
++5 % is called.
+
+**Lot 4, PR 2: the report and the lab tell the fire** (23 November 2026,
+D41 amended). The JSON keys of the proposal's §3 and the will's
+(`records[]`, `hearth[]`, `people[].believes[]`, `people[].will_start`,
+`found[].heard.*`, `found[].by_will[]`, `years[].knowledge`,
+`years[].fire`, `years[].food.stored_kj`, `years[].ways.stock_kj`,
+`meta.memory`), the chronicle's sentences for trials told and rumours
+dispelled, the lab's sections (Ce que la tribu sait, Qui a osé quoi, Ce
+que X croit, Qui a dit quoi à qui, Rumeurs) and its `-feu` / `-sansfeu`
+variant; `docs/10` says every key.
 
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the

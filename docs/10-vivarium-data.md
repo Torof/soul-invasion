@@ -65,6 +65,9 @@ clock, the only field no seed decides.
 | `meta.timing.helpers` | Helper threads placing the chunks' plants ahead of the bodies (`--helpers`, D51 amended); 0 is the simulation thread alone, what the lab passes for runs side by side. Timing: the pages are the same whatever the number | count |
 | `meta.timing.placed` | Chunks whose plants were placed over the run, by the helpers and the simulation thread together (a chunk twice when both placed it at once) | count |
 | `meta.timing.placed_ahead` | Of those, the chunks the helpers placed ahead | count |
+| `meta.memory.written` | Records written to the common memory over the run (D55) | count |
+| `meta.memory.freed` | Records freed, their last access dropped | count |
+| `meta.memory.held` | Records held at the end, those of `records` | count |
 | `years[].tribe` | The tribe | `"A"` or `"B"` |
 | `years[].year` | The year, from 1 | integer |
 | `years[].first_day` | Its first day | day |
@@ -95,6 +98,9 @@ clock, the only field no seed decides.
 | `years[].ways.sleep_out` | How many of them sleep out | count |
 | `years[].ways.median_worth_tiles` | The median of how far a plant's worth is halved | tiles |
 | `years[].ways.median_stock_kj` | The median of what they store before resting | kJ |
+| `years[].ways.stock_kj.q1` | The first quartile of what they store before resting (D55: the lead's metric) | kJ |
+| `years[].ways.stock_kj.median` | Its median, the same as `median_stock_kj` | kJ |
+| `years[].ways.stock_kj.q3` | Its third quartile | kJ |
 | `years[].camp` | The camp at the year's end, the median home of the living; `null` when no mind was read | `[x, y]` |
 | `years[].food.start_kj` | Carried by the tribe's living at the year's start; the whole object is `null` for a year the run did not reach | kJ |
 | `years[].food.gathered_kj` | Gathered in the year | kJ |
@@ -104,10 +110,30 @@ clock, the only field no seed decides.
 | `years[].food.lost_kj` | What the flows do not tell: left on the ground by the dead | kJ |
 | `years[].food.thin_hours` | A living person thin (fat reserve under half) | person-hours |
 | `years[].food.weak_hours` | A living person weak (under a fifth) | person-hours |
+| `years[].food.stored_kj.noon_mean` | Carried by the tribe's living at noon, the mean of the year's noons (D55: the stored food, the lead's metric); `null` without a noon | kJ |
+| `years[].food.stored_kj.noon_min` | The least carried at a noon of the year | kJ |
+| `years[].food.stored_kj.end` | Carried at the year's end, the same as `end_kj` | kJ |
+| `years[].fire.nights` | Nights with something told at the tribe's fire in the year (D55) | count |
+| `years[].fire.told` | Records told at it over the year | count |
+| `years[].fire.heard` | Records heard and held, one per listener | count |
+| `years[].fire.dispelled` | Rumours dispelled in the year: a body went where a teller had said and found nothing | count |
+| `years[].knowledge.places` | Distinct places some living member of the tribe knew of at the year's end, seen (D53) or heard of (D55); the whole object is `null` when no mind was read | count |
+| `years[].knowledge.recorded` | Of them, places some living member holds an access to a record of (D55): told at a fire, or heard | count |
+| `years[].knowledge.heard_only` | Of them, places no living member saw itself: known by hearsay only | count |
+| `years[].knowledge.accesses` | Accesses to places held by the living, all places and bodies | count |
+| `years[].knowledge.accesses_heard` | Of them, accesses got from a teller | count |
 | `found[].tribe` | The tribe | `"A"` or `"B"` |
 | `found[].tried.*` | Trials started over the run, by the kind of the step: `wider`, `narrower`, `sleep_out`, `sleep_home`, `store_more`, `store_less`, `home_moved` | count |
 | `found[].kept.*` | Trials judged and kept, by kind | count |
 | `found[].copied.*` | Ways copied from camp-mates, by kind | count |
+| `found[].heard.trials` | Trials whose step was a kept way heard at the fire (D55) | count |
+| `found[].heard.copies` | Ways copied by hearsay: with the fire lit every copy, without it none (the control copies by proximity) | count |
+| `found[].heard.dispelled` | Rumours dispelled over the run | count |
+| `found[].by_will[].band` | Trials by the will of the body when it started (D50, amended): the band, `timid` (0 to 20), `middling` (21 to 50) or `bold` (51 to 100) | string |
+| `found[].by_will[].from` | The band's lowest will | 0 to 100 |
+| `found[].by_will[].to` | Its highest | 0 to 100 |
+| `found[].by_will[].tried` | Trials started by bodies of that will | count |
+| `found[].by_will[].kept` | Of them, judged and kept | count |
 | `people[].id` | The person's number, the page's "person N" | integer |
 | `people[].name` | As the page names it | `"person N"` |
 | `people[].tribe` | Its tribe | `"A"` or `"B"` |
@@ -128,6 +154,12 @@ clock, the only field no seed decides.
 | `people[].children` | Children whose mother or father it is | count |
 | `people[].lost` | The days it lost an unborn child | `[day, …]` |
 | `people[].will` | Its will (D50), once its mind was read; `null` before | 0 to 100 |
+| `people[].will_start` | Its will when its mind was first read: the innate (D50, amended); `null` for a mind never read | 0 to 100 |
+| `people[].believes[].place` | A place it held an access to at the end, or at its death (D55): the place's key, its 16-tile square | `[x, y]` |
+| `people[].believes[].record` | The record it believes of it | integer |
+| `people[].believes[].seen` | Whether it saw it itself (false: heard) | boolean |
+| `people[].believes[].by` | Who it has it from: itself, or the teller | integer |
+| `people[].believes[].day` | The day it got it | day |
 | `people[].ways.worth_half_tiles` | Its ways at the end, or at its death (D50); the whole object is `null` for a mind never read | tiles |
 | `people[].ways.sleep_out` | Whether it sleeps out | boolean |
 | `people[].ways.stock_kj` | What it stores before resting | kJ |
@@ -137,6 +169,8 @@ clock, the only field no seed decides.
 | `people[].trials[].words` | The step in words, as the page tells it | string |
 | `people[].trials[].judged_day` | The day the world judged it; `null` while under trial or if it died first | day |
 | `people[].trials[].kept` | Whether it was kept; `null` while unjudged | boolean |
+| `people[].trials[].will` | Its will when it started the trial; `null` for a mind not read then | 0 to 100 |
+| `people[].trials[].heard` | Whether the step was a kept way heard at the fire (D55) | boolean |
 | `people[].copied` | Ways it copied from camp-mates | count |
 | `people[].thin_hours` | Hours its fat reserve was under half | person-hours |
 | `people[].weak_hours` | Hours it was under a fifth | person-hours |
@@ -147,6 +181,31 @@ clock, the only field no seed decides.
 | `people[].lines[].day` | A line of its life: its birth, its spouse, its children, their weaning, a lost child, its trials, its death; never a thought, a meal, a drink or a gather | day |
 | `people[].lines[].tick` | The tick | tick |
 | `people[].lines[].what` | The line, as the chronicle says it | string |
+| `records[].id` | A record of the common memory at the end (D55): its number | integer |
+| `records[].kind` | `place`, `water`, `trial` or `night` | string |
+| `records[].day` | Its day | day |
+| `records[].witness` | Who saw it first, or the trial's body; `null` for a night | integer |
+| `records[].refs` | Accesses and nights holding it | count |
+| `records[].place` | A place record: the place's key; `null` for another kind, as every key of one kind is | `[x, y]` |
+| `records[].states` | Its states, each a kind of food and the bucket of plants bearing it (`place_buckets`) | `[[kind, bucket], …]` |
+| `records[].way` | A trial record: the way, `worth_half_tiles`, `sleep_out`, `stock_kj` or `home` | string |
+| `records[].up` | Whether the step went up (wider, out, more; a home moved is up) | boolean |
+| `records[].kept` | Whether the trial was kept | boolean |
+| `records[].will` | The body's will when it was judged | 0 to 100 |
+| `records[].present` | A night record: how many lay down | count |
+| `records[].told` | How many records were told | count |
+| `hearth[].tribe` | The nights a tribe's hearth still holds at the end (the last `hearth_nights`, D55): the tribe | `"A"` or `"B"` |
+| `hearth[].nights[].day` | A night: the day that closed with it | day |
+| `hearth[].nights[].camp` | The camp | `[x, y]` |
+| `hearth[].nights[].present` | How many lay down | count |
+| `hearth[].nights[].told[].record` | A record told | integer |
+| `hearth[].nights[].told[].by` | Its teller | integer |
+| `rumours[].day` | A rumour dispelled (D55), the first 1,000 of the run only (the counts in `years[].fire.dispelled` take them all; a camp of 25 dispels about 27 a day, mostly at a look in passing): the day | day |
+| `rumours[].tribe` | The tribe of who went | `"A"` or `"B"` |
+| `rumours[].body` | Who went where a teller had said and found nothing | integer |
+| `rumours[].place` | The place | `[x, y]` |
+| `rumours[].record` | The record it had believed | integer |
+| `rumours[].from` | Who had told it | integer |
 | `curves.points` | Samples kept, at most 1,200 | count |
 | `curves.every` | One sample kept every so many of the 24 a day | count |
 | `curves.ticks` | The tick of each sample | `[tick, …]` |

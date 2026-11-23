@@ -652,6 +652,9 @@ pub enum News {
         before: Ways,
         /// Its ways after it.
         after: Ways,
+        /// Whether the step was a kept way heard at the fire (D55), or
+        /// its own draw.
+        heard: bool,
         /// The tick.
         at: u64,
     },
@@ -1366,6 +1369,12 @@ impl Mind {
                 at: now,
             });
         }
+    }
+
+    /// The places it knows of (D53): seen for itself, drafts and records
+    /// alike, or heard of (D55).
+    pub fn places_known(&self) -> impl Iterator<Item = PlaceKey> + '_ {
+        self.places.keys().copied()
     }
 
     /// The accesses it holds to places (D55), by place: its beliefs.
@@ -3787,6 +3796,7 @@ fn start_trial(
                 way,
                 before,
                 after: mind.ways,
+                heard: true,
                 at: world.tick().0,
             });
         }
@@ -3852,6 +3862,7 @@ fn start_trial(
         way,
         before,
         after: mind.ways,
+        heard: false,
         at: world.tick().0,
     })
 }

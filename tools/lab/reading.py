@@ -304,6 +304,10 @@ def summary(d):
         "trials": totals["tried"], "kept": totals["kept"], "copied": totals["copied"],
         "homes_moved": sum(y.get("homes_moved") or 0 for y in d.get("years", [])),
         "techniques": sum(1 for n in carried(d).values() if n),
+        "heard_trials": sum((f.get("heard") or {}).get("trials") or 0 for f in found),
+        "heard_copies": sum((f.get("heard") or {}).get("copies") or 0 for f in found),
+        "dispelled": sum((f.get("heard") or {}).get("dispelled") or 0 for f in found),
+        "knowledge": knowledge_at_end(d),
         "alive_start": sum(1 for p in people if not p.get("died") and p.get("born") == "start"),
         "years": last_year(d),
         "days": (d.get("meta") or {}).get("settings", {}).get("days"),
@@ -361,6 +365,8 @@ def settings_fr(d):
     parts.append(f"{fmt(days)} jours ({days / dpy:g} an{'s' if days >= 2 * dpy else ''})")
     parts.append(f"graine {s.get('seed', '?')}")
     parts.append("avec épreuves" if s.get("trials", True) else "sans épreuves (témoin)")
+    if "fire" in s:
+        parts.append("avec feu" if s.get("fire") else "sans feu (témoin : l'imitation d'avant le feu)")
     if s.get("fed"):
         parts.append("nourris sans limite")
     if not s.get("brain", True):
@@ -939,6 +945,201 @@ def kept_list(d, tribe, limit=200):
     return f"<ol class=kept>{li}{more}</ol>"
 
 
+# --- the fire and the common memory (D55) -------------------------------------------
+
+WILL_BAND_FR = {"timid": "frileux (0–20)", "middling": "moyens (21–50)", "bold": "aventuriers (51–100)"}
+WAY_FR = {"worth_half_tiles": "la distance de recherche", "sleep_out": "la nuit dehors ou au camp",
+          "stock_kj": "la réserve avant le repos", "home": "la maison"}
+
+
+def has_fire_data(d):
+    """Whether the run was written with the fire's keys (D55): `records` or a `fire` in some year."""
+    return "records" in d or any("fire" in y for y in d.get("years", []))
+
+
+def knowledge_at_end(d):
+    """What the tribes knew at the last year's end: places, by hearsay only, the share of accesses heard."""
+    ys = [y for y in years_of(d) if y.get("year") == last_year(d) and y.get("knowledge")]
+    if not ys:
+        return None
+    places = sum(y["knowledge"].get("places") or 0 for y in ys)
+    acc = sum(y["knowledge"].get("accesses") or 0 for y in ys)
+    heard = sum(y["knowledge"].get("accesses_heard") or 0 for y in ys)
+    return {"places": places, "heard_only": sum(y["knowledge"].get("heard_only") or 0 for y in ys),
+            "accesses": acc, "heard_share": heard / acc if acc else None,
+            "by_tribe": {y["tribe"]: y["knowledge"].get("places") or 0 for y in ys}}
+
+
+def records_by_id(d):
+    return {r.get("id"): r for r in d.get("records") or []}
+
+
+def place_fr(place):
+    return f"({place[0]}, {place[1]})" if place else "?"
+
+
+def record_fr(d, r):
+    """A record in words: `un lieu (1952, 1936), vu le jour 200 par personne 14`, `un essai gardé : la réserve avant le repos`."""
+    if r is None:
+        return "un souvenir oublié"
+    kind = r.get("kind")
+    if kind == "place":
+        states = r.get("states") or []
+        what = "nu" if not states else f"{len(states)} sorte{'s' if len(states) > 1 else ''} de nourriture"
+        return f"un lieu {place_fr(r.get('place'))}, {what}, vu le jour {r.get('day')}"
+    if kind == "water":
+        return f"de l'eau trouvée le jour {r.get('day')}"
+    if kind == "trial":
+        verdict = "gardé" if r.get("kept") else "abandonné"
+        return f"un essai {verdict} le jour {r.get('day')} : {WAY_FR.get(r.get('way'), r.get('way') or '?')} {'en plus' if r.get('up') else 'en moins'}"
+    if kind == "night":
+        return f"une nuit du jour {r.get('day')}, {r.get('present')} présents"
+    return f"un souvenir ({kind})"
+
+
+def knowledge_chart(d):
+    """Places known by each tribe at each year's end, and the stored food at noon, two small charts."""
+    yd = year_days(d)
+    ts = tribes(d)
+    rows = years_of(d)
+    n_years = max((y["year"] for y in rows), default=1)
+    top = max([(y.get("knowledge") or {}).get("places") or 0 for y in rows] + [1])
+    chart = Chart(0, n_years * yd, top, "années", "lieux connus par la tribu", yd)
+    stored = Chart(0, n_years * yd, max([((y.get("food") or {}).get("stored_kj") or {}).get("noon_mean") or 0 for y in rows] + [1]),
+                   "années", "nourriture portée à midi, moyenne de l'an (kJ)", yd)
+    for i, t in enumerate(ts):
+        mine = [y for y in rows if y["tribe"] == t]
+        xs = [y["year"] * yd for y in mine]
+        color = tribe_color(t, i)
+        ks = [(y.get("knowledge") or {}).get("places") for y in mine]
+        chart.line(xs, ks, color, f"tribu {t}")
+        chart.hover(xs, ks, [f"tribu {t}, an {y['year']} : {fmt((y.get('knowledge') or {}).get('places'))} lieux, "
+                             f"{fmt((y.get('knowledge') or {}).get('heard_only'))} par ouï-dire seul, "
+                             f"{fmt((y.get('knowledge') or {}).get('accesses_heard'))} souvenirs entendus sur {fmt((y.get('knowledge') or {}).get('accesses'))}"
+                             for y in mine], color)
+        ss = [((y.get("food") or {}).get("stored_kj") or {}).get("noon_mean") for y in mine]
+        stored.line(xs, ss, color, f"tribu {t}")
+        stored.hover(xs, ss, [f"tribu {t}, an {y['year']} : {fmt(s)} kJ portés à midi en moyenne, "
+                              f"minimum {fmt(((y.get('food') or {}).get('stored_kj') or {}).get('noon_min'))}, fin {fmt((y.get('food') or {}).get('end_kj'))}"
+                              for y, s in zip(mine, ss)], color)
+    return chart.svg("lieux connus par an"), stored.svg("nourriture portée à midi par an")
+
+
+def knowledge_html(d):
+    """The section « Ce que la tribu sait »: the chart of places known, the share heard, the fire's counts."""
+    sm_k = knowledge_at_end(d)
+    places_svg, stored_svg = knowledge_chart(d)
+    if sm_k is None:
+        line = "aucune clé <code>years[].knowledge</code> dans ce run"
+    else:
+        share = "" if sm_k["heard_share"] is None else f" ; {sm_k['heard_share']:.0%} des souvenirs des vivants viennent d'un conteur"
+        line = (f"À la fin, {plural(sm_k['places'], 'lieu', 'x')} connu{'s' if sm_k['places'] > 1 else ''} "
+                f"({', '.join(f'tribu {h(t)} {fmt(n)}' for t, n in sm_k['by_tribe'].items())}), "
+                f"dont {fmt(sm_k['heard_only'])} que personne de vivant n'a vu{'s' if sm_k['heard_only'] > 1 else ''} lui-même{share}.")
+    fire_rows = []
+    for y in years_of(d):
+        fi = y.get("fire") or {}
+        k = y.get("knowledge") or {}
+        fire_rows.append(f"<tr><td class=n>{y.get('year')}</td><td>{h(y.get('tribe', ''))}</td><td class=n>{fmt(k.get('places'))}</td>"
+                         f"<td class=n>{fmt(k.get('heard_only'))}</td><td class=n>{fmt(k.get('accesses_heard'))} / {fmt(k.get('accesses'))}</td>"
+                         f"<td class=n>{fmt(fi.get('nights'))}</td><td class=n>{fmt(fi.get('told'))}</td><td class=n>{fmt(fi.get('heard'))}</td>"
+                         f"<td class=n>{fmt(fi.get('dispelled'))}</td></tr>")
+    table = ('<table class="clean"><thead><tr><th>an</th><th>tribu</th><th class=n>lieux connus</th><th class=n>par ouï-dire seul</th>'
+             '<th class=n>souvenirs entendus / tenus</th><th class=n>nuits au feu</th><th class=n>dits</th><th class=n>entendus</th>'
+             '<th class=n>rumeurs dissipées</th></tr></thead><tbody>' + "".join(fire_rows) + "</tbody></table>")
+    return ("<h2>Ce que la tribu sait</h2><p class=caption>Les lieux dont un vivant de la tribu garde un souvenir à la fin de chaque an, vus ou entendus au feu ; "
+            "et la nourriture que la tribu porte à midi, la mesure du lead.</p>"
+            f"<p>{line}</p><div class=charts>{places_svg}{stored_svg}</div>{table}")
+
+
+def dared_html(d):
+    """The table « Qui a osé quoi »: each person's will at the start and the end, its trials, kept, heard; then by band."""
+    rows = []
+    people = [p for p in d.get("people", []) if p.get("trials")]
+    people.sort(key=lambda p: (-len(p.get("trials") or []), p.get("id", 0)))
+    for p in people:
+        trials = p.get("trials") or []
+        kept = sum(1 for t in trials if t.get("kept"))
+        heard = sum(1 for t in trials if t.get("heard"))
+        will = f"{fmt(p.get('will_start'))} → {fmt(p.get('will'))}" if p.get("will_start") is not None else fmt(p.get("will"))
+        rows.append(f"<tr><td>{h(person_fr(p.get('name', p.get('id'))))}</td><td>{h(p.get('tribe', ''))}</td><td class=n>{will}</td>"
+                    f"<td class=n>{len(trials)}</td><td class=n>{kept}</td><td class=n>{heard}</td>"
+                    f"<td class=muted>{h(', '.join(kind_fr(t.get('step', '?')) for t in trials if t.get('kept')))}</td></tr>")
+    bands = []
+    for f in d.get("found") or []:
+        for b in f.get("by_will") or []:
+            bands.append(f"<tr><td>{h(f.get('tribe', ''))}</td><td>{h(WILL_BAND_FR.get(b.get('band'), b.get('band') or '?'))}</td>"
+                         f"<td class=n>{fmt(b.get('tried'))}</td><td class=n>{fmt(b.get('kept'))}</td></tr>")
+    table = ('<table class="clean"><thead><tr><th>qui</th><th>tribu</th><th class=n>volonté début → fin</th><th class=n>essais</th>'
+             '<th class=n>gardés</th><th class=n>dont entendus au feu</th><th>ce qu\'il garde</th></tr></thead><tbody>'
+             + ("".join(rows) or '<tr><td colspan=7 class=muted>personne n\'a rien essayé</td></tr>') + "</tbody></table>")
+    by_band = ('<table class="clean"><thead><tr><th>tribu</th><th>volonté</th><th class=n>essais</th><th class=n>gardés</th></tr></thead><tbody>'
+               + "".join(bands) + "</tbody></table>") if bands else ""
+    return ("<h2>Qui a osé quoi</h2><p class=caption>La volonté de chacun au départ et à la fin (elle monte d'un cran à un essai gardé, baisse à un abandon), "
+            "ses essais, ceux qu'il a gardés, ceux qu'il a tirés d'un ouï-dire ; puis les essais par bande de volonté.</p>" + table + by_band)
+
+
+def nights_html(d):
+    """The table « Qui a dit quoi à qui »: the nights the hearths still hold, what was told and by whom."""
+    recs = records_by_id(d)
+    out = []
+    for hearth in d.get("hearth") or []:
+        nights = hearth.get("nights") or []
+        if not nights:
+            continue
+        rows = []
+        for n in sorted(nights, key=lambda n: n.get("day") or 0):
+            told = " ; ".join(f"{h(person_fr(t.get('by')))} : {h(record_fr(d, recs.get(t.get('record'))))}" for t in n.get("told") or [])
+            rows.append(f"<tr><td class=n>{fmt(n.get('day'))}</td><td class=n>{fmt(n.get('present'))}</td><td>{told or '<span class=muted>rien dit</span>'}</td></tr>")
+        out.append(f"<h4>Tribu {h(hearth.get('tribe', ''))}, {plural(len(nights), 'nuit')} gardée{'s' if len(nights) > 1 else ''} au foyer</h4>"
+                   '<table class="clean"><thead><tr><th class=n>jour</th><th class=n>présents</th><th>qui a dit quoi</th></tr></thead><tbody>'
+                   + "".join(rows) + "</tbody></table>")
+    return ("<h3>Qui a dit quoi à qui</h3><p class=muted>Les dernières nuits que le foyer garde (les plus anciennes sont oubliées) : "
+            "chaque chose dite, par qui ; ce que chacun en a cru est dans sa vie (« l'ont cru »).</p>" + ("".join(out) or '<p class="muted">aucune nuit gardée</p>'))
+
+
+def rumours_html(d):
+    """The list « Rumeurs »: places heard and found bare, by year."""
+    rums = d.get("rumours") or []
+    yd = year_days(d)
+    by_year = {}
+    for r in rums:
+        by_year.setdefault((r.get("day", 1) - 1) // yd + 1, []).append(r)
+    items = []
+    for year in sorted(by_year):
+        li = "".join(f"<li>jour {r.get('day')}, {h(person_fr(r.get('body')))} va où {h(person_fr(r.get('from')))} avait dit {place_fr(r.get('place'))} et ne trouve rien</li>"
+                     for r in by_year[year][:50])
+        more = f"<li class=muted>… et {len(by_year[year]) - 50} de plus</li>" if len(by_year[year]) > 50 else ""
+        items.append(f"<li>an {year} : {plural(len(by_year[year]), 'rumeur')} dissipée{'s' if len(by_year[year]) > 1 else ''}<ol class=kept>{li}{more}</ol></li>")
+    return ("<h3>Rumeurs</h3><p class=muted>Un lieu entendu au feu, trouvé nu par celui qui y est allé : il le dit le soir même, et les présents le croient.</p>"
+            + (f"<ul>{''.join(items)}</ul>" if items else '<p class="muted">aucune rumeur dissipée</p>'))
+
+
+def believes_html(d, p):
+    """What a person believes of the land at the end: its places, seen or heard from whom, which day, still true?"""
+    bel = p.get("believes") or []
+    if not bel:
+        return ""
+    recs = records_by_id(d)
+    later = {}
+    for r in d.get("records") or []:
+        if r.get("kind") == "place" and r.get("place"):
+            key = tuple(r["place"])
+            later[key] = max(later.get(key, 0), r.get("day") or 0)
+    seen = sum(1 for b in bel if b.get("seen"))
+    rows = []
+    for b in sorted(bel, key=lambda b: -(b.get("day") or 0)):
+        r = recs.get(b.get("record"))
+        key = tuple(b.get("place") or ())
+        still = "oui" if r is not None and later.get(key, 0) <= (r.get("day") or 0) else "non : un souvenir plus récent le contredit"
+        source = "vu lui-même" if b.get("seen") else f"entendu de {h(person_fr(b.get('by')))}"
+        rows.append(f"<tr><td>{place_fr(b.get('place'))}</td><td>{source}</td><td class=n>{fmt(b.get('day'))}</td>"
+                    f"<td>{h(record_fr(d, r))}</td><td>{still}</td></tr>")
+    return (f"<details><summary>Ce qu'il croit : {plural(len(bel), 'lieu', 'x')}, {seen} vu{'s' if seen > 1 else ''}, {len(bel) - seen} entendu{'s' if len(bel) - seen > 1 else ''}</summary>"
+            '<table class="clean"><thead><tr><th>lieu</th><th>source</th><th class=n>jour</th><th>souvenir</th><th>encore vrai ?</th></tr></thead><tbody>'
+            + "".join(rows) + "</tbody></table></details>")
+
+
 # --- the tables -------------------------------------------------------------------
 
 def years_table(d):
@@ -946,7 +1147,9 @@ def years_table(d):
     head = ("<tr><th>an</th><th>tribu</th><th>début → fin</th><th>‰</th><th>naiss.</th><th>morts</th>"
             + "".join(f"<th>{h(cause_fr(c))}</th>" for c in cs)
             + "<th>15 ans</th><th>femmes seules</th><th>essais / gardés / copiés</th><th>maisons</th><th>camp</th>"
-            "<th>cueilli kJ</th><th>mangé</th><th>gâté</th><th>perdu</th><th>fin</th><th>j. maigres</th><th>j. faibles</th></tr>")
+            "<th>cueilli kJ</th><th>mangé</th><th>gâté</th><th>perdu</th><th>fin</th><th>porté à midi moy. / min</th>"
+            "<th>stock q1 / méd. / q3</th><th>j. maigres</th><th>j. faibles</th>"
+            "<th>lieux connus (ouï-dire seul)</th><th>feu : nuits / dits / entendus</th><th>rumeurs</th></tr>")
     rows = []
     for y in years_of(d):
         f = y.get("food") or {}
@@ -954,6 +1157,10 @@ def years_table(d):
         fw = y.get("fertile_women") or {}
         camp = f"({y['camp'][0]}, {y['camp'][1]})" if y.get("camp") else "-"
         g = y.get("growth_permille")
+        st = f.get("stored_kj") or {}
+        q = (y.get("ways") or {}).get("stock_kj") or {}
+        k = y.get("knowledge") or {}
+        fi = y.get("fire") or {}
         rows.append(f"<tr><td class=n>{y.get('year')}</td><td>{h(y.get('tribe', ''))}</td>"
                     f"<td class=n>{fmt(y.get('population_before'))} → {fmt(y.get('population'))}</td>"
                     f"<td class=n>{'-' if g is None else ('+' if g > 0 else '') + fmt(g)}</td>"
@@ -965,10 +1172,17 @@ def years_table(d):
                     f"<td class=n>{fmt(y.get('homes_moved'))}</td><td>{camp}</td>"
                     f"<td class=n>{fmt(f.get('gathered_kj'))}</td><td class=n>{fmt(f.get('eaten_kj'))}</td>"
                     f"<td class=n>{fmt(f.get('spoiled_kj'))}</td><td class=n>{fmt(f.get('lost_kj'))}</td><td class=n>{fmt(f.get('end_kj'))}</td>"
-                    f"<td class=n>{fmt(hours_to_days(f.get('thin_hours')))}</td><td class=n>{fmt(hours_to_days(f.get('weak_hours')))}</td></tr>")
+                    f"<td class=n>{fmt(st.get('noon_mean'))} / {fmt(st.get('noon_min'))}</td>"
+                    f"<td class=n>{fmt(q.get('q1'))} / {fmt(q.get('median'))} / {fmt(q.get('q3'))}</td>"
+                    f"<td class=n>{fmt(hours_to_days(f.get('thin_hours')))}</td><td class=n>{fmt(hours_to_days(f.get('weak_hours')))}</td>"
+                    f"<td class=n>{fmt(k.get('places'))} ({fmt(k.get('heard_only'))})</td>"
+                    f"<td class=n>{fmt(fi.get('nights'))} / {fmt(fi.get('told'))} / {fmt(fi.get('heard'))}</td>"
+                    f"<td class=n>{fmt(fi.get('dispelled'))}</td></tr>")
     note = ("<p class=muted>Une ligne par an et par tribu. ‰ : croissance pour mille ; 15 ans : vivants / arrivés à quinze ans parmi les nés du run ; "
             "femmes seules : sans époux possible / femmes de 16 à 42 ans ; jours maigres et faibles : heures-personne sous la moitié "
-            "et sous le cinquième de la réserve, divisées par 24.</p>")
+            "et sous le cinquième de la réserve, divisées par 24 ; porté à midi : la nourriture que portent les vivants de la tribu, "
+            "moyenne et minimum des midis de l'an ; stock : quartiles de ce que chacun garde avant de se reposer ; lieux connus : "
+            "lieux distincts dont un vivant de la tribu a un souvenir à la fin de l'an, entre parenthèses ceux que personne n'a vus lui-même.</p>")
     return f'<div class=scroll><table class=years>{head}{"".join(rows)}</table></div>{note}'
 
 
@@ -1063,14 +1277,17 @@ def people_table(d):
         lines = "".join(f"<li>jour {ln.get('day')} : {h(ln.get('what', ''))}</li>" for ln in p.get("lines") or [])
         trials = len(p.get("trials") or [])
         kept = sum(1 for t in p.get("trials") or [] if t.get("kept"))
+        will_txt = fmt(p.get("will"))
+        if p.get("will_start") is not None and p.get("will_start") != p.get("will"):
+            will_txt = f"{fmt(p.get('will_start'))} → {fmt(p.get('will'))}"
         detail = (f"<details><summary>{h(person_fr(p.get('name', p.get('id'))))}</summary>"
                   f"<p class=muted>{h(way_txt)} ; {trials} essai{'s' if trials > 1 else ''}, {kept} gardé{'s' if kept > 1 else ''}, "
                   f"{fmt(p.get('copied'))} copie{'s' if (p.get('copied') or 0) > 1 else ''} ; "
                   f"{fmt(hours_to_days(p.get('thin_hours')))} j. maigres, {fmt(hours_to_days(p.get('weak_hours')))} j. faibles ; "
                   f"{fmt(p.get('gathered_kj'))} kJ cueillis, {fmt(p.get('meals'))} repas, {fmt(p.get('drinks'))} boissons.</p>"
-                  f"<ul class=lines>{lines or '<li class=muted>aucune ligne</li>'}</ul></details>")
+                  f"<ul class=lines>{lines or '<li class=muted>aucune ligne</li>'}</ul>{believes_html(d, p)}</details>")
         rows.append(f"<tr><td class=n>{p.get('id')}</td><td>{h(p.get('tribe', ''))}</td><td>{h(SEX_FR.get(p.get('sex'), p.get('sex') or '-'))}</td>"
-                    f"<td>{born}</td><td>{death}</td><td class=n>{fmt(p.get('children'))}</td><td class=n>{fmt(p.get('will'))}</td><td>{detail}</td></tr>")
+                    f"<td>{born}</td><td>{death}</td><td class=n>{fmt(p.get('children'))}</td><td class=n>{will_txt}</td><td>{detail}</td></tr>")
     return (f"<table class=people><tr><th>n°</th><th>tribu</th><th>sexe</th><th>né</th><th>mort</th><th>enfants</th><th>volonté</th><th>sa vie</th></tr>"
             f"{''.join(rows)}</table>")
 
@@ -1239,6 +1456,9 @@ def run_body(s, r, d):
                 "de fond (maladie, vieillesse, couches) ; le contour dit la tribu, A à gauche de l’année"
                 + (", B à droite" if len(ts) > 1 else "") + ".</p>" + want_chart(d, wide=True).svg("morts de manque et de fond par an"))
     body.append("<h2>Ce qu’ils ont trouvé</h2><p class=caption>Les techniques essayées, gardées et copiées, tribu par tribu.</p>" + techniques_html(d))
+    if has_fire_data(d):
+        body.append(knowledge_html(d))
+        body.append(dared_html(d))
     body.append(deaths_table(d))
     body.append(births_table(d))
     body.append(people_end_table(d))
@@ -1252,6 +1472,9 @@ def run_body(s, r, d):
     detail.append("</div>")
     for t in ts:
         detail.append(f"<h3>Les essais gardés de la tribu {h(t)}, par jour</h3>{kept_list(d, t)}")
+    if has_fire_data(d):
+        detail.append(nights_html(d))
+        detail.append(rumours_html(d))
     detail.append("<h3>Année par année</h3>" + years_table(d))
     detail.append(f"<h3>La vie de chacun ({len(d.get('people', []))})</h3>" + people_table(d))
     body.append(f'<details class=detail><summary>Le détail</summary>{"".join(detail)}</details>')

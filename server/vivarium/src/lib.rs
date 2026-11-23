@@ -15,14 +15,15 @@
 
 #![warn(clippy::float_arithmetic)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use sim::brain::{Brains, News, Way, Ways, Why};
+use sim::brain::{Brains, Mind, News, PlaceKey, Way, Ways, Why};
 use sim::content::{Content, Fire, Trials};
 use sim::map::{Map, Pos, Terrain};
+use sim::memory::{Access, Record, RecordId};
 use sim::time::Calendar;
 use sim::{BodyId, Death, Event, Intention, Sex, World};
 
@@ -291,12 +292,17 @@ pub struct Person {
     pub thoughts: u64,
     /// Its will, 0 to 100 (D50), once its mind was read.
     pub will: Option<u8>,
+    /// Its will when its mind was first read (D50, amended): the innate.
+    pub will_start: Option<u8>,
     /// Its ways at the end of the run, or at its death (D50).
     pub ways: Option<Ways>,
     /// Its trials, in order (D50).
     pub trials: Vec<TrialLine>,
     /// Ways it copied from camp-mates (D50).
     pub copied: u32,
+    /// What it believes of the land at the end (D55): its places, each an
+    /// access to a record, seen by itself or heard from a teller.
+    pub believes: Vec<(PlaceKey, Access)>,
     /// Its own lines of the chronicle.
     pub entries: Vec<Entry>,
     /// Its gauges 24 times a day.
@@ -318,6 +324,10 @@ pub struct TrialLine {
     /// The day the world judged it (from 1) and whether it was kept;
     /// `None` while under trial, or when the body died mid-trial.
     pub judged: Option<(u64, bool)>,
+    /// Its will when it started the trial, when its mind was read.
+    pub will: Option<u8>,
+    /// Whether the step was a kept way heard at the fire (D55).
+    pub heard: bool,
 }
 
 /// What a trial or a copy did, for the counters per year (D50).
@@ -415,6 +425,170 @@ pub struct Found {
     pub kept: [u32; 7],
     /// Ways copied from camp-mates, by kind.
     pub copied: [u32; 7],
+    /// Trials whose step was a kept way heard at the fire (D55).
+    pub heard_trials: u32,
+    /// Ways copied by hearsay (D55): with the fire lit, every copy is one;
+    /// without it, none (the control copies by proximity).
+    pub heard_copies: u32,
+    /// Rumours dispelled: a body went where a teller had said and found
+    /// nothing (D55).
+    pub dispelled: u32,
+    /// Trials started and kept by the will of the body when it started,
+    /// by band ([`WILL_BANDS`]).
+    pub by_will: [(u32, u32); 3],
+}
+
+/// The bands of the will for "who dared what": the timid, the middling,
+/// the bold; `(name, from, to)`, both ends included.
+pub const WILL_BANDS: [(&str, u8, u8); 3] =
+    [("timid", 0, 20), ("middling", 21, 50), ("bold", 51, 100)];
+
+/// The band of a will, an index into [`WILL_BANDS`].
+#[must_use]
+pub fn will_band(will: u8) -> usize {
+    WILL_BANDS
+        .iter()
+        .position(|&(_, from, to)| (from..=to).contains(&will))
+        .unwrap_or(WILL_BANDS.len() - 1)
+}
+
+/// The fire's counts of a tribe's year (D55).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FireYear {
+    /// Nights with something told at the tribe's fire.
+    pub nights: u32,
+    /// Records told.
+    pub told: u32,
+    /// Records heard and held, one per listener.
+    pub heard: u32,
+    /// Rumours dispelled.
+    pub dispelled: u32,
+}
+
+/// What a tribe's living knew of the land at a year's end (D55).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Knowledge {
+    /// Distinct places some living member knows of: seen (D53) or heard
+    /// of (D55).
+    pub places: u32,
+    /// Of them, places some living member holds an access to a record of
+    /// (D55): told at a fire, or heard.
+    pub recorded: u32,
+    /// Of them, places no living member saw itself: known by hearsay only.
+    pub heard_only: u32,
+    /// Accesses held by the living, all places and bodies.
+    pub accesses: u32,
+    /// Of them, accesses got from a teller.
+    pub accesses_heard: u32,
+}
+
+/// A rumour dispelled (D55): `body` went where `from` had said and found
+/// nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rumour {
+    /// The day it was dispelled (from 1).
+    pub day: u64,
+    /// The tribe of who went.
+    pub tribe: u8,
+    /// Who went and found nothing.
+    pub body: BodyId,
+    /// The place.
+    pub place: PlaceKey,
+    /// The record it had believed.
+    pub record: RecordId,
+    /// Who had told it.
+    pub from: BodyId,
+}
+
+/// A night of a hearth (D55), as the memory holds it at the end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Night {
+    /// The tribe of the first present.
+    pub tribe: u8,
+    /// The camp.
+    pub camp: Pos,
+    /// The day that closed with it.
+    pub day: u32,
+    /// How many lay down there.
+    pub present: u32,
+    /// What was told, each with its teller.
+    pub told: Vec<(RecordId, BodyId)>,
+}
+
+/// A record of the common memory at the end (D55), flat for the report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordRow {
+    /// Its number.
+    pub id: RecordId,
+    /// `place`, `water`, `trial` or `night`.
+    pub kind: &'static str,
+    /// Its day.
+    pub day: u32,
+    /// Its witness, or the trial's body; none for a night.
+    pub witness: Option<BodyId>,
+    /// A place's key.
+    pub place: Option<PlaceKey>,
+    /// A trial's way.
+    pub way: Option<Way>,
+    /// Whether the trial was kept.
+    pub kept: Option<bool>,
+    /// Whether the trial's step went up.
+    pub up: Option<bool>,
+    /// The trial body's will when judged.
+    pub will: Option<u8>,
+    /// A place's states, `(kind, bucket)`.
+    pub states: Vec<(u16, u8)>,
+    /// A night's present count.
+    pub present: u32,
+    /// A night's told count.
+    pub told: u32,
+    /// Accesses and nights holding it.
+    pub refs: u32,
+}
+
+fn record_row(id: RecordId, record: &Record, refs: u32) -> RecordRow {
+    let mut row = RecordRow {
+        id,
+        kind: "",
+        day: record.day(),
+        witness: record.witness(),
+        place: None,
+        way: None,
+        kept: None,
+        up: None,
+        will: None,
+        states: Vec::new(),
+        present: 0,
+        told: 0,
+        refs,
+    };
+    match record {
+        Record::Place { place, states, .. } => {
+            row.kind = "place";
+            row.place = Some(*place);
+            row.states.clone_from(states);
+        }
+        Record::Water { .. } => row.kind = "water",
+        Record::Trial {
+            way,
+            up,
+            kept,
+            will,
+            ..
+        } => {
+            row.kind = "trial";
+            row.way = Some(*way);
+            row.up = Some(*up);
+            row.kept = Some(*kept);
+            row.will = Some(*will);
+        }
+        Record::Night { told, present, .. } => {
+            row.kind = "night";
+            row.present = u32::try_from(present.len()).unwrap_or(u32::MAX);
+            row.told = u32::try_from(told.len()).unwrap_or(u32::MAX);
+        }
+    }
+    row
 }
 
 impl Found {
@@ -461,6 +635,10 @@ pub struct TrialEvent {
     pub way: Way,
     /// The step by its kind.
     pub step: Step,
+    /// The body's will when the trial started, when its mind was read.
+    pub will: Option<u8>,
+    /// Whether the step was a kept way heard at the fire (D55).
+    pub heard: bool,
 }
 
 /// A home moved (D50), for the data (22 November 2026): by a trial, by a
@@ -503,6 +681,8 @@ pub struct WaysInUse {
     pub median_worth_tiles: u64,
     /// The median of `stock_kj`.
     pub median_stock_kj: u64,
+    /// The quartiles of `stock_kj`: the first, the median, the third.
+    pub stock_kj_quartiles: [u64; 3],
     /// The camp: the median home (median x, median y).
     pub camp: Option<Pos>,
 }
@@ -648,6 +828,12 @@ fn is_life_line(what: &str) -> bool {
 
 /// Whether a line of a person's page is one of its trials (D50): shown
 /// past [`FULL_LINES_DAYS`] like the lines of life.
+/// The fire's lines of a life (D55): what it told of its trials, the
+/// rumours it dispelled.
+fn is_fire_line(what: &str) -> bool {
+    what.contains("at the fire, ") || what.contains("finds nothing where")
+}
+
 fn is_trial_line(what: &str) -> bool {
     [
         "tries a way",
@@ -705,6 +891,18 @@ pub struct Report {
     pub positions: Vec<(u64, Vec<(BodyId, Pos)>)>,
     /// The homes moved over the run, in order (D50).
     pub home_moves: Vec<HomeMove>,
+    /// The fire's counts by tribe and year (D55).
+    pub fire: BTreeMap<(u8, u64), FireYear>,
+    /// What the tribe's living knew at each year's end (D55).
+    pub knowledge: BTreeMap<(u8, u64), Knowledge>,
+    /// The rumours dispelled, in order (D55).
+    pub rumours: Vec<Rumour>,
+    /// The nights the hearths still hold at the end (D55).
+    pub nights: Vec<Night>,
+    /// The records of the common memory at the end (D55).
+    pub records: Vec<RecordRow>,
+    /// Records written and freed over the run (D55).
+    pub memory_counts: (u64, u64),
     /// Seconds the run took on the wall.
     pub wall_s: f64,
     /// Seconds the world took to be born.
@@ -989,6 +1187,8 @@ pub fn run_watched(
     let mut presence: BTreeMap<(u8, u64), Presence> = BTreeMap::new();
     let mut positions: Vec<(u64, Vec<(BodyId, Pos)>)> = Vec::new();
     let mut home_moves: Vec<HomeMove> = Vec::new();
+    let mut tally = FireTally::default();
+    let mut knowledge: BTreeMap<(u8, u64), Knowledge> = BTreeMap::new();
     // The homes under trial, (before, after), to tell where a given-up
     // home goes back to.
     let mut home_trials: BTreeMap<BodyId, (Pos, Pos)> = BTreeMap::new();
@@ -1238,7 +1438,47 @@ pub fn run_watched(
         }
         // The trials (D50): what the brains tried, judged and copied, in
         // the chronicle, on the person's page and in the counters.
-        for news in brains.news() {
+        let batch = brains.news();
+        // Who held what from whom this dawn (D55): the sentence of a
+        // trial told names those who believed it.
+        let mut believed: BTreeMap<(RecordId, BodyId), Vec<BodyId>> = BTreeMap::new();
+        for news in &batch {
+            if let News::Heard {
+                body, record, from, ..
+            } = news
+            {
+                believed.entry((*record, *from)).or_default().push(*body);
+            }
+        }
+        for news in batch {
+            if fire_news(
+                &news,
+                FireScene {
+                    tick,
+                    day,
+                    year,
+                    brains: &brains,
+                    believed: &believed,
+                },
+                (&mut people, &mut chronicle),
+                &mut tally,
+            ) {
+                continue;
+            }
+            let (heard, will) = match &news {
+                News::Trying { body, heard, .. } => (*heard, brains.mind(*body).map(Mind::will)),
+                News::Tried { body, way, .. } => (
+                    false,
+                    people.get(body).and_then(|p| {
+                        p.trials
+                            .iter()
+                            .rev()
+                            .find(|t| t.way == *way && t.judged.is_none())
+                            .and_then(|t| t.will)
+                    }),
+                ),
+                _ => (false, None),
+            };
             let home_move = |body: BodyId, from: Pos, to: Pos, how: &'static str| HomeMove {
                 tick,
                 day,
@@ -1297,6 +1537,8 @@ pub fn run_watched(
                         step: step.clone(),
                         kind,
                         judged: None,
+                        will,
+                        heard,
                     });
                     (
                         *body,
@@ -1335,8 +1577,7 @@ pub fn run_watched(
                         kind,
                     )
                 }
-                // The fire's news (D55) reach the page in its own pull
-                // request (the lab's sections); the chronicle stays as it is.
+                // The fire's news (D55) were read above.
                 News::Told { .. } | News::Heard { .. } | News::Dispelled { .. } => continue,
                 News::Copied {
                     body,
@@ -1377,6 +1618,8 @@ pub fn run_watched(
                 told,
                 way,
                 step: kind,
+                will,
+                heard,
             });
         }
         // Noon: where the living stand, by cell (the lab's map) and one
@@ -1399,9 +1642,21 @@ pub fn run_watched(
             }
             standing.sort_unstable_by_key(|&(id, _)| id);
             positions.push((day, standing));
+            // The stored food at noon (D55): what the tribe's living carry.
+            let carried = reserves(&world, content, &people);
+            for (tribe, &j) in carried.iter().enumerate().take(tribes) {
+                food.entry((u8::try_from(tribe).expect("two"), year))
+                    .or_default()
+                    .noon(j);
+            }
         }
         if tick % ticks_per_sample == 0 {
             for (id, person) in &mut people {
+                if person.will_start.is_none()
+                    && let Some(mind) = brains.mind(*id)
+                {
+                    person.will_start = Some(mind.will());
+                }
                 let Some(body) = world.body(*id) else {
                     continue;
                 };
@@ -1441,13 +1696,16 @@ pub fn run_watched(
                     food.entry((t, year + 1)).or_default().start_j = j;
                 }
                 ways_in_use.insert((t, year), ways_in_use_of(&world, &brains, &people, t));
+                knowledge.insert((t, year), knowledge_of(&world, &brains, &people, t));
             }
         }
     }
     for (id, person) in &mut people {
         if let Some(mind) = brains.mind(*id) {
             person.will = Some(mind.will());
+            person.will_start.get_or_insert(mind.will());
             person.ways = Some(*mind.ways());
+            person.believes = mind.believes().collect();
         }
         person.thoughts = brains
             .mind(*id)
@@ -1464,6 +1722,32 @@ pub fn run_watched(
             .map(sim::Body::id)
             .collect();
     }
+    // The common memory at the end (D55): its records, and the nights the
+    // hearths still hold.
+    let memory = brains.memory();
+    let records: Vec<RecordRow> = memory
+        .records()
+        .map(|(id, record, refs)| record_row(id, record, refs))
+        .collect();
+    let nights: Vec<Night> = brains
+        .hearths()
+        .iter()
+        .flat_map(|(camp, ids)| {
+            ids.iter().filter_map(|id| match memory.get(*id) {
+                Some(Record::Night {
+                    day, told, present, ..
+                }) => Some(Night {
+                    tribe: present.first().map_or(0, |b| tribe_of(&people, *b)),
+                    camp: *camp,
+                    day: *day,
+                    present: u32::try_from(present.len()).unwrap_or(u32::MAX),
+                    told: told.clone(),
+                }),
+                _ => None,
+            })
+        })
+        .collect();
+    let memory_counts = memory.counts();
     let wall_s = started.elapsed().as_secs_f64();
     let placed_ahead = placer.as_ref().map_or(0, sim::ahead::Placer::placed);
     drop(placer);
@@ -1499,6 +1783,12 @@ pub fn run_watched(
         presence,
         positions,
         home_moves,
+        fire: tally.fire,
+        knowledge,
+        rumours: tally.rumours,
+        nights,
+        records,
+        memory_counts,
         map_side,
         camps,
         ticks,
@@ -1601,6 +1891,12 @@ fn ways_in_use_of(
     let median_worth_tiles = ways[mid].worth_half_tiles;
     ways.sort_by_key(|w| w.stock_kj);
     let median_stock_kj = ways[mid].stock_kj;
+    let last = ways.len() - 1;
+    let stock_kj_quartiles = [
+        ways[last / 4].stock_kj,
+        median_stock_kj,
+        ways[last * 3 / 4].stock_kj,
+    ];
     let mut xs: Vec<i64> = ways.iter().map(|w| i64::from(w.home.x)).collect();
     let mut ys: Vec<i64> = ways.iter().map(|w| i64::from(w.home.y)).collect();
     let camp = Pos::new(
@@ -1612,7 +1908,186 @@ fn ways_in_use_of(
         sleep_out: u32::try_from(ways.iter().filter(|w| w.sleep_out).count()).unwrap_or(u32::MAX),
         median_worth_tiles,
         median_stock_kj,
+        stock_kj_quartiles,
         camp: Some(camp),
+    }
+}
+
+/// What the tribe's living know of the land (D55): their accesses to
+/// places, and how many came from a teller.
+fn knowledge_of(
+    world: &World,
+    brains: &Brains,
+    people: &BTreeMap<BodyId, Person>,
+    tribe: u8,
+) -> Knowledge {
+    // Each place known, whether some living member saw it itself, and
+    // whether some member holds a record of it.
+    let mut seen: BTreeMap<PlaceKey, (bool, bool)> = BTreeMap::new();
+    let mut out = Knowledge::default();
+    for body in world
+        .bodies()
+        .iter()
+        .filter(|b| b.condition().vitality.points() > 0)
+        .filter(|b| people.get(&b.id()).is_some_and(|p| p.tribe == tribe))
+    {
+        let Some(mind) = brains.mind(body.id()) else {
+            continue;
+        };
+        // A place without an access is a draft of its own look (D53).
+        for key in mind.places_known() {
+            seen.entry(key).or_default().0 = true;
+        }
+        for (key, access) in mind.believes() {
+            let own = access.is_own(body.id());
+            out.accesses += 1;
+            out.accesses_heard += u32::from(!own);
+            let entry = seen.entry(key).or_default();
+            entry.0 = own;
+            entry.1 = true;
+        }
+    }
+    out.places = u32::try_from(seen.len()).unwrap_or(u32::MAX);
+    out.recorded = u32::try_from(seen.values().filter(|s| s.1).count()).unwrap_or(u32::MAX);
+    out.heard_only = u32::try_from(seen.values().filter(|s| !s.0).count()).unwrap_or(u32::MAX);
+    out
+}
+
+/// How many rumours dispelled the report keeps one by one (`rumours[]`
+/// and the chronicle's sentence): the first so many; the counts
+/// (`years[].fire.dispelled`, `found[].heard.dispelled`) take them all. A
+/// camp of 25 dispels about 27 a day, mostly at a look in passing: written
+/// one by one over twenty years they made the data file 17 MB.
+pub const RUMOURS_KEPT: usize = 1000;
+
+/// The fire's tallies over a run (D55).
+#[derive(Debug, Default)]
+struct FireTally {
+    /// The counts by tribe and year.
+    fire: BTreeMap<(u8, u64), FireYear>,
+    /// The rumours dispelled, in order.
+    rumours: Vec<Rumour>,
+    /// The nights told at, (camp, day), to count a night once.
+    nights_told: BTreeSet<(Pos, u32)>,
+}
+
+/// What the fire's news (D55) need to be read.
+#[derive(Clone, Copy)]
+struct FireScene<'a> {
+    tick: u64,
+    day: u64,
+    year: u64,
+    brains: &'a Brains,
+    believed: &'a BTreeMap<(RecordId, BodyId), Vec<BodyId>>,
+}
+
+/// "person 7, person 9 and person 22 believed it", or "nobody believed it".
+fn believed_words(who: &[BodyId]) -> String {
+    match who {
+        [] => String::from("nobody believed it"),
+        [one] => format!("{} believed it", name(*one)),
+        [rest @ .., last] => {
+            let heads: Vec<String> = rest.iter().map(|b| name(*b)).collect();
+            format!("{} and {} believed it", heads.join(", "), name(*last))
+        }
+    }
+}
+
+/// Reads a piece of the fire's news (D55) into the counters, the rumours
+/// and the chronicle; `true` when it was one. A trial told makes a
+/// sentence ("at the fire, person 14 says its home moved did it good;
+/// person 7 and person 9 believed it"); a place or water told is counted;
+/// a rumour dispelled makes a sentence and a rumour.
+fn fire_news(
+    news: &News,
+    scene: FireScene<'_>,
+    (people, chronicle): (&mut BTreeMap<BodyId, Person>, &mut Vec<Entry>),
+    tally: &mut FireTally,
+) -> bool {
+    let tribe_of =
+        |people: &BTreeMap<BodyId, Person>, body: BodyId| people.get(&body).map_or(0, |p| p.tribe);
+    let mut line = |people: &mut BTreeMap<BodyId, Person>, body: BodyId, what: String| {
+        let entry = Entry {
+            tick: scene.tick,
+            day: scene.day,
+            what,
+        };
+        chronicle.push(entry.clone());
+        people.entry(body).or_default().entries.push(entry);
+    };
+    match news {
+        News::Told {
+            body,
+            record,
+            camp,
+            day: night,
+            ..
+        } => {
+            let tribe = tribe_of(people, *body);
+            let night_new = tally.nights_told.insert((*camp, *night));
+            let counts = tally.fire.entry((tribe, scene.year)).or_default();
+            counts.told += 1;
+            counts.nights += u32::from(night_new);
+            if let Some(Record::Trial {
+                way, after, kept, ..
+            }) = scene.brains.memory().get(*record)
+            {
+                let who = scene
+                    .believed
+                    .get(&(*record, *body))
+                    .map_or(&[][..], Vec::as_slice);
+                let what = format!(
+                    "at the fire, {} says its {} {}; {}",
+                    name(*body),
+                    way_words(*way, after),
+                    if *kept {
+                        "did it good"
+                    } else {
+                        "did it no good"
+                    },
+                    believed_words(who)
+                );
+                line(people, *body, what);
+            }
+            true
+        }
+        News::Heard { body, .. } => {
+            tally
+                .fire
+                .entry((tribe_of(people, *body), scene.year))
+                .or_default()
+                .heard += 1;
+            true
+        }
+        News::Dispelled {
+            body,
+            place,
+            record,
+            from,
+            ..
+        } => {
+            let tribe = tribe_of(people, *body);
+            tally.fire.entry((tribe, scene.year)).or_default().dispelled += 1;
+            if tally.rumours.len() >= RUMOURS_KEPT {
+                return true;
+            }
+            tally.rumours.push(Rumour {
+                day: scene.day,
+                tribe,
+                body: *body,
+                place: *place,
+                record: *record,
+                from: *from,
+            });
+            let what = format!(
+                "{} finds nothing where {} had said: the place is bare",
+                name(*body),
+                name(*from)
+            );
+            line(people, *body, what);
+            true
+        }
+        _ => false,
     }
 }
 
@@ -1638,9 +2113,29 @@ pub struct Balance {
     pub thin_samples: u64,
     /// Samples of a living person weak.
     pub weak_samples: u64,
+    /// Carried by its living at noon, summed over the year's noons (D55:
+    /// the stored food, the lead's metric).
+    pub noon_sum_j: u64,
+    /// The least carried at a noon of the year.
+    pub noon_min_j: Option<u64>,
+    /// Noons counted.
+    pub noons: u64,
 }
 
 impl Balance {
+    /// A noon's carried food.
+    pub fn noon(&mut self, j: u64) {
+        self.noon_sum_j += j;
+        self.noon_min_j = Some(self.noon_min_j.map_or(j, |m| m.min(j)));
+        self.noons += 1;
+    }
+
+    /// The mean of the year's noons, in joules; `None` without a noon.
+    #[must_use]
+    pub fn noon_mean_j(&self) -> Option<u64> {
+        (self.noons > 0).then(|| self.noon_sum_j / self.noons)
+    }
+
     /// Counts `grams` of `material` gathered.
     pub fn gathered(&mut self, content: &Content, material: &str, grams: u32) {
         self.gathered_j += joules(content, material, grams);
@@ -2252,12 +2747,29 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                 .iter()
                 .position(|s| *s == t.step)
                 .expect("one of seven");
+            let band = t.will.map(will_band);
             match t.told {
-                Told::Trying => found.tried[i] += 1,
-                Told::Tried(kept) => found.kept[i] += u32::from(kept),
-                Told::Copied => found.copied[i] += 1,
+                Told::Trying => {
+                    found.tried[i] += 1;
+                    found.heard_trials += u32::from(t.heard);
+                    if let Some(b) = band {
+                        found.by_will[b].0 += 1;
+                    }
+                }
+                Told::Tried(kept) => {
+                    found.kept[i] += u32::from(kept);
+                    if let Some(b) = band {
+                        found.by_will[b].1 += u32::from(kept);
+                    }
+                }
+                Told::Copied => {
+                    found.copied[i] += 1;
+                    found.heard_copies += u32::from(self.settings.fire);
+                }
             }
         }
+        found.dispelled = u32::try_from(self.rumours.iter().filter(|r| r.tribe == tribe).count())
+            .unwrap_or(u32::MAX);
         found
     }
 
@@ -2553,11 +3065,9 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             );
         }
         h.push_str("<table class=\"chronicle\">");
-        for entry in person
-            .entries
-            .iter()
-            .filter(|e| full || is_life_line(&e.what) || is_trial_line(&e.what))
-        {
+        for entry in person.entries.iter().filter(|e| {
+            full || is_life_line(&e.what) || is_trial_line(&e.what) || is_fire_line(&e.what)
+        }) {
             let _ = write!(
                 h,
                 "<tr><td>day {} · tick {}</td><td>{}</td></tr>",

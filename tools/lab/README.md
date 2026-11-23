@@ -76,6 +76,9 @@ Three screens:
   children and infants per camp, the ages, `--fed`, the days (the year of
   50 days is shown), the seeds (a list `1,2,3`, a range `1-10`, or both),
   "avec et sans épreuves" (two runs a seed, the second with `--no-trials`),
+  "avec et sans feu" (two more a seed, `-feu` and `-sansfeu`, the latter
+  with `--no-fire`: the control of D55, imitating by proximity as before
+  the fire),
   the cadence (1 by default; 10 is the game's and ten times slower) and the
   runs at a time. It writes `<runs-dir>/plans/<name>.json` and launches the
   series. Under the form, every existing plan has **Relancer** (run it
@@ -194,7 +197,9 @@ from) are the lab's own too; `soul-runs` ignores them.
 
 Expansion: one run per seed, named `<name>-s<seed>`; with
 `with_and_without_trials`, two per seed, `-avec` and `-sans` (the latter
-with `--no-trials`). A `--seed` inside `args` wins over `seeds`; `args` may
+with `--no-trials`); with `with_and_without_fire`, twice again, `-feu`
+and `-sansfeu` (the latter with `--no-fire`). A `--seed` inside `args`
+wins over `seeds`; `args` may
 be a list or a shell-like string. The `lab` key is the lab's own and
 `soul-runs` ignores it; a plan without it (written by hand or by
 `soul-runs`) is read all the same, the form being prefilled from its
