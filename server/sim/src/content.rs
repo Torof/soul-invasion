@@ -212,6 +212,10 @@ fn one_night() -> Vec<(u32, u32)> {
     vec![(0, 1)]
 }
 
+fn nobody_calm() -> Vec<(u32, u32)> {
+    vec![(0, 0)]
+}
+
 fn grove_64() -> u32 {
     64
 }
@@ -1071,6 +1075,12 @@ pub struct Trials {
     /// percent), the wills rising, straight lines between the points, the
     /// first held before and the last after.
     pub try_percent_by_will: Vec<(u32, u32)>,
+    /// The daily chance, in per mille, that a body of `will` with nothing
+    /// wrong starts a trial all the same, a search for better (D50,
+    /// amended 24 November 2026: the bold try when all is well): (will,
+    /// per mille), as `try_percent_by_will`. None when absent.
+    #[serde(default = "nobody_calm")]
+    pub calm_try_permille_by_will: Vec<(u32, u32)>,
     /// The nights a body must have slept at a place before a trial may
     /// set its home there (D50, amended 23 November 2026: the home goes to
     /// a place it lived): (will, nights), the wills rising, straight lines
@@ -1152,6 +1162,7 @@ impl Default for Trials {
             trial_after_days: 0,
             trial_days: 1,
             try_percent_by_will: vec![(0, 0)],
+            calm_try_permille_by_will: nobody_calm(),
             home_nights_by_will: one_night(),
             lived_keep_permille: 1000,
             grove_tiles: 64,
@@ -1203,10 +1214,19 @@ impl Trials {
         along(&self.try_percent_by_will, u64::from(will) * 1000, 1)
     }
 
+    /// The daily chance, in per mille, that a body of `will` with nothing
+    /// wrong starts a trial all the same.
+    #[must_use]
+    pub fn calm_try_permille(&self, will: u8) -> u64 {
+        along(&self.calm_try_permille_by_will, u64::from(will) * 1000, 1)
+    }
+
     /// Whether anybody ever tries or copies anything.
     #[must_use]
     pub fn on(&self) -> bool {
-        self.try_percent_by_will.iter().any(|p| p.1 > 0) || self.imitate_percent > 0
+        self.try_percent_by_will.iter().any(|p| p.1 > 0)
+            || self.calm_try_permille_by_will.iter().any(|p| p.1 > 0)
+            || self.imitate_percent > 0
     }
 
     fn validate(&self) -> Result<(), ContentError> {
@@ -1215,6 +1235,12 @@ impl Trials {
         if self.try_percent_by_will.is_empty()
             || !rising
             || self.try_percent_by_will.iter().any(|p| !percent(p.1))
+            || self.calm_try_permille_by_will.is_empty()
+            || !self
+                .calm_try_permille_by_will
+                .windows(2)
+                .all(|p| p[0].0 < p[1].0)
+            || self.calm_try_permille_by_will.iter().any(|p| p.1 > 1000)
             || self.lived_keep_permille > 1000
             || !(1..=1024).contains(&self.grove_tiles)
             || self.home_nights_by_will.is_empty()
@@ -1225,7 +1251,7 @@ impl Trials {
         {
             return Err(ContentError::Needs(
                 "trials: try_percent_by_will not empty, its wills rising and its percents at \
-                 most 100; home_nights_by_will not empty, its wills rising; \
+                 most 100; calm_try_permille_by_will likewise, at most 1000; home_nights_by_will not empty, its wills rising; \
                  lived_keep_permille at most 1000; grove_tiles 1 to 1024; imitate_percent and imitate_loss_percent at \
                  most 100; trial_days positive",
             ));

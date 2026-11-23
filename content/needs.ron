@@ -169,6 +169,11 @@
     // aussi acquise… la plupart des gens sont frileux… très peu de gens
     // sont des aventuriers", and "les leçons d'historien").
     // try_percent_by_will: a floor at zero: a will of 0 never tries.
+    // calm_try_permille_by_will: with nothing wrong, the bold try all the
+    //                    same (the lead, 24 November 2026), modestly:
+    //                    nobody under will 40, 1 % a day at 70, 2 % at 100:
+    //                    an adventurer of 90 about one search a year of
+    //                    fifty days, a calm tribe of twenty-five one or two.
     // will_innate:       the innate will drawn skewed, by percentile of the
     //                    bodies: the 80 % most timid between 5 and 20, the
     //                    next between 20 and 40, the last 7 % up to 90: one
@@ -223,6 +228,7 @@
         trial_after_days: 3,
         trial_days: 5,
         try_percent_by_will: [(0, 0), (100, 30)],
+        calm_try_permille_by_will: [(0, 0), (40, 0), (100, 20)],
         home_nights_by_will: [(0, 3), (70, 1)],
         lived_keep_permille: 950,
         grove_tiles: 64,

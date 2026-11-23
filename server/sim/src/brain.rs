@@ -3363,11 +3363,7 @@ impl Brains {
                     heard_nights: trial.heard.nights,
                     at: now,
                 });
-            } else if mind.trial.is_none()
-                && mind.distress_days >= trials.trial_after_days
-                && scatter::roll(seed, purpose::TRIAL_TRY, &[u64::from(id.0), day]) % 100
-                    < trials.try_percent(mind.will)
-            {
+            } else if mind.trial.is_none() && wants_to_try(trials, seed, (id, day), mind) {
                 let child = world.age_milli(body) < 16_000;
                 if let Some(news) = start_trial(world, rules, &self.memory, id, mind, child, day) {
                     mind.changed_day = Some(day);
@@ -5798,6 +5794,20 @@ fn follow_or_wait(
         });
     }
     Some(d)
+}
+
+/// Whether `id`, under no trial, starts one today (D50): in distress long
+/// enough, by the daily chance of its will; with nothing wrong, by the
+/// far smaller chance of a bold will to search for better (amended 24
+/// November 2026), judged the same.
+fn wants_to_try(trials: &Trials, seed: u64, (id, day): (BodyId, u64), mind: &Mind) -> bool {
+    if mind.distress_days >= trials.trial_after_days {
+        scatter::roll(seed, purpose::TRIAL_TRY, &[u64::from(id.0), day]) % 100
+            < trials.try_percent(mind.will)
+    } else {
+        scatter::roll(seed, purpose::TRIAL_CALM, &[u64::from(id.0), day]) % 1000
+            < trials.calm_try_permille(mind.will)
+    }
 }
 
 /// What walking `tiles` costs `body`, in per mille of a day's food (D50,
@@ -11785,5 +11795,32 @@ mod tests {
         assert_eq!(night.day.len(), LIVED_MAX);
         assert_eq!(night.walk, walk_permille(&rules, body, 1000));
         assert_eq!((mind.day_places.len(), mind.walked_today), (0, 0));
+    }
+
+    #[test]
+    fn with_nothing_wrong_only_the_bold_try_and_seldom() {
+        let mut trials = rules().needs.trials;
+        trials.try_percent_by_will = vec![(0, 0), (100, 30)];
+        trials.trial_after_days = 2;
+        trials.calm_try_permille_by_will = vec![(0, 0), (40, 0), (100, 20)];
+        let tries = |trials: &Trials, will: u8, distress: u32| {
+            let mut mind = Mind::new(Pos::new(5, 5));
+            mind.will = will;
+            mind.distress_days = distress;
+            (0..5000)
+                .filter(|&day| wants_to_try(trials, 9, (BodyId(3), day), &mind))
+                .count()
+        };
+        // Calm: the timid never, the bold about one day in fifty.
+        assert_eq!(tries(&trials, 20, 0), 0);
+        let bold = tries(&trials, 100, 0);
+        assert!((60..=140).contains(&bold), "{bold}");
+        assert!(tries(&trials, 70, 0) < bold);
+        // In distress: the distress' chance, far greater.
+        assert!(tries(&trials, 100, 2) > 1000);
+        // None when the content holds none.
+        trials.calm_try_permille_by_will = vec![(0, 0)];
+        assert_eq!(tries(&trials, 100, 0), 0);
+        assert_eq!(trials.calm_try_permille(100), 0);
     }
 }

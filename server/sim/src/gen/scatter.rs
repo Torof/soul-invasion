@@ -155,6 +155,9 @@ pub(crate) mod purpose {
     pub(crate) const TRIAL_TRY: u64 = 0x0d50_7e57;
     /// See `TRIAL_WILL`.
     pub(crate) const TRIAL_WAY: u64 = 0x0d50_3a7a;
+    /// See `TRIAL_WILL`: whether a body with nothing wrong tries all the
+    /// same today (D50, amended 24 November 2026).
+    pub(crate) const TRIAL_CALM: u64 = 0x0d50_ca1f;
     /// See `TRIAL_WILL`.
     pub(crate) const TRIAL_COPY: u64 = 0x0d50_c0b1;
     /// See `TRIAL_WILL`. Since D55 only the control without the fire draws
@@ -176,7 +179,7 @@ pub(crate) mod purpose {
 
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 69] = [
+    pub(crate) const ALL: [u64; 70] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -240,6 +243,7 @@ pub(crate) mod purpose {
         TRIAL_WILL,
         TRIAL_TRY,
         TRIAL_WAY,
+        TRIAL_CALM,
         TRIAL_COPY,
         TRIAL_COPY_WAY,
         TRIAL_COPY_LOSS,
