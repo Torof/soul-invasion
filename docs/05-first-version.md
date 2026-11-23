@@ -708,6 +708,33 @@ their teller). On the ten seeds: trips to a place found bare −44 % and
 +13 % (7 of 10), without trials births −6 % and one tribe's fall on seed
 6; numbers in D55.
 
+**Lot 5b, PR 1: the decisions at the fire** (23 November 2026, D56; D55
+amended; the proposal `content/ai-reserve/review/vivarium/lot-5/proposition-veillee-trois-temps.md`,
+the lead's yes to all of it). The vigil gets a third time: each present
+says, by decreasing will, where it goes tomorrow, from its own memory
+and at its own pace: it joins a call with room, calls others to a place
+it saw, goes alone to a place heard of, goes looking, or says nothing; a
+place taken whole is passed over. A caller and those who joined walk out
+together at dawn (`Intention::Follow`), each takes a plant no mate took,
+and the caller calls them home when half are full. One byte a day keeps
+each one's habit. Placeholders in `content/needs.ron`, section
+`decisions`; `--no-decisions` as the control; the JSON's
+`years[].decisions` and `people[].habit`. **The five-year try** (two
+tribes of 25, seed 1, with and without): alive 61 / 62, dead 5 / 6, none
+of want, gathered 112.3 / 110.5 million kJ, carried at noon 1,625 /
+1,357 thousand kJ, places found bare 9,222 / 9,814; 30 % of those who
+joined walked behind their caller; mothers of infants as far from the
+camp as the other adults (152 / 146 tiles at noon): the pace alone does
+not keep them near (D56). Then two rules the lead decided on these
+measures: carrying an infant slows its carrier to 75 % of its pace, and
+the caller looks behind on its way and waits for a member it sees
+walking after it; on one seed neither brings the mothers nearer
+(198 / 129 tiles with both) and the waits cost the food carried at noon
+a quarter (D56). On the ten seeds of the standard plan, against lot 5a:
+without trials alive 82.6 → 88.5 (6 of 10), carried at noon +20 % (10 of
+10); with trials alive 79.9 → 77.5 (8 of 10 lower), the births lost,
+supposedly, where sleeping out spread (D56).
+
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
 slopes drawn by the client from them (D44), then the relief in the

@@ -22,8 +22,8 @@ use sim::map::Pos;
 use sim::{BodyId, Death, Sex};
 
 use crate::{
-    DEATHS, Person, Report, STEPS, Step, TrialLine, WILL_BANDS, WorldKind, is_fire_line,
-    is_life_line, is_trial_line, name, thinned, tribe_name,
+    ACT_KEYS, DEATHS, DecisionYear, Person, Report, STEPS, Step, TrialLine, WILL_BANDS, WorldKind,
+    is_fire_line, is_life_line, is_trial_line, name, thinned, tribe_name,
 };
 
 /// The top-level keys, in the order they are written.
@@ -279,6 +279,7 @@ impl Report {
                 "seed": s.seed,
                 "trials": s.trials,
                 "fire": s.fire,
+                "decisions": s.decisions,
                 "content": s.content.as_deref().and_then(|p| p.file_name()).and_then(|n| n.to_str()),
             },
             "map_tiles": [self.map_side.0, self.map_side.1],
@@ -403,6 +404,7 @@ impl Report {
                     })
                 });
                 let fire = self.fire.get(&(y.tribe, y.year)).copied().unwrap_or_default();
+                let dec = self.decisions.get(&(y.tribe, y.year)).copied().unwrap_or_default();
                 let knowledge = self.knowledge.get(&(y.tribe, y.year)).copied();
                 let known = self.known_places.get(&(y.tribe, y.year));
                 json!({
@@ -440,6 +442,7 @@ impl Report {
                             "q3": y.ways.stock_kj_quartiles[2],
                         },
                     })),
+                    "decisions": decisions_json(&dec),
                     "fire": {
                         "nights": fire.nights,
                         "told": fire.told,
@@ -557,6 +560,17 @@ impl Report {
             "meals": person.meals.0,
             "drinks": person.drinks,
             "thoughts": person.thoughts,
+            "habit": {
+                "days": ACT_KEYS.iter().zip(person.habit).map(|(k, n)| ((*k).to_owned(), json!(n))).collect::<serde_json::Map<String, Value>>(),
+                "found": person.habit_found,
+                "bare": person.habit_bare,
+                "years": person.habit_years.iter().map(|(year, counts)| json!({
+                    "year": year,
+                    "days": by_act(counts.days),
+                    "fed_days": by_act(counts.fed),
+                    "found": by_act(counts.found),
+                })).collect::<Vec<_>>(),
+            },
             "lines": lines,
         })
     }
@@ -676,6 +690,54 @@ impl Report {
         };
         (count(50), count(20))
     }
+}
+
+/// Counts by [`sim::brain::Act`], keyed as the report says them.
+fn by_act(counts: [u32; 5]) -> Value {
+    let mut map = serde_json::Map::new();
+    for (key, count) in ACT_KEYS.iter().zip(counts) {
+        map.insert((*key).to_owned(), json!(count));
+    }
+    Value::Object(map)
+}
+
+/// A tribe-year's decisions at the fire, its groups, its days by what was
+/// done and the mothers' distance at noon (D56).
+fn decisions_json(dec: &DecisionYear) -> Value {
+    let mean = |sum: u64, n: u32| (n > 0).then(|| sum / u64::from(n));
+    json!({
+        "evenings": dec.evenings,
+        "full_told_evenings": dec.full_told,
+        "said": by_act(dec.said),
+        "calls_full": dec.calls_full,
+        "calls_skipped": dec.skipped,
+        "absent": dec.absent,
+        "groups": {
+            "formed": dec.groups,
+            "members": dec.members,
+            "followed": dec.followed,
+            "full": dec.full,
+            "left": dec.left,
+            "ended": {"home": dec.ended[0], "bare": dec.ended[1], "night": dec.ended[2]},
+            "moved_on": dec.moved_on,
+            "stretch_ticks": {"mean": mean(dec.stretch.0, dec.stretch.1), "max": dec.stretch.2, "groups": dec.stretch.1},
+            "together": dec.together,
+            "waited_ticks": dec.waited,
+            "waited_groups": dec.waited_groups,
+        },
+        "days_by_act": by_act(dec.days),
+        "trips": {
+            "found": by_act(dec.found),
+            "bare": by_act(dec.bare),
+            "fed_days": by_act(dec.fed),
+        },
+        "distance_noon_tiles": {
+            "mothers": mean(dec.distance.0, dec.distance.1),
+            "mother_noons": dec.distance.1,
+            "others": mean(dec.distance.2, dec.distance.3),
+            "other_noons": dec.distance.3,
+        },
+    })
 }
 
 #[cfg(test)]

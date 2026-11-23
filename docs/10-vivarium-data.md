@@ -54,6 +54,7 @@ clock, the only field no seed decides.
 | `meta.settings.seed` | The run's seed | integer |
 | `meta.settings.trials` | The brains try, judge and copy their ways (false: `--no-trials`) | boolean |
 | `meta.settings.fire` | The evening fire and the common memory, D55 (false: `--no-fire`); since 23 November 2026 | boolean |
+| `meta.settings.decisions` | The decisions at the evening fire, D56 (false: `--no-decisions`); since 23 November 2026 | boolean |
 | `meta.settings.content` | The content directory given, its last component; `null` when found from the working directory | string |
 | `meta.map_tiles` | The world's size | `[width, height]` tiles |
 | `meta.camps` | The camps' starting positions, A first | `[[x, y], …]` |
@@ -128,6 +129,33 @@ clock, the only field no seed decides.
 | `years[].knowledge.accesses` | Accesses to places held by the living, all places and bodies | count |
 | `years[].knowledge.accesses_heard` | Of them, accesses got from a teller | count |
 | `years[].knowledge.where` | The places themselves (since 23 November 2026, the lab's map): each place's key, its 16-tile square, and 1 when some living member saw it itself, 0 when known by hearsay only; in key order, the first 1,000 (`places` counts them all) | `[[x, y, seen], …]` |
+| `years[].decisions.evenings` | Evenings the tribe's fire said decisions (D56): two or more lay down at the camp | count |
+| `years[].decisions.full_told_evenings` | Of them, evenings someone told a place full (the look out is drawn half as often then) | count |
+| `years[].decisions.said.*` | What each present said at the fire, by what: `alone` (went alone to a place of its choice, D56), `called` (called others to a place it saw), `joined` (joined a call), `looked` (said it goes looking), `nothing` (no plan: absent from the fire, a child without its mother there, one carrying enough, or the decisions off) | count |
+| `years[].decisions.calls_full` | Calls that filled: as many joined as the caller saw room for | count |
+| `years[].decisions.calls_skipped` | Choices passed over because the place was already taken whole by a call or by those going alone | count |
+| `years[].decisions.absent` | Members of the camp not at its fire on an evening of decisions, summed over the evenings | person-evenings |
+| `years[].decisions.groups.formed` | Groups formed at the fire: a caller and one or more who joined | count |
+| `years[].decisions.groups.members` | Their members, the callers counted | count |
+| `years[].decisions.groups.followed` | Members who walked behind their caller at least once that day (`Follow`, on the way there or home) | count |
+| `years[].decisions.groups.full` | Members who carried what they wanted before the group went home | count |
+| `years[].decisions.groups.left` | Members who left their group on the way (lost sight of the caller, or the place out of reach) | count |
+| `years[].decisions.groups.ended.*` | How the groups ended: `home` (the caller called them home), `bare` (the place bare or out of reach and nothing to go on to), `night` (night came first, or the caller died) | count |
+| `years[].decisions.groups.moved_on` | Groups that found their place bare and went on to the caller's next | count |
+| `years[].decisions.groups.stretch_ticks.mean` | The stretch of a group: from its caller's arrival at the place to its last member's; the mean over the groups where both arrived; `null` without one | ticks |
+| `years[].decisions.groups.stretch_ticks.max` | The longest | ticks |
+| `years[].decisions.groups.stretch_ticks.groups` | The groups measured | count |
+| `years[].decisions.groups.together` | Members who stood at the place within a minute of their caller (the caller not counted): those who walked with it | count |
+| `years[].decisions.groups.waited_ticks` | Ticks the callers waited on the way for a member left behind ("look behind", D56) | ticks |
+| `years[].decisions.groups.waited_groups` | Groups whose caller waited so | count |
+| `years[].decisions.days_by_act.*` | Days lived by adults and children with a day of their own, by what they had said (the keys of `said`) | person-days |
+| `years[].decisions.trips.found.*` | Places found: seen by one and told at the fire to a listener who did not know them, by what the finder did that day | count |
+| `years[].decisions.trips.bare.*` | Places gone to and found bare, by what was done that day | count |
+| `years[].decisions.trips.fed_days.*` | Days one gathered a day of its need or more, by what was done that day | person-days |
+| `years[].decisions.distance_noon_tiles.mothers` | Mean distance at noon from its camp, on each axis the larger, of an adult (16 years or more) carrying an infant; `null` without one | tiles |
+| `years[].decisions.distance_noon_tiles.mother_noons` | The noons measured | count |
+| `years[].decisions.distance_noon_tiles.others` | The same for the other adults | tiles |
+| `years[].decisions.distance_noon_tiles.other_noons` | The noons measured | count |
 | `found[].tribe` | The tribe | `"A"` or `"B"` |
 | `found[].tried.*` | Trials started over the run, by the kind of the step: `wider`, `narrower`, `sleep_out`, `sleep_home`, `store_more`, `store_less`, `home_moved` | count |
 | `found[].kept.*` | Trials judged and kept, by kind | count |
@@ -184,6 +212,13 @@ clock, the only field no seed decides.
 | `people[].meals` | Meals eaten | count |
 | `people[].drinks` | Times it drank | count |
 | `people[].thoughts` | Times its brain thought | count |
+| `people[].habit.days.*` | Its days by what it had said at the fire (D56; the keys of `years[].decisions.said`) | days |
+| `people[].habit.found` | Places it found and told at the fire to one who did not know them | count |
+| `people[].habit.bare` | Places it went to and found bare | count |
+| `people[].habit.years[].year` | A year of its habit | year |
+| `people[].habit.years[].days.*` | Its days that year by what it had said | days |
+| `people[].habit.years[].fed_days.*` | Of them, the days it gathered a day of its need or more | days |
+| `people[].habit.years[].found.*` | Places it found that year, by what it did the day it found them | count |
 | `people[].lines[].day` | A line of its life: its birth, its spouse, its children, their weaning, a lost child, its trials, its death; never a thought, a meal, a drink or a gather | day |
 | `people[].lines[].tick` | The tick | tick |
 | `people[].lines[].what` | The line, as the chronicle says it | string |

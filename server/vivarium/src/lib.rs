@@ -20,8 +20,8 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use sim::brain::{Brains, Mind, News, PlaceKey, Way, Ways, Why};
-use sim::content::{Content, Fire, Trials};
+use sim::brain::{Act, Brains, GroupEnd, Mind, News, PlaceKey, Way, Ways, Why};
+use sim::content::{Content, Decisions, Fire, Trials};
 use sim::map::{Map, Pos, Terrain};
 use sim::memory::{Access, Record, RecordId};
 use sim::time::Calendar;
@@ -101,6 +101,10 @@ pub struct Settings {
     /// run beside each run with the fire (`--no-fire`): the content's
     /// `fire` section is replaced by one where nobody tells anything.
     pub fire: bool,
+    /// The evening's decisions (D56); false is the control run beside each
+    /// run with them (`--no-decisions`): the content's `decisions` section
+    /// is replaced by none, the fire otherwise the same.
+    pub decisions: bool,
     /// Where the vivarium's continent is kept between runs
     /// ([`continents`]): `None` for no cache (`--no-continent-cache`),
     /// the continent born at every run. The patch worlds never use it.
@@ -131,6 +135,7 @@ impl Default for Settings {
             fed: false,
             trials: true,
             fire: true,
+            decisions: true,
             continents: Some(continents::default_dir()),
             helpers: 1,
         }
@@ -288,6 +293,18 @@ pub struct Person {
     pub meals: (u32, u32),
     /// Times it drank.
     pub drinks: u32,
+    /// Its days by what it did (D56, [`Act::ALL`]'s order).
+    pub habit: [u32; 5],
+    /// Places it found new (D56).
+    pub habit_found: u32,
+    /// Places it went to and found bare (D56).
+    pub habit_bare: u32,
+    /// By year: its days by what it did, of them the days it gathered a
+    /// day of its need or more, and the places it found by what it did
+    /// (D56; what its habits and successes are read from).
+    pub habit_years: BTreeMap<u64, HabitYear>,
+    /// What it did its last day, [`Act::ALL`]'s index (D56).
+    pub last_act: usize,
     /// Times its brain thought.
     pub thoughts: u64,
     /// Its will, 0 to 100 (D50), once its mind was read.
@@ -464,6 +481,82 @@ pub struct FireYear {
     /// Rumours dispelled.
     pub dispelled: u32,
 }
+
+/// One person's year by what it did each day (D56): its days, the days
+/// it gathered a day of its need or more, the places it found.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HabitYear {
+    /// Days, by [`Act::ALL`]'s index.
+    pub days: [u32; 5],
+    /// Of them, the days it gathered a day of its need or more.
+    pub fed: [u32; 5],
+    /// Places it found, told at the fire to one who did not know them.
+    pub found: [u32; 5],
+}
+
+/// The evening's decisions and the day's groups by tribe and year (D56):
+/// what was said at the fire, the groups and how they ended, what each
+/// body did and found, and how far from the camp the mothers of infants
+/// stood at noon against the other grown people.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DecisionYear {
+    /// Evenings at which something was decided.
+    pub evenings: u32,
+    /// Evenings at which a full place was told.
+    pub full_told: u32,
+    /// What was said, by act ([`Act::ALL`]'s order).
+    pub said: [u32; 5],
+    /// Choices passed over, the place's room taken.
+    pub skipped: u32,
+    /// Calls whose room was filled.
+    pub calls_full: u32,
+    /// Bodies of the camp not at the fire, summed over the evenings.
+    pub absent: u32,
+    /// Groups formed.
+    pub groups: u32,
+    /// Their members, summed.
+    pub members: u32,
+    /// Members who walked behind the caller's way, summed.
+    pub followed: u32,
+    /// Members who had what they wanted, summed.
+    pub full: u32,
+    /// Members who left their group, summed.
+    pub left: u32,
+    /// Groups ended home, bare, at night.
+    pub ended: [u32; 3],
+    /// Groups that moved on from a place found bare.
+    pub moved_on: u32,
+    /// The stretch of the groups at their place, summed, in ticks, and
+    /// the groups that had one, and the longest.
+    pub stretch: (u64, u32, u64),
+    /// Members who stood at the place within a minute of their caller
+    /// (D56: walked with it).
+    pub together: u32,
+    /// Ticks callers waited on the way for one left behind (D56).
+    pub waited: u64,
+    /// Groups whose caller waited so.
+    pub waited_groups: u32,
+    /// Person-days by what was done ([`Act::ALL`]'s order).
+    pub days: [u32; 5],
+    /// Places found: seen by one and told at the fire to a listener who
+    /// did not know them, by what the finder did that day.
+    pub found: [u32; 5],
+    /// Places gone to and found bare, by what was done.
+    pub bare: [u32; 5],
+    /// Days one gathered a day of its need or more, by what was done.
+    pub fed: [u32; 5],
+    /// Distance to the camp at noon, in tiles: mothers carrying an infant
+    /// (sum, count), the other grown people (sum, count).
+    pub distance: (u64, u32, u64, u32),
+}
+
+/// An act's index in [`Act::ALL`].
+fn act_index(act: Act) -> usize {
+    Act::ALL.iter().position(|&a| a == act).unwrap_or(4)
+}
+
+/// The words of an act, for the report's keys.
+pub const ACT_KEYS: [&str; 5] = ["alone", "called", "joined", "looked", "nothing"];
 
 /// What a tribe's living knew of the land at a year's end (D55).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -831,7 +924,9 @@ fn is_life_line(what: &str) -> bool {
 /// The fire's lines of a life (D55): what it told of its trials, the
 /// rumours it dispelled.
 fn is_fire_line(what: &str) -> bool {
-    what.contains("at the fire, ") || what.contains("finds nothing where")
+    what.contains("at the fire, ")
+        || what.contains("finds nothing where")
+        || what.contains("'s group of")
 }
 
 fn is_trial_line(what: &str) -> bool {
@@ -903,6 +998,9 @@ pub struct Report {
     pub home_moves: Vec<HomeMove>,
     /// The fire's counts by tribe and year (D55).
     pub fire: BTreeMap<(u8, u64), FireYear>,
+    /// The evening's decisions and the day's groups by tribe and year
+    /// (D56).
+    pub decisions: BTreeMap<(u8, u64), DecisionYear>,
     /// What the tribe's living knew at each year's end (D55).
     pub knowledge: BTreeMap<(u8, u64), Knowledge>,
     /// The places the tribe's living knew at each year's end, each with
@@ -995,7 +1093,7 @@ pub fn run_watched(
     // The control run (D50, `--no-trials`): the content's trials replaced
     // by none, so nobody tries nor copies anything.
     let own_content;
-    let content = if settings.fed || !settings.trials || !settings.fire {
+    let content = if settings.fed || !settings.trials || !settings.fire || !settings.decisions {
         let mut own = content.clone();
         if settings.fed {
             own.needs.hunger_per_day = 0;
@@ -1010,6 +1108,9 @@ pub fn run_watched(
         }
         if !settings.fire {
             own.needs.fire = Fire::default();
+        }
+        if !settings.decisions {
+            own.needs.decisions = Decisions::default();
         }
         own_content = own;
         &own_content
@@ -1203,6 +1304,7 @@ pub fn run_watched(
     let mut positions: Vec<(u64, Vec<(BodyId, Pos)>)> = Vec::new();
     let mut home_moves: Vec<HomeMove> = Vec::new();
     let mut tally = FireTally::default();
+    let place_tiles = i32::try_from(content.needs.thought.place_tiles).unwrap_or(16);
     let mut knowledge: BTreeMap<(u8, u64), Knowledge> = BTreeMap::new();
     let mut known_places: BTreeMap<(u8, u64), Vec<(PlaceKey, bool)>> = BTreeMap::new();
     // The homes under trial, (before, after), to tell where a given-up
@@ -1470,6 +1572,22 @@ pub fn run_watched(
             if fire_news(
                 &news,
                 FireScene {
+                    place_tiles,
+                    tick,
+                    day,
+                    year,
+                    brains: &brains,
+                    believed: &believed,
+                },
+                (&mut people, &mut chronicle),
+                &mut tally,
+            ) {
+                continue;
+            }
+            if decision_news(
+                &news,
+                FireScene {
+                    place_tiles,
                     tick,
                     day,
                     year,
@@ -1594,7 +1712,14 @@ pub fn run_watched(
                     )
                 }
                 // The fire's news (D55) were read above.
-                News::Told { .. } | News::Heard { .. } | News::Dispelled { .. } => continue,
+                News::Told { .. }
+                | News::Heard { .. }
+                | News::Dispelled { .. }
+                | News::Decided { .. }
+                | News::Evening { .. }
+                | News::GroupEnded { .. }
+                | News::Found { .. }
+                | News::Habit { .. } => continue,
                 News::Copied {
                     body,
                     from,
@@ -1657,6 +1782,35 @@ pub fn run_watched(
                 standing.push((body.id(), pos));
             }
             standing.sort_unstable_by_key(|&(id, _)| id);
+            // How far from their camp the grown stand at noon (D56): the
+            // mothers carrying an infant against the others.
+            let carriers: BTreeSet<BodyId> = world
+                .bodies()
+                .iter()
+                .filter_map(|b| b.carried_by().filter(|_| world.is_infant(b, content)))
+                .collect();
+            for &(id, at) in &standing {
+                let (Some(body), Some(mind)) = (world.body(id), brains.mind(id)) else {
+                    continue;
+                };
+                if world.age_milli(body) < 16_000 {
+                    continue;
+                }
+                let home = mind.ways().home;
+                let (dx, dy) = (i64::from(at.x - home.x), i64::from(at.y - home.y));
+                let tiles = u64::try_from(dx * dx + dy * dy).unwrap_or(0).isqrt();
+                let counts = tally
+                    .decisions
+                    .entry((tribe_of(&people, id), year))
+                    .or_default();
+                if carriers.contains(&id) {
+                    counts.distance.0 += tiles;
+                    counts.distance.1 += 1;
+                } else {
+                    counts.distance.2 += tiles;
+                    counts.distance.3 += 1;
+                }
+            }
             positions.push((day, standing));
             // The stored food at noon (D55): what the tribe's living carry.
             let carried = reserves(&world, content, &people);
@@ -1805,6 +1959,7 @@ pub fn run_watched(
         positions,
         home_moves,
         fire: tally.fire,
+        decisions: tally.decisions,
         knowledge,
         known_places,
         rumours: tally.rumours,
@@ -2003,6 +2158,8 @@ pub const RUMOURS_KEPT: usize = 1000;
 struct FireTally {
     /// The counts by tribe and year.
     fire: BTreeMap<(u8, u64), FireYear>,
+    /// The decisions' counts by tribe and year (D56).
+    decisions: BTreeMap<(u8, u64), DecisionYear>,
     /// The rumours dispelled, in order.
     rumours: Vec<Rumour>,
     /// The nights told at, (camp, day), to count a night once.
@@ -2012,6 +2169,8 @@ struct FireTally {
 /// What the fire's news (D55) need to be read.
 #[derive(Clone, Copy)]
 struct FireScene<'a> {
+    /// The side of a place, in tiles (D53): a place's middle tile is told.
+    place_tiles: i32,
     tick: u64,
     day: u64,
     year: u64,
@@ -2028,6 +2187,183 @@ fn believed_words(who: &[BodyId]) -> String {
             let heads: Vec<String> = rest.iter().map(|b| name(*b)).collect();
             format!("{} and {} believed it", heads.join(", "), name(*last))
         }
+    }
+}
+
+/// Reads an evening's tally, a day's habit or a find told at the fire
+/// (D56) into the counters and the person's habit; `true` when it was one.
+fn counted_news(
+    news: &News,
+    year: u64,
+    people: &mut BTreeMap<BodyId, Person>,
+    tally: &mut FireTally,
+) -> bool {
+    let tribe_of =
+        |people: &BTreeMap<BodyId, Person>, body: BodyId| people.get(&body).map_or(0, |p| p.tribe);
+    match news {
+        News::Evening {
+            by,
+            skipped,
+            calls_full,
+            absent,
+            full_told,
+            ..
+        } => {
+            let tribe = tribe_of(people, *by);
+            let counts = tally.decisions.entry((tribe, year)).or_default();
+            counts.evenings += 1;
+            counts.full_told += u32::from(*full_told);
+            counts.skipped += skipped;
+            counts.calls_full += calls_full;
+            counts.absent += absent;
+            true
+        }
+        News::Habit {
+            body,
+            act,
+            kj_percent,
+            bare,
+            ..
+        } => {
+            let i = act_index(*act);
+            let counts = tally
+                .decisions
+                .entry((tribe_of(people, *body), year))
+                .or_default();
+            counts.days[i] += 1;
+            counts.bare[i] += bare;
+            counts.fed[i] += u32::from(*kj_percent >= 100);
+            let person = people.entry(*body).or_default();
+            person.habit[i] += 1;
+            person.habit_bare += bare;
+            person.last_act = i;
+            let year_counts = person.habit_years.entry(year).or_default();
+            year_counts.days[i] += 1;
+            year_counts.fed[i] += u32::from(*kj_percent >= 100);
+            true
+        }
+        News::Found { body, places, .. } => {
+            let tribe = tribe_of(people, *body);
+            let person = people.entry(*body).or_default();
+            let i = person.last_act;
+            person.habit_found += places;
+            person.habit_years.entry(year).or_default().found[i] += places;
+            tally.decisions.entry((tribe, year)).or_default().found[i] += places;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Reads a piece of the decisions' news (D56) into the counters, the
+/// person's habit and the chronicle; `true` when it was one. A call and a
+/// look out make a sentence ("at the fire, person 14 calls the others to
+/// (656, 208)"; "person 26 says it goes looking"), a group's end another.
+fn decision_news(
+    news: &News,
+    scene: FireScene<'_>,
+    (people, chronicle): (&mut BTreeMap<BodyId, Person>, &mut Vec<Entry>),
+    tally: &mut FireTally,
+) -> bool {
+    let tribe_of =
+        |people: &BTreeMap<BodyId, Person>, body: BodyId| people.get(&body).map_or(0, |p| p.tribe);
+    let mut line = |people: &mut BTreeMap<BodyId, Person>, body: BodyId, what: String| {
+        let entry = Entry {
+            tick: scene.tick,
+            day: scene.day,
+            what,
+        };
+        chronicle.push(entry.clone());
+        people.entry(body).or_default().entries.push(entry);
+    };
+    let side = scene.place_tiles;
+    let tile = |key: PlaceKey| (key.0 * side + side / 2, key.1 * side + side / 2);
+    match news {
+        News::Decided {
+            body, act, place, ..
+        } => {
+            let counts = tally
+                .decisions
+                .entry((tribe_of(people, *body), scene.year))
+                .or_default();
+            counts.said[act_index(*act)] += 1;
+            match (act, place) {
+                (Act::Called, Some(key)) => {
+                    let (x, y) = tile(*key);
+                    line(
+                        people,
+                        *body,
+                        format!(
+                            "at the fire, {} calls the others to ({x}, {y})",
+                            name(*body)
+                        ),
+                    );
+                }
+                (Act::Looked, _) => {
+                    line(
+                        people,
+                        *body,
+                        format!("at the fire, {} says it goes looking", name(*body)),
+                    );
+                }
+                _ => {}
+            }
+            true
+        }
+        News::GroupEnded {
+            leader,
+            place,
+            last_place,
+            members,
+            followed,
+            full,
+            left,
+            end,
+            stretch_ticks,
+            together,
+            waited_ticks,
+            ..
+        } => {
+            let counts = tally
+                .decisions
+                .entry((tribe_of(people, *leader), scene.year))
+                .or_default();
+            counts.groups += 1;
+            counts.members += members;
+            counts.followed += followed;
+            counts.full += full;
+            counts.left += left;
+            counts.ended[match end {
+                GroupEnd::Home => 0,
+                GroupEnd::Bare => 1,
+                GroupEnd::Night => 2,
+            }] += 1;
+            counts.moved_on += u32::from(place != last_place);
+            counts.together += together;
+            counts.waited += waited_ticks;
+            counts.waited_groups += u32::from(*waited_ticks > 0);
+            if *stretch_ticks > 0 {
+                counts.stretch.0 += stretch_ticks;
+                counts.stretch.1 += 1;
+                counts.stretch.2 = counts.stretch.2.max(*stretch_ticks);
+            }
+            let (x, y) = tile(*place);
+            let how = match end {
+                GroupEnd::Home => "comes home, its members carrying what they wanted",
+                GroupEnd::Bare => "found the place bare and nothing to go on to",
+                GroupEnd::Night => "came apart before night",
+            };
+            line(
+                people,
+                *leader,
+                format!("{}'s group of {members} to ({x}, {y}) {how}", name(*leader)),
+            );
+            true
+        }
+        News::Evening { .. } | News::Habit { .. } | News::Found { .. } => {
+            counted_news(news, scene.year, people, tally)
+        }
+        _ => false,
     }
 }
 
@@ -3844,6 +4180,7 @@ mod tests {
             fed: false,
             trials: true,
             fire: true,
+            decisions: true,
             continents: None,
             helpers: 1,
         }

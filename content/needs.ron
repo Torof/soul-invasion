@@ -80,8 +80,10 @@
     // needs 25 % more, and her infant burns nothing of its own; weaned at
     // two, it walks and gathers for itself. Children under twelve and the
     // old past fifty-five go at 70 % of the pace. An infant weighs 3.5 kg
-    // at birth, 12 kg weaned, on whoever carries it; an orphan is taken by
-    // the nearest woman within 64 tiles.
+    // at birth, 12 kg weaned, on whoever carries it, and slows it to 75 %
+    // of its pace (D56, the lead, 23 November 2026: a gesture of the body,
+    // never "the mothers stay"); an orphan is taken by the nearest woman
+    // within 64 tiles.
     ages: (
         need_by_age: [(0, 30), (2, 40), (14, 90), (18, 100), (55, 100), (56, 85)],
         woman_percent: 85,
@@ -91,6 +93,7 @@
         slow_under_years: 12,
         slow_over_years: 55,
         slow_pace_percent: 70,
+        carrying_pace_percent: 75,
         infant_mass_g: (3500, 12000),
         adopt_within_tiles: 64,
     ),
@@ -286,5 +289,62 @@
         told_days_per_hour: 4,
         told_days_max: 20,
         denied_per_night: 6,
+    ),
+    // The evening's third part (D56, decided by the project lead on 23
+    // November 2026): after the accounts and the lessons, each present
+    // says what it will do tomorrow, in the order of its will (the bold
+    // speak first), and the others join or not by their own perception.
+    // Placeholders (D30), tuned by reading the vivarium's page, never to a
+    // result.
+    // choices:              3 — a present weighs its three best places
+    //                          from the camp, by their worth for it at its
+    //                          own pace (a child, the old and the weak walk
+    //                          slower: a far place is worth less to them).
+    //                          0: no decisions, each day is its own.
+    // plants_per_gatherer:  2 — one who calls says "there is enough there
+    //                          for N": the trees and plants it saw holding
+    //                          food there, two a gatherer. A place told
+    //                          (heard, not seen) has the room its told
+    //                          state stands for (place_buckets).
+    // group_max:            6 — a group holds six at most, its caller
+    //                          with it.
+    // follows_mother_years: 12 — a child under twelve takes its mother's
+    //                          decision (it follows her home already).
+    // look_percent_by_will:  a present goes looking tomorrow instead of to
+    //                          a place it knows: none at will 0, 40 % at
+    //                          will 100, straight between; twice as often
+    //                          when nobody told a full place tonight.
+    // look_legs:            3 — one who goes looking walks three legs out
+    //                          that way, each a sight farther, then
+    //                          gathers as any day.
+    // habit_days:          50 — a mind keeps what it did its last fifty
+    //                          days (alone, called, joined, looked, nothing).
+    // habit_weight:        50 — each day it looked and found adds half the
+    //                          chance of looking again, each day it looked
+    //                          for nothing takes half away: a weight from
+    //                          its own record, never a label;
+    // habit_floor:         10 — never under a tenth of the chance.
+    // home_when_full_percent: 50 — the caller goes home with its group
+    //                          when half of the group carries what it
+    //                          wanted; those already full wait by it.
+    // behind_tiles:        24 — on its way the caller looks behind: while a
+    //                          member not yet there is farther than 24
+    //                          tiles from it, it stops and waits (the
+    //                          lead, 23 November 2026: "regarder
+    //                          derrière"); 0: it never does;
+    // behind_wait_minutes: 30 — half an hour of such waits a day at most.
+    decisions: (
+        choices: 3,
+        plants_per_gatherer: 2,
+        group_max: 6,
+        follows_mother_years: 12,
+        look_percent_by_will: [(0, 0), (100, 40)],
+        look_legs: 3,
+        habit_days: 50,
+        habit_weight: 50,
+        habit_floor: 10,
+        home_when_full_percent: 50,
+        behind_tiles: 24,
+        behind_wait_minutes: 30,
     ),
 )

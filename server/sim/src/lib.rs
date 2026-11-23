@@ -204,7 +204,8 @@ pub struct Condition {
     /// for a nursing woman. Derived, never stored.
     #[serde(skip, default = "permille_1000")]
     pub burn_permille: u32,
-    /// Its pace from its age, in percent. Derived, never stored.
+    /// Its pace from its age, and from the infant it carries (D56), in
+    /// percent. Derived, never stored.
     #[serde(skip, default = "percent_100")]
     pub age_pace_percent: u32,
 }
@@ -852,6 +853,19 @@ pub enum Intention {
         /// Where to.
         target: Pos,
     },
+    /// Walk behind another body (D56): set off on the way `leader` is
+    /// walking when it walks and stands within [`FOLLOW_TILES`] of the
+    /// follower, its route taken whole; otherwise walk to `target` as
+    /// [`Intention::MoveTo`] would. A walk of the simulation's own (the
+    /// brains' groups); no client asks it.
+    Follow {
+        /// Who walks behind.
+        body: BodyId,
+        /// Whom it walks behind.
+        leader: BodyId,
+        /// Where to, when the leader is not walking within reach.
+        target: Pos,
+    },
     /// Gather by hand the crop giving `gives` from a tree or a plant
     /// within reach (D45): work that lasts, a pinch at a time, into an
     /// item carried, until the plant is bare, the body can carry no more,
@@ -895,6 +909,7 @@ impl Intention {
             | Intention::Sleep { body }
             | Intention::Wake { body }
             | Intention::Teleport { body, .. }
+            | Intention::Follow { body, .. }
             | Intention::Gather { body, .. } => body,
         }
     }
@@ -1489,6 +1504,12 @@ pub const VALLEY_SEED: u64 = 1;
 /// told (the server's creature range takes it from here), and how far an
 /// act on an item is answered truly (`World::sight`).
 pub const EYES_RANGE_M: i32 = 150;
+
+/// How near its leader, in tiles on each axis, a body must stand to take
+/// the leader's way whole ([`Intention::Follow`], D56): within its camp
+/// (two of its homes' reach, as the fire's circle) it sees where the
+/// leader goes and walks behind it.
+pub const FOLLOW_TILES: i32 = 12;
 
 /// Whether `b` lies within the eyes' range of `a` ([`EYES_RANGE_M`]).
 #[must_use]
@@ -2326,6 +2347,15 @@ impl World {
                 body,
                 target: self.map.clamp(target),
             },
+            Intention::Follow {
+                body,
+                leader,
+                target,
+            } => Intention::Follow {
+                body,
+                leader,
+                target: self.map.clamp(target),
+            },
             other => other,
         };
         self.pending.push(intention);
@@ -2366,7 +2396,9 @@ impl World {
                 .body(intention.body())
                 .is_some_and(|b| self.is_infant(b, rules));
             if infant {
-                if let Intention::MoveTo { body, target } = intention {
+                if let Intention::MoveTo { body, target } | Intention::Follow { body, target, .. } =
+                    intention
+                {
                     events.push(Event::MoveRefused {
                         body,
                         target,
@@ -2375,7 +2407,18 @@ impl World {
                 }
                 continue;
             }
-            if let Intention::MoveTo { body, target } = intention {
+            if let Intention::Follow {
+                body,
+                leader,
+                target,
+            } = intention
+            {
+                if self.follow(body, leader, rules, events) {
+                    continue;
+                }
+                let lane = self.lane(body);
+                self.searches.ask(body, Some(target), lane);
+            } else if let Intention::MoveTo { body, target } = intention {
                 let lane = self.lane(body);
                 self.searches.ask(body, Some(target), lane);
             } else {
@@ -2560,7 +2603,13 @@ impl World {
             } else {
                 size
             };
-            c.age_pace_percent = ages.age_pace_percent(age);
+            // One carrying an infant goes slower (D56).
+            let carrying = if body.carrying_g > 0 {
+                ages.carrying_pace_percent
+            } else {
+                100
+            };
+            c.age_pace_percent = ages.age_pace_percent(age) * carrying / 100;
         }
     }
 
@@ -2842,6 +2891,14 @@ impl World {
                 self.set_off(index, target, true, rules, events);
             }
             Intention::Teleport { body: id, target } => self.teleport(id, target, rules, events),
+            Intention::Follow {
+                body: id, target, ..
+            } => {
+                if let Some(index) = self.index_of(id) {
+                    self.wake(index, events);
+                    self.set_off(index, target, true, rules, events);
+                }
+            }
             Intention::Eat { body: id, item } => self.eat(id, item, rules, events),
             Intention::PickUp { body: id, item } => self.pick_up(id, item, rules, events),
             Intention::Drop { body: id, item } => self.drop(id, item, rules, events),
@@ -3518,6 +3575,51 @@ impl World {
             body: id,
             item: None,
         });
+    }
+
+    /// `id` sets off behind `leader` (D56): when the leader walks and
+    /// stands within [`FOLLOW_TILES`] of it on each axis, it takes the
+    /// leader's way whole, from where the leader stands, and its goal if
+    /// it walks past its sight; no search of its own. False when the
+    /// leader is not walking within reach: the caller walks to its target
+    /// as a [`Intention::MoveTo`].
+    fn follow(
+        &mut self,
+        id: BodyId,
+        leader: BodyId,
+        rules: &Content,
+        events: &mut Vec<Event>,
+    ) -> bool {
+        let (Some(index), Some(lead)) = (self.index_of(id), self.index_of(leader)) else {
+            return false;
+        };
+        if index == lead {
+            return false;
+        }
+        let (from, there) = (self.bodies[index].pos(), self.bodies[lead].pos());
+        let near =
+            (from.x - there.x).abs() <= FOLLOW_TILES && (from.y - there.y).abs() <= FOLLOW_TILES;
+        if !near || self.bodies[lead].route.is_empty() || self.bodies[lead].condition.asleep {
+            return false;
+        }
+        let mut route: Vec<FinePos> = Vec::with_capacity(self.bodies[lead].route.len() + 1);
+        route.push(self.bodies[lead].at);
+        route.extend(self.bodies[lead].route.iter().copied());
+        let goal = self.bodies[lead].goal;
+        self.wake(index, events);
+        let body = &mut self.bodies[index];
+        let at = body.at;
+        body.skirted = Skirted::Not;
+        body.went.clear();
+        body.goal = goal;
+        body.route = route.iter().copied().collect();
+        events.push(Event::BodyWalks {
+            body: id,
+            from: at,
+            route,
+            speed_cm_per_s: rules.movement.walk_speed_cm_per_s,
+        });
+        true
     }
 
     /// Sends a body toward `target` (`ordered`: a new order, rather than a
@@ -4539,6 +4641,47 @@ mod tests {
         w.advance(60, &rules(), &mut events);
         assert_eq!(w.body(BodyId(1)).unwrap().pos(), Pos::new(1, 3));
         assert_eq!(w.body(BodyId(1)).unwrap().at(), Pos::new(1, 3).centre());
+    }
+
+    #[test]
+    fn a_follower_within_reach_takes_its_leaders_way_and_one_too_far_walks_its_own() {
+        let mut w = World::empty(
+            Calendar::new(10, 100).unwrap(),
+            Map::filled(48, 48, Terrain::Grass),
+        );
+        w.spawn_body(Pos::new(2, 2));
+        let rules = rules();
+        let leader = w.body(BodyId(1)).unwrap().pos();
+        let near = w.spawn_body(Pos::new(leader.x + 2, leader.y));
+        let far = w.spawn_body(Pos::new(leader.x + FOLLOW_TILES + 3, leader.y));
+        let mut events = Vec::new();
+        let target = Pos::new(leader.x + 20, leader.y + 12);
+        w.queue(Intention::MoveTo {
+            body: BodyId(1),
+            target,
+        });
+        w.step(&rules, &mut events);
+        let way: Vec<FinePos> = w.body(BodyId(1)).unwrap().route().collect();
+        assert_ne!(way, Vec::<FinePos>::new());
+        events.clear();
+        for body in [near, far] {
+            w.queue(Intention::Follow {
+                body,
+                leader: BodyId(1),
+                target,
+            });
+        }
+        w.step(&rules, &mut events);
+        // Within reach: the leader's way whole, from where it stood.
+        let followed: Vec<FinePos> = w.body(near).unwrap().route().collect();
+        assert_eq!(followed.last(), way.last());
+        assert!(followed.len() >= way.len());
+        // Too far: a way of its own to the same target.
+        assert!(w.body(far).unwrap().is_walking());
+        assert_eq!(
+            w.body(far).unwrap().route().last().map(FinePos::tile),
+            Some(target)
+        );
     }
 
     #[test]
@@ -6270,6 +6413,58 @@ mod tests {
         assert_eq!(
             baby.size_permille, 326,
             "half a year and a day: 30 to 40 %, a quarter of the way and more"
+        );
+    }
+
+    #[test]
+    fn carrying_an_infant_slows_its_carrier() {
+        let (mut w, rules, mother, infant) = mother_and_infant();
+        let mut events = Vec::new();
+        w.advance(1, &rules, &mut events);
+        let pace = |w: &World| {
+            w.body(mother)
+                .unwrap()
+                .condition()
+                .pace_percent(&rules.needs)
+        };
+        assert_eq!(rules.needs.ages.carrying_pace_percent, 75);
+        assert_eq!(pace(&w), 75, "a woman of 25 carrying");
+        // She walks a third slower than alone over the same ground.
+        let walked = |w: &mut World| {
+            let from = w.body(mother).unwrap().at();
+            w.queue(Intention::MoveTo {
+                body: mother,
+                target: Pos::new(60, 1),
+            });
+            let mut events = Vec::new();
+            w.advance(20, &rules, &mut events);
+            w.body(mother).unwrap().at().x - from.x
+        };
+        let carrying = walked(&mut w);
+        let (mut alone, _, lone, _) = mother_and_infant();
+        alone.bodies.retain(|b| b.id() != infant);
+        alone.advance(1, &rules, &mut events);
+        assert_eq!(
+            alone
+                .body(lone)
+                .unwrap()
+                .condition()
+                .pace_percent(&rules.needs),
+            100
+        );
+        let free = {
+            let from = alone.body(lone).unwrap().at();
+            alone.queue(Intention::MoveTo {
+                body: lone,
+                target: Pos::new(60, 1),
+            });
+            alone.advance(20, &rules, &mut events);
+            alone.body(lone).unwrap().at().x - from.x
+        };
+        // 75 % of the pace, and the infant's weight on top (D45's load).
+        assert!(
+            carrying * 100 <= free * 75 && carrying * 100 >= free * 60,
+            "{carrying} of {free}"
         );
     }
 

@@ -346,6 +346,127 @@ pub struct Needs {
     /// nights. Absent: no fire, nobody tells nor hears anything.
     #[serde(default)]
     pub fire: Fire,
+    /// The evening's third part (D56): at the fire, each present says
+    /// what it will do tomorrow, groups form for the places told, a few
+    /// go looking. Absent: nobody decides anything, each day is its own.
+    #[serde(default)]
+    pub decisions: Decisions,
+}
+
+/// The evening's decisions (D56, decided by the project lead on 23
+/// November 2026): after the accounts and the lessons, each present says
+/// what it will do tomorrow, in the order of its will, and the others
+/// join or not by their own perception. Every value is a D30
+/// placeholder, named and explained in `content/needs.ron`; nothing is
+/// tuned to a result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Decisions {
+    /// How many of its best places from the camp a present weighs when
+    /// it speaks. 0: no decisions.
+    pub choices: u32,
+    /// How many trees and plants holding food one gatherer takes at a
+    /// place: the room a place has is what holds there divided by it.
+    pub plants_per_gatherer: u32,
+    /// The most a group may hold, its caller with it.
+    pub group_max: u32,
+    /// A child younger than this, in years, takes its mother's decision.
+    pub follows_mother_years: u32,
+    /// The chance, in per cent, that a present goes looking tomorrow
+    /// instead of to a place it knows, by its will: (will, per cent), the
+    /// wills rising, straight lines between.
+    pub look_percent_by_will: Vec<(u32, u32)>,
+    /// How many legs one who goes looking walks out, each a sight
+    /// farther than the last, before it gathers as any day.
+    pub look_legs: u32,
+    /// How many days of what it did a mind keeps (its habit).
+    pub habit_days: u32,
+    /// What each of those days weighs on going looking: a day it looked
+    /// and found adds this many per cent of the chance, a day it looked
+    /// for nothing takes it away.
+    pub habit_weight: u32,
+    /// The chance never falls under this per cent of itself.
+    pub habit_floor: u32,
+    /// The caller goes home with its group when this per cent of the
+    /// group carries what it wanted.
+    pub home_when_full_percent: u32,
+    /// On its way the caller stops and waits while a member not yet there
+    /// stands farther from it than this, in tiles on each axis ("look
+    /// behind"). 0: it never looks behind.
+    pub behind_tiles: u32,
+    /// The most it waits so in a day, in game minutes.
+    pub behind_wait_minutes: u32,
+}
+
+impl Default for Decisions {
+    /// No decisions: each day is its own.
+    fn default() -> Self {
+        Self {
+            choices: 0,
+            plants_per_gatherer: 2,
+            group_max: 6,
+            follows_mother_years: 12,
+            look_percent_by_will: vec![(0, 0)],
+            look_legs: 3,
+            habit_days: 50,
+            habit_weight: 50,
+            habit_floor: 10,
+            home_when_full_percent: 50,
+            behind_tiles: 0,
+            behind_wait_minutes: 0,
+        }
+    }
+}
+
+impl Decisions {
+    /// The placeholders of `content/needs.ron` (D30).
+    #[must_use]
+    pub fn placeholders() -> Self {
+        Self {
+            choices: 3,
+            look_percent_by_will: vec![(0, 0), (100, 40)],
+            behind_tiles: 24,
+            behind_wait_minutes: 30,
+            ..Self::default()
+        }
+    }
+
+    /// Whether anybody decides anything at the fire.
+    #[must_use]
+    pub fn on(&self) -> bool {
+        self.choices > 0
+    }
+
+    /// The chance, in per cent, that a body of `will` goes looking.
+    #[must_use]
+    pub fn look_percent(&self, will: u8) -> u64 {
+        along(&self.look_percent_by_will, u64::from(will) * 1000, 1)
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        let rising = self
+            .look_percent_by_will
+            .windows(2)
+            .all(|p| p[0].0 < p[1].0);
+        if self.look_percent_by_will.is_empty()
+            || !rising
+            || self.look_percent_by_will.iter().any(|p| p.1 > 100)
+        {
+            return Err(ContentError::Needs(
+                "decisions: look_percent_by_will not empty, its wills rising, each 100 at most",
+            ));
+        }
+        if self.on() && (self.plants_per_gatherer == 0 || self.group_max == 0) {
+            return Err(ContentError::Needs(
+                "decisions: plants_per_gatherer and group_max are 1 or more",
+            ));
+        }
+        if self.habit_floor > 100 || self.home_when_full_percent > 100 {
+            return Err(ContentError::Needs(
+                "decisions: habit_floor and home_when_full_percent are per cent",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// The rules of thought that make a mind light (D53, decided by the
@@ -754,6 +875,11 @@ pub struct Ages {
     pub slow_over_years: u32,
     /// See `slow_under_years`.
     pub slow_pace_percent: u32,
+    /// One carrying an infant walks and gathers at this per cent of its
+    /// pace (D56, decided by the project lead on 23 November 2026): a
+    /// gesture of the body, never a rule of where to go. Absent: 100.
+    #[serde(default = "percent_100")]
+    pub carrying_pace_percent: u32,
     /// An infant's mass on its carrier, in grams: (at birth, weaned),
     /// straight between.
     pub infant_mass_g: (u32, u32),
@@ -773,6 +899,7 @@ impl Default for Ages {
             slow_under_years: 0,
             slow_over_years: u32::MAX,
             slow_pace_percent: 100,
+            carrying_pace_percent: 100,
             infant_mass_g: (0, 0),
             adopt_within_tiles: 0,
         }
@@ -982,11 +1109,12 @@ impl Ages {
             || self.woman_percent == 0
             || self.nursing_percent < 100
             || !(1..=100).contains(&self.slow_pace_percent)
+            || !(1..=100).contains(&self.carrying_pace_percent)
             || self.infant_mass_g.0 > self.infant_mass_g.1
         {
             return Err(ContentError::Needs(
                 "ages: need_by_age not empty, its ages rising and its percents positive; \
-                 woman_percent positive, nursing_percent at least 100, slow_pace_percent 1 to 100, \
+                 woman_percent positive, nursing_percent at least 100, slow_pace_percent and carrying_pace_percent 1 to 100, \
                  infant_mass_g rising",
             ));
         }
@@ -1524,7 +1652,8 @@ impl Content {
         self.needs.life.validate()?;
         self.needs.trials.validate()?;
         self.needs.thought.validate()?;
-        self.needs.fire.validate()
+        self.needs.fire.validate()?;
+        self.needs.decisions.validate()
     }
 
     /// Refuses the values the simulation cannot carry (audit of 20
