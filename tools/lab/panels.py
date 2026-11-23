@@ -421,7 +421,7 @@ def series_results(runs_dir, s):
 PANELS_CSS = """
 .fth{margin:1.1em 0 .4em;font-size:.82em;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:650}
 .fcards{display:grid;grid-template-columns:repeat(auto-fill,minmax(12.5em,1fr));gap:.6em}
-.fcard{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:.6em .8em .7em;box-shadow:var(--shadow)}
+.fcard{background:var(--surface);border:1px solid var(--edge);border-radius:10px;padding:.6em .8em .7em;box-shadow:var(--shadow)}
 .fcard .fn{font-size:.85em;color:var(--ink2);font-weight:600}
 .fcard .fv{font-size:1.6em;font-weight:700;line-height:1.15;font-variant-numeric:tabular-nums;margin:.1em 0}
 .fcard .fv small{font-size:.5em;font-weight:500;color:var(--muted);margin-left:.35em}
@@ -434,7 +434,7 @@ PANELS_CSS = """
 .maps6 .seg button{border:0;border-radius:0;padding:.2em .7em;font-size:.88em}.maps6 .seg button[aria-pressed=true]{background:var(--ink);color:var(--page)}
 .maps6 .chk{font-size:.9em;color:var(--ink2)}
 .mgrid6{display:grid;grid-template-columns:1fr 1fr;gap:1.2em}@media (max-width:900px){.mgrid6{grid-template-columns:1fr}}
-figure.m6{margin:0;background:var(--surface);border-radius:12px;padding:.7em;box-shadow:var(--shadow);border:1px solid var(--line);min-width:0}
+figure.m6{margin:0;background:var(--surface);border-radius:12px;padding:.7em;box-shadow:var(--shadow);border:1px solid var(--edge);min-width:0}
 figure.m6 figcaption{margin:0 0 .5em;font-size:.95em}
 .cv6{position:relative;width:100%;aspect-ratio:1;max-height:72vh;border-radius:6px;overflow:hidden;background:var(--zebra)}
 .cv6 canvas{display:block;width:100%;height:100%;cursor:grab;touch-action:none}.cv6 canvas.drag{cursor:grabbing}
@@ -861,6 +861,23 @@ STAMP_RE = __import__("re").compile(r"-(\d{8}-\d{6}|\d{4}-\d{2}-\d{2})$")
 WORD_FR = {"etalon": "étalon", "feu": "feu", "sansfeu": "sans feu"}
 
 
+def purpose_summary(question):
+    """The purpose in one clean sentence for the card: the question's first sentence, its
+    parentheses left to the full text; cut at a comma past 220 characters. '' without a question."""
+    re_ = __import__("re")
+    q = " ".join(str(question or "").split())
+    if not q:
+        return ""
+    m = re_.search(r"[.?!](?=\s|$)", q)
+    first = q[:m.end()] if m else q
+    clean = re_.sub(r"\s*\([^()]*\)", "", first)
+    clean = re_.sub(r"\s+([,.])", r"\1", clean).strip()
+    if len(clean) > 220:
+        cut = max(clean.rfind(", ", 0, 210), clean.rfind(" ; ", 0, 210), clean.rfind(" : ", 0, 210))
+        clean = (clean[:cut] if cut > 80 else clean[:210].rsplit(" ", 1)[0]).rstrip(" ,;:") + "…"
+    return clean
+
+
 def series_title(name, plan=None):
     """A series' title for a human eye: the plan's own `title` when it has one, else its name
     without the date stamp, its words spaced (`lab5-feu-20ans` → `Lab 5 feu 20 ans`)."""
@@ -880,30 +897,35 @@ def series_title(name, plan=None):
 
 HOME_CSS = """
 .bar7{display:flex;flex-wrap:wrap;gap:.6em 1em;align-items:center;margin:.6em 0 1.2em;padding:.6em .8em;background:var(--surface);
- border:1px solid var(--line);border-radius:10px}
+ border:1px solid var(--edge);border-radius:10px}
 .bar7 input[type=search]{flex:1;min-width:14em;padding:.35em .6em;border:1px solid var(--line);border-radius:8px;background:var(--page);color:var(--ink)}
 .bar7 select{padding:.3em .4em;border:1px solid var(--line);border-radius:8px;background:var(--page);color:var(--ink)}
 .bar7 label{font-size:.9em;color:var(--ink2)}
-h2.sec7{font-size:1.2em;margin:1.6em 0 .5em;display:flex;gap:.5em;align-items:baseline}h2.sec7 small{color:var(--muted);font-weight:400;font-size:.75em}
-h3.day7{font-size:.82em;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:1.2em 0 .5em;font-weight:650}
-.cards7{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,30em),1fr));gap:1em}
-article.scard{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:.9em 1.1em;box-shadow:var(--shadow);min-width:0}
-.scard .sh{display:flex;gap:.6em;align-items:baseline;flex-wrap:wrap}.scard h3{margin:0;font-size:1.12em}.scard h3 a{color:var(--ink);text-decoration:none}
-.scard h3 a:hover{text-decoration:underline}.scard .sh .etat{margin-left:auto}
-.scard .purpose{margin:.45em 0 .2em;color:var(--ink);line-height:1.4;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;cursor:pointer}
-.scard .purpose.open{-webkit-line-clamp:unset}.scard .none{color:var(--muted);font-style:italic}
-.scard .changed{margin:.15em 0 .4em;color:var(--ink2);font-size:.88em;line-height:1.35}.scard .changed b,.scard .purpose b.k{color:var(--muted);font-weight:600}
-.scard .meta{display:flex;flex-wrap:wrap;gap:.2em 1.1em;font-size:.85em;color:var(--ink2);margin:.35em 0}.scard .meta span b{color:var(--ink);font-weight:600}
-.scard .res{border-left:3px solid var(--ink2);padding:.1em 0 .1em .7em;margin:.6em 0}.scard .res .vd{font-weight:650;line-height:1.35}
-.scard .res ul{margin:.25em 0 0;padding-left:1.1em;font-size:.9em}.scard .res.wait{border-color:var(--line);color:var(--muted);font-size:.88em}
-.scard .links{font-size:.88em;margin:.4em 0 .2em;display:flex;gap:.3em 1em;flex-wrap:wrap}.scard .links .raw{color:var(--muted);margin-left:auto;font-size:.9em}
-.scard details{margin-top:.3em}.scard details summary{font-size:.9em;font-weight:600}
-ul.runs7{list-style:none;margin:.4em 0 0;padding:0;font-size:.86em}
-ul.runs7 li{padding:.4em 0;border-top:1px solid var(--line);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.1em .8em}
+h2.sec7{font-size:1.25em;margin:2.2em 0 .7em;display:flex;gap:.5em;align-items:baseline}h2.sec7 small{color:var(--muted);font-weight:400;font-size:.75em}
+h3.day7{font-size:.82em;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:1.6em 0 .6em;font-weight:650}
+.cards7{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,27em),1fr));gap:1.1em;align-items:start}
+details.scard{background:var(--surface);border:1px solid var(--edge);border-radius:12px;box-shadow:var(--shadow);min-width:0}
+details.scard[open]{grid-column:1/-1}
+details.scard>summary{list-style:none;cursor:pointer;padding:.85em 1.1em .9em;font-weight:400}details.scard>summary::after{content:none}details.scard>summary::-webkit-details-marker{display:none}
+details.scard>summary:hover .t{text-decoration:underline}
+.scard .st{display:flex;gap:.7em;align-items:baseline}.scard .t{font-size:1.1em;font-weight:650;color:var(--ink);line-height:1.3}
+.scard .st::after{content:"▸";margin-left:auto;color:var(--muted);font-size:.9em}details.scard[open] .st::after{content:"▾"}
+.scard .mk{font-size:.82em;font-weight:600;white-space:nowrap}.scard .mk.cours{color:#9a6a00}.scard .mk.echec,.scard .mk.arret{color:var(--want)}
+.scard .when{font-size:.86em;color:var(--muted);margin:.15em 0 0;font-variant-numeric:tabular-nums}
+.scard .purpose{margin:.5em 0 0;font-size:1.02em;line-height:1.55;color:var(--ink);max-width:62ch}.scard .purpose.none{color:var(--muted);font-style:italic}
+.scard .more{display:block;padding:0 1.1em 1em;border-top:1px solid var(--line);margin-top:.1em}
+.scard .full{margin:.7em 0;max-width:72ch;line-height:1.5;color:var(--ink)}.scard .full b{display:block;font-size:.78em;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:.15em}
+.scard .ver{font-size:.86em;color:var(--ink2)}.scard .ver code{background:var(--chip);padding:0 .35em;border-radius:4px}.scard .raw{color:var(--muted)}
+.scard .res{border-left:3px solid var(--ink2);padding:.15em 0 .15em .8em;margin:.9em 0}.scard .res .vd{font-weight:650;line-height:1.4;max-width:66ch}
+.scard .res ul{margin:.3em 0 0;padding-left:1.1em;font-size:.93em;line-height:1.45}.scard .res.wait{border-color:var(--line);color:var(--muted);font-size:.88em}
+.scard .links{display:flex;gap:.4em 1.2em;flex-wrap:wrap;align-items:center;margin:.6em 0}.scard .links a:first-child{font-weight:650}
+.scard details summary{font-size:.9em;font-weight:600;cursor:pointer}
+ul.runs7{list-style:none;margin:.4em 0 0;padding:0;font-size:.88em}
+ul.runs7 li{padding:.45em 0;border-top:1px solid var(--line);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.1em .8em}
 ul.runs7 li .w{color:var(--muted)}ul.runs7 li .r{grid-column:1/3;color:var(--ink2)}
 .etat .sg{margin-right:.3em}
 .pcards7{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,22em),1fr));gap:.8em}
-.pcard{background:var(--surface);border:1px dashed var(--line);border-radius:12px;padding:.7em 1em;font-size:.92em}
+.pcard{background:var(--surface);border:1px dashed var(--edge);border-radius:12px;padding:.7em 1em;font-size:.92em}
 .pcard b{display:block;margin-bottom:.2em}.pcard p{margin:.2em 0;color:var(--ink2)}
 """
 
@@ -920,7 +942,7 @@ HOME_JS = r"""
   const SIGN = {cours: '◐', fini: '✓', echec: '✕', arret: '■', '': '·'};
   const chip = s => `<span class="etat ${kind(s)}"><span class=sg aria-hidden=true>${SIGN[kind(s)]}</span>${esc(s)}</span>`;
   const q = document.getElementById('q7'), fs = document.getElementById('f7'), so = document.getElementById('s7'), gd = document.getElementById('g7');
-  const open = new Set(), openPurpose = new Set(), pending = new Set(), results = {};
+  const open = new Set(), pending = new Set(), results = {};
   let last = [];
   const variant = r => [r.base, r.trials === false ? 'sans essais' : 'avec essais', r.fire === false ? 'sans le feu' : 'avec le feu', 'graine ' + (r.seed ?? '?')].filter(Boolean).join(' · ');
   function runLine(s, r) {
@@ -928,31 +950,33 @@ HOME_JS = r"""
     const t = r.started ? (r.ended ? `${hour(r.started)} → ${hour(r.ended)} (${secs(r.elapsed)})` : `depuis ${hour(r.started)} (${secs(r.elapsed)})`) : 'pas encore lancé';
     const line = res[r.name] || (r.state === 'en cours' ? `année ${r.year ?? '—'} · ${r.alive ?? '—'} vivants · ${r.dead ?? '—'} morts (d’après le log)` :
       r.data ? 'résultat en lecture…' : r.alive != null ? `${r.alive} vivants · ${r.dead} morts (d’après le log)` : '');
-    return `<li><span><a href="${esc(r.read)}">${esc(variant(r))}</a> <span class=w>${esc(t)}</span></span>${chip(r.state)}<span class=r>${esc(line)}</span></li>`;
+    return `<li><span><a href="${esc(r.read)}">${esc(variant(r))}</a> <span class=w>${esc(t)}</span></span>${kind(r.state) === 'fini' ? '<span></span>' : `<span class="mk ${kind(r.state)}">${SIGN[kind(r.state)]} ${esc(r.state)}</span>`}<span class=r>${esc(line)}</span></li>`;
   }
   function card(s) {
-    const running = s.state === 'en cours' && s.owned;
+    const running = s.state === 'en cours' && s.owned, k = kind(s.state), v = s.version || {};
     const stop = running ? (pending.has(s.dir)
       ? `<span class="confirm">Arrêter <b>${esc(s.title)}</b> et tuer ses runs ? <form method="post" action="/arreter" style="display:inline"><input type="hidden" name="serie" value="${esc(s.dir)}"><button class="danger">Oui, arrêter</button></form> <button data-cancel="${esc(s.dir)}">Non</button></span>`
-      : `<button data-stop="${esc(s.dir)}">Arrêter</button>`) : '';
-    const purpose = s.question ? `<p class="purpose${openPurpose.has(s.name) ? ' open' : ''}" data-purpose="${esc(s.name)}" title="cliquer pour tout lire"><b class=k>But :</b> ${esc(s.question)}</p>` : '<p class="purpose none">but non écrit</p>';
-    const change = (s.version || {}).change ? `<p class=changed><b>Ce qui a changé :</b> ${esc(s.version.change)}</p>` : '';
-    const v = s.version || {};
-    const end = s.ended ? (sameDay(s.started, s.ended) ? hour(s.ended) : when(s.ended)) : (kind(s.state) === 'cours' ? 'en cours' : '—');
-    const meta = `<div class=meta><span>lancée <b>${esc(when(s.started))}</b></span><span>finie <b>${esc(end)}</b></span><span>durée <b>${esc(secs(s.elapsed))}</b></span>`
-      + `<span><b>${s.runs.length}</b> run${s.runs.length > 1 ? 's' : ''}</span><span>version <b>${esc(v.commit || 'inconnue')}</b>${v.branch && v.branch !== 'HEAD' ? ' (' + esc(v.branch) + ')' : ''}${v.dirty ? ' + modifs' : ''}</span></div>`;
+      : `<button data-stop="${esc(s.dir)}">Arrêter la série</button>`) : '';
+    const end = s.ended ? (sameDay(s.started, s.ended) ? hour(s.ended) : when(s.ended)) : (k === 'cours' ? 'en cours' : '…');
+    const mark = k === 'fini' ? '' : `<span class="mk ${k}">${SIGN[k]} ${esc(s.state)}</span>`;
+    const purpose = s.purpose ? `<p class=purpose>${esc(s.purpose)}</p>` : '<p class="purpose none">but non écrit</p>';
     const R = results[s.name];
-    const res = kind(s.state) === 'cours' ? '' : !R ? '<div class="res wait">les résultats se lisent…</div>' : R.verdict
+    const res = k === 'cours' ? '' : !R ? '<div class="res wait">les résultats se lisent…</div>' : R.verdict
       ? `<div class=res><div class=vd>${esc(R.verdict)}</div>${R.points.length ? '<ul>' + R.points.map(p => `<li>${p}</li>`).join('') + '</ul>' : ''}</div>`
       : '<div class="res wait">aucune donnée de run à lire</div>';
+    const full = s.question && s.question !== s.purpose ? `<p class=full><b>Le but en entier</b>${esc(s.question)}</p>` : '';
+    const change = v.change ? `<p class=full><b>Ce qui a changé</b>${esc(v.change)}</p>` : '';
+    const ver = `<p class=ver>version <code>${esc(v.commit || 'inconnue')}</code>${v.branch && v.branch !== 'HEAD' ? ' · branche ' + esc(v.branch) : ''}${v.dirty ? ' · avec des modifications' : ''} · durée ${esc(secs(s.elapsed))} · <span class=raw>${esc(s.name)}</span></p>`;
     const note = s.note ? `<p class="warn">${esc(s.note)}</p>` : '';
-    const links = `<div class=links><a href="/serie/${encodeURIComponent(s.name)}">lire la série</a>${s.synthese ? `<a href="${esc(s.synthese)}">synthèse</a>` : ''}<span class=raw>${esc(s.name)}</span></div>`;
-    const runs = `<details data-runs="${esc(s.name)}"${open.has(s.name) || running ? ' open' : ''}><summary>les ${s.runs.length} runs</summary><ul class=runs7>${s.runs.map(r => runLine(s, r)).join('')}</ul></details>`;
-    return `<article class=scard><div class=sh><h3><a href="/serie/${encodeURIComponent(s.name)}">${esc(s.title)}</a></h3>${chip(s.state)}${stop}</div>${purpose}${change}${meta}${note}${res}${links}${runs}</article>`;
+    const links = `<p class=links><a href="/serie/${encodeURIComponent(s.name)}">Lire la série →</a>${s.synthese ? `<a href="${esc(s.synthese)}">synthèse</a>` : ''}${stop}</p>`;
+    const runs = `<details data-runs="${esc(s.name)}"${open.has('r:' + s.name) || s.runs.length <= 6 ? ' open' : ''}><summary>les ${s.runs.length} runs</summary><ul class=runs7>${s.runs.map(r => runLine(s, r)).join('')}</ul></details>`;
+    return `<details class=scard data-card="${esc(s.name)}"${open.has(s.name) ? ' open' : ''}><summary><div class=st><span class=t>${esc(s.title)}</span>${mark}</div>`
+      + `<div class=when>${esc(when(s.started))} → ${esc(end)} · ${s.runs.length} run${s.runs.length > 1 ? 's' : ''}</div>${purpose}</summary>`
+      + `<div class=more>${res}${full}${change}${ver}${note}${links}${runs}</div></details>`;
   }
   function render() {
     const needle = q.value.trim().toLowerCase(), f = fs.value;
-    let list = last.filter(s => (!needle || [s.title, s.name, s.question, (s.version || {}).change, (s.version || {}).commit, (s.version || {}).branch].join(' ').toLowerCase().includes(needle))
+    let list = last.filter(s => (!needle || [s.title, s.name, s.question, s.purpose, (s.version || {}).change, (s.version || {}).commit, (s.version || {}).branch].join(' ').toLowerCase().includes(needle))
       && (f === 'toutes' || kind(s.state) === f));
     const by = so.value;
     list.sort(by === 'ancien' ? (a, b) => (a.started || 0) - (b.started || 0) : by === 'but' ? (a, b) => (a.question || '~').localeCompare(b.question || '~', 'fr')
@@ -972,11 +996,13 @@ HOME_JS = r"""
     if (!last.length) document.getElementById('series').innerHTML = '<p class="muted">Aucune série dans le dossier des runs. <a href="/nouvelle">Créer la première</a>.</p>';
   }
   document.addEventListener('click', e => {
-    const st = e.target.closest('[data-stop]'), ca = e.target.closest('[data-cancel]'), pu = e.target.closest('[data-purpose]');
+    const st = e.target.closest('[data-stop]'), ca = e.target.closest('[data-cancel]');
     if (st) { pending.add(st.dataset.stop); render(); } else if (ca) { pending.delete(ca.dataset.cancel); render(); }
-    else if (pu) { openPurpose.has(pu.dataset.purpose) ? openPurpose.delete(pu.dataset.purpose) : openPurpose.add(pu.dataset.purpose); pu.classList.toggle('open'); }
   });
-  document.addEventListener('toggle', e => { const d = e.target; if (d.dataset && d.dataset.runs) d.open ? open.add(d.dataset.runs) : open.delete(d.dataset.runs); }, true);
+  document.addEventListener('toggle', e => {
+    const d = e.target, key = d.dataset && (d.dataset.card || (d.dataset.runs && 'r:' + d.dataset.runs));
+    if (key) d.open ? open.add(key) : open.delete(key);
+  }, true);
   [q, fs, so, gd].forEach(x => x.addEventListener('input', render));
   const asked = {};
   async function readResults() {
@@ -993,7 +1019,7 @@ HOME_JS = r"""
     try {
       const r = await fetch('/api/series'); last = await r.json();
       document.getElementById('err').textContent = '';
-      if (!document.activeElement || !document.activeElement.closest('.scard')) render();
+      if (!document.activeElement || !document.activeElement.closest('.scard .more')) render();
       readResults();
     } catch (e) { document.getElementById('err').textContent = 'Le laboratoire ne répond plus (' + e + ').'; }
   }
@@ -1019,4 +1045,6 @@ def home_body(lab, standard_question):
             '<p id=err class=warn></p><div id=series><p class=muted>Chargement…</p></div>'
             f'<h2 class=sec7>Plans <small>{len(lab.standard_plans())} plans étalons</small></h2><div class=pcards7>{plans}</div>'
             f'<script>{HOME_JS}</script>')
+HOME_CSS += (".tile,.serie,section.tribe,.mapbox,svg.chart,table,.controls,form.f{border:1px solid var(--edge);box-shadow:var(--shadow)}\n"
+             "section.group{border-top-color:var(--edge)}\n")
 HOME_CSS += ".etat.cours,.etat.fini,.etat.echec,.etat.perdu,.etat.arret{color:#1f2328}\n"
