@@ -122,13 +122,14 @@ clock, the only field no seed decides.
 | `years[].knowledge.heard_only` | Of them, places no living member saw itself: known by hearsay only | count |
 | `years[].knowledge.accesses` | Accesses to places held by the living, all places and bodies | count |
 | `years[].knowledge.accesses_heard` | Of them, accesses got from a teller | count |
+| `years[].knowledge.where` | The places themselves (since 23 November 2026, the lab's map): each place's key, its 16-tile square, and 1 when some living member saw it itself, 0 when known by hearsay only; in key order, the first 1,000 (`places` counts them all) | `[[x, y, seen], …]` |
 | `found[].tribe` | The tribe | `"A"` or `"B"` |
 | `found[].tried.*` | Trials started over the run, by the kind of the step: `wider`, `narrower`, `sleep_out`, `sleep_home`, `store_more`, `store_less`, `home_moved` | count |
 | `found[].kept.*` | Trials judged and kept, by kind | count |
 | `found[].copied.*` | Ways copied from camp-mates, by kind | count |
 | `found[].heard.trials` | Trials whose step was a kept way heard at the fire (D55) | count |
 | `found[].heard.copies` | Ways copied by hearsay: with the fire lit every copy, without it none (the control copies by proximity) | count |
-| `found[].heard.dispelled` | Rumours dispelled over the run | count |
+| `found[].heard.dispelled` | Rumours dispelled over the run, every one: the sum of the tribe's `years[].fire.dispelled` (before 23 November 2026 it counted only the rumours kept in `rumours[]`, at most 1,000) | count |
 | `found[].by_will[].band` | Trials by the will of the body when it started (D50, amended): the band, `timid` (0 to 20), `middling` (21 to 50) or `bold` (51 to 100) | string |
 | `found[].by_will[].from` | The band's lowest will | 0 to 100 |
 | `found[].by_will[].to` | Its highest | 0 to 100 |
@@ -200,7 +201,7 @@ clock, the only field no seed decides.
 | `hearth[].nights[].present` | How many lay down | count |
 | `hearth[].nights[].told[].record` | A record told | integer |
 | `hearth[].nights[].told[].by` | Its teller | integer |
-| `rumours[].day` | A rumour dispelled (D55), the first 1,000 of the run only (the counts in `years[].fire.dispelled` take them all; a camp of 25 dispels about 27 a day, mostly at a look in passing): the day | day |
+| `rumours[].day` | A rumour dispelled (D55), the first 1,000 of the run only (the counts in `years[].fire.dispelled` and `found[].heard.dispelled` take them all; a camp of 25 dispels about 27 a day, mostly at a look in passing): the day | day |
 | `rumours[].tribe` | The tribe of who went | `"A"` or `"B"` |
 | `rumours[].body` | Who went where a teller had said and found nothing | integer |
 | `rumours[].place` | The place | `[x, y]` |
