@@ -48,6 +48,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:  # `-I` leaves the script's own folder out of the path
     sys.path.insert(0, HERE)
+import panels  # noqa: E402
 import reading  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(HERE))
@@ -749,7 +750,8 @@ class Lab:
             except (KeyError, TypeError, ValueError):
                 sig = None
             out.append({
-                "name": name, "dir": name, "question": plan.get("question", ""),
+                "name": name, "dir": name, "question": plan.get("question", ""), "title": panels.series_title(name, plan),
+                "started": min(starts) if starts else None, "ended": max(ends) if ended and ends else None,
                 "version": version, "plan_name": lab_plan_name(plan, name), "signature": sig,
                 "state": state, "owned": owned is not None, "elapsed": int(elapsed),
                 "note": (owned.note if owned else lab.get("note", "")) or "",
@@ -757,7 +759,7 @@ class Lab:
                 "sort": max(starts) if starts else os.path.getmtime(os.path.join(d, "serie.json")),
                 "synthese": f"/runs/{urllib.parse.quote(name)}/synthese.html" if synth else None,
                 "final": final,
-                "runs": [dict(r, seed=orig.get("seed"), trials=orig.get("trials", True), fire=orig.get("fire", True), base=orig.get("base"),
+                "runs": [dict(r, seed=orig.get("seed"), started=orig.get("started"), ended=orig.get("ended"), trials=orig.get("trials", True), fire=orig.get("fire", True), base=orig.get("base"),
                               page=f"/runs/{urllib.parse.quote(name)}/{urllib.parse.quote(r['page'])}" if r["page"] else None,
                               log=f"/runs/{urllib.parse.quote(name)}/{urllib.parse.quote(r['log'])}" if r["log"] else None,
                               data=os.path.exists(os.path.join(d, r["name"] + ".json")),
@@ -836,7 +838,7 @@ details.detail>summary::after{content:" — tout le reste : réglages, autres co
 ul.lines{font-size:.8em;columns:2;margin:.2em 0}.controls{background:var(--surface);border-radius:12px;padding:.7em 1.2em;margin:.6em 0 1em;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 form.inline{display:inline-block;margin:.2em 1em .2em 0}form.inline select{max-width:28em}
 .plans input[type=text]{width:16em}
-"""+reading.RUN_CSS
+"""+reading.RUN_CSS+panels.PANELS_CSS+panels.HOME_CSS
 
 
 def page(title, body, tab, port):
@@ -1055,7 +1057,7 @@ class Handler(BaseHTTPRequestHandler):
         url = urllib.parse.urlsplit(self.path)
         q = urllib.parse.parse_qs(url.query)
         if url.path == "/":
-            self._page(running_page(self.port))
+            self._page(page("Les séries", panels.home_body(self.lab, standard_question), "cours", self.port))
         elif url.path == "/nouvelle":
             fields, error = {}, ""
             name = (q.get("plan") or [""])[0]
@@ -1090,6 +1092,11 @@ class Handler(BaseHTTPRequestHandler):
             found, err = target(self.lab, urllib.parse.unquote(spec))
             d = None if err or found[1] is None else self.lab.store.load(found[0]["name"], found[1]["name"])
             arg = (q.get({"fiche": "id", "chronique": "an"}.get(kind, "quoi")) or [""])[0]
+            an = (q.get("an") or [""])[0]
+            panel = panels.piece(d, arg, int(an) if an.isdigit() else None) if d is not None and kind == "morceau" else None
+            if panel is not None:
+                self._send(200, panel[0], panel[1])
+                return
             piece = reading.run_piece(d, arg) if d is not None and kind == "morceau" else None
             if d is None or (kind != "morceau" and not arg.isdigit()) or (kind == "morceau" and piece is None):
                 self._send(404, "introuvable", "text/plain; charset=utf-8")
@@ -1102,6 +1109,12 @@ class Handler(BaseHTTPRequestHandler):
         elif url.path == "/compare":
             body, code = compare_page(self.lab, (q.get("a") or [""])[0], (q.get("b") or [""])[0], self.port)
             self._page(body, code)
+        elif url.path == "/api/resultats":
+            s = self.lab.find((q.get("serie") or [""])[0])
+            if s is None:
+                self._send(404, "introuvable", "text/plain; charset=utf-8")
+            else:
+                self._send(200, json.dumps(panels.series_results(self.lab.runs_dir, s[0]), ensure_ascii=False), "application/json; charset=utf-8")
         elif url.path == "/api/series":
             self._send(200, json.dumps(self.lab.series(), ensure_ascii=False), "application/json; charset=utf-8")
         elif url.path.startswith("/runs/"):

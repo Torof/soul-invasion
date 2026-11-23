@@ -887,11 +887,11 @@ class SeriesReading(unittest.TestCase):
         run = reading.run_body(s["etalon-test-1"], s["etalon-test-1"]["runs"][0], self.lab.store.load("etalon-test-1", "t-s1-avec"))
         for part in ("<p class=hero>Après 2 ans, 3 vivants", '<ul class="points top">', "<div class=tiles6>",
                      "<h2>Les gens</h2>", "<h2>Où ils vivent</h2>", "<h2>Ce qu’ils ont appris</h2>", "<h2>La chronique</h2>", "<h2>Annexes</h2>",
-                     "<h3>La population</h3>", "<h3>Les morts</h3>", "<h3>Les naissances</h3>", "<h3>Tout le monde</h3>", "<h3>Les techniques</h3>",
-                     'class="winter"', "vivants à la fin", 'data-lazy="carte"', 'data-lazy="annexes"', "<dialog id=fiche",
+                     "<h2>Les facteurs</h2>", "<h2>Les courbes</h2>", "data-maps6", "data-sm6", "<h3>Les morts</h3>", "<h3>Les naissances</h3>", "<h3>Tout le monde</h3>", "<h3>Les techniques</h3>",
+                     'class="winter"', "vivants à la fin", 'data-lazy="annexes"', "<dialog id=fiche",
                      'aria-label="morts de manque et de fond par an"', "A à gauche de l’année, B à droite"):
             self.assertIn(part, run)
-        self.assertLess(run.index('aria-label="population par tribu"'), run.index('aria-label="morts de manque et de fond par an"'))
+        self.assertLess(run.index('<h2>Les facteurs</h2>'), run.index('aria-label="morts de manque et de fond par an"'))
         order = [run.index(x) for x in ("<p class=hero>", '<ul class="points top">', "<div class=tiles6>", "<h2>Les gens</h2>", "<h3>Les morts</h3>",
                                         "<h2>Où ils vivent</h2>", "<h2>Ce qu’ils ont appris</h2>", "<h2>La chronique</h2>",
                                         "<h2>Annexes</h2>", "<details class=detail>")]

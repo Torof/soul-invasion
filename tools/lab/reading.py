@@ -2990,8 +2990,8 @@ def run_body(s, r, d, store=None, year=None):
     else:
         smc["rumours_all"] = sum(v["rumours"] or 0 for v in by_tribe(dc).values()) if has_fire_data(dc) else None
     fire = has_fire_data(d)
-    toc = [("resume", "Résumé", False), ("gens", "Les gens", False), ("morts", "Les morts", True), ("naissances", "Les naissances", True),
-           ("tous", "Tout le monde", True), ("ou", "Où ils vivent", False), ("appris", "Ce qu’ils ont appris", False),
+    toc = [("resume", "Résumé", False), ("facteurs", "Les facteurs", False), ("gens", "Les gens", False), ("morts", "Les morts", True), ("naissances", "Les naissances", True),
+           ("tous", "Tout le monde", True), ("courbes", "Les courbes", False), ("ou", "Où ils vivent", False), ("appris", "Ce qu’ils ont appris", False),
            ("chronique", "La chronique", False), ("annexes", "Annexes", False)]
     ctrl = (f'<p class=caption>Les pastilles comparent au témoin de la même série, <a href="{run_url(serie, rc["name"])}">{h(rc["name"])}</a> '
             f'({h(label)}) : vert mieux, rouge moins bien, gris ni l’un ni l’autre. Sous chaque total, '
@@ -2999,10 +2999,11 @@ def run_body(s, r, d, store=None, year=None):
     down = lambda html_: html_.replace("<h2>", "<h3>").replace("</h2>", "</h3>")  # noqa: E731
     body = [f'<section id=resume><p class=hero>{h(headline(d, sm, smc, label))}</p>'
             f'{points_html(top_points(d, sm, bt, dc, label), "points top")}{run_tiles(d, sm, bt, smc, label)}{ctrl}</section>']
+    import panels  # noqa: PLC0415 (panels reads this module: imported when the page is built)
+    body.append('<section id=facteurs class=group><h2>Les facteurs</h2><p class=caption>Les réglages de ce run, une carte par réglage ; '
+                'en gris, ce qui est éteint (le témoin).</p>' + panels.factors_html(d) + '</section>')
     body.append('<section id=gens class=group><h2>Les gens</h2>' + points_html(people_points(d, sm, bt))
-                + "<h3>La population</h3><p class=caption>Les vivants jour par jour, par tribu ; les hivers en bleu pâle, les années en bas.</p>"
-                + population_chart(d, wide=True).svg("population par tribu")
-                + "<p class=caption>Dessous, les morts de chaque année par tribu : en rouge ceux de manque (faim, soif, froid), en gris ceux "
+                + "<p class=caption>Les morts de chaque année par tribu : en rouge ceux de manque (faim, soif, froid), en gris ceux "
                 "de fond (maladie, vieillesse, couches) ; le contour dit la tribu, A à gauche de l’année"
                 + (", B à droite" if len(ts) > 1 else "") + ".</p>" + want_chart(d, wide=True).svg("morts de manque et de fond par an")
                 + '<section id=morts><h3>Les morts</h3>' + points_html(deaths_points(d, sm))
@@ -3011,8 +3012,9 @@ def run_body(s, r, d, store=None, year=None):
                 'la barre dit l’âge.</p>' + deaths_table_v2(d) + "</section>"
                 + "<section id=naissances><h3>Les naissances</h3>" + points_html(births_points(d, sm, bt)) + births_table_v2(d) + "</section>"
                 + "<section id=tous><h3>Tout le monde</h3>" + points_html(everyone_points(d, sm)) + people_table_v2(d) + "</section></section>")
+    body.append('<section id=courbes class=group><h2>Les courbes</h2>' + panels.curves_html() + '</section>')
     body.append('<section id=ou class=group><h2>Où ils vivent</h2>' + points_html(where_points(d, sm, bt))
-                + '<div data-lazy="carte" class=lazy><p class=muted>la carte se charge…</p></div>'
+                + panels.maps_html()
                 + ("<h3>Ce que la tribu sait</h3>" + points_html(knowledge_points(d)) + knowledge_body(d) if fire else "") + "</section>")
     body.append('<section id=appris class=group><h2>Ce qu’ils ont appris</h2>' + points_html(learnt_points(d, sm))
                 + "<h3>Les techniques</h3>" + points_html(techniques_points(d)) + techniques_html(d)
@@ -3021,7 +3023,7 @@ def run_body(s, r, d, store=None, year=None):
     body.append('<section id=annexes class=group><h2>Annexes</h2><details class=detail><summary>Les tableaux bruts</summary>'
                 '<div data-lazy="annexes"><p class=muted>les annexes se chargent…</p></div></details></section>')
     body.append('<dialog id=fiche class=fiche aria-label="fiche"><div class=in><button type=button class=close>fermer</button><div class=body></div></div></dialog>')
-    body.append(f"<script>{TABLE_JS}{CHRON_JS}{MAP2_JS}{LAZY_JS}{FICHE_JS}{TOC_JS}</script>")
+    body.append(f"<script>{TABLE_JS}{CHRON_JS}{MAP2_JS}{LAZY_JS}{FICHE_JS}{TOC_JS}{panels.MAPS6_JS}{panels.SM6_JS}</script>")
     base = f"{urllib.parse.quote(serie)}/{urllib.parse.quote(name)}"
     return (head + f'<div class=runpage data-fiche="/fiche/{h(base)}" data-morceau="/morceau/{h(base)}">{toc_html(toc)}'
             f'<div class=runmain>{"".join(body)}</div></div>')
