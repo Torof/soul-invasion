@@ -48,6 +48,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:  # `-I` leaves the script's own folder out of the path
     sys.path.insert(0, HERE)
+import panels  # noqa: E402
 import reading  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(HERE))
@@ -64,7 +65,7 @@ KEEP = ["Population", "Births", "Illness", "Old age", "Childbirth", "Hunger",
         "Thirst", "Cold", "Trials", "Kept", "Copied", "Homes moved"]
 BINARY_RETRY_S = 5.0
 FORM_DEFAULTS = {
-    "name": "", "question": "", "run_name": "", "world": "patch", "side": "50",
+    "name": "", "title": "", "question": "", "run_name": "", "world": "patch", "side": "50",
     "tribes": "", "people": "5", "children": "0", "infants": "0", "ages": "18-40",
     "fed": "", "days": "10", "seeds": "1", "both": "", "both_fire": "", "cadence": "1", "jobs": "",
     "change": "",
@@ -205,6 +206,7 @@ def plan_from_form(fields, runs_dir, binary, content, now=None):
     f["both_fire"] = "on" if f["both_fire"] else ""
     created = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now))
     return {
+        "title": f["title"].strip(),
         "question": f["question"],
         "change": f["change"],
         "binary": binary,
@@ -224,6 +226,7 @@ def form_from_plan(plan, name=""):
     if isinstance(lab.get("form"), dict):
         f.update({k: str(v) for k, v in lab["form"].items() if k in FORM_DEFAULTS})
     else:
+        f["title"] = plan.get("title", "")
         f["question"] = plan.get("question", "")
         f["change"] = plan.get("change", "")
         runs = plan.get("runs") or [{}]
@@ -382,22 +385,29 @@ def signature(plan):
 
 # --- the synthesis page (soul-runs' layout) -------------------------------
 
-def parse_tables(page):
-    """Last-year rows of the tribe table, by header names (missing columns tolerated)."""
-    result = {}
-    for t in re.findall(r"<table.*?</table>", page, re.S):
-        heads = [html.unescape(h) for h in re.findall(r"<th>(.*?)</th>", t, re.S)]
-        if "Year" not in heads or "Population" not in heads:
-            continue
-        last = {}
-        for row in re.findall(r"<tr>(.*?)</tr>", t, re.S):
-            cells = [html.unescape(re.sub(r"<.*?>", "", c))
-                     for c in re.findall(r"<td>(.*?)</td>", row, re.S)]
-            if len(cells) == len(heads):
-                d = dict(zip(heads, cells))
-                last[d.get("Tribe", "")] = d
-        result = last
-    return result
+# The synthesis' counters, by the KEEP names, read from a year of the run's data (lab 6: the
+# vivarium's page is minimal, its tables are no longer there).
+KEEP_KEYS = {"Population": lambda y: y.get("population"), "Births": lambda y: y.get("births"),
+             "Illness": lambda y: (y.get("deaths") or {}).get("illness"), "Old age": lambda y: (y.get("deaths") or {}).get("old_age"),
+             "Childbirth": lambda y: (y.get("deaths") or {}).get("childbirth"), "Hunger": lambda y: (y.get("deaths") or {}).get("hunger"),
+             "Thirst": lambda y: (y.get("deaths") or {}).get("thirst"), "Cold": lambda y: (y.get("deaths") or {}).get("cold"),
+             "Trials": lambda y: y.get("trials"), "Kept": lambda y: y.get("kept"), "Copied": lambda y: y.get("copied"),
+             "Homes moved": lambda y: y.get("homes_moved")}
+
+
+def last_year_counts(path):
+    """The last year's counters of each tribe, from the run's data file: `{tribe: {name: text}}`;
+    `{}` when the file is missing or unreadable."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            years = json.load(f).get("years") or []
+    except (OSError, ValueError, AttributeError):
+        return {}
+    last = {}
+    for y in years:
+        if isinstance(y, dict) and (y.get("tribe") not in last or (y.get("year") or 0) >= (last[y["tribe"]].get("year") or 0)):
+            last[y.get("tribe")] = y
+    return {t: {k: str(fn(y)) for k, fn in KEEP_KEYS.items() if fn(y) is not None} for t, y in last.items()}
 
 
 def synthesis(out, plan, runs, pid_alive=lambda name: False):
@@ -406,7 +416,7 @@ def synthesis(out, plan, runs, pid_alive=lambda name: False):
     rows, cols = [], []
     for r in runs:
         s = run_status(out, r, now, pid_alive(r["name"]))
-        tribes = parse_tables(read_text(os.path.join(out, r["name"] + ".html")) or "")
+        tribes = last_year_counts(os.path.join(out, r["name"] + ".json"))
         for k in KEEP:
             if any(k in t for t in tribes.values()) and k not in cols:
                 cols.append(k)
@@ -432,7 +442,7 @@ td,th{{border:1px solid #999;padding:3px 8px;text-align:left}}pre{{background:#e
 <h2>Ce que la série demandait</h2><p>{q}</p>
 <h2>Le plan</h2><pre>{h(json.dumps(plan, indent=1, ensure_ascii=False))}</pre>
 <h2>Les runs</h2>
-<p>Vivants et morts à la fin du run ; les compteurs sont ceux de la dernière année du tableau « The tribes, year by year » de chaque page, par tribu.</p>
+<p>Vivants et morts à la fin du run ; les compteurs sont ceux de la dernière année de chaque run, par tribu, lus dans ses données (<code>years[]</code>).</p>
 <table><tr><th>Run</th><th>Graine</th><th>Épreuves</th><th>État</th><th>Vivants</th><th>Morts</th><th>Temps</th><th>Page</th>{head}</tr>
 {''.join(body)}</table></html>"""
     with open(os.path.join(out, "synthese.html"), "w") as f:
@@ -749,7 +759,9 @@ class Lab:
             except (KeyError, TypeError, ValueError):
                 sig = None
             out.append({
-                "name": name, "dir": name, "question": plan.get("question", ""),
+                "name": name, "dir": name, "question": plan.get("question", ""), "title": panels.series_title(name, plan),
+                "purpose": panels.purpose_summary(plan.get("summary") or plan.get("question", "")),
+                "started": min(starts) if starts else None, "ended": max(ends) if ended and ends else None,
                 "version": version, "plan_name": lab_plan_name(plan, name), "signature": sig,
                 "state": state, "owned": owned is not None, "elapsed": int(elapsed),
                 "note": (owned.note if owned else lab.get("note", "")) or "",
@@ -757,7 +769,7 @@ class Lab:
                 "sort": max(starts) if starts else os.path.getmtime(os.path.join(d, "serie.json")),
                 "synthese": f"/runs/{urllib.parse.quote(name)}/synthese.html" if synth else None,
                 "final": final,
-                "runs": [dict(r, seed=orig.get("seed"), trials=orig.get("trials", True), fire=orig.get("fire", True), base=orig.get("base"),
+                "runs": [dict(r, seed=orig.get("seed"), started=orig.get("started"), ended=orig.get("ended"), trials=orig.get("trials", True), fire=orig.get("fire", True), base=orig.get("base"),
                               page=f"/runs/{urllib.parse.quote(name)}/{urllib.parse.quote(r['page'])}" if r["page"] else None,
                               log=f"/runs/{urllib.parse.quote(name)}/{urllib.parse.quote(r['log'])}" if r["log"] else None,
                               data=os.path.exists(os.path.join(d, r["name"] + ".json")),
@@ -771,13 +783,13 @@ class Lab:
 # --- the pages ---------------------------------------------------------------
 
 CSS = """
-:root{color-scheme:light;--page:#f9f9f7;--surface:#fff;--ink:#1f2328;--ink2:#52514e;--muted:#6b6a65;--line:#e6e4df;--zebra:#f6f5f1;
+:root{color-scheme:light;--page:#efeee9;--edge:#cbc7bd;--surface:#fff;--ink:#1f2328;--ink2:#52514e;--muted:#6b6a65;--line:#e6e4df;--zebra:#f6f5f1;
 --chip:#eceae4;--want:#d03b3b;--bg-death:#898781;--kept:#008300;--rumour:#eda100;--birth:#d55181;--fire:#6250d6;--camp:#1baf7a;--try:#898781;
---good-bg:#d8efd3;--good-ink:#1f6b2a;--bad-bg:#f6d3cf;--bad-ink:#8a2a22;--link:#1f6f8b;--shadow:0 1px 3px rgba(0,0,0,.06);--tA:#2a78d6;--tB:#eb6834;--winter:#dde6ee}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--page:#0d0d0d;--surface:#1a1a19;--ink:#f0efec;--ink2:#c3c2b7;
+--good-bg:#d8efd3;--good-ink:#1f6b2a;--bad-bg:#f6d3cf;--bad-ink:#8a2a22;--link:#1f6f8b;--shadow:0 1px 2px rgba(0,0,0,.07),0 4px 12px rgba(0,0,0,.05);--tA:#2a78d6;--tB:#eb6834;--winter:#dde6ee}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--page:#0b0b0b;--edge:#46463f;--surface:#1a1a19;--ink:#f0efec;--ink2:#c3c2b7;
 --muted:#a3a299;--line:#2c2c2a;--zebra:#222220;--chip:#2c2c2a;--want:#e66767;--bg-death:#898781;--kept:#0ca30c;--rumour:#c98500;--birth:#d55181;
 --fire:#9085e9;--camp:#199e70;--try:#898781;--good-bg:#173b1a;--good-ink:#9bd89b;--bad-bg:#4a1e1c;--bad-ink:#f2aaa5;--link:#6cb6d4;--shadow:none;--tA:#3987e5;--tB:#d95926;--winter:#1f2b36}}
-:root[data-theme="dark"]{color-scheme:dark;--page:#0d0d0d;--surface:#1a1a19;--ink:#f0efec;--ink2:#c3c2b7;--muted:#a3a299;--line:#2c2c2a;
+:root[data-theme="dark"]{color-scheme:dark;--page:#0b0b0b;--edge:#46463f;--surface:#1a1a19;--ink:#f0efec;--ink2:#c3c2b7;--muted:#a3a299;--line:#2c2c2a;
 --zebra:#222220;--chip:#2c2c2a;--want:#e66767;--bg-death:#898781;--kept:#0ca30c;--rumour:#c98500;--birth:#d55181;--fire:#9085e9;--camp:#199e70;
 --try:#898781;--good-bg:#173b1a;--good-ink:#9bd89b;--bad-bg:#4a1e1c;--bad-ink:#f2aaa5;--link:#6cb6d4;--shadow:none;--tA:#3987e5;--tB:#d95926;--winter:#1f2b36}
 body{font:16px/1.5 system-ui,sans-serif;margin:0;background:var(--page);color:var(--ink)}
@@ -836,7 +848,7 @@ details.detail>summary::after{content:" — tout le reste : réglages, autres co
 ul.lines{font-size:.8em;columns:2;margin:.2em 0}.controls{background:var(--surface);border-radius:12px;padding:.7em 1.2em;margin:.6em 0 1em;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 form.inline{display:inline-block;margin:.2em 1em .2em 0}form.inline select{max-width:28em}
 .plans input[type=text]{width:16em}
-"""+reading.RUN_CSS
+"""+reading.RUN_CSS+panels.PANELS_CSS+panels.HOME_CSS+panels.SECTIONS_CSS+panels.SERIE_CSS
 
 
 def page(title, body, tab, port):
@@ -847,63 +859,6 @@ def page(title, body, tab, port):
 <title>{html.escape(title)} — laboratoire</title><style>{CSS}</style></head><body>
 <header><strong>Laboratoire</strong>{nav}<small>127.0.0.1:{port}</small></header>
 <main>{body}</main></body></html>"""
-
-
-RUNNING_JS = """
-const fmt = v => v === null || v === undefined ? '-' : v;
-const cls = s => s === 'en cours' || s === 'attend' ? 'cours' : s === 'fini' || s.startsWith('terminée') ? 'fini'
-  : s.startsWith('ÉCHEC') || s === 'perdu' || s === 'perdue' ? 'echec' : s.startsWith('arrêt') ? 'arret' : '';
-const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const secs = s => s >= 3600 ? Math.floor(s/3600)+' h '+Math.floor(s%3600/60)+' min' : s >= 60 ? Math.floor(s/60)+' min '+(s%60)+' s' : s+' s';
-const pending = new Set();
-function render(series) {
-  const root = document.getElementById('series');
-  if (!series.length) { root.innerHTML = '<p class="muted">Aucune série dans le dossier des runs. <a href="/nouvelle">Créer la première</a>.</p>'; return; }
-  root.innerHTML = series.map(s => {
-    const running = s.state === 'en cours' && s.owned;
-    const stop = running ? (pending.has(s.dir)
-      ? `<span class="confirm">Arrêter la série <b>${esc(s.name)}</b> et tuer ses runs ? <form method="post" action="/arreter" style="display:inline"><input type="hidden" name="serie" value="${esc(s.dir)}"><button class="danger">Oui, arrêter</button></form> <button data-cancel="${esc(s.dir)}">Non</button></span>`
-      : `<button data-stop="${esc(s.dir)}" class="confirm">Arrêter</button>`) : '';
-    const rows = s.runs.map(r => `<tr><td>${r.page ? `<a href="${r.page}">${esc(r.name)}</a>` : esc(r.name)}</td>
-      <td><span class="etat ${cls(r.state)}">${esc(r.state)}</span></td><td class="n">${fmt(r.year)}</td><td class="n">${fmt(r.alive)}</td>
-      <td class="n">${fmt(r.dead)}</td><td class="n">${secs(r.elapsed)}</td><td>${r.log ? `<a href="${r.log}">log</a>` : ''}</td></tr>`).join('');
-    const final = s.final ? `<p><b>${esc(s.final)}</b>${s.synthese ? ` — <a href="${s.synthese}">synthèse</a>` : ''}</p>` : '';
-    const note = s.note ? `<p class="warn">${esc(s.note)}</p>` : '';
-    const meta = [s.created ? 'créée le ' + esc(s.created.replace('T', ' à ')) : '', s.jobs ? s.jobs + ' à la fois' : '',
-      s.owned ? '' : 'lancée hors du laboratoire', !s.final ? secs(s.elapsed) : ''].filter(Boolean).join(' · ');
-    return `<section class="serie"><h2>${esc(s.name)} <span class="etat ${cls(s.state)}">${esc(s.state)}</span>${stop}</h2>
-      <p class="muted">${meta}</p>${s.question ? `<p class="q">${esc(s.question)}</p>` : ''}${note}${final}
-      <table><tr><th>run</th><th>état</th><th>année</th><th>vivants</th><th>morts</th><th>temps</th><th></th></tr>${rows}</table></section>`;
-  }).join('');
-  root.querySelectorAll('[data-stop]').forEach(b => b.onclick = () => { pending.add(b.dataset.stop); render(last); });
-  root.querySelectorAll('[data-cancel]').forEach(b => b.onclick = () => { pending.delete(b.dataset.cancel); render(last); });
-}
-let last = [];
-async function tick() {
-  try { const r = await fetch('/api/series'); last = await r.json(); render(last); document.getElementById('err').textContent = ''; }
-  catch (e) { document.getElementById('err').textContent = 'Le laboratoire ne répond plus (' + e + ').'; }
-}
-tick(); setInterval(tick, 2000);
-"""
-
-FORM_JS = """
-const days = document.getElementById('days'), years = document.getElementById('years');
-const upd = () => { const d = parseInt(days.value, 10); years.textContent = isNaN(d) ? '' : '= ' + (d / 50).toFixed(d % 50 ? 2 : 0) + ' an(s) de 50 jours'; };
-days.oninput = upd; upd();
-const world = document.getElementById('world'), side = document.getElementById('side-row');
-const sideLabel = document.getElementById('side-row-label');
-const sw = () => { const d = world.value === 'patch' ? '' : 'none'; side.style.display = d; sideLabel.style.display = d; };
-world.onchange = sw; sw();
-const cad = document.getElementById('cadence'), cw = document.getElementById('cadence-warn');
-const cu = () => { cw.textContent = cad.value === '1' ? '' : 'Cadence ' + cad.value + ' : le jeu tourne à 10, soit dix fois plus lent qu’à 1.'; };
-cad.oninput = cu; cu();
-"""
-
-
-def running_page(port):
-    body = ('<h1>Les séries</h1><p id="err" class="warn"></p><div id="series"><p class="muted">Chargement…</p></div>'
-            f'<script>{RUNNING_JS}</script>')
-    return page("En cours", body, "cours", port)
 
 
 def form_page(lab, fields, port, error="", title="Nouvelle série"):
@@ -918,6 +873,8 @@ def form_page(lab, fields, port, error="", title="Nouvelle série"):
     rows = f"""
 <label for="name">Nom de la série</label><input type="text" id="name" name="name" value="{h(f['name'])}" required>
 <span class="hint">Le dossier des runs et le nom du plan : <code>{h(lab.runs_dir)}/&lt;nom&gt;/</code>, <code>plans/&lt;nom&gt;.json</code>.</span>
+<label for="title">Titre</label><input type="text" id="title" name="title" value="{h(f['title'])}" style="max-width:100%" placeholder="Le feu du soir, dix graines">
+<span class="hint">Ce que l’accueil affiche en gros ; sans titre, le nom de la série en mots.</span>
 <label for="question">Question</label><textarea id="question" name="question" class="wide" style="grid-column:2">{h(f['question'])}</textarea>
 <span class="hint">Ce que la série doit répondre ; recopiée en tête de la synthèse.</span>
 <label for="change">Ce qui a changé</label><input type="text" id="change" name="change" value="{h(f['change'])}" style="max-width:100%" placeholder="D50 b : le juge compte la soif">
@@ -970,12 +927,18 @@ def form_page(lab, fields, port, error="", title="Nouvelle série"):
     return page(title, body, "nouvelle", port)
 
 
-def standard_question(name):
+def standard_plan(name):
+    """A standard plan as read from the repository, or `{}` when it cannot be read."""
     try:
         with open(os.path.join(STANDARD_PLANS, name + ".json")) as f:
-            return json.load(f).get("question", "")
+            plan = json.load(f)
+        return plan if isinstance(plan, dict) else {}
     except (OSError, ValueError):
-        return ""
+        return {}
+
+
+def standard_question(name):
+    return standard_plan(name).get("question", "")
 
 
 def not_found(port, what="Page introuvable"):
@@ -1055,7 +1018,7 @@ class Handler(BaseHTTPRequestHandler):
         url = urllib.parse.urlsplit(self.path)
         q = urllib.parse.parse_qs(url.query)
         if url.path == "/":
-            self._page(running_page(self.port))
+            self._page(page("Les séries", panels.home_body(self.lab, standard_plan), "cours", self.port))
         elif url.path == "/nouvelle":
             fields, error = {}, ""
             name = (q.get("plan") or [""])[0]
@@ -1090,6 +1053,11 @@ class Handler(BaseHTTPRequestHandler):
             found, err = target(self.lab, urllib.parse.unquote(spec))
             d = None if err or found[1] is None else self.lab.store.load(found[0]["name"], found[1]["name"])
             arg = (q.get({"fiche": "id", "chronique": "an"}.get(kind, "quoi")) or [""])[0]
+            an = (q.get("an") or [""])[0]
+            panel = panels.piece(d, arg, int(an) if an.isdigit() else None) if d is not None and kind == "morceau" else None
+            if panel is not None:
+                self._send(200, panel[0], panel[1])
+                return
             piece = reading.run_piece(d, arg) if d is not None and kind == "morceau" else None
             if d is None or (kind != "morceau" and not arg.isdigit()) or (kind == "morceau" and piece is None):
                 self._send(404, "introuvable", "text/plain; charset=utf-8")
@@ -1102,6 +1070,12 @@ class Handler(BaseHTTPRequestHandler):
         elif url.path == "/compare":
             body, code = compare_page(self.lab, (q.get("a") or [""])[0], (q.get("b") or [""])[0], self.port)
             self._page(body, code)
+        elif url.path == "/api/resultats":
+            s = self.lab.find((q.get("serie") or [""])[0])
+            if s is None:
+                self._send(404, "introuvable", "text/plain; charset=utf-8")
+            else:
+                self._send(200, json.dumps(panels.series_results(self.lab.runs_dir, s[0]), ensure_ascii=False), "application/json; charset=utf-8")
         elif url.path == "/api/series":
             self._send(200, json.dumps(self.lab.series(), ensure_ascii=False), "application/json; charset=utf-8")
         elif url.path.startswith("/runs/"):
