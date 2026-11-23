@@ -145,6 +145,7 @@ The fundamental building block of all society.
 - **Knowledge as content** (12 November 2026, D15): concepts and processes with their prerequisites, at least two paths to each goal, the variants chosen by the maker.
 - **Discovering**, NPCs and players alike: by a **surprise observed** (the meat kept longer than expected; bark soaked in water; children's play; seeing another's attempt succeed) or a **trial pushed by a need** (the cold, losses counted, the memory of last winter), and only **one step from what is already known**. Willpower is the **depth of the search**: how far back from the need a mind looks, among what the band has to hand. A trial costs time and materials taken from food.
 - **Transmitting**: a skill is learnt by watching, working alongside, being taught; it degrades with each copy; it **dies with those who know it** if nobody learnt it.
+- **The knowledge of the land circulates at the fire** (23 November 2026, D55): at night at the camp, those who came home tell what changed for them in the day (a place seen full or bare, a water found, a way kept or given up); each thing known is one record in the world's memory, and a listener gains an access to it with its own credit, never the truth. A rumour dies by the gesture that made it: whoever goes and finds the place bare tells it that night.
 - **Knowledge read on a wiki** lets a player try; the body decides whether it succeeds.
 - Processes exist without being displayed: the space of possibilities is vast and hidden.
 - In the long term, possibly AI to judge free-form inventions.

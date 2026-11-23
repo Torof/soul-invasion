@@ -160,14 +160,19 @@ pub(crate) mod purpose {
     pub(crate) const TRIAL_DIRECTION: u64 = 0x0d50_d1e4;
     /// See `TRIAL_WILL`.
     pub(crate) const TRIAL_COPY: u64 = 0x0d50_c0b1;
-    /// See `TRIAL_WILL`.
+    /// See `TRIAL_WILL`. Since D55 only the control without the fire draws
+    /// the way copied (the fire copies the way heard).
     pub(crate) const TRIAL_COPY_WAY: u64 = 0x0d50_c0b2;
     /// See `TRIAL_WILL`.
     pub(crate) const TRIAL_COPY_LOSS: u64 = 0x0d50_1055;
 
+    /// The evening fire (D55): the jitter of a listener's credit in what a
+    /// teller told it, judged once the night it heard it.
+    pub(crate) const FIRE_CREDIT: u64 = 0x0d55_c4ed;
+
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 67] = [
+    pub(crate) const ALL: [u64; 68] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -235,6 +240,7 @@ pub(crate) mod purpose {
         TRIAL_COPY,
         TRIAL_COPY_WAY,
         TRIAL_COPY_LOSS,
+        FIRE_CREDIT,
     ];
 }
 

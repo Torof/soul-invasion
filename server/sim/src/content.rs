@@ -341,6 +341,11 @@ pub struct Needs {
     /// placeholders of `content/needs.ron`.
     #[serde(default)]
     pub thought: Thought,
+    /// The evening fire and the common memory (D55): who tells how much,
+    /// who keeps how much, the three states of a place, the hearth's
+    /// nights. Absent: no fire, nobody tells nor hears anything.
+    #[serde(default)]
+    pub fire: Fire,
 }
 
 /// The rules of thought that make a mind light (D53, decided by the
@@ -410,6 +415,120 @@ impl Thought {
         if self.places_remembered == 0 {
             return Err(ContentError::Needs(
                 "thought: places_remembered is 1 or more",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The evening fire and the common memory (D55, lot 4 of the simulation,
+/// 22 November 2026): at the camp, those who came home tell what changed
+/// for them in the day (a place seen, a water found, a way judged, how
+/// they fared), and each listener gains an access to the records told,
+/// never the world. Every value is a D30 placeholder, named and
+/// explained in `content/needs.ron`; nothing is tuned to a result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Fire {
+    /// How many things a present body tells a night at most: its judged
+    /// way, the water it found, then the places that changed for it, by
+    /// their value from the camp. 0: no fire.
+    pub told_per_night: u32,
+    /// How many told things a grown listener keeps a night at most, and
+    /// how many heard kept ways a mind holds.
+    pub heard_max: u32,
+    /// How many told things a listener keeps a night by its age: (years,
+    /// count), the ages rising, straight lines between the points, the
+    /// first held before and the last after; capped by `heard_max`. A
+    /// child keeps fewer than a grown one.
+    pub heard_by_age: Vec<(u32, u32)>,
+    /// The three states of a kind at a place, by how many of its plants
+    /// held food worth a step when looked at: bare under the first, some
+    /// from the first to under the second, full from the second.
+    pub place_buckets: (u32, u32),
+    /// How many nights a camp's hearth keeps: what the tribe knows is the
+    /// union of them.
+    pub hearth_nights: u32,
+}
+
+impl Default for Fire {
+    /// No fire: nobody tells nor hears anything.
+    fn default() -> Self {
+        Self {
+            told_per_night: 0,
+            heard_max: 0,
+            heard_by_age: vec![(0, 0)],
+            place_buckets: (1, 4),
+            hearth_nights: 0,
+        }
+    }
+}
+
+impl Fire {
+    /// The placeholders of `content/needs.ron` (D30).
+    #[must_use]
+    pub fn placeholders() -> Self {
+        Self {
+            told_per_night: 6,
+            heard_max: 24,
+            heard_by_age: vec![(2, 6), (8, 12), (14, 20), (16, 24)],
+            place_buckets: (1, 4),
+            hearth_nights: 50,
+        }
+    }
+
+    /// Whether anybody ever tells or hears anything.
+    #[must_use]
+    pub fn on(&self) -> bool {
+        self.told_per_night > 0 && self.heard_max > 0
+    }
+
+    /// How many told things a listener `age_milli` thousandths of a year
+    /// old keeps a night.
+    #[must_use]
+    pub fn heard_at(&self, age_milli: u64) -> u32 {
+        let by_age = along(&self.heard_by_age, age_milli, 1);
+        u32::try_from(by_age)
+            .unwrap_or(u32::MAX)
+            .min(self.heard_max)
+    }
+
+    /// The state of a kind at a place from how many of its plants `held`
+    /// food: 0 bare, 1 some, 2 full.
+    #[must_use]
+    pub fn bucket(&self, held: u32) -> u8 {
+        if held >= self.place_buckets.1 {
+            2
+        } else {
+            u8::from(held >= self.place_buckets.0)
+        }
+    }
+
+    /// How many plants holding food a state stands for, at the least:
+    /// what a listener takes a told state to mean.
+    #[must_use]
+    pub fn held_of(&self, bucket: u8) -> u32 {
+        match bucket {
+            0 => 0,
+            1 => self.place_buckets.0,
+            _ => self.place_buckets.1,
+        }
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        let rising = self.heard_by_age.windows(2).all(|p| p[0].0 < p[1].0);
+        if self.heard_by_age.is_empty() || !rising {
+            return Err(ContentError::Needs(
+                "fire: heard_by_age not empty, its ages rising",
+            ));
+        }
+        if self.place_buckets.0 == 0 || self.place_buckets.0 >= self.place_buckets.1 {
+            return Err(ContentError::Needs(
+                "fire: place_buckets is (some from, full from), 1 or more and rising",
+            ));
+        }
+        if self.on() && self.hearth_nights == 0 {
+            return Err(ContentError::Needs(
+                "fire: hearth_nights is a night or more when the fire is on",
             ));
         }
         Ok(())
@@ -1296,7 +1415,8 @@ impl Content {
         self.needs.ages.validate()?;
         self.needs.life.validate()?;
         self.needs.trials.validate()?;
-        self.needs.thought.validate()
+        self.needs.thought.validate()?;
+        self.needs.fire.validate()
     }
 
     /// Refuses the values the simulation cannot carry (audit of 20

@@ -256,6 +256,7 @@ impl Report {
                 "ticks_per_second": s.ticks_per_second,
                 "seed": s.seed,
                 "trials": s.trials,
+                "fire": s.fire,
                 "content": s.content.as_deref().and_then(|p| p.file_name()).and_then(|n| n.to_str()),
             },
             "map_tiles": [self.map_side.0, self.map_side.1],

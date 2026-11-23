@@ -29,6 +29,7 @@ pub mod land;
 pub mod life;
 pub mod lru;
 pub mod map;
+pub mod memory;
 pub mod open_ground;
 pub mod plan;
 pub mod relief;

@@ -81,11 +81,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use crate::content::{Content, Trials};
+use crate::content::{Content, Fire, Trials};
 use crate::crops::{self, Bearer, Source};
 use crate::r#gen::scatter::{self, purpose};
 use crate::lru::Lru;
 use crate::map::{CHUNK_SIZE, ChunkPos, FinePos, Map, Pos, Terrain};
+use crate::memory::{self, Access, Fared, Record, RecordId, Store};
 use crate::{Body, BodyId, Event, GATHER_REACH_MM, Intention, ItemId, World};
 
 /// Thirst from which a body goes to drink: half a game day without
@@ -240,8 +241,8 @@ struct Aim {
 }
 
 /// Where a place is: its square's coordinates, a tile's divided by the
-/// place's side ([`place_of`]).
-type PlaceKey = (i32, i32);
+/// place's side (the content's `thought.place_tiles`).
+pub type PlaceKey = memory::PlaceKey;
 
 /// A place a body remembers (D53): a square of the content's
 /// `thought.place_tiles` tiles on a side where it saw trees and plants
@@ -258,6 +259,16 @@ struct Place {
     /// there for now (its plants still ripening, a gather refused). It
     /// tries again [`RETRY_HOURS`] later, or another place meanwhile.
     not_before: Option<u64>,
+    /// The record it holds of this place (D55): its own, told at the
+    /// fire; or one heard, by whom and when. `None` for a draft never
+    /// told: what it saw is in `kinds`.
+    access: Option<Access>,
+    /// The day it last looked at the place itself.
+    looked_day: Option<u32>,
+    /// What an hour of the rumour it dispelled there was told to give
+    /// (D55): the bare place is told tonight, worth telling as much as
+    /// the rumour was; 0 when none.
+    rumour_kj: u64,
 }
 
 /// What a body saw of one kind at a place: how many trees and plants of
@@ -479,8 +490,69 @@ pub struct Trial {
     pub before: Ways,
     /// The day it started (the day closing at that nightfall).
     pub started_day: u64,
-    /// What the `trial_days` before gave: the judge compares against it.
+    /// What the `trial_days` before gave: the judge compares against it
+    /// when it heard nobody.
     pub before_days: Lately,
+    /// The days it heard at the fire of camp-mates who changed nothing
+    /// (D50, amended): the judge compares against their mean.
+    pub heard: HeardDays,
+}
+
+/// The days a body in trial heard at the fire from camp-mates who changed
+/// nothing, summed night after night: the relative judge's other side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HeardDays {
+    /// Their gathered kJ, each in per cent of its own need, summed.
+    pub kj_percent: u64,
+    /// Their days ended thin.
+    pub thin: u32,
+    /// Their days ended thirsty.
+    pub thirsty: u32,
+    /// Their days whose night before was cold.
+    pub cold: u32,
+    /// Days heard.
+    pub days: u32,
+    /// Nights at which some were heard.
+    pub nights: u32,
+}
+
+impl HeardDays {
+    /// One more day heard.
+    fn add(&mut self, fared: Fared) {
+        self.kj_percent += u64::from(fared.kj_percent);
+        self.thin += u32::from(fared.thin);
+        self.thirsty += u32::from(fared.thirsty);
+        self.cold += u32::from(fared.cold);
+        self.days += 1;
+    }
+
+    /// Their mean, as a [`Lately`] over `days` days (integers, the
+    /// division whole): what a body in trial compares its own days with.
+    /// `None` when none was heard.
+    fn mean(&self, days: u32) -> Option<Lately> {
+        if self.days == 0 {
+            return None;
+        }
+        let per = |n: u32| n.saturating_mul(days) / self.days;
+        Some(Lately {
+            kj_per_day: self.kj_percent / u64::from(self.days),
+            thin_days: per(self.thin),
+            thirsty_days: per(self.thirsty),
+            cold_days: per(self.cold),
+            distress_days: 0,
+        })
+    }
+}
+
+/// A way judged today (D55): told at the fire tonight, if its body is
+/// there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Judged {
+    way: Way,
+    after: Ways,
+    kept: bool,
+    before: Lately,
+    during: Lately,
 }
 
 /// One day as a mind closed it at nightfall (D50): what it gathered, and
@@ -578,6 +650,53 @@ pub enum News {
         way: Way,
         /// Kept (it gathered more a day, thin no more often) or reverted.
         kept: bool,
+        /// Judged against this many days heard at the fire of camp-mates
+        /// who changed nothing (D50, amended); 0: against its own days
+        /// before.
+        heard_days: u32,
+        /// Over this many nights.
+        heard_nights: u32,
+        /// The tick.
+        at: u64,
+    },
+    /// At the fire of `camp`, `body` told `record` (D55).
+    Told {
+        /// Who.
+        body: BodyId,
+        /// The record.
+        record: RecordId,
+        /// The camp.
+        camp: Pos,
+        /// The day that closed.
+        day: u32,
+        /// The tick.
+        at: u64,
+    },
+    /// At the fire, `body` heard `record` from `from` and kept an access
+    /// to it, with this credit (D55).
+    Heard {
+        /// Who.
+        body: BodyId,
+        /// The record.
+        record: RecordId,
+        /// Who told it.
+        from: BodyId,
+        /// Its credit in it, 1 to 100.
+        credit: u8,
+        /// The tick.
+        at: u64,
+    },
+    /// `body` went to a place it had heard of from `from` and found none
+    /// of the food told: the rumour is dispelled, and told tonight (D55).
+    Dispelled {
+        /// Who.
+        body: BodyId,
+        /// The place.
+        place: PlaceKey,
+        /// The record it believed.
+        record: RecordId,
+        /// Who had told it.
+        from: BodyId,
         /// The tick.
         at: u64,
     },
@@ -622,8 +741,19 @@ pub struct Mind {
     trial: Option<Trial>,
     /// Its home at the last nightfall: the camp-mates are those sharing it.
     home_at_dusk: Pos,
-    /// The day it last lay down at its camp and looked at its mates: it
-    /// copies at most once a night.
+    /// The kept ways it heard at the fire (D55): accesses to trial
+    /// records, the oldest first; at most the content's `fire.heard_max`.
+    heard_ways: Vec<Access>,
+    /// Its way judged today, to tell at the fire tonight.
+    judged: Option<Judged>,
+    /// The chunks whose drinking place it found today, to tell tonight.
+    water_found: Vec<ChunkPos>,
+    /// The day it last changed its ways (a trial started, a way copied or
+    /// kept): the relative judge leaves its days out for `trial_days`.
+    changed_day: Option<u64>,
+    /// The day it last weighed copying a camp-mate at lay-down: the
+    /// control without the fire ([`Brains::imitate_at_camp`]), once a
+    /// night.
     copied_night: Option<u64>,
     /// Where it last looked for water from: it looks again only elsewhere.
     looked_from: Option<Pos>,
@@ -680,6 +810,10 @@ impl Mind {
             cold_night: false,
             trial: None,
             home_at_dusk: home,
+            heard_ways: Vec::new(),
+            judged: None,
+            water_found: Vec::new(),
+            changed_day: None,
             copied_night: None,
             looked_from: None,
             set_off_from: None,
@@ -788,6 +922,468 @@ impl Mind {
     }
 }
 
+/// What `body` burns a day, in kilojoules: what its gathered kJ are set
+/// against when the fire compares days (a child needs less, D47).
+fn need_kj_per_day(rules: &Content, body: &Body) -> u64 {
+    body.condition().need_j_per_day(&rules.needs) / 1000
+}
+
+/// The judge of `trial` (D50, amended by D55): against the mean of the
+/// days it heard at the fire of camp-mates who changed nothing, its own
+/// gathered kJ in per cent of its need as theirs; against its own days
+/// before only when it heard nobody. Kept if nothing worsened and one
+/// thing improved ([`Lately::better_than`]). With what it will tell.
+fn judge(rules: &Content, body: &Body, mind: &Mind, trial: &Trial) -> (bool, Judged) {
+    let trials = &rules.needs.trials;
+    let during = mind.lately(trials.trial_days);
+    let kept = match trial.heard.mean(trials.trial_days) {
+        Some(theirs) => {
+            let need = need_kj_per_day(rules, body);
+            let own = Lately {
+                kj_per_day: during.kj_per_day * 100 / need.max(1),
+                ..during
+            };
+            own.better_than(&theirs)
+        }
+        None => during.better_than(&trial.before_days),
+    };
+    (
+        kept,
+        Judged {
+            way: trial.way,
+            after: mind.ways,
+            kept,
+            before: trial.before_days,
+            during,
+        },
+    )
+}
+
+/// Sets `way` in `mind` to its value in `theirs` (D50): with
+/// `imitate_loss_percent` a numeric way lands halfway. Whether it lost.
+fn copy_way(
+    mind: &mut Mind,
+    way: Way,
+    theirs: &Ways,
+    seed: u64,
+    keys: &[u64],
+    trials: &Trials,
+) -> bool {
+    let lost = matches!(way, Way::WorthHalfTiles | Way::StockKj)
+        && scatter::roll(seed, purpose::TRIAL_COPY_LOSS, keys) % 100
+            < u64::from(trials.imitate_loss_percent);
+    match (way, lost) {
+        (Way::WorthHalfTiles, true) => {
+            mind.ways.worth_half_tiles =
+                halfway(mind.ways.worth_half_tiles, theirs.worth_half_tiles);
+        }
+        (Way::StockKj, true) => {
+            mind.ways.stock_kj = halfway(mind.ways.stock_kj, theirs.stock_kj);
+        }
+        _ => way.copy(&mut mind.ways, theirs),
+    }
+    lost
+}
+
+/// What a listener takes a told state of a kind to be worth an hour: the
+/// kind's best, less its credit in the teller.
+fn heard_kj(food: &Food, kind: u16, bucket: u8, credit: u8) -> u64 {
+    if bucket == 0 {
+        return 0;
+    }
+    food.best_kj
+        .get(usize::from(kind))
+        .map_or(0, |kj| kj * u64::from(credit) / 100)
+}
+
+impl Place {
+    /// What it holds, told in the fire's states: each kind and how many of
+    /// its plants held food, bucketed.
+    fn states(&self, fire: &Fire) -> Vec<(u16, u8)> {
+        self.kinds
+            .iter()
+            .map(|seen| (seen.kind, fire.bucket(u32::from(seen.holding))))
+            .collect()
+    }
+
+    /// Whether what it saw differs from what the record it holds says, or
+    /// it saw food and holds no record yet: something to tell tonight.
+    fn changed(&self, fire: &Fire, memory: &Store) -> bool {
+        match self.access.and_then(|a| memory.get(a.record)) {
+            Some(Record::Place { states, .. }) => *states != self.states(fire),
+            Some(_) => false,
+            None => self.rumour_kj > 0 || self.kinds.iter().any(|seen| seen.holding > 0),
+        }
+    }
+
+    /// What the place is believed worth from `from`: what an hour of its
+    /// fullest plant gives, less the farther, of what it saw or, found
+    /// bare, of what the record it held said (a rumour dispelled is worth
+    /// telling as much as the rumour was).
+    fn value_from(
+        &self,
+        key: PlaceKey,
+        food: &Food,
+        memory: &Store,
+        from: Pos,
+        half: u64,
+        side: i32,
+    ) -> u64 {
+        let seen = self
+            .kinds
+            .iter()
+            .filter(|s| s.holding > 0)
+            .map(|s| s.best_kj)
+            .max();
+        let told = match self.access.and_then(|a| memory.get(a.record)) {
+            Some(Record::Place { states, .. }) => states
+                .iter()
+                .map(|&(kind, bucket)| heard_kj(food, kind, bucket, 100))
+                .max(),
+            _ => None,
+        };
+        worth(
+            seen.unwrap_or(0).max(told.unwrap_or(0)).max(self.rumour_kj),
+            far(place_centre(key, side), from),
+            half,
+        )
+    }
+}
+
+impl Mind {
+    /// It changed its ways within `trial_days` of `day`, or is under a
+    /// trial: the relative judge leaves its days out.
+    fn changed_lately(&self, rules: &Content, day: u64) -> bool {
+        self.trial.is_some()
+            || self
+                .changed_day
+                .is_some_and(|c| day < c + u64::from(rules.needs.trials.trial_days))
+    }
+
+    /// Drops every access it holds: the body is gone.
+    fn forget_all(&mut self, memory: &mut Store) {
+        for place in self.places.values_mut() {
+            if let Some(access) = place.access.take() {
+                memory.release(access.record);
+            }
+        }
+        for access in self.heard_ways.drain(..) {
+            memory.release(access.record);
+        }
+    }
+
+    /// Forgets the place `key`, dropping its access.
+    fn forget_place(&mut self, key: PlaceKey, memory: &mut Store) {
+        if let Some(place) = self.places.remove(&key)
+            && let Some(access) = place.access
+        {
+            memory.release(access.record);
+        }
+    }
+
+    /// Holds a heard kept way: at most `heard_max`, the oldest dropped.
+    fn hold_way(&mut self, access: Access, fire: &Fire, memory: &mut Store) {
+        self.heard_ways.push(access);
+        let keep = usize::try_from(fire.heard_max).unwrap_or(usize::MAX).max(1);
+        while self.heard_ways.len() > keep {
+            let dropped = self.heard_ways.remove(0);
+            memory.release(dropped.record);
+        }
+    }
+
+    /// What `me` tells at the fire of `camp` tonight (D55), each a record
+    /// found or written once in `memory`: its way judged today, the
+    /// drinking places it found today, then the places that changed for
+    /// it by their value from the camp; `told_per_night` at most. A place
+    /// told becomes its own record held (its draft is now in the well).
+    #[allow(clippy::too_many_arguments, reason = "one evening's telling")]
+    fn tell(
+        &mut self,
+        fire: &Fire,
+        food: &Food,
+        (camp, side, day, now): (Pos, i32, u32, u64),
+        me: BodyId,
+        memory: &mut Store,
+        news: &mut Vec<News>,
+    ) -> Vec<RecordId> {
+        let mut told = Vec::new();
+        let most = usize::try_from(fire.told_per_night).unwrap_or(usize::MAX);
+        if let Some(judged) = self.judged.take() {
+            let (id, _) = memory.intern(Record::Trial {
+                body: me,
+                day,
+                way: judged.way,
+                after: judged.after,
+                kept: judged.kept,
+                will: self.will,
+                before: judged.before,
+                during: judged.during,
+            });
+            told.push(id);
+        }
+        for chunk in std::mem::take(&mut self.water_found) {
+            if told.len() >= most {
+                break;
+            }
+            if let Some(place) = self.water.get(&chunk) {
+                let (id, _) = memory.intern(Record::Water {
+                    chunk,
+                    day,
+                    witness: me,
+                    stand: place.stand,
+                    water: place.water,
+                });
+                told.push(id);
+            }
+        }
+        let half = self.ways.worth_half_tiles;
+        let looked: Vec<PlaceKey> = self
+            .places
+            .iter()
+            .filter(|(_, p)| p.looked_day.is_some() && p.access.is_some_and(|a| !a.is_own(me)))
+            .filter(|(_, p)| p.access.zip(p.looked_day).is_some_and(|(a, d)| d > a.day))
+            .map(|(k, _)| *k)
+            .collect();
+        for key in looked {
+            self.correct(key, me, fire, food, memory, news, now);
+        }
+        let mut changed: Vec<(std::cmp::Reverse<u64>, PlaceKey)> = self
+            .places
+            .iter()
+            .filter(|(_, place)| place.looked_day.is_some() && place.changed(fire, memory))
+            .map(|(&key, place)| {
+                (
+                    std::cmp::Reverse(place.value_from(key, food, memory, camp, half, side)),
+                    key,
+                )
+            })
+            .collect();
+        changed.sort_unstable();
+        for (_, key) in changed {
+            if told.len() >= most {
+                break;
+            }
+            let place = self.places.get_mut(&key).expect("its place");
+            let (id, _) = memory.intern(Record::Place {
+                place: key,
+                day: place.looked_day.unwrap_or(day),
+                witness: me,
+                states: place.states(fire),
+            });
+            memory.hold(id);
+            place.rumour_kj = 0;
+            if let Some(old) = place.access.replace(Access {
+                record: id,
+                by: me,
+                day,
+            }) {
+                memory.release(old.record);
+            }
+            told.push(id);
+        }
+        told.truncate(most);
+        told
+    }
+
+    /// `me` hears `record` from `teller` at the fire of `camp` (D55) with
+    /// `credit` in it, and gains an access if it keeps it: a place heard
+    /// enters its places as what the teller said, worth less by the
+    /// credit, if it holds no later record of that place (its own look
+    /// included) and the place is worth remembering from the camp; a
+    /// water heard joins the drinking places it knows; a kept way heard
+    /// joins its heard ways. Whether it kept an access.
+    fn hear(
+        &mut self,
+        fire: &Fire,
+        food: &Food,
+        (camp, day): (Pos, u32),
+        (credit, record, teller): (u8, RecordId, BodyId),
+        memory: &mut Store,
+        rules: &Content,
+    ) -> bool {
+        let access = Access {
+            record,
+            by: teller,
+            day,
+        };
+        match memory.get(record) {
+            Some(Record::Place {
+                place: key,
+                day: rec_day,
+                states,
+                ..
+            }) => {
+                let (key, rec_day, states) = (*key, *rec_day, states.clone());
+                if let Some(place) = self.places.get(&key) {
+                    // The latest by its day, the smaller number at a tie;
+                    // its own look later than the record is the latest.
+                    let own_later = place.looked_day.is_some_and(|d| d > rec_day);
+                    let held_later = place
+                        .access
+                        .and_then(|a| memory.get(a.record).map(|r| (r.day(), a.record)))
+                        .is_some_and(|(d, id)| d > rec_day || (d == rec_day && id <= record));
+                    if own_later || held_later {
+                        return false;
+                    }
+                }
+                let place = self.places.entry(key).or_default();
+                place.kinds = states
+                    .iter()
+                    .map(|&(kind, bucket)| {
+                        let held = u16::try_from(fire.held_of(bucket)).unwrap_or(u16::MAX);
+                        Seen {
+                            kind,
+                            plants: held.max(
+                                place
+                                    .kinds
+                                    .iter()
+                                    .find(|s| s.kind == kind)
+                                    .map_or(0, |s| s.plants),
+                            ),
+                            holding: held,
+                            best_kj: heard_kj(food, kind, bucket, credit),
+                        }
+                    })
+                    .collect();
+                place.spent.clear();
+                place.not_before = None;
+                if let Some(old) = place.access.replace(access) {
+                    memory.release(old.record);
+                }
+                memory.hold(record);
+                // Worth remembering from the camp, or forgotten at once.
+                trim_places(food, rules, camp, self, memory);
+                self.places
+                    .get(&key)
+                    .is_some_and(|p| p.access == Some(access))
+            }
+            Some(Record::Water {
+                chunk,
+                stand,
+                water,
+                ..
+            }) => {
+                let (chunk, place) = (
+                    *chunk,
+                    DrinkingPlace {
+                        stand: *stand,
+                        water: *water,
+                    },
+                );
+                if self.water.contains_key(&chunk) {
+                    return false;
+                }
+                self.water.insert(chunk, place);
+                trim_water(self, camp);
+                false
+            }
+            Some(Record::Trial { kept: true, .. }) => {
+                memory.hold(record);
+                self.hold_way(access, fire, memory);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The place `key` was looked at by `me` since it heard of it (D55):
+    /// corrected at this first look. What it sees as the record says: the
+    /// record is its own now. Otherwise the access is dropped, and if the
+    /// record told food where none is, the rumour is dispelled
+    /// ([`News::Dispelled`]); the place as seen is told tonight.
+    #[allow(clippy::too_many_arguments, reason = "one look at one place heard of")]
+    fn correct(
+        &mut self,
+        key: PlaceKey,
+        me: BodyId,
+        fire: &Fire,
+        food: &Food,
+        memory: &mut Store,
+        news: &mut Vec<News>,
+        now: u64,
+    ) {
+        let Some(place) = self.places.get_mut(&key) else {
+            return;
+        };
+        let Some(access) = place.access.filter(|a| !a.is_own(me)) else {
+            return;
+        };
+        if place.looked_day.is_none() {
+            return;
+        }
+        let Some(Record::Place { states, .. }) = memory.get(access.record) else {
+            return;
+        };
+        if *states == place.states(fire) {
+            place.access = Some(Access { by: me, ..access });
+            return;
+        }
+        let told_food = states.iter().any(|&(_, bucket)| bucket > 0);
+        let found_food = place.kinds.iter().any(|s| s.holding > 0);
+        place.rumour_kj = states
+            .iter()
+            .map(|&(kind, bucket)| heard_kj(food, kind, bucket, 100))
+            .max()
+            .unwrap_or(0);
+        place.access = None;
+        memory.release(access.record);
+        if told_food && !found_food {
+            news.push(News::Dispelled {
+                body: me,
+                place: key,
+                record: access.record,
+                from: access.by,
+                at: now,
+            });
+        }
+    }
+
+    /// The accesses it holds to places (D55), by place: its beliefs.
+    pub fn believes(&self) -> impl Iterator<Item = (PlaceKey, Access)> + '_ {
+        self.places
+            .iter()
+            .filter_map(|(key, place)| place.access.map(|a| (*key, a)))
+    }
+
+    /// The kept ways it heard (D55), the oldest first.
+    pub fn heard_ways(&self) -> &[Access] {
+        &self.heard_ways
+    }
+}
+
+/// Past the content's `thought.places_remembered`, the places worth
+/// least from `at` are forgotten, their accesses dropped (D53, D55).
+fn trim_places(food: &Food, rules: &Content, at: Pos, mind: &mut Mind, memory: &mut Store) {
+    let keep = places_remembered(rules);
+    if mind.places.len() <= keep {
+        return;
+    }
+    let (half, side) = (mind.ways.worth_half_tiles, place_side(rules));
+    let mut ranked: Vec<Rank> = mind
+        .places
+        .iter()
+        .map(|(key, place)| rank_place(food, at, half, side, *key, place))
+        .collect();
+    ranked.select_nth_unstable(keep);
+    let gone: Vec<PlaceKey> = ranked[keep..].iter().map(|(_, key)| *key).collect();
+    for key in gone {
+        mind.forget_place(key, memory);
+    }
+}
+
+/// Kept small: the drinking places nearest the camp ([`MEMORY_PLACES`]).
+fn trim_water(mind: &mut Mind, camp: Pos) {
+    while mind.water.len() > MEMORY_PLACES {
+        let farthest = *mind
+            .water
+            .iter()
+            .max_by_key(|(chunk, place)| (far(place.stand, camp), **chunk))
+            .map(|(chunk, _)| chunk)
+            .expect("not empty");
+        mind.water.remove(&farthest);
+    }
+}
+
 /// How far from the camp the camp's water is looked for, in tiles.
 pub const CAMP_WATER_TILES: i32 = 2048;
 
@@ -827,6 +1423,17 @@ pub struct Brains {
     /// The night fell this turn: the minds close their day after the
     /// dead are let go.
     dusk: bool,
+    /// The day started this turn: the night's fires are held before the
+    /// minds think ([`Brains::vigil`]).
+    dawn: bool,
+    /// The well (D55): every record, written once.
+    memory: Store,
+    /// Each camp's hearth: its last `fire.hearth_nights` nights, the
+    /// oldest first.
+    hearths: BTreeMap<Pos, Vec<RecordId>>,
+    /// Who lay down at each camp tonight, by their home at dusk: the
+    /// fire's circle.
+    at_fire: BTreeMap<Pos, BTreeSet<BodyId>>,
 }
 
 /// The content's kinds of trees and plants bearing food, numbered, and
@@ -1123,6 +1730,10 @@ impl Brains {
             work: 0,
             news: Vec::new(),
             dusk: false,
+            dawn: false,
+            memory: Store::new(),
+            hearths: BTreeMap::new(),
+            at_fire: BTreeMap::new(),
         }
     }
 
@@ -1177,6 +1788,17 @@ impl Brains {
         }
     }
 
+    /// The well (D55): every record the minds hold.
+    pub fn memory(&self) -> &Store {
+        &self.memory
+    }
+
+    /// Each camp's hearth (D55): the records of its last nights, the
+    /// oldest first.
+    pub fn hearths(&self) -> &BTreeMap<Pos, Vec<RecordId>> {
+        &self.hearths
+    }
+
     /// The mind of `body`, if the brain pilots it.
     pub fn mind(&self, body: BodyId) -> Option<&Mind> {
         self.minds.get(&body)
@@ -1228,11 +1850,14 @@ impl Brains {
         // Who is gone, and who is due: the due noted on the way, by their
         // ids, rather than swept again.
         let mut due: Vec<BodyId> = Vec::new();
+        let memory = &mut self.memory;
         self.minds.retain(|&id, mind| {
             let Some(body) = world.body(id) else {
+                mind.forget_all(memory);
                 return false;
             };
             if body.condition().vitality.points() == 0 {
+                mind.forget_all(memory);
                 return false;
             }
             if body.condition().cold.is_full() {
@@ -1256,6 +1881,9 @@ impl Brains {
         if std::mem::take(&mut self.dusk) {
             self.close_day(world, rules);
         }
+        if std::mem::take(&mut self.dawn) {
+            self.vigil(world, rules);
+        }
         // The due think, by their ids from the first one the last turn
         // left waiting, while the turn's share of work lasts.
         let cap = tick_share(world, now, self.work_per_second);
@@ -1270,6 +1898,8 @@ impl Brains {
             bearers: &mut self.bearers,
             shores: &mut self.shores,
             food: &mut self.food,
+            memory: &mut self.memory,
+            news: &mut self.news,
         };
         let mut used = 0;
         self.waiting = 0;
@@ -1288,7 +1918,7 @@ impl Brains {
             mind.wake_at = None;
             mind.thoughts += 1;
             land.food.refresh(world, rules);
-            used += 1 + look(world, rules, body.pos(), mind, &mut land);
+            used += 1 + look(world, rules, id, body.pos(), mind, &mut land);
             if !mind.unseen.is_empty() {
                 pending.push(id);
             }
@@ -1306,7 +1936,11 @@ impl Brains {
         self.work = used;
         self.pending.extend(pending);
         for id in lay_down {
-            self.imitate(world, rules, id);
+            if rules.needs.fire.on() {
+                self.join_fire(world, rules, id);
+            } else {
+                self.imitate_at_camp(world, rules, id);
+            }
         }
         decisions.sort_by_key(|(id, _)| *id);
         decisions
@@ -1318,6 +1952,7 @@ impl Brains {
         for event in events {
             match event {
                 Event::NightFell { .. } => self.dusk = true,
+                Event::DayStarted { .. } => self.dawn = true,
                 Event::WorkStopped {
                     body, gives, grams, ..
                 } => {
@@ -1382,17 +2017,20 @@ impl Brains {
             if let Some(trial) = mind.trial
                 && day >= trial.started_day + u64::from(trials.trial_days)
             {
-                let kept = mind
-                    .lately(trials.trial_days)
-                    .better_than(&trial.before_days);
-                if !kept {
+                let (kept, judged) = judge(rules, body, mind, &trial);
+                if kept {
+                    mind.changed_day = Some(day);
+                } else {
                     trial.way.copy(&mut mind.ways, &trial.before);
                 }
                 mind.trial = None;
+                mind.judged = Some(judged);
                 self.news.push(News::Tried {
                     body: id,
                     way: trial.way,
                     kept,
+                    heard_days: trial.heard.days,
+                    heard_nights: trial.heard.nights,
                     at: now,
                 });
             } else if mind.trial.is_none()
@@ -1401,7 +2039,10 @@ impl Brains {
                     < trials.try_percent(mind.will)
             {
                 let child = world.age_milli(body) < 16_000;
-                if let Some(news) = start_trial(world, rules, &self.food, id, mind, child, day) {
+                if let Some(news) =
+                    start_trial(world, rules, &self.food, &self.memory, id, mind, child, day)
+                {
+                    mind.changed_day = Some(day);
                     self.news.push(news);
                 }
             }
@@ -1433,17 +2074,313 @@ impl Brains {
         }
     }
 
-    /// `id` lies down at its camp for the night (D50): once a night, it
-    /// may copy one way from the camp-mate (the same home at nightfall,
-    /// within `imitate_tiles` of it, not under a trial itself) who fared
-    /// best over the last `trial_days` (the fewest days of distress,
-    /// gathered a day breaking ties, [`Lately::fared`]), better than it
-    /// did; the chance is `imitate_percent` scaled by that mate's will. The way
-    /// is drawn among those that differ; with `imitate_loss_percent` a
-    /// numeric way lands halfway between its own and the mate's. A body
-    /// under a trial copies nothing: the world is judging it. Copying the
-    /// home moves the body's home: that is how a camp moves.
+    /// `id` lies down at its camp for the night (D55): it joins the
+    /// fire's circle of its camp (its home at dusk) if it lies within
+    /// `imitate_tiles` of it. The circle is read at dawn
+    /// ([`Brains::vigil`]); whoever sleeps out, collapses on the way or
+    /// never reaches the camp before dawn misses the night.
+    fn join_fire(&mut self, world: &World, rules: &Content, id: BodyId) {
+        if !rules.needs.fire.on() {
+            return;
+        }
+        let (Some(body), Some(mind)) = (world.body(id), self.minds.get(&id)) else {
+            return;
+        };
+        let here = body.pos();
+        let camp = mind.home_at_dusk;
+        let reach = i32::try_from(rules.needs.trials.imitate_tiles).unwrap_or(i32::MAX);
+        if (here.x - camp.x).abs() > reach || (here.y - camp.y).abs() > reach {
+            return;
+        }
+        self.at_fire.entry(camp).or_default().insert(id);
+    }
+
+    /// The night's fires, at dawn (D55): at each camp where two or more
+    /// lay down, each present in turn (by its id) tells what changed for
+    /// it in the day that closed, at most `told_per_night` things: its
+    /// way judged, the water it found, then the places whose state it
+    /// found other than the record it held (or saw bearing for the first
+    /// time), by their value from the camp; each thing told is a record
+    /// found or written once. Each present then hears the others: it
+    /// keeps the first `heard_by_age` by its credit in them, the younger
+    /// record next, and gains an access to each; a place heard replaces
+    /// the record it held for that place only if later dated (the smaller
+    /// number at a tie); a kept way heard joins its heard ways. A body in
+    /// trial adds the days told by the mates who changed nothing. The
+    /// night is written as a record of the camp's hearth, which keeps
+    /// `hearth_nights` of them. Then each present may copy a way it
+    /// heard ([`Brains::imitate`]). Nothing here reads the world.
+    fn vigil(&mut self, world: &World, rules: &Content) {
+        let fire = &rules.needs.fire;
+        let at_fire = std::mem::take(&mut self.at_fire);
+        if !fire.on() {
+            return;
+        }
+        let day = u32::try_from(today(world).saturating_sub(1)).unwrap_or(u32::MAX);
+        let now = world.tick().0;
+        let side = place_side(rules);
+        for (camp, circle) in at_fire {
+            let present: Vec<BodyId> = circle
+                .into_iter()
+                .filter(|id| {
+                    world.body(*id).is_some_and(|b| {
+                        b.condition().vitality.points() > 0 && !world.is_infant(b, rules)
+                    }) && self.minds.get(id).is_some_and(|m| m.home_at_dusk == camp)
+                })
+                .collect();
+            if present.len() < 2 {
+                // Nobody to tell: the drafts wait for another night.
+                continue;
+            }
+            let (told, fared) = self.fire_tell(world, rules, (camp, side, day, now), &present);
+            self.fire_hear(world, rules, (camp, day, now), &present, &told, &fared);
+            // The night, in the hearth.
+            let (night, _) = self.memory.intern(Record::Night {
+                camp,
+                day,
+                told,
+                present: present.clone(),
+                fared,
+            });
+            let hearth = self.hearths.entry(camp).or_default();
+            hearth.push(night);
+            let keep = usize::try_from(fire.hearth_nights).unwrap_or(usize::MAX);
+            while hearth.len() > keep {
+                let oldest = hearth.remove(0);
+                self.memory.release(oldest);
+            }
+            for &id in &present {
+                self.imitate(world, rules, id);
+            }
+        }
+    }
+
+    /// Each present tells, by its id ([`Mind::tell`]), and says how it
+    /// fared on the day that closed: what was told, with its teller, and
+    /// the days told.
+    #[allow(clippy::type_complexity, reason = "two lists of one evening")]
+    fn fire_tell(
+        &mut self,
+        world: &World,
+        rules: &Content,
+        (camp, side, day, now): (Pos, i32, u32, u64),
+        present: &[BodyId],
+    ) -> (Vec<(RecordId, BodyId)>, Vec<(BodyId, Fared)>) {
+        // What was told, with its teller; and the days told.
+        let fire = &rules.needs.fire;
+        let mut told: Vec<(RecordId, BodyId)> = Vec::new();
+        let mut fared: Vec<(BodyId, Fared)> = Vec::new();
+        for &id in present {
+            let Some(body) = world.body(id) else {
+                continue;
+            };
+            let need = need_kj_per_day(rules, body);
+            let mind = self.minds.get_mut(&id).expect("present");
+            for record in mind.tell(
+                fire,
+                &self.food,
+                (camp, side, day, now),
+                id,
+                &mut self.memory,
+                &mut self.news,
+            ) {
+                told.push((record, id));
+                self.news.push(News::Told {
+                    body: id,
+                    record,
+                    camp,
+                    day,
+                    at: now,
+                });
+            }
+            if let Some(last) = mind.days.last() {
+                fared.push((
+                    id,
+                    Fared {
+                        kj_percent: u32::try_from(last.gathered_kj * 100 / need.max(1))
+                            .unwrap_or(u32::MAX),
+                        thin: last.thin,
+                        thirsty: last.thirsty,
+                        cold: last.cold,
+                        changed: mind.changed_lately(rules, u64::from(day)),
+                    },
+                ));
+            }
+        }
+        (told, fared)
+    }
+
+    /// Each present hears the others, by its id ([`Mind::hear`]): it
+    /// keeps the first `heard_by_age` things told by its credit in them
+    /// (judged now and never again, [`memory::credit`], the teller's will
+    /// read where the teller stands), the younger record next; in trial,
+    /// it adds the days told by the mates who changed nothing.
+    fn fire_hear(
+        &mut self,
+        world: &World,
+        rules: &Content,
+        (camp, day, now): (Pos, u32, u64),
+        present: &[BodyId],
+        told: &[(RecordId, BodyId)],
+        fared: &[(BodyId, Fared)],
+    ) {
+        let fire = &rules.needs.fire;
+        let seed = world.seed();
+        for &id in present {
+            let Some(body) = world.body(id) else {
+                continue;
+            };
+            let keep = usize::try_from(fire.heard_at(world.age_milli(body))).unwrap_or(usize::MAX);
+            let own_will = self.minds.get(&id).expect("present").will;
+            let mut heard: Vec<(
+                std::cmp::Reverse<u8>,
+                std::cmp::Reverse<u32>,
+                RecordId,
+                BodyId,
+            )> = told
+                .iter()
+                .filter(|(_, teller)| *teller != id)
+                .filter_map(|&(record, teller)| {
+                    let rec_day = self.memory.get(record)?.day();
+                    let teller_will = self.minds.get(&teller).map_or(0, |m| m.will);
+                    let credit =
+                        memory::credit(seed, (id, own_will), (teller, teller_will), rec_day, day);
+                    Some((
+                        std::cmp::Reverse(credit),
+                        std::cmp::Reverse(rec_day),
+                        record,
+                        teller,
+                    ))
+                })
+                .collect();
+            heard.sort_unstable();
+            heard.dedup_by_key(|h| h.2);
+            let mind = self.minds.get_mut(&id).expect("present");
+            for (credit, _, record, teller) in heard.into_iter().take(keep) {
+                if mind.hear(
+                    fire,
+                    &self.food,
+                    (camp, day),
+                    (credit.0, record, teller),
+                    &mut self.memory,
+                    rules,
+                ) {
+                    self.news.push(News::Heard {
+                        body: id,
+                        record,
+                        from: teller,
+                        credit: credit.0,
+                        at: now,
+                    });
+                }
+            }
+            if let Some(trial) = mind.trial.as_mut() {
+                let mut any = false;
+                for &(mate, day_told) in fared {
+                    if mate != id && !day_told.changed {
+                        trial.heard.add(day_told);
+                        any = true;
+                    }
+                }
+                if any {
+                    trial.heard.nights += 1;
+                }
+            }
+        }
+    }
+
+    /// At the fire, `id` may copy one way it heard (D50, amended by D55):
+    /// among the kept ways it holds an access to that differ from its own,
+    /// the one whose teller fared best during its trial (the fewest days
+    /// of distress, gathered a day breaking ties, [`Lately::fared`]), its
+    /// credit next; the chance is `imitate_percent` scaled by that
+    /// teller's will; with `imitate_loss_percent` a numeric way lands
+    /// halfway between its own and the teller's. It copies what it heard
+    /// said, never what it did not hear: nobody reads another's mind. A
+    /// body under a trial copies nothing: the world is judging it.
+    /// Copying the home moves the body's home: that is how a camp moves.
     fn imitate(&mut self, world: &World, rules: &Content, id: BodyId) {
+        let trials = &rules.needs.trials;
+        let day = today(world);
+        let seed = world.seed();
+        let Some(mind) = self.minds.get(&id) else {
+            return;
+        };
+        if mind.trial.is_some() {
+            return;
+        }
+        let best = mind
+            .heard_ways
+            .iter()
+            .filter_map(|access| {
+                let Record::Trial {
+                    body: teller,
+                    way,
+                    after,
+                    kept: true,
+                    will,
+                    during,
+                    day: rec_day,
+                    ..
+                } = self.memory.get(access.record)?
+                else {
+                    return None;
+                };
+                if way.same(&mind.ways, after) {
+                    return None;
+                }
+                let credit = memory::credit(
+                    seed,
+                    (id, mind.will),
+                    (*teller, *will),
+                    *rec_day,
+                    access.day,
+                );
+                Some((
+                    (during.fared(), credit, std::cmp::Reverse(access.record)),
+                    (*teller, *will),
+                    *way,
+                    *after,
+                ))
+            })
+            .max_by_key(|(rank, ..)| *rank);
+        let Some((_, (from, prestige), way, theirs)) = best else {
+            return;
+        };
+        let mind = self.minds.get_mut(&id).expect("its mind");
+        let before = mind.ways;
+        let keys = [u64::from(id.0), day];
+        if scatter::roll(seed, purpose::TRIAL_COPY, &keys) % 100
+            >= u64::from(trials.imitate_percent) * u64::from(prestige) / 100
+        {
+            return;
+        }
+        let lost = copy_way(mind, way, &theirs, seed, &keys, trials);
+        mind.changed_day = Some(day);
+        self.news.push(News::Copied {
+            body: id,
+            from,
+            way,
+            lost,
+            before,
+            after: mind.ways,
+            at: world.tick().0,
+        });
+    }
+
+    /// The control without the fire (`--no-fire`, D55): the imitation of
+    /// before the fire, kept exactly so that a pair with and without the
+    /// fire measures the fire and nothing else. At night at its camp,
+    /// `id` may copy one way of the mate who fared best over `trial_days`
+    /// (the fewest days of distress, gathered a day breaking ties,
+    /// [`Lately::fared`]), better than it did; the chance is
+    /// `imitate_percent` scaled by that mate's will. The way is drawn
+    /// among those that differ; with `imitate_loss_percent` a numeric way
+    /// lands halfway between its own and the mate's. A body under a trial
+    /// copies nothing: the world is judging it. Copying the home moves the
+    /// body's home: that is how a camp moves. It reads the mate's mind,
+    /// which the fire never does.
+    fn imitate_at_camp(&mut self, world: &World, rules: &Content, id: BodyId) {
         let trials = &rules.needs.trials;
         let day = today(world);
         let Some(body) = world.body(id) else {
@@ -1498,19 +2435,8 @@ impl Brains {
             .unwrap_or(0)
             % differ.len();
         let way = differ[pick];
-        let lost = matches!(way, Way::WorthHalfTiles | Way::StockKj)
-            && scatter::roll(seed, purpose::TRIAL_COPY_LOSS, &keys) % 100
-                < u64::from(trials.imitate_loss_percent);
-        match (way, lost) {
-            (Way::WorthHalfTiles, true) => {
-                mind.ways.worth_half_tiles =
-                    halfway(mind.ways.worth_half_tiles, theirs.worth_half_tiles);
-            }
-            (Way::StockKj, true) => {
-                mind.ways.stock_kj = halfway(mind.ways.stock_kj, theirs.stock_kj);
-            }
-            _ => way.copy(&mut mind.ways, &theirs),
-        }
+        let lost = copy_way(mind, way, &theirs, seed, &keys, trials);
+        mind.changed_day = Some(day);
         self.news.push(News::Copied {
             body: id,
             from,
@@ -1559,7 +2485,16 @@ impl Brains {
                 )
             });
             if mind.unseen.len() < before {
-                remember_places(&self.food, rules, at, mind, seen);
+                let day = u32::try_from(today(world)).unwrap_or(u32::MAX);
+                remember_places(
+                    &self.food,
+                    rules,
+                    (id, at, day, world.tick().0),
+                    mind,
+                    seen,
+                    &mut self.memory,
+                    &mut self.news,
+                );
             }
             if mind.unseen.is_empty() {
                 self.pending.remove(&id);
@@ -1732,7 +2667,14 @@ fn far(a: Pos, b: Pos) -> i64 {
     clippy::too_many_lines,
     reason = "one straight reading, top to bottom; splitting it would scatter the rule"
 )] // one reading, top to bottom, of what it sees or does
-fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind, land: &mut Land<'_>) -> u64 {
+fn look(
+    world: &World,
+    rules: &Content,
+    id: BodyId,
+    at: Pos,
+    mind: &mut Mind,
+    land: &mut Land<'_>,
+) -> u64 {
     let map = world.map();
     let camp = mind.ways.home;
     let sight = sight_at(map, rules, at);
@@ -1782,6 +2724,7 @@ fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind, land: &mut Lan
                     }
                 }
                 if let Some((key, place)) = best {
+                    let mut found = false;
                     mind.water
                         .entry(chunk)
                         .and_modify(|known| {
@@ -1789,7 +2732,14 @@ fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind, land: &mut Lan
                                 *known = place;
                             }
                         })
-                        .or_insert(place);
+                        .or_insert_with(|| {
+                            found = true;
+                            place
+                        });
+                    if found && !mind.water_found.contains(&chunk) {
+                        // Told at the fire tonight (D55).
+                        mind.water_found.push(chunk);
+                    }
                 }
             }
         }
@@ -1862,18 +2812,20 @@ fn look(world: &World, rules: &Content, at: Pos, mind: &mut Mind, land: &mut Lan
                 mind.unseen.push(chunk);
             }
         }
-        remember_places(land.food, rules, at, mind, seen);
+        let day = u32::try_from(today(world)).unwrap_or(u32::MAX);
+        let now = world.tick().0;
+        remember_places(
+            land.food,
+            rules,
+            (id, at, day, now),
+            mind,
+            seen,
+            land.memory,
+            land.news,
+        );
     }
     // Kept small: the nearest to the camp.
-    while mind.water.len() > MEMORY_PLACES {
-        let farthest = *mind
-            .water
-            .iter()
-            .max_by_key(|(chunk, place)| (far(place.stand, camp), **chunk))
-            .map(|(chunk, _)| chunk)
-            .expect("not empty");
-        mind.water.remove(&farthest);
-    }
+    trim_water(mind, camp);
     while mind.food.len() > MEMORY_PLACES {
         let farthest = *mind
             .food
@@ -1958,36 +2910,31 @@ fn rank_place(
     )
 }
 
-/// The places `seen` from `at` (what and how many of each kind) join the
-/// mind's; past the content's `thought.places_remembered`, the places
-/// worth least from `at` are forgotten (D53).
+/// The places `seen` from `at` by `id` on `day` (what and how many of
+/// each kind) join the mind's; past the content's
+/// `thought.places_remembered`, the places worth least from `at` are
+/// forgotten (D53). A place heard of is corrected at this first look
+/// (D55): the look is now its own, and if it found none of the food the
+/// record told, the rumour is dispelled ([`News::Dispelled`]) and the
+/// access dropped; the bare place is told tonight.
 fn remember_places(
     food: &Food,
     rules: &Content,
-    at: Pos,
+    (id, at, day, now): (BodyId, Pos, u32, u64),
     mind: &mut Mind,
     seen: BTreeMap<PlaceKey, Vec<Seen>>,
+    memory: &mut Store,
+    news: &mut Vec<News>,
 ) {
     for (key, kinds) in seen {
         let place = mind.places.entry(key).or_default();
         for seen in kinds {
             place.saw(seen.kind, seen.plants, seen.holding, seen.best_kj);
         }
+        place.looked_day = Some(day);
+        mind.correct(key, id, &rules.needs.fire, food, memory, news, now);
     }
-    let keep = places_remembered(rules);
-    if mind.places.len() <= keep {
-        return;
-    }
-    let (half, side) = (mind.ways.worth_half_tiles, place_side(rules));
-    let mut ranked: Vec<Rank> = mind
-        .places
-        .iter()
-        .map(|(key, place)| rank_place(food, at, half, side, *key, place))
-        .collect();
-    ranked.select_nth_unstable(keep);
-    for (_, key) in &ranked[keep..] {
-        mind.places.remove(key);
-    }
+    trim_places(food, rules, at, mind, memory);
 }
 
 /// The minds' shared land, borrowed for a turn: the plants placed, the
@@ -1996,6 +2943,10 @@ struct Land<'a> {
     bearers: &'a mut Placed,
     shores: &'a mut Lru<ChunkPos, Vec<Shore>>,
     food: &'a mut Food,
+    /// The well (D55): the accesses a look confirms or drops.
+    memory: &'a mut Store,
+    /// What the looks tell (a rumour dispelled).
+    news: &'a mut Vec<News>,
 }
 
 /// What the body decides, now that it looked.
@@ -2504,6 +3455,7 @@ fn pick_in_place<'a>(
     for &(kind, _, holding, best_kj) in &bearing {
         place.saw(kind, 0, holding, best_kj);
     }
+    place.looked_day = Some(u32::try_from(today(world)).unwrap_or(u32::MAX));
     if let Some((rank, target)) = best {
         return Some((target, rank.0));
     }
@@ -2772,17 +3724,42 @@ const DIRECTIONS: [(i32, i32); 8] = [
 /// (under sixteen) does not try its home: it takes its mother's every
 /// night; a body whose home can go nowhere (the map's edge) tries another
 /// way that day. The trial records what the days before gave.
+#[allow(clippy::too_many_arguments, reason = "one trial's start")]
 fn start_trial(
     world: &World,
     rules: &Content,
     food: &Food,
+    memory: &Store,
     id: BodyId,
     mind: &mut Mind,
     child: bool,
     day: u64,
 ) -> Option<News> {
     let trials = &rules.needs.trials;
-    let r = scatter::roll(world.seed(), purpose::TRIAL_WAY, &[u64::from(id.0), day]);
+    let seed = world.seed();
+    // A kept way it heard at the fire comes first (D55): "I heard it
+    // worked for N, I try it", the way as told, a step lost at times.
+    if let Some((way, theirs)) = heard_candidate(memory, seed, id, mind, child) {
+        let before = mind.ways;
+        copy_way(mind, way, &theirs, seed, &[u64::from(id.0), day], trials);
+        if mind.ways != before {
+            mind.trial = Some(Trial {
+                way,
+                before,
+                started_day: day,
+                before_days: mind.lately(trials.trial_days),
+                heard: HeardDays::default(),
+            });
+            return Some(News::Trying {
+                body: id,
+                way,
+                before,
+                after: mind.ways,
+                at: world.tick().0,
+            });
+        }
+    }
+    let r = scatter::roll(seed, purpose::TRIAL_WAY, &[u64::from(id.0), day]);
     let draw = |ways: &[Way]| {
         ways[usize::try_from(r % u64::try_from(ways.len()).expect("four")).expect("small")]
     };
@@ -2828,6 +3805,7 @@ fn start_trial(
         before,
         started_day: day,
         before_days: mind.lately(trials.trial_days),
+        heard: HeardDays::default(),
     });
     Some(News::Trying {
         body: id,
@@ -2836,6 +3814,54 @@ fn start_trial(
         after: mind.ways,
         at: world.tick().0,
     })
+}
+
+/// The kept way `id` heard that it would try first (D55): among the
+/// trial records it holds an access to, kept and differing from its own
+/// ways (not the home for a child), the one whose teller fared best
+/// during its trial, its credit next, the smaller record at a tie: the
+/// way and the teller's ways to take it from.
+fn heard_candidate(
+    memory: &Store,
+    seed: u64,
+    id: BodyId,
+    mind: &Mind,
+    child: bool,
+) -> Option<(Way, Ways)> {
+    mind.heard_ways
+        .iter()
+        .filter_map(|access| {
+            let Record::Trial {
+                body: teller,
+                way,
+                after,
+                kept: true,
+                will,
+                during,
+                day: rec_day,
+                ..
+            } = memory.get(access.record)?
+            else {
+                return None;
+            };
+            if way.same(&mind.ways, after) || (child && *way == Way::Home) {
+                return None;
+            }
+            let credit = memory::credit(
+                seed,
+                (id, mind.will),
+                (*teller, *will),
+                *rec_day,
+                access.day,
+            );
+            Some((
+                (during.fared(), credit, std::cmp::Reverse(access.record)),
+                *way,
+                *after,
+            ))
+        })
+        .max_by_key(|(rank, ..)| *rank)
+        .map(|(_, way, after)| (way, after))
 }
 
 /// Where a trial sets `id`'s home (D50): `tiles` from its home towards one
@@ -3009,12 +4035,15 @@ mod tests {
     fn look_alone(world: &World, rules: &Content, at: Pos, mind: &mut Mind) {
         let (mut bearers, mut shores) = (Placed::new(), Lru::new(BEARER_CHUNKS));
         let mut food = food_now(world, rules);
+        let (mut memory, mut news) = (Store::new(), Vec::new());
         let mut land = Land {
             bearers: &mut bearers,
             shores: &mut shores,
             food: &mut food,
+            memory: &mut memory,
+            news: &mut news,
         };
-        look(world, rules, at, mind, &mut land);
+        look(world, rules, BodyId(1), at, mind, &mut land);
     }
 
     /// `decide` with nothing placed beforehand, what each kind bears now.
@@ -3026,10 +4055,13 @@ mod tests {
     ) -> Option<Decision> {
         let (mut bearers, mut shores) = (Placed::new(), Lru::new(BEARER_CHUNKS));
         let mut food = food_now(world, rules);
+        let (mut memory, mut news) = (Store::new(), Vec::new());
         let mut land = Land {
             bearers: &mut bearers,
             shores: &mut shores,
             food: &mut food,
+            memory: &mut memory,
+            news: &mut news,
         };
         decide(world, rules, &mut land, id, mind, 7)
     }
@@ -3048,6 +4080,9 @@ mod tests {
             }],
             spent: Vec::new(),
             not_before: None,
+            access: None,
+            looked_day: None,
+            rumour_kj: 0,
         }
     }
 
@@ -3459,12 +4494,15 @@ mod tests {
         }
         let mut whole = Mind::new(world.map().camp());
         let (mut shores, mut food) = (Lru::new(BEARER_CHUNKS), brains.food.clone());
+        let (mut memory, mut news) = (Store::new(), Vec::new());
         let mut land = Land {
             bearers: &mut all,
             shores: &mut shores,
             food: &mut food,
+            memory: &mut memory,
+            news: &mut news,
         };
-        look(&world, &rules, at, &mut whole, &mut land);
+        look(&world, &rules, id, at, &mut whole, &mut land);
         assert!(!whole.places.is_empty());
         assert_eq!(whole.places, brains.minds[&id].places);
     }
@@ -3731,7 +4769,16 @@ mod tests {
                 best_kj: food.now(food.numbers["bramble"]).unwrap().kj,
             }],
         )]);
-        remember_places(&food, &rules, here, &mut mind, seen);
+        let (mut memory, mut news) = (Store::new(), Vec::new());
+        remember_places(
+            &food,
+            &rules,
+            (BodyId(1), here, 0, 0),
+            &mut mind,
+            seen,
+            &mut memory,
+            &mut news,
+        );
         assert_eq!(mind.places.len(), keep);
         assert!(mind.places.contains_key(&bramble), "the bramble stays");
         assert!(
@@ -4329,6 +5376,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario, round after round")]
     fn remembering_what_it_sees_keeps_what_learning_all_then_forgetting_kept() {
         use crate::crops::tests::{run_to, valley_with};
         let (mut world, rules, _, _) = valley_with("bramble");
@@ -4425,7 +5473,21 @@ mod tests {
                 }
             }
             forget(&mut all);
-            remember_places(&food, &rules, here, &mut mind, seen);
+            for key in seen.keys() {
+                if let Some(place) = all.get_mut(key) {
+                    place.looked_day = Some(0);
+                }
+            }
+            let (mut memory, mut news) = (Store::new(), Vec::new());
+            remember_places(
+                &food,
+                &rules,
+                (BodyId(1), here, 0, 0),
+                &mut mind,
+                seen,
+                &mut memory,
+                &mut news,
+            );
             assert_eq!(mind.places, all, "round {round}");
         }
     }
@@ -4488,12 +5550,15 @@ mod tests {
             // Water only: its plants it looked at there already.
             mind.looked_from = None;
             mind.plants_from = Some(at);
+            let (mut memory, mut news) = (Store::new(), Vec::new());
             let mut land = Land {
                 bearers: &mut bearers,
                 shores: &mut shores,
                 food: &mut food,
+                memory: &mut memory,
+                news: &mut news,
             };
-            look(&world, &rules, at, &mut mind, &mut land);
+            look(&world, &rules, BodyId(1), at, &mut mind, &mut land);
             scan(at, &mut before);
             assert_eq!(mind.water, before, "looking from {at:?}");
             found = found.max(before.len());
@@ -4811,6 +5876,7 @@ mod tests {
             before: ways,
             started_day: 0,
             before_days: before,
+            heard: HeardDays::default(),
         });
         mind.days = vec![first];
         mind.gathered_today_kj = kj;
@@ -5066,9 +6132,16 @@ mod tests {
         let mut ways_tried = std::collections::BTreeSet::new();
         for day in 0..40 {
             mind.trial = None;
-            if let Some(News::Trying { way, .. }) =
-                start_trial(&world, &rules, &food, id, &mut mind, false, day)
-            {
+            if let Some(News::Trying { way, .. }) = start_trial(
+                &world,
+                &rules,
+                &food,
+                &Store::new(),
+                id,
+                &mut mind,
+                false,
+                day,
+            ) {
                 assert_ne!(way, Way::Home, "day {day}");
                 ways_tried.insert(way);
             }
@@ -5129,12 +6202,13 @@ mod tests {
     }
 
     #[test]
-    fn the_best_mate_is_the_least_distressed_gathered_kj_breaking_ties() {
+    fn without_the_fire_the_best_mate_is_the_least_distressed_gathered_kj_breaking_ties() {
         let mut world = field(64, 40, Pos::new(5, 5));
         world.spawn_body(Pos::new(6, 5));
         world.spawn_body(Pos::new(7, 5));
         let (me, a, b) = (BodyId(1), BodyId(2), BodyId(3));
         let rules = trials_at(100, 0);
+        assert!(!rules.needs.fire.on(), "the control: no fire");
         let day = |kj| Day {
             gathered_kj: kj,
             ..Day::default()
@@ -5150,7 +6224,7 @@ mod tests {
             m.days = vec![b_day];
             m.ways.stock_kj = STOCK_KJ * 2;
             m.will = 100;
-            brains.imitate(&world, &rules, me);
+            brains.imitate_at_camp(&world, &rules, me);
             (brains.news(), *brains.mind(me).unwrap().ways())
         };
         // A gathered most but was thirsty, B gathered less than me: none
@@ -5190,7 +6264,7 @@ mod tests {
     }
 
     #[test]
-    fn at_night_at_the_camp_a_body_copies_the_best_mates_way_losing_a_step_at_times() {
+    fn without_the_fire_a_body_at_the_camp_copies_the_best_mates_way_losing_a_step_at_times() {
         let mut world = field(64, 40, Pos::new(5, 5));
         world.spawn_body(Pos::new(6, 5));
         world.spawn_body(Pos::new(7, 5));
@@ -5211,7 +6285,7 @@ mod tests {
             f.days = vec![day(9000)];
             f.ways.stock_kj = 1;
             brains.minds.get_mut(&far).unwrap().home_at_dusk = Pos::new(50, 5);
-            brains.imitate(&world, rules, me);
+            brains.imitate_at_camp(&world, rules, me);
             (brains.news(), *brains.mind(me).unwrap().ways())
         };
         let (news, ways) = copy(&trials_at(100, 0));
@@ -5239,7 +6313,7 @@ mod tests {
         }];
         brains.minds.get_mut(&mate).unwrap().ways.sleep_out = true;
         brains.minds.get_mut(&mate).unwrap().will = 0;
-        brains.imitate(&world, &trials_at(100, 0), me);
+        brains.imitate_at_camp(&world, &trials_at(100, 0), me);
         let news = brains.news();
         assert!(news.is_empty(), "{news:?}");
         // Once a night only, and never under a trial.
@@ -5251,14 +6325,14 @@ mod tests {
         }];
         brains.minds.get_mut(&mate).unwrap().will = 100;
         brains.minds.get_mut(&mate).unwrap().ways.home = Pos::new(9, 9);
-        brains.imitate(&world, &rules, me);
+        brains.imitate_at_camp(&world, &rules, me);
         assert_eq!(
             brains.mind(me).unwrap().home(),
             Pos::new(9, 9),
             "the camp moved"
         );
         brains.minds.get_mut(&mate).unwrap().ways.sleep_out = true;
-        brains.imitate(&world, &rules, me);
+        brains.imitate_at_camp(&world, &rules, me);
         assert!(!brains.mind(me).unwrap().ways().sleep_out, "once a night");
         let mut brains = piloted(&world);
         brains.minds.get_mut(&mate).unwrap().days = vec![Day {
@@ -5273,9 +6347,24 @@ mod tests {
             before: mind.ways,
             started_day: 0,
             before_days: Lately::default(),
+            heard: HeardDays::default(),
         });
-        brains.imitate(&world, &rules, me);
+        brains.imitate_at_camp(&world, &rules, me);
         assert!(brains.news().is_empty(), "under a trial, it copies nothing");
+        // With the fire lit, lying down joins the fire and copies nothing
+        // by itself: the mate's mind is not read.
+        let mut lit = trials_at(100, 0);
+        lit.needs.fire = Fire::placeholders();
+        let mut brains = piloted(&world);
+        brains.minds.get_mut(&mate).unwrap().days = vec![Day {
+            gathered_kj: 3000,
+            ..Day::default()
+        }];
+        brains.minds.get_mut(&mate).unwrap().will = 100;
+        brains.minds.get_mut(&mate).unwrap().ways.sleep_out = true;
+        brains.join_fire(&world, &lit, me);
+        assert!(brains.news().is_empty(), "the fire reads no mind");
+        assert!(brains.at_fire.values().any(|set| set.contains(&me)));
     }
 
     #[test]
@@ -5370,6 +6459,731 @@ mod tests {
                 intention: Intention::Sleep { body: id },
                 why: Why::Night
             })
+        );
+    }
+
+    // The fire and the well (D55).
+
+    /// The repository's content (its crops name the kinds), trials on as
+    /// [`trials_at`] (100, 0), the fire on with the content's placeholders.
+    fn fire_rules() -> Content {
+        let mut rules = crate::crops::tests::content();
+        rules.needs.trials = trials_at(100, 0).needs.trials;
+        rules.needs.fire = Fire::placeholders();
+        rules
+    }
+
+    /// The brains piloting every body of `world` under `rules`.
+    fn piloted_with(world: &World, rules: &Content) -> Brains {
+        let mut brains = Brains::new(7);
+        for body in world.bodies() {
+            brains.adopt(world, rules, body.id());
+        }
+        brains
+    }
+
+    /// A field with `count` bodies at the camp (5, 5), the world a day
+    /// old, piloted.
+    fn camp_of(count: i32, rules: &Content) -> (World, Brains) {
+        let mut world = field(64, 60, Pos::new(5, 5));
+        for k in 1..count {
+            world.spawn_body(Pos::new(5 + k % 3, 5 + k / 3));
+        }
+        let mut events = Vec::new();
+        world.advance(world.calendar().ticks_per_day(), rules, &mut events);
+        let brains = piloted_with(&world, rules);
+        (world, brains)
+    }
+
+    /// The night: every body of `present` lies down at the camp, the day
+    /// turns (everybody kept fed and watered: the fire is what is
+    /// tested), and the fire is read at dawn. The news of the night.
+    fn night(
+        world: &mut World,
+        rules: &Content,
+        brains: &mut Brains,
+        present: &[BodyId],
+    ) -> Vec<News> {
+        for &id in present {
+            brains.join_fire(world, rules, id);
+        }
+        // The day turns in eighths, every gauge put back between them:
+        // a bare field in the repository's content freezes and parches
+        // a body in a night, and the fire is what is tested here.
+        let mut events = Vec::new();
+        for _ in 0..8 {
+            world.advance(world.calendar().ticks_per_day() / 8, rules, &mut events);
+            for body in &mut world.bodies {
+                body.condition.thirst = Gauge::at(0);
+                body.condition.hunger = Gauge::at(0);
+                body.condition.cold = Gauge::at(0);
+                body.condition.fatigue = Gauge::at(0);
+                body.condition.deficit_j = 0;
+            }
+        }
+        brains.vigil(world, rules);
+        brains.news()
+    }
+
+    /// A place `key` seen by `id` holding `holding` of `kind`, remembered
+    /// (its look's day: today).
+    fn saw_place(
+        world: &World,
+        rules: &Content,
+        brains: &mut Brains,
+        id: BodyId,
+        key: PlaceKey,
+        kind: u16,
+        holding: u16,
+    ) {
+        let food = brains.food.clone();
+        let best = food.best_kj[usize::from(kind)];
+        let seen = BTreeMap::from([(
+            key,
+            vec![Seen {
+                kind,
+                plants: holding.max(1),
+                holding,
+                best_kj: if holding > 0 { best } else { 0 },
+            }],
+        )]);
+        let day = u32::try_from(today(world)).unwrap();
+        let mind = brains.minds.get_mut(&id).unwrap();
+        remember_places(
+            &food,
+            rules,
+            (id, Pos::new(5, 5), day, world.tick().0),
+            mind,
+            seen,
+            &mut brains.memory,
+            &mut brains.news,
+        );
+    }
+
+    /// A kept trial of `teller` written in the well and heard by `id`:
+    /// "`teller` tried `way` and kept it".
+    fn heard_kept(
+        brains: &mut Brains,
+        (id, teller, day): (BodyId, BodyId, u32),
+        way: Way,
+        after: Ways,
+        will: u8,
+    ) -> RecordId {
+        let (record, _) = brains.memory.intern(Record::Trial {
+            body: teller,
+            day,
+            way,
+            after,
+            kept: true,
+            will,
+            before: Lately::default(),
+            during: Lately {
+                kj_per_day: 3000,
+                ..Lately::default()
+            },
+        });
+        brains.minds.get_mut(&id).unwrap().heard_ways.push(Access {
+            record,
+            by: teller,
+            day,
+        });
+        record
+    }
+
+    #[test]
+    fn at_the_fire_a_place_is_told_as_a_record_written_once_and_the_listener_gets_the_record_not_the_world()
+     {
+        let rules = fire_rules();
+        let (mut world, mut brains) = camp_of(3, &rules);
+        let (teller, other, listener) = (BodyId(1), BodyId(2), BodyId(3));
+        let kind = brains.food.numbers["bramble"];
+        let key = (2, 2);
+        // Two looks at the same thing the same day: one record.
+        saw_place(&world, &rules, &mut brains, teller, key, kind, 5);
+        saw_place(&world, &rules, &mut brains, other, key, kind, 7);
+        let news = night(&mut world, &rules, &mut brains, &[teller, other, listener]);
+        let told: Vec<(BodyId, RecordId)> = news
+            .iter()
+            .filter_map(|n| match n {
+                News::Told { body, record, .. } => Some((*body, *record)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(told.len(), 2, "{news:?}");
+        assert_eq!(
+            told[0].1, told[1].1,
+            "the same place, the same state, the same day: one number"
+        );
+        let record = told[0].1;
+        assert_eq!(brains.memory.len(), 2, "the place, and the night");
+        assert_eq!(
+            brains.memory.get(record).and_then(Record::witness),
+            Some(teller),
+            "signed by the first who told it"
+        );
+        // The listener holds an access to the teller's record, by the
+        // teller, and its place says what the record says (full), not
+        // what the world holds (nothing).
+        let mind = brains.mind(listener).unwrap();
+        let believes: Vec<(PlaceKey, Access)> = mind.believes().collect();
+        assert_eq!(believes.len(), 1, "{believes:?}");
+        assert_eq!(believes[0].0, key);
+        assert_eq!(believes[0].1.record, record);
+        let from = believes[0].1.by;
+        assert!(
+            from == teller || from == other,
+            "from the teller it credits most: {from:?}"
+        );
+        let place = &mind.places[&key];
+        assert_eq!(place.kinds[0].holding, 4, "full: four and more");
+        assert!(
+            place.kinds[0].best_kj < brains.food.best_kj[usize::from(kind)],
+            "worth less by its credit"
+        );
+        assert!(place.kinds[0].best_kj > 0);
+        // The credit was judged once: asked again, the same.
+        let heard: Vec<u8> = news
+            .iter()
+            .filter_map(|n| match n {
+                News::Heard { body, credit, .. } if *body == listener => Some(*credit),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(heard.len(), 1);
+        let again = memory::credit(
+            world.seed(),
+            (listener, brains.mind(listener).unwrap().will()),
+            (from, brains.mind(from).unwrap().will()),
+            1,
+            1,
+        );
+        assert_eq!(heard[0], again);
+        // The tellers hold their own record, the listener its access, and
+        // the night its two tellings.
+        assert_eq!(brains.memory.refs(record), 5);
+        assert_eq!(brains.hearths()[&Pos::new(5, 5)].len(), 1);
+    }
+
+    #[test]
+    fn a_strong_credit_is_kept_before_a_weak_one_and_a_child_keeps_fewer() {
+        let mut rules = fire_rules();
+        rules.needs.fire.heard_max = 1;
+        let (mut world, mut brains) = camp_of(3, &rules);
+        let (strong, weak, listener) = (BodyId(1), BodyId(2), BodyId(3));
+        let kind = brains.food.numbers["bramble"];
+        brains.minds.get_mut(&strong).unwrap().will = 100;
+        brains.minds.get_mut(&weak).unwrap().will = 0;
+        saw_place(&world, &rules, &mut brains, strong, (2, 2), kind, 5);
+        saw_place(&world, &rules, &mut brains, weak, (3, 3), kind, 5);
+        night(&mut world, &rules, &mut brains, &[strong, weak, listener]);
+        let believes: Vec<(PlaceKey, Access)> = brains.mind(listener).unwrap().believes().collect();
+        assert_eq!(believes.len(), 1);
+        assert_eq!(
+            believes[0].1.by, strong,
+            "one thing kept: the strong will's"
+        );
+        // A two-year-old keeps `heard_by_age` things and not one more.
+        let mut rules = fire_rules();
+        rules.needs.fire.heard_by_age = vec![(2, 3), (16, 24)];
+        rules.needs.fire.told_per_night = 10;
+        let (mut world, mut brains) = camp_of(3, &rules);
+        let (teller, grown, child) = (BodyId(1), BodyId(2), BodyId(3));
+        let per_year = i64::from(world.calendar().days_per_year());
+        world.bodies[2].born_day = world.today() - 2 * per_year;
+        for k in 0..8_i32 {
+            saw_place(&world, &rules, &mut brains, teller, (2 + k, 2), kind, 5);
+        }
+        night(&mut world, &rules, &mut brains, &[teller, grown, child]);
+        assert_eq!(brains.mind(grown).unwrap().believes().count(), 8);
+        assert_eq!(
+            brains.mind(child).unwrap().believes().count(),
+            3,
+            "three at two years"
+        );
+    }
+
+    #[test]
+    fn a_place_heard_and_found_bare_makes_a_new_dated_record_the_present_replace_and_the_absent_keep()
+     {
+        // The 226/231 example of the proposal.
+        let rules = fire_rules();
+        let (mut world, mut brains) = camp_of(4, &rules);
+        let (b14, b7, b9, b22) = (BodyId(1), BodyId(2), BodyId(3), BodyId(4));
+        let kind = brains.food.numbers["bramble"];
+        let key = (2, 2);
+        saw_place(&world, &rules, &mut brains, b14, key, kind, 5);
+        let news = night(&mut world, &rules, &mut brains, &[b14, b7, b9, b22]);
+        let r226 = news
+            .iter()
+            .find_map(|n| match n {
+                News::Told { record, .. } => Some(*record),
+                _ => None,
+            })
+            .unwrap();
+        for id in [b7, b9, b22] {
+            assert_eq!(
+                brains.mind(id).unwrap().believes().next().unwrap().1.record,
+                r226
+            );
+        }
+        // The next day, 7 goes and finds the place bare: a rumour dispelled.
+        saw_place(&world, &rules, &mut brains, b7, key, kind, 0);
+        let news = brains.news();
+        assert!(
+            matches!(news[..], [News::Dispelled { body, place, record, from, .. }] if body == b7 && place == key && record == r226 && from == b14),
+            "{news:?}"
+        );
+        assert_eq!(
+            brains.mind(b7).unwrap().believes().count(),
+            0,
+            "7 dropped 226"
+        );
+        assert_eq!(
+            brains.memory.refs(r226),
+            4,
+            "14, 9, 22 and the night hold it"
+        );
+        // At that night's fire, 14 is absent: 7 tells the bare place, 9
+        // replaces 226 by the later record, 22 (absent) keeps 226.
+        let news = night(&mut world, &rules, &mut brains, &[b7, b9]);
+        let r231 = news
+            .iter()
+            .find_map(|n| match n {
+                News::Told { body, record, .. } if *body == b7 => Some(*record),
+                _ => None,
+            })
+            .unwrap();
+        assert_ne!(r231, r226, "immutable: a new record, dated day 2");
+        assert_eq!(brains.memory.get(r231).map(Record::day), Some(2));
+        assert_eq!(
+            brains.mind(b9).unwrap().believes().next().unwrap().1.record,
+            r231
+        );
+        assert_eq!(
+            brains
+                .mind(b22)
+                .unwrap()
+                .believes()
+                .next()
+                .unwrap()
+                .1
+                .record,
+            r226
+        );
+        assert_eq!(
+            brains
+                .mind(b14)
+                .unwrap()
+                .believes()
+                .next()
+                .unwrap()
+                .1
+                .record,
+            r226
+        );
+        assert_eq!(
+            brains.mind(b9).unwrap().places[&key].kinds[0].holding,
+            0,
+            "9 believes it bare now"
+        );
+        // The older record told again at a later fire does not replace
+        // the later one.
+        let news = night(&mut world, &rules, &mut brains, &[b14, b9]);
+        assert!(
+            !news
+                .iter()
+                .any(|n| matches!(n, News::Heard { body, .. } if *body == b9)),
+            "9 keeps the later record: {news:?}"
+        );
+    }
+
+    #[test]
+    fn forgetting_frees_the_record_at_its_last_access_and_the_dead_release_theirs() {
+        let mut rules = fire_rules();
+        rules.needs.fire.hearth_nights = 1;
+        let (mut world, mut brains) = camp_of(2, &rules);
+        let (teller, listener) = (BodyId(1), BodyId(2));
+        let kind = brains.food.numbers["bramble"];
+        saw_place(&world, &rules, &mut brains, teller, (2, 2), kind, 5);
+        let news = night(&mut world, &rules, &mut brains, &[teller, listener]);
+        let record = news
+            .iter()
+            .find_map(|n| match n {
+                News::Told { record, .. } => Some(*record),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            brains.memory.refs(record),
+            3,
+            "the teller, the listener, the night"
+        );
+        // A night more: the hearth keeps one, the older night is freed.
+        saw_place(&world, &rules, &mut brains, teller, (3, 3), kind, 5);
+        night(&mut world, &rules, &mut brains, &[teller, listener]);
+        assert_eq!(brains.memory.refs(record), 2);
+        // The listener forgets the place: one access fewer.
+        brains
+            .minds
+            .get_mut(&listener)
+            .unwrap()
+            .forget_place((2, 2), &mut brains.memory);
+        assert_eq!(brains.memory.refs(record), 1);
+        // The teller dies: its accesses are released, the record is freed.
+        world.bodies[0].condition.vitality = Gauge::at(0);
+        brains.think(&world, &rules, &[]);
+        assert_eq!(brains.memory.get(record), None, "freed at its last access");
+    }
+
+    #[test]
+    fn imitate_copies_a_way_heard_said_and_nothing_unheard() {
+        let rules = fire_rules();
+        let (world, mut brains) = camp_of(2, &rules);
+        let (me, mate) = (BodyId(1), BodyId(2));
+        // The mate fares best and sleeps out, but said nothing: no copy.
+        let m = brains.minds.get_mut(&mate).unwrap();
+        m.days = vec![Day {
+            gathered_kj: 9000,
+            ..Day::default()
+        }];
+        m.ways.sleep_out = true;
+        m.will = 100;
+        brains.imitate(&world, &rules, me);
+        assert!(brains.news().is_empty(), "nobody reads another's mind");
+        assert!(!brains.mind(me).unwrap().ways().sleep_out);
+        // Heard it said at the fire that it kept its night out: copied.
+        let theirs = *brains.mind(mate).unwrap().ways();
+        heard_kept(&mut brains, (me, mate, 1), Way::SleepOut, theirs, 100);
+        brains.imitate(&world, &rules, me);
+        let news = brains.news();
+        assert!(
+            matches!(news[..], [News::Copied { body, from, way: Way::SleepOut, .. }] if body == me && from == mate),
+            "{news:?}"
+        );
+        assert!(brains.mind(me).unwrap().ways().sleep_out);
+        // Copying the home moves the camp; a teller of will 0 is never
+        // copied; under a trial it copies nothing.
+        let mut home = theirs;
+        home.home = Pos::new(9, 9);
+        heard_kept(&mut brains, (me, mate, 2), Way::Home, home, 100);
+        brains.imitate(&world, &rules, me);
+        assert_eq!(
+            brains.mind(me).unwrap().home(),
+            Pos::new(9, 9),
+            "the camp moved"
+        );
+        brains.news();
+        let mut wide = theirs;
+        wide.worth_half_tiles = WORTH_HALF_TILES * 2;
+        heard_kept(&mut brains, (me, mate, 3), Way::WorthHalfTiles, wide, 0);
+        brains.imitate(&world, &rules, me);
+        assert_eq!(
+            brains.mind(me).unwrap().ways().worth_half_tiles,
+            WORTH_HALF_TILES
+        );
+        // A lost step lands halfway.
+        let rules = {
+            let mut r = fire_rules();
+            r.needs.trials.imitate_loss_percent = 100;
+            r
+        };
+        heard_kept(&mut brains, (me, mate, 4), Way::WorthHalfTiles, wide, 100);
+        brains.imitate(&world, &rules, me);
+        let news = brains.news();
+        assert_eq!(
+            brains.mind(me).unwrap().ways().worth_half_tiles,
+            WORTH_HALF_TILES * 3 / 2,
+            "{news:?}"
+        );
+        let mind = brains.minds.get_mut(&me).unwrap();
+        mind.ways.worth_half_tiles = WORTH_HALF_TILES;
+        mind.trial = Some(Trial {
+            way: Way::StockKj,
+            before: mind.ways,
+            started_day: 0,
+            before_days: Lately::default(),
+            heard: HeardDays::default(),
+        });
+        brains.imitate(&world, &rules, me);
+        assert!(brains.news().is_empty(), "under a trial, it copies nothing");
+    }
+
+    #[test]
+    fn in_distress_a_kept_way_heard_is_the_first_trial_and_a_child_does_not_take_a_home() {
+        let rules = fire_rules();
+        let (world, mut brains) = camp_of(2, &rules);
+        let (me, mate) = (BodyId(1), BodyId(2));
+        let mut theirs = *brains.mind(mate).unwrap().ways();
+        theirs.stock_kj = STOCK_KJ * 2;
+        heard_kept(&mut brains, (me, mate, 1), Way::StockKj, theirs, 50);
+        let food = brains.food.clone();
+        let mind = brains.minds.get_mut(&me).unwrap();
+        let news = start_trial(&world, &rules, &food, &brains.memory, me, mind, false, 3);
+        assert!(
+            matches!(news, Some(News::Trying { way: Way::StockKj, after, .. }) if after.stock_kj == STOCK_KJ * 2),
+            "{news:?}"
+        );
+        assert_eq!(mind.trial.unwrap().way, Way::StockKj);
+        // A child hears of a moved home and does not try it: a way of its own.
+        let mut mind = Mind::new(Pos::new(5, 5));
+        let mut home = theirs;
+        home.home = Pos::new(9, 9);
+        let (record, _) = brains.memory.intern(Record::Trial {
+            body: mate,
+            day: 1,
+            way: Way::Home,
+            after: home,
+            kept: true,
+            will: 50,
+            before: Lately::default(),
+            during: Lately::default(),
+        });
+        mind.heard_ways.push(Access {
+            record,
+            by: mate,
+            day: 1,
+        });
+        let news = start_trial(
+            &world,
+            &rules,
+            &food,
+            &brains.memory,
+            me,
+            &mut mind,
+            true,
+            3,
+        );
+        assert!(
+            matches!(news, Some(News::Trying { way, .. }) if way != Way::Home),
+            "{news:?}"
+        );
+    }
+
+    #[test]
+    fn asleep_out_or_away_a_body_hears_nothing_and_the_same_seed_gives_the_same_nights() {
+        let rules = fire_rules();
+        let (mut world, mut brains) = camp_of(3, &rules);
+        let (teller, out, away) = (BodyId(1), BodyId(2), BodyId(3));
+        let kind = brains.food.numbers["bramble"];
+        saw_place(&world, &rules, &mut brains, teller, (2, 2), kind, 5);
+        // `out` sleeps out: it never lay down at the camp. `away` lies
+        // down past `imitate_tiles` of the camp: not in the circle.
+        brains.minds.get_mut(&away).unwrap().home_at_dusk = Pos::new(40, 40);
+        let news = night(&mut world, &rules, &mut brains, &[teller, away]);
+        assert!(news.is_empty(), "a teller alone tells nobody: {news:?}");
+        assert_eq!(brains.mind(out).unwrap().believes().count(), 0);
+        assert_eq!(brains.mind(away).unwrap().believes().count(), 0);
+        // Same seed, same nights.
+        let twice = || {
+            let mut world = field(200, 150, Pos::new(5, 5));
+            for k in 1..6 {
+                world.spawn_body(Pos::new(5 + k, 5));
+            }
+            let mut brains = piloted(&world);
+            let mut news = Vec::new();
+            let mut events = Vec::new();
+            for _ in 0..4 * world.calendar().ticks_per_day() {
+                events.clear();
+                world.step(&rules, &mut events);
+                for (_, decision) in brains.think(&world, &rules, &events) {
+                    world.queue(decision.intention);
+                }
+                news.extend(brains.news());
+            }
+            let records: Vec<(RecordId, Record, u32)> = brains
+                .memory
+                .records()
+                .map(|(id, r, refs)| (id, r.clone(), refs))
+                .collect();
+            (news, records, brains.hearths().clone())
+        };
+        let (news, records, hearths) = twice();
+        assert!(!hearths.is_empty(), "nights were held: {news:?}");
+        assert_ne!(records.len(), 0);
+        assert_eq!((news, records, hearths), twice());
+    }
+
+    /// A trial of `me` judged at nightfall with `heard` days of unchanged
+    /// mates summed, its own last day gathering `kj`: kept?
+    fn judged_against(heard: HeardDays, before: Lately, kj: u64) -> bool {
+        let rules = fire_rules();
+        let mut world = World::empty(
+            Calendar::new(1, 7200).unwrap(),
+            Map::filled(64, 64, Terrain::Grass).with_camp(5, 5),
+        );
+        let mut events = Vec::new();
+        world.advance(2 * world.calendar().ticks_per_day(), &rules, &mut events);
+        world.spawn_body(Pos::new(5, 5));
+        let mut brains = piloted_with(&world, &rules);
+        let me = BodyId(1);
+        let mind = brains.minds.get_mut(&me).unwrap();
+        let ways = mind.ways;
+        mind.ways.stock_kj *= 2;
+        mind.trial = Some(Trial {
+            way: Way::StockKj,
+            before: ways,
+            started_day: 0,
+            before_days: before,
+            heard,
+        });
+        mind.days = vec![Day {
+            gathered_kj: kj,
+            ..Day::default()
+        }];
+        mind.gathered_today_kj = kj;
+        let news = nightfall(&world, &rules, &mut brains);
+        match news[..] {
+            [
+                News::Tried {
+                    kept, heard_days, ..
+                },
+            ] => {
+                assert_eq!(heard_days, heard.days);
+                kept
+            }
+            _ => panic!("{news:?}"),
+        }
+    }
+
+    #[test]
+    fn a_trial_is_judged_against_the_heard_days_of_unchanged_mates_and_against_itself_when_it_heard_nobody()
+     {
+        let rules = fire_rules();
+        let (world, _) = camp_of(1, &rules);
+        let need = world.bodies[0].condition().need_j_per_day(&rules.needs) / 1000;
+        let before = Lately {
+            kj_per_day: 100,
+            ..Lately::default()
+        };
+        // Gathering 2,000 kJ a day where the week before gave 100: better
+        // than itself. But the mates who changed nothing gathered three
+        // needs a day: no better than them, given up.
+        let luck = HeardDays {
+            kj_percent: 300 * 4,
+            days: 4,
+            nights: 2,
+            ..HeardDays::default()
+        };
+        assert!(
+            judged_against(HeardDays::default(), before, 2000),
+            "against itself: kept"
+        );
+        assert!(
+            !judged_against(luck, before, 2000),
+            "a week of shared luck keeps nothing"
+        );
+        // The mates gathered half a need a day and were thin: better than them, kept.
+        let lean = HeardDays {
+            kj_percent: 50 * 4,
+            thin: 4,
+            days: 4,
+            nights: 2,
+            ..HeardDays::default()
+        };
+        assert!(
+            judged_against(lean, before, need),
+            "better than the mates: kept"
+        );
+        // Equal to the mates on every count: not better, given up.
+        let same = HeardDays {
+            kj_percent: 100 * 4,
+            days: 4,
+            nights: 2,
+            ..HeardDays::default()
+        };
+        assert!(!judged_against(same, before, need));
+    }
+
+    #[test]
+    fn at_the_fire_a_body_in_trial_sums_the_days_of_the_mates_who_changed_nothing() {
+        let rules = fire_rules();
+        let (mut world, mut brains) = camp_of(3, &rules);
+        let (me, steady, changed) = (BodyId(1), BodyId(2), BodyId(3));
+        let day = |kj| Day {
+            gathered_kj: kj,
+            thin: true,
+            ..Day::default()
+        };
+        let mind = brains.minds.get_mut(&me).unwrap();
+        mind.days = vec![day(100)];
+        mind.trial = Some(Trial {
+            way: Way::StockKj,
+            before: mind.ways,
+            started_day: 1,
+            before_days: Lately::default(),
+            heard: HeardDays::default(),
+        });
+        brains.minds.get_mut(&steady).unwrap().days = vec![day(2000)];
+        let m = brains.minds.get_mut(&changed).unwrap();
+        m.days = vec![day(9000)];
+        m.changed_day = Some(1);
+        night(&mut world, &rules, &mut brains, &[me, steady, changed]);
+        let heard = brains.mind(me).unwrap().trial().unwrap().heard;
+        assert_eq!(
+            (heard.days, heard.nights, heard.thin),
+            (1, 1, 1),
+            "the steady mate's day only"
+        );
+        let need = world.bodies[1].condition().need_j_per_day(&rules.needs) / 1000;
+        assert_eq!(heard.kj_percent, 2000 * 100 / need);
+    }
+
+    #[test]
+    fn a_body_tells_at_most_told_per_night_things_its_judged_way_first() {
+        let mut rules = fire_rules();
+        rules.needs.fire.told_per_night = 3;
+        let (mut world, mut brains) = camp_of(2, &rules);
+        let (teller, listener) = (BodyId(1), BodyId(2));
+        let kind = brains.food.numbers["bramble"];
+        for k in 0..2_i32 {
+            saw_place(&world, &rules, &mut brains, teller, (2 + k, 2), kind, 5);
+        }
+        let mind = brains.minds.get_mut(&teller).unwrap();
+        mind.judged = Some(Judged {
+            way: Way::StockKj,
+            after: mind.ways,
+            kept: true,
+            before: Lately::default(),
+            during: Lately::default(),
+        });
+        let news = night(&mut world, &rules, &mut brains, &[teller, listener]);
+        let told: Vec<RecordId> = news
+            .iter()
+            .filter_map(|n| match n {
+                News::Told { record, .. } => Some(*record),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(told.len(), 3, "{news:?}");
+        assert!(
+            matches!(brains.memory.get(told[0]), Some(Record::Trial { .. })),
+            "its way first"
+        );
+        assert_eq!(brains.mind(listener).unwrap().heard_ways().len(), 1);
+        assert_eq!(brains.mind(listener).unwrap().believes().count(), 2);
+        // Told once: the next night, nothing changed, nothing is told.
+        let news = night(&mut world, &rules, &mut brains, &[teller, listener]);
+        assert!(
+            !news.iter().any(|n| matches!(n, News::Told { .. })),
+            "{news:?}"
+        );
+        // Four places more than it may tell a night: the rest wait for
+        // the next night.
+        for k in 0..4_i32 {
+            saw_place(&world, &rules, &mut brains, teller, (2 + k, 3), kind, 5);
+        }
+        let told = |news: &[News]| {
+            news.iter()
+                .filter(|n| matches!(n, News::Told { .. }))
+                .count()
+        };
+        assert_eq!(
+            told(&night(&mut world, &rules, &mut brains, &[teller, listener])),
+            3
+        );
+        assert_eq!(
+            told(&night(&mut world, &rules, &mut brains, &[teller, listener])),
+            1
         );
     }
 }
