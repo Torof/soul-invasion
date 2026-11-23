@@ -262,12 +262,33 @@
     // hearth_nights:  50 — a camp's hearth keeps its last 50 nights (a
     //                   year): what the tribe knows is their union; a
     //                   record nobody holds any more is freed.
+    // told_days_per_hour: 4 — how long a told state is worth believing
+    //                   follows what the place bears (lot 5a, decided by
+    //                   the project lead on 23 November 2026): for each hour
+    //                   of work one of its plants holds (its crop's grams of
+    //                   a usual year over per_hour_g), four days; over them a
+    //                   listener's credit loses its 50 points of age, never
+    //                   over more days than the crop has left in its season.
+    //                   Four keeps lot 4's pace (ten days) for hazelnuts
+    //                   (2.5 hours a tree); dandelion leaves (8 minutes a
+    //                   plant) are old news by the next evening.
+    // told_days_max:  20 — and at most twenty days, whatever it bears.
+    // denied_per_night: 6 — "I found it bare" takes no slot (lot 5a): a
+    //                   body that found bare a place whose record it held
+    //                   said food tells it besides its told_per_night, as
+    //                   a short correction heard only by those present who
+    //                   hold a record of that place; at most six a night,
+    //                   the rumours worth most first, so that a night stays
+    //                   bounded and a denial never displaces good news.
     fire: (
         told_per_night: 6,
         heard_max: 24,
         heard_by_age: [(2, 6), (8, 12), (14, 20), (16, 24)],
         place_buckets: (1, 4),
         hearth_nights: 50,
+        told_days_per_hour: 4,
+        told_days_max: 20,
+        denied_per_night: 6,
     ),
     // The evening's third part (D56, decided by the project lead on 23
     // November 2026): after the accounts and the lessons, each present

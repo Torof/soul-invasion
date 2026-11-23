@@ -19,6 +19,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lab  # noqa: E402
+import panels  # noqa: E402
 import reading  # noqa: E402
 
 FAKE_VIVARIUM = r"""#!/bin/sh
@@ -31,7 +32,8 @@ done
 echo "year 1: 4 alive, 1 dead so far, 2 s" >&2
 echo "year 2: 3 alive, 2 dead so far, 4 s" >&2
 printf '<html><table><tr><th>Year</th><th>Tribe</th><th>Population</th><th>Hunger</th></tr><tr><td>1</td><td>A</td><td>4</td><td>1</td></tr><tr><td>2</td><td>A</td><td>3</td><td>2</td></tr></table></html>' > "$out"
-[ -n "$FAKE_JSON" ] && cp "$FAKE_JSON" "${out%.html}.json"
+if [ -n "$FAKE_JSON" ]; then cp "$FAKE_JSON" "${out%.html}.json"; else
+printf '{"meta":{},"years":[{"tribe":"A","year":1,"population":4,"deaths":{"hunger":1}},{"tribe":"A","year":2,"population":3,"deaths":{"hunger":2}}]}' > "${out%.html}.json"; fi
 echo "3 alive, 2 dead" >&2
 exit "${FAKE_EXIT:-0}"
 """
@@ -868,10 +870,12 @@ class SeriesReading(unittest.TestCase):
         serie = reading.serie_body(s["etalon-test-1"], self.series, self.lab.store)
         self.assertIn("Comparer avec la version…", serie)
         self.assertIn("def5678", serie)
-        self.assertIn('<p class=verdict>Avec les épreuves, 3 vivants à la fin et 2 morts de manque en moyenne sur 2 runs ; '
-                      'sans, 3 vivants et 2 morts de manque sur 2 runs. Les épreuves ne changent rien.</p>', serie)
-        self.assertIn("<th class=n>vivants</th><th class=n>morts de manque</th><th class=n>morts de fond</th><th class=n>naissances</th>", serie)
-        self.assertIn("<h2>Morts de manque et de fond</h2><ul><li>avec épreuves : <b>2,0</b> morts de manque en moyenne sur 2 runs (de 2 à 2), et 0,0 morts de fond (de 0 à 0)</li>", serie)
+        self.assertIn('<p class=vd>Avec essais, 3 vivants à la fin ; sans, 3 : pas de différence.</p>', serie)
+        self.assertIn('<a class=rw href="/run/etalon-test-1/t-s1-avec">t · avec essais · avec le feu · graine 1</a>', serie)
+        self.assertIn("<span class=rr>3 vivants · 2 morts de manque · 1 naissances", serie)
+        self.assertIn("<h2>Morts de manque et de fond</h2><ul><li>avec essais : <b>2,0</b> morts de manque en moyenne sur 2 runs (de 2 à 2), et 0,0 morts de fond (de 0 à 0)</li>", serie)
+        self.assertIn("<li>sans essais (témoin) : <b>3,0</b> vivants", serie)
+        self.assertIn(">sans essais (témoin)</text>", serie)   # the curves named by what differs
         agg = {True: {"n": 2, "mean": 4.0, "want": {"mean": 1.0}}, False: {"n": 2, "mean": 2.0, "want": {"mean": 3.0}}}
         self.assertEqual(reading.series_verdict(agg, 4, 4), "Avec les épreuves, 4 vivants à la fin et 1 mort de manque en moyenne sur 2 runs ; "
                                                              "sans, 2 vivants et 3 morts de manque sur 2 runs. Les épreuves gardent 2 vivants de plus et épargnent 2 morts de manque.")
@@ -887,11 +891,11 @@ class SeriesReading(unittest.TestCase):
         run = reading.run_body(s["etalon-test-1"], s["etalon-test-1"]["runs"][0], self.lab.store.load("etalon-test-1", "t-s1-avec"))
         for part in ("<p class=hero>Après 2 ans, 3 vivants", '<ul class="points top">', "<div class=tiles6>",
                      "<h2>Les gens</h2>", "<h2>Où ils vivent</h2>", "<h2>Ce qu’ils ont appris</h2>", "<h2>La chronique</h2>", "<h2>Annexes</h2>",
-                     "<h3>La population</h3>", "<h3>Les morts</h3>", "<h3>Les naissances</h3>", "<h3>Tout le monde</h3>", "<h3>Les techniques</h3>",
-                     'class="winter"', "vivants à la fin", 'data-lazy="carte"', 'data-lazy="annexes"', "<dialog id=fiche",
+                     "<h2>Les facteurs</h2>", "<h2>Les courbes</h2>", "data-maps6", "data-sm6", "<h3>Les morts</h3>", "<h3>Les naissances</h3>", "<h3>Tout le monde</h3>", "<h3>Les techniques</h3>",
+                     'class="winter"', "vivants à la fin", 'data-lazy="annexes"', "<dialog id=fiche",
                      'aria-label="morts de manque et de fond par an"', "A à gauche de l’année, B à droite"):
             self.assertIn(part, run)
-        self.assertLess(run.index('aria-label="population par tribu"'), run.index('aria-label="morts de manque et de fond par an"'))
+        self.assertLess(run.index('<h2>Les facteurs</h2>'), run.index('aria-label="morts de manque et de fond par an"'))
         order = [run.index(x) for x in ("<p class=hero>", '<ul class="points top">', "<div class=tiles6>", "<h2>Les gens</h2>", "<h3>Les morts</h3>",
                                         "<h2>Où ils vivent</h2>", "<h2>Ce qu’ils ont appris</h2>", "<h2>La chronique</h2>",
                                         "<h2>Annexes</h2>", "<details class=detail>")]
@@ -956,6 +960,15 @@ class SeriesReading(unittest.TestCase):
                                        ("/morceau/etalon-test-1/t-s1-avec?quoi=carte", 200, "data-map2"),
                                        ("/morceau/etalon-test-1/t-s1-avec?quoi=annexes", 200, "Année par année"),
                                        ("/morceau/etalon-test-1/t-s1-avec?quoi=rien", 404, "introuvable"),
+                                       ("/morceau/etalon-test-1/t-s1-avec?quoi=carte-base", 200, '"tribes"'),
+                                       ("/morceau/etalon-test-1/t-s1-avec?quoi=carte-an&an=2", 200, '"year":2'),
+                                       ("/morceau/etalon-test-1/t-s1-avec?quoi=relief", 200, '"known":false'),
+                                       ("/morceau/etalon-test-1/t-s1-avec?quoi=nourriture", 200, '"cells"'),
+                                       ("/morceau/etalon-test-1/t-s1-avec?quoi=courbes", 200, '"days"'),
+                                       ("/morceau/etalon-test-1/t-s1-avec?quoi=annees", 200, "<table"),
+                                       ("/api/resultats?serie=etalon-test-1", 200, '"verdict"'),
+                                       ("/api/resultats?serie=..", 404, ""),
+                                       ("/", 200, "Étalon"),
                                        ("/morceau/autre/t-s1-avec?quoi=carte", 404, "introuvable"),
                                        ("/run/autre/t-s1-avec", 200, reading.NO_DATA),
                                        ("/compare?a=etalon-test-1&b=etalon-test-2", 200, "Comparer deux versions"),
@@ -1113,6 +1126,137 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(series["state"], "arrêtée")
         self.assertEqual([r["state"] for r in series["runs"]], ["arrêté", "arrêté"])
         self.assertIn("2 arrêté(s)", series["final"])
+
+
+class OnePage(unittest.TestCase):
+    """Lab 6: the run page in one, the maps' pieces, the curves, the home and series cards."""
+
+    def data(self):
+        d = fixture(fire=True)
+        d["meta"]["factors"] = [{"key": "thought.plant_sight_tiles", "value": 12}, {"key": "fire.hearth_nights", "value": 3},
+                                {"key": "zzz.unknown", "value": [1, 2]}]
+        d["relief"] = {"cell_tiles": 32, "size": [2, 2], "known": True, "dm": [100, 110, 120, 130]}
+        d["bearers"] = {"chunk_tiles": 32, "margin_chunks": 2, "seasons": {"apple": [False, True, True, False]},
+                        "kinds": ["apple"], "cells": [[0, 0, [0, 3, 5, 0], [[0, 5]]]]}
+        return d
+
+    def test_factor_cards_come_from_meta_factors_and_unknown_keys_stay_folded(self):
+        page = panels.factors_html(self.data())
+        self.assertIn("<h3 class=fth>Le monde</h3>", page)
+        self.assertIn("class=allf", page)                      # every setting, folded
+        self.assertIn("zzz.unknown", page)                     # an unnamed key keeps its key
+        self.assertNotIn("zzz.unknown", page.split("class=allf")[0])
+        self.assertIn("Tous les réglages du contenu (3)", page)
+
+    def test_the_maps_pieces_answer_and_an_unknown_one_does_not(self):
+        d = self.data()
+        kinds = {}
+        for what in ("annees", "fond", "carte-base", "carte-an", "relief", "nourriture", "courbes"):
+            body, ctype = panels.piece(d, what, 1)
+            kinds[what] = ctype
+            if ctype.startswith("application/json"):
+                json.loads(body)
+        self.assertTrue(kinds["fond"].startswith("image/png"))
+        self.assertTrue(kinds["annees"].startswith("text/html"))
+        self.assertIsNone(panels.piece(d, "rien", 1))
+        base = json.loads(panels.piece(d, "carte-base", 1)[0])
+        self.assertEqual((base["tiles"], base["years"], base["dpy"], base["tribes"]), ([64, 64], 2, 50, ["A", "B"]))
+        year = json.loads(panels.piece(d, "carte-an", 1)[0])
+        self.assertEqual((year["year"], year["first"], year["last"]), (1, 1, 50))
+        self.assertIn([3, 10, 10, 30], [b[:4] for b in year["births"]])      # person 3 born on day 30
+        self.assertEqual(json.loads(panels.piece(d, "relief", 1)[0])["dm"], [100, 110, 120, 130])
+        self.assertEqual(json.loads(panels.piece(d, "nourriture", 1)[0])["kinds"], ["apple"])
+        old = fixture()                                         # a run made before lab 6: no relief, no food
+        self.assertFalse(json.loads(panels.piece(old, "relief", 1)[0])["known"])
+        self.assertEqual(json.loads(panels.piece(old, "nourriture", 1)[0])["cells"], [])
+
+    def test_the_small_multiples_share_the_days_and_smooth_the_needs(self):
+        c = panels.curves(self.data())
+        self.assertEqual((c["dpy"], c["last"], c["tribes"]), (50, 100, ["A", "B"]))
+        self.assertEqual(len(c["days"]), 20)
+        page = panels.curves_html()
+        self.assertIn("data-sm6", page)
+
+    def test_the_chronicle_facts_mix_their_kinds_and_count_right(self):
+        facts, total = panels.notable_facts(self.data(), limit=4)
+        self.assertEqual(len(facts), 4)
+        self.assertGreaterEqual(total, 4)
+        every = panels.notable_facts(self.data(), limit=99)[0]
+        self.assertEqual(len({f[1] for f in facts}), min(4, len({f[1] for f in every})))   # one of each kind before a second
+        self.assertEqual([f[0] for f in facts], sorted(f[0] for f in facts))     # told in the order of days
+        texts = " ".join(f[2] for f in panels.notable_facts(self.data(), limit=99)[0])
+        self.assertIn("1 mort de faim chez A", texts)
+        self.assertIn("B tombe à 1 vivant,", texts)                               # no plural on one
+
+    def test_the_year_strip_names_its_colours_and_marks(self):
+        strip = panels.year_strip(self.data())
+        self.assertIn('title="tribu A"', strip)
+        self.assertIn('title="tribu B"', strip)
+        self.assertIn("★", panels.years_section(self.data()))
+        self.assertIn('data-lazy="annees"', panels.years_section(self.data()))
+
+    def test_the_pyramid_counts_the_living_and_the_families_fold(self):
+        d = self.data()
+        start = panels.pyramid(d, 1, "Au départ")
+        self.assertIn("· 4 vivants", start)                    # person 3 is born on day 30
+        self.assertIn("· 3 vivants", panels.pyramid(d, 95, "À la fin"))   # persons 3 and 4 are dead
+        self.assertIn("id=ages", panels.ages_families_html(d))
+
+    def test_purpose_summary_and_series_title(self):
+        self.assertEqual(panels.purpose_summary("Le feu change-t-il la survie (avec le soir) ? Et puis le reste , voilà."),
+                         "Le feu change-t-il la survie ?")
+        self.assertEqual(panels.purpose_summary("Un but , clair : oui. Le reste."), "Un but, clair : oui.")
+        self.assertLessEqual(len(panels.purpose_summary("mot " * 200)), 222)
+        self.assertEqual(panels.series_title("x", {"title": "Mon titre"}), "Mon titre")
+        self.assertEqual(panels.series_title("lab5-feu-20ans-20261122-165124"), "Lab 5 feu 20 ans")
+
+    def test_variants_are_named_by_what_differs(self):
+        self.assertEqual(panels.variant_labels([(True, True), (True, False)]), {(True, True): "avec le feu", (True, False): "sans le feu"})
+        self.assertEqual(panels.variant_labels([(True, False), (False, False)])[(False, False)], "sans essais (témoin)")
+        self.assertEqual(len(set(panels.variant_labels([(a, b) for a in (True, False) for b in (True, False)]).values())), 4)
+        self.assertEqual(panels.variant_labels([(True, True)]), {(True, True): "tous les runs"})
+
+    def test_series_results_with_two_and_four_variants(self):
+        tmp = tempfile.mkdtemp(prefix="lab6-")
+        try:
+            os.makedirs(os.path.join(tmp, "s"))
+            runs = []
+            for i, (tr, fi) in enumerate(((True, True), (True, False), (False, True), (False, False))):
+                d = fixture(seed=i + 1, trials=tr, fire=fi)
+                d["meta"]["settings"]["fire"] = fi
+                with open(os.path.join(tmp, "s", f"r{i}.json"), "w") as f:
+                    json.dump(d, f)
+                runs.append({"name": f"r{i}"})
+            two = panels.series_results(tmp, {"name": "s", "runs": runs[:2]})
+            self.assertTrue(two["verdict"].startswith("Avec le feu, "), two["verdict"])
+            self.assertEqual(len(two["runs"]), 2)
+            four = panels.series_results(tmp, {"name": "s", "runs": runs})
+            self.assertTrue(four["verdict"].startswith("Le plus de vivants à la fin : "), four["verdict"])
+            self.assertIn("<b>4</b> runs lus sur 5", panels.series_results(tmp, {"name": "s", "runs": runs + [{"name": "absent"}]})["points"][-1])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_last_year_counts_read_the_data_file(self):
+        tmp = tempfile.mkdtemp(prefix="lab6-")
+        try:
+            p = os.path.join(tmp, "r.json")
+            with open(p, "w") as f:
+                json.dump(fixture(), f)
+            c = lab.last_year_counts(p)
+            self.assertEqual((c["A"]["Population"], c["A"]["Hunger"], c["B"]["Cold"]), ("2", "1", "1"))
+            self.assertEqual(lab.last_year_counts(os.path.join(tmp, "absent.json")), {})
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_the_title_field_goes_round_and_the_standard_plans_have_one(self):
+        fields = dict(Form.FIELDS, title="Un titre")
+        plan = lab.plan_from_form(fields, "/runs", "/b", "/c")
+        self.assertEqual(plan["title"], "Un titre")
+        self.assertEqual(lab.form_from_plan(plan)["title"], "Un titre")
+        names = sorted(n[:-5] for n in os.listdir(lab.STANDARD_PLANS) if n.endswith(".json"))
+        self.assertTrue(names)
+        for name in names:
+            self.assertTrue(lab.standard_plan(name).get("title"), name)
 
 
 if __name__ == "__main__":

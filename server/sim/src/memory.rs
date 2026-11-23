@@ -330,15 +330,45 @@ impl Store {
 #[must_use]
 pub fn credit(
     seed: u64,
-    (listener, listener_will): (BodyId, u8),
-    (teller, teller_will): (BodyId, u8),
+    listener: (BodyId, u8),
+    teller: (BodyId, u8),
     record_day: u32,
     heard_day: u32,
+) -> u8 {
+    credit_lasting(
+        seed,
+        listener,
+        teller,
+        (record_day, heard_day, heard_day),
+        TRUST_DAYS,
+    )
+}
+
+/// How many days of its age a record told takes to lose the 50 points of
+/// age in a listener's credit, by default: a way judged, a water found
+/// (five points a day, lot 4's pace).
+pub const TRUST_DAYS: u32 = 10;
+
+/// The credit ([`credit`]) on `today` in a record heard on `heard_day`
+/// whose news lasts `lasting_days` (D55, amended by lot 5a): the jitter is
+/// the night's it was heard, the record's age is counted to `today` and
+/// takes its 50 points over `lasting_days` instead of [`TRUST_DAYS`]. A
+/// place heard is believed less as it ages, as fast as what it bears goes:
+/// leaves picked in minutes are old news by the next evening, nuts keep
+/// for weeks (`content/needs.ron`, `fire.told_days_per_hour`). Still a
+/// function, never stored: asked again the same day, the same.
+#[must_use]
+pub fn credit_lasting(
+    seed: u64,
+    (listener, listener_will): (BodyId, u8),
+    (teller, teller_will): (BodyId, u8),
+    (record_day, heard_day, today): (u32, u32, u32),
+    lasting_days: u32,
 ) -> u8 {
     if listener == teller {
         return 100;
     }
-    let age = u64::from(heard_day.saturating_sub(record_day));
+    let age = u64::from(today.saturating_sub(record_day));
     let jitter = scatter::roll(
         seed,
         purpose::FIRE_CREDIT,
@@ -349,7 +379,8 @@ pub fn credit(
         ],
     ) % 21;
     let base = 50 + u64::from(teller_will) / 2 + jitter;
-    let less = u64::from(listener_will) / 4 + age.min(10) * 5;
+    let lasting = u64::from(lasting_days.max(1));
+    let less = u64::from(listener_will) / 4 + age.min(lasting) * 50 / lasting;
     u8::try_from(base.saturating_sub(less).clamp(1, 100)).expect("under 101")
 }
 
@@ -416,6 +447,41 @@ mod tests {
         store.release(night);
         assert_eq!(store.get(night), None);
         assert_eq!(store.get(a), None, "the night held the only access");
+    }
+
+    #[test]
+    fn a_record_lasting_ten_days_ages_as_before_and_a_short_lived_one_is_old_news_in_a_day() {
+        let me = (BodyId(7), 50);
+        let teller = (BodyId(14), 60);
+        for (rec, heard) in [(12, 12), (10, 12), (0, 40)] {
+            assert_eq!(
+                credit_lasting(1, me, teller, (rec, heard, heard), TRUST_DAYS),
+                credit(1, me, teller, rec, heard),
+                "ten days: lot 4's five points a day"
+            );
+        }
+        let fresh = credit_lasting(1, me, teller, (12, 12, 12), 1);
+        let day_old = credit_lasting(1, me, teller, (12, 12, 13), 1);
+        assert_eq!(
+            fresh - day_old,
+            50,
+            "a day-long news loses its age in a day"
+        );
+        assert_eq!(
+            day_old,
+            credit_lasting(1, me, teller, (12, 12, 40), 1),
+            "and no more after"
+        );
+        assert_eq!(
+            credit_lasting(1, me, teller, (12, 12, 13), 20),
+            fresh - 2,
+            "a twenty-day news loses two and a half points a day"
+        );
+        assert_eq!(
+            credit_lasting(1, me, teller, (12, 12, 14), 20),
+            fresh - 5,
+            "the jitter is the night's it was heard: another day, only the age moves"
+        );
     }
 
     #[test]

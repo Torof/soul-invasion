@@ -1,4 +1,5 @@
 {
+ "title": "Étalon : deux tribus de 25 sur vingt ans",
  "question": "Deux tribus de 25 adultes sur vingt ans, graine 1, avec et sans épreuves : la population, les morts par cause, les naissances, ce que les épreuves apportent.",
  "runs": [
   {"name": "vivarium-25", "args": "--world vivarium --tribes 2 --people 25 --days 1000 --cadence 1",

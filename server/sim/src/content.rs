@@ -569,6 +569,21 @@ pub struct Fire {
     /// How many nights a camp's hearth keeps: what the tribe knows is the
     /// union of them.
     pub hearth_nights: u32,
+    /// How many days a told state of a kind is worth believing for each
+    /// hour of work one of its plants holds (its crop's `grams` of a usual
+    /// year over `per_hour_g`, `crops.ron`): over that many days of the
+    /// record's age a listener's credit loses its 50 points of age, never
+    /// over more days than the crop has left in its season (lot 5a, D55
+    /// amended). Leaves picked in minutes are old news by the next
+    /// evening, nuts keep for weeks.
+    pub told_days_per_hour: u32,
+    /// The most days a told state is worth believing, whatever it bears.
+    pub told_days_max: u32,
+    /// How many denials a present body tells a night at most, besides its
+    /// `told_per_night`: places it found bare where the record it held
+    /// said food. A denial takes no slot and reaches only those who hold
+    /// a record of the place (lot 5a, D55 amended).
+    pub denied_per_night: u32,
 }
 
 impl Default for Fire {
@@ -580,6 +595,9 @@ impl Default for Fire {
             heard_by_age: vec![(0, 0)],
             place_buckets: (1, 4),
             hearth_nights: 0,
+            told_days_per_hour: 4,
+            told_days_max: 20,
+            denied_per_night: 0,
         }
     }
 }
@@ -594,6 +612,9 @@ impl Fire {
             heard_by_age: vec![(2, 6), (8, 12), (14, 20), (16, 24)],
             place_buckets: (1, 4),
             hearth_nights: 50,
+            told_days_per_hour: 4,
+            told_days_max: 20,
+            denied_per_night: 6,
         }
     }
 
@@ -650,6 +671,11 @@ impl Fire {
         if self.on() && self.hearth_nights == 0 {
             return Err(ContentError::Needs(
                 "fire: hearth_nights is a night or more when the fire is on",
+            ));
+        }
+        if self.on() && (self.told_days_per_hour == 0 || self.told_days_max == 0) {
+            return Err(ContentError::Needs(
+                "fire: told_days_per_hour and told_days_max are a day or more when the fire is on",
             ));
         }
         Ok(())
