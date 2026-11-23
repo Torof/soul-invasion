@@ -1,18 +1,21 @@
 # The vivarium's data: the report as JSON
 
 Since 22 November 2026 (D41 amended, D52), the vivarium writes its report twice: the HTML page
-(`--out FILE`, the project lead reads it) and, beside it, the same report as data, `FILE` with
-`.json` in place of its extension (`report.html` → `report.json`). The laboratory (`tools/lab/`)
-reads the data and never parses the page.
+(`--out FILE`) and, beside it, the same report as data, `FILE` with `.json` in place of its
+extension (`report.html` → `report.json`). The laboratory (`tools/lab/`) reads the data and never
+parses the page. Since lab 6 (23 November 2026) the project lead reads the lab's run page; the
+vivarium's own page is a minimal technical one (settings, end counts, the map, the timing), and
+`--page full` writes the former long page.
 
 The file is written by `server/vivarium/src/json.rs` (`Report::json`), the only writer. Objects
 are on their own lines, arrays inline, so it reads and stays small: a run of two tribes of 25 over
-twenty years weighs some 300 KB of data, plus the map's picture (`map.data_uri`, about 760 KB on
+twenty years weighs some 300 KB of data, plus the food and relief maps (some 100 and 200 KB),
+plus the map's picture (`map.data_uri`, about 760 KB on
 the vivarium's world: the PNG is stored uncompressed, as on the page), against several megabytes
 for its page, and the bodies' positions at noon (`positions`, one day a line) some 20 bytes a body
 a day: 50 bodies over twenty years weigh about a megabyte. Nothing in it is per tick: the curves
 are the samples the page already thins to at most 1,200 points, and the presence grid and the
-positions take the living once a day. **The chronicle is not in the file**: it is on the page,
+positions take the living once a day. **The chronicle is not in the file**: it is on the full page,
 and the people's own lines of life are under `people`.
 
 Everything is deterministic (the same settings give the same file, byte for byte) but
@@ -68,6 +71,8 @@ clock, the only field no seed decides.
 | `meta.memory.written` | Records written to the common memory over the run (D55) | count |
 | `meta.memory.freed` | Records freed, their last access dropped | count |
 | `meta.memory.held` | Records held at the end, those of `records` | count |
+| `meta.factors[].key` | A value of `content/needs.ron` by its path in the file, objects walked into (`trials.trial_days`, `night_from_percent.winter`); the lab's factor cards (lab 6) read them by key, an unknown key shown as it is | string |
+| `meta.factors[].value` | Its value as written in the content: a number, a text, a list; a list of objects kept whole as its JSON text | as in the content |
 | `years[].tribe` | The tribe | `"A"` or `"B"` |
 | `years[].year` | The year, from 1 | integer |
 | `years[].first_day` | Its first day | day |
@@ -229,10 +234,19 @@ clock, the only field no seed decides.
 | `map.tiles` | The world's size | `[width, height]` tiles |
 | `map.pixels` | The picture's size | `[width, height]` pixels |
 | `map.legend.*` | The colours of the dots: `camp`, `alive`, `dead` | `[r, g, b]` |
+| `bearers.chunk_tiles` | The food map (lab 6): the side of its cell, one chunk | tiles |
+| `bearers.margin_chunks` | The map covers only the chunks a tribe's living stood in at some noon (`presence`) and so many chunks around: the whole world would cost some 45 s a run | chunks |
+| `bearers.seasons` | The order of the four counts of a cell | `["spring", "summer", "autumn", "winter"]` |
+| `bearers.kinds` | The kinds of plants and trees that bear something, in the order of their first meeting | `["apple", …]` |
+| `bearers.cells` | Each covered chunk with bearers, placed as the world places them for the bodies: `cx`, `cy` (a chunk's column and row), the bearers in season in each of the four seasons (a kind is in season in a season when it bears on some day of it, in the world's second year), and the three most numerous kinds with their counts, the most numerous first (`kind` an index into `kinds`) | `[[cx, cy, [sp, su, au, wi], [[kind, count], …]], …]` |
+| `relief.cell_tiles` | The relief map (lab 6): one height every so many tiles, twice the map picture's scale | tiles |
+| `relief.size` | Its size | `[columns, rows]` |
+| `relief.known` | Whether the world has heights (the vivarium's atlas has; a flat test world has not, every height then 0) | `true` or `false` |
+| `relief.dm` | The heights at the cells' centres, row by row from the north-west | `[decimetres, …]` |
 
 ## Not in the file
 
-- The chronicle (on the page), the map's picture, the families' pages (worked out from `people`:
+- The chronicle (on the full page, `--page full`), the map's picture, the families' pages (worked out from `people`:
   mother, father, spouses, children), the ages table (worked out from `born_day` and `sex`).
 - The camp's median position per day: the vivarium works it out once a year (`years[].camp`), not
   per day; the lab can take it from `positions` (the median of a tribe's bodies at noon). The

@@ -162,6 +162,41 @@ Three screens:
     food being better, the four curves overlaid, A solid and B dashed, the maps side by side,
     the discoveries side by side).
 
+**Since lab 6 (23 November 2026, D52 amended)** the pages above are laid out
+again; where this list and the pages differ, the pages are right:
+
+- `/` (**Les séries**): one compact card a series, closed by default: its
+  title, the day, launch → end, the number of runs and the first sentence of
+  its purpose ("but non écrit" when there is none). A click opens it: the
+  verdict and two or three points (from `/api/resultats?serie=`, read once
+  and cached by the files' times), the whole purpose, what changed, the
+  version, the links and the runs. Sorting, filtering by state, a search and
+  grouping by day; the standard plans at the end. A plan's `title` (the form's
+  **Titre**, and each standard plan's) names its series; without one, the
+  series' name without its date stamp.
+- `/serie/<serie>`: the same head, the runs as cards, the aggregates and the
+  population curves by variant, named by what differs between the runs
+  ("avec le feu / sans le feu", "avec essais / sans essais (témoin)", or the
+  four short names when both vary).
+- `/run/<serie>/<name>`: the vivarium's page folded into the lab's.
+  **Les facteurs** (cards by theme from `meta.factors`, every setting folded);
+  **Les gens** with the age pyramids at the start and the end and the
+  families as folded cards; **Les courbes** as small multiples sharing one
+  hairline (a click enlarges one); **Nourriture et tribus, année par année**
+  (big figures, trend points, a strip of the years with ★ most food, ▼
+  least, ▲ most births, ✕ most deaths by want; the table folded and loaded on
+  demand); **Où ils vivent**, two canvas maps side by side, each among six
+  kinds (terrain and relief, food by season, water, noons, routes and camps,
+  deaths and births) sharing one year slider, pan and zoom, with hover and a
+  click on a person opening their card; **La chronique** with its trends and
+  ten notable facts, one of each kind in turn, the whole chronicle folded.
+  The heavy pieces come from `/morceau/<serie>/<run>?quoi=`: `fond` (the
+  terrain PNG), `carte-base`, `carte-an&an=N`, `courbes`, `relief`,
+  `nourriture`, `annees`. Colours always come with a word or a sign.
+
+The vivarium's own page is now minimal (settings, end counts, the map, the
+timing); `--page full` writes the long page of before.
+
 Everything on these pages is read from the runs' `NAME.json` (the
 vivarium's data, `docs/10-vivarium-data.md`), never from their pages. The
 curves are inline SVG drawn by Python; the only script drives the map's

@@ -2991,7 +2991,7 @@ def run_body(s, r, d, store=None, year=None):
         smc["rumours_all"] = sum(v["rumours"] or 0 for v in by_tribe(dc).values()) if has_fire_data(dc) else None
     fire = has_fire_data(d)
     toc = [("resume", "Résumé", False), ("facteurs", "Les facteurs", False), ("gens", "Les gens", False), ("morts", "Les morts", True), ("naissances", "Les naissances", True),
-           ("tous", "Tout le monde", True), ("courbes", "Les courbes", False), ("ou", "Où ils vivent", False), ("appris", "Ce qu’ils ont appris", False),
+           ("tous", "Tout le monde", True), ("ages", "Âges et familles", True), ("courbes", "Les courbes", False), ("annees", "Année par année", False), ("ou", "Où ils vivent", False), ("appris", "Ce qu’ils ont appris", False),
            ("chronique", "La chronique", False), ("annexes", "Annexes", False)]
     ctrl = (f'<p class=caption>Les pastilles comparent au témoin de la même série, <a href="{run_url(serie, rc["name"])}">{h(rc["name"])}</a> '
             f'({h(label)}) : vert mieux, rouge moins bien, gris ni l’un ni l’autre. Sous chaque total, '
@@ -3011,15 +3011,22 @@ def run_body(s, r, d, store=None, year=None):
                 '<i class="g c-want">■</i> mort de manque (faim, soif, froid) · <i class="g c-bg">■</i> mort de fond (maladie, vieillesse, couches) ; '
                 'la barre dit l’âge.</p>' + deaths_table_v2(d) + "</section>"
                 + "<section id=naissances><h3>Les naissances</h3>" + points_html(births_points(d, sm, bt)) + births_table_v2(d) + "</section>"
-                + "<section id=tous><h3>Tout le monde</h3>" + points_html(everyone_points(d, sm)) + people_table_v2(d) + "</section></section>")
+                + "<section id=tous><h3>Tout le monde</h3>" + points_html(everyone_points(d, sm)) + people_table_v2(d) + "</section>"
+                + panels.ages_families_html(d) + "</section>")
     body.append('<section id=courbes class=group><h2>Les courbes</h2>' + panels.curves_html() + '</section>')
+    body.append(panels.years_section(d))
     body.append('<section id=ou class=group><h2>Où ils vivent</h2>' + points_html(where_points(d, sm, bt))
                 + panels.maps_html()
                 + ("<h3>Ce que la tribu sait</h3>" + points_html(knowledge_points(d)) + knowledge_body(d) if fire else "") + "</section>")
     body.append('<section id=appris class=group><h2>Ce qu’ils ont appris</h2>' + points_html(learnt_points(d, sm))
                 + "<h3>Les techniques</h3>" + points_html(techniques_points(d)) + techniques_html(d)
                 + ("<h3>Qui a osé quoi</h3>" + points_html(dared_points(d)) + dared_body(d) if fire else "") + "</section>")
-    body.append(chronicle_html(d, year, f"/chronique/{urllib.parse.quote(serie)}/{urllib.parse.quote(name)}"))
+    chron = chronicle_html(d, year, f"/chronique/{urllib.parse.quote(serie)}/{urllib.parse.quote(name)}")
+    if chron:
+        chron = chron.replace("<h2>La chronique</h2>", "<h2>La chronique</h2>" + panels.chronicle_lead(d)
+                              + "<details class=chronall><summary>Chaque fait, un par un, année par année (filtres, recherche)</summary>", 1)
+        chron = chron[: chron.rindex("</section>")] + "</details></section>"
+    body.append(chron)
     body.append('<section id=annexes class=group><h2>Annexes</h2><details class=detail><summary>Les tableaux bruts</summary>'
                 '<div data-lazy="annexes"><p class=muted>les annexes se chargent…</p></div></details></section>')
     body.append('<dialog id=fiche class=fiche aria-label="fiche"><div class=in><button type=button class=close>fermer</button><div class=body></div></div></dialog>')
@@ -3185,14 +3192,9 @@ def same_plan(s, others):
 
 
 def serie_body(s, all_series, store):
-    rows, agg = series_numbers(s, store)
-    head = (f'<h1>Série {h(s["name"])} <span class="etat">{h(s["state"])}</span></h1>'
-            f'<p class=muted>{version_html(s.get("version"))}'
-            + (f' · plan <code>{h(s["plan_name"])}</code>' if s.get("plan_name") else "")
-            + (f' · créée le {h(s["created"].replace("T", " à "))}' if s.get("created") else "")
-            + (f' · <a href="{s["synthese"]}">synthèse</a>' if s.get("synthese") else "") + "</p>")
-    if s.get("question"):
-        head += f'<p class=q>{h(s["question"])}</p>'
+    import panels  # noqa: PLC0415 (panels reads this module: imported when the page is built)
+    rows, _agg = series_numbers(s, store)
+    head, res = panels.serie_head(s, store.runs_dir)
     # compare controls
     kin = same_plan(s, all_series)
     if kin:
@@ -3205,24 +3207,26 @@ def serie_body(s, all_series, store):
     run_opts = "".join(f'<option value="{h(s["name"])}/{h(r["name"])}">{h(r["name"])}</option>' for r in s["runs"])
     runs_cmp = (f'<form class=inline method=get action="/compare"><label>Deux runs de la série : <select name=a>{run_opts}</select></label> '
                 f'<label>et <select name=b>{run_opts}</select></label> <button>Comparer</button></form>')
-    body = [head, f"<p class=verdict>{h(series_verdict(agg, sum(1 for _r, d, _sm in rows if d), len(rows)))}</p>",
-            f"<div class=controls>{versions}{runs_cmp}</div>"]
-    # table
-    trs = []
-    for r, d, sm in rows:
-        link = f'<a href="{run_url(s["name"], r["name"])}">{h(r["name"])}</a>'
-        if sm:
-            cells = (f"<td class=n>{fmt(sm['alive'])}</td><td class=n>{fmt(sm['want'])}</td><td class=n>{fmt(sm['background'])}</td>"
-                     f"<td class=n>{fmt(sm['births'])}</td><td class=n>{fmt(sm['kept'])} / {fmt(sm['trials'])}</td>")
-        else:
-            cells = f'<td colspan=5 class=muted>{NO_DATA if r["state"] not in ("en cours", "attend") else "en cours, année " + fmt(r.get("year"))}</td>'
-        trs.append(f"<tr><td>{link}</td><td class=n>{r.get('seed', '')}</td><td>{trials_tag(r)}</td><td><span class=etat>{h(r['state'])}</span></td>"
-                   f"{cells}<td class=n>{secs(r.get('elapsed'))}</td><td>"
-                   + (f'<a href="{r["page"]}">page</a> ' if r.get("page") else "") + (f'<a href="{r["log"]}">log</a>' if r.get("log") else "") + "</td></tr>")
-    body.append('<h2>Les runs</h2><table class=clean><thead><tr><th>run</th><th>graine</th><th>épreuves</th><th>état</th><th class=n>vivants</th><th class=n>morts de manque</th><th class=n>morts de fond</th>'
-                f'<th class=n>naissances</th><th class=n>gardés / essais</th><th class=n>temps</th><th></th></tr></thead><tbody>{"".join(trs)}</tbody></table>')
-    body.append("<h2>Vivants à la fin</h2><ul>" + aggregates_html(agg[True], "avec épreuves") + aggregates_html(agg[False], "sans épreuves") + "</ul>")
-    body.append("<h2>Morts de manque et de fond</h2><ul>" + want_aggregates_html(agg[True], "avec épreuves") + want_aggregates_html(agg[False], "sans épreuves") + "</ul>")
+    body = [head, f"<div class=controls>{versions}{runs_cmp}</div>", panels.run_cards(s, res)]
+    # the aggregates and the curves by variant, named by what differs between the runs
+    groups = {}
+    for _r, d, sm in rows:
+        if d and sm:
+            groups.setdefault(panels.variant_of(d), []).append((d, sm))
+    labels = panels.variant_labels(groups) if groups else {}
+    order = sorted(groups, key=lambda k: (not k[0], not k[1]))
+    color = {k: panels.VARIANT_COLORS[i % len(panels.VARIANT_COLORS)] for i, k in enumerate(order)}
+    alive_li, want_li = [], []
+    for k in order:
+        sms = [sm for _d, sm in groups[k]]
+        a = aggregates([sm["alive"] for sm in sms])
+        a["want"] = aggregates([sm["want"] for sm in sms])
+        a["background"] = aggregates([sm["background"] for sm in sms])
+        alive_li.append(aggregates_html(a, labels[k]))
+        want_li.append(want_aggregates_html(a, labels[k]))
+    if order:
+        body.append("<h2>Vivants à la fin</h2><ul>" + "".join(alive_li) + "</ul>")
+        body.append("<h2>Morts de manque et de fond</h2><ul>" + "".join(want_li) + "</ul>")
     # overlaid population curves
     chart = None
     for r, d, _sm in rows:
@@ -3240,12 +3244,13 @@ def serie_body(s, all_series, store):
             if days[-1] > chart.xhi:
                 chart.xhi = days[-1]
                 chart.x = Scale(0, chart.xhi, chart.L, chart.W - chart.R)
-        chart.line(days, alive, TRIALS_COLOR[r.get("trials", True)], None, width=1.3)
+        col = color.get(panels.variant_of(d), TRIALS_COLOR[True])
+        chart.line(days, alive, col, None, width=1.3)
         xs, ys, titles = year_marks(d, None, "alive")
-        chart.hover(xs, ys, [f"{r['name']}, {t}" for t in titles], TRIALS_COLOR[r.get("trials", True)])
+        chart.hover(xs, ys, [f"{r['name']}, {t}" for t in titles], col)
     if chart:
-        chart.legend_item(TRIALS_COLOR[True], "avec épreuves")
-        chart.legend_item(TRIALS_COLOR[False], "sans épreuves")
+        for k in order:
+            chart.legend_item(color[k], labels[k])
         body.append("<h2>Population de tous les runs</h2>" + chart.svg("population de tous les runs"))
     else:
         body.append(f'<p class="err">{NO_DATA}.</p>')

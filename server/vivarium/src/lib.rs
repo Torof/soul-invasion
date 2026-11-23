@@ -876,6 +876,16 @@ pub struct Report {
     /// day, named: shown with the factors so a reader knows the rules of
     /// the run without opening `needs.ron`.
     pub rates: Vec<(&'static str, u32)>,
+    /// Every value of `content/needs.ron` the run lived by (lab 6, the
+    /// factors as cards), by its path in the file (`thought.place_tiles`),
+    /// the run's own: a control run's switched-off section as it ran.
+    pub factors: Vec<(String, serde_json::Value)>,
+    /// The trees and plants bearing food on the whole map, chunk by chunk
+    /// and season by season (lab 6, the food map).
+    pub bearers: Bearers,
+    /// The ground's height over the map, a value every few tiles (lab 6,
+    /// the relief map).
+    pub relief: Relief,
     /// Each tribe's food, year by year (lot 2): by (tribe, year).
     pub food: BTreeMap<(u8, u64), Balance>,
     /// The trials, judgements and copies of the run, in order (D50).
@@ -1761,6 +1771,9 @@ pub fn run_watched(
     drop(placer);
     let placed_in_all = world.shared_ground().bearers_placed();
     let (map_png, map_scale) = picture(&world, &camps);
+    let factors = factors_of(content);
+    let bearers = bearers_map(&world, &content.crops, &presence);
+    let relief = relief_of(world.map(), map_scale * 2);
     let needs = &content.needs;
     let rates = vec![
         ("hunger a day", needs.hunger_per_day),
@@ -1806,6 +1819,9 @@ pub fn run_watched(
         people,
         map_png,
         map_scale,
+        factors,
+        bearers,
+        relief,
         wall_s,
         birth_s,
         placed_ahead,
@@ -2330,6 +2346,184 @@ fn sample(world: &World, content: &Content, people: &mut BTreeMap<BodyId, Person
 /// The map as a picture: one pixel a few tiles, so the picture is at
 /// most 512 px a side; the terrain under the pixel's centre, the camp in
 /// red, the living in white, the dead in black.
+/// The trees and plants bearing food on a map (lab 6): per chunk with
+/// any, how many bear something in each season, and its most common kinds.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Bearers {
+    /// The kinds of tree and plant bearing food, in the order first met.
+    pub kinds: Vec<String>,
+    /// Per chunk with a bearer: its position, the bearers in season in
+    /// spring, summer, autumn and winter, and its three most common kinds
+    /// (an index into `kinds`, and how many).
+    pub cells: Vec<BearerCell>,
+}
+
+/// A chunk of the food map: its column and row, the bearers in season in
+/// each of the four seasons, and its most common kinds `(kind, count)`.
+pub type BearerCell = (i32, i32, [u32; 4], Vec<(usize, u32)>);
+
+/// The ground's height over a map (lab 6): one value every `cell` tiles.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Relief {
+    /// Tiles a value.
+    pub cell: u32,
+    /// Values a row and rows.
+    pub size: (u32, u32),
+    /// Whether the map has heights (the vivarium's world does; a patch has
+    /// none, and its values are 0).
+    pub known: bool,
+    /// Decimetres above the sea, row by row from the north-west.
+    pub dm: Vec<i16>,
+}
+
+/// Every value of `content/needs.ron` by its path in the file: an object
+/// is walked into (`trials.trial_days`, a season's value
+/// `night_from_percent.winter`), a number, a text or a list is a value.
+fn factors_of(content: &Content) -> Vec<(String, serde_json::Value)> {
+    fn walk(prefix: &str, value: serde_json::Value, out: &mut Vec<(String, serde_json::Value)>) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (key, item) in fields {
+                    let path = if prefix.is_empty() {
+                        key
+                    } else {
+                        format!("{prefix}.{key}")
+                    };
+                    walk(&path, item, out);
+                }
+            }
+            serde_json::Value::Array(items) if items.iter().any(serde_json::Value::is_object) => {
+                out.push((
+                    prefix.to_owned(),
+                    serde_json::Value::String(serde_json::Value::Array(items).to_string()),
+                ));
+            }
+            other => out.push((prefix.to_owned(), other)),
+        }
+    }
+    let mut out = Vec::new();
+    walk(
+        "",
+        serde_json::to_value(&content.needs).unwrap_or_default(),
+        &mut out,
+    );
+    out
+}
+
+/// Which seasons each kind bears something in: a crop is in season in a
+/// season when it is on some day of it, in the world's second year.
+fn seasons_of_kinds(
+    crops: &[sim::crops::Crop],
+    calendar: &Calendar,
+) -> BTreeMap<String, [bool; 4]> {
+    let per_year = u64::from(calendar.days_per_year()).max(1);
+    let per_day = calendar.ticks_per_day();
+    let mut out: BTreeMap<String, [bool; 4]> = BTreeMap::new();
+    for crop in crops {
+        let seasons = out.entry(crop.on.clone()).or_insert([false; 4]);
+        for day in 0..per_year {
+            let tick = sim::time::Tick((per_year + day) * per_day + per_day / 2);
+            if sim::crops::in_season(crop, calendar, tick).is_some() {
+                seasons[usize::try_from(day * 4 / per_year).unwrap_or(3).min(3)] = true;
+            }
+        }
+    }
+    out
+}
+
+/// Chunks around the tribes' noons the food map covers: the land they
+/// walked and so many chunks around it.
+pub const BEARERS_MARGIN_CHUNKS: u32 = 2;
+
+/// The food map (lab 6): the bearers of the chunks the tribes' living
+/// stood in at some noon, and [`BEARERS_MARGIN_CHUNKS`] around, placed as
+/// the world places them for the bodies and counted by season; once,
+/// after the run. The whole vivarium's world would cost some 45 s a run
+/// on one thread (4,600 chunks); the land around the tribes, a few.
+fn bearers_map(
+    world: &World,
+    crops: &[sim::crops::Crop],
+    presence: &BTreeMap<(u8, u64), Presence>,
+) -> Bearers {
+    let seasons = seasons_of_kinds(crops, world.calendar());
+    let map = world.map();
+    let side = sim::map::CHUNK_SIZE;
+    let (columns, rows) = (map.width().div_ceil(side), map.height().div_ceil(side));
+    let mut chunks: BTreeSet<(u32, u32)> = BTreeSet::new();
+    for &(cx, cy) in presence.values().flat_map(BTreeMap::keys) {
+        let (x, y) = (
+            cx * PRESENCE_CELL_TILES / side,
+            cy * PRESENCE_CELL_TILES / side,
+        );
+        let m = BEARERS_MARGIN_CHUNKS;
+        for ny in y.saturating_sub(m)..=(y + m).min(rows.saturating_sub(1)) {
+            for nx in x.saturating_sub(m)..=(x + m).min(columns.saturating_sub(1)) {
+                chunks.insert((ny, nx));
+            }
+        }
+    }
+    let mut out = Bearers::default();
+    let mut index: BTreeMap<String, usize> = BTreeMap::new();
+    {
+        for (cy, cx) in chunks {
+            let (x, y) = (
+                i32::try_from(cx).expect("a small map"),
+                i32::try_from(cy).expect("a small map"),
+            );
+            let here = world.bearers_in(sim::map::ChunkPos::new(x, y));
+            if here.is_empty() {
+                continue;
+            }
+            let mut by_season = [0_u32; 4];
+            let mut by_kind: BTreeMap<usize, u32> = BTreeMap::new();
+            for bearer in here.iter() {
+                let kind: &str = &bearer.kind;
+                let next = index.len();
+                let i = *index.entry(kind.to_owned()).or_insert_with(|| {
+                    out.kinds.push(kind.to_owned());
+                    next
+                });
+                *by_kind.entry(i).or_insert(0) += 1;
+                if let Some(s) = seasons.get(kind) {
+                    for (n, on) in by_season.iter_mut().zip(s) {
+                        *n += u32::from(*on);
+                    }
+                }
+            }
+            let mut kinds: Vec<(usize, u32)> = by_kind.into_iter().collect();
+            kinds.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            kinds.truncate(3);
+            out.cells.push((x, y, by_season, kinds));
+        }
+    }
+    out
+}
+
+/// The ground's height every `cell` tiles, read at each cell's middle.
+fn relief_of(map: &Map, cell: u32) -> Relief {
+    let cell = cell.max(1);
+    let size = (map.width().div_ceil(cell), map.height().div_ceil(cell));
+    let mut dm = Vec::with_capacity(usize::try_from(size.0 * size.1).unwrap_or(0));
+    let mut known = false;
+    for y in 0..size.1 {
+        for x in 0..size.0 {
+            let at = Pos::new(
+                i32::try_from((x * cell + cell / 2).min(map.width() - 1)).expect("fits"),
+                i32::try_from((y * cell + cell / 2).min(map.height() - 1)).expect("fits"),
+            );
+            let h = map.elevation(at);
+            known |= h.is_some();
+            dm.push(h.unwrap_or(0));
+        }
+    }
+    Relief {
+        cell,
+        size,
+        known,
+        dm,
+    }
+}
+
 fn picture(world: &World, camps: &[Pos]) -> (Vec<u8>, u32) {
     let map = world.map();
     let scale = map.width().max(map.height()).div_ceil(512).max(1);
@@ -3448,8 +3642,53 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         )
     }
 
-    /// The whole page.
+    /// The page the vivarium writes by default since lab 6 (D41 amended):
+    /// a minimal technical page, for work without the laboratory. The
+    /// settings, the end in one line, the map and the timing; everything
+    /// else is read in the lab's run page, from the data file beside.
     pub fn html(&self) -> String {
+        let s = &self.settings;
+        let world = match s.world {
+            WorldKind::Vivarium => "the vivarium's world (zone 2 of seed 14)".to_owned(),
+            WorldKind::Patch { side } => format!("a patch of the valley, {side} × {side} tiles"),
+        };
+        let deaths = self.people.values().filter(|p| p.death.is_some()).count();
+        let born = self.people.values().filter(|p| p.born_day >= 0).count();
+        let alive = self.samples.last().map_or(0, |last| last.alive);
+        let mut h = String::new();
+        let _ = write!(
+            h,
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Vivarium — {world}, seed {}, {} people, {} days</title>\
+<style>body{{font:15px/1.45 system-ui,sans-serif;margin:24px;max-width:900px;color:#222}}h1{{font-weight:600}}\
+img.map{{image-rendering:pixelated;border:1px solid #999;max-width:100%}}</style></head><body>\
+<h1>Vivarium — {world}</h1>\
+<p>Seed {}, {} grown people, {} children and {} infants at each of {} camp(s), {} game days ({} ticks), trials {}, fire {}{}.</p>\
+<p><b>At the end: {alive} alive, {deaths} dead, {born} born in the run.</b></p>\
+<p>This is the vivarium's minimal page. The report is read in the laboratory (<code>tools/lab/</code>), from the data written beside this page (the same name, <code>.json</code>; <code>docs/10-vivarium-data.md</code>). <code>--page full</code> writes the long page of before.</p>\
+<p>One pixel is {} tile{}; the camp red, the living white, the dead black.</p><img class=\"map\" alt=\"the map\" src=\"data:image/png;base64,{}\">",
+            s.seed,
+            s.people,
+            s.days,
+            s.seed,
+            s.people,
+            s.children,
+            s.infants,
+            self.camps.len(),
+            s.days,
+            self.ticks,
+            if s.trials { "on" } else { "off" },
+            if s.fire { "on" } else { "off" },
+            if s.fed { ", food without limit" } else { "" },
+            self.map_scale,
+            if self.map_scale == 1 { "" } else { "s" },
+            png::base64(&self.map_png)
+        );
+        format!("{h}{}</body></html>\n", self.timing())
+    }
+
+    /// The long page of before lab 6 (`--page full`): the factors, the
+    /// map, the curves, the tables, the chronicle and the families.
+    pub fn full_html(&self) -> String {
         format!("{}{}</body></html>\n", self.fixed(), self.timing())
     }
 
@@ -4430,6 +4669,96 @@ mod tests {
     }
 
     #[test]
+    fn the_minimal_page_points_to_the_lab_and_the_full_page_keeps_the_rest() {
+        let report = run_with(&small(), content()).unwrap();
+        let page = report.html();
+        for part in [
+            "At the end: ",
+            "tools/lab/",
+            "--page full",
+            "data:image/png;base64,",
+            "game years a minute",
+        ] {
+            assert!(page.contains(part), "the minimal page holds {part}");
+        }
+        assert!(!page.contains("<h2>The chronicle</h2>"));
+        let full = report.full_html();
+        for part in [
+            "<h2>The factors</h2>",
+            "<h2>The chronicle</h2>",
+            "<h2>The curves</h2>",
+        ] {
+            assert!(full.contains(part), "the full page holds {part}");
+        }
+        assert!(
+            page.len() * 4 < full.len(),
+            "the minimal page is the small one"
+        );
+    }
+
+    #[test]
+    fn the_factors_are_every_value_of_the_needs_by_its_path() {
+        let content = content();
+        let factors = factors_of(content);
+        let keys: Vec<&str> = factors.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(keys.contains(&"trials.trial_days"), "{keys:?}");
+        assert!(keys.iter().all(|k| !k.is_empty() && !k.starts_with('.')));
+        let mut sorted = keys.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), keys.len(), "a path once");
+        assert!(
+            factors.iter().all(|(_, v)| !v.is_object()),
+            "an object is walked into"
+        );
+        let report = run_with(&small(), content).unwrap();
+        let value = report.json_value();
+        assert_eq!(
+            value["meta"]["factors"].as_array().unwrap().len(),
+            factors.len()
+        );
+    }
+
+    #[test]
+    fn the_food_and_relief_maps_cover_the_tribes_land() {
+        let report = run_with(&small(), content()).unwrap();
+        let value = report.json_value();
+        let bearers = &value["bearers"];
+        let kinds = bearers["kinds"].as_array().unwrap().len();
+        let cells = bearers["cells"].as_array().unwrap();
+        assert!(
+            !cells.is_empty(),
+            "the land around the camp bears something"
+        );
+        for cell in cells {
+            let per_kind = cell[3].as_array().unwrap();
+            assert!(
+                per_kind
+                    .iter()
+                    .all(|k| usize::try_from(k[0].as_u64().unwrap()).unwrap() < kinds)
+            );
+            assert!(per_kind.len() <= 3, "the three most numerous kinds");
+            let counts: Vec<u64> = per_kind.iter().map(|k| k[1].as_u64().unwrap()).collect();
+            assert!(
+                counts.windows(2).all(|w| w[0] >= w[1]),
+                "the most numerous first"
+            );
+            assert!(
+                !counts.is_empty() && counts.iter().all(|&n| n > 0),
+                "a cell only with bearers"
+            );
+        }
+        let relief = &value["relief"];
+        let size = relief["size"].as_array().unwrap();
+        let (w, h) = (size[0].as_u64().unwrap(), size[1].as_u64().unwrap());
+        assert_eq!(relief["dm"].as_array().unwrap().len() as u64, w * h);
+        assert_eq!(
+            relief["cell_tiles"].as_u64().unwrap(),
+            u64::from(report.map_scale.max(1) * 2)
+        );
+    }
+
+    #[test]
     fn the_people_are_born_at_the_camp_and_counted_once_an_hour() {
         let report = run_with(&small(), content()).unwrap();
         assert_eq!(report.people.len(), 5, "five people, five pages");
@@ -4822,7 +5151,7 @@ mod tests {
         };
         let report = run_checked(&settings, &forced_trials());
         let value = report.json_value();
-        let html = report.html();
+        let html = report.full_html();
         let years = value["years"].as_array().unwrap();
         assert_eq!(years.len(), report.years().len());
         for (y, year) in years.iter().zip(report.years()) {
