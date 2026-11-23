@@ -941,6 +941,32 @@ pub enum News {
         /// When.
         at: u64,
     },
+    /// A caller called a good companion first, by name, at the fire
+    /// (D56, PR 1 ter), and it joins: a measure of the review.
+    Named {
+        /// The caller.
+        leader: BodyId,
+        /// The one named.
+        body: BodyId,
+        /// When.
+        at: u64,
+    },
+    /// Why it stopped gathering today and what it carried (lot 5b, a
+    /// measure of the review): told at nightfall, before its day's habit.
+    Stopped {
+        /// The body.
+        body: BodyId,
+        /// Why it went home first today: one of the `STOP_` reasons.
+        why: u8,
+        /// What it carried then, in kilojoules (0 if it never went).
+        stop_kj: u64,
+        /// What it carries at nightfall, in kilojoules.
+        evening_kj: u64,
+        /// What it burns a day, in kilojoules.
+        need_kj: u64,
+        /// When.
+        at: u64,
+    },
     /// One with no place to go asked whom it believes best "where is
     /// food?" at the fire (D56, PR 1 ter).
     Asked {
@@ -1167,6 +1193,9 @@ pub struct Mind {
     /// Whom it believes best at each activity of the content's
     /// `reputation` (D56, PR 1 ter): one at most an activity.
     reputed: Vec<Belief>,
+    /// Why it first went home from gathering today, and what it carried
+    /// then (a measure, told at nightfall).
+    stop: Option<(u8, u64)>,
     /// The dated facts it keeps on its companions as a caller (D56, PR 1
     /// ter), the oldest first: at most the content's
     /// `decisions.facts_kept`.
@@ -1265,6 +1294,18 @@ const FACT_LITTLE: u8 = 0x02;
 /// outings before it are not judged again.
 const FACT_ASIDE: u8 = 0x04;
 
+/// It never went home from gathering today ([`News::Stopped`]).
+pub const STOP_NONE: u8 = 0;
+/// It went home carrying what it wanted.
+pub const STOP_FULL: u8 = 1;
+/// Its group went home (its caller full, or enough of the group), itself
+/// not full.
+pub const STOP_GROUP: u8 = 2;
+/// Nothing left to gather that it knew of, not full.
+pub const STOP_NOTHING: u8 = 3;
+/// Night fell.
+pub const STOP_NIGHT: u8 = 4;
+
 /// What a caller's review says of a companion (D56, PR 1 ter).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Review {
@@ -1317,6 +1358,7 @@ impl Mind {
             bare_today: 0,
             reputed: Vec::new(),
             companions: Vec::new(),
+            stop: None,
             walks: 0,
             thoughts: 0,
         }
@@ -2412,6 +2454,9 @@ pub struct Brains {
     /// PR 1 ter): each caller, its members, how many came back fed, how
     /// many empty.
     accounts: Vec<Account>,
+    /// Whether nightfall tells why each stopped gathering
+    /// ([`News::Stopped`]): a measure the vivarium asks for (lot 5b).
+    measure_stops: bool,
 }
 
 /// A group's return, told at the next fire (D56, PR 1 ter): its caller,
@@ -2695,6 +2740,12 @@ fn plant_sight_at(map: &Map, rules: &Content, at: Pos) -> i32 {
 }
 
 impl Brains {
+    /// Asks nightfall to tell why each stopped gathering and what it
+    /// carried ([`News::Stopped`]): a measure of the review (lot 5b).
+    pub fn measure_stops(&mut self) {
+        self.measure_stops = true;
+    }
+
     /// No minds yet; `seed` chooses where they go looking.
     pub fn new(seed: u64) -> Self {
         Self {
@@ -2719,6 +2770,7 @@ impl Brains {
             at_fire: BTreeMap::new(),
             groups: BTreeMap::new(),
             accounts: Vec::new(),
+            measure_stops: false,
         }
     }
 
@@ -3023,6 +3075,10 @@ impl Brains {
                 (day, gathered_kj, now),
                 (kin.get(&id).copied(), season, indirect.contains(&id)),
             );
+            let told = stopped(world, rules, (id, body), mind, now);
+            if self.measure_stops {
+                self.news.extend(told);
+            }
             close_habit(rules, body, id, mind, day_of, kin_of, &mut self.news);
             mind.distress_days = if hungry || gathered_kj == 0 {
                 mind.distress_days.saturating_add(1)
@@ -3789,6 +3845,11 @@ impl Brains {
             // Called first, by name (PR 1 ter): it joins the call.
             if let Some((lead, key)) = reserved.remove(&id) {
                 said.insert(id, (Act::Joined, Some(key), Some(lead), 0));
+                self.news.push(News::Named {
+                    leader: lead,
+                    body: id,
+                    at: now,
+                });
                 continue;
             }
             let mut list = choices(&self.food, rules, world, mind, id, camp, pace);
@@ -4078,8 +4139,10 @@ impl Brains {
                     continue;
                 }
                 match mind.review(who, dec) {
-                    Review::Good => good_of.entry(lead).or_default().push(who),
-                    Review::Aside => {
+                    Review::Good if dec.review_holds("names") => {
+                        good_of.entry(lead).or_default().push(who);
+                    }
+                    Review::Aside if dec.review_holds("set_aside") => {
                         let child = world
                             .body(who)
                             .is_some_and(|b| b.mother() == Some(lead) || b.father() == Some(lead));
@@ -4087,7 +4150,7 @@ impl Brains {
                             aside_by.entry(lead).or_default().insert(who);
                         }
                     }
-                    Review::Unsaid => {}
+                    Review::Good | Review::Aside | Review::Unsaid => {}
                 }
             }
         }
@@ -4101,7 +4164,9 @@ impl Brains {
                     };
                     mind.note(fact, dec.facts_kept);
                 }
-                if let Some(mind) = self.minds.get_mut(&who) {
+                if dec.review_holds("aside_costs")
+                    && let Some(mind) = self.minds.get_mut(&who)
+                {
                     mind.set_aside(&rules.needs.temperance);
                 }
                 self.news.push(News::Aside {
@@ -5017,10 +5082,14 @@ fn decide(
     // The day's plan said at the fire (D56): a group's turn, a look out.
     let full = !can_carry || carried_kj(world, rules, id) >= mind.ways.stock_kj;
     let mut gathers = !night && (!full || on_the_way(world, groups, mind));
+    let mut group_home = false;
     if !night {
         match group_turn(world, rules, groups, (id, here), mind, full, now) {
             Turn::Go => {}
-            Turn::Home => gathers = false,
+            Turn::Home => {
+                gathers = false;
+                group_home = true;
+            }
             Turn::Decide(decision) => return decision,
         }
         if gathers && let Turn::Decide(decision) = look_out(world, rules, id, here, mind) {
@@ -5055,6 +5124,18 @@ fn decide(
     }
     mind.doing = Doing::Home;
     let why = if night { Why::Night } else { Why::Home };
+    if mind.stop.is_none() {
+        let reason = if night {
+            STOP_NIGHT
+        } else if full {
+            STOP_FULL
+        } else if group_home {
+            STOP_GROUP
+        } else {
+            STOP_NOTHING
+        };
+        mind.stop = Some((reason, carried_kj(world, rules, id)));
+    }
     decision(
         Intention::MoveTo {
             body: id,
@@ -5445,6 +5526,27 @@ fn follow_or_wait(
     Some(d)
 }
 
+/// Why `id` first went home from gathering today and what it carried,
+/// told at nightfall (lot 5b, a measure of the review), when the callers
+/// review their companions.
+fn stopped(
+    world: &World,
+    rules: &Content,
+    (id, body): (BodyId, &Body),
+    mind: &mut Mind,
+    now: u64,
+) -> Option<News> {
+    let (why, stop_kj) = mind.stop.take().unwrap_or((STOP_NONE, 0));
+    rules.needs.decisions.reviews().then(|| News::Stopped {
+        body: id,
+        why,
+        stop_kj,
+        evening_kj: carried_kj(world, rules, id),
+        need_kj: need_kj_per_day(rules, body),
+        at: now,
+    })
+}
+
 /// What a body did its day, kept in its habit when decisions are on, and
 /// told as [`News::Habit`] (D56). With the will tempered, its activities
 /// are judged (D56): yesterday's look out by whether it found a place it
@@ -5778,6 +5880,10 @@ fn group_turn(
         {
             g.followed.insert(id);
             mind.doing = Doing::Home;
+            if mind.stop.is_none() {
+                let reason = if full { STOP_FULL } else { STOP_GROUP };
+                mind.stop = Some((reason, carried_kj(world, rules, id)));
+            }
             return Turn::Decide(Some(Decision {
                 intention: Intention::Follow {
                     body: id,
@@ -9727,6 +9833,57 @@ mod tests {
         let news = decide_evening(&world, &rules, &mut brains, camp, &all);
         assert!(!news.iter().any(|n| matches!(n, News::Aside { .. })));
         assert_eq!(act_of(&brains, one).2, Some(lead));
+    }
+
+    #[test]
+    fn the_review_holds_only_to_the_parts_it_is_given() {
+        let note = |brains: &mut Brains, keep: u32, (one, two, lead): (BodyId, BodyId, BodyId)| {
+            let mind = brains.minds.get_mut(&lead).unwrap();
+            for day in 1..=2 {
+                mind.note(
+                    Fact {
+                        who: one,
+                        day,
+                        flags: FACT_WAITED,
+                    },
+                    keep,
+                );
+                mind.note(
+                    Fact {
+                        who: two,
+                        day,
+                        flags: 0,
+                    },
+                    keep,
+                );
+            }
+        };
+        let trio = (BodyId(1), BodyId(2), BodyId(3));
+        let all = [trio.0, trio.1, trio.2];
+        let evening = |parts: &[&str]| {
+            let (world, mut rules, mut brains, _, camp) = reviewing();
+            rules.needs.decisions.review_parts = parts.iter().map(|&p| p.to_owned()).collect();
+            note(&mut brains, rules.needs.decisions.facts_kept, trio);
+            let news = decide_evening(&world, &rules, &mut brains, camp, &all);
+            let review = news.iter().find_map(|n| match n {
+                News::Evening { review, .. } => Some((review.named, review.aside)),
+                _ => None,
+            });
+            let named = news.iter().any(|n| matches!(n, News::Named { .. }));
+            (review, named, brains.minds[&trio.0].confidence[1].failures)
+        };
+        assert_eq!(evening(&[]), (Some((0, 0)), false, 0), "the facts alone");
+        assert_eq!(
+            evening(&["set_aside"]),
+            (Some((0, 1)), false, 0),
+            "set aside, free"
+        );
+        assert_eq!(
+            evening(&["set_aside", "aside_costs"]),
+            (Some((0, 1)), false, 1),
+            "set aside, at a cost"
+        );
+        assert_eq!(evening(&["names"]), (Some((1, 0)), true, 0), "named only");
     }
 
     #[test]

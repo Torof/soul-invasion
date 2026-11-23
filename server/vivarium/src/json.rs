@@ -27,10 +27,11 @@ use crate::{
 };
 
 /// The top-level keys, in the order they are written.
-const ORDER: [&str; 14] = [
+const ORDER: [&str; 15] = [
     "meta",
     "years",
     "seasons",
+    "bilan",
     "found",
     "people",
     "records",
@@ -205,6 +206,7 @@ impl Report {
             "meta": self.meta(),
             "years": self.years_json(),
             "seasons": self.seasons_json(),
+            "bilan": self.bilan_json(),
             "found": self.found_json(),
             "people": self.people_json(),
             "records": self.records_json(),
@@ -377,6 +379,79 @@ impl Report {
                 })
                 .collect(),
         )
+    }
+
+    /// The review's measure (lot 5b): by standing, why each stopped and
+    /// what it carried; the groups' stability; the couples at the dawns
+    /// of conception; the confidence in gathering of the named and the
+    /// set aside, and who they are.
+    fn bilan_json(&self) -> Value {
+        let b = &self.bilan;
+        let mean = |sum: u64, n: u32| (n > 0).then(|| sum * 10 / u64::from(n));
+        let standing: serde_json::Map<String, Value> = crate::STANDINGS
+            .iter()
+            .zip(&b.standing)
+            .map(|(name, d)| {
+                let not_full = d.why[2] + d.why[3];
+                (
+                    (*name).to_owned(),
+                    json!({
+                        "days": d.days,
+                        "why": {
+                            "never": d.why[0],
+                            "full": d.why[1],
+                            "group": d.why[2],
+                            "nothing_left": d.why[3],
+                            "night": d.why[4],
+                        },
+                        "gathered_x10": mean(d.gathered, d.days),
+                        "at_stop_x10": mean(d.at_stop, d.days - d.why[0]),
+                        "evening_x10": mean(d.evening, d.days),
+                        "cut_short_x10": mean(d.cut_short, not_full),
+                    }),
+                )
+            })
+            .collect();
+        let curve = |kind: usize| -> Vec<Value> {
+            b.curve[kind]
+                .iter()
+                .map(|&(sum, n)| json!([mean(sum, n), n]))
+                .collect()
+        };
+        let who = |kind: usize| -> serde_json::Map<String, Value> {
+            crate::BANDS
+                .iter()
+                .zip(&b.who[kind])
+                .map(|(band, n)| ((*band).to_owned(), json!(n)))
+                .collect()
+        };
+        json!({
+            "standing": standing,
+            "groups": {
+                "stable_permille": (b.stable_n > 0).then(|| b.stable_permille / u64::from(b.stable_n)),
+                "members_two_days": b.stable_n,
+                "same_caller": b.same_caller,
+                "followers_two_days": b.followers_n,
+            },
+            "couples": {
+                "met": b.couples[0],
+                "apart": b.couples[1],
+                "thin": b.couples[2],
+                "apart_and_thin": b.couples[3],
+            },
+            "confidence": {
+                "everyone_x10": mean(b.base.0, b.base.1),
+                "set_aside_before_x10": mean(b.before[0].0, b.before[0].1),
+                "named_before_x10": mean(b.before[1].0, b.before[1].1),
+                "set_aside_after": curve(0),
+                "named_after": curve(1),
+            },
+            "who": {
+                "set_aside": who(0),
+                "named": who(1),
+                "noons": who(2),
+            },
+        })
     }
 
     /// The rumours dispelled (D55), in order.

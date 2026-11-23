@@ -426,6 +426,21 @@ pub struct Decisions {
     /// may make their own group near the camp.
     #[serde(default)]
     pub near_camp_tiles: u32,
+    /// The parts of the review in force (lot 5b, a measure of its causes):
+    /// `set_aside` (the bad told "not with us tomorrow"), `aside_costs`
+    /// (that costs them a failure of their confidence in gathering),
+    /// `names` (the good called first, by name, their room kept). The
+    /// facts are noted whenever `facts_kept` is above 0. All three when
+    /// absent: the review as decided.
+    #[serde(default = "review_parts_all")]
+    pub review_parts: Vec<String>,
+}
+
+/// The parts of the review a caller may hold to ([`Decisions::review_parts`]).
+pub const REVIEW_PARTS: [&str; 3] = ["set_aside", "aside_costs", "names"];
+
+fn review_parts_all() -> Vec<String> {
+    REVIEW_PARTS.iter().map(|&p| p.to_owned()).collect()
 }
 
 impl Default for Decisions {
@@ -448,6 +463,7 @@ impl Default for Decisions {
             review_outings: 0,
             review_bad: 0,
             near_camp_tiles: 0,
+            review_parts: review_parts_all(),
         }
     }
 }
@@ -479,6 +495,12 @@ impl Decisions {
     #[must_use]
     pub fn reviews(&self) -> bool {
         self.on() && self.facts_kept > 0
+    }
+
+    /// Whether the review holds to its part `part` ([`REVIEW_PARTS`]).
+    #[must_use]
+    pub fn review_holds(&self, part: &str) -> bool {
+        self.review_parts.iter().any(|p| p == part)
     }
 
     /// The chance, in per cent, that a body of `will` goes looking.
@@ -513,6 +535,15 @@ impl Decisions {
         if self.reviews() && (self.review_bad == 0 || self.review_bad > self.review_outings) {
             return Err(ContentError::Needs(
                 "decisions: with facts_kept, review_bad 1 to review_outings",
+            ));
+        }
+        if self
+            .review_parts
+            .iter()
+            .any(|p| !REVIEW_PARTS.contains(&p.as_str()))
+        {
+            return Err(ContentError::Needs(
+                "decisions: review_parts among set_aside, aside_costs, names",
             ));
         }
         Ok(())

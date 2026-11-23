@@ -287,6 +287,25 @@ clock, the only field no seed decides.
 | `seasons[].bare` | Places found bare in the season | count |
 | `seasons[].lookers_will_x10` | The will at noon of those who looked, mean over their looked days, × 10; `null` without one | integer |
 | `seasons[].lookers_explore_x10` | Their confidence in exploring, likewise | integer |
+| `bilan.standing.*.days` | The review's measure (lot 5b: by what way being named or set aside changes what each carries), over the whole run, by the day's standing: `named` (called first by name at the fire), `set_aside`, then by what it said, `joined`, `called`, `alone`, `looked`, `nothing`: person-days | count |
+| `bilan.standing.*.why.*` | Of them, why it first went home from gathering: `never` (it never went home from gathering), `full` (it carried what it wanted), `group` (its group went home, itself not full), `nothing_left` (nothing it knew of left to gather, not full), `night` | count |
+| `bilan.standing.*.gathered_x10` | What it gathered, in per cent of a day of its need, × 10, on average | integer |
+| `bilan.standing.*.at_stop_x10` | What it carried when it first went home, likewise, over the days it went | integer |
+| `bilan.standing.*.evening_x10` | What it carried at nightfall, likewise | integer |
+| `bilan.standing.*.cut_short_x10` | What it carried when it went home not full (`group` or `nothing_left`), likewise | integer |
+| `bilan.groups.stable_permille` | Members of a group two days running: the share of today's mates who were yesterday's, per mille, on average | per mille |
+| `bilan.groups.members_two_days` | How many such member-days | count |
+| `bilan.groups.same_caller` | Of the followers two days running, those who followed the same caller | count |
+| `bilan.groups.followers_two_days` | Followers two days running | count |
+| `bilan.couples.*` | At each dawn of conception (life's `conceive_nights` first days of a season), each fertile woman with a living spouse, not with child from before and carrying no infant: `met` (spouse within reach, reserve enough), `apart` (spouse too far only), `thin` (reserve too low only), `apart_and_thin` | count |
+| `bilan.confidence.everyone_x10` | The confidence in gathering (D56, 0 to 100) at every noon of a living body past infancy, × 10, on average | integer |
+| `bilan.confidence.set_aside_before_x10` | That of the set aside at the noon before the fire that set them aside | integer |
+| `bilan.confidence.named_before_x10` | That of the named, likewise | integer |
+| `bilan.confidence.set_aside_after` | By day since the day set aside (0: its noon, to 14): `[mean × 10, noons]` | `[[integer, count], …]` |
+| `bilan.confidence.named_after` | The same for the named | `[[integer, count], …]` |
+| `bilan.who.set_aside.*` | Who was set aside, by band at the noon before: `child` (under 12), `young` (12 to 15), `man`, `woman` (16 to 59), `mother` (with child or carrying an infant), `elder` (60 and over) | count |
+| `bilan.who.named.*` | Who was named, likewise | count |
+| `bilan.who.noons.*` | Every noon counted, by band: what the others are set against | count |
 | `curves.points` | Samples kept, at most 1,200 | count |
 | `curves.every` | One sample kept every so many of the 24 a day | count |
 | `curves.ticks` | The tick of each sample | `[tick, …]` |

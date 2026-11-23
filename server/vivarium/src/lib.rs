@@ -1057,6 +1057,11 @@ pub struct Report {
     /// The seasons' measure by tribe and season from the first (D56, PR 1
     /// ter).
     pub seasons: BTreeMap<(u8, u64), SeasonProbe>,
+    /// The review's measure (lot 5b): why each stops gathering and what
+    /// it carries by its day's standing, the groups' stability, the
+    /// couples at the dawns of conception, the confidence of the named
+    /// and of the set aside.
+    pub bilan: BilanProbe,
     /// The evening's decisions and the day's groups by tribe and year
     /// (D56).
     pub decisions: BTreeMap<(u8, u64), DecisionYear>,
@@ -1193,6 +1198,7 @@ pub fn run_watched(
     let mut people: BTreeMap<BodyId, Person> = BTreeMap::new();
     let mut chronicle = Vec::new();
     let mut brains = Brains::new(settings.seed);
+    brains.measure_stops();
     // The ground's caches (trees, rocks, bearers) widened from four views
     // to the world's chunks (D51 amended): over a long run the bodies see
     // more land than four views, and at the cap the caches thrashed from
@@ -1463,6 +1469,7 @@ pub fn run_watched(
                         what: format!("day {day} begins"),
                     });
                     watch(&world, *day);
+                    couples_at_dawn(&world, content, &mut tally.bilan);
                 }
                 Event::SeasonStarted { year, season } => chronicle.push(Entry {
                     tick,
@@ -1786,6 +1793,8 @@ pub fn run_watched(
                 | News::Judged { .. }
                 | News::Habit { .. }
                 | News::Aside { .. }
+                | News::Named { .. }
+                | News::Stopped { .. }
                 | News::Asked { .. }
                 | News::Followed { .. } => continue,
                 News::Copied {
@@ -1861,6 +1870,7 @@ pub fn run_watched(
                 }
                 let explore = mind.confidences(&content.needs.temperance)[0].unwrap_or(0);
                 tally.noon_of.insert(id, (mind.will(), explore));
+                noon_bilan(&world, content, &mut tally, (id, mind), day);
                 let probe = tally
                     .seasons
                     .entry((tribe_of(&people, id), season))
@@ -2049,6 +2059,7 @@ pub fn run_watched(
         home_moves,
         fire: tally.fire,
         seasons: tally.seasons,
+        bilan: tally.bilan,
         decisions: tally.decisions,
         reputed: tally.reputed,
         knowledge,
@@ -2269,6 +2280,95 @@ struct FireTally {
     noon_of: BTreeMap<BodyId, (u8, u8)>,
     /// Ticks in a season (a quarter of a year).
     ticks_per_season: u64,
+    /// The review's measure (lot 5b).
+    bilan: BilanProbe,
+    /// Those called by name at this dawn's fire: their day is counted at
+    /// nightfall.
+    named_now: BTreeSet<BodyId>,
+    /// Why each stopped today and what it carried, in per cent of its
+    /// need: (why, at the stop, at nightfall), until its habit is read.
+    stop_now: BTreeMap<BodyId, (u8, u64, u64)>,
+    /// Each living one's confidence in gathering and band at the last
+    /// noon.
+    noon_band: BTreeMap<BodyId, (u8, usize)>,
+    /// The bodies named or set aside lately: (day, kind), kind 0 set
+    /// aside, 1 named.
+    marks: BTreeMap<BodyId, Vec<(u64, usize)>>,
+    /// The day's groups being read: the day, and each caller's members.
+    groups_day: u64,
+    groups: BTreeMap<BodyId, BTreeSet<BodyId>>,
+    /// Each one's mates and caller the group day before.
+    mates_before: (u64, BTreeMap<BodyId, (BodyId, BTreeSet<BodyId>)>),
+}
+
+/// The standings of a day the review measure splits by: named at the
+/// fire, set aside, then by act.
+pub const STANDINGS: [&str; 7] = [
+    "named",
+    "set_aside",
+    "joined",
+    "called",
+    "alone",
+    "looked",
+    "nothing",
+];
+
+/// The bands of the confidence's measure.
+pub const BANDS: [&str; 6] = ["child", "young", "man", "woman", "mother", "elder"];
+
+/// How many days after being named or set aside the confidence is
+/// followed.
+pub const MARK_DAYS: usize = 15;
+
+/// A standing's days (lot 5b, the review's measure).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StandingDays {
+    /// Person-days.
+    pub days: u32,
+    /// Of them by why it first went home: never, full, its group, nothing
+    /// left, night (the brain's `STOP_` reasons).
+    pub why: [u32; 5],
+    /// Sums, in per cent of the need: gathered, carried at the stop (the
+    /// days it stopped), carried at nightfall.
+    pub gathered: u64,
+    /// See `gathered`.
+    pub at_stop: u64,
+    /// See `gathered`.
+    pub evening: u64,
+    /// Of the days it stopped not full (its group or nothing left), the
+    /// sum carried at the stop.
+    pub cut_short: u64,
+}
+
+/// The review's measure (lot 5b): by what way being named or set aside
+/// changes what each carries.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BilanProbe {
+    /// The days by standing ([`STANDINGS`]).
+    pub standing: [StandingDays; 7],
+    /// Members of a group two days running: the sum of the share of
+    /// today's mates who were yesterday's (per mille), how many, and of
+    /// the followers how many followed the same caller.
+    pub stable_permille: u64,
+    /// See `stable_permille`.
+    pub stable_n: u32,
+    /// See `stable_permille`.
+    pub same_caller: u32,
+    /// See `stable_permille`.
+    pub followers_n: u32,
+    /// Fertile women at the dawns of conception, with a living spouse,
+    /// neither with child nor carrying an infant: met (spouse near, reserve
+    /// enough), apart only, thin only, both.
+    pub couples: [u32; 4],
+    /// The confidence in gathering at noon, the days after being set
+    /// aside (0) or named (1): sums and counts by day since.
+    pub curve: [[(u64, u32); MARK_DAYS]; 2],
+    /// The same at the noon before.
+    pub before: [(u64, u32); 2],
+    /// Everyone's at every noon.
+    pub base: (u64, u32),
+    /// Who: by kind (set aside, named, every noon) and band ([`BANDS`]).
+    pub who: [[u32; 6]; 3],
 }
 
 /// A tribe's season, measured (D56, PR 1 ter): what its living believed
@@ -2505,6 +2605,7 @@ fn counted_news(
                 .or_default();
             counts.bare[i] += bare;
             counts.fed[i] += u32::from(*kj_percent >= 100);
+            habit_bilan(tally, *body, i, *kj_percent);
             if tally.aside_now.remove(body) {
                 let counts = tally
                     .decisions
@@ -2532,6 +2633,173 @@ fn counted_news(
             true
         }
         _ => false,
+    }
+}
+
+/// A body named (kind 1) or set aside (kind 0) for `day`: its
+/// confidence at the noon before and its band are counted, and it is
+/// followed the days after (lot 5b).
+fn mark(tally: &mut FireTally, body: BodyId, day: u64, kind: usize) {
+    if let Some(&(gather, band)) = tally.noon_band.get(&body) {
+        let b = &mut tally.bilan;
+        b.before[kind].0 += u64::from(gather);
+        b.before[kind].1 += 1;
+        b.who[kind][band] += 1;
+    }
+    tally.marks.entry(body).or_default().push((day, kind));
+}
+
+/// The band of a body at noon ([`BANDS`]).
+fn band_of(world: &World, content: &Content, body: &sim::Body) -> usize {
+    let years = world.age_milli(body) / 1000;
+    let mother = body.pregnant().is_some()
+        || world
+            .bodies()
+            .iter()
+            .any(|b| b.carried_by() == Some(body.id()) && world.is_infant(b, content));
+    if years < 12 {
+        0
+    } else if years < 16 {
+        1
+    } else if years >= 60 {
+        5
+    } else if mother {
+        4
+    } else if body.sex() == Sex::Female {
+        3
+    } else {
+        2
+    }
+}
+
+/// A noon of the review's measure (lot 5b): everyone's confidence in
+/// gathering and band, and that of the lately named or set aside by the
+/// days since.
+fn noon_bilan(
+    world: &World,
+    content: &Content,
+    tally: &mut FireTally,
+    (id, mind): (BodyId, &Mind),
+    day: u64,
+) {
+    let temper = &content.needs.temperance;
+    let Some(body) = world.body(id) else {
+        return;
+    };
+    let gather = temper
+        .activity("gather")
+        .and_then(|i| mind.confidences(temper).get(i).copied().flatten())
+        .unwrap_or(0);
+    let band = band_of(world, content, body);
+    tally.noon_band.insert(id, (gather, band));
+    let b = &mut tally.bilan;
+    b.base.0 += u64::from(gather);
+    b.base.1 += 1;
+    b.who[2][band] += 1;
+    if let Some(marks) = tally.marks.get_mut(&id) {
+        marks.retain(|&(d, _)| day < d + MARK_DAYS as u64);
+        for &(d, kind) in marks.iter() {
+            if let Some(since) = day.checked_sub(d) {
+                let cell = &mut b.curve[kind][usize::try_from(since).unwrap_or(0)];
+                cell.0 += u64::from(gather);
+                cell.1 += 1;
+            }
+        }
+    }
+}
+
+/// A day's habit by its standing (lot 5b): named, set aside, or its act;
+/// why it stopped and what it carried.
+fn habit_bilan(tally: &mut FireTally, body: BodyId, act: usize, kj_percent: u32) {
+    let standing = if tally.named_now.remove(&body) {
+        0
+    } else if tally.aside_now.contains(&body) {
+        1
+    } else {
+        // alone, called, joined, looked, nothing
+        [4, 3, 2, 5, 6][act.min(4)]
+    };
+    let (why, at_stop, evening) = tally.stop_now.remove(&body).unwrap_or((0, 0, 0));
+    let d = &mut tally.bilan.standing[standing];
+    d.days += 1;
+    d.why[usize::from(why).min(4)] += 1;
+    d.gathered += u64::from(kj_percent);
+    d.at_stop += at_stop;
+    d.evening += evening;
+    if why == sim::brain::STOP_GROUP || why == sim::brain::STOP_NOTHING {
+        d.cut_short += at_stop;
+    }
+}
+
+/// A member of a group on `day` (lot 5b): the day before's groups are
+/// compared with the ones before them when a new day starts.
+fn group_bilan(tally: &mut FireTally, day: u64, (caller, member): (BodyId, BodyId)) {
+    if day != tally.groups_day {
+        let groups = std::mem::take(&mut tally.groups);
+        let mut mates: BTreeMap<BodyId, (BodyId, BTreeSet<BodyId>)> = BTreeMap::new();
+        for (&lead, members) in &groups {
+            let all: BTreeSet<BodyId> = members.iter().copied().chain([lead]).collect();
+            for &m in &all {
+                let others = all.iter().copied().filter(|&o| o != m).collect();
+                mates.insert(m, (lead, others));
+            }
+        }
+        let (before_day, before) = &tally.mates_before;
+        if *before_day + 1 == tally.groups_day {
+            let b = &mut tally.bilan;
+            for (m, (lead, now)) in &mates {
+                let Some((lead_before, then)) = before.get(m) else {
+                    continue;
+                };
+                let shared = now.intersection(then).count();
+                b.stable_permille += (shared * 1000 / now.len().max(1)) as u64;
+                b.stable_n += 1;
+                if lead != m && lead_before != m {
+                    b.followers_n += 1;
+                    b.same_caller += u32::from(lead == lead_before);
+                }
+            }
+        }
+        tally.mates_before = (tally.groups_day, mates);
+        tally.groups_day = day;
+    }
+    tally.groups.entry(caller).or_default().insert(member);
+}
+
+/// The dawns of conception (lot 5b): each fertile woman with a living
+/// spouse, neither with child from before nor carrying an infant: her
+/// spouse near and her reserve enough, or what failed.
+fn couples_at_dawn(world: &World, content: &Content, b: &mut BilanProbe) {
+    let life = &content.needs.life;
+    let now = world.time();
+    if now.day_of_season() >= u64::from(life.conceive_nights) {
+        return;
+    }
+    let today = world.today();
+    let reach = i32::try_from(life.mate_within_tiles).unwrap_or(i32::MAX);
+    for woman in world.bodies() {
+        if woman.sex() != Sex::Female || !life.is_fertile(world.age_milli(woman)) {
+            continue;
+        }
+        if woman.pregnant().is_some_and(|p| p.since_day != today) {
+            continue;
+        }
+        if world
+            .bodies()
+            .iter()
+            .any(|b| b.carried_by() == Some(woman.id()))
+        {
+            continue;
+        }
+        let Some(spouse) = woman.spouse().and_then(|s| world.body(s)) else {
+            continue;
+        };
+        let (a, p) = (spouse.pos(), woman.pos());
+        let apart = (a.x - p.x).abs().max((a.y - p.y).abs()) > reach;
+        let c = woman.condition();
+        let thin = c.reserve_left_j(&content.needs) * 100
+            <= c.reserve_j(&content.needs) * u64::from(life.conceive_reserve_percent);
+        b.couples[usize::from(apart) + 2 * usize::from(thin)] += 1;
     }
 }
 
@@ -2672,8 +2940,11 @@ fn review_news(
     let side = scene.place_tiles;
     let tile = |key: PlaceKey| (key.0 * side + side / 2, key.1 * side + side / 2);
     match news {
-        News::Aside { leader, body, .. } => {
+        News::Aside {
+            leader, body, day, ..
+        } => {
             tally.aside_now.insert(*body);
+            mark(tally, *body, u64::from(*day), 0);
             line(
                 people,
                 *body,
@@ -2706,14 +2977,37 @@ fn review_news(
             );
             true
         }
+        News::Named { body, .. } => {
+            tally.named_now.insert(*body);
+            mark(tally, *body, scene.day, 1);
+            true
+        }
+        News::Stopped {
+            body,
+            why,
+            stop_kj,
+            evening_kj,
+            need_kj,
+            ..
+        } => {
+            let need = (*need_kj).max(1);
+            tally
+                .stop_now
+                .insert(*body, (*why, stop_kj * 100 / need, evening_kj * 100 / need));
+            true
+        }
         News::Followed {
             body,
+            whom,
             how,
             fed,
             empty,
             kj_percent,
             ..
         } => {
+            if *how == sim::brain::FOLLOW_JOINED {
+                group_bilan(tally, scene.day, (*whom, *body));
+            }
             let counts = tally
                 .decisions
                 .entry((tribe_of(people, *body), scene.year))
