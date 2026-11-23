@@ -212,6 +212,10 @@ fn one_night() -> Vec<(u32, u32)> {
     vec![(0, 1)]
 }
 
+fn grove_64() -> u32 {
+    64
+}
+
 fn permille_1000() -> u32 {
     1000
 }
@@ -1078,6 +1082,11 @@ pub struct Trials {
     /// place that stops doing it good loses its grade.
     #[serde(default = "permille_1000")]
     pub lived_keep_permille: u32,
+    /// The side of a grove, in tiles (D53, amended 24 November 2026):
+    /// gathering is noted over a grove, drinking and sleeping over a
+    /// place of `thought.place_tiles`. 64 when absent.
+    #[serde(default = "grove_64")]
+    pub grove_tiles: u32,
     /// At night at the camp, a body copies only from a camp-mate within
     /// this many tiles.
     pub imitate_tiles: u32,
@@ -1145,6 +1154,7 @@ impl Default for Trials {
             try_percent_by_will: vec![(0, 0)],
             home_nights_by_will: one_night(),
             lived_keep_permille: 1000,
+            grove_tiles: 64,
             imitate_tiles: 0,
             imitate_percent: 0,
             imitate_loss_percent: 0,
@@ -1206,6 +1216,7 @@ impl Trials {
             || !rising
             || self.try_percent_by_will.iter().any(|p| !percent(p.1))
             || self.lived_keep_permille > 1000
+            || !(1..=1024).contains(&self.grove_tiles)
             || self.home_nights_by_will.is_empty()
             || !self.home_nights_by_will.windows(2).all(|p| p[0].0 < p[1].0)
             || !percent(self.imitate_percent)
@@ -1215,7 +1226,7 @@ impl Trials {
             return Err(ContentError::Needs(
                 "trials: try_percent_by_will not empty, its wills rising and its percents at \
                  most 100; home_nights_by_will not empty, its wills rising; \
-                 lived_keep_permille at most 1000; imitate_percent and imitate_loss_percent at \
+                 lived_keep_permille at most 1000; grove_tiles 1 to 1024; imitate_percent and imitate_loss_percent at \
                  most 100; trial_days positive",
             ));
         }

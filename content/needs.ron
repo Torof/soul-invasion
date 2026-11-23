@@ -200,24 +200,32 @@
     //                    alone is not named: a short stay on trial_days,
     //                    then back if not kept; the season is for the acts
     //                    of a group (not yet in the game).
-    // home_nights_by_will: a trial of the home sets it at the place the
-    //                    body slept at whose nights its own body lived best
-    //                    (the fewest hungry, thirsty or cold nights, then
-    //                    the least walked, then the most gathered; the
-    //                    project lead, 23 November 2026: "ils doivent se
-    //                    souvenir des endroits où vivre et choisir
-    //                    eux-mêmes"), slept at three nights for the timid
-    //                    (will 0), one for the bold (will 70 and up);
+    // home_nights_by_will: a trial of the home sets it at the place or
+    //                    grove of its notebook where its own body would
+    //                    fare best (what it drank and gathered there, each
+    //                    up to a day's worth, less the hunger, thirst and
+    //                    cold its nights left and what walking cost, all
+    //                    in a day of each need, counted alike; the
+    //                    project lead, 23 November 2026: "ils
+    //                    doivent se souvenir des endroits où vivre et
+    //                    choisir eux-mêmes"), lived three days for the
+    //                    timid (will 0), one for the bold (will 70 and up);
     // lived_keep_permille: 950 — its notes of each place keep 95 % from one
     //                    day to the next: a night weighs half after two
     //                    weeks, so a place that stops doing it good loses
     //                    its grade.
+    // grove_tiles:       64 — gathering is noted over a grove of 64 m (24
+    //                    November 2026: "about a grove"), so gathering
+    //                    scattered in one grove adds up as the water drunk
+    //                    at again and again; drinking and sleeping keep the
+    //                    16 m places.
     trials: (
         trial_after_days: 3,
         trial_days: 5,
         try_percent_by_will: [(0, 0), (100, 30)],
         home_nights_by_will: [(0, 3), (70, 1)],
         lived_keep_permille: 950,
+        grove_tiles: 64,
         imitate_tiles: 12,
         imitate_percent: 20,
         imitate_loss_percent: 25,
