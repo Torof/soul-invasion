@@ -1002,6 +1002,38 @@ fn copy_way(
     lost
 }
 
+/// How many days a told state of `kind` is worth believing (D55, amended
+/// by lot 5a): `fire.told_days_per_hour` for each hour of work one of its
+/// plants holds in a usual year (its crop's `grams` over `per_hour_g`),
+/// at most `fire.told_days_max` and the days its crop has left in its
+/// season, at least one. A kind bearing nothing now is old news.
+fn told_days(world: &World, rules: &Content, food: &Food, kind: u16) -> u32 {
+    let fire = &rules.needs.fire;
+    let Some(bears) = food.now(kind) else {
+        return 1;
+    };
+    let crop = &rules.crops[bears.crop];
+    let held_milli = u64::from(crop.grams.1) * 1000 / u64::from(crop.per_hour_g.max(1));
+    let days = held_milli * u64::from(fire.told_days_per_hour) / 1000;
+    let left = crops::days_left(crop, world.calendar(), world.tick()).unwrap_or(0);
+    u32::try_from(days.min(u64::from(fire.told_days_max)).min(left).max(1)).unwrap_or(1)
+}
+
+/// How many days the record `record` is worth believing: a place, as long
+/// as the longest-lasting kind it tells bearing ([`told_days`]); anything
+/// else, [`memory::TRUST_DAYS`].
+fn record_days(world: &World, rules: &Content, food: &Food, record: Option<&Record>) -> u32 {
+    match record {
+        Some(Record::Place { states, .. }) => states
+            .iter()
+            .filter(|&&(_, bucket)| bucket > 0)
+            .map(|&(kind, _)| told_days(world, rules, food, kind))
+            .max()
+            .unwrap_or(memory::TRUST_DAYS),
+        _ => memory::TRUST_DAYS,
+    }
+}
+
 /// What a listener takes a told state of a kind to be worth an hour: the
 /// kind's best, less its credit in the teller.
 fn heard_kj(food: &Food, kind: u16, bucket: u8, credit: u8) -> u64 {
@@ -1470,6 +1502,10 @@ pub struct Brains {
     /// Each camp's hearth: its last `fire.hearth_nights` nights, the
     /// oldest first.
     hearths: BTreeMap<Pos, Vec<RecordId>>,
+    /// The will of each body gone, as it was when it died: what its news
+    /// is still weighed by (its prestige, D50), as a trial record carries
+    /// its teller's.
+    gone_wills: BTreeMap<BodyId, u8>,
     /// Who lay down at each camp tonight, by their home at dusk: the
     /// fire's circle.
     at_fire: BTreeMap<Pos, BTreeSet<BodyId>>,
@@ -1772,6 +1808,7 @@ impl Brains {
             dawn: false,
             memory: Store::new(),
             hearths: BTreeMap::new(),
+            gone_wills: BTreeMap::new(),
             at_fire: BTreeMap::new(),
         }
     }
@@ -1890,16 +1927,16 @@ impl Brains {
         // Who is gone, and who is due: the due noted on the way, by their
         // ids, rather than swept again.
         let mut due: Vec<BodyId> = Vec::new();
-        let memory = &mut self.memory;
+        let (memory, gone_wills) = (&mut self.memory, &mut self.gone_wills);
         self.minds.retain(|&id, mind| {
-            let Some(body) = world.body(id) else {
+            let body = world
+                .body(id)
+                .filter(|b| b.condition().vitality.points() > 0);
+            let Some(body) = body else {
                 mind.forget_all(memory);
+                gone_wills.insert(id, mind.will);
                 return false;
             };
-            if body.condition().vitality.points() == 0 {
-                mind.forget_all(memory);
-                return false;
-            }
             if body.condition().cold.is_full() {
                 mind.cold_night = true;
             }
@@ -2150,7 +2187,8 @@ impl Brains {
     /// trial adds the days told by the mates who changed nothing. The
     /// night is written as a record of the camp's hearth, which keeps
     /// `hearth_nights` of them. Then each present may copy a way it
-    /// heard ([`Brains::imitate`]). Nothing here reads the world.
+    /// heard ([`Brains::imitate`]). Nothing here reads the world but the
+    /// calendar: last, every mind's places heard age ([`Brains::age_heard`]).
     fn vigil(&mut self, world: &World, rules: &Content) {
         let fire = &rules.needs.fire;
         let at_fire = std::mem::take(&mut self.at_fire);
@@ -2192,6 +2230,53 @@ impl Brains {
             }
             for &id in &present {
                 self.imitate(world, rules, id);
+            }
+        }
+        self.age_heard(world, rules);
+    }
+
+    /// Each dawn, after the fire (D55, amended by lot 5a): a place heard
+    /// and not yet looked at is believed as its record's credit is today
+    /// ([`memory::credit_lasting`]): what it bears goes, picked or out of
+    /// season, and the news of it ages as fast. A perception of the
+    /// listener's own, nothing of the world read.
+    fn age_heard(&mut self, world: &World, rules: &Content) {
+        if !rules.needs.fire.on() {
+            return;
+        }
+        let seed = world.seed();
+        let today = u32::try_from(today(world)).unwrap_or(u32::MAX);
+        self.food.refresh(world, rules);
+        let mut wills = self.gone_wills.clone();
+        wills.extend(self.minds.iter().map(|(id, m)| (*id, m.will)));
+        let (memory, food) = (&self.memory, &self.food);
+        // A record's lasting, once a dawn: many hold the same.
+        let mut lasting: BTreeMap<RecordId, u32> = BTreeMap::new();
+        for (&id, mind) in &mut self.minds {
+            let will = mind.will;
+            for place in mind.places.values_mut() {
+                let Some(access) = place.access.filter(|a| !a.is_own(id)) else {
+                    continue;
+                };
+                let Some(record @ Record::Place { day, states, .. }) = memory.get(access.record)
+                else {
+                    continue;
+                };
+                let days = *lasting
+                    .entry(access.record)
+                    .or_insert_with(|| record_days(world, rules, food, Some(record)));
+                let credit = memory::credit_lasting(
+                    seed,
+                    (id, will),
+                    (access.by, wills.get(&access.by).copied().unwrap_or(0)),
+                    (*day, access.day, today),
+                    days,
+                );
+                for seen in &mut place.kinds {
+                    if let Some(&(_, bucket)) = states.iter().find(|s| s.0 == seen.kind) {
+                        seen.best_kj = heard_kj(food, seen.kind, bucket, credit);
+                    }
+                }
             }
         }
     }
@@ -2267,6 +2352,17 @@ impl Brains {
     ) {
         let fire = &rules.needs.fire;
         let seed = world.seed();
+        // How long each thing told is worth believing: by what it bears;
+        // its age counted to this dawn, the day the listener acts on it.
+        let dawn = u32::try_from(today(world)).unwrap_or(u32::MAX);
+        self.food.refresh(world, rules);
+        let lasting: BTreeMap<RecordId, u32> = told
+            .iter()
+            .map(|&(record, _)| {
+                let days = record_days(world, rules, &self.food, self.memory.get(record));
+                (record, days)
+            })
+            .collect();
         for &id in present {
             let Some(body) = world.body(id) else {
                 continue;
@@ -2284,8 +2380,13 @@ impl Brains {
                 .filter_map(|&(record, teller)| {
                     let rec_day = self.memory.get(record)?.day();
                     let teller_will = self.minds.get(&teller).map_or(0, |m| m.will);
-                    let credit =
-                        memory::credit(seed, (id, own_will), (teller, teller_will), rec_day, day);
+                    let credit = memory::credit_lasting(
+                        seed,
+                        (id, own_will),
+                        (teller, teller_will),
+                        (rec_day, day, dawn),
+                        lasting[&record],
+                    );
                     Some((
                         std::cmp::Reverse(credit),
                         std::cmp::Reverse(rec_day),
@@ -6776,18 +6877,61 @@ mod tests {
             })
             .collect();
         assert_eq!(heard.len(), 1);
-        let again = memory::credit(
+        let again = memory::credit_lasting(
             world.seed(),
             (listener, brains.mind(listener).unwrap().will()),
             (from, brains.mind(from).unwrap().will()),
-            1,
-            1,
+            (1, 1, 2),
+            record_days(&world, &rules, &brains.food, brains.memory.get(record)),
         );
         assert_eq!(heard[0], again);
         // The tellers hold their own record, the listener its access, and
         // the night its two tellings.
         assert_eq!(brains.memory.refs(record), 5);
         assert_eq!(brains.hearths()[&Pos::new(5, 5)].len(), 1);
+    }
+
+    #[test]
+    fn a_place_heard_is_believed_less_as_it_ages_as_fast_as_what_it_bears_goes() {
+        let rules = fire_rules();
+        let (mut world, mut brains) = camp_of(2, &rules);
+        let (teller, listener) = (BodyId(1), BodyId(2));
+        let leaves = brains.food.numbers["dandelion"];
+        let roots = brains.food.numbers["cattail"];
+        brains.food.refresh(&world, &rules);
+        let quick = told_days(&world, &rules, &brains.food, leaves);
+        let slow = told_days(&world, &rules, &brains.food, roots);
+        assert!(
+            quick < slow,
+            "leaves picked in minutes are old news before roots: {quick} {slow} days"
+        );
+        saw_place(&world, &rules, &mut brains, teller, (2, 2), leaves, 5);
+        saw_place(&world, &rules, &mut brains, teller, (3, 3), roots, 5);
+        night(&mut world, &rules, &mut brains, &[teller, listener]);
+        let believed = |brains: &Brains, key: PlaceKey, kind: u16| {
+            brains.mind(listener).unwrap().places[&key].kinds[0].best_kj * 100
+                / brains.food.best_kj[usize::from(kind)]
+        };
+        let (leaves_1, roots_1) = (
+            believed(&brains, (2, 2), leaves),
+            believed(&brains, (3, 3), roots),
+        );
+        assert!(
+            leaves_1 < roots_1,
+            "told the same evening, at dawn the leaves are believed less: {leaves_1} {roots_1}"
+        );
+        // A day more, nobody at the fire: what it holds ages.
+        night(&mut world, &rules, &mut brains, &[]);
+        let roots_2 = believed(&brains, (3, 3), roots);
+        assert!(
+            roots_2 < roots_1,
+            "a day older, believed less: {roots_2} {roots_1}"
+        );
+        assert_eq!(
+            believed(&brains, (2, 2), leaves),
+            leaves_1,
+            "the leaves lost all their age's credit already"
+        );
     }
 
     #[test]

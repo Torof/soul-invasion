@@ -253,6 +253,17 @@ pub fn on_plant(crop: &Crop, calendar: &Calendar, tick: Tick) -> Option<(u64, u6
     Some((span.year, share_on(crop.ripen, span)))
 }
 
+/// The whole days left before `crop` is gone from its plant at `tick`
+/// (its `until`), `None` out of its season: what news of it can outlive
+/// (D55, amended by lot 5a).
+#[must_use]
+pub fn days_left(crop: &Crop, calendar: &Calendar, tick: Tick) -> Option<u64> {
+    let span = span_at(crop.from, crop.until, calendar, tick)?;
+    // `span` counts in four hundredths of a tick.
+    let ticks = u64::try_from((span.length - span.done) / 400).unwrap_or(u64::MAX);
+    Some(ticks / calendar.ticks_per_day().max(1))
+}
+
 /// Is `crop` still ripening at `tick` ([`Ripen::rise`])? What is picked
 /// bare then is not bare for long: more comes until it is ripe.
 #[must_use]
