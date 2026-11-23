@@ -495,6 +495,22 @@ carried; the gatherer asking by its crop's number, borrowing, keeping its
 key; the vivarium's continent kept on disk between runs (a cache of the
 tool, `--no-continent-cache` to bear it anew). Measured on the loaded machine, reference and new alternated: the pair's process CPU **37.8 → 20.0 s** (−47 %), the world's step by the probe **12.1 → 5.6 s (−53 %)** and 44 → 32 % of the loop (the pre-test alone −34 %), the birth **5.9 → 0.3 s** (the continent read, not born), peak memory 132 → 122 MB; 250 days 429 → 175 s under load, pages the same. Left to PR 5 (D54), the rules of the route the lead chose: a lower path budget, a shorter sight in the open, and looking again toward the window's best edge after a skirt instead of giving up.
 
+**Lightening of the simulation, PR 5 (23 November 2026, D54).** The rules
+of the route: three coded and measured, one kept. After a skirt the body
+goes on, straight when the way is open, along the obstacle again where it
+turns, up to six legs an order (`movement.ron`, D30), instead of stopping
+at the first corner: the open question of the step audit, decided by the
+lead for going on; a body now goes round a lake whose far shore it cannot
+see. The path budget 1,500 → 500 and the sight in the open 60 → 40 were
+measured without gain (after lightening 4's pre-test a refused search
+expands no tile) and set aside by the lead: "on garde S11 toute seule".
+Over 1,000 days against lightening 4's binary, the three together: the
+game the same (deaths 29 → 29 and 39 → 39 with and without trials, the
+food a person within 10 %), 9–10 % more searches since the bodies go on,
+a search's step 161 → 142 µs with trials and 130 → 130 without: no
+lightening to read, a behaviour the lead wanted. The pages change, so
+lightening 4's invariant does not apply.
+
 **D50 b, the judge counts every distress** (22 November 2026, D50
 amended; after #308's deaths of thirst and cold). The day a mind closes at
 nightfall records every distress (gathered kJ, thin, thirsty, cold the

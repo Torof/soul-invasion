@@ -344,6 +344,11 @@ pub struct Body {
     /// stored, a restart forgets it.
     #[serde(skip)]
     skirted: Skirted,
+    /// Where its skirts for its current order began and ended (D54): it
+    /// never ends one on a tile of these, and the content caps their
+    /// number. Cleared with `skirted`; never stored, a restart forgets it.
+    #[serde(skip)]
+    went: Vec<Pos>,
     condition: Condition,
     /// The item in hand, if any: visible to all, the tool or weapon (D35).
     held: Option<ItemId>,
@@ -463,6 +468,14 @@ const PINCH_G: u32 = 10;
 pub const GATHER_REACH_MM: i64 = 2500;
 
 impl Body {
+    /// Forgets the order it was walking on: its goal, what it skirted and
+    /// where it went to look again. The route is its caller's to clear.
+    fn forget_way(&mut self) {
+        self.goal = None;
+        self.skirted = Skirted::Not;
+        self.went.clear();
+    }
+
     /// The body's id.
     pub fn id(&self) -> BodyId {
         self.id
@@ -1852,8 +1865,7 @@ impl World {
             let (id, before) = (body.id, body.pos().chunk());
             body.at = tile.centre();
             body.route.clear();
-            body.goal = None;
-            body.skirted = Skirted::Not;
+            body.forget_way();
             if tile.chunk() != before {
                 self.leave_chunk(id, before);
                 self.enter_chunk(id, tile.chunk());
@@ -2163,6 +2175,7 @@ impl World {
             route: VecDeque::new(),
             goal: None,
             skirted: Skirted::Not,
+            went: Vec::new(),
             condition: Condition::healthy(),
             held: None,
             carried: Vec::new(),
@@ -2695,10 +2708,10 @@ impl World {
                         });
                     }
                     body.route.clear();
-                    body.goal = None;
-                    body.skirted = Skirted::Not;
+                    body.forget_way();
                 }
             }
+            let c = &mut body.condition;
             let mut cause = None;
             // Hunger itself does no harm: the reserve is burnt first, and
             // only a spent one starves (lot 3).
@@ -2840,8 +2853,7 @@ impl World {
                     let body = &mut self.bodies[index];
                     if !body.condition.asleep {
                         body.condition.asleep = true;
-                        body.goal = None;
-                        body.skirted = Skirted::Not;
+                        body.forget_way();
                         if !body.route.is_empty() {
                             body.route.clear();
                             events.push(Event::BodyStopped {
@@ -2969,8 +2981,7 @@ impl World {
         self.wake(index, events);
         let body = &mut self.bodies[index];
         body.route.clear();
-        body.goal = None;
-        body.skirted = Skirted::Not;
+        body.forget_way();
         let before = body.pos().chunk();
         body.at = tile.centre();
         if tile.chunk() != before {
@@ -3078,8 +3089,7 @@ impl World {
         self.wake(index, events);
         let since = self.tick;
         let body = &mut self.bodies[index];
-        body.goal = None;
-        body.skirted = Skirted::Not;
+        body.forget_way();
         if !body.route.is_empty() {
             body.route.clear();
             events.push(Event::BodyStopped {
@@ -3542,6 +3552,7 @@ impl World {
         self.bodies[index].goal = None;
         if ordered {
             self.bodies[index].skirted = Skirted::Not;
+            self.bodies[index].went.clear();
         }
         let (plan, work) = self.plan_walk(index, target, rules);
         let walk_speed = rules.movement.walk_speed_cm_per_s;
@@ -3561,6 +3572,7 @@ impl World {
                 let body = &mut self.bodies[index];
                 let after_skirting = body.skirted == Skirted::Along;
                 body.skirted = Skirted::Not;
+                body.went.clear();
                 body.route = route.iter().copied().collect();
                 if let Some(&end) = route.last() {
                     events.push(walks(route));
@@ -3592,6 +3604,11 @@ impl World {
                 let end = *route.last().expect("a skirt is a walk");
                 let body = &mut self.bodies[index];
                 body.skirted = Skirted::Along;
+                // Where this leg began, for the first, and where it ends.
+                if body.went.is_empty() {
+                    body.went.push(from.tile());
+                }
+                body.went.push(end.tile());
                 body.route = route.iter().copied().collect();
                 // It looks again on arriving, wherever that is.
                 body.goal = Some(Goal {
@@ -3603,6 +3620,7 @@ impl World {
             }
             Plan::GiveUp => {
                 self.bodies[index].skirted = Skirted::Not;
+                self.bodies[index].went.clear();
                 self.blocked(index, target, rules, events);
             }
             Plan::Straight(route, seen) => {
@@ -3612,6 +3630,7 @@ impl World {
                     .all(|p| squared_mm(*p, from) < quarter * quarter)
                 {
                     self.bodies[index].skirted = Skirted::Not;
+                    self.bodies[index].went.clear();
                     if ordered {
                         events.push(Event::MoveRefused {
                             body: id,
@@ -3653,7 +3672,7 @@ impl World {
         let movement = &rules.movement;
         let cost = |t: Terrain| movement.cost(t);
         let body = &self.bodies[index];
-        let (from, skirted) = (body.at, body.skirted != Skirted::Not);
+        let from = body.at;
         let tile = from.tile();
         let sight = i32::try_from(self.sight_tiles_at(tile, rules)).unwrap_or(i32::MAX);
         let trunks = self.trunks();
@@ -3708,7 +3727,12 @@ impl World {
                 );
             }
         }
-        if skirted {
+        // Along the obstacle: as many legs for one order as the content
+        // allows, after each a look from where it stands, none ending on
+        // a tile a leg of this order began or ended on (it never circles);
+        // the legs spent, it stops and says so (D54).
+        let legs = body.went.len().saturating_sub(1);
+        if legs >= usize::try_from(movement.skirts_per_order).unwrap_or(usize::MAX) {
             return (Plan::GiveUp, work);
         }
         let near = u64::from(MM_PER_TILE.unsigned_abs()) * 3 / 2;
@@ -3716,6 +3740,9 @@ impl World {
             return (Plan::Straight(straight, false), work);
         }
         let plan = match self.map.skirt(from, target, sight, cost, blocked) {
+            Some((_, path)) if path.last().is_some_and(|end| body.went.contains(end)) => {
+                Plan::GiveUp
+            }
             Some((side, path)) => {
                 Plan::Skirt(self.map.pull_around(from, &path, cost, blocked), side)
             }
@@ -3739,13 +3766,11 @@ impl World {
     ) -> u32 {
         // Arrived: its stop was told on arrival, once, and nothing bars it.
         if self.bodies[index].at == goal.target.centre() {
-            self.bodies[index].goal = None;
-            self.bodies[index].skirted = Skirted::Not;
+            self.bodies[index].forget_way();
             return 0;
         }
         if squared_mm(self.bodies[index].at, goal.target.centre()) >= goal.looked_from {
-            self.bodies[index].goal = None;
-            self.bodies[index].skirted = Skirted::Not;
+            self.bodies[index].forget_way();
             self.blocked(index, goal.target, rules, events);
             return 0;
         }
@@ -4040,6 +4065,14 @@ mod tests {
 
     fn rules() -> Content {
         Content::sample()
+    }
+
+    /// The sample rules as before D54: one skirt for an order, then the body
+    /// stops.
+    fn rules_before_d54() -> Content {
+        let mut rules = Content::sample();
+        rules.movement.skirts_per_order = 1;
+        rules
     }
 
     fn small_world() -> World {
@@ -4931,7 +4964,7 @@ mod tests {
         // A target walled in: the body walks straight to the wall, looks
         // again, finds no way, skirts the wall once, looks once more from
         // there and stops for good: no second skirt.
-        let rules = rules();
+        let rules = rules_before_d54();
         let mut map = Map::filled(60, 60, Terrain::Grass);
         for i in 35..=45 {
             for p in [(i, 35), (i, 45), (35, i), (45, i)] {
@@ -4998,7 +5031,7 @@ mod tests {
             (Terrain::Water, Blockage::Water),
             (Terrain::Rock, Blockage::Rock),
         ] {
-            let rules = rules();
+            let rules = rules_before_d54();
             let mut map = Map::filled(60, 60, Terrain::Grass);
             for i in 35..=45 {
                 for p in [(i, 35), (i, 45), (35, i), (45, i)] {
@@ -5331,11 +5364,12 @@ mod tests {
     }
 
     #[test]
-    fn after_one_skirt_with_no_way_seen_the_body_stops_and_says_it() {
-        // The same lake: from the end of its skirt the far shore is still
-        // out of sight. It looks once more, sees no way, stops for good
-        // and says so: no second skirt, no wandering.
-        let rules = rules();
+    fn with_one_skirt_for_an_order_the_body_stops_after_it_and_says_it() {
+        // The same lake, under the rule before D54: from the end of its
+        // skirt the far shore is still out of sight. It looks once more,
+        // sees no way, stops for good and says so: no second skirt, no
+        // wandering.
+        let rules = rules_before_d54();
         let (mut w, target) = lake_with_one_end_in_sight();
         go(&mut w, target);
         let mut events = Vec::new();
@@ -5368,6 +5402,74 @@ mod tests {
             ),
             "it thinks it right after"
         );
+    }
+
+    #[test]
+    fn after_its_skirt_the_body_goes_on_and_skirts_again_until_it_sees_a_way() {
+        // The same lake, under D54: from the end of its skirt the far
+        // shore is out of sight, so instead of stopping it goes straight
+        // on down the lake's east shore, skirts the shore again where it
+        // turns, and so on till it sees a way and arrives: never blocked,
+        // within the legs the content allows.
+        let rules = rules();
+        let (mut w, target) = lake_with_one_end_in_sight();
+        go(&mut w, target);
+        let mut events = Vec::new();
+        for _ in 0..30_000 {
+            w.step(&rules, &mut events);
+            if w.body(BodyId(1)).expect("body 1").pos() == target {
+                break;
+            }
+        }
+        assert_eq!(blocks(&events), vec![], "never blocked");
+        assert_eq!(w.body(BodyId(1)).expect("body 1").pos(), target);
+        let thoughts = thoughts(&events);
+        assert_eq!(thoughts[0], Thought::Skirting { side: Side::Left });
+        assert_eq!(thoughts.last(), Some(&Thought::WaySeen), "{thoughts:?}");
+        assert!(!thoughts.contains(&Thought::NoWay), "{thoughts:?}");
+        let legs = thoughts
+            .iter()
+            .filter(|t| matches!(t, Thought::Skirting { .. }))
+            .count();
+        let cap = usize::try_from(rules.movement.skirts_per_order).expect("small");
+        assert!((2..=cap).contains(&legs), "{legs} legs along the shore");
+        let body = w.body(BodyId(1)).expect("body 1");
+        assert!(body.went.is_empty() && body.skirted == Skirted::Not);
+    }
+
+    #[test]
+    fn with_its_target_shut_in_the_body_stops_after_the_legs_the_content_allows() {
+        // A ring of water round the target: no leg finds a way, and after
+        // the legs the content allows (or sooner, were a leg to end where
+        // one began or ended) the body stops once and says it sees no
+        // way; under the rule before D54 it stopped after the first.
+        for (rules, most) in [(rules(), 6), (rules_before_d54(), 1)] {
+            let mut map = Map::filled(120, 120, Terrain::Grass);
+            for i in 55..=65 {
+                for p in [(i, 55), (i, 65), (55, i), (65, i)] {
+                    map.set(Pos::new(p.0, p.1), Terrain::Water);
+                }
+            }
+            let mut w = World::empty(Calendar::new(10, 1_000_000).unwrap(), map);
+            w.spawn_body(Pos::new(20, 60));
+            let target = Pos::new(60, 60);
+            go(&mut w, target);
+            let mut events = Vec::new();
+            for _ in 0..20_000 {
+                w.step(&rules, &mut events);
+            }
+            assert_eq!(blocks(&events).len(), 1, "stops once, for good");
+            let thoughts = thoughts(&events);
+            assert_eq!(thoughts.last(), Some(&Thought::NoWay), "{thoughts:?}");
+            let legs = thoughts
+                .iter()
+                .filter(|t| matches!(t, Thought::Skirting { .. }))
+                .count();
+            assert!((1..=most).contains(&legs), "{legs} legs, at most {most}");
+            assert_eq!(usize::try_from(rules.movement.skirts_per_order), Ok(most));
+            let body = w.body(BodyId(1)).expect("body 1");
+            assert!(body.went.is_empty() && body.skirted == Skirted::Not);
+        }
     }
 
     #[test]
@@ -5411,8 +5513,8 @@ mod tests {
     fn thoughts_come_in_the_order_of_the_decisions() {
         // Each thought follows the walk it decides, at the place it is
         // about: skirting at the end of the skirt, the stop where it
-        // stands.
-        let rules = rules();
+        // stands (under the rule before D54, which stops after one skirt).
+        let rules = rules_before_d54();
         let (mut w, target) = lake_with_one_end_in_sight();
         go(&mut w, target);
         let mut events = Vec::new();

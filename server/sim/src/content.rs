@@ -154,6 +154,12 @@ pub struct Movement {
     /// percent; the rest goes to the others (NPCs, animals). A lane's
     /// unused share goes to the other (D32).
     pub player_share_percent: u32,
+    /// How many legs along obstacles a body walks for one order before it
+    /// stops and says it sees no way (D54): after each, it looks again
+    /// from where it stands. 1 is the rule before D54: one skirt, then it
+    /// stops.
+    #[serde(default = "one")]
+    pub skirts_per_order: u32,
 }
 
 impl Movement {
@@ -216,6 +222,11 @@ fn percent_150() -> u32 {
 
 fn percent_50() -> u32 {
     50
+}
+
+/// The skirts for one order before D54 (D54).
+fn one() -> u32 {
+    1
 }
 
 fn percent_20() -> u32 {
@@ -1751,6 +1762,7 @@ pub const SAMPLE_MOVEMENT: &str = r"(
     path_budget_tiles: 1500,
     search_work_per_tick: 60000,
     player_share_percent: 50,
+    skirts_per_order: 6,
 )";
 
 /// Needs rules of [`Content::sample`]: the valley's own.
