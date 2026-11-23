@@ -566,6 +566,36 @@ pub struct Trials {
     /// copy lands halfway between its own value and the mate's (a search
     /// twice as wide copied becomes one and a half times as wide).
     pub imitate_loss_percent: u32,
+    /// The innate will, drawn skewed (D50, amended 23 November 2026):
+    /// (percentile, will), the percentiles rising from 0 to 100, straight
+    /// lines between: most bodies timid, one or two adventurers in
+    /// twenty-five. Empty: flat from 0 to 100, as before.
+    #[serde(default)]
+    pub will_innate: Vec<(u32, u32)>,
+    /// What a kept trial adds to its body's will (acquired will), 0 to 100.
+    #[serde(default)]
+    pub will_step_kept: u32,
+    /// What an abandoned trial takes from it.
+    #[serde(default)]
+    pub will_step_lost: u32,
+    /// The lessons heard at the fire (D55): what a heard trial of the same
+    /// change adds to that candidate's weight if kept, takes from it if
+    /// abandoned, in per cent of the base weight of 100.
+    #[serde(default)]
+    pub lesson_weight: u32,
+    /// A lesson older than this many days weighs half, older than twice
+    /// it nothing.
+    #[serde(default)]
+    pub lesson_days: u32,
+    /// The least weight a candidate keeps, in per cent of the base: a
+    /// weight, never a ban.
+    #[serde(default = "percent_100")]
+    pub lesson_floor: u32,
+    /// How much of the lessons a body heeds by its will, in per cent:
+    /// (will, percent), the wills rising; the timid follow them whole, the
+    /// adventurer in part.
+    #[serde(default)]
+    pub lesson_heed_by_will: Vec<(u32, u32)>,
 }
 
 impl Default for Trials {
@@ -580,11 +610,43 @@ impl Default for Trials {
             imitate_tiles: 0,
             imitate_percent: 0,
             imitate_loss_percent: 0,
+            will_innate: Vec::new(),
+            will_step_kept: 0,
+            will_step_lost: 0,
+            lesson_weight: 0,
+            lesson_days: 0,
+            lesson_floor: 100,
+            lesson_heed_by_will: Vec::new(),
         }
     }
 }
 
 impl Trials {
+    /// The innate will of a body from a draw `permille` (0 to 1,000): read
+    /// on the `will_innate` table at that percentile; flat without one.
+    #[must_use]
+    pub fn will_at(&self, permille: u64) -> u8 {
+        let permille = permille.min(1000);
+        let will = if self.will_innate.is_empty() {
+            permille * 100 / 1000
+        } else {
+            // The table's percentiles are years to `along`: a tenth of a
+            // per mille is a thousandth of a percentile.
+            along(&self.will_innate, permille * 100, 1)
+        };
+        u8::try_from(will.min(100)).expect("under 101")
+    }
+
+    /// How much of the lessons a body of `will` heeds, in per cent; the
+    /// whole without a table.
+    #[must_use]
+    pub fn heed_percent(&self, will: u8) -> u64 {
+        if self.lesson_heed_by_will.is_empty() {
+            return 100;
+        }
+        along(&self.lesson_heed_by_will, u64::from(will) * 1000, 1)
+    }
+
     /// The daily chance, in percent, that a body of `will` starts a trial
     /// once in distress long enough.
     #[must_use]
@@ -613,6 +675,26 @@ impl Trials {
                 "trials: try_percent_by_will not empty, its wills rising and its percents at \
                  most 100; far_home_from_will, imitate_percent and imitate_loss_percent at \
                  most 100; trial_days positive",
+            ));
+        }
+        let rising = |t: &[(u32, u32)]| t.windows(2).all(|p| p[0].0 < p[1].0);
+        if !rising(&self.will_innate)
+            || self
+                .will_innate
+                .iter()
+                .any(|p| !percent(p.0) || !percent(p.1))
+            || !percent(self.will_step_kept)
+            || !percent(self.will_step_lost)
+            || !percent(self.lesson_floor)
+            || !rising(&self.lesson_heed_by_will)
+            || self
+                .lesson_heed_by_will
+                .iter()
+                .any(|p| !percent(p.0) || !percent(p.1))
+        {
+            return Err(ContentError::Needs(
+                "trials: will_innate and lesson_heed_by_will rising, every value at most 100; \
+                 will_step_kept, will_step_lost and lesson_floor at most 100",
             ));
         }
         Ok(())

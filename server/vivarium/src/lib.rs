@@ -788,7 +788,12 @@ pub fn run_watched(
             own.needs.hunger_per_day = 0;
         }
         if !settings.trials {
-            own.needs.trials = Trials::default();
+            // The wills stay as the content draws them (the fire's credit
+            // reads them); nobody tries nor copies.
+            own.needs.trials = Trials {
+                will_innate: own.needs.trials.will_innate.clone(),
+                ..Trials::default()
+            };
         }
         if !settings.fire {
             own.needs.fire = Fire::default();
@@ -3297,6 +3302,7 @@ mod tests {
             imitate_tiles: 12,
             imitate_percent: 100,
             imitate_loss_percent: 50,
+            ..Trials::default()
         };
         content
     }

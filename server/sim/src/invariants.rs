@@ -51,7 +51,9 @@ fn bodies(
             )),
             Some(_) => {}
         }
-        if body.condition.vitality.points() == 0 {
+        // Death is the gauge at its bottom, not at its last whole point:
+        // a body under one point is dying, and still alive.
+        if body.condition.vitality.is_empty() {
             out.push(format!("body {id} is dead and still in the world"));
         }
         let chunk = pos.chunk();
