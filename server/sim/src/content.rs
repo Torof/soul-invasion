@@ -351,6 +351,12 @@ pub struct Needs {
     /// go looking. Absent: nobody decides anything, each day is its own.
     #[serde(default)]
     pub decisions: Decisions,
+    /// The will tempered and the confidence by activity (D50 amended,
+    /// D56): failures borne, a late success weighing more, the temperament
+    /// coming back, being listened to. Absent: the will moves by the
+    /// trials' fixed steps, and no activity has a confidence.
+    #[serde(default)]
+    pub temperance: Temperance,
 }
 
 /// The evening's decisions (D56, decided by the project lead on 23
@@ -463,6 +469,162 @@ impl Decisions {
         if self.habit_floor > 100 || self.home_when_full_percent > 100 {
             return Err(ContentError::Needs(
                 "decisions: habit_floor and home_when_full_percent are per cent",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The will tempered, and a confidence by activity (D50 amended, D56;
+/// decided by the project lead on 23 November 2026): four rules, each a
+/// perception of oneself, the same for the will (its trials) and for each
+/// activity (its days). Every value is a D30 placeholder, named and
+/// explained in `content/needs.ron`; nothing is tuned to a result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Temperance {
+    /// How many failures in a row cost nothing, by innate will: (will,
+    /// failures), the wills rising, straight lines between.
+    pub bears_by_innate: Vec<(u32, u32)>,
+    /// What each failure past those costs, in thousandths of a point of
+    /// will, times its rank past them: the first one this, the next twice
+    /// this, and so on.
+    pub failure_milli: u32,
+    /// How often, in per cent, a trial is kept: the rarity a success is
+    /// weighed by, so that average luck keeps the will where it is.
+    pub kept_percent: u32,
+    /// The share of the gap to the innate will a will or a confidence
+    /// closes each season, in thousandths.
+    pub relax_permille: u32,
+    /// What one gains, in thousandths of a point, when another joins its
+    /// call at the fire or copies a way it told.
+    pub listened_milli: u32,
+    /// The activities a confidence is held for, each with how often, in
+    /// per cent, a day of it succeeds. Known: `explore` (a day looking:
+    /// a place found and told new), `gather` (a day going to a place: a
+    /// day of its need gathered), `stay` (a day it said nothing at the
+    /// fire: none of its children under `follows_mother_years` hungry at
+    /// night). Empty: no confidence by activity.
+    pub activities: Vec<(String, u32)>,
+    /// A will this high or higher is counted bold in the vivarium's page.
+    pub bold_will: u32,
+}
+
+impl Default for Temperance {
+    /// Off: the will moves by the trials' fixed steps.
+    fn default() -> Self {
+        Self {
+            bears_by_innate: Vec::new(),
+            failure_milli: 0,
+            kept_percent: 25,
+            relax_permille: 0,
+            listened_milli: 0,
+            activities: Vec::new(),
+            bold_will: 40,
+        }
+    }
+}
+
+/// The activities a confidence may be held for (D56), as the content
+/// names them.
+pub const ACTIVITIES: [&str; 3] = ["explore", "gather", "stay"];
+
+impl Temperance {
+    /// The placeholders of `content/needs.ron` (D30).
+    #[must_use]
+    pub fn placeholders() -> Self {
+        Self {
+            bears_by_innate: vec![(0, 2), (100, 6)],
+            failure_milli: 1000,
+            kept_percent: 25,
+            relax_permille: 83,
+            listened_milli: 500,
+            activities: vec![
+                ("explore".to_owned(), 75),
+                ("gather".to_owned(), 50),
+                ("stay".to_owned(), 90),
+            ],
+            bold_will: 40,
+        }
+    }
+
+    /// Whether the will is tempered.
+    #[must_use]
+    pub fn on(&self) -> bool {
+        !self.bears_by_innate.is_empty()
+    }
+
+    /// How many failures in a row cost nothing to one of `innate` will.
+    #[must_use]
+    pub fn bears(&self, innate: u8) -> u32 {
+        u32::try_from(along(&self.bears_by_innate, u64::from(innate) * 1000, 1)).unwrap_or(u32::MAX)
+    }
+
+    /// The index in [`Temperance::activities`] of the activity `name`.
+    #[must_use]
+    pub fn activity(&self, name: &str) -> Option<usize> {
+        self.activities.iter().position(|(n, _)| n == name)
+    }
+
+    /// What a day of an activity that succeeds `percent` times in a
+    /// hundred gains when it succeeds, in thousandths of a point (D56,
+    /// amended): one failure's cost times the odds against the success,
+    /// (100 − `percent`) / `percent`, so that a success is worth what it
+    /// was against. The failures borne free cost nothing, so average luck
+    /// gains a little; the seasons' return to the innate holds it.
+    #[must_use]
+    pub fn day_success_milli(&self, percent: u32) -> u64 {
+        let percent = u64::from(percent.clamp(1, 100));
+        u64::from(self.failure_milli) * (100 - percent) / percent
+    }
+
+    /// What a success ending `failures` failures in a row gains, in
+    /// thousandths of a point, to one who bears `bears` of them free, when
+    /// a success comes `percent` times in a hundred: the gain grows with
+    /// the streak it ends, and is such that average luck (a success that
+    /// often) gains on average what its failures cost. Integer sums, the
+    /// same everywhere (D24).
+    #[must_use]
+    pub fn success_milli(&self, bears: u32, failures: u32, percent: u32) -> u64 {
+        const SCALE: u128 = 1_000_000_000;
+        let success = u128::from(percent.clamp(1, 100)) * SCALE / 100;
+        let failure = SCALE - success;
+        let (free, cost) = (u128::from(bears), u128::from(self.failure_milli));
+        // The cost a streak of failures runs to, weighed by its chance.
+        let (mut chance, mut loss) = (SCALE, 0_u128);
+        for streak in 0..2_000_u128 {
+            if streak > free {
+                let past = streak - free;
+                loss += chance * success / SCALE * cost * past * (past + 1) / 2;
+            }
+            chance = chance * failure / SCALE;
+            if chance == 0 {
+                break;
+            }
+        }
+        // A success ends a streak of n one time in 1/success: (n + 1)
+        // units.
+        let unit = loss / SCALE * success / SCALE;
+        u64::try_from(unit * (u128::from(failures) + 1)).unwrap_or(u64::MAX)
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        let rising = self.bears_by_innate.windows(2).all(|p| p[0].0 < p[1].0);
+        if !rising
+            || self.kept_percent == 0
+            || self.kept_percent > 100
+            || self.relax_permille > 1000
+        {
+            return Err(ContentError::Needs(
+                "temperance: bears_by_innate's wills rising, kept_percent 1 to 100, relax_permille 1,000 at most",
+            ));
+        }
+        if self
+            .activities
+            .iter()
+            .any(|(n, p)| !ACTIVITIES.contains(&n.as_str()) || *p == 0 || *p > 100)
+        {
+            return Err(ContentError::Needs(
+                "temperance: activities among explore, gather, stay, each succeeding 1 to 100 per cent",
             ));
         }
         Ok(())
@@ -743,7 +905,19 @@ pub struct Trials {
     /// adventurer in part.
     #[serde(default)]
     pub lesson_heed_by_will: Vec<(u32, u32)>,
+    /// The ways judged on their own horizon rather than on `trial_days`
+    /// (D50, amended on 23 November 2026): (way, days). A way whose worth
+    /// shows only over a season (a stock kept for the lean days, a night
+    /// out or at the camp) is tried that many days and judged on that
+    /// many days, its own and those heard, so that more trials no longer
+    /// mean more blind draws. Ways: those of [`TRIAL_WAYS`]; one not named
+    /// is judged on `trial_days`, and never on fewer.
+    #[serde(default)]
+    pub horizon_days: Vec<(String, u32)>,
 }
+
+/// The ways a trial may move, as the content names them (D50).
+pub const TRIAL_WAYS: [&str; 4] = ["worth_half_tiles", "sleep_out", "stock_kj", "home"];
 
 impl Default for Trials {
     /// Nobody tries anything nor copies anybody.
@@ -764,6 +938,7 @@ impl Default for Trials {
             lesson_days: 0,
             lesson_floor: 100,
             lesson_heed_by_will: Vec::new(),
+            horizon_days: Vec::new(),
         }
     }
 }
@@ -844,7 +1019,35 @@ impl Trials {
                  will_step_kept, will_step_lost and lesson_floor at most 100",
             ));
         }
+        if self
+            .horizon_days
+            .iter()
+            .any(|(way, days)| !TRIAL_WAYS.contains(&way.as_str()) || *days == 0)
+        {
+            return Err(ContentError::Needs(
+                "trials: horizon_days names known ways, each with days",
+            ));
+        }
         Ok(())
+    }
+
+    /// How many days a trial of the way `key` lasts and is judged on: its
+    /// horizon, never under `trial_days`.
+    #[must_use]
+    pub fn days_for(&self, key: &str) -> u32 {
+        self.horizon_days
+            .iter()
+            .find(|(way, _)| way == key)
+            .map_or(self.trial_days, |&(_, days)| days.max(self.trial_days))
+    }
+
+    /// The longest of the trials' days: what a mind keeps of its days.
+    #[must_use]
+    pub fn longest_days(&self) -> u32 {
+        self.horizon_days
+            .iter()
+            .map(|&(_, days)| days)
+            .fold(self.trial_days, u32::max)
     }
 }
 
@@ -929,8 +1132,16 @@ pub struct Life {
     /// Her spouse must be alive within this many tiles; a body takes a
     /// spouse within as many.
     pub mate_within_tiles: u32,
-    /// Her chance to conceive at the start of a season, in percent.
+    /// Her chance to conceive in a season, in percent, drawn once a
+    /// season.
     pub conceive_percent: u32,
+    /// The season's first nights she may conceive in (D49, amended): at
+    /// the start of each of these days, a wife not yet with child whose
+    /// spouse is back within `mate_within_tiles` meets the season's draw.
+    /// A night apart no longer loses the season; 1 is the season's very
+    /// start alone.
+    #[serde(default = "one")]
+    pub conceive_nights: u32,
     /// A pregnancy lasts this many seasons (a quarter of the year each).
     pub pregnancy_seasons: u32,
     /// A pregnant woman needs this much of her own need, in percent.
@@ -961,6 +1172,7 @@ impl Default for Life {
             conceive_reserve_percent: 100,
             mate_within_tiles: 0,
             conceive_percent: 0,
+            conceive_nights: 1,
             pregnancy_seasons: 1,
             pregnant_percent: 100,
             lose_when_weak: false,
@@ -1015,12 +1227,13 @@ impl Life {
             || !percent(self.boys_percent)
             || !percent(self.childbirth_death_percent)
             || self.pregnancy_seasons == 0
+            || self.conceive_nights == 0
             || self.pregnant_percent < 100
         {
             return Err(ContentError::Needs(
                 "life: death_by_age not empty, its ages rising and its per mille at most 1000; \
                  fertile_years and mate_years rising; the percents at most 100; \
-                 pregnancy_seasons positive, pregnant_percent at least 100",
+                 pregnancy_seasons and conceive_nights positive, pregnant_percent at least 100",
             ));
         }
         Ok(())
@@ -1653,7 +1866,8 @@ impl Content {
         self.needs.trials.validate()?;
         self.needs.thought.validate()?;
         self.needs.fire.validate()?;
-        self.needs.decisions.validate()
+        self.needs.decisions.validate()?;
+        self.needs.temperance.validate()
     }
 
     /// Refuses the values the simulation cannot carry (audit of 20
@@ -2245,6 +2459,28 @@ mod tests {
             err,
             ContentError::UnknownMaterial { index: 0, material } if material == "gold"
         ));
+    }
+
+    #[test]
+    fn a_slow_way_is_tried_on_its_horizon_and_never_under_trial_days() {
+        let mut trials = Trials {
+            trial_days: 5,
+            horizon_days: vec![("stock_kj".to_owned(), 12), ("sleep_out".to_owned(), 3)],
+            ..Trials::default()
+        };
+        assert_eq!(trials.days_for("stock_kj"), 12);
+        assert_eq!(trials.days_for("sleep_out"), 5, "never under trial_days");
+        assert_eq!(
+            trials.days_for("worth_half_tiles"),
+            5,
+            "not named: trial_days"
+        );
+        assert_eq!(trials.longest_days(), 12);
+        assert!(trials.validate().is_ok());
+        trials.horizon_days.push(("hunting".to_owned(), 12));
+        assert!(trials.validate().is_err(), "an unknown way");
+        trials.horizon_days = vec![("home".to_owned(), 0)];
+        assert!(trials.validate().is_err(), "no days");
     }
 
     #[test]

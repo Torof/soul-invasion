@@ -569,6 +569,10 @@ impl Report {
                     "days": by_act(counts.days),
                     "fed_days": by_act(counts.fed),
                     "found": by_act(counts.found),
+                    "will": counts.will,
+                    "confidence": counts.confidence.map(by_activity),
+                    "successes": by_activity(counts.successes),
+                    "failures": by_activity(counts.failures),
                 })).collect::<Vec<_>>(),
             },
             "lines": lines,
@@ -701,6 +705,16 @@ fn by_act(counts: [u32; 5]) -> Value {
     Value::Object(map)
 }
 
+/// Counts by activity (D56), keyed as `sim::content::ACTIVITIES` names
+/// them.
+fn by_activity<T: Into<Value> + Copy>(counts: [T; 3]) -> Value {
+    let mut map = serde_json::Map::new();
+    for (key, count) in sim::content::ACTIVITIES.iter().zip(counts) {
+        map.insert((*key).to_owned(), count.into());
+    }
+    Value::Object(map)
+}
+
 /// A tribe-year's decisions at the fire, its groups, its days by what was
 /// done and the mothers' distance at noon (D56).
 fn decisions_json(dec: &DecisionYear) -> Value {
@@ -730,6 +744,11 @@ fn decisions_json(dec: &DecisionYear) -> Value {
             "found": by_act(dec.found),
             "bare": by_act(dec.bare),
             "fed_days": by_act(dec.fed),
+        },
+        "wills": {"minds": dec.minds, "bold": dec.bold},
+        "judged": {
+            "successes": by_activity(dec.successes),
+            "failures": by_activity(dec.failures),
         },
         "distance_noon_tiles": {
             "mothers": mean(dec.distance.0, dec.distance.1),

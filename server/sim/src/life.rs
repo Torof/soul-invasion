@@ -64,11 +64,13 @@ impl World {
         parent_of(a, b) || parent_of(b, a) || share(a.mother, b.mother) || share(a.father, b.father)
     }
 
-    /// The season's conceptions (D49), at `SeasonStarted`: every woman of
-    /// the content's fertile years, with more than its share of her
-    /// reserve, carrying no infant and no unborn child, whose spouse is
-    /// alive within its reach, conceives with the content's chance, drawn
-    /// from the seed, her id, the year and the season.
+    /// The season's conceptions (D49, amended), at the dawn of each of
+    /// the season's first `conceive_nights` days: every woman of the
+    /// content's fertile years, with more than its share of her reserve,
+    /// carrying no infant and no unborn child, whose spouse is alive within
+    /// its reach that dawn, conceives with the content's chance, drawn
+    /// from the seed, her id, the year and the season: one draw a season,
+    /// met on any of those dawns her spouse is back.
     pub(crate) fn conceive(&mut self, rules: &Content, year: u64, season: Season) {
         if !self.life {
             return;
@@ -419,6 +421,8 @@ mod tests {
     fn a_fertile_fed_wife_with_her_husband_near_conceives_at_a_seasons_start() {
         let mut rules = fed_rules();
         rules.needs.life.conceive_percent = 100;
+        // The season's dawn alone (the tests' seasons last two days).
+        rules.needs.life.conceive_nights = 1;
         let mut w = world();
         let (wife, husband) = couple_of(&mut w);
         let mut events = Vec::new();
@@ -440,6 +444,69 @@ mod tests {
             pregnancy(&w, wife).map(|p| p.since_day),
             Some(today),
             "not twice"
+        );
+    }
+
+    fn to_dawn(w: &mut World, rules: &Content, events: &mut Vec<Event>) {
+        loop {
+            w.step(rules, events);
+            if w.time().is_day_start() {
+                return;
+            }
+        }
+    }
+
+    #[test]
+    fn a_husband_back_on_one_of_the_seasons_first_dawns_is_in_time_and_not_after() {
+        let mut rules = fed_rules();
+        rules.needs.life.conceive_percent = 100;
+        let nights = u64::from(rules.needs.life.conceive_nights);
+        // Seasons of ten days, longer than the first dawns (the tests'
+        // calendar has seasons of two).
+        let long = || {
+            let calendar = calendar().with_days_per_year(40).unwrap();
+            let mut w = World::empty(calendar, Map::filled(128, 16, Terrain::Grass));
+            w.set_life(true);
+            w
+        };
+        assert!(
+            nights > 1 && nights < 10,
+            "a few dawns, fewer than the season's days"
+        );
+        let mut events = Vec::new();
+        let away = Pos::new(110, 5).centre();
+
+        let mut w = long();
+        let (wife, husband) = couple_of(&mut w);
+        let home = w.body(husband).unwrap().at;
+        set(&mut w, husband, |b| b.at = away);
+        to_season_start(&mut w, &rules, &mut events);
+        assert_eq!(pregnancy(&w, wife), None, "away at the season's dawn");
+        set(&mut w, husband, |b| b.at = home);
+        to_dawn(&mut w, &rules, &mut events);
+        assert_eq!(w.time().day_of_season(), 1);
+        assert!(pregnancy(&w, wife).is_some(), "back the next dawn: in time");
+
+        let mut w = long();
+        let (wife, husband) = couple_of(&mut w);
+        set(&mut w, husband, |b| b.at = away);
+        to_season_start(&mut w, &rules, &mut events);
+        for _ in 1..nights {
+            to_dawn(&mut w, &rules, &mut events);
+        }
+        assert_eq!(
+            w.time().day_of_season(),
+            nights - 1,
+            "the last of the first dawns"
+        );
+        events.clear();
+        set(&mut w, husband, |b| b.at = home);
+        to_dawn(&mut w, &rules, &mut events);
+        assert_eq!(w.time().day_of_season(), nights);
+        assert_eq!(
+            pregnancy(&w, wife),
+            None,
+            "back after the first dawns: next season"
         );
     }
 
@@ -502,8 +569,10 @@ mod tests {
 
     #[test]
     fn the_contents_share_of_wives_conceive_each_season_the_same_ones_every_run() {
-        let rules = fed_rules();
+        let mut rules = fed_rules();
         assert_eq!(rules.needs.life.conceive_percent, 40);
+        // The season's dawn alone (the tests' seasons last two days).
+        rules.needs.life.conceive_nights = 1;
         let run = || {
             let mut w = world();
             for i in 0..200 {

@@ -152,6 +152,10 @@ clock, the only field no seed decides.
 | `years[].decisions.trips.found.*` | Places found: seen by one and told at the fire to a listener who did not know them, by what the finder did that day | count |
 | `years[].decisions.trips.bare.*` | Places gone to and found bare, by what was done that day | count |
 | `years[].decisions.trips.fed_days.*` | Days one gathered a day of its need or more, by what was done that day | person-days |
+| `years[].decisions.wills.minds` | The tribe's living whose mind was read at the year's end (D50, amended) | count |
+| `years[].decisions.wills.bold` | Of them, the bold: a will of `temperance.bold_will` (40) or more | count |
+| `years[].decisions.judged.successes.*` | Days of each activity judged a success in the year (D56): `explore` (a look out that found a place told new), `gather` (a walk to a place that gathered a day of need), `stay` (a silence at the fire with its children fed) | person-days |
+| `years[].decisions.judged.failures.*` | And judged a failure | person-days |
 | `years[].decisions.distance_noon_tiles.mothers` | Mean distance at noon from its camp, on each axis the larger, of an adult (16 years or more) carrying an infant; `null` without one | tiles |
 | `years[].decisions.distance_noon_tiles.mother_noons` | The noons measured | count |
 | `years[].decisions.distance_noon_tiles.others` | The same for the other adults | tiles |
@@ -219,6 +223,10 @@ clock, the only field no seed decides.
 | `people[].habit.years[].days.*` | Its days that year by what it had said | days |
 | `people[].habit.years[].fed_days.*` | Of them, the days it gathered a day of its need or more | days |
 | `people[].habit.years[].found.*` | Places it found that year, by what it did the day it found them | count |
+| `people[].habit.years[].will` | Its will at the year's end (D50, amended: tempered); `null` if its mind was not read then | 0 to 100 |
+| `people[].habit.years[].confidence.*` | Its confidence in each activity at the year's end (D56; `explore`, `gather`, `stay`), the lab's vocation is the highest; `null` when none is held | 0 to 100 |
+| `people[].habit.years[].successes.*` | Its days of each activity judged a success that year | days |
+| `people[].habit.years[].failures.*` | And judged a failure | days |
 | `people[].lines[].day` | A line of its life: its birth, its spouse, its children, their weaning, a lost child, its trials, its death; never a thought, a meal, a drink or a gather | day |
 | `people[].lines[].tick` | The tick | tick |
 | `people[].lines[].what` | The line, as the chronicle says it | string |
