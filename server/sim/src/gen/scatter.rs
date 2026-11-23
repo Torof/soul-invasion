@@ -170,9 +170,13 @@ pub(crate) mod purpose {
     /// teller told it, judged once the night it heard it.
     pub(crate) const FIRE_CREDIT: u64 = 0x0d55_c4ed;
 
+    /// The evening's decisions (D56): whether a present goes looking
+    /// tomorrow, and which way when two are as little known.
+    pub(crate) const FIRE_LOOK: u64 = 0x0d56_100c;
+
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 68] = [
+    pub(crate) const ALL: [u64; 69] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -241,6 +245,7 @@ pub(crate) mod purpose {
         TRIAL_COPY_WAY,
         TRIAL_COPY_LOSS,
         FIRE_CREDIT,
+        FIRE_LOOK,
     ];
 }
 

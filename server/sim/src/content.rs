@@ -346,6 +346,117 @@ pub struct Needs {
     /// nights. Absent: no fire, nobody tells nor hears anything.
     #[serde(default)]
     pub fire: Fire,
+    /// The evening's third part (D56): at the fire, each present says
+    /// what it will do tomorrow, groups form for the places told, a few
+    /// go looking. Absent: nobody decides anything, each day is its own.
+    #[serde(default)]
+    pub decisions: Decisions,
+}
+
+/// The evening's decisions (D56, decided by the project lead on 23
+/// November 2026): after the accounts and the lessons, each present says
+/// what it will do tomorrow, in the order of its will, and the others
+/// join or not by their own perception. Every value is a D30
+/// placeholder, named and explained in `content/needs.ron`; nothing is
+/// tuned to a result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Decisions {
+    /// How many of its best places from the camp a present weighs when
+    /// it speaks. 0: no decisions.
+    pub choices: u32,
+    /// How many trees and plants holding food one gatherer takes at a
+    /// place: the room a place has is what holds there divided by it.
+    pub plants_per_gatherer: u32,
+    /// The most a group may hold, its caller with it.
+    pub group_max: u32,
+    /// A child younger than this, in years, takes its mother's decision.
+    pub follows_mother_years: u32,
+    /// The chance, in per cent, that a present goes looking tomorrow
+    /// instead of to a place it knows, by its will: (will, per cent), the
+    /// wills rising, straight lines between.
+    pub look_percent_by_will: Vec<(u32, u32)>,
+    /// How many legs one who goes looking walks out, each a sight
+    /// farther than the last, before it gathers as any day.
+    pub look_legs: u32,
+    /// How many days of what it did a mind keeps (its habit).
+    pub habit_days: u32,
+    /// What each of those days weighs on going looking: a day it looked
+    /// and found adds this many per cent of the chance, a day it looked
+    /// for nothing takes it away.
+    pub habit_weight: u32,
+    /// The chance never falls under this per cent of itself.
+    pub habit_floor: u32,
+    /// The caller goes home with its group when this per cent of the
+    /// group carries what it wanted.
+    pub home_when_full_percent: u32,
+}
+
+impl Default for Decisions {
+    /// No decisions: each day is its own.
+    fn default() -> Self {
+        Self {
+            choices: 0,
+            plants_per_gatherer: 2,
+            group_max: 6,
+            follows_mother_years: 12,
+            look_percent_by_will: vec![(0, 0)],
+            look_legs: 3,
+            habit_days: 50,
+            habit_weight: 50,
+            habit_floor: 10,
+            home_when_full_percent: 50,
+        }
+    }
+}
+
+impl Decisions {
+    /// The placeholders of `content/needs.ron` (D30).
+    #[must_use]
+    pub fn placeholders() -> Self {
+        Self {
+            choices: 3,
+            look_percent_by_will: vec![(0, 0), (100, 40)],
+            ..Self::default()
+        }
+    }
+
+    /// Whether anybody decides anything at the fire.
+    #[must_use]
+    pub fn on(&self) -> bool {
+        self.choices > 0
+    }
+
+    /// The chance, in per cent, that a body of `will` goes looking.
+    #[must_use]
+    pub fn look_percent(&self, will: u8) -> u64 {
+        along(&self.look_percent_by_will, u64::from(will) * 1000, 1)
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        let rising = self
+            .look_percent_by_will
+            .windows(2)
+            .all(|p| p[0].0 < p[1].0);
+        if self.look_percent_by_will.is_empty()
+            || !rising
+            || self.look_percent_by_will.iter().any(|p| p.1 > 100)
+        {
+            return Err(ContentError::Needs(
+                "decisions: look_percent_by_will not empty, its wills rising, each 100 at most",
+            ));
+        }
+        if self.on() && (self.plants_per_gatherer == 0 || self.group_max == 0) {
+            return Err(ContentError::Needs(
+                "decisions: plants_per_gatherer and group_max are 1 or more",
+            ));
+        }
+        if self.habit_floor > 100 || self.home_when_full_percent > 100 {
+            return Err(ContentError::Needs(
+                "decisions: habit_floor and home_when_full_percent are per cent",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// The rules of thought that make a mind light (D53, decided by the
@@ -1498,7 +1609,8 @@ impl Content {
         self.needs.life.validate()?;
         self.needs.trials.validate()?;
         self.needs.thought.validate()?;
-        self.needs.fire.validate()
+        self.needs.fire.validate()?;
+        self.needs.decisions.validate()
     }
 
     /// Refuses the values the simulation cannot carry (audit of 20

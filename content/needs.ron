@@ -266,4 +266,53 @@
         place_buckets: (1, 4),
         hearth_nights: 50,
     ),
+    // The evening's third part (D56, decided by the project lead on 23
+    // November 2026): after the accounts and the lessons, each present
+    // says what it will do tomorrow, in the order of its will (the bold
+    // speak first), and the others join or not by their own perception.
+    // Placeholders (D30), tuned by reading the vivarium's page, never to a
+    // result.
+    // choices:              3 — a present weighs its three best places
+    //                          from the camp, by their worth for it at its
+    //                          own pace (a child, the old and the weak walk
+    //                          slower: a far place is worth less to them).
+    //                          0: no decisions, each day is its own.
+    // plants_per_gatherer:  2 — one who calls says "there is enough there
+    //                          for N": the trees and plants it saw holding
+    //                          food there, two a gatherer. A place told
+    //                          (heard, not seen) has the room its told
+    //                          state stands for (place_buckets).
+    // group_max:            6 — a group holds six at most, its caller
+    //                          with it.
+    // follows_mother_years: 12 — a child under twelve takes its mother's
+    //                          decision (it follows her home already).
+    // look_percent_by_will:  a present goes looking tomorrow instead of to
+    //                          a place it knows: none at will 0, 40 % at
+    //                          will 100, straight between; twice as often
+    //                          when nobody told a full place tonight.
+    // look_legs:            3 — one who goes looking walks three legs out
+    //                          that way, each a sight farther, then
+    //                          gathers as any day.
+    // habit_days:          50 — a mind keeps what it did its last fifty
+    //                          days (alone, called, joined, looked, nothing).
+    // habit_weight:        50 — each day it looked and found adds half the
+    //                          chance of looking again, each day it looked
+    //                          for nothing takes half away: a weight from
+    //                          its own record, never a label;
+    // habit_floor:         10 — never under a tenth of the chance.
+    // home_when_full_percent: 50 — the caller goes home with its group
+    //                          when half of the group carries what it
+    //                          wanted; those already full wait by it.
+    decisions: (
+        choices: 3,
+        plants_per_gatherer: 2,
+        group_max: 6,
+        follows_mother_years: 12,
+        look_percent_by_will: [(0, 0), (100, 40)],
+        look_legs: 3,
+        habit_days: 50,
+        habit_weight: 50,
+        habit_floor: 10,
+        home_when_full_percent: 50,
+    ),
 )
