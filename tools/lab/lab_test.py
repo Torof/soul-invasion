@@ -716,17 +716,16 @@ class SeriesReading(unittest.TestCase):
         self.assertIn("Population de tous les runs", serie)
         self.assertIn("écart-type", serie)
         run = reading.run_body(s["etalon-test-1"], s["etalon-test-1"]["runs"][0], self.lab.store.load("etalon-test-1", "t-s1-avec"))
-        for part in ("<p class=hero-sub>2 morts de manque : 1 de faim, 1 de froid, en hiver ; aucun mort de fond. Après 2 ans, 3 des 4", "<div class=tiles6>", "<h2>La carte</h2>", 'class="winter"',
-                     "<h2>La population</h2>", "<h2>Ce qu’ils ont trouvé</h2>", "<h2>Les morts</h2>", "<h2>Les naissances</h2>",
-                     "<h2>Les gens à la fin</h2>", "<summary>Le détail</summary>", "Année par année", "La vie de chacun (5)",
-                     "vivants à la fin", "nourriture portée (kJ)", "<h2>La chronique</h2>",
+        for part in ("<p class=hero-sub>2 morts de manque : 1 de faim, 1 de froid, en hiver ; aucun mort de fond. Après 2 ans, 3 des 4", "<div class=tiles6>",
+                     "<h2>Les gens</h2>", "<h2>Où ils vivent</h2>", "<h2>Ce qu’ils ont appris</h2>", "<h2>La chronique</h2>", "<h2>Annexes</h2>",
+                     "<h3>La population</h3>", "<h3>Les morts</h3>", "<h3>Les naissances</h3>", "<h3>Tout le monde</h3>", "<h3>Les techniques</h3>",
+                     'class="winter"', "Année par année", "vivants à la fin", "data-map2=", "<dialog id=fiche",
                      'aria-label="morts de manque et de fond par an"', "A à gauche de l’année, B à droite"):
             self.assertIn(part, run)
         self.assertLess(run.index('aria-label="population par tribu"'), run.index('aria-label="morts de manque et de fond par an"'))
-        self.assertLess(run.index('aria-label="morts de manque et de fond par an"'), run.index("<h2>Ce qu’ils ont trouvé</h2>"))
-        order = [run.index(x) for x in ("<p class=hero>", "<p class=hero-sub>", "<div class=tiles6>", "<h2>La carte</h2>", "<h2>La population</h2>",
-                                        "<h2>Ce qu’ils ont trouvé</h2>", "<h2>Les morts</h2>", "<h2>La chronique</h2>",
-                                        "<h2>Les naissances</h2>", "<h2>Les gens à la fin</h2>", "<details class=detail>")]
+        order = [run.index(x) for x in ("<p class=hero>", "<ul class=trends>", "<div class=tiles6>", "<h2>Les gens</h2>", "<h3>Les morts</h3>",
+                                        "<h2>Où ils vivent</h2>", "<h2>Ce qu’ils ont appris</h2>", "<h2>La chronique</h2>",
+                                        "<h2>Annexes</h2>", "<details class=detail>")]
         self.assertEqual(order, sorted(order))
         self.assertLess(run.index("Année par année"), run.index("</details>"))
         empty = reading.run_body(s["autre"], s["autre"]["runs"][0], None)
@@ -782,7 +781,7 @@ class SeriesReading(unittest.TestCase):
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         try:
             for path, code, needle in (("/lire", 200, "Lire / Comparer"), ("/serie/etalon-test-1", 200, "Comparer avec la version"),
-                                       ("/run/etalon-test-1/t-s1-avec", 200, "Ce qu’ils ont trouvé"),
+                                       ("/run/etalon-test-1/t-s1-avec", 200, "Ce qu’ils ont appris"),
                                        ("/run/autre/t-s1-avec", 200, reading.NO_DATA),
                                        ("/compare?a=etalon-test-1&b=etalon-test-2", 200, "Comparer deux versions"),
                                        ("/compare?a=etalon-test-1/t-s1-avec&b=etalon-test-2/t-s1-avec", 200, "Comparer deux runs"),

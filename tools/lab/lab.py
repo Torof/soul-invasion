@@ -772,14 +772,14 @@ class Lab:
 
 CSS = """
 :root{color-scheme:light;--page:#f9f9f7;--surface:#fff;--ink:#1f2328;--ink2:#52514e;--muted:#6b6a65;--line:#e6e4df;--zebra:#f6f5f1;
---chip:#eceae4;--want:#d03b3b;--bg-death:#898781;--kept:#008300;--rumour:#eda100;--birth:#2a78d6;--fire:#6250d6;--camp:#1baf7a;--try:#898781;
---good-bg:#d8efd3;--good-ink:#1f6b2a;--bad-bg:#f6d3cf;--bad-ink:#8a2a22;--link:#1f6f8b;--shadow:0 1px 3px rgba(0,0,0,.06)}
+--chip:#eceae4;--want:#d03b3b;--bg-death:#898781;--kept:#008300;--rumour:#eda100;--birth:#d55181;--fire:#6250d6;--camp:#1baf7a;--try:#898781;
+--good-bg:#d8efd3;--good-ink:#1f6b2a;--bad-bg:#f6d3cf;--bad-ink:#8a2a22;--link:#1f6f8b;--shadow:0 1px 3px rgba(0,0,0,.06);--tA:#2a78d6;--tB:#eb6834}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--page:#0d0d0d;--surface:#1a1a19;--ink:#f0efec;--ink2:#c3c2b7;
---muted:#a3a299;--line:#2c2c2a;--zebra:#222220;--chip:#2c2c2a;--want:#e66767;--bg-death:#898781;--kept:#0ca30c;--rumour:#c98500;--birth:#3987e5;
---fire:#9085e9;--camp:#199e70;--try:#898781;--good-bg:#173b1a;--good-ink:#9bd89b;--bad-bg:#4a1e1c;--bad-ink:#f2aaa5;--link:#6cb6d4;--shadow:none}}
+--muted:#a3a299;--line:#2c2c2a;--zebra:#222220;--chip:#2c2c2a;--want:#e66767;--bg-death:#898781;--kept:#0ca30c;--rumour:#c98500;--birth:#d55181;
+--fire:#9085e9;--camp:#199e70;--try:#898781;--good-bg:#173b1a;--good-ink:#9bd89b;--bad-bg:#4a1e1c;--bad-ink:#f2aaa5;--link:#6cb6d4;--shadow:none;--tA:#3987e5;--tB:#d95926}}
 :root[data-theme="dark"]{color-scheme:dark;--page:#0d0d0d;--surface:#1a1a19;--ink:#f0efec;--ink2:#c3c2b7;--muted:#a3a299;--line:#2c2c2a;
---zebra:#222220;--chip:#2c2c2a;--want:#e66767;--bg-death:#898781;--kept:#0ca30c;--rumour:#c98500;--birth:#3987e5;--fire:#9085e9;--camp:#199e70;
---try:#898781;--good-bg:#173b1a;--good-ink:#9bd89b;--bad-bg:#4a1e1c;--bad-ink:#f2aaa5;--link:#6cb6d4;--shadow:none}
+--zebra:#222220;--chip:#2c2c2a;--want:#e66767;--bg-death:#898781;--kept:#0ca30c;--rumour:#c98500;--birth:#d55181;--fire:#9085e9;--camp:#199e70;
+--try:#898781;--good-bg:#173b1a;--good-ink:#9bd89b;--bad-bg:#4a1e1c;--bad-ink:#f2aaa5;--link:#6cb6d4;--shadow:none;--tA:#3987e5;--tB:#d95926}
 body{font:16px/1.5 system-ui,sans-serif;margin:0;background:var(--page);color:var(--ink)}
 header{background:var(--surface);border-bottom:1px solid var(--line);padding:.7em 1.5em;display:flex;gap:1.6em;align-items:baseline}
 header strong{color:var(--ink);font-size:1.05em}
@@ -1085,6 +1085,17 @@ class Handler(BaseHTTPRequestHandler):
                 body = reading.run_body(s, r, self.lab.store.load(s["name"], r["name"]), store=self.lab.store,
                                         year=int(year) if year.isdigit() else None)
                 self._page(page(f"Run {r['name']}", body, "lire", self.port))
+        elif url.path.startswith("/fiche/") or url.path.startswith("/chronique/"):
+            kind, _, spec = url.path[1:].partition("/")
+            found, err = target(self.lab, urllib.parse.unquote(spec))
+            d = None if err or found[1] is None else self.lab.store.load(found[0]["name"], found[1]["name"])
+            arg = (q.get("id" if kind == "fiche" else "an") or [""])[0]
+            if d is None or not arg.isdigit():
+                self._send(404, "introuvable", "text/plain; charset=utf-8")
+            elif kind == "fiche":
+                self._send(200, reading.person_card(d, int(arg)))
+            else:
+                self._send(200, reading.chronicle_json(d, int(arg)), "application/json; charset=utf-8")
         elif url.path == "/compare":
             body, code = compare_page(self.lab, (q.get("a") or [""])[0], (q.get("b") or [""])[0], self.port)
             self._page(body, code)
