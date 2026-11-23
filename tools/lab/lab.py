@@ -757,7 +757,7 @@ class Lab:
                 "sort": max(starts) if starts else os.path.getmtime(os.path.join(d, "serie.json")),
                 "synthese": f"/runs/{urllib.parse.quote(name)}/synthese.html" if synth else None,
                 "final": final,
-                "runs": [dict(r, seed=orig.get("seed"), trials=orig.get("trials", True),
+                "runs": [dict(r, seed=orig.get("seed"), trials=orig.get("trials", True), fire=orig.get("fire", True), base=orig.get("base"),
                               page=f"/runs/{urllib.parse.quote(name)}/{urllib.parse.quote(r['page'])}" if r["page"] else None,
                               log=f"/runs/{urllib.parse.quote(name)}/{urllib.parse.quote(r['log'])}" if r["log"] else None,
                               data=os.path.exists(os.path.join(d, r["name"] + ".json")),
@@ -771,46 +771,55 @@ class Lab:
 # --- the pages ---------------------------------------------------------------
 
 CSS = """
-body{font:16px/1.5 system-ui,sans-serif;margin:0;background:#fbfbf9;color:#1f2328}
-header{background:#fff;border-bottom:1px solid #e6e4df;padding:.7em 1.5em;display:flex;gap:1.6em;align-items:baseline}
-header strong{color:#2f3e46;font-size:1.05em}
-header a{color:#5a6670;text-decoration:none;font-weight:600}header a.on{color:#1f2328;border-bottom:2px solid #2f3e46}
+:root{color-scheme:light;--page:#f9f9f7;--surface:#fff;--ink:#1f2328;--ink2:#52514e;--muted:#6b6a65;--line:#e6e4df;--zebra:#f6f5f1;
+--chip:#eceae4;--want:#d03b3b;--bg-death:#898781;--kept:#008300;--rumour:#eda100;--birth:#2a78d6;--fire:#6250d6;--camp:#1baf7a;--try:#898781;
+--good-bg:#d8efd3;--good-ink:#1f6b2a;--bad-bg:#f6d3cf;--bad-ink:#8a2a22;--link:#1f6f8b;--shadow:0 1px 3px rgba(0,0,0,.06)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--page:#0d0d0d;--surface:#1a1a19;--ink:#f0efec;--ink2:#c3c2b7;
+--muted:#a3a299;--line:#2c2c2a;--zebra:#222220;--chip:#2c2c2a;--want:#e66767;--bg-death:#898781;--kept:#0ca30c;--rumour:#c98500;--birth:#3987e5;
+--fire:#9085e9;--camp:#199e70;--try:#898781;--good-bg:#173b1a;--good-ink:#9bd89b;--bad-bg:#4a1e1c;--bad-ink:#f2aaa5;--link:#6cb6d4;--shadow:none}}
+:root[data-theme="dark"]{color-scheme:dark;--page:#0d0d0d;--surface:#1a1a19;--ink:#f0efec;--ink2:#c3c2b7;--muted:#a3a299;--line:#2c2c2a;
+--zebra:#222220;--chip:#2c2c2a;--want:#e66767;--bg-death:#898781;--kept:#0ca30c;--rumour:#c98500;--birth:#3987e5;--fire:#9085e9;--camp:#199e70;
+--try:#898781;--good-bg:#173b1a;--good-ink:#9bd89b;--bad-bg:#4a1e1c;--bad-ink:#f2aaa5;--link:#6cb6d4;--shadow:none}
+body{font:16px/1.5 system-ui,sans-serif;margin:0;background:var(--page);color:var(--ink)}
+header{background:var(--surface);border-bottom:1px solid var(--line);padding:.7em 1.5em;display:flex;gap:1.6em;align-items:baseline}
+header strong{color:var(--ink);font-size:1.05em}
+header a{color:var(--ink2);text-decoration:none;font-weight:600}header a.on{color:var(--ink);border-bottom:2px solid var(--ink)}
 header small{color:#9aa0a6;margin-left:auto}
 main{padding:1.2em 1.6em 4em;max-width:1100px;margin:0 auto}
-a{color:#1f6f8b}
+a{color:var(--link)}
 h1{font-size:1.5em;font-weight:650;margin:.3em 0 .4em}h2{font-size:1.25em;font-weight:650;margin:2.2em 0 .25em}h3{font-size:1.05em;margin:1.6em 0 .3em}
-.caption{color:#6b7280;font-size:.92em;margin:0 0 .8em}
+.caption{color:var(--muted);font-size:.92em;margin:0 0 .8em}
 .verdict{font-size:1.4em;line-height:1.45;margin:.8em 0 1em;max-width:44em}.verdict.small{font-size:1.1em;margin:.4em 0}
-.q{color:#444;margin:.2em 0 .6em;white-space:pre-wrap}.muted{color:#8a8f98}.small{font-size:.9em}.settings{color:#555}
-.etat{display:inline-block;padding:0 .6em;border-radius:1em;font-size:.75em;background:#eceae4;color:#444;vertical-align:middle;font-weight:500}
+.q{color:var(--ink2);margin:.2em 0 .6em;white-space:pre-wrap}.muted{color:var(--muted)}.small{font-size:.9em}.settings{color:var(--ink2)}
+.etat{display:inline-block;padding:0 .6em;border-radius:1em;font-size:.75em;background:var(--chip);color:var(--ink2);vertical-align:middle;font-weight:500}
 .etat.cours{background:#ffe9a8}.etat.fini{background:#d4ecd0}.etat.echec,.etat.perdu{background:#f6d3cf}.etat.arret{background:#e3dcf2}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(10em,1fr));gap:1em;margin:1em 0 1.5em}
-.tile{background:#fff;border-radius:12px;padding:1em 1.2em;box-shadow:0 1px 3px rgba(0,0,0,.06)}
-.tile .v{font-size:2.6em;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums}.tile .k{color:#4b5563;font-size:.95em;margin-top:.1em}
-.tile .s{color:#8a8f98;font-size:.85em;margin-top:.35em}
+.tile{background:var(--surface);border-radius:12px;padding:1em 1.2em;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.tile .v{font-size:2.6em;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums}.tile .k{color:var(--ink2);font-size:.95em;margin-top:.1em}
+.tile .s{color:var(--muted);font-size:.85em;margin-top:.35em}
 .tile.alive .v{color:#2b7a3d}.tile.want .v{color:#b3261e}.tile.background .v{color:#6b7280}.tile.births .v{color:#3a8f4a}.tile.stock .v{color:#8a6d1f}.tile.kept .v{color:#c2571a}.tile .v.text{font-size:1.15em;line-height:2.5}
 .tilelabel{font-weight:700;font-size:1.3em;align-self:center;color:#6b7280}
 .arrow{font-size:.42em;font-weight:600;margin-left:.4em;vertical-align:middle;padding:.1em .5em;border-radius:1em}
 .arrow.good{background:#d8efd3;color:#1f6b2a}.arrow.bad{background:#f6d3cf;color:#8a2a22}
 .alive{color:#2b7a3d;font-weight:600}.dead{color:#b3261e;font-weight:600}.cause{font-weight:600}
-table{border-collapse:collapse;font-size:.95em;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+table{border-collapse:collapse;font-size:.95em;background:var(--surface);border-radius:10px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 table.clean{width:100%}
-th{text-align:left;font-weight:600;color:#6b7280;font-size:.85em;padding:.7em .9em .5em;border-bottom:1px solid #e6e4df;background:#fff}
-td{padding:.5em .9em;vertical-align:top;border:0}tbody tr:nth-child(even) td{background:#f5f4f0}
+th{text-align:left;font-weight:600;color:var(--muted);font-size:.85em;padding:.7em .9em .5em;border-bottom:1px solid var(--line);background:var(--surface)}
+td{padding:.5em .9em;vertical-align:top;border:0}tbody tr:nth-child(even) td{background:var(--zebra)}
 td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
-.serie{background:#fff;border-radius:12px;padding:.9em 1.2em;margin:0 0 1em;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.serie{background:var(--surface);border-radius:12px;padding:.9em 1.2em;margin:0 0 1em;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 .serie h2{margin:0 0 .2em;font-size:1.15em}
 form.f{display:grid;grid-template-columns:max-content 1fr;gap:.5em 1em;align-items:center;max-width:820px;background:#fff;padding:1.2em;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 form.f label{font-weight:600}form.f .hint{grid-column:2;color:#6b7280;font-size:.85em;margin-top:-.3em}
 form.f textarea{min-height:4em;width:100%;box-sizing:border-box}form.f input[type=text],form.f input[type=number]{max-width:14em}
 form.f .wide{grid-column:1/3}
 input,select,textarea{font:inherit}
-button{font:inherit;padding:.35em 1em;border:1px solid #cfd3d8;border-radius:8px;background:#fff;cursor:pointer;color:#1f2328}
-button:hover{background:#f3f2ee}
+button{font:inherit;padding:.35em 1em;border:1px solid var(--line);border-radius:8px;background:var(--surface);cursor:pointer;color:var(--ink)}
+button:hover{background:var(--zebra)}
 button.main{background:#2f3e46;color:#fff;border-color:#2f3e46}button.danger{background:#b4433a;color:#fff;border-color:#b4433a}
 .warn{color:#8a4b00}.err{background:#f6d3cf;padding:.7em 1em;border-radius:8px}
 .plans td form{display:inline;margin-right:.4em}.confirm{display:inline-block;margin-left:.6em}
-.version code{background:#eceae4;padding:0 .35em;border-radius:4px;font-size:.9em}
+.version code{background:var(--chip);padding:0 .35em;border-radius:4px;font-size:.9em}
 .charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:1em}
 svg.chart{width:100%;height:auto;background:#fff;border-radius:12px;font-family:system-ui,sans-serif;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 .mapbox{background:#fff;border-radius:12px;padding:1em;box-shadow:0 1px 3px rgba(0,0,0,.06)}svg.map{width:100%;height:auto;display:block;border-radius:6px}
@@ -818,16 +827,16 @@ svg.chart{width:100%;height:auto;background:#fff;border-radius:12px;font-family:
 .timeline .when{font-weight:600;min-width:13em}.legend{color:#555;font-size:.92em;margin:.4em 0 0}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:1em;align-items:start}.cols2{display:grid;grid-template-columns:1fr 1fr;gap:1.2em;align-items:start}
 @media (max-width:900px){.cols,.cols2{grid-template-columns:1fr}}
-section.tribe{background:#fff;border-radius:12px;padding:.9em 1.2em;margin:0 0 1em;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+section.tribe{background:var(--surface);border-radius:12px;padding:.9em 1.2em;margin:0 0 1em;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 section.tribe p{margin:.3em 0 .6em}section.tribe table{box-shadow:none;margin-top:.6em}
 section.tribe ul,ol.kept{margin:.2em 0 .4em;padding-left:1.4em}ol.kept{font-size:.85em;max-height:22em;overflow:auto}
-.scroll{overflow-x:auto}table.years,table.people{font-size:.85em}details summary{cursor:pointer;color:#2f3e46;font-weight:600}
-details.detail{margin-top:2.5em;border-top:1px solid #e6e4df;padding-top:1em}details.detail>summary{font-size:1.25em;font-weight:650}
+.scroll{overflow-x:auto}table.years,table.people{font-size:.85em}details summary{cursor:pointer;color:var(--ink);font-weight:600}
+details.detail{margin-top:2.5em;border-top:1px solid var(--line);padding-top:1em}details.detail>summary{font-size:1.25em;font-weight:650}
 details.detail>summary::after{content:" — tout le reste : réglages, autres courbes, tableau des années, la vie de chacun";font-weight:400;color:#8a8f98;font-size:.75em}
-ul.lines{font-size:.8em;columns:2;margin:.2em 0}.controls{background:#fff;border-radius:12px;padding:.7em 1.2em;margin:.6em 0 1em;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+ul.lines{font-size:.8em;columns:2;margin:.2em 0}.controls{background:var(--surface);border-radius:12px;padding:.7em 1.2em;margin:.6em 0 1em;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 form.inline{display:inline-block;margin:.2em 1em .2em 0}form.inline select{max-width:28em}
 .plans input[type=text]{width:16em}
-"""
+"""+reading.RUN_CSS
 
 
 def page(title, body, tab, port):
@@ -1072,7 +1081,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._page(not_found(self.port, "Run introuvable"), 404)
             else:
                 s, r = found
-                self._page(page(f"Run {r['name']}", reading.run_body(s, r, self.lab.store.load(s["name"], r["name"])), "lire", self.port))
+                year = (q.get("an") or [""])[0]
+                body = reading.run_body(s, r, self.lab.store.load(s["name"], r["name"]), store=self.lab.store,
+                                        year=int(year) if year.isdigit() else None)
+                self._page(page(f"Run {r['name']}", body, "lire", self.port))
         elif url.path == "/compare":
             body, code = compare_page(self.lab, (q.get("a") or [""])[0], (q.get("b") or [""])[0], self.port)
             self._page(body, code)

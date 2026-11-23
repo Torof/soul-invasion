@@ -716,17 +716,17 @@ class SeriesReading(unittest.TestCase):
         self.assertIn("Population de tous les runs", serie)
         self.assertIn("écart-type", serie)
         run = reading.run_body(s["etalon-test-1"], s["etalon-test-1"]["runs"][0], self.lab.store.load("etalon-test-1", "t-s1-avec"))
-        for part in ("<p class=verdict>2 morts de manque : 1 de faim, 1 de froid, en hiver ; aucun mort de fond. Après 2 ans, 3 des 4", '<div class="tile alive">', "<h2>La carte</h2>", 'class="winter"',
+        for part in ("<p class=hero-sub>2 morts de manque : 1 de faim, 1 de froid, en hiver ; aucun mort de fond. Après 2 ans, 3 des 4", "<div class=tiles6>", "<h2>La carte</h2>", 'class="winter"',
                      "<h2>La population</h2>", "<h2>Ce qu’ils ont trouvé</h2>", "<h2>Les morts</h2>", "<h2>Les naissances</h2>",
                      "<h2>Les gens à la fin</h2>", "<summary>Le détail</summary>", "Année par année", "La vie de chacun (5)",
-                     '<div class="tile want">', '<div class="tile background">', '<div class="tile stock">',
+                     "vivants à la fin", "nourriture portée (kJ)", "<h2>La chronique</h2>",
                      'aria-label="morts de manque et de fond par an"', "A à gauche de l’année, B à droite"):
             self.assertIn(part, run)
         self.assertLess(run.index('aria-label="population par tribu"'), run.index('aria-label="morts de manque et de fond par an"'))
         self.assertLess(run.index('aria-label="morts de manque et de fond par an"'), run.index("<h2>Ce qu’ils ont trouvé</h2>"))
-        order = [run.index(x) for x in ("<p class=verdict>", "<div class=tiles>", "<h2>La carte</h2>", "<h2>La population</h2>",
-                                        "<h2>Ce qu’ils ont trouvé</h2>", "<h2>Les morts</h2>", "<h2>Les naissances</h2>",
-                                        "<h2>Les gens à la fin</h2>", "<details class=detail>")]
+        order = [run.index(x) for x in ("<p class=hero>", "<p class=hero-sub>", "<div class=tiles6>", "<h2>La carte</h2>", "<h2>La population</h2>",
+                                        "<h2>Ce qu’ils ont trouvé</h2>", "<h2>Les morts</h2>", "<h2>La chronique</h2>",
+                                        "<h2>Les naissances</h2>", "<h2>Les gens à la fin</h2>", "<details class=detail>")]
         self.assertEqual(order, sorted(order))
         self.assertLess(run.index("Année par année"), run.index("</details>"))
         empty = reading.run_body(s["autre"], s["autre"]["runs"][0], None)

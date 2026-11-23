@@ -15,6 +15,7 @@ import html
 import json
 import math
 import os
+import re
 import statistics
 import urllib.parse
 
@@ -307,6 +308,7 @@ def summary(d):
         "heard_trials": sum((f.get("heard") or {}).get("trials") or 0 for f in found),
         "heard_copies": sum((f.get("heard") or {}).get("copies") or 0 for f in found),
         "dispelled": sum((f.get("heard") or {}).get("dispelled") or 0 for f in found),
+        "dispelled_years": sum((y.get("fire") or {}).get("dispelled") or 0 for y in d.get("years", [])) if has_fire_data(d) else None,
         "knowledge": knowledge_at_end(d),
         "alive_start": sum(1 for p in people if not p.get("died") and p.get("born") == "start"),
         "years": last_year(d),
@@ -1401,6 +1403,513 @@ def tiles_html(sm, other=None, label=None):
     return f'<div class=tiles>{"<div class=tilelabel>" + h(label) + "</div>" if label else ""}{"".join(tiles)}</div>'
 
 
+# --- the run page laid out (lab 5): the top, the tables, the chronicle ---------------
+# One colour, one meaning, on every new part of the page (the CSS tokens of lab.py):
+# red the deaths by want, grey the background deaths, green what was kept, amber the
+# rumours; blue the births, violet the fire, teal the homes. A colour never travels
+# alone: a glyph and a word go with it.
+
+RUN_CSS = """
+main:has(.runpage){max-width:1320px}
+.runpage{display:grid;grid-template-columns:10.5em minmax(0,1fr);gap:2.2em;align-items:start}
+.toc{position:sticky;top:1em;font-size:.9em;border-left:2px solid var(--line);padding:.2em 0 .2em .9em}
+.toc b{display:block;color:var(--muted);font-size:.8em;text-transform:uppercase;letter-spacing:.06em;margin-bottom:.4em}
+.toc a{display:block;color:var(--ink2);text-decoration:none;padding:.18em 0}.toc a:hover{color:var(--ink)}
+.toc a.on{color:var(--ink);font-weight:650}
+.runpage section{scroll-margin-top:1em}
+.hero{font-size:1.75em;line-height:1.3;font-weight:650;margin:.6em 0 .35em;max-width:30em;text-wrap:balance}
+.hero-sub{color:var(--ink2);max-width:46em;margin:0 0 1.1em}
+.tiles6{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.8em;margin:.6em 0 .6em}
+.t6{background:var(--surface);border-radius:12px;padding:.8em 1em .85em;box-shadow:var(--shadow);border-top:4px solid var(--c,var(--line))}
+.t6 .k{color:var(--ink2);font-size:.9em;display:flex;gap:.4em;align-items:center}
+.t6 .v{font-size:2.1em;font-weight:700;line-height:1.15;font-variant-numeric:tabular-nums;margin:.1em 0 .1em}
+.t6 .s{color:var(--muted);font-size:.83em;line-height:1.4}
+.t6 .dl{margin:.1em 0 .35em}.t6 .d{display:inline-block;font-size:.8em;font-weight:600;padding:.05em .55em;border-radius:1em}
+.t6 .d.good{background:var(--good-bg);color:var(--good-ink)}.t6 .d.bad{background:var(--bad-bg);color:var(--bad-ink)}
+.t6 .d.same{background:var(--chip);color:var(--ink2)}
+.g{font-style:normal;display:inline-block;width:1.1em;text-align:center;line-height:1}
+.c-want{color:var(--want)}.c-bg{color:var(--bg-death)}.c-kept{color:var(--kept)}.c-rumour{color:var(--rumour)}
+.c-birth{color:var(--birth)}.c-fire{color:var(--fire)}.c-camp{color:var(--camp)}.c-try{color:var(--try)}
+.lead{font-weight:650;margin:.2em 0 .8em;max-width:46em}
+.tablebox{position:relative}
+table.data{width:100%;border-collapse:separate;border-spacing:0}
+table.data th{position:sticky;top:0;z-index:1;padding:0;white-space:nowrap}
+table.data th button{all:unset;cursor:pointer;display:block;width:100%;box-sizing:border-box;padding:.65em .9em .5em;color:var(--muted)}
+table.data th button:hover{color:var(--ink)}table.data th.n button{text-align:right}
+table.data th button::after{content:" ↕";opacity:.35}
+table.data th[aria-sort=ascending] button::after{content:" ↑";opacity:1}table.data th[aria-sort=descending] button::after{content:" ↓";opacity:1}
+table.data td{border-bottom:1px solid var(--line)}
+table.data.short tbody tr:nth-child(n+11){display:none}
+.none{color:var(--muted)}
+.cbar{display:inline-block;width:3.2em;height:.42em;border-radius:3px;background:var(--zebra);margin-right:.6em;vertical-align:middle;overflow:hidden}
+tbody tr:nth-child(even) .cbar{background:var(--surface)}
+.cbar span{display:block;height:100%;border-radius:3px;background:var(--c)}
+.tribe-chip{display:inline-block;font-size:.75em;font-weight:650;padding:0 .45em;border-radius:.6em;background:var(--chip);color:var(--ink2);margin-left:.4em}
+.more{margin:.6em 0 0}
+.chron-years{display:flex;flex-wrap:wrap;gap:.3em;margin:.2em 0 .8em;font-size:.9em}
+.chron-years a,.chron-years b{padding:.1em .55em;border-radius:1em;text-decoration:none;color:var(--ink2);background:var(--chip)}
+.chron-years b{background:var(--ink);color:var(--page)}
+.filters{display:flex;flex-wrap:wrap;gap:.5em .8em;align-items:center;background:var(--surface);border-radius:12px;padding:.7em 1em;box-shadow:var(--shadow);margin:0 0 1em;position:sticky;top:0;z-index:2}
+.chips{display:flex;flex-wrap:wrap;gap:.35em}
+.chips button{font-size:.88em;padding:.2em .75em;border-radius:1em;border:1px solid var(--line);background:var(--surface);color:var(--ink2)}
+.chips button[aria-pressed=true]{background:var(--ink);color:var(--page);border-color:var(--ink)}
+.filters select,.filters input{font-size:.9em;padding:.25em .5em;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink)}
+.filters input{width:14em}.filters .count{color:var(--muted);font-size:.85em;margin-left:auto}
+.season{margin:0 0 1.2em}
+.season>h3{margin:0 0 .5em;font-size:1em;display:flex;gap:.6em;align-items:baseline}
+.season>h3 small{color:var(--muted);font-weight:400}
+ol.days{list-style:none;margin:0;padding:0 0 0 .2em}
+li.day{display:grid;grid-template-columns:4.2em minmax(0,1fr);gap:.6em;padding:.15em 0}
+li.day>.dd{color:var(--muted);font-size:.85em;text-align:right;padding-top:.15em;font-variant-numeric:tabular-nums}
+ul.evs{list-style:none;margin:0;padding:0 0 .35em .9em;border-left:2px solid var(--line)}
+li.ev{padding:.12em 0;line-height:1.45}
+li.ev .lab{font-weight:650;margin-right:.35em}
+li.ev .x{color:var(--muted);font-size:.9em}
+li.grp>details>summary{list-style:none;cursor:pointer;font-weight:400;color:var(--ink)}
+li.grp>details>summary::-webkit-details-marker{display:none}
+li.grp>details>summary::after{content:" ▸ voir";color:var(--link);font-size:.85em}
+li.grp>details[open]>summary::after{content:" ▾ replier"}
+li.grp ul{list-style:none;margin:.2em 0 .3em 1.4em;padding:0;font-size:.92em;max-height:22em;overflow:auto}
+.chron-empty{color:var(--muted)}
+@media (max-width:860px){.runpage{grid-template-columns:minmax(0,1fr);gap:.4em}main:has(.runpage){padding-left:1em;padding-right:1em}
+.toc{position:static;border-left:0;padding:0;display:flex;flex-wrap:wrap;gap:.3em}
+.toc b{width:100%;margin:0}.toc a{padding:.1em .6em;background:var(--chip);border-radius:1em}
+.hero{font-size:1.35em}.filters{position:static}.tablebox{overflow-x:auto}
+li.day{grid-template-columns:3.2em minmax(0,1fr)}}
+@media (max-width:560px){.tiles6{grid-template-columns:repeat(2,minmax(0,1fr))}}
+"""
+
+THIN = " "   # the thin no-break space between thousands, in the new tables
+DASH = '<span class=none title="rien">—</span>'
+
+
+def fmt_thin(n):
+    """`12 345` with a thin space; the grey dash for None."""
+    return DASH if n is None else h(fmt(n)).replace(" ", THIN)
+
+
+def cell(text):
+    """A cell's text, never empty: the helpers' `-` and the empty string become the grey dash."""
+    return DASH if text in (None, "", "-") else text
+
+
+def control_of(s, r):
+    """The control run of `r` in its series: the same base and seed without the fire (with the fire
+    on for `r`), else without the trials; None when `r` is itself a control or has none."""
+    def same(o):
+        return o is not r and o.get("name") != r.get("name") and o.get("seed") == r.get("seed") \
+            and (o.get("base") == r.get("base") or r.get("base") is None)
+    runs = s.get("runs") or []
+    if r.get("fire", True) and r.get("trials", True):
+        c = next((o for o in runs if same(o) and o.get("fire", True) is False and o.get("trials", True)), None)
+        if c is not None:
+            return c, "sans le feu"
+    if r.get("trials", True):
+        c = next((o for o in runs if same(o) and o.get("trials", True) is False and o.get("fire", True) == r.get("fire", True)), None)
+        if c is not None:
+            return c, "sans les épreuves"
+    return None, None
+
+
+def headline(d, sm, smc=None, label=None):
+    """The verdict in one sentence, large: alive after so long, against the control when there is one."""
+    when = f"Après {plural(sm['years'], 'an')}" if sm["years"] else f"Après {plural(run_days(d), 'jour')}"
+    alive = sm["alive"]
+    who = "plus personne" if alive == 0 else f"{plural(alive, 'vivant')}"
+    if smc is None:
+        return f"{when}, {who} sur les {fmt(sm['start'])} du départ et les {plural(sm['births'], 'enfant')} nés en route."
+    gap = alive - smc["alive"]
+    if gap == 0:
+        return f"{when}, {who} : autant que {label}."
+    return f"{when}, {who} : {fmt(abs(gap))} de {'plus' if gap > 0 else 'moins'} que {label} ({fmt(smc['alive'])})."
+
+
+def tile6(title, value, sub, color=None, glyph="", ctrl=None, good_up=None, label=None, text=None):
+    """One tile of the top row: the number, its name, a line under it, the gap to the control."""
+    gap = ""
+    if ctrl is not None and value is not None:
+        dv = value - ctrl
+        if dv == 0:
+            gap = f'<span class="d same" title="{h(label)} : {fmt(ctrl)}">= témoin</span>'
+        else:
+            cls = "same" if good_up is None else ("good" if (dv > 0) == good_up else "bad")
+            gap = (f'<span class="d {cls}" title="{h(label)} : {fmt(ctrl)}">{"↑" if dv > 0 else "↓"} '
+                   f'{"+" if dv > 0 else "−"}{fmt(abs(dv)).replace(" ", THIN)} · témoin {fmt(ctrl).replace(" ", THIN)}</span>')
+    g = f'<i class="g {color}" aria-hidden=true>{glyph}</i>' if glyph else ""
+    style = f' style="--c:var(--{TILE_VAR[color]})"' if color else ""
+    shown = h(text) if text else fmt_thin(value)
+    return f'<div class=t6{style}><div class=k>{g}{h(title)}</div><div class=v>{shown}</div>{f"<div class=dl>{gap}</div>" if gap else ""}<div class=s>{sub}</div></div>'
+
+
+TILE_VAR = {"c-want": "want", "c-bg": "bg-death", "c-kept": "kept", "c-rumour": "rumour", "c-birth": "birth", "c-fire": "fire", "c-camp": "camp"}
+
+
+def run_tiles(sm, smc=None, label=None):
+    """Six tiles: alive, deaths, births, food carried, trials, rumours; arrows against the control."""
+    c = smc or {}
+    st, cst = sm.get("stock"), c.get("stock")
+    for x in (sm, c):
+        if x:   # every rumour of the run (years[].fire), not the first thousand that `found` and `rumours` keep
+            x["dispelled_all"] = x.get("dispelled_all", x.get("dispelled_years", x.get("dispelled")))
+    tiles = [
+        tile6("vivants à la fin", sm["alive"], f"{fmt(sm['start'])} au départ", None, "", c.get("alive"), True, label),
+        tile6("morts", sm["dead"], f'<i class="g c-want">■</i>{fmt(sm["want"])} de manque · <i class="g c-bg">■</i>{fmt(sm["background"])} de fond',
+              "c-want", "■", c.get("dead"), False, label),
+        tile6("naissances", sm["births"], f"{fmt(sm['alive'] - sm['alive_start'])} encore vivants" if sm["births"] else "aucune",
+              "c-birth", "●", c.get("births"), True, label),
+        tile6("nourriture portée (kJ)", st["kj"] if st else None, stock_sub(st) if st else "pas dans les données", None, "",
+              cst["kj"] if cst else None, True, label, None if st else NO_STOCK),
+        tile6("essais", sm["trials"], f'<i class="g c-kept">◆</i>{fmt(sm["kept"])} gardés · {plural(sm["copied"], "copie")}',
+              "c-kept", "◆", c.get("trials"), None, label),
+        tile6("rumeurs dissipées", sm.get("dispelled_all"), "un lieu entendu au feu, trouvé nu", "c-rumour", "●",
+              c.get("dispelled_all") if smc else None, None, label),
+    ]
+    return f"<div class=tiles6>{''.join(tiles)}</div>"
+
+
+TABLE_JS = """
+document.querySelectorAll('table.data').forEach(t => {
+  const body = t.tBodies[0], ths = [...t.tHead.rows[0].cells];
+  ths.forEach((th, i) => th.querySelector('button').addEventListener('click', () => {
+    const up = th.getAttribute('aria-sort') !== 'ascending';
+    ths.forEach(o => o.removeAttribute('aria-sort'));
+    th.setAttribute('aria-sort', up ? 'ascending' : 'descending');
+    const key = r => r.cells[i].dataset.k ?? r.cells[i].textContent;
+    const num = [...body.rows].every(r => key(r) === '' || !isNaN(+key(r)));
+    const rows = [...body.rows].sort((a, b) => {
+      const x = key(a), y = key(b);
+      const c = num ? (x === '' ? 1e18 : +x) - (y === '' ? 1e18 : +y) : x.localeCompare(y, 'fr');
+      return up ? c : -c;
+    });
+    rows.forEach(r => body.appendChild(r));
+  }));
+});
+document.querySelectorAll('[data-more]').forEach(b => b.addEventListener('click', () => {
+  const t = document.getElementById(b.dataset.more), short = t.classList.toggle('short');
+  b.textContent = short ? b.dataset.all : 'n’en voir que 10';
+}));
+"""
+
+
+def data_table(uid, head, rows, empty, limit=10):
+    """A sortable table: `head` of (title, numeric); `rows` of cells (html, sort key); 10 rows then « voir les N »."""
+    if not rows:
+        return f'<p class="muted">{h(empty)}</p>'
+    ths = "".join(f'<th{" class=n" if num else ""} scope=col><button type=button>{h(t)}</button></th>' for t, num in head)
+    trs = []
+    for r in rows:
+        tds = "".join(f'<td{" class=n" if num else ""}{"" if k is None else f" data-k={chr(34)}{h(str(k))}{chr(34)}"}>{cell(v)}</td>'
+                      for (v, k), (_, num) in zip(r, head))
+        trs.append(f"<tr>{tds}</tr>")
+    short = len(rows) > limit
+    more = (f'<p class=more><button type=button data-more="{uid}" data-all="voir les {len(rows)}">voir les {len(rows)}</button></p>'
+            if short else "")
+    return (f'<div class=tablebox><table class="data{" short" if short else ""}" id="{uid}"><thead><tr>{ths}</tr></thead>'
+            f'<tbody>{"".join(trs)}</tbody></table></div>{more}')
+
+
+def death_mark(cause):
+    """The glyph of a death: red for a death by want, grey for a background death; the word goes beside."""
+    return f'<i class="g {"c-want" if is_want(cause) else "c-bg"}" aria-hidden=true>■</i>'
+
+
+def deaths_table_v2(d):
+    """« Les morts », the new table: sortable, never empty, the age as a bar coloured by the kind of death."""
+    many = len(tribes(d)) > 1
+    dead = sorted((p for p in d.get("people", []) if p.get("died")), key=lambda p: p["died"].get("day") or 0)
+    ages = [age_days(d, p, p["died"].get("day")) for p in dead]
+    top = max([a for a in ages if a is not None] + [1])
+    rows = []
+    for p, age in zip(dead, ages):
+        died = p["died"]
+        cause = died.get("cause", "?")
+        camp = camp_at(d, p.get("tribe"), died.get("day"))
+        at = died.get("at")
+        dist = round(math.hypot(at[0] - camp[0], at[1] - camp[1])) if at and camp else None
+        bar = ("" if age is None else
+               f'<span class=cbar aria-hidden=true style="--c:var({"--want" if is_want(cause) else "--bg-death"})">'
+               f'<span style="width:{max(4, round(100 * age / top))}%"></span></span>')
+        kind = "manque" if is_want(cause) else "fond"
+        rows.append([
+            (h(person_fr(p.get("name", p.get("id")))) + (f'<span class=tribe-chip>{h(p.get("tribe", ""))}</span>' if many else ""), p.get("id")),
+            (h(day_fr(d, died.get("day"))), died.get("day")),
+            (bar + h(age_fr(d, age)) if age is not None else None, age),
+            (f'{death_mark(cause)}{h(cause_fr(cause))} <span class=muted>({kind})</span>',
+             f"{0 if is_want(cause) else 1}{CAUSE_ORDER.index(cause) if cause in CAUSE_ORDER else 9}"),
+            (h(where_fr(d, p.get("tribe"), at, died.get("day"))), dist),
+        ])
+    want = sum(1 for p in dead if is_want(p["died"].get("cause")))
+    lead = (f"{plural(len(dead), 'mort')} en {plural(last_year(d), 'an')} : {fmt(want)} de manque, {fmt(len(dead) - want)} de fond."
+            if dead else "Personne n’est mort.")
+    return ('<section id=morts><h2>Les morts</h2>'
+            f'<p class=lead>{h(lead)}</p><p class=caption>Cliquez un titre de colonne pour trier. '
+            '<i class="g c-want">■</i> mort de manque (faim, soif, froid) · <i class="g c-bg">■</i> mort de fond (maladie, vieillesse, couches) ; '
+            'la barre dit l’âge.</p>'
+            + data_table("t-morts", [("Qui", False), ("Quand", False), ("Âge à la mort", True), ("De quoi", False), ("Où", False)],
+                         rows, "Personne n’est mort.") + "</section>")
+
+
+# The chronicle: each event a type (glyph, colour, word), grouped when repeated the same day.
+EV = {  # type: (word on the line, glyph, colour class, filter)
+    "naissance": ("Naissance", "●", "c-birth", "naissances"),
+    "mort-want": ("Mort", "■", "c-want", "morts"),
+    "mort-bg": ("Mort", "■", "c-bg", "morts"),
+    "garde": ("Gardé", "◆", "c-kept", "essais"),
+    "essai": ("Essai", "○", "c-try", "essais"),
+    "abandon": ("Abandon", "○", "c-try", "essais"),
+    "copie": ("Copie", "▲", "c-fire", "feu"),
+    "lecon": ("Au feu", "▲", "c-fire", "feu"),
+    "rumeur": ("Rumeur", "●", "c-rumour", "rumeurs"),
+    "maison": ("Maison", "⌂", "c-camp", "maisons"),
+}
+EV_GROUP = {"naissance": ("naissance", "naissances"), "mort-want": ("mort de manque", "morts de manque"),
+            "mort-bg": ("mort de fond", "morts de fond"), "garde": ("façon gardée", "façons gardées"),
+            "essai": ("essai commencé", "essais commencés"), "abandon": ("abandon", "abandons"),
+            "copie": ("copie", "copies"), "lecon": ("leçon dite au feu", "leçons dites au feu"),
+            "rumeur": ("rumeur dissipée", "rumeurs dissipées"), "maison": ("maison déplacée", "maisons déplacées")}
+FILTERS = [("tout", "Tout"), ("morts", "Morts"), ("naissances", "Naissances"), ("essais", "Essais et trouvailles"),
+           ("feu", "Le feu"), ("rumeurs", "Rumeurs"), ("maisons", "Maisons")]
+GROUP_FROM = 3   # the same kind of event three times or more the same day: one foldable line
+
+WAY_LINE_FR = [
+    (r"searches with worth halved at (\d+) tiles", r"cherche à \1 tuiles"),
+    (r"searches (?:twice as wide|half as wide) \(worth halved at (\d+) tiles instead of (\d+)\)", r"cherche à \1 tuiles au lieu de \2"),
+    (r"stores (\d+) kJ before resting", r"garde \1 kJ avant le repos"),
+    (r"stores (?:twice as much|half as much) \((\d+) kJ instead of (\d+)\)", r"garde \1 kJ au lieu de \2"),
+    (r"sleeps out where night finds it", "dort là où la nuit le trouve"),
+    (r"comes home to sleep", "rentre dormir au camp"),
+    (r"sets its home at \((\d+), (\d+)\)", r"pose sa maison en (\1, \2)"),
+]
+
+
+def way_line_fr(text):
+    """A way as the vivarium's lines say it, in French; an unknown one is kept as written."""
+    for pat, rep in WAY_LINE_FR:
+        if re.fullmatch(pat, text):
+            out = re.sub(pat, rep, text)
+            return re.sub(r"(\d{4,}) kJ", lambda m: f"{fmt(int(m.group(1)))} kJ", re.sub(r"(\d{4,}) au lieu de (\d{4,})",
+                          lambda m: f"{fmt(int(m.group(1)))} au lieu de {fmt(int(m.group(2)))}", out))
+    return f"« {text} »"
+
+
+def chronicle_events(d, year):
+    """The events of one year, each `{day, type, tribe, who, text}` (`text` ready HTML), in the order of the days."""
+    yd = year_days(d)
+    first, last = (year - 1) * yd + 1, year * yd
+    tribe_of = {p.get("id"): p.get("tribe") for p in d.get("people", [])}
+    fire_on = ((d.get("meta") or {}).get("settings") or {}).get("fire", False)
+    out = []
+
+    def add(day, typ, tribe, who, text, order=0, extra=""):
+        """`text` is plain words (escaped here); `extra` is markup made here from numbers."""
+        if day is not None and first <= day <= last:
+            out.append({"day": day, "type": typ, "tribe": tribe or "", "who": [w for w in who if w is not None],
+                        "text": h(text) + extra, "order": order})
+    for p in d.get("people", []):
+        pid, t = p.get("id"), p.get("tribe")
+        if p.get("born") != "start":
+            sex = {"woman": "une fille", "man": "un garçon"}.get(p.get("sex"), "un enfant")
+            parents = " et ".join(person_fr(x) for x in (p.get("mother"), p.get("father")) if x is not None)
+            add(p.get("born_day") or p.get("born"), "naissance", t, [pid, p.get("mother"), p.get("father")],
+                f"{person_fr(pid)}, {sex}, naît" + (f" de {parents}" if parents else ""), 1)
+        died = p.get("died")
+        if died:
+            cause = died.get("cause", "?")
+            add(died.get("day"), "mort-want" if is_want(cause) else "mort-bg", t, [pid],
+                f"{person_fr(pid)} meurt de {cause_fr(cause)} à {age_fr(d, age_days(d, p, died.get('day')))}, "
+                f"{where_fr(d, t, died.get('at'), died.get('day'))}", 0)
+        for tr in p.get("trials") or []:
+            home = tr.get("step") == "home_moved"   # its start and its giving up are the homes' lines below
+            if not home:
+                add(tr.get("day"), "essai", t, [pid], f"{person_fr(pid)} essaie : {kind_fr(tr.get('step', '?'))}", 5)
+            if tr.get("judged_day") is not None and tr.get("kept") is not None and not (home and not tr["kept"]):
+                add(tr["judged_day"], "garde" if tr["kept"] else "abandon", t, [pid],
+                    f"{person_fr(pid)} {'garde' if tr['kept'] else 'abandonne'} : {kind_fr(tr.get('step', '?'))}"
+                    + (" (entendu au feu)" if tr.get("heard") else ""), 2 if tr["kept"] else 6)
+    seen = set()
+    for p in d.get("people", []):
+        for ln in p.get("lines") or []:
+            key = (ln.get("tick"), ln.get("what"))
+            if key in seen:
+                continue
+            seen.add(key)
+            what = ln.get("what") or ""
+            m = re.fullmatch(r"person (\d+) copies person (\d+)(, losing a step)?: (.+)", what)
+            if m:
+                a, b = int(m.group(1)), int(m.group(2))
+                add(ln.get("day"), "copie" if fire_on else "essai", tribe_of.get(a), [a, b],
+                    f"{person_fr(a)} copie {person_fr(b)} : {way_line_fr(m.group(4))}" + (" (en perdant un cran)" if m.group(3) else ""), 4)
+                continue
+            m = re.fullmatch(r"at the fire, person (\d+) says its (.+) did it (good|no good); (.+) believed it", what)
+            if m:
+                teller = int(m.group(1))
+                believers = [int(x) for x in re.findall(r"person (\d+)", m.group(4))]
+                add(ln.get("day"), "lecon", tribe_of.get(teller), [teller] + believers,
+                    f"{person_fr(teller)} dit que sa façon ({way_line_fr(m.group(2))}) "
+                    f"{'lui a fait du bien' if m.group(3) == 'good' else 'ne lui a rien valu'} ; "
+                    + ("personne ne l’a cru" if not believers else f"{plural(len(believers), 'personne')} l’{'ont' if len(believers) > 1 else 'a'} cru"),
+                    3, f' <span class=x>({", ".join(str(b) for b in believers)})</span>' if believers else "")
+    for r in d.get("rumours") or []:
+        add(r.get("day"), "rumeur", r.get("tribe"), [r.get("body"), r.get("from")],
+            f"{person_fr(r.get('body'))} ne trouve rien au lieu {place_fr(r.get('place'))}, où {person_fr(r.get('from'))} avait dit", 7)
+    for y in d.get("years", []):
+        for mv in y.get("home_moves") or []:
+            how = HOW_FR.get(mv.get("how"), mv.get("how") or "")
+            verb = {"trial": "essaie de déplacer sa maison", "copy": "déplace sa maison, copiée d’un voisin,",
+                    "reverted": "renonce et ramène sa maison"}.get(mv.get("how"), f"déplace sa maison ({how})")
+            add(mv.get("day"), "maison", y.get("tribe"), [mv.get("body")],
+                f"{person_fr(mv.get('body'))} {verb} de {place_fr(mv.get('from'))} à {place_fr(mv.get('to'))}", 3)
+    out.sort(key=lambda e: (e["day"], e["order"], e["who"][:1]))
+    return out
+
+
+def chronicle_groups(events):
+    """The events by day, each day a list of single events and of groups (the same type ≥ GROUP_FROM
+    times that day): `[(day, [("one", ev) | ("group", type, [ev…])])]`."""
+    days = []
+    for e in events:
+        if not days or days[-1][0] != e["day"]:
+            days.append((e["day"], []))
+        days[-1][1].append(e)
+    out = []
+    for day, evs in days:
+        items, done = [], set()
+        for e in evs:
+            if e["type"] in done:
+                continue
+            same = [x for x in evs if x["type"] == e["type"]]
+            if len(same) >= GROUP_FROM:
+                items.append(("group", e["type"], same))
+                done.add(e["type"])
+            else:
+                items.append(("one", e))
+        out.append((day, items))
+    return out
+
+
+def ev_html(e, word=True):
+    word_, glyph, cls, filt = EV[e["type"]]
+    lab = f'<b class=lab>{h(word_)}</b>' if word else ""
+    return (f'<li class=ev data-f="{filt}" data-tribe="{h(e["tribe"])}" data-who=" {" ".join(str(w) for w in e["who"])} ">'
+            f'<i class="g {cls}" aria-hidden=true>{glyph}</i>{lab}{e["text"]}</li>')
+
+
+def chronicle_html(d, year, url):
+    """« La chronique » of one year: by season then day, a glyph per type, filters, a search, repeats folded."""
+    ly = last_year(d)
+    if not ly:
+        return ""
+    year = min(max(1, year or 1), ly)
+    events = chronicle_events(d, year)
+    yd = year_days(d)
+    years_nav = "".join(f"<b>an {y}</b>" if y == year else f'<a href="{url}?an={y}#chronique">{y}</a>' for y in range(1, ly + 1))
+    counts = {}
+    for e in events:
+        counts[EV[e["type"]][3]] = counts.get(EV[e["type"]][3], 0) + 1
+    chips = "".join(f'<button type=button data-filter="{k}" aria-pressed="{"true" if k == "tout" else "false"}">{h(lab)}'
+                    f' <span class=muted>{len(events) if k == "tout" else counts.get(k, 0)}</span></button>' for k, lab in FILTERS)
+    ts = tribes(d)
+    tribe_sel = ("<select data-tribe aria-label=Tribu><option value=''>toutes les tribus</option>"
+                 + "".join(f"<option value='{h(t)}'>tribu {h(t)}</option>" for t in ts) + "</select>") if len(ts) > 1 else ""
+    seasons = []
+    for season in SEASON_ALL:
+        days = [(day, items) for day, items in chronicle_groups(events) if season_of(d, day) == season]
+        span = [day for day in range((year - 1) * yd + 1, year * yd + 1) if season_of(d, day) == season]
+        lo, hi = (span[0], span[-1]) if span else (0, 0)
+        n = sum(len(it[2]) if it[0] == "group" else 1 for _, items in days for it in items)
+        lis = []
+        for day, items in days:
+            evs = []
+            for it in items:
+                if it[0] == "one":
+                    evs.append(ev_html(it[1]))
+                    continue
+                _, typ, members = it
+                word, glyph, cls, filt = EV[typ]
+                one, many = EV_GROUP[typ]
+                evs.append(f'<li class="ev grp" data-f="{filt}"><details><summary><i class="g {cls}" aria-hidden=true>{glyph}</i>'
+                           f'<b class=lab>{h(word)}</b><span class=gn>{len(members)}</span> <span class=gw data-one="{h(one)}" data-many="{h(many)}">{h(many)}</span> ce jour-là</summary>'
+                           f'<ul>{"".join(ev_html(m, word=False) for m in members)}</ul></details></li>')
+            lis.append(f'<li class=day><span class=dd>jour {day}</span><ul class=evs>{"".join(evs)}</ul></li>')
+        body = f"<ol class=days>{''.join(lis)}</ol>" if lis else '<p class="chron-empty">rien ce trimestre</p>'
+        seasons.append(f'<div class=season><h3>{h(SEASON_FR[season].capitalize())} <small>jours {lo} à {hi} · '
+                       f'{plural(n, "événement")}</small></h3>{body}</div>')
+    legend = " · ".join(f'<i class="g {EV[k][2]}">{EV[k][1]}</i>{h(w)}' for k, w in
+                        (("naissance", "naissance"), ("mort-want", "mort de manque"), ("mort-bg", "mort de fond"),
+                         ("garde", "façon gardée"), ("essai", "essai ou abandon"), ("lecon", "le feu : leçon dite, copie"),
+                         ("rumeur", "rumeur dissipée"), ("maison", "maison déplacée")))
+    words = {"morts": ("mort", "s"), "naissances": ("naissance", "s"), "essais": ("essai commencé, gardé ou abandonné", ""),
+             "feu": ("leçon ou copie au feu", ""), "rumeurs": ("rumeur dissipée", ""), "maisons": ("maison déplacée", "")}
+    parts = []
+    for k, (w, suf) in words.items():
+        n = counts.get(k, 0)
+        if n:
+            parts.append(plural(n, w, suf) if suf else f"{fmt(n)} {w if n == 1 else w.replace('essai commencé, gardé ou abandonné', 'essais commencés, gardés ou abandonnés').replace('leçon ou copie', 'leçons ou copies').replace('rumeur dissipée', 'rumeurs dissipées').replace('maison déplacée', 'maisons déplacées')}")
+    lead = f"L’an {year} en {plural(len(events), 'événement')}" + (" : " + ", ".join(parts) if parts else "") + "."
+    rums = d.get("rumours") or []
+    capped = ""
+    if rums and sum((y.get("fire") or {}).get("dispelled") or 0 for y in d.get("years", [])) > len(rums):
+        days = [r.get("day") for r in rums if r.get("day") is not None]
+        capped = (f" Les données ne gardent le détail que des {fmt(len(rums))} premières rumeurs (jours {min(days)} à {max(days)}) : "
+                  "les autres années n’en montrent aucune, le compte de chaque an est dans « Ce que la tribu sait ».")
+    return (f'<section id=chronique><h2>La chronique</h2><p class=lead>{lead}</p>'
+            f'<p class=caption>Une année à la fois, par saison puis par jour. Ce qui se répète le même jour '
+            f'({GROUP_FROM} fois ou plus) tient sur une ligne qu’on déplie.{h(capped)}</p><p class=caption>{legend}</p>'
+            f'<nav class=chron-years aria-label="années">{years_nav}</nav>'
+            f'<div class=filters><div class=chips role=group aria-label="ne montrer que">{chips}</div>{tribe_sel}'
+            f'<input type=search data-search placeholder="un nom : 14, personne 14" aria-label="chercher un nom">'
+            f'<span class=count data-count></span></div>'
+            f'<div class=chron>{"".join(seasons)}</div></section>')
+
+
+CHRON_JS = """
+document.querySelectorAll('#chronique').forEach(c => {
+  let filt = 'tout';
+  const chips = c.querySelectorAll('[data-filter]'), tribe = c.querySelector('select[data-tribe]'),
+        search = c.querySelector('[data-search]'), count = c.querySelector('[data-count]');
+  function apply() {
+    const t = tribe ? tribe.value : '', q = search.value.trim().toLowerCase(), num = (q.match(/^\\D*(\\d+)\\D*$/) || [])[1];
+    const ok = e => (filt === 'tout' || e.dataset.f === filt) && (!t || e.dataset.tribe === t)
+      && (!q || (num ? e.dataset.who.includes(' ' + num + ' ') : e.textContent.toLowerCase().includes(q)));
+    let shown = 0;
+    c.querySelectorAll('li.ev:not(.grp)').forEach(e => { const v = ok(e); e.hidden = !v; });
+    c.querySelectorAll('li.grp').forEach(g => {
+      const n = [...g.querySelectorAll('li.ev')].filter(e => !e.hidden).length;
+      g.hidden = n === 0; g.querySelector('.gn').textContent = n;
+      const w = g.querySelector('.gw'); w.textContent = n > 1 ? w.dataset.many : w.dataset.one;
+    });
+    c.querySelectorAll('ul.evs > li.ev:not(.grp)').forEach(e => { if (!e.hidden) shown++; });
+    c.querySelectorAll('ul.evs > li.grp').forEach(g => { if (!g.hidden) shown += +g.querySelector('.gn').textContent; });
+    c.querySelectorAll('li.day').forEach(d => d.hidden = !d.querySelector('ul.evs > li:not([hidden])'));
+    c.querySelectorAll('.season').forEach(s => { const o = s.querySelector('ol.days'); if (o) s.hidden = !o.querySelector('li.day:not([hidden])'); });
+    count.textContent = shown + ' événement' + (shown > 1 ? 's' : '') + ' affiché' + (shown > 1 ? 's' : '');
+  }
+  chips.forEach(b => b.addEventListener('click', () => {
+    filt = b.dataset.filter; chips.forEach(o => o.setAttribute('aria-pressed', o === b ? 'true' : 'false')); apply();
+  }));
+  if (tribe) tribe.addEventListener('change', apply);
+  search.addEventListener('input', apply);
+  apply();
+});
+"""
+
+TOC_JS = """
+(() => {
+  const links = [...document.querySelectorAll('.toc a')];
+  const secs = links.map(a => document.getElementById(a.hash.slice(1))).filter(Boolean);
+  if (!('IntersectionObserver' in window)) return;
+  const io = new IntersectionObserver(es => es.forEach(e => {
+    if (e.isIntersecting) links.forEach(a => a.classList.toggle('on', a.hash === '#' + e.target.id));
+  }), {rootMargin: '0px 0px -70% 0px'});
+  secs.forEach(s => io.observe(s));
+})();
+"""
+
+
+def toc_html(items):
+    return '<nav class=toc aria-label="sommaire"><b>Sur cette page</b>' + "".join(f'<a href="#{k}">{h(v)}</a>' for k, v in items) + "</nav>"
+
+
 # --- the pages' bodies ------------------------------------------------------------
 
 def version_html(v):
@@ -1432,8 +1941,9 @@ def trials_tag(run):
     return "avec" if run.get("trials", True) else "sans"
 
 
-def run_body(s, r, d):
-    """The page of one run: `s` the series (from Lab.series()), `r` its run's state, `d` its data or None."""
+def run_body(s, r, d, store=None, year=None):
+    """The page of one run: `s` the series (from Lab.series()), `r` its run's state, `d` its data or None;
+    `store` finds the control run's data for the arrows, `year` the chronicle's year."""
     serie, name = s["name"], r["name"]
     where = {"fini": "terminé", "en cours": f"en cours, année {fmt(r.get('year'))}", "attend": "pas encore lancé"}.get(r["state"], r["state"])
     head = (f'<h1>Run {h(name)} <span class="etat">{h(where)}</span></h1>'
@@ -1448,20 +1958,36 @@ def run_body(s, r, d):
         return head + f'<p class="err">{NO_DATA}.{h(live)}</p>'
     sm = summary(d)
     ts = tribes(d)
-    body = [head, f"<p class=verdict>{h(verdict(d, sm))}</p>", tiles_html(sm)]
-    body.append("<h2>La carte</h2><p class=caption>Où ils étaient, jour après jour : faites glisser le curseur ou appuyez sur Lire.</p>" + map_svg(d, "m1"))
-    body.append("<h2>La population</h2><p class=caption>Les vivants jour par jour, par tribu ; les hivers en bleu pâle, les années en bas.</p>"
+    rc, label = control_of(s, r)
+    dc = store.load(s["name"], rc["name"]) if (rc is not None and store is not None) else None
+    smc = summary(dc) if dc is not None else None
+    if smc is None:
+        label = None
+    fire = has_fire_data(d)
+    toc = [("bref", "En bref"), ("carte", "La carte"), ("population", "La population"), ("trouve", "Ce qu’ils ont trouvé")]
+    toc += [("savoir", "Ce que la tribu sait"), ("ose", "Qui a osé quoi")] if fire else []
+    toc += [("morts", "Les morts"), ("chronique", "La chronique"), ("naissances", "Les naissances"), ("gens", "Les gens à la fin"),
+            ("detail", "Le détail")]
+    ctrl = (f'<p class=caption>Les flèches comparent au témoin de la même série, <a href="{run_url(serie, rc["name"])}">{h(rc["name"])}</a> '
+            f'({h(label)}) : vert mieux, rouge moins bien, gris ni l’un ni l’autre.</p>') if smc else ""
+    body = [f'<section id=bref><p class=hero>{h(headline(d, sm, smc, label))}</p><p class=hero-sub>{h(verdict(d, sm))}</p>'
+            f'{run_tiles(sm, smc, label)}{ctrl}</section>']
+    body.append("<section id=carte><h2>La carte</h2><p class=caption>Où ils étaient, jour après jour : faites glisser le curseur ou appuyez sur Lire.</p>"
+                + map_svg(d, "m1") + "</section>")
+    body.append("<section id=population><h2>La population</h2><p class=caption>Les vivants jour par jour, par tribu ; les hivers en bleu pâle, les années en bas.</p>"
                 + population_chart(d, wide=True).svg("population par tribu"))
     body.append("<p class=caption>Dessous, les morts de chaque année par tribu : en rouge ceux de manque (faim, soif, froid), en gris ceux "
                 "de fond (maladie, vieillesse, couches) ; le contour dit la tribu, A à gauche de l’année"
-                + (", B à droite" if len(ts) > 1 else "") + ".</p>" + want_chart(d, wide=True).svg("morts de manque et de fond par an"))
-    body.append("<h2>Ce qu’ils ont trouvé</h2><p class=caption>Les techniques essayées, gardées et copiées, tribu par tribu.</p>" + techniques_html(d))
-    if has_fire_data(d):
-        body.append(knowledge_html(d))
-        body.append(dared_html(d))
-    body.append(deaths_table(d))
-    body.append(births_table(d))
-    body.append(people_end_table(d))
+                + (", B à droite" if len(ts) > 1 else "") + ".</p>" + want_chart(d, wide=True).svg("morts de manque et de fond par an") + "</section>")
+    body.append("<section id=trouve><h2>Ce qu’ils ont trouvé</h2><p class=caption>Les techniques essayées, gardées et copiées, tribu par tribu.</p>"
+                + techniques_html(d) + "</section>")
+    if fire:
+        body.append(f"<section id=savoir>{knowledge_html(d)}</section>")
+        body.append(f"<section id=ose>{dared_html(d)}</section>")
+    body.append(deaths_table_v2(d))
+    body.append(chronicle_html(d, year, run_url(serie, name)))
+    body.append(f"<section id=naissances>{births_table(d)}</section>")
+    body.append(f"<section id=gens>{people_end_table(d)}</section>")
     detail = [f"<p class=settings>{h(settings_fr(d))}</p>"]
     for t in ts:
         detail.append(f"<p><b>La culture de la tribu {h(t)} à la fin</b> : {h(culture_line(d, t))}.</p>")
@@ -1472,14 +1998,14 @@ def run_body(s, r, d):
     detail.append("</div>")
     for t in ts:
         detail.append(f"<h3>Les essais gardés de la tribu {h(t)}, par jour</h3>{kept_list(d, t)}")
-    if has_fire_data(d):
+    if fire:
         detail.append(nights_html(d))
         detail.append(rumours_html(d))
     detail.append("<h3>Année par année</h3>" + years_table(d))
     detail.append(f"<h3>La vie de chacun ({len(d.get('people', []))})</h3>" + people_table(d))
-    body.append(f'<details class=detail><summary>Le détail</summary>{"".join(detail)}</details>')
-    body.append(f"<script>{MAP_JS}</script>")
-    return "".join(body)
+    body.append(f'<section id=detail><details class=detail><summary>Le détail</summary>{"".join(detail)}</details></section>')
+    body.append(f"<script>{MAP_JS}{TABLE_JS}{CHRON_JS}{TOC_JS}</script>")
+    return head + f'<div class=runpage>{toc_html(toc)}<div class=runmain>{"".join(body)}</div></div>'
 
 
 def aggregates(values):
