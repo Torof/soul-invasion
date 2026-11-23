@@ -208,6 +208,14 @@ fn every_season_100() -> BySeason<u32> {
 }
 
 /// 100: a rate as it is.
+fn one_night() -> Vec<(u32, u32)> {
+    vec![(0, 1)]
+}
+
+fn permille_1000() -> u32 {
+    1000
+}
+
 fn percent_100() -> u32 {
     100
 }
@@ -1043,8 +1051,8 @@ impl Fire {
 /// vivarium's page, never to remove the difficulty.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Trials {
-    /// Days of distress in a row (hungry at the day's end, or a day with
-    /// no gather at all) before a body may start a trial.
+    /// Days of distress in a row (hungry or thirsty at the day's end, or
+    /// a day with no gather at all) before a body may start a trial.
     pub trial_after_days: u32,
     /// How many days a trial lasts, and how many days before it the
     /// judgement compares them with; also the days imitation looks back on.
@@ -1053,12 +1061,17 @@ pub struct Trials {
     /// percent), the wills rising, straight lines between the points, the
     /// first held before and the last after.
     pub try_percent_by_will: Vec<(u32, u32)>,
-    /// From this will, a trial of the home may set it a whole
-    /// `new_home_walk_tiles` away; under it, a quarter of that.
-    pub far_home_from_will: u32,
-    /// How far a trial moves the home, in tiles, towards where the body
-    /// knows the most plants still bearing.
-    pub new_home_walk_tiles: u32,
+    /// The nights a body must have slept at a place before a trial may
+    /// set its home there (D50, amended 23 November 2026: the home goes to
+    /// a place it lived): (will, nights), the wills rising, straight lines
+    /// between the points; the bold trust one night, the timid want more.
+    #[serde(default = "one_night")]
+    pub home_nights_by_will: Vec<(u32, u32)>,
+    /// What its notes of a place keep from one day to the next, in per
+    /// mille (D53, amended 23 November 2026): the old nights fade, so a
+    /// place that stops doing it good loses its grade.
+    #[serde(default = "permille_1000")]
+    pub lived_keep_permille: u32,
     /// At night at the camp, a body copies only from a camp-mate within
     /// this many tiles.
     pub imitate_tiles: u32,
@@ -1124,8 +1137,8 @@ impl Default for Trials {
             trial_after_days: 0,
             trial_days: 1,
             try_percent_by_will: vec![(0, 0)],
-            far_home_from_will: 100,
-            new_home_walk_tiles: 0,
+            home_nights_by_will: one_night(),
+            lived_keep_permille: 1000,
             imitate_tiles: 0,
             imitate_percent: 0,
             imitate_loss_percent: 0,
@@ -1186,14 +1199,17 @@ impl Trials {
         if self.try_percent_by_will.is_empty()
             || !rising
             || self.try_percent_by_will.iter().any(|p| !percent(p.1))
-            || !percent(self.far_home_from_will)
+            || self.lived_keep_permille > 1000
+            || self.home_nights_by_will.is_empty()
+            || !self.home_nights_by_will.windows(2).all(|p| p[0].0 < p[1].0)
             || !percent(self.imitate_percent)
             || !percent(self.imitate_loss_percent)
             || self.trial_days == 0
         {
             return Err(ContentError::Needs(
                 "trials: try_percent_by_will not empty, its wills rising and its percents at \
-                 most 100; far_home_from_will, imitate_percent and imitate_loss_percent at \
+                 most 100; home_nights_by_will not empty, its wills rising; \
+                 lived_keep_permille at most 1000; imitate_percent and imitate_loss_percent at \
                  most 100; trial_days positive",
             ));
         }
@@ -1241,6 +1257,14 @@ impl Trials {
             .map_or(self.trial_days, |&(_, seasons)| {
                 season_days(seasons, days_per_year).max(self.trial_days)
             })
+    }
+
+    /// The nights a body of `will` must have slept at a place before a
+    /// trial may set its home there.
+    #[must_use]
+    pub fn home_nights(&self, will: u8) -> u32 {
+        u32::try_from(along(&self.home_nights_by_will, u64::from(will) * 1000, 1))
+            .unwrap_or(u32::MAX)
     }
 
     /// The longest of the trials' days: what a mind keeps of its days.
@@ -2224,12 +2248,6 @@ impl Content {
         ] {
             at_most("needs.ron", field, value, THOUSAND)?;
         }
-        at_most(
-            "needs.ron",
-            "trials.new_home_walk_tiles",
-            trials.new_home_walk_tiles,
-            MILLION,
-        )?;
         for (field, value) in [
             (
                 "thought.plant_sight_tiles",

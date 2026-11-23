@@ -3658,7 +3658,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                 "none (the control run): the people stand where they were born"
             },
             if s.trials && s.brain {
-                "on: a body in distress (hungry at nightfall, or a day without a gather) for content/needs.ron's trial_after_days running may try one way moved by one step, with a daily chance by its will; after trial_days the world has judged on every distress (kept if nothing worsened and one thing improved over gathered a day, thin days, thirsty days and cold nights, else reverted); a home trial goes towards the plants known bearing or the nearest water known, half and half, never past the map's edge; at night at the camp a body may copy one way from the camp-mate who fared best lately (the fewest days of distress, gathered kJ breaking ties), the more readily the greater that mate's will, a copy losing a step at times; children follow their mother's home every night"
+                "on: a body in distress (hungry or thirsty at nightfall, or a day without a gather) for content/needs.ron's trial_after_days running may try one way moved by one step, with a daily chance by its will; after trial_days the world has judged on every distress (kept if nothing worsened and one thing improved over gathered a day, thin days, thirsty days and cold nights, else reverted); a home trial goes to the place it slept at whose nights were the best by its own body (fewest hungry, thirsty or cold nights, then least walked, then most gathered), slept at for the nights its will asks, else no home trial that day; at night at the camp a body may copy one way from the camp-mate who fared best lately (the fewest days of distress, gathered kJ breaking ties), the more readily the greater that mate's will, a copy losing a step at times; children follow their mother's home every night"
             } else {
                 "off (the control run, --no-trials): nobody tries nor copies anything"
             },
@@ -5067,8 +5067,7 @@ mod tests {
             trial_after_days: 1,
             trial_days: 2,
             try_percent_by_will: vec![(0, 100)],
-            far_home_from_will: 70,
-            new_home_walk_tiles: 10,
+
             imitate_tiles: 12,
             imitate_percent: 100,
             imitate_loss_percent: 50,
