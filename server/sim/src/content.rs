@@ -458,6 +458,11 @@ pub struct Fire {
     pub told_days_per_hour: u32,
     /// The most days a told state is worth believing, whatever it bears.
     pub told_days_max: u32,
+    /// How many denials a present body tells a night at most, besides its
+    /// `told_per_night`: places it found bare where the record it held
+    /// said food. A denial takes no slot and reaches only those who hold
+    /// a record of the place (lot 5a, D55 amended).
+    pub denied_per_night: u32,
 }
 
 impl Default for Fire {
@@ -471,6 +476,7 @@ impl Default for Fire {
             hearth_nights: 0,
             told_days_per_hour: 4,
             told_days_max: 20,
+            denied_per_night: 0,
         }
     }
 }
@@ -487,6 +493,7 @@ impl Fire {
             hearth_nights: 50,
             told_days_per_hour: 4,
             told_days_max: 20,
+            denied_per_night: 6,
         }
     }
 

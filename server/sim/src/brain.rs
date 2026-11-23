@@ -271,6 +271,22 @@ struct Place {
     rumour_kj: u64,
 }
 
+/// A place found bare where the record it held said food (D55, amended by
+/// lot 5a): "I found it bare", told at the next fire apart from the
+/// `told_per_night` slots, to those present who hold a record of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Denial {
+    /// The place.
+    place: PlaceKey,
+    /// The day of the look that found it bare.
+    day: u32,
+    /// What that look saw: each kind there, bare.
+    states: Vec<(u16, u8)>,
+    /// What an hour of what the record said was worth: the rumours worth
+    /// most are denied first.
+    worth_kj: u64,
+}
+
 /// What a body saw of one kind at a place: how many trees and plants of
 /// it, and how many held food worth a step when it last looked (D48: what
 /// is there ripens and is picked; one sees the fruit on a bush, not a
@@ -764,6 +780,10 @@ pub struct Mind {
     judged: Option<Judged>,
     /// The chunks whose drinking place it found today, to tell tonight.
     water_found: Vec<ChunkPos>,
+    /// The places it found bare where a record said food since its last
+    /// fire, to deny there (lot 5a): kept apart from its places, which
+    /// forget a bare place first.
+    denials: Vec<Denial>,
     /// The day it last changed its ways (a trial started, a way copied or
     /// kept): the relative judge leaves its days out for `trial_days`.
     changed_day: Option<u64>,
@@ -829,6 +849,7 @@ impl Mind {
             heard_ways: Vec::new(),
             judged: None,
             water_found: Vec::new(),
+            denials: Vec::new(),
             changed_day: None,
             copied_night: None,
             looked_from: None,
@@ -1065,6 +1086,28 @@ impl Place {
         }
     }
 
+    /// Seen bare where a rumour said food: denied, not told in a slot.
+    fn is_denied(&self, fire: &Fire) -> bool {
+        self.rumour_kj > 0 && self.states(fire).iter().all(|&(_, bucket)| bucket == 0)
+    }
+
+    /// Seen bare where the record it holds, its own, said food: what an
+    /// hour of what the record said was worth, to deny it (lot 5a). A
+    /// rumour dispelled is denied from its look ([`Mind::correct`]).
+    fn denies(&self, food: &Food, memory: &Store) -> Option<u64> {
+        if self.rumour_kj > 0 || self.kinds.iter().any(|seen| seen.holding > 0) {
+            return None;
+        }
+        match self.access.and_then(|a| memory.get(a.record)) {
+            Some(Record::Place { states, .. }) => states
+                .iter()
+                .map(|&(kind, bucket)| heard_kj(food, kind, bucket, 100))
+                .max()
+                .filter(|&kj| kj > 0),
+            _ => None,
+        }
+    }
+
     /// What the place is believed worth from `from`: what an hour of its
     /// fullest plant gives, less the farther, of what it saw or, found
     /// bare, of what the record it held said (a rumour dispelled is worth
@@ -1158,6 +1201,10 @@ impl Mind {
     /// drinking places it found today, then the places that changed for
     /// it by their value from the camp; `told_per_night` at most. A place
     /// told becomes its own record held (its draft is now in the well).
+    /// Apart, its denials (lot 5a): the places it found bare where the
+    /// record it held said food, the rumours worth most first,
+    /// `denied_per_night` at most, each a bare record; a denial takes no
+    /// slot, and one beyond the cap is not told.
     #[allow(clippy::too_many_arguments, reason = "one evening's telling")]
     fn tell(
         &mut self,
@@ -1167,7 +1214,7 @@ impl Mind {
         me: BodyId,
         memory: &mut Store,
         news: &mut Vec<News>,
-    ) -> Vec<RecordId> {
+    ) -> (Vec<RecordId>, Vec<RecordId>) {
         let mut told = Vec::new();
         let most = usize::try_from(fire.told_per_night).unwrap_or(usize::MAX);
         if let Some(judged) = self.judged.take() {
@@ -1210,10 +1257,27 @@ impl Mind {
         for key in looked {
             self.correct(key, me, fire, food, memory, news, now);
         }
+        // Its own record said food and it found the place bare: denied.
+        let own_denials: Vec<Denial> = self
+            .places
+            .iter()
+            .filter(|(_, place)| place.looked_day.is_some())
+            .filter_map(|(&key, place)| {
+                place.denies(food, memory).map(|worth_kj| Denial {
+                    place: key,
+                    day: place.looked_day.unwrap_or(day),
+                    states: place.states(fire),
+                    worth_kj,
+                })
+            })
+            .collect();
+        self.denials.extend(own_denials);
         let mut changed: Vec<(std::cmp::Reverse<u64>, PlaceKey)> = self
             .places
             .iter()
             .filter(|(_, place)| place.looked_day.is_some() && place.changed(fire, memory))
+            .filter(|(_, place)| !place.is_denied(fire))
+            .filter(|(key, _)| !self.denials.iter().any(|d| d.place == **key))
             .map(|(&key, place)| {
                 (
                     std::cmp::Reverse(place.value_from(key, food, memory, camp, half, side)),
@@ -1245,7 +1309,56 @@ impl Mind {
             told.push(id);
         }
         told.truncate(most);
-        told
+        let denied = self.deny(fire, (day, me), memory);
+        (told, denied)
+    }
+
+    /// Its denials of tonight (lot 5a), each written once as a bare
+    /// record: the latest look a place, the rumours worth most first,
+    /// `denied_per_night` at most; a place seen bearing again since is
+    /// told among the places instead. A place it still knows holds the
+    /// bare record as its own.
+    fn deny(&mut self, fire: &Fire, (day, me): (u32, BodyId), memory: &mut Store) -> Vec<RecordId> {
+        let mut denials = std::mem::take(&mut self.denials);
+        denials.sort_by_key(|d| (d.place, std::cmp::Reverse(d.day)));
+        denials.dedup_by_key(|d| d.place);
+        denials.sort_by_key(|d| (std::cmp::Reverse(d.worth_kj), d.place));
+        let most = usize::try_from(fire.denied_per_night).unwrap_or(usize::MAX);
+        let mut denied = Vec::new();
+        for denial in denials {
+            let known = self.places.get_mut(&denial.place);
+            if known
+                .as_ref()
+                .is_some_and(|place| place.kinds.iter().any(|seen| seen.holding > 0))
+            {
+                continue;
+            }
+            if denied.len() >= most {
+                if let Some(place) = known {
+                    place.rumour_kj = 0;
+                }
+                continue;
+            }
+            let (id, _) = memory.intern(Record::Place {
+                place: denial.place,
+                day: denial.day,
+                witness: me,
+                states: denial.states,
+            });
+            if let Some(place) = known {
+                memory.hold(id);
+                place.rumour_kj = 0;
+                if let Some(old) = place.access.replace(Access {
+                    record: id,
+                    by: me,
+                    day,
+                }) {
+                    memory.release(old.record);
+                }
+            }
+            denied.push(id);
+        }
+        denied
     }
 
     /// `me` hears `record` from `teller` at the fire of `camp` (D55) with
@@ -1393,6 +1506,19 @@ impl Mind {
         place.access = None;
         memory.release(access.record);
         if told_food && !found_food {
+            self.denials.push(Denial {
+                place: key,
+                day: place.looked_day.unwrap_or(0),
+                states: place.states(fire),
+                worth_kj: place.rumour_kj,
+            });
+            // Away from the fire for days, it keeps the worth most.
+            let most = usize::try_from(fire.denied_per_night).unwrap_or(usize::MAX);
+            if self.denials.len() > most.saturating_mul(4).max(1) {
+                self.denials
+                    .sort_by_key(|d| (std::cmp::Reverse(d.worth_kj), d.place));
+                self.denials.truncate(most);
+            }
             news.push(News::Dispelled {
                 body: me,
                 place: key,
@@ -2211,13 +2337,15 @@ impl Brains {
                 // Nobody to tell: the drafts wait for another night.
                 continue;
             }
-            let (told, fared) = self.fire_tell(world, rules, (camp, side, day, now), &present);
+            let (told, denied, fared) =
+                self.fire_tell(world, rules, (camp, side, day, now), &present);
             self.fire_hear(world, rules, (camp, day, now), &present, &told, &fared);
-            // The night, in the hearth.
+            self.fire_deny(world, rules, (camp, day, now), &present, &denied);
+            // The night, in the hearth: the denials after the slots.
             let (night, _) = self.memory.intern(Record::Night {
                 camp,
                 day,
-                told,
+                told: told.into_iter().chain(denied).collect(),
                 present: present.clone(),
                 fared,
             });
@@ -2282,19 +2410,24 @@ impl Brains {
     }
 
     /// Each present tells, by its id ([`Mind::tell`]), and says how it
-    /// fared on the day that closed: what was told, with its teller, and
-    /// the days told.
-    #[allow(clippy::type_complexity, reason = "two lists of one evening")]
+    /// fared on the day that closed: what was told, with its teller, the
+    /// denials apart (lot 5a), and the days told.
+    #[allow(clippy::type_complexity, reason = "three lists of one evening")]
     fn fire_tell(
         &mut self,
         world: &World,
         rules: &Content,
         (camp, side, day, now): (Pos, i32, u32, u64),
         present: &[BodyId],
-    ) -> (Vec<(RecordId, BodyId)>, Vec<(BodyId, Fared)>) {
-        // What was told, with its teller; and the days told.
+    ) -> (
+        Vec<(RecordId, BodyId)>,
+        Vec<(RecordId, BodyId)>,
+        Vec<(BodyId, Fared)>,
+    ) {
+        // What was told, with its teller; the denials; and the days told.
         let fire = &rules.needs.fire;
         let mut told: Vec<(RecordId, BodyId)> = Vec::new();
+        let mut denied: Vec<(RecordId, BodyId)> = Vec::new();
         let mut fared: Vec<(BodyId, Fared)> = Vec::new();
         for &id in present {
             let Some(body) = world.body(id) else {
@@ -2302,15 +2435,17 @@ impl Brains {
             };
             let need = need_kj_per_day(rules, body);
             let mind = self.minds.get_mut(&id).expect("present");
-            for record in mind.tell(
+            let (slots, denials) = mind.tell(
                 fire,
                 &self.food,
                 (camp, side, day, now),
                 id,
                 &mut self.memory,
                 &mut self.news,
-            ) {
-                told.push((record, id));
+            );
+            told.extend(slots.iter().map(|&record| (record, id)));
+            denied.extend(denials.iter().map(|&record| (record, id)));
+            for record in slots.into_iter().chain(denials) {
                 self.news.push(News::Told {
                     body: id,
                     record,
@@ -2333,7 +2468,68 @@ impl Brains {
                 ));
             }
         }
-        (told, fared)
+        (told, denied, fared)
+    }
+
+    /// The denials of the night (lot 5a), apart from what is heard: each
+    /// present but its teller who holds a record of the place hears it
+    /// ([`Mind::hear`]): the later record replaces the older, the 226 →
+    /// 231 rule, and a place believed bare is forgotten first. A listener
+    /// who holds no record of the place hears nothing: a denial adds no
+    /// place, and keeps no slot of its attention (`heard_by_age`).
+    fn fire_deny(
+        &mut self,
+        world: &World,
+        rules: &Content,
+        (camp, day, now): (Pos, u32, u64),
+        present: &[BodyId],
+        denied: &[(RecordId, BodyId)],
+    ) {
+        let fire = &rules.needs.fire;
+        let seed = world.seed();
+        let dawn = u32::try_from(today(world)).unwrap_or(u32::MAX);
+        for &(record, teller) in denied {
+            let Some(&Record::Place {
+                place: key,
+                day: rec_day,
+                ..
+            }) = self.memory.get(record)
+            else {
+                continue;
+            };
+            let teller_will = self.minds.get(&teller).map_or(0, |m| m.will);
+            for &id in present {
+                let Some(mind) = self.minds.get_mut(&id) else {
+                    continue;
+                };
+                if id == teller || mind.places.get(&key).is_none_or(|p| p.access.is_none()) {
+                    continue;
+                }
+                let credit = memory::credit_lasting(
+                    seed,
+                    (id, mind.will),
+                    (teller, teller_will),
+                    (rec_day, day, dawn),
+                    memory::TRUST_DAYS,
+                );
+                if mind.hear(
+                    fire,
+                    &self.food,
+                    (camp, day),
+                    (credit, record, teller),
+                    &mut self.memory,
+                    rules,
+                ) {
+                    self.news.push(News::Heard {
+                        body: id,
+                        record,
+                        from: teller,
+                        credit,
+                        at: now,
+                    });
+                }
+            }
+        }
     }
 
     /// Each present hears the others, by its id ([`Mind::hear`]): it
@@ -6931,6 +7127,83 @@ mod tests {
             believed(&brains, (2, 2), leaves),
             leaves_1,
             "the leaves lost all their age's credit already"
+        );
+    }
+
+    #[test]
+    fn a_denial_takes_no_slot_outlives_the_place_forgotten_and_reaches_only_who_held_the_record() {
+        let mut rules = fire_rules();
+        rules.needs.fire.told_per_night = 1;
+        rules.needs.fire.denied_per_night = 1;
+        rules.needs.thought.places_remembered = 3;
+        let (mut world, mut brains) = camp_of(4, &rules);
+        let (teller, finder, holder, stranger) = (BodyId(1), BodyId(2), BodyId(3), BodyId(4));
+        let kind = brains.food.numbers["bramble"];
+        let (rumour, other, good) = ((4, 4), (5, 5), (0, 0));
+        // Night 1: the teller tells the rumour (its one slot); the
+        // stranger is away. Night 1 b: the other place, the same way.
+        saw_place(&world, &rules, &mut brains, teller, rumour, kind, 5);
+        night(&mut world, &rules, &mut brains, &[teller, finder, holder]);
+        saw_place(&world, &rules, &mut brains, teller, other, kind, 5);
+        night(&mut world, &rules, &mut brains, &[teller, finder, holder]);
+        let held = |brains: &Brains, id: BodyId, key: PlaceKey| {
+            brains
+                .mind(id)
+                .unwrap()
+                .believes()
+                .find(|(k, _)| *k == key)
+                .map(|(_, a)| a.record)
+        };
+        let r_rumour = held(&brains, holder, rumour).expect("heard");
+        let r_other = held(&brains, holder, other).expect("heard");
+        // The finder finds both bare, then sees good places: the bare
+        // ones are forgotten first, their denials kept apart.
+        saw_place(&world, &rules, &mut brains, finder, rumour, kind, 0);
+        saw_place(&world, &rules, &mut brains, finder, other, kind, 0);
+        for key in [good, (1, 0), (0, 1)] {
+            saw_place(&world, &rules, &mut brains, finder, key, kind, 6);
+        }
+        assert!(
+            !brains.mind(finder).unwrap().places.contains_key(&rumour),
+            "forgotten: three places remembered, the farthest last"
+        );
+        brains.news();
+        let news = night(&mut world, &rules, &mut brains, &[finder, holder, stranger]);
+        let told: Vec<RecordId> = news
+            .iter()
+            .filter_map(|n| match n {
+                News::Told { body, record, .. } if *body == finder => Some(*record),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            told.len(),
+            2,
+            "a good place in its one slot, and a denial: {news:?}"
+        );
+        let denial = told[1];
+        assert!(
+            matches!(brains.memory.get(denial), Some(Record::Place { place, states, .. }) if *place == rumour && states.iter().all(|s| s.1 == 0)),
+            "the rumour worth most (the smaller place at a tie), denied"
+        );
+        assert_eq!(
+            held(&brains, holder, rumour),
+            Some(denial),
+            "who held it replaces it"
+        );
+        assert_eq!(
+            held(&brains, holder, other),
+            Some(r_other),
+            "one denial a night: the other rumour is kept"
+        );
+        assert_ne!(r_rumour, denial);
+        assert!(
+            held(&brains, stranger, good).is_some(),
+            "the good news is heard"
+        );
+        assert!(
+            !brains.mind(stranger).unwrap().places.contains_key(&rumour),
+            "a denial adds no place to who never held it"
         );
     }
 
