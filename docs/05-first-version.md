@@ -730,7 +730,10 @@ measures: carrying an infant slows its carrier to 75 % of its pace, and
 the caller looks behind on its way and waits for a member it sees
 walking after it; on one seed neither brings the mothers nearer
 (198 / 129 tiles with both) and the waits cost the food carried at noon
-a quarter (D56).
+a quarter (D56). On the ten seeds of the standard plan, against lot 5a:
+without trials alive 82.6 → 88.5 (6 of 10), carried at noon +20 % (10 of
+10); with trials alive 79.9 → 77.5 (8 of 10 lower), the births lost,
+supposedly, where sleeping out spread (D56).
 
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
