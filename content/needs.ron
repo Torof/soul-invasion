@@ -343,6 +343,29 @@
     //                          lead, 23 November 2026: "regarder
     //                          derrière"); 0: it never does;
     // behind_wait_minutes: 30 — half an hour of such waits a day at most.
+    // The evening's review (PR 1 ter; the lead, 23 November 2026: "on
+    // peut mettre ça en place... les améliorer et les pousser un peu plus
+    // loin"): a caller keeps dated facts on its companions, never a level
+    // ("I waited for 14 on the 12th", "17 brought little back on the
+    // 13th"); looking behind and what each carries home feed them.
+    // facts_kept:          32 — the facts a caller keeps, the oldest
+    //                          forgotten first; 0: no review;
+    // review_outings:       3 — it judges a companion on its last three
+    //                          outings with it, since it last set it
+    //                          aside (judged over several outings, never
+    //                          on one day);
+    // review_bad:           2 — two of them bad (waited for on the way,
+    //                          or back with less than a day of its need):
+    //                          "not with us tomorrow", a gesture at the
+    //                          fire that costs the one set aside a failure
+    //                          of its confidence in gathering (temperance's
+    //                          rules); two good ones in a row: called
+    //                          first, by name. A parent never sets aside
+    //                          its own child, and a child whose parent is
+    //                          in the group comes with it;
+    // near_camp_tiles:     40 — one set aside weighs first the places it
+    //                          knows within 40 tiles of the camp: those set
+    //                          aside may make their own group near it.
     decisions: (
         choices: 3,
         plants_per_gatherer: 2,
@@ -356,6 +379,10 @@
         home_when_full_percent: 50,
         behind_tiles: 24,
         behind_wait_minutes: 30,
+        facts_kept: 32,
+        review_outings: 3,
+        review_bad: 2,
+        near_camp_tiles: 40,
     ),
     // The will tempered, and a confidence by activity (D50 amended, D56;
     // the project lead, 23 November 2026: "je suis d'accord avec toutes
@@ -395,6 +422,10 @@
     //                  in exploring against that in gathering multiplies
     //                  the habit's weight on going looking (habit_weight).
     // bold_will:      40 — the vivarium counts a will of 40 or more bold.
+    // streak_percent: [(0, 100), (4, 200)] — reproducibility (PR 1 ter):
+    //                  a day's success after successes in a row of the
+    //                  same activity weighs more, up to twice after four,
+    //                  straight between; a failure ends the streak.
     temperance: (
         bears_by_innate: [(0, 2), (100, 6)],
         failure_milli: 1000,
@@ -403,5 +434,38 @@
         listened_milli: 500,
         activities: [("explore", 75), ("gather", 50), ("stay", 90)],
         bold_will: 40,
+        streak_percent: [(0, 100), (4, 200)],
+    ),
+    // Who is believed to know (D56, PR 1 ter): "32 knows where berries
+    // are" is a record in the common memory (D55); each body holds, for
+    // each activity, only the one it believes best there, with its own
+    // credit (0 to 100). Never a title (D30): a belief, wrong at times.
+    // activities: explore (who finds places that feed), gather (whose
+    //             calls feed those who join).
+    // seen_gain:  20 — a day it followed one (joined its call, went where
+    //             its answer or its account said) and came back with a day
+    //             of its need;
+    // heard_gain: 10 — an account at the fire: a place new told by its
+    //             finder, a group home with half of it fed or more;
+    // wear:       15 — a day it followed one and came back empty; half of
+    //             it, heard at the fire that a whole group came back empty;
+    // fade_per_day: 1 — a point a day since the record's day: a belief
+    //             not renewed is gone in a season or two;
+    // join_percent: 100 — one joins first the call of whom it believes
+    //             best at gathering, when that call is among its choices,
+    //             with a chance of its credit in per cent;
+    // questions_per_night: 4 — one with no place to go asks whom it
+    //             believes best "where is food?" and gets that one's best
+    //             place: a telling to one, apart from the accounts' slots,
+    //             four a fire at most. Its success, when it follows the
+    //             answer, counts as a success of the one who answered.
+    reputation: (
+        activities: ["explore", "gather"],
+        seen_gain: 20,
+        heard_gain: 10,
+        wear: 15,
+        fade_per_day: 1,
+        join_percent: 100,
+        questions_per_night: 4,
     ),
 )

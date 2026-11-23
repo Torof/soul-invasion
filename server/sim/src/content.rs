@@ -357,6 +357,11 @@ pub struct Needs {
     /// trials' fixed steps, and no activity has a confidence.
     #[serde(default)]
     pub temperance: Temperance,
+    /// Who is believed to know (D56, PR 1 ter): a reputation by activity
+    /// held by each body in the common memory, and the questions asked of
+    /// it at the fire. Absent: nobody is reputed, nobody asks.
+    #[serde(default)]
+    pub reputation: Reputation,
 }
 
 /// The evening's decisions (D56, decided by the project lead on 23
@@ -401,6 +406,26 @@ pub struct Decisions {
     pub behind_tiles: u32,
     /// The most it waits so in a day, in game minutes.
     pub behind_wait_minutes: u32,
+    /// How many dated facts on its companions a caller keeps (D56, PR 1
+    /// ter: the evening's review), the oldest forgotten first. 0: no
+    /// review, anybody joins anybody.
+    #[serde(default)]
+    pub facts_kept: u32,
+    /// The review judges a companion on its last outings with the caller
+    /// since the caller last told it "not with us tomorrow": this many.
+    #[serde(default)]
+    pub review_outings: u32,
+    /// Of them, this many bad ones (waited for on the way, or back with
+    /// less than a day of its need) and it is told "not with us
+    /// tomorrow"; this many good ones in a row (neither) and it is called
+    /// first, by name.
+    #[serde(default)]
+    pub review_bad: u32,
+    /// One told "not with us tomorrow" weighs first the places it knows
+    /// within this many tiles of the camp, on each axis: those set aside
+    /// may make their own group near the camp.
+    #[serde(default)]
+    pub near_camp_tiles: u32,
 }
 
 impl Default for Decisions {
@@ -419,6 +444,10 @@ impl Default for Decisions {
             home_when_full_percent: 50,
             behind_tiles: 0,
             behind_wait_minutes: 0,
+            facts_kept: 0,
+            review_outings: 0,
+            review_bad: 0,
+            near_camp_tiles: 0,
         }
     }
 }
@@ -432,6 +461,10 @@ impl Decisions {
             look_percent_by_will: vec![(0, 0), (100, 40)],
             behind_tiles: 24,
             behind_wait_minutes: 30,
+            facts_kept: 32,
+            review_outings: 3,
+            review_bad: 2,
+            near_camp_tiles: 40,
             ..Self::default()
         }
     }
@@ -440,6 +473,12 @@ impl Decisions {
     #[must_use]
     pub fn on(&self) -> bool {
         self.choices > 0
+    }
+
+    /// Whether a caller reviews its companions at the fire (D56, PR 1 ter).
+    #[must_use]
+    pub fn reviews(&self) -> bool {
+        self.on() && self.facts_kept > 0
     }
 
     /// The chance, in per cent, that a body of `will` goes looking.
@@ -469,6 +508,11 @@ impl Decisions {
         if self.habit_floor > 100 || self.home_when_full_percent > 100 {
             return Err(ContentError::Needs(
                 "decisions: habit_floor and home_when_full_percent are per cent",
+            ));
+        }
+        if self.reviews() && (self.review_bad == 0 || self.review_bad > self.review_outings) {
+            return Err(ContentError::Needs(
+                "decisions: with facts_kept, review_bad 1 to review_outings",
             ));
         }
         Ok(())
@@ -507,6 +551,12 @@ pub struct Temperance {
     pub activities: Vec<(String, u32)>,
     /// A will this high or higher is counted bold in the vivarium's page.
     pub bold_will: u32,
+    /// A day of an activity that succeeds after successes in a row weighs
+    /// more (D56, PR 1 ter: "reproducibility"): (successes in a row
+    /// before it, per cent of its gain), rising, straight lines between,
+    /// the last held beyond. Empty: every success weighs the same.
+    #[serde(default)]
+    pub streak_percent: Vec<(u32, u32)>,
 }
 
 impl Default for Temperance {
@@ -520,6 +570,7 @@ impl Default for Temperance {
             listened_milli: 0,
             activities: Vec::new(),
             bold_will: 40,
+            streak_percent: Vec::new(),
         }
     }
 }
@@ -544,6 +595,7 @@ impl Temperance {
                 ("stay".to_owned(), 90),
             ],
             bold_will: 40,
+            streak_percent: vec![(0, 100), (4, 200)],
         }
     }
 
@@ -575,6 +627,18 @@ impl Temperance {
     pub fn day_success_milli(&self, percent: u32) -> u64 {
         let percent = u64::from(percent.clamp(1, 100));
         u64::from(self.failure_milli) * (100 - percent) / percent
+    }
+
+    /// What a day's success gains after `streak` successes in a row of
+    /// the same activity (D56, PR 1 ter): [`Temperance::day_success_milli`]
+    /// times the content's `streak_percent` at that streak.
+    #[must_use]
+    pub fn streak_success_milli(&self, percent: u32, streak: u32) -> u64 {
+        let base = self.day_success_milli(percent);
+        if self.streak_percent.is_empty() {
+            return base;
+        }
+        base * along(&self.streak_percent, u64::from(streak) * 1000, 1) / 100
     }
 
     /// What a success ending `failures` failures in a row gains, in
@@ -625,6 +689,105 @@ impl Temperance {
         {
             return Err(ContentError::Needs(
                 "temperance: activities among explore, gather, stay, each succeeding 1 to 100 per cent",
+            ));
+        }
+        if !self.streak_percent.windows(2).all(|p| p[0].0 < p[1].0) {
+            return Err(ContentError::Needs(
+                "temperance: streak_percent's streaks rising",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Who is believed to know (D56, PR 1 ter, decided by the project lead
+/// on 23 November 2026): "32 knows where berries are" is a record in the
+/// common memory (D55), and each body holds, for each activity, only the
+/// one it believes best there with its own credit in it. Experience and
+/// the fire's accounts form it; followers back empty wear it; time fades
+/// it. Never a title (D30). Every value is a D30 placeholder, named and
+/// explained in `content/needs.ron`; nothing is tuned to a result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reputation {
+    /// The activities a reputation is held for, among the temperance's
+    /// [`ACTIVITIES`]. Empty: nobody is reputed, nobody asks.
+    pub activities: Vec<String>,
+    /// What a day one followed another and came back with a day of its
+    /// need adds to its credit in that one, in points (0 to 100).
+    pub seen_gain: u32,
+    /// What an account at the fire adds: a place new told by the one who
+    /// found it, a group come home with most of it fed.
+    pub heard_gain: u32,
+    /// What a day one followed another and came back empty takes from it;
+    /// half of it, heard at the fire that a whole group came back empty.
+    pub wear: u32,
+    /// What a credit loses each day since its record's day.
+    pub fade_per_day: u32,
+    /// The chance, in per cent of its credit, that one joins first the
+    /// call of whom it believes best at gathering, when that call is among
+    /// its choices.
+    pub join_percent: u32,
+    /// How many questions ("where is food?") are answered at one fire,
+    /// apart from the accounts' slots. 0: nobody asks.
+    pub questions_per_night: u32,
+}
+
+impl Default for Reputation {
+    /// Off.
+    fn default() -> Self {
+        Self {
+            activities: Vec::new(),
+            seen_gain: 0,
+            heard_gain: 0,
+            wear: 0,
+            fade_per_day: 0,
+            join_percent: 0,
+            questions_per_night: 0,
+        }
+    }
+}
+
+impl Reputation {
+    /// The placeholders of `content/needs.ron` (D30).
+    #[must_use]
+    pub fn placeholders() -> Self {
+        Self {
+            activities: vec!["explore".to_owned(), "gather".to_owned()],
+            seen_gain: 20,
+            heard_gain: 10,
+            wear: 15,
+            fade_per_day: 1,
+            join_percent: 100,
+            questions_per_night: 4,
+        }
+    }
+
+    /// Whether anybody is reputed.
+    #[must_use]
+    pub fn on(&self) -> bool {
+        !self.activities.is_empty()
+    }
+
+    /// Whether a reputation is held for the activity `known`, an index in
+    /// [`ACTIVITIES`].
+    #[must_use]
+    pub fn holds(&self, known: usize) -> bool {
+        ACTIVITIES
+            .get(known)
+            .is_some_and(|name| self.activities.iter().any(|a| a == name))
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        if self
+            .activities
+            .iter()
+            .any(|a| !ACTIVITIES.contains(&a.as_str()))
+            || [self.seen_gain, self.heard_gain, self.wear]
+                .iter()
+                .any(|&g| g > 100)
+        {
+            return Err(ContentError::Needs(
+                "reputation: activities among explore, gather, stay; gains and wear 100 at most",
             ));
         }
         Ok(())
@@ -1867,7 +2030,8 @@ impl Content {
         self.needs.thought.validate()?;
         self.needs.fire.validate()?;
         self.needs.decisions.validate()?;
-        self.needs.temperance.validate()
+        self.needs.temperance.validate()?;
+        self.needs.reputation.validate()
     }
 
     /// Refuses the values the simulation cannot carry (audit of 20

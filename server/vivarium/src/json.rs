@@ -443,6 +443,7 @@ impl Report {
                         },
                     })),
                     "decisions": decisions_json(&dec),
+                    "reputed": self.reputed.get(&(y.tribe, y.year)).map(|rows| reputed_json(rows)),
                     "fire": {
                         "nights": fire.nights,
                         "told": fire.told,
@@ -715,6 +716,41 @@ fn by_activity<T: Into<Value> + Copy>(counts: [T; 3]) -> Value {
     Value::Object(map)
 }
 
+/// The days one followed another a way (D56, PR 1 ter): how many, back
+/// fed, back empty, and the mean per cent of its need gathered.
+fn follows_json((days, fed, empty, percent): (u32, u32, u32, u64)) -> Value {
+    json!({
+        "days": days,
+        "fed": fed,
+        "empty": empty,
+        "mean_need_percent": (days > 0).then(|| percent / u64::from(days)),
+    })
+}
+
+/// Who a tribe's living believed best at each activity at a year's end
+/// (D56, PR 1 ter), keyed as `sim::content::ACTIVITIES` names them, the
+/// most believed first.
+fn reputed_json(rows: &[crate::Reputed]) -> Value {
+    let mut map = serde_json::Map::new();
+    for (i, key) in sim::content::ACTIVITIES.iter().enumerate() {
+        let list: Vec<Value> = rows
+            .iter()
+            .filter(|r| usize::from(r.activity) == i)
+            .map(|r| {
+                json!({
+                    "who": id(r.who),
+                    "believers": r.believers,
+                    "mean_credit": r.credit / r.believers.max(1),
+                })
+            })
+            .collect();
+        if !list.is_empty() {
+            map.insert((*key).to_owned(), Value::Array(list));
+        }
+    }
+    Value::Object(map)
+}
+
 /// A tribe-year's decisions at the fire, its groups, its days by what was
 /// done and the mothers' distance at noon (D56).
 fn decisions_json(dec: &DecisionYear) -> Value {
@@ -746,6 +782,21 @@ fn decisions_json(dec: &DecisionYear) -> Value {
             "fed_days": by_act(dec.fed),
         },
         "wills": {"minds": dec.minds, "bold": dec.bold},
+        "review": {
+            "named": dec.review[0],
+            "set_aside": dec.review[1],
+            "refused": dec.review[2],
+            "weighed_joins": dec.review[3],
+            "asked": dec.review[4],
+            "answered": dec.review[5],
+            "set_aside_days": by_act(dec.aside_days),
+            "set_aside_fed_days": by_act(dec.aside_fed),
+        },
+        "follows": {
+            "joined": follows_json(dec.follows[0]),
+            "asked": follows_json(dec.follows[1]),
+            "told": follows_json(dec.follows[2]),
+        },
         "judged": {
             "successes": by_activity(dec.successes),
             "failures": by_activity(dec.failures),

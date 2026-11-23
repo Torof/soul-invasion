@@ -173,10 +173,13 @@ pub(crate) mod purpose {
     /// The evening's decisions (D56): whether a present goes looking
     /// tomorrow, and which way when two are as little known.
     pub(crate) const FIRE_LOOK: u64 = 0x0d56_100c;
+    /// The evening's decisions (D56, PR 1 ter): whether one joins first the
+    /// call of whom it believes best at gathering.
+    pub(crate) const FIRE_REPUTE: u64 = 0x0d56_1e9e;
 
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 69] = [
+    pub(crate) const ALL: [u64; 70] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -246,6 +249,7 @@ pub(crate) mod purpose {
         TRIAL_COPY_LOSS,
         FIRE_CREDIT,
         FIRE_LOOK,
+        FIRE_REPUTE,
     ];
 }
 

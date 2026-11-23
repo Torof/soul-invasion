@@ -568,7 +568,38 @@ pub struct DecisionYear {
     pub successes: [u32; 3],
     /// And judged a failure.
     pub failures: [u32; 3],
+    /// The evening's review and questions (D56, PR 1 ter), summed:
+    /// companions called by name, set aside, calls refused to one set
+    /// aside, joins weighed by a reputation, questions asked, answered
+    /// with a place.
+    pub review: [u32; 6],
+    /// Who followed whom, by how (joined a call, asked, went where a
+    /// finder told): (days, back fed, back empty, per cent of its need
+    /// gathered summed).
+    pub follows: [(u32, u32, u32, u64); 3],
+    /// The days of those set aside that evening, by what they did
+    /// ([`Act::ALL`]'s order): what becomes of them.
+    pub aside_days: [u32; 5],
+    /// Of them, the days they gathered a day of their need or more.
+    pub aside_fed: [u32; 5],
 }
+
+/// Who a tribe's living believed best at an activity at a year's end (D56,
+/// PR 1 ter): the one believed, by how many, their credits summed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reputed {
+    /// The activity, an index in `sim::content::ACTIVITIES`.
+    pub activity: u8,
+    /// The one believed best.
+    pub who: BodyId,
+    /// How many believed it.
+    pub believers: u32,
+    /// Their credits in it, summed.
+    pub credit: u32,
+}
+
+/// The most believed kept a tribe, a year and an activity.
+const REPUTED_KEPT: usize = 3;
 
 /// An act's index in [`Act::ALL`].
 fn act_index(act: Act) -> usize {
@@ -700,6 +731,7 @@ fn record_row(id: RecordId, record: &Record, refs: u32) -> RecordRow {
             row.present = u32::try_from(present.len()).unwrap_or(u32::MAX);
             row.told = u32::try_from(told.len()).unwrap_or(u32::MAX);
         }
+        Record::Reputed { .. } => row.kind = "reputed",
     }
     row
 }
@@ -1021,6 +1053,9 @@ pub struct Report {
     /// The evening's decisions and the day's groups by tribe and year
     /// (D56).
     pub decisions: BTreeMap<(u8, u64), DecisionYear>,
+    /// Who the living believed best at each activity at each year's end,
+    /// by tribe and year, the most believed first (D56, PR 1 ter).
+    pub reputed: BTreeMap<(u8, u64), Vec<Reputed>>,
     /// What the tribe's living knew at each year's end (D55).
     pub knowledge: BTreeMap<(u8, u64), Knowledge>,
     /// The places the tribe's living knew at each year's end, each with
@@ -1604,19 +1639,17 @@ pub fn run_watched(
             ) {
                 continue;
             }
-            if decision_news(
-                &news,
-                FireScene {
-                    place_tiles,
-                    tick,
-                    day,
-                    year,
-                    brains: &brains,
-                    believed: &believed,
-                },
-                (&mut people, &mut chronicle),
-                &mut tally,
-            ) {
+            let scene = FireScene {
+                place_tiles,
+                tick,
+                day,
+                year,
+                brains: &brains,
+                believed: &believed,
+            };
+            if decision_news(&news, scene, (&mut people, &mut chronicle), &mut tally)
+                || review_news(&news, scene, (&mut people, &mut chronicle), &mut tally)
+            {
                 continue;
             }
             let (heard, will) = match &news {
@@ -1740,7 +1773,10 @@ pub fn run_watched(
                 | News::GroupEnded { .. }
                 | News::Found { .. }
                 | News::Judged { .. }
-                | News::Habit { .. } => continue,
+                | News::Habit { .. }
+                | News::Aside { .. }
+                | News::Asked { .. }
+                | News::Followed { .. } => continue,
                 News::Copied {
                     body,
                     from,
@@ -1982,6 +2018,7 @@ pub fn run_watched(
         home_moves,
         fire: tally.fire,
         decisions: tally.decisions,
+        reputed: tally.reputed,
         knowledge,
         known_places,
         rumours: tally.rumours,
@@ -2186,6 +2223,12 @@ struct FireTally {
     rumours: Vec<Rumour>,
     /// The nights told at, (camp, day), to count a night once.
     nights_told: BTreeSet<(Pos, u32)>,
+    /// Those set aside at this dawn's fire (D56, PR 1 ter): their day is
+    /// counted at nightfall.
+    aside_now: BTreeSet<BodyId>,
+    /// Who the living believed best at each year's end, by tribe and
+    /// year (D56, PR 1 ter).
+    reputed: BTreeMap<(u8, u64), Vec<Reputed>>,
 }
 
 /// What the fire's news (D55) need to be read.
@@ -2223,6 +2266,10 @@ fn wills_of(
     tally: &mut FireTally,
 ) {
     let bold = content.needs.temperance.bold_will;
+    let rep = &content.needs.reputation;
+    let today =
+        u32::try_from(world.tick().0 / world.calendar().ticks_per_day()).unwrap_or(u32::MAX);
+    let mut believed: BTreeMap<(u8, BodyId), (u32, u32)> = BTreeMap::new();
     let counts = tally.decisions.entry((t, year)).or_default();
     for body in world.bodies() {
         let Some(mind) = brains.mind(body.id()) else {
@@ -2234,12 +2281,43 @@ fn wills_of(
         }
         counts.minds += 1;
         counts.bold += u32::from(u32::from(mind.will()) >= bold);
+        for (activity, who, credit) in mind.reputed(brains.memory(), rep, today) {
+            let entry = believed.entry((activity, who)).or_default();
+            entry.0 += 1;
+            entry.1 += u32::from(credit);
+        }
         let its_year = person.habit_years.entry(year).or_default();
         its_year.will = Some(mind.will());
         let held = mind.confidences(&content.needs.temperance);
         if held.iter().any(Option::is_some) {
             its_year.confidence = Some(held.map(|c| c.unwrap_or(0)));
         }
+    }
+    let mut rows: Vec<Reputed> = believed
+        .into_iter()
+        .map(|((activity, who), (believers, credit))| Reputed {
+            activity,
+            who,
+            believers,
+            credit,
+        })
+        .collect();
+    rows.sort_by_key(|r| {
+        (
+            r.activity,
+            std::cmp::Reverse(r.believers),
+            std::cmp::Reverse(r.credit),
+            r.who,
+        )
+    });
+    let mut kept: Vec<Reputed> = Vec::new();
+    for row in rows {
+        if kept.iter().filter(|k| k.activity == row.activity).count() < REPUTED_KEPT {
+            kept.push(row);
+        }
+    }
+    if !kept.is_empty() {
+        tally.reputed.insert((t, year), kept);
     }
 }
 
@@ -2280,10 +2358,22 @@ fn counted_news(
             calls_full,
             absent,
             full_told,
+            review,
             ..
         } => {
             let tribe = tribe_of(people, *by);
             let counts = tally.decisions.entry((tribe, year)).or_default();
+            let said = [
+                review.named,
+                review.aside,
+                review.refused,
+                review.weighed,
+                review.asked,
+                review.answered,
+            ];
+            for (sum, n) in counts.review.iter_mut().zip(said) {
+                *sum += n;
+            }
             counts.evenings += 1;
             counts.full_told += u32::from(*full_told);
             counts.skipped += skipped;
@@ -2306,6 +2396,14 @@ fn counted_news(
             counts.days[i] += 1;
             counts.bare[i] += bare;
             counts.fed[i] += u32::from(*kj_percent >= 100);
+            if tally.aside_now.remove(body) {
+                let counts = tally
+                    .decisions
+                    .entry((tribe_of(people, *body), year))
+                    .or_default();
+                counts.aside_days[i] += 1;
+                counts.aside_fed[i] += u32::from(*kj_percent >= 100);
+            }
             let person = people.entry(*body).or_default();
             person.habit[i] += 1;
             person.habit_bare += bare;
@@ -2435,6 +2533,88 @@ fn decision_news(
         }
         News::Evening { .. } | News::Habit { .. } | News::Found { .. } | News::Judged { .. } => {
             counted_news(news, scene.year, people, tally)
+        }
+        _ => false,
+    }
+}
+
+/// Reads a piece of the evening's review and questions (D56, PR 1 ter)
+/// into the counters and the chronicle; `true` when it was one. A set
+/// aside and a question make a sentence ("at the fire, person 14 tells
+/// person 9: not with us tomorrow"; "at the fire, person 9 asks person 32
+/// where food is and is told (656, 208)"); a follower's day is counted.
+fn review_news(
+    news: &News,
+    scene: FireScene<'_>,
+    (people, chronicle): (&mut BTreeMap<BodyId, Person>, &mut Vec<Entry>),
+    tally: &mut FireTally,
+) -> bool {
+    let tribe_of =
+        |people: &BTreeMap<BodyId, Person>, body: BodyId| people.get(&body).map_or(0, |p| p.tribe);
+    let mut line = |people: &mut BTreeMap<BodyId, Person>, body: BodyId, what: String| {
+        let entry = Entry {
+            tick: scene.tick,
+            day: scene.day,
+            what,
+        };
+        chronicle.push(entry.clone());
+        people.entry(body).or_default().entries.push(entry);
+    };
+    let side = scene.place_tiles;
+    let tile = |key: PlaceKey| (key.0 * side + side / 2, key.1 * side + side / 2);
+    match news {
+        News::Aside { leader, body, .. } => {
+            tally.aside_now.insert(*body);
+            line(
+                people,
+                *body,
+                format!(
+                    "at the fire, {} tells {}: not with us tomorrow",
+                    name(*leader),
+                    name(*body)
+                ),
+            );
+            true
+        }
+        News::Asked {
+            body, of, place, ..
+        } => {
+            let answer = place.map_or_else(
+                || String::from(", who knows no place to tell"),
+                |key| {
+                    let (x, y) = tile(key);
+                    format!(" and is told ({x}, {y})")
+                },
+            );
+            line(
+                people,
+                *body,
+                format!(
+                    "at the fire, {} asks {} where food is{answer}",
+                    name(*body),
+                    name(*of)
+                ),
+            );
+            true
+        }
+        News::Followed {
+            body,
+            how,
+            fed,
+            empty,
+            kj_percent,
+            ..
+        } => {
+            let counts = tally
+                .decisions
+                .entry((tribe_of(people, *body), scene.year))
+                .or_default();
+            let f = &mut counts.follows[usize::from(*how).min(2)];
+            f.0 += 1;
+            f.1 += u32::from(*fed);
+            f.2 += u32::from(*empty);
+            f.3 += u64::from(*kj_percent);
+            true
         }
         _ => false,
     }

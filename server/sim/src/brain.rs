@@ -81,7 +81,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use crate::content::{Content, Fire, Temperance, Trials};
+use crate::content::{Content, Decisions, Fire, Reputation, Temperance, Trials};
 use crate::crops::{self, Bearer, Source};
 use crate::r#gen::scatter::{self, purpose};
 use crate::lru::Lru;
@@ -572,6 +572,10 @@ struct Plan {
     legs: u32,
     /// Done with: the place found bare, the group home, the legs walked.
     done: bool,
+    /// Whom it asked "where is food?" at the fire, and the activity it
+    /// believed that one best at (D56, PR 1 ter): it goes where the
+    /// answer said.
+    asked: Option<(BodyId, u8)>,
 }
 
 /// A group of the day (D56): a caller and those who joined it, walking to
@@ -611,6 +615,9 @@ struct Group {
     waited: u64,
     /// The caller has set off.
     started: bool,
+    /// The members it waited for on the way (D56, PR 1 ter: a fact of
+    /// its review).
+    waited_for: BTreeSet<BodyId>,
 }
 
 /// A trial under way (D50): the way moved, the ways before the step, and
@@ -771,6 +778,31 @@ impl Lately {
     }
 }
 
+/// One evening's review and questions at a fire (D56, PR 1 ter).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EveningReview {
+    /// Companions a caller called first, by name.
+    pub named: u32,
+    /// Companions set aside ("not with us tomorrow").
+    pub aside: u32,
+    /// Calls one set aside would have joined, refused.
+    pub refused: u32,
+    /// Joins weighed by a reputation: the call of whom one believes best
+    /// at gathering taken first.
+    pub weighed: u32,
+    /// Questions asked ("where is food?").
+    pub asked: u32,
+    /// Of them, answered with a place.
+    pub answered: u32,
+}
+
+/// A follower joined its caller's group (D56, PR 1 ter).
+pub const FOLLOW_JOINED: u8 = 0;
+/// A follower went where the one it asked answered.
+pub const FOLLOW_ASKED: u8 = 1;
+/// A follower went to a place another found and told.
+pub const FOLLOW_TOLD: u8 = 2;
+
 /// What the brain tells of its trials (D50), drained with
 /// [`Brains::news`] after each turn: the vivarium's chronicle reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -884,6 +916,57 @@ pub enum News {
         absent: u32,
         /// Whether a full place was told tonight.
         full_told: bool,
+        /// The evening's review and questions (PR 1 ter): companions
+        /// called first by name, set aside ("not with us tomorrow"), calls
+        /// refused to one set aside, joins weighed by a reputation,
+        /// questions asked and answered with a place.
+        review: EveningReview,
+    },
+    /// A caller told a companion "not with us tomorrow" at the fire (D56,
+    /// PR 1 ter): judged over its last outings with it.
+    Aside {
+        /// The caller.
+        leader: BodyId,
+        /// The one set aside.
+        body: BodyId,
+        /// The day it is set aside for.
+        day: u32,
+        /// When.
+        at: u64,
+    },
+    /// One with no place to go asked whom it believes best "where is
+    /// food?" at the fire (D56, PR 1 ter).
+    Asked {
+        /// Who asked.
+        body: BodyId,
+        /// Whom.
+        of: BodyId,
+        /// The activity it believes that one best at, an index in
+        /// `content::ACTIVITIES`.
+        activity: u8,
+        /// The place answered, if any.
+        place: Option<PlaceKey>,
+        /// When.
+        at: u64,
+    },
+    /// At nightfall, one who followed another today (D56, PR 1 ter):
+    /// joined its call, went where its answer said, or went to a place it
+    /// told; how it came back.
+    Followed {
+        /// The follower.
+        body: BodyId,
+        /// The one followed.
+        whom: BodyId,
+        /// How: [`FOLLOW_JOINED`], [`FOLLOW_ASKED`], [`FOLLOW_TOLD`].
+        how: u8,
+        /// Back with a day of its need.
+        fed: bool,
+        /// Back with nothing.
+        empty: bool,
+        /// What it gathered, in per cent of a day of its need.
+        kj_percent: u32,
+        /// When.
+        at: u64,
     },
     /// A group of the day ended (D56).
     GroupEnded {
@@ -1074,6 +1157,13 @@ pub struct Mind {
     habit: Vec<u8>,
     /// Places it went to and found bare today.
     bare_today: u32,
+    /// Whom it believes best at each activity of the content's
+    /// `reputation` (D56, PR 1 ter): one at most an activity.
+    reputed: Vec<Belief>,
+    /// The dated facts it keeps on its companions as a caller (D56, PR 1
+    /// ter), the oldest first: at most the content's
+    /// `decisions.facts_kept`.
+    companions: Vec<Fact>,
     /// How many times it went looking: the next direction.
     walks: u64,
     /// How many times it thought.
@@ -1089,6 +1179,8 @@ pub struct Confidence {
     pub milli: u32,
     /// Failures in a row.
     pub failures: u16,
+    /// Successes in a row (D56, PR 1 ter: a streak weighs more).
+    pub successes: u16,
 }
 
 impl Confidence {
@@ -1102,15 +1194,18 @@ impl Confidence {
     /// `cost` times its rank past them.
     pub fn fail(&mut self, bears: u32, cost: u32) {
         self.failures = self.failures.saturating_add(1);
+        self.successes = 0;
         let past = u32::from(self.failures).saturating_sub(bears);
         self.milli = self.milli.saturating_sub(cost.saturating_mul(past));
     }
 
-    /// A success: `gain` added, the failures in a row forgotten.
+    /// A success: `gain` added, the failures in a row forgotten, one
+    /// more success in a row.
     pub fn succeed(&mut self, gain: u64) {
         let gain = u32::try_from(gain).unwrap_or(u32::MAX);
         self.milli = self.milli.saturating_add(gain).min(100_000);
         self.failures = 0;
+        self.successes = self.successes.saturating_add(1);
     }
 
     /// Listened to: `gain` added.
@@ -1125,6 +1220,53 @@ impl Confidence {
         let moved = now + (target - now) * i64::from(permille) / 1000;
         self.milli = u32::try_from(moved.clamp(0, 100_000)).unwrap_or(0);
     }
+}
+
+/// Whom a body believes best at an activity (D56, PR 1 ter): an access
+/// to the record "who knows" in the common memory and its own credit in
+/// it as of the record's day, fading a point a day by the content's
+/// `reputation.fade_per_day`. Sixteen bytes: the access's twelve, the
+/// activity's one, the credit's one, two of padding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Belief {
+    /// The activity, an index in `content::ACTIVITIES`.
+    activity: u8,
+    /// The record "who knows": who, at what, renewed when.
+    access: Access,
+    /// Its credit in it on the record's day, 1 to 100.
+    credit: u8,
+}
+
+/// A fact a caller keeps on a companion (D56, PR 1 ter): an outing with
+/// it on a day, and what it saw; never a level. Twelve bytes: the
+/// companion's four, the day's four, the flags' one, three of padding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Fact {
+    /// The companion.
+    who: BodyId,
+    /// The day of the outing, or of the evening it set it aside.
+    day: u32,
+    /// [`FACT_WAITED`], [`FACT_LITTLE`], [`FACT_ASIDE`].
+    flags: u8,
+}
+
+/// A fact: the caller waited for it on the way (D56, PR 1 ter).
+const FACT_WAITED: u8 = 0x01;
+/// A fact: it came back with less than a day of its need.
+const FACT_LITTLE: u8 = 0x02;
+/// A fact: the caller told it "not with us tomorrow" that evening; the
+/// outings before it are not judged again.
+const FACT_ASIDE: u8 = 0x04;
+
+/// What a caller's review says of a companion (D56, PR 1 ter).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Review {
+    /// Called first, by name.
+    Good,
+    /// "Not with us tomorrow".
+    Aside,
+    /// Nothing said.
+    Unsaid,
 }
 
 impl Mind {
@@ -1166,6 +1308,8 @@ impl Mind {
             plan: None,
             habit: Vec::new(),
             bare_today: 0,
+            reputed: Vec::new(),
+            companions: Vec::new(),
             walks: 0,
             thoughts: 0,
         }
@@ -1554,6 +1698,7 @@ impl Mind {
         let start = Confidence {
             milli: u32::from(innate) * 1000,
             failures: 0,
+            successes: 0,
         };
         self.confidence = vec![start; temper.activities.len()];
     }
@@ -1563,6 +1708,7 @@ impl Mind {
         let mut will = Confidence {
             milli: u32::from(self.will) * 1000 + u32::from(self.will_rest),
             failures: self.will_failures,
+            successes: 0,
         };
         change(&mut will);
         self.will = will.points();
@@ -1592,6 +1738,147 @@ impl Mind {
         }
     }
 
+    /// Its credit today in `belief` (D56, PR 1 ter): its credit on the
+    /// record's day, less the content's `fade_per_day` a day since.
+    fn credit_today(belief: &Belief, memory: &Store, rep: &Reputation, today: u32) -> u8 {
+        let day = memory.get(belief.access.record).map_or(0, Record::day);
+        let faded = today.saturating_sub(day).saturating_mul(rep.fade_per_day);
+        u8::try_from(u32::from(belief.credit).saturating_sub(faded)).unwrap_or(0)
+    }
+
+    /// Whom it believes best at `activity` (an index in
+    /// `content::ACTIVITIES`) today, and its credit in it; a credit faded
+    /// to nothing believes nobody (D56, PR 1 ter).
+    fn believed(
+        &self,
+        memory: &Store,
+        rep: &Reputation,
+        activity: u8,
+        today: u32,
+    ) -> Option<(BodyId, u8)> {
+        let belief = self.reputed.iter().find(|b| b.activity == activity)?;
+        let Some(Record::Reputed { who, .. }) = memory.get(belief.access.record) else {
+            return None;
+        };
+        let credit = Self::credit_today(belief, memory, rep, today);
+        (credit > 0).then_some((*who, credit))
+    }
+
+    /// Whom it believes best at each activity today, with its credit
+    /// (D56, PR 1 ter): (activity, who, credit).
+    #[must_use]
+    pub fn reputed(&self, memory: &Store, rep: &Reputation, today: u32) -> Vec<(u8, BodyId, u8)> {
+        self.reputed
+            .iter()
+            .filter_map(|b| {
+                self.believed(memory, rep, b.activity, today)
+                    .map(|(who, credit)| (b.activity, who, credit))
+            })
+            .collect()
+    }
+
+    /// One it followed, or an account of one (D56, PR 1 ter): `delta`
+    /// points to its credit in `who` at `activity`, got from `by` (itself
+    /// when it lived it). It keeps only whom it believes best: another
+    /// replaces the one it holds only when the gain alone passes its
+    /// credit today, and a wear to nothing drops it. The record "who
+    /// knows" is renewed today in the common memory. `true` when its
+    /// belief changed.
+    fn believe(
+        &mut self,
+        (me, by): (BodyId, BodyId),
+        (activity, who): (u8, BodyId),
+        delta: i32,
+        (memory, rep, today): (&mut Store, &Reputation, u32),
+    ) -> bool {
+        if who == me || delta == 0 || !rep.holds(usize::from(activity)) {
+            return false;
+        }
+        let at = self.reputed.iter().position(|b| b.activity == activity);
+        let held = at.and_then(|i| match memory.get(self.reputed[i].access.record) {
+            Some(Record::Reputed { who, .. }) => Some((
+                *who,
+                Self::credit_today(&self.reputed[i], memory, rep, today),
+            )),
+            _ => None,
+        });
+        let credit = match held {
+            Some((held, c)) if held == who => (i32::from(c) + delta).clamp(0, 100),
+            Some((_, c)) if delta > i32::from(c) => delta.min(100),
+            None if delta > 0 => delta.min(100),
+            _ => return false,
+        };
+        if let Some(i) = at {
+            let old = self.reputed.remove(i);
+            memory.release(old.access.record);
+        }
+        if credit > 0 {
+            let (record, _) = memory.intern(Record::Reputed {
+                who,
+                activity,
+                day: today,
+            });
+            self.reputed.push(Belief {
+                activity,
+                access: Access {
+                    record,
+                    by,
+                    day: today,
+                },
+                credit: u8::try_from(credit).unwrap_or(100),
+            });
+        }
+        true
+    }
+
+    /// A fact on a companion (D56, PR 1 ter), the oldest forgotten past
+    /// `kept`.
+    fn note(&mut self, fact: Fact, kept: u32) {
+        self.companions.push(fact);
+        let kept = usize::try_from(kept).unwrap_or(usize::MAX);
+        if self.companions.len() > kept {
+            let extra = self.companions.len() - kept;
+            self.companions.drain(..extra);
+        }
+    }
+
+    /// Its review of `who` at the fire (D56, PR 1 ter): its last
+    /// `review_outings` outings with it, since it last set it aside;
+    /// `review_bad` bad ones among them (waited for, or back with less
+    /// than a day of its need) set it aside; its last `review_bad` all
+    /// good call it first. Judged over several outings, never on one.
+    fn review(&self, who: BodyId, dec: &Decisions) -> Review {
+        let most = usize::try_from(dec.review_outings).unwrap_or(usize::MAX);
+        let bad_most = usize::try_from(dec.review_bad).unwrap_or(usize::MAX);
+        let mut outings: Vec<u8> = Vec::new();
+        for fact in self.companions.iter().rev().filter(|f| f.who == who) {
+            if fact.flags & FACT_ASIDE != 0 || outings.len() >= most {
+                break;
+            }
+            outings.push(fact.flags);
+        }
+        let bad = |flags: &u8| flags & (FACT_WAITED | FACT_LITTLE) != 0;
+        if outings.iter().filter(|f| bad(f)).count() >= bad_most {
+            Review::Aside
+        } else if outings.len() >= bad_most && !outings[..bad_most].iter().any(bad) {
+            Review::Good
+        } else {
+            Review::Unsaid
+        }
+    }
+
+    /// Set aside at the fire (D56, PR 1 ter): a failure of its confidence
+    /// in gathering, under the temperance's rules (borne free at first).
+    fn set_aside(&mut self, temper: &Temperance) {
+        let bears = temper.bears(self.innate);
+        if let Some(c) = temper
+            .activity("gather")
+            .and_then(|i| self.confidence.get_mut(i))
+        {
+            c.fail(bears, temper.failure_milli);
+        }
+    }
+
     /// A day of `activity` judged (D56): its confidence moved by the
     /// four rules; the news of it.
     fn judge_day(
@@ -1605,7 +1892,7 @@ impl Mind {
         let percent = temper.activities.get(activity)?.1;
         let c = self.confidence.get_mut(activity)?;
         if success {
-            c.succeed(temper.day_success_milli(percent));
+            c.succeed(temper.streak_success_milli(percent, u32::from(c.successes)));
         } else {
             c.fail(bears, temper.failure_milli);
         }
@@ -1629,6 +1916,9 @@ impl Mind {
         }
         for access in self.heard_ways.drain(..) {
             memory.release(access.record);
+        }
+        for belief in self.reputed.drain(..) {
+            memory.release(belief.access.record);
         }
     }
 
@@ -2093,7 +2383,15 @@ pub struct Brains {
     at_fire: BTreeMap<Pos, BTreeSet<BodyId>>,
     /// The groups of the day (D56), by their caller.
     groups: BTreeMap<BodyId, Group>,
+    /// The day's groups as they came home, told at the next fire (D56,
+    /// PR 1 ter): each caller, its members, how many came back fed, how
+    /// many empty.
+    accounts: Vec<Account>,
 }
+
+/// A group's return, told at the next fire (D56, PR 1 ter): its caller,
+/// its members, how many came back fed, how many empty.
+type Account = (BodyId, Vec<BodyId>, u32, u32);
 
 /// The content's kinds of trees and plants bearing food, numbered, and
 /// what each bears at one tick: a thought weighs hundreds of plants, and
@@ -2395,6 +2693,7 @@ impl Brains {
             gone_wills: BTreeMap::new(),
             at_fire: BTreeMap::new(),
             groups: BTreeMap::new(),
+            accounts: Vec::new(),
         }
     }
 
@@ -2656,6 +2955,17 @@ impl Brains {
         self.food.refresh(world, rules);
         let (kin, season) = temper_today(world, rules, day);
         let ids: Vec<BodyId> = self.minds.keys().copied().collect();
+        let follows = self.follows_today(world, rules, day);
+        let gathered: BTreeMap<BodyId, u64> = self
+            .minds
+            .iter()
+            .map(|(&id, m)| (id, m.gathered_today_kj))
+            .collect();
+        let indirect: BTreeSet<BodyId> = follows
+            .iter()
+            .filter(|f| f.how != FOLLOW_TOLD && f.fed)
+            .map(|f| f.whom)
+            .collect();
         for &id in &ids {
             let Some(body) = world.body(id) else {
                 continue;
@@ -2682,7 +2992,10 @@ impl Brains {
                     bare: gathered_kj == 0,
                 },
             );
-            let (day_of, kin_of) = ((day, gathered_kj, now), (kin.get(&id).copied(), season));
+            let (day_of, kin_of) = (
+                (day, gathered_kj, now),
+                (kin.get(&id).copied(), season, indirect.contains(&id)),
+            );
             close_habit(rules, body, id, mind, day_of, kin_of, &mut self.news);
             mind.distress_days = if hungry || gathered_kj == 0 {
                 mind.distress_days.saturating_add(1)
@@ -2723,8 +3036,15 @@ impl Brains {
                 }
             }
         }
+        self.review_day(world, rules, day, (&follows, &gathered));
         self.end_groups(now, u64::from(world.calendar().ticks_per_second()));
-        // The children follow (D50, D47).
+        self.children_follow(world, &ids);
+    }
+
+    /// The children follow (D50, D47): a child takes its mother's home
+    /// (its father's without one), a carried infant its carrier's; then
+    /// each mind notes its home for the night's camp-mates.
+    fn children_follow(&mut self, world: &World, ids: &[BodyId]) {
         let follow: Vec<(BodyId, Pos)> = ids
             .iter()
             .filter_map(|&id| {
@@ -2748,6 +3068,147 @@ impl Brains {
         }
         for mind in self.minds.values_mut() {
             mind.home_at_dusk = mind.ways.home;
+        }
+    }
+
+    /// Who followed whom today (D56, PR 1 ter), read at nightfall before
+    /// the day closes: each member of a group its caller (gathering), each
+    /// who asked at the fire the one it asked (the activity it asked it
+    /// for), each who went alone to a place another found and told that
+    /// finder (exploring); and how each came back: with a day of its need,
+    /// or with nothing.
+    fn follows_today(&self, world: &World, rules: &Content, day: u64) -> Vec<Follow> {
+        let rep = &rules.needs.reputation;
+        if !rep.on() && !rules.needs.decisions.reviews() {
+            return Vec::new();
+        }
+        let gather = activity_index("gather");
+        let explore = activity_index("explore");
+        let mut follows = Vec::new();
+        for (&id, mind) in &self.minds {
+            let Some(body) = world.body(id) else {
+                continue;
+            };
+            let Some(plan) = mind.plan.filter(|p| u64::from(p.day) == day) else {
+                continue;
+            };
+            let gathered = mind.gathered_today_kj;
+            let need = need_kj_per_day(rules, body);
+            let (fed, empty) = (gathered >= need, gathered == 0);
+            let kj_percent = u32::try_from(gathered * 100 / need.max(1)).unwrap_or(u32::MAX);
+            let mut push = |whom: BodyId, how: u8, activity: u8| {
+                if whom != id {
+                    follows.push(Follow {
+                        body: id,
+                        whom,
+                        how,
+                        activity,
+                        fed,
+                        empty,
+                        kj_percent,
+                    });
+                }
+            };
+            if plan.act == Act::Joined
+                && let Some(leader) = plan.leader
+            {
+                push(leader, FOLLOW_JOINED, gather);
+            }
+            if let Some((asked, activity)) = plan.asked {
+                push(asked, FOLLOW_ASKED, activity);
+            } else if plan.act == Act::Alone
+                && let Some(witness) = plan
+                    .place
+                    .and_then(|key| mind.places.get(&key))
+                    .and_then(|place| place.access)
+                    .and_then(|a| self.memory.get(a.record))
+                    .and_then(Record::witness)
+            {
+                push(witness, FOLLOW_TOLD, explore);
+            }
+        }
+        follows
+    }
+
+    /// The day reviewed at nightfall (D56, PR 1 ter): each follower's
+    /// credit in whom it followed moves (back fed: `seen_gain`; back
+    /// empty: `wear`), each caller notes a fact on each member of its
+    /// group (it waited for it, it came back with less than a day of its
+    /// need), and the groups' returns wait for the next fire's accounts.
+    fn review_day(
+        &mut self,
+        world: &World,
+        rules: &Content,
+        day: u64,
+        (follows, gathered): (&[Follow], &BTreeMap<BodyId, u64>),
+    ) {
+        let rep = &rules.needs.reputation;
+        let dec = &rules.needs.decisions;
+        let now = world.tick().0;
+        let day32 = u32::try_from(day).unwrap_or(u32::MAX);
+        for f in follows {
+            let delta = if f.fed {
+                i32::try_from(rep.seen_gain).unwrap_or(0)
+            } else if f.empty {
+                -i32::try_from(rep.wear).unwrap_or(0)
+            } else {
+                0
+            };
+            if let Some(mind) = self.minds.get_mut(&f.body) {
+                mind.believe(
+                    (f.body, f.body),
+                    (f.activity, f.whom),
+                    delta,
+                    (&mut self.memory, rep, day32),
+                );
+            }
+            self.news.push(News::Followed {
+                body: f.body,
+                whom: f.whom,
+                how: f.how,
+                fed: f.fed,
+                empty: f.empty,
+                kj_percent: f.kj_percent,
+                at: now,
+            });
+        }
+        let mut accounts = Vec::new();
+        for (&leader, g) in &self.groups {
+            let mut fed = 0;
+            let mut empty = 0;
+            let mut facts = Vec::new();
+            for &m in g.members.iter().skip(1) {
+                let (Some(body), Some(&gathered)) = (world.body(m), gathered.get(&m)) else {
+                    continue;
+                };
+                let little = gathered < need_kj_per_day(rules, body);
+                fed += u32::from(!little);
+                empty += u32::from(gathered == 0);
+                let mut flags = 0;
+                if g.waited_for.contains(&m) {
+                    flags |= FACT_WAITED;
+                }
+                if little {
+                    flags |= FACT_LITTLE;
+                }
+                facts.push(Fact {
+                    who: m,
+                    day: day32,
+                    flags,
+                });
+            }
+            if dec.reviews()
+                && let Some(mind) = self.minds.get_mut(&leader)
+            {
+                for fact in facts {
+                    mind.note(fact, dec.facts_kept);
+                }
+            }
+            let members = g.members.iter().skip(1).copied().collect();
+            accounts.push((leader, members, fed, empty));
+        }
+        if rep.on() {
+            self.accounts = accounts;
         }
     }
 
@@ -2791,9 +3252,11 @@ impl Brains {
     fn vigil(&mut self, world: &World, rules: &Content) {
         let fire = &rules.needs.fire;
         let at_fire = std::mem::take(&mut self.at_fire);
+        let accounts = std::mem::take(&mut self.accounts);
         if !fire.on() {
             return;
         }
+        let dawn = u32::try_from(today(world)).unwrap_or(u32::MAX);
         let day = u32::try_from(today(world).saturating_sub(1)).unwrap_or(u32::MAX);
         let now = world.tick().0;
         let side = place_side(rules);
@@ -2816,7 +3279,8 @@ impl Brains {
                 matches!(self.memory.get(record), Some(Record::Place { states, .. })
                     if states.iter().any(|&(_, bucket)| bucket >= 2))
             });
-            self.fire_hear(world, rules, (camp, day, now), &present, &told, &fared);
+            let learnt = self.fire_hear(world, rules, (camp, day, now), &present, &told, &fared);
+            self.fire_accounts(rules, dawn, &present, (&learnt, &accounts));
             self.fire_deny(world, rules, (camp, day, now), &present, &denied);
             // The night, in the hearth: the denials after the slots.
             let (night, _) = self.memory.intern(Record::Night {
@@ -3040,8 +3504,10 @@ impl Brains {
         present: &[BodyId],
         told: &[(RecordId, BodyId)],
         fared: &[(BodyId, Fared)],
-    ) {
+    ) -> Vec<(BodyId, BodyId)> {
         let fire = &rules.needs.fire;
+        // Each listener and the finder of a place new to it.
+        let mut learnt: Vec<(BodyId, BodyId)> = Vec::new();
         let seed = world.seed();
         // Its age counted to this dawn, the day the listener acts on it.
         let dawn = u32::try_from(today(world)).unwrap_or(u32::MAX);
@@ -3089,6 +3555,7 @@ impl Brains {
                     && !mind.places.contains_key(place)
                 {
                     found.insert((teller, record));
+                    learnt.push((id, teller));
                 }
                 if mind.hear(
                     fire,
@@ -3138,6 +3605,65 @@ impl Brains {
                 places,
                 at: now,
             });
+        }
+        learnt
+    }
+
+    /// The fire's accounts (D56, PR 1 ter): each listener's credit in the
+    /// finder of a place new to it rises by `heard_gain` (exploring); each
+    /// present outside a group of yesterday whose caller is here hears how
+    /// it came home: half of it fed or more, its credit in the caller rises
+    /// by `heard_gain` (gathering); all of it empty, it falls by half the
+    /// `wear` for whoever believed that caller best.
+    fn fire_accounts(
+        &mut self,
+        rules: &Content,
+        dawn: u32,
+        present: &[BodyId],
+        (learnt, accounts): (&[(BodyId, BodyId)], &[Account]),
+    ) {
+        let rep = &rules.needs.reputation;
+        if !rep.on() {
+            return;
+        }
+        let heard = i32::try_from(rep.heard_gain).unwrap_or(0);
+        let worn = -i32::try_from(rep.wear / 2).unwrap_or(0);
+        let (explore, gather) = (activity_index("explore"), activity_index("gather"));
+        for &(listener, finder) in learnt {
+            if let Some(mind) = self.minds.get_mut(&listener) {
+                mind.believe(
+                    (listener, finder),
+                    (explore, finder),
+                    heard,
+                    (&mut self.memory, rep, dawn),
+                );
+            }
+        }
+        for (leader, members, fed, empty) in accounts {
+            if !present.contains(leader) || members.is_empty() {
+                continue;
+            }
+            let n = u32::try_from(members.len()).unwrap_or(u32::MAX);
+            let delta = if fed * 2 >= n {
+                heard
+            } else if *empty == n {
+                worn
+            } else {
+                continue;
+            };
+            for &id in present {
+                if id == *leader || members.contains(&id) {
+                    continue;
+                }
+                if let Some(mind) = self.minds.get_mut(&id) {
+                    mind.believe(
+                        (id, *leader),
+                        (gather, *leader),
+                        delta,
+                        (&mut self.memory, rep, dawn),
+                    );
+                }
+            }
         }
     }
 
@@ -3189,10 +3715,25 @@ impl Brains {
             })
             .collect();
         speakers.sort_unstable();
+        let rep = &rules.needs.reputation;
+        let side = place_side(rules);
+        let near = i32::try_from(dec.near_camp_tiles).unwrap_or(i32::MAX);
+        // The review (PR 1 ter): who is called first, who set aside.
+        let (good_of, aside_by) = self.review_at_fire(world, rules, &speakers, (today, now));
+        let mut review = EveningReview {
+            aside: count_u32(aside_by.values().flatten()),
+            ..EveningReview::default()
+        };
+        let set_aside = |by: BodyId, id: BodyId| aside_by.get(&by).is_some_and(|s| s.contains(&id));
+        let mut questions = if rep.on() { rep.questions_per_night } else { 0 };
         // Each place chosen: its room, how many took it, its caller.
         let mut rooms: BTreeMap<PlaceKey, (u32, u32, Option<BodyId>)> = BTreeMap::new();
         let mut said: BTreeMap<BodyId, (Act, Option<PlaceKey>, Option<BodyId>, u8)> =
             BTreeMap::new();
+        // Companions called by name: the call and its place, their room
+        // kept for them.
+        let mut reserved: BTreeMap<BodyId, (BodyId, PlaceKey)> = BTreeMap::new();
+        let mut asked_of: BTreeMap<BodyId, (BodyId, u8)> = BTreeMap::new();
         let mut skipped = 0;
         for &(_, id) in &speakers {
             let (Some(body), Some(mind)) = (world.body(id), self.minds.get(&id)) else {
@@ -3201,6 +3742,7 @@ impl Brains {
             if carried_kj(world, rules, id) >= mind.ways.stock_kj + need_kj_per_day(rules, body) {
                 // It carries what it wants for tomorrow and tomorrow's
                 // meals on top: it stays.
+                unreserve(&mut reserved, &mut rooms, id);
                 said.insert(id, (Act::Nothing, None, None, 0));
                 continue;
             }
@@ -3212,13 +3754,56 @@ impl Brains {
                     < chance
             {
                 let octant = least_known(mind, rules, camp, seed, id, today64);
+                unreserve(&mut reserved, &mut rooms, id);
                 said.insert(id, (Act::Looked, None, None, octant));
                 continue;
             }
+            // Called first, by name (PR 1 ter): it joins the call.
+            if let Some((lead, key)) = reserved.remove(&id) {
+                said.insert(id, (Act::Joined, Some(key), Some(lead), 0));
+                continue;
+            }
+            let mut list = choices(&self.food, rules, world, mind, id, camp, pace);
+            if review.aside > 0 && aside_by.values().any(|s| s.contains(&id)) && near > 0 {
+                // Set aside, it weighs first the places near the camp.
+                list.sort_by_key(|(key, _, _)| !within(place_centre(*key, side), camp, near));
+            }
+            // A reputation weighs (PR 1 ter): the call of whom it believes
+            // best at gathering first, with a chance of its credit.
+            if rep.join_percent > 0
+                && let Some((best, credit)) =
+                    mind.believed(&self.memory, rep, activity_index("gather"), today)
+                && let Some(i) = list.iter().position(|(key, _, _)| {
+                    rooms.get(key).is_some_and(|&(room, taken, caller)| {
+                        caller == Some(best) && taken < room && !set_aside(best, id)
+                    })
+                })
+                && i > 0
+                && scatter::roll(seed, purpose::FIRE_REPUTE, &[u64::from(id.0), today64]) % 100
+                    < u64::from(credit) * u64::from(rep.join_percent) / 100
+            {
+                let first = list.remove(i);
+                list.insert(0, first);
+                review.weighed += 1;
+            }
+            let parents = [body.mother(), body.father()];
             let mut choice = (Act::Nothing, None, None, 0);
-            for (key, room, own) in choices(&self.food, rules, world, mind, id, camp, pace) {
+            for (key, room, own) in list {
                 match rooms.get_mut(&key) {
                     Some((room, taken, caller)) if *taken < *room => {
+                        // Set aside by its caller, unless its parent is
+                        // with it (PR 1 ter): refused.
+                        if let Some(c) = *caller
+                            && set_aside(c, id)
+                            && !parents.iter().flatten().any(|p| {
+                                said.get(p).is_some_and(|s| {
+                                    s.2 == Some(c) && matches!(s.0, Act::Called | Act::Joined)
+                                })
+                            })
+                        {
+                            review.refused += 1;
+                            continue;
+                        }
                         *taken += 1;
                         choice = match caller {
                             Some(c) => (Act::Joined, Some(key), Some(*c), 0),
@@ -3229,13 +3814,67 @@ impl Brains {
                     Some(_) => skipped += 1,
                     None => {
                         let caller = own.then_some(id);
-                        rooms.insert(key, (room, 1, caller));
+                        let mut taken = 1;
+                        // It calls its good companions first, by name.
+                        for &g in good_of.get(&id).into_iter().flatten() {
+                            if !own || taken >= room {
+                                break;
+                            }
+                            if said.contains_key(&g) || reserved.contains_key(&g) {
+                                continue;
+                            }
+                            reserved.insert(g, (id, key));
+                            taken += 1;
+                            review.named += 1;
+                        }
+                        rooms.insert(key, (room, taken, caller));
                         choice = if own {
                             (Act::Called, Some(key), Some(id), 0)
                         } else {
                             (Act::Alone, Some(key), None, 0)
                         };
                         break;
+                    }
+                }
+            }
+            // With no place to go, it asks (PR 1 ter).
+            if choice.0 == Act::Nothing
+                && questions > 0
+                && let Some((whom, activity, place, room)) =
+                    self.ask(world, rules, (camp, day, today), (id, present), &rooms)
+            {
+                questions -= 1;
+                review.asked += 1;
+                self.news.push(News::Asked {
+                    body: id,
+                    of: whom,
+                    activity,
+                    place,
+                    at: now,
+                });
+                if let Some(key) = place {
+                    review.answered += 1;
+                    choice = match rooms.get_mut(&key) {
+                        Some((room, taken, caller))
+                            if *taken < *room && !caller.is_some_and(|c| set_aside(c, id)) =>
+                        {
+                            *taken += 1;
+                            match caller {
+                                Some(c) => (Act::Joined, Some(key), Some(*c), 0),
+                                None => (Act::Alone, Some(key), None, 0),
+                            }
+                        }
+                        Some(_) => {
+                            skipped += 1;
+                            choice
+                        }
+                        None => {
+                            rooms.insert(key, (room, 1, None));
+                            (Act::Alone, Some(key), None, 0)
+                        }
+                    };
+                    if choice.0 != Act::Nothing {
+                        asked_of.insert(id, (whom, activity));
                     }
                 }
             }
@@ -3313,6 +3952,7 @@ impl Brains {
                     held: false,
                     waited: 0,
                     started: false,
+                    waited_for: BTreeSet::new(),
                 },
             );
         }
@@ -3330,6 +3970,7 @@ impl Brains {
                     octant,
                     legs: 0,
                     done: false,
+                    asked: asked_of.get(&id).copied(),
                 });
             }
             self.news.push(News::Decided {
@@ -3363,7 +4004,131 @@ impl Brains {
             calls_full,
             absent,
             full_told,
+            review,
         });
+    }
+
+    /// The evening's review (D56, PR 1 ter): each present who called
+    /// before judges each companion present on its last outings with it
+    /// ([`Mind::review`]): the good ones it calls first tomorrow, by name,
+    /// in the order they speak; the others bad over several outings it
+    /// tells "not with us tomorrow", a gesture that costs each a failure
+    /// of its confidence in gathering, and a fact. A parent never sets
+    /// aside its own child. By caller: whom it calls first, whom it set
+    /// aside.
+    #[allow(clippy::type_complexity, reason = "the review's two lists")]
+    fn review_at_fire(
+        &mut self,
+        world: &World,
+        rules: &Content,
+        speakers: &[(std::cmp::Reverse<u8>, BodyId)],
+        (today, now): (u32, u64),
+    ) -> (
+        BTreeMap<BodyId, Vec<BodyId>>,
+        BTreeMap<BodyId, BTreeSet<BodyId>>,
+    ) {
+        let dec = &rules.needs.decisions;
+        let mut good_of: BTreeMap<BodyId, Vec<BodyId>> = BTreeMap::new();
+        let mut aside_by: BTreeMap<BodyId, BTreeSet<BodyId>> = BTreeMap::new();
+        if !dec.reviews() {
+            return (good_of, aside_by);
+        }
+        for &(_, lead) in speakers {
+            let Some(mind) = self.minds.get(&lead).filter(|m| !m.companions.is_empty()) else {
+                continue;
+            };
+            for &(_, who) in speakers {
+                if who == lead {
+                    continue;
+                }
+                match mind.review(who, dec) {
+                    Review::Good => good_of.entry(lead).or_default().push(who),
+                    Review::Aside => {
+                        let child = world
+                            .body(who)
+                            .is_some_and(|b| b.mother() == Some(lead) || b.father() == Some(lead));
+                        if !child {
+                            aside_by.entry(lead).or_default().insert(who);
+                        }
+                    }
+                    Review::Unsaid => {}
+                }
+            }
+        }
+        for (&lead, set) in &aside_by {
+            for &who in set {
+                if let Some(mind) = self.minds.get_mut(&lead) {
+                    let fact = Fact {
+                        who,
+                        day: today,
+                        flags: FACT_ASIDE,
+                    };
+                    mind.note(fact, dec.facts_kept);
+                }
+                if let Some(mind) = self.minds.get_mut(&who) {
+                    mind.set_aside(&rules.needs.temperance);
+                }
+                self.news.push(News::Aside {
+                    leader: lead,
+                    body: who,
+                    day: today,
+                    at: now,
+                });
+            }
+        }
+        (good_of, aside_by)
+    }
+
+    /// One with no place to go asks whom it believes best "where is
+    /// food?" (D56, PR 1 ter): the present it holds the highest credit in,
+    /// at any activity of the reputation. That one answers its best place
+    /// from the camp it holds a record of and that tonight's calls have
+    /// not taken whole (it heard them), a telling to one apart from the
+    /// accounts' slots, and the asker hears it at that credit. Whom it
+    /// asked, for what, the place if it was answered one it now knows, and
+    /// that place's room; `None` when it believes nobody here.
+    fn ask(
+        &mut self,
+        world: &World,
+        rules: &Content,
+        (camp, day, dawn): (Pos, u32, u32),
+        (id, present): (BodyId, &[BodyId]),
+        rooms: &BTreeMap<PlaceKey, (u32, u32, Option<BodyId>)>,
+    ) -> Option<(BodyId, u8, Option<PlaceKey>, u32)> {
+        let rep = &rules.needs.reputation;
+        let mind = self.minds.get(&id)?;
+        let (activity, whom, credit) = mind
+            .reputed
+            .iter()
+            .filter_map(|b| {
+                mind.believed(&self.memory, rep, b.activity, dawn)
+                    .map(|(w, c)| (b.activity, w, c))
+            })
+            .filter(|(_, w, _)| present.contains(w))
+            .max_by_key(|&(a, w, c)| (c, std::cmp::Reverse(a), std::cmp::Reverse(w)))?;
+        let them = self.minds.get(&whom)?;
+        let body = world.body(whom)?;
+        let pace = u64::from(body.condition().pace_percent(&rules.needs).max(1));
+        let answer = choices(&self.food, rules, world, them, whom, camp, pace)
+            .into_iter()
+            .filter(|(key, _, _)| rooms.get(key).is_none_or(|r| r.1 < r.0))
+            .find_map(|(key, room, _)| {
+                them.places.get(&key)?.access.map(|a| (key, room, a.record))
+            });
+        let Some((key, room, record)) = answer else {
+            return Some((whom, activity, None, 0));
+        };
+        let mind = self.minds.get_mut(&id)?;
+        mind.hear(
+            &rules.needs.fire,
+            &self.food,
+            (camp, day),
+            (credit, record, whom),
+            &mut self.memory,
+            rules,
+        );
+        let knows = mind.places.contains_key(&key);
+        Some((whom, activity, knows.then_some(key), room))
     }
 
     /// At the fire, `id` may copy one way it heard (D50, amended by D55):
@@ -4658,7 +5423,7 @@ fn close_habit(
     id: BodyId,
     mind: &mut Mind,
     (day, gathered_kj, now): (u64, u64, u64),
-    (kin_fed, season): (Option<bool>, bool),
+    (kin_fed, season, indirect): (Option<bool>, bool, bool),
     news: &mut Vec<News>,
 ) {
     if season {
@@ -4677,9 +5442,14 @@ fn close_habit(
                 .habit
                 .last()
                 .filter(|b| *b & 0x0f == Act::Looked.code());
+            // An indirect success (PR 1 ter): one who joined its call or
+            // followed its answer came back fed; it counts as its own day
+            // of gathering fed, once a day.
+            let gathering = matches!(act, Act::Alone | Act::Called | Act::Joined);
             let judged = [
                 looked.map(|b| ("explore", b & HABIT_FOUND != 0)),
-                matches!(act, Act::Alone | Act::Called | Act::Joined).then_some(("gather", fed)),
+                gathering.then_some(("gather", fed || indirect)),
+                (indirect && !gathering).then_some(("gather", true)),
                 plan.filter(|_| act == Act::Nothing)
                     .and(kin_fed)
                     .map(|k| ("stay", k)),
@@ -4742,6 +5512,48 @@ fn kin_fed(world: &World, rules: &Content) -> BTreeMap<BodyId, bool> {
         }
     }
     fed
+}
+
+/// One called by name changed its mind (D56, PR 1 ter): the room kept for
+/// it is given back.
+fn unreserve(
+    reserved: &mut BTreeMap<BodyId, (BodyId, PlaceKey)>,
+    rooms: &mut BTreeMap<PlaceKey, (u32, u32, Option<BodyId>)>,
+    id: BodyId,
+) {
+    if let Some((_, key)) = reserved.remove(&id)
+        && let Some(room) = rooms.get_mut(&key)
+    {
+        room.1 = room.1.saturating_sub(1);
+    }
+}
+
+/// One who followed another today (D56, PR 1 ter).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Follow {
+    /// The follower.
+    body: BodyId,
+    /// The one followed.
+    whom: BodyId,
+    /// How ([`FOLLOW_JOINED`], [`FOLLOW_ASKED`], [`FOLLOW_TOLD`]).
+    how: u8,
+    /// The activity followed for, an index in `content::ACTIVITIES`.
+    activity: u8,
+    /// Back with a day of its need.
+    fed: bool,
+    /// Back with nothing.
+    empty: bool,
+    /// What it gathered, in per cent of a day of its need.
+    kj_percent: u32,
+}
+
+/// The index of the activity `name` in `content::ACTIVITIES`.
+fn activity_index(name: &str) -> u8 {
+    crate::content::ACTIVITIES
+        .iter()
+        .position(|n| *n == name)
+        .and_then(|i| u8::try_from(i).ok())
+        .unwrap_or(u8::MAX)
 }
 
 impl Group {
@@ -4825,16 +5637,24 @@ fn look_behind(
     // It sees a member walking behind it, out of reach: it waits for it.
     // One it does not see, or that stands still, it cannot wait for.
     let sight = sight_at(world.map(), rules, body.pos());
-    let behind = g.members.iter().skip(1).any(|m| {
-        !g.left.contains(m)
-            && !g.arrived.contains_key(m)
-            && world.body(*m).is_some_and(|b| {
-                b.is_walking()
-                    && within(b.pos(), body.pos(), sight)
-                    && !within(b.pos(), body.pos(), reach)
-            })
-    });
-    if behind && g.waited < most {
+    let behind: Vec<BodyId> = g
+        .members
+        .iter()
+        .skip(1)
+        .filter(|m| {
+            !g.left.contains(m)
+                && !g.arrived.contains_key(m)
+                && world.body(**m).is_some_and(|b| {
+                    b.is_walking()
+                        && within(b.pos(), body.pos(), sight)
+                        && !within(b.pos(), body.pos(), reach)
+                })
+        })
+        .copied()
+        .collect();
+    if !behind.is_empty() && g.waited < most {
+        // A fact of its review (PR 1 ter): whom it waited for.
+        g.waited_for.extend(behind);
         if g.held {
             g.waited += group_wait(world);
         }
@@ -8424,10 +9244,12 @@ mod tests {
             Confidence {
                 milli: 50_000,
                 failures: 0,
+                successes: 0,
             },
             Confidence {
                 milli: 50_000,
                 failures: 0,
+                successes: 0,
             },
         );
         for _ in 0..5 {
@@ -8452,6 +9274,7 @@ mod tests {
         let mut c = Confidence {
             milli: 20_000,
             failures: 6,
+            successes: 0,
         };
         c.succeed(late);
         assert_eq!(c.failures, 0);
@@ -8629,6 +9452,364 @@ mod tests {
         assert_eq!((caller.will, caller.will_rest), (61, 0));
         assert_eq!(caller.confidence[1].milli, 61_000);
         assert_eq!(brains.minds[&BodyId(1)].will, 20, "joining gives nothing");
+    }
+
+    #[test]
+    fn a_streak_of_successes_weighs_more_and_a_failure_ends_it() {
+        let temper = Temperance::placeholders();
+        assert_eq!(temper.streak_success_milli(50, 0), 1_000);
+        assert_eq!(
+            temper.streak_success_milli(50, 2),
+            1_500,
+            "halfway to twice"
+        );
+        assert_eq!(temper.streak_success_milli(50, 4), 2_000);
+        assert_eq!(temper.streak_success_milli(50, 9), 2_000, "held beyond");
+        let (mut mind, temper) = tempered(20);
+        let gather = temper.activity("gather").unwrap();
+        let at = (BodyId(1), 0);
+        let mut gains = Vec::new();
+        for _ in 0..3 {
+            let before = mind.confidence[gather].milli;
+            mind.judge_day(&temper, gather, true, at);
+            gains.push(mind.confidence[gather].milli - before);
+        }
+        assert_eq!(gains, [1_000, 1_250, 1_500]);
+        mind.judge_day(&temper, gather, false, at);
+        assert_eq!(mind.confidence[gather].successes, 0, "a failure ends it");
+        let before = mind.confidence[gather].milli;
+        mind.judge_day(&temper, gather, true, at);
+        assert_eq!(mind.confidence[gather].milli - before, 1_000);
+    }
+
+    #[test]
+    fn a_follower_back_fed_counts_once_as_its_callers_day_of_gathering() {
+        let (world, mut rules, id, _) = by_a_ripe_bramble(0);
+        rules.needs.decisions = crate::content::Decisions::placeholders();
+        rules.needs.temperance = Temperance::placeholders();
+        let body = world.body(id).unwrap();
+        let judged_gather = |act: Act, indirect: bool| {
+            let (mut mind, _) = tempered(20);
+            mind.plan = Some(Plan {
+                day: 3,
+                act,
+                place: None,
+                leader: None,
+                octant: 0,
+                legs: 0,
+                done: false,
+                asked: None,
+            });
+            let mut news = Vec::new();
+            close_habit(
+                &rules,
+                body,
+                id,
+                &mut mind,
+                (3, 0, 0),
+                (Some(true), false, indirect),
+                &mut news,
+            );
+            news.iter()
+                .filter_map(|n| match n {
+                    News::Judged {
+                        activity: 1,
+                        success,
+                        ..
+                    } => Some(*success),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            judged_gather(Act::Called, false),
+            [false],
+            "back with nothing"
+        );
+        assert_eq!(
+            judged_gather(Act::Called, true),
+            [true],
+            "a member came back fed"
+        );
+        assert_eq!(
+            judged_gather(Act::Nothing, true),
+            [true],
+            "it stayed, the one it answered came back fed: once"
+        );
+        assert_eq!(judged_gather(Act::Nothing, false), Vec::<bool>::new());
+    }
+
+    #[test]
+    fn each_body_believes_its_own_best_a_belief_wears_and_fades() {
+        let rep = crate::content::Reputation::placeholders();
+        let mut memory = Store::new();
+        let (a, b) = (BodyId(1), BodyId(2));
+        let (x, y) = (BodyId(7), BodyId(8));
+        let gather = activity_index("gather");
+        let (mut ma, mut mb) = (Mind::new(Pos::new(0, 0)), Mind::new(Pos::new(0, 0)));
+        assert!(ma.believe((a, a), (gather, x), 20, (&mut memory, &rep, 10)));
+        assert!(mb.believe((b, b), (gather, x), 20, (&mut memory, &rep, 10)));
+        assert_eq!(ma.believed(&memory, &rep, gather, 10), Some((x, 20)));
+        let record = ma.reputed[0].access.record;
+        assert_eq!(memory.refs(record), 2, "one record, held by each");
+        // Each its own: b followed y and came back fed; a did not.
+        assert!(!mb.believe((b, b), (gather, y), 10, (&mut memory, &rep, 10)));
+        assert!(mb.believe((b, b), (gather, y), 30, (&mut memory, &rep, 11)));
+        assert_eq!(mb.believed(&memory, &rep, gather, 11), Some((y, 30)));
+        assert_eq!(ma.believed(&memory, &rep, gather, 11), Some((x, 19)));
+        assert_eq!(memory.refs(record), 1, "b let it go");
+        // Worn by a follower back empty, faded by the days.
+        assert!(ma.believe((a, a), (gather, x), -15, (&mut memory, &rep, 12)));
+        assert_eq!(ma.believed(&memory, &rep, gather, 12), Some((x, 3)));
+        assert_eq!(ma.believed(&memory, &rep, gather, 14), Some((x, 1)));
+        assert_eq!(ma.believed(&memory, &rep, gather, 15), None, "faded");
+        assert!(
+            !ma.believe((a, a), (gather, a), 50, (&mut memory, &rep, 15)),
+            "never itself"
+        );
+        assert!(
+            !ma.believe(
+                (a, a),
+                (activity_index("stay"), x),
+                50,
+                (&mut memory, &rep, 15)
+            ),
+            "an activity not reputed"
+        );
+        ma.forget_all(&mut memory);
+        assert_eq!(memory.refs(record), 0);
+    }
+
+    #[test]
+    fn a_caller_judges_a_companion_over_several_outings_never_on_one() {
+        let dec = crate::content::Decisions::placeholders();
+        let mut mind = Mind::new(Pos::new(0, 0));
+        let who = BodyId(5);
+        let fact = |day, flags| Fact { who, day, flags };
+        mind.note(fact(1, FACT_WAITED), dec.facts_kept);
+        assert_eq!(mind.review(who, &dec), Review::Unsaid, "one bad day");
+        mind.note(fact(2, 0), dec.facts_kept);
+        mind.note(fact(3, FACT_LITTLE), dec.facts_kept);
+        assert_eq!(
+            mind.review(who, &dec),
+            Review::Aside,
+            "two of its last three"
+        );
+        mind.note(fact(4, FACT_ASIDE), dec.facts_kept);
+        assert_eq!(mind.review(who, &dec), Review::Unsaid, "judged anew");
+        mind.note(fact(5, 0), dec.facts_kept);
+        mind.note(fact(6, 0), dec.facts_kept);
+        assert_eq!(mind.review(who, &dec), Review::Good, "two good in a row");
+        for day in 7..50 {
+            mind.note(fact(day, 0), dec.facts_kept);
+        }
+        assert_eq!(mind.companions.len(), 32, "facts_kept");
+    }
+
+    /// Three at a camp knowing a place `p` with room for all; 3 bold.
+    fn reviewing() -> (World, Content, Brains, PlaceKey, Pos) {
+        let (world, mut rules, mut brains, bramble, camp) = deciding(3);
+        rules.needs.temperance = Temperance::placeholders();
+        rules.needs.reputation = crate::content::Reputation::placeholders();
+        rules.needs.decisions.look_percent_by_will = vec![(0, 0)];
+        let side = place_side(&rules);
+        let here = place_of(camp, side);
+        let p = (here.0 + 1, here.1);
+        let food = brains.food.clone();
+        for (id, mind) in &mut brains.minds {
+            mind.places.insert(p, place_with(&food, bramble, 12));
+            mind.set_innate(
+                if *id == BodyId(3) { 60 } else { 20 },
+                &rules.needs.temperance,
+            );
+        }
+        (world, rules, brains, p, camp)
+    }
+
+    #[test]
+    fn the_caller_calls_the_good_first_and_sets_aside_the_slow_but_not_its_child() {
+        let (mut world, rules, mut brains, p, camp) = reviewing();
+        let (one, two, lead) = (BodyId(1), BodyId(2), BodyId(3));
+        let keep = rules.needs.decisions.facts_kept;
+        let mind = brains.minds.get_mut(&lead).unwrap();
+        for day in 1..=2 {
+            mind.note(
+                Fact {
+                    who: one,
+                    day,
+                    flags: FACT_WAITED,
+                },
+                keep,
+            );
+            mind.note(
+                Fact {
+                    who: two,
+                    day,
+                    flags: 0,
+                },
+                keep,
+            );
+        }
+        let all = [one, two, lead];
+        let news = decide_evening(&world, &rules, &mut brains, camp, &all);
+        assert!(news.iter().any(|n| matches!(n,
+            News::Aside { leader, body, .. } if *leader == lead && *body == one)));
+        assert_eq!(act_of(&brains, two), (Act::Joined, Some(p), Some(lead)));
+        assert_ne!(act_of(&brains, one).2, Some(lead), "refused");
+        assert_eq!(
+            brains.minds[&one].confidence[1].failures, 1,
+            "a failure, borne free"
+        );
+        let review = news.iter().find_map(|n| match n {
+            News::Evening { review, .. } => Some(*review),
+            _ => None,
+        });
+        assert_eq!(
+            review.map(|r| (r.named, r.aside, r.refused)),
+            Some((1, 1, 1))
+        );
+        // The next evening it was set aside: judged anew, it may come.
+        let news = decide_evening(&world, &rules, &mut brains, camp, &all);
+        assert!(!news.iter().any(|n| matches!(n, News::Aside { .. })));
+        // Its own child it never sets aside.
+        world.set_parents(one, None, Some(lead));
+        let mind = brains.minds.get_mut(&lead).unwrap();
+        for day in 3..=4 {
+            mind.note(
+                Fact {
+                    who: one,
+                    day,
+                    flags: FACT_LITTLE,
+                },
+                keep,
+            );
+        }
+        let news = decide_evening(&world, &rules, &mut brains, camp, &all);
+        assert!(!news.iter().any(|n| matches!(n, News::Aside { .. })));
+        assert_eq!(act_of(&brains, one).2, Some(lead));
+    }
+
+    #[test]
+    fn one_with_no_place_asks_whom_it_believes_best_and_goes_where_it_is_told() {
+        let (world, rules, mut brains, p, camp) = reviewing();
+        let (asker, answerer) = (BodyId(1), BodyId(2));
+        let side = place_side(&rules);
+        let q = (p.0 + 2, p.1);
+        let bramble = brains.food.numbers["bramble"];
+        let food = brains.food.clone();
+        let day = u32::try_from(today(&world)).unwrap();
+        let (record, _) = brains.memory.intern(Record::Place {
+            place: q,
+            day: day - 1,
+            witness: answerer,
+            states: vec![(bramble, 2)],
+        });
+        for (id, mind) in &mut brains.minds {
+            mind.places.clear();
+            if *id == answerer {
+                let mut place = place_with(&food, bramble, 12);
+                place.access = Some(Access {
+                    record,
+                    by: answerer,
+                    day: day - 1,
+                });
+                mind.places.insert(q, place);
+            }
+        }
+        let rep = rules.needs.reputation.clone();
+        let mind = brains.minds.get_mut(&asker).unwrap();
+        mind.believe(
+            (asker, asker),
+            (activity_index("explore"), answerer),
+            40,
+            (&mut brains.memory, &rep, day),
+        );
+        let all = [asker, answerer, BodyId(3)];
+        let before = (brains.clone(), world.tick());
+        let news = decide_evening(&world, &rules, &mut brains, camp, &all);
+        assert!(news.iter().any(|n| matches!(n,
+            News::Asked { body, of, place: Some(at), .. }
+                if *body == asker && *of == answerer && *at == q)));
+        let plan = brains.minds[&asker].plan.unwrap();
+        assert_eq!(plan.place, Some(q), "where it was told");
+        assert_eq!(plan.asked, Some((answerer, activity_index("explore"))));
+        assert!(within(place_centre(q, side), camp, 200));
+        // The third believes nobody: it does not ask.
+        assert_eq!(
+            news.iter()
+                .filter(|n| matches!(n, News::Asked { .. }))
+                .count(),
+            1
+        );
+        // The same world, the same answers.
+        let (mut again, _) = before;
+        let replay = decide_evening(&world, &rules, &mut again, camp, &all);
+        assert_eq!(news, replay);
+        assert_eq!(again.minds[&asker].plan, brains.minds[&asker].plan);
+    }
+
+    #[test]
+    fn at_nightfall_a_follower_back_fed_believes_its_caller_and_the_caller_notes_who_it_waited_for()
+    {
+        let (world, rules, mut brains, p, _) = reviewing();
+        let (member, lead) = (BodyId(1), BodyId(3));
+        let day = today(&world);
+        let day32 = u32::try_from(day).unwrap();
+        let plan = |act, leader| Plan {
+            day: day32,
+            act,
+            place: Some(p),
+            leader,
+            octant: 0,
+            legs: 0,
+            done: false,
+            asked: None,
+        };
+        brains.minds.get_mut(&member).unwrap().plan = Some(plan(Act::Joined, Some(lead)));
+        brains.minds.get_mut(&lead).unwrap().plan = Some(plan(Act::Called, Some(lead)));
+        let need = need_kj_per_day(&rules, world.body(member).unwrap());
+        brains.minds.get_mut(&member).unwrap().gathered_today_kj = need;
+        brains.groups.insert(
+            lead,
+            Group {
+                day: day32,
+                called: p,
+                place: p,
+                members: vec![lead, member],
+                taken: BTreeMap::new(),
+                full: BTreeSet::new(),
+                followed: BTreeSet::new(),
+                left: BTreeSet::new(),
+                arrived: BTreeMap::new(),
+                dawn: 0,
+                home: false,
+                ended: None,
+                held: false,
+                waited: 0,
+                started: true,
+                waited_for: BTreeSet::from([member]),
+            },
+        );
+        let follows = brains.follows_today(&world, &rules, day);
+        assert_eq!(follows.len(), 1);
+        assert!(follows[0].fed && follows[0].whom == lead && follows[0].how == FOLLOW_JOINED);
+        let gathered = BTreeMap::from([(member, need), (lead, 0)]);
+        brains.review_day(&world, &rules, day, (&follows, &gathered));
+        let rep = &rules.needs.reputation;
+        assert_eq!(
+            brains.minds[&member].believed(&brains.memory, rep, activity_index("gather"), day32),
+            Some((lead, 20))
+        );
+        assert_eq!(
+            brains.minds[&lead].companions,
+            [Fact {
+                who: member,
+                day: day32,
+                flags: FACT_WAITED
+            }],
+            "it waited for it; it came back fed"
+        );
+        assert_eq!(brains.accounts, [(lead, vec![member], 1, 0)]);
     }
 
     #[test]

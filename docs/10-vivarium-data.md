@@ -156,6 +156,22 @@ clock, the only field no seed decides.
 | `years[].decisions.wills.bold` | Of them, the bold: a will of `temperance.bold_will` (40) or more | count |
 | `years[].decisions.judged.successes.*` | Days of each activity judged a success in the year (D56): `explore` (a look out that found a place told new), `gather` (a walk to a place that gathered a day of need), `stay` (a silence at the fire with its children fed) | person-days |
 | `years[].decisions.judged.failures.*` | And judged a failure | person-days |
+| `years[].decisions.review.named` | Companions a caller called first, by name, at the evening's review (D56, PR 1 ter): its last outings with them good | count |
+| `years[].decisions.review.set_aside` | Companions told "not with us tomorrow": bad on enough of their last outings with that caller (waited for, or back with less than a day of need) | count |
+| `years[].decisions.review.refused` | Calls one set aside would have joined, refused | count |
+| `years[].decisions.review.weighed_joins` | Joins weighed by a reputation: the call of whom one believes best at gathering taken first | count |
+| `years[].decisions.review.asked` | Questions asked at the fire ("where is food?") by one with no place to go | count |
+| `years[].decisions.review.answered` | Of them, answered with a place it can go to | count |
+| `years[].decisions.review.set_aside_days.*` | What those set aside did that day, by act (`alone`, `called`, `joined`, `looked`, `nothing`) | person-days |
+| `years[].decisions.review.set_aside_fed_days.*` | Of them, the days they gathered a day of their need | person-days |
+| `years[].decisions.follows.*.days` | Days one followed another (D56, PR 1 ter): `joined` its call, `asked` it and went where it answered, `told` (went alone to a place another found and told) | person-days |
+| `years[].decisions.follows.*.fed` | Of them, back with a day of its need | person-days |
+| `years[].decisions.follows.*.empty` | Of them, back with nothing | person-days |
+| `years[].decisions.follows.*.mean_need_percent` | What the follower gathered, in per cent of a day of its need, on average; `null` without a day | per cent |
+| `years[].reputed.*[]` | Who the tribe's living believed best at the year's end (D56, PR 1 ter), by activity (`explore`: the scout; `gather`: the one whose calls feed), the most believed first, three at most; `null` when nobody is reputed. A belief each holds, never a title | list |
+| `years[].reputed.*[].who` | The one believed best | id |
+| `years[].reputed.*[].believers` | How many of the living believed it | count |
+| `years[].reputed.*[].mean_credit` | Their credit in it, on average (1 to 100) | points |
 | `years[].decisions.distance_noon_tiles.mothers` | Mean distance at noon from its camp, on each axis the larger, of an adult (16 years or more) carrying an infant; `null` without one | tiles |
 | `years[].decisions.distance_noon_tiles.mother_noons` | The noons measured | count |
 | `years[].decisions.distance_noon_tiles.others` | The same for the other adults | tiles |
@@ -231,7 +247,7 @@ clock, the only field no seed decides.
 | `people[].lines[].tick` | The tick | tick |
 | `people[].lines[].what` | The line, as the chronicle says it | string |
 | `records[].id` | A record of the common memory at the end (D55): its number | integer |
-| `records[].kind` | `place`, `water`, `trial` or `night` | string |
+| `records[].kind` | `place`, `water`, `trial`, `night` or `reputed` (who is believed to know, D56, PR 1 ter) | string |
 | `records[].day` | Its day | day |
 | `records[].witness` | Who saw it first, or the trial's body; `null` for a night | integer |
 | `records[].refs` | Accesses and nights holding it | count |

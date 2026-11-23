@@ -110,6 +110,9 @@ def fixture(seed=1, trials=True, fire=False):
             y["knowledge"] = {"places": 30 * y["year"] if a else 5, "recorded": 20 if a else 0, "heard_only": 3 if a else 0,
                               "accesses": 40 if a else 0, "accesses_heard": 30 if a else 0}
             y["food"]["stored_kj"] = {"noon_mean": 400 * y["year"], "noon_min": 100, "end": 500}
+            if a:
+                y["reputed"] = {"explore": [{"who": 1, "believers": 2, "mean_credit": 60}], "gather": [{"who": 2, "believers": 1, "mean_credit": 20}]}
+                y["decisions"] = {"review": {"named": 1, "set_aside": 1, "refused": 0, "weighed_joins": 0, "asked": 3, "answered": 2}}
             if y["ways"]:
                 y["ways"]["stock_kj"] = {"q1": 15000, "median": 15000, "q3": 30000}
         d["found"][0]["heard"] = {"trials": 1, "copies": 1, "dispelled": 2}
@@ -176,7 +179,18 @@ class Layout(unittest.TestCase):
         return {"top": reading.top_points(d, sm, bt), "gens": reading.people_points(d, sm, bt), "morts": reading.deaths_points(d, sm),
                 "naissances": reading.births_points(d, sm, bt), "tous": reading.everyone_points(d, sm), "ou": reading.where_points(d, sm, bt),
                 "savoir": reading.knowledge_points(d), "appris": reading.learnt_points(d, sm), "techniques": reading.techniques_points(d),
-                "ose": reading.dared_points(d), "chronique": reading.chronicle_points(d, 1, reading.chronicle_events(d, 1))}
+                "ose": reading.dared_points(d), "repute": reading.reputed_points(d),
+                "chronique": reading.chronicle_points(d, 1, reading.chronicle_events(d, 1))}
+
+    def test_the_scout_is_who_the_most_living_believe(self):
+        pts = reading.reputed_points(self.d)
+        self.assertEqual(pts[0]["b"], "A : personne 1")
+        self.assertIn("éclaireur pour 2 vivants, an 2", pts[0]["t"])
+        self.assertIn("meneur", pts[1]["t"])
+        self.assertEqual(pts[2]["b"], "6 questions")
+        body = reading.reputed_body(self.d)
+        self.assertIn("t-repute", body)
+        self.assertIn("Personne n&#x27;est réputé", reading.reputed_body(fixture()))
 
     def test_the_points_are_short_and_as_many_as_said(self):
         for d in (self.d, fixture(), fixture(trials=False)):
