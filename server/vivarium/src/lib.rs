@@ -529,6 +529,13 @@ pub struct DecisionYear {
     /// The stretch of the groups at their place, summed, in ticks, and
     /// the groups that had one, and the longest.
     pub stretch: (u64, u32, u64),
+    /// Members who stood at the place within a minute of their caller
+    /// (D56: walked with it).
+    pub together: u32,
+    /// Ticks callers waited on the way for one left behind (D56).
+    pub waited: u64,
+    /// Groups whose caller waited so.
+    pub waited_groups: u32,
     /// Person-days by what was done ([`Act::ALL`]'s order).
     pub days: [u32; 5],
     /// Places found: seen by one and told at the fire to a listener who
@@ -2297,6 +2304,8 @@ fn decision_news(
             left,
             end,
             stretch_ticks,
+            together,
+            waited_ticks,
             ..
         } => {
             let counts = tally
@@ -2314,6 +2323,9 @@ fn decision_news(
                 GroupEnd::Night => 2,
             }] += 1;
             counts.moved_on += u32::from(place != last_place);
+            counts.together += together;
+            counts.waited += waited_ticks;
+            counts.waited_groups += u32::from(*waited_ticks > 0);
             if *stretch_ticks > 0 {
                 counts.stretch.0 += stretch_ticks;
                 counts.stretch.1 += 1;

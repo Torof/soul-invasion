@@ -692,6 +692,9 @@ fn decisions_json(dec: &DecisionYear) -> Value {
             "ended": {"home": dec.ended[0], "bare": dec.ended[1], "night": dec.ended[2]},
             "moved_on": dec.moved_on,
             "stretch_ticks": {"mean": mean(dec.stretch.0, dec.stretch.1), "max": dec.stretch.2, "groups": dec.stretch.1},
+            "together": dec.together,
+            "waited_ticks": dec.waited,
+            "waited_groups": dec.waited_groups,
         },
         "days_by_act": by_act(dec.days),
         "trips": {

@@ -80,8 +80,10 @@
     // needs 25 % more, and her infant burns nothing of its own; weaned at
     // two, it walks and gathers for itself. Children under twelve and the
     // old past fifty-five go at 70 % of the pace. An infant weighs 3.5 kg
-    // at birth, 12 kg weaned, on whoever carries it; an orphan is taken by
-    // the nearest woman within 64 tiles.
+    // at birth, 12 kg weaned, on whoever carries it, and slows it to 75 %
+    // of its pace (D56, the lead, 23 November 2026: a gesture of the body,
+    // never "the mothers stay"); an orphan is taken by the nearest woman
+    // within 64 tiles.
     ages: (
         need_by_age: [(0, 30), (2, 40), (14, 90), (18, 100), (55, 100), (56, 85)],
         woman_percent: 85,
@@ -91,6 +93,7 @@
         slow_under_years: 12,
         slow_over_years: 55,
         slow_pace_percent: 70,
+        carrying_pace_percent: 75,
         infant_mass_g: (3500, 12000),
         adopt_within_tiles: 64,
     ),
@@ -303,6 +306,12 @@
     // home_when_full_percent: 50 — the caller goes home with its group
     //                          when half of the group carries what it
     //                          wanted; those already full wait by it.
+    // behind_tiles:        24 — on its way the caller looks behind: while a
+    //                          member not yet there is farther than 24
+    //                          tiles from it, it stops and waits (the
+    //                          lead, 23 November 2026: "regarder
+    //                          derrière"); 0: it never does;
+    // behind_wait_minutes: 30 — half an hour of such waits a day at most.
     decisions: (
         choices: 3,
         plants_per_gatherer: 2,
@@ -314,5 +323,7 @@
         habit_weight: 50,
         habit_floor: 10,
         home_when_full_percent: 50,
+        behind_tiles: 24,
+        behind_wait_minutes: 30,
     ),
 )

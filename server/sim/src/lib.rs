@@ -204,7 +204,8 @@ pub struct Condition {
     /// for a nursing woman. Derived, never stored.
     #[serde(skip, default = "permille_1000")]
     pub burn_permille: u32,
-    /// Its pace from its age, in percent. Derived, never stored.
+    /// Its pace from its age, and from the infant it carries (D56), in
+    /// percent. Derived, never stored.
     #[serde(skip, default = "percent_100")]
     pub age_pace_percent: u32,
 }
@@ -2602,7 +2603,13 @@ impl World {
             } else {
                 size
             };
-            c.age_pace_percent = ages.age_pace_percent(age);
+            // One carrying an infant goes slower (D56).
+            let carrying = if body.carrying_g > 0 {
+                ages.carrying_pace_percent
+            } else {
+                100
+            };
+            c.age_pace_percent = ages.age_pace_percent(age) * carrying / 100;
         }
     }
 
@@ -6406,6 +6413,58 @@ mod tests {
         assert_eq!(
             baby.size_permille, 326,
             "half a year and a day: 30 to 40 %, a quarter of the way and more"
+        );
+    }
+
+    #[test]
+    fn carrying_an_infant_slows_its_carrier() {
+        let (mut w, rules, mother, infant) = mother_and_infant();
+        let mut events = Vec::new();
+        w.advance(1, &rules, &mut events);
+        let pace = |w: &World| {
+            w.body(mother)
+                .unwrap()
+                .condition()
+                .pace_percent(&rules.needs)
+        };
+        assert_eq!(rules.needs.ages.carrying_pace_percent, 75);
+        assert_eq!(pace(&w), 75, "a woman of 25 carrying");
+        // She walks a third slower than alone over the same ground.
+        let walked = |w: &mut World| {
+            let from = w.body(mother).unwrap().at();
+            w.queue(Intention::MoveTo {
+                body: mother,
+                target: Pos::new(60, 1),
+            });
+            let mut events = Vec::new();
+            w.advance(20, &rules, &mut events);
+            w.body(mother).unwrap().at().x - from.x
+        };
+        let carrying = walked(&mut w);
+        let (mut alone, _, lone, _) = mother_and_infant();
+        alone.bodies.retain(|b| b.id() != infant);
+        alone.advance(1, &rules, &mut events);
+        assert_eq!(
+            alone
+                .body(lone)
+                .unwrap()
+                .condition()
+                .pace_percent(&rules.needs),
+            100
+        );
+        let free = {
+            let from = alone.body(lone).unwrap().at();
+            alone.queue(Intention::MoveTo {
+                body: lone,
+                target: Pos::new(60, 1),
+            });
+            alone.advance(20, &rules, &mut events);
+            alone.body(lone).unwrap().at().x - from.x
+        };
+        // 75 % of the pace, and the infant's weight on top (D45's load).
+        assert!(
+            carrying * 100 <= free * 75 && carrying * 100 >= free * 60,
+            "{carrying} of {free}"
         );
     }
 

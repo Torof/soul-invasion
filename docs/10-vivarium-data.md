@@ -140,6 +140,9 @@ clock, the only field no seed decides.
 | `years[].decisions.groups.stretch_ticks.mean` | The stretch of a group: from its caller's arrival at the place to its last member's; the mean over the groups where both arrived; `null` without one | ticks |
 | `years[].decisions.groups.stretch_ticks.max` | The longest | ticks |
 | `years[].decisions.groups.stretch_ticks.groups` | The groups measured | count |
+| `years[].decisions.groups.together` | Members who stood at the place within a minute of their caller (the caller not counted): those who walked with it | count |
+| `years[].decisions.groups.waited_ticks` | Ticks the callers waited on the way for a member left behind ("look behind", D56) | ticks |
+| `years[].decisions.groups.waited_groups` | Groups whose caller waited so | count |
 | `years[].decisions.days_by_act.*` | Days lived by adults and children with a day of their own, by what they had said (the keys of `said`) | person-days |
 | `years[].decisions.trips.found.*` | Places found: seen by one and told at the fire to a listener who did not know them, by what the finder did that day | count |
 | `years[].decisions.trips.bare.*` | Places gone to and found bare, by what was done that day | count |

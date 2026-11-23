@@ -577,6 +577,12 @@ struct Group {
     home: bool,
     /// It ended (bare and nothing next, the caller gone).
     ended: Option<GroupEnd>,
+    /// The caller stands waiting on the way for one left behind (D56,
+    /// "look behind"), and how long it has waited so far, in ticks.
+    held: bool,
+    waited: u64,
+    /// The caller has set off.
+    started: bool,
 }
 
 /// A trial under way (D50): the way moved, the ways before the step, and
@@ -872,6 +878,11 @@ pub enum News {
         /// Ticks between the caller's arrival at the place and the last
         /// member's: how the group stretched (0 when one arrived alone).
         stretch_ticks: u64,
+        /// Members who stood at the place within [`TOGETHER_SECONDS`] of
+        /// the caller, the caller not counted: those who walked with it.
+        together: u32,
+        /// Ticks the caller waited on the way for one left behind.
+        waited_ticks: u64,
         /// The tick.
         at: u64,
     },
@@ -2230,10 +2241,14 @@ impl Brains {
     }
 
     /// The day's groups end at nightfall (D56), each told.
-    fn end_groups(&mut self, now: u64) {
+    fn end_groups(&mut self, now: u64, ticks_per_second: u64) {
         let groups = std::mem::take(&mut self.groups);
-        self.news
-            .extend(groups.iter().map(|(&leader, g)| g.ended_news(leader, now)));
+        let together = TOGETHER_SECONDS * ticks_per_second;
+        self.news.extend(
+            groups
+                .iter()
+                .map(|(&leader, g)| g.ended_news(leader, now, together)),
+        );
     }
 
     /// The nightfall closes every mind's day (D50): its gather and every
@@ -2319,7 +2334,7 @@ impl Brains {
                 }
             }
         }
-        self.end_groups(now);
+        self.end_groups(now, u64::from(world.calendar().ticks_per_second()));
         // The children follow (D50, D47).
         let follow: Vec<(BodyId, Pos)> = ids
             .iter()
@@ -2751,6 +2766,9 @@ impl Brains {
                     dawn: now,
                     home: false,
                     ended: None,
+                    held: false,
+                    waited: 0,
+                    started: false,
                 },
             );
         }
@@ -3637,7 +3655,7 @@ fn decide(
                 mind.chose_at = Some(now);
             }
             let decision = go_for(world, rules, id, mind, goal, Why::Hunger);
-            return follow_or_wait(world, groups, id, mind, decision, now);
+            return follow_or_wait(world, rules, groups, id, mind, decision, now);
         }
         // It knows the seasons: it goes looking by day, and only when
         // something is ripe somewhere. Out of season it bears its hunger
@@ -3665,7 +3683,7 @@ fn decide(
             mind.chose_at = Some(now);
         }
         let decision = go_for(world, rules, id, mind, goal, Why::Gather);
-        return follow_or_wait(world, groups, id, mind, decision, now);
+        return follow_or_wait(world, rules, groups, id, mind, decision, now);
     }
     let home = (here.x - camp.x).abs() <= HOME_TILES && (here.y - camp.y).abs() <= HOME_TILES;
     // Its way is to sleep out (D50): at night it lies down where it
@@ -3726,6 +3744,10 @@ fn wake_spread(world: &World) -> u64 {
 /// [`crate::FOLLOW_TILES`], so a member waiting by it sees it go and
 /// walks behind it.
 pub const GROUP_WAIT_SECONDS: u64 = 4;
+
+/// Members who stand at the group's place within this many game seconds
+/// of their caller walked with it (D56: the measure of "look behind").
+pub const TOGETHER_SECONDS: u64 = 60;
 
 /// [`GROUP_WAIT_SECONDS`] in ticks.
 fn group_wait(world: &World) -> u64 {
@@ -3996,6 +4018,7 @@ fn planned<'a>(
 /// most, while the caller has not set off; otherwise it walks as decided.
 fn follow_or_wait(
     world: &World,
+    rules: &Content,
     groups: &mut BTreeMap<BodyId, Group>,
     id: BodyId,
     mind: &mut Mind,
@@ -4022,6 +4045,7 @@ fn follow_or_wait(
         // The caller waits, an hour after dawn at most, while a member
         // still sleeps or has not come within reach of it.
         let waits = early
+            && !g.started
             && g.members.iter().skip(1).any(|m| {
                 !g.left.contains(m)
                     && world.body(*m).is_some_and(|b| {
@@ -4033,7 +4057,7 @@ fn follow_or_wait(
             mind.wake_at = Some(now + group_wait(world));
             return None;
         }
-        return Some(d);
+        return look_behind(world, rules, g, (id, body), mind, d, now);
     }
     let Intention::MoveTo { target, .. } = d.intention else {
         return Some(d);
@@ -4115,7 +4139,7 @@ fn close_habit(
 
 impl Group {
     /// The news of the group's end at nightfall (D56).
-    fn ended_news(&self, leader: BodyId, now: u64) -> News {
+    fn ended_news(&self, leader: BodyId, now: u64, together: u64) -> News {
         let count = |set: &BTreeSet<BodyId>| u32::try_from(set.len()).unwrap_or(u32::MAX);
         let first = self.arrived.get(&leader).copied();
         let last = self.arrived.values().copied().max();
@@ -4136,9 +4160,22 @@ impl Group {
                 (Some(first), Some(last)) => last.saturating_sub(first),
                 _ => 0,
             },
+            together: first.map_or(0, |first| {
+                count_u32(
+                    self.arrived
+                        .iter()
+                        .filter(|&(m, &at)| *m != leader && at.abs_diff(first) <= together),
+                )
+            }),
+            waited_ticks: self.waited,
             at: now,
         }
     }
+}
+
+/// How many, as a `u32`.
+fn count_u32<T>(items: impl Iterator<Item = T>) -> u32 {
+    u32::try_from(items.count()).unwrap_or(u32::MAX)
 }
 
 /// Whether its group's caller has not reached the group's place yet
@@ -4149,6 +4186,69 @@ fn on_the_way(world: &World, groups: &BTreeMap<BodyId, Group>, mind: &Mind) -> b
         .and_then(|p| p.leader)
         .and_then(|l| groups.get(&l))
         .is_some_and(|g| g.ended.is_none() && !g.home && !g.arrived.contains_key(&g.members[0]))
+}
+
+/// The caller on its way looks behind (D56, decided by the project lead
+/// on 23 November 2026): while it sees a member not yet there walking
+/// behind it, farther than `behind_tiles`, it stops and waits,
+/// `behind_wait_minutes` at most in a day; walking with none left behind, it goes on and looks
+/// again in [`GROUP_WAIT_SECONDS`]. `None`: it waits, or walks on.
+fn look_behind(
+    world: &World,
+    rules: &Content,
+    g: &mut Group,
+    (id, body): (BodyId, &Body),
+    mind: &mut Mind,
+    d: Decision,
+    now: u64,
+) -> Option<Decision> {
+    let dec = &rules.needs.decisions;
+    let on_way = !g.arrived.contains_key(&id) && (body.is_walking() || g.held);
+    if dec.behind_tiles == 0 || !on_way {
+        g.started = true;
+        if dec.behind_tiles > 0 && !g.arrived.contains_key(&id) {
+            // Setting off, it will look behind in a moment.
+            mind.wake_at = Some(now + group_wait(world));
+        }
+        return Some(d);
+    }
+    let reach = i32::try_from(dec.behind_tiles).unwrap_or(i32::MAX);
+    let per_second = u64::from(world.calendar().ticks_per_second());
+    let most = u64::from(dec.behind_wait_minutes) * 60 * per_second;
+    // It sees a member walking behind it, out of reach: it waits for it.
+    // One it does not see, or that stands still, it cannot wait for.
+    let sight = sight_at(world.map(), rules, body.pos());
+    let behind = g.members.iter().skip(1).any(|m| {
+        !g.left.contains(m)
+            && !g.arrived.contains_key(m)
+            && world.body(*m).is_some_and(|b| {
+                b.is_walking()
+                    && within(b.pos(), body.pos(), sight)
+                    && !within(b.pos(), body.pos(), reach)
+            })
+    });
+    if behind && g.waited < most {
+        if g.held {
+            g.waited += group_wait(world);
+        }
+        g.held = true;
+        mind.doing = Doing::Nothing;
+        mind.wake_at = Some(now + group_wait(world));
+        // Walking, it stops where it stands.
+        return body.is_walking().then_some(Decision {
+            intention: Intention::MoveTo {
+                body: id,
+                target: body.pos(),
+            },
+            why: d.why,
+        });
+    }
+    mind.wake_at = Some(now + group_wait(world));
+    if g.held {
+        g.held = false;
+        return Some(d);
+    }
+    None
 }
 
 /// What a member of a group does once it is there (D56).
@@ -7913,6 +8013,89 @@ mod tests {
             "{follow:?}"
         );
         assert!(brains.groups[&BodyId(1)].followed.contains(&BodyId(2)));
+    }
+
+    #[test]
+    fn the_caller_looks_behind_waits_for_one_left_far_then_goes_on() {
+        let (mut world, rules, mut brains, bramble, camp) = deciding(2);
+        let side = place_side(&rules);
+        let here = place_of(camp, side);
+        let p = (here.0 + 3, here.1);
+        let food = brains.food.clone();
+        for mind in brains.minds.values_mut() {
+            mind.places.insert(p, place_with(&food, bramble, 4));
+        }
+        brains.minds.get_mut(&BodyId(1)).unwrap().will = 50;
+        let mut rules = rules;
+        rules.needs.decisions.look_percent_by_will = vec![(0, 0)];
+        assert_eq!(rules.needs.decisions.behind_tiles, 24);
+        decide_evening(&world, &rules, &mut brains, camp, &[BodyId(1), BodyId(2)]);
+        let decide_now = |world: &World, brains: &mut Brains, id: BodyId| {
+            let mut mind = brains.minds.remove(&id).unwrap();
+            let mut news = Vec::new();
+            let mut land = Land {
+                groups: &mut brains.groups,
+                bearers: &mut brains.bearers,
+                shores: &mut brains.shores,
+                food: &mut brains.food,
+                memory: &mut brains.memory,
+                news: &mut news,
+            };
+            let decision = decide(world, &rules, &mut land, id, &mut mind, 7);
+            brains.minds.insert(id, mind);
+            decision
+        };
+        let mut events = Vec::new();
+        let lead = decide_now(&world, &mut brains, BodyId(1)).expect("it goes");
+        world.queue(lead.intention);
+        world.advance(2, &rules, &mut events);
+        assert!(world.body(BodyId(1)).unwrap().is_walking());
+        // None left behind: it walks on and looks again later.
+        assert_eq!(decide_now(&world, &mut brains, BodyId(1)), None);
+        // Its member is taken far behind, and it sees it walking after it:
+        // it stops where it stands.
+        let at = world.body(BodyId(1)).unwrap().pos();
+        world.queue(Intention::Teleport {
+            body: BodyId(2),
+            target: Pos::new(at.x + 40, at.y),
+        });
+        world.advance(1, &rules, &mut events);
+        // It walks toward its caller, in its sight.
+        world.queue(Intention::MoveTo {
+            body: BodyId(2),
+            target: at,
+        });
+        world.advance(1, &rules, &mut events);
+        let far = world.body(BodyId(2)).unwrap().pos();
+        assert!(
+            (far.x - at.x).abs() > 30 && world.body(BodyId(2)).unwrap().is_walking(),
+            "{far:?} {at:?} {events:?}"
+        );
+        let stop = decide_now(&world, &mut brains, BodyId(1)).expect("it stops");
+        let at = world.body(BodyId(1)).unwrap().pos();
+        assert!(
+            matches!(stop.intention, Intention::MoveTo { target, .. } if target == at),
+            "{stop:?}"
+        );
+        assert!(brains.groups[&BodyId(1)].held);
+        world.queue(stop.intention);
+        world.advance(2, &rules, &mut events);
+        assert!(!world.body(BodyId(1)).unwrap().is_walking());
+        // Still far: it waits, and its wait is counted.
+        assert_eq!(decide_now(&world, &mut brains, BodyId(1)), None);
+        assert!(brains.groups[&BodyId(1)].waited > 0);
+        // Its member comes within reach: it goes on to the place.
+        world.queue(Intention::Teleport {
+            body: BodyId(2),
+            target: Pos::new(at.x - 3, at.y),
+        });
+        world.advance(1, &rules, &mut events);
+        let go = decide_now(&world, &mut brains, BodyId(1)).expect("it goes on");
+        assert!(
+            matches!(go.intention, Intention::MoveTo { target, .. } if target != at),
+            "{go:?}"
+        );
+        assert!(!brains.groups[&BodyId(1)].held);
     }
 
     /// The brains piloting every body of `world` under `rules`.

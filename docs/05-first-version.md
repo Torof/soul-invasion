@@ -704,7 +704,12 @@ of want, gathered 112.3 / 110.5 million kJ, carried at noon 1,625 /
 1,357 thousand kJ, places found bare 9,222 / 9,814; 30 % of those who
 joined walked behind their caller; mothers of infants as far from the
 camp as the other adults (152 / 146 tiles at noon): the pace alone does
-not keep them near (D56).
+not keep them near (D56). Then two rules the lead decided on these
+measures: carrying an infant slows its carrier to 75 % of its pace, and
+the caller looks behind on its way and waits for a member it sees
+walking after it; on one seed neither brings the mothers nearer
+(198 / 129 tiles with both) and the waits cost the food carried at noon
+a quarter (D56).
 
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the

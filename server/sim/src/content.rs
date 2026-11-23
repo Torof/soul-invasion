@@ -389,6 +389,12 @@ pub struct Decisions {
     /// The caller goes home with its group when this per cent of the
     /// group carries what it wanted.
     pub home_when_full_percent: u32,
+    /// On its way the caller stops and waits while a member not yet there
+    /// stands farther from it than this, in tiles on each axis ("look
+    /// behind"). 0: it never looks behind.
+    pub behind_tiles: u32,
+    /// The most it waits so in a day, in game minutes.
+    pub behind_wait_minutes: u32,
 }
 
 impl Default for Decisions {
@@ -405,6 +411,8 @@ impl Default for Decisions {
             habit_weight: 50,
             habit_floor: 10,
             home_when_full_percent: 50,
+            behind_tiles: 0,
+            behind_wait_minutes: 0,
         }
     }
 }
@@ -416,6 +424,8 @@ impl Decisions {
         Self {
             choices: 3,
             look_percent_by_will: vec![(0, 0), (100, 40)],
+            behind_tiles: 24,
+            behind_wait_minutes: 30,
             ..Self::default()
         }
     }
@@ -839,6 +849,11 @@ pub struct Ages {
     pub slow_over_years: u32,
     /// See `slow_under_years`.
     pub slow_pace_percent: u32,
+    /// One carrying an infant walks and gathers at this per cent of its
+    /// pace (D56, decided by the project lead on 23 November 2026): a
+    /// gesture of the body, never a rule of where to go. Absent: 100.
+    #[serde(default = "percent_100")]
+    pub carrying_pace_percent: u32,
     /// An infant's mass on its carrier, in grams: (at birth, weaned),
     /// straight between.
     pub infant_mass_g: (u32, u32),
@@ -858,6 +873,7 @@ impl Default for Ages {
             slow_under_years: 0,
             slow_over_years: u32::MAX,
             slow_pace_percent: 100,
+            carrying_pace_percent: 100,
             infant_mass_g: (0, 0),
             adopt_within_tiles: 0,
         }
@@ -1067,11 +1083,12 @@ impl Ages {
             || self.woman_percent == 0
             || self.nursing_percent < 100
             || !(1..=100).contains(&self.slow_pace_percent)
+            || !(1..=100).contains(&self.carrying_pace_percent)
             || self.infant_mass_g.0 > self.infant_mass_g.1
         {
             return Err(ContentError::Needs(
                 "ages: need_by_age not empty, its ages rising and its percents positive; \
-                 woman_percent positive, nursing_percent at least 100, slow_pace_percent 1 to 100, \
+                 woman_percent positive, nursing_percent at least 100, slow_pace_percent and carrying_pace_percent 1 to 100, \
                  infant_mass_g rising",
             ));
         }
