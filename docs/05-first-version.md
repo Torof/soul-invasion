@@ -687,6 +687,27 @@ dispelled, the lab's sections (Ce que la tribu sait, Qui a osé quoi, Ce
 que X croit, Qui a dit quoi à qui, Rumeurs) and its `-feu` / `-sansfeu`
 variant; `docs/10` says every key.
 
+**Lot 5a: the hearth tells the truth better** (23 November 2026, D55
+amended; the lead's yes to three perception fixes, each built only if its
+cause was first confirmed, `content/ai-reserve/review/vivarium/lot-5/`).
+Measured first, on seed 2 without trials: a told place was found bare at
+22 % of the looks that met it, 21 % for the first to come and 42 % from
+the sixth, from 6 % (blackberries) to 78 % (asparagus) by what it bore
+and hardly by its age; of 6,728 rumours dispelled in two years, 199 were
+told, each rumour dispelled 5.2 times; the deaths of want were far from
+the camp, none on the way to a told place, 16 of 28 under eighteen and
+thin for years. Built: **a place heard ages as fast as what it bears**
+(the credit's age counted to each dawn, its 50 points taken over four
+days an hour of work a plant holds, at most twenty and the season's
+days left: `fire.told_days_per_hour`, `fire.told_days_max`) and **a
+denial takes no slot** (kept apart from the 48 places, told besides the
+six, heard only by who holds a record of the place: `fire.denied_per_night`).
+Not built: "tell it as you left it" (0.9 % of told places emptied by
+their teller). On the ten seeds: trips to a place found bare −44 % and
+−48 % (10 of 10), with trials births +8 % (8 of 10) and food carried
++13 % (7 of 10), without trials births −6 % and one tribe's fall on seed
+6; numbers in D55.
+
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
 slopes drawn by the client from them (D44), then the relief in the
