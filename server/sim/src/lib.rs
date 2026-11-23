@@ -472,6 +472,12 @@ pub(crate) fn thirst_raise(
     u64::from(needs.thirst_per_day) * GAUGE_SCALE * heat * effort / (per_day * 10_000)
 }
 
+/// What the cold rises by a day of night in `season`, without warmth: the
+/// night's cold follows the season (24 November 2026).
+pub(crate) fn night_cold(needs: &content::Needs, season: Season) -> u32 {
+    needs.cold_per_day_at_night * needs.cold_season_percent.get(season) / 100
+}
+
 /// The least a body gathers at a time, in grams: a pinch.
 const PINCH_G: u32 = 10;
 
@@ -2763,7 +2769,7 @@ impl World {
             c.set_appetite(needs);
             c.thirst.raise(thirst_raise(needs, season, effort, per_day));
             if night {
-                c.cold.raise(step(needs.cold_per_day_at_night));
+                c.cold.raise(step(night_cold(needs, season)));
             } else {
                 c.cold.lower(step(needs.cold_relief_per_day));
             }
@@ -6184,6 +6190,49 @@ mod tests {
         let flint = w.item(stone).unwrap().clone();
         assert_eq!(heap.merge(flint.clone()), Err(flint));
         assert_eq!(heap.mass_g(), 950);
+    }
+
+    #[test]
+    fn the_nights_cold_follows_the_season() {
+        let mut rules = rules();
+        rules.needs.cold_per_day_at_night = 300;
+        rules.needs.cold_season_percent = BySeason {
+            spring: 74,
+            summer: 32,
+            autumn: 63,
+            winter: 100,
+        };
+        let cold = |s| night_cold(&rules.needs, s);
+        assert_eq!(
+            [
+                Season::Spring,
+                Season::Summer,
+                Season::Autumn,
+                Season::Winter
+            ]
+            .map(cold),
+            [222, 96, 189, 300]
+        );
+        // A night in spring at a quarter of the rate: a quarter of the cold.
+        let night = |percent: u32| {
+            let mut rules = rules.clone();
+            rules.needs.cold_per_day_at_night = 100;
+            rules.needs.cold_season_percent.spring = percent;
+            let mut w = fed_world();
+            let mut events = Vec::new();
+            let mut most = 0;
+            for _ in 0..1000 {
+                w.step(&rules, &mut events);
+                most = most.max(condition(&w).cold.points());
+            }
+            most
+        };
+        let (full, quarter) = (night(100), night(25));
+        assert!(full > 20, "{full}");
+        assert!(
+            quarter * 4 <= full + 4 && quarter * 4 + 4 >= full,
+            "{quarter} {full}"
+        );
     }
 
     #[test]

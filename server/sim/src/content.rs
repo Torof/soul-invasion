@@ -306,6 +306,11 @@ pub struct Needs {
     pub walk_j_per_m: u32,
     /// Cold rises this much per day of night, without warmth.
     pub cold_per_day_at_night: u32,
+    /// The night's cold by season, in percent of `cold_per_day_at_night`:
+    /// mild summer nights, cold winter ones (24 November 2026). All 100
+    /// when absent.
+    #[serde(default = "every_season_100")]
+    pub cold_season_percent: BySeason<u32>,
     /// Cold falls this much per day of daylight.
     pub cold_relief_per_day: u32,
     /// Fatigue rises this much per day awake.
@@ -2120,14 +2125,15 @@ impl Content {
         {
             return Err(ContentError::Needs("night_from_percent is 1 to 99"));
         }
-        if Season::ALL
-            .iter()
-            .any(|s| !(1..=1000).contains(&self.needs.thirst_heat_percent.get(*s)))
-            || !(1..=1000).contains(&self.needs.thirst_effort_percent)
+        if Season::ALL.iter().any(|s| {
+            !(1..=1000).contains(&self.needs.thirst_heat_percent.get(*s))
+                || self.needs.cold_season_percent.get(*s) > 1000
+        }) || !(1..=1000).contains(&self.needs.thirst_effort_percent)
             || self.needs.walk_j_per_m > 10_000
         {
             return Err(ContentError::Needs(
-                "thirst_heat_percent and thirst_effort_percent are 1 to 1000, walk_j_per_m at most 10,000",
+                "thirst_heat_percent and thirst_effort_percent are 1 to 1000, cold_season_percent \
+                 at most 1000, walk_j_per_m at most 10,000",
             ));
         }
         if self.needs.kj_per_hunger_point == 0 {

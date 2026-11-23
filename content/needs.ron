@@ -31,6 +31,21 @@
 //                          A smaller body pays by its size. Carried loads
 //                          do not add to it yet.
 // cold_per_day_at_night:   300 — eight hours of night without warmth.
+// cold_season_percent:     the night's cold by season, in percent of
+//                          cold_per_day_at_night (the lead, 24 November
+//                          2026: mild summer nights, cold winter ones; the
+//                          vivarium is temperate). In proportion to how far
+//                          the night falls under about 20 °C, below which a
+//                          lightly clad body at rest loses more heat than
+//                          it makes: mean daily minimum of a temperate
+//                          lowland of western Europe (Météo-France normals
+//                          1991-2020, central France, about): winter 1 °C,
+//                          spring 6 °C, summer 14 °C, autumn 8 °C, so 19,
+//                          14, 6 and 12 degrees under, winter the 100 %
+//                          kept from before. A winter night fills the gauge
+//                          (300 a day, ten and a half hours of night); a
+//                          spring night reaches about 93, an autumn one 79,
+//                          a summer one 35.
 // cold_relief_per_day:     600 — four hours of daylight undo it.
 // fatigue_per_day_awake:   120 — twenty hours awake fill the gauge.
 // rest_per_day_asleep:     300 — eight hours of sleep empty it.
@@ -68,6 +83,7 @@
     thirst_effort_percent: 150,
     walk_j_per_m: 130,
     cold_per_day_at_night: 300,
+    cold_season_percent: (spring: 74, summer: 32, autumn: 63, winter: 100),
     cold_relief_per_day: 600,
     fatigue_per_day_awake: 120,
     rest_per_day_asleep: 300,
