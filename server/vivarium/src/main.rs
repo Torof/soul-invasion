@@ -44,12 +44,17 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
                            or ../../content/, the first holding materials.ron)
   --out FILE               the report (default vivarium-report.html); its
                            data is written beside it, FILE with .json
+  --page minimal|full      the page: minimal (default since lab 6: the
+                           settings, the end, the map; the lab reads the
+                           data) or full (the long page of before)
   --help                   this";
 
 /// What the command line asks.
 struct Options {
     settings: Settings,
     out: PathBuf,
+    /// The long page of before (`--page full`) rather than the minimal one.
+    full_page: bool,
 }
 
 fn parse(args: &[String]) -> Result<Option<Options>, String> {
@@ -57,6 +62,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
     let mut side = 50;
     let mut world = "patch".to_owned();
     let mut out = PathBuf::from("vivarium-report.html");
+    let mut full_page = false;
     let mut tribes: Option<u32> = None;
     let mut i = 0;
     let value = |i: &mut usize, name: &str| -> Result<String, String> {
@@ -69,44 +75,24 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
         text.parse()
             .map_err(|_| format!("{name}: not a number: {text}"))
     };
+    let small = |i: &mut usize, name: &str, too: &str| -> Result<u32, String> {
+        u32::try_from(number(value(i, name)?, name)?).map_err(|_| format!("{name}: {too}"))
+    };
     while i < args.len() {
         match args[i].as_str() {
             "--help" | "-h" => return Ok(None),
             "--world" => world = value(&mut i, "--world")?,
-            "--side" => {
-                side = u32::try_from(number(value(&mut i, "--side")?, "--side")?)
-                    .map_err(|_| "--side: too large".to_owned())?;
-            }
-            "--people" => {
-                settings.people = u32::try_from(number(value(&mut i, "--people")?, "--people")?)
-                    .map_err(|_| "--people: too many".to_owned())?;
-            }
-            "--children" => {
-                settings.children =
-                    u32::try_from(number(value(&mut i, "--children")?, "--children")?)
-                        .map_err(|_| "--children: too many".to_owned())?;
-            }
-            "--infants" => {
-                settings.infants = u32::try_from(number(value(&mut i, "--infants")?, "--infants")?)
-                    .map_err(|_| "--infants: too many".to_owned())?;
-            }
-            "--days" => {
-                settings.days = u32::try_from(number(value(&mut i, "--days")?, "--days")?)
-                    .map_err(|_| "--days: too many".to_owned())?;
-            }
-            "--cadence" => {
-                settings.ticks_per_second =
-                    u32::try_from(number(value(&mut i, "--cadence")?, "--cadence")?)
-                        .map_err(|_| "--cadence: too high".to_owned())?;
-            }
+            "--side" => side = small(&mut i, "--side", "too large")?,
+            "--people" => settings.people = small(&mut i, "--people", "too many")?,
+            "--children" => settings.children = small(&mut i, "--children", "too many")?,
+            "--infants" => settings.infants = small(&mut i, "--infants", "too many")?,
+            "--days" => settings.days = small(&mut i, "--days", "too many")?,
+            "--cadence" => settings.ticks_per_second = small(&mut i, "--cadence", "too high")?,
             "--no-brain" => settings.brain = false,
             "--no-trials" => settings.trials = false,
             "--no-fire" => settings.fire = false,
             "--no-continent-cache" => settings.continents = None,
-            "--helpers" => {
-                settings.helpers = u32::try_from(number(value(&mut i, "--helpers")?, "--helpers")?)
-                    .map_err(|_| "--helpers: too many".to_owned())?;
-            }
+            "--helpers" => settings.helpers = small(&mut i, "--helpers", "too many")?,
             "--fed" => settings.fed = true,
             "--ages" => {
                 let text = value(&mut i, "--ages")?;
@@ -131,6 +117,13 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--seed" => settings.seed = number(value(&mut i, "--seed")?, "--seed")?,
             "--content" => settings.content = Some(PathBuf::from(value(&mut i, "--content")?)),
             "--out" => out = PathBuf::from(value(&mut i, "--out")?),
+            "--page" => {
+                full_page = match value(&mut i, "--page")?.as_str() {
+                    "minimal" => false,
+                    "full" => true,
+                    other => return Err(format!("--page: minimal or full, not {other}")),
+                };
+            }
             other => return Err(format!("unknown option {other}\n{USAGE}")),
         }
         i += 1;
@@ -150,7 +143,11 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
     if side < 8 {
         return Err("--side: 8 tiles at least".to_owned());
     }
-    Ok(Some(Options { settings, out }))
+    Ok(Some(Options {
+        settings,
+        out,
+        full_page,
+    }))
 }
 
 /// Where the report's data goes: beside the page, the same stem with
@@ -179,7 +176,12 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if let Err(error) = std::fs::write(&options.out, report.html()) {
+    let page = if options.full_page {
+        report.full_html()
+    } else {
+        report.html()
+    };
+    if let Err(error) = std::fs::write(&options.out, page) {
         eprintln!("vivarium: cannot write {}: {error}", options.out.display());
         return ExitCode::FAILURE;
     }

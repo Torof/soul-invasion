@@ -1,4 +1,5 @@
 {
+ "title": "Étalon : deux tribus, dix graines",
  "question": "Deux tribus de 25 adultes sur vingt ans, dix graines, avec et sans épreuves (20 runs) : les épreuves changent-elles la survie, et de combien, graine par graine ?",
  "runs": [
   {"name": "vivarium-25", "args": "--world vivarium --tribes 2 --people 25 --days 1000 --cadence 1",

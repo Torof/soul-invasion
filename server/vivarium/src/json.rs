@@ -27,7 +27,7 @@ use crate::{
 };
 
 /// The top-level keys, in the order they are written.
-const ORDER: [&str; 11] = [
+const ORDER: [&str; 13] = [
     "meta",
     "years",
     "found",
@@ -39,6 +39,8 @@ const ORDER: [&str; 11] = [
     "presence",
     "positions",
     "map",
+    "bearers",
+    "relief",
 ];
 
 /// The format marker: raised when a key changes meaning or goes; a new key
@@ -210,6 +212,8 @@ impl Report {
             "presence": self.presence_json(),
             "positions": self.positions_json(),
             "map": self.map_json(),
+            "bearers": self.bearers_json(),
+            "relief": self.relief_json(),
         })
     }
 
@@ -283,6 +287,7 @@ impl Report {
             "ticks_per_day": self.ticks_per_day(),
             "ticks": self.ticks,
             "rates": self.rates.iter().map(|(name, rate)| json!({"name": name, "rate": rate})).collect::<Vec<_>>(),
+            "factors": self.factors.iter().map(|(key, value)| json!({"key": key, "value": value})).collect::<Vec<_>>(),
             "memory": {
                 "written": self.memory_counts.0,
                 "freed": self.memory_counts.1,
@@ -399,6 +404,7 @@ impl Report {
                 });
                 let fire = self.fire.get(&(y.tribe, y.year)).copied().unwrap_or_default();
                 let knowledge = self.knowledge.get(&(y.tribe, y.year)).copied();
+                let known = self.known_places.get(&(y.tribe, y.year));
                 json!({
                     "tribe": tribe_name(y.tribe).to_string(),
                     "year": y.year,
@@ -446,6 +452,10 @@ impl Report {
                         "heard_only": k.heard_only,
                         "accesses": k.accesses,
                         "accesses_heard": k.accesses_heard,
+                        "where": known.map_or_else(Vec::new, |places| places
+                            .iter()
+                            .map(|&((x, y), seen)| json!([x, y, u8::from(seen)]))
+                            .collect::<Vec<_>>()),
                     })),
                     "camp": pos_or_null(y.ways.camp),
                     "food": food,
@@ -623,6 +633,30 @@ impl Report {
 
     /// The page's picture of the map, as the page embeds it, with what is
     /// needed to draw on it.
+    /// The food map (lab 6): the bearers of every chunk holding some, by
+    /// season, and its three most common kinds.
+    fn bearers_json(&self) -> Value {
+        json!({
+            "chunk_tiles": sim::map::CHUNK_SIZE,
+            "margin_chunks": crate::BEARERS_MARGIN_CHUNKS,
+            "seasons": ["spring", "summer", "autumn", "winter"],
+            "kinds": self.bearers.kinds,
+            "cells": self.bearers.cells.iter().map(|(x, y, seasons, kinds)| {
+                json!([x, y, seasons, kinds.iter().map(|(k, n)| json!([k, n])).collect::<Vec<_>>()])
+            }).collect::<Vec<_>>(),
+        })
+    }
+
+    /// The relief map (lab 6): heights every few tiles, row by row.
+    fn relief_json(&self) -> Value {
+        json!({
+            "cell_tiles": self.relief.cell,
+            "size": [self.relief.size.0, self.relief.size.1],
+            "known": self.relief.known,
+            "dm": self.relief.dm,
+        })
+    }
+
     fn map_json(&self) -> Value {
         let scale = self.map_scale.max(1);
         json!({
