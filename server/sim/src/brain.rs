@@ -81,7 +81,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use crate::content::{Content, Fire, Trials};
+use crate::content::{Content, Fire, Temperance, Trials};
 use crate::crops::{self, Bearer, Source};
 use crate::r#gen::scatter::{self, purpose};
 use crate::lru::Lru;
@@ -482,6 +482,18 @@ impl Way {
             Way::SleepOut => ways.sleep_out = from.sleep_out,
             Way::StockKj => ways.stock_kj = from.stock_kj,
             Way::Home => ways.home = from.home,
+        }
+    }
+
+    /// Its name in the content ([`crate::content::TRIAL_WAYS`]).
+    #[must_use]
+    pub fn key(self) -> &'static str {
+        let [worth, sleep, stock, home] = crate::content::TRIAL_WAYS;
+        match self {
+            Way::WorthHalfTiles => worth,
+            Way::SleepOut => sleep,
+            Way::StockKj => stock,
+            Way::Home => home,
         }
     }
 
@@ -928,6 +940,20 @@ pub enum News {
         /// The tick.
         at: u64,
     },
+    /// A day of an activity judged (D56): `body`'s confidence in it
+    /// after.
+    Judged {
+        /// Who.
+        body: BodyId,
+        /// The activity, its index in [`crate::content::ACTIVITIES`].
+        activity: u8,
+        /// Whether the day succeeded.
+        success: bool,
+        /// Its confidence in it after, 0 to 100.
+        confidence: u8,
+        /// The tick.
+        at: u64,
+    },
     /// `body` copied `way` from its camp-mate `from`.
     Copied {
         /// Who.
@@ -957,11 +983,22 @@ pub struct Mind {
     /// adoption, a newborn's the same way (nothing is inherited for now),
     /// until the souls' Willpower comes (D30).
     will: u8,
+    /// Its innate will (D50, amended): what its will and its confidences
+    /// come back to, season after season (D56).
+    innate: u8,
+    /// Thousandths of a point of will beyond `will`, and its failures in
+    /// a row (D50, amended: the will tempered).
+    will_rest: u16,
+    will_failures: u16,
+    /// Its confidence in each activity of the content's `temperance`
+    /// (D56), in that order: explore, gather, stay.
+    confidence: Vec<Confidence>,
     /// Gathered since the last nightfall, in kilojoules.
     gathered_today_kj: u64,
     /// Days of distress in a row: hungry at nightfall, or no gather at all.
     distress_days: u32,
-    /// Its last days, the oldest first: at most twice `trial_days`.
+    /// Its last days, the oldest first: at most twice the longest
+    /// trial's days ([`Trials::longest_days`]).
     days: Vec<Day>,
     /// Its cold was full since the last nightfall: the night froze it.
     cold_night: bool,
@@ -1043,11 +1080,62 @@ pub struct Mind {
     thoughts: u64,
 }
 
+/// A confidence moved by the four rules of temperance (D50 amended,
+/// D56), in thousandths of a point (0 to 100,000), with its failures in a
+/// row: the will is one, each activity has one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Confidence {
+    /// Thousandths of a point.
+    pub milli: u32,
+    /// Failures in a row.
+    pub failures: u16,
+}
+
+impl Confidence {
+    /// In points, 0 to 100.
+    #[must_use]
+    pub fn points(self) -> u8 {
+        u8::try_from((self.milli / 1000).min(100)).unwrap_or(100)
+    }
+
+    /// A failure: the first `bears` in a row cost nothing, each past them
+    /// `cost` times its rank past them.
+    pub fn fail(&mut self, bears: u32, cost: u32) {
+        self.failures = self.failures.saturating_add(1);
+        let past = u32::from(self.failures).saturating_sub(bears);
+        self.milli = self.milli.saturating_sub(cost.saturating_mul(past));
+    }
+
+    /// A success: `gain` added, the failures in a row forgotten.
+    pub fn succeed(&mut self, gain: u64) {
+        let gain = u32::try_from(gain).unwrap_or(u32::MAX);
+        self.milli = self.milli.saturating_add(gain).min(100_000);
+        self.failures = 0;
+    }
+
+    /// Listened to: `gain` added.
+    pub fn raise(&mut self, gain: u32) {
+        self.milli = self.milli.saturating_add(gain).min(100_000);
+    }
+
+    /// A season: `permille` of the gap to `innate` closed.
+    pub fn relax(&mut self, innate: u8, permille: u32) {
+        let target = i64::from(innate) * 1000;
+        let now = i64::from(self.milli);
+        let moved = now + (target - now) * i64::from(permille) / 1000;
+        self.milli = u32::try_from(moved.clamp(0, 100_000)).unwrap_or(0);
+    }
+}
+
 impl Mind {
     fn new(home: Pos) -> Self {
         Self {
             ways: Ways::at(home),
             will: 0,
+            innate: 0,
+            will_rest: 0,
+            will_failures: 0,
+            confidence: Vec::new(),
             gathered_today_kj: 0,
             distress_days: 0,
             days: Vec::new(),
@@ -1135,6 +1223,22 @@ impl Mind {
         self.will
     }
 
+    /// Its innate will, 0 to 100 (D50, amended).
+    pub fn innate(&self) -> u8 {
+        self.innate
+    }
+
+    /// Its confidence in each activity of [`crate::content::ACTIVITIES`],
+    /// 0 to 100 (D56); `None` for one the content does not hold.
+    pub fn confidences(&self, temper: &Temperance) -> [Option<u8>; 3] {
+        crate::content::ACTIVITIES.map(|name| {
+            temper
+                .activity(name)
+                .and_then(|i| self.confidence.get(i))
+                .map(|c| c.points())
+        })
+    }
+
     /// The trial under way, if any (D50).
     pub fn trial(&self) -> Option<&Trial> {
         self.trial.as_ref()
@@ -1183,8 +1287,9 @@ fn need_kj_per_day(rules: &Content, body: &Body) -> u64 {
 /// thing improved ([`Lately::better_than`]). With what it will tell.
 fn judge(rules: &Content, body: &Body, mind: &Mind, trial: &Trial) -> (bool, Judged) {
     let trials = &rules.needs.trials;
-    let during = mind.lately(trials.trial_days);
-    let kept = match trial.heard.mean(trials.trial_days) {
+    let days = trials.days_for(trial.way.key());
+    let during = mind.lately(days);
+    let kept = match trial.heard.mean(days) {
         Some(theirs) => {
             let need = need_kj_per_day(rules, body);
             let own = Lately {
@@ -1354,6 +1459,27 @@ impl Place {
 }
 
 impl Mind {
+    /// What weighs its going looking at the fire, in per cent (D56): its
+    /// habit's look outs ([`Mind::look_weight`]); with the will tempered,
+    /// that habit times its confidence in exploring against its
+    /// confidence in gathering (a multiplier between `habit_floor` % and
+    /// three times, never a ban). Never under `habit_floor`.
+    fn lean_to_look(&self, rules: &Content) -> u64 {
+        let (temper, dec) = (&rules.needs.temperance, &rules.needs.decisions);
+        let habit = self.look_weight(dec);
+        let held = |name| temper.activity(name).and_then(|i| self.confidence.get(i));
+        match (temper.on(), held("explore"), held("gather")) {
+            (true, Some(explore), Some(gather)) => {
+                let floor = u64::from(dec.habit_floor);
+                let lean = ((u64::from(explore.points()) + 5) * 100
+                    / (u64::from(gather.points()) + 5))
+                    .clamp(floor, 300);
+                (habit * lean / 100).max(floor)
+            }
+            _ => habit,
+        }
+    }
+
     /// How much its habit weighs on going looking (D56), in per cent of
     /// the chance: each day it looked and found adds `habit_weight`, each
     /// day it looked for nothing takes it away, never under `habit_floor`.
@@ -1385,13 +1511,113 @@ impl Mind {
     /// The will acquired (D50, amended): a kept trial raises it by
     /// `will_step_kept`, an abandoned one lowers it by `will_step_lost`,
     /// within 0 to 100. A trait moved by one's own experience.
-    fn learn_will(&mut self, trials: &Trials, kept: bool) {
+    fn learn_will(&mut self, rules: &Content, kept: bool) {
+        let (trials, temper) = (&rules.needs.trials, &rules.needs.temperance);
+        if temper.on() {
+            let bears = temper.bears(self.innate);
+            self.temper_will(|will| {
+                if kept {
+                    let failures = u32::from(will.failures);
+                    will.succeed(temper.success_milli(bears, failures, temper.kept_percent));
+                } else {
+                    will.fail(bears, temper.failure_milli);
+                }
+            });
+            return;
+        }
         let will = if kept {
             (u32::from(self.will) + trials.will_step_kept).min(100)
         } else {
             u32::from(self.will).saturating_sub(trials.will_step_lost)
         };
         self.will = u8::try_from(will).expect("at most 100");
+    }
+
+    /// A day lived kept, twice the longest trial's days (D50).
+    fn keep_day(&mut self, trials: &Trials, day: Day) {
+        self.days.push(day);
+        let keep = usize::try_from(trials.longest_days())
+            .unwrap_or(usize::MAX)
+            .saturating_mul(2);
+        if self.days.len() > keep.max(2) {
+            self.days.remove(0);
+        }
+    }
+
+    /// Its innate will set (D50, amended), its will and its confidences
+    /// starting from it (D56).
+    fn set_innate(&mut self, innate: u8, temper: &Temperance) {
+        self.innate = innate;
+        self.will = innate;
+        self.will_rest = 0;
+        self.will_failures = 0;
+        let start = Confidence {
+            milli: u32::from(innate) * 1000,
+            failures: 0,
+        };
+        self.confidence = vec![start; temper.activities.len()];
+    }
+
+    /// Its will moved as a [`Confidence`] (D50, amended).
+    fn temper_will(&mut self, change: impl FnOnce(&mut Confidence)) {
+        let mut will = Confidence {
+            milli: u32::from(self.will) * 1000 + u32::from(self.will_rest),
+            failures: self.will_failures,
+        };
+        change(&mut will);
+        self.will = will.points();
+        self.will_rest = u16::try_from(will.milli - u32::from(self.will) * 1000).unwrap_or(0);
+        self.will_failures = will.failures;
+    }
+
+    /// Listened to (D56): another joined its call (`activity`: gathering)
+    /// or copied a way it told (`None`).
+    fn listened(&mut self, temper: &Temperance, activity: Option<usize>) {
+        if !temper.on() {
+            return;
+        }
+        self.temper_will(|will| will.raise(temper.listened_milli));
+        if let Some(c) = activity.and_then(|i| self.confidence.get_mut(i)) {
+            c.raise(temper.listened_milli);
+        }
+    }
+
+    /// A season gone (D56): the will and each confidence close a share of
+    /// their gap to the innate will.
+    fn relax(&mut self, temper: &Temperance) {
+        let (innate, share) = (self.innate, temper.relax_permille);
+        self.temper_will(|will| will.relax(innate, share));
+        for c in &mut self.confidence {
+            c.relax(innate, share);
+        }
+    }
+
+    /// A day of `activity` judged (D56): its confidence moved by the
+    /// four rules; the news of it.
+    fn judge_day(
+        &mut self,
+        temper: &Temperance,
+        activity: usize,
+        success: bool,
+        (body, at): (BodyId, u64),
+    ) -> Option<News> {
+        let bears = temper.bears(self.innate);
+        let percent = temper.activities.get(activity)?.1;
+        let c = self.confidence.get_mut(activity)?;
+        if success {
+            c.succeed(temper.day_success_milli(percent));
+        } else {
+            c.fail(bears, temper.failure_milli);
+        }
+        let name = temper.activities.get(activity)?.0.as_str();
+        let known = crate::content::ACTIVITIES.iter().position(|n| *n == name)?;
+        Some(News::Judged {
+            body,
+            activity: u8::try_from(known).unwrap_or(u8::MAX),
+            success,
+            confidence: c.points(),
+            at,
+        })
     }
 
     /// Drops every access it holds: the body is gone.
@@ -2210,9 +2436,10 @@ impl Brains {
             let mut mind = Mind::new(home);
             // Its innate will (D50, amended): a skewed draw from the
             // seed and its id, a child's the same way (no inheritance).
-            mind.will = rules.needs.trials.will_at(
+            let innate = rules.needs.trials.will_at(
                 scatter::roll(world.seed(), purpose::TRIAL_WILL, &[u64::from(body.0)]) % 1001,
             );
+            mind.set_innate(innate, &rules.needs.temperance);
             if first > now + 1 {
                 mind.due = false;
                 mind.wake_at = Some(first);
@@ -2427,6 +2654,7 @@ impl Brains {
         let day = today(world);
         let now = world.tick().0;
         self.food.refresh(world, rules);
+        let (kin, season) = temper_today(world, rules, day);
         let ids: Vec<BodyId> = self.minds.keys().copied().collect();
         for &id in &ids {
             let Some(body) = world.body(id) else {
@@ -2442,32 +2670,30 @@ impl Brains {
             }
             let c = body.condition();
             let hungry = c.hunger.points() >= HUNGRY;
-            mind.days.push(Day {
-                gathered_kj,
-                thin: c.is_thin(&rules.needs),
-                thirsty: c.thirst.points() >= THIRSTY,
-                cold: std::mem::take(&mut mind.cold_night),
-                hungry,
-                bare: gathered_kj == 0,
-            });
-            let keep = usize::try_from(trials.trial_days)
-                .unwrap_or(usize::MAX)
-                .saturating_mul(2);
-            if mind.days.len() > keep.max(2) {
-                mind.days.remove(0);
-            }
-            self.news
-                .push(close_habit(rules, body, id, mind, day, gathered_kj, now));
+            let cold = std::mem::take(&mut mind.cold_night);
+            mind.keep_day(
+                trials,
+                Day {
+                    gathered_kj,
+                    thin: c.is_thin(&rules.needs),
+                    thirsty: c.thirst.points() >= THIRSTY,
+                    cold,
+                    hungry,
+                    bare: gathered_kj == 0,
+                },
+            );
+            let (day_of, kin_of) = ((day, gathered_kj, now), (kin.get(&id).copied(), season));
+            close_habit(rules, body, id, mind, day_of, kin_of, &mut self.news);
             mind.distress_days = if hungry || gathered_kj == 0 {
                 mind.distress_days.saturating_add(1)
             } else {
                 0
             };
             if let Some(trial) = mind.trial
-                && day >= trial.started_day + u64::from(trials.trial_days)
+                && day >= trial.started_day + u64::from(trials.days_for(trial.way.key()))
             {
                 let (kept, judged) = judge(rules, body, mind, &trial);
-                mind.learn_will(trials, kept);
+                mind.learn_will(rules, kept);
                 if kept {
                     mind.changed_day = Some(day);
                 } else {
@@ -2980,7 +3206,7 @@ impl Brains {
             }
             let pace = u64::from(body.condition().pace_percent(&rules.needs).max(1));
             let percent = dec.look_percent(mind.will) * if full_told { 1 } else { 2 };
-            let chance = percent * mind.look_weight(dec) / 100;
+            let chance = percent * mind.lean_to_look(rules) / 100;
             if chance > 0
                 && scatter::roll(seed, purpose::FIRE_LOOK, &[u64::from(id.0), today64]) % 100
                     < chance
@@ -3057,6 +3283,18 @@ impl Brains {
             team.sort_unstable();
             team.retain(|&m| m != leader);
             team.insert(0, leader);
+            // Each who chose to join it listened to the caller (D56): not
+            // a child taking its mother's decision.
+            let temper = &rules.needs.temperance;
+            let joined = team
+                .iter()
+                .filter(|m| speakers.iter().any(|s| s.1 == **m))
+                .count();
+            if let Some(mind) = self.minds.get_mut(&leader) {
+                for _ in 1..joined {
+                    mind.listened(temper, temper.activity("gather"));
+                }
+            }
             self.groups.insert(
                 leader,
                 Group {
@@ -3205,6 +3443,10 @@ impl Brains {
             after: mind.ways,
             at: world.tick().0,
         });
+        // Its teller was listened to (D56).
+        if let Some(teller) = self.minds.get_mut(&from) {
+            teller.listened(&rules.needs.temperance, None);
+        }
     }
 
     /// The control without the fire (`--no-fire`, D55): the imitation of
@@ -4403,26 +4645,56 @@ fn follow_or_wait(
 }
 
 /// What a body did its day, kept in its habit when decisions are on, and
-/// told as [`News::Habit`] (D56).
+/// told as [`News::Habit`] (D56). With the will tempered, its activities
+/// are judged (D56): yesterday's look out by whether it found a place it
+/// told new at the fire this dawn, today's walk to a place by whether it
+/// gathered a day of its need, today's silence at the fire by whether its
+/// children were fed (`kin_fed`: none of them hungry; `None`: no child);
+/// a season ended (`season`), its will and confidences come back toward
+/// its innate will first.
 fn close_habit(
     rules: &Content,
     body: &Body,
     id: BodyId,
     mind: &mut Mind,
-    day: u64,
-    gathered_kj: u64,
-    now: u64,
-) -> News {
+    (day, gathered_kj, now): (u64, u64, u64),
+    (kin_fed, season): (Option<bool>, bool),
+    news: &mut Vec<News>,
+) {
+    if season {
+        mind.relax(&rules.needs.temperance);
+    }
     let plan = mind.plan.take().filter(|p| u64::from(p.day) == day);
     let act = plan.map_or(Act::Nothing, |p| p.act);
     let bare = std::mem::take(&mut mind.bare_today);
     let decisions = &rules.needs.decisions;
+    let need = need_kj_per_day(rules, body).max(1);
+    let fed = gathered_kj >= need_kj_per_day(rules, body);
     if decisions.on() {
+        let temper = &rules.needs.temperance;
+        if temper.on() {
+            let looked = mind
+                .habit
+                .last()
+                .filter(|b| *b & 0x0f == Act::Looked.code());
+            let judged = [
+                looked.map(|b| ("explore", b & HABIT_FOUND != 0)),
+                matches!(act, Act::Alone | Act::Called | Act::Joined).then_some(("gather", fed)),
+                plan.filter(|_| act == Act::Nothing)
+                    .and(kin_fed)
+                    .map(|k| ("stay", k)),
+            ];
+            for (name, success) in judged.into_iter().flatten() {
+                if let Some(i) = temper.activity(name) {
+                    news.extend(mind.judge_day(temper, i, success, (id, now)));
+                }
+            }
+        }
         let mut byte = act.code();
         if bare > 0 {
             byte |= HABIT_BARE;
         }
-        if gathered_kj >= need_kj_per_day(rules, body) {
+        if fed {
             byte |= HABIT_FED;
         }
         mind.habit.push(byte);
@@ -4432,15 +4704,44 @@ fn close_habit(
             mind.habit.drain(..extra);
         }
     }
-    let need = need_kj_per_day(rules, body).max(1);
-    News::Habit {
+    news.push(News::Habit {
         body: id,
         act,
         decided: plan.is_some(),
         kj_percent: u32::try_from(gathered_kj * 100 / need).unwrap_or(u32::MAX),
         bare,
         at: now,
+    });
+}
+
+/// With the will tempered (D56): whether each parent's children are fed
+/// tonight ([`kin_fed`]), and whether a season ends with this day (the
+/// will and the confidences come back toward the innate then).
+fn temper_today(world: &World, rules: &Content, day: u64) -> (BTreeMap<BodyId, bool>, bool) {
+    if !rules.needs.temperance.on() {
+        return (BTreeMap::new(), false);
     }
+    let season = u64::from(world.calendar().days_per_year() / 4).max(1);
+    (kin_fed(world, rules), day > 0 && day.is_multiple_of(season))
+}
+
+/// Whether the children under `follows_mother_years` of each parent are
+/// fed at nightfall (D56): none of them hungry. Parents without such a
+/// child are not in it.
+fn kin_fed(world: &World, rules: &Content) -> BTreeMap<BodyId, bool> {
+    let young = u64::from(rules.needs.decisions.follows_mother_years) * 1000;
+    let mut fed: BTreeMap<BodyId, bool> = BTreeMap::new();
+    for child in world.bodies() {
+        if child.condition().vitality.points() == 0 || world.age_milli(child) >= young {
+            continue;
+        }
+        let ok = child.condition().hunger.points() < HUNGRY;
+        for parent in [child.mother(), child.father()].into_iter().flatten() {
+            let entry = fed.entry(parent).or_insert(true);
+            *entry = *entry && ok;
+        }
+    }
+    fed
 }
 
 impl Group {
@@ -5199,7 +5500,7 @@ fn start_trial(
                 way,
                 before,
                 started_day: day,
-                before_days: mind.lately(trials.trial_days),
+                before_days: mind.lately(trials.days_for(way.key())),
                 heard: HeardDays::default(),
             });
             return Some(News::Trying {
@@ -5265,7 +5566,7 @@ fn start_trial(
         way,
         before,
         started_day: day,
-        before_days: mind.lately(trials.trial_days),
+        before_days: mind.lately(trials.days_for(way.key())),
         heard: HeardDays::default(),
     });
     Some(News::Trying {
@@ -7435,6 +7736,52 @@ mod tests {
     }
 
     #[test]
+    fn a_slow_way_is_judged_on_its_horizon_not_on_trial_days() {
+        let mut rules = trials_at(0, 0);
+        rules.needs.trials.horizon_days = vec![("stock_kj".to_owned(), 4)];
+        let id = BodyId(1);
+        let mut world = World::empty(
+            Calendar::new(1, 7200).unwrap(),
+            Map::filled(64, 64, Terrain::Grass).with_camp(5, 5),
+        );
+        let mut events = Vec::new();
+        world.advance(5 * world.calendar().ticks_per_day(), &rules, &mut events);
+        world.spawn_body(Pos::new(5, 5));
+        let today = u64::try_from(world.today()).unwrap();
+        let mut brains = piloted(&world);
+        let mind = brains.minds.get_mut(&id).unwrap();
+        let ways = *mind.ways();
+        mind.ways.stock_kj *= 2;
+        mind.trial = Some(Trial {
+            way: Way::StockKj,
+            before: ways,
+            started_day: today - 2,
+            before_days: Lately::default(),
+            heard: HeardDays::default(),
+        });
+        let news = nightfall(&world, &rules, &mut brains);
+        assert!(
+            news.is_empty(),
+            "two days of four: not judged yet, {news:?}"
+        );
+        let mind = brains.minds.get_mut(&id).unwrap();
+        let trial = mind.trial.as_mut().expect("still under trial");
+        trial.started_day = today - 4;
+        let news = nightfall(&world, &rules, &mut brains);
+        assert!(
+            matches!(
+                news[..],
+                [News::Tried {
+                    way: Way::StockKj,
+                    ..
+                }]
+            ),
+            "judged on its fourth day: {news:?}"
+        );
+        assert!(brains.mind(id).unwrap().trial().is_none());
+    }
+
+    #[test]
     fn the_worlds_judgement_keeps_a_better_way_and_reverts_a_worse_one() {
         let before = Lately {
             kj_per_day: 1000,
@@ -8058,6 +8405,230 @@ mod tests {
     fn act_of(brains: &Brains, id: BodyId) -> (Act, Option<PlaceKey>, Option<BodyId>) {
         let plan = brains.minds[&id].plan.expect("a plan");
         (plan.act, plan.place, plan.leader)
+    }
+
+    /// A mind of `innate` will holding the placeholders' confidences
+    /// (D50 amended, D56).
+    fn tempered(innate: u8) -> (Mind, Temperance) {
+        let temper = Temperance::placeholders();
+        let mut mind = Mind::new(Pos::new(0, 0));
+        mind.set_innate(innate, &temper);
+        (mind, temper)
+    }
+
+    #[test]
+    fn the_first_failures_cost_nothing_and_the_bold_bear_more_of_them() {
+        let temper = Temperance::placeholders();
+        assert_eq!((temper.bears(5), temper.bears(95)), (2, 5));
+        let (mut timid, mut bold) = (
+            Confidence {
+                milli: 50_000,
+                failures: 0,
+            },
+            Confidence {
+                milli: 50_000,
+                failures: 0,
+            },
+        );
+        for _ in 0..5 {
+            timid.fail(temper.bears(5), temper.failure_milli);
+            bold.fail(temper.bears(95), temper.failure_milli);
+        }
+        // The timid: free, free, then 1, 2, 3 points; the bold: all free.
+        assert_eq!(timid.milli, 44_000);
+        assert_eq!(bold.milli, 50_000);
+        // A sixth costs the bold its first point, the timid four more.
+        timid.fail(temper.bears(5), temper.failure_milli);
+        bold.fail(temper.bears(95), temper.failure_milli);
+        assert_eq!((timid.milli, bold.milli), (40_000, 49_000));
+    }
+
+    #[test]
+    fn a_success_weighs_more_the_later_it_comes_and_forgets_the_streak() {
+        let temper = Temperance::placeholders();
+        let early = temper.success_milli(2, 0, 25);
+        let late = temper.success_milli(2, 6, 25);
+        assert!(early > 0 && late == early * 7, "{early} {late}");
+        let mut c = Confidence {
+            milli: 20_000,
+            failures: 6,
+        };
+        c.succeed(late);
+        assert_eq!(c.failures, 0);
+        assert_eq!(c.milli, 20_000 + u32::try_from(late).unwrap());
+    }
+
+    #[test]
+    fn average_luck_keeps_the_will_where_it_is_bad_luck_wears_it_good_luck_raises_it() {
+        let temper = Temperance::placeholders();
+        // Gains and losses over many draws, unclamped, by a fixed
+        // sequence (a linear congruence: the same everywhere).
+        let run = |bears: u32, percent: u64| {
+            let (mut gains, mut losses, mut failures) = (0_u64, 0_u64, 0_u32);
+            let mut x: u64 = 12_345;
+            for _ in 0..400_000 {
+                x = x
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                if (x >> 33) % 100 < percent {
+                    gains += temper.success_milli(bears, failures, temper.kept_percent);
+                    failures = 0;
+                } else {
+                    failures += 1;
+                    losses +=
+                        u64::from(temper.failure_milli) * u64::from(failures.saturating_sub(bears));
+                }
+            }
+            (gains, losses)
+        };
+        for bears in [2, 4, 6] {
+            let (gains, losses) = run(bears, 25);
+            let gap = gains.abs_diff(losses) * 100 / losses;
+            assert!(gap <= 3, "bears {bears}: gains {gains}, losses {losses}");
+            let (gains, losses) = run(bears, 15);
+            assert!(gains < losses, "bad luck wears it: bears {bears}");
+            let (gains, losses) = run(bears, 40);
+            assert!(gains > losses, "good luck raises it: bears {bears}");
+        }
+    }
+
+    #[test]
+    fn a_day_that_succeeds_is_worth_the_odds_against_it() {
+        let temper = Temperance::placeholders();
+        assert_eq!(
+            temper.day_success_milli(75),
+            333,
+            "explore: a third of a failure"
+        );
+        assert_eq!(temper.day_success_milli(50), 1_000, "gather: one failure");
+        assert_eq!(temper.day_success_milli(90), 111, "stay: a ninth");
+        // Over a hundred days at the expected rate, the successes weigh
+        // what the failures would if each one cost.
+        for percent in [50_u32, 75, 90] {
+            let gains = temper.day_success_milli(percent) * u64::from(percent);
+            let costs = u64::from(temper.failure_milli) * u64::from(100 - percent);
+            assert!(
+                gains.abs_diff(costs) <= 100,
+                "{percent} %: {gains} against {costs}"
+            );
+        }
+        let (mut mind, temper) = tempered(20);
+        let explore = temper.activity("explore").unwrap();
+        let before = mind.confidence[explore].milli;
+        mind.judge_day(&temper, explore, true, (BodyId(1), 0));
+        assert_eq!(
+            mind.confidence[explore].milli,
+            before + 333,
+            "a place found counts"
+        );
+    }
+
+    #[test]
+    fn the_temperament_comes_back_half_its_gap_in_two_years() {
+        let (mut mind, temper) = tempered(10);
+        mind.will = 90;
+        mind.confidence[1].milli = 90_000;
+        for _ in 0..8 {
+            mind.relax(&temper);
+        }
+        assert!((48..=52).contains(&mind.will), "{}", mind.will);
+        assert!((48..=52).contains(&mind.confidence[1].points()));
+        assert_eq!(mind.confidence[0].points(), 10, "at its innate already");
+    }
+
+    #[test]
+    fn each_activity_keeps_its_own_streak() {
+        let (mut mind, temper) = tempered(5);
+        let at = (BodyId(1), 0);
+        for _ in 0..3 {
+            mind.judge_day(&temper, 0, false, at);
+        }
+        let news = mind.judge_day(&temper, 1, false, at);
+        assert_eq!(
+            (mind.confidence[0].failures, mind.confidence[1].failures),
+            (3, 1)
+        );
+        assert!(matches!(
+            news,
+            Some(News::Judged {
+                activity: 1,
+                success: false,
+                confidence: 5,
+                ..
+            })
+        ));
+        mind.judge_day(&temper, 1, true, at);
+        assert_eq!(
+            (mind.confidence[0].failures, mind.confidence[1].failures),
+            (3, 0)
+        );
+        assert_eq!(
+            mind.confidence[0].points(),
+            4,
+            "explore paid its third failure"
+        );
+        assert!(mind.confidence[1].milli > 5_000, "gather gained");
+        assert_eq!(mind.will, 5, "the will moves by trials, not by days");
+    }
+
+    #[test]
+    fn going_looking_is_its_habit_times_its_confidence_and_never_falls_to_nothing() {
+        let (_, mut rules, _, _) = by_a_ripe_bramble(0);
+        rules.needs.decisions = crate::content::Decisions::placeholders();
+        rules.needs.temperance = Temperance::placeholders();
+        let (mut mind, _) = tempered(20);
+        assert_eq!(
+            mind.lean_to_look(&rules),
+            100,
+            "even: no habit, even confidence"
+        );
+        mind.confidence[0].milli = 60_000;
+        assert_eq!(mind.lean_to_look(&rules), 260);
+        mind.habit.push(Act::Looked.code() | HABIT_FOUND);
+        assert_eq!(
+            mind.lean_to_look(&rules),
+            150 * 260 / 100,
+            "a look out that found weighs as in PR 1, times the confidence"
+        );
+        mind.habit.clear();
+        mind.confidence[0].milli = 0;
+        mind.confidence[1].milli = 100_000;
+        assert_eq!(
+            mind.lean_to_look(&rules),
+            u64::from(rules.needs.decisions.habit_floor),
+            "a weight, never a ban"
+        );
+    }
+
+    #[test]
+    fn being_joined_at_the_fire_gives_its_caller_confidence() {
+        let (world, mut rules, mut brains, bramble, camp) = deciding(3);
+        rules.needs.temperance = Temperance::placeholders();
+        rules.needs.decisions.look_percent_by_will = vec![(0, 0)];
+        let side = place_side(&rules);
+        let here = place_of(camp, side);
+        let p = (here.0 + 1, here.1);
+        let food = brains.food.clone();
+        for (id, mind) in &mut brains.minds {
+            mind.places.insert(p, place_with(&food, bramble, 6));
+            mind.set_innate(
+                if *id == BodyId(3) { 60 } else { 20 },
+                &rules.needs.temperance,
+            );
+        }
+        decide_evening(
+            &world,
+            &rules,
+            &mut brains,
+            camp,
+            &[BodyId(1), BodyId(2), BodyId(3)],
+        );
+        assert_eq!(act_of(&brains, BodyId(3)).0, Act::Called);
+        let caller = &brains.minds[&BodyId(3)];
+        // Two joined: half a point each, to its will and its gathering.
+        assert_eq!((caller.will, caller.will_rest), (61, 0));
+        assert_eq!(caller.confidence[1].milli, 61_000);
+        assert_eq!(brains.minds[&BodyId(1)].will, 20, "joining gives nothing");
     }
 
     #[test]
@@ -9071,9 +9642,9 @@ mod tests {
         let me = BodyId(1);
         let mind = brains.minds.get_mut(&me).unwrap();
         let ways = mind.ways;
-        mind.ways.stock_kj *= 2;
+        mind.ways.worth_half_tiles *= 2;
         mind.trial = Some(Trial {
-            way: Way::StockKj,
+            way: Way::WorthHalfTiles,
             before: ways,
             started_day: 0,
             before_days: before,
@@ -9317,7 +9888,9 @@ mod tests {
 
     #[test]
     fn a_kept_trial_raises_the_will_and_an_abandoned_one_lowers_it_within_bounds() {
-        let rules = fire_rules();
+        // The fixed steps: the rule without the content's temperance.
+        let mut rules = fire_rules();
+        rules.needs.temperance = Temperance::default();
         let judged = |will: u8, kept: bool| {
             let mut world = World::empty(
                 Calendar::new(1, 7200).unwrap(),
@@ -9330,9 +9903,9 @@ mod tests {
             let mind = brains.minds.get_mut(&BodyId(1)).unwrap();
             mind.will = will;
             let ways = mind.ways;
-            mind.ways.stock_kj *= 2;
+            mind.ways.worth_half_tiles *= 2;
             mind.trial = Some(Trial {
-                way: Way::StockKj,
+                way: Way::WorthHalfTiles,
                 before: ways,
                 started_day: 0,
                 before_days: Lately {

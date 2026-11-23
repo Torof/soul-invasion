@@ -492,6 +492,16 @@ pub struct HabitYear {
     pub fed: [u32; 5],
     /// Places it found, told at the fire to one who did not know them.
     pub found: [u32; 5],
+    /// Its will at the year's end (D50, amended); `None` if not read.
+    pub will: Option<u8>,
+    /// Its confidence in each activity at the year's end (D56), in the
+    /// order of `sim::content::ACTIVITIES` (explore, gather, stay; 0 for
+    /// one not held); `None` if none is held.
+    pub confidence: Option<[u8; 3]>,
+    /// Its days of each activity judged a success that year (D56).
+    pub successes: [u32; 3],
+    /// And judged a failure.
+    pub failures: [u32; 3],
 }
 
 /// The evening's decisions and the day's groups by tribe and year (D56):
@@ -548,6 +558,16 @@ pub struct DecisionYear {
     /// Distance to the camp at noon, in tiles: mothers carrying an infant
     /// (sum, count), the other grown people (sum, count).
     pub distance: (u64, u32, u64, u32),
+    /// The living whose mind was read at the year's end, and of them the
+    /// bold: a will of the content's `bold_will` or more (D50, amended).
+    pub minds: u32,
+    /// The bold among them.
+    pub bold: u32,
+    /// Days of each activity judged a success, in the order of
+    /// `sim::content::ACTIVITIES` (D56).
+    pub successes: [u32; 3],
+    /// And judged a failure.
+    pub failures: [u32; 3],
 }
 
 /// An act's index in [`Act::ALL`].
@@ -1719,6 +1739,7 @@ pub fn run_watched(
                 | News::Evening { .. }
                 | News::GroupEnded { .. }
                 | News::Found { .. }
+                | News::Judged { .. }
                 | News::Habit { .. } => continue,
                 News::Copied {
                     body,
@@ -1869,6 +1890,7 @@ pub fn run_watched(
                 let (k, known) = knowledge_of(&world, &brains, &people, t);
                 knowledge.insert((t, year), k);
                 known_places.insert((t, year), known);
+                wills_of(&world, &brains, &mut people, (t, year), content, &mut tally);
             }
         }
     }
@@ -2190,6 +2212,37 @@ fn believed_words(who: &[BodyId]) -> String {
     }
 }
 
+/// The wills and the confidences of tribe `t`'s living at the year's end
+/// (D50 amended, D56): each one's, and the bold among them.
+fn wills_of(
+    world: &World,
+    brains: &Brains,
+    people: &mut BTreeMap<BodyId, Person>,
+    (t, year): (u8, u64),
+    content: &Content,
+    tally: &mut FireTally,
+) {
+    let bold = content.needs.temperance.bold_will;
+    let counts = tally.decisions.entry((t, year)).or_default();
+    for body in world.bodies() {
+        let Some(mind) = brains.mind(body.id()) else {
+            continue;
+        };
+        let person = people.entry(body.id()).or_default();
+        if person.tribe != t || body.condition().vitality.points() == 0 {
+            continue;
+        }
+        counts.minds += 1;
+        counts.bold += u32::from(u32::from(mind.will()) >= bold);
+        let its_year = person.habit_years.entry(year).or_default();
+        its_year.will = Some(mind.will());
+        let held = mind.confidences(&content.needs.temperance);
+        if held.iter().any(Option::is_some) {
+            its_year.confidence = Some(held.map(|c| c.unwrap_or(0)));
+        }
+    }
+}
+
 /// Reads an evening's tally, a day's habit or a find told at the fire
 /// (D56) into the counters and the person's habit; `true` when it was one.
 fn counted_news(
@@ -2201,6 +2254,26 @@ fn counted_news(
     let tribe_of =
         |people: &BTreeMap<BodyId, Person>, body: BodyId| people.get(&body).map_or(0, |p| p.tribe);
     match news {
+        News::Judged {
+            body,
+            activity,
+            success,
+            ..
+        } => {
+            let i = usize::from(*activity).min(2);
+            let tribe = tribe_of(people, *body);
+            let counts = tally.decisions.entry((tribe, year)).or_default();
+            let person = people.entry(*body).or_default();
+            let mine = person.habit_years.entry(year).or_default();
+            if *success {
+                counts.successes[i] += 1;
+                mine.successes[i] += 1;
+            } else {
+                counts.failures[i] += 1;
+                mine.failures[i] += 1;
+            }
+            true
+        }
         News::Evening {
             by,
             skipped,
@@ -2360,7 +2433,7 @@ fn decision_news(
             );
             true
         }
-        News::Evening { .. } | News::Habit { .. } | News::Found { .. } => {
+        News::Evening { .. } | News::Habit { .. } | News::Found { .. } | News::Judged { .. } => {
             counted_news(news, scene.year, people, tally)
         }
         _ => false,

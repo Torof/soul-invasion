@@ -735,6 +735,34 @@ without trials alive 82.6 → 88.5 (6 of 10), carried at noon +20 % (10 of
 10); with trials alive 79.9 → 77.5 (8 of 10 lower), the births lost,
 supposedly, where sleeping out spread (D56).
 
+**Lot 5b, PR 1 bis: the will tempered and the vocations** (23 November
+2026, D50 and D56 amended; the lead's yes to four rules). Failures in a
+row cost nothing up to a threshold that grows with the innate will, then
+a little more each; a success forgets the streak and weighs more the
+later it comes, calibrated on the rarity of success so that average luck
+keeps the will where it is; the temperament comes back, half the gap in
+two years; being joined at the fire or copied raises it. The same four
+rules hold a confidence by activity (explore, gather, stay; a list in
+`content/needs.ron`, section `temperance`), judged from the world each
+day; the chance to go looking leans toward the more confident activity,
+never forbidden. A vocation is only the lab's word for the highest.
+**Twenty years, PR 1 against PR 1 bis** (two tribes, seed 1): the mean
+will 7.8 / 18.2 at the end (15.5 at the start), the bold 2 / 9; gathered
+502.0 / 460.8 million kJ, the food carried at noon halved in tribe B.
+
+**Then its causes answered** (23 November 2026, D49, D50 and D56
+amended). The first try lost people, and the causes were proved before
+any tuning (`content/ai-reserve/review/vivarium/lot-5/LOT5B-1bis-causes.md`):
+a success was worth nearly nothing, a night apart lost a season's
+conception, and the slow ways were judged on five days. The lead agreed
+to the four answers, each measured alone on four seeds: the habit leads
+the look out again and the confidence weighs it, a wife conceives on any
+of the season's first four dawns her spouse is back, a day that succeeds
+gains a failure's cost times the odds against it, and a stock or a
+night out is judged on twelve days. On the ten seeds, alive at twenty
+years 77.5 → 88.4 with trials and 88.5 → 96.8 without (10 of 10 both);
+the price of trying −11.0 → −8.4 alive (D56).
+
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
 slopes drawn by the client from them (D44), then the relief in the

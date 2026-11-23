@@ -141,6 +141,14 @@ impl Calendar {
         Season::ALL[usize::try_from(quarter).expect("under four")]
     }
 
+    /// The first day of the year (from 0) of the season `day_of_year`
+    /// (from 0) belongs to.
+    fn season_first_day(&self, day_of_year: u64) -> u64 {
+        let days = u64::from(self.days_per_year);
+        let quarter = day_of_year % days * 4 / days;
+        (quarter * days).div_ceil(4)
+    }
+
     /// Ticks in one game second.
     pub fn ticks_per_second(&self) -> u32 {
         self.ticks_per_second
@@ -168,6 +176,7 @@ impl Calendar {
             year: days / days_per_year + 1,
             day_of_year: day_of_year + 1,
             season: self.season_of(day_of_year),
+            day_of_season: day_of_year - self.season_first_day(day_of_year),
             season_start: day_of_year == 0
                 || self.season_of(day_of_year - 1) != self.season_of(day_of_year),
             ticks_per_day,
@@ -198,6 +207,7 @@ pub struct GameTime {
     pub day_of_year: u64,
     /// The season the day belongs to.
     pub season: Season,
+    day_of_season: u64,
     season_start: bool,
     ticks_per_day: u64,
 }
@@ -217,6 +227,11 @@ impl GameTime {
     /// True on the very first tick of a day.
     pub fn is_day_start(&self) -> bool {
         self.tick_of_day == 0
+    }
+
+    /// Days since the season started, from 0 on its first day.
+    pub fn day_of_season(&self) -> u64 {
+        self.day_of_season
     }
 
     /// True on the very first tick of a season (and so of a year).
@@ -285,6 +300,20 @@ mod tests {
                 (day, season, year, of_year),
                 "day {day}"
             );
+        }
+        // The days since the season started.
+        for (day, of_season) in [
+            (1, 0),
+            (13, 12),
+            (14, 0),
+            (25, 11),
+            (26, 0),
+            (38, 12),
+            (39, 0),
+            (50, 11),
+            (51, 0),
+        ] {
+            assert_eq!(at_day(day).day_of_season(), of_season, "day {day}");
         }
         // A season starts at the dawn of its first day only.
         assert!(c.time_at(Tick(13 * 10)).is_season_start());

@@ -2376,6 +2376,8 @@ impl World {
                 year: now.year,
                 season: now.season,
             });
+        }
+        if now.is_day_start() && now.day_of_season() < u64::from(rules.needs.life.conceive_nights) {
             self.conceive(rules, now.year, now.season);
         }
         let night = self.is_night(rules);

@@ -102,7 +102,9 @@
     // only in a world whose `life` is on: the vivarium's, never the game's.
     // A woman of 16 to 42 with more than 80 % of her reserve, carrying no
     // infant, whose spouse is alive within 64 tiles, conceives with a 40 %
-    // chance at the start of each season; she carries three seasons at
+    // chance a season, drawn once: her spouse may be back on any of the
+    // season's first four dawns (a night apart no longer loses the
+    // season); she carries three seasons at
     // 110 % of her need, and loses the child if she grows weak. 51 % of
     // the newborn are boys; 1 % of the mothers die giving birth. The chance
     // to die in a year by age, in per mille (150 in the first year, 50 to
@@ -117,6 +119,7 @@
         conceive_reserve_percent: 80,
         mate_within_tiles: 64,
         conceive_percent: 40,
+        conceive_nights: 4,
         pregnancy_seasons: 3,
         pregnant_percent: 110,
         lose_when_weak: true,
@@ -175,7 +178,13 @@
     //                    the least (what failed for one may work for
     //                    another);
     // lesson_heed_by_will: the timid heed the lessons whole (100 % at will
-    //                    0), the adventurer in part (30 % at will 100).
+    //                    0), the adventurer in part (30 % at will 100);
+    // horizon_days:   the slow ways are tried and judged on their own
+    //                    horizon, not on five days (the lead, 23 November
+    //                    2026: more trials must not mean more blind
+    //                    draws): a stock kept (stock_kj) and sleeping out
+    //                    or at the camp (sleep_out) over twelve days, a
+    //                    season of the vivarium's fifty-day year.
     trials: (
         trial_after_days: 3,
         trial_days: 5,
@@ -192,6 +201,7 @@
         lesson_days: 50,
         lesson_floor: 10,
         lesson_heed_by_will: [(0, 100), (100, 30)],
+        horizon_days: [("stock_kj", 12), ("sleep_out", 12)],
     ),
     // The rules of thought that keep a mind light (D53, decided by the
     // project lead on 22 November 2026): perceptions and gestures, never
@@ -346,5 +356,52 @@
         home_when_full_percent: 50,
         behind_tiles: 24,
         behind_wait_minutes: 30,
+    ),
+    // The will tempered, and a confidence by activity (D50 amended, D56;
+    // the project lead, 23 November 2026: "je suis d'accord avec toutes
+    // tes solutions"; and of trades: "pas en amont, mais en aval, par
+    // conséquence"). Four rules, each a perception of oneself, the same
+    // for the will (moved by its trials) and for each activity (moved by
+    // its days). Placeholders (D30), never tuned to a result.
+    // bears_by_innate: [(0, 2), (100, 6)] — failures in a row cost
+    //                  nothing up to two for the most timid, six for the
+    //                  boldest, straight between;
+    // failure_milli: 1000 — past them each failure costs a point of will,
+    //                  times its rank past them (1, then 2, then 3...);
+    // kept_percent:   25 — about one trial in four is kept: a success
+    //                  ending n failures gains (n + 1) units, the unit
+    //                  such that average luck gains what its failures
+    //                  cost (all failures: it loses faith; luck: it
+    //                  asserts itself);
+    // relax_permille: 83 — each season the will and the confidences close
+    //                  8.3 % of their gap to the innate will: half of it
+    //                  in two years;
+    // listened_milli: 500 — half a point when another joins its call at
+    //                  the fire (its will and its confidence in
+    //                  gathering) or copies a way it told (its will);
+    // activities:      the confidences held, each with how often a day of
+    //                  it succeeds, read on the five-year try of 23
+    //                  November 2026: explore 75 % (a look out that found
+    //                  a place and told it new), gather 50 % (a day of its
+    //                  need gathered), stay 90 % (none of its children
+    //                  hungry at night); later hunting, crafting. A day
+    //                  that succeeds gains a failure's cost times the odds
+    //                  against it, (100 - rarity) / rarity: a third of a
+    //                  point for a place found, one for a day fed, a ninth
+    //                  for a night none of its children went hungry (the
+    //                  lead, 23 November: a success must be worth
+    //                  something). A vocation is only the lab's word for
+    //                  the highest of them, never assigned. The confidence
+    //                  in exploring against that in gathering multiplies
+    //                  the habit's weight on going looking (habit_weight).
+    // bold_will:      40 — the vivarium counts a will of 40 or more bold.
+    temperance: (
+        bears_by_innate: [(0, 2), (100, 6)],
+        failure_milli: 1000,
+        kept_percent: 25,
+        relax_permille: 83,
+        listened_milli: 500,
+        activities: [("explore", 75), ("gather", 50), ("stay", 90)],
+        bold_will: 40,
     ),
 )
