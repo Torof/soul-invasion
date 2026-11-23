@@ -399,6 +399,7 @@ impl Report {
                 });
                 let fire = self.fire.get(&(y.tribe, y.year)).copied().unwrap_or_default();
                 let knowledge = self.knowledge.get(&(y.tribe, y.year)).copied();
+                let known = self.known_places.get(&(y.tribe, y.year));
                 json!({
                     "tribe": tribe_name(y.tribe).to_string(),
                     "year": y.year,
@@ -446,6 +447,10 @@ impl Report {
                         "heard_only": k.heard_only,
                         "accesses": k.accesses,
                         "accesses_heard": k.accesses_heard,
+                        "where": known.map_or_else(Vec::new, |places| places
+                            .iter()
+                            .map(|&((x, y), seen)| json!([x, y, u8::from(seen)]))
+                            .collect::<Vec<_>>()),
                     })),
                     "camp": pos_or_null(y.ways.camp),
                     "food": food,

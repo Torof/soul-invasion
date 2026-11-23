@@ -895,6 +895,11 @@ pub struct Report {
     pub fire: BTreeMap<(u8, u64), FireYear>,
     /// What the tribe's living knew at each year's end (D55).
     pub knowledge: BTreeMap<(u8, u64), Knowledge>,
+    /// The places the tribe's living knew at each year's end, each with
+    /// whether some living member saw it itself, in key order, at most
+    /// [`KNOWN_PLACES_KEPT`] (23 November 2026, the lab's map: why they
+    /// live where they live, year by year).
+    pub known_places: BTreeMap<(u8, u64), Vec<(PlaceKey, bool)>>,
     /// The rumours dispelled, in order (D55).
     pub rumours: Vec<Rumour>,
     /// The nights the hearths still hold at the end (D55).
@@ -1189,6 +1194,7 @@ pub fn run_watched(
     let mut home_moves: Vec<HomeMove> = Vec::new();
     let mut tally = FireTally::default();
     let mut knowledge: BTreeMap<(u8, u64), Knowledge> = BTreeMap::new();
+    let mut known_places: BTreeMap<(u8, u64), Vec<(PlaceKey, bool)>> = BTreeMap::new();
     // The homes under trial, (before, after), to tell where a given-up
     // home goes back to.
     let mut home_trials: BTreeMap<BodyId, (Pos, Pos)> = BTreeMap::new();
@@ -1696,7 +1702,9 @@ pub fn run_watched(
                     food.entry((t, year + 1)).or_default().start_j = j;
                 }
                 ways_in_use.insert((t, year), ways_in_use_of(&world, &brains, &people, t));
-                knowledge.insert((t, year), knowledge_of(&world, &brains, &people, t));
+                let (k, known) = knowledge_of(&world, &brains, &people, t);
+                knowledge.insert((t, year), k);
+                known_places.insert((t, year), known);
             }
         }
     }
@@ -1785,6 +1793,7 @@ pub fn run_watched(
         home_moves,
         fire: tally.fire,
         knowledge,
+        known_places,
         rumours: tally.rumours,
         nights,
         records,
@@ -1913,14 +1922,22 @@ fn ways_in_use_of(
     }
 }
 
+/// How many places a tribe's year keeps one by one (`years[].knowledge.where`):
+/// the first so many in key order; `years[].knowledge.places` counts them
+/// all. A tribe of 25 knows a few hundred; the bound keeps the data file
+/// small whatever the memory's placeholders.
+pub const KNOWN_PLACES_KEPT: usize = 1000;
+
 /// What the tribe's living know of the land (D55): their accesses to
-/// places, and how many came from a teller.
+/// places, and how many came from a teller; and the places themselves,
+/// each with whether some living member saw it, the first
+/// [`KNOWN_PLACES_KEPT`] in key order.
 fn knowledge_of(
     world: &World,
     brains: &Brains,
     people: &BTreeMap<BodyId, Person>,
     tribe: u8,
-) -> Knowledge {
+) -> (Knowledge, Vec<(PlaceKey, bool)>) {
     // Each place known, whether some living member saw it itself, and
     // whether some member holds a record of it.
     let mut seen: BTreeMap<PlaceKey, (bool, bool)> = BTreeMap::new();
@@ -1950,7 +1967,12 @@ fn knowledge_of(
     out.places = u32::try_from(seen.len()).unwrap_or(u32::MAX);
     out.recorded = u32::try_from(seen.values().filter(|s| s.1).count()).unwrap_or(u32::MAX);
     out.heard_only = u32::try_from(seen.values().filter(|s| !s.0).count()).unwrap_or(u32::MAX);
-    out
+    let places = seen
+        .iter()
+        .take(KNOWN_PLACES_KEPT)
+        .map(|(&key, s)| (key, s.0))
+        .collect();
+    (out, places)
 }
 
 /// How many rumours dispelled the report keeps one by one (`rumours[]`
@@ -2768,8 +2790,14 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                 }
             }
         }
-        found.dispelled = u32::try_from(self.rumours.iter().filter(|r| r.tribe == tribe).count())
-            .unwrap_or(u32::MAX);
+        // Every rumour of the run, from the years' counts: `rumours` keeps
+        // only the first `RUMOURS_KEPT`.
+        found.dispelled = self
+            .fire
+            .iter()
+            .filter(|((t, _), _)| *t == tribe)
+            .map(|(_, f)| f.dispelled)
+            .sum();
         found
     }
 
@@ -4721,6 +4749,66 @@ mod tests {
             assert!(
                 documented(path, &keys),
                 "{path} is written but not documented"
+            );
+        }
+    }
+
+    #[test]
+    fn the_known_places_and_the_rumours_are_written_whole() {
+        let settings = Settings {
+            days: 12,
+            tribes: 2,
+            people: 6,
+            ..small()
+        };
+        let report = run_checked(&settings, &forced_trials());
+        let value: serde_json::Value =
+            serde_json::from_str(&report.json()).expect("the file parses");
+        let mut places = 0;
+        for y in value["years"].as_array().unwrap() {
+            let k = &y["knowledge"];
+            if k.is_null() {
+                continue;
+            }
+            let known = k["where"].as_array().unwrap();
+            let count = usize::try_from(k["places"].as_u64().unwrap()).unwrap();
+            assert_eq!(known.len(), count.min(KNOWN_PLACES_KEPT), "{y}");
+            let heard = known.iter().filter(|p| p[2] == 0).count();
+            assert_eq!(
+                u64::try_from(heard).unwrap(),
+                k["heard_only"].as_u64().unwrap(),
+                "{y}"
+            );
+            let keys: Vec<(i64, i64)> = known
+                .iter()
+                .map(|p| (p[0].as_i64().unwrap(), p[1].as_i64().unwrap()))
+                .collect();
+            assert!(
+                keys.windows(2).all(|w| w[0] < w[1]),
+                "in key order, each once"
+            );
+            places += known.len();
+        }
+        assert!(places > 0, "the bodies know some places");
+        for t in 0..2u8 {
+            let name = tribe_name(t).to_string();
+            let all: u64 = value["years"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|y| y["tribe"] == name.as_str())
+                .map(|y| y["fire"]["dispelled"].as_u64().unwrap())
+                .sum();
+            let found = value["found"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|f| f["tribe"] == name.as_str())
+                .unwrap();
+            assert_eq!(
+                found["heard"]["dispelled"].as_u64().unwrap(),
+                all,
+                "every rumour, not the first {RUMOURS_KEPT}"
             );
         }
     }
