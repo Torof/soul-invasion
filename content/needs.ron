@@ -179,12 +179,17 @@
     //                    another);
     // lesson_heed_by_will: the timid heed the lessons whole (100 % at will
     //                    0), the adventurer in part (30 % at will 100);
-    // horizon_days:   the slow ways are tried and judged on their own
+    // horizon_seasons: the slow ways are tried and judged on their own
     //                    horizon, not on five days (the lead, 23 November
     //                    2026: more trials must not mean more blind
-    //                    draws): a stock kept (stock_kj) and sleeping out
-    //                    or at the camp (sleep_out) over twelve days, a
-    //                    season of the vivarium's fifty-day year.
+    //                    draws), counted in seasons and converted by the
+    //                    calendar (a quarter of the year in whole days):
+    //                    a stock kept (stock_kj) and sleeping out or at
+    //                    the camp (sleep_out) over one season, twelve days
+    //                    of the vivarium's fifty-day year. A home tried
+    //                    alone is not named: a short stay on trial_days,
+    //                    then back if not kept; the season is for the acts
+    //                    of a group (not yet in the game).
     trials: (
         trial_after_days: 3,
         trial_days: 5,
@@ -201,7 +206,7 @@
         lesson_days: 50,
         lesson_floor: 10,
         lesson_heed_by_will: [(0, 100), (100, 30)],
-        horizon_days: [("stock_kj", 12), ("sleep_out", 12)],
+        horizon_seasons: [("stock_kj", 1), ("sleep_out", 1)],
     ),
     // The rules of thought that keep a mind light (D53, decided by the
     // project lead on 22 November 2026): perceptions and gestures, never

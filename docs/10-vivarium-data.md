@@ -162,6 +162,10 @@ clock, the only field no seed decides.
 | `years[].decisions.review.weighed_joins` | Joins weighed by a reputation: the call of whom one believes best at gathering taken first | count |
 | `years[].decisions.review.asked` | Questions asked at the fire ("where is food?") by one with no place to go | count |
 | `years[].decisions.review.answered` | Of them, answered with a place it can go to | count |
+| `years[].decisions.review.said_nothing.stocked` | Who said nothing at the fire because it carries its stock and a day's need (D56, PR 1 ter: a measure of the « nothing » days) | count |
+| `years[].decisions.review.said_nothing.no_place` | Who said nothing knowing no place bearing now | count |
+| `years[].decisions.review.said_nothing.all_taken` | Who said nothing, every place it weighed taken whole (after a question, if any) | count |
+| `years[].decisions.need_percent_by_act.*` | What was gathered on a day, in per cent of a day of the need, on average, by what had been said; `null` without a day | per cent |
 | `years[].decisions.review.set_aside_days.*` | What those set aside did that day, by act (`alone`, `called`, `joined`, `looked`, `nothing`) | person-days |
 | `years[].decisions.review.set_aside_fed_days.*` | Of them, the days they gathered a day of their need | person-days |
 | `years[].decisions.follows.*.days` | Days one followed another (D56, PR 1 ter): `joined` its call, `asked` it and went where it answered, `told` (went alone to a place another found and told) | person-days |
@@ -271,6 +275,18 @@ clock, the only field no seed decides.
 | `rumours[].place` | The place | `[x, y]` |
 | `rumours[].record` | The record it had believed | integer |
 | `rumours[].from` | Who had told it | integer |
+| `seasons[].tribe` | The exploration's measure (lot 5b, PR 1 ter), one entry per tribe and season of the run (a quarter of the year, counted from the run's start): the tribe | `"A"` or `"B"` |
+| `seasons[].season` | The season, from 0 at the run's start (`season % 4`: 0 spring … 3 winter) | integer |
+| `seasons[].noons` | Noons of a living body past infancy counted in the season | count |
+| `seasons[].bearing_known_x10` | The places a body believes bearing food today (its own knowledge and what it heard), mean over the noons, × 10; `null` without noons | integer |
+| `seasons[].will_x10` | Its will (0 to 100), mean over the noons, × 10 | integer |
+| `seasons[].explore_x10` | Its confidence in exploring (D56, 0 to 100), mean over the noons, × 10 | integer |
+| `seasons[].days` | Person-days closed in the season | count |
+| `seasons[].looked` | Of them, days gone looking for a new place | count |
+| `seasons[].out` | Of them, days out (anything but nothing) | count |
+| `seasons[].bare` | Places found bare in the season | count |
+| `seasons[].lookers_will_x10` | The will at noon of those who looked, mean over their looked days, × 10; `null` without one | integer |
+| `seasons[].lookers_explore_x10` | Their confidence in exploring, likewise | integer |
 | `curves.points` | Samples kept, at most 1,200 | count |
 | `curves.every` | One sample kept every so many of the 24 a day | count |
 | `curves.ticks` | The tick of each sample | `[tick, …]` |

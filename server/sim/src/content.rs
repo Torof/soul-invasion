@@ -1069,14 +1069,18 @@ pub struct Trials {
     #[serde(default)]
     pub lesson_heed_by_will: Vec<(u32, u32)>,
     /// The ways judged on their own horizon rather than on `trial_days`
-    /// (D50, amended on 23 November 2026): (way, days). A way whose worth
-    /// shows only over a season (a stock kept for the lean days, a night
-    /// out or at the camp) is tried that many days and judged on that
-    /// many days, its own and those heard, so that more trials no longer
-    /// mean more blind draws. Ways: those of [`TRIAL_WAYS`]; one not named
-    /// is judged on `trial_days`, and never on fewer.
+    /// (D50, amended on 23 November 2026, then counted in seasons the
+    /// same day): (way, seasons). A way whose worth shows only over a
+    /// season (a stock kept for the lean days, a night out or at the
+    /// camp) is tried and judged on that many seasons, converted to days
+    /// by the calendar ([`Trials::days_for`]), its own days and those
+    /// heard, so that more trials no longer mean more blind draws and a
+    /// longer year lengthens them with it. Ways: those of [`TRIAL_WAYS`];
+    /// one not named is judged on `trial_days`, and never on fewer. A
+    /// home tried alone is not named: a short stay, then back if not kept
+    /// (the season's horizon is for the acts of a group).
     #[serde(default)]
-    pub horizon_days: Vec<(String, u32)>,
+    pub horizon_seasons: Vec<(String, u32)>,
 }
 
 /// The ways a trial may move, as the content names them (D50).
@@ -1101,7 +1105,7 @@ impl Default for Trials {
             lesson_days: 0,
             lesson_floor: 100,
             lesson_heed_by_will: Vec::new(),
-            horizon_days: Vec::new(),
+            horizon_seasons: Vec::new(),
         }
     }
 }
@@ -1183,35 +1187,45 @@ impl Trials {
             ));
         }
         if self
-            .horizon_days
+            .horizon_seasons
             .iter()
-            .any(|(way, days)| !TRIAL_WAYS.contains(&way.as_str()) || *days == 0)
+            .any(|(way, seasons)| !TRIAL_WAYS.contains(&way.as_str()) || *seasons == 0)
         {
             return Err(ContentError::Needs(
-                "trials: horizon_days names known ways, each with days",
+                "trials: horizon_seasons names known ways, each with seasons",
             ));
         }
         Ok(())
     }
 
     /// How many days a trial of the way `key` lasts and is judged on: its
-    /// horizon, never under `trial_days`.
+    /// horizon in seasons, a season being a quarter of `days_per_year`
+    /// in whole days (`seasons × days_per_year / 4`: 12 days a season in
+    /// a fifty-day year), never under `trial_days`.
     #[must_use]
-    pub fn days_for(&self, key: &str) -> u32 {
-        self.horizon_days
+    pub fn days_for(&self, key: &str, days_per_year: u32) -> u32 {
+        self.horizon_seasons
             .iter()
             .find(|(way, _)| way == key)
-            .map_or(self.trial_days, |&(_, days)| days.max(self.trial_days))
+            .map_or(self.trial_days, |&(_, seasons)| {
+                season_days(seasons, days_per_year).max(self.trial_days)
+            })
     }
 
     /// The longest of the trials' days: what a mind keeps of its days.
     #[must_use]
-    pub fn longest_days(&self) -> u32 {
-        self.horizon_days
+    pub fn longest_days(&self, days_per_year: u32) -> u32 {
+        self.horizon_seasons
             .iter()
-            .map(|&(_, days)| days)
+            .map(|&(_, seasons)| season_days(seasons, days_per_year))
             .fold(self.trial_days, u32::max)
     }
+}
+
+/// `seasons` seasons of a year of `days_per_year` days, in whole days.
+fn season_days(seasons: u32, days_per_year: u32) -> u32 {
+    let days = u64::from(seasons) * u64::from(days_per_year) / 4;
+    u32::try_from(days).unwrap_or(u32::MAX)
 }
 
 /// Ages and sexes (lot 3 B, decided 17 November 2026): what a body needs
@@ -2626,25 +2640,33 @@ mod tests {
     }
 
     #[test]
-    fn a_slow_way_is_tried_on_its_horizon_and_never_under_trial_days() {
+    fn a_slow_way_is_tried_on_its_horizon_in_seasons_and_never_under_trial_days() {
         let mut trials = Trials {
             trial_days: 5,
-            horizon_days: vec![("stock_kj".to_owned(), 12), ("sleep_out".to_owned(), 3)],
+            horizon_seasons: vec![("stock_kj".to_owned(), 1), ("sleep_out".to_owned(), 2)],
             ..Trials::default()
         };
-        assert_eq!(trials.days_for("stock_kj"), 12);
-        assert_eq!(trials.days_for("sleep_out"), 5, "never under trial_days");
+        assert_eq!(trials.days_for("stock_kj", 50), 12, "a season of 50 days");
+        assert_eq!(trials.days_for("stock_kj", 365), 91, "the year sets it");
+        assert_eq!(trials.days_for("sleep_out", 50), 25);
+        assert_eq!(trials.days_for("stock_kj", 8), 5, "never under trial_days");
         assert_eq!(
-            trials.days_for("worth_half_tiles"),
+            trials.days_for("worth_half_tiles", 50),
             5,
             "not named: trial_days"
         );
-        assert_eq!(trials.longest_days(), 12);
+        assert_eq!(
+            trials.days_for("home", 50),
+            5,
+            "a home tried alone: a short stay, not a season"
+        );
+        assert_eq!(trials.longest_days(50), 25);
+        assert_eq!(trials.longest_days(8), 5);
         assert!(trials.validate().is_ok());
-        trials.horizon_days.push(("hunting".to_owned(), 12));
+        trials.horizon_seasons.push(("hunting".to_owned(), 1));
         assert!(trials.validate().is_err(), "an unknown way");
-        trials.horizon_days = vec![("home".to_owned(), 0)];
-        assert!(trials.validate().is_err(), "no days");
+        trials.horizon_seasons = vec![("stock_kj".to_owned(), 0)];
+        assert!(trials.validate().is_err(), "no seasons");
     }
 
     #[test]

@@ -571,8 +571,12 @@ pub struct DecisionYear {
     /// The evening's review and questions (D56, PR 1 ter), summed:
     /// companions called by name, set aside, calls refused to one set
     /// aside, joins weighed by a reputation, questions asked, answered
-    /// with a place.
-    pub review: [u32; 6],
+    /// with a place; and of those who said nothing: carrying their stock,
+    /// knowing no place bearing, every place taken whole.
+    pub review: [u32; 9],
+    /// What was gathered, in per cent of a day of the need, summed over
+    /// the days, by act ([`Act::ALL`]'s order).
+    pub need_percent: [u64; 5],
     /// Who followed whom, by how (joined a call, asked, went where a
     /// finder told): (days, back fed, back empty, per cent of its need
     /// gathered summed).
@@ -1050,6 +1054,9 @@ pub struct Report {
     pub home_moves: Vec<HomeMove>,
     /// The fire's counts by tribe and year (D55).
     pub fire: BTreeMap<(u8, u64), FireYear>,
+    /// The seasons' measure by tribe and season from the first (D56, PR 1
+    /// ter).
+    pub seasons: BTreeMap<(u8, u64), SeasonProbe>,
     /// The evening's decisions and the day's groups by tribe and year
     /// (D56).
     pub decisions: BTreeMap<(u8, u64), DecisionYear>,
@@ -1358,7 +1365,11 @@ pub fn run_watched(
     let mut presence: BTreeMap<(u8, u64), Presence> = BTreeMap::new();
     let mut positions: Vec<(u64, Vec<(BodyId, Pos)>)> = Vec::new();
     let mut home_moves: Vec<HomeMove> = Vec::new();
-    let mut tally = FireTally::default();
+    let mut tally = FireTally {
+        ticks_per_season: (calendar.ticks_per_day() * u64::from(calendar.days_per_year()) / 4)
+            .max(1),
+        ..FireTally::default()
+    };
     let place_tiles = i32::try_from(content.needs.thought.place_tiles).unwrap_or(16);
     let mut knowledge: BTreeMap<(u8, u64), Knowledge> = BTreeMap::new();
     let mut known_places: BTreeMap<(u8, u64), Vec<(PlaceKey, bool)>> = BTreeMap::new();
@@ -1839,6 +1850,26 @@ pub fn run_watched(
                 standing.push((body.id(), pos));
             }
             standing.sort_unstable_by_key(|&(id, _)| id);
+            // The seasons' measure (PR 1 ter): what each believes bearing.
+            let season = tick / tally.ticks_per_season;
+            for &(id, _) in &standing {
+                let (Some(body), Some(mind)) = (world.body(id), brains.mind(id)) else {
+                    continue;
+                };
+                if world.is_infant(body, content) {
+                    continue;
+                }
+                let explore = mind.confidences(&content.needs.temperance)[0].unwrap_or(0);
+                tally.noon_of.insert(id, (mind.will(), explore));
+                let probe = tally
+                    .seasons
+                    .entry((tribe_of(&people, id), season))
+                    .or_default();
+                probe.noons += 1;
+                probe.bearing += u64::from(mind.bearing_known(&brains));
+                probe.will += u64::from(mind.will());
+                probe.explore += u64::from(explore);
+            }
             // How far from their camp the grown stand at noon (D56): the
             // mothers carrying an infant against the others.
             let carriers: BTreeSet<BodyId> = world
@@ -2017,6 +2048,7 @@ pub fn run_watched(
         positions,
         home_moves,
         fire: tally.fire,
+        seasons: tally.seasons,
         decisions: tally.decisions,
         reputed: tally.reputed,
         knowledge,
@@ -2229,6 +2261,43 @@ struct FireTally {
     /// Who the living believed best at each year's end, by tribe and
     /// year (D56, PR 1 ter).
     reputed: BTreeMap<(u8, u64), Vec<Reputed>>,
+    /// The seasons' measure, by tribe and season from the first (D56, PR 1
+    /// ter: does a tribe go looking when it knows nothing more to gather?).
+    seasons: BTreeMap<(u8, u64), SeasonProbe>,
+    /// Each living one's will and confidence in exploring at the last
+    /// noon.
+    noon_of: BTreeMap<BodyId, (u8, u8)>,
+    /// Ticks in a season (a quarter of a year).
+    ticks_per_season: u64,
+}
+
+/// A tribe's season, measured (D56, PR 1 ter): what its living believed
+/// bearing at noon, what they did, and who went looking.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SeasonProbe {
+    /// Noons of a living mind counted, and the places believed bearing
+    /// summed over them.
+    pub noons: u32,
+    /// See `noons`.
+    pub bearing: u64,
+    /// The wills and the confidences in exploring summed over the noons.
+    pub will: u64,
+    /// See `will`.
+    pub explore: u64,
+    /// Person-days, of them looked, of them out (anything but nothing),
+    /// and the places found bare.
+    pub days: u32,
+    /// See `days`.
+    pub looked: u32,
+    /// See `days`.
+    pub out: u32,
+    /// See `days`.
+    pub bare: u32,
+    /// The wills and the confidences in exploring of those who looked, at
+    /// the noon of their day, summed.
+    pub lookers_will: u64,
+    /// See `lookers_will`.
+    pub lookers_explore: u64,
 }
 
 /// What the fire's news (D55) need to be read.
@@ -2321,6 +2390,49 @@ fn wills_of(
     }
 }
 
+/// An evening's review and questions into the year's counts (D56, PR 1
+/// ter).
+fn add_review(counts: &mut DecisionYear, review: &sim::brain::EveningReview) {
+    let said = [
+        review.named,
+        review.aside,
+        review.refused,
+        review.weighed,
+        review.asked,
+        review.answered,
+        review.stocked,
+        review.no_place,
+        review.all_taken,
+    ];
+    for (sum, n) in counts.review.iter_mut().zip(said) {
+        *sum += n;
+    }
+}
+
+/// A day's habit into the seasons' measure (D56, PR 1 ter): its tribe's
+/// season counts the day, what was done, the places found bare, and the
+/// will and confidence of one who looked.
+fn season_habit(
+    tally: &mut FireTally,
+    (tribe, body): (u8, BodyId),
+    (act, bare, at): (Act, u32, u64),
+) {
+    let noon = tally.noon_of.get(&body).copied();
+    let probe = tally
+        .seasons
+        .entry((tribe, at / tally.ticks_per_season))
+        .or_default();
+    probe.days += 1;
+    probe.bare += bare;
+    probe.out += u32::from(act != Act::Nothing);
+    if act == Act::Looked {
+        probe.looked += 1;
+        let (will, explore) = noon.unwrap_or((0, 0));
+        probe.lookers_will += u64::from(will);
+        probe.lookers_explore += u64::from(explore);
+    }
+}
+
 /// Reads an evening's tally, a day's habit or a find told at the fire
 /// (D56) into the counters and the person's habit; `true` when it was one.
 fn counted_news(
@@ -2363,17 +2475,7 @@ fn counted_news(
         } => {
             let tribe = tribe_of(people, *by);
             let counts = tally.decisions.entry((tribe, year)).or_default();
-            let said = [
-                review.named,
-                review.aside,
-                review.refused,
-                review.weighed,
-                review.asked,
-                review.answered,
-            ];
-            for (sum, n) in counts.review.iter_mut().zip(said) {
-                *sum += n;
-            }
+            add_review(counts, review);
             counts.evenings += 1;
             counts.full_told += u32::from(*full_told);
             counts.skipped += skipped;
@@ -2386,6 +2488,7 @@ fn counted_news(
             act,
             kj_percent,
             bare,
+            at,
             ..
         } => {
             let i = act_index(*act);
@@ -2394,6 +2497,12 @@ fn counted_news(
                 .entry((tribe_of(people, *body), year))
                 .or_default();
             counts.days[i] += 1;
+            counts.need_percent[i] += u64::from(*kj_percent);
+            season_habit(tally, (tribe_of(people, *body), *body), (*act, *bare, *at));
+            let counts = tally
+                .decisions
+                .entry((tribe_of(people, *body), year))
+                .or_default();
             counts.bare[i] += bare;
             counts.fed[i] += u32::from(*kj_percent >= 100);
             if tally.aside_now.remove(body) {

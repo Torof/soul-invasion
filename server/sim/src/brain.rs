@@ -794,6 +794,13 @@ pub struct EveningReview {
     pub asked: u32,
     /// Of them, answered with a place.
     pub answered: u32,
+    /// Those who said nothing because they carry their stock and a day's
+    /// need (a measure of the « nothing » days).
+    pub stocked: u32,
+    /// Those who said nothing knowing no place bearing now.
+    pub no_place: u32,
+    /// Those who said nothing, every place they weighed taken whole.
+    pub all_taken: u32,
 }
 
 /// A follower joined its caller's group (D56, PR 1 ter).
@@ -1383,6 +1390,18 @@ impl Mind {
         })
     }
 
+    /// How many of the places it knows it believes bearing food now, by
+    /// what it saw or heard (a measure, D56: does a tribe go looking when
+    /// it knows nothing more to gather?).
+    #[must_use]
+    pub fn bearing_known(&self, brains: &Brains) -> u32 {
+        count_u32(
+            self.places
+                .values()
+                .filter(|p| p.bearing(&brains.food).is_some()),
+        )
+    }
+
     /// The trial under way, if any (D50).
     pub fn trial(&self) -> Option<&Trial> {
         self.trial.as_ref()
@@ -1429,9 +1448,15 @@ fn need_kj_per_day(rules: &Content, body: &Body) -> u64 {
 /// gathered kJ in per cent of its need as theirs; against its own days
 /// before only when it heard nobody. Kept if nothing worsened and one
 /// thing improved ([`Lately::better_than`]). With what it will tell.
-fn judge(rules: &Content, body: &Body, mind: &Mind, trial: &Trial) -> (bool, Judged) {
+fn judge(
+    rules: &Content,
+    per_year: u32,
+    body: &Body,
+    mind: &Mind,
+    trial: &Trial,
+) -> (bool, Judged) {
     let trials = &rules.needs.trials;
-    let days = trials.days_for(trial.way.key());
+    let days = trials.days_for(trial.way.key(), per_year);
     let during = mind.lately(days);
     let kept = match trial.heard.mean(days) {
         Some(theirs) => {
@@ -1678,9 +1703,9 @@ impl Mind {
     }
 
     /// A day lived kept, twice the longest trial's days (D50).
-    fn keep_day(&mut self, trials: &Trials, day: Day) {
+    fn keep_day(&mut self, trials: &Trials, per_year: u32, day: Day) {
         self.days.push(day);
-        let keep = usize::try_from(trials.longest_days())
+        let keep = usize::try_from(trials.longest_days(per_year))
             .unwrap_or(usize::MAX)
             .saturating_mul(2);
         if self.days.len() > keep.max(2) {
@@ -2949,6 +2974,7 @@ impl Brains {
     /// night's camp-mates.
     fn close_day(&mut self, world: &World, rules: &Content) {
         let trials = &rules.needs.trials;
+        let per_year = world.calendar().days_per_year();
         let seed = world.seed();
         let day = today(world);
         let now = world.tick().0;
@@ -2983,6 +3009,7 @@ impl Brains {
             let cold = std::mem::take(&mut mind.cold_night);
             mind.keep_day(
                 trials,
+                per_year,
                 Day {
                     gathered_kj,
                     thin: c.is_thin(&rules.needs),
@@ -3003,9 +3030,9 @@ impl Brains {
                 0
             };
             if let Some(trial) = mind.trial
-                && day >= trial.started_day + u64::from(trials.days_for(trial.way.key()))
+                && day >= trial.started_day + u64::from(trials.days_for(trial.way.key(), per_year))
             {
-                let (kept, judged) = judge(rules, body, mind, &trial);
+                let (kept, judged) = judge(rules, per_year, body, mind, &trial);
                 mind.learn_will(rules, kept);
                 if kept {
                     mind.changed_day = Some(day);
@@ -3743,6 +3770,7 @@ impl Brains {
                 // It carries what it wants for tomorrow and tomorrow's
                 // meals on top: it stays.
                 unreserve(&mut reserved, &mut rooms, id);
+                review.stocked += 1;
                 said.insert(id, (Act::Nothing, None, None, 0));
                 continue;
             }
@@ -3787,6 +3815,7 @@ impl Brains {
                 review.weighed += 1;
             }
             let parents = [body.mother(), body.father()];
+            let weighed = !list.is_empty();
             let mut choice = (Act::Nothing, None, None, 0);
             for (key, room, own) in list {
                 match rooms.get_mut(&key) {
@@ -3876,6 +3905,13 @@ impl Brains {
                     if choice.0 != Act::Nothing {
                         asked_of.insert(id, (whom, activity));
                     }
+                }
+            }
+            if choice.0 == Act::Nothing {
+                if weighed {
+                    review.all_taken += 1;
+                } else {
+                    review.no_place += 1;
                 }
             }
             said.insert(id, choice);
@@ -6320,7 +6356,8 @@ fn start_trial(
                 way,
                 before,
                 started_day: day,
-                before_days: mind.lately(trials.days_for(way.key())),
+                before_days: mind
+                    .lately(trials.days_for(way.key(), world.calendar().days_per_year())),
                 heard: HeardDays::default(),
             });
             return Some(News::Trying {
@@ -6386,7 +6423,7 @@ fn start_trial(
         way,
         before,
         started_day: day,
-        before_days: mind.lately(trials.days_for(way.key())),
+        before_days: mind.lately(trials.days_for(way.key(), world.calendar().days_per_year())),
         heard: HeardDays::default(),
     });
     Some(News::Trying {
@@ -8558,10 +8595,13 @@ mod tests {
     #[test]
     fn a_slow_way_is_judged_on_its_horizon_not_on_trial_days() {
         let mut rules = trials_at(0, 0);
-        rules.needs.trials.horizon_days = vec![("stock_kj".to_owned(), 4)];
+        rules.needs.trials.horizon_seasons = vec![("stock_kj".to_owned(), 1)];
         let id = BodyId(1);
         let mut world = World::empty(
-            Calendar::new(1, 7200).unwrap(),
+            Calendar::new(1, 7200)
+                .unwrap()
+                .with_days_per_year(16)
+                .unwrap(),
             Map::filled(64, 64, Terrain::Grass).with_camp(5, 5),
         );
         let mut events = Vec::new();
@@ -8582,7 +8622,7 @@ mod tests {
         let news = nightfall(&world, &rules, &mut brains);
         assert!(
             news.is_empty(),
-            "two days of four: not judged yet, {news:?}"
+            "two days of a season of four: not judged yet, {news:?}"
         );
         let mind = brains.minds.get_mut(&id).unwrap();
         let trial = mind.trial.as_mut().expect("still under trial");

@@ -27,9 +27,10 @@ use crate::{
 };
 
 /// The top-level keys, in the order they are written.
-const ORDER: [&str; 13] = [
+const ORDER: [&str; 14] = [
     "meta",
     "years",
+    "seasons",
     "found",
     "people",
     "records",
@@ -203,6 +204,7 @@ impl Report {
         json!({
             "meta": self.meta(),
             "years": self.years_json(),
+            "seasons": self.seasons_json(),
             "found": self.found_json(),
             "people": self.people_json(),
             "records": self.records_json(),
@@ -344,6 +346,34 @@ impl Report {
                         })
                         .collect();
                     json!({"tribe": tribe_name(tribe).to_string(), "nights": nights})
+                })
+                .collect(),
+        )
+    }
+
+    /// The seasons' measure (D56, PR 1 ter), by tribe and season from the
+    /// first: places believed bearing a noon, will and confidence in
+    /// exploring, days, looked, out, bare, and who looked.
+    fn seasons_json(&self) -> Value {
+        let mean = |sum: u64, n: u32| (n > 0).then(|| sum * 10 / u64::from(n));
+        Value::Array(
+            self.seasons
+                .iter()
+                .map(|(&(tribe, season), p)| {
+                    json!({
+                        "tribe": tribe_name(tribe).to_string(),
+                        "season": season,
+                        "noons": p.noons,
+                        "bearing_known_x10": mean(p.bearing, p.noons),
+                        "will_x10": mean(p.will, p.noons),
+                        "explore_x10": mean(p.explore, p.noons),
+                        "days": p.days,
+                        "looked": p.looked,
+                        "out": p.out,
+                        "bare": p.bare,
+                        "lookers_will_x10": mean(p.lookers_will, p.looked),
+                        "lookers_explore_x10": mean(p.lookers_explore, p.looked),
+                    })
                 })
                 .collect(),
         )
@@ -706,6 +736,19 @@ fn by_act(counts: [u32; 5]) -> Value {
     Value::Object(map)
 }
 
+/// A mean by act: `sums` over the `days` of each act; `null` without a
+/// day.
+fn by_act_mean(sums: [u64; 5], days: [u32; 5]) -> Value {
+    let mut map = serde_json::Map::new();
+    for ((key, sum), n) in ACT_KEYS.iter().zip(sums).zip(days) {
+        map.insert(
+            (*key).to_owned(),
+            json!((n > 0).then(|| sum / u64::from(n))),
+        );
+    }
+    Value::Object(map)
+}
+
 /// Counts by activity (D56), keyed as `sim::content::ACTIVITIES` names
 /// them.
 fn by_activity<T: Into<Value> + Copy>(counts: [T; 3]) -> Value {
@@ -776,6 +819,7 @@ fn decisions_json(dec: &DecisionYear) -> Value {
             "waited_groups": dec.waited_groups,
         },
         "days_by_act": by_act(dec.days),
+        "need_percent_by_act": by_act_mean(dec.need_percent, dec.days),
         "trips": {
             "found": by_act(dec.found),
             "bare": by_act(dec.bare),
@@ -789,6 +833,7 @@ fn decisions_json(dec: &DecisionYear) -> Value {
             "weighed_joins": dec.review[3],
             "asked": dec.review[4],
             "answered": dec.review[5],
+            "said_nothing": {"stocked": dec.review[6], "no_place": dec.review[7], "all_taken": dec.review[8]},
             "set_aside_days": by_act(dec.aside_days),
             "set_aside_fed_days": by_act(dec.aside_fed),
         },
