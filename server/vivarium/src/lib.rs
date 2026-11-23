@@ -1877,6 +1877,7 @@ pub fn run_watched(
                     .or_default();
                 probe.noons += 1;
                 probe.bearing += u64::from(mind.bearing_known(&brains));
+                probe.lived += mind.lived_places() as u64;
                 probe.will += u64::from(mind.will());
                 probe.explore += u64::from(explore);
             }
@@ -2380,6 +2381,9 @@ pub struct SeasonProbe {
     pub noons: u32,
     /// See `noons`.
     pub bearing: u64,
+    /// The places its notebook holds (D53, amended 24 November 2026),
+    /// summed over the noons.
+    pub lived: u64,
     /// The wills and the confidences in exploring summed over the noons.
     pub will: u64,
     /// See `will`.

@@ -279,6 +279,7 @@ clock, the only field no seed decides.
 | `seasons[].season` | The season, from 0 at the run's start (`season % 4`: 0 spring … 3 winter) | integer |
 | `seasons[].noons` | Noons of a living body past infancy counted in the season | count |
 | `seasons[].bearing_known_x10` | The places a body believes bearing food today (its own knowledge and what it heard), mean over the noons, × 10; `null` without noons | integer |
+| `seasons[].lived_x10` | The places its notebook holds (D53, amended 24 November 2026: slept, drank or gathered at, eight at most), mean over the noons, × 10; `null` without noons | integer |
 | `seasons[].will_x10` | Its will (0 to 100), mean over the noons, × 10 | integer |
 | `seasons[].explore_x10` | Its confidence in exploring (D56, 0 to 100), mean over the noons, × 10 | integer |
 | `seasons[].days` | Person-days closed in the season | count |

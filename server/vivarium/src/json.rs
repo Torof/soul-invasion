@@ -367,6 +367,7 @@ impl Report {
                         "season": season,
                         "noons": p.noons,
                         "bearing_known_x10": mean(p.bearing, p.noons),
+                        "lived_x10": mean(p.lived, p.noons),
                         "will_x10": mean(p.will, p.noons),
                         "explore_x10": mean(p.explore, p.noons),
                         "days": p.days,
