@@ -21,6 +21,15 @@
 //                          faster, a winter's slower (lot 2, D45).
 // thirst_effort_percent:   150 — walking or working, thirst comes half as
 //                          fast again.
+// walk_j_per_m:            130 — walking costs energy on top of the day's
+//                          need (the project lead, 24 November 2026: "que
+//                          la marche coûte de l'énergie"): the net cost of
+//                          walking at a comfortable pace is about 2 J per
+//                          kg per metre above rest (Margaria 1938; Bastien
+//                          et al. 2005, Eur J Appl Physiol), 130 J a metre
+//                          for 65 kg: 130 kJ a kilometre, about 31 kcal.
+//                          A smaller body pays by its size. Carried loads
+//                          do not add to it yet.
 // cold_per_day_at_night:   300 — eight hours of night without warmth.
 // cold_relief_per_day:     600 — four hours of daylight undo it.
 // fatigue_per_day_awake:   120 — twenty hours awake fill the gauge.
@@ -57,6 +66,7 @@
     thirst_per_day: 100,
     thirst_heat_percent: (spring: 100, summer: 140, autumn: 100, winter: 80),
     thirst_effort_percent: 150,
+    walk_j_per_m: 130,
     cold_per_day_at_night: 300,
     cold_relief_per_day: 600,
     fatigue_per_day_awake: 120,

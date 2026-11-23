@@ -290,6 +290,12 @@ pub struct Needs {
     /// 100 when absent.
     #[serde(default = "percent_100")]
     pub thirst_effort_percent: u32,
+    /// What a grown body burns walking, on top of the day's need, in
+    /// joules a metre walked (D50, amended 24 November 2026: walking costs
+    /// energy); a smaller body by its size. 0 when absent: walking is
+    /// free.
+    #[serde(default)]
+    pub walk_j_per_m: u32,
     /// Cold rises this much per day of night, without warmth.
     pub cold_per_day_at_night: u32,
     /// Cold falls this much per day of daylight.
@@ -2081,9 +2087,10 @@ impl Content {
             .iter()
             .any(|s| !(1..=1000).contains(&self.needs.thirst_heat_percent.get(*s)))
             || !(1..=1000).contains(&self.needs.thirst_effort_percent)
+            || self.needs.walk_j_per_m > 10_000
         {
             return Err(ContentError::Needs(
-                "thirst_heat_percent and thirst_effort_percent are 1 to 1000",
+                "thirst_heat_percent and thirst_effort_percent are 1 to 1000, walk_j_per_m at most 10,000",
             ));
         }
         if self.needs.kj_per_hunger_point == 0 {
