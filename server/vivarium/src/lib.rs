@@ -43,12 +43,28 @@ pub enum WorldKind {
     /// The vivarium's world (D41 lot 0): zone 2 of the atlas of seed 14,
     /// 2,176 m a side, born in some six seconds.
     Vivarium,
+    /// The same, twice as wide (24 November 2026, the long runs): zone 2
+    /// widened ([`sim::plan::ZONE_2_WIDE`]), 4,352 m a side, the same
+    /// camps on the same ground.
+    VivariumWide,
     /// A patch of the first version's valley, `side` tiles a side, born
     /// at once: the small trial the lead sees first (50 × 50).
     Patch {
         /// Tiles a side.
         side: u32,
     },
+}
+
+impl WorldKind {
+    /// The vivarium's zone the world is cut from; none for a patch.
+    #[must_use]
+    pub fn zone(self) -> Option<sim::plan::Zone> {
+        match self {
+            WorldKind::Vivarium => Some(sim::plan::ZONE_2),
+            WorldKind::VivariumWide => Some(sim::plan::ZONE_2_WIDE),
+            WorldKind::Patch { .. } => None,
+        }
+    }
 }
 
 /// What a run is given.
@@ -1345,13 +1361,14 @@ pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunErr
 /// born ([`continents`]); born at every run without a cache. The same
 /// map either way (D28, amended 19 November 2026).
 fn vivarium_map(settings: &Settings) -> Map {
+    let zone = settings.world.zone().unwrap_or(sim::plan::ZONE_2);
     let Some(dir) = &settings.continents else {
-        return Map::vivarium();
+        return Map::vivarium_of(zone);
     };
     let known = continents::read(dir, sim::plan::VIVARIUM_SEED, sim::plan::CONTINENT_SIDE)
         .into_iter()
         .collect();
-    let (map, born) = sim::plan::born_within(known, Map::vivarium);
+    let (map, born) = sim::plan::born_within(known, || Map::vivarium_of(zone));
     for continent in &born {
         if let Err(err) = continents::keep(dir, continent) {
             eprintln!(
@@ -1422,7 +1439,9 @@ pub fn run_watched(
     };
     let born = Instant::now();
     let mut world = match settings.world {
-        WorldKind::Vivarium => World::on_valley(calendar, content, vivarium_map(settings)),
+        WorldKind::Vivarium | WorldKind::VivariumWide => {
+            World::on_valley(calendar, content, vivarium_map(settings))
+        }
         WorldKind::Patch { side } => World::with_valley(calendar, content, side),
     };
     // The vivarium's worlds live (D49): births, couples, illness and old
@@ -3716,8 +3735,9 @@ fn camps(settings: &Settings, map: &Map) -> Vec<Pos> {
     let mut camps = vec![a];
     if settings.tribes >= 2 {
         camps.push(match settings.world {
-            WorldKind::Vivarium => {
-                let (x, y) = sim::plan::ZONE_2.tile(sim::plan::ZONE_2.camp_b);
+            WorldKind::Vivarium | WorldKind::VivariumWide => {
+                let zone = settings.world.zone().unwrap_or(sim::plan::ZONE_2);
+                let (x, y) = zone.tile(zone.camp_b);
                 Pos::new(
                     i32::try_from(x).expect("on the map"),
                     i32::try_from(y).expect("on the map"),
@@ -4087,6 +4107,9 @@ impl Report {
         let mut h = String::new();
         let world = match s.world {
             WorldKind::Vivarium => "the vivarium's world (zone 2 of seed 14)".to_owned(),
+            WorldKind::VivariumWide => {
+                "the vivarium's wide world (zone 2 of seed 14, twice as wide)".to_owned()
+            }
             WorldKind::Patch { side } => format!("a patch of the valley, {side} × {side} tiles"),
         };
         let _ = write!(
@@ -5119,6 +5142,9 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         let s = &self.settings;
         let world = match s.world {
             WorldKind::Vivarium => "the vivarium's world (zone 2 of seed 14)".to_owned(),
+            WorldKind::VivariumWide => {
+                "the vivarium's wide world (zone 2 of seed 14, twice as wide)".to_owned()
+            }
             WorldKind::Patch { side } => format!("a patch of the valley, {side} × {side} tiles"),
         };
         let deaths = self.people.values().filter(|p| p.death.is_some()).count();

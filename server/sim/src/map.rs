@@ -333,7 +333,11 @@ impl MapSpec {
             }
             let side = match generator {
                 PLAN_GENERATOR => Some(0),
-                VIVARIUM_GENERATOR => Some(crate::plan::ZONE_2.side()),
+                // A vivarium's zone, by its side (`plan::ZONES`).
+                VIVARIUM_GENERATOR => Some(
+                    crate::plan::Zone::of_side(width)
+                        .map_or(crate::plan::ZONE_2.side(), |z| z.side()),
+                ),
                 _ => None,
             };
             if let Some(side) = side
@@ -472,11 +476,9 @@ impl Map {
             return Self::on_window(Window::atlas(seed, width), seed);
         }
         if generator == VIVARIUM_GENERATOR {
-            let zone = crate::plan::ZONE_2;
-            assert!(
-                width == zone.side() && height == zone.side(),
-                "the vivarium's zone has one size"
-            );
+            let zone = crate::plan::Zone::of_side(width)
+                .filter(|_| width == height)
+                .expect("a vivarium's zone, by its side");
             return Self::on_window_by(zone.window(seed), seed, VIVARIUM_GENERATOR);
         }
         let cliff_rows = (height / 8).max(2);
@@ -516,7 +518,13 @@ impl Map {
     /// the atlas of seed 14 ([`crate::plan::ZONE_2`]), 2,176 m a side,
     /// with a height per tile, the camp at camp A.
     pub fn vivarium() -> Self {
-        let side = crate::plan::ZONE_2.side();
+        Self::vivarium_of(crate::plan::ZONE_2)
+    }
+
+    /// The vivarium's world on `zone`, one of [`crate::plan::ZONES`]:
+    /// [`crate::plan::ZONE_2_WIDE`] for the long runs (24 November 2026).
+    pub fn vivarium_of(zone: crate::plan::Zone) -> Self {
+        let side = zone.side();
         Self::valley_by(VIVARIUM_GENERATOR, side, side, crate::plan::VIVARIUM_SEED)
     }
 

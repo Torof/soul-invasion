@@ -398,6 +398,7 @@ impl Report {
         let s = &self.settings;
         let (world, side) = match s.world {
             WorldKind::Vivarium => ("vivarium", None),
+            WorldKind::VivariumWide => ("vivarium-wide", None),
             WorldKind::Patch { side } => ("patch", Some(side)),
         };
         json!({

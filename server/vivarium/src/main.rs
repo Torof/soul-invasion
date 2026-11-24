@@ -9,8 +9,10 @@ const USAGE: &str = "\
 vivarium [options]   runs a world of the simulation headless and accelerated,
                      and writes an HTML report (D41)
 
-  --world vivarium|patch   the vivarium's world (zone 2 of seed 14, some six
-                           seconds to be born), or a patch of the valley
+  --world vivarium|vivarium-wide|patch
+                           the vivarium's world (zone 2 of seed 14, some six
+                           seconds to be born), the same twice as wide
+                           (4,352 m a side), or a patch of the valley
                            (default: patch)
   --side N                 the patch's side in tiles (default 50)
   --people N               people born at each camp (default 5): grown
@@ -138,11 +140,16 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
     }
     settings.world = match world.as_str() {
         "vivarium" => WorldKind::Vivarium,
+        "vivarium-wide" => WorldKind::VivariumWide,
         "patch" => WorldKind::Patch { side },
-        other => return Err(format!("--world: vivarium or patch, not {other}")),
+        other => {
+            return Err(format!(
+                "--world: vivarium, vivarium-wide or patch, not {other}"
+            ));
+        }
     };
     settings.tribes = tribes.unwrap_or(match settings.world {
-        WorldKind::Vivarium => 2,
+        WorldKind::Vivarium | WorldKind::VivariumWide => 2,
         WorldKind::Patch { .. } => 1,
     });
     if !(1..=2).contains(&settings.tribes) {
