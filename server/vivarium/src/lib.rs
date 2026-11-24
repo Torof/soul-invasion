@@ -47,6 +47,11 @@ pub enum WorldKind {
     /// widened ([`sim::plan::ZONE_2_WIDE`]), 4,352 m a side, the same
     /// camps on the same ground.
     VivariumWide,
+    /// The same at the scale of a valley (24 November 2026, to see
+    /// whether the tribes spread): zone 2 widened
+    /// ([`sim::plan::ZONE_2_HUGE`]), 16,384 m a side, the same camps on
+    /// the same ground.
+    VivariumHuge,
     /// A patch of the first version's valley, `side` tiles a side, born
     /// at once: the small trial the lead sees first (50 × 50).
     Patch {
@@ -62,6 +67,7 @@ impl WorldKind {
         match self {
             WorldKind::Vivarium => Some(sim::plan::ZONE_2),
             WorldKind::VivariumWide => Some(sim::plan::ZONE_2_WIDE),
+            WorldKind::VivariumHuge => Some(sim::plan::ZONE_2_HUGE),
             WorldKind::Patch { .. } => None,
         }
     }
@@ -1904,7 +1910,7 @@ pub fn run_watched(
     };
     let born = Instant::now();
     let mut world = match settings.world {
-        WorldKind::Vivarium | WorldKind::VivariumWide => {
+        WorldKind::Vivarium | WorldKind::VivariumWide | WorldKind::VivariumHuge => {
             World::on_valley(calendar, content, vivarium_map(settings))
         }
         WorldKind::Patch { side } => World::with_valley(calendar, content, side),
@@ -4291,7 +4297,7 @@ fn camps(settings: &Settings, map: &Map) -> Vec<Pos> {
     let mut camps = vec![a];
     if settings.tribes >= 2 {
         camps.push(match settings.world {
-            WorldKind::Vivarium | WorldKind::VivariumWide => {
+            WorldKind::Vivarium | WorldKind::VivariumWide | WorldKind::VivariumHuge => {
                 let zone = settings.world.zone().unwrap_or(sim::plan::ZONE_2);
                 let (x, y) = zone.tile(zone.camp_b);
                 Pos::new(
@@ -4666,6 +4672,9 @@ impl Report {
             WorldKind::Vivarium => "the vivarium's world (zone 2 of seed 14)".to_owned(),
             WorldKind::VivariumWide => {
                 "the vivarium's wide world (zone 2 of seed 14, twice as wide)".to_owned()
+            }
+            WorldKind::VivariumHuge => {
+                "the vivarium's huge world (zone 2 of seed 14, 16,384 m a side)".to_owned()
             }
             WorldKind::Patch { side } => format!("a patch of the valley, {side} × {side} tiles"),
         };
@@ -5694,6 +5703,9 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             WorldKind::Vivarium => "the vivarium's world (zone 2 of seed 14)".to_owned(),
             WorldKind::VivariumWide => {
                 "the vivarium's wide world (zone 2 of seed 14, twice as wide)".to_owned()
+            }
+            WorldKind::VivariumHuge => {
+                "the vivarium's huge world (zone 2 of seed 14, 16,384 m a side)".to_owned()
             }
             WorldKind::Patch { side } => format!("a patch of the valley, {side} × {side} tiles"),
         };

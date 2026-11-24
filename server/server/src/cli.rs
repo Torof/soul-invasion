@@ -133,6 +133,8 @@ OPTIONS:
                            per tile, born at camp A (generator version 4).
     --world vivarium-wide  The same zone twice as wide, 4,352 m a side, the
                            vivarium's long runs' world.
+    --world vivarium-huge  The same zone at the scale of a valley, 16,384 m
+                           a side, to see whether the tribes spread.
     --dev                  Development tools: every client gets an overview
                            of the whole map and may teleport its body. Never
                            for play.
@@ -285,6 +287,10 @@ pub enum TestWorld {
     /// ([`sim::plan::ZONE_2_WIDE`], 24 November 2026), the vivarium's
     /// long runs' world.
     VivariumWide,
+    /// `vivarium-huge`: the same zone at the scale of a valley, 16,384 m
+    /// a side ([`sim::plan::ZONE_2_HUGE`], 24 November 2026), to see
+    /// whether the tribes spread.
+    VivariumHuge,
 }
 
 impl TestWorld {
@@ -294,7 +300,9 @@ impl TestWorld {
     pub fn continent_seed(self) -> Option<u64> {
         match self {
             Self::Plan(seed) => Some(seed),
-            Self::Vivarium | Self::VivariumWide => Some(sim::plan::VIVARIUM_SEED),
+            Self::Vivarium | Self::VivariumWide | Self::VivariumHuge => {
+                Some(sim::plan::VIVARIUM_SEED)
+            }
             _ => None,
         }
     }
@@ -429,6 +437,7 @@ impl Options {
                         "test:squelette" => Some(TestWorld::Skeleton),
                         "vivarium" => Some(TestWorld::Vivarium),
                         "vivarium-wide" => Some(TestWorld::VivariumWide),
+                        "vivarium-huge" => Some(TestWorld::VivariumHuge),
                         _ => {
                             if let Some(seed) = raw.strip_prefix("plan:") {
                                 seed.trim().parse().ok().map(TestWorld::Plan)
@@ -581,6 +590,10 @@ mod tests {
         assert_eq!(
             Options::parse(["--world", "vivarium-wide"]).unwrap().world,
             Some(TestWorld::VivariumWide)
+        );
+        assert_eq!(
+            Options::parse(["--world", "vivarium-huge"]).unwrap().world,
+            Some(TestWorld::VivariumHuge)
         );
     }
 
