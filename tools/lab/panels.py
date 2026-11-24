@@ -27,17 +27,17 @@ fmt = reading.fmt
 # a French name, the theme, the unit and one sentence. A rate the lab does not know shows its own
 # name under "Les corps", never dropped.
 RATE_FR = {
-    "hunger a day": ("La faim", "food", "points / jour", "monte de tant sur 100 chaque jour sans manger"),
-    "thirst a day": ("La soif", "bodies", "points / jour", "monte de tant sur 100 chaque jour sans boire"),
-    "cold a day of night": ("Le froid", "bodies", "points / jour de nuit", "monte la nuit dehors, loin du camp"),
-    "fatigue a day awake": ("La fatigue", "bodies", "points / jour éveillé", "il faut dormir chaque jour"),
-    "vitality lost a day starving, the fat reserve spent": ("La famine", "food", "vie / jour",
-                                                            "la vie perdue chaque jour quand la réserve de graisse est vide"),
+    "hunger a day": ("La faim", "food", "points / journée", "monte de tant sur 100 chaque journée sans manger"),
+    "thirst a day": ("La soif", "bodies", "points / journée", "monte de tant sur 100 chaque journée sans boire"),
+    "cold a day of night": ("Le froid", "bodies", "points / journée de nuit", "monte la nuit dehors, loin du camp"),
+    "fatigue a day awake": ("La fatigue", "bodies", "points / journée éveillé", "il faut dormir chaque journée"),
+    "vitality lost a day starving, the fat reserve spent": ("La famine", "food", "vie / journée",
+                                                            "la vie perdue chaque journée quand la réserve de graisse est vide"),
     "fat reserve, kJ": ("La réserve de graisse", "food", "kJ", "ce qu’un corps brûle avant d’affamer"),
-    "a day's eating at most, % of the need": ("Manger au plus", "food", "% du besoin / jour",
+    "a day's eating at most, % of the need": ("Manger au plus", "food", "% du besoin / journée",
                                              "la réserve se refait lentement, jamais d’un repas"),
-    "vitality lost a day at full thirst": ("La soif tue", "bodies", "vie / jour", "la vie perdue chaque jour à pleine soif"),
-    "vitality lost a day at full cold": ("Le froid tue", "bodies", "vie / jour", "la vie perdue chaque jour à plein froid"),
+    "vitality lost a day at full thirst": ("La soif tue", "bodies", "vie / journée", "la vie perdue chaque journée à pleine soif"),
+    "vitality lost a day at full cold": ("Le froid tue", "bodies", "vie / journée", "la vie perdue chaque journée à plein froid"),
 }
 # The factors of content/needs.ron the cards show (`meta.factors[].key`, since lab 6): theme, French
 # name, unit, one sentence. Every other key is in the folded list, by its own name.
@@ -55,10 +55,10 @@ FACTOR_FR = {
     "thought.place_tiles": ("thought", "Un lieu", "m de côté", "on retient la nourriture par coin, pas par buisson"),
     "thought.places_remembered": ("thought", "Lieux retenus", "lieux", "ceux qui valent le plus depuis le dernier regard"),
     "thought.plant_choice_hours": ("thought", "Choisir une plante", "heures", "on s’en tient à la plante choisie tant de temps"),
-    "trials.trial_after_days": ("thought", "Avant d’essayer", "jours de détresse", "il faut souffrir tant de jours pour essayer autre chose"),
-    "trials.trial_days": ("thought", "Un essai dure", "jours", "puis le monde le juge : gardé ou abandonné"),
+    "trials.trial_after_days": ("thought", "Avant d’essayer", "journées de détresse", "il faut souffrir tant de journées pour essayer autre chose"),
+    "trials.trial_days": ("thought", "Un essai dure", "journées", "puis le monde le juge : gardé ou abandonné"),
     "trials.imitate_percent": ("thought", "Copier", "%", "la chance de copier le camarade qui va le mieux"),
-    "trials.lived_keep_permille": ("thought", "Mémoire des nuits", "‰ par jour", "ce qu’un lieu où l’on a dormi garde d’un jour à l’autre"),
+    "trials.lived_keep_permille": ("thought", "Mémoire des nuits", "‰ par journée", "ce qu’un lieu où l’on a dormi garde d’une journée à l’autre"),
     "fire.told_per_night": ("fire", "Récits par soir", "souvenirs", "ce qu’un conteur dit au feu en une soirée"),
     "fire.heard_max": ("fire", "Retenus au plus", "souvenirs", "ce qu’une personne garde de ce qu’elle a entendu"),
     "fire.hearth_nights": ("fire", "Mémoire du foyer", "soirs", "les soirs que le foyer garde en mémoire"),
@@ -82,11 +82,11 @@ def factors(d):
     world = "le vivarium, une zone de l’atlas" if s.get("world") == "vivarium" else f"un carré de {fmt(s.get('side'))} m"
     out["world"].append(factor("La carte", f"{tiles[0] / 1000:.1f} km".replace(".", ","), f"{fmt(tiles[0])} × {fmt(tiles[1])} m",
                                f"{world} ; petite exprès, pour que les runs soient courts"))
-    out["world"].append(factor("L’année", fmt(yd), "jours", f"quatre saisons serrées dans {fmt(yd)} jours au lieu de 365"))
+    out["world"].append(factor("Le cycle des saisons", fmt(yd), "journées", f"quatre saisons serrées dans {fmt(yd)} journées au lieu de 365"))
     ad = m.get("days_per_age_year") or yd
     if ad != yd:
-        out["world"].append(factor("L’année d’âge", fmt(ad), "jours", "on vieillit d’un an tous les " + fmt(ad) + " jours"))
-    out["world"].append(factor("La durée", fmt(days // yd if yd else 0), "ans", f"{fmt(days)} jours de jeu"))
+        out["world"].append(factor("L’année d’âge", fmt(ad), "journées", "on vieillit d’un an tous les " + fmt(ad) + " journées"))
+    out["world"].append(factor("La durée", fmt(days), "journées", f"{fmt(days // yd if yd else 0)} cycles de {fmt(yd)} journées" if yd else ""))
     tribes = s.get("tribes") or len(m.get("camps") or [])
     out["world"].append(factor("Les tribus", fmt(tribes), "camps",
                                "chacune née à son camp, de part et d’autre de la rivière" if tribes > 1 else "une seule bande"))
@@ -105,7 +105,7 @@ def factors(d):
     out["food"].insert(0, factor("Nourriture sans limite", "oui" if fed else "non", "",
                                  "personne n’a faim : les naissances se lisent sans la nourriture" if fed
                                  else "il faut cueillir ce que les plantes portent, en saison"))
-    out["food"].append(factor("Un besoin", fmt(reading.KJ_PER_PERSON_DAY), "kJ / jour", "ce qu’une personne mange en un jour"))
+    out["food"].append(factor("Un besoin", fmt(reading.KJ_PER_PERSON_DAY), "kJ / journée", "ce qu’une personne mange en une journée"))
     brain = s.get("brain", True)
     out["thought"].append(factor("Le cerveau", "oui" if brain else "non", "",
                                  "il pense quand quelque chose change pour son corps" if brain else "le témoin : ils restent où ils sont nés",
@@ -311,23 +311,23 @@ def curves(d):
     def background(y):
         return sum(v or 0 for k, v in (y.get("deaths") or {}).items() if k not in reading.WANT_CAUSES)
 
-    line("alive_by_tribe", "Les vivants", "personnes", "vivants, jour par jour")
-    bars("births", "Les naissances", "par an", "naissances de l’année", lambda y: y.get("births"), "birth")
-    bars("want", "Morts de manque", "par an", "morts de faim, de soif ou de froid dans l’année", want, "want")
-    bars("background", "Morts de fond", "par an", "morts de maladie, de vieillesse ou en couches dans l’année", background, "bg-death")
-    bars("stored", "Nourriture portée", "jours / personne", "ce que portent les vivants à midi, en jours de nourriture par personne, "
-         "moyenne de l’année", stored_days, digits=1)
-    bars("gathered", "Cueilli", "kJ / personne / jour", "cueilli dans l’année, par vivant et par jour",
+    line("alive_by_tribe", "Les vivants", "personnes", "vivants, journée après journée")
+    bars("births", "Les naissances", "par cycle", "naissances du cycle", lambda y: y.get("births"), "birth")
+    bars("want", "Morts de manque", "par cycle", "morts de faim, de soif ou de froid dans le cycle", want, "want")
+    bars("background", "Morts de fond", "par cycle", "morts de maladie, de vieillesse ou en couches dans le cycle", background, "bg-death")
+    bars("stored", "Nourriture portée", "journées / personne", "ce que portent les vivants à midi, en journées de nourriture par personne, "
+         "moyenne du cycle", stored_days, digits=1)
+    bars("gathered", "Cueilli", "kJ / personne / journée", "cueilli dans le cycle, par vivant et par journée",
          lambda y: ((y.get("food") or {}).get("gathered_kj") or 0) / max(1, y.get("population_before") or y.get("population") or 1) / yd)
     line("thin_by_tribe", "Les maigres", "personnes", "vivants dont la réserve de graisse est sous la moitié")
     line("weak_by_tribe", "Les faibles", "personnes", "vivants dont la réserve est sous le cinquième")
     line("reserve_by_tribe", "La réserve de graisse", "% du plein", "réserve moyenne des vivants")
-    bars("trials", "Essais commencés", "par an", "essais d’une autre manière commencés dans l’année", lambda y: y.get("trials"))
-    bars("kept", "Essais gardés", "par an", "essais jugés et gardés dans l’année", lambda y: y.get("kept"), "kept")
-    bars("places", "Lieux connus", "lieux", "lieux que les vivants de la tribu ont en tête à la fin de l’année",
+    bars("trials", "Essais commencés", "par cycle", "essais d’une autre manière commencés dans le cycle", lambda y: y.get("trials"))
+    bars("kept", "Essais gardés", "par cycle", "essais jugés et gardés dans le cycle", lambda y: y.get("kept"), "kept")
+    bars("places", "Lieux connus", "lieux", "lieux que les vivants de la tribu ont en tête à la fin du cycle",
          lambda y: (y.get("knowledge") or {}).get("places"))
-    bars("told", "Récits au feu", "par an", "souvenirs racontés au feu du soir dans l’année", lambda y: (y.get("fire") or {}).get("told"), "fire")
-    bars("dispelled", "Rumeurs dissipées", "par an", "on va où un conteur a dit, on ne trouve rien",
+    bars("told", "Récits au feu", "par cycle", "souvenirs racontés au feu du soir dans le cycle", lambda y: (y.get("fire") or {}).get("told"), "fire")
+    bars("dispelled", "Rumeurs dissipées", "par cycle", "on va où un conteur a dit, on ne trouve rien",
          lambda y: (y.get("fire") or {}).get("dispelled"), "rumour")
     line("hunger", "La faim", "points sur 100", "faim moyenne des vivants, les deux tribus ensemble, moyenne glissante sur une semaine", by_tribe=False, smooth=8)
     line("thirst", "La soif", "points sur 100", "soif moyenne des vivants, les deux tribus ensemble, moyenne glissante sur une semaine", by_tribe=False, smooth=8)
@@ -373,8 +373,8 @@ def maps_html():
         return (f'<figure class=m6 data-m6={kind}><figcaption><select data-kind6 aria-label="quelle carte"></select><span class="muted note6"></span></figcaption>'
                 '<div class=cv6><canvas></canvas><div class=tip6 hidden></div><div class=zoom6><button type=button data-z=1 aria-label="zoomer">+</button>'
                 '<button type=button data-z=-1 aria-label="dézoomer">−</button></div></div><div class=lay6 data-lay6></div><div class=leg6 data-leg6></div></figure>')
-    return ('<div class=maps6 data-maps6><div class=mbar6><span class=yr6>an —</span><input type=range data-yr6 min=1 max=1 value=1 aria-label="année">'
-            '<button type=button data-play6>▶ les années</button><span class=seg role=group aria-label="cadrer sur" data-frames6></span>'
+    return ('<div class=maps6 data-maps6><div class=mbar6><span class=yr6>cycle —</span><input type=range data-yr6 min=1 max=1 value=1 aria-label="cycle des saisons">'
+            '<button type=button data-play6>▶ les cycles</button><span class=seg role=group aria-label="cadrer sur" data-frames6></span>'
             '<label class=chk><input type=checkbox data-pale6 checked> fond pâle</label></div>'
             f'<div class=mgrid6>{pane("presence")}{pane("routes")}</div>'
             '<p class="caption">Six cartes au choix dans chaque cadre : terrain et relief, nourriture, eau, midis, trajets et camps, morts et naissances. '
@@ -385,7 +385,7 @@ def maps_html():
 def curves_html():
     return ('<div class=sm6 data-sm6><p class=muted>les courbes se chargent…</p></div>'
             '<p class=caption>Une petite courbe par mesure, une colonne par tribu, même axe du temps partout ; les hivers en bandes pâles. '
-            'Survoler une courbe : la valeur exacte de ce jour sur toutes. Cliquer une mesure : elle s’agrandit.</p>')
+            'Survoler une courbe : la valeur exacte de cette journée sur toutes. Cliquer une mesure : elle s’agrandit.</p>')
 
 
 # --- the home's series cards: what each run found, read once and kept -----------------------------
@@ -434,30 +434,6 @@ def mean_fr(xs, digits=1):
     return fmt(round(m)) if abs(m - round(m)) < 0.05 else fmt(round(m, digits))
 
 
-VARIANT_COLORS = ("#c2571a", "#1f6f8b", "#6b4fa0", "#3a8f4a")   # orange, blue, violet, green: always named beside
-
-
-def variant_of(d):
-    """A run's variant, `(trials, fire)`, read from its settings."""
-    st = (d.get("meta") or {}).get("settings") or {}
-    return (st.get("trials", True), st.get("fire", True))
-
-
-def variant_labels(keys):
-    """Words for a series' variants: what differs between them, and only that."""
-    keys = sorted(set(keys), key=lambda k: (not k[0], not k[1]))
-    if len(keys) == 1:
-        return {keys[0]: "tous les runs"}
-    trials_vary = len({k[0] for k in keys}) > 1
-    fire_vary = len({k[1] for k in keys}) > 1
-    if trials_vary and fire_vary:
-        short = {(True, True): "essais et feu", (True, False): "essais seuls", (False, True): "feu seul", (False, False): "ni l’un ni l’autre"}
-        return {k: short[k] for k in keys}
-    if fire_vary:
-        return {k: "avec le feu" if k[1] else "sans le feu" for k in keys}
-    return {k: "avec essais" if k[0] else "sans essais (témoin)" for k in keys}
-
-
 def series_results(runs_dir, s):
     """A series' results: one sentence, two or three points and a line per run, from the runs' data."""
     briefs = {}
@@ -482,7 +458,7 @@ def series_results(runs_dir, s):
         verdict = (f"Avec {word}, {mean_fr([b['alive'] for b in ga])} vivants à la fin ; sans, {mean_fr([b['alive'] for b in gb])}"
                    + (f" : {'+' if gap > 0 else '−'}{mean_fr([abs(gap)])}." if abs(gap) >= 0.5 else " : pas de différence."))
         for label, fn in (("morts de manque", lambda b: b["want"]), ("naissances", lambda b: b["births"]),
-                          ("jours de nourriture portée par personne à la fin", lambda b: b["food_days"])):
+                          ("journées de nourriture portée par personne à la fin", lambda b: b["food_days"])):
             xa = [fn(b) for b in ga if fn(b) is not None]
             xb = [fn(b) for b in gb if fn(b) is not None]
             if xa and xb:
@@ -494,7 +470,7 @@ def series_results(runs_dir, s):
         verdict = (f"Le plus de vivants à la fin : {short[hi]} ({mean_fr([means[hi]])} en moyenne) ; "
                    f"le moins : {short[lo]} ({mean_fr([means[lo]])}).")
         for label, fn in (("vivants", lambda b: b["alive"]), ("morts de manque", lambda b: b["want"]),
-                          ("jours de nourriture portée par personne", lambda b: b["food_days"])):
+                          ("journées de nourriture portée par personne", lambda b: b["food_days"])):
             parts = []
             for k in keys:
                 xs = [fn(b) for b in groups[k] if fn(b) is not None]
@@ -581,7 +557,7 @@ MAPS6_JS = r"""
   const KINDS = {terrain: 'Terrain et relief', food: 'Nourriture', water: 'Eau', presence: 'Où ils passent leurs midis',
     routes: 'Trajets et camps', life: 'Morts et naissances'};
   const NOTES = {terrain: 'le sol et ses hauteurs', food: 'les plantes et arbres qui portent, par saison', water: 'ce qui se boit',
-    presence: 'l’année montrée', routes: 'de midi en midi, l’année montrée', life: 'jusqu’à l’année montrée'};
+    presence: 'le cycle montré', routes: 'de midi en midi, le cycle montré', life: 'jusqu’au cycle montré'};
   // The terrain's colours in the vivarium's picture (server/vivarium `picture`), exact.
   const GROUNDS = [[[120, 160, 70], 'prairie'], [[50, 100, 45], 'forêt'], [[60, 110, 170], 'eau (rivière, lac)'], [[120, 150, 180], 'gué'],
     [[90, 140, 190], 'ruisseau'], [[130, 125, 115], 'roche, falaise']];
@@ -600,7 +576,7 @@ MAPS6_JS = r"""
     water: () => [['water', true, `<i class=sw6 style="background:rgb(60,110,170)"></i> rivière et lacs`],
       ['ford', true, `<i class=sw6 style="background:rgb(120,150,180)"></i> gués`], ['brook', true, `<i class=sw6 style="background:rgb(90,140,190)"></i> ruisseaux`], camp],
     presence: () => [...B.tribes.map(t => ['t' + t, true, `<i class=sw6 style="background:${tc(t)};opacity:.7"></i> tribu ${esc(t)}`]),
-      ['cum', false, 'toutes les années jusqu’à celle-ci']],
+      ['cum', false, 'tous les cycles jusqu’à celui-ci']],
     routes: () => [['tracks', true, sw(`<path d="M1 12L6 5L10 9L15 3" fill=none stroke="${tc(B.tribes[0])}" stroke-width=2/>`) + ' trajets'], camp,
       ['deaths', true, sw(`<path d="M3 3L13 13M3 13L13 3" stroke="${css('--want')}" stroke-width=3/>`) + ' morts'],
       ['births', true, sw(`<circle cx=8 cy=8 r=5 fill="${css('--birth')}" stroke="#fff"/>`) + ' naissances'],
@@ -610,7 +586,7 @@ MAPS6_JS = r"""
     life: () => [['want', true, sw(`<path d="M3 3L13 13M3 13L13 3" stroke="${css('--want')}" stroke-width=3/>`) + ' morts de manque'],
       ['bg', true, sw(`<path d="M3 3L13 13M3 13L13 3" stroke="${css('--bg-death')}" stroke-width=3/>`) + ' morts de fond'],
       ['births', true, sw(`<circle cx=8 cy=8 r=5 fill="${css('--birth')}" stroke="#fff"/>`) + ' naissances'],
-      ['cum', true, 'toutes les années jusqu’à celle-ci'], camp],
+      ['cum', true, 'tous les cycles jusqu’à celui-ci'], camp],
   };
 
   // --- the view: a centre in tiles and a scale in pixels a tile, the same for both maps
@@ -776,7 +752,7 @@ MAPS6_JS = r"""
         g.fillStyle = tc(t); g.fill(); g.lineWidth = 2 * px; g.strokeStyle = '#fff'; g.stroke();
         if (now) {
           g.fillStyle = '#fff'; g.font = `800 ${12 * px}px system-ui,sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(t, x, y + px);
-          const span = s[0] === Math.min(s[1], Y) ? `an ${s[0]}` : `an ${s[0]} → an ${Math.min(s[1], Y)}`;
+          const span = s[0] === Math.min(s[1], Y) ? `cycle ${s[0]}` : `cycle ${s[0]} → cycle ${Math.min(s[1], Y)}`;
           const sx = (x - V.x) * V.k + w / 2, right = sx > w - 140, lx = x + (right ? -14 : 14) * px;
           g.font = `700 ${11 * px}px system-ui,sans-serif`; g.textAlign = right ? 'right' : 'left'; g.lineWidth = 3 * px; g.strokeStyle = css('--surface');
           g.strokeText(`camp ${t}, ${span}`, lx, y); g.fillStyle = css('--ink'); g.fillText(`camp ${t}, ${span}`, lx, y);
@@ -889,7 +865,7 @@ MAPS6_JS = r"""
     if (m.on.tracks) for (const [id, tr] of Object.entries(yd.tracks)) for (const p of tr) test((p[1] - wx) ** 2 + (p[2] - wy) ** 2, {track: [id, p]});
     return best;
   }
-  const dayFr = d => { const yd = B.dpy, doy = (d - 1) % yd; return `an ${Math.floor((d - 1) / yd) + 1}, ${SEASON[Math.min(3, Math.floor(doy * 4 / yd))]}, jour ${nf(d)}`; };
+  const dayFr = d => { const yd = B.dpy, doy = (d - 1) % yd; return `cycle ${Math.floor((d - 1) / yd) + 1}, ${SEASON[Math.min(3, Math.floor(doy * 4 / yd))]}, journée ${nf(d)}`; };
   const who = id => `personne ${id} <span class=m>(${esc(B.people[id] || '?')})</span>`;
   const kindFr = k => String(k).replace(/_/g, ' ');
   function cellLines(m, wx, wy) {
@@ -914,16 +890,16 @@ MAPS6_JS = r"""
     if (m.kind === 'presence') {
       for (const t of B.tribes) {
         const c = (presenceOf(m, t)[0]).find(c => c[0] === cx && c[1] === cy);
-        if (c) lines.push(`tribu ${esc(t)} : <b>${nf(c[2])}</b> midis de personnes ${m.on.cum ? 'jusqu’à l’an ' + Y : 'en l’an ' + Y}`);
+        if (c) lines.push(`tribu ${esc(t)} : <b>${nf(c[2])}</b> midis de personnes ${m.on.cum ? 'jusqu’au cycle ' + Y : 'au cycle ' + Y}`);
       }
     }
     if (m.kind === 'presence' || m.kind === 'routes') {
       const passed = yd && yd.cells.get(cx + ',' + cy);
       if (passed) {
         const list = [...passed].sort((a, b) => b[1] - a[1]);
-        lines.push('passés ici en l’an ' + Y + ' : ' + list.slice(0, 5).map(([id, n]) => `personne ${id} (${esc(B.people[id] || '?')}, ${n} midi${n > 1 ? 's' : ''})`).join(', ')
+        lines.push('passés ici au cycle ' + Y + ' : ' + list.slice(0, 5).map(([id, n]) => `personne ${id} (${esc(B.people[id] || '?')}, ${n} midi${n > 1 ? 's' : ''})`).join(', ')
           + (list.length > 5 ? ` et ${list.length - 5} autres` : ''));
-      } else if (yd) lines.push('<span class=m>aucune personne à midi ici en l’an ' + Y + '</span>');
+      } else if (yd) lines.push('<span class=m>aucune personne à midi ici au cycle ' + Y + '</span>');
     }
     m.hover = {cell: [cx, cy]};
     return lines;
@@ -956,18 +932,18 @@ MAPS6_JS = r"""
 
   // --- controls
   async function setYear(y) {
-    Y = y; slider.value = y; yrLabel.textContent = 'an ' + y;
-    try { await year(y); } catch (e) { yrLabel.textContent = 'an ' + y + ' (illisible)'; }
+    Y = y; slider.value = y; yrLabel.textContent = 'cycle ' + y;
+    try { await year(y); } catch (e) { yrLabel.textContent = 'cycle ' + y + ' (illisible)'; }
     if (Y === y) { maps.forEach(m => { m.hover = null; m.tip.hidden = true; }); legends(); drawAll(); }
   }
   function legend(m) {
     const yd = years[Y];
     if (m.kind === 'presence') return B.tribes.map(t => { const pk = presenceOf(m, t)[1];
       return `<span>tribu ${esc(t)}, ${esc(B.sides[t] || '')} : peu<i class=ramp style="background:linear-gradient(90deg,color-mix(in srgb,${tc(t)} 14%,transparent),${tc(t)})"></i>souvent (1 à ${nf(pk)} midis de personnes par case, échelle logarithmique)</span>`; }).join('')
-      + '<span>Un midi de personne : une personne vue à midi dans la case, un jour.</span>';
-    if (m.kind === 'routes') return yd ? `<span>an ${Y} : ${yd.deaths.length} mort${yd.deaths.length > 1 ? 's' : ''} (${yd.deaths.filter(d => d[5]).length} de manque, en rouge ; de fond en gris), ${yd.births.length} naissance${yd.births.length > 1 ? 's' : ''} (magenta), ${yd.moves.length} maison${yd.moves.length > 1 ? 's' : ''} déplacée${yd.moves.length > 1 ? 's' : ''} (sarcelle). Points cerclés de blanc : chacun au dernier midi de l’année.</span>` : '';
+      + '<span>Un midi de personne : une personne vue à midi dans la case, une journée.</span>';
+    if (m.kind === 'routes') return yd ? `<span>cycle ${Y} : ${yd.deaths.length} mort${yd.deaths.length > 1 ? 's' : ''} (${yd.deaths.filter(d => d[5]).length} de manque, en rouge ; de fond en gris), ${yd.births.length} naissance${yd.births.length > 1 ? 's' : ''} (magenta), ${yd.moves.length} maison${yd.moves.length > 1 ? 's' : ''} déplacée${yd.moves.length > 1 ? 's' : ''} (sarcelle). Points cerclés de blanc : chacun au dernier midi du cycle.</span>` : '';
     if (m.kind === 'life') { const L = lifeOf(m), want = L.deaths.filter(e => e[5]).length;
-      return `<span>${m.on.cum ? 'de l’an 1 à l’an ' + Y : 'en l’an ' + Y} : <b>${L.deaths.length}</b> morts (<b>${want}</b> de manque en rouge, ${L.deaths.length - want} de fond en gris), <b>${L.births.length}</b> naissances (magenta). Survoler : qui, quand ; cliquer : sa fiche.</span>`; }
+      return `<span>${m.on.cum ? 'du cycle 1 au cycle ' + Y : 'au cycle ' + Y} : <b>${L.deaths.length}</b> morts (<b>${want}</b> de manque en rouge, ${L.deaths.length - want} de fond en gris), <b>${L.births.length}</b> naissances (magenta). Survoler : qui, quand ; cliquer : sa fiche.</span>`; }
     if (m.kind === 'terrain') return R && R.known ? `<span>Ombrage : la lumière vient du nord-ouest, les pentes trois fois exagérées. Altitude de ${nf(R.lo / 10)} m (clair) à ${nf(R.hi / 10)} m (foncé), une valeur tous les ${R.cell} m.</span><span>Le sol : prairie, forêt, eau, gué, ruisseau, roche.</span>` : '<span>Ce run n’a pas le relief (relancer avec le vivarium récent).</span>';
     if (m.kind === 'water') return '<span>Le reste de la carte pâli. Survoler : l’eau la plus proche et sa distance.</span>';
     if (m.kind === 'food') return F && F.cells.length ? `<span>${esc(SEASON[season(m)])} : peu<i class=ramp style="background:linear-gradient(90deg,color-mix(in srgb,var(--kept) 14%,transparent),var(--kept))"></i>beaucoup (1 à ${nf(F.peak[season(m)])} plantes et arbres qui portent par carré de ${F.chunk_tiles} m, échelle logarithmique).</span><span>Comptés seulement là où les tribus ont passé un midi, et ${F.margin_chunks} carrés autour.</span>` : '<span>Ce run n’a pas la carte de la nourriture (relancer avec le vivarium récent).</span>';
@@ -996,7 +972,7 @@ MAPS6_JS = r"""
     box.querySelector('[data-pale6]').onchange = drawAll;
     const play = box.querySelector('[data-play6]');
     play.onclick = () => {
-      if (playing) { clearInterval(playing); playing = null; play.textContent = '▶ les années'; return; }
+      if (playing) { clearInterval(playing); playing = null; play.textContent = '▶ les cycles'; return; }
       play.textContent = '❚❚ arrêter';
       if (Y >= B.years) setYear(1);
       playing = setInterval(() => { if (Y >= B.years) { play.click(); return; } setYear(Y + 1); }, 900);
@@ -1054,10 +1030,10 @@ SM6_JS = r"""
   function nice(v) { if (v <= 0) return 1; const e = 10 ** Math.floor(Math.log10(v)), f = v / e; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * e; }
   function valueAt(row, s, day) {
     const vals = row.values[s];
-    if (row.kind === 'bars') { const y = Math.floor((day - 1) / C.dpy); return [vals[y] ?? null, 'an ' + (y + 1)]; }
+    if (row.kind === 'bars') { const y = Math.floor((day - 1) / C.dpy); return [vals[y] ?? null, 'cycle ' + (y + 1)]; }
     let lo = 0, hi = C.days.length - 1;
     while (lo < hi) { const mid = (lo + hi) >> 1; if (C.days[mid] < day) lo = mid + 1; else hi = mid; }
-    return [vals[lo] ?? null, 'jour ' + C.days[lo]];
+    return [vals[lo] ?? null, 'journée ' + C.days[lo]];
   }
   function chart(row, s, w, hgt, top) {
     const L = 40, R = 6, T = 6, Bm = 16, iw = w - L - R, ih = hgt - T - Bm, last = C.last || 1;
@@ -1068,7 +1044,7 @@ SM6_JS = r"""
     for (const f of (row.digits || top % 2 === 0 ? [0, .5, 1] : [0, 1])) g += `<line x1="${L}" x2="${L + iw}" y1="${Yv(top * f).toFixed(1)}" y2="${Yv(top * f).toFixed(1)}" stroke="var(--line)"/>`
       + `<text x="${L - 4}" y="${(Yv(top * f) + 3).toFixed(1)}" text-anchor="end">${nf(top * f, top * f % 1 ? 1 : 0)}</text>`;
     const years = Math.ceil(last / C.dpy), every = years > 12 ? 5 : years > 6 ? 2 : 1;
-    for (let y = 1; y <= years; y++) if (y === 1 || y % every === 0) g += `<text x="${X((y - 1) * C.dpy + 1 + C.dpy / 2).toFixed(1)}" y="${hgt - 3}" text-anchor="middle">an ${y}</text>`;
+    for (let y = 1; y <= years; y++) if (y === 1 || y % every === 0) g += `<text x="${X((y - 1) * C.dpy + 1 + C.dpy / 2).toFixed(1)}" y="${hgt - 3}" text-anchor="middle">cycle ${y}</text>`;
     const vals = row.values[s];
     if (row.kind === 'bars') {
       const bw = Math.max(1, iw / last * C.dpy - 2);
@@ -1098,8 +1074,8 @@ SM6_JS = r"""
   function setHover(day) {
     hoverDay = day;
     const now = box.querySelector('.now6');
-    if (day === null) now.textContent = 'Survoler une courbe : la valeur de ce jour sur toutes.';
-    else { const y = Math.floor((day - 1) / C.dpy) + 1, doy = (day - 1) % C.dpy; now.textContent = `an ${y}, ${SEASON[Math.min(3, Math.floor(doy * 4 / C.dpy))]}, jour ${day}`; }
+    if (day === null) now.textContent = 'Survoler une courbe : la valeur de cette journée sur toutes.';
+    else { const y = Math.floor((day - 1) / C.dpy) + 1, doy = (day - 1) % C.dpy; now.textContent = `cycle ${y}, ${SEASON[Math.min(3, Math.floor(doy * 4 / C.dpy))]}, journée ${day}`; }
     box.querySelectorAll('.row6').forEach(el => {
       const row = C.rows[+el.dataset.i];
       el.querySelectorAll('.ch6').forEach(ch => {
@@ -1233,7 +1209,7 @@ HOME_JS = r"""
   function runLine(s, r) {
     const res = (results[s.name] || {}).runs || {};
     const t = r.started ? (r.ended ? `${hour(r.started)} → ${hour(r.ended)} (${secs(r.elapsed)})` : `depuis ${hour(r.started)} (${secs(r.elapsed)})`) : 'pas encore lancé';
-    const line = res[r.name] || (r.state === 'en cours' ? `année ${r.year ?? '—'} · ${r.alive ?? '—'} vivants · ${r.dead ?? '—'} morts (d’après le log)` :
+    const line = res[r.name] || (r.state === 'en cours' ? `cycle ${r.year ?? '—'} · ${r.alive ?? '—'} vivants · ${r.dead ?? '—'} morts (d’après le log)` :
       r.data ? 'résultat en lecture…' : r.alive != null ? `${r.alive} vivants · ${r.dead} morts (d’après le log)` : '');
     return `<li><span><a href="${esc(r.read)}">${esc(variant(r))}</a> <span class=w>${esc(t)}</span></span>${kind(r.state) === 'fini' ? '<span></span>' : `<span class="mk ${kind(r.state)}">${SIGN[kind(r.state)]} ${esc(r.state)}</span>`}<span class=r>${esc(line)}</span></li>`;
   }
@@ -1326,7 +1302,7 @@ def home_body(lab, standard_plan):
             '<option value=echec>en échec</option><option value=arret>arrêtées</option></select></label>'
             '<label>tri <select id=s7><option value=recent>lancement, récent d’abord</option><option value=ancien>lancement, ancien d’abord</option>'
             '<option value=but>but (A → Z)</option><option value=etat>état</option></select></label>'
-            '<label><input type=checkbox id=g7 checked> grouper par jour</label></div>'
+            '<label><input type=checkbox id=g7 checked> grouper par journée</label></div>'
             '<p id=err class=warn></p><div id=series><p class=muted>Chargement…</p></div>'
             f'<h2 class=sec7>Plans <small>{len(lab.standard_plans())} plans étalons</small></h2><div class=pcards7>{plans}</div>'
             f'<script>{HOME_JS}</script>')
@@ -1376,7 +1352,7 @@ def years_points(d):
         first, last = ys[0], ys[-1]
         a, b = stored_days(first), stored_days(last)
         if a is not None and b is not None:
-            pts.append(P(f"{fmt(round(a, 1))} → {fmt(round(b, 1))} jours", f"de nourriture portée par personne chez {t}, an {first['year']} à an {last['year']}"
+            pts.append(P(f"{fmt(round(a, 1))} → {fmt(round(b, 1))} journées", f"de nourriture portée par personne chez {t}, cycle {first['year']} à cycle {last['year']}"
                          + (f" ({ratio_words(a, b)})" if ratio_words(a, b) else ""), [stored_days(y) for y in ys]))
         pop = [y.get("population") for y in ys]
         pts.append(P(f"{fmt(first.get('population_before'))} → {fmt(last.get('population'))} vivants", f"chez {t}", pop))
@@ -1388,7 +1364,7 @@ def years_points(d):
     thin = [(y.get("year"), y.get("tribe"), (y["food"].get("thin_hours") or 0) / 24) for y in allys]
     worst = max(thin, key=lambda x: x[2], default=None)
     if worst and worst[2] >= 1:
-        pts.append(P(f"an {worst[0]}", f"le plus maigre : {fmt(round(worst[2]))} jours-personne maigres chez {worst[1]}"))
+        pts.append(P(f"cycle {worst[0]}", f"le plus maigre : {fmt(round(worst[2]))} journées-personne maigres chez {worst[1]}"))
     return pts[:6]
 
 
@@ -1401,10 +1377,10 @@ def years_tiles(d):
     thin = sum(y["food"].get("thin_hours") or 0 for y in allys) / 24
     births = sum(y.get("births") or 0 for y in d.get("years", []))
     deaths = sum(y.get("deaths_total") or 0 for y in d.get("years", []))
-    tiles = [("cueilli", f"{fmt(round(g / kd))}", "jours de nourriture d’une personne"),
-             ("mangé", f"{fmt(round(e / kd))}", "jours de nourriture"),
-             ("pourri", f"{fmt(round(sp / kd))}", f"jours, {round(sp * 100 / g) if g else 0} % du cueilli"),
-             ("jours maigres", fmt(round(thin)), "jours-personne sous la moitié de la réserve"),
+    tiles = [("cueilli", f"{fmt(round(g / kd))}", "journées de nourriture d’une personne"),
+             ("mangé", f"{fmt(round(e / kd))}", "journées de nourriture"),
+             ("pourri", f"{fmt(round(sp / kd))}", f"journées, {round(sp * 100 / g) if g else 0} % du cueilli"),
+             ("journées maigres", fmt(round(thin)), "journées-personne sous la moitié de la réserve"),
              ("naissances · morts", f"{fmt(births)} · {fmt(deaths)}", "sur tout le run")]
     return '<div class=ytiles>' + "".join(f'<div class=yt><div class=k>{h(k)}</div><div class=v>{h(v)}</div><div class=s>{h(s_)}</div></div>'
                                           for k, v, s_ in tiles) + '</div>'
@@ -1439,23 +1415,23 @@ def year_strip(d):
             v = vals.get(yr)
             a = 0.12 + 0.78 * (v / peak) if v else 0.05
             sign = "".join(s for s, _ in marks.get(yr, []))
-            tip = (f"tribu {t}, an {yr} : " + (f"{fmt(round(v, 1))} j de nourriture portée par personne à midi, " if v is not None else "")
+            tip = (f"tribu {t}, cycle {yr} : " + (f"{fmt(round(v, 1))} j de nourriture portée par personne à midi, " if v is not None else "")
                    + (f"{fmt(y.get('population'))} vivants, {fmt(y.get('births'))} naissances, {fmt(y.get('deaths_total'))} morts "
                       f"({fmt(want_of(y))} de manque)" if y else "")
                    + ("" if not marks.get(yr) else " — " + ", ".join(w for _, w in marks[yr])))
             cells.append(f'<div class="yc{" hot" if sign else ""}" style="--a:{a:.2f};--c:var(--t{h(t)})" title="{h(tip)}">'
                          f'<span class=n>{yr}</span><span class=m>{h(sign)}</span></div>')
         rows.append(f'<div class=yrow><span class=yl>{reading.tribe_chip(t)}</span><div class=ycells style="--n:{ly}">{"".join(cells)}</div></div>')
-    legend = ('<p class=caption>Une case par an ; plus la couleur est pleine, plus la tribu porte de nourriture à midi (jours par personne, '
+    legend = ('<p class=caption>Une case par cycle ; plus la couleur est pleine, plus la tribu porte de nourriture à midi (journées par personne, '
               f'au plus {fmt(round(peak, 1))}). ★ le plus de nourriture portée, ▼ le moins, ▲ le plus de naissances, ✕ le plus de morts de manque. '
               'Survoler une case : ses chiffres.</p>')
     return f'<div class=ystrip>{"".join(rows)}</div>{legend}'
 
 
 def years_section(d):
-    return ('<section id=annees class=group><h2>Nourriture et tribus, année par année</h2>'
+    return ('<section id=annees class=group><h2>Nourriture et tribus, cycle par cycle</h2>'
             + reading.points_html(years_points(d)) + years_tiles(d) + year_strip(d)
-            + '<details class=fold><summary>Le tableau complet, une ligne par tribu et par an</summary><div class=scroll data-lazy="annees">'
+            + '<details class=fold><summary>Le tableau complet, une ligne par tribu et par cycle</summary><div class=scroll data-lazy="annees">'
             '<p class=muted>le tableau se charge…</p></div></details></section>')
 
 
@@ -1478,14 +1454,14 @@ def notable_facts(d, limit=10):
     for (yr, s, t, cause), days in groups.items():
         n = len(days)
         facts.append((min(days), 0 if n > 1 else 2,
-                      f"{SEASONS_FR[s]} de l’an {yr} : {n} mort{'s' if n > 1 else ''} de {reading.cause_fr(cause)} chez {t}"))
+                      f"{SEASONS_FR[s]} du cycle {yr} : {n} mort{'s' if n > 1 else ''} de {reading.cause_fr(cause)} chez {t}"))
     for t in ts:
         stays = reading.camp_stays(d, t)
         for (_a0, _b0, c0), (a1, _b1, c1) in zip(stays, stays[1:]):
             ang = math.degrees(math.atan2(c1[1] - c0[1], c1[0] - c0[0]))
             direction = reading.COMPASS[int(((ang + 360 + 22.5) % 360) // 45)]
             dist = math.hypot(c1[0] - c0[0], c1[1] - c0[1])
-            facts.append(((a1 - 1) * yd + 1, 0, f"an {a1} : {t} déplace son camp vers {direction}, à {fmt(round(dist))} m"))
+            facts.append(((a1 - 1) * yd + 1, 0, f"cycle {a1} : {t} déplace son camp vers {direction}, à {fmt(round(dist))} m"))
         firsts = {}
         for p in d.get("people", []):
             if p.get("tribe") != t:
@@ -1496,17 +1472,17 @@ def notable_facts(d, limit=10):
                     if k not in firsts or tr["judged_day"] < firsts[k][0]:
                         firsts[k] = (tr["judged_day"], p.get("id"))
         for k, (day, pid) in firsts.items():
-            facts.append((day, 1, f"an {(day - 1) // yd + 1} : chez {t}, personne {pid} garde pour la première fois « {reading.kind_fr(k)} »"))
+            facts.append((day, 1, f"cycle {(day - 1) // yd + 1} : chez {t}, personne {pid} garde pour la première fois « {reading.kind_fr(k)} »"))
         ys = reading.years_of(d, t)
         if ys:
             top = max(ys, key=lambda y: y.get("births") or 0)
             if (top.get("births") or 0) >= 2:
-                facts.append((top.get("first_day") or 1, 2, f"an {top['year']} : {top['births']} naissances chez {t}, le plus du run"))
+                facts.append((top.get("first_day") or 1, 2, f"cycle {top['year']} : {top['births']} naissances chez {t}, le plus du run"))
             hi = max(ys, key=lambda y: y.get("population") or 0)
             lo = min(ys, key=lambda y: y.get("population") or 0)
             if hi.get("population") != lo.get("population"):
-                facts.append((hi.get("last_day") or 1, 3, f"an {hi['year']} : {t} compte {reading.plural(hi['population'], 'vivant')}, son plus haut"))
-                facts.append((lo.get("last_day") or 1, 3, f"an {lo['year']} : {t} tombe à {reading.plural(lo['population'], 'vivant')}, son plus bas"))
+                facts.append((hi.get("last_day") or 1, 3, f"cycle {hi['year']} : {t} compte {reading.plural(hi['population'], 'vivant')}, son plus haut"))
+                facts.append((lo.get("last_day") or 1, 3, f"cycle {lo['year']} : {t} tombe à {reading.plural(lo['population'], 'vivant')}, son plus bas"))
     # One from each kind in turn, the most urgent kind first, so that the many first ways kept
     # do not crowd out the births and population records.
     buckets = {}
@@ -1521,34 +1497,12 @@ def notable_facts(d, limit=10):
     return chosen, len(facts)
 
 
-def chronicle_trends(d):
-    """Two or three big trends of the run, as points."""
-    ts = reading.tribes(d)
-    ly = reading.last_year(d) or 0
-    half = max(1, ly // 2)
-    pts = []
-    kept = [y.get("kept") or 0 for y in d.get("years", [])]
-    if any(kept):
-        a = sum(y.get("kept") or 0 for y in d.get("years", []) if (y.get("year") or 0) <= half)
-        b = sum(y.get("kept") or 0 for y in d.get("years", []) if (y.get("year") or 0) > half)
-        pts.append(P(f"{fmt(a)} → {fmt(b)}", f"essais gardés, ans 1 à {half} puis {half + 1} à {ly}"))
-    bw = sum(y.get("births") or 0 for y in d.get("years", []))
-    dw = sum(want_of(y) for y in d.get("years", []))
-    dt = sum(y.get("deaths_total") or 0 for y in d.get("years", []))
-    pts.append(P(f"{fmt(bw)} naissances", f"pour {fmt(dt)} morts, dont {fmt(dw)} de manque"))
-    for t in ts:
-        ys = reading.years_of(d, t)
-        if ys and ys[0].get("camp") and ys[-1].get("camp"):
-            moved = len(reading.camp_stays(d, t)) - 1
-            pts.append(P(f"{moved} déménagement{'s' if moved > 1 else ''}" if moved else "aucun déménagement", f"du camp de {t}"))
-    return pts[:4]
-
-
 def chronicle_lead(d):
+    """The chronicle's head: the notable facts."""
     facts, total = notable_facts(d)
     items = "".join(f'<li><span class=fd>{h(text.split(" : ", 1)[0])}</span>{reading.link_people(h(text.split(" : ", 1)[1] if " : " in text else text))}</li>'
                     for _day, _p, text in facts)
-    return (reading.points_html(chronicle_trends(d)) + '<h3>Les faits notables</h3>'
+    return ('<h3>Les faits notables</h3>'
             + (f'<ul class=facts>{items}</ul><p class=caption>{len(facts)} faits choisis sur {total} trouvés dans les données : '
                'les morts de manque par saison, les camps déplacés, la première fois que chaque façon est gardée, les records de naissances '
                'et de population.</p>' if items else '<p class=muted>rien de notable dans les données</p>'))
@@ -1560,7 +1514,7 @@ AGE_BANDS = [(0, 10), (10, 20), (20, 30), (30, 40), (40, 50), (50, 60), (60, 200
 
 
 def pyramid(d, at_day, title):
-    yd = reading.year_days(d)
+    yd = reading.age_year_days(d)
     counts = {b: {"man": 0, "woman": 0} for b in AGE_BANDS}
     for p in d.get("people", []):
         born = p.get("born_day") or 1
@@ -1615,29 +1569,29 @@ def families(d):
     return out
 
 
-def ages_families_html(d):
+def pyramids_html(d):
+    """The ages at the first day and at the last, side by side, in age-years (D09)."""
+    ay = reading.age_year_days(d)
+    return (f'<div class=pyrs>{pyramid(d, 1, "À la première journée")}{pyramid(d, reading.run_days(d), "À la dernière journée")}</div>'
+            '<p class=caption>Par tranches de dix années d’âge (une année d’âge : ' + fmt(ay) + ' journées de jeu) ; hommes à gauche, femmes à droite.</p>')
+
+
+def families_fold(d, fams=None):
+    """The families, a card each, folded: the children by mother and father."""
     yd = reading.year_days(d)
-    last = reading.run_days(d)
-    fams = families(d)
-    pts = []
-    if fams:
-        big = fams[0]
-        pts.append(P(f"{len(fams)} familles", f"dont {sum(1 for x in fams if x['in_run'])} avec un enfant né dans le run"))
-        pts.append(P(f"{len(big['kids'])} enfants", f"la plus grande : personne {big['mother']} et personne {big['father']} ({big['tribe']})"))
+    fams = families(d) if fams is None else fams
+    if not fams:
+        return ""
     cards = []
     for x in fams:
         kids = "".join(f'<li>{reading.person_link(k.get("id"))} <span class=muted>'
-                       + ("au départ" if k.get("born") == "start" else f"né{'e' if k.get('sex') == 'woman' else ''} l’an {((k.get('born_day') or 1) - 1) // yd + 1}")
-                       + (f", mort{'e' if k.get('sex') == 'woman' else ''} l’an {((k['died'].get('day') or 1) - 1) // yd + 1} ({h(reading.cause_fr(k['died'].get('cause')))})" if k.get("died") else "")
+                       + ("au départ" if k.get("born") == "start" else f"né{'e' if k.get('sex') == 'woman' else ''} au cycle {((k.get('born_day') or 1) - 1) // yd + 1}")
+                       + (f", mort{'e' if k.get('sex') == 'woman' else ''} au cycle {((k['died'].get('day') or 1) - 1) // yd + 1} ({h(reading.cause_fr(k['died'].get('cause')))})" if k.get("died") else "")
                        + "</span></li>" for k in x["kids"])
         cards.append(f'<details class=famc><summary>{reading.tribe_chip(x["tribe"])} {reading.person_link(x["mother"])} et {reading.person_link(x["father"])}'
                      f' <span class=muted>· {len(x["kids"])} enfant{"s" if len(x["kids"]) > 1 else ""}, {x["alive"]} vivant{"s" if x["alive"] > 1 else ""}</span></summary>'
                      f'<ul>{kids}</ul></details>')
-    return ('<section id=ages><h3>Les âges et les familles</h3>' + reading.points_html(pts)
-            + f'<div class=pyrs>{pyramid(d, 1, "Au départ")}{pyramid(d, last, "À la fin")}</div>'
-            + '<p class=caption>Par tranches de dix ans de jeu (une année : ' + fmt(yd) + ' jours) ; hommes à gauche, femmes à droite.</p>'
-            + (f'<details class=fold><summary>Les {len(fams)} familles, une carte chacune</summary><div class=fams>{"".join(cards)}</div></details>' if cards else "")
-            + '</section>')
+    return f'<details class=fold><summary>Les {len(fams)} familles, une carte chacune</summary><div class=fams>{"".join(cards)}</div></details>'
 
 
 SECTIONS_CSS = """
@@ -1663,61 +1617,4 @@ details.famc{background:var(--surface);border:1px solid var(--edge);border-radiu
 """
 
 
-# --- the series page: its head as on the home's card, its runs as cards ------------------------------
 
-def when_fr(t):
-    import time
-    if not t:
-        return "—"
-    days = ["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."]
-    months = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."]
-    lt = time.localtime(t)
-    return f"{days[lt.tm_wday]} {lt.tm_mday} {months[lt.tm_mon - 1]}, {lt.tm_hour:02d}:{lt.tm_min:02d}"
-
-
-def run_words(r):
-    return " · ".join(x for x in (r.get("base"), "avec essais" if r.get("trials", True) else "sans essais",
-                                  "avec le feu" if r.get("fire", True) else "sans le feu", f"graine {r.get('seed', '?')}") if x)
-
-
-def serie_head(s, runs_dir):
-    """The series page's head: its title, its purpose, its times, its version, its verdict and points."""
-    v = s.get("version") or {}
-    res = series_results(runs_dir, s)
-    end = when_fr(s.get("ended")) if s.get("ended") else ("en cours" if s["state"].startswith("en cours") else "—")
-    purpose = s.get("purpose") or ""
-    return (f'<h1>{h(s.get("title") or s["name"])}</h1>'
-            + (f'<p class=purpose6>{h(purpose)}</p>' if purpose else '<p class="purpose6 none">but non écrit</p>')
-            + f'<p class=meta6>lancée <b>{h(when_fr(s.get("started")))}</b> · finie <b>{h(end)}</b> · durée <b>{h(reading.secs(s.get("elapsed")))}</b>'
-            f' · <b>{len(s["runs"])}</b> runs · {h(s["state"])} · version <code>{h(v.get("commit") or "inconnue")}</code>'
-            + (f' ({h(v["branch"])})' if v.get("branch") and v.get("branch") != "HEAD" else "")
-            + (f' · <a href="{s["synthese"]}">synthèse</a>' if s.get("synthese") else "") + "</p>"
-            + (f'<details class=fold><summary>Le but en entier, ce qui a changé</summary><p>{h(s.get("question") or "")}</p>'
-               f'<p><b>Ce qui a changé :</b> {h(v.get("change") or "non écrit")}</p><p class=muted>{h(s["name"])}</p></details>')
-            + (f'<div class=res6><p class=vd>{h(res["verdict"])}</p><ul>' + "".join(f"<li>{p}</li>" for p in res["points"]) + "</ul></div>"
-               if res["verdict"] else ""), res)
-
-
-def run_cards(s, res):
-    out = []
-    for r in s["runs"]:
-        t = (f"{when_fr(r.get('started'))} → {when_fr(r.get('ended')).split(', ')[-1]} ({reading.secs(r.get('elapsed'))})"
-             if r.get("started") and r.get("ended") else ("pas encore lancé" if not r.get("started") else f"depuis {when_fr(r.get('started'))}"))
-        line = res["runs"].get(r["name"]) or (f"année {fmt(r.get('year'))} · {fmt(r.get('alive'))} vivants · {fmt(r.get('dead'))} morts (d’après le log)"
-                                              if r.get("alive") is not None else "pas de données")
-        state = "" if r["state"] == "fini" else f'<span class="mk">{h(r["state"])}</span>'
-        links = (f'<a href="{r["page"]}">page du vivarium</a> ' if r.get("page") else "") + (f'<a href="{r["log"]}">log</a>' if r.get("log") else "")
-        out.append(f'<li class=rc6><a class=rw href="{reading.run_url(s["name"], r["name"])}">{h(run_words(r))}</a>{state}'
-                   f'<span class=rt>{h(t)}</span><span class=rr>{h(line)}</span><span class=rl>{links}</span></li>')
-    return f'<h2>Les runs</h2><ul class=runs6>{"".join(out)}</ul>'
-
-
-SERIE_CSS = """
-.purpose6{font-size:1.1em;line-height:1.55;max-width:62ch;margin:.2em 0 .5em;color:var(--ink)}.purpose6.none{color:var(--muted);font-style:italic}
-.meta6{color:var(--ink2);font-size:.9em}.meta6 code{background:var(--chip);padding:0 .35em;border-radius:4px}
-.res6{border-left:3px solid var(--ink2);padding:.2em 0 .2em .9em;margin:1em 0}.res6 .vd{font-weight:650;font-size:1.1em;margin:0 0 .3em;max-width:62ch}
-.res6 ul{margin:0;padding-left:1.1em;line-height:1.5}
-ul.runs6{list-style:none;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,24em),1fr));gap:.7em}
-li.rc6{background:var(--surface);border:1px solid var(--edge);border-radius:10px;padding:.6em .8em;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:.15em}
-li.rc6 .rw{font-weight:650}li.rc6 .rt,li.rc6 .rl{font-size:.85em;color:var(--muted)}li.rc6 .rr{font-size:.92em}li.rc6 .mk{font-size:.82em;color:var(--want);font-weight:600}
-"""
