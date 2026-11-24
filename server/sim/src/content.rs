@@ -399,6 +399,51 @@ pub struct Needs {
     /// makes others go and see. Absent: nobody ever moves home.
     #[serde(default)]
     pub moving: Moving,
+    /// The family's weight when a move is called (D56, amended 24
+    /// November 2026), apart from company and added to it. Absent: the
+    /// family weighs only as company.
+    #[serde(default)]
+    pub family: Family,
+}
+
+/// What a body's family weighs when it weighs a move called at the fire
+/// (D56, amended 24 November 2026; the project lead: "un poids de la
+/// famille à part de la compagnie… ça peut s'ajouter à la compagnie…
+/// double effet sur une personne qui aime la compagnie et 0 sur une
+/// personne qui n'aime pas la compagnie, mais la famille a quand même un
+/// impact"; "s'il y a des enfants, il y a encore plus de poids"). Each
+/// member it would leave behind, wherever it stands, costs it the same
+/// whatever its sociability and however many others are around: a spouse,
+/// and each of its children too young to weigh a move, which go where
+/// their mother goes. It pulls, never forces: a gain worth more still
+/// wins. In per mille of a day of need, D30 placeholders named and
+/// explained in `content/needs.ron`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Family {
+    /// What leaving its spouse behind costs, a day.
+    pub spouse_permille: u32,
+    /// What leaving each of its young children behind costs, a day.
+    pub child_permille: u32,
+}
+
+impl Family {
+    /// The placeholders of `content/needs.ron` (D30).
+    #[must_use]
+    pub fn placeholders() -> Self {
+        Self {
+            spouse_permille: 250,
+            child_permille: 100,
+        }
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        if self.spouse_permille > 1000 || self.child_permille > 1000 {
+            return Err(ContentError::Needs(
+                "family: spouse_permille and child_permille 1000 at most (a day of need)",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Moving home as a consequence, never a goal (D50, D53, D56, amended 24
@@ -1882,7 +1927,8 @@ impl Needs {
         self.temperance.validate()?;
         self.reputation.validate()?;
         self.company.validate()?;
-        self.moving.validate()
+        self.moving.validate()?;
+        self.family.validate()
     }
 
     fn validate_reserve(&self) -> Result<(), ContentError> {

@@ -627,4 +627,20 @@
         spouse_day_percent: 80,
         see_percent_by_will: [(0, 20), (100, 80)],
     ),
+    // The family when a move is called at the fire (D56, amended 24
+    // November 2026; the project lead: "un poids de la famille à part de
+    // la compagnie", added to it, "s'il y a des enfants, il y a encore
+    // plus de poids"): each member a body would leave behind, wherever it
+    // stands, costs it a share of a day of need, whatever its sociability
+    // and however many others are around. Its company still counts its
+    // spouse as `company.spouse_counts`: a sociable body feels both.
+    // spouse_permille:  250 — leaving its spouse behind costs a quarter of
+    //                         a day of need a day;
+    // child_permille:   100 — and each of its children too young to weigh
+    //                         a move (under sixteen; they go where their
+    //                         mother goes) a tenth more.
+    family: (
+        spouse_permille: 250,
+        child_permille: 100,
+    ),
 )
