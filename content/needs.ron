@@ -511,13 +511,18 @@
     // join_percent: 100 — one joins first the call of whom it believes
     //             best at gathering, when that call is among its choices,
     //             with a chance of its credit in per cent;
+    // "live" (24 November 2026): who is believed to know where to live.
+    //             One who joined a move called at the fire (D56) gains
+    //             seen_gain in its caller when its own home trial there is
+    //             kept, and loses wear when it is given up; its trust in
+    //             the next call of that caller is that credit.
     // questions_per_night: 4 — one with no place to go asks whom it
     //             believes best "where is food?" and gets that one's best
     //             place: a telling to one, apart from the accounts' slots,
     //             four a fire at most. Its success, when it follows the
     //             answer, counts as a success of the one who answered.
     reputation: (
-        activities: ["explore", "gather"],
+        activities: ["explore", "gather", "live"],
         seen_gain: 20,
         heard_gain: 10,
         wear: 15,
@@ -542,10 +547,19 @@
     // enough_sociable:    6 — six for the most sociable (100), in a
     //                         straight line between; with fewer, what is
     //                         lacking falls in proportion, and more add
-    //                         nothing.
+    //                         nothing;
+    // spouse_counts:      3 — when a move is called at the fire (D56; the
+    //                         project lead, 24 November 2026: the couples
+    //                         stay as they are), a spouse counts as three
+    //                         companions in each listener's company,
+    //                         here if it stays, there if it said it goes:
+    //                         its absence is felt more, it pulls without
+    //                         forcing. Only in the move's balance; the
+    //                         night's company still counts anyone alike.
     company: (
         alone_permille: 1000,
         enough_loner: 2,
         enough_sociable: 6,
+        spouse_counts: 3,
     ),
 )

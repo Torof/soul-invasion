@@ -20,7 +20,9 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use sim::brain::{Act, Brains, GroupEnd, Mind, News, PlaceKey, Way, Ways, Why};
+use sim::brain::{
+    Act, Brains, GoalEnd, GoalTo, GroupEnd, Mind, News, PlaceKey, Unheard, Way, Ways, Weighed, Why,
+};
 use sim::content::{Content, Decisions, Fire, Trials};
 use sim::map::{Map, Pos, Terrain};
 use sim::memory::{Access, Record, RecordId};
@@ -294,7 +296,7 @@ pub struct Person {
     /// Times it drank.
     pub drinks: u32,
     /// Its days by what it did (D56, [`Act::ALL`]'s order).
-    pub habit: [u32; 5],
+    pub habit: [u32; ACTS],
     /// Places it found new (D56).
     pub habit_found: u32,
     /// Places it went to and found bare (D56).
@@ -493,11 +495,11 @@ pub struct FireYear {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HabitYear {
     /// Days, by [`Act::ALL`]'s index.
-    pub days: [u32; 5],
+    pub days: [u32; ACTS],
     /// Of them, the days it gathered a day of its need or more.
-    pub fed: [u32; 5],
+    pub fed: [u32; ACTS],
     /// Places it found, told at the fire to one who did not know them.
-    pub found: [u32; 5],
+    pub found: [u32; ACTS],
     /// Its will at the year's end (D50, amended); `None` if not read.
     pub will: Option<u8>,
     /// Its confidence in each activity at the year's end (D56), in the
@@ -521,7 +523,7 @@ pub struct DecisionYear {
     /// Evenings at which a full place was told.
     pub full_told: u32,
     /// What was said, by act ([`Act::ALL`]'s order).
-    pub said: [u32; 5],
+    pub said: [u32; ACTS],
     /// Choices passed over, the place's room taken.
     pub skipped: u32,
     /// Calls whose room was filled.
@@ -564,14 +566,14 @@ pub struct DecisionYear {
     /// Groups whose caller waited so.
     pub waited_groups: u32,
     /// Person-days by what was done ([`Act::ALL`]'s order).
-    pub days: [u32; 5],
+    pub days: [u32; ACTS],
     /// Places found: seen by one and told at the fire to a listener who
     /// did not know them, by what the finder did that day.
-    pub found: [u32; 5],
+    pub found: [u32; ACTS],
     /// Places gone to and found bare, by what was done.
-    pub bare: [u32; 5],
+    pub bare: [u32; ACTS],
     /// Days one gathered a day of its need or more, by what was done.
-    pub fed: [u32; 5],
+    pub fed: [u32; ACTS],
     /// Distance to the camp at noon, in tiles: mothers carrying an infant
     /// (sum, count), the other grown people (sum, count).
     pub distance: (u64, u32, u64, u32),
@@ -593,16 +595,16 @@ pub struct DecisionYear {
     pub review: [u32; 9],
     /// What was gathered, in per cent of a day of the need, summed over
     /// the days, by act ([`Act::ALL`]'s order).
-    pub need_percent: [u64; 5],
+    pub need_percent: [u64; ACTS],
     /// Who followed whom, by how (joined a call, asked, went where a
     /// finder told): (days, back fed, back empty, per cent of its need
     /// gathered summed).
     pub follows: [(u32, u32, u32, u64); 3],
     /// The days of those set aside that evening, by what they did
     /// ([`Act::ALL`]'s order): what becomes of them.
-    pub aside_days: [u32; 5],
+    pub aside_days: [u32; ACTS],
     /// Of them, the days they gathered a day of their need or more.
-    pub aside_fed: [u32; 5],
+    pub aside_fed: [u32; ACTS],
 }
 
 /// Who a tribe's living believed best at an activity at a year's end (D56,
@@ -628,7 +630,11 @@ fn act_index(act: Act) -> usize {
 }
 
 /// The words of an act, for the report's keys.
-pub const ACT_KEYS: [&str; 5] = ["alone", "called", "joined", "looked", "nothing"];
+/// How many acts there are ([`Act::ALL`]).
+pub const ACTS: usize = Act::ALL.len();
+
+/// The acts' keys in the data, [`Act::ALL`]'s order.
+pub const ACT_KEYS: [&str; ACTS] = ["alone", "called", "joined", "looked", "nothing", "moves"];
 
 /// What a tribe's living knew of the land at a year's end (D55).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -809,6 +815,53 @@ pub struct TrialEvent {
     pub will: Option<u8>,
     /// Whether the step was a kept way heard at the fire (D55).
     pub heard: bool,
+}
+
+/// A move called at the fire (D56, amended 24 November 2026), for the
+/// data: who called, where to, the gain told, and each listener's balance
+/// with its spouse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoveCall {
+    /// The day (from 1).
+    pub day: u64,
+    /// Who called.
+    pub caller: BodyId,
+    /// Its tribe.
+    pub tribe: u8,
+    /// The fire.
+    pub camp: Pos,
+    /// The new home.
+    pub to: Pos,
+    /// The gain told, in per mille of a day of need.
+    pub gain: i64,
+    /// How the caller fared at its old home by its notes.
+    pub caller_home_fare: Option<i64>,
+    /// The caller's spouse.
+    pub caller_spouse: Option<BodyId>,
+    /// Each listener, with its spouse then.
+    pub weighed: Vec<(Weighed, Option<BodyId>)>,
+    /// Each present who did not weigh it, why, and its spouse.
+    pub unheard: Vec<(BodyId, Unheard, Option<BodyId>)>,
+}
+
+/// A goal held over several days (D56, amended 24 November 2026), for
+/// the data: set, and how it ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GoalRow {
+    /// Whose.
+    pub body: BodyId,
+    /// Its tribe.
+    pub tribe: u8,
+    /// The day it was set (from 1).
+    pub day: u64,
+    /// Where to.
+    pub to: Pos,
+    /// How far, in tiles.
+    pub tiles: u32,
+    /// The load it set off with, in kilojoules.
+    pub load_kj: u64,
+    /// How it ended, and the day; `None` while held at the run's end.
+    pub end: Option<(GoalEnd, u64)>,
 }
 
 /// A home moved (D50), for the data (22 November 2026): by a trial, by a
@@ -1073,6 +1126,11 @@ pub struct Report {
     pub positions: Vec<(u64, Vec<(BodyId, Pos)>)>,
     /// The homes moved over the run, in order (D50).
     pub home_moves: Vec<HomeMove>,
+    /// The moves called at the fire, in order (D56, amended 24 November
+    /// 2026).
+    pub move_calls: Vec<MoveCall>,
+    /// The goals held, in the order set (D56, amended 24 November 2026).
+    pub goals: Vec<GoalRow>,
     /// The fire's counts by tribe and year (D55).
     pub fire: BTreeMap<(u8, u64), FireYear>,
     /// The seasons' measure by tribe and season from the first (D56, PR 1
@@ -1392,6 +1450,8 @@ pub fn run_watched(
     let mut presence: BTreeMap<(u8, u64), Presence> = BTreeMap::new();
     let mut positions: Vec<(u64, Vec<(BodyId, Pos)>)> = Vec::new();
     let mut home_moves: Vec<HomeMove> = Vec::new();
+    let mut move_calls: Vec<MoveCall> = Vec::new();
+    let mut goals: Vec<GoalRow> = Vec::new();
     let mut tally = FireTally {
         ticks_per_season: (calendar.ticks_per_day() * u64::from(calendar.days_per_year()) / 4)
             .max(1),
@@ -1756,6 +1816,57 @@ pub fn run_watched(
                     after,
                     ..
                 } => home_moves.push(home_move(*body, before.home, after.home, "copy")),
+                News::MoveCalled {
+                    caller,
+                    camp,
+                    to,
+                    gain,
+                    home_fare,
+                    weighed,
+                    unheard,
+                    ..
+                } => {
+                    let spouse = |b: BodyId| world.body(b).and_then(sim::Body::spouse);
+                    move_calls.push(MoveCall {
+                        day,
+                        caller: *caller,
+                        tribe: tribe_of(&people, *caller),
+                        camp: *camp,
+                        to: *to,
+                        gain: *gain,
+                        caller_home_fare: *home_fare,
+                        caller_spouse: spouse(*caller),
+                        weighed: weighed.iter().map(|w| (*w, spouse(w.body))).collect(),
+                        unheard: unheard
+                            .iter()
+                            .map(|&(b, why)| (b, why, spouse(b)))
+                            .collect(),
+                    });
+                }
+                News::GoalSet {
+                    body,
+                    to: GoalTo::Home(to),
+                    tiles,
+                    load_kj,
+                    ..
+                } => goals.push(GoalRow {
+                    body: *body,
+                    tribe: tribe_of(&people, *body),
+                    day,
+                    to: *to,
+                    tiles: *tiles,
+                    load_kj: *load_kj,
+                    end: None,
+                }),
+                News::GoalEnded { body, end, .. } => {
+                    if let Some(row) = goals
+                        .iter_mut()
+                        .rev()
+                        .find(|g| g.body == *body && g.end.is_none())
+                    {
+                        row.end = Some((*end, day));
+                    }
+                }
                 _ => {}
             }
             let (body, what, told, way, kind) = match &news {
@@ -1832,6 +1943,9 @@ pub fn run_watched(
                 | News::Barred { .. }
                 | News::Company { .. }
                 | News::Reached { .. }
+                | News::MoveCalled { .. }
+                | News::GoalSet { .. }
+                | News::GoalEnded { .. }
                 | News::Followed { .. } => continue,
                 News::Copied {
                     body,
@@ -2094,6 +2208,8 @@ pub fn run_watched(
         presence,
         positions,
         home_moves,
+        move_calls,
+        goals,
         fire: tally.fire,
         seasons: tally.seasons,
         bilan: tally.bilan,

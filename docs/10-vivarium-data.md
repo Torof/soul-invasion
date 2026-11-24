@@ -131,7 +131,7 @@ clock, the only field no seed decides.
 | `years[].knowledge.where` | The places themselves (since 23 November 2026, the lab's map): each place's key, its 16-tile square, and 1 when some living member saw it itself, 0 when known by hearsay only; in key order, the first 1,000 (`places` counts them all) | `[[x, y, seen], …]` |
 | `years[].decisions.evenings` | Evenings the tribe's fire said decisions (D56): two or more lay down at the camp | count |
 | `years[].decisions.full_told_evenings` | Of them, evenings someone told a place full (the look out is drawn half as often then) | count |
-| `years[].decisions.said.*` | What each present said at the fire, by what: `alone` (went alone to a place of its choice, D56), `called` (called others to a place it saw), `joined` (joined a call), `looked` (said it goes looking), `nothing` (no plan: absent from the fire, a child without its mother there, one carrying enough, or the decisions off) | count |
+| `years[].decisions.said.*` | What each present said at the fire, by what: `alone` (went alone to a place of its choice, D56), `called` (called others to a place it saw), `joined` (joined a call), `looked` (said it goes looking), `nothing` (no plan: absent from the fire, a child without its mother there, one carrying enough, or the decisions off), `moves` (called a move to the home its notebook graded best, D56 amended 24 November 2026; who joined it counts in `joined`) | count |
 | `years[].decisions.calls_full` | Calls that filled: as many joined as the caller saw room for | count |
 | `years[].decisions.calls_skipped` | Choices passed over because the place was already taken whole by a call or by those going alone | count |
 | `years[].decisions.absent` | Members of the camp not at its fire on an evening of decisions, summed over the evenings | person-evenings |
@@ -169,7 +169,7 @@ clock, the only field no seed decides.
 | `years[].decisions.review.said_nothing.no_place` | Who said nothing knowing no place bearing now | count |
 | `years[].decisions.review.said_nothing.all_taken` | Who said nothing, every place it weighed taken whole (after a question, if any) | count |
 | `years[].decisions.need_percent_by_act.*` | What was gathered on a day, in per cent of a day of the need, on average, by what had been said; `null` without a day | per cent |
-| `years[].decisions.review.set_aside_days.*` | What those set aside did that day, by act (`alone`, `called`, `joined`, `looked`, `nothing`) | person-days |
+| `years[].decisions.review.set_aside_days.*` | What those set aside did that day, by act (`alone`, `called`, `joined`, `looked`, `nothing`, `moves`) | person-days |
 | `years[].decisions.review.set_aside_fed_days.*` | Of them, the days they gathered a day of their need | person-days |
 | `years[].decisions.follows.*.days` | Days one followed another (D56, PR 1 ter): `joined` its call, `asked` it and went where it answered, `told` (went alone to a place another found and told) | person-days |
 | `years[].decisions.follows.*.fed` | Of them, back with a day of its need | person-days |
@@ -330,6 +330,13 @@ clock, the only field no seed decides.
 | `presence[].cell_tiles` | The side of a cell, 32 | tiles |
 | `presence[].cells` | Each cell where somebody stood at noon, with the count of living bodies there over the year's noons (one a day); cells at zero omitted; `cx = x / 32`, `cy = y / 32` | `[[cx, cy, count], …]` |
 | `positions` | Where every living body stood at noon, day by day (the lab's map of the movements): each day in order, with its living bodies in id order, each `[id, x, y]`; a body dead by noon is not there, so a day's list is the living of `people` that noon. One day a line in the file | `[[day, [[id, x, y], …]], …]` |
+| `move_calls[]` | Each move called at a fire (D56, amended 24 November 2026), in order | list |
+| `move_calls[].day`, `.tribe`, `.caller`, `.caller_spouse` | The day (from 1), the caller's tribe, the caller, its spouse then | |
+| `move_calls[].camp`, `.to`, `.tiles` | The fire, the new home, the distance between | `[x, y]`, tiles |
+| `move_calls[].gain_permille`, `.caller_home_fare_permille` | The gain the caller told, and how it fared at its old home, by its own notes | per mille of a day of need |
+| `move_calls[].weighed[]` | Each listener who spoke after it: `body`, `spouse`, `balance_permille` (the gain times `trust`, plus the company it would lack here less there), `trust` (0 to 100), `home_fare_permille` (its own home's grade, `null` if it never slept there), `joined` | |
+| `move_calls[].unheard[]` | Each present grown who did not weigh it: `body`, `spouse`, `why` (`before`: it spoke before the caller, its day said; `trial`: under a trial; `child`: under sixteen) | |
+| `goals[]` | Each goal held over several days (D56, amended 24 November 2026): `body`, `tribe`, `day` set, `to`, `tiles`, `load_kj` carried then, `end` (`arrived`, `load`, `hunger`, `thirst`, `dropped`, `null` while held at the end), `end_day` | |
 | `map.data_uri` | The page's picture of the map at the run's end, the same PNG: the terrain, the camps red, the living white, the dead black | `"data:image/png;base64,…"` |
 | `map.tiles_per_pixel` | The scale: one pixel is so many tiles a side (5 on the vivarium's world) | tiles |
 | `map.tiles` | The world's size | `[width, height]` tiles |

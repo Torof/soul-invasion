@@ -415,6 +415,12 @@ pub struct Company {
     /// How many others are enough for the most sociable (100); between
     /// the two, in a straight line.
     pub enough_sociable: u32,
+    /// How many companions a spouse counts as when a body weighs a move
+    /// called at the fire (D56, the project lead, 24 November 2026): its
+    /// absence is felt more, so a spouse who goes pulls the other without
+    /// forcing it. Absent: 1, a spouse like anyone.
+    #[serde(default = "one")]
+    pub spouse_counts: u32,
 }
 
 impl Default for Company {
@@ -424,6 +430,7 @@ impl Default for Company {
             alone_permille: 0,
             enough_loner: 2,
             enough_sociable: 6,
+            spouse_counts: 1,
         }
     }
 }
@@ -436,6 +443,7 @@ impl Company {
             alone_permille: 1000,
             enough_loner: 2,
             enough_sociable: 6,
+            spouse_counts: 3,
         }
     }
 
@@ -450,6 +458,14 @@ impl Company {
     /// need alone, nothing once enough are there, in proportion between.
     #[must_use]
     pub fn lacking_permille(&self, sociable: u8, others: u32) -> u64 {
+        self.lacking_hundredths(sociable, u64::from(others) * 100)
+    }
+
+    /// [`Company::lacking_permille`] with the others counted in
+    /// hundredths of a body: a spouse weighs several
+    /// ([`Company::spouse_counts`]).
+    #[must_use]
+    pub fn lacking_hundredths(&self, sociable: u8, others: u64) -> u64 {
         let s = u64::from(sociable.min(100));
         let need = u64::from(self.alone_permille) * s / 100;
         // Enough, in hundredths of a body.
@@ -465,7 +481,7 @@ impl Company {
         if enough == 0 {
             return 0;
         }
-        let short = enough.saturating_sub(u64::from(others) * 100);
+        let short = enough.saturating_sub(others);
         need * short / enough
     }
 
@@ -475,8 +491,10 @@ impl Company {
                 "company: alone_permille 1000 at most (a day of need); enough_loner at least 1",
             ));
         }
-        if self.enough_loner > 1000 || self.enough_sociable > 1000 {
-            return Err(ContentError::Needs("company: enough 1000 at most"));
+        if self.enough_loner > 1000 || self.enough_sociable > 1000 || self.spouse_counts > 1000 {
+            return Err(ContentError::Needs(
+                "company: enough and spouse_counts 1000 at most",
+            ));
         }
         Ok(())
     }
@@ -726,7 +744,7 @@ impl Default for Temperance {
 
 /// The activities a confidence may be held for (D56), as the content
 /// names them.
-pub const ACTIVITIES: [&str; 3] = ["explore", "gather", "stay"];
+pub const ACTIVITIES: [&str; 4] = ["explore", "gather", "stay", "live"];
 
 impl Temperance {
     /// The placeholders of `content/needs.ron` (D30).
@@ -901,7 +919,7 @@ impl Reputation {
     #[must_use]
     pub fn placeholders() -> Self {
         Self {
-            activities: vec!["explore".to_owned(), "gather".to_owned()],
+            activities: vec!["explore".to_owned(), "gather".to_owned(), "live".to_owned()],
             seen_gain: 20,
             heard_gain: 10,
             wear: 15,
@@ -936,7 +954,7 @@ impl Reputation {
                 .any(|&g| g > 100)
         {
             return Err(ContentError::Needs(
-                "reputation: activities among explore, gather, stay; gains and wear 100 at most",
+                "reputation: activities among explore, gather, stay, live; gains and wear 100 at most",
             ));
         }
         Ok(())
