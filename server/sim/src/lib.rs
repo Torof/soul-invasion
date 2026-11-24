@@ -677,6 +677,12 @@ impl Body {
         self.food_g
     }
 
+    /// Grams of loose food its arms alone hold (D57): `hands_g` by its
+    /// size, without the containers.
+    pub fn arms_g(&self, movement: &Movement) -> u32 {
+        self.food_capacity_g(movement).saturating_sub(self.holds_g)
+    }
+
     /// The gesture it is busy at, if any (D57).
     pub fn making(&self) -> Option<&hands::Making> {
         self.making.as_ref()

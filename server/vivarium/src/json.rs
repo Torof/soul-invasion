@@ -27,7 +27,7 @@ use crate::{
 };
 
 /// The top-level keys, in the order they are written.
-const ORDER: [&str; 23] = [
+const ORDER: [&str; 24] = [
     "meta",
     "years",
     "seasons",

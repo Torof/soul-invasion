@@ -142,6 +142,11 @@ pub struct Handwork {
     /// mastery, in its own body (the lead's knowledge model, 22 November
     /// 2026: no levels, practised gestures).
     pub practised: Vec<(Deed, u32)>,
+    /// The kinds of thing that once served it (the lead, 25 November
+    /// 2026: "c'est propre d'un cerveau"): a tool whose cut gave
+    /// something, a container that held food beyond its arms. Its own
+    /// memory of use, no perception: such a thing is kept, never let go.
+    pub served: Vec<u16>,
 }
 
 impl Handwork {
@@ -152,6 +157,19 @@ impl Handwork {
             .iter()
             .find(|(d, _)| *d == deed)
             .map_or(0, |(_, n)| *n)
+    }
+
+    /// Whether a thing of `material` once served it.
+    #[must_use]
+    pub fn served(&self, material: u16) -> bool {
+        self.served.contains(&material)
+    }
+
+    /// A thing of `material` served it.
+    fn serve(&mut self, material: u16) {
+        if !self.served.contains(&material) {
+            self.served.push(material);
+        }
     }
 
     /// Whether it left `thing` alone today.
@@ -408,6 +426,19 @@ pub(super) fn hands_turn(
     }
     let trying = mind.trial.is_some_and(|t| t.way == Way::Hands);
     let have = carried(world, rules, id);
+    // A container serves when it holds food beyond what the arms alone
+    // would: the body lives it, nothing tells it.
+    if body.food_g() > body.arms_g(&rules.movement) {
+        for &(_, m) in &have {
+            if rules
+                .materials
+                .get(usize::from(m))
+                .is_some_and(|m| m.holds_g > 0)
+            {
+                mind.handwork.serve(m);
+            }
+        }
+    }
     // What its hands no longer know is let go, one thing a thought: a
     // trial given up leaves what it brought.
     if !trying {
@@ -418,7 +449,11 @@ pub(super) fn hands_turn(
                 .get(usize::from(m))
                 .is_some_and(|m| m.food.is_some())
         };
-        if let Some(&(item, _)) = have.iter().find(|(_, m)| !food(*m) && !keep.contains(m)) {
+        let served = &mind.handwork;
+        if let Some(&(item, _)) = have
+            .iter()
+            .find(|(_, m)| !food(*m) && !keep.contains(m) && !served.served(*m))
+        {
             mind.handwork.to = None;
             return HandsTurn::Decide(Some(Decision {
                 intention: Intention::Drop { body: id, item },
@@ -728,6 +763,10 @@ fn resolve(world: &World, id: BodyId, mind: &mut Mind) {
     if !worked {
         return;
     }
+    // A tool whose cut gave something served it (25 November 2026).
+    if deed.gesture == Gesture::Cut && deed.with != NOTHING {
+        mind.handwork.serve(deed.with);
+    }
     match mind.handwork.practised.iter_mut().find(|(d, _)| *d == deed) {
         Some((_, n)) => *n += 1,
         None => mind.handwork.practised.push((deed, 1)),
@@ -923,6 +962,62 @@ mod tests {
             },
             "the pebble, not the food"
         );
+    }
+
+    #[test]
+    fn a_flint_that_cut_is_kept_though_its_hands_know_no_deed() {
+        let (rules, mut world, mut brains, id, birch) = by_a_birch();
+        let here = world.body(id).unwrap().pos();
+        let flint = picked(&mut world, &rules, id, "flint");
+        let mut idle = brains.minds.get(&id).unwrap().clone();
+        let HandsTurn::Decide(Some(decision)) =
+            hands_turn(&world, &rules, (id, here), &mut idle, 7)
+        else {
+            panic!("a deed");
+        };
+        assert_eq!(
+            decision.intention,
+            Intention::Drop {
+                body: id,
+                item: flint
+            },
+            "a flint that never served is let go"
+        );
+        // The same body, its last cut with the flint having given bark.
+        let mind = brains.minds.get_mut(&id).unwrap();
+        let cut = Deed {
+            gesture: Gesture::Cut,
+            on: birch,
+            with: material(&rules, "flint"),
+        };
+        mind.handwork.pending = Some((cut, flint));
+        mind.handwork.done = Some(true);
+        let turn = hands_turn(&world, &rules, (id, here), mind, 7);
+        assert!(mind.handwork.served(material(&rules, "flint")));
+        assert!(mind.ways.hands.is_empty(), "served, not learnt: no trial");
+        assert_eq!(turn, HandsTurn::Free, "the flint stays in its hands");
+    }
+
+    #[test]
+    fn a_container_that_held_food_beyond_the_arms_served() {
+        let (rules, mut world, mut brains, id, _) = by_a_birch();
+        let here = world.body(id).unwrap().pos();
+        picked(&mut world, &rules, id, "folded_birch_bark");
+        let container = material(&rules, "folded_birch_bark");
+        let mind = brains.minds.get_mut(&id).unwrap();
+        let _ = hands_turn(&world, &rules, (id, here), mind, 7);
+        assert!(!mind.handwork.served(container), "empty, it served nothing");
+        let berries = world.spawn_item("berries", 3000, here);
+        let mut events = Vec::new();
+        world.queue(Intention::PickUp {
+            body: id,
+            item: berries,
+        });
+        world.advance(1, &rules, &mut events);
+        assert!(world.body(id).unwrap().food_g() > 1000, "{events:?}");
+        let mind = brains.minds.get_mut(&id).unwrap();
+        let _ = hands_turn(&world, &rules, (id, here), mind, 7);
+        assert!(mind.handwork.served(container));
     }
 
     #[test]

@@ -400,6 +400,7 @@ clock, the only field no seed decides.
 | `hands.tribes[].years[].age_year` | The age-year | from 1 |
 | `hands.tribes[].years[].living` | Living past infancy at its end | count |
 | `hands.tribes[].years[].carriers` | Of them, carrying a container | count |
+| `hands.tribes[].years[].served_carriers` | Of the living, carrying a thing that once served them (a flint whose cut gave something, a container that held food beyond the arms), kept by their memory of use (D57, 25 November 2026) | count |
 | `hands.tribes[].years[].made` | Containers made | count |
 | `hands.tribes[].years[].remade` | Of them, remakes after a tear | count |
 | `hands.tribes[].years[].torn` | Containers torn | count |

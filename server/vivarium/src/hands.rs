@@ -23,6 +23,9 @@ pub struct HandsYear {
     pub living: u32,
     /// Of them, carrying a container.
     pub carriers: u32,
+    /// Of them, carrying a thing that once served them (a flint that cut,
+    /// a container that held food), kept as their own memory of use.
+    pub served_carriers: u32,
     /// Containers made in the age-year.
     pub made: u32,
     /// Of them, by a body whose container had torn before: remakes.
@@ -357,13 +360,22 @@ impl HandsProbe {
             if world.is_infant(b, content) || b.condition().vitality.points() == 0 {
                 continue;
             }
+            let mut served = false;
             if let Some(mind) = brains.mind(b.id()) {
                 for deed in mind.ways().hands.iter() {
                     *self.known.entry(deed_name(content, deed)).or_default() += 1;
                 }
+                served = b.inventory().any(|i| {
+                    world
+                        .item(i)
+                        .and_then(|i| content.materials.iter().position(|m| m.id == i.material()))
+                        .and_then(|m| u16::try_from(m).ok())
+                        .is_some_and(|m| mind.handwork().served(m))
+                });
             }
             let with = carries_container(world, content, b);
             let y = self.year(tribe(people, b.id()), age_year);
+            y.served_carriers += u32::from(served);
             y.living += 1;
             y.carriers += u32::from(with);
         }
@@ -492,6 +504,7 @@ fn year_json(ay: u64, y: &HandsYear, changes: &[(u64, u8)], t: u8, per: u64) -> 
         "age_year": ay,
         "living": y.living,
         "carriers": y.carriers,
+        "served_carriers": y.served_carriers,
         "made": y.made,
         "remade": y.remade,
         "torn": y.torn,
