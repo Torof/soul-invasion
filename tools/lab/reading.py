@@ -37,7 +37,6 @@ HOW_FR = {"trial": "essai", "copy": "copie", "reverted": "abandon"}
 TRIBE_COLOR = {"A": "#2a78d6", "B": "#eb6834"}   # blue and orange, the lab 5 page's --tA and --tB
 OTHER_COLORS = ["#2e8b57", "#8e44ad", "#b7950b", "#444"]
 SIDE_COLOR = {"a": "#1f6f8b", "b": "#c2571a"}       # the two sides of a comparison
-TRIALS_COLOR = {True: "#c2571a", False: "#1f6f8b"}  # orange with trials, blue without
 BIRTH_COLOR = "#3a8f4a"
 ALIVE_COLOR, DEAD_COLOR, KEPT_COLOR = "#2b7a3d", "#b3261e", "#c2571a"
 # Deaths by want are the brain's figure (22 November 2026); the rest is the background curve (D49):
@@ -81,6 +80,9 @@ def fmt(n):
         return "-"
     if isinstance(n, float):
         return f"{n:,.1f}".replace(",", " ").replace(".", ",")
+    if not isinstance(n, int):
+        # A word among numbers (a season's name in a factor's pairs).
+        return str(n)
     return f"{n:,}".replace(",", " ")
 
 
@@ -121,11 +123,11 @@ def season_of(d, day):
 
 
 def day_fr(d, day):
-    """`an 3, printemps, jour 112` for a day of the run; `-` for None."""
+    """`cycle 3, printemps, journée 112` for a day of the run; `-` for None."""
     if day is None:
         return "-"
     yd = year_days(d)
-    return f"an {(int(day) - 1) // yd + 1}, {SEASON_FR[season_of(d, day)]}, jour {fmt(int(day))}"
+    return f"cycle {(int(day) - 1) // yd + 1}, {SEASON_FR[season_of(d, day)]}, journée {fmt(int(day))}"
 
 
 def age_days(d, p, at_day=None):
@@ -144,12 +146,12 @@ def age_days(d, p, at_day=None):
 
 
 def age_fr(d, days_old):
-    """`32 ans`, `1 an`, `23 jours` (under a year), in age-years of `days_per_age_year` (D09)."""
+    """`32 ans`, `1 an`, `23 journées` (under a year), in age-years of `days_per_age_year` (D09)."""
     if days_old is None:
         return "-"
     yd = age_year_days(d)
     if days_old < yd:
-        return plural(days_old, "jour")
+        return plural(days_old, "journée")
     return plural(days_old // yd, "an")
 
 
@@ -364,7 +366,7 @@ def settings_fr(d):
         parts.append(f"âges {s['adult_years'][0]}-{s['adult_years'][1]}")
     days = s.get("days") or 0
     dpy = (d.get("meta") or {}).get("days_per_year") or 50
-    parts.append(f"{fmt(days)} jours ({days / dpy:g} an{'s' if days >= 2 * dpy else ''})")
+    parts.append(f"{fmt(days)} journées ({days / dpy:g} cycle{'s' if days >= 2 * dpy else ''})")
     parts.append(f"graine {s.get('seed', '?')}")
     parts.append("avec épreuves" if s.get("trials", True) else "sans épreuves (témoin)")
     if "fire" in s:
@@ -470,7 +472,7 @@ class Chart:
                 w0, w1 = max(self.xlo, yr * yd + math.ceil(yd * 3 / 4) + 1), min(self.xhi, (yr + 1) * yd)
                 if w1 > w0:
                     g.append(f'<rect class="winter" x="{self.x(w0):.1f}" y="{self.T}" width="{self.x(w1) - self.x(w0):.1f}" '
-                             f'height="{self.H - self.B - self.T}" fill="#dde6ee"><title>hiver de l’an {yr + 1}</title></rect>')
+                             f'height="{self.H - self.B - self.T}" fill="#dde6ee"><title>hiver du cycle {yr + 1}</title></rect>')
                 yr += 1
         # grid and y axis
         for v in y_ticks(self.ytop):
@@ -533,7 +535,7 @@ def year_marks(d, tribe_index, curve):
         if yr and yr != last:
             xs.append(day)
             ys.append(v)
-            ts.append(f"an {yr}, jour {day} : {fmt(v)}")
+            ts.append(f"cycle {yr}, journée {day} : {fmt(v)}")
             last = yr
     return xs, ys, ts
 
@@ -547,7 +549,7 @@ def population_chart(d, label=None, color_of=None, dash=False, chart=None, hover
     ts = tribes(d)
     top = max((max(v) for v in by_tribe if v), default=1)
     if chart is None:
-        chart = Chart(0, max(days[-1] if days else 1, year_days(d)), top, "années", "vivants", year_days(d),
+        chart = Chart(0, max(days[-1] if days else 1, year_days(d)), top, "cycles des saisons", "vivants", year_days(d),
                       size=(1000, 260) if wide else None, winters=wide)
         if wide:
             chart.legend_item("#dde6ee", "hivers")
@@ -571,7 +573,7 @@ def reserve_chart(d, label=None, color_of=None, dash=False, chart=None):
     by_tribe = c.get("reserve_by_tribe") or []
     ts = tribes(d)
     if chart is None:
-        chart = Chart(0, max(days[-1] if days else 1, year_days(d)), 100, "années", "réserve de graisse, % du plein",
+        chart = Chart(0, max(days[-1] if days else 1, year_days(d)), 100, "cycles des saisons", "réserve de graisse, % du plein",
                       year_days(d), pct=True)
     for i, vals in enumerate(by_tribe):
         t = ts[i] if i < len(ts) else f"tribu {i + 1}"
@@ -599,7 +601,7 @@ def births_deaths_chart(d, label=None, chart=None, slot=(0, 1), tag=""):
     n_years = max(per_year, default=1)
     top = max([e["births"] for e in per_year.values()] + [sum(e["deaths"].values()) for e in per_year.values()] + [1])
     if chart is None:
-        chart = Chart(0, n_years * yd, top, "années", "naissances et morts dans l'année", yd)
+        chart = Chart(0, n_years * yd, top, "cycles des saisons", "naissances et morts dans le cycle", yd)
         chart.legend_item(BIRTH_COLOR, "naissances")
         for c in cs:
             chart.legend_item(CAUSE_COLOR.get(c, "#333"), f"morts : {cause_fr(c)}")
@@ -614,46 +616,14 @@ def births_deaths_chart(d, label=None, chart=None, slot=(0, 1), tag=""):
         w = yd / n
         pre = f"{label} · " if label else ""
         chart.bar(x0 + w * 0.08, x0 + w * 0.48, 0, e["births"], BIRTH_COLOR,
-                  f"{pre}an {yr} : {e['births']} naissance{'s' if e['births'] > 1 else ''}")
+                  f"{pre}cycle {yr} : {e['births']} naissance{'s' if e['births'] > 1 else ''}")
         base = 0
         for c in cs:
             v = e["deaths"].get(c, 0)
             if v:
                 chart.bar(x0 + w * 0.52, x0 + w * 0.92, base, base + v, CAUSE_COLOR.get(c, "#333"),
-                          f"{pre}an {yr} : {v} mort{'s' if v > 1 else ''} de {cause_fr(c)}", stroke="#fff")
+                          f"{pre}cycle {yr} : {v} mort{'s' if v > 1 else ''} de {cause_fr(c)}", stroke="#fff")
                 base += v
-    return chart
-
-
-def want_chart(d, wide=False):
-    """Per year and per tribe, a small bar stacked in two: the deaths by want (red) under the
-    background deaths (grey); the bar's outline is the tribe's colour. `wide`: the run page's form,
-    the same width and x scale as the population curve above it."""
-    yd = year_days(d)
-    ts = tribes(d)
-    per = {}
-    for y in years_of(d):
-        dd = y.get("deaths") or {}
-        want = sum(n for c, n in dd.items() if is_want(c))
-        per[(y.get("year", 0), y.get("tribe"))] = (want, sum(dd.values()) - want, dd)
-    n_years = max((yr for yr, _ in per), default=1)
-    days = (d.get("curves") or {}).get("days") or []
-    top = max([w + b for w, b, _ in per.values()] + [1])
-    chart = Chart(0, max(days[-1] if days else 1, yd), top, "années", "morts dans l’année", yd,
-                  size=(1000, 150) if wide else None, winters=wide)     # the population curve's x scale
-    n = max(1, len(ts))
-    for (yr, t), (want, background, dd) in sorted(per.items(), key=lambda kv: (kv[0][0], str(kv[0][1]))):
-        i = ts.index(t) if t in ts else 0
-        x0 = (yr - 1) * yd + i * yd / n
-        w = yd / n
-        words = ", ".join(f"{cause_fr(c)} {fmt(v)}" for c, v in dd.items() if v)
-        title = f"tribu {t}, an {yr} : {plural(want, 'mort')} de manque, {fmt(background)} de fond" + (f" ({words})" if words else "")
-        stroke = tribe_color(t, i)
-        x1 = min(x0 + w * 0.88, chart.xhi)       # a last year cut short by the run's end
-        if want:
-            chart.bar(x0 + w * 0.12, x1, 0, want, WANT_COLOR, title, stroke=stroke)
-        if background:
-            chart.bar(x0 + w * 0.12, x1, want, want + background, BACKGROUND_COLOR, title, stroke=stroke)
     return chart
 
 
@@ -665,7 +635,7 @@ def kept_chart(d, label=None, color_of=None, chart=None, slot=(0, 1)):
     n_years = max((y["year"] for y in rows), default=1)
     top = max([y.get("kept") or 0 for y in rows] + [1])
     if chart is None:
-        chart = Chart(0, n_years * yd, top, "années", "essais gardés dans l'année", yd)
+        chart = Chart(0, n_years * yd, top, "cycles des saisons", "essais gardés dans le cycle", yd)
     else:
         chart.ytop = nice_max(max(chart.ytop, top))
         chart.y = Scale(0, chart.ytop, chart.H - chart.B, chart.T)
@@ -678,7 +648,7 @@ def kept_chart(d, label=None, color_of=None, chart=None, slot=(0, 1)):
         x0 = (y["year"] - 1) * yd + k * yd / n + i * w
         pre = f"{label} · " if label else ""
         chart.bar(x0 + w * 0.1, x0 + w * 0.9, 0, y.get("kept") or 0, color,
-                  f"{pre}tribu {y['tribe']}, an {y['year']} : {y.get('trials') or 0} essais, "
+                  f"{pre}tribu {y['tribe']}, cycle {y['year']} : {y.get('trials') or 0} essais, "
                   f"{y.get('kept') or 0} gardés, {y.get('copied') or 0} copiés")
     for i, t in enumerate(ts):
         chart.legend_item(color_of(t, i) if color_of else tribe_color(t, i), f"{label + ' · ' if label else ''}tribu {t}")
@@ -699,7 +669,7 @@ document.querySelectorAll('[data-map]').forEach(m => {
   const sampleAt = day => { let k = -1; for (let i = 0; i < pos.length && pos[i][0] <= day; i++) k = i; return k; };
   function show(day) {
     const year = Math.floor((day - 1) / dpy) + 1, doy = (day - 1) % dpy;
-    when.textContent = 'an ' + year + ', ' + seasons[Math.min(3, Math.floor(doy * 4 / dpy))] + ', jour ' + day;
+    when.textContent = 'cycle ' + year + ', ' + seasons[Math.min(3, Math.floor(doy * 4 / dpy))] + ', journée ' + day;
     deaths.forEach(g => g.style.display = +g.dataset.death <= day ? 'inline' : 'none');
     const passed = day >= days ? data.lastYear : year - 1;
     camps.forEach(c => c.style.display = +c.dataset.campYear <= passed ? 'inline' : 'none');
@@ -714,7 +684,7 @@ document.querySelectorAll('[data-map]').forEach(m => {
       for (const [id, x, y] of pos[k][1]) {
         const c = colour(id);
         if (trail[id]) out += `<polyline fill="none" stroke="${c}" stroke-opacity=".45" stroke-width="${r / 3}" points="${trail[id].join(' ')} ${x},${y}"/>`;
-        out += `<circle cx="${x}" cy="${y}" r="${r}" fill="${c}" stroke="#fff" stroke-width="${r / 4}"><title>${data.names[id] || id}, jour ${pos[k][0]}</title></circle>`;
+        out += `<circle cx="${x}" cy="${y}" r="${r}" fill="${c}" stroke="#fff" stroke-width="${r / 4}"><title>${data.names[id] || id}, journée ${pos[k][0]}</title></circle>`;
       }
     }
     dots.innerHTML = out;
@@ -774,7 +744,7 @@ def map_svg(d, uid, side="", show_deaths=True):
             for cx, cy, n in p.get("cells") or []:
                 o = 0.12 + 0.75 * min(1, n / peak)
                 parts.append(f'<rect x="{cx * cell}" y="{cy * cell}" width="{cell}" height="{cell}" fill="{color}" '
-                             f'fill-opacity="{o:.2f}"><title>tribu {h(p["tribe"])}, an {yr} : {n} présence(s) à midi</title></rect>')
+                             f'fill-opacity="{o:.2f}"><title>tribu {h(p["tribe"])}, cycle {yr} : {n} présence(s) à midi</title></rect>')
         parts.append("</g>")
     # the camps' path, one a tribe: the whole path light, a marker at every year's end
     for i, t in enumerate(ts):
@@ -789,7 +759,7 @@ def map_svg(d, uid, side="", show_deaths=True):
         for yr, (x, y) in pts:
             parts.append(f'<g data-camp-year="{yr}"><rect x="{x - fs / 3:.1f}" y="{y - fs / 3:.1f}" width="{fs / 1.5:.1f}" height="{fs / 1.5:.1f}" '
                          f'transform="rotate(45 {x} {y})" fill="{color}" stroke="#fff" stroke-width="{fs / 10:.2f}">'
-                         f'<title>tribu {h(t)}, {"départ" if yr == 0 else f"fin de l’an {yr}"} : camp en ({x}, {y})</title></rect>'
+                         f'<title>tribu {h(t)}, {"départ" if yr == 0 else f"fin du cycle {yr}"} : camp en ({x}, {y})</title></rect>'
                          f'<text x="{x + fs * 0.45:.1f}" y="{y - fs * 0.3:.1f}" font-size="{fs:.1f}" fill="{color}" '
                          f'stroke="#fff" stroke-width="{fs / 6:.2f}" paint-order="stroke" font-weight="700">{yr}</text></g>')
     # the deaths' places, each shown from its day
@@ -812,17 +782,17 @@ def map_svg(d, uid, side="", show_deaths=True):
             "names": {str(p.get("id")): person_fr(p.get("name", p.get("id"))) for p in d.get("people", [])}}
     payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
     who = ", ".join(f'<span style="color:{tribe_color(t, i)}">● tribu {h(t)}</span>' for i, t in enumerate(ts))
-    legend = (f"{who} : les vivants ce jour-là, avec leur trace des derniers jours · × un mort, là où il est tombé · "
-              f"◆ le camp à la fin de chaque année (le chiffre est l’année), relié par son chemin.")
+    legend = (f"{who} : les vivants cette journée-là, avec leur trace des dernières journées · × un mort, là où il est tombé · "
+              f"◆ le camp à la fin de chaque cycle (le chiffre est le cycle), relié par son chemin.")
     if not pos:
-        legend = (f'<b>{NO_POSITIONS}</b> : les vivants ne sont pas dessinés jour par jour (le vivarium récent les écrit) ; '
-                  f'le curseur fait défiler le camp et les morts au fil des jours. {who} · × un mort, là où il est tombé · '
-                  f'◆ le camp à la fin de chaque année (le chiffre est l’année).')
+        legend = (f'<b>{NO_POSITIONS}</b> : les vivants ne sont pas dessinés journée après journée (le vivarium récent les écrit) ; '
+                  f'le curseur fait défiler le camp et les morts au fil des journées. {who} · × un mort, là où il est tombé · '
+                  f'◆ le camp à la fin de chaque cycle (le chiffre est le cycle).')
     controls = (f'<p class="timeline"><button type="button" data-play>▶ Lire</button> '
-                f'<input type="range" min="1" max="{days}" value="{days}" step="1" aria-label="jour"> '
+                f'<input type="range" min="1" max="{days}" value="{days}" step="1" aria-label="journée"> '
                 f'<span class="when">{h(day_fr(d, days))}</span></p>'
                 f'<p class="muted small"><label><input type="checkbox" data-heat{"" if pos else " checked"}> '
-                f'Montrer aussi où ils ont le plus été dans l’année affichée (plus foncé : plus souvent)</label></p>')
+                f'Montrer aussi où ils ont le plus été dans le cycle affichée (plus foncé : plus souvent)</label></p>')
     return (f'<div class="mapbox" data-map="{h(uid)}">{"".join(parts)}{controls}'
             f'<p class="legend">{legend}</p><script type="application/json">{payload}</script></div>')
 
@@ -861,7 +831,7 @@ def culture_line(d, tribe):
     """The tribe's culture at the end, in one sentence, from the last year's ways."""
     ys = years_of(d, tribe)
     if not ys:
-        return "aucune année lue"
+        return "aucun cycle lu"
     last = ys[-1]
     w = last.get("ways")
     alive = last.get("population")
@@ -935,7 +905,7 @@ def techniques_html(d):
 
 
 def kept_list(d, tribe, limit=200):
-    """`jour 212, personne 14 cherche plus loin, garde` for every kept trial, by day."""
+    """`journée 212, personne 14 cherche plus loin, garde` for every kept trial, by day."""
     items = []
     for p in d.get("people", []):
         if p.get("tribe") != tribe:
@@ -946,8 +916,8 @@ def kept_list(d, tribe, limit=200):
     items.sort(key=lambda x: x[0])
     if not items:
         return '<p class="muted">aucun essai gardé</p>'
-    li = "".join(f"<li>jour {day}, {h(person_fr(who))} : {h(kind_fr(t.get('step', '?')))}, garde "
-                 f"<span class=muted>({h(t.get('words', ''))}, essayé le jour {t.get('day')})</span></li>"
+    li = "".join(f"<li>journée {day}, {h(person_fr(who))} : {h(kind_fr(t.get('step', '?')))}, garde "
+                 f"<span class=muted>({h(t.get('words', ''))}, essayé la journée {t.get('day')})</span></li>"
                  for day, who, t in items[:limit])
     more = f'<li class=muted>… et {len(items) - limit} de plus</li>' if len(items) > limit else ""
     return f"<ol class=kept>{li}{more}</ol>"
@@ -987,21 +957,21 @@ def place_fr(place):
 
 
 def record_fr(d, r):
-    """A record in words: `un lieu (1952, 1936), vu le jour 200 par personne 14`, `un essai gardé : la réserve avant le repos`."""
+    """A record in words: `un lieu (1952, 1936), vu la journée 200 par personne 14`, `un essai gardé : la réserve avant le repos`."""
     if r is None:
         return "un souvenir oublié"
     kind = r.get("kind")
     if kind == "place":
         states = r.get("states") or []
         what = "nu" if not states else f"{len(states)} sorte{'s' if len(states) > 1 else ''} de nourriture"
-        return f"un lieu {place_fr(r.get('place'))}, {what}, vu le jour {r.get('day')}"
+        return f"un lieu {place_fr(r.get('place'))}, {what}, vu la journée {r.get('day')}"
     if kind == "water":
-        return f"de l'eau trouvée le jour {r.get('day')}"
+        return f"de l'eau trouvée la journée {r.get('day')}"
     if kind == "trial":
         verdict = "gardé" if r.get("kept") else "abandonné"
-        return f"un essai {verdict} le jour {r.get('day')} : {WAY_FR.get(r.get('way'), r.get('way') or '?')} {'en plus' if r.get('up') else 'en moins'}"
+        return f"un essai {verdict} la journée {r.get('day')} : {WAY_FR.get(r.get('way'), r.get('way') or '?')} {'en plus' if r.get('up') else 'en moins'}"
     if kind == "night":
-        return f"une nuit du jour {r.get('day')}, {r.get('present')} présents"
+        return f"une nuit de la journée {r.get('day')}, {r.get('present')} présents"
     return f"un souvenir ({kind})"
 
 
@@ -1012,25 +982,25 @@ def knowledge_chart(d):
     rows = years_of(d)
     n_years = max((y["year"] for y in rows), default=1)
     top = max([(y.get("knowledge") or {}).get("places") or 0 for y in rows] + [1])
-    chart = Chart(0, n_years * yd, top, "années", "lieux connus par la tribu", yd)
+    chart = Chart(0, n_years * yd, top, "cycles des saisons", "lieux connus par la tribu", yd)
     stored = Chart(0, n_years * yd, max([((y.get("food") or {}).get("stored_kj") or {}).get("noon_mean") or 0 for y in rows] + [1]),
-                   "années", "nourriture portée à midi, moyenne de l'an (kJ)", yd)
+                   "cycles des saisons", "nourriture portée à midi, moyenne du cycle (kJ)", yd)
     for i, t in enumerate(ts):
         mine = [y for y in rows if y["tribe"] == t]
         xs = [y["year"] * yd for y in mine]
         color = tribe_color(t, i)
         ks = [(y.get("knowledge") or {}).get("places") for y in mine]
         chart.line(xs, ks, color, f"tribu {t}")
-        chart.hover(xs, ks, [f"tribu {t}, an {y['year']} : {fmt((y.get('knowledge') or {}).get('places'))} lieux, "
+        chart.hover(xs, ks, [f"tribu {t}, cycle {y['year']} : {fmt((y.get('knowledge') or {}).get('places'))} lieux, "
                              f"{fmt((y.get('knowledge') or {}).get('heard_only'))} par ouï-dire seul, "
                              f"{fmt((y.get('knowledge') or {}).get('accesses_heard'))} souvenirs entendus sur {fmt((y.get('knowledge') or {}).get('accesses'))}"
                              for y in mine], color)
         ss = [((y.get("food") or {}).get("stored_kj") or {}).get("noon_mean") for y in mine]
         stored.line(xs, ss, color, f"tribu {t}")
-        stored.hover(xs, ss, [f"tribu {t}, an {y['year']} : {fmt(s)} kJ portés à midi en moyenne, "
+        stored.hover(xs, ss, [f"tribu {t}, cycle {y['year']} : {fmt(s)} kJ portés à midi en moyenne, "
                               f"minimum {fmt(((y.get('food') or {}).get('stored_kj') or {}).get('noon_min'))}, fin {fmt((y.get('food') or {}).get('end_kj'))}"
                               for y, s in zip(mine, ss)], color)
-    return chart.svg("lieux connus par an"), stored.svg("nourriture portée à midi par an")
+    return chart.svg("lieux connus par cycle"), stored.svg("nourriture portée à midi par cycle")
 
 
 def knowledge_body(d):
@@ -1046,9 +1016,9 @@ def knowledge_body(d):
                      (fmt_thin(k.get("places")), k.get("places")), (fmt_thin(k.get("heard_only")), k.get("heard_only")),
                      (fmt_thin(fi.get("dispelled")), fi.get("dispelled")), (heard, k.get("accesses_heard")),
                      (fmt_thin(fi.get("nights")), fi.get("nights")), (fmt_thin(fi.get("told")), fi.get("told")), (fmt_thin(fi.get("heard")), fi.get("heard"))])
-    return out + data_table("t-savoir", [("An", True), ("Tribu", False), ("Lieux connus", True), ("Par ouï-dire seul", True),
+    return out + data_table("t-savoir", [("Cycle", True), ("Tribu", False), ("Lieux connus", True), ("Par ouï-dire seul", True),
                                          ("Rumeurs dissipées", True), ("Souvenirs entendus / tenus", True, True), ("Nuits au feu", True, True),
-                                         ("Dits", True, True), ("Entendus", True, True)], rows, "Aucune année.")
+                                         ("Dits", True, True), ("Entendus", True, True)], rows, "Aucun cycle.")
 
 
 def knowledge_html(d):
@@ -1070,10 +1040,10 @@ def knowledge_html(d):
                          f"<td class=n>{fmt(k.get('heard_only'))}</td><td class=n>{fmt(k.get('accesses_heard'))} / {fmt(k.get('accesses'))}</td>"
                          f"<td class=n>{fmt(fi.get('nights'))}</td><td class=n>{fmt(fi.get('told'))}</td><td class=n>{fmt(fi.get('heard'))}</td>"
                          f"<td class=n>{fmt(fi.get('dispelled'))}</td></tr>")
-    table = ('<table class="clean"><thead><tr><th>an</th><th>tribu</th><th class=n>lieux connus</th><th class=n>par ouï-dire seul</th>'
+    table = ('<table class="clean"><thead><tr><th>cycle</th><th>tribu</th><th class=n>lieux connus</th><th class=n>par ouï-dire seul</th>'
              '<th class=n>souvenirs entendus / tenus</th><th class=n>nuits au feu</th><th class=n>dits</th><th class=n>entendus</th>'
              '<th class=n>rumeurs dissipées</th></tr></thead><tbody>' + "".join(fire_rows) + "</tbody></table>")
-    return ("<h2>Ce que la tribu sait</h2><p class=caption>Les lieux dont un vivant de la tribu garde un souvenir à la fin de chaque an, vus ou entendus au feu ; "
+    return ("<h2>Ce que la tribu sait</h2><p class=caption>Les lieux dont un vivant de la tribu garde un souvenir à la fin de chaque cycle, vus ou entendus au feu ; "
             "et la nourriture que la tribu porte à midi, la mesure du lead.</p>"
             f"<p>{line}</p><div class=charts>{places_svg}{stored_svg}</div>{table}")
 
@@ -1138,7 +1108,7 @@ def nights_html(d):
             told = " ; ".join(f"{h(person_fr(t.get('by')))} : {h(record_fr(d, recs.get(t.get('record'))))}" for t in n.get("told") or [])
             rows.append(f"<tr><td class=n>{fmt(n.get('day'))}</td><td class=n>{fmt(n.get('present'))}</td><td>{told or '<span class=muted>rien dit</span>'}</td></tr>")
         out.append(f"<h4>Tribu {h(hearth.get('tribe', ''))}, {plural(len(nights), 'nuit')} gardée{'s' if len(nights) > 1 else ''} au foyer</h4>"
-                   '<table class="clean"><thead><tr><th class=n>jour</th><th class=n>présents</th><th>qui a dit quoi</th></tr></thead><tbody>'
+                   '<table class="clean"><thead><tr><th class=n>journée</th><th class=n>présents</th><th>qui a dit quoi</th></tr></thead><tbody>'
                    + "".join(rows) + "</tbody></table>")
     return ("<h3>Qui a dit quoi à qui</h3><p class=muted>Les dernières nuits que le foyer garde (les plus anciennes sont oubliées) : "
             "chaque chose dite, par qui ; ce que chacun en a cru est dans sa vie (« l'ont cru »).</p>" + ("".join(out) or '<p class="muted">aucune nuit gardée</p>'))
@@ -1153,10 +1123,10 @@ def rumours_html(d):
         by_year.setdefault((r.get("day", 1) - 1) // yd + 1, []).append(r)
     items = []
     for year in sorted(by_year):
-        li = "".join(f"<li>jour {r.get('day')}, {h(person_fr(r.get('body')))} va où {h(person_fr(r.get('from')))} avait dit {place_fr(r.get('place'))} et ne trouve rien</li>"
+        li = "".join(f"<li>journée {r.get('day')}, {h(person_fr(r.get('body')))} va où {h(person_fr(r.get('from')))} avait dit {place_fr(r.get('place'))} et ne trouve rien</li>"
                      for r in by_year[year][:50])
         more = f"<li class=muted>… et {len(by_year[year]) - 50} de plus</li>" if len(by_year[year]) > 50 else ""
-        items.append(f"<li>an {year} : {plural(len(by_year[year]), 'rumeur')} dissipée{'s' if len(by_year[year]) > 1 else ''}<ol class=kept>{li}{more}</ol></li>")
+        items.append(f"<li>cycle {year} : {plural(len(by_year[year]), 'rumeur')} dissipée{'s' if len(by_year[year]) > 1 else ''}<ol class=kept>{li}{more}</ol></li>")
     return ("<h3>Rumeurs</h3><p class=muted>Un lieu entendu au feu, trouvé nu par celui qui y est allé : il le dit le soir même, et les présents le croient.</p>"
             + (f"<ul>{''.join(items)}</ul>" if items else '<p class="muted">aucune rumeur dissipée</p>'))
 
@@ -1182,7 +1152,7 @@ def believes_html(d, p):
         rows.append(f"<tr><td>{place_fr(b.get('place'))}</td><td>{source}</td><td class=n>{fmt(b.get('day'))}</td>"
                     f"<td>{h(record_fr(d, r))}</td><td>{still}</td></tr>")
     return (f"<details><summary>Ce qu'il croit : {plural(len(bel), 'lieu', 'x')}, {seen} vu{'s' if seen > 1 else ''}, {len(bel) - seen} entendu{'s' if len(bel) - seen > 1 else ''}</summary>"
-            '<table class="clean"><thead><tr><th>lieu</th><th>source</th><th class=n>jour</th><th>souvenir</th><th>encore vrai ?</th></tr></thead><tbody>'
+            '<table class="clean"><thead><tr><th>lieu</th><th>source</th><th class=n>journée</th><th>souvenir</th><th>encore vrai ?</th></tr></thead><tbody>'
             + "".join(rows) + "</tbody></table></details>")
 
 
@@ -1190,7 +1160,7 @@ def believes_html(d, p):
 
 def years_table(d):
     cs = causes(d)
-    head = ("<tr><th>an</th><th>tribu</th><th>début → fin</th><th>‰</th><th>naiss.</th><th>morts</th>"
+    head = ("<tr><th>cycle</th><th>tribu</th><th>début → fin</th><th>‰</th><th>naiss.</th><th>morts</th>"
             + "".join(f"<th>{h(cause_fr(c))}</th>" for c in cs)
             + "<th>15 ans</th><th>femmes seules</th><th>essais / gardés / copiés</th><th>maisons</th><th>camp</th>"
             "<th>cueilli kJ</th><th>mangé</th><th>gâté</th><th>perdu</th><th>fin</th><th>porté à midi moy. / min</th>"
@@ -1224,11 +1194,11 @@ def years_table(d):
                     f"<td class=n>{fmt(k.get('places'))} ({fmt(k.get('heard_only'))})</td>"
                     f"<td class=n>{fmt(fi.get('nights'))} / {fmt(fi.get('told'))} / {fmt(fi.get('heard'))}</td>"
                     f"<td class=n>{fmt(fi.get('dispelled'))}</td></tr>")
-    note = ("<p class=muted>Une ligne par an et par tribu. ‰ : croissance pour mille ; 15 ans : vivants / arrivés à quinze ans parmi les nés du run ; "
-            "femmes seules : sans époux possible / femmes de 16 à 42 ans ; jours maigres et faibles : heures-personne sous la moitié "
+    note = ("<p class=muted>Une ligne par cycle et par tribu. ‰ : croissance pour mille ; 15 ans : vivants / arrivés à quinze ans parmi les nés du run ; "
+            "femmes seules : sans époux possible / femmes de 16 à 42 ans ; journées maigres et faibles : heures-personne sous la moitié "
             "et sous le cinquième de la réserve, divisées par 24 ; porté à midi : la nourriture que portent les vivants de la tribu, "
-            "moyenne et minimum des midis de l'an ; stock : quartiles de ce que chacun garde avant de se reposer ; lieux connus : "
-            "lieux distincts dont un vivant de la tribu a un souvenir à la fin de l'an, entre parenthèses ceux que personne n'a vus lui-même.</p>")
+            "moyenne et minimum des midis du cycle ; stock : quartiles de ce que chacun garde avant de se reposer ; lieux connus : "
+            "lieux distincts dont un vivant de la tribu a un souvenir à la fin du cycle, entre parenthèses ceux que personne n'a vus lui-même.</p>")
     return f'<div class=scroll><table class=years>{head}{"".join(rows)}</table></div>{note}'
 
 
@@ -1262,7 +1232,7 @@ def deaths_table(d):
         rows.append(f"<tr><td>{h(person_fr(p.get('name', p.get('id'))))}{' (' + h(p.get('tribe', '')) + ')' if many else ''}</td>"
                     f"<td>{h(day_fr(d, died.get('day')))}</td><td class=n>{h(age_fr(d, age_days(d, p, died.get('day'))))}</td>"
                     f"<td>{cause_html(died.get('cause', '?'))}</td><td>{h(where_fr(d, p.get('tribe'), died.get('at'), died.get('day')))}</td></tr>")
-    return table_html("Les morts", "Chaque mort du run, dans l’ordre des jours : qui, quand, à quel âge, de quoi, et où par rapport au camp de sa tribu cette année-là.",
+    return table_html("Les morts", "Chaque mort du run, dans l’ordre du temps : qui, quand, à quel âge, de quoi, et où par rapport au camp de sa tribu ce cycle-là.",
                       [("Qui", False), ("Quand", False), ("Âge à la mort", True), ("De quoi", False), ("Où", False)],
                       rows, "Personne n’est mort.")
 
@@ -1313,14 +1283,14 @@ def people_table(d):
     rows = []
     for p in sorted(d.get("people", []), key=lambda p: (p.get("tribe", ""), p.get("id", 0))):
         died = p.get("died")
-        death = (f"jour {died.get('day')}, {h(cause_fr(died.get('cause', '?')))}"
+        death = (f"journée {died.get('day')}, {h(cause_fr(died.get('cause', '?')))}"
                  + (f" ({h(SEASON_FR.get(died.get('season'), died.get('season') or ''))})" if died.get("season") else "")) if died else "vivant"
         born = "au départ" + (f" ({age_fr(d, p['age_days_at_start'])})" if p.get("age_days_at_start") is not None else "") \
-            if p.get("born") == "start" else f"jour {p.get('born')}"
+            if p.get("born") == "start" else f"journée {p.get('born')}"
         ways = p.get("ways") or {}
         way_txt = (f"{'dort dehors' if ways.get('sleep_out') else 'dort au camp'}, cherche jusqu'à {fmt(ways.get('worth_half_tiles'))} tuiles, "
                    f"garde {fmt(ways.get('stock_kj'))} kJ, maison ({ways['home'][0]}, {ways['home'][1]})") if ways and ways.get("home") else "esprit non lu"
-        lines = "".join(f"<li>jour {ln.get('day')} : {h(ln.get('what', ''))}</li>" for ln in p.get("lines") or [])
+        lines = "".join(f"<li>journée {ln.get('day')} : {h(ln.get('what', ''))}</li>" for ln in p.get("lines") or [])
         trials = len(p.get("trials") or [])
         kept = sum(1 for t in p.get("trials") or [] if t.get("kept"))
         will_txt = fmt(p.get("will"))
@@ -1343,7 +1313,7 @@ def verdict(d, sm=None):
     sm = sm or summary(d)
     settings = (d.get("meta") or {}).get("settings") or {}
     alive, start, births = sm["alive"], sm["start"], sm["births"]
-    when = f"Après {plural(sm['years'], 'an')}" if sm["years"] else f"Après {plural(run_days(d), 'jour')}"
+    when = f"Après {plural(sm['years'], 'cycle')}" if sm["years"] else f"Après {plural(run_days(d), 'journée')}"
     alive_start = sm["alive_start"]
     alive_born = alive - alive_start
     if alive == 0:
@@ -1411,8 +1381,8 @@ def stock_sub(st):
         return "aucune clé <code>years[].food</code> dans ce run"
     parts = []
     if st["days_per_person"] is not None:
-        parts.append(f"≈ {plural(round(st['days_per_person']), 'jour')} de vivres par vivant")
-    parts.append(f"début de l’an {fmt(st['year'])} : {fmt(st['start_kj'])}")
+        parts.append(f"≈ {plural(round(st['days_per_person']), 'journée')} de vivres par vivant")
+    parts.append(f"début du cycle {fmt(st['year'])} : {fmt(st['start_kj'])}")
     if len(st["by_tribe"]) > 1:
         parts.append(", ".join(f"{h(t)} {fmt(kj)}" for t, kj in st["by_tribe"].items()))
     return " · ".join(parts)
@@ -1433,7 +1403,7 @@ def tiles_html(sm, other=None, label=None):
     o = other or {}
     st = sm.get("stock")
     ost = o.get("stock")
-    tiles = [tile("alive", "vivants à la fin", sm["alive"], o.get("alive"), f"{fmt(sm['start'])} au départ, {plural(sm['years'], 'an')}"),
+    tiles = [tile("alive", "vivants à la fin", sm["alive"], o.get("alive"), f"{fmt(sm['start'])} au départ, {plural(sm['years'], 'cycle')}"),
              tile("want", "morts de manque", sm["want"], o.get("want"),
                   " · ".join(f"{cause_html(c)} {fmt(n)}" for c, n in sm["want_by"].items()), good_up=False),
              tile("background", "morts de fond", sm["background"], o.get("background"),
@@ -1610,24 +1580,6 @@ def link_people(text_html):
     return re.sub(r"personne (\d+)", lambda m: person_link(int(m.group(1))), text_html)
 
 
-def control_of(s, r):
-    """The control run of `r` in its series: the same base and seed without the fire (with the fire
-    on for `r`), else without the trials; None when `r` is itself a control or has none."""
-    def same(o):
-        return o.get("name") != r.get("name") and o.get("seed") == r.get("seed") \
-            and (o.get("base") == r.get("base") or r.get("base") is None)
-    runs = s.get("runs") or []
-    if r.get("fire", True) and r.get("trials", True):
-        c = next((o for o in runs if same(o) and o.get("fire", True) is False and o.get("trials", True)), None)
-        if c is not None:
-            return c, "sans le feu"
-    if r.get("trials", True):
-        c = next((o for o in runs if same(o) and o.get("trials", True) is False and o.get("fire", True) == r.get("fire", True)), None)
-        if c is not None:
-            return c, "sans les épreuves"
-    return None, None
-
-
 def by_tribe(d):
     """The numbers of the top row, tribe by tribe: alive, deaths, births, food carried, trials, rumours."""
     out = {}
@@ -1650,77 +1602,11 @@ def by_tribe(d):
     return out
 
 
-def headline(d, sm, smc=None, label=None):
-    """The verdict in one sentence, large: alive after so long, against the control when there is one."""
-    when = f"Après {plural(sm['years'], 'an')}" if sm["years"] else f"Après {plural(run_days(d), 'jour')}"
-    alive = sm["alive"]
-    who = "plus personne" if alive == 0 else f"{plural(alive, 'vivant')}"
-    if smc is None:
-        return f"{when}, {who} sur les {fmt(sm['start'])} du départ et les {plural(sm['births'], 'enfant')} nés en route."
-    gap = alive - smc["alive"]
-    if gap == 0:
-        return f"{when}, {who} : autant que {label}."
-    return f"{when}, {who} : {fmt(abs(gap))} de {'plus' if gap > 0 else 'moins'} que {label} ({fmt(smc['alive'])})."
-
-
-def mean_of(xs):
-    xs = [x for x in xs if x is not None]
-    return sum(xs) / len(xs) if xs else None
-
-
 def pct(a, b):
     """`+41 %` from b to a; None when b is nothing."""
     if a is None or not b:
         return None
     return round(100 * (a - b) / b)
-
-
-def tile6(title, value, sub, color=None, glyph="", ctrl=None, good_up=None, label=None, text=None, split=None):
-    """One tile of the top row: the total, its name, A | B, the gap to the control, a line under it."""
-    gap = ""
-    if ctrl is not None and value is not None:
-        dv = value - ctrl
-        if dv == 0:
-            gap = f'<span class="d same" title="{h(label)} : {fmt(ctrl)}">= témoin</span>'
-        else:
-            cls = "same" if good_up is None else ("good" if (dv > 0) == good_up else "bad")
-            gap = (f'<span class="d {cls}" title="{h(label)} : {fmt(ctrl)}">{"↑" if dv > 0 else "↓"} '
-                   f'{"+" if dv > 0 else "−"}{fmt(abs(dv)).replace(" ", THIN)} · témoin {fmt(ctrl).replace(" ", THIN)}</span>')
-    g = f'<i class="g {color}" aria-hidden=true>{glyph}</i>' if glyph else ""
-    style = f' style="--c:var(--{TILE_VAR[color]})"' if color else ""
-    shown = h(text) if text else fmt_thin(value)
-    ab = ""
-    if split and len(split) > 1:
-        ab = '<div class=ab>' + "".join(f"<span>{tribe_chip(t)}{fmt_thin(v)}</span>" for t, v in split.items()) + "</div>"
-    return (f'<div class=t6{style}><div class=k>{g}{h(title)}</div><div class=v>{shown}</div>{ab}'
-            f'{f"<div class=dl>{gap}</div>" if gap else ""}<div class=s>{sub}</div></div>')
-
-
-TILE_VAR = {"c-want": "want", "c-bg": "bg-death", "c-kept": "kept", "c-rumour": "rumour", "c-birth": "birth", "c-fire": "fire", "c-camp": "camp"}
-
-
-def run_tiles(d, sm, bt, smc=None, label=None):
-    """Six tiles: alive, deaths, births, food carried, trials, rumours; each total, then A | B, then the
-    arrow against the control."""
-    c = smc or {}
-    st, cst = sm.get("stock"), c.get("stock")
-    sp = lambda key: {t: v[key] for t, v in bt.items()}  # noqa: E731
-    rum = sum(v["rumours"] or 0 for v in bt.values()) if has_fire_data(d) else None
-    tiles = [
-        tile6("vivants à la fin", sm["alive"], f"{fmt(sm['start'])} au départ", None, "", c.get("alive"), True, label, split=sp("alive")),
-        tile6("morts", sm["dead"], f'<i class="g c-want">■</i>{fmt(sm["want"])} de manque · <i class="g c-bg">■</i>{fmt(sm["background"])} de fond',
-              "c-want", "■", c.get("dead"), False, label, split=sp("dead")),
-        tile6("naissances", sm["births"], f"{fmt(sm['alive'] - sm['alive_start'])} encore vivants" if sm["births"] else "aucune",
-              "c-birth", "●", c.get("births"), True, label, split=sp("births")),
-        tile6("nourriture portée à la fin (kJ)", st["kj"] if st else None,
-              (f"≈ {plural(round(st['days_per_person']), 'jour')} de vivres par vivant" if st and st["days_per_person"] is not None else "")
-              if st else "pas dans les données", None, "", cst["kj"] if cst else None, True, label, None if st else NO_STOCK, split=sp("food")),
-        tile6("essais", sm["trials"], f'<i class="g c-kept">◆</i>{fmt(sm["kept"])} gardés · {plural(sm["copied"], "copie")}',
-              "c-kept", "◆", c.get("trials"), None, label, split=sp("trials")),
-        tile6("rumeurs dissipées", rum, "un lieu entendu au feu, trouvé nu", "c-rumour", "●",
-              c.get("rumours_all") if smc else None, None, label, split=sp("rumours") if rum is not None else None),
-    ]
-    return f"<div class=tiles6>{''.join(tiles)}</div>"
 
 
 TABLE_JS = """
@@ -1810,10 +1696,10 @@ def death_mark(cause):
 
 
 def when_short(d, day):
-    """`an 3, été` for a day of the run."""
+    """`cycle 3, été` for a day of the run."""
     if day is None:
         return None
-    return f"an {(int(day) - 1) // year_days(d) + 1}, {SEASON_FR[season_of(d, day)]}"
+    return f"cycle {(int(day) - 1) // year_days(d) + 1}, {SEASON_FR[season_of(d, day)]}"
 
 
 def years_old(d, days):
@@ -1847,7 +1733,7 @@ def deaths_table_v2(d):
             (h(where_fr(d, p.get("tribe"), at, died.get("day"))), dist),
         ])
     return data_table("t-morts", [("Qui", False), ("Tribu", False), ("Quand", False), ("Âge à la mort (ans)", True), ("De quoi", False),
-                                  ("Jour du run", True, True), ("Distance au camp (m)", True, True), ("Où, depuis le camp", False, True)],
+                                  ("Journée du run", True, True), ("Distance au camp (m)", True, True), ("Où, depuis le camp", False, True)],
                       rows, "Personne n’est mort.")
 
 
@@ -1866,7 +1752,7 @@ def births_table_v2(d):
                      (person_link(p.get("father")) if p.get("father") is not None else None, p.get("father")),
                      (fmt_thin(day), day)])
     return data_table("t-naiss", [("Qui", False), ("Tribu", False), ("Quand", False), ("Mère", False), ("Vivant à la fin", False),
-                                  ("Père", False, True), ("Jour du run", True, True)], rows, "Aucune naissance.")
+                                  ("Père", False, True), ("Journée du run", True, True)], rows, "Aucune naissance.")
 
 
 def people_table_v2(d):
@@ -2075,11 +1961,11 @@ def chronicle_year(d, year):
                 one, many = EV_GROUP[typ]
                 evs.append(f'<li class="ev grp" data-f="{filt}"><details><summary><i class="g {cls}" aria-hidden=true>{glyph}</i>'
                            f'<b class=lab>{h(word)}</b><span class=gn>{len(members)}</span> <span class=gw data-one="{h(one)}" '
-                           f'data-many="{h(many)}">{h(many)}</span> ce jour-là</summary>'
+                           f'data-many="{h(many)}">{h(many)}</span> cette journée-là</summary>'
                            f'<ul>{"".join(ev_html(m, word=False) for m in members)}</ul></details></li>')
-            lis.append(f'<li class=day><span class=dd>jour {day}</span><ul class=evs>{"".join(evs)}</ul></li>')
+            lis.append(f'<li class=day><span class=dd>journée {day}</span><ul class=evs>{"".join(evs)}</ul></li>')
         body = f"<ol class=days>{''.join(lis)}</ol>" if lis else '<p class="chron-empty">rien cette saison</p>'
-        seasons.append(f'<div class=season><h4>{h(SEASON_FR[season].capitalize())} <small>jours {lo} à {hi} · '
+        seasons.append(f'<div class=season><h4>{h(SEASON_FR[season].capitalize())} <small>journées {lo} à {hi} · '
                        f'{plural(n, "événement")}</small></h4>{body}</div>')
     chips = "".join(f'<button type=button data-filter="{k}" aria-pressed="{"true" if k == "tout" else "false"}">{h(lab)}'
                     f' <span class=muted>{len(events) if k == "tout" else counts.get(k, 0)}</span></button>' for k, lab in FILTERS)
@@ -2094,7 +1980,7 @@ def chronicle_html(d, year, chron_url):
         return ""
     year = min(max(1, year or 1), ly)
     years_nav = "".join(f'<button type=button data-year="{y}" aria-current="{"true" if y == year else "false"}">'
-                        f'{"an " if y == year else ""}{y}</button>' for y in range(1, ly + 1))
+                        f'{"cycle " if y == year else ""}{y}</button>' for y in range(1, ly + 1))
     ts = tribes(d)
     tribe_sel = ("<select data-tribe aria-label=Tribu><option value=''>les deux tribus</option>"
                  + "".join(f"<option value='{h(t)}'>tribu {h(t)}, {h(tribe_side(d, t))}</option>" for t in ts) + "</select>") if len(ts) > 1 else ""
@@ -2106,13 +1992,13 @@ def chronicle_html(d, year, chron_url):
     capped = ""
     if rums and sum((y.get("fire") or {}).get("dispelled") or 0 for y in d.get("years", [])) > len(rums):
         days = [r.get("day") for r in rums if r.get("day") is not None]
-        capped = (f" Le fichier ne garde le détail que des {fmt(len(rums))} premières rumeurs (jours {min(days)} à {max(days)}) : "
-                  "les autres années n’en montrent aucune.")
+        capped = (f" Le fichier ne garde le détail que des {fmt(len(rums))} premières rumeurs (journées {min(days)} à {max(days)}) : "
+                  "les autres cycles n’en montrent aucune.")
     tribes_txt = " ; le bord de chaque ligne a la couleur de sa tribu (" + ", ".join(f"{tribe_chip(t)}" for t in ts) + ")" if len(ts) > 1 else ""
-    return (f'<section id=chronique class=group data-chron="{h(chron_url)}"><h2>La chronique</h2><div data-chron-lead><p class=muted>l’an {year} se charge…</p></div>'
-            f'<p class=caption>Une année à la fois, par saison puis par jour. Ce qui se répète le même jour '
+    return (f'<section id=chronique class=group data-chron="{h(chron_url)}"><h2>La chronique</h2><div data-chron-lead><p class=muted>le cycle {year} se charge…</p></div>'
+            f'<p class=caption>Un cycle à la fois, par saison puis par journée. Ce qui se répète la même journée '
             f'({GROUP_FROM} fois ou plus) tient sur une ligne qu’on déplie{tribes_txt}.{h(capped)}</p><p class=caption>{legend}</p>'
-            f'<nav class=chron-years aria-label="années">{years_nav}</nav>'
+            f'<nav class=chron-years aria-label="cycles">{years_nav}</nav>'
             f'<div class=filters><div class=chips role=group aria-label="ne montrer que" data-chips></div>{tribe_sel}'
             f'<input type=search data-search placeholder="un nom : 14, personne 14" aria-label="chercher un nom">'
             f'<span class=count data-count></span></div>'
@@ -2149,7 +2035,7 @@ document.querySelectorAll('#chronique').forEach(c => {
   }
   c.querySelectorAll('[data-year]').forEach(b => b.addEventListener('click', async () => {
     const y = b.dataset.year;
-    count.textContent = 'chargement de l’an ' + y + '…';
+    count.textContent = 'chargement du cycle ' + y + '…';
     try {
       const r = await fetch(c.dataset.chron + '?an=' + y);
       if (!r.ok) throw new Error(r.status);
@@ -2157,10 +2043,10 @@ document.querySelectorAll('#chronique').forEach(c => {
       c.querySelector('[data-chron-lead]').innerHTML = data.lead;
       c.querySelector('[data-chips]').innerHTML = data.chips;
       c.querySelector('[data-chron-body]').innerHTML = data.seasons;
-      c.querySelectorAll('[data-year]').forEach(o => { o.setAttribute('aria-current', o === b ? 'true' : 'false'); o.textContent = (o === b ? 'an ' : '') + o.dataset.year; });
+      c.querySelectorAll('[data-year]').forEach(o => { o.setAttribute('aria-current', o === b ? 'true' : 'false'); o.textContent = (o === b ? 'cycle ' : '') + o.dataset.year; });
       if (![...c.querySelectorAll('[data-filter]')].some(o => o.dataset.filter === filt)) filt = 'tout';
       bindChips(); apply();
-    } catch (e) { count.textContent = 'l’an ' + y + ' n’a pas pu être lu (' + e.message + ')'; }
+    } catch (e) { count.textContent = 'le cycle ' + y + ' n’a pas pu être lu (' + e.message + ')'; }
   }));
   if (tribe) tribe.addEventListener('change', apply);
   search.addEventListener('input', apply);
@@ -2275,7 +2161,7 @@ function initMap2(m) {
       for (const [id, x, y] of pos[k][1]) {
         const c = data.colors[data.tribe[id]] || '#444';
         if (trail[id]) out += `<polyline fill="none" stroke="${c}" stroke-opacity=".5" stroke-width="${data.r / 3}" points="${trail[id].join(' ')} ${x},${y}"/>`;
-        out += `<circle data-person="${id}" cx="${x}" cy="${y}" r="${data.r}" fill="${c}" stroke="#fff" stroke-width="${data.r / 4}" style="cursor:pointer"><title>personne ${id} (${data.tribe[id]}), jour ${pos[k][0]} : cliquez pour sa fiche</title></circle>`;
+        out += `<circle data-person="${id}" cx="${x}" cy="${y}" r="${data.r}" fill="${c}" stroke="#fff" stroke-width="${data.r / 4}" style="cursor:pointer"><title>personne ${id} (${data.tribe[id]}), journée ${pos[k][0]} : cliquez pour sa fiche</title></circle>`;
       }
     }
     dots.innerHTML = out;
@@ -2293,12 +2179,12 @@ function initMap2(m) {
     seen.innerHTML = a; heard.innerHTML = b;
   }
   function show(year, day) {
-    yrTxt.textContent = 'an ' + year + (day ? ', jour ' + day : '');
+    yrTxt.textContent = 'cycle ' + year + (day ? ', journée ' + day : '');
     if (!day) places(year);
     let hs = '';
     if (m.querySelector('[data-layer=heat]').checked) for (const [t, [cell, cells]] of Object.entries(data.heat[year] || {})) {
       const c = data.colors[t] || '#444';
-      for (const [cx, cy, n] of cells) hs += `<rect x="${cx * cell}" y="${cy * cell}" width="${cell}" height="${cell}" fill="${c}" fill-opacity="${(0.15 + 0.6 * Math.min(1, n / data.peak)).toFixed(2)}"><title>tribu ${t}, an ${year} : ${n} midi${n > 1 ? 's' : ''} ici</title></rect>`;
+      for (const [cx, cy, n] of cells) hs += `<rect x="${cx * cell}" y="${cy * cell}" width="${cell}" height="${cell}" fill="${c}" fill-opacity="${(0.15 + 0.6 * Math.min(1, n / data.peak)).toFixed(2)}"><title>tribu ${t}, cycle ${year} : ${n} midi${n > 1 ? 's' : ''} ici</title></rect>`;
     }
     m.querySelector('g.heat').innerHTML = hs;
     m.querySelectorAll('[data-dy]').forEach(g => { const y = +g.dataset.dy; g.style.display = y > year ? 'none' : 'inline'; g.style.opacity = y === year ? 1 : .3; });
@@ -2323,7 +2209,7 @@ function initMap2(m) {
   }));
   let timer = null;
   const play = m.querySelector('[data-play-years]'), days = m.querySelector('[data-play-days]');
-  function stop() { clearInterval(timer); timer = null; play.textContent = '▶ Les années'; days.textContent = '▶ Cette année jour par jour'; }
+  function stop() { clearInterval(timer); timer = null; play.textContent = '▶ Les cycles'; days.textContent = '▶ Ce cycle journée après journée'; }
   play.addEventListener('click', () => {
     if (timer) return stop();
     if (+slider.value >= +slider.max) slider.value = 1;
@@ -2380,7 +2266,7 @@ def map_v2(d, uid):
             parts.append(f'<polyline fill="none" stroke="{color}" stroke-width="{fs / 4:.1f}" stroke-dasharray="{fs / 2:.1f} {fs / 3:.1f}" '
                          f'points="{" ".join(f"{c[0]},{c[1]}" for _, _, c in st)}"/>')
         for a, b, (x, y) in st:
-            span = f"an {a}" if a == b else f"an {a} → an {b}"
+            span = f"cycle {a}" if a == b else f"cycle {a} → cycle {b}"
             parts.append(f'<g data-stay="{a}-{b}" style="pointer-events:none"><title>camp {h(t)}, {span} : ({x}, {y})</title>'
                          f'<rect x="{x - fs / 2:.1f}" y="{y - fs / 2:.1f}" width="{fs:.1f}" height="{fs:.1f}" transform="rotate(45 {x} {y})" '
                          f'fill="{color}" stroke="#fff" stroke-width="{fs / 8:.1f}"/>'
@@ -2419,9 +2305,9 @@ def map_v2(d, uid):
     at_end = known_by_year.get(str(ly), {})
     nseen = {t: sum(1 for w in at_end.get(t, []) if w[2]) for t in ts}
     nheard = {t: sum(1 for w in at_end.get(t, []) if not w[2]) for t in ts}
-    when = "à la fin du run (ce run n’a pas les lieux année par année)" if by_end else "l’année montrée"
-    bar = (f'<div class=bar><span class=yr>an {ly}</span><input type=range data-yr min=1 max={ly} value={ly} aria-label="année">'
-           f'<button type=button data-play-years>▶ Les années</button><button type=button data-play-days>▶ Cette année jour par jour</button></div>'
+    when = "à la fin du run (ce run n’a pas les lieux cycle par cycle)" if by_end else "le cycle montré"
+    bar = (f'<div class=bar><span class=yr>cycle {ly}</span><input type=range data-yr min=1 max={ly} value={ly} aria-label="cycle">'
+           f'<button type=button data-play-years>▶ Les cycles</button><button type=button data-play-days>▶ Ce cycle journée après journée</button></div>'
            f'<div class=bar><span class=seg role=group aria-label="cadrer sur">{zoom}</span></div>')
 
     def sw(inner):
@@ -2430,32 +2316,32 @@ def map_v2(d, uid):
     for i, t in enumerate(ts):
         c = tribe_color(t, i)
         items.append((sw(f'<circle r="8" fill="{c}" stroke="#fff" stroke-width="1.5"/><text y="4" text-anchor="middle" font-size="11" font-weight="800" fill="#fff">{h(t)}</text>'),
-                      f"le camp de la tribu {h(t)}, {h(tribe_side(d, t))}, l’année montrée"))
+                      f"le camp de la tribu {h(t)}, {h(tribe_side(d, t))}, le cycle montré"))
     items.append((sw('<rect x="-4" y="-4" width="8" height="8" transform="rotate(45)" fill="#888" stroke="#fff"/>'),
-                  "un camp de l’année montrée ou d’avant, daté (« an 1 → an 20 ») ; un trait pointillé relie les camps successifs"))
+                  "un camp du cycle montré ou d’avant, daté (« cycle 1 → cycle 20 ») ; un trait pointillé relie les camps successifs"))
     items.append((sw(f'<circle r="4" fill="{tribe_color(ts[0], 0) if ts else "#444"}" stroke="#fff" stroke-width="1.2"/>'),
-                  "une personne à midi, le dernier jour de l’année (cliquez : sa fiche)"))
+                  "une personne à midi, la dernière journée du cycle (cliquez : sa fiche)"))
     items.append((sw(f'<rect x="-8" y="-8" width="16" height="16" fill="{tribe_color(ts[0], 0) if ts else "#444"}" fill-opacity=".45"/>'),
-                  "là où la tribu a passé ses midis cette année (plus foncé : plus souvent)"))
+                  "là où la tribu a passé ses midis ce cycle (plus foncé : plus souvent)"))
     items.append((sw('<g stroke-linecap="round"><path d="M-5-5L5 5M-5 5L5-5" stroke="#fff" stroke-width="4"/><path d="M-5-5L5 5M-5 5L5-5" stroke="#111" stroke-width="2"/></g>'),
-                  "un mort cette année (pâle : les années d’avant)"))
-    items.append((sw('<circle r="4.5" fill="#d55181" stroke="#fff" stroke-width="1.2"/>'), "une naissance cette année"))
+                  "un mort ce cycle (pâle : les cycles d’avant)"))
+    items.append((sw('<circle r="4.5" fill="#d55181" stroke="#fff" stroke-width="1.2"/>'), "une naissance ce cycle"))
     ground = [(sw('<rect x="-8" y="-8" width="16" height="16" fill="rgb(120,160,70)"/>'), "prairie"),
               (sw('<rect x="-8" y="-8" width="16" height="16" fill="rgb(50,100,45)"/>'), "forêt"),
               (sw('<rect x="-8" y="-8" width="16" height="16" fill="rgb(60,110,170)"/>'), "eau (rivière, lac) ; plus clair : gué, ruisseau")]
     lay = ('<div class=lay>'
-           '<label><input type=checkbox data-layer=heat checked> où la tribu a passé ses midis cette année</label>'
+           '<label><input type=checkbox data-layer=heat checked> où la tribu a passé ses midis ce cycle</label>'
            f'<label><input type=checkbox data-layer=seen> lieux de nourriture vus par un vivant, {h(when)} ; à la fin '
            f'({", ".join(f"{h(t)} {fmt(nseen[t])}" for t in ts)})</label>'
            f'<label><input type=checkbox data-layer=heard> lieux connus seulement par ouï-dire au feu, {h(when)} ; à la fin '
            f'({", ".join(f"{h(t)} {fmt(nheard[t])}" for t in ts)})</label></div>')
-    stays_txt = "".join(f'<li>{tribe_chip(t)}' + " ; ".join(f'({c[0]}, {c[1]}) an {a}' + ("" if a == b else f" → an {b}") for a, b, c in stays[t]) + "</li>"
+    stays_txt = "".join(f'<li>{tribe_chip(t)}' + " ; ".join(f'({c[0]}, {c[1]}) cycle {a}' + ("" if a == b else f" → cycle {b}") for a, b, c in stays[t]) + "</li>"
                         for t in ts)
     legend = (f'<div class=mlegend><h4>Ce qu’on voit</h4><ul>{"".join(f"<li>{s}<span>{w}</span></li>" for s, w in items)}</ul>'
               f'<h4>Pourquoi ils sont là</h4>{lay}'
               f'<h4>Le fond</h4><ul>{"".join(f"<li>{s}<span>{w}</span></li>" for s, w in ground)}</ul>'
               f'<h4>Les camps, datés</h4><ul class=stays data-stays>{stays_txt}</ul></div>')
-    note = ('<p class=mapnote>Les lieux sont des carrés de 16 cases, ceux que les vivants de la tribu ont en tête à la fin de l’année montrée'
+    note = ('<p class=mapnote>Les lieux sont des carrés de 16 cases, ceux que les vivants de la tribu ont en tête à la fin du cycle montré'
             + (" (ce run est plus ancien : seulement à la fin du run)" if by_end else "")
             + '. L’eau trouvée n’a pas de position dans le fichier : on la voit sur le fond.</p>')
     return (f'<div class=map2 data-map2="{h(uid)}"><div>{"".join(parts)}{bar}{note}</div>{legend}'
@@ -2477,26 +2363,26 @@ def frise_svg(d, p, copies, lessons):
     for y in range(0, end // yd + 1, 5):
         x = sx(y * yd + 1)
         out.append(f'<line x1="{x:.1f}" x2="{x:.1f}" y1="10" y2="56" stroke="var(--line)"/><text x="{x:.1f}" y="70" font-size="10" '
-                   f'text-anchor="middle" fill="var(--muted)">an {y + 1}</text>')
+                   f'text-anchor="middle" fill="var(--muted)">cycle {y + 1}</text>')
     out.append(f'<line x1="{sx(born):.1f}" x2="{sx(died or end):.1f}" y1="33" y2="33" stroke="{color}" stroke-width="5" stroke-linecap="round"/>')
 
     def mark(day, glyph, cls, title, dy):
         out.append(f'<text x="{sx(day):.1f}" y="{33 + dy}" font-size="13" text-anchor="middle" class="{cls}" fill="currentColor">{glyph}'
                    f'<title>{h(title)}</title></text>')
     for t in p.get("trials") or []:
-        mark(t.get("day") or 1, "○", "c-try", f"jour {t.get('day')} : essaie {kind_fr(t.get('step', '?'))}", -9)
+        mark(t.get("day") or 1, "○", "c-try", f"journée {t.get('day')} : essaie {kind_fr(t.get('step', '?'))}", -9)
         if t.get("judged_day") is not None and t.get("kept"):
-            mark(t["judged_day"], "◆", "c-kept", f"jour {t['judged_day']} : garde {kind_fr(t.get('step', '?'))}", -9)
+            mark(t["judged_day"], "◆", "c-kept", f"journée {t['judged_day']} : garde {kind_fr(t.get('step', '?'))}", -9)
     for le in lessons:
-        mark(le["day"], "▲", "c-fire", f"jour {le['day']} : raconte au feu ({le['way']})", 19)
+        mark(le["day"], "▲", "c-fire", f"journée {le['day']} : raconte au feu ({le['way']})", 19)
     for c in copies:
-        mark(c["day"], "▲", "c-fire", f"jour {c['day']} : copie personne {c['from']}", 19)
+        mark(c["day"], "▲", "c-fire", f"journée {c['day']} : copie personne {c['from']}", 19)
     for k in d.get("people", []):
         if p.get("id") in (k.get("mother"), k.get("father")) and k.get("born") != "start":
-            mark(k.get("born_day") or k.get("born"), "●", "c-birth", f"jour {k.get('born_day') or k.get('born')} : naissance de personne {k.get('id')}", 19)
+            mark(k.get("born_day") or k.get("born"), "●", "c-birth", f"journée {k.get('born_day') or k.get('born')} : naissance de personne {k.get('id')}", 19)
     if died:
         cause = p["died"].get("cause")
-        mark(died, "■", "c-want" if is_want(cause) else "c-bg", f"jour {died} : meurt de {cause_fr(cause)}", 5)
+        mark(died, "■", "c-want" if is_want(cause) else "c-bg", f"journée {died} : meurt de {cause_fr(cause)}", 5)
     out.append("</svg>")
     return "".join(out)
 
@@ -2528,13 +2414,13 @@ def person_card(d, pid):
     will = (f"{fmt(p.get('will_start'))} au départ, {fmt(p.get('will'))} à la fin" if p.get("will_start") is not None else fmt(p.get("will")))
     trials = p.get("trials") or []
     kept = [t for t in trials if t.get("kept")]
-    tl = "".join(f"<li>jour {t.get('day')} : {h(kind_fr(t.get('step', '?')))}, "
+    tl = "".join(f"<li>journée {t.get('day')} : {h(kind_fr(t.get('step', '?')))}, "
                  + ("<i class='g c-kept'>◆</i>gardé" if t.get("kept") else "abandonné" if t.get("kept") is False else "pas jugé")
                  + (" (entendu au feu)" if t.get("heard") else "") + "</li>" for t in trials)
-    ll = "".join(f"<li>jour {le['day']} : sa façon ({h(le['way'])}) {'lui a fait du bien' if le['good'] else 'ne lui a rien valu'} ; "
+    ll = "".join(f"<li>journée {le['day']} : sa façon ({h(le['way'])}) {'lui a fait du bien' if le['good'] else 'ne lui a rien valu'} ; "
                  f"{'personne ne l’a cru' if not le['believers'] else plural(len(le['believers']), 'personne') + ' l’ont cru' if len(le['believers']) > 1 else '1 personne l’a cru'}</li>"
                  for le in lessons)
-    cl = "".join(f"<li>jour {c['day']} : copie {person_link(c['from'])} : {h(c['way'])}{' (en perdant un cran)' if c['loss'] else ''}</li>" for c in copies)
+    cl = "".join(f"<li>journée {c['day']} : copie {person_link(c['from'])} : {h(c['way'])}{' (en perdant un cran)' if c['loss'] else ''}</li>" for c in copies)
     kids = [k for k in d.get("people", []) if pid in (k.get("mother"), k.get("father"))]
     ways = p.get("ways") or {}
     way_txt = (f"{'dort dehors' if ways.get('sleep_out') else 'rentre dormir au camp'}, cherche à {fmt(ways.get('worth_half_tiles'))} tuiles, "
@@ -2550,7 +2436,7 @@ def person_card(d, pid):
             f'<p><b>Volonté</b> {h(will)} · <b>À la fin</b> : {h(way_txt)} · <b>Enfants</b> : '
             f'{", ".join(person_link(k.get("id")) for k in kids) or "aucun"}.</p>'
             f'<p><b>Ce qu’{pron} a fait</b> : {fmt(p.get("gathered_kj"))} kJ cueillis, {fmt(p.get("meals"))} repas ; '
-            f'{fmt(hours_to_days(p.get("thin_hours")))} jours maigre ; {plural(len(heard), "leçon")} entendue{"s" if len(heard) > 1 else ""} au feu et crue{"s" if len(heard) > 1 else ""} ; '
+            f'{fmt(hours_to_days(p.get("thin_hours")))} journées maigres ; {plural(len(heard), "leçon")} entendue{"s" if len(heard) > 1 else ""} au feu et crue{"s" if len(heard) > 1 else ""} ; '
             f'copié{e} {fmt(len(copied_from_me))} fois par d’autres ; {fmt(len(bel))} lieux en tête à la fin ({fmt(nseen)} vus, {fmt(len(bel) - nseen)} entendus).</p>'
             + sec(f"Ce qu’{pron} a essayé ({len(trials)}, {plural(len(kept), 'gardé')})", tl, "rien essayé")
             + sec(f"Ce qu’{pron} a raconté au feu ({len(lessons)})", ll, "rien raconté")
@@ -2673,269 +2559,7 @@ def per_year(d, fn, tribe=None):
     return out
 
 
-def population_series(d, sm):
-    return [sm["start"]] + per_year(d, lambda y: y.get("population"))
-
-
-def noon_food_series(d):
-    return per_year(d, lambda y: ((y.get("food") or {}).get("stored_kj") or {}).get("noon_mean"))
-
-
-def places_series(d, t):
-    return per_year(d, lambda y: (y.get("knowledge") or {}).get("places"), t)
-
-
-def kids_dead(d):
-    yd = year_days(d)
-    return sum(1 for p in d.get("people", []) if p.get("died") and (age_days(d, p, p["died"].get("day")) or 0) < 15 * yd)
-
-
-def ratio_fr(a, b):
-    """`2×`, `1,6×`: how many times a holds b."""
-    r = a / b
-    return f"{round(r)}×" if r >= 1.95 else f"{r:.1f}×".replace(".", ",")
-
-
-def camps_point(d, sm):
-    ts = tribes(d)
-    moved = {t: camp_stays(d, t) for t in ts}
-    movers = [t for t in ts if len(moved[t]) > 1]
-    if not movers:
-        return point("aucun camp n’a bougé", f"en {plural(sm['years'], 'an')}")
-    t = max(movers, key=lambda t: len(moved[t]))
-    when = ", ".join(f"an {a}" for a, _, _ in moved[t][1:4])
-    return point(f"camp de {t} déplacé {len(moved[t]) - 1} fois", f"({when})")
-
-
-def places_point(d, bt):
-    ts = [t for t in tribes(d) if bt[t]["places"] is not None]
-    if len(ts) < 2:
-        return None
-    hi, lo = sorted(ts, key=lambda t: -(bt[t]["places"] or 0))[:2]
-    a, b = bt[hi]["places"] or 0, bt[lo]["places"] or 0
-    if b and a / b >= 1.3:
-        return point(f"{hi} connaît {ratio_fr(a, b)} plus de lieux", f"que {lo} ({num(a)} et {num(b)})", places_series(d, hi))
-    return point(f"{hi} et {lo} connaissent autant de lieux", f"({num(a)} et {num(b)})", places_series(d, hi))
-
-
-def deaths_point(d, sm):
-    if not sm["dead"]:
-        return point("personne n’est mort", f"en {plural(sm['years'], 'an')}")
-    kids = kids_dead(d)
-    if not sm["want"]:
-        main = max(sm["background_by"], key=sm["background_by"].get)
-        rest = f": {num(sm['background_by'][main])} de {cause_fr(main)}" + (f", dont {num(kids)} enfants" if kids else "")
-        return point("0 mort de manque", rest)
-    by = ", ".join(f"{num(n)} de {cause_fr(c)}" for c, n in sm["want_by"].items() if n)
-    return point(f"{plural(sm['want'], 'mort')} de manque", f": {by}")
-
-
-def top_points(d, sm, bt, dc=None, label=None):
-    """The top of the page: four to six points, by what counts most: the living, the deaths, the
-    control's gap, what they learnt, what they know, the camps; then the births and the rumours."""
-    ts = tribes(d)
-    gap = sm["alive"] - sm["start"]
-    pop = population_series(d, sm)
-    if len(ts) > 1:
-        gains = {t: bt[t]["alive"] - bt[t]["start"] for t in ts}
-        who = f", {' et '.join(ts)} à égalité" if len(set(gains.values())) == 1 else f", surtout {max(gains, key=gains.get)}"
-    else:
-        who = ""
-    pts = [point(f"{plural(sm['alive'], 'vivant')}", f"({'+' if gap >= 0 else '−'}{num(abs(gap))} en {plural(sm['years'], 'an')}{who})", pop),
-           deaths_point(d, sm)]
-    if dc is not None:
-        btc = by_tribe(dc)
-        a = mean_of([x for t in bt for x in bt[t]["noon"]])
-        b = mean_of([x for t in btc for x in btc[t]["noon"]])
-        p = pct(a, b)
-        if p is not None:
-            pts.append(point(f"{'+' if p >= 0 else '−'}{abs(p)} % de nourriture portée", f"à midi, {label.replace('sans', 'avec', 1)}",
-                             noon_food_series(d)))
-    pts.append(point(f"{plural(sm['trials'], 'essai')}", f", {num(sm['kept'])} gardés, {plural(sm['copied'], 'copie')}"
-                     + (" entendues au feu" if sm["copied"] and sm["heard_copies"] == sm["copied"] else "")))
-    pl = places_point(d, bt)
-    if pl:
-        pts.append(pl)
-    pts.append(camps_point(d, sm))
-    if sm["births"]:
-        pts.append(point(f"{plural(sm['births'], 'naissance')}", f", {num(sm['alive'] - sm['alive_start'])} encore en vie"))
-    return pts[:TOP_POINTS[1]]
-
-
-def people_points(d, sm, bt):
-    ts = tribes(d)
-    pts = []
-    if len(ts) > 1:
-        pts.append(point(", ".join(f"{t} {num(bt[t]['alive'])}" for t in ts) + " vivants",
-                         f"sur {num(sm['start'] + sm['births'])} personnes en tout", population_series(d, sm)))
-    else:
-        pts.append(point(f"{plural(sm['alive'], 'vivant')}", f"sur {num(sm['start'] + sm['births'])} personnes en tout", population_series(d, sm)))
-    pts.append(point(f"{plural(sm['births'], 'naissance')} pour {plural(sm['dead'], 'mort')}",
-                     f"; {num(sm['alive'] - sm['alive_start'])} enfants nés en route vivent encore"))
-    kids = kids_dead(d)
-    if kids:
-        pts.append(point(f"{plural(kids, 'enfant')} mort{'s' if kids > 1 else ''}", "avant 15 ans"))
-    return pts[:SECTION_POINTS[1]]
-
-
-def deaths_points(d, sm):
-    dead = [p for p in d.get("people", []) if p.get("died")]
-    if not dead:
-        return [point("personne n’est mort", f"en {plural(sm['years'], 'an')}"), point("0 mort de manque", "ni de fond")]
-    yd = year_days(d)
-    ages = sorted(age_days(d, p, p["died"].get("day")) or 0 for p in dead)
-    med = ages[len(ages) // 2] // yd
-    by_year = {}
-    for p in dead:
-        yr = (p["died"].get("day", 1) - 1) // yd + 1
-        by_year[yr] = by_year.get(yr, 0) + 1
-    worst = max(by_year, key=lambda y: (by_year[y], -y))
-    pts = [point(f"{plural(len(dead), 'mort')}", f": {num(sm['want'])} de manque, {num(sm['background'])} de fond"),
-           point(f"{num(med)} ans", "d’âge médian à la mort"),
-           point(f"an {worst}", f", le plus dur : {plural(by_year[worst], 'mort')}",
-                 [by_year.get(y, 0) for y in range(1, last_year(d) + 1)])]
-    return pts
-
-
-def births_points(d, sm, bt):
-    born = [p for p in d.get("people", []) if p.get("born") != "start"]
-    if not born:
-        return [point("aucune naissance", f"en {plural(sm['years'], 'an')}"), point(f"{plural(sm['alive'], 'vivant')}", "à la fin")]
-    yd = year_days(d)
-    by_year = {}
-    for p in born:
-        yr = ((p.get("born_day") or p.get("born") or 1) - 1) // yd + 1
-        by_year[yr] = by_year.get(yr, 0) + 1
-    best = max(by_year, key=lambda y: (by_year[y], -y))
-    pts = [point(f"{plural(len(born), 'naissance')}", f", {num(sum(1 for p in born if not p.get('died')))} en vie à la fin"),
-           point(f"an {best}", f", le plus fécond : {plural(by_year[best], 'naissance')}",
-                 [by_year.get(y, 0) for y in range(1, last_year(d) + 1)])]
-    ts = tribes(d)
-    if len(ts) > 1:
-        pts.append(point(", ".join(f"{t} {num(bt[t]['births'])}" for t in ts), "naissances par tribu"))
-    return pts
-
-
-def everyone_points(d, sm):
-    people = d.get("people", [])
-    wills = [(p.get("will_start"), p.get("will")) for p in people if p.get("will_start") is not None and p.get("will") is not None]
-    pts = [point(f"{num(sm['alive'])} vivants sur {num(len(people))}", "personnes, les vivants d’abord")]
-    if wills:
-        a = round(sum(w[0] for w in wills) / len(wills))
-        b = round(sum(w[1] for w in wills) / len(wills))
-        pts.append(point(f"volonté moyenne {num(a)} → {num(b)}", "du début à la fin"))
-    top = max(people, key=lambda p: (p.get("children") or 0, -(p.get("id") or 0)), default=None)
-    if top and top.get("children"):
-        pts.append(point(f"{person_fr(top.get('id'))} : {plural(top['children'], 'enfant')}", ", le plus de descendants"))
-    if len(pts) < 2:
-        pts.append(point(plural(sm["dead"], "mort"), f"et {plural(sm['births'], 'naissance')} en tout"))
-    return pts
-
-
-def where_points(d, sm, bt):
-    ts = tribes(d)
-    pts = [camps_point(d, sm)]
-    if all(bt[t]["places"] is not None for t in ts):
-        pts.append(point(", ".join(f"{t} {num(bt[t]['places'])}" for t in ts) + " lieux connus", "des vivants à la fin"))
-    k = knowledge_at_end(d)
-    if k and k["heard_share"] is not None:
-        pts.append(point(f"{round(100 * k['heard_share'])} % des souvenirs", "viennent d’un conteur"))
-    if len(pts) < 2:
-        pts.append(point(f"{len(ts)} tribu{'s' if len(ts) > 1 else ''}", ", ".join(f"{t} {tribe_side(d, t)}" for t in ts)))
-    return pts
-
-
-def knowledge_points(d):
-    pts = []
-    for t in tribes(d):
-        s = places_series(d, t)
-        xs = [v for v in s if v is not None]
-        if xs:
-            pts.append(point(f"{t} : {num(xs[0])} → {num(xs[-1])} lieux", f"connus, an 1 à an {last_year(d)}", s))
-    food = noon_food_series(d)
-    xs = [v for v in food if v is not None]
-    if xs:
-        pts.append(point(f"{num(round(xs[-1]))} kJ portés à midi", "en moyenne, la dernière année", food))
-    return pts[:SECTION_POINTS[1]] or [point("aucun lieu", "lu dans ce run"), point("aucune nourriture", "lue à midi")]
-
-
-def learnt_points(d, sm):
-    pts = [point(f"{plural(sm['trials'], 'essai')}, {num(sm['kept'])} gardés",
-                 f"({round(100 * sm['kept'] / sm['trials']) if sm['trials'] else 0} %)",
-                 per_year(d, lambda y: y.get("trials")))]
-    held = carried(d)
-    if held:
-        k = max(held, key=held.get)
-        pts.append(point(kind_fr(k), f", la façon portée par le plus de vivants ({num(held[k])})"))
-    if sm["copied"]:
-        pts.append(point(f"{plural(sm['copied'], 'copie')}", "toutes par ouï-dire au feu" if sm["heard_copies"] == sm["copied"]
-                         else f"dont {num(sm['heard_copies'])} par ouï-dire au feu"))
-    if len(pts) < 2:
-        pts.append(point("aucune copie", "entre voisins"))
-    return pts
-
-
-def techniques_points(d):
-    pts = []
-    for t in tribes(d):
-        held = carried(d, t)
-        if held:
-            k = max(held, key=held.get)
-            pts.append(point(f"{t} : {plural(len(held), 'technique')} portée{'s' if len(held) > 1 else ''}",
-                             f"surtout {kind_fr(k)} ({num(held[k])})"))
-        else:
-            pts.append(point(f"{t} : aucune technique", "portée à la fin"))
-    return pts[:SECTION_POINTS[1]]
-
-
-def dared_points(d):
-    people = [p for p in d.get("people", []) if p.get("trials")]
-    if not people:
-        return [point("personne", "n’a rien essayé"), point("0 essai", "gardé")]
-    top = max(people, key=lambda p: (len(p["trials"]), -(p.get("id") or 0)))
-    pts = [point(f"{person_fr(top.get('id'))} a osé {len(top['trials'])} fois",
-                 f"et gardé {num(sum(1 for t in top['trials'] if t.get('kept')))}")]
-    bands = {}
-    for f in d.get("found") or []:
-        for b in f.get("by_will") or []:
-            x = bands.setdefault(b.get("band"), [0, 0])
-            x[0] += b.get("tried") or 0
-            x[1] += b.get("kept") or 0
-    if bands.get("bold") and bands["bold"][0] and bands.get("timid") and bands["timid"][0]:
-        pts.append(point(f"{round(100 * bands['bold'][1] / bands['bold'][0])} % gardés chez les aventuriers",
-                         f"contre {round(100 * bands['timid'][1] / bands['timid'][0])} % chez les frileux"))
-    wills = [(p.get("will_start"), p.get("will")) for p in people if p.get("will_start") is not None and p.get("will") is not None]
-    if wills:
-        pts.append(point(f"volonté {num(round(sum(w[0] for w in wills) / len(wills)))} → {num(round(sum(w[1] for w in wills) / len(wills)))}",
-                         "en moyenne chez ceux qui ont essayé"))
-    if len(pts) < SECTION_POINTS[0]:
-        pts.append(point(f"{num(len(people))} sur {num(len(d.get('people', [])))}", "ont essayé au moins une fois"))
-    return pts[:SECTION_POINTS[1]]
-
-
 REPUTED_WORDS = (("explore", "éclaireur"), ("gather", "meneur"))
-
-
-def reputed_points(d):
-    """« Qui sait où est la nourriture » (D56, PR 1 ter): who the most living believed best at the last year's end,
-    the scout and the one whose calls feed; a belief, never a title."""
-    pts = []
-    for t in tribes(d):
-        ys = [y for y in d.get("years", []) if y.get("tribe") == t and y.get("reputed")]
-        if not ys:
-            continue
-        last = ys[-1]
-        for act, word in REPUTED_WORDS:
-            top = (last["reputed"].get(act) or [None])[0]
-            if top:
-                pts.append(point(f"{t} : {person_fr(top['who'])}", f"{word} pour {plural(top['believers'], 'vivant')}, an {last['year']}"))
-    asked = sum(((y.get("decisions") or {}).get("review") or {}).get("asked") or 0 for y in d.get("years", []))
-    if asked:
-        answered = sum(((y.get("decisions") or {}).get("review") or {}).get("answered") or 0 for y in d.get("years", []))
-        pts.append(point(f"{plural(asked, 'question')}", f"« où est la nourriture ? », {num(answered)} avec un lieu"))
-    if len(pts) < SECTION_POINTS[0]:
-        pts += [point("personne", "n’est réputé"), point("aucune question", "au feu")][: SECTION_POINTS[0] - len(pts)]
-    return pts[:SECTION_POINTS[1]]
 
 
 def reputed_body(d):
@@ -2946,22 +2570,22 @@ def reputed_body(d):
         rep, rev = y.get("reputed") or {}, (y.get("decisions") or {}).get("review") or {}
         if not rep and not rev.get("asked") and not rev.get("set_aside"):
             continue
-        cells = [(h(f"an {y['year']}"), y["year"]), (tribe_chip(y.get("tribe")), y.get("tribe"))]
+        cells = [(h(f"cycle {y['year']}"), y["year"]), (tribe_chip(y.get("tribe")), y.get("tribe"))]
         for act, _ in REPUTED_WORDS:
             top = (rep.get(act) or [None])[0]
             cells.append((f"{person_link(top['who'])} ({fmt_thin(top['believers'])})", top["believers"]) if top else (None, 0))
         for key in ("asked", "answered", "named", "set_aside"):
             cells.append((fmt_thin(rev.get(key) or 0), rev.get(key) or 0))
         rows.append(cells)
-    return ("<p class=caption>Ce que chacun croit, jamais un titre : le plus cru par les vivants à la fin de l'année (entre parenthèses, combien le croient).</p>"
-            + data_table("t-repute", [("Année", True), ("Tribu", False), ("Éclaireur", True), ("Meneur", True), ("Questions", True),
+    return ("<p class=caption>Ce que chacun croit, jamais un titre : le plus cru par les vivants à la fin du cycle (entre parenthèses, combien le croient).</p>"
+            + data_table("t-repute", [("Cycle", True), ("Tribu", False), ("Éclaireur", True), ("Meneur", True), ("Questions", True),
                                        ("Avec un lieu", True), ("Appelés par leur nom", True, True), ("Mis à l'écart", True, True)],
                          rows, "Personne n'est réputé dans ce run."))
 
 
 def chronicle_points(d, year, events):
     """The year's points: how much happened, then its two biggest kinds, with their busiest day."""
-    pts = [point(f"{plural(len(events), 'événement')}", f"en l’an {year}")]
+    pts = [point(f"{plural(len(events), 'événement')}", f"au cycle {year}")]
     by = {}
     for e in events:
         by.setdefault(e["type"], []).append(e)
@@ -2972,9 +2596,9 @@ def chronicle_points(d, year, events):
             days[e["day"]] = days.get(e["day"], 0) + 1
         top = max(days, key=lambda k: (days[k], -k))
         pts.append(point(f"{num(len(by[typ]))} {one if len(by[typ]) == 1 else many}",
-                         f"dont {num(days[top])} le jour {top}" if days[top] > 1 and len(days) > 1 else f"le jour {top}" if len(days) == 1 else ""))
+                         f"dont {num(days[top])} la journée {top}" if days[top] > 1 and len(days) > 1 else f"la journée {top}" if len(days) == 1 else ""))
     if len(pts) < 2:
-        pts.append(point("rien", "cette année-là"))
+        pts.append(point("rien", "ce cycle-là"))
     return pts
 
 
@@ -3016,79 +2640,6 @@ def trials_tag(run):
     return "avec" if run.get("trials", True) else "sans"
 
 
-def run_body(s, r, d, store=None, year=None):
-    """The page of one run: `s` the series (from Lab.series()), `r` its run's state, `d` its data or None;
-    `store` finds the control run's data for the arrows, `year` the chronicle's year."""
-    serie, name = s["name"], r["name"]
-    where = {"fini": "terminé", "en cours": f"en cours, année {fmt(r.get('year'))}", "attend": "pas encore lancé"}.get(r["state"], r["state"])
-    head = (f'<h1>Run {h(name)} <span class="etat">{h(where)}</span></h1>'
-            f'<p class=muted>série <a href="{serie_url(serie)}">{h(serie)}</a> · {version_html(s.get("version"))} · '
-            f'graine {r.get("seed", "?")}, {trials_tag(r)} épreuves · {secs(r.get("elapsed"))}'
-            + (f' · <a href="{r["page"]}">page du vivarium</a>' if r.get("page") else "")
-            + (f' · <a href="{r["log"]}">log</a>' if r.get("log") else "") + "</p>")
-    if s.get("question"):
-        head += f'<p class=q>{h(s["question"])}</p>'
-    if d is None:
-        live = f" Le run est {where} : {fmt(r.get('alive'))} vivants, {fmt(r.get('dead'))} morts d’après le log." if r["state"] == "en cours" else ""
-        return head + f'<p class="err">{NO_DATA}.{h(live)}</p>'
-    sm = summary(d)
-    ts = tribes(d)
-    bt = by_tribe(d)
-    rc, label = control_of(s, r)
-    dc = store.load(s["name"], rc["name"]) if (rc is not None and store is not None) else None
-    smc = summary(dc) if dc is not None else None
-    if smc is None:
-        label, dc = None, None
-    else:
-        smc["rumours_all"] = sum(v["rumours"] or 0 for v in by_tribe(dc).values()) if has_fire_data(dc) else None
-    fire = has_fire_data(d)
-    toc = [("resume", "Résumé", False), ("facteurs", "Les facteurs", False), ("gens", "Les gens", False), ("morts", "Les morts", True), ("naissances", "Les naissances", True),
-           ("tous", "Tout le monde", True), ("ages", "Âges et familles", True), ("courbes", "Les courbes", False), ("annees", "Année par année", False), ("ou", "Où ils vivent", False), ("appris", "Ce qu’ils ont appris", False),
-           ("chronique", "La chronique", False), ("annexes", "Annexes", False)]
-    ctrl = (f'<p class=caption>Les pastilles comparent au témoin de la même série, <a href="{run_url(serie, rc["name"])}">{h(rc["name"])}</a> '
-            f'({h(label)}) : vert mieux, rouge moins bien, gris ni l’un ni l’autre. Sous chaque total, '
-            + " | ".join(f"{tribe_chip(t)} tribu {h(t)}, {h(tribe_side(d, t))}" for t in ts) + ".</p>") if smc else ""
-    down = lambda html_: html_.replace("<h2>", "<h3>").replace("</h2>", "</h3>")  # noqa: E731
-    body = [f'<section id=resume><p class=hero>{h(headline(d, sm, smc, label))}</p>'
-            f'{points_html(top_points(d, sm, bt, dc, label), "points top")}{run_tiles(d, sm, bt, smc, label)}{ctrl}</section>']
-    import panels  # noqa: PLC0415 (panels reads this module: imported when the page is built)
-    body.append('<section id=facteurs class=group><h2>Les facteurs</h2><p class=caption>Les réglages de ce run, une carte par réglage ; '
-                'en gris, ce qui est éteint (le témoin).</p>' + panels.factors_html(d) + '</section>')
-    body.append('<section id=gens class=group><h2>Les gens</h2>' + points_html(people_points(d, sm, bt))
-                + "<p class=caption>Les morts de chaque année par tribu : en rouge ceux de manque (faim, soif, froid), en gris ceux "
-                "de fond (maladie, vieillesse, couches) ; le contour dit la tribu, A à gauche de l’année"
-                + (", B à droite" if len(ts) > 1 else "") + ".</p>" + want_chart(d, wide=True).svg("morts de manque et de fond par an")
-                + '<section id=morts><h3>Les morts</h3>' + points_html(deaths_points(d, sm))
-                + '<p class=caption>Cliquez un titre de colonne pour trier, un nom pour la fiche. '
-                '<i class="g c-want">■</i> mort de manque (faim, soif, froid) · <i class="g c-bg">■</i> mort de fond (maladie, vieillesse, couches) ; '
-                'la barre dit l’âge.</p>' + deaths_table_v2(d) + "</section>"
-                + "<section id=naissances><h3>Les naissances</h3>" + points_html(births_points(d, sm, bt)) + births_table_v2(d) + "</section>"
-                + "<section id=tous><h3>Tout le monde</h3>" + points_html(everyone_points(d, sm)) + people_table_v2(d) + "</section>"
-                + panels.ages_families_html(d) + "</section>")
-    body.append('<section id=courbes class=group><h2>Les courbes</h2>' + panels.curves_html() + '</section>')
-    body.append(panels.years_section(d))
-    body.append('<section id=ou class=group><h2>Où ils vivent</h2>' + points_html(where_points(d, sm, bt))
-                + panels.maps_html()
-                + ("<h3>Ce que la tribu sait</h3>" + points_html(knowledge_points(d)) + knowledge_body(d) if fire else "") + "</section>")
-    body.append('<section id=appris class=group><h2>Ce qu’ils ont appris</h2>' + points_html(learnt_points(d, sm))
-                + "<h3>Les techniques</h3>" + points_html(techniques_points(d)) + techniques_html(d)
-                + ("<h3>Qui a osé quoi</h3>" + points_html(dared_points(d)) + dared_body(d) if fire else "")
-                + ("<h3>Qui sait où est la nourriture</h3>" + points_html(reputed_points(d)) + reputed_body(d) if fire else "") + "</section>")
-    chron = chronicle_html(d, year, f"/chronique/{urllib.parse.quote(serie)}/{urllib.parse.quote(name)}")
-    if chron:
-        chron = chron.replace("<h2>La chronique</h2>", "<h2>La chronique</h2>" + panels.chronicle_lead(d)
-                              + "<details class=chronall><summary>Chaque fait, un par un, année par année (filtres, recherche)</summary>", 1)
-        chron = chron[: chron.rindex("</section>")] + "</details></section>"
-    body.append(chron)
-    body.append('<section id=annexes class=group><h2>Annexes</h2><details class=detail><summary>Les tableaux bruts</summary>'
-                '<div data-lazy="annexes"><p class=muted>les annexes se chargent…</p></div></details></section>')
-    body.append('<dialog id=fiche class=fiche aria-label="fiche"><div class=in><button type=button class=close>fermer</button><div class=body></div></div></dialog>')
-    body.append(f"<script>{TABLE_JS}{CHRON_JS}{MAP2_JS}{LAZY_JS}{FICHE_JS}{TOC_JS}{panels.MAPS6_JS}{panels.SM6_JS}</script>")
-    base = f"{urllib.parse.quote(serie)}/{urllib.parse.quote(name)}"
-    return (head + f'<div class=runpage data-fiche="/fiche/{h(base)}" data-morceau="/morceau/{h(base)}">{toc_html(toc)}'
-            f'<div class=runmain>{"".join(body)}</div></div>')
-
-
 def run_piece(d, what):
     """A piece of the run page the lab sends when it is asked: `carte` the map, `annexes` the raw
     tables; None for anything else. The page carries neither: they weigh most."""
@@ -3101,16 +2652,16 @@ def run_piece(d, what):
     for t in ts:
         detail.append(f"<p><b>La culture de la tribu {h(t)} à la fin</b> : {h(culture_line(d, t))}.</p>")
     detail.append("<h3>Les autres courbes</h3><div class=charts>")
-    detail.append(births_deaths_chart(d).svg("naissances et morts par an"))
-    detail.append(kept_chart(d).svg("essais gardés par an"))
+    detail.append(births_deaths_chart(d).svg("naissances et morts par cycle"))
+    detail.append(kept_chart(d).svg("essais gardés par cycle"))
     detail.append(reserve_chart(d).svg("réserve moyenne"))
     detail.append("</div>")
     for t in ts:
-        detail.append(f"<h3>Les essais gardés de la tribu {h(t)}, par jour</h3>{kept_list(d, t)}")
+        detail.append(f"<h3>Les essais gardés de la tribu {h(t)}, par journée</h3>{kept_list(d, t)}")
     if has_fire_data(d):
         detail.append(nights_html(d))
         detail.append(rumours_html(d))
-    detail.append("<h3>Année par année</h3>" + years_table(d))
+    detail.append("<h3>Cycle par cycle</h3>" + years_table(d))
     detail.append(f"<h3>La vie de chacun, l’ancien tableau ({len(d.get('people', []))})</h3>" + people_table(d))
     return "".join(detail)
 
@@ -3232,84 +2783,6 @@ def compare_verdict(agg_a, agg_b):
     return "La version B contre la version A : " + " ; ".join(parts) + "."
 
 
-def same_plan(s, others):
-    """The other series made from the same plan (same plan name or identical runs), newest first."""
-    out = []
-    for o in others:
-        if o["name"] == s["name"]:
-            continue
-        if (s.get("plan_name") and o.get("plan_name") == s.get("plan_name")) or \
-                (s.get("signature") and o.get("signature") == s.get("signature")):
-            out.append(o)
-    return out
-
-
-def serie_body(s, all_series, store):
-    import panels  # noqa: PLC0415 (panels reads this module: imported when the page is built)
-    rows, _agg = series_numbers(s, store)
-    head, res = panels.serie_head(s, store.runs_dir)
-    # compare controls
-    kin = same_plan(s, all_series)
-    if kin:
-        opts = "".join(f'<option value="{h(o["name"])}">{h(o["name"])} — {h((o.get("version") or {}).get("commit") or "inconnu")}'
-                       f'{" : " + h(o["version"]["change"]) if (o.get("version") or {}).get("change") else ""}</option>' for o in kin)
-        versions = (f'<form class=inline method=get action="/compare"><input type=hidden name=a value="{h(s["name"])}">'
-                    f'<label>Comparer avec la version… <select name=b>{opts}</select></label> <button class=main>Comparer</button></form>')
-    else:
-        versions = '<p class=muted>Comparer avec la version… : aucune autre série n’a été faite du même plan. Relancez-le avec <code>lab.py run</code> et une phrase <code>--change</code>.</p>'
-    run_opts = "".join(f'<option value="{h(s["name"])}/{h(r["name"])}">{h(r["name"])}</option>' for r in s["runs"])
-    runs_cmp = (f'<form class=inline method=get action="/compare"><label>Deux runs de la série : <select name=a>{run_opts}</select></label> '
-                f'<label>et <select name=b>{run_opts}</select></label> <button>Comparer</button></form>')
-    body = [head, f"<div class=controls>{versions}{runs_cmp}</div>", panels.run_cards(s, res)]
-    # the aggregates and the curves by variant, named by what differs between the runs
-    groups = {}
-    for _r, d, sm in rows:
-        if d and sm:
-            groups.setdefault(panels.variant_of(d), []).append((d, sm))
-    labels = panels.variant_labels(groups) if groups else {}
-    order = sorted(groups, key=lambda k: (not k[0], not k[1]))
-    color = {k: panels.VARIANT_COLORS[i % len(panels.VARIANT_COLORS)] for i, k in enumerate(order)}
-    alive_li, want_li = [], []
-    for k in order:
-        sms = [sm for _d, sm in groups[k]]
-        a = aggregates([sm["alive"] for sm in sms])
-        a["want"] = aggregates([sm["want"] for sm in sms])
-        a["background"] = aggregates([sm["background"] for sm in sms])
-        alive_li.append(aggregates_html(a, labels[k]))
-        want_li.append(want_aggregates_html(a, labels[k]))
-    if order:
-        body.append("<h2>Vivants à la fin</h2><ul>" + "".join(alive_li) + "</ul>")
-        body.append("<h2>Morts de manque et de fond</h2><ul>" + "".join(want_li) + "</ul>")
-    # overlaid population curves
-    chart = None
-    for r, d, _sm in rows:
-        if not d:
-            continue
-        c = d.get("curves") or {}
-        days, alive = c.get("days") or [], c.get("alive") or []
-        if not days:
-            continue
-        if chart is None:
-            chart = Chart(0, max(days[-1], year_days(d)), max(alive or [1]), "années", "vivants (toutes tribus)", year_days(d))
-        else:
-            chart.ytop = nice_max(max(chart.ytop, max(alive or [1])))
-            chart.y = Scale(0, chart.ytop, chart.H - chart.B, chart.T)
-            if days[-1] > chart.xhi:
-                chart.xhi = days[-1]
-                chart.x = Scale(0, chart.xhi, chart.L, chart.W - chart.R)
-        col = color.get(panels.variant_of(d), TRIALS_COLOR[True])
-        chart.line(days, alive, col, None, width=1.3)
-        xs, ys, titles = year_marks(d, None, "alive")
-        chart.hover(xs, ys, [f"{r['name']}, {t}" for t in titles], col)
-    if chart:
-        for k in order:
-            chart.legend_item(color[k], labels[k])
-        body.append("<h2>Population de tous les runs</h2>" + chart.svg("population de tous les runs"))
-    else:
-        body.append(f'<p class="err">{NO_DATA}.</p>')
-    return "".join(body)
-
-
 def lire_body(all_series, store):
     items = []
     for s in all_series:
@@ -3382,14 +2855,14 @@ def compare_runs_body(sa, ra, da, sb, rb, db, title=True):
     body.append(ch.svg("population"))
     ch = births_deaths_chart(da, "A", slot=(0, 2))
     births_deaths_chart(db, "B", chart=ch, slot=(1, 2))
-    body.append(ch.svg("naissances et morts par an (A à gauche de l’année, B à droite)"))
+    body.append(ch.svg("naissances et morts par cycle (A à gauche du cycle, B à droite)"))
     ch = kept_chart(da, "A", side_colors("a"), slot=(0, 2))
     kept_chart(db, "B", side_colors("b"), chart=ch, slot=(1, 2))
-    body.append(ch.svg("essais gardés par an"))
+    body.append(ch.svg("essais gardés par cycle"))
     ch = reserve_chart(da, "A", side_colors("a"))
     reserve_chart(db, "B", side_colors("b"), dash=True, chart=ch)
     body.append(ch.svg("réserve moyenne"))
-    body.append("</div><p class=muted>A en trait plein et B en pointillé ; dans les barres, A à gauche de chaque année et B à droite.</p>")
+    body.append("</div><p class=muted>A en trait plein et B en pointillé ; dans les barres, A à gauche de chaque cycle et B à droite.</p>")
     body.append(f'<h2>Les cartes</h2><div class=cols2><div>{map_svg(da, "ma", "(A)")}</div><div>{map_svg(db, "mb", "(B)")}</div></div>')
     body.append("<h2>Les découvertes</h2>")
     ta, tb = tribes(da), tribes(db)
@@ -3457,7 +2930,7 @@ def compare_series_body(sa, sb, store):
             if not days:
                 continue
             if chart is None:
-                chart = Chart(0, max(days[-1], year_days(d)), max(alive or [1]), "années", "vivants (toutes tribus)", year_days(d))
+                chart = Chart(0, max(days[-1], year_days(d)), max(alive or [1]), "cycles des saisons", "vivants (toutes tribus)", year_days(d))
             else:
                 chart.ytop = nice_max(max(chart.ytop, max(alive or [1])))
                 chart.y = Scale(0, chart.ytop, chart.H - chart.B, chart.T)

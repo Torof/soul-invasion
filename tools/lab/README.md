@@ -132,7 +132,7 @@ Three screens:
     ce run" when the key is missing, the slider then moving the camp and
     the deaths only), the dead as a cross where they fell from the day
     they die, the camp at every year's end joined by its path, the day
-    shown as "an 3, printemps, jour 112", and the year's presence heatmap
+    shown as "cycle 3, printemps, journée 112" (a game day is « journée », four seasons a « cycle », « an » only for ages, real time says « réel »), and the year's presence heatmap
     as an option; **the population curve** alone, the whole width, years
     marked and winters shaded, and under it, on the same x scale, **the
     deaths of each year per tribe** as a small bar stacked in two, the
@@ -182,7 +182,7 @@ again; where this list and the pages differ, the pages are right:
   **Les facteurs** (cards by theme from `meta.factors`, every setting folded);
   **Les gens** with the age pyramids at the start and the end and the
   families as folded cards; **Les courbes** as small multiples sharing one
-  hairline (a click enlarges one); **Nourriture et tribus, année par année**
+  hairline (a click enlarges one); **Nourriture et tribus, cycle par cycle**
   (big figures, trend points, a strip of the years with ★ most food, ▼
   least, ▲ most births, ✕ most deaths by want; the table folded and loaded on
   demand); **Où ils vivent**, two canvas maps side by side, each among six
@@ -193,6 +193,30 @@ again; where this list and the pages differ, the pages are right:
   The heavy pieces come from `/morceau/<serie>/<run>?quoi=`: `fond` (the
   terrain PNG), `carte-base`, `carte-an&an=N`, `courbes`, `relief`,
   `nourriture`, `annees`. Colours always come with a word or a sign.
+
+**Since 24 November 2026 (D52 amended again, the pages in plain words)** the
+series and run pages are laid out once more (`plain.py`); where the lists
+above and the pages differ, the pages are right:
+
+- `/serie/<serie>`: a breadcrumb, the question (`plan.question`), the answer
+  under it (`plan.answer`, or "Réponse : pas encore écrite"), then **one
+  table**, a row a run: au départ, naissances, morts (dont faim), vivants à
+  la fin, ayant vécu en tout, couples ensemble à l'aube, distance du camp à
+  midi au printemps, déménagements, each header explained in a tooltip and in
+  a legend under the table. A row is named by the run's `note` (with its seed
+  when the note lacks it), else by the settings that differ between the runs,
+  and the seed. A run's `ref` (`"series/run"`) puts that run first, marked
+  "référence", and colours the run's cells against it: green better, red
+  worse, a gap of 5 % or less (2 at least, 3 points for the couples) left
+  uncoloured; the distance and the moves are never coloured. A click on a
+  row opens the run. The computing time of each run is in small at the bottom.
+- `/run/<serie>/<name>`: the breadcrumb "Labo › series › run" and "← retour
+  à la série", one summary line (at the start, births, deaths by cause,
+  alive at the end, lived in all, the simulated days and age-years), then
+  always the same parts, each opened by one plain sentence: the map, the
+  population, births and deaths on a frieze, the ages, the couples, the homes
+  changed, the chronicle; the rest folded at the bottom ("Pour aller plus
+  loin").
 
 The vivarium's own page is now minimal (settings, end counts, the map, the
 timing); `--page full` writes the long page of before.
@@ -244,8 +268,8 @@ first run's `args`.
 
 ```
 <runs-dir>/plans/<name>.json      the plan
-<runs-dir>/<name>/serie.json      {"plan", "runs": [{name, base, seed, trials, args,
-                                   started, ended, wall, pid, stopped}], "lab": {pid, jobs, note},
+<runs-dir>/<name>/serie.json      {"plan" (optional "answer"), "runs": [{name, base, seed, trials, args,
+                                   started, ended, wall, pid, stopped, optional note and ref}], "lab": {pid, jobs, note},
                                    "version": {commit, branch, dirty, change, worktree, binary, binary_mtime}}
 <runs-dir>/<name>/NAME.json       the vivarium's data (docs/10), what "Lire / Comparer" reads
 <runs-dir>/<name>/NAME.log        the run's stderr and stdout (`year N: A alive, D dead so far, S s`)
@@ -274,7 +298,8 @@ table of techniques, the verdict sentence, the deaths by want apart from
 the background (an unknown cause counts as background), the stored food
 and its missing-key tile, days, ages and places in words, the three
 tables of the run page, the tiles and their arrows, the curves' scaling,
-the stacked bar of deaths per year, the map and its `positions` fixture, the series' aggregates, the
+the map and its `positions` fixture, the series' aggregates, the series' table (the runs' names,
+the reference colouring, the new columns, the old runs without their keys), the run page's parts, the
 compare pages, the version record (a temporary git repository), the
 standard plans, the routes, and three end-to-end runs with a shell script
 in place of the vivarium (a series to its synthesis; the `run` command

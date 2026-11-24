@@ -425,6 +425,33 @@ clock, the only field no seed decides.
 | `relief.known` | Whether the world has heights (the vivarium's atlas has; a flat test world has not, every height then 0) | `true` or `false` |
 | `relief.dm` | The heights at the cells' centres, row by row from the north-west | `[decimetres, …]` |
 
+## Beside the data: the lab's series file
+
+The laboratory (D52) keeps a series in `<runs-dir>/<series>/serie.json` (the full layout is in
+`tools/lab/README.md`). Its pages read the keys below there; `plan.answer`, `runs[].note` and
+`runs[].ref` are optional, written by hand or by the AI session, and an older file without them
+opens all the same.
+
+Listed here, not in a table: the keys of the tables above are the data file's own, and a test
+of the vivarium walks them.
+
+- `plan.question`: the series' question, at the top of its page (text).
+- `plan.answer`: the answer, one or two sentences written when the series ends (24 November
+  2026); without it the page says "Réponse : pas encore écrite" (text).
+- `runs[].note`: the run's name for a human eye, what makes it differ (`"3 kg · richesse 7,3 ·
+  graine 1"`); the page adds the seed when the note does not say it. Without a note, the run is
+  named by the settings that differ between the series' runs, and its seed (text).
+- `runs[].ref`: the run it is compared with (24 November 2026): `"series/run"`, possibly a run of
+  another series, or a run of the same series alone; its cells are coloured against that run's
+  (text).
+
+The series' table reads from each run's data: `people` (at the start, births, deaths and those of
+hunger, alive at the end), `nights_apart` (the couples together at dawn: `together` over `dawns`),
+`positions` with `years[].camp` (the median distance at noon, on the longer axis, of the bodies
+to their tribe's camp of that year, else of the year before, in the spring of each year: the
+first quarter of `meta.days_per_year`), `home_changes` (counted) and `meta.timing.wall_s`. A run
+written before a key shows "—" in its column.
+
 ## Not in the file
 
 - The chronicle (on the full page, `--page full`), the map's picture, the families' pages (worked out from `people`:
