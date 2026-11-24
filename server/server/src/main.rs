@@ -519,7 +519,8 @@ fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
         // the life rule is off in the game and the protocol says nothing.
         | Event::BodyBorn { .. }
         | Event::PregnancyLost { .. }
-        | Event::Coupled { .. } => {}
+        | Event::Coupled { .. }
+        | Event::Parted { .. } => {}
         Event::DrinkRefused { body, at, reason } => {
             shared.tell_pilot(*body, drink_refused_view(*body, *at, *reason));
         }

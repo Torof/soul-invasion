@@ -96,6 +96,8 @@ clock, the only field no seed decides.
 | `years[].kept` | Trials judged in the year and kept | count |
 | `years[].copied` | Ways copied from camp-mates in the year | count |
 | `years[].homes_moved` | Homes moved in the year, by a trial or a copy | count |
+| `years[].couples.parted` | The tribe's couples parted in the year, apart too long, each counted once (D49, amended 24 November 2026) | count |
+| `years[].couples.taken_again` | The spouses its members took in the year after their first, widowed or parted | count |
 | `years[].home_moves[].day` | A home moved in the year (from the brain's news): the day | day |
 | `years[].home_moves[].body` | Whose | integer |
 | `years[].home_moves[].from` | The home before | `[x, y]` |
@@ -216,6 +218,8 @@ clock, the only field no seed decides.
 | `people[].father` | Its father's id; `null` when unknown | integer |
 | `people[].spouses[].day` | The day a spouse was taken | day |
 | `people[].spouses[].id` | That spouse | integer |
+| `people[].parted[].day` | The day it parted from a spouse, apart too long (D49, amended 24 November 2026) | day |
+| `people[].parted[].id` | That spouse | integer |
 | `people[].children` | Children whose mother or father it is | count |
 | `people[].lost` | The days it lost an unborn child | `[day, …]` |
 | `people[].will` | Its will (D50), once its mind was read; `null` before | 0 to 100 |
@@ -362,6 +366,8 @@ clock, the only field no seed decides.
 | `moving.utility[].day`, `.body`, `.tribe` | The day it set off, who, its tribe | |
 | `moving.utility[].mover_hungry_nights` | Its nightfalls hungry over the season after | count |
 | `moving.utility[].stayers`, `.stayers_hungry_nights_milli` | The grown of its tribe alive throughout who moved neither in the season before nor in that one; their mean hungry nightfalls over the same days, in thousandths | |
+| `moving.utility[].mover_drink_tiles_before`, `.mover_drink_tiles_after` | The mover's mean tiles from home to its first drink of the day, the days it drank, over the season before it set off and the season after (24 November 2026, the movers' water); null when it never drank there | tiles |
+| `moving.utility[].stayers_drink_tiles_after` | The stayers' mean of theirs over the season after; null when none drank | tiles |
 | `goals[]` | Each goal held over several days (D56, amended 24 November 2026): `body`, `tribe`, `day` set, `to`, `tiles`, `load_kj` carried then, `end` (`arrived`, `load`, `hunger`, `thirst`, `dropped`, `null` while held at the end), `end_day` | |
 | `map.data_uri` | The page's picture of the map at the run's end, the same PNG: the terrain, the camps red, the living white, the dead black | `"data:image/png;base64,…"` |
 | `map.tiles_per_pixel` | The scale: one pixel is so many tiles a side (5 on the vivarium's world) | tiles |

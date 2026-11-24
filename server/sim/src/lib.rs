@@ -398,6 +398,14 @@ pub struct Body {
     /// Its spouse, alive: cleared when the spouse dies (D49).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     spouse: Option<BodyId>,
+    /// The dawns in a row its spouse was beyond the content's reach (D49,
+    /// amended 24 November 2026): at `part_after_days` the couple parts.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    apart_days: u32,
+    /// The unmarried body it courts and the dawns in a row it slept near
+    /// it (D49, amended 24 November 2026): at `court_days` they wed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    courting: Option<(BodyId, u32)>,
     /// The child a woman carries, not yet born (D49).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pregnant: Option<Pregnancy>,
@@ -411,6 +419,11 @@ fn born_grown() -> i64 {
 
 fn male() -> Sex {
     Sex::Male
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// Work that lasts (D45): a body gathering from a tree or a plant, by
@@ -1180,6 +1193,13 @@ pub enum Event {
         /// The nearest it could take.
         b: BodyId,
     },
+    /// Two spouses parted, apart too long (D49, amended 24 November 2026).
+    Parted {
+        /// The lower id.
+        a: BodyId,
+        /// The other.
+        b: BodyId,
+    },
     /// A body died; it is now a corpse item.
     BodyDied {
         /// Who.
@@ -1367,6 +1387,11 @@ pub struct World {
     /// Never persisted.
     #[serde(skip)]
     piloted: BTreeSet<BodyId>,
+    /// Where each mind holds its home, as the brains last told
+    /// ([`World::set_homes`]): spouses are apart by their homes (D49,
+    /// amended 24 November 2026). Never persisted.
+    #[serde(skip)]
+    homes: BTreeMap<BodyId, Pos>,
     /// The content's kinds of tree, the trees of a chunk are placed with
     /// ([`World::trees_in`]); set by [`World::take_content`]. Never
     /// persisted: the trees are placed again, the same, from the map.
@@ -1469,6 +1494,7 @@ impl<'de> serde::Deserialize<'de> for World {
             grow_due: true,
             searches: Searches::default(),
             piloted: BTreeSet::new(),
+            homes: BTreeMap::new(),
             species: Vec::new(),
             geology: geology::Geology::default(),
             open_ground: open_ground::OpenGround::default(),
@@ -1582,6 +1608,7 @@ impl World {
             grow_due: true,
             searches: Searches::default(),
             piloted: BTreeSet::new(),
+            homes: BTreeMap::new(),
             species: Vec::new(),
             geology: geology::Geology::default(),
             open_ground: open_ground::OpenGround::default(),
@@ -2239,6 +2266,8 @@ impl World {
             mother: None,
             father: None,
             spouse: None,
+            apart_days: 0,
+            courting: None,
             pregnant: None,
         });
         self.enter_chunk(id, pos.chunk());
@@ -2523,6 +2552,14 @@ impl World {
     /// (D32). The server's input, as intentions are; never persisted.
     pub fn set_piloted(&mut self, bodies: impl IntoIterator<Item = BodyId>) {
         self.piloted = bodies.into_iter().collect();
+    }
+
+    /// Tells the world where each mind holds its home (D49, amended 24
+    /// November 2026): the brains' input, as intentions are; never
+    /// persisted. Spouses are apart by their homes when both have one,
+    /// else by where they stand: one sleeping out keeps the couple.
+    pub fn set_homes(&mut self, homes: impl IntoIterator<Item = (BodyId, Pos)>) {
+        self.homes = homes.into_iter().collect();
     }
 
     /// The lane of a body's searches.
@@ -2859,6 +2896,7 @@ impl World {
         for other in &mut self.bodies {
             if other.spouse == Some(id) {
                 other.spouse = None;
+                other.apart_days = 0;
             }
         }
         for item in body.inventory().collect::<Vec<_>>() {
