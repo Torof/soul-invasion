@@ -1046,8 +1046,8 @@ impl WhyProbe {
     fn nights_at_dawn(&mut self, world: &World, brains: &Brains, content: &Content) {
         let life = &content.needs.life;
         let today = world.today();
-        // By year of the calendar (today one age-year each).
-        let days_a_year = u64::from(world.calendar().days_per_year().max(1));
+        // By age-year.
+        let days_a_year = u64::from(world.calendar().days_per_age_year().max(1));
         let year =
             usize::try_from(u64::try_from(today).unwrap_or(0) / days_a_year).unwrap_or(usize::MAX);
         let reach = life.mate_within_tiles;
@@ -1945,13 +1945,23 @@ pub fn run_watched(
                 + u64::from(k) * u64::from(hi.saturating_sub(lo))
                     / u64::from(settings.people.max(1));
             let sex = if k % 2 == 0 { Sex::Female } else { Sex::Male };
-            born.push((years * per_year + u64::from(k) * 7, sex, false));
+            // Spread by fiftieths of an age-year (7 days when the age-year
+            // was the 50-day year): never a whole age-year more.
+            born.push((
+                years * per_year + u64::from(k) * 7 * per_year / 50,
+                sex,
+                false,
+            ));
         }
         for k in 0..settings.children {
             let years =
                 3 + u64::from(k) * 8 / u64::from(settings.children.saturating_sub(1).max(1));
             let sex = if k % 2 == 0 { Sex::Male } else { Sex::Female };
-            born.push((years * per_year + u64::from(k) * 5, sex, false));
+            born.push((
+                years * per_year + u64::from(k) * 5 * per_year / 50,
+                sex,
+                false,
+            ));
         }
         for k in 0..settings.infants {
             let sex = if k % 2 == 0 { Sex::Female } else { Sex::Male };

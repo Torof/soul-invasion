@@ -401,7 +401,7 @@ clock, the only field no seed decides.
 | `home_changes[].knew_villages` | Of them, those the mover knew a place within reach of | count |
 | `home_changes[].nearest_village` | The nearest village to the new home, `{tiles, people}`; null without any | object or null |
 | `home_changes[].known_places` | The places the mover knew of | count |
-| `nights_apart[]` | The fertile couples' dawns, by year of the calendar from the first (24 November 2026, the project lead: births need couples together at night): every dawn of a fertile wife not with child whose spouse lives; apart is farther than `mate_within_tiles` on either axis. Each dawn apart has one cause, the first that holds for a spouse away from its home | list, one per year |
+| `nights_apart[]` | The fertile couples' dawns, by age-year from the first (24 November 2026, the project lead: births need couples together at night): every dawn of a fertile wife not with child whose spouse lives; apart is farther than `mate_within_tiles` on either axis. Each dawn apart has one cause, the first that holds for a spouse away from its home | list, one per year |
 | `nights_apart[].dawns` | The fertile couples' dawns | dawns |
 | `nights_apart[].together` | Those spent together | dawns |
 | `nights_apart[].homes_apart` | Apart: their homes farther apart than `mate_within_tiles` | dawns |
