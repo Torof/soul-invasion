@@ -857,6 +857,9 @@ struct Judged {
     kept: bool,
     before: Lately,
     during: Lately,
+    /// A home's grades, the old home's and the new one's (D50, amended 24
+    /// November 2026).
+    grades: Option<(i64, i64)>,
 }
 
 /// The direction of a step of `way` from `before` to `after`: wider or
@@ -1258,6 +1261,9 @@ pub enum News {
         heard_days: u32,
         /// Over this many nights.
         heard_nights: u32,
+        /// A home's trial: the old home's grade and the new one's, by its
+        /// notes, on which it was judged (D50, amended 24 November 2026).
+        grades: Option<(i64, i64)>,
         /// The tick.
         at: u64,
     },
@@ -2014,16 +2020,23 @@ fn judge(
     let trials = &rules.needs.trials;
     let days = trials.days_for(trial.way.key(), per_year);
     let during = mind.lately(days);
-    let kept = match trial.heard.mean(days) {
-        Some(theirs) => {
-            let need = need_kj_per_day(rules, body);
-            let own = Lately {
-                kj_per_day: during.kj_per_day * 100 / need.max(1),
-                ..during
-            };
-            own.better_than(&theirs)
+    let grades = (trial.way == Way::Home)
+        .then(|| home_grades(rules, mind, trial))
+        .flatten();
+    let kept = if trial.way == Way::Home {
+        grades.is_some_and(|(old, new)| new - old > MARGIN_PERMILLE)
+    } else {
+        match trial.heard.mean(days) {
+            Some(theirs) => {
+                let need = need_kj_per_day(rules, body);
+                let own = Lately {
+                    kj_per_day: during.kj_per_day * 100 / need.max(1),
+                    ..during
+                };
+                own.better_than(&theirs)
+            }
+            None => during.better_than(&trial.before_days),
         }
-        None => during.better_than(&trial.before_days),
     };
     (
         kept,
@@ -2034,8 +2047,49 @@ fn judge(
             kept,
             before: trial.before_days,
             during,
+            grades,
         },
     )
+}
+
+/// The judge of a home trial (D50, amended 24 November 2026, the project
+/// lead: "il faut vraiment que le déménagement apporte quelque chose"):
+/// after its season, the grade ([`fare`]) of the new home by the body's
+/// own nights and days there, against the old home's by its notes, the
+/// same grade that chose it, kept above the margin: the two grades.
+/// `None`, given up: never slept at the new home, or it is the old one's
+/// place. No notes left of the old one, it counts nothing.
+fn home_grades(rules: &Content, mind: &Mind, trial: &Trial) -> Option<(i64, i64)> {
+    let sides = (place_side(rules), grove_side(rules));
+    let note = |at: Pos| {
+        let place = place_of(at, sides.0);
+        mind.lived
+            .iter()
+            .find(|l| !l.grove && l.place == place && l.nights >= 1000)
+    };
+    let walk = mind.walk(rules);
+    let grade = |l: &Lived| fare(l, &mind.lived, sides, Some(l), walk);
+    let new = note(mind.ways.home)?;
+    if place_of(mind.ways.home, sides.0) == place_of(trial.before.home, sides.0) {
+        return None;
+    }
+    Some((note(trial.before.home).map_or(0, grade), grade(new)))
+}
+
+/// What moving from `from` to `to` costs `mind` a day (D56, amended 24
+/// November 2026): the walk there, its energy and its time valued as in
+/// [`fare`], and a day of its own gathering lost to settling, spread over
+/// `trials.move_repay_seasons`. A move is worth it only above the margin
+/// plus this.
+fn move_cost(world: &World, rules: &Content, mind: &Mind, (from, to): (Pos, Pos)) -> i64 {
+    let walk = mind.walk(rules);
+    let tiles = u64::try_from(far(from, to).isqrt()).unwrap_or(u64::MAX);
+    let once = (walk.round_trip(tiles) / 2).saturating_add(walk.day_worth);
+    let days = rules
+        .needs
+        .trials
+        .move_repay_days(world.calendar().days_per_year());
+    i64::try_from(once / u64::from(days)).unwrap_or(i64::MAX)
 }
 
 /// Sets `way` in `mind` to its value in `theirs` (D50): with
@@ -3829,6 +3883,7 @@ impl Brains {
                     kept,
                     heard_days: trial.heard.days,
                     heard_nights: trial.heard.nights,
+                    grades: judged.grades,
                     at: now,
                 });
             } else if mind.trial.is_none()
@@ -4765,7 +4820,12 @@ impl Brains {
                     rules,
                     (&self.memory, seed, today),
                     (id, mind),
-                    (*caller, self.minds.get(caller).map_or(0, |m| m.will), *gain),
+                    (
+                        *caller,
+                        self.minds.get(caller).map_or(0, |m| m.will),
+                        *gain,
+                        *to,
+                    ),
                     (present, &going, 0),
                 ) {
                     weighed.push(w);
@@ -4950,6 +5010,12 @@ impl Brains {
             (&mut said, &mut moves_to, &mut followed),
         );
         let stays = own.filter(|w| !w.joined).map(|w| w.body);
+        // Staying, it forgets (the project lead, 24 November 2026): the
+        // call dropped, its trial ended unjudged; a better place told
+        // later is decided afresh, as a couple.
+        if let Some(mind) = stays.and_then(|id| self.minds.get_mut(&id)) {
+            mind.calling = None;
+        }
         // The children take their mother's decision.
         for &id in present {
             let Some(mother) = mother_of(id) else {
@@ -5258,7 +5324,7 @@ impl Brains {
                     rules,
                     (&self.memory, seed, today),
                     (m, mind),
-                    (teller, teller_will, k.gain),
+                    (teller, teller_will, k.gain, k.to),
                     (present, &going, k.there),
                 ) else {
                     continue;
@@ -5299,9 +5365,9 @@ impl Brains {
     /// balance ([`weigh_move`]): the gain it sees there, trusting itself,
     /// and the company it would lack here less there, its spouse counting
     /// `company.spouse_counts` and staying. Above the margin it goes
-    /// alone, as ever; otherwise it stays with its spouse: no trial
-    /// opened, the call kept for a later evening, and those who said they
-    /// come stay too. Its weighing, if it weighed.
+    /// alone, as ever; otherwise it stays with its spouse and forgets: no
+    /// trial opened, the call dropped, and those who said they come stay
+    /// too. Its weighing, if it weighed.
     fn weigh_own_going(
         &self,
         world: &World,
@@ -5315,7 +5381,7 @@ impl Brains {
             &mut BTreeMap<BodyId, BodyId>,
         ),
     ) -> Option<Weighed> {
-        let &(caller, _, gain, ref weighed) = call?;
+        let &(caller, to, gain, ref weighed) = call?;
         let spouse = world.body(caller)?.spouse()?;
         if !weighed.iter().any(|w| w.body == spouse && !w.joined) {
             return None;
@@ -5336,7 +5402,7 @@ impl Brains {
             rules,
             (&self.memory, seed, today),
             (caller, mind),
-            (caller, mind.will, gain),
+            (caller, mind.will, gain, to),
             (present, &going, 0),
         )?;
         if !own.joined {
@@ -8252,7 +8318,8 @@ fn spouse_away(world: &World, body: &Body, present: &[BodyId]) -> Option<BodyId>
 /// content's `company.spouse_counts` companions (the project lead, 24
 /// November 2026): its going pulls without forcing. Its trust is its
 /// credit in the caller at living if it believes it best at it, else the
-/// credit of a teller ([`memory::credit`]). It joins above a hundredth of
+/// credit of a teller ([`memory::credit`]). Less what the move costs it a
+/// day from its own home ([`move_cost`]). It joins above a hundredth of
 /// a day ([`MARGIN_PERMILLE`]). `there_before`: those who said they go
 /// when a kept call was called, in hundredths of a body. `None`: it does
 /// not weigh it: a child (its home is its mother's), or under a trial
@@ -8262,7 +8329,7 @@ fn weigh_move(
     rules: &Content,
     (memory, seed, today): (&Store, u64, u32),
     (id, mind): (BodyId, &Mind),
-    (caller, caller_will, gain): (BodyId, u8, i64),
+    (caller, caller_will, gain, to): (BodyId, u8, i64, Pos),
     (present, going, there_before): (&[BodyId], &dyn Fn(BodyId) -> bool, u64),
 ) -> Option<Weighed> {
     let body = world.body(id)?;
@@ -8300,7 +8367,10 @@ fn weigh_move(
     let lack = |others: u64| {
         i64::try_from(company.lacking_hundredths(mind.sociable, others)).unwrap_or(i64::MAX)
     };
-    let balance = gain * i64::from(trust) / 100 + lack(here) - lack(there);
+    // What the move costs it a day, from its own home (D56, amended 24
+    // November 2026): the gain must repay it.
+    let cost = move_cost(world, rules, mind, (mind.ways.home, to));
+    let balance = gain * i64::from(trust) / 100 - cost + lack(here) - lack(there);
     Some(Weighed {
         body: id,
         balance,
@@ -8342,7 +8412,10 @@ fn home_fare(rules: &Content, mind: &Mind) -> Option<i64> {
 
 /// [`lived_home`], with how much better it fares there than at its home
 /// (D56, amended 24 November 2026), in per mille of a day of need: what
-/// it tells when it calls the move. The home never slept at counts 0.
+/// it tells when it calls the move. The home never slept at counts 0. A
+/// place is chosen by what it gains a day less what the move costs a day
+/// ([`move_cost`]), and only above the margin, exactly (24 November 2026:
+/// no rounding).
 fn lived_best(world: &World, rules: &Content, mind: &Mind) -> Option<(Pos, i64)> {
     let sides = (place_side(rules), grove_side(rules));
     let home = place_of(mind.ways.home, sides.0);
@@ -8350,24 +8423,23 @@ fn lived_best(world: &World, rules: &Content, mind: &Mind) -> Option<(Pos, i64)>
     let home_notes = mind.lived.iter().find(|l| is_home(l) && l.nights >= 1000);
     let nights = u64::from(rules.needs.trials.home_nights(mind.will)) * 1000;
     let walk = mind.walk(rules);
+    let grade = |l: &Lived| fare(l, &mind.lived, sides, home_notes, walk);
+    let at_home = home_notes.map_or(0, grade);
+    // What it gains a day there, less what the move costs a day: a place
+    // must beat the home by the margin once the move is repaid (D56,
+    // amended 24 November 2026).
+    let net = |l: &Lived| {
+        let side = if l.grove { sides.1 } else { sides.0 };
+        let there = place_centre(l.place, side);
+        grade(l) - at_home - move_cost(world, rules, mind, (mind.ways.home, there))
+    };
     let best = mind
         .lived
         .iter()
-        .filter(|l| is_home(l) || l.lived() >= nights)
-        .max_by_key(|l| {
-            (
-                fare(l, &mind.lived, sides, home_notes, walk).div_euclid(10),
-                is_home(l),
-                !l.grove,
-                l.lived(),
-                std::cmp::Reverse(l.place),
-            )
-        })?;
-    if is_home(best) {
-        return None;
-    }
-    let gain = fare(best, &mind.lived, sides, home_notes, walk)
-        - home_notes.map_or(0, |h| fare(h, &mind.lived, sides, home_notes, walk));
+        .filter(|l| !is_home(l) && l.lived() >= nights)
+        .max_by_key(|l| (net(l), !l.grove, l.lived(), std::cmp::Reverse(l.place)))
+        .filter(|l| net(l) > MARGIN_PERMILLE)?;
+    let gain = grade(best) - at_home;
     let side = if best.grove { sides.1 } else { sides.0 };
     let centre = place_centre(best.place, side);
     let map = world.map();
@@ -8520,6 +8592,7 @@ fn end_goal(
         kept: false,
         heard_days: trial.heard.days,
         heard_nights: trial.heard.nights,
+        grades: None,
         at: now,
     });
 }
@@ -12306,6 +12379,8 @@ mod tests {
     fn a_move_called_at_the_fire_is_joined_by_some_and_not_by_others_each_at_its_balance() {
         let (world, mut rules, mut brains, _, camp) = deciding(8);
         rules.needs.company = crate::content::Company::placeholders();
+        // The move's cost aside here: its own test weighs it.
+        rules.needs.trials.move_repay_seasons = 100_000;
         let to = Pos::new(camp.x + 40, camp.y);
         brains.minds.get_mut(&BodyId(1)).unwrap().will = 90;
         for (&id, mind) in &mut brains.minds {
@@ -12401,6 +12476,8 @@ mod tests {
         let third = |count: u32, gain: i64, spouses: bool| {
             let (mut world, mut rules, mut brains, _, camp) = deciding(count);
             rules.needs.company = crate::content::Company::placeholders();
+            // The move's cost aside here: its own test weighs it.
+            rules.needs.trials.move_repay_seasons = 100_000;
             for mind in brains.minds.values_mut() {
                 mind.sociable = 60;
             }
@@ -12861,9 +12938,9 @@ mod tests {
             brains.minds[&BodyId(2)].ways.home,
             brains.minds[&BodyId(2)].home_at_dusk
         );
-        // Cares weakly: it stays with its spouse, keeps its call, and the
+        // Cares weakly: it stays with its spouse and forgets its call; the
         // one who said it comes stays too; no trial is opened.
-        let (own, brains, to, camp) = evening(100);
+        let (own, brains, _, camp) = evening(100);
         assert!(!own.joined, "{own:?}");
         for b in [1, 3] {
             let mind = &brains.minds[&BodyId(b)];
@@ -12871,9 +12948,50 @@ mod tests {
             assert_eq!(mind.ways.home, camp);
             assert!(mind.trial.is_none());
         }
-        let kept = brains.minds[&BodyId(1)].calling.expect("the call kept");
-        assert_eq!((kept.to, kept.gain), (to, 300));
+        assert!(brains.minds[&BodyId(1)].calling.is_none(), "it forgets");
         assert!(!brains.groups.contains_key(&BodyId(1)));
+    }
+
+    #[test]
+    fn a_caller_who_stays_forgets_then_decides_afresh_on_a_new_call() {
+        let (mut world, mut rules, mut brains, _, camp) = deciding(10);
+        rules.needs.company = crate::content::Company::placeholders();
+        wed(&mut world, BodyId(1), BodyId(2));
+        for (&id, mind) in &mut brains.minds {
+            (mind.will, mind.sociable) = match id.0 {
+                1 => (90, 100),
+                2 => (10, 100),
+                _ => (10, 60),
+            };
+        }
+        let present: Vec<BodyId> = (1..=10).map(BodyId).collect();
+        // A small gain: its spouse says no, it stays and forgets.
+        let first = Pos::new(camp.x + 40, camp.y);
+        calling_at(&world, &mut brains, BodyId(1), first, 120);
+        let news = decide_evening(&world, &rules, &mut brains, camp, &present);
+        assert!(news.iter().any(|n| matches!(
+            n,
+            News::MoveCalled { own: Some(w), .. } if !w.joined
+        )));
+        assert!(brains.minds[&BodyId(1)].calling.is_none());
+        assert!(brains.minds[&BodyId(1)].trial.is_none());
+        // The next evening it tells nothing of it: no call.
+        let news = decide_evening(&world, &rules, &mut brains, camp, &present);
+        assert!(!news.iter().any(|n| matches!(n, News::MoveCalled { .. })));
+        // A new and far better place: called afresh, its spouse weighs it
+        // again, as a couple.
+        let second = Pos::new(camp.x, camp.y + 40);
+        calling_at(&world, &mut brains, BodyId(1), second, 3000);
+        let news = decide_evening(&world, &rules, &mut brains, camp, &present);
+        let w = weighed_of(&news);
+        let spouse = w
+            .iter()
+            .find(|w| w.body == BodyId(2))
+            .expect("weighed afresh");
+        assert!(spouse.joined, "{spouse:?}");
+        for b in [1, 2] {
+            assert_eq!(brains.minds[&BodyId(b)].ways.home, second);
+        }
     }
 
     #[test]
@@ -13850,6 +13968,7 @@ mod tests {
             kept: true,
             before: Lately::default(),
             during: Lately::default(),
+            grades: None,
         });
         let news = night(&mut world, &rules, &mut brains, &[teller, listener]);
         let told: Vec<RecordId> = news
@@ -14369,10 +14488,13 @@ mod tests {
         };
         // A little food in its home's grove, a day's water at (8, 8), some
         // 180 tiles away: living by the water saves more walking than the
-        // grove's walk costs.
+        // grove's walk costs. The grove's middle, (2, 2) of the places,
+        // nearer the water, grades as well and costs less to move to: it
+        // wins (D56, amended 24 November 2026: the move must repay its
+        // cost).
         let mind = at_home(vec![picked((0, 0), 20, 600), drank((8, 8), 50, 1000)]);
         assert!(fare_of(&rules, &mind, (8, 8), false) > fare_of(&rules, &mind, (0, 0), false));
-        assert_eq!(goes(&world, &rules, &mind).map(|g| g.0), Some((8, 8)));
+        assert_eq!(goes(&world, &rules, &mind).map(|g| g.0), Some((2, 2)));
         // Home gives water and food within reach, a richer grove far off:
         // no move, the water there being far.
         let mind = at_home(vec![
@@ -14436,10 +14558,135 @@ mod tests {
             1000,
         );
         assert_eq!(goes(&world, &rules, &mind), None);
-        // A third of a day's food to walk there and back: the water wins.
+        // A third of a day's food to walk there and back: the water wins
+        // over the home; the grove's middle, (2, 2) of the places, nearer
+        // the water and cheaper to move to, wins over the water's place.
         mind.walk_kilotile = 830;
         assert!(fare_of(&rules, &mind, (8, 8), false) > fare_of(&rules, &mind, (0, 0), false) + 10);
-        assert_eq!(goes(&world, &rules, &mind).map(|g| g.0), Some((8, 8)));
+        assert_eq!(goes(&world, &rules, &mind).map(|g| g.0), Some((2, 2)));
+    }
+
+    #[test]
+    fn a_home_trial_is_kept_by_its_grade_over_a_season_despite_worse_first_days() {
+        let mut rules = rules();
+        rules.needs.trials.horizon_seasons = vec![("home".to_owned(), 1)];
+        assert_eq!(rules.needs.trials.days_for("home", 50), 12, "a season");
+        let world = field(256, 250, Pos::new(5, 5));
+        let body = &world.bodies[0];
+        let side = place_side(&rules);
+        // The old home (0, 0): fed and watered, cold nights. The new one
+        // (8, 8), lived since the move: fed and watered, warm nights.
+        let fed =
+            |grove: PlaceKey, water: PlaceKey| vec![picked(grove, 0, 1000), drank(water, 0, 1000)];
+        let lived = |new_nights: [u64; SENSES]| {
+            let mut mind = Mind::new(Pos::new(5, 5));
+            lived_at(
+                &mut mind,
+                (0, 0),
+                5,
+                &night_with(COLD, 0, fed((0, 0), (0, 0))),
+                950,
+            );
+            lived_at(
+                &mut mind,
+                (8, 8),
+                10,
+                &night_with(new_nights, 0, fed((2, 2), (8, 8))),
+                950,
+            );
+            let before = mind.ways;
+            mind.ways.home = place_centre((8, 8), side);
+            // Its first days there were worse than before: the move, the
+            // settling, hungry and bare.
+            mind.days = vec![
+                Day {
+                    hungry: true,
+                    bare: true,
+                    ..Day::default()
+                };
+                3
+            ];
+            let trial = Trial {
+                way: Way::Home,
+                before,
+                started_day: 0,
+                before_days: Lately {
+                    kj_per_day: 5000,
+                    ..Lately::default()
+                },
+                heard: HeardDays::default(),
+                caller: None,
+            };
+            (mind, trial)
+        };
+        let (mind, trial) = lived([0; SENSES]);
+        let (kept, judged) = judge(&rules, 50, body, &mind, &trial);
+        // The old judge would give it up; the grade keeps it.
+        assert!(!judged.during.better_than(&trial.before_days));
+        assert!(kept, "graded better than the old home by the margin");
+        // As cold there as at the old home: no better, given up.
+        let (mind, trial) = lived(COLD);
+        assert!(!judge(&rules, 50, body, &mind, &trial).0);
+    }
+
+    #[test]
+    fn a_far_barely_better_place_is_refused_while_a_near_one_is_taken() {
+        let mut rules = rules();
+        rules.needs.trials.home_nights_by_will = vec![(0, 1)];
+        let world = field(256, 250, Pos::new(5, 5));
+        let days = rules
+            .needs
+            .trials
+            .move_repay_days(world.calendar().days_per_year());
+        // Its home (0, 0) lacks a tenth of a day of company each night; a
+        // place near, (1, 0), or some 200 tiles off, (12, 0), lacks none:
+        // each a tenth of a day better. A day's light walks 600 tiles, a
+        // day gathers a day of need.
+        let with = |place: PlaceKey, lack: u64| {
+            let mut mind = Mind::new(Pos::new(5, 5));
+            (mind.walk_kilotile, mind.day_tiles) = (13, 600);
+            mind.gathered = (1000 * 1000, 1000);
+            lived_at(
+                &mut mind,
+                (0, 0),
+                3,
+                &night_with([0, 0, 0, lack], 0, vec![]),
+                1000,
+            );
+            lived_at(
+                &mut mind,
+                place,
+                1,
+                &night_with([0; SENSES], 0, vec![]),
+                1000,
+            );
+            mind
+        };
+        let cost = |mind: &Mind, place: PlaceKey| {
+            move_cost(
+                &world,
+                &rules,
+                mind,
+                (mind.ways.home, place_centre(place, 16)),
+            )
+        };
+        let (near, far_off) = (with((1, 0), 100), with((12, 0), 100));
+        // Each move: the walk there, and a day of settling, over a season.
+        assert!(cost(&near, (1, 0)) >= 1000 / i64::from(days));
+        assert!(cost(&far_off, (12, 0)) > cost(&near, (1, 0)) + 20);
+        assert!(100 - cost(&near, (1, 0)) > MARGIN_PERMILLE);
+        assert!(100 - cost(&far_off, (12, 0)) <= MARGIN_PERMILLE);
+        assert_eq!(goes(&world, &rules, &near).map(|g| g.0), Some((1, 0)));
+        assert_eq!(goes(&world, &rules, &far_off), None, "not worth the move");
+        // Clearly better, the far place repays its cost.
+        let far_better = with((12, 0), 300);
+        assert_eq!(
+            goes(&world, &rules, &far_better).map(|g| g.0),
+            Some((12, 0))
+        );
+        // A listener weighs the same cost from its own home.
+        let called = |mind: &Mind, gain: i64| gain - cost(mind, (12, 0));
+        assert!(called(&far_off, 100) <= MARGIN_PERMILLE);
     }
 
     #[test]

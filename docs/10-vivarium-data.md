@@ -238,6 +238,7 @@ clock, the only field no seed decides.
 | `people[].trials[].kept` | Whether it was kept; `null` while unjudged | boolean |
 | `people[].trials[].will` | Its will when it started the trial; `null` for a mind not read then | 0 to 100 |
 | `people[].trials[].heard` | Whether the step was a kept way heard at the fire (D55) | boolean |
+| `people[].trials[].grades_permille` | A home trial judged (D50, amended 24 November 2026): the old home's grade and the new one's by the body's notes, `[old, new]`, kept when the new beats the old by a hundredth of a day; `null` otherwise | per mille of a day of need |
 | `people[].copied` | Ways it copied from camp-mates | count |
 | `people[].thin_hours` | Hours its fat reserve was under half | person-hours |
 | `people[].weak_hours` | Hours it was under a fifth | person-hours |

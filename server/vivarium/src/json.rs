@@ -119,6 +119,7 @@ fn trial(t: &TrialLine) -> Value {
         "kept": t.judged.map(|(_, kept)| kept),
         "will": t.will,
         "heard": t.heard,
+        "grades_permille": t.grades.map(|(old, new)| [old, new]),
     })
 }
 

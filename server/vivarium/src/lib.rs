@@ -353,6 +353,8 @@ pub struct TrialLine {
     pub will: Option<u8>,
     /// Whether the step was a kept way heard at the fire (D55).
     pub heard: bool,
+    /// A home's trial judged: the old home's grade and the new one's.
+    pub grades: Option<(i64, i64)>,
 }
 
 /// What a trial or a copy did, for the counters per year (D50).
@@ -1901,6 +1903,7 @@ pub fn run_watched(
                         judged: None,
                         will,
                         heard,
+                        grades: None,
                     });
                     (
                         *body,
@@ -1911,7 +1914,11 @@ pub fn run_watched(
                     )
                 }
                 News::Tried {
-                    body, way, kept, ..
+                    body,
+                    way,
+                    kept,
+                    grades,
+                    ..
                 } => {
                     let person = people.entry(*body).or_default();
                     let (step, kind) = person
@@ -1923,6 +1930,7 @@ pub fn run_watched(
                             || (String::new(), Step::of_way(*way)),
                             |t| {
                                 t.judged = Some((day, *kept));
+                                t.grades = *grades;
                                 (t.step.clone(), t.kind)
                             },
                         );

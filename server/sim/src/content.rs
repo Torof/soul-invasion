@@ -1266,10 +1266,17 @@ pub struct Trials {
     /// heard, so that more trials no longer mean more blind draws and a
     /// longer year lengthens them with it. Ways: those of [`TRIAL_WAYS`];
     /// one not named is judged on `trial_days`, and never on fewer. A
-    /// home tried alone is not named: a short stay, then back if not kept
-    /// (the season's horizon is for the acts of a group).
+    /// home is judged by its grade over its horizon (D50, amended 24
+    /// November 2026).
     #[serde(default)]
     pub horizon_seasons: Vec<(String, u32)>,
+    /// The seasons over which a move must repay its cost (D56, amended 24
+    /// November 2026, the project lead: "il faut vraiment que le
+    /// déménagement apporte quelque chose"): a move is worth it only if
+    /// its gain a day passes the margin plus the walk there and a day of
+    /// settling, spread over these seasons. One when absent.
+    #[serde(default = "one")]
+    pub move_repay_seasons: u32,
 }
 
 /// The ways a trial may move, as the content names them (D50).
@@ -1298,6 +1305,7 @@ impl Default for Trials {
             lesson_floor: 100,
             lesson_heed_by_will: Vec::new(),
             horizon_seasons: Vec::new(),
+            move_repay_seasons: 1,
         }
     }
 }
@@ -1421,6 +1429,12 @@ impl Trials {
             .map_or(self.trial_days, |&(_, seasons)| {
                 season_days(seasons, days_per_year).max(self.trial_days)
             })
+    }
+
+    /// The days over which a move must repay its cost, at least one.
+    #[must_use]
+    pub fn move_repay_days(&self, days_per_year: u32) -> u32 {
+        season_days(self.move_repay_seasons, days_per_year).max(1)
     }
 
     /// The nights a body of `will` must have slept at a place before a

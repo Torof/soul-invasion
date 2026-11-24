@@ -217,10 +217,13 @@
     //                    calendar (a quarter of the year in whole days):
     //                    a stock kept (stock_kj) and sleeping out or at
     //                    the camp (sleep_out) over one season, twelve days
-    //                    of the vivarium's fifty-day year. A home tried
-    //                    alone is not named: a short stay on trial_days,
-    //                    then back if not kept; the season is for the acts
-    //                    of a group (not yet in the game).
+    //                    of the vivarium's fifty-day year; a home (24
+    //                    November 2026) over one season too, judged by its
+    //                    grade there against the old home's.
+    // move_repay_seasons: 1 — a move must repay the walk there and a day of
+    //                    settling within a season (24 November 2026, the
+    //                    lead: "il faut vraiment que le déménagement
+    //                    apporte quelque chose").
     // home_nights_by_will: a trial of the home sets it at the place or
     //                    grove of its notebook where its own body would
     //                    fare best (what it drank and gathered there, each
@@ -264,7 +267,8 @@
         lesson_days: 50,
         lesson_floor: 10,
         lesson_heed_by_will: [(0, 100), (100, 30)],
-        horizon_seasons: [("stock_kj", 1), ("sleep_out", 1)],
+        horizon_seasons: [("stock_kj", 1), ("sleep_out", 1), ("home", 1)],
+        move_repay_seasons: 1,
     ),
     // The rules of thought that keep a mind light (D53, decided by the
     // project lead on 22 November 2026): perceptions and gestures, never
