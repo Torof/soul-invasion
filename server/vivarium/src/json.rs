@@ -880,6 +880,7 @@ fn decisions_json(dec: &DecisionYear) -> Value {
         "said": by_act(dec.said),
         "calls_full": dec.calls_full,
         "calls_skipped": dec.skipped,
+        "barred": {"made": dec.barred[0], "heard": dec.barred[1], "cleared_stood": dec.barred[2], "cleared_heard": dec.barred[3]},
         "absent": dec.absent,
         "groups": {
             "formed": dec.groups,
@@ -887,7 +888,7 @@ fn decisions_json(dec: &DecisionYear) -> Value {
             "followed": dec.followed,
             "full": dec.full,
             "left": dec.left,
-            "ended": {"home": dec.ended[0], "bare": dec.ended[1], "night": dec.ended[2]},
+            "ended": {"home": dec.ended[0], "bare": dec.ended[1], "night": dec.ended[2], "blocked": dec.ended[3]},
             "moved_on": dec.moved_on,
             "stretch_ticks": {"mean": mean(dec.stretch.0, dec.stretch.1), "max": dec.stretch.2, "groups": dec.stretch.1},
             "together": dec.together,

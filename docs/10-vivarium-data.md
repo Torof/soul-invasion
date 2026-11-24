@@ -140,7 +140,8 @@ clock, the only field no seed decides.
 | `years[].decisions.groups.followed` | Members who walked behind their caller at least once that day (`Follow`, on the way there or home) | count |
 | `years[].decisions.groups.full` | Members who carried what they wanted before the group went home | count |
 | `years[].decisions.groups.left` | Members who left their group on the way (lost sight of the caller, or the place out of reach) | count |
-| `years[].decisions.groups.ended.*` | How the groups ended: `home` (the caller called them home), `bare` (the place bare or out of reach and nothing to go on to), `night` (night came first, or the caller died) | count |
+| `years[].decisions.groups.ended.*` | How the groups ended: `home` (the caller called them home), `bare` (the place bare and nothing to go on to), `night` (night came first, or the caller died), `blocked` (the caller could not walk to the place: seen, not reached, D53 amended 24 November 2026; told as `bare` before) | count |
+| `years[].decisions.barred.*` | Marks of seen, not reached (D53, amended 24 November 2026): `made` (a walk barred), `heard` (at the fire), `cleared_stood` (the body stood on the place), `cleared_heard` (at a fire, from one who stood on it since) | count |
 | `years[].decisions.groups.moved_on` | Groups that found their place bare and went on to the caller's next | count |
 | `years[].decisions.groups.stretch_ticks.mean` | The stretch of a group: from its caller's arrival at the place to its last member's; the mean over the groups where both arrived; `null` without one | ticks |
 | `years[].decisions.groups.stretch_ticks.max` | The longest | ticks |
@@ -251,7 +252,7 @@ clock, the only field no seed decides.
 | `people[].lines[].tick` | The tick | tick |
 | `people[].lines[].what` | The line, as the chronicle says it | string |
 | `records[].id` | A record of the common memory at the end (D55): its number | integer |
-| `records[].kind` | `place`, `water`, `trial`, `night` or `reputed` (who is believed to know, D56, PR 1 ter) | string |
+| `records[].kind` | `place`, `water`, `trial`, `night`, `reputed` (who is believed to know, D56, PR 1 ter) or `barred` (a place seen, not reached, D53 amended 24 November 2026) | string |
 | `records[].day` | Its day | day |
 | `records[].witness` | Who saw it first, or the trial's body; `null` for a night | integer |
 | `records[].refs` | Accesses and nights holding it | count |
