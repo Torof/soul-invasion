@@ -4979,6 +4979,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         h.push_str("<h2>The curves</h2>");
         h.push_str(&self.curves());
         h.push_str(&self.food_table());
+        h.push_str(&self.hands_section());
         h.push_str(&self.tribes_table());
         h.push_str(&self.ages_table());
         let _ = write!(
@@ -5973,6 +5974,14 @@ img.map{{image-rendering:pixelated;border:1px solid #999;max-width:100%}}</style
         );
         h.push_str(&self.settlements_section());
         format!("{h}{}</body></html>\n", self.timing())
+    }
+
+    /// The hands' section of the full page (D57).
+    fn hands_section(&self) -> String {
+        let changes: Vec<(u64, u8)> = self.home_changes.iter().map(|c| (c.day, c.tribe)).collect();
+        let days = u64::from(self.calendar().days_per_age_year().max(1));
+        let tribes = u8::try_from(self.camps.len()).unwrap_or(u8::MAX);
+        self.hands.html(&self.hands.json(&changes, days, tribes))
     }
 
     /// The long page of before lab 6 (`--page full`): the factors, the

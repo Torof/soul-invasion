@@ -464,6 +464,77 @@ fn year_json(ay: u64, y: &HandsYear, changes: &[(u64, u8)], t: u8, per: u64) -> 
     })
 }
 
+impl HandsProbe {
+    /// The full page's section (D57), from the probe's JSON: the first
+    /// container, the tellings, and each tribe's age-years.
+    #[must_use]
+    pub fn html(&self, data: &Value) -> String {
+        use std::fmt::Write as _;
+        let mut h = String::from("<h2>The hands</h2>");
+        let first = &data["first"];
+        if first.is_null() {
+            h.push_str("<p>No container was made.</p>");
+        } else {
+            let _ = write!(
+                h,
+                "<p>The first container: day {}, by {} of tribe {}. {} made in all ({} remakes after a tear) by {} bodies; {} tellings at the fire, {} listeners, {} of them never tried; heard across the tribes {} times.</p>",
+                first["day"],
+                first["body"],
+                first["tribe"].as_str().unwrap_or("?"),
+                data["made"],
+                data["remakes"],
+                data["makers"],
+                data["told"].as_array().map_or(0, Vec::len),
+                data["heard"],
+                data["heard_never_tried"],
+                data["heard_across_tribes"]
+            );
+        }
+        let show = |v: &Value| {
+            if v.is_null() {
+                "–".to_owned()
+            } else {
+                v.to_string()
+            }
+        };
+        for tribe in data["tribes"].as_array().into_iter().flatten() {
+            let _ = write!(
+                h,
+                "<h3>Tribe {}</h3><p>First container: {}.</p><table><tr><th>age-year</th><th>carriers / living</th><th>made</th><th>remade</th><th>torn</th><th>trials (heard)</th><th>kept</th><th>kJ home with / without</th><th>noon tiles</th><th>homes changed</th></tr>",
+                tribe["tribe"].as_str().unwrap_or("?"),
+                if tribe["first"].is_null() {
+                    "none".to_owned()
+                } else {
+                    format!("day {}", tribe["first"]["day"])
+                }
+            );
+            for y in tribe["years"].as_array().into_iter().flatten() {
+                let noon = y["noon_tiles_x10"]
+                    .as_u64()
+                    .map_or("–".to_owned(), |n| format!("{}.{}", n / 10, n % 10));
+                let _ = write!(
+                    h,
+                    "<tr><td>{}</td><td>{} / {}</td><td>{}</td><td>{}</td><td>{}</td><td>{} ({})</td><td>{}</td><td>{} / {}</td><td>{noon}</td><td>{}</td></tr>",
+                    y["age_year"],
+                    y["carriers"],
+                    y["living"],
+                    y["made"],
+                    y["remade"],
+                    y["torn"],
+                    y["trials"],
+                    y["trials_heard"],
+                    y["kept"],
+                    show(&y["home_with_kj"]),
+                    show(&y["home_without_kj"]),
+                    y["home_changes"]
+                );
+            }
+            h.push_str("</table>");
+        }
+        h
+    }
+}
+
 fn tribe_name(t: u8) -> String {
     char::from(b'A' + t).to_string()
 }
