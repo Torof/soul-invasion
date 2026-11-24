@@ -857,6 +857,259 @@ pub struct Settlement {
     pub by_tribe: [u32; 2],
 }
 
+/// One dawn of a couple (24 November 2026, why couples part): in tiles,
+/// on the longer axis as the parting rule counts, the spouses apart where
+/// they woke, each one from its own home, and the two homes apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoupleDawn {
+    /// The day.
+    pub day: u64,
+    /// The spouses apart.
+    pub apart: u32,
+    /// Each one from its own home, the lower id first.
+    pub from_home: [u32; 2],
+    /// Their homes apart.
+    pub homes_apart: u32,
+}
+
+/// A parting with the dawns before it (24 November 2026).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Parting {
+    /// The day.
+    pub day: u64,
+    /// The two, the lower id first.
+    pub pair: [BodyId; 2],
+    /// Their dawns as spouses up to the parting's own, the oldest first.
+    pub dawns: Vec<CoupleDawn>,
+}
+
+/// A grown body's home changed between two dawns (24 November 2026, why
+/// daughter villages): where it went against the settlements of the dawn
+/// before (the others' homes, linked as [`Settlement`]s are), and what it
+/// knew of them. A village is such a settlement of [`VILLAGE_PEOPLE`] or
+/// more that does not reach its old home.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HomeChange {
+    /// The day.
+    pub day: u64,
+    /// Who.
+    pub body: BodyId,
+    /// Its tribe.
+    pub tribe: u8,
+    /// The home before.
+    pub from: Pos,
+    /// The home after.
+    pub to: Pos,
+    /// The other grown bodies whose home changed the same dawn to within
+    /// reach of this one's new home.
+    pub with: u32,
+    /// The people of the settlements its old home reached, itself out.
+    pub left_people: u32,
+    /// The people of the settlements its new home reaches, itself out.
+    pub joined_people: u32,
+    /// The villages there were.
+    pub villages: u32,
+    /// Of them, those it knew a place within reach of.
+    pub knew_villages: u32,
+    /// The nearest village to its new home: (tiles, people).
+    pub nearest_village: Option<(u32, u32)>,
+    /// The places it knew of.
+    pub known_places: u32,
+}
+
+/// The people a settlement needs to count as a village in a
+/// [`HomeChange`].
+pub const VILLAGE_PEOPLE: u32 = 10;
+
+/// Why couples part and why homes move (24 November 2026): kept at every
+/// dawn.
+#[derive(Debug, Clone, Default)]
+struct WhyProbe {
+    /// Each couple's last dawns, by pair.
+    couples: BTreeMap<(BodyId, BodyId), Vec<CoupleDawn>>,
+    /// Each living body's home at the last dawn, with its tribe.
+    homes: BTreeMap<BodyId, (Pos, u8)>,
+    partings: Vec<Parting>,
+    changes: Vec<HomeChange>,
+}
+
+/// The tiles between two tiles on the longer axis.
+fn tiles_apart(a: Pos, b: Pos) -> u32 {
+    (a.x - b.x).unsigned_abs().max((a.y - b.y).unsigned_abs())
+}
+
+/// A body's home: its mind's, else where it stands.
+fn home_of(world: &World, brains: &Brains, id: BodyId) -> Option<Pos> {
+    brains
+        .mind(id)
+        .map(sim::brain::Mind::home)
+        .or_else(|| world.body(id).map(sim::Body::pos))
+}
+
+/// A couple's dawn now, the lower id first.
+fn couple_dawn(world: &World, brains: &Brains, day: u64, pair: [BodyId; 2]) -> Option<CoupleDawn> {
+    let (a, b) = (world.body(pair[0])?, world.body(pair[1])?);
+    let (ha, hb) = (
+        home_of(world, brains, pair[0])?,
+        home_of(world, brains, pair[1])?,
+    );
+    Some(CoupleDawn {
+        day,
+        apart: tiles_apart(a.pos(), b.pos()),
+        from_home: [tiles_apart(a.pos(), ha), tiles_apart(b.pos(), hb)],
+        homes_apart: tiles_apart(ha, hb),
+    })
+}
+
+/// The groups of `homes` linked within `reach`, link by link: each home's
+/// group, a root index.
+fn linked(homes: &[Pos], reach: u32) -> Vec<usize> {
+    let mut root: Vec<usize> = (0..homes.len()).collect();
+    for i in 0..homes.len() {
+        for j in i + 1..homes.len() {
+            if tiles_apart(homes[i], homes[j]) <= reach {
+                let (ri, rj) = (find(&mut root, i), find(&mut root, j));
+                root[ri.max(rj)] = ri.min(rj);
+            }
+        }
+    }
+    (0..homes.len()).map(|i| find(&mut root, i)).collect()
+}
+
+impl WhyProbe {
+    /// At a dawn: each couple's dawn, then the grown bodies whose home
+    /// changed since the last.
+    fn dawn(
+        &mut self,
+        world: &World,
+        brains: &Brains,
+        people: &BTreeMap<BodyId, Person>,
+        content: &Content,
+        day: u64,
+    ) {
+        for b in world.bodies() {
+            let Some(spouse) = b.spouse() else { continue };
+            if b.id() >= spouse {
+                continue;
+            }
+            if let Some(d) = couple_dawn(world, brains, day, [b.id(), spouse]) {
+                let dawns = self.couples.entry((b.id(), spouse)).or_default();
+                dawns.retain(|old| old.day + 13 > day);
+                dawns.push(d);
+            }
+        }
+        let now: BTreeMap<BodyId, (Pos, u8)> = world
+            .bodies()
+            .iter()
+            .filter(|b| b.condition().vitality.points() > 0)
+            .filter_map(|b| {
+                let id = b.carried_by().unwrap_or(b.id());
+                let tribe = people.get(&b.id()).map_or(0, |p| p.tribe);
+                home_of(world, brains, id).map(|h| (b.id(), (h, tribe)))
+            })
+            .collect();
+        let movers: Vec<(BodyId, Pos, Pos, u8)> = world
+            .bodies()
+            .iter()
+            .filter(|b| world.age_milli(b) >= 16_000 && brains.mind(b.id()).is_some())
+            .filter_map(|b| {
+                let (from, _) = *self.homes.get(&b.id())?;
+                let (to, tribe) = *now.get(&b.id())?;
+                (from != to).then_some((b.id(), from, to, tribe))
+            })
+            .collect();
+        if !movers.is_empty() {
+            self.moved(brains, content, day, &movers);
+        }
+        self.homes = now;
+    }
+
+    /// The home changes of a dawn against the homes of the dawn before.
+    fn moved(
+        &mut self,
+        brains: &Brains,
+        content: &Content,
+        day: u64,
+        movers: &[(BodyId, Pos, Pos, u8)],
+    ) {
+        let reach = content.needs.life.mate_within_tiles;
+        let side = i32::try_from(content.needs.thought.place_tiles)
+            .unwrap_or(16)
+            .max(1);
+        for &(body, from, to, tribe) in movers {
+            let homes: Vec<Pos> = self
+                .homes
+                .iter()
+                .filter(|(id, _)| **id != body)
+                .map(|(_, (h, _))| *h)
+                .collect();
+            let group = linked(&homes, reach);
+            let mut people_in: BTreeMap<usize, u32> = BTreeMap::new();
+            for g in &group {
+                *people_in.entry(*g).or_default() += 1;
+            }
+            let reached = |at: Pos| -> BTreeSet<usize> {
+                homes
+                    .iter()
+                    .zip(&group)
+                    .filter(|(h, _)| tiles_apart(**h, at) <= reach)
+                    .map(|(_, g)| *g)
+                    .collect()
+            };
+            let people_of = |gs: &BTreeSet<usize>| gs.iter().map(|g| people_in[g]).sum::<u32>();
+            let (left, joined) = (reached(from), reached(to));
+            let villages: BTreeSet<usize> = people_in
+                .iter()
+                .filter(|(g, n)| **n >= VILLAGE_PEOPLE && !left.contains(g))
+                .map(|(g, _)| *g)
+                .collect();
+            let known: Vec<Pos> = brains.mind(body).map_or_else(Vec::new, |m| {
+                m.places_known()
+                    .map(|k| Pos::new(k.0 * side + side / 2, k.1 * side + side / 2))
+                    .collect()
+            });
+            let knew: BTreeSet<usize> = known
+                .iter()
+                .flat_map(|p| reached(*p))
+                .filter(|g| villages.contains(g))
+                .collect();
+            let nearest_village = homes
+                .iter()
+                .zip(&group)
+                .filter(|(_, g)| villages.contains(g))
+                .map(|(h, g)| (tiles_apart(*h, to), people_in[g]))
+                .min();
+            let with = movers
+                .iter()
+                .filter(|m| m.0 != body && tiles_apart(m.2, to) <= reach)
+                .count();
+            self.changes.push(HomeChange {
+                day,
+                body,
+                tribe,
+                from,
+                to,
+                with: u32::try_from(with).unwrap_or(u32::MAX),
+                left_people: people_of(&left),
+                joined_people: people_of(&joined),
+                villages: u32::try_from(villages.len()).unwrap_or(u32::MAX),
+                knew_villages: u32::try_from(knew.len()).unwrap_or(u32::MAX),
+                nearest_village,
+                known_places: u32::try_from(known.len()).unwrap_or(u32::MAX),
+            });
+        }
+    }
+
+    /// A parting now: the couple's dawns kept, and this one.
+    fn parted(&mut self, world: &World, brains: &Brains, day: u64, a: BodyId, b: BodyId) {
+        let pair = [a.min(b), a.max(b)];
+        let mut dawns = self.couples.remove(&(pair[0], pair[1])).unwrap_or_default();
+        dawns.retain(|d| d.day + 13 > day && d.day != day);
+        dawns.extend(couple_dawn(world, brains, day, pair));
+        self.partings.push(Parting { day, pair, dawns });
+    }
+}
+
 /// Moving as a consequence, for the data (amended 24 November 2026).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MovingProbe {
@@ -1391,6 +1644,11 @@ pub struct Report {
     pub settlements: BTreeMap<u64, Vec<Settlement>>,
     /// The reach that links homes into one settlement, in tiles.
     pub settlement_reach: u32,
+    /// Each parting with its couple's dawns before it (24 November 2026).
+    pub partings: Vec<Parting>,
+    /// Each grown body's home changed between two dawns (24 November
+    /// 2026).
+    pub home_changes: Vec<HomeChange>,
     /// The rumours dispelled, in order (D55).
     pub rumours: Vec<Rumour>,
     /// The nights the hearths still hold at the end (D55).
@@ -1710,6 +1968,7 @@ pub fn run_watched(
     let mut knowledge: BTreeMap<(u8, u64), Knowledge> = BTreeMap::new();
     let mut known_places: BTreeMap<(u8, u64), Vec<(PlaceKey, bool)>> = BTreeMap::new();
     let mut settlements: BTreeMap<u64, Vec<Settlement>> = BTreeMap::new();
+    let mut why = WhyProbe::default();
     // The homes under trial, (before, after), to tell where a given-up
     // home goes back to.
     let mut home_trials: BTreeMap<BodyId, (Pos, Pos)> = BTreeMap::new();
@@ -1826,6 +2085,7 @@ pub fn run_watched(
                     });
                     watch(&world, *day);
                     couples_at_dawn(&world, content, &mut tally.bilan);
+                    why.dawn(&world, &brains, &people, content, *day);
                     let threshold = u64::from(content.needs.moving.push_permille);
                     for b in world.bodies() {
                         if world.age_milli(b) < 16_000 {
@@ -1980,6 +2240,7 @@ pub fn run_watched(
                     }
                 }
                 Event::Parted { a, b } => {
+                    why.parted(&world, &brains, day, *a, *b);
                     let entry = Entry {
                         tick,
                         day,
@@ -2583,6 +2844,8 @@ pub fn run_watched(
         known_places,
         settlements,
         settlement_reach: content.needs.life.mate_within_tiles,
+        partings: why.partings,
+        home_changes: why.changes,
         rumours: tally.rumours,
         nights,
         records,
@@ -6682,6 +6945,21 @@ mod tests {
                     .zip(&b)
                     .all(|(x, y)| *x == "*" || x.trim_end_matches("[]") == y.trim_end_matches("[]"))
         })
+    }
+
+    #[test]
+    fn homes_link_into_one_group_link_by_link_and_not_beyond_reach() {
+        let homes = [
+            Pos::new(0, 0),
+            Pos::new(60, 0),
+            Pos::new(120, 10),
+            Pos::new(300, 300),
+        ];
+        let group = linked(&homes, 64);
+        assert_eq!(group[0], group[1]);
+        assert_eq!(group[1], group[2], "linked through the middle home");
+        assert_ne!(group[0], group[3]);
+        assert_eq!(tiles_apart(homes[0], homes[2]), 120);
     }
 
     #[test]
