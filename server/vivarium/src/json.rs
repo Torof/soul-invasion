@@ -496,6 +496,7 @@ impl Report {
         let (world, side) = match s.world {
             WorldKind::Vivarium => ("vivarium", None),
             WorldKind::VivariumWide => ("vivarium-wide", None),
+            WorldKind::VivariumHuge => ("vivarium-huge", None),
             WorldKind::Patch { side } => ("patch", Some(side)),
         };
         json!({

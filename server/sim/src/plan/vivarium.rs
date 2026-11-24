@@ -81,8 +81,22 @@ pub const ZONE_2_WIDE: Zone = Zone {
     ..ZONE_2
 };
 
-/// The vivarium's zones, by side: [`ZONE_2`] and [`ZONE_2_WIDE`].
-pub const ZONES: [Zone; 2] = [ZONE_2, ZONE_2_WIDE];
+/// Zone 2 at the scale of a valley (24 November 2026, the project lead's
+/// map of 15 to 20 km a side, "on pourra observer si vraiment il y a de
+/// l'expansion"): the same landmarks and camps on the same ground, with
+/// 111 cells more on each side, 256 cells, 16,384 m a side (268 km²). The
+/// side is the most a map may have ([`crate::map::MAX_SIDE`]), and the
+/// zone with the windows' margin still lies inside the region of
+/// [`REGION_CELLS`] continent cells it is cut from.
+pub const ZONE_2_HUGE: Zone = Zone {
+    corner: (ZONE_2.corner.0 - 111, ZONE_2.corner.1 - 111),
+    side_cells: ZONE_2.side_cells + 2 * 111,
+    ..ZONE_2
+};
+
+/// The vivarium's zones, by side: [`ZONE_2`], [`ZONE_2_WIDE`] and
+/// [`ZONE_2_HUGE`].
+pub const ZONES: [Zone; 3] = [ZONE_2, ZONE_2_WIDE, ZONE_2_HUGE];
 
 impl Zone {
     /// The vivarium's zone of `side` tiles, if one is.
@@ -201,6 +215,57 @@ mod tests {
             let (x, y) = ZONE_2.tile(cell);
             assert_eq!(ZONE_2_WIDE.tile(cell), (x + shift, y + shift));
         }
+    }
+
+    /// The huge zone: the same landmarks, 111 cells farther from its
+    /// corner; its side the most a map may have; the zone and the
+    /// windows' margin of two cells inside the region it is cut from.
+    #[test]
+    fn the_huge_zone_keeps_the_landmarks_where_they_were() {
+        assert_eq!(ZONE_2_HUGE.side(), 16_384);
+        assert_eq!(ZONE_2_HUGE.side(), crate::map::MAX_SIDE);
+        assert!(ZONE_2_HUGE.side().is_multiple_of(CHUNK_SIZE));
+        assert_eq!(Zone::of_side(ZONE_2_HUGE.side()), Some(ZONE_2_HUGE));
+        let shift = 111 * 64;
+        for cell in [ZONE_2.crossing, ZONE_2.hill, ZONE_2.camp_a, ZONE_2.camp_b] {
+            let (x, y) = ZONE_2.tile(cell);
+            assert_eq!(ZONE_2_HUGE.tile(cell), (x + shift, y + shift));
+        }
+        let region =
+            REGION_CELLS * usize::try_from(super::super::region::PER_CELL).expect("positive");
+        let side = usize::try_from(ZONE_2_HUGE.side_cells).expect("small");
+        for corner in [ZONE_2_HUGE.corner.0, ZONE_2_HUGE.corner.1] {
+            assert!(
+                corner >= 2 && corner + side + 2 <= region,
+                "inside the region"
+            );
+        }
+    }
+
+    /// The huge zone walks on zone 2's ground: at the camps, the hill
+    /// and the crossing, the same terrain and the same height.
+    #[test]
+    fn the_huge_zone_reads_the_same_ground() {
+        let huge = Map::on_window_by(
+            ZONE_2_HUGE.window_on(crate::plan::net::continent()),
+            VIVARIUM_SEED,
+            VIVARIUM_GENERATOR,
+        );
+        let small = map();
+        for cell in [ZONE_2.crossing, ZONE_2.hill, ZONE_2.camp_a, ZONE_2.camp_b] {
+            let (here, there) = (pos(ZONE_2.tile(cell)), pos(ZONE_2_HUGE.tile(cell)));
+            assert_eq!(huge.get(there), small.get(here), "cell {cell:?}");
+            assert_eq!(
+                huge.elevation(there),
+                small.elevation(here),
+                "cell {cell:?}"
+            );
+        }
+        assert_eq!(
+            huge.camp(),
+            pos(ZONE_2_HUGE.tile(ZONE_2.camp_a)),
+            "born at camp A"
+        );
     }
 
     #[test]

@@ -78,7 +78,7 @@ pub use measure::Numbers;
 pub(crate) use net::zone_window;
 pub use region::Region;
 pub use relief::{Stroke, StrokeKind};
-pub use vivarium::{VIVARIUM_SEED, ZONE_2, ZONE_2_WIDE, ZONES, Zone};
+pub use vivarium::{VIVARIUM_SEED, ZONE_2, ZONE_2_HUGE, ZONE_2_WIDE, ZONES, Zone};
 pub use window::Window;
 
 /// Side of a continent cell, in metres: 64 chunks of 32 m, so a chunk
