@@ -185,9 +185,15 @@ pub(crate) mod purpose {
     /// listener who believes a surprise told at the fire goes and sees it.
     pub(crate) const FIRE_SEE: u64 = 0x0d56_5ee0;
 
+    /// The hands (D57): the gesture a body in a trial of its hands tries,
+    /// and the thing it tries it on.
+    pub(crate) const HANDS_GESTURE: u64 = 0x0d57_9e57;
+    /// See `HANDS_GESTURE`.
+    pub(crate) const HANDS_THING: u64 = 0x0d57_7419;
+
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 72] = [
+    pub(crate) const ALL: [u64; 74] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -260,6 +266,8 @@ pub(crate) mod purpose {
         FIRE_REPUTE,
         SOCIABILITY,
         FIRE_SEE,
+        HANDS_GESTURE,
+        HANDS_THING,
     ];
 }
 

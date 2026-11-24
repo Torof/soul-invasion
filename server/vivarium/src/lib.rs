@@ -33,6 +33,7 @@ use sim::{Blockage, BodyId, Death, Event, Intention, Sex, World};
 pub mod chain;
 // --- end of the scarcity chain ---
 pub mod continents;
+pub mod hands;
 pub mod json;
 pub mod lands;
 pub mod png;
@@ -455,10 +456,12 @@ pub enum Step {
     StoreLess,
     /// Its home moved.
     HomeMoved,
+    /// A deed of its hands more (D57).
+    Hands,
 }
 
 /// Every [`Step`], in the order of the page.
-pub const STEPS: [Step; 7] = [
+pub const STEPS: [Step; 8] = [
     Step::Wider,
     Step::Narrower,
     Step::SleepOut,
@@ -466,6 +469,7 @@ pub const STEPS: [Step; 7] = [
     Step::StoreMore,
     Step::StoreLess,
     Step::HomeMoved,
+    Step::Hands,
 ];
 
 impl Step {
@@ -480,6 +484,7 @@ impl Step {
             Way::StockKj if after.stock_kj > before.stock_kj => Self::StoreMore,
             Way::StockKj => Self::StoreLess,
             Way::Home => Self::HomeMoved,
+            Way::Hands => Self::Hands,
         }
     }
 
@@ -493,6 +498,7 @@ impl Step {
             Way::SleepOut => Self::SleepOut,
             Way::StockKj => Self::StoreMore,
             Way::Home => Self::HomeMoved,
+            Way::Hands => Self::Hands,
         }
     }
 
@@ -507,6 +513,7 @@ impl Step {
             Self::StoreMore => "store more",
             Self::StoreLess => "store less",
             Self::HomeMoved => "home moved",
+            Self::Hands => "try its hands",
         }
     }
 }
@@ -516,11 +523,11 @@ impl Step {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Found {
     /// Trials started, by kind.
-    pub tried: [u32; 7],
+    pub tried: [u32; 8],
     /// Trials judged and kept, by kind.
-    pub kept: [u32; 7],
+    pub kept: [u32; 8],
     /// Ways copied from camp-mates, by kind.
-    pub copied: [u32; 7],
+    pub copied: [u32; 8],
     /// Trials whose step was a kept way heard at the fire (D55).
     pub heard_trials: u32,
     /// Ways copied by hearsay (D55): with the fire lit, every copy is one;
@@ -1823,6 +1830,8 @@ pub struct Report {
     /// felt, the surprises, the days gone to see, and what the moves did
     /// to the movers' hungry nights.
     pub moving: MovingProbe,
+    /// The hands (D57): the containers made, carried, torn, told.
+    pub hands: hands::HandsProbe,
     /// The goals held, in the order set (D56, amended 24 November 2026).
     pub goals: Vec<GoalRow>,
     /// The fire's counts by tribe and year (D55).
@@ -2234,6 +2243,9 @@ pub fn run_watched(
     let mut home_moves: Vec<HomeMove> = Vec::new();
     let mut move_calls: Vec<MoveCall> = Vec::new();
     let mut moving = MovingProbe::default();
+    let mut hands = hands::HandsProbe::default();
+    let days_per_age_year = u64::from(calendar.days_per_age_year().max(1));
+    let ticks_per_age_year = calendar.ticks_per_day() * days_per_age_year;
     let mut goals: Vec<GoalRow> = Vec::new();
     let mut tally = FireTally {
         ticks_per_season: (calendar.ticks_per_day() * u64::from(calendar.days_per_cycle()) / 4)
@@ -2306,7 +2318,13 @@ pub fn run_watched(
                 world.map().land_made()[0]
             );
         }
+        // The age-year whose ticks are elapsing, from 1 (D57's measures).
+        let age_year = (tick - 1) / ticks_per_age_year + 1;
         for event in &events {
+            hands.event((&world, content), &people, event, (day, age_year));
+            if matches!(event, Event::NightFell { .. }) {
+                hands.nightfall((&world, content), &brains, &people, age_year);
+            }
             match event {
                 Event::WorkStopped {
                     body,
@@ -2564,6 +2582,7 @@ pub fn run_watched(
         // The trials (D50): what the brains tried, judged and copied, in
         // the chronicle, on the person's page and in the counters.
         let batch = brains.news();
+        hands.news(&brains, (&world, content), &people, &batch, (day, age_year));
         // Who held what from whom this dawn (D55): the sentence of a
         // trial told names those who believed it.
         let mut believed: BTreeMap<(RecordId, BodyId), Vec<BodyId>> = BTreeMap::new();
@@ -2899,6 +2918,7 @@ pub fn run_watched(
         // Noon: where the living stand, by cell (the lab's map) and one
         // by one (its map of the movements).
         if tick % calendar.ticks_per_day() == calendar.ticks_per_day() / 2 {
+            hands.noon(&world, &brains, &people, age_year);
             let mut standing: Vec<(BodyId, Pos)> = Vec::new();
             for body in world.bodies() {
                 if body.condition().vitality.points() == 0 {
@@ -3009,6 +3029,12 @@ pub fn run_watched(
                 balance.weak_samples += u64::from(now.weak_by_tribe[tribe]);
             }
             samples.push(now);
+        }
+        // The age-year's last tick, or the run's: who carries a container
+        // (D57).
+        if tick % ticks_per_age_year == 0 || tick == ticks {
+            let t = u8::try_from(tribes).unwrap_or(u8::MAX);
+            hands.age_year_end((&world, content), &people, t, age_year);
         }
         // The year's last tick, or the run's: what the living carry, and
         // the ways in use (D50).
@@ -3152,6 +3178,7 @@ pub fn run_watched(
         home_moves,
         move_calls,
         moving,
+        hands,
         goals,
         fire: tally.fire,
         seasons: tally.seasons,
@@ -3202,6 +3229,7 @@ fn thought(intention: &Intention, why: Why) -> String {
         Why::Night => "night",
         Why::Home => "nothing pressing",
         Why::Gather => "by day, short of a store",
+        Why::Hands => "by day, something for its hands here",
     };
     let act = match intention {
         Intention::MoveTo { target, .. } => format!("walks to ({}, {})", target.x, target.y),
@@ -3233,7 +3261,7 @@ pub fn step_words(way: Way, before: &Ways, after: &Ways) -> String {
             after.stock_kj,
             before.stock_kj
         ),
-        Way::SleepOut | Way::Home => way_words(way, after),
+        Way::SleepOut | Way::Home | Way::Hands => way_words(way, after),
     }
 }
 
@@ -3250,6 +3278,8 @@ pub fn way_words(way: Way, ways: &Ways) -> String {
         Way::SleepOut => "comes home to sleep".to_owned(),
         Way::StockKj => format!("stores {} kJ before resting", ways.stock_kj),
         Way::Home => format!("sets its home at ({}, {})", ways.home.x, ways.home.y),
+        Way::Hands if ways.hands.is_empty() => "does nothing with its hands".to_owned(),
+        Way::Hands => format!("knows {} deeds of its hands", ways.hands.len()),
     }
 }
 

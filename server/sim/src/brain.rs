@@ -90,6 +90,9 @@ use crate::map::{CHUNK_SIZE, ChunkPos, FinePos, Map, Pos, Terrain};
 use crate::memory::{self, Access, Fared, Record, RecordId, Store};
 use crate::{Blockage, Body, BodyId, Event, GATHER_REACH_MM, Intention, ItemId, World};
 
+mod handwork;
+pub use handwork::{DEEDS, Deed, Deeds, Handwork, NOTHING};
+
 /// Thirst from which a body goes to drink: half a game day without
 /// water (thirst rises 100 points a day), so it drinks before the night
 /// and twice a day.
@@ -194,6 +197,8 @@ pub enum Why {
     Home,
     /// Day, carrying less than its store: it gathers (D45).
     Gather,
+    /// Day: something its hands may do here (D57).
+    Hands,
 }
 
 /// A thought: what a body was asked, and why.
@@ -227,6 +232,8 @@ enum Doing {
     ToPlace(PlaceKey),
     ToGather(Aim),
     Gathering(Aim),
+    /// Stepping to a thing or a tree to do a deed of its hands (D57).
+    ToHands,
 }
 
 /// A tree or plant a body is going to gather from, or gathers from.
@@ -480,6 +487,9 @@ pub struct Ways {
     /// trial's ways before set it back and the body returns. There is no
     /// other home anywhere in a mind.
     pub home: Pos,
+    /// The deeds of its hands it knows (D57): a trial of its hands adds
+    /// what came of something; kept, they are its; given up, gone.
+    pub hands: Deeds,
 }
 
 impl Ways {
@@ -491,6 +501,7 @@ impl Ways {
             sleep_out: false,
             stock_kj: STOCK_KJ,
             home,
+            hands: Deeds::default(),
         }
     }
 }
@@ -506,11 +517,19 @@ pub enum Way {
     StockKj,
     /// [`Ways::home`], moved.
     Home,
+    /// [`Ways::hands`], a deed more (D57).
+    Hands,
 }
 
 impl Way {
     /// Every way, in a fixed order.
-    pub const ALL: [Way; 4] = [Way::WorthHalfTiles, Way::SleepOut, Way::StockKj, Way::Home];
+    pub const ALL: [Way; 5] = [
+        Way::WorthHalfTiles,
+        Way::SleepOut,
+        Way::StockKj,
+        Way::Home,
+        Way::Hands,
+    ];
 
     /// Its value in `ways` set to its value in `from`.
     fn copy(self, ways: &mut Ways, from: &Ways) {
@@ -519,18 +538,20 @@ impl Way {
             Way::SleepOut => ways.sleep_out = from.sleep_out,
             Way::StockKj => ways.stock_kj = from.stock_kj,
             Way::Home => ways.home = from.home,
+            Way::Hands => ways.hands = from.hands,
         }
     }
 
     /// Its name in the content ([`crate::content::TRIAL_WAYS`]).
     #[must_use]
     pub fn key(self) -> &'static str {
-        let [worth, sleep, stock, home] = crate::content::TRIAL_WAYS;
+        let [worth, sleep, stock, home, hands] = crate::content::TRIAL_WAYS;
         match self {
             Way::WorthHalfTiles => worth,
             Way::SleepOut => sleep,
             Way::StockKj => stock,
             Way::Home => home,
+            Way::Hands => hands,
         }
     }
 
@@ -541,6 +562,7 @@ impl Way {
             Way::SleepOut => a.sleep_out == b.sleep_out,
             Way::StockKj => a.stock_kj == b.stock_kj,
             Way::Home => a.home == b.home,
+            Way::Hands => a.hands == b.hands,
         }
     }
 }
@@ -873,7 +895,7 @@ fn step_up(way: Way, before: &Ways, after: &Ways) -> bool {
         Way::WorthHalfTiles => after.worth_half_tiles > before.worth_half_tiles,
         Way::StockKj => after.stock_kj > before.stock_kj,
         Way::SleepOut => after.sleep_out,
-        Way::Home => true,
+        Way::Home | Way::Hands => true,
     }
 }
 
@@ -1889,6 +1911,8 @@ pub struct Mind {
     walks: u64,
     /// How many times it thought.
     thoughts: u64,
+    /// Its hands (D57): what it tries, steps to and practised.
+    handwork: Handwork,
 }
 
 /// A confidence moved by the four rules of temperance (D50 amended,
@@ -2072,6 +2096,7 @@ impl Mind {
             to_see: None,
             walks: 0,
             thoughts: 0,
+            handwork: Handwork::default(),
         }
     }
 
@@ -2127,6 +2152,11 @@ impl Mind {
     /// Its ways (D50).
     pub fn ways(&self) -> &Ways {
         &self.ways
+    }
+
+    /// Its hands (D57): the deeds it tries and how often it did each.
+    pub fn handwork(&self) -> &Handwork {
+        &self.handwork
     }
 
     /// Its will, 0 to 100 (D50).
@@ -4307,7 +4337,7 @@ impl Brains {
             if let Some(trial) = mind.trial
                 && day >= trial.started_day + u64::from(trials.days_for(trial.way.key(), per_year))
             {
-                let (kept, judged) = judge(rules, per_year, body, mind, &trial);
+                let (kept, judged) = handwork::judge_trial(rules, per_year, body, mind, &trial);
                 mind.learn_will(rules, kept);
                 believe_caller(rules, (id, day), mind, (&trial, kept), &mut self.memory);
                 if kept {
@@ -6274,8 +6304,9 @@ impl Brains {
                 };
                 // A home heard is not copied by prestige (D56, amended
                 // 24 November 2026): a move is called at the fire and
-                // each decides at its own balance.
-                if way.same(&mind.ways, after) || *way == Way::Home {
+                // each decides at its own balance. Nor the hands (D57):
+                // hearing does not make them able, they are tried.
+                if way.same(&mind.ways, after) || matches!(*way, Way::Home | Way::Hands) {
                     return None;
                 }
                 let credit = memory::credit(
@@ -6379,7 +6410,7 @@ impl Brains {
         }
         let differ: Vec<Way> = Way::ALL
             .into_iter()
-            .filter(|way| !way.same(&mind.ways, &theirs))
+            .filter(|way| *way != Way::Hands && !way.same(&mind.ways, &theirs))
             .collect();
         if differ.is_empty() {
             return;
@@ -6477,6 +6508,8 @@ impl Brains {
                 | Event::BodyAte { body, .. }
                 | Event::WorkStopped { body, .. }
                 | Event::GatherRefused { body, .. }
+                | Event::Gestured { body, .. }
+                | Event::GestureRefused { body, .. }
                 | Event::Spoiled {
                     holder: Some(body), ..
                 } => *body,
@@ -6512,6 +6545,15 @@ impl Brains {
                 }
                 if let Event::DrinkRefused { at, .. } = event {
                     mind.water.retain(|_, place| place.water != *at);
+                }
+                match event {
+                    Event::Gestured { gave, .. } => mind.handwork.done = Some(gave.is_some()),
+                    Event::GestureRefused { .. }
+                    | Event::ActRefused {
+                        act: crate::ItemAct::PickUp,
+                        ..
+                    } => mind.handwork.refused(today(world)),
+                    _ => {}
                 }
                 if let (Event::GatherRefused { .. }, Doing::Gathering(aim)) = (event, mind.doing) {
                     // Whatever the reason, not again before a later hour.
@@ -6971,8 +7013,9 @@ fn decide(
     let map = world.map();
     let decision = |intention, why| Some(Decision { intention, why });
     let (thirsty, parched, hungry, asleep, collapsed) = pasts(world, rules, id, mind.past.2);
-    // The world refuses a gather to a body whose load is full.
-    let can_carry = body.load_g() < body.capacity_g(&rules.movement);
+    // The world refuses a gather to a body whose arms and containers are
+    // full (D57).
+    let can_carry = body.food_room_g(&rules.movement) > 0;
     let night = world.is_night(rules);
     let now = world.tick().0;
     if let Doing::Gathering(_) = mind.doing {
@@ -6986,6 +7029,10 @@ fn decide(
             // the next choice, a plant picked bare skipped then.
             mind.doing = Doing::Nothing;
         }
+    }
+    // At a gesture (D57): it goes on unless thirst, hunger or night calls.
+    if body.making().is_some() && !thirsty && !hungry && !night {
+        return None;
     }
     if let Doing::ToGather(aim) = mind.doing
         && mind.stopped
@@ -7132,6 +7179,14 @@ fn decide(
         if !night && ripe_somewhere {
             return go_looking(map, rules, id, here, mind, seed, Why::Hunger);
         }
+    }
+    // Its hands (D57): a deed it knows and lacks what it gives, or a
+    // gesture of a trial of its hands, on what lies around it.
+    if !night
+        && let handwork::HandsTurn::Decide(decision) =
+            handwork::hands_turn(world, rules, (id, here), mind, seed)
+    {
+        return decision;
     }
     // The day's plan said at the fire (D56): a group's turn, a look out.
     let full = !can_carry || carried_kj(world, rules, id) >= mind.ways.stock_kj;
@@ -8773,8 +8828,17 @@ fn start_trial(
     // worked for N, I try it", the way as told, a step lost at times.
     if let Some((way, theirs)) = heard_candidate(memory, seed, id, mind) {
         let before = mind.ways;
-        copy_way(mind, way, &theirs, seed, &[u64::from(id.0), day], trials);
-        if mind.ways != before {
+        if way == Way::Hands {
+            // Hearing does not make the hands able (D57; the lead's
+            // knowledge model, 22 November 2026): it tries the deeds
+            // heard, and learns those that come to something in its own
+            // hands.
+            mind.handwork.drop_aim();
+            mind.handwork.aim = theirs.hands;
+        } else {
+            copy_way(mind, way, &theirs, seed, &[u64::from(id.0), day], trials);
+        }
+        if mind.ways != before || way == Way::Hands {
             mind.trial = Some(Trial {
                 way,
                 before,
@@ -8830,8 +8894,11 @@ fn start_trial(
         }
         // Never drawn: a move is a consequence ([`call_move`]).
         Way::Home => {}
+        // Nothing moves yet (D57): what it draws and does in the days of
+        // the trial does.
+        Way::Hands => mind.handwork.drop_aim(),
     }
-    if mind.ways == before {
+    if mind.ways == before && way != Way::Hands {
         // Nothing moved (a step that stays, at 1): no trial.
         return None;
     }
@@ -8873,6 +8940,11 @@ fn lessons(rules: &Content, memory: &Store, mind: &Mind, day: u64) -> Vec<(Way, 
         (Way::StockKj, true, 100),
         (Way::StockKj, false, 100),
     ];
+    // The hands (D57): a gesture tried on what lies around, when the
+    // content has them.
+    if rules.needs.hands.on() {
+        candidates.push((Way::Hands, true, 100));
+    }
     if trials.lesson_weight == 0 || trials.lesson_days == 0 {
         return candidates;
     }
@@ -8932,7 +9004,10 @@ fn heard_candidate(memory: &Store, seed: u64, id: BodyId, mind: &Mind) -> Option
             else {
                 return None;
             };
-            if way.same(&mind.ways, after) || *way == Way::Home {
+            if way.same(&mind.ways, after)
+                || *way == Way::Home
+                || (*way == Way::Hands && after.hands.within(&mind.ways.hands))
+            {
                 return None;
             }
             let credit = memory::credit(
@@ -11751,6 +11826,7 @@ mod tests {
                 Way::StockKj => twice(a.stock_kj, b.stock_kj),
                 Way::SleepOut => a.sleep_out != b.sleep_out,
                 Way::Home => a.home != b.home,
+                Way::Hands => a.hands != b.hands,
             }
     }
 
@@ -11764,6 +11840,7 @@ mod tests {
                 sleep_out: false,
                 stock_kj: STOCK_KJ,
                 home,
+                hands: Deeds::default(),
             }
         );
         let mind = Mind::new(home);
@@ -15481,7 +15558,9 @@ mod tests {
         };
         let before = weights(&brains, 0, 10);
         assert!(before.iter().all(|c| c.2 == 100), "{before:?}");
-        assert_eq!(before.len(), 5);
+        // Five ways, and the hands (D57).
+        assert_eq!(before.len(), 6);
+        assert!(before.iter().any(|c| c.0 == Way::Hands));
         assert!(
             before.iter().all(|c| c.0 != Way::Home),
             "a move is never drawn (amended 24 November 2026)"
@@ -15545,6 +15624,7 @@ mod tests {
             (Way::SleepOut, true),
             (Way::StockKj, true),
             (Way::Home, true),
+            (Way::Hands, true),
         ]
         .into_iter()
         .enumerate()

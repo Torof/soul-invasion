@@ -376,6 +376,39 @@ clock, the only field no seed decides.
 | `moving.utility[].stayers`, `.stayers_hungry_nights_milli` | The grown of its tribe alive throughout who moved neither in the season before nor in that one; their mean hungry nightfalls over the same days, in thousandths | |
 | `moving.utility[].mover_drink_tiles_before`, `.mover_drink_tiles_after` | The mover's mean tiles from home to its first drink of the day, the days it drank, over the season before it set off and the season after (24 November 2026, the movers' water); null when it never drank there | tiles |
 | `moving.utility[].stayers_drink_tiles_after` | The stayers' mean of theirs over the season after; null when none drank | tiles |
+| `hands` | The hands (D57, 24 November 2026): the first invention, the container; present in every run, empty without `hands` in the content | object |
+| `hands.first` | The first container made in the run: `day`, `age_year_x10` (its age-year × 10, from 0), `body`, `tribe`, `heard_before` (it had heard a deed of the hands told); null without one | object or null |
+| `hands.first_listener_made` | The first container made by another body after hearing a deed of the hands told: `day`, `body`, `tribe`, `nights_after_first` (days after the first container); null without one | object or null |
+| `hands.made` | Containers made | count |
+| `hands.remakes` | Of them, by a body whose own container had torn before | count |
+| `hands.makers` | The bodies that made one | count |
+| `hands.told[]` | Each telling at a fire of a kept trial of the hands, in order: `day`, `record`, `teller`, `tribe`, `heard` (who believed it that night), `missed` (its tribe's living past infancy not at that fire) | list |
+| `hands.heard` | Bodies that heard a deed of the hands told | count |
+| `hands.heard_never_tried` | Of them, those that never began a trial of the deeds heard | count |
+| `hands.heard_across_tribes` | Hearings by a listener of the other tribe than its teller (0 while camps do not visit) | count |
+| `hands.gestures.*` | By gesture (`cut`, `fold`): `done` (ended), `gave` (something came of it); a pick-up is D35's act and not counted here | `{done, gave}` |
+| `hands.tribes[]` | One per tribe | list |
+| `hands.tribes[].tribe` | Its name | `"A"` or `"B"` |
+| `hands.tribes[].first` | Its first container, as `hands.first`: the second tribe finding it alone, or not | object or null |
+| `hands.tribes[].makers` | Its bodies that made one | count |
+| `hands.tribes[].told` | Tellings by its tellers | count |
+| `hands.tribes[].heard_from_tribe` | Listeners of a teller of this tribe | count |
+| `hands.tribes[].years[]` | By age-year from 1 | list |
+| `hands.tribes[].years[].age_year` | The age-year | from 1 |
+| `hands.tribes[].years[].living` | Living past infancy at its end | count |
+| `hands.tribes[].years[].carriers` | Of them, carrying a container | count |
+| `hands.tribes[].years[].made` | Containers made | count |
+| `hands.tribes[].years[].remade` | Of them, remakes after a tear | count |
+| `hands.tribes[].years[].torn` | Containers torn | count |
+| `hands.tribes[].years[].trials` | Trials of the hands begun | count |
+| `hands.tribes[].years[].trials_heard` | Of them, on a tale heard | count |
+| `hands.tribes[].years[].kept` | Trials of the hands kept | count |
+| `hands.tribes[].years[].home_with_kj` | The food carried at nightfall by the grown at home (within `HOME_TILES` of it) with a container, a night's mean; null without such a night | kJ |
+| `hands.tribes[].years[].home_with_nights` | The nights counted | count |
+| `hands.tribes[].years[].home_without_kj` | The same without a container | kJ |
+| `hands.tribes[].years[].home_without_nights` | The nights counted | count |
+| `hands.tribes[].years[].noon_tiles_x10` | The grown's distance from home at noon, on each axis the larger, mean × 10 | tiles × 10 |
+| `hands.tribes[].years[].home_changes` | Homes changed in the age-year (`home_changes`) | count |
 | `settlements[]` | The settlements at each year's end and the run's (24 November 2026): the living whose homes lie within `mate_within_tiles` of one another on each axis, link by link; an infant counted at its carrier's home, a body without a mind where it stands | list |
 | `settlements[].year` | The year | integer |
 | `settlements[].groups[]` | Its settlements, the largest first | list |

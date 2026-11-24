@@ -92,8 +92,32 @@ pub struct Material {
     pub flammable: bool,
     /// Can it be eaten?
     pub food: Option<Food>,
+    /// Its edge cuts what a body cuts with it in hand (D57).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub sharp: bool,
+    /// The material it becomes when folded, its grams kept (D57).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folds_into: Option<String>,
+    /// A container (D57): the grams of loose food it keeps together, on
+    /// top of what the arms hold (`movement.hands_g`). 0: none.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub holds_g: u32,
+    /// The days after it was made that it tears and is gone (D57). 0: it
+    /// never wears (food spoils by its own `keeps_days`).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub wears_days: u32,
     /// How it looks.
     pub look: Look,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 /// A closeness condition: within so many tiles of some terrain.
@@ -409,6 +433,67 @@ pub struct Needs {
     /// family weighs only as company.
     #[serde(default)]
     pub family: Family,
+    /// The gestures of the hands (D57): how long a cut or a fold takes,
+    /// how far around itself a body sees what it may try one on, how many
+    /// it tries a day in a trial of its hands. Absent: nobody tries a
+    /// gesture.
+    #[serde(default)]
+    pub hands: Hands,
+}
+
+/// The gestures of the hands (D57; the project lead, 24 November 2026:
+/// "C'est parfait"): picking up, cutting with what is in hand, folding.
+/// No recipe: what comes of a gesture is what the materials are
+/// (`sharp`, `folds_into`, `holds_g`, a tree's `bark`). D30 placeholders,
+/// named and explained in `content/needs.ron`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hands {
+    /// The game minutes a cut or a fold takes.
+    pub gesture_minutes: u32,
+    /// How far around itself a body sees what it may try a gesture on, in
+    /// tiles on each axis.
+    pub near_tiles: u32,
+    /// The gestures a body in a trial of its hands tries a day, at most.
+    /// 0: nobody tries one, and the hands are never a trial.
+    pub tries_per_day: u32,
+}
+
+impl Default for Hands {
+    /// Off: nobody tries a gesture.
+    fn default() -> Self {
+        Self {
+            gesture_minutes: 10,
+            near_tiles: 4,
+            tries_per_day: 0,
+        }
+    }
+}
+
+impl Hands {
+    /// The placeholders of `content/needs.ron` (D30).
+    #[must_use]
+    pub fn placeholders() -> Self {
+        Self {
+            gesture_minutes: 10,
+            near_tiles: 4,
+            tries_per_day: 4,
+        }
+    }
+
+    /// Whether anybody tries a gesture.
+    #[must_use]
+    pub fn on(&self) -> bool {
+        self.tries_per_day > 0
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        if !(1..=24 * 60).contains(&self.gesture_minutes) || !(1..=16).contains(&self.near_tiles) {
+            return Err(ContentError::Needs(
+                "hands: gesture_minutes 1 to a day, near_tiles 1 to 16",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// What a body's family weighs when it weighs a move called at the fire
@@ -1437,7 +1522,7 @@ pub struct Trials {
 }
 
 /// The ways a trial may move, as the content names them (D50).
-pub const TRIAL_WAYS: [&str; 4] = ["worth_half_tiles", "sleep_out", "stock_kj", "home"];
+pub const TRIAL_WAYS: [&str; 5] = ["worth_half_tiles", "sleep_out", "stock_kj", "home", "hands"];
 
 impl Default for Trials {
     /// Nobody tries anything nor copies anybody.
@@ -1935,7 +2020,8 @@ impl Needs {
         self.reputation.validate()?;
         self.company.validate()?;
         self.moving.validate()?;
-        self.family.validate()
+        self.family.validate()?;
+        self.hands.validate()
     }
 
     fn validate_reserve(&self) -> Result<(), ContentError> {
@@ -2027,6 +2113,10 @@ pub struct Species {
     /// nuts, cones. Out of it, or without it, the tree is drawn bare.
     #[serde(default)]
     pub fruit: Option<crate::crops::FruitWindow>,
+    /// The material a body cuts from its trunk with an edge in hand
+    /// (D57); `None`: cutting it gives nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bark: Option<String>,
 }
 
 /// Farthest a species' seeds may fall ([`Species::spread_m`]): the trees
@@ -2369,6 +2459,36 @@ impl Content {
         Ok(())
     }
 
+    /// Checks what the gestures of the hands name (D57): a material's
+    /// fold and a tree's bark are materials.
+    fn validate_gestures(&self, ids: &BTreeSet<&str>) -> Result<(), ContentError> {
+        for material in &self.materials {
+            if material
+                .folds_into
+                .as_ref()
+                .is_some_and(|into| !ids.contains(into.as_str()) || *into == material.id)
+            {
+                return Err(ContentError::InvalidValue {
+                    id: material.id.clone(),
+                    what: "folds_into names another material",
+                });
+            }
+        }
+        for species in &self.species {
+            if species
+                .bark
+                .as_ref()
+                .is_some_and(|bark| !ids.contains(bark.as_str()))
+            {
+                return Err(ContentError::Species {
+                    id: species.id.clone(),
+                    what: "bark names no material",
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Checks ids are unique, references resolve and values make sense.
     pub fn validate(&self) -> Result<(), ContentError> {
         let mut ids = BTreeSet::new();
@@ -2403,7 +2523,11 @@ impl Content {
             if !is_hex_colour(&material.look.colour) {
                 return Err(invalid("look.colour must be #rrggbb"));
             }
+            if material.holds_g > 0 && material.food.is_some() {
+                return Err(invalid("food is no container"));
+            }
         }
+        self.validate_gestures(&ids)?;
         self.validate_species()?;
         self.validate_flora()?;
         for (index, spawn) in self.spawns.iter().enumerate() {
@@ -2745,9 +2869,7 @@ impl Content {
             return Err(ContentError::Movement("carry_capacity_g must be positive"));
         }
         if !(1..=self.movement.carry_capacity_g).contains(&self.movement.hands_g) {
-            return Err(ContentError::Movement(
-                "hands_g is 1 to carry_capacity_g",
-            ));
+            return Err(ContentError::Movement("hands_g is 1 to carry_capacity_g"));
         }
         if !(1..=100).contains(&self.movement.speed_percent_at_full_load) {
             return Err(ContentError::Movement(
@@ -3269,10 +3391,25 @@ mod tests {
                 ..
             }
         ));
-        // The repository's own file is valid.
-        base()
-            .with_species(include_str!("../../../content/species.ron"))
-            .unwrap();
+        // A bark names a material (D57).
+        let barked = r#"[(id: "oak", name: "Oak", height_m: 4.0, habitats: { heart: 1 }, bark: Some("gold"))]"#;
+        assert!(matches!(
+            base().with_species(barked).unwrap_err(),
+            ContentError::Species {
+                what: "bark names no material",
+                ..
+            }
+        ));
+        // The repository's own file is valid, with its own materials.
+        Content::from_ron(
+            include_str!("../../../content/materials.ron"),
+            SAMPLE_SPAWNS,
+            SAMPLE_MOVEMENT,
+            SAMPLE_NEEDS,
+        )
+        .unwrap()
+        .with_species(include_str!("../../../content/species.ron"))
+        .unwrap();
     }
 }
 

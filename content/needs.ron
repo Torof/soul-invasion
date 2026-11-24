@@ -644,4 +644,21 @@
         spouse_permille: 250,
         child_permille: 100,
     ),
+    // The gestures of the hands (D57; the project lead, 24 November 2026:
+    // "C'est parfait"): pick up, cut with what is in hand, fold. No
+    // recipe: what a gesture gives is what the materials are
+    // (materials.ron: sharp, folds_into, holds_g, wears_days; species.ron:
+    // bark). A trial of the hands (D50, the way `hands`) is a gesture drawn
+    // from the run's seed on what lies within `near_tiles` or is carried;
+    // what worked is told at the fire as any trial judged (D55).
+    // gesture_minutes: 10 — a cut or a fold takes ten game minutes;
+    // near_tiles:       4 — a body sees what it may try a gesture on four
+    //                       tiles around itself, and steps there;
+    // tries_per_day:    4 — a body in a trial of its hands tries four
+    //                       gestures a day at most (0: nobody tries one).
+    hands: (
+        gesture_minutes: 10,
+        near_tiles: 4,
+        tries_per_day: 4,
+    ),
 )
