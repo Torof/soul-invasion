@@ -59,7 +59,7 @@ const ORDER: [&str; 27] = [
 
 /// The format marker: raised when a key changes meaning or goes; a new key
 /// does not raise it.
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = 2;
 
 /// The cause of a death as a key: the page's column heads.
 const fn cause_key(cause: Death) -> &'static str {
@@ -90,7 +90,7 @@ const fn step_key(step: Step) -> &'static str {
 /// `[x, y]`.
 const fn way_key(way: Way) -> &'static str {
     match way {
-        Way::WorthHalfTiles => "worth_half_tiles",
+        Way::WorthHalfMinutes => "worth_half_minutes",
         Way::SleepOut => "sleep_out",
         Way::StockKj => "stock_kj",
         Way::Home => "home",
@@ -902,7 +902,7 @@ impl Report {
                     "ways": (y.ways.minds > 0).then(|| json!({
                         "minds": y.ways.minds,
                         "sleep_out": y.ways.sleep_out,
-                        "median_worth_tiles": y.ways.median_worth_tiles,
+                        "median_worth_minutes": y.ways.median_worth_minutes,
                         "median_stock_kj": y.ways.median_stock_kj,
                         "home_grade_permille": y.ways.home_grades.map(|[min, median, max]| json!({"min": min, "median": median, "max": max})),
                         "stock_kj": {
@@ -1030,7 +1030,7 @@ impl Report {
                 "day": access.day,
             })).collect::<Vec<_>>(),
             "ways": person.ways.as_ref().map(|w| json!({
-                "worth_half_tiles": w.worth_half_tiles,
+                "worth_half_minutes": w.worth_half_minutes,
                 "sleep_out": w.sleep_out,
                 "stock_kj": w.stock_kj,
                 "home": pos(w.home),

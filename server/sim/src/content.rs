@@ -1921,7 +1921,7 @@ pub struct Trials {
 }
 
 /// The ways a trial may move, as the content names them (D50).
-pub const TRIAL_WAYS: [&str; 5] = ["worth_half_tiles", "sleep_out", "stock_kj", "home", "hands"];
+pub const TRIAL_WAYS: [&str; 5] = ["worth_half_minutes", "sleep_out", "stock_kj", "home", "hands"];
 
 impl Default for Trials {
     /// Nobody tries anything nor copies anybody.
@@ -3846,7 +3846,7 @@ mod tests {
         assert_eq!(trials.days_for("sleep_out", 50), 25);
         assert_eq!(trials.days_for("stock_kj", 8), 5, "never under trial_days");
         assert_eq!(
-            trials.days_for("worth_half_tiles", 50),
+            trials.days_for("worth_half_minutes", 50),
             5,
             "not named: trial_days"
         );

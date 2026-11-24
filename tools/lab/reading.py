@@ -840,8 +840,10 @@ def culture_line(d, tribe):
     minds = w.get("minds") or 0
     return (f"{fmt(alive)} vivant{'s' if (alive or 0) > 1 else ''} à la fin ({minds} esprit{'s' if minds > 1 else ''} lu{'s' if minds > 1 else ''}) : "
             f"{w.get('sleep_out', 0)} dorment dehors, {minds - (w.get('sleep_out') or 0)} au camp ; "
-            f"la valeur d'une plante est divisée par deux à {fmt(w.get('median_worth_tiles'))} tuiles (médiane) ; "
-            f"{fmt(w.get('median_stock_kj'))} kJ gardés avant le repos (médiane)"
+            + (f"la valeur d'une plante est divisée par deux à {fmt(w.get('median_worth_minutes'))} minutes de marche (médiane) ; "
+               if "median_worth_minutes" in w else
+               f"la valeur d'une plante est divisée par deux à {fmt(w.get('median_worth_tiles'))} tuiles (médiane) ; ")
+            + f"{fmt(w.get('median_stock_kj'))} kJ gardés avant le repos (médiane)"
             + (f" ; camp en ({last['camp'][0]}, {last['camp'][1]})" if last.get("camp") else ""))
 
 
@@ -926,7 +928,14 @@ def kept_list(d, tribe, limit=200):
 # --- the fire and the common memory (D55) -------------------------------------------
 
 WILL_BAND_FR = {"timid": "frileux (0–20)", "middling": "moyens (21–50)", "bold": "aventuriers (51–100)"}
-WAY_FR = {"worth_half_tiles": "la distance de recherche", "sleep_out": "la nuit dehors ou au camp",
+def search_fr(ways):
+    """How far it searches: in walking minutes since 26 November 2026, in tiles before."""
+    if "worth_half_minutes" in ways:
+        return f"{fmt(ways.get('worth_half_minutes'))} minutes de marche"
+    return f"{fmt(ways.get('worth_half_tiles'))} tuiles"
+
+
+WAY_FR = {"worth_half_minutes": "la distance de recherche", "worth_half_tiles": "la distance de recherche", "sleep_out": "la nuit dehors ou au camp",
           "stock_kj": "la réserve avant le repos", "home": "la maison"}
 
 
@@ -1326,7 +1335,7 @@ def people_table(d):
         born = "au départ" + (f" ({age_fr(d, p['age_days_at_start'])})" if p.get("age_days_at_start") is not None else "") \
             if p.get("born") == "start" else f"journée {p.get('born')}"
         ways = p.get("ways") or {}
-        way_txt = (f"{'dort dehors' if ways.get('sleep_out') else 'dort au camp'}, cherche jusqu'à {fmt(ways.get('worth_half_tiles'))} tuiles, "
+        way_txt = (f"{'dort dehors' if ways.get('sleep_out') else 'dort au camp'}, cherche jusqu'à {search_fr(ways)}, "
                    f"garde {fmt(ways.get('stock_kj'))} kJ, maison ({ways['home'][0]}, {ways['home'][1]})") if ways and ways.get("home") else "esprit non lu"
         lines = "".join(f"<li>journée {ln.get('day')} : {h(ln.get('what', ''))}</li>" for ln in p.get("lines") or [])
         trials = len(p.get("trials") or [])
@@ -1863,6 +1872,8 @@ FILTERS = [("tout", "Tout"), ("morts", "Morts"), ("naissances", "Naissances"), (
 GROUP_FROM = 3   # the same kind of event three times or more the same day: one foldable line
 
 WAY_LINE_FR = [
+    (r"searches with worth halved at a walk of (\d+) game minutes", r"cherche à \1 minutes de marche"),
+    (r"searches (?:twice as wide|half as wide) \(worth halved at a walk of (\d+) game minutes instead of (\d+)\)", r"cherche à \1 minutes de marche au lieu de \2"),
     (r"searches with worth halved at (\d+) tiles", r"cherche à \1 tuiles"),
     (r"searches (?:twice as wide|half as wide) \(worth halved at (\d+) tiles instead of (\d+)\)", r"cherche à \1 tuiles au lieu de \2"),
     (r"stores (\d+) kJ before resting", r"garde \1 kJ avant le repos"),
@@ -2461,7 +2472,7 @@ def person_card(d, pid):
     cl = "".join(f"<li>journée {c['day']} : copie {person_link(c['from'])} : {h(c['way'])}{' (en perdant un cran)' if c['loss'] else ''}</li>" for c in copies)
     kids = [k for k in d.get("people", []) if pid in (k.get("mother"), k.get("father"))]
     ways = p.get("ways") or {}
-    way_txt = (f"{'dort dehors' if ways.get('sleep_out') else 'rentre dormir au camp'}, cherche à {fmt(ways.get('worth_half_tiles'))} tuiles, "
+    way_txt = (f"{'dort dehors' if ways.get('sleep_out') else 'rentre dormir au camp'}, cherche à {search_fr(ways)}, "
                f"garde {fmt(ways.get('stock_kj'))} kJ avant le repos") if ways else "esprit jamais lu"
     bel = p.get("believes") or []
     nseen = sum(1 for b in bel if b.get("seen"))

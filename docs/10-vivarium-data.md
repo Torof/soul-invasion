@@ -42,7 +42,7 @@ clock, the only field no seed decides.
 
 | Key | Meaning | Unit or form |
 |---|---|---|
-| `meta.format` | The format marker, `1` since 22 November 2026 | integer |
+| `meta.format` | The format marker, `1` since 22 November 2026, `2` since 26 November 2026 (the ways' `worth_half_tiles` became `worth_half_minutes`) | integer |
 | `meta.settings.world` | The world; `"vivarium-wide"` the vivarium's zone twice as wide, `"vivarium-huge"` the same zone 16,384 m a side (24 November 2026) | `"vivarium"`, `"vivarium-wide"`, `"vivarium-huge"` or `"patch"` |
 | `meta.settings.side` | A patch's side; `null` on the vivarium's world | tiles |
 | `meta.settings.people` | People born at each camp: the whole band with the pyramid start, the grown alone with the founders' | count |
@@ -122,7 +122,7 @@ clock, the only field no seed decides.
 | `years[].ways.home_grade_permille.median` | Its median | per mille of a day of need |
 | `years[].ways.home_grade_permille.max` | Its highest | per mille of a day of need |
 | `years[].ways.sleep_out` | How many of them sleep out | count |
-| `years[].ways.median_worth_tiles` | The median of how far a plant's worth is halved | tiles |
+| `years[].ways.median_worth_minutes` | The median of the walk that halves a plant's worth (`median_worth_tiles`, in tiles, until 26 November 2026: the brain in walking time) | game minutes |
 | `years[].ways.median_stock_kj` | The median of what they store before resting | kJ |
 | `years[].ways.stock_kj.q1` | The first quartile of what they store before resting (D55: the lead's metric) | kJ |
 | `years[].ways.stock_kj.median` | Its median, the same as `median_stock_kj` | kJ |
@@ -246,7 +246,7 @@ clock, the only field no seed decides.
 | `people[].believes[].seen` | Whether it saw it itself (false: heard) | boolean |
 | `people[].believes[].by` | Who it has it from: itself, or the teller | integer |
 | `people[].believes[].day` | The day it got it | day |
-| `people[].ways.worth_half_tiles` | Its ways at the end, or at its death (D50); the whole object is `null` for a mind never read | tiles |
+| `people[].ways.worth_half_minutes` | Its ways at the end, or at its death (D50); the whole object is `null` for a mind never read. The walk that halves a plant's worth, in game minutes (`worth_half_tiles`, in tiles, until 24 November 2026) | game minutes |
 | `people[].ways.sleep_out` | Whether it sleeps out | boolean |
 | `people[].ways.stock_kj` | What it stores before resting | kJ |
 | `people[].ways.home` | Its home | `[x, y]` |
@@ -287,7 +287,7 @@ clock, the only field no seed decides.
 | `records[].refs` | Accesses and nights holding it | count |
 | `records[].place` | A place record: the place's key; `null` for another kind, as every key of one kind is | `[x, y]` |
 | `records[].states` | Its states, each a kind of food and the bucket of plants bearing it (`place_buckets`) | `[[kind, bucket], …]` |
-| `records[].way` | A trial record: the way, `worth_half_tiles`, `sleep_out`, `stock_kj` or `home` | string |
+| `records[].way` | A trial record: the way, `worth_half_minutes` (`worth_half_tiles` until 26 November 2026), `sleep_out`, `stock_kj` or `home` | string |
 | `records[].up` | Whether the step went up (wider, out, more; a home moved is up) | boolean |
 | `records[].kept` | Whether the trial was kept | boolean |
 | `records[].will` | The body's will when it was judged | 0 to 100 |
