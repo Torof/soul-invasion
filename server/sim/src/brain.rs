@@ -135,6 +135,13 @@ pub const MEMORY_PLACES: usize = 64;
 /// November 2026 (the project lead: "Faut le passer non en mètres, mais en
 /// temps de marche").
 pub const WORTH_HALF_MINUTES: u64 = 30;
+/// How long a walk from home a grove lies within to count as near it, in
+/// game minutes: a day gathered there is no news at the fire (amended 24
+/// November 2026). It was a grove's side, 64 tiles on each axis, until the
+/// brain counted in walking time the same day (the project lead: "Faut le
+/// passer non en mètres, mais en temps de marche"): 4 game minutes are 64
+/// tiles on the reference ground, 43 in the forest.
+pub const GROVE_NEAR_MINUTES: u64 = 4;
 /// How far, in tiles, a body walks before it looks again for drinking
 /// places and for trees and plants bearing food: a lake shore holds
 /// thousands of tiles of water, a meadow thousands of plants, and its
@@ -5005,7 +5012,12 @@ impl Brains {
                 continue;
             };
             night.losses[Sense::Warmth as usize] = u64::from(body.condition().cold.points()) * 10;
-            mind.yesterday = Some(yesterday_of(&night, closed, mind.ways.home, grove));
+            let near = |at: Pos| {
+                let tiles = u64::try_from(far(at, mind.ways.home)).unwrap_or(0).isqrt();
+                mind.walk_milliminutes(tiles) <= GROVE_NEAR_MINUTES * 1000
+            };
+            let yesterday = yesterday_of(&night, closed, near, grove);
+            mind.yesterday = Some(yesterday);
             mind.note_night(place_of(body.pos(), side), &night, keep, (season, side));
         }
     }
@@ -6019,7 +6031,7 @@ impl Brains {
         speakers.sort_unstable();
         let rep = &rules.needs.reputation;
         let side = place_side(rules);
-        let near = i32::try_from(dec.near_camp_tiles).unwrap_or(i32::MAX);
+        let near = u64::from(dec.near_camp_minutes).saturating_mul(1000);
         // The review (PR 1 ter): who is called first, who set aside.
         let (good_of, aside_by) = self.review_at_fire(world, rules, &speakers, (today, now));
         // A call to move is the evening's first word (D56, amended 24
@@ -6201,7 +6213,10 @@ impl Brains {
             let mut list = choices(&self.food, rules, world, mind, id, camp);
             if review.aside > 0 && aside_by.values().any(|s| s.contains(&id)) && near > 0 {
                 // Set aside, it weighs first the places near the camp.
-                list.sort_by_key(|(key, _, _)| !within(place_centre(*key, side), camp, near));
+                list.sort_by_key(|(key, _, _)| {
+                    let tiles = far(place_centre(*key, side), camp);
+                    mind.walk_milliminutes(u64::try_from(tiles).unwrap_or(0).isqrt()) > near
+                });
             }
             // A reputation weighs (PR 1 ter): the call of whom it believes
             // best at gathering first, with a chance of its credit.
@@ -8733,8 +8748,9 @@ fn night_of(
 
 /// What a body's day `day` was, as it lies down to note it (amended 24
 /// November 2026): the food gathered, where most, and whether that was
-/// near its `home` (its grove within a grove's side of it, `grove` tiles).
-fn yesterday_of(night: &Night, day: u32, home: Pos, grove: i32) -> Yesterday {
+/// near its home (the middle of its grove, of `grove` tiles, `near` it:
+/// within [`GROVE_NEAR_MINUTES`] of walk).
+fn yesterday_of(night: &Night, day: u32, near: impl Fn(Pos) -> bool, grove: i32) -> Yesterday {
     let food = |a: &DayAct| a.gains[Sense::Food as usize];
     let gathered = night.day.iter().filter(|a| a.grove).map(food).sum();
     let most = night
@@ -8746,7 +8762,7 @@ fn yesterday_of(night: &Night, day: u32, home: Pos, grove: i32) -> Yesterday {
         day,
         gathered,
         grove: most.map(|a| (a.place, food(a), a.spot, a.saved)),
-        near: most.is_none_or(|a| within(place_centre(a.place, grove), home, grove)),
+        near: most.is_none_or(|a| near(place_centre(a.place, grove))),
     }
 }
 
@@ -18475,6 +18491,33 @@ mod tests {
             saved,
             gains: [gathered, 0, 0, 0],
         }
+    }
+
+    #[test]
+    fn near_home_and_near_the_camp_are_game_minutes_of_walk() {
+        // A grove's middle is near home within four game minutes of walk:
+        // 64 tiles on the reference ground, some 43 in the forest.
+        let mut mind = Mind::new(Pos::new(0, 0));
+        let near =
+            |mind: &Mind, tiles: u64| mind.walk_milliminutes(tiles) <= GROVE_NEAR_MINUTES * 1000;
+        assert!(near(&mind, 64) && !near(&mind, 66));
+        mind.tile_umin = 93_567;
+        assert!(near(&mind, 42) && !near(&mind, 44));
+        // What a day was: its best grove near home or not.
+        let day = |at: i32| {
+            let night = night_with([0; SENSES], 0, vec![picked((at, 0), 0, 1000)]);
+            yesterday_of(&night, 1, |p: Pos| p.x < 100, 64).near
+        };
+        assert!(day(1), "a grove whose middle lies 96 tiles off: near");
+        assert!(!day(2), "160 tiles off: not");
+        // The evening's near the camp: three game minutes, 48 tiles on
+        // the reference ground (the content's `decisions.near_camp_minutes`).
+        assert_eq!(
+            crate::content::Decisions::placeholders().near_camp_minutes,
+            3
+        );
+        let fresh = Mind::new(Pos::new(0, 0));
+        assert!(fresh.walk_milliminutes(48) <= 3000 && fresh.walk_milliminutes(49) > 3000);
     }
 
     /// A night cold through, nothing else lacking: the cold is out of
