@@ -155,7 +155,7 @@
         conceive_percent: 40,
         conceive_nights: 4,
         part_after_days: 12,
-        court_days: 6,
+        together_nights: 6,
         pregnancy_quarters: 3,
         pregnant_percent: 110,
         lose_when_weak: true,

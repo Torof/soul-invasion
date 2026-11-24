@@ -403,7 +403,7 @@ pub struct Body {
     #[serde(default, skip_serializing_if = "is_zero")]
     apart_days: u32,
     /// The unmarried body it courts and the dawns in a row it slept near
-    /// it (D49, amended 24 November 2026): at `court_days` they wed.
+    /// it (D49, amended 24 November 2026): at `together_nights` they wed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     courting: Option<(BodyId, u32)>,
     /// The child a woman carries, not yet born (D49).
