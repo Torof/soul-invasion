@@ -7811,6 +7811,14 @@ fn on_the_way(world: &World, groups: &BTreeMap<BodyId, Group>, mind: &Mind) -> b
         .is_some_and(|g| g.ended.is_none() && !g.home && !g.arrived.contains_key(&g.members[0]))
 }
 
+/// Ticks in `minutes` game minutes: a game minute is a 1,440th of the
+/// game day, as the bodies feel it, not a minute of the calendar's
+/// seconds (24 November 2026: the look behind read its 30 minutes as
+/// calendar minutes, a quarter of a 2-hour day, 12 times too long).
+fn game_minutes(world: &World, minutes: u32) -> u64 {
+    u64::from(minutes) * world.calendar().ticks_per_day() / 1_440
+}
+
 /// The caller on its way looks behind (D56, decided by the project lead
 /// on 23 November 2026): while it sees a member not yet there walking
 /// behind it, farther than `behind_tiles`, it stops and waits,
@@ -7836,8 +7844,7 @@ fn look_behind(
         return Some(d);
     }
     let reach = i32::try_from(dec.behind_tiles).unwrap_or(i32::MAX);
-    let per_second = u64::from(world.calendar().ticks_per_second());
-    let most = u64::from(dec.behind_wait_minutes) * 60 * per_second;
+    let most = game_minutes(world, dec.behind_wait_minutes);
     // It sees a member walking behind it, out of reach: it waits for it.
     // One it does not see, or that stands still, it cannot wait for.
     let sight = sight_at(world.map(), rules, body.pos());
@@ -13775,6 +13782,22 @@ mod tests {
             "{follow:?}"
         );
         assert!(brains.groups[&BodyId(1)].followed.contains(&BodyId(2)));
+    }
+
+    #[test]
+    fn the_look_behind_waits_game_minutes_a_share_of_the_day() {
+        let map = || Map::filled(8, 8, Terrain::Grass).with_camp(4, 4);
+        // Today's day, 2 real hours at 10 ticks a second: half an hour of
+        // the day is 1,500 ticks (2.5 real minutes), not 18,000.
+        let today = World::empty(Calendar::new(10, 7_200).unwrap(), map());
+        assert_eq!(game_minutes(&today, 30), 1_500);
+        // The same share of a longer day.
+        let longer = World::empty(Calendar::new(10, 16_200).unwrap(), map());
+        assert_eq!(game_minutes(&longer, 30), 3_375);
+        assert_eq!(
+            game_minutes(&longer, 1_440),
+            longer.calendar().ticks_per_day()
+        );
     }
 
     #[test]

@@ -409,7 +409,8 @@
     //                          tiles from it, it stops and waits (the
     //                          lead, 23 November 2026: "regarder
     //                          derrière"); 0: it never does;
-    // behind_wait_minutes: 30 — half an hour of such waits a day at most.
+    // behind_wait_minutes: 30 — half an hour of such waits a day at most,
+    //                          in game minutes (a 1,440th of the day).
     // The evening's review (PR 1 ter; the lead, 23 November 2026: "on
     // peut mettre ça en place... les améliorer et les pousser un peu plus
     // loin"): a caller keeps dated facts on its companions, never a level
