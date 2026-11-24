@@ -415,9 +415,13 @@ def part_html(d):
     else:
         ep += " (pourquoi : pas mesuré dans ce run, plus ancien que la mesure)"
     li.append(ep + ".</li>")
-    li.append(f"<li><b>Déménager.</b> {b(m['moves'])} déménagement{'s' if (m['moves'] or 0) > 1 else ''}, de {b(m['move_median_m'], ' m')} "
-              f"en médiane ; l’installation la plus loin des camps du départ est à {b(m['settle_far_m'], ' m')}.</li>")
-    li.append(f"<li><b>Explorer.</b> {b(m['explore_days'])} journées d’exploration par personne et par cycle ; une journée d’exploration "
+    mv = m["moves"]
+    dem = f"<li><b>Déménager.</b> {b(mv)} déménagement{'s' if (mv or 0) >= 2 else ''}"
+    if m["move_median_m"] is not None:
+        dem += f", de {b(m['move_median_m'], ' m')} en médiane"
+    li.append(dem + f" ; l’installation la plus loin des camps du départ est à {b(m['settle_far_m'], ' m')}.</li>")
+    ed = m["explore_days"]
+    li.append(f"<li><b>Explorer.</b> {b(ed)} journée{'s' if (ed or 0) >= 2 else ''} d’exploration par personne et par cycle ; une journée d’exploration "
               f"va jusqu’à {b(m['look_median_m'], ' m')} de chez lui en médiane, {b(m['look_max_m'], ' m')} au plus ; "
               f"{b(m['found_looking'])} endroits trouvés en explorant et racontés au foyer.</li>")
     by = m.get("deaths_by") or {}
