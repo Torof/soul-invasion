@@ -27,7 +27,7 @@ use crate::{
 };
 
 /// The top-level keys, in the order they are written.
-const ORDER: [&str; 19] = [
+const ORDER: [&str; 21] = [
     "meta",
     "years",
     "seasons",
@@ -43,6 +43,8 @@ const ORDER: [&str; 19] = [
     "move_calls",
     "moving",
     "settlements",
+    "partings",
+    "home_changes",
     "goals",
     "map",
     "bearers",
@@ -223,6 +225,53 @@ impl Report {
         )
     }
 
+    /// Each parting with its couple's dawns before it (24 November 2026).
+    fn partings_json(&self) -> Value {
+        Value::Array(
+            self.partings
+                .iter()
+                .map(|p| {
+                    json!({
+                        "day": p.day,
+                        "pair": [p.pair[0].0, p.pair[1].0],
+                        "dawns": p.dawns.iter().map(|d| json!({
+                            "day": d.day,
+                            "apart": d.apart,
+                            "from_home": d.from_home,
+                            "homes_apart": d.homes_apart,
+                        })).collect::<Vec<_>>(),
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// Each grown body's home changed between two dawns (24 November
+    /// 2026).
+    fn home_changes_json(&self) -> Value {
+        Value::Array(
+            self.home_changes
+                .iter()
+                .map(|c| {
+                    json!({
+                        "day": c.day,
+                        "body": c.body.0,
+                        "tribe": c.tribe,
+                        "from": pos(c.from),
+                        "to": pos(c.to),
+                        "with": c.with,
+                        "left_people": c.left_people,
+                        "joined_people": c.joined_people,
+                        "villages": c.villages,
+                        "knew_villages": c.knew_villages,
+                        "nearest_village": c.nearest_village.map(|(tiles, people)| json!({"tiles": tiles, "people": people})),
+                        "known_places": c.known_places,
+                    })
+                })
+                .collect(),
+        )
+    }
+
     /// Moving as a consequence (amended 24 November 2026): the moves felt
     /// (pushed, or by a huge surprise), the surprises lived, the days gone
     /// to see, and each move's utility (the mover's hungry nights over the
@@ -354,7 +403,7 @@ impl Report {
     /// without `meta.timing`: the same settings give the same value.
     #[must_use]
     pub fn json_value(&self) -> Value {
-        json!({
+        let mut value = json!({
             "meta": self.meta(),
             "years": self.years_json(),
             "seasons": self.seasons_json(),
@@ -374,7 +423,10 @@ impl Report {
             "map": self.map_json(),
             "bearers": self.bearers_json(),
             "relief": self.relief_json(),
-        })
+        });
+        value["partings"] = self.partings_json();
+        value["home_changes"] = self.home_changes_json();
+        value
     }
 
     /// The whole file: [`Report::json_value`] with `meta.timing` (the wall

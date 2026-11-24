@@ -374,6 +374,27 @@ clock, the only field no seed decides.
 | `settlements[].groups[].at` | The mean of its homes | `[x, y]` tiles |
 | `settlements[].groups[].people` | The living there | count |
 | `settlements[].groups[].by_tribe` | Of them, the first and the second tribe's | `[count, count]` |
+| `partings[]` | Each parting (24 November 2026, why couples part), with the couple's dawns before it; distances in tiles on the longer axis, as the parting rule counts | list |
+| `partings[].day` | The day it parted | day |
+| `partings[].pair` | The two, the lower id first | `[id, id]` |
+| `partings[].dawns[]` | Their dawns as spouses over the 12 days before, up to the parting's own, the oldest first | list |
+| `partings[].dawns[].day` | The day | day |
+| `partings[].dawns[].apart` | The spouses apart where they woke | tiles |
+| `partings[].dawns[].from_home` | Each one from its own home, the lower id first | `[tiles, tiles]` |
+| `partings[].dawns[].homes_apart` | Their two homes apart | tiles |
+| `home_changes[]` | Each grown body's home changed between two dawns, whatever moved it (24 November 2026, why daughter villages), against the settlements of the dawn before: the others' homes linked within `mate_within_tiles` on each axis, link by link; a village is such a settlement of 10 or more that does not reach the old home | list |
+| `home_changes[].day` | The dawn it was seen | day |
+| `home_changes[].body` | Who | id |
+| `home_changes[].tribe` | Its tribe | 0 or 1 |
+| `home_changes[].from` | The home before | `[x, y]` tiles |
+| `home_changes[].to` | The home after | `[x, y]` tiles |
+| `home_changes[].with` | The other grown bodies whose home changed the same dawn to within reach of this new home | count |
+| `home_changes[].left_people` | The people of the settlements the old home reached, the mover out | count |
+| `home_changes[].joined_people` | The people of the settlements the new home reaches, the mover out | count |
+| `home_changes[].villages` | The villages there were | count |
+| `home_changes[].knew_villages` | Of them, those the mover knew a place within reach of | count |
+| `home_changes[].nearest_village` | The nearest village to the new home, `{tiles, people}`; null without any | object or null |
+| `home_changes[].known_places` | The places the mover knew of | count |
 | `goals[]` | Each goal held over several days (D56, amended 24 November 2026): `body`, `tribe`, `day` set, `to`, `tiles`, `load_kj` carried then, `end` (`arrived`, `load`, `hunger`, `thirst`, `dropped`, `null` while held at the end), `end_day` | |
 | `map.data_uri` | The page's picture of the map at the run's end, the same PNG: the terrain, the camps red, the living white, the dead black | `"data:image/png;base64,…"` |
 | `map.tiles_per_pixel` | The scale: one pixel is so many tiles a side (5 on the vivarium's world) | tiles |
