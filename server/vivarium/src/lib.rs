@@ -996,7 +996,7 @@ pub struct TrialEvent {
 
 /// A settlement at a year's end (24 November 2026, the lead's "combien de
 /// villages, où vivent-ils"): the living whose homes lie within
-/// `mate_within_tiles` of one another, link by link.
+/// [`SETTLEMENT_TILES`] of one another, link by link.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Settlement {
     /// The mean of its homes.
@@ -1005,6 +1005,48 @@ pub struct Settlement {
     pub people: u32,
     /// Of them, by tribe (the first two).
     pub by_tribe: [u32; 2],
+}
+
+/// How far a settlement's homes link, in tiles on each axis: the homes
+/// within it of one another are one settlement, link by link. Its own
+/// measure, no longer the couples' `mate_within_tiles` (24 November 2026,
+/// the brain in walking time).
+pub const SETTLEMENT_TILES: u32 = 64;
+
+/// How far the living went in a year (24 November 2026, the project lead:
+/// "Faut le passer non en mètres, mais en temps de marche"): a measure, in
+/// thousandths of a game minute of each one's own walk
+/// ([`sim::brain::Mind::walk_milliminutes`]) and in tiles.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReachYear {
+    /// Each gather's end, from the gatherer's home: its walk.
+    pub gather_mm: Vec<u64>,
+    /// The same, in tiles.
+    pub gather_tiles: Vec<u64>,
+    /// Each grown one's notebook at each dawn: its places.
+    pub places: Vec<u64>,
+    /// The same: its farthest place from home, its walk.
+    pub farthest_mm: Vec<u64>,
+    /// The same, in tiles.
+    pub farthest_tiles: Vec<u64>,
+    /// The places the notebooks forgot for want of room.
+    pub forgotten: u64,
+    /// The tiles from home they lay at, summed.
+    pub forgotten_tiles: u64,
+}
+
+impl ReachYear {
+    /// The `permille`-th of `values` in order (the median at 500), 0 when
+    /// there are none.
+    #[must_use]
+    pub fn quantile(values: &[u64], permille: usize) -> u64 {
+        if values.is_empty() {
+            return 0;
+        }
+        let mut sorted = values.to_vec();
+        sorted.sort_unstable();
+        sorted[((sorted.len() - 1) * permille / 1000).min(sorted.len() - 1)]
+    }
 }
 
 /// One dawn of a couple (24 November 2026, why couples part): in tiles,
@@ -1347,7 +1389,7 @@ impl WhyProbe {
         day: u64,
         movers: &[(BodyId, Pos, Pos, u8)],
     ) {
-        let reach = content.needs.life.mate_within_tiles;
+        let reach = SETTLEMENT_TILES;
         let side = i32::try_from(content.needs.thought.place_tiles)
             .unwrap_or(16)
             .max(1);
@@ -1527,6 +1569,46 @@ impl Report {
             self.settlement_reach,
             png::base64(&self.map_png),
             counts.join("; ")
+        )
+    }
+
+    /// How far the living went, year by year (24 November 2026, the brain
+    /// in walking time): [`ReachYear`], in game minutes of each one's walk
+    /// and in tiles.
+    #[must_use]
+    pub fn reach_section(&self) -> String {
+        if self.reach.is_empty() {
+            return String::new();
+        }
+        let q = ReachYear::quantile;
+        let min = |mm: u64| format!("{}.{}", mm / 1000, mm % 1000 / 100);
+        let mut rows = String::new();
+        for (year, r) in &self.reach {
+            let places = r
+                .places
+                .iter()
+                .sum::<u64>()
+                .checked_div(u64::try_from(r.places.len()).unwrap_or(1))
+                .unwrap_or(0);
+            let _ = write!(
+                rows,
+                "<tr><td>{year}</td><td>{}</td><td>{} ({} t)</td><td>{} ({} t)</td><td>{places}</td><td>{} ({} t)</td><td>{} ({} t)</td><td>{}</td><td>{} t</td></tr>",
+                r.gather_mm.len(),
+                min(q(&r.gather_mm, 500)),
+                q(&r.gather_tiles, 500),
+                min(q(&r.gather_mm, 900)),
+                q(&r.gather_tiles, 900),
+                min(q(&r.farthest_mm, 500)),
+                q(&r.farthest_tiles, 500),
+                min(r.farthest_mm.iter().copied().max().unwrap_or(0)),
+                r.farthest_tiles.iter().copied().max().unwrap_or(0),
+                r.forgotten,
+                r.forgotten_tiles.checked_div(r.forgotten).unwrap_or(0),
+            );
+        }
+        format!(
+            "<h2>How far they go</h2><p>In game minutes of each one's own walk (a game minute is a 1,440th of the day), tiles in brackets: the gathers from the gatherer's home, the notebooks of the grown at each dawn, and the places forgotten for want of room.</p>\
+             <table><tr><th>Year</th><th>Gathers</th><th>From home, median</th><th>From home, 90 %</th><th>Notebook places</th><th>Farthest kept, median</th><th>Farthest kept, most</th><th>Forgotten</th><th>Forgotten, from home</th></tr>{rows}</table>"
         )
     }
 
@@ -1964,6 +2046,9 @@ pub struct Report {
     pub settlements: BTreeMap<u64, Vec<Settlement>>,
     /// The reach that links homes into one settlement, in tiles.
     pub settlement_reach: u32,
+    /// How far the living went, by year (24 November 2026, the brain in
+    /// walking time).
+    pub reach: BTreeMap<u64, ReachYear>,
     /// Each parting with its couple's dawns before it (24 November 2026).
     pub partings: Vec<Parting>,
     /// Each grown body's home changed between two dawns (24 November
@@ -2546,6 +2631,8 @@ pub fn run_watched(
     // --- the scarcity chain (24 November 2026) ---
     let mut chain = chain::Chain::new(calendar.ticks_per_day());
     // --- end of the scarcity chain ---
+    let mut reach: BTreeMap<u64, ReachYear> = BTreeMap::new();
+    let mut forgot_seen: BTreeMap<BodyId, (u64, u64)> = BTreeMap::new();
     // The homes under trial, (before, after), to tell where a given-up
     // home goes back to.
     let mut home_trials: BTreeMap<BodyId, (Pos, Pos)> = BTreeMap::new();
@@ -2647,6 +2734,14 @@ pub fn run_watched(
                     food.entry((tribe, year))
                         .or_default()
                         .gathered(content, gives, *grams);
+                    if let (Some(b), Some(mind)) = (world.body(*body), brains.mind(*body)) {
+                        let (at, home) = (b.pos(), mind.home());
+                        let (dx, dy) = (i64::from(at.x - home.x), i64::from(at.y - home.y));
+                        let tiles = (dx * dx + dy * dy).unsigned_abs().isqrt();
+                        let r = reach.entry(year).or_default();
+                        r.gather_mm.push(mind.walk_milliminutes(tiles));
+                        r.gather_tiles.push(tiles);
+                    }
                     let person = people.entry(*body).or_default();
                     person.gathered_j += joules(content, gives, *grams);
                     person.note(
@@ -2708,6 +2803,15 @@ pub fn run_watched(
                             continue;
                         }
                         if let Some(mind) = brains.mind(b.id()) {
+                            let r = reach.entry(year).or_default();
+                            let (kept, farthest) = mind.notebook(content);
+                            r.places.push(u64::try_from(kept).unwrap_or(u64::MAX));
+                            r.farthest_tiles.push(farthest);
+                            r.farthest_mm.push(mind.walk_milliminutes(farthest));
+                            let (n, tiles) = mind.forgotten();
+                            let seen = forgot_seen.insert(b.id(), (n, tiles)).unwrap_or((0, 0));
+                            r.forgotten += n.saturating_sub(seen.0);
+                            r.forgotten_tiles += tiles.saturating_sub(seen.1);
                             let e = moving
                                 .pushed
                                 .entry((tribe_of(&people, b.id()), year))
@@ -3443,7 +3547,7 @@ pub fn run_watched(
         // The year's last tick, or the run's: what the living carry, and
         // the ways in use (D50).
         if tick % per_year == 0 || tick == ticks {
-            settlements.insert(year, settlements_of(&world, &brains, &people, content));
+            settlements.insert(year, settlements_of(&world, &brains, &people));
             let carried = reserves(&world, content, &people);
             for (tribe, &j) in carried.iter().enumerate().take(tribes) {
                 let t = u8::try_from(tribe).expect("two");
@@ -3605,7 +3709,8 @@ pub fn run_watched(
         knowledge,
         known_places,
         settlements,
-        settlement_reach: content.needs.life.mate_within_tiles,
+        settlement_reach: SETTLEMENT_TILES,
+        reach,
         partings: why.partings,
         home_changes: why.changes,
         nights_apart: why.nights,
@@ -3888,15 +3993,14 @@ fn find(root: &mut [usize], i: usize) -> usize {
 
 /// The settlements now ([`Settlement`]): each living body at its home
 /// (its mind's), an infant or a body without a mind at its carrier's or
-/// where it stands; homes within `mate_within_tiles` of one another, on
+/// where it stands; homes within [`SETTLEMENT_TILES`] of one another, on
 /// each axis, are one settlement, link by link. The largest first.
 fn settlements_of(
     world: &World,
     brains: &Brains,
     people: &BTreeMap<BodyId, Person>,
-    content: &Content,
 ) -> Vec<Settlement> {
-    let reach = i32::try_from(content.needs.life.mate_within_tiles).unwrap_or(i32::MAX);
+    let reach = i32::try_from(SETTLEMENT_TILES).unwrap_or(i32::MAX);
     let home = |b: &sim::Body| {
         let id = b.carried_by().unwrap_or(b.id());
         brains
@@ -5522,6 +5626,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             png::base64(&self.map_png)
         );
         h.push_str(&self.settlements_section());
+        h.push_str(&self.reach_section());
         h.push_str("<h2>The curves</h2>");
         h.push_str(&self.curves());
         h.push_str(&self.food_table());
@@ -6681,6 +6786,23 @@ mod tests {
             }
             content
         })
+    }
+
+    #[test]
+    fn the_reach_is_measured_in_game_minutes_and_tiles() {
+        assert_eq!(ReachYear::quantile(&[], 500), 0);
+        assert_eq!(ReachYear::quantile(&[30, 10, 20], 500), 20);
+        assert_eq!(
+            ReachYear::quantile(&[5, 1, 4, 2, 3, 9, 8, 7, 6, 10], 900),
+            9
+        );
+        let report = run_with(&Settings { days: 3, ..small() }, content()).unwrap();
+        let r = &report.reach[&1];
+        assert!(!r.gather_mm.is_empty() && r.gather_mm.len() == r.gather_tiles.len());
+        assert!(!r.places.is_empty() && r.farthest_mm.len() == r.places.len());
+        let json = report.json_value();
+        assert_eq!(json["reach"][0]["year"], json!(1));
+        assert!(report.full_html().contains("How far they go"));
     }
 
     fn small() -> Settings {

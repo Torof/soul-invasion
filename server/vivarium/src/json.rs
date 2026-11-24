@@ -22,12 +22,12 @@ use sim::map::Pos;
 use sim::{BodyId, Death, Sex};
 
 use crate::{
-    ACT_KEYS, DEATHS, DecisionYear, Person, Report, STEPS, Step, TrialLine, WILL_BANDS, WorldKind,
-    is_fire_line, is_life_line, is_trial_line, name, thinned, tribe_name,
+    ACT_KEYS, DEATHS, DecisionYear, Person, ReachYear, Report, STEPS, Step, TrialLine, WILL_BANDS,
+    WorldKind, is_fire_line, is_life_line, is_trial_line, name, thinned, tribe_name,
 };
 
 /// The top-level keys, in the order they are written.
-const ORDER: [&str; 26] = [
+const ORDER: [&str; 27] = [
     "meta",
     "years",
     "seasons",
@@ -49,6 +49,7 @@ const ORDER: [&str; 26] = [
     "nights_apart",
     "nights_out",
     "pooling",
+    "reach",
     "goals",
     "map",
     "bearers",
@@ -319,6 +320,41 @@ impl Report {
         )
     }
 
+    /// How far the living went, year by year (24 November 2026, the brain
+    /// in walking time): the gathers from home and the notebooks' farthest
+    /// places, in game minutes of each one's own walk and in tiles, and
+    /// the places forgotten for want of room.
+    fn reach_json(&self) -> Value {
+        // Tenths of a game minute, from thousandths.
+        let minutes = |mm: u64| mm / 100;
+        let q = ReachYear::quantile;
+        Value::Array(
+            self.reach
+                .iter()
+                .map(|(year, r)| {
+                    let mean = |sum: u64, n: usize| {
+                        sum.checked_div(u64::try_from(n).unwrap_or(1)).unwrap_or(0)
+                    };
+                    json!({
+                        "year": year,
+                        "gathers": r.gather_mm.len(),
+                        "gather_minutes_x10_median": minutes(q(&r.gather_mm, 500)),
+                        "gather_minutes_x10_p90": minutes(q(&r.gather_mm, 900)),
+                        "gather_tiles_median": q(&r.gather_tiles, 500),
+                        "gather_tiles_p90": q(&r.gather_tiles, 900),
+                        "notebook_places_mean": mean(r.places.iter().sum(), r.places.len()),
+                        "notebook_farthest_minutes_x10_median": minutes(q(&r.farthest_mm, 500)),
+                        "notebook_farthest_minutes_x10_max": minutes(r.farthest_mm.iter().copied().max().unwrap_or(0)),
+                        "notebook_farthest_tiles_median": q(&r.farthest_tiles, 500),
+                        "notebook_farthest_tiles_max": r.farthest_tiles.iter().copied().max().unwrap_or(0),
+                        "forgotten": r.forgotten,
+                        "forgotten_tiles_mean": r.forgotten_tiles.checked_div(r.forgotten).unwrap_or(0),
+                    })
+                })
+                .collect(),
+        )
+    }
+
     /// Moving as a consequence (amended 24 November 2026): the moves felt
     /// (pushed, or by a huge surprise), the surprises lived, the days gone
     /// to see, and each move's utility (the mover's hungry nights over the
@@ -497,6 +533,7 @@ impl Report {
         let days = u64::from(self.calendar().days_per_age_year().max(1));
         let tribes = u8::try_from(self.camps.len()).unwrap_or(u8::MAX);
         value["hands"] = self.hands.json(&changes, days, tribes);
+        value["reach"] = self.reach_json();
         value
     }
 

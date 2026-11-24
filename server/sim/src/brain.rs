@@ -2133,6 +2133,15 @@ pub struct Mind {
     /// ground it lay on, as it felt it at its last nightfall: the time a
     /// walk takes (D53, amended 24 November 2026).
     day_tiles: u64,
+    /// What a tile of walk takes it, in millionths of a game minute (a
+    /// 1,440th of the game day): at its pace on the ground it lay on as it
+    /// felt it at its last nightfall, on the reference ground at its
+    /// adoption ([`Mind::walk_milliminutes`]; the project lead, 24 November
+    /// 2026: "Faut le passer non en mètres, mais en temps de marche").
+    tile_umin: u64,
+    /// The places its notebook forgot for want of room, and the tiles from
+    /// home they lay at, summed: a measure.
+    forgotten: (u64, u64),
     /// What it gathered its last days, in per mille of a day of need, and
     /// the days, both faded as its notes and in thousandths: what a day of
     /// light is worth to it.
@@ -2370,6 +2379,8 @@ impl Mind {
             kept_call: None,
             walk_kilotile: 0,
             day_tiles: 0,
+            tile_umin: REFERENCE_TILE_UMIN,
+            forgotten: (0, 0),
             gathered: (0, 0),
             habit: Vec::new(),
             bare_today: 0,
@@ -2462,6 +2473,38 @@ impl Mind {
     /// Its camp.
     pub fn home(&self) -> Pos {
         self.ways.home
+    }
+
+    /// What walking `tiles` in a straight line takes it, in thousandths of
+    /// a game minute (a 1,440th of the game day): at the pace it felt at
+    /// its last nightfall on the ground it lay on, on the reference ground
+    /// before. The brain's one clock of distance (the project lead, 24
+    /// November 2026: "Faut le passer non en mètres, mais en temps de
+    /// marche").
+    #[must_use]
+    pub fn walk_milliminutes(&self, tiles: u64) -> u64 {
+        tiles.saturating_mul(self.tile_umin) / 1000
+    }
+
+    /// Its notebook (D53), a measure: how many places it holds, and the
+    /// farthest of them from its home, in tiles.
+    #[must_use]
+    pub fn notebook(&self, rules: &Content) -> (usize, u64) {
+        let (home, side) = (self.ways.home, place_side(rules));
+        let farthest = self
+            .places
+            .keys()
+            .map(|&key| far(place_centre(key, side), home))
+            .max()
+            .map_or(0, |d| u64::try_from(d).unwrap_or(0).isqrt());
+        (self.places.len(), farthest)
+    }
+
+    /// The places its notebook forgot for want of room since it was
+    /// adopted, and the tiles from home they lay at, summed: a measure.
+    #[must_use]
+    pub fn forgotten(&self) -> (u64, u64) {
+        self.forgotten
     }
 
     /// Its ways (D50).
@@ -3946,6 +3989,9 @@ fn trim_places(food: &Food, rules: &Content, at: Pos, mind: &mut Mind, memory: &
     ranked.select_nth_unstable(keep);
     let gone: Vec<PlaceKey> = ranked[keep..].iter().map(|(_, key)| *key).collect();
     for key in gone {
+        let tiles = far(place_centre(key, side), mind.ways.home);
+        mind.forgotten.0 += 1;
+        mind.forgotten.1 += u64::try_from(tiles).unwrap_or(0).isqrt();
         mind.forget_place(key, memory);
     }
 }
@@ -4413,6 +4459,11 @@ impl Brains {
                 .trials
                 .will_at(scatter::roll(run_seed, purpose::TRIAL_WILL, &[u64::from(body.0)]) % 1001);
             mind.set_innate(innate, &rules.needs.temperance);
+            // Its walk on the reference ground, until it feels its own.
+            if let Some(b) = world.body(body) {
+                let reference = rules.movement.walk_speed_cm_per_s;
+                mind.tile_umin = tile_umin(world, paced_cm(rules, b, reference));
+            }
             // Its sociability (D53, amended 24 November 2026): even from
             // 0 to 100, from the run's seed and its id, never inherited.
             mind.sociable = u8::try_from(
@@ -8603,6 +8654,12 @@ fn night_of(
         .get(body.pos())
         .map_or(0, |t| rules.movement.speed_cm_per_s(t));
     mind.day_tiles = light_walk(world, rules, body, ground);
+    let felt = if ground > 0 {
+        ground
+    } else {
+        rules.movement.walk_speed_cm_per_s
+    };
+    mind.tile_umin = tile_umin(world, paced_cm(rules, body, felt));
     let keep = u64::from(rules.needs.trials.lived_keep_permille);
     let got = gathered_kj * 1000 / need_kj_per_day(rules, body).max(1);
     let (sum, days) = mind.gathered;
@@ -9803,8 +9860,7 @@ fn light_left_tiles(world: &World, rules: &Content, body: &Body) -> u64 {
         calendar.ticks_per_day() * u64::from(rules.needs.night_from_percent.get(now.season)) / 100;
     let seconds =
         night_at.saturating_sub(now.tick_of_day) / u64::from(calendar.ticks_per_second()).max(1);
-    let pace = u64::from(body.condition().pace_percent(&rules.needs));
-    u64::from(rules.movement.walk_speed_cm_per_s) * pace / 100 * seconds / 100
+    paced_cm(rules, body, rules.movement.walk_speed_cm_per_s) * seconds / 100
 }
 
 /// Whether `body` standing at `here` is past its point of no return
@@ -9837,12 +9893,8 @@ fn past_no_return(
 /// each): home nearer than that, it does not choose, it goes home (the
 /// project lead, 25 November 2026).
 fn choice_tiles(world: &World, rules: &Content, body: &Body) -> u64 {
-    let calendar = world.calendar();
-    let seconds = u64::from(rules.needs.trips.choice_beyond_minutes)
-        * u64::from(calendar.seconds_per_day())
-        / 1_440;
-    let pace = u64::from(body.condition().pace_percent(&rules.needs));
-    u64::from(rules.movement.walk_speed_cm_per_s) * pace / 100 * seconds / 100
+    let paced = paced_cm(rules, body, rules.movement.walk_speed_cm_per_s);
+    minutes_tiles(world, paced, rules.needs.trips.choice_beyond_minutes)
 }
 
 /// Whether `body` at `here` is farther from its camp `home` than
@@ -11022,13 +11074,42 @@ fn light_walk(world: &World, rules: &Content, body: &Body, speed_cm: u32) -> u64
     } else {
         rules.movement.walk_speed_cm_per_s
     };
-    let pace = u64::from(body.condition().pace_percent(&rules.needs));
-    let speed_cm = u64::from(speed_cm) * pace / 100;
+    let speed_cm = paced_cm(rules, body, speed_cm);
     let light = u64::from(world.calendar().seconds_per_day())
         * u64::from(rules.needs.night_from_percent.get(world.time().season))
         / 100;
     speed_cm * light / 100
 }
+
+/// How fast `body` walks at its pace on a ground of `speed_cm` per
+/// second, in centimetres a second: the brain's one clock of a walk, read
+/// as tiles in game minutes ([`minutes_tiles`]: the point of no return,
+/// the choice away from the camp) or as game minutes a tile
+/// ([`tile_umin`]: the mind's own, [`Mind::walk_milliminutes`]).
+fn paced_cm(rules: &Content, body: &Body, speed_cm: u32) -> u64 {
+    let pace = u64::from(body.condition().pace_percent(&rules.needs));
+    u64::from(speed_cm) * pace / 100
+}
+
+/// The tiles walked at `speed_cm` per second in `minutes` game minutes, a
+/// game minute being a 1,440th of the game day.
+fn minutes_tiles(world: &World, speed_cm: u64, minutes: u32) -> u64 {
+    let seconds = u64::from(minutes) * u64::from(world.calendar().seconds_per_day()) / 1_440;
+    speed_cm * seconds / 100
+}
+
+/// What a tile walked at `speed_cm` per second takes, in millionths of a
+/// game minute, a game minute being a 1,440th of the game day (11.25
+/// seconds of the calendar v1's 16,200-second day, some 16 tiles on the
+/// reference ground).
+fn tile_umin(world: &World, speed_cm: u64) -> u64 {
+    let per_day = u64::from(world.calendar().seconds_per_day()).max(1);
+    144_000_000_000 / speed_cm.max(1).saturating_mul(per_day)
+}
+
+/// [`tile_umin`] at the reference ground's 1.43 m/s and the calendar v1's
+/// 16,200-second day: a mind's until it is adopted into a world.
+const REFERENCE_TILE_UMIN: u64 = 62_160;
 
 /// Whether `to` lies farther from `at` than `body` walks in a day.
 fn beyond_a_day(world: &World, rules: &Content, body: &Body, at: Pos, to: Pos) -> bool {
@@ -16401,6 +16482,40 @@ mod tests {
         assert_eq!(brains.minds[&BodyId(2)].ways.home, camp, "it comes back");
         assert_eq!(brains.minds[&BodyId(1)].ways.home, to);
         assert!(brains.minds[&BodyId(1)].trial.is_some());
+    }
+
+    #[test]
+    fn a_walk_takes_game_minutes_at_the_pace_felt() {
+        // The calendar v1: a 16,200-second day, a game minute of 11.25 s.
+        let world = World::empty(
+            Calendar::new(10, 16_200).unwrap(),
+            Map::filled(8, 8, Terrain::Grass),
+        );
+        assert_eq!(tile_umin(&world, 143), REFERENCE_TILE_UMIN);
+        let mut mind = Mind::new(Pos::new(4, 4));
+        // The reference ground's 1.43 m/s: 16 tiles a game minute, half an
+        // hour some 483 tiles.
+        assert_eq!(mind.walk_milliminutes(16), 994);
+        assert_eq!(mind.walk_milliminutes(483) / 1000, 30);
+        // Felt in the forest (0.95 m/s): half an hour is some 321 tiles.
+        mind.tile_umin = tile_umin(&world, 95);
+        assert_eq!(mind.walk_milliminutes(321) / 1000, 30);
+        // The old 2-hour day: a game minute of 5 s, half an hour 215 tiles.
+        let old = World::empty(
+            Calendar::new(10, 7_200).unwrap(),
+            Map::filled(8, 8, Terrain::Grass),
+        );
+        mind.tile_umin = tile_umin(&old, 143);
+        assert_eq!(mind.walk_milliminutes(215) / 1000, 30);
+        // Adopted, a mind walks the reference ground at its body's pace.
+        let mut world = World::empty(
+            Calendar::new(10, 16_200).unwrap(),
+            Map::filled(8, 8, Terrain::Grass).with_camp(4, 4),
+        );
+        let id = world.spawn_body(Pos::new(4, 4));
+        let rules = rules();
+        let brains = piloted_with(&world, &rules);
+        assert_eq!(brains.minds[&id].tile_umin, REFERENCE_TILE_UMIN);
     }
 
     #[test]
