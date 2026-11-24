@@ -3865,7 +3865,7 @@ impl Mind {
                 }
                 memory.hold(record);
                 // Worth remembering from the camp, or forgotten at once.
-                trim_places(food, rules, camp, self, memory);
+                trim_places(food, rules, self, memory);
                 self.places
                     .get(&key)
                     .is_some_and(|p| p.access == Some(access))
@@ -3987,8 +3987,11 @@ impl Mind {
 }
 
 /// Past the content's `thought.places_remembered`, the places worth
-/// least from `at` are forgotten, their accesses dropped (D53, D55).
-fn trim_places(food: &Food, rules: &Content, at: Pos, mind: &mut Mind, memory: &mut Store) {
+/// least from its home in walking time are forgotten, their accesses
+/// dropped (D53, D55). From its home, not from where it looks (24 November
+/// 2026, the brain in walking time): the notebook followed the body, so a
+/// far find was forgotten on the way back.
+fn trim_places(food: &Food, rules: &Content, mind: &mut Mind, memory: &mut Store) {
     let keep = places_remembered(rules);
     if mind.places.len() <= keep {
         return;
@@ -3997,7 +4000,7 @@ fn trim_places(food: &Food, rules: &Content, at: Pos, mind: &mut Mind, memory: &
     let mut ranked: Vec<Rank> = mind
         .places
         .iter()
-        .map(|(key, place)| rank_place(food, at, half, side, *key, place))
+        .map(|(key, place)| rank_place(food, mind.ways.home, half, side, *key, place))
         .collect();
     ranked.select_nth_unstable(keep);
     let gone: Vec<PlaceKey> = ranked[keep..].iter().map(|(_, key)| *key).collect();
@@ -7090,7 +7093,7 @@ impl Brains {
                 remember_places(
                     &self.food,
                     rules,
-                    (id, at, day, world.tick().0),
+                    (id, day, world.tick().0),
                     mind,
                     seen,
                     &mut self.memory,
@@ -7443,7 +7446,7 @@ fn look(
         remember_places(
             land.food,
             rules,
-            (id, at, day, now),
+            (id, day, now),
             mind,
             seen,
             land.memory,
@@ -7612,17 +7615,16 @@ fn rank_place(
     )
 }
 
-/// The places `seen` from `at` by `id` on `day` (what and how many of
-/// each kind) join the mind's; past the content's
-/// `thought.places_remembered`, the places worth least from `at` are
-/// forgotten (D53). A place heard of is corrected at this first look
+/// The places `seen` by `id` on `day` (what and how many of each kind)
+/// join the mind's; past the content's `thought.places_remembered`, the
+/// places worth least from its home in walking time are forgotten (D53). A place heard of is corrected at this first look
 /// (D55): the look is now its own, and if it found none of the food the
 /// record told, the rumour is dispelled ([`News::Dispelled`]) and the
 /// access dropped; the bare place is told tonight.
 fn remember_places(
     food: &Food,
     rules: &Content,
-    (id, at, day, now): (BodyId, Pos, u32, u64),
+    (id, day, now): (BodyId, u32, u64),
     mind: &mut Mind,
     seen: BTreeMap<PlaceKey, Vec<Seen>>,
     memory: &mut Store,
@@ -7636,7 +7638,7 @@ fn remember_places(
         place.looked_day = Some(day);
         mind.correct(key, id, &rules.needs.fire, food, memory, news, now);
     }
-    trim_places(food, rules, at, mind, memory);
+    trim_places(food, rules, mind, memory);
 }
 
 /// The minds' shared land, borrowed for a turn: the plants placed, the
@@ -12226,6 +12228,37 @@ mod tests {
     }
 
     #[test]
+    fn the_notebook_keeps_a_far_rich_find_from_home_not_from_where_it_looks() {
+        let (world, rules, id, _) = by_a_ripe_bramble(0);
+        let home = world.body(id).unwrap().pos();
+        let side = place_side(&rules);
+        let own = place_of(home, side);
+        let food = food_now(&world, &rules);
+        let (bramble, hazel) = (food.numbers["bramble"], food.numbers["hazel"]);
+        let keep = places_remembered(&rules);
+        let mut mind = Mind::new(home);
+        // A hazel corner 125 places off (some 2,000 tiles, two hours of
+        // walk), and as many bramble corners as the notebook holds around
+        // the home: one is too many.
+        let far_off = (own.0 + 125, own.1);
+        mind.places.insert(far_off, place_with(&food, hazel, 1));
+        let mut ring = (0..).map(|i: i32| (own.0 + i % 7 - 3, own.1 + i / 7 - 3));
+        while mind.places.len() <= keep {
+            mind.places
+                .insert(ring.next().unwrap(), place_with(&food, bramble, 3));
+        }
+        let mut memory = Store::new();
+        trim_places(&food, &rules, &mut mind, &mut memory);
+        assert_eq!(mind.places.len(), keep);
+        // From home, two hours of walk to 52,000 kJ an hour of hazelnuts
+        // is worth more than a bramble corner at the door (1,800 kJ): the
+        // find is kept and a bramble corner forgotten, wherever the body
+        // stood when it looked.
+        assert!(mind.places.contains_key(&far_off));
+        assert_eq!(mind.forgotten().0, 1);
+    }
+
+    #[test]
     fn it_goes_to_the_richer_place_unless_it_is_too_far() {
         let (world, rules, id, _) = by_a_ripe_bramble(0);
         let here = world.body(id).unwrap().pos();
@@ -12428,7 +12461,7 @@ mod tests {
         remember_places(
             &food,
             &rules,
-            (BodyId(1), here, 0, 0),
+            (BodyId(1), 0, 0),
             &mut mind,
             seen,
             &mut memory,
@@ -14022,7 +14055,7 @@ mod tests {
             remember_places(
                 &food,
                 &rules,
-                (BodyId(1), here, 0, 0),
+                (BodyId(1), 0, 0),
                 &mut mind,
                 seen,
                 &mut memory,
@@ -17246,7 +17279,7 @@ mod tests {
         remember_places(
             &food,
             rules,
-            (id, Pos::new(5, 5), day, world.tick().0),
+            (id, day, world.tick().0),
             mind,
             seen,
             &mut brains.memory,
