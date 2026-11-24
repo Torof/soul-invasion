@@ -122,7 +122,8 @@ pub const HUNGRY: u32 = 50;
 /// the ring the bodies are born in).
 pub const HOME_TILES: i32 = 6;
 /// How many drinking places and how many foods a body remembers: the
-/// nearest to the camp are kept.
+/// water nearest its home or its notebook's places, the food nearest the
+/// camp.
 pub const MEMORY_PLACES: usize = 64;
 /// How long a walk halves a plant's worth, in game minutes (a 1,440th of
 /// the game day): a body weighs what an hour of gathering gives against
@@ -3798,18 +3799,18 @@ impl Mind {
         denied
     }
 
-    /// `me` hears `record` from `teller` at the fire of `camp` (D55) with
+    /// `me` hears `record` from `teller` at the fire (D55) with
     /// `credit` in it, and gains an access if it keeps it: a place heard
     /// enters its places as what the teller said, worth less by the
     /// credit, if it holds no later record of that place (its own look
-    /// included) and the place is worth remembering from the camp; a
+    /// included) and the place is worth remembering from its home; a
     /// water heard joins the drinking places it knows; a kept way heard
     /// joins its heard ways. Whether it kept an access.
     fn hear(
         &mut self,
         fire: &Fire,
         food: &Food,
-        (camp, day): (Pos, u32),
+        (_camp, day): (Pos, u32),
         (credit, record, teller): (u8, RecordId, BodyId),
         memory: &mut Store,
         rules: &Content,
@@ -3887,7 +3888,7 @@ impl Mind {
                     return false;
                 }
                 self.water.insert(chunk, place);
-                trim_water(self, camp);
+                trim_water(self, rules);
                 false
             }
             Some(Record::Trial { .. } | Record::Deed { .. }) => {
@@ -4012,16 +4013,37 @@ fn trim_places(food: &Food, rules: &Content, mind: &mut Mind, memory: &mut Store
     }
 }
 
-/// Kept small: the drinking places nearest the camp ([`MEMORY_PLACES`]).
-fn trim_water(mind: &mut Mind, camp: Pos) {
-    while mind.water.len() > MEMORY_PLACES {
-        let farthest = *mind
-            .water
-            .iter()
-            .max_by_key(|(chunk, place)| (far(place.stand, camp), **chunk))
-            .map(|(chunk, _)| chunk)
-            .expect("not empty");
-        mind.water.remove(&farthest);
+/// Kept small ([`MEMORY_PLACES`]): the drinking places nearest in walking
+/// time to its home or to a place of its notebook (24 November 2026, the
+/// brain in walking time: the nearest the camp were kept, so the water by
+/// a far grove was forgotten first and the grove's grade lacked it). One
+/// clock for all its walks, so the nearest in tiles is the nearest in time.
+fn trim_water(mind: &mut Mind, rules: &Content) {
+    if mind.water.len() <= MEMORY_PLACES {
+        return;
+    }
+    let side = place_side(rules);
+    let mut known: Vec<Pos> = mind
+        .places
+        .keys()
+        .map(|&key| place_centre(key, side))
+        .collect();
+    known.push(mind.ways.home);
+    let mut ranked: Vec<(i64, ChunkPos)> = mind
+        .water
+        .iter()
+        .map(|(chunk, place)| {
+            let nearest = known
+                .iter()
+                .map(|&at| far(place.stand, at))
+                .min()
+                .unwrap_or(i64::MAX);
+            (nearest, *chunk)
+        })
+        .collect();
+    ranked.select_nth_unstable(MEMORY_PLACES);
+    for (_, chunk) in &ranked[MEMORY_PLACES..] {
+        mind.water.remove(chunk);
     }
 }
 
@@ -7453,8 +7475,9 @@ fn look(
             land.news,
         );
     }
-    // Kept small: the nearest to the camp.
-    trim_water(mind, camp);
+    // Kept small: the water nearest home or its places, the food nearest
+    // the camp.
+    trim_water(mind, rules);
     while mind.food.len() > MEMORY_PLACES {
         let farthest = *mind
             .food
@@ -12224,6 +12247,47 @@ mod tests {
         assert_eq!(
             worth(1000, far(Pos::new(0, 0), Pos::new(320, 0)), (30, 93_567)),
             500
+        );
+    }
+
+    #[test]
+    fn the_water_kept_is_the_nearest_to_home_or_to_a_place_it_knows() {
+        let rules = rules();
+        let side = place_side(&rules);
+        let home = Pos::new(4000, 4000);
+        let mut mind = Mind::new(home);
+        // A grove it knows some 2,000 tiles east, two hours of walk.
+        let grove = place_of(Pos::new(6000, 4000), side);
+        mind.places.insert(grove, Place::default());
+        let drink = |at: Pos| DrinkingPlace {
+            stand: at,
+            water: at,
+        };
+        // As many drinking places around home as it holds, one chunk apart.
+        for i in 0..i32::try_from(MEMORY_PLACES).unwrap() {
+            let at = Pos::new(home.x + (i % 8) * 32, home.y + (i / 8) * 32);
+            mind.water.insert(at.chunk(), drink(at));
+        }
+        // The grove's water, and one as far that lies by nothing it knows.
+        let by_grove = place_centre(grove, side);
+        let lone = Pos::new(4000, 2000);
+        mind.water.insert(by_grove.chunk(), drink(by_grove));
+        mind.water.insert(lone.chunk(), drink(lone));
+        trim_water(&mut mind, &rules);
+        assert_eq!(mind.water.len(), MEMORY_PLACES);
+        assert!(
+            mind.water.contains_key(&by_grove.chunk()),
+            "by the grove: kept"
+        );
+        assert!(
+            !mind.water.contains_key(&lone.chunk()),
+            "by nothing: forgotten"
+        );
+        assert!(
+            !mind
+                .water
+                .contains_key(&Pos::new(home.x + 7 * 32, home.y + 7 * 32).chunk()),
+            "the farthest from home goes too"
         );
     }
 
