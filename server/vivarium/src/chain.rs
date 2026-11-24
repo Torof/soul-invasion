@@ -59,11 +59,13 @@ pub struct AwayWhy {
     pub goal: u32,
     /// Lay down within the fire's reach of its home: the home moved since.
     pub lay_at_home: u32,
-    /// Awake at dawn: still walking, or never lay down.
+    /// Awake at dawn and never lay down since the dawn before: it walked
+    /// or stood the night through.
     pub awake: u32,
     /// Asleep, its lying down not seen (since the run's first tick).
     pub unseen: u32,
-    /// The fatigue at lying down of those asleep, summed, and how many.
+    /// The fatigue at lying down of those who lay down, summed, and how
+    /// many.
     pub fatigue: (u64, u32),
 }
 
@@ -83,8 +85,8 @@ struct Track {
     tribe: u8,
     at: FinePos,
     asleep: bool,
-    /// Its last lying down, with its fatigue then.
-    lay: Option<(Lay, u32)>,
+    /// Its last lying down, with its fatigue and the tick then.
+    lay: Option<(Lay, u32, u64)>,
     /// What barred its last walk since dawn.
     barred: Option<Blockage>,
     /// The farthest it stood from home since its last day closed, on the
@@ -114,6 +116,8 @@ pub struct Chain {
     /// Every looking day, in order.
     pub looks: Vec<Look>,
     tracks: BTreeMap<BodyId, Track>,
+    /// The tick of the last dawn.
+    last_dawn: u64,
     ticks_per_hour: u64,
     ticks_per_minute: u64,
 }
@@ -216,7 +220,7 @@ impl Chain {
                 } else {
                     Lay::AtHome
                 };
-                t.lay = Some((lay, c.fatigue.points()));
+                t.lay = Some((lay, c.fatigue.points(), tick));
             }
             t.asleep = c.asleep;
             if minute
@@ -243,11 +247,14 @@ impl Chain {
         }
         if dawn {
             self.dawn(world, brains, content);
+            self.last_dawn = tick;
         }
     }
 
     /// A dawn: each grown body away from home, as `nights_out` counts it,
-    /// by how it lay down; then the day's barring forgotten.
+    /// by how it lay down last, asleep still or since the dawn before (the
+    /// rested wake with the day, at the dawn's own tick); then the day's
+    /// barring forgotten.
     fn dawn(&mut self, world: &World, brains: &Brains, content: &Content) {
         let reach = content.needs.trials.imitate_tiles;
         let days_a_year = u64::from(world.calendar().days_per_age_year().max(1));
@@ -265,12 +272,14 @@ impl Chain {
                 continue;
             }
             let lay = self.tracks.get(&b.id()).and_then(|t| t.lay);
-            if !b.condition().asleep {
-                why.awake += 1;
-                continue;
-            }
-            let Some((lay, fatigue)) = lay else {
-                why.unseen += 1;
+            let asleep = b.condition().asleep;
+            let Some((lay, fatigue, _)) = lay.filter(|&(_, _, at)| asleep || at > self.last_dawn)
+            else {
+                if asleep {
+                    why.unseen += 1;
+                } else {
+                    why.awake += 1;
+                }
                 continue;
             };
             why.fatigue.0 += u64::from(fatigue);
@@ -459,16 +468,17 @@ mod tests {
         let report = run(6, content());
         assert_ne!(report.chain.away, Vec::new());
         for (why, out) in report.chain.away.iter().zip(&report.nights_out) {
-            let asleep = why.exhausted
-                + why.stopped
-                + why.sleep_out
-                + why.goal
-                + why.lay_at_home
-                + why.unseen;
-            assert_eq!(asleep, out.asleep, "{why:?} against {out:?}");
-            assert_eq!(why.awake, out.away - out.asleep);
+            let lay = why.exhausted + why.stopped + why.sleep_out + why.goal + why.lay_at_home;
+            assert_eq!(
+                lay + why.awake + why.unseen,
+                out.away,
+                "{why:?} against {out:?}"
+            );
+            // The rested wake at the dawn's tick: those still asleep are
+            // among those who lay down.
+            assert!(lay + why.unseen >= out.asleep, "{why:?} against {out:?}");
             assert_eq!(why.stopped_by.iter().sum::<u32>(), why.stopped);
-            assert_eq!(why.fatigue.1, asleep - why.unseen);
+            assert_eq!(why.fatigue.1, lay);
         }
         let looked: u32 = report
             .decisions
