@@ -273,9 +273,9 @@ COLUMNS = [
      "au-delà de laquelle se tiennent les 10 % les plus loin, en mètres",
      [("far_" + s, _season_far(s), 0, (0, 0)) for s in SEASONS]),
     ("epuisement", "L’épuisement",
-     "les aubes d’un adulte loin de son foyer, en % de ses aubes ; puis pourquoi, en % de toutes les aubes : "
+     "les aubes d’un adulte loin de chez lui, en % de ses aubes ; puis pourquoi, en % de toutes les aubes : "
      "tombé de fatigue, arrêté (eau, falaise, pas de chemin), dehors par choix (son habitude ou un but lointain), "
-     "debout à l’aube (relevé dans la nuit, ou jamais couché), autre (son foyer a bougé pendant la nuit)",
+     "debout à l’aube (relevé dans la nuit, ou jamais couché), autre (il a déménagé pendant la nuit)",
      [("away_pct", _simple("away_pct", "{} % des aubes loin"), 0, (0, 0)),
       ("exhausted_pct", _simple("exhausted_pct", "épuisés {} %"), -1, (0.2, 0.05)),
       ("stopped_pct", _simple("stopped_pct", "arrêtés {} %"), 0, (0, 0)),
@@ -283,15 +283,15 @@ COLUMNS = [
       ("awake_pct", _simple("awake_pct", "debout {} %"), 0, (0, 0)),
       ("other_pct", _simple("other_pct", "autre {} %"), 0, (0, 0))]),
     ("demenager", "Déménager",
-     "combien de fois un adulte a changé de foyer, la distance médiane d’un changement, puis l’installation "
-     "(un groupe de foyers) la plus loin des camps du départ, en mètres",
-     [("moves", _plural("moves", "changement", "changements"), 0, (0, 0)),
+     "combien de fois un adulte a déménagé, la distance médiane d’un déménagement, puis l’installation "
+     "(des gens qui vivent côte à côte) la plus loin des camps du départ, en mètres",
+     [("moves", _plural("moves", "déménagement", "déménagements"), 0, (0, 0)),
       ("move_median_m", _simple("move_median_m", "de {} m"), 0, (0, 0)),
       ("settle_far_m", _simple("settle_far_m", "la plus loin à {} m"), 0, (0, 0))]),
     ("explorer", "Explorer",
      "les journées passées à explorer (partir seul vers l’inconnu) par personne et par cycle ; le point le plus "
-     "loin du foyer d’une journée d’exploration, la médiane et le plus loin de tous, en mètres ; les endroits "
-     "trouvés en explorant et racontés au feu",
+     "loin de chez soi d’une journée d’exploration, la médiane et le plus loin de tous, en mètres ; les endroits "
+     "trouvés en explorant et racontés au foyer (la veillée du soir au camp)",
      [("explore_days", _plural("explore_days", "journée par cycle", "journées par cycle"), 0, (0, 0)),
       ("look_median_m", _simple("look_median_m", "jusqu’à {} m"), 0, (0, 0)),
       ("look_max_m", _simple("look_max_m", "au plus {} m"), 0, (0, 0)),
@@ -387,7 +387,7 @@ DEATH_WORDS = {"hunger": "de faim", "thirst": "de soif", "cold": "de froid", "il
                "old_age": "de vieillesse", "childbirth": "en couches"}   # as plain.DEATH_WORDS
 
 LEAD = ("Ce qui leur manque et ce que cela leur coûte, en huit mesures : ce qu’ils mangent, l’effort, jusqu’où ils vont, "
-        "les nuits loin du camp, les déménagements, l’exploration, la vie et les couples.")
+        "les nuits loin de chez eux, les déménagements, l’exploration, la vie et les couples.")
 
 
 def b(x, unit=""):
@@ -404,22 +404,22 @@ def part_html(d):
     far = [f"{reading.SEASON_FR[s]} {b(m['far_' + s][0], ' m')} (10 % au-delà de {b(m['far_' + s][1], ' m')})"
            for s in SEASONS if m.get("far_" + s)]
     li.append("<li><b>Aller loin.</b> À midi, la distance médiane au camp : " + ("; ".join(far) if far else NONE) + ".</li>")
-    ep = f"<li><b>L’épuisement.</b> {b(m['away_pct'], ' %')} des aubes d’un adulte se passent loin de son foyer"
+    ep = f"<li><b>L’épuisement.</b> {b(m['away_pct'], ' %')} des aubes d’un adulte se passent loin de chez lui"
     if m.get("away_counts"):
         c = m["away_counts"]
         ep += (f" : {b(c['exhausted'])} fois tombé de fatigue, {b(c['stopped'])} fois arrêté sans chemin du retour, "
                f"{b(c['sleep_out'] + c['goal'])} fois dehors par choix, {b(c['woke'])} fois relevé dans la nuit, {b(c['awake'])} fois jamais couché, "
-               f"{b(c['lay_at_home'] + c['unseen'])} autres (son foyer déplacé pendant la nuit, ou son coucher pas vu)")
+               f"{b(c['lay_at_home'] + c['unseen'])} autres (il a déménagé pendant la nuit, ou son coucher n’a pas été vu)")
         if m.get("away_fatigue") is not None:
             ep += f" ; leur fatigue en se couchant : {b(m['away_fatigue'])} sur 100 en moyenne"
     else:
         ep += " (pourquoi : pas mesuré dans ce run, plus ancien que la mesure)"
     li.append(ep + ".</li>")
-    li.append(f"<li><b>Déménager.</b> {b(m['moves'])} changement{'s' if (m['moves'] or 0) > 1 else ''} de foyer, de {b(m['move_median_m'], ' m')} "
+    li.append(f"<li><b>Déménager.</b> {b(m['moves'])} déménagement{'s' if (m['moves'] or 0) > 1 else ''}, de {b(m['move_median_m'], ' m')} "
               f"en médiane ; l’installation la plus loin des camps du départ est à {b(m['settle_far_m'], ' m')}.</li>")
     li.append(f"<li><b>Explorer.</b> {b(m['explore_days'])} journées d’exploration par personne et par cycle ; une journée d’exploration "
-              f"va jusqu’à {b(m['look_median_m'], ' m')} du foyer en médiane, {b(m['look_max_m'], ' m')} au plus ; "
-              f"{b(m['found_looking'])} endroits trouvés en explorant et racontés au feu.</li>")
+              f"va jusqu’à {b(m['look_median_m'], ' m')} de chez lui en médiane, {b(m['look_max_m'], ' m')} au plus ; "
+              f"{b(m['found_looking'])} endroits trouvés en explorant et racontés au foyer.</li>")
     by = m.get("deaths_by") or {}
     causes = ", ".join(f"{fmt(n)} {DEATH_WORDS.get(c, 'de ' + reading.cause_fr(c))}" for c, n in sorted(by.items(), key=lambda x: -x[1]) if n) or "aucune"
     bw = m["births_per_woman"]
