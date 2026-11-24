@@ -101,6 +101,7 @@ clock, the only field no seed decides.
 | `years[].home_moves[].to` | The home after | `[x, y]` |
 | `years[].home_moves[].how` | `"trial"` (a trial of the home starts), `"copy"` (copied from a camp-mate), `"reverted"` (the trial given up: the home goes back, not counted in `homes_moved`) | string |
 | `years[].ways.minds` | Minds read at the year's end among the living; the whole object is `null` when none | count |
+| `years[].ways.home_grade_permille` | How the tribe's living grade their own home by their notebook at the year's end (D53, amended 24 November 2026): `min`, `median`, `max`; `null` when none slept at home | per mille of a day of need |
 | `years[].ways.sleep_out` | How many of them sleep out | count |
 | `years[].ways.median_worth_tiles` | The median of how far a plant's worth is halved | tiles |
 | `years[].ways.median_stock_kj` | The median of what they store before resting | kJ |
@@ -335,7 +336,8 @@ clock, the only field no seed decides.
 | `move_calls[].camp`, `.to`, `.tiles` | The fire, the new home, the distance between | `[x, y]`, tiles |
 | `move_calls[].gain_permille`, `.caller_home_fare_permille` | The gain the caller told, and how it fared at its old home, by its own notes | per mille of a day of need |
 | `move_calls[].weighed[]` | Each listener who spoke after it: `body`, `spouse`, `balance_permille` (the gain times `trust`, plus the company it would lack here less there), `trust` (0 to 100), `home_fare_permille` (its own home's grade, `null` if it never slept there), `joined` | |
-| `move_calls[].unheard[]` | Each present grown who did not weigh it: `body`, `spouse`, `why` (`before`: it spoke before the caller, its day said; `trial`: under a trial; `child`: under sixteen) | |
+| `move_calls[].kept_from` | When the caller is a spouse telling a call it kept until its spouse was present: who first called it; `null` otherwise | integer |
+| `move_calls[].unheard[]` | Each present grown who did not weigh it: `body`, `spouse`, `why` (`before`: it spoke before the caller, its day said; `spouse_away`: its spouse was not at the fire, it keeps the call; `trial`: under a trial; `child`: under sixteen) | |
 | `goals[]` | Each goal held over several days (D56, amended 24 November 2026): `body`, `tribe`, `day` set, `to`, `tiles`, `load_kj` carried then, `end` (`arrived`, `load`, `hunger`, `thirst`, `dropped`, `null` while held at the end), `end_day` | |
 | `map.data_uri` | The page's picture of the map at the run's end, the same PNG: the terrain, the camps red, the living white, the dead black | `"data:image/png;base64,…"` |
 | `map.tiles_per_pixel` | The scale: one pixel is so many tiles a side (5 on the vivarium's world) | tiles |

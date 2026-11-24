@@ -838,6 +838,9 @@ pub struct MoveCall {
     pub caller_home_fare: Option<i64>,
     /// The caller's spouse.
     pub caller_spouse: Option<BodyId>,
+    /// Who first called it, when the caller tells a call it kept for its
+    /// spouse's presence.
+    pub from: Option<BodyId>,
     /// Each listener, with its spouse then.
     pub weighed: Vec<(Weighed, Option<BodyId>)>,
     /// Each present who did not weigh it, why, and its spouse.
@@ -908,6 +911,10 @@ pub struct WaysInUse {
     pub stock_kj_quartiles: [u64; 3],
     /// The camp: the median home (median x, median y).
     pub camp: Option<Pos>,
+    /// How the living grade their own home by their notebooks (D53,
+    /// amended 24 November 2026): the least, the median, the most, in per
+    /// mille of a day of need.
+    pub home_grades: Option<[i64; 3]>,
 }
 
 /// How a person came into a family (lot 3 C).
@@ -1824,6 +1831,7 @@ pub fn run_watched(
                     home_fare,
                     weighed,
                     unheard,
+                    from,
                     ..
                 } => {
                     let spouse = |b: BodyId| world.body(b).and_then(sim::Body::spouse);
@@ -1835,6 +1843,7 @@ pub fn run_watched(
                         to: *to,
                         gain: *gain,
                         caller_home_fare: *home_fare,
+                        from: *from,
                         caller_spouse: spouse(*caller),
                         weighed: weighed.iter().map(|w| (*w, spouse(w.body))).collect(),
                         unheard: unheard
@@ -2114,7 +2123,10 @@ pub fn run_watched(
                 if tick < ticks {
                     food.entry((t, year + 1)).or_default().start_j = j;
                 }
-                ways_in_use.insert((t, year), ways_in_use_of(&world, &brains, &people, t));
+                ways_in_use.insert(
+                    (t, year),
+                    ways_in_use_of(&world, (&brains, content), &people, t),
+                );
                 let (k, known) = knowledge_of(&world, &brains, &people, t);
                 knowledge.insert((t, year), k);
                 known_places.insert((t, year), known);
@@ -2303,17 +2315,27 @@ pub fn way_words(way: Way, ways: &Ways) -> String {
 /// out, the medians, the camp as the median home.
 fn ways_in_use_of(
     world: &World,
-    brains: &Brains,
+    (brains, content): (&Brains, &Content),
     people: &BTreeMap<BodyId, Person>,
     tribe: u8,
 ) -> WaysInUse {
-    let mut ways: Vec<Ways> = world
+    let minds: Vec<&Mind> = world
         .bodies()
         .iter()
         .filter(|b| b.condition().vitality.points() > 0)
         .filter(|b| people.get(&b.id()).is_some_and(|p| p.tribe == tribe))
-        .filter_map(|b| brains.mind(b.id()).map(|m| *m.ways()))
+        .filter_map(|b| brains.mind(b.id()))
         .collect();
+    let mut grades: Vec<i64> = minds.iter().filter_map(|m| m.home_grade(content)).collect();
+    grades.sort_unstable();
+    let home_grades = (!grades.is_empty()).then(|| {
+        [
+            grades[0],
+            grades[grades.len() / 2],
+            grades[grades.len() - 1],
+        ]
+    });
+    let mut ways: Vec<Ways> = minds.iter().map(|m| *m.ways()).collect();
     if ways.is_empty() {
         return WaysInUse::default();
     }
@@ -2345,6 +2367,7 @@ fn ways_in_use_of(
         median_stock_kj,
         stock_kj_quartiles,
         camp: Some(camp),
+        home_grades,
     }
 }
 

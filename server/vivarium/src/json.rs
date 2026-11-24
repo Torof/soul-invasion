@@ -214,6 +214,7 @@ impl Report {
                         "caller": id(c.caller),
                         "caller_spouse": c.caller_spouse.map(id),
                         "caller_home_fare_permille": c.caller_home_fare,
+                        "kept_from": c.from.map(id),
                         "camp": pos(c.camp),
                         "to": pos(c.to),
                         "tiles": (i64::from(c.to.x - c.camp.x).pow(2) + i64::from(c.to.y - c.camp.y).pow(2)).isqrt(),
@@ -231,6 +232,7 @@ impl Report {
                             "spouse": spouse.map(id),
                             "why": match why {
                                 Unheard::Before => "before",
+                                Unheard::SpouseAway => "spouse_away",
                                 Unheard::Trial => "trial",
                                 Unheard::Child => "child",
                             },
@@ -615,6 +617,7 @@ impl Report {
                         "sleep_out": y.ways.sleep_out,
                         "median_worth_tiles": y.ways.median_worth_tiles,
                         "median_stock_kj": y.ways.median_stock_kj,
+                        "home_grade_permille": y.ways.home_grades.map(|[min, median, max]| json!({"min": min, "median": median, "max": max})),
                         "stock_kj": {
                             "q1": y.ways.stock_kj_quartiles[0],
                             "median": y.ways.stock_kj_quartiles[1],
