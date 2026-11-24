@@ -227,6 +227,10 @@ impl Report {
                             "home_fare_permille": w.home_fare,
                             "joined": w.joined,
                         })).collect::<Vec<_>>(),
+                        "caller_weighed": c.own.map(|w| json!({
+                            "balance_permille": w.balance,
+                            "joined": w.joined,
+                        })),
                         "unheard": c.unheard.iter().map(|(b, why, spouse)| json!({
                             "body": id(*b),
                             "spouse": spouse.map(id),

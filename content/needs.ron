@@ -240,6 +240,11 @@
     //                    scattered in one grove adds up as the water drunk
     //                    at again and again; drinking and sleeping keep the
     //                    16 m places.
+    // idle_day_permille: 1000 — what a day of light is worth to a body that
+    //                    gathered nothing lately (24 November 2026: an hour
+    //                    walking is an hour not gathering; the walk's time
+    //                    is valued at what the body itself gathers in a
+    //                    day, this when it has nothing to go by).
     trials: (
         trial_after_days: 3,
         trial_days: 5,
@@ -248,6 +253,7 @@
         home_nights_by_will: [(0, 3), (70, 1)],
         lived_keep_permille: 950,
         grove_tiles: 64,
+        idle_day_permille: 1000,
         imitate_tiles: 12,
         imitate_percent: 20,
         imitate_loss_percent: 25,

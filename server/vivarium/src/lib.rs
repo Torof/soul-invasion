@@ -843,6 +843,8 @@ pub struct MoveCall {
     pub from: Option<BodyId>,
     /// Each listener, with its spouse then.
     pub weighed: Vec<(Weighed, Option<BodyId>)>,
+    /// The caller's own weighing after its spouse said no.
+    pub own: Option<Weighed>,
     /// Each present who did not weigh it, why, and its spouse.
     pub unheard: Vec<(BodyId, Unheard, Option<BodyId>)>,
 }
@@ -1832,6 +1834,7 @@ pub fn run_watched(
                     weighed,
                     unheard,
                     from,
+                    own,
                     ..
                 } => {
                     let spouse = |b: BodyId| world.body(b).and_then(sim::Body::spouse);
@@ -1846,6 +1849,7 @@ pub fn run_watched(
                         from: *from,
                         caller_spouse: spouse(*caller),
                         weighed: weighed.iter().map(|w| (*w, spouse(w.body))).collect(),
+                        own: *own,
                         unheard: unheard
                             .iter()
                             .map(|&(b, why)| (b, why, spouse(b)))

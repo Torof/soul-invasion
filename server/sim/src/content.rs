@@ -1211,6 +1211,12 @@ pub struct Trials {
     /// place of `thought.place_tiles`. 64 when absent.
     #[serde(default = "grove_64")]
     pub grove_tiles: u32,
+    /// What a day of light is worth to a body that gathered nothing
+    /// lately, in per mille of a day of its need (D53, amended 24 November
+    /// 2026): the time it walks is valued at what it gathers in a day, and
+    /// this when it has nothing of its own to go by. A day when absent.
+    #[serde(default = "permille_1000")]
+    pub idle_day_permille: u32,
     /// At night at the camp, a body copies only from a camp-mate within
     /// this many tiles.
     pub imitate_tiles: u32,
@@ -1280,6 +1286,7 @@ impl Default for Trials {
             home_nights_by_will: one_night(),
             lived_keep_permille: 1000,
             grove_tiles: 64,
+            idle_day_permille: 1000,
             imitate_tiles: 0,
             imitate_percent: 0,
             imitate_loss_percent: 0,
