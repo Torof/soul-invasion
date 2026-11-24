@@ -7545,10 +7545,17 @@ mod tests {
                 .all(|i| i.pos().is_some())
         );
     }
-    /// The sample rules with the repository's kinds of tree.
+    /// The sample rules with the repository's kinds of tree, and its
+    /// materials, which hold the birch's bark (D57).
     fn wooded_rules() -> Content {
-        Content::sample()
-            .with_species(include_str!("../../../content/species.ron"))
+        Content::from_ron(
+            include_str!("../../../content/materials.ron"),
+            content::SAMPLE_SPAWNS,
+            content::SAMPLE_MOVEMENT,
+            content::SAMPLE_NEEDS,
+        )
+        .expect("repository materials parse")
+        .with_species(include_str!("../../../content/species.ron"))
             .expect("species.ron parses")
     }
 

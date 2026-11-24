@@ -3034,7 +3034,7 @@ pub fn run_watched(
         // (D57).
         if tick % ticks_per_age_year == 0 || tick == ticks {
             let t = u8::try_from(tribes).unwrap_or(u8::MAX);
-            hands.age_year_end((&world, content), &people, t, age_year);
+            hands.age_year_end((&world, content), (&brains, &people), t, age_year);
         }
         // The year's last tick, or the run's: what the living carry, and
         // the ways in use (D50).

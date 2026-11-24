@@ -1232,6 +1232,8 @@ def hands_html(d):
                    + "</p>")
     else:
         out.append("<p>Personne n’a fait de contenant.</p>")
+    known = hd.get("known") or {}
+    out.append("<p>Gestes sus à la fin : " + (", ".join(f"{h(k)} ({fmt(v)})" for k, v in known.items()) if known else "aucun") + ".</p>")
     head = [("Âge", True), ("Le portent", True), ("Faits", True), ("Refaits", True), ("Déchirés", True),
             ("Essais (entendus)", True), ("Gardés", True), ("Rapporté avec / sans, kJ", True), ("Midi, cases", True), ("Déménagements", True)]
     for t in hd["tribes"]:

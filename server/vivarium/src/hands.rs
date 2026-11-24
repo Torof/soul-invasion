@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
-use sim::brain::{Brains, HOME_TILES, News, Way};
+use sim::brain::{Brains, Deed, HOME_TILES, News, Way};
 use sim::content::Content;
 use sim::hands::Gesture;
 use sim::memory::{Record, RecordId};
@@ -103,6 +103,12 @@ pub struct HandsProbe {
     pub gestures: BTreeMap<Gesture, (u32, u32)>,
     /// Heard across tribes: a listener of the other tribe than its teller.
     pub heard_across: u32,
+    /// The deeds the living past infancy know, by name, with their
+    /// knowers: at the last age-year's end, the run's.
+    pub known: BTreeMap<String, u32>,
+    /// The cuts, by the material of the tool: (ended, something came of
+    /// it).
+    pub cuts_with: BTreeMap<String, (u32, u32)>,
 }
 
 fn tribe(people: &BTreeMap<BodyId, Person>, id: BodyId) -> u8 {
@@ -140,12 +146,20 @@ impl HandsProbe {
             Event::Gestured {
                 body,
                 gesture,
+                item,
                 gave,
-                ..
             } => {
                 let entry = self.gestures.entry(*gesture).or_default();
                 entry.0 += 1;
                 entry.1 += u32::from(gave.is_some());
+                if *gesture == Gesture::Cut {
+                    let tool = world
+                        .item(*item)
+                        .map_or_else(|| "?".to_owned(), |i| i.material().to_owned());
+                    let entry = self.cuts_with.entry(tool).or_default();
+                    entry.0 += 1;
+                    entry.1 += u32::from(gave.is_some());
+                }
                 let made = *gesture == Gesture::Fold
                     && gave
                         .and_then(|g| world.item(g))
@@ -331,16 +345,22 @@ impl HandsProbe {
     pub fn age_year_end(
         &mut self,
         (world, content): (&World, &Content),
-        people: &BTreeMap<BodyId, Person>,
+        (brains, people): (&Brains, &BTreeMap<BodyId, Person>),
         tribes: u8,
         age_year: u64,
     ) {
         for t in 0..tribes {
             self.year(t, age_year);
         }
+        self.known.clear();
         for b in world.bodies() {
             if world.is_infant(b, content) || b.condition().vitality.points() == 0 {
                 continue;
+            }
+            if let Some(mind) = brains.mind(b.id()) {
+                for deed in mind.ways().hands.iter() {
+                    *self.known.entry(deed_name(content, deed)).or_default() += 1;
+                }
             }
             let with = carries_container(world, content, b);
             let y = self.year(tribe(people, b.id()), age_year);
@@ -433,8 +453,31 @@ impl HandsProbe {
             "heard_never_tried": heard_never_tried,
             "heard_across_tribes": self.heard_across,
             "gestures": gestures,
+            "known": self.known,
+            "cuts_with": self.cuts_with.iter().map(|(m, (done, gave))| (m.clone(), json!({"done": done, "gave": gave}))).collect::<serde_json::Map<String, Value>>(),
             "tribes": tribes_json,
         })
+    }
+}
+
+/// A deed's name: its gesture, what it is done on, and what it cuts with
+/// (`cut birch with flint`, `take flint`, `fold birch_bark`).
+fn deed_name(content: &Content, deed: Deed) -> String {
+    let material = |m: u16| {
+        content
+            .materials
+            .get(usize::from(m))
+            .map_or("?", |m| m.id.as_str())
+    };
+    match deed.gesture {
+        Gesture::Cut => {
+            let tree = content
+                .species
+                .get(usize::from(deed.on))
+                .map_or("?", |s| s.id.as_str());
+            format!("cut {tree} with {}", material(deed.with))
+        }
+        g => format!("{} {}", g.key(), material(deed.on)),
     }
 }
 
@@ -490,6 +533,21 @@ impl HandsProbe {
                 data["heard_across_tribes"]
             );
         }
+        let known: Vec<String> = data["known"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(deed, n)| format!("{deed}: {n}"))
+            .collect();
+        let _ = write!(
+            h,
+            "<p>Deeds known at the end: {}.</p>",
+            if known.is_empty() {
+                "none".to_owned()
+            } else {
+                known.join(", ")
+            }
+        );
         let show = |v: &Value| {
             if v.is_null() {
                 "–".to_owned()
