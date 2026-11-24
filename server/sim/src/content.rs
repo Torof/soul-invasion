@@ -2803,6 +2803,25 @@ mod tests {
         assert!(c.validate().is_ok());
     }
 
+    /// Moving as a consequence (amended 24 November 2026): off by
+    /// default; the placeholders on; a spouse's day never more than one's
+    /// own; the chance to go and see rising with the will.
+    #[test]
+    fn moving_is_off_without_its_section_and_its_placeholders_hold() {
+        let off = Moving::default();
+        assert!(!off.on());
+        assert!(off.validate().is_ok());
+        let m = Moving::placeholders();
+        assert!(m.on() && m.validate().is_ok());
+        assert_eq!((m.see_percent(0), m.see_percent(100)), (20, 80));
+        assert!(m.see_percent(50) > 20 && m.see_percent(50) < 80);
+        let too_much = Moving {
+            spouse_day_percent: 101,
+            ..Moving::placeholders()
+        };
+        assert!(too_much.validate().is_err());
+    }
+
     #[test]
     fn a_closeness_condition_needs_a_reach() {
         let zero = SAMPLE_SPAWNS.replacen("within: 2", "within: 0", 1);

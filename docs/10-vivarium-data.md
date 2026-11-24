@@ -55,6 +55,7 @@ clock, the only field no seed decides.
 | `meta.settings.trials` | The brains try, judge and copy their ways (false: `--no-trials`) | boolean |
 | `meta.settings.fire` | The evening fire and the common memory, D55 (false: `--no-fire`); since 23 November 2026 | boolean |
 | `meta.settings.decisions` | The decisions at the evening fire, D56 (false: `--no-decisions`); since 23 November 2026 | boolean |
+| `meta.settings.moves` | Moving home as a consequence (amended 24 November 2026); `false`: the control run, `--no-moves`, nobody is surprised nor moves home | boolean |
 | `meta.settings.content` | The content directory given, its last component; `null` when found from the working directory | string |
 | `meta.map_tiles` | The world's size | `[width, height]` tiles |
 | `meta.camps` | The camps' starting positions, A first | `[[x, y], …]` |
@@ -342,6 +343,25 @@ clock, the only field no seed decides.
 | `move_calls[].kept_from` | When the caller is a spouse telling a call it kept until its spouse was present: who first called it; `null` otherwise | integer |
 | `move_calls[].caller_weighed` | When its spouse said no, how the caller weighed its own going, trusting itself (D56, amended 24 November 2026): `balance_permille`, `joined` (`false`: it stayed with its spouse and keeps the call); `null` otherwise | |
 | `move_calls[].unheard[]` | Each present grown who did not weigh it: `body`, `spouse`, `why` (`before`: it spoke before the caller, its day said; `spouse_away`: its spouse was not at the fire, it keeps the call; `trial`: under a trial; `child`: under sixteen) | |
+| `moving.felt[]` | Each move felt at nightfall, then called at the dawn's fire (amended 24 November 2026: a move is a consequence), in order | list |
+| `moving.felt[].day`, `.body`, `.tribe` | The day, who, its tribe | |
+| `moving.felt[].gain_permille`, `.push_permille`, `.surprise_permille` | The new home's grade less the old one's, season against season; how much worse its recent days were than its usual days of the season; its greatest surprise there | per mille of a day of need |
+| `moving.felt[].huge` | `true`: not pushed, the surprise alone was huge enough | boolean |
+| `moving.surprised[]` | Each surprise lived: a day gathering at a grove away from home that gave clearly more than the present who stayed near home and gathered that day, in order | list |
+| `moving.surprised[].day`, `.body`, `.tribe`, `.stayers` | The day it was told, who, its tribe, how many stayers it was compared with | |
+| `moving.surprised[].gain_permille`, `.stayers_gathered_permille` | How much more it gathered there; the stayers' mean that day | per mille of a day of need |
+| `moving.surprised[].spouse_took_it` | Its spouse at the fire took the day into its own notes | boolean |
+| `moving.go_see[]` | Each day gone to see a surprise told at the fire, in order | list |
+| `moving.go_see[].day`, `.body`, `.tribe`, `.from` | The day, who, its tribe, the teller | |
+| `moving.pushed[]` | By tribe and year, the push felt | list |
+| `moving.pushed[].tribe` | The tribe | `"A"` or `"B"` |
+| `moving.pushed[].year` | The year | integer |
+| `moving.pushed[].dawns` | The grown bodies' dawns that year | count |
+| `moving.pushed[].pushed` | Those of them whose push at the last nightfall reached `moving.push_permille` | count |
+| `moving.utility[]` | Each move's utility (the lead's measure): the mover against the stayers over the season after | list |
+| `moving.utility[].day`, `.body`, `.tribe` | The day it set off, who, its tribe | |
+| `moving.utility[].mover_hungry_nights` | Its nightfalls hungry over the season after | count |
+| `moving.utility[].stayers`, `.stayers_hungry_nights_milli` | The grown of its tribe alive throughout who moved neither in the season before nor in that one; their mean hungry nightfalls over the same days, in thousandths | |
 | `goals[]` | Each goal held over several days (D56, amended 24 November 2026): `body`, `tribe`, `day` set, `to`, `tiles`, `load_kj` carried then, `end` (`arrived`, `load`, `hunger`, `thirst`, `dropped`, `null` while held at the end), `end_day` | |
 | `map.data_uri` | The page's picture of the map at the run's end, the same PNG: the terrain, the camps red, the living white, the dead black | `"data:image/png;base64,…"` |
 | `map.tiles_per_pixel` | The scale: one pixel is so many tiles a side (5 on the vivarium's world) | tiles |

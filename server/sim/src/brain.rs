@@ -1084,7 +1084,9 @@ fn push_of(recent: &Usual, usual: &Usual, walk: Walk) -> u64 {
         return 0;
     }
     let cost = |tiles: i128| {
-        let c = i128::from(walk.round_trip(u64::try_from(tiles.unsigned_abs()).unwrap_or(u64::MAX)) / 2);
+        let c = i128::from(
+            walk.round_trip(u64::try_from(tiles.unsigned_abs()).unwrap_or(u64::MAX)) / 2,
+        );
         if tiles < 0 { -c } else { c }
     };
     let (u_g, u_t) = (usual.mean(usual.gathered), usual.mean(usual.tiles));
@@ -2311,10 +2313,7 @@ fn season_view(notes: &[Lived], season: Option<u8>) -> Vec<Lived> {
                 *a += b;
             }
         } else {
-            merged.push(Lived {
-                season: 0,
-                ..*l
-            });
+            merged.push(Lived { season: 0, ..*l });
         }
     }
     merged
@@ -4232,23 +4231,16 @@ impl Brains {
                     at: now,
                 });
             } else if mind.trial.is_none() && mind.calling.is_none() {
-                // A move first, as a consequence of what it lived (amended
-                // 24 November 2026); a child takes its mother's home.
-                let called = if world.age_milli(body) < 16_000 {
-                    Vec::new()
-                } else {
-                    call_move(world, rules, (id, day, now), mind)
-                };
-                if !called.is_empty() {
-                    mind.changed_day = Some(day);
-                    self.news.extend(called);
-                } else if wants_to_try(trials, seed, (id, day), mind)
-                    && let Some(news) =
-                        start_trial(world, rules, (&self.memory, seed), id, mind, day)
-                {
-                    mind.changed_day = Some(day);
-                    self.news.push(news);
-                }
+                let grown = world.age_milli(body) >= 16_000;
+                let news = change_or_move(
+                    world,
+                    rules,
+                    (&self.memory, seed),
+                    (id, day, now),
+                    grown,
+                    mind,
+                );
+                self.news.extend(news);
             }
         }
         self.review_day(world, rules, day, (&follows, &gathered));
@@ -4647,8 +4639,6 @@ impl Brains {
         if !moving.on() {
             return;
         }
-        let seed = self.seed;
-        let today = day + 1;
         let threshold = u64::from(moving.surprise_permille);
         let season = season_of_day(world, u64::from(day));
         let grown = |id: BodyId| world.body(id).is_some_and(|b| world.age_milli(b) >= 16_000);
@@ -4712,67 +4702,88 @@ impl Brains {
         }
         // The greatest surprise told first; a listener goes to see one.
         tales.sort_by_key(|&(gain, id, _)| (std::cmp::Reverse(gain), id));
+        for tale in tales {
+            self.tell_surprise(world, rules, (camp, day, now), present, tale);
+        }
+    }
+
+    /// `teller` tells its surprise `gain` at the fire, where it gathered
+    /// at `spot` (amended 24 November 2026): each other grown present
+    /// with no notes of its own of that grove and none going to see
+    /// another, who believes it, goes to see it today by the chance of its
+    /// will ([`Brains::fire_surprise`]).
+    fn tell_surprise(
+        &mut self,
+        world: &World,
+        rules: &Content,
+        (camp, day, now): (Pos, u32, u64),
+        present: &[BodyId],
+        (gain, teller, spot): (u64, BodyId, PlaceKey),
+    ) {
+        let moving = &rules.needs.moving;
+        let seed = self.seed;
+        let today = day + 1;
+        let threshold = u64::from(moving.surprise_permille);
+        let grown = |id: BodyId| world.body(id).is_some_and(|b| world.age_milli(b) >= 16_000);
         let grove = grove_side(rules);
         let side = place_side(rules);
-        for (gain, teller, spot) in tales {
-            let Some(teller_will) = self.minds.get(&teller).map(|m| m.will) else {
+        let Some(teller_will) = self.minds.get(&teller).map(|m| m.will) else {
+            return;
+        };
+        let told = self
+            .minds
+            .get(&teller)
+            .and_then(|m| m.places.get(&spot))
+            .and_then(|p| p.access)
+            .map(|a| a.record);
+        let teller_spouse = world.body(teller).and_then(Body::spouse);
+        let grove_key = place_of(place_centre(spot, side), grove);
+        for &id in present {
+            if id == teller || Some(id) == teller_spouse || !grown(id) {
+                continue;
+            }
+            let Some(mind) = self.minds.get_mut(&id) else {
                 continue;
             };
-            let told = self
-                .minds
-                .get(&teller)
-                .and_then(|m| m.places.get(&spot))
-                .and_then(|p| p.access)
-                .map(|a| a.record);
-            let teller_spouse = world.body(teller).and_then(Body::spouse);
-            let grove_key = place_of(place_centre(spot, side), grove);
-            for &id in present {
-                if id == teller || Some(id) == teller_spouse || !grown(id) {
-                    continue;
-                }
-                let Some(mind) = self.minds.get_mut(&id) else {
-                    continue;
-                };
-                // Its own notes there: it trusts them, not the tale.
-                let own = mind
-                    .lived
-                    .iter()
-                    .any(|l| l.grove && l.place == grove_key && l.lived() >= 1000);
-                if own || mind.to_see.is_some_and(|t| t.0 == today) {
-                    continue;
-                }
-                let credit = memory::credit(seed, (id, mind.will), (teller, teller_will), day, day);
-                if gain * u64::from(credit) / 100 < threshold
-                    || scatter::roll(
-                        seed,
-                        purpose::FIRE_SEE,
-                        &[u64::from(id.0), u64::from(today), u64::from(teller.0)],
-                    ) % 100
-                        >= moving.see_percent(mind.will)
-                {
-                    continue;
-                }
-                if !mind.places.contains_key(&spot)
-                    && let Some(record) = told
-                {
-                    mind.hear(
-                        &rules.needs.fire,
-                        &self.food,
-                        (camp, day),
-                        (credit, record, teller),
-                        &mut self.memory,
-                        rules,
-                    );
-                }
-                if mind.places.get(&spot).is_some_and(|p| !p.is_barred()) {
-                    mind.to_see = Some((today, spot, teller));
-                    self.news.push(News::GoSee {
-                        body: id,
-                        place: spot,
-                        from: teller,
-                        at: now,
-                    });
-                }
+            // Its own notes there: it trusts them, not the tale.
+            let own = mind
+                .lived
+                .iter()
+                .any(|l| l.grove && l.place == grove_key && l.lived() >= 1000);
+            if own || mind.to_see.is_some_and(|t| t.0 == today) {
+                continue;
+            }
+            let credit = memory::credit(seed, (id, mind.will), (teller, teller_will), day, day);
+            if gain * u64::from(credit) / 100 < threshold
+                || scatter::roll(
+                    seed,
+                    purpose::FIRE_SEE,
+                    &[u64::from(id.0), u64::from(today), u64::from(teller.0)],
+                ) % 100
+                    >= moving.see_percent(mind.will)
+            {
+                continue;
+            }
+            if !mind.places.contains_key(&spot)
+                && let Some(record) = told
+            {
+                mind.hear(
+                    &rules.needs.fire,
+                    &self.food,
+                    (camp, day),
+                    (credit, record, teller),
+                    &mut self.memory,
+                    rules,
+                );
+            }
+            if mind.places.get(&spot).is_some_and(|p| !p.is_barred()) {
+                mind.to_see = Some((today, spot, teller));
+                self.news.push(News::GoSee {
+                    body: id,
+                    place: spot,
+                    from: teller,
+                    at: now,
+                });
             }
         }
     }
@@ -8530,6 +8541,36 @@ const DIRECTIONS: [(i32, i32); 8] = [
     (1, -1),
 ];
 
+/// At nightfall, `id` under no trial nor call may change (D50, amended 24
+/// November 2026): a move first, as a consequence of what it lived
+/// ([`call_move`]; a child takes its mother's home), else a trial by the
+/// chance of its will ([`wants_to_try`], [`start_trial`]). The news.
+fn change_or_move(
+    world: &World,
+    rules: &Content,
+    (memory, seed): (&Store, u64),
+    (id, day, now): (BodyId, u64, u64),
+    grown: bool,
+    mind: &mut Mind,
+) -> Vec<News> {
+    let called = if grown {
+        call_move(world, rules, (id, day, now), mind)
+    } else {
+        Vec::new()
+    };
+    if !called.is_empty() {
+        mind.changed_day = Some(day);
+        return called;
+    }
+    if wants_to_try(&rules.needs.trials, seed, (id, day), mind)
+        && let Some(news) = start_trial(world, rules, (memory, seed), id, mind, day)
+    {
+        mind.changed_day = Some(day);
+        return vec![news];
+    }
+    Vec::new()
+}
+
 /// `id` starts a trial on `day` (D50): one way moved by one step, drawn
 /// from the world's seed, its id and the day: the worth distance twice or
 /// half, the night out flipped, the store twice or half. The home is never
@@ -8829,12 +8870,7 @@ fn call_move(
         way: Way::Home,
         before: mind.ways,
         started_day: day,
-        before_days: mind.lately(
-            rules
-                .needs
-                .trials
-                .days_for(Way::Home.key(), per_year),
-        ),
+        before_days: mind.lately(rules.needs.trials.days_for(Way::Home.key(), per_year)),
         heard: HeardDays::default(),
         caller: None,
     };
@@ -9015,18 +9051,21 @@ fn own_gain(rules: &Content, mind: &Mind, to: Pos) -> Option<i64> {
     let sides = (place_side(rules), grove_side(rules));
     let home = place_of(mind.ways.home, sides.0);
     let walk = mind.walk(rules);
-    [(place_of(to, sides.1), true), (place_of(to, sides.0), false)]
-        .into_iter()
-        .filter(|&(key, grove)| {
-            mind.lived
-                .iter()
-                .filter(|l| l.place == key && l.grove == grove)
-                .map(Lived::lived)
-                .sum::<u64>()
-                >= 1000
-        })
-        .find_map(|at| season_grades(&mind.lived, at, home, sides, walk))
-        .map(|(old, new)| new - old)
+    [
+        (place_of(to, sides.0), false),
+        (place_of(to, sides.1), true),
+    ]
+    .into_iter()
+    .filter(|&(key, grove)| {
+        mind.lived
+            .iter()
+            .filter(|l| l.place == key && l.grove == grove)
+            .map(Lived::lived)
+            .sum::<u64>()
+            >= 1000
+    })
+    .find_map(|at| season_grades(&mind.lived, at, home, sides, walk))
+    .map(|(old, new)| new - old)
 }
 
 /// A hundredth of a day of need, in per mille: the margin a place must
@@ -9084,12 +9123,16 @@ struct Candidate {
 fn lived_best(world: &World, rules: &Content, mind: &Mind) -> Option<Candidate> {
     let sides = (place_side(rules), grove_side(rules));
     let home = place_of(mind.ways.home, sides.0);
-    let days = rules.needs.trials.home_nights(mind.will).saturating_mul(100);
+    let days = rules
+        .needs
+        .trials
+        .home_nights(mind.will)
+        .saturating_mul(100);
     let walk = mind.walk(rules);
     let merged = season_view(&mind.lived, None);
     let ranked = merged
         .iter()
-        .filter(|l| !(!l.grove && l.place == home) && l.surprised >= days)
+        .filter(|l| (l.grove || l.place != home) && l.surprised >= days)
         .filter_map(|l| {
             let (old, new) = season_grades(&mind.lived, (l.place, l.grove), home, sides, walk)?;
             let side = if l.grove { sides.1 } else { sides.0 };
@@ -14366,15 +14409,8 @@ mod tests {
             (1..=40)
                 .map(|day| {
                     let mut mind = Mind::new(Pos::new(5, 5));
-                    start_trial(
-                        &world,
-                        &rules,
-                        (&brains.memory, seed),
-                        me,
-                        &mut mind,
-                        day,
-                    )
-                    .and(mind.trial.map(|t| t.way))
+                    start_trial(&world, &rules, (&brains.memory, seed), me, &mut mind, day)
+                        .and(mind.trial.map(|t| t.way))
                 })
                 .collect()
         };
@@ -14395,14 +14431,7 @@ mod tests {
         theirs.stock_kj = STOCK_KJ * 2;
         heard_kept(&mut brains, (me, mate, 1), Way::StockKj, theirs, 50);
         let mind = brains.minds.get_mut(&me).unwrap();
-        let news = start_trial(
-            &world,
-            &rules,
-            (&brains.memory, brains.seed),
-            me,
-            mind,
-            3,
-        );
+        let news = start_trial(&world, &rules, (&brains.memory, brains.seed), me, mind, 3);
         assert!(
             matches!(news, Some(News::Trying { way: Way::StockKj, after, .. }) if after.stock_kj == STOCK_KJ * 2),
             "{news:?}"
@@ -15482,5 +15511,456 @@ mod tests {
         trials.calm_try_permille_by_will = vec![(0, 0)];
         assert_eq!(tries(&trials, 100, 0), 0);
         assert_eq!(trials.calm_try_permille(100), 0);
+    }
+
+    /// The rules of moving as a consequence (amended 24 November 2026):
+    /// the fire, the decisions and the placeholders of `moving`.
+    fn moving_rules() -> Content {
+        let mut rules = crate::crops::tests::content();
+        rules.needs.fire = Fire::placeholders();
+        rules.needs.decisions = crate::content::Decisions::placeholders();
+        rules.needs.moving = crate::content::Moving::placeholders();
+        rules.needs.trials.home_nights_by_will = vec![(0, 3), (70, 1)];
+        rules
+    }
+
+    /// A mind at home (0, 0), alone every night there, and in company
+    /// one night at (1, 0), fed and watered alike: (1, 0) grades better.
+    fn better_next_door() -> Mind {
+        let fed = vec![drank((0, 0), 0, 1000), picked((0, 0), 0, 1000)];
+        let mut mind = Mind::new(Pos::new(5, 5));
+        lived_at(
+            &mut mind,
+            (0, 0),
+            3,
+            &night_with(LONELY, 0, fed.clone()),
+            1000,
+        );
+        lived_at(&mut mind, (1, 0), 1, &night_with([0; SENSES], 0, fed), 1000);
+        mind.will = 90;
+        mind
+    }
+
+    /// Marks `days` days of surprise at the place (1, 0), the greatest
+    /// `max` per mille.
+    fn surprised_at_next_door(mind: &mut Mind, days: u32, max: u64) {
+        for l in mind.lived.iter_mut().filter(|l| l.place == (1, 0)) {
+            l.surprised = days * 100;
+            l.surprise_max = max;
+        }
+    }
+
+    #[test]
+    fn no_move_happens_without_a_lived_surprise() {
+        let rules = moving_rules();
+        let world = field(256, 250, Pos::new(5, 5));
+        let mut mind = better_next_door();
+        mind.push = 1000;
+        // Better graded, pushed hard: no surprise lived there, no move.
+        assert_eq!(call_move(&world, &rules, (BodyId(1), 3, 0), &mut mind), []);
+        assert!(mind.calling.is_none());
+        // A whole day of surprise there, and the move is felt.
+        surprised_at_next_door(&mut mind, 1, 400);
+        let news = call_move(&world, &rules, (BodyId(1), 3, 0), &mut mind);
+        assert!(
+            matches!(news[..], [News::MoveFelt { huge: false, .. }]),
+            "{news:?}"
+        );
+        assert_eq!(mind.calling.map(|c| place_of(c.to, 16)), Some((1, 0)));
+        // Moving off (the control, `--no-moves`): never.
+        let mut off = rules.clone();
+        off.needs.moving = crate::content::Moving::default();
+        let mut mind = better_next_door();
+        mind.push = 1000;
+        surprised_at_next_door(&mut mind, 3, 4000);
+        assert_eq!(call_move(&world, &off, (BodyId(1), 3, 0), &mut mind), []);
+        // A move is never drawn as a trial (amended 24 November 2026).
+        for day in 0..200 {
+            let mut m = better_next_door();
+            surprised_at_next_door(&mut m, 3, 400);
+            let tried = start_trial(
+                &world,
+                &rules,
+                (&Store::default(), 7),
+                BodyId(1),
+                &mut m,
+                day,
+            );
+            assert!(!matches!(tried, Some(News::Trying { way: Way::Home, .. })));
+        }
+    }
+
+    #[test]
+    fn a_surprise_without_push_is_told_but_nobody_moves() {
+        let rules = moving_rules();
+        let world = field(256, 250, Pos::new(5, 5));
+        let mut mind = better_next_door();
+        surprised_at_next_door(&mut mind, 3, 400);
+        // Not pushed: a story for the fire, no call.
+        mind.push = 99;
+        assert_eq!(call_move(&world, &rules, (BodyId(1), 3, 0), &mut mind), []);
+        assert!(mind.calling.is_none());
+        // Pushed by a tenth of a day: it calls.
+        mind.push = 100;
+        assert_ne!(call_move(&world, &rules, (BodyId(1), 3, 0), &mut mind), []);
+        assert!(mind.calling.is_some());
+    }
+
+    #[test]
+    fn a_huge_surprise_moves_anyway() {
+        let rules = moving_rules();
+        let world = field(256, 250, Pos::new(5, 5));
+        let mut mind = better_next_door();
+        mind.push = 0;
+        // Four times the threshold: a day of need more, without a push.
+        surprised_at_next_door(&mut mind, 1, 999);
+        assert_eq!(call_move(&world, &rules, (BodyId(1), 3, 0), &mut mind), []);
+        surprised_at_next_door(&mut mind, 1, 1000);
+        let news = call_move(&world, &rules, (BodyId(1), 3, 0), &mut mind);
+        assert!(
+            matches!(
+                news[..],
+                [News::MoveFelt {
+                    huge: true,
+                    push: 0,
+                    ..
+                }]
+            ),
+            "{news:?}"
+        );
+        // With no fire to call it at, it goes at once, its trial begun.
+        let mut alone = rules.clone();
+        alone.needs.fire = Fire::default();
+        let mut mind = better_next_door();
+        surprised_at_next_door(&mut mind, 1, 1000);
+        let news = call_move(&world, &alone, (BodyId(1), 3, 0), &mut mind);
+        assert!(matches!(
+            news[..],
+            [News::MoveFelt { .. }, News::Trying { way: Way::Home, .. }]
+        ));
+        assert_eq!(place_of(mind.ways.home, 16), (1, 0));
+        assert!(mind.trial.is_some());
+    }
+
+    /// Each of `days` (id, near, gathered, at the grove (0, 0) standing at
+    /// the place (2, 2)) as its yesterday, the day `day`.
+    fn yesterdays(brains: &mut Brains, day: u32, days: &[(u32, bool, u64)]) {
+        for &(id, near, gathered) in days {
+            brains.minds.get_mut(&BodyId(id)).unwrap().yesterday = Some(Yesterday {
+                day,
+                gathered,
+                grove: (gathered > 0).then_some(((0, 0), gathered, (2, 2), 0)),
+                near,
+            });
+        }
+    }
+
+    #[test]
+    fn a_surprise_is_against_the_stayers_of_the_same_day_and_a_spouse_takes_it() {
+        let rules = moving_rules();
+        let (mut world, mut brains) = camp_of(4, &rules);
+        wed(&mut world, BodyId(1), BodyId(2));
+        let present: Vec<BodyId> = (1..=4).map(BodyId).collect();
+        let day = u32::try_from(today(&world)).unwrap() - 1;
+        let camp = Pos::new(5, 5);
+        // 1 gathered away 1.2 days of need; 2 and 3 near home half a day
+        // each; 4 near home, nothing: it tells nothing of near home.
+        yesterdays(
+            &mut brains,
+            day,
+            &[
+                (1, false, 1200),
+                (2, true, 500),
+                (3, true, 500),
+                (4, true, 0),
+            ],
+        );
+        brains.fire_surprise(&world, &rules, (camp, day, 0), &present);
+        let news = brains.news();
+        assert!(
+            news.iter().any(|n| matches!(
+                n,
+                News::Surprised {
+                    body: BodyId(1),
+                    gain: 700,
+                    stayers: 2,
+                    spouse: Some(BodyId(2)),
+                    ..
+                }
+            )),
+            "{news:?}"
+        );
+        let note = |brains: &Brains, id: u32| {
+            brains.minds[&BodyId(id)]
+                .lived
+                .iter()
+                .find(|l| l.grove && l.place == (0, 0))
+                .copied()
+                .unwrap_or_default()
+        };
+        assert_eq!(note(&brains, 1).surprised, 100);
+        // The spouse took the day at four fifths of its own.
+        let spouse = note(&brains, 2);
+        assert_eq!((spouse.surprised, spouse.days), (80, 800));
+        assert_eq!(spouse.gains[Sense::Food as usize], 1200 * 800);
+        assert_eq!(note(&brains, 3).surprised, 0, "a tale is not a day lived");
+        // Clearly more, not a little more: under the threshold, nothing.
+        let (world, mut brains) = camp_of(4, &rules);
+        yesterdays(
+            &mut brains,
+            day,
+            &[(1, false, 749), (2, true, 500), (3, true, 500)],
+        );
+        brains.fire_surprise(&world, &rules, (camp, day, 0), &present);
+        assert!(
+            !brains
+                .news()
+                .iter()
+                .any(|n| matches!(n, News::Surprised { .. }))
+        );
+        // No stayer that day: no yardstick, no surprise.
+        let (world, mut brains) = camp_of(4, &rules);
+        yesterdays(&mut brains, day, &[(1, false, 5000), (2, false, 100)]);
+        brains.fire_surprise(&world, &rules, (camp, day, 0), &present);
+        assert!(
+            !brains
+                .news()
+                .iter()
+                .any(|n| matches!(n, News::Surprised { .. }))
+        );
+    }
+
+    #[test]
+    fn a_listener_goes_and_sees_then_decides_from_its_own_day() {
+        let mut rules = moving_rules();
+        // Everyone who believes it goes: the test reads the gesture.
+        rules.needs.moving.see_percent_by_will = vec![(0, 100), (100, 100)];
+        let (world, mut brains) = camp_of(5, &rules);
+        let present: Vec<BodyId> = (1..=5).map(BodyId).collect();
+        let day = u32::try_from(today(&world)).unwrap() - 1;
+        let camp = Pos::new(5, 5);
+        let kind = brains.food.numbers["bramble"];
+        for id in [3, 5] {
+            saw_place(&world, &rules, &mut brains, BodyId(id), (2, 2), kind, 5);
+        }
+        // 5 lived at that grove itself: it trusts its own notes.
+        brains.minds.get_mut(&BodyId(5)).unwrap().lived.push(Lived {
+            place: (0, 0),
+            grove: true,
+            days: 1000,
+            ..Lived::default()
+        });
+        for mind in brains.minds.values_mut() {
+            mind.ways.home = camp;
+            mind.home_at_dusk = camp;
+        }
+        yesterdays(
+            &mut brains,
+            day,
+            &[
+                (1, false, 1500),
+                (2, true, 400),
+                (3, true, 400),
+                (4, true, 400),
+                (5, true, 400),
+            ],
+        );
+        brains.fire_surprise(&world, &rules, (camp, day, 0), &present);
+        let news = brains.news();
+        let saw: Vec<BodyId> = news
+            .iter()
+            .filter_map(|n| match n {
+                News::GoSee {
+                    body,
+                    from: BodyId(1),
+                    place: (2, 2),
+                    ..
+                } => Some(*body),
+                _ => None,
+            })
+            .collect();
+        assert!(saw.contains(&BodyId(3)), "{news:?}");
+        assert!(!saw.contains(&BodyId(5)), "its own notes, not the tale");
+        assert!(!saw.contains(&BodyId(1)));
+        // The tale moves nobody: no candidate from it.
+        assert!(
+            brains.minds[&BodyId(3)]
+                .lived
+                .iter()
+                .all(|l| l.surprised == 0)
+        );
+        // At the fire it says it goes there, alone: a day of gathering.
+        brains.fire_decide(&world, &rules, (camp, day, 0), &present, true);
+        assert_eq!(act_of(&brains, BodyId(3)), (Act::Alone, Some((2, 2)), None));
+        // Its own day there, clearly better than the stayers': its own
+        // surprise, in its own notes.
+        let next = day + 1;
+        yesterdays(
+            &mut brains,
+            next,
+            &[(3, false, 1500), (2, true, 400), (4, true, 400)],
+        );
+        brains.fire_surprise(&world, &rules, (camp, next, 0), &present);
+        assert!(
+            brains.minds[&BodyId(3)]
+                .lived
+                .iter()
+                .any(|l| l.grove && l.surprised == 100)
+        );
+        // Its own day there no better: nothing.
+        let (world, mut brains) = camp_of(5, &rules);
+        yesterdays(
+            &mut brains,
+            next,
+            &[(3, false, 500), (2, true, 400), (4, true, 400)],
+        );
+        brains.fire_surprise(&world, &rules, (camp, next, 0), &present);
+        assert!(
+            brains.minds[&BodyId(3)]
+                .lived
+                .iter()
+                .all(|l| l.surprised == 0)
+        );
+    }
+
+    #[test]
+    fn a_home_is_judged_winter_against_winter() {
+        let rules = moving_rules();
+        // The old home (0, 0): rich in summer (season 1) from its grove
+        // (0, 0), poor in winter (3). The new home (8, 8), lived in winter,
+        // its grove (2, 2) giving twice the old winter's.
+        let (old, new) = ((0, 0), (8, 8));
+        let notes = |old_winter: bool| {
+            let mut mind = Mind::new(place_centre(new, 16));
+            mind.walk_kilotile = 1000;
+            let at_old = |food| vec![picked((0, 0), 0, food), drank(old, 0, 1000)];
+            for _ in 0..5 {
+                mind.note_night(old, &night_with([0; SENSES], 0, at_old(2000)), 1000, 1);
+                if old_winter {
+                    mind.note_night(old, &night_with([0; SENSES], 0, at_old(300)), 1000, 3);
+                }
+                let at_new = vec![picked((2, 2), 0, 600), drank(new, 0, 1000)];
+                mind.note_night(new, &night_with([0; SENSES], 0, at_new), 1000, 3);
+            }
+            let mut before = mind.ways;
+            before.home = place_centre(old, 16);
+            let trial = Trial {
+                way: Way::Home,
+                before,
+                started_day: 0,
+                before_days: Lately::default(),
+                heard: HeardDays::default(),
+                caller: None,
+            };
+            (mind, trial)
+        };
+        // Last winter at the old home is in its notes: winter against
+        // winter, the new home is better.
+        let (mind, trial) = notes(true);
+        let (was, is) = home_grades(&rules, &mind, &trial).unwrap();
+        assert!(is - was > MARGIN_PERMILLE, "{was} {is}");
+        assert!(judge(&rules, 50, &world_body(), &mind, &trial).0);
+        // Against the old home's summer it would have lost.
+        let (mind, trial) = notes(false);
+        let (was, is) = home_grades(&rules, &mind, &trial).unwrap();
+        assert!(is < was, "{was} {is}");
+    }
+
+    fn world_body() -> Body {
+        field(256, 250, Pos::new(5, 5)).bodies[0].clone()
+    }
+
+    #[test]
+    fn the_push_is_its_recent_days_against_its_usual_days_of_the_season() {
+        let walk = Walk {
+            kilotile: 1000,
+            day_tiles: 0,
+            day_worth: 0,
+        };
+        let day = |gathered, tiles, drink, nights| Usual {
+            gathered,
+            tiles,
+            drink,
+            nights,
+            weight: 0,
+        };
+        let sum = |days: &[Usual]| {
+            let mut u = Usual::default();
+            for d in days {
+                u.add(d);
+            }
+            u
+        };
+        let usual = sum(&[day(1000, 400, 50, 0); 4]);
+        assert_eq!(
+            push_of(&sum(&[day(1000, 400, 50, 0)]), &usual, walk),
+            0,
+            "as usual"
+        );
+        assert_eq!(
+            push_of(&sum(&[day(1000, 400, 50, 0)]), &Usual::default(), walk),
+            0,
+            "no usual yet"
+        );
+        // Twice the walk for the same harvest: 400 tiles more.
+        assert_eq!(push_of(&sum(&[day(1000, 800, 50, 0)]), &usual, walk), 400);
+        // 100 tiles farther to drink, there and back.
+        assert_eq!(push_of(&sum(&[day(1000, 400, 150, 0)]), &usual, walk), 200);
+        // Hungrier nights.
+        assert_eq!(push_of(&sum(&[day(1000, 400, 50, 300)]), &usual, walk), 300);
+        // Better than usual: no push, never under nothing.
+        assert_eq!(push_of(&sum(&[day(2000, 200, 0, 0)]), &usual, walk), 0);
+    }
+
+    #[test]
+    fn an_empty_visit_counts_a_day_of_nothing_and_opens_no_note() {
+        let mut mind = Mind::new(Pos::new(5, 5));
+        lived_at(
+            &mut mind,
+            (0, 0),
+            1,
+            &night_with([0; SENSES], 0, vec![picked((1, 1), 0, 1000)]),
+            1000,
+        );
+        let grove = |mind: &Mind| {
+            *mind
+                .lived
+                .iter()
+                .find(|l| l.grove && l.place == (1, 1))
+                .unwrap()
+        };
+        assert_eq!(grove(&mind).per_day(grove(&mind).gains[0]), 1000);
+        // Back there, nothing found: half a day a day.
+        lived_at(
+            &mut mind,
+            (0, 0),
+            1,
+            &night_with([0; SENSES], 0, vec![picked((1, 1), 0, 0)]),
+            1000,
+        );
+        assert_eq!(grove(&mind).per_day(grove(&mind).gains[0]), 500);
+        // Nothing found at a grove it never noted: no note opened.
+        lived_at(
+            &mut mind,
+            (0, 0),
+            1,
+            &night_with([0; SENSES], 0, vec![picked((3, 3), 0, 0)]),
+            1000,
+        );
+        assert!(mind.lived.iter().all(|l| l.place != (3, 3)));
+        // A note waits for its season: winter's do not fade in summer.
+        mind.note_night((0, 0), &night_with([0; SENSES], 0, vec![]), 500, 3);
+        assert_eq!(grove(&mind).days, 2000, "season 0's notes kept");
+        assert_eq!(mind.lived_places(), 2);
+    }
+
+    #[test]
+    fn a_listener_who_lived_there_weighs_a_call_by_its_own_notes() {
+        let rules = moving_rules();
+        let mind = better_next_door();
+        let to = place_centre((1, 0), 16);
+        let own = own_gain(&rules, &mind, to).unwrap();
+        assert!(own > MARGIN_PERMILLE, "{own}");
+        assert_eq!(own_gain(&rules, &mind, place_centre((9, 9), 16)), None);
     }
 }
