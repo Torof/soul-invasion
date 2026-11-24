@@ -732,6 +732,10 @@ pub struct Weighed {
     pub home_fare: Option<i64>,
     /// It joined.
     pub joined: bool,
+    /// What the place itself is worth to it a day: the gain told times
+    /// its trust, less what the move costs it, company and family aside
+    /// (D56, amended 25 November 2026), in per mille of a day of need.
+    pub worth: i64,
 }
 
 /// A group of the day (D56): a caller and those who joined it, walking to
@@ -5374,6 +5378,8 @@ impl Brains {
         // (D56, amended 24 November 2026): its caller, home, gain, and
         // who weighed it.
         let mut call: Option<(BodyId, Pos, i64, Vec<Weighed>)> = None;
+        // Its listeners' last round (D56, amended 25 November 2026).
+        let mut rounds: BTreeMap<BodyId, Weighed> = BTreeMap::new();
         let mut caller_fare = None;
         // Who did not weigh it, and why (a measure).
         let mut unheard: Vec<(BodyId, Unheard)> = Vec::new();
@@ -5410,14 +5416,37 @@ impl Brains {
                 moves_to.insert(id, c.to);
                 call = Some((id, c.to, c.gain, Vec::new()));
                 caller_fare = home_fare(rules, mind);
+                // Everyone present hears it, then weighs it in rounds.
+                let listeners: Vec<BodyId> = speakers
+                    .iter()
+                    .map(|s| s.1)
+                    .filter(|&b| {
+                        b != id
+                            && !said.contains_key(&b)
+                            && world
+                                .body(b)
+                                .is_some_and(|lb| spouse_away(world, lb, present).is_none())
+                    })
+                    .collect();
+                let will = mind.will;
+                rounds = weigh_in_rounds(
+                    world,
+                    rules,
+                    (&self.memory, seed, today),
+                    &self.minds,
+                    (&|_| (id, will), c.gain, c.to),
+                    (present, &listeners, 0),
+                    &|b| b == id,
+                    &mother_of,
+                )
+                .into_iter()
+                .map(|w| (w.body, w))
+                .collect();
                 continue;
             }
             if let Some((caller, to, gain, weighed)) = call.as_mut() {
                 let going = |b: BodyId| {
-                    let goes = |x: BodyId| {
-                        x == *caller
-                            || matches!(said.get(&x), Some((Act::Joined, None, Some(l), _)) if l == caller)
-                    };
+                    let goes = |x: BodyId| x == *caller || rounds.get(&x).is_some_and(|w| w.joined);
                     goes(b) || mother_of(b).is_some_and(goes)
                 };
                 if spouse_away(world, body, present).is_some() {
@@ -5433,19 +5462,7 @@ impl Brains {
                         }),
                     ));
                     unheard.push((id, Unheard::SpouseAway));
-                } else if let Some(w) = weigh_move(
-                    world,
-                    rules,
-                    (&self.memory, seed, today),
-                    (id, mind),
-                    (
-                        *caller,
-                        self.minds.get(caller).map_or(0, |m| m.will),
-                        *gain,
-                        *to,
-                    ),
-                    (present, &going, 0),
-                ) {
+                } else if let Some(&w) = rounds.get(&id) {
                     weighed.push(w);
                     // A newer call heard drops the one it kept.
                     kept.push((id, None));
@@ -5933,32 +5950,29 @@ impl Brains {
             self.minds.get_mut(&id).expect("its mind").kept_call = None;
             let mut pair = [id, spouse];
             pair.sort_by_key(|&b| order(b));
-            let mut weighed = Vec::new();
+            let listeners: Vec<BodyId> =
+                pair.into_iter().filter(|m| !said.contains_key(m)).collect();
+            // The two weigh it together, each knowing the other's answer
+            // (D56, amended 25 November 2026).
+            let teller = |m: BodyId| {
+                let t = if m == id { k.caller } else { id };
+                (t, self.minds.get(&t).map_or(0, |tm| tm.will))
+            };
+            let weighed = weigh_in_rounds(
+                world,
+                rules,
+                (&self.memory, seed, today),
+                &self.minds,
+                (&teller, k.gain, k.to),
+                (present, &listeners, k.there),
+                &|_| false,
+                &|_| None,
+            );
             let mut first: Option<BodyId> = None;
-            for m in pair {
-                if said.contains_key(&m) {
-                    continue;
-                }
-                let (Some(mind), teller) =
-                    (self.minds.get(&m), if m == id { k.caller } else { id })
-                else {
-                    continue;
-                };
-                let going = |b: BodyId| first == Some(b);
-                let teller_will = self.minds.get(&teller).map_or(0, |t| t.will);
-                let Some(w) = weigh_move(
-                    world,
-                    rules,
-                    (&self.memory, seed, today),
-                    (m, mind),
-                    (teller, teller_will, k.gain, k.to),
-                    (present, &going, k.there),
-                ) else {
-                    continue;
-                };
-                weighed.push(w);
+            for &w in &weighed {
+                let m = w.body;
                 if w.joined {
-                    followed.insert(m, teller);
+                    followed.insert(m, teller(m).0);
                     if let Some(lead) = first {
                         said.insert(m, (Act::Joined, None, Some(lead), 0));
                     } else {
@@ -9101,6 +9115,88 @@ fn spouse_away(world: &World, body: &Body, present: &[BodyId]) -> Option<BodyId>
     })
 }
 
+/// A move called at the fire weighed in rounds (D56, amended 25 November
+/// 2026, the project lead: "the fire's decision in rounds, a couple
+/// weighing with each other's answer known"). First each listener says
+/// whether the place itself is worth the move to it (`Weighed::worth`,
+/// company and family aside): those it is worth raise a hand, "I'd come".
+/// Then in rounds each weighs its going ([`weigh_move`]) knowing whose
+/// hands are up, the caller's always (`always`): a raised hand is lowered
+/// by one who would not go with them, until no hand moves; then a hand is
+/// raised by one the hands up now pull (its spouse, its company), until
+/// none rises. Each its own balance, no vote: it only knows the others'
+/// answers, its spouse's among them, as one does at a fire where everyone
+/// has spoken; nobody goes for company alone where nobody goes for the
+/// place. The weighings of the last round, in the listeners' order,
+/// `joined` for those whose hand is up. `teller`: whom each listener heard
+/// it from, and that one's will.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the fire's call and its listeners"
+)]
+fn weigh_in_rounds(
+    world: &World,
+    rules: &Content,
+    (memory, seed, today): (&Store, u64, u32),
+    minds: &BTreeMap<BodyId, Mind>,
+    (teller, gain, to): (&dyn Fn(BodyId) -> (BodyId, u8), i64, Pos),
+    (present, listeners, there_before): (&[BodyId], &[BodyId], u64),
+    always: &dyn Fn(BodyId) -> bool,
+    mother_of: &dyn Fn(BodyId) -> Option<BodyId>,
+) -> Vec<Weighed> {
+    let weigh = |id: BodyId, up: &BTreeSet<BodyId>| {
+        let goes = |b: BodyId| always(b) || up.contains(&b);
+        let going = |b: BodyId| goes(b) || mother_of(b).is_some_and(goes);
+        let (from, will) = teller(id);
+        weigh_move(
+            world,
+            rules,
+            (memory, seed, today),
+            (id, minds.get(&id)?),
+            (from, will, gain, to),
+            (present, &going, there_before),
+        )
+    };
+    let none = BTreeSet::new();
+    let mut up: BTreeSet<BodyId> = listeners
+        .iter()
+        .copied()
+        .filter(|&id| weigh(id, &none).is_some_and(|w| w.worth > MARGIN_PERMILLE))
+        .collect();
+    // Hands lowered: each gone set is smaller, so it ends.
+    loop {
+        let still: BTreeSet<BodyId> = up
+            .iter()
+            .copied()
+            .filter(|&id| weigh(id, &up).is_some_and(|w| w.joined))
+            .collect();
+        if still == up {
+            break;
+        }
+        up = still;
+    }
+    // Hands raised: each gone set is larger, so it ends.
+    loop {
+        let more: Vec<BodyId> = listeners
+            .iter()
+            .copied()
+            .filter(|id| !up.contains(id) && weigh(*id, &up).is_some_and(|w| w.joined))
+            .collect();
+        if more.is_empty() {
+            break;
+        }
+        up.extend(more);
+    }
+    listeners
+        .iter()
+        .filter_map(|&id| weigh(id, &up))
+        .map(|w| Weighed {
+            joined: up.contains(&w.body),
+            ..w
+        })
+        .collect()
+}
+
 /// How a listener at the fire weighs a move called (D56, amended 24
 /// November 2026; the project lead: no vote, "plusieurs individus"): the
 /// gain the caller told, times its trust in the caller, plus the company
@@ -9178,6 +9274,7 @@ fn weigh_move(
         trust,
         home_fare: home_fare(rules, mind),
         joined: balance > MARGIN_PERMILLE,
+        worth: gain * i64::from(trust) / 100 - cost,
     })
 }
 
@@ -13367,21 +13464,20 @@ mod tests {
             (Act::Joined, None, Some(BodyId(1)))
         );
         let weighed = weighed_of(&news);
-        assert_eq!(weighed.len(), 7, "each who spoke after it weighed it");
+        assert_eq!(weighed.len(), 7, "each who heard it weighed it");
         // The loner: the gain told at its trust, nothing to lack.
         assert!(weighed[0].joined && weighed[0].balance > MARGIN_PERMILLE);
         assert_eq!(weighed[0].balance, 400 * i64::from(weighed[0].trust) / 100);
-        // The sociable: five stay here, two go there; the crowd it would
-        // lack weighs more than the gain told. Each its own balance.
+        // The sociable: weighed in rounds, each knowing the others' answers
+        // (D56, amended 25 November 2026), the crowd goes together: none
+        // would lack anyone there. Each its own balance.
         for w in &weighed[1..] {
-            assert!(!w.joined && w.balance <= MARGIN_PERMILLE, "{w:?}");
-            assert_ne!(act_of(&brains, w.body).0, Act::Joined);
-            assert_eq!(brains.minds[&w.body].ways.home, camp);
-            assert!(brains.minds[&w.body].trial.is_none());
+            assert!(w.joined && w.balance > MARGIN_PERMILLE, "{w:?}");
+            assert_eq!(act_of(&brains, w.body).0, Act::Joined);
         }
-        // The caller and the one who joined each opened its own trial of
-        // the home there, judged alone; they walk as one group.
-        for id in [BodyId(1), BodyId(2)] {
+        // Each who joined opened its own trial of the home there, judged
+        // alone; they walk as one group.
+        for id in (1..=8).map(BodyId) {
             let mind = &brains.minds[&id];
             assert_eq!(mind.ways.home, to);
             assert!(mind.calling.is_none());
@@ -13396,8 +13492,29 @@ mod tests {
         let group = &brains.groups[&BodyId(1)];
         assert_eq!(
             (group.members.clone(), group.moves),
-            (vec![BodyId(1), BodyId(2)], Some(to))
+            ((1..=8).map(BodyId).collect(), Some(to))
         );
+        // The sociable when the others stay, each busy with a trial of its
+        // own: two go, five stay here; the crowd it would lack weighs more
+        // than the gain told.
+        let (world, mut rules, mut brains, _, camp) = deciding(8);
+        rules.needs.company = crate::content::Company::placeholders();
+        rules.needs.trials.move_repay_seasons = 100_000;
+        brains.minds.get_mut(&BodyId(1)).unwrap().will = 90;
+        for (&id, mind) in &mut brains.minds {
+            mind.sociable = if id == BodyId(2) { 0 } else { 100 };
+        }
+        calling_at(&world, &mut brains, BodyId(1), to, 400);
+        busy(&mut brains, 4..=8);
+        let news = decide_evening(&world, &rules, &mut brains, camp, &present);
+        let weighed = weighed_of(&news);
+        let third = weighed.iter().find(|w| w.body == BodyId(3)).unwrap();
+        assert!(
+            !third.joined && third.balance <= MARGIN_PERMILLE,
+            "{third:?}"
+        );
+        assert_eq!(brains.minds[&BodyId(3)].ways.home, camp);
+        assert!(brains.minds[&BodyId(3)].trial.is_none());
         // With nobody to join it, the caller goes alone all the same.
         let (world, mut rules, mut brains, _, camp) = deciding(3);
         rules.needs.company = crate::content::Company::placeholders();
@@ -13437,6 +13554,58 @@ mod tests {
         assert_eq!(weighed.len(), 2, "everyone present but the caller");
     }
 
+    /// `ids` are busy with a trial of their own: they do not weigh a call
+    /// (D56), they stay where they are.
+    fn busy(brains: &mut Brains, ids: impl IntoIterator<Item = u32>) {
+        for id in ids {
+            let mind = brains.minds.get_mut(&BodyId(id)).unwrap();
+            mind.trial = Some(Trial {
+                way: Way::StockKj,
+                before: mind.ways,
+                started_day: 0,
+                before_days: Lately::default(),
+                heard: HeardDays::default(),
+                caller: None,
+            });
+        }
+    }
+
+    #[test]
+    fn a_couple_weighs_a_call_in_rounds_each_knowing_the_others_answer() {
+        // The caller bold, a couple 2 and 3 who need no company but hold to
+        // each other, the others busy with trials of their own.
+        let (mut world, mut rules, mut brains, _, camp) = deciding(6);
+        rules.needs.company = crate::content::Company::placeholders();
+        rules.needs.family = crate::content::Family::placeholders();
+        rules.needs.trials.move_repay_seasons = 100_000;
+        wed(&mut world, BodyId(2), BodyId(3));
+        for (&id, mind) in &mut brains.minds {
+            mind.sociable = 0;
+            mind.will = if id == BodyId(1) { 90 } else { 10 };
+        }
+        let to = Pos::new(camp.x + 40, camp.y);
+        calling_at(&world, &mut brains, BodyId(1), to, 200);
+        busy(&mut brains, 4..=6);
+        let present: Vec<BodyId> = (1..=6).map(BodyId).collect();
+        let news = decide_evening(&world, &rules, &mut brains, camp, &present);
+        let weighed = weighed_of(&news);
+        let w = |b: u32| *weighed.iter().find(|w| w.body == BodyId(b)).unwrap();
+        // Each finds the place worth it, but not worth leaving its spouse:
+        // one after the other, each saw the other staying and said no. In
+        // rounds each knows the other's answer: they go together.
+        let spouse = i64::from(rules.needs.family.spouse_permille);
+        for b in [2, 3] {
+            let w = w(b);
+            assert!(
+                w.worth > MARGIN_PERMILLE && w.worth - spouse <= MARGIN_PERMILLE,
+                "{w:?}"
+            );
+            assert!(w.joined, "{w:?}");
+            assert_eq!(w.balance, w.worth + spouse, "its spouse goes: it pulls");
+            assert_eq!(brains.minds[&BodyId(b)].ways.home, to);
+        }
+    }
+
     #[test]
     fn a_spouse_who_goes_pulls_the_other_without_forcing_it() {
         // `count` at the fire, the caller bold, the second a loner who
@@ -13470,6 +13639,8 @@ mod tests {
                 Pos::new(camp.x + 40, camp.y),
                 gain,
             );
+            // The others stay, each busy with a trial of its own.
+            busy(&mut brains, 4..=count);
             let present: Vec<BodyId> = (1..=count).map(BodyId).collect();
             let news = decide_evening(&world, &rules, &mut brains, camp, &present);
             let weighed = weighed_of(&news);
@@ -13812,8 +13983,8 @@ mod tests {
         let kept = brains.minds[&BodyId(2)].kept_call.expect("kept");
         assert_eq!((kept.to, kept.caller, kept.gain), (to, BodyId(1), 400));
         assert_eq!(
-            kept.there, 100,
-            "the caller, the only one gone before it spoke"
+            kept.there, 200,
+            "the caller and the loner who said it comes (in rounds, D56 amended 25 November 2026)"
         );
         assert_eq!(brains.minds[&BodyId(2)].ways.home, camp);
         // The next evening, its spouse there: it tells the call, each
@@ -13942,6 +14113,8 @@ mod tests {
                 };
             }
             calling_at(&world, &mut brains, BodyId(1), to, 300);
+            // The seven others stay, each busy with a trial of its own.
+            busy(&mut brains, 4..=10);
             let present: Vec<BodyId> = (1..=10).map(BodyId).collect();
             let news = decide_evening(&world, &rules, &mut brains, camp, &present);
             let own = news
@@ -14003,6 +14176,8 @@ mod tests {
             };
         }
         let present: Vec<BodyId> = (1..=10).map(BodyId).collect();
+        // The others stay, each busy with a trial of its own.
+        busy(&mut brains, 3..=10);
         // A small gain: its spouse says no, it stays and forgets.
         let first = Pos::new(camp.x + 40, camp.y);
         calling_at(&world, &mut brains, BodyId(1), first, 120);

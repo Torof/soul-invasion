@@ -391,6 +391,7 @@ impl Report {
                             "trust": w.trust,
                             "home_fare_permille": w.home_fare,
                             "joined": w.joined,
+                            "worth_permille": w.worth,
                         })).collect::<Vec<_>>(),
                         "caller_weighed": c.own.map(|w| json!({
                             "balance_permille": w.balance,
