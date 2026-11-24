@@ -2190,6 +2190,13 @@ impl Mind {
         self.trial.as_ref()
     }
 
+    /// Whether it holds a goal beyond a day (D56): at night it lies down
+    /// where it stands.
+    #[must_use]
+    pub fn holds_goal(&self) -> bool {
+        self.goal.is_some()
+    }
+
     /// Its days of distress in a row (D50).
     pub fn distress_days(&self) -> u32 {
         self.distress_days

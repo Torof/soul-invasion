@@ -27,7 +27,7 @@ use crate::{
 };
 
 /// The top-level keys, in the order they are written.
-const ORDER: [&str; 21] = [
+const ORDER: [&str; 22] = [
     "meta",
     "years",
     "seasons",
@@ -45,6 +45,7 @@ const ORDER: [&str; 21] = [
     "settlements",
     "partings",
     "home_changes",
+    "nights_apart",
     "goals",
     "map",
     "bearers",
@@ -246,6 +247,27 @@ impl Report {
         )
     }
 
+    /// The fertile couples' dawns by age-year, together or apart and why
+    /// (24 November 2026).
+    fn nights_apart_json(&self) -> Value {
+        Value::Array(
+            self.nights_apart
+                .iter()
+                .map(|n| {
+                    json!({
+                        "dawns": n.dawns,
+                        "together": n.together,
+                        "homes_apart": n.homes_apart,
+                        "sleep_out": n.sleep_out,
+                        "goal": n.goal,
+                        "home_trial": n.home_trial,
+                        "caught_out": n.caught_out,
+                    })
+                })
+                .collect(),
+        )
+    }
+
     /// Each grown body's home changed between two dawns (24 November
     /// 2026).
     fn home_changes_json(&self) -> Value {
@@ -426,6 +448,7 @@ impl Report {
         });
         value["partings"] = self.partings_json();
         value["home_changes"] = self.home_changes_json();
+        value["nights_apart"] = self.nights_apart_json();
         value
     }
 
