@@ -8993,7 +8993,8 @@ fn spouse_away(world: &World, body: &Body, present: &[BodyId]) -> Option<BodyId>
 /// content's `company.spouse_counts` companions (the project lead, 24
 /// November 2026): its going pulls without forcing. Its trust is its
 /// credit in the caller at living if it believes it best at it, else the
-/// credit of a teller ([`memory::credit`]). Less what the move costs it a
+/// credit of a teller ([`memory::credit`]). Its family weighs apart and
+/// besides ([`family_left`]). Less what the move costs it a
 /// day from its own home ([`move_cost`]). It joins above a hundredth of
 /// a day ([`MARGIN_PERMILLE`]). `there_before`: those who said they go
 /// when a kept call was called, in hundredths of a body. `None`: it does
@@ -9051,7 +9052,8 @@ fn weigh_move(
         Some(own) if caller != id => (own, 100),
         _ => (gain, trust),
     };
-    let balance = gain * i64::from(trust) / 100 - cost + lack(here) - lack(there);
+    let balance = gain * i64::from(trust) / 100 - cost + lack(here) - lack(there)
+        + family_left(world, rules, (id, spouse), going);
     Some(Weighed {
         body: id,
         balance,
@@ -9084,6 +9086,47 @@ fn own_gain(rules: &Content, mind: &Mind, to: Pos) -> Option<i64> {
     })
     .find_map(|at| season_grades(&mind.lived, at, home, sides, walk))
     .map(|(old, new)| new - old)
+}
+
+/// What `id`'s family weighs for its going, in per mille of a day of need
+/// (D56, amended 24 November 2026; the project lead: "un poids de la
+/// famille à part de la compagnie", added to it, "s'il y a des enfants,
+/// il y a encore plus de poids"): each member who goes pulls it there,
+/// each who stays holds it here, wherever they stand, whatever its
+/// sociability and however many others are around. Its spouse counts
+/// `family.spouse_permille`; each of its children too young to weigh a
+/// move (under sixteen) `family.child_permille`, on its mother's side: a
+/// child of `id`'s own body goes with it, and weighs nothing either way.
+fn family_left(
+    world: &World,
+    rules: &Content,
+    (id, spouse): (BodyId, Option<BodyId>),
+    going: &dyn Fn(BodyId) -> bool,
+) -> i64 {
+    let family = &rules.needs.family;
+    let alive = |b: BodyId| {
+        world
+            .body(b)
+            .is_some_and(|body| body.condition().vitality.points() > 0)
+    };
+    let side = |weight: u32, goes: bool| {
+        let weight = i64::from(weight);
+        if goes { weight } else { -weight }
+    };
+    let mut pull = spouse.map_or(0, |s| side(family.spouse_permille, going(s)));
+    if family.child_permille > 0 {
+        for child in world.bodies() {
+            let young = world.age_milli(child) < 16_000;
+            let ours = child.mother() == Some(id) || child.father() == Some(id);
+            if !young || !ours || !alive(child.id()) {
+                continue;
+            }
+            if let Some(mother) = child.mother().filter(|&m| m != id && alive(m)) {
+                pull += side(family.child_permille, going(mother));
+            }
+        }
+    }
+    pull
 }
 
 /// A hundredth of a day of need, in per mille: the margin a place must
@@ -13203,8 +13246,10 @@ mod tests {
         let third = |count: u32, gain: i64, spouses: bool| {
             let (mut world, mut rules, mut brains, _, camp) = deciding(count);
             rules.needs.company = crate::content::Company::placeholders();
-            // The move's cost aside here: its own test weighs it.
+            // The move's cost and the family aside here: their own tests
+            // weigh them.
             rules.needs.trials.move_repay_seasons = 100_000;
+            rules.needs.family = crate::content::Family::default();
             for mind in brains.minds.values_mut() {
                 mind.sociable = 60;
             }
@@ -13245,6 +13290,71 @@ mod tests {
         let (mate, spouse) = (third(10, 30, false), third(10, 30, true));
         assert!(spouse.balance > mate.balance);
         assert!(!spouse.joined, "{spouse:?}");
+    }
+
+    #[test]
+    fn the_family_weighs_apart_from_company_and_more_with_children() {
+        // Six at the fire, the caller bold, nobody sociable: company
+        // weighs nothing. The second is the caller's spouse or not, with
+        // `children` young ones whose mother is the caller.
+        let second = |family: bool, spouse: bool, children: u32| {
+            let (mut world, mut rules, mut brains, _, camp) = deciding(6 + children);
+            rules.needs.company = crate::content::Company::placeholders();
+            rules.needs.family = if family {
+                crate::content::Family::placeholders()
+            } else {
+                crate::content::Family::default()
+            };
+            rules.needs.trials.move_repay_seasons = 100_000;
+            for mind in brains.minds.values_mut() {
+                mind.sociable = 0;
+            }
+            brains.minds.get_mut(&BodyId(1)).unwrap().will = 90;
+            if spouse {
+                for (a, b) in [(1, 2), (2, 1)] {
+                    let body = world
+                        .bodies
+                        .iter_mut()
+                        .find(|x| x.id() == BodyId(a))
+                        .unwrap();
+                    body.spouse = Some(BodyId(b));
+                }
+            }
+            for k in 0..children {
+                let child = BodyId(7 + k);
+                world.set_birth(child, 5 * 50, crate::Sex::Female);
+                let body = world.bodies.iter_mut().find(|b| b.id() == child).unwrap();
+                body.mother = Some(BodyId(1));
+                body.father = Some(BodyId(2));
+            }
+            calling_at(
+                &world,
+                &mut brains,
+                BodyId(1),
+                Pos::new(camp.x + 40, camp.y),
+                100,
+            );
+            let present: Vec<BodyId> = (1..=6 + children).map(BodyId).collect();
+            let news = decide_evening(&world, &rules, &mut brains, camp, &present);
+            *weighed_of(&news)
+                .iter()
+                .find(|w| w.body == BodyId(2))
+                .unwrap()
+        };
+        // A loner: its spouse who goes pulls it by the family alone.
+        let (alone, wed) = (second(false, true, 0), second(true, true, 0));
+        assert_eq!(wed.balance - alone.balance, 250);
+        // A stranger to the caller feels no family.
+        assert_eq!(
+            second(true, false, 0).balance,
+            second(false, false, 0).balance
+        );
+        // Its two young children go with their mother: more weight still.
+        let with_children = second(true, true, 2);
+        assert_eq!(
+            with_children.balance - second(false, true, 2).balance,
+            250 + 2 * 100
+        );
     }
 
     #[test]
@@ -13620,6 +13730,9 @@ mod tests {
         let evening = |caller_sociable: u8| {
             let (mut world, mut rules, mut brains, _, camp) = deciding(10);
             rules.needs.company = crate::content::Company::placeholders();
+            // The family aside: it would pull the spouse after the caller
+            // (its own test weighs it).
+            rules.needs.family = crate::content::Family::default();
             let to = Pos::new(camp.x + 40, camp.y);
             wed(&mut world, BodyId(1), BodyId(2));
             for (&id, mind) in &mut brains.minds {
