@@ -349,7 +349,7 @@ clock, the only field no seed decides.
 | `move_calls[].day`, `.tribe`, `.caller`, `.caller_spouse` | The day (from 1), the caller's tribe, the caller, its spouse then | |
 | `move_calls[].camp`, `.to`, `.tiles` | The fire, the new home, the distance between | `[x, y]`, tiles |
 | `move_calls[].gain_permille`, `.caller_home_fare_permille` | The gain the caller told, and how it fared at its old home, by its own notes | per mille of a day of need |
-| `move_calls[].weighed[]` | Each listener who spoke after it: `body`, `spouse`, `balance_permille` (the gain times `trust`, plus the company it would lack here less there), `trust` (0 to 100), `home_fare_permille` (its own home's grade, `null` if it never slept there), `joined` | |
+| `move_calls[].weighed[]` | Each listener who weighed it, in its last round (D56, amended 25 November 2026: the call weighed in rounds): `body`, `spouse`, `balance_permille` (the gain times `trust`, less the move's cost, plus the company it would lack here less there, plus its family), `trust` (0 to 100), `home_fare_permille` (its own home's grade, `null` if it never slept there), `joined` (its hand up at the end), `worth_permille` (the place's own worth to it: the gain times `trust`, less the move's cost, company and family aside; a hand is raised first only above the margin) | |
 | `move_calls[].kept_from` | When the caller is a spouse telling a call it kept until its spouse was present: who first called it; `null` otherwise | integer |
 | `move_calls[].caller_weighed` | When its spouse said no, how the caller weighed its own going, trusting itself (D56, amended 24 November 2026): `balance_permille`, `joined` (`false`: it stayed with its spouse and keeps the call); `null` otherwise | |
 | `move_calls[].unheard[]` | Each present grown who did not weigh it: `body`, `spouse`, `why` (`before`: it spoke before the caller, its day said; `spouse_away`: its spouse was not at the fire, it keeps the call; `trial`: under a trial; `child`: under sixteen) | |
@@ -358,8 +358,8 @@ clock, the only field no seed decides.
 | `moving.felt[].gain_permille`, `.push_permille`, `.surprise_permille` | The new home's grade less the old one's, season against season; how much worse its recent days were than its usual days of the season; its greatest surprise there | per mille of a day of need |
 | `moving.felt[].huge` | `true`: not pushed, the surprise alone was huge enough | boolean |
 | `moving.surprised[]` | Each surprise lived: a day gathering at a grove away from home that gave clearly more than the present who stayed near home and gathered that day, in order | list |
-| `moving.surprised[].day`, `.body`, `.tribe`, `.stayers` | The day it was told, who, its tribe, how many stayers it was compared with | |
-| `moving.surprised[].gain_permille`, `.stayers_gathered_permille` | How much more it gathered there; the stayers' mean that day | per mille of a day of need |
+| `moving.surprised[].day`, `.body`, `.tribe`, `.stayers` | The day it was told, who, its tribe, how many stayers it was compared with (0: none stayed near home that day, it was compared with its own usual days of the season, amended 25 November 2026) | |
+| `moving.surprised[].gain_permille`, `.stayers_gathered_permille` | How much more it gathered there; the stayers' mean that day, or its own usual day's when `stayers` is 0 | per mille of a day of need |
 | `moving.surprised[].spouse_took_it` | Its spouse at the fire took the day into its own notes | boolean |
 | `moving.go_see[]` | Each day gone to see a surprise told at the fire, in order | list |
 | `moving.go_see[].day`, `.body`, `.tribe`, `.from` | The day, who, its tribe, the teller | |
@@ -409,6 +409,11 @@ clock, the only field no seed decides.
 | `nights_apart[].goal` | Apart: one away from home holds a goal beyond a day (D56) | dawns |
 | `nights_apart[].home_trial` | Apart: one away from home is on its home trial | dawns |
 | `nights_apart[].caught_out` | Apart: none of these; the night caught one out | dawns |
+| `nights_out[]` | The grown bodies' dawns, by age-year from the first (25 November 2026, the project lead: do small groups ever spend nights out together?); away is farther from its home than the fire's reach (`trials.imitate_tiles`) on either axis | list, one per year |
+| `nights_out[].dawns` | The grown bodies' dawns | dawns |
+| `nights_out[].away` | Those away from home | dawns |
+| `nights_out[].asleep` | Of them, asleep | dawns |
+| `nights_out[].in_company` | Of them, with two or more other grown bodies away from their own homes lying within the fire's reach: a group's night out | dawns |
 | `goals[]` | Each goal held over several days (D56, amended 24 November 2026): `body`, `tribe`, `day` set, `to`, `tiles`, `load_kj` carried then, `end` (`arrived`, `load`, `hunger`, `thirst`, `dropped`, `null` while held at the end), `end_day` | |
 | `map.data_uri` | The page's picture of the map at the run's end, the same PNG: the terrain, the camps red, the living white, the dead black | `"data:image/png;base64,…"` |
 | `map.tiles_per_pixel` | The scale: one pixel is so many tiles a side (5 on the vivarium's world) | tiles |

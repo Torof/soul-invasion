@@ -27,7 +27,7 @@ use crate::{
 };
 
 /// The top-level keys, in the order they are written.
-const ORDER: [&str; 22] = [
+const ORDER: [&str; 23] = [
     "meta",
     "years",
     "seasons",
@@ -46,6 +46,7 @@ const ORDER: [&str; 22] = [
     "partings",
     "home_changes",
     "nights_apart",
+    "nights_out",
     "goals",
     "map",
     "bearers",
@@ -268,6 +269,24 @@ impl Report {
         )
     }
 
+    /// The grown bodies' dawns by age-year, at home or away (25 November
+    /// 2026).
+    fn nights_out_json(&self) -> Value {
+        Value::Array(
+            self.nights_out
+                .iter()
+                .map(|n| {
+                    json!({
+                        "dawns": n.dawns,
+                        "away": n.away,
+                        "asleep": n.asleep,
+                        "in_company": n.in_company,
+                    })
+                })
+                .collect(),
+        )
+    }
+
     /// Each grown body's home changed between two dawns (24 November
     /// 2026).
     fn home_changes_json(&self) -> Value {
@@ -372,6 +391,7 @@ impl Report {
                             "trust": w.trust,
                             "home_fare_permille": w.home_fare,
                             "joined": w.joined,
+                            "worth_permille": w.worth,
                         })).collect::<Vec<_>>(),
                         "caller_weighed": c.own.map(|w| json!({
                             "balance_permille": w.balance,
@@ -449,6 +469,7 @@ impl Report {
         value["partings"] = self.partings_json();
         value["home_changes"] = self.home_changes_json();
         value["nights_apart"] = self.nights_apart_json();
+        value["nights_out"] = self.nights_out_json();
         value
     }
 
