@@ -2832,7 +2832,7 @@ impl Mind {
     /// that found nothing (all its gains zero) counts a day of nothing at
     /// a place already in the notes (amended 24 November 2026: an empty
     /// visit counts), and opens no new note.
-    fn note_night(&mut self, place: PlaceKey, night: &Night, keep: u64, season: u8) {
+    fn note_night(&mut self, place: PlaceKey, night: &Night, keep: u64, (season, side): (u8, i32)) {
         for l in self.lived.iter_mut().filter(|l| l.season == season) {
             let fade = |v: &mut u64| *v = *v * keep / 1000;
             fade(&mut l.nights);
@@ -2842,7 +2842,7 @@ impl Mind {
             l.gains.iter_mut().chain(l.losses.iter_mut()).for_each(fade);
         }
         self.lived.retain(|l| l.lived() > 0);
-        let l = self.lived_slot(place, false, season);
+        let l = self.lived_slot(place, false, (season, side));
         l.nights += 1000;
         l.walk += night.walk * 1000;
         for (sum, v) in l.losses.iter_mut().zip(night.losses) {
@@ -2858,7 +2858,7 @@ impl Mind {
             {
                 continue;
             }
-            let l = self.lived_slot(act.place, act.grove, season);
+            let l = self.lived_slot(act.place, act.grove, (season, side));
             if act.grove || act.place != place {
                 l.days += 1000;
             }
@@ -2870,9 +2870,17 @@ impl Mind {
     }
 
     /// The notes of `place` (a grove or not) in `season`, a new place
-    /// taking the room of the least lived (all its seasons summed) when
-    /// the notes hold [`LIVED_MAX`] places.
-    fn lived_slot(&mut self, place: PlaceKey, grove: bool, season: u8) -> &mut Lived {
+    /// taking the room of the least lived when the notes hold
+    /// [`LIVED_MAX`] places: the least lived this season, then in all
+    /// (a note out of its season does not fade, so a place of long ago
+    /// would otherwise keep its room for ever); never its home's place
+    /// (`side` its grid), nor the old home while a move is judged.
+    fn lived_slot(
+        &mut self,
+        place: PlaceKey,
+        grove: bool,
+        (season, side): (u8, i32),
+    ) -> &mut Lived {
         let i = if let Some(i) = self
             .lived
             .iter()
@@ -2880,14 +2888,23 @@ impl Mind {
         {
             i
         } else {
-            let mut places: BTreeMap<(PlaceKey, bool), u64> = BTreeMap::new();
+            let mut places: BTreeMap<(PlaceKey, bool), (u64, u64)> = BTreeMap::new();
             for l in &self.lived {
-                *places.entry((l.place, l.grove)).or_default() += l.lived();
+                let e = places.entry((l.place, l.grove)).or_default();
+                if l.season == season {
+                    e.0 += l.lived();
+                }
+                e.1 += l.lived();
+            }
+            let mut kept = vec![place_of(self.ways.home, side)];
+            if let Some(t) = self.trial.filter(|t| t.way == Way::Home) {
+                kept.push(place_of(t.before.home, side));
             }
             if !places.contains_key(&(place, grove))
                 && places.len() >= LIVED_MAX
                 && let Some((&least, _)) = places
                     .iter()
+                    .filter(|((p, g), _)| *g || !kept.contains(p))
                     .min_by_key(|((p, g), lived)| (**lived, *g, *p))
             {
                 self.lived.retain(|l| (l.place, l.grove) != least);
@@ -4308,7 +4325,7 @@ impl Brains {
             };
             night.losses[Sense::Warmth as usize] = u64::from(body.condition().cold.points()) * 10;
             mind.yesterday = Some(yesterday_of(&night, closed, mind.ways.home, grove));
-            mind.note_night(place_of(body.pos(), side), &night, keep, season);
+            mind.note_night(place_of(body.pos(), side), &night, keep, (season, side));
         }
     }
 
@@ -4641,6 +4658,7 @@ impl Brains {
         }
         let threshold = u64::from(moving.surprise_permille);
         let season = season_of_day(world, u64::from(day));
+        let side = place_side(rules);
         let grown = |id: BodyId| world.body(id).is_some_and(|b| world.age_milli(b) >= 16_000);
         let lived: Vec<(BodyId, Yesterday)> = present
             .iter()
@@ -4671,7 +4689,7 @@ impl Brains {
                 continue;
             }
             if let Some(mind) = self.minds.get_mut(&id) {
-                let l = mind.lived_slot(grove, true, season);
+                let l = mind.lived_slot(grove, true, (season, side));
                 l.surprised += 100;
                 l.surprise_max = l.surprise_max.max(gain);
             }
@@ -4681,7 +4699,7 @@ impl Brains {
                 .filter(|s| present.contains(s) && grown(*s));
             if let Some(mind) = spouse.and_then(|s| self.minds.get_mut(&s)) {
                 let pct = u64::from(moving.spouse_day_percent);
-                let l = mind.lived_slot(grove, true, season);
+                let l = mind.lived_slot(grove, true, (season, side));
                 l.days += pct * 10;
                 l.gains[Sense::Food as usize] += food * pct * 10;
                 l.saved += saved * pct * 10;
@@ -14970,7 +14988,7 @@ mod tests {
     /// `nights` nights noted at `place`, each with these marks.
     fn lived_at(mind: &mut Mind, place: PlaceKey, nights: u32, night: &Night, keep: u64) {
         for _ in 0..nights {
-            mind.note_night(place, night, keep, 0);
+            mind.note_night(place, night, keep, (0, 16));
         }
     }
 
@@ -15835,12 +15853,17 @@ mod tests {
             mind.walk_kilotile = 1000;
             let at_old = |food| vec![picked((0, 0), 0, food), drank(old, 0, 1000)];
             for _ in 0..5 {
-                mind.note_night(old, &night_with([0; SENSES], 0, at_old(2000)), 1000, 1);
+                mind.note_night(
+                    old,
+                    &night_with([0; SENSES], 0, at_old(2000)),
+                    1000,
+                    (1, 16),
+                );
                 if old_winter {
-                    mind.note_night(old, &night_with([0; SENSES], 0, at_old(300)), 1000, 3);
+                    mind.note_night(old, &night_with([0; SENSES], 0, at_old(300)), 1000, (3, 16));
                 }
                 let at_new = vec![picked((2, 2), 0, 600), drank(new, 0, 1000)];
-                mind.note_night(new, &night_with([0; SENSES], 0, at_new), 1000, 3);
+                mind.note_night(new, &night_with([0; SENSES], 0, at_new), 1000, (3, 16));
             }
             let mut before = mind.ways;
             before.home = place_centre(old, 16);
@@ -15949,9 +15972,39 @@ mod tests {
         );
         assert!(mind.lived.iter().all(|l| l.place != (3, 3)));
         // A note waits for its season: winter's do not fade in summer.
-        mind.note_night((0, 0), &night_with([0; SENSES], 0, vec![]), 500, 3);
+        mind.note_night((0, 0), &night_with([0; SENSES], 0, vec![]), 500, (3, 16));
         assert_eq!(grove(&mind).days, 2000, "season 0's notes kept");
         assert_eq!(mind.lived_places(), 2);
+    }
+
+    #[test]
+    fn a_new_home_keeps_its_room_among_old_notes_of_other_seasons() {
+        // Eight places lived long in spring (season 0), notes that do not
+        // fade in summer.
+        let mut mind = Mind::new(place_centre((20, 20), 16));
+        for k in 0..8 {
+            lived_at(
+                &mut mind,
+                (k, 0),
+                10,
+                &night_with([0; SENSES], 0, vec![]),
+                1000,
+            );
+        }
+        // Summer at the new home (20, 20), a new grove each day: the home
+        // is never pushed out, the least lived of this season goes first.
+        for k in 0..5 {
+            let day = vec![picked((10 + k, 10), 0, 500)];
+            mind.note_night((20, 20), &night_with([0; SENSES], 0, day), 950, (1, 16));
+        }
+        assert_eq!(mind.lived_places(), LIVED_MAX);
+        let home: u64 = mind
+            .lived
+            .iter()
+            .filter(|l| !l.grove && l.place == (20, 20))
+            .map(|l| l.nights)
+            .sum();
+        assert!(home >= 4000, "{home}");
     }
 
     #[test]

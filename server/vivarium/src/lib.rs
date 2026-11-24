@@ -901,12 +901,8 @@ impl Report {
                     .alive
                     .keys()
                     .filter(|&&b| b != h.body)
-                    .filter(|&&b| {
-                        self.people.get(&b).map(|p| p.tribe) == Some(h.tribe)
-                    })
-                    .filter(|&&b| {
-                        lived(b, from, to) && !moved(b, h.day.saturating_sub(season), to)
-                    })
+                    .filter(|&&b| self.people.get(&b).map(|p| p.tribe) == Some(h.tribe))
+                    .filter(|&&b| lived(b, from, to) && !moved(b, h.day.saturating_sub(season), to))
                     .map(|&b| hungry(b, from, to))
                     .collect();
                 if stayers.is_empty() {
