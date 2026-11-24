@@ -135,8 +135,13 @@ pub struct Movement {
     /// `None` cannot be walked. Paths weigh tiles by it and bodies slow
     /// down by it.
     pub terrain_costs: BTreeMap<Terrain, Option<u32>>,
-    /// What a body can carry, in grams (D35).
+    /// The heaviest load a body walks under, in grams (D35): the load at
+    /// which it walks at `speed_percent_at_full_load`.
     pub carry_capacity_g: u32,
+    /// What a body holds in its arms with no bag, in grams (D35, amended
+    /// 24 November 2026): all it can carry while it has nothing to carry
+    /// in. An infant rides on the back and takes nothing from it.
+    pub hands_g: u32,
     /// Walking speed at full load, in percent of the unloaded speed.
     pub speed_percent_at_full_load: u32,
     /// How far a body sees, by the terrain it stands on, in tiles on each
@@ -2739,6 +2744,11 @@ impl Content {
         if self.movement.carry_capacity_g == 0 {
             return Err(ContentError::Movement("carry_capacity_g must be positive"));
         }
+        if !(1..=self.movement.carry_capacity_g).contains(&self.movement.hands_g) {
+            return Err(ContentError::Movement(
+                "hands_g is 1 to carry_capacity_g",
+            ));
+        }
         if !(1..=100).contains(&self.movement.speed_percent_at_full_load) {
             return Err(ContentError::Movement(
                 "speed_percent_at_full_load is 1 to 100",
@@ -2799,6 +2809,7 @@ pub const SAMPLE_MOVEMENT: &str = r"(
     walk_speed_cm_per_s: 143,
     terrain_costs: { grass: Some(10), forest: Some(15), ford: Some(20), brook: Some(15), water: None, rock: None },
     carry_capacity_g: 20000,
+    hands_g: 3000,
     speed_percent_at_full_load: 60,
     sight_tiles: { grass: 60, forest: 25, ford: 60, brook: 60, water: 60, rock: 60 },
     path_budget_tiles: 1500,
@@ -2930,6 +2941,11 @@ mod tests {
         assert!(matches!(
             Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, &weak, SAMPLE_NEEDS).unwrap_err(),
             ContentError::Movement("carry_capacity_g must be positive")
+        ));
+        let empty = SAMPLE_MOVEMENT.replacen("hands_g: 3000", "hands_g: 0", 1);
+        assert!(matches!(
+            Content::from_ron(SAMPLE_MATERIALS, SAMPLE_SPAWNS, &empty, SAMPLE_NEEDS).unwrap_err(),
+            ContentError::Movement("hands_g is 1 to carry_capacity_g")
         ));
         let frozen = SAMPLE_MOVEMENT.replacen(
             "speed_percent_at_full_load: 60",

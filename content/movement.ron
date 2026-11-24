@@ -6,8 +6,13 @@
 //                      the reference; paths weigh tiles by it and bodies
 //                      slow down by it (cost 15 = two thirds of the speed).
 //                      None cannot be walked. Every terrain must appear.
-// carry_capacity_g:    what a body can carry in all, in grams (D35).
+// carry_capacity_g:    the heaviest load a body walks under, in grams
+//                      (D35): at it, it walks at speed_percent_at_full_load.
 //                      20 kg: thirteen branches, or fifty flints.
+// hands_g:             what a body holds in its arms with no bag, in grams
+//                      (D35, amended 24 November 2026): 3 kg, a day of
+//                      berries or three of nuts. An infant rides on the
+//                      back and takes nothing from it.
 // speed_percent_at_full_load: walking speed at full load, in percent of
 //                      the unloaded speed; linear in between.
 // sight_tiles:         how far a body sees, in tiles on each axis, by the
@@ -56,6 +61,7 @@
 //                      other.
 (
     carry_capacity_g: 20000,
+    hands_g: 3000,
     speed_percent_at_full_load: 60,
     walk_speed_cm_per_s: 143,
     sight_tiles: {

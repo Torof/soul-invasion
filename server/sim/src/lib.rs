@@ -624,14 +624,13 @@ impl Body {
         self.pregnant
     }
 
-    /// What it can carry, in grams: the content's for a grown body, to its
-    /// size, less the infants it carries.
+    /// What it can carry, in grams: what a grown body holds in its arms
+    /// (the content's `hands_g`), to its size. An infant rides on the back:
+    /// it slows the walk ([`Self::burden_g`]) but takes nothing from it.
     pub fn capacity_g(&self, movement: &Movement) -> u32 {
         let size = u64::from(self.condition.size_permille.min(1000));
-        let own = u64::from(movement.carry_capacity_g) * size / 1000;
-        u32::try_from(own)
-            .unwrap_or(u32::MAX)
-            .saturating_sub(self.carrying_g)
+        let own = u64::from(movement.hands_g) * size / 1000;
+        u32::try_from(own).unwrap_or(u32::MAX)
     }
 
     /// What weighs on its walk, in grams: its load and the infants it
