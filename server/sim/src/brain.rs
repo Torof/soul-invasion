@@ -7888,7 +7888,12 @@ mod tests {
         };
         look(&world, &rules, id, at, &mut whole, &mut land);
         assert!(!whole.places.is_empty());
-        assert_eq!(whole.places, brains.minds[&id].places);
+        // Standing on a place is noted by the thought, not by the look.
+        let mut learnt = brains.minds[&id].places.clone();
+        for place in learnt.values_mut() {
+            place.stood = None;
+        }
+        assert_eq!(whole.places, learnt);
     }
 
     #[test]
