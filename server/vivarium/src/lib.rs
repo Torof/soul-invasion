@@ -921,6 +921,40 @@ pub struct HomeChange {
 /// [`HomeChange`].
 pub const VILLAGE_PEOPLE: u32 = 10;
 
+/// A fertile couple's dawns in one age-year (24 November 2026, the
+/// project lead: "ce qu'on veut, c'est des naissances. Et pas de
+/// séparation physique"): together, or apart and why. Every dawn of a
+/// fertile wife not with child, her spouse living; apart is farther than
+/// `mate_within_tiles` on either axis. Each night apart has one cause, the
+/// first that holds for a spouse away from its home: their homes apart,
+/// its way to sleep out (D50), a goal held beyond a day (D56), its home
+/// trial on its way, or none of these: the night caught it out.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NightsApart {
+    /// The fertile couples' dawns.
+    pub dawns: u32,
+    /// Those spent together.
+    pub together: u32,
+    /// Apart: their homes apart.
+    pub homes_apart: u32,
+    /// Apart: one sleeps out by its way.
+    pub sleep_out: u32,
+    /// Apart: one holds a goal beyond a day.
+    pub goal: u32,
+    /// Apart: one on its home trial.
+    pub home_trial: u32,
+    /// Apart: none of these, the night caught one out.
+    pub caught_out: u32,
+}
+
+impl NightsApart {
+    /// The dawns apart.
+    #[must_use]
+    pub fn apart(&self) -> u32 {
+        self.dawns - self.together
+    }
+}
+
 /// Why couples part and why homes move (24 November 2026): kept at every
 /// dawn.
 #[derive(Debug, Clone, Default)]
@@ -931,6 +965,8 @@ struct WhyProbe {
     homes: BTreeMap<BodyId, (Pos, u8)>,
     partings: Vec<Parting>,
     changes: Vec<HomeChange>,
+    /// The fertile couples' dawns, by age-year from the first.
+    nights: Vec<NightsApart>,
 }
 
 /// The tiles between two tiles on the longer axis.
@@ -977,6 +1013,74 @@ fn linked(homes: &[Pos], reach: u32) -> Vec<usize> {
 }
 
 impl WhyProbe {
+    /// Each fertile couple's dawn, together or apart and why
+    /// ([`NightsApart`]).
+    fn nights_at_dawn(&mut self, world: &World, brains: &Brains, content: &Content) {
+        let life = &content.needs.life;
+        let today = world.today();
+        // By year of the calendar (today one age-year each).
+        let days_a_year = u64::from(world.calendar().days_per_year().max(1));
+        let year =
+            usize::try_from(u64::try_from(today).unwrap_or(0) / days_a_year).unwrap_or(usize::MAX);
+        let reach = life.mate_within_tiles;
+        let mut night = NightsApart::default();
+        for woman in world.bodies() {
+            if woman.sex() != Sex::Female
+                || !life.is_fertile(world.age_milli(woman))
+                || woman.pregnant().is_some_and(|p| p.since_day != today)
+            {
+                continue;
+            }
+            let Some(man) = woman.spouse().and_then(|s| world.body(s)) else {
+                continue;
+            };
+            night.dawns += 1;
+            if tiles_apart(woman.pos(), man.pos()) <= reach {
+                night.together += 1;
+                continue;
+            }
+            let homes = [woman, man].map(|b| home_of(world, brains, b.id()));
+            let away: Vec<&sim::brain::Mind> = [woman, man]
+                .iter()
+                .zip(homes)
+                .filter(|(b, h)| h.is_none_or(|h| tiles_apart(b.pos(), h) > reach))
+                .filter_map(|(b, _)| brains.mind(b.id()))
+                .collect();
+            let cause = if let [Some(a), Some(b)] = homes
+                && tiles_apart(a, b) > reach
+            {
+                &mut night.homes_apart
+            } else if away.iter().any(|m| m.ways().sleep_out) {
+                &mut night.sleep_out
+            } else if away.iter().any(|m| m.holds_goal()) {
+                &mut night.goal
+            } else if away
+                .iter()
+                .any(|m| m.trial().is_some_and(|t| t.way == sim::brain::Way::Home))
+            {
+                &mut night.home_trial
+            } else {
+                &mut night.caught_out
+            };
+            *cause += 1;
+        }
+        if self.nights.len() <= year {
+            self.nights.resize(year + 1, NightsApart::default());
+        }
+        let n = &mut self.nights[year];
+        for (total, add) in [
+            (&mut n.dawns, night.dawns),
+            (&mut n.together, night.together),
+            (&mut n.homes_apart, night.homes_apart),
+            (&mut n.sleep_out, night.sleep_out),
+            (&mut n.goal, night.goal),
+            (&mut n.home_trial, night.home_trial),
+            (&mut n.caught_out, night.caught_out),
+        ] {
+            *total += add;
+        }
+    }
+
     /// At a dawn: each couple's dawn, then the grown bodies whose home
     /// changed since the last.
     fn dawn(
@@ -987,6 +1091,7 @@ impl WhyProbe {
         content: &Content,
         day: u64,
     ) {
+        self.nights_at_dawn(world, brains, content);
         for b in world.bodies() {
             let Some(spouse) = b.spouse() else { continue };
             if b.id() >= spouse {
@@ -1649,6 +1754,9 @@ pub struct Report {
     /// Each grown body's home changed between two dawns (24 November
     /// 2026).
     pub home_changes: Vec<HomeChange>,
+    /// The fertile couples' dawns, together or apart and why, by age-year
+    /// from the first (24 November 2026).
+    pub nights_apart: Vec<NightsApart>,
     /// The rumours dispelled, in order (D55).
     pub rumours: Vec<Rumour>,
     /// The nights the hearths still hold at the end (D55).
@@ -2846,6 +2954,7 @@ pub fn run_watched(
         settlement_reach: content.needs.life.mate_within_tiles,
         partings: why.partings,
         home_changes: why.changes,
+        nights_apart: why.nights,
         rumours: tally.rumours,
         nights,
         records,

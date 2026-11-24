@@ -395,6 +395,14 @@ clock, the only field no seed decides.
 | `home_changes[].knew_villages` | Of them, those the mover knew a place within reach of | count |
 | `home_changes[].nearest_village` | The nearest village to the new home, `{tiles, people}`; null without any | object or null |
 | `home_changes[].known_places` | The places the mover knew of | count |
+| `nights_apart[]` | The fertile couples' dawns, by year of the calendar from the first (24 November 2026, the project lead: births need couples together at night): every dawn of a fertile wife not with child whose spouse lives; apart is farther than `mate_within_tiles` on either axis. Each dawn apart has one cause, the first that holds for a spouse away from its home | list, one per year |
+| `nights_apart[].dawns` | The fertile couples' dawns | dawns |
+| `nights_apart[].together` | Those spent together | dawns |
+| `nights_apart[].homes_apart` | Apart: their homes farther apart than `mate_within_tiles` | dawns |
+| `nights_apart[].sleep_out` | Apart: one away from home sleeps out by its way (D50) | dawns |
+| `nights_apart[].goal` | Apart: one away from home holds a goal beyond a day (D56) | dawns |
+| `nights_apart[].home_trial` | Apart: one away from home is on its home trial | dawns |
+| `nights_apart[].caught_out` | Apart: none of these; the night caught one out | dawns |
 | `goals[]` | Each goal held over several days (D56, amended 24 November 2026): `body`, `tribe`, `day` set, `to`, `tiles`, `load_kj` carried then, `end` (`arrived`, `load`, `hunger`, `thirst`, `dropped`, `null` while held at the end), `end_day` | |
 | `map.data_uri` | The page's picture of the map at the run's end, the same PNG: the terrain, the camps red, the living white, the dead black | `"data:image/png;base64,…"` |
 | `map.tiles_per_pixel` | The scale: one pixel is so many tiles a side (5 on the vivarium's world) | tiles |
