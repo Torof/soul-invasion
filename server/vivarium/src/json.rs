@@ -27,7 +27,7 @@ use crate::{
 };
 
 /// The top-level keys, in the order they are written.
-const ORDER: [&str; 18] = [
+const ORDER: [&str; 19] = [
     "meta",
     "years",
     "seasons",
@@ -42,6 +42,7 @@ const ORDER: [&str; 18] = [
     "positions",
     "move_calls",
     "moving",
+    "settlements",
     "goals",
     "map",
     "bearers",
@@ -202,6 +203,26 @@ fn layout_lines(value: &Value, depth: usize, out: &mut String) {
 }
 
 impl Report {
+    /// The settlements at each year's end (24 November 2026), the largest
+    /// first.
+    fn settlements_json(&self) -> Value {
+        Value::Array(
+            self.settlements
+                .iter()
+                .map(|(year, groups)| {
+                    json!({
+                        "year": year,
+                        "groups": groups.iter().map(|g| json!({
+                            "at": pos(g.at),
+                            "people": g.people,
+                            "by_tribe": g.by_tribe,
+                        })).collect::<Vec<_>>(),
+                    })
+                })
+                .collect(),
+        )
+    }
+
     /// Moving as a consequence (amended 24 November 2026): the moves felt
     /// (pushed, or by a huge surprise), the surprises lived, the days gone
     /// to see, and each move's utility (the mover's hungry nights over the
@@ -348,6 +369,7 @@ impl Report {
             "positions": self.positions_json(),
             "move_calls": self.move_calls_json(),
             "moving": self.moving_json(),
+            "settlements": self.settlements_json(),
             "goals": self.goals_json(),
             "map": self.map_json(),
             "bearers": self.bearers_json(),

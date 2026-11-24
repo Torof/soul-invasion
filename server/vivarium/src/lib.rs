@@ -844,6 +844,19 @@ pub struct TrialEvent {
     pub heard: bool,
 }
 
+/// A settlement at a year's end (24 November 2026, the lead's "combien de
+/// villages, où vivent-ils"): the living whose homes lie within
+/// `mate_within_tiles` of one another, link by link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Settlement {
+    /// The mean of its homes.
+    pub at: Pos,
+    /// The living there, infants with their carrier.
+    pub people: u32,
+    /// Of them, by tribe (the first two).
+    pub by_tribe: [u32; 2],
+}
+
 /// Moving as a consequence, for the data (amended 24 November 2026).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MovingProbe {
@@ -895,6 +908,60 @@ pub struct MoveUtility {
 }
 
 impl Report {
+    /// Where they live at the end (24 November 2026): the map with each
+    /// settlement of the last year as a disc, its area the people, blue
+    /// the first tribe's share, orange the second's, and the count of
+    /// settlements every five years.
+    #[must_use]
+    pub fn settlements_section(&self) -> String {
+        let Some((last, groups)) = self.settlements.iter().next_back() else {
+            return String::new();
+        };
+        let (w, hgt) = self.map_side;
+        let most = groups.iter().map(|g| g.people).max().unwrap_or(1).max(1);
+        let unit = u64::from(w.max(hgt) / 30).max(1);
+        let mut discs = String::new();
+        for g in groups {
+            let r =
+                unit * (u64::from(g.people) * 10_000 / u64::from(most)).isqrt() / 100 + unit / 4;
+            let colour = if g.by_tribe[0] >= g.by_tribe[1] {
+                "#2a6fdb"
+            } else {
+                "#e07b00"
+            };
+            let _ = write!(
+                discs,
+                "<circle cx=\"{}\" cy=\"{}\" r=\"{r}\" fill=\"{colour}\" fill-opacity=\"0.55\" stroke=\"#fff\" stroke-width=\"{}\"/>\
+                 <text x=\"{}\" y=\"{}\" font-size=\"{}\" text-anchor=\"middle\" dominant-baseline=\"middle\" fill=\"#fff\" font-weight=\"bold\">{}</text>",
+                g.at.x,
+                g.at.y,
+                unit / 8,
+                g.at.x,
+                g.at.y,
+                unit * 9 / 10,
+                g.people
+            );
+        }
+        let counts: Vec<String> = self
+            .settlements
+            .iter()
+            .filter(|(y, _)| **y == 1 || *y % 5 == 0 || *y == last)
+            .map(|(y, g)| {
+                let big = g.iter().filter(|s| s.people >= 10).count();
+                format!("year {y}: {} ({big} of ten or more)", g.len())
+            })
+            .collect();
+        format!(
+            "<h2>Where they live</h2><p>At the end of year {last}: <b>{} settlements</b> (homes within {} tiles of one another, link by link), the number in each disc its people; blue the first tribe, orange the second.</p>\
+             <svg class=\"map\" viewBox=\"0 0 {w} {hgt}\" style=\"max-width:100%;height:auto\"><image href=\"data:image/png;base64,{}\" x=\"0\" y=\"0\" width=\"{w}\" height=\"{hgt}\" preserveAspectRatio=\"none\"/>{discs}</svg>\
+             <p>Settlements: {}.</p>",
+            groups.len(),
+            self.settlement_reach,
+            png::base64(&self.map_png),
+            counts.join("; ")
+        )
+    }
+
     /// The utility of each move (amended 24 November 2026): see
     /// [`MoveUtility`]. A move whose mover did not live the whole season
     /// after, or with no stayer, is left out.
@@ -1319,6 +1386,11 @@ pub struct Report {
     /// [`KNOWN_PLACES_KEPT`] (23 November 2026, the lab's map: why they
     /// live where they live, year by year).
     pub known_places: BTreeMap<(u8, u64), Vec<(PlaceKey, bool)>>,
+    /// The settlements at each year's end, the largest first (24
+    /// November 2026).
+    pub settlements: BTreeMap<u64, Vec<Settlement>>,
+    /// The reach that links homes into one settlement, in tiles.
+    pub settlement_reach: u32,
     /// The rumours dispelled, in order (D55).
     pub rumours: Vec<Rumour>,
     /// The nights the hearths still hold at the end (D55).
@@ -1637,6 +1709,7 @@ pub fn run_watched(
     let place_tiles = i32::try_from(content.needs.thought.place_tiles).unwrap_or(16);
     let mut knowledge: BTreeMap<(u8, u64), Knowledge> = BTreeMap::new();
     let mut known_places: BTreeMap<(u8, u64), Vec<(PlaceKey, bool)>> = BTreeMap::new();
+    let mut settlements: BTreeMap<u64, Vec<Settlement>> = BTreeMap::new();
     // The homes under trial, (before, after), to tell where a given-up
     // home goes back to.
     let mut home_trials: BTreeMap<BodyId, (Pos, Pos)> = BTreeMap::new();
@@ -2393,6 +2466,7 @@ pub fn run_watched(
         // The year's last tick, or the run's: what the living carry, and
         // the ways in use (D50).
         if tick % per_year == 0 || tick == ticks {
+            settlements.insert(year, settlements_of(&world, &brains, &people, content));
             let carried = reserves(&world, content, &people);
             for (tribe, &j) in carried.iter().enumerate().take(tribes) {
                 let t = u8::try_from(tribe).expect("two");
@@ -2507,6 +2581,8 @@ pub fn run_watched(
         reputed: tally.reputed,
         knowledge,
         known_places,
+        settlements,
+        settlement_reach: content.needs.life.mate_within_tiles,
         rumours: tally.rumours,
         nights,
         records,
@@ -2659,6 +2735,77 @@ pub const KNOWN_PLACES_KEPT: usize = 1000;
 /// places, and how many came from a teller; and the places themselves,
 /// each with whether some living member saw it, the first
 /// [`KNOWN_PLACES_KEPT`] in key order.
+/// The root of `i` in a union of indices, the path to it shortened.
+fn find(root: &mut [usize], i: usize) -> usize {
+    let mut r = i;
+    while root[r] != r {
+        r = root[r];
+    }
+    root[i] = r;
+    r
+}
+
+/// The settlements now ([`Settlement`]): each living body at its home
+/// (its mind's), an infant or a body without a mind at its carrier's or
+/// where it stands; homes within `mate_within_tiles` of one another, on
+/// each axis, are one settlement, link by link. The largest first.
+fn settlements_of(
+    world: &World,
+    brains: &Brains,
+    people: &BTreeMap<BodyId, Person>,
+    content: &Content,
+) -> Vec<Settlement> {
+    let reach = i32::try_from(content.needs.life.mate_within_tiles).unwrap_or(i32::MAX);
+    let home = |b: &sim::Body| {
+        let id = b.carried_by().unwrap_or(b.id());
+        brains
+            .mind(id)
+            .map(sim::brain::Mind::home)
+            .or_else(|| world.body(id).map(sim::Body::pos))
+            .unwrap_or(b.pos())
+    };
+    let homes: Vec<(Pos, u8)> = world
+        .bodies()
+        .iter()
+        .filter(|b| b.condition().vitality.points() > 0)
+        .map(|b| (home(b), people.get(&b.id()).map_or(0, |p| p.tribe)))
+        .collect();
+    // Link by link: a union of the homes within reach of one another.
+    let mut root: Vec<usize> = (0..homes.len()).collect();
+    for i in 0..homes.len() {
+        for j in i + 1..homes.len() {
+            let (a, b) = (homes[i].0, homes[j].0);
+            if (a.x - b.x).abs() <= reach && (a.y - b.y).abs() <= reach {
+                let (ri, rj) = (find(&mut root, i), find(&mut root, j));
+                root[ri.max(rj)] = ri.min(rj);
+            }
+        }
+    }
+    let mut groups: BTreeMap<usize, (i64, i64, u32, [u32; 2])> = BTreeMap::new();
+    for (i, &(at, tribe)) in homes.iter().enumerate() {
+        let g = groups.entry(find(&mut root, i)).or_default();
+        g.0 += i64::from(at.x);
+        g.1 += i64::from(at.y);
+        g.2 += 1;
+        if let Some(n) = g.3.get_mut(usize::from(tribe)) {
+            *n += 1;
+        }
+    }
+    let mut out: Vec<Settlement> = groups
+        .into_values()
+        .map(|(x, y, n, by_tribe)| {
+            let mean = |sum: i64| i32::try_from(sum / i64::from(n.max(1))).unwrap_or(0);
+            Settlement {
+                at: Pos::new(mean(x), mean(y)),
+                people: n,
+                by_tribe,
+            }
+        })
+        .collect();
+    out.sort_by_key(|s| (std::cmp::Reverse(s.people), s.at.x, s.at.y));
+    out
+}
+
 fn knowledge_of(
     world: &World,
     brains: &Brains,
@@ -4180,6 +4327,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             if self.map_scale == 1 { "" } else { "s" },
             png::base64(&self.map_png)
         );
+        h.push_str(&self.settlements_section());
         h.push_str("<h2>The curves</h2>");
         h.push_str(&self.curves());
         h.push_str(&self.food_table());
@@ -5178,6 +5326,7 @@ img.map{{image-rendering:pixelated;border:1px solid #999;max-width:100%}}</style
             if self.map_scale == 1 { "" } else { "s" },
             png::base64(&self.map_png)
         );
+        h.push_str(&self.settlements_section());
         format!("{h}{}</body></html>\n", self.timing())
     }
 
