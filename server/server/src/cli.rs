@@ -126,6 +126,8 @@ OPTIONS:
     --world vivarium       The vivarium's world (D41, lot 0): zone 2 of the
                            atlas of seed 14, 2,176 m a side with a height
                            per tile, born at camp A (generator version 4).
+    --world vivarium-wide  The same zone twice as wide, 4,352 m a side, the
+                           vivarium's long runs' world.
     --dev                  Development tools: every client gets an overview
                            of the whole map and may teleport its body. Never
                            for play.
@@ -274,6 +276,10 @@ pub enum TestWorld {
     /// `vivarium`: the vivarium's world, zone 2 of the atlas of seed 14
     /// (generator version 4, D41 lot 0).
     Vivarium,
+    /// `vivarium-wide`: the same zone twice as wide, 4,352 m a side
+    /// ([`sim::plan::ZONE_2_WIDE`], 24 November 2026), the vivarium's
+    /// long runs' world.
+    VivariumWide,
 }
 
 impl TestWorld {
@@ -283,7 +289,7 @@ impl TestWorld {
     pub fn continent_seed(self) -> Option<u64> {
         match self {
             Self::Plan(seed) => Some(seed),
-            Self::Vivarium => Some(sim::plan::VIVARIUM_SEED),
+            Self::Vivarium | Self::VivariumWide => Some(sim::plan::VIVARIUM_SEED),
             _ => None,
         }
     }
@@ -416,6 +422,7 @@ impl Options {
                         "test:relief" => Some(TestWorld::Relief),
                         "test:squelette" => Some(TestWorld::Skeleton),
                         "vivarium" => Some(TestWorld::Vivarium),
+                        "vivarium-wide" => Some(TestWorld::VivariumWide),
                         _ => {
                             if let Some(seed) = raw.strip_prefix("plan:") {
                                 seed.trim().parse().ok().map(TestWorld::Plan)
@@ -564,6 +571,10 @@ mod tests {
         assert_eq!(
             Options::parse(["--world", "vivarium"]).unwrap().world,
             Some(TestWorld::Vivarium)
+        );
+        assert_eq!(
+            Options::parse(["--world", "vivarium-wide"]).unwrap().world,
+            Some(TestWorld::VivariumWide)
         );
     }
 
