@@ -3457,7 +3457,7 @@ impl Brains {
     fn close_day(&mut self, world: &World, rules: &Content) {
         let trials = &rules.needs.trials;
         let per_year = world.calendar().days_per_year();
-        let seed = world.seed();
+        let seed = self.seed;
         let day = today(world);
         let now = world.tick().0;
         self.food.refresh(world, rules);
@@ -3534,7 +3534,9 @@ impl Brains {
                 });
             } else if mind.trial.is_none() && wants_to_try(trials, seed, (id, day), mind) {
                 let child = world.age_milli(body) < 16_000;
-                if let Some(news) = start_trial(world, rules, &self.memory, id, mind, child, day) {
+                if let Some(news) =
+                    start_trial(world, rules, (&self.memory, seed), id, mind, child, day)
+                {
                     mind.changed_day = Some(day);
                     self.news.push(news);
                 }
@@ -3895,7 +3897,7 @@ impl Brains {
         if !rules.needs.fire.on() {
             return;
         }
-        let seed = world.seed();
+        let seed = self.seed;
         let today = u32::try_from(today(world)).unwrap_or(u32::MAX);
         self.food.refresh(world, rules);
         let mut wills = self.gone_wills.clone();
@@ -4009,7 +4011,7 @@ impl Brains {
         denied: &[(RecordId, BodyId)],
     ) {
         let fire = &rules.needs.fire;
-        let seed = world.seed();
+        let seed = self.seed;
         let dawn = u32::try_from(today(world)).unwrap_or(u32::MAX);
         for &(record, teller) in denied {
             if matches!(self.memory.get(record), Some(Record::Barred { .. })) {
@@ -4135,7 +4137,7 @@ impl Brains {
         let fire = &rules.needs.fire;
         // Each listener and the finder of a place new to it.
         let mut learnt: Vec<(BodyId, BodyId)> = Vec::new();
-        let seed = world.seed();
+        let seed = self.seed;
         // Its age counted to this dawn, the day the listener acts on it.
         let dawn = u32::try_from(today(world)).unwrap_or(u32::MAX);
         let lasting = self.told_lasting(world, rules, told);
@@ -4320,7 +4322,7 @@ impl Brains {
         if !dec.on() {
             return;
         }
-        let seed = world.seed();
+        let seed = self.seed;
         let today = day + 1;
         let today64 = u64::from(today);
         let child_years = u64::from(dec.follows_mother_years) * 1000;
@@ -4789,7 +4791,7 @@ impl Brains {
     fn imitate(&mut self, world: &World, rules: &Content, id: BodyId) {
         let trials = &rules.needs.trials;
         let day = today(world);
-        let seed = world.seed();
+        let seed = self.seed;
         let Some(mind) = self.minds.get(&id) else {
             return;
         };
@@ -4908,7 +4910,7 @@ impl Brains {
             return;
         };
         let before = mind.ways;
-        let seed = world.seed();
+        let seed = self.seed;
         let keys = [u64::from(id.0), day];
         if scatter::roll(seed, purpose::TRIAL_COPY, &keys) % 100
             >= u64::from(trials.imitate_percent) * u64::from(will) / 100
@@ -7107,14 +7109,13 @@ const DIRECTIONS: [(i32, i32); 8] = [
 fn start_trial(
     world: &World,
     rules: &Content,
-    memory: &Store,
+    (memory, seed): (&Store, u64),
     id: BodyId,
     mind: &mut Mind,
     child: bool,
     day: u64,
 ) -> Option<News> {
     let trials = &rules.needs.trials;
-    let seed = world.seed();
     // A kept way it heard at the fire comes first (D55): "I heard it
     // worked for N, I try it", the way as told, a step lost at times.
     if let Some((way, theirs)) = heard_candidate(memory, seed, id, mind, child) {
@@ -11393,7 +11394,7 @@ mod tests {
             .collect();
         assert_eq!(heard.len(), 1);
         let again = memory::credit_lasting(
-            world.seed(),
+            brains.seed,
             (listener, brains.mind(listener).unwrap().will()),
             (from, brains.mind(from).unwrap().will()),
             (1, 1, 2),
@@ -11770,6 +11771,39 @@ mod tests {
         assert!(brains.news().is_empty(), "under a trial, it copies nothing");
     }
 
+    /// The brain's daily draws (D50, amended 24 November 2026) come from
+    /// the run's seed, not the map's: on the same map, another run seed
+    /// tries other ways on other days.
+    #[test]
+    fn the_way_tried_is_drawn_from_the_run_seed() {
+        let rules = fire_rules();
+        let (world, brains) = camp_of(2, &rules);
+        let me = BodyId(1);
+        let tried = |seed: u64| -> Vec<Option<Way>> {
+            (1..=40)
+                .map(|day| {
+                    let mut mind = Mind::new(Pos::new(5, 5));
+                    start_trial(
+                        &world,
+                        &rules,
+                        (&brains.memory, seed),
+                        me,
+                        &mut mind,
+                        true,
+                        day,
+                    )
+                    .and(mind.trial.map(|t| t.way))
+                })
+                .collect()
+        };
+        assert_eq!(tried(3), tried(3), "one seed, the same ways");
+        assert_ne!(
+            tried(1),
+            tried(9),
+            "another run seed, other ways, the map the same"
+        );
+    }
+
     #[test]
     fn in_distress_a_kept_way_heard_is_the_first_trial_and_a_child_does_not_take_a_home() {
         let rules = fire_rules();
@@ -11779,7 +11813,15 @@ mod tests {
         theirs.stock_kj = STOCK_KJ * 2;
         heard_kept(&mut brains, (me, mate, 1), Way::StockKj, theirs, 50);
         let mind = brains.minds.get_mut(&me).unwrap();
-        let news = start_trial(&world, &rules, &brains.memory, me, mind, false, 3);
+        let news = start_trial(
+            &world,
+            &rules,
+            (&brains.memory, brains.seed),
+            me,
+            mind,
+            false,
+            3,
+        );
         assert!(
             matches!(news, Some(News::Trying { way: Way::StockKj, after, .. }) if after.stock_kj == STOCK_KJ * 2),
             "{news:?}"
@@ -11805,7 +11847,15 @@ mod tests {
             by: mate,
             day: 1,
         });
-        let news = start_trial(&world, &rules, &brains.memory, me, &mut mind, true, 3);
+        let news = start_trial(
+            &world,
+            &rules,
+            (&brains.memory, brains.seed),
+            me,
+            &mut mind,
+            true,
+            3,
+        );
         assert!(
             matches!(news, Some(News::Trying { way, .. }) if way != Way::Home),
             "{news:?}"
@@ -12282,8 +12332,15 @@ mod tests {
                 mind.will = will;
                 if let Some(News::Trying {
                     way, before, after, ..
-                }) = start_trial(&world, &rules, &brains.memory, me, &mut mind, true, day)
-                    && (way != Way::StockKj || step_up(way, &before, &after))
+                }) = start_trial(
+                    &world,
+                    &rules,
+                    (&brains.memory, brains.seed),
+                    me,
+                    &mut mind,
+                    true,
+                    day,
+                ) && (way != Way::StockKj || step_up(way, &before, &after))
                 {
                     given_up += 1;
                 }
