@@ -67,6 +67,16 @@ pub enum Record {
         /// Each kind seen there and its state, the kinds rising.
         states: Vec<(u16, Bucket)>,
     },
+    /// A place seen, not reached (D53, amended 24 November 2026): its
+    /// witness's walk there was barred on that day.
+    Barred {
+        /// The place.
+        place: PlaceKey,
+        /// The day the walk was barred.
+        day: u32,
+        /// Whose walk.
+        witness: BodyId,
+    },
     /// A place to drink found.
     Water {
         /// Its chunk.
@@ -136,6 +146,7 @@ impl Record {
     pub fn day(&self) -> u32 {
         match self {
             Record::Place { day, .. }
+            | Record::Barred { day, .. }
             | Record::Water { day, .. }
             | Record::Trial { day, .. }
             | Record::Night { day, .. }
@@ -147,7 +158,9 @@ impl Record {
     #[must_use]
     pub fn witness(&self) -> Option<BodyId> {
         match self {
-            Record::Place { witness, .. } | Record::Water { witness, .. } => Some(*witness),
+            Record::Place { witness, .. }
+            | Record::Barred { witness, .. }
+            | Record::Water { witness, .. } => Some(*witness),
             Record::Trial { body, .. } => Some(*body),
             Record::Night { .. } | Record::Reputed { .. } => None,
         }
@@ -161,6 +174,11 @@ impl Record {
             Record::Place {
                 place, day, states, ..
             } => Key::Place(*place, *day, states.clone()),
+            Record::Barred {
+                place,
+                day,
+                witness,
+            } => Key::Barred(*place, *day, *witness),
             Record::Water {
                 chunk, day, stand, ..
             } => Key::Water(*chunk, *day, *stand),
@@ -175,6 +193,7 @@ impl Record {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Key {
     Place(PlaceKey, u32, Vec<(u16, Bucket)>),
+    Barred(PlaceKey, u32, BodyId),
     Water(ChunkPos, u32, Pos),
     Trial(BodyId, u32, Way),
     Night(Pos, u32),

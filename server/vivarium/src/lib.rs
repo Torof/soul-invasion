@@ -25,7 +25,7 @@ use sim::content::{Content, Decisions, Fire, Trials};
 use sim::map::{Map, Pos, Terrain};
 use sim::memory::{Access, Record, RecordId};
 use sim::time::Calendar;
-use sim::{BodyId, Death, Event, Intention, Sex, World};
+use sim::{Blockage, BodyId, Death, Event, Intention, Sex, World};
 
 pub mod continents;
 pub mod json;
@@ -532,8 +532,19 @@ pub struct DecisionYear {
     pub full: u32,
     /// Members who left their group, summed.
     pub left: u32,
-    /// Groups ended home, bare, at night.
-    pub ended: [u32; 3],
+    /// Groups ended home, bare, at night, blocked (the place seen, not
+    /// reached).
+    pub ended: [u32; 4],
+    /// Marks of seen, not reached (D53, amended 24 November 2026): made by
+    /// a walk barred by water or rock, heard at the fire, cleared by
+    /// standing on the place.
+    pub barred: [u32; 3],
+    /// What barred the walks that made a mark: water, rock (no way seen
+    /// makes none).
+    pub barred_causes: [u32; 2],
+    /// Marks of seen, not reached held by the tribe's living at the
+    /// year's end, faded ones not counted.
+    pub barred_held: u32,
     /// Groups that moved on from a place found bare.
     pub moved_on: u32,
     /// The stretch of the groups at their place, summed, in ticks, and
@@ -736,6 +747,10 @@ fn record_row(id: RecordId, record: &Record, refs: u32) -> RecordRow {
             row.told = u32::try_from(told.len()).unwrap_or(u32::MAX);
         }
         Record::Reputed { .. } => row.kind = "reputed",
+        Record::Barred { place, .. } => {
+            row.kind = "barred";
+            row.place = Some(*place);
+        }
     }
     row
 }
@@ -1667,6 +1682,7 @@ pub fn run_watched(
             };
             if decision_news(&news, scene, (&mut people, &mut chronicle), &mut tally)
                 || review_news(&news, scene, (&mut people, &mut chronicle), &mut tally)
+                || barred_news(&news, year, &people, &mut tally)
             {
                 continue;
             }
@@ -1796,6 +1812,8 @@ pub fn run_watched(
                 | News::Named { .. }
                 | News::Stopped { .. }
                 | News::Asked { .. }
+                | News::Barred { .. }
+                | News::Reached { .. }
                 | News::Followed { .. } => continue,
                 News::Copied {
                     body,
@@ -2454,6 +2472,7 @@ fn wills_of(
         }
         counts.minds += 1;
         counts.bold += u32::from(u32::from(mind.will()) >= bold);
+        counts.barred_held += mind.marks_held();
         for (activity, who, credit) in mind.reputed(brains.memory(), rep, today) {
             let entry = believed.entry((activity, who)).or_default();
             entry.0 += 1;
@@ -2807,6 +2826,52 @@ fn couples_at_dawn(world: &World, content: &Content, b: &mut BilanProbe) {
     }
 }
 
+/// A group's end's place in [`DecisionYear::ended`].
+fn ended_index(end: GroupEnd) -> usize {
+    match end {
+        GroupEnd::Home => 0,
+        GroupEnd::Bare => 1,
+        GroupEnd::Night => 2,
+        GroupEnd::Blocked => 3,
+    }
+}
+
+/// How a group's end is told in the chronicle.
+fn ended_how(end: GroupEnd) -> &'static str {
+    match end {
+        GroupEnd::Home => "comes home, its members carrying what they wanted",
+        GroupEnd::Bare => "found the place bare and nothing to go on to",
+        GroupEnd::Night => "came apart before night",
+        GroupEnd::Blocked => "was barred on the way: the place seen, not reached",
+    }
+}
+
+/// Reads a mark of seen, not reached made or cleared (D53, amended 24
+/// November 2026) into the tribe's year; `true` when it was one.
+fn barred_news(
+    news: &News,
+    year: u64,
+    people: &BTreeMap<BodyId, Person>,
+    tally: &mut FireTally,
+) -> bool {
+    let (body, slot, cause) = match news {
+        News::Barred { body, cause, .. } => (body, usize::from(cause.is_none()), *cause),
+        News::Reached { body, .. } => (body, 2, None),
+        _ => return false,
+    };
+    let tribe = people.get(body).map_or(0, |p| p.tribe);
+    let counts = tally.decisions.entry((tribe, year)).or_default();
+    counts.barred[slot] += 1;
+    if let Some(cause) = cause {
+        match cause {
+            Blockage::Water => counts.barred_causes[0] += 1,
+            Blockage::Rock => counts.barred_causes[1] += 1,
+            Blockage::NoWay => {}
+        }
+    }
+    true
+}
+
 /// Reads a piece of the decisions' news (D56) into the counters, the
 /// person's habit and the chronicle; `true` when it was one. A call and a
 /// look out make a sentence ("at the fire, person 14 calls the others to
@@ -2885,11 +2950,7 @@ fn decision_news(
             counts.followed += followed;
             counts.full += full;
             counts.left += left;
-            counts.ended[match end {
-                GroupEnd::Home => 0,
-                GroupEnd::Bare => 1,
-                GroupEnd::Night => 2,
-            }] += 1;
+            counts.ended[ended_index(*end)] += 1;
             counts.moved_on += u32::from(place != last_place);
             counts.together += together;
             counts.waited += waited_ticks;
@@ -2900,11 +2961,7 @@ fn decision_news(
                 counts.stretch.2 = counts.stretch.2.max(*stretch_ticks);
             }
             let (x, y) = tile(*place);
-            let how = match end {
-                GroupEnd::Home => "comes home, its members carrying what they wanted",
-                GroupEnd::Bare => "found the place bare and nothing to go on to",
-                GroupEnd::Night => "came apart before night",
-            };
+            let how = ended_how(*end);
             line(
                 people,
                 *leader,
