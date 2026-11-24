@@ -181,9 +181,13 @@ pub(crate) mod purpose {
     /// from the seed and its id at adoption, never inherited.
     pub(crate) const SOCIABILITY: u64 = 0x0d53_c0a9;
 
+    /// Moving as a consequence (D56, amended 24 November 2026): whether a
+    /// listener who believes a surprise told at the fire goes and sees it.
+    pub(crate) const FIRE_SEE: u64 = 0x0d56_5ee0;
+
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 71] = [
+    pub(crate) const ALL: [u64; 72] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -255,6 +259,7 @@ pub(crate) mod purpose {
         FIRE_LOOK,
         FIRE_REPUTE,
         SOCIABILITY,
+        FIRE_SEE,
     ];
 }
 

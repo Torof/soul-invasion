@@ -572,4 +572,48 @@
         enough_sociable: 6,
         spouse_counts: 3,
     ),
+    // Moving home, a consequence and never a goal (D50, D53, D56, amended
+    // 24 November 2026; the project lead: "le déménagement est une
+    // conséquence, pas une cause"; the synthesis
+    // content/ai-reserve/review/vivarium/lot-5/synthese-penseurs-demenager-2026-11-24.md).
+    // Nobody draws a move by chance any more. A body calls a move only when
+    // it feels it is not going well here (the push) and it lived, itself or
+    // through its spouse, days clearly better somewhere than the camp-mates
+    // who stayed near home that same day (the surprise). Every value is a
+    // D30 placeholder.
+    // surprise_permille: 250 — a day at a place is a surprise when the food
+    //                    gathered there passes by a quarter of a day of need
+    //                    what the camp-mates who stayed near home gathered
+    //                    the same day, as heard at the fire; the days it
+    //                    must be felt on are home_nights_by_will (three for
+    //                    the timid, one for the bold); 0: nobody is ever
+    //                    surprised, nobody moves home;
+    // huge_times:          4 — a surprise four times that (a day of need)
+    //                    calls a move without any push;
+    // push_permille:     100 — the push: its recent days a tenth of a day
+    //                    of need worse than its usual days of the season
+    //                    (longer walks for the same harvest, longer walks
+    //                    to drink, hungrier or thirstier nights);
+    // recent_keep_permille: 700 — its recent days fade fast (a day weighs
+    //                    half after two days);
+    // usual_keep_permille:  950 — its usual days of a season fade only on
+    //                    days of that season, as the notes do (half after
+    //                    two weeks of that season);
+    // spouse_day_percent:    80 — a spouse's day of surprise, told at the
+    //                    fire, counts four fifths of one's own (the
+    //                    synthesis: "presque comme les siens");
+    // see_percent_by_will: a listener who believes a surprise told at the
+    //                    fire goes and sees it the next day by this chance
+    //                    (a fifth for the timid, four fifths for the bold);
+    //                    a listener with notes of its own there trusts them
+    //                    and does not go on the tale.
+    moving: (
+        surprise_permille: 250,
+        huge_times: 4,
+        push_permille: 100,
+        recent_keep_permille: 700,
+        usual_keep_permille: 950,
+        spouse_day_percent: 80,
+        see_percent_by_will: [(0, 20), (100, 80)],
+    ),
 )

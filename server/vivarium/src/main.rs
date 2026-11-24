@@ -36,6 +36,9 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
   --no-decisions           the control run of D56: the fire tells and hears
                            but nobody says what it will do tomorrow (the
                            content's decisions replaced by none)
+  --no-moves               the control run of moving as a consequence:
+                           nobody is surprised, nobody moves home (the
+                           content's moving section replaced by none)
   --no-continent-cache     bear the vivarium's continent anew instead of
                            reading it from ${XDG_CACHE_HOME:-~/.cache}/soul-sim/
                            continents/ (where a run keeps it; same pages)
@@ -95,6 +98,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--no-trials" => settings.trials = false,
             "--no-fire" => settings.fire = false,
             "--no-decisions" => settings.decisions = false,
+            "--no-moves" => settings.moves = false,
             "--no-continent-cache" => settings.continents = None,
             "--helpers" => settings.helpers = small(&mut i, "--helpers", "too many")?,
             "--fed" => settings.fed = true,
