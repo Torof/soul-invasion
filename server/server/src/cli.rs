@@ -386,7 +386,7 @@ impl Options {
         let mut opts = Self::default();
         let mut ticks_per_second = Calendar::DEFAULT_TICKS_PER_SECOND;
         let mut seconds_per_day = Calendar::DEFAULT_SECONDS_PER_DAY;
-        let mut days_per_year = Calendar::DEFAULT_DAYS_PER_YEAR;
+        let mut days_per_year = Calendar::DEFAULT_DAYS_PER_CYCLE;
         let mut args = args.into_iter();
 
         while let Some(arg) = args.next() {
@@ -469,7 +469,7 @@ impl Options {
             opts.data = DataLocation::Ephemeral;
         }
         opts.calendar = Calendar::new(ticks_per_second, seconds_per_day)
-            .and_then(|c| c.with_days_per_year(days_per_year))
+            .and_then(|c| c.with_days_per_cycle(days_per_year))
             .map_err(CliError::Calendar)?;
         Ok(opts)
     }
@@ -523,7 +523,7 @@ mod tests {
             opts.calendar,
             Calendar::new(4, 30)
                 .unwrap()
-                .with_days_per_year(12)
+                .with_days_per_cycle(12)
                 .unwrap()
         );
     }
@@ -669,7 +669,7 @@ mod tests {
         );
         assert_eq!(
             Options::parse(["--days-per-year", "3"]),
-            Err(CliError::Calendar(sim::CalendarError::TooShortYear))
+            Err(CliError::Calendar(sim::CalendarError::TooShortCycle))
         );
         assert_eq!(Options::parse(["--help"]), Err(CliError::HelpRequested));
     }

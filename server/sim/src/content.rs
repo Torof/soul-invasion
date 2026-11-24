@@ -1570,8 +1570,8 @@ fn season_days(seasons: u32, days_per_year: u32) -> u32 {
 
 /// Ages and sexes (lot 3 B, decided 17 November 2026): what a body needs
 /// against a grown man, how fast it goes and what it carries, and the
-/// infant carried and nursed until it is weaned. Ages in game years
-/// ([`crate::time::Calendar::days_per_year`]).
+/// infant carried and nursed until it is weaned. Ages in age-years
+/// ([`crate::time::Calendar::days_per_age_year`]), never in cycles.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ages {
     /// A body's need, its reserve and its strength by age, in percent of
@@ -1636,9 +1636,10 @@ pub enum Sex {
 }
 
 /// Births, background deaths and kinship (lot 3 C, decided 21 November
-/// 2026; D49). Every value is a D30 placeholder. Ages in game years; what
-/// is counted in years follows the season, what is counted in days
-/// follows the day.
+/// 2026; D49). Every value is a D30 placeholder. Ages in age-years; what
+/// is counted in years follows the age-year (D09, amended 24 November
+/// 2026), never the cycle of seasons; what is counted in days follows
+/// the day.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Life {
     /// A woman conceives from the first age to the last, both included.
@@ -1649,13 +1650,13 @@ pub struct Life {
     /// Her spouse must be alive within this many tiles; a body takes a
     /// spouse within as many.
     pub mate_within_tiles: u32,
-    /// Her chance to conceive in a season, in percent, drawn once a
-    /// season.
+    /// Her chance to conceive in a quarter of an age-year, in percent,
+    /// drawn once a quarter (a season while the age-year is the cycle).
     pub conceive_percent: u32,
-    /// The season's first nights she may conceive in (D49, amended): at
+    /// The quarter's first nights she may conceive in (D49, amended): at
     /// the start of each of these days, a wife not yet with child whose
-    /// spouse is back within `mate_within_tiles` meets the season's draw.
-    /// A night apart no longer loses the season; 1 is the season's very
+    /// spouse is back within `mate_within_tiles` meets the quarter's draw.
+    /// A night apart no longer loses the quarter; 1 is the quarter's very
     /// start alone.
     #[serde(default = "one")]
     pub conceive_nights: u32,
@@ -1670,8 +1671,10 @@ pub struct Life {
     /// live together. 0: at once, the nearest at the body's hour.
     #[serde(default)]
     pub court_days: u32,
-    /// A pregnancy lasts this many seasons (a quarter of the year each).
-    pub pregnancy_seasons: u32,
+    /// A pregnancy lasts this many quarters of an age-year, in whole days
+    /// (`quarters × days_per_age_year / 4`; D09, amended 24 November 2026:
+    /// seasons while the age-year was the cycle).
+    pub pregnancy_quarters: u32,
     /// A pregnant woman needs this much of her own need, in percent.
     pub pregnant_percent: u32,
     /// A weak woman (under `Needs::weak_percent`) loses the child.
@@ -1680,10 +1683,10 @@ pub struct Life {
     pub boys_percent: u32,
     /// The mother's chance to die giving birth, in percent.
     pub childbirth_death_percent: u32,
-    /// The chance to die in a year by age, in thousandths: (years, per
-    /// mille), the ages rising, straight lines between them, the last
-    /// held after. Drawn every day with the year's chance divided by its
-    /// days.
+    /// The chance to die in an age-year by age, in thousandths: (age-years,
+    /// per mille), the ages rising, straight lines between them, the last
+    /// held after. Drawn every day with the age-year's chance divided by
+    /// its days.
     pub death_by_age: Vec<(u32, u32)>,
     /// From this age a background death is of old age; before, of illness.
     pub old_age_from_years: u32,
@@ -1703,7 +1706,7 @@ impl Default for Life {
             conceive_nights: 1,
             part_after_days: 0,
             court_days: 0,
-            pregnancy_seasons: 1,
+            pregnancy_quarters: 1,
             pregnant_percent: 100,
             lose_when_weak: false,
             boys_percent: 50,
@@ -1716,18 +1719,19 @@ impl Default for Life {
 }
 
 impl Life {
-    /// The chance to die within a year at `age_milli` thousandths of a
-    /// year, in thousandths.
+    /// The chance to die within an age-year at `age_milli` thousandths of
+    /// an age-year, in thousandths.
     #[must_use]
     pub fn death_permille_per_year(&self, age_milli: u64) -> u64 {
         along(&self.death_by_age, age_milli, 1)
     }
 
-    /// The chance to die today, in millionths: the year's, shared out
-    /// over its days, so a longer year does not kill more a year.
+    /// The chance to die today, in millionths: the age-year's, shared out
+    /// over its `days_per_age_year` days, so a longer age-year does not
+    /// kill more an age-year.
     #[must_use]
-    pub fn death_ppm_per_day(&self, age_milli: u64, days_per_year: u32) -> u64 {
-        self.death_permille_per_year(age_milli) * 1000 / u64::from(days_per_year.max(1))
+    pub fn death_ppm_per_day(&self, age_milli: u64, days_per_age_year: u32) -> u64 {
+        self.death_permille_per_year(age_milli) * 1000 / u64::from(days_per_age_year.max(1))
     }
 
     /// Whether a woman that old conceives.
@@ -1756,14 +1760,14 @@ impl Life {
             || !percent(self.conceive_percent)
             || !percent(self.boys_percent)
             || !percent(self.childbirth_death_percent)
-            || self.pregnancy_seasons == 0
+            || self.pregnancy_quarters == 0
             || self.conceive_nights == 0
             || self.pregnant_percent < 100
         {
             return Err(ContentError::Needs(
                 "life: death_by_age not empty, its ages rising and its per mille at most 1000; \
                  fertile_years and mate_years rising; the percents at most 100; \
-                 pregnancy_seasons and conceive_nights positive, pregnant_percent at least 100",
+                 pregnancy_quarters and conceive_nights positive, pregnant_percent at least 100",
             ));
         }
         Ok(())
@@ -2537,7 +2541,7 @@ impl Content {
             ("life.fertile_years", life.fertile_years.1),
             ("life.mate_years", life.mate_years.1),
             ("life.old_age_from_years", life.old_age_from_years),
-            ("life.pregnancy_seasons", life.pregnancy_seasons),
+            ("life.pregnancy_quarters", life.pregnancy_quarters),
             ("life.part_after_days", life.part_after_days),
             ("life.court_days", life.court_days),
         ] {

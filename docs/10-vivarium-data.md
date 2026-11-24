@@ -25,7 +25,10 @@ clock, the only field no seed decides.
 ## Conventions
 
 - `format` is raised when a key changes meaning or goes away; a new key does not raise it.
-- Days count from 1 (the run's first day); ticks from 0. A year is `meta.days_per_year` days.
+- Days count from 1 (the run's first day); ticks from 0. A year (`years[]`, a season's year) is
+  the cycle of four seasons, `meta.days_per_year` days; an age (`adult_years`, the ages of the
+  people) is counted in age-years of `meta.days_per_age_year` days (D09, amended 24 November
+  2026). Today the two are the same, 50 days.
 - Tribes are named by their letter, `"A"` or `"B"`, in the order of `meta.camps`; the arrays "by
   tribe" under `curves` follow the same order.
 - Positions are `[x, y]` in tiles of one metre, `x` growing east and `y` south.
@@ -59,7 +62,10 @@ clock, the only field no seed decides.
 | `meta.settings.content` | The content directory given, its last component; `null` when found from the working directory | string |
 | `meta.map_tiles` | The world's size | `[width, height]` tiles |
 | `meta.camps` | The camps' starting positions, A first | `[[x, y], …]` |
-| `meta.days_per_year` | The length of a year | days |
+| `meta.days_per_year` | The length of a year: the cycle of four seasons, the nature clock (`--days-per-cycle`) | days |
+| `meta.age_years_per_cycle` | Age-years in a cycle, the clock of ages (`--age-years-per-cycle`; D09, amended 24 November 2026); 1 today, the age-year being the cycle | count |
+| `meta.days_per_age_year` | The length of an age-year: `days_per_year / age_years_per_cycle` | days |
+| `meta.seconds_per_day` | The length of a game day (`--seconds-per-day`) | game seconds |
 | `meta.ticks_per_day` | The length of a day at this cadence | ticks |
 | `meta.ticks` | Ticks run | ticks |
 | `meta.rates[].name` | A rate of `content/needs.ron` the people live by | string |
@@ -313,7 +319,7 @@ clock, the only field no seed decides.
 | `bilan.groups.members_two_days` | How many such member-days | count |
 | `bilan.groups.same_caller` | Of the followers two days running, those who followed the same caller | count |
 | `bilan.groups.followers_two_days` | Followers two days running | count |
-| `bilan.couples.*` | At each dawn of conception (life's `conceive_nights` first days of a season), each fertile woman with a living spouse, not with child from before and carrying no infant: `met` (spouse within reach, reserve enough), `apart` (spouse too far only), `thin` (reserve too low only), `apart_and_thin` | count |
+| `bilan.couples.*` | At each dawn of conception (life's `conceive_nights` first days of a quarter of an age-year, a season while the age-year is the cycle), each fertile woman with a living spouse, not with child from before and carrying no infant: `met` (spouse within reach, reserve enough), `apart` (spouse too far only), `thin` (reserve too low only), `apart_and_thin` | count |
 | `bilan.confidence.everyone_x10` | The confidence in gathering (D56, 0 to 100) at every noon of a living body past infancy, × 10, on average | integer |
 | `bilan.confidence.set_aside_before_x10` | That of the set aside at the noon before the fire that set them aside | integer |
 | `bilan.confidence.named_before_x10` | That of the named, likewise | integer |

@@ -521,7 +521,10 @@ impl Report {
             },
             "map_tiles": [self.map_side.0, self.map_side.1],
             "camps": self.camps.iter().map(|&c| pos(c)).collect::<Vec<_>>(),
-            "days_per_year": sim::time::Calendar::DEFAULT_DAYS_PER_YEAR,
+            "days_per_year": self.calendar().days_per_cycle(),
+            "age_years_per_cycle": self.calendar().age_years_per_cycle(),
+            "days_per_age_year": self.calendar().days_per_age_year(),
+            "seconds_per_day": self.calendar().seconds_per_day(),
             "ticks_per_day": self.ticks_per_day(),
             "ticks": self.ticks,
             "rates": self.rates.iter().map(|(name, rate)| json!({"name": name, "rate": rate})).collect::<Vec<_>>(),
@@ -727,7 +730,7 @@ impl Report {
     }
 
     fn years_json(&self) -> Value {
-        let per_year = u64::from(sim::time::Calendar::DEFAULT_DAYS_PER_YEAR);
+        let per_year = u64::from(self.calendar().days_per_cycle());
         let years: Vec<Value> = self
             .years()
             .iter()

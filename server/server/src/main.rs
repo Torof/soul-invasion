@@ -77,7 +77,7 @@ fn run(opts: &Options) -> Result<(), BoxError> {
         calendar.ticks_per_second(),
         calendar.seconds_per_day(),
         calendar.ticks_per_day(),
-        calendar.days_per_year(),
+        calendar.days_per_cycle(),
     );
 
     if let Some((x, y)) = opts.dump_chunk {

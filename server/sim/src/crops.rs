@@ -201,7 +201,7 @@ fn span_at(
     calendar: &Calendar,
     tick: Tick,
 ) -> Option<Span> {
-    let per_year = calendar.ticks_per_day() * u64::from(calendar.days_per_year());
+    let per_year = calendar.ticks_per_day() * u64::from(calendar.days_per_cycle());
     let year = tick.0 / per_year + 1;
     // Compared in four hundredths of a year, without rounding.
     let at = u128::from(tick.0 % per_year) * 400;
@@ -1539,7 +1539,7 @@ pub(crate) mod tests {
         let content = content();
         let calendar = Calendar::default();
         let day = calendar.ticks_per_day();
-        let days = u64::from(calendar.days_per_year());
+        let days = u64::from(calendar.days_per_cycle());
         let phase = |d: u64| {
             fruit_phase(
                 &content.species,

@@ -411,10 +411,12 @@ pub struct Body {
     pregnant: Option<Pregnancy>,
 }
 
-/// A body of before ages: twenty-five years old at the world's first day,
-/// in years of the default calendar's days.
+/// A body of before ages, read from a world saved before them: twenty-five
+/// age-years old at the world's first day, in the legacy calendar's
+/// age-years (one a cycle of fifty days), pinned whatever the default
+/// calendar becomes.
 fn born_grown() -> i64 {
-    -25 * i64::from(Calendar::DEFAULT_DAYS_PER_YEAR)
+    -25 * i64::from(Calendar::LEGACY_DAYS_PER_CYCLE / Calendar::LEGACY_AGE_YEARS_PER_CYCLE)
 }
 
 fn male() -> Sex {
@@ -2259,7 +2261,7 @@ impl World {
             carried: Vec::new(),
             load_g: 0,
             work: None,
-            born_day: born_grown(),
+            born_day: -25 * i64::from(self.calendar.days_per_age_year()),
             sex: Sex::Male,
             carried_by: None,
             carrying_g: 0,
@@ -2280,10 +2282,11 @@ impl World {
         i64::try_from(self.tick.0 / self.calendar.ticks_per_day().max(1)).unwrap_or(i64::MAX)
     }
 
-    /// How old a body is, in thousandths of a game year (lot 3 B).
+    /// How old a body is, in thousandths of an age-year (lot 3 B; D09,
+    /// amended 24 November 2026: ages follow the age-year, not the cycle).
     pub fn age_milli(&self, body: &Body) -> u64 {
         let days = u64::try_from(self.today() - body.born_day).unwrap_or(0);
-        days * 1000 / u64::from(self.calendar.days_per_year().max(1))
+        days * 1000 / u64::from(self.calendar.days_per_age_year().max(1))
     }
 
     /// Sets a body's birth and sex (lot 3 B): `age_days` old today.
@@ -2472,12 +2475,14 @@ impl World {
         }
         if now.is_season_start() {
             events.push(Event::SeasonStarted {
-                year: now.year,
+                year: now.cycle,
                 season: now.season,
             });
         }
-        if now.is_day_start() && now.day_of_season() < u64::from(rules.needs.life.conceive_nights) {
-            self.conceive(rules, now.year, now.season);
+        if now.is_day_start()
+            && now.day_of_age_quarter() < u64::from(rules.needs.life.conceive_nights)
+        {
+            self.conceive(rules, now.age_year, now.age_quarter);
         }
         let night = self.is_night(rules);
         if night && !was_night {
@@ -6526,7 +6531,7 @@ mod tests {
             Calendar::new(1, 7200).unwrap(),
             Map::filled(64, 8, Terrain::Grass),
         );
-        let year = u64::from(w.calendar().days_per_year());
+        let year = u64::from(w.calendar().days_per_age_year());
         let mother = w.spawn_body(Pos::new(1, 1));
         let infant = w.spawn_body(Pos::new(2, 1));
         w.set_birth(mother, 25 * year, Sex::Female);
@@ -6662,7 +6667,7 @@ mod tests {
     #[test]
     fn an_orphan_is_taken_by_the_nearest_woman_or_left_to_starve() {
         let (mut w, rules, mother, infant) = mother_and_infant();
-        let year = u64::from(w.calendar().days_per_year());
+        let year = u64::from(w.calendar().days_per_age_year());
         let aunt = w.spawn_body(Pos::new(30, 1));
         w.set_birth(aunt, 30 * year, Sex::Female);
         let man = w.spawn_body(Pos::new(3, 1));
@@ -6687,7 +6692,7 @@ mod tests {
             Calendar::new(1, 7200).unwrap(),
             Map::filled(16, 4, Terrain::Grass),
         );
-        let year = u64::from(w.calendar().days_per_year());
+        let year = u64::from(w.calendar().days_per_age_year());
         let man = w.spawn_body(Pos::new(1, 1));
         let boy = w.spawn_body(Pos::new(2, 1));
         w.set_birth(boy, 2 * year + 1, Sex::Male);
@@ -6701,7 +6706,7 @@ mod tests {
     #[test]
     fn an_infant_is_weaned_at_two_and_walks() {
         let (mut w, rules, mother, infant) = mother_and_infant();
-        let year = u64::from(w.calendar().days_per_year());
+        let year = u64::from(w.calendar().days_per_age_year());
         w.set_birth(infant, 2 * year - 1, Sex::Male);
         let mut events = Vec::new();
         w.advance(w.calendar().ticks_per_day() + 1, &rules, &mut events);
@@ -6841,7 +6846,7 @@ mod tests {
         // 1000 ticks a day, 8 days a year: two days a season.
         let calendar = Calendar::new(10, 100)
             .unwrap()
-            .with_days_per_year(8)
+            .with_days_per_cycle(8)
             .unwrap();
         let mut w = World::empty(calendar, Map::filled(4, 4, Terrain::Grass));
         let mut events = Vec::new();

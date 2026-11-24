@@ -57,7 +57,6 @@ DEFAULT_RUNS = os.path.join(HOME, ".cache", "soul-sim", "runs")
 DEFAULT_BIN = os.path.join(HOME, ".cache", "soul-sim", "target", "release", "vivarium")
 DEFAULT_CONTENT = os.path.join(REPO, "content")
 DEFAULT_JOBS = max(1, (os.cpu_count() or 4) - 2)
-DAYS_A_YEAR = 50
 YEAR_RE = re.compile(r"year (\d+): (\d+) alive, (\d+) dead so far, (\d+) s")
 FINAL_RE = re.compile(r"(\d+) alive, (\d+) dead")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
