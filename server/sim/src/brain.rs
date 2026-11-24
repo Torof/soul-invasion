@@ -899,6 +899,15 @@ struct Day {
 /// 23 November 2026): the least lived forgotten first.
 const LIVED_MAX: usize = 8;
 
+/// The way a body came (D53, amended 25 November 2026, the project lead:
+/// "the way home is the way it came"): a point of its walk kept each time
+/// it stands this many tiles from the last one kept.
+const TRAIL_STEP_TILES: i64 = 16;
+
+/// The most points of the way it came a body keeps: past it, every other
+/// one is let go, the way kept twice as coarse.
+const TRAIL_MAX: usize = 64;
+
 /// What a body perceives of how it fares, each in its own gauge's unit
 /// and all counted alike, per mille of a day of that need (D50, D53,
 /// amended 24 November 2026; the lead: the home must end at the optimal
@@ -1860,6 +1869,14 @@ pub struct Mind {
     /// Why it first went home from gathering today, and what it carried
     /// then (a measure, told at nightfall).
     stop: Option<(u8, u64)>,
+    /// The way it came since it left its home (D53, amended 25 November
+    /// 2026): points of its walk [`TRAIL_STEP_TILES`] apart, its loops
+    /// cut, the nearest home first. Walked back when the way home stops.
+    trail: Vec<Pos>,
+    /// The home its way started from: another home, another way.
+    trail_home: Pos,
+    /// The point of its way it walks back to, stopped short of its camp.
+    back_to: Option<Pos>,
     /// The dated facts it keeps on its companions as a caller (D56, PR 1
     /// ter), the oldest first: at most the content's
     /// `decisions.facts_kept`.
@@ -2032,6 +2049,9 @@ impl Mind {
             reputed: Vec::new(),
             companions: Vec::new(),
             stop: None,
+            trail: Vec::new(),
+            trail_home: home,
+            back_to: None,
             drank_at: 0,
             walked_today: 0,
             from_home: 0,
@@ -2148,6 +2168,40 @@ impl Mind {
     /// What walking costs it (D53, amended 24 November 2026): its
     /// energy and the time, at what it gathered its last days, else at
     /// `trials.idle_day_permille`.
+    /// It stands at `to` (D53, amended 25 November 2026): the way it came
+    /// keeps a point each [`TRAIL_STEP_TILES`] from the last; back near a
+    /// point already kept it cuts the loop there; near home it starts
+    /// again. Another home, another way.
+    fn walked_to(&mut self, to: Pos) {
+        // On its way home it walks its way back: it cuts it, never adds.
+        let homeward = self.doing == Doing::Home;
+        if self.trail_home != self.ways.home {
+            self.trail.clear();
+            self.trail_home = self.ways.home;
+        }
+        let step = TRAIL_STEP_TILES * TRAIL_STEP_TILES;
+        if far(to, self.ways.home) < step {
+            self.trail.clear();
+            return;
+        }
+        if let Some(i) = self.trail.iter().position(|&p| far(p, to) < step) {
+            self.trail.truncate(i + 1);
+            return;
+        }
+        if homeward {
+            return;
+        }
+        self.trail.push(to);
+        if self.trail.len() > TRAIL_MAX {
+            let n = self.trail.len();
+            let mut i = 0;
+            self.trail.retain(|_| {
+                i += 1;
+                (n - i).is_multiple_of(2)
+            });
+        }
+    }
+
     fn walk(&self, rules: &Content) -> Walk {
         let (sum, days) = self.gathered;
         Walk {
@@ -4113,6 +4167,7 @@ impl Brains {
                 Event::BodyMoved { body, to, .. } => {
                     if let Some(mind) = self.minds.get_mut(body) {
                         mind.walked_today += 1;
+                        mind.walked_to(*to);
                         mind.from_home = if place_of(*to, side) == place_of(mind.ways.home, side) {
                             0
                         } else {
@@ -7071,17 +7126,52 @@ fn decide(
         }
         return None;
     }
+    let why = if night { Why::Night } else { Why::Home };
     if mind.doing == Doing::Home {
-        // On its way (something else made it think): it goes on. Stopped
-        // short of the camp: it stays there, and tries again at the next
-        // change rather than asking the same walk at once.
-        if mind.stopped {
-            mind.doing = Doing::Nothing;
+        // On its way (something else made it think): it goes on.
+        if !mind.stopped {
+            return None;
+        }
+        // Stopped short of its camp, or at the point of its way it walked
+        // back to (D53, amended 25 November 2026): the way home is the
+        // way it came, point by point, the latest first.
+        let walked_back_to = mind.back_to.take();
+        if let Some(p) = walked_back_to
+            && mind.trail.last() == Some(&p)
+        {
+            mind.trail.pop();
+        }
+        // Its way all walked back: home from there.
+        if walked_back_to.is_some() && mind.trail.is_empty() {
+            return decision(
+                Intention::MoveTo {
+                    body: id,
+                    target: camp,
+                },
+                why,
+            );
+        }
+        if let Some(&p) = mind.trail.last() {
+            mind.back_to = Some(p);
+            return decision(
+                Intention::MoveTo {
+                    body: id,
+                    target: p,
+                },
+                why,
+            );
+        }
+        // No way left it knows: it stays there, and tries again at the
+        // next change rather than asking the same walk at once; at night
+        // it lies down there rather than stand awake till dawn.
+        mind.doing = Doing::Nothing;
+        if night && !c.asleep {
+            return decision(Intention::Sleep { body: id }, Why::Night);
         }
         return None;
     }
     mind.doing = Doing::Home;
-    let why = if night { Why::Night } else { Why::Home };
+    mind.back_to = None;
     if mind.stop.is_none() {
         let reason = if night {
             STOP_NIGHT
@@ -10769,6 +10859,89 @@ mod tests {
             (at.x - 5).abs() <= HOME_TILES && (at.y - 5).abs() <= HOME_TILES,
             "at home: {at:?}"
         );
+    }
+
+    #[test]
+    fn the_way_it_came_keeps_a_point_a_step_cuts_its_loops_and_starts_again_at_home() {
+        let mut mind = Mind::new(Pos::new(5, 5));
+        for x in 5..=60 {
+            mind.walked_to(Pos::new(x, 5));
+        }
+        assert_eq!(
+            mind.trail,
+            vec![Pos::new(21, 5), Pos::new(37, 5), Pos::new(53, 5)]
+        );
+        // Back near a point kept: the loop is cut there.
+        for x in (38..60).rev() {
+            mind.walked_to(Pos::new(x, 5));
+        }
+        assert_eq!(mind.trail, vec![Pos::new(21, 5), Pos::new(37, 5)]);
+        // Too long a way: kept twice as coarse, its latest point kept.
+        for x in 38..2000 {
+            mind.walked_to(Pos::new(x, 5));
+        }
+        assert!(mind.trail.len() <= TRAIL_MAX, "{}", mind.trail.len());
+        assert!(
+            mind.trail.last().is_some_and(|p| p.x > 1999 - 2 * 16),
+            "{:?}",
+            mind.trail.last()
+        );
+        // On its way home it only cuts its way, never adds to it.
+        let before = mind.trail.clone();
+        mind.doing = Doing::Home;
+        mind.walked_to(Pos::new(3000, 900));
+        assert_eq!(mind.trail, before);
+        mind.doing = Doing::Nothing;
+        // Home again: a new way.
+        mind.walked_to(Pos::new(6, 6));
+        assert_eq!(mind.trail, Vec::new());
+        // Another home, another way.
+        mind.walked_to(Pos::new(40, 5));
+        mind.ways.home = Pos::new(40, 40);
+        mind.walked_to(Pos::new(40, 5));
+        assert_eq!(mind.trail, vec![Pos::new(40, 5)]);
+    }
+
+    #[test]
+    fn stopped_short_of_its_camp_it_walks_back_the_way_it_came_then_lies_down_at_night() {
+        let rules = rules();
+        let mut world = field(64, 30, Pos::new(40, 10));
+        let mut brains = piloted(&world);
+        let id = world.bodies[0].id();
+        let mind = brains.minds.get_mut(&id).unwrap();
+        let way = vec![Pos::new(20, 60), Pos::new(40, 60)];
+        (mind.trail, mind.trail_home) = (way, mind.ways.home);
+        // Stopped by the river on its way home: back the way it came, the
+        // latest point first.
+        (mind.doing, mind.stopped) = (Doing::Home, true);
+        let back = decide_alone(&world, &rules, id, mind).expect("it walks back");
+        let to = |target| Intention::MoveTo { body: id, target };
+        assert_eq!(back.intention, to(Pos::new(40, 60)));
+        // There (or stopped short of it): the point before.
+        mind.stopped = true;
+        let back = decide_alone(&world, &rules, id, mind).expect("on back");
+        assert_eq!(back.intention, to(Pos::new(20, 60)));
+        // Its way all walked back: home from there.
+        mind.stopped = true;
+        let home = decide_alone(&world, &rules, id, mind).expect("home");
+        assert_eq!(home.intention, to(mind.ways.home));
+        // Still stopped: by day it waits for a change, as before.
+        mind.stopped = true;
+        assert!(decide_alone(&world, &rules, id, mind).is_none());
+        assert_eq!(mind.doing, Doing::Nothing);
+        // At night, stopped with no way it knows, it lies down there
+        // rather than stand awake till dawn.
+        let mut events = Vec::new();
+        while !world.is_night(&rules) {
+            world.advance(50, &rules, &mut events);
+        }
+        for body in &mut world.bodies {
+            (body.condition.thirst, body.condition.hunger) = (Gauge::at(0), Gauge::at(0));
+        }
+        let mind = brains.minds.get_mut(&id).unwrap();
+        (mind.doing, mind.stopped) = (Doing::Home, true);
+        let night = decide_alone(&world, &rules, id, mind).expect("it lies down");
+        assert_eq!(night.intention, Intention::Sleep { body: id });
     }
 
     #[test]
