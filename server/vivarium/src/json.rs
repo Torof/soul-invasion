@@ -884,7 +884,6 @@ fn decisions_json(dec: &DecisionYear) -> Value {
             "made": dec.barred[0],
             "heard": dec.barred[1],
             "cleared_stood": dec.barred[2],
-            "cleared_heard": dec.barred[3],
             "held": dec.barred_held,
             "causes": {"water": dec.barred_causes[0], "rock": dec.barred_causes[1]},
         },

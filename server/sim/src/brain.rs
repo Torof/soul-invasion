@@ -273,8 +273,7 @@ struct Place {
     /// Seen, not reached (D53, amended 24 November 2026): the day a walk
     /// to it was barred by water or rock, or the day of the mark it
     /// heard. The place is no longer chosen nor called while it holds; it
-    /// clears only when the body stands on it, or hears at the fire from
-    /// one who stood on it since.
+    /// clears only when the body itself stands on it.
     barred: Option<u32>,
     /// The last day it stood on the place.
     stood: Option<u32>,
@@ -946,15 +945,13 @@ pub enum News {
         /// When.
         at: u64,
     },
-    /// `body`'s mark on `place` cleared: it stood on it, or `heard` at the
-    /// fire from one who stood on it since the mark.
+    /// `body`'s mark on `place` cleared: it stood on it itself (the way
+    /// is not told: a mate who stood there does not clear it).
     Reached {
         /// Who.
         body: BodyId,
         /// The place.
         place: PlaceKey,
-        /// Heard at the fire, not its own feet.
-        heard: bool,
         /// When.
         at: u64,
     },
@@ -3722,7 +3719,6 @@ impl Brains {
             let learnt = self.fire_hear(world, rules, (camp, day, now), &present, &told, &fared);
             self.fire_accounts(rules, dawn, &present, (&learnt, &accounts));
             self.fire_deny(world, rules, (camp, day, now), &present, &denied);
-            self.fire_reach(&present, now);
             // The night, in the hearth: the denials after the slots.
             let (night, _) = self.memory.intern(Record::Night {
                 camp,
@@ -3945,49 +3941,6 @@ impl Brains {
                 body: id,
                 place: key,
                 cause: None,
-                at: now,
-            });
-        }
-    }
-
-    /// The marks of seen, not reached of those at the fire, answered
-    /// (D53, amended 24 November 2026): one who stood on a marked place
-    /// on the mark's day or after says so, and the mark clears.
-    fn fire_reach(&mut self, present: &[BodyId], now: u64) {
-        let mut cleared: Vec<(BodyId, PlaceKey)> = Vec::new();
-        for &id in present {
-            let Some(mind) = self.minds.get(&id) else {
-                continue;
-            };
-            for (&key, place) in &mind.places {
-                let Some(day) = place.barred else {
-                    continue;
-                };
-                let stood_since = present.iter().any(|&other| {
-                    other != id
-                        && self
-                            .minds
-                            .get(&other)
-                            .and_then(|m| m.places.get(&key))
-                            .and_then(|p| p.stood)
-                            .is_some_and(|stood| stood >= day)
-                });
-                if stood_since {
-                    cleared.push((id, key));
-                }
-            }
-        }
-        for (id, key) in cleared {
-            if let Some(mind) = self.minds.get_mut(&id) {
-                if let Some(place) = mind.places.get_mut(&key) {
-                    place.barred = None;
-                }
-                mind.barred_new.retain(|(k, _)| *k != key);
-            }
-            self.news.push(News::Reached {
-                body: id,
-                place: key,
-                heard: true,
                 at: now,
             });
         }
@@ -6864,7 +6817,6 @@ fn stand_on(
         news.push(News::Reached {
             body: id,
             place: key,
-            heard: false,
             at: world.tick().0,
         });
     }
@@ -8246,7 +8198,7 @@ mod tests {
         stand_on(&world, &rules, (id, far_at.tile()), mind, &mut news);
         assert_eq!(mind.places[&key].barred, None);
         assert!(mind.barred_new.is_empty(), "a mark cleared is not told");
-        assert!(matches!(news[..], [News::Reached { heard: false, .. }]));
+        assert!(matches!(news[..], [News::Reached { .. }]));
         assert_eq!(
             place_to_gather(&world, &food, here, mind, 0, side, None).map(|p| p.0),
             Some(key)
@@ -8269,7 +8221,8 @@ mod tests {
     }
 
     #[test]
-    fn a_mark_is_told_like_a_denial_heard_by_who_holds_the_place_and_cleared_by_who_stood_there() {
+    fn a_mark_is_told_like_a_denial_heard_by_who_holds_the_place_and_cleared_only_by_its_own_feet()
+    {
         let (world, rules, id, mut brains) = by_a_ripe_bramble(0);
         let food = food_now(&world, &rules);
         let side = place_side(&rules);
@@ -8330,17 +8283,25 @@ mod tests {
         assert_eq!(brains.minds[&holds].places[&key].barred, Some(day));
         assert_eq!(brains.minds[&stood].places[&key].barred, None);
         assert!(brains.minds[&stranger].places.is_empty());
-        // At the fire, the one who stood there since answers: the marks
-        // clear.
-        brains.fire_reach(&present, 0);
-        assert_eq!(brains.minds[&id].places[&key].barred, None);
-        assert_eq!(brains.minds[&holds].places[&key].barred, None);
-        let reached = brains
-            .news
-            .iter()
-            .filter(|n| matches!(n, News::Reached { heard: true, .. }))
-            .count();
-        assert_eq!(reached, 2);
+        // That a mate stood there does not tell the way: nothing at the
+        // fire clears a mark, only its own feet on the place.
+        assert!(
+            !brains
+                .news
+                .iter()
+                .any(|n| matches!(n, News::Reached { .. }))
+        );
+        let mind = brains.minds.get_mut(&holds).unwrap();
+        let mut news = Vec::new();
+        stand_on(
+            &world,
+            &rules,
+            (holds, Pos::new(here.x + 40, here.y)),
+            mind,
+            &mut news,
+        );
+        assert_eq!(mind.places[&key].barred, None);
+        assert!(matches!(news[..], [News::Reached { .. }]));
     }
 
     #[test]
@@ -8390,7 +8351,7 @@ mod tests {
             &mut news,
         );
         assert_eq!(mind.marks_held(), 0);
-        assert!(matches!(news[..], [News::Reached { heard: false, .. }]));
+        assert!(matches!(news[..], [News::Reached { .. }]));
     }
 
     #[test]

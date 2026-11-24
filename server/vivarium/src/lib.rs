@@ -536,9 +536,9 @@ pub struct DecisionYear {
     /// reached).
     pub ended: [u32; 4],
     /// Marks of seen, not reached (D53, amended 24 November 2026): made by
-    /// a walk barred, heard at the fire, cleared by standing on the place,
-    /// cleared by hearing from one who stood on it.
-    pub barred: [u32; 4],
+    /// a walk barred by water or rock, heard at the fire, cleared by
+    /// standing on the place.
+    pub barred: [u32; 3],
     /// What barred the walks that made a mark: water, rock (no way seen
     /// makes none).
     pub barred_causes: [u32; 2],
@@ -2856,7 +2856,7 @@ fn barred_news(
 ) -> bool {
     let (body, slot, cause) = match news {
         News::Barred { body, cause, .. } => (body, usize::from(cause.is_none()), *cause),
-        News::Reached { body, heard, .. } => (body, 2 + usize::from(*heard), None),
+        News::Reached { body, .. } => (body, 2, None),
         _ => return false,
     };
     let tribe = people.get(body).map_or(0, |p| p.tribe);
