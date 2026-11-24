@@ -132,7 +132,7 @@ Three screens:
     ce run" when the key is missing, the slider then moving the camp and
     the deaths only), the dead as a cross where they fell from the day
     they die, the camp at every year's end joined by its path, the day
-    shown as "an 3, printemps, jour 112", and the year's presence heatmap
+    shown as "cycle 3, printemps, jour 112" (a cycle is the four seasons; "an" is kept for ages), and the year's presence heatmap
     as an option; **the population curve** alone, the whole width, years
     marked and winters shaded, and under it, on the same x scale, **the
     deaths of each year per tribe** as a small bar stacked in two, the

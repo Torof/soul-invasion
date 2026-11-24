@@ -111,7 +111,7 @@ COLUMNS = [
     ("lived", "ayant vécu en tout", "ceux du départ plus les naissances : tous ceux qui ont vécu un jour du run", 1, (2, 0.05)),
     ("together", "couples ensemble à l’aube", "sur les matins où une femme pouvait concevoir et avait un mari vivant, "
      "la part où les deux se réveillaient l’un près de l’autre", 1, (3, 0)),
-    ("noon_spring", "distance du camp à midi, au printemps", "à midi, au printemps, à quelle distance de son camp de l’année se tient "
+    ("noon_spring", "distance du camp à midi, au printemps", "à midi, au printemps, à quelle distance de son camp du cycle se tient "
      "chacun ; la valeur du milieu (la médiane), en mètres", 0, (0, 0)),
     ("moves", "déménagements", "combien de fois un adulte a changé de foyer", 0, (0, 0)),
 ]
@@ -470,12 +470,12 @@ def frise(d):
         w0, w1 = yr * yd + math.ceil(yd * 3 / 4), min(days, (yr + 1) * yd)
         if w1 > w0:
             g.append(f'<rect class="winter" x="{x(w0):.1f}" y="6" width="{x(w1) - x(w0):.1f}" height="{Hh - 26}" fill="#dde6ee">'
-                     f'<title>hiver de l’an {yr + 1}</title></rect>')
+                     f'<title>hiver du cycle {yr + 1}</title></rect>')
         yr += 1
     for yr in range(0, math.ceil(days / yd)):
         a, b = yr * yd, min((yr + 1) * yd, days)
         g.append(f'<line x1="{x(a):.1f}" x2="{x(a):.1f}" y1="6" y2="{Hh - 20}" stroke="#eee"/>')
-        g.append(f'<text x="{(x(a) + x(b)) / 2:.1f}" y="{Hh - 6}" text-anchor="middle" font-size="11">an {yr + 1}</text>')
+        g.append(f'<text x="{(x(a) + x(b)) / 2:.1f}" y="{Hh - 6}" text-anchor="middle" font-size="11">cycle {yr + 1}</text>')
     g.append(f'<line x1="{L}" x2="{W - R}" y1="{mid}" y2="{mid}" stroke="#888"/>')
     g.append(f'<text x="{L - 6}" y="{mid - 6}" text-anchor="end" font-size="11">nés</text>'
              f'<text x="{L - 6}" y="{mid + 14}" text-anchor="end" font-size="11">morts</text>')
@@ -604,7 +604,7 @@ PARTS = [("carte", "La carte : où ils vont"), ("population", "La population au 
          ("frise", "Naissances et morts sur une frise"), ("ages", "Les âges"), ("couples", "Les couples"),
          ("demenagements", "Les déménagements"), ("chronique", "La chronique")]
 LEADS = {
-    "carte": "Où chaque tribu a vécu, année par année : le curseur choisit l’année, et chaque cadre ce qu’il montre "
+    "carte": "Où chaque tribu a vécu, cycle par cycle : le curseur choisit le cycle, et chaque cadre ce qu’il montre "
              "(les endroits où l’on se tenait à midi, les trajets et les camps, la nourriture, l’eau, les morts et les naissances).",
     "population": "Combien de vivants compte chaque tribu, jour après jour ; les bandes pâles sont les hivers.",
     "frise": "Chaque naissance au-dessus de la ligne et chaque mort en dessous, au jour où elle arrive, sur le même temps que la courbe.",
@@ -626,7 +626,7 @@ def rest_html(d):
     years, what they learnt, the tables."""
     down = lambda x: x.replace("<h3>", "<h4>").replace("</h3>", "</h4>").replace("<h2>", "<h3>").replace("</h2>", "</h3>")  # noqa: E731
     fire = reading.has_fire_data(d)
-    inner = ['<p class=lead>Le reste des données du run, pour qui veut creuser : les réglages, les autres courbes, l’année par année, '
+    inner = ['<p class=lead>Le reste des données du run, pour qui veut creuser : les réglages, les autres courbes, le cycle par cycle, '
              'ce qu’ils ont appris, les tableaux de chacun.</p>',
              "<h3>Les réglages</h3>" + panels.factors_html(d),
              "<h3>Les autres courbes</h3>" + panels.curves_html(),
@@ -667,7 +667,7 @@ def run_body(s, r, d, store=None, year=None):
     chron = reading.chronicle_html(d, year, f"/chronique/{urllib.parse.quote(serie)}/{urllib.parse.quote(name)}")
     if chron:
         chron = chron.replace("<h2>La chronique</h2>", f"<h2>La chronique</h2><p class=lead>{h(LEADS['chronique'])}</p>" + panels.chronicle_lead(d)
-                              + "<details class=chronall><summary>Chaque fait, un par un, année par année (filtres, recherche)</summary>", 1)
+                              + "<details class=chronall><summary>Chaque fait, un par un, cycle par cycle (filtres, recherche)</summary>", 1)
         chron = chron[: chron.rindex("</section>")] + "</details></section>"
     else:
         chron = part("chronique", '<p class=muted>Pas de chronique : le run n’a pas d’année.</p>')

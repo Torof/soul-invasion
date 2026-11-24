@@ -123,11 +123,11 @@ def season_of(d, day):
 
 
 def day_fr(d, day):
-    """`an 3, printemps, jour 112` for a day of the run; `-` for None."""
+    """`cycle 3, printemps, jour 112` for a day of the run; `-` for None."""
     if day is None:
         return "-"
     yd = year_days(d)
-    return f"an {(int(day) - 1) // yd + 1}, {SEASON_FR[season_of(d, day)]}, jour {fmt(int(day))}"
+    return f"cycle {(int(day) - 1) // yd + 1}, {SEASON_FR[season_of(d, day)]}, jour {fmt(int(day))}"
 
 
 def age_days(d, p, at_day=None):
@@ -472,7 +472,7 @@ class Chart:
                 w0, w1 = max(self.xlo, yr * yd + math.ceil(yd * 3 / 4) + 1), min(self.xhi, (yr + 1) * yd)
                 if w1 > w0:
                     g.append(f'<rect class="winter" x="{self.x(w0):.1f}" y="{self.T}" width="{self.x(w1) - self.x(w0):.1f}" '
-                             f'height="{self.H - self.B - self.T}" fill="#dde6ee"><title>hiver de l’an {yr + 1}</title></rect>')
+                             f'height="{self.H - self.B - self.T}" fill="#dde6ee"><title>hiver du cycle {yr + 1}</title></rect>')
                 yr += 1
         # grid and y axis
         for v in y_ticks(self.ytop):
@@ -535,7 +535,7 @@ def year_marks(d, tribe_index, curve):
         if yr and yr != last:
             xs.append(day)
             ys.append(v)
-            ts.append(f"an {yr}, jour {day} : {fmt(v)}")
+            ts.append(f"cycle {yr}, jour {day} : {fmt(v)}")
             last = yr
     return xs, ys, ts
 
@@ -549,7 +549,7 @@ def population_chart(d, label=None, color_of=None, dash=False, chart=None, hover
     ts = tribes(d)
     top = max((max(v) for v in by_tribe if v), default=1)
     if chart is None:
-        chart = Chart(0, max(days[-1] if days else 1, year_days(d)), top, "années", "vivants", year_days(d),
+        chart = Chart(0, max(days[-1] if days else 1, year_days(d)), top, "cycles des saisons", "vivants", year_days(d),
                       size=(1000, 260) if wide else None, winters=wide)
         if wide:
             chart.legend_item("#dde6ee", "hivers")
@@ -573,7 +573,7 @@ def reserve_chart(d, label=None, color_of=None, dash=False, chart=None):
     by_tribe = c.get("reserve_by_tribe") or []
     ts = tribes(d)
     if chart is None:
-        chart = Chart(0, max(days[-1] if days else 1, year_days(d)), 100, "années", "réserve de graisse, % du plein",
+        chart = Chart(0, max(days[-1] if days else 1, year_days(d)), 100, "cycles des saisons", "réserve de graisse, % du plein",
                       year_days(d), pct=True)
     for i, vals in enumerate(by_tribe):
         t = ts[i] if i < len(ts) else f"tribu {i + 1}"
@@ -601,7 +601,7 @@ def births_deaths_chart(d, label=None, chart=None, slot=(0, 1), tag=""):
     n_years = max(per_year, default=1)
     top = max([e["births"] for e in per_year.values()] + [sum(e["deaths"].values()) for e in per_year.values()] + [1])
     if chart is None:
-        chart = Chart(0, n_years * yd, top, "années", "naissances et morts dans l'année", yd)
+        chart = Chart(0, n_years * yd, top, "cycles des saisons", "naissances et morts dans le cycle", yd)
         chart.legend_item(BIRTH_COLOR, "naissances")
         for c in cs:
             chart.legend_item(CAUSE_COLOR.get(c, "#333"), f"morts : {cause_fr(c)}")
@@ -616,13 +616,13 @@ def births_deaths_chart(d, label=None, chart=None, slot=(0, 1), tag=""):
         w = yd / n
         pre = f"{label} · " if label else ""
         chart.bar(x0 + w * 0.08, x0 + w * 0.48, 0, e["births"], BIRTH_COLOR,
-                  f"{pre}an {yr} : {e['births']} naissance{'s' if e['births'] > 1 else ''}")
+                  f"{pre}cycle {yr} : {e['births']} naissance{'s' if e['births'] > 1 else ''}")
         base = 0
         for c in cs:
             v = e["deaths"].get(c, 0)
             if v:
                 chart.bar(x0 + w * 0.52, x0 + w * 0.92, base, base + v, CAUSE_COLOR.get(c, "#333"),
-                          f"{pre}an {yr} : {v} mort{'s' if v > 1 else ''} de {cause_fr(c)}", stroke="#fff")
+                          f"{pre}cycle {yr} : {v} mort{'s' if v > 1 else ''} de {cause_fr(c)}", stroke="#fff")
                 base += v
     return chart
 
@@ -635,7 +635,7 @@ def kept_chart(d, label=None, color_of=None, chart=None, slot=(0, 1)):
     n_years = max((y["year"] for y in rows), default=1)
     top = max([y.get("kept") or 0 for y in rows] + [1])
     if chart is None:
-        chart = Chart(0, n_years * yd, top, "années", "essais gardés dans l'année", yd)
+        chart = Chart(0, n_years * yd, top, "cycles des saisons", "essais gardés dans le cycle", yd)
     else:
         chart.ytop = nice_max(max(chart.ytop, top))
         chart.y = Scale(0, chart.ytop, chart.H - chart.B, chart.T)
@@ -648,7 +648,7 @@ def kept_chart(d, label=None, color_of=None, chart=None, slot=(0, 1)):
         x0 = (y["year"] - 1) * yd + k * yd / n + i * w
         pre = f"{label} · " if label else ""
         chart.bar(x0 + w * 0.1, x0 + w * 0.9, 0, y.get("kept") or 0, color,
-                  f"{pre}tribu {y['tribe']}, an {y['year']} : {y.get('trials') or 0} essais, "
+                  f"{pre}tribu {y['tribe']}, cycle {y['year']} : {y.get('trials') or 0} essais, "
                   f"{y.get('kept') or 0} gardés, {y.get('copied') or 0} copiés")
     for i, t in enumerate(ts):
         chart.legend_item(color_of(t, i) if color_of else tribe_color(t, i), f"{label + ' · ' if label else ''}tribu {t}")
@@ -669,7 +669,7 @@ document.querySelectorAll('[data-map]').forEach(m => {
   const sampleAt = day => { let k = -1; for (let i = 0; i < pos.length && pos[i][0] <= day; i++) k = i; return k; };
   function show(day) {
     const year = Math.floor((day - 1) / dpy) + 1, doy = (day - 1) % dpy;
-    when.textContent = 'an ' + year + ', ' + seasons[Math.min(3, Math.floor(doy * 4 / dpy))] + ', jour ' + day;
+    when.textContent = 'cycle ' + year + ', ' + seasons[Math.min(3, Math.floor(doy * 4 / dpy))] + ', jour ' + day;
     deaths.forEach(g => g.style.display = +g.dataset.death <= day ? 'inline' : 'none');
     const passed = day >= days ? data.lastYear : year - 1;
     camps.forEach(c => c.style.display = +c.dataset.campYear <= passed ? 'inline' : 'none');
@@ -744,7 +744,7 @@ def map_svg(d, uid, side="", show_deaths=True):
             for cx, cy, n in p.get("cells") or []:
                 o = 0.12 + 0.75 * min(1, n / peak)
                 parts.append(f'<rect x="{cx * cell}" y="{cy * cell}" width="{cell}" height="{cell}" fill="{color}" '
-                             f'fill-opacity="{o:.2f}"><title>tribu {h(p["tribe"])}, an {yr} : {n} présence(s) à midi</title></rect>')
+                             f'fill-opacity="{o:.2f}"><title>tribu {h(p["tribe"])}, cycle {yr} : {n} présence(s) à midi</title></rect>')
         parts.append("</g>")
     # the camps' path, one a tribe: the whole path light, a marker at every year's end
     for i, t in enumerate(ts):
@@ -759,7 +759,7 @@ def map_svg(d, uid, side="", show_deaths=True):
         for yr, (x, y) in pts:
             parts.append(f'<g data-camp-year="{yr}"><rect x="{x - fs / 3:.1f}" y="{y - fs / 3:.1f}" width="{fs / 1.5:.1f}" height="{fs / 1.5:.1f}" '
                          f'transform="rotate(45 {x} {y})" fill="{color}" stroke="#fff" stroke-width="{fs / 10:.2f}">'
-                         f'<title>tribu {h(t)}, {"départ" if yr == 0 else f"fin de l’an {yr}"} : camp en ({x}, {y})</title></rect>'
+                         f'<title>tribu {h(t)}, {"départ" if yr == 0 else f"fin du cycle {yr}"} : camp en ({x}, {y})</title></rect>'
                          f'<text x="{x + fs * 0.45:.1f}" y="{y - fs * 0.3:.1f}" font-size="{fs:.1f}" fill="{color}" '
                          f'stroke="#fff" stroke-width="{fs / 6:.2f}" paint-order="stroke" font-weight="700">{yr}</text></g>')
     # the deaths' places, each shown from its day
@@ -783,16 +783,16 @@ def map_svg(d, uid, side="", show_deaths=True):
     payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
     who = ", ".join(f'<span style="color:{tribe_color(t, i)}">● tribu {h(t)}</span>' for i, t in enumerate(ts))
     legend = (f"{who} : les vivants ce jour-là, avec leur trace des derniers jours · × un mort, là où il est tombé · "
-              f"◆ le camp à la fin de chaque année (le chiffre est l’année), relié par son chemin.")
+              f"◆ le camp à la fin de chaque cycle (le chiffre est le cycle), relié par son chemin.")
     if not pos:
         legend = (f'<b>{NO_POSITIONS}</b> : les vivants ne sont pas dessinés jour par jour (le vivarium récent les écrit) ; '
                   f'le curseur fait défiler le camp et les morts au fil des jours. {who} · × un mort, là où il est tombé · '
-                  f'◆ le camp à la fin de chaque année (le chiffre est l’année).')
+                  f'◆ le camp à la fin de chaque cycle (le chiffre est le cycle).')
     controls = (f'<p class="timeline"><button type="button" data-play>▶ Lire</button> '
                 f'<input type="range" min="1" max="{days}" value="{days}" step="1" aria-label="jour"> '
                 f'<span class="when">{h(day_fr(d, days))}</span></p>'
                 f'<p class="muted small"><label><input type="checkbox" data-heat{"" if pos else " checked"}> '
-                f'Montrer aussi où ils ont le plus été dans l’année affichée (plus foncé : plus souvent)</label></p>')
+                f'Montrer aussi où ils ont le plus été dans le cycle affichée (plus foncé : plus souvent)</label></p>')
     return (f'<div class="mapbox" data-map="{h(uid)}">{"".join(parts)}{controls}'
             f'<p class="legend">{legend}</p><script type="application/json">{payload}</script></div>')
 
@@ -982,22 +982,22 @@ def knowledge_chart(d):
     rows = years_of(d)
     n_years = max((y["year"] for y in rows), default=1)
     top = max([(y.get("knowledge") or {}).get("places") or 0 for y in rows] + [1])
-    chart = Chart(0, n_years * yd, top, "années", "lieux connus par la tribu", yd)
+    chart = Chart(0, n_years * yd, top, "cycles des saisons", "lieux connus par la tribu", yd)
     stored = Chart(0, n_years * yd, max([((y.get("food") or {}).get("stored_kj") or {}).get("noon_mean") or 0 for y in rows] + [1]),
-                   "années", "nourriture portée à midi, moyenne de l'an (kJ)", yd)
+                   "cycles des saisons", "nourriture portée à midi, moyenne du cycle (kJ)", yd)
     for i, t in enumerate(ts):
         mine = [y for y in rows if y["tribe"] == t]
         xs = [y["year"] * yd for y in mine]
         color = tribe_color(t, i)
         ks = [(y.get("knowledge") or {}).get("places") for y in mine]
         chart.line(xs, ks, color, f"tribu {t}")
-        chart.hover(xs, ks, [f"tribu {t}, an {y['year']} : {fmt((y.get('knowledge') or {}).get('places'))} lieux, "
+        chart.hover(xs, ks, [f"tribu {t}, cycle {y['year']} : {fmt((y.get('knowledge') or {}).get('places'))} lieux, "
                              f"{fmt((y.get('knowledge') or {}).get('heard_only'))} par ouï-dire seul, "
                              f"{fmt((y.get('knowledge') or {}).get('accesses_heard'))} souvenirs entendus sur {fmt((y.get('knowledge') or {}).get('accesses'))}"
                              for y in mine], color)
         ss = [((y.get("food") or {}).get("stored_kj") or {}).get("noon_mean") for y in mine]
         stored.line(xs, ss, color, f"tribu {t}")
-        stored.hover(xs, ss, [f"tribu {t}, an {y['year']} : {fmt(s)} kJ portés à midi en moyenne, "
+        stored.hover(xs, ss, [f"tribu {t}, cycle {y['year']} : {fmt(s)} kJ portés à midi en moyenne, "
                               f"minimum {fmt(((y.get('food') or {}).get('stored_kj') or {}).get('noon_min'))}, fin {fmt((y.get('food') or {}).get('end_kj'))}"
                               for y, s in zip(mine, ss)], color)
     return chart.svg("lieux connus par an"), stored.svg("nourriture portée à midi par an")
@@ -1126,7 +1126,7 @@ def rumours_html(d):
         li = "".join(f"<li>jour {r.get('day')}, {h(person_fr(r.get('body')))} va où {h(person_fr(r.get('from')))} avait dit {place_fr(r.get('place'))} et ne trouve rien</li>"
                      for r in by_year[year][:50])
         more = f"<li class=muted>… et {len(by_year[year]) - 50} de plus</li>" if len(by_year[year]) > 50 else ""
-        items.append(f"<li>an {year} : {plural(len(by_year[year]), 'rumeur')} dissipée{'s' if len(by_year[year]) > 1 else ''}<ol class=kept>{li}{more}</ol></li>")
+        items.append(f"<li>cycle {year} : {plural(len(by_year[year]), 'rumeur')} dissipée{'s' if len(by_year[year]) > 1 else ''}<ol class=kept>{li}{more}</ol></li>")
     return ("<h3>Rumeurs</h3><p class=muted>Un lieu entendu au feu, trouvé nu par celui qui y est allé : il le dit le soir même, et les présents le croient.</p>"
             + (f"<ul>{''.join(items)}</ul>" if items else '<p class="muted">aucune rumeur dissipée</p>'))
 
@@ -1382,7 +1382,7 @@ def stock_sub(st):
     parts = []
     if st["days_per_person"] is not None:
         parts.append(f"≈ {plural(round(st['days_per_person']), 'jour')} de vivres par vivant")
-    parts.append(f"début de l’an {fmt(st['year'])} : {fmt(st['start_kj'])}")
+    parts.append(f"début du cycle {fmt(st['year'])} : {fmt(st['start_kj'])}")
     if len(st["by_tribe"]) > 1:
         parts.append(", ".join(f"{h(t)} {fmt(kj)}" for t, kj in st["by_tribe"].items()))
     return " · ".join(parts)
@@ -1699,7 +1699,7 @@ def when_short(d, day):
     """`an 3, été` for a day of the run."""
     if day is None:
         return None
-    return f"an {(int(day) - 1) // year_days(d) + 1}, {SEASON_FR[season_of(d, day)]}"
+    return f"cycle {(int(day) - 1) // year_days(d) + 1}, {SEASON_FR[season_of(d, day)]}"
 
 
 def years_old(d, days):
@@ -1980,7 +1980,7 @@ def chronicle_html(d, year, chron_url):
         return ""
     year = min(max(1, year or 1), ly)
     years_nav = "".join(f'<button type=button data-year="{y}" aria-current="{"true" if y == year else "false"}">'
-                        f'{"an " if y == year else ""}{y}</button>' for y in range(1, ly + 1))
+                        f'{"cycle " if y == year else ""}{y}</button>' for y in range(1, ly + 1))
     ts = tribes(d)
     tribe_sel = ("<select data-tribe aria-label=Tribu><option value=''>les deux tribus</option>"
                  + "".join(f"<option value='{h(t)}'>tribu {h(t)}, {h(tribe_side(d, t))}</option>" for t in ts) + "</select>") if len(ts) > 1 else ""
@@ -1995,8 +1995,8 @@ def chronicle_html(d, year, chron_url):
         capped = (f" Le fichier ne garde le détail que des {fmt(len(rums))} premières rumeurs (jours {min(days)} à {max(days)}) : "
                   "les autres années n’en montrent aucune.")
     tribes_txt = " ; le bord de chaque ligne a la couleur de sa tribu (" + ", ".join(f"{tribe_chip(t)}" for t in ts) + ")" if len(ts) > 1 else ""
-    return (f'<section id=chronique class=group data-chron="{h(chron_url)}"><h2>La chronique</h2><div data-chron-lead><p class=muted>l’an {year} se charge…</p></div>'
-            f'<p class=caption>Une année à la fois, par saison puis par jour. Ce qui se répète le même jour '
+    return (f'<section id=chronique class=group data-chron="{h(chron_url)}"><h2>La chronique</h2><div data-chron-lead><p class=muted>le cycle {year} se charge…</p></div>'
+            f'<p class=caption>Un cycle à la fois, par saison puis par jour. Ce qui se répète le même jour '
             f'({GROUP_FROM} fois ou plus) tient sur une ligne qu’on déplie{tribes_txt}.{h(capped)}</p><p class=caption>{legend}</p>'
             f'<nav class=chron-years aria-label="années">{years_nav}</nav>'
             f'<div class=filters><div class=chips role=group aria-label="ne montrer que" data-chips></div>{tribe_sel}'
@@ -2035,7 +2035,7 @@ document.querySelectorAll('#chronique').forEach(c => {
   }
   c.querySelectorAll('[data-year]').forEach(b => b.addEventListener('click', async () => {
     const y = b.dataset.year;
-    count.textContent = 'chargement de l’an ' + y + '…';
+    count.textContent = 'chargement du cycle ' + y + '…';
     try {
       const r = await fetch(c.dataset.chron + '?an=' + y);
       if (!r.ok) throw new Error(r.status);
@@ -2046,7 +2046,7 @@ document.querySelectorAll('#chronique').forEach(c => {
       c.querySelectorAll('[data-year]').forEach(o => { o.setAttribute('aria-current', o === b ? 'true' : 'false'); o.textContent = (o === b ? 'an ' : '') + o.dataset.year; });
       if (![...c.querySelectorAll('[data-filter]')].some(o => o.dataset.filter === filt)) filt = 'tout';
       bindChips(); apply();
-    } catch (e) { count.textContent = 'l’an ' + y + ' n’a pas pu être lu (' + e.message + ')'; }
+    } catch (e) { count.textContent = 'le cycle ' + y + ' n’a pas pu être lu (' + e.message + ')'; }
   }));
   if (tribe) tribe.addEventListener('change', apply);
   search.addEventListener('input', apply);
@@ -2179,7 +2179,7 @@ function initMap2(m) {
     seen.innerHTML = a; heard.innerHTML = b;
   }
   function show(year, day) {
-    yrTxt.textContent = 'an ' + year + (day ? ', jour ' + day : '');
+    yrTxt.textContent = 'cycle ' + year + (day ? ', jour ' + day : '');
     if (!day) places(year);
     let hs = '';
     if (m.querySelector('[data-layer=heat]').checked) for (const [t, [cell, cells]] of Object.entries(data.heat[year] || {})) {
@@ -2266,7 +2266,7 @@ def map_v2(d, uid):
             parts.append(f'<polyline fill="none" stroke="{color}" stroke-width="{fs / 4:.1f}" stroke-dasharray="{fs / 2:.1f} {fs / 3:.1f}" '
                          f'points="{" ".join(f"{c[0]},{c[1]}" for _, _, c in st)}"/>')
         for a, b, (x, y) in st:
-            span = f"an {a}" if a == b else f"an {a} → an {b}"
+            span = f"cycle {a}" if a == b else f"cycle {a} → cycle {b}"
             parts.append(f'<g data-stay="{a}-{b}" style="pointer-events:none"><title>camp {h(t)}, {span} : ({x}, {y})</title>'
                          f'<rect x="{x - fs / 2:.1f}" y="{y - fs / 2:.1f}" width="{fs:.1f}" height="{fs:.1f}" transform="rotate(45 {x} {y})" '
                          f'fill="{color}" stroke="#fff" stroke-width="{fs / 8:.1f}"/>'
@@ -2305,8 +2305,8 @@ def map_v2(d, uid):
     at_end = known_by_year.get(str(ly), {})
     nseen = {t: sum(1 for w in at_end.get(t, []) if w[2]) for t in ts}
     nheard = {t: sum(1 for w in at_end.get(t, []) if not w[2]) for t in ts}
-    when = "à la fin du run (ce run n’a pas les lieux année par année)" if by_end else "l’année montrée"
-    bar = (f'<div class=bar><span class=yr>an {ly}</span><input type=range data-yr min=1 max={ly} value={ly} aria-label="année">'
+    when = "à la fin du run (ce run n’a pas les lieux cycle par cycle)" if by_end else "le cycle montré"
+    bar = (f'<div class=bar><span class=yr>cycle {ly}</span><input type=range data-yr min=1 max={ly} value={ly} aria-label="année">'
            f'<button type=button data-play-years>▶ Les années</button><button type=button data-play-days>▶ Cette année jour par jour</button></div>'
            f'<div class=bar><span class=seg role=group aria-label="cadrer sur">{zoom}</span></div>')
 
@@ -2316,7 +2316,7 @@ def map_v2(d, uid):
     for i, t in enumerate(ts):
         c = tribe_color(t, i)
         items.append((sw(f'<circle r="8" fill="{c}" stroke="#fff" stroke-width="1.5"/><text y="4" text-anchor="middle" font-size="11" font-weight="800" fill="#fff">{h(t)}</text>'),
-                      f"le camp de la tribu {h(t)}, {h(tribe_side(d, t))}, l’année montrée"))
+                      f"le camp de la tribu {h(t)}, {h(tribe_side(d, t))}, le cycle montré"))
     items.append((sw('<rect x="-4" y="-4" width="8" height="8" transform="rotate(45)" fill="#888" stroke="#fff"/>'),
                   "un camp de l’année montrée ou d’avant, daté (« an 1 → an 20 ») ; un trait pointillé relie les camps successifs"))
     items.append((sw(f'<circle r="4" fill="{tribe_color(ts[0], 0) if ts else "#444"}" stroke="#fff" stroke-width="1.2"/>'),
@@ -2335,7 +2335,7 @@ def map_v2(d, uid):
            f'({", ".join(f"{h(t)} {fmt(nseen[t])}" for t in ts)})</label>'
            f'<label><input type=checkbox data-layer=heard> lieux connus seulement par ouï-dire au feu, {h(when)} ; à la fin '
            f'({", ".join(f"{h(t)} {fmt(nheard[t])}" for t in ts)})</label></div>')
-    stays_txt = "".join(f'<li>{tribe_chip(t)}' + " ; ".join(f'({c[0]}, {c[1]}) an {a}' + ("" if a == b else f" → an {b}") for a, b, c in stays[t]) + "</li>"
+    stays_txt = "".join(f'<li>{tribe_chip(t)}' + " ; ".join(f'({c[0]}, {c[1]}) cycle {a}' + ("" if a == b else f" → cycle {b}") for a, b, c in stays[t]) + "</li>"
                         for t in ts)
     legend = (f'<div class=mlegend><h4>Ce qu’on voit</h4><ul>{"".join(f"<li>{s}<span>{w}</span></li>" for s, w in items)}</ul>'
               f'<h4>Pourquoi ils sont là</h4>{lay}'
@@ -2363,7 +2363,7 @@ def frise_svg(d, p, copies, lessons):
     for y in range(0, end // yd + 1, 5):
         x = sx(y * yd + 1)
         out.append(f'<line x1="{x:.1f}" x2="{x:.1f}" y1="10" y2="56" stroke="var(--line)"/><text x="{x:.1f}" y="70" font-size="10" '
-                   f'text-anchor="middle" fill="var(--muted)">an {y + 1}</text>')
+                   f'text-anchor="middle" fill="var(--muted)">cycle {y + 1}</text>')
     out.append(f'<line x1="{sx(born):.1f}" x2="{sx(died or end):.1f}" y1="33" y2="33" stroke="{color}" stroke-width="5" stroke-linecap="round"/>')
 
     def mark(day, glyph, cls, title, dy):
@@ -2570,14 +2570,14 @@ def reputed_body(d):
         rep, rev = y.get("reputed") or {}, (y.get("decisions") or {}).get("review") or {}
         if not rep and not rev.get("asked") and not rev.get("set_aside"):
             continue
-        cells = [(h(f"an {y['year']}"), y["year"]), (tribe_chip(y.get("tribe")), y.get("tribe"))]
+        cells = [(h(f"cycle {y['year']}"), y["year"]), (tribe_chip(y.get("tribe")), y.get("tribe"))]
         for act, _ in REPUTED_WORDS:
             top = (rep.get(act) or [None])[0]
             cells.append((f"{person_link(top['who'])} ({fmt_thin(top['believers'])})", top["believers"]) if top else (None, 0))
         for key in ("asked", "answered", "named", "set_aside"):
             cells.append((fmt_thin(rev.get(key) or 0), rev.get(key) or 0))
         rows.append(cells)
-    return ("<p class=caption>Ce que chacun croit, jamais un titre : le plus cru par les vivants à la fin de l'année (entre parenthèses, combien le croient).</p>"
+    return ("<p class=caption>Ce que chacun croit, jamais un titre : le plus cru par les vivants à la fin du cycle (entre parenthèses, combien le croient).</p>"
             + data_table("t-repute", [("Année", True), ("Tribu", False), ("Éclaireur", True), ("Meneur", True), ("Questions", True),
                                        ("Avec un lieu", True), ("Appelés par leur nom", True, True), ("Mis à l'écart", True, True)],
                          rows, "Personne n'est réputé dans ce run."))
@@ -2585,7 +2585,7 @@ def reputed_body(d):
 
 def chronicle_points(d, year, events):
     """The year's points: how much happened, then its two biggest kinds, with their busiest day."""
-    pts = [point(f"{plural(len(events), 'événement')}", f"en l’an {year}")]
+    pts = [point(f"{plural(len(events), 'événement')}", f"au cycle {year}")]
     by = {}
     for e in events:
         by.setdefault(e["type"], []).append(e)
@@ -2930,7 +2930,7 @@ def compare_series_body(sa, sb, store):
             if not days:
                 continue
             if chart is None:
-                chart = Chart(0, max(days[-1], year_days(d)), max(alive or [1]), "années", "vivants (toutes tribus)", year_days(d))
+                chart = Chart(0, max(days[-1], year_days(d)), max(alive or [1]), "cycles des saisons", "vivants (toutes tribus)", year_days(d))
             else:
                 chart.ytop = nice_max(max(chart.ytop, max(alive or [1])))
                 chart.y = Scale(0, chart.ytop, chart.H - chart.B, chart.T)
