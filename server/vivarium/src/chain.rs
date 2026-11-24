@@ -62,6 +62,9 @@ pub struct AwayWhy {
     /// Awake at dawn and never lay down since the dawn before: it walked
     /// or stood the night through.
     pub awake: u32,
+    /// Awake at dawn, having lain down since the dawn before and risen in
+    /// the night (to drink, called away): on its feet away from home.
+    pub woke: u32,
     /// Asleep, its lying down not seen (since the run's first tick).
     pub unseen: u32,
     /// The fatigue at lying down of those who lay down, summed, and how
@@ -85,6 +88,8 @@ struct Track {
     tribe: u8,
     at: FinePos,
     asleep: bool,
+    /// The tick it last rose.
+    rose: u64,
     /// Its last lying down, with its fatigue and the tick then.
     lay: Option<(Lay, u32, u64)>,
     /// What barred its last walk since dawn.
@@ -128,6 +133,31 @@ fn blockage_index(b: Option<Blockage>) -> usize {
         Some(Blockage::Rock) => 1,
         Some(Blockage::NoWay) => 2,
         None => 3,
+    }
+}
+
+/// How `body` lies down now: collapsed of fatigue, else by its mind's
+/// way, goal, or home within `reach`, else stopped by what barred it.
+fn lay_of(
+    body: &sim::Body,
+    mind: Option<&sim::brain::Mind>,
+    barred: Option<Blockage>,
+    reach: u32,
+) -> Lay {
+    if body.condition().fatigue.is_full() {
+        return Lay::Exhausted;
+    }
+    let Some(m) = mind else {
+        return Lay::AtHome;
+    };
+    if m.ways().sleep_out {
+        Lay::SleepOut
+    } else if m.holds_goal() {
+        Lay::Goal
+    } else if tiles_apart(body.pos(), m.home()) <= reach {
+        Lay::AtHome
+    } else {
+        Lay::Stopped(barred)
     }
 }
 
@@ -183,6 +213,7 @@ impl Chain {
                 lay: None,
                 barred: None,
                 far: 0,
+                rose: 0,
             });
             let y = &mut acc[usize::from(t.tribe.min(1))];
             let walker = !world.is_infant(b, content);
@@ -205,22 +236,11 @@ impl Chain {
             }
             let mind = brains.mind(id);
             if c.asleep && !t.asleep {
-                let lay = if c.fatigue.is_full() {
-                    Lay::Exhausted
-                } else if let Some(m) = mind {
-                    if m.ways().sleep_out {
-                        Lay::SleepOut
-                    } else if m.holds_goal() {
-                        Lay::Goal
-                    } else if tiles_apart(b.pos(), m.home()) <= reach {
-                        Lay::AtHome
-                    } else {
-                        Lay::Stopped(t.barred)
-                    }
-                } else {
-                    Lay::AtHome
-                };
+                let lay = lay_of(b, mind, t.barred, reach);
                 t.lay = Some((lay, c.fatigue.points(), tick));
+            }
+            if t.asleep && !c.asleep {
+                t.rose = tick;
             }
             t.asleep = c.asleep;
             if minute
@@ -246,7 +266,7 @@ impl Chain {
             y.gathering_ticks += add.gathering_ticks;
         }
         if dawn {
-            self.dawn(world, brains, content);
+            self.dawn(world, brains, content, tick);
             self.last_dawn = tick;
         }
     }
@@ -255,7 +275,7 @@ impl Chain {
     /// by how it lay down last, asleep still or since the dawn before (the
     /// rested wake with the day, at the dawn's own tick); then the day's
     /// barring forgotten.
-    fn dawn(&mut self, world: &World, brains: &Brains, content: &Content) {
+    fn dawn(&mut self, world: &World, brains: &Brains, content: &Content, now: u64) {
         let reach = content.needs.trials.imitate_tiles;
         let days_a_year = u64::from(world.calendar().days_per_age_year().max(1));
         let year = usize::try_from(u64::try_from(world.today()).unwrap_or(0) / days_a_year)
@@ -271,10 +291,14 @@ impl Chain {
             if tiles_apart(b.pos(), home) <= reach {
                 continue;
             }
-            let lay = self.tracks.get(&b.id()).and_then(|t| t.lay);
+            let Some(track) = self.tracks.get(&b.id()) else {
+                continue;
+            };
             let asleep = b.condition().asleep;
-            let Some((lay, fatigue, _)) = lay.filter(|&(_, _, at)| asleep || at > self.last_dawn)
-            else {
+            // Slept till dawn: asleep still, or risen with the day (the
+            // rested rise at the dawn's own tick).
+            let till_dawn = asleep || track.rose + self.ticks_per_minute >= now;
+            let Some((lay, fatigue, at)) = track.lay else {
                 if asleep {
                     why.unseen += 1;
                 } else {
@@ -282,6 +306,14 @@ impl Chain {
                 }
                 continue;
             };
+            if !till_dawn {
+                if at > self.last_dawn {
+                    why.woke += 1;
+                } else {
+                    why.awake += 1;
+                }
+                continue;
+            }
             why.fatigue.0 += u64::from(fatigue);
             why.fatigue.1 += 1;
             match lay {
@@ -308,6 +340,7 @@ impl Chain {
         n.goal += why.goal;
         n.lay_at_home += why.lay_at_home;
         n.awake += why.awake;
+        n.woke += why.woke;
         n.unseen += why.unseen;
         n.fatigue.0 += why.fatigue.0;
         n.fatigue.1 += why.fatigue.1;
@@ -371,6 +404,7 @@ impl Chain {
                     "goal": a.goal,
                     "lay_at_home": a.lay_at_home,
                     "awake": a.awake,
+                    "woke": a.woke,
                     "unseen": a.unseen,
                     "fatigue_mean": (a.fatigue.1 > 0).then(|| a.fatigue.0 / u64::from(a.fatigue.1)),
                 })
@@ -470,7 +504,7 @@ mod tests {
         for (why, out) in report.chain.away.iter().zip(&report.nights_out) {
             let lay = why.exhausted + why.stopped + why.sleep_out + why.goal + why.lay_at_home;
             assert_eq!(
-                lay + why.awake + why.unseen,
+                lay + why.awake + why.woke + why.unseen,
                 out.away,
                 "{why:?} against {out:?}"
             );

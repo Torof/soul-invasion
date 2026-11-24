@@ -446,8 +446,9 @@ clock, the only field no seed decides.
 | `chain.away[].goal` | Laid down where it stood, holding a goal beyond a day (D56): by choice | dawns |
 | `chain.away[].lay_at_home` | Laid down within the fire's reach of its home: its home moved away from it since | dawns |
 | `chain.away[].awake` | Awake at dawn and never lay down since the dawn before: it walked or stood the night through | dawns |
+| `chain.away[].woke` | Awake at dawn, having lain down since the dawn before and risen in the night (to drink, or called away): on its feet away from home; whoever rose with the day (the rested rise at the dawn's own tick) is told by how it lay down | dawns |
 | `chain.away[].unseen` | Asleep, its lying down not seen | dawns |
-| `chain.away[].fatigue_mean` | The fatigue at lying down of those who lay down away (all but `awake` and `unseen`), on average; `null` without one | points of 100 |
+| `chain.away[].fatigue_mean` | The fatigue at lying down of those who lay down away (all but `awake`, `woke` and `unseen`), on average; `null` without one | points of 100 |
 | `chain.looks` | Every looking day (`Act::Looked`, D56), in order: the day it closed (its nightfall), the tribe (0 or 1), and the farthest it stood from its home that day, on the longer axis, looked at once a game minute | `[[day, tribe, tiles], …]` |
 
 ## Beside the data: the lab's series file
