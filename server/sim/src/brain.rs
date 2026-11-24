@@ -4346,8 +4346,11 @@ impl Brains {
 
     /// At dawn, before the night is noted, each grown body feels the
     /// company it had (D53, amended 24 November 2026): the others at its
-    /// fire's circle, anyone counting alike, none at no fire (it slept
-    /// out, or alone at its camp). What too few left it lacking enters its
+    /// fire's circle, anyone counting alike; and wherever it lay (amended
+    /// 25 November 2026, the project lead: "company felt where one actually
+    /// sleeps, counting those lying near"), the others asleep within the
+    /// fire's reach of it (`trials.imitate_tiles`), at a fire or not: a
+    /// band lying out together is not alone. What too few left it lacking enters its
     /// night as [`Sense::Company`], by its sociability
     /// ([`crate::content::Company::lacking_permille`]). Only with the fire
     /// lit: without it there is no gathering to feel. It grades the place
@@ -4358,12 +4361,33 @@ impl Brains {
         }
         let company = &rules.needs.company;
         let day = u32::try_from(today(world).saturating_sub(1)).unwrap_or(u32::MAX);
-        let mut at: BTreeMap<BodyId, u32> = BTreeMap::new();
+        let reach = i32::try_from(rules.needs.trials.imitate_tiles).unwrap_or(i32::MAX);
+        // Who lies where: the living past infancy, asleep.
+        let lying: Vec<(BodyId, Pos)> = world
+            .bodies()
+            .iter()
+            .filter(|b| {
+                let c = b.condition();
+                c.asleep && c.vitality.points() > 0 && !world.is_infant(b, rules)
+            })
+            .map(|b| (b.id(), b.pos()))
+            .collect();
+        let mut circle_of: BTreeMap<BodyId, &[BodyId]> = BTreeMap::new();
         for (_, present) in circles {
-            let others = u32::try_from(present.len().saturating_sub(1)).unwrap_or(u32::MAX);
             for &id in present {
-                at.insert(id, others);
+                circle_of.insert(id, present);
             }
+        }
+        let mut at: BTreeMap<BodyId, u32> = BTreeMap::new();
+        for b in world.bodies() {
+            let (id, here) = (b.id(), b.pos());
+            let circle = circle_of.get(&id).copied().unwrap_or(&[]);
+            let near = lying
+                .iter()
+                .filter(|&&(o, p)| o != id && !circle.contains(&o) && within(p, here, reach))
+                .count();
+            let others = circle.len().saturating_sub(1) + near;
+            at.insert(id, u32::try_from(others).unwrap_or(u32::MAX));
         }
         for (&id, mind) in &mut self.minds {
             let Some(night) = mind.night.as_mut() else {
@@ -4722,8 +4746,12 @@ impl Brains {
     /// (the surprise × its credit in the teller above the threshold), goes
     /// to see it today by the chance of its will
     /// (`moving.see_percent_by_will`): a day gathering there, its own day
-    /// to judge by. A tale never moves anyone. No stayer heard, no
-    /// surprise: the same day is the yardstick.
+    /// to judge by. A tale never moves anyone. The same day is the
+    /// yardstick; with no stayer heard (amended 25 November 2026, the
+    /// project lead: "a surprise judged also against the body's own usual
+    /// days"), each weighs its day against its own usual days of the
+    /// season ([`Usual`], what it gathered a day), the day itself among
+    /// them; with none yet, no surprise.
     fn fire_surprise(
         &mut self,
         world: &World,
@@ -4753,14 +4781,18 @@ impl Brains {
             .filter(|(_, y)| y.near && y.gathered > 0)
             .map(|(_, y)| y.gathered)
             .collect();
-        if stayers.is_empty() {
-            return;
-        }
         let n = u64::try_from(stayers.len()).unwrap_or(u64::MAX);
-        let mean = stayers.iter().sum::<u64>() / n;
+        let stayed = stayers.iter().sum::<u64>().checked_div(n);
         let mut tales: Vec<(u64, BodyId, PlaceKey)> = Vec::new();
         for &(id, y) in &lived {
             let Some((grove, food, spot, saved)) = y.grove.filter(|_| !y.near) else {
+                continue;
+            };
+            // The stayers of the same day; with none, its own usual days.
+            let Some(mean) = stayed.or_else(|| {
+                let usual = &self.minds.get(&id)?.usual[usize::from(season.min(3))];
+                (usual.weight > 0).then(|| u64::try_from(usual.mean(usual.gathered)).unwrap_or(0))
+            }) else {
                 continue;
             };
             let gain = food.saturating_sub(mean);
@@ -12471,6 +12503,69 @@ mod tests {
         assert_eq!(got, vec![666, 0, 250, 1000]);
     }
 
+    /// Company is felt where one lies (D53, amended 25 November 2026): a
+    /// band lying out together is not alone; one lying alone is.
+    #[test]
+    fn company_is_felt_where_one_lies_counting_those_lying_near() {
+        let mut rules = fire_rules();
+        rules.needs.company = crate::content::Company::placeholders();
+        let (mut world, mut brains) = camp_of(5, &rules);
+        let ids: Vec<BodyId> = brains.minds.keys().copied().collect();
+        for id in &ids {
+            let mind = brains.minds.get_mut(id).unwrap();
+            mind.sociable = 100;
+            mind.night = Some(night_with([0; SENSES], 0, Vec::new()));
+        }
+        // Two at the fire; two lying out together far from it, a third
+        // lying out alone farther still. All asleep.
+        for (i, at) in [
+            (2, Pos::new(40, 40)),
+            (3, Pos::new(43, 41)),
+            (4, Pos::new(40, 10)),
+        ] {
+            world.bodies[i].at = at.centre();
+        }
+        for body in &mut world.bodies {
+            body.condition.asleep = true;
+        }
+        let mut events = Vec::new();
+        world.advance(world.calendar().ticks_per_day() / 2, &rules, &mut events);
+        for (i, at) in [
+            (2, Pos::new(40, 40)),
+            (3, Pos::new(43, 41)),
+            (4, Pos::new(40, 10)),
+        ] {
+            world.bodies[i].at = at.centre();
+        }
+        for body in &mut world.bodies {
+            body.condition.asleep = true;
+            (
+                body.condition.thirst,
+                body.condition.hunger,
+                body.condition.cold,
+            ) = (Gauge::at(0), Gauge::at(0), Gauge::at(0));
+        }
+        for &id in &ids[..2] {
+            brains.join_fire(&world, &rules, id);
+        }
+        brains.vigil(&world, &rules);
+        let news = brains.news();
+        let others: Vec<u32> = ids
+            .iter()
+            .map(|id| {
+                news.iter()
+                    .find_map(|n| match n {
+                        News::Company { body, others, .. } if body == id => Some(*others),
+                        _ => None,
+                    })
+                    .expect("its company felt")
+            })
+            .collect();
+        // Each at the fire has the other there, counted once; the two out
+        // have each other; the lone one nobody.
+        assert_eq!(others, vec![1, 1, 1, 1, 0]);
+    }
+
     /// Company grades places and gives no order (D53, amended 24 November
     /// 2026): the same night with and without it leaves every way, plan
     /// and trial alike, and only the notebook differs.
@@ -16246,7 +16341,8 @@ mod tests {
                 .iter()
                 .any(|n| matches!(n, News::Surprised { .. }))
         );
-        // No stayer that day: no yardstick, no surprise.
+        // No stayer that day and no usual days of its own: no yardstick, no
+        // surprise.
         let (world, mut brains) = camp_of(4, &rules);
         yesterdays(&mut brains, day, &[(1, false, 5000), (2, false, 100)]);
         brains.fire_surprise(&world, &rules, (camp, day, 0), &present);
@@ -16255,6 +16351,40 @@ mod tests {
                 .news()
                 .iter()
                 .any(|n| matches!(n, News::Surprised { .. }))
+        );
+        // No stayer that day: its own usual days of the season are the
+        // yardstick (amended 25 November 2026).
+        let (world, mut brains) = camp_of(4, &rules);
+        yesterdays(&mut brains, day, &[(1, false, 1000), (2, false, 100)]);
+        let season = usize::from(season_of_day(&world, u64::from(day)).min(3));
+        brains.minds.get_mut(&BodyId(1)).unwrap().usual[season].add(&Usual {
+            gathered: 400,
+            ..Usual::default()
+        });
+        brains.fire_surprise(&world, &rules, (camp, day, 0), &present);
+        let news = brains.news();
+        assert!(
+            news.iter().any(|n| matches!(
+                n,
+                News::Surprised {
+                    body: BodyId(1),
+                    gain: 600,
+                    stayers: 0,
+                    stayers_gathered: 400,
+                    ..
+                }
+            )),
+            "{news:?}"
+        );
+        assert!(
+            !news.iter().any(|n| matches!(
+                n,
+                News::Surprised {
+                    body: BodyId(2),
+                    ..
+                }
+            )),
+            "no usual days of its own"
         );
     }
 

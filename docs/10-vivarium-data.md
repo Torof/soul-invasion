@@ -358,8 +358,8 @@ clock, the only field no seed decides.
 | `moving.felt[].gain_permille`, `.push_permille`, `.surprise_permille` | The new home's grade less the old one's, season against season; how much worse its recent days were than its usual days of the season; its greatest surprise there | per mille of a day of need |
 | `moving.felt[].huge` | `true`: not pushed, the surprise alone was huge enough | boolean |
 | `moving.surprised[]` | Each surprise lived: a day gathering at a grove away from home that gave clearly more than the present who stayed near home and gathered that day, in order | list |
-| `moving.surprised[].day`, `.body`, `.tribe`, `.stayers` | The day it was told, who, its tribe, how many stayers it was compared with | |
-| `moving.surprised[].gain_permille`, `.stayers_gathered_permille` | How much more it gathered there; the stayers' mean that day | per mille of a day of need |
+| `moving.surprised[].day`, `.body`, `.tribe`, `.stayers` | The day it was told, who, its tribe, how many stayers it was compared with (0: none stayed near home that day, it was compared with its own usual days of the season, amended 25 November 2026) | |
+| `moving.surprised[].gain_permille`, `.stayers_gathered_permille` | How much more it gathered there; the stayers' mean that day, or its own usual day's when `stayers` is 0 | per mille of a day of need |
 | `moving.surprised[].spouse_took_it` | Its spouse at the fire took the day into its own notes | boolean |
 | `moving.go_see[]` | Each day gone to see a surprise told at the fire, in order | list |
 | `moving.go_see[].day`, `.body`, `.tribe`, `.from` | The day, who, its tribe, the teller | |
