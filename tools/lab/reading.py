@@ -81,6 +81,9 @@ def fmt(n):
         return "-"
     if isinstance(n, float):
         return f"{n:,.1f}".replace(",", " ").replace(".", ",")
+    if not isinstance(n, int):
+        # A word among numbers (a season's name in a factor's pairs).
+        return str(n)
     return f"{n:,}".replace(",", " ")
 
 

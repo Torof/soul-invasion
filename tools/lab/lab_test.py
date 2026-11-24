@@ -580,6 +580,10 @@ class Reading(unittest.TestCase):
                 p["died"]["cause"] = "illness"
         self.assertTrue(reading.verdict(self.d).startswith("Aucun mort de manque ; 5 morts de fond : maladie 4, vieillesse 1."))
 
+    def test_a_word_among_a_factors_numbers_is_shown_as_it_is(self):
+        # Calendar v1's nights by season are pairs of a season's name and a share.
+        self.assertEqual(panels.value_fr([["spring", 70], ["winter", 62]]), "spring→70 · winter→62")
+
     def test_the_stock_tile_reads_the_food_of_the_last_year(self):
         st = reading.stock(self.d)
         self.assertEqual((st["kj"], st["start_kj"], st["by_tribe"], st["year"]), (1000, 0, {"A": 500, "B": 500}, 2))
