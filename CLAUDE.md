@@ -62,6 +62,7 @@ conductor: vision, decisions, practices, audits, security. The AI writes the cod
 
 ## Conventions
 
+- Time words for the lead (pages, reports, chat): a game day is « journée », four seasons a « cycle », « an » only for ages, real time always says « réel » (« 3 jours réels »); never « jour » alone (24 Nov 2026).
 - Commits: Conventional Commits (`feat:`, `fix:`, `docs:`, `ci:`, `refactor:`,
   `test:`, `chore:`), imperative mood, English.
 - Rust: `cargo fmt` and `cargo clippy --all-targets -- -D warnings` must pass
