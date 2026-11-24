@@ -473,21 +473,21 @@ class Reading(unittest.TestCase):
         self.assertIn("étaient coupées", reading.story_html(fixture(trials=False), "A"))
         table = reading.found_table(self.d, "A")
         self.assertIn("<th>Gardée la première fois</th>", table)
-        self.assertIn("<td>cycle 1, été, jour 15</td><td>personne 1</td><td class=n>1</td><td class=n>1</td>", table)
+        self.assertIn("<td>cycle 1, été, journée 15</td><td>personne 1</td><td class=n>1</td><td class=n>1</td>", table)
         self.assertIn("deux fois plus loin du camp", table)
         self.assertEqual(table.count("<tr>"), 2)                    # the header and the one kept kind
         self.assertEqual(reading.found_table(self.d, "B"), "")
-        self.assertIn("jour 15, personne 1 : chercher plus loin, garde", reading.kept_list(self.d, "A"))
+        self.assertIn("journée 15, personne 1 : chercher plus loin, garde", reading.kept_list(self.d, "A"))
 
     def test_the_verdict_in_everyday_french(self):
         v = reading.verdict(self.d)
         self.assertEqual(v, "2 morts de manque : 1 de faim, 1 de froid, en hiver ; aucun mort de fond. "
-                            "Après 2 ans, 3 des 4 du départ sont vivants, et l’enfant né en route n’a pas survécu. Une technique gardée : chercher plus loin.")
+                            "Après 2 cycles, 3 des 4 du départ sont vivants, et l’enfant né en route n’a pas survécu. Une technique gardée : chercher plus loin.")
         self.assertTrue(reading.verdict(fixture(trials=False)).endswith("Les épreuves étaient coupées (c’est le témoin) : rien à garder."))
         for p in self.d["people"]:
             p["died"] = p["died"] or {"day": 95, "cause": "thirst", "season": "winter", "at": [1, 1]}
         self.assertTrue(reading.verdict(self.d).startswith("5 morts de manque : 1 de faim, 3 de soif, 1 de froid, en hiver ; aucun mort de fond. "
-                                                          "Après 2 ans, plus personne : les 4 du départ sont morts, et l’enfant né en route aussi."))
+                                                          "Après 2 cycles, plus personne : les 4 du départ sont morts, et l’enfant né en route aussi."))
         self.assertIn("Aucune technique", reading.verdict(self.d))
         alone = fixture()
         alone["people"] = alone["people"][:2]
@@ -508,7 +508,7 @@ class Reading(unittest.TestCase):
         self.assertEqual((sm["want"], sm["background"], sm["dead"]), (2, 3, 5))
         self.assertEqual(sm["background_by"], {"illness": 1, "old_age": 1, "childbirth": 0, "plague": 1})
         self.assertTrue(reading.verdict(self.d, sm).startswith(
-            "2 morts de manque : 1 de faim, 1 de froid, en hiver ; 3 morts de fond : maladie 1, vieillesse 1, plague 1. Après 2 ans, plus personne"))
+            "2 morts de manque : 1 de faim, 1 de froid, en hiver ; 3 morts de fond : maladie 1, vieillesse 1, plague 1. Après 2 cycles, plus personne"))
         # the want deaths spread over seasons: "le plus souvent"
         self.d["people"][2]["died"]["season"] = "summer"
         self.d["people"][3]["died"]["season"] = "summer"
@@ -531,7 +531,7 @@ class Reading(unittest.TestCase):
         self.assertAlmostEqual(st["days_per_person"], 1000 / 3 / 10000)
         tiles = reading.tiles_html(reading.summary(self.d))
         self.assertIn(f'<div class="tile stock"><div class=v>{reading.fmt(1000)}</div><div class=k>nourriture stockée (kJ)</div>', tiles)
-        self.assertIn("≈ 0 jour de vivres par vivant · début du cycle 2 : 0 · A 500, B 500", tiles)
+        self.assertIn("≈ 0 journée de vivres par vivant · début du cycle 2 : 0 · A 500, B 500", tiles)
         other = reading.summary(fixture())
         other["stock"]["kj"] = 400
         self.assertIn(f'<div class="tile stock"><div class=v>{reading.fmt(1000)}<span class="arrow good" title="+600', reading.tiles_html(reading.summary(self.d), other))
@@ -545,12 +545,12 @@ class Reading(unittest.TestCase):
         self.assertNotIn("arrow", tiles.split('class="tile stock"')[1].split("</div></div>")[0])
 
     def test_days_ages_and_places_in_words(self):
-        self.assertEqual(reading.day_fr(self.d, 112), "cycle 3, printemps, jour 112")
-        self.assertEqual(reading.day_fr(self.d, 50), "cycle 1, hiver, jour 50")
+        self.assertEqual(reading.day_fr(self.d, 112), "cycle 3, printemps, journée 112")
+        self.assertEqual(reading.day_fr(self.d, 50), "cycle 1, hiver, journée 50")
         self.assertEqual([reading.season_of(self.d, day) for day in (1, 13, 14, 26, 38, 39)],
                          ["spring", "spring", "summer", "autumn", "autumn", "winter"])
         self.assertEqual(reading.age_fr(self.d, 7300 + 99), "147 ans")      # game years of 50 days
-        self.assertEqual(reading.age_fr(self.d, 40), "40 jours")
+        self.assertEqual(reading.age_fr(self.d, 40), "40 journées")
         self.assertEqual(reading.age_days(self.d, self.d["people"][2], 70), 40)   # born day 30, dead day 70
         self.assertEqual(reading.age_days(self.d, self.d["people"][0]), 7300 + 99)
         self.assertEqual(reading.where_fr(self.d, "A", [11, 12], 70), "au camp")
@@ -563,19 +563,19 @@ class Reading(unittest.TestCase):
         self.assertIn("<h2>Les morts</h2>", deaths)
         self.assertIn("<th>Qui</th><th>Quand</th><th class=n>Âge à la mort</th><th>De quoi</th><th>Où</th>", deaths)
         self.assertEqual(deaths.count("<tr>"), 3)
-        self.assertIn("<td>personne 3 (A)</td><td>cycle 2, été, jour 70</td><td class=n>40 jours</td>", deaths)
+        self.assertIn("<td>personne 3 (A)</td><td>cycle 2, été, journée 70</td><td class=n>40 journées</td>", deaths)
         self.assertIn(">faim</span></td><td>au camp</td>", deaths)
         births = reading.births_table(self.d)
         self.assertIn("<h2>Les naissances</h2>", births)
         self.assertEqual(births.count("<tr>"), 2)
-        self.assertIn("<td>personne 3 (A)</td><td>cycle 1, automne, jour 30</td><td>-</td><td>-</td><td><span class=dead>non</span> : mort de faim à 40 jours</td>", births)
+        self.assertIn("<td>personne 3 (A)</td><td>cycle 1, automne, journée 30</td><td>-</td><td>-</td><td><span class=dead>non</span> : mort de faim à 40 journées</td>", births)
         people = reading.people_end_table(self.d)
         self.assertIn("<h2>Les gens à la fin</h2>", people)
         self.assertEqual(people.count("<tr>"), 6)
         rows = people.split("<tr>")
         self.assertIn("vivante", rows[2])                 # the living first (rows[1] is the header)
         self.assertIn("<td>chercher plus loin</td>", rows[2])
-        self.assertIn("<span class=dead>mort</span>, cycle 2, été, jour 70 (faim)", people)
+        self.assertIn("<span class=dead>mort</span>, cycle 2, été, journée 70 (faim)", people)
         empty = fixture()
         empty["people"] = [p for p in empty["people"] if not p["died"] and p["born"] == "start"]
         self.assertIn("Personne n’est mort.", reading.deaths_table(empty))
@@ -623,19 +623,19 @@ class Reading(unittest.TestCase):
         self.assertIn("frileux (0–20)", dared)
         nights = reading.nights_html(d)
         self.assertIn("Tribu A, 2 nuits gardées au foyer", nights)
-        self.assertIn("personne 1 : un essai gardé le jour 15 : la distance de recherche en plus", nights)
-        self.assertIn("personne 1 : un lieu (16, 16), 1 sorte de nourriture, vu le jour 12", nights)
-        self.assertIn("personne 2 : un lieu (32, 16), nu, vu le jour 40", nights)
+        self.assertIn("personne 1 : un essai gardé la journée 15 : la distance de recherche en plus", nights)
+        self.assertIn("personne 1 : un lieu (16, 16), 1 sorte de nourriture, vu la journée 12", nights)
+        self.assertIn("personne 2 : un lieu (32, 16), nu, vu la journée 40", nights)
         rum = reading.rumours_html(d)
         self.assertIn("cycle 1 : 1 rumeur dissipée", rum)
         self.assertIn("cycle 2 : 1 rumeur dissipée", rum)
-        self.assertIn("jour 40, personne 2 va où personne 1 avait dit (32, 16) et ne trouve rien", rum)
+        self.assertIn("journée 40, personne 2 va où personne 1 avait dit (32, 16) et ne trouve rien", rum)
         self.assertIn("aucune rumeur dissipée", reading.rumours_html(self.d))
         bel = reading.believes_html(d, d["people"][0])
         self.assertIn("Ce qu'il croit : 2 lieux, 1 vu, 1 entendu", bel)
         self.assertIn("<td>(32, 16)</td><td>entendu de personne 2</td><td class=n>30</td>", bel)
         self.assertIn("non : un souvenir plus récent le contredit", bel)
-        self.assertIn("<td>(16, 16)</td><td>vu lui-même</td><td class=n>12</td><td>un lieu (16, 16), 1 sorte de nourriture, vu le jour 12</td><td>oui</td>", bel)
+        self.assertIn("<td>(16, 16)</td><td>vu lui-même</td><td class=n>12</td><td>un lieu (16, 16), 1 sorte de nourriture, vu la journée 12</td><td>oui</td>", bel)
         self.assertEqual(reading.believes_html(d, d["people"][1]), "")
         page = plain.run_body({"name": "s", "version": None}, {"name": "r", "state": "fini", "seed": 1}, d)
         for section in ("Ce que la tribu sait", "Qui a osé quoi"):
@@ -656,7 +656,7 @@ class Reading(unittest.TestCase):
     def test_settings_in_french(self):
         s = reading.settings_fr(self.d)
         self.assertIn("monde vivarium, 2 tribus, 2 adultes", s)
-        self.assertIn("100 jours (2 ans), graine 1, avec épreuves", s)
+        self.assertIn("100 journées (2 cycles), graine 1, avec épreuves", s)
         self.assertIn("sans épreuves (témoin)", reading.settings_fr(fixture(trials=False)))
 
     def test_tables_build(self):
@@ -665,7 +665,7 @@ class Reading(unittest.TestCase):
         self.assertEqual(years.count("<tr>"), 5)
         people = reading.people_table(self.d)
         self.assertEqual(people.count("<details>"), 5)
-        self.assertIn("jour 70, faim (hiver)", people)
+        self.assertIn("journée 70, faim (hiver)", people)
         self.assertEqual(reading.hours_to_days(36), 1.5)
 
     def test_map_draws_trail_heat_and_deaths(self):
@@ -683,7 +683,7 @@ class Reading(unittest.TestCase):
         self.assertIn('<g data-death="70"', svg)
         self.assertIn('<g class="dots"></g>', svg)
         self.assertIn('<input type="range" min="1" max="100" value="100"', html_)
-        self.assertIn("cycle 2, hiver, jour 100", html_)
+        self.assertIn("cycle 2, hiver, journée 100", html_)
         self.assertIn(reading.NO_POSITIONS, html_)
         self.assertIn('data-heat checked', html_)                # without positions, the heatmap is shown
         payload = json.loads(html_[html_.index('<script type="application/json">') + 32:html_.rindex("</script>")])
@@ -739,14 +739,14 @@ class Curves(unittest.TestCase):
         self.assertEqual(pop.count("<polyline"), 2)
         self.assertIn("tribu A", pop)
         self.assertIn("vivants", pop)
-        self.assertIn("cycle 1, jour 50 : 3", pop)          # the hover title at the year's end
+        self.assertIn("cycle 1, journée 50 : 3", pop)          # the hover title at the year's end
         bd = reading.births_deaths_chart(d).svg("bd")
         self.assertIn("cycle 1 : 1 naissance", bd)
         self.assertIn("cycle 2 : 1 mort de faim", bd)
         self.assertIn("cycle 2 : 1 mort de froid", bd)
         self.assertIn("essais gardés", reading.kept_chart(d).svg("k"))
         self.assertIn("réserve de graisse", reading.reserve_chart(d).svg("r"))
-        self.assertEqual(reading.year_marks(d, None, "alive"), ([50], [5], ["cycle 1, jour 50 : 5"]))
+        self.assertEqual(reading.year_marks(d, None, "alive"), ([50], [5], ["cycle 1, journée 50 : 5"]))
 
     def test_two_runs_share_one_chart(self):
         a, b = fixture(), fixture(trials=False)
@@ -886,7 +886,7 @@ class SeriesReading(unittest.TestCase):
                                        ("/fiche/etalon-test-1/t-s1-avec?id=x", 404, "introuvable"),
                                        ("/chronique/etalon-test-1/t-s1-avec?an=1", 200, '"seasons"'),
                                        ("/morceau/etalon-test-1/t-s1-avec?quoi=carte", 200, "data-map2"),
-                                       ("/morceau/etalon-test-1/t-s1-avec?quoi=annexes", 200, "Année par année"),
+                                       ("/morceau/etalon-test-1/t-s1-avec?quoi=annexes", 200, "Cycle par cycle"),
                                        ("/morceau/etalon-test-1/t-s1-avec?quoi=rien", 404, "introuvable"),
                                        ("/morceau/etalon-test-1/t-s1-avec?quoi=carte-base", 200, '"tribes"'),
                                        ("/morceau/etalon-test-1/t-s1-avec?quoi=carte-an&an=2", 200, '"year":2'),
@@ -1254,7 +1254,7 @@ class PlainPages(unittest.TestCase):
         self.assertNotIn("Temps de calcul", page)                 # unknown or 0: hidden
         self.assertIn('<a href="/run/old/b">sans essais · graine 1</a>', page)
         run = plain.run_body(s, s["runs"][0], self.store.load("old", "a"), store=self.store)
-        self.assertIn("100</b> jours de jeu, soit <b>2</b> années d’âge", run)   # no days_per_age_year: the cycle's
+        self.assertIn("100</b> journées de jeu, soit <b>2</b> années d’âge", run)   # no days_per_age_year: the cycle's
 
     def test_the_runs_are_named_by_their_note_else_by_what_differs(self):
         runs = [{"name": "a", "seed": 1, "trials": True, "fire": True}, {"name": "b", "seed": 2, "trials": True, "fire": False}]
@@ -1321,7 +1321,7 @@ class PlainPages(unittest.TestCase):
         d = self.rich()
         line = plain.summary_line(d)
         self.assertEqual(line, "<p class=sumline><b>4</b> au départ · <b>1</b> naissance · <b>2</b> morts (1 de faim, 1 de froid) · "
-                               "<b>3</b> vivants à la fin · <b>5</b> ayant vécu en tout · <b>100</b> jours de jeu, soit <b>2</b> années d’âge</p>")
+                               "<b>3</b> vivants à la fin · <b>5</b> ayant vécu en tout · <b>100</b> journées de jeu, soit <b>2</b> années d’âge</p>")
         d["meta"]["days_per_age_year"] = 8
         self.assertIn("soit <b>12,5</b> années d’âge", plain.summary_line(d))
         couples = plain.couples_html(d)
@@ -1335,7 +1335,7 @@ class PlainPages(unittest.TestCase):
         frise = plain.frise(d)
         self.assertEqual(frise.count(f'fill="{reading.BIRTH_COLOR}"'), 1)
         self.assertEqual(frise.count(f'fill="{reading.CAUSE_COLOR["hunger"]}"'), 1)
-        self.assertIn("cycle 1, automne, jour 30 : naissance de personne 3, tribu A", frise)
+        self.assertIn("cycle 1, automne, journée 30 : naissance de personne 3, tribu A", frise)
         self.assertIn("Aucune naissance ni aucune mort", plain.frise(dict(d, people=[])))
 
 

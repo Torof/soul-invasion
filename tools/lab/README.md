@@ -132,7 +132,7 @@ Three screens:
     ce run" when the key is missing, the slider then moving the camp and
     the deaths only), the dead as a cross where they fell from the day
     they die, the camp at every year's end joined by its path, the day
-    shown as "cycle 3, printemps, jour 112" (a cycle is the four seasons; "an" is kept for ages), and the year's presence heatmap
+    shown as "cycle 3, printemps, journée 112" (a game day is « journée », four seasons a « cycle », « an » only for ages, real time says « réel »), and the year's presence heatmap
     as an option; **the population curve** alone, the whole width, years
     marked and winters shaded, and under it, on the same x scale, **the
     deaths of each year per tribe** as a small bar stacked in two, the
@@ -182,7 +182,7 @@ again; where this list and the pages differ, the pages are right:
   **Les facteurs** (cards by theme from `meta.factors`, every setting folded);
   **Les gens** with the age pyramids at the start and the end and the
   families as folded cards; **Les courbes** as small multiples sharing one
-  hairline (a click enlarges one); **Nourriture et tribus, année par année**
+  hairline (a click enlarges one); **Nourriture et tribus, cycle par cycle**
   (big figures, trend points, a strip of the years with ★ most food, ▼
   least, ▲ most births, ✕ most deaths by want; the table folded and loaded on
   demand); **Où ils vivent**, two canvas maps side by side, each among six

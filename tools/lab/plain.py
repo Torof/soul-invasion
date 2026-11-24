@@ -104,11 +104,11 @@ def measures_of(store, serie, run):
 # more is better, -1 fewer is better, 0 neither) and the dead zone (an absolute floor and a share of
 # the reference): a gap within it is noise and stays uncoloured.
 COLUMNS = [
-    ("start", "au départ", "les gens vivants au premier jour", 0, (0, 0)),
+    ("start", "au départ", "les gens vivants à la première journée", 0, (0, 0)),
     ("births", "naissances", "les enfants nés pendant le run", 1, (2, 0.05)),
     ("deaths", "morts (dont faim)", "tous les morts du run ; entre parenthèses, ceux morts de faim", -1, (2, 0.05)),
-    ("alive", "vivants à la fin", "les gens encore en vie au dernier jour", 1, (2, 0.05)),
-    ("lived", "ayant vécu en tout", "ceux du départ plus les naissances : tous ceux qui ont vécu un jour du run", 1, (2, 0.05)),
+    ("alive", "vivants à la fin", "les gens encore en vie à la dernière journée", 1, (2, 0.05)),
+    ("lived", "ayant vécu en tout", "ceux du départ plus les naissances : tous ceux qui ont vécu à un moment du run", 1, (2, 0.05)),
     ("together", "couples ensemble à l’aube", "sur les matins où une femme pouvait concevoir et avait un mari vivant, "
      "la part où les deux se réveillaient l’un près de l’autre", 1, (3, 0)),
     ("noon_spring", "distance du camp à midi, au printemps", "à midi, au printemps, à quelle distance de son camp du cycle se tient "
@@ -187,7 +187,7 @@ SETTING_FR = {
     "children": lambda v: f"{fmt(v)} enfants par camp",
     "infants": lambda v: f"{fmt(v)} nourrissons par camp",
     "adult_years": lambda v: f"âges {v[0]}–{v[1]}" if isinstance(v, list) and len(v) == 2 else f"âges {v}",
-    "days": lambda v: f"{fmt(v)} jours",
+    "days": lambda v: f"{fmt(v)} journées",
     "content": lambda v: f"contenu « {v} »",
     "ticks_per_second": lambda v: f"cadence {fmt(v)}",
     "base": lambda v: str(v),
@@ -304,7 +304,7 @@ def ref_label(store, serie, run):
 
 def state_words(r):
     if r.get("state") == "en cours":
-        return f"en cours, année {fmt(r.get('year'))}" if r.get("year") else "en cours"
+        return f"en cours, cycle {fmt(r.get('year'))}" if r.get("year") else "en cours"
     return {"attend": "pas encore lancé", "fini": ""}.get(r.get("state"), r.get("state") or "")
 
 
@@ -437,7 +437,7 @@ def summary_line(d):
              f"<b>{fmt(sm['dead'])}</b> mort{'s' if sm['dead'] > 1 else ''}" + (f" ({h(causes)})" if causes else ""),
              f"<b>{fmt(sm['alive'])}</b> vivant{'s' if sm['alive'] > 1 else ''} à la fin",
              f"<b>{fmt(sm['start'] + sm['births'])}</b> ayant vécu en tout",
-             f"<b>{fmt(days)}</b> jours de jeu, soit <b>{years_words(ay)}</b> année{'s' if ay >= 2 else ''} d’âge"]
+             f"<b>{fmt(days)}</b> journées de jeu, soit <b>{years_words(ay)}</b> année{'s' if ay >= 2 else ''} d’âge"]
     return '<p class=sumline>' + " · ".join(parts) + "</p>"
 
 
@@ -501,13 +501,13 @@ def frise(d):
     legend = (f'<i class=sw style="background:{reading.BIRTH_COLOR}"></i>naissance'
               + "".join(f' · <i class=sw style="background:{reading.CAUSE_COLOR.get(c, "#666")}"></i>mort {h(DEATH_WORDS.get(c, reading.cause_fr(c)))}'
                         for c in cs))
-    return f'{"".join(g)}<p class=caption>{legend}. Survoler une marque : le jour et la personne.</p>'
+    return f'{"".join(g)}<p class=caption>{legend}. Survoler une marque : la journée et la personne.</p>'
 
 
 APART_FR = [   # the causes of a night apart (`nights_apart[]`), in plain French
     ("homes_apart", "leurs deux foyers sont trop loin l’un de l’autre"),
     ("sleep_out", "l’un dort dehors, loin de chez lui, par habitude"),
-    ("goal", "l’un est parti plusieurs jours vers un but lointain"),
+    ("goal", "l’un est parti plusieurs journées vers un but lointain"),
     ("home_trial", "l’un essaie un nouveau foyer"),
     ("caught_out", "la nuit a surpris l’un loin de chez lui"),
 ]
@@ -546,7 +546,7 @@ def couples_html(d):
         ay = reading.age_year_days(d)
         rows = "".join(f'<tr><td class=n>{i + 1}</td><td class=n>{fmt(x.get("dawns") or 0)}</td><td class=n>{fmt(x.get("together") or 0)}</td>'
                        + "".join(f'<td class=n>{fmt(x.get(k) or 0)}</td>' for k, _w in APART_FR) + "</tr>" for i, x in enumerate(na))
-        out.append(f'<details class=fold><summary>Année d’âge par année d’âge (une année d’âge : {fmt(ay)} jours de jeu)</summary><div class=scroll>'
+        out.append(f'<details class=fold><summary>Année d’âge par année d’âge (une année d’âge : {fmt(ay)} journées de jeu)</summary><div class=scroll>'
                    '<table class=plain><thead><tr><th class=n>année d’âge</th><th class=n>matins</th><th class=n>ensemble</th>'
                    '<th class=n>foyers loin</th><th class=n>dort dehors</th><th class=n>but lointain</th><th class=n>essai de foyer</th>'
                    f'<th class=n>surpris par la nuit</th></tr></thead><tbody>{rows}</tbody></table></div></details>')
@@ -554,7 +554,7 @@ def couples_html(d):
         out.append('<p class=muted>Les matins ensemble ou séparés ne sont pas mesurés dans ce run (il est plus ancien que cette mesure).</p>')
     bc = (d.get("bilan") or {}).get("couples") if isinstance(d.get("bilan"), dict) else None
     if isinstance(bc, dict) and sum(v or 0 for v in bc.values()):
-        out.append(f"<p>Les jours où une femme pouvait tomber enceinte : <b>{fmt(bc.get('met') or 0)}</b> fois son mari était près d’elle et elle assez nourrie, "
+        out.append(f"<p>Les journées où une femme pouvait tomber enceinte : <b>{fmt(bc.get('met') or 0)}</b> fois son mari était près d’elle et elle assez nourrie, "
                    f"<b>{fmt(bc.get('apart') or 0)}</b> fois il était trop loin, <b>{fmt(bc.get('thin') or 0)}</b> fois elle était trop maigre, "
                    f"<b>{fmt(bc.get('apart_and_thin') or 0)}</b> fois les deux.</p>")
     fams = panels.families(d)
@@ -606,9 +606,9 @@ PARTS = [("carte", "La carte : où ils vont"), ("population", "La population au 
 LEADS = {
     "carte": "Où chaque tribu a vécu, cycle par cycle : le curseur choisit le cycle, et chaque cadre ce qu’il montre "
              "(les endroits où l’on se tenait à midi, les trajets et les camps, la nourriture, l’eau, les morts et les naissances).",
-    "population": "Combien de vivants compte chaque tribu, jour après jour ; les bandes pâles sont les hivers.",
-    "frise": "Chaque naissance au-dessus de la ligne et chaque mort en dessous, au jour où elle arrive, sur le même temps que la courbe.",
-    "ages": "Combien d’hommes et de femmes de chaque âge vivent au premier jour et au dernier, par tranches de dix années d’âge.",
+    "population": "Combien de vivants compte chaque tribu, journée après journée ; les bandes pâles sont les hivers.",
+    "frise": "Chaque naissance au-dessus de la ligne et chaque mort en dessous, à la journée où elle arrive, sur le même temps que la courbe.",
+    "ages": "Combien d’hommes et de femmes de chaque âge vivent à la première journée et au dernier, par tranches de dix années d’âge.",
     "couples": "Combien de couples se forment ou se séparent, et si mari et femme se réveillent l’un près de l’autre : "
                "sans cela, pas d’enfant.",
     "demenagements": "Chaque fois qu’un adulte change de foyer : quand, qui, à quelle distance et dans quelle direction, seul ou avec d’autres.",
@@ -670,9 +670,9 @@ def run_body(s, r, d, store=None, year=None):
                               + "<details class=chronall><summary>Chaque fait, un par un, cycle par cycle (filtres, recherche)</summary>", 1)
         chron = chron[: chron.rindex("</section>")] + "</details></section>"
     else:
-        chron = part("chronique", '<p class=muted>Pas de chronique : le run n’a pas d’année.</p>')
+        chron = part("chronique", '<p class=muted>Pas de chronique : le run n’a pas de cycle.</p>')
     body = [part("carte", panels.maps_html()),
-            part("population", reading.population_chart(d, wide=True).svg("vivants par tribu, jour par jour")),
+            part("population", reading.population_chart(d, wide=True).svg("vivants par tribu, journée après journée")),
             part("frise", frise(d)),
             part("ages", panels.pyramids_html(d)),
             part("couples", couples_html(d)),

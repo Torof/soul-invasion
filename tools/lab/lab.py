@@ -442,7 +442,7 @@ td,th{{border:1px solid #999;padding:3px 8px;text-align:left}}pre{{background:#e
 <h2>Ce que la série demandait</h2><p>{q}</p>
 <h2>Le plan</h2><pre>{h(json.dumps(plan, indent=1, ensure_ascii=False))}</pre>
 <h2>Les runs</h2>
-<p>Vivants et morts à la fin du run ; les compteurs sont ceux de la dernière année de chaque run, par tribu, lus dans ses données (<code>years[]</code>).</p>
+<p>Vivants et morts à la fin du run ; les compteurs sont ceux de le dernier cycle de chaque run, par tribu, lus dans ses données (<code>years[]</code>).</p>
 <table><tr><th>Run</th><th>Graine</th><th>Épreuves</th><th>État</th><th>Vivants</th><th>Morts</th><th>Temps</th><th>Page</th>{head}</tr>
 {''.join(body)}</table></html>"""
     with open(os.path.join(out, "synthese.html"), "w") as f:
@@ -847,7 +847,7 @@ section.tribe p{margin:.3em 0 .6em}section.tribe table{box-shadow:none;margin-to
 section.tribe ul,ol.kept{margin:.2em 0 .4em;padding-left:1.4em}ol.kept{font-size:.85em;max-height:22em;overflow:auto}
 .scroll{overflow-x:auto}table.years,table.people{font-size:.85em}details summary{cursor:pointer;color:var(--ink);font-weight:600}
 details.detail{margin-top:2.5em;border-top:1px solid var(--line);padding-top:1em}details.detail>summary{font-size:1.25em;font-weight:650}
-details.detail>summary::after{content:" — tout le reste : réglages, autres courbes, tableau des années, la vie de chacun";font-weight:400;color:#8a8f98;font-size:.75em}
+details.detail>summary::after{content:" — tout le reste : réglages, autres courbes, tableau des cycles, la vie de chacun";font-weight:400;color:#8a8f98;font-size:.75em}
 ul.lines{font-size:.8em;columns:2;margin:.2em 0}.controls{background:var(--surface);border-radius:12px;padding:.7em 1.2em;margin:.6em 0 1em;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 form.inline{display:inline-block;margin:.2em 1em .2em 0}form.inline select{max-width:28em}
 .plans input[type=text]{width:16em}
@@ -890,8 +890,8 @@ def form_page(lab, fields, port, error="", title="Nouvelle série"):
 <label for="infants">Nourrissons par camp</label><input type="number" id="infants" name="infants" min="0" value="{h(f['infants'])}">
 <label for="ages">Âges des adultes</label><input type="text" id="ages" name="ages" value="{h(f['ages'])}" pattern="\\d+-\\d+">
 <span class="hint">LO-HI en années, répartis ; 20-20 pour un couple de vingt ans.</span>
-<label for="fed">Nourris sans limite</label><span><input type="checkbox" id="fed" name="fed"{chk('fed')}> <code>--fed</code> : la faim d'un jour vaut 0, personne ne maigrit</span>
-<label for="days">Jours</label><span><input type="number" id="days" name="days" min="1" value="{h(f['days'])}"> <span id="years" class="muted"></span></span>
+<label for="fed">Nourris sans limite</label><span><input type="checkbox" id="fed" name="fed"{chk('fed')}> <code>--fed</code> : la faim d'une journée vaut 0, personne ne maigrit</span>
+<label for="days">Journées</label><span><input type="number" id="days" name="days" min="1" value="{h(f['days'])}"> <span id="years" class="muted"></span></span>
 <label for="seeds">Graines</label><input type="text" id="seeds" name="seeds" value="{h(f['seeds'])}">
 <span class="hint">Une liste (1,2,3) ou une plage (1-10), ou les deux (1-3,7). Un run par graine.</span>
 <label for="both">Avec et sans épreuves</label><span><input type="checkbox" id="both" name="both"{chk('both')}> deux runs par graine : <code>-avec</code> et <code>-sans</code> (<code>--no-trials</code>, le témoin de D50)</span>

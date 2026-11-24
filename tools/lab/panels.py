@@ -27,17 +27,17 @@ fmt = reading.fmt
 # a French name, the theme, the unit and one sentence. A rate the lab does not know shows its own
 # name under "Les corps", never dropped.
 RATE_FR = {
-    "hunger a day": ("La faim", "food", "points / jour", "monte de tant sur 100 chaque jour sans manger"),
-    "thirst a day": ("La soif", "bodies", "points / jour", "monte de tant sur 100 chaque jour sans boire"),
-    "cold a day of night": ("Le froid", "bodies", "points / jour de nuit", "monte la nuit dehors, loin du camp"),
-    "fatigue a day awake": ("La fatigue", "bodies", "points / jour éveillé", "il faut dormir chaque jour"),
-    "vitality lost a day starving, the fat reserve spent": ("La famine", "food", "vie / jour",
-                                                            "la vie perdue chaque jour quand la réserve de graisse est vide"),
+    "hunger a day": ("La faim", "food", "points / journée", "monte de tant sur 100 chaque journée sans manger"),
+    "thirst a day": ("La soif", "bodies", "points / journée", "monte de tant sur 100 chaque journée sans boire"),
+    "cold a day of night": ("Le froid", "bodies", "points / journée de nuit", "monte la nuit dehors, loin du camp"),
+    "fatigue a day awake": ("La fatigue", "bodies", "points / journée éveillé", "il faut dormir chaque journée"),
+    "vitality lost a day starving, the fat reserve spent": ("La famine", "food", "vie / journée",
+                                                            "la vie perdue chaque journée quand la réserve de graisse est vide"),
     "fat reserve, kJ": ("La réserve de graisse", "food", "kJ", "ce qu’un corps brûle avant d’affamer"),
-    "a day's eating at most, % of the need": ("Manger au plus", "food", "% du besoin / jour",
+    "a day's eating at most, % of the need": ("Manger au plus", "food", "% du besoin / journée",
                                              "la réserve se refait lentement, jamais d’un repas"),
-    "vitality lost a day at full thirst": ("La soif tue", "bodies", "vie / jour", "la vie perdue chaque jour à pleine soif"),
-    "vitality lost a day at full cold": ("Le froid tue", "bodies", "vie / jour", "la vie perdue chaque jour à plein froid"),
+    "vitality lost a day at full thirst": ("La soif tue", "bodies", "vie / journée", "la vie perdue chaque journée à pleine soif"),
+    "vitality lost a day at full cold": ("Le froid tue", "bodies", "vie / journée", "la vie perdue chaque journée à plein froid"),
 }
 # The factors of content/needs.ron the cards show (`meta.factors[].key`, since lab 6): theme, French
 # name, unit, one sentence. Every other key is in the folded list, by its own name.
@@ -55,10 +55,10 @@ FACTOR_FR = {
     "thought.place_tiles": ("thought", "Un lieu", "m de côté", "on retient la nourriture par coin, pas par buisson"),
     "thought.places_remembered": ("thought", "Lieux retenus", "lieux", "ceux qui valent le plus depuis le dernier regard"),
     "thought.plant_choice_hours": ("thought", "Choisir une plante", "heures", "on s’en tient à la plante choisie tant de temps"),
-    "trials.trial_after_days": ("thought", "Avant d’essayer", "jours de détresse", "il faut souffrir tant de jours pour essayer autre chose"),
-    "trials.trial_days": ("thought", "Un essai dure", "jours", "puis le monde le juge : gardé ou abandonné"),
+    "trials.trial_after_days": ("thought", "Avant d’essayer", "journées de détresse", "il faut souffrir tant de journées pour essayer autre chose"),
+    "trials.trial_days": ("thought", "Un essai dure", "journées", "puis le monde le juge : gardé ou abandonné"),
     "trials.imitate_percent": ("thought", "Copier", "%", "la chance de copier le camarade qui va le mieux"),
-    "trials.lived_keep_permille": ("thought", "Mémoire des nuits", "‰ par jour", "ce qu’un lieu où l’on a dormi garde d’un jour à l’autre"),
+    "trials.lived_keep_permille": ("thought", "Mémoire des nuits", "‰ par journée", "ce qu’un lieu où l’on a dormi garde d’une journée à l’autre"),
     "fire.told_per_night": ("fire", "Récits par soir", "souvenirs", "ce qu’un conteur dit au feu en une soirée"),
     "fire.heard_max": ("fire", "Retenus au plus", "souvenirs", "ce qu’une personne garde de ce qu’elle a entendu"),
     "fire.hearth_nights": ("fire", "Mémoire du foyer", "soirs", "les soirs que le foyer garde en mémoire"),
@@ -82,11 +82,11 @@ def factors(d):
     world = "le vivarium, une zone de l’atlas" if s.get("world") == "vivarium" else f"un carré de {fmt(s.get('side'))} m"
     out["world"].append(factor("La carte", f"{tiles[0] / 1000:.1f} km".replace(".", ","), f"{fmt(tiles[0])} × {fmt(tiles[1])} m",
                                f"{world} ; petite exprès, pour que les runs soient courts"))
-    out["world"].append(factor("Le cycle des saisons", fmt(yd), "jours", f"quatre saisons serrées dans {fmt(yd)} jours au lieu de 365"))
+    out["world"].append(factor("Le cycle des saisons", fmt(yd), "journées", f"quatre saisons serrées dans {fmt(yd)} journées au lieu de 365"))
     ad = m.get("days_per_age_year") or yd
     if ad != yd:
-        out["world"].append(factor("L’année d’âge", fmt(ad), "jours", "on vieillit d’un an tous les " + fmt(ad) + " jours"))
-    out["world"].append(factor("La durée", fmt(days // yd if yd else 0), "ans", f"{fmt(days)} jours de jeu"))
+        out["world"].append(factor("L’année d’âge", fmt(ad), "journées", "on vieillit d’un an tous les " + fmt(ad) + " journées"))
+    out["world"].append(factor("La durée", fmt(days), "journées", f"{fmt(days // yd if yd else 0)} cycles de {fmt(yd)} journées" if yd else ""))
     tribes = s.get("tribes") or len(m.get("camps") or [])
     out["world"].append(factor("Les tribus", fmt(tribes), "camps",
                                "chacune née à son camp, de part et d’autre de la rivière" if tribes > 1 else "une seule bande"))
@@ -105,7 +105,7 @@ def factors(d):
     out["food"].insert(0, factor("Nourriture sans limite", "oui" if fed else "non", "",
                                  "personne n’a faim : les naissances se lisent sans la nourriture" if fed
                                  else "il faut cueillir ce que les plantes portent, en saison"))
-    out["food"].append(factor("Un besoin", fmt(reading.KJ_PER_PERSON_DAY), "kJ / jour", "ce qu’une personne mange en un jour"))
+    out["food"].append(factor("Un besoin", fmt(reading.KJ_PER_PERSON_DAY), "kJ / journée", "ce qu’une personne mange en une journée"))
     brain = s.get("brain", True)
     out["thought"].append(factor("Le cerveau", "oui" if brain else "non", "",
                                  "il pense quand quelque chose change pour son corps" if brain else "le témoin : ils restent où ils sont nés",
@@ -311,13 +311,13 @@ def curves(d):
     def background(y):
         return sum(v or 0 for k, v in (y.get("deaths") or {}).items() if k not in reading.WANT_CAUSES)
 
-    line("alive_by_tribe", "Les vivants", "personnes", "vivants, jour par jour")
+    line("alive_by_tribe", "Les vivants", "personnes", "vivants, journée après journée")
     bars("births", "Les naissances", "par cycle", "naissances du cycle", lambda y: y.get("births"), "birth")
     bars("want", "Morts de manque", "par cycle", "morts de faim, de soif ou de froid dans le cycle", want, "want")
     bars("background", "Morts de fond", "par cycle", "morts de maladie, de vieillesse ou en couches dans le cycle", background, "bg-death")
-    bars("stored", "Nourriture portée", "jours / personne", "ce que portent les vivants à midi, en jours de nourriture par personne, "
+    bars("stored", "Nourriture portée", "journées / personne", "ce que portent les vivants à midi, en journées de nourriture par personne, "
          "moyenne du cycle", stored_days, digits=1)
-    bars("gathered", "Cueilli", "kJ / personne / jour", "cueilli dans le cycle, par vivant et par jour",
+    bars("gathered", "Cueilli", "kJ / personne / journée", "cueilli dans le cycle, par vivant et par journée",
          lambda y: ((y.get("food") or {}).get("gathered_kj") or 0) / max(1, y.get("population_before") or y.get("population") or 1) / yd)
     line("thin_by_tribe", "Les maigres", "personnes", "vivants dont la réserve de graisse est sous la moitié")
     line("weak_by_tribe", "Les faibles", "personnes", "vivants dont la réserve est sous le cinquième")
@@ -374,7 +374,7 @@ def maps_html():
                 '<div class=cv6><canvas></canvas><div class=tip6 hidden></div><div class=zoom6><button type=button data-z=1 aria-label="zoomer">+</button>'
                 '<button type=button data-z=-1 aria-label="dézoomer">−</button></div></div><div class=lay6 data-lay6></div><div class=leg6 data-leg6></div></figure>')
     return ('<div class=maps6 data-maps6><div class=mbar6><span class=yr6>cycle —</span><input type=range data-yr6 min=1 max=1 value=1 aria-label="cycle des saisons">'
-            '<button type=button data-play6>▶ les années</button><span class=seg role=group aria-label="cadrer sur" data-frames6></span>'
+            '<button type=button data-play6>▶ les cycles</button><span class=seg role=group aria-label="cadrer sur" data-frames6></span>'
             '<label class=chk><input type=checkbox data-pale6 checked> fond pâle</label></div>'
             f'<div class=mgrid6>{pane("presence")}{pane("routes")}</div>'
             '<p class="caption">Six cartes au choix dans chaque cadre : terrain et relief, nourriture, eau, midis, trajets et camps, morts et naissances. '
@@ -385,7 +385,7 @@ def maps_html():
 def curves_html():
     return ('<div class=sm6 data-sm6><p class=muted>les courbes se chargent…</p></div>'
             '<p class=caption>Une petite courbe par mesure, une colonne par tribu, même axe du temps partout ; les hivers en bandes pâles. '
-            'Survoler une courbe : la valeur exacte de ce jour sur toutes. Cliquer une mesure : elle s’agrandit.</p>')
+            'Survoler une courbe : la valeur exacte de cette journée sur toutes. Cliquer une mesure : elle s’agrandit.</p>')
 
 
 # --- the home's series cards: what each run found, read once and kept -----------------------------
@@ -458,7 +458,7 @@ def series_results(runs_dir, s):
         verdict = (f"Avec {word}, {mean_fr([b['alive'] for b in ga])} vivants à la fin ; sans, {mean_fr([b['alive'] for b in gb])}"
                    + (f" : {'+' if gap > 0 else '−'}{mean_fr([abs(gap)])}." if abs(gap) >= 0.5 else " : pas de différence."))
         for label, fn in (("morts de manque", lambda b: b["want"]), ("naissances", lambda b: b["births"]),
-                          ("jours de nourriture portée par personne à la fin", lambda b: b["food_days"])):
+                          ("journées de nourriture portée par personne à la fin", lambda b: b["food_days"])):
             xa = [fn(b) for b in ga if fn(b) is not None]
             xb = [fn(b) for b in gb if fn(b) is not None]
             if xa and xb:
@@ -470,7 +470,7 @@ def series_results(runs_dir, s):
         verdict = (f"Le plus de vivants à la fin : {short[hi]} ({mean_fr([means[hi]])} en moyenne) ; "
                    f"le moins : {short[lo]} ({mean_fr([means[lo]])}).")
         for label, fn in (("vivants", lambda b: b["alive"]), ("morts de manque", lambda b: b["want"]),
-                          ("jours de nourriture portée par personne", lambda b: b["food_days"])):
+                          ("journées de nourriture portée par personne", lambda b: b["food_days"])):
             parts = []
             for k in keys:
                 xs = [fn(b) for b in groups[k] if fn(b) is not None]
@@ -576,7 +576,7 @@ MAPS6_JS = r"""
     water: () => [['water', true, `<i class=sw6 style="background:rgb(60,110,170)"></i> rivière et lacs`],
       ['ford', true, `<i class=sw6 style="background:rgb(120,150,180)"></i> gués`], ['brook', true, `<i class=sw6 style="background:rgb(90,140,190)"></i> ruisseaux`], camp],
     presence: () => [...B.tribes.map(t => ['t' + t, true, `<i class=sw6 style="background:${tc(t)};opacity:.7"></i> tribu ${esc(t)}`]),
-      ['cum', false, 'toutes les années jusqu’à celle-ci']],
+      ['cum', false, 'tous les cycles jusqu’à celui-ci']],
     routes: () => [['tracks', true, sw(`<path d="M1 12L6 5L10 9L15 3" fill=none stroke="${tc(B.tribes[0])}" stroke-width=2/>`) + ' trajets'], camp,
       ['deaths', true, sw(`<path d="M3 3L13 13M3 13L13 3" stroke="${css('--want')}" stroke-width=3/>`) + ' morts'],
       ['births', true, sw(`<circle cx=8 cy=8 r=5 fill="${css('--birth')}" stroke="#fff"/>`) + ' naissances'],
@@ -586,7 +586,7 @@ MAPS6_JS = r"""
     life: () => [['want', true, sw(`<path d="M3 3L13 13M3 13L13 3" stroke="${css('--want')}" stroke-width=3/>`) + ' morts de manque'],
       ['bg', true, sw(`<path d="M3 3L13 13M3 13L13 3" stroke="${css('--bg-death')}" stroke-width=3/>`) + ' morts de fond'],
       ['births', true, sw(`<circle cx=8 cy=8 r=5 fill="${css('--birth')}" stroke="#fff"/>`) + ' naissances'],
-      ['cum', true, 'toutes les années jusqu’à celle-ci'], camp],
+      ['cum', true, 'tous les cycles jusqu’à celui-ci'], camp],
   };
 
   // --- the view: a centre in tiles and a scale in pixels a tile, the same for both maps
@@ -865,7 +865,7 @@ MAPS6_JS = r"""
     if (m.on.tracks) for (const [id, tr] of Object.entries(yd.tracks)) for (const p of tr) test((p[1] - wx) ** 2 + (p[2] - wy) ** 2, {track: [id, p]});
     return best;
   }
-  const dayFr = d => { const yd = B.dpy, doy = (d - 1) % yd; return `cycle ${Math.floor((d - 1) / yd) + 1}, ${SEASON[Math.min(3, Math.floor(doy * 4 / yd))]}, jour ${nf(d)}`; };
+  const dayFr = d => { const yd = B.dpy, doy = (d - 1) % yd; return `cycle ${Math.floor((d - 1) / yd) + 1}, ${SEASON[Math.min(3, Math.floor(doy * 4 / yd))]}, journée ${nf(d)}`; };
   const who = id => `personne ${id} <span class=m>(${esc(B.people[id] || '?')})</span>`;
   const kindFr = k => String(k).replace(/_/g, ' ');
   function cellLines(m, wx, wy) {
@@ -940,7 +940,7 @@ MAPS6_JS = r"""
     const yd = years[Y];
     if (m.kind === 'presence') return B.tribes.map(t => { const pk = presenceOf(m, t)[1];
       return `<span>tribu ${esc(t)}, ${esc(B.sides[t] || '')} : peu<i class=ramp style="background:linear-gradient(90deg,color-mix(in srgb,${tc(t)} 14%,transparent),${tc(t)})"></i>souvent (1 à ${nf(pk)} midis de personnes par case, échelle logarithmique)</span>`; }).join('')
-      + '<span>Un midi de personne : une personne vue à midi dans la case, un jour.</span>';
+      + '<span>Un midi de personne : une personne vue à midi dans la case, une journée.</span>';
     if (m.kind === 'routes') return yd ? `<span>cycle ${Y} : ${yd.deaths.length} mort${yd.deaths.length > 1 ? 's' : ''} (${yd.deaths.filter(d => d[5]).length} de manque, en rouge ; de fond en gris), ${yd.births.length} naissance${yd.births.length > 1 ? 's' : ''} (magenta), ${yd.moves.length} maison${yd.moves.length > 1 ? 's' : ''} déplacée${yd.moves.length > 1 ? 's' : ''} (sarcelle). Points cerclés de blanc : chacun au dernier midi du cycle.</span>` : '';
     if (m.kind === 'life') { const L = lifeOf(m), want = L.deaths.filter(e => e[5]).length;
       return `<span>${m.on.cum ? 'du cycle 1 au cycle ' + Y : 'au cycle ' + Y} : <b>${L.deaths.length}</b> morts (<b>${want}</b> de manque en rouge, ${L.deaths.length - want} de fond en gris), <b>${L.births.length}</b> naissances (magenta). Survoler : qui, quand ; cliquer : sa fiche.</span>`; }
@@ -972,7 +972,7 @@ MAPS6_JS = r"""
     box.querySelector('[data-pale6]').onchange = drawAll;
     const play = box.querySelector('[data-play6]');
     play.onclick = () => {
-      if (playing) { clearInterval(playing); playing = null; play.textContent = '▶ les années'; return; }
+      if (playing) { clearInterval(playing); playing = null; play.textContent = '▶ les cycles'; return; }
       play.textContent = '❚❚ arrêter';
       if (Y >= B.years) setYear(1);
       playing = setInterval(() => { if (Y >= B.years) { play.click(); return; } setYear(Y + 1); }, 900);
@@ -1033,7 +1033,7 @@ SM6_JS = r"""
     if (row.kind === 'bars') { const y = Math.floor((day - 1) / C.dpy); return [vals[y] ?? null, 'cycle ' + (y + 1)]; }
     let lo = 0, hi = C.days.length - 1;
     while (lo < hi) { const mid = (lo + hi) >> 1; if (C.days[mid] < day) lo = mid + 1; else hi = mid; }
-    return [vals[lo] ?? null, 'jour ' + C.days[lo]];
+    return [vals[lo] ?? null, 'journée ' + C.days[lo]];
   }
   function chart(row, s, w, hgt, top) {
     const L = 40, R = 6, T = 6, Bm = 16, iw = w - L - R, ih = hgt - T - Bm, last = C.last || 1;
@@ -1074,8 +1074,8 @@ SM6_JS = r"""
   function setHover(day) {
     hoverDay = day;
     const now = box.querySelector('.now6');
-    if (day === null) now.textContent = 'Survoler une courbe : la valeur de ce jour sur toutes.';
-    else { const y = Math.floor((day - 1) / C.dpy) + 1, doy = (day - 1) % C.dpy; now.textContent = `cycle ${y}, ${SEASON[Math.min(3, Math.floor(doy * 4 / C.dpy))]}, jour ${day}`; }
+    if (day === null) now.textContent = 'Survoler une courbe : la valeur de cette journée sur toutes.';
+    else { const y = Math.floor((day - 1) / C.dpy) + 1, doy = (day - 1) % C.dpy; now.textContent = `cycle ${y}, ${SEASON[Math.min(3, Math.floor(doy * 4 / C.dpy))]}, journée ${day}`; }
     box.querySelectorAll('.row6').forEach(el => {
       const row = C.rows[+el.dataset.i];
       el.querySelectorAll('.ch6').forEach(ch => {
@@ -1209,7 +1209,7 @@ HOME_JS = r"""
   function runLine(s, r) {
     const res = (results[s.name] || {}).runs || {};
     const t = r.started ? (r.ended ? `${hour(r.started)} → ${hour(r.ended)} (${secs(r.elapsed)})` : `depuis ${hour(r.started)} (${secs(r.elapsed)})`) : 'pas encore lancé';
-    const line = res[r.name] || (r.state === 'en cours' ? `année ${r.year ?? '—'} · ${r.alive ?? '—'} vivants · ${r.dead ?? '—'} morts (d’après le log)` :
+    const line = res[r.name] || (r.state === 'en cours' ? `cycle ${r.year ?? '—'} · ${r.alive ?? '—'} vivants · ${r.dead ?? '—'} morts (d’après le log)` :
       r.data ? 'résultat en lecture…' : r.alive != null ? `${r.alive} vivants · ${r.dead} morts (d’après le log)` : '');
     return `<li><span><a href="${esc(r.read)}">${esc(variant(r))}</a> <span class=w>${esc(t)}</span></span>${kind(r.state) === 'fini' ? '<span></span>' : `<span class="mk ${kind(r.state)}">${SIGN[kind(r.state)]} ${esc(r.state)}</span>`}<span class=r>${esc(line)}</span></li>`;
   }
@@ -1302,7 +1302,7 @@ def home_body(lab, standard_plan):
             '<option value=echec>en échec</option><option value=arret>arrêtées</option></select></label>'
             '<label>tri <select id=s7><option value=recent>lancement, récent d’abord</option><option value=ancien>lancement, ancien d’abord</option>'
             '<option value=but>but (A → Z)</option><option value=etat>état</option></select></label>'
-            '<label><input type=checkbox id=g7 checked> grouper par jour</label></div>'
+            '<label><input type=checkbox id=g7 checked> grouper par journée</label></div>'
             '<p id=err class=warn></p><div id=series><p class=muted>Chargement…</p></div>'
             f'<h2 class=sec7>Plans <small>{len(lab.standard_plans())} plans étalons</small></h2><div class=pcards7>{plans}</div>'
             f'<script>{HOME_JS}</script>')
@@ -1352,7 +1352,7 @@ def years_points(d):
         first, last = ys[0], ys[-1]
         a, b = stored_days(first), stored_days(last)
         if a is not None and b is not None:
-            pts.append(P(f"{fmt(round(a, 1))} → {fmt(round(b, 1))} jours", f"de nourriture portée par personne chez {t}, cycle {first['year']} à cycle {last['year']}"
+            pts.append(P(f"{fmt(round(a, 1))} → {fmt(round(b, 1))} journées", f"de nourriture portée par personne chez {t}, cycle {first['year']} à cycle {last['year']}"
                          + (f" ({ratio_words(a, b)})" if ratio_words(a, b) else ""), [stored_days(y) for y in ys]))
         pop = [y.get("population") for y in ys]
         pts.append(P(f"{fmt(first.get('population_before'))} → {fmt(last.get('population'))} vivants", f"chez {t}", pop))
@@ -1364,7 +1364,7 @@ def years_points(d):
     thin = [(y.get("year"), y.get("tribe"), (y["food"].get("thin_hours") or 0) / 24) for y in allys]
     worst = max(thin, key=lambda x: x[2], default=None)
     if worst and worst[2] >= 1:
-        pts.append(P(f"cycle {worst[0]}", f"le plus maigre : {fmt(round(worst[2]))} jours-personne maigres chez {worst[1]}"))
+        pts.append(P(f"cycle {worst[0]}", f"le plus maigre : {fmt(round(worst[2]))} journées-personne maigres chez {worst[1]}"))
     return pts[:6]
 
 
@@ -1377,10 +1377,10 @@ def years_tiles(d):
     thin = sum(y["food"].get("thin_hours") or 0 for y in allys) / 24
     births = sum(y.get("births") or 0 for y in d.get("years", []))
     deaths = sum(y.get("deaths_total") or 0 for y in d.get("years", []))
-    tiles = [("cueilli", f"{fmt(round(g / kd))}", "jours de nourriture d’une personne"),
-             ("mangé", f"{fmt(round(e / kd))}", "jours de nourriture"),
-             ("pourri", f"{fmt(round(sp / kd))}", f"jours, {round(sp * 100 / g) if g else 0} % du cueilli"),
-             ("jours maigres", fmt(round(thin)), "jours-personne sous la moitié de la réserve"),
+    tiles = [("cueilli", f"{fmt(round(g / kd))}", "journées de nourriture d’une personne"),
+             ("mangé", f"{fmt(round(e / kd))}", "journées de nourriture"),
+             ("pourri", f"{fmt(round(sp / kd))}", f"journées, {round(sp * 100 / g) if g else 0} % du cueilli"),
+             ("journées maigres", fmt(round(thin)), "journées-personne sous la moitié de la réserve"),
              ("naissances · morts", f"{fmt(births)} · {fmt(deaths)}", "sur tout le run")]
     return '<div class=ytiles>' + "".join(f'<div class=yt><div class=k>{h(k)}</div><div class=v>{h(v)}</div><div class=s>{h(s_)}</div></div>'
                                           for k, v, s_ in tiles) + '</div>'
@@ -1422,7 +1422,7 @@ def year_strip(d):
             cells.append(f'<div class="yc{" hot" if sign else ""}" style="--a:{a:.2f};--c:var(--t{h(t)})" title="{h(tip)}">'
                          f'<span class=n>{yr}</span><span class=m>{h(sign)}</span></div>')
         rows.append(f'<div class=yrow><span class=yl>{reading.tribe_chip(t)}</span><div class=ycells style="--n:{ly}">{"".join(cells)}</div></div>')
-    legend = ('<p class=caption>Une case par cycle ; plus la couleur est pleine, plus la tribu porte de nourriture à midi (jours par personne, '
+    legend = ('<p class=caption>Une case par cycle ; plus la couleur est pleine, plus la tribu porte de nourriture à midi (journées par personne, '
               f'au plus {fmt(round(peak, 1))}). ★ le plus de nourriture portée, ▼ le moins, ▲ le plus de naissances, ✕ le plus de morts de manque. '
               'Survoler une case : ses chiffres.</p>')
     return f'<div class=ystrip>{"".join(rows)}</div>{legend}'
@@ -1572,8 +1572,8 @@ def families(d):
 def pyramids_html(d):
     """The ages at the first day and at the last, side by side, in age-years (D09)."""
     ay = reading.age_year_days(d)
-    return (f'<div class=pyrs>{pyramid(d, 1, "Au premier jour")}{pyramid(d, reading.run_days(d), "Au dernier jour")}</div>'
-            '<p class=caption>Par tranches de dix années d’âge (une année d’âge : ' + fmt(ay) + ' jours de jeu) ; hommes à gauche, femmes à droite.</p>')
+    return (f'<div class=pyrs>{pyramid(d, 1, "À la première journée")}{pyramid(d, reading.run_days(d), "À la dernière journée")}</div>'
+            '<p class=caption>Par tranches de dix années d’âge (une année d’âge : ' + fmt(ay) + ' journées de jeu) ; hommes à gauche, femmes à droite.</p>')
 
 
 def families_fold(d, fams=None):
