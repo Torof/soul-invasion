@@ -7556,7 +7556,7 @@ mod tests {
         )
         .expect("repository materials parse")
         .with_species(include_str!("../../../content/species.ron"))
-            .expect("species.ron parses")
+        .expect("species.ron parses")
     }
 
     /// The small valley with its trees, body 1 born at the camp.

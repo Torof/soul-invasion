@@ -187,6 +187,57 @@ impl Handwork {
 }
 
 /// A material's index in the content.
+/// The deeds that make a container, read from the content alone: take a
+/// sharp material, cut a tree whose bark folds into a container with it,
+/// fold that bark. Not the experiment's: its diagnostic (the vivarium's
+/// `--hands-known`), founders who know them from birth. Empty when the
+/// content holds no such chain.
+#[must_use]
+pub fn container_deeds(rules: &Content) -> Deeds {
+    let mut deeds = Deeds::default();
+    let index = |id: &str| material_index(rules, id);
+    let Some(sharp) = rules.materials.iter().position(|m| m.sharp) else {
+        return deeds;
+    };
+    let Ok(sharp) = u16::try_from(sharp) else {
+        return deeds;
+    };
+    for (s, species) in rules.species.iter().enumerate() {
+        let Some(bark) = species.bark.as_deref().and_then(index) else {
+            continue;
+        };
+        let holds = folds_into(rules, bark)
+            .and_then(|m| rules.materials.get(usize::from(m)))
+            .is_some_and(|m| m.holds_g > 0);
+        let Ok(s) = u16::try_from(s) else {
+            continue;
+        };
+        if holds {
+            for deed in [
+                Deed {
+                    gesture: Gesture::Take,
+                    on: sharp,
+                    with: NOTHING,
+                },
+                Deed {
+                    gesture: Gesture::Cut,
+                    on: s,
+                    with: sharp,
+                },
+                Deed {
+                    gesture: Gesture::Fold,
+                    on: bark,
+                    with: NOTHING,
+                },
+            ] {
+                deeds.add(deed);
+            }
+            return deeds;
+        }
+    }
+    deeds
+}
+
 fn material_index(rules: &Content, id: &str) -> Option<u16> {
     rules
         .materials
@@ -771,6 +822,13 @@ mod tests {
             assert!(deeds.add(deed));
         }
         deeds
+    }
+
+    #[test]
+    fn the_deeds_of_a_container_are_read_from_the_content() {
+        let (rules, _, _, _, birch) = by_a_birch();
+        assert_eq!(container_deeds(&rules), bark_deeds(&rules, birch));
+        assert!(container_deeds(&Content::sample()).is_empty());
     }
 
     #[test]

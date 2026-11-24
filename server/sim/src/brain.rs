@@ -91,7 +91,7 @@ use crate::memory::{self, Access, Fared, Record, RecordId, Store};
 use crate::{Blockage, Body, BodyId, Event, GATHER_REACH_MM, Intention, ItemId, World};
 
 mod handwork;
-pub use handwork::{DEEDS, Deed, Deeds, Handwork, NOTHING};
+pub use handwork::{DEEDS, Deed, Deeds, Handwork, NOTHING, container_deeds};
 
 /// Thirst from which a body goes to drink: half a game day without
 /// water (thirst rises 100 points a day), so it drinks before the night
@@ -4033,6 +4033,19 @@ impl Brains {
     /// The mind of `body`, if the brain pilots it.
     pub fn mind(&self, body: BodyId) -> Option<&Mind> {
         self.minds.get(&body)
+    }
+
+    /// `body` knows `deeds` of the hands from now on (D57): the vivarium's
+    /// diagnostic founders (`--hands-known`), never the game's. False when
+    /// the brain does not pilot it.
+    pub fn teach_hands(&mut self, body: BodyId, deeds: Deeds) -> bool {
+        let Some(mind) = self.minds.get_mut(&body) else {
+            return false;
+        };
+        for deed in deeds.iter() {
+            mind.ways.hands.add(deed);
+        }
+        true
     }
 
     /// How many due minds the last turn left waiting for the next

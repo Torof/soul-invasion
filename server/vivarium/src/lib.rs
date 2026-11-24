@@ -136,6 +136,10 @@ pub struct Settings {
     /// control run beside each trial run (`--no-trials`): the content's
     /// `trials` section is replaced by one where nobody tries anything.
     pub trials: bool,
+    /// A diagnostic of D57, not its experiment (`--hands-known N`): the
+    /// first N founders of each tribe know the deeds of a container from
+    /// birth, read from the content. 0, the experiment: nobody knows.
+    pub hands_known: u32,
     /// The evening fire and the common memory (D55); false is the control
     /// run beside each run with the fire (`--no-fire`): the content's
     /// `fire` section is replaced by one where nobody tells anything.
@@ -200,6 +204,7 @@ impl Default for Settings {
             adult_years: (18, 40),
             fed: false,
             trials: true,
+            hands_known: 0,
             fire: true,
             decisions: true,
             moves: true,
@@ -2108,6 +2113,7 @@ pub fn run_watched(
             born.push((per_year / 2, sex, true));
         }
         let mut women: Vec<BodyId> = Vec::new();
+        let mut knowers = settings.hands_known;
         for (age_days, sex, infant) in born {
             let Some(id) = world.spawn_near(camp) else {
                 continue;
@@ -2126,6 +2132,10 @@ pub fn run_watched(
             }
             if settings.brain {
                 brains.adopt_at(&world, content, id, camp);
+                if knowers > 0 && !infant && age_days >= 18 * per_year {
+                    knowers -= 1;
+                    brains.teach_hands(id, sim::brain::container_deeds(content));
+                }
             }
             let at = world.body(id).map_or(camp, sim::Body::pos);
             let who = describe(sex, age_days * 1000 / per_year.max(1));
@@ -6152,6 +6162,7 @@ mod tests {
             adult_years: (18, 40),
             fed: false,
             trials: true,
+            hands_known: 0,
             fire: true,
             decisions: true,
             moves: true,

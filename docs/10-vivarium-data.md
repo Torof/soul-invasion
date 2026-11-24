@@ -56,6 +56,7 @@ clock, the only field no seed decides.
 | `meta.settings.ticks_per_second` | The cadence: ticks a game second (the game runs at 10) | ticks |
 | `meta.settings.seed` | The run's seed | integer |
 | `meta.settings.trials` | The brains try, judge and copy their ways (false: `--no-trials`) | boolean |
+| `meta.settings.hands_known` | Grown founders of each tribe who know the deeds of a container from birth, a diagnostic of D57 (`--hands-known`); 0 in the experiment | count |
 | `meta.settings.fire` | The evening fire and the common memory, D55 (false: `--no-fire`); since 23 November 2026 | boolean |
 | `meta.settings.decisions` | The decisions at the evening fire, D56 (false: `--no-decisions`); since 23 November 2026 | boolean |
 | `meta.settings.moves` | Moving home as a consequence (amended 24 November 2026); `false`: the control run, `--no-moves`, nobody is surprised nor moves home | boolean |

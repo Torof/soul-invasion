@@ -552,6 +552,7 @@ impl Report {
                 "ticks_per_second": s.ticks_per_second,
                 "seed": s.seed,
                 "trials": s.trials,
+                "hands_known": s.hands_known,
                 "fire": s.fire,
                 "decisions": s.decisions,
                 "moves": s.moves,
