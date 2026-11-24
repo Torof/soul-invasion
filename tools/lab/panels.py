@@ -45,7 +45,7 @@ FACTOR_FR = {
     "thin_percent": ("bodies", "Maigre sous", "% de la réserve", "en dessous, on compte la personne maigre"),
     "weak_percent": ("bodies", "Faible sous", "% de la réserve", "en dessous, faible : elle marche moins vite"),
     "weak_pace_percent": ("bodies", "Le pas d’un faible", "% du pas", "ce qu’il reste du pas quand on est faible"),
-    "life.pregnancy_seasons": ("bodies", "La grossesse", "saisons", "de la conception à la naissance"),
+    "life.pregnancy_quarters": ("bodies", "La grossesse", "quarts d’année d’âge", "de la conception à la naissance"),
     "life.old_age_from_years": ("bodies", "La vieillesse", "ans", "l’âge où la mort de vieillesse commence"),
     "life.childbirth_death_percent": ("bodies", "Mourir en couches", "%", "la part des naissances où la mère meurt"),
     "meal_g": ("food", "Un repas", "g", "ce qu’on mange d’un coup"),
@@ -82,7 +82,10 @@ def factors(d):
     world = "le vivarium, une zone de l’atlas" if s.get("world") == "vivarium" else f"un carré de {fmt(s.get('side'))} m"
     out["world"].append(factor("La carte", f"{tiles[0] / 1000:.1f} km".replace(".", ","), f"{fmt(tiles[0])} × {fmt(tiles[1])} m",
                                f"{world} ; petite exprès, pour que les runs soient courts"))
-    out["world"].append(factor("L’année", fmt(yd), "jours", "quatre saisons serrées dans 50 jours au lieu de 365"))
+    out["world"].append(factor("L’année", fmt(yd), "jours", f"quatre saisons serrées dans {fmt(yd)} jours au lieu de 365"))
+    ad = m.get("days_per_age_year") or yd
+    if ad != yd:
+        out["world"].append(factor("L’année d’âge", fmt(ad), "jours", "on vieillit d’un an tous les " + fmt(ad) + " jours"))
     out["world"].append(factor("La durée", fmt(days // yd if yd else 0), "ans", f"{fmt(days)} jours de jeu"))
     tribes = s.get("tribes") or len(m.get("camps") or [])
     out["world"].append(factor("Les tribus", fmt(tribes), "camps",

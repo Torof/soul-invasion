@@ -1,10 +1,22 @@
 //! World time: ticks, calendar and game time.
 //!
 //! The simulation advances by fixed ticks (D24). The calendar is world data
-//! (D09): each world decides how many ticks make a second and how many
-//! seconds make a day, and how many days make a year of four seasons
-//! (D09, amended 13 November 2026). Time acceleration lives in the server,
-//! never here.
+//! (D09): each world decides how many ticks make a second, how many
+//! seconds make a day, how many days make a cycle of four seasons and how
+//! many age-years a cycle holds (D09, amended 13 and 24 November 2026).
+//! Time acceleration lives in the server, never here.
+//!
+//! Three clocks (D09, amended 24 November 2026):
+//! - the **day**: needs, gathering, walking, rot;
+//! - the **age-year**: ageing, pregnancy, childhood, fertility, healing;
+//!   a body's age is counted in age-years, never in cycles;
+//! - the **cycle** of four seasons: nature (fruit windows, crops, tree
+//!   growth). Where the code, the protocol or the storage says "year"
+//!   without "age" (the event `SeasonStarted { year }`, a crop's
+//!   year, the stored and sent `days_per_year`), it means the cycle.
+//!
+//! Today one age-year is the whole cycle (`age_years_per_cycle` 1); the
+//! validated v1 calendar (lot 2) makes it an eighth of one.
 
 use serde::{Deserialize, Serialize};
 
@@ -23,12 +35,19 @@ pub enum CalendarError {
     /// `seconds_per_day` was zero.
     #[error("seconds_per_day must be at least 1")]
     ZeroSecondsPerDay,
-    /// `days_per_year` was under four: every season needs a day.
-    #[error("days_per_year must be at least 4, a day per season")]
-    TooShortYear,
+    /// `days_per_cycle` was under four: every season needs a day.
+    #[error("days_per_cycle must be at least 4, a day per season")]
+    TooShortCycle,
+    /// `age_years_per_cycle` was zero.
+    #[error("age_years_per_cycle must be at least 1")]
+    ZeroAgeYears,
+    /// The cycle's days are not a whole number of age-years, each of four
+    /// days at least (a day per quarter of an age-year).
+    #[error("days_per_cycle must be a whole number of age-years of at least 4 days each")]
+    UnevenAgeYears,
 }
 
-/// A quarter of the year (D09). Seasons start at dawn: a day belongs to
+/// A quarter of the cycle (D09). Seasons start at dawn: a day belongs to
 /// one season only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -44,7 +63,7 @@ pub enum Season {
 }
 
 impl Season {
-    /// The four, in the order of the year.
+    /// The four, in the order of the cycle.
     pub const ALL: [Season; 4] = [
         Season::Spring,
         Season::Summer,
@@ -61,19 +80,25 @@ impl Season {
 pub struct Calendar {
     ticks_per_second: u32,
     seconds_per_day: u32,
-    /// Absent from a calendar saved before the year existed (and from
-    /// the old snapshots the storage's first migrations read): it takes
-    /// the provisional year.
-    days_per_year: u32,
+    /// Game days in a cycle of four seasons, stored under its first name,
+    /// `days_per_year`.
+    #[serde(rename = "days_per_year")]
+    days_per_cycle: u32,
+    /// Age-years in a cycle (snapshot v18).
+    age_years_per_cycle: u32,
 }
 
-/// A calendar as stored: the same fields, checked on reading.
+/// A calendar as stored: the same fields, checked on reading. A field
+/// absent from an old world takes its legacy value, pinned: never a
+/// default that a later calendar may change.
 #[derive(Deserialize)]
 struct StoredCalendar {
     ticks_per_second: u32,
     seconds_per_day: u32,
-    #[serde(default = "default_days_per_year")]
-    days_per_year: u32,
+    #[serde(default = "legacy_days_per_cycle", rename = "days_per_year")]
+    days_per_cycle: u32,
+    #[serde(default = "legacy_age_years_per_cycle")]
+    age_years_per_cycle: u32,
 }
 
 impl TryFrom<StoredCalendar> for Calendar {
@@ -81,12 +106,27 @@ impl TryFrom<StoredCalendar> for Calendar {
 
     fn try_from(stored: StoredCalendar) -> Result<Self, CalendarError> {
         Self::new(stored.ticks_per_second, stored.seconds_per_day)?
-            .with_days_per_year(stored.days_per_year)
+            .with_cycle(stored.days_per_cycle, stored.age_years_per_cycle)
     }
 }
 
-fn default_days_per_year() -> u32 {
-    Calendar::DEFAULT_DAYS_PER_YEAR
+fn legacy_days_per_cycle() -> u32 {
+    Calendar::LEGACY_DAYS_PER_CYCLE
+}
+
+fn legacy_age_years_per_cycle() -> u32 {
+    Calendar::LEGACY_AGE_YEARS_PER_CYCLE
+}
+
+/// The quarter (0 to 3) of a span of `days` days that its day `day`
+/// (from 0) falls in, cut at whole days: `day × 4 / days`.
+fn quarter_of(day: u64, days: u64) -> u64 {
+    day % days * 4 / days
+}
+
+/// The first day (from 0) of the quarter `quarter` of a span of `days`.
+fn quarter_first_day(quarter: u64, days: u64) -> u64 {
+    (quarter * days).div_ceil(4)
 }
 
 impl Calendar {
@@ -95,11 +135,21 @@ impl Calendar {
     /// Default day length: two hours of game time, the first-version
     /// order of magnitude (see `docs/05-first-version.md`).
     pub const DEFAULT_SECONDS_PER_DAY: u32 = 2 * 60 * 60;
-    /// Default year: fifty game days, about four real days with a
-    /// two-hour day (D09, provisional, to be fixed before a world opens).
-    pub const DEFAULT_DAYS_PER_YEAR: u32 = 50;
+    /// Default cycle of four seasons: fifty game days, about four real
+    /// days with a two-hour day (D09; the validated v1, 64, is lot 2).
+    pub const DEFAULT_DAYS_PER_CYCLE: u32 = 50;
+    /// Default age-years in a cycle: one, the age-year is the cycle (D09;
+    /// the validated v1, 8, is lot 2).
+    pub const DEFAULT_AGE_YEARS_PER_CYCLE: u32 = 1;
+    /// The cycle of a world saved before it was stored (snapshot v12):
+    /// fifty days, pinned, whatever the default becomes.
+    pub const LEGACY_DAYS_PER_CYCLE: u32 = 50;
+    /// The age-years a cycle of a world saved before they were stored
+    /// (snapshot v18): one, pinned, whatever the default becomes.
+    pub const LEGACY_AGE_YEARS_PER_CYCLE: u32 = 1;
 
-    /// Builds a calendar with the default year, rejecting zero lengths.
+    /// Builds a calendar with the default cycle and age-years, rejecting
+    /// zero lengths.
     pub fn new(ticks_per_second: u32, seconds_per_day: u32) -> Result<Self, CalendarError> {
         if ticks_per_second == 0 {
             return Err(CalendarError::ZeroTicksPerSecond);
@@ -110,43 +160,74 @@ impl Calendar {
         Ok(Self {
             ticks_per_second,
             seconds_per_day,
-            days_per_year: Self::DEFAULT_DAYS_PER_YEAR,
+            days_per_cycle: Self::DEFAULT_DAYS_PER_CYCLE,
+            age_years_per_cycle: Self::DEFAULT_AGE_YEARS_PER_CYCLE,
         })
     }
 
-    /// The same calendar with a year of `days_per_year` days, at least
-    /// four (a day per season).
-    pub fn with_days_per_year(self, days_per_year: u32) -> Result<Self, CalendarError> {
-        if days_per_year < 4 {
-            return Err(CalendarError::TooShortYear);
+    /// The same calendar with a cycle of `days_per_cycle` days, at least
+    /// four (a day per season), and its age-years unchanged.
+    pub fn with_days_per_cycle(self, days_per_cycle: u32) -> Result<Self, CalendarError> {
+        self.with_cycle(days_per_cycle, self.age_years_per_cycle)
+    }
+
+    /// The same calendar with `age_years_per_cycle` age-years in its
+    /// cycle, which they must divide into whole age-years of four days at
+    /// least (a day per quarter of an age-year).
+    pub fn with_age_years_per_cycle(self, age_years_per_cycle: u32) -> Result<Self, CalendarError> {
+        self.with_cycle(self.days_per_cycle, age_years_per_cycle)
+    }
+
+    /// The same calendar with a cycle of `days_per_cycle` days holding
+    /// `age_years_per_cycle` age-years, checked as both setters check.
+    pub fn with_cycle(
+        self,
+        days_per_cycle: u32,
+        age_years_per_cycle: u32,
+    ) -> Result<Self, CalendarError> {
+        if days_per_cycle < 4 {
+            return Err(CalendarError::TooShortCycle);
+        }
+        if age_years_per_cycle == 0 {
+            return Err(CalendarError::ZeroAgeYears);
+        }
+        if !days_per_cycle.is_multiple_of(age_years_per_cycle)
+            || days_per_cycle / age_years_per_cycle < 4
+        {
+            return Err(CalendarError::UnevenAgeYears);
         }
         Ok(Self {
-            days_per_year,
+            days_per_cycle,
+            age_years_per_cycle,
             ..self
         })
     }
 
-    /// Game days in one year.
-    pub fn days_per_year(&self) -> u32 {
-        self.days_per_year
+    /// Game days in one cycle of four seasons (the nature clock). Not the
+    /// age-year: see [`Calendar::days_per_age_year`].
+    pub fn days_per_cycle(&self) -> u32 {
+        self.days_per_cycle
     }
 
-    /// The season of a day of the year (0 for its first). The year is cut
-    /// in four at whole days, `day × 4 / days_per_year`: equal seasons
-    /// when the year is a multiple of four, else as near as whole days
-    /// allow (50 days: 13, 12, 13, 12).
-    pub fn season_of(&self, day_of_year: u64) -> Season {
-        let quarter =
-            day_of_year % u64::from(self.days_per_year) * 4 / u64::from(self.days_per_year);
+    /// Age-years in one cycle (the age clock against the nature clock).
+    pub fn age_years_per_cycle(&self) -> u32 {
+        self.age_years_per_cycle
+    }
+
+    /// Game days in one age-year: what a body's age, its pregnancy, its
+    /// childhood and its fertility are counted in. A whole number, four
+    /// at least.
+    pub fn days_per_age_year(&self) -> u32 {
+        self.days_per_cycle / self.age_years_per_cycle
+    }
+
+    /// The season of a day of the cycle (0 for its first). The cycle is
+    /// cut in four at whole days, `day × 4 / days_per_cycle`: equal
+    /// seasons when the cycle is a multiple of four, else as near as whole
+    /// days allow (50 days: 13, 12, 13, 12).
+    pub fn season_of(&self, day_of_cycle: u64) -> Season {
+        let quarter = quarter_of(day_of_cycle, u64::from(self.days_per_cycle));
         Season::ALL[usize::try_from(quarter).expect("under four")]
-    }
-
-    /// The first day of the year (from 0) of the season `day_of_year`
-    /// (from 0) belongs to.
-    fn season_first_day(&self, day_of_year: u64) -> u64 {
-        let days = u64::from(self.days_per_year);
-        let quarter = day_of_year % days * 4 / days;
-        (quarter * days).div_ceil(4)
     }
 
     /// Ticks in one game second.
@@ -168,17 +249,24 @@ impl Calendar {
     pub fn time_at(&self, tick: Tick) -> GameTime {
         let ticks_per_day = self.ticks_per_day();
         let days = tick.0 / ticks_per_day;
-        let days_per_year = u64::from(self.days_per_year);
-        let day_of_year = days % days_per_year;
+        let days_per_cycle = u64::from(self.days_per_cycle);
+        let day_of_cycle = days % days_per_cycle;
+        let season_quarter = quarter_of(day_of_cycle, days_per_cycle);
+        let days_per_age_year = u64::from(self.days_per_age_year());
+        let day_of_age_year = days % days_per_age_year;
+        let age_quarter = quarter_of(day_of_age_year, days_per_age_year);
         GameTime {
             day: days + 1,
             tick_of_day: tick.0 % ticks_per_day,
-            year: days / days_per_year + 1,
-            day_of_year: day_of_year + 1,
-            season: self.season_of(day_of_year),
-            day_of_season: day_of_year - self.season_first_day(day_of_year),
-            season_start: day_of_year == 0
-                || self.season_of(day_of_year - 1) != self.season_of(day_of_year),
+            cycle: days / days_per_cycle + 1,
+            day_of_cycle: day_of_cycle + 1,
+            season: self.season_of(day_of_cycle),
+            age_year: days / days_per_age_year + 1,
+            age_quarter: u8::try_from(age_quarter).expect("under four"),
+            day_of_season: day_of_cycle - quarter_first_day(season_quarter, days_per_cycle),
+            day_of_age_quarter: day_of_age_year - quarter_first_day(age_quarter, days_per_age_year),
+            season_start: day_of_cycle == 0
+                || self.season_of(day_of_cycle - 1) != self.season_of(day_of_cycle),
             ticks_per_day,
         }
     }
@@ -189,7 +277,8 @@ impl Default for Calendar {
         Self {
             ticks_per_second: Self::DEFAULT_TICKS_PER_SECOND,
             seconds_per_day: Self::DEFAULT_SECONDS_PER_DAY,
-            days_per_year: Self::DEFAULT_DAYS_PER_YEAR,
+            days_per_cycle: Self::DEFAULT_DAYS_PER_CYCLE,
+            age_years_per_cycle: Self::DEFAULT_AGE_YEARS_PER_CYCLE,
         }
     }
 }
@@ -201,13 +290,22 @@ pub struct GameTime {
     pub day: u64,
     /// Ticks elapsed since the start of the day.
     pub tick_of_day: u64,
-    /// Year number, starting at 1.
-    pub year: u64,
-    /// Day of the year, starting at 1.
-    pub day_of_year: u64,
+    /// Cycle number (the cycle of four seasons, the "year" of the
+    /// protocol and of the crops), starting at 1.
+    pub cycle: u64,
+    /// Day of the cycle, starting at 1.
+    pub day_of_cycle: u64,
     /// The season the day belongs to.
     pub season: Season,
+    /// Age-year number since the world's first day, starting at 1: the
+    /// clock of ages, a cycle holding `age_years_per_cycle` of them.
+    pub age_year: u64,
+    /// The quarter of the age-year the day belongs to, 0 to 3, cut at
+    /// whole days as the seasons cut the cycle (the same as the season's
+    /// index while an age-year is the cycle).
+    pub age_quarter: u8,
     day_of_season: u64,
+    day_of_age_quarter: u64,
     season_start: bool,
     ticks_per_day: u64,
 }
@@ -234,7 +332,13 @@ impl GameTime {
         self.day_of_season
     }
 
-    /// True on the very first tick of a season (and so of a year).
+    /// Days since the quarter of the age-year started, from 0 on its
+    /// first day.
+    pub fn day_of_age_quarter(&self) -> u64 {
+        self.day_of_age_quarter
+    }
+
+    /// True on the very first tick of a season (and so of a cycle).
     pub fn is_season_start(&self) -> bool {
         self.season_start && self.is_day_start()
     }
@@ -250,8 +354,119 @@ mod tests {
         assert!(read(r#"{"ticks_per_second":0,"seconds_per_day":60}"#).is_err());
         assert!(read(r#"{"ticks_per_second":10,"seconds_per_day":0}"#).is_err());
         assert!(read(r#"{"ticks_per_second":10,"seconds_per_day":60,"days_per_year":0}"#).is_err());
+        assert!(
+            read(r#"{"ticks_per_second":10,"seconds_per_day":60,"age_years_per_cycle":0}"#)
+                .is_err()
+        );
+        assert!(
+            read(r#"{"ticks_per_second":10,"seconds_per_day":60,"days_per_year":64,"age_years_per_cycle":5}"#)
+                .is_err(),
+            "64 days are not five whole age-years"
+        );
+        // An old calendar takes the legacy values, pinned: fifty days a
+        // cycle, one age-year a cycle.
         let old = read(r#"{"ticks_per_second":10,"seconds_per_day":60}"#).unwrap();
-        assert_eq!(old.days_per_year(), Calendar::DEFAULT_DAYS_PER_YEAR);
+        assert_eq!(old.days_per_cycle(), 50);
+        assert_eq!(old.age_years_per_cycle(), 1);
+        assert_eq!(old.days_per_age_year(), 50);
+    }
+
+    #[test]
+    fn a_calendar_is_stored_with_its_age_years_under_the_year_s_first_name() {
+        let c = Calendar::new(10, 16_200)
+            .unwrap()
+            .with_cycle(64, 8)
+            .unwrap();
+        let json = serde_json::to_value(c).unwrap();
+        assert_eq!(json["days_per_year"], 64);
+        assert_eq!(json["age_years_per_cycle"], 8);
+        assert_eq!(serde_json::from_value::<Calendar>(json).unwrap(), c);
+    }
+
+    #[test]
+    fn the_age_years_cut_the_cycle_in_whole_days() {
+        let c = Calendar::new(1, 1).unwrap();
+        assert_eq!(
+            c.with_age_years_per_cycle(0),
+            Err(CalendarError::ZeroAgeYears)
+        );
+        // 50 days are not 8 whole age-years; 12 days are not 4 of 4 days.
+        assert_eq!(
+            c.with_age_years_per_cycle(8),
+            Err(CalendarError::UnevenAgeYears)
+        );
+        assert_eq!(c.with_cycle(12, 4), Err(CalendarError::UnevenAgeYears));
+        let v1 = c.with_cycle(64, 8).unwrap();
+        assert_eq!(
+            (
+                v1.days_per_cycle(),
+                v1.age_years_per_cycle(),
+                v1.days_per_age_year()
+            ),
+            (64, 8, 8)
+        );
+        // The cycle's length keeps the age-years, and is checked with them:
+        // 36 days are not 8 whole age-years, 24 days are 8 of 3 days.
+        assert_eq!(v1.with_days_per_cycle(32).unwrap().days_per_age_year(), 4);
+        assert_eq!(
+            v1.with_days_per_cycle(24),
+            Err(CalendarError::UnevenAgeYears)
+        );
+        assert_eq!(
+            v1.with_days_per_cycle(36),
+            Err(CalendarError::UnevenAgeYears)
+        );
+        // Today's: one age-year, the whole cycle.
+        let today = Calendar::default();
+        assert_eq!(today.age_years_per_cycle(), 1);
+        assert_eq!(today.days_per_age_year(), today.days_per_cycle());
+    }
+
+    #[test]
+    fn a_tick_has_its_age_year_and_its_quarter() {
+        // The validated v1: 64 days a cycle, 8 age-years of 8 days.
+        let c = Calendar::new(1, 10).unwrap().with_cycle(64, 8).unwrap();
+        let at_day = |day: u64| c.time_at(Tick((day - 1) * 10));
+        for (day, cycle, season, age_year, quarter, of_quarter) in [
+            (1, 1, Season::Spring, 1, 0, 0),
+            (2, 1, Season::Spring, 1, 0, 1),
+            (3, 1, Season::Spring, 1, 1, 0),
+            (8, 1, Season::Spring, 1, 3, 1),
+            (9, 1, Season::Spring, 2, 0, 0),
+            (16, 1, Season::Spring, 2, 3, 1),
+            (17, 1, Season::Summer, 3, 0, 0),
+            (64, 1, Season::Winter, 8, 3, 1),
+            (65, 2, Season::Spring, 9, 0, 0),
+        ] {
+            let t = at_day(day);
+            assert_eq!(
+                (
+                    t.cycle,
+                    t.season,
+                    t.age_year,
+                    t.age_quarter,
+                    t.day_of_age_quarter()
+                ),
+                (cycle, season, age_year, quarter, of_quarter),
+                "day {day}"
+            );
+        }
+        // Four equal seasons of sixteen days.
+        assert_eq!(at_day(17).day_of_season(), 0);
+        assert!(c.time_at(Tick(16 * 10)).is_season_start());
+        // One age-year a cycle: the age-year, its quarters and their days
+        // are the cycle, its seasons and theirs, whole day for whole day.
+        let today = Calendar::new(1, 10).unwrap();
+        for day in 1..=150 {
+            let t = today.time_at(Tick((day - 1) * 10));
+            assert_eq!(t.age_year, t.cycle, "day {day}");
+            assert_eq!(
+                Season::ALL[usize::from(t.age_quarter)],
+                t.season,
+                "day {day}"
+            );
+            assert_eq!(t.day_of_age_quarter(), t.day_of_season(), "day {day}");
+        }
     }
 
     #[test]
@@ -267,19 +482,19 @@ mod tests {
         assert_eq!(Calendar::new(0, 10), Err(CalendarError::ZeroTicksPerSecond));
         assert_eq!(Calendar::new(10, 0), Err(CalendarError::ZeroSecondsPerDay));
         let c = Calendar::new(1, 1).unwrap();
-        assert_eq!(c.with_days_per_year(3), Err(CalendarError::TooShortYear));
-        assert_eq!(c.with_days_per_year(4).unwrap().days_per_year(), 4);
+        assert_eq!(c.with_days_per_cycle(3), Err(CalendarError::TooShortCycle));
+        assert_eq!(c.with_days_per_cycle(4).unwrap().days_per_cycle(), 4);
     }
 
     #[test]
     fn the_default_year_is_fifty_days() {
-        assert_eq!(Calendar::default().days_per_year(), 50);
-        assert_eq!(Calendar::new(2, 5).unwrap().days_per_year(), 50);
+        assert_eq!(Calendar::default().days_per_cycle(), 50);
+        assert_eq!(Calendar::new(2, 5).unwrap().days_per_cycle(), 50);
     }
 
     #[test]
     fn a_tick_has_a_year_and_a_season() {
-        let c = Calendar::new(1, 10).unwrap(); // 10 ticks a day, 50 days a year
+        let c = Calendar::new(1, 10).unwrap(); // 10 ticks a day, 50 days a cycle
         let at_day = |day: u64| c.time_at(Tick((day - 1) * 10));
         // 50 days in four: 13, 12, 13, 12.
         for (day, season, year, of_year) in [
@@ -296,7 +511,7 @@ mod tests {
         ] {
             let t = at_day(day);
             assert_eq!(
-                (t.day, t.season, t.year, t.day_of_year),
+                (t.day, t.season, t.cycle, t.day_of_cycle),
                 (day, season, year, of_year),
                 "day {day}"
             );
@@ -321,7 +536,7 @@ mod tests {
         assert!(!c.time_at(Tick(12 * 10)).is_season_start());
         assert!(c.time_at(Tick(50 * 10)).is_season_start(), "a new year");
         // A year of a multiple of four has equal seasons.
-        let even = c.with_days_per_year(8).unwrap();
+        let even = c.with_days_per_cycle(8).unwrap();
         let seasons: Vec<Season> = (0..8).map(|d| even.season_of(d)).collect();
         assert_eq!(
             seasons,

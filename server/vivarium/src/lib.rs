@@ -83,6 +83,16 @@ pub struct Settings {
     /// Ticks a game second: the plan's slow cadence is 1 (the game runs
     /// at 10), a named factor of the run.
     pub ticks_per_second: u32,
+    /// Game seconds a game day (`--seconds-per-day`; D09): the
+    /// calendar's default unless given.
+    pub seconds_per_day: u32,
+    /// Game days in a cycle of four seasons, the nature clock
+    /// (`--days-per-cycle`; D09): the calendar's default unless given.
+    pub days_per_cycle: u32,
+    /// Age-years in a cycle, the age clock against the nature clock
+    /// (`--age-years-per-cycle`; D09, amended 24 November 2026): the
+    /// calendar's default unless given.
+    pub age_years_per_cycle: u32,
     /// The run's seed: recorded, and the brain's when it comes; the
     /// world's own seed is the world's.
     pub seed: u64,
@@ -141,6 +151,20 @@ pub struct Settings {
     pub helpers: u32,
 }
 
+impl Settings {
+    /// The run's calendar: its cadence, its day, its cycle and its
+    /// age-years (D09).
+    ///
+    /// # Errors
+    ///
+    /// When the calendar refuses them (a zero length, a cycle under four
+    /// days, a cycle not cut in whole age-years of four days at least).
+    pub fn calendar(&self) -> Result<Calendar, sim::time::CalendarError> {
+        Calendar::new(self.ticks_per_second, self.seconds_per_day)?
+            .with_cycle(self.days_per_cycle, self.age_years_per_cycle)
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -148,6 +172,9 @@ impl Default for Settings {
             people: 5,
             days: 10,
             ticks_per_second: 1,
+            seconds_per_day: Calendar::DEFAULT_SECONDS_PER_DAY,
+            days_per_cycle: Calendar::DEFAULT_DAYS_PER_CYCLE,
+            age_years_per_cycle: Calendar::DEFAULT_AGE_YEARS_PER_CYCLE,
             seed: 1,
             content: None,
             brain: true,
@@ -180,7 +207,8 @@ pub enum RunError {
     Read(PathBuf, std::io::Error),
     /// The content files do not validate together.
     Content(Box<sim::content::ContentError>),
-    /// The calendar refuses the cadence.
+    /// The calendar refuses the cadence, the day, the cycle or the
+    /// age-years.
     Calendar(sim::time::CalendarError),
 }
 
@@ -1220,7 +1248,7 @@ impl Report {
     /// after, or with no stayer, is left out.
     #[must_use]
     pub fn move_utility(&self) -> Vec<MoveUtility> {
-        let season = u64::from(sim::time::Calendar::DEFAULT_DAYS_PER_YEAR / 4).max(1);
+        let season = u64::from(self.calendar().days_per_cycle() / 4).max(1);
         let m = &self.moving;
         let lived = |b: BodyId, from: u64, to: u64| {
             m.alive
@@ -1727,8 +1755,7 @@ pub fn run_watched(
     content: &Content,
     watch: &mut dyn FnMut(&World, u64),
 ) -> Result<Report, RunError> {
-    let calendar = Calendar::new(settings.ticks_per_second, Calendar::DEFAULT_SECONDS_PER_DAY)
-        .map_err(RunError::Calendar)?;
+    let calendar = settings.calendar().map_err(RunError::Calendar)?;
     // Food without limit (lot 3 C, trial 1): hunger a day is 0, the fat
     // reserve is never drawn on, so the births are read apart from the
     // food. The content is otherwise the one given.
@@ -1801,8 +1828,8 @@ pub fn run_watched(
         let tribe = u8::try_from(tribe).expect("two tribes at most");
         // Who is born at the camp (lot 3 B): grown women and men in turn,
         // from `adult_years` (18 to 40 by default); children; infants, each
-        // on a woman.
-        let per_year = u64::from(calendar.days_per_year());
+        // on a woman. Ages in age-years (D09, amended 24 November 2026).
+        let per_year = u64::from(calendar.days_per_age_year());
         let mut born: Vec<(u64, Sex, bool)> = Vec::new();
         let (lo, hi) = settings.adult_years;
         for k in 0..settings.people {
@@ -1949,7 +1976,7 @@ pub fn run_watched(
         }
     }
     let tribes = camps.len();
-    let per_year = calendar.ticks_per_day() * u64::from(calendar.days_per_year());
+    let per_year = calendar.ticks_per_day() * u64::from(calendar.days_per_cycle());
     let mut food: BTreeMap<(u8, u64), Balance> = BTreeMap::new();
     let mut trials: Vec<TrialEvent> = Vec::new();
     let mut ways_in_use: BTreeMap<(u8, u64), WaysInUse> = BTreeMap::new();
@@ -1960,7 +1987,7 @@ pub fn run_watched(
     let mut moving = MovingProbe::default();
     let mut goals: Vec<GoalRow> = Vec::new();
     let mut tally = FireTally {
-        ticks_per_season: (calendar.ticks_per_day() * u64::from(calendar.days_per_year()) / 4)
+        ticks_per_season: (calendar.ticks_per_day() * u64::from(calendar.days_per_cycle()) / 4)
             .max(1),
         ..FireTally::default()
     };
@@ -4315,7 +4342,7 @@ fn seasons_of_kinds(
     crops: &[sim::crops::Crop],
     calendar: &Calendar,
 ) -> BTreeMap<String, [bool; 4]> {
-    let per_year = u64::from(calendar.days_per_year()).max(1);
+    let per_year = u64::from(calendar.days_per_cycle()).max(1);
     let per_day = calendar.ticks_per_day();
     let mut out: BTreeMap<String, [bool; 4]> = BTreeMap::new();
     for crop in crops {
@@ -4513,7 +4540,8 @@ impl Report {
     )]
     pub fn fixed(&self) -> String {
         let s = &self.settings;
-        let days_per_year = f64::from(Calendar::DEFAULT_DAYS_PER_YEAR);
+        let calendar = self.calendar();
+        let days_per_year = f64::from(calendar.days_per_cycle());
         let mut h = String::new();
         let world = match s.world {
             WorldKind::Vivarium => "the vivarium's world (zone 2 of seed 14)".to_owned(),
@@ -4556,12 +4584,12 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
 <li><b>The needs</b> (content/needs.ron, points of 100 a game day): {}.</li></ul>",
             s.ticks_per_second,
             Calendar::DEFAULT_TICKS_PER_SECOND,
-            u64::from(s.ticks_per_second) * u64::from(Calendar::DEFAULT_SECONDS_PER_DAY),
+            calendar.ticks_per_day(),
             self.map_side.0,
             self.map_side.1,
             self.camps_words(),
-            Calendar::DEFAULT_DAYS_PER_YEAR,
-            Calendar::DEFAULT_SECONDS_PER_DAY,
+            calendar.days_per_cycle(),
+            calendar.seconds_per_day(),
             if s.brain {
                 "the minimal one (sim::brain): it thinks only when something changes for its body, drinks when thirst passes 50 (wakes for it past 80); when hunger passes 50 (and until it falls under content/needs.ron's fed_under, D53) it eats what it carries, else the food it saw, else goes to the place it knows bearing food worth most and picks a tree or plant there, chosen once an hour; by day it gathers until it carries its store (three days of food, 30,000 kJ, by default); goes looking when it knows no place (for food: by day, and only when something is ripe somewhere), goes home at night and sleeps within 6 tiles of the camp (or sleeps out, if that is its way); it remembers the drinking places, the food and the places where it saw trees and plants bearing food (corners of place_tiles, not bushes), seen within plant_sight_tiles. Its ways (how far a plant is worth going, whether it sleeps out, how much it stores, where home is) are its own, D50"
             } else {
@@ -4640,15 +4668,15 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         Self::birth_day(person) <= day && self.death_day(person).is_none_or(|d| d > day)
     }
 
-    /// How old a person is at the end of `day` (from 1), in years.
-    fn years_on(person: &Person, day: u64) -> u64 {
-        Self::age_milli(person, i64::try_from(day).unwrap_or(i64::MAX) - 1) / 1000
+    /// How old a person is at the end of `day` (from 1), in age-years.
+    fn years_on(&self, person: &Person, day: u64) -> u64 {
+        self.age_milli(person, i64::try_from(day).unwrap_or(i64::MAX) - 1) / 1000
     }
 
-    /// The day (from 1) a person turns `years`.
-    fn birthday(person: &Person, years: i64) -> u64 {
-        u64::try_from(person.born_day + years * i64::from(Calendar::DEFAULT_DAYS_PER_YEAR) + 1)
-            .unwrap_or(0)
+    /// The day (from 1) a person turns `years` age-years.
+    fn birthday(&self, person: &Person, years: i64) -> u64 {
+        let per_year = i64::from(self.calendar().days_per_age_year());
+        u64::try_from(person.born_day + years * per_year + 1).unwrap_or(0)
     }
 
     /// The last day of the run (from 1).
@@ -4693,7 +4721,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             } else {
                 1
             };
-            let sixteen = Self::birthday(person, 16);
+            let sixteen = self.birthday(person, 16);
             let woman = person.sex == Some(Sex::Female);
             let end = self.death_day(person);
             let last = end.unwrap_or(self.last_day());
@@ -4783,7 +4811,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                     "{who}, {}, at the start",
                     person
                         .sex
-                        .map_or_else(String::new, |sex| describe(sex, Self::age_milli(person, 0)))
+                        .map_or_else(String::new, |sex| describe(sex, self.age_milli(person, 0)))
                 ),
                 Arrival::Born => format!(
                     "{who}, {}, is born to {} and {}",
@@ -4844,7 +4872,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                             at.y,
                             describe(
                                 person.sex.unwrap_or(Sex::Male),
-                                Self::age_milli(person, i64::try_from(day).unwrap_or(0) - 1)
+                                self.age_milli(person, i64::try_from(day).unwrap_or(0) - 1)
                             )
                         ),
                     });
@@ -4901,7 +4929,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
     /// Each tribe's years in numbers (lot 3 C).
     #[must_use]
     pub fn years(&self) -> Vec<Year> {
-        let per_year = u64::from(Calendar::DEFAULT_DAYS_PER_YEAR);
+        let per_year = u64::from(self.calendar().days_per_cycle());
         let last = self.last_day();
         let count = last.div_ceil(per_year);
         let people = |tribe: u8| self.people.iter().filter(move |(_, p)| p.tribe == tribe);
@@ -4948,7 +4976,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                         }
                     }
                     if p.born_in_run {
-                        let fifteen = Self::birthday(p, 15);
+                        let fifteen = self.birthday(p, 15);
                         if fifteen <= end {
                             y.fifteen.1 += 1;
                             y.fifteen.0 += u32::from(self.alive_on(p, fifteen));
@@ -4959,7 +4987,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                 for (&id, w) in people(tribe) {
                     if w.sex != Some(Sex::Female)
                         || !self.alive_on(w, end)
-                        || !(16..=42).contains(&Self::years_on(w, end))
+                        || !(16..=42).contains(&self.years_on(w, end))
                     {
                         continue;
                     }
@@ -4970,7 +4998,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                     let possible = people(tribe).any(|(&m, man)| {
                         man.sex == Some(Sex::Male)
                             && self.alive_on(man, end)
-                            && (16..=50).contains(&Self::years_on(man, end))
+                            && (16..=50).contains(&self.years_on(man, end))
                             && self.spouse_on(man, end).is_none()
                             && !Self::kin((id, w), (m, man))
                     });
@@ -5007,14 +5035,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
 
     /// "spring", "winter": the season of `tick`.
     fn season_name(&self, tick: u64) -> String {
-        Calendar::new(
-            self.settings.ticks_per_second,
-            Calendar::DEFAULT_SECONDS_PER_DAY,
-        )
-        .map_or_else(
-            |_| String::new(),
-            |calendar| format!("{:?}", calendar.time_at(sim::Tick(tick)).season).to_lowercase(),
-        )
+        format!("{:?}", self.calendar().time_at(sim::Tick(tick)).season).to_lowercase()
     }
 
     /// The tribes, year by year (lot 3 C): population and its growth,
@@ -5043,7 +5064,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                 "—".to_owned()
             } else {
                 let mean_tenths = y.intervals_days.iter().sum::<u64>() * 10
-                    / (u64::from(Calendar::DEFAULT_DAYS_PER_YEAR)
+                    / (u64::from(self.calendar().days_per_age_year())
                         * u64::try_from(y.intervals_days.len()).unwrap_or(1));
                 format!(
                     "{}.{} years ({} births)",
@@ -5134,7 +5155,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             } else {
                 format!(
                     ", {} at the start",
-                    describe(sex, Self::age_milli(person, 0))
+                    describe(sex, self.age_milli(person, 0))
                 )
             }
         });
@@ -5332,7 +5353,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             "{role}, {}",
             describe(
                 person.sex.unwrap_or(Sex::Male),
-                Self::age_milli(person, i64::try_from(on).unwrap_or(0) - 1)
+                self.age_milli(person, i64::try_from(on).unwrap_or(0) - 1)
             )
         );
         let span = match m.until {
@@ -5452,29 +5473,28 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
     }
 
     /// Ticks a game day of this run.
-    /// The season and year of `tick`, as "winter of year 2".
+    /// The season and cycle of `tick`, as "winter of year 2".
     fn season_of(&self, tick: u64) -> String {
-        Calendar::new(
-            self.settings.ticks_per_second,
-            Calendar::DEFAULT_SECONDS_PER_DAY,
-        )
-        .map_or_else(
-            |_| String::new(),
-            |calendar| {
-                let time = calendar.time_at(sim::Tick(tick));
-                format!(
-                    "{} of year {}",
-                    format!("{:?}", time.season).to_lowercase(),
-                    time.year
-                )
-            },
+        let time = self.calendar().time_at(sim::Tick(tick));
+        format!(
+            "{} of year {}",
+            format!("{:?}", time.season).to_lowercase(),
+            time.cycle
         )
     }
 
-    /// How old a person is on `day` (from 0), in thousandths of a year.
-    fn age_milli(person: &Person, day: i64) -> u64 {
+    /// How old a person is on `day` (from 0), in thousandths of an
+    /// age-year.
+    fn age_milli(&self, person: &Person, day: i64) -> u64 {
         let days = u64::try_from(day - person.born_day).unwrap_or(0);
-        days * 1000 / u64::from(Calendar::DEFAULT_DAYS_PER_YEAR)
+        days * 1000 / u64::from(self.calendar().days_per_age_year())
+    }
+
+    /// The run's calendar, checked when the run started.
+    pub(crate) fn calendar(&self) -> Calendar {
+        self.settings
+            .calendar()
+            .expect("the run's calendar, checked when it started")
     }
 
     /// The people by age and sex, at the start and the living at the end
@@ -5498,7 +5518,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                 .values()
                 .filter(|p| p.sex == Some(sex) && (!living || p.death.is_none()))
                 .filter(|p| living || !p.born_in_run)
-                .filter(|p| (lo..hi).contains(&(Self::age_milli(p, day) / 1000)))
+                .filter(|p| (lo..hi).contains(&(self.age_milli(p, day) / 1000)))
                 .count()
         };
         let mut h = String::from(
@@ -5520,7 +5540,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
     }
 
     fn ticks_per_day(&self) -> u64 {
-        u64::from(self.settings.ticks_per_second) * u64::from(Calendar::DEFAULT_SECONDS_PER_DAY)
+        self.calendar().ticks_per_day()
     }
 
     /// The timing line: what changes from one machine or run to the next.
@@ -5530,7 +5550,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         reason = "float maths of the simulation, the same result on every run"
     )]
     pub fn timing(&self) -> String {
-        let days_per_year = f64::from(Calendar::DEFAULT_DAYS_PER_YEAR);
+        let days_per_year = f64::from(self.calendar().days_per_cycle());
         let years = f64::from(self.settings.days) / days_per_year;
         let minutes = self.wall_s / 60.0;
         let speed = if minutes > 0.0 { years / minutes } else { 0.0 };
@@ -5741,6 +5761,9 @@ mod tests {
             people: 5,
             days: 2,
             ticks_per_second: 1,
+            seconds_per_day: Calendar::DEFAULT_SECONDS_PER_DAY,
+            days_per_cycle: Calendar::DEFAULT_DAYS_PER_CYCLE,
+            age_years_per_cycle: Calendar::DEFAULT_AGE_YEARS_PER_CYCLE,
             seed: 1,
             content: None,
             brain: true,
@@ -6199,7 +6222,7 @@ mod tests {
         let grown: Vec<_> = report
             .people
             .values()
-            .filter(|p| !p.born_in_run && Report::years_on(p, 1) >= 16)
+            .filter(|p| !p.born_in_run && report.years_on(p, 1) >= 16)
             .collect();
         assert_eq!(grown.len(), 4);
         for person in &grown {
@@ -6209,7 +6232,7 @@ mod tests {
         for (id, child) in report
             .people
             .iter()
-            .filter(|(_, p)| Report::years_on(p, 1) < 16)
+            .filter(|(_, p)| report.years_on(p, 1) < 16)
         {
             let mother = child.mother.expect("a mother");
             let father = child.father.expect("a father");
@@ -6288,7 +6311,7 @@ mod tests {
         report.people.insert(
             BodyId(102),
             child(
-                1 - 16 * i64::from(Calendar::DEFAULT_DAYS_PER_YEAR),
+                1 - 16 * i64::from(Calendar::default().days_per_age_year()),
                 Sex::Male,
                 false,
             ),
@@ -6305,7 +6328,7 @@ mod tests {
         let mut groom = Person {
             tribe: 0,
             sex: Some(Sex::Male),
-            born_day: -30 * i64::from(Calendar::DEFAULT_DAYS_PER_YEAR),
+            born_day: -30 * i64::from(Calendar::default().days_per_age_year()),
             couplings: vec![(2, single)],
             ..Person::default()
         };
@@ -6430,7 +6453,7 @@ mod tests {
             people: 2,
             adult_years: (20, 20),
             fed: true,
-            days: 20 * Calendar::DEFAULT_DAYS_PER_YEAR,
+            days: 20 * Calendar::DEFAULT_DAYS_PER_CYCLE,
             ..small()
         };
         let report = run_checked(&settings, content());
@@ -6442,7 +6465,7 @@ mod tests {
             report.people[&wife].couplings.first().map(|c| c.1),
             Some(husband)
         );
-        let per_year = u64::from(Calendar::DEFAULT_DAYS_PER_YEAR);
+        let per_year = u64::from(report.calendar().days_per_age_year());
         let children: Vec<(BodyId, &Person)> = report
             .people
             .iter()
@@ -6464,7 +6487,7 @@ mod tests {
             intervals.push(gap);
             let earlier_lived_to_two = report
                 .death_day(earlier)
-                .is_none_or(|d| d >= Report::birthday(earlier, 2));
+                .is_none_or(|d| d >= report.birthday(earlier, 2));
             if earlier_lived_to_two {
                 assert!(gap * 10 >= 25 * per_year, "{gap} days between two births");
             }
@@ -6503,7 +6526,7 @@ mod tests {
     fn weaned_at_two(report: &Report, children: &[(BodyId, &Person)]) -> usize {
         let mut weaned = 0;
         for (_, child) in children {
-            let two = Report::birthday(child, 2);
+            let two = report.birthday(child, 2);
             if two + 1 > report.last_day() || report.death_day(child).is_some_and(|d| d <= two) {
                 continue;
             }
@@ -6542,7 +6565,7 @@ mod tests {
                     id.0,
                     cause_words(cause),
                     report.day_of(tick),
-                    Report::years_on(p, report.day_of(tick))
+                    report.years_on(p, report.day_of(tick))
                 ));
             }
         }

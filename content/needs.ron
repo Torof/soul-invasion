@@ -99,7 +99,8 @@
     weak_percent: 20,
     weak_pace_percent: 70,
     // Ages and sexes (lot 3 B, decided by the project lead on 17 November
-    // 2026), in game years. A body's need, its reserve, its day's ceiling
+    // 2026), in age-years (D09, amended 24 November 2026: the age clock,
+    // not the cycle of seasons). A body's need, its reserve, its day's ceiling
     // and what it carries go with its size: an infant 30 % of a grown
     // man, a child 40 % at two to 90 % at fourteen, a man 100 %, past
     // fifty-five 85 %; a woman 85 % of a man of her age. A woman nursing
@@ -128,15 +129,16 @@
     // only in a world whose `life` is on: the vivarium's, never the game's.
     // A woman of 16 to 42 with more than 80 % of her reserve, carrying no
     // infant, whose spouse is alive within 64 tiles, conceives with a 40 %
-    // chance a season, drawn once: her spouse may be back on any of the
-    // season's first four dawns (a night apart no longer loses the
-    // season); she carries three seasons at
+    // chance a quarter of an age-year (a season while the age-year is the
+    // cycle), drawn once: her spouse may be back on any of the quarter's
+    // first four dawns (a night apart no longer loses the quarter); she
+    // carries three quarters of an age-year at
     // 110 % of her need, and loses the child if she grows weak. 51 % of
     // the newborn are boys; 1 % of the mothers die giving birth. The chance
-    // to die in a year by age, in per mille (150 in the first year, 50 to
+    // to die in an age-year by age, in per mille (150 in the first year, 50 to
     // four, 10 to thirty-nine, 20 to fifty-four, 50 to sixty-nine, 150
-    // from seventy), drawn every day with the year's chance shared over its
-    // days: of illness before sixty, of old age from then. At 16, or once
+    // from seventy), drawn every day with the age-year's chance shared over
+    // its days: of illness before sixty, of old age from then. At 16, or once
     // widowed, a body takes the nearest unmarried body of the other sex
     // within 64 tiles, aged 16 to 50, that is neither parent, child nor
     // sibling, half-siblings included, once it has slept within those 64
@@ -151,7 +153,7 @@
         conceive_nights: 4,
         part_after_days: 12,
         court_days: 6,
-        pregnancy_seasons: 3,
+        pregnancy_quarters: 3,
         pregnant_percent: 110,
         lose_when_weak: true,
         boys_percent: 51,
