@@ -763,6 +763,35 @@ night out is judged on twelve days. On the ten seeds, alive at twenty
 years 77.5 → 88.4 with trials and 88.5 → 96.8 without (10 of 10 both);
 the price of trying −11.0 → −8.4 alive (D56).
 
+**Lot 5b, PR 1 ter: who is believed to know, the questions, the evening's
+review** (23 November 2026, D55 and D56 amended). Each body believes one
+person best at exploring and one at gathering, with its own credit, a
+record of the common memory; one with no place to go asks that one
+"where is food?" at the fire; a caller keeps dated facts on its
+companions and, over three outings, sets one aside or calls one first
+by name; a success after successes weighs more; the slow ways are judged
+over a season. On the ten seeds against #329: alive 88.4 → 88.7 with
+trials, 96.8 → 98.3 without; the review whole is the only version
+without a collapse (D56).
+
+**Lot 5b: choosing where to live, walking's cost, the bold, the
+seasons' cold** (23 and 24 November 2026, D50 and D53 amended; the lead:
+"ils doivent se souvenir des endroits où vivre et choisir eux-mêmes", the
+home at the optimal place for good). Each body keeps a notebook of eight
+places: where it slept, drank and gathered (over a grove of 64 m), with
+only what was done there, fading day by day; a home trial goes where it
+would fare best by one common grade, every need in a day of that need,
+counted alike (`brain::Sense`, where a new perception plugs in). Thirst
+counts in distress; walking costs 130 J a metre; with nothing wrong the
+bold try all the same (2 % a day at will 100); the night's cold follows
+the season (only winter nights fill the gauge). On the ten seeds against
+#329 (two tribes of 25, twenty years): with trials alive 88.4 → 92.0 (7
+of 10), births 80.0 → 83.9, deaths of want 1.2 → 1.3, homes within 30 m
+of water at the end B 0 → 9.0 (10 of 10), A 3.9 → 8.1; without trials
+alive 96.8 → 91.7, two collapses of tribe B by its water (seeds 1 and 4,
+35 and 32 dead of hunger in a season), deaths of want 1.0 → 7.8, the
+cause not yet found.
+
 Beside the vivarium, **the mountain** (decided 13 and 14 November 2026)
 is built in three pull requests: the heights in the chunks (D43), the
 slopes drawn by the client from them (D44), then the relief in the
