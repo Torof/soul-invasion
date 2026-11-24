@@ -4535,6 +4535,15 @@ impl Brains {
         let near = i32::try_from(dec.near_camp_tiles).unwrap_or(i32::MAX);
         // The review (PR 1 ter): who is called first, who set aside.
         let (good_of, aside_by) = self.review_at_fire(world, rules, &speakers, (today, now));
+        // A call to move is the evening's first word (D56, amended 24
+        // November 2026): everyone present hears it, a spouse who would
+        // have spoken before it too; the others keep their order.
+        if let Some(i) = speakers
+            .iter()
+            .position(|&(_, id)| self.minds.get(&id).is_some_and(|m| m.calling.is_some()))
+        {
+            speakers[..=i].rotate_right(1);
+        }
         let mut review = EveningReview {
             aside: count_u32(aside_by.values().flatten()),
             ..EveningReview::default()
@@ -11929,6 +11938,30 @@ mod tests {
         assert_eq!(act_of(&brains, BodyId(1)).0, Act::Moves);
         assert_eq!(brains.minds[&BodyId(1)].ways.home, to);
         assert!(!brains.groups.contains_key(&BodyId(1)));
+    }
+
+    /// The call is the evening's first word (D56, amended 24 November
+    /// 2026): one bolder than the caller, who would have spoken before it,
+    /// hears and weighs it too.
+    #[test]
+    fn a_move_call_is_the_first_word_and_the_bolder_hear_it() {
+        let (world, mut rules, mut brains, _, camp) = deciding(3);
+        rules.needs.company = crate::content::Company::placeholders();
+        let to = Pos::new(camp.x + 40, camp.y);
+        for (&id, mind) in &mut brains.minds {
+            mind.sociable = 0;
+            mind.will = if id == BodyId(2) { 90 } else { 10 };
+        }
+        calling_at(&world, &mut brains, BodyId(1), to, 400);
+        let present = [BodyId(1), BodyId(2), BodyId(3)];
+        let news = decide_evening(&world, &rules, &mut brains, camp, &present);
+        assert_eq!(act_of(&brains, BodyId(1)).0, Act::Moves);
+        let weighed = weighed_of(&news);
+        assert!(
+            weighed.iter().any(|w| w.body == BodyId(2)),
+            "the bolder one weighed the call: {weighed:?}"
+        );
+        assert_eq!(weighed.len(), 2, "everyone present but the caller");
     }
 
     #[test]
