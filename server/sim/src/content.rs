@@ -691,7 +691,8 @@ pub struct Decisions {
     /// stands farther from it than this, in tiles on each axis ("look
     /// behind"). 0: it never looks behind.
     pub behind_tiles: u32,
-    /// The most it waits so in a day, in game minutes.
+    /// The most it waits so in a day, in game minutes (a 1,440th of the
+    /// game day).
     pub behind_wait_minutes: u32,
     /// How many dated facts on its companions a caller keeps (D56, PR 1
     /// ter: the evening's review), the oldest forgotten first. 0: no
