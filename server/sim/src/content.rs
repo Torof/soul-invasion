@@ -741,7 +741,7 @@ impl Default for Decisions {
             follows_mother_years: 12,
             look_percent_by_will: vec![(0, 0)],
             look_legs: 3,
-            habit_days: 50,
+            habit_days: 64,
             habit_weight: 50,
             habit_floor: 10,
             home_when_full_percent: 50,
@@ -906,7 +906,7 @@ impl Temperance {
             bears_by_innate: vec![(0, 2), (100, 6)],
             failure_milli: 1000,
             kept_percent: 25,
-            relax_permille: 83,
+            relax_permille: 500,
             listened_milli: 500,
             activities: vec![
                 ("explore".to_owned(), 75),
@@ -1255,7 +1255,7 @@ impl Fire {
             heard_max: 24,
             heard_by_age: vec![(2, 6), (8, 12), (14, 20), (16, 24)],
             place_buckets: (1, 4),
-            hearth_nights: 50,
+            hearth_nights: 64,
             told_days_per_hour: 4,
             told_days_max: 20,
             denied_per_night: 6,
@@ -1713,9 +1713,11 @@ pub struct Life {
     /// Two unmarried become spouses once one has slept within
     /// `mate_within_tiles` of the other this many dawns in a row (D49,
     /// amended 24 November 2026): couples form over time, among those who
-    /// live together. 0: at once, the nearest at the body's hour.
-    #[serde(default)]
-    pub court_days: u32,
+    /// live together. 0: at once, the nearest at the body's hour. No
+    /// courtship, no wedding: nights lived side by side (the project lead,
+    /// 24 November 2026; named `court_days` before).
+    #[serde(default, alias = "court_days")]
+    pub together_nights: u32,
     /// A pregnancy lasts this many quarters of an age-year, in whole days
     /// (`quarters × days_per_age_year / 4`; D09, amended 24 November 2026:
     /// seasons while the age-year was the cycle).
@@ -1750,7 +1752,7 @@ impl Default for Life {
             conceive_percent: 0,
             conceive_nights: 1,
             part_after_days: 0,
-            court_days: 0,
+            together_nights: 0,
             pregnancy_quarters: 1,
             pregnant_percent: 100,
             lose_when_weak: false,
@@ -2589,7 +2591,7 @@ impl Content {
             ("life.old_age_from_years", life.old_age_from_years),
             ("life.pregnancy_quarters", life.pregnancy_quarters),
             ("life.part_after_days", life.part_after_days),
-            ("life.court_days", life.court_days),
+            ("life.together_nights", life.together_nights),
         ] {
             at_most("needs.ron", field, value, THOUSAND)?;
         }

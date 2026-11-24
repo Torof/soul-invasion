@@ -29,12 +29,14 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
                            the vivarium's world, 1 on a patch)
   --days N                 game days to run (default 10)
   --cadence N              ticks a game second (default 1; the game runs at 10)
-  --seconds-per-day N      game seconds a game day (default 7200, two hours)
+  --seconds-per-day N      game seconds a game day (default 16200, four
+                           hours and a half: calendar v1)
   --days-per-cycle N       game days in a cycle of four seasons, the nature
-                           clock (default 50; at least 4)
+                           clock (default 64; at least 4)
   --age-years-per-cycle N  age-years in a cycle, the clock of ages (default
-                           1: an age-year is the cycle); it must cut the
-                           cycle in whole age-years of 4 days at least
+                           8: an age-year of 8 days; 1 makes the age-year
+                           the cycle); it must cut the cycle in whole
+                           age-years of 4 days at least
   --seed N                 the run's seed (default 1)
   --no-brain               the control run: nobody thinks, the people stand
   --no-trials              the control run of D50: nobody tries a way nor

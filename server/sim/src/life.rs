@@ -285,7 +285,7 @@ impl World {
             if self.own_hour(id) != tick_of_day {
                 continue;
             }
-            if life.court_days == 0 {
+            if life.together_nights == 0 {
                 self.couple(index, rules, events);
             }
             let age = self.age_milli(&self.bodies[index]);
@@ -371,15 +371,15 @@ impl World {
     }
 
     /// The courting at a day's start (D49, amended 24 November 2026),
-    /// when `court_days` is not 0: an unmarried body of the mating years
+    /// when `together_nights` is not 0: an unmarried body of the mating years
     /// keeps the one it courts while that one may still wed it and slept
     /// within `mate_within_tiles`, one dawn more; else it courts the
-    /// nearest it may wed there, from one dawn, or none. At `court_days`
+    /// nearest it may wed there, from one dawn, or none. At `together_nights`
     /// dawns the two wed, the lower id first; one taken that dawn is no
     /// longer free for another.
     fn court(&mut self, rules: &Content, events: &mut Vec<Event>) {
         let life = &rules.needs.life;
-        if life.court_days == 0 {
+        if life.together_nights == 0 {
             return;
         }
         let reach = i32::try_from(life.mate_within_tiles).unwrap_or(i32::MAX);
@@ -403,7 +403,7 @@ impl World {
                 self.bodies[index].courting = now;
             }
             if let Some((other, days)) = now
-                && days >= life.court_days
+                && days >= life.together_nights
             {
                 weds.push((id, other));
             }
@@ -769,7 +769,7 @@ mod tests {
     #[test]
     fn two_unwed_wed_after_sleeping_near_each_other_dawns_in_a_row() {
         let mut rules = fed_rules();
-        rules.needs.life.court_days = 3;
+        rules.needs.life.together_nights = 3;
         rules.needs.life.death_by_age = vec![(0, 0)];
         let mut w = world();
         let her = person(&mut w, 10, 5, 25, Sex::Female);
@@ -803,7 +803,7 @@ mod tests {
     fn spouses_apart_too_many_dawns_in_a_row_part_and_may_take_another() {
         let mut rules = fed_rules();
         rules.needs.life.part_after_days = 3;
-        rules.needs.life.court_days = 0;
+        rules.needs.life.together_nights = 0;
         rules.needs.life.death_by_age = vec![(0, 0)];
         let mut w = world();
         let (wife, husband) = couple_of(&mut w);
@@ -850,7 +850,7 @@ mod tests {
     fn a_spouse_sleeping_out_keeps_the_couple_but_homes_apart_part_it() {
         let mut rules = fed_rules();
         rules.needs.life.part_after_days = 3;
-        rules.needs.life.court_days = 0;
+        rules.needs.life.together_nights = 0;
         rules.needs.life.death_by_age = vec![(0, 0)];
         let mut w = world();
         let (wife, husband) = couple_of(&mut w);
@@ -1072,7 +1072,7 @@ mod tests {
     fn a_body_takes_the_nearest_unwed_body_of_the_other_sex_barring_its_kin() {
         let mut rules = fed_rules();
         // At once, at the body's hour: the courting is the next test's.
-        rules.needs.life.court_days = 0;
+        rules.needs.life.together_nights = 0;
         let mut w = world();
         let her = person(&mut w, 10, 5, 25, Sex::Female);
         let brother = person(&mut w, 11, 5, 23, Sex::Male);

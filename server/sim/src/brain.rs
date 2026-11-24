@@ -12782,13 +12782,12 @@ mod tests {
     }
 
     #[test]
-    fn the_temperament_comes_back_half_its_gap_in_two_years() {
+    fn the_temperament_comes_back_half_its_gap_in_two_age_years() {
         let (mut mind, temper) = tempered(10);
         mind.will = 90;
         mind.confidence[1].milli = 90_000;
-        for _ in 0..8 {
-            mind.relax(&temper);
-        }
+        // A season, two age-years at calendar v1.
+        mind.relax(&temper);
         assert!((48..=52).contains(&mind.will), "{}", mind.will);
         assert!((48..=52).contains(&mind.confidence[1].points()));
         assert_eq!(mind.confidence[0].points(), 10, "at its innate already");
@@ -15522,12 +15521,13 @@ mod tests {
             "a weight, never a ban"
         );
         // A lesson fades: half after lesson_days, nothing after twice.
+        let lesson = u64::from(rules.needs.trials.lesson_days);
         assert_eq!(
-            weight_of(&weights(&brains, 0, 10 + 50), Way::SleepOut, true),
+            weight_of(&weights(&brains, 0, 10 + lesson), Way::SleepOut, true),
             125
         );
         assert_eq!(
-            weight_of(&weights(&brains, 0, 10 + 100), Way::SleepOut, true),
+            weight_of(&weights(&brains, 0, 10 + 2 * lesson), Way::SleepOut, true),
             100
         );
     }
