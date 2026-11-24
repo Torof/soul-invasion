@@ -3197,11 +3197,13 @@ impl Brains {
             // Its first thought too in its own tick: a tribe born at once
             // does not think all in one.
             let mut mind = Mind::new(home);
-            // Its innate will (D50, amended): a skewed draw from the
-            // seed and its id, a child's the same way (no inheritance).
-            let innate = rules.needs.trials.will_at(
-                scatter::roll(world.seed(), purpose::TRIAL_WILL, &[u64::from(body.0)]) % 1001,
-            );
+            // Its innate will (D50, amended 24 November 2026): a skewed
+            // draw from the run's seed and its id, a child's the same way
+            // (no inheritance).
+            let innate = rules
+                .needs
+                .trials
+                .will_at(scatter::roll(run_seed, purpose::TRIAL_WILL, &[u64::from(body.0)]) % 1001);
             mind.set_innate(innate, &rules.needs.temperance);
             // Its sociability (D53, amended 24 November 2026): even from
             // 0 to 100, from the run's seed and its id, never inherited.
@@ -9417,12 +9419,28 @@ mod tests {
         assert!(!rules().needs.trials.on());
     }
 
+    /// The innate will (D50, amended 24 November 2026): drawn from the
+    /// run's seed and the id, not the map's: the same body, the same seed,
+    /// the same will; another seed, another will.
     #[test]
-    fn the_will_is_drawn_from_the_world_seed_and_the_id_at_adoption() {
+    fn the_will_is_drawn_from_the_run_seed_and_the_id_at_adoption() {
         let world = field(64, 40, Pos::new(5, 5));
         let a = piloted(&world).mind(BodyId(1)).unwrap().will();
         let b = piloted(&world).mind(BodyId(1)).unwrap().will();
         assert_eq!(a, b, "the same every time");
+        let rules = rules();
+        let will_of = |seed: u64, id: BodyId| {
+            let mut brains = Brains::new(seed);
+            brains.adopt(&world, &rules, id);
+            brains.mind(id).unwrap().innate()
+        };
+        let id = BodyId(1);
+        assert_eq!(will_of(3, id), will_of(3, id), "one seed, one will");
+        assert_ne!(
+            will_of(1, id),
+            will_of(9, id),
+            "another run seed, another will, the map the same"
+        );
         let mut many = field(64, 40, Pos::new(5, 5));
         for k in 0..40 {
             many.spawn_body(Pos::new(6 + k % 8, 6 + k / 8));
