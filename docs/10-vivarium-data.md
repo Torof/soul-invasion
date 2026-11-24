@@ -40,7 +40,7 @@ clock, the only field no seed decides.
 | Key | Meaning | Unit or form |
 |---|---|---|
 | `meta.format` | The format marker, `1` since 22 November 2026 | integer |
-| `meta.settings.world` | The world | `"vivarium"` or `"patch"` |
+| `meta.settings.world` | The world; `"vivarium-wide"` the vivarium's zone twice as wide (24 November 2026) | `"vivarium"`, `"vivarium-wide"` or `"patch"` |
 | `meta.settings.side` | A patch's side; `null` on the vivarium's world | tiles |
 | `meta.settings.people` | Grown people born at each camp | count |
 | `meta.settings.children` | Children born at each camp | count |
@@ -368,6 +368,12 @@ clock, the only field no seed decides.
 | `moving.utility[].stayers`, `.stayers_hungry_nights_milli` | The grown of its tribe alive throughout who moved neither in the season before nor in that one; their mean hungry nightfalls over the same days, in thousandths | |
 | `moving.utility[].mover_drink_tiles_before`, `.mover_drink_tiles_after` | The mover's mean tiles from home to its first drink of the day, the days it drank, over the season before it set off and the season after (24 November 2026, the movers' water); null when it never drank there | tiles |
 | `moving.utility[].stayers_drink_tiles_after` | The stayers' mean of theirs over the season after; null when none drank | tiles |
+| `settlements[]` | The settlements at each year's end and the run's (24 November 2026): the living whose homes lie within `mate_within_tiles` of one another on each axis, link by link; an infant counted at its carrier's home, a body without a mind where it stands | list |
+| `settlements[].year` | The year | integer |
+| `settlements[].groups[]` | Its settlements, the largest first | list |
+| `settlements[].groups[].at` | The mean of its homes | `[x, y]` tiles |
+| `settlements[].groups[].people` | The living there | count |
+| `settlements[].groups[].by_tribe` | Of them, the first and the second tribe's | `[count, count]` |
 | `goals[]` | Each goal held over several days (D56, amended 24 November 2026): `body`, `tribe`, `day` set, `to`, `tiles`, `load_kj` carried then, `end` (`arrived`, `load`, `hunger`, `thirst`, `dropped`, `null` while held at the end), `end_day` | |
 | `map.data_uri` | The page's picture of the map at the run's end, the same PNG: the terrain, the camps red, the living white, the dead black | `"data:image/png;base64,…"` |
 | `map.tiles_per_pixel` | The scale: one pixel is so many tiles a side (5 on the vivarium's world) | tiles |
