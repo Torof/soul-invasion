@@ -2658,6 +2658,9 @@ impl Content {
         }
         for crop in &self.crops {
             let field = |name: &str| format!("crop `{}` on `{}`: {name}", crop.gives, crop.on);
+            if let Some(richness) = crop.richness_permille {
+                at_most("crops.ron", "richness_permille", richness, MILLION)?;
+            }
             for (name, grams) in [
                 ("grams (lean)", crop.grams.0),
                 ("grams (usual)", crop.grams.1),

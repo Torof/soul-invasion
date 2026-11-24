@@ -1272,7 +1272,11 @@ mod tests {
             .unwrap();
         let world = storage.latest_world().unwrap().unwrap();
         assert_eq!(world.tick(), Tick(12));
-        assert_eq!(world.calendar(), &Calendar::new(2, 3).unwrap());
+        assert_eq!(
+            world.calendar(),
+            &Calendar::new(2, 3).unwrap().with_cycle(50, 1).unwrap(),
+            "the legacy cycle, pinned"
+        );
         assert!(
             world.bodies().is_empty(),
             "the standard valley, nobody in it yet"
@@ -1295,7 +1299,11 @@ mod tests {
             .unwrap();
         let world = storage.latest_world().unwrap().unwrap();
         assert_eq!(world.tick(), Tick(40));
-        assert_eq!(world.calendar(), &Calendar::new(2, 3).unwrap());
+        assert_eq!(
+            world.calendar(),
+            &Calendar::new(2, 3).unwrap().with_cycle(50, 1).unwrap(),
+            "the legacy cycle, pinned"
+        );
         assert_eq!(world.map().width(), sim::VALLEY_SIZE);
         assert!(
             world.bodies().is_empty(),
@@ -1725,10 +1733,7 @@ mod tests {
     fn a_world_saved_before_the_year_gets_fifty_days_and_bodies_quenched() {
         // A v11 snapshot: its calendar has no year, its bodies no thirst.
         let mut world = World::with_valley(
-            Calendar::new(2, 3)
-                .unwrap()
-                .with_days_per_cycle(12)
-                .unwrap(),
+            Calendar::new(2, 3).unwrap().with_cycle(12, 1).unwrap(),
             &content(),
             256,
         );
@@ -1909,10 +1914,7 @@ mod tests {
     #[test]
     fn a_v17_world_ages_one_age_year_a_cycle_and_a_v18_keeps_its_own() {
         let content = content();
-        let calendar = Calendar::new(2, 3)
-            .unwrap()
-            .with_days_per_cycle(16)
-            .unwrap();
+        let calendar = Calendar::new(2, 3).unwrap().with_cycle(16, 1).unwrap();
         let mut world = World::with_valley(calendar, &content, 256);
         let body = world.spawn_at_camp().expect("a body at the camp");
         let mut events = Vec::new();

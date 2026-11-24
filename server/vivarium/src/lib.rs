@@ -6453,7 +6453,7 @@ mod tests {
             people: 2,
             adult_years: (20, 20),
             fed: true,
-            days: 20 * Calendar::DEFAULT_DAYS_PER_CYCLE,
+            days: 20 * Calendar::default().days_per_age_year(),
             ..small()
         };
         let report = run_checked(&settings, content());
@@ -6695,8 +6695,8 @@ mod tests {
         assert_eq!(report.people.len(), 5, "five people, five pages");
         assert_eq!(
             report.ticks,
-            2 * 7200,
-            "two days of 7,200 ticks at one tick a second"
+            2 * 16_200,
+            "two days of 16,200 ticks at one tick a second"
         );
         // Tick 0 and then 24 times a day: 48 in two days.
         assert_eq!(report.samples.len(), 1 + 48);
@@ -6807,18 +6807,21 @@ mod tests {
                 "person {} died of thirst beside the river",
                 id.0
             );
+            // A child born in the run (6 game days of pregnancy since
+            // the calendar v1) drinks its mother's milk.
             assert!(
-                person.drinks >= 10,
+                person.born_in_run || person.drinks >= 10,
                 "person {} drank {} times in ten days",
                 id.0,
                 person.drinks
             );
             assert!(
-                person.thoughts > 0
-                    && person
-                        .entries
-                        .iter()
-                        .any(|e| e.what.starts_with("thirsty: "))
+                person.born_in_run
+                    || person.thoughts > 0
+                        && person
+                            .entries
+                            .iter()
+                            .any(|e| e.what.starts_with("thirsty: "))
             );
         }
         assert!(report.fixed().contains("the minimal one (sim::brain)"));

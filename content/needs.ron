@@ -3,13 +3,16 @@
 //
 // night_from_percent:      the day starts at dawn; night begins here, by
 //                          season (D09): the light lasts longer in summer.
-//                          Of a 24 h day from 06:00: spring and autumn 58 %
-//                          (night at 19:55), summer 64 % (21:20), winter
-//                          56 % (19:25). Winter is shortened only that much
-//                          until cold by season, fire and shelter come: its
-//                          10.6 h of night cost a body sleeping outside 43
-//                          points of vitality, which the day gives back; at
-//                          50 % it would lose 25 a day and die in winter.
+//                          The calendar v1 (D09, the project lead, 24
+//                          November 2026): night takes summer 25 %,
+//                          spring and autumn 30 %, winter 38 % of the
+//                          day. Of a 24 h day from 06:00: spring and
+//                          autumn 70 % (night at 22:48), summer 75 %
+//                          (00:00), winter 62 % (20:53). Before v1 it was
+//                          58, 64, 58, 56: winter's 10.6 h of night then
+//                          cost a body sleeping outside 43 points of
+//                          vitality, which the day gave back; its 9.1 h
+//                          now cost less.
 // hunger_per_day:          100 — with kj_per_hunger_point, a body burns
 //                          10,000 kJ a day, out of its fat reserve; hunger
 //                          is the appetite, what the reserve misses and
@@ -76,7 +79,7 @@
 // weak_percent:            20 — weak under a fifth: it walks and gathers
 // weak_pace_percent:       70 — at seven tenths of its pace.
 (
-    night_from_percent: (spring: 58, summer: 64, autumn: 58, winter: 56),
+    night_from_percent: (spring: 70, summer: 75, autumn: 70, winter: 62),
     hunger_per_day: 100,
     thirst_per_day: 100,
     thirst_heat_percent: (spring: 100, summer: 140, autumn: 100, winter: 80),

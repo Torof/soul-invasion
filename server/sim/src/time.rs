@@ -15,8 +15,10 @@
 //!   without "age" (the event `SeasonStarted { year }`, a crop's
 //!   year, the stored and sent `days_per_year`), it means the cycle.
 //!
-//! Today one age-year is the whole cycle (`age_years_per_cycle` 1); the
-//! validated v1 calendar (lot 2) makes it an eighth of one.
+//! The calendar v1 (D09, in force since 24 November 2026): a game day of
+//! 16,200 s, a cycle of 64 game days (seasons of 16), 8 age-years of 8
+//! game days a cycle. A world saved before keeps its own day and its
+//! pinned legacy cycle: 50 days, one age-year a cycle.
 
 use serde::{Deserialize, Serialize};
 
@@ -132,15 +134,16 @@ fn quarter_first_day(quarter: u64, days: u64) -> u64 {
 impl Calendar {
     /// Default simulation resolution: ten ticks per game second.
     pub const DEFAULT_TICKS_PER_SECOND: u32 = 10;
-    /// Default day length: two hours of game time, the first-version
-    /// order of magnitude (see `docs/05-first-version.md`).
-    pub const DEFAULT_SECONDS_PER_DAY: u32 = 2 * 60 * 60;
-    /// Default cycle of four seasons: fifty game days, about four real
-    /// days with a two-hour day (D09; the validated v1, 64, is lot 2).
-    pub const DEFAULT_DAYS_PER_CYCLE: u32 = 50;
-    /// Default age-years in a cycle: one, the age-year is the cycle (D09;
-    /// the validated v1, 8, is lot 2).
-    pub const DEFAULT_AGE_YEARS_PER_CYCLE: u32 = 1;
+    /// Default day length (the calendar v1, D09): 16,200 game seconds,
+    /// four and a half real hours at the game's pace, so the hour of the
+    /// day a player meets shifts each evening.
+    pub const DEFAULT_SECONDS_PER_DAY: u32 = 16_200;
+    /// Default cycle of four seasons (the calendar v1, D09): 64 game days,
+    /// seasons of 16, about twelve real days.
+    pub const DEFAULT_DAYS_PER_CYCLE: u32 = 64;
+    /// Default age-years in a cycle (the calendar v1, D09): eight, an
+    /// age-year of 8 game days, half a season.
+    pub const DEFAULT_AGE_YEARS_PER_CYCLE: u32 = 8;
     /// The cycle of a world saved before it was stored (snapshot v12):
     /// fifty days, pinned, whatever the default becomes.
     pub const LEGACY_DAYS_PER_CYCLE: u32 = 50;
@@ -385,7 +388,7 @@ mod tests {
 
     #[test]
     fn the_age_years_cut_the_cycle_in_whole_days() {
-        let c = Calendar::new(1, 1).unwrap();
+        let c = Calendar::new(1, 1).unwrap().with_cycle(50, 1).unwrap();
         assert_eq!(
             c.with_age_years_per_cycle(0),
             Err(CalendarError::ZeroAgeYears)
@@ -416,10 +419,9 @@ mod tests {
             v1.with_days_per_cycle(36),
             Err(CalendarError::UnevenAgeYears)
         );
-        // Today's: one age-year, the whole cycle.
-        let today = Calendar::default();
-        assert_eq!(today.age_years_per_cycle(), 1);
-        assert_eq!(today.days_per_age_year(), today.days_per_cycle());
+        // The legacy shape: one age-year, the whole cycle.
+        assert_eq!(c.age_years_per_cycle(), 1);
+        assert_eq!(c.days_per_age_year(), c.days_per_cycle());
     }
 
     #[test]
@@ -456,7 +458,7 @@ mod tests {
         assert!(c.time_at(Tick(16 * 10)).is_season_start());
         // One age-year a cycle: the age-year, its quarters and their days
         // are the cycle, its seasons and theirs, whole day for whole day.
-        let today = Calendar::new(1, 10).unwrap();
+        let today = Calendar::new(1, 10).unwrap().with_cycle(50, 1).unwrap();
         for day in 1..=150 {
             let t = today.time_at(Tick((day - 1) * 10));
             assert_eq!(t.age_year, t.cycle, "day {day}");
@@ -470,11 +472,11 @@ mod tests {
     }
 
     #[test]
-    fn default_calendar_is_ten_ticks_and_two_hours() {
+    fn default_calendar_is_ten_ticks_and_four_hours_and_a_half() {
         let c = Calendar::default();
         assert_eq!(c.ticks_per_second(), 10);
-        assert_eq!(c.seconds_per_day(), 7200);
-        assert_eq!(c.ticks_per_day(), 72_000);
+        assert_eq!(c.seconds_per_day(), 16_200);
+        assert_eq!(c.ticks_per_day(), 162_000);
     }
 
     #[test]
@@ -483,18 +485,29 @@ mod tests {
         assert_eq!(Calendar::new(10, 0), Err(CalendarError::ZeroSecondsPerDay));
         let c = Calendar::new(1, 1).unwrap();
         assert_eq!(c.with_days_per_cycle(3), Err(CalendarError::TooShortCycle));
-        assert_eq!(c.with_days_per_cycle(4).unwrap().days_per_cycle(), 4);
+        assert_eq!(c.with_cycle(4, 1).unwrap().days_per_cycle(), 4);
     }
 
     #[test]
-    fn the_default_year_is_fifty_days() {
-        assert_eq!(Calendar::default().days_per_cycle(), 50);
-        assert_eq!(Calendar::new(2, 5).unwrap().days_per_cycle(), 50);
+    fn the_default_cycle_is_v1() {
+        for c in [Calendar::default(), Calendar::new(2, 5).unwrap()] {
+            assert_eq!(c.days_per_cycle(), 64);
+            assert_eq!(c.age_years_per_cycle(), 8);
+            assert_eq!(c.days_per_age_year(), 8);
+        }
+        // Seasons of sixteen days, quarters of age-year of two.
+        let c = Calendar::new(1, 10).unwrap();
+        let t = c.time_at(Tick(16 * 10));
+        assert_eq!(
+            (t.season, t.age_year, t.age_quarter),
+            (Season::Summer, 3, 0)
+        );
+        assert_eq!(c.time_at(Tick(2 * 10)).age_quarter, 1);
     }
 
     #[test]
     fn a_tick_has_a_year_and_a_season() {
-        let c = Calendar::new(1, 10).unwrap(); // 10 ticks a day, 50 days a cycle
+        let c = Calendar::new(1, 10).unwrap().with_cycle(50, 1).unwrap(); // 10 ticks a day, 50 days a cycle
         let at_day = |day: u64| c.time_at(Tick((day - 1) * 10));
         // 50 days in four: 13, 12, 13, 12.
         for (day, season, year, of_year) in [

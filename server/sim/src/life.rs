@@ -447,7 +447,7 @@ mod tests {
     /// Four ticks a day, eight days a year: a season of two days, a
     /// pregnancy of six.
     fn calendar() -> Calendar {
-        Calendar::new(2, 2).unwrap().with_days_per_cycle(8).unwrap()
+        Calendar::new(2, 2).unwrap().with_cycle(8, 1).unwrap()
     }
 
     fn world_with(life: bool) -> World {
