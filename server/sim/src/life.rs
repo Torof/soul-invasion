@@ -151,8 +151,11 @@ impl World {
     }
 
     /// The couples at a day's start (D49, amended 24 November 2026): a
-    /// body whose spouse stands beyond `mate_within_tiles` counts one more
-    /// dawn apart, one back within it counts none; at `part_after_days`
+    /// body whose spouse's home lies beyond `mate_within_tiles` of its own
+    /// counts one more dawn apart, one back within it counts none (the
+    /// homes the brains told, [`World::set_homes`]; a body without one
+    /// counts where it stands: a spouse sleeping out is not a spouse
+    /// gone); at `part_after_days`
     /// dawns in a row the two part, both free to take another by the
     /// daily rule. Their children stay with their mother: nothing of
     /// theirs changes. Nothing when `part_after_days` is 0.
@@ -168,7 +171,8 @@ impl World {
             let Some(spouse) = body.spouse.and_then(|s| self.body(s)) else {
                 continue;
             };
-            let apart = tiles_apart(spouse.pos(), body.pos()) > reach;
+            let home = |b: &Body| self.homes.get(&b.id).copied().unwrap_or(b.pos());
+            let apart = tiles_apart(home(spouse), home(body)) > reach;
             let (a, b) = (body.id, spouse.id);
             let days = &mut self.bodies[index].apart_days;
             *days = if apart { *days + 1 } else { 0 };
@@ -837,6 +841,32 @@ mod tests {
         assert_eq!(w.body(wife).unwrap().spouse, Some(suitor));
         assert_eq!(w.body(husband).unwrap().spouse, None, "nobody near him");
         assert_eq!(w.body(husband).unwrap().apart_days, 0);
+    }
+
+    #[test]
+    fn a_spouse_sleeping_out_keeps_the_couple_but_homes_apart_part_it() {
+        let mut rules = fed_rules();
+        rules.needs.life.part_after_days = 3;
+        rules.needs.life.court_days = 0;
+        rules.needs.life.death_by_age = vec![(0, 0)];
+        let mut w = world();
+        let (wife, husband) = couple_of(&mut w);
+        set(&mut w, husband, |b| b.at = Pos::new(110, 5).centre());
+        let mut events = Vec::new();
+        // One home for both, he sleeps a hundred tiles out: no dawn apart.
+        let home = Pos::new(5, 5);
+        w.set_homes([(wife, home), (husband, home)]);
+        w.advance(4 * w_day(), &rules, &mut events);
+        assert_eq!(w.body(wife).unwrap().apart_days, 0);
+        assert_eq!(w.body(wife).unwrap().spouse, Some(husband));
+        // He takes a home of his own out there: three dawns and they part.
+        w.set_homes([(wife, home), (husband, Pos::new(110, 5))]);
+        w.advance(3 * w_day(), &rules, &mut events);
+        assert!(
+            events.iter().any(|e| matches!(e, Event::Parted { .. })),
+            "homes apart part the couple"
+        );
+        assert_eq!(w.body(wife).unwrap().spouse, None);
     }
 
     #[test]

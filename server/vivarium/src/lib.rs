@@ -1639,8 +1639,20 @@ pub fn run_watched(
     if let Some(placer) = &placer {
         placer.follow(&world, content);
     }
+    let ticks_per_day = calendar.ticks_per_day();
     for _ in 0..ticks {
         events.clear();
+        // The homes the minds hold, told before each dawn (D49, amended
+        // 24 November 2026): spouses part by their homes, not by where
+        // they slept.
+        if (world.tick().0 + 1).is_multiple_of(ticks_per_day) {
+            let homes: Vec<(BodyId, Pos)> = world
+                .bodies()
+                .iter()
+                .filter_map(|b| brains.mind(b.id()).map(|m| (b.id(), m.home())))
+                .collect();
+            world.set_homes(homes);
+        }
         world.step(content, &mut events);
         let tick = world.tick().0;
         if let Some(placer) = &placer

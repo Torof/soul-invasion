@@ -1387,6 +1387,11 @@ pub struct World {
     /// Never persisted.
     #[serde(skip)]
     piloted: BTreeSet<BodyId>,
+    /// Where each mind holds its home, as the brains last told
+    /// ([`World::set_homes`]): spouses are apart by their homes (D49,
+    /// amended 24 November 2026). Never persisted.
+    #[serde(skip)]
+    homes: BTreeMap<BodyId, Pos>,
     /// The content's kinds of tree, the trees of a chunk are placed with
     /// ([`World::trees_in`]); set by [`World::take_content`]. Never
     /// persisted: the trees are placed again, the same, from the map.
@@ -1489,6 +1494,7 @@ impl<'de> serde::Deserialize<'de> for World {
             grow_due: true,
             searches: Searches::default(),
             piloted: BTreeSet::new(),
+            homes: BTreeMap::new(),
             species: Vec::new(),
             geology: geology::Geology::default(),
             open_ground: open_ground::OpenGround::default(),
@@ -1602,6 +1608,7 @@ impl World {
             grow_due: true,
             searches: Searches::default(),
             piloted: BTreeSet::new(),
+            homes: BTreeMap::new(),
             species: Vec::new(),
             geology: geology::Geology::default(),
             open_ground: open_ground::OpenGround::default(),
@@ -2545,6 +2552,14 @@ impl World {
     /// (D32). The server's input, as intentions are; never persisted.
     pub fn set_piloted(&mut self, bodies: impl IntoIterator<Item = BodyId>) {
         self.piloted = bodies.into_iter().collect();
+    }
+
+    /// Tells the world where each mind holds its home (D49, amended 24
+    /// November 2026): the brains' input, as intentions are; never
+    /// persisted. Spouses are apart by their homes when both have one,
+    /// else by where they stand: one sleeping out keeps the couple.
+    pub fn set_homes(&mut self, homes: impl IntoIterator<Item = (BodyId, Pos)>) {
+        self.homes = homes.into_iter().collect();
     }
 
     /// The lane of a body's searches.
