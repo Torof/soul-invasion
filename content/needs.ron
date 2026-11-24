@@ -139,13 +139,18 @@
     // days: of illness before sixty, of old age from then. At 16, or once
     // widowed, a body takes the nearest unmarried body of the other sex
     // within 64 tiles, aged 16 to 50, that is neither parent, child nor
-    // sibling, half-siblings included.
+    // sibling, half-siblings included, once it has slept within those 64
+    // tiles of that body 6 dawns in a row. Spouses apart beyond those 64 tiles
+    // at 12 dawns in a row (about a season) part, both free to take
+    // another; the children stay with their mother.
     life: (
         fertile_years: (16, 42),
         conceive_reserve_percent: 80,
         mate_within_tiles: 64,
         conceive_percent: 40,
         conceive_nights: 4,
+        part_after_days: 12,
+        court_days: 6,
         pregnancy_seasons: 3,
         pregnant_percent: 110,
         lose_when_weak: true,

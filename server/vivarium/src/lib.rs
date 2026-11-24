@@ -287,6 +287,9 @@ pub struct Person {
     /// Its spouses in order, with the day each was taken (from 1): the
     /// last is its spouse, alive or dead.
     pub couplings: Vec<(u64, BodyId)>,
+    /// The spouses it parted from, apart too long, with the day (D49,
+    /// amended 24 November 2026).
+    pub partings: Vec<(u64, BodyId)>,
     /// Its children: those whose mother or father it is, in birth order.
     pub children: Vec<BodyId>,
     /// The days it lost an unborn child (from 1).
@@ -844,6 +847,10 @@ pub struct MovingProbe {
     /// By (tribe, year): the grown bodies' dawns, and those of them
     /// pushed (the push at the last nightfall at its threshold or more).
     pub pushed: BTreeMap<(u8, u64), (u32, u32)>,
+    /// The tiles from home each grown body had walked when it first drank,
+    /// by body and day, the days it drank (24 November 2026, the movers'
+    /// water).
+    pub drink: BTreeMap<BodyId, BTreeMap<u64, u64>>,
 }
 
 /// What a move did to its mover (amended 24 November 2026, the utility
@@ -864,6 +871,11 @@ pub struct MoveUtility {
     pub stayers: u32,
     /// Their mean hungry nights over the same season, in thousandths.
     pub stayers_milli: u64,
+    /// The mover's mean tiles from home to its first drink, the days it
+    /// drank, over the season before it set off and the season after.
+    pub mover_drink: (Option<u64>, Option<u64>),
+    /// The stayers' mean of theirs over the season after.
+    pub stayers_drink: Option<u64>,
 }
 
 impl Report {
@@ -884,6 +896,13 @@ impl Report {
                 .get(&b)
                 .map_or(0, |days| days.range(from..=to).count())
         };
+        let drink = |b: BodyId, from: u64, to: u64| {
+            let days = m.drink.get(&b)?;
+            let (sum, n) = days
+                .range(from..=to)
+                .fold((0, 0), |(sum, n), (_, &t)| (sum + t, n + 1));
+            (n > 0).then(|| sum / n)
+        };
         let moved = |b: BodyId, from: u64, to: u64| {
             self.home_moves
                 .iter()
@@ -897,14 +916,17 @@ impl Report {
                 if !lived(h.body, from, to) {
                     return None;
                 }
-                let stayers: Vec<usize> = m
+                let stayed: Vec<BodyId> = m
                     .alive
                     .keys()
                     .filter(|&&b| b != h.body)
                     .filter(|&&b| self.people.get(&b).map(|p| p.tribe) == Some(h.tribe))
                     .filter(|&&b| lived(b, from, to) && !moved(b, h.day.saturating_sub(season), to))
-                    .map(|&b| hungry(b, from, to))
+                    .copied()
                     .collect();
+                let stayers: Vec<usize> = stayed.iter().map(|&b| hungry(b, from, to)).collect();
+                let stayers_tiles: Vec<u64> =
+                    stayed.iter().filter_map(|&b| drink(b, from, to)).collect();
                 if stayers.is_empty() {
                     return None;
                 }
@@ -917,6 +939,14 @@ impl Report {
                     mover: u32::try_from(hungry(h.body, from, to)).unwrap_or(u32::MAX),
                     stayers: u32::try_from(n).unwrap_or(u32::MAX),
                     stayers_milli: sum * 1000 / n,
+                    mover_drink: (
+                        drink(h.body, h.day.saturating_sub(season), h.day),
+                        drink(h.body, from, to),
+                    ),
+                    stayers_drink: (!stayers_tiles.is_empty()).then(|| {
+                        stayers_tiles.iter().sum::<u64>()
+                            / u64::try_from(stayers_tiles.len()).unwrap_or(1)
+                    }),
                 })
             })
             .collect()
@@ -1609,8 +1639,20 @@ pub fn run_watched(
     if let Some(placer) = &placer {
         placer.follow(&world, content);
     }
+    let ticks_per_day = calendar.ticks_per_day();
     for _ in 0..ticks {
         events.clear();
+        // The homes the minds hold, told before each dawn (D49, amended
+        // 24 November 2026): spouses part by their homes, not by where
+        // they slept.
+        if (world.tick().0 + 1).is_multiple_of(ticks_per_day) {
+            let homes: Vec<(BodyId, Pos)> = world
+                .bodies()
+                .iter()
+                .filter_map(|b| brains.mind(b.id()).map(|m| (b.id(), m.home())))
+                .collect();
+            world.set_homes(homes);
+        }
         world.step(content, &mut events);
         let tick = world.tick().0;
         if let Some(placer) = &placer
@@ -1704,6 +1746,13 @@ pub fn run_watched(
                                 .or_default();
                             e.0 += 1;
                             e.1 += u32::from(mind.push() >= threshold);
+                            if let Some(tiles) = mind.drank_from_home() {
+                                moving
+                                    .drink
+                                    .entry(b.id())
+                                    .or_default()
+                                    .insert(day.saturating_sub(1), tiles);
+                            }
                         }
                     }
                 }
@@ -1835,6 +1884,19 @@ pub fn run_watched(
                     for (who, other) in [(*a, *b), (*b, *a)] {
                         let person = people.entry(who).or_default();
                         person.couplings.push((day, other));
+                        person.entries.push(entry.clone());
+                    }
+                }
+                Event::Parted { a, b } => {
+                    let entry = Entry {
+                        tick,
+                        day,
+                        what: format!("{} and {} part, apart too long", name(*a), name(*b)),
+                    };
+                    chronicle.push(entry.clone());
+                    for (who, other) in [(*a, *b), (*b, *a)] {
+                        let person = people.entry(who).or_default();
+                        person.partings.push((day, other));
                         person.entries.push(entry.clone());
                     }
                 }

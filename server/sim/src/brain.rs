@@ -1733,6 +1733,8 @@ pub struct Mind {
     season: u8,
     /// The fewest tiles from home it had walked when it drank today.
     drink_from_home: Option<u64>,
+    /// The same, of its last day closed: `None` when it did not drink.
+    drank_from_home: Option<u64>,
     /// Its recent days (amended 24 November 2026, the push).
     recent: Usual,
     /// Its usual days, season by season.
@@ -2038,6 +2040,7 @@ impl Mind {
             lived: Vec::new(),
             season: 0,
             drink_from_home: None,
+            drank_from_home: None,
             recent: Usual::default(),
             usual: [Usual::default(); 4],
             push: 0,
@@ -2164,6 +2167,14 @@ impl Mind {
     #[must_use]
     pub fn push(&self) -> u64 {
         self.push
+    }
+
+    /// The fewest tiles from home it had walked when it drank on its last
+    /// day closed (24 November 2026, the movers' water): `None` when it
+    /// did not drink. A measure.
+    #[must_use]
+    pub fn drank_from_home(&self) -> Option<u64> {
+        self.drank_from_home
     }
 
     /// How it grades its own home by its notebook (D53, amended 24
@@ -7538,7 +7549,8 @@ fn night_of(
     let (sum, days) = mind.gathered;
     mind.gathered = (sum * keep / 1000 + got * 1000, days * keep / 1000 + 1000);
     let tiles = std::mem::take(&mut mind.walked_today);
-    let drink = mind.drink_from_home.take().unwrap_or(0);
+    mind.drank_from_home = mind.drink_from_home.take();
+    let drink = mind.drank_from_home.unwrap_or(0);
     mind.season = season;
     let moving = &rules.needs.moving;
     if moving.on() {

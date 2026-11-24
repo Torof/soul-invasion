@@ -39,7 +39,7 @@ use sim::{CHUNK_SIZE, ChunkPos, Content, Pos, World};
 
 /// Version of the serialized `World` inside a snapshot. Bump on any change
 /// to `World`'s shape, and add a migration in `decode_world`.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 16;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 17;
 
 /// Version of a chunk's changes as stored (`encode_changes`). Bump on any
 /// change to their bytes, and read the old ones in `decode_changes`.
@@ -872,6 +872,7 @@ fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<Wo
             13 => migrate_v13_to_v14(&data)?,
             14 => migrate_v14_to_v15(&data)?,
             15 => migrate_v15_to_v16(data),
+            16 => migrate_v16_to_v17(data),
             _ => return Err(unsupported()),
         };
         version += 1;
@@ -1131,6 +1132,14 @@ fn migrate_v14_to_v15(data: &str) -> Result<String, StorageError> {
 /// world saved before has none of them and the rule off, which is what
 /// the fields read as when absent: the data is the same.
 fn migrate_v15_to_v16(data: String) -> String {
+    data
+}
+
+/// v17: a body counts the dawns in a row its spouse was too far, and
+/// the couple parts at the content's count (D49, amended 24 November
+/// 2026). A world saved before counts none, which is what the field reads
+/// as when absent: the data is the same.
+fn migrate_v16_to_v17(data: String) -> String {
     data
 }
 
