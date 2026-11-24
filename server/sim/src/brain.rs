@@ -15079,12 +15079,13 @@ mod tests {
             "a weight, never a ban"
         );
         // A lesson fades: half after lesson_days, nothing after twice.
+        let lesson = u64::from(rules.needs.trials.lesson_days);
         assert_eq!(
-            weight_of(&weights(&brains, 0, 10 + 50), Way::SleepOut, true),
+            weight_of(&weights(&brains, 0, 10 + lesson), Way::SleepOut, true),
             125
         );
         assert_eq!(
-            weight_of(&weights(&brains, 0, 10 + 100), Way::SleepOut, true),
+            weight_of(&weights(&brains, 0, 10 + 2 * lesson), Way::SleepOut, true),
             100
         );
     }
