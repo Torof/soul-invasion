@@ -39,7 +39,7 @@ use sim::{CHUNK_SIZE, ChunkPos, Content, Pos, World};
 
 /// Version of the serialized `World` inside a snapshot. Bump on any change
 /// to `World`'s shape, and add a migration in `decode_world`.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 17;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 18;
 
 /// Version of a chunk's changes as stored (`encode_changes`). Bump on any
 /// change to their bytes, and read the old ones in `decode_changes`.
@@ -873,6 +873,7 @@ fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<Wo
             14 => migrate_v14_to_v15(&data)?,
             15 => migrate_v15_to_v16(data),
             16 => migrate_v16_to_v17(data),
+            17 => migrate_v17_to_v18(&data)?,
             _ => return Err(unsupported()),
         };
         version += 1;
@@ -1043,13 +1044,14 @@ fn migrate_v10_to_v11(data: &str, content: &Content) -> Result<String, StorageEr
 
 /// v12: the calendar has a year (D09, amended 13 November 2026) and
 /// bodies thirst (D34, amended the same day). A world saved before gets
-/// the provisional year of 50 days and its bodies have just drunk.
+/// the provisional year of 50 days, pinned (never the default, which
+/// may change), and its bodies have just drunk.
 fn migrate_v11_to_v12(data: &str) -> Result<String, StorageError> {
     let mut old: serde_json::Value = serde_json::from_str(data)?;
     if let Some(calendar) = old["calendar"].as_object_mut() {
         calendar
             .entry("days_per_year")
-            .or_insert_with(|| sim::Calendar::DEFAULT_DAYS_PER_YEAR.into());
+            .or_insert_with(|| sim::Calendar::LEGACY_DAYS_PER_CYCLE.into());
     }
     let quenched = serde_json::to_value(sim::Condition::healthy().thirst)?;
     if let Some(bodies) = old["bodies"].as_array_mut() {
@@ -1105,7 +1107,7 @@ fn migrate_v14_to_v15(data: &str) -> Result<String, StorageError> {
     let calendar: sim::Calendar = serde_json::from_value(old["calendar"].clone())?;
     let tick = old["tick"].as_u64().unwrap_or(0);
     let today = i64::try_from(tick / calendar.ticks_per_day().max(1)).unwrap_or(0);
-    let per_year = i64::from(calendar.days_per_year());
+    let per_year = i64::from(calendar.days_per_age_year());
     if let Some(bodies) = old["bodies"].as_array_mut() {
         for body in bodies.iter_mut().filter_map(|b| b.as_object_mut()) {
             let id = body
@@ -1141,6 +1143,20 @@ fn migrate_v15_to_v16(data: String) -> String {
 /// as when absent: the data is the same.
 fn migrate_v16_to_v17(data: String) -> String {
     data
+}
+
+/// v18: the calendar counts its age-years in a cycle of seasons (D09,
+/// amended 24 November 2026: three clocks). A world saved before ages one
+/// age-year a cycle, as it always did: `age_years_per_cycle` is written
+/// as the legacy value, pinned, never read from a default that may change.
+fn migrate_v17_to_v18(data: &str) -> Result<String, StorageError> {
+    let mut old: serde_json::Value = serde_json::from_str(data)?;
+    if let Some(calendar) = old["calendar"].as_object_mut() {
+        calendar
+            .entry("age_years_per_cycle")
+            .or_insert_with(|| sim::Calendar::LEGACY_AGE_YEARS_PER_CYCLE.into());
+    }
+    Ok(old.to_string())
 }
 
 fn standard_world_at_old_tick(data: &str, content: &Content) -> Result<String, StorageError> {
@@ -1256,7 +1272,11 @@ mod tests {
             .unwrap();
         let world = storage.latest_world().unwrap().unwrap();
         assert_eq!(world.tick(), Tick(12));
-        assert_eq!(world.calendar(), &Calendar::new(2, 3).unwrap());
+        assert_eq!(
+            world.calendar(),
+            &Calendar::new(2, 3).unwrap().with_cycle(50, 1).unwrap(),
+            "the legacy cycle, pinned"
+        );
         assert!(
             world.bodies().is_empty(),
             "the standard valley, nobody in it yet"
@@ -1279,7 +1299,11 @@ mod tests {
             .unwrap();
         let world = storage.latest_world().unwrap().unwrap();
         assert_eq!(world.tick(), Tick(40));
-        assert_eq!(world.calendar(), &Calendar::new(2, 3).unwrap());
+        assert_eq!(
+            world.calendar(),
+            &Calendar::new(2, 3).unwrap().with_cycle(50, 1).unwrap(),
+            "the legacy cycle, pinned"
+        );
         assert_eq!(world.map().width(), sim::VALLEY_SIZE);
         assert!(
             world.bodies().is_empty(),
@@ -1709,7 +1733,7 @@ mod tests {
     fn a_world_saved_before_the_year_gets_fifty_days_and_bodies_quenched() {
         // A v11 snapshot: its calendar has no year, its bodies no thirst.
         let mut world = World::with_valley(
-            Calendar::new(2, 3).unwrap().with_days_per_year(12).unwrap(),
+            Calendar::new(2, 3).unwrap().with_cycle(12, 1).unwrap(),
             &content(),
             256,
         );
@@ -1738,14 +1762,14 @@ mod tests {
             )
             .unwrap();
         let back = storage.latest_world().unwrap().unwrap();
-        assert_eq!(back.calendar().days_per_year(), 50);
+        assert_eq!(back.calendar().days_per_cycle(), 50);
         assert_eq!(back.calendar().ticks_per_day(), 6);
         assert_eq!(back.body(body).unwrap().condition().thirst.points(), 0);
         // Today's worlds keep their own year and thirst.
         let mut storage = Sqlite::in_memory(content()).unwrap();
         storage.save_world(&world).unwrap();
         let today = storage.latest_world().unwrap().unwrap();
-        assert_eq!(today.calendar().days_per_year(), 12);
+        assert_eq!(today.calendar().days_per_cycle(), 12);
         assert_eq!(
             today.body(body).unwrap().condition(),
             world.body(body).unwrap().condition()
@@ -1885,6 +1909,50 @@ mod tests {
             .unwrap();
         assert_eq!(version, SNAPSHOT_FORMAT_VERSION);
         assert!(storage.latest_world().unwrap().unwrap().life());
+    }
+
+    #[test]
+    fn a_v17_world_ages_one_age_year_a_cycle_and_a_v18_keeps_its_own() {
+        let content = content();
+        let calendar = Calendar::new(2, 3).unwrap().with_cycle(16, 1).unwrap();
+        let mut world = World::with_valley(calendar, &content, 256);
+        let body = world.spawn_at_camp().expect("a body at the camp");
+        let mut events = Vec::new();
+        world.advance(4, &content, &mut events);
+        assert!(world.body(body).is_some());
+        let mut old: serde_json::Value = serde_json::to_value(&world).unwrap();
+        assert!(
+            old["calendar"]
+                .as_object_mut()
+                .unwrap()
+                .remove("age_years_per_cycle")
+                .is_some()
+        );
+        let mut storage = Sqlite::in_memory(content.clone()).unwrap();
+        storage
+            .conn
+            .execute(
+                "INSERT INTO snapshots (tick, format_version, data) VALUES (4, 17, ?1)",
+                [old.to_string()],
+            )
+            .unwrap();
+        let back = storage.latest_world().unwrap().unwrap();
+        assert_eq!(back.calendar().age_years_per_cycle(), 1);
+        assert_eq!(back.calendar().days_per_age_year(), 16);
+        assert_eq!(back.calendar().days_per_cycle(), 16);
+        assert_eq!(
+            back.age_milli(back.body(body).unwrap()),
+            world.age_milli(world.body(body).unwrap()),
+            "the same age, in age-years of the cycle"
+        );
+        // A v18 world keeps its age-years: four a cycle, of four days.
+        let quick = Calendar::new(2, 3).unwrap().with_cycle(16, 4).unwrap();
+        let world = World::with_valley(quick, &content, 256);
+        let mut storage = Sqlite::in_memory(content).unwrap();
+        storage.save_world(&world).unwrap();
+        let today = storage.latest_world().unwrap().unwrap();
+        assert_eq!(today.calendar(), &quick);
+        assert_eq!(today.calendar().days_per_age_year(), 4);
     }
 
     #[test]

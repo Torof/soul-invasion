@@ -25,7 +25,10 @@ clock, the only field no seed decides.
 ## Conventions
 
 - `format` is raised when a key changes meaning or goes away; a new key does not raise it.
-- Days count from 1 (the run's first day); ticks from 0. A year is `meta.days_per_year` days.
+- Days count from 1 (the run's first day); ticks from 0. A year (`years[]`, a season's year) is
+  the cycle of four seasons, `meta.days_per_year` days; an age (`adult_years`, the ages of the
+  people) is counted in age-years of `meta.days_per_age_year` days (D09, amended 24 November
+  2026). Today the two are the same, 50 days.
 - Tribes are named by their letter, `"A"` or `"B"`, in the order of `meta.camps`; the arrays "by
   tribe" under `curves` follow the same order.
 - Positions are `[x, y]` in tiles of one metre, `x` growing east and `y` south.
@@ -40,7 +43,7 @@ clock, the only field no seed decides.
 | Key | Meaning | Unit or form |
 |---|---|---|
 | `meta.format` | The format marker, `1` since 22 November 2026 | integer |
-| `meta.settings.world` | The world | `"vivarium"` or `"patch"` |
+| `meta.settings.world` | The world; `"vivarium-wide"` the vivarium's zone twice as wide (24 November 2026) | `"vivarium"`, `"vivarium-wide"` or `"patch"` |
 | `meta.settings.side` | A patch's side; `null` on the vivarium's world | tiles |
 | `meta.settings.people` | Grown people born at each camp | count |
 | `meta.settings.children` | Children born at each camp | count |
@@ -59,7 +62,10 @@ clock, the only field no seed decides.
 | `meta.settings.content` | The content directory given, its last component; `null` when found from the working directory | string |
 | `meta.map_tiles` | The world's size | `[width, height]` tiles |
 | `meta.camps` | The camps' starting positions, A first | `[[x, y], …]` |
-| `meta.days_per_year` | The length of a year | days |
+| `meta.days_per_year` | The length of a year: the cycle of four seasons, the nature clock (`--days-per-cycle`) | days |
+| `meta.age_years_per_cycle` | Age-years in a cycle, the clock of ages (`--age-years-per-cycle`; D09, amended 24 November 2026); 1 today, the age-year being the cycle | count |
+| `meta.days_per_age_year` | The length of an age-year: `days_per_year / age_years_per_cycle` | days |
+| `meta.seconds_per_day` | The length of a game day (`--seconds-per-day`) | game seconds |
 | `meta.ticks_per_day` | The length of a day at this cadence | ticks |
 | `meta.ticks` | Ticks run | ticks |
 | `meta.rates[].name` | A rate of `content/needs.ron` the people live by | string |
@@ -313,7 +319,7 @@ clock, the only field no seed decides.
 | `bilan.groups.members_two_days` | How many such member-days | count |
 | `bilan.groups.same_caller` | Of the followers two days running, those who followed the same caller | count |
 | `bilan.groups.followers_two_days` | Followers two days running | count |
-| `bilan.couples.*` | At each dawn of conception (life's `conceive_nights` first days of a season), each fertile woman with a living spouse, not with child from before and carrying no infant: `met` (spouse within reach, reserve enough), `apart` (spouse too far only), `thin` (reserve too low only), `apart_and_thin` | count |
+| `bilan.couples.*` | At each dawn of conception (life's `conceive_nights` first days of a quarter of an age-year, a season while the age-year is the cycle), each fertile woman with a living spouse, not with child from before and carrying no infant: `met` (spouse within reach, reserve enough), `apart` (spouse too far only), `thin` (reserve too low only), `apart_and_thin` | count |
 | `bilan.confidence.everyone_x10` | The confidence in gathering (D56, 0 to 100) at every noon of a living body past infancy, × 10, on average | integer |
 | `bilan.confidence.set_aside_before_x10` | That of the set aside at the noon before the fire that set them aside | integer |
 | `bilan.confidence.named_before_x10` | That of the named, likewise | integer |
@@ -368,6 +374,41 @@ clock, the only field no seed decides.
 | `moving.utility[].stayers`, `.stayers_hungry_nights_milli` | The grown of its tribe alive throughout who moved neither in the season before nor in that one; their mean hungry nightfalls over the same days, in thousandths | |
 | `moving.utility[].mover_drink_tiles_before`, `.mover_drink_tiles_after` | The mover's mean tiles from home to its first drink of the day, the days it drank, over the season before it set off and the season after (24 November 2026, the movers' water); null when it never drank there | tiles |
 | `moving.utility[].stayers_drink_tiles_after` | The stayers' mean of theirs over the season after; null when none drank | tiles |
+| `settlements[]` | The settlements at each year's end and the run's (24 November 2026): the living whose homes lie within `mate_within_tiles` of one another on each axis, link by link; an infant counted at its carrier's home, a body without a mind where it stands | list |
+| `settlements[].year` | The year | integer |
+| `settlements[].groups[]` | Its settlements, the largest first | list |
+| `settlements[].groups[].at` | The mean of its homes | `[x, y]` tiles |
+| `settlements[].groups[].people` | The living there | count |
+| `settlements[].groups[].by_tribe` | Of them, the first and the second tribe's | `[count, count]` |
+| `partings[]` | Each parting (24 November 2026, why couples part), with the couple's dawns before it; distances in tiles on the longer axis, as the parting rule counts | list |
+| `partings[].day` | The day it parted | day |
+| `partings[].pair` | The two, the lower id first | `[id, id]` |
+| `partings[].dawns[]` | Their dawns as spouses over the 12 days before, up to the parting's own, the oldest first | list |
+| `partings[].dawns[].day` | The day | day |
+| `partings[].dawns[].apart` | The spouses apart where they woke | tiles |
+| `partings[].dawns[].from_home` | Each one from its own home, the lower id first | `[tiles, tiles]` |
+| `partings[].dawns[].homes_apart` | Their two homes apart | tiles |
+| `home_changes[]` | Each grown body's home changed between two dawns, whatever moved it (24 November 2026, why daughter villages), against the settlements of the dawn before: the others' homes linked within `mate_within_tiles` on each axis, link by link; a village is such a settlement of 10 or more that does not reach the old home | list |
+| `home_changes[].day` | The dawn it was seen | day |
+| `home_changes[].body` | Who | id |
+| `home_changes[].tribe` | Its tribe | 0 or 1 |
+| `home_changes[].from` | The home before | `[x, y]` tiles |
+| `home_changes[].to` | The home after | `[x, y]` tiles |
+| `home_changes[].with` | The other grown bodies whose home changed the same dawn to within reach of this new home | count |
+| `home_changes[].left_people` | The people of the settlements the old home reached, the mover out | count |
+| `home_changes[].joined_people` | The people of the settlements the new home reaches, the mover out | count |
+| `home_changes[].villages` | The villages there were | count |
+| `home_changes[].knew_villages` | Of them, those the mover knew a place within reach of | count |
+| `home_changes[].nearest_village` | The nearest village to the new home, `{tiles, people}`; null without any | object or null |
+| `home_changes[].known_places` | The places the mover knew of | count |
+| `nights_apart[]` | The fertile couples' dawns, by age-year from the first (24 November 2026, the project lead: births need couples together at night): every dawn of a fertile wife not with child whose spouse lives; apart is farther than `mate_within_tiles` on either axis. Each dawn apart has one cause, the first that holds for a spouse away from its home | list, one per year |
+| `nights_apart[].dawns` | The fertile couples' dawns | dawns |
+| `nights_apart[].together` | Those spent together | dawns |
+| `nights_apart[].homes_apart` | Apart: their homes farther apart than `mate_within_tiles` | dawns |
+| `nights_apart[].sleep_out` | Apart: one away from home sleeps out by its way (D50) | dawns |
+| `nights_apart[].goal` | Apart: one away from home holds a goal beyond a day (D56) | dawns |
+| `nights_apart[].home_trial` | Apart: one away from home is on its home trial | dawns |
+| `nights_apart[].caught_out` | Apart: none of these; the night caught one out | dawns |
 | `goals[]` | Each goal held over several days (D56, amended 24 November 2026): `body`, `tribe`, `day` set, `to`, `tiles`, `load_kj` carried then, `end` (`arrived`, `load`, `hunger`, `thirst`, `dropped`, `null` while held at the end), `end_day` | |
 | `map.data_uri` | The page's picture of the map at the run's end, the same PNG: the terrain, the camps red, the living white, the dead black | `"data:image/png;base64,…"` |
 | `map.tiles_per_pixel` | The scale: one pixel is so many tiles a side (5 on the vivarium's world) | tiles |

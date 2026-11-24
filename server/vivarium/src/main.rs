@@ -9,8 +9,10 @@ const USAGE: &str = "\
 vivarium [options]   runs a world of the simulation headless and accelerated,
                      and writes an HTML report (D41)
 
-  --world vivarium|patch   the vivarium's world (zone 2 of seed 14, some six
-                           seconds to be born), or a patch of the valley
+  --world vivarium|vivarium-wide|patch
+                           the vivarium's world (zone 2 of seed 14, some six
+                           seconds to be born), the same twice as wide
+                           (4,352 m a side), or a patch of the valley
                            (default: patch)
   --side N                 the patch's side in tiles (default 50)
   --people N               people born at each camp (default 5): grown
@@ -26,6 +28,12 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
                            the vivarium's world, 1 on a patch)
   --days N                 game days to run (default 10)
   --cadence N              ticks a game second (default 1; the game runs at 10)
+  --seconds-per-day N      game seconds a game day (default 7200, two hours)
+  --days-per-cycle N       game days in a cycle of four seasons, the nature
+                           clock (default 50; at least 4)
+  --age-years-per-cycle N  age-years in a cycle, the clock of ages (default
+                           1: an age-year is the cycle); it must cut the
+                           cycle in whole age-years of 4 days at least
   --seed N                 the run's seed (default 1)
   --no-brain               the control run: nobody thinks, the people stand
   --no-trials              the control run of D50: nobody tries a way nor
@@ -63,6 +71,10 @@ struct Options {
     full_page: bool,
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one flag a line, read top to bottom; splitting it would scatter the flags"
+)]
 fn parse(args: &[String]) -> Result<Option<Options>, String> {
     let mut settings = Settings::default();
     let mut side = 50;
@@ -94,6 +106,15 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--infants" => settings.infants = small(&mut i, "--infants", "too many")?,
             "--days" => settings.days = small(&mut i, "--days", "too many")?,
             "--cadence" => settings.ticks_per_second = small(&mut i, "--cadence", "too high")?,
+            "--seconds-per-day" => {
+                settings.seconds_per_day = small(&mut i, "--seconds-per-day", "too long")?;
+            }
+            "--days-per-cycle" => {
+                settings.days_per_cycle = small(&mut i, "--days-per-cycle", "too long")?;
+            }
+            "--age-years-per-cycle" => {
+                settings.age_years_per_cycle = small(&mut i, "--age-years-per-cycle", "too many")?;
+            }
             "--no-brain" => settings.brain = false,
             "--no-trials" => settings.trials = false,
             "--no-fire" => settings.fire = false,
@@ -138,11 +159,16 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
     }
     settings.world = match world.as_str() {
         "vivarium" => WorldKind::Vivarium,
+        "vivarium-wide" => WorldKind::VivariumWide,
         "patch" => WorldKind::Patch { side },
-        other => return Err(format!("--world: vivarium or patch, not {other}")),
+        other => {
+            return Err(format!(
+                "--world: vivarium, vivarium-wide or patch, not {other}"
+            ));
+        }
     };
     settings.tribes = tribes.unwrap_or(match settings.world {
-        WorldKind::Vivarium => 2,
+        WorldKind::Vivarium | WorldKind::VivariumWide => 2,
         WorldKind::Patch { .. } => 1,
     });
     if !(1..=2).contains(&settings.tribes) {
@@ -151,6 +177,9 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
     if side < 8 {
         return Err("--side: 8 tiles at least".to_owned());
     }
+    settings
+        .calendar()
+        .map_err(|e| format!("the calendar: {e}"))?;
     Ok(Some(Options {
         settings,
         out,
@@ -279,6 +308,43 @@ mod tests {
         assert!(couple.settings.fed);
         assert!(parse(&args(&["--ages", "20"])).is_err());
         assert!(parse(&args(&["--ages", "30-20"])).is_err());
+    }
+
+    #[test]
+    fn the_calendar_is_read_and_checked() {
+        let defaults = parse(&args(&[])).unwrap().unwrap().settings;
+        assert_eq!(
+            defaults.calendar().unwrap(),
+            sim::Calendar::new(1, 16_200).unwrap(),
+            "the calendar v1 at the vivarium's cadence"
+        );
+        let v1 = parse(&args(&[
+            "--seconds-per-day",
+            "16200",
+            "--days-per-cycle",
+            "64",
+            "--age-years-per-cycle",
+            "8",
+        ]))
+        .unwrap()
+        .unwrap()
+        .settings;
+        let calendar = v1.calendar().unwrap();
+        assert_eq!(calendar.seconds_per_day(), 16_200);
+        assert_eq!(calendar.days_per_cycle(), 64);
+        assert_eq!(calendar.days_per_age_year(), 8);
+        // A cycle not cut in whole age-years of four days is refused.
+        assert!(
+            parse(&args(&[
+                "--days-per-cycle",
+                "50",
+                "--age-years-per-cycle",
+                "8"
+            ]))
+            .is_err()
+        );
+        assert!(parse(&args(&["--days-per-cycle", "3"])).is_err());
+        assert!(parse(&args(&["--seconds-per-day", "0"])).is_err());
     }
 
     #[test]

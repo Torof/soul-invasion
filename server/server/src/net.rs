@@ -1109,7 +1109,7 @@ impl Shared {
             deaths: Mutex::new(Lru::new(DEATHS_REMEMBERED)),
             ticks_per_second: world.calendar().ticks_per_second(),
             ticks_per_day: world.calendar().ticks_per_day(),
-            days_per_year: world.calendar().days_per_year(),
+            days_per_year: world.calendar().days_per_cycle(),
             time_scale_permille: permille(time_scale),
             items: Mutex::new(items),
             natural: world
@@ -5335,7 +5335,7 @@ mod tests {
         let shared = Arc::new(Shared::new(&world, &content, 1, 1.0));
         let calendar = *world.calendar();
         let day = calendar.ticks_per_day();
-        let autumn = Tick(day * (u64::from(calendar.days_per_year()) / 2 + 1) + day / 2);
+        let autumn = Tick(day * (u64::from(calendar.days_per_cycle()) / 2 + 1) + day / 2);
         (world, shared, autumn)
     }
 
@@ -5419,7 +5419,7 @@ mod tests {
         let day = calendar.ticks_per_day();
         // Late summer: the blackberries are ripe, and the elderberries no
         // one gathers here (D30) on their plateau.
-        let late_summer = Tick(day * (u64::from(calendar.days_per_year()) * 45 / 100) + day / 2);
+        let late_summer = Tick(day * (u64::from(calendar.days_per_cycle()) * 45 / 100) + day / 2);
         let wire = |id: &str| {
             let index = shared.flora.iter().position(|k| k.id == id).unwrap();
             u16::try_from(index).unwrap()

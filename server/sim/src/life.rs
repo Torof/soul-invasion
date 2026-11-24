@@ -6,16 +6,17 @@
 //! seed). The whole rule plays only in a world whose `life` is on: the
 //! vivarium's, never the game's.
 //!
-//! The two clocks: what is counted in years follows the season (a
-//! pregnancy lasts seasons, fertility, mating and the death curve go by
-//! the age in years), what is counted in days follows the day (the daily
-//! death draw, the day a child is due).
+//! The clocks (D09, amended 24 November 2026): what is counted in years
+//! follows the age-year, never the cycle of seasons (a pregnancy lasts
+//! quarters of an age-year, conception is drawn by quarter of an age-year,
+//! fertility, mating and the death curve go by the age in age-years); what
+//! is counted in days follows the day (the daily death draw, the day a
+//! child is due).
 
 use serde::{Deserialize, Serialize};
 
 use crate::content::{Content, Sex};
 use crate::r#gen::scatter::{self, purpose};
-use crate::time::Season;
 use crate::{Body, BodyId, Death, Event, Pos, World};
 
 /// The child a woman carries unborn (D49).
@@ -64,21 +65,22 @@ impl World {
         parent_of(a, b) || parent_of(b, a) || share(a.mother, b.mother) || share(a.father, b.father)
     }
 
-    /// The season's conceptions (D49, amended), at the dawn of each of
-    /// the season's first `conceive_nights` days: every woman of the
-    /// content's fertile years, with more than its share of her reserve,
-    /// carrying no infant and no unborn child, whose spouse is alive within
-    /// its reach that dawn, conceives with the content's chance, drawn
-    /// from the seed, her id, the year and the season: one draw a season,
-    /// met on any of those dawns her spouse is back.
-    pub(crate) fn conceive(&mut self, rules: &Content, year: u64, season: Season) {
+    /// The conceptions of a quarter of an age-year (D49, amended; D09,
+    /// amended 24 November 2026: a season while the age-year is the
+    /// cycle), at the dawn of each of the quarter's first `conceive_nights`
+    /// days: every woman of the content's fertile years, with more than its
+    /// share of her reserve, carrying no infant and no unborn child, whose
+    /// spouse is alive within its reach that dawn, conceives with the
+    /// content's chance, drawn from the seed, her id, the age-year and the
+    /// quarter: one draw a quarter, met on any of those dawns her spouse
+    /// is back.
+    pub(crate) fn conceive(&mut self, rules: &Content, age_year: u64, quarter: u8) {
         if !self.life {
             return;
         }
         let life = &rules.needs.life;
         let needs = &rules.needs;
         let reach = i32::try_from(life.mate_within_tiles).unwrap_or(i32::MAX);
-        let season_index = Season::ALL.iter().position(|&s| s == season).unwrap_or(0) as u64;
         let today = self.today();
         let seed = self.seed();
         let mut conceived = Vec::new();
@@ -108,7 +110,7 @@ impl World {
                 life.conceive_percent * 10,
                 seed,
                 purpose::LIFE_CONCEIVE,
-                &[u64::from(woman.id.0), year, season_index],
+                &[u64::from(woman.id.0), age_year, u64::from(quarter)],
             ) {
                 conceived.push((woman.id, spouse.id));
             }
@@ -125,11 +127,12 @@ impl World {
     }
 
     /// The day a child conceived on `since_day` is due: the content's
-    /// seasons later, a season being a quarter of the year's days.
+    /// quarters of an age-year later, in whole days (`quarters ×
+    /// days_per_age_year / 4`).
     fn due_day(&self, rules: &Content, since_day: i64) -> i64 {
-        let days = u64::from(rules.needs.life.pregnancy_seasons)
-            * u64::from(self.calendar.days_per_year())
-            / u64::try_from(Season::ALL.len()).unwrap_or(1);
+        let days = u64::from(rules.needs.life.pregnancy_quarters)
+            * u64::from(self.calendar.days_per_age_year())
+            / 4;
         since_day.saturating_add(i64::try_from(days).unwrap_or(i64::MAX))
     }
 
@@ -268,14 +271,14 @@ impl World {
     }
 
     /// At each body's own hour: it takes a spouse if it has none, then
-    /// draws its death of the day, the year's chance at its age shared
-    /// over the year's days, of illness under the content's old age and
-    /// of old age from it.
+    /// draws its death of the day, the age-year's chance at its age shared
+    /// over the age-year's days, of illness under the content's old age
+    /// and of old age from it.
     fn couple_and_die(&mut self, rules: &Content, tick_of_day: u64, events: &mut Vec<Event>) {
         let life = &rules.needs.life;
         let seed = self.seed();
         let day = u64::try_from(self.today()).unwrap_or(0);
-        let days_per_year = self.calendar.days_per_year();
+        let days_per_age_year = self.calendar.days_per_age_year();
         let mut died = Vec::new();
         for index in 0..self.bodies.len() {
             let id = self.bodies[index].id;
@@ -286,7 +289,7 @@ impl World {
                 self.couple(index, rules, events);
             }
             let age = self.age_milli(&self.bodies[index]);
-            let ppm = life.death_ppm_per_day(age, days_per_year);
+            let ppm = life.death_ppm_per_day(age, days_per_age_year);
             if scatter::roll(seed, purpose::LIFE_DEATH, &[u64::from(id.0), day]) % 1_000_000 < ppm {
                 let cause = if age / 1000 >= u64::from(life.old_age_from_years) {
                     Death::OldAge
@@ -444,7 +447,7 @@ mod tests {
     /// Four ticks a day, eight days a year: a season of two days, a
     /// pregnancy of six.
     fn calendar() -> Calendar {
-        Calendar::new(2, 2).unwrap().with_days_per_year(8).unwrap()
+        Calendar::new(2, 2).unwrap().with_cycle(8, 1).unwrap()
     }
 
     fn world_with(life: bool) -> World {
@@ -460,7 +463,7 @@ mod tests {
     /// A body `years` old, of `sex`, standing at (x, y).
     fn person(w: &mut World, x: i32, y: i32, years: u64, sex: Sex) -> BodyId {
         let id = w.spawn_body(Pos::new(x, y));
-        let year = u64::from(w.calendar().days_per_year());
+        let year = u64::from(w.calendar().days_per_age_year());
         w.set_birth(id, years * year, sex);
         id
     }
@@ -571,7 +574,7 @@ mod tests {
         // Seasons of ten days, longer than the first dawns (the tests'
         // calendar has seasons of two).
         let long = || {
-            let calendar = calendar().with_days_per_year(40).unwrap();
+            let calendar = calendar().with_days_per_cycle(40).unwrap();
             let mut w = World::empty(calendar, Map::filled(128, 16, Terrain::Grass));
             w.set_life(true);
             w

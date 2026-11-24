@@ -940,6 +940,7 @@ pub fn make(world: TestWorld, calendar: Calendar, content: &Content) -> World {
                 .with_camp(x, y)
         }
         TestWorld::Vivarium => Map::vivarium(),
+        TestWorld::VivariumWide => Map::vivarium_of(sim::plan::ZONE_2_WIDE),
     };
     World::on_valley(calendar, content, map)
 }

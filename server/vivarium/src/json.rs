@@ -27,7 +27,7 @@ use crate::{
 };
 
 /// The top-level keys, in the order they are written.
-const ORDER: [&str; 18] = [
+const ORDER: [&str; 22] = [
     "meta",
     "years",
     "seasons",
@@ -42,6 +42,10 @@ const ORDER: [&str; 18] = [
     "positions",
     "move_calls",
     "moving",
+    "settlements",
+    "partings",
+    "home_changes",
+    "nights_apart",
     "goals",
     "map",
     "bearers",
@@ -202,6 +206,94 @@ fn layout_lines(value: &Value, depth: usize, out: &mut String) {
 }
 
 impl Report {
+    /// The settlements at each year's end (24 November 2026), the largest
+    /// first.
+    fn settlements_json(&self) -> Value {
+        Value::Array(
+            self.settlements
+                .iter()
+                .map(|(year, groups)| {
+                    json!({
+                        "year": year,
+                        "groups": groups.iter().map(|g| json!({
+                            "at": pos(g.at),
+                            "people": g.people,
+                            "by_tribe": g.by_tribe,
+                        })).collect::<Vec<_>>(),
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// Each parting with its couple's dawns before it (24 November 2026).
+    fn partings_json(&self) -> Value {
+        Value::Array(
+            self.partings
+                .iter()
+                .map(|p| {
+                    json!({
+                        "day": p.day,
+                        "pair": [p.pair[0].0, p.pair[1].0],
+                        "dawns": p.dawns.iter().map(|d| json!({
+                            "day": d.day,
+                            "apart": d.apart,
+                            "from_home": d.from_home,
+                            "homes_apart": d.homes_apart,
+                        })).collect::<Vec<_>>(),
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// The fertile couples' dawns by age-year, together or apart and why
+    /// (24 November 2026).
+    fn nights_apart_json(&self) -> Value {
+        Value::Array(
+            self.nights_apart
+                .iter()
+                .map(|n| {
+                    json!({
+                        "dawns": n.dawns,
+                        "together": n.together,
+                        "homes_apart": n.homes_apart,
+                        "sleep_out": n.sleep_out,
+                        "goal": n.goal,
+                        "home_trial": n.home_trial,
+                        "caught_out": n.caught_out,
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// Each grown body's home changed between two dawns (24 November
+    /// 2026).
+    fn home_changes_json(&self) -> Value {
+        Value::Array(
+            self.home_changes
+                .iter()
+                .map(|c| {
+                    json!({
+                        "day": c.day,
+                        "body": c.body.0,
+                        "tribe": c.tribe,
+                        "from": pos(c.from),
+                        "to": pos(c.to),
+                        "with": c.with,
+                        "left_people": c.left_people,
+                        "joined_people": c.joined_people,
+                        "villages": c.villages,
+                        "knew_villages": c.knew_villages,
+                        "nearest_village": c.nearest_village.map(|(tiles, people)| json!({"tiles": tiles, "people": people})),
+                        "known_places": c.known_places,
+                    })
+                })
+                .collect(),
+        )
+    }
+
     /// Moving as a consequence (amended 24 November 2026): the moves felt
     /// (pushed, or by a huge surprise), the surprises lived, the days gone
     /// to see, and each move's utility (the mover's hungry nights over the
@@ -333,7 +425,7 @@ impl Report {
     /// without `meta.timing`: the same settings give the same value.
     #[must_use]
     pub fn json_value(&self) -> Value {
-        json!({
+        let mut value = json!({
             "meta": self.meta(),
             "years": self.years_json(),
             "seasons": self.seasons_json(),
@@ -348,11 +440,16 @@ impl Report {
             "positions": self.positions_json(),
             "move_calls": self.move_calls_json(),
             "moving": self.moving_json(),
+            "settlements": self.settlements_json(),
             "goals": self.goals_json(),
             "map": self.map_json(),
             "bearers": self.bearers_json(),
             "relief": self.relief_json(),
-        })
+        });
+        value["partings"] = self.partings_json();
+        value["home_changes"] = self.home_changes_json();
+        value["nights_apart"] = self.nights_apart_json();
+        value
     }
 
     /// The whole file: [`Report::json_value`] with `meta.timing` (the wall
@@ -398,6 +495,7 @@ impl Report {
         let s = &self.settings;
         let (world, side) = match s.world {
             WorldKind::Vivarium => ("vivarium", None),
+            WorldKind::VivariumWide => ("vivarium-wide", None),
             WorldKind::Patch { side } => ("patch", Some(side)),
         };
         json!({
@@ -423,7 +521,10 @@ impl Report {
             },
             "map_tiles": [self.map_side.0, self.map_side.1],
             "camps": self.camps.iter().map(|&c| pos(c)).collect::<Vec<_>>(),
-            "days_per_year": sim::time::Calendar::DEFAULT_DAYS_PER_YEAR,
+            "days_per_year": self.calendar().days_per_cycle(),
+            "age_years_per_cycle": self.calendar().age_years_per_cycle(),
+            "days_per_age_year": self.calendar().days_per_age_year(),
+            "seconds_per_day": self.calendar().seconds_per_day(),
             "ticks_per_day": self.ticks_per_day(),
             "ticks": self.ticks,
             "rates": self.rates.iter().map(|(name, rate)| json!({"name": name, "rate": rate})).collect::<Vec<_>>(),
@@ -629,7 +730,7 @@ impl Report {
     }
 
     fn years_json(&self) -> Value {
-        let per_year = u64::from(sim::time::Calendar::DEFAULT_DAYS_PER_YEAR);
+        let per_year = u64::from(self.calendar().days_per_cycle());
         let years: Vec<Value> = self
             .years()
             .iter()

@@ -43,12 +43,28 @@ pub enum WorldKind {
     /// The vivarium's world (D41 lot 0): zone 2 of the atlas of seed 14,
     /// 2,176 m a side, born in some six seconds.
     Vivarium,
+    /// The same, twice as wide (24 November 2026, the long runs): zone 2
+    /// widened ([`sim::plan::ZONE_2_WIDE`]), 4,352 m a side, the same
+    /// camps on the same ground.
+    VivariumWide,
     /// A patch of the first version's valley, `side` tiles a side, born
     /// at once: the small trial the lead sees first (50 × 50).
     Patch {
         /// Tiles a side.
         side: u32,
     },
+}
+
+impl WorldKind {
+    /// The vivarium's zone the world is cut from; none for a patch.
+    #[must_use]
+    pub fn zone(self) -> Option<sim::plan::Zone> {
+        match self {
+            WorldKind::Vivarium => Some(sim::plan::ZONE_2),
+            WorldKind::VivariumWide => Some(sim::plan::ZONE_2_WIDE),
+            WorldKind::Patch { .. } => None,
+        }
+    }
 }
 
 /// What a run is given.
@@ -67,6 +83,16 @@ pub struct Settings {
     /// Ticks a game second: the plan's slow cadence is 1 (the game runs
     /// at 10), a named factor of the run.
     pub ticks_per_second: u32,
+    /// Game seconds a game day (`--seconds-per-day`; D09): the
+    /// calendar's default unless given.
+    pub seconds_per_day: u32,
+    /// Game days in a cycle of four seasons, the nature clock
+    /// (`--days-per-cycle`; D09): the calendar's default unless given.
+    pub days_per_cycle: u32,
+    /// Age-years in a cycle, the age clock against the nature clock
+    /// (`--age-years-per-cycle`; D09, amended 24 November 2026): the
+    /// calendar's default unless given.
+    pub age_years_per_cycle: u32,
     /// The run's seed: recorded, and the brain's when it comes; the
     /// world's own seed is the world's.
     pub seed: u64,
@@ -125,6 +151,20 @@ pub struct Settings {
     pub helpers: u32,
 }
 
+impl Settings {
+    /// The run's calendar: its cadence, its day, its cycle and its
+    /// age-years (D09).
+    ///
+    /// # Errors
+    ///
+    /// When the calendar refuses them (a zero length, a cycle under four
+    /// days, a cycle not cut in whole age-years of four days at least).
+    pub fn calendar(&self) -> Result<Calendar, sim::time::CalendarError> {
+        Calendar::new(self.ticks_per_second, self.seconds_per_day)?
+            .with_cycle(self.days_per_cycle, self.age_years_per_cycle)
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -132,6 +172,9 @@ impl Default for Settings {
             people: 5,
             days: 10,
             ticks_per_second: 1,
+            seconds_per_day: Calendar::DEFAULT_SECONDS_PER_DAY,
+            days_per_cycle: Calendar::DEFAULT_DAYS_PER_CYCLE,
+            age_years_per_cycle: Calendar::DEFAULT_AGE_YEARS_PER_CYCLE,
             seed: 1,
             content: None,
             brain: true,
@@ -164,7 +207,8 @@ pub enum RunError {
     Read(PathBuf, std::io::Error),
     /// The content files do not validate together.
     Content(Box<sim::content::ContentError>),
-    /// The calendar refuses the cadence.
+    /// The calendar refuses the cadence, the day, the cycle or the
+    /// age-years.
     Calendar(sim::time::CalendarError),
 }
 
@@ -828,6 +872,377 @@ pub struct TrialEvent {
     pub heard: bool,
 }
 
+/// A settlement at a year's end (24 November 2026, the lead's "combien de
+/// villages, où vivent-ils"): the living whose homes lie within
+/// `mate_within_tiles` of one another, link by link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Settlement {
+    /// The mean of its homes.
+    pub at: Pos,
+    /// The living there, infants with their carrier.
+    pub people: u32,
+    /// Of them, by tribe (the first two).
+    pub by_tribe: [u32; 2],
+}
+
+/// One dawn of a couple (24 November 2026, why couples part): in tiles,
+/// on the longer axis as the parting rule counts, the spouses apart where
+/// they woke, each one from its own home, and the two homes apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoupleDawn {
+    /// The day.
+    pub day: u64,
+    /// The spouses apart.
+    pub apart: u32,
+    /// Each one from its own home, the lower id first.
+    pub from_home: [u32; 2],
+    /// Their homes apart.
+    pub homes_apart: u32,
+}
+
+/// A parting with the dawns before it (24 November 2026).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Parting {
+    /// The day.
+    pub day: u64,
+    /// The two, the lower id first.
+    pub pair: [BodyId; 2],
+    /// Their dawns as spouses up to the parting's own, the oldest first.
+    pub dawns: Vec<CoupleDawn>,
+}
+
+/// A grown body's home changed between two dawns (24 November 2026, why
+/// daughter villages): where it went against the settlements of the dawn
+/// before (the others' homes, linked as [`Settlement`]s are), and what it
+/// knew of them. A village is such a settlement of [`VILLAGE_PEOPLE`] or
+/// more that does not reach its old home.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HomeChange {
+    /// The day.
+    pub day: u64,
+    /// Who.
+    pub body: BodyId,
+    /// Its tribe.
+    pub tribe: u8,
+    /// The home before.
+    pub from: Pos,
+    /// The home after.
+    pub to: Pos,
+    /// The other grown bodies whose home changed the same dawn to within
+    /// reach of this one's new home.
+    pub with: u32,
+    /// The people of the settlements its old home reached, itself out.
+    pub left_people: u32,
+    /// The people of the settlements its new home reaches, itself out.
+    pub joined_people: u32,
+    /// The villages there were.
+    pub villages: u32,
+    /// Of them, those it knew a place within reach of.
+    pub knew_villages: u32,
+    /// The nearest village to its new home: (tiles, people).
+    pub nearest_village: Option<(u32, u32)>,
+    /// The places it knew of.
+    pub known_places: u32,
+}
+
+/// The people a settlement needs to count as a village in a
+/// [`HomeChange`].
+pub const VILLAGE_PEOPLE: u32 = 10;
+
+/// A fertile couple's dawns in one age-year (24 November 2026, the
+/// project lead: "ce qu'on veut, c'est des naissances. Et pas de
+/// séparation physique"): together, or apart and why. Every dawn of a
+/// fertile wife not with child, her spouse living; apart is farther than
+/// `mate_within_tiles` on either axis. Each night apart has one cause, the
+/// first that holds for a spouse away from its home: their homes apart,
+/// its way to sleep out (D50), a goal held beyond a day (D56), its home
+/// trial on its way, or none of these: the night caught it out.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NightsApart {
+    /// The fertile couples' dawns.
+    pub dawns: u32,
+    /// Those spent together.
+    pub together: u32,
+    /// Apart: their homes apart.
+    pub homes_apart: u32,
+    /// Apart: one sleeps out by its way.
+    pub sleep_out: u32,
+    /// Apart: one holds a goal beyond a day.
+    pub goal: u32,
+    /// Apart: one on its home trial.
+    pub home_trial: u32,
+    /// Apart: none of these, the night caught one out.
+    pub caught_out: u32,
+}
+
+impl NightsApart {
+    /// The dawns apart.
+    #[must_use]
+    pub fn apart(&self) -> u32 {
+        self.dawns - self.together
+    }
+}
+
+/// Why couples part and why homes move (24 November 2026): kept at every
+/// dawn.
+#[derive(Debug, Clone, Default)]
+struct WhyProbe {
+    /// Each couple's last dawns, by pair.
+    couples: BTreeMap<(BodyId, BodyId), Vec<CoupleDawn>>,
+    /// Each living body's home at the last dawn, with its tribe.
+    homes: BTreeMap<BodyId, (Pos, u8)>,
+    partings: Vec<Parting>,
+    changes: Vec<HomeChange>,
+    /// The fertile couples' dawns, by age-year from the first.
+    nights: Vec<NightsApart>,
+}
+
+/// The tiles between two tiles on the longer axis.
+fn tiles_apart(a: Pos, b: Pos) -> u32 {
+    (a.x - b.x).unsigned_abs().max((a.y - b.y).unsigned_abs())
+}
+
+/// A body's home: its mind's, else where it stands.
+fn home_of(world: &World, brains: &Brains, id: BodyId) -> Option<Pos> {
+    brains
+        .mind(id)
+        .map(sim::brain::Mind::home)
+        .or_else(|| world.body(id).map(sim::Body::pos))
+}
+
+/// A couple's dawn now, the lower id first.
+fn couple_dawn(world: &World, brains: &Brains, day: u64, pair: [BodyId; 2]) -> Option<CoupleDawn> {
+    let (a, b) = (world.body(pair[0])?, world.body(pair[1])?);
+    let (ha, hb) = (
+        home_of(world, brains, pair[0])?,
+        home_of(world, brains, pair[1])?,
+    );
+    Some(CoupleDawn {
+        day,
+        apart: tiles_apart(a.pos(), b.pos()),
+        from_home: [tiles_apart(a.pos(), ha), tiles_apart(b.pos(), hb)],
+        homes_apart: tiles_apart(ha, hb),
+    })
+}
+
+/// The groups of `homes` linked within `reach`, link by link: each home's
+/// group, a root index.
+fn linked(homes: &[Pos], reach: u32) -> Vec<usize> {
+    let mut root: Vec<usize> = (0..homes.len()).collect();
+    for i in 0..homes.len() {
+        for j in i + 1..homes.len() {
+            if tiles_apart(homes[i], homes[j]) <= reach {
+                let (ri, rj) = (find(&mut root, i), find(&mut root, j));
+                root[ri.max(rj)] = ri.min(rj);
+            }
+        }
+    }
+    (0..homes.len()).map(|i| find(&mut root, i)).collect()
+}
+
+impl WhyProbe {
+    /// Each fertile couple's dawn, together or apart and why
+    /// ([`NightsApart`]).
+    fn nights_at_dawn(&mut self, world: &World, brains: &Brains, content: &Content) {
+        let life = &content.needs.life;
+        let today = world.today();
+        // By age-year.
+        let days_a_year = u64::from(world.calendar().days_per_age_year().max(1));
+        let year =
+            usize::try_from(u64::try_from(today).unwrap_or(0) / days_a_year).unwrap_or(usize::MAX);
+        let reach = life.mate_within_tiles;
+        let mut night = NightsApart::default();
+        for woman in world.bodies() {
+            if woman.sex() != Sex::Female
+                || !life.is_fertile(world.age_milli(woman))
+                || woman.pregnant().is_some_and(|p| p.since_day != today)
+            {
+                continue;
+            }
+            let Some(man) = woman.spouse().and_then(|s| world.body(s)) else {
+                continue;
+            };
+            night.dawns += 1;
+            if tiles_apart(woman.pos(), man.pos()) <= reach {
+                night.together += 1;
+                continue;
+            }
+            let homes = [woman, man].map(|b| home_of(world, brains, b.id()));
+            let away: Vec<&sim::brain::Mind> = [woman, man]
+                .iter()
+                .zip(homes)
+                .filter(|(b, h)| h.is_none_or(|h| tiles_apart(b.pos(), h) > reach))
+                .filter_map(|(b, _)| brains.mind(b.id()))
+                .collect();
+            let cause = if let [Some(a), Some(b)] = homes
+                && tiles_apart(a, b) > reach
+            {
+                &mut night.homes_apart
+            } else if away.iter().any(|m| m.ways().sleep_out) {
+                &mut night.sleep_out
+            } else if away.iter().any(|m| m.holds_goal()) {
+                &mut night.goal
+            } else if away
+                .iter()
+                .any(|m| m.trial().is_some_and(|t| t.way == sim::brain::Way::Home))
+            {
+                &mut night.home_trial
+            } else {
+                &mut night.caught_out
+            };
+            *cause += 1;
+        }
+        if self.nights.len() <= year {
+            self.nights.resize(year + 1, NightsApart::default());
+        }
+        let n = &mut self.nights[year];
+        for (total, add) in [
+            (&mut n.dawns, night.dawns),
+            (&mut n.together, night.together),
+            (&mut n.homes_apart, night.homes_apart),
+            (&mut n.sleep_out, night.sleep_out),
+            (&mut n.goal, night.goal),
+            (&mut n.home_trial, night.home_trial),
+            (&mut n.caught_out, night.caught_out),
+        ] {
+            *total += add;
+        }
+    }
+
+    /// At a dawn: each couple's dawn, then the grown bodies whose home
+    /// changed since the last.
+    fn dawn(
+        &mut self,
+        world: &World,
+        brains: &Brains,
+        people: &BTreeMap<BodyId, Person>,
+        content: &Content,
+        day: u64,
+    ) {
+        self.nights_at_dawn(world, brains, content);
+        for b in world.bodies() {
+            let Some(spouse) = b.spouse() else { continue };
+            if b.id() >= spouse {
+                continue;
+            }
+            if let Some(d) = couple_dawn(world, brains, day, [b.id(), spouse]) {
+                let dawns = self.couples.entry((b.id(), spouse)).or_default();
+                dawns.retain(|old| old.day + 13 > day);
+                dawns.push(d);
+            }
+        }
+        let now: BTreeMap<BodyId, (Pos, u8)> = world
+            .bodies()
+            .iter()
+            .filter(|b| b.condition().vitality.points() > 0)
+            .filter_map(|b| {
+                let id = b.carried_by().unwrap_or(b.id());
+                let tribe = people.get(&b.id()).map_or(0, |p| p.tribe);
+                home_of(world, brains, id).map(|h| (b.id(), (h, tribe)))
+            })
+            .collect();
+        let movers: Vec<(BodyId, Pos, Pos, u8)> = world
+            .bodies()
+            .iter()
+            .filter(|b| world.age_milli(b) >= 16_000 && brains.mind(b.id()).is_some())
+            .filter_map(|b| {
+                let (from, _) = *self.homes.get(&b.id())?;
+                let (to, tribe) = *now.get(&b.id())?;
+                (from != to).then_some((b.id(), from, to, tribe))
+            })
+            .collect();
+        if !movers.is_empty() {
+            self.moved(brains, content, day, &movers);
+        }
+        self.homes = now;
+    }
+
+    /// The home changes of a dawn against the homes of the dawn before.
+    fn moved(
+        &mut self,
+        brains: &Brains,
+        content: &Content,
+        day: u64,
+        movers: &[(BodyId, Pos, Pos, u8)],
+    ) {
+        let reach = content.needs.life.mate_within_tiles;
+        let side = i32::try_from(content.needs.thought.place_tiles)
+            .unwrap_or(16)
+            .max(1);
+        for &(body, from, to, tribe) in movers {
+            let homes: Vec<Pos> = self
+                .homes
+                .iter()
+                .filter(|(id, _)| **id != body)
+                .map(|(_, (h, _))| *h)
+                .collect();
+            let group = linked(&homes, reach);
+            let mut people_in: BTreeMap<usize, u32> = BTreeMap::new();
+            for g in &group {
+                *people_in.entry(*g).or_default() += 1;
+            }
+            let reached = |at: Pos| -> BTreeSet<usize> {
+                homes
+                    .iter()
+                    .zip(&group)
+                    .filter(|(h, _)| tiles_apart(**h, at) <= reach)
+                    .map(|(_, g)| *g)
+                    .collect()
+            };
+            let people_of = |gs: &BTreeSet<usize>| gs.iter().map(|g| people_in[g]).sum::<u32>();
+            let (left, joined) = (reached(from), reached(to));
+            let villages: BTreeSet<usize> = people_in
+                .iter()
+                .filter(|(g, n)| **n >= VILLAGE_PEOPLE && !left.contains(g))
+                .map(|(g, _)| *g)
+                .collect();
+            let known: Vec<Pos> = brains.mind(body).map_or_else(Vec::new, |m| {
+                m.places_known()
+                    .map(|k| Pos::new(k.0 * side + side / 2, k.1 * side + side / 2))
+                    .collect()
+            });
+            let knew: BTreeSet<usize> = known
+                .iter()
+                .flat_map(|p| reached(*p))
+                .filter(|g| villages.contains(g))
+                .collect();
+            let nearest_village = homes
+                .iter()
+                .zip(&group)
+                .filter(|(_, g)| villages.contains(g))
+                .map(|(h, g)| (tiles_apart(*h, to), people_in[g]))
+                .min();
+            let with = movers
+                .iter()
+                .filter(|m| m.0 != body && tiles_apart(m.2, to) <= reach)
+                .count();
+            self.changes.push(HomeChange {
+                day,
+                body,
+                tribe,
+                from,
+                to,
+                with: u32::try_from(with).unwrap_or(u32::MAX),
+                left_people: people_of(&left),
+                joined_people: people_of(&joined),
+                villages: u32::try_from(villages.len()).unwrap_or(u32::MAX),
+                knew_villages: u32::try_from(knew.len()).unwrap_or(u32::MAX),
+                nearest_village,
+                known_places: u32::try_from(known.len()).unwrap_or(u32::MAX),
+            });
+        }
+    }
+
+    /// A parting now: the couple's dawns kept, and this one.
+    fn parted(&mut self, world: &World, brains: &Brains, day: u64, a: BodyId, b: BodyId) {
+        let pair = [a.min(b), a.max(b)];
+        let mut dawns = self.couples.remove(&(pair[0], pair[1])).unwrap_or_default();
+        dawns.retain(|d| d.day + 13 > day && d.day != day);
+        dawns.extend(couple_dawn(world, brains, day, pair));
+        self.partings.push(Parting { day, pair, dawns });
+    }
+}
+
 /// Moving as a consequence, for the data (amended 24 November 2026).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MovingProbe {
@@ -879,12 +1294,66 @@ pub struct MoveUtility {
 }
 
 impl Report {
+    /// Where they live at the end (24 November 2026): the map with each
+    /// settlement of the last year as a disc, its area the people, blue
+    /// the first tribe's share, orange the second's, and the count of
+    /// settlements every five years.
+    #[must_use]
+    pub fn settlements_section(&self) -> String {
+        let Some((last, groups)) = self.settlements.iter().next_back() else {
+            return String::new();
+        };
+        let (w, hgt) = self.map_side;
+        let most = groups.iter().map(|g| g.people).max().unwrap_or(1).max(1);
+        let unit = u64::from(w.max(hgt) / 30).max(1);
+        let mut discs = String::new();
+        for g in groups {
+            let r =
+                unit * (u64::from(g.people) * 10_000 / u64::from(most)).isqrt() / 100 + unit / 4;
+            let colour = if g.by_tribe[0] >= g.by_tribe[1] {
+                "#2a6fdb"
+            } else {
+                "#e07b00"
+            };
+            let _ = write!(
+                discs,
+                "<circle cx=\"{}\" cy=\"{}\" r=\"{r}\" fill=\"{colour}\" fill-opacity=\"0.55\" stroke=\"#fff\" stroke-width=\"{}\"/>\
+                 <text x=\"{}\" y=\"{}\" font-size=\"{}\" text-anchor=\"middle\" dominant-baseline=\"middle\" fill=\"#fff\" font-weight=\"bold\">{}</text>",
+                g.at.x,
+                g.at.y,
+                unit / 8,
+                g.at.x,
+                g.at.y,
+                unit * 9 / 10,
+                g.people
+            );
+        }
+        let counts: Vec<String> = self
+            .settlements
+            .iter()
+            .filter(|(y, _)| **y == 1 || *y % 5 == 0 || *y == last)
+            .map(|(y, g)| {
+                let big = g.iter().filter(|s| s.people >= 10).count();
+                format!("year {y}: {} ({big} of ten or more)", g.len())
+            })
+            .collect();
+        format!(
+            "<h2>Where they live</h2><p>At the end of year {last}: <b>{} settlements</b> (homes within {} tiles of one another, link by link), the number in each disc its people; blue the first tribe, orange the second.</p>\
+             <svg class=\"map\" viewBox=\"0 0 {w} {hgt}\" style=\"max-width:100%;height:auto\"><image href=\"data:image/png;base64,{}\" x=\"0\" y=\"0\" width=\"{w}\" height=\"{hgt}\" preserveAspectRatio=\"none\"/>{discs}</svg>\
+             <p>Settlements: {}.</p>",
+            groups.len(),
+            self.settlement_reach,
+            png::base64(&self.map_png),
+            counts.join("; ")
+        )
+    }
+
     /// The utility of each move (amended 24 November 2026): see
     /// [`MoveUtility`]. A move whose mover did not live the whole season
     /// after, or with no stayer, is left out.
     #[must_use]
     pub fn move_utility(&self) -> Vec<MoveUtility> {
-        let season = u64::from(sim::time::Calendar::DEFAULT_DAYS_PER_YEAR / 4).max(1);
+        let season = u64::from(self.calendar().days_per_cycle() / 4).max(1);
         let m = &self.moving;
         let lived = |b: BodyId, from: u64, to: u64| {
             m.alive
@@ -1303,6 +1772,19 @@ pub struct Report {
     /// [`KNOWN_PLACES_KEPT`] (23 November 2026, the lab's map: why they
     /// live where they live, year by year).
     pub known_places: BTreeMap<(u8, u64), Vec<(PlaceKey, bool)>>,
+    /// The settlements at each year's end, the largest first (24
+    /// November 2026).
+    pub settlements: BTreeMap<u64, Vec<Settlement>>,
+    /// The reach that links homes into one settlement, in tiles.
+    pub settlement_reach: u32,
+    /// Each parting with its couple's dawns before it (24 November 2026).
+    pub partings: Vec<Parting>,
+    /// Each grown body's home changed between two dawns (24 November
+    /// 2026).
+    pub home_changes: Vec<HomeChange>,
+    /// The fertile couples' dawns, together or apart and why, by age-year
+    /// from the first (24 November 2026).
+    pub nights_apart: Vec<NightsApart>,
     /// The rumours dispelled, in order (D55).
     pub rumours: Vec<Rumour>,
     /// The nights the hearths still hold at the end (D55).
@@ -1345,13 +1827,14 @@ pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunErr
 /// born ([`continents`]); born at every run without a cache. The same
 /// map either way (D28, amended 19 November 2026).
 fn vivarium_map(settings: &Settings) -> Map {
+    let zone = settings.world.zone().unwrap_or(sim::plan::ZONE_2);
     let Some(dir) = &settings.continents else {
-        return Map::vivarium();
+        return Map::vivarium_of(zone);
     };
     let known = continents::read(dir, sim::plan::VIVARIUM_SEED, sim::plan::CONTINENT_SIDE)
         .into_iter()
         .collect();
-    let (map, born) = sim::plan::born_within(known, Map::vivarium);
+    let (map, born) = sim::plan::born_within(known, || Map::vivarium_of(zone));
     for continent in &born {
         if let Err(err) = continents::keep(dir, continent) {
             eprintln!(
@@ -1380,8 +1863,7 @@ pub fn run_watched(
     content: &Content,
     watch: &mut dyn FnMut(&World, u64),
 ) -> Result<Report, RunError> {
-    let calendar = Calendar::new(settings.ticks_per_second, Calendar::DEFAULT_SECONDS_PER_DAY)
-        .map_err(RunError::Calendar)?;
+    let calendar = settings.calendar().map_err(RunError::Calendar)?;
     // Food without limit (lot 3 C, trial 1): hunger a day is 0, the fat
     // reserve is never drawn on, so the births are read apart from the
     // food. The content is otherwise the one given.
@@ -1422,7 +1904,9 @@ pub fn run_watched(
     };
     let born = Instant::now();
     let mut world = match settings.world {
-        WorldKind::Vivarium => World::on_valley(calendar, content, vivarium_map(settings)),
+        WorldKind::Vivarium | WorldKind::VivariumWide => {
+            World::on_valley(calendar, content, vivarium_map(settings))
+        }
         WorldKind::Patch { side } => World::with_valley(calendar, content, side),
     };
     // The vivarium's worlds live (D49): births, couples, illness and old
@@ -1452,8 +1936,8 @@ pub fn run_watched(
         let tribe = u8::try_from(tribe).expect("two tribes at most");
         // Who is born at the camp (lot 3 B): grown women and men in turn,
         // from `adult_years` (18 to 40 by default); children; infants, each
-        // on a woman.
-        let per_year = u64::from(calendar.days_per_year());
+        // on a woman. Ages in age-years (D09, amended 24 November 2026).
+        let per_year = u64::from(calendar.days_per_age_year());
         let mut born: Vec<(u64, Sex, bool)> = Vec::new();
         let (lo, hi) = settings.adult_years;
         for k in 0..settings.people {
@@ -1461,13 +1945,23 @@ pub fn run_watched(
                 + u64::from(k) * u64::from(hi.saturating_sub(lo))
                     / u64::from(settings.people.max(1));
             let sex = if k % 2 == 0 { Sex::Female } else { Sex::Male };
-            born.push((years * per_year + u64::from(k) * 7, sex, false));
+            // Spread by fiftieths of an age-year (7 days when the age-year
+            // was the 50-day year): never a whole age-year more.
+            born.push((
+                years * per_year + u64::from(k) * 7 * per_year / 50,
+                sex,
+                false,
+            ));
         }
         for k in 0..settings.children {
             let years =
                 3 + u64::from(k) * 8 / u64::from(settings.children.saturating_sub(1).max(1));
             let sex = if k % 2 == 0 { Sex::Male } else { Sex::Female };
-            born.push((years * per_year + u64::from(k) * 5, sex, false));
+            born.push((
+                years * per_year + u64::from(k) * 5 * per_year / 50,
+                sex,
+                false,
+            ));
         }
         for k in 0..settings.infants {
             let sex = if k % 2 == 0 { Sex::Female } else { Sex::Male };
@@ -1600,7 +2094,7 @@ pub fn run_watched(
         }
     }
     let tribes = camps.len();
-    let per_year = calendar.ticks_per_day() * u64::from(calendar.days_per_year());
+    let per_year = calendar.ticks_per_day() * u64::from(calendar.days_per_cycle());
     let mut food: BTreeMap<(u8, u64), Balance> = BTreeMap::new();
     let mut trials: Vec<TrialEvent> = Vec::new();
     let mut ways_in_use: BTreeMap<(u8, u64), WaysInUse> = BTreeMap::new();
@@ -1611,13 +2105,15 @@ pub fn run_watched(
     let mut moving = MovingProbe::default();
     let mut goals: Vec<GoalRow> = Vec::new();
     let mut tally = FireTally {
-        ticks_per_season: (calendar.ticks_per_day() * u64::from(calendar.days_per_year()) / 4)
+        ticks_per_season: (calendar.ticks_per_day() * u64::from(calendar.days_per_cycle()) / 4)
             .max(1),
         ..FireTally::default()
     };
     let place_tiles = i32::try_from(content.needs.thought.place_tiles).unwrap_or(16);
     let mut knowledge: BTreeMap<(u8, u64), Knowledge> = BTreeMap::new();
     let mut known_places: BTreeMap<(u8, u64), Vec<(PlaceKey, bool)>> = BTreeMap::new();
+    let mut settlements: BTreeMap<u64, Vec<Settlement>> = BTreeMap::new();
+    let mut why = WhyProbe::default();
     // The homes under trial, (before, after), to tell where a given-up
     // home goes back to.
     let mut home_trials: BTreeMap<BodyId, (Pos, Pos)> = BTreeMap::new();
@@ -1734,6 +2230,7 @@ pub fn run_watched(
                     });
                     watch(&world, *day);
                     couples_at_dawn(&world, content, &mut tally.bilan);
+                    why.dawn(&world, &brains, &people, content, *day);
                     let threshold = u64::from(content.needs.moving.push_permille);
                     for b in world.bodies() {
                         if world.age_milli(b) < 16_000 {
@@ -1888,6 +2385,7 @@ pub fn run_watched(
                     }
                 }
                 Event::Parted { a, b } => {
+                    why.parted(&world, &brains, day, *a, *b);
                     let entry = Entry {
                         tick,
                         day,
@@ -2374,6 +2872,7 @@ pub fn run_watched(
         // The year's last tick, or the run's: what the living carry, and
         // the ways in use (D50).
         if tick % per_year == 0 || tick == ticks {
+            settlements.insert(year, settlements_of(&world, &brains, &people, content));
             let carried = reserves(&world, content, &people);
             for (tribe, &j) in carried.iter().enumerate().take(tribes) {
                 let t = u8::try_from(tribe).expect("two");
@@ -2488,6 +2987,11 @@ pub fn run_watched(
         reputed: tally.reputed,
         knowledge,
         known_places,
+        settlements,
+        settlement_reach: content.needs.life.mate_within_tiles,
+        partings: why.partings,
+        home_changes: why.changes,
+        nights_apart: why.nights,
         rumours: tally.rumours,
         nights,
         records,
@@ -2640,6 +3144,77 @@ pub const KNOWN_PLACES_KEPT: usize = 1000;
 /// places, and how many came from a teller; and the places themselves,
 /// each with whether some living member saw it, the first
 /// [`KNOWN_PLACES_KEPT`] in key order.
+/// The root of `i` in a union of indices, the path to it shortened.
+fn find(root: &mut [usize], i: usize) -> usize {
+    let mut r = i;
+    while root[r] != r {
+        r = root[r];
+    }
+    root[i] = r;
+    r
+}
+
+/// The settlements now ([`Settlement`]): each living body at its home
+/// (its mind's), an infant or a body without a mind at its carrier's or
+/// where it stands; homes within `mate_within_tiles` of one another, on
+/// each axis, are one settlement, link by link. The largest first.
+fn settlements_of(
+    world: &World,
+    brains: &Brains,
+    people: &BTreeMap<BodyId, Person>,
+    content: &Content,
+) -> Vec<Settlement> {
+    let reach = i32::try_from(content.needs.life.mate_within_tiles).unwrap_or(i32::MAX);
+    let home = |b: &sim::Body| {
+        let id = b.carried_by().unwrap_or(b.id());
+        brains
+            .mind(id)
+            .map(sim::brain::Mind::home)
+            .or_else(|| world.body(id).map(sim::Body::pos))
+            .unwrap_or(b.pos())
+    };
+    let homes: Vec<(Pos, u8)> = world
+        .bodies()
+        .iter()
+        .filter(|b| b.condition().vitality.points() > 0)
+        .map(|b| (home(b), people.get(&b.id()).map_or(0, |p| p.tribe)))
+        .collect();
+    // Link by link: a union of the homes within reach of one another.
+    let mut root: Vec<usize> = (0..homes.len()).collect();
+    for i in 0..homes.len() {
+        for j in i + 1..homes.len() {
+            let (a, b) = (homes[i].0, homes[j].0);
+            if (a.x - b.x).abs() <= reach && (a.y - b.y).abs() <= reach {
+                let (ri, rj) = (find(&mut root, i), find(&mut root, j));
+                root[ri.max(rj)] = ri.min(rj);
+            }
+        }
+    }
+    let mut groups: BTreeMap<usize, (i64, i64, u32, [u32; 2])> = BTreeMap::new();
+    for (i, &(at, tribe)) in homes.iter().enumerate() {
+        let g = groups.entry(find(&mut root, i)).or_default();
+        g.0 += i64::from(at.x);
+        g.1 += i64::from(at.y);
+        g.2 += 1;
+        if let Some(n) = g.3.get_mut(usize::from(tribe)) {
+            *n += 1;
+        }
+    }
+    let mut out: Vec<Settlement> = groups
+        .into_values()
+        .map(|(x, y, n, by_tribe)| {
+            let mean = |sum: i64| i32::try_from(sum / i64::from(n.max(1))).unwrap_or(0);
+            Settlement {
+                at: Pos::new(mean(x), mean(y)),
+                people: n,
+                by_tribe,
+            }
+        })
+        .collect();
+    out.sort_by_key(|s| (std::cmp::Reverse(s.people), s.at.x, s.at.y));
+    out
+}
+
 fn knowledge_of(
     world: &World,
     brains: &Brains,
@@ -3716,8 +4291,9 @@ fn camps(settings: &Settings, map: &Map) -> Vec<Pos> {
     let mut camps = vec![a];
     if settings.tribes >= 2 {
         camps.push(match settings.world {
-            WorldKind::Vivarium => {
-                let (x, y) = sim::plan::ZONE_2.tile(sim::plan::ZONE_2.camp_b);
+            WorldKind::Vivarium | WorldKind::VivariumWide => {
+                let zone = settings.world.zone().unwrap_or(sim::plan::ZONE_2);
+                let (x, y) = zone.tile(zone.camp_b);
                 Pos::new(
                     i32::try_from(x).expect("on the map"),
                     i32::try_from(y).expect("on the map"),
@@ -3885,7 +4461,7 @@ fn seasons_of_kinds(
     crops: &[sim::crops::Crop],
     calendar: &Calendar,
 ) -> BTreeMap<String, [bool; 4]> {
-    let per_year = u64::from(calendar.days_per_year()).max(1);
+    let per_year = u64::from(calendar.days_per_cycle()).max(1);
     let per_day = calendar.ticks_per_day();
     let mut out: BTreeMap<String, [bool; 4]> = BTreeMap::new();
     for crop in crops {
@@ -4083,10 +4659,14 @@ impl Report {
     )]
     pub fn fixed(&self) -> String {
         let s = &self.settings;
-        let days_per_year = f64::from(Calendar::DEFAULT_DAYS_PER_YEAR);
+        let calendar = self.calendar();
+        let days_per_year = f64::from(calendar.days_per_cycle());
         let mut h = String::new();
         let world = match s.world {
             WorldKind::Vivarium => "the vivarium's world (zone 2 of seed 14)".to_owned(),
+            WorldKind::VivariumWide => {
+                "the vivarium's wide world (zone 2 of seed 14, twice as wide)".to_owned()
+            }
             WorldKind::Patch { side } => format!("a patch of the valley, {side} × {side} tiles"),
         };
         let _ = write!(
@@ -4123,12 +4703,12 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
 <li><b>The needs</b> (content/needs.ron, points of 100 a game day): {}.</li></ul>",
             s.ticks_per_second,
             Calendar::DEFAULT_TICKS_PER_SECOND,
-            u64::from(s.ticks_per_second) * u64::from(Calendar::DEFAULT_SECONDS_PER_DAY),
+            calendar.ticks_per_day(),
             self.map_side.0,
             self.map_side.1,
             self.camps_words(),
-            Calendar::DEFAULT_DAYS_PER_YEAR,
-            Calendar::DEFAULT_SECONDS_PER_DAY,
+            calendar.days_per_cycle(),
+            calendar.seconds_per_day(),
             if s.brain {
                 "the minimal one (sim::brain): it thinks only when something changes for its body, drinks when thirst passes 50 (wakes for it past 80); when hunger passes 50 (and until it falls under content/needs.ron's fed_under, D53) it eats what it carries, else the food it saw, else goes to the place it knows bearing food worth most and picks a tree or plant there, chosen once an hour; by day it gathers until it carries its store (three days of food, 30,000 kJ, by default); goes looking when it knows no place (for food: by day, and only when something is ripe somewhere), goes home at night and sleeps within 6 tiles of the camp (or sleeps out, if that is its way); it remembers the drinking places, the food and the places where it saw trees and plants bearing food (corners of place_tiles, not bushes), seen within plant_sight_tiles. Its ways (how far a plant is worth going, whether it sleeps out, how much it stores, where home is) are its own, D50"
             } else {
@@ -4157,6 +4737,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             if self.map_scale == 1 { "" } else { "s" },
             png::base64(&self.map_png)
         );
+        h.push_str(&self.settlements_section());
         h.push_str("<h2>The curves</h2>");
         h.push_str(&self.curves());
         h.push_str(&self.food_table());
@@ -4206,15 +4787,15 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         Self::birth_day(person) <= day && self.death_day(person).is_none_or(|d| d > day)
     }
 
-    /// How old a person is at the end of `day` (from 1), in years.
-    fn years_on(person: &Person, day: u64) -> u64 {
-        Self::age_milli(person, i64::try_from(day).unwrap_or(i64::MAX) - 1) / 1000
+    /// How old a person is at the end of `day` (from 1), in age-years.
+    fn years_on(&self, person: &Person, day: u64) -> u64 {
+        self.age_milli(person, i64::try_from(day).unwrap_or(i64::MAX) - 1) / 1000
     }
 
-    /// The day (from 1) a person turns `years`.
-    fn birthday(person: &Person, years: i64) -> u64 {
-        u64::try_from(person.born_day + years * i64::from(Calendar::DEFAULT_DAYS_PER_YEAR) + 1)
-            .unwrap_or(0)
+    /// The day (from 1) a person turns `years` age-years.
+    fn birthday(&self, person: &Person, years: i64) -> u64 {
+        let per_year = i64::from(self.calendar().days_per_age_year());
+        u64::try_from(person.born_day + years * per_year + 1).unwrap_or(0)
     }
 
     /// The last day of the run (from 1).
@@ -4259,7 +4840,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             } else {
                 1
             };
-            let sixteen = Self::birthday(person, 16);
+            let sixteen = self.birthday(person, 16);
             let woman = person.sex == Some(Sex::Female);
             let end = self.death_day(person);
             let last = end.unwrap_or(self.last_day());
@@ -4349,7 +4930,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                     "{who}, {}, at the start",
                     person
                         .sex
-                        .map_or_else(String::new, |sex| describe(sex, Self::age_milli(person, 0)))
+                        .map_or_else(String::new, |sex| describe(sex, self.age_milli(person, 0)))
                 ),
                 Arrival::Born => format!(
                     "{who}, {}, is born to {} and {}",
@@ -4410,7 +4991,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                             at.y,
                             describe(
                                 person.sex.unwrap_or(Sex::Male),
-                                Self::age_milli(person, i64::try_from(day).unwrap_or(0) - 1)
+                                self.age_milli(person, i64::try_from(day).unwrap_or(0) - 1)
                             )
                         ),
                     });
@@ -4467,7 +5048,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
     /// Each tribe's years in numbers (lot 3 C).
     #[must_use]
     pub fn years(&self) -> Vec<Year> {
-        let per_year = u64::from(Calendar::DEFAULT_DAYS_PER_YEAR);
+        let per_year = u64::from(self.calendar().days_per_cycle());
         let last = self.last_day();
         let count = last.div_ceil(per_year);
         let people = |tribe: u8| self.people.iter().filter(move |(_, p)| p.tribe == tribe);
@@ -4514,7 +5095,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                         }
                     }
                     if p.born_in_run {
-                        let fifteen = Self::birthday(p, 15);
+                        let fifteen = self.birthday(p, 15);
                         if fifteen <= end {
                             y.fifteen.1 += 1;
                             y.fifteen.0 += u32::from(self.alive_on(p, fifteen));
@@ -4525,7 +5106,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                 for (&id, w) in people(tribe) {
                     if w.sex != Some(Sex::Female)
                         || !self.alive_on(w, end)
-                        || !(16..=42).contains(&Self::years_on(w, end))
+                        || !(16..=42).contains(&self.years_on(w, end))
                     {
                         continue;
                     }
@@ -4536,7 +5117,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                     let possible = people(tribe).any(|(&m, man)| {
                         man.sex == Some(Sex::Male)
                             && self.alive_on(man, end)
-                            && (16..=50).contains(&Self::years_on(man, end))
+                            && (16..=50).contains(&self.years_on(man, end))
                             && self.spouse_on(man, end).is_none()
                             && !Self::kin((id, w), (m, man))
                     });
@@ -4573,14 +5154,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
 
     /// "spring", "winter": the season of `tick`.
     fn season_name(&self, tick: u64) -> String {
-        Calendar::new(
-            self.settings.ticks_per_second,
-            Calendar::DEFAULT_SECONDS_PER_DAY,
-        )
-        .map_or_else(
-            |_| String::new(),
-            |calendar| format!("{:?}", calendar.time_at(sim::Tick(tick)).season).to_lowercase(),
-        )
+        format!("{:?}", self.calendar().time_at(sim::Tick(tick)).season).to_lowercase()
     }
 
     /// The tribes, year by year (lot 3 C): population and its growth,
@@ -4609,7 +5183,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                 "—".to_owned()
             } else {
                 let mean_tenths = y.intervals_days.iter().sum::<u64>() * 10
-                    / (u64::from(Calendar::DEFAULT_DAYS_PER_YEAR)
+                    / (u64::from(self.calendar().days_per_age_year())
                         * u64::try_from(y.intervals_days.len()).unwrap_or(1));
                 format!(
                     "{}.{} years ({} births)",
@@ -4700,7 +5274,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             } else {
                 format!(
                     ", {} at the start",
-                    describe(sex, Self::age_milli(person, 0))
+                    describe(sex, self.age_milli(person, 0))
                 )
             }
         });
@@ -4898,7 +5472,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             "{role}, {}",
             describe(
                 person.sex.unwrap_or(Sex::Male),
-                Self::age_milli(person, i64::try_from(on).unwrap_or(0) - 1)
+                self.age_milli(person, i64::try_from(on).unwrap_or(0) - 1)
             )
         );
         let span = match m.until {
@@ -5018,29 +5592,28 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
     }
 
     /// Ticks a game day of this run.
-    /// The season and year of `tick`, as "winter of year 2".
+    /// The season and cycle of `tick`, as "winter of year 2".
     fn season_of(&self, tick: u64) -> String {
-        Calendar::new(
-            self.settings.ticks_per_second,
-            Calendar::DEFAULT_SECONDS_PER_DAY,
-        )
-        .map_or_else(
-            |_| String::new(),
-            |calendar| {
-                let time = calendar.time_at(sim::Tick(tick));
-                format!(
-                    "{} of year {}",
-                    format!("{:?}", time.season).to_lowercase(),
-                    time.year
-                )
-            },
+        let time = self.calendar().time_at(sim::Tick(tick));
+        format!(
+            "{} of year {}",
+            format!("{:?}", time.season).to_lowercase(),
+            time.cycle
         )
     }
 
-    /// How old a person is on `day` (from 0), in thousandths of a year.
-    fn age_milli(person: &Person, day: i64) -> u64 {
+    /// How old a person is on `day` (from 0), in thousandths of an
+    /// age-year.
+    fn age_milli(&self, person: &Person, day: i64) -> u64 {
         let days = u64::try_from(day - person.born_day).unwrap_or(0);
-        days * 1000 / u64::from(Calendar::DEFAULT_DAYS_PER_YEAR)
+        days * 1000 / u64::from(self.calendar().days_per_age_year())
+    }
+
+    /// The run's calendar, checked when the run started.
+    pub(crate) fn calendar(&self) -> Calendar {
+        self.settings
+            .calendar()
+            .expect("the run's calendar, checked when it started")
     }
 
     /// The people by age and sex, at the start and the living at the end
@@ -5064,7 +5637,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                 .values()
                 .filter(|p| p.sex == Some(sex) && (!living || p.death.is_none()))
                 .filter(|p| living || !p.born_in_run)
-                .filter(|p| (lo..hi).contains(&(Self::age_milli(p, day) / 1000)))
+                .filter(|p| (lo..hi).contains(&(self.age_milli(p, day) / 1000)))
                 .count()
         };
         let mut h = String::from(
@@ -5086,7 +5659,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
     }
 
     fn ticks_per_day(&self) -> u64 {
-        u64::from(self.settings.ticks_per_second) * u64::from(Calendar::DEFAULT_SECONDS_PER_DAY)
+        self.calendar().ticks_per_day()
     }
 
     /// The timing line: what changes from one machine or run to the next.
@@ -5096,7 +5669,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         reason = "float maths of the simulation, the same result on every run"
     )]
     pub fn timing(&self) -> String {
-        let days_per_year = f64::from(Calendar::DEFAULT_DAYS_PER_YEAR);
+        let days_per_year = f64::from(self.calendar().days_per_cycle());
         let years = f64::from(self.settings.days) / days_per_year;
         let minutes = self.wall_s / 60.0;
         let speed = if minutes > 0.0 { years / minutes } else { 0.0 };
@@ -5119,6 +5692,9 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         let s = &self.settings;
         let world = match s.world {
             WorldKind::Vivarium => "the vivarium's world (zone 2 of seed 14)".to_owned(),
+            WorldKind::VivariumWide => {
+                "the vivarium's wide world (zone 2 of seed 14, twice as wide)".to_owned()
+            }
             WorldKind::Patch { side } => format!("a patch of the valley, {side} × {side} tiles"),
         };
         let deaths = self.people.values().filter(|p| p.death.is_some()).count();
@@ -5152,6 +5728,7 @@ img.map{{image-rendering:pixelated;border:1px solid #999;max-width:100%}}</style
             if self.map_scale == 1 { "" } else { "s" },
             png::base64(&self.map_png)
         );
+        h.push_str(&self.settlements_section());
         format!("{h}{}</body></html>\n", self.timing())
     }
 
@@ -5303,6 +5880,9 @@ mod tests {
             people: 5,
             days: 2,
             ticks_per_second: 1,
+            seconds_per_day: Calendar::DEFAULT_SECONDS_PER_DAY,
+            days_per_cycle: Calendar::DEFAULT_DAYS_PER_CYCLE,
+            age_years_per_cycle: Calendar::DEFAULT_AGE_YEARS_PER_CYCLE,
             seed: 1,
             content: None,
             brain: true,
@@ -5761,7 +6341,7 @@ mod tests {
         let grown: Vec<_> = report
             .people
             .values()
-            .filter(|p| !p.born_in_run && Report::years_on(p, 1) >= 16)
+            .filter(|p| !p.born_in_run && report.years_on(p, 1) >= 16)
             .collect();
         assert_eq!(grown.len(), 4);
         for person in &grown {
@@ -5771,7 +6351,7 @@ mod tests {
         for (id, child) in report
             .people
             .iter()
-            .filter(|(_, p)| Report::years_on(p, 1) < 16)
+            .filter(|(_, p)| report.years_on(p, 1) < 16)
         {
             let mother = child.mother.expect("a mother");
             let father = child.father.expect("a father");
@@ -5850,7 +6430,7 @@ mod tests {
         report.people.insert(
             BodyId(102),
             child(
-                1 - 16 * i64::from(Calendar::DEFAULT_DAYS_PER_YEAR),
+                1 - 16 * i64::from(Calendar::default().days_per_age_year()),
                 Sex::Male,
                 false,
             ),
@@ -5867,7 +6447,7 @@ mod tests {
         let mut groom = Person {
             tribe: 0,
             sex: Some(Sex::Male),
-            born_day: -30 * i64::from(Calendar::DEFAULT_DAYS_PER_YEAR),
+            born_day: -30 * i64::from(Calendar::default().days_per_age_year()),
             couplings: vec![(2, single)],
             ..Person::default()
         };
@@ -5992,7 +6572,7 @@ mod tests {
             people: 2,
             adult_years: (20, 20),
             fed: true,
-            days: 20 * Calendar::DEFAULT_DAYS_PER_YEAR,
+            days: 20 * Calendar::default().days_per_age_year(),
             ..small()
         };
         let report = run_checked(&settings, content());
@@ -6004,7 +6584,7 @@ mod tests {
             report.people[&wife].couplings.first().map(|c| c.1),
             Some(husband)
         );
-        let per_year = u64::from(Calendar::DEFAULT_DAYS_PER_YEAR);
+        let per_year = u64::from(report.calendar().days_per_age_year());
         let children: Vec<(BodyId, &Person)> = report
             .people
             .iter()
@@ -6026,7 +6606,7 @@ mod tests {
             intervals.push(gap);
             let earlier_lived_to_two = report
                 .death_day(earlier)
-                .is_none_or(|d| d >= Report::birthday(earlier, 2));
+                .is_none_or(|d| d >= report.birthday(earlier, 2));
             if earlier_lived_to_two {
                 assert!(gap * 10 >= 25 * per_year, "{gap} days between two births");
             }
@@ -6065,7 +6645,7 @@ mod tests {
     fn weaned_at_two(report: &Report, children: &[(BodyId, &Person)]) -> usize {
         let mut weaned = 0;
         for (_, child) in children {
-            let two = Report::birthday(child, 2);
+            let two = report.birthday(child, 2);
             if two + 1 > report.last_day() || report.death_day(child).is_some_and(|d| d <= two) {
                 continue;
             }
@@ -6104,7 +6684,7 @@ mod tests {
                     id.0,
                     cause_words(cause),
                     report.day_of(tick),
-                    Report::years_on(p, report.day_of(tick))
+                    report.years_on(p, report.day_of(tick))
                 ));
             }
         }
@@ -6234,8 +6814,8 @@ mod tests {
         assert_eq!(report.people.len(), 5, "five people, five pages");
         assert_eq!(
             report.ticks,
-            2 * 7200,
-            "two days of 7,200 ticks at one tick a second"
+            2 * 16_200,
+            "two days of 16,200 ticks at one tick a second"
         );
         // Tick 0 and then 24 times a day: 48 in two days.
         assert_eq!(report.samples.len(), 1 + 48);
@@ -6346,18 +6926,21 @@ mod tests {
                 "person {} died of thirst beside the river",
                 id.0
             );
+            // A child born in the run (6 game days of pregnancy since
+            // the calendar v1) drinks its mother's milk.
             assert!(
-                person.drinks >= 10,
+                person.born_in_run || person.drinks >= 10,
                 "person {} drank {} times in ten days",
                 id.0,
                 person.drinks
             );
             assert!(
-                person.thoughts > 0
-                    && person
-                        .entries
-                        .iter()
-                        .any(|e| e.what.starts_with("thirsty: "))
+                person.born_in_run
+                    || person.thoughts > 0
+                        && person
+                            .entries
+                            .iter()
+                            .any(|e| e.what.starts_with("thirsty: "))
             );
         }
         assert!(report.fixed().contains("the minimal one (sim::brain)"));
@@ -6507,6 +7090,21 @@ mod tests {
                     .zip(&b)
                     .all(|(x, y)| *x == "*" || x.trim_end_matches("[]") == y.trim_end_matches("[]"))
         })
+    }
+
+    #[test]
+    fn homes_link_into_one_group_link_by_link_and_not_beyond_reach() {
+        let homes = [
+            Pos::new(0, 0),
+            Pos::new(60, 0),
+            Pos::new(120, 10),
+            Pos::new(300, 300),
+        ];
+        let group = linked(&homes, 64);
+        assert_eq!(group[0], group[1]);
+        assert_eq!(group[1], group[2], "linked through the middle home");
+        assert_ne!(group[0], group[3]);
+        assert_eq!(tiles_apart(homes[0], homes[2]), 120);
     }
 
     #[test]

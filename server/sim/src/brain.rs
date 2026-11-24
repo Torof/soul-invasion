@@ -2190,6 +2190,13 @@ impl Mind {
         self.trial.as_ref()
     }
 
+    /// Whether it holds a goal beyond a day (D56): at night it lies down
+    /// where it stands.
+    #[must_use]
+    pub fn holds_goal(&self) -> bool {
+        self.goal.is_some()
+    }
+
     /// Its days of distress in a row (D50).
     pub fn distress_days(&self) -> u32 {
         self.distress_days
@@ -2405,7 +2412,7 @@ fn move_cost(world: &World, rules: &Content, mind: &Mind, (from, to): (Pos, Pos)
     let days = rules
         .needs
         .trials
-        .move_repay_days(world.calendar().days_per_year());
+        .move_repay_days(world.calendar().days_per_cycle());
     i64::try_from(once / u64::from(days)).unwrap_or(i64::MAX)
 }
 
@@ -2437,7 +2444,8 @@ fn copy_way(
 
 /// How many days a told state of `kind` is worth believing (D55, amended
 /// by lot 5a): `fire.told_days_per_hour` for each hour of work one of its
-/// plants holds in a usual year (its crop's `grams` over `per_hour_g`),
+/// plants holds in a usual cycle (its crop's grams of a cycle,
+/// [`crops::cycle_grams`], over `per_hour_g`),
 /// at most `fire.told_days_max` and the days its crop has left in its
 /// season, at least one. A kind bearing nothing now is old news.
 fn told_days(world: &World, rules: &Content, food: &Food, kind: u16) -> u32 {
@@ -2446,7 +2454,8 @@ fn told_days(world: &World, rules: &Content, food: &Food, kind: u16) -> u32 {
         return 1;
     };
     let crop = &rules.crops[bears.crop];
-    let held_milli = u64::from(crop.grams.1) * 1000 / u64::from(crop.per_hour_g.max(1));
+    let usual = crops::cycle_grams(crop, world.calendar()).1;
+    let held_milli = u64::from(usual) * 1000 / u64::from(crop.per_hour_g.max(1));
     let days = held_milli * u64::from(fire.told_days_per_hour) / 1000;
     let left = crops::days_left(crop, world.calendar(), world.tick()).unwrap_or(0);
     u32::try_from(days.min(u64::from(fire.told_days_max)).min(left).max(1)).unwrap_or(1)
@@ -4175,7 +4184,7 @@ impl Brains {
     /// night's camp-mates.
     fn close_day(&mut self, world: &World, rules: &Content) {
         let trials = &rules.needs.trials;
-        let per_year = world.calendar().days_per_year();
+        let per_year = world.calendar().days_per_cycle();
         let seed = self.seed;
         let day = today(world);
         let now = world.tick().0;
@@ -5772,7 +5781,7 @@ impl Brains {
         (moves_to, followed): (&BTreeMap<BodyId, Pos>, &BTreeMap<BodyId, BodyId>),
     ) {
         let trials = &rules.needs.trials;
-        let per_year = world.calendar().days_per_year();
+        let per_year = world.calendar().days_per_cycle();
         let now = world.tick().0;
         let ids: Vec<(BodyId, Pos)> = said
             .iter()
@@ -7598,7 +7607,7 @@ fn yesterday_of(night: &Night, day: u32, home: Pos, grove: i32) -> Yesterday {
 /// (winter).
 fn season_of_day(world: &World, day: u64) -> u8 {
     let c = world.calendar();
-    c.season_of(day % u64::from(c.days_per_year().max(1))) as u8
+    c.season_of(day % u64::from(c.days_per_cycle().max(1))) as u8
 }
 
 /// Why `id` first went home from gathering today and what it carried,
@@ -7707,7 +7716,7 @@ fn temper_today(world: &World, rules: &Content, day: u64) -> (BTreeMap<BodyId, b
     if !rules.needs.temperance.on() {
         return (BTreeMap::new(), false);
     }
-    let season = u64::from(world.calendar().days_per_year() / 4).max(1);
+    let season = u64::from(world.calendar().days_per_cycle() / 4).max(1);
     (kin_fed(world, rules), day > 0 && day.is_multiple_of(season))
 }
 
@@ -8635,7 +8644,7 @@ fn start_trial(
                 before,
                 started_day: day,
                 before_days: mind
-                    .lately(trials.days_for(way.key(), world.calendar().days_per_year())),
+                    .lately(trials.days_for(way.key(), world.calendar().days_per_cycle())),
                 heard: HeardDays::default(),
                 caller: None,
             });
@@ -8694,7 +8703,7 @@ fn start_trial(
         way,
         before,
         started_day: day,
-        before_days: mind.lately(trials.days_for(way.key(), world.calendar().days_per_year())),
+        before_days: mind.lately(trials.days_for(way.key(), world.calendar().days_per_cycle())),
         heard: HeardDays::default(),
         caller: None,
     });
@@ -8902,7 +8911,7 @@ fn call_move(
     if !pushed && !huge {
         return Vec::new();
     }
-    let per_year = world.calendar().days_per_year();
+    let per_year = world.calendar().days_per_cycle();
     let trial = Trial {
         way: Way::Home,
         before: mind.ways,
@@ -10578,7 +10587,7 @@ mod tests {
         let mut news = Vec::new();
         bar(&world, (id, key, Blockage::Water), mind, &mut news);
         let later = world.tick().0
-            + 2 * u64::from(world.calendar().days_per_year()) * world.calendar().ticks_per_day();
+            + 2 * u64::from(world.calendar().days_per_cycle()) * world.calendar().ticks_per_day();
         let mut events = Vec::new();
         world.advance(later - world.tick().0, &rules, &mut events);
         let mind = brains.minds.get_mut(&id).unwrap();
@@ -11100,7 +11109,7 @@ mod tests {
         let mut events = Vec::new();
         let (mut bearing, mut bare) = (0, 0);
         // Two years, each day at a later hour.
-        for _ in 0..2 * world.calendar().days_per_year() {
+        for _ in 0..2 * world.calendar().days_per_cycle() {
             food.refresh(&world, &rules);
             for crop in &rules.crops {
                 let numbered = food.numbers.get(&crop.on).copied();
@@ -11690,10 +11699,7 @@ mod tests {
         rules.needs.trials.horizon_seasons = vec![("stock_kj".to_owned(), 1)];
         let id = BodyId(1);
         let mut world = World::empty(
-            Calendar::new(1, 7200)
-                .unwrap()
-                .with_days_per_year(16)
-                .unwrap(),
+            Calendar::new(1, 7200).unwrap().with_cycle(16, 1).unwrap(),
             Map::filled(64, 64, Terrain::Grass).with_camp(5, 5),
         );
         let mut events = Vec::new();
@@ -12016,7 +12022,7 @@ mod tests {
         let orphan = world.spawn_body(Pos::new(7, 5));
         let infant = world.spawn_body(Pos::new(8, 5));
         let father = world.spawn_body(Pos::new(9, 5));
-        let per_year = u64::from(world.calendar().days_per_year());
+        let per_year = u64::from(world.calendar().days_per_age_year());
         world.set_birth(mother, 30 * per_year, Sex::Female);
         world.set_birth(father, 30 * per_year, Sex::Male);
         world.set_birth(child, 5 * per_year, Sex::Male);
@@ -14344,7 +14350,7 @@ mod tests {
         rules.needs.fire.told_per_night = 10;
         let (mut world, mut brains) = camp_of(3, &rules);
         let (teller, grown, child) = (BodyId(1), BodyId(2), BodyId(3));
-        let per_year = i64::from(world.calendar().days_per_year());
+        let per_year = i64::from(world.calendar().days_per_age_year());
         world.bodies[2].born_day = world.today() - 2 * per_year;
         for k in 0..8_i32 {
             saw_place(&world, &rules, &mut brains, teller, (2 + k, 2), kind, 5);
@@ -15493,11 +15499,19 @@ mod tests {
     fn a_far_barely_better_place_is_refused_while_a_near_one_is_taken() {
         let mut rules = rules();
         rules.needs.trials.home_nights_by_will = vec![(0, 1)];
-        let world = field(256, 250, Pos::new(5, 5));
+        // The cycle of before the calendar v1, seasons of 12 days: the
+        // margins below are read on a move repaid over 12 days.
+        let mut map = Map::filled(256, 256, Terrain::Grass).with_camp(5, 5);
+        for y in 0..256 {
+            map.set(Pos::new(250, y), Terrain::Water);
+        }
+        let calendar = Calendar::new(1, 7200).unwrap().with_cycle(50, 1).unwrap();
+        let mut world = World::empty(calendar, map);
+        world.spawn_body(Pos::new(5, 5));
         let days = rules
             .needs
             .trials
-            .move_repay_days(world.calendar().days_per_year());
+            .move_repay_days(world.calendar().days_per_cycle());
         // Its home (0, 0) lacks a tenth of a day of company each night; a
         // place near, (1, 0), or some 200 tiles off, (12, 0), lacks none:
         // each a tenth of a day better. A day's light walks 600 tiles, a

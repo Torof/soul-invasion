@@ -66,9 +66,14 @@ OPTIONS:
                            ../content, ../../content that exists.
     --ticks-per-second <N> Calendar: simulation ticks per game second
                            (default 10).
-    --seconds-per-day <N>  Calendar: game seconds per game day (default 7200).
-    --days-per-year <N>    Calendar: game days per year, four seasons
-                           (default 50, at least 4).
+    --seconds-per-day <N>  Calendar: game seconds per game day (default
+                           16200, the calendar v1).
+    --days-per-year <N>    Calendar: game days per cycle of four seasons
+                           (default 64, at least 4).
+    --age-years-per-cycle <N>
+                           Calendar: age-years per cycle, the clock of ages
+                           (default 8); they must cut the cycle into whole
+                           age-years of 4 days at least.
     --valley-size <N>      A new world's valley, N tiles on a side (default
                            3072, 256 to 16384). A smaller one starts far
                            faster: for tests and development.
@@ -126,6 +131,8 @@ OPTIONS:
     --world vivarium       The vivarium's world (D41, lot 0): zone 2 of the
                            atlas of seed 14, 2,176 m a side with a height
                            per tile, born at camp A (generator version 4).
+    --world vivarium-wide  The same zone twice as wide, 4,352 m a side, the
+                           vivarium's long runs' world.
     --dev                  Development tools: every client gets an overview
                            of the whole map and may teleport its body. Never
                            for play.
@@ -274,6 +281,10 @@ pub enum TestWorld {
     /// `vivarium`: the vivarium's world, zone 2 of the atlas of seed 14
     /// (generator version 4, D41 lot 0).
     Vivarium,
+    /// `vivarium-wide`: the same zone twice as wide, 4,352 m a side
+    /// ([`sim::plan::ZONE_2_WIDE`], 24 November 2026), the vivarium's
+    /// long runs' world.
+    VivariumWide,
 }
 
 impl TestWorld {
@@ -283,7 +294,7 @@ impl TestWorld {
     pub fn continent_seed(self) -> Option<u64> {
         match self {
             Self::Plan(seed) => Some(seed),
-            Self::Vivarium => Some(sim::plan::VIVARIUM_SEED),
+            Self::Vivarium | Self::VivariumWide => Some(sim::plan::VIVARIUM_SEED),
             _ => None,
         }
     }
@@ -380,7 +391,8 @@ impl Options {
         let mut opts = Self::default();
         let mut ticks_per_second = Calendar::DEFAULT_TICKS_PER_SECOND;
         let mut seconds_per_day = Calendar::DEFAULT_SECONDS_PER_DAY;
-        let mut days_per_year = Calendar::DEFAULT_DAYS_PER_YEAR;
+        let mut days_per_year = Calendar::DEFAULT_DAYS_PER_CYCLE;
+        let mut age_years_per_cycle = Calendar::DEFAULT_AGE_YEARS_PER_CYCLE;
         let mut args = args.into_iter();
 
         while let Some(arg) = args.next() {
@@ -416,6 +428,7 @@ impl Options {
                         "test:relief" => Some(TestWorld::Relief),
                         "test:squelette" => Some(TestWorld::Skeleton),
                         "vivarium" => Some(TestWorld::Vivarium),
+                        "vivarium-wide" => Some(TestWorld::VivariumWide),
                         _ => {
                             if let Some(seed) = raw.strip_prefix("plan:") {
                                 seed.trim().parse().ok().map(TestWorld::Plan)
@@ -449,6 +462,7 @@ impl Options {
                 "--ticks-per-second" => ticks_per_second = value(arg, args.next())?,
                 "--seconds-per-day" => seconds_per_day = value(arg, args.next())?,
                 "--days-per-year" => days_per_year = value(arg, args.next())?,
+                "--age-years-per-cycle" => age_years_per_cycle = value(arg, args.next())?,
                 other => return Err(CliError::UnknownOption(other.to_owned())),
             }
         }
@@ -462,7 +476,7 @@ impl Options {
             opts.data = DataLocation::Ephemeral;
         }
         opts.calendar = Calendar::new(ticks_per_second, seconds_per_day)
-            .and_then(|c| c.with_days_per_year(days_per_year))
+            .and_then(|c| c.with_cycle(days_per_year, age_years_per_cycle))
             .map_err(CliError::Calendar)?;
         Ok(opts)
     }
@@ -508,16 +522,15 @@ mod tests {
             "30",
             "--days-per-year",
             "12",
+            "--age-years-per-cycle",
+            "3",
         ])
         .unwrap();
         assert!(opts.headless);
         assert_eq!(opts.days, Some(3));
         assert_eq!(
             opts.calendar,
-            Calendar::new(4, 30)
-                .unwrap()
-                .with_days_per_year(12)
-                .unwrap()
+            Calendar::new(4, 30).unwrap().with_cycle(12, 3).unwrap()
         );
     }
 
@@ -564,6 +577,10 @@ mod tests {
         assert_eq!(
             Options::parse(["--world", "vivarium"]).unwrap().world,
             Some(TestWorld::Vivarium)
+        );
+        assert_eq!(
+            Options::parse(["--world", "vivarium-wide"]).unwrap().world,
+            Some(TestWorld::VivariumWide)
         );
     }
 
@@ -658,7 +675,21 @@ mod tests {
         );
         assert_eq!(
             Options::parse(["--days-per-year", "3"]),
-            Err(CliError::Calendar(sim::CalendarError::TooShortYear))
+            Err(CliError::Calendar(sim::CalendarError::TooShortCycle))
+        );
+        assert_eq!(
+            Options::parse(["--days-per-year", "50"]),
+            Err(CliError::Calendar(sim::CalendarError::UnevenAgeYears)),
+            "50 days are not eight whole age-years"
+        );
+        assert_eq!(
+            Options::parse(["--days-per-year", "50", "--age-years-per-cycle", "1"])
+                .unwrap()
+                .calendar,
+            Calendar::new(10, 16_200)
+                .unwrap()
+                .with_cycle(50, 1)
+                .unwrap()
         );
         assert_eq!(Options::parse(["--help"]), Err(CliError::HelpRequested));
     }

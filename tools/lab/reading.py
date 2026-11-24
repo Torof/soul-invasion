@@ -144,10 +144,10 @@ def age_days(d, p, at_day=None):
 
 
 def age_fr(d, days_old):
-    """`32 ans`, `1 an`, `23 jours` (under a year), in game years of `days_per_year`."""
+    """`32 ans`, `1 an`, `23 jours` (under a year), in age-years of `days_per_age_year` (D09)."""
     if days_old is None:
         return "-"
-    yd = year_days(d)
+    yd = age_year_days(d)
     if days_old < yd:
         return plural(days_old, "jour")
     return plural(days_old // yd, "an")
@@ -507,7 +507,13 @@ class Chart:
 
 
 def year_days(d):
+    """The days of a year of the data: the cycle of four seasons (`meta.days_per_year`)."""
     return (d.get("meta") or {}).get("days_per_year") or 50
+
+
+def age_year_days(d):
+    """The days of an age-year (`meta.days_per_age_year`, D09); a file written before it: the cycle's."""
+    return (d.get("meta") or {}).get("days_per_age_year") or year_days(d)
 
 
 def year_marks(d, tribe_index, curve):

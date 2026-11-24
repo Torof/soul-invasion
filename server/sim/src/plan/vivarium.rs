@@ -71,7 +71,26 @@ pub const ZONE_2: Zone = Zone {
     camp_b: (159, 167),
 };
 
+/// Zone 2 twice as wide (24 November 2026, the project lead's "une carte
+/// un peu plus grande" for the long runs): the same landmarks and camps
+/// on the same ground, with 17 cells more on each side, 4,352 m a side.
+/// The corner moves; every landmark stays where it was on the continent.
+pub const ZONE_2_WIDE: Zone = Zone {
+    corner: (ZONE_2.corner.0 - 17, ZONE_2.corner.1 - 17),
+    side_cells: 2 * ZONE_2.side_cells,
+    ..ZONE_2
+};
+
+/// The vivarium's zones, by side: [`ZONE_2`] and [`ZONE_2_WIDE`].
+pub const ZONES: [Zone; 2] = [ZONE_2, ZONE_2_WIDE];
+
 impl Zone {
+    /// The vivarium's zone of `side` tiles, if one is.
+    #[must_use]
+    pub fn of_side(side: u32) -> Option<Zone> {
+        ZONES.into_iter().find(|z| z.side() == side)
+    }
+
     /// The zone's side in tiles (metres): a whole number of chunks of 32.
     #[must_use]
     pub const fn side(&self) -> u32 {
@@ -171,6 +190,17 @@ mod tests {
         assert_eq!(ZONE_2.tile(ZONE_2.corner), (32, 32));
         assert_eq!(ZONE_2.tile(ZONE_2.camp_a), (30 * 64 + 32, 30 * 64 + 32));
         assert_eq!(ZONE_2.tile(ZONE_2.camp_b), (3 * 64 + 32, 3 * 64 + 32));
+    }
+
+    #[test]
+    fn the_wide_zone_keeps_the_landmarks_where_they_were() {
+        assert_eq!(ZONE_2_WIDE.side(), 2 * ZONE_2.side());
+        assert_eq!(Zone::of_side(ZONE_2_WIDE.side()), Some(ZONE_2_WIDE));
+        let shift = 17 * 64;
+        for cell in [ZONE_2.crossing, ZONE_2.hill, ZONE_2.camp_a, ZONE_2.camp_b] {
+            let (x, y) = ZONE_2.tile(cell);
+            assert_eq!(ZONE_2_WIDE.tile(cell), (x + shift, y + shift));
+        }
     }
 
     #[test]
