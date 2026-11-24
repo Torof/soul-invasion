@@ -539,8 +539,9 @@ pub struct DecisionYear {
     /// a walk barred, heard at the fire, cleared by standing on the place,
     /// cleared by hearing from one who stood on it.
     pub barred: [u32; 4],
-    /// What barred the walks that made a mark: water, rock, no way seen.
-    pub barred_causes: [u32; 3],
+    /// What barred the walks that made a mark: water, rock (no way seen
+    /// makes none).
+    pub barred_causes: [u32; 2],
     /// Marks of seen, not reached held by the tribe's living at the
     /// year's end, faded ones not counted.
     pub barred_held: u32,
@@ -2471,7 +2472,7 @@ fn wills_of(
         }
         counts.minds += 1;
         counts.bold += u32::from(u32::from(mind.will()) >= bold);
-        counts.barred_held += mind.marks_held(today);
+        counts.barred_held += mind.marks_held();
         for (activity, who, credit) in mind.reputed(brains.memory(), rep, today) {
             let entry = believed.entry((activity, who)).or_default();
             entry.0 += 1;
@@ -2862,11 +2863,11 @@ fn barred_news(
     let counts = tally.decisions.entry((tribe, year)).or_default();
     counts.barred[slot] += 1;
     if let Some(cause) = cause {
-        counts.barred_causes[match cause {
-            Blockage::Water => 0,
-            Blockage::Rock => 1,
-            Blockage::NoWay => 2,
-        }] += 1;
+        match cause {
+            Blockage::Water => counts.barred_causes[0] += 1,
+            Blockage::Rock => counts.barred_causes[1] += 1,
+            Blockage::NoWay => {}
+        }
     }
     true
 }
