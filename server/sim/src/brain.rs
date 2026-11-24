@@ -2444,7 +2444,8 @@ fn copy_way(
 
 /// How many days a told state of `kind` is worth believing (D55, amended
 /// by lot 5a): `fire.told_days_per_hour` for each hour of work one of its
-/// plants holds in a usual year (its crop's `grams` over `per_hour_g`),
+/// plants holds in a usual cycle (its crop's grams of a cycle,
+/// [`crops::cycle_grams`], over `per_hour_g`),
 /// at most `fire.told_days_max` and the days its crop has left in its
 /// season, at least one. A kind bearing nothing now is old news.
 fn told_days(world: &World, rules: &Content, food: &Food, kind: u16) -> u32 {
@@ -2453,7 +2454,8 @@ fn told_days(world: &World, rules: &Content, food: &Food, kind: u16) -> u32 {
         return 1;
     };
     let crop = &rules.crops[bears.crop];
-    let held_milli = u64::from(crop.grams.1) * 1000 / u64::from(crop.per_hour_g.max(1));
+    let usual = crops::cycle_grams(crop, world.calendar()).1;
+    let held_milli = u64::from(usual) * 1000 / u64::from(crop.per_hour_g.max(1));
     let days = held_milli * u64::from(fire.told_days_per_hour) / 1000;
     let left = crops::days_left(crop, world.calendar(), world.tick()).unwrap_or(0);
     u32::try_from(days.min(u64::from(fire.told_days_max)).min(left).max(1)).unwrap_or(1)
@@ -11654,10 +11656,7 @@ mod tests {
         rules.needs.trials.horizon_seasons = vec![("stock_kj".to_owned(), 1)];
         let id = BodyId(1);
         let mut world = World::empty(
-            Calendar::new(1, 7200)
-                .unwrap()
-                .with_days_per_cycle(16)
-                .unwrap(),
+            Calendar::new(1, 7200).unwrap().with_cycle(16, 1).unwrap(),
             Map::filled(64, 64, Terrain::Grass).with_camp(5, 5),
         );
         let mut events = Vec::new();
@@ -15387,7 +15386,15 @@ mod tests {
     fn a_far_barely_better_place_is_refused_while_a_near_one_is_taken() {
         let mut rules = rules();
         rules.needs.trials.home_nights_by_will = vec![(0, 1)];
-        let world = field(256, 250, Pos::new(5, 5));
+        // The cycle of before the calendar v1, seasons of 12 days: the
+        // margins below are read on a move repaid over 12 days.
+        let mut map = Map::filled(256, 256, Terrain::Grass).with_camp(5, 5);
+        for y in 0..256 {
+            map.set(Pos::new(250, y), Terrain::Water);
+        }
+        let calendar = Calendar::new(1, 7200).unwrap().with_cycle(50, 1).unwrap();
+        let mut world = World::empty(calendar, map);
+        world.spawn_body(Pos::new(5, 5));
         let days = rules
             .needs
             .trials

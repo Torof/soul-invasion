@@ -19,8 +19,11 @@
 // until:   when it is gone, the same way; before `from`, in the next year
 //          (rose hips through the winter). (spring, 0) to (winter, 100):
 //          all year.
-// grams:   what one plant bears in a (lean, usual, rich) year; each plant
-//          bears a share of its own, three quarters to five quarters.
+// grams:   what one plant bears in a (lean, usual, rich) year of the
+//          Earth, 365 days; each plant bears a share of its own, three
+//          quarters to five quarters. In the game it bears that per cycle
+//          of seasons × richness × the cycle's days ÷ 365 (D45, amended 24
+//          November 2026, the calendar v1).
 // years:   in a hundred years, how many are lean and how many rich; the
 //          rest are usual. A kind has the same year over a kilometre of
 //          the world, as the oaks of a country mast together.
@@ -35,7 +38,12 @@
 //          the load a plant shows follows it. Absent: (rise: 20, fall:
 //          30). A crop there all year (roots, bulbs) neither rises nor
 //          falls: (rise: 0, fall: 0).
+// richness_permille: 7300 — the world's one dial on the land's yield, in
+//          thousandths (D30 placeholder): 7.3 keeps the food of a game
+//          day what it was with a 50-day cycle (7.3 × 50 ÷ 365 = 1); the
+//          project lead fixes it after measuring.
 (
+    richness_permille: Some(7300),
     crops: [
         // The winter's store: 3 to 10 kg a tree, years of plenty and
         // lean years.

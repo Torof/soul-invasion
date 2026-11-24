@@ -315,8 +315,8 @@ mod tests {
         let defaults = parse(&args(&[])).unwrap().unwrap().settings;
         assert_eq!(
             defaults.calendar().unwrap(),
-            sim::Calendar::new(1, 7_200).unwrap(),
-            "today's calendar at the vivarium's cadence"
+            sim::Calendar::new(1, 16_200).unwrap(),
+            "the calendar v1 at the vivarium's cadence"
         );
         let v1 = parse(&args(&[
             "--seconds-per-day",

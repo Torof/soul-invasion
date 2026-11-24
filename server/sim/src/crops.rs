@@ -55,7 +55,10 @@ pub struct Crop {
     pub from: (Season, u8),
     /// When it is gone, the same way. Before `from`: in the next year.
     pub until: (Season, u8),
-    /// What one plant bears, in grams, in a lean, a usual and a rich year.
+    /// What one plant bears, in grams, in a lean, a usual and a rich year
+    /// of the Earth (365 days). In the game a plant bears per cycle of
+    /// seasons this × the world's richness × the cycle's days ÷ 365
+    /// ([`cycle_grams`]; D45, amended 24 November 2026).
     pub grams: (u32, u32, u32),
     /// How often its years are lean or rich.
     pub years: Years,
@@ -66,6 +69,35 @@ pub struct Crop {
     /// default.
     #[serde(default)]
     pub ripen: Ripen,
+    /// The world's richness (`crops.ron`'s one dial, `richness_permille`),
+    /// copied onto each crop when the file is read, in thousandths;
+    /// `None` when the file has none: its grams are then a cycle's as
+    /// written (the tests' small crops).
+    #[serde(skip)]
+    pub richness_permille: Option<u32>,
+}
+
+/// What a plant of `crop`'s kind bears in a lean, a usual and a rich
+/// cycle of `calendar`, in grams (D45, amended 24 November 2026: the
+/// calendar v1): its Earth year's grams × the world's richness × the
+/// cycle's days ÷ 365. The richness is the content's one dial: 7.3 makes
+/// a game day bear what it bore with a 50-day cycle, 7.3 × 50 ÷ 365 being
+/// one. A crop read without the dial bears its grams as written.
+#[must_use]
+pub fn cycle_grams(crop: &Crop, calendar: &Calendar) -> (u32, u32, u32) {
+    let Some(richness) = crop.richness_permille else {
+        return crop.grams;
+    };
+    let scale = |grams: u32| {
+        let g = u128::from(grams) * u128::from(richness) * u128::from(calendar.days_per_cycle())
+            / (365 * 1000);
+        u32::try_from(g).unwrap_or(u32::MAX)
+    };
+    (
+        scale(crop.grams.0),
+        scale(crop.grams.1),
+        scale(crop.grams.2),
+    )
 }
 
 /// How much of a crop is on the plant over its span (D48): none at its
@@ -121,12 +153,25 @@ pub enum Year {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CropsFile {
+    /// The world's richness, in thousandths ([`cycle_grams`]).
+    #[serde(default)]
+    richness_permille: Option<u32>,
     crops: Vec<Crop>,
 }
 
-/// The crops of `text` (the text of `crops.ron`).
+/// The crops of `text` (the text of `crops.ron`), each with the file's
+/// richness.
 pub fn parse(text: &str) -> Result<Vec<Crop>, ron::error::SpannedError> {
-    ron::from_str::<CropsFile>(text).map(|file| file.crops)
+    ron::from_str::<CropsFile>(text).map(|file| {
+        let richness = file.richness_permille;
+        file.crops
+            .into_iter()
+            .map(|crop| Crop {
+                richness_permille: richness,
+                ..crop
+            })
+            .collect()
+    })
 }
 
 /// What is wrong with `crop` on its own, if anything (that its kind and
@@ -299,7 +344,8 @@ pub(crate) fn there_keyed(
     at: FinePos,
 ) -> Option<(u64, u32)> {
     let (year, share) = on_plant(crop, calendar, tick)?;
-    let grams = u64::from(bears_keyed(crop, on_key, seed, frame, at, year)) * share / WHOLE;
+    let grams =
+        u64::from(bears_keyed(crop, on_key, calendar, seed, frame, at, year)) * share / WHOLE;
     Some((year, u32::try_from(grams).expect("at most what it bears")))
 }
 
@@ -354,21 +400,37 @@ fn year_of_keyed(crop: &Crop, on_key: u64, seed: u64, tile: (i32, i32), year: u6
 /// What a plant of `crop`'s kind standing at `at` bears in `year`, in
 /// grams, before anything is picked.
 #[cfg(test)]
-pub(crate) fn bears(crop: &Crop, seed: u64, frame: Frame, at: FinePos, year: u64) -> u32 {
-    bears_keyed(crop, key_of(crop), seed, frame, at, year)
+pub(crate) fn bears(
+    crop: &Crop,
+    calendar: &Calendar,
+    seed: u64,
+    frame: Frame,
+    at: FinePos,
+    year: u64,
+) -> u32 {
+    bears_keyed(crop, key_of(crop), calendar, seed, frame, at, year)
 }
 
-/// What a plant of `crop`'s kind standing at `at` bears in `year`, in
-/// grams, before anything is picked; the kind's key ([`key_of`]) given.
-fn bears_keyed(crop: &Crop, on_key: u64, seed: u64, frame: Frame, at: FinePos, year: u64) -> u32 {
+/// What a plant of `crop`'s kind standing at `at` bears in `year` (a
+/// cycle of `calendar`), in grams, before anything is picked; the kind's
+/// key ([`key_of`]) given.
+fn bears_keyed(
+    crop: &Crop,
+    on_key: u64,
+    calendar: &Calendar,
+    seed: u64,
+    frame: Frame,
+    at: FinePos,
+    year: u64,
+) -> u32 {
     let tile = at.tile();
+    let grams = cycle_grams(crop, calendar);
     let base = match year_of_keyed(crop, on_key, seed, frame.tile(tile.x, tile.y), year) {
-        Year::Lean => crop.grams.0,
-        Year::Usual => crop.grams.1,
-        Year::Rich => crop.grams.2,
+        Year::Lean => grams.0,
+        Year::Usual => grams.1,
+        Year::Rich => grams.2,
     };
-    u32::try_from(u64::from(base) * share_keyed(on_key, seed, frame, at) / 1000)
-        .expect("under five quarters of a tonne")
+    u32::try_from(u64::from(base) * share_keyed(on_key, seed, frame, at) / 1000).unwrap_or(u32::MAX)
 }
 
 /// The share of its kind's crop a plant of `crop`'s kind standing at
@@ -384,11 +446,12 @@ fn share_keyed(on_key: u64, seed: u64, frame: Frame, at: FinePos) -> u64 {
     750 + hash(&[PURPOSE, seed, on_key, key(x), key(y)]) % 501
 }
 
-/// What a plant of `crop`'s kind standing at `at` bears in a rich year,
-/// in grams: its share of the kind's rich crop, the load it shows full.
-fn rich_on(crop: &Crop, seed: u64, frame: Frame, at: FinePos) -> u32 {
-    u32::try_from(u64::from(crop.grams.2) * share(crop, seed, frame, at) / 1000)
-        .expect("under five quarters of a tonne")
+/// What a plant of `crop`'s kind standing at `at` bears in a rich cycle
+/// of `calendar`, in grams: its share of the kind's rich crop, the load it
+/// shows full.
+fn rich_on(crop: &Crop, calendar: &Calendar, seed: u64, frame: Frame, at: FinePos) -> u32 {
+    let rich = cycle_grams(crop, calendar).2;
+    u32::try_from(u64::from(rich) * share(crop, seed, frame, at) / 1000).unwrap_or(u32::MAX)
 }
 
 /// When a kind of tree or shrub shows its fruit (D48, `species.ron`'s
@@ -521,7 +584,7 @@ fn fruit_of(
                 .filter(|p| p.year == year)
                 .map_or(0, |p| p.grams);
             let left = u64::from(grams.saturating_sub(taken));
-            let rich = u64::from(rich_on(crop, seed, frame, at)).max(1);
+            let rich = u64::from(rich_on(crop, calendar, seed, frame, at)).max(1);
             Some(if left == 0 {
                 0
             } else {
@@ -671,11 +734,44 @@ pub(crate) mod tests {
             years: Years { lean: 25, rich: 25 },
             per_hour_g: 2000,
             ripen: Ripen::default(),
+            richness_permille: None,
         }
     }
 
+    #[test]
+    fn a_crop_bears_its_real_year_times_the_richness_over_the_cycle() {
+        let rich = Crop {
+            richness_permille: Some(7300),
+            ..hazel()
+        };
+        // 7.3 × 50 ÷ 365 is one: the 50-day cycle bears the grams as written.
+        let legacy = Calendar::new(1, 100).unwrap().with_cycle(50, 1).unwrap();
+        assert_eq!(cycle_grams(&rich, &legacy), (1000, 5000, 10_000));
+        // The calendar v1's 64 days bear 1.28 times as much a cycle: the same
+        // a day.
+        let v1 = Calendar::new(1, 100).unwrap();
+        assert_eq!(cycle_grams(&rich, &v1), (1280, 6400, 12_800));
+        // The richness is the dial: life's own, 1.
+        let poor = Crop {
+            richness_permille: Some(1000),
+            ..hazel()
+        };
+        assert_eq!(cycle_grams(&poor, &v1), (175, 876, 1753));
+        // Without the dial, the grams are a cycle's as written.
+        assert_eq!(cycle_grams(&hazel(), &v1), (1000, 5000, 10_000));
+        // The file's dial reaches every crop.
+        let crops = parse(
+            "(richness_permille: Some(7300), crops: [(on: \"hazel\", gives: \"hazelnuts\", \
+             from: (autumn, 0), until: (winter, 0), grams: (1, 2, 3), \
+             years: (lean: 0, rich: 0), per_hour_g: 1)])",
+        )
+        .unwrap();
+        assert_eq!(crops[0].richness_permille, Some(7300));
+        assert_eq!(parse("(crops: [])").unwrap().len(), 0);
+    }
+
     pub(crate) fn calendar() -> Calendar {
-        Calendar::new(1, 100).unwrap()
+        Calendar::new(1, 100).unwrap().with_cycle(50, 1).unwrap()
     }
 
     /// The tick at `day` and a half.
@@ -756,11 +852,25 @@ pub(crate) mod tests {
     #[test]
     fn two_plants_side_by_side_bear_a_share_of_their_own() {
         let hazel = hazel();
-        let a = bears(&hazel, 7, Frame::ORIGIN, FinePos::new(10_500, 10_500), 3);
-        let b = bears(&hazel, 7, Frame::ORIGIN, FinePos::new(12_500, 10_500), 3);
+        let a = bears(
+            &hazel,
+            &calendar(),
+            7,
+            Frame::ORIGIN,
+            FinePos::new(10_500, 10_500),
+            3,
+        );
+        let b = bears(
+            &hazel,
+            &calendar(),
+            7,
+            Frame::ORIGIN,
+            FinePos::new(12_500, 10_500),
+            3,
+        );
         assert_ne!(a, b);
         for at in [FinePos::new(10_500, 10_500), FinePos::new(12_500, 10_500)] {
-            let grams = bears(&hazel, 7, Frame::ORIGIN, at, 3);
+            let grams = bears(&hazel, &calendar(), 7, Frame::ORIGIN, at, 3);
             let base = match year_of(&hazel, 7, (at.tile().x, at.tile().y), 3) {
                 Year::Lean => 1000,
                 Year::Usual => 5000,
@@ -775,7 +885,14 @@ pub(crate) mod tests {
         // same plant of the world bears the same.
         let shifted = Frame::at((-3, -4));
         assert_eq!(
-            bears(&hazel, 7, shifted, FinePos::new(13_500, 14_500), 3),
+            bears(
+                &hazel,
+                &calendar(),
+                7,
+                shifted,
+                FinePos::new(13_500, 14_500),
+                3
+            ),
             a
         );
     }
@@ -890,7 +1007,7 @@ pub(crate) mod tests {
         run_to(&mut world, &content, 30);
         let crop = &content.crops[0];
         let frame = Frame::at(world.map().origin());
-        let full = bears(crop, world.seed(), frame, hazel.at, 1);
+        let full = bears(crop, world.calendar(), world.seed(), frame, hazel.at, 1);
         let ripe = world.ripe_on(chunk, &hazel);
         assert_eq!(
             ripe,
@@ -921,7 +1038,7 @@ pub(crate) mod tests {
         run_to(&mut world, &content, 40);
         assert_eq!(world.ripe_on(chunk, &hazel), []);
         run_to(&mut world, &content, 80);
-        let next = bears(crop, world.seed(), frame, hazel.at, 2);
+        let next = bears(crop, world.calendar(), world.seed(), frame, hazel.at, 2);
         assert_eq!(world.ripe_on(chunk, &hazel)[0].grams, next);
         assert_eq!(world.ripe_on(chunk, &hazel)[0].year, 2);
     }
@@ -1394,7 +1511,7 @@ pub(crate) mod tests {
         let ripening = fruit_at(&hazel_tree, std::slice::from_ref(&rich), 25, &tree, None);
         assert_eq!(ripening, 2);
         // Picked: what is left of the rich year's whole.
-        let grams = bears(&rich, 7, Frame::ORIGIN, tree.at, 1);
+        let grams = bears(&rich, &calendar(), 7, Frame::ORIGIN, tree.at, 1);
         let picked = |year, grams| {
             BTreeMap::from([(
                 (Source::Tree(tree.key), "hazelnuts".to_owned()),
@@ -1475,7 +1592,7 @@ pub(crate) mod tests {
             .unwrap()
             .clone();
         let frame = Frame::at(world.map().origin());
-        let full = bears(&crop, world.seed(), frame, hazel.at, 1);
+        let full = bears(&crop, world.calendar(), world.seed(), frame, hazel.at, 1);
         // Half a day into its ripening (2.5 days): a fifth of it.
         run_to(&mut world, &content, 25);
         let early = full / 5;
@@ -1520,8 +1637,8 @@ pub(crate) mod tests {
         assert_eq!(world.fruit_on(oak.0, &oak.1), LEVELS, "acorns");
         let crop = content.crops.iter().find(|c| c.on == "hazel").unwrap();
         let frame = Frame::at(world.map().origin());
-        let full = bears(crop, world.seed(), frame, hazel.at, 1);
-        let rich = rich_on(crop, world.seed(), frame, hazel.at);
+        let full = bears(crop, world.calendar(), world.seed(), frame, hazel.at, 1);
+        let rich = rich_on(crop, world.calendar(), world.seed(), frame, hazel.at);
         let level = u8::try_from((u64::from(full) * 16 + u64::from(rich)) / (2 * u64::from(rich)))
             .unwrap()
             .max(1);
@@ -1645,7 +1762,7 @@ pub(crate) mod tests {
             .collect();
         let at = FinePos::new(10_500, 10_500);
         assert_eq!(plant_fruit_at(&bramble, &rich, 25, at, None), LEVELS);
-        let grams = bears(&rich[0], 7, Frame::ORIGIN, at, 1);
+        let grams = bears(&rich[0], &calendar(), 7, Frame::ORIGIN, at, 1);
         let key = PlantKey::of(ChunkPos::new(0, 0), at).unwrap();
         let picked = |grams| {
             BTreeMap::from([(
@@ -1711,7 +1828,7 @@ pub(crate) mod tests {
         run_to(&mut world, &content, 25); // late summer
         let crop = content.crops.iter().find(|c| c.on == "bramble").unwrap();
         let frame = Frame::at(world.map().origin());
-        let full = bears(crop, world.seed(), frame, bramble.at, 1);
+        let full = bears(crop, world.calendar(), world.seed(), frame, bramble.at, 1);
         let before = world.plant_fruit_on(chunk, &plant);
         assert!(before > 0);
         world.pick(chunk, bramble.source, "blackberries", full / 2);

@@ -6527,8 +6527,10 @@ mod tests {
     /// carries, under the repository's needs (lot 3 B).
     fn mother_and_infant() -> (World, Content, BodyId, BodyId) {
         let rules = reserve_rules();
+        // Age-years of 50 days: an infant of half a year grows by a
+        // hundredth of a year a day.
         let mut w = World::empty(
-            Calendar::new(1, 7200).unwrap(),
+            Calendar::new(1, 7200).unwrap().with_cycle(50, 1).unwrap(),
             Map::filled(64, 8, Terrain::Grass),
         );
         let year = u64::from(w.calendar().days_per_age_year());
@@ -6844,10 +6846,7 @@ mod tests {
     #[test]
     fn summer_days_are_longer_than_winter_days() {
         // 1000 ticks a day, 8 days a year: two days a season.
-        let calendar = Calendar::new(10, 100)
-            .unwrap()
-            .with_days_per_cycle(8)
-            .unwrap();
+        let calendar = Calendar::new(10, 100).unwrap().with_cycle(8, 1).unwrap();
         let mut w = World::empty(calendar, Map::filled(4, 4, Terrain::Grass));
         let mut events = Vec::new();
         let mut nightfall = BTreeMap::new();
