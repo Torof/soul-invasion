@@ -25,7 +25,7 @@ use sim::content::{Content, Decisions, Fire, Trials};
 use sim::map::{Map, Pos, Terrain};
 use sim::memory::{Access, Record, RecordId};
 use sim::time::Calendar;
-use sim::{BodyId, Death, Event, Intention, Sex, World};
+use sim::{Blockage, BodyId, Death, Event, Intention, Sex, World};
 
 pub mod continents;
 pub mod json;
@@ -539,6 +539,11 @@ pub struct DecisionYear {
     /// a walk barred, heard at the fire, cleared by standing on the place,
     /// cleared by hearing from one who stood on it.
     pub barred: [u32; 4],
+    /// What barred the walks that made a mark: water, rock, no way seen.
+    pub barred_causes: [u32; 3],
+    /// Marks of seen, not reached held by the tribe's living at the
+    /// year's end, faded ones not counted.
+    pub barred_held: u32,
     /// Groups that moved on from a place found bare.
     pub moved_on: u32,
     /// The stretch of the groups at their place, summed, in ticks, and
@@ -2466,6 +2471,7 @@ fn wills_of(
         }
         counts.minds += 1;
         counts.bold += u32::from(u32::from(mind.will()) >= bold);
+        counts.barred_held += mind.marks_held(today);
         for (activity, who, credit) in mind.reputed(brains.memory(), rep, today) {
             let entry = believed.entry((activity, who)).or_default();
             entry.0 += 1;
@@ -2847,13 +2853,21 @@ fn barred_news(
     people: &BTreeMap<BodyId, Person>,
     tally: &mut FireTally,
 ) -> bool {
-    let (News::Barred { body, heard, .. } | News::Reached { body, heard, .. }) = news else {
-        return false;
+    let (body, slot, cause) = match news {
+        News::Barred { body, cause, .. } => (body, usize::from(cause.is_none()), *cause),
+        News::Reached { body, heard, .. } => (body, 2 + usize::from(*heard), None),
+        _ => return false,
     };
     let tribe = people.get(body).map_or(0, |p| p.tribe);
-    let reached = matches!(news, News::Reached { .. });
-    tally.decisions.entry((tribe, year)).or_default().barred
-        [usize::from(reached) * 2 + usize::from(*heard)] += 1;
+    let counts = tally.decisions.entry((tribe, year)).or_default();
+    counts.barred[slot] += 1;
+    if let Some(cause) = cause {
+        counts.barred_causes[match cause {
+            Blockage::Water => 0,
+            Blockage::Rock => 1,
+            Blockage::NoWay => 2,
+        }] += 1;
+    }
     true
 }
 

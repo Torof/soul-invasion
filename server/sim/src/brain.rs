@@ -88,7 +88,7 @@ use crate::r#gen::scatter::{self, purpose};
 use crate::lru::Lru;
 use crate::map::{CHUNK_SIZE, ChunkPos, FinePos, Map, Pos, Terrain};
 use crate::memory::{self, Access, Fared, Record, RecordId, Store};
-use crate::{Body, BodyId, Event, GATHER_REACH_MM, Intention, ItemId, World};
+use crate::{Blockage, Body, BodyId, Event, GATHER_REACH_MM, Intention, ItemId, World};
 
 /// Thirst from which a body goes to drink: half a game day without
 /// water (thirst rises 100 points a day), so it drinks before the night
@@ -275,9 +275,36 @@ struct Place {
     /// was made. The place is no longer chosen nor called while it holds;
     /// it clears only when the body stands on it, or hears at the fire
     /// from one who stood on it since.
-    barred: Option<u32>,
+    barred: Option<Mark>,
     /// The last day it stood on the place.
     stood: Option<u32>,
+}
+
+/// A mark of seen, not reached on a place (D53, amended 24 November 2026):
+/// the day it was made, and the day it fades by, a season later
+/// ([`mark_days`]): the body would try again then, from another side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Mark {
+    day: u32,
+    until: u32,
+}
+
+impl Mark {
+    /// Whether it still holds on `today`.
+    fn holds(self, today: u32) -> bool {
+        today < self.until
+    }
+}
+
+/// How long a mark of seen, not reached holds, in days (D53, amended 24
+/// November 2026): a season, a quarter of the calendar's year.
+fn mark_days(world: &World) -> u32 {
+    (world.calendar().days_per_year() / 4).max(1)
+}
+
+/// The day of the world as a `u32`.
+fn today_u32(world: &World) -> u32 {
+    u32::try_from(today(world)).unwrap_or(u32::MAX)
 }
 
 /// A place found bare where the record it held said food (D55, amended by
@@ -336,6 +363,11 @@ impl Place {
                 },
             ),
         }
+    }
+
+    /// Marked seen, not reached, the mark holding on `today`.
+    fn barred_on(&self, today: u32) -> bool {
+        self.barred.is_some_and(|m| m.holds(today))
     }
 
     /// Found bare of `kind` for the crop's `year`.
@@ -931,8 +963,8 @@ pub enum News {
         body: BodyId,
         /// The place.
         place: PlaceKey,
-        /// Heard at the fire, not its own walk.
-        heard: bool,
+        /// What barred its own walk; `None` when heard at the fire.
+        cause: Option<Blockage>,
         /// When.
         at: u64,
     },
@@ -1314,10 +1346,9 @@ pub struct Mind {
     /// kept while the body looks again for a way, is not one
     /// ([`Body::is_pausing`]).
     stopped: bool,
-    /// The tick its walk ended barred since it last thought: blocked
-    /// short of its target with no way seen, or refused at the start
-    /// (D32).
-    blocked_at: Option<u64>,
+    /// What barred its walk since it last thought: blocked short of its
+    /// target with no way seen, or refused at the start (D32).
+    blocked: Option<Blockage>,
     /// The places it marked seen, not reached, since its last fire, with
     /// the day: told at the next one like a denial.
     barred_new: Vec<(PlaceKey, u32)>,
@@ -1504,7 +1535,7 @@ impl Mind {
             past: (false, false, false, false, false),
             due: true,
             stopped: false,
-            blocked_at: None,
+            blocked: None,
             barred_new: Vec::new(),
             out_of_reach: BTreeMap::new(),
             unseen: Vec::new(),
@@ -1552,6 +1583,14 @@ impl Mind {
                 .expect("not empty");
             self.left_alone.remove(&soonest);
         }
+    }
+
+    /// The places it holds marked seen, not reached on `today` (D53,
+    /// amended 24 November 2026).
+    #[must_use]
+    pub fn marks_held(&self, today: u32) -> u32 {
+        u32::try_from(self.places.values().filter(|p| p.barred_on(today)).count())
+            .unwrap_or(u32::MAX)
     }
 
     /// The drinking places it knows.
@@ -2359,7 +2398,7 @@ impl Mind {
             .places
             .iter()
             .filter(|(_, place)| place.looked_day.is_some() && place.changed(fire, memory))
-            .filter(|(_, place)| !place.is_denied(fire) && place.barred.is_none())
+            .filter(|(_, place)| !place.is_denied(fire) && !place.barred_on(day))
             .filter(|(key, _)| !self.denials.iter().any(|d| d.place == **key))
             .map(|(&key, place)| {
                 (
@@ -2393,7 +2432,7 @@ impl Mind {
         }
         told.truncate(most);
         let mut denied = self.deny(fire, (day, me), memory);
-        denied.extend(self.tell_barred(fire, me, memory));
+        denied.extend(self.tell_barred(fire, (day, me), memory));
         (told, denied)
     }
 
@@ -2402,14 +2441,19 @@ impl Mind {
     /// first, `denied_per_night` at most, told apart from the slots like
     /// a denial; one beyond the cap is not told. A mark cleared since is
     /// not told.
-    fn tell_barred(&mut self, fire: &Fire, me: BodyId, memory: &mut Store) -> Vec<RecordId> {
+    fn tell_barred(
+        &mut self,
+        fire: &Fire,
+        (today, me): (u32, BodyId),
+        memory: &mut Store,
+    ) -> Vec<RecordId> {
         let mut marks = std::mem::take(&mut self.barred_new);
         marks.sort_by_key(|&(key, day)| (std::cmp::Reverse(day), key));
         marks.dedup_by_key(|m| m.0);
         let most = usize::try_from(fire.denied_per_night).unwrap_or(usize::MAX);
         marks
             .into_iter()
-            .filter(|(key, _)| self.places.get(key).is_some_and(|p| p.barred.is_some()))
+            .filter(|(key, _)| self.places.get(key).is_some_and(|p| p.barred_on(today)))
             .take(most)
             .map(|(place, day)| {
                 memory
@@ -3266,7 +3310,7 @@ impl Brains {
                 }
                 decisions.push((id, decision));
             }
-            (mind.stopped, mind.blocked_at) = (false, None);
+            (mind.stopped, mind.blocked) = (false, None);
         }
         self.owed += used.saturating_sub(allowance);
         self.work = used;
@@ -3706,7 +3750,7 @@ impl Brains {
             let learnt = self.fire_hear(world, rules, (camp, day, now), &present, &told, &fared);
             self.fire_accounts(rules, dawn, &present, (&learnt, &accounts));
             self.fire_deny(world, rules, (camp, day, now), &present, &denied);
-            self.fire_reach(&present, now);
+            self.fire_reach(&present, (dawn, now));
             // The night, in the hearth: the denials after the slots.
             let (night, _) = self.memory.intern(Record::Night {
                 camp,
@@ -3857,7 +3901,8 @@ impl Brains {
         let dawn = u32::try_from(today(world)).unwrap_or(u32::MAX);
         for &(record, teller) in denied {
             if let Some(&Record::Barred { place, day, .. }) = self.memory.get(record) {
-                self.hear_barred(present, (place, day, teller), now);
+                let until = day.saturating_add(mark_days(world));
+                self.hear_barred(present, (place, Mark { day, until }, teller), (dawn, now));
                 continue;
             }
             let Some(&Record::Place {
@@ -3911,8 +3956,8 @@ impl Brains {
     fn hear_barred(
         &mut self,
         present: &[BodyId],
-        (key, day, teller): (PlaceKey, u32, BodyId),
-        now: u64,
+        (key, mark, teller): (PlaceKey, Mark, BodyId),
+        (dawn, now): (u32, u64),
     ) {
         for &id in present {
             if id == teller {
@@ -3921,14 +3966,17 @@ impl Brains {
             let Some(place) = self.minds.get_mut(&id).and_then(|m| m.places.get_mut(&key)) else {
                 continue;
             };
-            if place.barred.is_some() || place.stood.is_some_and(|stood| stood >= day) {
+            if !mark.holds(dawn)
+                || place.barred_on(dawn)
+                || place.stood.is_some_and(|stood| stood >= mark.day)
+            {
                 continue;
             }
-            place.barred = Some(day);
+            place.barred = Some(mark);
             self.news.push(News::Barred {
                 body: id,
                 place: key,
-                heard: true,
+                cause: None,
                 at: now,
             });
         }
@@ -3937,14 +3985,14 @@ impl Brains {
     /// The marks of seen, not reached of those at the fire, answered
     /// (D53, amended 24 November 2026): one who stood on a marked place
     /// on the mark's day or after says so, and the mark clears.
-    fn fire_reach(&mut self, present: &[BodyId], now: u64) {
+    fn fire_reach(&mut self, present: &[BodyId], (dawn, now): (u32, u64)) {
         let mut cleared: Vec<(BodyId, PlaceKey)> = Vec::new();
         for &id in present {
             let Some(mind) = self.minds.get(&id) else {
                 continue;
             };
             for (&key, place) in &mind.places {
-                let Some(day) = place.barred else {
+                let Some(Mark { day, .. }) = place.barred.filter(|m| m.holds(dawn)) else {
                     continue;
                 };
                 let stood_since = present.iter().any(|&other| {
@@ -4916,8 +4964,9 @@ impl Brains {
                 ) {
                     mind.stopped = true;
                 }
-                if matches!(event, Event::BodyBlocked { .. } | Event::MoveRefused { .. }) {
-                    mind.blocked_at = Some(world.tick().0);
+                if let Event::BodyBlocked { reason, .. } | Event::MoveRefused { reason, .. } = event
+                {
+                    mind.blocked = Some(*reason);
                 }
                 if let Event::BodyAte { item, .. } | Event::ActRefused { item, .. } = event {
                     // Eaten whole, refused or gone: looked at again when seen.
@@ -5385,8 +5434,8 @@ fn decide(
         // reached, until one stands on it.
         mind.doing = Doing::Nothing;
         leave_for_today(world, mind, place);
-        if mind.blocked_at.is_some() {
-            bar(world, (id, place), mind, news);
+        if let Some(cause) = mind.blocked {
+            bar(world, (id, place, cause), mind, news);
         }
     }
     // What to gather, chosen once a thought: hunger and the day's
@@ -5668,7 +5717,7 @@ fn still_chosen(world: &World, rules: &Content, mind: &Mind, now: u64) -> bool {
 fn place_open(world: &World, food: &Food, mind: &Mind, key: PlaceKey, now: u64) -> bool {
     mind.places.get(&key).is_some_and(|place| {
         place.bearing(food).is_some()
-            && place.barred.is_none()
+            && !place.barred_on(today_u32(world))
             && place.not_before.is_none_or(|tick| now >= tick)
             && mind.out_of_reach.get(&key) != Some(&today(world))
     })
@@ -5818,7 +5867,10 @@ fn planned<'a>(
         }
     }
     let blocked = mind.out_of_reach.get(&key) == Some(&day)
-        || mind.places.get(&key).is_some_and(|p| p.barred.is_some());
+        || mind
+            .places
+            .get(&key)
+            .is_some_and(|p| p.barred_on(today_u32(world)));
     if blocked || !mind.places.contains_key(&key) {
         if let Some(g) = group.as_deref_mut() {
             if g.members[0] == id {
@@ -6447,7 +6499,7 @@ fn place_to_gather(
         .iter()
         .filter(|(key, place)| {
             not != Some(**key)
-                && place.barred.is_none()
+                && !place.barred_on(today_u32(world))
                 && mind.out_of_reach.get(key) != Some(&today)
                 && place.not_before.is_none_or(|tick| now >= tick)
         })
@@ -6497,7 +6549,7 @@ fn choices(
         .iter()
         .filter(|(key, place)| {
             mind.out_of_reach.get(key) != Some(&today)
-                && place.barred.is_none()
+                && !place.barred_on(today_u32(world))
                 && place.not_before.is_none_or(|tick| now >= tick)
         })
         .filter_map(|(key, place)| {
@@ -6793,28 +6845,38 @@ fn stopped_short(
     leave_for_today(world, mind, place);
     // Barred short of a plant of a place it does not stand on: the place
     // is seen, not reached.
-    if mind.blocked_at.is_some() && !at_place(body.pos(), place, side) {
-        bar(world, (id, place), mind, news);
+    if let Some(cause) = mind.blocked
+        && !at_place(body.pos(), place, side)
+    {
+        bar(world, (id, place, cause), mind, news);
     }
 }
 
 /// `id` marks the place `key` it holds seen, not reached (D53, amended
 /// 24 November 2026): its walk there was barred. Lasting, unlike the
 /// day's [`leave_for_today`]; told at its next fire like a denial.
-fn bar(world: &World, (id, key): (BodyId, PlaceKey), mind: &mut Mind, news: &mut Vec<News>) {
-    let day = u32::try_from(today(world)).unwrap_or(u32::MAX);
+fn bar(
+    world: &World,
+    (id, key, cause): (BodyId, PlaceKey, Blockage),
+    mind: &mut Mind,
+    news: &mut Vec<News>,
+) {
+    let day = today_u32(world);
     let Some(place) = mind.places.get_mut(&key) else {
         return;
     };
-    if place.barred.is_some() {
+    if place.barred_on(day) {
         return;
     }
-    place.barred = Some(day);
+    place.barred = Some(Mark {
+        day,
+        until: day.saturating_add(mark_days(world)),
+    });
     mind.barred_new.push((key, day));
     news.push(News::Barred {
         body: id,
         place: key,
-        heard: false,
+        cause: Some(cause),
         at: world.tick().0,
     });
 }
@@ -6832,8 +6894,10 @@ fn stand_on(
     let Some(place) = mind.places.get_mut(&key) else {
         return;
     };
-    place.stood = Some(u32::try_from(today(world)).unwrap_or(u32::MAX));
-    if place.barred.take().is_some() {
+    let today = today_u32(world);
+    place.stood = Some(today);
+    // A mark faded is dropped without a word.
+    if place.barred.take().is_some_and(|m| m.holds(today)) {
         mind.barred_new.retain(|(k, _)| *k != key);
         news.push(News::Reached {
             body: id,
@@ -8184,13 +8248,26 @@ mod tests {
         // Its walk to a plant there ended barred (an obstacle, no way seen).
         mind.doing = Doing::ToGather(aim);
         mind.stopped = true;
-        mind.blocked_at = Some(0);
+        mind.blocked = Some(Blockage::Water);
         let mut news = Vec::new();
         stopped_short(&world, &rules, id, mind, aim, &mut news);
         let day = u32::try_from(today(&world)).unwrap();
-        assert_eq!(mind.places[&key].barred, Some(day));
+        let season = mark_days(&world);
+        assert_eq!(
+            mind.places[&key].barred,
+            Some(Mark {
+                day,
+                until: day + season
+            })
+        );
         assert_eq!(mind.barred_new, vec![(key, day)], "to tell at its fire");
-        assert!(matches!(news[..], [News::Barred { heard: false, .. }]));
+        assert!(matches!(
+            news[..],
+            [News::Barred {
+                cause: Some(Blockage::Water),
+                ..
+            }]
+        ));
         // The next day it is still not chosen, nor called: the mark lasts.
         let next_day = world.tick().0 + world.calendar().ticks_per_day();
         let mut events = Vec::new();
@@ -8219,13 +8296,13 @@ mod tests {
         let mut barred = mind.clone();
         barred.doing = Doing::ToPlace(key);
         barred.stopped = true;
-        barred.blocked_at = Some(0);
+        barred.blocked = Some(Blockage::NoWay);
         decide_alone(&world, &rules, id, &mut barred);
         assert!(barred.places[&key].barred.is_some());
         let mut stopped = mind.clone();
         stopped.doing = Doing::ToPlace(key);
         stopped.stopped = true;
-        stopped.blocked_at = None;
+        stopped.blocked = None;
         decide_alone(&world, &rules, id, &mut stopped);
         assert_eq!(stopped.places[&key].barred, None);
         assert_eq!(stopped.out_of_reach.get(&key), Some(&today(&world)));
@@ -8244,7 +8321,11 @@ mod tests {
         let mind = brains.minds.get_mut(&id).unwrap();
         mind.places.clear();
         mind.places.insert(key, held.clone());
-        mind.places.get_mut(&key).unwrap().barred = Some(day);
+        let mark = Mark {
+            day,
+            until: day + mark_days(&world),
+        };
+        mind.places.get_mut(&key).unwrap().barred = Some(mark);
         mind.barred_new.push((key, day));
         // Its telling: the mark apart from the slots, the place not told as
         // food.
@@ -8289,13 +8370,13 @@ mod tests {
         }
         brains.news.clear();
         let present = [id, holds, stood, stranger];
-        brains.hear_barred(&present, (key, day, id), 0);
-        assert_eq!(brains.minds[&holds].places[&key].barred, Some(day));
+        brains.hear_barred(&present, (key, mark, id), (day, 0));
+        assert_eq!(brains.minds[&holds].places[&key].barred, Some(mark));
         assert_eq!(brains.minds[&stood].places[&key].barred, None);
         assert!(brains.minds[&stranger].places.is_empty());
         // At the fire, the one who stood there since answers: the marks
         // clear.
-        brains.fire_reach(&present, 0);
+        brains.fire_reach(&present, (day, 0));
         assert_eq!(brains.minds[&id].places[&key].barred, None);
         assert_eq!(brains.minds[&holds].places[&key].barred, None);
         let reached = brains
@@ -8304,6 +8385,55 @@ mod tests {
             .filter(|n| matches!(n, News::Reached { heard: true, .. }))
             .count();
         assert_eq!(reached, 2);
+    }
+
+    #[test]
+    fn a_mark_of_seen_not_reached_fades_after_a_season_and_is_heard_no_more() {
+        let (mut world, rules, id, mut brains) = by_a_ripe_bramble(0);
+        let food = food_now(&world, &rules);
+        let side = place_side(&rules);
+        let here = world.body(id).unwrap().pos();
+        let key = place_of(Pos::new(here.x + 40, here.y), side);
+        let mind = brains.minds.get_mut(&id).unwrap();
+        mind.places.clear();
+        mind.places
+            .insert(key, place_with(&food, food.numbers["bramble"], 2));
+        let mut news = Vec::new();
+        bar(&world, (id, key, Blockage::Rock), mind, &mut news);
+        let day = today_u32(&world);
+        let season = mark_days(&world);
+        assert_eq!(season, world.calendar().days_per_year() / 4);
+        assert_eq!(mind.marks_held(day), 1);
+        assert_eq!(mind.marks_held(day + season - 1), 1, "held the season");
+        assert_eq!(mind.marks_held(day + season), 0, "faded after it");
+        // A season on, the place is chosen again, as it would be tried
+        // from another side.
+        let later = world.tick().0 + u64::from(season) * world.calendar().ticks_per_day();
+        let mut events = Vec::new();
+        world.advance(later - world.tick().0, &rules, &mut events);
+        let mind = brains.minds.get_mut(&id).unwrap();
+        assert!(!mind.places[&key].barred_on(today_u32(&world)));
+        // A mark faded and told late is not taken up by a listener.
+        let mark = mind.places[&key].barred.unwrap();
+        let template = mind.clone();
+        let listener = BodyId(950);
+        let mut m = template;
+        m.places.get_mut(&key).unwrap().barred = None;
+        brains.minds.insert(listener, m);
+        brains.hear_barred(&[id, listener], (key, mark, id), (today_u32(&world), 0));
+        assert_eq!(brains.minds[&listener].places[&key].barred, None);
+        // Standing on a place whose mark faded says nothing.
+        let mind = brains.minds.get_mut(&id).unwrap();
+        let mut news = Vec::new();
+        stand_on(
+            &world,
+            &rules,
+            (id, Pos::new(here.x + 40, here.y)),
+            mind,
+            &mut news,
+        );
+        assert_eq!(news.len(), 0);
+        assert_eq!(mind.places[&key].barred, None);
     }
 
     #[test]

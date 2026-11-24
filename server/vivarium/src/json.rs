@@ -880,7 +880,14 @@ fn decisions_json(dec: &DecisionYear) -> Value {
         "said": by_act(dec.said),
         "calls_full": dec.calls_full,
         "calls_skipped": dec.skipped,
-        "barred": {"made": dec.barred[0], "heard": dec.barred[1], "cleared_stood": dec.barred[2], "cleared_heard": dec.barred[3]},
+        "barred": {
+            "made": dec.barred[0],
+            "heard": dec.barred[1],
+            "cleared_stood": dec.barred[2],
+            "cleared_heard": dec.barred[3],
+            "held": dec.barred_held,
+            "causes": {"water": dec.barred_causes[0], "rock": dec.barred_causes[1], "no_way": dec.barred_causes[2]},
+        },
         "absent": dec.absent,
         "groups": {
             "formed": dec.groups,

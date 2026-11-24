@@ -142,6 +142,8 @@ clock, the only field no seed decides.
 | `years[].decisions.groups.left` | Members who left their group on the way (lost sight of the caller, or the place out of reach) | count |
 | `years[].decisions.groups.ended.*` | How the groups ended: `home` (the caller called them home), `bare` (the place bare and nothing to go on to), `night` (night came first, or the caller died), `blocked` (the caller could not walk to the place: seen, not reached, D53 amended 24 November 2026; told as `bare` before) | count |
 | `years[].decisions.barred.*` | Marks of seen, not reached (D53, amended 24 November 2026): `made` (a walk barred), `heard` (at the fire), `cleared_stood` (the body stood on the place), `cleared_heard` (at a fire, from one who stood on it since) | count |
+| `years[].decisions.barred.held` | Marks of seen, not reached held by the tribe's living at the year's end, faded ones not counted (the last year's is the run's end) | count |
+| `years[].decisions.barred.causes.*` | What barred the walks that made a mark in the year: `water`, `rock` (the cliff or other ground no body enters), `no_way` (nothing impassable right ahead, yet no way in sight) | count |
 | `years[].decisions.groups.moved_on` | Groups that found their place bare and went on to the caller's next | count |
 | `years[].decisions.groups.stretch_ticks.mean` | The stretch of a group: from its caller's arrival at the place to its last member's; the mean over the groups where both arrived; `null` without one | ticks |
 | `years[].decisions.groups.stretch_ticks.max` | The longest | ticks |
