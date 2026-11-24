@@ -11,6 +11,12 @@
 // food:        None, or (energy_kj_per_kg, keeps_days): the energy of a
 //              kilogram on the one scale all content shares (D15), and
 //              the days before it spoils untreated.
+//              Nuts, wild grain, peas and seeds keep a cycle of the
+//              four seasons at least (64 days, calendar v1; the project
+//              lead, 24 November 2026): autumn's food lasts to spring.
+//              Hazelnuts and walnuts are weighed in their shells, as
+//              the crops give them: 11,500 kJ a kilogram, not the
+//              kernel's 26,000 (the plants' weight, 24 November 2026).
 // look:        provisional graphics, a colour.
 [
     (id: "flint", name: "Flint",
@@ -40,7 +46,7 @@
     (id: "hazelnuts", name: "Hazelnuts",
      description: "Hazelnuts in their shells. They keep for months.",
      kind: plant, mass_kg: 0.1, hardness: 1,
-     flammable: false, food: Some((energy_kj_per_kg: 26000, keeps_days: 40)), look: (colour: "#9a6b3a")),
+     flammable: false, food: Some((energy_kj_per_kg: 11500, keeps_days: 64)), look: (colour: "#9a6b3a")),
     (id: "blackberries", name: "Blackberries",
      description: "A handful of blackberries. They spoil in days.",
      kind: plant, mass_kg: 0.1, hardness: 0,
@@ -82,11 +88,11 @@
     (id: "peas", name: "Wild peas",
      description: "Small dry peas from their pods. They keep for months.",
      kind: plant, mass_kg: 0.1, hardness: 1,
-     flammable: false, food: Some((energy_kj_per_kg: 14000, keeps_days: 40)), look: (colour: "#9aaa5a")),
+     flammable: false, food: Some((energy_kj_per_kg: 14000, keeps_days: 64)), look: (colour: "#9aaa5a")),
     (id: "grain", name: "Wild grain",
      description: "Hard seeds of wild grasses, rubbed from their ears. They keep for a year, dry.",
      kind: plant, mass_kg: 0.1, hardness: 1,
-     flammable: false, food: Some((energy_kj_per_kg: 14000, keeps_days: 50)), look: (colour: "#caaa5a")),
+     flammable: false, food: Some((energy_kj_per_kg: 14000, keeps_days: 64)), look: (colour: "#caaa5a")),
     (id: "chanterelles", name: "Chanterelles",
      description: "Golden funnel-shaped mushrooms. They spoil in days.",
      kind: plant, mass_kg: 0.1, hardness: 0,
@@ -110,7 +116,7 @@
     (id: "flax_seeds", name: "Flax seeds",
      description: "Small oily seeds of wild flax. They keep for months.",
      kind: plant, mass_kg: 0.1, hardness: 1,
-     flammable: false, food: Some((energy_kj_per_kg: 22000, keeps_days: 40)), look: (colour: "#8a6a3a")),
+     flammable: false, food: Some((energy_kj_per_kg: 22000, keeps_days: 64)), look: (colour: "#8a6a3a")),
     (id: "cattail_root", name: "Cattail root",
      description: "Starchy rootstock dug from the mud of the bank. It keeps for weeks.",
      kind: plant, mass_kg: 0.1, hardness: 1,
@@ -233,9 +239,9 @@
     (id: "walnuts", name: "Walnuts",
      description: "Walnuts in their shells, rich and oily. They keep for months.",
      kind: plant, mass_kg: 0.1, hardness: 0,
-     flammable: false, food: Some((energy_kj_per_kg: 26000, keeps_days: 90)), look: (colour: "#8a6a4a")),
+     flammable: false, food: Some((energy_kj_per_kg: 11500, keeps_days: 90)), look: (colour: "#8a6a4a")),
     (id: "chestnuts", name: "Sweet chestnuts",
      description: "Shiny brown nuts from spiny husks, starchy and sweet. They keep for weeks.",
      kind: plant, mass_kg: 0.1, hardness: 0,
-     flammable: false, food: Some((energy_kj_per_kg: 8000, keeps_days: 30)), look: (colour: "#6a3a1a")),
+     flammable: false, food: Some((energy_kj_per_kg: 8000, keeps_days: 64)), look: (colour: "#6a3a1a")),
 ]

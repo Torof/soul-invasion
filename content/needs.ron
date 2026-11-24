@@ -155,7 +155,7 @@
         conceive_percent: 40,
         conceive_nights: 4,
         part_after_days: 12,
-        court_days: 6,
+        together_nights: 6,
         pregnancy_quarters: 3,
         pregnant_percent: 110,
         lose_when_weak: true,
@@ -213,7 +213,8 @@
     //                    (the same way, the same direction) adds half the
     //                    base weight of 100 to that candidate if it was
     //                    kept, takes it away if it was abandoned,
-    // lesson_days:    50 — whole for a year, half for the next, nothing
+    // lesson_days:    64 — whole for a cycle of the four seasons (calendar
+    //                    v1), half for the next, nothing
     //                    after; a weight, never a ban:
     // lesson_floor:   10 — a candidate keeps a tenth of its base weight at
     //                    the least (what failed for one may work for
@@ -274,7 +275,7 @@
         will_step_kept: 5,
         will_step_lost: 5,
         lesson_weight: 50,
-        lesson_days: 50,
+        lesson_days: 64,
         lesson_floor: 10,
         lesson_heed_by_will: [(0, 100), (100, 30)],
         horizon_seasons: [("stock_kj", 1), ("sleep_out", 1), ("home", 1)],
@@ -346,8 +347,8 @@
     //                   how many of its plants held food worth a step:
     //                   bare (none), some (1 to 3), full (4 and more), so
     //                   that one berry more does not make a record more.
-    // hearth_nights:  50 — a camp's hearth keeps its last 50 nights (a
-    //                   year): what the tribe knows is their union; a
+    // hearth_nights:  64 — a camp's hearth keeps its last 64 nights (a
+    //                   cycle of the four seasons, calendar v1): what the tribe knows is their union; a
     //                   record nobody holds any more is freed.
     // told_days_per_hour: 4 — how long a told state is worth believing
     //                   follows what the place bears (lot 5a, decided by
@@ -372,7 +373,7 @@
         heard_max: 24,
         heard_by_age: [(2, 6), (8, 12), (14, 20), (16, 24)],
         place_buckets: (1, 4),
-        hearth_nights: 50,
+        hearth_nights: 64,
         told_days_per_hour: 4,
         told_days_max: 20,
         denied_per_night: 6,
@@ -404,8 +405,8 @@
     // look_legs:            3 — one who goes looking walks three legs out
     //                          that way, each a sight farther, then
     //                          gathers as any day.
-    // habit_days:          50 — a mind keeps what it did its last fifty
-    //                          days (alone, called, joined, looked, nothing).
+    // habit_days:          64 — a mind keeps what it did its last 64
+    //                          days (a cycle, calendar v1) (alone, called, joined, looked, nothing).
     // habit_weight:        50 — each day it looked and found adds half the
     //                          chance of looking again, each day it looked
     //                          for nothing takes half away: a weight from
@@ -451,7 +452,7 @@
         follows_mother_years: 12,
         look_percent_by_will: [(0, 0), (100, 40)],
         look_legs: 3,
-        habit_days: 50,
+        habit_days: 64,
         habit_weight: 50,
         habit_floor: 10,
         home_when_full_percent: 50,
@@ -478,9 +479,9 @@
     //                  such that average luck gains what its failures
     //                  cost (all failures: it loses faith; luck: it
     //                  asserts itself);
-    // relax_permille: 83 — each season the will and the confidences close
-    //                  8.3 % of their gap to the innate will: half of it
-    //                  in two years;
+    // relax_permille: 500 — each season the will and the confidences close
+    //                  half of their gap to the innate will: half of it
+    //                  in two age-years (a season is two at calendar v1);
     // listened_milli: 500 — half a point when another joins its call at
     //                  the fire (its will and its confidence in
     //                  gathering) or copies a way it told (its will);
@@ -508,7 +509,7 @@
         bears_by_innate: [(0, 2), (100, 6)],
         failure_milli: 1000,
         kept_percent: 25,
-        relax_permille: 83,
+        relax_permille: 500,
         listened_milli: 500,
         activities: [("explore", 75), ("gather", 50), ("stay", 90)],
         bold_will: 40,

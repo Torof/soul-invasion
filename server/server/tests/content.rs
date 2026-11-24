@@ -39,7 +39,7 @@ fn energy_per_kilogram_gives_a_piece_what_it_gave_before() {
         ("berries", 250),
         ("meat", 1200),
         // The crops of lot 2 (D45): a handful of each.
-        ("hazelnuts", 2600),
+        ("hazelnuts", 1150),
         ("blackberries", 180),
         // Lot 2's whole list (nourriture.md, 16 November 2026).
         ("nettle_leaves", 170),
@@ -85,9 +85,11 @@ fn energy_per_kilogram_gives_a_piece_what_it_gave_before() {
         ("mulberries", 180),
         ("figs", 310),
         ("pears", 240),
-        ("walnuts", 2600),
+        ("walnuts", 1150),
         ("chestnuts", 800),
     ];
+    // Hazelnuts and walnuts weighed in their shells since 24 November
+    // 2026 (11,500 kJ a kilogram, not the kernel's).
     for (id, kj) in before {
         let material = content.material(id).expect(id);
         let food = material.food.expect("food");
