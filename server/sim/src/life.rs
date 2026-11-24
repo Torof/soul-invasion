@@ -144,6 +144,7 @@ impl World {
         }
         if tick_of_day == 0 {
             self.part(rules, events);
+            self.court(rules, events);
             self.lose_or_bear(rules, events);
         }
         self.couple_and_die(rules, tick_of_day, events);
@@ -277,7 +278,9 @@ impl World {
             if self.own_hour(id) != tick_of_day {
                 continue;
             }
-            self.couple(index, rules, events);
+            if life.court_days == 0 {
+                self.couple(index, rules, events);
+            }
             let age = self.age_milli(&self.bodies[index]);
             let ppm = life.death_ppm_per_day(age, days_per_year);
             if scatter::roll(seed, purpose::LIFE_DEATH, &[u64::from(id.0), day]) % 1_000_000 < ppm {
@@ -318,31 +321,92 @@ impl World {
         if seeker.spouse.is_some() || !life.mates(self.age_milli(seeker)) {
             return;
         }
-        let reach = i32::try_from(life.mate_within_tiles).unwrap_or(i32::MAX);
+        let Some(spouse) = self.nearest_mate(seeker, rules) else {
+            return;
+        };
+        self.wed(seeker.id, spouse, events);
+    }
+
+    /// Whether `other` may become `seeker`'s spouse: of the other sex, of
+    /// the mating years, without a spouse, not its kin.
+    fn may_wed(&self, seeker: &Body, other: &Body, rules: &Content) -> bool {
+        other.id != seeker.id
+            && other.sex != seeker.sex
+            && other.spouse.is_none()
+            && rules.needs.life.mates(self.age_milli(other))
+            && !Self::are_kin(seeker, other)
+    }
+
+    /// The nearest body `seeker` may wed within the content's reach, the
+    /// lower id between equals.
+    fn nearest_mate(&self, seeker: &Body, rules: &Content) -> Option<BodyId> {
+        let reach = i32::try_from(rules.needs.life.mate_within_tiles).unwrap_or(i32::MAX);
         let here = seeker.pos();
-        let found = self
-            .bodies
+        self.bodies
             .iter()
-            .filter(|other| {
-                other.id != seeker.id
-                    && other.sex != seeker.sex
-                    && other.spouse.is_none()
-                    && life.mates(self.age_milli(other))
-                    && !Self::are_kin(seeker, other)
-            })
+            .filter(|other| self.may_wed(seeker, other, rules))
             .map(|other| (tiles_apart(other.pos(), here), other.id))
             .filter(|&(d, _)| d <= reach)
             .min()
-            .map(|(_, id)| id);
-        let Some(spouse) = found else {
-            return;
-        };
-        let a = seeker.id;
-        self.bodies[index].spouse = Some(spouse);
-        if let Some(other) = self.index_of(spouse) {
-            self.bodies[other].spouse = Some(a);
+            .map(|(_, id)| id)
+    }
+
+    /// `a` and `b` become spouses, their courting over.
+    fn wed(&mut self, a: BodyId, b: BodyId, events: &mut Vec<Event>) {
+        for (me, other) in [(a, b), (b, a)] {
+            if let Some(index) = self.index_of(me) {
+                self.bodies[index].spouse = Some(other);
+                self.bodies[index].courting = None;
+                self.bodies[index].apart_days = 0;
+            }
         }
-        events.push(Event::Coupled { a, b: spouse });
+        events.push(Event::Coupled { a, b });
+    }
+
+    /// The courting at a day's start (D49, amended 24 November 2026),
+    /// when `court_days` is not 0: an unmarried body of the mating years
+    /// keeps the one it courts while that one may still wed it and slept
+    /// within `mate_within_tiles`, one dawn more; else it courts the
+    /// nearest it may wed there, from one dawn, or none. At `court_days`
+    /// dawns the two wed, the lower id first; one taken that dawn is no
+    /// longer free for another.
+    fn court(&mut self, rules: &Content, events: &mut Vec<Event>) {
+        let life = &rules.needs.life;
+        if life.court_days == 0 {
+            return;
+        }
+        let reach = i32::try_from(life.mate_within_tiles).unwrap_or(i32::MAX);
+        let mut courts = Vec::new();
+        for body in &self.bodies {
+            if body.spouse.is_some() || !life.mates(self.age_milli(body)) {
+                courts.push((body.id, None));
+                continue;
+            }
+            let kept = body.courting.and_then(|(id, days)| {
+                let other = self.body(id)?;
+                (self.may_wed(body, other, rules) && tiles_apart(other.pos(), body.pos()) <= reach)
+                    .then_some((id, days + 1))
+            });
+            let now = kept.or_else(|| self.nearest_mate(body, rules).map(|id| (id, 1)));
+            courts.push((body.id, now));
+        }
+        let mut weds = Vec::new();
+        for (id, now) in courts {
+            if let Some(index) = self.index_of(id) {
+                self.bodies[index].courting = now;
+            }
+            if let Some((other, days)) = now
+                && days >= life.court_days
+            {
+                weds.push((id, other));
+            }
+        }
+        for (a, b) in weds {
+            let free = |w: &World, id| w.body(id).is_some_and(|x| x.spouse.is_none());
+            if free(self, a) && free(self, b) {
+                self.wed(a, b, events);
+            }
+        }
     }
 }
 
@@ -696,9 +760,43 @@ mod tests {
     }
 
     #[test]
+    fn two_unwed_wed_after_sleeping_near_each_other_dawns_in_a_row() {
+        let mut rules = fed_rules();
+        rules.needs.life.court_days = 3;
+        rules.needs.life.death_by_age = vec![(0, 0)];
+        let mut w = world();
+        let her = person(&mut w, 10, 5, 25, Sex::Female);
+        let passer = person(&mut w, 12, 5, 27, Sex::Male);
+        let neighbour = person(&mut w, 30, 5, 27, Sex::Male);
+        let stand = |w: &mut World, id: BodyId, x: i32| {
+            set(w, id, |b| b.at = Pos::new(x, 5).centre());
+        };
+        let mut events = Vec::new();
+        // A passer-by near her one dawn, then gone: no spouse of a day.
+        w.advance(w_day(), &rules, &mut events);
+        assert_eq!(w.body(her).unwrap().courting, Some((passer, 1)));
+        stand(&mut w, passer, 110);
+        w.advance(w_day(), &rules, &mut events);
+        assert_eq!(
+            w.body(her).unwrap().courting,
+            Some((neighbour, 1)),
+            "the next nearest"
+        );
+        // He has slept near her since the first dawn, the passer-by back
+        // nearer or not: at the third they wed, by his three dawns.
+        stand(&mut w, passer, 11);
+        w.advance(w_day(), &rules, &mut events);
+        assert_eq!(w.body(her).unwrap().spouse, Some(neighbour));
+        assert_eq!(w.body(neighbour).unwrap().spouse, Some(her));
+        assert_eq!(w.body(her).unwrap().courting, None);
+        assert_eq!(w.body(passer).unwrap().spouse, None);
+    }
+
+    #[test]
     fn spouses_apart_too_many_dawns_in_a_row_part_and_may_take_another() {
         let mut rules = fed_rules();
         rules.needs.life.part_after_days = 3;
+        rules.needs.life.court_days = 0;
         rules.needs.life.death_by_age = vec![(0, 0)];
         let mut w = world();
         let (wife, husband) = couple_of(&mut w);
@@ -939,7 +1037,9 @@ mod tests {
 
     #[test]
     fn a_body_takes_the_nearest_unwed_body_of_the_other_sex_barring_its_kin() {
-        let rules = fed_rules();
+        let mut rules = fed_rules();
+        // At once, at the body's hour: the courting is the next test's.
+        rules.needs.life.court_days = 0;
         let mut w = world();
         let her = person(&mut w, 10, 5, 25, Sex::Female);
         let brother = person(&mut w, 11, 5, 23, Sex::Male);

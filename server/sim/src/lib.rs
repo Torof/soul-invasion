@@ -402,6 +402,10 @@ pub struct Body {
     /// amended 24 November 2026): at `part_after_days` the couple parts.
     #[serde(default, skip_serializing_if = "is_zero")]
     apart_days: u32,
+    /// The unmarried body it courts and the dawns in a row it slept near
+    /// it (D49, amended 24 November 2026): at `court_days` they wed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    courting: Option<(BodyId, u32)>,
     /// The child a woman carries, not yet born (D49).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pregnant: Option<Pregnancy>,
@@ -2256,6 +2260,7 @@ impl World {
             father: None,
             spouse: None,
             apart_days: 0,
+            courting: None,
             pregnant: None,
         });
         self.enter_chunk(id, pos.chunk());
