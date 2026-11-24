@@ -1212,6 +1212,42 @@ def cause_html(c):
     return f'<span class="cause" style="color:{CAUSE_COLOR.get(c, "#333")}">{h(cause_fr(c))}</span>'
 
 
+def hands_html(d):
+    """« Les mains » (D57) : le premier contenant, qui le porte d'âge en âge, les refaits, ce qui s'est
+    raconté au feu, et ce qu'il a changé (la nourriture rapportée, la distance à midi). Vide sans `hands`."""
+    hd = d.get("hands") or {}
+    if not hd.get("tribes"):
+        return ""
+    first = hd.get("first")
+    told = hd.get("told") or []
+    out = []
+    if first:
+        lis = hd.get("first_listener_made")
+        out.append(f"<p>Premier contenant : jour {fmt(first['day'])} (âge {first['age_year_x10'] / 10:.1f} an), par "
+                   f"{h(person_fr(first['body']))}, tribu {h(first['tribe'])}. {fmt(hd.get('made'))} faits en tout "
+                   f"({fmt(hd.get('remakes'))} refaits après une déchirure) par {fmt(hd.get('makers'))} personnes. "
+                   f"Raconté {fmt(len(told))} fois au feu, {fmt(hd.get('heard'))} l’ont entendu, "
+                   f"{fmt(hd.get('heard_never_tried'))} sans jamais essayer, {fmt(hd.get('heard_across_tribes'))} d’une autre tribu."
+                   + (f" Le premier auditeur à en faire un : {fmt(lis['nights_after_first'])} nuits après le premier." if lis else "")
+                   + "</p>")
+    else:
+        out.append("<p>Personne n’a fait de contenant.</p>")
+    head = [("Âge", True), ("Le portent", True), ("Faits", True), ("Refaits", True), ("Déchirés", True),
+            ("Essais (entendus)", True), ("Gardés", True), ("Rapporté avec / sans, kJ", True), ("Midi, cases", True), ("Déménagements", True)]
+    for t in hd["tribes"]:
+        rows = []
+        for y in t["years"]:
+            noon = y.get("noon_tiles_x10")
+            rows.append(f"<tr><td class=n>{y['age_year']}</td><td class=n>{y['carriers']} / {y['living']}</td><td class=n>{y['made']}</td>"
+                        f"<td class=n>{y['remade']}</td><td class=n>{y['torn']}</td><td class=n>{y['trials']} ({y['trials_heard']})</td>"
+                        f"<td class=n>{y['kept']}</td><td class=n>{fmt(y.get('home_with_kj')) if y.get('home_with_kj') is not None else '–'} / "
+                        f"{fmt(y.get('home_without_kj')) if y.get('home_without_kj') is not None else '–'}</td>"
+                        f"<td class=n>{'–' if noon is None else f'{noon / 10:.1f}'}</td><td class=n>{y['home_changes']}</td></tr>")
+        when = f"jour {fmt(t['first']['day'])}" if t.get("first") else "jamais"
+        out.append(table_html(f"Tribu {t['tribe']}", f"Son premier contenant : {when}. Par année d’âge.", head, rows, "Rien."))
+    return "".join(out).replace("<h2>", "<h4>").replace("</h2>", "</h4>")
+
+
 def table_html(title, caption, head, rows, empty, cls="clean"):
     """A titled table: title, one-line caption, full-word headers, zebra rows (the CSS), no borders."""
     out = [f"<h2>{h(title)}</h2><p class=caption>{h(caption)}</p>"]

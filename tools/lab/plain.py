@@ -638,6 +638,8 @@ def rest_html(d):
              "<h3>Les naissances, une par une</h3>" + reading.births_table_v2(d),
              "<h3>Tout le monde</h3>" + reading.people_table_v2(d),
              "<h3>Les techniques</h3>" + reading.techniques_html(d)]
+    if (d.get("hands") or {}).get("tribes"):
+        inner.append("<h3>Les mains</h3>" + reading.hands_html(d))
     if fire:
         inner.append("<h3>Ce que la tribu sait</h3>" + reading.knowledge_body(d))
         inner.append("<h3>Qui a osé quoi</h3>" + reading.dared_body(d))
