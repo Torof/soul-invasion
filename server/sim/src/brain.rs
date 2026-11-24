@@ -559,7 +559,7 @@ pub enum Act {
     /// Nothing said: no place worth a day, or it was not at the fire.
     Nothing,
     /// "I go to live at X, who comes?" (D56, amended 24 November 2026):
-    /// the home its own notebook graded best ([`lived_home`]), called at
+    /// the home its own notebook graded best (`lived_home`), called at
     /// the fire; it leads whoever joins, and goes even alone.
     Moves,
 }
@@ -727,7 +727,7 @@ pub struct Weighed {
     pub balance: i64,
     /// Its trust in the caller, 0 to 100.
     pub trust: u8,
-    /// How it fares at its own home by its notes ([`fare`]), if it slept
+    /// How it fares at its own home by its notes (`fare`), if it slept
     /// there.
     pub home_fare: Option<i64>,
     /// It joined.
@@ -1153,7 +1153,7 @@ pub enum News {
         /// How much better it fares there by its own notes, in per mille
         /// of a day of need.
         gain: i64,
-        /// How it fared at its old home by its notes ([`fare`]).
+        /// How it fared at its old home by its notes (`fare`).
         home_fare: Option<i64>,
         /// Each listener who weighed it, in the order they spoke.
         weighed: Vec<Weighed>,
