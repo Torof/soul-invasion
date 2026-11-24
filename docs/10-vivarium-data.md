@@ -43,7 +43,7 @@ clock, the only field no seed decides.
 | Key | Meaning | Unit or form |
 |---|---|---|
 | `meta.format` | The format marker, `1` since 22 November 2026 | integer |
-| `meta.settings.world` | The world; `"vivarium-wide"` the vivarium's zone twice as wide (24 November 2026) | `"vivarium"`, `"vivarium-wide"` or `"patch"` |
+| `meta.settings.world` | The world; `"vivarium-wide"` the vivarium's zone twice as wide, `"vivarium-huge"` the same zone 16,384 m a side (24 November 2026) | `"vivarium"`, `"vivarium-wide"`, `"vivarium-huge"` or `"patch"` |
 | `meta.settings.side` | A patch's side; `null` on the vivarium's world | tiles |
 | `meta.settings.people` | Grown people born at each camp | count |
 | `meta.settings.children` | Children born at each camp | count |
