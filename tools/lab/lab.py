@@ -49,6 +49,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:  # `-I` leaves the script's own folder out of the path
     sys.path.insert(0, HERE)
 import panels  # noqa: E402
+import plain  # noqa: E402
 import reading  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(HERE))
@@ -759,6 +760,7 @@ class Lab:
                 sig = None
             out.append({
                 "name": name, "dir": name, "question": plan.get("question", ""), "title": panels.series_title(name, plan),
+                "answer": plan.get("answer") if isinstance(plan.get("answer"), str) else "",
                 "purpose": panels.purpose_summary(plan.get("summary") or plan.get("question", "")),
                 "started": min(starts) if starts else None, "ended": max(ends) if ended and ends else None,
                 "version": version, "plan_name": lab_plan_name(plan, name), "signature": sig,
@@ -769,6 +771,8 @@ class Lab:
                 "synthese": f"/runs/{urllib.parse.quote(name)}/synthese.html" if synth else None,
                 "final": final,
                 "runs": [dict(r, seed=orig.get("seed"), started=orig.get("started"), ended=orig.get("ended"), trials=orig.get("trials", True), fire=orig.get("fire", True), base=orig.get("base"),
+                              note=orig.get("note") if isinstance(orig.get("note"), str) else None,
+                              ref=orig.get("ref") if isinstance(orig.get("ref"), str) else None,
                               page=f"/runs/{urllib.parse.quote(name)}/{urllib.parse.quote(r['page'])}" if r["page"] else None,
                               log=f"/runs/{urllib.parse.quote(name)}/{urllib.parse.quote(r['log'])}" if r["log"] else None,
                               data=os.path.exists(os.path.join(d, r["name"] + ".json")),
@@ -847,7 +851,7 @@ details.detail>summary::after{content:" — tout le reste : réglages, autres co
 ul.lines{font-size:.8em;columns:2;margin:.2em 0}.controls{background:var(--surface);border-radius:12px;padding:.7em 1.2em;margin:.6em 0 1em;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 form.inline{display:inline-block;margin:.2em 1em .2em 0}form.inline select{max-width:28em}
 .plans input[type=text]{width:16em}
-"""+reading.RUN_CSS+panels.PANELS_CSS+panels.HOME_CSS+panels.SECTIONS_CSS+panels.SERIE_CSS
+"""+reading.RUN_CSS+panels.PANELS_CSS+panels.HOME_CSS+panels.SECTIONS_CSS+plain.PLAIN_CSS
 
 
 def page(title, body, tab, port):
@@ -1036,7 +1040,7 @@ class Handler(BaseHTTPRequestHandler):
             if err or found[1] is not None:
                 self._page(not_found(self.port, "Série introuvable"), 404)
             else:
-                self._page(page(f"Série {found[0]['name']}", reading.serie_body(found[0], self.lab.series(), self.lab.store), "lire", self.port))
+                self._page(page(f"Série {found[0]['name']}", plain.serie_body(found[0], self.lab.store), "lire", self.port))
         elif url.path.startswith("/run/"):
             found, err = target(self.lab, urllib.parse.unquote(url.path[len("/run/"):]))
             if err or found[1] is None:
@@ -1044,8 +1048,8 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 s, r = found
                 year = (q.get("an") or [""])[0]
-                body = reading.run_body(s, r, self.lab.store.load(s["name"], r["name"]), store=self.lab.store,
-                                        year=int(year) if year.isdigit() else None)
+                body = plain.run_body(s, r, self.lab.store.load(s["name"], r["name"]), store=self.lab.store,
+                                      year=int(year) if year.isdigit() else None)
                 self._page(page(f"Run {r['name']}", body, "lire", self.port))
         elif url.path.startswith("/fiche/") or url.path.startswith("/chronique/") or url.path.startswith("/morceau/"):
             kind, _, spec = url.path[1:].partition("/")

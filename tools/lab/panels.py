@@ -434,30 +434,6 @@ def mean_fr(xs, digits=1):
     return fmt(round(m)) if abs(m - round(m)) < 0.05 else fmt(round(m, digits))
 
 
-VARIANT_COLORS = ("#c2571a", "#1f6f8b", "#6b4fa0", "#3a8f4a")   # orange, blue, violet, green: always named beside
-
-
-def variant_of(d):
-    """A run's variant, `(trials, fire)`, read from its settings."""
-    st = (d.get("meta") or {}).get("settings") or {}
-    return (st.get("trials", True), st.get("fire", True))
-
-
-def variant_labels(keys):
-    """Words for a series' variants: what differs between them, and only that."""
-    keys = sorted(set(keys), key=lambda k: (not k[0], not k[1]))
-    if len(keys) == 1:
-        return {keys[0]: "tous les runs"}
-    trials_vary = len({k[0] for k in keys}) > 1
-    fire_vary = len({k[1] for k in keys}) > 1
-    if trials_vary and fire_vary:
-        short = {(True, True): "essais et feu", (True, False): "essais seuls", (False, True): "feu seul", (False, False): "ni l’un ni l’autre"}
-        return {k: short[k] for k in keys}
-    if fire_vary:
-        return {k: "avec le feu" if k[1] else "sans le feu" for k in keys}
-    return {k: "avec essais" if k[0] else "sans essais (témoin)" for k in keys}
-
-
 def series_results(runs_dir, s):
     """A series' results: one sentence, two or three points and a line per run, from the runs' data."""
     briefs = {}
@@ -1521,34 +1497,12 @@ def notable_facts(d, limit=10):
     return chosen, len(facts)
 
 
-def chronicle_trends(d):
-    """Two or three big trends of the run, as points."""
-    ts = reading.tribes(d)
-    ly = reading.last_year(d) or 0
-    half = max(1, ly // 2)
-    pts = []
-    kept = [y.get("kept") or 0 for y in d.get("years", [])]
-    if any(kept):
-        a = sum(y.get("kept") or 0 for y in d.get("years", []) if (y.get("year") or 0) <= half)
-        b = sum(y.get("kept") or 0 for y in d.get("years", []) if (y.get("year") or 0) > half)
-        pts.append(P(f"{fmt(a)} → {fmt(b)}", f"essais gardés, ans 1 à {half} puis {half + 1} à {ly}"))
-    bw = sum(y.get("births") or 0 for y in d.get("years", []))
-    dw = sum(want_of(y) for y in d.get("years", []))
-    dt = sum(y.get("deaths_total") or 0 for y in d.get("years", []))
-    pts.append(P(f"{fmt(bw)} naissances", f"pour {fmt(dt)} morts, dont {fmt(dw)} de manque"))
-    for t in ts:
-        ys = reading.years_of(d, t)
-        if ys and ys[0].get("camp") and ys[-1].get("camp"):
-            moved = len(reading.camp_stays(d, t)) - 1
-            pts.append(P(f"{moved} déménagement{'s' if moved > 1 else ''}" if moved else "aucun déménagement", f"du camp de {t}"))
-    return pts[:4]
-
-
 def chronicle_lead(d):
+    """The chronicle's head: the notable facts."""
     facts, total = notable_facts(d)
     items = "".join(f'<li><span class=fd>{h(text.split(" : ", 1)[0])}</span>{reading.link_people(h(text.split(" : ", 1)[1] if " : " in text else text))}</li>'
                     for _day, _p, text in facts)
-    return (reading.points_html(chronicle_trends(d)) + '<h3>Les faits notables</h3>'
+    return ('<h3>Les faits notables</h3>'
             + (f'<ul class=facts>{items}</ul><p class=caption>{len(facts)} faits choisis sur {total} trouvés dans les données : '
                'les morts de manque par saison, les camps déplacés, la première fois que chaque façon est gardée, les records de naissances '
                'et de population.</p>' if items else '<p class=muted>rien de notable dans les données</p>'))
@@ -1560,7 +1514,7 @@ AGE_BANDS = [(0, 10), (10, 20), (20, 30), (30, 40), (40, 50), (50, 60), (60, 200
 
 
 def pyramid(d, at_day, title):
-    yd = reading.year_days(d)
+    yd = reading.age_year_days(d)
     counts = {b: {"man": 0, "woman": 0} for b in AGE_BANDS}
     for p in d.get("people", []):
         born = p.get("born_day") or 1
@@ -1615,15 +1569,19 @@ def families(d):
     return out
 
 
-def ages_families_html(d):
+def pyramids_html(d):
+    """The ages at the first day and at the last, side by side, in age-years (D09)."""
+    ay = reading.age_year_days(d)
+    return (f'<div class=pyrs>{pyramid(d, 1, "Au premier jour")}{pyramid(d, reading.run_days(d), "Au dernier jour")}</div>'
+            '<p class=caption>Par tranches de dix années d’âge (une année d’âge : ' + fmt(ay) + ' jours de jeu) ; hommes à gauche, femmes à droite.</p>')
+
+
+def families_fold(d, fams=None):
+    """The families, a card each, folded: the children by mother and father."""
     yd = reading.year_days(d)
-    last = reading.run_days(d)
-    fams = families(d)
-    pts = []
-    if fams:
-        big = fams[0]
-        pts.append(P(f"{len(fams)} familles", f"dont {sum(1 for x in fams if x['in_run'])} avec un enfant né dans le run"))
-        pts.append(P(f"{len(big['kids'])} enfants", f"la plus grande : personne {big['mother']} et personne {big['father']} ({big['tribe']})"))
+    fams = families(d) if fams is None else fams
+    if not fams:
+        return ""
     cards = []
     for x in fams:
         kids = "".join(f'<li>{reading.person_link(k.get("id"))} <span class=muted>'
@@ -1633,11 +1591,7 @@ def ages_families_html(d):
         cards.append(f'<details class=famc><summary>{reading.tribe_chip(x["tribe"])} {reading.person_link(x["mother"])} et {reading.person_link(x["father"])}'
                      f' <span class=muted>· {len(x["kids"])} enfant{"s" if len(x["kids"]) > 1 else ""}, {x["alive"]} vivant{"s" if x["alive"] > 1 else ""}</span></summary>'
                      f'<ul>{kids}</ul></details>')
-    return ('<section id=ages><h3>Les âges et les familles</h3>' + reading.points_html(pts)
-            + f'<div class=pyrs>{pyramid(d, 1, "Au départ")}{pyramid(d, last, "À la fin")}</div>'
-            + '<p class=caption>Par tranches de dix ans de jeu (une année : ' + fmt(yd) + ' jours) ; hommes à gauche, femmes à droite.</p>'
-            + (f'<details class=fold><summary>Les {len(fams)} familles, une carte chacune</summary><div class=fams>{"".join(cards)}</div></details>' if cards else "")
-            + '</section>')
+    return f'<details class=fold><summary>Les {len(fams)} familles, une carte chacune</summary><div class=fams>{"".join(cards)}</div></details>'
 
 
 SECTIONS_CSS = """
@@ -1663,61 +1617,4 @@ details.famc{background:var(--surface);border:1px solid var(--edge);border-radiu
 """
 
 
-# --- the series page: its head as on the home's card, its runs as cards ------------------------------
 
-def when_fr(t):
-    import time
-    if not t:
-        return "—"
-    days = ["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."]
-    months = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."]
-    lt = time.localtime(t)
-    return f"{days[lt.tm_wday]} {lt.tm_mday} {months[lt.tm_mon - 1]}, {lt.tm_hour:02d}:{lt.tm_min:02d}"
-
-
-def run_words(r):
-    return " · ".join(x for x in (r.get("base"), "avec essais" if r.get("trials", True) else "sans essais",
-                                  "avec le feu" if r.get("fire", True) else "sans le feu", f"graine {r.get('seed', '?')}") if x)
-
-
-def serie_head(s, runs_dir):
-    """The series page's head: its title, its purpose, its times, its version, its verdict and points."""
-    v = s.get("version") or {}
-    res = series_results(runs_dir, s)
-    end = when_fr(s.get("ended")) if s.get("ended") else ("en cours" if s["state"].startswith("en cours") else "—")
-    purpose = s.get("purpose") or ""
-    return (f'<h1>{h(s.get("title") or s["name"])}</h1>'
-            + (f'<p class=purpose6>{h(purpose)}</p>' if purpose else '<p class="purpose6 none">but non écrit</p>')
-            + f'<p class=meta6>lancée <b>{h(when_fr(s.get("started")))}</b> · finie <b>{h(end)}</b> · durée <b>{h(reading.secs(s.get("elapsed")))}</b>'
-            f' · <b>{len(s["runs"])}</b> runs · {h(s["state"])} · version <code>{h(v.get("commit") or "inconnue")}</code>'
-            + (f' ({h(v["branch"])})' if v.get("branch") and v.get("branch") != "HEAD" else "")
-            + (f' · <a href="{s["synthese"]}">synthèse</a>' if s.get("synthese") else "") + "</p>"
-            + (f'<details class=fold><summary>Le but en entier, ce qui a changé</summary><p>{h(s.get("question") or "")}</p>'
-               f'<p><b>Ce qui a changé :</b> {h(v.get("change") or "non écrit")}</p><p class=muted>{h(s["name"])}</p></details>')
-            + (f'<div class=res6><p class=vd>{h(res["verdict"])}</p><ul>' + "".join(f"<li>{p}</li>" for p in res["points"]) + "</ul></div>"
-               if res["verdict"] else ""), res)
-
-
-def run_cards(s, res):
-    out = []
-    for r in s["runs"]:
-        t = (f"{when_fr(r.get('started'))} → {when_fr(r.get('ended')).split(', ')[-1]} ({reading.secs(r.get('elapsed'))})"
-             if r.get("started") and r.get("ended") else ("pas encore lancé" if not r.get("started") else f"depuis {when_fr(r.get('started'))}"))
-        line = res["runs"].get(r["name"]) or (f"année {fmt(r.get('year'))} · {fmt(r.get('alive'))} vivants · {fmt(r.get('dead'))} morts (d’après le log)"
-                                              if r.get("alive") is not None else "pas de données")
-        state = "" if r["state"] == "fini" else f'<span class="mk">{h(r["state"])}</span>'
-        links = (f'<a href="{r["page"]}">page du vivarium</a> ' if r.get("page") else "") + (f'<a href="{r["log"]}">log</a>' if r.get("log") else "")
-        out.append(f'<li class=rc6><a class=rw href="{reading.run_url(s["name"], r["name"])}">{h(run_words(r))}</a>{state}'
-                   f'<span class=rt>{h(t)}</span><span class=rr>{h(line)}</span><span class=rl>{links}</span></li>')
-    return f'<h2>Les runs</h2><ul class=runs6>{"".join(out)}</ul>'
-
-
-SERIE_CSS = """
-.purpose6{font-size:1.1em;line-height:1.55;max-width:62ch;margin:.2em 0 .5em;color:var(--ink)}.purpose6.none{color:var(--muted);font-style:italic}
-.meta6{color:var(--ink2);font-size:.9em}.meta6 code{background:var(--chip);padding:0 .35em;border-radius:4px}
-.res6{border-left:3px solid var(--ink2);padding:.2em 0 .2em .9em;margin:1em 0}.res6 .vd{font-weight:650;font-size:1.1em;margin:0 0 .3em;max-width:62ch}
-.res6 ul{margin:0;padding-left:1.1em;line-height:1.5}
-ul.runs6{list-style:none;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,24em),1fr));gap:.7em}
-li.rc6{background:var(--surface);border:1px solid var(--edge);border-radius:10px;padding:.6em .8em;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:.15em}
-li.rc6 .rw{font-weight:650}li.rc6 .rt,li.rc6 .rl{font-size:.85em;color:var(--muted)}li.rc6 .rr{font-size:.92em}li.rc6 .mk{font-size:.82em;color:var(--want);font-weight:600}
-"""
