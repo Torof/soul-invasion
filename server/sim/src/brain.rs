@@ -12417,13 +12417,12 @@ mod tests {
     }
 
     #[test]
-    fn the_temperament_comes_back_half_its_gap_in_two_years() {
+    fn the_temperament_comes_back_half_its_gap_in_two_age_years() {
         let (mut mind, temper) = tempered(10);
         mind.will = 90;
         mind.confidence[1].milli = 90_000;
-        for _ in 0..8 {
-            mind.relax(&temper);
-        }
+        // A season, two age-years at calendar v1.
+        mind.relax(&temper);
         assert!((48..=52).contains(&mind.will), "{}", mind.will);
         assert!((48..=52).contains(&mind.confidence[1].points()));
         assert_eq!(mind.confidence[0].points(), 10, "at its innate already");

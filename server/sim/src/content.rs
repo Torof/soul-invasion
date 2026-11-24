@@ -906,7 +906,7 @@ impl Temperance {
             bears_by_innate: vec![(0, 2), (100, 6)],
             failure_milli: 1000,
             kept_percent: 25,
-            relax_permille: 83,
+            relax_permille: 500,
             listened_milli: 500,
             activities: vec![
                 ("explore".to_owned(), 75),

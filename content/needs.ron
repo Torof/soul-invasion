@@ -479,9 +479,9 @@
     //                  such that average luck gains what its failures
     //                  cost (all failures: it loses faith; luck: it
     //                  asserts itself);
-    // relax_permille: 83 — each season the will and the confidences close
-    //                  8.3 % of their gap to the innate will: half of it
-    //                  in two years;
+    // relax_permille: 500 — each season the will and the confidences close
+    //                  half of their gap to the innate will: half of it
+    //                  in two age-years (a season is two at calendar v1);
     // listened_milli: 500 — half a point when another joins its call at
     //                  the fire (its will and its confidence in
     //                  gathering) or copies a way it told (its will);
@@ -509,7 +509,7 @@
         bears_by_innate: [(0, 2), (100, 6)],
         failure_milli: 1000,
         kept_percent: 25,
-        relax_permille: 83,
+        relax_permille: 500,
         listened_milli: 500,
         activities: [("explore", 75), ("gather", 50), ("stay", 90)],
         bold_will: 40,
