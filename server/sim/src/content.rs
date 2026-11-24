@@ -415,6 +415,12 @@ pub struct Company {
     /// How many others are enough for the most sociable (100); between
     /// the two, in a straight line.
     pub enough_sociable: u32,
+    /// How many companions a spouse counts as when a body weighs a move
+    /// called at the fire (D56, the project lead, 24 November 2026): its
+    /// absence is felt more, so a spouse who goes pulls the other without
+    /// forcing it. Absent: 1, a spouse like anyone.
+    #[serde(default = "one")]
+    pub spouse_counts: u32,
 }
 
 impl Default for Company {
@@ -424,6 +430,7 @@ impl Default for Company {
             alone_permille: 0,
             enough_loner: 2,
             enough_sociable: 6,
+            spouse_counts: 1,
         }
     }
 }
@@ -436,6 +443,7 @@ impl Company {
             alone_permille: 1000,
             enough_loner: 2,
             enough_sociable: 6,
+            spouse_counts: 3,
         }
     }
 
@@ -450,6 +458,14 @@ impl Company {
     /// need alone, nothing once enough are there, in proportion between.
     #[must_use]
     pub fn lacking_permille(&self, sociable: u8, others: u32) -> u64 {
+        self.lacking_hundredths(sociable, u64::from(others) * 100)
+    }
+
+    /// [`Company::lacking_permille`] with the others counted in
+    /// hundredths of a body: a spouse weighs several
+    /// ([`Company::spouse_counts`]).
+    #[must_use]
+    pub fn lacking_hundredths(&self, sociable: u8, others: u64) -> u64 {
         let s = u64::from(sociable.min(100));
         let need = u64::from(self.alone_permille) * s / 100;
         // Enough, in hundredths of a body.
@@ -465,7 +481,7 @@ impl Company {
         if enough == 0 {
             return 0;
         }
-        let short = enough.saturating_sub(u64::from(others) * 100);
+        let short = enough.saturating_sub(others);
         need * short / enough
     }
 
@@ -475,8 +491,10 @@ impl Company {
                 "company: alone_permille 1000 at most (a day of need); enough_loner at least 1",
             ));
         }
-        if self.enough_loner > 1000 || self.enough_sociable > 1000 {
-            return Err(ContentError::Needs("company: enough 1000 at most"));
+        if self.enough_loner > 1000 || self.enough_sociable > 1000 || self.spouse_counts > 1000 {
+            return Err(ContentError::Needs(
+                "company: enough and spouse_counts 1000 at most",
+            ));
         }
         Ok(())
     }
@@ -726,7 +744,7 @@ impl Default for Temperance {
 
 /// The activities a confidence may be held for (D56), as the content
 /// names them.
-pub const ACTIVITIES: [&str; 3] = ["explore", "gather", "stay"];
+pub const ACTIVITIES: [&str; 4] = ["explore", "gather", "stay", "live"];
 
 impl Temperance {
     /// The placeholders of `content/needs.ron` (D30).
@@ -901,7 +919,7 @@ impl Reputation {
     #[must_use]
     pub fn placeholders() -> Self {
         Self {
-            activities: vec!["explore".to_owned(), "gather".to_owned()],
+            activities: vec!["explore".to_owned(), "gather".to_owned(), "live".to_owned()],
             seen_gain: 20,
             heard_gain: 10,
             wear: 15,
@@ -936,7 +954,7 @@ impl Reputation {
                 .any(|&g| g > 100)
         {
             return Err(ContentError::Needs(
-                "reputation: activities among explore, gather, stay; gains and wear 100 at most",
+                "reputation: activities among explore, gather, stay, live; gains and wear 100 at most",
             ));
         }
         Ok(())
@@ -1193,6 +1211,12 @@ pub struct Trials {
     /// place of `thought.place_tiles`. 64 when absent.
     #[serde(default = "grove_64")]
     pub grove_tiles: u32,
+    /// What a day of light is worth to a body that gathered nothing
+    /// lately, in per mille of a day of its need (D53, amended 24 November
+    /// 2026): the time it walks is valued at what it gathers in a day, and
+    /// this when it has nothing of its own to go by. A day when absent.
+    #[serde(default = "permille_1000")]
+    pub idle_day_permille: u32,
     /// At night at the camp, a body copies only from a camp-mate within
     /// this many tiles.
     pub imitate_tiles: u32,
@@ -1242,10 +1266,17 @@ pub struct Trials {
     /// heard, so that more trials no longer mean more blind draws and a
     /// longer year lengthens them with it. Ways: those of [`TRIAL_WAYS`];
     /// one not named is judged on `trial_days`, and never on fewer. A
-    /// home tried alone is not named: a short stay, then back if not kept
-    /// (the season's horizon is for the acts of a group).
+    /// home is judged by its grade over its horizon (D50, amended 24
+    /// November 2026).
     #[serde(default)]
     pub horizon_seasons: Vec<(String, u32)>,
+    /// The seasons over which a move must repay its cost (D56, amended 24
+    /// November 2026, the project lead: "il faut vraiment que le
+    /// déménagement apporte quelque chose"): a move is worth it only if
+    /// its gain a day passes the margin plus the walk there and a day of
+    /// settling, spread over these seasons. One when absent.
+    #[serde(default = "one")]
+    pub move_repay_seasons: u32,
 }
 
 /// The ways a trial may move, as the content names them (D50).
@@ -1262,6 +1293,7 @@ impl Default for Trials {
             home_nights_by_will: one_night(),
             lived_keep_permille: 1000,
             grove_tiles: 64,
+            idle_day_permille: 1000,
             imitate_tiles: 0,
             imitate_percent: 0,
             imitate_loss_percent: 0,
@@ -1273,6 +1305,7 @@ impl Default for Trials {
             lesson_floor: 100,
             lesson_heed_by_will: Vec::new(),
             horizon_seasons: Vec::new(),
+            move_repay_seasons: 1,
         }
     }
 }
@@ -1396,6 +1429,12 @@ impl Trials {
             .map_or(self.trial_days, |&(_, seasons)| {
                 season_days(seasons, days_per_year).max(self.trial_days)
             })
+    }
+
+    /// The days over which a move must repay its cost, at least one.
+    #[must_use]
+    pub fn move_repay_days(&self, days_per_year: u32) -> u32 {
+        season_days(self.move_repay_seasons, days_per_year).max(1)
     }
 
     /// The nights a body of `will` must have slept at a place before a

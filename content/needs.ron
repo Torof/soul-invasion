@@ -217,10 +217,13 @@
     //                    calendar (a quarter of the year in whole days):
     //                    a stock kept (stock_kj) and sleeping out or at
     //                    the camp (sleep_out) over one season, twelve days
-    //                    of the vivarium's fifty-day year. A home tried
-    //                    alone is not named: a short stay on trial_days,
-    //                    then back if not kept; the season is for the acts
-    //                    of a group (not yet in the game).
+    //                    of the vivarium's fifty-day year; a home (24
+    //                    November 2026) over one season too, judged by its
+    //                    grade there against the old home's.
+    // move_repay_seasons: 1 — a move must repay the walk there and a day of
+    //                    settling within a season (24 November 2026, the
+    //                    lead: "il faut vraiment que le déménagement
+    //                    apporte quelque chose").
     // home_nights_by_will: a trial of the home sets it at the place or
     //                    grove of its notebook where its own body would
     //                    fare best (what it drank and gathered there, each
@@ -240,6 +243,11 @@
     //                    scattered in one grove adds up as the water drunk
     //                    at again and again; drinking and sleeping keep the
     //                    16 m places.
+    // idle_day_permille: 1000 — what a day of light is worth to a body that
+    //                    gathered nothing lately (24 November 2026: an hour
+    //                    walking is an hour not gathering; the walk's time
+    //                    is valued at what the body itself gathers in a
+    //                    day, this when it has nothing to go by).
     trials: (
         trial_after_days: 3,
         trial_days: 5,
@@ -248,6 +256,7 @@
         home_nights_by_will: [(0, 3), (70, 1)],
         lived_keep_permille: 950,
         grove_tiles: 64,
+        idle_day_permille: 1000,
         imitate_tiles: 12,
         imitate_percent: 20,
         imitate_loss_percent: 25,
@@ -258,7 +267,8 @@
         lesson_days: 50,
         lesson_floor: 10,
         lesson_heed_by_will: [(0, 100), (100, 30)],
-        horizon_seasons: [("stock_kj", 1), ("sleep_out", 1)],
+        horizon_seasons: [("stock_kj", 1), ("sleep_out", 1), ("home", 1)],
+        move_repay_seasons: 1,
     ),
     // The rules of thought that keep a mind light (D53, decided by the
     // project lead on 22 November 2026): perceptions and gestures, never
@@ -511,13 +521,18 @@
     // join_percent: 100 — one joins first the call of whom it believes
     //             best at gathering, when that call is among its choices,
     //             with a chance of its credit in per cent;
+    // "live" (24 November 2026): who is believed to know where to live.
+    //             One who joined a move called at the fire (D56) gains
+    //             seen_gain in its caller when its own home trial there is
+    //             kept, and loses wear when it is given up; its trust in
+    //             the next call of that caller is that credit.
     // questions_per_night: 4 — one with no place to go asks whom it
     //             believes best "where is food?" and gets that one's best
     //             place: a telling to one, apart from the accounts' slots,
     //             four a fire at most. Its success, when it follows the
     //             answer, counts as a success of the one who answered.
     reputation: (
-        activities: ["explore", "gather"],
+        activities: ["explore", "gather", "live"],
         seen_gain: 20,
         heard_gain: 10,
         wear: 15,
@@ -542,10 +557,19 @@
     // enough_sociable:    6 — six for the most sociable (100), in a
     //                         straight line between; with fewer, what is
     //                         lacking falls in proportion, and more add
-    //                         nothing.
+    //                         nothing;
+    // spouse_counts:      3 — when a move is called at the fire (D56; the
+    //                         project lead, 24 November 2026: the couples
+    //                         stay as they are), a spouse counts as three
+    //                         companions in each listener's company,
+    //                         here if it stays, there if it said it goes:
+    //                         its absence is felt more, it pulls without
+    //                         forcing. Only in the move's balance; the
+    //                         night's company still counts anyone alike.
     company: (
         alone_permille: 1000,
         enough_loner: 2,
         enough_sociable: 6,
+        spouse_counts: 3,
     ),
 )

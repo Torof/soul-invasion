@@ -558,16 +558,21 @@ pub enum Act {
     Looked,
     /// Nothing said: no place worth a day, or it was not at the fire.
     Nothing,
+    /// "I go to live at X, who comes?" (D56, amended 24 November 2026):
+    /// the home its own notebook graded best (`lived_home`), called at
+    /// the fire; it leads whoever joins, and goes even alone.
+    Moves,
 }
 
 impl Act {
     /// Every act, in a fixed order.
-    pub const ALL: [Act; 5] = [
+    pub const ALL: [Act; 6] = [
         Act::Alone,
         Act::Called,
         Act::Joined,
         Act::Looked,
         Act::Nothing,
+        Act::Moves,
     ];
 
     /// Its code in a habit's byte.
@@ -578,6 +583,7 @@ impl Act {
             Act::Joined => 2,
             Act::Looked => 3,
             Act::Nothing => 4,
+            Act::Moves => 5,
         }
     }
 }
@@ -616,6 +622,116 @@ struct Plan {
     /// believed that one best at (D56, PR 1 ter): it goes where the
     /// answer said.
     asked: Option<(BodyId, u8)>,
+    /// Its day is a move to its new home (D56, amended 24 November
+    /// 2026): it called it, or joined the call, or is the child of one
+    /// who did. No gathering is judged on it.
+    moving: bool,
+}
+
+/// What each present said at the fire (D56): its act, the place, its
+/// caller, the way it looks.
+type Said = BTreeMap<BodyId, (Act, Option<PlaceKey>, Option<BodyId>, u8)>;
+
+/// A goal held over several days (D56, amended 24 November 2026): at
+/// most one a mind. Each morning it comes before the day's decision;
+/// drinking, eating and sleeping interrupt it, then it goes on. The body
+/// says stop ([`GoalEnd`]); nothing counts the days.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeldGoal {
+    /// What it is for.
+    pub to: GoalTo,
+    /// The day it was set.
+    pub day: u32,
+    /// What it carried then, in kilojoules: half of it gone, it stops.
+    pub load_kj: u64,
+}
+
+/// What a held goal is for (D56, amended 24 November 2026). Only the
+/// move needs one for now; telling at a camp and testing a place come
+/// with the visit and the testers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoalTo {
+    /// Walking to its new home, farther than a day's walk.
+    Home(Pos),
+}
+
+/// How a held goal ended (D56, amended 24 November 2026).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GoalEnd {
+    /// It got there.
+    Arrived,
+    /// Half the load it set off with is gone.
+    Load,
+    /// Hungry, with nothing to eat on it.
+    Hunger,
+    /// Thirsty, with no water it knows within a day's walk.
+    Thirst,
+    /// What it walked to is no longer its aim: its home went back (the
+    /// trial judged given up), or moved again.
+    Dropped,
+}
+
+/// A home trial drawn at nightfall from its own notebook (D56, amended
+/// 24 November 2026), held until the dawn's fire: there it calls the
+/// move, or, at no fire, it goes alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Calling {
+    /// The new home.
+    to: Pos,
+    /// How much better it would fare there than at its home, by its own
+    /// notes, in per mille of a day of need ([`fare`]).
+    gain: i64,
+    /// The trial, started once it goes.
+    trial: Trial,
+}
+
+/// A move heard at the fire while its spouse was away (D56, amended 24
+/// November 2026; the project lead: "il reporte la décision, en attendant
+/// la présence de son conjoint"): kept until a fire where the spouse is
+/// present, there weighed by both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct KeptCall {
+    /// The new home called.
+    to: Pos,
+    /// The gain the caller told.
+    gain: i64,
+    /// Who called.
+    caller: BodyId,
+    /// Those who said they go then, in hundredths of a body.
+    there: u64,
+}
+
+/// Why a present did not weigh a move called at the fire (D56, amended
+/// 24 November 2026), a measure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unheard {
+    /// It spoke before the caller: its day was said.
+    Before,
+    /// Its spouse was not at the fire: it keeps the call until it is.
+    SpouseAway,
+    /// Under a trial: the world is judging it.
+    Trial,
+    /// Under sixteen: its home is its mother's.
+    Child,
+}
+
+/// One listener weighing a move called at the fire (D56, amended 24
+/// November 2026), as the brain tells it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Weighed {
+    /// Who.
+    pub body: BodyId,
+    /// The gain told times its trust in the caller, plus the company it
+    /// would lack here less the company it would lack there, in per mille
+    /// of a day of need.
+    pub balance: i64,
+    /// Its trust in the caller, 0 to 100.
+    pub trust: u8,
+    /// How it fares at its own home by its notes (`fare`), if it slept
+    /// there.
+    pub home_fare: Option<i64>,
+    /// It joined.
+    pub joined: bool,
 }
 
 /// A group of the day (D56): a caller and those who joined it, walking to
@@ -658,6 +774,9 @@ struct Group {
     /// The members it waited for on the way (D56, PR 1 ter: a fact of
     /// its review).
     waited_for: BTreeSet<BodyId>,
+    /// The new home it walks to, when it is a move (D56, amended 24
+    /// November 2026): no gathering, it ends there.
+    moves: Option<Pos>,
 }
 
 /// A trial under way (D50): the way moved, the ways before the step, and
@@ -676,6 +795,9 @@ pub struct Trial {
     /// The days it heard at the fire of camp-mates who changed nothing
     /// (D50, amended): the judge compares against their mean.
     pub heard: HeardDays,
+    /// The caller whose move it joined (D56, amended 24 November 2026):
+    /// its credit in it at living moves by the judgement.
+    pub caller: Option<BodyId>,
 }
 
 /// The days a body in trial heard at the fire from camp-mates who changed
@@ -735,6 +857,9 @@ struct Judged {
     kept: bool,
     before: Lately,
     during: Lately,
+    /// A home's grades, the old home's and the new one's (D50, amended 24
+    /// November 2026).
+    grades: Option<(i64, i64)>,
 }
 
 /// The direction of a step of `way` from `before` to `after`: wider or
@@ -803,6 +928,33 @@ enum Sense {
 /// How many [`Sense`]s.
 const SENSES: usize = 4;
 
+/// How a sense got by day reaches a place one lives at (D53, amended 24
+/// November 2026).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// Every place that gave it adds up, a day at most: food, from the
+    /// groves around.
+    All,
+    /// The best place that gave it: water, drunk at one place.
+    Best,
+}
+
+impl Sense {
+    /// Every sense, in its order.
+    const ALL: [Sense; SENSES] = [Sense::Food, Sense::Water, Sense::Warmth, Sense::Company];
+
+    /// How what it gives by day reaches a place one lives at; `None`: it is
+    /// felt at night where one sleeps (the cold, the company). A new sense
+    /// adds its line here.
+    fn reach(self) -> Option<Reach> {
+        match self {
+            Sense::Food => Some(Reach::All),
+            Sense::Water => Some(Reach::Best),
+            Sense::Warmth | Sense::Company => None,
+        }
+    }
+}
+
 /// A place in a body's notebook (D50 and D53, amended 23 and 24 November
 /// 2026), as its own body lived it, summed and faded day by day, a night
 /// or a day counting a thousand: a place it slept or drank at, of
@@ -845,6 +997,36 @@ impl Lived {
     /// A night's share of `sum`.
     fn per_night(&self, sum: u64) -> u64 {
         sum / self.nights.max(1)
+    }
+}
+
+/// What walking costs a body, as it felt it at its last nightfall (D53,
+/// amended 24 November 2026): its energy, and its time, "an hour walking
+/// is an hour not gathering".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Walk {
+    /// A thousand tiles' energy, in per mille of a day of need.
+    kilotile: u64,
+    /// The tiles it walks through a day's light; none felt yet, the time
+    /// costs nothing.
+    day_tiles: u64,
+    /// What a day of light is worth to it: what it gathers in one, in per
+    /// mille of a day of need.
+    day_worth: u64,
+}
+
+impl Walk {
+    /// What walking `tiles` there and back costs, in per mille of a day of
+    /// need: the energy, and the share of the day's light it takes valued
+    /// at what the body gathers in a day.
+    fn round_trip(self, tiles: u64) -> u64 {
+        let both = tiles.saturating_mul(2);
+        let energy = both.saturating_mul(self.kilotile) / 1000;
+        let time = both
+            .saturating_mul(self.day_worth)
+            .checked_div(self.day_tiles)
+            .unwrap_or(0);
+        energy.saturating_add(time)
     }
 }
 
@@ -958,6 +1140,63 @@ pub const FOLLOW_TOLD: u8 = 2;
 /// [`Brains::news`] after each turn: the vivarium's chronicle reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum News {
+    /// `caller` called at the fire of `camp` "I go to live at `to`, who
+    /// comes?" (D56, amended 24 November 2026), telling `gain`; each who
+    /// spoke after it weighed it at its own balance.
+    MoveCalled {
+        /// Who called.
+        caller: BodyId,
+        /// The fire.
+        camp: Pos,
+        /// The new home.
+        to: Pos,
+        /// How much better it fares there by its own notes, in per mille
+        /// of a day of need.
+        gain: i64,
+        /// How it fared at its old home by its notes (`fare`).
+        home_fare: Option<i64>,
+        /// Each listener who weighed it, in the order they spoke.
+        weighed: Vec<Weighed>,
+        /// Each present grown who did not weigh it, and why.
+        unheard: Vec<(BodyId, Unheard)>,
+        /// Who first called it, when `caller` is a spouse telling a call
+        /// it kept (D56, amended 24 November 2026).
+        from: Option<BodyId>,
+        /// The caller's own weighing after its spouse said no (D56,
+        /// amended 24 November 2026): not joined, it stayed with its
+        /// spouse and keeps the call.
+        own: Option<Weighed>,
+        /// When.
+        at: u64,
+    },
+    /// `body` set off to live at `to`, farther than a day's walk, `tiles`
+    /// away, carrying `load_kj`: it holds the goal (D56, amended 24
+    /// November 2026).
+    GoalSet {
+        /// Who.
+        body: BodyId,
+        /// What for.
+        to: GoalTo,
+        /// How far, in tiles.
+        tiles: u32,
+        /// What it carried, in kilojoules.
+        load_kj: u64,
+        /// When.
+        at: u64,
+    },
+    /// `body`'s goal set on `set_day` ended, and how.
+    GoalEnded {
+        /// Who.
+        body: BodyId,
+        /// What it was for.
+        to: GoalTo,
+        /// How it ended.
+        end: GoalEnd,
+        /// The day it was set.
+        set_day: u32,
+        /// When.
+        at: u64,
+    },
     /// `body`'s night (D53, amended 24 November 2026): `others` at its
     /// fire the night of `day`, 0 at no fire; its sociability.
     Company {
@@ -1022,6 +1261,9 @@ pub enum News {
         heard_days: u32,
         /// Over this many nights.
         heard_nights: u32,
+        /// A home's trial: the old home's grade and the new one's, by its
+        /// notes, on which it was judged (D50, amended 24 November 2026).
+        grades: Option<(i64, i64)>,
         /// The tick.
         at: u64,
     },
@@ -1385,6 +1627,26 @@ pub struct Mind {
     chose_at: Option<u64>,
     /// What it said at the fire it will do today (D56), and how far it is.
     plan: Option<Plan>,
+    /// The goal it holds over several days, if any (D56, amended 24
+    /// November 2026).
+    goal: Option<HeldGoal>,
+    /// The home trial drawn at nightfall, held for the dawn's fire.
+    calling: Option<Calling>,
+    /// A move it heard with its spouse away, kept until a fire where its
+    /// spouse is present (D56, amended 24 November 2026).
+    kept_call: Option<KeptCall>,
+    /// What walking a thousand tiles costs its body, in per mille of a day
+    /// of need, as it felt it at its last nightfall: its notebook counts
+    /// the walk to what a place gives with it.
+    walk_kilotile: u64,
+    /// How many tiles it walks through a day's light at its pace on the
+    /// ground it lay on, as it felt it at its last nightfall: the time a
+    /// walk takes (D53, amended 24 November 2026).
+    day_tiles: u64,
+    /// What it gathered its last days, in per mille of a day of need, and
+    /// the days, both faded as its notes and in thousandths: what a day of
+    /// light is worth to it.
+    gathered: (u64, u64),
     /// What it did its last days (D56), the oldest first, one byte a day,
     /// tagged by activity: the low four bits the act's code ([`Act`]:
     /// alone, called and joined gather at a known place, looked explores,
@@ -1562,6 +1824,12 @@ impl Mind {
             wake_at: None,
             chose_at: None,
             plan: None,
+            goal: None,
+            calling: None,
+            kept_call: None,
+            walk_kilotile: 0,
+            day_tiles: 0,
+            gathered: (0, 0),
             habit: Vec::new(),
             bare_today: 0,
             reputed: Vec::new(),
@@ -1647,10 +1915,12 @@ impl Mind {
         self.sociable
     }
 
-    /// Its confidence in each activity of [`crate::content::ACTIVITIES`],
-    /// 0 to 100 (D56); `None` for one the content does not hold.
+    /// Its confidence in each of the first three activities of
+    /// [`crate::content::ACTIVITIES`] (explore, gather, stay; living holds
+    /// none), 0 to 100 (D56); `None` for one the content does not hold.
     pub fn confidences(&self, temper: &Temperance) -> [Option<u8>; 3] {
-        crate::content::ACTIVITIES.map(|name| {
+        let names = &crate::content::ACTIVITIES;
+        [names[0], names[1], names[2]].map(|name| {
             temper
                 .activity(name)
                 .and_then(|i| self.confidence.get(i))
@@ -1668,6 +1938,30 @@ impl Mind {
                 .values()
                 .filter(|p| p.bearing(&brains.food).is_some()),
         )
+    }
+
+    /// What walking costs it (D53, amended 24 November 2026): its
+    /// energy and the time, at what it gathered its last days, else at
+    /// `trials.idle_day_permille`.
+    fn walk(&self, rules: &Content) -> Walk {
+        let (sum, days) = self.gathered;
+        Walk {
+            kilotile: self.walk_kilotile,
+            day_tiles: self.day_tiles,
+            day_worth: if sum > 0 {
+                sum / days.max(1)
+            } else {
+                u64::from(rules.needs.trials.idle_day_permille)
+            },
+        }
+    }
+
+    /// How it grades its own home by its notebook (D53, amended 24
+    /// November 2026), in per mille of a day of need: `None` when it never
+    /// slept there. A measure.
+    #[must_use]
+    pub fn home_grade(&self, rules: &Content) -> Option<i64> {
+        home_fare(rules, self)
     }
 
     /// The trial under way, if any (D50).
@@ -1726,16 +2020,23 @@ fn judge(
     let trials = &rules.needs.trials;
     let days = trials.days_for(trial.way.key(), per_year);
     let during = mind.lately(days);
-    let kept = match trial.heard.mean(days) {
-        Some(theirs) => {
-            let need = need_kj_per_day(rules, body);
-            let own = Lately {
-                kj_per_day: during.kj_per_day * 100 / need.max(1),
-                ..during
-            };
-            own.better_than(&theirs)
+    let grades = (trial.way == Way::Home)
+        .then(|| home_grades(rules, mind, trial))
+        .flatten();
+    let kept = if trial.way == Way::Home {
+        grades.is_some_and(|(old, new)| new - old > MARGIN_PERMILLE)
+    } else {
+        match trial.heard.mean(days) {
+            Some(theirs) => {
+                let need = need_kj_per_day(rules, body);
+                let own = Lately {
+                    kj_per_day: during.kj_per_day * 100 / need.max(1),
+                    ..during
+                };
+                own.better_than(&theirs)
+            }
+            None => during.better_than(&trial.before_days),
         }
-        None => during.better_than(&trial.before_days),
     };
     (
         kept,
@@ -1746,8 +2047,49 @@ fn judge(
             kept,
             before: trial.before_days,
             during,
+            grades,
         },
     )
+}
+
+/// The judge of a home trial (D50, amended 24 November 2026, the project
+/// lead: "il faut vraiment que le déménagement apporte quelque chose"):
+/// after its season, the grade ([`fare`]) of the new home by the body's
+/// own nights and days there, against the old home's by its notes, the
+/// same grade that chose it, kept above the margin: the two grades.
+/// `None`, given up: never slept at the new home, or it is the old one's
+/// place. No notes left of the old one, it counts nothing.
+fn home_grades(rules: &Content, mind: &Mind, trial: &Trial) -> Option<(i64, i64)> {
+    let sides = (place_side(rules), grove_side(rules));
+    let note = |at: Pos| {
+        let place = place_of(at, sides.0);
+        mind.lived
+            .iter()
+            .find(|l| !l.grove && l.place == place && l.nights >= 1000)
+    };
+    let walk = mind.walk(rules);
+    let grade = |l: &Lived| fare(l, &mind.lived, sides, Some(l), walk);
+    let new = note(mind.ways.home)?;
+    if place_of(mind.ways.home, sides.0) == place_of(trial.before.home, sides.0) {
+        return None;
+    }
+    Some((note(trial.before.home).map_or(0, grade), grade(new)))
+}
+
+/// What moving from `from` to `to` costs `mind` a day (D56, amended 24
+/// November 2026): the walk there, its energy and its time valued as in
+/// [`fare`], and a day of its own gathering lost to settling, spread over
+/// `trials.move_repay_seasons`. A move is worth it only above the margin
+/// plus this.
+fn move_cost(world: &World, rules: &Content, mind: &Mind, (from, to): (Pos, Pos)) -> i64 {
+    let walk = mind.walk(rules);
+    let tiles = u64::try_from(far(from, to).isqrt()).unwrap_or(u64::MAX);
+    let once = (walk.round_trip(tiles) / 2).saturating_add(walk.day_worth);
+    let days = rules
+        .needs
+        .trials
+        .move_repay_days(world.calendar().days_per_year());
+    i64::try_from(once / u64::from(days)).unwrap_or(i64::MAX)
 }
 
 /// Sets `way` in `mind` to its value in `theirs` (D50): with
@@ -3499,7 +3841,7 @@ impl Brains {
             let c = body.condition();
             let (hungry, thirsty) = (c.hunger.points() >= HUNGRY, c.thirst.points() >= THIRSTY);
             let cold = std::mem::take(&mut mind.cold_night);
-            mind.night = Some(night_of(rules, body, mind));
+            mind.night = Some(night_of(world, rules, (body, gathered_kj), mind));
             mind.keep_day(
                 trials,
                 per_year,
@@ -3527,6 +3869,7 @@ impl Brains {
             {
                 let (kept, judged) = judge(rules, per_year, body, mind, &trial);
                 mind.learn_will(rules, kept);
+                believe_caller(rules, (id, day), mind, (&trial, kept), &mut self.memory);
                 if kept {
                     mind.changed_day = Some(day);
                 } else {
@@ -3540,14 +3883,19 @@ impl Brains {
                     kept,
                     heard_days: trial.heard.days,
                     heard_nights: trial.heard.nights,
+                    grades: judged.grades,
                     at: now,
                 });
-            } else if mind.trial.is_none() && wants_to_try(trials, seed, (id, day), mind) {
+            } else if mind.trial.is_none()
+                && mind.calling.is_none()
+                && wants_to_try(trials, seed, (id, day), mind)
+            {
                 let child = world.age_milli(body) < 16_000;
                 if let Some(news) =
                     start_trial(world, rules, (&self.memory, seed), id, mind, child, day)
                 {
                     mind.changed_day = Some(day);
+                    hold_for_the_fire(world, rules, mind, &news);
                     self.news.push(news);
                 }
             }
@@ -3685,6 +4033,7 @@ impl Brains {
                 }
             };
             if plan.act == Act::Joined
+                && !plan.moving
                 && let Some(leader) = plan.leader
             {
                 push(leader, FOLLOW_JOINED, gather);
@@ -3748,7 +4097,7 @@ impl Brains {
             });
         }
         let mut accounts = Vec::new();
-        for (&leader, g) in &self.groups {
+        for (&leader, g) in self.groups.iter().filter(|(_, g)| g.moves.is_none()) {
             let mut fed = 0;
             let mut empty = 0;
             let mut facts = Vec::new();
@@ -3894,6 +4243,22 @@ impl Brains {
             for &id in &present {
                 self.imitate(world, rules, id);
             }
+        }
+        // Who drew a home of its own and was at no fire: it goes alone,
+        // unless it waits for its spouse (D56, amended 24 November 2026).
+        let calling: Vec<BodyId> = self
+            .minds
+            .iter()
+            .filter(|(_, m)| m.calling.is_some())
+            .map(|(&id, _)| id)
+            .filter(|&id| {
+                world
+                    .body(id)
+                    .is_some_and(|b| spouse_away(world, b, &[]).is_none())
+            })
+            .collect();
+        for id in calling {
+            self.go_alone(world, rules, id);
         }
         self.age_heard(world, rules);
     }
@@ -4359,6 +4724,19 @@ impl Brains {
         let near = i32::try_from(dec.near_camp_tiles).unwrap_or(i32::MAX);
         // The review (PR 1 ter): who is called first, who set aside.
         let (good_of, aside_by) = self.review_at_fire(world, rules, &speakers, (today, now));
+        // A call to move is the evening's first word (D56, amended 24
+        // November 2026): everyone present hears it, a spouse who would
+        // have spoken before it too; the others keep their order. A caller
+        // whose spouse is away keeps its call for a fire where it is.
+        let calls = |id: BodyId| {
+            self.minds.get(&id).is_some_and(|m| m.calling.is_some())
+                && world
+                    .body(id)
+                    .is_some_and(|b| spouse_away(world, b, present).is_none())
+        };
+        if let Some(i) = speakers.iter().position(|&(_, id)| calls(id)) {
+            speakers[..=i].rotate_right(1);
+        }
         let mut review = EveningReview {
             aside: count_u32(aside_by.values().flatten()),
             ..EveningReview::default()
@@ -4374,10 +4752,100 @@ impl Brains {
         let mut reserved: BTreeMap<BodyId, (BodyId, PlaceKey)> = BTreeMap::new();
         let mut asked_of: BTreeMap<BodyId, (BodyId, u8)> = BTreeMap::new();
         let mut skipped = 0;
+        // The move called tonight, at most one, the most willing first
+        // (D56, amended 24 November 2026): its caller, home, gain, and
+        // who weighed it.
+        let mut call: Option<(BodyId, Pos, i64, Vec<Weighed>)> = None;
+        let mut caller_fare = None;
+        // Who did not weigh it, and why (a measure).
+        let mut unheard: Vec<(BodyId, Unheard)> = Vec::new();
+        // The moves tonight: their leaders' new homes, and whose word each
+        // who goes followed.
+        let mut moves_to: BTreeMap<BodyId, Pos> = BTreeMap::new();
+        let mut followed: BTreeMap<BodyId, BodyId> = BTreeMap::new();
+        // The calls kept for a spouse's presence, told first.
+        let retold = self.retell_kept(
+            world,
+            rules,
+            (seed, today, camp, now),
+            (present, &speakers),
+            (&mut said, &mut moves_to, &mut followed),
+        );
+        // Who keeps tonight's call for its spouse, who drops an older one.
+        let mut kept: Vec<(BodyId, Option<KeptCall>)> = Vec::new();
         for &(_, id) in &speakers {
             let (Some(body), Some(mind)) = (world.body(id), self.minds.get(&id)) else {
                 continue;
             };
+            if said.contains_key(&id) {
+                // It decided with its spouse on a call it kept.
+                continue;
+            }
+            if call.is_none()
+                && let Some(c) = mind.calling
+                && spouse_away(world, body, present).is_none()
+            {
+                // "I go to live at X, who comes?"
+                unreserve(&mut reserved, &mut rooms, id);
+                unheard.extend(said.keys().map(|&b| (b, Unheard::Before)));
+                said.insert(id, (Act::Moves, None, Some(id), 0));
+                moves_to.insert(id, c.to);
+                call = Some((id, c.to, c.gain, Vec::new()));
+                caller_fare = home_fare(rules, mind);
+                continue;
+            }
+            if let Some((caller, to, gain, weighed)) = call.as_mut() {
+                let going = |b: BodyId| {
+                    let goes = |x: BodyId| {
+                        x == *caller
+                            || matches!(said.get(&x), Some((Act::Joined, None, Some(l), _)) if l == caller)
+                    };
+                    goes(b) || mother_of(b).is_some_and(goes)
+                };
+                if spouse_away(world, body, present).is_some() {
+                    // Its spouse away, it keeps the call until it is here.
+                    let there = present.iter().filter(|&&b| going(b)).count();
+                    kept.push((
+                        id,
+                        Some(KeptCall {
+                            to: *to,
+                            gain: *gain,
+                            caller: *caller,
+                            there: u64::try_from(there).unwrap_or(u64::MAX) * 100,
+                        }),
+                    ));
+                    unheard.push((id, Unheard::SpouseAway));
+                } else if let Some(w) = weigh_move(
+                    world,
+                    rules,
+                    (&self.memory, seed, today),
+                    (id, mind),
+                    (
+                        *caller,
+                        self.minds.get(caller).map_or(0, |m| m.will),
+                        *gain,
+                        *to,
+                    ),
+                    (present, &going, 0),
+                ) {
+                    weighed.push(w);
+                    // A newer call heard drops the one it kept.
+                    kept.push((id, None));
+                    if w.joined {
+                        unreserve(&mut reserved, &mut rooms, id);
+                        said.insert(id, (Act::Joined, None, Some(*caller), 0));
+                        followed.insert(id, *caller);
+                        continue;
+                    }
+                } else {
+                    let why = if mind.trial.is_some() {
+                        Unheard::Trial
+                    } else {
+                        Unheard::Child
+                    };
+                    unheard.push((id, why));
+                }
+            }
             if carried_kj(world, rules, id) >= mind.ways.stock_kj + need_kj_per_day(rules, body) {
                 // It carries what it wants for tomorrow and tomorrow's
                 // meals on top: it stays.
@@ -4533,13 +5001,28 @@ impl Brains {
             }
             said.insert(id, choice);
         }
+        let own = self.weigh_own_going(
+            world,
+            rules,
+            (seed, today),
+            present,
+            call.as_ref(),
+            (&mut said, &mut moves_to, &mut followed),
+        );
+        let stays = own.filter(|w| !w.joined).map(|w| w.body);
+        // Staying, it forgets (the project lead, 24 November 2026): the
+        // call dropped, its trial ended unjudged; a better place told
+        // later is decided afresh, as a couple.
+        if let Some(mind) = stays.and_then(|id| self.minds.get_mut(&id)) {
+            mind.calling = None;
+        }
         // The children take their mother's decision.
         for &id in present {
             let Some(mother) = mother_of(id) else {
                 continue;
             };
             let choice = match said.get(&mother).copied() {
-                Some((Act::Called | Act::Joined, place, leader, _)) => {
+                Some((Act::Called | Act::Joined | Act::Moves, place, leader, _)) => {
                     (Act::Joined, place, leader, 0)
                 }
                 Some((Act::Alone, place, _, _)) => (Act::Alone, place, None, 0),
@@ -4550,7 +5033,7 @@ impl Brains {
         // A call nobody joined is a walk alone; the others are groups.
         let mut members: BTreeMap<BodyId, Vec<BodyId>> = BTreeMap::new();
         for (&id, &(act, _, leader, _)) in &said {
-            if let (Act::Called | Act::Joined, Some(leader)) = (act, leader) {
+            if let (Act::Called | Act::Joined | Act::Moves, Some(leader)) = (act, leader) {
                 members.entry(leader).or_default().push(id);
             }
         }
@@ -4565,12 +5048,20 @@ impl Brains {
                 *choice = (Act::Alone, choice.1, None, 0);
             }
         }
+        for (id, k) in kept {
+            if let Some(mind) = self.minds.get_mut(&id) {
+                mind.kept_call = k;
+            }
+        }
         for (leader, mut team) in members {
             if team.len() < 2 {
                 continue;
             }
-            let Some(&(_, Some(place), _, _)) = said.get(&leader) else {
-                continue;
+            let moves = moves_to.get(&leader).copied();
+            let place = match (said.get(&leader), moves) {
+                (_, Some(to)) => place_of(to, side),
+                (Some(&(_, Some(place), _, _)), None) => place,
+                _ => continue,
             };
             team.sort_unstable();
             team.retain(|&m| m != leader);
@@ -4582,9 +5073,14 @@ impl Brains {
                 .iter()
                 .filter(|m| speakers.iter().any(|s| s.1 == **m))
                 .count();
+            let activity = if moves.is_some() {
+                None
+            } else {
+                temper.activity("gather")
+            };
             if let Some(mind) = self.minds.get_mut(&leader) {
                 for _ in 1..joined {
-                    mind.listened(temper, temper.activity("gather"));
+                    mind.listened(temper, activity);
                 }
             }
             self.groups.insert(
@@ -4606,16 +5102,21 @@ impl Brains {
                     waited: 0,
                     started: false,
                     waited_for: BTreeSet::new(),
+                    moves,
                 },
             );
         }
         for (&id, &(act, place, leader, octant)) in &said {
+            let moving = act == Act::Moves
+                || (act == Act::Joined
+                    && place.is_none()
+                    && leader.is_some_and(|l| moves_to.contains_key(&l)));
             if let Some(mind) = self.minds.get_mut(&id) {
                 mind.plan = Some(Plan {
                     day: today,
                     act,
                     place,
-                    leader: if act == Act::Joined || act == Act::Called {
+                    leader: if matches!(act, Act::Joined | Act::Called | Act::Moves) {
                         leader
                     } else {
                         None
@@ -4624,6 +5125,7 @@ impl Brains {
                     legs: 0,
                     done: false,
                     asked: asked_of.get(&id).copied(),
+                    moving,
                 });
             }
             self.news.push(News::Decided {
@@ -4635,6 +5137,35 @@ impl Brains {
                 day: today,
                 at: now,
             });
+        }
+        self.start_move(world, rules, today64, &said, (&moves_to, &followed));
+        self.news.extend(retold);
+        if let Some((caller, to, gain, weighed)) = call {
+            self.news.push(News::MoveCalled {
+                caller,
+                camp,
+                to,
+                gain,
+                home_fare: caller_fare,
+                weighed,
+                unheard,
+                from: None,
+                own,
+                at: now,
+            });
+        }
+        // Who drew a home of its own and did not call or join: it goes
+        // alone, as a trial; unless its spouse is away, or it stayed for
+        // its spouse, then it keeps its call for a later fire (D56, amended
+        // 24 November 2026).
+        for &id in present {
+            if stays != Some(id)
+                && world
+                    .body(id)
+                    .is_some_and(|b| spouse_away(world, b, present).is_none())
+            {
+                self.go_alone(world, rules, id);
+            }
         }
         let absent = u32::try_from(
             self.minds
@@ -4659,6 +5190,243 @@ impl Brains {
             full_told,
             review,
         });
+    }
+
+    /// The moves said at the fire start (D56, amended 24 November 2026):
+    /// the caller's home trial, drawn at nightfall, begins; each who went
+    /// on another's word (`followed`: the caller, or the spouse who told a
+    /// call it kept) opens its own home trial toward the same home, judged
+    /// alone like any, so each can come back; one under a trial (a spouse)
+    /// ends it unjudged first. A child under the content's
+    /// `follows_mother_years` walks with its mother and takes her home.
+    /// Each farther than a day's walk holds the goal.
+    fn start_move(
+        &mut self,
+        world: &World,
+        rules: &Content,
+        today: u64,
+        said: &Said,
+        (moves_to, followed): (&BTreeMap<BodyId, Pos>, &BTreeMap<BodyId, BodyId>),
+    ) {
+        let trials = &rules.needs.trials;
+        let per_year = world.calendar().days_per_year();
+        let now = world.tick().0;
+        let ids: Vec<(BodyId, Pos)> = said
+            .iter()
+            .filter(|(_, s)| s.1.is_none())
+            .filter_map(|(&id, s)| Some((id, *moves_to.get(&s.2?)?)))
+            .collect();
+        for (id, to) in ids {
+            let child = world.body(id).is_some_and(|b| world.age_milli(b) < 16_000);
+            let Some(mind) = self.minds.get_mut(&id) else {
+                continue;
+            };
+            if let Some(&by) = followed.get(&id) {
+                mind.calling = None;
+                if let Some(t) = mind.trial.take() {
+                    // Ended unjudged: no lesson, no credit moved.
+                    t.way.copy(&mut mind.ways, &t.before);
+                }
+                let before = mind.ways;
+                mind.ways.home = to;
+                mind.trial = Some(Trial {
+                    way: Way::Home,
+                    before,
+                    started_day: today,
+                    before_days: mind.lately(trials.days_for(Way::Home.key(), per_year)),
+                    heard: HeardDays::default(),
+                    caller: Some(by),
+                });
+                mind.changed_day = Some(today);
+                self.news.push(News::Trying {
+                    body: id,
+                    way: Way::Home,
+                    before,
+                    after: mind.ways,
+                    heard: true,
+                    at: now,
+                });
+            } else if child {
+                // A child takes its mother's home, as every nightfall.
+                mind.ways.home = to;
+            } else {
+                go_to_live(mind);
+            }
+            if let Some(news) = set_goal(world, rules, id, mind, to) {
+                self.news.push(news);
+            }
+        }
+    }
+
+    /// The calls kept for a spouse's presence (D56, amended 24 November
+    /// 2026; the project lead: "il reporte la décision, en attendant la
+    /// présence de son conjoint"), told at the first fire where both are
+    /// present, before anything else: each of the two weighs it at its own
+    /// balance, the more willing first, the one who kept it trusting the
+    /// caller, its spouse trusting the one who tells it. Those who said
+    /// they go when it was called count there. Who joins first leads the
+    /// other, if it joins too, to the home called: no group with the
+    /// caller. A call kept whose spouse died is dropped. The news of each.
+    #[allow(clippy::type_complexity, reason = "the evening's tables")]
+    fn retell_kept(
+        &mut self,
+        world: &World,
+        rules: &Content,
+        (seed, today, camp, now): (u64, u32, Pos, u64),
+        (present, speakers): (&[BodyId], &[(std::cmp::Reverse<u8>, BodyId)]),
+        (said, moves_to, followed): (
+            &mut Said,
+            &mut BTreeMap<BodyId, Pos>,
+            &mut BTreeMap<BodyId, BodyId>,
+        ),
+    ) -> Vec<News> {
+        let mut news = Vec::new();
+        let order = |id: BodyId| {
+            speakers
+                .iter()
+                .position(|s| s.1 == id)
+                .unwrap_or(usize::MAX)
+        };
+        for &(_, id) in speakers {
+            let Some(k) = self.minds.get(&id).and_then(|m| m.kept_call) else {
+                continue;
+            };
+            let spouse = world.body(id).and_then(Body::spouse).filter(|s| {
+                world
+                    .body(*s)
+                    .is_some_and(|b| b.condition().vitality.points() > 0)
+            });
+            let Some(spouse) = spouse else {
+                self.minds.get_mut(&id).expect("its mind").kept_call = None;
+                continue;
+            };
+            if said.contains_key(&id) || !present.contains(&spouse) {
+                continue;
+            }
+            self.minds.get_mut(&id).expect("its mind").kept_call = None;
+            let mut pair = [id, spouse];
+            pair.sort_by_key(|&b| order(b));
+            let mut weighed = Vec::new();
+            let mut first: Option<BodyId> = None;
+            for m in pair {
+                if said.contains_key(&m) {
+                    continue;
+                }
+                let (Some(mind), teller) =
+                    (self.minds.get(&m), if m == id { k.caller } else { id })
+                else {
+                    continue;
+                };
+                let going = |b: BodyId| first == Some(b);
+                let teller_will = self.minds.get(&teller).map_or(0, |t| t.will);
+                let Some(w) = weigh_move(
+                    world,
+                    rules,
+                    (&self.memory, seed, today),
+                    (m, mind),
+                    (teller, teller_will, k.gain, k.to),
+                    (present, &going, k.there),
+                ) else {
+                    continue;
+                };
+                weighed.push(w);
+                if w.joined {
+                    followed.insert(m, teller);
+                    if let Some(lead) = first {
+                        said.insert(m, (Act::Joined, None, Some(lead), 0));
+                    } else {
+                        said.insert(m, (Act::Moves, None, Some(m), 0));
+                        moves_to.insert(m, k.to);
+                        first = Some(m);
+                    }
+                }
+            }
+            news.push(News::MoveCalled {
+                caller: id,
+                camp,
+                to: k.to,
+                gain: k.gain,
+                home_fare: None,
+                weighed,
+                unheard: Vec::new(),
+                from: Some(k.caller),
+                own: None,
+                at: now,
+            });
+        }
+        news
+    }
+
+    /// `id`, holding a home its own notebook gave and no move called or
+    /// joined, goes there alone (D56, amended 24 November 2026): its home
+    /// trial begins, a goal held if it is beyond a day.
+    /// After its spouse said no, the caller weighs its own going (D56,
+    /// amended 24 November 2026, the project lead) at the listeners'
+    /// balance ([`weigh_move`]): the gain it sees there, trusting itself,
+    /// and the company it would lack here less there, its spouse counting
+    /// `company.spouse_counts` and staying. Above the margin it goes
+    /// alone, as ever; otherwise it stays with its spouse and forgets: no
+    /// trial opened, the call dropped, and those who said they come stay
+    /// too. Its weighing, if it weighed.
+    fn weigh_own_going(
+        &self,
+        world: &World,
+        rules: &Content,
+        (seed, today): (u64, u32),
+        present: &[BodyId],
+        call: Option<&(BodyId, Pos, i64, Vec<Weighed>)>,
+        (said, moves_to, followed): (
+            &mut Said,
+            &mut BTreeMap<BodyId, Pos>,
+            &mut BTreeMap<BodyId, BodyId>,
+        ),
+    ) -> Option<Weighed> {
+        let &(caller, to, gain, ref weighed) = call?;
+        let spouse = world.body(caller)?.spouse()?;
+        if !weighed.iter().any(|w| w.body == spouse && !w.joined) {
+            return None;
+        }
+        let mind = self.minds.get(&caller)?;
+        let child_years = u64::from(rules.needs.decisions.follows_mother_years) * 1000;
+        let joins = |b: BodyId| matches!(said.get(&b), Some((Act::Joined, None, Some(l), _)) if *l == caller);
+        let going = |b: BodyId| {
+            joins(b)
+                || world
+                    .body(b)
+                    .filter(|body| world.age_milli(body) < child_years)
+                    .and_then(Body::mother)
+                    .is_some_and(|m| present.contains(&m) && joins(m))
+        };
+        let own = weigh_move(
+            world,
+            rules,
+            (&self.memory, seed, today),
+            (caller, mind),
+            (caller, mind.will, gain, to),
+            (present, &going, 0),
+        )?;
+        if !own.joined {
+            moves_to.remove(&caller);
+            followed.retain(|_, by| *by != caller);
+            for (&id, choice) in said.iter_mut() {
+                if id == caller || matches!(choice, (Act::Joined, None, Some(l), _) if *l == caller)
+                {
+                    *choice = (Act::Nothing, None, None, 0);
+                }
+            }
+        }
+        Some(own)
+    }
+
+    fn go_alone(&mut self, world: &World, rules: &Content, id: BodyId) {
+        let Some(mind) = self.minds.get_mut(&id) else {
+            return;
+        };
+        if let Some(to) = go_to_live(mind)
+            && let Some(news) = set_goal(world, rules, id, mind, to)
+        {
+            self.news.push(news);
+        }
     }
 
     /// The evening's review (D56, PR 1 ter): each present who called
@@ -4754,9 +5522,13 @@ impl Brains {
     ) -> Option<(BodyId, u8, Option<PlaceKey>, u32)> {
         let rep = &rules.needs.reputation;
         let mind = self.minds.get(&id)?;
+        let live = activity_index("live");
         let (activity, whom, credit) = mind
             .reputed
             .iter()
+            // "Where is food?" is not asked of whom it believes knows
+            // where to live.
+            .filter(|b| b.activity != live)
             .filter_map(|b| {
                 mind.believed(&self.memory, rep, b.activity, dawn)
                     .map(|(w, c)| (b.activity, w, c))
@@ -4825,7 +5597,10 @@ impl Brains {
                 else {
                     return None;
                 };
-                if way.same(&mind.ways, after) {
+                // A home heard is not copied by prestige (D56, amended
+                // 24 November 2026): a move is called at the fire and
+                // each decides at its own balance.
+                if way.same(&mind.ways, after) || *way == Way::Home {
                     return None;
                 }
                 let credit = memory::credit(
@@ -5519,7 +6294,6 @@ fn decide(
     let here = body.pos();
     stand_on(world, rules, (id, here), mind, (memory, news));
     let map = world.map();
-    let camp = mind.ways.home;
     let decision = |intention, why| Some(Decision { intention, why });
     let (thirsty, parched, hungry, asleep, collapsed) = pasts(world, rules, id, mind.past.2);
     // The world refuses a gather to a body whose load is full.
@@ -5577,6 +6351,13 @@ fn decide(
         mind.doing = Doing::Nothing;
         return None;
     }
+    // A goal held (D56, amended 24 November 2026): got there, or the
+    // body says stop, before it drinks or eats.
+    if let Some(end) = goal_ends(world, rules, (id, body, here), mind, (thirsty, hungry)) {
+        let day = u32::try_from(today(world)).unwrap_or(u32::MAX);
+        end_goal(rules, (id, now, day), mind, end, (memory, news));
+    }
+    let camp = mind.ways.home;
     if thirsty {
         // At a drinking place: drink.
         if let Some(water) = water_by(map, here) {
@@ -5682,6 +6463,9 @@ fn decide(
     let mut gathers = !night && (!full || on_the_way(world, groups, mind));
     let mut group_home = false;
     if !night {
+        if let Turn::Decide(decision) = move_turn(world, rules, groups, (id, here), mind, now) {
+            return decision;
+        }
         match group_turn(world, rules, groups, (id, here), mind, full, now) {
             Turn::Go => {}
             Turn::Home => {
@@ -5704,7 +6488,9 @@ fn decide(
     let home = (here.x - camp.x).abs() <= HOME_TILES && (here.y - camp.y).abs() <= HOME_TILES;
     // Its way is to sleep out (D50): at night it lies down where it
     // stands, as if the camp were under its feet.
-    if home || (night && mind.ways.sleep_out) {
+    // Holding a goal, it lies down where it stands too (D56, amended 24
+    // November 2026): the night interrupts the walk.
+    if home || (night && (mind.ways.sleep_out || mind.goal.is_some())) {
         mind.doing = Doing::Nothing;
         if night && !c.asleep {
             return decision(Intention::Sleep { body: id }, Why::Night);
@@ -6065,10 +6851,15 @@ fn follow_or_wait(
     let Some(plan) = plan_today(world, mind) else {
         return Some(d);
     };
-    let (Some(leader), Some(place)) = (plan.leader, plan.place) else {
+    let Some(leader) = plan.leader else {
         return Some(d);
     };
-    if mind.doing != Doing::ToPlace(place) {
+    let there = match plan.place {
+        Some(place) => mind.doing == Doing::ToPlace(place),
+        // A move walks to the new home (D56, amended 24 November 2026).
+        None => plan.moving && mind.doing == Doing::Home,
+    };
+    if !there {
         return Some(d);
     }
     let (Some(g), Some(lead), Some(body)) =
@@ -6159,11 +6950,26 @@ fn walk_permille(rules: &Content, body: &Body, tiles: u64) -> u64 {
 /// dawn (D50, D53 amended): the hunger and thirst left, in per mille of a
 /// day (a gauge point is a hundredth), the day's walk, and what it did
 /// place by place. The cold is read at dawn.
-fn night_of(rules: &Content, body: &Body, mind: &mut Mind) -> Night {
+fn night_of(
+    world: &World,
+    rules: &Content,
+    (body, gathered_kj): (&Body, u64),
+    mind: &mut Mind,
+) -> Night {
     let c = body.condition();
     let mut losses = [0; SENSES];
     losses[Sense::Food as usize] = u64::from(c.hunger.points()) * 10;
     losses[Sense::Water as usize] = u64::from(c.thirst.points()) * 10;
+    mind.walk_kilotile = walk_permille(rules, body, 1000);
+    let ground = world
+        .map()
+        .get(body.pos())
+        .map_or(0, |t| rules.movement.speed_cm_per_s(t));
+    mind.day_tiles = light_walk(world, rules, body, ground);
+    let keep = u64::from(rules.needs.trials.lived_keep_permille);
+    let got = gathered_kj * 1000 / need_kj_per_day(rules, body).max(1);
+    let (sum, days) = mind.gathered;
+    mind.gathered = (sum * keep / 1000 + got * 1000, days * keep / 1000 + 1000);
     Night {
         losses,
         walk: walk_permille(rules, body, std::mem::take(&mut mind.walked_today)),
@@ -6228,7 +7034,10 @@ fn close_habit(
             // An indirect success (PR 1 ter): one who joined its call or
             // followed its answer came back fed; it counts as its own day
             // of gathering fed, once a day.
-            let gathering = matches!(act, Act::Alone | Act::Called | Act::Joined);
+            // A day of moving is not one of gathering (D56, amended 24
+            // November 2026).
+            let gathering = matches!(act, Act::Alone | Act::Called | Act::Joined)
+                && !plan.is_some_and(|p| p.moving);
             let judged = [
                 looked.map(|b| ("explore", b & HABIT_FOUND != 0)),
                 gathering.then_some(("gather", fed || indirect)),
@@ -6384,7 +7193,7 @@ fn count_u32<T>(items: impl Iterator<Item = T>) -> u32 {
 /// (D56): until then a member goes on, full or not.
 fn on_the_way(world: &World, groups: &BTreeMap<BodyId, Group>, mind: &Mind) -> bool {
     plan_today(world, mind)
-        .filter(|p| matches!(p.act, Act::Called | Act::Joined))
+        .filter(|p| matches!(p.act, Act::Called | Act::Joined) && !p.moving)
         .and_then(|p| p.leader)
         .and_then(|l| groups.get(&l))
         .is_some_and(|g| g.ended.is_none() && !g.home && !g.arrived.contains_key(&g.members[0]))
@@ -6488,7 +7297,7 @@ fn group_turn(
     let Some(plan) = plan_today(world, mind) else {
         return Turn::Go;
     };
-    if !matches!(plan.act, Act::Called | Act::Joined) {
+    if !matches!(plan.act, Act::Called | Act::Joined) || plan.moving {
         return Turn::Go;
     }
     let Some(g) = plan.leader.and_then(|l| groups.get_mut(&l)) else {
@@ -7169,6 +7978,7 @@ fn start_trial(
                 before_days: mind
                     .lately(trials.days_for(way.key(), world.calendar().days_per_year())),
                 heard: HeardDays::default(),
+                caller: None,
             });
             return Some(News::Trying {
                 body: id,
@@ -7234,6 +8044,7 @@ fn start_trial(
         started_day: day,
         before_days: mind.lately(trials.days_for(way.key(), world.calendar().days_per_year())),
         heard: HeardDays::default(),
+        caller: None,
     });
     Some(News::Trying {
         body: id,
@@ -7365,39 +8176,208 @@ fn grove_side(rules: &Content) -> i32 {
 }
 
 /// How a body would fare living at `l`, by its own notes (D50, D53,
-/// amended 24 November 2026), in per mille of a day of need, every
-/// [`Sense`] counted alike: what the places of its grove gave a day, each
-/// sense up to a day's worth, less what the nights there (its own, else
-/// the most slept place of its grove) left it lacking and what its days'
-/// walking cost. A place it never slept near takes the home's nights
-/// (`home`), their walking less what living there would have saved.
-fn fare(l: &Lived, notes: &[Lived], (side, grove): (i32, i32), home: Option<&Lived>) -> i64 {
-    let grove_of = |n: &Lived| {
-        if n.grove {
-            n.place
-        } else {
-            place_of(place_centre(n.place, side), grove)
+/// amended 24 November 2026), in per mille of a day of need: what lies
+/// within its reach from there, less what its nights there lack. For each
+/// [`Sense`] got by day ([`Sense::reach`]), each note that gave it, a day's
+/// worth of it there less what walking from `l` there and back costs
+/// (`walk`, its body's cost of a thousand tiles), the positive ones only:
+/// food from all the groves, the best first, water from the best
+/// drinking place, each capped at a day. Then the senses felt at night
+/// (the cold, the company), from its own nights there, else from the
+/// home's (`home`). Hunger and thirst at nightfall do not count: what is
+/// within reach does. Nothing says water or a grove is good: only what
+/// the body got, and how far it must walk to get it again. The project
+/// lead, 24 November 2026: what matters is being near water and plenty of
+/// fruits and plants; the cold is the same everywhere until fire and
+/// caves come.
+fn fare(
+    l: &Lived,
+    notes: &[Lived],
+    (side, grove): (i32, i32),
+    home: Option<&Lived>,
+    walk: Walk,
+) -> i64 {
+    let centre = |n: &Lived| place_centre(n.place, if n.grove { grove } else { side });
+    let here = centre(l);
+    let mut grade: i64 = 0;
+    for sense in Sense::ALL {
+        let Some(reach) = sense.reach() else {
+            continue;
+        };
+        let s = sense as usize;
+        let mut got: Vec<u64> = notes
+            .iter()
+            .filter(|n| n.gains[s] > 0)
+            .filter_map(|n| {
+                let tiles = u64::try_from(far(here, centre(n)).isqrt()).unwrap_or(u64::MAX);
+                let cost = walk.round_trip(tiles);
+                n.per_day(n.gains[s]).checked_sub(cost).filter(|&v| v > 0)
+            })
+            .collect();
+        got.sort_unstable_by(|a, b| b.cmp(a));
+        let day = match reach {
+            Reach::All => got.iter().sum::<u64>(),
+            Reach::Best => got.first().copied().unwrap_or(0),
+        };
+        grade += i64::try_from(day.min(1000)).unwrap_or(1000);
+    }
+    let nights = if l.nights >= 1000 { Some(l) } else { home };
+    let lost: u64 = nights.map_or(0, |n| {
+        Sense::ALL
+            .iter()
+            .filter(|s| s.reach().is_none())
+            .map(|&s| n.per_night(n.losses[s as usize]))
+            .sum()
+    });
+    grade - i64::try_from(lost).unwrap_or(i64::MAX)
+}
+
+/// A home trial `news` tells, drawn from `mind`'s own notebook (D56,
+/// amended 24 November 2026): with the fire and the decisions on, it is
+/// held for the dawn's fire, where it calls the move; it lies down at its
+/// old camp tonight. A home heard and copied is a trial as ever.
+fn hold_for_the_fire(world: &World, rules: &Content, mind: &mut Mind, news: &News) {
+    let calls = rules.needs.fire.on() && rules.needs.decisions.on();
+    let drawn = matches!(
+        news,
+        News::Trying {
+            way: Way::Home,
+            heard: false,
+            ..
         }
+    );
+    if !calls || !drawn {
+        return;
+    }
+    let Some(trial) = mind.trial.take() else {
+        return;
     };
-    let mine = grove_of(l);
-    let near = || notes.iter().filter(move |n| grove_of(n) == mine);
-    let gains: u64 = (0..SENSES)
-        .map(|s| near().map(|n| n.per_day(n.gains[s])).sum::<u64>().min(1000))
-        .sum();
-    let slept = if l.nights >= 1000 {
-        Some(l)
+    let to = mind.ways.home;
+    mind.ways.home = trial.before.home;
+    let gain = lived_best(world, rules, mind).map_or(0, |(_, g)| g);
+    mind.calling = Some(Calling { to, gain, trial });
+}
+
+/// One who joined a move has its home trial there judged (D56, amended
+/// 24 November 2026): its credit in the caller at living moves by its own
+/// body's verdict, `seen_gain` kept, `wear` given up.
+fn believe_caller(
+    rules: &Content,
+    (id, day): (BodyId, u64),
+    mind: &mut Mind,
+    (trial, kept): (&Trial, bool),
+    memory: &mut Store,
+) {
+    let Some(caller) = trial.caller else {
+        return;
+    };
+    let rep = &rules.needs.reputation;
+    let delta = if kept {
+        i32::try_from(rep.seen_gain).unwrap_or(0)
     } else {
-        near()
-            .filter(|n| n.nights >= 1000)
-            .max_by_key(|n| (n.nights, n.place))
+        -i32::try_from(rep.wear).unwrap_or(0)
     };
-    let night = |n: &Lived| n.losses.iter().map(|&v| n.per_night(v)).sum::<u64>();
-    let losses = match (slept, home) {
-        (Some(n), _) => night(n) + n.per_night(n.walk),
-        (None, Some(h)) => night(h) + h.per_night(h.walk).saturating_sub(l.per_day(l.saved)),
-        (None, None) => 0,
+    let day = u32::try_from(day).unwrap_or(u32::MAX);
+    mind.believe(
+        (id, id),
+        (activity_index("live"), caller),
+        delta,
+        (memory, rep, day),
+    );
+}
+
+/// `mind` goes to live at the home it drew at nightfall (D56, amended 24
+/// November 2026): its home trial begins. The home, if it held one.
+fn go_to_live(mind: &mut Mind) -> Option<Pos> {
+    let c = mind.calling.take()?;
+    let mut trial = c.trial;
+    trial.before = mind.ways;
+    mind.ways.home = c.to;
+    mind.trial = Some(trial);
+    Some(c.to)
+}
+
+/// The living grown spouse of `body` not at this fire, if any (D56,
+/// amended 24 November 2026): it postpones its decision on a call.
+fn spouse_away(world: &World, body: &Body, present: &[BodyId]) -> Option<BodyId> {
+    body.spouse().filter(|s| {
+        !present.contains(s)
+            && world.body(*s).is_some_and(|b| {
+                b.condition().vitality.points() > 0 && world.age_milli(b) >= 16_000
+            })
+    })
+}
+
+/// How a listener at the fire weighs a move called (D56, amended 24
+/// November 2026; the project lead: no vote, "plusieurs individus"): the
+/// gain the caller told, times its trust in the caller, plus the company
+/// it would lack here less the company it would lack there, each by its
+/// own sociability ([`crate::content::Company::lacking_permille`]). Here
+/// are the others present who do not go; there, those who already said
+/// they go, the caller first, and their children. A spouse counts as the
+/// content's `company.spouse_counts` companions (the project lead, 24
+/// November 2026): its going pulls without forcing. Its trust is its
+/// credit in the caller at living if it believes it best at it, else the
+/// credit of a teller ([`memory::credit`]). Less what the move costs it a
+/// day from its own home ([`move_cost`]). It joins above a hundredth of
+/// a day ([`MARGIN_PERMILLE`]). `there_before`: those who said they go
+/// when a kept call was called, in hundredths of a body. `None`: it does
+/// not weigh it: a child (its home is its mother's), or under a trial
+/// (the world is judging it) unless it has a spouse.
+fn weigh_move(
+    world: &World,
+    rules: &Content,
+    (memory, seed, today): (&Store, u64, u32),
+    (id, mind): (BodyId, &Mind),
+    (caller, caller_will, gain, to): (BodyId, u8, i64, Pos),
+    (present, going, there_before): (&[BodyId], &dyn Fn(BodyId) -> bool, u64),
+) -> Option<Weighed> {
+    let body = world.body(id)?;
+    let spouse = body.spouse().filter(|s| {
+        world
+            .body(*s)
+            .is_some_and(|b| b.condition().vitality.points() > 0)
+    });
+    // Under a trial, only a spouse hears it (the project lead, 24 November
+    // 2026): if it joins, its trial ends unjudged.
+    if (mind.trial.is_some() && spouse.is_none()) || world.age_milli(body) < 16_000 {
+        return None;
+    }
+    let rep = &rules.needs.reputation;
+    let trust = match mind.believed(memory, rep, activity_index("live"), today) {
+        // The caller weighing its own going trusts itself.
+        _ if caller == id => 100,
+        Some((who, credit)) if who == caller => credit,
+        _ => memory::credit(seed, (id, mind.will), (caller, caller_will), today, today),
     };
-    i64::try_from(gains).unwrap_or(i64::MAX) - i64::try_from(losses).unwrap_or(i64::MAX)
+    let company = &rules.needs.company;
+    let (mut here, mut there) = (0u64, there_before);
+    for &other in present.iter().filter(|&&o| o != id) {
+        let weight = if Some(other) == spouse {
+            u64::from(company.spouse_counts) * 100
+        } else {
+            100
+        };
+        if going(other) {
+            there += weight;
+        } else {
+            here += weight;
+        }
+    }
+    let lack = |others: u64| {
+        i64::try_from(company.lacking_hundredths(mind.sociable, others)).unwrap_or(i64::MAX)
+    };
+    // What the move costs it a day, from its own home (D56, amended 24
+    // November 2026): the gain must repay it.
+    let cost = move_cost(world, rules, mind, (mind.ways.home, to));
+    let balance = gain * i64::from(trust) / 100 - cost + lack(here) - lack(there);
+    Some(Weighed {
+        body: id,
+        balance,
+        trust,
+        home_fare: home_fare(rules, mind),
+        joined: balance > MARGIN_PERMILLE,
+    })
 }
 
 /// Where a trial sets `id`'s home (D50, amended 23 and 24 November 2026,
@@ -7410,33 +8390,277 @@ fn fare(l: &Lived, notes: &[Lived], (side, grove): (i32, i32), home: Option<&Liv
 /// grades a place. `None` when no place it lived beats its home, or none
 /// was lived long enough: no home trial that day.
 fn lived_home(world: &World, rules: &Content, mind: &Mind) -> Option<Pos> {
+    lived_best(world, rules, mind).map(|(at, _)| at)
+}
+
+/// A hundredth of a day of need, in per mille: the margin a place must
+/// beat the home by in the notebook ([`lived_home`]), and the margin a
+/// listener's balance must pass to join a move ([`weigh_move`]).
+const MARGIN_PERMILLE: i64 = 10;
+
+/// How `mind` fares at its own home by its notes ([`fare`]): `None` when
+/// it never slept there.
+fn home_fare(rules: &Content, mind: &Mind) -> Option<i64> {
+    let sides = (place_side(rules), grove_side(rules));
+    let home = place_of(mind.ways.home, sides.0);
+    let note = mind
+        .lived
+        .iter()
+        .find(|l| !l.grove && l.place == home && l.nights >= 1000)?;
+    Some(fare(note, &mind.lived, sides, Some(note), mind.walk(rules)))
+}
+
+/// [`lived_home`], with how much better it fares there than at its home
+/// (D56, amended 24 November 2026), in per mille of a day of need: what
+/// it tells when it calls the move. The home never slept at counts 0. A
+/// place is chosen by what it gains a day less what the move costs a day
+/// ([`move_cost`]), and only above the margin, exactly (24 November 2026:
+/// no rounding).
+fn lived_best(world: &World, rules: &Content, mind: &Mind) -> Option<(Pos, i64)> {
     let sides = (place_side(rules), grove_side(rules));
     let home = place_of(mind.ways.home, sides.0);
     let is_home = |l: &Lived| !l.grove && l.place == home;
     let home_notes = mind.lived.iter().find(|l| is_home(l) && l.nights >= 1000);
     let nights = u64::from(rules.needs.trials.home_nights(mind.will)) * 1000;
+    let walk = mind.walk(rules);
+    let grade = |l: &Lived| fare(l, &mind.lived, sides, home_notes, walk);
+    let at_home = home_notes.map_or(0, grade);
+    // What it gains a day there, less what the move costs a day: a place
+    // must beat the home by the margin once the move is repaid (D56,
+    // amended 24 November 2026).
+    let net = |l: &Lived| {
+        let side = if l.grove { sides.1 } else { sides.0 };
+        let there = place_centre(l.place, side);
+        grade(l) - at_home - move_cost(world, rules, mind, (mind.ways.home, there))
+    };
     let best = mind
         .lived
         .iter()
-        .filter(|l| is_home(l) || l.lived() >= nights)
-        .max_by_key(|l| {
-            (
-                fare(l, &mind.lived, sides, home_notes).div_euclid(10),
-                is_home(l),
-                !l.grove,
-                l.lived(),
-                std::cmp::Reverse(l.place),
-            )
-        })?;
-    if is_home(best) {
-        return None;
-    }
+        .filter(|l| !is_home(l) && l.lived() >= nights)
+        .max_by_key(|l| (net(l), !l.grove, l.lived(), std::cmp::Reverse(l.place)))
+        .filter(|l| net(l) > MARGIN_PERMILLE)?;
+    let gain = grade(best) - at_home;
     let side = if best.grove { sides.1 } else { sides.0 };
     let centre = place_centre(best.place, side);
     let map = world.map();
     (0..=side / 2)
         .flat_map(|r| ring(centre, r))
         .find(|&at| map.is_passable(at))
+        .map(|at| (at, gain))
+}
+
+/// How far `body` walks in a day of the season, in tiles (D56, amended
+/// 24 November 2026): its pace on the reference ground through the hours
+/// of light. What "within a day" means to it.
+fn day_walk_tiles(world: &World, rules: &Content, body: &Body) -> i64 {
+    let reference = rules.movement.walk_speed_cm_per_s;
+    i64::try_from(light_walk(world, rules, body, reference)).unwrap_or(i64::MAX)
+}
+
+/// How far `body` walks through the season's hours of light at its pace
+/// on a ground of `speed_cm` per second (the reference ground's when it
+/// cannot be walked), in tiles.
+fn light_walk(world: &World, rules: &Content, body: &Body, speed_cm: u32) -> u64 {
+    let speed_cm = if speed_cm > 0 {
+        speed_cm
+    } else {
+        rules.movement.walk_speed_cm_per_s
+    };
+    let pace = u64::from(body.condition().pace_percent(&rules.needs));
+    let speed_cm = u64::from(speed_cm) * pace / 100;
+    let light = u64::from(world.calendar().seconds_per_day())
+        * u64::from(rules.needs.night_from_percent.get(world.time().season))
+        / 100;
+    speed_cm * light / 100
+}
+
+/// Whether `to` lies farther from `at` than `body` walks in a day.
+fn beyond_a_day(world: &World, rules: &Content, body: &Body, at: Pos, to: Pos) -> bool {
+    let day = day_walk_tiles(world, rules, body);
+    far(at, to) > day.saturating_mul(day)
+}
+
+/// `mind` sets off to live at `to` (D56, amended 24 November 2026): a
+/// goal held while the walk is beyond a day, with the load it carries.
+fn set_goal(world: &World, rules: &Content, id: BodyId, mind: &mut Mind, to: Pos) -> Option<News> {
+    let body = world.body(id)?;
+    if !beyond_a_day(world, rules, body, body.pos(), to) {
+        return None;
+    }
+    let day = u32::try_from(today(world)).unwrap_or(u32::MAX);
+    let load_kj = carried_kj(world, rules, id);
+    mind.goal = Some(HeldGoal {
+        to: GoalTo::Home(to),
+        day,
+        load_kj,
+    });
+    Some(News::GoalSet {
+        body: id,
+        to: GoalTo::Home(to),
+        tiles: u32::try_from(far(body.pos(), to).isqrt()).unwrap_or(u32::MAX),
+        load_kj,
+        at: world.tick().0,
+    })
+}
+
+/// Whether the goal `mind` holds ends now (D56, amended 24 November
+/// 2026), and how: it got there, or the body says stop: half its
+/// starting load gone, hungry with nothing to eat on it, thirsty with no
+/// water it knows within a day's walk. Its aim no longer its home drops
+/// it. Nothing counts the days.
+fn goal_ends(
+    world: &World,
+    rules: &Content,
+    (id, body, here): (BodyId, &Body, Pos),
+    mind: &Mind,
+    (thirsty, hungry): (bool, bool),
+) -> Option<GoalEnd> {
+    let goal = mind.goal?;
+    let GoalTo::Home(to) = goal.to;
+    if mind.ways.home != to {
+        return Some(GoalEnd::Dropped);
+    }
+    if within(here, to, HOME_TILES) {
+        return Some(GoalEnd::Arrived);
+    }
+    if goal.load_kj > 0 && carried_kj(world, rules, id).saturating_mul(2) < goal.load_kj {
+        return Some(GoalEnd::Load);
+    }
+    if hungry && carried_food(world, rules, id).is_none() {
+        return Some(GoalEnd::Hunger);
+    }
+    if thirsty && water_by(world.map(), here).is_none() {
+        let day = day_walk_tiles(world, rules, body);
+        let reach = day.saturating_mul(day);
+        if !mind.water.values().any(|w| far(w.stand, here) <= reach) {
+            return Some(GoalEnd::Thirst);
+        }
+    }
+    None
+}
+
+/// The goal `mind` holds ends (D56, amended 24 November 2026). When the
+/// body said stop on its way to a new home, the move is given up as a
+/// trial is: its home goes back, its will learns it, and its credit in
+/// the caller it followed wears. It comes back.
+fn end_goal(
+    rules: &Content,
+    (id, now, day): (BodyId, u64, u32),
+    mind: &mut Mind,
+    end: GoalEnd,
+    (memory, news): (&mut Store, &mut Vec<News>),
+) {
+    let Some(goal) = mind.goal.take() else {
+        return;
+    };
+    news.push(News::GoalEnded {
+        body: id,
+        to: goal.to,
+        end,
+        set_day: goal.day,
+        at: now,
+    });
+    if mind.doing == Doing::Home {
+        mind.doing = Doing::Nothing;
+    }
+    if !matches!(end, GoalEnd::Load | GoalEnd::Hunger | GoalEnd::Thirst) {
+        return;
+    }
+    let GoalTo::Home(to) = goal.to;
+    let Some(trial) = mind
+        .trial
+        .filter(|t| t.way == Way::Home && mind.ways.home == to)
+    else {
+        return;
+    };
+    trial.way.copy(&mut mind.ways, &trial.before);
+    mind.trial = None;
+    mind.learn_will(rules, false);
+    if let Some(caller) = trial.caller {
+        let rep = &rules.needs.reputation;
+        let wear = -i32::try_from(rep.wear).unwrap_or(0);
+        mind.believe(
+            (id, id),
+            (activity_index("live"), caller),
+            wear,
+            (memory, rep, day),
+        );
+    }
+    news.push(News::Tried {
+        body: id,
+        way: Way::Home,
+        kept: false,
+        heard_days: trial.heard.days,
+        heard_nights: trial.heard.nights,
+        grades: None,
+        at: now,
+    });
+}
+
+/// A move at its turn, by day (D56, amended 24 November 2026): one who
+/// called it, joined it, or is the child of one who did, walks to the
+/// new home today, behind its caller in a group ([`follow_or_wait`]);
+/// one holding the goal walks there day after day. There, it lives its
+/// day as anyone. [`Turn::Go`]: no move, or there.
+fn move_turn(
+    world: &World,
+    rules: &Content,
+    groups: &mut BTreeMap<BodyId, Group>,
+    (id, here): (BodyId, Pos),
+    mind: &mut Mind,
+    now: u64,
+) -> Turn {
+    let plan = plan_today(world, mind).filter(|p| p.moving);
+    let leader = plan.and_then(|p| p.leader);
+    let group = leader.and_then(|l| groups.get(&l));
+    let group_to = group.and_then(|g| g.moves);
+    let behind = group.is_some_and(|g| g.moves.is_some() && g.ended.is_none() && !g.home);
+    let to = match (plan, group_to, mind.goal) {
+        (Some(_), Some(to), _) => to,
+        (Some(_), None, _) => mind.ways.home,
+        (None, _, Some(goal)) => {
+            let GoalTo::Home(to) = goal.to;
+            to
+        }
+        (None, _, None) => return Turn::Go,
+    };
+    if within(here, to, HOME_TILES) {
+        if plan.is_some() {
+            plan_done(mind);
+            if let Some(g) = leader.and_then(|l| groups.get_mut(&l)) {
+                g.arrived.entry(id).or_insert(now);
+                if g.members[0] == id {
+                    g.home = true;
+                }
+            }
+        }
+        if mind.doing == Doing::Home {
+            mind.doing = Doing::Nothing;
+        }
+        return Turn::Go;
+    }
+    if mind.doing == Doing::Home && mind.stopped {
+        // Stopped short of it: it waits for the next change, as one
+        // stopped short of its camp does.
+        mind.doing = Doing::Nothing;
+        return Turn::Decide(None);
+    }
+    let walking = world.body(id).is_some_and(Body::is_walking);
+    if !behind && mind.doing == Doing::Home && walking {
+        return Turn::Decide(None);
+    }
+    mind.doing = Doing::Home;
+    let d = Decision {
+        intention: Intention::MoveTo {
+            body: id,
+            target: to,
+        },
+        why: Why::Home,
+    };
+    if behind {
+        return Turn::Decide(follow_or_wait(world, rules, groups, id, mind, Some(d), now));
+    }
+    Turn::Decide(Some(d))
 }
 
 /// The tiles at `r` from `centre` on each axis, row by row.
@@ -9649,6 +10873,7 @@ mod tests {
             started_day: 0,
             before_days: before,
             heard: HeardDays::default(),
+            caller: None,
         });
         mind.days = vec![first];
         mind.gathered_today_kj = kj;
@@ -9696,6 +10921,7 @@ mod tests {
             started_day: today - 2,
             before_days: Lately::default(),
             heard: HeardDays::default(),
+            caller: None,
         });
         let news = nightfall(&world, &rules, &mut brains);
         assert!(
@@ -9971,6 +11197,7 @@ mod tests {
             started_day: 0,
             before_days: Lately::default(),
             heard: HeardDays::default(),
+            caller: None,
         });
         brains.imitate_at_camp(&world, &rules, me);
         assert!(brains.news().is_empty(), "under a trial, it copies nothing");
@@ -10547,6 +11774,7 @@ mod tests {
                 legs: 0,
                 done: false,
                 asked: None,
+                moving: false,
             });
             let mut news = Vec::new();
             close_habit(
@@ -10863,6 +12091,7 @@ mod tests {
             legs: 0,
             done: false,
             asked: None,
+            moving: false,
         };
         brains.minds.get_mut(&member).unwrap().plan = Some(plan(Act::Joined, Some(lead)));
         brains.minds.get_mut(&lead).unwrap().plan = Some(plan(Act::Called, Some(lead)));
@@ -10887,6 +12116,7 @@ mod tests {
                 waited: 0,
                 started: true,
                 waited_for: BTreeSet::from([member]),
+                moves: None,
             },
         );
         let follows = brains.follows_today(&world, &rules, day);
@@ -11114,6 +12344,654 @@ mod tests {
         let news = decide_evening(&world, &off, &mut quiet, camp, &present);
         assert!(news.is_empty(), "{news:?}");
         assert!(quiet.minds.values().all(|m| m.plan.is_none()));
+    }
+
+    /// `id` drew at nightfall a home of its own notebook at `to`, `gain`
+    /// better (D56, amended 24 November 2026): held for the dawn's fire.
+    fn calling_at(world: &World, brains: &mut Brains, id: BodyId, to: Pos, gain: i64) {
+        let day = today(world);
+        let mind = brains.minds.get_mut(&id).unwrap();
+        mind.calling = Some(Calling {
+            to,
+            gain,
+            trial: Trial {
+                way: Way::Home,
+                before: mind.ways,
+                started_day: day,
+                before_days: Lately::default(),
+                heard: HeardDays::default(),
+                caller: None,
+            },
+        });
+    }
+
+    /// What the move called at the evening weighed, listener by listener.
+    fn weighed_of(news: &[News]) -> Vec<Weighed> {
+        news.iter()
+            .find_map(|n| match n {
+                News::MoveCalled { weighed, .. } => Some(weighed.clone()),
+                _ => None,
+            })
+            .expect("a move called")
+    }
+
+    #[test]
+    fn a_move_called_at_the_fire_is_joined_by_some_and_not_by_others_each_at_its_balance() {
+        let (world, mut rules, mut brains, _, camp) = deciding(8);
+        rules.needs.company = crate::content::Company::placeholders();
+        // The move's cost aside here: its own test weighs it.
+        rules.needs.trials.move_repay_seasons = 100_000;
+        let to = Pos::new(camp.x + 40, camp.y);
+        brains.minds.get_mut(&BodyId(1)).unwrap().will = 90;
+        for (&id, mind) in &mut brains.minds {
+            // The second needs no company; the others need a crowd.
+            mind.sociable = if id == BodyId(2) { 0 } else { 100 };
+        }
+        calling_at(&world, &mut brains, BodyId(1), to, 400);
+        let present: Vec<BodyId> = (1..=8).map(BodyId).collect();
+        let news = decide_evening(&world, &rules, &mut brains, camp, &present);
+        assert_eq!(
+            act_of(&brains, BodyId(1)),
+            (Act::Moves, None, Some(BodyId(1)))
+        );
+        assert_eq!(
+            act_of(&brains, BodyId(2)),
+            (Act::Joined, None, Some(BodyId(1)))
+        );
+        let weighed = weighed_of(&news);
+        assert_eq!(weighed.len(), 7, "each who spoke after it weighed it");
+        // The loner: the gain told at its trust, nothing to lack.
+        assert!(weighed[0].joined && weighed[0].balance > MARGIN_PERMILLE);
+        assert_eq!(weighed[0].balance, 400 * i64::from(weighed[0].trust) / 100);
+        // The sociable: five stay here, two go there; the crowd it would
+        // lack weighs more than the gain told. Each its own balance.
+        for w in &weighed[1..] {
+            assert!(!w.joined && w.balance <= MARGIN_PERMILLE, "{w:?}");
+            assert_ne!(act_of(&brains, w.body).0, Act::Joined);
+            assert_eq!(brains.minds[&w.body].ways.home, camp);
+            assert!(brains.minds[&w.body].trial.is_none());
+        }
+        // The caller and the one who joined each opened its own trial of
+        // the home there, judged alone; they walk as one group.
+        for id in [BodyId(1), BodyId(2)] {
+            let mind = &brains.minds[&id];
+            assert_eq!(mind.ways.home, to);
+            assert!(mind.calling.is_none());
+            let trial = mind.trial.expect("its trial");
+            assert_eq!((trial.way, trial.before.home), (Way::Home, camp));
+            assert!(mind.plan.unwrap().moving);
+        }
+        assert_eq!(
+            brains.minds[&BodyId(2)].trial.unwrap().caller,
+            Some(BodyId(1))
+        );
+        let group = &brains.groups[&BodyId(1)];
+        assert_eq!(
+            (group.members.clone(), group.moves),
+            (vec![BodyId(1), BodyId(2)], Some(to))
+        );
+        // With nobody to join it, the caller goes alone all the same.
+        let (world, mut rules, mut brains, _, camp) = deciding(3);
+        rules.needs.company = crate::content::Company::placeholders();
+        for mind in brains.minds.values_mut() {
+            mind.sociable = 100;
+        }
+        calling_at(&world, &mut brains, BodyId(1), to, 5);
+        let present = [BodyId(1), BodyId(2), BodyId(3)];
+        let news = decide_evening(&world, &rules, &mut brains, camp, &present);
+        assert!(weighed_of(&news).iter().all(|w| !w.joined));
+        assert_eq!(act_of(&brains, BodyId(1)).0, Act::Moves);
+        assert_eq!(brains.minds[&BodyId(1)].ways.home, to);
+        assert!(!brains.groups.contains_key(&BodyId(1)));
+    }
+
+    /// The call is the evening's first word (D56, amended 24 November
+    /// 2026): one bolder than the caller, who would have spoken before it,
+    /// hears and weighs it too.
+    #[test]
+    fn a_move_call_is_the_first_word_and_the_bolder_hear_it() {
+        let (world, mut rules, mut brains, _, camp) = deciding(3);
+        rules.needs.company = crate::content::Company::placeholders();
+        let to = Pos::new(camp.x + 40, camp.y);
+        for (&id, mind) in &mut brains.minds {
+            mind.sociable = 0;
+            mind.will = if id == BodyId(2) { 90 } else { 10 };
+        }
+        calling_at(&world, &mut brains, BodyId(1), to, 400);
+        let present = [BodyId(1), BodyId(2), BodyId(3)];
+        let news = decide_evening(&world, &rules, &mut brains, camp, &present);
+        assert_eq!(act_of(&brains, BodyId(1)).0, Act::Moves);
+        let weighed = weighed_of(&news);
+        assert!(
+            weighed.iter().any(|w| w.body == BodyId(2)),
+            "the bolder one weighed the call: {weighed:?}"
+        );
+        assert_eq!(weighed.len(), 2, "everyone present but the caller");
+    }
+
+    #[test]
+    fn a_spouse_who_goes_pulls_the_other_without_forcing_it() {
+        // `count` at the fire, the caller bold, the second a loner who
+        // joins, the third of sociability 60, its spouse or not.
+        let third = |count: u32, gain: i64, spouses: bool| {
+            let (mut world, mut rules, mut brains, _, camp) = deciding(count);
+            rules.needs.company = crate::content::Company::placeholders();
+            // The move's cost aside here: its own test weighs it.
+            rules.needs.trials.move_repay_seasons = 100_000;
+            for mind in brains.minds.values_mut() {
+                mind.sociable = 60;
+            }
+            brains.minds.get_mut(&BodyId(1)).unwrap().will = 90;
+            brains.minds.get_mut(&BodyId(2)).unwrap().sociable = 0;
+            if spouses {
+                for (a, b) in [(2, 3), (3, 2)] {
+                    let body = world
+                        .bodies
+                        .iter_mut()
+                        .find(|x| x.id() == BodyId(a))
+                        .unwrap();
+                    body.spouse = Some(BodyId(b));
+                }
+            }
+            calling_at(
+                &world,
+                &mut brains,
+                BodyId(1),
+                Pos::new(camp.x + 40, camp.y),
+                gain,
+            );
+            let present: Vec<BodyId> = (1..=count).map(BodyId).collect();
+            let news = decide_evening(&world, &rules, &mut brains, camp, &present);
+            let weighed = weighed_of(&news);
+            assert!(weighed[0].joined, "the loner goes");
+            assert_eq!(rules.needs.company.spouse_counts, 3);
+            weighed[1]
+        };
+        // Balanced: three would stay here, two go there. A mate stays; a
+        // spouse, its spouse gone, would lack it as three companions and
+        // joins.
+        let (mate, spouse) = (third(6, 100, false), third(6, 100, true));
+        assert!(!mate.joined, "{mate:?}");
+        assert!(spouse.joined, "{spouse:?}");
+        // Strongly against it, seven staying here and little told: the
+        // spouse feels the pull and still stays.
+        let (mate, spouse) = (third(10, 30, false), third(10, 30, true));
+        assert!(spouse.balance > mate.balance);
+        assert!(!spouse.joined, "{spouse:?}");
+    }
+
+    #[test]
+    fn one_who_joined_a_move_is_judged_alone_and_can_come_back() {
+        let (world, rules, mut brains, _, camp) = deciding(2);
+        assert!(today(&world) > 5);
+        let to = Pos::new(camp.x + 40, camp.y);
+        brains.minds.get_mut(&BodyId(1)).unwrap().will = 90;
+        for mind in brains.minds.values_mut() {
+            mind.sociable = 0;
+        }
+        calling_at(&world, &mut brains, BodyId(1), to, 400);
+        decide_evening(&world, &rules, &mut brains, camp, &[BodyId(1), BodyId(2)]);
+        assert_eq!(brains.minds[&BodyId(2)].ways.home, to);
+        // The one who joined lived worse there by its own days: its trial,
+        // begun long enough ago, is given up at nightfall; the caller's,
+        // begun today, goes on.
+        let joined = brains.minds.get_mut(&BodyId(2)).unwrap();
+        let trial = joined.trial.as_mut().unwrap();
+        trial.started_day = 0;
+        trial.before_days = Lately {
+            kj_per_day: 5000,
+            ..Lately::default()
+        };
+        joined.days = vec![Day::default()];
+        let news = nightfall(&world, &rules, &mut brains);
+        assert!(
+            news.iter().any(|n| matches!(
+                n,
+                News::Tried {
+                    body: BodyId(2),
+                    way: Way::Home,
+                    kept: false,
+                    ..
+                }
+            )),
+            "{news:?}"
+        );
+        assert_eq!(brains.minds[&BodyId(2)].ways.home, camp, "it comes back");
+        assert_eq!(brains.minds[&BodyId(1)].ways.home, to);
+        assert!(brains.minds[&BodyId(1)].trial.is_some());
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines, reason = "one goal followed day after day")]
+    fn a_goal_is_held_across_days_lies_down_at_night_and_ends_when_the_body_says_stop() {
+        let rules = rules();
+        // A short day: a day's walk is some sixty tiles.
+        let map = Map::filled(400, 64, Terrain::Grass).with_camp(5, 5);
+        let mut world = World::empty(Calendar::new(1, 72).unwrap(), map);
+        let id = world.spawn_body(Pos::new(5, 5));
+        let mut brains = piloted_with(&world, &rules);
+        let body = world.body(id).unwrap();
+        let day = i32::try_from(day_walk_tiles(&world, &rules, body)).unwrap();
+        assert!((40..80).contains(&day), "{day}");
+        let (near, to) = (Pos::new(5 + day / 2, 5), Pos::new(5 + 3 * day, 5));
+        let mind = brains.minds.get_mut(&id).unwrap();
+        let camp = mind.ways.home;
+        assert!(
+            set_goal(&world, &rules, id, mind, near).is_none(),
+            "within a day"
+        );
+        let before = mind.ways;
+        mind.ways.home = to;
+        mind.trial = Some(Trial {
+            way: Way::Home,
+            before,
+            started_day: 0,
+            before_days: Lately::default(),
+            heard: HeardDays::default(),
+            caller: None,
+        });
+        assert!(matches!(
+            set_goal(&world, &rules, id, mind, to),
+            Some(News::GoalSet { tiles, .. }) if i64::from(tiles) == i64::from(3 * day)
+        ));
+        // By day it walks there, its day's choice aside.
+        let walk = decide_alone(&world, &rules, id, mind).expect("it walks");
+        assert_eq!(
+            walk.intention,
+            Intention::MoveTo {
+                body: id,
+                target: to
+            }
+        );
+        // At night it lies down where it stands, the goal kept.
+        let mut events = Vec::new();
+        world.advance(50, &rules, &mut events);
+        assert!(world.is_night(&rules));
+        for body in &mut world.bodies {
+            (body.condition.thirst, body.condition.hunger) = (Gauge::at(0), Gauge::at(0));
+        }
+        let mind = brains.minds.get_mut(&id).unwrap();
+        mind.doing = Doing::Nothing;
+        let night = decide_alone(&world, &rules, id, mind).expect("it lies down");
+        assert_eq!(night.intention, Intention::Sleep { body: id });
+        assert!(mind.goal.is_some());
+        // The next day, thirsty with water known within a day: it drinks
+        // first, the goal kept.
+        world.advance(30, &rules, &mut events);
+        assert!(!world.is_night(&rules));
+        let water = Pos::new(5 + day / 2, 6);
+        mind.water.insert(
+            water.chunk(),
+            DrinkingPlace {
+                stand: water,
+                water,
+            },
+        );
+        for body in &mut world.bodies {
+            (body.condition.thirst, body.condition.hunger) = (Gauge::at(THIRSTY), Gauge::at(0));
+            body.condition.asleep = false;
+        }
+        mind.past = pasts(&world, &rules, id, false);
+        let drink = decide_alone(&world, &rules, id, mind).expect("it drinks");
+        assert_eq!(drink.why, Why::Thirst);
+        assert!(mind.goal.is_some());
+        // Hungry with nothing on it: the body says stop. The move is
+        // given up as a trial is: its home goes back.
+        for body in &mut world.bodies {
+            (body.condition.thirst, body.condition.hunger) = (Gauge::at(0), Gauge::at(HUNGRY));
+        }
+        let mut news = Vec::new();
+        let (mut bearers, mut shores) = (Placed::new(), Lru::new(BEARER_CHUNKS));
+        let mut food = food_now(&world, &rules);
+        let mut memory = Store::new();
+        let mut land = Land {
+            groups: &mut BTreeMap::new(),
+            bearers: &mut bearers,
+            shores: &mut shores,
+            food: &mut food,
+            memory: &mut memory,
+            news: &mut news,
+        };
+        decide(&world, &rules, &mut land, id, mind, 7);
+        assert!(mind.goal.is_none());
+        assert_eq!((mind.ways.home, mind.trial), (camp, None));
+        assert!(news.iter().any(|n| matches!(
+            n,
+            News::GoalEnded {
+                end: GoalEnd::Hunger,
+                ..
+            }
+        )));
+        assert!(news.iter().any(|n| matches!(
+            n,
+            News::Tried {
+                way: Way::Home,
+                kept: false,
+                ..
+            }
+        )));
+        // Half the load it set off with gone: stop as well.
+        mind.ways.home = to;
+        mind.goal = Some(HeldGoal {
+            to: GoalTo::Home(to),
+            day: 0,
+            load_kj: 1000,
+        });
+        let body = world.body(id).unwrap();
+        assert_eq!(
+            goal_ends(&world, &rules, (id, body, body.pos()), mind, (false, false)),
+            Some(GoalEnd::Load)
+        );
+    }
+
+    /// Makes `a` and `b` spouses.
+    fn wed(world: &mut World, a: BodyId, b: BodyId) {
+        for (x, y) in [(a, b), (b, a)] {
+            world
+                .bodies
+                .iter_mut()
+                .find(|body| body.id() == x)
+                .unwrap()
+                .spouse = Some(y);
+        }
+    }
+
+    #[test]
+    fn a_spouse_under_a_trial_hears_the_call_and_joining_ends_its_trial_unjudged() {
+        let (mut world, mut rules, mut brains, _, camp) = deciding(4);
+        rules.needs.company = crate::content::Company::placeholders();
+        let to = Pos::new(camp.x + 40, camp.y);
+        wed(&mut world, BodyId(2), BodyId(3));
+        for (&id, mind) in &mut brains.minds {
+            mind.sociable = 0;
+            mind.will = if id == BodyId(1) { 90 } else { 10 };
+            if id == BodyId(2) || id == BodyId(4) {
+                // Under a trial of its worth distance.
+                let before = mind.ways;
+                mind.ways.worth_half_tiles *= 2;
+                mind.trial = Some(Trial {
+                    way: Way::WorthHalfTiles,
+                    before,
+                    started_day: 0,
+                    before_days: Lately::default(),
+                    heard: HeardDays::default(),
+                    caller: None,
+                });
+            }
+        }
+        calling_at(&world, &mut brains, BodyId(1), to, 400);
+        let present: Vec<BodyId> = (1..=4).map(BodyId).collect();
+        let news = decide_evening(&world, &rules, &mut brains, camp, &present);
+        let weighed = weighed_of(&news);
+        // The spouse under a trial weighed it and joined; one under a trial
+        // with no spouse did not hear it.
+        assert!(
+            weighed.iter().any(|w| w.body == BodyId(2) && w.joined),
+            "{weighed:?}"
+        );
+        assert!(weighed.iter().all(|w| w.body != BodyId(4)));
+        let unheard = news.iter().find_map(|n| match n {
+            News::MoveCalled { unheard, .. } => Some(unheard.clone()),
+            _ => None,
+        });
+        assert_eq!(unheard, Some(vec![(BodyId(4), Unheard::Trial)]));
+        // Its trial ended unjudged: the way back, the will as it was, its
+        // home trial toward the call begun.
+        let mind = &brains.minds[&BodyId(2)];
+        assert_eq!(mind.ways.worth_half_tiles, WORTH_HALF_TILES);
+        assert_eq!(mind.will, 10);
+        let trial = mind.trial.unwrap();
+        assert_eq!(
+            (trial.way, trial.caller, mind.ways.home),
+            (Way::Home, Some(BodyId(1)), to)
+        );
+        assert!(!news.iter().any(|n| matches!(n, News::Tried { .. })));
+    }
+
+    #[test]
+    fn an_absent_spouse_postpones_the_decision_then_both_weigh_it_together() {
+        let (mut world, mut rules, mut brains, _, camp) = deciding(4);
+        rules.needs.company = crate::content::Company::placeholders();
+        let to = Pos::new(camp.x + 40, camp.y);
+        wed(&mut world, BodyId(2), BodyId(4));
+        for (&id, mind) in &mut brains.minds {
+            mind.sociable = 0;
+            mind.will = if id == BodyId(1) { 90 } else { 10 };
+        }
+        calling_at(&world, &mut brains, BodyId(1), to, 400);
+        // The first evening, its spouse away: it does not weigh the call,
+        // it keeps it.
+        let news = decide_evening(
+            &world,
+            &rules,
+            &mut brains,
+            camp,
+            &[BodyId(1), BodyId(2), BodyId(3)],
+        );
+        let weighed = weighed_of(&news);
+        assert!(weighed.iter().all(|w| w.body != BodyId(2)));
+        assert!(news.iter().any(|n| matches!(
+            n,
+            News::MoveCalled { unheard, .. } if unheard == &vec![(BodyId(2), Unheard::SpouseAway)]
+        )));
+        let kept = brains.minds[&BodyId(2)].kept_call.expect("kept");
+        assert_eq!((kept.to, kept.caller, kept.gain), (to, BodyId(1), 400));
+        assert_eq!(
+            kept.there, 100,
+            "the caller, the only one gone before it spoke"
+        );
+        assert_eq!(brains.minds[&BodyId(2)].ways.home, camp);
+        // The next evening, its spouse there: it tells the call, each
+        // weighs it; the spouse trusts the one who tells it.
+        let news = decide_evening(
+            &world,
+            &rules,
+            &mut brains,
+            camp,
+            &[BodyId(2), BodyId(3), BodyId(4)],
+        );
+        let (caller, from, weighed) = news
+            .iter()
+            .find_map(|n| match n {
+                News::MoveCalled {
+                    caller,
+                    from: Some(from),
+                    weighed,
+                    ..
+                } => Some((*caller, *from, weighed.clone())),
+                _ => None,
+            })
+            .expect("the call told again");
+        assert_eq!((caller, from), (BodyId(2), BodyId(1)));
+        assert_eq!(
+            weighed
+                .iter()
+                .map(|w| (w.body, w.joined))
+                .collect::<Vec<_>>(),
+            [(BodyId(2), true), (BodyId(4), true)]
+        );
+        assert_eq!(
+            act_of(&brains, BodyId(2)),
+            (Act::Moves, None, Some(BodyId(2)))
+        );
+        assert_eq!(
+            act_of(&brains, BodyId(4)),
+            (Act::Joined, None, Some(BodyId(2)))
+        );
+        for (id, by) in [(BodyId(2), BodyId(1)), (BodyId(4), BodyId(2))] {
+            let mind = &brains.minds[&id];
+            assert_eq!(mind.ways.home, to);
+            assert_eq!(mind.trial.unwrap().caller, Some(by));
+        }
+        assert!(brains.minds[&BodyId(2)].kept_call.is_none());
+        assert_eq!(brains.groups[&BodyId(2)].moves, Some(to));
+        assert_ne!(act_of(&brains, BodyId(3)).0, Act::Joined);
+    }
+
+    #[test]
+    fn a_caller_with_its_spouse_away_waits_then_calls_with_the_spouse_present() {
+        let (mut world, mut rules, mut brains, _, camp) = deciding(4);
+        rules.needs.company = crate::content::Company::placeholders();
+        let to = Pos::new(camp.x + 40, camp.y);
+        wed(&mut world, BodyId(1), BodyId(4));
+        for (&id, mind) in &mut brains.minds {
+            mind.sociable = 0;
+            mind.will = if id == BodyId(1) { 90 } else { 10 };
+        }
+        calling_at(&world, &mut brains, BodyId(1), to, 400);
+        // Its spouse away: no call tonight, it keeps it and its home.
+        let news = decide_evening(
+            &world,
+            &rules,
+            &mut brains,
+            camp,
+            &[BodyId(1), BodyId(2), BodyId(3)],
+        );
+        assert!(!news.iter().any(|n| matches!(n, News::MoveCalled { .. })));
+        let mind = &brains.minds[&BodyId(1)];
+        assert_eq!(mind.calling.map(|c| (c.to, c.gain)), Some((to, 400)));
+        assert_eq!(mind.ways.home, camp);
+        assert_ne!(act_of(&brains, BodyId(1)).0, Act::Moves);
+        // At no fire, with a spouse alive, it does not go alone either.
+        assert!(spouse_away(&world, world.body(BodyId(1)).unwrap(), &[]).is_some());
+        // Its spouse there: the same call, the spouse weighing it like any
+        // listener.
+        let news = decide_evening(
+            &world,
+            &rules,
+            &mut brains,
+            camp,
+            &[BodyId(1), BodyId(2), BodyId(3), BodyId(4)],
+        );
+        let (caller, to_called, gain) = news
+            .iter()
+            .find_map(|n| match n {
+                News::MoveCalled {
+                    caller,
+                    to,
+                    gain,
+                    from: None,
+                    ..
+                } => Some((*caller, *to, *gain)),
+                _ => None,
+            })
+            .expect("the call");
+        assert_eq!((caller, to_called, gain), (BodyId(1), to, 400));
+        assert!(weighed_of(&news).iter().any(|w| w.body == BodyId(4)));
+        assert_eq!(
+            act_of(&brains, BodyId(1)),
+            (Act::Moves, None, Some(BodyId(1)))
+        );
+    }
+
+    #[test]
+    fn after_its_spouse_says_no_the_caller_weighs_its_own_going() {
+        // Ten at the fire: the caller 1, its spouse 2 (most sociable: it
+        // stays with the seven others), a loner 3 who says it comes. The
+        // caller is a loner (the gain outweighs what it would lack) or
+        // most sociable (alone there, it would lack its spouse and all).
+        let evening = |caller_sociable: u8| {
+            let (mut world, mut rules, mut brains, _, camp) = deciding(10);
+            rules.needs.company = crate::content::Company::placeholders();
+            let to = Pos::new(camp.x + 40, camp.y);
+            wed(&mut world, BodyId(1), BodyId(2));
+            for (&id, mind) in &mut brains.minds {
+                (mind.will, mind.sociable) = match id.0 {
+                    1 => (90, caller_sociable),
+                    2 => (10, 100),
+                    3 => (50, 0),
+                    _ => (10, 60),
+                };
+            }
+            calling_at(&world, &mut brains, BodyId(1), to, 300);
+            let present: Vec<BodyId> = (1..=10).map(BodyId).collect();
+            let news = decide_evening(&world, &rules, &mut brains, camp, &present);
+            let own = news
+                .iter()
+                .find_map(|n| match n {
+                    News::MoveCalled { own, .. } => Some(*own),
+                    _ => None,
+                })
+                .expect("the call")
+                .expect("it weighed its own going");
+            let weighed = weighed_of(&news);
+            let said = |b: u32| weighed.iter().find(|w| w.body == BodyId(b)).unwrap().joined;
+            assert!(!said(2), "the spouse says no");
+            assert!(said(3), "the loner says it comes");
+            (own, brains, to, camp)
+        };
+        // Cares strongly: it goes alone, as ever, the loner behind it.
+        let (own, brains, to, _) = evening(0);
+        assert!(own.joined && own.trust == 100, "{own:?}");
+        assert_eq!(
+            act_of(&brains, BodyId(1)),
+            (Act::Moves, None, Some(BodyId(1)))
+        );
+        assert_eq!(
+            act_of(&brains, BodyId(3)),
+            (Act::Joined, None, Some(BodyId(1)))
+        );
+        for b in [1, 3] {
+            assert_eq!(brains.minds[&BodyId(b)].ways.home, to);
+        }
+        assert_eq!(
+            brains.minds[&BodyId(2)].ways.home,
+            brains.minds[&BodyId(2)].home_at_dusk
+        );
+        // Cares weakly: it stays with its spouse and forgets its call; the
+        // one who said it comes stays too; no trial is opened.
+        let (own, brains, _, camp) = evening(100);
+        assert!(!own.joined, "{own:?}");
+        for b in [1, 3] {
+            let mind = &brains.minds[&BodyId(b)];
+            assert_eq!(act_of(&brains, BodyId(b)).0, Act::Nothing);
+            assert_eq!(mind.ways.home, camp);
+            assert!(mind.trial.is_none());
+        }
+        assert!(brains.minds[&BodyId(1)].calling.is_none(), "it forgets");
+        assert!(!brains.groups.contains_key(&BodyId(1)));
+    }
+
+    #[test]
+    fn a_caller_who_stays_forgets_then_decides_afresh_on_a_new_call() {
+        let (mut world, mut rules, mut brains, _, camp) = deciding(10);
+        rules.needs.company = crate::content::Company::placeholders();
+        wed(&mut world, BodyId(1), BodyId(2));
+        for (&id, mind) in &mut brains.minds {
+            (mind.will, mind.sociable) = match id.0 {
+                1 => (90, 100),
+                2 => (10, 100),
+                _ => (10, 60),
+            };
+        }
+        let present: Vec<BodyId> = (1..=10).map(BodyId).collect();
+        // A small gain: its spouse says no, it stays and forgets.
+        let first = Pos::new(camp.x + 40, camp.y);
+        calling_at(&world, &mut brains, BodyId(1), first, 120);
+        let news = decide_evening(&world, &rules, &mut brains, camp, &present);
+        assert!(news.iter().any(|n| matches!(
+            n,
+            News::MoveCalled { own: Some(w), .. } if !w.joined
+        )));
+        assert!(brains.minds[&BodyId(1)].calling.is_none());
+        assert!(brains.minds[&BodyId(1)].trial.is_none());
+        // The next evening it tells nothing of it: no call.
+        let news = decide_evening(&world, &rules, &mut brains, camp, &present);
+        assert!(!news.iter().any(|n| matches!(n, News::MoveCalled { .. })));
+        // A new and far better place: called afresh, its spouse weighs it
+        // again, as a couple.
+        let second = Pos::new(camp.x, camp.y + 40);
+        calling_at(&world, &mut brains, BodyId(1), second, 3000);
+        let news = decide_evening(&world, &rules, &mut brains, camp, &present);
+        let w = weighed_of(&news);
+        let spouse = w
+            .iter()
+            .find(|w| w.body == BodyId(2))
+            .expect("weighed afresh");
+        assert!(spouse.joined, "{spouse:?}");
+        for b in [1, 2] {
+            assert_eq!(brains.minds[&BodyId(b)].ways.home, second);
+        }
     }
 
     #[test]
@@ -11764,18 +13642,16 @@ mod tests {
             "{news:?}"
         );
         assert!(brains.mind(me).unwrap().ways().sleep_out);
-        // Copying the home moves the camp; a teller of will 0 is never
-        // copied; under a trial it copies nothing.
+        // A home heard is not copied (D56, amended 24 November 2026: a
+        // move is called at the fire, each weighs it); a teller of will 0
+        // is never copied; under a trial it copies nothing.
         let mut home = theirs;
         home.home = Pos::new(9, 9);
+        let before = brains.mind(me).unwrap().home();
         heard_kept(&mut brains, (me, mate, 2), Way::Home, home, 100);
         brains.imitate(&world, &rules, me);
-        assert_eq!(
-            brains.mind(me).unwrap().home(),
-            Pos::new(9, 9),
-            "the camp moved"
-        );
-        brains.news();
+        assert_eq!(brains.mind(me).unwrap().home(), before, "no home copied");
+        assert_eq!(brains.news(), Vec::new());
         let mut wide = theirs;
         wide.worth_half_tiles = WORTH_HALF_TILES * 2;
         heard_kept(&mut brains, (me, mate, 3), Way::WorthHalfTiles, wide, 0);
@@ -11806,6 +13682,7 @@ mod tests {
             started_day: 0,
             before_days: Lately::default(),
             heard: HeardDays::default(),
+            caller: None,
         });
         brains.imitate(&world, &rules, me);
         assert!(brains.news().is_empty(), "under a trial, it copies nothing");
@@ -11968,6 +13845,7 @@ mod tests {
             started_day: 0,
             before_days: before,
             heard,
+            caller: None,
         });
         mind.days = vec![Day {
             gathered_kj: kj,
@@ -12055,6 +13933,7 @@ mod tests {
             started_day: 1,
             before_days: Lately::default(),
             heard: HeardDays::default(),
+            caller: None,
         });
         brains.minds.get_mut(&steady).unwrap().days = vec![day(2000)];
         let m = brains.minds.get_mut(&changed).unwrap();
@@ -12089,6 +13968,7 @@ mod tests {
             kept: true,
             before: Lately::default(),
             during: Lately::default(),
+            grades: None,
         });
         let news = night(&mut world, &rules, &mut brains, &[teller, listener]);
         let told: Vec<RecordId> = news
@@ -12232,6 +14112,7 @@ mod tests {
                     ..Lately::default()
                 },
                 heard: HeardDays::default(),
+                caller: None,
             });
             let kj = 1000;
             mind.days = vec![Day {
@@ -12449,46 +14330,179 @@ mod tests {
             .iter()
             .find(|l| l.place == place && l.grove == grove)
             .unwrap();
-        fare(l, &mind.lived, sides, home)
+        fare(l, &mind.lived, sides, home, mind.walk(rules))
     }
 
     #[test]
-    fn water_food_or_both_win_by_how_the_body_fared_there() {
+    fn a_place_near_known_water_and_groves_beats_one_with_the_same_groves_and_no_water() {
+        let rules = rules();
+        let sides = (place_side(&rules), grove_side(&rules));
+        // Slept at home (0, 0), the cold alike everywhere; a grove gives a
+        // day of food at (1, 1) of the 64 grid; water drunk only at the
+        // place (4, 4) of the 16 grid, beside the grove.
+        let mut mind = Mind::new(Pos::new(8, 8));
+        mind.walk_kilotile = 13;
+        let day = vec![picked((1, 1), 0, 1000), drank((4, 4), 0, 1000)];
+        lived_at(&mut mind, (0, 0), 3, &night_with(COLD, 0, day), 1000);
+        let home = mind
+            .lived
+            .iter()
+            .find(|l| !l.grove && l.place == (0, 0))
+            .copied();
+        let at = |place: PlaceKey| Lived {
+            place,
+            grove: false,
+            nights: 0,
+            days: 1000,
+            gains: [0; SENSES],
+            losses: [0; SENSES],
+            walk: 0,
+            saved: 0,
+        };
+        // By the water and the grove, or some 800 tiles from both.
+        let (by, beyond) = (at((5, 5)), at((40, 40)));
+        let fare_at = |l: &Lived| fare(l, &mind.lived, sides, home.as_ref(), mind.walk(&rules));
+        // Water and food within reach, less the cold of the home's nights.
+        assert_eq!(fare_at(&by), 1000);
+        // Far away, both cost the walk there and back.
+        assert!(
+            fare_at(&by) - fare_at(&beyond) > MARGIN_PERMILLE,
+            "{}",
+            fare_at(&beyond)
+        );
+        // With nothing drunk anywhere, no water counts.
+        let mut dry = Mind::new(Pos::new(8, 8));
+        lived_at(
+            &mut dry,
+            (0, 0),
+            3,
+            &night_with(COLD, 0, vec![picked((1, 1), 0, 1000)]),
+            1000,
+        );
+        let dry_home = dry
+            .lived
+            .iter()
+            .find(|l| !l.grove && l.place == (0, 0))
+            .copied();
+        assert!(
+            fare(&by, &dry.lived, sides, dry_home.as_ref(), mind.walk(&rules)) < fare_at(&by) - 900
+        );
+    }
+
+    #[test]
+    fn a_far_grove_costs_clearly_more_than_a_near_one_in_time() {
+        let rules = rules();
+        let sides = (place_side(&rules), grove_side(&rules));
+        // A grove at (1, 1) of the 64 grid gives a day of food; a place
+        // beside it, and one some 800 tiles away.
+        let mut mind = Mind::new(Pos::new(8, 8));
+        let day = vec![picked((1, 1), 0, 1000)];
+        lived_at(&mut mind, (0, 0), 3, &night_with([0; SENSES], 0, day), 1000);
+        let at = |place: PlaceKey| Lived {
+            place,
+            grove: false,
+            nights: 0,
+            days: 1000,
+            gains: [0; SENSES],
+            losses: [0; SENSES],
+            walk: 0,
+            saved: 0,
+        };
+        let (near, far_off) = (at((5, 5)), at((40, 40)));
+        let gap = |walk: Walk| {
+            let fare_at = |l: &Lived| fare(l, &mind.lived, sides, None, walk);
+            fare_at(&near) - fare_at(&far_off)
+        };
+        // Its energy alone: the far grove costs a few hundredths of a day.
+        let energy = Walk {
+            kilotile: 13,
+            day_tiles: 0,
+            day_worth: 1000,
+        };
+        assert!(gap(energy) < 30, "{}", gap(energy));
+        // Its time too: a day's light walks 6000 tiles, a day gathers a
+        // day of need; the round trip of some 1600 tiles is a quarter of
+        // the day's light, a quarter of a day not gathering.
+        let timed = Walk {
+            day_tiles: 6000,
+            ..energy
+        };
+        assert!(gap(timed) > 200, "{}", gap(timed));
+        // What a day of light is worth is what it gathered lately, else
+        // the placeholder.
+        assert_eq!(
+            mind.walk(&rules).day_worth,
+            u64::from(rules.needs.trials.idle_day_permille)
+        );
+        mind.gathered = (1500 * 3000, 3000);
+        assert_eq!(mind.walk(&rules).day_worth, 1500);
+    }
+
+    #[test]
+    fn a_home_with_groves_around_no_longer_grades_near_minus_two_thousand() {
+        let rules = rules();
+        let sides = (place_side(&rules), grove_side(&rules));
+        // Hungry and thirsty half a day at nightfall, cold a third, alone
+        // a fifth: before, only its own grove counted and the nightfall's
+        // hunger and thirst were taken off.
+        let mut mind = Mind::new(Pos::new(8, 8));
+        mind.walk_kilotile = 13;
+        let day = vec![
+            drank((0, 0), 0, 1000),
+            picked((1, 0), 0, 600),
+            picked((0, 1), 0, 600),
+        ];
+        lived_at(
+            &mut mind,
+            (0, 0),
+            3,
+            &night_with([500, 500, 300, 200], 0, day),
+            1000,
+        );
+        let home = mind
+            .lived
+            .iter()
+            .find(|l| !l.grove && l.place == (0, 0))
+            .copied()
+            .unwrap();
+        let grade = fare(&home, &mind.lived, sides, Some(&home), mind.walk(&rules));
+        // The groves around, a day at most, the water at home, less the
+        // cold and the company of its nights.
+        assert!((1450..=1500).contains(&grade), "{grade}");
+        assert_eq!(home_fare(&rules, &mind), Some(grade));
+    }
+
+    #[test]
+    fn water_or_food_win_by_what_lies_within_reach_and_its_walk() {
         let mut rules = rules();
         rules.needs.trials.home_nights_by_will = vec![(0, 1)];
         let world = field(256, 250, Pos::new(5, 5));
         let home = Pos::new(5, 5);
+        // A walk of a tile costs a thousandth of a day here, to read the
+        // rule: what lies within reach counts less its walk there and back.
         let at_home = |day: Vec<DayAct>| {
             let mut mind = Mind::new(home);
+            mind.walk_kilotile = 1000;
             lived_at(&mut mind, (0, 0), 2, &night_with(COLD, 0, day), 1000);
             mind
         };
-        // Water: a little food in its home's grove, a day's water at
-        // (8, 8): at home 600 - 1000 (the cold), there 1000 - 1000.
+        // A little food in its home's grove, a day's water at (8, 8), some
+        // 180 tiles away: living by the water saves more walking than the
+        // grove's walk costs. The grove's middle, (2, 2) of the places,
+        // nearer the water, grades as well and costs less to move to: it
+        // wins (D56, amended 24 November 2026: the move must repay its
+        // cost).
         let mind = at_home(vec![picked((0, 0), 20, 600), drank((8, 8), 50, 1000)]);
-        assert_eq!(fare_of(&rules, &mind, (0, 0), false), -400);
-        assert_eq!(fare_of(&rules, &mind, (8, 8), false), 0);
-        assert_eq!(goes(&world, &rules, &mind).map(|g| g.0), Some((8, 8)));
-        // Food: half its water at home, a day's food in the grove (2, 2).
-        let mind = at_home(vec![drank((0, 0), 0, 500), picked((2, 2), 50, 1000)]);
-        assert_eq!(goes(&world, &rules, &mind).map(|g| g.1), Some((2, 2)));
-        // Home gives as much: no move; more than a day's worth counts as
-        // a day's.
+        assert!(fare_of(&rules, &mind, (8, 8), false) > fare_of(&rules, &mind, (0, 0), false));
+        assert_eq!(goes(&world, &rules, &mind).map(|g| g.0), Some((2, 2)));
+        // Home gives water and food within reach, a richer grove far off:
+        // no move, the water there being far.
         let mind = at_home(vec![
             drank((0, 0), 0, 1000),
             picked((0, 0), 0, 500),
             picked((2, 2), 50, 3000),
         ]);
-        assert_eq!(fare_of(&rules, &mind, (2, 2), true), 0);
         assert_eq!(goes(&world, &rules, &mind), None);
-        // Both: half its water at home, a grove far away feeding it with
-        // water in it: there it would get both.
-        let mind = at_home(vec![
-            drank((0, 0), 0, 500),
-            drank((9, 9), 60, 500),
-            picked((2, 2), 50, 1000),
-        ]);
-        assert_eq!(goes(&world, &rules, &mind), Some(((9, 9), (2, 2))));
         // Never lived anywhere: no trial.
         assert_eq!(goes(&world, &rules, &Mind::new(home)), None);
     }
@@ -12499,21 +14513,21 @@ mod tests {
         rules.needs.trials.home_nights_by_will = vec![(0, 3), (70, 1)];
         let world = field(256, 250, Pos::new(5, 5));
         let fed = vec![drank((0, 0), 0, 1000), picked((0, 0), 0, 1000)];
-        // Hungry half a day at home every night, not at (1, 0) where it
-        // slept once, fed and watered alike: (1, 0) fares better.
+        // Cold at home every night, not at (1, 0) where it slept once, fed
+        // and watered alike: (1, 0) fares better.
         let mut mind = Mind::new(Pos::new(5, 5));
         lived_at(
             &mut mind,
             (0, 0),
             3,
-            &night_with([500, 0, 1000, 0], 0, fed.clone()),
+            &night_with(COLD, 0, fed.clone()),
             1000,
         );
         lived_at(
             &mut mind,
             (1, 0),
             1,
-            &night_with(COLD, 0, fed.clone()),
+            &night_with([0; SENSES], 0, fed.clone()),
             1000,
         );
         mind.will = 0;
@@ -12524,7 +14538,7 @@ mod tests {
             &mut mind,
             (1, 0),
             2,
-            &night_with(COLD, 0, fed.clone()),
+            &night_with([0; SENSES], 0, fed.clone()),
             1000,
         );
         mind.will = 0;
@@ -12533,19 +14547,146 @@ mod tests {
             Some((1, 0)),
             "three nights"
         );
-        // The water far away: what walking there costs is what living
-        // there saves. Free, the cold alike, home and water tie: no move.
+        // The water far away: free to walk, home and water tie: no move.
         let mut mind = Mind::new(Pos::new(5, 5));
         let day = vec![picked((0, 0), 0, 1000), drank((8, 8), 0, 1000)];
-        lived_at(&mut mind, (0, 0), 3, &night_with(COLD, 0, day), 1000);
+        lived_at(
+            &mut mind,
+            (0, 0),
+            3,
+            &night_with(COLD, 0, day.clone()),
+            1000,
+        );
         assert_eq!(goes(&world, &rules, &mind), None);
-        // A third of a day's food walked there and back: the water wins.
-        let mut mind = Mind::new(Pos::new(5, 5));
-        let day = vec![picked((0, 0), 0, 1000), drank((8, 8), 300, 1000)];
-        lived_at(&mut mind, (0, 0), 3, &night_with(COLD, 300, day), 1000);
-        assert_eq!(fare_of(&rules, &mind, (0, 0), false), -300);
-        assert_eq!(fare_of(&rules, &mind, (8, 8), false), 0);
-        assert_eq!(goes(&world, &rules, &mind).map(|g| g.0), Some((8, 8)));
+        // A third of a day's food to walk there and back: the water wins
+        // over the home; the grove's middle, (2, 2) of the places, nearer
+        // the water and cheaper to move to, wins over the water's place.
+        mind.walk_kilotile = 830;
+        assert!(fare_of(&rules, &mind, (8, 8), false) > fare_of(&rules, &mind, (0, 0), false) + 10);
+        assert_eq!(goes(&world, &rules, &mind).map(|g| g.0), Some((2, 2)));
+    }
+
+    #[test]
+    fn a_home_trial_is_kept_by_its_grade_over_a_season_despite_worse_first_days() {
+        let mut rules = rules();
+        rules.needs.trials.horizon_seasons = vec![("home".to_owned(), 1)];
+        assert_eq!(rules.needs.trials.days_for("home", 50), 12, "a season");
+        let world = field(256, 250, Pos::new(5, 5));
+        let body = &world.bodies[0];
+        let side = place_side(&rules);
+        // The old home (0, 0): fed and watered, cold nights. The new one
+        // (8, 8), lived since the move: fed and watered, warm nights.
+        let fed =
+            |grove: PlaceKey, water: PlaceKey| vec![picked(grove, 0, 1000), drank(water, 0, 1000)];
+        let lived = |new_nights: [u64; SENSES]| {
+            let mut mind = Mind::new(Pos::new(5, 5));
+            lived_at(
+                &mut mind,
+                (0, 0),
+                5,
+                &night_with(COLD, 0, fed((0, 0), (0, 0))),
+                950,
+            );
+            lived_at(
+                &mut mind,
+                (8, 8),
+                10,
+                &night_with(new_nights, 0, fed((2, 2), (8, 8))),
+                950,
+            );
+            let before = mind.ways;
+            mind.ways.home = place_centre((8, 8), side);
+            // Its first days there were worse than before: the move, the
+            // settling, hungry and bare.
+            mind.days = vec![
+                Day {
+                    hungry: true,
+                    bare: true,
+                    ..Day::default()
+                };
+                3
+            ];
+            let trial = Trial {
+                way: Way::Home,
+                before,
+                started_day: 0,
+                before_days: Lately {
+                    kj_per_day: 5000,
+                    ..Lately::default()
+                },
+                heard: HeardDays::default(),
+                caller: None,
+            };
+            (mind, trial)
+        };
+        let (mind, trial) = lived([0; SENSES]);
+        let (kept, judged) = judge(&rules, 50, body, &mind, &trial);
+        // The old judge would give it up; the grade keeps it.
+        assert!(!judged.during.better_than(&trial.before_days));
+        assert!(kept, "graded better than the old home by the margin");
+        // As cold there as at the old home: no better, given up.
+        let (mind, trial) = lived(COLD);
+        assert!(!judge(&rules, 50, body, &mind, &trial).0);
+    }
+
+    #[test]
+    fn a_far_barely_better_place_is_refused_while_a_near_one_is_taken() {
+        let mut rules = rules();
+        rules.needs.trials.home_nights_by_will = vec![(0, 1)];
+        let world = field(256, 250, Pos::new(5, 5));
+        let days = rules
+            .needs
+            .trials
+            .move_repay_days(world.calendar().days_per_year());
+        // Its home (0, 0) lacks a tenth of a day of company each night; a
+        // place near, (1, 0), or some 200 tiles off, (12, 0), lacks none:
+        // each a tenth of a day better. A day's light walks 600 tiles, a
+        // day gathers a day of need.
+        let with = |place: PlaceKey, lack: u64| {
+            let mut mind = Mind::new(Pos::new(5, 5));
+            (mind.walk_kilotile, mind.day_tiles) = (13, 600);
+            mind.gathered = (1000 * 1000, 1000);
+            lived_at(
+                &mut mind,
+                (0, 0),
+                3,
+                &night_with([0, 0, 0, lack], 0, vec![]),
+                1000,
+            );
+            lived_at(
+                &mut mind,
+                place,
+                1,
+                &night_with([0; SENSES], 0, vec![]),
+                1000,
+            );
+            mind
+        };
+        let cost = |mind: &Mind, place: PlaceKey| {
+            move_cost(
+                &world,
+                &rules,
+                mind,
+                (mind.ways.home, place_centre(place, 16)),
+            )
+        };
+        let (near, far_off) = (with((1, 0), 100), with((12, 0), 100));
+        // Each move: the walk there, and a day of settling, over a season.
+        assert!(cost(&near, (1, 0)) >= 1000 / i64::from(days));
+        assert!(cost(&far_off, (12, 0)) > cost(&near, (1, 0)) + 20);
+        assert!(100 - cost(&near, (1, 0)) > MARGIN_PERMILLE);
+        assert!(100 - cost(&far_off, (12, 0)) <= MARGIN_PERMILLE);
+        assert_eq!(goes(&world, &rules, &near).map(|g| g.0), Some((1, 0)));
+        assert_eq!(goes(&world, &rules, &far_off), None, "not worth the move");
+        // Clearly better, the far place repays its cost.
+        let far_better = with((12, 0), 300);
+        assert_eq!(
+            goes(&world, &rules, &far_better).map(|g| g.0),
+            Some((12, 0))
+        );
+        // A listener weighs the same cost from its own home.
+        let called = |mind: &Mind, gain: i64| gain - cost(mind, (12, 0));
+        assert!(called(&far_off, 100) <= MARGIN_PERMILLE);
     }
 
     #[test]
@@ -12645,7 +14786,7 @@ mod tests {
         }
         assert_eq!(mind.day_places.len(), LIVED_MAX);
         mind.walked_today = 1000;
-        let night = night_of(&rules, body, mind);
+        let night = night_of(&world, &rules, (body, 0), mind);
         assert_eq!(night.day.len(), LIVED_MAX);
         assert_eq!(night.walk, walk_permille(&rules, body, 1000));
         assert_eq!((mind.day_places.len(), mind.walked_today), (0, 0));

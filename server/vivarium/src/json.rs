@@ -17,7 +17,7 @@
 
 use serde_json::{Map, Value, json};
 
-use sim::brain::Way;
+use sim::brain::{GoalEnd, Unheard, Way};
 use sim::map::Pos;
 use sim::{BodyId, Death, Sex};
 
@@ -27,7 +27,7 @@ use crate::{
 };
 
 /// The top-level keys, in the order they are written.
-const ORDER: [&str; 15] = [
+const ORDER: [&str; 17] = [
     "meta",
     "years",
     "seasons",
@@ -40,6 +40,8 @@ const ORDER: [&str; 15] = [
     "curves",
     "presence",
     "positions",
+    "move_calls",
+    "goals",
     "map",
     "bearers",
     "relief",
@@ -117,6 +119,7 @@ fn trial(t: &TrialLine) -> Value {
         "kept": t.judged.map(|(_, kept)| kept),
         "will": t.will,
         "heard": t.heard,
+        "grades_permille": t.grades.map(|(old, new)| [old, new]),
     })
 }
 
@@ -198,6 +201,81 @@ fn layout_lines(value: &Value, depth: usize, out: &mut String) {
 }
 
 impl Report {
+    /// The moves called at the fire (D56, amended 24 November 2026): each
+    /// listener's balance, trust, home grade and spouse, and whether it
+    /// joined.
+    fn move_calls_json(&self) -> Value {
+        Value::Array(
+            self.move_calls
+                .iter()
+                .map(|c| {
+                    json!({
+                        "day": c.day,
+                        "tribe": tribe_name(c.tribe).to_string(),
+                        "caller": id(c.caller),
+                        "caller_spouse": c.caller_spouse.map(id),
+                        "caller_home_fare_permille": c.caller_home_fare,
+                        "kept_from": c.from.map(id),
+                        "camp": pos(c.camp),
+                        "to": pos(c.to),
+                        "tiles": (i64::from(c.to.x - c.camp.x).pow(2) + i64::from(c.to.y - c.camp.y).pow(2)).isqrt(),
+                        "gain_permille": c.gain,
+                        "weighed": c.weighed.iter().map(|(w, spouse)| json!({
+                            "body": id(w.body),
+                            "spouse": spouse.map(id),
+                            "balance_permille": w.balance,
+                            "trust": w.trust,
+                            "home_fare_permille": w.home_fare,
+                            "joined": w.joined,
+                        })).collect::<Vec<_>>(),
+                        "caller_weighed": c.own.map(|w| json!({
+                            "balance_permille": w.balance,
+                            "joined": w.joined,
+                        })),
+                        "unheard": c.unheard.iter().map(|(b, why, spouse)| json!({
+                            "body": id(*b),
+                            "spouse": spouse.map(id),
+                            "why": match why {
+                                Unheard::Before => "before",
+                                Unheard::SpouseAway => "spouse_away",
+                                Unheard::Trial => "trial",
+                                Unheard::Child => "child",
+                            },
+                        })).collect::<Vec<_>>(),
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// The goals held (D56, amended 24 November 2026): set, and how each
+    /// ended.
+    fn goals_json(&self) -> Value {
+        Value::Array(
+            self.goals
+                .iter()
+                .map(|g| {
+                    json!({
+                        "body": id(g.body),
+                        "tribe": tribe_name(g.tribe).to_string(),
+                        "day": g.day,
+                        "to": pos(g.to),
+                        "tiles": g.tiles,
+                        "load_kj": g.load_kj,
+                        "end": g.end.map(|(end, _)| match end {
+                            GoalEnd::Arrived => "arrived",
+                            GoalEnd::Load => "load",
+                            GoalEnd::Hunger => "hunger",
+                            GoalEnd::Thirst => "thirst",
+                            GoalEnd::Dropped => "dropped",
+                        }),
+                        "end_day": g.end.map(|(_, day)| day),
+                    })
+                })
+                .collect(),
+        )
+    }
+
     /// The report as data, as `docs/10-vivarium-data.md` lays it out,
     /// without `meta.timing`: the same settings give the same value.
     #[must_use]
@@ -215,6 +293,8 @@ impl Report {
             "curves": self.curves_json(),
             "presence": self.presence_json(),
             "positions": self.positions_json(),
+            "move_calls": self.move_calls_json(),
+            "goals": self.goals_json(),
             "map": self.map_json(),
             "bearers": self.bearers_json(),
             "relief": self.relief_json(),
@@ -542,6 +622,7 @@ impl Report {
                         "sleep_out": y.ways.sleep_out,
                         "median_worth_tiles": y.ways.median_worth_tiles,
                         "median_stock_kj": y.ways.median_stock_kj,
+                        "home_grade_permille": y.ways.home_grades.map(|[min, median, max]| json!({"min": min, "median": median, "max": max})),
                         "stock_kj": {
                             "q1": y.ways.stock_kj_quartiles[0],
                             "median": y.ways.stock_kj_quartiles[1],
@@ -812,7 +893,7 @@ impl Report {
 }
 
 /// Counts by [`sim::brain::Act`], keyed as the report says them.
-fn by_act(counts: [u32; 5]) -> Value {
+fn by_act(counts: [u32; crate::ACTS]) -> Value {
     let mut map = serde_json::Map::new();
     for (key, count) in ACT_KEYS.iter().zip(counts) {
         map.insert((*key).to_owned(), json!(count));
@@ -822,7 +903,7 @@ fn by_act(counts: [u32; 5]) -> Value {
 
 /// A mean by act: `sums` over the `days` of each act; `null` without a
 /// day.
-fn by_act_mean(sums: [u64; 5], days: [u32; 5]) -> Value {
+fn by_act_mean(sums: [u64; crate::ACTS], days: [u32; crate::ACTS]) -> Value {
     let mut map = serde_json::Map::new();
     for ((key, sum), n) in ACT_KEYS.iter().zip(sums).zip(days) {
         map.insert(
