@@ -981,6 +981,23 @@ pub struct NightsApart {
     pub caught_out: u32,
 }
 
+/// The grown bodies' dawns by age-year, at home or away (25 November
+/// 2026, the project lead: do small groups ever spend nights out
+/// together?). Away is farther from its home than the fire's reach
+/// (`trials.imitate_tiles`) on either axis.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NightsOut {
+    /// The grown bodies' dawns.
+    pub dawns: u32,
+    /// Those away from home.
+    pub away: u32,
+    /// Of them, asleep.
+    pub asleep: u32,
+    /// Of them, with two or more other grown bodies away from their own
+    /// homes lying within the fire's reach: a group's night out.
+    pub in_company: u32,
+}
+
 impl NightsApart {
     /// The dawns apart.
     #[must_use]
@@ -1001,6 +1018,8 @@ struct WhyProbe {
     changes: Vec<HomeChange>,
     /// The fertile couples' dawns, by age-year from the first.
     nights: Vec<NightsApart>,
+    /// The grown bodies' dawns, at home or away, by age-year.
+    out: Vec<NightsOut>,
 }
 
 /// The tiles between two tiles on the longer axis.
@@ -1098,6 +1117,7 @@ impl WhyProbe {
             };
             *cause += 1;
         }
+        self.nights_out_at_dawn(world, brains, content, year);
         if self.nights.len() <= year {
             self.nights.resize(year + 1, NightsApart::default());
         }
@@ -1113,6 +1133,46 @@ impl WhyProbe {
         ] {
             *total += add;
         }
+    }
+
+    /// Each grown body's dawn, at home or away ([`NightsOut`]).
+    fn nights_out_at_dawn(
+        &mut self,
+        world: &World,
+        brains: &Brains,
+        content: &Content,
+        year: usize,
+    ) {
+        let reach = content.needs.trials.imitate_tiles;
+        let mut night = NightsOut::default();
+        let away: Vec<(Pos, bool)> = world
+            .bodies()
+            .iter()
+            .filter(|b| b.condition().vitality.points() > 0 && world.age_milli(b) >= 16_000)
+            .filter_map(|b| {
+                night.dawns += 1;
+                let home = home_of(world, brains, b.id())?;
+                (tiles_apart(b.pos(), home) > reach).then_some((b.pos(), b.condition().asleep))
+            })
+            .collect();
+        for (i, &(at, asleep)) in away.iter().enumerate() {
+            night.away += 1;
+            night.asleep += u32::from(asleep);
+            let near = away
+                .iter()
+                .enumerate()
+                .filter(|&(j, &(other, lying))| j != i && lying && tiles_apart(at, other) <= reach)
+                .count();
+            night.in_company += u32::from(near >= 2);
+        }
+        if self.out.len() <= year {
+            self.out.resize(year + 1, NightsOut::default());
+        }
+        let n = &mut self.out[year];
+        n.dawns += night.dawns;
+        n.away += night.away;
+        n.asleep += night.asleep;
+        n.in_company += night.in_company;
     }
 
     /// At a dawn: each couple's dawn, then the grown bodies whose home
@@ -1791,6 +1851,9 @@ pub struct Report {
     /// The fertile couples' dawns, together or apart and why, by age-year
     /// from the first (24 November 2026).
     pub nights_apart: Vec<NightsApart>,
+    /// The grown bodies' dawns, at home or away, by age-year from the
+    /// first (25 November 2026).
+    pub nights_out: Vec<NightsOut>,
     /// The rumours dispelled, in order (D55).
     pub rumours: Vec<Rumour>,
     /// The nights the hearths still hold at the end (D55).
@@ -2998,6 +3061,7 @@ pub fn run_watched(
         partings: why.partings,
         home_changes: why.changes,
         nights_apart: why.nights,
+        nights_out: why.out,
         rumours: tally.rumours,
         nights,
         records,

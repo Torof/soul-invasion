@@ -409,6 +409,11 @@ clock, the only field no seed decides.
 | `nights_apart[].goal` | Apart: one away from home holds a goal beyond a day (D56) | dawns |
 | `nights_apart[].home_trial` | Apart: one away from home is on its home trial | dawns |
 | `nights_apart[].caught_out` | Apart: none of these; the night caught one out | dawns |
+| `nights_out[]` | The grown bodies' dawns, by age-year from the first (25 November 2026, the project lead: do small groups ever spend nights out together?); away is farther from its home than the fire's reach (`trials.imitate_tiles`) on either axis | list, one per year |
+| `nights_out[].dawns` | The grown bodies' dawns | dawns |
+| `nights_out[].away` | Those away from home | dawns |
+| `nights_out[].asleep` | Of them, asleep | dawns |
+| `nights_out[].in_company` | Of them, with two or more other grown bodies away from their own homes lying within the fire's reach: a group's night out | dawns |
 | `goals[]` | Each goal held over several days (D56, amended 24 November 2026): `body`, `tribe`, `day` set, `to`, `tiles`, `load_kj` carried then, `end` (`arrived`, `load`, `hunger`, `thirst`, `dropped`, `null` while held at the end), `end_day` | |
 | `map.data_uri` | The page's picture of the map at the run's end, the same PNG: the terrain, the camps red, the living white, the dead black | `"data:image/png;base64,…"` |
 | `map.tiles_per_pixel` | The scale: one pixel is so many tiles a side (5 on the vivarium's world) | tiles |
