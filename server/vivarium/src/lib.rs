@@ -23,7 +23,7 @@ use std::time::Instant;
 use sim::brain::{
     Act, Brains, GoalEnd, GoalTo, GroupEnd, Mind, News, PlaceKey, Unheard, Way, Ways, Weighed, Why,
 };
-use sim::content::{Content, Decisions, Fire, Trials};
+use sim::content::{Content, Decisions, Fire, Moving, Trials};
 use sim::map::{Map, Pos, Terrain};
 use sim::memory::{Access, Record, RecordId};
 use sim::time::Calendar;
@@ -107,6 +107,11 @@ pub struct Settings {
     /// run with them (`--no-decisions`): the content's `decisions` section
     /// is replaced by none, the fire otherwise the same.
     pub decisions: bool,
+    /// Moving home as a consequence (D50, D56, amended 24 November 2026);
+    /// false is the control run beside each run with it (`--no-moves`):
+    /// the content's `moving` section is replaced by none, so nobody is
+    /// surprised and nobody moves home; everything else the same.
+    pub moves: bool,
     /// Where the vivarium's continent is kept between runs
     /// ([`continents`]): `None` for no cache (`--no-continent-cache`),
     /// the continent born at every run. The patch worlds never use it.
@@ -138,6 +143,7 @@ impl Default for Settings {
             trials: true,
             fire: true,
             decisions: true,
+            moves: true,
             continents: Some(continents::default_dir()),
             helpers: 1,
         }
@@ -819,6 +825,108 @@ pub struct TrialEvent {
     pub heard: bool,
 }
 
+/// Moving as a consequence, for the data (amended 24 November 2026).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MovingProbe {
+    /// Each move felt at nightfall: (day, body, tribe, gain, push,
+    /// surprise, huge).
+    pub felt: Vec<(u64, BodyId, u8, i64, u64, u64, bool)>,
+    /// Each surprise lived: (day, body, tribe, gain, stayers, what they
+    /// gathered, spouse took the day).
+    pub surprised: Vec<(u64, BodyId, u8, u64, u32, u64, bool)>,
+    /// Each day gone to see a surprise told: (day, body, tribe, teller).
+    pub go_see: Vec<(u64, BodyId, u8, BodyId)>,
+    /// The nights each grown body was hungry at nightfall, by body: the
+    /// days.
+    pub hungry: BTreeMap<BodyId, BTreeSet<u64>>,
+    /// The nightfalls each grown body lived, by body: the days.
+    pub alive: BTreeMap<BodyId, BTreeSet<u64>>,
+    /// By (tribe, year): the grown bodies' dawns, and those of them
+    /// pushed (the push at the last nightfall at its threshold or more).
+    pub pushed: BTreeMap<(u8, u64), (u32, u32)>,
+}
+
+/// What a move did to its mover (amended 24 November 2026, the utility
+/// measure): its hungry nights over the season after it set off, against
+/// the mean of the grown of its tribe who moved neither in the season
+/// before nor in that one, over the same nights, all alive throughout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MoveUtility {
+    /// The day it set off.
+    pub day: u64,
+    /// Who.
+    pub body: BodyId,
+    /// Its tribe.
+    pub tribe: u8,
+    /// Its hungry nights over the season after.
+    pub mover: u32,
+    /// The stayers compared with.
+    pub stayers: u32,
+    /// Their mean hungry nights over the same season, in thousandths.
+    pub stayers_milli: u64,
+}
+
+impl Report {
+    /// The utility of each move (amended 24 November 2026): see
+    /// [`MoveUtility`]. A move whose mover did not live the whole season
+    /// after, or with no stayer, is left out.
+    #[must_use]
+    pub fn move_utility(&self) -> Vec<MoveUtility> {
+        let season = u64::from(sim::time::Calendar::DEFAULT_DAYS_PER_YEAR / 4).max(1);
+        let m = &self.moving;
+        let lived = |b: BodyId, from: u64, to: u64| {
+            m.alive
+                .get(&b)
+                .is_some_and(|days| (from..=to).all(|d| days.contains(&d)))
+        };
+        let hungry = |b: BodyId, from: u64, to: u64| {
+            m.hungry
+                .get(&b)
+                .map_or(0, |days| days.range(from..=to).count())
+        };
+        let moved = |b: BodyId, from: u64, to: u64| {
+            self.home_moves
+                .iter()
+                .any(|h| h.body == b && h.how == "trial" && (from..=to).contains(&h.day))
+        };
+        self.home_moves
+            .iter()
+            .filter(|h| h.how == "trial")
+            .filter_map(|h| {
+                let (from, to) = (h.day + 1, h.day + season);
+                if !lived(h.body, from, to) {
+                    return None;
+                }
+                let stayers: Vec<usize> = m
+                    .alive
+                    .keys()
+                    .filter(|&&b| b != h.body)
+                    .filter(|&&b| {
+                        self.people.get(&b).map(|p| p.tribe) == Some(h.tribe)
+                    })
+                    .filter(|&&b| {
+                        lived(b, from, to) && !moved(b, h.day.saturating_sub(season), to)
+                    })
+                    .map(|&b| hungry(b, from, to))
+                    .collect();
+                if stayers.is_empty() {
+                    return None;
+                }
+                let n = u64::try_from(stayers.len()).unwrap_or(u64::MAX);
+                let sum = u64::try_from(stayers.iter().sum::<usize>()).unwrap_or(u64::MAX);
+                Some(MoveUtility {
+                    day: h.day,
+                    body: h.body,
+                    tribe: h.tribe,
+                    mover: u32::try_from(hungry(h.body, from, to)).unwrap_or(u32::MAX),
+                    stayers: u32::try_from(n).unwrap_or(u32::MAX),
+                    stayers_milli: sum * 1000 / n,
+                })
+            })
+            .collect()
+    }
+}
+
 /// A move called at the fire (D56, amended 24 November 2026), for the
 /// data: who called, where to, the gain told, and each listener's balance
 /// with its spouse.
@@ -1140,6 +1248,10 @@ pub struct Report {
     /// The moves called at the fire, in order (D56, amended 24 November
     /// 2026).
     pub move_calls: Vec<MoveCall>,
+    /// Moving as a consequence (amended 24 November 2026): the moves
+    /// felt, the surprises, the days gone to see, and what the moves did
+    /// to the movers' hungry nights.
+    pub moving: MovingProbe,
     /// The goals held, in the order set (D56, amended 24 November 2026).
     pub goals: Vec<GoalRow>,
     /// The fire's counts by tribe and year (D55).
@@ -1250,7 +1362,12 @@ pub fn run_watched(
     // The control run (D50, `--no-trials`): the content's trials replaced
     // by none, so nobody tries nor copies anything.
     let own_content;
-    let content = if settings.fed || !settings.trials || !settings.fire || !settings.decisions {
+    let content = if settings.fed
+        || !settings.trials
+        || !settings.fire
+        || !settings.decisions
+        || !settings.moves
+    {
         let mut own = content.clone();
         if settings.fed {
             own.needs.hunger_per_day = 0;
@@ -1268,6 +1385,9 @@ pub fn run_watched(
         }
         if !settings.decisions {
             own.needs.decisions = Decisions::default();
+        }
+        if !settings.moves {
+            own.needs.moving = Moving::default();
         }
         own_content = own;
         &own_content
@@ -1462,6 +1582,7 @@ pub fn run_watched(
     let mut positions: Vec<(u64, Vec<(BodyId, Pos)>)> = Vec::new();
     let mut home_moves: Vec<HomeMove> = Vec::new();
     let mut move_calls: Vec<MoveCall> = Vec::new();
+    let mut moving = MovingProbe::default();
     let mut goals: Vec<GoalRow> = Vec::new();
     let mut tally = FireTally {
         ticks_per_season: (calendar.ticks_per_day() * u64::from(calendar.days_per_year()) / 4)
@@ -1554,6 +1675,19 @@ pub fn run_watched(
                         what: format!("{grams} g of {material} it carried spoil ({energy} kJ)"),
                     });
                 }
+                Event::NightFell { .. } => {
+                    // Each grown body's nightfall, hungry or not (the
+                    // utility of the moves, 24 November 2026).
+                    for b in world.bodies() {
+                        if world.age_milli(b) < 16_000 || b.condition().vitality.points() == 0 {
+                            continue;
+                        }
+                        moving.alive.entry(b.id()).or_default().insert(day);
+                        if b.condition().hunger.points() >= sim::brain::HUNGRY {
+                            moving.hungry.entry(b.id()).or_default().insert(day);
+                        }
+                    }
+                }
                 Event::DayStarted { day } => {
                     chronicle.push(Entry {
                         tick,
@@ -1562,6 +1696,20 @@ pub fn run_watched(
                     });
                     watch(&world, *day);
                     couples_at_dawn(&world, content, &mut tally.bilan);
+                    let threshold = u64::from(content.needs.moving.push_permille);
+                    for b in world.bodies() {
+                        if world.age_milli(b) < 16_000 {
+                            continue;
+                        }
+                        if let Some(mind) = brains.mind(b.id()) {
+                            let e = moving
+                                .pushed
+                                .entry((tribe_of(&people, b.id()), year))
+                                .or_default();
+                            e.0 += 1;
+                            e.1 += u32::from(mind.push() >= threshold);
+                        }
+                    }
                 }
                 Event::SeasonStarted { year, season } => chronicle.push(Entry {
                     tick,
@@ -1858,6 +2006,43 @@ pub fn run_watched(
                             .collect(),
                     });
                 }
+                News::MoveFelt {
+                    body,
+                    gain,
+                    push,
+                    surprise,
+                    huge,
+                    ..
+                } => moving.felt.push((
+                    day,
+                    *body,
+                    tribe_of(&people, *body),
+                    *gain,
+                    *push,
+                    *surprise,
+                    *huge,
+                )),
+                News::Surprised {
+                    body,
+                    gain,
+                    stayers,
+                    stayers_gathered,
+                    spouse,
+                    ..
+                } => moving.surprised.push((
+                    day,
+                    *body,
+                    tribe_of(&people, *body),
+                    *gain,
+                    *stayers,
+                    *stayers_gathered,
+                    spouse.is_some(),
+                )),
+                News::GoSee { body, from, .. } => {
+                    moving
+                        .go_see
+                        .push((day, *body, tribe_of(&people, *body), *from));
+                }
                 News::GoalSet {
                     body,
                     to: GoalTo::Home(to),
@@ -1965,6 +2150,9 @@ pub fn run_watched(
                 | News::Company { .. }
                 | News::Reached { .. }
                 | News::MoveCalled { .. }
+                | News::MoveFelt { .. }
+                | News::Surprised { .. }
+                | News::GoSee { .. }
                 | News::GoalSet { .. }
                 | News::GoalEnded { .. }
                 | News::Followed { .. } => continue,
@@ -2233,6 +2421,7 @@ pub fn run_watched(
         positions,
         home_moves,
         move_calls,
+        moving,
         goals,
         fire: tally.fire,
         seasons: tally.seasons,
@@ -5067,6 +5256,7 @@ mod tests {
             trials: true,
             fire: true,
             decisions: true,
+            moves: true,
             continents: None,
             helpers: 1,
         }

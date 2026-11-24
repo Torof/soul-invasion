@@ -27,7 +27,7 @@ use crate::{
 };
 
 /// The top-level keys, in the order they are written.
-const ORDER: [&str; 17] = [
+const ORDER: [&str; 18] = [
     "meta",
     "years",
     "seasons",
@@ -41,6 +41,7 @@ const ORDER: [&str; 17] = [
     "presence",
     "positions",
     "move_calls",
+    "moving",
     "goals",
     "map",
     "bearers",
@@ -201,6 +202,55 @@ fn layout_lines(value: &Value, depth: usize, out: &mut String) {
 }
 
 impl Report {
+    /// Moving as a consequence (amended 24 November 2026): the moves felt
+    /// (pushed, or by a huge surprise), the surprises lived, the days gone
+    /// to see, and each move's utility (the mover's hungry nights over the
+    /// season after, against the stayers' over the same nights).
+    fn moving_json(&self) -> Value {
+        let m = &self.moving;
+        let utility = self.move_utility();
+        json!({
+            "felt": m.felt.iter().map(|&(day, body, tribe, gain, push, surprise, huge)| json!({
+                "day": day,
+                "body": id(body),
+                "tribe": tribe_name(tribe).to_string(),
+                "gain_permille": gain,
+                "push_permille": push,
+                "surprise_permille": surprise,
+                "huge": huge,
+            })).collect::<Vec<_>>(),
+            "surprised": m.surprised.iter().map(|&(day, body, tribe, gain, stayers, gathered, spouse)| json!({
+                "day": day,
+                "body": id(body),
+                "tribe": tribe_name(tribe).to_string(),
+                "gain_permille": gain,
+                "stayers": stayers,
+                "stayers_gathered_permille": gathered,
+                "spouse_took_it": spouse,
+            })).collect::<Vec<_>>(),
+            "pushed": m.pushed.iter().map(|(&(tribe, year), &(dawns, pushed))| json!({
+                "tribe": tribe_name(tribe).to_string(),
+                "year": year,
+                "dawns": dawns,
+                "pushed": pushed,
+            })).collect::<Vec<_>>(),
+            "go_see": m.go_see.iter().map(|&(day, body, tribe, from)| json!({
+                "day": day,
+                "body": id(body),
+                "tribe": tribe_name(tribe).to_string(),
+                "from": id(from),
+            })).collect::<Vec<_>>(),
+            "utility": utility.iter().map(|u| json!({
+                "day": u.day,
+                "body": id(u.body),
+                "tribe": tribe_name(u.tribe).to_string(),
+                "mover_hungry_nights": u.mover,
+                "stayers": u.stayers,
+                "stayers_hungry_nights_milli": u.stayers_milli,
+            })).collect::<Vec<_>>(),
+        })
+    }
+
     /// The moves called at the fire (D56, amended 24 November 2026): each
     /// listener's balance, trust, home grade and spouse, and whether it
     /// joined.
@@ -294,6 +344,7 @@ impl Report {
             "presence": self.presence_json(),
             "positions": self.positions_json(),
             "move_calls": self.move_calls_json(),
+            "moving": self.moving_json(),
             "goals": self.goals_json(),
             "map": self.map_json(),
             "bearers": self.bearers_json(),
@@ -364,6 +415,7 @@ impl Report {
                 "trials": s.trials,
                 "fire": s.fire,
                 "decisions": s.decisions,
+                "moves": s.moves,
                 "content": s.content.as_deref().and_then(|p| p.file_name()).and_then(|n| n.to_str()),
             },
             "map_tiles": [self.map_side.0, self.map_side.1],

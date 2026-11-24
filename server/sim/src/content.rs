@@ -394,6 +394,112 @@ pub struct Needs {
     /// fire weighs in the notebook. Absent: nobody feels it.
     #[serde(default)]
     pub company: Company,
+    /// Moving home as a consequence (D50, D53, D56, amended 24 November
+    /// 2026): the push felt here, the surprise lived there, the tale that
+    /// makes others go and see. Absent: nobody ever moves home.
+    #[serde(default)]
+    pub moving: Moving,
+}
+
+/// Moving home as a consequence, never a goal (D50, D53, D56, amended 24
+/// November 2026; the project lead: "le déménagement est une conséquence,
+/// pas une cause"). A move is called only by a body that feels it is not
+/// going well here (the push: its recent days against its usual days of
+/// the season) and that lived, itself or through its spouse, days clearly
+/// better at a place than its camp-mates who stayed near home that same
+/// day (the surprise); a huge surprise alone is enough. The tale of a
+/// surprise at the fire makes some go and see, never move. Every value is
+/// a D30 placeholder, named and explained in `content/needs.ron`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Moving {
+    /// How much more a day at a place must have given than the same day
+    /// gave the camp-mates who stayed near home, in per mille of a day of
+    /// need, to be a surprise. 0: nobody is ever surprised, nobody moves.
+    pub surprise_permille: u32,
+    /// A surprise this many times `surprise_permille` calls a move
+    /// without any push.
+    pub huge_times: u32,
+    /// How much worse its recent days must be than its usual days of the
+    /// season, in per mille of a day of need, for a body to feel pushed.
+    pub push_permille: u32,
+    /// What its recent days keep from one day to the next, per mille: a
+    /// short memory.
+    pub recent_keep_permille: u32,
+    /// What its usual days of a season keep from one day of that season
+    /// to the next, per mille: a long memory.
+    pub usual_keep_permille: u32,
+    /// What a spouse's day of surprise counts for in a body's own notes,
+    /// in per cent of a day lived by itself.
+    pub spouse_day_percent: u32,
+    /// The chance, in per cent by will, that a listener who believes a
+    /// surprise told at the fire goes and sees it the next day.
+    pub see_percent_by_will: Vec<(u32, u32)>,
+}
+
+impl Default for Moving {
+    /// Off: nobody is surprised, nobody moves home.
+    fn default() -> Self {
+        Self {
+            surprise_permille: 0,
+            huge_times: 4,
+            push_permille: 100,
+            recent_keep_permille: 700,
+            usual_keep_permille: 950,
+            spouse_day_percent: 100,
+            see_percent_by_will: vec![(0, 0)],
+        }
+    }
+}
+
+impl Moving {
+    /// The placeholders of `content/needs.ron` (D30).
+    #[must_use]
+    pub fn placeholders() -> Self {
+        Self {
+            surprise_permille: 250,
+            huge_times: 4,
+            push_permille: 100,
+            recent_keep_permille: 700,
+            usual_keep_permille: 950,
+            spouse_day_percent: 80,
+            see_percent_by_will: vec![(0, 20), (100, 80)],
+        }
+    }
+
+    /// Whether anybody can be surprised, and so move home.
+    #[must_use]
+    pub fn on(&self) -> bool {
+        self.surprise_permille > 0
+    }
+
+    /// The chance, in per cent, that a listener of `will` goes and sees a
+    /// surprise it believes.
+    #[must_use]
+    pub fn see_percent(&self, will: u8) -> u64 {
+        along(&self.see_percent_by_will, u64::from(will) * 1000, 1)
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        let rising = self.see_percent_by_will.windows(2).all(|p| p[0].0 < p[1].0);
+        if self.see_percent_by_will.is_empty()
+            || !rising
+            || self
+                .see_percent_by_will
+                .iter()
+                .any(|p| p.0 > 100 || p.1 > 100)
+            || self.recent_keep_permille > 1000
+            || self.usual_keep_permille > 1000
+            || self.spouse_day_percent > 100
+            || self.huge_times == 0
+        {
+            return Err(ContentError::Needs(
+                "moving: see_percent_by_will not empty, its wills rising, every value at most \
+                 100; recent_keep_permille and usual_keep_permille at most 1000; \
+                 spouse_day_percent at most 100; huge_times at least 1",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Company, a sense of the notebook (D53 amended 24 November 2026; the
@@ -1757,7 +1863,8 @@ impl Needs {
         self.decisions.validate()?;
         self.temperance.validate()?;
         self.reputation.validate()?;
-        self.company.validate()
+        self.company.validate()?;
+        self.moving.validate()
     }
 
     fn validate_reserve(&self) -> Result<(), ContentError> {
