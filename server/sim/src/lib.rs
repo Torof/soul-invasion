@@ -1663,7 +1663,8 @@ impl World {
             .enumerate()
             .filter(|(_, crop)| *crop.on == *bearer.kind)
             .filter_map(|(i, crop)| {
-                let (year, grams) = self.left_of(chunk, bearer.source, bearer.at, i)?;
+                let (year, grams) =
+                    self.left_of(self.changes_in(chunk), bearer.source, bearer.at, i)?;
                 Some(crops::Ripe {
                     gives: crop.gives.clone(),
                     year,
@@ -1689,7 +1690,7 @@ impl World {
             .iter()
             .enumerate()
             .filter(|(_, crop)| crop.on == kind && crop.gives == gives)
-            .find_map(|(i, _)| self.left_of(chunk, source, at, i))
+            .find_map(|(i, _)| self.left_of(self.changes_in(chunk), source, at, i))
     }
 
     /// [`World::ripe_of`] for the crop at `crop` in the content's order
@@ -1705,7 +1706,20 @@ impl World {
         at: FinePos,
         crop: usize,
     ) -> Option<(u64, u32)> {
-        (crop < self.crops.len()).then(|| self.left_of(chunk, source, at, crop))?
+        (crop < self.crops.len()).then(|| self.left_of(self.changes_in(chunk), source, at, crop))?
+    }
+
+    /// [`World::ripe_of_crop`] with the chunk's changes already in hand
+    /// ([`World::changes_in`]): a mind looking over a chunk's plants finds
+    /// them once, not once a plant.
+    pub fn ripe_of_crop_in(
+        &self,
+        changes: Option<&changes::ChunkChanges>,
+        source: crops::Source,
+        at: FinePos,
+        crop: usize,
+    ) -> Option<(u64, u32)> {
+        (crop < self.crops.len()).then(|| self.left_of(changes, source, at, crop))?
     }
 
     /// The crop giving `gives` on the kind `kind`, in the content's order
@@ -1722,7 +1736,7 @@ impl World {
     /// when nothing.
     fn left_of(
         &self,
-        chunk: ChunkPos,
+        changes: Option<&changes::ChunkChanges>,
         source: crops::Source,
         at: FinePos,
         crop: usize,
@@ -1735,8 +1749,7 @@ impl World {
             crops::there_keyed(crop, key, &self.calendar, self.tick, self.seed(), frame, at)?;
         // Looked up without making the key's text: the picks of one
         // source sit together, few of them.
-        let taken = self
-            .changes_in(chunk)
+        let taken = changes
             .and_then(|c| {
                 c.picked
                     .range((source, String::new())..)
@@ -2701,9 +2714,12 @@ impl World {
     /// Every body's state as a carrier, for the infants it nurses: whether
     /// it has milk (a woman whose reserve is not spent), its cold, fatigue
     /// and sleep.
+    /// Only the bodies carrying one: a handful, read by id, where every
+    /// body's state was gathered each tick for them.
     fn carriers(&self, needs: &content::Needs) -> BTreeMap<BodyId, (bool, Gauge, Gauge, bool)> {
-        self.bodies
-            .iter()
+        let by: BTreeSet<BodyId> = self.bodies.iter().filter_map(|b| b.carried_by).collect();
+        by.into_iter()
+            .filter_map(|id| self.body(id))
             .map(|b| {
                 let c = &b.condition;
                 let milk = b.sex == Sex::Female && c.deficit_j < c.reserve_j(needs);

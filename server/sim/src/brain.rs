@@ -3261,6 +3261,47 @@ impl Brains {
         std::mem::take(&mut self.news)
     }
 
+    /// Who is gone, and who is due, at the tick `now`: the gone forgotten,
+    /// each living mind's gauges read, the due by id.
+    fn sweep_minds(&mut self, world: &World, rules: &Content, now: u64) -> Vec<BodyId> {
+        // Who is gone, and who is due: the due noted on the way, by their
+        // ids, rather than swept again.
+        let spread = wake_spread(world);
+        let mut due: Vec<BodyId> = Vec::new();
+        let (memory, gone_wills) = (&mut self.memory, &mut self.gone_wills);
+        // Bodies and minds both by id: one walk through each.
+        let (bodies, mut at) = (world.bodies(), 0);
+        self.minds.retain(|&id, mind| {
+            at += bodies[at..].partition_point(|b| b.id() < id);
+            let body = bodies
+                .get(at)
+                .filter(|b| b.id() == id && b.condition().vitality.points() > 0);
+            let Some(body) = body else {
+                mind.forget_all(memory);
+                gone_wills.insert(id, mind.will);
+                return false;
+            };
+            if body.condition().cold.is_full() {
+                mind.cold_night = true;
+            }
+            let past = pasts_of(body, rules, mind.past.2);
+            if past != mind.past {
+                // A gauge past a threshold: in its own tick too, as the
+                // dawn (a tribe born at once grows hungry at once).
+                mind.past = past;
+                mind.wake(id, now, spread);
+            }
+            if mind.wake_at.is_some_and(|tick| now >= tick) {
+                mind.due = true;
+            }
+            if mind.due {
+                due.push(id);
+            }
+            true
+        });
+        due
+    }
+
     /// One turn, after a tick of `world` that produced `events`: the
     /// minds something changed for think, as many as the turn's share of
     /// [`THOUGHT_WORK_PER_SECOND`] allows, and what they decide is given
@@ -3280,38 +3321,7 @@ impl Brains {
         self.bearers.chunks.widen(chunks);
         self.shores.widen(chunks);
         self.learn_unseen(world, rules);
-        let spread = wake_spread(world);
-        // Who is gone, and who is due: the due noted on the way, by their
-        // ids, rather than swept again.
-        let mut due: Vec<BodyId> = Vec::new();
-        let (memory, gone_wills) = (&mut self.memory, &mut self.gone_wills);
-        self.minds.retain(|&id, mind| {
-            let body = world
-                .body(id)
-                .filter(|b| b.condition().vitality.points() > 0);
-            let Some(body) = body else {
-                mind.forget_all(memory);
-                gone_wills.insert(id, mind.will);
-                return false;
-            };
-            if body.condition().cold.is_full() {
-                mind.cold_night = true;
-            }
-            let past = pasts(world, rules, id, mind.past.2);
-            if past != mind.past {
-                // A gauge past a threshold: in its own tick too, as the
-                // dawn (a tribe born at once grows hungry at once).
-                mind.past = past;
-                mind.wake(id, now, spread);
-            }
-            if mind.wake_at.is_some_and(|tick| now >= tick) {
-                mind.due = true;
-            }
-            if mind.due {
-                due.push(id);
-            }
-            true
-        });
+        let mut due = self.sweep_minds(world, rules, now);
         if std::mem::take(&mut self.dusk) {
             self.close_day(world, rules);
         }
@@ -5077,16 +5087,21 @@ fn pasts(
     world
         .body(id)
         .map_or((false, false, false, false, false), |body| {
-            let c = body.condition();
-            let hunger = c.hunger.points();
-            (
-                c.thirst.points() >= THIRSTY,
-                c.thirst.points() >= PARCHED,
-                hunger >= HUNGRY || (was_hungry && hunger >= rules.needs.thought.fed_under),
-                c.asleep,
-                c.asleep && c.fatigue.points() >= COLLAPSED,
-            )
+            pasts_of(body, rules, was_hungry)
         })
+}
+
+/// [`pasts`] of a body already found.
+fn pasts_of(body: &Body, rules: &Content, was_hungry: bool) -> (bool, bool, bool, bool, bool) {
+    let c = body.condition();
+    let hunger = c.hunger.points();
+    (
+        c.thirst.points() >= THIRSTY,
+        c.thirst.points() >= PARCHED,
+        hunger >= HUNGRY || (was_hungry && hunger >= rules.needs.thought.fed_under),
+        c.asleep,
+        c.asleep && c.fatigue.points() >= COLLAPSED,
+    )
 }
 
 /// Can a body stand on `pos`?
@@ -5353,34 +5368,59 @@ fn count_plants(
     let Some(placed) = bearers.get(world, food, chunk) else {
         return false;
     };
+    // The chunk's changes found once, and its few places tallied here
+    // before they join `seen`: the same sums, not a search a plant.
+    let changes = world.changes_in(chunk);
+    let mut tally: Vec<(PlaceKey, Vec<Seen>)> = Vec::new();
     for (bearer, kind) in placed.food() {
         let tile = bearer.at.tile();
         if (tile.x - at.x).abs() > sight || (tile.y - at.y).abs() > sight {
             continue;
         }
         let kj = food.now(kind).and_then(|bears| {
-            let (_, left_g) = world.ripe_of_crop(chunk, bearer.source, bearer.at, bears.crop)?;
+            let (_, left_g) =
+                world.ripe_of_crop_in(changes, bearer.source, bearer.at, bears.crop)?;
             kj_of_an_hour(bears.kj, rules.crops[bears.crop].per_hour_g, left_g)
         });
-        let kinds = seen.entry(place_of(tile, side)).or_default();
-        match kinds.binary_search_by_key(&kind, |k| k.kind) {
-            Ok(i) => {
-                kinds[i].plants = kinds[i].plants.saturating_add(1);
-                kinds[i].holding = kinds[i].holding.saturating_add(u16::from(kj.is_some()));
-                kinds[i].best_kj = kinds[i].best_kj.max(kj.unwrap_or(0));
-            }
-            Err(i) => kinds.insert(
-                i,
-                Seen {
-                    kind,
-                    plants: 1,
-                    holding: u16::from(kj.is_some()),
-                    best_kj: kj.unwrap_or(0),
-                },
-            ),
+        let place = place_of(tile, side);
+        let at_place = tally
+            .iter()
+            .position(|(p, _)| *p == place)
+            .unwrap_or_else(|| {
+                tally.push((place, Vec::new()));
+                tally.len() - 1
+            });
+        add_seen(
+            &mut tally[at_place].1,
+            Seen {
+                kind,
+                plants: 1,
+                holding: u16::from(kj.is_some()),
+                best_kj: kj.unwrap_or(0),
+            },
+        );
+    }
+    for (place, kinds) in tally {
+        let into = seen.entry(place).or_default();
+        for one in kinds {
+            add_seen(into, one);
         }
     }
     true
+}
+
+/// Adds `one` to the kinds seen at a place, kept in kind order: plants
+/// and those holding food summed, the best kept.
+fn add_seen(kinds: &mut Vec<Seen>, one: Seen) {
+    match kinds.binary_search_by_key(&one.kind, |k| k.kind) {
+        Ok(i) => {
+            let k = &mut kinds[i];
+            k.plants = k.plants.saturating_add(one.plants);
+            k.holding = k.holding.saturating_add(one.holding);
+            k.best_kj = k.best_kj.max(one.best_kj);
+        }
+        Err(i) => kinds.insert(i, one),
+    }
 }
 
 /// A place's rank in a memory ([`remember_places`]): the lower, the
