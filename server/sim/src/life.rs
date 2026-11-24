@@ -134,17 +134,56 @@ impl World {
     }
 
     /// The life rule's tick (D49), when `life` is on. At the start of a
-    /// day: a weak pregnant woman loses her child, a woman at her due day
-    /// gives birth. At each body's own hour of the day: a body without a
-    /// spouse takes one, and the body draws its death of the day.
+    /// day: spouses apart too long part, a weak pregnant woman loses her
+    /// child, a woman at her due day gives birth. At each body's own hour
+    /// of the day: a body without a spouse takes one, and the body draws
+    /// its death of the day.
     pub(crate) fn live(&mut self, rules: &Content, tick_of_day: u64, events: &mut Vec<Event>) {
         if !self.life {
             return;
         }
         if tick_of_day == 0 {
+            self.part(rules, events);
             self.lose_or_bear(rules, events);
         }
         self.couple_and_die(rules, tick_of_day, events);
+    }
+
+    /// The couples at a day's start (D49, amended 24 November 2026): a
+    /// body whose spouse stands beyond `mate_within_tiles` counts one more
+    /// dawn apart, one back within it counts none; at `part_after_days`
+    /// dawns in a row the two part, both free to take another by the
+    /// daily rule. Their children stay with their mother: nothing of
+    /// theirs changes. Nothing when `part_after_days` is 0.
+    fn part(&mut self, rules: &Content, events: &mut Vec<Event>) {
+        let life = &rules.needs.life;
+        if life.part_after_days == 0 {
+            return;
+        }
+        let reach = i32::try_from(life.mate_within_tiles).unwrap_or(i32::MAX);
+        let mut parted = Vec::new();
+        for index in 0..self.bodies.len() {
+            let body = &self.bodies[index];
+            let Some(spouse) = body.spouse.and_then(|s| self.body(s)) else {
+                continue;
+            };
+            let apart = tiles_apart(spouse.pos(), body.pos()) > reach;
+            let (a, b) = (body.id, spouse.id);
+            let days = &mut self.bodies[index].apart_days;
+            *days = if apart { *days + 1 } else { 0 };
+            if *days >= life.part_after_days && a < b {
+                parted.push((a, b));
+            }
+        }
+        for (a, b) in parted {
+            for id in [a, b] {
+                if let Some(index) = self.index_of(id) {
+                    self.bodies[index].spouse = None;
+                    self.bodies[index].apart_days = 0;
+                }
+            }
+            events.push(Event::Parted { a, b });
+        }
     }
 
     /// The pregnancies at a day's start: lost by a weak woman, when the
@@ -654,6 +693,52 @@ mod tests {
 
     fn w_day() -> u64 {
         calendar().ticks_per_day()
+    }
+
+    #[test]
+    fn spouses_apart_too_many_dawns_in_a_row_part_and_may_take_another() {
+        let mut rules = fed_rules();
+        rules.needs.life.part_after_days = 3;
+        rules.needs.life.death_by_age = vec![(0, 0)];
+        let mut w = world();
+        let (wife, husband) = couple_of(&mut w);
+        let suitor = person(&mut w, 14, 5, 30, Sex::Male);
+        let stand = |w: &mut World, id: BodyId, x: i32| {
+            set(w, id, |b| b.at = Pos::new(x, 5).centre());
+        };
+        let parted = |events: &[Event]| {
+            events
+                .iter()
+                .filter_map(|e| match e {
+                    Event::Parted { a, b } => Some((*a, *b)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut events = Vec::new();
+        // Two dawns a hundred tiles apart, then one back: the count starts
+        // again.
+        stand(&mut w, husband, 110);
+        w.advance(2 * w_day(), &rules, &mut events);
+        assert_eq!(w.body(wife).unwrap().apart_days, 2);
+        stand(&mut w, husband, 12);
+        w.advance(w_day(), &rules, &mut events);
+        assert_eq!(w.body(wife).unwrap().apart_days, 0);
+        stand(&mut w, husband, 110);
+        w.advance(2 * w_day(), &rules, &mut events);
+        assert!(parted(&events).is_empty(), "two dawns apart are not enough");
+        assert_eq!(w.body(wife).unwrap().spouse, Some(husband));
+        // The third dawn apart in a row: they part, and by the next day
+        // she has taken the man near her, at her hour.
+        w.advance(w_day(), &rules, &mut events);
+        assert_eq!(
+            parted(&events),
+            vec![(wife.min(husband), wife.max(husband))]
+        );
+        w.advance(w_day(), &rules, &mut events);
+        assert_eq!(w.body(wife).unwrap().spouse, Some(suitor));
+        assert_eq!(w.body(husband).unwrap().spouse, None, "nobody near him");
+        assert_eq!(w.body(husband).unwrap().apart_days, 0);
     }
 
     #[test]

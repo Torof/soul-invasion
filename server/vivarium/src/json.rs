@@ -247,6 +247,9 @@ impl Report {
                 "mover_hungry_nights": u.mover,
                 "stayers": u.stayers,
                 "stayers_hungry_nights_milli": u.stayers_milli,
+                "mover_drink_tiles_before": u.mover_drink.0,
+                "mover_drink_tiles_after": u.mover_drink.1,
+                "stayers_drink_tiles_after": u.stayers_drink,
             })).collect::<Vec<_>>(),
         })
     }
@@ -606,6 +609,25 @@ impl Report {
         )
     }
 
+    /// A tribe's couples parted in a year, each counted once, and the
+    /// spouses its members took after their first (D49, amended 24
+    /// November 2026).
+    fn couples_of_year(&self, tribe: u8, year: u64, per_year: u64) -> Value {
+        let in_year = |day: u64| day > (year - 1) * per_year && day <= year * per_year;
+        let of_tribe = self.people.iter().filter(|(_, p)| p.tribe == tribe);
+        // Each parting is the two's: counted by the lower id.
+        let parted = of_tribe
+            .clone()
+            .flat_map(|(&me, p)| p.partings.iter().map(move |&(day, other)| (me, day, other)))
+            .filter(|&(me, day, other)| in_year(day) && me < other)
+            .count();
+        let taken_again = of_tribe
+            .flat_map(|(_, p)| p.couplings.iter().skip(1))
+            .filter(|&&(day, _)| in_year(day))
+            .count();
+        json!({"parted": parted, "taken_again": taken_again})
+    }
+
     fn years_json(&self) -> Value {
         let per_year = u64::from(sim::time::Calendar::DEFAULT_DAYS_PER_YEAR);
         let years: Vec<Value> = self
@@ -665,6 +687,7 @@ impl Report {
                     "kept": y.kept,
                     "copied": y.copied,
                     "homes_moved": y.homes_moved,
+                    "couples": self.couples_of_year(y.tribe, y.year, per_year),
                     "home_moves": self.home_moves.iter()
                         .filter(|m| m.tribe == y.tribe && m.day > (y.year - 1) * per_year && m.day <= y.year * per_year)
                         .map(|m| json!({"day": m.day, "body": id(m.body), "from": pos(m.from), "to": pos(m.to), "how": m.how}))
@@ -766,7 +789,12 @@ impl Report {
             "nights": person.company.0,
             "alone": person.company.1,
         });
-        json!({
+        let parted: Vec<Value> = person
+            .partings
+            .iter()
+            .map(|(day, spouse)| json!({"day": day, "id": id(*spouse)}))
+            .collect();
+        let mut row = json!({
             "id": id(body),
             "name": name(body),
             "tribe": tribe_name(person.tribe).to_string(),
@@ -824,7 +852,10 @@ impl Report {
                 })).collect::<Vec<_>>(),
             },
             "lines": lines,
-        })
+        });
+        // Beside the macro: one more key passes its recursion limit.
+        row["parted"] = Value::Array(parted);
+        row
     }
 
     fn people_json(&self) -> Value {

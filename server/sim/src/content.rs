@@ -1658,6 +1658,11 @@ pub struct Life {
     /// start alone.
     #[serde(default = "one")]
     pub conceive_nights: u32,
+    /// Spouses apart beyond `mate_within_tiles` at this many dawns in a
+    /// row part (D49, amended 24 November 2026): both become free to take
+    /// another, the children staying with their mother. 0: never.
+    #[serde(default)]
+    pub part_after_days: u32,
     /// A pregnancy lasts this many seasons (a quarter of the year each).
     pub pregnancy_seasons: u32,
     /// A pregnant woman needs this much of her own need, in percent.
@@ -1689,6 +1694,7 @@ impl Default for Life {
             mate_within_tiles: 0,
             conceive_percent: 0,
             conceive_nights: 1,
+            part_after_days: 0,
             pregnancy_seasons: 1,
             pregnant_percent: 100,
             lose_when_weak: false,
@@ -2524,6 +2530,7 @@ impl Content {
             ("life.mate_years", life.mate_years.1),
             ("life.old_age_from_years", life.old_age_from_years),
             ("life.pregnancy_seasons", life.pregnancy_seasons),
+            ("life.part_after_days", life.part_after_days),
         ] {
             at_most("needs.ron", field, value, THOUSAND)?;
         }

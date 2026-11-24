@@ -398,6 +398,10 @@ pub struct Body {
     /// Its spouse, alive: cleared when the spouse dies (D49).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     spouse: Option<BodyId>,
+    /// The dawns in a row its spouse was beyond the content's reach (D49,
+    /// amended 24 November 2026): at `part_after_days` the couple parts.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    apart_days: u32,
     /// The child a woman carries, not yet born (D49).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pregnant: Option<Pregnancy>,
@@ -411,6 +415,11 @@ fn born_grown() -> i64 {
 
 fn male() -> Sex {
     Sex::Male
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// Work that lasts (D45): a body gathering from a tree or a plant, by
@@ -1178,6 +1187,13 @@ pub enum Event {
         /// The one whose daily hour it was.
         a: BodyId,
         /// The nearest it could take.
+        b: BodyId,
+    },
+    /// Two spouses parted, apart too long (D49, amended 24 November 2026).
+    Parted {
+        /// The lower id.
+        a: BodyId,
+        /// The other.
         b: BodyId,
     },
     /// A body died; it is now a corpse item.
@@ -2239,6 +2255,7 @@ impl World {
             mother: None,
             father: None,
             spouse: None,
+            apart_days: 0,
             pregnant: None,
         });
         self.enter_chunk(id, pos.chunk());
@@ -2859,6 +2876,7 @@ impl World {
         for other in &mut self.bodies {
             if other.spouse == Some(id) {
                 other.spouse = None;
+                other.apart_days = 0;
             }
         }
         for item in body.inventory().collect::<Vec<_>>() {
