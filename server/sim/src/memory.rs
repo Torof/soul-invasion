@@ -117,6 +117,17 @@ pub enum Record {
         /// How each present fared that day.
         fared: Vec<(BodyId, Fared)>,
     },
+    /// Who is believed to know (D56, PR 1 ter): "32 knows where berries
+    /// are", dated by the day the belief was last renewed. Each body
+    /// holding it has its own credit in it; nobody holds it as a title.
+    Reputed {
+        /// The one believed to know.
+        who: BodyId,
+        /// The activity, an index in `content::ACTIVITIES`.
+        activity: u8,
+        /// The day it was last renewed.
+        day: u32,
+    },
 }
 
 impl Record {
@@ -127,7 +138,8 @@ impl Record {
             Record::Place { day, .. }
             | Record::Water { day, .. }
             | Record::Trial { day, .. }
-            | Record::Night { day, .. } => *day,
+            | Record::Night { day, .. }
+            | Record::Reputed { day, .. } => *day,
         }
     }
 
@@ -137,13 +149,13 @@ impl Record {
         match self {
             Record::Place { witness, .. } | Record::Water { witness, .. } => Some(*witness),
             Record::Trial { body, .. } => Some(*body),
-            Record::Night { .. } => None,
+            Record::Night { .. } | Record::Reputed { .. } => None,
         }
     }
 
     /// What makes it the same record as another: a place, a day and its
     /// states, whoever looked; a water, a day and where; a body's way on a
-    /// day; a camp's night.
+    /// day; a camp's night; who is reputed at what, renewed on a day.
     fn key(&self) -> Key {
         match self {
             Record::Place {
@@ -154,6 +166,7 @@ impl Record {
             } => Key::Water(*chunk, *day, *stand),
             Record::Trial { body, day, way, .. } => Key::Trial(*body, *day, *way),
             Record::Night { camp, day, .. } => Key::Night(*camp, *day),
+            Record::Reputed { who, activity, day } => Key::Reputed(*who, *activity, *day),
         }
     }
 }
@@ -165,6 +178,7 @@ enum Key {
     Water(ChunkPos, u32, Pos),
     Trial(BodyId, u32, Way),
     Night(Pos, u32),
+    Reputed(BodyId, u8, u32),
 }
 
 /// An access a body holds to a record: the number, who it has it from

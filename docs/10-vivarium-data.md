@@ -156,6 +156,26 @@ clock, the only field no seed decides.
 | `years[].decisions.wills.bold` | Of them, the bold: a will of `temperance.bold_will` (40) or more | count |
 | `years[].decisions.judged.successes.*` | Days of each activity judged a success in the year (D56): `explore` (a look out that found a place told new), `gather` (a walk to a place that gathered a day of need), `stay` (a silence at the fire with its children fed) | person-days |
 | `years[].decisions.judged.failures.*` | And judged a failure | person-days |
+| `years[].decisions.review.named` | Companions a caller called first, by name, at the evening's review (D56, PR 1 ter): its last outings with them good | count |
+| `years[].decisions.review.set_aside` | Companions told "not with us tomorrow": bad on enough of their last outings with that caller (waited for, or back with less than a day of need) | count |
+| `years[].decisions.review.refused` | Calls one set aside would have joined, refused | count |
+| `years[].decisions.review.weighed_joins` | Joins weighed by a reputation: the call of whom one believes best at gathering taken first | count |
+| `years[].decisions.review.asked` | Questions asked at the fire ("where is food?") by one with no place to go | count |
+| `years[].decisions.review.answered` | Of them, answered with a place it can go to | count |
+| `years[].decisions.review.said_nothing.stocked` | Who said nothing at the fire because it carries its stock and a day's need (D56, PR 1 ter: a measure of the « nothing » days) | count |
+| `years[].decisions.review.said_nothing.no_place` | Who said nothing knowing no place bearing now | count |
+| `years[].decisions.review.said_nothing.all_taken` | Who said nothing, every place it weighed taken whole (after a question, if any) | count |
+| `years[].decisions.need_percent_by_act.*` | What was gathered on a day, in per cent of a day of the need, on average, by what had been said; `null` without a day | per cent |
+| `years[].decisions.review.set_aside_days.*` | What those set aside did that day, by act (`alone`, `called`, `joined`, `looked`, `nothing`) | person-days |
+| `years[].decisions.review.set_aside_fed_days.*` | Of them, the days they gathered a day of their need | person-days |
+| `years[].decisions.follows.*.days` | Days one followed another (D56, PR 1 ter): `joined` its call, `asked` it and went where it answered, `told` (went alone to a place another found and told) | person-days |
+| `years[].decisions.follows.*.fed` | Of them, back with a day of its need | person-days |
+| `years[].decisions.follows.*.empty` | Of them, back with nothing | person-days |
+| `years[].decisions.follows.*.mean_need_percent` | What the follower gathered, in per cent of a day of its need, on average; `null` without a day | per cent |
+| `years[].reputed.*[]` | Who the tribe's living believed best at the year's end (D56, PR 1 ter), by activity (`explore`: the scout; `gather`: the one whose calls feed), the most believed first, three at most; `null` when nobody is reputed. A belief each holds, never a title | list |
+| `years[].reputed.*[].who` | The one believed best | id |
+| `years[].reputed.*[].believers` | How many of the living believed it | count |
+| `years[].reputed.*[].mean_credit` | Their credit in it, on average (1 to 100) | points |
 | `years[].decisions.distance_noon_tiles.mothers` | Mean distance at noon from its camp, on each axis the larger, of an adult (16 years or more) carrying an infant; `null` without one | tiles |
 | `years[].decisions.distance_noon_tiles.mother_noons` | The noons measured | count |
 | `years[].decisions.distance_noon_tiles.others` | The same for the other adults | tiles |
@@ -231,7 +251,7 @@ clock, the only field no seed decides.
 | `people[].lines[].tick` | The tick | tick |
 | `people[].lines[].what` | The line, as the chronicle says it | string |
 | `records[].id` | A record of the common memory at the end (D55): its number | integer |
-| `records[].kind` | `place`, `water`, `trial` or `night` | string |
+| `records[].kind` | `place`, `water`, `trial`, `night` or `reputed` (who is believed to know, D56, PR 1 ter) | string |
 | `records[].day` | Its day | day |
 | `records[].witness` | Who saw it first, or the trial's body; `null` for a night | integer |
 | `records[].refs` | Accesses and nights holding it | count |
@@ -255,6 +275,38 @@ clock, the only field no seed decides.
 | `rumours[].place` | The place | `[x, y]` |
 | `rumours[].record` | The record it had believed | integer |
 | `rumours[].from` | Who had told it | integer |
+| `seasons[].tribe` | The exploration's measure (lot 5b, PR 1 ter), one entry per tribe and season of the run (a quarter of the year, counted from the run's start): the tribe | `"A"` or `"B"` |
+| `seasons[].season` | The season, from 0 at the run's start (`season % 4`: 0 spring … 3 winter) | integer |
+| `seasons[].noons` | Noons of a living body past infancy counted in the season | count |
+| `seasons[].bearing_known_x10` | The places a body believes bearing food today (its own knowledge and what it heard), mean over the noons, × 10; `null` without noons | integer |
+| `seasons[].lived_x10` | The places its notebook holds (D53, amended 24 November 2026: slept, drank or gathered at, eight at most), mean over the noons, × 10; `null` without noons | integer |
+| `seasons[].will_x10` | Its will (0 to 100), mean over the noons, × 10 | integer |
+| `seasons[].explore_x10` | Its confidence in exploring (D56, 0 to 100), mean over the noons, × 10 | integer |
+| `seasons[].days` | Person-days closed in the season | count |
+| `seasons[].looked` | Of them, days gone looking for a new place | count |
+| `seasons[].out` | Of them, days out (anything but nothing) | count |
+| `seasons[].bare` | Places found bare in the season | count |
+| `seasons[].lookers_will_x10` | The will at noon of those who looked, mean over their looked days, × 10; `null` without one | integer |
+| `seasons[].lookers_explore_x10` | Their confidence in exploring, likewise | integer |
+| `bilan.standing.*.days` | The review's measure (lot 5b: by what way being named or set aside changes what each carries), over the whole run, by the day's standing: `named` (called first by name at the fire), `set_aside`, then by what it said, `joined`, `called`, `alone`, `looked`, `nothing`: person-days | count |
+| `bilan.standing.*.why.*` | Of them, why it first went home from gathering: `never` (it never went home from gathering), `full` (it carried what it wanted), `group` (its group went home, itself not full), `nothing_left` (nothing it knew of left to gather, not full), `night` | count |
+| `bilan.standing.*.gathered_x10` | What it gathered, in per cent of a day of its need, × 10, on average | integer |
+| `bilan.standing.*.at_stop_x10` | What it carried when it first went home, likewise, over the days it went | integer |
+| `bilan.standing.*.evening_x10` | What it carried at nightfall, likewise | integer |
+| `bilan.standing.*.cut_short_x10` | What it carried when it went home not full (`group` or `nothing_left`), likewise | integer |
+| `bilan.groups.stable_permille` | Members of a group two days running: the share of today's mates who were yesterday's, per mille, on average | per mille |
+| `bilan.groups.members_two_days` | How many such member-days | count |
+| `bilan.groups.same_caller` | Of the followers two days running, those who followed the same caller | count |
+| `bilan.groups.followers_two_days` | Followers two days running | count |
+| `bilan.couples.*` | At each dawn of conception (life's `conceive_nights` first days of a season), each fertile woman with a living spouse, not with child from before and carrying no infant: `met` (spouse within reach, reserve enough), `apart` (spouse too far only), `thin` (reserve too low only), `apart_and_thin` | count |
+| `bilan.confidence.everyone_x10` | The confidence in gathering (D56, 0 to 100) at every noon of a living body past infancy, × 10, on average | integer |
+| `bilan.confidence.set_aside_before_x10` | That of the set aside at the noon before the fire that set them aside | integer |
+| `bilan.confidence.named_before_x10` | That of the named, likewise | integer |
+| `bilan.confidence.set_aside_after` | By day since the day set aside (0: its noon, to 14): `[mean × 10, noons]` | `[[integer, count], …]` |
+| `bilan.confidence.named_after` | The same for the named | `[[integer, count], …]` |
+| `bilan.who.set_aside.*` | Who was set aside, by band at the noon before: `child` (under 12), `young` (12 to 15), `man`, `woman` (16 to 59), `mother` (with child or carrying an infant), `elder` (60 and over) | count |
+| `bilan.who.named.*` | Who was named, likewise | count |
+| `bilan.who.noons.*` | Every noon counted, by band: what the others are set against | count |
 | `curves.points` | Samples kept, at most 1,200 | count |
 | `curves.every` | One sample kept every so many of the 24 a day | count |
 | `curves.ticks` | The tick of each sample | `[tick, …]` |

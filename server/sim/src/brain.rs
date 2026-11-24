@@ -56,8 +56,8 @@
 //! going, whether it sleeps out, how much it stores, where home is. At
 //! nightfall each mind closes its day: what it gathered, whether it is
 //! thin, thirsty or hungry, whether the night before froze it, whether
-//! the day was bare, and whether it is in **distress** (hungry at the
-//! day's end, or a day with no gather at all). Distressed for
+//! the day was bare, and whether it is in **distress** (hungry or
+//! thirsty at the day's end, or a day with no gather at all). Distressed for
 //! `trial_after_days` running, it
 //! may start a **trial** (a daily chance by its **will**, a placeholder
 //! drawn from the world's seed and its id until the souls' Willpower
@@ -65,9 +65,10 @@
 //! and the day. After `trial_days` the world has **judged** on every
 //! distress: the way is kept if nothing worsened and one thing improved
 //! (gathered a day, thin days, thirsty days, cold days), else reverted. A
-//! new home goes towards where it knows the most plants still bearing or
-//! towards the nearest drinking place it knows, half and half, and never
-//! past the map's edge. Lying down
+//! new home goes to the place or grove of its notebook where its own
+//! body would fare best (what it gathered and drank there, less what its
+//! nights left lacking and its walking cost, every need alike), lived
+//! for the days its will asks. Lying down
 //! at its camp at night, a body may **copy** one way from the camp-mate
 //! who fared best lately (the fewest days of distress, gathered kJ
 //! breaking ties), the more readily the greater that mate's will,
@@ -81,7 +82,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use crate::content::{Content, Fire, Temperance, Trials};
+use crate::content::{Content, Decisions, Fire, Reputation, Temperance, Trials};
 use crate::crops::{self, Bearer, Source};
 use crate::r#gen::scatter::{self, purpose};
 use crate::lru::Lru;
@@ -572,6 +573,10 @@ struct Plan {
     legs: u32,
     /// Done with: the place found bare, the group home, the legs walked.
     done: bool,
+    /// Whom it asked "where is food?" at the fire, and the activity it
+    /// believed that one best at (D56, PR 1 ter): it goes where the
+    /// answer said.
+    asked: Option<(BodyId, u8)>,
 }
 
 /// A group of the day (D56): a caller and those who joined it, walking to
@@ -611,6 +616,9 @@ struct Group {
     waited: u64,
     /// The caller has set off.
     started: bool,
+    /// The members it waited for on the way (D56, PR 1 ter: a fact of
+    /// its review).
+    waited_for: BTreeSet<BodyId>,
 }
 
 /// A trial under way (D50): the way moved, the ways before the step, and
@@ -723,6 +731,104 @@ struct Day {
     bare: bool,
 }
 
+/// The most places a body keeps in its notes of the nights (D53, amended
+/// 23 November 2026): the least lived forgotten first.
+const LIVED_MAX: usize = 8;
+
+/// What a body perceives of how it fares, each in its own gauge's unit
+/// and all counted alike, per mille of a day of that need (D50, D53,
+/// amended 24 November 2026; the lead: the home must end at the optimal
+/// place, for good, whatever comes to count later). **A new perception
+/// plugs in here**: a variant (fear, sight, warmth kept), what a place
+/// gives of it noted in [`DayAct::gains`] where it is given, what the
+/// body suffered of it at night in [`Night::losses`]; [`fare`] sums every
+/// sense and the home's choice reads nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sense {
+    /// Food: what was gathered there, in per mille of a day's need; at
+    /// night the hunger left (a hunger point is a hundredth of a day).
+    Food,
+    /// Water: what was drunk there, the thirst since the last drink in per
+    /// mille of a day; at night the thirst left.
+    Water,
+    /// Warmth: nothing gives it yet; at dawn the cold the night left.
+    Warmth,
+}
+
+/// How many [`Sense`]s.
+const SENSES: usize = 3;
+
+/// A place in a body's notebook (D50 and D53, amended 23 and 24 November
+/// 2026), as its own body lived it, summed and faded day by day, a night
+/// or a day counting a thousand: a place it slept or drank at, of
+/// `place_tiles`, or a grove it gathered in, of `trials.grove_tiles`. Each
+/// holds only what was done there: the night's losses where it slept, what
+/// it drank where it drank, what it gathered where it gathered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Lived {
+    /// The place, on its own grid.
+    place: PlaceKey,
+    /// A grove (`trials.grove_tiles`) rather than a place (`place_tiles`).
+    grove: bool,
+    /// The nights slept there, faded.
+    nights: u64,
+    /// The days it drank or gathered there without sleeping there, faded.
+    days: u64,
+    /// What the place gave, by [`Sense`].
+    gains: [u64; SENSES],
+    /// What its nights there left it lacking, by [`Sense`].
+    losses: [u64; SENSES],
+    /// What its days ending there cost in walking, in per mille of a day's
+    /// food.
+    walk: u64,
+    /// What walking there from home and back cost, in per mille of a day's
+    /// food: what living there would have saved.
+    saved: u64,
+}
+
+impl Lived {
+    /// The nights and days lived there, faded.
+    fn lived(&self) -> u64 {
+        self.nights + self.days
+    }
+
+    /// A day's share of `sum`.
+    fn per_day(&self, sum: u64) -> u64 {
+        sum / self.lived().max(1)
+    }
+
+    /// A night's share of `sum`.
+    fn per_night(&self, sum: u64) -> u64 {
+        sum / self.nights.max(1)
+    }
+}
+
+/// What a body did at a place in its day, noted at the next dawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DayAct {
+    /// The place, on its own grid.
+    place: PlaceKey,
+    /// A grove rather than a place.
+    grove: bool,
+    /// The least that walking there from home and back cost that day, in
+    /// per mille of a day's food.
+    saved: u64,
+    /// What it got there, by [`Sense`].
+    gains: [u64; SENSES],
+}
+
+/// A night to note at the next dawn, where the body lies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Night {
+    /// What it lacked, by [`Sense`]: hunger and thirst at nightfall, the
+    /// cold at dawn.
+    losses: [u64; SENSES],
+    /// What the day's walking cost, in per mille of a day's food.
+    walk: u64,
+    /// What it did that day, place by place.
+    day: Vec<DayAct>,
+}
+
 impl Day {
     /// A day of distress: any of its marks.
     fn distress(self) -> bool {
@@ -770,6 +876,38 @@ impl Lately {
         (std::cmp::Reverse(self.distress_days), self.kj_per_day)
     }
 }
+
+/// One evening's review and questions at a fire (D56, PR 1 ter).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EveningReview {
+    /// Companions a caller called first, by name.
+    pub named: u32,
+    /// Companions set aside ("not with us tomorrow").
+    pub aside: u32,
+    /// Calls one set aside would have joined, refused.
+    pub refused: u32,
+    /// Joins weighed by a reputation: the call of whom one believes best
+    /// at gathering taken first.
+    pub weighed: u32,
+    /// Questions asked ("where is food?").
+    pub asked: u32,
+    /// Of them, answered with a place.
+    pub answered: u32,
+    /// Those who said nothing because they carry their stock and a day's
+    /// need (a measure of the « nothing » days).
+    pub stocked: u32,
+    /// Those who said nothing knowing no place bearing now.
+    pub no_place: u32,
+    /// Those who said nothing, every place they weighed taken whole.
+    pub all_taken: u32,
+}
+
+/// A follower joined its caller's group (D56, PR 1 ter).
+pub const FOLLOW_JOINED: u8 = 0;
+/// A follower went where the one it asked answered.
+pub const FOLLOW_ASKED: u8 = 1;
+/// A follower went to a place another found and told.
+pub const FOLLOW_TOLD: u8 = 2;
 
 /// What the brain tells of its trials (D50), drained with
 /// [`Brains::news`] after each turn: the vivarium's chronicle reads it.
@@ -884,6 +1022,83 @@ pub enum News {
         absent: u32,
         /// Whether a full place was told tonight.
         full_told: bool,
+        /// The evening's review and questions (PR 1 ter): companions
+        /// called first by name, set aside ("not with us tomorrow"), calls
+        /// refused to one set aside, joins weighed by a reputation,
+        /// questions asked and answered with a place.
+        review: EveningReview,
+    },
+    /// A caller told a companion "not with us tomorrow" at the fire (D56,
+    /// PR 1 ter): judged over its last outings with it.
+    Aside {
+        /// The caller.
+        leader: BodyId,
+        /// The one set aside.
+        body: BodyId,
+        /// The day it is set aside for.
+        day: u32,
+        /// When.
+        at: u64,
+    },
+    /// A caller called a good companion first, by name, at the fire
+    /// (D56, PR 1 ter), and it joins: a measure of the review.
+    Named {
+        /// The caller.
+        leader: BodyId,
+        /// The one named.
+        body: BodyId,
+        /// When.
+        at: u64,
+    },
+    /// Why it stopped gathering today and what it carried (lot 5b, a
+    /// measure of the review): told at nightfall, before its day's habit.
+    Stopped {
+        /// The body.
+        body: BodyId,
+        /// Why it went home first today: one of the `STOP_` reasons.
+        why: u8,
+        /// What it carried then, in kilojoules (0 if it never went).
+        stop_kj: u64,
+        /// What it carries at nightfall, in kilojoules.
+        evening_kj: u64,
+        /// What it burns a day, in kilojoules.
+        need_kj: u64,
+        /// When.
+        at: u64,
+    },
+    /// One with no place to go asked whom it believes best "where is
+    /// food?" at the fire (D56, PR 1 ter).
+    Asked {
+        /// Who asked.
+        body: BodyId,
+        /// Whom.
+        of: BodyId,
+        /// The activity it believes that one best at, an index in
+        /// `content::ACTIVITIES`.
+        activity: u8,
+        /// The place answered, if any.
+        place: Option<PlaceKey>,
+        /// When.
+        at: u64,
+    },
+    /// At nightfall, one who followed another today (D56, PR 1 ter):
+    /// joined its call, went where its answer said, or went to a place it
+    /// told; how it came back.
+    Followed {
+        /// The follower.
+        body: BodyId,
+        /// The one followed.
+        whom: BodyId,
+        /// How: [`FOLLOW_JOINED`], [`FOLLOW_ASKED`], [`FOLLOW_TOLD`].
+        how: u8,
+        /// Back with a day of its need.
+        fed: bool,
+        /// Back with nothing.
+        empty: bool,
+        /// What it gathered, in per cent of a day of its need.
+        kj_percent: u32,
+        /// When.
+        at: u64,
     },
     /// A group of the day ended (D56).
     GroupEnded {
@@ -995,6 +1210,20 @@ pub struct Mind {
     confidence: Vec<Confidence>,
     /// Gathered since the last nightfall, in kilojoules.
     gathered_today_kj: u64,
+    /// Tiles stepped since the last nightfall.
+    walked_today: u64,
+    /// Tiles stepped since it last stood in its home's place.
+    from_home: u64,
+    /// The tick it last drank at.
+    drank_at: u64,
+    /// What it did since the last nightfall, place by place, at most
+    /// [`LIVED_MAX`] places.
+    day_places: Vec<DayAct>,
+    /// The day closed at nightfall, noted where it lies at the next dawn.
+    night: Option<Night>,
+    /// Its notes of the places it slept at (D50, D53 amended), at most
+    /// [`LIVED_MAX`].
+    lived: Vec<Lived>,
     /// Days of distress in a row: hungry at nightfall, or no gather at all.
     distress_days: u32,
     /// Its last days, the oldest first: at most twice the longest
@@ -1074,6 +1303,16 @@ pub struct Mind {
     habit: Vec<u8>,
     /// Places it went to and found bare today.
     bare_today: u32,
+    /// Whom it believes best at each activity of the content's
+    /// `reputation` (D56, PR 1 ter): one at most an activity.
+    reputed: Vec<Belief>,
+    /// Why it first went home from gathering today, and what it carried
+    /// then (a measure, told at nightfall).
+    stop: Option<(u8, u64)>,
+    /// The dated facts it keeps on its companions as a caller (D56, PR 1
+    /// ter), the oldest first: at most the content's
+    /// `decisions.facts_kept`.
+    companions: Vec<Fact>,
     /// How many times it went looking: the next direction.
     walks: u64,
     /// How many times it thought.
@@ -1089,6 +1328,8 @@ pub struct Confidence {
     pub milli: u32,
     /// Failures in a row.
     pub failures: u16,
+    /// Successes in a row (D56, PR 1 ter: a streak weighs more).
+    pub successes: u16,
 }
 
 impl Confidence {
@@ -1102,15 +1343,18 @@ impl Confidence {
     /// `cost` times its rank past them.
     pub fn fail(&mut self, bears: u32, cost: u32) {
         self.failures = self.failures.saturating_add(1);
+        self.successes = 0;
         let past = u32::from(self.failures).saturating_sub(bears);
         self.milli = self.milli.saturating_sub(cost.saturating_mul(past));
     }
 
-    /// A success: `gain` added, the failures in a row forgotten.
+    /// A success: `gain` added, the failures in a row forgotten, one
+    /// more success in a row.
     pub fn succeed(&mut self, gain: u64) {
         let gain = u32::try_from(gain).unwrap_or(u32::MAX);
         self.milli = self.milli.saturating_add(gain).min(100_000);
         self.failures = 0;
+        self.successes = self.successes.saturating_add(1);
     }
 
     /// Listened to: `gain` added.
@@ -1125,6 +1369,65 @@ impl Confidence {
         let moved = now + (target - now) * i64::from(permille) / 1000;
         self.milli = u32::try_from(moved.clamp(0, 100_000)).unwrap_or(0);
     }
+}
+
+/// Whom a body believes best at an activity (D56, PR 1 ter): an access
+/// to the record "who knows" in the common memory and its own credit in
+/// it as of the record's day, fading a point a day by the content's
+/// `reputation.fade_per_day`. Sixteen bytes: the access's twelve, the
+/// activity's one, the credit's one, two of padding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Belief {
+    /// The activity, an index in `content::ACTIVITIES`.
+    activity: u8,
+    /// The record "who knows": who, at what, renewed when.
+    access: Access,
+    /// Its credit in it on the record's day, 1 to 100.
+    credit: u8,
+}
+
+/// A fact a caller keeps on a companion (D56, PR 1 ter): an outing with
+/// it on a day, and what it saw; never a level. Twelve bytes: the
+/// companion's four, the day's four, the flags' one, three of padding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Fact {
+    /// The companion.
+    who: BodyId,
+    /// The day of the outing, or of the evening it set it aside.
+    day: u32,
+    /// [`FACT_WAITED`], [`FACT_LITTLE`], [`FACT_ASIDE`].
+    flags: u8,
+}
+
+/// A fact: the caller waited for it on the way (D56, PR 1 ter).
+const FACT_WAITED: u8 = 0x01;
+/// A fact: it came back with less than a day of its need.
+const FACT_LITTLE: u8 = 0x02;
+/// A fact: the caller told it "not with us tomorrow" that evening; the
+/// outings before it are not judged again.
+const FACT_ASIDE: u8 = 0x04;
+
+/// It never went home from gathering today ([`News::Stopped`]).
+pub const STOP_NONE: u8 = 0;
+/// It went home carrying what it wanted.
+pub const STOP_FULL: u8 = 1;
+/// Its group went home (its caller full, or enough of the group), itself
+/// not full.
+pub const STOP_GROUP: u8 = 2;
+/// Nothing left to gather that it knew of, not full.
+pub const STOP_NOTHING: u8 = 3;
+/// Night fell.
+pub const STOP_NIGHT: u8 = 4;
+
+/// What a caller's review says of a companion (D56, PR 1 ter).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Review {
+    /// Called first, by name.
+    Good,
+    /// "Not with us tomorrow".
+    Aside,
+    /// Nothing said.
+    Unsaid,
 }
 
 impl Mind {
@@ -1166,6 +1469,15 @@ impl Mind {
             plan: None,
             habit: Vec::new(),
             bare_today: 0,
+            reputed: Vec::new(),
+            companions: Vec::new(),
+            stop: None,
+            drank_at: 0,
+            walked_today: 0,
+            from_home: 0,
+            day_places: Vec::new(),
+            night: None,
+            lived: Vec::new(),
             walks: 0,
             thoughts: 0,
         }
@@ -1239,6 +1551,18 @@ impl Mind {
         })
     }
 
+    /// How many of the places it knows it believes bearing food now, by
+    /// what it saw or heard (a measure, D56: does a tribe go looking when
+    /// it knows nothing more to gather?).
+    #[must_use]
+    pub fn bearing_known(&self, brains: &Brains) -> u32 {
+        count_u32(
+            self.places
+                .values()
+                .filter(|p| p.bearing(&brains.food).is_some()),
+        )
+    }
+
     /// The trial under way, if any (D50).
     pub fn trial(&self) -> Option<&Trial> {
         self.trial.as_ref()
@@ -1285,9 +1609,15 @@ fn need_kj_per_day(rules: &Content, body: &Body) -> u64 {
 /// gathered kJ in per cent of its need as theirs; against its own days
 /// before only when it heard nobody. Kept if nothing worsened and one
 /// thing improved ([`Lately::better_than`]). With what it will tell.
-fn judge(rules: &Content, body: &Body, mind: &Mind, trial: &Trial) -> (bool, Judged) {
+fn judge(
+    rules: &Content,
+    per_year: u32,
+    body: &Body,
+    mind: &Mind,
+    trial: &Trial,
+) -> (bool, Judged) {
     let trials = &rules.needs.trials;
-    let days = trials.days_for(trial.way.key());
+    let days = trials.days_for(trial.way.key(), per_year);
     let during = mind.lately(days);
     let kept = match trial.heard.mean(days) {
         Some(theirs) => {
@@ -1534,9 +1864,9 @@ impl Mind {
     }
 
     /// A day lived kept, twice the longest trial's days (D50).
-    fn keep_day(&mut self, trials: &Trials, day: Day) {
+    fn keep_day(&mut self, trials: &Trials, per_year: u32, day: Day) {
         self.days.push(day);
-        let keep = usize::try_from(trials.longest_days())
+        let keep = usize::try_from(trials.longest_days(per_year))
             .unwrap_or(usize::MAX)
             .saturating_mul(2);
         if self.days.len() > keep.max(2) {
@@ -1554,6 +1884,7 @@ impl Mind {
         let start = Confidence {
             milli: u32::from(innate) * 1000,
             failures: 0,
+            successes: 0,
         };
         self.confidence = vec![start; temper.activities.len()];
     }
@@ -1563,6 +1894,7 @@ impl Mind {
         let mut will = Confidence {
             milli: u32::from(self.will) * 1000 + u32::from(self.will_rest),
             failures: self.will_failures,
+            successes: 0,
         };
         change(&mut will);
         self.will = will.points();
@@ -1592,6 +1924,254 @@ impl Mind {
         }
     }
 
+    /// Its credit today in `belief` (D56, PR 1 ter): its credit on the
+    /// record's day, less the content's `fade_per_day` a day since.
+    fn credit_today(belief: &Belief, memory: &Store, rep: &Reputation, today: u32) -> u8 {
+        let day = memory.get(belief.access.record).map_or(0, Record::day);
+        let faded = today.saturating_sub(day).saturating_mul(rep.fade_per_day);
+        u8::try_from(u32::from(belief.credit).saturating_sub(faded)).unwrap_or(0)
+    }
+
+    /// Whom it believes best at `activity` (an index in
+    /// `content::ACTIVITIES`) today, and its credit in it; a credit faded
+    /// to nothing believes nobody (D56, PR 1 ter).
+    fn believed(
+        &self,
+        memory: &Store,
+        rep: &Reputation,
+        activity: u8,
+        today: u32,
+    ) -> Option<(BodyId, u8)> {
+        let belief = self.reputed.iter().find(|b| b.activity == activity)?;
+        let Some(Record::Reputed { who, .. }) = memory.get(belief.access.record) else {
+            return None;
+        };
+        let credit = Self::credit_today(belief, memory, rep, today);
+        (credit > 0).then_some((*who, credit))
+    }
+
+    /// Whom it believes best at each activity today, with its credit
+    /// (D56, PR 1 ter): (activity, who, credit).
+    #[must_use]
+    pub fn reputed(&self, memory: &Store, rep: &Reputation, today: u32) -> Vec<(u8, BodyId, u8)> {
+        self.reputed
+            .iter()
+            .filter_map(|b| {
+                self.believed(memory, rep, b.activity, today)
+                    .map(|(who, credit)| (b.activity, who, credit))
+            })
+            .collect()
+    }
+
+    /// One it followed, or an account of one (D56, PR 1 ter): `delta`
+    /// points to its credit in `who` at `activity`, got from `by` (itself
+    /// when it lived it). It keeps only whom it believes best: another
+    /// replaces the one it holds only when the gain alone passes its
+    /// credit today, and a wear to nothing drops it. The record "who
+    /// knows" is renewed today in the common memory. `true` when its
+    /// belief changed.
+    fn believe(
+        &mut self,
+        (me, by): (BodyId, BodyId),
+        (activity, who): (u8, BodyId),
+        delta: i32,
+        (memory, rep, today): (&mut Store, &Reputation, u32),
+    ) -> bool {
+        if who == me || delta == 0 || !rep.holds(usize::from(activity)) {
+            return false;
+        }
+        let at = self.reputed.iter().position(|b| b.activity == activity);
+        let held = at.and_then(|i| match memory.get(self.reputed[i].access.record) {
+            Some(Record::Reputed { who, .. }) => Some((
+                *who,
+                Self::credit_today(&self.reputed[i], memory, rep, today),
+            )),
+            _ => None,
+        });
+        let credit = match held {
+            Some((held, c)) if held == who => (i32::from(c) + delta).clamp(0, 100),
+            Some((_, c)) if delta > i32::from(c) => delta.min(100),
+            None if delta > 0 => delta.min(100),
+            _ => return false,
+        };
+        if let Some(i) = at {
+            let old = self.reputed.remove(i);
+            memory.release(old.access.record);
+        }
+        if credit > 0 {
+            let (record, _) = memory.intern(Record::Reputed {
+                who,
+                activity,
+                day: today,
+            });
+            self.reputed.push(Belief {
+                activity,
+                access: Access {
+                    record,
+                    by,
+                    day: today,
+                },
+                credit: u8::try_from(credit).unwrap_or(100),
+            });
+        }
+        true
+    }
+
+    /// A day closed in distress or not: hungry or thirsty at nightfall, or
+    /// nothing gathered (D50, amended 23 November 2026: thirst too).
+    fn distressed(&mut self, distress: bool) {
+        self.distress_days = if distress {
+            self.distress_days.saturating_add(1)
+        } else {
+            0
+        };
+    }
+
+    /// It drank (`grove` false) or gathered (`grove` true) at `place`
+    /// (D53, amended 24 November 2026): its `gains` noted there for the
+    /// night, with the least that walking there and back cost today.
+    fn acted_at(&mut self, place: PlaceKey, grove: bool, saved: u64, gains: [u64; SENSES]) {
+        if let Some(act) = self
+            .day_places
+            .iter_mut()
+            .find(|a| a.place == place && a.grove == grove)
+        {
+            act.saved = act.saved.min(saved);
+            for (sum, g) in act.gains.iter_mut().zip(gains) {
+                *sum += g;
+            }
+        } else if self.day_places.len() < LIVED_MAX {
+            self.day_places.push(DayAct {
+                place,
+                grove,
+                saved,
+                gains,
+            });
+        }
+    }
+
+    /// How many places its notebook holds (D53, amended 23 November 2026).
+    #[must_use]
+    pub fn lived_places(&self) -> usize {
+        self.lived.len()
+    }
+
+    /// A night slept at `place` (D50, D53 amended): every note fades by
+    /// `keep` per mille, then the night's losses and walk are added there,
+    /// and to each place and grove of the day what it gave; a new place
+    /// takes the room of the least lived when the notes are full.
+    fn note_night(&mut self, place: PlaceKey, night: &Night, keep: u64) {
+        for l in &mut self.lived {
+            let fade = |v: &mut u64| *v = *v * keep / 1000;
+            fade(&mut l.nights);
+            fade(&mut l.days);
+            fade(&mut l.walk);
+            fade(&mut l.saved);
+            l.gains.iter_mut().chain(l.losses.iter_mut()).for_each(fade);
+        }
+        self.lived.retain(|l| l.lived() > 0);
+        let l = self.lived_slot(place, false);
+        l.nights += 1000;
+        l.walk += night.walk * 1000;
+        for (sum, v) in l.losses.iter_mut().zip(night.losses) {
+            *sum += v * 1000;
+        }
+        for act in &night.day {
+            let l = self.lived_slot(act.place, act.grove);
+            if act.grove || act.place != place {
+                l.days += 1000;
+            }
+            l.saved += act.saved * 1000;
+            for (sum, g) in l.gains.iter_mut().zip(act.gains) {
+                *sum += g * 1000;
+            }
+        }
+    }
+
+    /// The notes of `place` (a grove or not), a new one taking the room
+    /// of the least lived when the notes are full.
+    fn lived_slot(&mut self, place: PlaceKey, grove: bool) -> &mut Lived {
+        let i = if let Some(i) = self
+            .lived
+            .iter()
+            .position(|l| l.place == place && l.grove == grove)
+        {
+            i
+        } else {
+            if self.lived.len() >= LIVED_MAX
+                && let Some(least) = (0..self.lived.len()).min_by_key(|&i| {
+                    (
+                        self.lived[i].lived(),
+                        self.lived[i].grove,
+                        self.lived[i].place,
+                    )
+                })
+            {
+                self.lived.remove(least);
+            }
+            self.lived.push(Lived {
+                place,
+                grove,
+                nights: 0,
+                days: 0,
+                gains: [0; SENSES],
+                losses: [0; SENSES],
+                walk: 0,
+                saved: 0,
+            });
+            self.lived.len() - 1
+        };
+        &mut self.lived[i]
+    }
+
+    /// A fact on a companion (D56, PR 1 ter), the oldest forgotten past
+    /// `kept`.
+    fn note(&mut self, fact: Fact, kept: u32) {
+        self.companions.push(fact);
+        let kept = usize::try_from(kept).unwrap_or(usize::MAX);
+        if self.companions.len() > kept {
+            let extra = self.companions.len() - kept;
+            self.companions.drain(..extra);
+        }
+    }
+
+    /// Its review of `who` at the fire (D56, PR 1 ter): its last
+    /// `review_outings` outings with it, since it last set it aside;
+    /// `review_bad` bad ones among them (waited for, or back with less
+    /// than a day of its need) set it aside; its last `review_bad` all
+    /// good call it first. Judged over several outings, never on one.
+    fn review(&self, who: BodyId, dec: &Decisions) -> Review {
+        let most = usize::try_from(dec.review_outings).unwrap_or(usize::MAX);
+        let bad_most = usize::try_from(dec.review_bad).unwrap_or(usize::MAX);
+        let mut outings: Vec<u8> = Vec::new();
+        for fact in self.companions.iter().rev().filter(|f| f.who == who) {
+            if fact.flags & FACT_ASIDE != 0 || outings.len() >= most {
+                break;
+            }
+            outings.push(fact.flags);
+        }
+        let bad = |flags: &u8| flags & (FACT_WAITED | FACT_LITTLE) != 0;
+        if outings.iter().filter(|f| bad(f)).count() >= bad_most {
+            Review::Aside
+        } else if outings.len() >= bad_most && !outings[..bad_most].iter().any(bad) {
+            Review::Good
+        } else {
+            Review::Unsaid
+        }
+    }
+
+    /// Set aside at the fire (D56, PR 1 ter): a failure of its confidence
+    /// in gathering, under the temperance's rules (borne free at first).
+    fn set_aside(&mut self, temper: &Temperance) {
+        let bears = temper.bears(self.innate);
+        if let Some(c) = temper
+            .activity("gather")
+            .and_then(|i| self.confidence.get_mut(i))
+        {
+            c.fail(bears, temper.failure_milli);
+        }
+    }
+
     /// A day of `activity` judged (D56): its confidence moved by the
     /// four rules; the news of it.
     fn judge_day(
@@ -1605,7 +2185,7 @@ impl Mind {
         let percent = temper.activities.get(activity)?.1;
         let c = self.confidence.get_mut(activity)?;
         if success {
-            c.succeed(temper.day_success_milli(percent));
+            c.succeed(temper.streak_success_milli(percent, u32::from(c.successes)));
         } else {
             c.fail(bears, temper.failure_milli);
         }
@@ -1629,6 +2209,9 @@ impl Mind {
         }
         for access in self.heard_ways.drain(..) {
             memory.release(access.record);
+        }
+        for belief in self.reputed.drain(..) {
+            memory.release(belief.access.record);
         }
     }
 
@@ -2093,7 +2676,18 @@ pub struct Brains {
     at_fire: BTreeMap<Pos, BTreeSet<BodyId>>,
     /// The groups of the day (D56), by their caller.
     groups: BTreeMap<BodyId, Group>,
+    /// The day's groups as they came home, told at the next fire (D56,
+    /// PR 1 ter): each caller, its members, how many came back fed, how
+    /// many empty.
+    accounts: Vec<Account>,
+    /// Whether nightfall tells why each stopped gathering
+    /// ([`News::Stopped`]): a measure the vivarium asks for (lot 5b).
+    measure_stops: bool,
 }
+
+/// A group's return, told at the next fire (D56, PR 1 ter): its caller,
+/// its members, how many came back fed, how many empty.
+type Account = (BodyId, Vec<BodyId>, u32, u32);
 
 /// The content's kinds of trees and plants bearing food, numbered, and
 /// what each bears at one tick: a thought weighs hundreds of plants, and
@@ -2372,6 +2966,12 @@ fn plant_sight_at(map: &Map, rules: &Content, at: Pos) -> i32 {
 }
 
 impl Brains {
+    /// Asks nightfall to tell why each stopped gathering and what it
+    /// carried ([`News::Stopped`]): a measure of the review (lot 5b).
+    pub fn measure_stops(&mut self) {
+        self.measure_stops = true;
+    }
+
     /// No minds yet; `seed` chooses where they go looking.
     pub fn new(seed: u64) -> Self {
         Self {
@@ -2395,6 +2995,8 @@ impl Brains {
             gone_wills: BTreeMap::new(),
             at_fire: BTreeMap::new(),
             groups: BTreeMap::new(),
+            accounts: Vec::new(),
+            measure_stops: false,
         }
     }
 
@@ -2502,7 +3104,7 @@ impl Brains {
         events: &[Event],
     ) -> Vec<(BodyId, Decision)> {
         self.notice(events, world);
-        self.count_gathers(events, rules);
+        self.count_gathers(events, world, rules);
         let now = world.tick().0;
         self.bearers.left = cold_chunks_at(world, now);
         let chunks = world.map().chunks_wide() as usize * world.map().chunks_high() as usize;
@@ -2611,18 +3213,53 @@ impl Brains {
 
     /// What each body gathered this tick goes to its day's count (D50);
     /// the nightfall is noted for [`Brains::close_day`].
-    fn count_gathers(&mut self, events: &[Event], rules: &Content) {
+    fn count_gathers(&mut self, events: &[Event], world: &World, rules: &Content) {
+        let side = place_side(rules);
+        let grove = grove_side(rules);
+        let now = world.tick().0;
+        let per_day = world.calendar().ticks_per_day().max(1);
         for event in events {
             match event {
                 Event::NightFell { .. } => self.dusk = true,
                 Event::DayStarted { .. } => self.dawn = true,
+                Event::BodyMoved { body, to, .. } => {
+                    if let Some(mind) = self.minds.get_mut(body) {
+                        mind.walked_today += 1;
+                        mind.from_home = if place_of(*to, side) == place_of(mind.ways.home, side) {
+                            0
+                        } else {
+                            mind.from_home + 1
+                        };
+                    }
+                }
+                Event::BodyDrank { body, .. } => {
+                    if let (Some(mind), Some(b)) = (self.minds.get_mut(body), world.body(*body)) {
+                        // Its thirst since its last drink, in per cent of
+                        // a day's: a drink at most a day's.
+                        let since = now.saturating_sub(std::mem::replace(&mut mind.drank_at, now));
+                        let mut gains = [0; SENSES];
+                        gains[Sense::Water as usize] = (since * 1000 / per_day).min(1000);
+                        let saved = walk_permille(rules, b, mind.from_home * 2);
+                        mind.acted_at(place_of(b.pos(), side), false, saved, gains);
+                    }
+                }
                 Event::WorkStopped {
                     body, gives, grams, ..
                 } => {
                     if let Some(mind) = self.minds.get_mut(body)
                         && let Some(food) = rules.material(gives).and_then(|m| m.food)
                     {
-                        mind.gathered_today_kj += u64::from(food.energy_kj(*grams));
+                        let kj = u64::from(food.energy_kj(*grams));
+                        mind.gathered_today_kj += kj;
+                        if let Some(b) = world.body(*body)
+                            && kj > 0
+                        {
+                            let mut gains = [0; SENSES];
+                            gains[Sense::Food as usize] =
+                                kj * 1000 / need_kj_per_day(rules, b).max(1);
+                            let saved = walk_permille(rules, b, mind.from_home * 2);
+                            mind.acted_at(place_of(b.pos(), grove), true, saved, gains);
+                        }
                     }
                 }
                 _ => {}
@@ -2650,12 +3287,24 @@ impl Brains {
     /// night's camp-mates.
     fn close_day(&mut self, world: &World, rules: &Content) {
         let trials = &rules.needs.trials;
+        let per_year = world.calendar().days_per_year();
         let seed = world.seed();
         let day = today(world);
         let now = world.tick().0;
         self.food.refresh(world, rules);
         let (kin, season) = temper_today(world, rules, day);
         let ids: Vec<BodyId> = self.minds.keys().copied().collect();
+        let follows = self.follows_today(world, rules, day);
+        let gathered: BTreeMap<BodyId, u64> = self
+            .minds
+            .iter()
+            .map(|(&id, m)| (id, m.gathered_today_kj))
+            .collect();
+        let indirect: BTreeSet<BodyId> = follows
+            .iter()
+            .filter(|f| f.how != FOLLOW_TOLD && f.fed)
+            .map(|f| f.whom)
+            .collect();
         for &id in &ids {
             let Some(body) = world.body(id) else {
                 continue;
@@ -2669,30 +3318,35 @@ impl Brains {
                 continue;
             }
             let c = body.condition();
-            let hungry = c.hunger.points() >= HUNGRY;
+            let (hungry, thirsty) = (c.hunger.points() >= HUNGRY, c.thirst.points() >= THIRSTY);
             let cold = std::mem::take(&mut mind.cold_night);
+            mind.night = Some(night_of(rules, body, mind));
             mind.keep_day(
                 trials,
+                per_year,
                 Day {
                     gathered_kj,
                     thin: c.is_thin(&rules.needs),
-                    thirsty: c.thirst.points() >= THIRSTY,
+                    thirsty,
                     cold,
                     hungry,
                     bare: gathered_kj == 0,
                 },
             );
-            let (day_of, kin_of) = ((day, gathered_kj, now), (kin.get(&id).copied(), season));
+            let (day_of, kin_of) = (
+                (day, gathered_kj, now),
+                (kin.get(&id).copied(), season, indirect.contains(&id)),
+            );
+            let told = stopped(world, rules, (id, body), mind, now);
+            if self.measure_stops {
+                self.news.extend(told);
+            }
             close_habit(rules, body, id, mind, day_of, kin_of, &mut self.news);
-            mind.distress_days = if hungry || gathered_kj == 0 {
-                mind.distress_days.saturating_add(1)
-            } else {
-                0
-            };
+            mind.distressed(hungry || thirsty || gathered_kj == 0);
             if let Some(trial) = mind.trial
-                && day >= trial.started_day + u64::from(trials.days_for(trial.way.key()))
+                && day >= trial.started_day + u64::from(trials.days_for(trial.way.key(), per_year))
             {
-                let (kept, judged) = judge(rules, body, mind, &trial);
+                let (kept, judged) = judge(rules, per_year, body, mind, &trial);
                 mind.learn_will(rules, kept);
                 if kept {
                     mind.changed_day = Some(day);
@@ -2709,22 +3363,40 @@ impl Brains {
                     heard_nights: trial.heard.nights,
                     at: now,
                 });
-            } else if mind.trial.is_none()
-                && mind.distress_days >= trials.trial_after_days
-                && scatter::roll(seed, purpose::TRIAL_TRY, &[u64::from(id.0), day]) % 100
-                    < trials.try_percent(mind.will)
-            {
+            } else if mind.trial.is_none() && wants_to_try(trials, seed, (id, day), mind) {
                 let child = world.age_milli(body) < 16_000;
-                if let Some(news) =
-                    start_trial(world, rules, &self.food, &self.memory, id, mind, child, day)
-                {
+                if let Some(news) = start_trial(world, rules, &self.memory, id, mind, child, day) {
                     mind.changed_day = Some(day);
                     self.news.push(news);
                 }
             }
         }
+        self.review_day(world, rules, day, (&follows, &gathered));
         self.end_groups(now, u64::from(world.calendar().ticks_per_second()));
-        // The children follow (D50, D47).
+        self.children_follow(world, &ids);
+    }
+
+    /// At dawn each notes the night it just slept where it lies (D50, D53
+    /// amended 23 November 2026): its notes of every place fade first.
+    fn note_nights(&mut self, world: &World, rules: &Content) {
+        let side = place_side(rules);
+        let keep = u64::from(rules.needs.trials.lived_keep_permille);
+        for (id, mind) in &mut self.minds {
+            let Some(mut night) = mind.night.take() else {
+                continue;
+            };
+            let Some(body) = world.body(*id) else {
+                continue;
+            };
+            night.losses[Sense::Warmth as usize] = u64::from(body.condition().cold.points()) * 10;
+            mind.note_night(place_of(body.pos(), side), &night, keep);
+        }
+    }
+
+    /// The children follow (D50, D47): a child takes its mother's home
+    /// (its father's without one), a carried infant its carrier's; then
+    /// each mind notes its home for the night's camp-mates.
+    fn children_follow(&mut self, world: &World, ids: &[BodyId]) {
         let follow: Vec<(BodyId, Pos)> = ids
             .iter()
             .filter_map(|&id| {
@@ -2748,6 +3420,147 @@ impl Brains {
         }
         for mind in self.minds.values_mut() {
             mind.home_at_dusk = mind.ways.home;
+        }
+    }
+
+    /// Who followed whom today (D56, PR 1 ter), read at nightfall before
+    /// the day closes: each member of a group its caller (gathering), each
+    /// who asked at the fire the one it asked (the activity it asked it
+    /// for), each who went alone to a place another found and told that
+    /// finder (exploring); and how each came back: with a day of its need,
+    /// or with nothing.
+    fn follows_today(&self, world: &World, rules: &Content, day: u64) -> Vec<Follow> {
+        let rep = &rules.needs.reputation;
+        if !rep.on() && !rules.needs.decisions.reviews() {
+            return Vec::new();
+        }
+        let gather = activity_index("gather");
+        let explore = activity_index("explore");
+        let mut follows = Vec::new();
+        for (&id, mind) in &self.minds {
+            let Some(body) = world.body(id) else {
+                continue;
+            };
+            let Some(plan) = mind.plan.filter(|p| u64::from(p.day) == day) else {
+                continue;
+            };
+            let gathered = mind.gathered_today_kj;
+            let need = need_kj_per_day(rules, body);
+            let (fed, empty) = (gathered >= need, gathered == 0);
+            let kj_percent = u32::try_from(gathered * 100 / need.max(1)).unwrap_or(u32::MAX);
+            let mut push = |whom: BodyId, how: u8, activity: u8| {
+                if whom != id {
+                    follows.push(Follow {
+                        body: id,
+                        whom,
+                        how,
+                        activity,
+                        fed,
+                        empty,
+                        kj_percent,
+                    });
+                }
+            };
+            if plan.act == Act::Joined
+                && let Some(leader) = plan.leader
+            {
+                push(leader, FOLLOW_JOINED, gather);
+            }
+            if let Some((asked, activity)) = plan.asked {
+                push(asked, FOLLOW_ASKED, activity);
+            } else if plan.act == Act::Alone
+                && let Some(witness) = plan
+                    .place
+                    .and_then(|key| mind.places.get(&key))
+                    .and_then(|place| place.access)
+                    .and_then(|a| self.memory.get(a.record))
+                    .and_then(Record::witness)
+            {
+                push(witness, FOLLOW_TOLD, explore);
+            }
+        }
+        follows
+    }
+
+    /// The day reviewed at nightfall (D56, PR 1 ter): each follower's
+    /// credit in whom it followed moves (back fed: `seen_gain`; back
+    /// empty: `wear`), each caller notes a fact on each member of its
+    /// group (it waited for it, it came back with less than a day of its
+    /// need), and the groups' returns wait for the next fire's accounts.
+    fn review_day(
+        &mut self,
+        world: &World,
+        rules: &Content,
+        day: u64,
+        (follows, gathered): (&[Follow], &BTreeMap<BodyId, u64>),
+    ) {
+        let rep = &rules.needs.reputation;
+        let dec = &rules.needs.decisions;
+        let now = world.tick().0;
+        let day32 = u32::try_from(day).unwrap_or(u32::MAX);
+        for f in follows {
+            let delta = if f.fed {
+                i32::try_from(rep.seen_gain).unwrap_or(0)
+            } else if f.empty {
+                -i32::try_from(rep.wear).unwrap_or(0)
+            } else {
+                0
+            };
+            if let Some(mind) = self.minds.get_mut(&f.body) {
+                mind.believe(
+                    (f.body, f.body),
+                    (f.activity, f.whom),
+                    delta,
+                    (&mut self.memory, rep, day32),
+                );
+            }
+            self.news.push(News::Followed {
+                body: f.body,
+                whom: f.whom,
+                how: f.how,
+                fed: f.fed,
+                empty: f.empty,
+                kj_percent: f.kj_percent,
+                at: now,
+            });
+        }
+        let mut accounts = Vec::new();
+        for (&leader, g) in &self.groups {
+            let mut fed = 0;
+            let mut empty = 0;
+            let mut facts = Vec::new();
+            for &m in g.members.iter().skip(1) {
+                let (Some(body), Some(&gathered)) = (world.body(m), gathered.get(&m)) else {
+                    continue;
+                };
+                let little = gathered < need_kj_per_day(rules, body);
+                fed += u32::from(!little);
+                empty += u32::from(gathered == 0);
+                let mut flags = 0;
+                if g.waited_for.contains(&m) {
+                    flags |= FACT_WAITED;
+                }
+                if little {
+                    flags |= FACT_LITTLE;
+                }
+                facts.push(Fact {
+                    who: m,
+                    day: day32,
+                    flags,
+                });
+            }
+            if dec.reviews()
+                && let Some(mind) = self.minds.get_mut(&leader)
+            {
+                for fact in facts {
+                    mind.note(fact, dec.facts_kept);
+                }
+            }
+            let members = g.members.iter().skip(1).copied().collect();
+            accounts.push((leader, members, fed, empty));
+        }
+        if rep.on() {
+            self.accounts = accounts;
         }
     }
 
@@ -2789,11 +3602,14 @@ impl Brains {
     /// heard ([`Brains::imitate`]). Nothing here reads the world but the
     /// calendar: last, every mind's places heard age ([`Brains::age_heard`]).
     fn vigil(&mut self, world: &World, rules: &Content) {
+        self.note_nights(world, rules);
         let fire = &rules.needs.fire;
         let at_fire = std::mem::take(&mut self.at_fire);
+        let accounts = std::mem::take(&mut self.accounts);
         if !fire.on() {
             return;
         }
+        let dawn = u32::try_from(today(world)).unwrap_or(u32::MAX);
         let day = u32::try_from(today(world).saturating_sub(1)).unwrap_or(u32::MAX);
         let now = world.tick().0;
         let side = place_side(rules);
@@ -2816,7 +3632,8 @@ impl Brains {
                 matches!(self.memory.get(record), Some(Record::Place { states, .. })
                     if states.iter().any(|&(_, bucket)| bucket >= 2))
             });
-            self.fire_hear(world, rules, (camp, day, now), &present, &told, &fared);
+            let learnt = self.fire_hear(world, rules, (camp, day, now), &present, &told, &fared);
+            self.fire_accounts(rules, dawn, &present, (&learnt, &accounts));
             self.fire_deny(world, rules, (camp, day, now), &present, &denied);
             // The night, in the hearth: the denials after the slots.
             let (night, _) = self.memory.intern(Record::Night {
@@ -3040,8 +3857,10 @@ impl Brains {
         present: &[BodyId],
         told: &[(RecordId, BodyId)],
         fared: &[(BodyId, Fared)],
-    ) {
+    ) -> Vec<(BodyId, BodyId)> {
         let fire = &rules.needs.fire;
+        // Each listener and the finder of a place new to it.
+        let mut learnt: Vec<(BodyId, BodyId)> = Vec::new();
         let seed = world.seed();
         // Its age counted to this dawn, the day the listener acts on it.
         let dawn = u32::try_from(today(world)).unwrap_or(u32::MAX);
@@ -3089,6 +3908,7 @@ impl Brains {
                     && !mind.places.contains_key(place)
                 {
                     found.insert((teller, record));
+                    learnt.push((id, teller));
                 }
                 if mind.hear(
                     fire,
@@ -3138,6 +3958,65 @@ impl Brains {
                 places,
                 at: now,
             });
+        }
+        learnt
+    }
+
+    /// The fire's accounts (D56, PR 1 ter): each listener's credit in the
+    /// finder of a place new to it rises by `heard_gain` (exploring); each
+    /// present outside a group of yesterday whose caller is here hears how
+    /// it came home: half of it fed or more, its credit in the caller rises
+    /// by `heard_gain` (gathering); all of it empty, it falls by half the
+    /// `wear` for whoever believed that caller best.
+    fn fire_accounts(
+        &mut self,
+        rules: &Content,
+        dawn: u32,
+        present: &[BodyId],
+        (learnt, accounts): (&[(BodyId, BodyId)], &[Account]),
+    ) {
+        let rep = &rules.needs.reputation;
+        if !rep.on() {
+            return;
+        }
+        let heard = i32::try_from(rep.heard_gain).unwrap_or(0);
+        let worn = -i32::try_from(rep.wear / 2).unwrap_or(0);
+        let (explore, gather) = (activity_index("explore"), activity_index("gather"));
+        for &(listener, finder) in learnt {
+            if let Some(mind) = self.minds.get_mut(&listener) {
+                mind.believe(
+                    (listener, finder),
+                    (explore, finder),
+                    heard,
+                    (&mut self.memory, rep, dawn),
+                );
+            }
+        }
+        for (leader, members, fed, empty) in accounts {
+            if !present.contains(leader) || members.is_empty() {
+                continue;
+            }
+            let n = u32::try_from(members.len()).unwrap_or(u32::MAX);
+            let delta = if fed * 2 >= n {
+                heard
+            } else if *empty == n {
+                worn
+            } else {
+                continue;
+            };
+            for &id in present {
+                if id == *leader || members.contains(&id) {
+                    continue;
+                }
+                if let Some(mind) = self.minds.get_mut(&id) {
+                    mind.believe(
+                        (id, *leader),
+                        (gather, *leader),
+                        delta,
+                        (&mut self.memory, rep, dawn),
+                    );
+                }
+            }
         }
     }
 
@@ -3189,10 +4068,25 @@ impl Brains {
             })
             .collect();
         speakers.sort_unstable();
+        let rep = &rules.needs.reputation;
+        let side = place_side(rules);
+        let near = i32::try_from(dec.near_camp_tiles).unwrap_or(i32::MAX);
+        // The review (PR 1 ter): who is called first, who set aside.
+        let (good_of, aside_by) = self.review_at_fire(world, rules, &speakers, (today, now));
+        let mut review = EveningReview {
+            aside: count_u32(aside_by.values().flatten()),
+            ..EveningReview::default()
+        };
+        let set_aside = |by: BodyId, id: BodyId| aside_by.get(&by).is_some_and(|s| s.contains(&id));
+        let mut questions = if rep.on() { rep.questions_per_night } else { 0 };
         // Each place chosen: its room, how many took it, its caller.
         let mut rooms: BTreeMap<PlaceKey, (u32, u32, Option<BodyId>)> = BTreeMap::new();
         let mut said: BTreeMap<BodyId, (Act, Option<PlaceKey>, Option<BodyId>, u8)> =
             BTreeMap::new();
+        // Companions called by name: the call and its place, their room
+        // kept for them.
+        let mut reserved: BTreeMap<BodyId, (BodyId, PlaceKey)> = BTreeMap::new();
+        let mut asked_of: BTreeMap<BodyId, (BodyId, u8)> = BTreeMap::new();
         let mut skipped = 0;
         for &(_, id) in &speakers {
             let (Some(body), Some(mind)) = (world.body(id), self.minds.get(&id)) else {
@@ -3201,6 +4095,8 @@ impl Brains {
             if carried_kj(world, rules, id) >= mind.ways.stock_kj + need_kj_per_day(rules, body) {
                 // It carries what it wants for tomorrow and tomorrow's
                 // meals on top: it stays.
+                unreserve(&mut reserved, &mut rooms, id);
+                review.stocked += 1;
                 said.insert(id, (Act::Nothing, None, None, 0));
                 continue;
             }
@@ -3212,13 +4108,62 @@ impl Brains {
                     < chance
             {
                 let octant = least_known(mind, rules, camp, seed, id, today64);
+                unreserve(&mut reserved, &mut rooms, id);
                 said.insert(id, (Act::Looked, None, None, octant));
                 continue;
             }
+            // Called first, by name (PR 1 ter): it joins the call.
+            if let Some((lead, key)) = reserved.remove(&id) {
+                said.insert(id, (Act::Joined, Some(key), Some(lead), 0));
+                self.news.push(News::Named {
+                    leader: lead,
+                    body: id,
+                    at: now,
+                });
+                continue;
+            }
+            let mut list = choices(&self.food, rules, world, mind, id, camp, pace);
+            if review.aside > 0 && aside_by.values().any(|s| s.contains(&id)) && near > 0 {
+                // Set aside, it weighs first the places near the camp.
+                list.sort_by_key(|(key, _, _)| !within(place_centre(*key, side), camp, near));
+            }
+            // A reputation weighs (PR 1 ter): the call of whom it believes
+            // best at gathering first, with a chance of its credit.
+            if rep.join_percent > 0
+                && let Some((best, credit)) =
+                    mind.believed(&self.memory, rep, activity_index("gather"), today)
+                && let Some(i) = list.iter().position(|(key, _, _)| {
+                    rooms.get(key).is_some_and(|&(room, taken, caller)| {
+                        caller == Some(best) && taken < room && !set_aside(best, id)
+                    })
+                })
+                && i > 0
+                && scatter::roll(seed, purpose::FIRE_REPUTE, &[u64::from(id.0), today64]) % 100
+                    < u64::from(credit) * u64::from(rep.join_percent) / 100
+            {
+                let first = list.remove(i);
+                list.insert(0, first);
+                review.weighed += 1;
+            }
+            let parents = [body.mother(), body.father()];
+            let weighed = !list.is_empty();
             let mut choice = (Act::Nothing, None, None, 0);
-            for (key, room, own) in choices(&self.food, rules, world, mind, id, camp, pace) {
+            for (key, room, own) in list {
                 match rooms.get_mut(&key) {
                     Some((room, taken, caller)) if *taken < *room => {
+                        // Set aside by its caller, unless its parent is
+                        // with it (PR 1 ter): refused.
+                        if let Some(c) = *caller
+                            && set_aside(c, id)
+                            && !parents.iter().flatten().any(|p| {
+                                said.get(p).is_some_and(|s| {
+                                    s.2 == Some(c) && matches!(s.0, Act::Called | Act::Joined)
+                                })
+                            })
+                        {
+                            review.refused += 1;
+                            continue;
+                        }
                         *taken += 1;
                         choice = match caller {
                             Some(c) => (Act::Joined, Some(key), Some(*c), 0),
@@ -3229,7 +4174,20 @@ impl Brains {
                     Some(_) => skipped += 1,
                     None => {
                         let caller = own.then_some(id);
-                        rooms.insert(key, (room, 1, caller));
+                        let mut taken = 1;
+                        // It calls its good companions first, by name.
+                        for &g in good_of.get(&id).into_iter().flatten() {
+                            if !own || taken >= room {
+                                break;
+                            }
+                            if said.contains_key(&g) || reserved.contains_key(&g) {
+                                continue;
+                            }
+                            reserved.insert(g, (id, key));
+                            taken += 1;
+                            review.named += 1;
+                        }
+                        rooms.insert(key, (room, taken, caller));
                         choice = if own {
                             (Act::Called, Some(key), Some(id), 0)
                         } else {
@@ -3237,6 +4195,54 @@ impl Brains {
                         };
                         break;
                     }
+                }
+            }
+            // With no place to go, it asks (PR 1 ter).
+            if choice.0 == Act::Nothing
+                && questions > 0
+                && let Some((whom, activity, place, room)) =
+                    self.ask(world, rules, (camp, day, today), (id, present), &rooms)
+            {
+                questions -= 1;
+                review.asked += 1;
+                self.news.push(News::Asked {
+                    body: id,
+                    of: whom,
+                    activity,
+                    place,
+                    at: now,
+                });
+                if let Some(key) = place {
+                    review.answered += 1;
+                    choice = match rooms.get_mut(&key) {
+                        Some((room, taken, caller))
+                            if *taken < *room && !caller.is_some_and(|c| set_aside(c, id)) =>
+                        {
+                            *taken += 1;
+                            match caller {
+                                Some(c) => (Act::Joined, Some(key), Some(*c), 0),
+                                None => (Act::Alone, Some(key), None, 0),
+                            }
+                        }
+                        Some(_) => {
+                            skipped += 1;
+                            choice
+                        }
+                        None => {
+                            rooms.insert(key, (room, 1, None));
+                            (Act::Alone, Some(key), None, 0)
+                        }
+                    };
+                    if choice.0 != Act::Nothing {
+                        asked_of.insert(id, (whom, activity));
+                    }
+                }
+            }
+            if choice.0 == Act::Nothing {
+                if weighed {
+                    review.all_taken += 1;
+                } else {
+                    review.no_place += 1;
                 }
             }
             said.insert(id, choice);
@@ -3313,6 +4319,7 @@ impl Brains {
                     held: false,
                     waited: 0,
                     started: false,
+                    waited_for: BTreeSet::new(),
                 },
             );
         }
@@ -3330,6 +4337,7 @@ impl Brains {
                     octant,
                     legs: 0,
                     done: false,
+                    asked: asked_of.get(&id).copied(),
                 });
             }
             self.news.push(News::Decided {
@@ -3363,7 +4371,135 @@ impl Brains {
             calls_full,
             absent,
             full_told,
+            review,
         });
+    }
+
+    /// The evening's review (D56, PR 1 ter): each present who called
+    /// before judges each companion present on its last outings with it
+    /// ([`Mind::review`]): the good ones it calls first tomorrow, by name,
+    /// in the order they speak; the others bad over several outings it
+    /// tells "not with us tomorrow", a gesture that costs each a failure
+    /// of its confidence in gathering, and a fact. A parent never sets
+    /// aside its own child. By caller: whom it calls first, whom it set
+    /// aside.
+    #[allow(clippy::type_complexity, reason = "the review's two lists")]
+    fn review_at_fire(
+        &mut self,
+        world: &World,
+        rules: &Content,
+        speakers: &[(std::cmp::Reverse<u8>, BodyId)],
+        (today, now): (u32, u64),
+    ) -> (
+        BTreeMap<BodyId, Vec<BodyId>>,
+        BTreeMap<BodyId, BTreeSet<BodyId>>,
+    ) {
+        let dec = &rules.needs.decisions;
+        let mut good_of: BTreeMap<BodyId, Vec<BodyId>> = BTreeMap::new();
+        let mut aside_by: BTreeMap<BodyId, BTreeSet<BodyId>> = BTreeMap::new();
+        if !dec.reviews() {
+            return (good_of, aside_by);
+        }
+        for &(_, lead) in speakers {
+            let Some(mind) = self.minds.get(&lead).filter(|m| !m.companions.is_empty()) else {
+                continue;
+            };
+            for &(_, who) in speakers {
+                if who == lead {
+                    continue;
+                }
+                match mind.review(who, dec) {
+                    Review::Good if dec.review_holds("names") => {
+                        good_of.entry(lead).or_default().push(who);
+                    }
+                    Review::Aside if dec.review_holds("set_aside") => {
+                        let child = world
+                            .body(who)
+                            .is_some_and(|b| b.mother() == Some(lead) || b.father() == Some(lead));
+                        if !child {
+                            aside_by.entry(lead).or_default().insert(who);
+                        }
+                    }
+                    Review::Good | Review::Aside | Review::Unsaid => {}
+                }
+            }
+        }
+        for (&lead, set) in &aside_by {
+            for &who in set {
+                if let Some(mind) = self.minds.get_mut(&lead) {
+                    let fact = Fact {
+                        who,
+                        day: today,
+                        flags: FACT_ASIDE,
+                    };
+                    mind.note(fact, dec.facts_kept);
+                }
+                if dec.review_holds("aside_costs")
+                    && let Some(mind) = self.minds.get_mut(&who)
+                {
+                    mind.set_aside(&rules.needs.temperance);
+                }
+                self.news.push(News::Aside {
+                    leader: lead,
+                    body: who,
+                    day: today,
+                    at: now,
+                });
+            }
+        }
+        (good_of, aside_by)
+    }
+
+    /// One with no place to go asks whom it believes best "where is
+    /// food?" (D56, PR 1 ter): the present it holds the highest credit in,
+    /// at any activity of the reputation. That one answers its best place
+    /// from the camp it holds a record of and that tonight's calls have
+    /// not taken whole (it heard them), a telling to one apart from the
+    /// accounts' slots, and the asker hears it at that credit. Whom it
+    /// asked, for what, the place if it was answered one it now knows, and
+    /// that place's room; `None` when it believes nobody here.
+    fn ask(
+        &mut self,
+        world: &World,
+        rules: &Content,
+        (camp, day, dawn): (Pos, u32, u32),
+        (id, present): (BodyId, &[BodyId]),
+        rooms: &BTreeMap<PlaceKey, (u32, u32, Option<BodyId>)>,
+    ) -> Option<(BodyId, u8, Option<PlaceKey>, u32)> {
+        let rep = &rules.needs.reputation;
+        let mind = self.minds.get(&id)?;
+        let (activity, whom, credit) = mind
+            .reputed
+            .iter()
+            .filter_map(|b| {
+                mind.believed(&self.memory, rep, b.activity, dawn)
+                    .map(|(w, c)| (b.activity, w, c))
+            })
+            .filter(|(_, w, _)| present.contains(w))
+            .max_by_key(|&(a, w, c)| (c, std::cmp::Reverse(a), std::cmp::Reverse(w)))?;
+        let them = self.minds.get(&whom)?;
+        let body = world.body(whom)?;
+        let pace = u64::from(body.condition().pace_percent(&rules.needs).max(1));
+        let answer = choices(&self.food, rules, world, them, whom, camp, pace)
+            .into_iter()
+            .filter(|(key, _, _)| rooms.get(key).is_none_or(|r| r.1 < r.0))
+            .find_map(|(key, room, _)| {
+                them.places.get(&key)?.access.map(|a| (key, room, a.record))
+            });
+        let Some((key, room, record)) = answer else {
+            return Some((whom, activity, None, 0));
+        };
+        let mind = self.minds.get_mut(&id)?;
+        mind.hear(
+            &rules.needs.fire,
+            &self.food,
+            (camp, day),
+            (credit, record, whom),
+            &mut self.memory,
+            rules,
+        );
+        let knows = mind.places.contains_key(&key);
+        Some((whom, activity, knows.then_some(key), room))
     }
 
     /// At the fire, `id` may copy one way it heard (D50, amended by D55):
@@ -4216,10 +5352,14 @@ fn decide(
     // The day's plan said at the fire (D56): a group's turn, a look out.
     let full = !can_carry || carried_kj(world, rules, id) >= mind.ways.stock_kj;
     let mut gathers = !night && (!full || on_the_way(world, groups, mind));
+    let mut group_home = false;
     if !night {
         match group_turn(world, rules, groups, (id, here), mind, full, now) {
             Turn::Go => {}
-            Turn::Home => gathers = false,
+            Turn::Home => {
+                gathers = false;
+                group_home = true;
+            }
             Turn::Decide(decision) => return decision,
         }
         if gathers && let Turn::Decide(decision) = look_out(world, rules, id, here, mind) {
@@ -4254,6 +5394,18 @@ fn decide(
     }
     mind.doing = Doing::Home;
     let why = if night { Why::Night } else { Why::Home };
+    if mind.stop.is_none() {
+        let reason = if night {
+            STOP_NIGHT
+        } else if full {
+            STOP_FULL
+        } else if group_home {
+            STOP_GROUP
+        } else {
+            STOP_NOTHING
+        };
+        mind.stop = Some((reason, carried_kj(world, rules, id)));
+    }
     decision(
         Intention::MoveTo {
             body: id,
@@ -4644,6 +5796,66 @@ fn follow_or_wait(
     Some(d)
 }
 
+/// Whether `id`, under no trial, starts one today (D50): in distress long
+/// enough, by the daily chance of its will; with nothing wrong, by the
+/// far smaller chance of a bold will to search for better (amended 24
+/// November 2026), judged the same.
+fn wants_to_try(trials: &Trials, seed: u64, (id, day): (BodyId, u64), mind: &Mind) -> bool {
+    if mind.distress_days >= trials.trial_after_days {
+        scatter::roll(seed, purpose::TRIAL_TRY, &[u64::from(id.0), day]) % 100
+            < trials.try_percent(mind.will)
+    } else {
+        scatter::roll(seed, purpose::TRIAL_CALM, &[u64::from(id.0), day]) % 1000
+            < trials.calm_try_permille(mind.will)
+    }
+}
+
+/// What walking `tiles` costs `body`, in per mille of a day's food (D50,
+/// amended 24 November 2026: walking costs energy).
+fn walk_permille(rules: &Content, body: &Body, tiles: u64) -> u64 {
+    let c = body.condition();
+    let j =
+        tiles * u64::from(rules.needs.walk_j_per_m) * u64::from(c.size_permille.min(1000)) / 1000;
+    j * 1000 / c.need_j_per_day(&rules.needs).max(1)
+}
+
+/// The day closed at nightfall, to be noted where it lies at the next
+/// dawn (D50, D53 amended): the hunger and thirst left, in per mille of a
+/// day (a gauge point is a hundredth), the day's walk, and what it did
+/// place by place. The cold is read at dawn.
+fn night_of(rules: &Content, body: &Body, mind: &mut Mind) -> Night {
+    let c = body.condition();
+    let mut losses = [0; SENSES];
+    losses[Sense::Food as usize] = u64::from(c.hunger.points()) * 10;
+    losses[Sense::Water as usize] = u64::from(c.thirst.points()) * 10;
+    Night {
+        losses,
+        walk: walk_permille(rules, body, std::mem::take(&mut mind.walked_today)),
+        day: std::mem::take(&mut mind.day_places),
+    }
+}
+
+/// Why `id` first went home from gathering today and what it carried,
+/// told at nightfall (lot 5b, a measure of the review), when the callers
+/// review their companions.
+fn stopped(
+    world: &World,
+    rules: &Content,
+    (id, body): (BodyId, &Body),
+    mind: &mut Mind,
+    now: u64,
+) -> Option<News> {
+    let (why, stop_kj) = mind.stop.take().unwrap_or((STOP_NONE, 0));
+    rules.needs.decisions.reviews().then(|| News::Stopped {
+        body: id,
+        why,
+        stop_kj,
+        evening_kj: carried_kj(world, rules, id),
+        need_kj: need_kj_per_day(rules, body),
+        at: now,
+    })
+}
+
 /// What a body did its day, kept in its habit when decisions are on, and
 /// told as [`News::Habit`] (D56). With the will tempered, its activities
 /// are judged (D56): yesterday's look out by whether it found a place it
@@ -4658,7 +5870,7 @@ fn close_habit(
     id: BodyId,
     mind: &mut Mind,
     (day, gathered_kj, now): (u64, u64, u64),
-    (kin_fed, season): (Option<bool>, bool),
+    (kin_fed, season, indirect): (Option<bool>, bool, bool),
     news: &mut Vec<News>,
 ) {
     if season {
@@ -4677,9 +5889,14 @@ fn close_habit(
                 .habit
                 .last()
                 .filter(|b| *b & 0x0f == Act::Looked.code());
+            // An indirect success (PR 1 ter): one who joined its call or
+            // followed its answer came back fed; it counts as its own day
+            // of gathering fed, once a day.
+            let gathering = matches!(act, Act::Alone | Act::Called | Act::Joined);
             let judged = [
                 looked.map(|b| ("explore", b & HABIT_FOUND != 0)),
-                matches!(act, Act::Alone | Act::Called | Act::Joined).then_some(("gather", fed)),
+                gathering.then_some(("gather", fed || indirect)),
+                (indirect && !gathering).then_some(("gather", true)),
                 plan.filter(|_| act == Act::Nothing)
                     .and(kin_fed)
                     .map(|k| ("stay", k)),
@@ -4742,6 +5959,48 @@ fn kin_fed(world: &World, rules: &Content) -> BTreeMap<BodyId, bool> {
         }
     }
     fed
+}
+
+/// One called by name changed its mind (D56, PR 1 ter): the room kept for
+/// it is given back.
+fn unreserve(
+    reserved: &mut BTreeMap<BodyId, (BodyId, PlaceKey)>,
+    rooms: &mut BTreeMap<PlaceKey, (u32, u32, Option<BodyId>)>,
+    id: BodyId,
+) {
+    if let Some((_, key)) = reserved.remove(&id)
+        && let Some(room) = rooms.get_mut(&key)
+    {
+        room.1 = room.1.saturating_sub(1);
+    }
+}
+
+/// One who followed another today (D56, PR 1 ter).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Follow {
+    /// The follower.
+    body: BodyId,
+    /// The one followed.
+    whom: BodyId,
+    /// How ([`FOLLOW_JOINED`], [`FOLLOW_ASKED`], [`FOLLOW_TOLD`]).
+    how: u8,
+    /// The activity followed for, an index in `content::ACTIVITIES`.
+    activity: u8,
+    /// Back with a day of its need.
+    fed: bool,
+    /// Back with nothing.
+    empty: bool,
+    /// What it gathered, in per cent of a day of its need.
+    kj_percent: u32,
+}
+
+/// The index of the activity `name` in `content::ACTIVITIES`.
+fn activity_index(name: &str) -> u8 {
+    crate::content::ACTIVITIES
+        .iter()
+        .position(|n| *n == name)
+        .and_then(|i| u8::try_from(i).ok())
+        .unwrap_or(u8::MAX)
 }
 
 impl Group {
@@ -4825,16 +6084,24 @@ fn look_behind(
     // It sees a member walking behind it, out of reach: it waits for it.
     // One it does not see, or that stands still, it cannot wait for.
     let sight = sight_at(world.map(), rules, body.pos());
-    let behind = g.members.iter().skip(1).any(|m| {
-        !g.left.contains(m)
-            && !g.arrived.contains_key(m)
-            && world.body(*m).is_some_and(|b| {
-                b.is_walking()
-                    && within(b.pos(), body.pos(), sight)
-                    && !within(b.pos(), body.pos(), reach)
-            })
-    });
-    if behind && g.waited < most {
+    let behind: Vec<BodyId> = g
+        .members
+        .iter()
+        .skip(1)
+        .filter(|m| {
+            !g.left.contains(m)
+                && !g.arrived.contains_key(m)
+                && world.body(**m).is_some_and(|b| {
+                    b.is_walking()
+                        && within(b.pos(), body.pos(), sight)
+                        && !within(b.pos(), body.pos(), reach)
+                })
+        })
+        .copied()
+        .collect();
+    if !behind.is_empty() && g.waited < most {
+        // A fact of its review (PR 1 ter): whom it waited for.
+        g.waited_for.extend(behind);
         if g.held {
             g.waited += group_wait(world);
         }
@@ -4922,6 +6189,10 @@ fn group_turn(
         {
             g.followed.insert(id);
             mind.doing = Doing::Home;
+            if mind.stop.is_none() {
+                let reason = if full { STOP_FULL } else { STOP_GROUP };
+                mind.stop = Some((reason, carried_kj(world, rules, id)));
+            }
             return Turn::Decide(Some(Decision {
                 intention: Intention::Follow {
                     body: id,
@@ -5446,17 +6717,6 @@ fn halfway(own: u64, theirs: u64) -> u64 {
     own.midpoint(theirs)
 }
 
-/// How far a trial moves the home, in tiles, by the will (D50): the whole
-/// `new_home_walk_tiles` from `far_home_from_will`, a quarter under it.
-fn will_step(will: u8, trials: &Trials) -> i32 {
-    let tiles = if u32::from(will) >= trials.far_home_from_will {
-        trials.new_home_walk_tiles
-    } else {
-        trials.new_home_walk_tiles / 4
-    };
-    i32::try_from(tiles).unwrap_or(i32::MAX)
-}
-
 /// The eight directions, east first, turning clockwise on the screen.
 const DIRECTIONS: [(i32, i32); 8] = [
     (1, 0),
@@ -5471,17 +6731,15 @@ const DIRECTIONS: [(i32, i32); 8] = [
 
 /// `id` starts a trial on `day` (D50): one way moved by one step, drawn
 /// from the world's seed, its id and the day: the worth distance twice or
-/// half, the night out flipped, the store twice or half, or the home moved
-/// [`will_step`] tiles towards where it knows the most plants still
-/// bearing or the nearest drinking place it knows ([`new_home`]). A child
-/// (under sixteen) does not try its home: it takes its mother's every
-/// night; a body whose home can go nowhere (the map's edge) tries another
+/// half, the night out flipped, the store twice or half, or the home set
+/// at the place it lived best ([`lived_home`]). A child (under sixteen)
+/// does not try its home: it takes its mother's every night; a body whose
+/// home can go nowhere (no place it lived beats its home) tries another
 /// way that day. The trial records what the days before gave.
 #[allow(clippy::too_many_arguments, reason = "one trial's start")]
 fn start_trial(
     world: &World,
     rules: &Content,
-    food: &Food,
     memory: &Store,
     id: BodyId,
     mind: &mut Mind,
@@ -5500,7 +6758,8 @@ fn start_trial(
                 way,
                 before,
                 started_day: day,
-                before_days: mind.lately(trials.days_for(way.key())),
+                before_days: mind
+                    .lately(trials.days_for(way.key(), world.calendar().days_per_year())),
                 heard: HeardDays::default(),
             });
             return Some(News::Trying {
@@ -5532,8 +6791,7 @@ fn start_trial(
     let (mut way, mut up) = draw(&candidates, r);
     let mut home = None;
     if way == Way::Home {
-        let tiles = will_step(mind.will, trials);
-        home = new_home(world, rules, food, id, mind, day, tiles);
+        home = lived_home(world, rules, mind);
         if home.is_none() {
             candidates.retain(|c| c.0 != Way::Home);
             (way, up) = draw(&candidates, r >> 8);
@@ -5566,7 +6824,7 @@ fn start_trial(
         way,
         before,
         started_day: day,
-        before_days: mind.lately(trials.days_for(way.key())),
+        before_days: mind.lately(trials.days_for(way.key(), world.calendar().days_per_year())),
         heard: HeardDays::default(),
     });
     Some(News::Trying {
@@ -5691,99 +6949,99 @@ fn heard_candidate(
         .map(|(_, way, after)| (way, after))
 }
 
-/// Where a trial sets `id`'s home (D50): `tiles` from its home towards one
-/// of two things it perceives, drawn half and half from the seed, its id
-/// and the day (D50 b): the direction (of eight) where it knows the most
-/// plants still bearing (what is left on them now, [`World::ripe_of`]),
-/// or the direction of the nearest drinking place it knows; the other
-/// when the drawn one has nothing, a seeded direction when neither has;
-/// then the nearest walkable tile back along that line. Nothing says
-/// "stay near water": the judge counts the thirsty days, and the tribe
-/// finds it or not. The map's edge is physics, not a rule: one walks
-/// until the land ends (the lead, 22 November 2026), so a step that would
-/// leave the map shortens to the edge less a margin of half the step,
-/// along each axis it moves on (the vivarium's world has an edge; the
-/// planet will have none, only its ocean). `None` when the home can go
-/// nowhere: nothing left between the home and the margin that way, or no
-/// walkable tile on the shortened line; no home trial that day.
-fn new_home(
-    world: &World,
-    rules: &Content,
-    food: &Food,
-    id: BodyId,
-    mind: &Mind,
-    day: u64,
-    tiles: i32,
-) -> Option<Pos> {
-    let home = mind.ways.home;
-    let side = place_side(rules);
-    let mut counts = [0_u32; 8];
-    for (&key, place) in &mind.places {
-        let bearing = place.bearing_count(food);
-        if bearing == 0 {
-            continue;
+/// The grid of the groves (D53, amended 24 November 2026): gathering is
+/// noted over `trials.grove_tiles`, so a grove gathered here and there
+/// adds up as the water drunk at again and again.
+fn grove_side(rules: &Content) -> i32 {
+    i32::try_from(rules.needs.trials.grove_tiles.max(1)).unwrap_or(i32::MAX)
+}
+
+/// How a body would fare living at `l`, by its own notes (D50, D53,
+/// amended 24 November 2026), in per mille of a day of need, every
+/// [`Sense`] counted alike: what the places of its grove gave a day, each
+/// sense up to a day's worth, less what the nights there (its own, else
+/// the most slept place of its grove) left it lacking and what its days'
+/// walking cost. A place it never slept near takes the home's nights
+/// (`home`), their walking less what living there would have saved.
+fn fare(l: &Lived, notes: &[Lived], (side, grove): (i32, i32), home: Option<&Lived>) -> i64 {
+    let grove_of = |n: &Lived| {
+        if n.grove {
+            n.place
+        } else {
+            place_of(place_centre(n.place, side), grove)
         }
-        let at = place_centre(key, side);
-        let (dx, dy) = (at.x - home.x, at.y - home.y);
-        if dx == 0 && dy == 0 {
-            continue;
-        }
-        counts[octant(dx, dy)] += bearing;
-    }
-    let plants = counts.iter().any(|&n| n > 0).then(|| {
-        (0..8)
-            .max_by_key(|&i| (counts[i], std::cmp::Reverse(i)))
-            .expect("eight")
-    });
-    let water = mind
-        .water
-        .values()
-        .map(|place| place.stand)
-        .filter(|&at| at != home)
-        .min_by_key(|&at| (far(home, at), at.x, at.y))
-        .map(|at| octant(at.x - home.x, at.y - home.y));
-    let r = scatter::roll(
-        world.seed(),
-        purpose::TRIAL_DIRECTION,
-        &[u64::from(id.0), day],
-    );
-    let drawn = if r.is_multiple_of(2) {
-        plants.or(water)
+    };
+    let mine = grove_of(l);
+    let near = || notes.iter().filter(move |n| grove_of(n) == mine);
+    let gains: u64 = (0..SENSES)
+        .map(|s| near().map(|n| n.per_day(n.gains[s])).sum::<u64>().min(1000))
+        .sum();
+    let slept = if l.nights >= 1000 {
+        Some(l)
     } else {
-        water.or(plants)
+        near()
+            .filter(|n| n.nights >= 1000)
+            .max_by_key(|n| (n.nights, n.place))
     };
-    let (dx, dy) =
-        DIRECTIONS[drawn.unwrap_or_else(|| usize::try_from((r >> 1) % 8).expect("under eight"))];
-    let map = world.map();
-    let (w, h) = (
-        i32::try_from(map.width()).expect("fits") - 1,
-        i32::try_from(map.height()).expect("fits") - 1,
-    );
-    let margin = tiles / 2;
-    // How far the step may go along one axis before the margin: the whole
-    // step on an axis it does not move on.
-    let reach = |d: i32, at: i32, end: i32| match d {
-        0 => tiles,
-        d if d > 0 => end - margin - at,
-        _ => at - margin,
+    let night = |n: &Lived| n.losses.iter().map(|&v| n.per_night(v)).sum::<u64>();
+    let losses = match (slept, home) {
+        (Some(n), _) => night(n) + n.per_night(n.walk),
+        (None, Some(h)) => night(h) + h.per_night(h.walk).saturating_sub(l.per_day(l.saved)),
+        (None, None) => 0,
     };
-    let step = tiles.min(reach(dx, home.x, w)).min(reach(dy, home.y, h));
-    if step <= 0 {
-        // No land that way: the home already stands at the margin, or past
-        // it, on an axis the step moves on.
+    i64::try_from(gains).unwrap_or(i64::MAX) - i64::try_from(losses).unwrap_or(i64::MAX)
+}
+
+/// Where a trial sets `id`'s home (D50, amended 23 and 24 November 2026,
+/// the project lead: "ils doivent se souvenir des endroits où vivre et
+/// choisir eux-mêmes", and the home at the optimal place for good): at
+/// the place or grove of its notebook where it would [`fare`] best, by a
+/// hundredth of a day at least, lived for the nights or days its will
+/// asks; the walkable tile nearest its middle. Nothing says water or
+/// plants are good: only what its body got, lacked and spent there
+/// grades a place. `None` when no place it lived beats its home, or none
+/// was lived long enough: no home trial that day.
+fn lived_home(world: &World, rules: &Content, mind: &Mind) -> Option<Pos> {
+    let sides = (place_side(rules), grove_side(rules));
+    let home = place_of(mind.ways.home, sides.0);
+    let is_home = |l: &Lived| !l.grove && l.place == home;
+    let home_notes = mind.lived.iter().find(|l| is_home(l) && l.nights >= 1000);
+    let nights = u64::from(rules.needs.trials.home_nights(mind.will)) * 1000;
+    let best = mind
+        .lived
+        .iter()
+        .filter(|l| is_home(l) || l.lived() >= nights)
+        .max_by_key(|l| {
+            (
+                fare(l, &mind.lived, sides, home_notes).div_euclid(10),
+                is_home(l),
+                !l.grove,
+                l.lived(),
+                std::cmp::Reverse(l.place),
+            )
+        })?;
+    if is_home(best) {
         return None;
     }
-    let inside = |at: Pos| {
-        (dx == 0 || (margin..=w - margin).contains(&at.x))
-            && (dy == 0 || (margin..=h - margin).contains(&at.y))
-    };
-    // Back along the line from the far end to the home: the first
-    // walkable tile, inside the margin and away from the home.
-    (1..=step)
-        .rev()
-        .map(|k| Pos::new(home.x + dx * k, home.y + dy * k))
-        .find(|&at| walkable(map, rules, at))
-        .filter(|&at| at != home && inside(at))
+    let side = if best.grove { sides.1 } else { sides.0 };
+    let centre = place_centre(best.place, side);
+    let map = world.map();
+    (0..=side / 2)
+        .flat_map(|r| ring(centre, r))
+        .find(|&at| map.is_passable(at))
+}
+
+/// The tiles at `r` from `centre` on each axis, row by row.
+fn ring(centre: Pos, r: i32) -> Vec<Pos> {
+    let mut tiles = Vec::new();
+    for dy in -r..=r {
+        for dx in -r..=r {
+            if dx.abs() == r || dy.abs() == r {
+                tiles.push(Pos::new(centre.x + dx, centre.y + dy));
+            }
+        }
+    }
+    tiles
 }
 
 /// Which of the eight [`DIRECTIONS`] `(dx, dy)` points to: by the signs,
@@ -7488,8 +8746,6 @@ mod tests {
             trial_after_days: 1,
             trial_days: 2,
             try_percent_by_will: vec![(0, percent)],
-            far_home_from_will: 70,
-            new_home_walk_tiles: 20,
             imitate_tiles: 12,
             imitate_percent: percent,
             imitate_loss_percent: loss,
@@ -7595,6 +8851,16 @@ mod tests {
         assert_eq!(brains.mind(id).unwrap().distress_days(), 2);
         // The days kept: twice trial_days (1 by default) at least two.
         assert!(brains.mind(id).unwrap().days.len() <= 4);
+        // Fed and gathering but thirsty at nightfall: distress too (D50,
+        // amended 23 November 2026).
+        world.bodies[0].condition.hunger = Gauge::at(0);
+        brains.minds.get_mut(&id).unwrap().gathered_today_kj = 500;
+        nightfall(&world, &rules, &mut brains);
+        assert_eq!(brains.mind(id).unwrap().distress_days(), 0);
+        world.bodies[0].condition.thirst = Gauge::at(THIRSTY);
+        brains.minds.get_mut(&id).unwrap().gathered_today_kj = 500;
+        nightfall(&world, &rules, &mut brains);
+        assert_eq!(brains.mind(id).unwrap().distress_days(), 1);
     }
 
     #[test]
@@ -7738,10 +9004,13 @@ mod tests {
     #[test]
     fn a_slow_way_is_judged_on_its_horizon_not_on_trial_days() {
         let mut rules = trials_at(0, 0);
-        rules.needs.trials.horizon_days = vec![("stock_kj".to_owned(), 4)];
+        rules.needs.trials.horizon_seasons = vec![("stock_kj".to_owned(), 1)];
         let id = BodyId(1);
         let mut world = World::empty(
-            Calendar::new(1, 7200).unwrap(),
+            Calendar::new(1, 7200)
+                .unwrap()
+                .with_days_per_year(16)
+                .unwrap(),
             Map::filled(64, 64, Terrain::Grass).with_camp(5, 5),
         );
         let mut events = Vec::new();
@@ -7762,7 +9031,7 @@ mod tests {
         let news = nightfall(&world, &rules, &mut brains);
         assert!(
             news.is_empty(),
-            "two days of four: not judged yet, {news:?}"
+            "two days of a season of four: not judged yet, {news:?}"
         );
         let mind = brains.minds.get_mut(&id).unwrap();
         let trial = mind.trial.as_mut().expect("still under trial");
@@ -7884,204 +9153,6 @@ mod tests {
                 distress_days: 2,
             }
         );
-    }
-
-    #[test]
-    fn a_new_home_goes_towards_the_plants_it_knows_bearing_or_the_water_it_knows() {
-        let (world, rules, id, _) = by_a_ripe_bramble(0);
-        let mut rules = rules;
-        rules.needs.trials = trials_at(100, 0).needs.trials;
-        let food = food_now(&world, &rules);
-        // The home in the middle of the 256-tile valley: no edge near.
-        let home = Pos::new(128, 128);
-        let mut mind = Mind::new(home);
-        // Knowing nothing bearing and no water: the seeded direction, 20
-        // tiles off, along one of the eight lines or the nearest walkable
-        // tile back from there; the same again.
-        let seeded = new_home(&world, &rules, &food, id, &mind, 3, 20).unwrap();
-        assert_ne!(seeded, home);
-        let (dx, dy) = ((seeded.x - home.x).abs(), (seeded.y - home.y).abs());
-        assert!(
-            dx.max(dy) <= 20 && (dx == 0 || dy == 0 || dx == dy),
-            "{seeded:?}"
-        );
-        assert!(walkable(world.map(), &rules, seeded));
-        assert_eq!(
-            new_home(&world, &rules, &food, id, &mind, 3, 20),
-            Some(seeded),
-            "the same again"
-        );
-        // Three brambles known north-east of the home, bearing, and a
-        // drinking place south-west of it: half the days one, half the
-        // other, by the seeded draw.
-        let bramble = food.numbers["bramble"];
-        let side = place_side(&rules);
-        let own = place_of(home, side);
-        mind.places
-            .insert((own.0 + 1, own.1 - 2), place_with(&food, bramble, 3));
-        let north_east = |at: Pos| at.x > home.x && at.y < home.y;
-        let south_west = |at: Pos| at.x < home.x && at.y > home.y;
-        let towards = new_home(&world, &rules, &food, id, &mind, 3, 20).unwrap();
-        assert!(north_east(towards), "only the plants known: {towards:?}");
-        assert!(walkable(world.map(), &rules, towards));
-        let well = Pos::new(home.x - 30, home.y + 30);
-        mind.water.insert(
-            well.chunk(),
-            DrinkingPlace {
-                stand: well,
-                water: well,
-            },
-        );
-        let (mut plants, mut water) = (0, 0);
-        for day in 0..20 {
-            let at = new_home(&world, &rules, &food, id, &mind, day, 20).unwrap();
-            if north_east(at) {
-                plants += 1;
-            } else if south_west(at) {
-                water += 1;
-            } else {
-                panic!("day {day}: {at:?}");
-            }
-        }
-        assert!(
-            plants >= 5 && water >= 5,
-            "{plants} towards the plants, {water} towards the water"
-        );
-        // Spent for the year, the place does not count: the water, every
-        // day.
-        let year = food.now(bramble).unwrap().year;
-        for place in mind.places.values_mut() {
-            place.spend(bramble, year);
-        }
-        for day in 0..20 {
-            let at = new_home(&world, &rules, &food, id, &mind, day, 20).unwrap();
-            assert!(south_west(at), "day {day}: {at:?}");
-        }
-        // The step follows the will: a quarter under far_home_from_will.
-        assert_eq!(will_step(69, &rules.needs.trials), 5);
-        assert_eq!(will_step(70, &rules.needs.trials), 20);
-        assert_eq!(octant(10, 0), 0);
-        assert_eq!(octant(10, 6), 1);
-        assert_eq!(octant(0, -3), 6);
-        assert_eq!(octant(-9, -2), 4);
-    }
-
-    #[test]
-    fn no_home_past_the_maps_edge_and_the_body_tries_another_way_instead() {
-        // A field of 64 tiles, the home at (5, 5): a step of 20 keeps the
-        // home 10 tiles inside the edge.
-        let world = field(64, -1, Pos::new(5, 5));
-        let rules = trials_at(100, 0);
-        let food = food_now(&world, &rules);
-        let id = BodyId(1);
-        let home = Pos::new(5, 5);
-        let knowing = |stand: Pos| {
-            let mut mind = Mind::new(home);
-            mind.water.insert(
-                stand.chunk(),
-                DrinkingPlace {
-                    stand,
-                    water: stand,
-                },
-            );
-            mind
-        };
-        // Water known north-west: that way leaves the map, no home.
-        let mind = knowing(Pos::new(0, 0));
-        assert_eq!(new_home(&world, &rules, &food, id, &mind, 1, 20), None);
-        // Water known east: (25, 5) is inside the margin along the axis
-        // the step moves on; the home's own row near the edge is where it
-        // stands, not where it walks.
-        let mind = knowing(Pos::new(30, 5));
-        assert_eq!(
-            new_home(&world, &rules, &food, id, &mind, 1, 20),
-            Some(Pos::new(25, 5))
-        );
-        // Water known south-east: the home goes there.
-        let mind = knowing(Pos::new(30, 30));
-        assert_eq!(
-            new_home(&world, &rules, &food, id, &mind, 1, 20),
-            Some(Pos::new(25, 25))
-        );
-        // A body whose home can go nowhere tries another way that day:
-        // over forty days of trials, never its home, and the three others.
-        // Its home at the corner, the water known beyond it: the step
-        // north-west, whole or a quarter of it, has no land before the
-        // margin (a home at (5, 5) with a quarter step of 5 would go three
-        // tiles: the edge is physics, one walks until the margin).
-        let home = Pos::new(1, 1);
-        let mut mind = knowing(Pos::new(0, 0));
-        mind.ways.home = home;
-        let mut ways_tried = std::collections::BTreeSet::new();
-        for day in 0..40 {
-            mind.trial = None;
-            if let Some(News::Trying { way, .. }) = start_trial(
-                &world,
-                &rules,
-                &food,
-                &Store::new(),
-                id,
-                &mut mind,
-                false,
-                day,
-            ) {
-                assert_ne!(way, Way::Home, "day {day}");
-                ways_tried.insert(way);
-            }
-        }
-        assert_eq!(ways_tried.len(), 3, "{ways_tried:?}");
-        assert_eq!(mind.ways.home, home);
-    }
-
-    #[test]
-    fn at_the_maps_edge_the_home_step_shortens_to_the_margin() {
-        // The vivarium's world is 2,176 tiles a side and the step 2,000: a
-        // home at (1952, 1952) could go nowhere whole, and no adult of
-        // will tried its home in twenty years (2 home trials in tribe A
-        // against 36–52 of every other way). The edge is physics (the
-        // lead, 22 November 2026): the step shortens to the edge less the
-        // margin of half the step.
-        let world = field(2176, -1, Pos::new(5, 5));
-        let rules = trials_at(100, 0);
-        let food = food_now(&world, &rules);
-        let id = BodyId(1);
-        let home = Pos::new(1952, 1952);
-        let knowing = |stand: Pos| {
-            let mut mind = Mind::new(home);
-            mind.water.insert(
-                stand.chunk(),
-                DrinkingPlace {
-                    stand,
-                    water: stand,
-                },
-            );
-            mind
-        };
-        // Water known north: 952 tiles north, at the margin.
-        let mind = knowing(Pos::new(1952, 100));
-        assert_eq!(
-            new_home(&world, &rules, &food, id, &mind, 1, 2000),
-            Some(Pos::new(1952, 1000))
-        );
-        // Water known north-west: the shorter reach, the northern one, on
-        // both axes of the diagonal.
-        let mind = knowing(Pos::new(100, 100));
-        assert_eq!(
-            new_home(&world, &rules, &food, id, &mind, 1, 2000),
-            Some(Pos::new(1000, 1000))
-        );
-        // Water known south: the home stands past the margin that way.
-        let mind = knowing(Pos::new(1952, 2100));
-        assert_eq!(new_home(&world, &rules, &food, id, &mind, 1, 2000), None);
-        // A lake over the whole shortened line north: no walkable tile
-        // inside the margin, no home.
-        let mut map = Map::filled(2176, 2176, Terrain::Grass).with_camp(5, 5);
-        for y in 1000..1952 {
-            map.set(Pos::new(1952, y), Terrain::Water);
-        }
-        let lake = World::empty(Calendar::new(1, 7200).unwrap(), map);
-        let mind = knowing(Pos::new(1952, 100));
-        assert_eq!(new_home(&lake, &rules, &food, id, &mind, 1, 2000), None);
     }
 
     #[test]
@@ -8356,7 +9427,6 @@ mod tests {
             trial_after_days: forced.trial_after_days,
             trial_days: forced.trial_days,
             try_percent_by_will: forced.try_percent_by_will,
-            new_home_walk_tiles: forced.new_home_walk_tiles,
             imitate_percent: forced.imitate_percent,
             imitate_loss_percent: forced.imitate_loss_percent,
             ..rules.needs.trials
@@ -8424,10 +9494,12 @@ mod tests {
             Confidence {
                 milli: 50_000,
                 failures: 0,
+                successes: 0,
             },
             Confidence {
                 milli: 50_000,
                 failures: 0,
+                successes: 0,
             },
         );
         for _ in 0..5 {
@@ -8452,6 +9524,7 @@ mod tests {
         let mut c = Confidence {
             milli: 20_000,
             failures: 6,
+            successes: 0,
         };
         c.succeed(late);
         assert_eq!(c.failures, 0);
@@ -8629,6 +9702,415 @@ mod tests {
         assert_eq!((caller.will, caller.will_rest), (61, 0));
         assert_eq!(caller.confidence[1].milli, 61_000);
         assert_eq!(brains.minds[&BodyId(1)].will, 20, "joining gives nothing");
+    }
+
+    #[test]
+    fn a_streak_of_successes_weighs_more_and_a_failure_ends_it() {
+        let temper = Temperance::placeholders();
+        assert_eq!(temper.streak_success_milli(50, 0), 1_000);
+        assert_eq!(
+            temper.streak_success_milli(50, 2),
+            1_500,
+            "halfway to twice"
+        );
+        assert_eq!(temper.streak_success_milli(50, 4), 2_000);
+        assert_eq!(temper.streak_success_milli(50, 9), 2_000, "held beyond");
+        let (mut mind, temper) = tempered(20);
+        let gather = temper.activity("gather").unwrap();
+        let at = (BodyId(1), 0);
+        let mut gains = Vec::new();
+        for _ in 0..3 {
+            let before = mind.confidence[gather].milli;
+            mind.judge_day(&temper, gather, true, at);
+            gains.push(mind.confidence[gather].milli - before);
+        }
+        assert_eq!(gains, [1_000, 1_250, 1_500]);
+        mind.judge_day(&temper, gather, false, at);
+        assert_eq!(mind.confidence[gather].successes, 0, "a failure ends it");
+        let before = mind.confidence[gather].milli;
+        mind.judge_day(&temper, gather, true, at);
+        assert_eq!(mind.confidence[gather].milli - before, 1_000);
+    }
+
+    #[test]
+    fn a_follower_back_fed_counts_once_as_its_callers_day_of_gathering() {
+        let (world, mut rules, id, _) = by_a_ripe_bramble(0);
+        rules.needs.decisions = crate::content::Decisions::placeholders();
+        rules.needs.temperance = Temperance::placeholders();
+        let body = world.body(id).unwrap();
+        let judged_gather = |act: Act, indirect: bool| {
+            let (mut mind, _) = tempered(20);
+            mind.plan = Some(Plan {
+                day: 3,
+                act,
+                place: None,
+                leader: None,
+                octant: 0,
+                legs: 0,
+                done: false,
+                asked: None,
+            });
+            let mut news = Vec::new();
+            close_habit(
+                &rules,
+                body,
+                id,
+                &mut mind,
+                (3, 0, 0),
+                (Some(true), false, indirect),
+                &mut news,
+            );
+            news.iter()
+                .filter_map(|n| match n {
+                    News::Judged {
+                        activity: 1,
+                        success,
+                        ..
+                    } => Some(*success),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            judged_gather(Act::Called, false),
+            [false],
+            "back with nothing"
+        );
+        assert_eq!(
+            judged_gather(Act::Called, true),
+            [true],
+            "a member came back fed"
+        );
+        assert_eq!(
+            judged_gather(Act::Nothing, true),
+            [true],
+            "it stayed, the one it answered came back fed: once"
+        );
+        assert_eq!(judged_gather(Act::Nothing, false), Vec::<bool>::new());
+    }
+
+    #[test]
+    fn each_body_believes_its_own_best_a_belief_wears_and_fades() {
+        let rep = crate::content::Reputation::placeholders();
+        let mut memory = Store::new();
+        let (a, b) = (BodyId(1), BodyId(2));
+        let (x, y) = (BodyId(7), BodyId(8));
+        let gather = activity_index("gather");
+        let (mut ma, mut mb) = (Mind::new(Pos::new(0, 0)), Mind::new(Pos::new(0, 0)));
+        assert!(ma.believe((a, a), (gather, x), 20, (&mut memory, &rep, 10)));
+        assert!(mb.believe((b, b), (gather, x), 20, (&mut memory, &rep, 10)));
+        assert_eq!(ma.believed(&memory, &rep, gather, 10), Some((x, 20)));
+        let record = ma.reputed[0].access.record;
+        assert_eq!(memory.refs(record), 2, "one record, held by each");
+        // Each its own: b followed y and came back fed; a did not.
+        assert!(!mb.believe((b, b), (gather, y), 10, (&mut memory, &rep, 10)));
+        assert!(mb.believe((b, b), (gather, y), 30, (&mut memory, &rep, 11)));
+        assert_eq!(mb.believed(&memory, &rep, gather, 11), Some((y, 30)));
+        assert_eq!(ma.believed(&memory, &rep, gather, 11), Some((x, 19)));
+        assert_eq!(memory.refs(record), 1, "b let it go");
+        // Worn by a follower back empty, faded by the days.
+        assert!(ma.believe((a, a), (gather, x), -15, (&mut memory, &rep, 12)));
+        assert_eq!(ma.believed(&memory, &rep, gather, 12), Some((x, 3)));
+        assert_eq!(ma.believed(&memory, &rep, gather, 14), Some((x, 1)));
+        assert_eq!(ma.believed(&memory, &rep, gather, 15), None, "faded");
+        assert!(
+            !ma.believe((a, a), (gather, a), 50, (&mut memory, &rep, 15)),
+            "never itself"
+        );
+        assert!(
+            !ma.believe(
+                (a, a),
+                (activity_index("stay"), x),
+                50,
+                (&mut memory, &rep, 15)
+            ),
+            "an activity not reputed"
+        );
+        ma.forget_all(&mut memory);
+        assert_eq!(memory.refs(record), 0);
+    }
+
+    #[test]
+    fn a_caller_judges_a_companion_over_several_outings_never_on_one() {
+        let dec = crate::content::Decisions::placeholders();
+        let mut mind = Mind::new(Pos::new(0, 0));
+        let who = BodyId(5);
+        let fact = |day, flags| Fact { who, day, flags };
+        mind.note(fact(1, FACT_WAITED), dec.facts_kept);
+        assert_eq!(mind.review(who, &dec), Review::Unsaid, "one bad day");
+        mind.note(fact(2, 0), dec.facts_kept);
+        mind.note(fact(3, FACT_LITTLE), dec.facts_kept);
+        assert_eq!(
+            mind.review(who, &dec),
+            Review::Aside,
+            "two of its last three"
+        );
+        mind.note(fact(4, FACT_ASIDE), dec.facts_kept);
+        assert_eq!(mind.review(who, &dec), Review::Unsaid, "judged anew");
+        mind.note(fact(5, 0), dec.facts_kept);
+        mind.note(fact(6, 0), dec.facts_kept);
+        assert_eq!(mind.review(who, &dec), Review::Good, "two good in a row");
+        for day in 7..50 {
+            mind.note(fact(day, 0), dec.facts_kept);
+        }
+        assert_eq!(mind.companions.len(), 32, "facts_kept");
+    }
+
+    /// Three at a camp knowing a place `p` with room for all; 3 bold.
+    fn reviewing() -> (World, Content, Brains, PlaceKey, Pos) {
+        let (world, mut rules, mut brains, bramble, camp) = deciding(3);
+        rules.needs.temperance = Temperance::placeholders();
+        rules.needs.reputation = crate::content::Reputation::placeholders();
+        rules.needs.decisions.look_percent_by_will = vec![(0, 0)];
+        let side = place_side(&rules);
+        let here = place_of(camp, side);
+        let p = (here.0 + 1, here.1);
+        let food = brains.food.clone();
+        for (id, mind) in &mut brains.minds {
+            mind.places.insert(p, place_with(&food, bramble, 12));
+            mind.set_innate(
+                if *id == BodyId(3) { 60 } else { 20 },
+                &rules.needs.temperance,
+            );
+        }
+        (world, rules, brains, p, camp)
+    }
+
+    #[test]
+    fn the_caller_calls_the_good_first_and_sets_aside_the_slow_but_not_its_child() {
+        let (mut world, rules, mut brains, p, camp) = reviewing();
+        let (one, two, lead) = (BodyId(1), BodyId(2), BodyId(3));
+        let keep = rules.needs.decisions.facts_kept;
+        let mind = brains.minds.get_mut(&lead).unwrap();
+        for day in 1..=2 {
+            mind.note(
+                Fact {
+                    who: one,
+                    day,
+                    flags: FACT_WAITED,
+                },
+                keep,
+            );
+            mind.note(
+                Fact {
+                    who: two,
+                    day,
+                    flags: 0,
+                },
+                keep,
+            );
+        }
+        let all = [one, two, lead];
+        let news = decide_evening(&world, &rules, &mut brains, camp, &all);
+        assert!(news.iter().any(|n| matches!(n,
+            News::Aside { leader, body, .. } if *leader == lead && *body == one)));
+        assert_eq!(act_of(&brains, two), (Act::Joined, Some(p), Some(lead)));
+        assert_ne!(act_of(&brains, one).2, Some(lead), "refused");
+        assert_eq!(
+            brains.minds[&one].confidence[1].failures, 1,
+            "a failure, borne free"
+        );
+        let review = news.iter().find_map(|n| match n {
+            News::Evening { review, .. } => Some(*review),
+            _ => None,
+        });
+        assert_eq!(
+            review.map(|r| (r.named, r.aside, r.refused)),
+            Some((1, 1, 1))
+        );
+        // The next evening it was set aside: judged anew, it may come.
+        let news = decide_evening(&world, &rules, &mut brains, camp, &all);
+        assert!(!news.iter().any(|n| matches!(n, News::Aside { .. })));
+        // Its own child it never sets aside.
+        world.set_parents(one, None, Some(lead));
+        let mind = brains.minds.get_mut(&lead).unwrap();
+        for day in 3..=4 {
+            mind.note(
+                Fact {
+                    who: one,
+                    day,
+                    flags: FACT_LITTLE,
+                },
+                keep,
+            );
+        }
+        let news = decide_evening(&world, &rules, &mut brains, camp, &all);
+        assert!(!news.iter().any(|n| matches!(n, News::Aside { .. })));
+        assert_eq!(act_of(&brains, one).2, Some(lead));
+    }
+
+    #[test]
+    fn the_review_holds_only_to_the_parts_it_is_given() {
+        let note = |brains: &mut Brains, keep: u32, (one, two, lead): (BodyId, BodyId, BodyId)| {
+            let mind = brains.minds.get_mut(&lead).unwrap();
+            for day in 1..=2 {
+                mind.note(
+                    Fact {
+                        who: one,
+                        day,
+                        flags: FACT_WAITED,
+                    },
+                    keep,
+                );
+                mind.note(
+                    Fact {
+                        who: two,
+                        day,
+                        flags: 0,
+                    },
+                    keep,
+                );
+            }
+        };
+        let trio = (BodyId(1), BodyId(2), BodyId(3));
+        let all = [trio.0, trio.1, trio.2];
+        let evening = |parts: &[&str]| {
+            let (world, mut rules, mut brains, _, camp) = reviewing();
+            rules.needs.decisions.review_parts = parts.iter().map(|&p| p.to_owned()).collect();
+            note(&mut brains, rules.needs.decisions.facts_kept, trio);
+            let news = decide_evening(&world, &rules, &mut brains, camp, &all);
+            let review = news.iter().find_map(|n| match n {
+                News::Evening { review, .. } => Some((review.named, review.aside)),
+                _ => None,
+            });
+            let named = news.iter().any(|n| matches!(n, News::Named { .. }));
+            (review, named, brains.minds[&trio.0].confidence[1].failures)
+        };
+        assert_eq!(evening(&[]), (Some((0, 0)), false, 0), "the facts alone");
+        assert_eq!(
+            evening(&["set_aside"]),
+            (Some((0, 1)), false, 0),
+            "set aside, free"
+        );
+        assert_eq!(
+            evening(&["set_aside", "aside_costs"]),
+            (Some((0, 1)), false, 1),
+            "set aside, at a cost"
+        );
+        assert_eq!(evening(&["names"]), (Some((1, 0)), true, 0), "named only");
+    }
+
+    #[test]
+    fn one_with_no_place_asks_whom_it_believes_best_and_goes_where_it_is_told() {
+        let (world, rules, mut brains, p, camp) = reviewing();
+        let (asker, answerer) = (BodyId(1), BodyId(2));
+        let side = place_side(&rules);
+        let q = (p.0 + 2, p.1);
+        let bramble = brains.food.numbers["bramble"];
+        let food = brains.food.clone();
+        let day = u32::try_from(today(&world)).unwrap();
+        let (record, _) = brains.memory.intern(Record::Place {
+            place: q,
+            day: day - 1,
+            witness: answerer,
+            states: vec![(bramble, 2)],
+        });
+        for (id, mind) in &mut brains.minds {
+            mind.places.clear();
+            if *id == answerer {
+                let mut place = place_with(&food, bramble, 12);
+                place.access = Some(Access {
+                    record,
+                    by: answerer,
+                    day: day - 1,
+                });
+                mind.places.insert(q, place);
+            }
+        }
+        let rep = rules.needs.reputation.clone();
+        let mind = brains.minds.get_mut(&asker).unwrap();
+        mind.believe(
+            (asker, asker),
+            (activity_index("explore"), answerer),
+            40,
+            (&mut brains.memory, &rep, day),
+        );
+        let all = [asker, answerer, BodyId(3)];
+        let before = (brains.clone(), world.tick());
+        let news = decide_evening(&world, &rules, &mut brains, camp, &all);
+        assert!(news.iter().any(|n| matches!(n,
+            News::Asked { body, of, place: Some(at), .. }
+                if *body == asker && *of == answerer && *at == q)));
+        let plan = brains.minds[&asker].plan.unwrap();
+        assert_eq!(plan.place, Some(q), "where it was told");
+        assert_eq!(plan.asked, Some((answerer, activity_index("explore"))));
+        assert!(within(place_centre(q, side), camp, 200));
+        // The third believes nobody: it does not ask.
+        assert_eq!(
+            news.iter()
+                .filter(|n| matches!(n, News::Asked { .. }))
+                .count(),
+            1
+        );
+        // The same world, the same answers.
+        let (mut again, _) = before;
+        let replay = decide_evening(&world, &rules, &mut again, camp, &all);
+        assert_eq!(news, replay);
+        assert_eq!(again.minds[&asker].plan, brains.minds[&asker].plan);
+    }
+
+    #[test]
+    fn at_nightfall_a_follower_back_fed_believes_its_caller_and_the_caller_notes_who_it_waited_for()
+    {
+        let (world, rules, mut brains, p, _) = reviewing();
+        let (member, lead) = (BodyId(1), BodyId(3));
+        let day = today(&world);
+        let day32 = u32::try_from(day).unwrap();
+        let plan = |act, leader| Plan {
+            day: day32,
+            act,
+            place: Some(p),
+            leader,
+            octant: 0,
+            legs: 0,
+            done: false,
+            asked: None,
+        };
+        brains.minds.get_mut(&member).unwrap().plan = Some(plan(Act::Joined, Some(lead)));
+        brains.minds.get_mut(&lead).unwrap().plan = Some(plan(Act::Called, Some(lead)));
+        let need = need_kj_per_day(&rules, world.body(member).unwrap());
+        brains.minds.get_mut(&member).unwrap().gathered_today_kj = need;
+        brains.groups.insert(
+            lead,
+            Group {
+                day: day32,
+                called: p,
+                place: p,
+                members: vec![lead, member],
+                taken: BTreeMap::new(),
+                full: BTreeSet::new(),
+                followed: BTreeSet::new(),
+                left: BTreeSet::new(),
+                arrived: BTreeMap::new(),
+                dawn: 0,
+                home: false,
+                ended: None,
+                held: false,
+                waited: 0,
+                started: true,
+                waited_for: BTreeSet::from([member]),
+            },
+        );
+        let follows = brains.follows_today(&world, &rules, day);
+        assert_eq!(follows.len(), 1);
+        assert!(follows[0].fed && follows[0].whom == lead && follows[0].how == FOLLOW_JOINED);
+        let gathered = BTreeMap::from([(member, need), (lead, 0)]);
+        brains.review_day(&world, &rules, day, (&follows, &gathered));
+        let rep = &rules.needs.reputation;
+        assert_eq!(
+            brains.minds[&member].believed(&brains.memory, rep, activity_index("gather"), day32),
+            Some((lead, 20))
+        );
+        assert_eq!(
+            brains.minds[&lead].companions,
+            [Fact {
+                who: member,
+                day: day32,
+                flags: FACT_WAITED
+            }],
+            "it waited for it; it came back fed"
+        );
+        assert_eq!(brains.accounts, [(lead, vec![member], 1, 0)]);
     }
 
     #[test]
@@ -9539,9 +11021,8 @@ mod tests {
         let mut theirs = *brains.mind(mate).unwrap().ways();
         theirs.stock_kj = STOCK_KJ * 2;
         heard_kept(&mut brains, (me, mate, 1), Way::StockKj, theirs, 50);
-        let food = brains.food.clone();
         let mind = brains.minds.get_mut(&me).unwrap();
-        let news = start_trial(&world, &rules, &food, &brains.memory, me, mind, false, 3);
+        let news = start_trial(&world, &rules, &brains.memory, me, mind, false, 3);
         assert!(
             matches!(news, Some(News::Trying { way: Way::StockKj, after, .. }) if after.stock_kj == STOCK_KJ * 2),
             "{news:?}"
@@ -9567,16 +11048,7 @@ mod tests {
             by: mate,
             day: 1,
         });
-        let news = start_trial(
-            &world,
-            &rules,
-            &food,
-            &brains.memory,
-            me,
-            &mut mind,
-            true,
-            3,
-        );
+        let news = start_trial(&world, &rules, &brains.memory, me, &mut mind, true, 3);
         assert!(
             matches!(news, Some(News::Trying { way, .. }) if way != Way::Home),
             "{news:?}"
@@ -10046,7 +11518,6 @@ mod tests {
             heard_lesson(&mut brains, me, (way, up, false, 1 + 2 * day));
             heard_lesson(&mut brains, me, (way, up, false, 2 + 2 * day));
         }
-        let food = brains.food.clone();
         let tries = |brains: &Brains, will: u8| {
             let mut given_up = 0;
             for day in 10..50 {
@@ -10054,16 +11525,8 @@ mod tests {
                 mind.will = will;
                 if let Some(News::Trying {
                     way, before, after, ..
-                }) = start_trial(
-                    &world,
-                    &rules,
-                    &food,
-                    &brains.memory,
-                    me,
-                    &mut mind,
-                    true,
-                    day,
-                ) && (way != Way::StockKj || step_up(way, &before, &after))
+                }) = start_trial(&world, &rules, &brains.memory, me, &mut mind, true, day)
+                    && (way != Way::StockKj || step_up(way, &before, &after))
                 {
                     given_up += 1;
                 }
@@ -10076,5 +11539,288 @@ mod tests {
             "the timid tried the given-up {timid} times in 40 days, the adventurer {bold}"
         );
         assert!(timid <= 12, "{timid}");
+    }
+
+    /// `nights` nights noted at `place`, each with these marks.
+    fn lived_at(mind: &mut Mind, place: PlaceKey, nights: u32, night: &Night, keep: u64) {
+        for _ in 0..nights {
+            mind.note_night(place, night, keep);
+        }
+    }
+
+    /// A night with these losses, this walk and the day's acts.
+    fn night_with(losses: [u64; SENSES], walk: u64, day: Vec<DayAct>) -> Night {
+        Night { losses, walk, day }
+    }
+
+    /// Drunk at a place (16 tiles); `saved` the walk there and back.
+    fn drank(place: PlaceKey, saved: u64, drunk: u64) -> DayAct {
+        DayAct {
+            place,
+            grove: false,
+            saved,
+            gains: [0, drunk, 0],
+        }
+    }
+
+    /// Gathered in a grove (64 tiles); `saved` the walk there and back.
+    fn picked(grove: PlaceKey, saved: u64, gathered: u64) -> DayAct {
+        DayAct {
+            place: grove,
+            grove: true,
+            saved,
+            gains: [gathered, 0, 0],
+        }
+    }
+
+    /// A night cold through, nothing else lacking.
+    const COLD: [u64; SENSES] = [0, 0, 1000];
+
+    /// Where a home trial would go: its place on the 16 and the 64 grids.
+    fn goes(world: &World, rules: &Content, mind: &Mind) -> Option<(PlaceKey, PlaceKey)> {
+        lived_home(world, rules, mind).map(|to| {
+            (
+                place_of(to, place_side(rules)),
+                place_of(to, grove_side(rules)),
+            )
+        })
+    }
+
+    /// The fare of the place `place` (a grove or not) in `mind`'s notes.
+    fn fare_of(rules: &Content, mind: &Mind, place: PlaceKey, grove: bool) -> i64 {
+        let sides = (place_side(rules), grove_side(rules));
+        let home = mind.lived.iter().find(|l| !l.grove && l.place == (0, 0));
+        let l = mind
+            .lived
+            .iter()
+            .find(|l| l.place == place && l.grove == grove)
+            .unwrap();
+        fare(l, &mind.lived, sides, home)
+    }
+
+    #[test]
+    fn water_food_or_both_win_by_how_the_body_fared_there() {
+        let mut rules = rules();
+        rules.needs.trials.home_nights_by_will = vec![(0, 1)];
+        let world = field(256, 250, Pos::new(5, 5));
+        let home = Pos::new(5, 5);
+        let at_home = |day: Vec<DayAct>| {
+            let mut mind = Mind::new(home);
+            lived_at(&mut mind, (0, 0), 2, &night_with(COLD, 0, day), 1000);
+            mind
+        };
+        // Water: a little food in its home's grove, a day's water at
+        // (8, 8): at home 600 - 1000 (the cold), there 1000 - 1000.
+        let mind = at_home(vec![picked((0, 0), 20, 600), drank((8, 8), 50, 1000)]);
+        assert_eq!(fare_of(&rules, &mind, (0, 0), false), -400);
+        assert_eq!(fare_of(&rules, &mind, (8, 8), false), 0);
+        assert_eq!(goes(&world, &rules, &mind).map(|g| g.0), Some((8, 8)));
+        // Food: half its water at home, a day's food in the grove (2, 2).
+        let mind = at_home(vec![drank((0, 0), 0, 500), picked((2, 2), 50, 1000)]);
+        assert_eq!(goes(&world, &rules, &mind).map(|g| g.1), Some((2, 2)));
+        // Home gives as much: no move; more than a day's worth counts as
+        // a day's.
+        let mind = at_home(vec![
+            drank((0, 0), 0, 1000),
+            picked((0, 0), 0, 500),
+            picked((2, 2), 50, 3000),
+        ]);
+        assert_eq!(fare_of(&rules, &mind, (2, 2), true), 0);
+        assert_eq!(goes(&world, &rules, &mind), None);
+        // Both: half its water at home, a grove far away feeding it with
+        // water in it: there it would get both.
+        let mind = at_home(vec![
+            drank((0, 0), 0, 500),
+            drank((9, 9), 60, 500),
+            picked((2, 2), 50, 1000),
+        ]);
+        assert_eq!(goes(&world, &rules, &mind), Some(((9, 9), (2, 2))));
+        // Never lived anywhere: no trial.
+        assert_eq!(goes(&world, &rules, &Mind::new(home)), None);
+    }
+
+    #[test]
+    fn the_nights_and_the_walk_count_in_the_same_fare_and_the_timid_waits() {
+        let mut rules = rules();
+        rules.needs.trials.home_nights_by_will = vec![(0, 3), (70, 1)];
+        let world = field(256, 250, Pos::new(5, 5));
+        let fed = vec![drank((0, 0), 0, 1000), picked((0, 0), 0, 1000)];
+        // Hungry half a day at home every night, not at (1, 0) where it
+        // slept once, fed and watered alike: (1, 0) fares better.
+        let mut mind = Mind::new(Pos::new(5, 5));
+        lived_at(
+            &mut mind,
+            (0, 0),
+            3,
+            &night_with([500, 0, 1000], 0, fed.clone()),
+            1000,
+        );
+        lived_at(
+            &mut mind,
+            (1, 0),
+            1,
+            &night_with(COLD, 0, fed.clone()),
+            1000,
+        );
+        mind.will = 0;
+        assert_eq!(goes(&world, &rules, &mind), None, "one night: not enough");
+        mind.will = 90;
+        assert_eq!(goes(&world, &rules, &mind).map(|g| g.0), Some((1, 0)));
+        lived_at(
+            &mut mind,
+            (1, 0),
+            2,
+            &night_with(COLD, 0, fed.clone()),
+            1000,
+        );
+        mind.will = 0;
+        assert_eq!(
+            goes(&world, &rules, &mind).map(|g| g.0),
+            Some((1, 0)),
+            "three nights"
+        );
+        // The water far away: what walking there costs is what living
+        // there saves. Free, the cold alike, home and water tie: no move.
+        let mut mind = Mind::new(Pos::new(5, 5));
+        let day = vec![picked((0, 0), 0, 1000), drank((8, 8), 0, 1000)];
+        lived_at(&mut mind, (0, 0), 3, &night_with(COLD, 0, day), 1000);
+        assert_eq!(goes(&world, &rules, &mind), None);
+        // A third of a day's food walked there and back: the water wins.
+        let mut mind = Mind::new(Pos::new(5, 5));
+        let day = vec![picked((0, 0), 0, 1000), drank((8, 8), 300, 1000)];
+        lived_at(&mut mind, (0, 0), 3, &night_with(COLD, 300, day), 1000);
+        assert_eq!(fare_of(&rules, &mind, (0, 0), false), -300);
+        assert_eq!(fare_of(&rules, &mind, (8, 8), false), 0);
+        assert_eq!(goes(&world, &rules, &mind).map(|g| g.0), Some((8, 8)));
+    }
+
+    #[test]
+    fn old_days_fade_a_grove_and_a_place_are_apart_and_the_notes_keep_eight() {
+        let mut mind = Mind::new(Pos::new(5, 5));
+        // A grove and the place of the same key are two notes.
+        let day = vec![drank((0, 0), 0, 1000), picked((0, 0), 0, 400)];
+        lived_at(&mut mind, (0, 0), 1, &night_with(COLD, 0, day), 950);
+        assert_eq!(mind.lived_places(), 2);
+        let grove = *mind.lived.iter().find(|l| l.grove).unwrap();
+        assert_eq!((grove.days, grove.gains), (1000, [400_000, 0, 0]));
+        // A place turned bad: the last nights weigh more.
+        let mut turned = Mind::new(Pos::new(5, 5));
+        lived_at(
+            &mut turned,
+            (0, 0),
+            30,
+            &night_with([0, 0, 0], 0, vec![]),
+            950,
+        );
+        lived_at(&mut turned, (0, 0), 30, &night_with(COLD, 0, vec![]), 950);
+        let l = turned.lived[0];
+        assert!(
+            l.per_night(l.losses[Sense::Warmth as usize]) >= 700,
+            "{l:?}"
+        );
+        // Not gathered there any more: its days fade away and it goes.
+        lived_at(&mut mind, (0, 0), 200, &night_with(COLD, 0, vec![]), 950);
+        assert!(!mind.lived.iter().any(|l| l.grove));
+        // Nine groves: the least lived gives up its room.
+        let mut many = Mind::new(Pos::new(5, 5));
+        for k in 0..9 {
+            let day = vec![picked((k, 1), 0, 100)];
+            lived_at(
+                &mut many,
+                (0, 0),
+                u32::try_from(9 - k).unwrap(),
+                &night_with(COLD, 0, day),
+                1000,
+            );
+        }
+        assert_eq!(many.lived_places(), LIVED_MAX);
+        assert!(
+            many.lived.iter().any(|l| l.place == (8, 1)),
+            "the newest is noted"
+        );
+        assert!(!many.lived.iter().any(|l| l.grove && l.place == (7, 1)));
+    }
+
+    #[test]
+    fn a_drink_counts_the_thirst_since_the_last_and_the_walk_there_and_back_is_what_it_would_save()
+    {
+        let mut rules = rules();
+        rules.needs.walk_j_per_m = 130;
+        let (world, mut brains) = camp_of(1, &rules);
+        let me = BodyId(1);
+        let per_day = world.calendar().ticks_per_day();
+        let now = world.tick().0;
+        let side = place_side(&rules);
+        let body = &world.bodies[0];
+        // Out of the home's place the steps count; back in it, nought.
+        let step = |to: Pos| Event::BodyMoved {
+            body: me,
+            to,
+            at: FinePos::new(0, 0),
+            remaining: 0,
+        };
+        let out: Vec<Event> = (0..25).map(|k| step(Pos::new(20 + k, 5))).collect();
+        brains.count_gathers(&out, &world, &rules);
+        assert_eq!(brains.mind(me).unwrap().from_home, 25);
+        // Its last drink half a day ago: half a day's thirst, where it
+        // stands; the 25 tiles there and back what living there saves.
+        brains.minds.get_mut(&me).unwrap().drank_at = now - per_day / 2;
+        let drink = Event::BodyDrank {
+            body: me,
+            at: Pos::new(6, 5),
+        };
+        brains.count_gathers(std::slice::from_ref(&drink), &world, &rules);
+        let here = place_of(body.pos(), side);
+        let saved = walk_permille(&rules, body, 50);
+        // 50 m at 130 J of 10,000 kJ: 6.5 J a thousandth, 0 by default.
+        assert_eq!(
+            saved,
+            50 * 130 * 1000 / body.condition().need_j_per_day(&rules.needs)
+        );
+        let mind = brains.minds.get_mut(&me).unwrap();
+        assert_eq!(mind.day_places, vec![drank(here, saved, 500)]);
+        // Again at once: nothing more. A day or more since: a day's.
+        mind.acted_at(here, false, saved, [0; SENSES]);
+        mind.drank_at = 0;
+        brains.count_gathers(std::slice::from_ref(&drink), &world, &rules);
+        let mind = brains.minds.get_mut(&me).unwrap();
+        assert_eq!(mind.day_places[0].gains, [0, 1500, 0]);
+        // At most eight places a day; the night takes them, and the walk.
+        for k in 0..20 {
+            mind.acted_at((k, 3), true, 0, [1, 0, 0]);
+        }
+        assert_eq!(mind.day_places.len(), LIVED_MAX);
+        mind.walked_today = 1000;
+        let night = night_of(&rules, body, mind);
+        assert_eq!(night.day.len(), LIVED_MAX);
+        assert_eq!(night.walk, walk_permille(&rules, body, 1000));
+        assert_eq!((mind.day_places.len(), mind.walked_today), (0, 0));
+    }
+
+    #[test]
+    fn with_nothing_wrong_only_the_bold_try_and_seldom() {
+        let mut trials = rules().needs.trials;
+        trials.try_percent_by_will = vec![(0, 0), (100, 30)];
+        trials.trial_after_days = 2;
+        trials.calm_try_permille_by_will = vec![(0, 0), (40, 0), (100, 20)];
+        let tries = |trials: &Trials, will: u8, distress: u32| {
+            let mut mind = Mind::new(Pos::new(5, 5));
+            mind.will = will;
+            mind.distress_days = distress;
+            (0..5000)
+                .filter(|&day| wants_to_try(trials, 9, (BodyId(3), day), &mind))
+                .count()
+        };
+        // Calm: the timid never, the bold about one day in fifty.
+        assert_eq!(tries(&trials, 20, 0), 0);
+        let bold = tries(&trials, 100, 0);
+        assert!((60..=140).contains(&bold), "{bold}");
+        assert!(tries(&trials, 70, 0) < bold);
+        // In distress: the distress' chance, far greater.
+        assert!(tries(&trials, 100, 2) > 1000);
+        // None when the content holds none.
+        trials.calm_try_permille_by_will = vec![(0, 0)];
+        assert_eq!(tries(&trials, 100, 0), 0);
+        assert_eq!(trials.calm_try_permille(100), 0);
     }
 }

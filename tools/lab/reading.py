@@ -2907,6 +2907,52 @@ def dared_points(d):
     return pts[:SECTION_POINTS[1]]
 
 
+REPUTED_WORDS = (("explore", "éclaireur"), ("gather", "meneur"))
+
+
+def reputed_points(d):
+    """« Qui sait où est la nourriture » (D56, PR 1 ter): who the most living believed best at the last year's end,
+    the scout and the one whose calls feed; a belief, never a title."""
+    pts = []
+    for t in tribes(d):
+        ys = [y for y in d.get("years", []) if y.get("tribe") == t and y.get("reputed")]
+        if not ys:
+            continue
+        last = ys[-1]
+        for act, word in REPUTED_WORDS:
+            top = (last["reputed"].get(act) or [None])[0]
+            if top:
+                pts.append(point(f"{t} : {person_fr(top['who'])}", f"{word} pour {plural(top['believers'], 'vivant')}, an {last['year']}"))
+    asked = sum(((y.get("decisions") or {}).get("review") or {}).get("asked") or 0 for y in d.get("years", []))
+    if asked:
+        answered = sum(((y.get("decisions") or {}).get("review") or {}).get("answered") or 0 for y in d.get("years", []))
+        pts.append(point(f"{plural(asked, 'question')}", f"« où est la nourriture ? », {num(answered)} avec un lieu"))
+    if len(pts) < SECTION_POINTS[0]:
+        pts += [point("personne", "n’est réputé"), point("aucune question", "au feu")][: SECTION_POINTS[0] - len(pts)]
+    return pts[:SECTION_POINTS[1]]
+
+
+def reputed_body(d):
+    """The table of « Qui sait où est la nourriture »: by tribe and year, the most believed scout and caller, the
+    questions and those set aside at the evening's review."""
+    rows = []
+    for y in d.get("years", []):
+        rep, rev = y.get("reputed") or {}, (y.get("decisions") or {}).get("review") or {}
+        if not rep and not rev.get("asked") and not rev.get("set_aside"):
+            continue
+        cells = [(h(f"an {y['year']}"), y["year"]), (tribe_chip(y.get("tribe")), y.get("tribe"))]
+        for act, _ in REPUTED_WORDS:
+            top = (rep.get(act) or [None])[0]
+            cells.append((f"{person_link(top['who'])} ({fmt_thin(top['believers'])})", top["believers"]) if top else (None, 0))
+        for key in ("asked", "answered", "named", "set_aside"):
+            cells.append((fmt_thin(rev.get(key) or 0), rev.get(key) or 0))
+        rows.append(cells)
+    return ("<p class=caption>Ce que chacun croit, jamais un titre : le plus cru par les vivants à la fin de l'année (entre parenthèses, combien le croient).</p>"
+            + data_table("t-repute", [("Année", True), ("Tribu", False), ("Éclaireur", True), ("Meneur", True), ("Questions", True),
+                                       ("Avec un lieu", True), ("Appelés par leur nom", True, True), ("Mis à l'écart", True, True)],
+                         rows, "Personne n'est réputé dans ce run."))
+
+
 def chronicle_points(d, year, events):
     """The year's points: how much happened, then its two biggest kinds, with their busiest day."""
     pts = [point(f"{plural(len(events), 'événement')}", f"en l’an {year}")]
@@ -3020,7 +3066,8 @@ def run_body(s, r, d, store=None, year=None):
                 + ("<h3>Ce que la tribu sait</h3>" + points_html(knowledge_points(d)) + knowledge_body(d) if fire else "") + "</section>")
     body.append('<section id=appris class=group><h2>Ce qu’ils ont appris</h2>' + points_html(learnt_points(d, sm))
                 + "<h3>Les techniques</h3>" + points_html(techniques_points(d)) + techniques_html(d)
-                + ("<h3>Qui a osé quoi</h3>" + points_html(dared_points(d)) + dared_body(d) if fire else "") + "</section>")
+                + ("<h3>Qui a osé quoi</h3>" + points_html(dared_points(d)) + dared_body(d) if fire else "")
+                + ("<h3>Qui sait où est la nourriture</h3>" + points_html(reputed_points(d)) + reputed_body(d) if fire else "") + "</section>")
     chron = chronicle_html(d, year, f"/chronique/{urllib.parse.quote(serie)}/{urllib.parse.quote(name)}")
     if chron:
         chron = chron.replace("<h2>La chronique</h2>", "<h2>La chronique</h2>" + panels.chronicle_lead(d)

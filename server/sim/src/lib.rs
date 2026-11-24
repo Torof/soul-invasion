@@ -256,6 +256,17 @@ impl Condition {
         needs.need_j_per_day() * u64::from(self.burn_permille) / 1000
     }
 
+    /// It walked a stretch whose length squared is `mm_squared`
+    /// (millimetres): the walk's cost, `walk_j_per_m` for a grown body,
+    /// less for a smaller one, adds to what it lacks, on top of the day's
+    /// need (D50, amended 24 November 2026).
+    pub fn walked(&mut self, mm_squared: u64, needs: &content::Needs) {
+        let mm = mm_squared.isqrt();
+        let size = u64::from(self.size_permille.min(1000));
+        let j = u64::from(needs.walk_j_per_m) * mm * size / 1_000_000;
+        self.deficit_j = (self.deficit_j + j).min(self.reserve_j(needs));
+    }
+
     /// Thin: under the content's share of its reserve.
     #[must_use]
     pub fn is_thin(&self, needs: &content::Needs) -> bool {
@@ -459,6 +470,12 @@ pub(crate) fn thirst_raise(
         100
     };
     u64::from(needs.thirst_per_day) * GAUGE_SCALE * heat * effort / (per_day * 10_000)
+}
+
+/// What the cold rises by a day of night in `season`, without warmth: the
+/// night's cold follows the season (24 November 2026).
+pub(crate) fn night_cold(needs: &content::Needs, season: Season) -> u32 {
+    needs.cold_per_day_at_night * needs.cold_season_percent.get(season) / 100
 }
 
 /// The least a body gathers at a time, in grams: a pinch.
@@ -2361,6 +2378,46 @@ impl World {
         self.pending.push(intention);
     }
 
+    /// Every body on a route walks its tick, and pays the walk (D50,
+    /// amended 24 November 2026).
+    fn walk_all(&mut self, rules: &Content, events: &mut Vec<Event>) {
+        let per_second = f64::from(self.calendar.ticks_per_second());
+        for index in 0..self.bodies.len() {
+            if self.bodies[index].route.is_empty() {
+                continue;
+            }
+            let body = &self.bodies[index];
+            let speed = loaded_speed(&rules.movement, body.burden_g())
+                * body.condition.pace_percent(&rules.needs)
+                / 100;
+            let before = self.bodies[index].pos().chunk();
+            let from = self.bodies[index].at;
+            walk(
+                &mut self.bodies[index],
+                &self.map,
+                &rules.movement,
+                speed,
+                per_second,
+                events,
+            );
+            let body = &mut self.bodies[index];
+            let (dx, dy) = (
+                i64::from(body.at.x) - i64::from(from.x),
+                i64::from(body.at.y) - i64::from(from.y),
+            );
+            body.condition.walked(
+                dx.unsigned_abs().pow(2) + dy.unsigned_abs().pow(2),
+                &rules.needs,
+            );
+            let after = self.bodies[index].pos().chunk();
+            if after != before {
+                let id = self.bodies[index].id;
+                self.leave_chunk(id, before);
+                self.enter_chunk(id, after);
+            }
+        }
+    }
+
     /// Advances the world by exactly one fixed tick under the content's
     /// rules, appending the events of that tick to `events`.
     pub fn step(&mut self, rules: &Content, events: &mut Vec<Event>) {
@@ -2440,31 +2497,7 @@ impl World {
         }
         self.search(rules, events);
 
-        let per_second = f64::from(self.calendar.ticks_per_second());
-        for index in 0..self.bodies.len() {
-            if self.bodies[index].route.is_empty() {
-                continue;
-            }
-            let body = &self.bodies[index];
-            let speed = loaded_speed(&rules.movement, body.burden_g())
-                * body.condition.pace_percent(&rules.needs)
-                / 100;
-            let before = self.bodies[index].pos().chunk();
-            walk(
-                &mut self.bodies[index],
-                &self.map,
-                &rules.movement,
-                speed,
-                per_second,
-                events,
-            );
-            let after = self.bodies[index].pos().chunk();
-            if after != before {
-                let id = self.bodies[index].id;
-                self.leave_chunk(id, before);
-                self.enter_chunk(id, after);
-            }
-        }
+        self.walk_all(rules, events);
 
         self.follow_carriers();
         self.labour(rules, events);
@@ -2736,7 +2769,7 @@ impl World {
             c.set_appetite(needs);
             c.thirst.raise(thirst_raise(needs, season, effort, per_day));
             if night {
-                c.cold.raise(step(needs.cold_per_day_at_night));
+                c.cold.raise(step(night_cold(needs, season)));
             } else {
                 c.cold.lower(step(needs.cold_relief_per_day));
             }
@@ -6157,6 +6190,79 @@ mod tests {
         let flint = w.item(stone).unwrap().clone();
         assert_eq!(heap.merge(flint.clone()), Err(flint));
         assert_eq!(heap.mass_g(), 950);
+    }
+
+    #[test]
+    fn the_nights_cold_follows_the_season() {
+        let mut rules = rules();
+        rules.needs.cold_per_day_at_night = 300;
+        rules.needs.cold_season_percent = BySeason {
+            spring: 74,
+            summer: 32,
+            autumn: 63,
+            winter: 100,
+        };
+        let cold = |s| night_cold(&rules.needs, s);
+        assert_eq!(
+            [
+                Season::Spring,
+                Season::Summer,
+                Season::Autumn,
+                Season::Winter
+            ]
+            .map(cold),
+            [222, 96, 189, 300]
+        );
+        // A night in spring at a quarter of the rate: a quarter of the cold.
+        let night = |percent: u32| {
+            let mut rules = rules.clone();
+            rules.needs.cold_per_day_at_night = 100;
+            rules.needs.cold_season_percent.spring = percent;
+            let mut w = fed_world();
+            let mut events = Vec::new();
+            let mut most = 0;
+            for _ in 0..1000 {
+                w.step(&rules, &mut events);
+                most = most.max(condition(&w).cold.points());
+            }
+            most
+        };
+        let (full, quarter) = (night(100), night(25));
+        assert!(full > 20, "{full}");
+        assert!(
+            quarter * 4 <= full + 4 && quarter * 4 + 4 >= full,
+            "{quarter} {full}"
+        );
+    }
+
+    #[test]
+    fn walking_costs_energy_by_the_metre_on_top_of_the_days_need() {
+        let mut rules = rules();
+        rules.needs.walk_j_per_m = 130;
+        let (mut walker, mut stander) = (open_field(), open_field());
+        go(&mut walker, Pos::new(7, 0));
+        let mut events = Vec::new();
+        for _ in 0..200 {
+            walker.step(&rules, &mut events);
+            stander.step(&rules, &mut events);
+            if walker.bodies[0].route.is_empty() {
+                break;
+            }
+        }
+        assert_eq!(walker.body(BodyId(1)).unwrap().pos(), Pos::new(7, 0));
+        let lack = |w: &World| w.body(BodyId(1)).unwrap().condition().deficit_j;
+        // Seven metres at 130 J a metre: 910 J more than the one standing,
+        // short of a joule a tick for the rounding.
+        let extra = lack(&walker) - lack(&stander);
+        assert!((880..=910).contains(&extra), "{extra}");
+        // A child of half the size pays half; nothing when absent.
+        let mut c = Condition::healthy();
+        c.size_permille = 500;
+        c.walked(1000 * 1000, &rules.needs);
+        assert_eq!(c.deficit_j, 65);
+        rules.needs.walk_j_per_m = 0;
+        c.walked(1000 * 1000, &rules.needs);
+        assert_eq!(c.deficit_j, 65);
     }
 
     #[test]

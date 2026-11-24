@@ -148,16 +148,16 @@ pub(crate) mod purpose {
 
     /// The brains' trials (D50), salted apart too: a body's will at
     /// adoption, whether it starts a trial today, which way it moves and
-    /// which way round, the direction of a new home knowing no plant,
-    /// whether it copies a camp-mate tonight, which way, and whether the
-    /// copy loses a step.
+    /// which way round, whether it copies a camp-mate tonight, which way,
+    /// and whether the copy loses a step.
     pub(crate) const TRIAL_WILL: u64 = 0x0d50_3111;
     /// See `TRIAL_WILL`.
     pub(crate) const TRIAL_TRY: u64 = 0x0d50_7e57;
     /// See `TRIAL_WILL`.
     pub(crate) const TRIAL_WAY: u64 = 0x0d50_3a7a;
-    /// See `TRIAL_WILL`.
-    pub(crate) const TRIAL_DIRECTION: u64 = 0x0d50_d1e4;
+    /// See `TRIAL_WILL`: whether a body with nothing wrong tries all the
+    /// same today (D50, amended 24 November 2026).
+    pub(crate) const TRIAL_CALM: u64 = 0x0d50_ca1f;
     /// See `TRIAL_WILL`.
     pub(crate) const TRIAL_COPY: u64 = 0x0d50_c0b1;
     /// See `TRIAL_WILL`. Since D55 only the control without the fire draws
@@ -173,10 +173,13 @@ pub(crate) mod purpose {
     /// The evening's decisions (D56): whether a present goes looking
     /// tomorrow, and which way when two are as little known.
     pub(crate) const FIRE_LOOK: u64 = 0x0d56_100c;
+    /// The evening's decisions (D56, PR 1 ter): whether one joins first the
+    /// call of whom it believes best at gathering.
+    pub(crate) const FIRE_REPUTE: u64 = 0x0d56_1e9e;
 
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 69] = [
+    pub(crate) const ALL: [u64; 70] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -240,12 +243,13 @@ pub(crate) mod purpose {
         TRIAL_WILL,
         TRIAL_TRY,
         TRIAL_WAY,
-        TRIAL_DIRECTION,
+        TRIAL_CALM,
         TRIAL_COPY,
         TRIAL_COPY_WAY,
         TRIAL_COPY_LOSS,
         FIRE_CREDIT,
         FIRE_LOOK,
+        FIRE_REPUTE,
     ];
 }
 

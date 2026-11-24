@@ -27,9 +27,11 @@ use crate::{
 };
 
 /// The top-level keys, in the order they are written.
-const ORDER: [&str; 13] = [
+const ORDER: [&str; 15] = [
     "meta",
     "years",
+    "seasons",
+    "bilan",
     "found",
     "people",
     "records",
@@ -203,6 +205,8 @@ impl Report {
         json!({
             "meta": self.meta(),
             "years": self.years_json(),
+            "seasons": self.seasons_json(),
+            "bilan": self.bilan_json(),
             "found": self.found_json(),
             "people": self.people_json(),
             "records": self.records_json(),
@@ -349,6 +353,108 @@ impl Report {
         )
     }
 
+    /// The seasons' measure (D56, PR 1 ter), by tribe and season from the
+    /// first: places believed bearing a noon, will and confidence in
+    /// exploring, days, looked, out, bare, and who looked.
+    fn seasons_json(&self) -> Value {
+        let mean = |sum: u64, n: u32| (n > 0).then(|| sum * 10 / u64::from(n));
+        Value::Array(
+            self.seasons
+                .iter()
+                .map(|(&(tribe, season), p)| {
+                    json!({
+                        "tribe": tribe_name(tribe).to_string(),
+                        "season": season,
+                        "noons": p.noons,
+                        "bearing_known_x10": mean(p.bearing, p.noons),
+                        "lived_x10": mean(p.lived, p.noons),
+                        "will_x10": mean(p.will, p.noons),
+                        "explore_x10": mean(p.explore, p.noons),
+                        "days": p.days,
+                        "looked": p.looked,
+                        "out": p.out,
+                        "bare": p.bare,
+                        "lookers_will_x10": mean(p.lookers_will, p.looked),
+                        "lookers_explore_x10": mean(p.lookers_explore, p.looked),
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// The review's measure (lot 5b): by standing, why each stopped and
+    /// what it carried; the groups' stability; the couples at the dawns
+    /// of conception; the confidence in gathering of the named and the
+    /// set aside, and who they are.
+    fn bilan_json(&self) -> Value {
+        let b = &self.bilan;
+        let mean = |sum: u64, n: u32| (n > 0).then(|| sum * 10 / u64::from(n));
+        let standing: serde_json::Map<String, Value> = crate::STANDINGS
+            .iter()
+            .zip(&b.standing)
+            .map(|(name, d)| {
+                let not_full = d.why[2] + d.why[3];
+                (
+                    (*name).to_owned(),
+                    json!({
+                        "days": d.days,
+                        "why": {
+                            "never": d.why[0],
+                            "full": d.why[1],
+                            "group": d.why[2],
+                            "nothing_left": d.why[3],
+                            "night": d.why[4],
+                        },
+                        "gathered_x10": mean(d.gathered, d.days),
+                        "at_stop_x10": mean(d.at_stop, d.days - d.why[0]),
+                        "evening_x10": mean(d.evening, d.days),
+                        "cut_short_x10": mean(d.cut_short, not_full),
+                    }),
+                )
+            })
+            .collect();
+        let curve = |kind: usize| -> Vec<Value> {
+            b.curve[kind]
+                .iter()
+                .map(|&(sum, n)| json!([mean(sum, n), n]))
+                .collect()
+        };
+        let who = |kind: usize| -> serde_json::Map<String, Value> {
+            crate::BANDS
+                .iter()
+                .zip(&b.who[kind])
+                .map(|(band, n)| ((*band).to_owned(), json!(n)))
+                .collect()
+        };
+        json!({
+            "standing": standing,
+            "groups": {
+                "stable_permille": (b.stable_n > 0).then(|| b.stable_permille / u64::from(b.stable_n)),
+                "members_two_days": b.stable_n,
+                "same_caller": b.same_caller,
+                "followers_two_days": b.followers_n,
+            },
+            "couples": {
+                "met": b.couples[0],
+                "apart": b.couples[1],
+                "thin": b.couples[2],
+                "apart_and_thin": b.couples[3],
+            },
+            "confidence": {
+                "everyone_x10": mean(b.base.0, b.base.1),
+                "set_aside_before_x10": mean(b.before[0].0, b.before[0].1),
+                "named_before_x10": mean(b.before[1].0, b.before[1].1),
+                "set_aside_after": curve(0),
+                "named_after": curve(1),
+            },
+            "who": {
+                "set_aside": who(0),
+                "named": who(1),
+                "noons": who(2),
+            },
+        })
+    }
+
     /// The rumours dispelled (D55), in order.
     fn rumours_json(&self) -> Value {
         Value::Array(
@@ -443,6 +549,7 @@ impl Report {
                         },
                     })),
                     "decisions": decisions_json(&dec),
+                    "reputed": self.reputed.get(&(y.tribe, y.year)).map(|rows| reputed_json(rows)),
                     "fire": {
                         "nights": fire.nights,
                         "told": fire.told,
@@ -705,12 +812,60 @@ fn by_act(counts: [u32; 5]) -> Value {
     Value::Object(map)
 }
 
+/// A mean by act: `sums` over the `days` of each act; `null` without a
+/// day.
+fn by_act_mean(sums: [u64; 5], days: [u32; 5]) -> Value {
+    let mut map = serde_json::Map::new();
+    for ((key, sum), n) in ACT_KEYS.iter().zip(sums).zip(days) {
+        map.insert(
+            (*key).to_owned(),
+            json!((n > 0).then(|| sum / u64::from(n))),
+        );
+    }
+    Value::Object(map)
+}
+
 /// Counts by activity (D56), keyed as `sim::content::ACTIVITIES` names
 /// them.
 fn by_activity<T: Into<Value> + Copy>(counts: [T; 3]) -> Value {
     let mut map = serde_json::Map::new();
     for (key, count) in sim::content::ACTIVITIES.iter().zip(counts) {
         map.insert((*key).to_owned(), count.into());
+    }
+    Value::Object(map)
+}
+
+/// The days one followed another a way (D56, PR 1 ter): how many, back
+/// fed, back empty, and the mean per cent of its need gathered.
+fn follows_json((days, fed, empty, percent): (u32, u32, u32, u64)) -> Value {
+    json!({
+        "days": days,
+        "fed": fed,
+        "empty": empty,
+        "mean_need_percent": (days > 0).then(|| percent / u64::from(days)),
+    })
+}
+
+/// Who a tribe's living believed best at each activity at a year's end
+/// (D56, PR 1 ter), keyed as `sim::content::ACTIVITIES` names them, the
+/// most believed first.
+fn reputed_json(rows: &[crate::Reputed]) -> Value {
+    let mut map = serde_json::Map::new();
+    for (i, key) in sim::content::ACTIVITIES.iter().enumerate() {
+        let list: Vec<Value> = rows
+            .iter()
+            .filter(|r| usize::from(r.activity) == i)
+            .map(|r| {
+                json!({
+                    "who": id(r.who),
+                    "believers": r.believers,
+                    "mean_credit": r.credit / r.believers.max(1),
+                })
+            })
+            .collect();
+        if !list.is_empty() {
+            map.insert((*key).to_owned(), Value::Array(list));
+        }
     }
     Value::Object(map)
 }
@@ -740,12 +895,29 @@ fn decisions_json(dec: &DecisionYear) -> Value {
             "waited_groups": dec.waited_groups,
         },
         "days_by_act": by_act(dec.days),
+        "need_percent_by_act": by_act_mean(dec.need_percent, dec.days),
         "trips": {
             "found": by_act(dec.found),
             "bare": by_act(dec.bare),
             "fed_days": by_act(dec.fed),
         },
         "wills": {"minds": dec.minds, "bold": dec.bold},
+        "review": {
+            "named": dec.review[0],
+            "set_aside": dec.review[1],
+            "refused": dec.review[2],
+            "weighed_joins": dec.review[3],
+            "asked": dec.review[4],
+            "answered": dec.review[5],
+            "said_nothing": {"stocked": dec.review[6], "no_place": dec.review[7], "all_taken": dec.review[8]},
+            "set_aside_days": by_act(dec.aside_days),
+            "set_aside_fed_days": by_act(dec.aside_fed),
+        },
+        "follows": {
+            "joined": follows_json(dec.follows[0]),
+            "asked": follows_json(dec.follows[1]),
+            "told": follows_json(dec.follows[2]),
+        },
         "judged": {
             "successes": by_activity(dec.successes),
             "failures": by_activity(dec.failures),

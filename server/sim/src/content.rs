@@ -208,6 +208,22 @@ fn every_season_100() -> BySeason<u32> {
 }
 
 /// 100: a rate as it is.
+fn one_night() -> Vec<(u32, u32)> {
+    vec![(0, 1)]
+}
+
+fn nobody_calm() -> Vec<(u32, u32)> {
+    vec![(0, 0)]
+}
+
+fn grove_64() -> u32 {
+    64
+}
+
+fn permille_1000() -> u32 {
+    1000
+}
+
 fn percent_100() -> u32 {
     100
 }
@@ -282,8 +298,19 @@ pub struct Needs {
     /// 100 when absent.
     #[serde(default = "percent_100")]
     pub thirst_effort_percent: u32,
+    /// What a grown body burns walking, on top of the day's need, in
+    /// joules a metre walked (D50, amended 24 November 2026: walking costs
+    /// energy); a smaller body by its size. 0 when absent: walking is
+    /// free.
+    #[serde(default)]
+    pub walk_j_per_m: u32,
     /// Cold rises this much per day of night, without warmth.
     pub cold_per_day_at_night: u32,
+    /// The night's cold by season, in percent of `cold_per_day_at_night`:
+    /// mild summer nights, cold winter ones (24 November 2026). All 100
+    /// when absent.
+    #[serde(default = "every_season_100")]
+    pub cold_season_percent: BySeason<u32>,
     /// Cold falls this much per day of daylight.
     pub cold_relief_per_day: u32,
     /// Fatigue rises this much per day awake.
@@ -357,6 +384,11 @@ pub struct Needs {
     /// trials' fixed steps, and no activity has a confidence.
     #[serde(default)]
     pub temperance: Temperance,
+    /// Who is believed to know (D56, PR 1 ter): a reputation by activity
+    /// held by each body in the common memory, and the questions asked of
+    /// it at the fire. Absent: nobody is reputed, nobody asks.
+    #[serde(default)]
+    pub reputation: Reputation,
 }
 
 /// The evening's decisions (D56, decided by the project lead on 23
@@ -401,6 +433,41 @@ pub struct Decisions {
     pub behind_tiles: u32,
     /// The most it waits so in a day, in game minutes.
     pub behind_wait_minutes: u32,
+    /// How many dated facts on its companions a caller keeps (D56, PR 1
+    /// ter: the evening's review), the oldest forgotten first. 0: no
+    /// review, anybody joins anybody.
+    #[serde(default)]
+    pub facts_kept: u32,
+    /// The review judges a companion on its last outings with the caller
+    /// since the caller last told it "not with us tomorrow": this many.
+    #[serde(default)]
+    pub review_outings: u32,
+    /// Of them, this many bad ones (waited for on the way, or back with
+    /// less than a day of its need) and it is told "not with us
+    /// tomorrow"; this many good ones in a row (neither) and it is called
+    /// first, by name.
+    #[serde(default)]
+    pub review_bad: u32,
+    /// One told "not with us tomorrow" weighs first the places it knows
+    /// within this many tiles of the camp, on each axis: those set aside
+    /// may make their own group near the camp.
+    #[serde(default)]
+    pub near_camp_tiles: u32,
+    /// The parts of the review in force (lot 5b, a measure of its causes):
+    /// `set_aside` (the bad told "not with us tomorrow"), `aside_costs`
+    /// (that costs them a failure of their confidence in gathering),
+    /// `names` (the good called first, by name, their room kept). The
+    /// facts are noted whenever `facts_kept` is above 0. All three when
+    /// absent: the review as decided.
+    #[serde(default = "review_parts_all")]
+    pub review_parts: Vec<String>,
+}
+
+/// The parts of the review a caller may hold to ([`Decisions::review_parts`]).
+pub const REVIEW_PARTS: [&str; 3] = ["set_aside", "aside_costs", "names"];
+
+fn review_parts_all() -> Vec<String> {
+    REVIEW_PARTS.iter().map(|&p| p.to_owned()).collect()
 }
 
 impl Default for Decisions {
@@ -419,6 +486,11 @@ impl Default for Decisions {
             home_when_full_percent: 50,
             behind_tiles: 0,
             behind_wait_minutes: 0,
+            facts_kept: 0,
+            review_outings: 0,
+            review_bad: 0,
+            near_camp_tiles: 0,
+            review_parts: review_parts_all(),
         }
     }
 }
@@ -432,6 +504,10 @@ impl Decisions {
             look_percent_by_will: vec![(0, 0), (100, 40)],
             behind_tiles: 24,
             behind_wait_minutes: 30,
+            facts_kept: 32,
+            review_outings: 3,
+            review_bad: 2,
+            near_camp_tiles: 40,
             ..Self::default()
         }
     }
@@ -440,6 +516,18 @@ impl Decisions {
     #[must_use]
     pub fn on(&self) -> bool {
         self.choices > 0
+    }
+
+    /// Whether a caller reviews its companions at the fire (D56, PR 1 ter).
+    #[must_use]
+    pub fn reviews(&self) -> bool {
+        self.on() && self.facts_kept > 0
+    }
+
+    /// Whether the review holds to its part `part` ([`REVIEW_PARTS`]).
+    #[must_use]
+    pub fn review_holds(&self, part: &str) -> bool {
+        self.review_parts.iter().any(|p| p == part)
     }
 
     /// The chance, in per cent, that a body of `will` goes looking.
@@ -469,6 +557,20 @@ impl Decisions {
         if self.habit_floor > 100 || self.home_when_full_percent > 100 {
             return Err(ContentError::Needs(
                 "decisions: habit_floor and home_when_full_percent are per cent",
+            ));
+        }
+        if self.reviews() && (self.review_bad == 0 || self.review_bad > self.review_outings) {
+            return Err(ContentError::Needs(
+                "decisions: with facts_kept, review_bad 1 to review_outings",
+            ));
+        }
+        if self
+            .review_parts
+            .iter()
+            .any(|p| !REVIEW_PARTS.contains(&p.as_str()))
+        {
+            return Err(ContentError::Needs(
+                "decisions: review_parts among set_aside, aside_costs, names",
             ));
         }
         Ok(())
@@ -507,6 +609,12 @@ pub struct Temperance {
     pub activities: Vec<(String, u32)>,
     /// A will this high or higher is counted bold in the vivarium's page.
     pub bold_will: u32,
+    /// A day of an activity that succeeds after successes in a row weighs
+    /// more (D56, PR 1 ter: "reproducibility"): (successes in a row
+    /// before it, per cent of its gain), rising, straight lines between,
+    /// the last held beyond. Empty: every success weighs the same.
+    #[serde(default)]
+    pub streak_percent: Vec<(u32, u32)>,
 }
 
 impl Default for Temperance {
@@ -520,6 +628,7 @@ impl Default for Temperance {
             listened_milli: 0,
             activities: Vec::new(),
             bold_will: 40,
+            streak_percent: Vec::new(),
         }
     }
 }
@@ -544,6 +653,7 @@ impl Temperance {
                 ("stay".to_owned(), 90),
             ],
             bold_will: 40,
+            streak_percent: vec![(0, 100), (4, 200)],
         }
     }
 
@@ -575,6 +685,18 @@ impl Temperance {
     pub fn day_success_milli(&self, percent: u32) -> u64 {
         let percent = u64::from(percent.clamp(1, 100));
         u64::from(self.failure_milli) * (100 - percent) / percent
+    }
+
+    /// What a day's success gains after `streak` successes in a row of
+    /// the same activity (D56, PR 1 ter): [`Temperance::day_success_milli`]
+    /// times the content's `streak_percent` at that streak.
+    #[must_use]
+    pub fn streak_success_milli(&self, percent: u32, streak: u32) -> u64 {
+        let base = self.day_success_milli(percent);
+        if self.streak_percent.is_empty() {
+            return base;
+        }
+        base * along(&self.streak_percent, u64::from(streak) * 1000, 1) / 100
     }
 
     /// What a success ending `failures` failures in a row gains, in
@@ -625,6 +747,105 @@ impl Temperance {
         {
             return Err(ContentError::Needs(
                 "temperance: activities among explore, gather, stay, each succeeding 1 to 100 per cent",
+            ));
+        }
+        if !self.streak_percent.windows(2).all(|p| p[0].0 < p[1].0) {
+            return Err(ContentError::Needs(
+                "temperance: streak_percent's streaks rising",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Who is believed to know (D56, PR 1 ter, decided by the project lead
+/// on 23 November 2026): "32 knows where berries are" is a record in the
+/// common memory (D55), and each body holds, for each activity, only the
+/// one it believes best there with its own credit in it. Experience and
+/// the fire's accounts form it; followers back empty wear it; time fades
+/// it. Never a title (D30). Every value is a D30 placeholder, named and
+/// explained in `content/needs.ron`; nothing is tuned to a result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reputation {
+    /// The activities a reputation is held for, among the temperance's
+    /// [`ACTIVITIES`]. Empty: nobody is reputed, nobody asks.
+    pub activities: Vec<String>,
+    /// What a day one followed another and came back with a day of its
+    /// need adds to its credit in that one, in points (0 to 100).
+    pub seen_gain: u32,
+    /// What an account at the fire adds: a place new told by the one who
+    /// found it, a group come home with most of it fed.
+    pub heard_gain: u32,
+    /// What a day one followed another and came back empty takes from it;
+    /// half of it, heard at the fire that a whole group came back empty.
+    pub wear: u32,
+    /// What a credit loses each day since its record's day.
+    pub fade_per_day: u32,
+    /// The chance, in per cent of its credit, that one joins first the
+    /// call of whom it believes best at gathering, when that call is among
+    /// its choices.
+    pub join_percent: u32,
+    /// How many questions ("where is food?") are answered at one fire,
+    /// apart from the accounts' slots. 0: nobody asks.
+    pub questions_per_night: u32,
+}
+
+impl Default for Reputation {
+    /// Off.
+    fn default() -> Self {
+        Self {
+            activities: Vec::new(),
+            seen_gain: 0,
+            heard_gain: 0,
+            wear: 0,
+            fade_per_day: 0,
+            join_percent: 0,
+            questions_per_night: 0,
+        }
+    }
+}
+
+impl Reputation {
+    /// The placeholders of `content/needs.ron` (D30).
+    #[must_use]
+    pub fn placeholders() -> Self {
+        Self {
+            activities: vec!["explore".to_owned(), "gather".to_owned()],
+            seen_gain: 20,
+            heard_gain: 10,
+            wear: 15,
+            fade_per_day: 1,
+            join_percent: 100,
+            questions_per_night: 4,
+        }
+    }
+
+    /// Whether anybody is reputed.
+    #[must_use]
+    pub fn on(&self) -> bool {
+        !self.activities.is_empty()
+    }
+
+    /// Whether a reputation is held for the activity `known`, an index in
+    /// [`ACTIVITIES`].
+    #[must_use]
+    pub fn holds(&self, known: usize) -> bool {
+        ACTIVITIES
+            .get(known)
+            .is_some_and(|name| self.activities.iter().any(|a| a == name))
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        if self
+            .activities
+            .iter()
+            .any(|a| !ACTIVITIES.contains(&a.as_str()))
+            || [self.seen_gain, self.heard_gain, self.wear]
+                .iter()
+                .any(|&g| g > 100)
+        {
+            return Err(ContentError::Needs(
+                "reputation: activities among explore, gather, stay; gains and wear 100 at most",
             ));
         }
         Ok(())
@@ -849,8 +1070,8 @@ impl Fire {
 /// vivarium's page, never to remove the difficulty.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Trials {
-    /// Days of distress in a row (hungry at the day's end, or a day with
-    /// no gather at all) before a body may start a trial.
+    /// Days of distress in a row (hungry or thirsty at the day's end, or
+    /// a day with no gather at all) before a body may start a trial.
     pub trial_after_days: u32,
     /// How many days a trial lasts, and how many days before it the
     /// judgement compares them with; also the days imitation looks back on.
@@ -859,12 +1080,28 @@ pub struct Trials {
     /// percent), the wills rising, straight lines between the points, the
     /// first held before and the last after.
     pub try_percent_by_will: Vec<(u32, u32)>,
-    /// From this will, a trial of the home may set it a whole
-    /// `new_home_walk_tiles` away; under it, a quarter of that.
-    pub far_home_from_will: u32,
-    /// How far a trial moves the home, in tiles, towards where the body
-    /// knows the most plants still bearing.
-    pub new_home_walk_tiles: u32,
+    /// The daily chance, in per mille, that a body of `will` with nothing
+    /// wrong starts a trial all the same, a search for better (D50,
+    /// amended 24 November 2026: the bold try when all is well): (will,
+    /// per mille), as `try_percent_by_will`. None when absent.
+    #[serde(default = "nobody_calm")]
+    pub calm_try_permille_by_will: Vec<(u32, u32)>,
+    /// The nights a body must have slept at a place before a trial may
+    /// set its home there (D50, amended 23 November 2026: the home goes to
+    /// a place it lived): (will, nights), the wills rising, straight lines
+    /// between the points; the bold trust one night, the timid want more.
+    #[serde(default = "one_night")]
+    pub home_nights_by_will: Vec<(u32, u32)>,
+    /// What its notes of a place keep from one day to the next, in per
+    /// mille (D53, amended 23 November 2026): the old nights fade, so a
+    /// place that stops doing it good loses its grade.
+    #[serde(default = "permille_1000")]
+    pub lived_keep_permille: u32,
+    /// The side of a grove, in tiles (D53, amended 24 November 2026):
+    /// gathering is noted over a grove, drinking and sleeping over a
+    /// place of `thought.place_tiles`. 64 when absent.
+    #[serde(default = "grove_64")]
+    pub grove_tiles: u32,
     /// At night at the camp, a body copies only from a camp-mate within
     /// this many tiles.
     pub imitate_tiles: u32,
@@ -906,14 +1143,18 @@ pub struct Trials {
     #[serde(default)]
     pub lesson_heed_by_will: Vec<(u32, u32)>,
     /// The ways judged on their own horizon rather than on `trial_days`
-    /// (D50, amended on 23 November 2026): (way, days). A way whose worth
-    /// shows only over a season (a stock kept for the lean days, a night
-    /// out or at the camp) is tried that many days and judged on that
-    /// many days, its own and those heard, so that more trials no longer
-    /// mean more blind draws. Ways: those of [`TRIAL_WAYS`]; one not named
-    /// is judged on `trial_days`, and never on fewer.
+    /// (D50, amended on 23 November 2026, then counted in seasons the
+    /// same day): (way, seasons). A way whose worth shows only over a
+    /// season (a stock kept for the lean days, a night out or at the
+    /// camp) is tried and judged on that many seasons, converted to days
+    /// by the calendar ([`Trials::days_for`]), its own days and those
+    /// heard, so that more trials no longer mean more blind draws and a
+    /// longer year lengthens them with it. Ways: those of [`TRIAL_WAYS`];
+    /// one not named is judged on `trial_days`, and never on fewer. A
+    /// home tried alone is not named: a short stay, then back if not kept
+    /// (the season's horizon is for the acts of a group).
     #[serde(default)]
-    pub horizon_days: Vec<(String, u32)>,
+    pub horizon_seasons: Vec<(String, u32)>,
 }
 
 /// The ways a trial may move, as the content names them (D50).
@@ -926,8 +1167,10 @@ impl Default for Trials {
             trial_after_days: 0,
             trial_days: 1,
             try_percent_by_will: vec![(0, 0)],
-            far_home_from_will: 100,
-            new_home_walk_tiles: 0,
+            calm_try_permille_by_will: nobody_calm(),
+            home_nights_by_will: one_night(),
+            lived_keep_permille: 1000,
+            grove_tiles: 64,
             imitate_tiles: 0,
             imitate_percent: 0,
             imitate_loss_percent: 0,
@@ -938,7 +1181,7 @@ impl Default for Trials {
             lesson_days: 0,
             lesson_floor: 100,
             lesson_heed_by_will: Vec::new(),
-            horizon_days: Vec::new(),
+            horizon_seasons: Vec::new(),
         }
     }
 }
@@ -976,10 +1219,19 @@ impl Trials {
         along(&self.try_percent_by_will, u64::from(will) * 1000, 1)
     }
 
+    /// The daily chance, in per mille, that a body of `will` with nothing
+    /// wrong starts a trial all the same.
+    #[must_use]
+    pub fn calm_try_permille(&self, will: u8) -> u64 {
+        along(&self.calm_try_permille_by_will, u64::from(will) * 1000, 1)
+    }
+
     /// Whether anybody ever tries or copies anything.
     #[must_use]
     pub fn on(&self) -> bool {
-        self.try_percent_by_will.iter().any(|p| p.1 > 0) || self.imitate_percent > 0
+        self.try_percent_by_will.iter().any(|p| p.1 > 0)
+            || self.calm_try_permille_by_will.iter().any(|p| p.1 > 0)
+            || self.imitate_percent > 0
     }
 
     fn validate(&self) -> Result<(), ContentError> {
@@ -988,14 +1240,24 @@ impl Trials {
         if self.try_percent_by_will.is_empty()
             || !rising
             || self.try_percent_by_will.iter().any(|p| !percent(p.1))
-            || !percent(self.far_home_from_will)
+            || self.calm_try_permille_by_will.is_empty()
+            || !self
+                .calm_try_permille_by_will
+                .windows(2)
+                .all(|p| p[0].0 < p[1].0)
+            || self.calm_try_permille_by_will.iter().any(|p| p.1 > 1000)
+            || self.lived_keep_permille > 1000
+            || !(1..=1024).contains(&self.grove_tiles)
+            || self.home_nights_by_will.is_empty()
+            || !self.home_nights_by_will.windows(2).all(|p| p[0].0 < p[1].0)
             || !percent(self.imitate_percent)
             || !percent(self.imitate_loss_percent)
             || self.trial_days == 0
         {
             return Err(ContentError::Needs(
                 "trials: try_percent_by_will not empty, its wills rising and its percents at \
-                 most 100; far_home_from_will, imitate_percent and imitate_loss_percent at \
+                 most 100; calm_try_permille_by_will likewise, at most 1000; home_nights_by_will not empty, its wills rising; \
+                 lived_keep_permille at most 1000; grove_tiles 1 to 1024; imitate_percent and imitate_loss_percent at \
                  most 100; trial_days positive",
             ));
         }
@@ -1020,35 +1282,53 @@ impl Trials {
             ));
         }
         if self
-            .horizon_days
+            .horizon_seasons
             .iter()
-            .any(|(way, days)| !TRIAL_WAYS.contains(&way.as_str()) || *days == 0)
+            .any(|(way, seasons)| !TRIAL_WAYS.contains(&way.as_str()) || *seasons == 0)
         {
             return Err(ContentError::Needs(
-                "trials: horizon_days names known ways, each with days",
+                "trials: horizon_seasons names known ways, each with seasons",
             ));
         }
         Ok(())
     }
 
     /// How many days a trial of the way `key` lasts and is judged on: its
-    /// horizon, never under `trial_days`.
+    /// horizon in seasons, a season being a quarter of `days_per_year`
+    /// in whole days (`seasons × days_per_year / 4`: 12 days a season in
+    /// a fifty-day year), never under `trial_days`.
     #[must_use]
-    pub fn days_for(&self, key: &str) -> u32 {
-        self.horizon_days
+    pub fn days_for(&self, key: &str, days_per_year: u32) -> u32 {
+        self.horizon_seasons
             .iter()
             .find(|(way, _)| way == key)
-            .map_or(self.trial_days, |&(_, days)| days.max(self.trial_days))
+            .map_or(self.trial_days, |&(_, seasons)| {
+                season_days(seasons, days_per_year).max(self.trial_days)
+            })
+    }
+
+    /// The nights a body of `will` must have slept at a place before a
+    /// trial may set its home there.
+    #[must_use]
+    pub fn home_nights(&self, will: u8) -> u32 {
+        u32::try_from(along(&self.home_nights_by_will, u64::from(will) * 1000, 1))
+            .unwrap_or(u32::MAX)
     }
 
     /// The longest of the trials' days: what a mind keeps of its days.
     #[must_use]
-    pub fn longest_days(&self) -> u32 {
-        self.horizon_days
+    pub fn longest_days(&self, days_per_year: u32) -> u32 {
+        self.horizon_seasons
             .iter()
-            .map(|&(_, days)| days)
+            .map(|&(_, seasons)| season_days(seasons, days_per_year))
             .fold(self.trial_days, u32::max)
     }
+}
+
+/// `seasons` seasons of a year of `days_per_year` days, in whole days.
+fn season_days(seasons: u32, days_per_year: u32) -> u32 {
+    let days = u64::from(seasons) * u64::from(days_per_year) / 4;
+    u32::try_from(days).unwrap_or(u32::MAX)
 }
 
 /// Ages and sexes (lot 3 B, decided 17 November 2026): what a body needs
@@ -1845,13 +2125,15 @@ impl Content {
         {
             return Err(ContentError::Needs("night_from_percent is 1 to 99"));
         }
-        if Season::ALL
-            .iter()
-            .any(|s| !(1..=1000).contains(&self.needs.thirst_heat_percent.get(*s)))
-            || !(1..=1000).contains(&self.needs.thirst_effort_percent)
+        if Season::ALL.iter().any(|s| {
+            !(1..=1000).contains(&self.needs.thirst_heat_percent.get(*s))
+                || self.needs.cold_season_percent.get(*s) > 1000
+        }) || !(1..=1000).contains(&self.needs.thirst_effort_percent)
+            || self.needs.walk_j_per_m > 10_000
         {
             return Err(ContentError::Needs(
-                "thirst_heat_percent and thirst_effort_percent are 1 to 1000",
+                "thirst_heat_percent and thirst_effort_percent are 1 to 1000, cold_season_percent \
+                 at most 1000, walk_j_per_m at most 10,000",
             ));
         }
         if self.needs.kj_per_hunger_point == 0 {
@@ -1867,7 +2149,8 @@ impl Content {
         self.needs.thought.validate()?;
         self.needs.fire.validate()?;
         self.needs.decisions.validate()?;
-        self.needs.temperance.validate()
+        self.needs.temperance.validate()?;
+        self.needs.reputation.validate()
     }
 
     /// Refuses the values the simulation cannot carry (audit of 20
@@ -2015,12 +2298,6 @@ impl Content {
         ] {
             at_most("needs.ron", field, value, THOUSAND)?;
         }
-        at_most(
-            "needs.ron",
-            "trials.new_home_walk_tiles",
-            trials.new_home_walk_tiles,
-            MILLION,
-        )?;
         for (field, value) in [
             (
                 "thought.plant_sight_tiles",
@@ -2462,25 +2739,33 @@ mod tests {
     }
 
     #[test]
-    fn a_slow_way_is_tried_on_its_horizon_and_never_under_trial_days() {
+    fn a_slow_way_is_tried_on_its_horizon_in_seasons_and_never_under_trial_days() {
         let mut trials = Trials {
             trial_days: 5,
-            horizon_days: vec![("stock_kj".to_owned(), 12), ("sleep_out".to_owned(), 3)],
+            horizon_seasons: vec![("stock_kj".to_owned(), 1), ("sleep_out".to_owned(), 2)],
             ..Trials::default()
         };
-        assert_eq!(trials.days_for("stock_kj"), 12);
-        assert_eq!(trials.days_for("sleep_out"), 5, "never under trial_days");
+        assert_eq!(trials.days_for("stock_kj", 50), 12, "a season of 50 days");
+        assert_eq!(trials.days_for("stock_kj", 365), 91, "the year sets it");
+        assert_eq!(trials.days_for("sleep_out", 50), 25);
+        assert_eq!(trials.days_for("stock_kj", 8), 5, "never under trial_days");
         assert_eq!(
-            trials.days_for("worth_half_tiles"),
+            trials.days_for("worth_half_tiles", 50),
             5,
             "not named: trial_days"
         );
-        assert_eq!(trials.longest_days(), 12);
+        assert_eq!(
+            trials.days_for("home", 50),
+            5,
+            "a home tried alone: a short stay, not a season"
+        );
+        assert_eq!(trials.longest_days(50), 25);
+        assert_eq!(trials.longest_days(8), 5);
         assert!(trials.validate().is_ok());
-        trials.horizon_days.push(("hunting".to_owned(), 12));
+        trials.horizon_seasons.push(("hunting".to_owned(), 1));
         assert!(trials.validate().is_err(), "an unknown way");
-        trials.horizon_days = vec![("home".to_owned(), 0)];
-        assert!(trials.validate().is_err(), "no days");
+        trials.horizon_seasons = vec![("stock_kj".to_owned(), 0)];
+        assert!(trials.validate().is_err(), "no seasons");
     }
 
     #[test]

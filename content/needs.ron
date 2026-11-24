@@ -21,7 +21,31 @@
 //                          faster, a winter's slower (lot 2, D45).
 // thirst_effort_percent:   150 — walking or working, thirst comes half as
 //                          fast again.
+// walk_j_per_m:            130 — walking costs energy on top of the day's
+//                          need (the project lead, 24 November 2026: "que
+//                          la marche coûte de l'énergie"): the net cost of
+//                          walking at a comfortable pace is about 2 J per
+//                          kg per metre above rest (Margaria 1938; Bastien
+//                          et al. 2005, Eur J Appl Physiol), 130 J a metre
+//                          for 65 kg: 130 kJ a kilometre, about 31 kcal.
+//                          A smaller body pays by its size. Carried loads
+//                          do not add to it yet.
 // cold_per_day_at_night:   300 — eight hours of night without warmth.
+// cold_season_percent:     the night's cold by season, in percent of
+//                          cold_per_day_at_night (the lead, 24 November
+//                          2026: mild summer nights, cold winter ones; the
+//                          vivarium is temperate). In proportion to how far
+//                          the night falls under about 20 °C, below which a
+//                          lightly clad body at rest loses more heat than
+//                          it makes: mean daily minimum of a temperate
+//                          lowland of western Europe (Météo-France normals
+//                          1991-2020, central France, about): winter 1 °C,
+//                          spring 6 °C, summer 14 °C, autumn 8 °C, so 19,
+//                          14, 6 and 12 degrees under, winter the 100 %
+//                          kept from before. A winter night fills the gauge
+//                          (300 a day, ten and a half hours of night); a
+//                          spring night reaches about 93, an autumn one 79,
+//                          a summer one 35.
 // cold_relief_per_day:     600 — four hours of daylight undo it.
 // fatigue_per_day_awake:   120 — twenty hours awake fill the gauge.
 // rest_per_day_asleep:     300 — eight hours of sleep empty it.
@@ -57,7 +81,9 @@
     thirst_per_day: 100,
     thirst_heat_percent: (spring: 100, summer: 140, autumn: 100, winter: 80),
     thirst_effort_percent: 150,
+    walk_j_per_m: 130,
     cold_per_day_at_night: 300,
+    cold_season_percent: (spring: 74, summer: 32, autumn: 63, winter: 100),
     cold_relief_per_day: 600,
     fatigue_per_day_awake: 120,
     rest_per_day_asleep: 300,
@@ -159,6 +185,11 @@
     // aussi acquise… la plupart des gens sont frileux… très peu de gens
     // sont des aventuriers", and "les leçons d'historien").
     // try_percent_by_will: a floor at zero: a will of 0 never tries.
+    // calm_try_permille_by_will: with nothing wrong, the bold try all the
+    //                    same (the lead, 24 November 2026), modestly:
+    //                    nobody under will 40, 1 % a day at 70, 2 % at 100:
+    //                    an adventurer of 90 about one search a year of
+    //                    fifty days, a calm tribe of twenty-five one or two.
     // will_innate:       the innate will drawn skewed, by percentile of the
     //                    bodies: the 80 % most timid between 5 and 20, the
     //                    next between 20 and 40, the last 7 % up to 90: one
@@ -179,18 +210,44 @@
     //                    another);
     // lesson_heed_by_will: the timid heed the lessons whole (100 % at will
     //                    0), the adventurer in part (30 % at will 100);
-    // horizon_days:   the slow ways are tried and judged on their own
+    // horizon_seasons: the slow ways are tried and judged on their own
     //                    horizon, not on five days (the lead, 23 November
     //                    2026: more trials must not mean more blind
-    //                    draws): a stock kept (stock_kj) and sleeping out
-    //                    or at the camp (sleep_out) over twelve days, a
-    //                    season of the vivarium's fifty-day year.
+    //                    draws), counted in seasons and converted by the
+    //                    calendar (a quarter of the year in whole days):
+    //                    a stock kept (stock_kj) and sleeping out or at
+    //                    the camp (sleep_out) over one season, twelve days
+    //                    of the vivarium's fifty-day year. A home tried
+    //                    alone is not named: a short stay on trial_days,
+    //                    then back if not kept; the season is for the acts
+    //                    of a group (not yet in the game).
+    // home_nights_by_will: a trial of the home sets it at the place or
+    //                    grove of its notebook where its own body would
+    //                    fare best (what it drank and gathered there, each
+    //                    up to a day's worth, less the hunger, thirst and
+    //                    cold its nights left and what walking cost, all
+    //                    in a day of each need, counted alike; the
+    //                    project lead, 23 November 2026: "ils
+    //                    doivent se souvenir des endroits où vivre et
+    //                    choisir eux-mêmes"), lived three days for the
+    //                    timid (will 0), one for the bold (will 70 and up);
+    // lived_keep_permille: 950 — its notes of each place keep 95 % from one
+    //                    day to the next: a night weighs half after two
+    //                    weeks, so a place that stops doing it good loses
+    //                    its grade.
+    // grove_tiles:       64 — gathering is noted over a grove of 64 m (24
+    //                    November 2026: "about a grove"), so gathering
+    //                    scattered in one grove adds up as the water drunk
+    //                    at again and again; drinking and sleeping keep the
+    //                    16 m places.
     trials: (
         trial_after_days: 3,
         trial_days: 5,
         try_percent_by_will: [(0, 0), (100, 30)],
-        far_home_from_will: 70,
-        new_home_walk_tiles: 2000,
+        calm_try_permille_by_will: [(0, 0), (40, 0), (100, 20)],
+        home_nights_by_will: [(0, 3), (70, 1)],
+        lived_keep_permille: 950,
+        grove_tiles: 64,
         imitate_tiles: 12,
         imitate_percent: 20,
         imitate_loss_percent: 25,
@@ -201,7 +258,7 @@
         lesson_days: 50,
         lesson_floor: 10,
         lesson_heed_by_will: [(0, 100), (100, 30)],
-        horizon_days: [("stock_kj", 12), ("sleep_out", 12)],
+        horizon_seasons: [("stock_kj", 1), ("sleep_out", 1)],
     ),
     // The rules of thought that keep a mind light (D53, decided by the
     // project lead on 22 November 2026): perceptions and gestures, never
@@ -343,6 +400,29 @@
     //                          lead, 23 November 2026: "regarder
     //                          derrière"); 0: it never does;
     // behind_wait_minutes: 30 — half an hour of such waits a day at most.
+    // The evening's review (PR 1 ter; the lead, 23 November 2026: "on
+    // peut mettre ça en place... les améliorer et les pousser un peu plus
+    // loin"): a caller keeps dated facts on its companions, never a level
+    // ("I waited for 14 on the 12th", "17 brought little back on the
+    // 13th"); looking behind and what each carries home feed them.
+    // facts_kept:          32 — the facts a caller keeps, the oldest
+    //                          forgotten first; 0: no review;
+    // review_outings:       3 — it judges a companion on its last three
+    //                          outings with it, since it last set it
+    //                          aside (judged over several outings, never
+    //                          on one day);
+    // review_bad:           2 — two of them bad (waited for on the way,
+    //                          or back with less than a day of its need):
+    //                          "not with us tomorrow", a gesture at the
+    //                          fire that costs the one set aside a failure
+    //                          of its confidence in gathering (temperance's
+    //                          rules); two good ones in a row: called
+    //                          first, by name. A parent never sets aside
+    //                          its own child, and a child whose parent is
+    //                          in the group comes with it;
+    // near_camp_tiles:     40 — one set aside weighs first the places it
+    //                          knows within 40 tiles of the camp: those set
+    //                          aside may make their own group near it.
     decisions: (
         choices: 3,
         plants_per_gatherer: 2,
@@ -356,6 +436,10 @@
         home_when_full_percent: 50,
         behind_tiles: 24,
         behind_wait_minutes: 30,
+        facts_kept: 32,
+        review_outings: 3,
+        review_bad: 2,
+        near_camp_tiles: 40,
     ),
     // The will tempered, and a confidence by activity (D50 amended, D56;
     // the project lead, 23 November 2026: "je suis d'accord avec toutes
@@ -395,6 +479,10 @@
     //                  in exploring against that in gathering multiplies
     //                  the habit's weight on going looking (habit_weight).
     // bold_will:      40 — the vivarium counts a will of 40 or more bold.
+    // streak_percent: [(0, 100), (4, 200)] — reproducibility (PR 1 ter):
+    //                  a day's success after successes in a row of the
+    //                  same activity weighs more, up to twice after four,
+    //                  straight between; a failure ends the streak.
     temperance: (
         bears_by_innate: [(0, 2), (100, 6)],
         failure_milli: 1000,
@@ -403,5 +491,38 @@
         listened_milli: 500,
         activities: [("explore", 75), ("gather", 50), ("stay", 90)],
         bold_will: 40,
+        streak_percent: [(0, 100), (4, 200)],
+    ),
+    // Who is believed to know (D56, PR 1 ter): "32 knows where berries
+    // are" is a record in the common memory (D55); each body holds, for
+    // each activity, only the one it believes best there, with its own
+    // credit (0 to 100). Never a title (D30): a belief, wrong at times.
+    // activities: explore (who finds places that feed), gather (whose
+    //             calls feed those who join).
+    // seen_gain:  20 — a day it followed one (joined its call, went where
+    //             its answer or its account said) and came back with a day
+    //             of its need;
+    // heard_gain: 10 — an account at the fire: a place new told by its
+    //             finder, a group home with half of it fed or more;
+    // wear:       15 — a day it followed one and came back empty; half of
+    //             it, heard at the fire that a whole group came back empty;
+    // fade_per_day: 1 — a point a day since the record's day: a belief
+    //             not renewed is gone in a season or two;
+    // join_percent: 100 — one joins first the call of whom it believes
+    //             best at gathering, when that call is among its choices,
+    //             with a chance of its credit in per cent;
+    // questions_per_night: 4 — one with no place to go asks whom it
+    //             believes best "where is food?" and gets that one's best
+    //             place: a telling to one, apart from the accounts' slots,
+    //             four a fire at most. Its success, when it follows the
+    //             answer, counts as a success of the one who answered.
+    reputation: (
+        activities: ["explore", "gather"],
+        seen_gain: 20,
+        heard_gain: 10,
+        wear: 15,
+        fade_per_day: 1,
+        join_percent: 100,
+        questions_per_night: 4,
     ),
 )
