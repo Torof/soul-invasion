@@ -470,7 +470,15 @@ pub struct Ways {
     /// The food it gathers by day before it rests, in kilojoules
     /// ([`STOCK_KJ`]).
     pub stock_kj: u64,
-    /// Its camp: where it goes at night and by day, and goes looking from.
+    /// Its home (D50, amended 24 November 2026; the lead: "maintenant
+    /// c'est ma maison, ce n'est plus celle-là. C'est là où il va
+    /// revenir"): **one at a time**, the place it returns to at dusk,
+    /// sleeps at (unless it sleeps out), whose fire it sits at, and goes
+    /// looking from. A home trial sets it at once and it is provisional
+    /// until judged: kept, it is the home and the old one survives only
+    /// as a memory in the notebook ([`Mind`]'s `lived`); not kept, the
+    /// trial's ways before set it back and the body returns. There is no
+    /// other home anywhere in a mind.
     pub home: Pos,
 }
 
@@ -784,10 +792,16 @@ enum Sense {
     Water,
     /// Warmth: nothing gives it yet; at dawn the cold the night left.
     Warmth,
+    /// Company (D53, amended 24 November 2026): a need of the body felt
+    /// only at night at the fire, where anyone present counts, family no
+    /// more than others ([`crate::content::Company`]). Nothing gives it by
+    /// day; at dawn what too few at its fire left it lacking, its whole
+    /// need at no fire. It grades places, and orders nothing.
+    Company,
 }
 
 /// How many [`Sense`]s.
-const SENSES: usize = 3;
+const SENSES: usize = 4;
 
 /// A place in a body's notebook (D50 and D53, amended 23 and 24 November
 /// 2026), as its own body lived it, summed and faded day by day, a night
@@ -944,6 +958,18 @@ pub const FOLLOW_TOLD: u8 = 2;
 /// [`Brains::news`] after each turn: the vivarium's chronicle reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum News {
+    /// `body`'s night (D53, amended 24 November 2026): `others` at its
+    /// fire the night of `day`, 0 at no fire; its sociability.
+    Company {
+        /// Who.
+        body: BodyId,
+        /// The day the night closed.
+        day: u32,
+        /// Others at its fire.
+        others: u32,
+        /// Its sociability, 0 to 100.
+        sociable: u8,
+    },
     /// `body` marked `place` seen, not reached (D53, amended 24 November
     /// 2026): its own walk there was barred, or `heard` at the fire.
     Barred {
@@ -1254,6 +1280,10 @@ pub struct Mind {
     /// Its innate will (D50, amended): what its will and its confidences
     /// come back to, season after season (D56).
     innate: u8,
+    /// Its innate sociability, 0 to 100 (D53, amended 24 November 2026):
+    /// drawn from the seed and its id at adoption, never inherited, fixed
+    /// for life; how much company it needs at night.
+    sociable: u8,
     /// Thousandths of a point of will beyond `will`, and its failures in
     /// a row (D50, amended: the will tempered).
     will_rest: u16,
@@ -1286,7 +1316,10 @@ pub struct Mind {
     cold_night: bool,
     /// The trial under way, if any.
     trial: Option<Trial>,
-    /// Its home at the last nightfall: the camp-mates are those sharing it.
+    /// Its home as it was at the last nightfall, not a second home: the
+    /// fire it lies down for tonight, kept while the vigil at dawn may
+    /// move the home ([`Ways::home`]). The fire's circle is the place of
+    /// it (`place_tiles`, D55 amended 24 November 2026).
     home_at_dusk: Pos,
     /// The kept ways it heard at the fire (D55): accesses to trial
     /// records, the oldest first; at most the content's `fire.heard_max`.
@@ -1495,6 +1528,7 @@ impl Mind {
             ways: Ways::at(home),
             will: 0,
             innate: 0,
+            sociable: 0,
             will_rest: 0,
             will_failures: 0,
             confidence: Vec::new(),
@@ -1606,6 +1640,11 @@ impl Mind {
     /// Its innate will, 0 to 100 (D50, amended).
     pub fn innate(&self) -> u8 {
         self.innate
+    }
+
+    /// Its innate sociability, 0 to 100 (D53, amended 24 November 2026).
+    pub fn sociable(&self) -> u8 {
+        self.sociable
     }
 
     /// Its confidence in each activity of [`crate::content::ACTIVITIES`],
@@ -2791,9 +2830,10 @@ pub struct Brains {
     /// is still weighed by (its prestige, D50), as a trial record carries
     /// its teller's.
     gone_wills: BTreeMap<BodyId, u8>,
-    /// Who lay down at each camp tonight, by their home at dusk: the
-    /// fire's circle.
-    at_fire: BTreeMap<Pos, BTreeSet<BodyId>>,
+    /// Who lay down at each camp tonight, by the place of their home at
+    /// dusk (`place_tiles`, D55 amended 24 November 2026): the fire's
+    /// circle, neighbours a few metres apart sharing one.
+    at_fire: BTreeMap<PlaceKey, BTreeSet<BodyId>>,
     /// The groups of the day (D56), by their caller.
     groups: BTreeMap<BodyId, Group>,
     /// The day's groups as they came home, told at the next fire (D56,
@@ -3152,6 +3192,7 @@ impl Brains {
             .or_insert_with(|| nearest_drinking_place(world.map(), rules, home));
         let now = world.tick().0;
         let first = now + u64::from(body.0) % wake_spread(world);
+        let run_seed = self.seed;
         let mind = self.minds.entry(body).or_insert_with(|| {
             // Its first thought too in its own tick: a tribe born at once
             // does not think all in one.
@@ -3162,6 +3203,12 @@ impl Brains {
                 scatter::roll(world.seed(), purpose::TRIAL_WILL, &[u64::from(body.0)]) % 1001,
             );
             mind.set_innate(innate, &rules.needs.temperance);
+            // Its sociability (D53, amended 24 November 2026): even from
+            // 0 to 100, from the run's seed and its id, never inherited.
+            mind.sociable = u8::try_from(
+                scatter::roll(run_seed, purpose::SOCIABILITY, &[u64::from(body.0)]) % 101,
+            )
+            .unwrap_or(100);
             if first > now + 1 {
                 mind.due = false;
                 mind.wake_at = Some(first);
@@ -3496,6 +3543,48 @@ impl Brains {
         self.children_follow(world, &ids);
     }
 
+    /// At dawn, before the night is noted, each grown body feels the
+    /// company it had (D53, amended 24 November 2026): the others at its
+    /// fire's circle, anyone counting alike, none at no fire (it slept
+    /// out, or alone at its camp). What too few left it lacking enters its
+    /// night as [`Sense::Company`], by its sociability
+    /// ([`crate::content::Company::lacking_permille`]). Only with the fire
+    /// lit: without it there is no gathering to feel. It grades the place
+    /// it lies at in its notebook, and nothing else: no order, no trigger.
+    fn feel_company(&mut self, world: &World, rules: &Content, circles: &[(Pos, Vec<BodyId>)]) {
+        if !rules.needs.fire.on() {
+            return;
+        }
+        let company = &rules.needs.company;
+        let day = u32::try_from(today(world).saturating_sub(1)).unwrap_or(u32::MAX);
+        let mut at: BTreeMap<BodyId, u32> = BTreeMap::new();
+        for (_, present) in circles {
+            let others = u32::try_from(present.len().saturating_sub(1)).unwrap_or(u32::MAX);
+            for &id in present {
+                at.insert(id, others);
+            }
+        }
+        for (&id, mind) in &mut self.minds {
+            let Some(night) = mind.night.as_mut() else {
+                continue;
+            };
+            let Some(body) = world.body(id) else {
+                continue;
+            };
+            if body.condition().vitality.points() == 0 || world.is_infant(body, rules) {
+                continue;
+            }
+            let others = at.get(&id).copied().unwrap_or(0);
+            night.losses[Sense::Company as usize] = company.lacking_permille(mind.sociable, others);
+            self.news.push(News::Company {
+                body: id,
+                day,
+                others,
+                sociable: mind.sociable,
+            });
+        }
+    }
+
     /// At dawn each notes the night it just slept where it lies (D50, D53
     /// amended 23 November 2026): its notes of every place fade first.
     fn note_nights(&mut self, world: &World, rules: &Content) {
@@ -3685,10 +3774,12 @@ impl Brains {
     }
 
     /// `id` lies down at its camp for the night (D55): it joins the
-    /// fire's circle of its camp (its home at dusk) if it lies within
-    /// `imitate_tiles` of it. The circle is read at dawn
-    /// ([`Brains::vigil`]); whoever sleeps out, collapses on the way or
-    /// never reaches the camp before dawn misses the night.
+    /// fire's circle of its camp if it lies within `imitate_tiles` of its
+    /// home at dusk. The circle gathers by the home's place
+    /// (`place_tiles`, D55 amended 24 November 2026), not by its tile:
+    /// neighbours living a few metres apart share one fire. The circle is
+    /// read at dawn ([`Brains::vigil`]); whoever sleeps out, collapses on
+    /// the way or never reaches the camp before dawn misses the night.
     fn join_fire(&mut self, world: &World, rules: &Content, id: BodyId) {
         if !rules.needs.fire.on() {
             return;
@@ -3702,7 +3793,10 @@ impl Brains {
         if (here.x - camp.x).abs() > reach || (here.y - camp.y).abs() > reach {
             return;
         }
-        self.at_fire.entry(camp).or_default().insert(id);
+        self.at_fire
+            .entry(place_of(camp, place_side(rules)))
+            .or_default()
+            .insert(id);
     }
 
     /// The night's fires, at dawn (D55): at each camp where two or more
@@ -3722,9 +3816,30 @@ impl Brains {
     /// heard ([`Brains::imitate`]). Nothing here reads the world but the
     /// calendar: last, every mind's places heard age ([`Brains::age_heard`]).
     fn vigil(&mut self, world: &World, rules: &Content) {
-        self.note_nights(world, rules);
         let fire = &rules.needs.fire;
+        let side = place_side(rules);
         let at_fire = std::mem::take(&mut self.at_fire);
+        // The circles: the living grown at the place of their home at
+        // dusk, the camp a place's middle.
+        let circles: Vec<(Pos, Vec<BodyId>)> = at_fire
+            .into_iter()
+            .map(|(key, circle)| {
+                let present = circle
+                    .into_iter()
+                    .filter(|id| {
+                        world.body(*id).is_some_and(|b| {
+                            b.condition().vitality.points() > 0 && !world.is_infant(b, rules)
+                        }) && self
+                            .minds
+                            .get(id)
+                            .is_some_and(|m| place_of(m.home_at_dusk, side) == key)
+                    })
+                    .collect();
+                (place_centre(key, side), present)
+            })
+            .collect();
+        self.feel_company(world, rules, &circles);
+        self.note_nights(world, rules);
         let accounts = std::mem::take(&mut self.accounts);
         if !fire.on() {
             return;
@@ -3732,16 +3847,7 @@ impl Brains {
         let dawn = u32::try_from(today(world)).unwrap_or(u32::MAX);
         let day = u32::try_from(today(world).saturating_sub(1)).unwrap_or(u32::MAX);
         let now = world.tick().0;
-        let side = place_side(rules);
-        for (camp, circle) in at_fire {
-            let present: Vec<BodyId> = circle
-                .into_iter()
-                .filter(|id| {
-                    world.body(*id).is_some_and(|b| {
-                        b.condition().vitality.points() > 0 && !world.is_infant(b, rules)
-                    }) && self.minds.get(id).is_some_and(|m| m.home_at_dusk == camp)
-                })
-                .collect();
+        for (camp, present) in circles {
             if present.len() < 2 {
                 // Nobody to tell: the drafts wait for another night.
                 continue;
@@ -4520,7 +4626,7 @@ impl Brains {
             self.minds
                 .iter()
                 .filter(|(id, m)| {
-                    m.home_at_dusk == camp
+                    place_of(m.home_at_dusk, side) == place_of(camp, side)
                         && !present.contains(id)
                         && world.body(**id).is_some_and(|b| {
                             b.condition().vitality.points() > 0 && !world.is_infant(b, rules)
@@ -9920,6 +10026,135 @@ mod tests {
         );
     }
 
+    // Company and the fire by place (D53, D55 amended 24 November 2026).
+
+    /// The circle gathers by the home's place, not its tile: two
+    /// neighbours a few tiles apart in one place of `place_tiles` sit at
+    /// one fire, written once in the hearth at the place's middle.
+    #[test]
+    fn neighbours_in_one_place_share_one_fire() {
+        let rules = fire_rules();
+        let (mut world, mut brains) = camp_of(2, &rules);
+        let ids: Vec<BodyId> = brains.minds.keys().copied().collect();
+        // (5, 5) and (9, 10): two tiles, one place of 16.
+        for (id, home) in ids.iter().zip([Pos::new(5, 5), Pos::new(9, 10)]) {
+            let mind = brains.minds.get_mut(id).unwrap();
+            mind.ways.home = home;
+            mind.home_at_dusk = home;
+            mind.night = Some(night_with([0; SENSES], 0, Vec::new()));
+        }
+        let news = night(&mut world, &rules, &mut brains, &ids);
+        assert_eq!(
+            brains.hearths().len(),
+            1,
+            "one fire: {:?}",
+            brains.hearths()
+        );
+        let hearth = &brains.hearths()[&Pos::new(8, 8)];
+        let Some(Record::Night { present, .. }) = brains.memory.get(hearth[0]) else {
+            panic!("a night in the hearth");
+        };
+        assert_eq!(present.len(), 2);
+        let others: Vec<u32> = news
+            .iter()
+            .filter_map(|n| match n {
+                News::Company { others, .. } => Some(*others),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(others, vec![1, 1], "each had the other");
+    }
+
+    /// The sociability is innate (D53, amended 24 November 2026): drawn
+    /// from the run's seed and the id, 0 to 100, the same for the same
+    /// seed, different from body to body and from seed to seed.
+    #[test]
+    fn sociability_is_drawn_from_the_seed_and_the_id() {
+        let rules = fire_rules();
+        let (world, _) = camp_of(12, &rules);
+        let draw = |seed: u64| {
+            let mut brains = Brains::new(seed);
+            for body in world.bodies() {
+                brains.adopt(&world, &rules, body.id());
+            }
+            brains
+                .minds
+                .values()
+                .map(Mind::sociable)
+                .collect::<Vec<_>>()
+        };
+        let first = draw(7);
+        assert_eq!(first, draw(7), "the same seed, the same sociabilities");
+        assert_ne!(first, draw(8), "another seed, others");
+        assert!(first.iter().all(|&s| s <= 100));
+        let distinct: BTreeSet<u8> = first.iter().copied().collect();
+        assert!(distinct.len() > 6, "drawn body by body: {first:?}");
+    }
+
+    /// Company, felt at night at the fire, enters the night's notebook by
+    /// sociability: with enough others nothing, with fewer in proportion,
+    /// alone (not at the fire) the whole need; anyone counts alike.
+    #[test]
+    fn company_is_felt_at_the_fire_and_noted_with_the_night() {
+        let mut rules = fire_rules();
+        rules.needs.company = crate::content::Company::placeholders();
+        let (mut world, mut brains) = camp_of(4, &rules);
+        let ids: Vec<BodyId> = brains.minds.keys().copied().collect();
+        for (id, sociable) in ids.iter().zip([100, 0, 50, 100]) {
+            let mind = brains.minds.get_mut(id).unwrap();
+            mind.sociable = sociable;
+            mind.night = Some(night_with([0; SENSES], 0, Vec::new()));
+        }
+        // Three at the fire (two others each), the fourth not.
+        night(&mut world, &rules, &mut brains, &ids[..3]);
+        let lacked = |id: &BodyId| {
+            let mind = &brains.minds[id];
+            let l = mind
+                .lived
+                .iter()
+                .find(|l| !l.grove)
+                .expect("its night noted");
+            l.per_night(l.losses[Sense::Company as usize])
+        };
+        let got: Vec<u64> = ids.iter().map(lacked).collect();
+        assert_eq!(got, vec![666, 0, 250, 1000]);
+    }
+
+    /// Company grades places and gives no order (D53, amended 24 November
+    /// 2026): the same night with and without it leaves every way, plan
+    /// and trial alike, and only the notebook differs.
+    #[test]
+    fn company_orders_nothing() {
+        let run = |on: bool| {
+            let (mut world, mut rules, mut brains, _, _) = deciding(4);
+            rules.needs.company = if on {
+                crate::content::Company::placeholders()
+            } else {
+                crate::content::Company::default()
+            };
+            let ids: Vec<BodyId> = brains.minds.keys().copied().collect();
+            for mind in brains.minds.values_mut() {
+                mind.sociable = 100;
+                mind.night = Some(night_with([0; SENSES], 0, Vec::new()));
+            }
+            let news: Vec<News> = night(&mut world, &rules, &mut brains, &ids[..2])
+                .into_iter()
+                .filter(|n| !matches!(n, News::Company { .. }))
+                .collect();
+            let minds: Vec<_> = brains
+                .minds
+                .values()
+                .map(|m| (m.ways, m.plan, m.trial.map(|t| t.way)))
+                .collect();
+            let notes: Vec<_> = brains.minds.values().map(|m| m.lived.clone()).collect();
+            (news, minds, notes)
+        };
+        let (with, without) = (run(true), run(false));
+        assert_eq!(with.0, without.0, "the same news");
+        assert_eq!(with.1, without.1, "the same ways, plans and trials");
+        assert_ne!(with.2, without.2, "only the notebook differs");
+    }
+
     // The fire and the well (D55).
 
     /// The repository's content (its crops name the kinds), trials on as
@@ -11150,7 +11385,7 @@ mod tests {
         // The tellers hold their own record, the listener its access, and
         // the night its two tellings.
         assert_eq!(brains.memory.refs(record), 5);
-        assert_eq!(brains.hearths()[&Pos::new(5, 5)].len(), 1);
+        assert_eq!(brains.hearths()[&Pos::new(8, 8)].len(), 1);
     }
 
     #[test]
@@ -12063,7 +12298,7 @@ mod tests {
             place,
             grove: false,
             saved,
-            gains: [0, drunk, 0],
+            gains: [0, drunk, 0, 0],
         }
     }
 
@@ -12073,12 +12308,12 @@ mod tests {
             place: grove,
             grove: true,
             saved,
-            gains: [gathered, 0, 0],
+            gains: [gathered, 0, 0, 0],
         }
     }
 
     /// A night cold through, nothing else lacking.
-    const COLD: [u64; SENSES] = [0, 0, 1000];
+    const COLD: [u64; SENSES] = [0, 0, 1000, 0];
 
     /// Where a home trial would go: its place on the 16 and the 64 grids.
     fn goes(world: &World, rules: &Content, mind: &Mind) -> Option<(PlaceKey, PlaceKey)> {
@@ -12156,7 +12391,7 @@ mod tests {
             &mut mind,
             (0, 0),
             3,
-            &night_with([500, 0, 1000], 0, fed.clone()),
+            &night_with([500, 0, 1000, 0], 0, fed.clone()),
             1000,
         );
         lived_at(
@@ -12206,14 +12441,14 @@ mod tests {
         lived_at(&mut mind, (0, 0), 1, &night_with(COLD, 0, day), 950);
         assert_eq!(mind.lived_places(), 2);
         let grove = *mind.lived.iter().find(|l| l.grove).unwrap();
-        assert_eq!((grove.days, grove.gains), (1000, [400_000, 0, 0]));
+        assert_eq!((grove.days, grove.gains), (1000, [400_000, 0, 0, 0]));
         // A place turned bad: the last nights weigh more.
         let mut turned = Mind::new(Pos::new(5, 5));
         lived_at(
             &mut turned,
             (0, 0),
             30,
-            &night_with([0, 0, 0], 0, vec![]),
+            &night_with([0, 0, 0, 0], 0, vec![]),
             950,
         );
         lived_at(&mut turned, (0, 0), 30, &night_with(COLD, 0, vec![]), 950);
@@ -12288,10 +12523,10 @@ mod tests {
         mind.drank_at = 0;
         brains.count_gathers(std::slice::from_ref(&drink), &world, &rules);
         let mind = brains.minds.get_mut(&me).unwrap();
-        assert_eq!(mind.day_places[0].gains, [0, 1500, 0]);
+        assert_eq!(mind.day_places[0].gains, [0, 1500, 0, 0]);
         // At most eight places a day; the night takes them, and the walk.
         for k in 0..20 {
-            mind.acted_at((k, 3), true, 0, [1, 0, 0]);
+            mind.acted_at((k, 3), true, 0, [1, 0, 0, 0]);
         }
         assert_eq!(mind.day_places.len(), LIVED_MAX);
         mind.walked_today = 1000;

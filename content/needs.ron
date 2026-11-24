@@ -525,4 +525,27 @@
         join_percent: 100,
         questions_per_night: 4,
     ),
+    // Company, a sense of the night's notebook (D53, D55 amended; the
+    // project lead, 24 November 2026): a need of the body felt only at
+    // night at the fire, where anyone present counts and family weighs no
+    // more. It grades places and never gives an order; nothing makes a
+    // crowd good or bad by rule, food is the counterweight. Each body's
+    // sociability is innate, drawn even from 0 to 100 from the seed and
+    // its id, never inherited, fixed for life.
+    // alone_permille:  1000 — a night fully alone (at no fire: slept out,
+    //                         or alone at its camp) costs the most
+    //                         sociable (100) a day of need, a body of
+    //                         sociability s that many per cent of it;
+    //                         1000 at most; 0: nobody feels company;
+    // enough_loner:       2 — two others at its fire are enough for the
+    //                         least sociable (0);
+    // enough_sociable:    6 — six for the most sociable (100), in a
+    //                         straight line between; with fewer, what is
+    //                         lacking falls in proportion, and more add
+    //                         nothing.
+    company: (
+        alone_permille: 1000,
+        enough_loner: 2,
+        enough_sociable: 6,
+    ),
 )

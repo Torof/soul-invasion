@@ -313,6 +313,12 @@ pub struct Person {
     pub will_start: Option<u8>,
     /// Its ways at the end of the run, or at its death (D50).
     pub ways: Option<Ways>,
+    /// Its sociability, 0 to 100 (D53, amended 24 November 2026), once a
+    /// night of it was felt.
+    pub sociable: Option<u8>,
+    /// Its nights felt, and of them those at no fire (D53, amended 24
+    /// November 2026).
+    pub company: (u32, u32),
     /// Its trials, in order (D50).
     pub trials: Vec<TrialLine>,
     /// Ways it copied from camp-mates (D50).
@@ -1710,6 +1716,17 @@ pub fn run_watched(
                 how,
             };
             match &news {
+                News::Company {
+                    body,
+                    others,
+                    sociable,
+                    ..
+                } => {
+                    let person = people.entry(*body).or_default();
+                    person.sociable = Some(*sociable);
+                    person.company.0 += 1;
+                    person.company.1 += u32::from(*others == 0);
+                }
                 News::Trying {
                     body,
                     way: Way::Home,
@@ -1813,6 +1830,7 @@ pub fn run_watched(
                 | News::Stopped { .. }
                 | News::Asked { .. }
                 | News::Barred { .. }
+                | News::Company { .. }
                 | News::Reached { .. }
                 | News::Followed { .. } => continue,
                 News::Copied {
