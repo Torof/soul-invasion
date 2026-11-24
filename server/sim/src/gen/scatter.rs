@@ -177,9 +177,13 @@ pub(crate) mod purpose {
     /// call of whom it believes best at gathering.
     pub(crate) const FIRE_REPUTE: u64 = 0x0d56_1e9e;
 
+    /// A body's innate sociability (D53, amended 24 November 2026): drawn
+    /// from the seed and its id at adoption, never inherited.
+    pub(crate) const SOCIABILITY: u64 = 0x0d53_c0a9;
+
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 70] = [
+    pub(crate) const ALL: [u64; 71] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -250,6 +254,7 @@ pub(crate) mod purpose {
         FIRE_CREDIT,
         FIRE_LOOK,
         FIRE_REPUTE,
+        SOCIABILITY,
     ];
 }
 

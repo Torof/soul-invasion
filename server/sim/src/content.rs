@@ -389,6 +389,97 @@ pub struct Needs {
     /// it at the fire. Absent: nobody is reputed, nobody asks.
     #[serde(default)]
     pub reputation: Reputation,
+    /// Company, a need of the body felt at night at the fire (D53, D55,
+    /// amended 24 November 2026): how much a night with too few at one's
+    /// fire weighs in the notebook. Absent: nobody feels it.
+    #[serde(default)]
+    pub company: Company,
+}
+
+/// Company, a sense of the notebook (D53 amended 24 November 2026; the
+/// project lead's rules of that day): a need of the body felt only at
+/// night at the fire, where anyone present counts and family weighs no
+/// more. It saturates fast, and a night fully alone weighs at most a day
+/// of need, for the most sociable. It grades places only and never gives
+/// an order. Every value is a D30 placeholder, named and explained in
+/// `content/needs.ron`; nothing is tuned to a result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Company {
+    /// What a night fully alone costs the most sociable body (sociability
+    /// 100), in per mille of a day of need; a body of sociability `s`
+    /// feels `s` per cent of it. 0: nobody feels company. At most 1000.
+    pub alone_permille: u32,
+    /// How many others at its fire are enough for the least sociable
+    /// (sociability 0): more add nothing.
+    pub enough_loner: u32,
+    /// How many others are enough for the most sociable (100); between
+    /// the two, in a straight line.
+    pub enough_sociable: u32,
+}
+
+impl Default for Company {
+    /// Off: nobody feels company.
+    fn default() -> Self {
+        Self {
+            alone_permille: 0,
+            enough_loner: 2,
+            enough_sociable: 6,
+        }
+    }
+}
+
+impl Company {
+    /// The placeholders of `content/needs.ron` (D30).
+    #[must_use]
+    pub fn placeholders() -> Self {
+        Self {
+            alone_permille: 1000,
+            enough_loner: 2,
+            enough_sociable: 6,
+        }
+    }
+
+    /// Whether anybody feels company.
+    #[must_use]
+    pub fn on(&self) -> bool {
+        self.alone_permille > 0
+    }
+
+    /// What a night with `others` at its fire costs a body of sociability
+    /// `sociable` (0 to 100), in per mille of a day of need: its whole
+    /// need alone, nothing once enough are there, in proportion between.
+    #[must_use]
+    pub fn lacking_permille(&self, sociable: u8, others: u32) -> u64 {
+        let s = u64::from(sociable.min(100));
+        let need = u64::from(self.alone_permille) * s / 100;
+        // Enough, in hundredths of a body.
+        let (lo, hi) = (
+            u64::from(self.enough_loner) * 100,
+            u64::from(self.enough_sociable) * 100,
+        );
+        let enough = if hi >= lo {
+            lo + (hi - lo) * s / 100
+        } else {
+            lo - (lo - hi) * s / 100
+        };
+        if enough == 0 {
+            return 0;
+        }
+        let short = enough.saturating_sub(u64::from(others) * 100);
+        need * short / enough
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        if self.alone_permille > 1000 || (self.on() && self.enough_loner == 0) {
+            return Err(ContentError::Needs(
+                "company: alone_permille 1000 at most (a day of need); enough_loner at least 1",
+            ));
+        }
+        if self.enough_loner > 1000 || self.enough_sociable > 1000 {
+            return Err(ContentError::Needs("company: enough 1000 at most"));
+        }
+        Ok(())
+    }
 }
 
 /// The evening's decisions (D56, decided by the project lead on 23
@@ -1617,6 +1708,19 @@ impl Ages {
 
 impl Needs {
     /// Checks the fat reserve's values (lot 3).
+    /// The sections of the needs, each by its own rules.
+    fn validate_sections(&self) -> Result<(), ContentError> {
+        self.ages.validate()?;
+        self.life.validate()?;
+        self.trials.validate()?;
+        self.thought.validate()?;
+        self.fire.validate()?;
+        self.decisions.validate()?;
+        self.temperance.validate()?;
+        self.reputation.validate()?;
+        self.company.validate()
+    }
+
     fn validate_reserve(&self) -> Result<(), ContentError> {
         if self.reserve_kj == 0
             || self.intake_ceiling_percent < 100
@@ -2143,14 +2247,7 @@ impl Content {
             return Err(ContentError::Needs("meal_g must be positive"));
         }
         self.needs.validate_reserve()?;
-        self.needs.ages.validate()?;
-        self.needs.life.validate()?;
-        self.needs.trials.validate()?;
-        self.needs.thought.validate()?;
-        self.needs.fire.validate()?;
-        self.needs.decisions.validate()?;
-        self.needs.temperance.validate()?;
-        self.needs.reputation.validate()
+        self.needs.validate_sections()
     }
 
     /// Refuses the values the simulation cannot carry (audit of 20
@@ -2521,6 +2618,44 @@ pub const SAMPLE_SPAWNS: &str = r#"[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Company (D53, amended 24 November 2026): a night fully alone costs
+    /// at most a day of need, for the most sociable, less as sociability
+    /// falls; it saturates at about two others for a loner and six for a
+    /// sociable, and more add nothing; off, nothing.
+    #[test]
+    fn company_saturates_and_a_night_alone_weighs_a_day_at_most() {
+        let c = Company::placeholders();
+        assert_eq!(c.lacking_permille(100, 0), 1000, "alone: a day of need");
+        assert_eq!(c.lacking_permille(50, 0), 500);
+        assert_eq!(c.lacking_permille(0, 0), 0, "a loner never lacks");
+        // The most sociable: six are enough, more add nothing.
+        assert_eq!(c.lacking_permille(100, 3), 500);
+        assert_eq!(c.lacking_permille(100, 6), 0);
+        assert_eq!(c.lacking_permille(100, 40), 0);
+        // Half: four are enough.
+        assert_eq!(c.lacking_permille(50, 2), 250);
+        assert_eq!(c.lacking_permille(50, 4), 0);
+        // A loner of 10: a little over two are enough.
+        assert!(c.lacking_permille(10, 2) > 0);
+        assert_eq!(c.lacking_permille(10, 3), 0);
+        for others in 0..8 {
+            for s in 0..100 {
+                assert!(c.lacking_permille(s, others) <= c.lacking_permille(s + 1, others));
+                assert!(c.lacking_permille(s, others + 1) <= c.lacking_permille(s, others));
+            }
+        }
+        let off = Company::default();
+        assert!(!off.on());
+        assert_eq!(off.lacking_permille(100, 0), 0);
+        // More than a day of need is refused.
+        let too_much = Company {
+            alone_permille: 1001,
+            ..Company::placeholders()
+        };
+        assert!(too_much.validate().is_err());
+        assert!(c.validate().is_ok());
+    }
 
     #[test]
     fn a_closeness_condition_needs_a_reach() {

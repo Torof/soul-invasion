@@ -626,6 +626,13 @@ impl Report {
             .filter(|e| is_life_line(&e.what) || is_trial_line(&e.what) || is_fire_line(&e.what))
             .map(|e| json!({"day": e.day, "tick": e.tick, "what": e.what}))
             .collect();
+        // Company (D53, amended 24 November 2026): its sociability, its
+        // nights felt and those at no fire.
+        let company = json!({
+            "sociable": person.sociable,
+            "nights": person.company.0,
+            "alone": person.company.1,
+        });
         json!({
             "id": id(body),
             "name": name(body),
@@ -646,6 +653,7 @@ impl Report {
             "lost": person.lost,
             "will": person.will,
             "will_start": person.will_start,
+            "company": company,
             "believes": person.believes.iter().map(|&((x, y), access)| json!({
                 "place": [x, y],
                 "record": access.record,

@@ -216,6 +216,9 @@ clock, the only field no seed decides.
 | `people[].lost` | The days it lost an unborn child | `[day, …]` |
 | `people[].will` | Its will (D50), once its mind was read; `null` before | 0 to 100 |
 | `people[].will_start` | Its will when its mind was first read: the innate (D50, amended); `null` for a mind never read | 0 to 100 |
+| `people[].company.sociable` | Its innate sociability (D53, amended 24 November 2026), once a night of it was felt; `null` before | 0 to 100 |
+| `people[].company.nights` | Nights it felt company or its lack, at dawn, the fire lit (an infant feels none) | count |
+| `people[].company.alone` | Of them, the nights at no fire: slept out, or alone at its camp | count |
 | `people[].believes[].place` | A place it held an access to at the end, or at its death (D55): the place's key, its 16-tile square | `[x, y]` |
 | `people[].believes[].record` | The record it believes of it | integer |
 | `people[].believes[].seen` | Whether it saw it itself (false: heard) | boolean |
@@ -268,7 +271,7 @@ clock, the only field no seed decides.
 | `records[].told` | How many records were told | count |
 | `hearth[].tribe` | The nights a tribe's hearth still holds at the end (the last `hearth_nights`, D55): the tribe | `"A"` or `"B"` |
 | `hearth[].nights[].day` | A night: the day that closed with it | day |
-| `hearth[].nights[].camp` | The camp | `[x, y]` |
+| `hearth[].nights[].camp` | The camp: the middle of the place (16 tiles) where the circle gathered (D55, amended 24 November 2026) | `[x, y]` |
 | `hearth[].nights[].present` | How many lay down | count |
 | `hearth[].nights[].told[].record` | A record told | integer |
 | `hearth[].nights[].told[].by` | Its teller | integer |
