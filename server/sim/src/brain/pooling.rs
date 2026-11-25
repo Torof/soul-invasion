@@ -4,12 +4,14 @@
 //! **The hearth** (« le foyer », never « le feu ») is everyone who lies
 //! down at the camp's evening gathering: the circle of the home's place
 //! (D55, amended 24 November 2026). It has **one reserve**, at the camp:
-//! heaps of food lying on the ground at one tile, the home of the first
-//! who put food there. They are the world's items, nothing more: they
-//! spoil there as food does anywhere (D45), and are eaten with the
-//! world's own gesture. The brain only remembers which heaps are the
-//! hearth's, so that nobody of another hearth takes them for food lying
-//! about (giving outside the hearth is not built).
+//! heaps of food at one tile, the home of the first who put food there.
+//! **A ledger** (the project lead, 25 November 2026: « c'est simplement
+//! un bookkeeping »): a heap laid there leaves the world's items for a
+//! record the world keeps off the ground ([`Intention::Keep`],
+//! [`World::kept`]), which no look reads; it spoils there as food does
+//! anywhere (D45); eaten, it feeds the body with no item made; taken
+//! away (the hands may), it is an item again. The brain remembers which
+//! records are the hearth's (giving outside the hearth is not built).
 //!
 //! - **Carrying for its own.** While a body owes its hearth (what it set
 //!   out at dawn to gather for it, below), of each gather its own's share,
@@ -116,7 +118,8 @@ pub(super) fn camp_of(rules: &Content, home: Pos) -> Pos {
 pub(super) struct Reserve {
     /// The tile it lies at: the home of the first who put food there.
     tile: Pos,
-    /// The heaps put there, in the order put.
+    /// The heaps put there, in the order put: records the world keeps
+    /// ([`World::kept`]), read by their ids, never by a scan.
     items: Vec<ItemId>,
 }
 
@@ -146,16 +149,29 @@ struct Heap {
 
 /// The food heap `item` as [`Heap`], unless it is not food or spoiled.
 fn heap(world: &World, rules: &Content, item: ItemId) -> Option<Heap> {
-    let found = world.item(item)?;
+    heap_of(world, rules, world.item(item)?)
+}
+
+/// The heap `item` of a reserve: kept in its ledger, or, the rare one a
+/// body took away and let fall there again (its death), lying on the
+/// ground.
+fn kept_heap(world: &World, rules: &Content, item: ItemId) -> Option<Heap> {
+    heap_of(world, rules, world.kept(item).or_else(|| world.item(item))?)
+}
+
+/// [`heap`] of an item or a record found.
+fn heap_of(world: &World, rules: &Content, found: &crate::Item) -> Option<Heap> {
     let food = rules.material(found.material())?.food?;
-    if world.is_spoiled(item, rules) {
+    let keeps = u64::from(food.keeps_days) * world.calendar().ticks_per_day();
+    // Spoiled as the world says it (D45), read from the item at hand.
+    if world.tick().0.saturating_sub(found.made().0) >= keeps {
         return None;
     }
     Some(Heap {
-        item,
+        item: found.id(),
         at: found.pos(),
         kj: u64::from(food.energy_kj(found.mass_g())),
-        ends: found.made().0 + u64::from(food.keeps_days) * world.calendar().ticks_per_day(),
+        ends: found.made().0 + keeps,
     })
 }
 
@@ -172,7 +188,7 @@ impl Reserves {
         reserve
             .items
             .iter()
-            .filter_map(|&item| heap(world, rules, item))
+            .filter_map(|&item| kept_heap(world, rules, item))
             .filter(|h| h.at.is_some_and(|at| near(at, reserve.tile)))
             .collect()
     }
@@ -195,7 +211,8 @@ impl Reserves {
             let tile = reserve.tile;
             reserve.items.retain(|&item| {
                 let lies = world
-                    .item(item)
+                    .kept(item)
+                    .or_else(|| world.item(item))
                     .and_then(crate::Item::pos)
                     .is_some_and(|at| near(at, tile));
                 if !lies {
@@ -395,7 +412,7 @@ pub(super) fn put_down(
             at: world.tick().0,
         });
         return Some(Decision {
-            intention: Intention::Drop {
+            intention: Intention::Keep {
                 body: id,
                 item: spare.item,
             },
@@ -688,8 +705,11 @@ impl Brains {
                         self.news.push(News::SpoiledAtHearth { camp, kj, at });
                     }
                 }
-                crate::Event::ItemAdded { item, .. } => {
-                    // Food laid at a reserve: who lives at that hearth
+                crate::Event::Kept { item, .. } | crate::Event::ItemAdded { item, .. } => {
+                    // Food laid at a reserve (kept in its ledger, or what
+                    // is left of a heap after a meal; lying on the ground
+                    // only when one taken away was let fall there again):
+                    // who lives at that hearth
                     // and stands at the camp sees it, and thinks again
                     // (a hungry child waiting there, its gauges unmoved,
                     // would not, and starved beside a full reserve in the
@@ -967,11 +987,16 @@ mod tests {
         brains.minds.get_mut(&id).unwrap().doing = Doing::Home;
         let (decision, news) = think_told(&world, &rules, &mut brains, id);
         let decision = decision.unwrap();
-        let Intention::Drop { item, .. } = decision.intention else {
+        let Intention::Keep { item, .. } = decision.intention else {
             panic!("it puts down: {decision:?}");
         };
         world.queue(decision.intention.clone());
         world.step(&rules, &mut Vec::new());
+        // The ledger: the heap left the world's items for a record kept
+        // at the reserve, and nothing lies on the ground.
+        assert!(world.item(item).is_none(), "no item any more");
+        assert_eq!(world.kept(item).map(crate::Item::mass_g), Some(300));
+        assert!(world.items_in(at.chunk()).iter().all(|i| i.id() != item));
         let camp = camp_of(&rules, at);
         assert_eq!(brains.reserves.kj(&world, &rules, camp), 750);
         assert_eq!(brains.reserves.camp_holding(item), Some(camp));
@@ -987,7 +1012,7 @@ mod tests {
         // What it keeps is its own share: nothing more to put down.
         let decision = think(&world, &rules, &mut brains, id);
         assert!(
-            !decision.is_some_and(|d| matches!(d.intention, Intention::Drop { .. })),
+            !decision.is_some_and(|d| matches!(d.intention, Intention::Keep { .. })),
             "it keeps its store"
         );
     }

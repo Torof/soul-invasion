@@ -897,6 +897,17 @@ pub enum Intention {
         /// What.
         item: ItemId,
     },
+    /// Lay a carried item in a store a brain keeps at the body's tile: a
+    /// hearth's reserve (D58, the ledger). It leaves the ground and the
+    /// world's items for a record no look reads ([`World::kept`]): eaten
+    /// from there, it feeds the body with no item made; taken away, it is
+    /// an item again. Refused as a drop is.
+    Keep {
+        /// Who.
+        body: BodyId,
+        /// What.
+        item: ItemId,
+    },
     /// Take a carried item in hand; what was in hand is carried instead.
     Hold {
         /// Who.
@@ -996,7 +1007,9 @@ impl Intention {
         match *self {
             Intention::Eat { item, .. } => Some((ItemAct::Eat, item)),
             Intention::PickUp { item, .. } => Some((ItemAct::PickUp, item)),
-            Intention::Drop { item, .. } => Some((ItemAct::Drop, item)),
+            Intention::Drop { item, .. } | Intention::Keep { item, .. } => {
+                Some((ItemAct::Drop, item))
+            }
             Intention::Hold { item, .. } => Some((ItemAct::Hold, item)),
             Intention::Stow { item, .. } => Some((ItemAct::Stow, item)),
             _ => None,
@@ -1010,6 +1023,7 @@ impl Intention {
             | Intention::Eat { body, .. }
             | Intention::PickUp { body, .. }
             | Intention::Drop { body, .. }
+            | Intention::Keep { body, .. }
             | Intention::Hold { body, .. }
             | Intention::Stow { body, .. }
             | Intention::Drink { body, .. }
@@ -1261,6 +1275,19 @@ pub enum Event {
         /// Its chunk's version right after it ([`World::chunk_version`]).
         version: ground::Version,
     },
+    /// Food laid in a store a brain keeps ([`Intention::Keep`], D58), or
+    /// what is left of it after a meal from it: off the ground, no chunk
+    /// changes.
+    Kept {
+        /// Which.
+        item: ItemId,
+        /// Content id of its material.
+        material: String,
+        /// Its mass now, in grams.
+        mass_g: u32,
+        /// The tile it is kept at.
+        at: Pos,
+    },
     /// An item is gone from the ground.
     ItemRemoved {
         /// Which.
@@ -1465,6 +1492,17 @@ pub struct World {
     /// (D39). Derived: rebuilt on load.
     #[serde(skip)]
     ground: BTreeMap<ChunkPos, BTreeSet<ItemId>>,
+    /// The food kept in the stores the brains keep (D58, a hearth's
+    /// reserve as a ledger): records, by id, each where it is kept, no
+    /// longer items of the world nor lying on the ground, so that no look
+    /// reads them. Only the vivarium's brains keep food (D50): never
+    /// persisted, as the minds are not; the server's worlds hold none.
+    #[serde(skip)]
+    kept: BTreeMap<ItemId, Item>,
+    /// The records of `kept` by chunk, for the hands' sight of what lies
+    /// near ([`World::items_near`]). Derived from `kept`.
+    #[serde(skip)]
+    kept_in: BTreeMap<ChunkPos, BTreeSet<ItemId>>,
     /// The content's spawn rules the natural items follow, set with the
     /// kinds of tree ([`World::take_content`]). Never persisted.
     #[serde(skip)]
@@ -1591,6 +1629,8 @@ impl<'de> serde::Deserialize<'de> for World {
             changes: BTreeMap::new(),
             by_chunk: BTreeMap::new(),
             ground: BTreeMap::new(),
+            kept: BTreeMap::new(),
+            kept_in: BTreeMap::new(),
             spawns: Vec::new(),
             pending: Vec::new(),
             grow_due: true,
@@ -1705,6 +1745,8 @@ impl World {
             changes: BTreeMap::new(),
             by_chunk: BTreeMap::new(),
             ground: BTreeMap::new(),
+            kept: BTreeMap::new(),
+            kept_in: BTreeMap::new(),
             spawns: Vec::new(),
             pending: Vec::new(),
             grow_due: true,
@@ -2288,6 +2330,42 @@ impl World {
     /// A stored item by id (natural items are stored once taken).
     pub fn item(&self, id: ItemId) -> Option<&Item> {
         self.items.get(&id)
+    }
+
+    /// The record of food kept in a store by id ([`Intention::Keep`],
+    /// D58): its material, grams, the tick it was made and where it is
+    /// kept. Not an item of the world: [`World::item`] does not find it.
+    pub fn kept(&self, id: ItemId) -> Option<&Item> {
+        self.kept.get(&id)
+    }
+
+    /// An item of the world, or a record kept in a store.
+    fn item_or_kept(&self, id: ItemId) -> Option<&Item> {
+        self.items.get(&id).or_else(|| self.kept.get(&id))
+    }
+
+    /// Lets go of the record `id` kept in a store, and of its chunk's
+    /// note of it.
+    fn unkeep(&mut self, id: ItemId) -> Option<Item> {
+        let record = self.kept.remove(&id)?;
+        if let Some(pos) = record.pos()
+            && let Some(ids) = self.kept_in.get_mut(&pos.chunk())
+        {
+            ids.remove(&id);
+            if ids.is_empty() {
+                self.kept_in.remove(&pos.chunk());
+            }
+        }
+        Some(record)
+    }
+
+    /// The records kept in stores in `chunk`, in no order.
+    pub(crate) fn kept_in(&self, chunk: ChunkPos) -> impl Iterator<Item = &Item> + '_ {
+        self.kept_in
+            .get(&chunk)
+            .into_iter()
+            .flatten()
+            .filter_map(|id| self.kept.get(id))
     }
 
     /// Notes a stored item lying in a chunk: a change to what the chunk
@@ -3157,6 +3235,7 @@ impl World {
             Intention::Eat { body: id, item } => self.eat(id, item, rules, events),
             Intention::PickUp { body: id, item } => self.pick_up(id, item, rules, events),
             Intention::Drop { body: id, item } => self.drop(id, item, rules, events),
+            Intention::Keep { body: id, item } => self.keep(id, item, rules, events),
             Intention::Hold { body: id, item } => self.hold(id, item, rules, events),
             Intention::Stow { body: id, item } => self.stow(id, item, rules, events),
             Intention::Drink { body: id, at } => self.drink(id, at, events),
@@ -3217,6 +3296,10 @@ impl World {
                 (self.bodies[carrier].pos(), Refusal::NotCarried)
             }
             Some(Place::Ground { pos }) => (pos, Refusal::OutOfReach),
+            None if self.kept.contains_key(&item) => match self.kept.get(&item).map(|k| k.place) {
+                Some(Place::Ground { pos }) => (pos, Refusal::OutOfReach),
+                _ => return Err(Refusal::Unknown),
+            },
             None => match items::tile_of(item) {
                 Some(tile) => (tile, Refusal::OutOfReach),
                 None => return Err(Refusal::Unknown),
@@ -3239,7 +3322,7 @@ impl World {
     /// carried by it, or neither ([`World::sight`] says why not).
     fn reach(&self, index: usize, item: ItemId) -> Result<Place, Refusal> {
         self.sight(index, item)?;
-        self.item(item)
+        self.item_or_kept(item)
             .map(|found| found.place)
             .ok_or(Refusal::Unknown)
     }
@@ -3566,7 +3649,8 @@ impl World {
     /// Has the item `id` spoiled (D16, D45)? False when there is no such
     /// item.
     pub fn is_spoiled(&self, id: ItemId, rules: &Content) -> bool {
-        self.item(id).is_some_and(|item| self.spoiled(item, rules))
+        self.item_or_kept(id)
+            .is_some_and(|item| self.spoiled(item, rules))
     }
 
     /// Has `item` spoiled (D16, D45)? Food does, its content's days after
@@ -3588,13 +3672,34 @@ impl World {
     /// ground, carried. Done as each day starts; till then, spoiled food
     /// is refused to who would eat it.
     fn spoil(&mut self, rules: &Content, events: &mut Vec<Event>) {
-        let gone: Vec<ItemId> = self
+        let mut gone: Vec<ItemId> = self
             .items
             .values()
             .filter(|item| self.spoiled(item, rules))
             .map(|item| item.id)
             .collect();
+        // Food kept in a store spoils there as anywhere (D58): told in the
+        // order of the ids, as if it lay among the items.
+        let kept_from = gone.len();
+        gone.extend(
+            self.kept
+                .values()
+                .filter(|item| self.spoiled(item, rules))
+                .map(|item| item.id),
+        );
+        if gone.len() > kept_from {
+            gone.sort_unstable();
+        }
         for id in gone {
+            if let Some(record) = self.unkeep(id) {
+                events.push(Event::Spoiled {
+                    item: id,
+                    material: record.material,
+                    grams: record.mass_g,
+                    holder: None,
+                });
+                continue;
+            }
             let Some(item) = self.remove_item(id) else {
                 continue;
             };
@@ -3636,14 +3741,19 @@ impl World {
             Ok(place) => place,
             Err(reason) => return Self::refuse(events, id, ItemAct::Eat, item, reason),
         };
-        let Some((material, mass_g)) = self.item(item).map(|i| (i.material.clone(), i.mass_g))
+        let Some((material, mass_g)) = self
+            .item_or_kept(item)
+            .map(|i| (i.material.clone(), i.mass_g))
         else {
             return Self::refuse(events, id, ItemAct::Eat, item, Refusal::Unknown);
         };
         let Some(food) = rules.material(&material).and_then(|m| m.food) else {
             return Self::refuse(events, id, ItemAct::Eat, item, Refusal::NotFood);
         };
-        if self.item(item).is_some_and(|i| self.spoiled(i, rules)) {
+        if self
+            .item_or_kept(item)
+            .is_some_and(|i| self.spoiled(i, rules))
+        {
             return Self::refuse(events, id, ItemAct::Eat, item, Refusal::Spoiled);
         }
         // A kilojoule a kilogram is a joule a gram: what it can still eat
@@ -3665,6 +3775,9 @@ impl World {
         c.eaten_today_j += eaten_j;
         c.set_appetite(needs);
         match place {
+            Place::Ground { .. } if self.kept.contains_key(&item) => {
+                self.eaten_kept(item, grams, events);
+            }
             Place::Ground { pos } if whole => {
                 self.remove_item(item);
                 events.push(Event::ItemRemoved {
@@ -3733,9 +3846,9 @@ impl World {
             }
             Err(reason) => return Self::refuse(events, id, ItemAct::PickUp, item, reason),
         };
-        let mass = self.item(item).map_or(0, Item::mass_g);
+        let mass = self.item_or_kept(item).map_or(0, Item::mass_g);
         let food = self
-            .item(item)
+            .item_or_kept(item)
             .and_then(|i| rules.material(&i.material))
             .is_some_and(|m| m.food.is_some());
         if self.bodies[index].load_g.saturating_add(mass)
@@ -3745,10 +3858,19 @@ impl World {
             return Self::refuse(events, id, ItemAct::PickUp, item, Refusal::TooHeavy);
         }
         self.wake(index, events);
-        if let Some(taken) = self.items.get_mut(&item) {
-            taken.place = Place::Carried { body: id };
-            self.lift(item, pos.chunk());
-        }
+        // Taken away from a store (D58): the record is an item again, the
+        // same, carried; nothing lay on the ground.
+        let from_store = if let Some(mut record) = self.unkeep(item) {
+            record.place = Place::Carried { body: id };
+            self.items.insert(item, record);
+            true
+        } else {
+            if let Some(taken) = self.items.get_mut(&item) {
+                taken.place = Place::Carried { body: id };
+                self.lift(item, pos.chunk());
+            }
+            false
+        };
         let body = &mut self.bodies[index];
         let in_hand = body.held.is_none();
         if in_hand {
@@ -3756,11 +3878,13 @@ impl World {
         } else {
             body.carried.push(item);
         }
-        events.push(Event::ItemRemoved {
-            item,
-            at: pos,
-            version: self.chunk_version(pos.chunk()),
-        });
+        if !from_store {
+            events.push(Event::ItemRemoved {
+                item,
+                at: pos,
+                version: self.chunk_version(pos.chunk()),
+            });
+        }
         self.inventory_changed(index, rules, events);
         if in_hand {
             events.push(Event::BodyHolds {
@@ -3796,6 +3920,65 @@ impl World {
             at,
             version: self.chunk_version(at.chunk()),
         });
+        self.inventory_changed(index, rules, events);
+        if was_held {
+            events.push(Event::BodyHolds {
+                body: id,
+                item: None,
+            });
+        }
+    }
+
+    /// What is left of the record `item` kept in a store once `grams` of
+    /// it are eaten (D58): lighter, or gone; nothing lay on the ground, no
+    /// chunk changes.
+    fn eaten_kept(&mut self, item: ItemId, grams: u32, events: &mut Vec<Event>) {
+        let Some(left) = self.kept.get_mut(&item) else {
+            return;
+        };
+        if left.mass_g <= grams {
+            self.unkeep(item);
+            return;
+        }
+        left.mass_g -= grams;
+        let (material, mass_g, place) = (left.material.clone(), left.mass_g, left.place);
+        if let Place::Ground { pos } = place {
+            events.push(Event::Kept {
+                item,
+                material,
+                mass_g,
+                at: pos,
+            });
+        }
+    }
+
+    /// Lays a carried item in a store a brain keeps ([`Intention::Keep`],
+    /// D58): refused as a drop is; the item leaves the world's items for a
+    /// record kept at the body's tile, off the ground.
+    fn keep(&mut self, id: BodyId, item: ItemId, rules: &Content, events: &mut Vec<Event>) {
+        let Some(index) = self.index_of(id) else {
+            return Self::refuse(events, id, ItemAct::Drop, item, Refusal::Unknown);
+        };
+        if !self.bodies[index].has(item) {
+            let reason = self.not_had(item);
+            return Self::refuse(events, id, ItemAct::Drop, item, reason);
+        }
+        self.wake(index, events);
+        let at = self.bodies[index].pos();
+        let was_held = self.bodies[index].held == Some(item);
+        self.bodies[index].let_go(item);
+        let Some(mut record) = self.items.remove(&item) else {
+            return;
+        };
+        record.place = Place::Ground { pos: at };
+        events.push(Event::Kept {
+            item,
+            material: record.material.clone(),
+            mass_g: record.mass_g,
+            at,
+        });
+        self.kept.insert(item, record);
+        self.kept_in.entry(at.chunk()).or_default().insert(item);
         self.inventory_changed(index, rules, events);
         if was_held {
             events.push(Event::BodyHolds {
@@ -6388,6 +6571,184 @@ mod tests {
         assert_eq!(condition(&w).hunger.points(), 6);
         assert!(w.items().all(|i| i.id() != berries));
         assert_eq!(w.items().count(), 2);
+    }
+
+    /// A fed world whose body carries `grams` of berries, kept in a store
+    /// at its tile ([`Intention::Keep`], D58), and the events of the keep.
+    fn kept_berries(grams: u32) -> (World, ItemId, Vec<Event>, ground::Version) {
+        let mut w = fed_world();
+        let mut events = Vec::new();
+        w.advance(500, &rules(), &mut events); // hunger 16
+        let berries = w.spawn_item("berries", grams, Pos::new(1, 1));
+        w.queue(Intention::PickUp {
+            body: BodyId(1),
+            item: berries,
+        });
+        w.step(&rules(), &mut events);
+        events.clear();
+        let version = w.chunk_version(ChunkPos::new(0, 0));
+        w.queue(Intention::Keep {
+            body: BodyId(1),
+            item: berries,
+        });
+        w.step(&rules(), &mut events);
+        (w, berries, events, version)
+    }
+
+    #[test]
+    fn food_kept_in_a_store_leaves_the_world_and_feeds_the_body_directly() {
+        let (mut w, berries, events, version) = kept_berries(100);
+        assert!(events.contains(&Event::Kept {
+            item: berries,
+            material: "berries".to_owned(),
+            mass_g: 100,
+            at: Pos::new(1, 1),
+        }));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::ItemAdded { .. } | Event::ItemRemoved { .. })),
+            "nothing lies on the ground"
+        );
+        // A record, not an item: no look reads it, the hands see it near.
+        assert!(w.item(berries).is_none());
+        assert!(!w.body(BodyId(1)).unwrap().has(berries));
+        assert_eq!(w.kept(berries).map(Item::pos), Some(Some(Pos::new(1, 1))));
+        assert_eq!(w.items_in(ChunkPos::new(0, 0)).len(), 0);
+        assert_eq!(w.laid_in(ChunkPos::new(0, 0)).count(), 0);
+        assert!(
+            w.items_near(Pos::new(1, 1), 2)
+                .iter()
+                .any(|i| i.id() == berries)
+        );
+        assert_eq!(w.chunk_version(ChunkPos::new(0, 0)), version);
+        // Kept again: refused as a drop of what it does not have.
+        let mut events = Vec::new();
+        w.queue(Intention::Keep {
+            body: BodyId(1),
+            item: berries,
+        });
+        w.step(&rules(), &mut events);
+        assert!(events.contains(&Event::ActRefused {
+            body: BodyId(1),
+            act: ItemAct::Drop,
+            item: berries,
+            reason: Refusal::Unknown,
+        }));
+        // Eaten from the store: the body is fed, the record gone, no item
+        // made, nothing on the ground told.
+        events.clear();
+        w.queue(Intention::Eat {
+            body: BodyId(1),
+            item: berries,
+        });
+        w.step(&rules(), &mut events);
+        assert!(events.contains(&Event::BodyAte {
+            body: BodyId(1),
+            item: berries,
+            material: "berries".to_owned(),
+            grams: 100,
+            energy_kj: 250,
+        }));
+        assert_eq!(condition(&w).hunger.points(), 6);
+        assert!(w.kept(berries).is_none());
+        assert!(w.item(berries).is_none());
+        assert!(!events.iter().any(|e| matches!(
+            e,
+            Event::ItemAdded { .. } | Event::ItemRemoved { .. } | Event::Kept { .. }
+        )));
+    }
+
+    #[test]
+    fn a_meal_from_a_store_leaves_the_rest_kept_lighter() {
+        let (mut w, berries, _, _) = kept_berries(400);
+        assert!(w.kept(berries).is_some());
+        let mut events = Vec::new();
+        w.queue(Intention::Eat {
+            body: BodyId(1),
+            item: berries,
+        });
+        w.step(&rules(), &mut events);
+        let eaten = events
+            .iter()
+            .find_map(|e| match e {
+                Event::BodyAte { grams, .. } => Some(*grams),
+                _ => None,
+            })
+            .unwrap();
+        assert!(eaten > 0 && eaten < 400);
+        assert!(events.contains(&Event::Kept {
+            item: berries,
+            material: "berries".to_owned(),
+            mass_g: 400 - eaten,
+            at: Pos::new(1, 1),
+        }));
+        assert_eq!(w.kept(berries).map(Item::mass_g), Some(400 - eaten));
+    }
+
+    #[test]
+    fn food_kept_spoils_and_taken_away_is_an_item_again() {
+        let (mut w, berries, _, _) = kept_berries(100);
+        let made = w.kept(berries).unwrap().made();
+        // Taken away: the same item again, carried, as heavy and as old.
+        let mut events = Vec::new();
+        w.queue(Intention::PickUp {
+            body: BodyId(1),
+            item: berries,
+        });
+        w.step(&rules(), &mut events);
+        assert!(w.kept(berries).is_none());
+        let item = w.item(berries).unwrap();
+        assert_eq!(item.place(), Place::Carried { body: BodyId(1) });
+        assert_eq!((item.mass_g(), item.made()), (100, made));
+        assert!(w.body(BodyId(1)).unwrap().has(berries));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::ItemRemoved { .. }))
+        );
+        // Kept again, it spoils in the store as anywhere (berries keep
+        // three days), told with no holder and nothing on the ground.
+        w.queue(Intention::Keep {
+            body: BodyId(1),
+            item: berries,
+        });
+        w.step(&rules(), &mut events);
+        events.clear();
+        w.advance(4000, &rules(), &mut events);
+        assert!(events.contains(&Event::Spoiled {
+            item: berries,
+            material: "berries".to_owned(),
+            grams: 100,
+            holder: None,
+        }));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::ItemRemoved { .. }))
+        );
+        assert!(w.kept(berries).is_none());
+        assert!(
+            w.items_near(Pos::new(1, 1), 2)
+                .iter()
+                .all(|i| i.id() != berries)
+        );
+    }
+
+    #[test]
+    fn a_store_is_deterministic() {
+        let run = || {
+            let (mut w, berries, mut events, _) = kept_berries(400);
+            for _ in 0..3 {
+                w.queue(Intention::Eat {
+                    body: BodyId(1),
+                    item: berries,
+                });
+                w.step(&rules(), &mut events);
+            }
+            (events, w.kept(berries).cloned())
+        };
+        assert_eq!(run(), run());
     }
 
     #[test]
