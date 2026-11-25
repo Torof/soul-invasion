@@ -13,7 +13,7 @@
 //! is counted in days follows the day (the daily death draw, the day a
 //! child is due).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -180,21 +180,27 @@ impl World {
             let home = |b: &Body| self.homes.get(&b.id).copied().unwrap_or(b.pos());
             let apart = tiles_apart(home(spouse), home(body)) > reach;
             let (a, b) = (body.id, spouse.id);
+            // A second wife's link is hers alone (D49, amended 25 November
+            // 2026): she counts it, he counts his first wife's.
+            let mutual = spouse.spouse == Some(a);
             let days = &mut self.bodies[index].apart_days;
             *days = if apart { *days + 1 } else { 0 };
-            if *days >= life.part_after_days && a < b {
+            if *days >= life.part_after_days && (a < b || !mutual) {
                 parted.push((a, b));
             }
         }
-        for (a, b) in parted {
-            for id in [a, b] {
-                if let Some(index) = self.index_of(id) {
+        for &(a, b) in &parted {
+            for (me, other) in [(a, b), (b, a)] {
+                if let Some(index) = self.index_of(me)
+                    && self.bodies[index].spouse == Some(other)
+                {
                     self.bodies[index].spouse = None;
                     self.bodies[index].apart_days = 0;
                 }
             }
             events.push(Event::Parted { a, b });
         }
+        self.first_wife_again(parted.iter().flat_map(|&(a, b)| [a, b]));
     }
 
     /// The pregnancies at a day's start: lost by a weak woman, when the
@@ -417,6 +423,29 @@ impl World {
         events.push(Event::Coupled { a, b });
     }
 
+    /// A man among `ids` left with no spouse while a second wife still
+    /// has him (his first wife dead or parted) takes her as his own, the
+    /// lower id first (D49, amended 25 November 2026).
+    pub(crate) fn first_wife_again(&mut self, ids: impl IntoIterator<Item = BodyId>) {
+        for id in ids {
+            let Some(index) = self.index_of(id) else {
+                continue;
+            };
+            if self.bodies[index].spouse.is_some() {
+                continue;
+            }
+            let wife = self
+                .bodies
+                .iter()
+                .filter(|b| b.spouse == Some(id))
+                .map(|b| b.id)
+                .min();
+            if wife.is_some() {
+                self.bodies[index].spouse = wife;
+            }
+        }
+    }
+
     /// The weddings of a day's start at the hearths (D49, amended 25
     /// November 2026; the project lead's choice A), when the content's
     /// `wed_at_hearth` is on: an unmarried body of the mating years whose
@@ -466,6 +495,70 @@ impl World {
         }
         for (a, b) in weds {
             self.wed(a, b, events);
+        }
+        if life.second_wife {
+            self.second_wives(side, rules, events);
+        }
+    }
+
+    /// A woman's second wives' pass (D49, amended 25 November 2026): each
+    /// woman of the mating years still unwed whose home lies in a hearth's
+    /// place, the lower id first, becomes the second wife of a married man
+    /// of that hearth, of the mating years, not her kin, with no second
+    /// wife yet: the nearest in age, the lower id between equals. Her
+    /// spouse is he; his stays his first wife.
+    fn second_wives(&mut self, side: i32, rules: &Content, events: &mut Vec<Event>) {
+        let life = &rules.needs.life;
+        let key = |p: Pos| (p.x.div_euclid(side), p.y.div_euclid(side));
+        let mut women = Vec::new();
+        let mut husbands: BTreeMap<(i32, i32), Vec<usize>> = BTreeMap::new();
+        for (index, body) in self.bodies.iter().enumerate() {
+            let Some(&home) = self.homes.get(&body.id) else {
+                continue;
+            };
+            if !life.mates(self.age_milli(body)) {
+                continue;
+            }
+            match (body.sex, body.spouse) {
+                (Sex::Female, None) => women.push((body.id, index, key(home))),
+                (Sex::Male, Some(_)) => husbands.entry(key(home)).or_default().push(index),
+                _ => {}
+            }
+        }
+        women.sort_unstable();
+        let mut taken: BTreeSet<BodyId> = self
+            .bodies
+            .iter()
+            .filter_map(|b| {
+                let husband = self.body(b.spouse?)?;
+                (husband.spouse != Some(b.id)).then_some(husband.id)
+            })
+            .collect();
+        let mut weds = Vec::new();
+        for (wife, index, hearth) in women {
+            let me = &self.bodies[index];
+            let Some(men) = husbands.get(&hearth) else {
+                continue;
+            };
+            let pick = men
+                .iter()
+                .map(|&i| &self.bodies[i])
+                .filter(|man| !taken.contains(&man.id) && !Self::are_kin(me, man))
+                .min_by_key(|man| (man.born_day.abs_diff(me.born_day), man.id))
+                .map(|man| man.id);
+            if let Some(man) = pick {
+                taken.insert(man);
+                weds.push((wife, man));
+            }
+        }
+        for (wife, man) in weds {
+            if let Some(index) = self.index_of(wife) {
+                let body = &mut self.bodies[index];
+                body.spouse = Some(man);
+                body.courting = None;
+                body.apart_days = 0;
+            }
+            events.push(Event::Coupled { a: wife, b: man });
         }
     }
 
@@ -967,6 +1060,88 @@ mod tests {
     }
 
     #[test]
+    fn a_woman_left_unwed_at_a_hearth_becomes_a_second_wife_once() {
+        let mut rules = fed_rules();
+        assert!(rules.needs.life.second_wife, "the content's rule");
+        rules.needs.life.death_by_age = vec![(0, 0)];
+        let mut w = world();
+        let side = i32::try_from(rules.needs.thought.place_tiles).unwrap();
+        let camp = Pos::new(side * 2, 5);
+        // One hearth: a couple of 30 and 28, a man of 40 and his wife of
+        // 38, and three unwed women: 27, 26 and the first man's daughter
+        // of 17. No free man.
+        let (husband, first) = (
+            person(&mut w, 10, 5, 30, Sex::Male),
+            person(&mut w, 11, 5, 28, Sex::Female),
+        );
+        let (elder, elder_wife) = (
+            person(&mut w, 12, 5, 40, Sex::Male),
+            person(&mut w, 13, 5, 38, Sex::Female),
+        );
+        wed(&mut w, husband, first);
+        wed(&mut w, elder, elder_wife);
+        let of_27 = person(&mut w, 14, 5, 27, Sex::Female);
+        let of_26 = person(&mut w, 15, 5, 26, Sex::Female);
+        let daughter = person(&mut w, 16, 5, 17, Sex::Female);
+        set(&mut w, daughter, |d| d.father = Some(husband));
+        w.set_homes(
+            [husband, first, elder, elder_wife, of_27, of_26, daughter].map(|id| (id, camp)),
+        );
+        let mut events = Vec::new();
+        w.advance(w_day(), &rules, &mut events);
+        // The lower id first: the woman of 27 takes the man nearest her
+        // age, of 30; the woman of 26 the other, of 40; the daughter none,
+        // her father kin and both men taken.
+        assert_eq!(w.body(of_27).unwrap().spouse, Some(husband));
+        assert_eq!(w.body(of_26).unwrap().spouse, Some(elder));
+        assert_eq!(w.body(daughter).unwrap().spouse, None);
+        assert_eq!(
+            w.body(husband).unwrap().spouse,
+            Some(first),
+            "his first wife"
+        );
+        assert_eq!(w.body(elder).unwrap().spouse, Some(elder_wife));
+        // His first wife dies: the second becomes his own.
+        w.die(first, Death::Illness, &rules, &mut events);
+        assert_eq!(w.body(husband).unwrap().spouse, Some(of_27));
+        // Off: one wife each.
+        rules.needs.life.second_wife = false;
+        let mut w2 = world();
+        let (man, wife) = (
+            person(&mut w2, 10, 5, 30, Sex::Male),
+            person(&mut w2, 11, 5, 28, Sex::Female),
+        );
+        wed(&mut w2, man, wife);
+        let lone = person(&mut w2, 12, 5, 27, Sex::Female);
+        w2.set_homes([(man, camp), (wife, camp), (lone, camp)]);
+        w2.advance(w_day(), &rules, &mut events);
+        assert_eq!(w2.body(lone).unwrap().spouse, None);
+    }
+
+    #[test]
+    fn a_second_wife_parting_leaves_the_first_wed() {
+        let mut rules = fed_rules();
+        rules.needs.life.death_by_age = vec![(0, 0)];
+        let mut w = world();
+        let side = i32::try_from(rules.needs.thought.place_tiles).unwrap();
+        let (camp, far) = (Pos::new(side * 2, 5), Pos::new(side * 20, 5));
+        let husband = person(&mut w, 10, 5, 30, Sex::Male);
+        let first = person(&mut w, 11, 5, 28, Sex::Female);
+        let second = person(&mut w, 12, 5, 27, Sex::Female);
+        wed(&mut w, husband, first);
+        set(&mut w, second, |b| b.spouse = Some(husband));
+        // She lives far from him: she parts, he keeps his first wife.
+        w.set_homes([(husband, camp), (first, camp), (second, far)]);
+        let mut events = Vec::new();
+        for _ in 0..=rules.needs.life.part_after_days {
+            w.advance(w_day(), &rules, &mut events);
+        }
+        assert_eq!(w.body(second).unwrap().spouse, None);
+        assert_eq!(w.body(husband).unwrap().spouse, Some(first));
+        assert_eq!(w.body(first).unwrap().spouse, Some(husband));
+    }
+
+    #[test]
     fn the_hearths_weddings_are_the_same_every_run() {
         let mut rules = fed_rules();
         rules.needs.life.death_by_age = vec![(0, 0)];
@@ -993,7 +1168,8 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let first = run();
-        assert_eq!(first.iter().filter(|(_, s)| s.is_some()).count(), 8);
+        // Four couples, and the fifth woman a second wife (D49).
+        assert_eq!(first.iter().filter(|(_, s)| s.is_some()).count(), 9);
         assert_eq!(first, run());
     }
 
