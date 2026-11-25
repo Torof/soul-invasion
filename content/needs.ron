@@ -644,4 +644,39 @@
         spouse_permille: 250,
         child_permille: 100,
     ),
+    // Food pooled at the hearth (D58; validated by the project lead on 25
+    // November 2026, « la mise en commun »). The hearth (« le foyer ») is
+    // everyone who lies down at the camp's evening gathering: one reserve
+    // a hearth, at the camp. Who comes home puts down there what it carried
+    // for its own (below) and what it carries beyond its own store (the
+    // stock way, about three days); who is
+    // hungry at the camp eats there before it eats its own, the young
+    // first (under `fed_until_years`, then under sixteen, the grown after
+    // them, while the reserve does not cover what the younger can still
+    // eat today). It spoils by what it holds, as food does anywhere. At
+    // dawn each body at the hearth sees the reserve and the hunger of its
+    // own (its spouse, its children under sixteen): one that sees its own
+    // hungry and the reserve short gathers for them too, as many days as
+    // for itself, and of what it gathers then carries their share home
+    // uneaten. Absent: each eats what it gathers.
+    // fed_until_years:   8 — a child is fed by the hearth until eight and
+    //                        does not gather alone (the project lead: a
+    //                        child of two does not feed itself); from eight
+    //                        it gathers and puts down like the others;
+    // care_percent: (0, 100) — the innate care for the young's coming days
+    //                        (the project lead, « les jeunes d'abord »): a
+    //                        grown body counts in its own store this share
+    //                        of what the reserve leaves uncovered of the
+    //                        young's need, drawn even between the two from
+    //                        the seed and its id, fixed for life;
+    // own_care_percent: 200 — for its own children, twice its care, at most
+    //                        the whole of their need;
+    // care_days:         2 — the young's need weighed against the reserve:
+    //                        their next two days.
+    pooling: (
+        fed_until_years: 8,
+        care_percent: (0, 100),
+        own_care_percent: 200,
+        care_days: 2,
+    ),
 )

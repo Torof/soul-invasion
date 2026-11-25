@@ -27,7 +27,7 @@ use crate::{
 };
 
 /// The top-level keys, in the order they are written.
-const ORDER: [&str; 23] = [
+const ORDER: [&str; 24] = [
     "meta",
     "years",
     "seasons",
@@ -47,6 +47,7 @@ const ORDER: [&str; 23] = [
     "home_changes",
     "nights_apart",
     "nights_out",
+    "pooling",
     "goals",
     "map",
     "bearers",
@@ -470,6 +471,9 @@ impl Report {
         value["home_changes"] = self.home_changes_json();
         value["nights_apart"] = self.nights_apart_json();
         value["nights_out"] = self.nights_out_json();
+        // --- the hearth's pooling (25 November 2026) ---
+        value["pooling"] = self.pooling.json();
+        // --- end of the hearth's pooling ---
         value
     }
 

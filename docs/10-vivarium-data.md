@@ -414,6 +414,15 @@ clock, the only field no seed decides.
 | `nights_out[].away` | Those away from home | dawns |
 | `nights_out[].asleep` | Of them, asleep | dawns |
 | `nights_out[].in_company` | Of them, with two or more other grown bodies away from their own homes lying within the fire's reach: a group's night out | dawns |
+| `pooling` | Food pooled at the hearth (D58, 25 November 2026): its own block, apart from the others | object |
+| `pooling.on`, `pooling.care` | Whether food was pooled (the content's `pooling` section on and the fire lit; `--no-pooling` turns it off), and whether the care for the young's coming days was on (`--no-care` turns it off) | `true` or `false` |
+| `pooling.fed_until_years` | The age the hearth feeds a child until | years |
+| `pooling.totals.put_kj`, `.eaten_kj`, `.eaten_young_kj`, `.spoiled_kj` | Over the run, all hearths: food put down at a reserve, eaten from one, of it eaten by the young (under sixteen), spoiled there | kJ |
+| `pooling.children.young`, `.under_eight` | Bodies under sixteen, under eight, at some point of the run (born in it, or that young at the start) | bodies |
+| `pooling.children.dead_before_sixteen`, `.dead_before_eight` | Of them, dead before sixteen, before eight | bodies |
+| `pooling.children.born` | Born in the run | bodies |
+| `pooling.parents`, `pooling.others` | The grown (sixteen and more) at each nightfall: the parents of a living child under eight, and the other grown. `body_days`; `out`, the body-days it went farther from its home than `HOME_TILES` (6) on either axis at some step; `tiles`, tiles walked in all, and `tiles_per_day` a body-day; `fatigue_at_nightfall`, the mean fatigue then; `thin`, `weak`, the body-days thin or weak at nightfall | body-days, tiles, points |
+| `pooling.days[]` | Day by day (from 1): `reserve_dawn_kj` (all reserves at dawn), `put_kj`, `eaten_kj`, `spoiled_kj`; `grown` and `out` (the grown at nightfall, and those that went out that day), `out_percent`; `gathering_for` (the bodies that set out at dawn to gather for their hearth beyond their own store), `seen_kj` and `cared_kj` (what for: their own seen hungry, their care, before the greater is taken); `hearths[]`, each hearth's `camp` (`[x, y]`, its place's middle), `dawn_kj`, `put_kj`, `eaten_kj`, `eaten_young_kj`, `spoiled_kj` | list, kJ, bodies, % |
 | `goals[]` | Each goal held over several days (D56, amended 24 November 2026): `body`, `tribe`, `day` set, `to`, `tiles`, `load_kj` carried then, `end` (`arrived`, `load`, `hunger`, `thirst`, `dropped`, `null` while held at the end), `end_day` | |
 | `map.data_uri` | The page's picture of the map at the run's end, the same PNG: the terrain, the camps red, the living white, the dead black | `"data:image/png;base64,…"` |
 | `map.tiles_per_pixel` | The scale: one pixel is so many tiles a side (5 on the vivarium's world) | tiles |

@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lab  # noqa: E402
 import panels  # noqa: E402
 import plain  # noqa: E402
+import pooling  # noqa: E402
 import reading  # noqa: E402
 
 FAKE_VIVARIUM = r"""#!/bin/sh
@@ -1337,6 +1338,39 @@ class PlainPages(unittest.TestCase):
         self.assertEqual(frise.count(f'fill="{reading.CAUSE_COLOR["hunger"]}"'), 1)
         self.assertIn("cycle 1, automne, journée 30 : naissance de personne 3, tribu A", frise)
         self.assertIn("Aucune naissance ni aucune mort", plain.frise(dict(d, people=[])))
+
+
+class HearthPart(unittest.TestCase):
+    """Le foyer (D58): the block `pooling` read in plain words, the lazy cycle looked for."""
+
+    def block(self, outs, reserves):
+        days = [{"day": i + 1, "reserve_dawn_kj": r, "put_kj": 1000, "eaten_kj": 800, "spoiled_kj": 0,
+                 "grown": 10, "out": o // 10, "out_percent": o, "hearths": []}
+                for i, (o, r) in enumerate(zip(outs, reserves))]
+        return {"on": True, "care": True, "fed_until_years": 8,
+                "totals": {"put_kj": 5000, "eaten_kj": 4000, "eaten_young_kj": 3000, "spoiled_kj": 100},
+                "children": {"young": 6, "under_eight": 5, "dead_before_eight": 1, "dead_before_sixteen": 2, "born": 5},
+                "parents": {"body_days": 20, "tiles_per_day": 900, "fatigue_at_nightfall": 70, "thin": 5},
+                "others": {"body_days": 30, "tiles_per_day": 800, "fatigue_at_nightfall": 60, "thin": 3},
+                "days": days}
+
+    def test_the_part_says_what_the_hearth_gave_and_the_children(self):
+        d = {"pooling": self.block([100, 90, 100, 95], [0, 5000, 1000, 2000]), "meta": {}}
+        html_ = pooling.part_html(d)
+        self.assertIn("Posé au foyer : 5 MJ", html_)
+        self.assertIn("Enfants morts avant 8 ans : 1", html_)
+        self.assertIn("Pas de cycle", html_)
+        self.assertIn("<svg", html_)
+
+    def test_the_lazy_cycle_is_seen_when_a_full_reserve_keeps_them_home(self):
+        r, lo, hi, words = pooling.cycle(self.block([90, 20, 85, 10, 95, 15], [0, 9000, 500, 9500, 0, 8000]))
+        self.assertLess(r, -0.3)
+        self.assertEqual((lo, hi), (10, 95))
+        self.assertIn("Le cycle apparaît", words)
+
+    def test_a_run_before_the_pooling_says_so(self):
+        self.assertIn("Pas de données du foyer", pooling.part_html({"meta": {}}))
+        self.assertIn("Pas de mise en commun", pooling.part_html({"pooling": {"on": False}, "meta": {}}))
 
 
 if __name__ == "__main__":
