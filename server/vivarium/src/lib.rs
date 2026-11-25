@@ -41,6 +41,7 @@ pub mod conception;
 pub mod continents;
 pub mod hands;
 pub mod json;
+pub mod land_food;
 pub mod lands;
 // --- the hearth's pooling (25 November 2026): its own module ---
 pub mod pooling;
@@ -1838,6 +1839,9 @@ pub struct Report {
     /// The trees and plants bearing food on the whole map, chunk by chunk
     /// and season by season (lab 6, the food map).
     pub bearers: Bearers,
+    /// The land's food by season (25 November 2026): what the plants hold
+    /// day by day, untouched, and near each tribe's camp.
+    pub land_food: land_food::LandFood,
     /// The ground's height over the map, a value every few tiles (lab 6,
     /// the relief map).
     pub relief: Relief,
@@ -2320,6 +2324,10 @@ pub fn run_watched(
     let mut trials: Vec<TrialEvent> = Vec::new();
     let mut ways_in_use: BTreeMap<(u8, u64), WaysInUse> = BTreeMap::new();
     let mut presence: BTreeMap<(u8, u64), Presence> = BTreeMap::new();
+    // The land's food (25 November 2026): each tribe's camp at each noon.
+    let mut land_camps: Vec<(u64, Vec<Option<Pos>>)> = Vec::new();
+    // And what each tribe picked, by material and season of the run.
+    let mut land_picks: BTreeMap<(u64, u8, String), u64> = BTreeMap::new();
     let mut positions: Vec<(u64, Vec<(BodyId, Pos)>)> = Vec::new();
     let mut home_moves: Vec<HomeMove> = Vec::new();
     let mut move_calls: Vec<MoveCall> = Vec::new();
@@ -2437,6 +2445,13 @@ pub fn run_watched(
                 } => {
                     let energy = kj(content, gives, *grams);
                     let tribe = tribe_of(&people, *body);
+                    *land_picks
+                        .entry((
+                            (day - 1) * 4 / u64::from(calendar.days_per_cycle().max(1)),
+                            tribe,
+                            gives.clone(),
+                        ))
+                        .or_insert(0) += u64::from(*grams);
                     food.entry((tribe, year))
                         .or_default()
                         .gathered(content, gives, *grams);
@@ -3127,6 +3142,27 @@ pub fn run_watched(
                     counts.distance.3 += 1;
                 }
             }
+            // The land's food (25 November 2026): each tribe's camp, the
+            // median home of its living past infancy.
+            land_camps.push((
+                day,
+                (0..tribes)
+                    .map(|t| {
+                        let (mut xs, mut ys): (Vec<i32>, Vec<i32>) = standing
+                            .iter()
+                            .filter(|&&(id, _)| usize::from(tribe_of(&people, id)) == t)
+                            .filter(|&&(id, _)| {
+                                world.body(id).is_some_and(|b| !world.is_infant(b, content))
+                            })
+                            .filter_map(|&(id, _)| brains.mind(id).map(sim::brain::Mind::home))
+                            .map(|h| (h.x, h.y))
+                            .unzip();
+                        xs.sort_unstable();
+                        ys.sort_unstable();
+                        (!xs.is_empty()).then(|| Pos::new(xs[xs.len() / 2], ys[ys.len() / 2]))
+                    })
+                    .collect(),
+            ));
             positions.push((day, standing));
             // The stored food at noon (D55): what the tribe's living carry.
             let carried = reserves(&world, content, &people);
@@ -3308,7 +3344,10 @@ pub fn run_watched(
         });
     let (map_png, map_scale) = picture(&world, &camps, &terrain);
     let factors = factors_of(content);
-    let bearers = bearers_map(&world, &content.crops, &presence);
+    let mut land = land_food::Measure::new(content, world.time().cycle);
+    let rings = land_food::ring_chunks(&world, &land_camps);
+    let bearers = bearers_map(&world, &content.crops, &presence, &rings, &mut land);
+    let land_food = land.finish(&world, content, &land_camps, &land_picks);
     let relief = relief_of(world.map(), map_scale * 2);
     let needs = &content.needs;
     let rates = vec![
@@ -3379,6 +3418,7 @@ pub fn run_watched(
         map_scale,
         factors,
         bearers,
+        land_food,
         relief,
         wall_s,
         birth_s,
@@ -4876,6 +4916,8 @@ fn bearers_map(
     world: &World,
     crops: &[sim::crops::Crop],
     presence: &BTreeMap<(u8, u64), Presence>,
+    rings: &BTreeSet<(u32, u32)>,
+    land: &mut land_food::Measure,
 ) -> Bearers {
     let seasons = seasons_of_kinds(crops, world.calendar());
     let map = world.map();
@@ -4897,13 +4939,16 @@ fn bearers_map(
     let mut out = Bearers::default();
     let mut index: BTreeMap<String, usize> = BTreeMap::new();
     {
-        for (cy, cx) in chunks {
+        // The land's food (25 November 2026) is measured on the food map's
+        // chunks and around the camps, each chunk placed once.
+        for (cy, cx) in chunks.union(rings).copied() {
             let (x, y) = (
                 i32::try_from(cx).expect("a small map"),
                 i32::try_from(cy).expect("a small map"),
             );
             let here = world.bearers_in(sim::map::ChunkPos::new(x, y));
-            if here.is_empty() {
+            land.add(world, (cx, cy), &here);
+            if here.is_empty() || !chunks.contains(&(cy, cx)) {
                 continue;
             }
             let mut by_season = [0_u32; 4];
@@ -7569,6 +7614,38 @@ mod tests {
         assert_eq!(group[1], group[2], "linked through the middle home");
         assert_ne!(group[0], group[3]);
         assert_eq!(tiles_apart(homes[0], homes[2]), 120);
+    }
+
+    #[test]
+    fn the_land_food_counts_every_noon_and_every_pick() {
+        let settings = Settings {
+            days: 6,
+            tribes: 2,
+            ..small()
+        };
+        let report = run_checked(&settings, &forced_trials());
+        let land = &report.land_food;
+        assert!(land.chunks > 0);
+        assert!(land.plants.iter().sum::<u64>() > 0, "{land:?}");
+        let days: Vec<u64> = land.days.iter().map(|d| d.day).collect();
+        assert_eq!(days, (1..=6).collect::<Vec<_>>());
+        for day in &land.days {
+            assert_eq!(day.near.len(), 2);
+            for (_, [half, whole]) in day.near.iter().flatten() {
+                assert!(half <= whole, "{day:?}");
+            }
+        }
+        // Spring bears something on the valley.
+        assert!(land.days.iter().any(|d| d.map_kj > 0));
+        // The picks are the gatherers' own, joule for joule.
+        let picked: u64 = land
+            .picked_g
+            .iter()
+            .flat_map(|(_, _, row)| row.iter().zip(&land.kj_per_kg))
+            .map(|(g, kj)| g * u64::from(*kj))
+            .sum();
+        let gathered: u64 = report.people.values().map(|p| p.gathered_j).sum();
+        assert_eq!(picked, gathered);
     }
 
     #[test]
