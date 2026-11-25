@@ -693,11 +693,35 @@
     //                        the whole of their need;
     // care_days:         2 — the young's need weighed against the reserve:
     //                        their next two days.
+    // The hunger bar (the project lead, 25 November 2026: "Avoir faim et
+    // porter de la nourriture pour l'amener aux enfants, c'est ok. Avoir
+    // très faim et porter de la nourriture pour les enfants la garder, ça
+    // va être plus rare, et ça peut être en fonction de la volonté.
+    // Quelqu'un qui n'a pas de volonté va manger cette nourriture,
+    // quelqu'un qui a beaucoup de volonté va la ramener. Par contre, avoir
+    // très très faim, mourir de faim et avoir de la nourriture, ça personne
+    // ne le fera jamais, on mange la nourriture."). Read by the share of
+    // its fat reserve a hungry body has left, not by its hunger gauge
+    // (full for days before it dies). Absent: the hungry carry home and
+    // leave the young first, however thin.
+    // very_hungry_fat_percent: 50 — under half its fat left, a hungry body
+    //                        is very hungry: it eats what it carries for
+    //                        its hearth, and from the reserve despite the
+    //                        young, unless its will keeps it;
+    // starving_fat_percent: 25 — under a quarter, it is starving: it eats
+    //                        it, always;
+    // keep_percent_by_will: [(0, 10), (100, 90)] — the chance a very hungry
+    //                        body keeps the hearth's food, by its will (0 to
+    //                        100): the weak-willed eat, the strong-willed
+    //                        carry it home. Drawn once a game day.
     pooling: (
         fed_until_years: 8,
         care_percent: (0, 100),
         own_care_percent: 200,
         care_days: 2,
+        very_hungry_fat_percent: 50,
+        starving_fat_percent: 25,
+        keep_percent_by_will: [(0, 10), (100, 90)],
     ),
     // The gestures of the hands (D57; the project lead, 24 November 2026:
     // "C'est parfait"): pick up, cut with what is in hand, fold. No

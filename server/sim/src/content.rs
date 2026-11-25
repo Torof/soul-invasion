@@ -480,6 +480,36 @@ pub struct Pooling {
     /// against. 0: no care.
     #[serde(default)]
     pub care_days: u32,
+    /// The hunger bar (the project lead, 25 November 2026: "avoir très
+    /// faim et porter de la nourriture pour les enfants, la garder, ça va
+    /// être plus rare, et ça peut être en fonction de la volonté"): under
+    /// this per cent of its fat reserve left, a hungry body is very
+    /// hungry, and eats the food it carries for its hearth, or from the
+    /// reserve despite the young, unless its will keeps it
+    /// (`keep_percent_by_will`). 0: nobody is very hungry.
+    #[serde(default)]
+    pub very_hungry_fat_percent: u32,
+    /// Under this per cent of its fat reserve left, a hungry body is
+    /// starving and always eats it ("mourir de faim et avoir de la
+    /// nourriture, ça personne ne le fera jamais"). 0: nobody starves so.
+    #[serde(default)]
+    pub starving_fat_percent: u32,
+    /// The chance, in per cent by will, that a very hungry body keeps the
+    /// hearth's food: (will, per cent), the wills rising.
+    #[serde(default)]
+    pub keep_percent_by_will: Vec<(u32, u32)>,
+}
+
+/// How hungry a body is by its fat reserve left (D58, amended 25 November
+/// 2026, the hunger bar).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HungerTier {
+    /// It carries home and leaves the young first, as before.
+    Hungry,
+    /// It eats the hearth's food or keeps it, by its will.
+    VeryHungry,
+    /// It eats it, always.
+    Starving,
 }
 
 impl Pooling {
@@ -491,7 +521,32 @@ impl Pooling {
             care_percent: (0, 100),
             own_care_percent: 200,
             care_days: 2,
+            very_hungry_fat_percent: 50,
+            starving_fat_percent: 25,
+            keep_percent_by_will: vec![(0, 10), (100, 90)],
         }
+    }
+
+    /// How hungry a body is with `left_percent` of its fat reserve left.
+    #[must_use]
+    pub fn tier(&self, left_percent: u64) -> HungerTier {
+        if left_percent < u64::from(self.starving_fat_percent) {
+            HungerTier::Starving
+        } else if left_percent < u64::from(self.very_hungry_fat_percent) {
+            HungerTier::VeryHungry
+        } else {
+            HungerTier::Hungry
+        }
+    }
+
+    /// The chance, in per cent, that a very hungry body of `will` keeps
+    /// the hearth's food.
+    #[must_use]
+    pub fn keep_percent(&self, will: u8) -> u64 {
+        if self.keep_percent_by_will.is_empty() {
+            return 100;
+        }
+        along(&self.keep_percent_by_will, u64::from(will) * 1000, 1)
     }
 
     /// Whether anything is pooled.
@@ -533,6 +588,19 @@ impl Pooling {
         if self.own_care_percent > 1000 || self.fed_until_years > 100 || self.care_days > 100 {
             return Err(ContentError::Needs(
                 "pooling: own_care_percent 1000, fed_until_years and care_days 100 at most",
+            ));
+        }
+        let bar = &self.keep_percent_by_will;
+        if self.starving_fat_percent > self.very_hungry_fat_percent
+            || self.very_hungry_fat_percent > 100
+            || !bar.windows(2).all(|p| p[0].0 < p[1].0)
+            || !bar.iter().all(|p| p.0 <= 100 && p.1 <= 100)
+            || (self.very_hungry_fat_percent > self.starving_fat_percent && bar.is_empty())
+        {
+            return Err(ContentError::Needs(
+                "pooling: starving_fat_percent at most very_hungry_fat_percent, at most 100; \
+                 keep_percent_by_will given when there is a very hungry tier, its wills \
+                 rising, every value at most 100",
             ));
         }
         Ok(())

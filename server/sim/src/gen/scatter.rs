@@ -201,9 +201,13 @@ pub(crate) mod purpose {
     /// whether a body away stays out, goes on, or goes home.
     pub(crate) const TRIP_TURN: u64 = 0x0d53_7a1e;
 
+    /// The hunger bar (D58, amended 25 November 2026): whether a very
+    /// hungry body keeps its hearth's food this game day, by its will.
+    pub(crate) const HUNGER_BAR: u64 = 0x0d58_ba55;
+
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 76] = [
+    pub(crate) const ALL: [u64; 77] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -280,6 +284,7 @@ pub(crate) mod purpose {
         HANDS_THING,
         HANDS_HEARD,
         TRIP_TURN,
+        HUNGER_BAR,
     ];
 }
 
