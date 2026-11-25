@@ -1284,6 +1284,8 @@ pub enum News {
     PutDown {
         /// Who.
         body: BodyId,
+        /// The heap.
+        item: ItemId,
         /// The hearth: its camp.
         camp: Pos,
         /// Kilojoules put down.
@@ -3695,6 +3697,10 @@ pub struct Brains {
     measure_stops: bool,
     /// Each hearth's reserve of food (D58).
     reserves: pooling::Reserves,
+    /// The infants each carrier carries, with a mind, as of the last
+    /// nightfall: they keep the way it walks (D53, amended 25 November
+    /// 2026).
+    carried: BTreeMap<BodyId, Vec<BodyId>>,
 }
 
 /// A group's return, told at the next fire (D56, PR 1 ter): its caller,
@@ -4010,6 +4016,7 @@ impl Brains {
             accounts: Vec::new(),
             measure_stops: false,
             reserves: pooling::Reserves::default(),
+            carried: BTreeMap::new(),
         }
     }
 
@@ -4272,6 +4279,17 @@ impl Brains {
                             mind.from_home + 1
                         };
                     }
+                    // The infants it carries go its way, and keep it for
+                    // the day they are weaned (D53, amended 25 November
+                    // 2026).
+                    for infant in self.carried.get(body).into_iter().flatten() {
+                        let still = world
+                            .body(*infant)
+                            .is_some_and(|b| b.carried_by() == Some(*body));
+                        if let (true, Some(mind)) = (still, self.minds.get_mut(infant)) {
+                            mind.walked_to(*to);
+                        }
+                    }
                 }
                 Event::BodyDrank { body, .. } => {
                     if let (Some(mind), Some(b)) = (self.minds.get_mut(body), world.body(*body)) {
@@ -4530,6 +4548,12 @@ impl Brains {
     /// (its father's without one), a carried infant its carrier's; then
     /// each mind notes its home for the night's camp-mates.
     fn children_follow(&mut self, world: &World, ids: &[BodyId]) {
+        self.carried.clear();
+        for &id in ids {
+            if let Some(carrier) = world.body(id).and_then(Body::carried_by) {
+                self.carried.entry(carrier).or_default().push(id);
+            }
+        }
         let follow: Vec<(BodyId, Pos)> = ids
             .iter()
             .filter_map(|&id| {
@@ -7189,7 +7213,7 @@ fn decide(
         return go_looking(map, rules, id, here, mind, seed, Why::Thirst);
     }
     // A child fed by its hearth does not gather alone (D58).
-    let fed = pooling::fed_by_hearth(world, rules, body);
+    let fed = pooling::fed_by_hearth(world, rules, reserves, body);
     // Back at its camp (home from the day, or at night), it first puts
     // down at its hearth's reserve what it carries beyond what it keeps
     // (D58), then eats if hungry.
@@ -12484,6 +12508,49 @@ mod tests {
         assert_eq!(home(infant), Pos::new(30, 30), "its carrier's");
         assert_eq!(home(mother), Pos::new(20, 20), "a grown body keeps its own");
         assert!(brains.minds.values().all(|m| m.home_at_dusk == m.ways.home));
+    }
+
+    #[test]
+    fn a_carried_infant_keeps_the_way_its_carrier_walks_until_it_is_weaned() {
+        // 25 November 2026: two infants weaned on their mother's way home,
+        // beyond a river, had no way of their own: their walk home stopped
+        // short day after day, and fed by the hearth (D58) they starved
+        // there. Carried, an infant goes its carrier's way and keeps it.
+        use crate::content::Sex;
+        let rules = rules();
+        let mut world = field(200, 150, Pos::new(5, 5));
+        let mother = BodyId(1);
+        let infant = world.spawn_body(Pos::new(5, 5));
+        let per_year = u64::from(world.calendar().days_per_age_year());
+        world.set_birth(mother, 30 * per_year, Sex::Female);
+        world.set_birth(infant, 0, Sex::Female);
+        assert!(world.carry(mother, infant));
+        let mut brains = piloted(&world);
+        nightfall(&world, &rules, &mut brains);
+        let walk = |brains: &mut Brains, world: &World, xs: std::ops::RangeInclusive<i32>| {
+            let events: Vec<Event> = xs
+                .map(|x| Event::BodyMoved {
+                    body: mother,
+                    to: Pos::new(x, 5),
+                    at: Pos::new(x, 5).centre(),
+                    remaining: 0,
+                })
+                .collect();
+            brains.count_gathers(&events, world, &rules);
+        };
+        walk(&mut brains, &world, 5..=60);
+        let way = vec![Pos::new(21, 5), Pos::new(37, 5), Pos::new(53, 5)];
+        assert_eq!(brains.minds[&mother].trail, way);
+        assert_eq!(brains.minds[&infant].trail, way, "carried, it went her way");
+        // Weaned, it walks its own: her steps are no longer its own.
+        for body in &mut world.bodies {
+            if body.id() == infant {
+                body.carried_by = None;
+            }
+        }
+        walk(&mut brains, &world, 61..=80);
+        assert_eq!(brains.minds[&infant].trail, way);
+        assert_ne!(brains.minds[&mother].trail, way);
     }
 
     #[test]

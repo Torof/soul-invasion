@@ -68,9 +68,24 @@ pub(super) fn on(rules: &Content) -> bool {
 }
 
 /// Whether `body` is a child fed by its hearth: weaned, younger than the
-/// content's `fed_until_years`. It does not gather alone.
-pub(super) fn fed_by_hearth(world: &World, rules: &Content, body: &Body) -> bool {
-    on(rules) && rules.needs.pooling.fed(world.age_milli(body)) && !world.is_infant(body, rules)
+/// content's `fed_until_years`, and of a hearth: it lay down in its camp's
+/// circle last night (before the first dawn, every child is). It does not
+/// gather alone. A child that slept away from its camp (lost on its
+/// mother's way, out with her) has no hearth that day and fends for itself.
+pub(super) fn fed_by_hearth(
+    world: &World,
+    rules: &Content,
+    reserves: &Reserves,
+    body: &Body,
+) -> bool {
+    on(rules)
+        && rules.needs.pooling.fed(world.age_milli(body))
+        && !world.is_infant(body, rules)
+        && (!reserves.dawned
+            || reserves
+                .young
+                .values()
+                .any(|young| young.contains(&(body.id(), true))))
 }
 
 /// The camp of a home: its place's middle, the circle's and the hearth's
@@ -98,6 +113,9 @@ pub(super) struct Reserves {
     /// The young of each hearth at dawn: each, and whether it is fed by
     /// the hearth (under `fed_until_years`).
     young: BTreeMap<Pos, Vec<(BodyId, bool)>>,
+    /// Whether a dawn has been seen: before it, no circle says who is of a
+    /// hearth.
+    dawned: bool,
 }
 
 /// A heap of a reserve, or carried: its id, where it lies, its energy and
@@ -337,6 +355,7 @@ pub(super) fn put_down(
         mind.due = true;
         news.push(News::PutDown {
             body: id,
+            item: spare.item,
             camp,
             kj: spare.kj,
             at: world.tick().0,
@@ -411,6 +430,7 @@ impl Brains {
         let pooling = &rules.needs.pooling;
         self.reserves.prune(world);
         self.reserves.young.clear();
+        self.reserves.dawned = true;
         for mind in self.minds.values_mut() {
             mind.hearth_extra_kj = 0;
             mind.hearth_put_kj = 0;
@@ -436,7 +456,7 @@ impl Brains {
             let young_need: u64 = young.iter().map(|(_, need)| need * days).sum();
             let uncovered = young_need.saturating_sub(reserve_kj);
             for body in &bodies {
-                if fed_by_hearth(world, rules, body) {
+                if pooling.fed(world.age_milli(body)) && !world.is_infant(body, rules) {
                     continue;
                 }
                 let Some(mind) = self.minds.get_mut(&body.id()) else {
@@ -483,6 +503,13 @@ impl Brains {
                 }
             }
         }
+    }
+
+    /// The camp whose hearth's reserve holds `item`, if one does (D58, for
+    /// the vivarium's food balance).
+    #[must_use]
+    pub fn hearth_holding(&self, item: ItemId) -> Option<Pos> {
+        self.reserves.camp_holding(item)
     }
 
     /// What each hearth's reserve holds now, in kilojoules, by camp (D58,
@@ -654,7 +681,16 @@ mod tests {
     #[test]
     fn a_hungry_child_under_eight_does_not_gather_one_of_eight_does() {
         use crate::crops::tests::{body_by, run_to, valley_with};
-        for (years, pooling, gathers) in [(5, true, false), (5, false, true), (9, true, true)] {
+        // Its hearth: none known yet (before the first dawn), lay down in
+        // its camp's circle, or slept away from it (lost on its mother's
+        // way, 25 November 2026: fed by no hearth, it fends for itself).
+        for (years, pooling, circle, gathers) in [
+            (5, true, None, false),
+            (5, true, Some(true), false),
+            (5, true, Some(false), true),
+            (5, false, None, true),
+            (9, true, Some(true), true),
+        ] {
             let (mut world, mut rules, _, bramble) = valley_with("bramble");
             rules.needs.fire = Fire::placeholders();
             rules.needs.pooling = if pooling {
@@ -671,6 +707,17 @@ mod tests {
             let mut brains = Brains::new(7);
             brains.adopt(&world, &rules, id);
             brains.minds.get_mut(&id).unwrap().ways.worth_half_tiles = 1;
+            if let Some(lay) = circle {
+                brains.reserves.dawned = true;
+                if lay {
+                    let camp = camp_of(&rules, brains.minds[&id].ways.home);
+                    let fed = rules
+                        .needs
+                        .pooling
+                        .fed(world.age_milli(world.body(id).unwrap()));
+                    brains.reserves.young.insert(camp, vec![(id, fed)]);
+                }
+            }
             let (mut gathered, mut events) = (false, Vec::new());
             for _ in 0..30 {
                 events.clear();
@@ -680,7 +727,10 @@ mod tests {
                     world.queue(d.intention);
                 }
             }
-            assert_eq!(gathered, gathers, "{years} years, pooling {pooling}");
+            assert_eq!(
+                gathered, gathers,
+                "{years} years, pooling {pooling}, in its circle {circle:?}"
+            );
         }
     }
 
