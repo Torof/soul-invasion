@@ -90,6 +90,8 @@ enum Source {
         id: u64,
         /// The chunks made lately, by index; a dry chunk is an empty one.
         held: Mutex<Lru<u32, Arc<WetChunk>>>,
+        /// How many chunks were made here (not read back from bytes).
+        made: AtomicU64,
     },
 }
 
@@ -113,6 +115,7 @@ impl Source {
             window,
             id: LANDS.fetch_add(1, Ordering::Relaxed),
             held: Mutex::new(Lru::new(WET_CACHE_CHUNKS)),
+            made: AtomicU64::new(0),
         }
     }
 }
@@ -217,7 +220,12 @@ impl Waters {
                 }
                 f(chunks.get(&chunk))
             }
-            Source::Window { window, id, held } => {
+            Source::Window {
+                window,
+                id,
+                held,
+                made,
+            } => {
                 let pos = ChunkPos::new(
                     i32::try_from(chunk % self.chunks_wide).expect("few chunks"),
                     i32::try_from(chunk / self.chunks_wide).expect("few chunks"),
@@ -232,9 +240,10 @@ impl Waters {
                     || {
                         let found = lock().get(&chunk).map(Arc::clone);
                         found.unwrap_or_else(|| {
-                            let made = Arc::new(WetChunk::of_window(window, pos));
-                            lock().insert(chunk, Arc::clone(&made));
-                            made
+                            made.fetch_add(1, Ordering::Relaxed);
+                            let wet = Arc::new(WetChunk::of_window(window, pos));
+                            lock().insert(chunk, Arc::clone(&wet));
+                            wet
                         })
                     },
                     |wet| {
@@ -413,6 +422,9 @@ pub(crate) struct Land {
     /// relief look test): its heights, and where the forest may grow.
     relief: Option<Arc<Window>>,
     held: Mutex<Held>,
+    /// How many chunks of tiles and of woods were made here (not read back
+    /// from bytes, [`Land::take_bytes`]).
+    made: [AtomicU64; 2],
 }
 
 /// What the lock guards: the chunks made lately.
@@ -560,6 +572,7 @@ impl Land {
                 tiles: Lru::new(tiles),
                 woods: Lru::new(woods_held),
             }),
+            made: [AtomicU64::new(0), AtomicU64::new(0)],
         }
     }
 
@@ -635,6 +648,7 @@ impl Land {
         if let Some(tiles) = self.lock().tiles.get(&chunk).map(Arc::clone) {
             return tiles;
         }
+        self.made[0].fetch_add(1, Ordering::Relaxed);
         let tiles = Arc::new(self.make_tiles(chunk));
         self.lock().tiles.insert(chunk, Arc::clone(&tiles));
         tiles
@@ -645,6 +659,7 @@ impl Land {
         if let Some(woods) = self.lock().woods.get(&chunk).map(Arc::clone) {
             return woods;
         }
+        self.made[1].fetch_add(1, Ordering::Relaxed);
         let woods = Arc::new(self.make_woods(chunk));
         self.lock().woods.insert(chunk, Arc::clone(&woods));
         woods
@@ -775,6 +790,339 @@ impl Land {
             }
         }
         woods
+    }
+}
+
+/// The first bytes of a land's chunks kept as bytes ([`Land::to_bytes`]),
+/// with the layout's version: changed with `ChunkTiles`, `ChunkWoods`,
+/// `WetChunk` or the way they are written, so bytes of another layout are
+/// never read.
+const KEPT_MAGIC: &[u8; 8] = b"SOULLND1";
+
+/// FNV-1a over `bytes`: the kept bytes' checksum.
+fn checksum(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// A terrain's code in the kept bytes: its place in [`Terrain::ALL`]
+/// (the match fails to build when a terrain is added unlisted here).
+fn terrain_code(terrain: Terrain) -> u8 {
+    match terrain {
+        Terrain::Grass => 0,
+        Terrain::Forest => 1,
+        Terrain::Water => 2,
+        Terrain::Ford => 3,
+        Terrain::Brook => 4,
+        Terrain::Rock => 5,
+    }
+}
+
+fn terrain_of(code: u8) -> Option<Terrain> {
+    Terrain::ALL.get(usize::from(code)).copied()
+}
+
+/// Every habitat, in the order of its code in the kept bytes.
+const HABITATS: [Habitat; 11] = [
+    Habitat::Meadow,
+    Habitat::Edge,
+    Habitat::Wood,
+    Habitat::Heart,
+    Habitat::Clearing,
+    Habitat::Camp,
+    Habitat::Copse,
+    Habitat::Lone,
+    Habitat::Riverside,
+    Habitat::CliffFoot,
+    Habitat::None,
+];
+
+/// A habitat's code in the kept bytes: its place in [`HABITATS`] (the
+/// match fails to build when a habitat is added unlisted here).
+fn habitat_code(habitat: Habitat) -> u8 {
+    match habitat {
+        Habitat::Meadow => 0,
+        Habitat::Edge => 1,
+        Habitat::Wood => 2,
+        Habitat::Heart => 3,
+        Habitat::Clearing => 4,
+        Habitat::Camp => 5,
+        Habitat::Copse => 6,
+        Habitat::Lone => 7,
+        Habitat::Riverside => 8,
+        Habitat::CliffFoot => 9,
+        Habitat::None => 10,
+    }
+}
+
+fn habitat_of(code: u8) -> Option<Habitat> {
+    HABITATS.get(usize::from(code)).copied()
+}
+
+/// Bytes being read, little-endian, front first.
+struct Reader<'a>(&'a [u8]);
+
+impl<'a> Reader<'a> {
+    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+        let (head, rest) = self.0.split_at_checked(n)?;
+        self.0 = rest;
+        Some(head)
+    }
+
+    fn u32(&mut self) -> Option<u32> {
+        Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
+    }
+
+    fn i32(&mut self) -> Option<i32> {
+        Some(i32::from_le_bytes(self.take(4)?.try_into().ok()?))
+    }
+
+    fn u16s(&mut self, n: usize) -> Option<Vec<u16>> {
+        let bytes = self.take(n.checked_mul(2)?)?;
+        Some(
+            bytes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&b| u16::from_le_bytes(b))
+                .collect(),
+        )
+    }
+
+    fn u64s(&mut self, n: usize) -> Option<Vec<u64>> {
+        let bytes = self.take(n.checked_mul(8)?)?;
+        Some(
+            bytes
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|&b| u64::from_le_bytes(b))
+                .collect(),
+        )
+    }
+
+    fn chunk(&mut self) -> Option<ChunkPos> {
+        Some(ChunkPos::new(self.i32()?, self.i32()?))
+    }
+
+    /// A count of entries, each at least `least` bytes: refused when the
+    /// bytes left cannot hold them (a damaged count allocates nothing).
+    fn count(&mut self, least: usize) -> Option<usize> {
+        let n = usize::try_from(self.u32()?).ok()?;
+        (n.checked_mul(least)? <= self.0.len()).then_some(n)
+    }
+}
+
+fn put_u32(out: &mut Vec<u8>, n: usize) {
+    out.extend_from_slice(&u32::try_from(n).expect("a count of chunks").to_le_bytes());
+}
+
+fn put_chunk(out: &mut Vec<u8>, chunk: ChunkPos) {
+    out.extend_from_slice(&chunk.x.to_le_bytes());
+    out.extend_from_slice(&chunk.y.to_le_bytes());
+}
+
+/// What a land's bytes hold, read whole before any of it is taken.
+struct Kept {
+    tiles: Vec<(ChunkPos, ChunkTiles)>,
+    woods: Vec<(ChunkPos, ChunkWoods)>,
+    wet: Vec<(u32, WetChunk)>,
+}
+
+/// The land kept between runs (D51, amended 25 November 2026): a chunk's
+/// tiles, woods and water are a pure function of the map (its window and
+/// seed), never of a run, so the chunks a run made can be written out
+/// and read back into another run's land of the same map, which then
+/// reads them as if it had made them: the same bytes. Writing and reading
+/// files is the caller's (the vivarium's, D24); here only the bytes.
+impl Land {
+    /// Holds up to `chunks` chunks of tiles, of woods and of water (never
+    /// fewer than now): the vivarium holds its whole map, so a chunk is
+    /// made once a run, not again each time a body walks back to it.
+    pub(crate) fn widen(&self, chunks: usize) {
+        {
+            let mut held = self.lock();
+            held.tiles.widen(chunks);
+            held.woods.widen(chunks);
+        }
+        if let Source::Window { held, .. } = &self.waters.source {
+            held.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .widen(chunks);
+        }
+    }
+
+    /// How many chunks of tiles, of woods and of water this land made
+    /// itself so far (those read back from bytes not counted).
+    pub(crate) fn made(&self) -> [u64; 3] {
+        let wet = match &self.waters.source {
+            Source::Window { made, .. } => made.load(Ordering::Relaxed),
+            Source::Sparse { .. } => 0,
+        };
+        [
+            self.made[0].load(Ordering::Relaxed),
+            self.made[1].load(Ordering::Relaxed),
+            wet,
+        ]
+    }
+
+    /// The chunks held now, as bytes [`Land::take_bytes`] reads back: the
+    /// map's size, each chunk of tiles, of woods and of a window's water,
+    /// in the order of their places, and a checksum.
+    pub(crate) fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(KEPT_MAGIC);
+        out.extend_from_slice(&self.width.to_le_bytes());
+        out.extend_from_slice(&self.height.to_le_bytes());
+        {
+            let held = self.lock();
+            put_u32(&mut out, held.tiles.len());
+            for (&chunk, tiles) in held.tiles.iter() {
+                put_chunk(&mut out, chunk);
+                out.extend(tiles.terrain.iter().map(|&t| terrain_code(t)));
+                for word in tiles.open {
+                    out.extend_from_slice(&word.to_le_bytes());
+                }
+            }
+            put_u32(&mut out, held.woods.len());
+            for (&chunk, woods) in held.woods.iter() {
+                put_chunk(&mut out, chunk);
+                out.extend_from_slice(&woods.density);
+                out.extend(woods.habitat.iter().map(|&h| habitat_code(h)));
+            }
+        }
+        match &self.waters.source {
+            Source::Window { held, .. } => {
+                let held = held.lock().unwrap_or_else(PoisonError::into_inner);
+                put_u32(&mut out, held.len());
+                for (&chunk, wet) in held.iter() {
+                    out.extend_from_slice(&chunk.to_le_bytes());
+                    put_u32(&mut out, wet.at.len());
+                    for &at in &wet.at {
+                        out.extend_from_slice(&at.to_le_bytes());
+                    }
+                    out.extend(wet.terrain.iter().map(|t| t.map_or(u8::MAX, terrain_code)));
+                    out.extend_from_slice(&wet.depth);
+                    for &current in &wet.current {
+                        out.extend_from_slice(&current.to_le_bytes());
+                    }
+                }
+            }
+            Source::Sparse { .. } => put_u32(&mut out, 0),
+        }
+        let sum = checksum(&out);
+        out.extend_from_slice(&sum.to_le_bytes());
+        out
+    }
+
+    /// Takes the chunks of `bytes` ([`Land::to_bytes`] of a land of the
+    /// same map) that are not held yet: how many chunks of tiles, woods and
+    /// water were taken, or `None`, taking nothing, when the bytes are
+    /// damaged, of another layout or of a map of another size. Only a land
+    /// of the same map may give them (the caller names its files by the
+    /// map): they are read as made, never checked against the generator.
+    pub(crate) fn take_bytes(&self, bytes: &[u8]) -> Option<[usize; 3]> {
+        let kept = self.read_kept(bytes)?;
+        let mut taken = [0; 3];
+        {
+            let mut held = self.lock();
+            for (chunk, tiles) in kept.tiles {
+                if !held.tiles.contains(&chunk) {
+                    held.tiles.insert(chunk, Arc::new(tiles));
+                    taken[0] += 1;
+                }
+            }
+            for (chunk, woods) in kept.woods {
+                if !held.woods.contains(&chunk) {
+                    held.woods.insert(chunk, Arc::new(woods));
+                    taken[1] += 1;
+                }
+            }
+        }
+        if let Source::Window { held, .. } = &self.waters.source {
+            let mut held = held.lock().unwrap_or_else(PoisonError::into_inner);
+            for (chunk, wet) in kept.wet {
+                if !held.contains(&chunk) {
+                    held.insert(chunk, Arc::new(wet));
+                    taken[2] += 1;
+                }
+            }
+        }
+        Some(taken)
+    }
+
+    fn read_kept(&self, bytes: &[u8]) -> Option<Kept> {
+        let (body, sum) = bytes.split_at_checked(bytes.len().checked_sub(8)?)?;
+        if checksum(body) != u64::from_le_bytes(sum.try_into().ok()?) {
+            return None;
+        }
+        let mut r = Reader(body);
+        if r.take(KEPT_MAGIC.len())? != KEPT_MAGIC
+            || r.u32()? != self.width
+            || r.u32()? != self.height
+        {
+            return None;
+        }
+        let (columns, rows) = (
+            i32::try_from(self.width.div_ceil(CHUNK_SIZE)).ok()?,
+            i32::try_from(self.height.div_ceil(CHUNK_SIZE)).ok()?,
+        );
+        let on_map = |c: ChunkPos| (0..columns).contains(&c.x) && (0..rows).contains(&c.y);
+        let mut kept = Kept {
+            tiles: Vec::new(),
+            woods: Vec::new(),
+            wet: Vec::new(),
+        };
+        for _ in 0..r.count(8 + PAGE + PAGE / 8)? {
+            let chunk = r.chunk().filter(|&c| on_map(c))?;
+            let terrain = r
+                .take(PAGE)?
+                .iter()
+                .map(|&c| terrain_of(c))
+                .collect::<Option<Box<[Terrain]>>>()?;
+            let open = r.u64s(PAGE / 64)?.try_into().ok()?;
+            kept.tiles.push((chunk, ChunkTiles { terrain, open }));
+        }
+        for _ in 0..r.count(8 + 2 * PAGE)? {
+            let chunk = r.chunk().filter(|&c| on_map(c))?;
+            let density = r.take(PAGE)?.into();
+            let habitat = r
+                .take(PAGE)?
+                .iter()
+                .map(|&c| habitat_of(c))
+                .collect::<Option<Box<[Habitat]>>>()?;
+            kept.woods.push((chunk, ChunkWoods { density, habitat }));
+        }
+        let wet_chunks = u32::try_from(columns * rows).ok()?;
+        for _ in 0..r.count(8)? {
+            let chunk = r.u32().filter(|&c| c < wet_chunks)?;
+            let n = r.count(6)?;
+            let at = r.u16s(n)?;
+            if at.iter().any(|&a| usize::from(a) >= PAGE) {
+                return None;
+            }
+            let terrain = r
+                .take(n)?
+                .iter()
+                .map(|&c| match c {
+                    u8::MAX => Some(None),
+                    c => terrain_of(c).map(Some),
+                })
+                .collect::<Option<Vec<_>>>()?;
+            let depth = r.take(n)?.to_vec();
+            let current = r.u16s(n)?;
+            kept.wet.push((
+                chunk,
+                WetChunk {
+                    at,
+                    terrain,
+                    depth,
+                    current,
+                },
+            ));
+        }
+        r.0.is_empty().then_some(kept)
     }
 }
 
@@ -913,6 +1261,78 @@ mod tests {
             }
         }
         assert!(wet_tiles > 10_000, "{wet_tiles} water tiles");
+    }
+
+    /// A window's land kept as bytes and taken by another land of the
+    /// same window is the land made: every chunk of tiles, woods and water
+    /// the same, none made again; damaged bytes or another map's are
+    /// refused whole (D51 amended 25 November 2026).
+    #[test]
+    fn a_land_kept_as_bytes_is_taken_back_as_made_and_damaged_bytes_are_refused() {
+        use crate::plan::{Continent, Region, region};
+        let continent = Continent::with(3, 128, None);
+        let site = region::site(&continent);
+        let region = Region::around(&continent, site, 256);
+        let corner = Window::choose(&region, 1024);
+        let window = Arc::new(Window::cut(&continent, &region, corner, 1024));
+        let tiles_a_side = window.side();
+        let land_of = |window: &Arc<Window>| {
+            let woods = Woods::on_world(tiles_a_side, 3, window.camp(), window.tile_origin());
+            let land = Land::new(
+                tiles_a_side,
+                tiles_a_side,
+                0,
+                Waters::on_window(Arc::clone(window)),
+                woods,
+            )
+            .on_window(Arc::clone(window));
+            land.widen(1024);
+            land
+        };
+        let land = land_of(&window);
+        let chunks: Vec<ChunkPos> = (0..6)
+            .flat_map(|y| (0..6).map(move |x| ChunkPos::new(x * 5, y * 5)))
+            .collect();
+        for &chunk in &chunks {
+            let _ = (land.tiles(chunk), land.woods(chunk));
+        }
+        let made = land.made();
+        assert!(made[0] >= 36 && made[1] == 36 && made[2] > 36, "{made:?}");
+        let bytes = land.to_bytes();
+        let again = land_of(&window);
+        let taken = again.take_bytes(&bytes).expect("the same map's bytes");
+        assert_eq!(
+            taken.map(|n| n as u64),
+            [made[0], made[1], made[2]],
+            "every chunk taken"
+        );
+        for &chunk in &chunks {
+            assert_eq!(*again.tiles(chunk), *land.tiles(chunk));
+            assert_eq!(*again.woods(chunk), *land.woods(chunk));
+            let (x0, y0) = (
+                chunk.x.unsigned_abs() * CHUNK_SIZE,
+                chunk.y.unsigned_abs() * CHUNK_SIZE,
+            );
+            for k in 0..CHUNK_SIZE {
+                let (x, y) = (x0 + k, y0 + (k * 11) % CHUNK_SIZE);
+                assert_eq!(again.depth(x, y), land.depth(x, y));
+                assert_eq!(again.current(x, y), land.current(x, y));
+            }
+        }
+        assert_eq!(again.made(), [0, 0, 0], "nothing made again");
+        assert_eq!(again.to_bytes(), bytes, "written again, the same bytes");
+        // Taken twice: nothing more.
+        assert_eq!(again.take_bytes(&bytes), Some([0, 0, 0]));
+        // Damaged, cut short, or of a map of another size: refused whole.
+        let fresh = land_of(&window);
+        let mut damaged = bytes.clone();
+        damaged[bytes.len() / 2] ^= 1;
+        assert_eq!(fresh.take_bytes(&damaged), None);
+        assert_eq!(fresh.take_bytes(&bytes[..bytes.len() - 9]), None);
+        let (_, waters, woods, cliff_rows) = parts(320, 320, 3);
+        let other = Land::new(320, 320, cliff_rows, waters, woods);
+        assert_eq!(other.take_bytes(&bytes), None);
+        assert_eq!(fresh.lock().tiles.len(), 0, "nothing taken");
     }
 
     #[test]
