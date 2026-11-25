@@ -1392,25 +1392,40 @@ impl Map {
         let mut arena = SKIRT_ARENA.with_borrow_mut(std::mem::take);
         arena.begin(cells);
         let now = arena.now;
+        // The square's cells read row by row, a cell's place worked out
+        // from the tile's place in the square, each tile's ground asked
+        // once (`looked`: open, asked already this skirt) rather than
+        // from each obstacle tile beside it (D51, amended 25 November
+        // 2026: the same cells marked, in the same order, a fifth of the
+        // simulation thread before).
+        let cell = |x: i32, y: i32| usize::try_from(y * side_len + x).expect("within the square");
         let mut todo = VecDeque::from([first]);
         arena.obstacle[index(first)?] = now;
         arena.obstacles.push(index(first)?);
         while let Some(p) = todo.pop_front() {
-            for dy in -SKIRT_SIDE..=SKIRT_SIDE {
-                for dx in -SKIRT_SIDE..=SKIRT_SIDE {
-                    if let Some(i) = index(Pos::new(p.x + dx, p.y + dy)) {
-                        arena.bank[i] = now;
-                    }
-                }
+            let (px, py) = (p.x - start.x + reach, p.y - start.y + reach);
+            let (x0, x1) = (
+                (px - SKIRT_SIDE).max(0),
+                (px + SKIRT_SIDE).min(side_len - 1),
+            );
+            for y in (py - SKIRT_SIDE).max(0)..=(py + SKIRT_SIDE).min(side_len - 1) {
+                arena.bank[cell(x0, y)..=cell(x1, y)].fill(now);
             }
             for next in p.neighbours() {
-                if let Some(i) = index(next)
-                    && arena.obstacle[i] != now
-                    && barred(next)
-                {
+                let (nx, ny) = (next.x - start.x + reach, next.y - start.y + reach);
+                if nx < 0 || ny < 0 || nx >= side_len || ny >= side_len {
+                    continue;
+                }
+                let i = cell(nx, ny);
+                if arena.obstacle[i] == now || arena.looked[i] == now {
+                    continue;
+                }
+                if barred(next) {
                     arena.obstacle[i] = now;
                     arena.obstacles.push(i);
                     todo.push_back(next);
+                } else {
+                    arena.looked[i] = now;
                 }
             }
         }
@@ -1919,9 +1934,9 @@ fn skirt_along(
 }
 
 thread_local! {
-    /// One skirt arena a thread ([`Map::skirt`]): the five arrays of the
+    /// One skirt arena a thread ([`Map::skirt`]): the seven arrays of the
     /// sight square kept from one skirt to the next and cleared by a
-    /// stamp, never zeroed. About 25 bytes a cell, 370 KB for a sight of
+    /// stamp, never zeroed. About 29 bytes a cell, 430 KB for a sight of
     /// 60, once.
     static SKIRT_ARENA: RefCell<SkirtArena> = RefCell::new(SkirtArena::default());
 }
@@ -1936,6 +1951,8 @@ struct SkirtArena {
     /// This skirt's stamp.
     now: u32,
     obstacle: Vec<u32>,
+    /// The cells whose ground was asked and found open, this skirt.
+    looked: Vec<u32>,
     bank: Vec<u32>,
     reached: Vec<u32>,
     steps: Vec<u32>,
@@ -1953,6 +1970,7 @@ impl SkirtArena {
     fn begin(&mut self, cells: usize) {
         if self.obstacle.len() < cells {
             self.obstacle.resize(cells, 0);
+            self.looked.resize(cells, 0);
             self.bank.resize(cells, 0);
             self.reached.resize(cells, 0);
             self.steps.resize(cells, u32::MAX);
@@ -1963,6 +1981,7 @@ impl SkirtArena {
         if self.now == 0 {
             // Once in four billion skirts: every old stamp forgotten.
             self.obstacle.fill(0);
+            self.looked.fill(0);
             self.bank.fill(0);
             self.reached.fill(0);
             self.now = 1;

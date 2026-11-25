@@ -29,12 +29,12 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crate::content::Species;
-use crate::crops::Bearer;
+use crate::crops::{Bearer, PlantKey, Source};
 use crate::geology::{Geology, Rock};
 use crate::lru::Lru;
-use crate::map::{CHUNK_SIZE, ChunkPos, Map, PATH_REACH, Pos, Terrain};
+use crate::map::{CHUNK_SIZE, ChunkPos, FinePos, Map, PATH_REACH, Pos, Terrain};
 use crate::open_ground::OpenGround;
-use crate::trees::{self, Tree};
+use crate::trees::{self, Tree, TreeKey};
 
 /// How many times a chunk was changed by men: 0 while it is as the seed
 /// made it.
@@ -86,6 +86,8 @@ struct Held {
     /// How many times a chunk's bearers were placed into `bearers`, in
     /// all: what the placing cost, read by the vivarium's timing.
     bearers_placed: u64,
+    /// How many times a chunk's trees were placed into `trees`, in all.
+    trees_placed: u64,
 }
 
 /// A chunk's trees as placed, with the tiles their trunks block: made
@@ -493,6 +495,7 @@ impl Ground {
                 rocks: Lru::new(capacity),
                 bearers: Lru::new(capacity),
                 bearers_placed: 0,
+                trees_placed: 0,
             }),
         }
     }
@@ -608,7 +611,9 @@ impl Ground {
             return placed;
         }
         let placed = Placed::new(chunk, trees::trees_in(map, species, open, seed, chunk));
-        self.lock().trees.insert(key, placed.clone());
+        let mut held = self.lock();
+        held.trees.insert(key, placed.clone());
+        held.trees_placed += 1;
         placed
     }
 
@@ -697,6 +702,111 @@ impl Ground {
         self.lock().trees.len()
     }
 
+    /// How many times a chunk's trees were placed, in all, by every
+    /// thread (those taken from bytes not counted).
+    #[must_use]
+    pub fn trees_placed(&self) -> u64 {
+        self.lock().trees_placed
+    }
+
+    /// The trees of the chunks held as the seed placed them (version 0)
+    /// and the bearers held, as bytes [`Ground::take_bytes`] reads back
+    /// (D51, amended 25 November 2026): both are a pure function of the
+    /// map, the seed and the content's kinds, so the vivarium keeps them
+    /// on disk between runs of the same world and content, as it keeps
+    /// its land. A magic and layout version, the bearers' kinds named
+    /// once, each chunk's trees then each chunk's bearers in the order of
+    /// their chunks, a checksum.
+    #[must_use]
+    pub fn to_bytes(&self) -> Vec<u8> {
+        use crate::land::{put_chunk, put_u32};
+        let held = self.lock();
+        let mut kinds: BTreeMap<&str, u16> = BTreeMap::new();
+        for bearers in held.bearers.iter().map(|(_, b)| b) {
+            for bearer in bearers.iter() {
+                let next = u16::try_from(kinds.len()).expect("few kinds");
+                kinds.entry(&bearer.kind).or_insert(next);
+            }
+        }
+        let mut out = GROUND_MAGIC.to_vec();
+        let mut names: Vec<(&str, u16)> = kinds.iter().map(|(k, i)| (*k, *i)).collect();
+        names.sort_unstable_by_key(|&(_, i)| i);
+        put_u32(&mut out, names.len());
+        for (name, _) in names {
+            put_u32(&mut out, name.len());
+            out.extend_from_slice(name.as_bytes());
+        }
+        let seeded: Vec<(ChunkPos, &Placed)> = held
+            .trees
+            .iter()
+            .filter(|((_, version), _)| *version == 0)
+            .map(|((chunk, _), placed)| (*chunk, placed))
+            .collect();
+        put_u32(&mut out, seeded.len());
+        for (chunk, placed) in seeded {
+            put_chunk(&mut out, chunk);
+            put_u32(&mut out, placed.trees.len());
+            for tree in placed.trees.iter() {
+                out.extend_from_slice(&tree.at.x.to_le_bytes());
+                out.extend_from_slice(&tree.at.y.to_le_bytes());
+                let species = u16::try_from(tree.species).expect("few kinds of tree");
+                out.extend_from_slice(&species.to_le_bytes());
+                out.extend_from_slice(&tree.key.bits().to_le_bytes());
+            }
+        }
+        put_u32(&mut out, held.bearers.len());
+        for (&chunk, bearers) in held.bearers.iter() {
+            put_chunk(&mut out, chunk);
+            put_u32(&mut out, bearers.len());
+            for bearer in bearers.iter() {
+                match bearer.source {
+                    Source::Tree(key) => {
+                        out.push(0);
+                        out.extend_from_slice(&key.bits().to_le_bytes());
+                        out.extend_from_slice(&[0, 0]);
+                    }
+                    Source::Plant(key) => {
+                        out.push(1);
+                        out.extend_from_slice(&key.x_mm.to_le_bytes());
+                        out.extend_from_slice(&key.y_mm.to_le_bytes());
+                    }
+                }
+                out.extend_from_slice(&bearer.at.x.to_le_bytes());
+                out.extend_from_slice(&bearer.at.y.to_le_bytes());
+                out.extend_from_slice(&kinds[&*bearer.kind].to_le_bytes());
+            }
+        }
+        let sum = crate::land::checksum(&out);
+        out.extend_from_slice(&sum.to_le_bytes());
+        out
+    }
+
+    /// Takes the trees and bearers of `bytes` ([`Ground::to_bytes`] of a
+    /// ground of the same map, seed and content: the caller's to
+    /// guarantee) not held yet, as if placed here: how many chunks of
+    /// trees and of bearers. `None`, taking nothing, for bytes damaged, of
+    /// another layout, or naming a kind of tree beyond the `species`
+    /// count. A tree's trunks are worked out again from its trees.
+    #[must_use]
+    pub fn take_bytes(&self, bytes: &[u8], species: usize) -> Option<[usize; 2]> {
+        let (trees, bearers) = read_ground(bytes, species)?;
+        let mut held = self.lock();
+        let mut taken = [0; 2];
+        for (chunk, trees) in trees {
+            if !held.trees.contains(&(chunk, 0)) {
+                held.trees.insert((chunk, 0), Placed::new(chunk, trees));
+                taken[0] += 1;
+            }
+        }
+        for (chunk, bearers) in bearers {
+            if !held.bearers.contains(&chunk) {
+                held.bearers.insert(chunk, bearers.into());
+                taken[1] += 1;
+            }
+        }
+        Some(taken)
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Held> {
         // A reader that panicked while holding the lock left nothing half
         // written: every change here is one insert.
@@ -704,6 +814,67 @@ impl Ground {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+}
+
+/// The first bytes of a ground kept as bytes ([`Ground::to_bytes`]), with
+/// the layout's version.
+const GROUND_MAGIC: &[u8; 8] = b"SOULGRD1";
+
+/// Chunks of trees and of bearers read from bytes.
+type GroundRead = (Vec<(ChunkPos, Vec<Tree>)>, Vec<(ChunkPos, Vec<Bearer>)>);
+
+/// The trees and bearers of `bytes`, read whole, or `None`.
+fn read_ground(bytes: &[u8], species: usize) -> Option<GroundRead> {
+    use crate::land::{Reader, checksum};
+    let (body, sum) = bytes.split_at_checked(bytes.len().checked_sub(8)?)?;
+    if checksum(body) != u64::from_le_bytes(sum.try_into().ok()?) {
+        return None;
+    }
+    let mut r = Reader(body);
+    if r.take(GROUND_MAGIC.len())? != GROUND_MAGIC {
+        return None;
+    }
+    let mut kinds: Vec<Arc<str>> = Vec::new();
+    for _ in 0..r.count(4)? {
+        let n = usize::try_from(r.u32()?).ok()?;
+        kinds.push(Arc::from(std::str::from_utf8(r.take(n)?).ok()?));
+    }
+    let mut trees = Vec::new();
+    for _ in 0..r.count(12)? {
+        let chunk = r.chunk()?;
+        let mut these = Vec::new();
+        for _ in 0..r.count(12)? {
+            let at = FinePos::new(r.i32()?, r.i32()?);
+            let kind = usize::from(r.u16()?);
+            let key = TreeKey::from_bits(r.u16()?)?;
+            if kind >= species {
+                return None;
+            }
+            these.push(Tree {
+                at,
+                species: kind,
+                key,
+            });
+        }
+        trees.push((chunk, these));
+    }
+    let mut bearers = Vec::new();
+    for _ in 0..r.count(12)? {
+        let chunk = r.chunk()?;
+        let mut these = Vec::new();
+        for _ in 0..r.count(15)? {
+            let source = match (r.u8()?, r.u16()?, r.u16()?) {
+                (0, bits, 0) => Source::Tree(TreeKey::from_bits(bits)?),
+                (1, x_mm, y_mm) => Source::Plant(PlantKey { x_mm, y_mm }),
+                _ => return None,
+            };
+            let at = FinePos::new(r.i32()?, r.i32()?);
+            let kind = Arc::clone(kinds.get(usize::from(r.u16()?))?);
+            these.push(Bearer { source, at, kind });
+        }
+        bearers.push((chunk, these));
+    }
+    r.0.is_empty().then_some((trees, bearers))
 }
 
 #[cfg(test)]

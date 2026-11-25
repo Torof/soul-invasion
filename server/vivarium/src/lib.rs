@@ -157,9 +157,9 @@ pub struct Settings {
     /// ([`continents`]): `None` for no cache (`--no-continent-cache`),
     /// the continent born at every run. The patch worlds never use it.
     pub continents: Option<PathBuf>,
-    /// Where the vivarium's land (its chunks' tiles, woods and water) is
-    /// kept between runs ([`lands`]): `None` for no cache
-    /// (`--no-land-cache`), every chunk made by the run. The patch worlds
+    /// Where the vivarium's land (its chunks' tiles, woods and water) and
+    /// its trees and plants are kept between runs ([`lands`]): `None` for
+    /// no cache (`--no-land-cache`), every chunk made by the run. The patch worlds
     /// never use it. The pages are the same either way.
     pub lands: Option<PathBuf>,
     /// Helper threads placing the chunks' bearers ahead of the bodies
@@ -1908,6 +1908,12 @@ pub struct Report {
     /// Chunks of tiles, woods and water read from the land kept by the
     /// runs before ([`lands`]). Timing too.
     pub land_kept: [usize; 3],
+    /// Chunks of trees and of bearers placed by the run until its end (the
+    /// food map's after it not counted). Timing, never simulation.
+    pub ground_made: [u64; 2],
+    /// Chunks of trees and of bearers read from those the runs before
+    /// kept ([`lands::read_ground_into`]). Timing too.
+    pub ground_kept: [usize; 2],
     // --- the scarcity chain (24 November 2026) ---
     /// La chaîne du manque: the need, the walk, the work, why bodies lie
     /// away at dawn, how far the looking days go ([`chain::Chain`]).
@@ -2077,6 +2083,13 @@ pub fn run_watched(
     world
         .shared_ground()
         .widen(map.chunks_wide() as usize * map.chunks_high() as usize);
+    // The trees and bearers kept by the runs before on this world with
+    // this content, taken before the first tick (the same as placed, D51
+    // amended 25 November 2026).
+    let placing = sim::ahead::Placing::of(&world);
+    let ground_kept = land_cache
+        .and_then(|(dir, name, program)| lands::read_ground_into(&placing, dir, name, program))
+        .unwrap_or([0; 2]);
     // The helpers placing bearers ahead (D51 amended), told where the
     // bodies are every few ticks; `None` with `--helpers 0`.
     let placer = sim::ahead::Placer::spawn(&world, usize::try_from(settings.helpers).unwrap_or(1));
@@ -3138,6 +3151,18 @@ pub fn run_watched(
             dir.display()
         );
     }
+    // The trees and bearers placed, kept the same way.
+    let ground = world.shared_ground();
+    let ground_made = [ground.trees_placed(), ground.bearers_placed()];
+    if let Some((dir, name, program)) = land_cache
+        && ground_made.iter().any(|&n| n > 0)
+        && let Err(err) = lands::keep_ground(dir, name, program, &placing, &ground)
+    {
+        eprintln!(
+            "note: the trees and plants could not be kept under {}: {err}",
+            dir.display()
+        );
+    }
     // The picture's terrain kept with the land (the same points as read),
     // or else read from the map and kept.
     let (_, points_wide, points_high) = picture_size(world.map());
@@ -3232,6 +3257,8 @@ pub fn run_watched(
         placed: placed_in_all,
         land_made,
         land_kept,
+        ground_made,
+        ground_kept,
     })
 }
 
@@ -5928,7 +5955,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         let minutes = self.wall_s / 60.0;
         let speed = if minutes > 0.0 { years / minutes } else { 0.0 };
         format!(
-            "<p id=\"timing\">The world was born in {:.2} s; the run took {:.2} s on the wall: <b>{speed:.1} game years a minute</b>. {} chunks' plants placed, {} of them ahead by {} helper thread{}. {} chunks of land made, {} read from the land kept by the runs before.</p>",
+            "<p id=\"timing\">The world was born in {:.2} s; the run took {:.2} s on the wall: <b>{speed:.1} game years a minute</b>. {} chunks' plants placed, {} of them ahead by {} helper thread{}. {} chunks of land made, {} read from the land kept by the runs before; {} chunks' plants read from those kept.</p>",
             self.birth_s,
             self.wall_s,
             self.placed,
@@ -5937,6 +5964,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             if self.settings.helpers == 1 { "" } else { "s" },
             self.land_made[0],
             self.land_kept[0],
+            self.ground_kept[1],
         )
     }
 
@@ -6307,7 +6335,8 @@ mod tests {
     /// pages the born one gives (D28 amended 19 November 2026; lightening
     /// 4's S7): the report's data, timings apart, is the same born, kept
     /// and read, or born with no cache at all. So does the land kept with
-    /// it, and the picture's terrain (D51 amended 25 November 2026).
+    /// it, the picture's terrain, and the trees and plants (D51 amended 25
+    /// November 2026).
     #[test]
     #[ignore = "the vivarium's continent born twice, some 20 s in release: cargo test --release -p vivarium -- --ignored the_kept_continent"]
     fn the_kept_continent_and_land_give_the_pages_the_born_ones_give() {
@@ -6350,6 +6379,11 @@ mod tests {
             kept.land_kept[0] > 0,
             "the land kept is read: {:?}",
             kept.land_kept
+        );
+        assert!(
+            kept.ground_kept.iter().all(|&n| n > 0),
+            "the trees and plants kept are read: {:?}",
+            kept.ground_kept
         );
         let apart = run_checked(
             &Settings {

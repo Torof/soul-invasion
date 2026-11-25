@@ -79,6 +79,8 @@ clock, the only field no seed decides.
 | `meta.timing.placed_ahead` | Of those, the chunks the helpers placed ahead | count |
 | `meta.timing.land_made` | Chunks of land the run made itself until its end, the picture's apart: tiles, woods, water (D51 amended 25 November 2026) | `[count, count, count]` |
 | `meta.timing.land_kept` | Chunks of land read from the file the runs before kept (`--no-land-cache`: none): tiles, woods, water | `[count, count, count]` |
+| `meta.timing.ground_made` | Chunks of trees and of bearers the run placed until its end, the food map's apart (D51 amended 25 November 2026) | `[count, count]` |
+| `meta.timing.ground_kept` | Chunks of trees and of bearers read from the file the runs before kept on this world with this content (`--no-land-cache`: none) | `[count, count]` |
 | `meta.memory.written` | Records written to the common memory over the run (D55) | count |
 | `meta.memory.freed` | Records freed, their last access dropped | count |
 | `meta.memory.held` | Records held at the end, those of `records` | count |
