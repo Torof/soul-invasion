@@ -23,7 +23,10 @@
 //!    it knows bearing food now (D45, D53) worth most: what an hour of
 //!    its best kind gives, less the farther; standing there, it picks
 //!    the tree or plant worth most by what is left on it, none holding
-//!    less than [`GATHER_MIN_MINUTES`] of work; knowing none, it goes
+//!    less than [`GATHER_MIN_MINUTES`] of work (a small plant counted
+//!    with its **patch**, the plants of its kind around it, picked one
+//!    after the other: one picks a patch of dandelions, not a
+//!    dandelion); knowing none, it goes
 //!    looking. A hungry body whose reserve is not weak sleeps at
 //!    night like the others (the D47 trial of 21 November 2026: hungry
 //!    all day, a body never slept and walked twenty-two hours a day).
@@ -334,7 +337,7 @@ struct Seen {
     /// shows part of itself).
     plants: u16,
     /// How many held [`GATHER_MIN_MINUTES`] of food or more when it last
-    /// looked.
+    /// looked, alone or with their patch (D53, amended 25 November 2026).
     holding: u16,
     /// What an hour of the fullest of them gave when it last looked, in
     /// kilojoules ([`kj_of_an_hour`]); 0 when none held food.
@@ -6898,16 +6901,43 @@ impl Brains {
             let sight = plant_sight_at(world.map(), rules, at);
             let before = mind.unseen.len();
             let mut seen = BTreeMap::new();
+            let mut patched = Vec::new();
             mind.unseen.retain(|&chunk| {
                 !count_plants(
                     world,
                     rules,
                     &mut self.bearers,
                     &self.food,
-                    &mut seen,
+                    (&mut seen, &mut patched),
                     (chunk, at, sight),
                 )
             });
+            if patch_reach(rules) > 0 && mind.unseen.len() < before {
+                // A patch spreads over the chunks beside its own: what was
+                // placed now completes the patches of what was placed
+                // before, so the land in sight is read again, as a look
+                // placing it all at once reads it.
+                seen.clear();
+                patched.clear();
+                let (low, high) = (
+                    Pos::new(at.x - sight, at.y - sight).chunk(),
+                    Pos::new(at.x + sight, at.y + sight).chunk(),
+                );
+                for chunk in (low.y..=high.y)
+                    .flat_map(|cy| (low.x..=high.x).map(move |cx| ChunkPos::new(cx, cy)))
+                    .filter(|chunk| !mind.unseen.contains(chunk))
+                {
+                    count_plants(
+                        world,
+                        rules,
+                        &mut self.bearers,
+                        &self.food,
+                        (&mut seen, &mut patched),
+                        (chunk, at, sight),
+                    );
+                }
+            }
+            see_patches(rules, &self.food, &patched, &mut seen);
             if mind.unseen.len() < before {
                 let day = u32::try_from(today(world)).unwrap_or(u32::MAX);
                 remember_places(
@@ -7247,18 +7277,20 @@ fn look(
         let own = at.chunk();
         chunks.sort_by_key(|c| ((c.x - own.x).abs().max((c.y - own.y).abs()), c.y, c.x));
         let mut seen = BTreeMap::new();
+        let mut patched = Vec::new();
         for chunk in chunks {
             if !count_plants(
                 world,
                 rules,
                 land.bearers,
                 land.food,
-                &mut seen,
+                (&mut seen, &mut patched),
                 (chunk, at, sight),
             ) {
                 mind.unseen.push(chunk);
             }
         }
+        see_patches(rules, land.food, &patched, &mut seen);
         let day = u32::try_from(today(world)).unwrap_or(u32::MAX);
         let now = world.tick().0;
         remember_places(
@@ -7290,15 +7322,18 @@ fn look(
 /// (D53: a body remembers the corners, not the bushes), and of those in
 /// season how many hold food worth a step now ([`Seen::holding`]: one
 /// sees the fruit on a bush); `false` if the chunk's could not be placed
-/// this turn.
+/// this turn. With patches (`thought.patch_tiles`), each plant bearing
+/// now also goes into `patched`, for [`see_patches`] to weigh the small
+/// ones by their patch once every chunk in sight is read.
 fn count_plants(
     world: &World,
     rules: &Content,
     bearers: &mut Placed,
     food: &Food,
-    seen: &mut BTreeMap<PlaceKey, Vec<Seen>>,
+    (seen, patched): (&mut BTreeMap<PlaceKey, Vec<Seen>>, &mut Vec<Patched>),
     (chunk, at, sight): (ChunkPos, Pos, i32),
 ) -> bool {
+    let by_patch = patch_reach(rules) > 0;
     let side = place_side(rules);
     let Some(placed) = bearers.get(world, food, chunk) else {
         return false;
@@ -7312,11 +7347,22 @@ fn count_plants(
         if (tile.x - at.x).abs() > sight || (tile.y - at.y).abs() > sight {
             continue;
         }
-        let kj = food.now(kind).and_then(|bears| {
+        let left = food.now(kind).and_then(|bears| {
             let (_, left_g) =
                 world.ripe_of_crop_in(changes, bearer.source, bearer.at, bears.crop)?;
+            Some((bears, left_g))
+        });
+        let kj = left.and_then(|(bears, left_g)| {
             kj_of_an_hour(bears.kj, rules.crops[bears.crop].per_hour_g, left_g)
         });
+        if by_patch && let Some((_, left_g)) = left.filter(|l| l.1 > 0) {
+            patched.push(Patched {
+                tile,
+                kind,
+                left_g,
+                alone: kj.is_some(),
+            });
+        }
         let place = place_of(tile, side);
         let at_place = tally
             .iter()
@@ -7342,6 +7388,43 @@ fn count_plants(
         }
     }
     true
+}
+
+/// The small plants `patched` in sight not worth a step alone, weighed by
+/// their patch ([`patch_grams`], D53 amended 25 November 2026): each whose
+/// patch holds [`GATHER_MIN_MINUTES`] of work counts as holding food at
+/// its place in `seen`, the patch's hour its worth. A patch is seen from
+/// any of its plants, so it counts at each place it spreads over.
+fn see_patches(
+    rules: &Content,
+    food: &Food,
+    patched: &[Patched],
+    seen: &mut BTreeMap<PlaceKey, Vec<Seen>>,
+) {
+    let reach = patch_reach(rules);
+    if reach == 0 || patched.iter().all(|p| p.alone) {
+        return;
+    }
+    let side = place_side(rules);
+    for (plant, grams) in patched.iter().zip(patch_grams(patched, reach)) {
+        if plant.alone {
+            continue;
+        }
+        let Some(bears) = food.now(plant.kind) else {
+            continue;
+        };
+        if let Some(kj) = kj_with_patch(rules, bears, None, grams) {
+            add_seen(
+                seen.entry(place_of(plant.tile, side)).or_default(),
+                Seen {
+                    kind: plant.kind,
+                    plants: 0,
+                    holding: 1,
+                    best_kj: kj,
+                },
+            );
+        }
+    }
 }
 
 /// Adds `one` to the kinds seen at a place, kept in kind order: plants
@@ -7932,6 +8015,82 @@ fn kj_of_an_hour(kj_per_hour: u64, per_hour_g: u32, left_g: u32) -> Option<u64> 
         return None;
     }
     Some(kj_per_hour * u64::from(left_g.min(per_hour_g)) / u64::from(per_hour_g.max(1)))
+}
+
+/// How far a patch reaches, in tiles on each axis (`thought.patch_tiles`,
+/// D53 amended 25 November 2026); 0: each plant weighed alone.
+fn patch_reach(rules: &Content) -> i32 {
+    i32::try_from(rules.needs.thought.patch_tiles).unwrap_or(0)
+}
+
+/// A plant bearing food now, as a patch is summed from it (D53, amended
+/// 25 November 2026): where it stands, its kind, the grams left on it,
+/// and whether it holds [`GATHER_MIN_MINUTES`] of work alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Patched {
+    tile: Pos,
+    kind: u16,
+    left_g: u32,
+    alone: bool,
+}
+
+/// For each of `plants` not worth a step alone, the grams left on its
+/// **patch**: on every plant of its kind within `reach` tiles of it on
+/// each axis, itself counted (a kind bears one crop at a time, so the
+/// same crop); 0 for those worth a step alone, weighed alone as before.
+/// A forager picks a patch of dandelions, not a dandelion. The plants are
+/// sorted once into squares of `reach`, so each sum reads the nine
+/// squares around it, not every plant.
+fn patch_grams(plants: &[Patched], reach: i32) -> Vec<u32> {
+    let reach = reach.max(1);
+    let square = |p: Pos| (p.x.div_euclid(reach), p.y.div_euclid(reach));
+    let mut sorted: Vec<((u16, i32, i32), usize)> = plants
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.left_g > 0)
+        .map(|(i, p)| {
+            let (sx, sy) = square(p.tile);
+            ((p.kind, sy, sx), i)
+        })
+        .collect();
+    sorted.sort_unstable();
+    plants
+        .iter()
+        .map(|plant| {
+            if plant.alone {
+                return 0;
+            }
+            let (sx, sy) = square(plant.tile);
+            let mut grams = 0u32;
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let key = (plant.kind, sy + dy, sx + dx);
+                    let from = sorted.partition_point(|(k, _)| *k < key);
+                    for &(_, j) in sorted[from..].iter().take_while(|(k, _)| *k == key) {
+                        let other = plants[j];
+                        if (other.tile.x - plant.tile.x).abs() <= reach
+                            && (other.tile.y - plant.tile.y).abs() <= reach
+                        {
+                            grams = grams.saturating_add(other.left_g);
+                        }
+                    }
+                }
+            }
+            grams
+        })
+        .collect()
+}
+
+/// What an hour of a plant of `kind` gives, `alone` what it gives by
+/// itself ([`kj_of_an_hour`]) and `patch_g` the grams left on its patch
+/// ([`patch_grams`]): a plant worth a step alone is weighed alone, as
+/// before; one that is not, by its patch.
+fn kj_with_patch(rules: &Content, bears: Bears, alone: Option<u64>, patch_g: u32) -> Option<u64> {
+    alone.or_else(|| {
+        (patch_g > 0)
+            .then(|| kj_of_an_hour(bears.kj, rules.crops[bears.crop].per_hour_g, patch_g))
+            .flatten()
+    })
 }
 
 /// What a plant giving `kj_per_hour` is worth at `far_squared` (the
@@ -8937,6 +9096,95 @@ fn least_known(mind: &Mind, rules: &Content, camp: Pos, seed: u64, id: BodyId, d
     u8::try_from(way).expect("under eight")
 }
 
+/// What a body standing at a place reads there ([`read_place`]).
+struct PlaceRead {
+    /// The plants it may pick, of the place, each with its crop and the
+    /// grams left on it.
+    picks: Vec<(Aim, Bears, u32)>,
+    /// With patches, the plants bearing now around the place, as far as
+    /// a patch of it reaches ([`patch_grams`]).
+    patched: Vec<Patched>,
+    /// The kinds bearing now seen there, with their crop, how many of
+    /// their plants hold food and what the fullest gives an hour.
+    bearing: Vec<(u16, Bears, u16, u64)>,
+    /// A plant of the place is left alone for now.
+    left_alone: bool,
+}
+
+/// Standing at the place `key` (`side` tiles wide) at the tick `now`, the
+/// plants of its chunk it sees: of the place, those bearing now and not
+/// spent there, not left alone, no mate at them (D56); around it, with
+/// patches, those a patch of the place reaches. `None` if it does not
+/// remember the place.
+fn read_place(
+    world: &World,
+    rules: &Content,
+    (food, bearers): (&Food, &mut Placed),
+    mind: &Mind,
+    taken: &[(ChunkPos, Source)],
+    (key, now): (PlaceKey, u64),
+) -> Option<PlaceRead> {
+    let (side, reach) = (place_side(rules), patch_reach(rules));
+    let chunk = place_centre(key, side).chunk();
+    let corner = (key.0 * side, key.1 * side);
+    let within = |t: Pos| near_place(t, corner, side, 0);
+    let place = mind.places.get(&key)?;
+    let mut read = PlaceRead {
+        picks: Vec::new(),
+        patched: Vec::new(),
+        bearing: Vec::new(),
+        left_alone: false,
+    };
+    let held = bearers.held(world, food, chunk);
+    let changes = world.changes_in(chunk);
+    for (bearer, kind) in held.food() {
+        let tile = bearer.at.tile();
+        let Some(bears) = food.now(kind) else {
+            continue;
+        };
+        let k = (chunk, bearer.source);
+        let inside = within(tile);
+        if inside && place.is_spent(kind, bears.year) {
+            continue;
+        }
+        if mind.left_alone.get(&k).is_some_and(|&tick| now < tick) {
+            read.left_alone |= inside;
+            continue;
+        }
+        if taken.contains(&k) {
+            // A mate of its group is at that one (D56): it sees it there.
+            continue;
+        }
+        if !inside && (reach == 0 || !near_place(tile, corner, side, reach)) {
+            continue;
+        }
+        if inside && !read.bearing.iter().any(|b| b.0 == kind) {
+            read.bearing.push((kind, bears, 0, 0));
+        }
+        let Some((_, left_g)) =
+            world.ripe_of_crop_in(changes, bearer.source, bearer.at, bears.crop)
+        else {
+            continue;
+        };
+        if !inside {
+            read.patched.push(Patched {
+                tile,
+                kind,
+                left_g,
+                alone: true,
+            });
+        } else if left_g > 0 {
+            let aim = Aim {
+                key: k,
+                at: bearer.at,
+                kind,
+            };
+            read.picks.push((aim, bears, left_g));
+        }
+    }
+    Some(read)
+}
+
 /// How a plant ranks at its place ([`pick_in_place`]): its worth, the
 /// nearer first, the key breaking ties.
 type PickRank = (
@@ -8948,8 +9196,13 @@ type PickRank = (
 /// Standing at the place `key`, the tree or plant there worth most now,
 /// with that worth: of a kind bearing now and not spent there, not left
 /// alone, by what an hour of it gives of what is left on it, less the
-/// farther, and none holding less than [`GATHER_MIN_MINUTES`] of work.
-/// The look refreshes what the place is remembered to hold
+/// farther, and none holding less than [`GATHER_MIN_MINUTES`] of work. A
+/// small plant not worth a step alone is weighed by its **patch**, the
+/// plants of its kind around it ([`patch_grams`], D53 amended 25 November
+/// 2026): the patch's grams pass the floor and give its hour, and the
+/// body walks to the nearest plant of the best patch; that one picked
+/// bare, the next choice here takes the next, so it picks the patch
+/// plant after plant. The look refreshes what the place is remembered to hold
 /// ([`Place::saw`]). Nothing worth a step: the place is left alone an
 /// hour if a plant of it was, or its crop still ripens (D48: more
 /// comes); else found bare for the year, by kind.
@@ -8971,65 +9224,60 @@ fn pick_in_place<'a>(
     let side = place_side(rules);
     let chunk = place_centre(key, side).chunk();
     let (x0, y0) = (key.0 * side, key.1 * side);
-    let within = |t: Pos| (x0..x0 + side).contains(&t.x) && (y0..y0 + side).contains(&t.y);
-    let place = mind.places.get(&key)?;
     let half = mind.ways.worth_half_tiles;
-    let held = bearers.held(world, food, chunk);
+    let reach = patch_reach(rules);
+    let PlaceRead {
+        picks,
+        mut patched,
+        mut bearing,
+        left_alone,
+    } = read_place(world, rules, (food, bearers), mind, taken, (key, now))?;
+    let alone: Vec<Option<u64>> = picks
+        .iter()
+        .map(|&(_, bears, left_g)| {
+            kj_of_an_hour(bears.kj, rules.crops[bears.crop].per_hour_g, left_g)
+        })
+        .collect();
+    let by_patch = reach > 0 && alone.iter().any(Option::is_none);
+    if by_patch {
+        // Only when a plant here is not worth a step alone.
+        patch_beside(
+            world,
+            rules,
+            (food, bearers),
+            taken,
+            (chunk, (x0, y0)),
+            &mut patched,
+        );
+    }
+    let grams = if by_patch {
+        patch_grams_of(&picks, &alone, patched, reach)
+    } else {
+        vec![0; picks.len()]
+    };
     let mut best: Option<(PickRank, Target<'a>)> = None;
-    // The kinds bearing now seen there, with their crop, how many of
-    // their plants hold food and what the fullest gives an hour.
-    let mut bearing: Vec<(u16, Bears, u16, u64)> = Vec::new();
-    let mut left_alone = false;
-    for (bearer, kind) in held.food() {
-        let tile = bearer.at.tile();
-        if !within(tile) {
-            continue;
-        }
-        let Some(bears) = food.now(kind) else {
+    for ((&(aim, bears, _), kj), grams) in picks.iter().zip(alone).zip(grams) {
+        let Some(kj) = kj_with_patch(rules, bears, kj, grams) else {
             continue;
         };
-        if place.is_spent(kind, bears.year) {
-            continue;
-        }
-        let k = (chunk, bearer.source);
-        if mind.left_alone.get(&k).is_some_and(|&tick| now < tick) {
-            left_alone = true;
-            continue;
-        }
-        if taken.contains(&k) {
-            // A mate of its group is at that one (D56): it sees it there.
-            continue;
-        }
-        let i = bearing.iter().position(|b| b.0 == kind).unwrap_or_else(|| {
-            bearing.push((kind, bears, 0, 0));
-            bearing.len() - 1
-        });
-        let crop = &rules.crops[bears.crop];
-        let Some((_, left_g)) = world.ripe_of_crop(chunk, bearer.source, bearer.at, bears.crop)
-        else {
-            continue;
-        };
-        let Some(kj) = kj_of_an_hour(bears.kj, crop.per_hour_g, left_g) else {
-            continue;
-        };
+        let i = bearing
+            .iter()
+            .position(|b| b.0 == aim.kind)
+            .expect("a kind bearing there");
         bearing[i].2 = bearing[i].2.saturating_add(1);
         bearing[i].3 = bearing[i].3.max(kj);
-        let d = far(tile, here);
+        let d = far(aim.at.tile(), here);
         let rank = (
             worth(kj, d, half),
             std::cmp::Reverse(d),
-            std::cmp::Reverse(k),
+            std::cmp::Reverse(aim.key),
         );
         if best.as_ref().is_none_or(|(b, _)| rank > *b) {
             best = Some((
                 rank,
                 Target {
-                    aim: Aim {
-                        key: k,
-                        at: bearer.at,
-                        kind,
-                    },
-                    gives: crop.gives.as_str(),
+                    aim,
+                    gives: rules.crops[bears.crop].gives.as_str(),
                 },
             ));
         }
@@ -9069,6 +9317,88 @@ fn pick_in_place<'a>(
         mind.bare_today += 1;
     }
     None
+}
+
+/// The plants bearing now of the chunks beside `chunk`, the chunk of the
+/// place whose corner is `corner`, as far as a patch of it reaches
+/// (`thought.patch_tiles`), into `patched`: read only if already placed
+/// or the turn allows it, those a mate is at left out.
+fn patch_beside(
+    world: &World,
+    rules: &Content,
+    (food, bearers): (&Food, &mut Placed),
+    taken: &[(ChunkPos, Source)],
+    (chunk, corner): (ChunkPos, (i32, i32)),
+    patched: &mut Vec<Patched>,
+) {
+    let (side, reach) = (place_side(rules), patch_reach(rules));
+    let (x0, y0) = corner;
+    let (lo, hi) = (
+        Pos::new(x0 - reach, y0 - reach).chunk(),
+        Pos::new(x0 + side - 1 + reach, y0 + side - 1 + reach).chunk(),
+    );
+    for cy in lo.y..=hi.y {
+        for cx in lo.x..=hi.x {
+            let beside = ChunkPos::new(cx, cy);
+            if beside == chunk {
+                continue;
+            }
+            let Some(held) = bearers.get(world, food, beside) else {
+                continue;
+            };
+            let changes = world.changes_in(beside);
+            for (bearer, kind) in held.food() {
+                let tile = bearer.at.tile();
+                if !near_place(tile, corner, side, reach)
+                    || taken.contains(&(beside, bearer.source))
+                {
+                    continue;
+                }
+                if let Some(bears) = food.now(kind)
+                    && let Some((_, left_g)) =
+                        world.ripe_of_crop_in(changes, bearer.source, bearer.at, bears.crop)
+                {
+                    patched.push(Patched {
+                        tile,
+                        kind,
+                        left_g,
+                        alone: true,
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// The grams of the patch of each of `picks` (a plant of the place, its
+/// crop, the grams left on it) among `patched`, the plants around
+/// ([`patch_grams`]); 0 for those worth a step `alone`.
+fn patch_grams_of(
+    picks: &[(Aim, Bears, u32)],
+    alone: &[Option<u64>],
+    mut patched: Vec<Patched>,
+    reach: i32,
+) -> Vec<u32> {
+    let first = patched.len();
+    patched.extend(
+        picks
+            .iter()
+            .zip(alone)
+            .map(|(&(aim, _, left_g), kj)| Patched {
+                tile: aim.at.tile(),
+                kind: aim.kind,
+                left_g,
+                alone: kj.is_some(),
+            }),
+    );
+    patch_grams(&patched, reach).split_off(first)
+}
+
+/// Is `tile` within `reach` tiles of the place whose corner is `corner`,
+/// `side` tiles wide: as far as a patch of it reaches.
+fn near_place(tile: Pos, (x0, y0): (i32, i32), side: i32, reach: i32) -> bool {
+    (x0 - reach..x0 + side + reach).contains(&tile.x)
+        && (y0 - reach..y0 + side + reach).contains(&tile.y)
 }
 
 /// The tile to stand on at the place `key`: the walkable one nearest its
@@ -11097,6 +11427,198 @@ mod tests {
             place_to_gather(&world, &food, here, mind, 0, side, None).map(|p| p.0) != Some(key),
             "not chosen again this year"
         );
+    }
+
+    #[test]
+    fn a_patch_sums_the_plants_of_its_kind_around_each_small_one() {
+        let plant = |x: i32, y: i32, kind: u16, left_g: u32, alone: bool| Patched {
+            tile: Pos::new(x, y),
+            kind,
+            left_g,
+            alone,
+        };
+        let plants = [
+            plant(10, 10, 1, 30, false),
+            plant(14, 6, 1, 40, false),   // 4 tiles off on each axis: in
+            plant(15, 10, 1, 50, false),  // 5 tiles off: out (in the 2nd's)
+            plant(11, 11, 2, 900, false), // another kind: out
+            plant(-3, -3, 1, 20, false),
+            plant(-6, -1, 1, 25, false), // across zero, 3 and 2 tiles off
+            plant(9, 9, 1, 700, true),   // worth a step alone: summed in
+        ];
+        assert_eq!(
+            patch_grams(&plants, 4),
+            [
+                30 + 40 + 700,
+                40 + 30 + 50,
+                50 + 40,
+                900,
+                20 + 25,
+                25 + 20,
+                0
+            ],
+            "each small plant's patch, itself counted; one worth a step alone is weighed alone"
+        );
+        // The floor is the patch's: a small plant passes with its patch,
+        // one passing alone is weighed alone.
+        let bears = Bears {
+            crop: 0,
+            year: 1,
+            kj: 2850,
+        };
+        let rules = crate::crops::tests::content();
+        let per_hour = rules.crops[0].per_hour_g;
+        let floor = per_hour * GATHER_MIN_MINUTES / 60;
+        assert_eq!(kj_with_patch(&rules, bears, None, floor - 1), None);
+        assert_eq!(
+            kj_with_patch(&rules, bears, None, floor),
+            kj_of_an_hour(2850, per_hour, floor)
+        );
+        assert_eq!(kj_with_patch(&rules, bears, Some(7), per_hour), Some(7));
+    }
+
+    /// The valley at the world's richness 1.0 on day 3 of its first
+    /// spring, a body hungry by its first nettle, piloted, the patches
+    /// `patch_tiles` tiles wide. A nettle holds some 50 g then, under the
+    /// 250 g of ten minutes' work; the nettles grow in clumps.
+    fn by_a_nettle(patch_tiles: u32) -> (World, Content, BodyId, Brains) {
+        use crate::crops::tests::{body_by, calendar, content, run_to};
+        let mut rules = content();
+        for crop in &mut rules.crops {
+            crop.richness_permille = Some(1000);
+        }
+        rules.needs.thought.patch_tiles = patch_tiles;
+        let mut world = World::with_valley(calendar(), &rules, 256);
+        let nettle = (0..8)
+            .flat_map(|y| (0..8).map(move |x| ChunkPos::new(x, y)))
+            .find_map(|c| {
+                world
+                    .bearers_in(c)
+                    .iter()
+                    .find(|b| &*b.kind == "nettle")
+                    .cloned()
+            })
+            .expect("a nettle in the valley");
+        run_to(&mut world, &rules, 3);
+        let id = body_by(&mut world, &nettle);
+        let body = world.bodies.iter_mut().find(|b| b.id() == id).unwrap();
+        body.condition.deficit_j = 60 * u64::from(rules.needs.kj_per_hunger_point) * 1000;
+        body.condition.hunger = Gauge::at(60);
+        let mut brains = Brains::new(7);
+        brains.adopt(&world, &rules, id);
+        near_sighted(&mut brains, id);
+        (world, rules, id, brains)
+    }
+
+    #[test]
+    fn a_patch_of_small_plants_passes_the_floor_where_one_alone_does_not() {
+        // Standing at its first nettle's place, what it sees of the
+        // nettles there: how many hold food worth a step, and what an
+        // hour of the best gives.
+        let nettles = |patch_tiles: u32| {
+            let (world, rules, id, mut brains) = by_a_nettle(patch_tiles);
+            let here = world.body(id).unwrap().pos();
+            let key = place_of(here, place_side(&rules));
+            let food = food_now(&world, &rules);
+            let nettle = food.numbers["nettle"];
+            let mind = brains.minds.get_mut(&id).unwrap();
+            mind.places.insert(key, place_with(&food, nettle, 1));
+            pick_in_place(
+                &world,
+                &rules,
+                &food,
+                &mut brains.bearers,
+                mind,
+                &[],
+                key,
+                here,
+                0,
+            );
+            let seen = mind.places[&key]
+                .kinds
+                .iter()
+                .find(|k| k.kind == nettle)
+                .copied()
+                .expect("the nettles seen");
+            (seen.holding, seen.best_kj)
+        };
+        assert_eq!(nettles(0), (0, 0), "each nettle alone: none worth a step");
+        let (holding, best_kj) = nettles(4);
+        assert!(
+            holding >= 2 && best_kj > 0,
+            "the patch holds ten minutes of work: {holding} nettles, {best_kj} kJ an hour"
+        );
+    }
+
+    #[test]
+    fn a_body_picks_a_patch_plant_after_plant_in_one_go() {
+        // A quarter of a day by the nettles: the plants it picked bare,
+        // each holding less than ten minutes' work alone.
+        let small_picked = |patch_tiles: u32| {
+            let (mut world, rules, id, mut brains) = by_a_nettle(patch_tiles);
+            let ticks = world.calendar().ticks_per_day() / 4;
+            let (events, _) = run_valley(&mut world, &rules, &mut brains, ticks);
+            events
+                .iter()
+                .filter_map(|e| match e {
+                    Event::WorkStopped {
+                        body,
+                        gives,
+                        grams,
+                        why: crate::WorkEnd::Bare,
+                    } if *body == id => {
+                        let crop = rules.crops.iter().find(|c| c.gives == *gives)?;
+                        let floor = crop.per_hour_g * GATHER_MIN_MINUTES / 60;
+                        (*grams < floor).then(|| gives.clone())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<String>>()
+        };
+        assert_eq!(
+            small_picked(0),
+            Vec::<String>::new(),
+            "each plant alone: no small one is worth a step"
+        );
+        let picked = small_picked(4);
+        assert!(
+            picked.len() >= 3,
+            "small plants picked one after the other, each bare: {picked:?}"
+        );
+        assert!(
+            picked.windows(2).any(|w| w[0] == w[1]),
+            "two of the same patch in a row: {picked:?}"
+        );
+    }
+
+    #[test]
+    fn a_plant_worth_a_step_alone_is_chosen_as_before() {
+        // The ripe bramble holds ten minutes' work alone: the patch changes
+        // neither the plant chosen nor its worth.
+        let choose = |patch_tiles: u32| {
+            let (world, mut rules, id, mut brains) = by_a_ripe_bramble(0);
+            rules.needs.thought.patch_tiles = patch_tiles;
+            let here = world.body(id).unwrap().pos();
+            let key = place_of(here, place_side(&rules));
+            let food = food_now(&world, &rules);
+            let mind = brains.minds.get_mut(&id).unwrap();
+            mind.places
+                .insert(key, place_with(&food, food.numbers["bramble"], 1));
+            pick_in_place(
+                &world,
+                &rules,
+                &food,
+                &mut brains.bearers,
+                mind,
+                &[],
+                key,
+                here,
+                0,
+            )
+            .map(|(target, worth)| (target.aim, target.gives.to_owned(), worth))
+        };
+        let before = choose(0).expect("the bramble");
+        assert_eq!(choose(4), Some(before));
     }
 
     #[test]
