@@ -162,6 +162,11 @@ pub struct Settings {
     /// The care for the young's coming days (D58): false pools without it
     /// (`--no-care`), the section's `care_days` set to 0.
     pub care: bool,
+    /// The point of no return and the trips (D53, D56, amended 25
+    /// November 2026): false is the control run without the choice
+    /// (`--no-trips`), the content's `trips` section replaced by none: a
+    /// body gathers until night and walks home in the dark.
+    pub trips: bool,
     /// Where the vivarium's continent is kept between runs
     /// ([`continents`]): `None` for no cache (`--no-continent-cache`),
     /// the continent born at every run. The patch worlds never use it.
@@ -219,6 +224,7 @@ impl Default for Settings {
             moves: true,
             pooling: true,
             care: true,
+            trips: true,
             continents: Some(continents::default_dir()),
             lands: Some(lands::default_dir()),
             helpers: 1,
@@ -2041,6 +2047,7 @@ pub fn run_watched(
         || !settings.moves
         || !settings.pooling
         || !settings.care
+        || !settings.trips
     {
         let mut own = content.clone();
         if settings.fed {
@@ -2065,6 +2072,9 @@ pub fn run_watched(
         }
         if !settings.care {
             own.needs.pooling.care_days = 0;
+        }
+        if !settings.trips {
+            own.needs.trips = sim::content::Trips::default();
         }
         if !settings.moves {
             own.needs.moving = Moving::default();
@@ -2962,7 +2972,8 @@ pub fn run_watched(
                 | News::PutDown { .. }
                 | News::AteAtHearth { .. }
                 | News::SpoiledAtHearth { .. }
-                | News::SawHearth { .. } => continue,
+                | News::SawHearth { .. }
+                | News::Turned { .. } => continue,
                 News::Copied {
                     body,
                     from,
@@ -6283,6 +6294,7 @@ mod tests {
             moves: true,
             pooling: true,
             care: true,
+            trips: true,
             continents: None,
             lands: None,
             helpers: 1,

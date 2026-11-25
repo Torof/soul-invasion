@@ -59,6 +59,10 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
                            pooling section replaced by none)
   --no-care                pool at the hearth without the care for the
                            young's coming days (pooling.care_days 0)
+  --no-trips               the control run of the point of no return: nobody
+                           chooses to go home, stay out or go on; a body
+                           gathers until night and walks home in the dark
+                           (the content's trips section replaced by none)
   --no-continent-cache     bear the vivarium's continent anew instead of
                            reading it from ${XDG_CACHE_HOME:-~/.cache}/soul-sim/
                            continents/ (where a run keeps it; same pages)
@@ -143,6 +147,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--no-moves" => settings.moves = false,
             "--no-pooling" => settings.pooling = false,
             "--no-care" => settings.care = false,
+            "--no-trips" => settings.trips = false,
             "--no-continent-cache" => settings.continents = None,
             "--no-land-cache" => settings.lands = None,
             "--helpers" => settings.helpers = small(&mut i, "--helpers", "too many")?,

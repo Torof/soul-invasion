@@ -445,6 +445,13 @@ pub struct Needs {
     /// gesture.
     #[serde(default)]
     pub hands: Hands,
+    /// The point of no return and the trips (D53, D56, amended 25
+    /// November 2026): away from its camp when the walk home would take
+    /// the rest of the light, and each morning away, a body chooses to go
+    /// home, to stay out or to go on. Absent: nobody chooses; a body
+    /// gathers until night and walks home in the dark, as before.
+    #[serde(default)]
+    pub trips: Trips,
 }
 
 /// Food pooled at the hearth (D58; the project lead, 25 November 2026:
@@ -526,6 +533,93 @@ impl Pooling {
         if self.own_care_percent > 1000 || self.fed_until_years > 100 || self.care_days > 100 {
             return Err(ContentError::Needs(
                 "pooling: own_care_percent 1000, fed_until_years and care_days 100 at most",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The point of no return and the trips (D53, D56, amended 25 November
+/// 2026; the project lead: "il faut effectivement qu'ils puissent
+/// réfléchir à faire demi-tour, quand c'est nécessaire, mais aussi prendre
+/// la décision de dormir sur place et de continuer le voyage"). A body
+/// away from its camp chooses, when the walk home would take the rest of
+/// the day's light and each morning it wakes away: hungry with no food
+/// in sight it goes home; food in sight, it may stay out by
+/// `stay_percent_by_will`; not hungry, it may go on by
+/// `go_on_percent_by_will`; its way to sleep out (D50) raises either
+/// chance to `sleep_out_percent`. Every value is a D30 placeholder, named
+/// and explained in `content/needs.ron`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Trips {
+    /// The chance, in per cent by will, that a body seeing food around it
+    /// stays out: (will, per cent). Empty: nobody chooses (off).
+    pub stay_percent_by_will: Vec<(u32, u32)>,
+    /// The chance, in per cent by will, that a body neither hungry nor
+    /// seeing food goes on with its trip.
+    pub go_on_percent_by_will: Vec<(u32, u32)>,
+    /// With its way to sleep out (D50), either chance is at least this.
+    pub sleep_out_percent: u32,
+}
+
+impl Trips {
+    /// The placeholders of `content/needs.ron` (D30).
+    #[must_use]
+    pub fn placeholders() -> Self {
+        Self {
+            stay_percent_by_will: vec![(0, 30), (100, 90)],
+            go_on_percent_by_will: vec![(0, 0), (100, 60)],
+            sleep_out_percent: 90,
+        }
+    }
+
+    /// Whether a body chooses at the point of no return.
+    #[must_use]
+    pub fn on(&self) -> bool {
+        !self.stay_percent_by_will.is_empty()
+    }
+
+    /// The chance, in per cent, that a body of `will` seeing food stays
+    /// out; with its way to sleep out, at least `sleep_out_percent`.
+    #[must_use]
+    pub fn stay_percent(&self, will: u8, sleeps_out: bool) -> u64 {
+        self.with_way(&self.stay_percent_by_will, will, sleeps_out)
+    }
+
+    /// The chance, in per cent, that a body of `will` neither hungry nor
+    /// seeing food goes on; with its way to sleep out, at least
+    /// `sleep_out_percent`.
+    #[must_use]
+    pub fn go_on_percent(&self, will: u8, sleeps_out: bool) -> u64 {
+        self.with_way(&self.go_on_percent_by_will, will, sleeps_out)
+    }
+
+    fn with_way(&self, curve: &[(u32, u32)], will: u8, sleeps_out: bool) -> u64 {
+        if curve.is_empty() {
+            return 0;
+        }
+        let by_will = along(curve, u64::from(will) * 1000, 1);
+        if sleeps_out {
+            by_will.max(u64::from(self.sleep_out_percent))
+        } else {
+            by_will
+        }
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        let fine = |curve: &[(u32, u32)]| {
+            curve.windows(2).all(|p| p[0].0 < p[1].0)
+                && curve.iter().all(|p| p.0 <= 100 && p.1 <= 100)
+        };
+        if self.stay_percent_by_will.is_empty() != self.go_on_percent_by_will.is_empty()
+            || !fine(&self.stay_percent_by_will)
+            || !fine(&self.go_on_percent_by_will)
+            || self.sleep_out_percent > 100
+        {
+            return Err(ContentError::Needs(
+                "trips: stay_percent_by_will and go_on_percent_by_will both empty or both \
+                 given, their wills rising, every value at most 100; sleep_out_percent at \
+                 most 100",
             ));
         }
         Ok(())
@@ -2144,6 +2238,7 @@ impl Needs {
         self.moving.validate()?;
         self.family.validate()?;
         self.pooling.validate()?;
+        self.trips.validate()?;
         self.hands.validate()
     }
 

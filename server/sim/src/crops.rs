@@ -975,6 +975,10 @@ pub(crate) mod tests {
             for crop in &mut c.crops {
                 crop.richness_permille = Some(7300);
             }
+            // The scenarios put their bodies away from the camp at any
+            // hour: the choice at the point of no return (25 November
+            // 2026) is tested apart, with its own content.
+            c.needs.trips = crate::content::Trips::default();
             c
         })
         .unwrap()
