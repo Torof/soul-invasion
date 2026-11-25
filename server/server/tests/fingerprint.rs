@@ -101,8 +101,9 @@ fn world_print(world: &World) -> (u64, u64, u64) {
 #[test]
 fn the_768_valley_is_pinned() {
     // The items re-pinned for the flint on the banks and by the rock (D57,
-    // 24 November 2026, denser on the 25th); the tiles and the trees
-    // unchanged.
+    // 24 November 2026, denser on the 25th); the trees re-pinned for the
+    // birch on the banks (D37, amended 25 November 2026: the trees have no
+    // generator version, every world's banks change); the tiles unchanged.
     let world = World::with_valley(Calendar::default(), &content(), 768);
     let print = world_print(&world);
     assert_eq!(
@@ -110,7 +111,7 @@ fn the_768_valley_is_pinned() {
         (
             0x69d7_839f_7a2f_8794,
             0x8cdd_0480_3dac_6627,
-            0x9de2_b5e3_514c_af23
+            0xd069_a159_6f50_05dd
         ),
         "{print:#x?}"
     );
