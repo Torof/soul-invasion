@@ -80,6 +80,9 @@ pub struct ToldHands {
     pub teller: BodyId,
     /// The teller's tribe.
     pub tribe: u8,
+    /// What it told: `kept trial`, or a novelty by its deed (`cut birch
+    /// with flint`).
+    pub what: String,
     /// Who believed it that night.
     pub heard: u32,
     /// Its tribe's living past infancy not at that fire.
@@ -210,12 +213,19 @@ impl HandsProbe {
         let is_hands = |record: RecordId| {
             matches!(
                 memory.get(record),
-                Some(Record::Trial {
-                    way: Way::Hands,
-                    kept: true,
-                    ..
-                })
+                Some(
+                    Record::Trial {
+                        way: Way::Hands,
+                        kept: true,
+                        ..
+                    } | Record::Deed { .. }
+                )
             )
+        };
+        // What a telling says: a kept trial, or a novelty by its deed.
+        let what = |record: RecordId| match memory.get(record) {
+            Some(Record::Deed { deed, .. }) => deed_name(content, *deed),
+            _ => "kept trial".to_owned(),
         };
         for news in batch {
             match news {
@@ -272,6 +282,7 @@ impl HandsProbe {
                         record: *record,
                         teller: *body,
                         tribe: t,
+                        what: what(*record),
                         heard: u32::try_from(heard).unwrap_or(u32::MAX),
                         missed: u32::try_from(members.saturating_sub(present)).unwrap_or(u32::MAX),
                     });
@@ -458,6 +469,7 @@ impl HandsProbe {
                 "record": t.record,
                 "teller": t.teller.0,
                 "tribe": tribe_name(t.tribe),
+                "what": t.what,
                 "heard": t.heard,
                 "missed": t.missed,
             })).collect::<Vec<_>>(),

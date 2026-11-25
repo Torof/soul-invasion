@@ -12,6 +12,7 @@ use crate::content::Content;
 use crate::r#gen::scatter::{self, purpose};
 use crate::hands::Gesture;
 use crate::map::{ChunkPos, FinePos, Pos};
+use crate::memory::{Record, Store};
 use crate::trees::TreeKey;
 use crate::{BodyId, GATHER_REACH_MM, Intention, Item, ItemId, World};
 
@@ -147,6 +148,14 @@ pub struct Handwork {
     /// something, a container that held food beyond its arms. Its own
     /// memory of use, no perception: such a thing is kept, never let go.
     pub served: Vec<u16>,
+    /// The kinds of thing its hands made or took (D57, 25 November 2026):
+    /// one not among them is a novelty, told at the fire that evening.
+    pub(super) made_kinds: Vec<u16>,
+    /// The novelties to tell at its next fire: the deed and what it made.
+    pub(super) novel: Vec<(Deed, u16)>,
+    /// The heard deeds it set out to try, and the day: such a deed is
+    /// tried again on the extra chance only once heard again after it.
+    pub(super) tried_heard: Vec<(Deed, u64)>,
 }
 
 impl Handwork {
@@ -202,6 +211,96 @@ impl Handwork {
         self.pending = None;
         self.done = None;
     }
+}
+
+/// The deeds of the hands `mind` heard told and does not know (D57, 25
+/// November 2026), each with the number of different tellers it heard it
+/// from: a novelty told, or a kept trial of the hands. A deed it set out
+/// to try is left out until heard again after that day.
+pub(super) fn heard_deeds(memory: &Store, mind: &Mind) -> Vec<(Deed, u32)> {
+    let mut heard: Vec<(Deed, Vec<BodyId>, u64)> = Vec::new();
+    let mut add = |deed: Deed, by: BodyId, day: u64| {
+        if mind.ways.hands.contains(deed) {
+            return;
+        }
+        match heard.iter_mut().find(|(d, ..)| *d == deed) {
+            Some((_, tellers, last)) => {
+                if !tellers.contains(&by) {
+                    tellers.push(by);
+                }
+                *last = (*last).max(day);
+            }
+            None => heard.push((deed, vec![by], day)),
+        }
+    };
+    for access in &mind.heard_ways {
+        let day = u64::from(access.day);
+        match memory.get(access.record) {
+            Some(Record::Deed { deed, .. }) => add(*deed, access.by, day),
+            Some(Record::Trial {
+                way: Way::Hands,
+                kept: true,
+                after,
+                ..
+            }) => {
+                for deed in after.hands.iter() {
+                    add(deed, access.by, day);
+                }
+            }
+            _ => {}
+        }
+    }
+    heard
+        .into_iter()
+        .filter(|(deed, _, last)| {
+            !mind
+                .handwork
+                .tried_heard
+                .iter()
+                .any(|(d, tried)| d == deed && tried >= last)
+        })
+        .map(|(deed, tellers, _)| (deed, u32::try_from(tellers.len()).unwrap_or(u32::MAX)))
+        .collect()
+}
+
+/// The heard deeds `mind` sets out to try on `day`, as its aim: noted
+/// tried, so that the extra chance does not draw them again until heard
+/// again.
+pub(super) fn aim_at(mind: &mut Mind, deeds: &[(Deed, u32)], day: u64) {
+    mind.handwork.drop_aim();
+    for &(deed, _) in deeds {
+        mind.handwork.aim.add(deed);
+        match mind
+            .handwork
+            .tried_heard
+            .iter_mut()
+            .find(|(d, _)| *d == deed)
+        {
+            Some((_, tried)) => *tried = day,
+            None => mind.handwork.tried_heard.push((deed, day)),
+        }
+    }
+}
+
+/// The extra chance, in per mille, that `mind` sets out on `day` to try
+/// the deeds it heard (D57, 25 November 2026: a deed heard is tried more
+/// readily than an invention): its usual chance by its will (in distress
+/// the percent, else the calm per mille, at least the content's floor for
+/// heard deeds) times the factor of the most tellers any of them was
+/// heard from, at most 1,000. 0 with nothing heard.
+pub(super) fn heard_chance(rules: &Content, mind: &Mind, deeds: &[(Deed, u32)]) -> u64 {
+    let trials = &rules.needs.trials;
+    let Some(tellers) = deeds.iter().map(|(_, n)| *n).max() else {
+        return 0;
+    };
+    let base = if mind.distress_days >= trials.trial_after_days {
+        trials.try_percent(mind.will) * 10
+    } else {
+        trials
+            .calm_try_permille(mind.will)
+            .max(u64::from(trials.heard_calm_floor_permille))
+    };
+    (base * trials.heard_factor(tellers)).min(1000)
 }
 
 /// A material's index in the content.
@@ -419,7 +518,7 @@ pub(super) fn hands_turn(
     if body.making().is_some() {
         return HandsTurn::Decide(None);
     }
-    resolve(world, id, mind);
+    resolve(world, rules, id, mind);
     let day = today(world);
     if mind.handwork.barred.0 != day {
         mind.handwork.barred = (day, Vec::new());
@@ -776,7 +875,7 @@ pub(super) fn judge_trial(
 /// when something came of it (D57), its trial's days counted from today
 /// so that the judge sees the days with the new thing; practised in any
 /// case.
-fn resolve(world: &World, id: BodyId, mind: &mut Mind) {
+fn resolve(world: &World, rules: &Content, id: BodyId, mind: &mut Mind) {
     let Some((deed, item)) = mind.handwork.pending else {
         return;
     };
@@ -796,6 +895,14 @@ fn resolve(world: &World, id: BodyId, mind: &mut Mind) {
     mind.handwork.pending = None;
     if !worked {
         return;
+    }
+    // A new kind of thing made or taken: a novelty, told tonight (the
+    // project lead, 25 November 2026), whatever the trial's judgment.
+    if let Some(made) = product(rules, deed)
+        && !mind.handwork.made_kinds.contains(&made)
+    {
+        mind.handwork.made_kinds.push(made);
+        mind.handwork.novel.push((deed, made));
     }
     // A tool whose cut gave something served it (25 November 2026).
     if deed.gesture == Gesture::Cut && deed.with != NOTHING {
@@ -1147,6 +1254,96 @@ mod tests {
     }
 
     #[test]
+    fn a_novelty_of_the_hands_is_told_that_evening_once() {
+        let (rules, mut world, mut brains, id, _) = by_a_birch();
+        let flint = picked(&mut world, &rules, id, "flint");
+        let take = Deed {
+            gesture: Gesture::Take,
+            on: material(&rules, "flint"),
+            with: NOTHING,
+        };
+        let mind = brains.minds.get_mut(&id).unwrap();
+        mind.handwork.pending = Some((take, flint));
+        resolve(&world, &rules, id, mind);
+        assert_eq!(mind.handwork.novel, vec![(take, material(&rules, "flint"))]);
+        let told = mind.tell_own(id, 3, &mut brains.memory);
+        assert_eq!(told.len(), 1, "told without a judgment");
+        assert!(matches!(
+            brains.memory.get(told[0]),
+            Some(Record::Deed { deed, body, .. }) if *deed == take && *body == id
+        ));
+        let mind = brains.minds.get_mut(&id).unwrap();
+        mind.handwork.pending = Some((take, flint));
+        resolve(&world, &rules, id, mind);
+        assert!(
+            mind.handwork.novel.is_empty(),
+            "a second flint is nothing new"
+        );
+    }
+
+    #[test]
+    fn a_deed_heard_is_tried_more_readily_the_more_tellers_and_once_till_heard_again() {
+        let (rules, world, mut brains, id, birch) = by_a_birch();
+        let flint = material(&rules, "flint");
+        let cut = Deed {
+            gesture: Gesture::Cut,
+            on: birch,
+            with: flint,
+        };
+        let mut records = Vec::new();
+        for teller in 1..=4 {
+            let (record, _) = brains.memory.intern(Record::Deed {
+                body: BodyId(100 + teller),
+                day: 1,
+                deed: cut,
+                made: material(&rules, "birch_bark"),
+                will: 50,
+            });
+            records.push((record, BodyId(100 + teller)));
+        }
+        let mind = brains.minds.get_mut(&id).unwrap();
+        mind.will = 10;
+        mind.distress_days = 0;
+        let trials = &rules.needs.trials;
+        assert_eq!(
+            trials.calm_try_permille(10),
+            0,
+            "no blind invention at will 10"
+        );
+        let mut chances = Vec::new();
+        for &(record, by) in &records {
+            mind.heard_ways.push(Access { record, by, day: 2 });
+            let heard = heard_deeds(&brains.memory, mind);
+            assert_eq!(heard.len(), 1);
+            chances.push(heard_chance(&rules, mind, &heard));
+        }
+        // The floor (1 per mille) times 5, 10, 10, 20.
+        assert_eq!(chances, vec![5, 10, 10, 20]);
+        mind.distress_days = trials.trial_after_days;
+        let heard = heard_deeds(&brains.memory, mind);
+        assert_eq!(
+            heard_chance(&rules, mind, &heard),
+            (trials.try_percent(10) * 10 * 20).min(1000),
+            "in distress: its own percent times the factor"
+        );
+        // Set out to try on day 5: not again on the extra chance until
+        // heard again after that.
+        aim_at(mind, &heard, 5);
+        assert!(mind.handwork.aim.contains(cut));
+        assert_eq!(heard_deeds(&brains.memory, mind), Vec::new());
+        mind.heard_ways.push(Access {
+            record: records[0].0,
+            by: records[0].1,
+            day: 6,
+        });
+        assert_eq!(heard_deeds(&brains.memory, mind).len(), 1, "heard again");
+        // Known, it is no longer a heard deed to try.
+        mind.ways.hands.add(cut);
+        assert_eq!(heard_deeds(&brains.memory, mind), Vec::new());
+        let _ = world;
+    }
+
+    #[test]
     fn a_trial_of_the_hands_learns_only_what_came_to_something() {
         let (rules, world, mut brains, id, birch) = by_a_birch();
         let mind = brains.minds.get_mut(&id).unwrap();
@@ -1165,7 +1362,7 @@ mod tests {
         };
         mind.handwork.pending = Some((cut, ItemId(1)));
         mind.handwork.done = Some(false);
-        resolve(&world, id, mind);
+        resolve(&world, &rules, id, mind);
         assert!(mind.ways.hands.is_empty(), "a cut with a pebble: nothing");
         let fold = Deed {
             gesture: Gesture::Fold,
@@ -1174,10 +1371,10 @@ mod tests {
         };
         mind.handwork.pending = Some((fold, ItemId(1)));
         // Not done yet: it waits.
-        resolve(&world, id, mind);
+        resolve(&world, &rules, id, mind);
         assert_eq!(mind.handwork.pending, Some((fold, ItemId(1))));
         mind.handwork.done = Some(true);
-        resolve(&world, id, mind);
+        resolve(&world, &rules, id, mind);
         assert!(mind.ways.hands.contains(fold));
         assert_eq!(mind.handwork.practised(fold), 1);
         assert_eq!(

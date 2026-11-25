@@ -1519,6 +1519,20 @@ pub struct Trials {
     /// settling, spread over these seasons. One when absent.
     #[serde(default = "one")]
     pub move_repay_seasons: u32,
+    /// A deed heard is tried more readily than an invention (D57, the
+    /// project lead, 25 November 2026: hearing makes one think of it more
+    /// often): a body holding a heard deed of the hands it does not know
+    /// gets an extra daily chance to try it, its usual chance by its will
+    /// times this factor, by the number of different tellers it heard the
+    /// deed from: (tellers, factor), the factor of the greatest count not
+    /// above. Empty: no extra chance.
+    #[serde(default)]
+    pub heard_factor_by_tellers: Vec<(u32, u32)>,
+    /// The base of that extra chance, in per mille a day, for a calm body
+    /// whose will gives less (the calm chance is nothing below 40): heard
+    /// deeds only; an invention keeps its own chance.
+    #[serde(default)]
+    pub heard_calm_floor_permille: u32,
 }
 
 /// The ways a trial may move, as the content names them (D50).
@@ -1548,11 +1562,24 @@ impl Default for Trials {
             lesson_heed_by_will: Vec::new(),
             horizon_seasons: Vec::new(),
             move_repay_seasons: 1,
+            heard_factor_by_tellers: Vec::new(),
+            heard_calm_floor_permille: 0,
         }
     }
 }
 
 impl Trials {
+    /// The extra chance's factor for a deed heard from `tellers`
+    /// different tellers (D57): 0 when none applies.
+    #[must_use]
+    pub fn heard_factor(&self, tellers: u32) -> u64 {
+        self.heard_factor_by_tellers
+            .iter()
+            .filter(|(n, _)| *n <= tellers)
+            .max_by_key(|(n, _)| *n)
+            .map_or(0, |(_, f)| u64::from(*f))
+    }
+
     /// The innate will of a body from a draw `permille` (0 to 1,000): read
     /// on the `will_innate` table at that percentile; flat without one.
     #[must_use]

@@ -3145,6 +3145,40 @@ impl Mind {
         }
     }
 
+    /// What `me` lived and tells first at a fire (D55, D57): its way
+    /// judged today, kept or given up, then the novelties of its hands,
+    /// told before any judgment (25 November 2026).
+    fn tell_own(&mut self, me: BodyId, day: u32, memory: &mut Store) -> Vec<RecordId> {
+        let mut own = Vec::new();
+        if let Some(judged) = self.judged.take() {
+            let (id, _) = memory.intern(Record::Trial {
+                body: me,
+                day,
+                way: judged.way,
+                after: judged.after,
+                up: judged.up,
+                kept: judged.kept,
+                will: self.will,
+                before: judged.before,
+                during: judged.during,
+            });
+            own.push(id);
+        }
+        // A novelty of its hands, told the evening it was made, before
+        // any judgment (D57, the project lead, 25 November 2026).
+        for (deed, made) in std::mem::take(&mut self.handwork.novel) {
+            let (id, _) = memory.intern(Record::Deed {
+                body: me,
+                day,
+                deed,
+                made,
+                will: self.will,
+            });
+            own.push(id);
+        }
+        own
+    }
+
     /// What `me` tells at the fire of `camp` tonight (D55), each a record
     /// found or written once in `memory`: its way judged today, the
     /// drinking places it found today, then the places that changed for
@@ -3166,20 +3200,7 @@ impl Mind {
     ) -> (Vec<RecordId>, Vec<RecordId>) {
         let mut told = Vec::new();
         let most = usize::try_from(fire.told_per_night).unwrap_or(usize::MAX);
-        if let Some(judged) = self.judged.take() {
-            let (id, _) = memory.intern(Record::Trial {
-                body: me,
-                day,
-                way: judged.way,
-                after: judged.after,
-                up: judged.up,
-                kept: judged.kept,
-                will: self.will,
-                before: judged.before,
-                during: judged.during,
-            });
-            told.push(id);
-        }
+        told.extend(self.tell_own(me, day, memory));
         for chunk in std::mem::take(&mut self.water_found) {
             if told.len() >= most {
                 break;
@@ -3448,9 +3469,10 @@ impl Mind {
                 trim_water(self, camp);
                 false
             }
-            Some(Record::Trial { .. }) => {
+            Some(Record::Trial { .. } | Record::Deed { .. }) => {
                 // Kept or given up: a kept way to copy or try, a lesson
-                // either way (D50, amended).
+                // either way (D50, amended); a novelty of the hands, a
+                // deed to try (D57, 25 November 2026).
                 memory.hold(record);
                 self.hold_way(access, fire, memory);
                 true
@@ -8818,7 +8840,53 @@ fn change_or_move(
         mind.changed_day = Some(day);
         return vec![news];
     }
+    // A deed heard is tried more readily than an invention (D57, the
+    // project lead, 25 November 2026): an extra chance, by its will and
+    // the tellers it heard it from.
+    if rules.needs.hands.on() {
+        let heard = handwork::heard_deeds(memory, mind);
+        let chance = handwork::heard_chance(rules, mind, &heard);
+        if chance > 0
+            && scatter::roll(seed, purpose::HANDS_HEARD, &[u64::from(id.0), day]) % 1000 < chance
+        {
+            mind.changed_day = Some(day);
+            return vec![start_heard_deeds(world, rules, id, mind, (&heard, day))];
+        }
+    }
     Vec::new()
+}
+
+/// `id` sets out on `day` to try the deeds of the hands it heard and does
+/// not know (D57, 25 November 2026): a trial of its hands aimed at them
+/// all, as a body that knows them would do them; it learns those that
+/// come to something in its own hands.
+fn start_heard_deeds(
+    world: &World,
+    rules: &Content,
+    id: BodyId,
+    mind: &mut Mind,
+    (heard, day): (&[(Deed, u32)], u64),
+) -> News {
+    let before = mind.ways;
+    handwork::aim_at(mind, heard, day);
+    let trials = &rules.needs.trials;
+    mind.trial = Some(Trial {
+        way: Way::Hands,
+        before,
+        started_day: day,
+        before_days: mind
+            .lately(trials.days_for(Way::Hands.key(), world.calendar().days_per_cycle())),
+        heard: HeardDays::default(),
+        caller: None,
+    });
+    News::Trying {
+        body: id,
+        way: Way::Hands,
+        before,
+        after: mind.ways,
+        heard: true,
+        at: world.tick().0,
+    }
 }
 
 /// `id` starts a trial on `day` (D50): one way moved by one step, drawn
@@ -8846,8 +8914,13 @@ fn start_trial(
             // knowledge model, 22 November 2026): it tries the deeds
             // heard, and learns those that come to something in its own
             // hands.
-            mind.handwork.drop_aim();
-            mind.handwork.aim = theirs.hands;
+            let heard: Vec<(Deed, u32)> = theirs
+                .hands
+                .iter()
+                .filter(|d| !mind.ways.hands.contains(*d))
+                .map(|d| (d, 1))
+                .collect();
+            handwork::aim_at(mind, &heard, day);
         } else {
             copy_way(mind, way, &theirs, seed, &[u64::from(id.0), day], trials);
         }

@@ -280,6 +280,18 @@
         lesson_heed_by_will: [(0, 100), (100, 30)],
         horizon_seasons: [("stock_kj", 1), ("sleep_out", 1), ("home", 1)],
         move_repay_seasons: 1,
+        // A deed heard is tried more readily than an invention (D57, the
+        // project lead, 25 November 2026: "hearing makes one think of it
+        // more often"; D30 placeholders). A body holding a heard deed of
+        // the hands it does not know gets an extra daily chance to try it:
+        // its usual chance by its will (calm, or in distress) times a
+        // factor by the different tellers it heard it from, x5 for one,
+        // x10 for two or three, x20 for four or more. The calm chance is
+        // nothing below will 40, so a calm body's base is at least 1 per
+        // mille a journée (0.1 %, the lead, 25 November 2026: "au lieu
+        // d'avoir 5 fois 0, on a 5 fois 0,1"), for heard deeds only.
+        heard_factor_by_tellers: [(1, 5), (2, 10), (4, 20)],
+        heard_calm_floor_permille: 1,
     ),
     // The rules of thought that keep a mind light (D53, decided by the
     // project lead on 22 November 2026): perceptions and gestures, never

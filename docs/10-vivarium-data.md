@@ -383,7 +383,7 @@ clock, the only field no seed decides.
 | `hands.made` | Containers made | count |
 | `hands.remakes` | Of them, by a body whose own container had torn before | count |
 | `hands.makers` | The bodies that made one | count |
-| `hands.told[]` | Each telling at a fire of a kept trial of the hands, in order: `day`, `record`, `teller`, `tribe`, `heard` (who believed it that night), `missed` (its tribe's living past infancy not at that fire) | list |
+| `hands.told[]` | Each telling at a fire of a kept trial of the hands or of a novelty of the hands (D57, 25 November 2026), in order: `day`, `record`, `teller`, `tribe`, `what` (`kept trial`, or the novelty's deed: `take flint`, `cut birch with flint`, `fold birch_bark`), `heard` (who believed it that night), `missed` (its tribe's living past infancy not at that fire) | list |
 | `hands.heard` | Bodies that heard a deed of the hands told | count |
 | `hands.heard_never_tried` | Of them, those that never began a trial of the deeds heard | count |
 | `hands.heard_across_tribes` | Hearings by a listener of the other tribe than its teller (0 while camps do not visit) | count |

@@ -842,6 +842,11 @@ fn record_row(id: RecordId, record: &Record, refs: u32) -> RecordRow {
             row.told = u32::try_from(told.len()).unwrap_or(u32::MAX);
         }
         Record::Reputed { .. } => row.kind = "reputed",
+        Record::Deed { will, .. } => {
+            row.kind = "deed";
+            row.way = Some(Way::Hands);
+            row.will = Some(*will);
+        }
         Record::Barred { place, .. } => {
             row.kind = "barred";
             row.place = Some(*place);

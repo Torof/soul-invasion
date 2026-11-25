@@ -190,10 +190,12 @@ pub(crate) mod purpose {
     pub(crate) const HANDS_GESTURE: u64 = 0x0d57_9e57;
     /// See `HANDS_GESTURE`.
     pub(crate) const HANDS_THING: u64 = 0x0d57_7419;
+    /// The extra chance to try a deed heard (D57, 25 November 2026).
+    pub(crate) const HANDS_HEARD: u64 = 0x0d57_4ea2;
 
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 74] = [
+    pub(crate) const ALL: [u64; 75] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -268,6 +270,7 @@ pub(crate) mod purpose {
         FIRE_SEE,
         HANDS_GESTURE,
         HANDS_THING,
+        HANDS_HEARD,
     ];
 }
 
