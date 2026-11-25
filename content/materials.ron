@@ -8,12 +8,17 @@
 //              grams, split and merged (D35).
 // hardness:    0 (soft) to 10 (hardest); knapping and cutting compare it.
 // flammable:   feeds a fire.
-// food:        None, or (energy_kj_per_kg, keeps_days): the energy of a
-//              kilogram on the one scale all content shares (D15), and
-//              the days before it spoils untreated.
+// food:        None, or (energy_kj_per_kg, keeps_days or keeps_seasons):
+//              the energy of a kilogram on the one scale all content
+//              shares (D15), and how long it keeps untreated: a short
+//              keeping in days, a long one in seasons, so that it follows
+//              the calendar when the calendar is tuned (D09); never both.
 //              Nuts, wild grain, peas and seeds keep a cycle of the
-//              four seasons at least (64 days, calendar v1; the project
-//              lead, 24 November 2026): autumn's food lasts to spring.
+//              four seasons at least (keeps_seasons: 4, 64 days in
+//              calendar v1; the project lead, 24 November 2026): autumn's
+//              food lasts to spring. Walnuts keep six seasons, a cycle
+//              and a half (96 days in calendar v1; 90 days until 25
+//              November 2026, the nearest whole seasons).
 //              Hazelnuts and walnuts are weighed in their shells, as
 //              the crops give them: 11,500 kJ a kilogram, not the
 //              kernel's 26,000 (the plants' weight, 24 November 2026).
@@ -24,7 +29,8 @@
 // folds_into:  a material it becomes when folded, keeping its grams.
 // holds_g:     a container: the grams of loose food it keeps together,
 //              on top of what the arms hold.
-// wears_days:  days after it was made that it tears and is gone.
+// wears_days:  days after it was made that it tears and is gone; or
+// wears_seasons: the same in seasons, for a long wear (D09); never both.
 [
     (id: "flint", name: "Flint",
      description: "A hard stone that flakes to a sharp edge when struck.",
@@ -53,7 +59,7 @@
     (id: "hazelnuts", name: "Hazelnuts",
      description: "Hazelnuts in their shells. They keep for months.",
      kind: plant, mass_kg: 0.1, hardness: 1,
-     flammable: false, food: Some((energy_kj_per_kg: 11500, keeps_days: 64)), look: (colour: "#9a6b3a")),
+     flammable: false, food: Some((energy_kj_per_kg: 11500, keeps_seasons: 4)), look: (colour: "#9a6b3a")),
     (id: "blackberries", name: "Blackberries",
      description: "A handful of blackberries. They spoil in days.",
      kind: plant, mass_kg: 0.1, hardness: 0,
@@ -99,11 +105,11 @@
     (id: "peas", name: "Wild peas",
      description: "Small dry peas from their pods. They keep for months.",
      kind: plant, mass_kg: 0.1, hardness: 1,
-     flammable: false, food: Some((energy_kj_per_kg: 14000, keeps_days: 64)), look: (colour: "#9aaa5a")),
+     flammable: false, food: Some((energy_kj_per_kg: 14000, keeps_seasons: 4)), look: (colour: "#9aaa5a")),
     (id: "grain", name: "Wild grain",
      description: "Hard seeds of wild grasses, rubbed from their ears. They keep for a year, dry.",
      kind: plant, mass_kg: 0.1, hardness: 1,
-     flammable: false, food: Some((energy_kj_per_kg: 14000, keeps_days: 64)), look: (colour: "#caaa5a")),
+     flammable: false, food: Some((energy_kj_per_kg: 14000, keeps_seasons: 4)), look: (colour: "#caaa5a")),
     (id: "chanterelles", name: "Chanterelles",
      description: "Golden funnel-shaped mushrooms. They spoil in days.",
      kind: plant, mass_kg: 0.1, hardness: 0,
@@ -127,7 +133,7 @@
     (id: "flax_seeds", name: "Flax seeds",
      description: "Small oily seeds of wild flax. They keep for months.",
      kind: plant, mass_kg: 0.1, hardness: 1,
-     flammable: false, food: Some((energy_kj_per_kg: 22000, keeps_days: 64)), look: (colour: "#8a6a3a")),
+     flammable: false, food: Some((energy_kj_per_kg: 22000, keeps_seasons: 4)), look: (colour: "#8a6a3a")),
     (id: "cattail_root", name: "Cattail root",
      description: "Starchy rootstock dug from the mud of the bank. It keeps for weeks.",
      kind: plant, mass_kg: 0.1, hardness: 1,
@@ -250,23 +256,24 @@
     (id: "walnuts", name: "Walnuts",
      description: "Walnuts in their shells, rich and oily. They keep for months.",
      kind: plant, mass_kg: 0.1, hardness: 0,
-     flammable: false, food: Some((energy_kj_per_kg: 11500, keeps_days: 90)), look: (colour: "#8a6a4a")),
+     flammable: false, food: Some((energy_kj_per_kg: 11500, keeps_seasons: 6)), look: (colour: "#8a6a4a")),
     (id: "chestnuts", name: "Sweet chestnuts",
      description: "Shiny brown nuts from spiny husks, starchy and sweet. They keep for weeks.",
      kind: plant, mass_kg: 0.1, hardness: 0,
-     flammable: false, food: Some((energy_kj_per_kg: 8000, keeps_days: 64)), look: (colour: "#6a3a1a")),
+     flammable: false, food: Some((energy_kj_per_kg: 8000, keeps_seasons: 4)), look: (colour: "#6a3a1a")),
     // Birch bark (D57, the project lead, 24 November 2026: "C'est
     // parfait"): cut from a birch with something sharp in hand; supple, it
     // folds. Folded, it keeps loose food together. Placeholder values.
-    // Folded, it lasts a cycle (64 days; the project lead's principle E,
-    // 25 November 2026: a thing lasts at least as long as what it serves,
-    // and the nuts it carries keep 64 days; it tore in 16).
+    // Folded, it lasts a cycle, four seasons (64 days in calendar v1; the
+    // project lead's principle E, 25 November 2026: a thing lasts at least
+    // as long as what it serves, and the nuts it carries keep four
+    // seasons; it tore in 16 days).
     (id: "birch_bark", name: "Birch bark",
      description: "A sheet of bark cut from a birch, supple and waterproof. It folds without breaking.",
      kind: plant, mass_kg: 0.2, hardness: 1, folds_into: Some("folded_birch_bark"),
      flammable: true, food: None, look: (colour: "#e8e2d0")),
     (id: "folded_birch_bark", name: "Folded birch bark",
      description: "A sheet of birch bark folded on itself. What is put in it stays together; it tears after four seasons.",
-     kind: plant, mass_kg: 0.2, hardness: 1, holds_g: 4000, wears_days: 64,
+     kind: plant, mass_kg: 0.2, hardness: 1, holds_g: 4000, wears_seasons: 4,
      flammable: true, food: None, look: (colour: "#d8cfb4")),
 ]

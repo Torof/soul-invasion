@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::map::{CHUNK_SIZE, Terrain};
-use crate::time::Season;
+use crate::time::{Calendar, Season};
 use crate::woods::Habitat;
 
 /// What family a material belongs to. Guides what can be done with it;
@@ -38,11 +38,36 @@ pub struct Food {
     /// Energy of a kilogram, in kilojoules: the one scale all content
     /// shares (D15), so an item gives what its grams are worth.
     pub energy_kj_per_kg: u32,
-    /// Days before it spoils, untreated (D16: computed on demand).
+    /// Days before it spoils, untreated (D16: computed on demand): a
+    /// short keeping, written in days (D09: what rots follows the day).
+    /// 0 when it keeps seasons.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub keeps_days: u32,
+    /// Seasons before it spoils, untreated: a long keeping (nuts, grain,
+    /// seeds), written in seasons so it follows the world's cycle when
+    /// the calendar is tuned (D09, D15). 0 when it keeps days; never both.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub keeps_seasons: u32,
 }
 
 impl Food {
+    /// The days it keeps in a cycle of `days_per_cycle` days: its
+    /// seasons in whole days when it keeps seasons, else its days.
+    #[must_use]
+    pub fn days_kept(&self, days_per_cycle: u32) -> u32 {
+        if self.keeps_seasons > 0 {
+            season_days(self.keeps_seasons, days_per_cycle)
+        } else {
+            self.keeps_days
+        }
+    }
+
+    /// The ticks it keeps under `calendar` ([`Food::days_kept`]).
+    #[must_use]
+    pub fn ticks_kept(&self, calendar: &Calendar) -> u64 {
+        u64::from(self.days_kept(calendar.days_per_cycle())) * calendar.ticks_per_day()
+    }
+
     /// Kilojoules in `grams` of it, rounded down.
     #[must_use]
     pub fn energy_kj(&self, grams: u32) -> u32 {
@@ -69,6 +94,18 @@ impl Material {
     )]
     pub fn mass_g(&self) -> u32 {
         (self.mass_kg * 1000.0).round().clamp(0.0, 1e9) as u32
+    }
+
+    /// The days after it was made that it tears, in a cycle of
+    /// `days_per_cycle` days: its `wears_seasons` in whole days when set,
+    /// else its `wears_days`; 0 when it never wears.
+    #[must_use]
+    pub fn days_worn(&self, days_per_cycle: u32) -> u32 {
+        if self.wears_seasons > 0 {
+            season_days(self.wears_seasons, days_per_cycle)
+        } else {
+            self.wears_days
+        }
     }
 }
 
@@ -102,10 +139,16 @@ pub struct Material {
     /// top of what the arms hold (`movement.hands_g`). 0: none.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub holds_g: u32,
-    /// The days after it was made that it tears and is gone (D57). 0: it
-    /// never wears (food spoils by its own `keeps_days`).
+    /// The days after it was made that it tears and is gone (D57): a
+    /// short wear, written in days. 0: not in days (food spoils by its
+    /// own keeping).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub wears_days: u32,
+    /// The seasons after it was made that it tears and is gone: a long
+    /// wear, written in seasons so it follows the world's cycle (D09).
+    /// 0: not in seasons; never both; neither, it never wears.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub wears_seasons: u32,
     /// How it looks.
     pub look: Look,
 }
@@ -1059,8 +1102,10 @@ pub struct Decisions {
     /// How many legs one who goes looking walks out, each a sight
     /// farther than the last, before it gathers as any day.
     pub look_legs: u32,
-    /// How many days of what it did a mind keeps (its habit).
-    pub habit_days: u32,
+    /// How many seasons of what it did a mind keeps (its habit), one
+    /// byte a day: a long duration, written in seasons (D09); see
+    /// [`Decisions::habit_days`].
+    pub habit_seasons: u32,
     /// What each of those days weighs on going looking: a day it looked
     /// and found adds this many per cent of the chance, a day it looked
     /// for nothing takes it away.
@@ -1124,7 +1169,7 @@ impl Default for Decisions {
             follows_mother_years: 12,
             look_percent_by_will: vec![(0, 0)],
             look_legs: 3,
-            habit_days: 64,
+            habit_seasons: 4,
             habit_weight: 50,
             habit_floor: 10,
             home_when_full_percent: 50,
@@ -1140,6 +1185,13 @@ impl Default for Decisions {
 }
 
 impl Decisions {
+    /// The days of what it did a mind keeps in a cycle of
+    /// `days_per_cycle` days: its `habit_seasons` in whole days.
+    #[must_use]
+    pub fn habit_days(&self, days_per_cycle: u32) -> u32 {
+        season_days(self.habit_seasons, days_per_cycle)
+    }
+
     /// The placeholders of `content/needs.ron` (D30).
     #[must_use]
     pub fn placeholders() -> Self {
@@ -1606,9 +1658,10 @@ pub struct Fire {
     /// held food worth a step when looked at: bare under the first, some
     /// from the first to under the second, full from the second.
     pub place_buckets: (u32, u32),
-    /// How many nights a camp's hearth keeps: what the tribe knows is the
-    /// union of them.
-    pub hearth_nights: u32,
+    /// How many seasons of nights a camp's hearth keeps: what the tribe
+    /// knows is the union of them. A long duration, written in seasons
+    /// (D09); see [`Fire::hearth_nights`].
+    pub hearth_seasons: u32,
     /// How many days a told state of a kind is worth believing for each
     /// hour of work one of its plants holds (its crop's `grams` of a usual
     /// year over `per_hour_g`, `crops.ron`): over that many days of the
@@ -1634,7 +1687,7 @@ impl Default for Fire {
             heard_max: 0,
             heard_by_age: vec![(0, 0)],
             place_buckets: (1, 4),
-            hearth_nights: 0,
+            hearth_seasons: 0,
             told_days_per_hour: 4,
             told_days_max: 20,
             denied_per_night: 0,
@@ -1643,6 +1696,13 @@ impl Default for Fire {
 }
 
 impl Fire {
+    /// The nights a camp's hearth keeps in a cycle of `days_per_cycle`
+    /// days: its `hearth_seasons` in whole days, a night each.
+    #[must_use]
+    pub fn hearth_nights(&self, days_per_cycle: u32) -> u32 {
+        season_days(self.hearth_seasons, days_per_cycle)
+    }
+
     /// The placeholders of `content/needs.ron` (D30).
     #[must_use]
     pub fn placeholders() -> Self {
@@ -1651,7 +1711,7 @@ impl Fire {
             heard_max: 24,
             heard_by_age: vec![(2, 6), (8, 12), (14, 20), (16, 24)],
             place_buckets: (1, 4),
-            hearth_nights: 64,
+            hearth_seasons: 4,
             told_days_per_hour: 4,
             told_days_max: 20,
             denied_per_night: 6,
@@ -1708,9 +1768,9 @@ impl Fire {
                 "fire: place_buckets is (some from, full from), 1 or more and rising",
             ));
         }
-        if self.on() && self.hearth_nights == 0 {
+        if self.on() && self.hearth_seasons == 0 {
             return Err(ContentError::Needs(
-                "fire: hearth_nights is a night or more when the fire is on",
+                "fire: hearth_seasons is a season or more when the fire is on",
             ));
         }
         if self.on() && (self.told_days_per_hour == 0 || self.told_days_max == 0) {
@@ -1792,10 +1852,11 @@ pub struct Trials {
     /// abandoned, in per cent of the base weight of 100.
     #[serde(default)]
     pub lesson_weight: u32,
-    /// A lesson older than this many days weighs half, older than twice
-    /// it nothing.
+    /// A lesson older than this many seasons weighs half, older than
+    /// twice it nothing: a long duration, written in seasons (D09); see
+    /// [`Trials::lesson_days`].
     #[serde(default)]
-    pub lesson_days: u32,
+    pub lesson_seasons: u32,
     /// The least weight a candidate keeps, in per cent of the base: a
     /// weight, never a ban.
     #[serde(default = "percent_100")]
@@ -1866,7 +1927,7 @@ impl Default for Trials {
             will_step_kept: 0,
             will_step_lost: 0,
             lesson_weight: 0,
-            lesson_days: 0,
+            lesson_seasons: 0,
             lesson_floor: 100,
             lesson_heed_by_will: Vec::new(),
             horizon_seasons: Vec::new(),
@@ -2018,6 +2079,13 @@ impl Trials {
         !self.horizon_seasons.iter().any(|(way, _)| way == key)
     }
 
+    /// The days a lesson weighs whole in a cycle of `days_per_cycle`
+    /// days: its `lesson_seasons` in whole days.
+    #[must_use]
+    pub fn lesson_days(&self, days_per_cycle: u32) -> u32 {
+        season_days(self.lesson_seasons, days_per_cycle)
+    }
+
     /// The days over which a move must repay its cost, at least one.
     #[must_use]
     pub fn move_repay_days(&self, days_per_year: u32) -> u32 {
@@ -2042,7 +2110,9 @@ impl Trials {
     }
 }
 
-/// `seasons` seasons of a year of `days_per_year` days, in whole days.
+/// `seasons` seasons of a cycle of `days_per_year` days, in whole days
+/// (rounded down): how every long duration written in seasons becomes
+/// days under the world's calendar (D09).
 fn season_days(seasons: u32, days_per_year: u32) -> u32 {
     let days = u64::from(seasons) * u64::from(days_per_year) / 4;
     u32::try_from(days).unwrap_or(u32::MAX)
@@ -2897,6 +2967,27 @@ impl Content {
         Ok(())
     }
 
+    /// Checks a material's keeping and wear are written in days or in
+    /// seasons, never both (D09).
+    fn validate_keeping(&self) -> Result<(), ContentError> {
+        for material in &self.materials {
+            let invalid = |what| ContentError::InvalidValue {
+                id: material.id.clone(),
+                what,
+            };
+            if material.wears_days > 0 && material.wears_seasons > 0 {
+                return Err(invalid("wears in days or in seasons, not both"));
+            }
+            if material
+                .food
+                .is_some_and(|food| food.keeps_days > 0 && food.keeps_seasons > 0)
+            {
+                return Err(invalid("food keeps days or seasons, not both"));
+            }
+        }
+        Ok(())
+    }
+
     /// Checks what the gestures of the hands name (D57): a material's
     /// fold and a tree's bark are materials.
     fn validate_gestures(&self, ids: &BTreeSet<&str>) -> Result<(), ContentError> {
@@ -2966,6 +3057,7 @@ impl Content {
             }
         }
         self.validate_gestures(&ids)?;
+        self.validate_keeping()?;
         self.validate_species()?;
         self.validate_flora()?;
         for (index, spawn) in self.spawns.iter().enumerate() {
@@ -3214,6 +3306,12 @@ impl Content {
                     field("food.keeps_days"),
                     food.keeps_days,
                     MILLION,
+                )?;
+                at_most(
+                    "materials.ron",
+                    field("food.keeps_seasons"),
+                    food.keeps_seasons,
+                    THOUSAND,
                 )?;
             }
         }
@@ -3767,6 +3865,50 @@ mod tests {
         assert!(pooling.validate().is_ok());
     }
 
+    /// A long duration written in seasons is its seasons in whole days of
+    /// the world's cycle (D09): calendar v1's 16 days a season, and it
+    /// follows a cycle tuned otherwise; one in days stays its days.
+    #[test]
+    fn a_duration_in_seasons_follows_the_cycle_and_one_in_days_does_not() {
+        let nuts = Food {
+            energy_kj_per_kg: 11_500,
+            keeps_days: 0,
+            keeps_seasons: 4,
+        };
+        let berries = Food {
+            keeps_days: 3,
+            keeps_seasons: 0,
+            ..nuts
+        };
+        assert_eq!(nuts.days_kept(64), 64);
+        assert_eq!(nuts.days_kept(50), 50);
+        assert_eq!(
+            Food {
+                keeps_seasons: 6,
+                ..nuts
+            }
+            .days_kept(64),
+            96
+        );
+        assert_eq!(berries.days_kept(64), 3);
+        assert_eq!(berries.days_kept(50), 3);
+        let calendar = Calendar::new(1, 7200).unwrap();
+        assert_eq!(nuts.ticks_kept(&calendar), 64 * 7200);
+        let fire = Fire {
+            hearth_seasons: 1,
+            ..Fire::placeholders()
+        };
+        assert_eq!(fire.hearth_nights(64), 16);
+        assert_eq!(Fire::placeholders().hearth_nights(64), 64);
+        let mut trials = Trials::default();
+        assert_eq!(trials.lesson_days(64), 0, "no lessons: none kept");
+        trials.lesson_seasons = 4;
+        assert_eq!(trials.lesson_days(64), 64);
+        let decisions = Decisions::placeholders();
+        assert_eq!(decisions.habit_days(64), 64);
+        assert_eq!(decisions.habit_days(50), 50);
+    }
+
     #[test]
     fn values_outside_sense_are_refused() {
         let bad = |field: &str| {
@@ -3812,6 +3954,15 @@ mod tests {
             Content::from_ron(&mute, "[]", SAMPLE_MOVEMENT, SAMPLE_NEEDS).unwrap_err(),
             ContentError::InvalidValue {
                 what: "description is empty",
+                ..
+            }
+        ));
+        // A keeping is written in days or in seasons, never both (D09).
+        let both = SAMPLE_MATERIALS.replacen("keeps_days: 3", "keeps_days: 3, keeps_seasons: 4", 1);
+        assert!(matches!(
+            Content::from_ron(&both, "[]", SAMPLE_MOVEMENT, SAMPLE_NEEDS).unwrap_err(),
+            ContentError::InvalidValue {
+                what: "food keeps days or seasons, not both",
                 ..
             }
         ));

@@ -29,6 +29,37 @@ fn the_content_directory_loads_and_validates() {
     }
 }
 
+/// The long durations are written in seasons (D09, the clocks audit's
+/// principle D, 25 November 2026) and give calendar v1's days exactly as
+/// the days they replaced: nuts, grain, peas and seeds keep 64 days,
+/// walnuts six seasons (96, from 90), folded bark lasts 64, the hearth,
+/// the habits and the lessons hold 64; under another cycle they follow it.
+#[test]
+fn the_long_durations_in_seasons_give_calendar_v1_its_days() {
+    let content = repository_content();
+    let v1 = Calendar::DEFAULT_DAYS_PER_CYCLE;
+    assert_eq!(v1, 64);
+    let kept = |id: &str, per_cycle: u32| {
+        content
+            .material(id)
+            .and_then(|m| m.food)
+            .map(|food| food.days_kept(per_cycle))
+    };
+    for id in ["hazelnuts", "peas", "grain", "flax_seeds", "chestnuts"] {
+        assert_eq!(kept(id, v1), Some(64), "{id}");
+        assert_eq!(kept(id, 50), Some(50), "{id} follows the cycle");
+    }
+    assert_eq!(kept("walnuts", v1), Some(96));
+    assert_eq!(kept("berries", v1), Some(3), "a short keeping stays days");
+    let bark = content.material("folded_birch_bark").unwrap();
+    assert_eq!(bark.days_worn(v1), 64);
+    let needs = &content.needs;
+    assert_eq!(needs.fire.hearth_nights(v1), 64);
+    assert_eq!(needs.decisions.habit_days(v1), 64);
+    assert_eq!(needs.trials.lesson_days(v1), 64);
+    assert_eq!(needs.life.part_after_days, 12, "an absence stays in days");
+}
+
 /// Food weighs its energy per kilogram now (D15, D35): a piece of each
 /// food gives the kilojoules its single piece gave before, and a meal is
 /// a positive number of grams.

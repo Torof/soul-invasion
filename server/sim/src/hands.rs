@@ -523,6 +523,7 @@ mod tests {
             .iter_mut()
             .find(|m| m.id == "folded_birch_bark")
             .unwrap();
+        folded.wears_seasons = 0;
         folded.wears_days = 1;
         // Two days alive whatever the cold, thirst and hunger.
         rules.needs.freezing_per_day = 0;

@@ -3693,17 +3693,21 @@ impl World {
             .is_some_and(|item| self.spoiled(item, rules))
     }
 
-    /// Has `item` spoiled (D16, D45)? Food does, its content's days after
-    /// it was made; a material that wears tears its `wears_days` after
-    /// (D57); anything else never.
+    /// Has `item` spoiled (D16, D45)? Food does, its content's keeping
+    /// after it was made; a material that wears tears its wear after
+    /// (D57); anything else never. Keeping and wear written in seasons
+    /// follow this world's cycle (D09).
     fn spoiled(&self, item: &Item, rules: &Content) -> bool {
         let Some(material) = rules.material(&item.material) else {
             return false;
         };
+        let per_cycle = self.calendar.days_per_cycle();
         let days = match material.food {
-            Some(food) => food.keeps_days,
-            None if material.wears_days > 0 => material.wears_days,
-            None => return false,
+            Some(food) => food.days_kept(per_cycle),
+            None => match material.days_worn(per_cycle) {
+                0 => return false,
+                worn => worn,
+            },
         };
         self.tick.0.saturating_sub(item.made.0) >= u64::from(days) * self.calendar.ticks_per_day()
     }

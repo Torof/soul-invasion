@@ -2143,7 +2143,8 @@ pub struct Mind {
     /// nothing stays or keeps its own day), bit 4 `HABIT_FOUND` (it found
     /// a place new), bit 5 `HABIT_BARE` (it found one bare), bit 6
     /// `HABIT_FED` (it gathered a day of its need); bit 7 free. At most the
-    /// content's `decisions.habit_days` bytes.
+    /// content's `decisions.habit_seasons` in days
+    /// ([`Decisions::habit_days`]).
     habit: Vec<u8>,
     /// Places it went to and found bare today.
     bare_today: u32,
@@ -4006,8 +4007,8 @@ pub struct Brains {
     dawn: bool,
     /// The well (D55): every record, written once.
     memory: Store,
-    /// Each camp's hearth: its last `fire.hearth_nights` nights, the
-    /// oldest first.
+    /// Each camp's hearth: the nights of its last `fire.hearth_seasons`
+    /// ([`Fire::hearth_nights`]), the oldest first.
     hearths: BTreeMap<Pos, Vec<RecordId>>,
     /// The will of each body gone, as it was when it died: what its news
     /// is still weighed by (its prestige, D50), as a trial record carries
@@ -4788,7 +4789,15 @@ impl Brains {
             if self.measure_stops {
                 self.news.extend(told);
             }
-            close_habit(rules, body, id, mind, day_of, kin_of, &mut self.news);
+            close_habit(
+                (rules, per_year),
+                body,
+                id,
+                mind,
+                day_of,
+                kin_of,
+                &mut self.news,
+            );
             mind.distressed(hungry || thirsty || gathered_kj == 0);
             let due = mind.trial.filter(|t| {
                 day >= t.started_day + u64::from(trials.days_for(t.way.key(), per_year))
@@ -5129,7 +5138,7 @@ impl Brains {
     /// number at a tie); a kept way heard joins its heard ways. A body in
     /// trial adds the days told by the mates who changed nothing. The
     /// night is written as a record of the camp's hearth, which keeps
-    /// `hearth_nights` of them. Then each present may copy a way it
+    /// `hearth_seasons` of them. Then each present may copy a way it
     /// heard ([`Brains::imitate`]). Nothing here reads the world but the
     /// calendar: last, every mind's places heard age ([`Brains::age_heard`]).
     fn vigil(&mut self, world: &World, rules: &Content) {
@@ -5190,7 +5199,8 @@ impl Brains {
             });
             let hearth = self.hearths.entry(camp).or_default();
             hearth.push(night);
-            let keep = usize::try_from(fire.hearth_nights).unwrap_or(usize::MAX);
+            let keep = usize::try_from(fire.hearth_nights(world.calendar().days_per_cycle()))
+                .unwrap_or(usize::MAX);
             while hearth.len() > keep {
                 let oldest = hearth.remove(0);
                 self.memory.release(oldest);
@@ -8726,7 +8736,7 @@ fn stopped(
 /// a season ended (`season`), its will and confidences come back toward
 /// its innate will first.
 fn close_habit(
-    rules: &Content,
+    (rules, days_per_cycle): (&Content, u32),
     body: &Body,
     id: BodyId,
     mind: &mut Mind,
@@ -8779,7 +8789,7 @@ fn close_habit(
             byte |= HABIT_FED;
         }
         mind.habit.push(byte);
-        let keep = usize::try_from(decisions.habit_days).unwrap_or(usize::MAX);
+        let keep = usize::try_from(decisions.habit_days(days_per_cycle)).unwrap_or(usize::MAX);
         if mind.habit.len() > keep {
             let extra = mind.habit.len() - keep;
             mind.habit.drain(..extra);
@@ -9741,8 +9751,7 @@ fn carried_food(world: &World, rules: &Content, id: BodyId) -> Option<ItemId> {
             if world.is_spoiled(item.id(), rules) {
                 return None;
             }
-            let ends =
-                item.made().0 + u64::from(food.keeps_days) * world.calendar().ticks_per_day();
+            let ends = item.made().0 + food.ticks_kept(world.calendar());
             Some((ends, item.id()))
         })
         .min()
@@ -10257,7 +10266,12 @@ fn start_trial(
     // The candidates, each weighed by the lessons it heard (D50,
     // amended): a weight, never a ban.
     let r = scatter::roll(seed, purpose::TRIAL_WAY, &[u64::from(id.0), day]);
-    let candidates = lessons(rules, memory, mind, day);
+    let candidates = lessons(
+        (rules, world.calendar().days_per_cycle()),
+        memory,
+        mind,
+        day,
+    );
     let draw = |candidates: &[(Way, bool, u64)], r: u64| {
         let total: u64 = candidates.iter().map(|c| c.2).sum();
         let mut at = r % total.max(1);
@@ -10327,10 +10341,16 @@ fn start_trial(
 /// 100; each trial heard at the fire of the same
 /// change (the same way, the same direction) adds `lesson_weight` if it
 /// was kept and takes it away if it was given up, whole for
-/// `lesson_days`, half for as long again, nothing after, scaled by how
-/// much a body of this will heeds the lessons (`lesson_heed_by_will`);
+/// `lesson_seasons` (in days of the world's cycle,
+/// [`Trials::lesson_days`]), half for as long again, nothing after,
+/// scaled by how much a body of this will heeds the lessons (`lesson_heed_by_will`);
 /// never under `lesson_floor`: a weight, never a ban.
-fn lessons(rules: &Content, memory: &Store, mind: &Mind, day: u64) -> Vec<(Way, bool, u64)> {
+fn lessons(
+    (rules, days_per_cycle): (&Content, u32),
+    memory: &Store,
+    mind: &Mind,
+    day: u64,
+) -> Vec<(Way, bool, u64)> {
     let trials = &rules.needs.trials;
     let heed = trials.heed_percent(mind.will);
     let mut candidates: Vec<(Way, bool, u64)> = vec![
@@ -10345,7 +10365,8 @@ fn lessons(rules: &Content, memory: &Store, mind: &Mind, day: u64) -> Vec<(Way, 
     if rules.needs.hands.on() {
         candidates.push((Way::Hands, true, 100));
     }
-    if trials.lesson_weight == 0 || trials.lesson_days == 0 {
+    let whole = u64::from(trials.lesson_days(days_per_cycle));
+    if trials.lesson_weight == 0 || whole == 0 {
         return candidates;
     }
     let floor = u64::from(trials.lesson_floor);
@@ -10361,7 +10382,6 @@ fn lessons(rules: &Content, memory: &Store, mind: &Mind, day: u64) -> Vec<(Way, 
             continue;
         };
         let age = day.saturating_sub(u64::from(*rec_day));
-        let whole = u64::from(trials.lesson_days);
         let factor = if age < whole {
             100
         } else if age < 2 * whole {
@@ -15385,7 +15405,7 @@ mod tests {
             });
             let mut news = Vec::new();
             close_habit(
-                &rules,
+                (&rules, world.calendar().days_per_cycle()),
                 body,
                 id,
                 &mut mind,
@@ -17355,8 +17375,10 @@ mod tests {
     #[test]
     fn forgetting_frees_the_record_at_its_last_access_and_the_dead_release_theirs() {
         let mut rules = fire_rules();
-        rules.needs.fire.hearth_nights = 1;
+        rules.needs.fire.hearth_seasons = 1;
         let (mut world, mut brains) = camp_of(2, &rules);
+        // A cycle of four days: the hearth's season is one night.
+        world.calendar = world.calendar.with_cycle(4, 1).unwrap();
         let (teller, listener) = (BodyId(1), BodyId(2));
         let kind = brains.food.numbers["bramble"];
         saw_place(&world, &rules, &mut brains, teller, (2, 2), kind, 5);
@@ -17970,12 +17992,13 @@ mod tests {
     fn a_heard_failure_lowers_the_candidate_a_success_raises_it_by_the_listeners_will_and_it_fades()
     {
         let rules = fire_rules();
-        let (_, mut brains) = camp_of(1, &rules);
+        let (world, mut brains) = camp_of(1, &rules);
         let me = BodyId(1);
+        let per_year = world.calendar().days_per_cycle();
         let weights = |brains: &Brains, will: u8, day: u64| {
             let mut mind = brains.mind(me).unwrap().clone();
             mind.will = will;
-            lessons(&rules, &brains.memory, &mind, day)
+            lessons((&rules, per_year), &brains.memory, &mind, day)
         };
         let before = weights(&brains, 0, 10);
         assert!(before.iter().all(|c| c.2 == 100), "{before:?}");
@@ -18021,7 +18044,7 @@ mod tests {
             "a weight, never a ban"
         );
         // A lesson fades: half after lesson_days, nothing after twice.
-        let lesson = u64::from(rules.needs.trials.lesson_days);
+        let lesson = u64::from(rules.needs.trials.lesson_days(per_year));
         assert_eq!(
             weight_of(&weights(&brains, 0, 10 + lesson), Way::SleepOut, true),
             125

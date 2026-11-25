@@ -160,8 +160,9 @@
     // project lead, 25 November 2026, choice A); else, as before, the
     // nearest within 64 tiles once it has slept within those 64 tiles of
     // that body 6 dawns in a row. Spouses apart beyond those 64 tiles
-    // at 12 dawns in a row (about a season) part, both free to take
-    // another; the children stay with their mother.
+    // at 12 dawns in a row (three quarters of a season in calendar v1; an
+    // absence is counted in dawns, D09, so it stays in days) part, both
+    // free to take another; the children stay with their mother.
     life: (
         fertile_years: (16, 42),
         mate_within_tiles: 64,
@@ -238,8 +239,9 @@
     // calm_try_permille_by_will: with nothing wrong, the bold try all the
     //                    same (the lead, 24 November 2026), modestly:
     //                    nobody under will 40, 1 % a day at 70, 2 % at 100:
-    //                    an adventurer of 90 about one search a year of
-    //                    fifty days, a calm tribe of twenty-five one or two.
+    //                    an adventurer of 90 about one search a cycle of
+    //                    64 days (calendar v1), a calm tribe of
+    //                    twenty-five one or two.
     // will_innate:       the innate will drawn skewed, by percentile of the
     //                    bodies: the 80 % most timid between 5 and 20, the
     //                    next between 20 and 40, the last 7 % up to 90: one
@@ -253,8 +255,9 @@
     //                    (the same way, the same direction) adds half the
     //                    base weight of 100 to that candidate if it was
     //                    kept, takes it away if it was abandoned,
-    // lesson_days:    64 — whole for a cycle of the four seasons (calendar
-    //                    v1), half for the next, nothing
+    // lesson_seasons: 4 — whole for a cycle of the four seasons (64 days
+    //                    in calendar v1; in seasons, it follows the
+    //                    calendar, D09), half for the next, nothing
     //                    after; a weight, never a ban:
     // lesson_floor:   10 — a candidate keeps a tenth of its base weight at
     //                    the least (what failed for one may work for
@@ -320,7 +323,7 @@
         will_step_kept: 5,
         will_step_lost: 5,
         lesson_weight: 50,
-        lesson_days: 64,
+        lesson_seasons: 4,
         lesson_floor: 10,
         lesson_heed_by_will: [(0, 100), (100, 30)],
         horizon_seasons: [("stock_kj", 3), ("sleep_out", 1), ("home", 1)],
@@ -423,9 +426,11 @@
     //                   how many of its plants held food worth a step:
     //                   bare (none), some (1 to 3), full (4 and more), so
     //                   that one berry more does not make a record more.
-    // hearth_nights:  64 — a camp's hearth keeps its last 64 nights (a
-    //                   cycle of the four seasons, calendar v1): what the tribe knows is their union; a
-    //                   record nobody holds any more is freed.
+    // hearth_seasons: 4 — a camp's hearth keeps the nights of its last
+    //                   four seasons, a cycle (64 nights in calendar v1;
+    //                   written in seasons, it follows the calendar, D09):
+    //                   what the tribe knows is their union; a record
+    //                   nobody holds any more is freed.
     // told_days_per_hour: 4 — how long a told state is worth believing
     //                   follows what the place bears (lot 5a, decided by
     //                   the project lead on 23 November 2026): for each hour
@@ -449,7 +454,7 @@
         heard_max: 24,
         heard_by_age: [(2, 6), (8, 12), (14, 20), (16, 24)],
         place_buckets: (1, 4),
-        hearth_nights: 64,
+        hearth_seasons: 4,
         told_days_per_hour: 4,
         told_days_max: 20,
         denied_per_night: 6,
@@ -481,8 +486,11 @@
     // look_legs:            3 — one who goes looking walks three legs out
     //                          that way, each a sight farther, then
     //                          gathers as any day.
-    // habit_days:          64 — a mind keeps what it did its last 64
-    //                          days (a cycle, calendar v1) (alone, called, joined, looked, nothing).
+    // habit_seasons:        4 — a mind keeps what it did each day of its
+    //                          last four seasons, a cycle (64 days in
+    //                          calendar v1; in seasons, it follows the
+    //                          calendar, D09) (alone, called, joined,
+    //                          looked, nothing).
     // habit_weight:        50 — each day it looked and found adds half the
     //                          chance of looking again, each day it looked
     //                          for nothing takes half away: a weight from
@@ -528,7 +536,7 @@
         follows_mother_years: 12,
         look_percent_by_will: [(0, 0), (100, 40)],
         look_legs: 3,
-        habit_days: 64,
+        habit_seasons: 4,
         habit_weight: 50,
         habit_floor: 10,
         home_when_full_percent: 50,
@@ -792,8 +800,8 @@
     // The gestures of the hands (D57; the project lead, 24 November 2026:
     // "C'est parfait"): pick up, cut with what is in hand, fold. No
     // recipe: what a gesture gives is what the materials are
-    // (materials.ron: sharp, folds_into, holds_g, wears_days; species.ron:
-    // bark). A trial of the hands (D50, the way `hands`) is a gesture drawn
+    // (materials.ron: sharp, folds_into, holds_g, wears_days or
+    // wears_seasons; species.ron: bark). A trial of the hands (D50, the way `hands`) is a gesture drawn
     // from the run's seed on what lies within `near_tiles` or is carried;
     // what worked is told at the fire as any trial judged (D55).
     // gesture_minutes: 10 — a cut or a fold takes ten game minutes;

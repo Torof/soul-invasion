@@ -293,7 +293,7 @@ clock, the only field no seed decides.
 | `records[].will` | The body's will when it was judged | 0 to 100 |
 | `records[].present` | A night record: how many lay down | count |
 | `records[].told` | How many records were told | count |
-| `hearth[].tribe` | The nights a tribe's hearth still holds at the end (the last `hearth_nights`, D55): the tribe | `"A"` or `"B"` |
+| `hearth[].tribe` | The nights a tribe's hearth still holds at the end (those of its last `hearth_seasons`, D55, D09): the tribe | `"A"` or `"B"` |
 | `hearth[].nights[].day` | A night: the day that closed with it | day |
 | `hearth[].nights[].camp` | The camp: the middle of the place (16 tiles) where the circle gathered (D55, amended 24 November 2026) | `[x, y]` |
 | `hearth[].nights[].present` | How many lay down | count |

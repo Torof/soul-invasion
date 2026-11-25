@@ -176,7 +176,7 @@ fn kept_heap(world: &World, rules: &Content, item: ItemId) -> Option<Heap> {
 /// [`heap`] of an item or a record found.
 fn heap_of(world: &World, rules: &Content, found: &crate::Item) -> Option<Heap> {
     let food = rules.material(found.material())?.food?;
-    let keeps = u64::from(food.keeps_days) * world.calendar().ticks_per_day();
+    let keeps = food.ticks_kept(world.calendar());
     // Spoiled as the world says it (D45), read from the item at hand.
     if world.tick().0.saturating_sub(found.made().0) >= keeps {
         return None;
