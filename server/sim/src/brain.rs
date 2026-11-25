@@ -1406,6 +1406,23 @@ pub enum News {
         /// The tick.
         at: u64,
     },
+    /// The hunger bar (D58, amended 25 November 2026): `body`, hungry
+    /// with little of its fat reserve left, ate its hearth's food: what
+    /// it carried for its hearth, on the way (`reserve` false), or from
+    /// the reserve despite the young (`reserve` true). `starving`: under
+    /// `starving_fat_percent`; otherwise very hungry, its will not keeping
+    /// it.
+    HungerBar {
+        /// Who.
+        body: BodyId,
+        /// Starving, or only very hungry.
+        starving: bool,
+        /// From the reserve despite the young, or what it carried for its
+        /// hearth.
+        reserve: bool,
+        /// The tick.
+        at: u64,
+    },
     /// `kj` of the reserve of the hearth at `camp` spoiled (D58).
     SpoiledAtHearth {
         /// The hearth: its camp.
@@ -2079,6 +2096,10 @@ pub struct Mind {
     /// gathered while it owed its hearth, not its own to eat; put down at
     /// the camp.
     hearth_carried_kj: u64,
+    /// The tick it chose to eat of what it carried for its hearth, its
+    /// hunger giving way (D58, amended 25 November 2026, the hunger bar):
+    /// eaten, its `hearth_carried_kj` is lowered to what it holds.
+    hearth_bar_meal: Option<u64>,
     /// The day it could not reach its hearth's reserve: not again that
     /// day (D58).
     hearth_barred: Option<u64>,
@@ -2292,6 +2313,7 @@ impl Mind {
             hearth_extra_kj: 0,
             hearth_put_kj: 0,
             hearth_carried_kj: 0,
+            hearth_bar_meal: None,
             hearth_barred: None,
             walks: 0,
             walks_day: 0,
@@ -7600,17 +7622,33 @@ fn decide(
     // own, the young first (D58).
     if hungry
         && let Some(decision) =
-            pooling::eat_at_hearth(world, rules, reserves, (id, body, here), mind)
+            pooling::eat_at_hearth(world, rules, (reserves, news), (id, body, here), mind, seed)
     {
         return Some(decision);
     }
-    // What it carries for its hearth is not its own to eat (D58).
-    if hungry
-        && pooling::may_eat_carried(world, rules, id, mind)
-        && let Some(item) = carried_food(world, rules, id)
-    {
-        mind.doing = Doing::Nothing;
-        return decision(Intention::Eat { body: id, item }, Why::Hunger);
+    // What it carries for its hearth is not its own to eat (D58), unless
+    // its hunger gives way (the hunger bar, amended 25 November 2026).
+    if hungry {
+        let gives = if pooling::holds_only_hearth_food(world, rules, id, mind) {
+            pooling::gives_way(world, rules, body, mind, seed).map(Some)
+        } else {
+            Some(None)
+        };
+        if let Some(tier) = gives
+            && let Some(item) = carried_food(world, rules, id)
+        {
+            if let Some(tier) = tier {
+                news.push(News::HungerBar {
+                    body: id,
+                    starving: tier == crate::content::HungerTier::Starving,
+                    reserve: false,
+                    at: now,
+                });
+                mind.hearth_bar_meal = Some(now);
+            }
+            mind.doing = Doing::Nothing;
+            return decision(Intention::Eat { body: id, item }, Why::Hunger);
+        }
     }
     // Hungry by night, it sleeps on it unless its reserve is weak: the
     // night's gathering gave crumbs and cost the sleep.
@@ -9329,13 +9367,14 @@ fn turn_due(
 
 /// Whether the body sees food around it (D53, amended 25 November 2026):
 /// a place it knows bearing now within its sight of plants, food lying
-/// it saw there, or food it carries that is its own to eat (D58).
+/// it saw there, or food it carries that is its own to eat (D58), or
+/// its hearth's that its hunger would eat (the hunger bar).
 fn sees_food(
     world: &World,
     rules: &Content,
-    (id, here): (BodyId, Pos),
+    (id, body, here): (BodyId, &Body, Pos),
     mind: &Mind,
-    food: &Food,
+    (food, seed): (&Food, u64),
 ) -> bool {
     let sight = plant_sight_at(world.map(), rules, here);
     let side = place_side(rules);
@@ -9344,7 +9383,7 @@ fn sees_food(
             && place.bearing(food).is_some()
             && within(place_centre(*key, side), here, sight)
     }) || mind.food.values().any(|&p| within(p, here, sight))
-        || (pooling::may_eat_carried(world, rules, id, mind)
+        || (pooling::may_eat_carried(world, rules, (id, body), mind, seed)
             && carried_food(world, rules, id).is_some())
 }
 
@@ -9403,7 +9442,7 @@ fn trip_turn(
         }
     };
     mind.turn_at = None;
-    let sighted = sees_food(world, rules, (id, here), mind, food);
+    let sighted = sees_food(world, rules, (id, body, here), mind, (food, seed));
     let child = rules.needs.pooling.on() && rules.needs.pooling.fed(world.age_milli(body));
     let chance = if child || (hungry && !sighted) {
         0

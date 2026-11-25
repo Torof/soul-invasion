@@ -157,6 +157,10 @@ pub struct HearthProbe {
     /// The children dead: (before eight, before sixteen, born in the run
     /// or young at the start, of them dead before eight, before sixteen).
     pub children: Children,
+    /// The hunger bar (D58, amended 25 November 2026): the meals of the
+    /// hearth's food eaten by hunger, `[on the way, from the reserve
+    /// despite the young]`, each `[very hungry, starving]`.
+    pub hunger_bar: [[u32; 2]; 2],
     /// The parents of a living child under eight, and the day they were
     /// read: who ate at the hearth.
     parents: BTreeSet<BodyId>,
@@ -296,6 +300,11 @@ impl HearthProbe {
                     h.eaten_young_kj += kj;
                 }
             }
+            News::HungerBar {
+                starving, reserve, ..
+            } => {
+                self.hunger_bar[usize::from(*reserve)][usize::from(*starving)] += 1;
+            }
             News::SpoiledAtHearth { camp, kj, .. } => {
                 self.day(day).hearths.entry(*camp).or_default().spoiled_kj += kj;
             }
@@ -411,6 +420,16 @@ impl HearthProbe {
                 "eaten_kj": eaten,
                 "eaten_young_kj": young,
                 "spoiled_kj": spoiled,
+            },
+            "hunger_bar": {
+                "on_the_way": {
+                    "very_hungry": self.hunger_bar[0][0],
+                    "starving": self.hunger_bar[0][1],
+                },
+                "despite_the_young": {
+                    "very_hungry": self.hunger_bar[1][0],
+                    "starving": self.hunger_bar[1][1],
+                },
             },
             "children": {
                 "young": c.young,

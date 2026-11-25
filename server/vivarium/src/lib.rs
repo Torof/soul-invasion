@@ -2994,6 +2994,7 @@ pub fn run_watched(
                 | News::AteAtHearth { .. }
                 | News::SpoiledAtHearth { .. }
                 | News::SawHearth { .. }
+                | News::HungerBar { .. }
                 | News::Turned { .. } => continue,
                 News::Copied {
                     body,

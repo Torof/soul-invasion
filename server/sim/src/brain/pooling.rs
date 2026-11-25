@@ -28,6 +28,17 @@
 //!   the reserve holds beyond what the young of the hearth (under
 //!   sixteen) can still eat today; a child from `fed_until_years` to
 //!   sixteen only beyond what the younger ones can.
+//! - **The hunger bar** (the project lead, 25 November 2026: "avoir très
+//!   très faim, mourir de faim et avoir de la nourriture, ça personne ne le
+//!   fera jamais, on mange la nourriture"). How hungry a body is, read by
+//!   the share of its fat reserve left (its hunger gauge is full for days
+//!   before it dies): from `very_hungry_fat_percent` up it is hungry, and
+//!   carries home and leaves the young first as above; below, very hungry,
+//!   it eats what it carries for its hearth, and from the reserve despite
+//!   the young, unless its will keeps it (`keep_percent_by_will`, drawn
+//!   once a game day); below `starving_fat_percent`, starving, it eats it,
+//!   always. A child the hearth feeds is not concerned: nobody is ahead
+//!   of it.
 //! - **The young are fed by the hearth** until `fed_until_years`: they do
 //!   not gather alone (a weaned child of two gathered for itself).
 //! - **What a body sees** (two true perceptions, both approved): at dawn,
@@ -54,6 +65,8 @@ use super::{
     Brains, Content, Decision, Doing, HOME_TILES, HUNGRY, Intention, Mind, News, need_kj_per_day,
     place_centre, place_of, place_side, today,
 };
+use crate::content::HungerTier;
+use crate::r#gen::scatter::{self, purpose};
 use crate::map::Pos;
 use crate::{Body, BodyId, ItemId, World};
 
@@ -252,12 +265,16 @@ fn young_ahead(world: &World, rules: &Content, reserves: &Reserves, camp: Pos, b
 /// the young first: walks to the heap that spoils first and eats it.
 /// `None` when it is not at its camp, the reserve holds nothing it may
 /// eat, or it could not reach it today.
+///
+/// The hunger bar: very hungry and not kept by its will, or starving, it
+/// eats from the reserve despite the young ([`gives_way`]), and tells it.
 pub(super) fn eat_at_hearth(
     world: &World,
     rules: &Content,
-    reserves: &Reserves,
+    (reserves, news): (&Reserves, &mut Vec<News>),
     (id, body, here): (BodyId, &Body, Pos),
     mind: &mut Mind,
+    seed: u64,
 ) -> Option<Decision> {
     if !on(rules) || !at_camp(rules, here, mind) {
         return None;
@@ -269,9 +286,15 @@ pub(super) fn eat_at_hearth(
     let camp = camp_of(rules, mind.ways.home);
     let heaps = reserves.heaps(world, rules, camp);
     let holds: u64 = heaps.iter().map(|h| h.kj).sum();
-    if holds == 0 || holds <= young_ahead(world, rules, reserves, camp, body) {
+    if holds == 0 {
         return None;
     }
+    // The young first, unless its hunger gives way.
+    let despite = if holds <= young_ahead(world, rules, reserves, camp, body) {
+        Some(gives_way(world, rules, body, mind, seed)?)
+    } else {
+        None
+    };
     let first = heaps.iter().min_by_key(|h| (h.ends, h.item))?;
     let at = first.at?;
     let decision = |intention| {
@@ -282,6 +305,14 @@ pub(super) fn eat_at_hearth(
     };
     if near(at, here) {
         mind.doing = Doing::Nothing;
+        if let Some(tier) = despite {
+            news.push(News::HungerBar {
+                body: id,
+                starving: tier == HungerTier::Starving,
+                reserve: true,
+                at: world.tick().0,
+            });
+        }
         return decision(Intention::Eat {
             body: id,
             item: first.item,
@@ -383,12 +414,80 @@ pub(super) fn put_down(
     })
 }
 
-/// Whether a hungry body may eat from what it carries (D58): only what
-/// is beyond what it carries for its hearth.
-pub(super) fn may_eat_carried(world: &World, rules: &Content, id: BodyId, mind: &Mind) -> bool {
-    !on(rules)
-        || mind.hearth_carried_kj == 0
-        || super::carried_kj(world, rules, id) > mind.hearth_carried_kj
+/// Whether all a body carries is carried for its hearth (D58): hungry,
+/// it eats only what is beyond it.
+pub(super) fn holds_only_hearth_food(
+    world: &World,
+    rules: &Content,
+    id: BodyId,
+    mind: &Mind,
+) -> bool {
+    on(rules)
+        && mind.hearth_carried_kj > 0
+        && super::carried_kj(world, rules, id) <= mind.hearth_carried_kj
+}
+
+/// Whether a hungry body may eat from what it carries (D58): what is
+/// beyond what it carries for its hearth, or that too when its hunger
+/// gives way ([`gives_way`]).
+pub(super) fn may_eat_carried(
+    world: &World,
+    rules: &Content,
+    (id, body): (BodyId, &Body),
+    mind: &Mind,
+    seed: u64,
+) -> bool {
+    !holds_only_hearth_food(world, rules, id, mind)
+        || gives_way(world, rules, body, mind, seed).is_some()
+}
+
+/// The share of its fat reserve `body` has left, in per cent: what is
+/// left of it (`Condition::reserve_left_j`) against its whole reserve
+/// (`Condition::reserve_j`, the content's to its size). 100 with no
+/// reserve at all.
+pub(super) fn fat_left_percent(rules: &Content, body: &Body) -> u64 {
+    let c = body.condition();
+    let full = c.reserve_j(&rules.needs);
+    if full == 0 {
+        return 100;
+    }
+    c.reserve_left_j(&rules.needs) * 100 / full
+}
+
+/// The hunger bar (D58, amended 25 November 2026; the project lead:
+/// "quelqu'un qui n'a pas de volonté va manger cette nourriture,
+/// quelqu'un qui a beaucoup de volonté va la ramener. Par contre, avoir
+/// très très faim, mourir de faim et avoir de la nourriture, ça personne
+/// ne le fera jamais"): whether a hungry `body` eats its hearth's food,
+/// what it carries for it or what the reserve keeps for the young, and
+/// how hungry it is then. By the share of its fat reserve left: hungry,
+/// it keeps it (`None`); very hungry, it eats it unless its will keeps it,
+/// by `keep_percent_by_will`, drawn once a game day so that it does not
+/// change its mind each thought; starving, it eats it. A child the hearth
+/// feeds is not concerned.
+pub(super) fn gives_way(
+    world: &World,
+    rules: &Content,
+    body: &Body,
+    mind: &Mind,
+    seed: u64,
+) -> Option<HungerTier> {
+    let pooling = &rules.needs.pooling;
+    if !on(rules) || pooling.fed(world.age_milli(body)) {
+        return None;
+    }
+    match pooling.tier(fat_left_percent(rules, body)) {
+        HungerTier::Hungry => None,
+        HungerTier::Starving => Some(HungerTier::Starving),
+        HungerTier::VeryHungry => {
+            let roll = scatter::roll(
+                seed,
+                purpose::HUNGER_BAR,
+                &[u64::from(body.id().0), today(world)],
+            ) % 100;
+            (roll >= pooling.keep_percent(mind.will)).then_some(HungerTier::VeryHungry)
+        }
+    }
 }
 
 /// What of `kj` just gathered a body carries for its hearth (D58): while
@@ -556,6 +655,18 @@ impl Brains {
                             kj: u64::from(*energy_kj),
                             at,
                         });
+                    } else if let Some(mind) = self.minds.get_mut(body)
+                        && mind.hearth_bar_meal.is_some()
+                    {
+                        // Its hunger gave way (the hunger bar): what it ate
+                        // was its hearth's, and it carries for its hearth
+                        // no more than it holds now; the rest it still
+                        // owes. Only then, so that without the bar nothing
+                        // changes.
+                        mind.hearth_bar_meal = None;
+                        mind.hearth_carried_kj = mind
+                            .hearth_carried_kj
+                            .min(super::carried_kj(world, rules, *body));
                     }
                 }
                 crate::Event::Spoiled {
@@ -894,11 +1005,17 @@ mod tests {
         let mind = brains.minds.get_mut(&id).unwrap();
         mind.hearth_carried_kj = 1000;
         assert!(
-            !may_eat_carried(&world, &rules, id, mind),
+            !may_eat_carried(&world, &rules, (id, world.body(id).unwrap()), mind, 7),
             "all of it is its own's"
         );
         mind.hearth_carried_kj = 500;
-        assert!(may_eat_carried(&world, &rules, id, mind));
+        assert!(may_eat_carried(
+            &world,
+            &rules,
+            (id, world.body(id).unwrap()),
+            mind,
+            7
+        ));
         mind.hearth_carried_kj = 1000;
         let decision = think(&world, &rules, &mut brains, id);
         assert!(
@@ -988,5 +1105,218 @@ mod tests {
             );
             assert_eq!(brains.reserves.young[&camp], vec![(child, true)]);
         }
+    }
+
+    /// `id` hungry with `left` per cent of its fat reserve left.
+    fn thin(world: &mut World, rules: &Content, id: BodyId, left: u64) {
+        let body = world.bodies.iter_mut().find(|b| b.id() == id).unwrap();
+        let full = body.condition.reserve_j(&rules.needs);
+        body.condition.deficit_j = full * (100 - left) / 100;
+        body.condition.hunger = Gauge::at(90);
+    }
+
+    /// The pooled content, its hunger bar's will table at its two
+    /// extremes: the will-less always eat, the strong-willed always keep.
+    fn barred() -> Content {
+        let mut rules = pooled();
+        rules.needs.pooling.keep_percent_by_will = vec![(0, 0), (100, 100)];
+        rules
+    }
+
+    /// A grown body far from its camp carrying 1000 kJ of berries, all
+    /// of it for its hearth, with `left` per cent of its fat and `will`.
+    fn carrying_home(rules: &Content, left: u64, will: u8) -> (World, Brains, BodyId) {
+        let at = Pos::new(40, 40);
+        let (mut world, mut brains, ids) = field(rules, &[(at, 30)]);
+        let id = ids[0];
+        let item = world.spawn_item("berries", 400, at);
+        world.queue(Intention::PickUp { body: id, item });
+        world.step(rules, &mut Vec::new());
+        thin(&mut world, rules, id, left);
+        let mind = brains.minds.get_mut(&id).unwrap();
+        mind.hearth_carried_kj = 1000;
+        mind.will = will;
+        (world, brains, id)
+    }
+
+    fn eats(decision: Option<&Decision>) -> bool {
+        decision.is_some_and(|d| matches!(d.intention, Intention::Eat { .. }))
+    }
+
+    fn bar_told(news: &[News]) -> Option<(bool, bool)> {
+        news.iter().find_map(|n| match n {
+            News::HungerBar {
+                starving, reserve, ..
+            } => Some((*starving, *reserve)),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn the_hunger_bar_is_read_by_the_fat_left() {
+        let p = Pooling::placeholders();
+        assert_eq!(p.tier(100), HungerTier::Hungry);
+        assert_eq!(p.tier(50), HungerTier::Hungry);
+        assert_eq!(p.tier(49), HungerTier::VeryHungry);
+        assert_eq!(p.tier(25), HungerTier::VeryHungry);
+        assert_eq!(p.tier(24), HungerTier::Starving);
+        assert_eq!((p.keep_percent(0), p.keep_percent(50)), (10, 50));
+        assert_eq!(p.keep_percent(100), 90);
+        // Without the bar in the content, nobody is ever more than hungry.
+        let old = Pooling {
+            very_hungry_fat_percent: 0,
+            starving_fat_percent: 0,
+            keep_percent_by_will: Vec::new(),
+            ..Pooling::placeholders()
+        };
+        assert_eq!(old.tier(0), HungerTier::Hungry);
+        let rules = pooled();
+        let (world, _, ids) = field(&rules, &[(Pos::new(5, 5), 30)]);
+        let mut world = world;
+        thin(&mut world, &rules, ids[0], 40);
+        assert_eq!(fat_left_percent(&rules, world.body(ids[0]).unwrap()), 40);
+    }
+
+    #[test]
+    fn hungry_it_carries_its_hearth_s_food_home() {
+        let rules = barred();
+        let (world, mut brains, id) = carrying_home(&rules, 60, 0);
+        let (decision, news) = think_told(&world, &rules, &mut brains, id);
+        assert!(!eats(decision.as_ref()), "hungry, it carries it home");
+        assert_eq!(bar_told(&news), None);
+    }
+
+    #[test]
+    fn very_hungry_it_eats_its_hearth_s_food_or_carries_it_by_its_will() {
+        let rules = barred();
+        let (world, mut brains, id) = carrying_home(&rules, 40, 100);
+        let decision = think(&world, &rules, &mut brains, id);
+        assert!(!eats(decision.as_ref()), "a strong will carries it home");
+        let (mut world, mut brains, id) = carrying_home(&rules, 40, 0);
+        let (decision, news) = think_told(&world, &rules, &mut brains, id);
+        let decision = decision.unwrap();
+        assert!(eats(Some(&decision)), "no will, it eats: {decision:?}");
+        assert_eq!(bar_told(&news), Some((false, false)));
+        // Eaten, it carries for its hearth no more than it holds.
+        let mut events = Vec::new();
+        world.queue(decision.intention);
+        world.step(&rules, &mut events);
+        brains.think(&world, &rules, &events);
+        let held = super::super::carried_kj(&world, &rules, id);
+        assert!(held < 1000, "it ate: {held}");
+        assert_eq!(brains.minds[&id].hearth_carried_kj, held);
+        // The placeholders' draw is made once a game day: a will of 50
+        // does not change its mind from one tick to the next.
+        let rules = pooled();
+        let (mut world, mut brains, id) = carrying_home(&rules, 40, 50);
+        let first = gives_way(
+            &world,
+            &rules,
+            world.body(id).unwrap(),
+            &brains.minds[&id],
+            7,
+        );
+        for _ in 0..20 {
+            world.step(&rules, &mut Vec::new());
+            let mind = brains.minds.get_mut(&id).unwrap();
+            assert_eq!(
+                gives_way(&world, &rules, world.body(id).unwrap(), mind, 7),
+                first
+            );
+        }
+    }
+
+    #[test]
+    fn starving_it_always_eats_its_hearth_s_food() {
+        let rules = barred();
+        let (world, mut brains, id) = carrying_home(&rules, 22, 100);
+        let (decision, news) = think_told(&world, &rules, &mut brains, id);
+        assert!(eats(decision.as_ref()), "starving, even a strong will eats");
+        assert_eq!(bar_told(&news), Some((true, false)));
+    }
+
+    /// A grown body and a hungry child of five at the camp, the reserve
+    /// 250 kJ, less than the child can eat; the grown with `left` per cent
+    /// of its fat and `will`.
+    fn short_reserve(rules: &Content, left: u64, will: u8) -> (World, Brains, BodyId, ItemId) {
+        let at = Pos::new(5, 5);
+        let (mut world, mut brains, ids) = field(rules, &[(at, 30), (at, 5)]);
+        let (grown, child) = (ids[0], ids[1]);
+        let camp = camp_of(rules, at);
+        let pooled = world.spawn_item("berries", 100, at);
+        brains.reserves.put(camp, at, pooled);
+        brains.reserves.young.insert(camp, vec![(child, true)]);
+        hungry(&mut world, rules, child, 70);
+        thin(&mut world, rules, grown, left);
+        brains.minds.get_mut(&grown).unwrap().will = will;
+        (world, brains, grown, pooled)
+    }
+
+    #[test]
+    fn hungry_at_the_camp_it_leaves_a_short_reserve_to_the_young() {
+        let rules = barred();
+        let (world, mut brains, grown, pooled) = short_reserve(&rules, 60, 0);
+        let decision = think(&world, &rules, &mut brains, grown);
+        assert!(
+            !decision.is_some_and(|d| d.intention
+                == Intention::Eat {
+                    body: grown,
+                    item: pooled
+                }),
+            "hungry, the young first"
+        );
+    }
+
+    #[test]
+    fn very_hungry_at_the_camp_it_eats_despite_the_young_by_its_will() {
+        let rules = barred();
+        let (world, mut brains, grown, pooled) = short_reserve(&rules, 40, 100);
+        let decision = think(&world, &rules, &mut brains, grown);
+        assert!(
+            !decision.is_some_and(|d| d.intention
+                == Intention::Eat {
+                    body: grown,
+                    item: pooled
+                }),
+            "a strong will leaves it to the young"
+        );
+        let (world, mut brains, grown, pooled) = short_reserve(&rules, 40, 0);
+        let (decision, news) = think_told(&world, &rules, &mut brains, grown);
+        assert_eq!(
+            decision.unwrap().intention,
+            Intention::Eat {
+                body: grown,
+                item: pooled
+            }
+        );
+        assert_eq!(bar_told(&news), Some((false, true)));
+    }
+
+    #[test]
+    fn a_starving_grown_at_the_camp_eats_from_the_reserve_the_young_would_keep() {
+        let rules = barred();
+        let (world, mut brains, grown, pooled) = short_reserve(&rules, 22, 100);
+        let (decision, news) = think_told(&world, &rules, &mut brains, grown);
+        assert_eq!(
+            decision.unwrap().intention,
+            Intention::Eat {
+                body: grown,
+                item: pooled
+            },
+            "starving, nobody leaves food it can eat"
+        );
+        assert_eq!(bar_told(&news), Some((true, true)));
+    }
+
+    #[test]
+    fn a_child_the_hearth_feeds_is_not_concerned_by_the_bar() {
+        let rules = barred();
+        let (mut world, brains, ids) = field(&rules, &[(Pos::new(5, 5), 5)]);
+        thin(&mut world, &rules, ids[0], 10);
+        let body = world.body(ids[0]).unwrap();
+        assert_eq!(
+            gives_way(&world, &rules, body, &brains.minds[&ids[0]], 7),
+            None
+        );
     }
 }
