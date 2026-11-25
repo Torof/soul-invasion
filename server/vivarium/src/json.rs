@@ -562,6 +562,7 @@ impl Report {
                 "world": world,
                 "side": side,
                 "people": s.people,
+                "start": s.start.key(),
                 "children": s.children,
                 "infants": s.infants,
                 "adult_years": [s.adult_years.0, s.adult_years.1],

@@ -45,10 +45,11 @@ clock, the only field no seed decides.
 | `meta.format` | The format marker, `1` since 22 November 2026 | integer |
 | `meta.settings.world` | The world; `"vivarium-wide"` the vivarium's zone twice as wide, `"vivarium-huge"` the same zone 16,384 m a side (24 November 2026) | `"vivarium"`, `"vivarium-wide"`, `"vivarium-huge"` or `"patch"` |
 | `meta.settings.side` | A patch's side; `null` on the vivarium's world | tiles |
-| `meta.settings.people` | Grown people born at each camp | count |
-| `meta.settings.children` | Children born at each camp | count |
-| `meta.settings.infants` | Infants born at each camp | count |
-| `meta.settings.adult_years` | The grown people's ages at the start, first to second | `[years, years]` |
+| `meta.settings.people` | People born at each camp: the whole band with the pyramid start, the grown alone with the founders' | count |
+| `meta.settings.start` | How a camp is born (`--start`, the life lot, 25 November 2026): `"pyramid"`, a band of every age shaped on the Hadza and the !Kung (D41, amended), the default since then; `"founders"`, the grown of `adult_years` with `children` and `infants`, as every run before; a run without the key is a founders' run | `"pyramid"` or `"founders"` |
+| `meta.settings.children` | The founders' children born at each camp (0 with the pyramid start) | count |
+| `meta.settings.infants` | The founders' infants born at each camp (0 with the pyramid start) | count |
+| `meta.settings.adult_years` | The founders' grown ages at the start, first to second (unused with the pyramid start) | `[years, years]` |
 | `meta.settings.fed` | Food without limit (`--fed`) | boolean |
 | `meta.settings.brain` | The people think (false: the control run without a brain) | boolean |
 | `meta.settings.tribes` | Tribes, 1 or 2 | count |

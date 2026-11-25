@@ -2453,6 +2453,23 @@ impl World {
         }
     }
 
+    /// Sets a body's fat reserve to `percent` of its whole (the life lot,
+    /// 25 November 2026): the vivarium's start with an age pyramid gives
+    /// its people unequal reserves rather than all full. Its whole is the
+    /// content's for its age and sex (D47), as the next tick sizes it.
+    /// Nothing for an unknown body; over 100, full.
+    pub fn set_reserve_percent(&mut self, id: BodyId, percent: u32, rules: &Content) {
+        let Some(index) = self.index_of(id) else {
+            return;
+        };
+        let age = self.age_milli(&self.bodies[index]);
+        let body = &mut self.bodies[index];
+        let size = rules.needs.ages.size_permille(age, body.sex);
+        let whole = rules.needs.reserve_j() * u64::from(size) / 1000;
+        body.condition.deficit_j = whole * u64::from(100 - percent.min(100)) / 100;
+        self.grow_due = true;
+    }
+
     /// Gives the infant `infant` to `carrier` to carry and nurse (lot 3 B):
     /// it stands where its carrier stands from now on. False when either
     /// is unknown or they are the same.

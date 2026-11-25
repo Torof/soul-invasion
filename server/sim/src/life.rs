@@ -317,6 +317,50 @@ impl World {
         }
     }
 
+    /// Weds `a` and `b` now, whatever their ages and wherever they stand:
+    /// the vivarium's start with an age pyramid (the life lot, 25 November
+    /// 2026) weds the couples it planned, the old among them, rather than
+    /// the nearest by the daily rule. False, nothing done, when either is
+    /// unknown, they are the same, of one sex, kin, or either is wed.
+    /// `Event::Coupled` for the pair.
+    pub fn wed_at_start(&mut self, a: BodyId, b: BodyId, events: &mut Vec<Event>) -> bool {
+        let (Some(x), Some(y)) = (self.body(a), self.body(b)) else {
+            return false;
+        };
+        if a == b
+            || x.sex == y.sex
+            || x.spouse.is_some()
+            || y.spouse.is_some()
+            || Self::are_kin(x, y)
+        {
+            return false;
+        }
+        self.wed(a, b, events);
+        true
+    }
+
+    /// `woman` is with child by `father` since `since_day` (counted from
+    /// the world's first, before it for a pregnancy begun before the
+    /// world): the vivarium's start with an age pyramid (the life lot)
+    /// sets a few women with child, so that their births spread over the
+    /// first days. False, nothing done, when she is unknown, not a woman,
+    /// already with child, or the father is unknown.
+    pub fn set_pregnant(&mut self, woman: BodyId, since_day: i64, father: BodyId) -> bool {
+        if self.body(father).is_none() {
+            return false;
+        }
+        let Some(index) = self.index_of(woman) else {
+            return false;
+        };
+        let body = &mut self.bodies[index];
+        if body.sex != Sex::Female || body.pregnant.is_some() {
+            return false;
+        }
+        body.pregnant = Some(Pregnancy { since_day, father });
+        self.grow_due = true;
+        true
+    }
+
     /// A body of the content's mating years without a spouse takes the
     /// nearest body of the other sex within the content's reach, of those
     /// years, without a spouse, that is not its kin (`are_kin`); the
@@ -1248,5 +1292,62 @@ mod tests {
         let mut events = Vec::new();
         off.couple_all(&rules, &mut events);
         assert!(events.is_empty() && off.body(a).unwrap().spouse().is_none());
+    }
+
+    /// The start with an age pyramid (the life lot, 25 November 2026):
+    /// `wed_at_start` weds a planned couple whatever their ages and
+    /// distance, never two of one sex, kin or one already wed;
+    /// `set_pregnant` sets a woman with child, born at her due day.
+    #[test]
+    fn the_pyramid_start_weds_its_couples_and_sets_women_with_child() {
+        let rules = fed_rules();
+        let mut w = world();
+        let old_wife = person(&mut w, 10, 5, 63, Sex::Female);
+        let old_man = person(&mut w, 100, 5, 67, Sex::Male);
+        let daughter = person(&mut w, 11, 5, 30, Sex::Female);
+        let man = person(&mut w, 12, 5, 33, Sex::Male);
+        w.set_parents(daughter, Some(old_wife), Some(old_man));
+        let mut events = Vec::new();
+        assert!(
+            w.wed_at_start(old_wife, old_man, &mut events),
+            "past fifty, far apart"
+        );
+        assert!(
+            !w.wed_at_start(daughter, old_man, &mut events),
+            "kin, and he is wed"
+        );
+        assert!(!w.wed_at_start(daughter, daughter, &mut events));
+        assert!(!w.wed_at_start(daughter, old_wife, &mut events), "one sex");
+        assert!(w.wed_at_start(man, daughter, &mut events));
+        assert_eq!(
+            events,
+            vec![
+                Event::Coupled {
+                    a: old_wife,
+                    b: old_man
+                },
+                Event::Coupled {
+                    a: man,
+                    b: daughter
+                }
+            ]
+        );
+        // With child since two days before the world: due on day 4 of a
+        // six-day pregnancy, the father her husband.
+        assert!(!w.set_pregnant(man, -2, daughter), "not a woman");
+        assert!(w.set_pregnant(daughter, -2, man));
+        assert!(!w.set_pregnant(daughter, 0, man), "already with child");
+        let mut events = Vec::new();
+        let day = w.calendar().ticks_per_day();
+        for _ in 0..day * 5 {
+            w.step(&rules, &mut events);
+        }
+        let born: Vec<(BodyId, i64)> = w
+            .bodies()
+            .iter()
+            .filter(|b| b.mother() == Some(daughter))
+            .map(|b| (b.father().unwrap(), b.born_day()))
+            .collect();
+        assert_eq!(born, vec![(man, 4)]);
     }
 }
