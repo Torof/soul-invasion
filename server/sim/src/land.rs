@@ -932,6 +932,56 @@ pub(crate) fn put_chunk(out: &mut Vec<u8>, chunk: ChunkPos) {
     out.extend_from_slice(&chunk.y.to_le_bytes());
 }
 
+/// Why kept bytes (of a land, [`crate::map::Map::take_land_bytes`], or of a ground's
+/// trees and plants, [`crate::ground::Ground::take_bytes`]) were refused:
+/// nothing of them was taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refused {
+    /// Damaged, of another layout, or of a map of another size.
+    Unreadable,
+    /// This chunk, made here, differs from the one kept: the bytes were
+    /// made by another code (or another content).
+    Differs(ChunkPos),
+}
+
+/// What kept bytes gave: chunks taken of each kind, chunks the bytes
+/// held of each kind, and chunks held here before (made, or by the
+/// check) found the same as the bytes'.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Taken<const N: usize> {
+    /// Chunks taken, of each kind (tiles, woods, water; or trees, bearers).
+    pub taken: [usize; N],
+    /// Chunks the bytes held, of each kind.
+    pub kept: [usize; N],
+    /// Chunks held here compared with the bytes' and found the same.
+    pub compared: usize,
+}
+
+/// Up to `check` places among `n`, chosen by `salt` (`SplitMix64`), each
+/// once: which kept chunks a check makes again. Which ones changes
+/// nothing but the time: every chunk held is compared.
+pub(crate) fn sample(n: usize, check: usize, salt: u64) -> Vec<usize> {
+    if check >= n {
+        return (0..n).collect();
+    }
+    let mut state = salt;
+    let mut out: Vec<usize> = Vec::with_capacity(check);
+    let mut tries = 0;
+    while out.len() < check && tries < 4 * check {
+        state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^= z >> 31;
+        let i = usize::try_from(z % u64::try_from(n).expect("a count")).expect("below n");
+        if !out.contains(&i) {
+            out.push(i);
+        }
+        tries += 1;
+    }
+    out
+}
+
 /// What a land's bytes hold, read whole before any of it is taken.
 struct Kept {
     tiles: Vec<(ChunkPos, ChunkTiles)>,
@@ -1025,40 +1075,124 @@ impl Land {
         out
     }
 
+    /// Makes `chunk`'s tiles, woods and water if they are not held yet:
+    /// what preparing a whole land does, chunk by chunk, on any thread.
+    pub(crate) fn make(&self, chunk: ChunkPos) {
+        let _ = self.tiles(chunk);
+        let _ = self.woods(chunk);
+        let index = u32::try_from(chunk.y).expect("on the map") * self.waters.chunks_wide
+            + u32::try_from(chunk.x).expect("on the map");
+        self.waters.with_chunk(index, |_| ());
+    }
+
+    /// How many chunks of tiles, woods and water are held now.
+    pub(crate) fn held(&self) -> [usize; 3] {
+        let (tiles, woods) = {
+            let held = self.lock();
+            (held.tiles.len(), held.woods.len())
+        };
+        let wet = match &self.waters.source {
+            Source::Window { held, .. } => {
+                held.lock().unwrap_or_else(PoisonError::into_inner).len()
+            }
+            Source::Sparse { .. } => 0,
+        };
+        [tiles, woods, wet]
+    }
+
     /// Takes the chunks of `bytes` ([`Land::to_bytes`] of a land of the
-    /// same map) that are not held yet: how many chunks of tiles, woods and
-    /// water were taken, or `None`, taking nothing, when the bytes are
-    /// damaged, of another layout or of a map of another size. Only a land
-    /// of the same map may give them (the caller names its files by the
-    /// map): they are read as made, never checked against the generator.
-    pub(crate) fn take_bytes(&self, bytes: &[u8]) -> Option<[usize; 3]> {
-        let kept = self.read_kept(bytes)?;
-        let mut taken = [0; 3];
+    /// same map) that are not held yet, after a check (D51, amended 25
+    /// November 2026: a file kept by another build of the same
+    /// land-making code is read, the check guarding it): `check` chunks
+    /// of the bytes, chosen by `salt`, are made here first (with the
+    /// chunks their woods read around them), and every chunk held here is
+    /// compared with the bytes' own. Refused, taking nothing, when the
+    /// bytes are damaged, of another layout or of a map of another size,
+    /// and when a chunk differs: the bytes were made by another code.
+    ///
+    /// # Errors
+    ///
+    /// [`Refused`], as said.
+    pub(crate) fn take_bytes(
+        &self,
+        bytes: &[u8],
+        check: usize,
+        salt: u64,
+    ) -> Result<Taken<3>, Refused> {
+        let kept = self.read_kept(bytes).ok_or(Refused::Unreadable)?;
+        for i in sample(kept.tiles.len(), check, salt) {
+            self.make(kept.tiles[i].0);
+        }
+        let mut out = Taken {
+            taken: [0; 3],
+            kept: [kept.tiles.len(), kept.woods.len(), kept.wet.len()],
+            compared: 0,
+        };
+        let wet_held = match &self.waters.source {
+            Source::Window { held, .. } => Some(held),
+            Source::Sparse { .. } => None,
+        };
+        // Compared first, all of it, so that nothing is taken from bytes
+        // that differ anywhere.
+        {
+            let mut held = self.lock();
+            for (chunk, tiles) in &kept.tiles {
+                if let Some(mine) = held.tiles.get(chunk) {
+                    if **mine != *tiles {
+                        return Err(Refused::Differs(*chunk));
+                    }
+                    out.compared += 1;
+                }
+            }
+            for (chunk, woods) in &kept.woods {
+                if let Some(mine) = held.woods.get(chunk) {
+                    if **mine != *woods {
+                        return Err(Refused::Differs(*chunk));
+                    }
+                    out.compared += 1;
+                }
+            }
+        }
+        if let Some(held) = wet_held {
+            let mut held = held.lock().unwrap_or_else(PoisonError::into_inner);
+            for (index, wet) in &kept.wet {
+                if let Some(mine) = held.get(index) {
+                    if **mine != *wet {
+                        let wide = self.waters.chunks_wide;
+                        return Err(Refused::Differs(ChunkPos::new(
+                            i32::try_from(index % wide).unwrap_or(i32::MAX),
+                            i32::try_from(index / wide).unwrap_or(i32::MAX),
+                        )));
+                    }
+                    out.compared += 1;
+                }
+            }
+        }
         {
             let mut held = self.lock();
             for (chunk, tiles) in kept.tiles {
                 if !held.tiles.contains(&chunk) {
                     held.tiles.insert(chunk, Arc::new(tiles));
-                    taken[0] += 1;
+                    out.taken[0] += 1;
                 }
             }
             for (chunk, woods) in kept.woods {
                 if !held.woods.contains(&chunk) {
                     held.woods.insert(chunk, Arc::new(woods));
-                    taken[1] += 1;
+                    out.taken[1] += 1;
                 }
             }
         }
-        if let Source::Window { held, .. } = &self.waters.source {
+        if let Some(held) = wet_held {
             let mut held = held.lock().unwrap_or_else(PoisonError::into_inner);
             for (chunk, wet) in kept.wet {
                 if !held.contains(&chunk) {
                     held.insert(chunk, Arc::new(wet));
-                    taken[2] += 1;
+                    out.taken[2] += 1;
                 }
             }
         }
-        Some(taken)
+        Ok(out)
     }
 
     fn read_kept(&self, bytes: &[u8]) -> Option<Kept> {
@@ -1309,9 +1443,13 @@ mod tests {
         assert!(made[0] >= 36 && made[1] == 36 && made[2] > 36, "{made:?}");
         let bytes = land.to_bytes();
         let again = land_of(&window);
-        let taken = again.take_bytes(&bytes).expect("the same map's bytes");
+        let taken = again
+            .take_bytes(&bytes, 0, 0)
+            .expect("the same map's bytes");
+        assert_eq!(taken.compared, 0, "nothing held, nothing checked");
+        assert_eq!(taken.kept, taken.taken);
         assert_eq!(
-            taken.map(|n| n as u64),
+            taken.taken.map(|n| n as u64),
             [made[0], made[1], made[2]],
             "every chunk taken"
         );
@@ -1330,18 +1468,64 @@ mod tests {
         }
         assert_eq!(again.made(), [0, 0, 0], "nothing made again");
         assert_eq!(again.to_bytes(), bytes, "written again, the same bytes");
-        // Taken twice: nothing more.
-        assert_eq!(again.take_bytes(&bytes), Some([0, 0, 0]));
+        // Taken twice: nothing more, every chunk compared and the same.
+        let twice = again.take_bytes(&bytes, 3, 7).expect("the same bytes");
+        assert_eq!(twice.taken, [0, 0, 0]);
+        assert_eq!(twice.compared, twice.kept.iter().sum::<usize>());
         // Damaged, cut short, or of a map of another size: refused whole.
         let fresh = land_of(&window);
         let mut damaged = bytes.clone();
         damaged[bytes.len() / 2] ^= 1;
-        assert_eq!(fresh.take_bytes(&damaged), None);
-        assert_eq!(fresh.take_bytes(&bytes[..bytes.len() - 9]), None);
+        assert_eq!(fresh.take_bytes(&damaged, 0, 0), Err(Refused::Unreadable));
+        assert_eq!(
+            fresh.take_bytes(&bytes[..bytes.len() - 9], 0, 0),
+            Err(Refused::Unreadable)
+        );
         let (_, waters, woods, cliff_rows) = parts(320, 320, 3);
         let other = Land::new(320, 320, cliff_rows, waters, woods);
-        assert_eq!(other.take_bytes(&bytes), None);
+        assert_eq!(other.take_bytes(&bytes, 0, 0), Err(Refused::Unreadable));
         assert_eq!(fresh.lock().tiles.len(), 0, "nothing taken");
+        // Bytes whole and readable but of another land-making code: a
+        // tile of the first chunk changed, the checksum made again. Without
+        // a check they would be taken as made; the check makes chunks of
+        // the bytes here, finds one that differs, and takes nothing.
+        let mut foreign = bytes[..bytes.len() - 8].to_vec();
+        let first = ChunkPos::new(
+            i32::from_le_bytes(foreign[20..24].try_into().unwrap()),
+            i32::from_le_bytes(foreign[24..28].try_into().unwrap()),
+        );
+        foreign[28] = u8::from(foreign[28] == 0);
+        let sum = checksum(&foreign);
+        foreign.extend_from_slice(&sum.to_le_bytes());
+        let checked = land_of(&window);
+        assert_eq!(
+            checked.take_bytes(&foreign, usize::MAX, 1),
+            Err(Refused::Differs(first))
+        );
+        assert_eq!(
+            checked.lock().tiles.len() as u64,
+            checked.made()[0],
+            "only its own"
+        );
+        let unchecked = land_of(&window);
+        assert!(
+            unchecked.take_bytes(&foreign, 0, 1).is_ok(),
+            "the check guards"
+        );
+    }
+
+    #[test]
+    fn a_sample_is_distinct_places_below_its_bound() {
+        let picked = sample(100, 30, 42);
+        assert_eq!(picked.len(), 30);
+        assert!(picked.iter().all(|&i| i < 100));
+        let mut sorted = picked.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 30, "each once");
+        assert_ne!(sample(100, 30, 43), picked, "another salt, other places");
+        assert_eq!(sample(5, 30, 1).len(), 5, "no more than there are");
+        assert_eq!(sample(0, 30, 1), Vec::<usize>::new());
     }
 
     #[test]

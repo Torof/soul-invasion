@@ -290,6 +290,8 @@ pub enum RunError {
     /// The calendar refuses the cadence, the day, the cycle or the
     /// age-years.
     Calendar(sim::time::CalendarError),
+    /// The land cannot be prepared for these settings.
+    Prepare(String),
 }
 
 impl std::fmt::Display for RunError {
@@ -303,6 +305,7 @@ impl std::fmt::Display for RunError {
             Self::Read(path, source) => write!(f, "cannot read {}: {source}", path.display()),
             Self::Content(source) => write!(f, "invalid content: {source}"),
             Self::Calendar(source) => write!(f, "calendar: {source:?}"),
+            Self::Prepare(why) => write!(f, "{why}"),
         }
     }
 }
@@ -1998,8 +2001,17 @@ pub struct Report {
     /// food map's after it not counted). Timing, never simulation.
     pub ground_made: [u64; 2],
     /// Chunks of trees and of bearers read from those the runs before
-    /// kept ([`lands::read_ground_into`]). Timing too.
+    /// kept ([`lands::ground_into`]). Timing too.
     pub ground_kept: [usize; 2],
+    /// Chunks of land and of trees and bearers the run held before
+    /// taking the kept files and found the same as theirs: the check that
+    /// lets a file of another build be read (D51 amended 25 November
+    /// 2026). Timing too.
+    pub land_checked: [usize; 2],
+    /// Seconds on the wall the run spent preparing the whole land, then
+    /// its trees and plants, on all cores, when no whole file was kept (0
+    /// when it read them). Timing too.
+    pub land_prepared_s: [f64; 2],
     // --- the scarcity chain (24 November 2026) ---
     /// La chaîne du manque: the need, the walk, the work, why bodies lie
     /// away at dawn, how far the looking days go ([`chain::Chain`]).
@@ -2046,17 +2058,12 @@ fn world_name(world: WorldKind) -> &'static str {
     }
 }
 
-/// Where the run's land is kept ([`lands`]), its world's name and the
-/// program's fingerprint: `None` without a cache, on a patch, or when
-/// the program cannot read itself.
-fn land_cache(settings: &Settings) -> Option<(&Path, &'static str, u64)> {
+/// Where the run's land is kept ([`lands`]) and its world's name: `None`
+/// without a cache or on a patch.
+fn land_cache(settings: &Settings) -> Option<(&Path, &'static str)> {
     let dir = settings.lands.as_deref()?;
     settings.world.zone()?;
-    Some((
-        dir,
-        world_name(settings.world),
-        lands::program_fingerprint()?,
-    ))
+    Some((dir, world_name(settings.world)))
 }
 
 /// The vivarium's map from its continent, kept or born.
@@ -2150,14 +2157,16 @@ pub fn run_watched(
     };
     let born = Instant::now();
     let land_cache = land_cache(settings);
-    let mut land_kept = [0; 3];
+    let mut land_got = lands::Got::default();
     let mut world = match settings.world {
         WorldKind::Vivarium | WorldKind::VivariumWide | WorldKind::VivariumHuge => {
             let map = vivarium_map(settings);
-            // The chunks kept by the runs before, taken before the first
-            // is read (the same bytes as made, D51 amended).
-            if let Some((dir, world, program)) = land_cache {
-                land_kept = lands::read_into(&map, dir, world, program).unwrap_or([0; 3]);
+            // The chunks kept, checked and taken before the first is read
+            // (the same bytes as made), or the whole land prepared on all
+            // cores and kept when no whole file is (D51 amended 25
+            // November 2026).
+            if let Some((dir, world)) = land_cache {
+                land_got = lands::land_into(&map, dir, world, Some(lands::prepare_threads()));
             }
             World::on_valley(calendar, content, map)
         }
@@ -2178,16 +2187,20 @@ pub fn run_watched(
     // more land than four views, and at the cap the caches thrashed from
     // day 59 on, each chunk's bearers placing nine chunks' trees again.
     let map = world.map();
-    world
-        .shared_ground()
-        .widen(map.chunks_wide() as usize * map.chunks_high() as usize);
+    world.shared_ground().widen(ground_chunks(map));
     // The trees and bearers kept by the runs before on this world with
     // this content, taken before the first tick (the same as placed, D51
     // amended 25 November 2026).
     let placing = sim::ahead::Placing::of(&world);
-    let ground_kept = land_cache
-        .and_then(|(dir, name, program)| lands::read_ground_into(&placing, dir, name, program))
-        .unwrap_or([0; 2]);
+    let ground_got = land_cache.map_or_else(lands::Got::default, |(dir, name)| {
+        lands::ground_into(
+            &placing,
+            &world.shared_ground(),
+            dir,
+            name,
+            Some(lands::prepare_threads()),
+        )
+    });
     // The helpers placing bearers ahead (D51 amended), told where the
     // bodies are every few ticks; `None` with `--helpers 0`.
     let placer = sim::ahead::Placer::spawn(&world, usize::try_from(settings.helpers).unwrap_or(1));
@@ -3475,9 +3488,10 @@ pub fn run_watched(
     // makes the rest of the map (the picture's chunks are not kept: a
     // whole huge map would weigh some 800 MB).
     let land_made = world.map().land_made();
-    if let Some((dir, name, program)) = land_cache
+    if let Some((dir, name)) = land_cache
+        && !land_got.whole
         && land_made.iter().any(|&n| n > 0)
-        && let Err(err) = lands::keep(dir, name, program, world.map())
+        && let Err(err) = lands::keep(dir, name, world.map())
     {
         eprintln!(
             "note: the land could not be kept under {}: {err}",
@@ -3487,9 +3501,10 @@ pub fn run_watched(
     // The trees and bearers placed, kept the same way.
     let ground = world.shared_ground();
     let ground_made = [ground.trees_placed(), ground.bearers_placed()];
-    if let Some((dir, name, program)) = land_cache
+    if let Some((dir, name)) = land_cache
+        && !ground_got.whole
         && ground_made.iter().any(|&n| n > 0)
-        && let Err(err) = lands::keep_ground(dir, name, program, &placing, &ground)
+        && let Err(err) = lands::keep_ground(dir, name, &placing, &ground)
     {
         eprintln!(
             "note: the trees and plants could not be kept under {}: {err}",
@@ -3497,24 +3512,9 @@ pub fn run_watched(
         );
     }
     // The picture's terrain kept with the land (the same points as read),
-    // or else read from the map and kept.
-    let (_, points_wide, points_high) = picture_size(world.map());
-    let points = usize::try_from(points_wide * points_high).expect("a small picture");
-    let terrain = land_cache
-        .and_then(|(dir, name, program)| lands::read_picture(dir, name, program))
-        .filter(|t| t.len() == points)
-        .unwrap_or_else(|| {
-            let terrain = picture_terrain(world.map());
-            if let Some((dir, name, program)) = land_cache
-                && let Err(err) = lands::keep_picture(dir, name, program, &terrain)
-            {
-                eprintln!(
-                    "note: the picture's terrain could not be kept under {}: {err}",
-                    dir.display()
-                );
-            }
-            terrain
-        });
+    // or else read from the map and kept; not read beside a land refused
+    // by its check (another code made both).
+    let terrain = kept_picture(world.map(), land_cache, land_got.refused);
     let (map_png, map_scale) = picture(&world, &camps, &terrain);
     let factors = factors_of(content);
     let mut land = land_food::Measure::new(content, world.time().cycle);
@@ -3601,10 +3601,96 @@ pub fn run_watched(
         placed_ahead,
         placed: placed_in_all,
         land_made,
-        land_kept,
+        land_kept: land_got.taken,
         ground_made,
-        ground_kept,
+        ground_kept: ground_got.taken,
+        land_checked: [land_got.compared, ground_got.compared],
+        land_prepared_s: [
+            land_got.prepared_s.unwrap_or(0.0),
+            ground_got.prepared_s.unwrap_or(0.0),
+        ],
     })
+}
+
+/// The chunks of trees, bearers and walkable pieces a vivarium's ground
+/// holds: the map's and the ring around it, whose trees (none) the
+/// plants of the edge's chunks read and whose bearers (none) the bodies
+/// at the edge look at. Held to the map's alone, these pushed the map's
+/// own out and they were placed again (D51 amended 25 November 2026).
+fn ground_chunks(map: &Map) -> usize {
+    (map.chunks_wide() as usize + 2) * (map.chunks_high() as usize + 2)
+}
+
+/// The terrain under the points of the picture of `map`: kept with the
+/// land under `cache` (not beside a land `refused` by its check), or
+/// else read from the map and kept.
+fn kept_picture(
+    map: &Map,
+    cache: Option<(&Path, &'static str)>,
+    refused: bool,
+) -> Vec<Option<Terrain>> {
+    let (_, points_wide, points_high) = picture_size(map);
+    let points = usize::try_from(points_wide * points_high).expect("a small picture");
+    cache
+        .filter(|_| !refused)
+        .and_then(|(dir, name)| lands::read_picture(dir, name))
+        .filter(|t| t.len() == points)
+        .unwrap_or_else(|| {
+            let terrain = picture_terrain(map);
+            if let Some((dir, name)) = cache
+                && let Err(err) = lands::keep_picture(dir, name, &terrain)
+            {
+                eprintln!(
+                    "note: the picture's terrain could not be kept under {}: {err}",
+                    dir.display()
+                );
+            }
+            terrain
+        })
+}
+
+/// Prepares the land of the world of `settings`, its trees and its plants
+/// bearing food with the content of `settings` (`--prepare-land`, D51
+/// amended 25 November 2026): every chunk of the map made on all cores
+/// and kept ([`lands`]), with the picture's terrain, so the runs of a
+/// series that follow read them all and make none. Nothing is simulated.
+/// A line saying what was done.
+///
+/// # Errors
+///
+/// As [`run`]: the content unreadable; and a world that is not the
+/// vivarium's, or no cache to keep the land in.
+pub fn prepare(settings: &Settings) -> Result<String, RunError> {
+    let content = load_content(&content_dir(settings)?)?;
+    let calendar = settings.calendar().map_err(RunError::Calendar)?;
+    let Some((dir, name)) = land_cache(settings) else {
+        return Err(RunError::Prepare(
+            "--prepare-land: a vivarium world (not a patch) and the land's cache".to_owned(),
+        ));
+    };
+    let started = Instant::now();
+    let threads = lands::prepare_threads();
+    let map = vivarium_map(settings);
+    let land = lands::land_into(&map, dir, name, Some(threads));
+    let world = World::on_valley(calendar, &content, map);
+    let chunks = world.map().chunks_wide() as usize * world.map().chunks_high() as usize;
+    world.shared_ground().widen(ground_chunks(world.map()));
+    let placing = sim::ahead::Placing::of(&world);
+    let ground = lands::ground_into(&placing, &world.shared_ground(), dir, name, Some(threads));
+    let _ = kept_picture(world.map(), Some((dir, name)), land.refused);
+    let said = |what: &str, prepared: Option<f64>, taken: usize| {
+        prepared.map_or_else(
+            || format!("{what} read ({taken} chunks)"),
+            |s| format!("{what} prepared in {s:.1} s"),
+        )
+    };
+    Ok(format!(
+        "{name}: {}, {}, {chunks} chunks on {threads} threads, {:.1} s in all, under {}",
+        said("land", land.prepared_s, land.taken[0]),
+        said("trees and plants", ground.prepared_s, ground.taken[1]),
+        started.elapsed().as_secs_f64(),
+        dir.display()
+    ))
 }
 
 /// A decision in words, for the person's page.
@@ -6747,12 +6833,13 @@ mod tests {
                 .is_file(),
             "the born continent is kept"
         );
-        let program = lands::program_fingerprint().expect("the test reads itself");
+        let code = lands::land_code();
         assert!(
-            lands::path_of(&dir.join("lands"), "vivarium", program).is_file()
-                && lands::picture_path_of(&dir.join("lands"), "vivarium", program).is_file(),
-            "the land made and the picture's terrain are kept"
+            lands::path_of(&dir.join("lands"), "vivarium", code).is_file()
+                && lands::picture_path_of(&dir.join("lands"), "vivarium", code).is_file(),
+            "the land prepared and the picture's terrain are kept"
         );
+        assert!(born.land_prepared_s[0] > 0.0, "the first run prepared it");
         let kept = run_checked(&settings, content());
         assert!(
             kept.land_kept[0] > 0,

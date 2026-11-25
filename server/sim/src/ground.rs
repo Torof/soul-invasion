@@ -11,15 +11,23 @@
 //! beside them): a chunk's trees are placed **once** for every reader,
 //! where each reader used to place them again (a chunk's plants read the
 //! trees of the nine chunks around it: a view of 361 chunks placed about
-//! 3,600 chunks' trees). An entry is keyed by the chunk and its
-//! **version**: how many times men changed it (an item taken, a tree
-//! felled, one planted: [`crate::changes::ChunkChanges`], which the world
-//! keeps and stores). Every chunk is at version 0 until men change it; a
-//! change sets the new version here ([`Ground::set_version`]), so the
-//! next request places the chunk again and, when felling comes, lays the
-//! changes over it. The old entry ages out. Bounded ([`TREE_CACHE_CHUNKS`]), the least
+//! 3,600 chunks' trees). Bounded ([`TREE_CACHE_CHUNKS`]), the least
 //! recently used out first: the memory follows the chunks in use, never
 //! the map's size nor the land visited.
+//!
+//! **The trees are placed once and kept** (D51, amended 25 November
+//! 2026): an entry is keyed by the chunk alone. A chunk also has a
+//! **version**, how many times men changed it
+//! ([`crate::changes::ChunkChanges`], which the world keeps and stores),
+//! set here as it moves ([`Ground::set_version`]) for the server's frames
+//! to read; the trees used to be keyed by it too, so every item laid,
+//! lifted or picked in a chunk placed its trees again (115,638 placings
+//! for some 15,000 chunks over a vivarium run of 400 days), though no
+//! change of men touches a tree yet. The trees held are the seed's.
+//! Felling, when it comes, lays a chunk's felled and planted trees over
+//! the seed's trees held here (a patch: some trees taken out, some put
+//! in, never a new placing) and works that chunk's trunks and walkable
+//! pieces out again.
 //!
 //! A `Ground` belongs to one world and one content: the trees it holds
 //! were placed on that world's map with that content's kinds of tree.
@@ -31,6 +39,7 @@ use std::sync::{Arc, Mutex};
 use crate::content::Species;
 use crate::crops::{Bearer, PlantKey, Source};
 use crate::geology::{Geology, Rock};
+use crate::land::{Refused, Taken};
 use crate::lru::Lru;
 use crate::map::{CHUNK_SIZE, ChunkPos, FinePos, Map, PATH_REACH, Pos, Terrain};
 use crate::open_ground::OpenGround;
@@ -65,15 +74,18 @@ pub struct Ground {
 /// version bumped between the two is seen as a whole.
 #[derive(Debug)]
 struct Held {
-    /// The trees of a chunk at a version and the tiles their trunks
-    /// block, the least recently used out first.
-    trees: Lru<(ChunkPos, Version), Placed>,
-    /// The walkable pieces of a chunk at a version, under a set of
-    /// walkable terrains ([`Links`]), the least recently used out first.
-    links: Lru<(ChunkPos, Version, u8), Arc<Links>>,
+    /// The trees of a chunk as the seed placed them and the tiles their
+    /// trunks block, the least recently used out first: by chunk alone,
+    /// for no change of men touches a tree yet (see the module's doc).
+    trees: Lru<ChunkPos, Placed>,
+    /// The walkable pieces of a chunk under a set of walkable terrains
+    /// ([`Links`]), the least recently used out first: read from the
+    /// map's terrain and the trunks, by chunk alone as the trees.
+    links: Lru<(ChunkPos, u8), Arc<Links>>,
     /// The chunks changed by men, with how many times: absent means 0.
     /// Grows with what men change, never with the land visited; the
-    /// versions of the world's chunk changes, set as they change.
+    /// versions of the world's chunk changes, set as they change, for
+    /// the server's frames ([`Ground::version`]).
     versions: BTreeMap<ChunkPos, Version>,
     /// The rock under each tile of a chunk (`geology`), on a map that has
     /// it: never changed by men, so held by the chunk alone.
@@ -506,15 +518,14 @@ impl Ground {
         self.lock().versions.get(&chunk).copied().unwrap_or(0)
     }
 
-    /// Notes that men changed `chunk` (an item taken, a tree felled, one
-    /// planted), now at `version`: its trees are placed again, with the
-    /// changes laid over them, the next time they are asked for.
+    /// Notes that men changed `chunk` (an item taken or laid, a crop
+    /// picked), now at `version`. Its trees are kept: no change of men
+    /// touches a tree yet (see the module's doc).
     pub fn set_version(&self, chunk: ChunkPos, version: Version) {
         self.lock().versions.insert(chunk, version);
     }
 
-    /// The trees standing in `chunk` at its current version: those held,
-    /// or else placed now ([`trees::trees_in`]) and held. The same trees
+    /// The trees standing in `chunk`: those held, or else placed now ([`trees::trees_in`]) and held. The same trees
     /// either way; a hit copies nothing. Placed with the lock released:
     /// two readers missing the same chunk at once place the same trees,
     /// and the second only replaces the first.
@@ -530,9 +541,9 @@ impl Ground {
         self.placed(map, species, open, seed, chunk).trees
     }
 
-    /// The tiles blocked by the trunks of `chunk`'s trees at its current
-    /// version ([`Trunks`]): held with the trees, made when they are
-    /// placed, and placed again with them.
+    /// The tiles blocked by the trunks of `chunk`'s trees ([`Trunks`]):
+    /// held with the trees, made when they are placed, and placed again
+    /// with them.
     #[must_use]
     pub fn trunks_in(
         &self,
@@ -545,8 +556,7 @@ impl Ground {
         self.placed(map, species, open, seed, chunk).trunks
     }
 
-    /// The walkable pieces of `chunk` at its current version under the
-    /// terrains of `mask` ([`Links`], [`walkable_mask`]): held, or else
+    /// The walkable pieces of `chunk` under the terrains of `mask` ([`Links`], [`walkable_mask`]): held, or else
     /// worked out now from the chunk's terrain and trunks, and held.
     #[must_use]
     pub fn links_in(
@@ -558,14 +568,10 @@ impl Ground {
         chunk: ChunkPos,
         mask: u8,
     ) -> Arc<Links> {
-        let key = {
-            let mut held = self.lock();
-            let key = (chunk, held.versions.get(&chunk).copied().unwrap_or(0), mask);
-            if let Some(links) = held.links.get(&key) {
-                return Arc::clone(links);
-            }
-            key
-        };
+        let key = (chunk, mask);
+        if let Some(links) = self.lock().links.get(&key) {
+            return Arc::clone(links);
+        }
         let trunks = self.trunks_in(map, species, open, seed, chunk);
         let links = Arc::new(Links::of(map, chunk, mask, &trunks));
         self.lock().links.insert(key, Arc::clone(&links));
@@ -592,8 +598,7 @@ impl Ground {
         }
     }
 
-    /// `chunk`'s trees and trunks at its current version: held, or else
-    /// placed now and held.
+    /// `chunk`'s trees and trunks: held, or else placed now and held.
     fn placed(
         &self,
         map: &Map,
@@ -602,17 +607,12 @@ impl Ground {
         seed: u64,
         chunk: ChunkPos,
     ) -> Placed {
-        let (key, held) = {
-            let mut held = self.lock();
-            let key = (chunk, held.versions.get(&chunk).copied().unwrap_or(0));
-            (key, held.trees.get(&key).cloned())
-        };
-        if let Some(placed) = held {
+        if let Some(placed) = self.lock().trees.get(&chunk).cloned() {
             return placed;
         }
         let placed = Placed::new(chunk, trees::trees_in(map, species, open, seed, chunk));
         let mut held = self.lock();
-        held.trees.insert(key, placed.clone());
+        held.trees.insert(chunk, placed.clone());
         held.trees_placed += 1;
         placed
     }
@@ -687,16 +687,13 @@ impl Ground {
         Some(rocks)
     }
 
-    /// Are `chunk`'s trees held, at its current version? Does not count
-    /// as a use.
+    /// Are `chunk`'s trees held? Does not count as a use.
     #[must_use]
     pub fn holds_trees(&self, chunk: ChunkPos) -> bool {
-        let held = self.lock();
-        let version = held.versions.get(&chunk).copied().unwrap_or(0);
-        held.trees.contains(&(chunk, version))
+        self.lock().trees.contains(&chunk)
     }
 
-    /// How many chunks' trees are held, stale versions included.
+    /// How many chunks' trees are held.
     #[must_use]
     pub fn trees_held(&self) -> usize {
         self.lock().trees.len()
@@ -709,8 +706,8 @@ impl Ground {
         self.lock().trees_placed
     }
 
-    /// The trees of the chunks held as the seed placed them (version 0)
-    /// and the bearers held, as bytes [`Ground::take_bytes`] reads back
+    /// The trees of the chunks held (as the seed placed them) and the
+    /// bearers held, as bytes [`Ground::take_bytes`] reads back
     /// (D51, amended 25 November 2026): both are a pure function of the
     /// map, the seed and the content's kinds, so the vivarium keeps them
     /// on disk between runs of the same world and content, as it keeps
@@ -739,8 +736,7 @@ impl Ground {
         let seeded: Vec<(ChunkPos, &Placed)> = held
             .trees
             .iter()
-            .filter(|((_, version), _)| *version == 0)
-            .map(|((chunk, _), placed)| (*chunk, placed))
+            .map(|(chunk, placed)| (*chunk, placed))
             .collect();
         put_u32(&mut out, seeded.len());
         for (chunk, placed) in seeded {
@@ -782,29 +778,67 @@ impl Ground {
     }
 
     /// Takes the trees and bearers of `bytes` ([`Ground::to_bytes`] of a
-    /// ground of the same map, seed and content: the caller's to
-    /// guarantee) not held yet, as if placed here: how many chunks of
-    /// trees and of bearers. `None`, taking nothing, for bytes damaged, of
+    /// ground of the same map, seed and content, placed by the same code)
+    /// not held yet, as if placed here, once every chunk held here is
+    /// found the same as the bytes' (the check of D51, amended 25 November
+    /// 2026: [`crate::ahead::Placing::take_ground_bytes`] places a few of
+    /// them first). A tree's trunks are worked out again from its trees.
+    ///
+    /// # Errors
+    ///
+    /// Taking nothing: [`Refused::Unreadable`] for bytes damaged, of
     /// another layout, or naming a kind of tree beyond the `species`
-    /// count. A tree's trunks are worked out again from its trees.
-    #[must_use]
-    pub fn take_bytes(&self, bytes: &[u8], species: usize) -> Option<[usize; 2]> {
-        let (trees, bearers) = read_ground(bytes, species)?;
+    /// count; [`Refused::Differs`] when a chunk held here is not the
+    /// bytes'.
+    pub fn take_bytes(&self, bytes: &[u8], species: usize) -> Result<Taken<2>, Refused> {
+        let read = read_ground(bytes, species).ok_or(Refused::Unreadable)?;
+        self.take_read(read)
+    }
+
+    /// [`Ground::take_bytes`], the bytes read.
+    pub(crate) fn take_read(&self, (trees, bearers): GroundRead) -> Result<Taken<2>, Refused> {
         let mut held = self.lock();
-        let mut taken = [0; 2];
+        let mut out = Taken {
+            taken: [0; 2],
+            kept: [trees.len(), bearers.len()],
+            compared: 0,
+        };
+        for (chunk, trees) in &trees {
+            if let Some(mine) = held.trees.get(chunk) {
+                if *mine.trees != **trees {
+                    return Err(Refused::Differs(*chunk));
+                }
+                out.compared += 1;
+            }
+        }
+        for (chunk, bearers) in &bearers {
+            if let Some(mine) = held.bearers.get(chunk) {
+                if **mine != **bearers {
+                    return Err(Refused::Differs(*chunk));
+                }
+                out.compared += 1;
+            }
+        }
         for (chunk, trees) in trees {
-            if !held.trees.contains(&(chunk, 0)) {
-                held.trees.insert((chunk, 0), Placed::new(chunk, trees));
-                taken[0] += 1;
+            if !held.trees.contains(&chunk) {
+                held.trees.insert(chunk, Placed::new(chunk, trees));
+                out.taken[0] += 1;
             }
         }
         for (chunk, bearers) in bearers {
             if !held.bearers.contains(&chunk) {
                 held.bearers.insert(chunk, bearers.into());
-                taken[1] += 1;
+                out.taken[1] += 1;
             }
         }
-        Some(taken)
+        Ok(out)
+    }
+
+    /// How many chunks of trees and of bearers are held now.
+    #[must_use]
+    pub fn ground_held(&self) -> [usize; 2] {
+        let held = self.lock();
+        [held.trees.len(), held.bearers.len()]
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Held> {
@@ -821,10 +855,10 @@ impl Ground {
 const GROUND_MAGIC: &[u8; 8] = b"SOULGRD1";
 
 /// Chunks of trees and of bearers read from bytes.
-type GroundRead = (Vec<(ChunkPos, Vec<Tree>)>, Vec<(ChunkPos, Vec<Bearer>)>);
+pub(crate) type GroundRead = (Vec<(ChunkPos, Vec<Tree>)>, Vec<(ChunkPos, Vec<Bearer>)>);
 
 /// The trees and bearers of `bytes`, read whole, or `None`.
-fn read_ground(bytes: &[u8], species: usize) -> Option<GroundRead> {
+pub(crate) fn read_ground(bytes: &[u8], species: usize) -> Option<GroundRead> {
     use crate::land::{Reader, checksum};
     let (body, sum) = bytes.split_at_checked(bytes.len().checked_sub(8)?)?;
     if checksum(body) != u64::from_le_bytes(sum.try_into().ok()?) {
@@ -961,26 +995,28 @@ mod tests {
     }
 
     #[test]
-    fn a_change_bumps_the_version_and_places_the_chunk_again() {
+    fn a_change_bumps_the_version_and_keeps_the_trees_placed() {
         let (map, species) = valley();
         let ground = Ground::default();
         let chunk = wooded(&map, &species)[0];
         assert_eq!(ground.version(chunk), 0);
         let before = ground.trees_in(&map, &species, &open(), SEED, chunk);
+        let links = ground.links_in(&map, &species, &open(), SEED, chunk, 1);
+        assert_eq!(ground.trees_placed(), 1);
+        // An item laid, lifted or picked: the version moves, the trees,
+        // trunks and walkable pieces stay as placed (D51, amended 25
+        // November 2026): no change of men touches a tree yet.
         ground.set_version(chunk, 1);
         assert_eq!(ground.version(chunk), 1);
-        assert!(
-            !ground.holds_trees(chunk),
-            "the old version is not the chunk's"
-        );
+        assert!(ground.holds_trees(chunk), "kept across the change");
         let after = ground.trees_in(&map, &species, &open(), SEED, chunk);
-        assert!(!Arc::ptr_eq(&before, &after), "placed again");
-        assert_eq!(before, after, "nothing lays changes over them yet");
-        assert_eq!(
-            ground.trees_held(),
-            2,
-            "the old entry ages out, it is not dropped"
-        );
+        assert!(Arc::ptr_eq(&before, &after), "not placed again");
+        assert!(Arc::ptr_eq(
+            &links,
+            &ground.links_in(&map, &species, &open(), SEED, chunk, 1)
+        ));
+        assert_eq!(ground.trees_placed(), 1, "placed once");
+        assert_eq!(ground.trees_held(), 1, "one entry a chunk");
         ground.set_version(chunk, 2);
         assert_eq!(ground.version(chunk), 2);
         // Another chunk keeps its own version.
@@ -1035,13 +1071,12 @@ mod tests {
             assert_eq!(*again, **trunks);
             assert!(ground.holds_trees(chunk), "held with the trees");
         }
-        // A changed chunk makes its trunks again with its trees.
+        // A changed chunk keeps its trunks with its trees.
         let chunk = chunks[11];
         let before = ground.trunks_in(&map, &species, &open(), SEED, chunk);
         ground.set_version(chunk, 1);
         let after = ground.trunks_in(&map, &species, &open(), SEED, chunk);
-        assert!(!Arc::ptr_eq(&before, &after), "made again");
-        assert_eq!(before, after, "nothing felled yet");
+        assert!(Arc::ptr_eq(&before, &after), "kept, nothing felled yet");
         // A lookup reads the same bits, and nothing off the map.
         let open = open();
         let lookup = ground.trunks_at(&map, &species, &open, SEED);

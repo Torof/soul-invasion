@@ -523,6 +523,8 @@ impl Report {
                     "land_kept": self.land_kept,
                     "ground_made": self.ground_made,
                     "ground_kept": self.ground_kept,
+                    "land_checked": self.land_checked,
+                    "land_prepared_s": self.land_prepared_s,
                 }),
             );
         }
