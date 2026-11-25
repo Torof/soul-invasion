@@ -62,6 +62,7 @@ FACTOR_FR = {
     "fire.told_per_night": ("fire", "Récits par soir", "souvenirs", "ce qu’un conteur dit au feu en une soirée"),
     "fire.heard_max": ("fire", "Retenus au plus", "souvenirs", "ce qu’une personne garde de ce qu’elle a entendu"),
     "fire.hearth_nights": ("fire", "Mémoire du foyer", "soirs", "les soirs que le foyer garde en mémoire"),
+    "fire.hearth_seasons": ("fire", "Mémoire du foyer", "saisons", "les saisons de soirs que le foyer garde en mémoire"),
 }
 
 THEMES = [("world", "Le monde"), ("bodies", "Les corps"), ("food", "La nourriture"), ("thought", "La pensée"), ("fire", "Le feu")]
