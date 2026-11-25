@@ -15,7 +15,7 @@ fmt = reading.fmt
 
 LEAD = ("Ce que chaque foyer a reçu, donné et perdu : ce qu’on pose à la réserve du camp en rentrant, ce qu’on y mange, "
         "les jeunes d’abord ; les enfants morts jeunes ; les parents d’un enfant de moins de 8 ans face aux autres adultes ; "
-        "et, journée après journée, la réserve à l’aube face à la part des adultes qui sortent.")
+        "et, journée après journée, la réserve à l’aube face à la part des adultes qui partent cueillir.")
 
 
 def block(d):
@@ -43,23 +43,24 @@ def _corr(xs, ys):
 def cycle(p):
     """The boom and bust looked for: (r between the reserve at dawn and the share going out that
     day, the share's low and high, a sentence)."""
-    days = [x for x in p.get("days") or [] if x.get("out_percent") is not None and x.get("grown")]
+    key = "gathered_percent" if any("gathered_percent" in x for x in p.get("days") or []) else "out_percent"
+    days = [x for x in p.get("days") or [] if x.get(key) is not None and x.get("grown")]
     if len(days) < 3:
         return None, None, None, "Trop peu de journées pour le dire."
     res = [x.get("reserve_dawn_kj") or 0 for x in days]
-    out = [x["out_percent"] for x in days]
+    out = [x[key] for x in days]
     r = _corr(res, out)
     lo, hi = min(out), max(out)
     calm = sum(1 for o in out if o < 50)
     if r is not None and r <= -0.3 and hi - lo >= 30:
-        words = (f"Le cycle apparaît : plus la réserve est pleine à l’aube, moins ils sortent (r = {r:.2f}), "
-                 f"et la part qui sort va de {lo} à {hi} %.")
+        words = (f"Le cycle apparaît : plus la réserve est pleine à l’aube, moins ils partent cueillir (r = {r:.2f}), "
+                 f"et la part qui y part va de {lo} à {hi} %.")
     elif calm == 0:
-        words = (f"Pas de cycle : chaque journée, {lo} % au moins des adultes sortent (jusqu’à {hi} %), "
+        words = (f"Pas de cycle : chaque journée, {lo} % au moins des adultes partent cueillir (jusqu’à {hi} %), "
                  f"quelle que soit la réserve" + (f" (r = {r:.2f})." if r is not None else "."))
     else:
-        words = (f"Pas de cycle net : {calm} journée{'s' if calm > 1 else ''} où moins de la moitié sort, "
-                 f"la part qui sort va de {lo} à {hi} %" + (f", r = {r:.2f} avec la réserve." if r is not None else "."))
+        words = (f"Pas de cycle net : {calm} journée{'s' if calm > 1 else ''} où moins de la moitié part cueillir, "
+                 f"la part qui y part va de {lo} à {hi} %" + (f", r = {r:.2f} avec la réserve." if r is not None else "."))
     return r, lo, hi, words
 
 
@@ -109,7 +110,8 @@ def charts(d, p):
     a.line(xs, put, "#3a8a4a", "posé dans la journée")
     a.line(xs, eat, "#c33", "mangé dans la journée")
     b = reading.Chart(0, max(xs[-1], yd), 100, "cycles des saisons", "% des adultes", yd, pct=True, size=(1000, 200), winters=True)
-    b.line(xs, [x.get("out_percent") for x in days], "#36c", "sortis de leur camp")
+    b.line(xs, [x.get("out_percent") for x in days], "#9ab", "sortis de leur camp (boire compris)")
+    b.line(xs, [x.get("gathered_percent") for x in days], "#36c", "partis cueillir")
     return (a.svg("les réserves des foyers, journée après journée")
             + b.svg("la part des adultes qui sortent, journée après journée"))
 

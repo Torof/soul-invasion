@@ -40,6 +40,8 @@ pub struct ClassDay {
     pub bodies: u32,
     /// Of them, gone out: beyond `HOME_TILES` of their home at some step.
     pub out: u32,
+    /// Of them, gathered something that day.
+    pub gathered: u32,
     /// Tiles walked, all of them.
     pub tiles: u64,
     /// Fatigue at nightfall, in points, summed.
@@ -54,6 +56,7 @@ impl ClassDay {
     fn add(&mut self, other: &Self) {
         self.bodies += other.bodies;
         self.out += other.out;
+        self.gathered += other.gathered;
         self.tiles += other.tiles;
         self.fatigue += other.fatigue;
         self.thin += other.thin;
@@ -71,6 +74,7 @@ impl ClassDay {
         json!({
             "body_days": self.bodies,
             "out": self.out,
+            "gathered": self.gathered,
             "tiles": self.tiles,
             "tiles_per_day": per(self.tiles),
             "fatigue_at_nightfall": per(self.fatigue),
@@ -114,6 +118,8 @@ pub struct HearthProbe {
     walked: BTreeMap<BodyId, u64>,
     /// Who went out today.
     out: BTreeSet<BodyId>,
+    /// Who gathered something today.
+    gathered: BTreeSet<BodyId>,
     /// The children dead: (before eight, before sixteen, born in the run
     /// or young at the start, of them dead before eight, before sixteen).
     pub children: Children,
@@ -171,6 +177,9 @@ impl HearthProbe {
                         }
                     }
                 }
+                Event::WorkStopped { body, grams, .. } if *grams > 0 => {
+                    self.gathered.insert(*body);
+                }
                 Event::DayStarted { .. } => {
                     for (camp, kj) in brains.reserves_kj(world, content) {
                         self.day(day).hearths.entry(camp).or_default().dawn_kj = kj;
@@ -208,6 +217,7 @@ impl HearthProbe {
             let c = b.condition();
             class.bodies += 1;
             class.out += u32::from(self.out.contains(&b.id()));
+            class.gathered += u32::from(self.gathered.contains(&b.id()));
             class.tiles += self.walked.get(&b.id()).copied().unwrap_or(0);
             class.fatigue += u64::from(c.fatigue.points());
             class.thin += u32::from(c.is_thin(needs));
@@ -215,6 +225,7 @@ impl HearthProbe {
         }
         self.walked.clear();
         self.out.clear();
+        self.gathered.clear();
         let today = self.day(day);
         today.parents.add(&parent_day);
         today.others.add(&other_day);
@@ -301,6 +312,7 @@ impl HearthProbe {
                 others.add(&d.others);
                 let grown = d.parents.bodies + d.others.bodies;
                 let out = d.parents.out + d.others.out;
+                let gathered = d.parents.gathered + d.others.gathered;
                 let (mut dawn, mut p, mut e, mut s) = (0, 0, 0, 0);
                 for h in d.hearths.values() {
                     dawn += h.dawn_kj;
@@ -321,6 +333,8 @@ impl HearthProbe {
                     "grown": grown,
                     "out": out,
                     "out_percent": (out * 100).checked_div(grown).map_or(Value::Null, |p| json!(p)),
+                    "gathered": gathered,
+                    "gathered_percent": (gathered * 100).checked_div(grown).map_or(Value::Null, |p| json!(p)),
                     "gathering_for": d.gathering_for,
                     "seen_kj": d.seen_kj,
                     "cared_kj": d.cared_kj,
