@@ -1892,6 +1892,32 @@ impl World {
         (left > 0).then_some((year, left))
     }
 
+    /// What the tree or plant `bearer` bears of the crop at `crop` (the
+    /// content's order, as [`World::ripe_of_crop`]) in the crop's year
+    /// `year`, in grams, before anything is picked (D45): its kind's lean,
+    /// usual or rich year around it times its own share. `None` when the
+    /// crop is not of its kind. Nothing in the world asks it: a measure's
+    /// question (the vivarium's land food, 25 November 2026).
+    #[must_use]
+    pub fn bears_of_crop(&self, bearer: &crops::Bearer, crop: usize, year: u64) -> Option<u32> {
+        let of = self.crops.get(crop).filter(|c| *c.on == *bearer.kind)?;
+        let frame = r#gen::scatter::Frame::at(self.map.origin());
+        let key = self
+            .crop_keys
+            .get(crop)
+            .copied()
+            .unwrap_or_else(|| crops::key_of(of));
+        Some(crops::bears_keyed(
+            of,
+            key,
+            &self.calendar,
+            self.seed(),
+            frame,
+            bearer.at,
+            year,
+        ))
+    }
+
     /// The fruit `tree`, of `chunk`, shows now (D48, [`crops::fruit_on`]).
     pub fn fruit_on(&self, chunk: ChunkPos, tree: &trees::Tree) -> u8 {
         crops::fruit_on(
