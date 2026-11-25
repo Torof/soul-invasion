@@ -537,6 +537,24 @@ impl Brains {
                         self.news.push(News::SpoiledAtHearth { camp, kj, at });
                     }
                 }
+                crate::Event::ItemAdded { item, .. } => {
+                    // Food laid at a reserve: who lives at that hearth
+                    // and stands at the camp sees it, and thinks again
+                    // (a hungry child waiting there, its gauges unmoved,
+                    // would not, and starved beside a full reserve in the
+                    // first trial).
+                    if let Some(camp) = self.reserves.camp_holding(*item) {
+                        for (id, mind) in &mut self.minds {
+                            if camp_of(rules, mind.ways.home) == camp
+                                && world
+                                    .body(*id)
+                                    .is_some_and(|b| at_camp(rules, b.pos(), mind))
+                            {
+                                mind.due = true;
+                            }
+                        }
+                    }
+                }
                 crate::Event::WorkStopped {
                     body, gives, grams, ..
                 } => {
@@ -829,6 +847,42 @@ mod tests {
             !decision.is_some_and(|d| matches!(d.intention, Intention::Eat { .. })),
             "hungry, it leaves its own's share alone"
         );
+    }
+
+    #[test]
+    fn a_hungry_child_waiting_at_the_camp_eats_what_is_put_down() {
+        let rules = pooled();
+        let at = Pos::new(5, 5);
+        let (mut world, mut brains, ids) = field(&rules, &[(at, 30), (Pos::new(7, 6), 5)]);
+        let (grown, child) = (ids[0], ids[1]);
+        let item = world.spawn_item("berries", 400, at);
+        world.queue(Intention::PickUp { body: grown, item });
+        world.step(&rules, &mut Vec::new());
+        hungry(&mut world, &rules, child, 70);
+        let mut events = Vec::new();
+        // The child waits: nothing to eat, nothing to gather.
+        for _ in 0..20 {
+            events.clear();
+            world.step(&rules, &mut events);
+            for (_, d) in brains.think(&world, &rules, &events) {
+                world.queue(d.intention);
+            }
+        }
+        // Its mother comes home with 1000 kJ for her own.
+        brains.minds.get_mut(&grown).unwrap().hearth_carried_kj = 1000;
+        brains.minds.get_mut(&grown).unwrap().due = true;
+        let mut ate = false;
+        for _ in 0..300 {
+            events.clear();
+            world.step(&rules, &mut events);
+            ate |= events
+                .iter()
+                .any(|e| matches!(e, crate::Event::BodyAte { body, item: i, .. } if *body == child && *i == item));
+            for (_, d) in brains.think(&world, &rules, &events) {
+                world.queue(d.intention);
+            }
+        }
+        assert!(ate, "the child saw the food put down and ate it");
     }
 
     #[test]
