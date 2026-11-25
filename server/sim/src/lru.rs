@@ -105,6 +105,12 @@ impl<K: Ord + Copy, V> Lru<K, V> {
         self.entries.keys()
     }
 
+    /// The entries held, in their keys' order (not by use); reading them
+    /// does not count as a use.
+    pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+        self.entries.iter().map(|(k, (v, _))| (k, v))
+    }
+
     /// Takes `key`'s entry out, if any.
     pub fn remove(&mut self, key: &K) -> Option<V> {
         let (value, used) = self.entries.remove(key)?;

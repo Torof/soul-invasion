@@ -453,6 +453,7 @@ mod tests {
             age_years_per_cycle: Calendar::DEFAULT_AGE_YEARS_PER_CYCLE,
             seed: 3,
             content: None,
+            lands: None,
             brain: true,
             tribes: 2,
             children: 2,

@@ -495,6 +495,8 @@ impl Report {
                     "helpers": self.settings.helpers,
                     "placed": self.placed,
                     "placed_ahead": self.placed_ahead,
+                    "land_made": self.land_made,
+                    "land_kept": self.land_kept,
                 }),
             );
         }

@@ -76,6 +76,8 @@ clock, the only field no seed decides.
 | `meta.timing.helpers` | Helper threads placing the chunks' plants ahead of the bodies (`--helpers`, D51 amended); 0 is the simulation thread alone, what the lab passes for runs side by side. Timing: the pages are the same whatever the number | count |
 | `meta.timing.placed` | Chunks whose plants were placed over the run, by the helpers and the simulation thread together (a chunk twice when both placed it at once) | count |
 | `meta.timing.placed_ahead` | Of those, the chunks the helpers placed ahead | count |
+| `meta.timing.land_made` | Chunks of land the run made itself until its end, the picture's apart: tiles, woods, water (D51 amended 25 November 2026) | `[count, count, count]` |
+| `meta.timing.land_kept` | Chunks of land read from the file the runs before kept (`--no-land-cache`: none): tiles, woods, water | `[count, count, count]` |
 | `meta.memory.written` | Records written to the common memory over the run (D55) | count |
 | `meta.memory.freed` | Records freed, their last access dropped | count |
 | `meta.memory.held` | Records held at the end, those of `records` | count |
