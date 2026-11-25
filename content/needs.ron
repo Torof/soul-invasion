@@ -216,8 +216,10 @@
     // knows the most plants still bearing or towards the nearest drinking
     // place it knows, half and half; a quarter of that under will 70; the
     // vivarium's world ends at its edge, D50 b, 22 November 2026). After 5
-    // days the world has judged on every
-    // distress: kept if nothing worsened and one thing improved (gathered
+    // days the world has judged, within one season (amended 25 November
+    // 2026: a short trial begins only when its 5 days end in its season,
+    // its days before counted in that season only; else it waits for the
+    // next, so the change of season never judges it), on every distress: kept if nothing worsened and one thing improved (gathered
     // a day, days thin, days thirsty at nightfall, nights cold), else
     // reverted. At night at the camp a body copies one way from the
     // camp-mate within 12 tiles who fared best over the last 5 days (the

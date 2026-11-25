@@ -65,7 +65,8 @@
 //! may start a **trial** (a daily chance by its **will**, a placeholder
 //! drawn from the world's seed and its id until the souls' Willpower
 //! comes, D30): one way moved by one step, drawn from the seed, its id
-//! and the day. After `trial_days` the world has **judged** on every
+//! and the day, its days held within one season ([`trial_fits`]). After
+//! `trial_days` the world has **judged** on every
 //! distress: the way is kept if nothing worsened and one thing improved
 //! (gathered a day, thin days, thirsty days, cold days), else reverted. A
 //! new home goes to the place or grove of its notebook where its own
@@ -1368,6 +1369,23 @@ impl Lately {
             || self.thirsty_days < before.thirsty_days
             || self.cold_days < before.cold_days;
         !worse && better
+    }
+
+    /// These counts of `from` days carried to `to` days, as the heard
+    /// days are ([`HeardDays::mean`]); the gathered a day kept.
+    #[must_use]
+    fn scaled(self, from: u32, to: u32) -> Self {
+        if from == to || from == 0 {
+            return self;
+        }
+        let per = |n: u32| n.saturating_mul(to) / from;
+        Self {
+            kj_per_day: self.kj_per_day,
+            thin_days: per(self.thin_days),
+            thirsty_days: per(self.thirsty_days),
+            cold_days: per(self.cold_days),
+            distress_days: per(self.distress_days),
+        }
     }
 
     /// How well it fared, the greater the better: the fewest days of
@@ -8610,6 +8628,74 @@ fn season_of_day(world: &World, day: u64) -> u8 {
     c.season_of(day % u64::from(c.days_per_cycle().max(1))) as u8
 }
 
+/// The first and last days of the season holding `day`, never reaching
+/// before the world's first day.
+fn season_bounds(world: &World, day: u64) -> (u64, u64) {
+    let cycle = u64::from(world.calendar().days_per_cycle().max(1));
+    let season = season_of_day(world, day);
+    let (mut first, mut last) = (day, day);
+    while first > 0 && day - first < cycle && season_of_day(world, first - 1) == season {
+        first -= 1;
+    }
+    while last - day < cycle && season_of_day(world, last + 1) == season {
+        last += 1;
+    }
+    (first, last)
+}
+
+/// The season a short trial of `way` begun on `day` is held within (D50,
+/// amended 25 November 2026: a trial is judged over a span where its
+/// effect can show, without the change of season deciding it): its
+/// first and last days. `None` for a way judged on its horizon in
+/// seasons, or when the season is too short to hold a trial (the rule
+/// cannot hold, the trial is judged as before).
+fn trial_season(world: &World, trials: &Trials, way: Way, day: u64) -> Option<(u64, u64)> {
+    if !trials.short(way.key()) {
+        return None;
+    }
+    let (first, last) = season_bounds(world, day);
+    (last - first >= u64::from(trials.trial_days)).then_some((first, last))
+}
+
+/// Whether a trial of `way` may begin on `day` (D50, amended 25 November
+/// 2026): a short one only when its days end within the day's season,
+/// so the change of season never judges it; it waits for the next.
+fn trial_fits(world: &World, trials: &Trials, way: Way, day: u64) -> bool {
+    trial_season(world, trials, way, day)
+        .is_none_or(|(_, last)| day + u64::from(trials.trial_days) <= last)
+}
+
+/// What the days before a trial of `way` begun on `day` gave, the judge's
+/// other side when it hears nobody (D50): its days of the trial's
+/// length; for a short trial only those of its own season (amended 25
+/// November 2026), scaled to the trial's days as the heard days are.
+fn before_trial(world: &World, trials: &Trials, mind: &Mind, way: Way, day: u64) -> Lately {
+    let days = trials.days_for(way.key(), world.calendar().days_per_cycle());
+    match trial_season(world, trials, way, day) {
+        Some((first, _)) => {
+            // As before when the season holds them all (the days kept
+            // as many, at the world's start, as there are).
+            let kept = days.min(u32::try_from(mind.days.len()).unwrap_or(u32::MAX));
+            let own = u32::try_from(day - first + 1).unwrap_or(u32::MAX).min(kept);
+            mind.lately(own).scaled(own, kept)
+        }
+        None => mind.lately(days),
+    }
+}
+
+/// The day a trial of the hands counts its days from once it learnt a
+/// deed on `day` (D57): that day, so the judge sees the days with the new
+/// thing, but never so late that its days leave the season (D50, amended
+/// 25 November 2026).
+fn restarted_day(world: &World, trials: &Trials, trial: &Trial, day: u64) -> u64 {
+    match trial_season(world, trials, trial.way, day) {
+        Some((_, last)) => day
+            .min(last.saturating_sub(u64::from(trials.trial_days)))
+            .max(trial.started_day),
+        None => day,
+    }
+}
+
 /// Why `id` first went home from gathering today and what it carried,
 /// told at nightfall (lot 5b, a measure of the review), when the callers
 /// review their companions.
@@ -10064,6 +10150,7 @@ fn change_or_move(
         let heard = handwork::heard_deeds(memory, mind);
         let chance = handwork::heard_chance(rules, mind, &heard);
         if chance > 0
+            && trial_fits(world, &rules.needs.trials, Way::Hands, day)
             && scatter::roll(seed, purpose::HANDS_HEARD, &[u64::from(id.0), day]) % 1000 < chance
         {
             mind.changed_day = Some(day);
@@ -10091,8 +10178,7 @@ fn start_heard_deeds(
         way: Way::Hands,
         before,
         started_day: day,
-        before_days: mind
-            .lately(trials.days_for(Way::Hands.key(), world.calendar().days_per_cycle())),
+        before_days: before_trial(world, trials, mind, Way::Hands, day),
         heard: HeardDays::default(),
         caller: None,
     });
@@ -10112,7 +10198,9 @@ fn start_heard_deeds(
 /// drawn (amended 24 November 2026, the project lead: "le déménagement est
 /// une conséquence, pas une cause"): a move is called only from a push
 /// felt here and a surprise lived there ([`call_move`]). The trial records
-/// what the days before gave.
+/// what the days before gave. A short trial whose days would leave the
+/// season is not begun: it waits for the next season ([`trial_fits`];
+/// amended 25 November 2026).
 fn start_trial(
     world: &World,
     rules: &Content,
@@ -10125,7 +10213,13 @@ fn start_trial(
     // A kept way it heard at the fire comes first (D55): "I heard it
     // worked for N, I try it", the way as told, a step lost at times.
     if let Some((way, theirs)) = heard_candidate(memory, seed, id, mind) {
+        // A short trial waits for a season that can hold its days (D50,
+        // amended 25 November 2026).
+        if !trial_fits(world, trials, way, day) {
+            return None;
+        }
         let before = mind.ways;
+        let before_days = before_trial(world, trials, mind, way, day);
         if way == Way::Hands {
             // Hearing does not make the hands able (D57; the lead's
             // knowledge model, 22 November 2026): it tries the deeds
@@ -10146,8 +10240,7 @@ fn start_trial(
                 way,
                 before,
                 started_day: day,
-                before_days: mind
-                    .lately(trials.days_for(way.key(), world.calendar().days_per_cycle())),
+                before_days,
                 heard: HeardDays::default(),
                 caller: None,
             });
@@ -10178,7 +10271,11 @@ fn start_trial(
         (last.0, last.1)
     };
     let (way, up) = draw(&candidates, r);
+    if !trial_fits(world, trials, way, day) {
+        return None;
+    }
     let before = mind.ways;
+    let before_days = before_trial(world, trials, mind, way, day);
     match way {
         Way::WorthHalfTiles => {
             mind.ways.worth_half_tiles = if up {
@@ -10209,7 +10306,7 @@ fn start_trial(
         way,
         before,
         started_day: day,
-        before_days: mind.lately(trials.days_for(way.key(), world.calendar().days_per_cycle())),
+        before_days,
         heard: HeardDays::default(),
         caller: None,
     });
@@ -14198,6 +14295,156 @@ mod tests {
             "judged on its fourth day: {news:?}"
         );
         assert!(brains.mind(id).unwrap().trial().is_none());
+    }
+
+    /// Four bodies in a cycle of sixteen days (seasons of four), short
+    /// trials of two days whole in chance: the news of the nightfalls of
+    /// days 2 to 6, day 3 gathered, every other bare.
+    fn season_trials() -> (Vec<Vec<News>>, Brains) {
+        let rules = trials_at(100, 0);
+        let mut world = World::empty(
+            Calendar::new(1, 7200).unwrap().with_cycle(16, 1).unwrap(),
+            Map::filled(64, 64, Terrain::Grass).with_camp(5, 5),
+        );
+        let mut events = Vec::new();
+        world.advance(2 * world.calendar().ticks_per_day(), &rules, &mut events);
+        for k in 0..4 {
+            world.spawn_body(Pos::new(5 + k, 6));
+        }
+        let mut brains = piloted(&world);
+        let mut nights = Vec::new();
+        // Kept alive and fresh: nobody drinks or eats here.
+        let fresh = world.bodies[0].condition.clone();
+        for day in 2..=6 {
+            if day > 2 {
+                world.advance(world.calendar().ticks_per_day(), &rules, &mut events);
+                for body in &mut world.bodies {
+                    body.condition = fresh.clone();
+                }
+            }
+            assert_eq!(world.today(), day);
+            if day == 3 {
+                for mind in brains.minds.values_mut() {
+                    mind.gathered_today_kj = 500;
+                }
+            }
+            nights.push(nightfall(&world, &rules, &mut brains));
+        }
+        (nights, brains)
+    }
+
+    #[test]
+    fn a_short_trial_waits_for_a_season_that_holds_its_days_and_its_before_is_of_that_season() {
+        // D50, amended 25 November 2026: days 2 and 3 end the first
+        // season (days 0 to 3); a trial of two days begun there would be
+        // judged in the next: none begins, in distress and whole in
+        // chance as they are.
+        let (nights, brains) = season_trials();
+        assert!(nights[0].is_empty(), "day 2: {:?}", nights[0]);
+        assert!(nights[1].is_empty(), "day 3: {:?}", nights[1]);
+        // Day 4 opens the second season: all four begin, the day before
+        // their trial taken in their own season only (day 4, bare),
+        // scaled to the trial's two days, not day 3's gather of autumn.
+        assert_eq!(nights[2].len(), 4, "day 4: {:?}", nights[2]);
+        for n in &nights[2] {
+            let News::Trying { body, .. } = n else {
+                panic!("{n:?}");
+            };
+            let tried = brains.minds[body].trial.is_none();
+            assert!(tried, "judged on day 6 since");
+        }
+        // Within the season, judged as before: on day 6, two days on.
+        assert!(nights[3].is_empty(), "day 5: {:?}", nights[3]);
+        assert_eq!(nights[4].len(), 4, "day 6: {:?}", nights[4]);
+        assert!(
+            nights[4].iter().all(|n| matches!(n, News::Tried { .. })),
+            "{:?}",
+            nights[4]
+        );
+    }
+
+    #[test]
+    fn the_before_of_a_short_trial_is_taken_in_its_season_and_as_before_within_it() {
+        let rules = trials_at(0, 0);
+        let trials = &rules.needs.trials;
+        let world = World::empty(
+            Calendar::new(1, 7200).unwrap().with_cycle(16, 1).unwrap(),
+            Map::filled(16, 16, Terrain::Grass),
+        );
+        let mut mind = Mind::new(Pos::new(5, 5));
+        let gathered = |kj| Day {
+            gathered_kj: kj,
+            ..Day::default()
+        };
+        let bare = Day {
+            bare: true,
+            ..Day::default()
+        };
+        // Days 2 and 3 of the first season, gathered; day 4, bare, opens
+        // the second.
+        mind.days = vec![gathered(400), gathered(600), bare];
+        assert_eq!(
+            before_trial(&world, trials, &mind, Way::WorthHalfTiles, 4),
+            Lately {
+                distress_days: 2,
+                ..Lately::default()
+            },
+            "one day of its season, scaled to two"
+        );
+        // Day 5, in the same season as day 4: the two days, as before.
+        mind.days.push(bare);
+        assert_eq!(
+            before_trial(&world, trials, &mind, Way::WorthHalfTiles, 5),
+            mind.lately(2)
+        );
+        // A way judged on its horizon keeps its days, whatever the season.
+        let mut slow = rules.clone();
+        slow.needs.trials.horizon_seasons = vec![("stock_kj".to_owned(), 1)];
+        assert_eq!(
+            before_trial(&world, &slow.needs.trials, &mind, Way::StockKj, 4),
+            mind.lately(4)
+        );
+        assert!(trial_fits(&world, &slow.needs.trials, Way::StockKj, 3));
+        assert!(!trial_fits(&world, trials, Way::WorthHalfTiles, 3));
+        assert!(trial_fits(&world, trials, Way::WorthHalfTiles, 17));
+        assert!(!trial_fits(&world, trials, Way::WorthHalfTiles, 18));
+        // A season too short to hold a trial: the rule cannot hold, the
+        // trial begins and is judged as before.
+        let tiny = World::empty(
+            Calendar::new(1, 7200).unwrap().with_cycle(8, 1).unwrap(),
+            Map::filled(16, 16, Terrain::Grass),
+        );
+        assert!(trial_fits(&tiny, trials, Way::WorthHalfTiles, 1));
+    }
+
+    #[test]
+    fn a_trial_of_the_hands_restarted_by_a_deed_learnt_still_ends_within_its_season() {
+        let rules = trials_at(0, 0);
+        let trials = &rules.needs.trials;
+        let world = World::empty(
+            Calendar::new(1, 7200).unwrap().with_cycle(16, 1).unwrap(),
+            Map::filled(16, 16, Terrain::Grass),
+        );
+        let trial = Trial {
+            way: Way::Hands,
+            before: Ways::at(Pos::new(5, 5)),
+            started_day: 4,
+            before_days: Lately::default(),
+            heard: HeardDays::default(),
+            caller: None,
+        };
+        // The season holds days 4 to 7: two days counted from day 5 at the
+        // latest, whatever day after it the deed was learnt.
+        assert_eq!(restarted_day(&world, trials, &trial, 5), 5);
+        assert_eq!(restarted_day(&world, trials, &trial, 6), 5);
+        assert_eq!(restarted_day(&world, trials, &trial, 7), 5);
+    }
+
+    #[test]
+    fn the_same_seed_gives_the_same_trials_held_within_their_seasons() {
+        let (a, _) = season_trials();
+        let (b, _) = season_trials();
+        assert_eq!(a, b);
     }
 
     #[test]
