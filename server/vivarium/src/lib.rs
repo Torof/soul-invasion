@@ -29,8 +29,12 @@ use sim::memory::{Access, Record, RecordId};
 use sim::time::Calendar;
 use sim::{Blockage, BodyId, Death, Event, Intention, ItemId, Sex, World};
 
+// --- the scarcity chain (24 November 2026): its own module ---
+pub mod chain;
+// --- end of the scarcity chain ---
 pub mod continents;
 pub mod json;
+pub mod lands;
 // --- the hearth's pooling (25 November 2026): its own module ---
 pub mod pooling;
 // --- end of the hearth's pooling ---
@@ -157,6 +161,11 @@ pub struct Settings {
     /// ([`continents`]): `None` for no cache (`--no-continent-cache`),
     /// the continent born at every run. The patch worlds never use it.
     pub continents: Option<PathBuf>,
+    /// Where the vivarium's land (its chunks' tiles, woods and water) is
+    /// kept between runs ([`lands`]): `None` for no cache
+    /// (`--no-land-cache`), every chunk made by the run. The patch worlds
+    /// never use it. The pages are the same either way.
+    pub lands: Option<PathBuf>,
     /// Helper threads placing the chunks' bearers ahead of the bodies
     /// (`sim::ahead`, D51 amended): 0 is the one simulation thread alone
     /// (the lab's choice for a series of runs side by side, each helper
@@ -205,6 +214,7 @@ impl Default for Settings {
             pooling: true,
             care: true,
             continents: Some(continents::default_dir()),
+            lands: Some(lands::default_dir()),
             helpers: 1,
         }
     }
@@ -1889,6 +1899,17 @@ pub struct Report {
     /// simulation thread (the same chunk twice when both placed it at
     /// once). Timing too.
     pub placed: u64,
+    /// Chunks of tiles, woods and water the run made itself until its end
+    /// (the picture's not counted). Timing, never simulation.
+    pub land_made: [u64; 3],
+    /// Chunks of tiles, woods and water read from the land kept by the
+    /// runs before ([`lands`]). Timing too.
+    pub land_kept: [usize; 3],
+    // --- the scarcity chain (24 November 2026) ---
+    /// La chaîne du manque: the need, the walk, the work, why bodies lie
+    /// away at dawn, how far the looking days go ([`chain::Chain`]).
+    pub chain: chain::Chain,
+    // --- end of the scarcity chain ---
 }
 
 /// Runs the vivarium with `settings` and reports.
@@ -1912,6 +1933,39 @@ pub fn run_with(settings: &Settings, content: &Content) -> Result<Report, RunErr
 /// born ([`continents`]); born at every run without a cache. The same
 /// map either way (D28, amended 19 November 2026).
 fn vivarium_map(settings: &Settings) -> Map {
+    let map = vivarium_continent_map(settings);
+    // The land of the whole map held (D51 amended 25 November 2026): each
+    // chunk made once a run, not again each time the bodies walk back
+    // (at richness 1.0 the tiles made again were some 70 % of a run).
+    map.widen_land(map.chunks_wide() as usize * map.chunks_high() as usize);
+    map
+}
+
+/// The name of the run's world in the files of its kept land.
+fn world_name(world: WorldKind) -> &'static str {
+    match world {
+        WorldKind::Vivarium => "vivarium",
+        WorldKind::VivariumWide => "vivarium-wide",
+        WorldKind::VivariumHuge => "vivarium-huge",
+        WorldKind::Patch { .. } => "patch",
+    }
+}
+
+/// Where the run's land is kept ([`lands`]), its world's name and the
+/// program's fingerprint: `None` without a cache, on a patch, or when
+/// the program cannot read itself.
+fn land_cache(settings: &Settings) -> Option<(&Path, &'static str, u64)> {
+    let dir = settings.lands.as_deref()?;
+    settings.world.zone()?;
+    Some((
+        dir,
+        world_name(settings.world),
+        lands::program_fingerprint()?,
+    ))
+}
+
+/// The vivarium's map from its continent, kept or born.
+fn vivarium_continent_map(settings: &Settings) -> Map {
     let zone = settings.world.zone().unwrap_or(sim::plan::ZONE_2);
     let Some(dir) = &settings.continents else {
         return Map::vivarium_of(zone);
@@ -1996,9 +2050,17 @@ pub fn run_watched(
         content
     };
     let born = Instant::now();
+    let land_cache = land_cache(settings);
+    let mut land_kept = [0; 3];
     let mut world = match settings.world {
         WorldKind::Vivarium | WorldKind::VivariumWide | WorldKind::VivariumHuge => {
-            World::on_valley(calendar, content, vivarium_map(settings))
+            let map = vivarium_map(settings);
+            // The chunks kept by the runs before, taken before the first
+            // is read (the same bytes as made, D51 amended).
+            if let Some((dir, world, program)) = land_cache {
+                land_kept = lands::read_into(&map, dir, world, program).unwrap_or([0; 3]);
+            }
+            World::on_valley(calendar, content, map)
         }
         WorldKind::Patch { side } => World::with_valley(calendar, content, side),
     };
@@ -2214,6 +2276,9 @@ pub fn run_watched(
     let start_day = world.today();
     // --- end of the hearth's pooling ---
     let mut why = WhyProbe::default();
+    // --- the scarcity chain (24 November 2026) ---
+    let mut chain = chain::Chain::new(calendar.ticks_per_day());
+    // --- end of the scarcity chain ---
     // The homes under trial, (before, after), to tell where a given-up
     // home goes back to.
     let mut home_trials: BTreeMap<BodyId, (Pos, Pos)> = BTreeMap::new();
@@ -2267,11 +2332,12 @@ pub fn run_watched(
             // One plain line a year on stderr, so nobody waits blind on a
             // long run.
             eprintln!(
-                "year {year}: {} alive, {} dead so far, {:.0} s, {} chunks placed ahead",
+                "year {year}: {} alive, {} dead so far, {:.0} s, {} chunks placed ahead, {} chunks of land made",
                 world.bodies().len(),
                 people.values().filter(|p| p.death.is_some()).count(),
                 started.elapsed().as_secs_f64(),
-                placer.as_ref().map_or(0, sim::ahead::Placer::placed)
+                placer.as_ref().map_or(0, sim::ahead::Placer::placed),
+                world.map().land_made()[0]
             );
         }
         for event in &events {
@@ -2521,6 +2587,9 @@ pub fn run_watched(
                 _ => {}
             }
         }
+        // --- the scarcity chain (24 November 2026) ---
+        chain.tick((&world, &brains, content), &events, &people, (tick, year));
+        // --- end of the scarcity chain ---
         // The brain lets a mind go once its body's vitality is under a
         // point, a little before the body dies: what it thought is read
         // now, or its page would say 0 (audit of 20 November 2026, F8).
@@ -2566,6 +2635,9 @@ pub fn run_watched(
             }
         }
         for news in batch {
+            // --- the scarcity chain (24 November 2026) ---
+            chain.news(&news, day);
+            // --- end of the scarcity chain ---
             if fire_news(
                 &news,
                 FireScene {
@@ -3086,7 +3158,39 @@ pub fn run_watched(
     let placed_ahead = placer.as_ref().map_or(0, sim::ahead::Placer::placed);
     drop(placer);
     let placed_in_all = world.shared_ground().bearers_placed();
-    let (map_png, map_scale) = picture(&world, &camps);
+    // The land the run made, kept for the next ones before the picture
+    // makes the rest of the map (the picture's chunks are not kept: a
+    // whole huge map would weigh some 800 MB).
+    let land_made = world.map().land_made();
+    if let Some((dir, name, program)) = land_cache
+        && land_made.iter().any(|&n| n > 0)
+        && let Err(err) = lands::keep(dir, name, program, world.map())
+    {
+        eprintln!(
+            "note: the land could not be kept under {}: {err}",
+            dir.display()
+        );
+    }
+    // The picture's terrain kept with the land (the same points as read),
+    // or else read from the map and kept.
+    let (_, points_wide, points_high) = picture_size(world.map());
+    let points = usize::try_from(points_wide * points_high).expect("a small picture");
+    let terrain = land_cache
+        .and_then(|(dir, name, program)| lands::read_picture(dir, name, program))
+        .filter(|t| t.len() == points)
+        .unwrap_or_else(|| {
+            let terrain = picture_terrain(world.map());
+            if let Some((dir, name, program)) = land_cache
+                && let Err(err) = lands::keep_picture(dir, name, program, &terrain)
+            {
+                eprintln!(
+                    "note: the picture's terrain could not be kept under {}: {err}",
+                    dir.display()
+                );
+            }
+            terrain
+        });
+    let (map_png, map_scale) = picture(&world, &camps, &terrain);
     let factors = factors_of(content);
     let bearers = bearers_map(&world, &content.crops, &presence);
     let relief = relief_of(world.map(), map_scale * 2);
@@ -3136,6 +3240,9 @@ pub fn run_watched(
         home_changes: why.changes,
         nights_apart: why.nights,
         nights_out: why.out,
+        // --- the scarcity chain (24 November 2026) ---
+        chain,
+        // --- end of the scarcity chain ---
         rumours: tally.rumours,
         nights,
         records,
@@ -3156,6 +3263,8 @@ pub fn run_watched(
         birth_s,
         placed_ahead,
         placed: placed_in_all,
+        land_made,
+        land_kept,
     })
 }
 
@@ -4721,19 +4830,45 @@ fn relief_of(map: &Map, cell: u32) -> Relief {
     }
 }
 
-fn picture(world: &World, camps: &[Pos]) -> (Vec<u8>, u32) {
-    let map = world.map();
+/// The picture's scale (tiles a point) and size (points) for `map`.
+fn picture_size(map: &Map) -> (u32, u32, u32) {
     let scale = map.width().max(map.height()).div_ceil(512).max(1);
-    let (w, h) = (map.width().div_ceil(scale), map.height().div_ceil(scale));
+    (
+        scale,
+        map.width().div_ceil(scale),
+        map.height().div_ceil(scale),
+    )
+}
+
+/// The terrain under each point of the picture, row by row: the map's
+/// tile at the point's middle, `None` off the map. A pure function of the
+/// map, kept with its land ([`lands::keep_picture`]): read whole, it makes
+/// every chunk of the map (some 3.5 minutes on the huge world).
+fn picture_terrain(map: &Map) -> Vec<Option<Terrain>> {
+    let (scale, w, h) = picture_size(map);
+    let mut out = Vec::with_capacity(usize::try_from(w * h).expect("a small picture"));
+    for py in 0..h {
+        for px in 0..w {
+            out.push(map.get(Pos::new(
+                i32::try_from(px * scale + scale / 2).expect("fits"),
+                i32::try_from(py * scale + scale / 2).expect("fits"),
+            )));
+        }
+    }
+    out
+}
+
+/// The run's picture of the map, its `terrain` under each point
+/// ([`picture_terrain`]), with the camps and the bodies.
+fn picture(world: &World, camps: &[Pos], terrain: &[Option<Terrain>]) -> (Vec<u8>, u32) {
+    let map = world.map();
+    let (scale, w, h) = picture_size(map);
     let mut rgb = vec![0_u8; usize::try_from(w * h * 3).expect("a small picture")];
     let at = |x: u32, y: u32| usize::try_from((y * w + x) * 3).expect("in the picture");
     for py in 0..h {
         for px in 0..w {
-            let pos = Pos::new(
-                i32::try_from(px * scale + scale / 2).expect("fits"),
-                i32::try_from(py * scale + scale / 2).expect("fits"),
-            );
-            let colour = match map.get(pos) {
+            let here = terrain[usize::try_from(py * w + px).expect("in the picture")];
+            let colour = match here {
                 Some(Terrain::Grass) => [120, 160, 70],
                 Some(Terrain::Forest) => [50, 100, 45],
                 Some(Terrain::Water) => [60, 110, 170],
@@ -5829,13 +5964,15 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         let minutes = self.wall_s / 60.0;
         let speed = if minutes > 0.0 { years / minutes } else { 0.0 };
         format!(
-            "<p id=\"timing\">The world was born in {:.2} s; the run took {:.2} s on the wall: <b>{speed:.1} game years a minute</b>. {} chunks' plants placed, {} of them ahead by {} helper thread{}.</p>",
+            "<p id=\"timing\">The world was born in {:.2} s; the run took {:.2} s on the wall: <b>{speed:.1} game years a minute</b>. {} chunks' plants placed, {} of them ahead by {} helper thread{}. {} chunks of land made, {} read from the land kept by the runs before.</p>",
             self.birth_s,
             self.wall_s,
             self.placed,
             self.placed_ahead,
             self.settings.helpers,
-            if self.settings.helpers == 1 { "" } else { "s" }
+            if self.settings.helpers == 1 { "" } else { "s" },
+            self.land_made[0],
+            self.land_kept[0],
         )
     }
 
@@ -6028,7 +6165,15 @@ mod tests {
         static CONTENT: OnceLock<Content> = OnceLock::new();
         CONTENT.get_or_init(|| {
             let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
-            load_content(&dir).expect("the repository's content reads and validates")
+            let mut content =
+                load_content(&dir).expect("the repository's content reads and validates");
+            // The tests' scenarios were sized at the switch's richness,
+            // 7.3 (24 November 2026); the world's dial is 1.0 since the
+            // project lead fixed it (25 November 2026).
+            for crop in &mut content.crops {
+                crop.richness_permille = Some(7300);
+            }
+            content
         })
     }
 
@@ -6056,6 +6201,7 @@ mod tests {
             pooling: true,
             care: true,
             continents: None,
+            lands: None,
             helpers: 1,
         }
     }
@@ -6189,10 +6335,11 @@ mod tests {
     /// The vivarium's continent kept on disk and read back gives the very
     /// pages the born one gives (D28 amended 19 November 2026; lightening
     /// 4's S7): the report's data, timings apart, is the same born, kept
-    /// and read, or born with no cache at all.
+    /// and read, or born with no cache at all. So does the land kept with
+    /// it, and the picture's terrain (D51 amended 25 November 2026).
     #[test]
     #[ignore = "the vivarium's continent born twice, some 20 s in release: cargo test --release -p vivarium -- --ignored the_kept_continent"]
-    fn the_kept_continent_gives_the_pages_the_born_one_gives() {
+    fn the_kept_continent_and_land_give_the_pages_the_born_ones_give() {
         let dir = std::env::temp_dir().join(format!(
             "soul-vivarium-kept-continent-{}",
             std::process::id()
@@ -6203,6 +6350,7 @@ mod tests {
             tribes: 2,
             days: 2,
             continents: Some(dir.clone()),
+            lands: Some(dir.join("lands")),
             ..small()
         };
         let data = |report: &Report| {
@@ -6220,10 +6368,22 @@ mod tests {
                 .is_file(),
             "the born continent is kept"
         );
+        let program = lands::program_fingerprint().expect("the test reads itself");
+        assert!(
+            lands::path_of(&dir.join("lands"), "vivarium", program).is_file()
+                && lands::picture_path_of(&dir.join("lands"), "vivarium", program).is_file(),
+            "the land made and the picture's terrain are kept"
+        );
         let kept = run_checked(&settings, content());
+        assert!(
+            kept.land_kept[0] > 0,
+            "the land kept is read: {:?}",
+            kept.land_kept
+        );
         let apart = run_checked(
             &Settings {
                 continents: None,
+                lands: None,
                 ..settings
             },
             content(),

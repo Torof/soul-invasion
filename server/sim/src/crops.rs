@@ -967,6 +967,16 @@ pub(crate) mod tests {
         .and_then(|c| c.with_species(include_str!("../../../content/species.ron")))
         .and_then(|c| c.with_flora(include_str!("../../../content/flora.ron")))
         .and_then(|c| c.with_crops(include_str!("../../../content/crops.ron")))
+        .map(|mut c| {
+            // The tests' scenarios were sized at the switch's richness,
+            // 7.3 (24 November 2026); the world's dial is 1.0 since the
+            // project lead fixed it (25 November 2026). They test the
+            // mechanisms, not the dial.
+            for crop in &mut c.crops {
+                crop.richness_permille = Some(7300);
+            }
+            c
+        })
         .unwrap()
     }
 

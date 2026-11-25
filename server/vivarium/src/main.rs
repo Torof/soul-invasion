@@ -59,6 +59,10 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
   --no-continent-cache     bear the vivarium's continent anew instead of
                            reading it from ${XDG_CACHE_HOME:-~/.cache}/soul-sim/
                            continents/ (where a run keeps it; same pages)
+  --no-land-cache          make every chunk of land (tiles, woods, water)
+                           anew instead of reading those the runs before
+                           kept under ${XDG_CACHE_HOME:-~/.cache}/soul-sim/
+                           lands/ (one file a world and a build; same pages)
   --helpers N              threads placing the chunks' plants ahead of the
                            bodies (default 1; 0 = the simulation thread
                            alone, for runs side by side); the pages are the
@@ -132,6 +136,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--no-pooling" => settings.pooling = false,
             "--no-care" => settings.care = false,
             "--no-continent-cache" => settings.continents = None,
+            "--no-land-cache" => settings.lands = None,
             "--helpers" => settings.helpers = small(&mut i, "--helpers", "too many")?,
             "--fed" => settings.fed = true,
             "--ages" => {
@@ -376,6 +381,15 @@ mod tests {
                 .settings
                 .trials
         );
+        assert!(
+            parse(&args(&["--no-land-cache"]))
+                .unwrap()
+                .unwrap()
+                .settings
+                .lands
+                .is_none()
+        );
+        assert!(parse(&args(&[])).unwrap().unwrap().settings.lands.is_some());
         assert!(
             parse(&args(&["--no-continent-cache"]))
                 .unwrap()

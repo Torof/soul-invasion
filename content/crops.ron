@@ -38,12 +38,13 @@
 //          the load a plant shows follows it. Absent: (rise: 20, fall:
 //          30). A crop there all year (roots, bulbs) neither rises nor
 //          falls: (rise: 0, fall: 0).
-// richness_permille: 7300 — the world's one dial on the land's yield, in
-//          thousandths (D30 placeholder): 7.3 keeps the food of a game
-//          day what it was with a 50-day cycle (7.3 × 50 ÷ 365 = 1); the
-//          project lead fixes it after measuring.
+// richness_permille: 1000 — the world's one dial on the land's yield, in
+//          thousandths (D30 placeholder). Fixed at 1.0 by the project lead
+//          on 25 November 2026 after the richness series (7.3, 1.5, 1.0,
+//          0.7): at 1.0 a tribe barely holds, hungry at times, walking
+//          near a kilometre and moving camp; at 0.7 it collapses.
 (
-    richness_permille: Some(7300),
+    richness_permille: Some(1000),
     crops: [
         // The winter's store: 3 to 10 kg a tree, years of plenty and
         // lean years.

@@ -218,6 +218,20 @@ above and the pages differ, the pages are right:
   changed, the chronicle; the rest folded at the bottom ("Pour aller plus
   loin").
 
+**Since 24 November 2026 (D52 amended, la chaîne du manque)** both pages
+carry the scarcity chain's eight measures (`scarcity.py`): manger, l'effort,
+aller loin, l'épuisement, déménager, explorer, la vie, les couples. On the
+series page a **second table**, « La chaîne du manque », under the first,
+with the same rows, references and colouring rules: a column a measure, its
+values one under the other; only the values whose better side is obvious
+are coloured (more eaten, fewer thin hours, fewer dawns away exhausted,
+fewer children dead, fewer deaths of hunger, more births, more couples
+together), the effort, the distances, the moves and the exploring never. On
+the run page, a part « La chaîne du manque » right after the summary line,
+a plain line a measure. They read the data's `chain` key where the rest of
+the data does not hold the measure (`docs/10-vivarium-data.md`); a run
+written before it shows "—" there.
+
 The vivarium's own page is now minimal (settings, end counts, the map, the
 timing); `--page full` writes the long page of before.
 

@@ -471,6 +471,9 @@ impl Report {
         value["home_changes"] = self.home_changes_json();
         value["nights_apart"] = self.nights_apart_json();
         value["nights_out"] = self.nights_out_json();
+        // --- the scarcity chain (24 November 2026) ---
+        value["chain"] = self.chain.json(self.ticks_per_day());
+        // --- end of the scarcity chain ---
         // --- the hearth's pooling (25 November 2026) ---
         value["pooling"] = self.pooling.json();
         // --- end of the hearth's pooling ---
@@ -496,6 +499,8 @@ impl Report {
                     "helpers": self.settings.helpers,
                     "placed": self.placed,
                     "placed_ahead": self.placed_ahead,
+                    "land_made": self.land_made,
+                    "land_kept": self.land_kept,
                 }),
             );
         }
@@ -512,6 +517,10 @@ impl Report {
                 layout(&value[*key], 1, &mut out);
             }
         }
+        // --- the scarcity chain (24 November 2026): last, outside ORDER ---
+        out.push_str(",\n  \"chain\": ");
+        layout(&value["chain"], 1, &mut out);
+        // --- end of the scarcity chain ---
         out.push_str("\n}\n");
         out
     }

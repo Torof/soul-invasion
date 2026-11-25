@@ -23,6 +23,7 @@ import panels  # noqa: E402
 import plain  # noqa: E402
 import pooling  # noqa: E402
 import reading  # noqa: E402
+import scarcity  # noqa: E402
 
 FAKE_VIVARIUM = r"""#!/bin/sh
 # A vivarium that lives two years and writes a tiny report.
@@ -1304,7 +1305,7 @@ class PlainPages(unittest.TestCase):
         z = plain.cells_html(rows[4]["m"], rows[4]["ref_m"])
         self.assertIn('<td class="n " title="référence : 2 (-2)">0</td>', z)             # the moves are never coloured
         page = plain.serie_body(s, self.store)
-        self.assertEqual(page.count("<span class=refmk>référence</span>"), 2)
+        self.assertEqual(page.count("<span class=refmk>référence</span>"), 4)   # two references, in both tables
         self.assertIn("Référence illisible (il faut « série/run ») pour : w.", page)
         self.assertIn('<tr data-href="/run/ref/B-s1"', page)                             # a reference opens in its own series
         self.assertIn("comparé à : #346, richesse 7,3 · graine 1", page)
@@ -1371,6 +1372,95 @@ class HearthPart(unittest.TestCase):
     def test_a_run_before_the_pooling_says_so(self):
         self.assertIn("Pas de données du foyer", pooling.part_html({"meta": {}}))
         self.assertIn("Pas de mise en commun", pooling.part_html({"pooling": {"on": False}, "meta": {}}))
+
+class ScarcityChain(unittest.TestCase):
+    """« La chaîne du manque » (24 November 2026): the eight measures, the second table and the run page's part."""
+
+    @staticmethod
+    def chained():
+        d = PlainPages.rich()
+        d["meta"]["days_per_age_year"] = 10
+        d["meta"]["factors"] = [{"key": "life.fertile_years", "value": [16, 42]}]
+        d["people"][0]["age_days_at_start"] = 200      # a woman of 20 ans: fertile the whole run (100 journées)
+        d["people"][3]["age_days_at_start"] = 506      # a woman of 50 ans, dead at journée 90: 59,5 ans
+        d["chain"] = {"ticks_per_hour": 1,
+                      "years": [{"tribe": "A", "year": 1, "lived_hours": 2400, "walker_hours": 2400, "need_kj": 500000,
+                                 "walk_kj": 40000, "walked_m": 300000, "gathering_ticks": 400}],
+                      "away": [{"exhausted": 3, "stopped": 1, "stopped_by": {"water": 1, "rock": 0, "no_way": 0, "none": 0},
+                                "sleep_out": 1, "goal": 1, "lay_at_home": 0, "awake": 1, "woke": 1, "unseen": 0, "fatigue_mean": 95}],
+                      "looks": [[3, 0, 100], [4, 0, 300], [5, 1, 900]]}
+        d["nights_out"] = [{"dawns": 200, "away": 8, "asleep": 5, "in_company": 0}]
+        d["settlements"] = [{"year": 1, "groups": [{"at": [13, 14], "people": 3, "by_tribe": [3, 0]},
+                                                   {"at": [50, 50], "people": 2, "by_tribe": [0, 2]}]}]
+        for y in d["years"]:
+            if y["tribe"] == "A":
+                y["decisions"] = {"days_by_act": {"alone": 40, "looked": 10}, "trips": {"found": {"looked": 3}}}
+                y["couples"] = {"parted": y["year"] - 1, "taken_again": 0}
+        return d
+
+    def test_the_eight_measures_are_read_from_the_data(self):
+        m = scarcity.measures(self.chained())
+        self.assertEqual(m["eaten_pct"], 100)                  # 540 000 kJ eaten against 500 000 burnt and 40 000 walked
+        self.assertEqual(m["thin_h"], 1.9)                     # 192 hours thin over 100 person-days
+        self.assertEqual((m["walked_m"], m["gather_h"]), (3000, 4.0))
+        self.assertEqual(m["far_spring"], (3, 20))             # spring noons 0 0 0 0 3 4 8 10 20: the median, the farthest tenth
+        self.assertEqual(m["far_summer"], (89, 89))
+        self.assertIsNone(m["far_winter"])
+        self.assertEqual((m["away_pct"], m["exhausted_pct"], m["stopped_pct"], m["choice_pct"], m["awake_pct"], m["other_pct"]),
+                         (4.0, 1.5, 0.5, 1.0, 1.0, 0.0))
+        self.assertEqual(m["away_fatigue"], 95)
+        self.assertEqual((m["moves"], m["move_median_m"], m["settle_far_m"]), (2, 30, 5))
+        self.assertEqual((m["explore_days"], m["look_median_m"], m["look_max_m"], m["found_looking"]), (10.0, 300, 900, 6))
+        self.assertEqual(m["births_per_woman"], 0.5)           # one birth over 100 fertile journées, a cycle of 50
+        self.assertEqual((m["child_deaths"], m["child_deaths_pct"]), (1, 100))
+        self.assertEqual(m["deaths_by"], {"hunger": 1, "cold": 1})
+        self.assertAlmostEqual(m["mean_age_death"], 31.75, delta=0.06)   # 4 ans and 59,5 ans
+        self.assertEqual((m["together"], m["parted"]), (70, 1))
+
+    def test_an_older_run_shows_a_dash_where_the_chain_is_missing(self):
+        m = scarcity.measures(PlainPages.rich())
+        for k in ("eaten_pct", "walked_m", "gather_h", "exhausted_pct", "look_median_m", "births_per_woman"):
+            self.assertIsNone(m[k], k)
+        self.assertEqual(m["thin_h"], 19.2)                    # without the chain, the noons count the person-days: 10 bodies
+        self.assertIsNone(scarcity.measures({"meta": {}})["away_pct"])
+        cells = scarcity.cells_html(m, None)
+        self.assertEqual(cells.count("<td class=ch>"), 8)
+        self.assertIn(f"<span class=v>{scarcity.NONE}</span>", cells)
+        self.assertIn("ne sont jamais colorés", scarcity.LEGEND_COLOURS)
+
+    def test_only_the_obvious_values_are_coloured_against_the_reference(self):
+        ref = scarcity.measures(self.chained())
+        worse = self.chained()
+        worse["chain"]["years"][0]["need_kj"] = 1000000      # they eat half of what they burn
+        worse["chain"]["years"][0]["walked_m"] = 900000      # they walk three times more: never coloured
+        worse["chain"]["away"][0]["exhausted"] = 9
+        cells = scarcity.cells_html(scarcity.measures(worse), ref)
+        self.assertIn('<span class="v bad" title="référence : 100 (-48)">52 % du besoin</span>', cells)
+        self.assertIn(f'<span class="v ">{reading.fmt(9000)} m marchés</span>', cells)
+        self.assertIn('<span class="v bad" title="référence : 1,5 (+3,0)">épuisés 4,5 %</span>', cells)
+        self.assertNotIn("good", cells)
+        better = scarcity.cells_html(ref, scarcity.measures(worse))
+        self.assertIn('<span class="v good"', better)
+
+    def test_the_series_page_has_the_second_table_and_the_run_page_its_part(self):
+        tmp = PlainPages("test_the_answer_shows_when_written")
+        tmp.setUp()
+        try:
+            s = tmp.series("chaine", [{"name": "a", "seed": 1, "note": "riche"}, {"name": "b", "seed": 1, "note": "pauvre", "ref": "a"}],
+                           {"a": self.chained(), "b": self.chained()})
+            page = plain.serie_body(s, tmp.store)
+            self.assertIn("<h2 class=chain>La chaîne du manque</h2>", page)
+            self.assertLess(page.index("<table class=plain>"), page.index('<table class="plain chain">'))
+            self.assertEqual(page.count("<span class=refmk>référence</span>"), 2)     # the same reference rows in both tables
+            run = plain.run_body(s, s["runs"][1], tmp.store.load("chaine", "b"), store=tmp.store)
+            self.assertLess(run.index("class=sumline"), run.index("<section id=chaine "))
+            self.assertLess(run.index("<section id=chaine "), run.index("<section id=carte "))
+            self.assertIn("<b>100 %</b> de ce qu’ils brûlent", run)
+            self.assertIn("<b>3</b> fois tombé de fatigue", run)
+            self.assertIn("<b>1</b> fois relevé dans la nuit, <b>1</b> fois jamais couché", run)
+            self.assertIn("l’eau 1", run)
+        finally:
+            tmp.tearDown()
 
 
 if __name__ == "__main__":
