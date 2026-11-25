@@ -106,6 +106,46 @@ struct Track {
     out_nights: u32,
     /// The farthest it stood from home since it last woke at home.
     out_far: u32,
+    /// Who it was when its outing began (25 November 2026).
+    out_who: Option<Who>,
+}
+
+/// Who a body was when an outing began (25 November 2026): its will, a
+/// parent of a living child under 8, under 16, its sex, its age.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Who {
+    /// Its will, 0 to 100.
+    pub will: u8,
+    /// A parent of a living child under 8 age-years.
+    pub parent_under_8: bool,
+    /// A parent of a living child under 16 age-years.
+    pub parent_under_16: bool,
+    /// A woman.
+    pub female: bool,
+    /// Its age, in whole age-years.
+    pub age_years: u32,
+}
+
+impl Who {
+    fn of(world: &World, brains: &Brains, body: &sim::Body) -> Self {
+        let id = body.id();
+        let youngest = world
+            .bodies()
+            .iter()
+            .filter(|c| {
+                c.condition().vitality.points() > 0
+                    && (c.mother() == Some(id) || c.father() == Some(id))
+            })
+            .map(|c| world.age_milli(c))
+            .min();
+        Self {
+            will: brains.mind(id).map_or(0, sim::brain::Mind::will),
+            parent_under_8: youngest.is_some_and(|a| a < 8_000),
+            parent_under_16: youngest.is_some_and(|a| a < 16_000),
+            female: body.sex() == sim::content::Sex::Female,
+            age_years: u32::try_from(world.age_milli(body) / 1000).unwrap_or(u32::MAX),
+        }
+    }
 }
 
 /// An outing from home (25 November 2026): the dawn it woke home again,
@@ -121,6 +161,8 @@ pub struct Outing {
     pub nights: u32,
     /// The farthest from home, in tiles on the longer axis.
     pub tiles: u32,
+    /// Who it was when the outing began.
+    pub who: Who,
 }
 
 /// A looking day (`Act::Looked`): the day it closed, the tribe, the
@@ -248,6 +290,7 @@ impl Chain {
                 far: 0,
                 out_nights: 0,
                 out_far: 0,
+                out_who: None,
                 rose: 0,
             });
             let y = &mut acc[usize::from(t.tribe.min(1))];
@@ -286,6 +329,9 @@ impl Chain {
                 let from_home = tiles_apart(b.pos(), m.home());
                 t.far = t.far.max(from_home);
                 t.out_far = t.out_far.max(from_home);
+                if from_home > reach && t.out_who.is_none() && world.age_milli(b) >= 16_000 {
+                    t.out_who = Some(Who::of(world, brains, b));
+                }
             }
         }
         for (tribe, add) in acc.iter().enumerate() {
@@ -336,14 +382,16 @@ impl Chain {
                 continue;
             }
             if t.out_nights > 0 || t.out_far > reach {
+                let who = t.out_who.unwrap_or_else(|| Who::of(world, brains, b));
                 self.outings.push(Outing {
                     day,
                     tribe: t.tribe,
                     nights: t.out_nights,
                     tiles: t.out_far,
+                    who,
                 });
             }
-            (t.out_nights, t.out_far) = (0, 0);
+            (t.out_nights, t.out_far, t.out_who) = (0, 0, None);
         }
         for b in world.bodies() {
             if b.condition().vitality.points() == 0 || world.age_milli(b) < 16_000 {
@@ -494,7 +542,19 @@ impl Chain {
         let outings: Vec<Value> = self
             .outings
             .iter()
-            .map(|o| json!([o.day, o.tribe, o.nights, o.tiles]))
+            .map(|o| {
+                json!([
+                    o.day,
+                    o.tribe,
+                    o.nights,
+                    o.tiles,
+                    o.who.will,
+                    o.who.parent_under_8,
+                    o.who.parent_under_16,
+                    if o.who.female { "female" } else { "male" },
+                    o.who.age_years,
+                ])
+            })
             .collect();
         let turns = |t: [u32; 3]| json!({"home": t[0], "stay": t[1], "on": t[2]});
         json!({
@@ -622,6 +682,10 @@ mod tests {
         assert_ne!(report.chain.outings, Vec::new());
         for o in &report.chain.outings {
             assert!(o.nights > 0 || o.tiles > reach, "{o:?}");
+            // Who went: grown, its will a will, a parent of one under 8 a
+            // parent of one under 16.
+            assert!(o.who.age_years >= 16 && o.who.will <= 100, "{o:?}");
+            assert!(!o.who.parent_under_8 || o.who.parent_under_16, "{o:?}");
         }
     }
 

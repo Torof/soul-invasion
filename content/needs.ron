@@ -734,10 +734,21 @@
     //                        neither hungry nor seeing food, by its will;
     // sleep_out_percent: 90 — with its way to sleep out (D50: learnt by
     //                        trials, told, copied), either chance is at
-    //                        least this.
+    //                        least this;
+    // choice_beyond_minutes: 30 — home nearer than half an hour of walking
+    //                        at its pace (game minutes, a 1,440th of the
+    //                        game day), a body does not choose: it goes
+    //                        home, even after nightfall, and never lies
+    //                        down out there, unless stopped (water, rock,
+    //                        no way) or exhausted. The project lead, 25
+    //                        November 2026: nobody sleeps out 30 m from
+    //                        the hearth; "s'il sait être pas trop loin du
+    //                        camp en termes de temps, il décide de rentrer
+    //                        même après la tombée de la nuit".
     trips: (
         stay_percent_by_will: [(0, 30), (100, 90)],
         go_on_percent_by_will: [(0, 0), (100, 60)],
         sleep_out_percent: 90,
+        choice_beyond_minutes: 30,
     ),
 )

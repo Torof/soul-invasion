@@ -560,6 +560,12 @@ pub struct Trips {
     pub go_on_percent_by_will: Vec<(u32, u32)>,
     /// With its way to sleep out (D50), either chance is at least this.
     pub sleep_out_percent: u32,
+    /// Home nearer than this, in game minutes of walking at its pace
+    /// (a game minute a 1,440th of the game day), a body does not choose:
+    /// it goes home, even after nightfall (the project lead, 25 November
+    /// 2026: nobody sleeps out half an hour from the hearth).
+    #[serde(default)]
+    pub choice_beyond_minutes: u32,
 }
 
 impl Trips {
@@ -570,6 +576,7 @@ impl Trips {
             stay_percent_by_will: vec![(0, 30), (100, 90)],
             go_on_percent_by_will: vec![(0, 0), (100, 60)],
             sleep_out_percent: 90,
+            choice_beyond_minutes: 30,
         }
     }
 
@@ -615,11 +622,12 @@ impl Trips {
             || !fine(&self.stay_percent_by_will)
             || !fine(&self.go_on_percent_by_will)
             || self.sleep_out_percent > 100
+            || self.choice_beyond_minutes > 1440
         {
             return Err(ContentError::Needs(
                 "trips: stay_percent_by_will and go_on_percent_by_will both empty or both \
                  given, their wills rising, every value at most 100; sleep_out_percent at \
-                 most 100",
+                 most 100; choice_beyond_minutes at most 1440",
             ));
         }
         Ok(())
