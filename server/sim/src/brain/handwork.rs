@@ -1031,7 +1031,7 @@ fn resolve(world: &World, rules: &Content, id: BodyId, mind: &mut Mind) -> Optio
     if let Some(trial) = mind.trial.as_mut().filter(|t| t.way == Way::Hands)
         && mind.ways.hands.add(deed)
     {
-        trial.started_day = today(world);
+        trial.started_day = super::restarted_day(world, &rules.needs.trials, trial, today(world));
     }
     tool
 }

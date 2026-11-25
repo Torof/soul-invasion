@@ -2010,6 +2010,14 @@ impl Trials {
             })
     }
 
+    /// Whether a trial of the way `key` is short: judged on `trial_days`,
+    /// not on a horizon in seasons. A short trial is judged within one
+    /// season (D50, amended 25 November 2026).
+    #[must_use]
+    pub fn short(&self, key: &str) -> bool {
+        !self.horizon_seasons.iter().any(|(way, _)| way == key)
+    }
+
     /// The days over which a move must repay its cost, at least one.
     #[must_use]
     pub fn move_repay_days(&self, days_per_year: u32) -> u32 {
