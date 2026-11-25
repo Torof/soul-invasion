@@ -459,6 +459,27 @@ fn things_near(world: &World, here: Pos, near: i32, mind: &Mind) -> Vec<Item> {
     out
 }
 
+/// Whether the bark a cut of a tree of `species` gives would go on the
+/// body (D57, amended 25 November 2026): a body feels its load, and does
+/// not cut what it could not carry away (the world lets such a bark fall
+/// at its feet, and it still lacked bark, and cut again). True when the
+/// tree has no bark: nothing would fall.
+fn bark_fits(world: &World, rules: &Content, id: BodyId, species: usize) -> bool {
+    let Some(body) = world.body(id) else {
+        return false;
+    };
+    let Some(mass_g) = rules
+        .species
+        .get(species)
+        .and_then(|s| s.bark.as_deref())
+        .and_then(|bark| rules.material(bark))
+        .map(|m| m.mass_g().max(1))
+    else {
+        return true;
+    };
+    body.load_g().saturating_add(mass_g) <= body.capacity_g(&rules.movement)
+}
+
 /// The trees standing within `near` tiles of `here`, nearest first: their
 /// chunk, key, trunk and species.
 fn trees_near(
@@ -687,7 +708,10 @@ fn draw(
     } else {
         trees_near(world, here, near, mind)
             .into_iter()
-            .filter(|t| rules.species.get(t.3).is_some_and(|s| s.bark.is_some()))
+            .filter(|t| {
+                rules.species.get(t.3).is_some_and(|s| s.bark.is_some())
+                    && bark_fits(world, rules, id, t.3)
+            })
             .collect()
     };
     let open: Vec<Gesture> = Gesture::ALL
@@ -789,7 +813,7 @@ fn needed(
                     };
                     if let Some(&(chunk, key, at, _)) = trees_near(world, here, near, mind)
                         .iter()
-                        .find(|t| usize::from(deed.on) == t.3)
+                        .find(|t| usize::from(deed.on) == t.3 && bark_fits(world, rules, id, t.3))
                     {
                         return Some((
                             (
@@ -1178,6 +1202,46 @@ mod tests {
         };
         assert_eq!(mind.handwork.practised(cut), 1);
         assert_eq!(mind.ways.hands, bark_deeds(&rules, birch));
+    }
+
+    #[test]
+    fn a_body_whose_load_cannot_take_the_bark_does_not_cut() {
+        let (rules, mut world, mut brains, id, birch) = by_a_birch();
+        let here = world.body(id).unwrap().pos();
+        let flint = picked(&mut world, &rules, id, "flint");
+        let sharp = [(flint, material(&rules, "flint"))];
+        let bark_g = rules.material("birch_bark").unwrap().mass_g();
+        let set_load = |world: &mut World, room_g: u32| {
+            let body = world.bodies.iter_mut().find(|b| b.id() == id).unwrap();
+            body.load_g = body.capacity_g(&rules.movement) - room_g;
+        };
+        let cuts = |world: &World, mind: &mut Mind| {
+            matches!(
+                hands_turn(world, &rules, (id, here), mind, (7, &mut Vec::new())),
+                HandsTurn::Decide(Some(Decision {
+                    intention: Intention::Cut { .. },
+                    ..
+                }))
+            )
+        };
+        let mind = brains.minds.get_mut(&id).unwrap();
+        mind.ways.hands = bark_deeds(&rules, birch);
+        // Room for less than a bark: the deed it knows is not done (the
+        // bark would fall at its feet, and it would lack bark still).
+        set_load(&mut world, bark_g - 1);
+        assert!(!cuts(&world, mind), "no cut it cannot carry");
+        // Nor drawn in a trial.
+        mind.ways.hands = Deeds::default();
+        for day in 0..200 {
+            mind.handwork.tries = (day, 0);
+            if let Some((_, deed)) = draw(&world, &rules, (id, here), mind, (day, &sharp, 4)) {
+                assert_ne!(deed.gesture, Gesture::Cut, "day {day}");
+            }
+        }
+        // Room for the bark: it cuts.
+        mind.ways.hands = bark_deeds(&rules, birch);
+        set_load(&mut world, bark_g);
+        assert!(cuts(&world, mind), "a bark it can carry");
     }
 
     #[test]

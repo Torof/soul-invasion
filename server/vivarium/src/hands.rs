@@ -140,6 +140,10 @@ pub struct HandsProbe {
     /// The cuts, by the material of the tool: (ended, something came of
     /// it).
     pub cuts_with: BTreeMap<String, (u32, u32)>,
+    /// Cuts whose bark fell at the cutter's feet, its load too full to
+    /// take it (D57, amended 25 November 2026: no longer chosen; only a
+    /// load filled during the gesture lets one fall).
+    pub barks_dropped: u32,
 }
 
 fn tribe(people: &BTreeMap<BodyId, Person>, id: BodyId) -> u8 {
@@ -190,6 +194,10 @@ impl HandsProbe {
                     let entry = self.cuts_with.entry(tool).or_default();
                     entry.0 += 1;
                     entry.1 += u32::from(gave.is_some());
+                    self.barks_dropped += u32::from(
+                        gave.and_then(|g| world.item(g))
+                            .is_some_and(|i| i.pos().is_some()),
+                    );
                 }
                 let made = *gesture == Gesture::Fold
                     && gave
@@ -509,6 +517,7 @@ impl HandsProbe {
             "gestures": gestures,
             "known": self.known,
             "cuts_with": self.cuts_with.iter().map(|(m, (done, gave))| (m.clone(), json!({"done": done, "gave": gave}))).collect::<serde_json::Map<String, Value>>(),
+            "barks_dropped": self.barks_dropped,
             "tribes": tribes_json,
         })
     }

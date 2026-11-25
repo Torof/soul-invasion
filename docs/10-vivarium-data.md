@@ -396,6 +396,7 @@ clock, the only field no seed decides.
 | `hands.gestures.*` | By gesture (`cut`, `fold`): `done` (ended), `gave` (something came of it); a pick-up is D35's act and not counted here | `{done, gave}` |
 | `hands.known.*` | By deed (`take flint`, `cut birch with flint`, `fold birch_bark`, ...): the living past infancy who know it at the run's end | count |
 | `hands.cuts_with.*` | By the material of the tool (`flint`, `pebble`, `branch`, ...): the cuts `done` and those that `gave` something | `{done, gave}` |
+| `hands.barks_dropped` | Cuts whose bark fell at the cutter's feet, its load too full to take it (D57, amended 25 November 2026: a body no longer cuts what it cannot carry, so only a load filled during the gesture counts here) | count |
 | `hands.tribes[]` | One per tribe | list |
 | `hands.tribes[].tribe` | Its name | `"A"` or `"B"` |
 | `hands.tribes[].first` | Its first container, as `hands.first`: the second tribe finding it alone, or not | object or null |
