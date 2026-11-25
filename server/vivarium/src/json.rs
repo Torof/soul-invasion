@@ -479,6 +479,10 @@ impl Report {
         // --- end of the scarcity chain ---
         // --- the hearth's pooling (25 November 2026) ---
         value["pooling"] = self.pooling.json();
+        // --- the food carried home (25 November 2026) ---
+        self.carried
+            .add_json(&mut value["pooling"], self.ticks_per_day());
+        // --- end of the food carried home ---
         // --- end of the hearth's pooling ---
         let changes: Vec<(u64, u8)> = self.home_changes.iter().map(|c| (c.day, c.tribe)).collect();
         let days = u64::from(self.calendar().days_per_age_year().max(1));
