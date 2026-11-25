@@ -2148,6 +2148,14 @@ pub struct Life {
     /// 24 November 2026; named `court_days` before).
     #[serde(default, alias = "court_days")]
     pub together_nights: u32,
+    /// Two unmarried of one hearth wed at dawn, at once (D49, amended 25
+    /// November 2026; the project lead, choice A): both homes in one
+    /// camp's place (`thought.place_tiles`, the hearth's key, D55, D58),
+    /// the seeker taking the one nearest in age, the lower id between
+    /// equals; the bodies of no hearth, or none to wed at theirs, court as
+    /// `together_nights` says. False: courting alone.
+    #[serde(default)]
+    pub wed_at_hearth: bool,
     /// A pregnancy lasts this many quarters of an age-year, in whole days
     /// (`quarters × days_per_age_year / 4`; D09, amended 24 November 2026:
     /// seasons while the age-year was the cycle).
@@ -2184,6 +2192,7 @@ impl Default for Life {
             conceive_nights: 1,
             part_after_days: 0,
             together_nights: 0,
+            wed_at_hearth: false,
             pregnancy_quarters: 1,
             pregnant_percent: 100,
             lose_when_weak: false,

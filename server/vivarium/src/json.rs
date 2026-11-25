@@ -490,6 +490,9 @@ impl Report {
         // --- the conceptions (25 November 2026) ---
         value["conception"] = self.conception.json();
         // --- end of the conceptions ---
+        // --- the meetings between tribes (25 November 2026) ---
+        value["meetings"] = self.meetings.json();
+        // --- end of the meetings between tribes ---
         let changes: Vec<(u64, u8)> = self.home_changes.iter().map(|c| (c.day, c.tribe)).collect();
         let days = u64::from(self.calendar().days_per_age_year().max(1));
         let tribes = u8::try_from(self.camps.len()).unwrap_or(u8::MAX);
@@ -544,6 +547,10 @@ impl Report {
         out.push_str(",\n  \"conception\": ");
         layout(&value["conception"], 1, &mut out);
         // --- end of the conceptions ---
+        // --- the meetings between tribes (25 November 2026): last ---
+        out.push_str(",\n  \"meetings\": ");
+        layout(&value["meetings"], 1, &mut out);
+        // --- end of the meetings between tribes ---
         out.push_str("\n}\n");
         out
     }

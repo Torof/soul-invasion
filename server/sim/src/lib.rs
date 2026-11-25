@@ -4223,8 +4223,10 @@ impl World {
     /// How far a body standing on `pos` sees, in tiles on each axis
     /// (D32): the content's sight from the most open walkable ground it
     /// stands on or touches. In the heart of a wood, the forest's; at its
-    /// edge, it sees out, as from the open ground beside it.
-    fn sight_tiles_at(&self, pos: Pos, rules: &Content) -> u32 {
+    /// edge, it sees out, as from the open ground beside it. Public for
+    /// the vivarium's measure of the meetings between tribes.
+    #[must_use]
+    pub fn sight_tiles_at(&self, pos: Pos, rules: &Content) -> u32 {
         let movement = &rules.movement;
         let own = movement.sight_tiles(self.map.get(pos).unwrap_or(Terrain::Rock));
         (-1..=1)

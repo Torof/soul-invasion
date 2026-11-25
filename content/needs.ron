@@ -130,7 +130,8 @@
     // Births, background deaths and kinship (lot 3 C, decided by the
     // project lead on 21 November 2026; D49). Placeholders (D30). Played
     // only in a world whose `life` is on: the vivarium's, never the game's.
-    // A woman of 16 to 42 with more than 80 % of her reserve, carrying no
+    // A woman of 16 to 42 with more than 70 % of her reserve (80 until
+    // 25 November 2026), carrying no
     // infant, whose spouse is alive within 64 tiles, conceives with a 40 %
     // chance a quarter of an age-year (a season while the age-year is the
     // cycle), drawn once: her spouse may be back on any of the quarter's
@@ -142,28 +143,35 @@
     // four, 10 to thirty-nine, 20 to fifty-four, 50 to sixty-nine, 150
     // from seventy), drawn every day with the age-year's chance shared over
     // its days: of illness before sixty, of old age from then. At 16, or once
-    // widowed, a body takes the nearest unmarried body of the other sex
-    // within 64 tiles, aged 16 to 50, that is neither parent, child nor
-    // sibling, half-siblings included, once it has slept within those 64
-    // tiles of that body 6 dawns in a row. Spouses apart beyond those 64 tiles
+    // widowed, a body takes an unmarried body of the other sex, aged 16
+    // to 50, that is neither parent, child nor sibling, half-siblings
+    // included: at dawn, at once, one of its own hearth (both homes in one
+    // camp's place; the nearest in age, the lower id between equals; the
+    // project lead, 25 November 2026, choice A); else, as before, the
+    // nearest within 64 tiles once it has slept within those 64 tiles of
+    // that body 6 dawns in a row. Spouses apart beyond those 64 tiles
     // at 12 dawns in a row (about a season) part, both free to take
     // another; the children stay with their mother.
     life: (
         fertile_years: (16, 42),
-        conceive_reserve_percent: 80,
+        conceive_reserve_percent: 70,
         mate_within_tiles: 64,
         conceive_percent: 40,
-        // conceive_percent_by_reserve — under the 80 % gate, a thin woman
+        // conceive_percent_by_reserve — under the gate, a thin woman
         //   conceives less often, never not at all (the project lead, 25
         //   November 2026, after the conception measures: no fertile woman
         //   was above 80 % from the first summer on, and no child was
         //   conceived after the first week): (reserve %, chance % a
         //   quarter), read between the points: 2 % at an empty reserve,
-        //   5 % at a quarter, 15 % at half, 40 % at the gate.
-        conceive_percent_by_reserve: [(0, 2), (25, 5), (50, 15), (80, 40)],
+        //   5 % at a quarter, 15 % at half, 40 % at the gate. The gate went
+        //   from 80 to 70 % the same day (the lead: "70 plus le choix A");
+        //   the last point followed it, from (80, 40) to (70, 40), so the
+        //   chance meets the gate's 40 % without a step.
+        conceive_percent_by_reserve: [(0, 2), (25, 5), (50, 15), (70, 40)],
         conceive_nights: 4,
         part_after_days: 12,
         together_nights: 6,
+        wed_at_hearth: true,
         pregnancy_quarters: 3,
         pregnant_percent: 110,
         lose_when_weak: true,
