@@ -35,6 +35,9 @@ pub mod carried;
 // --- the scarcity chain (24 November 2026): its own module ---
 pub mod chain;
 // --- end of the scarcity chain ---
+// --- the conceptions (25 November 2026): its own module ---
+pub mod conception;
+// --- end of the conceptions ---
 pub mod continents;
 pub mod hands;
 pub mod json;
@@ -1921,6 +1924,11 @@ pub struct Report {
     /// while carrying for the hearth ([`carried::CarryProbe`]).
     pub carried: carried::CarryProbe,
     // --- end of the food carried home ---
+    // --- the conceptions (25 November 2026) ---
+    /// What barred the fertile women at each conception dawn, the
+    /// pregnancies lost, the births ([`conception::ConceptionProbe`]).
+    pub conception: conception::ConceptionProbe,
+    // --- end of the conceptions ---
     /// Seconds the run took on the wall.
     pub wall_s: f64,
     /// Seconds the world took to be born.
@@ -2336,6 +2344,9 @@ pub fn run_watched(
     // --- the food carried home (25 November 2026) ---
     let mut carried = carried::CarryProbe::new(content, calendar.ticks_per_day());
     // --- end of the food carried home ---
+    // --- the conceptions (25 November 2026) ---
+    let mut conception = conception::ConceptionProbe::new(content);
+    // --- end of the conceptions ---
     let mut why = WhyProbe::default();
     // --- the scarcity chain (24 November 2026) ---
     let mut chain = chain::Chain::new(calendar.ticks_per_day());
@@ -2375,7 +2386,13 @@ pub fn run_watched(
                 .collect();
             world.set_homes(homes);
         }
+        // --- the conceptions (25 November 2026) ---
+        conception.before(&world, content, &people);
+        // --- end of the conceptions ---
         world.step(content, &mut events);
+        // --- the conceptions (25 November 2026) ---
+        conception.after(&world, content, &events);
+        // --- end of the conceptions ---
         let tick = world.tick().0;
         if let Some(placer) = &placer
             && tick.is_multiple_of(FOLLOW_EVERY_TICKS)
@@ -3349,6 +3366,9 @@ pub fn run_watched(
         memory_counts,
         pooling,
         carried,
+        // --- the conceptions (25 November 2026) ---
+        conception,
+        // --- end of the conceptions ---
         map_side,
         camps,
         ticks,
