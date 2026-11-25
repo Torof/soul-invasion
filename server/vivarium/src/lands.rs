@@ -177,7 +177,7 @@ fn hash_sources(mut h: u64, sources: &[(&str, &[u8])]) -> u64 {
     h
 }
 
-/// The fingerprint of the code that makes the land ([`LAND_SOURCES`]):
+/// The fingerprint of the code that makes the land (`LAND_SOURCES`):
 /// what the land's and the picture's files are named by.
 #[must_use]
 pub fn land_code() -> u64 {
@@ -186,7 +186,7 @@ pub fn land_code() -> u64 {
 }
 
 /// The fingerprint of the code that places the trees and the plants
-/// bearing food ([`LAND_SOURCES`], [`GROUND_SOURCES`], the widest spread
+/// bearing food (`LAND_SOURCES`, `GROUND_SOURCES`, the widest spread
 /// of a tree the placing reads): what their file is named by.
 #[must_use]
 pub fn ground_code() -> u64 {

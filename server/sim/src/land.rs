@@ -932,7 +932,7 @@ pub(crate) fn put_chunk(out: &mut Vec<u8>, chunk: ChunkPos) {
     out.extend_from_slice(&chunk.y.to_le_bytes());
 }
 
-/// Why kept bytes (of a land, [`Land::take_bytes`], or of a ground's
+/// Why kept bytes (of a land, [`crate::map::Map::take_land_bytes`], or of a ground's
 /// trees and plants, [`crate::ground::Ground::take_bytes`]) were refused:
 /// nothing of them was taken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
