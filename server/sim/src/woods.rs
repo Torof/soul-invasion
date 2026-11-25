@@ -92,7 +92,7 @@ pub enum Habitat {
     /// A tree alone in the meadow.
     Lone,
     /// The wood on the first tiles by a river or a brook: the riverside
-    /// kinds' (willow, alder).
+    /// kinds' (willow, alder, birch).
     Riverside,
     /// The wood in the band at the cliff's foot.
     CliffFoot,
@@ -938,7 +938,7 @@ impl Woods {
             }
         }
         // The wood on the first tiles by the water is the riverside
-        // habitat, the riverside kinds' (willow, alder): no tree of its
+        // habitat, the riverside kinds' (willow, alder, birch): no tree of its
         // own, the woods' density as around it; never the tile beside
         // any water, never on a bare stretch.
         let (river, brook) = to;
