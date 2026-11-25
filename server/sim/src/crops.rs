@@ -121,7 +121,7 @@ impl Default for Ripen {
     }
 }
 
-/// The whole of a crop, in [`share_on`]'s millionths ([`on_plant`]'s
+/// The whole of a crop, in `share_on`'s millionths (`on_plant`'s
 /// share).
 pub const WHOLE: u64 = 1_000_000;
 
