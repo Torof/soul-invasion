@@ -67,7 +67,7 @@
     (id: "wild_cherry", name: "Wild cherry", height_m: 20.0, spread_m: 20,
         habitats: { wood: 10, edge: 25, copse: 20, lone: 15 },
         // Cherries, as their crop in crops.ron.
-        fruit: Some((from: (summer, 0), until: (summer, 40)))),
+        fruit: Some((from: (spring, 80), until: (summer, 30)))),
     (id: "mulberry", name: "Mulberry", height_m: 10.0, spread_m: 16,
         habitats: { edge: 10, copse: 15, lone: 20, riverside: 5 },
         // Mulberries.
@@ -79,7 +79,7 @@
     (id: "walnut", name: "Walnut", height_m: 25.0, big: true, spread_m: 8,
         habitats: { edge: 5, copse: 20, lone: 30, riverside: 10 },
         // Walnuts.
-        fruit: Some((from: (autumn, 20), until: (winter, 30)))),
+        fruit: Some((from: (autumn, 20), until: (winter, 20)))),
     (id: "chestnut", name: "Sweet chestnut", height_m: 28.0, big: true, spread_m: 8,
         habitats: { wood: 25, edge: 15, copse: 15 },
         // Chestnuts.
