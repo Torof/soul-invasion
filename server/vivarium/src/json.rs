@@ -484,6 +484,9 @@ impl Report {
             .add_json(&mut value["pooling"], self.ticks_per_day());
         // --- end of the food carried home ---
         // --- end of the hearth's pooling ---
+        // --- the conceptions (25 November 2026) ---
+        value["conception"] = self.conception.json();
+        // --- end of the conceptions ---
         let changes: Vec<(u64, u8)> = self.home_changes.iter().map(|c| (c.day, c.tribe)).collect();
         let days = u64::from(self.calendar().days_per_age_year().max(1));
         let tribes = u8::try_from(self.camps.len()).unwrap_or(u8::MAX);
