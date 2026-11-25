@@ -47,6 +47,7 @@ pub mod lands;
 pub mod pooling;
 // --- end of the hearth's pooling ---
 pub mod png;
+pub mod pyramid;
 
 /// Where the content is looked for when no directory is given: as the
 /// server does, from the working directory up.
@@ -97,8 +98,12 @@ impl WorldKind {
 pub struct Settings {
     /// The world.
     pub world: WorldKind,
-    /// People born at the camp at tick zero.
+    /// People born at the camp at tick zero: the whole band with the
+    /// pyramid start, the grown alone with the founders' (`start`).
     pub people: u32,
+    /// How the people are born (the life lot, 25 November 2026): a band
+    /// with an age pyramid, the default, or the founders of lot 3 C.
+    pub start: Start,
     /// Game days to run.
     pub days: u32,
     /// Ticks a game second: the plan's slow cadence is 1 (the game runs
@@ -192,6 +197,31 @@ pub struct Settings {
     pub helpers: u32,
 }
 
+/// How a camp's people are born at the start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Start {
+    /// A band with an age pyramid (the life lot, 25 November 2026;
+    /// [`pyramid`]): `people` of every age, children with their mothers,
+    /// couples close in age, some unwed, reserves unequal, a few women
+    /// with child. The default.
+    Pyramid,
+    /// The founders of lot 3 C: `people` grown of `adult_years`, then
+    /// `children` and `infants`, every grown wed the first evening by the
+    /// daily rule, every reserve full.
+    Founders,
+}
+
+impl Start {
+    /// Its name, as the command line and the data say it.
+    #[must_use]
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Pyramid => "pyramid",
+            Self::Founders => "founders",
+        }
+    }
+}
+
 impl Settings {
     /// The run's calendar: its cadence, its day, its cycle and its
     /// age-years (D09).
@@ -211,6 +241,7 @@ impl Default for Settings {
         Self {
             world: WorldKind::Patch { side: 50 },
             people: 5,
+            start: Start::Pyramid,
             days: 10,
             ticks_per_second: 1,
             seconds_per_day: Calendar::DEFAULT_SECONDS_PER_DAY,
@@ -2149,54 +2180,99 @@ pub fn run_watched(
     let placer = sim::ahead::Placer::spawn(&world, usize::try_from(settings.helpers).unwrap_or(1));
     // Who is born at each camp: (its id, its tribe, grown or not).
     let mut departure: Vec<(BodyId, u8, bool)> = Vec::new();
+    // The pyramid start's bands (the life lot, 25 November 2026): each
+    // tribe's plan, and the id each member was born as.
+    let mut bands: Vec<(Vec<pyramid::Member>, Vec<Option<BodyId>>)> = Vec::new();
     for (tribe, &camp) in camps.iter().enumerate() {
         let tribe = u8::try_from(tribe).expect("two tribes at most");
-        // Who is born at the camp (lot 3 B): grown women and men in turn,
-        // from `adult_years` (18 to 40 by default); children; infants, each
-        // on a woman. Ages in age-years (D09, amended 24 November 2026).
         let per_year = u64::from(calendar.days_per_age_year());
-        let mut born: Vec<(u64, Sex, bool)> = Vec::new();
-        let (lo, hi) = settings.adult_years;
-        for k in 0..settings.people {
-            let years = u64::from(lo)
-                + u64::from(k) * u64::from(hi.saturating_sub(lo))
-                    / u64::from(settings.people.max(1));
-            let sex = if k % 2 == 0 { Sex::Female } else { Sex::Male };
-            // Spread by fiftieths of an age-year (7 days when the age-year
-            // was the 50-day year): never a whole age-year more.
-            born.push((
-                years * per_year + u64::from(k) * 7 * per_year / 50,
-                sex,
-                false,
-            ));
+        // Who is born at the camp: (age in days, sex, infant, the band's
+        // member with the pyramid start).
+        let mut born: Vec<(u64, Sex, bool, Option<usize>)> = Vec::new();
+        let band = match settings.start {
+            Start::Pyramid => pyramid::plan(
+                settings.people,
+                settings.seed,
+                tribe,
+                content,
+                calendar.days_per_age_year(),
+            ),
+            Start::Founders => Vec::new(),
+        };
+        if settings.start == Start::Pyramid {
+            // The band (the life lot): the grown and the children, then
+            // the infants, each in its mother's arms.
+            let (infants, others): (Vec<usize>, Vec<usize>) =
+                (0..band.len()).partition(|&k| band[k].infant(content));
+            for k in others.into_iter().chain(infants) {
+                let m = &band[k];
+                born.push((
+                    u64::from(m.age_tenths) * per_year / 10,
+                    m.sex,
+                    m.infant(content),
+                    Some(k),
+                ));
+            }
+        } else {
+            // The founders (lot 3 B): grown women and men in turn, from
+            // `adult_years` (18 to 40 by default); children; infants, each
+            // on a woman. Ages in age-years (D09, amended 24 November 2026).
+            let (lo, hi) = settings.adult_years;
+            for k in 0..settings.people {
+                let years = u64::from(lo)
+                    + u64::from(k) * u64::from(hi.saturating_sub(lo))
+                        / u64::from(settings.people.max(1));
+                let sex = if k % 2 == 0 { Sex::Female } else { Sex::Male };
+                // Spread by fiftieths of an age-year (7 days when the
+                // age-year was the 50-day year): never a whole age-year more.
+                born.push((
+                    years * per_year + u64::from(k) * 7 * per_year / 50,
+                    sex,
+                    false,
+                    None,
+                ));
+            }
+            for k in 0..settings.children {
+                let years =
+                    3 + u64::from(k) * 8 / u64::from(settings.children.saturating_sub(1).max(1));
+                let sex = if k % 2 == 0 { Sex::Male } else { Sex::Female };
+                born.push((
+                    years * per_year + u64::from(k) * 5 * per_year / 50,
+                    sex,
+                    false,
+                    None,
+                ));
+            }
+            for k in 0..settings.infants {
+                let sex = if k % 2 == 0 { Sex::Female } else { Sex::Male };
+                born.push((per_year / 2, sex, true, None));
+            }
         }
-        for k in 0..settings.children {
-            let years =
-                3 + u64::from(k) * 8 / u64::from(settings.children.saturating_sub(1).max(1));
-            let sex = if k % 2 == 0 { Sex::Male } else { Sex::Female };
-            born.push((
-                years * per_year + u64::from(k) * 5 * per_year / 50,
-                sex,
-                false,
-            ));
-        }
-        for k in 0..settings.infants {
-            let sex = if k % 2 == 0 { Sex::Female } else { Sex::Male };
-            born.push((per_year / 2, sex, true));
-        }
+        let mut ids: Vec<Option<BodyId>> = vec![None; band.len()];
         let mut women: Vec<BodyId> = Vec::new();
         let mut knowers = settings.hands_known;
-        for (age_days, sex, infant) in born {
+        for (age_days, sex, infant, member) in born {
+            // A band's infant is born in its mother's arms, or not at all.
+            let mother = member
+                .filter(|_| infant)
+                .map(|k| band[k].mother.and_then(|w| ids[w]));
+            if mother == Some(None) {
+                continue;
+            }
             let Some(id) = world.spawn_near(camp) else {
                 continue;
             };
             world.set_birth(id, age_days, sex);
+            if let Some(k) = member {
+                ids[k] = Some(id);
+            }
             let mut carrier = None;
             if infant {
-                if women.is_empty() {
-                    continue;
-                }
-                let nurse = women.remove(0);
+                let nurse = match mother.flatten() {
+                    Some(nurse) => nurse,
+                    None if women.is_empty() => continue,
+                    None => women.remove(0),
+                };
                 world.carry(nurse, id);
                 carrier = Some(nurse);
             } else if sex == Sex::Female && age_days >= 18 * per_year {
@@ -2243,13 +2319,30 @@ pub fn run_watched(
             person.entries.push(entry);
             departure.push((id, tribe, !infant && age_days >= 16 * per_year));
         }
+        bands.push((band, ids));
     }
-    // The departure paired (lot 3 C): the grown are coupled at once by the
-    // sim's own rule (the nearest of the other sex, kin barred), then each
-    // child and infant is given a mother and a father among its camp's
-    // couples, the infant's nurse being its mother.
+    // The departure paired. The founders (lot 3 C): the grown are coupled
+    // at once by the sim's own rule (the nearest of the other sex, kin
+    // barred), then each child and infant is given a mother and a father
+    // among its camp's couples, the infant's nurse being its mother. The
+    // band (the life lot): its planned couples are wed, each child given
+    // its planned mother and her spouse.
     let mut events = Vec::new();
-    world.couple_all(content, &mut events);
+    match settings.start {
+        Start::Founders => world.couple_all(content, &mut events),
+        Start::Pyramid => {
+            for (band, ids) in &bands {
+                for (w, m) in band.iter().enumerate() {
+                    if m.sex == Sex::Female
+                        && let Some(a) = ids[w]
+                        && let Some(b) = m.spouse.and_then(|s| ids[s])
+                    {
+                        world.wed_at_start(a, b, &mut events);
+                    }
+                }
+            }
+        }
+    }
     for event in &events {
         if let Event::Coupled { a, b } = event {
             let entry = Entry {
@@ -2265,53 +2358,95 @@ pub fn run_watched(
             }
         }
     }
-    for tribe in 0..camps.len() {
-        let tribe = u8::try_from(tribe).expect("two tribes at most");
-        let couples: Vec<(BodyId, BodyId)> = departure
-            .iter()
-            .filter(|&&(_, t, grown)| t == tribe && grown)
-            .filter_map(|&(id, ..)| {
-                let body = world.body(id)?;
-                (body.sex() == Sex::Female).then_some((id, body.spouse()?))
-            })
-            .collect();
-        let young: Vec<BodyId> = departure
-            .iter()
-            .filter(|&&(_, t, grown)| t == tribe && !grown)
-            .map(|&(id, ..)| id)
-            .collect();
-        for (k, id) in young.into_iter().enumerate() {
-            let parents = match world.body(id).and_then(sim::Body::carried_by) {
-                Some(nurse) => Some((nurse, world.body(nurse).and_then(sim::Body::spouse))),
-                None if couples.is_empty() => None,
-                None => couples
-                    .get(k % couples.len())
-                    .map(|&(mother, father)| (mother, Some(father))),
-            };
-            let Some((mother, father)) = parents else {
-                continue;
-            };
-            world.set_parents(id, Some(mother), father);
-            let entry = Entry {
-                tick: 0,
-                day: 1,
-                what: match father {
-                    Some(father) => format!(
-                        "{} is the child of {} and {}",
+    let mut parents: Vec<(BodyId, BodyId, Option<BodyId>)> = Vec::new();
+    if settings.start == Start::Founders {
+        for tribe in 0..camps.len() {
+            let tribe = u8::try_from(tribe).expect("two tribes at most");
+            let couples: Vec<(BodyId, BodyId)> = departure
+                .iter()
+                .filter(|&&(_, t, grown)| t == tribe && grown)
+                .filter_map(|&(id, ..)| {
+                    let body = world.body(id)?;
+                    (body.sex() == Sex::Female).then_some((id, body.spouse()?))
+                })
+                .collect();
+            let young: Vec<BodyId> = departure
+                .iter()
+                .filter(|&&(_, t, grown)| t == tribe && !grown)
+                .map(|&(id, ..)| id)
+                .collect();
+            for (k, id) in young.into_iter().enumerate() {
+                let found = match world.body(id).and_then(sim::Body::carried_by) {
+                    Some(nurse) => Some((nurse, world.body(nurse).and_then(sim::Body::spouse))),
+                    None if couples.is_empty() => None,
+                    None => couples
+                        .get(k % couples.len())
+                        .map(|&(mother, father)| (mother, Some(father))),
+                };
+                if let Some((mother, father)) = found {
+                    parents.push((id, mother, father));
+                }
+            }
+        }
+    } else {
+        for (band, ids) in &bands {
+            for (c, m) in band.iter().enumerate() {
+                if let Some(id) = ids[c]
+                    && let Some(mother) = m.mother.and_then(|w| ids[w])
+                {
+                    let father = world.body(mother).and_then(sim::Body::spouse);
+                    parents.push((id, mother, father));
+                }
+            }
+        }
+    }
+    for (id, mother, father) in parents {
+        world.set_parents(id, Some(mother), father);
+        let entry = Entry {
+            tick: 0,
+            day: 1,
+            what: match father {
+                Some(father) => format!(
+                    "{} is the child of {} and {}",
+                    name(id),
+                    name(mother),
+                    name(father)
+                ),
+                None => format!("{} is the child of {}", name(id), name(mother)),
+            },
+        };
+        chronicle.push(entry.clone());
+        let person = people.entry(id).or_default();
+        person.mother = Some(mother);
+        person.father = father;
+        person.entries.push(entry);
+        for parent in std::iter::once(mother).chain(father) {
+            people.entry(parent).or_default().children.push(id);
+        }
+    }
+    // The band's reserves, unequal (full when fed: the reserve is never
+    // drawn on then), and its women with child (the life lot).
+    for (band, ids) in &bands {
+        for (k, m) in band.iter().enumerate() {
+            let Some(id) = ids[k] else { continue };
+            if !settings.fed {
+                world.set_reserve_percent(id, m.reserve_percent, content);
+            }
+            if let Some(days) = m.with_child_days
+                && let Some(father) = world.body(id).and_then(sim::Body::spouse)
+                && world.set_pregnant(id, world.today() - i64::from(days), father)
+            {
+                let entry = Entry {
+                    tick: 0,
+                    day: 1,
+                    what: format!(
+                        "{} is with child by {}, {days} days into it",
                         name(id),
-                        name(mother),
                         name(father)
                     ),
-                    None => format!("{} is the child of {}", name(id), name(mother)),
-                },
-            };
-            chronicle.push(entry.clone());
-            let person = people.entry(id).or_default();
-            person.mother = Some(mother);
-            person.father = father;
-            person.entries.push(entry);
-            for parent in std::iter::once(mother).chain(father) {
-                people.entry(parent).or_default().children.push(id);
+                };
+                chronicle.push(entry.clone());
+                people.entry(id).or_default().entries.push(entry);
             }
         }
     }
@@ -5159,7 +5294,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
 <li><b>The year</b>: {} days of {} game seconds (a day of the game is two hours of its clock), four seasons.</li>\
 <li><b>The brain</b>: {}.</li>\
 <li><b>The trials</b> (D50): {}.</li>\
-<li><b>Life</b> (D49): on, as in every vivarium world and never in the game: women conceive, people couple and die of illness and old age, by content/needs.ron's life section; the departure pairs the grown by the sim's own rule and gives the children a mother and a father among the camp's couples{}.</li>\
+<li><b>Life</b> (D49): on, as in every vivarium world and never in the game: women conceive, people couple and die of illness and old age, by content/needs.ron's life section; {}{}.</li>\
 <li><b>The food</b>: the crops of content/crops.ron (D45), on the trees and plants in their season, more some years than others, whole again the next year; gathered by hand at their rate an hour; spoiled after their days. Hunger is the appetite on a fat reserve (D46): the reserve spent, the body starves.</li>\
 <li><b>The needs</b> (content/needs.ron, points of 100 a game day): {}.</li></ul>",
             s.ticks_per_second,
@@ -5179,6 +5314,14 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                 "on: a body in distress (hungry or thirsty at nightfall, or a day without a gather) for content/needs.ron's trial_after_days running may try one way moved by one step, with a daily chance by its will, and with nothing wrong the bold seldom search for better all the same (calm_try_permille_by_will); after trial_days the world has judged on every distress (kept if nothing worsened and one thing improved over gathered a day, thin days, thirsty days and cold nights, else reverted); a home trial goes to the place or grove of its notebook where its own body would fare best (food gathered and water drunk there, less the hunger, thirst and cold its nights left and what walking cost, every need counted alike), lived for the days its will asks, else no home trial that day; at night at the camp a body may copy one way from the camp-mate who fared best lately (the fewest days of distress, gathered kJ breaking ties), the more readily the greater that mate's will, a copy losing a step at times; children follow their mother's home every night"
             } else {
                 "off (the control run, --no-trials): nobody tries nor copies anything"
+            },
+            match s.start {
+                Start::Pyramid => {
+                    "the start is a band with an age pyramid (the life lot): some 44 % under sixteen, two infants each in its mother's arms, adults of every age and a few old, couples close in age wed, the youngest grown unwed, each child with its mother and her spouse, reserves drawn from 45 to 90 % of full, three in eight of the wed fertile women nursing no infant with child"
+                }
+                Start::Founders => {
+                    "the start is the founders' (lot 3 C): the departure pairs the grown by the sim's own rule and gives the children a mother and a father among the camp's couples, every reserve full"
+                }
             },
             if s.fed {
                 "; <b>food without limit</b>: hunger a day is 0, nobody grows thin or weak, so the births are read apart from the food"
@@ -6362,6 +6505,7 @@ mod tests {
         Settings {
             world: WorldKind::Patch { side: 50 },
             people: 5,
+            start: Start::Founders,
             days: 2,
             ticks_per_second: 1,
             seconds_per_day: Calendar::DEFAULT_SECONDS_PER_DAY,
@@ -6830,6 +6974,71 @@ mod tests {
     /// the sim's own rule, every child has a mother and a father among the
     /// camp's couples, an infant's nurse is its mother, and the families
     /// follow: the woman heads, her husband and her children are in hers.
+    /// The life lot's content (25 November 2026): « the young first » at
+    /// the hearth are those under twelve; a stock kept is judged over
+    /// three seasons, so one begun on autumn's first day is judged
+    /// through the end of the next spring.
+    #[test]
+    fn the_life_lot_s_content_values() {
+        let needs = &content().needs;
+        assert_eq!(needs.pooling.young_first_until_years, 12);
+        let cycle = Calendar::default().days_per_cycle();
+        assert_eq!(cycle, 64);
+        let days = needs.trials.days_for("stock_kj", cycle);
+        assert_eq!(days, 48);
+        let autumn = cycle / 2;
+        assert_eq!(autumn + days, cycle + cycle / 4, "the next spring's end");
+    }
+
+    /// The pyramid start (the life lot, 25 November 2026): a band of 25
+    /// of every age is born, its couples wed close in age, the youngest
+    /// grown unwed, each child with its mother and her husband, the
+    /// infants in their mothers' arms, reserves unequal and under full,
+    /// one woman with child; the world's invariants hold.
+    #[test]
+    fn the_pyramid_start_is_born_as_a_band() {
+        let settings = Settings {
+            people: 25,
+            start: Start::Pyramid,
+            days: 1,
+            ..small()
+        };
+        let report = run_checked(&settings, content());
+        let founders: Vec<&Person> = report.people.values().filter(|p| !p.born_in_run).collect();
+        assert_eq!(founders.len(), 25);
+        let under_16 = founders
+            .iter()
+            .filter(|p| report.years_on(p, 1) < 16)
+            .count();
+        assert_eq!(under_16, 11);
+        let wed = founders
+            .iter()
+            .filter(|p| p.couplings.first().is_some_and(|c| c.0 == 1))
+            .count();
+        assert_eq!(wed, 12, "six couples wed at the start");
+        for p in founders.iter().filter(|p| report.years_on(p, 1) < 16) {
+            let mother = &report.people[&p.mother.expect("a mother")];
+            assert_eq!(mother.sex, Some(Sex::Female));
+            assert_eq!(mother.couplings.first().map(|c| c.1), p.father);
+            if let Some(nurse) = p.carrier {
+                assert_eq!(Some(nurse), p.mother, "an infant in its mother's arms");
+            }
+        }
+        assert_eq!(founders.iter().filter(|p| p.carrier.is_some()).count(), 2);
+        let with_child = report
+            .chronicle
+            .iter()
+            .filter(|e| e.day == 1 && e.what.contains("is with child by"))
+            .count();
+        assert_eq!(with_child, 1);
+        let first = &report.samples[0];
+        assert!(
+            first.reserve_by_tribe[0] < 90,
+            "reserves under full: {}",
+            first.reserve_by_tribe[0]
+        );
+    }
+
     #[test]
     fn the_departure_pairs_the_grown_and_gives_the_young_parents() {
         let settings = Settings {

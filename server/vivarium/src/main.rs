@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use vivarium::{Settings, WorldKind, run};
+use vivarium::{Settings, Start, WorldKind, run};
 
 const USAGE: &str = "\
 vivarium [options]   runs a world of the simulation headless and accelerated,
@@ -16,15 +16,25 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
                            valley (16,384 m a side), or a patch of the
                            valley (default: patch)
   --side N                 the patch's side in tiles (default 50)
-  --people N               people born at each camp (default 5): grown
-                           women and men in turn, 18 to 40 years old
-  --ages LO-HI             the grown people's ages, spread from LO to HI
-                           years (default 18-40; 20-20 for a couple of 20)
+  --people N               people born at each camp (default 5): the whole
+                           band with the pyramid start; the grown alone,
+                           women and men in turn, with the founders' start
+  --start pyramid|founders how a camp is born (default: pyramid, the life
+                           lot): a band of every age shaped on the Hadza
+                           and the !Kung, some 44 % under sixteen, children
+                           with their mothers, couples close in age, some
+                           unwed, reserves unequal, a few women with child;
+                           or the founders of lot 3 C, grown of --ages all
+                           wed the first evening, reserves full. --ages,
+                           --children and --infants mean the founders
+  --ages LO-HI             the founders' ages, spread from LO to HI years
+                           (default 18-40; 20-20 for a couple of 20)
   --fed                    food without limit: hunger a day is 0, nobody
                            grows thin (lot 3 C, trial 1)
-  --children N             children at each camp too, 3 to 11 (default 0)
-  --infants N              infants of half a year at each camp, each carried
-                           by one of its women (default 0)
+  --children N             the founders' children at each camp too, 3 to 11
+                           (default 0)
+  --infants N              the founders' infants of half a year at each
+                           camp, each carried by one of its women (default 0)
   --tribes N               1 or 2 tribes, each at its own camp (default: 2 on
                            the vivarium's world, 1 on a patch)
   --days N                 game days to run (default 10)
@@ -104,6 +114,9 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
     let mut out = PathBuf::from("vivarium-report.html");
     let mut full_page = false;
     let mut tribes: Option<u32> = None;
+    // The start asked, and whether a founders' flag was given.
+    let mut start: Option<Start> = None;
+    let mut founders_flag = false;
     let mut i = 0;
     let value = |i: &mut usize, name: &str| -> Result<String, String> {
         *i += 1;
@@ -124,8 +137,21 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--world" => world = value(&mut i, "--world")?,
             "--side" => side = small(&mut i, "--side", "too large")?,
             "--people" => settings.people = small(&mut i, "--people", "too many")?,
-            "--children" => settings.children = small(&mut i, "--children", "too many")?,
-            "--infants" => settings.infants = small(&mut i, "--infants", "too many")?,
+            "--children" => {
+                settings.children = small(&mut i, "--children", "too many")?;
+                founders_flag = true;
+            }
+            "--infants" => {
+                settings.infants = small(&mut i, "--infants", "too many")?;
+                founders_flag = true;
+            }
+            "--start" => {
+                start = Some(match value(&mut i, "--start")?.as_str() {
+                    "pyramid" => Start::Pyramid,
+                    "founders" => Start::Founders,
+                    other => return Err(format!("--start: pyramid or founders, not {other}")),
+                });
+            }
             "--days" => settings.days = small(&mut i, "--days", "too many")?,
             "--cadence" => settings.ticks_per_second = small(&mut i, "--cadence", "too high")?,
             "--seconds-per-day" => {
@@ -162,6 +188,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
                         .map_err(|_| "--ages: too old".to_owned())
                 };
                 settings.adult_years = (years(lo)?, years(hi)?);
+                founders_flag = true;
                 if settings.adult_years.0 > settings.adult_years.1 {
                     return Err(format!("--ages: LO above HI: {text}"));
                 }
@@ -186,6 +213,17 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
         }
         i += 1;
     }
+    settings.start = match (start, founders_flag) {
+        (Some(Start::Pyramid), true) => {
+            return Err(
+                "--ages, --children and --infants are the founders' start, not the pyramid's"
+                    .to_owned(),
+            );
+        }
+        (Some(start), _) => start,
+        (None, true) => Start::Founders,
+        (None, false) => Start::Pyramid,
+    };
     settings.world = match world.as_str() {
         "vivarium" => WorldKind::Vivarium,
         "vivarium-wide" => WorldKind::VivariumWide,
@@ -336,8 +374,29 @@ mod tests {
             .unwrap();
         assert_eq!(couple.settings.adult_years, (20, 20));
         assert!(couple.settings.fed);
+        assert_eq!(
+            couple.settings.start,
+            Start::Founders,
+            "--ages: the founders"
+        );
         assert!(parse(&args(&["--ages", "20"])).is_err());
         assert!(parse(&args(&["--ages", "30-20"])).is_err());
+    }
+
+    #[test]
+    fn the_start_is_the_pyramid_unless_the_founders_are_asked() {
+        let start = |a: &[&str]| parse(&args(a)).map(|o| o.unwrap().settings.start);
+        assert_eq!(start(&[]), Ok(Start::Pyramid));
+        assert_eq!(start(&["--people", "25"]), Ok(Start::Pyramid));
+        assert_eq!(start(&["--start", "founders"]), Ok(Start::Founders));
+        assert_eq!(start(&["--children", "3"]), Ok(Start::Founders));
+        assert_eq!(start(&["--infants", "1"]), Ok(Start::Founders));
+        assert_eq!(
+            start(&["--start", "founders", "--children", "3"]),
+            Ok(Start::Founders)
+        );
+        assert!(start(&["--children", "3", "--start", "pyramid"]).is_err());
+        assert!(start(&["--start", "elders"]).is_err());
     }
 
     #[test]
