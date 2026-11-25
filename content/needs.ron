@@ -344,12 +344,23 @@
     // places_remembered: 48 — how many such places it keeps in mind, those
     //                    worth most from where it last looked (a few
     //                    dozen corners, where it remembered 256 bushes).
+    // patch_tiles:       4 — a body gathers a patch, not a plant (the
+    //                    project lead, 25 November 2026: "Un vrai
+    //                    cueilleur ne cueille pas un pissenlit : il cueille
+    //                    un coin de pissenlits"): the plants of the same
+    //                    crop within 4 tiles on each axis of the one it
+    //                    chose, what one picks without walking away. The
+    //                    ten minutes of work a plant must hold to be worth
+    //                    the walk are the patch's; a tree or bush holding
+    //                    them alone is weighed alone, as before. 0: each
+    //                    plant alone.
     thought: (
         plant_sight_tiles: 30,
         fed_under: 30,
         plant_choice_hours: 1,
         place_tiles: 16,
         places_remembered: 48,
+        patch_tiles: 4,
     ),
     // The evening fire and the common memory (D55, lot 4 of the
     // simulation, decided by the project lead on 22 November 2026). Every

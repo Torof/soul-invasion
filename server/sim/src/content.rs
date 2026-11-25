@@ -1491,6 +1491,13 @@ pub struct Thought {
     /// How many such places a body remembers: those worth most from
     /// where it last looked.
     pub places_remembered: u32,
+    /// How far, in tiles on each axis, a body gathers a **patch** (D53,
+    /// amended 25 November 2026): the plants of the same crop around the
+    /// one it chose, picked one after the other without walking away. A
+    /// small plant is worth the walk when its patch holds ten minutes of
+    /// work, not itself alone. 0, or absent: each plant weighed alone.
+    #[serde(default)]
+    pub patch_tiles: u32,
 }
 
 impl Default for Thought {
@@ -1502,6 +1509,7 @@ impl Default for Thought {
             plant_choice_hours: 1,
             place_tiles: 16,
             places_remembered: 48,
+            patch_tiles: 4,
         }
     }
 }
@@ -1531,6 +1539,11 @@ impl Thought {
         if self.places_remembered == 0 {
             return Err(ContentError::Needs(
                 "thought: places_remembered is 1 or more",
+            ));
+        }
+        if self.patch_tiles > self.place_tiles {
+            return Err(ContentError::Needs(
+                "thought: patch_tiles is place_tiles at most",
             ));
         }
         Ok(())
