@@ -4501,9 +4501,9 @@ fn couples_at_dawn(world: &World, content: &Content, b: &mut BilanProbe) {
         };
         let (a, p) = (spouse.pos(), woman.pos());
         let apart = (a.x - p.x).abs().max((a.y - p.y).abs()) > reach;
-        let c = woman.condition();
-        let thin = c.reserve_left_j(&content.needs) * 100
-            <= c.reserve_j(&content.needs) * u64::from(life.conceive_reserve_percent);
+        // Too thin: her reserve leaves her no chance, weak since fertility
+        // follows the gain (D49, amended 25 November 2026).
+        let thin = sim::life::conceive_chance(woman, &content.needs) == 0;
         b.couples[usize::from(apart) + 2 * usize::from(thin)] += 1;
     }
 }

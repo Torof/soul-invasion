@@ -261,6 +261,10 @@ fn reserve_kj_60000() -> u32 {
     60_000
 }
 
+fn percent_101() -> u32 {
+    101
+}
+
 fn percent_150() -> u32 {
     150
 }
@@ -2126,22 +2130,29 @@ pub enum Sex {
 pub struct Life {
     /// A woman conceives from the first age to the last, both included.
     pub fertile_years: (u32, u32),
-    /// She conceives only with more than this share of her fat reserve, in
-    /// percent: a thin woman does not.
-    pub conceive_reserve_percent: u32,
     /// Her spouse must be alive within this many tiles; a body takes a
     /// spouse within as many.
     pub mate_within_tiles: u32,
-    /// Her chance to conceive in a quarter of an age-year, in percent,
-    /// drawn once a quarter (a season while the age-year is the cycle).
-    pub conceive_percent: u32,
-    /// At or under `conceive_reserve_percent`, her chance a quarter by her
-    /// reserve left (D49, amended 25 November 2026; the project lead: a
-    /// thin woman conceives less often, never not at all): points
-    /// (reserve per cent, chance per cent), rising, read between them.
-    /// Empty: a thin woman does not conceive.
+    /// The dawns over which her reserve's gain is read (D49, amended 25
+    /// November 2026, fertility follows the gain): her reserve left now
+    /// against its value this many dawns ago, or her oldest dawn kept when
+    /// fewer have passed (none: flat).
+    #[serde(default = "one")]
+    pub conceive_gain_days: u32,
+    /// Her chance to conceive in a quarter of an age-year, in percent, by
+    /// her reserve's gain (D49, amended 25 November 2026): points (gain,
+    /// chance per cent), the gain the mean a day over the last
+    /// `conceive_gain_days` dawns in per cent of her day's need, which may
+    /// be negative; rising, read between them, the first held below and the
+    /// last above. A weak woman (`weak_percent`) never conceives. Empty:
+    /// nobody conceives.
     #[serde(default)]
-    pub conceive_percent_by_reserve: Vec<(u32, u32)>,
+    pub conceive_percent_by_gain: Vec<(i32, u32)>,
+    /// With at least this share of her reserve left, in per cent, she has
+    /// the table's last chance whatever her gain: a full reserve cannot
+    /// rise further. Over 100: never.
+    #[serde(default = "percent_101")]
+    pub conceive_full_percent: u32,
     /// The quarter's first nights she may conceive in (D49, amended): at
     /// the start of each of these days, a wife not yet with child whose
     /// spouse is back within `mate_within_tiles` meets the quarter's draw.
@@ -2207,10 +2218,10 @@ impl Default for Life {
     fn default() -> Self {
         Self {
             fertile_years: (0, 0),
-            conceive_reserve_percent: 100,
             mate_within_tiles: 0,
-            conceive_percent: 0,
-            conceive_percent_by_reserve: Vec::new(),
+            conceive_gain_days: 1,
+            conceive_percent_by_gain: Vec::new(),
+            conceive_full_percent: 101,
             conceive_nights: 1,
             part_after_days: 0,
             together_nights: 0,
@@ -2266,16 +2277,12 @@ impl Life {
             || self.death_by_age.iter().any(|p| p.1 > 1000)
             || self.fertile_years.0 > self.fertile_years.1
             || self.mate_years.0 > self.mate_years.1
-            || !percent(self.conceive_reserve_percent)
-            || !percent(self.conceive_percent)
             || !self
-                .conceive_percent_by_reserve
+                .conceive_percent_by_gain
                 .windows(2)
                 .all(|p| p[0].0 < p[1].0)
-            || self
-                .conceive_percent_by_reserve
-                .iter()
-                .any(|p| p.0 > 100 || p.1 > 100)
+            || self.conceive_percent_by_gain.iter().any(|p| p.1 > 100)
+            || self.conceive_gain_days == 0
             || !percent(self.boys_percent)
             || !percent(self.childbirth_death_percent)
             || self.pregnancy_quarters == 0
@@ -2285,7 +2292,9 @@ impl Life {
             return Err(ContentError::Needs(
                 "life: death_by_age not empty, its ages rising and its per mille at most 1000; \
                  fertile_years and mate_years rising; the percents at most 100; \
-                 pregnancy_quarters and conceive_nights positive, pregnant_percent at least 100",
+                 conceive_percent_by_gain's gains rising; \
+                 pregnancy_quarters, conceive_nights and conceive_gain_days positive, \
+                 pregnant_percent at least 100",
             ));
         }
         Ok(())
@@ -2296,20 +2305,35 @@ impl Life {
 /// value), the ages rising, each value scaled by `scale`, straight lines
 /// between the points, the first held before and the last after.
 impl Life {
-    /// Her chance to conceive this quarter, in percent, with `left` of
-    /// her `whole` fat reserve (D49, amended 25 November 2026): the
-    /// content's chance above the gate, below it the chance by her
-    /// reserve, 0 when none is given.
+    /// Her chance to conceive this quarter, in percent (D49, amended 25
+    /// November 2026: fertility follows the gain): read on
+    /// `conceive_percent_by_gain` at `gain`, her reserve's mean gain a day
+    /// in per cent of her day's need; the table's last chance when `full`
+    /// (at or over `conceive_full_percent`); 0 when no table is given. The
+    /// weak are barred by the caller.
     #[must_use]
-    pub fn conceive_chance(&self, left: u64, whole: u64) -> u64 {
-        if left * 100 > whole * u64::from(self.conceive_reserve_percent) {
-            return u64::from(self.conceive_percent);
-        }
-        if self.conceive_percent_by_reserve.is_empty() {
+    pub fn conceive_chance(&self, gain: i64, full: bool) -> u64 {
+        let points = &self.conceive_percent_by_gain;
+        let (Some(first), Some(last)) = (points.first(), points.last()) else {
             return 0;
+        };
+        if full || gain >= i64::from(last.0) {
+            return u64::from(last.1);
         }
-        let share = left * 100 / whole.max(1);
-        along(&self.conceive_percent_by_reserve, share * 1000, 1)
+        if gain <= i64::from(first.0) {
+            return u64::from(first.1);
+        }
+        for pair in points.windows(2) {
+            let ((a, va), (b, vb)) = (
+                (i64::from(pair[0].0), i64::from(pair[0].1)),
+                (i64::from(pair[1].0), i64::from(pair[1].1)),
+            );
+            if (a..b).contains(&gain) {
+                let at = va + (vb - va) * (gain - a) / (b - a);
+                return u64::try_from(at).unwrap_or(0);
+            }
+        }
+        u64::from(last.1)
     }
 }
 
@@ -3389,23 +3413,38 @@ mod tests {
     /// falls; it saturates at about two others for a loner and six for a
     /// sociable, and more add nothing; off, nothing.
     #[test]
-    fn a_thin_woman_conceives_less_often_never_not_at_all() {
+    fn her_chance_follows_her_reserves_gain_and_a_full_reserve_has_the_best() {
         let life = Life {
-            conceive_reserve_percent: 80,
-            conceive_percent: 40,
-            conceive_percent_by_reserve: vec![(0, 2), (25, 5), (50, 15), (80, 40)],
+            conceive_percent_by_gain: vec![(-10, 1), (0, 3), (10, 15), (20, 40)],
+            conceive_full_percent: 95,
             ..Life::default()
         };
-        assert_eq!(life.conceive_chance(90, 100), 40, "above the gate");
-        assert_eq!(life.conceive_chance(50, 100), 15);
-        assert_eq!(life.conceive_chance(25, 100), 5);
-        assert_eq!(life.conceive_chance(0, 100), 2, "never not at all");
-        assert_eq!(life.conceive_chance(65, 100), 27, "read between the points");
-        let gate_only = Life {
-            conceive_percent_by_reserve: Vec::new(),
+        assert_eq!(life.conceive_chance(-50, false), 1, "falling fast");
+        assert_eq!(life.conceive_chance(-10, false), 1);
+        assert_eq!(
+            life.conceive_chance(-5, false),
+            2,
+            "read between the points"
+        );
+        assert_eq!(life.conceive_chance(0, false), 3, "flat");
+        assert_eq!(life.conceive_chance(5, false), 9);
+        assert_eq!(life.conceive_chance(10, false), 15);
+        assert_eq!(life.conceive_chance(20, false), 40, "a good gain");
+        assert_eq!(life.conceive_chance(45, false), 40, "the last held above");
+        assert_eq!(life.conceive_chance(-50, true), 40, "a full reserve");
+        assert_eq!(Life::default().conceive_chance(30, true), 0, "no table");
+        let mut good = Life {
+            death_by_age: vec![(0, 10)],
             ..life
         };
-        assert_eq!(gate_only.conceive_chance(79, 100), 0, "no table: barred");
+        assert!(good.validate().is_ok());
+        good.conceive_percent_by_gain = vec![(0, 3), (0, 15)];
+        assert!(good.validate().is_err(), "gains rising");
+        good.conceive_percent_by_gain = vec![(0, 101)];
+        assert!(good.validate().is_err(), "a chance at most 100");
+        good.conceive_percent_by_gain = vec![(0, 3)];
+        good.conceive_gain_days = 0;
+        assert!(good.validate().is_err(), "a window of a dawn at least");
     }
 
     #[test]
