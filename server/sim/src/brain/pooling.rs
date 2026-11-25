@@ -518,6 +518,14 @@ impl Brains {
     pub fn reserves_kj(&self, world: &World, rules: &Content) -> Vec<(Pos, u64)> {
         self.reserves.all_kj(world, rules)
     }
+
+    /// The camp of the hearth a body whose home is `home` belongs to: its
+    /// place's middle, the key of [`Brains::reserves_kj`] (D58, a measure
+    /// for the vivarium).
+    #[must_use]
+    pub fn hearth_camp(rules: &Content, home: Pos) -> Pos {
+        camp_of(rules, home)
+    }
 }
 
 impl Brains {

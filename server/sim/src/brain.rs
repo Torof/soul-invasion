@@ -2373,6 +2373,12 @@ impl Mind {
         self.will
     }
 
+    /// What it carries for its hearth now, in kilojoules (D58): not its
+    /// own to eat. Read by the vivarium's measures alone.
+    pub fn hearth_carried_kj(&self) -> u64 {
+        self.hearth_carried_kj
+    }
+
     /// What it set out at dawn to gather for its hearth and has not yet
     /// put down there, in kilojoules (D58).
     fn hearth_owed(&self) -> u64 {

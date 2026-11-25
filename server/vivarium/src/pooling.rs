@@ -100,6 +100,40 @@ pub struct PoolDay {
     pub seen_kj: u64,
     /// See `gathering_for`: kilojoules by their care.
     pub cared_kj: u64,
+    /// Who ate at the hearths that day (25 November 2026).
+    pub eaters: Eaters,
+}
+
+/// Who ate at the hearths, in kilojoules (the food carried home, 25
+/// November 2026).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Eaters {
+    /// Children under eight, fed by the hearth.
+    pub under_eight_kj: u64,
+    /// Children from eight to sixteen.
+    pub eight_to_sixteen_kj: u64,
+    /// The grown parents of a living child under eight.
+    pub parents_kj: u64,
+    /// The other grown.
+    pub others_kj: u64,
+}
+
+impl Eaters {
+    fn add(&mut self, other: &Self) {
+        self.under_eight_kj += other.under_eight_kj;
+        self.eight_to_sixteen_kj += other.eight_to_sixteen_kj;
+        self.parents_kj += other.parents_kj;
+        self.others_kj += other.others_kj;
+    }
+
+    fn json(&self) -> Value {
+        json!({
+            "under_eight_kj": self.under_eight_kj,
+            "eight_to_sixteen_kj": self.eight_to_sixteen_kj,
+            "parents_kj": self.parents_kj,
+            "others_kj": self.others_kj,
+        })
+    }
 }
 
 /// The run's measure of the hearths.
@@ -123,6 +157,10 @@ pub struct HearthProbe {
     /// The children dead: (before eight, before sixteen, born in the run
     /// or young at the start, of them dead before eight, before sixteen).
     pub children: Children,
+    /// The parents of a living child under eight, and the day they were
+    /// read: who ate at the hearth.
+    parents: BTreeSet<BodyId>,
+    parents_day: u64,
 }
 
 /// The children's lives.
@@ -165,6 +203,10 @@ impl HearthProbe {
         events: &[Event],
         day: u64,
     ) {
+        if self.parents_day != day {
+            self.parents = crate::carried::parents_of_young(world);
+            self.parents_day = day;
+        }
         for event in events {
             match event {
                 Event::BodyMoved { body, to, .. } => {
@@ -238,9 +280,16 @@ impl HearthProbe {
                 self.day(day).hearths.entry(*camp).or_default().put_kj += kj;
             }
             News::AteAtHearth { body, camp, kj, .. } => {
-                let young = world
-                    .body(*body)
-                    .is_some_and(|b| world.age_milli(b) < 16_000);
+                let age = world.body(*body).map(|b| world.age_milli(b));
+                let young = age.is_some_and(|a| a < 16_000);
+                let parent = self.parents.contains(body);
+                let eaters = &mut self.day(day).eaters;
+                match age {
+                    Some(a) if a < 8_000 => eaters.under_eight_kj += kj,
+                    Some(a) if a < 16_000 => eaters.eight_to_sixteen_kj += kj,
+                    _ if parent => eaters.parents_kj += kj,
+                    _ => eaters.others_kj += kj,
+                }
                 let h = self.day(day).hearths.entry(*camp).or_default();
                 h.eaten_kj += kj;
                 if young {
@@ -304,12 +353,14 @@ impl HearthProbe {
         let mut parents = ClassDay::default();
         let mut others = ClassDay::default();
         let (mut put, mut eaten, mut young, mut spoiled) = (0_u64, 0_u64, 0_u64, 0_u64);
+        let mut eaters = Eaters::default();
         let days: Vec<Value> = self
             .days
             .iter()
             .map(|(day, d)| {
                 parents.add(&d.parents);
                 others.add(&d.others);
+                eaters.add(&d.eaters);
                 let grown = d.parents.bodies + d.others.bodies;
                 let out = d.parents.out + d.others.out;
                 let gathered = d.parents.gathered + d.others.gathered;
@@ -338,6 +389,7 @@ impl HearthProbe {
                     "gathering_for": d.gathering_for,
                     "seen_kj": d.seen_kj,
                     "cared_kj": d.cared_kj,
+                    "eaters": d.eaters.json(),
                     "hearths": d.hearths.iter().map(|(camp, h)| json!({
                         "camp": [camp.x, camp.y],
                         "dawn_kj": h.dawn_kj,
@@ -369,6 +421,7 @@ impl HearthProbe {
             },
             "parents": parents.json(),
             "others": others.json(),
+            "eaters": eaters.json(),
             "days": days,
         })
     }

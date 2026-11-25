@@ -29,6 +29,9 @@ use sim::memory::{Access, Record, RecordId};
 use sim::time::Calendar;
 use sim::{Blockage, BodyId, Death, Event, Intention, ItemId, Sex, World};
 
+// --- the food carried home (25 November 2026): its own module ---
+pub mod carried;
+// --- end of the food carried home ---
 // --- the scarcity chain (24 November 2026): its own module ---
 pub mod chain;
 // --- end of the scarcity chain ---
@@ -1913,6 +1916,11 @@ pub struct Report {
     /// others, the children's deaths (D58, [`pooling::HearthProbe`]).
     pub pooling: pooling::HearthProbe,
     // --- end of the hearth's pooling ---
+    // --- the food carried home (25 November 2026) ---
+    /// The deaths of hunger, the arms full, the grown's intake, hunger
+    /// while carrying for the hearth ([`carried::CarryProbe`]).
+    pub carried: carried::CarryProbe,
+    // --- end of the food carried home ---
     /// Seconds the run took on the wall.
     pub wall_s: f64,
     /// Seconds the world took to be born.
@@ -2325,6 +2333,9 @@ pub fn run_watched(
     let mut pooling = pooling::HearthProbe::new(content);
     let start_day = world.today();
     // --- end of the hearth's pooling ---
+    // --- the food carried home (25 November 2026) ---
+    let mut carried = carried::CarryProbe::new(content, calendar.ticks_per_day());
+    // --- end of the food carried home ---
     let mut why = WhyProbe::default();
     // --- the scarcity chain (24 November 2026) ---
     let mut chain = chain::Chain::new(calendar.ticks_per_day());
@@ -2378,6 +2389,9 @@ pub fn run_watched(
         // --- the hearth's pooling (25 November 2026) ---
         pooling.tick((&world, &brains, content), &events, day);
         // --- end of the hearth's pooling ---
+        // --- the food carried home (25 November 2026) ---
+        carried.tick((&world, &brains, content), &events, &people);
+        // --- end of the food carried home ---
         if tick.is_multiple_of(per_year) {
             // One plain line a year on stderr, so nobody waits blind on a
             // long run.
@@ -2657,9 +2671,19 @@ pub fn run_watched(
                 person.thoughts = mind.thoughts();
                 person.will = Some(mind.will());
                 person.ways = Some(*mind.ways());
+                // --- the food carried home (25 November 2026) ---
+                carried.dying((&world, &brains, content), body.id());
+                // --- end of the food carried home ---
             }
         }
-        for (body, decision) in brains.think(&world, content, &events) {
+        let decisions = brains.think(&world, content, &events);
+        // The trials (D50): what the brains tried, judged and copied, in
+        // the chronicle, on the person's page and in the counters.
+        let batch = brains.news();
+        // --- the food carried home (25 November 2026) ---
+        carried.thoughts((&world, &brains, content), &decisions, &batch);
+        // --- end of the food carried home ---
+        for (body, decision) in decisions {
             let person = people.entry(body).or_default();
             person.entries.push(Entry {
                 tick,
@@ -2668,9 +2692,6 @@ pub fn run_watched(
             });
             world.queue(decision.intention);
         }
-        // The trials (D50): what the brains tried, judged and copied, in
-        // the chronicle, on the person's page and in the counters.
-        let batch = brains.news();
         // --- the hearth's pooling (25 November 2026) ---
         for news in &batch {
             pooling.news(news, &world, day);
@@ -3326,6 +3347,7 @@ pub fn run_watched(
         records,
         memory_counts,
         pooling,
+        carried,
         map_side,
         camps,
         ticks,

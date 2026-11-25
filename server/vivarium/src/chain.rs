@@ -127,7 +127,7 @@ pub struct Who {
 }
 
 impl Who {
-    fn of(world: &World, brains: &Brains, body: &sim::Body) -> Self {
+    pub(crate) fn of(world: &World, brains: &Brains, body: &sim::Body) -> Self {
         let id = body.id();
         let youngest = world
             .bodies()
