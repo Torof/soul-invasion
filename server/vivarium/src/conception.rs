@@ -119,8 +119,9 @@ pub enum Spouse {
 
 /// The first condition that bars a woman, in `World::conceive`'s order;
 /// `None` when all are met (the draw then decides). `share_percent` is her
-/// reserve left in per cent of the whole, `gate` the content's
-/// `conceive_reserve_percent`; `above_gate` is the rule's own comparison.
+/// reserve left in per cent of the whole; `above_gate` is whether her
+/// reserve leaves her any chance: above the content's
+/// `conceive_reserve_percent`, or under it with a chance by her reserve.
 #[must_use]
 pub fn first_block(
     pregnant: bool,
@@ -292,7 +293,15 @@ impl ConceptionProbe {
                 .entry((woman.id(), next.age_year, next.age_quarter))
                 .or_default();
             quarter.best_share = quarter.best_share.max(share);
-            match first_block(pregnant, (above, share), infant, spouse) {
+            // Under the gate, a woman with a chance by her reserve (D49,
+            // amended 25 November 2026) is not barred by it: the draw
+            // decides.
+            let open = above
+                || life.conceive_chance(
+                    woman.condition().reserve_left_j(&content.needs),
+                    woman.condition().reserve_j(&content.needs),
+                ) > 0;
+            match first_block(pregnant, (open, share), infant, spouse) {
                 Some(block) => {
                     self.checks[block.index()] += 1;
                     quarter.checks.push(block);
