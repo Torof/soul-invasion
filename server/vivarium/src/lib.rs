@@ -5966,7 +5966,15 @@ mod tests {
         static CONTENT: OnceLock<Content> = OnceLock::new();
         CONTENT.get_or_init(|| {
             let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
-            load_content(&dir).expect("the repository's content reads and validates")
+            let mut content =
+                load_content(&dir).expect("the repository's content reads and validates");
+            // The tests' scenarios were sized at the switch's richness,
+            // 7.3 (24 November 2026); the world's dial is 1.0 since the
+            // project lead fixed it (25 November 2026).
+            for crop in &mut content.crops {
+                crop.richness_permille = Some(7300);
+            }
+            content
         })
     }
 
