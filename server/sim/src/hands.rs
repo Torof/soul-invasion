@@ -77,6 +77,13 @@ impl World {
                         .filter(|i| i.pos().is_some_and(near))
                         .cloned(),
                 );
+                // Food kept in a store (D58) is no item lying about, but
+                // hands see it there and may take it away.
+                out.extend(
+                    self.kept_in(ChunkPos::new(x, y))
+                        .filter(|i| i.pos().is_some_and(near))
+                        .cloned(),
+                );
             }
         }
         if !self.natural {
