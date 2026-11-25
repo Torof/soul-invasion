@@ -121,8 +121,9 @@ impl Default for Ripen {
     }
 }
 
-/// The whole of a crop, in [`share_on`]'s millionths.
-const WHOLE: u64 = 1_000_000;
+/// The whole of a crop, in [`share_on`]'s millionths ([`on_plant`]'s
+/// share).
+pub const WHOLE: u64 = 1_000_000;
 
 /// The levels of the fruit a tree or a plant shows (D48): 0 none to
 /// `LEVELS` the load of its rich year at its peak.
@@ -414,7 +415,7 @@ pub(crate) fn bears(
 /// What a plant of `crop`'s kind standing at `at` bears in `year` (a
 /// cycle of `calendar`), in grams, before anything is picked; the kind's
 /// key ([`key_of`]) given.
-fn bears_keyed(
+pub(crate) fn bears_keyed(
     crop: &Crop,
     on_key: u64,
     calendar: &Calendar,
@@ -1055,6 +1056,34 @@ pub(crate) mod tests {
         let next = bears(crop, world.calendar(), world.seed(), frame, hazel.at, 2);
         assert_eq!(world.ripe_on(chunk, &hazel)[0].grams, next);
         assert_eq!(world.ripe_on(chunk, &hazel)[0].year, 2);
+    }
+
+    #[test]
+    fn what_a_plant_bears_untouched_is_asked_by_crop_and_year() {
+        let (mut world, content, chunk, hazel) = valley_with("hazel");
+        let frame = Frame::at(world.map().origin());
+        let crop = &content.crops[0];
+        for year in 1..=3 {
+            assert_eq!(
+                world.bears_of_crop(&hazel, 0, year),
+                Some(bears(
+                    crop,
+                    world.calendar(),
+                    world.seed(),
+                    frame,
+                    hazel.at,
+                    year
+                ))
+            );
+        }
+        // A crop of another kind: none.
+        let other = content.crops.iter().position(|c| c.on != "hazel").unwrap();
+        assert_eq!(world.bears_of_crop(&hazel, other, 1), None);
+        // Picking does not change it: what it bears, not what is left.
+        run_to(&mut world, &content, 30);
+        let full = world.bears_of_crop(&hazel, 0, 1);
+        world.pick(chunk, hazel.source, "hazelnuts", 400);
+        assert_eq!(world.bears_of_crop(&hazel, 0, 1), full);
     }
 
     #[test]

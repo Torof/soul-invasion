@@ -496,6 +496,16 @@ clock, the only field no seed decides.
 | `bearers.seasons` | The order of the four counts of a cell | `["spring", "summer", "autumn", "winter"]` |
 | `bearers.kinds` | The kinds of plants and trees that bear something, in the order of their first meeting | `["apple", …]` |
 | `bearers.cells` | Each covered chunk with bearers, placed as the world places them for the bodies: `cx`, `cy` (a chunk's column and row), the bearers in season in each of the four seasons (a kind is in season in a season when it bears on some day of it, in the world's second year), and the three most numerous kinds with their counts, the most numerous first (`kind` an index into `kinds`) | `[[cx, cy, [sp, su, au, wi], [[kind, count], …]], …]` |
+| `land_food.ring_tiles` | The land's food (25 November 2026, measures only): what the trees and plants hold, day by day, had nobody picked any (D45, D48), worked out once after the run on the chunks of the food map (`bearers`) and every chunk within the wider ring of a tribe's camp at some noon. The two rings around a camp, on the longer axis | `[500, 1000]` tiles |
+| `land_food.chunks` | The chunks measured (a chunk is 32 × 32 tiles, about 0.001 km²) | count |
+| `land_food.crops` | The crops, in the order of `content/crops.ron`: `"kind/material"` | `["hazel/hazelnuts", …]` |
+| `land_food.kj_per_kg` | Each crop's material's energy (`materials.ron`), in the same order | kJ a kg |
+| `land_food.plants` | Each crop's trees or plants on the land measured | count |
+| `land_food.bears_g` | Each crop's grams on the land measured, before any picking, crop-year by crop-year from the first (a crop running into the next year counts in the year it began): its kind's lean, usual or rich year around each plant times the plant's share (`World::bears_of_crop`) | `[[grams, …], …]` |
+| `land_food.days` | Each noon of the run: the day (from 1), the kilojoules on the plants of the whole land measured then (each crop's `bears_g` of the year on its plant times its curve, `ripen`), and per tribe, in the order of the camps, its camp that noon (the median home of its living past infancy) with the kilojoules within each ring of it, or `null` when the tribe has no living. Untouched: picks are stored by the crop's year, so a past day's leftovers cannot be read after the run | `[[day, kJ, [[[x, y], [kJ, kJ]] or null, …]], …]` |
+| `land_food.picked_g` | What each tribe picked, season by season of the run (the `WorkStopped` events' grams): the season from 0 (the first spring; 4 is the second spring), the tribe (0 or 1), and each crop's grams in the order of `crops` | `[[season, tribe, [grams, …]], …]` |
+| `land_food.camps[].at` | Each camp a tribe had at some noon, in the order first met | `[x, y]` |
+| `land_food.camps[].bears_g` | Each crop's grams within each ring of that camp, before any picking, crop-year by crop-year: what a change of the crops' seasons or curves would put near the camp, worked out without a run | `[[[grams, …], [grams, …]], …]` per crop, rings in the order of `ring_tiles` |
 | `relief.cell_tiles` | The relief map (lab 6): one height every so many tiles, twice the map picture's scale | tiles |
 | `relief.size` | Its size | `[columns, rows]` |
 | `relief.known` | Whether the world has heights (the vivarium's atlas has; a flat test world has not, every height then 0) | `true` or `false` |
