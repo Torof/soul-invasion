@@ -57,9 +57,11 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
                            reading it from ${XDG_CACHE_HOME:-~/.cache}/soul-sim/
                            continents/ (where a run keeps it; same pages)
   --no-land-cache          make every chunk of land (tiles, woods, water)
-                           anew instead of reading those the runs before
-                           kept under ${XDG_CACHE_HOME:-~/.cache}/soul-sim/
-                           lands/ (one file a world and a build; same pages)
+                           and place every tree and plant anew instead of
+                           reading those the runs before kept under
+                           ${XDG_CACHE_HOME:-~/.cache}/soul-sim/lands/ (a
+                           file a world and a build, the plants' also a
+                           content; same pages)
   --helpers N              threads placing the chunks' plants ahead of the
                            bodies (default 1; 0 = the simulation thread
                            alone, for runs side by side); the pages are the

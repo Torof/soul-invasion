@@ -504,6 +504,8 @@ impl Report {
                     "placed_ahead": self.placed_ahead,
                     "land_made": self.land_made,
                     "land_kept": self.land_kept,
+                    "ground_made": self.ground_made,
+                    "ground_kept": self.ground_kept,
                 }),
             );
         }

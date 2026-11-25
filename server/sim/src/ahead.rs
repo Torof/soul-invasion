@@ -20,7 +20,7 @@
 //! are the caller's to size ([`Ground::widen`]): the helpers fill them with
 //! the land around the bodies, more than four views' worth on a long run.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
@@ -76,6 +76,34 @@ impl Placing {
             seed: world.seed(),
             ground: world.shared_ground(),
         }
+    }
+
+    /// A fingerprint of what the placing reads beyond the map: the seed
+    /// and the content's species, open biomes, flora and crops (FNV-1a
+    /// over their debug text). Two placings of the same map with the same
+    /// fingerprint place the same trees and bearers: the vivarium names
+    /// the file of its kept ground by it (D51, amended 25 November 2026).
+    #[must_use]
+    pub fn fingerprint(&self) -> u64 {
+        let text = format!(
+            "{:?}",
+            (
+                self.seed,
+                &self.species,
+                &self.open,
+                &self.flora,
+                &self.crops
+            )
+        );
+        crate::land::checksum(text.as_bytes())
+    }
+
+    /// Takes the trees and bearers of `bytes` into the world's ground
+    /// ([`Ground::take_bytes`], its kinds of tree counted from this
+    /// placing's): how many chunks of trees and of bearers, or `None`.
+    #[must_use]
+    pub fn take_ground_bytes(&self, bytes: &[u8]) -> Option<[usize; 2]> {
+        self.ground.take_bytes(bytes, self.species.len())
     }
 
     /// The same, borrowed.
@@ -250,6 +278,135 @@ pub fn ahead_of(steps: &[Step]) -> Vec<ChunkPos> {
     chunks.into_iter().map(|(_, c)| c).collect()
 }
 
+/// A helper's choice of the chunks to place, made at every hint without
+/// rebuilding what it already knows (D51, amended 25 November 2026): the
+/// helper is told where the bodies are every few ticks, some thousand
+/// times a real second, and takes each newer hint between two chunks, so
+/// it chose again after nearly every chunk it placed. [`ahead_of`] chose
+/// among every chunk around every body, held or not, in a sorted map, and
+/// the helper then skipped those it knew in a sorted set: half the
+/// helper's time, which left the simulation thread placing a third of
+/// the chunks itself. Here the chunks done are a bit a chunk of the map,
+/// the nearest distance a slot a chunk stamped by the hint, and only the
+/// chunks left are sorted: the same chunks, in the same order, as
+/// [`ahead_of`] gives once the done and those off the map are dropped.
+#[derive(Debug)]
+struct Chooser {
+    columns: i32,
+    rows: i32,
+    /// A bit a chunk, row by row: found held, or placed by this helper.
+    done: Vec<u64>,
+    /// The nearest distance this hint gave each chunk, valid where its
+    /// stamp is the hint's.
+    nearest: Vec<i32>,
+    stamp: Vec<u32>,
+    hint: u32,
+    /// The chunks this hint chose, not sorted yet: their slots.
+    chosen: Vec<usize>,
+}
+
+impl Chooser {
+    fn new(map: &Map) -> Self {
+        let columns = i32::try_from(map.chunks_wide()).expect("a map of few chunks");
+        let rows = i32::try_from(map.chunks_high()).expect("a map of few chunks");
+        let chunks = usize::try_from(columns * rows).expect("a map of few chunks");
+        Self {
+            columns,
+            rows,
+            done: vec![0; chunks.div_ceil(64)],
+            nearest: vec![0; chunks],
+            stamp: vec![0; chunks],
+            hint: 0,
+            chosen: Vec::new(),
+        }
+    }
+
+    fn slot(&self, chunk: ChunkPos) -> Option<usize> {
+        ((0..self.columns).contains(&chunk.x) && (0..self.rows).contains(&chunk.y))
+            .then(|| usize::try_from(chunk.y * self.columns + chunk.x).expect("on the map"))
+    }
+
+    fn is_done(&self, slot: usize) -> bool {
+        self.done[slot / 64] & (1 << (slot % 64)) != 0
+    }
+
+    /// Notes `chunk` done: held, or placed now.
+    fn mark_done(&mut self, chunk: ChunkPos) {
+        if let Some(slot) = self.slot(chunk) {
+            self.done[slot / 64] |= 1 << (slot % 64);
+        }
+    }
+
+    /// The chunks of the map the bodies of `steps` may look at soon and
+    /// not done yet, the `k`th of every `n` by their place on the map,
+    /// nearest to a body first, then by row and column ([`ahead_of`]).
+    fn choose(&mut self, steps: &[Step], (k, n): (usize, usize)) -> Vec<ChunkPos> {
+        self.hint = self.hint.wrapping_add(1);
+        if self.hint == 0 {
+            self.stamp.fill(0);
+            self.hint = 1;
+        }
+        self.chosen.clear();
+        let side = i32::try_from(CHUNK_SIZE).expect("small chunk side");
+        for step in steps {
+            let reach = step.sight + LEAD_CHUNKS * side;
+            let own = step.at.chunk();
+            self.note(
+                Pos::new(step.at.x - reach, step.at.y - reach),
+                Pos::new(step.at.x + reach, step.at.y + reach),
+                own,
+                (k, n),
+            );
+            if let Some(to) = step.to {
+                self.note(
+                    Pos::new(to.x - step.sight, to.y - step.sight),
+                    Pos::new(to.x + step.sight, to.y + step.sight),
+                    own,
+                    (k, n),
+                );
+            }
+        }
+        let columns = usize::try_from(self.columns).expect("positive");
+        let mut out: Vec<(i32, usize)> = self
+            .chosen
+            .iter()
+            .map(|&slot| (self.nearest[slot], slot))
+            .collect();
+        // By distance, then row, then column: the slot is row by row.
+        out.sort_unstable();
+        out.into_iter()
+            .map(|(_, slot)| {
+                ChunkPos::new(
+                    i32::try_from(slot % columns).expect("on the map"),
+                    i32::try_from(slot / columns).expect("on the map"),
+                )
+            })
+            .collect()
+    }
+
+    /// The chunks of the square `low..=high` (tiles), on the map, not
+    /// done and the helper's, at their distance from `from` if nearer.
+    fn note(&mut self, low: Pos, high: Pos, from: ChunkPos, (k, n): (usize, usize)) {
+        let (low, high) = (low.chunk(), high.chunk());
+        for cy in low.y.max(0)..=high.y.min(self.rows - 1) {
+            for cx in low.x.max(0)..=high.x.min(self.columns - 1) {
+                let slot = usize::try_from(cy * self.columns + cx).expect("on the map");
+                if slot % n != k || self.is_done(slot) {
+                    continue;
+                }
+                let far = (cx - from.x).abs().max((cy - from.y).abs());
+                if self.stamp[slot] == self.hint {
+                    self.nearest[slot] = self.nearest[slot].min(far);
+                } else {
+                    self.stamp[slot] = self.hint;
+                    self.nearest[slot] = far;
+                    self.chosen.push(slot);
+                }
+            }
+        }
+    }
+}
+
 /// The helper threads placing bearers ahead of the bodies. Made once a
 /// run ([`Placer::spawn`]), told where the bodies are now and then
 /// ([`Placer::follow`]), joined when dropped. Each helper places every
@@ -330,12 +487,12 @@ impl Drop for Placer {
 }
 
 /// A helper's life: wait for a hint, place the chunks it names that are
-/// not held yet, nearest first, its own `k`th of every `n`; read the
-/// newest hint between two chunks, so it follows the bodies rather than
-/// finishing an old square. The chunks it found held or placed itself are
-/// noted, so a hint costs no lock for the land already placed (the
-/// ground's lock is the simulation thread's too). Ends when the channel
-/// closes.
+/// not held yet, nearest first, its own `k`th of every `n` (by their place
+/// on the map); read the newest hint between two chunks, so it follows the
+/// bodies rather than finishing an old square. The chunks it found held
+/// or placed itself are noted ([`Chooser`]), so a hint costs no lock for
+/// the land already placed (the ground's lock is the simulation thread's
+/// too). Ends when the channel closes.
 fn helper(
     placing: &Placing,
     hints: &Receiver<Arc<[Step]>>,
@@ -343,7 +500,7 @@ fn helper(
     placed: &AtomicU64,
 ) {
     let mut next: Option<Arc<[Step]>> = None;
-    let mut known: BTreeSet<ChunkPos> = BTreeSet::new();
+    let mut chooser = Chooser::new(&placing.map);
     loop {
         let Ok(mut steps) = next.take().map_or_else(|| hints.recv(), Ok) else {
             return;
@@ -356,10 +513,7 @@ fn helper(
                 Err(TryRecvError::Disconnected) => return,
             }
         }
-        for chunk in ahead_of(&steps).into_iter().skip(k).step_by(n) {
-            if known.contains(&chunk) {
-                continue;
-            }
+        for chunk in chooser.choose(&steps, (k, n)) {
             match hints.try_recv() {
                 Ok(newer) => {
                     next = Some(newer);
@@ -371,7 +525,7 @@ fn helper(
             if placing.place_ahead(chunk) {
                 placed.fetch_add(1, Ordering::Relaxed);
             }
-            known.insert(chunk);
+            chooser.mark_done(chunk);
         }
     }
 }
@@ -431,6 +585,106 @@ mod tests {
                 "the same bearers at {chunk:?}"
             );
         }
+    }
+
+    /// A world's trees and bearers kept as bytes and taken by another
+    /// world of the same map and content are the ones placed: the same
+    /// bearers, nothing placed again, the same bytes written again;
+    /// damaged bytes or a content of fewer kinds of tree are refused
+    /// whole (D51 amended 25 November 2026).
+    #[test]
+    fn a_ground_kept_as_bytes_is_taken_back_as_placed() {
+        let rules = content();
+        let world = World::with_valley(calendar(), &rules, 256);
+        let placing = Placing::of(&world);
+        let chunks: Vec<ChunkPos> = (0..8)
+            .flat_map(|y| (0..8).map(move |x| ChunkPos::new(x, y)))
+            .collect();
+        for &chunk in &chunks {
+            assert!(placing.place_ahead(chunk));
+        }
+        let ground = world.shared_ground();
+        let bytes = ground.to_bytes();
+        let again = World::with_valley(calendar(), &rules, 256);
+        let taking = Placing::of(&again);
+        assert_eq!(taking.fingerprint(), placing.fingerprint());
+        let taken = taking.take_ground_bytes(&bytes).expect("the same world's");
+        assert_eq!(taken[1], chunks.len());
+        assert_eq!(taken[0], ground.trees_held());
+        let mut bearing = 0;
+        for &chunk in &chunks {
+            let kept = again.bearers_in(chunk);
+            bearing += kept.len();
+            assert_eq!(*kept, *world.bearers_in(chunk), "{chunk:?}");
+        }
+        assert!(bearing > 100, "{bearing} bearers");
+        let taken_ground = again.shared_ground();
+        assert_eq!(taken_ground.bearers_placed(), 0, "nothing placed again");
+        assert_eq!(taken_ground.trees_placed(), 0, "no tree placed again");
+        assert_eq!(taken_ground.to_bytes(), bytes, "written again, the same");
+        assert_eq!(taking.take_ground_bytes(&bytes), Some([0, 0]));
+        // Damaged, cut short, or for fewer kinds of tree: refused whole.
+        let fresh = World::with_valley(calendar(), &rules, 256);
+        let mut damaged = bytes.clone();
+        damaged[bytes.len() / 2] ^= 1;
+        assert_eq!(fresh.shared_ground().take_bytes(&damaged, usize::MAX), None);
+        assert_eq!(
+            fresh
+                .shared_ground()
+                .take_bytes(&bytes[..bytes.len() - 9], usize::MAX),
+            None
+        );
+        assert_eq!(fresh.shared_ground().take_bytes(&bytes, 0), None);
+        assert_eq!(fresh.shared_ground().trees_held(), 0, "nothing taken");
+    }
+
+    /// The helper's choice is [`ahead_of`]'s, the chunks off the map and
+    /// those done dropped, in the same order; two helpers share it whole,
+    /// each chunk to one.
+    #[test]
+    fn the_helpers_choice_is_the_chunks_ahead_not_done() {
+        let rules = content();
+        let world = World::with_valley(calendar(), &rules, 320);
+        let mut chooser = Chooser::new(world.map());
+        let mut walking = step(40, 300, 25);
+        walking.to = Some(Pos::new(250, 60));
+        let steps = [
+            walking,
+            step(150, 150, 20),
+            step(170, 140, 25),
+            step(5, 5, 10),
+        ];
+        let on_map = |c: &ChunkPos| world.map().has_chunk(*c);
+        let expected: Vec<ChunkPos> = ahead_of(&steps).into_iter().filter(on_map).collect();
+        assert!(expected.len() > 40, "{}", expected.len());
+        assert_eq!(chooser.choose(&steps, (0, 1)), expected);
+        // Some done: the rest, in the same order, again and again.
+        for c in expected.iter().step_by(3) {
+            chooser.mark_done(*c);
+        }
+        let rest: Vec<ChunkPos> = expected
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| i % 3 != 0)
+            .map(|(_, c)| *c)
+            .collect();
+        assert_eq!(chooser.choose(&steps, (0, 1)), rest);
+        assert_eq!(chooser.choose(&steps, (0, 1)), rest);
+        // Two helpers: each its share, together the whole, in order.
+        let halves = [
+            chooser.choose(&steps, (0, 2)),
+            chooser.choose(&steps, (1, 2)),
+        ];
+        assert!(halves.iter().all(|h| !h.is_empty()));
+        let order = |c: &ChunkPos| rest.iter().position(|r| r == c).expect("one of the rest");
+        for half in &halves {
+            assert!(half.windows(2).all(|w| order(&w[0]) < order(&w[1])));
+        }
+        let mut both: Vec<ChunkPos> = halves.concat();
+        both.sort_unstable();
+        let mut whole = rest.clone();
+        whole.sort_unstable();
+        assert_eq!(both, whole);
     }
 
     #[test]

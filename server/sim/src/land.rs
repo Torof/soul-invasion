@@ -799,8 +799,9 @@ impl Land {
 /// never read.
 const KEPT_MAGIC: &[u8; 8] = b"SOULLND1";
 
-/// FNV-1a over `bytes`: the kept bytes' checksum.
-fn checksum(bytes: &[u8]) -> u64 {
+/// FNV-1a over `bytes`: the kept bytes' checksum (the ground's too,
+/// [`crate::ground::Ground::to_bytes`]).
+pub(crate) fn checksum(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
         (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
     })
@@ -861,20 +862,28 @@ fn habitat_of(code: u8) -> Option<Habitat> {
 }
 
 /// Bytes being read, little-endian, front first.
-struct Reader<'a>(&'a [u8]);
+pub(crate) struct Reader<'a>(pub(crate) &'a [u8]);
 
 impl<'a> Reader<'a> {
-    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+    pub(crate) fn take(&mut self, n: usize) -> Option<&'a [u8]> {
         let (head, rest) = self.0.split_at_checked(n)?;
         self.0 = rest;
         Some(head)
     }
 
-    fn u32(&mut self) -> Option<u32> {
+    pub(crate) fn u16(&mut self) -> Option<u16> {
+        Some(u16::from_le_bytes(self.take(2)?.try_into().ok()?))
+    }
+
+    pub(crate) fn u8(&mut self) -> Option<u8> {
+        Some(self.take(1)?[0])
+    }
+
+    pub(crate) fn u32(&mut self) -> Option<u32> {
         Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
     }
 
-    fn i32(&mut self) -> Option<i32> {
+    pub(crate) fn i32(&mut self) -> Option<i32> {
         Some(i32::from_le_bytes(self.take(4)?.try_into().ok()?))
     }
 
@@ -902,23 +911,23 @@ impl<'a> Reader<'a> {
         )
     }
 
-    fn chunk(&mut self) -> Option<ChunkPos> {
+    pub(crate) fn chunk(&mut self) -> Option<ChunkPos> {
         Some(ChunkPos::new(self.i32()?, self.i32()?))
     }
 
     /// A count of entries, each at least `least` bytes: refused when the
     /// bytes left cannot hold them (a damaged count allocates nothing).
-    fn count(&mut self, least: usize) -> Option<usize> {
+    pub(crate) fn count(&mut self, least: usize) -> Option<usize> {
         let n = usize::try_from(self.u32()?).ok()?;
         (n.checked_mul(least)? <= self.0.len()).then_some(n)
     }
 }
 
-fn put_u32(out: &mut Vec<u8>, n: usize) {
+pub(crate) fn put_u32(out: &mut Vec<u8>, n: usize) {
     out.extend_from_slice(&u32::try_from(n).expect("a count of chunks").to_le_bytes());
 }
 
-fn put_chunk(out: &mut Vec<u8>, chunk: ChunkPos) {
+pub(crate) fn put_chunk(out: &mut Vec<u8>, chunk: ChunkPos) {
     out.extend_from_slice(&chunk.x.to_le_bytes());
     out.extend_from_slice(&chunk.y.to_le_bytes());
 }
