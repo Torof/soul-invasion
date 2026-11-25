@@ -142,11 +142,9 @@
     // Births, background deaths and kinship (lot 3 C, decided by the
     // project lead on 21 November 2026; D49). Placeholders (D30). Played
     // only in a world whose `life` is on: the vivarium's, never the game's.
-    // A woman of 16 to 42 with more than 70 % of her reserve (80 until
-    // 25 November 2026), carrying no
-    // infant, whose spouse is alive within 64 tiles, conceives with a 40 %
-    // chance a quarter of an age-year (a season while the age-year is the
-    // cycle), drawn once: her spouse may be back on any of the quarter's
+    // A woman of 16 to 42, not weak, carrying no infant, whose spouse is
+    // alive within 64 tiles, conceives with a chance by her reserve's gain
+    // (below) a quarter of an age-year, drawn once: her spouse may be back on any of the quarter's
     // first four dawns (a night apart no longer loses the quarter); she
     // carries three quarters of an age-year at
     // 110 % of her need, and loses the child if she grows weak. 51 % of
@@ -166,20 +164,25 @@
     // another; the children stay with their mother.
     life: (
         fertile_years: (16, 42),
-        conceive_reserve_percent: 70,
         mate_within_tiles: 64,
-        conceive_percent: 40,
-        // conceive_percent_by_reserve — under the gate, a thin woman
-        //   conceives less often, never not at all (the project lead, 25
-        //   November 2026, after the conception measures: no fertile woman
-        //   was above 80 % from the first summer on, and no child was
-        //   conceived after the first week): (reserve %, chance % a
-        //   quarter), read between the points: 2 % at an empty reserve,
-        //   5 % at a quarter, 15 % at half, 40 % at the gate. The gate went
-        //   from 80 to 70 % the same day (the lead: "70 plus le choix A");
-        //   the last point followed it, from (80, 40) to (70, 40), so the
-        //   chance meets the gate's 40 % without a step.
-        conceive_percent_by_reserve: [(0, 2), (25, 5), (50, 15), (70, 40)],
+        // Fertility follows the gain (the project lead, 25 November 2026,
+        // principle A of the clocks' audit; D49 amended): a forager
+        // woman's fecundity tracks her energy balance, her body gaining,
+        // more than her fat (Ellison 2003). Her gain is her reserve left
+        // now against its value 8 dawns ago (conceive_gain_days: an
+        // age-year, half a season), as a mean a day in per cent of her
+        // day's need: 0 flat; 50 the most a day's ceiling of 150 % can
+        // bank. Her chance a quarter (gain, chance %), read between the
+        // points: 1 % falling a tenth of her need a day or faster, 3 %
+        // flat, 15 % at a tenth, 40 % (the old chance above the gate) at
+        // a fifth and over. Not by her level: a thin woman whose reserve
+        // rises conceives; a weak one (under weak_percent) never; one at
+        // 95 % of her reserve or more has the 40 %, a full reserve
+        // having no room to rise (until this day: a gate at 70 % of her
+        // reserve, a chance by her level under it).
+        conceive_gain_days: 8,
+        conceive_percent_by_gain: [(-10, 1), (0, 3), (10, 15), (20, 40)],
+        conceive_full_percent: 95,
         conceive_nights: 4,
         part_after_days: 12,
         together_nights: 6,

@@ -70,12 +70,13 @@ impl World {
     /// The conceptions of a quarter of an age-year (D49, amended; D09,
     /// amended 24 November 2026: a season while the age-year is the
     /// cycle), at the dawn of each of the quarter's first `conceive_nights`
-    /// days: every woman of the content's fertile years, with more than its
-    /// share of her reserve, carrying no infant and no unborn child, whose
-    /// spouse is alive within its reach that dawn, conceives with the
-    /// content's chance, drawn from the seed, her id, the age-year and the
-    /// quarter: one draw a quarter, met on any of those dawns her spouse
-    /// is back.
+    /// days: every woman of the content's fertile years, not weak, carrying
+    /// no infant and no unborn child, whose spouse is alive within its
+    /// reach that dawn, conceives with the chance her reserve's gain gives
+    /// (amended 25 November 2026: fertility follows the gain, see
+    /// [`conceive_chance`]), drawn from the seed, her id, the age-year and
+    /// the quarter: one draw a quarter, met on any of those dawns her
+    /// spouse is back.
     pub(crate) fn conceive(&mut self, rules: &Content, age_year: u64, quarter: u8) {
         if !self.life {
             return;
@@ -93,8 +94,7 @@ impl World {
             {
                 continue;
             }
-            let c = &woman.condition;
-            let chance = life.conceive_chance(c.reserve_left_j(needs), c.reserve_j(needs));
+            let chance = conceive_chance(woman, needs);
             if chance == 0 {
                 continue;
             }
@@ -123,6 +123,30 @@ impl World {
                     father,
                 });
                 self.grow_due = true;
+            }
+        }
+    }
+
+    /// Each woman's reserve left at this dawn, kept for the gain her
+    /// fertility follows (D49, amended 25 November 2026): run at every
+    /// day's start after the conceptions, so the rule reads her reserve now
+    /// against her last `conceive_gain_days` dawns. Life off, nothing.
+    pub(crate) fn mark_reserves(&mut self, rules: &Content) {
+        if !self.life {
+            return;
+        }
+        let needs = &rules.needs;
+        let keep = usize::try_from(needs.life.conceive_gain_days).unwrap_or(usize::MAX);
+        for woman in &mut self.bodies {
+            if woman.sex != Sex::Female {
+                continue;
+            }
+            let left = woman.condition.reserve_left_j(needs);
+            let dawns = &mut woman.reserve_dawns;
+            dawns.push(left);
+            if dawns.len() > keep {
+                let extra = dawns.len() - keep;
+                dawns.drain(..extra);
             }
         }
     }
@@ -609,6 +633,23 @@ impl World {
     }
 }
 
+/// A woman's chance to conceive this quarter, in percent (D49, amended
+/// 25 November 2026: fertility follows the gain): never when weak; the
+/// content's chance by her reserve's gain ([`Body::reserve_gain_percent`]),
+/// the best when her reserve is full. The world's rule and the vivarium's
+/// measures read the same.
+#[must_use]
+pub fn conceive_chance(woman: &Body, needs: &crate::content::Needs) -> u64 {
+    let c = &woman.condition;
+    if c.is_weak(needs) {
+        return 0;
+    }
+    let life = &needs.life;
+    let full =
+        c.reserve_left_j(needs) * 100 >= c.reserve_j(needs) * u64::from(life.conceive_full_percent);
+    life.conceive_chance(woman.reserve_gain_percent(needs), full)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -627,6 +668,11 @@ mod tests {
         rules.needs.cold_per_day_at_night = 0;
         rules.needs.hunger_per_day = 0;
         rules
+    }
+
+    /// Every wife not weak conceives, whatever her gain.
+    fn certain(rules: &mut Content) {
+        rules.needs.life.conceive_percent_by_gain = vec![(0, 100)];
     }
 
     /// The content with a year's death certain: 12.5 % a day of eight.
@@ -722,7 +768,7 @@ mod tests {
     #[test]
     fn a_fertile_fed_wife_with_her_husband_near_conceives_at_a_seasons_start() {
         let mut rules = fed_rules();
-        rules.needs.life.conceive_percent = 100;
+        certain(&mut rules);
         // The season's dawn alone (the tests' seasons last two days).
         rules.needs.life.conceive_nights = 1;
         let mut w = world();
@@ -761,7 +807,7 @@ mod tests {
     #[test]
     fn a_husband_back_on_one_of_the_seasons_first_dawns_is_in_time_and_not_after() {
         let mut rules = fed_rules();
-        rules.needs.life.conceive_percent = 100;
+        certain(&mut rules);
         let nights = u64::from(rules.needs.life.conceive_nights);
         // Seasons of ten days, longer than the first dawns (the tests'
         // calendar has seasons of two).
@@ -813,11 +859,9 @@ mod tests {
     }
 
     #[test]
-    fn a_woman_too_old_thin_nursing_or_whose_husband_is_far_or_dead_does_not_conceive() {
+    fn a_woman_too_old_weak_nursing_or_whose_husband_is_far_or_dead_does_not_conceive() {
         let mut rules = fed_rules();
-        rules.needs.life.conceive_percent = 100;
-        // The gate alone: the chance by reserve is tested in content.
-        rules.needs.life.conceive_percent_by_reserve.clear();
+        certain(&mut rules);
         let mut events = Vec::new();
 
         let mut w = world();
@@ -831,13 +875,13 @@ mod tests {
         // Her reserve as these rules size it: a woman's own share (D47).
         w.step(&rules, &mut events);
         let reserve = w.body(wife).unwrap().condition.reserve_j(&rules.needs);
-        let gate = u64::from(rules.needs.life.conceive_reserve_percent);
-        assert_eq!(gate, 70, "the content's gate (25 November 2026)");
+        let weak = u64::from(rules.needs.weak_percent);
         set(&mut w, wife, |b| {
-            b.condition.deficit_j = reserve * (100 - gate) / 100;
+            b.condition.deficit_j = reserve * (100 - weak) / 100 + 1;
         });
         to_season_start(&mut w, &rules, &mut events);
-        assert_eq!(pregnancy(&w, wife), None, "at the gate of her reserve");
+        assert!(w.body(wife).unwrap().condition.is_weak(&rules.needs));
+        assert_eq!(pregnancy(&w, wife), None, "weak");
 
         let mut w = world();
         let (wife, _) = couple_of(&mut w);
@@ -878,20 +922,144 @@ mod tests {
     }
 
     #[test]
-    fn the_contents_chance_by_reserve_meets_its_gate_without_a_step() {
+    fn the_contents_chance_rises_with_the_gain_and_a_full_reserve_has_the_best() {
         let life = fed_rules().needs.life;
-        let gate = u64::from(life.conceive_reserve_percent);
-        let full = u64::from(life.conceive_percent);
-        assert_eq!(gate, 70);
-        assert_eq!(life.conceive_chance(gate, 100), full, "at the gate");
-        assert_eq!(life.conceive_chance(gate + 1, 100), full, "above it");
-        assert_eq!(life.conceive_chance(60, 100), 27, "between 50 and 70");
+        let best = u64::from(life.conceive_percent_by_gain.last().unwrap().1);
+        assert_eq!(best, 40, "the old chance above the gate");
+        let (falling, flat, rising) = (
+            life.conceive_chance(-20, false),
+            life.conceive_chance(0, false),
+            life.conceive_chance(20, false),
+        );
+        assert!(
+            0 < falling && falling < flat && flat < rising,
+            "{falling} {flat} {rising}"
+        );
+        assert_eq!(rising, best);
+        assert!(life.conceive_full_percent <= 100);
+        assert_eq!(life.conceive_chance(-20, true), best);
+        assert_eq!(life.conceive_gain_days, 8, "an age-year, half a season");
+    }
+
+    /// 200 wives of the same reserve, 60 % of hers, their husbands beside
+    /// them, drawn at one quarter with the content's table: by the gain
+    /// of their last dawns.
+    fn wives_conceiving(
+        rules: &Content,
+        gain_percent: i64,
+        deficit_percent: u64,
+    ) -> BTreeSet<BodyId> {
+        let mut w = world();
+        let mut wives = Vec::new();
+        for i in 0..200 {
+            let x = i % 100 + 2;
+            let y = i / 100 * 6 + 2;
+            let wife = person(&mut w, x, y, 25, Sex::Female);
+            let husband = person(&mut w, x, y + 1, 27, Sex::Male);
+            wed(&mut w, wife, husband);
+            wives.push(wife);
+        }
+        w.step(rules, &mut Vec::new());
+        let days = u64::from(rules.needs.life.conceive_gain_days);
+        for wife in wives {
+            set(&mut w, wife, |b| {
+                let needs = &rules.needs;
+                b.condition.deficit_j = b.condition.reserve_j(needs) * deficit_percent / 100;
+                let left = i64::try_from(b.condition.reserve_left_j(needs)).unwrap();
+                let need = i64::try_from(b.condition.need_j_per_day(needs)).unwrap();
+                let span = i64::try_from(days).unwrap();
+                let oldest = left - gain_percent * need * span / 100;
+                b.reserve_dawns =
+                    vec![u64::try_from(oldest).unwrap(); usize::try_from(days).unwrap()];
+                assert_eq!(b.reserve_gain_percent(needs), gain_percent);
+            });
+        }
+        w.conceive(rules, 3, 1);
+        w.bodies
+            .iter()
+            .filter(|b| b.pregnant.is_some())
+            .map(|b| b.id)
+            .collect()
+    }
+
+    #[test]
+    fn a_rising_wife_conceives_more_than_a_flat_one_a_falling_one_rarely_a_weak_one_never() {
+        let mut rules = fed_rules();
+        // A day's need to read the gain in (nothing is stepped after the
+        // dawns are set: nobody burns).
+        rules.needs.hunger_per_day = 100;
+        let rising = wives_conceiving(&rules, 25, 40);
+        let flat = wives_conceiving(&rules, 0, 40);
+        let falling = wives_conceiving(&rules, -15, 40);
+        let weak = wives_conceiving(&rules, 25, 85);
+        assert!(
+            (60..=100).contains(&rising.len()),
+            "{} of 200 rising conceived, about 40 % expected",
+            rising.len()
+        );
+        assert!(flat.len() <= 20, "{} of 200 flat, about 3 %", flat.len());
+        assert!(
+            falling.len() <= 10,
+            "{} of 200 falling, about 1 %",
+            falling.len()
+        );
+        assert!(flat.len() < rising.len() && falling.len() <= flat.len());
+        assert!(weak.is_empty(), "a weak wife never, rising or not");
+        assert_eq!(
+            rising,
+            wives_conceiving(&rules, 25, 40),
+            "fixed by the seed"
+        );
+        // A thin wife whose reserve rises conceives as well as a fuller one.
+        let thin = wives_conceiving(&rules, 25, 70);
+        assert_eq!(thin, rising, "the same draw, the same chance");
+    }
+
+    #[test]
+    fn a_womans_dawns_are_kept_for_her_gain_never_a_mans_nor_with_life_off() {
+        let mut rules = fed_rules();
+        rules.needs.life.conceive_percent_by_gain.clear();
+        // Her gain read in the content's day's need (these rules burn none).
+        let mut needs = rules.needs.clone();
+        needs.hunger_per_day = 100;
+        let mut events = Vec::new();
+        let days = u64::from(rules.needs.life.conceive_gain_days);
+        for life in [true, false] {
+            let mut w = world_with(life);
+            let (wife, husband) = couple_of(&mut w);
+            w.step(&rules, &mut events);
+            let reserve = w.body(wife).unwrap().condition.reserve_j(&rules.needs);
+            let need = w.body(wife).unwrap().condition.need_j_per_day(&needs);
+            set(&mut w, wife, |b| b.condition.deficit_j = reserve / 2);
+            // She banks 30 % of her day's need each day.
+            for _ in 0..days + 3 {
+                to_dawn(&mut w, &rules, &mut events);
+                set(&mut w, wife, |b| b.condition.deficit_j -= need * 30 / 100);
+            }
+            let her = w.body(wife).unwrap();
+            assert!(w.body(husband).unwrap().reserve_dawns.is_empty(), "a man");
+            if life {
+                assert_eq!(her.reserve_dawns.len() as u64, days, "the last dawns only");
+                assert_eq!(her.reserve_gain_percent(&needs), 30);
+                let back: World =
+                    serde_json::from_str(&serde_json::to_string(&w).unwrap()).unwrap();
+                let read = back.body(wife).unwrap();
+                assert_eq!(read.reserve_gain_percent(&needs), 0, "never stored: flat");
+            } else {
+                assert!(her.reserve_dawns.is_empty(), "life off");
+                assert_eq!(her.reserve_gain_percent(&needs), 0);
+            }
+        }
     }
 
     #[test]
     fn the_contents_share_of_wives_conceive_each_season_the_same_ones_every_run() {
         let mut rules = fed_rules();
-        assert_eq!(rules.needs.life.conceive_percent, 40);
+        // Fed and full: the table's best, whatever her gain.
+        assert_eq!(
+            rules.needs.life.conceive_percent_by_gain.last().unwrap().1,
+            40
+        );
         // The season's dawn alone (the tests' seasons last two days).
         rules.needs.life.conceive_nights = 1;
         let run = || {
@@ -1500,7 +1668,7 @@ mod tests {
     #[test]
     fn with_life_off_nobody_is_born_couples_or_dies_of_anything_but_want() {
         let mut rules = deadly_rules();
-        rules.needs.life.conceive_percent = 100;
+        certain(&mut rules);
         rules.needs.life.childbirth_death_percent = 100;
         let mut w = world_with(false);
         assert!(!w.life());
