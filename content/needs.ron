@@ -73,8 +73,15 @@
 //                          twenty-fifth, its reserve spent on the
 //                          thirty-first, dead the day after. Thin and
 //                          weak stay in percent of the reserve.
-// intake_ceiling_percent:  150 — a day's eating, in percent of the need:
-//                          a spent reserve takes sixty days to make again.
+// intake_ceiling_percent:  300 — a day's eating, in percent of the need
+//                          (D46, amended 25 November 2026, the project
+//                          lead's principle C: "the fat refills in one
+//                          good season"). A season is 16 days, a real one
+//                          some 91, so the body's real yearly rhythm asks a
+//                          faster refill: from a third full, a man is full
+//                          again in some 10 days of plenty, a woman (her
+//                          reserve 140 % of his, her need 85 %) in some 17.
+//                          At 150 a good season gave back 27 % at most.
 // thin_percent:            50 — thin under half its reserve.
 // weak_percent:            20 — weak under a fifth: it walks and gathers
 // weak_pace_percent:       70 — at seven tenths of its pace.
@@ -97,7 +104,7 @@
     kj_per_hunger_point: 100,
     meal_g: 300,
     reserve_kj: 300000,
-    intake_ceiling_percent: 150,
+    intake_ceiling_percent: 300,
     thin_percent: 50,
     weak_percent: 20,
     weak_pace_percent: 70,
