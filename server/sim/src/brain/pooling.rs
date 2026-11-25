@@ -24,6 +24,14 @@
 //!   before it eats, a body puts down there what it carries for its hearth
 //!   and what it carries beyond its own store (its stock way, about three
 //!   days): one heap a thought, what spoils first first.
+//! - **The store counts what is laid at home** (amended 25 November 2026):
+//!   a body's store is what it carries **and its share of its hearth's
+//!   reserve** (what the reserve holds divided by those who lay down in
+//!   its circle at dawn; nothing without a hearth). It gathers until both
+//!   reach its stock way and what it owes; at its camp, its store short,
+//!   it keeps nothing on itself and lays all it carries down, its arms
+//!   free to fetch the rest; its store reached, it keeps its store at most
+//!   on itself, as before.
 //! - **Eating.** Hungry at its camp, a body eats from the reserve before
 //!   it eats its own, what spoils first first. **The young first** (the
 //!   project lead, 25 November 2026): an older body eats there only
@@ -135,6 +143,12 @@ pub(super) struct Reserves {
     /// Whether a dawn has been seen: before it, no circle says who is of a
     /// hearth.
     dawned: bool,
+    /// How many lay down in each hearth's circle at dawn: who eats from
+    /// its reserve, the divisor of a body's share of it.
+    eaters: BTreeMap<Pos, u64>,
+    /// What each reserve held, read once a tick: the tick and kilojoules
+    /// (a reading kept, not a state; a heap put down forgets it).
+    read: BTreeMap<Pos, (u64, u64)>,
 }
 
 /// A heap of a reserve, or carried: its id, where it lies, its energy and
@@ -230,7 +244,33 @@ impl Reserves {
         self.by_camp.get(&camp).map_or(home, |r| r.tile)
     }
 
+    /// A body's share of its hearth's reserve (D58, amended 25 November
+    /// 2026: its store counts what is laid at home): what the reserve of
+    /// the hearth of `home` holds, divided by those who lay down in its
+    /// circle at dawn; nothing without pooling, or before a dawn saw that
+    /// circle.
+    pub(super) fn share_kj(&mut self, world: &World, rules: &Content, home: Pos) -> u64 {
+        if !on(rules) {
+            return 0;
+        }
+        let camp = camp_of(rules, home);
+        let Some(&eaters) = self.eaters.get(&camp) else {
+            return 0;
+        };
+        let tick = world.tick().0;
+        let kj = match self.read.get(&camp) {
+            Some(&(at, kj)) if at == tick => kj,
+            _ => {
+                let kj = self.kj(world, rules, camp);
+                self.read.insert(camp, (tick, kj));
+                kj
+            }
+        };
+        kj / eaters.max(1)
+    }
+
     fn put(&mut self, camp: Pos, tile: Pos, item: ItemId) {
+        self.read.remove(&camp);
         self.by_camp
             .entry(camp)
             .or_insert_with(|| Reserve {
@@ -381,9 +421,16 @@ pub(super) fn put_down(
     // What it keeps: its store at most, and never what it carries for
     // its hearth.
     mind.hearth_carried_kj = mind.hearth_carried_kj.min(total);
-    let keep = total
-        .saturating_sub(mind.hearth_carried_kj)
-        .min(mind.ways.stock_kj);
+    // Its store counts what is laid at home (amended 25 November 2026):
+    // short of it, it keeps nothing on itself, its arms free to fetch the
+    // rest.
+    let keep = if store_short(world, rules, reserves, (id, body), mind) {
+        0
+    } else {
+        total
+            .saturating_sub(mind.hearth_carried_kj)
+            .min(mind.ways.stock_kj)
+    };
     if total <= keep {
         return None;
     }
@@ -432,6 +479,23 @@ pub(super) fn put_down(
         },
         why,
     })
+}
+
+/// Whether a body's store, measured where a forager keeps it, is short
+/// of what it wants (D58, amended 25 November 2026): what it carries and
+/// its share of its hearth's reserve, against its stock way and what it
+/// owes its hearth. Never without pooling.
+pub(super) fn store_short(
+    world: &World,
+    rules: &Content,
+    reserves: &mut Reserves,
+    (id, body): (BodyId, &Body),
+    mind: &Mind,
+) -> bool {
+    on(rules)
+        && !fed_by_hearth(world, rules, reserves, body)
+        && super::carried_kj(world, rules, id) + reserves.share_kj(world, rules, mind.ways.home)
+            < mind.ways.stock_kj + mind.hearth_owed()
 }
 
 /// Whether all a body carries is carried for its hearth (D58): hungry,
@@ -550,6 +614,8 @@ impl Brains {
         let pooling = &rules.needs.pooling;
         self.reserves.prune(world);
         self.reserves.young.clear();
+        self.reserves.eaters.clear();
+        self.reserves.read.clear();
         self.reserves.dawned = true;
         for mind in self.minds.values_mut() {
             mind.hearth_extra_kj = 0;
@@ -560,6 +626,9 @@ impl Brains {
             let camp = *camp;
             let reserve_kj = self.reserves.kj(world, rules, camp);
             let bodies: Vec<&Body> = present.iter().filter_map(|&b| world.body(b)).collect();
+            self.reserves
+                .eaters
+                .insert(camp, u64::try_from(bodies.len()).unwrap_or(u64::MAX));
             let young: Vec<(&Body, u64)> = bodies
                 .iter()
                 .filter(|b| pooling.young_first(world.age_milli(b)))
@@ -1018,6 +1087,154 @@ mod tests {
         );
     }
 
+    /// The valley at midday of day 28, blackberries ripe, a fed grown
+    /// body born beside a bramble, piloted, `stock` its store; its camp's
+    /// circle at dawn held it and `others` more, its hearth's reserve
+    /// `reserve_g` grams of berries.
+    fn by_the_bramble(
+        stock: u64,
+        others: usize,
+        reserve_g: u32,
+    ) -> (World, Content, BodyId, Brains) {
+        use crate::crops::tests::{body_by, run_to, valley_with};
+        let (mut world, rules, _, bramble) = valley_with("bramble");
+        run_to(&mut world, &rules, 28);
+        let id = body_by(&mut world, &bramble);
+        let mut brains = Brains::new(7);
+        brains.adopt(&world, &rules, id);
+        let mind = brains.minds.get_mut(&id).unwrap();
+        // The bramble beside it stays its choice (as `near_sighted`).
+        mind.ways.worth_half_tiles = 1;
+        mind.ways.stock_kj = stock;
+        let home = mind.ways.home;
+        let camp = camp_of(&rules, home);
+        let mut present = vec![id];
+        let year = u64::from(world.calendar().days_per_age_year());
+        for _ in 0..others {
+            let other = world.spawn_body(home);
+            world.set_birth(other, 30 * year, Sex::Female);
+            present.push(other);
+        }
+        if reserve_g > 0 {
+            let heap = world.spawn_item("berries", reserve_g, home);
+            brains.reserves.put(camp, home, heap);
+        }
+        brains.see_hearths(&world, &rules, &[(camp, present)]);
+        (world, rules, id, brains)
+    }
+
+    /// Runs `ticks` ticks with the brain piloting: its decisions, queued.
+    fn live(
+        world: &mut World,
+        rules: &Content,
+        brains: &mut Brains,
+        ticks: u64,
+    ) -> Vec<(BodyId, Decision)> {
+        let (mut decided, mut events) = (Vec::new(), Vec::new());
+        for _ in 0..ticks {
+            events.clear();
+            world.step(rules, &mut events);
+            for (body, decision) in brains.think(world, rules, &events) {
+                world.queue(decision.intention.clone());
+                decided.push((body, decision));
+            }
+        }
+        decided
+    }
+
+    #[test]
+    fn its_store_counts_its_share_of_its_hearth_s_reserve() {
+        // 600 g of berries, 1500 kJ, at the hearth; a store of 1000 kJ.
+        for (others, reserve_g, gathers) in [
+            // An empty hearth: it gathers its store, as before.
+            (0, 0, true),
+            // Its share covers its store: it does not gather for it.
+            (0, 600, false),
+            // One pile for four eaters, 375 kJ each: the hearth's food is
+            // not counted whole by each, and it gathers.
+            (3, 600, true),
+        ] {
+            let (mut world, rules, id, mut brains) = by_the_bramble(1000, others, reserve_g);
+            let share = brains
+                .reserves
+                .share_kj(&world, &rules, brains.minds[&id].ways.home);
+            assert_eq!(share, u64::from(reserve_g) * 5 / 2 / (others as u64 + 1));
+            let decided = live(&mut world, &rules, &mut brains, 30);
+            let gathered = decided.iter().any(|(b, d)| {
+                *b == id
+                    && d.why == super::super::Why::Gather
+                    && matches!(d.intention, Intention::Gather { .. })
+            });
+            assert_eq!(
+                gathered, gathers,
+                "{others} others, {reserve_g} g: {decided:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn with_a_store_twice_as_large_it_brings_home_more_over_days() {
+        use crate::crops::tests::{body_by, run_to, valley_with};
+        // What a body alone at its hearth, its home by a ripe bramble, lays
+        // down there from midday to the next midday, with `stock`.
+        let laid = |stock: u64| {
+            let (mut world, rules, _, bramble) = valley_with("bramble");
+            run_to(&mut world, &rules, 28);
+            let id = body_by(&mut world, &bramble);
+            let home = world.body(id).unwrap().pos();
+            let mut brains = Brains::new(7);
+            brains.adopt_at(&world, &rules, id, home);
+            let mind = brains.minds.get_mut(&id).unwrap();
+            mind.ways.worth_half_tiles = 1;
+            mind.ways.stock_kj = stock;
+            brains.see_hearths(&world, &rules, &[(camp_of(&rules, home), vec![id])]);
+            let day = world.calendar().ticks_per_day();
+            live(&mut world, &rules, &mut brains, day);
+            brains
+                .news()
+                .iter()
+                .filter_map(|n| match n {
+                    News::PutDown { body, kj, .. } if *body == id => Some(*kj),
+                    _ => None,
+                })
+                .sum::<u64>()
+        };
+        // Its arms hold 1800 kJ of blackberries: a store of 3000 kJ is one
+        // armful laid and one carried; twice it, more trips with full arms.
+        let once = laid(3000);
+        let twice = laid(6000);
+        assert!(once > 0 && once < 3000, "once {once}");
+        assert!(twice > once, "twice {twice} against once {once}");
+    }
+
+    #[test]
+    fn at_its_camp_short_of_its_store_it_lays_down_all_it_carries() {
+        let rules = pooled();
+        let at = Pos::new(5, 5);
+        let (mut world, mut brains, ids) = field(&rules, &[(at, 30)]);
+        let id = ids[0];
+        let item = world.spawn_item("berries", 300, at);
+        world.queue(Intention::PickUp { body: id, item });
+        world.step(&rules, &mut Vec::new());
+        let camp = camp_of(&rules, at);
+        brains.see_hearths(&world, &rules, &[(camp, vec![id])]);
+        // 750 kJ carried, a store of 1000 kJ: short, it lays it down, though
+        // its store alone would have kept it on itself.
+        brains.minds.get_mut(&id).unwrap().ways.stock_kj = 1000;
+        let decision = think(&world, &rules, &mut brains, id).unwrap();
+        assert!(
+            matches!(decision.intention, Intention::Keep { item: kept, .. } if kept == item),
+            "it lays it down: {decision:?}"
+        );
+        // A store of 500 kJ: reached by what it carries, it keeps it.
+        brains.minds.get_mut(&id).unwrap().ways.stock_kj = 500;
+        let decision = think(&world, &rules, &mut brains, id);
+        assert!(
+            !decision.is_some_and(|d| matches!(d.intention, Intention::Keep { .. })),
+            "it keeps its store"
+        );
+    }
+
     #[test]
     fn what_it_gathers_for_its_own_is_carried_for_them_not_eaten() {
         // Owing its hearth as much as its store: half of each gather.
@@ -1065,6 +1282,8 @@ mod tests {
         world.queue(Intention::PickUp { body: grown, item });
         world.step(&rules, &mut Vec::new());
         hungry(&mut world, &rules, child, 70);
+        // Her store is what she carries: she keeps it until it is owed.
+        brains.minds.get_mut(&grown).unwrap().ways.stock_kj = 1000;
         let mut events = Vec::new();
         // The child waits: nothing to eat, nothing to gather.
         for _ in 0..20 {

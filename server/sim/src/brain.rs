@@ -6049,9 +6049,12 @@ impl Brains {
                 said.insert(id, (Act::Alone, Some(spot), None, 0));
                 continue;
             }
-            if carried_kj(world, rules, id) >= mind.ways.stock_kj + need_kj_per_day(rules, body) {
-                // It carries what it wants for tomorrow and tomorrow's
-                // meals on top: it stays.
+            if carried_kj(world, rules, id) + self.reserves.share_kj(world, rules, mind.ways.home)
+                >= mind.ways.stock_kj + need_kj_per_day(rules, body)
+            {
+                // It holds what it wants for tomorrow and tomorrow's
+                // meals on top, carried or its share of its hearth's
+                // reserve (D58, amended 25 November 2026): it stays.
                 unreserve(&mut reserved, &mut rooms, id);
                 review.stocked += 1;
                 said.insert(id, (Act::Nothing, None, None, 0));
@@ -7749,7 +7752,10 @@ fn decide(
     // (D58), then eats if hungry.
     let at_home = (here.x - camp.x).abs() <= HOME_TILES && (here.y - camp.y).abs() <= HOME_TILES;
     if at_home
-        && (night || mind.doing == Doing::Home || mind.hearth_carried_kj > 0)
+        && (night
+            || mind.doing == Doing::Home
+            || mind.hearth_carried_kj > 0
+            || pooling::store_short(world, rules, reserves, (id, body), mind))
         && let Some(decision) =
             pooling::put_down(world, rules, reserves, (id, body, night), mind, news)
     {
@@ -7853,8 +7859,13 @@ fn decide(
     }
     // The day's plan said at the fire (D56): a group's turn, a look out.
     // Its store, and what it saw its hearth needs of it (D58).
+    // Its store counts what is laid at home (D58, amended 25 November
+    // 2026): what it carries and its share of its hearth's reserve.
     let store = mind.ways.stock_kj + mind.hearth_owed();
-    let full = !can_carry || carried_kj(world, rules, id) >= store;
+    let carried = carried_kj(world, rules, id);
+    let full = !can_carry
+        || carried >= store
+        || carried + reserves.share_kj(world, rules, mind.ways.home) >= store;
     let mut gathers = !night && !fed && !going_home && (!full || on_the_way(world, groups, mind));
     let mut group_home = false;
     if !night {
