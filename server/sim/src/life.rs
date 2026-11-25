@@ -13,6 +13,8 @@
 //! is counted in days follows the day (the daily death draw, the day a
 //! child is due).
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::content::{Content, Sex};
@@ -136,7 +138,8 @@ impl World {
     }
 
     /// The life rule's tick (D49), when `life` is on. At the start of a
-    /// day: spouses apart too long part, a weak pregnant woman loses her
+    /// day: spouses apart too long part, the unmarried of one hearth wed,
+    /// the others court, a weak pregnant woman loses her
     /// child, a woman at her due day gives birth. At each body's own hour
     /// of the day: a body without a spouse takes one, and the body draws
     /// its death of the day.
@@ -146,6 +149,7 @@ impl World {
         }
         if tick_of_day == 0 {
             self.part(rules, events);
+            self.wed_at_hearths(rules, events);
             self.court(rules, events);
             self.lose_or_bear(rules, events);
         }
@@ -411,6 +415,58 @@ impl World {
             }
         }
         events.push(Event::Coupled { a, b });
+    }
+
+    /// The weddings of a day's start at the hearths (D49, amended 25
+    /// November 2026; the project lead's choice A), when the content's
+    /// `wed_at_hearth` is on: an unmarried body of the mating years whose
+    /// home lies in one camp's place (the hearth's key, D55, D58: the
+    /// homes the brains told, [`World::set_homes`]) weds at once one of
+    /// that hearth it may wed (`may_wed`), the nearest in age, the lower id
+    /// between equals; the seekers the lower id first, one taken no longer
+    /// free. A body with no home is of no hearth: it courts as before.
+    fn wed_at_hearths(&mut self, rules: &Content, events: &mut Vec<Event>) {
+        let life = &rules.needs.life;
+        if !life.wed_at_hearth {
+            return;
+        }
+        let side = i32::try_from(rules.needs.thought.place_tiles)
+            .unwrap_or(1)
+            .max(1);
+        let mut hearths: BTreeMap<(i32, i32), Vec<usize>> = BTreeMap::new();
+        for (index, body) in self.bodies.iter().enumerate() {
+            if body.spouse.is_some() || !life.mates(self.age_milli(body)) {
+                continue;
+            }
+            if let Some(home) = self.homes.get(&body.id) {
+                let key = (home.x.div_euclid(side), home.y.div_euclid(side));
+                hearths.entry(key).or_default().push(index);
+            }
+        }
+        let mut weds = Vec::new();
+        for mut free in hearths.into_values() {
+            free.sort_by_key(|&i| self.bodies[i].id);
+            while let Some(seeker) = free.first().copied() {
+                free.remove(0);
+                let me = &self.bodies[seeker];
+                let pick = free
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &i)| self.may_wed(me, &self.bodies[i], rules))
+                    .min_by_key(|&(_, &i)| {
+                        let other = &self.bodies[i];
+                        (other.born_day.abs_diff(me.born_day), other.id)
+                    })
+                    .map(|(at, _)| at);
+                if let Some(at) = pick {
+                    let other = free.remove(at);
+                    weds.push((me.id, self.bodies[other].id));
+                }
+            }
+        }
+        for (a, b) in weds {
+            self.wed(a, b, events);
+        }
     }
 
     /// The courting at a day's start (D49, amended 24 November 2026),
@@ -680,9 +736,13 @@ mod tests {
         let mut w = world();
         let (wife, _) = couple_of(&mut w);
         let reserve = w.body(wife).unwrap().condition.reserve_j(&rules.needs);
-        set(&mut w, wife, |b| b.condition.deficit_j = reserve * 30 / 100);
+        let gate = u64::from(rules.needs.life.conceive_reserve_percent);
+        assert_eq!(gate, 70, "the content's gate (25 November 2026)");
+        set(&mut w, wife, |b| {
+            b.condition.deficit_j = reserve * (100 - gate) / 100;
+        });
         to_season_start(&mut w, &rules, &mut events);
-        assert_eq!(pregnancy(&w, wife), None, "under 80 % of her reserve");
+        assert_eq!(pregnancy(&w, wife), None, "at the gate of her reserve");
 
         let mut w = world();
         let (wife, _) = couple_of(&mut w);
@@ -720,6 +780,17 @@ mod tests {
             "a brother is no husband"
         );
         assert_eq!(pregnancy(&w, wife), None, "no husband, only a brother");
+    }
+
+    #[test]
+    fn the_contents_chance_by_reserve_meets_its_gate_without_a_step() {
+        let life = fed_rules().needs.life;
+        let gate = u64::from(life.conceive_reserve_percent);
+        let full = u64::from(life.conceive_percent);
+        assert_eq!(gate, 70);
+        assert_eq!(life.conceive_chance(gate, 100), full, "at the gate");
+        assert_eq!(life.conceive_chance(gate + 1, 100), full, "above it");
+        assert_eq!(life.conceive_chance(60, 100), 27, "between 50 and 70");
     }
 
     #[test]
@@ -842,6 +913,86 @@ mod tests {
         assert_eq!(w.body(neighbour).unwrap().spouse, Some(her));
         assert_eq!(w.body(her).unwrap().courting, None);
         assert_eq!(w.body(passer).unwrap().spouse, None);
+    }
+
+    #[test]
+    fn two_unwed_of_one_hearth_wed_at_the_first_dawn_the_nearest_in_age() {
+        let mut rules = fed_rules();
+        assert!(rules.needs.life.wed_at_hearth, "the content's rule");
+        rules.needs.life.death_by_age = vec![(0, 0)];
+        let mut w = world();
+        let side = i32::try_from(rules.needs.thought.place_tiles).unwrap();
+        let camp = Pos::new(side * 2, 5);
+        let other_camp = Pos::new(side * 4, 5);
+        // At one hearth: a woman of 20, men of 30, 22 and 18 (the last
+        // her brother), and a man of 21 whose home is at another hearth,
+        // standing beside her. A woman of 24 with no home, beside him.
+        let her = person(&mut w, 10, 5, 20, Sex::Female);
+        let older = person(&mut w, 110, 5, 30, Sex::Male);
+        let near_in_age = person(&mut w, 120, 5, 22, Sex::Male);
+        let brother = person(&mut w, 11, 5, 18, Sex::Male);
+        set(&mut w, brother, |b| b.mother = Some(BodyId(900)));
+        set(&mut w, her, |b| b.mother = Some(BodyId(900)));
+        let beside = person(&mut w, 12, 5, 21, Sex::Male);
+        let homeless = person(&mut w, 13, 5, 24, Sex::Female);
+        w.set_homes([
+            (her, camp),
+            (older, camp),
+            (near_in_age, camp),
+            (brother, camp),
+            (beside, other_camp),
+        ]);
+        let mut events = Vec::new();
+        w.advance(w_day(), &rules, &mut events);
+        // One dawn: she weds the man of 22, a hundred tiles off, the
+        // nearest in age that is not her brother; the man beside her is of
+        // another hearth.
+        assert_eq!(w.body(her).unwrap().spouse, Some(near_in_age));
+        assert_eq!(w.body(near_in_age).unwrap().spouse, Some(her));
+        for id in [older, brother, beside, homeless] {
+            assert_eq!(w.body(id).unwrap().spouse, None);
+        }
+        // The one of no hearth courts as before, the man beside her too.
+        assert_eq!(w.body(homeless).unwrap().courting, Some((beside, 1)));
+        // Off, nobody of that hearth weds at once.
+        rules.needs.life.wed_at_hearth = false;
+        let mut w2 = world();
+        let a = person(&mut w2, 10, 5, 20, Sex::Female);
+        let b = person(&mut w2, 120, 5, 22, Sex::Male);
+        w2.set_homes([(a, camp), (b, camp)]);
+        w2.advance(w_day(), &rules, &mut events);
+        assert_eq!(w2.body(a).unwrap().spouse, None);
+    }
+
+    #[test]
+    fn the_hearths_weddings_are_the_same_every_run() {
+        let mut rules = fed_rules();
+        rules.needs.life.death_by_age = vec![(0, 0)];
+        let run = || {
+            let mut w = world();
+            let camp = Pos::new(40, 5);
+            let mut homes = Vec::new();
+            for (n, sex) in [Sex::Female, Sex::Male]
+                .into_iter()
+                .cycle()
+                .take(9)
+                .enumerate()
+            {
+                let years = 16 + u64::try_from(n * 7 % 30).unwrap();
+                let id = person(&mut w, i32::try_from(n).unwrap() * 3, 5, years, sex);
+                homes.push((id, camp));
+            }
+            w.set_homes(homes);
+            let mut events = Vec::new();
+            w.advance(w_day(), &rules, &mut events);
+            w.bodies()
+                .iter()
+                .map(|b| (b.id(), b.spouse()))
+                .collect::<Vec<_>>()
+        };
+        let first = run();
+        assert_eq!(first.iter().filter(|(_, s)| s.is_some()).count(), 8);
+        assert_eq!(first, run());
     }
 
     #[test]

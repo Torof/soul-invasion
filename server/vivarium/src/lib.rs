@@ -38,6 +38,9 @@ pub mod chain;
 // --- the conceptions (25 November 2026): its own module ---
 pub mod conception;
 // --- end of the conceptions ---
+// --- the meetings between tribes (25 November 2026): its own module ---
+pub mod meetings;
+// --- end of the meetings between tribes ---
 pub mod continents;
 pub mod hands;
 pub mod json;
@@ -1969,6 +1972,11 @@ pub struct Report {
     /// pregnancies lost, the births ([`conception::ConceptionProbe`]).
     pub conception: conception::ConceptionProbe,
     // --- end of the conceptions ---
+    // --- the meetings between tribes (25 November 2026) ---
+    /// Bodies of different tribes in sight, read every game hour, and the
+    /// nearest by season ([`meetings::MeetingProbe`]).
+    pub meetings: meetings::MeetingProbe,
+    // --- end of the meetings between tribes ---
     /// Seconds the run took on the wall.
     pub wall_s: f64,
     /// Seconds the world took to be born.
@@ -2495,6 +2503,9 @@ pub fn run_watched(
     // --- the conceptions (25 November 2026) ---
     let mut conception = conception::ConceptionProbe::new(content);
     // --- end of the conceptions ---
+    // --- the meetings between tribes (25 November 2026) ---
+    let mut meetings = meetings::MeetingProbe::new(calendar.ticks_per_day());
+    // --- end of the meetings between tribes ---
     let mut why = WhyProbe::default();
     // --- the scarcity chain (24 November 2026) ---
     let mut chain = chain::Chain::new(calendar.ticks_per_day());
@@ -2557,6 +2568,9 @@ pub fn run_watched(
         // --- the food carried home (25 November 2026) ---
         carried.tick((&world, &brains, content), &events, &people);
         // --- end of the food carried home ---
+        // --- the meetings between tribes (25 November 2026) ---
+        meetings.tick(&world, content, &people);
+        // --- end of the meetings between tribes ---
         if tick.is_multiple_of(per_year) {
             // One plain line a year on stderr, so nobody waits blind on a
             // long run.
@@ -3561,6 +3575,9 @@ pub fn run_watched(
         // --- the conceptions (25 November 2026) ---
         conception,
         // --- end of the conceptions ---
+        // --- the meetings between tribes (25 November 2026) ---
+        meetings,
+        // --- end of the meetings between tribes ---
         map_side,
         camps,
         ticks,
