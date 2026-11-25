@@ -106,7 +106,11 @@
     // not the cycle of seasons). A body's need, its reserve, its day's ceiling
     // and what it carries go with its size: an infant 30 % of a grown
     // man, a child 40 % at two to 90 % at fourteen, a man 100 %, past
-    // fifty-five 85 %; a woman 85 % of a man of her age. A woman nursing
+    // fifty-five 85 %; a woman 85 % of a man of her age. Her fat reserve
+    // alone is not her size: 140 % of a man's of her age (the project
+    // lead, 25 November 2026: women carry more fat than men, to live
+    // through a lean season and bear children; forager women hold some
+    // 1.3 to 1.6 times men's fat by weight). A woman nursing
     // needs 25 % more, and her infant burns nothing of its own; weaned at
     // two, it walks and gathers for itself. Children under twelve and the
     // old past fifty-five go at 70 % of the pace. An infant weighs 3.5 kg
@@ -118,6 +122,7 @@
         need_by_age: [(0, 30), (2, 40), (14, 90), (18, 100), (55, 100), (56, 85)],
         woman_percent: 85,
         woman_from_years: 14,
+        woman_reserve_percent: 140,
         nursing_percent: 125,
         weaned_years: 2,
         slow_under_years: 12,
