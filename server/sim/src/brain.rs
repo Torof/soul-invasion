@@ -65,7 +65,7 @@
 //! may start a **trial** (a daily chance by its **will**, a placeholder
 //! drawn from the world's seed and its id until the souls' Willpower
 //! comes, D30): one way moved by one step, drawn from the seed, its id
-//! and the day, its days held within one season ([`trial_fits`]). After
+//! and the day, its days held within one season (`trial_fits`). After
 //! `trial_days` the world has **judged** on every
 //! distress: the way is kept if nothing worsened and one thing improved
 //! (gathered a day, thin days, thirsty days, cold days), else reverted. A
@@ -10199,7 +10199,7 @@ fn start_heard_deeds(
 /// une conséquence, pas une cause"): a move is called only from a push
 /// felt here and a surprise lived there ([`call_move`]). The trial records
 /// what the days before gave. A short trial whose days would leave the
-/// season is not begun: it waits for the next season ([`trial_fits`];
+/// season is not begun: it waits for the next season (`trial_fits`;
 /// amended 25 November 2026).
 fn start_trial(
     world: &World,
