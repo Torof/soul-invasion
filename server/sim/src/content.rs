@@ -1528,11 +1528,14 @@ pub struct Trials {
     /// above. Empty: no extra chance.
     #[serde(default)]
     pub heard_factor_by_tellers: Vec<(u32, u32)>,
-    /// The base of that extra chance, in per mille a day, for a calm body
-    /// whose will gives less (the calm chance is nothing below 40): heard
-    /// deeds only; an invention keeps its own chance.
+    /// The least daily chance, in per mille, that any body starts a trial
+    /// of any way, calm or in distress, whatever its will (D50, amended 25
+    /// November 2026, the project lead: "au lieu d'avoir 5 fois 0, on a 5
+    /// fois 0,1. Donc je pense qu'il faut le garder en permanence pour
+    /// tout"): a will of 0 tries too, rarely; the extra chance of a heard
+    /// deed multiplies from it when the will gives less. 0 when absent.
     #[serde(default)]
-    pub heard_calm_floor_permille: u32,
+    pub try_floor_permille: u32,
 }
 
 /// The ways a trial may move, as the content names them (D50).
@@ -1563,7 +1566,7 @@ impl Default for Trials {
             horizon_seasons: Vec::new(),
             move_repay_seasons: 1,
             heard_factor_by_tellers: Vec::new(),
-            heard_calm_floor_permille: 0,
+            try_floor_permille: 0,
         }
     }
 }
@@ -1624,6 +1627,7 @@ impl Trials {
     pub fn on(&self) -> bool {
         self.try_percent_by_will.iter().any(|p| p.1 > 0)
             || self.calm_try_permille_by_will.iter().any(|p| p.1 > 0)
+            || self.try_floor_permille > 0
             || self.imitate_percent > 0
     }
 

@@ -7738,12 +7738,20 @@ fn follow_or_wait(
 /// far smaller chance of a bold will to search for better (amended 24
 /// November 2026), judged the same.
 fn wants_to_try(trials: &Trials, seed: u64, (id, day): (BodyId, u64), mind: &Mind) -> bool {
+    // Never under the floor of every trial (D50, amended 25 November
+    // 2026), whatever the will, calm or in distress.
+    let floor = u64::from(trials.try_floor_permille);
     if mind.distress_days >= trials.trial_after_days {
-        scatter::roll(seed, purpose::TRIAL_TRY, &[u64::from(id.0), day]) % 100
-            < trials.try_percent(mind.will)
+        let roll = scatter::roll(seed, purpose::TRIAL_TRY, &[u64::from(id.0), day]);
+        let percent = trials.try_percent(mind.will);
+        if percent * 10 >= floor {
+            roll % 100 < percent
+        } else {
+            roll % 1000 < floor
+        }
     } else {
         scatter::roll(seed, purpose::TRIAL_CALM, &[u64::from(id.0), day]) % 1000
-            < trials.calm_try_permille(mind.will)
+            < trials.calm_try_permille(mind.will).max(floor)
     }
 }
 
@@ -16281,6 +16289,7 @@ mod tests {
         trials.try_percent_by_will = vec![(0, 0), (100, 30)];
         trials.trial_after_days = 2;
         trials.calm_try_permille_by_will = vec![(0, 0), (40, 0), (100, 20)];
+        trials.try_floor_permille = 0;
         let tries = |trials: &Trials, will: u8, distress: u32| {
             let mut mind = Mind::new(Pos::new(5, 5));
             mind.will = will;
@@ -16300,6 +16309,36 @@ mod tests {
         trials.calm_try_permille_by_will = vec![(0, 0)];
         assert_eq!(tries(&trials, 100, 0), 0);
         assert_eq!(trials.calm_try_permille(100), 0);
+    }
+
+    #[test]
+    fn every_will_tries_at_least_at_the_floor_calm_or_in_distress() {
+        // The project lead, 25 November 2026: 0.1 % a journée for all,
+        // a will of 0 included.
+        let mut trials = rules().needs.trials;
+        trials.try_percent_by_will = vec![(0, 0), (100, 30)];
+        trials.trial_after_days = 2;
+        trials.calm_try_permille_by_will = vec![(0, 0), (40, 0), (100, 20)];
+        let tries = |trials: &Trials, will: u8, distress: u32| {
+            let mut mind = Mind::new(Pos::new(5, 5));
+            mind.will = will;
+            mind.distress_days = distress;
+            (0..20_000)
+                .filter(|&day| wants_to_try(trials, 9, (BodyId(3), day), &mind))
+                .count()
+        };
+        trials.try_floor_permille = 0;
+        assert_eq!((tries(&trials, 0, 0), tries(&trials, 0, 2)), (0, 0));
+        let bold = tries(&trials, 100, 0);
+        trials.try_floor_permille = 1;
+        for (will, distress) in [(0, 0), (0, 2), (20, 0)] {
+            let n = tries(&trials, will, distress);
+            assert!(
+                (5..=40).contains(&n),
+                "will {will}, distress {distress}: {n}"
+            );
+        }
+        assert_eq!(tries(&trials, 100, 0), bold, "above the floor, unchanged");
     }
 
     /// The rules of moving as a consequence (amended 24 November 2026):

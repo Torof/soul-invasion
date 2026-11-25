@@ -285,8 +285,8 @@ pub(super) fn aim_at(mind: &mut Mind, deeds: &[(Deed, u32)], day: u64) {
 /// The extra chance, in per mille, that `mind` sets out on `day` to try
 /// the deeds it heard (D57, 25 November 2026: a deed heard is tried more
 /// readily than an invention): its usual chance by its will (in distress
-/// the percent, else the calm per mille, at least the content's floor for
-/// heard deeds) times the factor of the most tellers any of them was
+/// the percent, else the calm per mille, at least the floor of every
+/// trial) times the factor of the most tellers any of them was
 /// heard from, at most 1,000. 0 with nothing heard.
 pub(super) fn heard_chance(rules: &Content, mind: &Mind, deeds: &[(Deed, u32)]) -> u64 {
     let trials = &rules.needs.trials;
@@ -296,10 +296,9 @@ pub(super) fn heard_chance(rules: &Content, mind: &Mind, deeds: &[(Deed, u32)]) 
     let base = if mind.distress_days >= trials.trial_after_days {
         trials.try_percent(mind.will) * 10
     } else {
-        trials
-            .calm_try_permille(mind.will)
-            .max(u64::from(trials.heard_calm_floor_permille))
-    };
+        trials.calm_try_permille(mind.will)
+    }
+    .max(u64::from(trials.try_floor_permille));
     (base * trials.heard_factor(tellers)).min(1000)
 }
 
