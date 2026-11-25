@@ -48,6 +48,7 @@ fn energy_per_kilogram_gives_a_piece_what_it_gave_before() {
         ("watercress", 45),
         ("linden_leaves", 200),
         ("pine_bark", 500),
+        ("linden_bark", 500),
         ("strawberries", 130),
         ("raspberries", 220),
         ("peas", 1400),
