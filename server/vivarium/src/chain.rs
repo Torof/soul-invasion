@@ -465,6 +465,8 @@ mod tests {
             fire: true,
             decisions: true,
             moves: true,
+            pooling: true,
+            care: true,
             continents: None,
             helpers: 0,
         }

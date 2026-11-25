@@ -91,6 +91,7 @@ use crate::memory::{self, Access, Fared, Record, RecordId, Store};
 use crate::{Blockage, Body, BodyId, Event, GATHER_REACH_MM, Intention, ItemId, World};
 
 mod handwork;
+mod pooling;
 pub use handwork::{DEEDS, Deed, Deeds, Handwork, NOTHING, container_deeds};
 
 /// Thirst from which a body goes to drink: half a game day without
@@ -232,6 +233,9 @@ enum Doing {
     ToPlace(PlaceKey),
     ToGather(Aim),
     Gathering(Aim),
+    /// On its way to its hearth's reserve (D58): to eat there, or to put
+    /// food down.
+    ToReserve(Pos),
     /// Stepping to a thing or a tree to do a deed of its hands (D57).
     ToHands,
 }
@@ -1296,6 +1300,58 @@ pub const FOLLOW_TOLD: u8 = 2;
 /// [`Brains::news`] after each turn: the vivarium's chronicle reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum News {
+    /// `body` put down `kj` of food at its hearth's reserve at `camp`
+    /// (D58).
+    PutDown {
+        /// Who.
+        body: BodyId,
+        /// The heap.
+        item: ItemId,
+        /// The hearth: its camp.
+        camp: Pos,
+        /// Kilojoules put down.
+        kj: u64,
+        /// The tick.
+        at: u64,
+    },
+    /// `body` ate `kj` from the reserve of its hearth at `camp` (D58).
+    AteAtHearth {
+        /// Who.
+        body: BodyId,
+        /// The hearth: its camp.
+        camp: Pos,
+        /// Kilojoules eaten.
+        kj: u64,
+        /// The tick.
+        at: u64,
+    },
+    /// `kj` of the reserve of the hearth at `camp` spoiled (D58).
+    SpoiledAtHearth {
+        /// The hearth: its camp.
+        camp: Pos,
+        /// Kilojoules lost.
+        kj: u64,
+        /// The tick.
+        at: u64,
+    },
+    /// At dawn `body` saw its hearth's reserve hold `reserve_kj` and will
+    /// gather beyond its own store for its hearth (D58): `seen_kj` for its
+    /// own it saw hungry, `cared_kj` by its care for the young's coming
+    /// days; it gathers the greater.
+    SawHearth {
+        /// Who.
+        body: BodyId,
+        /// The hearth: its camp.
+        camp: Pos,
+        /// What the reserve held.
+        reserve_kj: u64,
+        /// For its own seen hungry, less the reserve.
+        seen_kj: u64,
+        /// By its care for the young's uncovered coming days.
+        cared_kj: u64,
+        /// The tick.
+        at: u64,
+    },
     /// `body` felt at nightfall that it should live at `to` (D56, amended
     /// 24 November 2026: a move is a consequence): a place where it lived
     /// surprises, `gain` better a day than its home season against
@@ -1907,6 +1963,23 @@ pub struct Mind {
     /// ter), the oldest first: at most the content's
     /// `decisions.facts_kept`.
     companions: Vec<Fact>,
+    /// Its innate care for the young's coming days, 0 to 100 (D58):
+    /// drawn from the seed and its id at adoption, never inherited, fixed
+    /// for life.
+    care: u8,
+    /// What it gathers today beyond its own store for its hearth (D58),
+    /// in kilojoules: set at dawn by what it saw there, lowered by what it
+    /// puts down.
+    hearth_extra_kj: u64,
+    /// What it put down at its hearth's reserve today (D58).
+    hearth_put_kj: u64,
+    /// What it carries for its hearth (D58): its own's share of what it
+    /// gathered while it owed its hearth, not its own to eat; put down at
+    /// the camp.
+    hearth_carried_kj: u64,
+    /// The day it could not reach its hearth's reserve: not again that
+    /// day (D58).
+    hearth_barred: Option<u64>,
     /// How many times it went looking: the next direction.
     walks: u64,
     /// How many times it thought.
@@ -2094,6 +2167,11 @@ impl Mind {
             push: 0,
             yesterday: None,
             to_see: None,
+            care: 0,
+            hearth_extra_kj: 0,
+            hearth_put_kj: 0,
+            hearth_carried_kj: 0,
+            hearth_barred: None,
             walks: 0,
             thoughts: 0,
             handwork: Handwork::default(),
@@ -2162,6 +2240,12 @@ impl Mind {
     /// Its will, 0 to 100 (D50).
     pub fn will(&self) -> u8 {
         self.will
+    }
+
+    /// What it set out at dawn to gather for its hearth and has not yet
+    /// put down there, in kilojoules (D58).
+    fn hearth_owed(&self) -> u64 {
+        self.hearth_extra_kj.saturating_sub(self.hearth_put_kj)
     }
 
     /// Its innate will, 0 to 100 (D50, amended).
@@ -3662,6 +3746,12 @@ pub struct Brains {
     /// Whether nightfall tells why each stopped gathering
     /// ([`News::Stopped`]): a measure the vivarium asks for (lot 5b).
     measure_stops: bool,
+    /// Each hearth's reserve of food (D58).
+    reserves: pooling::Reserves,
+    /// The infants each carrier carries, with a mind, as of the last
+    /// nightfall: they keep the way it walks (D53, amended 25 November
+    /// 2026).
+    carried: BTreeMap<BodyId, Vec<BodyId>>,
 }
 
 /// A group's return, told at the next fire (D56, PR 1 ter): its caller,
@@ -3976,6 +4066,8 @@ impl Brains {
             groups: BTreeMap::new(),
             accounts: Vec::new(),
             measure_stops: false,
+            reserves: pooling::Reserves::default(),
+            carried: BTreeMap::new(),
         }
     }
 
@@ -4030,6 +4122,12 @@ impl Brains {
                 scatter::roll(run_seed, purpose::SOCIABILITY, &[u64::from(body.0)]) % 101,
             )
             .unwrap_or(100);
+            // Its care for the young's coming days (D58): even in the
+            // content's range, from the run's seed and its id, never
+            // inherited.
+            mind.care = rules.needs.pooling.care_at(
+                scatter::roll(run_seed, purpose::HEARTH_CARE, &[u64::from(body.0)]) % 1001,
+            );
             if first > now + 1 {
                 mind.due = false;
                 mind.wake_at = Some(first);
@@ -4146,6 +4244,7 @@ impl Brains {
         events: &[Event],
     ) -> Vec<(BodyId, Decision)> {
         self.notice(events, world);
+        self.hearth_events(events, world, rules);
         self.count_gathers(events, world, rules);
         let now = world.tick().0;
         self.bearers.left = cold_chunks_at(world, now);
@@ -4176,6 +4275,7 @@ impl Brains {
             food: &mut self.food,
             memory: &mut self.memory,
             news: &mut self.news,
+            reserves: &mut self.reserves,
         };
         let mut used = 0;
         self.waiting = 0;
@@ -4242,6 +4342,17 @@ impl Brains {
                         } else {
                             mind.from_home + 1
                         };
+                    }
+                    // The infants it carries go its way, and keep it for
+                    // the day they are weaned (D53, amended 25 November
+                    // 2026).
+                    for infant in self.carried.get(body).into_iter().flatten() {
+                        let still = world
+                            .body(*infant)
+                            .is_some_and(|b| b.carried_by() == Some(*body));
+                        if let (true, Some(mind)) = (still, self.minds.get_mut(infant)) {
+                            mind.walked_to(*to);
+                        }
                     }
                 }
                 Event::BodyDrank { body, .. } => {
@@ -4501,6 +4612,12 @@ impl Brains {
     /// (its father's without one), a carried infant its carrier's; then
     /// each mind notes its home for the night's camp-mates.
     fn children_follow(&mut self, world: &World, ids: &[BodyId]) {
+        self.carried.clear();
+        for &id in ids {
+            if let Some(carrier) = world.body(id).and_then(Body::carried_by) {
+                self.carried.entry(carrier).or_default().push(id);
+            }
+        }
         let follow: Vec<(BodyId, Pos)> = ids
             .iter()
             .filter_map(|&id| {
@@ -4736,6 +4853,7 @@ impl Brains {
             .collect();
         self.feel_company(world, rules, &circles);
         self.note_nights(world, rules);
+        self.see_hearths(world, rules, &circles);
         let accounts = std::mem::take(&mut self.accounts);
         if !fire.on() {
             return;
@@ -6783,7 +6901,8 @@ fn look(
             }
         }
     }
-    // Food: what lies in the chunks in sight, within sight.
+    // Food: what lies in the chunks in sight, within sight; a hearth's
+    // reserve is no food lying about (D58).
     mind.food.retain(|_, pos| !in_sight(*pos));
     let is_food = |material: &str| is_food(rules, material);
     if rules.spawns.iter().any(|spawn| is_food(&spawn.material)) {
@@ -6793,6 +6912,7 @@ fn look(
                 for item in world.items_in(ChunkPos::new(cx, cy)) {
                     if let Some(pos) = item.pos().filter(|p| in_sight(*p))
                         && is_food(item.material())
+                        && land.reserves.camp_holding(item.id()).is_none()
                     {
                         mind.food.insert(item.id(), pos);
                     }
@@ -6808,6 +6928,7 @@ fn look(
                 for item in world.laid_in(ChunkPos::new(cx, cy)) {
                     if let Some(pos) = item.pos().filter(|p| in_sight(*p))
                         && is_food(item.material())
+                        && land.reserves.camp_holding(item.id()).is_none()
                     {
                         mind.food.insert(item.id(), pos);
                     }
@@ -7013,6 +7134,8 @@ struct Land<'a> {
     memory: &'a mut Store,
     /// What the looks tell (a rumour dispelled).
     news: &'a mut Vec<News>,
+    /// Each hearth's reserve (D58).
+    reserves: &'a mut pooling::Reserves,
 }
 
 /// What the body decides, now that it looked.
@@ -7034,6 +7157,7 @@ fn decide(
         groups,
         memory,
         news,
+        reserves,
         ..
     } = land;
     let food: &Food = food;
@@ -7169,7 +7293,32 @@ fn decide(
         }
         return go_looking(map, rules, id, here, mind, seed, Why::Thirst);
     }
-    if hungry && let Some(item) = carried_food(world, rules, id) {
+    // A child fed by its hearth does not gather alone (D58).
+    let fed = pooling::fed_by_hearth(world, rules, reserves, body);
+    // Back at its camp (home from the day, or at night), it first puts
+    // down at its hearth's reserve what it carries beyond what it keeps
+    // (D58), then eats if hungry.
+    let at_home = (here.x - camp.x).abs() <= HOME_TILES && (here.y - camp.y).abs() <= HOME_TILES;
+    if at_home
+        && (night || mind.doing == Doing::Home || mind.hearth_carried_kj > 0)
+        && let Some(decision) =
+            pooling::put_down(world, rules, reserves, (id, body, night), mind, news)
+    {
+        return Some(decision);
+    }
+    // Hungry at its camp, it eats from its hearth's reserve before its
+    // own, the young first (D58).
+    if hungry
+        && let Some(decision) =
+            pooling::eat_at_hearth(world, rules, reserves, (id, body, here), mind)
+    {
+        return Some(decision);
+    }
+    // What it carries for its hearth is not its own to eat (D58).
+    if hungry
+        && pooling::may_eat_carried(world, rules, id, mind)
+        && let Some(item) = carried_food(world, rules, id)
+    {
         mind.doing = Doing::Nothing;
         return decision(Intention::Eat { body: id, item }, Why::Hunger);
     }
@@ -7200,7 +7349,10 @@ fn decide(
                 Why::Hunger,
             );
         }
-        if can_carry && let (Some(goal), fresh) = to_gather(mind, bearers, groups) {
+        if can_carry
+            && !fed
+            && let (Some(goal), fresh) = to_gather(mind, bearers, groups)
+        {
             if fresh {
                 mind.chose_at = Some(now);
             }
@@ -7211,7 +7363,7 @@ fn decide(
         // something is ripe somewhere. Out of season it bears its hunger
         // by its camp.
         let ripe_somewhere = food.now.iter().any(Option::is_some);
-        if !night && ripe_somewhere {
+        if !night && !fed && ripe_somewhere {
             return go_looking(map, rules, id, here, mind, seed, Why::Hunger);
         }
     }
@@ -7224,20 +7376,24 @@ fn decide(
         return decision;
     }
     // The day's plan said at the fire (D56): a group's turn, a look out.
-    let full = !can_carry || carried_kj(world, rules, id) >= mind.ways.stock_kj;
-    let mut gathers = !night && (!full || on_the_way(world, groups, mind));
+    // Its store, and what it saw its hearth needs of it (D58).
+    let store = mind.ways.stock_kj + mind.hearth_owed();
+    let full = !can_carry || carried_kj(world, rules, id) >= store;
+    let mut gathers = !night && !fed && (!full || on_the_way(world, groups, mind));
     let mut group_home = false;
     if !night {
         if let Turn::Decide(decision) = move_turn(world, rules, groups, (id, here), mind, now) {
             return decision;
         }
-        match group_turn(world, rules, groups, (id, here), mind, full, now) {
-            Turn::Go => {}
-            Turn::Home => {
-                gathers = false;
-                group_home = true;
+        if !fed {
+            match group_turn(world, rules, groups, (id, here), mind, full, now) {
+                Turn::Go => {}
+                Turn::Home => {
+                    gathers = false;
+                    group_home = true;
+                }
+                Turn::Decide(decision) => return decision,
             }
-            Turn::Decide(decision) => return decision,
         }
         if gathers && let Turn::Decide(decision) = look_out(world, rules, id, here, mind) {
             return decision;
@@ -9946,6 +10102,7 @@ mod tests {
             food: &mut food,
             memory: &mut memory,
             news: &mut news,
+            reserves: &mut pooling::Reserves::default(),
         };
         look(world, rules, BodyId(1), at, mind, &mut land);
     }
@@ -9967,6 +10124,7 @@ mod tests {
             food: &mut food,
             memory: &mut memory,
             news: &mut news,
+            reserves: &mut pooling::Reserves::default(),
         };
         decide(world, rules, &mut land, id, mind, 7)
     }
@@ -10410,6 +10568,7 @@ mod tests {
             food: &mut food,
             memory: &mut memory,
             news: &mut news,
+            reserves: &mut pooling::Reserves::default(),
         };
         look(&world, &rules, id, at, &mut whole, &mut land);
         assert!(!whole.places.is_empty());
@@ -11794,6 +11953,7 @@ mod tests {
                 food: &mut food,
                 memory: &mut memory,
                 news: &mut news,
+                reserves: &mut pooling::Reserves::default(),
             };
             look(&world, &rules, BodyId(1), at, &mut mind, &mut land);
             scan(at, &mut before);
@@ -12518,6 +12678,49 @@ mod tests {
         assert_eq!(home(infant), Pos::new(30, 30), "its carrier's");
         assert_eq!(home(mother), Pos::new(20, 20), "a grown body keeps its own");
         assert!(brains.minds.values().all(|m| m.home_at_dusk == m.ways.home));
+    }
+
+    #[test]
+    fn a_carried_infant_keeps_the_way_its_carrier_walks_until_it_is_weaned() {
+        // 25 November 2026: two infants weaned on their mother's way home,
+        // beyond a river, had no way of their own: their walk home stopped
+        // short day after day, and fed by the hearth (D58) they starved
+        // there. Carried, an infant goes its carrier's way and keeps it.
+        use crate::content::Sex;
+        let rules = rules();
+        let mut world = field(200, 150, Pos::new(5, 5));
+        let mother = BodyId(1);
+        let infant = world.spawn_body(Pos::new(5, 5));
+        let per_year = u64::from(world.calendar().days_per_age_year());
+        world.set_birth(mother, 30 * per_year, Sex::Female);
+        world.set_birth(infant, 0, Sex::Female);
+        assert!(world.carry(mother, infant));
+        let mut brains = piloted(&world);
+        nightfall(&world, &rules, &mut brains);
+        let walk = |brains: &mut Brains, world: &World, xs: std::ops::RangeInclusive<i32>| {
+            let events: Vec<Event> = xs
+                .map(|x| Event::BodyMoved {
+                    body: mother,
+                    to: Pos::new(x, 5),
+                    at: Pos::new(x, 5).centre(),
+                    remaining: 0,
+                })
+                .collect();
+            brains.count_gathers(&events, world, &rules);
+        };
+        walk(&mut brains, &world, 5..=60);
+        let way = vec![Pos::new(21, 5), Pos::new(37, 5), Pos::new(53, 5)];
+        assert_eq!(brains.minds[&mother].trail, way);
+        assert_eq!(brains.minds[&infant].trail, way, "carried, it went her way");
+        // Weaned, it walks its own: her steps are no longer its own.
+        for body in &mut world.bodies {
+            if body.id() == infant {
+                body.carried_by = None;
+            }
+        }
+        walk(&mut brains, &world, 61..=80);
+        assert_eq!(brains.minds[&infant].trail, way);
+        assert_ne!(brains.minds[&mother].trail, way);
     }
 
     #[test]
@@ -14122,6 +14325,7 @@ mod tests {
             food: &mut food,
             memory: &mut memory,
             news: &mut news,
+            reserves: &mut pooling::Reserves::default(),
         };
         decide(&world, &rules, &mut land, id, mind, 7);
         assert!(mind.goal.is_none());
@@ -14497,6 +14701,7 @@ mod tests {
                 food: &mut brains.food,
                 memory: &mut brains.memory,
                 news: &mut news,
+                reserves: &mut pooling::Reserves::default(),
             };
             let decision = decide(world, &rules, &mut land, id, &mut mind, 7);
             brains.minds.insert(id, mind);
@@ -14569,6 +14774,7 @@ mod tests {
                 food: &mut brains.food,
                 memory: &mut brains.memory,
                 news: &mut news,
+                reserves: &mut pooling::Reserves::default(),
             };
             let decision = decide(world, &rules, &mut land, id, &mut mind, 7);
             brains.minds.insert(id, mind);

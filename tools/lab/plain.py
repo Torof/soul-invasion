@@ -18,6 +18,7 @@ import threading
 import urllib.parse
 
 import panels
+import pooling
 import reading
 import scarcity
 
@@ -604,7 +605,7 @@ def moves_html(d):
 
 PARTS = [("chaine", "La chaîne du manque"), ("carte", "La carte : où ils vont"), ("population", "La population au fil du temps"),
          ("frise", "Naissances et morts sur une frise"), ("ages", "Les âges"), ("couples", "Les couples"),
-         ("demenagements", "Les déménagements"), ("chronique", "La chronique")]
+         ("foyer", "Le foyer : la mise en commun"), ("demenagements", "Les déménagements"), ("chronique", "La chronique")]
 LEADS = {
     "chaine": scarcity.LEAD,
     "carte": "Où chaque tribu a vécu, cycle par cycle : le curseur choisit le cycle, et chaque cadre ce qu’il montre "
@@ -614,6 +615,7 @@ LEADS = {
     "ages": "Combien d’hommes et de femmes de chaque âge vivent à la première journée et au dernier, par tranches de dix années d’âge.",
     "couples": "Combien de couples se forment ou se séparent, et si mari et femme se réveillent l’un près de l’autre : "
                "sans cela, pas d’enfant.",
+    "foyer": pooling.LEAD,
     "demenagements": "Chaque fois qu’un adulte change de foyer : quand, qui, à quelle distance et dans quelle direction, seul ou avec d’autres.",
     "chronique": "Ce qui s’est passé, dans l’ordre : d’abord les faits qui comptent, puis, à déplier, chaque fait un par un.",
 }
@@ -682,12 +684,13 @@ def run_body(s, r, d, store=None, year=None):
             part("frise", frise(d)),
             part("ages", panels.pyramids_html(d)),
             part("couples", couples_html(d)),
+            part("foyer", pooling.part_html(d)),
             part("demenagements", moves_html(d)),
             chron, rest_html(d),
             '<dialog id=fiche class=fiche aria-label="fiche"><div class=in><button type=button class=close>fermer</button><div class=body></div></div></dialog>',
             f"<script>{reading.TABLE_JS}{reading.CHRON_JS}{reading.MAP2_JS}{reading.LAZY_JS}{reading.FICHE_JS}{reading.TOC_JS}"
             f"{panels.MAPS6_JS}{panels.SM6_JS}</script>"]
-    toc = [(k, v.split(" : ")[0] if k == "carte" else v, False) for k, v in PARTS] + [("reste", "Pour aller plus loin", False)]
+    toc = [(k, v.split(" : ")[0] if k in ("carte", "foyer") else v, False) for k, v in PARTS] + [("reste", "Pour aller plus loin", False)]
     base = f"{urllib.parse.quote(serie)}/{urllib.parse.quote(name)}"
     return ("".join(head) + f'<div class=runpage data-fiche="/fiche/{h(base)}" data-morceau="/morceau/{h(base)}">{reading.toc_html(toc)}'
             f'<div class=runmain>{"".join(body)}</div></div>')

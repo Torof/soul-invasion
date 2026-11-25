@@ -433,12 +433,103 @@ pub struct Needs {
     /// family weighs only as company.
     #[serde(default)]
     pub family: Family,
+    /// Food pooled at the hearth (D58, validated by the project lead on 25
+    /// November 2026): one reserve a camp, the young fed from it, the
+    /// young first, and an innate care for their coming days. Absent:
+    /// each eats what it gathers, and a weaned child gathers for itself.
+    #[serde(default)]
+    pub pooling: Pooling,
     /// The gestures of the hands (D57): how long a cut or a fold takes,
     /// how far around itself a body sees what it may try one on, how many
     /// it tries a day in a trial of its hands. Absent: nobody tries a
     /// gesture.
     #[serde(default)]
     pub hands: Hands,
+}
+
+/// Food pooled at the hearth (D58; the project lead, 25 November 2026:
+/// « le foyer », everyone who lies down at the camp's evening gathering).
+/// One reserve a hearth, at the camp: who comes home puts there what it
+/// carries beyond its own store, who is hungry at the camp eats there
+/// before it eats its own, the young first. A child is fed by the hearth
+/// until `fed_until_years` and does not gather alone. Every value is a
+/// D30 placeholder, named and explained in `content/needs.ron`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pooling {
+    /// Until this age a child is fed by the hearth and does not gather
+    /// alone. 0: nothing is pooled.
+    pub fed_until_years: u32,
+    /// The innate care for the young's coming days (the project lead, 25
+    /// November 2026, « les jeunes d'abord »): drawn evenly between these
+    /// per cent from the run's seed and the body's id, the share of the
+    /// young of its hearth's uncovered need a grown body counts in its
+    /// own. Absent: (0, 0), nobody cares beyond what it sees hungry.
+    #[serde(default)]
+    pub care_percent: (u32, u32),
+    /// For its own children, its care times this per cent, at most 100.
+    #[serde(default)]
+    pub own_care_percent: u32,
+    /// How many coming days of the young's need the reserve is weighed
+    /// against. 0: no care.
+    #[serde(default)]
+    pub care_days: u32,
+}
+
+impl Pooling {
+    /// The placeholders of `content/needs.ron` (D30).
+    #[must_use]
+    pub fn placeholders() -> Self {
+        Self {
+            fed_until_years: 8,
+            care_percent: (0, 100),
+            own_care_percent: 200,
+            care_days: 2,
+        }
+    }
+
+    /// Whether anything is pooled.
+    #[must_use]
+    pub fn on(&self) -> bool {
+        self.fed_until_years > 0
+    }
+
+    /// Whether a child that old is fed by the hearth.
+    #[must_use]
+    pub fn fed(&self, age_milli: u64) -> bool {
+        age_milli < u64::from(self.fed_until_years) * 1000
+    }
+
+    /// Whether anybody cares for the young's coming days.
+    #[must_use]
+    pub fn cares(&self) -> bool {
+        self.on() && self.care_days > 0 && self.care_percent.1 > 0
+    }
+
+    /// The care of a body whose draw is `draw` (0 to 1000), in per cent.
+    #[must_use]
+    pub fn care_at(&self, draw: u64) -> u8 {
+        let (lo, hi) = (
+            u64::from(self.care_percent.0),
+            u64::from(self.care_percent.1),
+        );
+        let span = hi.saturating_sub(lo);
+        u8::try_from(lo + span * draw.min(1000) / 1000).unwrap_or(100)
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        let (lo, hi) = self.care_percent;
+        if lo > hi || hi > 100 {
+            return Err(ContentError::Needs(
+                "pooling: care_percent (low, high), low at most high, high at most 100",
+            ));
+        }
+        if self.own_care_percent > 1000 || self.fed_until_years > 100 || self.care_days > 100 {
+            return Err(ContentError::Needs(
+                "pooling: own_care_percent 1000, fed_until_years and care_days 100 at most",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// The gestures of the hands (D57; the project lead, 24 November 2026:
@@ -2052,6 +2143,7 @@ impl Needs {
         self.company.validate()?;
         self.moving.validate()?;
         self.family.validate()?;
+        self.pooling.validate()?;
         self.hands.validate()
     }
 

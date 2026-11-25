@@ -180,6 +180,10 @@ pub(crate) mod purpose {
     /// A body's innate sociability (D53, amended 24 November 2026): drawn
     /// from the seed and its id at adoption, never inherited.
     pub(crate) const SOCIABILITY: u64 = 0x0d53_c0a9;
+    /// A body's innate care for the young's coming days (D58): drawn even
+    /// from the content's range, from the run's seed and its id, never
+    /// inherited, fixed for life.
+    pub(crate) const HEARTH_CARE: u64 = 0x0d58_ca4e;
 
     /// Moving as a consequence (D56, amended 24 November 2026): whether a
     /// listener who believes a surprise told at the fire goes and sees it.

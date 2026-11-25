@@ -27,7 +27,7 @@ use crate::{
 };
 
 /// The top-level keys, in the order they are written.
-const ORDER: [&str; 24] = [
+const ORDER: [&str; 25] = [
     "meta",
     "years",
     "seasons",
@@ -48,6 +48,7 @@ const ORDER: [&str; 24] = [
     "home_changes",
     "nights_apart",
     "nights_out",
+    "pooling",
     "goals",
     "map",
     "bearers",
@@ -476,6 +477,9 @@ impl Report {
         // --- the scarcity chain (24 November 2026) ---
         value["chain"] = self.chain.json(self.ticks_per_day());
         // --- end of the scarcity chain ---
+        // --- the hearth's pooling (25 November 2026) ---
+        value["pooling"] = self.pooling.json();
+        // --- end of the hearth's pooling ---
         let changes: Vec<(u64, u8)> = self.home_changes.iter().map(|c| (c.day, c.tribe)).collect();
         let days = u64::from(self.calendar().days_per_age_year().max(1));
         let tribes = u8::try_from(self.camps.len()).unwrap_or(u8::MAX);

@@ -27,7 +27,7 @@ use sim::content::{Content, Decisions, Fire, Moving, Trials};
 use sim::map::{Map, Pos, Terrain};
 use sim::memory::{Access, Record, RecordId};
 use sim::time::Calendar;
-use sim::{Blockage, BodyId, Death, Event, Intention, Sex, World};
+use sim::{Blockage, BodyId, Death, Event, Intention, ItemId, Sex, World};
 
 // --- the scarcity chain (24 November 2026): its own module ---
 pub mod chain;
@@ -36,6 +36,9 @@ pub mod continents;
 pub mod hands;
 pub mod json;
 pub mod lands;
+// --- the hearth's pooling (25 November 2026): its own module ---
+pub mod pooling;
+// --- end of the hearth's pooling ---
 pub mod png;
 
 /// Where the content is looked for when no directory is given: as the
@@ -153,6 +156,12 @@ pub struct Settings {
     /// the content's `moving` section is replaced by none, so nobody is
     /// surprised and nobody moves home; everything else the same.
     pub moves: bool,
+    /// The hearth's pooling (D58): false is the control run without it
+    /// (`--no-pooling`), the content's `pooling` section replaced by none.
+    pub pooling: bool,
+    /// The care for the young's coming days (D58): false pools without it
+    /// (`--no-care`), the section's `care_days` set to 0.
+    pub care: bool,
     /// Where the vivarium's continent is kept between runs
     /// ([`continents`]): `None` for no cache (`--no-continent-cache`),
     /// the continent born at every run. The patch worlds never use it.
@@ -208,6 +217,8 @@ impl Default for Settings {
             fire: true,
             decisions: true,
             moves: true,
+            pooling: true,
+            care: true,
             continents: Some(continents::default_dir()),
             lands: Some(lands::default_dir()),
             helpers: 1,
@@ -1891,6 +1902,11 @@ pub struct Report {
     pub records: Vec<RecordRow>,
     /// Records written and freed over the run (D55).
     pub memory_counts: (u64, u64),
+    // --- the hearth's pooling (25 November 2026) ---
+    /// The hearths' reserves, the grown going out, the parents against the
+    /// others, the children's deaths (D58, [`pooling::HearthProbe`]).
+    pub pooling: pooling::HearthProbe,
+    // --- end of the hearth's pooling ---
     /// Seconds the run took on the wall.
     pub wall_s: f64,
     /// Seconds the world took to be born.
@@ -2023,6 +2039,8 @@ pub fn run_watched(
         || !settings.fire
         || !settings.decisions
         || !settings.moves
+        || !settings.pooling
+        || !settings.care
     {
         let mut own = content.clone();
         if settings.fed {
@@ -2041,6 +2059,12 @@ pub fn run_watched(
         }
         if !settings.decisions {
             own.needs.decisions = Decisions::default();
+        }
+        if !settings.pooling {
+            own.needs.pooling = sim::content::Pooling::default();
+        }
+        if !settings.care {
+            own.needs.pooling.care_days = 0;
         }
         if !settings.moves {
             own.needs.moving = Moving::default();
@@ -2264,6 +2288,9 @@ pub fn run_watched(
     let tribes = camps.len();
     let per_year = calendar.ticks_per_day() * u64::from(calendar.days_per_cycle());
     let mut food: BTreeMap<(u8, u64), Balance> = BTreeMap::new();
+    // The heaps put down at a hearth (D58), each with its putter's tribe,
+    // until the world lays it there.
+    let mut hearth_put: BTreeMap<ItemId, u8> = BTreeMap::new();
     let mut trials: Vec<TrialEvent> = Vec::new();
     let mut ways_in_use: BTreeMap<(u8, u64), WaysInUse> = BTreeMap::new();
     let mut presence: BTreeMap<(u8, u64), Presence> = BTreeMap::new();
@@ -2284,6 +2311,10 @@ pub fn run_watched(
     let mut knowledge: BTreeMap<(u8, u64), Knowledge> = BTreeMap::new();
     let mut known_places: BTreeMap<(u8, u64), Vec<(PlaceKey, bool)>> = BTreeMap::new();
     let mut settlements: BTreeMap<u64, Vec<Settlement>> = BTreeMap::new();
+    // --- the hearth's pooling (25 November 2026) ---
+    let mut pooling = pooling::HearthProbe::new(content);
+    let start_day = world.today();
+    // --- end of the hearth's pooling ---
     let mut why = WhyProbe::default();
     // --- the scarcity chain (24 November 2026) ---
     let mut chain = chain::Chain::new(calendar.ticks_per_day());
@@ -2334,6 +2365,9 @@ pub fn run_watched(
         // The year whose ticks are elapsing, as the calendar counts (from
         // 1): the tick that starts a year still closes the one before.
         let year = (tick - 1) / per_year + 1;
+        // --- the hearth's pooling (25 November 2026) ---
+        pooling.tick((&world, &brains, content), &events, day);
+        // --- end of the hearth's pooling ---
         if tick.is_multiple_of(per_year) {
             // One plain line a year on stderr, so nobody waits blind on a
             // long run.
@@ -2463,17 +2497,34 @@ pub fn run_watched(
                         person.ways = Some(*mind.ways());
                     }
                 }
+                // --- the hearth's pooling (25 November 2026) ---
+                Event::ItemAdded {
+                    item,
+                    material,
+                    mass_g,
+                    ..
+                } => {
+                    if let Some(tribe) = hearth_put.remove(item) {
+                        food.entry((tribe, year)).or_default().hearth_in_j +=
+                            joules(content, material, *mass_g);
+                    }
+                }
+                // --- end of the hearth's pooling ---
                 Event::BodyAte {
                     body,
+                    item,
                     material,
                     grams,
                     energy_kj,
-                    ..
                 } => {
                     let tribe = tribe_of(&people, *body);
-                    food.entry((tribe, year))
-                        .or_default()
-                        .eaten(content, material, *grams);
+                    let balance = food.entry((tribe, year)).or_default();
+                    balance.eaten(content, material, *grams);
+                    // --- the hearth's pooling (25 November 2026) ---
+                    if brains.hearth_holding(*item).is_some() {
+                        balance.hearth_out_j += joules(content, material, *grams);
+                    }
+                    // --- end of the hearth's pooling ---
                     let person = people.entry(*body).or_default();
                     person.meals.0 += 1;
                     person.meals.1 += grams;
@@ -2610,6 +2661,14 @@ pub fn run_watched(
         // The trials (D50): what the brains tried, judged and copied, in
         // the chronicle, on the person's page and in the counters.
         let batch = brains.news();
+        // --- the hearth's pooling (25 November 2026) ---
+        for news in &batch {
+            pooling.news(news, &world, day);
+            if let News::PutDown { body, item, .. } = news {
+                hearth_put.insert(*item, tribe_of(&people, *body));
+            }
+        }
+        // --- end of the hearth's pooling ---
         hands.news(&brains, (&world, content), &people, &batch, (day, age_year));
         // Who held what from whom this dawn (D55): the sentence of a
         // trial told names those who believed it.
@@ -2899,7 +2958,11 @@ pub fn run_watched(
                 | News::GoSee { .. }
                 | News::GoalSet { .. }
                 | News::GoalEnded { .. }
-                | News::Followed { .. } => continue,
+                | News::Followed { .. }
+                | News::PutDown { .. }
+                | News::AteAtHearth { .. }
+                | News::SpoiledAtHearth { .. }
+                | News::SawHearth { .. } => continue,
                 News::Copied {
                     body,
                     from,
@@ -3134,6 +3197,17 @@ pub fn run_watched(
         })
         .collect();
     let memory_counts = memory.counts();
+    // --- the hearth's pooling (25 November 2026) ---
+    pooling.finish(
+        &people,
+        (
+            calendar.ticks_per_day(),
+            u64::from(calendar.days_per_age_year()),
+            start_day,
+            world.today(),
+        ),
+    );
+    // --- end of the hearth's pooling ---
     let wall_s = started.elapsed().as_secs_f64();
     let placed_ahead = placer.as_ref().map_or(0, sim::ahead::Placer::placed);
     drop(placer);
@@ -3240,6 +3314,7 @@ pub fn run_watched(
         nights,
         records,
         memory_counts,
+        pooling,
         map_side,
         camps,
         ticks,
@@ -4442,6 +4517,11 @@ pub struct Balance {
     pub spoiled_j: u64,
     /// Carried by its living at the year's end (or the run's).
     pub end_j: u64,
+    /// Put down from the packs at a hearth's reserve (D58): it leaves the
+    /// packs without being lost.
+    pub hearth_in_j: u64,
+    /// Eaten from a hearth's reserve (D58): eaten, but from no pack.
+    pub hearth_out_j: u64,
     /// Samples (24 a day) of a living person thin: a person-day is 24.
     pub thin_samples: u64,
     /// Samples of a living person weak.
@@ -4491,7 +4571,9 @@ impl Balance {
         let flows = i128::from(self.start_j) + i128::from(self.gathered_j)
             - i128::from(self.eaten_j)
             - i128::from(self.spoiled_j)
-            - i128::from(self.end_j);
+            - i128::from(self.end_j)
+            - i128::from(self.hearth_in_j)
+            + i128::from(self.hearth_out_j);
         i64::try_from(flows).unwrap_or(i64::MAX)
     }
 }
@@ -6199,6 +6281,8 @@ mod tests {
             fire: true,
             decisions: true,
             moves: true,
+            pooling: true,
+            care: true,
             continents: None,
             lands: None,
             helpers: 1,
