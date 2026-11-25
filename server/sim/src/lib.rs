@@ -430,6 +430,13 @@ pub struct Body {
     /// The child a woman carries, not yet born (D49).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pregnant: Option<Pregnancy>,
+    /// A woman's reserve left at each of her last dawns, in joules, the
+    /// oldest first, at most the content's `conceive_gain_days` (D49,
+    /// amended 25 November 2026: fertility follows the gain). Kept only
+    /// while life is on (the vivarium's); never stored: a world read back
+    /// reads her gain flat until dawns pass again.
+    #[serde(skip)]
+    reserve_dawns: Vec<u64>,
 }
 
 /// A body of before ages, read from a world saved before them: twenty-five
@@ -643,6 +650,23 @@ impl Body {
     /// The child it carries unborn, if any (D49).
     pub fn pregnant(&self) -> Option<Pregnancy> {
         self.pregnant
+    }
+
+    /// Her reserve's mean gain a day over the dawns kept (D49, amended 25
+    /// November 2026: fertility follows the gain), in per cent of her
+    /// day's need: her reserve left now against her oldest dawn kept,
+    /// spread over the dawns since. Negative when it falls; 0 with no dawn
+    /// kept (life off, or a world just read back).
+    #[must_use]
+    pub fn reserve_gain_percent(&self, needs: &content::Needs) -> i64 {
+        let Some(&oldest) = self.reserve_dawns.first() else {
+            return 0;
+        };
+        let now = i128::from(self.condition.reserve_left_j(needs));
+        let days = i128::try_from(self.reserve_dawns.len()).unwrap_or(i128::MAX);
+        let need = i128::from(self.condition.need_j_per_day(needs).max(1));
+        let gain = (now - i128::from(oldest)) * 100 / (days * need);
+        i64::try_from(gain).unwrap_or(if gain < 0 { i64::MIN } else { i64::MAX })
     }
 
     /// What it can carry in all, in grams: the content's load for a grown
@@ -2497,6 +2521,7 @@ impl World {
             apart_days: 0,
             courting: None,
             pregnant: None,
+            reserve_dawns: Vec::new(),
         });
         self.enter_chunk(id, pos.chunk());
         self.grow_due = true;
@@ -2726,6 +2751,9 @@ impl World {
             && now.day_of_age_quarter() < u64::from(rules.needs.life.conceive_nights)
         {
             self.conceive(rules, now.age_year, now.age_quarter);
+        }
+        if now.is_day_start() {
+            self.mark_reserves(rules);
         }
         let night = self.is_night(rules);
         if night && !was_night {

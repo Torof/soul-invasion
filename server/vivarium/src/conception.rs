@@ -1,18 +1,22 @@
 //! The conceptions (25 November 2026): measures only, asked by the project
 //! lead after the hunger bar (D58, amended): at richness 1.0 no child was
 //! born after the thirteenth day on any of five seeds, every birth coming
-//! from the founders' pregnancies. The suspicion to measure, not to fix:
-//! the grown eat 62 to 79 % of their need, so a woman's fat reserve stays
-//! under the gate of `conceive_reserve_percent` (D49).
+//! from the founders' pregnancies. Since the same day the rule follows her
+//! reserve's gain, not its level (D49, amended 25 November 2026): only a
+//! weak woman is barred by her reserve, and the checks that reach the
+//! draw are counted by her gain.
 //!
 //! - **Every check**: at each dawn the world's conception rule runs
 //!   (`World::conceive`, the quarter's first `conceive_nights` days), each
 //!   woman of the fertile years, by the first condition that bars her, in
-//!   the rule's own order: with child already; her reserve at or under the
-//!   gate (by share left: under 25 %, 25 to 50 %, 50 % to the gate); an
-//!   infant in her arms; no spouse (never wed, widowed, parted); her spouse
-//!   beyond `mate_within_tiles`; all met but the quarter's draw said no;
-//!   conceived. Read on the world just before the tick that runs the rule
+//!   the rule's own order: with child already; weak; an infant in her
+//!   arms; no spouse (never wed, widowed, parted); her spouse beyond
+//!   `mate_within_tiles`; all met but the quarter's draw said no;
+//!   conceived.
+//! - **By her gain**: the checks that reached the draw and the conceptions,
+//!   by her reserve's gain (`Body::reserve_gain_percent`): falling (under
+//!   0), slow (0 to under the table's last point), good (at it or over, or
+//!   her reserve full). Read on the world just before the tick that runs the rule
 //!   (what runs before it in that tick, the spoiling, touches no body);
 //!   whether she conceived is read from the world just after.
 //! - **Every woman-quarter**: a woman is checked on several dawns of a
@@ -39,9 +43,8 @@ use crate::Person;
 pub enum Block {
     /// With child already.
     Pregnant,
-    /// Her reserve at or under the gate, by share left: 0 under 25 %, 1
-    /// from 25 to under 50 %, 2 from 50 % to the gate.
-    Reserve(u8),
+    /// Weak: under the content's `weak_percent` of her reserve.
+    Weak,
     /// An infant in her arms.
     Infant,
     /// No spouse, never wed.
@@ -58,13 +61,10 @@ pub enum Block {
     Conceived,
 }
 
-/// The keys of the counts, in order; the reserve's three are the
-/// [`Block::Reserve`] buckets.
-pub const KEYS: [&str; 11] = [
+/// The keys of the counts, in order.
+pub const KEYS: [&str; 9] = [
     "pregnant",
-    "reserve_0_25",
-    "reserve_25_50",
-    "reserve_50_80",
+    "weak",
     "infant",
     "never_wed",
     "widowed",
@@ -80,23 +80,51 @@ impl Block {
     pub fn index(self) -> usize {
         match self {
             Block::Pregnant => 0,
-            Block::Reserve(b) => 1 + usize::from(b.min(2)),
-            Block::Infant => 4,
-            Block::NeverWed => 5,
-            Block::Widowed => 6,
-            Block::Parted => 7,
-            Block::SpouseFar => 8,
-            Block::DrawNo => 9,
-            Block::Conceived => 10,
+            Block::Weak => 1,
+            Block::Infant => 2,
+            Block::NeverWed => 3,
+            Block::Widowed => 4,
+            Block::Parted => 5,
+            Block::SpouseFar => 6,
+            Block::DrawNo => 7,
+            Block::Conceived => 8,
+        }
+    }
+}
+
+/// Her reserve's gain at a check that reached the draw, as the keys of
+/// [`GAINS`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gain {
+    /// Falling: under 0.
+    Falling,
+    /// From 0 to under the content's last point.
+    Slow,
+    /// At the last point or over, or her reserve full: the table's best.
+    Good,
+}
+
+/// The keys of the gain's counts, in order.
+pub const GAINS: [&str; 3] = ["falling", "slow", "good"];
+
+impl Gain {
+    /// Her band, from her gain and whether her chance is the table's best.
+    #[must_use]
+    pub fn of(gain_percent: i64, best: bool) -> Gain {
+        if best {
+            Gain::Good
+        } else if gain_percent < 0 {
+            Gain::Falling
+        } else {
+            Gain::Slow
         }
     }
 
-    /// The same condition, whatever the reserve's bucket: a quarter barred
-    /// by her reserve on every check is barred by it.
-    fn kind(self) -> Block {
+    fn index(self) -> usize {
         match self {
-            Block::Reserve(_) => Block::Reserve(0),
-            other => other,
+            Gain::Falling => 0,
+            Gain::Slow => 1,
+            Gain::Good => 2,
         }
     }
 }
@@ -118,26 +146,15 @@ pub enum Spouse {
 }
 
 /// The first condition that bars a woman, in `World::conceive`'s order;
-/// `None` when all are met (the draw then decides). `share_percent` is her
-/// reserve left in per cent of the whole; `above_gate` is whether her
-/// reserve leaves her any chance: above the content's
-/// `conceive_reserve_percent`, or under it with a chance by her reserve.
+/// `None` when all are met (the draw then decides). `weak`: her reserve
+/// leaves her no chance (D49, amended 25 November 2026).
 #[must_use]
-pub fn first_block(
-    pregnant: bool,
-    (above_gate, share_percent): (bool, u64),
-    infant: bool,
-    spouse: Spouse,
-) -> Option<Block> {
+pub fn first_block(pregnant: bool, weak: bool, infant: bool, spouse: Spouse) -> Option<Block> {
     if pregnant {
         return Some(Block::Pregnant);
     }
-    if !above_gate {
-        return Some(Block::Reserve(match share_percent {
-            0..25 => 0,
-            25..50 => 1,
-            _ => 2,
-        }));
+    if weak {
+        return Some(Block::Weak);
     }
     if infant {
         return Some(Block::Infant);
@@ -156,30 +173,18 @@ pub fn first_block(
 pub struct Quarter {
     /// The checks, in order.
     pub checks: Vec<Block>,
-    /// Her best reserve share over the checks, in per cent.
-    pub best_share: u64,
 }
 
 impl Quarter {
     /// What the quarter counts as: conceived on any check; else the one
-    /// condition that barred every check (the reserve by her best share);
-    /// else `None`, mixed.
+    /// condition that barred every check; else `None`, mixed.
     #[must_use]
     pub fn verdict(&self) -> Option<Block> {
         if self.checks.contains(&Block::Conceived) {
             return Some(Block::Conceived);
         }
         let first = *self.checks.first()?;
-        if !self.checks.iter().all(|b| b.kind() == first.kind()) {
-            return None;
-        }
-        Some(match first {
-            Block::Reserve(_) => {
-                first_block(false, (false, self.best_share), false, Spouse::NeverWed)
-                    .unwrap_or(first)
-            }
-            other => other,
-        })
+        self.checks.iter().all(|&b| b == first).then_some(first)
     }
 }
 
@@ -199,12 +204,12 @@ pub struct Lost {
 pub struct SeasonDawns {
     /// Fertile women, counted at every dawn.
     pub fertile: u64,
-    /// Of them, above the gate.
-    pub above_gate: u64,
+    /// Of them, her reserve rising (a gain over 0).
+    pub rising: u64,
     /// Fertile women neither with child nor with an infant in her arms.
     pub free: u64,
-    /// Of them, above the gate.
-    pub free_above_gate: u64,
+    /// Of them, her reserve rising.
+    pub free_rising: u64,
 }
 
 /// The probe.
@@ -214,28 +219,31 @@ pub struct ConceptionProbe {
     pub checks: [u64; KEYS.len()],
     /// Each woman's quarters: (woman, age-year, quarter).
     pub quarters: BTreeMap<(BodyId, u64, u8), Quarter>,
+    /// The checks that reached the draw by her gain, as [`GAINS`]: (the
+    /// checks, the conceptions).
+    pub by_gain: [(u64, u64); GAINS.len()],
     /// The pregnancies lost, in order.
     pub lost: Vec<Lost>,
     /// The days of the births, in order.
     pub births: Vec<u64>,
     /// The dawns by (cycle, season).
     pub seasons: BTreeMap<(u64, Season), SeasonDawns>,
-    /// The content's gate, `conceive_reserve_percent`.
-    pub gate_percent: u32,
+    /// The content's `conceive_gain_days`: the dawns her gain is read over.
+    pub gain_days: u32,
     /// The women who met every condition at the dawn being stepped, with
-    /// her quarter's key: the world tells after the tick whether she
-    /// conceived.
-    pending: Vec<(u64, BodyId, u64, u8)>,
+    /// her quarter's key and her gain's band: the world tells after the
+    /// tick whether she conceived.
+    pending: Vec<(u64, BodyId, u64, u8, Gain)>,
 }
 
-/// Her reserve left in per cent of the whole, and whether it is above the
-/// gate by the rule's own comparison.
-fn reserve(woman: &Body, content: &Content) -> (bool, u64) {
-    let needs = &content.needs;
+/// Her reserve left in per cent of the whole.
+fn reserve(woman: &Body, content: &Content) -> u64 {
     let c = woman.condition();
-    let (left, whole) = (c.reserve_left_j(needs), c.reserve_j(needs));
-    let above = left * 100 > whole * u64::from(needs.life.conceive_reserve_percent);
-    (above, (left * 100).checked_div(whole).unwrap_or(0))
+    let (left, whole) = (
+        c.reserve_left_j(&content.needs),
+        c.reserve_j(&content.needs),
+    );
+    (left * 100).checked_div(whole).unwrap_or(0)
 }
 
 impl ConceptionProbe {
@@ -243,7 +251,7 @@ impl ConceptionProbe {
     #[must_use]
     pub fn new(content: &Content) -> Self {
         ConceptionProbe {
-            gate_percent: content.needs.life.conceive_reserve_percent,
+            gain_days: content.needs.life.conceive_gain_days,
             ..ConceptionProbe::default()
         }
     }
@@ -268,16 +276,17 @@ impl ConceptionProbe {
                 continue;
             }
             let pregnant = woman.pregnant().is_some();
-            let (above, share) = reserve(woman, content);
+            let gain = woman.reserve_gain_percent(&content.needs);
+            let rising = gain > 0;
             let infant = world
                 .bodies()
                 .iter()
                 .any(|b| b.carried_by() == Some(woman.id()));
             season.fertile += 1;
-            season.above_gate += u64::from(above);
+            season.rising += u64::from(rising);
             if !pregnant && !infant {
                 season.free += 1;
-                season.free_above_gate += u64::from(above);
+                season.free_rising += u64::from(rising);
             }
             if !checking {
                 continue;
@@ -292,30 +301,25 @@ impl ConceptionProbe {
                 .quarters
                 .entry((woman.id(), next.age_year, next.age_quarter))
                 .or_default();
-            quarter.best_share = quarter.best_share.max(share);
-            // Under the gate, a woman with a chance by her reserve (D49,
-            // amended 25 November 2026) is not barred by it: the draw
-            // decides.
-            let open = above
-                || life.conceive_chance(
-                    woman.condition().reserve_left_j(&content.needs),
-                    woman.condition().reserve_j(&content.needs),
-                ) > 0;
-            match first_block(pregnant, (open, share), infant, spouse) {
-                Some(block) => {
-                    self.checks[block.index()] += 1;
-                    quarter.checks.push(block);
-                }
-                None => self
-                    .pending
-                    .push((next.day, woman.id(), next.age_year, next.age_quarter)),
+            // The rule's own chance: nil only for a weak woman, or with no
+            // table at all.
+            let chance = sim::life::conceive_chance(woman, &content.needs);
+            if let Some(block) = first_block(pregnant, chance == 0, infant, spouse) {
+                self.checks[block.index()] += 1;
+                quarter.checks.push(block);
+            } else {
+                let best = life.conceive_percent_by_gain.last().map(|p| u64::from(p.1));
+                let band = Gain::of(gain, best == Some(chance));
+                self.by_gain[band.index()].0 += 1;
+                self.pending
+                    .push((next.day, woman.id(), next.age_year, next.age_quarter, band));
             }
         }
         let s = self.seasons.entry((next.cycle, next.season)).or_default();
         s.fertile += season.fertile;
-        s.above_gate += season.above_gate;
+        s.rising += season.rising;
         s.free += season.free;
-        s.free_above_gate += season.free_above_gate;
+        s.free_rising += season.free_rising;
     }
 
     /// After each tick: whether the women who met every condition
@@ -323,12 +327,13 @@ impl ConceptionProbe {
     /// as the draw's no), and the tick's losses and births.
     pub fn after(&mut self, world: &World, content: &Content, events: &[Event]) {
         let today = world.today();
-        for (_, woman, year, quarter) in std::mem::take(&mut self.pending) {
+        for (_, woman, year, quarter, band) in std::mem::take(&mut self.pending) {
             let conceived = world
                 .body(woman)
                 .and_then(Body::pregnant)
                 .is_some_and(|p| p.since_day == today);
             let block = if conceived {
+                self.by_gain[band.index()].1 += 1;
                 Block::Conceived
             } else {
                 Block::DrawNo
@@ -346,7 +351,7 @@ impl ConceptionProbe {
                 Event::PregnancyLost { mother, .. } => self.lost.push(Lost {
                     day,
                     mother: *mother,
-                    reserve_percent: world.body(*mother).map_or(0, |b| reserve(b, content).1),
+                    reserve_percent: world.body(*mother).map_or(0, |b| reserve(b, content)),
                 }),
                 Event::BodyBorn { .. } => self.births.push(day),
                 _ => {}
@@ -383,9 +388,20 @@ impl ConceptionProbe {
         let mut woman_quarters = keyed(&quarters);
         woman_quarters["mixed"] = json!(mixed);
         woman_quarters["total"] = json!(self.quarters.len());
+        let by_gain: serde_json::Map<String, Value> = GAINS
+            .iter()
+            .zip(&self.by_gain)
+            .map(|(k, (met, conceived))| {
+                (
+                    (*k).to_string(),
+                    json!({ "met": met, "conceived": conceived }),
+                )
+            })
+            .collect();
         json!({
-            "gate_percent": self.gate_percent,
+            "gain_days": self.gain_days,
             "checks": keyed(&self.checks),
+            "by_gain": by_gain,
             "woman_quarters": woman_quarters,
             "lost": self.lost.iter().map(|l| json!({
                 "day": l.day,
@@ -398,9 +414,9 @@ impl ConceptionProbe {
                 "cycle": cycle,
                 "season": season,
                 "fertile_dawns": s.fertile,
-                "above_gate": s.above_gate,
+                "rising": s.rising,
                 "free_dawns": s.free,
-                "free_above_gate": s.free_above_gate,
+                "free_rising": s.free_rising,
             })).collect::<Vec<_>>(),
         })
     }
@@ -515,67 +531,56 @@ mod tests {
             probe
                 .seasons
                 .values()
-                .all(|s| s.above_gate <= s.fertile && s.free_above_gate <= s.free)
+                .all(|s| s.rising <= s.fertile && s.free_rising <= s.free)
         );
+        let drawn: u64 = probe.by_gain.iter().map(|g| g.0).sum();
+        let by_gain: u64 = probe.by_gain.iter().map(|g| g.1).sum();
+        assert_eq!(
+            drawn,
+            probe.checks[Block::DrawNo.index()] + probe.checks[conceived],
+            "every check at the draw has a band"
+        );
+        assert_eq!(by_gain, probe.checks[conceived]);
         let data: Value = serde_json::from_str(&report.json()).expect("the file is JSON");
         let c = &data["conception"];
         assert_eq!(c["woman_quarters"]["total"], json!(probe.quarters.len()));
         assert_eq!(c["checks"]["conceived"], json!(probe.checks[conceived]));
-        assert_eq!(
-            c["gate_percent"],
-            json!(content.needs.life.conceive_reserve_percent)
-        );
+        assert_eq!(c["gain_days"], json!(content.needs.life.conceive_gain_days));
+        assert_eq!(c["by_gain"]["good"]["met"], json!(probe.by_gain[2].0));
     }
 
     #[test]
     fn the_first_bar_follows_the_rules_order() {
         let near = Spouse::Alive { near: true };
         assert_eq!(
-            first_block(true, (false, 10), true, Spouse::NeverWed),
+            first_block(true, true, true, Spouse::NeverWed),
             Some(Block::Pregnant)
         );
+        assert_eq!(first_block(false, true, true, near), Some(Block::Weak));
         assert_eq!(
-            first_block(false, (false, 24), true, near),
-            Some(Block::Reserve(0))
-        );
-        assert_eq!(
-            first_block(false, (false, 25), true, near),
-            Some(Block::Reserve(1))
-        );
-        assert_eq!(
-            first_block(false, (false, 50), false, near),
-            Some(Block::Reserve(2))
-        );
-        assert_eq!(
-            first_block(false, (false, 80), false, near),
-            Some(Block::Reserve(2))
-        );
-        assert_eq!(
-            first_block(false, (true, 81), true, Spouse::Parted),
+            first_block(false, false, true, Spouse::Parted),
             Some(Block::Infant)
         );
         assert_eq!(
-            first_block(false, (true, 90), false, Spouse::NeverWed),
+            first_block(false, false, false, Spouse::NeverWed),
             Some(Block::NeverWed)
         );
         assert_eq!(
-            first_block(false, (true, 90), false, Spouse::Widowed),
+            first_block(false, false, false, Spouse::Widowed),
             Some(Block::Widowed)
         );
         assert_eq!(
-            first_block(false, (true, 90), false, Spouse::Parted),
+            first_block(false, false, false, Spouse::Parted),
             Some(Block::Parted)
         );
         assert_eq!(
-            first_block(false, (true, 90), false, Spouse::Alive { near: false }),
+            first_block(false, false, false, Spouse::Alive { near: false }),
             Some(Block::SpouseFar)
         );
-        assert_eq!(first_block(false, (true, 90), false, near), None);
+        assert_eq!(first_block(false, false, false, near), None);
         let mut seen: Vec<usize> = [
             Block::Pregnant,
-            Block::Reserve(0),
-            Block::Reserve(1),
-            Block::Reserve(2),
+            Block::Weak,
             Block::Infant,
             Block::NeverWed,
             Block::Widowed,
@@ -593,38 +598,36 @@ mod tests {
 
     #[test]
     fn a_quarter_is_barred_only_by_what_barred_every_check() {
-        let q = |checks: &[Block], best_share| Quarter {
+        let q = |checks: &[Block]| Quarter {
             checks: checks.to_vec(),
-            best_share,
         };
+        assert_eq!(q(&[Block::SpouseFar; 4]).verdict(), Some(Block::SpouseFar));
         assert_eq!(
-            q(&[Block::SpouseFar; 4], 90).verdict(),
-            Some(Block::SpouseFar)
-        );
-        assert_eq!(
-            q(
-                &[
-                    Block::SpouseFar,
-                    Block::Conceived,
-                    Block::Pregnant,
-                    Block::Pregnant
-                ],
-                90
-            )
+            q(&[
+                Block::SpouseFar,
+                Block::Conceived,
+                Block::Pregnant,
+                Block::Pregnant
+            ])
             .verdict(),
             Some(Block::Conceived)
         );
-        assert_eq!(q(&[Block::SpouseFar, Block::DrawNo], 90).verdict(), None);
-        assert_eq!(
-            q(
-                &[Block::Reserve(0), Block::Reserve(1), Block::Reserve(1)],
-                30
-            )
-            .verdict(),
-            Some(Block::Reserve(1)),
-            "the reserve by her best share"
-        );
-        assert_eq!(q(&[], 0).verdict(), None);
+        assert_eq!(q(&[Block::SpouseFar, Block::DrawNo]).verdict(), None);
+        assert_eq!(q(&[Block::Weak, Block::Weak]).verdict(), Some(Block::Weak));
+        assert_eq!(q(&[]).verdict(), None);
+    }
+
+    #[test]
+    fn a_gain_falls_in_one_band() {
+        assert_eq!(Gain::of(-1, false), Gain::Falling);
+        assert_eq!(Gain::of(0, false), Gain::Slow);
+        assert_eq!(Gain::of(19, false), Gain::Slow);
+        assert_eq!(Gain::of(-30, true), Gain::Good, "a full reserve");
+        let bands: Vec<usize> = [Gain::Falling, Gain::Slow, Gain::Good]
+            .iter()
+            .map(|g| g.index())
+            .collect();
+        assert_eq!(bands, (0..GAINS.len()).collect::<Vec<_>>());
     }
 
     #[test]
