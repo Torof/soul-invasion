@@ -47,8 +47,8 @@
 //                          14, 6 and 12 degrees under, winter the 100 %
 //                          kept from before. A winter night fills the gauge
 //                          (300 a day, ten and a half hours of night); a
-//                          spring night reaches about 93, an autumn one 79,
-//                          a summer one 35.
+//                          spring night reaches about 67, an autumn one 57,
+//                          a summer one 24 (the calendar's shorter nights).
 // cold_relief_per_day:     600 — four hours of daylight undo it.
 // fatigue_per_day_awake:   120 — twenty hours awake fill the gauge.
 // rest_per_day_asleep:     300 — eight hours of sleep empty it.

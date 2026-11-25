@@ -65,6 +65,12 @@
          grams: (100, 200, 300), years: (lean: 10, rich: 10), per_hour_g: 1500),
         (on: "watercress", gives: "watercress", from: (spring, 0), until: (autumn, 100),
          grams: (50, 100, 150), years: (lean: 10, rich: 10), per_hour_g: 600),
+        // Linden inner bark, the spring's hunger food when the roots are
+        // spent and the leaves feed little (25 November 2026). Listed
+        // before the leaves: a brain sees the first crop of a kind in season,
+        // so the linden gives its bark first, then its leaves.
+        (on: "linden", gives: "linden_bark", from: (spring, 0), until: (spring, 60),
+         grams: (500, 800, 1200), years: (lean: 10, rich: 10), per_hour_g: 600),
         (on: "linden", gives: "linden_leaves", from: (spring, 0), until: (spring, 100),
          grams: (600, 1200, 2000), years: (lean: 10, rich: 10), per_hour_g: 1500),
         (on: "pine", gives: "pine_bark", from: (spring, 0), until: (summer, 0),
@@ -87,12 +93,16 @@
          grams: (100, 200, 400), years: (lean: 30, rich: 20), per_hour_g: 1000),
         (on: "wild_flax", gives: "flax_seeds", from: (summer, 60), until: (autumn, 30),
          grams: (10, 20, 40), years: (lean: 15, rich: 15), per_hour_g: 200),
-        // Through the winter: haws and hips stay on the branch, oyster
+        // Through the winter: haws and hips stay on the branch, but the
+        // thrushes, the jays and the rot take them faster than they ripened
+        // (the smoothed calendar, 25 November 2026: a harder winter); oyster
         // mushrooms on the trunks, cattail roots in the mud all year.
-        (on: "hawthorn", gives: "haws", from: (autumn, 0), until: (winter, 100),
-         grams: (1000, 2000, 3000), years: (lean: 15, rich: 15), per_hour_g: 1000),
+        (on: "hawthorn", gives: "haws", from: (autumn, 0), until: (winter, 60),
+         grams: (1000, 2000, 3000), years: (lean: 15, rich: 15), per_hour_g: 1000,
+         ripen: (rise: 20, fall: 60)),
         (on: "dog_rose", gives: "rose_hips", from: (autumn, 0), until: (winter, 100),
-         grams: (300, 700, 1000), years: (lean: 15, rich: 15), per_hour_g: 500),
+         grams: (300, 700, 1000), years: (lean: 15, rich: 15), per_hour_g: 500,
+         ripen: (rise: 20, fall: 70)),
         (on: "oyster_mushroom", gives: "oyster_mushrooms", from: (autumn, 30), until: (winter, 100),
          grams: (100, 300, 500), years: (lean: 20, rich: 20), per_hour_g: 800),
         (on: "cattail", gives: "cattail_root", from: (spring, 0), until: (winter, 100),
@@ -111,7 +121,7 @@
         (on: "lambs_lettuce", gives: "lambs_lettuce", from: (winter, 50), until: (spring, 60),
          grams: (30, 60, 100), years: (lean: 10, rich: 10), per_hour_g: 600),
         // The summer's start: currants, gooseberries, bilberries, greens.
-        (on: "gooseberry", gives: "gooseberries", from: (spring, 90), until: (summer, 60),
+        (on: "gooseberry", gives: "gooseberries", from: (spring, 70), until: (summer, 60),
          grams: (1000, 2000, 3000), years: (lean: 15, rich: 15), per_hour_g: 1500),
         (on: "red_currant", gives: "red_currants", from: (summer, 0), until: (summer, 60),
          grams: (500, 1500, 2500), years: (lean: 15, rich: 15), per_hour_g: 1200),
@@ -129,23 +139,24 @@
          grams: (2000, 5000, 8000), years: (lean: 20, rich: 20), per_hour_g: 2000),
         (on: "wild_grape", gives: "grapes", from: (autumn, 0), until: (autumn, 70),
          grams: (1000, 3000, 5000), years: (lean: 20, rich: 20), per_hour_g: 2000),
-        (on: "strawberry_tree", gives: "arbutus_berries", from: (autumn, 50), until: (winter, 60),
+        (on: "strawberry_tree", gives: "arbutus_berries", from: (autumn, 50), until: (winter, 40),
          grams: (1000, 3000, 5000), years: (lean: 20, rich: 20), per_hour_g: 1500),
-        (on: "blackthorn", gives: "sloes", from: (autumn, 50), until: (winter, 100),
-         grams: (1000, 2000, 3000), years: (lean: 15, rich: 15), per_hour_g: 1200),
+        (on: "blackthorn", gives: "sloes", from: (autumn, 50), until: (winter, 60),
+         grams: (1000, 2000, 3000), years: (lean: 15, rich: 15), per_hour_g: 1200,
+         ripen: (rise: 20, fall: 50)),
         (on: "wild_onion", gives: "wild_onions", from: (spring, 0), until: (winter, 100),
          grams: (20, 40, 60), years: (lean: 5, rich: 5), per_hour_g: 300,
          ripen: (rise: 0, fall: 0)),
-        (on: "silverweed", gives: "silverweed_root", from: (autumn, 0), until: (spring, 30),
+        (on: "silverweed", gives: "silverweed_root", from: (autumn, 0), until: (spring, 80),
          grams: (30, 60, 100), years: (lean: 10, rich: 10), per_hour_g: 400),
-        (on: "arrowhead", gives: "arrowhead_tubers", from: (autumn, 30), until: (spring, 40),
+        (on: "arrowhead", gives: "arrowhead_tubers", from: (autumn, 30), until: (spring, 80),
          grams: (50, 100, 150), years: (lean: 10, rich: 10), per_hour_g: 500),
         (on: "water_chestnut", gives: "water_chestnuts", from: (autumn, 0), until: (winter, 50),
          grams: (50, 150, 250), years: (lean: 15, rich: 15), per_hour_g: 800),
-        // The fruit and nut trees (16 November 2026): cherries and
-        // mulberries for the summer, pears, figs, walnuts and chestnuts for
+        // The fruit and nut trees (16 November 2026): cherries at the
+        // spring's end (25 November 2026), mulberries for the summer, pears, figs, walnuts and chestnuts for
         // the autumn and the winter's store.
-        (on: "wild_cherry", gives: "cherries", from: (summer, 0), until: (summer, 40),
+        (on: "wild_cherry", gives: "cherries", from: (spring, 80), until: (summer, 30),
          grams: (5000, 15000, 30000), years: (lean: 25, rich: 20), per_hour_g: 3000),
         (on: "mulberry", gives: "mulberries", from: (summer, 20), until: (summer, 80),
          grams: (3000, 8000, 15000), years: (lean: 15, rich: 15), per_hour_g: 2500),
@@ -153,9 +164,11 @@
          grams: (2000, 6000, 12000), years: (lean: 20, rich: 15), per_hour_g: 2500),
         (on: "wild_pear", gives: "pears", from: (autumn, 0), until: (autumn, 80),
          grams: (5000, 15000, 25000), years: (lean: 20, rich: 20), per_hour_g: 4000),
-        (on: "walnut", gives: "walnuts", from: (autumn, 20), until: (winter, 30),
-         grams: (5000, 15000, 30000), years: (lean: 25, rich: 25), per_hour_g: 2000),
+        (on: "walnut", gives: "walnuts", from: (autumn, 20), until: (winter, 20),
+         grams: (5000, 15000, 30000), years: (lean: 25, rich: 25), per_hour_g: 2000,
+         ripen: (rise: 20, fall: 50)),
         (on: "chestnut", gives: "chestnuts", from: (autumn, 20), until: (winter, 20),
-         grams: (10000, 30000, 60000), years: (lean: 25, rich: 25), per_hour_g: 3000),
+         grams: (10000, 30000, 60000), years: (lean: 25, rich: 25), per_hour_g: 3000,
+         ripen: (rise: 20, fall: 50)),
     ],
 )
