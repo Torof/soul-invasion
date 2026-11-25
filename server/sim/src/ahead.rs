@@ -30,6 +30,7 @@ use crate::content::{Content, Species};
 use crate::crops::{self, Bearer, Crop};
 use crate::flora;
 use crate::ground::Ground;
+use crate::land::{Refused, Taken};
 use crate::map::{CHUNK_SIZE, ChunkPos, FinePos, Map, Pos};
 use crate::open_ground::OpenGround;
 use crate::trees::Tree;
@@ -100,10 +101,51 @@ impl Placing {
 
     /// Takes the trees and bearers of `bytes` into the world's ground
     /// ([`Ground::take_bytes`], its kinds of tree counted from this
-    /// placing's): how many chunks of trees and of bearers, or `None`.
+    /// placing's) after a check (D51, amended 25 November 2026): the
+    /// bearers of `check` chunks of the bytes, chosen by `salt`, are
+    /// placed here first, with the trees of the nine chunks around each,
+    /// and every chunk held is compared with the bytes' own.
+    ///
+    /// # Errors
+    ///
+    /// Taking nothing: [`Refused::Unreadable`] for bytes damaged or of
+    /// another layout or content; [`Refused::Differs`] when a chunk
+    /// placed here is not the bytes' (another code placed them).
+    pub fn take_ground_bytes(
+        &self,
+        bytes: &[u8],
+        check: usize,
+        salt: u64,
+    ) -> Result<Taken<2>, Refused> {
+        let read =
+            crate::ground::read_ground(bytes, self.species.len()).ok_or(Refused::Unreadable)?;
+        for i in crate::land::sample(read.1.len(), check, salt) {
+            self.place_ahead(read.1[i].0);
+        }
+        self.ground.take_read(read)
+    }
+
+    /// Places `chunk`'s trees into the ground if they are not held yet
+    /// (the same as when first asked for): a whole map's ground is
+    /// prepared this way, the trees of every chunk first, on as many
+    /// threads as there are cores. Nothing off the map.
+    pub fn place_trees(&self, chunk: ChunkPos) {
+        if self.map.has_chunk(chunk) {
+            let _ = self.parts().trees_in(chunk);
+        }
+    }
+
+    /// Places `chunk`'s bearers into the ground if they are not held yet
+    /// (the trees around read where the ground holds them): `true` if it
+    /// placed them.
+    pub fn place_bearers(&self, chunk: ChunkPos) -> bool {
+        self.place_ahead(chunk)
+    }
+
+    /// The map the placing reads.
     #[must_use]
-    pub fn take_ground_bytes(&self, bytes: &[u8]) -> Option<[usize; 2]> {
-        self.ground.take_bytes(bytes, self.species.len())
+    pub fn map(&self) -> &Map {
+        &self.map
     }
 
     /// The same, borrowed.
@@ -608,9 +650,12 @@ mod tests {
         let again = World::with_valley(calendar(), &rules, 256);
         let taking = Placing::of(&again);
         assert_eq!(taking.fingerprint(), placing.fingerprint());
-        let taken = taking.take_ground_bytes(&bytes).expect("the same world's");
-        assert_eq!(taken[1], chunks.len());
-        assert_eq!(taken[0], ground.trees_held());
+        let taken = taking
+            .take_ground_bytes(&bytes, 0, 0)
+            .expect("the same world's");
+        assert_eq!(taken.taken[1], chunks.len());
+        assert_eq!(taken.taken[0], ground.trees_held());
+        assert_eq!(taken.kept, taken.taken);
         let mut bearing = 0;
         for &chunk in &chunks {
             let kept = again.bearers_in(chunk);
@@ -622,20 +667,69 @@ mod tests {
         assert_eq!(taken_ground.bearers_placed(), 0, "nothing placed again");
         assert_eq!(taken_ground.trees_placed(), 0, "no tree placed again");
         assert_eq!(taken_ground.to_bytes(), bytes, "written again, the same");
-        assert_eq!(taking.take_ground_bytes(&bytes), Some([0, 0]));
+        let twice = taking.take_ground_bytes(&bytes, 4, 9).expect("the same");
+        assert_eq!(twice.taken, [0, 0]);
+        assert_eq!(
+            twice.compared,
+            twice.kept[0] + twice.kept[1],
+            "all compared"
+        );
+        // A check on a fresh world: a few chunks placed here first, found
+        // the same, the rest taken.
+        let checked = World::with_valley(calendar(), &rules, 256);
+        let checking = Placing::of(&checked);
+        let taken = checking.take_ground_bytes(&bytes, 5, 3).expect("the same");
+        assert!(taken.compared >= 5, "{taken:?}");
+        assert_eq!(checked.shared_ground().bearers_placed(), 5);
+        assert_eq!(checked.shared_ground().ground_held(), taken.kept);
         // Damaged, cut short, or for fewer kinds of tree: refused whole.
         let fresh = World::with_valley(calendar(), &rules, 256);
         let mut damaged = bytes.clone();
         damaged[bytes.len() / 2] ^= 1;
-        assert_eq!(fresh.shared_ground().take_bytes(&damaged, usize::MAX), None);
+        let refused = Err(Refused::Unreadable);
+        assert_eq!(
+            fresh.shared_ground().take_bytes(&damaged, usize::MAX),
+            refused
+        );
         assert_eq!(
             fresh
                 .shared_ground()
                 .take_bytes(&bytes[..bytes.len() - 9], usize::MAX),
-            None
+            refused
         );
-        assert_eq!(fresh.shared_ground().take_bytes(&bytes, 0), None);
+        assert_eq!(fresh.shared_ground().take_bytes(&bytes, 0), refused);
         assert_eq!(fresh.shared_ground().trees_held(), 0, "nothing taken");
+        // Bytes of another code: a tree of a chunk moved. Without a check
+        // they would be taken; the check places the chunks here, finds one
+        // that is not the bytes', and takes nothing.
+        let (mut trees, bearers) =
+            crate::ground::read_ground(&bytes, rules.species.len()).expect("readable");
+        let (moved_chunk, moved) = trees
+            .iter_mut()
+            .find(|(_, t)| !t.is_empty())
+            .expect("a wooded chunk");
+        moved[0].at = FinePos::new(moved[0].at.x + 1, moved[0].at.y);
+        let moved_chunk = *moved_chunk;
+        let forged = Ground::default();
+        forged.take_read((trees, bearers)).expect("taken as given");
+        let foreign = forged.to_bytes();
+        let checked = World::with_valley(calendar(), &rules, 256);
+        assert_eq!(
+            Placing::of(&checked).take_ground_bytes(&foreign, usize::MAX, 1),
+            Err(Refused::Differs(moved_chunk))
+        );
+        assert_eq!(
+            checked.shared_ground().trees_held() as u64,
+            checked.shared_ground().trees_placed(),
+            "nothing taken"
+        );
+        let unchecked = World::with_valley(calendar(), &rules, 256);
+        assert!(
+            Placing::of(&unchecked)
+                .take_ground_bytes(&foreign, 0, 1)
+                .is_ok(),
+            "the check guards"
+        );
     }
 
     /// The helper's choice is [`ahead_of`]'s, the chunks off the map and

@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use vivarium::{Settings, Start, WorldKind, run};
+use vivarium::{Settings, Start, WorldKind, prepare, run};
 
 const USAGE: &str = "\
 vivarium [options]   runs a world of the simulation headless and accelerated,
@@ -78,10 +78,16 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
                            continents/ (where a run keeps it; same pages)
   --no-land-cache          make every chunk of land (tiles, woods, water)
                            and place every tree and plant anew instead of
-                           reading those the runs before kept under
+                           reading those kept under
                            ${XDG_CACHE_HOME:-~/.cache}/soul-sim/lands/ (a
-                           file a world and a build, the plants' also a
-                           content; same pages)
+                           file a world and a land-making code, the plants'
+                           also a content, checked when read; a run that
+                           finds none prepares it on all cores; same pages)
+  --prepare-land           simulate nothing: make the whole land of --world,
+                           its trees and its plants (with --content) on all
+                           cores and keep them, for the runs of a series to
+                           read (done once per world, content and
+                           land-making code; seeds share it)
   --helpers N              threads placing the chunks' plants ahead of the
                            bodies (default 1; 0 = the simulation thread
                            alone, for runs side by side); the pages are the
@@ -101,6 +107,8 @@ struct Options {
     out: PathBuf,
     /// The long page of before (`--page full`) rather than the minimal one.
     full_page: bool,
+    /// Prepare the land and keep it, run nothing (`--prepare-land`).
+    prepare: bool,
 }
 
 #[allow(
@@ -113,6 +121,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
     let mut world = "patch".to_owned();
     let mut out = PathBuf::from("vivarium-report.html");
     let mut full_page = false;
+    let mut prepare = false;
     let mut tribes: Option<u32> = None;
     // The start asked, and whether a founders' flag was given.
     let mut start: Option<Start> = None;
@@ -176,6 +185,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--no-trips" => settings.trips = false,
             "--no-continent-cache" => settings.continents = None,
             "--no-land-cache" => settings.lands = None,
+            "--prepare-land" => prepare = true,
             "--helpers" => settings.helpers = small(&mut i, "--helpers", "too many")?,
             "--fed" => settings.fed = true,
             "--ages" => {
@@ -252,6 +262,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
         settings,
         out,
         full_page,
+        prepare,
     }))
 }
 
@@ -274,6 +285,18 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if options.prepare {
+        return match prepare(&options.settings) {
+            Ok(line) => {
+                println!("{line}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("vivarium: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let report = match run(&options.settings) {
         Ok(report) => report,
         Err(error) => {
@@ -462,6 +485,8 @@ mod tests {
                 .is_none()
         );
         assert!(parse(&args(&[])).unwrap().unwrap().settings.lands.is_some());
+        assert!(parse(&args(&["--prepare-land"])).unwrap().unwrap().prepare);
+        assert!(!parse(&args(&[])).unwrap().unwrap().prepare);
         assert!(
             parse(&args(&["--no-continent-cache"]))
                 .unwrap()

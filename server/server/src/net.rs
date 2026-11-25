@@ -4356,12 +4356,15 @@ mod tests {
             assert_eq!(&sent(&forgets, chunk).unwrap(), miss, "{chunk:?}");
             assert_eq!(forgets.ground.trees_held(), 1, "bounded");
         }
-        // A change to a chunk (felling, later) bumps its version: placed
-        // again, the same today, nothing laying changes over them yet.
+        // A change to a chunk (an item laid or taken, a crop picked)
+        // bumps its version: its frame is made again, its trees are kept
+        // as placed, no change of men touching a tree yet (D51, amended 25
+        // November 2026).
+        let placed = shared.ground.trees_placed();
         shared.ground.set_version(chunks[0], 1);
         assert!(
-            !shared.ground.holds_trees(chunks[0]),
-            "the old version is stale"
+            shared.ground.holds_trees(chunks[0]),
+            "the trees are kept across the change"
         );
         // Encoded again. The version its frame carries is the one the
         // events told the network (D4): a felling will come with its own
@@ -4372,10 +4375,7 @@ mod tests {
             (&misses[0].tiles, &misses[0].trees, &misses[0].items)
         );
         assert_eq!(protocol::decode_chunk(&again.frame).unwrap().version, 0);
-        assert!(
-            shared.ground.holds_trees(chunks[0]),
-            "held at the new version"
-        );
+        assert_eq!(shared.ground.trees_placed(), placed, "not placed again");
     }
 
     #[test]

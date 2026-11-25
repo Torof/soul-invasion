@@ -79,9 +79,11 @@ clock, the only field no seed decides.
 | `meta.timing.placed` | Chunks whose plants were placed over the run, by the helpers and the simulation thread together (a chunk twice when both placed it at once) | count |
 | `meta.timing.placed_ahead` | Of those, the chunks the helpers placed ahead | count |
 | `meta.timing.land_made` | Chunks of land the run made itself until its end, the picture's apart: tiles, woods, water (D51 amended 25 November 2026) | `[count, count, count]` |
-| `meta.timing.land_kept` | Chunks of land read from the file the runs before kept (`--no-land-cache`: none): tiles, woods, water | `[count, count, count]` |
+| `meta.timing.land_kept` | Chunks of land read from the file kept (`--no-land-cache`: none): tiles, woods, water | `[count, count, count]` |
 | `meta.timing.ground_made` | Chunks of trees and of bearers the run placed until its end, the food map's apart (D51 amended 25 November 2026) | `[count, count]` |
-| `meta.timing.ground_kept` | Chunks of trees and of bearers read from the file the runs before kept on this world with this content (`--no-land-cache`: none) | `[count, count]` |
+| `meta.timing.ground_kept` | Chunks of trees and of bearers read from the file kept on this world with this content (`--no-land-cache`: none) | `[count, count]` |
+| `meta.timing.land_checked` | Chunks of land, then of trees and bearers, the run held before taking the kept files and found the same as theirs: the check that lets a file written by another build be read (D51 amended 25 November 2026) | `[count, count]` |
+| `meta.timing.land_prepared_s` | Seconds on the wall the run spent preparing the whole land, then its trees and plants, on all cores, when no whole file was kept; 0 when it read them | `[seconds, seconds]` |
 | `meta.memory.written` | Records written to the common memory over the run (D55) | count |
 | `meta.memory.freed` | Records freed, their last access dropped | count |
 | `meta.memory.held` | Records held at the end, those of `records` | count |

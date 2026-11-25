@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::r#gen::scatter::purpose;
 use crate::r#gen::{Groves, Lcg};
-use crate::land::{Land, Waters};
+use crate::land::{Land, Refused, Taken, Waters};
 use crate::plan::Window;
 use crate::woods::{Habitat, Woods};
 
@@ -794,15 +794,47 @@ impl Map {
     }
 
     /// Takes the chunks of land in `bytes` ([`Map::land_bytes`] of a map of
-    /// the same spec: the caller's to guarantee) that are not held yet, as
-    /// if made here: how many chunks of tiles, woods and water. `None`,
-    /// taking nothing, for bytes damaged, of another layout or of a map of
-    /// another size, and for a map of one terrain.
-    #[must_use]
-    pub fn take_land_bytes(&self, bytes: &[u8]) -> Option<[usize; 3]> {
+    /// the same spec, made by the same land-making code) that are not held
+    /// yet, as if made here, after a check: `check` chunks of the bytes,
+    /// chosen by `salt`, are made here first, and every chunk held is
+    /// compared with the bytes' own ([`crate::land::Taken`]).
+    ///
+    /// # Errors
+    ///
+    /// Taking nothing: [`Refused::Unreadable`] for bytes damaged, of
+    /// another layout or of a map of another size, and for a map of one
+    /// terrain; [`Refused::Differs`] when a chunk made here is not the
+    /// bytes' (another land-making code wrote them).
+    pub fn take_land_bytes(
+        &self,
+        bytes: &[u8],
+        check: usize,
+        salt: u64,
+    ) -> Result<Taken<3>, Refused> {
         match &self.ground {
-            Made::Valley(land) => land.take_bytes(bytes),
-            Made::Filled(_) => None,
+            Made::Valley(land) => land.take_bytes(bytes, check, salt),
+            Made::Filled(_) => Err(Refused::Unreadable),
+        }
+    }
+
+    /// Makes `chunk`'s tiles, woods and water if they are not held yet
+    /// (the same as when first read): a whole land is prepared this way,
+    /// chunk by chunk, on as many threads as there are cores. Nothing off
+    /// the map or on a map of one terrain.
+    pub fn make_land(&self, chunk: ChunkPos) {
+        if let Made::Valley(land) = &self.ground
+            && self.has_chunk(chunk)
+        {
+            land.make(chunk);
+        }
+    }
+
+    /// How many chunks of tiles, of woods and of water are held now.
+    #[must_use]
+    pub fn land_held(&self) -> [usize; 3] {
+        match &self.ground {
+            Made::Valley(land) => land.held(),
+            Made::Filled(_) => [0; 3],
         }
     }
 
