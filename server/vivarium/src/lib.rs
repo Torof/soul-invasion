@@ -2708,7 +2708,13 @@ pub fn run_watched(
                     }
                 }
                 // --- the hearth's pooling (25 November 2026) ---
-                Event::ItemAdded {
+                Event::Kept {
+                    item,
+                    material,
+                    mass_g,
+                    ..
+                }
+                | Event::ItemAdded {
                     item,
                     material,
                     mass_g,
@@ -3616,6 +3622,15 @@ fn thought(intention: &Intention, why: Why) -> String {
         Intention::MoveTo { target, .. } => format!("walks to ({}, {})", target.x, target.y),
         Intention::Drink { at, .. } => format!("drinks at ({}, {})", at.x, at.y),
         Intention::Eat { item, .. } => format!("eats item {}", item.0),
+        // Laid at its hearth's reserve (D58): said as the drop it was
+        // before the reserve became a ledger, so that pages compare.
+        Intention::Keep { body, item } => format!(
+            "{:?}",
+            Intention::Drop {
+                body: *body,
+                item: *item
+            }
+        ),
         Intention::Sleep { .. } => "lies down to sleep".to_owned(),
         Intention::Wake { .. } => "gets up".to_owned(),
         Intention::Gather { gives, .. } => format!("gathers {gives}"),

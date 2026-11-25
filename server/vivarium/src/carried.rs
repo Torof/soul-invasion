@@ -586,7 +586,9 @@ impl CarryProbe {
                     }
                 }
                 _ if hunger < HUNGRY => continue,
-                Intention::Drop { .. } if put > 0 => &mut c.hungry_putting_down,
+                Intention::Drop { .. } | Intention::Keep { .. } if put > 0 => {
+                    &mut c.hungry_putting_down
+                }
                 _ if carried <= held => &mut c.hungry_blocked,
                 _ => &mut c.hungry_own_left,
             };

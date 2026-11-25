@@ -515,6 +515,9 @@ fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
         | Event::WorkStopped { .. }
         | Event::GatherRefused { .. }
         | Event::Spoiled { .. }
+        // Food kept in a store is the vivarium's brains' alone (D58): the
+        // server's worlds keep none.
+        | Event::Kept { .. }
         // Births, lost pregnancies and couples are the vivarium's (D49):
         // the life rule is off in the game and the protocol says nothing.
         | Event::BodyBorn { .. }
