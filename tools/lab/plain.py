@@ -19,6 +19,7 @@ import urllib.parse
 
 import panels
 import reading
+import scarcity
 
 h = html.escape
 fmt = reading.fmt
@@ -73,7 +74,8 @@ def measures(d):
     return {"start": sm["start"], "births": sm["births"], "deaths": sm["dead"], "hunger": deaths.get("hunger", 0),
             "alive": sm["alive"], "lived": sm["start"] + sm["births"], "together": together_percent(d),
             "noon_spring": noon_spring_median(d), "moves": len(hc) if isinstance(hc, list) else None,
-            "wall": wall if isinstance(wall, (int, float)) and wall > 0 else None}
+            "wall": wall if isinstance(wall, (int, float)) and wall > 0 else None,
+            "chain": scarcity.measures(d)}   # the second table, « La chaîne du manque » (scarcity.py)
 
 
 _MEASURES = {}
@@ -395,7 +397,7 @@ def serie_body(s, store):
     out = [crumbs([("Labo", "/"), (title, None)]), f"<h1>{h(title)}{state}</h1>",
            f'<p class=question>{h(s.get("question") or "Question : pas écrite")}</p>',
            f'<p class=answer>{h(answer)}</p>' if answer else '<p class="answer none">Réponse : pas encore écrite</p>',
-           series_table(s, store)]
+           series_table(s, store), scarcity.chain_table(series_rows(s, store)[0])]
     walls = []
     for r in s.get("runs") or []:
         m = measures_of(store, s["name"], r["name"])
@@ -600,10 +602,11 @@ def moves_html(d):
     return "".join(out)
 
 
-PARTS = [("carte", "La carte : où ils vont"), ("population", "La population au fil du temps"),
+PARTS = [("chaine", "La chaîne du manque"), ("carte", "La carte : où ils vont"), ("population", "La population au fil du temps"),
          ("frise", "Naissances et morts sur une frise"), ("ages", "Les âges"), ("couples", "Les couples"),
          ("demenagements", "Les déménagements"), ("chronique", "La chronique")]
 LEADS = {
+    "chaine": scarcity.LEAD,
     "carte": "Où chaque tribu a vécu, cycle par cycle : le curseur choisit le cycle, et chaque cadre ce qu’il montre "
              "(les endroits où l’on se tenait à midi, les trajets et les camps, la nourriture, l’eau, les morts et les naissances).",
     "population": "Combien de vivants compte chaque tribu, journée après journée ; les bandes pâles sont les hivers.",
@@ -671,7 +674,8 @@ def run_body(s, r, d, store=None, year=None):
         chron = chron[: chron.rindex("</section>")] + "</details></section>"
     else:
         chron = part("chronique", '<p class=muted>Pas de chronique : le run n’a pas de cycle.</p>')
-    body = [part("carte", panels.maps_html()),
+    body = [part("chaine", scarcity.part_html(d)),
+            part("carte", panels.maps_html()),
             part("population", reading.population_chart(d, wide=True).svg("vivants par tribu, journée après journée")),
             part("frise", frise(d)),
             part("ages", panels.pyramids_html(d)),
@@ -716,4 +720,4 @@ p.lead{color:var(--ink2);margin:0 0 .8em;max-width:62ch}
 i.sw{display:inline-block;width:.8em;height:.8em;border-radius:2px;margin:0 .3em 0 .1em;vertical-align:-.05em}
 ul.plainlist{margin:.2em 0 .8em;padding-left:1.2em}
 details.rest>summary{font-size:1.15em;font-weight:650;margin:.4em 0}
-"""
+""" + scarcity.CSS

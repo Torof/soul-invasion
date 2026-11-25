@@ -29,6 +29,9 @@ use sim::memory::{Access, Record, RecordId};
 use sim::time::Calendar;
 use sim::{Blockage, BodyId, Death, Event, Intention, Sex, World};
 
+// --- the scarcity chain (24 November 2026): its own module ---
+pub mod chain;
+// --- end of the scarcity chain ---
 pub mod continents;
 pub mod json;
 pub mod lands;
@@ -1886,6 +1889,11 @@ pub struct Report {
     /// Chunks of tiles, woods and water read from the land kept by the
     /// runs before ([`lands`]). Timing too.
     pub land_kept: [usize; 3],
+    // --- the scarcity chain (24 November 2026) ---
+    /// La chaîne du manque: the need, the walk, the work, why bodies lie
+    /// away at dawn, how far the looking days go ([`chain::Chain`]).
+    pub chain: chain::Chain,
+    // --- end of the scarcity chain ---
 }
 
 /// Runs the vivarium with `settings` and reports.
@@ -2237,6 +2245,9 @@ pub fn run_watched(
     let mut known_places: BTreeMap<(u8, u64), Vec<(PlaceKey, bool)>> = BTreeMap::new();
     let mut settlements: BTreeMap<u64, Vec<Settlement>> = BTreeMap::new();
     let mut why = WhyProbe::default();
+    // --- the scarcity chain (24 November 2026) ---
+    let mut chain = chain::Chain::new(calendar.ticks_per_day());
+    // --- end of the scarcity chain ---
     // The homes under trial, (before, after), to tell where a given-up
     // home goes back to.
     let mut home_trials: BTreeMap<BodyId, (Pos, Pos)> = BTreeMap::new();
@@ -2525,6 +2536,9 @@ pub fn run_watched(
                 _ => {}
             }
         }
+        // --- the scarcity chain (24 November 2026) ---
+        chain.tick((&world, &brains, content), &events, &people, (tick, year));
+        // --- end of the scarcity chain ---
         // The brain lets a mind go once its body's vitality is under a
         // point, a little before the body dies: what it thought is read
         // now, or its page would say 0 (audit of 20 November 2026, F8).
@@ -2562,6 +2576,9 @@ pub fn run_watched(
             }
         }
         for news in batch {
+            // --- the scarcity chain (24 November 2026) ---
+            chain.news(&news, day);
+            // --- end of the scarcity chain ---
             if fire_news(
                 &news,
                 FireScene {
@@ -3149,6 +3166,9 @@ pub fn run_watched(
         home_changes: why.changes,
         nights_apart: why.nights,
         nights_out: why.out,
+        // --- the scarcity chain (24 November 2026) ---
+        chain,
+        // --- end of the scarcity chain ---
         rumours: tally.rumours,
         nights,
         records,

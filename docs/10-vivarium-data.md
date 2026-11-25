@@ -431,6 +431,27 @@ clock, the only field no seed decides.
 | `relief.size` | Its size | `[columns, rows]` |
 | `relief.known` | Whether the world has heights (the vivarium's atlas has; a flat test world has not, every height then 0) | `true` or `false` |
 | `relief.dm` | The heights at the cells' centres, row by row from the north-west | `[decimetres, …]` |
+| `chain.ticks_per_hour` | La chaîne du manque (24 November 2026, the project lead: "Déménager, l'épuisement, aller loin très important… explorer très important"): the measures the rest of the data did not hold, kept by `server/vivarium/src/chain.rs`, a probe that reads the world and the minds and changes nothing. A game hour: a twenty-fourth of a game day | ticks |
+| `chain.years[].tribe` | A tribe's year of the chain (the season's year, as `years[]`): the tribe | `"A"` or `"B"` |
+| `chain.years[].year` | The year, from 1 | integer |
+| `chain.years[].lived_hours` | The living (vitality above 0), counted once a game hour, as the curves' samples count them | person-hours |
+| `chain.years[].walker_hours` | Of them, those past infancy: who walk on their own | person-hours |
+| `chain.years[].need_kj` | What the living burn: a twenty-fourth of each one's day's need each game hour (a child less, a nursing woman more, an infant nothing); `years[].food.eaten_kj` is set against it, with `walk_kj` | kJ |
+| `chain.years[].walk_kj` | What the walkers' walking cost on top of the day's need, as the world charges it (`walk_j_per_m`, less for a smaller body) | kJ |
+| `chain.years[].walked_m` | The walkers' walking: the straight stretch between their positions tick after tick, summed | metres |
+| `chain.years[].gathering_ticks` | Ticks a walker spent at a work: gathering at a plant or tree (D45); `/ ticks_per_hour` is game hours | ticks |
+| `chain.away[]` | Why a grown body away from home at dawn is there, by age-year from the first, in the order of `nights_out` (whose `away` its keys share out): by how it lay down last, asleep still or since the dawn before (the rested wake with the day, at the dawn's own tick, so `nights_out[].asleep` misses them) | list, one per year |
+| `chain.away[].exhausted` | Collapsed of fatigue: the world laid it down where it stood, its fatigue full | dawns |
+| `chain.away[].stopped` | Laid down by its brain away from home, neither by its way nor for a goal: stopped short, no way home left (water, rock, no way seen) | dawns |
+| `chain.away[].stopped_by.*` | Of them, what barred its last walk since dawn (`Event::BodyBlocked` or `MoveRefused`): `water`, `rock`, `no_way`, or `none` told | dawns |
+| `chain.away[].sleep_out` | Laid down where it stood, its way being to sleep out (D50): by choice | dawns |
+| `chain.away[].goal` | Laid down where it stood, holding a goal beyond a day (D56): by choice | dawns |
+| `chain.away[].lay_at_home` | Laid down within the fire's reach of its home: its home moved away from it since | dawns |
+| `chain.away[].awake` | Awake at dawn and never lay down since the dawn before: it walked or stood the night through | dawns |
+| `chain.away[].woke` | Awake at dawn, having lain down since the dawn before and risen in the night (to drink, or called away): on its feet away from home; whoever rose with the day (the rested rise at the dawn's own tick) is told by how it lay down | dawns |
+| `chain.away[].unseen` | Asleep, its lying down not seen | dawns |
+| `chain.away[].fatigue_mean` | The fatigue at lying down of those who lay down away (all but `awake`, `woke` and `unseen`), on average; `null` without one | points of 100 |
+| `chain.looks` | Every looking day (`Act::Looked`, D56), in order: the day it closed (its nightfall), the tribe (0 or 1), and the farthest it stood from its home that day, on the longer axis, looked at once a game minute | `[[day, tribe, tiles], …]` |
 
 ## Beside the data: the lab's series file
 
