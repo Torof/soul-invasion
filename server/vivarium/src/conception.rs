@@ -507,7 +507,7 @@ mod tests {
                 .values()
                 .all(|s| s.above_gate <= s.fertile && s.free_above_gate <= s.free)
         );
-        let data = report.json_value();
+        let data: Value = serde_json::from_str(&report.json()).expect("the file is JSON");
         let c = &data["conception"];
         assert_eq!(c["woman_quarters"]["total"], json!(probe.quarters.len()));
         assert_eq!(c["checks"]["conceived"], json!(probe.checks[conceived]));

@@ -537,6 +537,10 @@ impl Report {
         out.push_str(",\n  \"chain\": ");
         layout(&value["chain"], 1, &mut out);
         // --- end of the scarcity chain ---
+        // --- the conceptions (25 November 2026): last, outside ORDER ---
+        out.push_str(",\n  \"conception\": ");
+        layout(&value["conception"], 1, &mut out);
+        // --- end of the conceptions ---
         out.push_str("\n}\n");
         out
     }
