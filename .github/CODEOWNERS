@@ -2,8 +2,10 @@
 # from the project lead before it can be merged (enforced by branch protection).
 # Everything else merges automatically once CI is green.
 
-# Design decisions and documents
-/docs/                      @Torof
+# Design decisions and documents are NOT protected since 25 November 2026
+# (the project lead: nearly every pull request amends a decision in docs/,
+# each one already validated in conversation before it is built, so the
+# label there was a click without a reading). Only the licence stays below.
 
 # The client <-> server contract
 /server/protocol/           @Torof

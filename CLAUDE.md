@@ -28,7 +28,9 @@ conductor: vision, decisions, practices, audits, security. The AI writes the cod
 - `main` is protected. All work goes through a branch and a pull request.
   The CI must be green. Protected areas (see `.github/CODEOWNERS`) need the
   project lead's approval, given by adding the `lead-approved` label to the
-  pull request; everything else merges on its own.
+  pull request; everything else merges on its own. Since 25 November 2026
+  `docs/` is not protected (its licence is): a decision is validated in
+  conversation before it is built, and its PR merges on green CI.
 - **The AI never adds the `lead-approved` label, never approves a pull
   request, and never merges one by hand.** The AI works from the project
   lead's GitHub account, so this is a matter of trust, not of mechanics:
