@@ -1099,6 +1099,54 @@ mod tests {
     }
 
     #[test]
+    fn a_body_that_knows_a_deed_tinkers_on_from_it_in_a_trial() {
+        // It knows how to take a flint and holds one, beside a birch: out
+        // of a trial its hands rest; in a trial of its hands it draws new
+        // gestures with what it holds, the flint among them, and comes to
+        // cut the birch with it. Nothing prefers the cut: it is drawn
+        // among the gestures the things allow.
+        let (rules, mut world, mut brains, id, birch) = by_a_birch();
+        let here = world.body(id).unwrap().pos();
+        let flint = picked(&mut world, &rules, id, "flint");
+        let flint_m = material(&rules, "flint");
+        let day = today(&world);
+        let mind = brains.minds.get_mut(&id).unwrap();
+        assert!(mind.ways.hands.add(Deed {
+            gesture: Gesture::Take,
+            on: flint_m,
+            with: NOTHING,
+        }));
+        assert_eq!(
+            hands_turn(&world, &rules, (id, here), mind, 7),
+            HandsTurn::Free,
+            "out of a trial it only does what it knows, and holds the flint"
+        );
+        mind.trial = Some(Trial {
+            way: Way::Hands,
+            before: mind.ways,
+            started_day: day,
+            before_days: Lately::default(),
+            heard: HeardDays::default(),
+            caller: None,
+        });
+        let mut cut = false;
+        for seed in 0..200 {
+            mind.handwork.tries = (day, 0);
+            mind.handwork.barred = (day, Vec::new());
+            mind.handwork.to = None;
+            mind.handwork.pending = None;
+            mind.doing = Doing::Nothing;
+            if let HandsTurn::Decide(Some(d)) = hands_turn(&world, &rules, (id, here), mind, seed)
+                && let Intention::Cut { with, .. } = d.intention
+            {
+                assert_eq!(with, flint, "it cuts with the flint it knew to take");
+                cut = true;
+            }
+        }
+        assert!(cut, "the birch {birch} is cut with the flint at some draw");
+    }
+
+    #[test]
     fn a_trial_of_the_hands_learns_only_what_came_to_something() {
         let (rules, world, mut brains, id, birch) = by_a_birch();
         let mind = brains.minds.get_mut(&id).unwrap();
