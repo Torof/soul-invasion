@@ -38,6 +38,17 @@ pub struct HandsYear {
     pub trials_heard: u32,
     /// Trials of the hands kept.
     pub kept: u32,
+    /// Trials of the hands ended unjudged: nothing new within reach to
+    /// try (D57, amended 25 November 2026).
+    pub untried: u32,
+    /// Trials of the hands that drew a gesture at random: begun on no
+    /// tale, and begun on a tale (a free hand where no heard gesture
+    /// could be made).
+    pub drew_free: u32,
+    /// See `drew_free`.
+    pub drew_heard: u32,
+    /// Tools taken up for a cut known or heard.
+    pub tools_taken: u32,
     /// Food carried at nightfall by the grown at home with a container:
     /// kJ summed, and the nights.
     pub home_with_kj: u64,
@@ -52,6 +63,20 @@ pub struct HandsYear {
     pub noon_tiles: u64,
     /// See `noon_tiles`.
     pub noons: u32,
+}
+
+impl HandsYear {
+    /// A trial of the hands ended unjudged, a gesture drawn, a tool taken
+    /// up (D57, amended 25 November 2026).
+    fn count(&mut self, news: &News) {
+        match news {
+            News::Untried { .. } => self.untried += 1,
+            News::Drew { heard: true, .. } => self.drew_heard += 1,
+            News::Drew { heard: false, .. } => self.drew_free += 1,
+            News::ToolTaken { .. } => self.tools_taken += 1,
+            _ => {}
+        }
+    }
 }
 
 /// A container made.
@@ -248,6 +273,11 @@ impl HandsProbe {
                     kept: true,
                     ..
                 } => self.year(tribe(people, *body), age_year).kept += 1,
+                News::Untried { body, .. }
+                | News::Drew { body, .. }
+                | News::ToolTaken { body, .. } => {
+                    self.year(tribe(people, *body), age_year).count(news);
+                }
                 News::Told {
                     body, record, camp, ..
                 } if is_hands(*record) => {
@@ -523,6 +553,10 @@ fn year_json(ay: u64, y: &HandsYear, changes: &[(u64, u8)], t: u8, per: u64) -> 
         "trials": y.trials,
         "trials_heard": y.trials_heard,
         "kept": y.kept,
+        "untried": y.untried,
+        "drew_free": y.drew_free,
+        "drew_heard": y.drew_heard,
+        "tools_taken": y.tools_taken,
         "home_with_kj": mean(y.home_with_kj, y.home_with_nights),
         "home_with_nights": y.home_with_nights,
         "home_without_kj": mean(y.home_without_kj, y.home_without_nights),
@@ -583,7 +617,7 @@ impl HandsProbe {
         for tribe in data["tribes"].as_array().into_iter().flatten() {
             let _ = write!(
                 h,
-                "<h3>Tribe {}</h3><p>First container: {}.</p><table><tr><th>age-year</th><th>carriers / living</th><th>made</th><th>remade</th><th>torn</th><th>trials (heard)</th><th>kept</th><th>kJ home with / without</th><th>noon tiles</th><th>homes changed</th></tr>",
+                "<h3>Tribe {}</h3><p>First container: {}.</p><table><tr><th>age-year</th><th>carriers / living</th><th>made</th><th>remade</th><th>torn</th><th>trials (heard)</th><th>kept</th><th>untried</th><th>drew free / on a tale</th><th>tools taken</th><th>kJ home with / without</th><th>noon tiles</th><th>homes changed</th></tr>",
                 tribe["tribe"].as_str().unwrap_or("?"),
                 if tribe["first"].is_null() {
                     "none".to_owned()
@@ -597,7 +631,7 @@ impl HandsProbe {
                     .map_or("–".to_owned(), |n| format!("{}.{}", n / 10, n % 10));
                 let _ = write!(
                     h,
-                    "<tr><td>{}</td><td>{} / {}</td><td>{}</td><td>{}</td><td>{}</td><td>{} ({})</td><td>{}</td><td>{} / {}</td><td>{noon}</td><td>{}</td></tr>",
+                    "<tr><td>{}</td><td>{} / {}</td><td>{}</td><td>{}</td><td>{}</td><td>{} ({})</td><td>{}</td><td>{}</td><td>{} / {}</td><td>{}</td><td>{} / {}</td><td>{noon}</td><td>{}</td></tr>",
                     y["age_year"],
                     y["carriers"],
                     y["living"],
@@ -607,6 +641,10 @@ impl HandsProbe {
                     y["trials"],
                     y["trials_heard"],
                     y["kept"],
+                    y["untried"],
+                    y["drew_free"],
+                    y["drew_heard"],
+                    y["tools_taken"],
                     show(&y["home_with_kj"]),
                     show(&y["home_without_kj"]),
                     y["home_changes"]
@@ -620,4 +658,48 @@ impl HandsProbe {
 
 fn tribe_name(t: u8) -> String {
     char::from(b'A' + t).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_age_year_counts_the_untried_the_drawn_and_the_tools_taken() {
+        let body = BodyId(1);
+        let mut y = HandsYear::default();
+        for news in [
+            News::Untried { body, at: 1 },
+            News::Drew {
+                body,
+                heard: true,
+                at: 2,
+            },
+            News::Drew {
+                body,
+                heard: false,
+                at: 3,
+            },
+            News::Drew {
+                body,
+                heard: true,
+                at: 4,
+            },
+            News::ToolTaken {
+                body,
+                tool: 0,
+                at: 5,
+            },
+        ] {
+            y.count(&news);
+        }
+        assert_eq!(
+            (y.untried, y.drew_free, y.drew_heard, y.tools_taken),
+            (1, 1, 2, 1)
+        );
+        let json = year_json(1, &y, &[], 0, 8);
+        assert_eq!(json["untried"], 1);
+        assert_eq!(json["drew_heard"], 2);
+        assert_eq!(json["tools_taken"], 1);
+    }
 }

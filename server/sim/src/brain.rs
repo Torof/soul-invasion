@@ -906,6 +906,36 @@ fn step_up(way: Way, before: &Ways, after: &Ways) -> bool {
     }
 }
 
+/// `trial`, its days over, judged (D50): the will learns, the caller is
+/// believed or worn, the way kept or put back, the judgement held for the
+/// fire; the news.
+fn judge_due(
+    rules: &Content,
+    (id, day, now, per_year): (BodyId, u64, u64, u32),
+    (body, mind, memory): (&crate::Body, &mut Mind, &mut Store),
+    trial: &Trial,
+) -> News {
+    let (kept, judged) = handwork::judge_trial(rules, per_year, body, mind, trial);
+    mind.learn_will(rules, kept);
+    believe_caller(rules, (id, day), mind, (trial, kept), memory);
+    if kept {
+        mind.changed_day = Some(day);
+    } else {
+        trial.way.copy(&mut mind.ways, &trial.before);
+    }
+    mind.trial = None;
+    mind.judged = Some(judged);
+    News::Tried {
+        body: id,
+        way: trial.way,
+        kept,
+        heard_days: trial.heard.days,
+        heard_nights: trial.heard.nights,
+        grades: judged.grades,
+        at: now,
+    }
+}
+
 /// One day as a mind closed it at nightfall (D50): what it gathered, and
 /// every distress of the day.
 #[allow(
@@ -1657,6 +1687,38 @@ pub enum News {
         /// A home's trial: the old home's grade and the new one's, by its
         /// notes, on which it was judged (D50, amended 24 November 2026).
         grades: Option<(i64, i64)>,
+        /// The tick.
+        at: u64,
+    },
+    /// `body`'s trial of its hands ended unjudged (D57, amended 25
+    /// November 2026: "I could not try" is not "it did not work"): in its
+    /// days no gesture its hands did not know could be begun, nothing new
+    /// being within its reach. No lesson, no will moved, no failure.
+    Untried {
+        /// Who.
+        body: BodyId,
+        /// The tick.
+        at: u64,
+    },
+    /// `body`, in a trial of its hands, drew its first gesture at random
+    /// (D57): `heard`, in a trial begun on a tale, which keeps a free hand
+    /// when no gesture heard can be made there (amended 25 November 2026).
+    Drew {
+        /// Who.
+        body: BodyId,
+        /// The trial began on a tale heard.
+        heard: bool,
+        /// The tick.
+        at: u64,
+    },
+    /// `body` took up a thing of `tool` (a material's index in the
+    /// content) as the tool a cut it knows or heard names (D57, amended
+    /// 25 November 2026: "cut a birch with a flint" holds the flint).
+    ToolTaken {
+        /// Who.
+        body: BodyId,
+        /// The tool's material.
+        tool: u16,
         /// The tick.
         at: u64,
     },
@@ -4710,28 +4772,20 @@ impl Brains {
             }
             close_habit(rules, body, id, mind, day_of, kin_of, &mut self.news);
             mind.distressed(hungry || thirsty || gathered_kj == 0);
-            if let Some(trial) = mind.trial
-                && day >= trial.started_day + u64::from(trials.days_for(trial.way.key(), per_year))
-            {
-                let (kept, judged) = handwork::judge_trial(rules, per_year, body, mind, &trial);
-                mind.learn_will(rules, kept);
-                believe_caller(rules, (id, day), mind, (&trial, kept), &mut self.memory);
-                if kept {
-                    mind.changed_day = Some(day);
-                } else {
-                    trial.way.copy(&mut mind.ways, &trial.before);
-                }
-                mind.trial = None;
-                mind.judged = Some(judged);
-                self.news.push(News::Tried {
-                    body: id,
-                    way: trial.way,
-                    kept,
-                    heard_days: trial.heard.days,
-                    heard_nights: trial.heard.nights,
-                    grades: judged.grades,
-                    at: now,
-                });
+            let due = mind.trial.filter(|t| {
+                day >= t.started_day + u64::from(trials.days_for(t.way.key(), per_year))
+            });
+            if let Some(news) = due.and_then(|t| handwork::end_untried(mind, &t, (id, now))) {
+                self.news.push(news);
+            } else if let Some(trial) = due {
+                let memory = &mut self.memory;
+                let news = judge_due(
+                    rules,
+                    (id, day, now, per_year),
+                    (body, mind, memory),
+                    &trial,
+                );
+                self.news.push(news);
             } else if mind.trial.is_none() && mind.calling.is_none() {
                 // What it knows bare holds while no crop came on.
                 mind.bare.fade(mind.ways.home, self.food.comings);
@@ -7793,7 +7847,7 @@ fn decide(
     if !night
         && !going_home
         && let handwork::HandsTurn::Decide(decision) =
-            handwork::hands_turn(world, rules, (id, here), mind, seed)
+            handwork::hands_turn(world, rules, (id, here), mind, (seed, news))
     {
         return decision;
     }
@@ -17577,6 +17631,53 @@ mod tests {
         assert_eq!(judged(50, false), 45);
         assert_eq!(judged(98, true), 100, "bounded above");
         assert_eq!(judged(3, false), 0, "bounded below");
+    }
+
+    #[test]
+    fn a_trial_of_the_hands_with_nothing_new_within_reach_is_not_judged() {
+        // D57, amended 25 November 2026 (the project lead): "I could not
+        // try" is not "it did not work".
+        let mut rules = fire_rules();
+        rules.needs.temperance = Temperance::default();
+        let ended = |gestured: bool| {
+            let mut world = World::empty(
+                Calendar::new(1, 7200).unwrap(),
+                Map::filled(64, 64, Terrain::Grass).with_camp(5, 5),
+            );
+            let mut events = Vec::new();
+            world.advance(2 * world.calendar().ticks_per_day(), &rules, &mut events);
+            world.spawn_body(Pos::new(5, 5));
+            let mut brains = piloted_with(&world, &rules);
+            let mind = brains.minds.get_mut(&BodyId(1)).unwrap();
+            mind.will = 50;
+            mind.trial = Some(Trial {
+                way: Way::Hands,
+                before: mind.ways,
+                started_day: 0,
+                before_days: Lately::default(),
+                heard: HeardDays::default(),
+                caller: None,
+            });
+            mind.handwork.gestured = gestured;
+            let news = nightfall(&world, &rules, &mut brains);
+            let mind = brains.mind(BodyId(1)).unwrap();
+            assert!(mind.trial.is_none(), "the trial is over either way");
+            (news, mind.will(), mind.judged.is_some())
+        };
+        // Nothing new begun in its days: not judged, nothing to tell, the
+        // will as it was, no failure counted.
+        let (news, will, told) = ended(false);
+        assert!(matches!(news[..], [News::Untried { .. }]), "{news:?}");
+        assert_eq!(will, 50);
+        assert!(!told, "no lesson for the fire");
+        // A gesture begun that gave nothing: judged and given up, as before.
+        let (news, will, told) = ended(true);
+        assert!(
+            matches!(news[..], [News::Tried { kept: false, .. }]),
+            "{news:?}"
+        );
+        assert_eq!(will, 45);
+        assert!(told, "a lesson for the fire");
     }
 
     /// `me` holds a heard trial record of `way` `up`, `kept`, dated `day`.

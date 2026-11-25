@@ -42,8 +42,8 @@
 //!   kilometre (`MEADOW_FAR`). Their kinds are those of the `lone`
 //!   habitat and of the mothers near the edge.
 //! - **Riverside**: the wood on the first tiles by the water is placed
-//!   as any wood, on the grids, of the riverside kinds (alder, willow)
-//!   in runs from their mothers; no line of its own.
+//!   as any wood, on the grids, of the riverside kinds (alder, willow,
+//!   birch) in runs from their mothers; no line of its own.
 //! - **Dense and light regions** (D37, 11 November 2026): every cell's
 //!   chance, and the meadows' groups', is scaled by the region's
 //!   stocking ([`Woods::stocking`], a noise on cells of 300 tiles): the

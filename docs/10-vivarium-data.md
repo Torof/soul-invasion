@@ -251,8 +251,9 @@ clock, the only field no seed decides.
 | `people[].trials[].day` | A trial's first day | day |
 | `people[].trials[].step` | The kind of the step, as `found` names them | string |
 | `people[].trials[].words` | The step in words, as the page tells it | string |
-| `people[].trials[].judged_day` | The day the world judged it; `null` while under trial or if it died first | day |
+| `people[].trials[].judged_day` | The day the world judged it; `null` while under trial, if it died first, or if it ended unjudged | day |
 | `people[].trials[].kept` | Whether it was kept; `null` while unjudged | boolean |
+| `people[].trials[].untried_day` | A trial of the hands ended unjudged (25 November 2026): the day, its hands having found nothing new to try within reach; `null` otherwise | day |
 | `people[].trials[].will` | Its will when it started the trial; `null` for a mind not read then | 0 to 100 |
 | `people[].trials[].heard` | Whether the step was a kept way heard at the fire (D55) | boolean |
 | `people[].trials[].grades_permille` | A home trial judged (D50, amended 24 November 2026): the old home's grade and the new one's by the body's notes, `[old, new]`, kept when the new beats the old by a hundredth of a day; `null` otherwise | per mille of a day of need |
@@ -410,6 +411,10 @@ clock, the only field no seed decides.
 | `hands.tribes[].years[].trials` | Trials of the hands begun | count |
 | `hands.tribes[].years[].trials_heard` | Of them, on a tale heard | count |
 | `hands.tribes[].years[].kept` | Trials of the hands kept | count |
+| `hands.tribes[].years[].untried` | Trials of the hands ended unjudged, no gesture new to the hands having been begun in their days, nothing new being within reach (D57, amended 25 November 2026): no lesson told, no will moved | count |
+| `hands.tribes[].years[].drew_free` | Trials of the hands begun on no tale that drew a gesture at random | count |
+| `hands.tribes[].years[].drew_heard` | Trials of the hands begun on a tale that drew a gesture at random, no gesture heard being possible there (D57, amended 25 November 2026); `drew_free + drew_heard` are the trials that truly tried something new | count |
+| `hands.tribes[].years[].tools_taken` | Tools taken up for a cut known or heard, when none was carried (D57, amended 25 November 2026: "cut a birch with a flint" holds the flint) | count |
 | `hands.tribes[].years[].home_with_kj` | The food carried at nightfall by the grown at home (within `HOME_TILES` of it) with a container, a night's mean; null without such a night | kJ |
 | `hands.tribes[].years[].home_with_nights` | The nights counted | count |
 | `hands.tribes[].years[].home_without_kj` | The same without a container | kJ |

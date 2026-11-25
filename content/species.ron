@@ -35,8 +35,11 @@
         habitats: { heart: 15, wood: 15, edge: 5, cliff_foot: 100, lone: 10 },
         // Cones.
         fruit: Some((from: (autumn, 0), until: (winter, 50)))),
+    // On the banks too (D37, amended 25 November 2026, the project lead:
+    // "Ok, va pour ça"): a pioneer of the river gravels, half the
+    // willow's weight there, so it forms its own stands by the water.
     (id: "birch", name: "Birch", height_m: 18.0, spread_m: 34, pioneer: true,
-        habitats: { heart: 5, wood: 10, edge: 45, cliff_foot: 20, lone: 35 },
+        habitats: { heart: 5, wood: 10, edge: 45, cliff_foot: 20, lone: 35, riverside: 50 },
         // Its bark, cut with an edge (D57).
         bark: Some("birch_bark")),
     (id: "hazel", name: "Hazel", height_m: 5.0, spread_m: 10,

@@ -4247,7 +4247,9 @@ mod tests {
         // print and bytes exactly, 19 November 2026), then for the flint
         // lying on the banks and by the rock (787,681 bytes before, D57), and
         // for more of it in the gravels and by the rock (787,921 bytes before,
-        // 25 November 2026).
+        // 25 November 2026), then for the birch on the banks (788,959 bytes
+        // before, D37 amended 25 November 2026: trees have no generator
+        // version, so the banks of every world change).
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
         let content = crate::content::load(&dir).expect("repository content");
         let map = Map::valley_by(sim::map::FIRST_GENERATOR, 768, 768, sim::VALLEY_SEED);
@@ -4263,7 +4265,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!((print, bytes), (0x68ba_fd2c_24fa_49fb, 788_959));
+        assert_eq!((print, bytes), (0x0eea_d9e7_fcc4_b4e0, 789_231));
     }
 
     #[test]

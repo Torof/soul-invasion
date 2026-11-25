@@ -477,8 +477,13 @@ pub struct TrialLine {
     /// The step by its kind.
     pub kind: Step,
     /// The day the world judged it (from 1) and whether it was kept;
-    /// `None` while under trial, or when the body died mid-trial.
+    /// `None` while under trial, when the body died mid-trial, or when it
+    /// ended unjudged.
     pub judged: Option<(u64, bool)>,
+    /// The day a trial of the hands ended unjudged, its hands having
+    /// found nothing new to try within reach (D57, amended 25 November
+    /// 2026).
+    pub untried: Option<u64>,
     /// Its will when it started the trial, when its mind was read.
     pub will: Option<u8>,
     /// Whether the step was a kept way heard at the fire (D55).
@@ -2920,7 +2925,7 @@ pub fn run_watched(
                         p.trials
                             .iter()
                             .rev()
-                            .find(|t| t.way == *way && t.judged.is_none())
+                            .find(|t| t.way == *way && t.judged.is_none() && t.untried.is_none())
                             .and_then(|t| t.will)
                     }),
                 ),
@@ -2967,6 +2972,15 @@ pub fn run_watched(
                         && !kept
                     {
                         home_moves.push(home_move(*body, after, before, "reverted"));
+                    }
+                }
+                News::Untried { body, .. } => {
+                    if let Some(t) = people.get_mut(body).and_then(|p| {
+                        p.trials.iter_mut().rev().find(|t| {
+                            t.way == Way::Hands && t.judged.is_none() && t.untried.is_none()
+                        })
+                    }) {
+                        t.untried = Some(day);
                     }
                 }
                 News::Copied {
@@ -3087,6 +3101,7 @@ pub fn run_watched(
                         step: step.clone(),
                         kind,
                         judged: None,
+                        untried: None,
                         will,
                         heard,
                         grades: None,
@@ -3111,7 +3126,7 @@ pub fn run_watched(
                         .trials
                         .iter_mut()
                         .rev()
-                        .find(|t| t.way == *way && t.judged.is_none())
+                        .find(|t| t.way == *way && t.judged.is_none() && t.untried.is_none())
                         .map_or_else(
                             || (String::new(), Step::of_way(*way)),
                             |t| {
@@ -3162,7 +3177,10 @@ pub fn run_watched(
                 | News::SpoiledAtHearth { .. }
                 | News::SawHearth { .. }
                 | News::HungerBar { .. }
-                | News::Turned { .. } => continue,
+                | News::Turned { .. }
+                | News::Untried { .. }
+                | News::Drew { .. }
+                | News::ToolTaken { .. } => continue,
                 News::Copied {
                     body,
                     from,
@@ -5954,10 +5972,11 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
     /// halved at 64 tiles instead of 32), and keeps it (day 217)".
     #[must_use]
     pub fn trial_words(trial: &TrialLine) -> String {
-        let verdict = match trial.judged {
-            Some((day, true)) => format!(", and keeps it (day {day})"),
-            Some((day, false)) => format!(", and gives it up (day {day})"),
-            None => ", still under trial".to_owned(),
+        let verdict = match (trial.judged, trial.untried) {
+            (Some((day, true)), _) => format!(", and keeps it (day {day})"),
+            (Some((day, false)), _) => format!(", and gives it up (day {day})"),
+            (None, Some(day)) => format!(", but finds nothing new to try within reach (day {day})"),
+            (None, None) => ", still under trial".to_owned(),
         };
         format!("day {}, {}{verdict}", trial.day, trial.step)
     }
