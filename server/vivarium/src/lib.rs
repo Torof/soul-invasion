@@ -27,7 +27,7 @@ use sim::content::{Content, Decisions, Fire, Moving, Trials};
 use sim::map::{Map, Pos, Terrain};
 use sim::memory::{Access, Record, RecordId};
 use sim::time::Calendar;
-use sim::{Blockage, BodyId, Death, Event, Intention, Sex, World};
+use sim::{Blockage, BodyId, Death, Event, Intention, ItemId, Sex, World};
 
 pub mod continents;
 pub mod json;
@@ -2189,6 +2189,9 @@ pub fn run_watched(
     let tribes = camps.len();
     let per_year = calendar.ticks_per_day() * u64::from(calendar.days_per_cycle());
     let mut food: BTreeMap<(u8, u64), Balance> = BTreeMap::new();
+    // The heaps put down at a hearth (D58), each with its putter's tribe,
+    // until the world lays it there.
+    let mut hearth_put: BTreeMap<ItemId, u8> = BTreeMap::new();
     let mut trials: Vec<TrialEvent> = Vec::new();
     let mut ways_in_use: BTreeMap<(u8, u64), WaysInUse> = BTreeMap::new();
     let mut presence: BTreeMap<(u8, u64), Presence> = BTreeMap::new();
@@ -2382,17 +2385,34 @@ pub fn run_watched(
                         person.ways = Some(*mind.ways());
                     }
                 }
+                // --- the hearth's pooling (25 November 2026) ---
+                Event::ItemAdded {
+                    item,
+                    material,
+                    mass_g,
+                    ..
+                } => {
+                    if let Some(tribe) = hearth_put.remove(item) {
+                        food.entry((tribe, year)).or_default().hearth_in_j +=
+                            joules(content, material, *mass_g);
+                    }
+                }
+                // --- end of the hearth's pooling ---
                 Event::BodyAte {
                     body,
+                    item,
                     material,
                     grams,
                     energy_kj,
-                    ..
                 } => {
                     let tribe = tribe_of(&people, *body);
-                    food.entry((tribe, year))
-                        .or_default()
-                        .eaten(content, material, *grams);
+                    let balance = food.entry((tribe, year)).or_default();
+                    balance.eaten(content, material, *grams);
+                    // --- the hearth's pooling (25 November 2026) ---
+                    if brains.hearth_holding(*item).is_some() {
+                        balance.hearth_out_j += joules(content, material, *grams);
+                    }
+                    // --- end of the hearth's pooling ---
                     let person = people.entry(*body).or_default();
                     person.meals.0 += 1;
                     person.meals.1 += grams;
@@ -2529,6 +2549,9 @@ pub fn run_watched(
         // --- the hearth's pooling (25 November 2026) ---
         for news in &batch {
             pooling.news(news, &world, day);
+            if let News::PutDown { body, item, .. } = news {
+                hearth_put.insert(*item, tribe_of(&people, *body));
+            }
         }
         // --- end of the hearth's pooling ---
         // Who held what from whom this dawn (D55): the sentence of a
@@ -4313,6 +4336,11 @@ pub struct Balance {
     pub spoiled_j: u64,
     /// Carried by its living at the year's end (or the run's).
     pub end_j: u64,
+    /// Put down from the packs at a hearth's reserve (D58): it leaves the
+    /// packs without being lost.
+    pub hearth_in_j: u64,
+    /// Eaten from a hearth's reserve (D58): eaten, but from no pack.
+    pub hearth_out_j: u64,
     /// Samples (24 a day) of a living person thin: a person-day is 24.
     pub thin_samples: u64,
     /// Samples of a living person weak.
@@ -4362,7 +4390,9 @@ impl Balance {
         let flows = i128::from(self.start_j) + i128::from(self.gathered_j)
             - i128::from(self.eaten_j)
             - i128::from(self.spoiled_j)
-            - i128::from(self.end_j);
+            - i128::from(self.end_j)
+            - i128::from(self.hearth_in_j)
+            + i128::from(self.hearth_out_j);
         i64::try_from(flows).unwrap_or(i64::MAX)
     }
 }
