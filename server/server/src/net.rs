@@ -4244,7 +4244,10 @@ mod tests {
         // the berries each shrub shows, a byte a plant (1,234,476), then
         // for protocol v30's compact frames (1,338,344 bytes before; their
         // content, decoded and written again in v29's layout, gave v29's
-        // print and bytes exactly, 19 November 2026).
+        // print and bytes exactly, 19 November 2026), then for the flint
+        // lying on the banks and by the rock (787,681 bytes before, D57), and
+        // for more of it in the gravels and by the rock (787,921 bytes before,
+        // 25 November 2026).
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
         let content = crate::content::load(&dir).expect("repository content");
         let map = Map::valley_by(sim::map::FIRST_GENERATOR, 768, 768, sim::VALLEY_SEED);
@@ -4260,7 +4263,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!((print, bytes), (0x1ba8_6abb_49e0_e4d2, 787_681));
+        assert_eq!((print, bytes), (0x68ba_fd2c_24fa_49fb, 788_959));
     }
 
     #[test]

@@ -520,7 +520,11 @@ fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
         | Event::BodyBorn { .. }
         | Event::PregnancyLost { .. }
         | Event::Coupled { .. }
-        | Event::Parted { .. } => {}
+        | Event::Parted { .. }
+        // The gestures of the hands are the brains' alone for now (D57):
+        // what they give goes as an inventory changed, told already.
+        | Event::Gestured { .. }
+        | Event::GestureRefused { .. } => {}
         Event::DrinkRefused { body, at, reason } => {
             shared.tell_pilot(*body, drink_refused_view(*body, *at, *reason));
         }

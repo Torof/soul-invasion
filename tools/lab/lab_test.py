@@ -720,6 +720,28 @@ class Reading(unittest.TestCase):
             self.assertIsNone(store.load("s", "bad"))
 
 
+class Hands(unittest.TestCase):
+    """« Les mains » (D57): the first container, the tellings, a table per tribe; nothing without `hands`."""
+
+    def test_the_hands_say_the_first_container_and_each_age_year(self):
+        year = {"age_year": 3, "living": 20, "carriers": 4, "made": 2, "remade": 1, "torn": 1, "trials": 5,
+                "trials_heard": 2, "kept": 1, "home_with_kj": 9000, "home_without_kj": 3000, "noon_tiles_x10": 245,
+                "home_changes": 0}
+        d = {"hands": {"first": {"day": 17, "age_year_x10": 21, "body": 12, "tribe": "A"},
+                       "first_listener_made": {"day": 30, "body": 7, "tribe": "A", "nights_after_first": 13},
+                       "made": 2, "remakes": 1, "makers": 2, "told": [{"day": 18}], "heard": 9, "heard_never_tried": 3,
+                       "heard_across_tribes": 0,
+                       "tribes": [{"tribe": "A", "first": {"day": 17}, "years": [year]},
+                                  {"tribe": "B", "first": None, "years": []}]}}
+        html_ = reading.hands_html(d)
+        self.assertIn("jour 17", html_)
+        self.assertIn("13 nuits après le premier", html_)
+        self.assertIn("4 / 20", html_)
+        self.assertIn("24,5", html_.replace("24.5", "24,5"))
+        self.assertIn("jamais", html_)
+        self.assertEqual(reading.hands_html({}), "")
+
+
 class Curves(unittest.TestCase):
     def test_scale_maps_the_span_and_a_flat_span(self):
         x = reading.Scale(0, 100, 50, 650)

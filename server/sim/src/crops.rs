@@ -1137,7 +1137,10 @@ pub(crate) mod tests {
 
     #[test]
     fn gathering_a_hazel_takes_its_rate_an_hour_into_the_hand_until_it_is_bare() {
-        let (mut world, content, chunk, hazel) = valley_with("hazel");
+        let (mut world, mut content, chunk, hazel) = valley_with("hazel");
+        // Arms that hold the whole crop: this is the gathering's rate, not
+        // what a body holds (D57).
+        content.movement.hands_g = content.movement.carry_capacity_g;
         run_to(&mut world, &content, 30);
         let full = world.ripe_on(chunk, &hazel)[0].grams;
         let body = body_by(&mut world, &hazel);
@@ -1215,6 +1218,7 @@ pub(crate) mod tests {
         )));
         // Room again; another intention stops it, the nuts kept.
         content.movement.carry_capacity_g = 20_000;
+        content.movement.hands_g = 20_000;
         world.queue(gather(body, chunk, &hazel, "hazelnuts"));
         world.advance(3, &content, &mut events);
         events.clear();
@@ -1367,6 +1371,7 @@ pub(crate) mod tests {
             spread_m: 10,
             pioneer: false,
             fruit: Some(FruitWindow { from, until }),
+            bark: None,
         }
     }
 

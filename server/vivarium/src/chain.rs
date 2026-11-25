@@ -461,6 +461,7 @@ mod tests {
             adult_years: (18, 40),
             fed: false,
             trials: true,
+            hands_known: 0,
             fire: true,
             decisions: true,
             moves: true,

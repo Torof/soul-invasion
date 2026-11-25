@@ -18,10 +18,17 @@
 //              the crops give them: 11,500 kJ a kilogram, not the
 //              kernel's 26,000 (the plants' weight, 24 November 2026).
 // look:        provisional graphics, a colour.
+// What a material is, for the gestures of the hands (D57): no recipe,
+// only what the stuff itself does, each absent when it does not.
+// sharp:       its edge cuts what a body cuts with it in hand.
+// folds_into:  a material it becomes when folded, keeping its grams.
+// holds_g:     a container: the grams of loose food it keeps together,
+//              on top of what the arms hold.
+// wears_days:  days after it was made that it tears and is gone.
 [
     (id: "flint", name: "Flint",
      description: "A hard stone that flakes to a sharp edge when struck.",
-     kind: stone, mass_kg: 0.4, hardness: 7,
+     kind: stone, mass_kg: 0.4, hardness: 7, sharp: true,
      flammable: false, food: None, look: (colour: "#5e5a52")),
     (id: "pebble", name: "Pebble",
      description: "A smooth river stone, good for hammering.",
@@ -244,4 +251,15 @@
      description: "Shiny brown nuts from spiny husks, starchy and sweet. They keep for weeks.",
      kind: plant, mass_kg: 0.1, hardness: 0,
      flammable: false, food: Some((energy_kj_per_kg: 8000, keeps_days: 64)), look: (colour: "#6a3a1a")),
+    // Birch bark (D57, the project lead, 24 November 2026: "C'est
+    // parfait"): cut from a birch with something sharp in hand; supple, it
+    // folds. Folded, it keeps loose food together. Placeholder values.
+    (id: "birch_bark", name: "Birch bark",
+     description: "A sheet of bark cut from a birch, supple and waterproof. It folds without breaking.",
+     kind: plant, mass_kg: 0.2, hardness: 1, folds_into: Some("folded_birch_bark"),
+     flammable: true, food: None, look: (colour: "#e8e2d0")),
+    (id: "folded_birch_bark", name: "Folded birch bark",
+     description: "A sheet of birch bark folded on itself. What is put in it stays together; it tears in a season.",
+     kind: plant, mass_kg: 0.2, hardness: 1, holds_g: 4000, wears_days: 16,
+     flammable: true, food: None, look: (colour: "#d8cfb4")),
 ]

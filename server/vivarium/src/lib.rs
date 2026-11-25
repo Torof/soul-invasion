@@ -33,6 +33,7 @@ use sim::{Blockage, BodyId, Death, Event, Intention, Sex, World};
 pub mod chain;
 // --- end of the scarcity chain ---
 pub mod continents;
+pub mod hands;
 pub mod json;
 pub mod lands;
 pub mod png;
@@ -135,6 +136,10 @@ pub struct Settings {
     /// control run beside each trial run (`--no-trials`): the content's
     /// `trials` section is replaced by one where nobody tries anything.
     pub trials: bool,
+    /// A diagnostic of D57, not its experiment (`--hands-known N`): the
+    /// first N founders of each tribe know the deeds of a container from
+    /// birth, read from the content. 0, the experiment: nobody knows.
+    pub hands_known: u32,
     /// The evening fire and the common memory (D55); false is the control
     /// run beside each run with the fire (`--no-fire`): the content's
     /// `fire` section is replaced by one where nobody tells anything.
@@ -199,6 +204,7 @@ impl Default for Settings {
             adult_years: (18, 40),
             fed: false,
             trials: true,
+            hands_known: 0,
             fire: true,
             decisions: true,
             moves: true,
@@ -455,10 +461,12 @@ pub enum Step {
     StoreLess,
     /// Its home moved.
     HomeMoved,
+    /// A deed of its hands more (D57).
+    Hands,
 }
 
 /// Every [`Step`], in the order of the page.
-pub const STEPS: [Step; 7] = [
+pub const STEPS: [Step; 8] = [
     Step::Wider,
     Step::Narrower,
     Step::SleepOut,
@@ -466,6 +474,7 @@ pub const STEPS: [Step; 7] = [
     Step::StoreMore,
     Step::StoreLess,
     Step::HomeMoved,
+    Step::Hands,
 ];
 
 impl Step {
@@ -480,6 +489,7 @@ impl Step {
             Way::StockKj if after.stock_kj > before.stock_kj => Self::StoreMore,
             Way::StockKj => Self::StoreLess,
             Way::Home => Self::HomeMoved,
+            Way::Hands => Self::Hands,
         }
     }
 
@@ -493,6 +503,7 @@ impl Step {
             Way::SleepOut => Self::SleepOut,
             Way::StockKj => Self::StoreMore,
             Way::Home => Self::HomeMoved,
+            Way::Hands => Self::Hands,
         }
     }
 
@@ -507,6 +518,7 @@ impl Step {
             Self::StoreMore => "store more",
             Self::StoreLess => "store less",
             Self::HomeMoved => "home moved",
+            Self::Hands => "try its hands",
         }
     }
 }
@@ -516,11 +528,11 @@ impl Step {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Found {
     /// Trials started, by kind.
-    pub tried: [u32; 7],
+    pub tried: [u32; 8],
     /// Trials judged and kept, by kind.
-    pub kept: [u32; 7],
+    pub kept: [u32; 8],
     /// Ways copied from camp-mates, by kind.
-    pub copied: [u32; 7],
+    pub copied: [u32; 8],
     /// Trials whose step was a kept way heard at the fire (D55).
     pub heard_trials: u32,
     /// Ways copied by hearsay (D55): with the fire lit, every copy is one;
@@ -830,6 +842,11 @@ fn record_row(id: RecordId, record: &Record, refs: u32) -> RecordRow {
             row.told = u32::try_from(told.len()).unwrap_or(u32::MAX);
         }
         Record::Reputed { .. } => row.kind = "reputed",
+        Record::Deed { will, .. } => {
+            row.kind = "deed";
+            row.way = Some(Way::Hands);
+            row.will = Some(*will);
+        }
         Record::Barred { place, .. } => {
             row.kind = "barred";
             row.place = Some(*place);
@@ -1823,6 +1840,8 @@ pub struct Report {
     /// felt, the surprises, the days gone to see, and what the moves did
     /// to the movers' hungry nights.
     pub moving: MovingProbe,
+    /// The hands (D57): the containers made, carried, torn, told.
+    pub hands: hands::HandsProbe,
     /// The goals held, in the order set (D56, amended 24 November 2026).
     pub goals: Vec<GoalRow>,
     /// The fire's counts by tribe and year (D55).
@@ -2099,6 +2118,7 @@ pub fn run_watched(
             born.push((per_year / 2, sex, true));
         }
         let mut women: Vec<BodyId> = Vec::new();
+        let mut knowers = settings.hands_known;
         for (age_days, sex, infant) in born {
             let Some(id) = world.spawn_near(camp) else {
                 continue;
@@ -2117,6 +2137,10 @@ pub fn run_watched(
             }
             if settings.brain {
                 brains.adopt_at(&world, content, id, camp);
+                if knowers > 0 && !infant && age_days >= 18 * per_year {
+                    knowers -= 1;
+                    brains.teach_hands(id, sim::brain::container_deeds(content));
+                }
             }
             let at = world.body(id).map_or(camp, sim::Body::pos);
             let who = describe(sex, age_days * 1000 / per_year.max(1));
@@ -2234,6 +2258,9 @@ pub fn run_watched(
     let mut home_moves: Vec<HomeMove> = Vec::new();
     let mut move_calls: Vec<MoveCall> = Vec::new();
     let mut moving = MovingProbe::default();
+    let mut hands = hands::HandsProbe::default();
+    let days_per_age_year = u64::from(calendar.days_per_age_year().max(1));
+    let ticks_per_age_year = calendar.ticks_per_day() * days_per_age_year;
     let mut goals: Vec<GoalRow> = Vec::new();
     let mut tally = FireTally {
         ticks_per_season: (calendar.ticks_per_day() * u64::from(calendar.days_per_cycle()) / 4)
@@ -2306,7 +2333,13 @@ pub fn run_watched(
                 world.map().land_made()[0]
             );
         }
+        // The age-year whose ticks are elapsing, from 1 (D57's measures).
+        let age_year = (tick - 1) / ticks_per_age_year + 1;
         for event in &events {
+            hands.event((&world, content), &people, event, (day, age_year));
+            if matches!(event, Event::NightFell { .. }) {
+                hands.nightfall((&world, content), &brains, &people, age_year);
+            }
             match event {
                 Event::WorkStopped {
                     body,
@@ -2564,6 +2597,7 @@ pub fn run_watched(
         // The trials (D50): what the brains tried, judged and copied, in
         // the chronicle, on the person's page and in the counters.
         let batch = brains.news();
+        hands.news(&brains, (&world, content), &people, &batch, (day, age_year));
         // Who held what from whom this dawn (D55): the sentence of a
         // trial told names those who believed it.
         let mut believed: BTreeMap<(RecordId, BodyId), Vec<BodyId>> = BTreeMap::new();
@@ -2899,6 +2933,7 @@ pub fn run_watched(
         // Noon: where the living stand, by cell (the lab's map) and one
         // by one (its map of the movements).
         if tick % calendar.ticks_per_day() == calendar.ticks_per_day() / 2 {
+            hands.noon(&world, &brains, &people, age_year);
             let mut standing: Vec<(BodyId, Pos)> = Vec::new();
             for body in world.bodies() {
                 if body.condition().vitality.points() == 0 {
@@ -3009,6 +3044,12 @@ pub fn run_watched(
                 balance.weak_samples += u64::from(now.weak_by_tribe[tribe]);
             }
             samples.push(now);
+        }
+        // The age-year's last tick, or the run's: who carries a container
+        // (D57).
+        if tick % ticks_per_age_year == 0 || tick == ticks {
+            let t = u8::try_from(tribes).unwrap_or(u8::MAX);
+            hands.age_year_end((&world, content), (&brains, &people), t, age_year);
         }
         // The year's last tick, or the run's: what the living carry, and
         // the ways in use (D50).
@@ -3152,6 +3193,7 @@ pub fn run_watched(
         home_moves,
         move_calls,
         moving,
+        hands,
         goals,
         fire: tally.fire,
         seasons: tally.seasons,
@@ -3202,6 +3244,7 @@ fn thought(intention: &Intention, why: Why) -> String {
         Why::Night => "night",
         Why::Home => "nothing pressing",
         Why::Gather => "by day, short of a store",
+        Why::Hands => "by day, something for its hands here",
     };
     let act = match intention {
         Intention::MoveTo { target, .. } => format!("walks to ({}, {})", target.x, target.y),
@@ -3233,7 +3276,7 @@ pub fn step_words(way: Way, before: &Ways, after: &Ways) -> String {
             after.stock_kj,
             before.stock_kj
         ),
-        Way::SleepOut | Way::Home => way_words(way, after),
+        Way::SleepOut | Way::Home | Way::Hands => way_words(way, after),
     }
 }
 
@@ -3250,6 +3293,8 @@ pub fn way_words(way: Way, ways: &Ways) -> String {
         Way::SleepOut => "comes home to sleep".to_owned(),
         Way::StockKj => format!("stores {} kJ before resting", ways.stock_kj),
         Way::Home => format!("sets its home at ({}, {})", ways.home.x, ways.home.y),
+        Way::Hands if ways.hands.is_empty() => "does nothing with its hands".to_owned(),
+        Way::Hands => format!("knows {} deeds of its hands", ways.hands.len()),
     }
 }
 
@@ -4949,6 +4994,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         h.push_str("<h2>The curves</h2>");
         h.push_str(&self.curves());
         h.push_str(&self.food_table());
+        h.push_str(&self.hands_section());
         h.push_str(&self.tribes_table());
         h.push_str(&self.ages_table());
         let _ = write!(
@@ -5945,6 +5991,14 @@ img.map{{image-rendering:pixelated;border:1px solid #999;max-width:100%}}</style
         format!("{h}{}</body></html>\n", self.timing())
     }
 
+    /// The hands' section of the full page (D57).
+    fn hands_section(&self) -> String {
+        let changes: Vec<(u64, u8)> = self.home_changes.iter().map(|c| (c.day, c.tribe)).collect();
+        let days = u64::from(self.calendar().days_per_age_year().max(1));
+        let tribes = u8::try_from(self.camps.len()).unwrap_or(u8::MAX);
+        self.hands.html(&self.hands.json(&changes, days, tribes))
+    }
+
     /// The long page of before lab 6 (`--page full`): the factors, the
     /// map, the curves, the tables, the chronicle and the families.
     pub fn full_html(&self) -> String {
@@ -6113,6 +6167,7 @@ mod tests {
             adult_years: (18, 40),
             fed: false,
             trials: true,
+            hands_known: 0,
             fire: true,
             decisions: true,
             moves: true,

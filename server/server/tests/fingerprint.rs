@@ -100,13 +100,16 @@ fn world_print(world: &World) -> (u64, u64, u64) {
 
 #[test]
 fn the_768_valley_is_pinned() {
+    // The items re-pinned for the flint on the banks and by the rock (D57,
+    // 24 November 2026, denser on the 25th); the tiles and the trees
+    // unchanged.
     let world = World::with_valley(Calendar::default(), &content(), 768);
     let print = world_print(&world);
     assert_eq!(
         print,
         (
             0x69d7_839f_7a2f_8794,
-            0x1699_064a_28c9_c440,
+            0x8cdd_0480_3dac_6627,
             0x9de2_b5e3_514c_af23
         ),
         "{print:#x?}"
@@ -124,13 +127,14 @@ fn a_1536_valley_of_another_seed_is_pinned() {
 #[test]
 #[ignore = "the game's 3072 valley: run by hand in release"]
 fn the_game_valley_is_pinned() {
+    // The items re-pinned for the flint (D57, 24 and 25 November 2026).
     let world = World::new(Calendar::default(), &content());
     let print = world_print(&world);
     assert_eq!(
         print,
         (
             0xf87f_9a29_456e_a107,
-            0xe198_ab58_61fb_919b,
+            0x88fb_e397_0872_adb5,
             0xd156_3c2f_7563_cd1b
         ),
         "{print:#x?}"

@@ -19,6 +19,8 @@
 //           or without it, the tree is drawn bare; in it, laden, or as
 //           much as is left of its crop when one of crops.ron is in
 //           season. The windows below are placeholders, to tune by eye.
+// bark:     the material a body cuts from its trunk with an edge in hand
+//           (D57), when its bark comes away; absent, cutting gives nothing.
 //
 // Within a habitat, one kind dominates each stand of a few hundred metres
 // (the weight here times a power of its stand's strength at the place;
@@ -34,7 +36,9 @@
         // Cones.
         fruit: Some((from: (autumn, 0), until: (winter, 50)))),
     (id: "birch", name: "Birch", height_m: 18.0, spread_m: 34, pioneer: true,
-        habitats: { heart: 5, wood: 10, edge: 45, cliff_foot: 20, lone: 35 }),
+        habitats: { heart: 5, wood: 10, edge: 45, cliff_foot: 20, lone: 35 },
+        // Its bark, cut with an edge (D57).
+        bark: Some("birch_bark")),
     (id: "hazel", name: "Hazel", height_m: 5.0, spread_m: 10,
         habitats: { heart: 6, wood: 12, edge: 35, copse: 15, lone: 10 },
         // Hazelnuts.
