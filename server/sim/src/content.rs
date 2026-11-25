@@ -269,6 +269,11 @@ fn percent_50() -> u32 {
     50
 }
 
+/// « The young first » before the life lot (D58): sixteen.
+fn sixteen() -> u32 {
+    16
+}
+
 /// The skirts for one order before D54 (D54).
 fn one() -> u32 {
     1
@@ -466,6 +471,13 @@ pub struct Pooling {
     /// Until this age a child is fed by the hearth and does not gather
     /// alone. 0: nothing is pooled.
     pub fed_until_years: u32,
+    /// « The young first » (the project lead, 25 November 2026, then the
+    /// life lot the same day: "les jeunes d'abord" at twelve, no longer at
+    /// sixteen): who is younger than this, in years, eats from the
+    /// hearth's reserve before the grown, and its coming days are the
+    /// young's the grown care for. Absent: sixteen, as before the field.
+    #[serde(default = "sixteen")]
+    pub young_first_until_years: u32,
     /// The innate care for the young's coming days (the project lead, 25
     /// November 2026, « les jeunes d'abord »): drawn evenly between these
     /// per cent from the run's seed and the body's id, the share of the
@@ -518,6 +530,7 @@ impl Pooling {
     pub fn placeholders() -> Self {
         Self {
             fed_until_years: 8,
+            young_first_until_years: 12,
             care_percent: (0, 100),
             own_care_percent: 200,
             care_days: 2,
@@ -561,6 +574,13 @@ impl Pooling {
         age_milli < u64::from(self.fed_until_years) * 1000
     }
 
+    /// Whether a body that old is among the young the hearth feeds first
+    /// (« the young first »): younger than `young_first_until_years`.
+    #[must_use]
+    pub fn young_first(&self, age_milli: u64) -> bool {
+        age_milli < u64::from(self.young_first_until_years) * 1000
+    }
+
     /// Whether anybody cares for the young's coming days.
     #[must_use]
     pub fn cares(&self) -> bool {
@@ -588,6 +608,14 @@ impl Pooling {
         if self.own_care_percent > 1000 || self.fed_until_years > 100 || self.care_days > 100 {
             return Err(ContentError::Needs(
                 "pooling: own_care_percent 1000, fed_until_years and care_days 100 at most",
+            ));
+        }
+        if self.on()
+            && (self.young_first_until_years < self.fed_until_years
+                || self.young_first_until_years > 100)
+        {
+            return Err(ContentError::Needs(
+                "pooling: young_first_until_years at least fed_until_years, at most 100",
             ));
         }
         let bar = &self.keep_percent_by_will;
@@ -3636,6 +3664,22 @@ mod tests {
         assert!(trials.validate().is_err(), "an unknown way");
         trials.horizon_seasons = vec![("stock_kj".to_owned(), 0)];
         assert!(trials.validate().is_err(), "no seasons");
+    }
+
+    #[test]
+    fn the_young_first_age_is_at_least_the_fed_age() {
+        let mut pooling = Pooling::placeholders();
+        assert_eq!(pooling.young_first_until_years, 12);
+        assert!(pooling.validate().is_ok());
+        assert!(pooling.young_first(11_999) && !pooling.young_first(12_000));
+        pooling.young_first_until_years = 6;
+        assert!(pooling.validate().is_err(), "younger than the fed children");
+        pooling.young_first_until_years = 101;
+        assert!(pooling.validate().is_err(), "past a hundred");
+        // Nothing pooled: the field is not read.
+        pooling.fed_until_years = 0;
+        pooling.young_first_until_years = 0;
+        assert!(pooling.validate().is_ok());
     }
 
     #[test]

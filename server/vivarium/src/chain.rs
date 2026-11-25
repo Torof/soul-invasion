@@ -593,6 +593,7 @@ mod tests {
         Settings {
             world: WorldKind::Patch { side: 60 },
             people: 6,
+            start: crate::Start::Founders,
             days,
             ticks_per_second: 1,
             seconds_per_day: Calendar::DEFAULT_SECONDS_PER_DAY,

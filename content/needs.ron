@@ -234,11 +234,16 @@
     //                    2026: more trials must not mean more blind
     //                    draws), counted in seasons and converted by the
     //                    calendar (a quarter of the year in whole days):
-    //                    a stock kept (stock_kj) and sleeping out or at
-    //                    the camp (sleep_out) over one season, twelve days
-    //                    of the vivarium's fifty-day year; a home (24
-    //                    November 2026) over one season too, judged by its
-    //                    grade there against the old home's.
+    //                    sleeping out or at the camp (sleep_out) over one
+    //                    season, sixteen days of the 64-day cycle; a home
+    //                    (24 November 2026) over one season too, judged by
+    //                    its grade there against the old home's; a stock
+    //                    kept (stock_kj) over three seasons since the life
+    //                    lot (25 November 2026, one before): what is kept
+    //                    in autumn feeds only at the end of winter and in
+    //                    spring, so a store begun any day of autumn is
+    //                    judged through the next spring (two seasons would
+    //                    end before the spring for one begun early).
     // move_repay_seasons: 1 — a move must repay the walk there and a day of
     //                    settling within a season (24 November 2026, the
     //                    lead: "il faut vraiment que le déménagement
@@ -286,7 +291,7 @@
         lesson_days: 64,
         lesson_floor: 10,
         lesson_heed_by_will: [(0, 100), (100, 30)],
-        horizon_seasons: [("stock_kj", 1), ("sleep_out", 1), ("home", 1)],
+        horizon_seasons: [("stock_kj", 3), ("sleep_out", 1), ("home", 1)],
         move_repay_seasons: 1,
         // A deed heard is tried more readily than an invention (D57, the
         // project lead, 25 November 2026: "hearing makes one think of it
@@ -702,6 +707,15 @@
     //                        does not gather alone (the project lead: a
     //                        child of two does not feed itself); from eight
     //                        it gathers and puts down like the others;
+    // young_first_until_years: 12 — « the young first » (the project lead,
+    //                        25 November 2026; at twelve since the life lot
+    //                        the same day, sixteen before): who is younger
+    //                        eats from the reserve before the others, and
+    //                        its coming days are the ones the others care
+    //                        for; from twelve a child eats as the grown do
+    //                        (Hadza and !Kung children of ten to twelve
+    //                        gather much of their own food). Absent:
+    //                        sixteen;
     // care_percent: (0, 100) — the innate care for the young's coming days
     //                        (the project lead, « les jeunes d'abord »): a
     //                        grown body counts in its own store this share
@@ -735,6 +749,7 @@
     //                        carry it home. Drawn once a game day.
     pooling: (
         fed_until_years: 8,
+        young_first_until_years: 12,
         care_percent: (0, 100),
         own_care_percent: 200,
         care_days: 2,

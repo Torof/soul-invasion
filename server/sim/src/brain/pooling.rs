@@ -24,10 +24,11 @@
 //!   days): one heap a thought, what spoils first first.
 //! - **Eating.** Hungry at its camp, a body eats from the reserve before
 //!   it eats its own, what spoils first first. **The young first** (the
-//!   project lead, 25 November 2026): a grown body eats there only what
-//!   the reserve holds beyond what the young of the hearth (under
-//!   sixteen) can still eat today; a child from `fed_until_years` to
-//!   sixteen only beyond what the younger ones can.
+//!   project lead, 25 November 2026): an older body eats there only
+//!   what the reserve holds beyond what the young of the hearth (under
+//!   `young_first_until_years`, twelve since the life lot of the same day;
+//!   sixteen before) can still eat today; a child from `fed_until_years`
+//!   to that age only beyond what the younger ones can.
 //! - **The hunger bar** (the project lead, 25 November 2026: "avoir très
 //!   très faim, mourir de faim et avoir de la nourriture, ça personne ne le
 //!   fera jamais, on mange la nourriture"). How hungry a body is, read by
@@ -49,9 +50,9 @@
 //!   need, not a steer.
 //! - **The care for the young's coming days** (the project lead, 25
 //!   November 2026, « les jeunes d'abord », a human trait he asked for):
-//!   a grown body counts in its own store a share of what the reserve
-//!   leaves uncovered of the young of its hearth's next `care_days` of
-//!   need. The share is innate, drawn from the run's seed and its id
+//!   a body past the young's age counts in its own store a share of what
+//!   the reserve leaves uncovered of the young of its hearth's next
+//!   `care_days` of need. The share is innate, drawn from the run's seed and its id
 //!   (`care_percent`), and greater for its own children
 //!   (`own_care_percent`). It gathers the greater of the two, never both:
 //!   they weigh the same children.
@@ -70,9 +71,11 @@ use crate::r#gen::scatter::{self, purpose};
 use crate::map::Pos;
 use crate::{Body, BodyId, ItemId, World};
 
-/// The age a body is grown at, in thousandths of a year (as the brain
-/// counts it elsewhere): sixteen.
-const GROWN_MILLI: u64 = 16_000;
+/// The age under which a child is one of its parent's own, whose hunger
+/// the parent sees at dawn, in thousandths of a year (as the brain counts
+/// it elsewhere): sixteen. Not « the young first » of the hearth, which is
+/// the content's `young_first_until_years` (twelve).
+const OWN_CHILD_MILLI: u64 = 16_000;
 
 /// Whether food is pooled: the content's section, and the evening circle
 /// it rides on.
@@ -241,15 +244,15 @@ fn at_camp(rules: &Content, here: Pos, mind: &Mind) -> bool {
 }
 
 /// What the young ahead of `body` at its hearth can still eat today, in
-/// kilojoules: for a grown body every young one of the hearth; for a
-/// young one past `fed_until_years`, the younger fed by the hearth; for
-/// those, nobody.
+/// kilojoules: for a body past `young_first_until_years` every young one
+/// of the hearth; for a young one past `fed_until_years`, the younger fed
+/// by the hearth; for those, nobody.
 fn young_ahead(world: &World, rules: &Content, reserves: &Reserves, camp: Pos, body: &Body) -> u64 {
     let age = world.age_milli(body);
     if rules.needs.pooling.fed(age) {
         return 0;
     }
-    let grown = age >= GROWN_MILLI;
+    let grown = !rules.needs.pooling.young_first(age);
     reserves.young.get(&camp).map_or(0, |young| {
         young
             .iter()
@@ -507,7 +510,7 @@ fn for_hearth(kj: u64, store: u64, owed: u64) -> u64 {
 fn is_own(world: &World, body: &Body, other: &Body) -> bool {
     body.spouse() == Some(other.id())
         || ((other.mother() == Some(body.id()) || other.father() == Some(body.id()))
-            && world.age_milli(other) < GROWN_MILLI)
+            && world.age_milli(other) < OWN_CHILD_MILLI)
 }
 
 impl Brains {
@@ -541,7 +544,7 @@ impl Brains {
             let bodies: Vec<&Body> = present.iter().filter_map(|&b| world.body(b)).collect();
             let young: Vec<(&Body, u64)> = bodies
                 .iter()
-                .filter(|b| world.age_milli(b) < GROWN_MILLI)
+                .filter(|b| pooling.young_first(world.age_milli(b)))
                 .map(|b| (*b, need_kj_per_day(rules, b)))
                 .collect();
             self.reserves.young.insert(
@@ -570,25 +573,27 @@ impl Brains {
                     .map(|o| need_kj_per_day(rules, o) * stock / own_need)
                     .sum();
                 let seen = hungry_own.saturating_sub(reserve_kj);
-                let cared =
-                    if pooling.cares() && world.age_milli(body) >= GROWN_MILLI && uncovered > 0 {
-                        let care = u64::from(mind.care);
-                        let own_care = (care * u64::from(pooling.own_care_percent) / 100).min(100);
-                        let weighed: u64 = young
-                            .iter()
-                            .map(|(y, need)| {
-                                let w = if is_own(world, body, y) {
-                                    own_care
-                                } else {
-                                    care
-                                };
-                                need * days * w / 100
-                            })
-                            .sum();
-                        weighed * uncovered / young_need.max(1)
-                    } else {
-                        0
-                    };
+                let cared = if pooling.cares()
+                    && !pooling.young_first(world.age_milli(body))
+                    && uncovered > 0
+                {
+                    let care = u64::from(mind.care);
+                    let own_care = (care * u64::from(pooling.own_care_percent) / 100).min(100);
+                    let weighed: u64 = young
+                        .iter()
+                        .map(|(y, need)| {
+                            let w = if is_own(world, body, y) {
+                                own_care
+                            } else {
+                                care
+                            };
+                            need * days * w / 100
+                        })
+                        .sum();
+                    weighed * uncovered / young_need.max(1)
+                } else {
+                    0
+                };
                 mind.hearth_extra_kj = seen.max(cared);
                 if mind.hearth_extra_kj > 0 {
                     self.news.push(News::SawHearth {
@@ -1105,6 +1110,47 @@ mod tests {
             );
             assert_eq!(brains.reserves.young[&camp], vec![(child, true)]);
         }
+    }
+
+    #[test]
+    fn the_young_first_are_those_under_the_content_s_age_twelve() {
+        let at = Pos::new(5, 5);
+        // A woman of 30, children of 5, 11 and 13: the hearth's young are
+        // those under twelve, the one of 13 eats as the grown do.
+        let rules = pooled();
+        assert_eq!(rules.needs.pooling.young_first_until_years, 12);
+        let (mut world, mut brains, ids) = field(&rules, &[(at, 30), (at, 5), (at, 11), (at, 13)]);
+        let (grown, small, eleven, thirteen) = (ids[0], ids[1], ids[2], ids[3]);
+        let camp = camp_of(&rules, at);
+        brains.see_hearths(&world, &rules, &[(camp, ids.clone())]);
+        assert_eq!(
+            brains.reserves.young[&camp],
+            vec![(small, true), (eleven, false)],
+            "under twelve only"
+        );
+        // A short reserve, the eleven-year-old hungry: the one of 13 leaves
+        // it to it as the grown do; the eleven-year-old eats.
+        let pooled = world.spawn_item("berries", 100, at);
+        brains.reserves.put(camp, at, pooled);
+        for id in [grown, eleven, thirteen] {
+            hungry(&mut world, &rules, id, 70);
+        }
+        let eats = |d: Option<Decision>, body| {
+            d.is_some_and(|d| d.intention == Intention::Eat { body, item: pooled })
+        };
+        assert!(!eats(
+            think(&world, &rules, &mut brains, thirteen),
+            thirteen
+        ));
+        assert!(!eats(think(&world, &rules, &mut brains, grown), grown));
+        assert!(eats(think(&world, &rules, &mut brains, eleven), eleven));
+        // Old content, the field absent: sixteen, as before it.
+        let old: Pooling = ron::from_str(
+            "(fed_until_years: 8, care_percent: (0, 100), own_care_percent: 200, care_days: 2)",
+        )
+        .unwrap();
+        assert_eq!(old.young_first_until_years, 16);
+        assert!(old.young_first(15_999) && !old.young_first(16_000));
     }
 
     /// `id` hungry with `left` per cent of its fat reserve left.
