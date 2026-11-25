@@ -5054,9 +5054,12 @@ fn sample(world: &World, content: &Content, people: &mut BTreeMap<BodyId, Person
         alive_by_tribe[t] += 1;
         thin_by_tribe[t] += u32::from(condition.is_thin(needs));
         weak_by_tribe[t] += u32::from(condition.is_weak(needs));
-        let reserve =
-            u32::try_from(condition.reserve_left_j(needs) * 100 / needs.reserve_j().max(1))
-                .expect("a percent");
+        // Against its own whole reserve, full at 100 (a woman's is larger
+        // than a man's since D47's amendment of 25 November 2026).
+        let reserve = u32::try_from(
+            condition.reserve_left_j(needs) * 100 / condition.reserve_j(needs).max(1),
+        )
+        .expect("a percent");
         reserve_sum[t] += reserve;
         hunger += condition.hunger.points();
         thirst += condition.thirst.points();
