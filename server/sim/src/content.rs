@@ -2048,8 +2048,13 @@ pub struct Ages {
     pub need_by_age: Vec<(u32, u32)>,
     /// A woman's, in percent of a man's of her age, from `woman_from_years`.
     pub woman_percent: u32,
-    /// The age from which a woman needs `woman_percent`.
+    /// The age from which a woman needs `woman_percent`, and holds
+    /// `woman_reserve_percent`.
     pub woman_from_years: u32,
+    /// A woman's fat reserve, in percent of a man's of her age, from
+    /// `woman_from_years` (D47, amended 25 November 2026: a woman carries
+    /// more fat than a man, though she burns less).
+    pub woman_reserve_percent: u32,
     /// A woman nursing an infant needs this much of her own need, in
     /// percent; the infant then burns nothing of its own.
     pub nursing_percent: u32,
@@ -2082,6 +2087,7 @@ impl Default for Ages {
             need_by_age: vec![(0, 100)],
             woman_percent: 100,
             woman_from_years: 0,
+            woman_reserve_percent: 100,
             nursing_percent: 100,
             weaned_years: 0,
             slow_under_years: 0,
@@ -2318,13 +2324,25 @@ impl Ages {
     /// a year old, of `sex`, in thousandths of a grown man's.
     #[must_use]
     pub fn size_permille(&self, age_milli: u64, sex: Sex) -> u32 {
+        self.scaled_permille(age_milli, sex, self.woman_percent)
+    }
+
+    /// The fat reserve of a body `age_milli` thousandths of a year old, of
+    /// `sex`, in thousandths of a grown man's: its size by age, and a
+    /// woman's own share (D47, amended 25 November 2026).
+    #[must_use]
+    pub fn reserve_permille(&self, age_milli: u64, sex: Sex) -> u32 {
+        self.scaled_permille(age_milli, sex, self.woman_reserve_percent)
+    }
+
+    fn scaled_permille(&self, age_milli: u64, sex: Sex, woman_percent: u32) -> u32 {
         let mut size = if self.need_by_age.is_empty() {
             1000
         } else {
             along(&self.need_by_age, age_milli, 10)
         };
         if sex == Sex::Female && age_milli >= u64::from(self.woman_from_years) * 1000 {
-            size = size * u64::from(self.woman_percent) / 100;
+            size = size * u64::from(woman_percent) / 100;
         }
         u32::try_from(size).unwrap_or(u32::MAX)
     }
@@ -2367,6 +2385,7 @@ impl Ages {
             || !rising
             || self.need_by_age.iter().any(|p| p.1 == 0)
             || self.woman_percent == 0
+            || self.woman_reserve_percent == 0
             || self.nursing_percent < 100
             || !(1..=100).contains(&self.slow_pace_percent)
             || !(1..=100).contains(&self.carrying_pace_percent)
@@ -2374,7 +2393,7 @@ impl Ages {
         {
             return Err(ContentError::Needs(
                 "ages: need_by_age not empty, its ages rising and its percents positive; \
-                 woman_percent positive, nursing_percent at least 100, slow_pace_percent and carrying_pace_percent 1 to 100, \
+                 woman_percent and woman_reserve_percent positive, nursing_percent at least 100, slow_pace_percent and carrying_pace_percent 1 to 100, \
                  infant_mass_g rising",
             ));
         }
@@ -3056,6 +3075,7 @@ impl Content {
         }
         for (field, value) in [
             ("ages.woman_percent", ages.woman_percent),
+            ("ages.woman_reserve_percent", ages.woman_reserve_percent),
             ("ages.nursing_percent", ages.nursing_percent),
             ("ages.adopt_within_tiles", ages.adopt_within_tiles),
         ] {

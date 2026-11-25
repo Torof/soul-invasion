@@ -197,10 +197,16 @@ pub struct Condition {
     #[serde(default)]
     pub eaten_today_j: u64,
     /// Its size against a grown man, in thousandths, from its age and sex
-    /// (lot 3 B): its reserve and what it carries. Derived each tick,
+    /// (lot 3 B): its need and what it carries; its reserve is
+    /// `reserve_permille`. Derived each tick,
     /// never stored.
     #[serde(skip, default = "permille_1000")]
     pub size_permille: u32,
+    /// Its fat reserve against a grown man's, in thousandths, from its age
+    /// and sex: a woman holds more than her size (D47, amended 25 November
+    /// 2026). Derived each tick, never stored.
+    #[serde(skip, default = "permille_1000")]
+    pub reserve_permille: u32,
     /// What it burns against a grown man, in thousandths: its size, more
     /// for a nursing woman. Derived, never stored.
     #[serde(skip, default = "permille_1000")]
@@ -233,6 +239,7 @@ impl Condition {
             deficit_j: 0,
             eaten_today_j: 0,
             size_permille: 1000,
+            reserve_permille: 1000,
             burn_permille: 1000,
             age_pace_percent: 100,
         }
@@ -245,10 +252,10 @@ impl Condition {
     }
 
     /// Its whole reserve, in joules: the content's for a grown man, to its
-    /// size.
+    /// age and sex.
     #[must_use]
     pub fn reserve_j(&self, needs: &content::Needs) -> u64 {
-        needs.reserve_j() * u64::from(self.size_permille) / 1000
+        needs.reserve_j() * u64::from(self.reserve_permille) / 1000
     }
 
     /// What it burns a day, in joules.
@@ -2542,7 +2549,7 @@ impl World {
         };
         let age = self.age_milli(&self.bodies[index]);
         let body = &mut self.bodies[index];
-        let size = rules.needs.ages.size_permille(age, body.sex);
+        let size = rules.needs.ages.reserve_permille(age, body.sex);
         let whole = rules.needs.reserve_j() * u64::from(size) / 1000;
         body.condition.deficit_j = whole * u64::from(100 - percent.min(100)) / 100;
         self.grow_due = true;
@@ -2919,6 +2926,7 @@ impl World {
             let nursing = body.sex == Sex::Female && body.carrying_g > 0;
             let c = &mut body.condition;
             c.size_permille = size;
+            c.reserve_permille = ages.reserve_permille(age, body.sex);
             // A nursing woman needs more; a pregnant one too (D49, when
             // the life rule plays), the nursing taking over once the child
             // is born. One adopting an infant while she carries another
@@ -7097,6 +7105,24 @@ mod tests {
         assert_eq!(ages.age_pace_percent(60_000), 70);
         assert_eq!(ages.infant_mass_g(0), 3500);
         assert_eq!(ages.infant_mass_g(2000), 12000);
+    }
+
+    #[test]
+    fn a_woman_holds_more_fat_than_a_man_though_she_burns_less() {
+        let ages = reserve_rules().needs.ages;
+        let reserve = |years: u64, sex| ages.reserve_permille(years * 1000, sex);
+        assert_eq!(reserve(30, Sex::Male), 1000, "a man");
+        assert_eq!(reserve(30, Sex::Female), 1400, "a woman");
+        assert_eq!(reserve(8, Sex::Female), 650, "a girl as a boy");
+        assert_eq!(ages.size_permille(30_000, Sex::Female), 850, "her need");
+        let (mut w, rules, mother, _) = mother_and_infant();
+        w.advance(1, &rules, &mut Vec::new());
+        let mum = w.body(mother).unwrap().condition();
+        assert_eq!(
+            mum.reserve_j(&rules.needs),
+            rules.needs.reserve_j() * 14 / 10
+        );
+        assert_eq!(mum.size_permille, 850);
     }
 
     #[test]

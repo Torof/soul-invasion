@@ -735,6 +735,8 @@ mod tests {
 
         let mut w = world();
         let (wife, _) = couple_of(&mut w);
+        // Her reserve as these rules size it: a woman's own share (D47).
+        w.step(&rules, &mut events);
         let reserve = w.body(wife).unwrap().condition.reserve_j(&rules.needs);
         let gate = u64::from(rules.needs.life.conceive_reserve_percent);
         assert_eq!(gate, 70, "the content's gate (25 November 2026)");
