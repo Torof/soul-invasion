@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 
 use crate::BodyId;
-use crate::brain::{Lately, Way, Ways};
+use crate::brain::{Deed, Lately, Way, Ways};
 use crate::r#gen::scatter::{self, purpose};
 use crate::map::{ChunkPos, Pos};
 
@@ -113,6 +113,23 @@ pub enum Record {
         /// How it lived during the trial.
         during: Lately,
     },
+    /// A deed of the hands that made a new kind of thing for its doer,
+    /// told the evening it was done, before any judgment (D57, the project
+    /// lead, 25 November 2026: a novelty is told): made `made` from
+    /// `deed.on` with `deed.with`.
+    Deed {
+        /// Who did it.
+        body: BodyId,
+        /// The day it was told.
+        day: u32,
+        /// The deed.
+        deed: Deed,
+        /// The kind of thing it made: a material's index (for a take, the
+        /// thing taken).
+        made: u16,
+        /// Its will when told: the prestige a listener weighs.
+        will: u8,
+    },
     /// A night at a camp's fire: who was there, what was told by whom,
     /// how each fared that day.
     Night {
@@ -149,6 +166,7 @@ impl Record {
             | Record::Barred { day, .. }
             | Record::Water { day, .. }
             | Record::Trial { day, .. }
+            | Record::Deed { day, .. }
             | Record::Night { day, .. }
             | Record::Reputed { day, .. } => *day,
         }
@@ -161,7 +179,7 @@ impl Record {
             Record::Place { witness, .. }
             | Record::Barred { witness, .. }
             | Record::Water { witness, .. } => Some(*witness),
-            Record::Trial { body, .. } => Some(*body),
+            Record::Trial { body, .. } | Record::Deed { body, .. } => Some(*body),
             Record::Night { .. } | Record::Reputed { .. } => None,
         }
     }
@@ -183,6 +201,9 @@ impl Record {
                 chunk, day, stand, ..
             } => Key::Water(*chunk, *day, *stand),
             Record::Trial { body, day, way, .. } => Key::Trial(*body, *day, *way),
+            Record::Deed {
+                body, day, deed, ..
+            } => Key::Deed(*body, *day, *deed),
             Record::Night { camp, day, .. } => Key::Night(*camp, *day),
             Record::Reputed { who, activity, day } => Key::Reputed(*who, *activity, *day),
         }
@@ -196,6 +217,7 @@ enum Key {
     Barred(PlaceKey, u32, BodyId),
     Water(ChunkPos, u32, Pos),
     Trial(BodyId, u32, Way),
+    Deed(BodyId, u32, Deed),
     Night(Pos, u32),
     Reputed(BodyId, u8, u32),
 }

@@ -19,6 +19,7 @@ pub mod content;
 pub mod crops;
 pub mod flora;
 pub mod geology;
+pub mod hands;
 // `gen` is a reserved keyword in the 2024 edition: the module is `r#gen`,
 // its file `gen.rs`.
 pub(crate) mod r#gen;
@@ -371,9 +372,22 @@ pub struct Body {
     /// walking body is not weighed every tick. Derived, never stored.
     #[serde(skip)]
     load_g: u32,
+    /// Grams of loose food among what it carries (D35, amended by D57):
+    /// what the arms and its containers hold. Derived with `load_g`, never
+    /// stored.
+    #[serde(skip)]
+    food_g: u32,
+    /// Grams of loose food its containers keep together (D57), on top of
+    /// what its arms hold. Derived with `load_g`, never stored.
+    #[serde(skip)]
+    holds_g: u32,
     /// The work it is busy at, if any (D45): gathering, a pinch at a time.
     #[serde(default)]
     work: Option<Work>,
+    /// The gesture it is busy at, if any (D57): a cut or a fold, until its
+    /// time is up. Absent from a snapshot when there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    making: Option<hands::Making>,
     /// The day it was born, counted from the world's first (before it:
     /// negative). Lot 3 B.
     #[serde(default = "born_grown")]
@@ -624,14 +638,54 @@ impl Body {
         self.pregnant
     }
 
-    /// What it can carry, in grams: the content's for a grown body, to its
-    /// size, less the infants it carries.
+    /// What it can carry in all, in grams: the content's load for a grown
+    /// body, to its size, less the infants it carries (D35). Whole objects
+    /// (a branch, a log, a flint) count against this alone; loose food
+    /// also against what its arms and containers hold
+    /// ([`Self::food_room_g`]).
     pub fn capacity_g(&self, movement: &Movement) -> u32 {
         let size = u64::from(self.condition.size_permille.min(1000));
         let own = u64::from(movement.carry_capacity_g) * size / 1000;
         u32::try_from(own)
             .unwrap_or(u32::MAX)
             .saturating_sub(self.carrying_g)
+    }
+
+    /// What its arms and containers hold of loose food, in grams (D35,
+    /// amended 24 November 2026; D57): the content's `hands_g` to its
+    /// size, an infant riding on the back and taking nothing from it, and
+    /// what each container it carries keeps together.
+    pub fn food_capacity_g(&self, movement: &Movement) -> u32 {
+        let size = u64::from(self.condition.size_permille.min(1000));
+        let arms = u64::from(movement.hands_g) * size / 1000;
+        u32::try_from(arms)
+            .unwrap_or(u32::MAX)
+            .saturating_add(self.holds_g)
+    }
+
+    /// The grams of loose food it can still take (D57): what its arms and
+    /// containers hold less the food it carries, and no more than its
+    /// load leaves.
+    pub fn food_room_g(&self, movement: &Movement) -> u32 {
+        self.food_capacity_g(movement)
+            .saturating_sub(self.food_g)
+            .min(self.capacity_g(movement).saturating_sub(self.load_g))
+    }
+
+    /// Grams of loose food it carries, as last weighed (D57).
+    pub fn food_g(&self) -> u32 {
+        self.food_g
+    }
+
+    /// Grams of loose food its arms alone hold (D57): `hands_g` by its
+    /// size, without the containers.
+    pub fn arms_g(&self, movement: &Movement) -> u32 {
+        self.food_capacity_g(movement).saturating_sub(self.holds_g)
+    }
+
+    /// The gesture it is busy at, if any (D57).
+    pub fn making(&self) -> Option<&hands::Making> {
+        self.making.as_ref()
     }
 
     /// What weighs on its walk, in grams: its load and the infants it
@@ -912,6 +966,27 @@ pub enum Intention {
         /// The material gathered.
         gives: String,
     },
+    /// Cut the tree `tree` of `chunk` within reach with the item `with`
+    /// it carries, taken in hand (D57): a gesture of the content's
+    /// minutes, whatever comes of it.
+    Cut {
+        /// Who.
+        body: BodyId,
+        /// The item it cuts with.
+        with: ItemId,
+        /// The chunk of the tree.
+        chunk: ChunkPos,
+        /// The tree.
+        tree: trees::TreeKey,
+    },
+    /// Fold the item `item` it carries (D57): a gesture of the content's
+    /// minutes, whatever comes of it.
+    Fold {
+        /// Who.
+        body: BodyId,
+        /// The item folded.
+        item: ItemId,
+    },
 }
 
 impl Intention {
@@ -942,7 +1017,9 @@ impl Intention {
             | Intention::Wake { body }
             | Intention::Teleport { body, .. }
             | Intention::Follow { body, .. }
-            | Intention::Gather { body, .. } => body,
+            | Intention::Gather { body, .. }
+            | Intention::Cut { body, .. }
+            | Intention::Fold { body, .. } => body,
         }
     }
 }
@@ -1108,6 +1185,29 @@ pub enum Event {
         chunk: ChunkPos,
         /// Its version now ([`World::chunk_version`]).
         version: ground::Version,
+    },
+    /// A body finished a gesture (D57): a cut or a fold, on `item` (the
+    /// tool it cut with, or what it folded), and what came of it: a new
+    /// item cut, the item folded into another material, or nothing.
+    /// Seen by all.
+    Gestured {
+        /// Who.
+        body: BodyId,
+        /// The gesture.
+        gesture: hands::Gesture,
+        /// The tool it cut with, or what it folded.
+        item: ItemId,
+        /// What came of it, if anything.
+        gave: Option<ItemId>,
+    },
+    /// A body could not begin a gesture (D57). Told to the pilot.
+    GestureRefused {
+        /// Who.
+        body: BodyId,
+        /// The gesture.
+        gesture: hands::Gesture,
+        /// Why.
+        reason: Refusal,
     },
     /// A body stopped gathering, and what it gathered. Seen by all.
     WorkStopped {
@@ -1640,7 +1740,7 @@ impl World {
         self.crops.clone_from(&content.crops);
         self.crop_keys = self.crops.iter().map(crops::key_of).collect();
         for index in 0..self.bodies.len() {
-            self.refresh_load(index);
+            self.refresh_load(index, content);
         }
         self.let_out_of_trunks(content);
     }
@@ -2200,10 +2300,22 @@ impl World {
         }
     }
 
-    /// Weighs a body's load again ([`Body::load_g`]).
-    fn refresh_load(&mut self, index: usize) {
-        let load = self.load_g(&self.bodies[index]);
-        self.bodies[index].load_g = load;
+    /// Weighs a body's load again ([`Body::load_g`]), its loose food and
+    /// what its containers hold (D57).
+    fn refresh_load(&mut self, index: usize, rules: &Content) {
+        let body = &self.bodies[index];
+        let (mut load, mut food, mut holds) = (0_u32, 0_u32, 0_u32);
+        for item in body.inventory().filter_map(|id| self.item(id)) {
+            load = load.saturating_add(item.mass_g);
+            if let Some(material) = rules.material(&item.material) {
+                if material.food.is_some() {
+                    food = food.saturating_add(item.mass_g);
+                }
+                holds = holds.saturating_add(material.holds_g);
+            }
+        }
+        let body = &mut self.bodies[index];
+        (body.load_g, body.food_g, body.holds_g) = (load, food, holds);
     }
 
     /// Grams a body carries in all, its items' own (the body keeps the
@@ -2260,7 +2372,10 @@ impl World {
             held: None,
             carried: Vec::new(),
             load_g: 0,
+            food_g: 0,
+            holds_g: 0,
             work: None,
+            making: None,
             born_day: -25 * i64::from(self.calendar.days_per_age_year()),
             sex: Sex::Male,
             carried_by: None,
@@ -2548,6 +2663,7 @@ impl World {
 
         self.follow_carriers();
         self.labour(rules, events);
+        self.make(rules, events);
         self.fare(rules, night, now.is_day_start(), events);
         self.live(rules, now.tick_of_day, events);
     }
@@ -2959,11 +3075,13 @@ impl World {
                 self.materialise(item);
             }
         }
-        // Any other intention stops the work its body is busy at.
+        // Any other intention stops the work its body is busy at, and the
+        // gesture (D57).
         if !matches!(intention, Intention::Gather { .. })
             && let Some(index) = self.index_of(intention.body())
         {
             self.stop_work(index, WorkEnd::Interrupted, events);
+            self.bodies[index].making = None;
         }
         match *intention {
             Intention::Gather {
@@ -2999,6 +3117,13 @@ impl World {
             Intention::Hold { body: id, item } => self.hold(id, item, rules, events),
             Intention::Stow { body: id, item } => self.stow(id, item, rules, events),
             Intention::Drink { body: id, at } => self.drink(id, at, events),
+            Intention::Cut {
+                body: id,
+                with,
+                chunk,
+                tree,
+            } => self.cut(id, with, (chunk, tree), rules, events),
+            Intention::Fold { body: id, item } => self.fold(id, item, rules, events),
             Intention::Sleep { body: id } => {
                 if let Some(index) = self.index_of(id) {
                     let body = &mut self.bodies[index];
@@ -3096,7 +3221,7 @@ impl World {
 
     /// Weighs a body's load again and tells what it carries now.
     fn inventory_changed(&mut self, index: usize, rules: &Content, events: &mut Vec<Event>) {
-        self.refresh_load(index);
+        self.refresh_load(index, rules);
         self.inventory_told(index, rules, events);
     }
 
@@ -3233,7 +3358,7 @@ impl World {
         if crop.is_none_or(|c| self.ripe_of_crop(chunk, source, bearer.at, c).is_none()) {
             return refuse(events, Refusal::NothingRipe);
         }
-        if self.bodies[index].load_g >= self.bodies[index].capacity_g(&rules.movement) {
+        if self.bodies[index].food_room_g(&rules.movement) == 0 {
             return refuse(events, Refusal::TooHeavy);
         }
         self.stop_work(index, WorkEnd::Interrupted, events);
@@ -3303,9 +3428,7 @@ impl World {
                 self.stop_work(index, WorkEnd::Bare, events);
                 continue;
             };
-            let room = self.bodies[index]
-                .capacity_g(&rules.movement)
-                .saturating_sub(self.bodies[index].load_g);
+            let room = self.bodies[index].food_room_g(&rules.movement);
             let grams = due.min(left).min(room);
             if grams > 0 {
                 self.record_pick(chunk, source, &gives, year, grams);
@@ -3378,8 +3501,9 @@ impl World {
             work.into = Some(item);
         }
         // The grams added, the load not re-weighed: every change of an
-        // inventory keeps `load_g` the items' sum.
+        // inventory keeps `load_g` the items' sum, `food_g` its food's.
         self.bodies[index].load_g += grams;
+        self.bodies[index].food_g += grams;
         self.inventory_told(index, rules, events);
     }
 
@@ -3403,15 +3527,18 @@ impl World {
     }
 
     /// Has `item` spoiled (D16, D45)? Food does, its content's days after
-    /// it was made; anything else never.
+    /// it was made; a material that wears tears its `wears_days` after
+    /// (D57); anything else never.
     fn spoiled(&self, item: &Item, rules: &Content) -> bool {
-        rules
-            .material(&item.material)
-            .and_then(|m| m.food)
-            .is_some_and(|food| {
-                self.tick.0.saturating_sub(item.made.0)
-                    >= u64::from(food.keeps_days) * self.calendar.ticks_per_day()
-            })
+        let Some(material) = rules.material(&item.material) else {
+            return false;
+        };
+        let days = match material.food {
+            Some(food) => food.keeps_days,
+            None if material.wears_days > 0 => material.wears_days,
+            None => return false,
+        };
+        self.tick.0.saturating_sub(item.made.0) >= u64::from(days) * self.calendar.ticks_per_day()
     }
 
     /// Takes away the food that has spoiled, wherever it is (D45): on the
@@ -3564,8 +3691,13 @@ impl World {
             Err(reason) => return Self::refuse(events, id, ItemAct::PickUp, item, reason),
         };
         let mass = self.item(item).map_or(0, Item::mass_g);
+        let food = self
+            .item(item)
+            .and_then(|i| rules.material(&i.material))
+            .is_some_and(|m| m.food.is_some());
         if self.bodies[index].load_g.saturating_add(mass)
             > self.bodies[index].capacity_g(&rules.movement)
+            || (food && mass > self.bodies[index].food_room_g(&rules.movement))
         {
             return Self::refuse(events, id, ItemAct::PickUp, item, Refusal::TooHeavy);
         }
@@ -7419,11 +7551,18 @@ mod tests {
                 .all(|i| i.pos().is_some())
         );
     }
-    /// The sample rules with the repository's kinds of tree.
+    /// The sample rules with the repository's kinds of tree, and its
+    /// materials, which hold the birch's bark (D57).
     fn wooded_rules() -> Content {
-        Content::sample()
-            .with_species(include_str!("../../../content/species.ron"))
-            .expect("species.ron parses")
+        Content::from_ron(
+            include_str!("../../../content/materials.ron"),
+            content::SAMPLE_SPAWNS,
+            content::SAMPLE_MOVEMENT,
+            content::SAMPLE_NEEDS,
+        )
+        .expect("repository materials parse")
+        .with_species(include_str!("../../../content/species.ron"))
+        .expect("species.ron parses")
     }
 
     /// The small valley with its trees, body 1 born at the camp.

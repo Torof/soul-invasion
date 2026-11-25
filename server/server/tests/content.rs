@@ -124,13 +124,15 @@ fn the_valley_drops_dead_wood_and_pebbles_where_they_belong() {
     );
     assert!(items.iter().any(|i| i.material() == "branch"));
     assert!(items.iter().any(|i| i.material() == "pebble"));
-    // Nothing ready-made lies about: berries, fibres and flint will come
-    // from the bushes, the plants and the rock.
+    // Flint lies on the banks and by the rock (D57).
+    assert!(items.iter().any(|i| i.material() == "flint"));
+    // Nothing else ready-made lies about: berries and fibres will come
+    // from the bushes and the plants.
     assert!(
         items
             .iter()
-            .all(|i| matches!(i.material(), "branch" | "pebble")),
-        "only dead wood and pebbles lie on the ground"
+            .all(|i| matches!(i.material(), "branch" | "pebble" | "flint")),
+        "only dead wood, pebbles and flint lie on the ground"
     );
 }
 

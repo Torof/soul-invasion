@@ -27,7 +27,7 @@ use crate::{
 };
 
 /// The top-level keys, in the order they are written.
-const ORDER: [&str; 24] = [
+const ORDER: [&str; 25] = [
     "meta",
     "years",
     "seasons",
@@ -42,6 +42,7 @@ const ORDER: [&str; 24] = [
     "positions",
     "move_calls",
     "moving",
+    "hands",
     "settlements",
     "partings",
     "home_changes",
@@ -80,6 +81,7 @@ const fn step_key(step: Step) -> &'static str {
         Step::StoreMore => "store_more",
         Step::StoreLess => "store_less",
         Step::HomeMoved => "home_moved",
+        Step::Hands => "hands",
     }
 }
 
@@ -90,6 +92,7 @@ const fn way_key(way: Way) -> &'static str {
         Way::SleepOut => "sleep_out",
         Way::StockKj => "stock_kj",
         Way::Home => "home",
+        Way::Hands => "hands",
     }
 }
 
@@ -107,8 +110,8 @@ fn id(body: BodyId) -> Value {
     json!(body.0)
 }
 
-/// Seven counters by the kind of the step, as an object.
-fn by_step(counts: &[u32; 7]) -> Value {
+/// The counters by the kind of the step, as an object.
+fn by_step(counts: &[u32; 8]) -> Value {
     let mut out = Map::new();
     for (i, step) in STEPS.iter().enumerate() {
         out.insert(step_key(*step).to_owned(), json!(counts[i]));
@@ -477,6 +480,10 @@ impl Report {
         // --- the hearth's pooling (25 November 2026) ---
         value["pooling"] = self.pooling.json();
         // --- end of the hearth's pooling ---
+        let changes: Vec<(u64, u8)> = self.home_changes.iter().map(|c| (c.day, c.tribe)).collect();
+        let days = u64::from(self.calendar().days_per_age_year().max(1));
+        let tribes = u8::try_from(self.camps.len()).unwrap_or(u8::MAX);
+        value["hands"] = self.hands.json(&changes, days, tribes);
         value
     }
 
@@ -501,6 +508,8 @@ impl Report {
                     "placed_ahead": self.placed_ahead,
                     "land_made": self.land_made,
                     "land_kept": self.land_kept,
+                    "ground_made": self.ground_made,
+                    "ground_kept": self.ground_kept,
                 }),
             );
         }
@@ -549,6 +558,7 @@ impl Report {
                 "ticks_per_second": s.ticks_per_second,
                 "seed": s.seed,
                 "trials": s.trials,
+                "hands_known": s.hands_known,
                 "fire": s.fire,
                 "decisions": s.decisions,
                 "moves": s.moves,

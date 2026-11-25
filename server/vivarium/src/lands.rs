@@ -15,9 +15,16 @@
 //! new file (its first run makes its chunks again, as without a cache) and
 //! a file is never read by a build that did not write it. Under
 //! `${XDG_CACHE_HOME:-~/.cache}/soul-sim/lands/`.
+//!
+//! The trees and the plants bearing food are kept the same way
+//! ([`keep_ground`], second amendment of the same day): a pure function
+//! of the world and of the content's kinds, their file is named by the
+//! world, the program and the content's fingerprint
+//! ([`sim::ahead::Placing::fingerprint`]).
 
 use std::path::{Path, PathBuf};
 
+use sim::ahead::Placing;
 use sim::map::{Map, Terrain, VIVARIUM_GENERATOR};
 
 /// Days a kept land of another build is left before it is cleared, when
@@ -96,6 +103,57 @@ pub fn keep(dir: &Path, world: &str, program: u64, map: &Map) -> std::io::Result
     Ok(())
 }
 
+/// The file of the trees and bearers of `world` placed with the content
+/// of fingerprint `placing` ([`sim::ahead::Placing::fingerprint`]), kept
+/// by the program of fingerprint `program`, under `dir`: the trees and
+/// plants read the content, so each content has its own (D51, amended 25
+/// November 2026).
+#[must_use]
+pub fn ground_path_of(dir: &Path, world: &str, program: u64, placing: u64) -> PathBuf {
+    dir.join(format!(
+        "ground-{world}-g{VIVARIUM_GENERATOR}-{placing:016x}-{program:016x}.bin"
+    ))
+}
+
+/// Gives the world of `placing` the trees and bearers kept under `dir`
+/// for `world` by this `program`: how many chunks of trees and of
+/// bearers; `None` when nothing is kept or the file is damaged.
+#[must_use]
+pub fn read_ground_into(
+    placing: &Placing,
+    dir: &Path,
+    world: &str,
+    program: u64,
+) -> Option<[usize; 2]> {
+    let bytes = std::fs::read(ground_path_of(dir, world, program, placing.fingerprint())).ok()?;
+    placing.take_ground_bytes(&bytes)
+}
+
+/// Keeps the trees and bearers of the world of `placing` under `dir`
+/// for `world` and this `program`, with what another run kept there
+/// meanwhile; written whole, then moved over.
+///
+/// # Errors
+///
+/// The file system's, when the directory cannot be made or the file
+/// written or moved.
+pub fn keep_ground(
+    dir: &Path,
+    world: &str,
+    program: u64,
+    placing: &Placing,
+    ground: &sim::ground::Ground,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let _ = read_ground_into(placing, dir, world, program);
+    let path = ground_path_of(dir, world, program, placing.fingerprint());
+    let part = path.with_extension(format!("part{}", std::process::id()));
+    std::fs::write(&part, ground.to_bytes())?;
+    std::fs::rename(&part, &path)?;
+    clear_stale(dir, world, program);
+    Ok(())
+}
+
 /// The first bytes of a kept picture's terrain, with its layout's version.
 const PICTURE_MAGIC: &[u8; 8] = b"SOULPIC1";
 
@@ -161,12 +219,16 @@ pub fn keep_picture(
     Ok(())
 }
 
-/// Removes the files of `world` (lands, pictures, parts left by a run
+/// Removes the files of `world` (lands, pictures, grounds, parts left by a run
 /// stopped midway) untouched for [`STALE_DAYS`], but the kept files of
 /// this `program`.
 fn clear_stale(dir: &Path, world: &str, program: u64) {
     let ours = format!("-{program:016x}.bin");
-    let prefixes = [format!("land-{world}-g"), format!("picture-{world}-g")];
+    let prefixes = [
+        format!("land-{world}-g"),
+        format!("picture-{world}-g"),
+        format!("ground-{world}-g"),
+    ];
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };

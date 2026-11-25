@@ -33,6 +33,7 @@ use sim::{Blockage, BodyId, Death, Event, Intention, ItemId, Sex, World};
 pub mod chain;
 // --- end of the scarcity chain ---
 pub mod continents;
+pub mod hands;
 pub mod json;
 pub mod lands;
 // --- the hearth's pooling (25 November 2026): its own module ---
@@ -138,6 +139,10 @@ pub struct Settings {
     /// control run beside each trial run (`--no-trials`): the content's
     /// `trials` section is replaced by one where nobody tries anything.
     pub trials: bool,
+    /// A diagnostic of D57, not its experiment (`--hands-known N`): the
+    /// first N founders of each tribe know the deeds of a container from
+    /// birth, read from the content. 0, the experiment: nobody knows.
+    pub hands_known: u32,
     /// The evening fire and the common memory (D55); false is the control
     /// run beside each run with the fire (`--no-fire`): the content's
     /// `fire` section is replaced by one where nobody tells anything.
@@ -161,9 +166,9 @@ pub struct Settings {
     /// ([`continents`]): `None` for no cache (`--no-continent-cache`),
     /// the continent born at every run. The patch worlds never use it.
     pub continents: Option<PathBuf>,
-    /// Where the vivarium's land (its chunks' tiles, woods and water) is
-    /// kept between runs ([`lands`]): `None` for no cache
-    /// (`--no-land-cache`), every chunk made by the run. The patch worlds
+    /// Where the vivarium's land (its chunks' tiles, woods and water) and
+    /// its trees and plants are kept between runs ([`lands`]): `None` for
+    /// no cache (`--no-land-cache`), every chunk made by the run. The patch worlds
     /// never use it. The pages are the same either way.
     pub lands: Option<PathBuf>,
     /// Helper threads placing the chunks' bearers ahead of the bodies
@@ -208,6 +213,7 @@ impl Default for Settings {
             adult_years: (18, 40),
             fed: false,
             trials: true,
+            hands_known: 0,
             fire: true,
             decisions: true,
             moves: true,
@@ -466,10 +472,12 @@ pub enum Step {
     StoreLess,
     /// Its home moved.
     HomeMoved,
+    /// A deed of its hands more (D57).
+    Hands,
 }
 
 /// Every [`Step`], in the order of the page.
-pub const STEPS: [Step; 7] = [
+pub const STEPS: [Step; 8] = [
     Step::Wider,
     Step::Narrower,
     Step::SleepOut,
@@ -477,6 +485,7 @@ pub const STEPS: [Step; 7] = [
     Step::StoreMore,
     Step::StoreLess,
     Step::HomeMoved,
+    Step::Hands,
 ];
 
 impl Step {
@@ -491,6 +500,7 @@ impl Step {
             Way::StockKj if after.stock_kj > before.stock_kj => Self::StoreMore,
             Way::StockKj => Self::StoreLess,
             Way::Home => Self::HomeMoved,
+            Way::Hands => Self::Hands,
         }
     }
 
@@ -504,6 +514,7 @@ impl Step {
             Way::SleepOut => Self::SleepOut,
             Way::StockKj => Self::StoreMore,
             Way::Home => Self::HomeMoved,
+            Way::Hands => Self::Hands,
         }
     }
 
@@ -518,6 +529,7 @@ impl Step {
             Self::StoreMore => "store more",
             Self::StoreLess => "store less",
             Self::HomeMoved => "home moved",
+            Self::Hands => "try its hands",
         }
     }
 }
@@ -527,11 +539,11 @@ impl Step {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Found {
     /// Trials started, by kind.
-    pub tried: [u32; 7],
+    pub tried: [u32; 8],
     /// Trials judged and kept, by kind.
-    pub kept: [u32; 7],
+    pub kept: [u32; 8],
     /// Ways copied from camp-mates, by kind.
-    pub copied: [u32; 7],
+    pub copied: [u32; 8],
     /// Trials whose step was a kept way heard at the fire (D55).
     pub heard_trials: u32,
     /// Ways copied by hearsay (D55): with the fire lit, every copy is one;
@@ -841,6 +853,11 @@ fn record_row(id: RecordId, record: &Record, refs: u32) -> RecordRow {
             row.told = u32::try_from(told.len()).unwrap_or(u32::MAX);
         }
         Record::Reputed { .. } => row.kind = "reputed",
+        Record::Deed { will, .. } => {
+            row.kind = "deed";
+            row.way = Some(Way::Hands);
+            row.will = Some(*will);
+        }
         Record::Barred { place, .. } => {
             row.kind = "barred";
             row.place = Some(*place);
@@ -1834,6 +1851,8 @@ pub struct Report {
     /// felt, the surprises, the days gone to see, and what the moves did
     /// to the movers' hungry nights.
     pub moving: MovingProbe,
+    /// The hands (D57): the containers made, carried, torn, told.
+    pub hands: hands::HandsProbe,
     /// The goals held, in the order set (D56, amended 24 November 2026).
     pub goals: Vec<GoalRow>,
     /// The fire's counts by tribe and year (D55).
@@ -1905,6 +1924,12 @@ pub struct Report {
     /// Chunks of tiles, woods and water read from the land kept by the
     /// runs before ([`lands`]). Timing too.
     pub land_kept: [usize; 3],
+    /// Chunks of trees and of bearers placed by the run until its end (the
+    /// food map's after it not counted). Timing, never simulation.
+    pub ground_made: [u64; 2],
+    /// Chunks of trees and of bearers read from those the runs before
+    /// kept ([`lands::read_ground_into`]). Timing too.
+    pub ground_kept: [usize; 2],
     // --- the scarcity chain (24 November 2026) ---
     /// La chaîne du manque: the need, the walk, the work, why bodies lie
     /// away at dawn, how far the looking days go ([`chain::Chain`]).
@@ -2082,6 +2107,13 @@ pub fn run_watched(
     world
         .shared_ground()
         .widen(map.chunks_wide() as usize * map.chunks_high() as usize);
+    // The trees and bearers kept by the runs before on this world with
+    // this content, taken before the first tick (the same as placed, D51
+    // amended 25 November 2026).
+    let placing = sim::ahead::Placing::of(&world);
+    let ground_kept = land_cache
+        .and_then(|(dir, name, program)| lands::read_ground_into(&placing, dir, name, program))
+        .unwrap_or([0; 2]);
     // The helpers placing bearers ahead (D51 amended), told where the
     // bodies are every few ticks; `None` with `--helpers 0`.
     let placer = sim::ahead::Placer::spawn(&world, usize::try_from(settings.helpers).unwrap_or(1));
@@ -2123,6 +2155,7 @@ pub fn run_watched(
             born.push((per_year / 2, sex, true));
         }
         let mut women: Vec<BodyId> = Vec::new();
+        let mut knowers = settings.hands_known;
         for (age_days, sex, infant) in born {
             let Some(id) = world.spawn_near(camp) else {
                 continue;
@@ -2141,6 +2174,10 @@ pub fn run_watched(
             }
             if settings.brain {
                 brains.adopt_at(&world, content, id, camp);
+                if knowers > 0 && !infant && age_days >= 18 * per_year {
+                    knowers -= 1;
+                    brains.teach_hands(id, sim::brain::container_deeds(content));
+                }
             }
             let at = world.body(id).map_or(camp, sim::Body::pos);
             let who = describe(sex, age_days * 1000 / per_year.max(1));
@@ -2261,6 +2298,9 @@ pub fn run_watched(
     let mut home_moves: Vec<HomeMove> = Vec::new();
     let mut move_calls: Vec<MoveCall> = Vec::new();
     let mut moving = MovingProbe::default();
+    let mut hands = hands::HandsProbe::default();
+    let days_per_age_year = u64::from(calendar.days_per_age_year().max(1));
+    let ticks_per_age_year = calendar.ticks_per_day() * days_per_age_year;
     let mut goals: Vec<GoalRow> = Vec::new();
     let mut tally = FireTally {
         ticks_per_season: (calendar.ticks_per_day() * u64::from(calendar.days_per_cycle()) / 4)
@@ -2340,7 +2380,13 @@ pub fn run_watched(
                 world.map().land_made()[0]
             );
         }
+        // The age-year whose ticks are elapsing, from 1 (D57's measures).
+        let age_year = (tick - 1) / ticks_per_age_year + 1;
         for event in &events {
+            hands.event((&world, content), &people, event, (day, age_year));
+            if matches!(event, Event::NightFell { .. }) {
+                hands.nightfall((&world, content), &brains, &people, age_year);
+            }
             match event {
                 Event::WorkStopped {
                     body,
@@ -2623,6 +2669,7 @@ pub fn run_watched(
             }
         }
         // --- end of the hearth's pooling ---
+        hands.news(&brains, (&world, content), &people, &batch, (day, age_year));
         // Who held what from whom this dawn (D55): the sentence of a
         // trial told names those who believed it.
         let mut believed: BTreeMap<(RecordId, BodyId), Vec<BodyId>> = BTreeMap::new();
@@ -2962,6 +3009,7 @@ pub fn run_watched(
         // Noon: where the living stand, by cell (the lab's map) and one
         // by one (its map of the movements).
         if tick % calendar.ticks_per_day() == calendar.ticks_per_day() / 2 {
+            hands.noon(&world, &brains, &people, age_year);
             let mut standing: Vec<(BodyId, Pos)> = Vec::new();
             for body in world.bodies() {
                 if body.condition().vitality.points() == 0 {
@@ -3073,6 +3121,12 @@ pub fn run_watched(
             }
             samples.push(now);
         }
+        // The age-year's last tick, or the run's: who carries a container
+        // (D57).
+        if tick % ticks_per_age_year == 0 || tick == ticks {
+            let t = u8::try_from(tribes).unwrap_or(u8::MAX);
+            hands.age_year_end((&world, content), (&brains, &people), t, age_year);
+        }
         // The year's last tick, or the run's: what the living carry, and
         // the ways in use (D50).
         if tick % per_year == 0 || tick == ticks {
@@ -3171,6 +3225,18 @@ pub fn run_watched(
             dir.display()
         );
     }
+    // The trees and bearers placed, kept the same way.
+    let ground = world.shared_ground();
+    let ground_made = [ground.trees_placed(), ground.bearers_placed()];
+    if let Some((dir, name, program)) = land_cache
+        && ground_made.iter().any(|&n| n > 0)
+        && let Err(err) = lands::keep_ground(dir, name, program, &placing, &ground)
+    {
+        eprintln!(
+            "note: the trees and plants could not be kept under {}: {err}",
+            dir.display()
+        );
+    }
     // The picture's terrain kept with the land (the same points as read),
     // or else read from the map and kept.
     let (_, points_wide, points_high) = picture_size(world.map());
@@ -3226,6 +3292,7 @@ pub fn run_watched(
         home_moves,
         move_calls,
         moving,
+        hands,
         goals,
         fire: tally.fire,
         seasons: tally.seasons,
@@ -3265,6 +3332,8 @@ pub fn run_watched(
         placed: placed_in_all,
         land_made,
         land_kept,
+        ground_made,
+        ground_kept,
     })
 }
 
@@ -3277,6 +3346,7 @@ fn thought(intention: &Intention, why: Why) -> String {
         Why::Night => "night",
         Why::Home => "nothing pressing",
         Why::Gather => "by day, short of a store",
+        Why::Hands => "by day, something for its hands here",
     };
     let act = match intention {
         Intention::MoveTo { target, .. } => format!("walks to ({}, {})", target.x, target.y),
@@ -3308,7 +3378,7 @@ pub fn step_words(way: Way, before: &Ways, after: &Ways) -> String {
             after.stock_kj,
             before.stock_kj
         ),
-        Way::SleepOut | Way::Home => way_words(way, after),
+        Way::SleepOut | Way::Home | Way::Hands => way_words(way, after),
     }
 }
 
@@ -3325,6 +3395,8 @@ pub fn way_words(way: Way, ways: &Ways) -> String {
         Way::SleepOut => "comes home to sleep".to_owned(),
         Way::StockKj => format!("stores {} kJ before resting", ways.stock_kj),
         Way::Home => format!("sets its home at ({}, {})", ways.home.x, ways.home.y),
+        Way::Hands if ways.hands.is_empty() => "does nothing with its hands".to_owned(),
+        Way::Hands => format!("knows {} deeds of its hands", ways.hands.len()),
     }
 }
 
@@ -5031,6 +5103,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         h.push_str("<h2>The curves</h2>");
         h.push_str(&self.curves());
         h.push_str(&self.food_table());
+        h.push_str(&self.hands_section());
         h.push_str(&self.tribes_table());
         h.push_str(&self.ages_table());
         let _ = write!(
@@ -5964,7 +6037,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
         let minutes = self.wall_s / 60.0;
         let speed = if minutes > 0.0 { years / minutes } else { 0.0 };
         format!(
-            "<p id=\"timing\">The world was born in {:.2} s; the run took {:.2} s on the wall: <b>{speed:.1} game years a minute</b>. {} chunks' plants placed, {} of them ahead by {} helper thread{}. {} chunks of land made, {} read from the land kept by the runs before.</p>",
+            "<p id=\"timing\">The world was born in {:.2} s; the run took {:.2} s on the wall: <b>{speed:.1} game years a minute</b>. {} chunks' plants placed, {} of them ahead by {} helper thread{}. {} chunks of land made, {} read from the land kept by the runs before; {} chunks' plants read from those kept.</p>",
             self.birth_s,
             self.wall_s,
             self.placed,
@@ -5973,6 +6046,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
             if self.settings.helpers == 1 { "" } else { "s" },
             self.land_made[0],
             self.land_kept[0],
+            self.ground_kept[1],
         )
     }
 
@@ -6025,6 +6099,14 @@ img.map{{image-rendering:pixelated;border:1px solid #999;max-width:100%}}</style
         );
         h.push_str(&self.settlements_section());
         format!("{h}{}</body></html>\n", self.timing())
+    }
+
+    /// The hands' section of the full page (D57).
+    fn hands_section(&self) -> String {
+        let changes: Vec<(u64, u8)> = self.home_changes.iter().map(|c| (c.day, c.tribe)).collect();
+        let days = u64::from(self.calendar().days_per_age_year().max(1));
+        let tribes = u8::try_from(self.camps.len()).unwrap_or(u8::MAX);
+        self.hands.html(&self.hands.json(&changes, days, tribes))
     }
 
     /// The long page of before lab 6 (`--page full`): the factors, the
@@ -6195,6 +6277,7 @@ mod tests {
             adult_years: (18, 40),
             fed: false,
             trials: true,
+            hands_known: 0,
             fire: true,
             decisions: true,
             moves: true,
@@ -6336,7 +6419,8 @@ mod tests {
     /// pages the born one gives (D28 amended 19 November 2026; lightening
     /// 4's S7): the report's data, timings apart, is the same born, kept
     /// and read, or born with no cache at all. So does the land kept with
-    /// it, and the picture's terrain (D51 amended 25 November 2026).
+    /// it, the picture's terrain, and the trees and plants (D51 amended 25
+    /// November 2026).
     #[test]
     #[ignore = "the vivarium's continent born twice, some 20 s in release: cargo test --release -p vivarium -- --ignored the_kept_continent"]
     fn the_kept_continent_and_land_give_the_pages_the_born_ones_give() {
@@ -6379,6 +6463,11 @@ mod tests {
             kept.land_kept[0] > 0,
             "the land kept is read: {:?}",
             kept.land_kept
+        );
+        assert!(
+            kept.ground_kept.iter().all(|&n| n > 0),
+            "the trees and plants kept are read: {:?}",
+            kept.ground_kept
         );
         let apart = run_checked(
             &Settings {

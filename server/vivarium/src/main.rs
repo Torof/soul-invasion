@@ -41,6 +41,9 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
   --no-brain               the control run: nobody thinks, the people stand
   --no-trials              the control run of D50: nobody tries a way nor
                            copies one (the content's trials replaced by none)
+  --hands-known N          a diagnostic of D57: the first N grown founders of
+                           each tribe know the deeds of a container from
+                           birth (default 0, the experiment: nobody knows)
   --no-fire                the control run of D55: no evening fire, nobody
                            tells nor hears anything (the content's fire
                            replaced by none)
@@ -60,9 +63,11 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
                            reading it from ${XDG_CACHE_HOME:-~/.cache}/soul-sim/
                            continents/ (where a run keeps it; same pages)
   --no-land-cache          make every chunk of land (tiles, woods, water)
-                           anew instead of reading those the runs before
-                           kept under ${XDG_CACHE_HOME:-~/.cache}/soul-sim/
-                           lands/ (one file a world and a build; same pages)
+                           and place every tree and plant anew instead of
+                           reading those the runs before kept under
+                           ${XDG_CACHE_HOME:-~/.cache}/soul-sim/lands/ (a
+                           file a world and a build, the plants' also a
+                           content; same pages)
   --helpers N              threads placing the chunks' plants ahead of the
                            bodies (default 1; 0 = the simulation thread
                            alone, for runs side by side); the pages are the
@@ -130,6 +135,9 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             }
             "--no-brain" => settings.brain = false,
             "--no-trials" => settings.trials = false,
+            "--hands-known" => {
+                settings.hands_known = small(&mut i, "--hands-known", "too many")?;
+            }
             "--no-fire" => settings.fire = false,
             "--no-decisions" => settings.decisions = false,
             "--no-moves" => settings.moves = false,
