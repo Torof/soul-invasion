@@ -7040,17 +7040,17 @@ mod tests {
 
     #[test]
     fn eating_fills_the_reserve_at_most_the_days_ceiling_and_a_sated_body_refuses() {
-        // A need of 10,000 kJ a day: 15,000 a day at most.
+        // A need of 10,000 kJ a day: 30,000 a day at most (D46, 300 %).
         let rules = reserve_rules();
         let mut w = fed_world();
         let body = BodyId(1);
-        // Half its reserve spent: room for 30,000 kJ, more than a day's.
-        w.bodies[0].condition.deficit_j = 30_000_000;
-        // 10 kg of berries, 2,500 kJ a kilogram.
-        let food = w.spawn_item("berries", 10_000, Pos::new(1, 1));
+        // A fifth of its reserve spent: room for 60,000 kJ, more than a day's.
+        w.bodies[0].condition.deficit_j = 60_000_000;
+        // 20 kg of berries, 2,500 kJ a kilogram.
+        let food = w.spawn_item("berries", 20_000, Pos::new(1, 1));
         let mut events = Vec::new();
         let mut eaten = 0;
-        for _ in 0..40 {
+        for _ in 0..50 {
             events.clear();
             w.queue(Intention::Eat { body, item: food });
             w.step(&rules, &mut events);
@@ -7062,8 +7062,8 @@ mod tests {
                 })
                 .sum::<u32>();
         }
-        // The day's ceiling: 150 % of 10,000 kJ.
-        assert!((14_900..=15_000).contains(&eaten), "{eaten}");
+        // The day's ceiling: 300 % of 10,000 kJ.
+        assert!((29_900..=30_000).contains(&eaten), "{eaten}");
         assert!(events.contains(&Event::ActRefused {
             body,
             act: ItemAct::Eat,
