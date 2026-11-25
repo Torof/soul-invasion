@@ -762,6 +762,50 @@ impl Map {
             && u32::try_from(chunk.y).is_ok_and(|y| y < self.chunks_high())
     }
 
+    /// Holds up to `chunks` chunks of the land made (tiles, woods, water),
+    /// never fewer than now (D51, amended 25 November 2026): the vivarium
+    /// holds its whole map, each chunk made once a run. Nothing read
+    /// changes: a chunk let go is made again, the same bytes.
+    pub fn widen_land(&self, chunks: usize) {
+        if let Made::Valley(land) = &self.ground {
+            land.widen(chunks);
+        }
+    }
+
+    /// How many chunks of tiles, of woods and of water the land made so
+    /// far, those read back with [`Map::take_land_bytes`] not counted.
+    #[must_use]
+    pub fn land_made(&self) -> [u64; 3] {
+        match &self.ground {
+            Made::Valley(land) => land.made(),
+            Made::Filled(_) => [0; 3],
+        }
+    }
+
+    /// The chunks of land held now, as bytes another map of the same spec
+    /// takes back ([`Map::take_land_bytes`]); `None` for a map of one
+    /// terrain.
+    #[must_use]
+    pub fn land_bytes(&self) -> Option<Vec<u8>> {
+        match &self.ground {
+            Made::Valley(land) => Some(land.to_bytes()),
+            Made::Filled(_) => None,
+        }
+    }
+
+    /// Takes the chunks of land in `bytes` ([`Map::land_bytes`] of a map of
+    /// the same spec: the caller's to guarantee) that are not held yet, as
+    /// if made here: how many chunks of tiles, woods and water. `None`,
+    /// taking nothing, for bytes damaged, of another layout or of a map of
+    /// another size, and for a map of one terrain.
+    #[must_use]
+    pub fn take_land_bytes(&self, bytes: &[u8]) -> Option<[usize; 3]> {
+        match &self.ground {
+            Made::Valley(land) => land.take_bytes(bytes),
+            Made::Filled(_) => None,
+        }
+    }
+
     /// The tiles of a chunk, row by row, `CHUNK_SIZE × CHUNK_SIZE` of
     /// them; beyond the map's edge the ground is rock. `None` for a chunk
     /// entirely outside the map.
