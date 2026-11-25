@@ -498,9 +498,10 @@ pub(super) fn hands_turn(
 }
 
 /// A gesture drawn in a trial of the hands on nothing heard (D57): one of
-/// the three, on a thing drawn among those it carries or that lie around
-/// it, at most the content's tries a day. No suggestion: any thing, any
-/// tool.
+/// the three the things allow, on a thing drawn among those it carries or
+/// that lie around it, at most the content's tries a day. A cut only with
+/// a sharp thing and only on a tree with bark, a fold only of what folds
+/// (amended 25 November 2026); no suggestion of which gesture.
 fn draw(
     world: &World,
     rules: &Content,
@@ -526,11 +527,45 @@ fn draw(
         );
         usize::try_from(r % u64::try_from(n.max(1)).unwrap_or(1)).unwrap_or(0)
     };
-    let gesture = Gesture::ALL[usize::try_from(r % 3).unwrap_or(0)];
+    // Only what the things allow (the project lead, 25 November 2026:
+    // "on ne coupe pas avec une baie"): a body sees truly that a stone is
+    // sharp, that a sheet bends, that a tree has bark to cut. It cuts with
+    // a sharp thing only, a tree with bark only; it folds what folds. The
+    // gesture stays drawn at random among those the things allow: nothing
+    // says which.
+    let material = |m: u16| rules.materials.get(usize::from(m));
+    let tools: Vec<(ItemId, u16)> = have
+        .iter()
+        .copied()
+        .filter(|&(_, m)| material(m).is_some_and(|m| m.sharp))
+        .collect();
+    let folding: Vec<(ItemId, u16)> = have
+        .iter()
+        .copied()
+        .filter(|&(_, m)| material(m).is_some_and(|m| m.folds_into.is_some()))
+        .collect();
+    let things = things_near(world, here, near, mind);
+    let trees: Vec<_> = if tools.is_empty() {
+        Vec::new()
+    } else {
+        trees_near(world, here, near, mind)
+            .into_iter()
+            .filter(|t| rules.species.get(t.3).is_some_and(|s| s.bark.is_some()))
+            .collect()
+    };
+    let open: Vec<Gesture> = Gesture::ALL
+        .into_iter()
+        .filter(|g| match g {
+            Gesture::Take => !things.is_empty(),
+            Gesture::Cut => !trees.is_empty(),
+            Gesture::Fold => !folding.is_empty(),
+        })
+        .collect();
+    let n = u64::try_from(open.len()).ok().filter(|&n| n > 0)?;
+    let gesture = open[usize::try_from(r % n).unwrap_or(0)];
     let deed = |on, with| Deed { gesture, on, with };
     match gesture {
         Gesture::Take => {
-            let things = things_near(world, here, near, mind);
             let thing = things.get(pick(things.len(), 0))?;
             let on = material_index(rules, thing.material())?;
             Some((
@@ -539,9 +574,8 @@ fn draw(
             ))
         }
         Gesture::Cut => {
-            let trees = trees_near(world, here, near, mind);
             let &(chunk, key, at, species) = trees.get(pick(trees.len(), 0))?;
-            let &(with, with_m) = have.get(pick(have.len(), 1))?;
+            let &(with, with_m) = tools.get(pick(tools.len(), 1))?;
             Some((
                 HandTarget::Tree {
                     chunk,
@@ -553,7 +587,7 @@ fn draw(
             ))
         }
         Gesture::Fold => {
-            let &(item, on) = have.get(pick(have.len(), 0))?;
+            let &(item, on) = folding.get(pick(folding.len(), 0))?;
             Some((HandTarget::Item(item, here), deed(on, NOTHING)))
         }
     }
@@ -784,6 +818,7 @@ mod tests {
     use super::*;
     use crate::memory::{Access, Record};
     use crate::time::Calendar;
+    use std::collections::BTreeSet;
 
     /// The repository's content, a valley of minute ticks, a body beside
     /// a birch with a mind: the rules, world, brains, body, and the
@@ -1018,6 +1053,49 @@ mod tests {
         let mind = brains.minds.get_mut(&id).unwrap();
         let _ = hands_turn(&world, &rules, (id, here), mind, 7);
         assert!(mind.handwork.served(container));
+    }
+
+    #[test]
+    fn a_gesture_is_drawn_only_with_what_allows_it() {
+        let (rules, mut world, mut brains, id, birch) = by_a_birch();
+        let here = world.body(id).unwrap().pos();
+        let berries = picked(&mut world, &rules, id, "berries");
+        let pebble = picked(&mut world, &rules, id, "pebble");
+        let mind = brains.minds.get_mut(&id).unwrap();
+        let (berries_m, pebble_m) = (material(&rules, "berries"), material(&rules, "pebble"));
+        let blunt = [(berries, berries_m), (pebble, pebble_m)];
+        let mut gestures = BTreeSet::new();
+        for day in 0..200 {
+            mind.handwork.tries = (day, 0);
+            if let Some((_, deed)) = draw(&world, &rules, (id, here), mind, (day, &blunt, 4)) {
+                gestures.insert(deed.gesture);
+            }
+        }
+        assert!(
+            !gestures.contains(&Gesture::Cut) && !gestures.contains(&Gesture::Fold),
+            "no cut with a berry or a pebble, no fold of them: {gestures:?}"
+        );
+        let flint = picked(&mut world, &rules, id, "flint");
+        let flint_m = material(&rules, "flint");
+        let sharp = [(berries, berries_m), (flint, flint_m)];
+        let mut cuts = 0;
+        for day in 0..200 {
+            mind.handwork.tries = (day, 0);
+            if let Some((_, deed)) = draw(&world, &rules, (id, here), mind, (day, &sharp, 4))
+                && deed.gesture == Gesture::Cut
+            {
+                cuts += 1;
+                assert_eq!(deed.with, flint_m, "only the sharp thing cuts");
+                assert!(
+                    rules.species[usize::from(deed.on)].bark.is_some(),
+                    "a tree with bark"
+                );
+            }
+        }
+        assert!(
+            cuts > 0,
+            "the flint beside the birch {birch} is drawn to cut"
+        );
     }
 
     #[test]
