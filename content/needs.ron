@@ -153,6 +153,14 @@
         conceive_reserve_percent: 80,
         mate_within_tiles: 64,
         conceive_percent: 40,
+        // conceive_percent_by_reserve — under the 80 % gate, a thin woman
+        //   conceives less often, never not at all (the project lead, 25
+        //   November 2026, after the conception measures: no fertile woman
+        //   was above 80 % from the first summer on, and no child was
+        //   conceived after the first week): (reserve %, chance % a
+        //   quarter), read between the points: 2 % at an empty reserve,
+        //   5 % at a quarter, 15 % at half, 40 % at the gate.
+        conceive_percent_by_reserve: [(0, 2), (25, 5), (50, 15), (80, 40)],
         conceive_nights: 4,
         part_after_days: 12,
         together_nights: 6,

@@ -2080,6 +2080,13 @@ pub struct Life {
     /// Her chance to conceive in a quarter of an age-year, in percent,
     /// drawn once a quarter (a season while the age-year is the cycle).
     pub conceive_percent: u32,
+    /// At or under `conceive_reserve_percent`, her chance a quarter by her
+    /// reserve left (D49, amended 25 November 2026; the project lead: a
+    /// thin woman conceives less often, never not at all): points
+    /// (reserve per cent, chance per cent), rising, read between them.
+    /// Empty: a thin woman does not conceive.
+    #[serde(default)]
+    pub conceive_percent_by_reserve: Vec<(u32, u32)>,
     /// The quarter's first nights she may conceive in (D49, amended): at
     /// the start of each of these days, a wife not yet with child whose
     /// spouse is back within `mate_within_tiles` meets the quarter's draw.
@@ -2132,6 +2139,7 @@ impl Default for Life {
             conceive_reserve_percent: 100,
             mate_within_tiles: 0,
             conceive_percent: 0,
+            conceive_percent_by_reserve: Vec::new(),
             conceive_nights: 1,
             part_after_days: 0,
             together_nights: 0,
@@ -2187,6 +2195,14 @@ impl Life {
             || self.mate_years.0 > self.mate_years.1
             || !percent(self.conceive_reserve_percent)
             || !percent(self.conceive_percent)
+            || !self
+                .conceive_percent_by_reserve
+                .windows(2)
+                .all(|p| p[0].0 < p[1].0)
+            || self
+                .conceive_percent_by_reserve
+                .iter()
+                .any(|p| p.0 > 100 || p.1 > 100)
             || !percent(self.boys_percent)
             || !percent(self.childbirth_death_percent)
             || self.pregnancy_quarters == 0
@@ -2206,6 +2222,24 @@ impl Life {
 /// The value at `age_milli` thousandths of a year along `points`: (years,
 /// value), the ages rising, each value scaled by `scale`, straight lines
 /// between the points, the first held before and the last after.
+impl Life {
+    /// Her chance to conceive this quarter, in percent, with `left` of
+    /// her `whole` fat reserve (D49, amended 25 November 2026): the
+    /// content's chance above the gate, below it the chance by her
+    /// reserve, 0 when none is given.
+    #[must_use]
+    pub fn conceive_chance(&self, left: u64, whole: u64) -> u64 {
+        if left * 100 > whole * u64::from(self.conceive_reserve_percent) {
+            return u64::from(self.conceive_percent);
+        }
+        if self.conceive_percent_by_reserve.is_empty() {
+            return 0;
+        }
+        let share = left * 100 / whole.max(1);
+        along(&self.conceive_percent_by_reserve, share * 1000, 1)
+    }
+}
+
 fn along(points: &[(u32, u32)], age_milli: u64, scale: u64) -> u64 {
     let milli = |(years, value): (u32, u32)| (u64::from(years) * 1000, u64::from(value) * scale);
     let points: Vec<(u64, u64)> = points.iter().copied().map(milli).collect();
@@ -3267,6 +3301,26 @@ mod tests {
     /// at most a day of need, for the most sociable, less as sociability
     /// falls; it saturates at about two others for a loner and six for a
     /// sociable, and more add nothing; off, nothing.
+    #[test]
+    fn a_thin_woman_conceives_less_often_never_not_at_all() {
+        let life = Life {
+            conceive_reserve_percent: 80,
+            conceive_percent: 40,
+            conceive_percent_by_reserve: vec![(0, 2), (25, 5), (50, 15), (80, 40)],
+            ..Life::default()
+        };
+        assert_eq!(life.conceive_chance(90, 100), 40, "above the gate");
+        assert_eq!(life.conceive_chance(50, 100), 15);
+        assert_eq!(life.conceive_chance(25, 100), 5);
+        assert_eq!(life.conceive_chance(0, 100), 2, "never not at all");
+        assert_eq!(life.conceive_chance(65, 100), 27, "read between the points");
+        let gate_only = Life {
+            conceive_percent_by_reserve: Vec::new(),
+            ..life
+        };
+        assert_eq!(gate_only.conceive_chance(79, 100), 0, "no table: barred");
+    }
+
     #[test]
     fn company_saturates_and_a_night_alone_weighs_a_day_at_most() {
         let c = Company::placeholders();

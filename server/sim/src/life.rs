@@ -92,9 +92,8 @@ impl World {
                 continue;
             }
             let c = &woman.condition;
-            if c.reserve_left_j(needs) * 100
-                <= c.reserve_j(needs) * u64::from(life.conceive_reserve_percent)
-            {
+            let chance = life.conceive_chance(c.reserve_left_j(needs), c.reserve_j(needs));
+            if chance == 0 {
                 continue;
             }
             if self.bodies.iter().any(|b| b.carried_by == Some(woman.id)) {
@@ -107,7 +106,7 @@ impl World {
                 continue;
             }
             if scatter::chance(
-                life.conceive_percent * 10,
+                u32::try_from(chance * 10).unwrap_or(1000),
                 seed,
                 purpose::LIFE_CONCEIVE,
                 &[u64::from(woman.id.0), age_year, u64::from(quarter)],
@@ -624,6 +623,8 @@ mod tests {
     fn a_woman_too_old_thin_nursing_or_whose_husband_is_far_or_dead_does_not_conceive() {
         let mut rules = fed_rules();
         rules.needs.life.conceive_percent = 100;
+        // The gate alone: the chance by reserve is tested in content.
+        rules.needs.life.conceive_percent_by_reserve.clear();
         let mut events = Vec::new();
 
         let mut w = world();
