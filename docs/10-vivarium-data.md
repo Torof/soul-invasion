@@ -362,7 +362,7 @@ clock, the only field no seed decides.
 | `moving.felt[].day`, `.body`, `.tribe` | The day, who, its tribe | |
 | `moving.felt[].gain_permille`, `.push_permille`, `.surprise_permille` | The new home's grade less the old one's, season against season; how much worse its recent days were than its usual days of the season; its greatest surprise there | per mille of a day of need |
 | `moving.felt[].huge` | `true`: not pushed, the surprise alone was huge enough | boolean |
-| `moving.surprised[]` | Each surprise lived: a day gathering at a grove away from home that gave clearly more than the present who stayed near home and gathered that day, in order | list |
+| `moving.surprised[]` | Each surprise lived: a day gathering at a grove away from home that gave clearly more than the present who stayed near home and gathered that day, in order; or, for a day that ended away from any fire (out on a trip, amended 25 November 2026), more than its own usual days of the season (`stayers` 0, never told) | list |
 | `moving.surprised[].day`, `.body`, `.tribe`, `.stayers` | The day it was told, who, its tribe, how many stayers it was compared with (0: none stayed near home that day, it was compared with its own usual days of the season, amended 25 November 2026) | |
 | `moving.surprised[].gain_permille`, `.stayers_gathered_permille` | How much more it gathered there; the stayers' mean that day, or its own usual day's when `stayers` is 0 | per mille of a day of need |
 | `moving.surprised[].spouse_took_it` | Its spouse at the fire took the day into its own notes | boolean |
@@ -494,12 +494,16 @@ clock, the only field no seed decides.
 | `chain.away[].stopped_by.*` | Of them, what barred its last walk since dawn (`Event::BodyBlocked` or `MoveRefused`): `water`, `rock`, `no_way`, or `none` told | dawns |
 | `chain.away[].sleep_out` | Laid down where it stood, its way being to sleep out (D50): by choice | dawns |
 | `chain.away[].goal` | Laid down where it stood, holding a goal beyond a day (D56): by choice | dawns |
+| `chain.away[].trip` | Laid down where it stood, out on a trip it chose at its point of no return or on a morning away (D53, D56, amended 25 November 2026): by choice; counted before `sleep_out` | dawns |
 | `chain.away[].lay_at_home` | Laid down within the fire's reach of its home: its home moved away from it since | dawns |
 | `chain.away[].awake` | Awake at dawn and never lay down since the dawn before: it walked or stood the night through | dawns |
 | `chain.away[].woke` | Awake at dawn, having lain down since the dawn before and risen in the night (to drink, or called away): on its feet away from home; whoever rose with the day (the rested rise at the dawn's own tick) is told by how it lay down | dawns |
 | `chain.away[].unseen` | Asleep, its lying down not seen | dawns |
 | `chain.away[].fatigue_mean` | The fatigue at lying down of those who lay down away (all but `awake`, `woke` and `unseen`), on average; `null` without one | points of 100 |
 | `chain.looks` | Every looking day (`Act::Looked`, D56), in order: the day it closed (its nightfall), the tribe (0 or 1), and the farthest it stood from its home that day, on the longer axis, looked at once a game minute | `[[day, tribe, tiles], …]` |
+| `chain.outings` | Every outing of a grown body beyond the fire's reach of its home (`trials.imitate_tiles`), as it ended, in order (25 November 2026): the day it woke home again, the tribe (0 or 1), the nights it woke away (0: out and back by the next dawn), and the farthest it stood from its home, on the longer axis, looked at once a game minute; then who went, as it was when the outing began (the first game minute it stood beyond the fire's reach): its will (0 to 100), whether it was a parent of a living child under 8 age-years, of one under 16, its sex (`"female"` or `"male"`), and its age in whole age-years. An outing still open at the end, or ended by death, is not there | `[[day, tribe, nights, tiles, will, parent_under_8, parent_under_16, sex, age_years], …]` |
+| `chain.turns.no_return.*` | What the bodies chose away from home when the straight walk home took the rest of the day's light (`News::Turned`, D53, D56, amended 25 November 2026): `home`, `stay` (food in sight, it stays out) or `on` (it goes on with its trip) | choices |
+| `chain.turns.morning.*` | The same, on a morning they woke on a trip | choices |
 
 ## Beside the data: the lab's series file
 

@@ -934,9 +934,90 @@ const LIVED_MAX: usize = 8;
 /// it stands this many tiles from the last one kept.
 const TRAIL_STEP_TILES: i64 = 16;
 
-/// The most points of the way it came a body keeps: past it, every other
-/// one is let go, the way kept twice as coarse.
-const TRAIL_MAX: usize = 64;
+/// The most points of the way it came a body keeps, the quick memory of
+/// its trip (amended 25 November 2026, the lead's "mémoire rapide du
+/// voyage"): 1,024 points of eight bytes, 8 KiB a body away at most,
+/// some sixteen thousand tiles of way. Past it, the points whose
+/// neighbours see each other along a clear line are let go first
+/// ([`Mind::thin_trail`]), never one whose loss would send the way home
+/// across water or rock.
+const TRAIL_MAX: usize = 1024;
+
+/// The land a body found bare around its camp (D53, amended 25 November
+/// 2026; the project lead: "Hier j'ai fait le tour près du camp et il n'y
+/// avait rien, alors aujourd'hui je vais directement plus loin"): for
+/// each of the eight directions of its look-out spiral, how far out from
+/// the camp, in tiles on the longer axis, a leg looked for food and found
+/// nothing worth going to. Held for this camp while no crop comes on
+/// ([`Food::comings`]): what the content says bears again may be there
+/// again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Bare {
+    /// The camp it was found around.
+    home: Pos,
+    /// [`Food::comings`] when it was found.
+    comings: u32,
+    /// By direction ([`DIRECTIONS`]), the tiles out known bare.
+    tiles: [u32; 8],
+}
+
+impl Bare {
+    /// Forgotten when the camp is another, or a crop came on since.
+    fn fade(&mut self, home: Pos, comings: u32) {
+        if self.home != home || self.comings != comings {
+            *self = Bare {
+                home,
+                comings,
+                tiles: [0; 8],
+            };
+        }
+    }
+
+    /// Whether `at` lies in the land known bare around the camp.
+    fn holds(&self, at: Pos) -> bool {
+        let (dx, dy) = (at.x - self.home.x, at.y - self.home.y);
+        if (dx, dy) == (0, 0) {
+            return self.tiles.iter().all(|&t| t > 0);
+        }
+        let out = u32::try_from(dx.abs().max(dy.abs())).unwrap_or(u32::MAX);
+        out <= self.tiles[octant(dx, dy)]
+    }
+
+    /// Whether anything is known bare.
+    fn any(&self) -> bool {
+        self.tiles.iter().any(|&t| t > 0)
+    }
+}
+
+/// A leg of the look-out spiral looking for food: its direction, how far
+/// out from the camp it goes, in tiles on the longer axis, and its end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Leg {
+    dir: u8,
+    out: u32,
+    to: Pos,
+}
+
+/// What a body away from its camp chose (D53, D56, amended 25 November
+/// 2026): at the point of no return, or on a morning it woke away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TripChoice {
+    /// It goes home.
+    Home,
+    /// It stays out where it sees food: it gathers and sleeps there.
+    Stay,
+    /// It goes on with its trip, and sleeps out.
+    On,
+}
+
+/// When a body made a [`TripChoice`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TripWhen {
+    /// The walk home would take the rest of the day's light.
+    NoReturn,
+    /// A morning it woke away from its camp.
+    Morning,
+}
 
 /// What a body perceives of how it fares, each in its own gauge's unit
 /// and all counted alike, per mille of a day of that need (D50, D53,
@@ -1437,6 +1518,27 @@ pub enum News {
         /// amended 24 November 2026): not joined, it stayed with its
         /// spouse and keeps the call.
         own: Option<Weighed>,
+        /// When.
+        at: u64,
+    },
+    /// `body`, away from its camp, chose (D53, D56, amended 25 November
+    /// 2026): at its point of no return or on a morning away, `tiles`
+    /// from its camp in a straight line, `nights` slept out on its trip.
+    Turned {
+        /// Who.
+        body: BodyId,
+        /// What it chose.
+        choice: TripChoice,
+        /// When it chose.
+        when: TripWhen,
+        /// Hungry, and seeing food around it.
+        hungry: bool,
+        /// Seeing food around it.
+        sees_food: bool,
+        /// How far from its camp, in tiles.
+        tiles: u32,
+        /// The nights its trip held already.
+        nights: u32,
         /// When.
         at: u64,
     },
@@ -1980,8 +2082,27 @@ pub struct Mind {
     /// The day it could not reach its hearth's reserve: not again that
     /// day (D58).
     hearth_barred: Option<u64>,
-    /// How many times it went looking: the next direction.
+    /// How many times it went looking today: the next direction and the
+    /// ring. The spiral starts again by the camp each day (fixed on 25
+    /// November 2026: counted over a whole life, the rings only widened,
+    /// a sight every eight legs, and hungry bodies looked ever farther,
+    /// beyond any way home they could walk).
     walks: u64,
+    /// The day `walks` counts.
+    walks_day: u64,
+    /// The land it found bare around its camp (amended 25 November 2026).
+    bare: Bare,
+    /// Its last leg looking for food, until it looks again.
+    leg: Option<Leg>,
+    /// What it chose away from its camp today, and the day (amended 25
+    /// November 2026): one choice a day.
+    out: Option<(u64, TripChoice)>,
+    /// The day its trip began, the day it first chose to stay out; `None`
+    /// once home.
+    trip_from: Option<u64>,
+    /// The tick its point of no return may come at the earliest, walking
+    /// straight away from its camp: looked at then, without a thought.
+    turn_at: Option<u64>,
     /// How many times it thought.
     thoughts: u64,
     /// Its hands (D57): what it tries, steps to and practised.
@@ -2173,6 +2294,16 @@ impl Mind {
             hearth_carried_kj: 0,
             hearth_barred: None,
             walks: 0,
+            walks_day: 0,
+            bare: Bare {
+                home,
+                comings: 0,
+                tiles: [0; 8],
+            },
+            leg: None,
+            out: None,
+            trip_from: None,
+            turn_at: None,
             thoughts: 0,
             handwork: Handwork::default(),
         }
@@ -2287,10 +2418,15 @@ impl Mind {
     /// energy and the time, at what it gathered its last days, else at
     /// `trials.idle_day_permille`.
     /// It stands at `to` (D53, amended 25 November 2026): the way it came
-    /// keeps a point each [`TRAIL_STEP_TILES`] from the last; back near a
-    /// point already kept it cuts the loop there; near home it starts
-    /// again. Another home, another way.
-    fn walked_to(&mut self, to: Pos) {
+    /// keeps a point each [`TRAIL_STEP_TILES`] from the last; near home
+    /// it starts again. Another home, another way. The quick memory of
+    /// the trip (amended again the same day, the lead's "mémoire rapide du
+    /// voyage"): the way is kept whole while it is away, never halved
+    /// ([`TRAIL_MAX`]), and a loop is cut back to an earlier point only
+    /// when that point lies within a step along a clear line (`map`):
+    /// never across water or rock, where the first way cut them and sent
+    /// the bodies home over a lake.
+    fn walked_to(&mut self, map: &Map, to: Pos) {
         // On its way home it walks its way back: it cuts it, never adds.
         let homeward = self.doing == Doing::Home;
         if self.trail_home != self.ways.home {
@@ -2302,7 +2438,15 @@ impl Mind {
             self.trail.clear();
             return;
         }
-        if let Some(i) = self.trail.iter().position(|&p| far(p, to) < step) {
+        // Not a step from the last point yet: nothing new.
+        if self.trail.last().is_some_and(|&p| far(p, to) < step) {
+            return;
+        }
+        if let Some(i) = self
+            .trail
+            .iter()
+            .position(|&p| far(p, to) < step && clear_line(map, p, to))
+        {
             self.trail.truncate(i + 1);
             return;
         }
@@ -2311,13 +2455,38 @@ impl Mind {
         }
         self.trail.push(to);
         if self.trail.len() > TRAIL_MAX {
-            let n = self.trail.len();
-            let mut i = 0;
-            self.trail.retain(|_| {
-                i += 1;
-                (n - i).is_multiple_of(2)
-            });
+            self.thin_trail(map);
         }
+    }
+
+    /// Its way grown past [`TRAIL_MAX`]: the points whose two neighbours
+    /// see each other along a clear line are let go, the oldest first,
+    /// until a quarter of the way is gone; if that is not enough, the
+    /// oldest points (the home end, from which it walks straight home).
+    fn thin_trail(&mut self, map: &Map) {
+        let keep = TRAIL_MAX * 3 / 4;
+        let mut i = 1;
+        while self.trail.len() > keep && i + 1 < self.trail.len() {
+            if clear_line(map, self.trail[i - 1], self.trail[i + 1]) {
+                self.trail.remove(i);
+            }
+            i += 1;
+        }
+        if self.trail.len() > keep {
+            let cut = self.trail.len() - keep;
+            self.trail.drain(..cut);
+        }
+    }
+
+    /// Whether it is out on a trip it chose (amended 25 November 2026):
+    /// it chose to stay out today, or slept out on its trip and is not
+    /// home yet. A measure, and what lays it down where it stands.
+    #[must_use]
+    pub fn on_trip(&self, day: u64) -> bool {
+        self.trip_from.is_some()
+            || self
+                .out
+                .is_some_and(|(d, c)| d == day && c != TripChoice::Home)
     }
 
     fn walk(&self, rules: &Content) -> Walk {
@@ -3782,6 +3951,10 @@ struct Food {
     tick: Option<u64>,
     /// What each kind bears at `tick`, if anything (the first of its food crops in season, in the content's order).
     now: Vec<Option<Bears>>,
+    /// How many times a crop came on since the brains began (D53,
+    /// amended 25 November 2026): a kind bearing again, or a new crop of
+    /// it. What a body found bare may bear again from then ([`Bare`]).
+    comings: u32,
 }
 
 /// What a kind bears now: the crop, its year, what an hour of it gives.
@@ -3844,7 +4017,19 @@ impl Food {
                     })
                 })
             })
-            .collect();
+            .collect::<Vec<Option<Bears>>>();
+        let came = now.iter().enumerate().any(|(i, new)| {
+            new.is_some_and(|n| {
+                self.now
+                    .get(i)
+                    .copied()
+                    .flatten()
+                    .is_none_or(|o| (o.crop, o.year) != (n.crop, n.year))
+            })
+        });
+        if came && !self.now.is_empty() {
+            self.comings = self.comings.wrapping_add(1);
+        }
         self.now = now;
     }
 
@@ -4224,6 +4409,20 @@ impl Brains {
             if mind.wake_at.is_some_and(|tick| now >= tick) {
                 mind.due = true;
             }
+            // Its point of no return may have come (amended 25 November
+            // 2026): looked at without a thought, a thought if it came.
+            if let Some(at) = mind.turn_at
+                && now >= at
+            {
+                mind.turn_at = None;
+                let (here, home) = (body.pos(), mind.ways.home);
+                if !world.is_night(rules) && !body.condition().asleep {
+                    match turn_due(world, rules, body, (here, home)) {
+                        Ok(()) => mind.due = true,
+                        Err(next) => mind.turn_at = Some(next),
+                    }
+                }
+            }
             if mind.due {
                 due.push(id);
             }
@@ -4336,7 +4535,7 @@ impl Brains {
                 Event::BodyMoved { body, to, .. } => {
                     if let Some(mind) = self.minds.get_mut(body) {
                         mind.walked_today += 1;
-                        mind.walked_to(*to);
+                        mind.walked_to(world.map(), *to);
                         mind.from_home = if place_of(*to, side) == place_of(mind.ways.home, side) {
                             0
                         } else {
@@ -4351,7 +4550,7 @@ impl Brains {
                             .body(*infant)
                             .is_some_and(|b| b.carried_by() == Some(*body));
                         if let (true, Some(mind)) = (still, self.minds.get_mut(infant)) {
-                            mind.walked_to(*to);
+                            mind.walked_to(world.map(), *to);
                         }
                     }
                 }
@@ -4503,6 +4702,8 @@ impl Brains {
                     at: now,
                 });
             } else if mind.trial.is_none() && mind.calling.is_none() {
+                // What it knows bare holds while no crop came on.
+                mind.bare.fade(mind.ways.home, self.food.comings);
                 let grown = world.age_milli(body) >= 16_000;
                 let news = change_or_move(
                     world,
@@ -4858,6 +5059,7 @@ impl Brains {
         if !fire.on() {
             return;
         }
+        self.away_surprise(world, rules, &circles);
         let dawn = u32::try_from(today(world)).unwrap_or(u32::MAX);
         let day = u32::try_from(today(world).saturating_sub(1)).unwrap_or(u32::MAX);
         let now = world.tick().0;
@@ -5016,6 +5218,63 @@ impl Brains {
         tales.sort_by_key(|&(gain, id, _)| (std::cmp::Reverse(gain), id));
         for tale in tales {
             self.tell_surprise(world, rules, (camp, day, now), present, tale);
+        }
+    }
+
+    /// The surprises of a day that ended away from any fire (amended 25
+    /// November 2026: the places found on a trip become candidates for a
+    /// move, D56). One who lay down at no circle, whose grove of most food
+    /// lay away from its home, weighs its day there against its own usual
+    /// days of the season, as at a fire where no stayer was heard; by
+    /// `moving.surprise_permille` or more, the day is marked in its notes
+    /// of that grove and season. Nobody hears it and nothing is told: it
+    /// tells it, if at all, as its own notes, never as a tale.
+    fn away_surprise(&mut self, world: &World, rules: &Content, circles: &[(Pos, Vec<BodyId>)]) {
+        let moving = &rules.needs.moving;
+        if !moving.on() {
+            return;
+        }
+        let threshold = u64::from(moving.surprise_permille);
+        let day = u32::try_from(today(world).saturating_sub(1)).unwrap_or(u32::MAX);
+        let season = season_of_day(world, u64::from(day));
+        let side = place_side(rules);
+        let now = world.tick().0;
+        let at_fire: BTreeSet<BodyId> = circles
+            .iter()
+            .flat_map(|(_, present)| present.iter().copied())
+            .collect();
+        for (&id, mind) in &mut self.minds {
+            if at_fire.contains(&id) {
+                continue;
+            }
+            let Some(y) = mind.yesterday.filter(|y| y.day == day && !y.near) else {
+                continue;
+            };
+            let Some((grove, food, _, _)) = y.grove else {
+                continue;
+            };
+            let usual = &mind.usual[usize::from(season.min(3))];
+            if usual.weight == 0 {
+                continue;
+            }
+            let mean = u64::try_from(usual.mean(usual.gathered)).unwrap_or(0);
+            let gain = food.saturating_sub(mean);
+            if gain < threshold {
+                continue;
+            }
+            let l = mind.lived_slot(grove, true, (season, side));
+            l.surprised += 100;
+            l.surprise_max = l.surprise_max.max(gain);
+            self.news.push(News::Surprised {
+                body: id,
+                place: grove,
+                gain,
+                stayers: 0,
+                stayers_gathered: mean,
+                spouse: None,
+                day,
+                at: now,
+            });
         }
     }
 
@@ -7177,10 +7436,26 @@ fn decide(
     let can_carry = body.food_room_g(&rules.movement) > 0;
     let night = world.is_night(rules);
     let now = world.tick().0;
+    // Away from its camp, once a day, it chooses: home, stay or go on
+    // (amended 25 November 2026).
+    if !asleep {
+        trip_turn(
+            world,
+            rules,
+            (id, body, here),
+            mind,
+            (food, seed, hungry),
+            news,
+        );
+    }
+    let day = today(world);
+    let out_today = mind.out.filter(|&(d, _)| d == day).map(|(_, c)| c);
+    let going_home = out_today == Some(TripChoice::Home);
     if let Doing::Gathering(_) = mind.doing {
         if body.work().is_some() {
-            // At work: it goes on unless thirst, hunger or night calls.
-            if !thirsty && !hungry && !night {
+            // At work: it goes on unless thirst, hunger, night or its
+            // choice to go home calls.
+            if !thirsty && !hungry && !night && !going_home {
                 return None;
             }
         } else {
@@ -7189,8 +7464,9 @@ fn decide(
             mind.doing = Doing::Nothing;
         }
     }
-    // At a gesture (D57): it goes on unless thirst, hunger or night calls.
-    if body.making().is_some() && !thirsty && !hungry && !night {
+    // At a gesture (D57): it goes on unless thirst, hunger, night or its
+    // choice to go home calls.
+    if body.making().is_some() && !thirsty && !hungry && !night && !going_home {
         return None;
     }
     if let Doing::ToGather(aim) = mind.doing
@@ -7291,7 +7567,15 @@ fn decide(
                 Why::Thirst,
             );
         }
-        return go_looking(map, rules, id, here, mind, seed, Why::Thirst);
+        return go_looking(
+            world,
+            rules,
+            id,
+            here,
+            mind,
+            (seed, food.comings),
+            Why::Thirst,
+        );
     }
     // A child fed by its hearth does not gather alone (D58).
     let fed = pooling::fed_by_hearth(world, rules, reserves, body);
@@ -7349,8 +7633,10 @@ fn decide(
                 Why::Hunger,
             );
         }
+        // Going home by its choice, it gathers nor looks no more.
         if can_carry
             && !fed
+            && !going_home
             && let (Some(goal), fresh) = to_gather(mind, bearers, groups)
         {
             if fresh {
@@ -7363,13 +7649,22 @@ fn decide(
         // something is ripe somewhere. Out of season it bears its hunger
         // by its camp.
         let ripe_somewhere = food.now.iter().any(Option::is_some);
-        if !night && !fed && ripe_somewhere {
-            return go_looking(map, rules, id, here, mind, seed, Why::Hunger);
+        if !night && !fed && !going_home && ripe_somewhere {
+            return go_looking(
+                world,
+                rules,
+                id,
+                here,
+                mind,
+                (seed, food.comings),
+                Why::Hunger,
+            );
         }
     }
     // Its hands (D57): a deed it knows and lacks what it gives, or a
     // gesture of a trial of its hands, on what lies around it.
     if !night
+        && !going_home
         && let handwork::HandsTurn::Decide(decision) =
             handwork::hands_turn(world, rules, (id, here), mind, seed)
     {
@@ -7379,13 +7674,13 @@ fn decide(
     // Its store, and what it saw its hearth needs of it (D58).
     let store = mind.ways.stock_kj + mind.hearth_owed();
     let full = !can_carry || carried_kj(world, rules, id) >= store;
-    let mut gathers = !night && !fed && (!full || on_the_way(world, groups, mind));
+    let mut gathers = !night && !fed && !going_home && (!full || on_the_way(world, groups, mind));
     let mut group_home = false;
     if !night {
         if let Turn::Decide(decision) = move_turn(world, rules, groups, (id, here), mind, now) {
             return decision;
         }
-        if !fed {
+        if !fed && !going_home {
             match group_turn(world, rules, groups, (id, here), mind, full, now) {
                 Turn::Go => {}
                 Turn::Home => {
@@ -7407,11 +7702,52 @@ fn decide(
         return follow_or_wait(world, rules, groups, id, mind, decision, now);
     }
     let home = (here.x - camp.x).abs() <= HOME_TILES && (here.y - camp.y).abs() <= HOME_TILES;
+    // Out by its choice by day (amended 25 November 2026), it does not
+    // walk home: going on, it looks farther; staying, or with nothing to
+    // go on to, it stays where it stands until the night.
+    if !night && !home && matches!(out_today, Some(TripChoice::Stay | TripChoice::On)) {
+        if out_today == Some(TripChoice::On) && !full {
+            if mind.doing == Doing::Exploring(Why::Explore) && !mind.stopped {
+                return None;
+            }
+            if let Some(decision) = go_looking(
+                world,
+                rules,
+                id,
+                here,
+                mind,
+                (seed, food.comings),
+                Why::Explore,
+            ) {
+                return Some(decision);
+            }
+        }
+        mind.doing = Doing::Nothing;
+        if body.is_walking() || body.is_pausing() {
+            // Walking (home, or to a place gone): it stops where it is.
+            return decision(
+                Intention::MoveTo {
+                    body: id,
+                    target: here,
+                },
+                Why::Gather,
+            );
+        }
+        return None;
+    }
     // Its way is to sleep out (D50): at night it lies down where it
     // stands, as if the camp were under its feet.
     // Holding a goal, it lies down where it stands too (D56, amended 24
-    // November 2026): the night interrupts the walk.
-    if home || (night && (mind.ways.sleep_out || mind.goal.is_some())) {
+    // November 2026): the night interrupts the walk. And out on a trip
+    // (amended 25 November 2026).
+    // Within half an hour's walk of home, it goes home even after
+    // nightfall rather than lie down out there (the project lead, 25
+    // November 2026: "s'il sait être pas trop loin du camp en termes de
+    // temps, il décide de rentrer même après la tombée de la nuit"),
+    // unless stopped short or exhausted (below, and the world).
+    let lies_out = (mind.ways.sleep_out || mind.on_trip(day))
+        && (!rules.needs.trips.on() || beyond_choice(world, rules, body, (here, camp)));
+    if home || (night && (lies_out || mind.goal.is_some())) {
         mind.doing = Doing::Nothing;
         if night && !c.asleep {
             return decision(Intention::Sleep { body: id }, Why::Night);
@@ -7676,6 +8012,12 @@ fn plan_done(mind: &mut Mind) {
     if let Some(plan) = mind.plan.as_mut() {
         plan.done = true;
     }
+}
+
+/// Whether the straight line from `a` to `b` crosses only passable tiles
+/// (no water, no rock): a way walked there and back.
+fn clear_line(map: &Map, a: Pos, b: Pos) -> bool {
+    crate::map::line_clear(a.centre(), b.centre(), |p| map.is_passable(p))
 }
 
 /// Whether `a` and `b` stand within `tiles` of each other on each axis.
@@ -8896,17 +9238,212 @@ pub fn carried_kj(world: &World, rules: &Content, id: BodyId) -> u64 {
     })
 }
 
+/// The tiles `body` walks at its pace on the reference ground through
+/// the day's light left (none at night): the time it has to walk home.
+fn light_left_tiles(world: &World, rules: &Content, body: &Body) -> u64 {
+    let calendar = world.calendar();
+    let now = world.time();
+    let night_at =
+        calendar.ticks_per_day() * u64::from(rules.needs.night_from_percent.get(now.season)) / 100;
+    let seconds =
+        night_at.saturating_sub(now.tick_of_day) / u64::from(calendar.ticks_per_second()).max(1);
+    let pace = u64::from(body.condition().pace_percent(&rules.needs));
+    u64::from(rules.movement.walk_speed_cm_per_s) * pace / 100 * seconds / 100
+}
+
+/// Whether `body` standing at `here` is past its point of no return
+/// (D53, amended 25 November 2026): the straight walk to its camp `home`
+/// at its pace takes the rest of the day's light or more (the straight
+/// distance in walking time; a way around water is longer, never
+/// shorter). `Err` with the earliest tick it may be, walking straight
+/// away from its camp: the distance home grows at its pace while the
+/// light left shrinks at the clock's, so half the gap.
+fn past_no_return(
+    world: &World,
+    rules: &Content,
+    body: &Body,
+    (here, home): (Pos, Pos),
+) -> Result<(), u64> {
+    let home_tiles = u64::try_from(far(here, home).isqrt()).unwrap_or(u64::MAX);
+    let left = light_left_tiles(world, rules, body);
+    if home_tiles >= left {
+        return Ok(());
+    }
+    let pace = u64::from(body.condition().pace_percent(&rules.needs)).max(1);
+    let cm_per_s = (u64::from(rules.movement.walk_speed_cm_per_s) * pace / 100).max(1);
+    let seconds = (left - home_tiles) * 100 / 2 / cm_per_s;
+    let ticks = seconds * u64::from(world.calendar().ticks_per_second());
+    Err(world.tick().0 + ticks.max(1))
+}
+
+/// The tiles `body` walks at its pace on the reference ground in
+/// `trips.choice_beyond_minutes` game minutes (a 1,440th of the game day
+/// each): home nearer than that, it does not choose, it goes home (the
+/// project lead, 25 November 2026).
+fn choice_tiles(world: &World, rules: &Content, body: &Body) -> u64 {
+    let calendar = world.calendar();
+    let seconds = u64::from(rules.needs.trips.choice_beyond_minutes)
+        * u64::from(calendar.seconds_per_day())
+        / 1_440;
+    let pace = u64::from(body.condition().pace_percent(&rules.needs));
+    u64::from(rules.movement.walk_speed_cm_per_s) * pace / 100 * seconds / 100
+}
+
+/// Whether `body` at `here` is farther from its camp `home` than
+/// [`choice_tiles`] (and than [`HOME_TILES`]): far enough to choose.
+fn beyond_choice(world: &World, rules: &Content, body: &Body, (here, home): (Pos, Pos)) -> bool {
+    !within(here, home, HOME_TILES)
+        && u64::try_from(far(here, home).isqrt()).unwrap_or(u64::MAX)
+            > choice_tiles(world, rules, body)
+}
+
+/// Whether the choice of [`trip_turn`] is due for `body` at `here`: past
+/// its point of no return and beyond [`choice_tiles`]; else `Err` with
+/// the earliest tick it may be, walking straight away from its camp.
+fn turn_due(
+    world: &World,
+    rules: &Content,
+    body: &Body,
+    (here, home): (Pos, Pos),
+) -> Result<(), u64> {
+    past_no_return(world, rules, body, (here, home))?;
+    if beyond_choice(world, rules, body, (here, home)) {
+        return Ok(());
+    }
+    let home_tiles = u64::try_from(far(here, home).isqrt()).unwrap_or(u64::MAX);
+    let short = choice_tiles(world, rules, body)
+        .max(u64::try_from(HOME_TILES).unwrap_or(0))
+        .saturating_add(1)
+        .saturating_sub(home_tiles);
+    let pace = u64::from(body.condition().pace_percent(&rules.needs)).max(1);
+    let cm_per_s = (u64::from(rules.movement.walk_speed_cm_per_s) * pace / 100).max(1);
+    let ticks = short * 100 / cm_per_s * u64::from(world.calendar().ticks_per_second());
+    Err(world.tick().0 + ticks.max(1))
+}
+
+/// Whether the body sees food around it (D53, amended 25 November 2026):
+/// a place it knows bearing now within its sight of plants, food lying
+/// it saw there, or food it carries that is its own to eat (D58).
+fn sees_food(
+    world: &World,
+    rules: &Content,
+    (id, here): (BodyId, Pos),
+    mind: &Mind,
+    food: &Food,
+) -> bool {
+    let sight = plant_sight_at(world.map(), rules, here);
+    let side = place_side(rules);
+    mind.places.iter().any(|(key, place)| {
+        !place.is_barred()
+            && place.bearing(food).is_some()
+            && within(place_centre(*key, side), here, sight)
+    }) || mind.food.values().any(|&p| within(p, here, sight))
+        || (pooling::may_eat_carried(world, rules, id, mind)
+            && carried_food(world, rules, id).is_some())
+}
+
+/// The point of no return and the mornings away (D53, D56, amended 25
+/// November 2026; the project lead: "il faut effectivement qu'ils
+/// puissent réfléchir à faire demi-tour, quand c'est nécessaire, mais
+/// aussi prendre la décision de dormir sur place et de continuer le
+/// voyage"). Away from its camp, by day, once a day: when the walk home
+/// would take the rest of the light ([`past_no_return`]), or at its first
+/// thought of a morning it woke on a trip, the body chooses by what it
+/// perceives. Hungry and seeing no food, it goes home, where its hearth's
+/// reserve is (D58); seeing food, it stays out by the chance of its will
+/// (`trips.stay_percent_by_will`); neither hungry nor seeing food, it
+/// goes on by `trips.go_on_percent_by_will`; its way to sleep out (D50)
+/// raises either chance to `trips.sleep_out_percent`; otherwise home. A
+/// child the hearth feeds goes home. Not a turn forced on it: what it
+/// chose leads its day ([`decide`]). Before its point of no return, it
+/// notes the tick at which to look again ([`Mind::turn_at`]).
+#[allow(
+    clippy::too_many_lines,
+    reason = "one choice read in order: due, perceived, drawn, told"
+)]
+fn trip_turn(
+    world: &World,
+    rules: &Content,
+    (id, body, here): (BodyId, &Body, Pos),
+    mind: &mut Mind,
+    (food, seed, hungry): (&Food, u64, bool),
+    news: &mut Vec<News>,
+) {
+    let trips = &rules.needs.trips;
+    if !trips.on() || world.is_night(rules) {
+        mind.turn_at = None;
+        return;
+    }
+    let (home, day) = (mind.ways.home, today(world));
+    // Within half an hour's walk of home it does not choose: its trip is
+    // over, it goes home (the project lead, 25 November 2026).
+    let away = beyond_choice(world, rules, body, (here, home));
+    if !away {
+        mind.trip_from = None;
+    }
+    if mind.out.is_some_and(|(d, _)| d == day) || mind.goal.is_some() {
+        mind.turn_at = None;
+        return;
+    }
+    let when = if away && mind.trip_from.is_some() {
+        TripWhen::Morning
+    } else {
+        match turn_due(world, rules, body, (here, home)) {
+            Ok(()) => TripWhen::NoReturn,
+            Err(at) => {
+                mind.turn_at = Some(at);
+                return;
+            }
+        }
+    };
+    mind.turn_at = None;
+    let sighted = sees_food(world, rules, (id, here), mind, food);
+    let child = rules.needs.pooling.on() && rules.needs.pooling.fed(world.age_milli(body));
+    let chance = if child || (hungry && !sighted) {
+        0
+    } else if sighted {
+        trips.stay_percent(mind.will, mind.ways.sleep_out)
+    } else if hungry {
+        0
+    } else {
+        trips.go_on_percent(mind.will, mind.ways.sleep_out)
+    };
+    let roll = scatter::roll(seed, purpose::TRIP_TURN, &[u64::from(id.0), day]) % 100;
+    let choice = match (roll < chance, sighted) {
+        (false, _) => TripChoice::Home,
+        (true, true) => TripChoice::Stay,
+        (true, false) => TripChoice::On,
+    };
+    let nights = mind.trip_from.map_or(0, |from| {
+        u32::try_from(day - from.min(day)).unwrap_or(u32::MAX)
+    });
+    if choice != TripChoice::Home && mind.trip_from.is_none() {
+        mind.trip_from = Some(day);
+    }
+    mind.out = Some((day, choice));
+    news.push(News::Turned {
+        body: id,
+        choice,
+        when,
+        hungry,
+        sees_food: sighted,
+        tiles: u32::try_from(far(here, home).isqrt()).unwrap_or(u32::MAX),
+        nights,
+        at: world.tick().0,
+    });
+}
+
 /// The body goes looking for what it needs ([`explore`]), unless its
 /// last leg went nowhere: hemmed in, it waits for the next change (the
 /// night, the day, a need growing pressing) rather than ask leg after leg
-/// at once, each one out of a wider ring.
+/// at once, each one out of a wider ring. `comings`: [`Food::comings`].
 fn go_looking(
-    map: &Map,
+    world: &World,
     rules: &Content,
     id: BodyId,
     here: Pos,
     mind: &mut Mind,
-    seed: u64,
+    (seed, comings): (u64, u32),
     need: Why,
 ) -> Option<Decision> {
     if matches!(mind.doing, Doing::Exploring(_)) && mind.stopped && mind.set_off_from == Some(here)
@@ -8915,42 +9452,118 @@ fn go_looking(
         return None;
     }
     mind.set_off_from = Some(here);
-    Some(explore(map, rules, id, here, mind, seed, need))
+    Some(explore(
+        world.map(),
+        rules,
+        id,
+        here,
+        mind,
+        (seed, today(world), comings),
+        need,
+    ))
 }
 
 /// The body goes looking for what it needs: a spiral out of its camp,
 /// eight legs a ring, each ring a sight's length wider than the last (the
 /// first direction chosen by the seed and the body), clamped to the map;
 /// from each leg's end it looks, so the rings it walks sweep the land.
+/// The spiral starts again by the camp each day (`day`), unless the body
+/// is on a trip: it goes on with it. Looking for food (`Why::Hunger`, or
+/// `Why::Explore` going on with a trip), a leg after which it looks again
+/// found nothing worth going to: the land out to its end is known bare
+/// that way ([`Bare`]), and each leg that way starts beyond it.
 fn explore(
     map: &Map,
     rules: &Content,
     id: BodyId,
     here: Pos,
     mind: &mut Mind,
-    seed: u64,
+    (seed, day, comings): (u64, u64, u32),
     need: Why,
 ) -> Decision {
-    let first = usize::try_from(mix(seed ^ u64::from(id.0)) % 8).expect("under eight");
-    let turn = usize::try_from(mind.walks % 8).expect("under eight");
-    let ring = i32::try_from(mind.walks / 8 + 1).unwrap_or(i32::MAX);
-    let (dx, dy) = DIRECTIONS[(first + turn) % 8];
-    mind.walks += 1;
+    if mind.walks_day != day {
+        mind.walks_day = day;
+        if mind.trip_from.is_none() {
+            mind.walks = 0;
+        }
+        mind.leg = None;
+    }
     let reach = i32::try_from(
         map.get(here)
             .map_or(1, |terrain| rules.movement.sight_tiles(terrain)),
     )
     .unwrap_or(1);
+    let camp = mind.ways.home;
+    let for_food = matches!(need, Why::Hunger | Why::Explore);
+    if for_food {
+        mind.bare.fade(camp, comings);
+        if let Some(leg) = mind.leg.take()
+            && matches!(mind.doing, Doing::Exploring(Why::Hunger | Why::Explore))
+            && within(here, leg.to, reach)
+        {
+            let d = usize::from(leg.dir);
+            mind.bare.tiles[d] = mind.bare.tiles[d].max(leg.out);
+        }
+    }
+    let first = usize::try_from(mix(seed ^ u64::from(id.0)) % 8).expect("under eight");
     let (w, h) = (
         i32::try_from(map.width()).expect("fits") - 1,
         i32::try_from(map.height()).expect("fits") - 1,
     );
-    let camp = mind.ways.home;
-    let out = reach.saturating_mul(ring);
+    // Going on with its trip (amended 25 November 2026, the project
+    // lead): it looks on from where it stands, outward, in its trip's
+    // direction (where it stands seen from its camp), beyond the land it
+    // knows bare that way; never a spiral round the camp again.
+    if for_food && mind.out == Some((day, TripChoice::On)) {
+        let (cx, cy) = (here.x - camp.x, here.y - camp.y);
+        let dir = if (cx, cy) == (0, 0) {
+            first
+        } else {
+            octant(cx, cy)
+        };
+        let (dx, dy) = DIRECTIONS[dir];
+        let now_out = cx.abs().max(cy.abs());
+        let bare = i32::try_from(mind.bare.tiles[dir]).unwrap_or(i32::MAX);
+        let step = now_out
+            .max(bare)
+            .saturating_add(reach)
+            .saturating_sub(now_out);
+        let target = Pos::new(
+            here.x.saturating_add(dx.saturating_mul(step)).clamp(0, w),
+            here.y.saturating_add(dy.saturating_mul(step)).clamp(0, h),
+        );
+        mind.leg = Some(Leg {
+            dir: u8::try_from(dir).expect("under eight"),
+            out: u32::try_from((target.x - camp.x).abs().max((target.y - camp.y).abs()))
+                .unwrap_or(0),
+            to: target,
+        });
+        mind.doing = Doing::Exploring(need);
+        return Decision {
+            intention: Intention::MoveTo { body: id, target },
+            why: Why::Explore,
+        };
+    }
+    let turn = usize::try_from(mind.walks % 8).expect("under eight");
+    let ring = i32::try_from(mind.walks / 8 + 1).unwrap_or(i32::MAX);
+    let dir = (first + turn) % 8;
+    let (dx, dy) = DIRECTIONS[dir];
+    mind.walks += 1;
+    let beyond = if for_food {
+        i32::try_from(mind.bare.tiles[dir]).unwrap_or(i32::MAX)
+    } else {
+        0
+    };
+    let out = reach.saturating_mul(ring).saturating_add(beyond);
     let target = Pos::new(
         camp.x.saturating_add(dx.saturating_mul(out)).clamp(0, w),
         camp.y.saturating_add(dy.saturating_mul(out)).clamp(0, h),
     );
+    mind.leg = for_food.then(|| Leg {
+        dir: u8::try_from(dir).expect("under eight"),
+        out: u32::try_from((target.x - camp.x).abs().max((target.y - camp.y).abs())).unwrap_or(0),
+        to: target,
+    });
     mind.doing = Doing::Exploring(need);
     Decision {
         intention: Intention::MoveTo { body: id, target },
@@ -9762,12 +10375,34 @@ fn lived_best(world: &World, rules: &Content, mind: &Mind) -> Option<Candidate> 
         .home_nights(mind.will)
         .saturating_mul(100);
     let walk = mind.walk(rules);
-    let merged = season_view(&mind.lived, None);
+    // The land it found bare now around its camp gives nothing (amended
+    // 25 November 2026): what it noted there in the season is not there
+    // to gather, so a camp whose surroundings are known bare weighs less,
+    // and so does a place among them.
+    let bare_now: Vec<Lived>;
+    let notes: &[Lived] = if mind.bare.any() && mind.bare.home == mind.ways.home {
+        bare_now = mind
+            .lived
+            .iter()
+            .map(|l| {
+                let side = if l.grove { sides.1 } else { sides.0 };
+                let mut l = *l;
+                if mind.bare.holds(place_centre(l.place, side)) {
+                    l.gains[Sense::Food as usize] = 0;
+                }
+                l
+            })
+            .collect();
+        &bare_now
+    } else {
+        &mind.lived
+    };
+    let merged = season_view(notes, None);
     let ranked = merged
         .iter()
         .filter(|l| (l.grove || l.place != home) && l.surprised >= days)
         .filter_map(|l| {
-            let (old, new) = season_grades(&mind.lived, (l.place, l.grove), home, sides, walk)?;
+            let (old, new) = season_grades(notes, (l.place, l.grove), home, sides, walk)?;
             let side = if l.grove { sides.1 } else { sides.0 };
             let there = place_centre(l.place, side);
             // A place must beat the home by the margin once the move is
@@ -11320,43 +11955,96 @@ mod tests {
 
     #[test]
     fn the_way_it_came_keeps_a_point_a_step_cuts_its_loops_and_starts_again_at_home() {
+        let map = Map::filled(2100, 40, Terrain::Grass);
         let mut mind = Mind::new(Pos::new(5, 5));
         for x in 5..=60 {
-            mind.walked_to(Pos::new(x, 5));
+            mind.walked_to(&map, Pos::new(x, 5));
         }
         assert_eq!(
             mind.trail,
             vec![Pos::new(21, 5), Pos::new(37, 5), Pos::new(53, 5)]
         );
-        // Back near a point kept: the loop is cut there.
-        for x in (38..60).rev() {
-            mind.walked_to(Pos::new(x, 5));
+        // Back on a point kept: the loop is cut there.
+        for x in (37..60).rev() {
+            mind.walked_to(&map, Pos::new(x, 5));
         }
         assert_eq!(mind.trail, vec![Pos::new(21, 5), Pos::new(37, 5)]);
-        // Too long a way: kept twice as coarse, its latest point kept.
+        // A long way is kept whole, never halved (the quick memory of the
+        // trip, 25 November 2026).
         for x in 38..2000 {
-            mind.walked_to(Pos::new(x, 5));
+            mind.walked_to(&map, Pos::new(x, 5));
         }
-        assert!(mind.trail.len() <= TRAIL_MAX, "{}", mind.trail.len());
-        assert!(
-            mind.trail.last().is_some_and(|p| p.x > 1999 - 2 * 16),
-            "{:?}",
-            mind.trail.last()
-        );
+        assert_eq!(mind.trail.len(), (1997 - 21) / 16 + 1, "a point a step");
+        assert!(mind.trail.windows(2).all(|w| w[1].x - w[0].x == 16));
         // On its way home it only cuts its way, never adds to it.
         let before = mind.trail.clone();
         mind.doing = Doing::Home;
-        mind.walked_to(Pos::new(3000, 900));
+        mind.walked_to(&map, Pos::new(1000, 30));
         assert_eq!(mind.trail, before);
         mind.doing = Doing::Nothing;
         // Home again: a new way.
-        mind.walked_to(Pos::new(6, 6));
+        mind.walked_to(&map, Pos::new(6, 6));
         assert_eq!(mind.trail, Vec::new());
         // Another home, another way.
-        mind.walked_to(Pos::new(40, 5));
+        mind.walked_to(&map, Pos::new(40, 5));
         mind.ways.home = Pos::new(40, 40);
-        mind.walked_to(Pos::new(40, 5));
+        mind.walked_to(&map, Pos::new(40, 5));
         assert_eq!(mind.trail, vec![Pos::new(40, 5)]);
+    }
+
+    #[test]
+    fn the_way_of_a_trip_is_never_cut_across_water_and_thinned_only_along_clear_lines() {
+        // A river at x = 50: out along its west bank, over the ford at the
+        // south, back up its east bank. The east bank passes within a step
+        // of the west bank's points, across the water: never cut there.
+        let mut map = Map::filled(200, 200, Terrain::Grass);
+        for y in 0..190 {
+            map.set(Pos::new(50, y), Terrain::Water);
+        }
+        let mut mind = Mind::new(Pos::new(40, 5));
+        for y in 5..=195 {
+            mind.walked_to(&map, Pos::new(42, y));
+        }
+        for x in 42..=54 {
+            mind.walked_to(&map, Pos::new(x, 195));
+        }
+        for y in (20..=195).rev() {
+            mind.walked_to(&map, Pos::new(54, y));
+        }
+        let west = mind.trail.iter().filter(|p| p.x == 42).count();
+        assert_eq!(west, 11, "the west bank kept whole: {:?}", mind.trail);
+        assert!(mind.trail.last().is_some_and(|p| p.x == 54 && p.y < 40));
+        // Past its bound, the points whose neighbours see each other go
+        // first, never one whose loss would cross the river.
+        let mut long = mind.clone();
+        long.trail = (0..=TRAIL_MAX)
+            .map(|i| {
+                let i = i32::try_from(i).unwrap();
+                Pos::new(if i % 2 == 0 { 42 } else { 45 }, 1 + (i % 180))
+            })
+            .collect();
+        long.thin_trail(&map);
+        assert!(long.trail.len() <= TRAIL_MAX * 3 / 4);
+        // A zigzag between two rows of water, each point dry: no point's
+        // neighbours see each other, so the oldest go, the latest kept.
+        let n = i32::try_from(TRAIL_MAX).unwrap() + 1;
+        let mut rows = Map::filled(u32::try_from(3 * n + 20).unwrap(), 30, Terrain::Grass);
+        for x in 0..3 * n + 20 {
+            rows.set(Pos::new(x, 10), Terrain::Water);
+            rows.set(Pos::new(x, 20), Terrain::Water);
+        }
+        let zigzag: Vec<Pos> = (0..n)
+            .map(|i| Pos::new(10 + 3 * i, if i % 2 == 0 { 10 } else { 20 }))
+            .collect();
+        for &p in &zigzag {
+            rows.set(p, Terrain::Grass);
+        }
+        let mut wide = mind.clone();
+        wide.trail.clone_from(&zigzag);
+        wide.thin_trail(&rows);
+        assert_eq!(wide.trail.len(), TRAIL_MAX * 3 / 4);
+        assert_eq!(wide.trail.last(), zigzag.last());
+        assert!(wide.trail.windows(2).all(|w| w[0].y != w[1].y));
     }
 
     #[test]
@@ -11524,7 +12212,7 @@ mod tests {
                     BodyId(1),
                     Pos::new(500, 500),
                     &mut mind,
-                    7,
+                    (7, 0, 0),
                     Why::Thirst,
                 )
                 .intention
@@ -11544,6 +12232,513 @@ mod tests {
                 && targets[8..].iter().all(|p| ring(*p) <= 120),
             "the second twice as wide: {targets:?}"
         );
+    }
+
+    #[test]
+    fn the_spiral_starts_again_by_the_camp_each_day() {
+        let world = field(1000, 999, Pos::new(5, 5));
+        let mut mind = Mind::new(Pos::new(5, 5));
+        let leg = |mind: &mut Mind, day: u64| match explore(
+            world.map(),
+            &rules(),
+            BodyId(1),
+            Pos::new(500, 500),
+            mind,
+            (7, day, 0),
+            Why::Hunger,
+        )
+        .intention
+        {
+            Intention::MoveTo { target, .. } => target,
+            other => panic!("{other:?}"),
+        };
+        let ring = |p: Pos| (p.x - 5).abs().max((p.y - 5).abs());
+        let first = leg(&mut mind, 3);
+        for _ in 0..40 {
+            leg(&mut mind, 3);
+        }
+        assert!(ring(leg(&mut mind, 3)) > 60 * 5, "rings widen within a day");
+        let next_day = leg(&mut mind, 4);
+        assert_eq!(next_day, first, "the next day starts by the camp again");
+        assert!(ring(next_day) <= 60);
+    }
+
+    #[test]
+    fn a_leg_that_found_nothing_is_known_bare_and_the_next_day_starts_beyond_it() {
+        let world = field(1000, 999, Pos::new(500, 500));
+        let camp = Pos::new(500, 500);
+        let mut mind = Mind::new(camp);
+        let leg = |mind: &mut Mind, here: Pos, (day, comings): (u64, u32), need: Why| match explore(
+            world.map(),
+            &rules(),
+            BodyId(1),
+            here,
+            mind,
+            (7, day, comings),
+            need,
+        )
+        .intention
+        {
+            Intention::MoveTo { target, .. } => target,
+            other => panic!("{other:?}"),
+        };
+        let ring = |p: Pos| (p.x - camp.x).abs().max((p.y - camp.y).abs());
+        // Day 3: its first leg, a sight out; there it looks again for food:
+        // that way is known bare to its end.
+        let first = leg(&mut mind, camp, (3, 0), Why::Hunger);
+        assert_eq!(ring(first), 60);
+        let second = leg(&mut mind, first, (3, 0), Why::Hunger);
+        assert_eq!(ring(second), 60, "the next way is not known bare");
+        let dir = octant(first.x - camp.x, first.y - camp.y);
+        assert_eq!(mind.bare.tiles[dir], 60);
+        assert!(
+            mind.bare
+                .holds(Pos::new(first.x.midpoint(camp.x), first.y.midpoint(camp.y)))
+        );
+        // Stopped short of the second leg: not known bare.
+        let third = leg(&mut mind, Pos::new(800, 800), (3, 0), Why::Hunger);
+        let second_dir = octant(second.x - camp.x, second.y - camp.y);
+        assert_eq!(mind.bare.tiles[second_dir], 0);
+        assert_ne!(third, second);
+        // The next day: the spiral starts by the camp again, but that way
+        // goes straight beyond what it knows bare.
+        let next = leg(&mut mind, camp, (4, 0), Why::Hunger);
+        assert_eq!(octant(next.x - camp.x, next.y - camp.y), dir);
+        assert_eq!(ring(next), 120, "beyond the bare land");
+        // Looking for water, the bare land does not count.
+        let mut thirsty = mind.clone();
+        thirsty.walks_day = 0;
+        assert_eq!(ring(leg(&mut thirsty, camp, (5, 0), Why::Thirst)), 60);
+        // A crop came on: what was bare may bear again.
+        let fresh = leg(&mut mind, camp, (5, 1), Why::Hunger);
+        assert_eq!(ring(fresh), 60);
+        assert!(!mind.bare.any());
+        // Another camp: what was bare around the old one is forgotten.
+        mind.bare.tiles[dir] = 60;
+        mind.ways.home = Pos::new(300, 300);
+        mind.bare.fade(mind.ways.home, 1);
+        assert!(!mind.bare.any());
+    }
+
+    /// The content with the trips' choice always out (`percent` 100) or
+    /// never (0), whatever the will.
+    fn trips_rules(percent: u32) -> Content {
+        let mut rules = rules();
+        rules.needs.trips = crate::content::Trips {
+            stay_percent_by_will: vec![(0, percent)],
+            go_on_percent_by_will: vec![(0, percent)],
+            sleep_out_percent: 0,
+            choice_beyond_minutes: 30,
+        };
+        rules
+    }
+
+    #[test]
+    fn at_its_point_of_no_return_a_body_chooses_by_what_it_perceives() {
+        let rules = trips_rules(100);
+        let camp = Pos::new(5, 5);
+        let mut world = field(1000, 999, Pos::new(600, 5));
+        let id = world.bodies[0].id();
+        let mut events = Vec::new();
+        let turn = |world: &World, rules: &Content, mind: &mut Mind, hungry: bool| {
+            let body = world.body(id).unwrap();
+            let mut news = Vec::new();
+            let food = food_now(world, rules);
+            trip_turn(
+                world,
+                rules,
+                (id, body, body.pos()),
+                mind,
+                (&food, 7, hungry),
+                &mut news,
+            );
+            news
+        };
+        // In the morning, far but with the day before it: nothing to
+        // choose yet, a tick to look again at.
+        let mut mind = Mind::new(camp);
+        assert_eq!(turn(&world, &rules, &mut mind, false), Vec::new());
+        let at = mind.turn_at.expect("a tick to look again");
+        assert!(at > world.tick().0);
+        // Until the walk home takes the rest of the light.
+        while past_no_return(
+            &world,
+            &rules,
+            world.body(id).unwrap(),
+            (Pos::new(600, 5), camp),
+        )
+        .is_err()
+        {
+            world.advance(10, &rules, &mut events);
+        }
+        assert!(!world.is_night(&rules));
+        assert!(world.tick().0 >= at, "never earlier than it looked");
+        let chosen = |hungry: bool, mind: &mut Mind| {
+            let news = turn(&world, &rules, mind, hungry);
+            match news[..] {
+                [News::Turned { choice, when, .. }] => (choice, when),
+                ref other => panic!("{other:?}"),
+            }
+        };
+        // Hungry, no food in sight: home.
+        let mut mind = Mind::new(camp);
+        assert_eq!(
+            chosen(true, &mut mind),
+            (TripChoice::Home, TripWhen::NoReturn)
+        );
+        assert!(!mind.on_trip(today(&world)));
+        // Once a day.
+        assert_eq!(turn(&world, &rules, &mut mind, false), Vec::new());
+        // Not hungry, no food in sight: it goes on.
+        let mut mind = Mind::new(camp);
+        assert_eq!(chosen(false, &mut mind).0, TripChoice::On);
+        assert!(mind.on_trip(today(&world)));
+        // Food in sight: it stays, hungry or not.
+        let mut mind = Mind::new(camp);
+        mind.food.insert(ItemId(1), Pos::new(605, 6));
+        assert_eq!(chosen(true, &mut mind).0, TripChoice::Stay);
+        // The timid by the content's chance (0 here): home, food or not.
+        let never = trips_rules(0);
+        let mut mind = Mind::new(camp);
+        mind.food.insert(ItemId(1), Pos::new(605, 6));
+        let news = turn(&world, &never, &mut mind, false);
+        assert!(matches!(
+            news[..],
+            [News::Turned {
+                choice: TripChoice::Home,
+                ..
+            }]
+        ));
+        // Its way to sleep out raises the chance.
+        let mut way = never.clone();
+        way.needs.trips.sleep_out_percent = 100;
+        let mut mind = Mind::new(camp);
+        mind.ways.sleep_out = true;
+        let news = turn(&world, &way, &mut mind, false);
+        assert!(matches!(
+            news[..],
+            [News::Turned {
+                choice: TripChoice::On,
+                ..
+            }]
+        ));
+        // Off: nobody chooses.
+        let mut off = rules.clone();
+        off.needs.trips = crate::content::Trips::default();
+        let mut mind = Mind::new(camp);
+        assert_eq!(turn(&world, &off, &mut mind, false), Vec::new());
+    }
+
+    #[test]
+    fn out_on_a_trip_it_sleeps_where_it_stands_and_chooses_again_each_morning() {
+        let rules = trips_rules(100);
+        let camp = Pos::new(5, 5);
+        let mut world = field(1000, 999, Pos::new(600, 5));
+        let id = world.bodies[0].id();
+        let mut events = Vec::new();
+        // By day, out by its choice while walking home: it stops there.
+        let mut stay = Mind::new(camp);
+        stay.out = Some((today(&world), TripChoice::Stay));
+        world.queue(Intention::MoveTo {
+            body: id,
+            target: camp,
+        });
+        world.step(&rules, &mut events);
+        let here = world.body(id).unwrap().pos();
+        assert!(world.body(id).unwrap().is_walking());
+        let stops = decide_alone(&world, &rules, id, &mut stay).expect("it stops");
+        assert_eq!(
+            stops.intention,
+            Intention::MoveTo {
+                body: id,
+                target: here
+            }
+        );
+        world.queue(stops.intention);
+        world.step(&rules, &mut events);
+        let mut mind = Mind::new(camp);
+        mind.out = Some((today(&world), TripChoice::On));
+        mind.trip_from = Some(today(&world));
+        while !world.is_night(&rules) {
+            world.advance(50, &rules, &mut events);
+        }
+        for body in &mut world.bodies {
+            (body.condition.thirst, body.condition.hunger) = (Gauge::at(0), Gauge::at(0));
+        }
+        let night = decide_alone(&world, &rules, id, &mut mind).expect("it lies down");
+        assert_eq!(night.intention, Intention::Sleep { body: id });
+        // Without the trip, it walks home in the dark, as before.
+        let mut day_trip = Mind::new(camp);
+        let home = decide_alone(&world, &rules, id, &mut day_trip).expect("home");
+        assert_eq!(
+            home.intention,
+            Intention::MoveTo {
+                body: id,
+                target: camp
+            }
+        );
+        // The next morning, its first thought away: it chooses again.
+        while world.is_night(&rules) {
+            world.advance(50, &rules, &mut events);
+        }
+        for body in &mut world.bodies {
+            (body.condition.thirst, body.condition.hunger) = (Gauge::at(0), Gauge::at(0));
+            body.condition.asleep = false;
+        }
+        let body = world.body(id).unwrap();
+        let mut news = Vec::new();
+        let food = food_now(&world, &rules);
+        trip_turn(
+            &world,
+            &rules,
+            (id, body, body.pos()),
+            &mut mind,
+            (&food, 7, false),
+            &mut news,
+        );
+        assert!(matches!(
+            news[..],
+            [News::Turned {
+                choice: TripChoice::On,
+                when: TripWhen::Morning,
+                nights: 1,
+                ..
+            }]
+        ));
+        // Home again, the trip is over.
+        mind.out = None;
+        let mut at_home = field(1000, 999, Pos::new(6, 6));
+        at_home.advance(world.tick().0, &rules, &mut events);
+        let body = at_home.body(id).unwrap();
+        trip_turn(
+            &at_home,
+            &rules,
+            (id, body, body.pos()),
+            &mut mind,
+            (&food, 7, false),
+            &mut news,
+        );
+        assert_eq!(mind.trip_from, None);
+    }
+
+    #[test]
+    fn going_on_it_looks_on_from_where_it_stands_outward_beyond_the_bare_land() {
+        let world = field(1000, 999, Pos::new(300, 100));
+        let camp = Pos::new(100, 100);
+        let mut mind = Mind::new(camp);
+        mind.out = Some((4, TripChoice::On));
+        let leg = |mind: &mut Mind, here: Pos, need: Why| match explore(
+            world.map(),
+            &rules(),
+            BodyId(1),
+            here,
+            mind,
+            (7, 4, 0),
+            need,
+        )
+        .intention
+        {
+            Intention::MoveTo { target, .. } => target,
+            other => panic!("{other:?}"),
+        };
+        // East of its camp: on east, a sight farther, from where it stands.
+        assert_eq!(
+            leg(&mut mind, Pos::new(300, 100), Why::Explore),
+            Pos::new(360, 100)
+        );
+        // The land known bare out to 400 tiles that way: beyond it.
+        let mut bare = Mind::new(camp);
+        bare.out = Some((4, TripChoice::On));
+        bare.bare.tiles[octant(1, 0)] = 400;
+        assert_eq!(
+            leg(&mut bare, Pos::new(300, 100), Why::Hunger),
+            Pos::new(560, 100)
+        );
+        // South-west of its camp: on south-west (clamped to the map).
+        assert_eq!(
+            leg(&mut mind, Pos::new(40, 160), Why::Explore),
+            Pos::new(0, 220)
+        );
+        // Not going on: the spiral round the camp, as before.
+        let mut day = Mind::new(camp);
+        let spiral = leg(&mut day, Pos::new(300, 100), Why::Hunger);
+        assert!((spiral.x - camp.x).abs().max((spiral.y - camp.y).abs()) <= 60);
+    }
+
+    #[test]
+    fn within_half_an_hour_of_home_it_does_not_choose_and_walks_home_even_at_night() {
+        let rules = trips_rules(100);
+        let camp = Pos::new(5, 5);
+        let near = Pos::new(105, 5);
+        let mut world = field(1000, 999, near);
+        let id = world.bodies[0].id();
+        let body = world.body(id).unwrap();
+        // 100 tiles: within half an hour (30 game minutes of a 7,200 s
+        // day are 150 s, some 214 tiles at its pace); 600 tiles: beyond.
+        let tiles = choice_tiles(&world, &rules, body);
+        assert!((100..600).contains(&tiles), "{tiles}");
+        assert!(!beyond_choice(&world, &rules, body, (near, camp)));
+        assert!(beyond_choice(
+            &world,
+            &rules,
+            body,
+            (Pos::new(605, 5), camp)
+        ));
+        let mut events = Vec::new();
+        while past_no_return(&world, &rules, world.body(id).unwrap(), (near, camp)).is_err() {
+            world.advance(5, &rules, &mut events);
+        }
+        assert!(!world.is_night(&rules));
+        // Past its point of no return, but near: no choice, and a trip
+        // it was on is over.
+        let mut mind = Mind::new(camp);
+        mind.trip_from = Some(today(&world).saturating_sub(1));
+        let body = world.body(id).unwrap();
+        let mut news = Vec::new();
+        let food = food_now(&world, &rules);
+        trip_turn(
+            &world,
+            &rules,
+            (id, body, near),
+            &mut mind,
+            (&food, 7, false),
+            &mut news,
+        );
+        assert_eq!(news, Vec::new());
+        assert_eq!(mind.trip_from, None);
+        // At night, out on a trip or by its way to sleep out, it walks
+        // home in the dark from here.
+        while !world.is_night(&rules) {
+            world.advance(50, &rules, &mut events);
+        }
+        for body in &mut world.bodies {
+            (body.condition.thirst, body.condition.hunger) = (Gauge::at(0), Gauge::at(0));
+        }
+        let home = Intention::MoveTo {
+            body: id,
+            target: camp,
+        };
+        let mut trip = Mind::new(camp);
+        trip.out = Some((today(&world), TripChoice::Stay));
+        assert_eq!(
+            decide_alone(&world, &rules, id, &mut trip)
+                .unwrap()
+                .intention,
+            home
+        );
+        let mut way = Mind::new(camp);
+        way.ways.sleep_out = true;
+        assert_eq!(
+            decide_alone(&world, &rules, id, &mut way)
+                .unwrap()
+                .intention,
+            home
+        );
+        // Without the trips' content, its way lays it down as before.
+        let mut off = rules.clone();
+        off.needs.trips = crate::content::Trips::default();
+        let mut way = Mind::new(camp);
+        way.ways.sleep_out = true;
+        assert_eq!(
+            decide_alone(&world, &off, id, &mut way).unwrap().intention,
+            Intention::Sleep { body: id }
+        );
+    }
+
+    #[test]
+    fn a_camp_known_bare_around_weighs_less_against_a_place_lived_on_a_trip() {
+        let mut rules = rules();
+        rules.needs.trials.home_nights_by_will = vec![(0, 3), (70, 1)];
+        let world = field(256, 250, Pos::new(5, 5));
+        // Home (0, 0), fed by the grove (0, 0) by the camp and by the
+        // grove (4, 4) far out; the place (8, 8) slept at once on a trip,
+        // fed by the same two.
+        let mut mind = Mind::new(Pos::new(5, 5));
+        let day = |water: PlaceKey| {
+            vec![
+                picked((0, 0), 0, 1000),
+                picked((4, 4), 0, 1000),
+                drank(water, 0, 1000),
+            ]
+        };
+        lived_at(
+            &mut mind,
+            (0, 0),
+            3,
+            &night_with([0; SENSES], 0, day((0, 0))),
+            1000,
+        );
+        lived_at(
+            &mut mind,
+            (8, 8),
+            1,
+            &night_with([0; SENSES], 0, day((8, 8))),
+            1000,
+        );
+        for l in mind
+            .lived
+            .iter_mut()
+            .filter(|l| !l.grove && l.place == (8, 8))
+        {
+            l.surprised = 300;
+            l.surprise_max = 1000;
+        }
+        mind.will = 90;
+        mind.walk_kilotile = 830;
+        let best = |mind: &Mind| lived_best(&world, &rules, mind).map(|c| c.gain);
+        let before = best(&mind);
+        // The land by the camp found bare this season: the grove (0, 0)
+        // gives nothing now; the grove (4, 4) far out weighs more than
+        // the home.
+        let toward = octant(16 - 5, 16 - 5);
+        mind.bare.tiles[toward] = 40;
+        let after = best(&mind);
+        assert!(
+            after.is_some_and(|a| before.is_none_or(|b| a > b)),
+            "{before:?} → {after:?}"
+        );
+        // Known bare around another camp: nothing changes.
+        mind.bare.home = Pos::new(200, 200);
+        assert_eq!(best(&mind), before);
+    }
+
+    #[test]
+    fn a_day_ended_away_from_any_fire_surprises_against_its_own_usual_days() {
+        let rules = moving_rules();
+        let (world, mut brains) = camp_of(3, &rules);
+        let day = u32::try_from(today(&world)).unwrap() - 1;
+        let season = usize::from(season_of_day(&world, u64::from(day)).min(3));
+        // 1 and 2 gathered away 1.2 days of need; 2 is at the fire, 1 lay
+        // down out on its trip; both usually gather half a day.
+        yesterdays(&mut brains, day, &[(1, false, 1200), (2, false, 1200)]);
+        for id in [1, 2] {
+            let mind = brains.minds.get_mut(&BodyId(id)).unwrap();
+            mind.usual[season] = Usual {
+                gathered: 500_000,
+                weight: 1000,
+                ..Usual::default()
+            };
+        }
+        let circles = vec![(Pos::new(8, 8), vec![BodyId(2), BodyId(3)])];
+        brains.away_surprise(&world, &rules, &circles);
+        let surprised = |brains: &Brains, id: u32| {
+            brains.minds[&BodyId(id)]
+                .lived
+                .iter()
+                .filter(|l| l.grove && l.place == (0, 0))
+                .map(|l| l.surprised)
+                .sum::<u32>()
+        };
+        assert_eq!(surprised(&brains, 1), 100);
+        assert_eq!(surprised(&brains, 2), 0, "at a fire, the fire judges");
+        assert!(matches!(
+            brains.news()[..],
+            [News::Surprised {
+                body: BodyId(1),
+                stayers: 0,
+                ..
+            }]
+        ));
     }
 
     #[test]

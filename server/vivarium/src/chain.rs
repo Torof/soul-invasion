@@ -7,14 +7,16 @@
 //! distances at noon, the moves, the births and deaths, the couples) is
 //! not here. Here: what the people need and walk and how long they work at
 //! a plant, by tribe and year; why the grown bodies away from home at dawn
-//! lie there; and how far each looking day went from home. A measure only:
+//! lie there; how far each looking day went from home; and (25 November
+//! 2026) each outing from home, its nights out and how far it went, and
+//! what the bodies chose at their point of no return. A measure only:
 //! it reads the world and the minds, and changes nothing.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
 
-use sim::brain::{Act, Brains, News};
+use sim::brain::{Act, Brains, News, TripChoice, TripWhen};
 use sim::content::Content;
 use sim::map::FinePos;
 use sim::{Blockage, BodyId, Event, World};
@@ -57,6 +59,8 @@ pub struct AwayWhy {
     pub sleep_out: u32,
     /// Lay down where it stood, holding a goal beyond a day (D56).
     pub goal: u32,
+    /// Lay down where it stood out on a trip it chose (25 November 2026).
+    pub trip: u32,
     /// Lay down within the fire's reach of its home: the home moved since.
     pub lay_at_home: u32,
     /// Awake at dawn and never lay down since the dawn before: it walked
@@ -79,6 +83,7 @@ enum Lay {
     Stopped(Option<Blockage>),
     SleepOut,
     Goal,
+    Trip,
     AtHome,
 }
 
@@ -97,6 +102,67 @@ struct Track {
     /// The farthest it stood from home since its last day closed, on the
     /// longer axis, looked at once a game minute.
     far: u32,
+    /// The dawns it woke away from home since it last woke at home.
+    out_nights: u32,
+    /// The farthest it stood from home since it last woke at home.
+    out_far: u32,
+    /// Who it was when its outing began (25 November 2026).
+    out_who: Option<Who>,
+}
+
+/// Who a body was when an outing began (25 November 2026): its will, a
+/// parent of a living child under 8, under 16, its sex, its age.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Who {
+    /// Its will, 0 to 100.
+    pub will: u8,
+    /// A parent of a living child under 8 age-years.
+    pub parent_under_8: bool,
+    /// A parent of a living child under 16 age-years.
+    pub parent_under_16: bool,
+    /// A woman.
+    pub female: bool,
+    /// Its age, in whole age-years.
+    pub age_years: u32,
+}
+
+impl Who {
+    fn of(world: &World, brains: &Brains, body: &sim::Body) -> Self {
+        let id = body.id();
+        let youngest = world
+            .bodies()
+            .iter()
+            .filter(|c| {
+                c.condition().vitality.points() > 0
+                    && (c.mother() == Some(id) || c.father() == Some(id))
+            })
+            .map(|c| world.age_milli(c))
+            .min();
+        Self {
+            will: brains.mind(id).map_or(0, sim::brain::Mind::will),
+            parent_under_8: youngest.is_some_and(|a| a < 8_000),
+            parent_under_16: youngest.is_some_and(|a| a < 16_000),
+            female: body.sex() == sim::content::Sex::Female,
+            age_years: u32::try_from(world.age_milli(body) / 1000).unwrap_or(u32::MAX),
+        }
+    }
+}
+
+/// An outing from home (25 November 2026): the dawn it woke home again,
+/// the tribe, the nights it slept away (0: back by the next dawn), the
+/// farthest from home, in tiles on the longer axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Outing {
+    /// The day it woke home again.
+    pub day: u64,
+    /// The tribe, 0 or 1.
+    pub tribe: u8,
+    /// The nights away.
+    pub nights: u32,
+    /// The farthest from home, in tiles on the longer axis.
+    pub tiles: u32,
+    /// Who it was when the outing began.
+    pub who: Who,
 }
 
 /// A looking day (`Act::Looked`): the day it closed, the tribe, the
@@ -120,6 +186,12 @@ pub struct Chain {
     pub away: Vec<AwayWhy>,
     /// Every looking day, in order.
     pub looks: Vec<Look>,
+    /// Every outing of a grown body beyond the fire's reach of its home,
+    /// as it ended (25 November 2026).
+    pub outings: Vec<Outing>,
+    /// What the bodies chose away from home (25 November 2026): at the
+    /// point of no return, then on a morning away; each home, stay, on.
+    pub turns: [[u32; 3]; 2],
     tracks: BTreeMap<BodyId, Track>,
     /// The tick of the last dawn.
     last_dawn: u64,
@@ -141,7 +213,7 @@ fn blockage_index(b: Option<Blockage>) -> usize {
 fn lay_of(
     body: &sim::Body,
     mind: Option<&sim::brain::Mind>,
-    barred: Option<Blockage>,
+    (barred, day): (Option<Blockage>, u64),
     reach: u32,
 ) -> Lay {
     if body.condition().fatigue.is_full() {
@@ -150,7 +222,10 @@ fn lay_of(
     let Some(m) = mind else {
         return Lay::AtHome;
     };
-    if m.ways().sleep_out {
+    let away = tiles_apart(body.pos(), m.home()) > reach;
+    if away && m.on_trip(day) {
+        Lay::Trip
+    } else if m.ways().sleep_out {
         Lay::SleepOut
     } else if m.holds_goal() {
         Lay::Goal
@@ -213,6 +288,9 @@ impl Chain {
                 lay: None,
                 barred: None,
                 far: 0,
+                out_nights: 0,
+                out_far: 0,
+                out_who: None,
                 rose: 0,
             });
             let y = &mut acc[usize::from(t.tribe.min(1))];
@@ -236,7 +314,8 @@ impl Chain {
             }
             let mind = brains.mind(id);
             if c.asleep && !t.asleep {
-                let lay = lay_of(b, mind, t.barred, reach);
+                let day = tick / world.calendar().ticks_per_day().max(1);
+                let lay = lay_of(b, mind, (t.barred, day), reach);
                 t.lay = Some((lay, c.fatigue.points(), tick));
             }
             if t.asleep && !c.asleep {
@@ -247,7 +326,12 @@ impl Chain {
                 && walker
                 && let Some(m) = mind
             {
-                t.far = t.far.max(tiles_apart(b.pos(), m.home()));
+                let from_home = tiles_apart(b.pos(), m.home());
+                t.far = t.far.max(from_home);
+                t.out_far = t.out_far.max(from_home);
+                if from_home > reach && t.out_who.is_none() && world.age_milli(b) >= 16_000 {
+                    t.out_who = Some(Who::of(world, brains, b));
+                }
             }
         }
         for (tribe, add) in acc.iter().enumerate() {
@@ -281,6 +365,34 @@ impl Chain {
         let year = usize::try_from(u64::try_from(world.today()).unwrap_or(0) / days_a_year)
             .unwrap_or(usize::MAX);
         let mut why = AwayWhy::default();
+        // The outings: a night more away, or one ended at home.
+        let day = u64::try_from(world.today()).unwrap_or(0);
+        for b in world.bodies() {
+            if b.condition().vitality.points() == 0 || world.age_milli(b) < 16_000 {
+                continue;
+            }
+            let Some(home) = home_of(world, brains, b.id()) else {
+                continue;
+            };
+            let Some(t) = self.tracks.get_mut(&b.id()) else {
+                continue;
+            };
+            if tiles_apart(b.pos(), home) > reach {
+                t.out_nights += 1;
+                continue;
+            }
+            if t.out_nights > 0 || t.out_far > reach {
+                let who = t.out_who.unwrap_or_else(|| Who::of(world, brains, b));
+                self.outings.push(Outing {
+                    day,
+                    tribe: t.tribe,
+                    nights: t.out_nights,
+                    tiles: t.out_far,
+                    who,
+                });
+            }
+            (t.out_nights, t.out_far, t.out_who) = (0, 0, None);
+        }
         for b in world.bodies() {
             if b.condition().vitality.points() == 0 || world.age_milli(b) < 16_000 {
                 continue;
@@ -324,6 +436,7 @@ impl Chain {
                 }
                 Lay::SleepOut => why.sleep_out += 1,
                 Lay::Goal => why.goal += 1,
+                Lay::Trip => why.trip += 1,
                 Lay::AtHome => why.lay_at_home += 1,
             }
         }
@@ -338,6 +451,7 @@ impl Chain {
         }
         n.sleep_out += why.sleep_out;
         n.goal += why.goal;
+        n.trip += why.trip;
         n.lay_at_home += why.lay_at_home;
         n.awake += why.awake;
         n.woke += why.woke;
@@ -354,6 +468,15 @@ impl Chain {
     /// A brain's news: a day closed (`News::Habit`) ends its farthest
     /// point; a looking day's is kept.
     pub fn news(&mut self, news: &News, day: u64) {
+        if let News::Turned { choice, when, .. } = news {
+            let w = usize::from(*when == TripWhen::Morning);
+            let c = match choice {
+                TripChoice::Home => 0,
+                TripChoice::Stay => 1,
+                TripChoice::On => 2,
+            };
+            self.turns[w][c] += 1;
+        }
         if let News::Habit { body, act, .. } = news
             && let Some(t) = self.tracks.get_mut(body)
         {
@@ -402,6 +525,7 @@ impl Chain {
                     },
                     "sleep_out": a.sleep_out,
                     "goal": a.goal,
+                    "trip": a.trip,
                     "lay_at_home": a.lay_at_home,
                     "awake": a.awake,
                     "woke": a.woke,
@@ -415,11 +539,34 @@ impl Chain {
             .iter()
             .map(|l| json!([l.day, l.tribe, l.tiles]))
             .collect();
+        let outings: Vec<Value> = self
+            .outings
+            .iter()
+            .map(|o| {
+                json!([
+                    o.day,
+                    o.tribe,
+                    o.nights,
+                    o.tiles,
+                    o.who.will,
+                    o.who.parent_under_8,
+                    o.who.parent_under_16,
+                    if o.who.female { "female" } else { "male" },
+                    o.who.age_years,
+                ])
+            })
+            .collect();
+        let turns = |t: [u32; 3]| json!({"home": t[0], "stay": t[1], "on": t[2]});
         json!({
             "ticks_per_hour": (ticks_per_day / 24).max(1),
             "years": years,
             "away": away,
             "looks": looks,
+            "outings": outings,
+            "turns": {
+                "no_return": turns(self.turns[0]),
+                "morning": turns(self.turns[1]),
+            },
         })
     }
 }
@@ -467,6 +614,7 @@ mod tests {
             moves: true,
             pooling: true,
             care: true,
+            trips: true,
             continents: None,
             helpers: 0,
         }
@@ -506,7 +654,8 @@ mod tests {
         let report = run(6, content());
         assert_ne!(report.chain.away, Vec::new());
         for (why, out) in report.chain.away.iter().zip(&report.nights_out) {
-            let lay = why.exhausted + why.stopped + why.sleep_out + why.goal + why.lay_at_home;
+            let lay =
+                why.exhausted + why.stopped + why.sleep_out + why.goal + why.trip + why.lay_at_home;
             assert_eq!(
                 lay + why.awake + why.woke + why.unseen,
                 out.away,
@@ -528,6 +677,16 @@ mod tests {
             looked,
             "a look a looking day"
         );
+        // Every outing ended went beyond the fire's reach or slept away.
+        let reach = content().needs.trials.imitate_tiles;
+        assert_ne!(report.chain.outings, Vec::new());
+        for o in &report.chain.outings {
+            assert!(o.nights > 0 || o.tiles > reach, "{o:?}");
+            // Who went: grown, its will a will, a parent of one under 8 a
+            // parent of one under 16.
+            assert!(o.who.age_years >= 16 && o.who.will <= 100, "{o:?}");
+            assert!(!o.who.parent_under_8 || o.who.parent_under_16, "{o:?}");
+        }
     }
 
     #[test]

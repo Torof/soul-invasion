@@ -716,4 +716,39 @@
         near_tiles: 4,
         tries_per_day: 4,
     ),
+    // The point of no return and the trips (D53, D56, amended 25 November
+    // 2026; the project lead: "réfléchir à faire demi-tour, quand c'est
+    // nécessaire, mais aussi prendre la décision de dormir sur place et de
+    // continuer le voyage"). Away from its camp, when the straight walk home
+    // at its pace would take the rest of the day's light, and each morning
+    // it wakes away, a body chooses, by what it perceives: hungry with no
+    // food in sight, it goes home (the hearth's reserve is there, D58);
+    // food in sight, it may stay out there, gather and sleep; neither
+    // hungry nor seeing food, it may go on with its trip and sleep out.
+    // Otherwise it goes home. The timid go home, the bold stay out. Absent:
+    // nobody chooses, a body gathers until night and walks home in the
+    // dark, as before. Every value is a D30 placeholder.
+    // stay_percent_by_will: [(0, 30), (100, 90)] — the chance it stays out
+    //                        seeing food, by its will (0 to 100);
+    // go_on_percent_by_will: [(0, 0), (100, 60)] — the chance it goes on
+    //                        neither hungry nor seeing food, by its will;
+    // sleep_out_percent: 90 — with its way to sleep out (D50: learnt by
+    //                        trials, told, copied), either chance is at
+    //                        least this;
+    // choice_beyond_minutes: 30 — home nearer than half an hour of walking
+    //                        at its pace (game minutes, a 1,440th of the
+    //                        game day), a body does not choose: it goes
+    //                        home, even after nightfall, and never lies
+    //                        down out there, unless stopped (water, rock,
+    //                        no way) or exhausted. The project lead, 25
+    //                        November 2026: nobody sleeps out 30 m from
+    //                        the hearth; "s'il sait être pas trop loin du
+    //                        camp en termes de temps, il décide de rentrer
+    //                        même après la tombée de la nuit".
+    trips: (
+        stay_percent_by_will: [(0, 30), (100, 90)],
+        go_on_percent_by_will: [(0, 0), (100, 60)],
+        sleep_out_percent: 90,
+        choice_beyond_minutes: 30,
+    ),
 )
