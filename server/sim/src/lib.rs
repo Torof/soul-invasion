@@ -3143,12 +3143,16 @@ impl World {
         self.orphan(id, at, rules);
         // The dead leaves the world and keeps nothing of it; its children
         // keep its id as their parent, its spouse is widowed (D49).
+        let mut widowed = Vec::new();
         for other in &mut self.bodies {
             if other.spouse == Some(id) {
                 other.spouse = None;
                 other.apart_days = 0;
+                widowed.push(other.id);
             }
         }
+        // A widower whose second wife lives takes her as his own (D49).
+        self.first_wife_again(widowed);
         for item in body.inventory().collect::<Vec<_>>() {
             let Some(dropped) = self.items.get_mut(&item) else {
                 continue;

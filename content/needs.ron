@@ -177,6 +177,13 @@
         part_after_days: 12,
         together_nights: 6,
         wed_at_hearth: true,
+        // second_wife: true — a woman of a hearth left unwed once its
+        //   unmarried have wed becomes the second wife of a married man
+        //   of that hearth, the nearest in age, one wife at most before
+        //   her, not her kin (the project lead, 25 November 2026: most
+        //   forager peoples allow it, few men do it; the reference run had
+        //   16 fertile women for 8 men of their years on one seed).
+        second_wife: true,
         pregnancy_quarters: 3,
         pregnant_percent: 110,
         lose_when_weak: true,

@@ -2162,6 +2162,14 @@ pub struct Life {
     /// `together_nights` says. False: courting alone.
     #[serde(default)]
     pub wed_at_hearth: bool,
+    /// A woman of a hearth left unwed at dawn, once its unmarried have
+    /// wed (`wed_at_hearth`), becomes the second wife of a married man of
+    /// that hearth, the nearest in age, one with a single wife, not her
+    /// kin (D49, amended 25 November 2026; the project lead: "je valide la
+    /// deuxième femme"). Her spouse is he; his stays his first wife. False:
+    /// one wife each.
+    #[serde(default)]
+    pub second_wife: bool,
     /// A pregnancy lasts this many quarters of an age-year, in whole days
     /// (`quarters × days_per_age_year / 4`; D09, amended 24 November 2026:
     /// seasons while the age-year was the cycle).
@@ -2199,6 +2207,7 @@ impl Default for Life {
             part_after_days: 0,
             together_nights: 0,
             wed_at_hearth: false,
+            second_wife: false,
             pregnancy_quarters: 1,
             pregnant_percent: 100,
             lose_when_weak: false,

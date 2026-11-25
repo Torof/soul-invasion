@@ -522,10 +522,11 @@ fn for_hearth(kj: u64, store: u64, owed: u64) -> u64 {
     owed.min(u64::try_from(share).unwrap_or(u64::MAX))
 }
 
-/// Whether `other` is one of `body`'s own: its spouse, or its child under
-/// sixteen.
+/// Whether `other` is one of `body`'s own: its spouse (a second wife
+/// too, D49), or its child under sixteen.
 fn is_own(world: &World, body: &Body, other: &Body) -> bool {
     body.spouse() == Some(other.id())
+        || other.spouse() == Some(body.id())
         || ((other.mother() == Some(body.id()) || other.father() == Some(body.id()))
             && world.age_milli(other) < OWN_CHILD_MILLI)
 }

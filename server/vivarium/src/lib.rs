@@ -7264,7 +7264,11 @@ mod tests {
     /// wife's when he marries; the year counts births, deaths by cause, the
     /// interval between births and the fertile women without a spouse.
     fn peopled_report() -> (Report, BodyId, BodyId) {
-        let mut report = run_with(&small(), content()).unwrap();
+        // The families' bookkeeping, with its one unwed woman kept unwed:
+        // no second wife (D49) in this small band.
+        let mut rules = content().clone();
+        rules.needs.life.second_wife = false;
+        let mut report = run_with(&small(), &rules).unwrap();
         let per_day = report.ticks_per_day();
         let (mother, father) = (BodyId(1), report.people[&BodyId(1)].couplings[0].1);
         assert_eq!(report.people[&mother].sex, Some(Sex::Female));
