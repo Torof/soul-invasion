@@ -447,7 +447,7 @@ pub(super) fn see_reserve(
 
 /// Whether a body standing at `here` is at its camp: near its home, or
 /// on its home's place.
-fn at_camp(rules: &Content, here: Pos, mind: &Mind) -> bool {
+pub(super) fn at_camp(rules: &Content, here: Pos, mind: &Mind) -> bool {
     let home = mind.ways.home;
     let side = place_side(rules);
     ((here.x - home.x).abs() <= HOME_TILES && (here.y - home.y).abs() <= HOME_TILES)

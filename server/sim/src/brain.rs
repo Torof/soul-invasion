@@ -4906,7 +4906,7 @@ impl Brains {
         let day = today(world);
         let now = world.tick().0;
         self.food.refresh(world, rules);
-        let (kin, season) = temper_today(world, rules, day);
+        let (kin, season) = temper_today(world, rules, day, &self.minds);
         let ids: Vec<BodyId> = self.minds.keys().copied().collect();
         let follows = self.follows_today(world, rules, day);
         let gathered: BTreeMap<BodyId, u64> = self
@@ -9102,19 +9102,41 @@ fn close_habit(
 /// With the will tempered (D56): whether each parent's children are fed
 /// tonight ([`kin_fed`]), and whether a season ends with this day (the
 /// will and the confidences come back toward the innate then).
-fn temper_today(world: &World, rules: &Content, day: u64) -> (BTreeMap<BodyId, bool>, bool) {
+fn temper_today(
+    world: &World,
+    rules: &Content,
+    day: u64,
+    minds: &BTreeMap<BodyId, Mind>,
+) -> (BTreeMap<BodyId, bool>, bool) {
     if !rules.needs.temperance.on() {
         return (BTreeMap::new(), false);
     }
     let season = u64::from(world.calendar().days_per_cycle() / 4).max(1);
-    (kin_fed(world, rules), day > 0 && day.is_multiple_of(season))
+    (
+        kin_fed(world, rules, minds),
+        day > 0 && day.is_multiple_of(season),
+    )
 }
 
 /// Whether the children under `follows_mother_years` of each parent are
 /// fed at nightfall (D56): none of them hungry. Parents without such a
-/// child are not in it.
-fn kin_fed(world: &World, rules: &Content) -> BTreeMap<BodyId, bool> {
+/// child are not in it. With `temperance.kin_seen` (the audit of wakes,
+/// step 6), only the children it sees: both at its camp at nightfall.
+fn kin_fed(
+    world: &World,
+    rules: &Content,
+    minds: &BTreeMap<BodyId, Mind>,
+) -> BTreeMap<BodyId, bool> {
     let young = u64::from(rules.needs.decisions.follows_mother_years) * 1000;
+    let seen_only = rules.needs.temperance.kin_seen;
+    let sees = |parent: BodyId, child: &Body| {
+        minds.get(&parent).is_some_and(|mind| {
+            world
+                .body(parent)
+                .is_some_and(|p| pooling::at_camp(rules, p.pos(), mind))
+                && pooling::at_camp(rules, child.pos(), mind)
+        })
+    };
     let mut fed: BTreeMap<BodyId, bool> = BTreeMap::new();
     for child in world.bodies() {
         if child.condition().vitality.points() == 0 || world.age_milli(child) >= young {
@@ -9122,6 +9144,9 @@ fn kin_fed(world: &World, rules: &Content) -> BTreeMap<BodyId, bool> {
         }
         let ok = child.condition().hunger.points() < HUNGRY;
         for parent in [child.mother(), child.father()].into_iter().flatten() {
+            if seen_only && !sees(parent, child) {
+                continue;
+            }
             let entry = fed.entry(parent).or_insert(true);
             *entry = *entry && ok;
         }

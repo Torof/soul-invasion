@@ -1493,6 +1493,13 @@ pub struct Temperance {
     /// the last held beyond. Empty: every success weighs the same.
     #[serde(default)]
     pub streak_percent: Vec<(u32, u32)>,
+    /// Whether a parent judges its day at the camp (`stay`) only by the
+    /// children it sees (the audit of wakes, 26 November 2026, step 6):
+    /// those at its camp at nightfall, with it; a child away is not
+    /// judged. False, or absent: the hunger of all its children, wherever
+    /// they are, the rule before.
+    #[serde(default)]
+    pub kin_seen: bool,
 }
 
 impl Default for Temperance {
@@ -1507,6 +1514,7 @@ impl Default for Temperance {
             activities: Vec::new(),
             bold_will: 40,
             streak_percent: Vec::new(),
+            kin_seen: false,
         }
     }
 }
@@ -1532,6 +1540,8 @@ impl Temperance {
             ],
             bold_will: 40,
             streak_percent: vec![(0, 100), (4, 200)],
+            // The switch of the audit of wakes at the rule before.
+            kin_seen: false,
         }
     }
 

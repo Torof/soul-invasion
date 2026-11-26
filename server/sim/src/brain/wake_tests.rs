@@ -257,3 +257,35 @@ fn a_young_one_within_reach_eats_what_it_is_handed() {
     assert!(world.body(young).unwrap().condition().deficit_j < deficit);
     assert!(world.body(giver).unwrap().condition().deficit_j >= deficit);
 }
+
+#[test]
+fn a_parent_judges_its_day_at_the_camp_by_the_children_it_sees() {
+    let (mut world, mut rules, brains) = field(3);
+    let (mother, near, away) = (
+        world.bodies()[0].id(),
+        world.bodies()[1].id(),
+        world.bodies()[2].id(),
+    );
+    let year = u64::from(world.calendar().days_per_age_year());
+    for (child, at) in [(near, Pos::new(6, 6)), (away, Pos::new(50, 50))] {
+        world.set_birth(child, 5 * year, crate::Sex::Female);
+        world.set_parents(child, Some(mother), None);
+        world
+            .bodies
+            .iter_mut()
+            .find(|b| b.id() == child)
+            .unwrap()
+            .at = at.centre();
+    }
+    world.set_birth(mother, 30 * year, crate::Sex::Female);
+    // The one away is hungry; the one by its mother is not.
+    let away_body = world.bodies.iter_mut().find(|b| b.id() == away).unwrap();
+    away_body.condition.hunger = crate::Gauge::at(70);
+    assert!(!super::kin_fed(&world, &rules, &brains.minds)[&mother]);
+    rules.needs.temperance.kin_seen = true;
+    assert!(super::kin_fed(&world, &rules, &brains.minds)[&mother]);
+    // None of its children in sight: not judged.
+    let near_body = world.bodies.iter_mut().find(|b| b.id() == near).unwrap();
+    near_body.at = Pos::new(50, 52).centre();
+    assert!(!super::kin_fed(&world, &rules, &brains.minds).contains_key(&mother));
+}

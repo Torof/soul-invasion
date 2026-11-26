@@ -88,7 +88,8 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
                            thought.wake_asleep true,
                            decisions.behind_glance false,
                            pooling.hearth_look and
-                           pooling.young_seen false, ...)
+                           pooling.young_seen,
+                           temperance.kin_seen false)
   --no-continent-cache     bear the vivarium's continent anew instead of
                            reading it from ${XDG_CACHE_HOME:-~/.cache}/soul-sim/
                            continents/ (where a run keeps it; same pages)

@@ -5321,6 +5321,7 @@ fn old_wakes(needs: &mut sim::content::Needs) {
     needs.decisions.behind_glance = false;
     needs.pooling.hearth_look = false;
     needs.pooling.young_seen = false;
+    needs.temperance.kin_seen = false;
 }
 
 fn factors_of(content: &Content) -> Vec<(String, serde_json::Value)> {

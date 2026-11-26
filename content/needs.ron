@@ -634,6 +634,13 @@
     //                  a day's success after successes in a row of the
     //                  same activity weighs more, up to twice after four,
     //                  straight between; a failure ends the streak.
+    // kin_seen: true — a parent judges its day at the camp ("stay") only
+    //                  by the children it sees: both at its camp at
+    //                  nightfall; a child away is not judged (the audit of
+    //                  wakes, 26 November 2026, step 6: 61 % of the pairs
+    //                  read with the child out of sight). false, or
+    //                  absent: all its children, wherever they are, the
+    //                  rule before (--old-wakes).
     temperance: (
         bears_by_innate: [(0, 2), (100, 6)],
         failure_milli: 1000,
@@ -643,6 +650,7 @@
         activities: [("explore", 75), ("gather", 50), ("stay", 90)],
         bold_will: 40,
         streak_percent: [(0, 100), (4, 200)],
+        kin_seen: true,
     ),
     // Who is believed to know (D56, PR 1 ter): "32 knows where berries
     // are" is a record in the common memory (D55); each body holds, for
