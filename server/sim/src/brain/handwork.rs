@@ -253,8 +253,12 @@ pub(super) fn heard_deeds(memory: &Store, mind: &Mind) -> Vec<(Deed, u32)> {
                 way: Way::Hands,
                 kept: true,
                 after,
+                problem,
                 ..
-            }) => {
+            }) if problem.is_none_or(|k| mind.carries(k)) => {
+                // Told with a problem: only a listener living the same
+                // problem has a reason to try it (D50, amended 26
+                // November 2026).
                 for deed in after.hands.iter() {
                     add(deed, access.by, day);
                 }
@@ -301,17 +305,23 @@ pub(super) fn aim_at(mind: &mut Mind, deeds: &[(Deed, u32)], day: u64) {
 /// trial) times the factor of the most tellers any of them was
 /// heard from, at most 1,000. 0 with nothing heard.
 pub(super) fn heard_chance(rules: &Content, mind: &Mind, deeds: &[(Deed, u32)]) -> u64 {
-    let trials = &rules.needs.trials;
     let Some(tellers) = deeds.iter().map(|(_, n)| *n).max() else {
         return 0;
     };
-    let base = if mind.distress_days >= trials.trial_after_days {
+    (will_chance(rules, mind) * rules.needs.trials.heard_factor(tellers)).min(1000)
+}
+
+/// The chance, in per mille, that `mind` sets out to try by its will
+/// alone: in distress the percent, else the calm per mille, at least the
+/// floor of every trial (D50, amended).
+pub(super) fn will_chance(rules: &Content, mind: &Mind) -> u64 {
+    let trials = &rules.needs.trials;
+    if mind.distress_days >= trials.trial_after_days {
         trials.try_percent(mind.will) * 10
     } else {
         trials.calm_try_permille(mind.will)
     }
-    .max(u64::from(trials.try_floor_permille));
-    (base * trials.heard_factor(tellers)).min(1000)
+    .max(u64::from(trials.try_floor_permille))
 }
 
 /// A material's index in the content.
@@ -795,6 +805,69 @@ fn draw(
             Some((HandTarget::Item(item, here), deed(on, NOTHING)))
         }
     }
+}
+
+/// Whether `id` at `here` could begin a gesture its hands do not know
+/// (D50 and D57, amended 26 November 2026): among the gestures the things
+/// around allow, as [`draw`] sees them, one whose deed is not among its
+/// ways. Nothing is drawn, no try spent: a trial from a problem waits for
+/// such a moment.
+pub(super) fn something_new(
+    world: &World,
+    rules: &Content,
+    (id, here): (BodyId, Pos),
+    mind: &Mind,
+) -> bool {
+    let near = i32::try_from(rules.needs.hands.near_tiles).unwrap_or(4);
+    let have = carried(world, rules, id);
+    let material = |m: u16| rules.materials.get(usize::from(m));
+    let new = |deed: Deed| !mind.ways.hands.contains(deed);
+    let fold = have.iter().any(|&(_, m)| {
+        material(m).is_some_and(|m| m.folds_into.is_some())
+            && new(Deed {
+                gesture: Gesture::Fold,
+                on: m,
+                with: NOTHING,
+            })
+    });
+    if fold {
+        return true;
+    }
+    let take = things_near(world, here, near, mind)
+        .iter()
+        .any(|&(_, _, m)| {
+            material_index(rules, m).is_some_and(|on| {
+                new(Deed {
+                    gesture: Gesture::PickUp,
+                    on,
+                    with: NOTHING,
+                })
+            })
+        });
+    if take {
+        return true;
+    }
+    let tools: Vec<u16> = have
+        .iter()
+        .map(|&(_, m)| m)
+        .filter(|&m| material(m).is_some_and(|m| m.sharp))
+        .collect();
+    if tools.is_empty() {
+        return false;
+    }
+    trees_near(world, here, near, mind).iter().any(|t| {
+        rules.species.get(t.3).is_some_and(|s| s.bark.is_some())
+            && bark_fits(world, rules, id, t.3)
+            && u16::try_from(t.3).is_ok_and(|on| {
+                tools.iter().any(|&with| {
+                    new(Deed {
+                        gesture: Gesture::Cut,
+                        on,
+                        with,
+                    })
+                })
+            })
+    })
 }
 
 /// The first deed of `deeds` it lacks what it gives and can do here: a
@@ -1454,6 +1527,7 @@ mod tests {
             before_days: Lately::default(),
             heard: HeardDays::default(),
             caller: None,
+            problem: None,
         });
         let mut cut = false;
         for seed in 0..200 {
@@ -1492,6 +1566,7 @@ mod tests {
             before_days: Lately::default(),
             heard: HeardDays::default(),
             caller: None,
+            problem: None,
         });
     }
 
@@ -1721,6 +1796,7 @@ mod tests {
             before_days: Lately::default(),
             heard: HeardDays::default(),
             caller: None,
+            problem: None,
         });
         let cut = Deed {
             gesture: Gesture::Cut,
@@ -1766,6 +1842,7 @@ mod tests {
             will: 50,
             before: Lately::default(),
             during: Lately::default(),
+            problem: None,
         });
         let mut mind = brains.minds.get(&id).unwrap().clone();
         mind.heard_ways.push(Access {

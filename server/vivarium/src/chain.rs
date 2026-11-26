@@ -618,6 +618,7 @@ mod tests {
             pooling: true,
             care: true,
             trips: true,
+            problems: true,
             continents: None,
             helpers: 0,
         }

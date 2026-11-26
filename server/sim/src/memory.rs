@@ -112,6 +112,9 @@ pub enum Record {
         before: Lately,
         /// How it lived during the trial.
         during: Lately,
+        /// The problem the trial was begun from (D50, amended 26 November
+        /// 2026): "problem X, deed Y, it worked"; `None` for every other.
+        problem: Option<u8>,
     },
     /// A deed of the hands that made a new kind of thing for its doer,
     /// told the evening it was done, before any judgment (D57, the project
