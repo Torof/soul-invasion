@@ -259,6 +259,9 @@ enum Doing {
     ToReserve(Pos),
     /// Stepping to a thing or a tree to do a deed of its hands (D57).
     ToHands,
+    /// On its way to a young one seen hungry, or to its hearth's reserve
+    /// for it, to feed it (D58, the audit of wakes, step 5).
+    ToFeed(BodyId),
 }
 
 /// What a mind watches without a thought (D56, the audit of wakes, step
@@ -7219,6 +7222,9 @@ impl Brains {
     /// Marks the minds the tick's events concern.
     fn notice(&mut self, events: &[Event], world: &World, rules: &Content) {
         let thought = &rules.needs.thought;
+        // The young fed last turn: their meal is no thought of theirs
+        // (step 5 of the audit of wakes).
+        let handed = self.reserves.take_handed();
         for event in events {
             let body = match event {
                 Event::DayStarted { .. } | Event::NightFell { .. } => {
@@ -7266,18 +7272,7 @@ impl Brains {
                 // (22 November 2026).
                 continue;
             }
-            if !thought.wake_on_interrupt
-                && matches!(
-                    event,
-                    Event::WorkStopped {
-                        why: crate::WorkEnd::Interrupted,
-                        ..
-                    }
-                )
-            {
-                // The echo of an order (the audit of wakes, step 1): its
-                // own new intention, or its falling asleep, stopped the
-                // gather. It has just decided; sleep has its threshold.
+            if echo(event, thought, &handed) {
                 continue;
             }
             if let Some(mind) = self.minds.get_mut(&body) {
@@ -7363,6 +7358,22 @@ fn pasts_of(body: &Body, rules: &Content, was_hungry: bool) -> (bool, bool, bool
         c.asleep,
         c.asleep && c.fatigue.points() >= COLLAPSED,
     )
+}
+
+/// Whether `event` is the echo of something already decided, which
+/// wakes nobody: a gather its own new intention, or its falling asleep,
+/// stopped (the audit of wakes, step 1, `thought.wake_on_interrupt`
+/// false: it has just decided; sleep has its threshold); a young one's
+/// meal it was handed (step 5, `handed`: no thought of its own).
+fn echo(event: &Event, thought: &crate::content::Thought, handed: &BTreeSet<BodyId>) -> bool {
+    match event {
+        Event::BodyAte { body, .. } => handed.contains(body),
+        Event::WorkStopped {
+            why: crate::WorkEnd::Interrupted,
+            ..
+        } => !thought.wake_on_interrupt,
+        _ => false,
+    }
 }
 
 /// Whether a body asleep sleeps on whatever it would think (D45): asleep,
@@ -7998,6 +8009,11 @@ fn decide(
             (seed, food.comings),
             Why::Thirst,
         );
+    }
+    // A young one of its hearth seen hungry near it: it feeds it (D58,
+    // the audit of wakes, step 5).
+    if let Some(decision) = pooling::feed_young(world, rules, reserves, (id, body, here), mind) {
+        return Some(decision);
     }
     // A child fed by its hearth does not gather alone (D58).
     let fed = pooling::fed_by_hearth(world, rules, reserves, body);

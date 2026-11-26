@@ -580,6 +580,17 @@ pub struct Pooling {
     /// anywhere, as it is now, the rule before.
     #[serde(default)]
     pub hearth_look: bool,
+    /// Whether the young are seen, not their stomach (the project lead,
+    /// 26 November 2026; the audit of wakes, step 5): an awake grown body,
+    /// or a child past `fed_until_years`, who sees a young one of its
+    /// hearth hungry near it feeds it, from what it carries or from the
+    /// reserve, and what the reserve keeps for the young counts the
+    /// stomach of those it sees at the camp only, a day of need, less
+    /// what was seen eaten at the camp, for the others. False, or absent:
+    /// nobody feeds another, and the young's stomach is read from
+    /// anywhere, the rule before.
+    #[serde(default)]
+    pub young_seen: bool,
 }
 
 /// The default width of a heap of the hearth's reserve: one journée.
@@ -615,6 +626,7 @@ impl Pooling {
             heap_days: 1,
             // The switches of the audit of wakes at the rule before.
             hearth_look: false,
+            young_seen: false,
         }
     }
 

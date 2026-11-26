@@ -216,3 +216,44 @@ fn the_caller_is_woken_by_the_member_it_waits_for_and_glances_behind_without_a_t
         Glance::Behind(now)
     ));
 }
+
+#[test]
+fn a_young_one_within_reach_eats_what_it_is_handed() {
+    let (mut world, rules, _) = field(3);
+    let (giver, young, far) = (
+        world.bodies()[0].id(),
+        world.bodies()[1].id(),
+        world.bodies()[2].id(),
+    );
+    let item = world.spawn_item("berries", 400, Pos::new(5, 6));
+    world.queue(Intention::PickUp { body: giver, item });
+    world.step(&rules, &mut Vec::new());
+    let deficit = 50 * u64::from(rules.needs.kj_per_hunger_point) * 1000;
+    for b in &mut world.bodies {
+        b.condition.deficit_j = deficit;
+    }
+    let mut events = Vec::new();
+    // One two tiles off is out of reach: refused, told to the giver.
+    world.queue(Intention::Feed {
+        body: giver,
+        young: far,
+        item,
+    });
+    world.step(&rules, &mut events);
+    assert!(events.iter().any(|e| matches!(e,
+        Event::ActRefused { body, reason: crate::Refusal::OutOfReach, .. } if *body == giver)));
+    // One beside it eats from its hands.
+    events.clear();
+    world.queue(Intention::Feed {
+        body: giver,
+        young,
+        item,
+    });
+    world.step(&rules, &mut events);
+    assert!(events.iter().any(|e| matches!(e,
+        Event::BodyAte { body, item: i, .. } if *body == young && *i == item)));
+    let left = world.item(item).map_or(0, crate::Item::mass_g);
+    assert!(left < 400, "the giver holds what is left: {left}");
+    assert!(world.body(young).unwrap().condition().deficit_j < deficit);
+    assert!(world.body(giver).unwrap().condition().deficit_j >= deficit);
+}

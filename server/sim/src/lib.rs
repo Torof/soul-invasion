@@ -939,6 +939,20 @@ pub enum Intention {
         /// What.
         item: ItemId,
     },
+    /// Give a young one standing within reach the food `item` to eat
+    /// (D58, amended 26 November 2026: the young are seen, not their
+    /// stomach): `item` carried by the body, or lying, or kept in a
+    /// store, within its reach; the young eats it as by [`Intention::Eat`],
+    /// as much as its own room for food allows. A gesture of the
+    /// simulation's own (the brains'); no client asks it.
+    Feed {
+        /// Who gives.
+        body: BodyId,
+        /// Who eats.
+        young: BodyId,
+        /// What.
+        item: ItemId,
+    },
     /// Take a carried item in hand; what was in hand is carried instead.
     Hold {
         /// Who.
@@ -1036,7 +1050,9 @@ impl Intention {
     #[must_use]
     pub fn item_act(&self) -> Option<(ItemAct, ItemId)> {
         match *self {
-            Intention::Eat { item, .. } => Some((ItemAct::Eat, item)),
+            Intention::Eat { item, .. } | Intention::Feed { item, .. } => {
+                Some((ItemAct::Eat, item))
+            }
             Intention::PickUp { item, .. } => Some((ItemAct::PickUp, item)),
             Intention::Drop { item, .. } | Intention::Keep { item, .. } => {
                 Some((ItemAct::Drop, item))
@@ -1052,6 +1068,7 @@ impl Intention {
         match *self {
             Intention::MoveTo { body, .. }
             | Intention::Eat { body, .. }
+            | Intention::Feed { body, .. }
             | Intention::PickUp { body, .. }
             | Intention::Drop { body, .. }
             | Intention::Keep { body, .. }
@@ -3327,6 +3344,11 @@ impl World {
                 }
             }
             Intention::Eat { body: id, item } => self.eat(id, item, rules, events),
+            Intention::Feed {
+                body: id,
+                young,
+                item,
+            } => self.feed(id, young, item, rules, events),
             Intention::PickUp { body: id, item } => self.pick_up(id, item, rules, events),
             Intention::Drop { body: id, item } => self.drop(id, item, rules, events),
             Intention::Keep { body: id, item } => self.keep(id, item, rules, events),
@@ -3858,6 +3880,46 @@ impl World {
             Ok(place) => place,
             Err(reason) => return Self::refuse(events, id, ItemAct::Eat, item, reason),
         };
+        self.eat_from((index, index), item, place, rules, events);
+    }
+
+    /// [`Intention::Feed`]: `id` gives `young`, standing on its tile or
+    /// next to it, the food `item` within its own reach; refused as an
+    /// eating is, told to the giver.
+    fn feed(
+        &mut self,
+        id: BodyId,
+        young: BodyId,
+        item: ItemId,
+        rules: &Content,
+        events: &mut Vec<Event>,
+    ) {
+        let (Some(index), Some(eater)) = (self.index_of(id), self.index_of(young)) else {
+            return Self::refuse(events, id, ItemAct::Eat, item, Refusal::Unknown);
+        };
+        let (a, b) = (self.bodies[index].pos(), self.bodies[eater].pos());
+        if eater == index || (a.x - b.x).abs() > 1 || (a.y - b.y).abs() > 1 {
+            return Self::refuse(events, id, ItemAct::Eat, item, Refusal::OutOfReach);
+        }
+        let place = match self.reach(index, item) {
+            Ok(place) => place,
+            Err(reason) => return Self::refuse(events, id, ItemAct::Eat, item, reason),
+        };
+        self.eat_from((eater, index), item, place, rules, events);
+    }
+
+    /// The body `eater` eats `item`, which lies at `place` within the
+    /// reach of `holder` (itself, or one who feeds it): refusals are told
+    /// to the holder, the meal to the eater.
+    fn eat_from(
+        &mut self,
+        (eater, index): (usize, usize),
+        item: ItemId,
+        place: Place,
+        rules: &Content,
+        events: &mut Vec<Event>,
+    ) {
+        let id = self.bodies[index].id;
         let Some((material, mass_g)) = self
             .item_or_kept(item)
             .map(|i| (i.material.clone(), i.mass_g))
@@ -3877,7 +3939,7 @@ impl World {
         // today, in grams of this food.
         let needs = &rules.needs;
         let room_g =
-            self.bodies[index].condition.room_j(needs) / u64::from(food.energy_kj_per_kg).max(1);
+            self.bodies[eater].condition.room_j(needs) / u64::from(food.energy_kj_per_kg).max(1);
         let grams = mass_g
             .min(needs.meal_g)
             .min(u32::try_from(room_g).unwrap_or(u32::MAX))
@@ -3885,10 +3947,10 @@ impl World {
         if grams == 0 {
             return Self::refuse(events, id, ItemAct::Eat, item, Refusal::Sated);
         }
-        self.wake(index, events);
+        self.wake(eater, events);
         let whole = grams == mass_g;
         let eaten_j = u64::from(grams) * u64::from(food.energy_kj_per_kg);
-        let c = &mut self.bodies[index].condition;
+        let c = &mut self.bodies[eater].condition;
         c.deficit_j = c.deficit_j.saturating_sub(eaten_j);
         c.eaten_today_j += eaten_j;
         c.set_appetite(needs);
@@ -3945,7 +4007,7 @@ impl World {
             }
         }
         events.push(Event::BodyAte {
-            body: id,
+            body: self.bodies[eater].id,
             item,
             material,
             grams,

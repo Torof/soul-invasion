@@ -3908,6 +3908,7 @@ fn thought(intention: &Intention, why: Why) -> String {
         Intention::Sleep { .. } => "lies down to sleep".to_owned(),
         Intention::Wake { .. } => "gets up".to_owned(),
         Intention::Gather { gives, .. } => format!("gathers {gives}"),
+        Intention::Feed { young, item, .. } => format!("feeds {} item {}", young.0, item.0),
         other => format!("{other:?}"),
     };
     format!("{reason}: {act}")
@@ -5319,6 +5320,7 @@ fn old_wakes(needs: &mut sim::content::Needs) {
     needs.thought.wake_asleep = true;
     needs.decisions.behind_glance = false;
     needs.pooling.hearth_look = false;
+    needs.pooling.young_seen = false;
 }
 
 fn factors_of(content: &Content) -> Vec<(String, serde_json::Value)> {

@@ -853,6 +853,24 @@
     //                        emptied since, it comes home to an empty one.
     //                        false, or absent: its share read from
     //                        anywhere, the rule before (--old-wakes).
+    // young_seen: true — the young are seen, not their stomach (the
+    //                        project lead, 26 November 2026, from the case
+    //                        of a hungry child waiting at the camp, food
+    //                        laid there no longer waking it): an awake
+    //                        grown body, or a child past fed_until_years,
+    //                        who sees a young one of its hearth (fed by
+    //                        it, seen at the dawn circle) hungry within 6
+    //                        tiles feeds it: what it carries, walking to
+    //                        it, or at its camp a handful taken from the
+    //                        reserve for it (laid back once the young is
+    //                        fed). The young thinks nothing of it. And what
+    //                        the reserve keeps for the young counts the
+    //                        stomach of those seen at the camp; for the
+    //                        others, a day of their need less what they
+    //                        were seen eating at the camp since dawn.
+    //                        false, or absent: nobody feeds another, the
+    //                        young's stomach read from anywhere, the rule
+    //                        before (--old-wakes).
     pooling: (
         fed_until_years: 8,
         young_first_until_years: 12,
@@ -864,6 +882,7 @@
         keep_percent_by_will: [(0, 10), (100, 90)],
         heap_days: 1,
         hearth_look: true,
+        young_seen: true,
     ),
     // The gestures of the hands (D57; the project lead, 24 November 2026:
     // "C'est parfait"): pick up, cut with what is in hand, fold. No
