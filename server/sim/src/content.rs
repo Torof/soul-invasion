@@ -571,6 +571,15 @@ pub struct Pooling {
     /// heaps, food spoiling up to `heap_days - 1` journées early.
     #[serde(default = "one_day")]
     pub heap_days: u32,
+    /// Whether a body knows its hearth's reserve by what it saw of it
+    /// (the project lead, 26 November 2026: "no telepathy: a person
+    /// knows what is at the camp when she sees it"; the audit of wakes,
+    /// step 4): what the reserve held and how many lay in its circle the
+    /// last time it saw it, awake at its camp, at the dawn circle, or
+    /// laying a heap there itself. False, or absent: its share read from
+    /// anywhere, as it is now, the rule before.
+    #[serde(default)]
+    pub hearth_look: bool,
 }
 
 /// The default width of a heap of the hearth's reserve: one journée.
@@ -604,6 +613,8 @@ impl Pooling {
             starving_fat_percent: 25,
             keep_percent_by_will: vec![(0, 10), (100, 90)],
             heap_days: 1,
+            // The switches of the audit of wakes at the rule before.
+            hearth_look: false,
         }
     }
 

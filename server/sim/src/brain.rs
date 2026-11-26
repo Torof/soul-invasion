@@ -2239,6 +2239,9 @@ pub struct Mind {
     /// gathered while it owed its hearth, not its own to eat; put down at
     /// the camp.
     hearth_carried_kj: u64,
+    /// What it last saw of its hearth's reserve (D58, the audit of wakes,
+    /// step 4): with `pooling.hearth_look`, its share is read from this.
+    hearth_seen: Option<pooling::HearthSeen>,
     /// The tick it chose to eat of what it carried for its hearth, its
     /// hunger giving way (D58, amended 25 November 2026, the hunger bar):
     /// eaten, its `hearth_carried_kj` is lowered to what it holds.
@@ -2464,6 +2467,7 @@ impl Mind {
             hearth_extra_kj: 0,
             hearth_put_kj: 0,
             hearth_carried_kj: 0,
+            hearth_seen: None,
             hearth_bar_meal: None,
             hearth_barred: None,
             walks: 0,
@@ -6245,7 +6249,8 @@ impl Brains {
                 said.insert(id, (Act::Alone, Some(spot), None, 0));
                 continue;
             }
-            if carried_kj(world, rules, id) + self.reserves.share_kj(world, rules, mind.ways.home)
+            if carried_kj(world, rules, id)
+                + pooling::known_share_kj(world, rules, &self.reserves, mind)
                 >= mind.ways.stock_kj + need_kj_per_day(rules, body)
             {
                 // It holds what it wants for tomorrow and tomorrow's
@@ -7844,6 +7849,10 @@ fn decide(
     let map = world.map();
     let decision = |intention, why| Some(Decision { intention, why });
     let (thirsty, parched, hungry, asleep, collapsed) = pasts(world, rules, id, mind.past.2);
+    if !asleep {
+        // Awake at its camp, it sees its hearth's reserve (step 4).
+        pooling::see_reserve(world, rules, reserves, here, mind);
+    }
     // The world refuses a gather to a body whose arms and containers are
     // full (D57).
     let can_carry = body.food_room_g(&rules.movement) > 0;
@@ -8124,7 +8133,7 @@ fn decide(
     let carried = carried_kj(world, rules, id);
     let full = !can_carry
         || carried >= store
-        || carried + reserves.share_kj(world, rules, mind.ways.home) >= store;
+        || carried + pooling::known_share_kj(world, rules, reserves, mind) >= store;
     let mut gathers = !night && !fed && !going_home && (!full || on_the_way(world, groups, mind));
     let mut group_home = false;
     if !night {

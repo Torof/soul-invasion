@@ -378,6 +378,62 @@ impl Reserves {
     }
 }
 
+/// What a body saw of its hearth's reserve the last time it saw it (D58,
+/// the audit of wakes, step 4; the project lead, 26 November 2026: "no
+/// telepathy: a person knows what is at the camp when she sees it").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct HearthSeen {
+    /// What the reserve held, in kilojoules.
+    kj: u64,
+    /// How many lay down in its circle at dawn, if a dawn saw it.
+    eaters: Option<u64>,
+    /// When it saw it, the tick.
+    at: u64,
+}
+
+/// A body's share of its hearth's reserve as it knows it (D58): with
+/// `pooling.hearth_look`, what it saw the last time it saw the reserve,
+/// divided by the circle it saw then; believed as seen, nothing projected
+/// (spoiled, eaten, laid since). Without, its share now, read from
+/// anywhere, the rule before ([`Reserves::share_kj`]).
+pub(super) fn known_share_kj(
+    world: &World,
+    rules: &Content,
+    reserves: &Reserves,
+    mind: &Mind,
+) -> u64 {
+    if !rules.needs.pooling.hearth_look {
+        return reserves.share_kj(world, rules, mind.ways.home);
+    }
+    if !on(rules) {
+        return 0;
+    }
+    mind.hearth_seen
+        .and_then(|seen| seen.eaters.map(|e| seen.kj / e.max(1)))
+        .unwrap_or(0)
+}
+
+/// A body awake at `here` sees its hearth's reserve when it stands at its
+/// camp ([`at_camp`]: within six tiles of its home, or on its home's
+/// place), with `pooling.hearth_look` (step 4 of the audit of wakes).
+pub(super) fn see_reserve(
+    world: &World,
+    rules: &Content,
+    reserves: &Reserves,
+    here: Pos,
+    mind: &mut Mind,
+) {
+    if !rules.needs.pooling.hearth_look || !on(rules) || !at_camp(rules, here, mind) {
+        return;
+    }
+    let camp = camp_of(rules, mind.ways.home);
+    mind.hearth_seen = Some(HearthSeen {
+        kj: reserves.kj(world, rules, camp),
+        eaters: reserves.eaters.get(&camp).copied(),
+        at: world.tick().0,
+    });
+}
+
 /// Whether a body standing at `here` is at its camp: near its home, or
 /// on its home's place.
 fn at_camp(rules: &Content, here: Pos, mind: &Mind) -> bool {
@@ -537,6 +593,10 @@ pub(super) fn put_down(
     if near(tile, here) {
         reserves.put(camp, tile, spare.item);
         mind.hearth_put_kj += spare.kj;
+        if let Some(seen) = mind.hearth_seen.as_mut() {
+            // It knows what it laid itself (step 4).
+            seen.kj += spare.kj;
+        }
         mind.hearth_carried_kj = mind.hearth_carried_kj.saturating_sub(spare.kj);
         mind.doing = Doing::Nothing;
         mind.due = true;
@@ -583,7 +643,7 @@ pub(super) fn store_short(
 ) -> bool {
     on(rules)
         && !fed_by_hearth(world, rules, reserves, body)
-        && super::carried_kj(world, rules, id) + reserves.share_kj(world, rules, mind.ways.home)
+        && super::carried_kj(world, rules, id) + known_share_kj(world, rules, reserves, mind)
             < mind.ways.stock_kj + mind.hearth_owed()
 }
 
@@ -715,9 +775,20 @@ impl Brains {
             let camp = *camp;
             let reserve_kj = self.reserves.kj(world, rules, camp);
             let bodies: Vec<&Body> = present.iter().filter_map(|&b| world.body(b)).collect();
-            self.reserves
-                .eaters
-                .insert(camp, u64::try_from(bodies.len()).unwrap_or(u64::MAX));
+            let eaters = u64::try_from(bodies.len()).unwrap_or(u64::MAX);
+            self.reserves.eaters.insert(camp, eaters);
+            if pooling.hearth_look {
+                // The circle sees its reserve (step 4).
+                for body in &bodies {
+                    if let Some(mind) = self.minds.get_mut(&body.id()) {
+                        mind.hearth_seen = Some(HearthSeen {
+                            kj: reserve_kj,
+                            eaters: Some(eaters),
+                            at: now,
+                        });
+                    }
+                }
+            }
             let young: Vec<(&Body, u64)> = bodies
                 .iter()
                 .filter(|b| pooling.young_first(world.age_milli(b)))
@@ -1372,6 +1443,37 @@ mod tests {
             }
         }
         decided
+    }
+
+    #[test]
+    fn its_share_is_what_it_saw_of_its_reserve_the_last_time_it_saw_it() {
+        // 600 g of berries, 1500 kJ, seen by its circle at dawn.
+        let (mut world, mut rules, id, mut brains) = by_the_bramble(1000, 0, 600);
+        rules.needs.pooling.hearth_look = true;
+        let home = brains.minds[&id].ways.home;
+        let camp = camp_of(&rules, home);
+        brains.see_hearths(&world, &rules, &[(camp, vec![id])]);
+        let known =
+            |b: &Brains, w: &World, r: &Content| known_share_kj(w, r, &b.reserves, &b.minds[&id]);
+        assert_eq!(known(&brains, &world, &rules), 1500);
+        // Another heap laid while it does not look: the truth moves, not
+        // what it knows.
+        let heap = world.spawn_kept("berries", 600, home);
+        brains.reserves.put(camp, home, heap);
+        assert_eq!(brains.reserves.share_kj(&world, &rules, home), 3000);
+        assert_eq!(known(&brains, &world, &rules), 1500);
+        // Far from its camp it sees nothing of it; at its camp it sees.
+        let far = Pos::new(home.x + 40, home.y + 40);
+        let mind = brains.minds.get_mut(&id).unwrap();
+        see_reserve(&world, &rules, &brains.reserves, far, mind);
+        assert_eq!(known(&brains, &world, &rules), 1500);
+        let mind = brains.minds.get_mut(&id).unwrap();
+        see_reserve(&world, &rules, &brains.reserves, home, mind);
+        assert_eq!(known(&brains, &world, &rules), 3000);
+        // The rule before reads it from anywhere.
+        rules.needs.pooling.hearth_look = false;
+        brains.minds.get_mut(&id).unwrap().hearth_seen = None;
+        assert_eq!(known(&brains, &world, &rules), 3000);
     }
 
     #[test]

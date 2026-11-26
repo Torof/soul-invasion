@@ -841,6 +841,18 @@
     //                        the very journée it would have gone alone;
     //                        3: fewer heaps, but food spoils up to two
     //                        journées early (berries keep three).
+    // hearth_look: true — a body knows its hearth's reserve by what it
+    //                        saw of it (the project lead, 26 November 2026:
+    //                        "no telepathy: a person knows what is at the
+    //                        camp when she sees it"): what the reserve held
+    //                        and how many lay in its circle the last time
+    //                        it saw it, awake at its camp (6 tiles of its
+    //                        home, or its home's place), at the dawn
+    //                        circle, or laying a heap there itself. Out at
+    //                        its gathering it believes what it saw: full,
+    //                        emptied since, it comes home to an empty one.
+    //                        false, or absent: its share read from
+    //                        anywhere, the rule before (--old-wakes).
     pooling: (
         fed_until_years: 8,
         young_first_until_years: 12,
@@ -851,6 +863,7 @@
         starving_fat_percent: 25,
         keep_percent_by_will: [(0, 10), (100, 90)],
         heap_days: 1,
+        hearth_look: true,
     ),
     // The gestures of the hands (D57; the project lead, 24 November 2026:
     // "C'est parfait"): pick up, cut with what is in hand, fold. No
