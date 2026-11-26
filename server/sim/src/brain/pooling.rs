@@ -495,7 +495,8 @@ fn young_ahead(
 /// A young one of its hearth `id` sees hungry near it, awake (D58, the
 /// audit of wakes, step 5: the project lead, "the young are seen, not
 /// their stomach"): one its circle saw at dawn, fed by the hearth, not an
-/// infant (nursed), within six tiles; the nearest.
+/// infant (nursed), within six tiles, with room to eat (one full refuses
+/// food); the nearest.
 fn hungry_young_seen(
     world: &World,
     rules: &Content,
@@ -513,6 +514,7 @@ fn hungry_young_seen(
             c.vitality.points() > 0
                 && !c.asleep
                 && c.hunger.points() >= HUNGRY
+                && c.room_j(&rules.needs) > 0
                 && !world.is_infant(y, rules)
                 && (y.pos().x - here.x).abs() <= HOME_TILES
                 && (y.pos().y - here.y).abs() <= HOME_TILES
@@ -561,7 +563,12 @@ pub(super) fn feed_young(
     };
     let target = if let Some(item) = super::carried_food(world, rules, id) {
         if near(at, here) {
+            // A mouthful at a time: it looks again at once whether the
+            // young is still hungry, and gives another, or lays the rest
+            // back (no event of its own follows a meal it gives: without
+            // this it stood a mouthful later, the handful in its arms).
             mind.doing = Doing::Nothing;
+            mind.due = true;
             reserves.handed.insert(young);
             return decision(Intention::Feed {
                 body: id,
@@ -1820,10 +1827,10 @@ mod tests {
             let (mut world, mut brains, ids) = field(&rules, &[(at, 30), (Pos::new(7, 6), 5)]);
             let (grown, child) = (ids[0], ids[1]);
             brains.see_hearths(&world, &rules, &[(camp_of(&rules, at), ids.clone())]);
-            let item = world.spawn_item("berries", 400, at);
+            let item = world.spawn_item("berries", 1000, at);
             world.queue(Intention::PickUp { body: grown, item });
             world.step(&rules, &mut Vec::new());
-            hungry(&mut world, &rules, child, 70);
+            hungry(&mut world, &rules, child, 90);
             // It waits, its hunger already known to it: nothing wakes it.
             let past = super::super::pasts(&world, &rules, child, false);
             let child_mind = brains.minds.get_mut(&child).unwrap();
@@ -1843,6 +1850,9 @@ mod tests {
             }
             assert_eq!(fed, seen, "young_seen {seen}: fed from her hands");
             assert!(!thought, "the child thought nothing of it");
+            // A mouthful after another, until it is no longer hungry.
+            let after = world.body(child).unwrap().condition().hunger.points();
+            assert_eq!(after < HUNGRY, seen, "young_seen {seen}: hunger {after}");
         }
     }
 
